@@ -13,7 +13,7 @@ import pandas as pd
 from storage import store_ohlcv, load_ohlcv
 
 
-def get_exchange(exchange_id: str = "binance") -> ccxt.Exchange:
+def get_exchange(exchange_id: str = "binanceus") -> ccxt.Exchange:
     """Get a ccxt exchange instance (public, no auth)."""
     exchange_class = getattr(ccxt, exchange_id)
     exchange = exchange_class({
@@ -27,7 +27,7 @@ def fetch_ohlcv(
     timeframe: str = "1d",
     since: Optional[str] = None,
     limit: int = 500,
-    exchange_id: str = "binance",
+    exchange_id: str = "binanceus",
     store: bool = True,
 ) -> pd.DataFrame:
     """
@@ -70,7 +70,7 @@ def fetch_full_history(
     symbol: str = "BTC/USDT",
     timeframe: str = "1d",
     since: str = "2020-01-01",
-    exchange_id: str = "binance",
+    exchange_id: str = "binanceus",
     store: bool = True,
 ) -> pd.DataFrame:
     """
@@ -153,7 +153,7 @@ def fetch_full_history(
 def load_cached_data(
     symbol: str = "BTC/USDT",
     timeframe: str = "1d",
-    exchange_id: str = "binance",
+    exchange_id: str = "binanceus",
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ) -> pd.DataFrame:
