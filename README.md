@@ -1,92 +1,133 @@
-# Crypto Trading Bot — Phase 1
+# Crypto Trading Bot — Phases 1-5
 
-A modular cryptocurrency trading bot system with backtesting capabilities. Currently focused on Binance spot markets using public API data (no keys required).
+A modular cryptocurrency trading bot with backtesting, paper trading, live trading, ML signals, and portfolio optimization. Built for Binance US spot markets.
 
 ## Architecture
 
 ```
 trading-bot/
-├── data_fetcher.py   # Historical & real-time OHLCV from Binance via ccxt
-├── indicators.py     # Technical indicators (SMA crossover, RSI, Bollinger Bands)
-├── backtester.py     # Backtesting engine with performance metrics
-├── storage.py        # SQLite storage for price data & backtest results
-├── run_backtest.py   # Main entry point — run & compare strategies
-└── README.md
+├── strategies.py          # 11 configurable trading strategies
+├── indicators.py          # Technical indicator primitives (SMA, EMA, RSI, BB)
+├── backtester.py          # Event-driven backtesting engine with metrics
+├── optimizer.py           # Walk-forward optimization framework
+├── reporter.py            # Text-based performance reporting
+├── exchange_adapter.py    # Binance US adapter (paper + live via ccxt)
+├── risk_manager.py        # Risk management rules engine
+├── live_trader.py         # Live/paper trading engine with CLI
+├── alerts.py              # Alert system (stdout → Discord ready)
+├── ml_models.py           # XGBoost ML signal models
+├── portfolio_optimizer.py # Multi-asset optimization & analytics
+├── data_fetcher.py        # Historical + real-time OHLCV from Binance
+├── storage.py             # SQLite storage layer
+├── run_backtest.py        # Main backtesting entry point
+└── models/                # Saved ML models
 ```
 
-## Features
+## Strategies (11 implemented)
 
-### Data Layer
-- Fetches OHLCV candles from Binance (public API, no keys needed)
-- Automatic pagination for full history downloads
-- SQLite caching — fetch once, backtest many times
-- Rate limit handling and retry logic
-
-### Indicators
-- **SMA Crossover**: Configurable fast/slow period moving average crossover
-- **RSI**: Relative Strength Index with overbought/oversold signals
-- **Bollinger Bands**: Mean reversion signals at band touches
-
-### Backtesting Engine
-- Event-driven simulation with realistic commission (0.1%) and slippage (0.05%)
-- Full equity curve tracking
-- Comprehensive metrics:
-  - Total & annualized returns
-  - Sharpe ratio, Sortino ratio
-  - Max drawdown, Calmar ratio
-  - Win rate, profit factor
-  - Per-trade analytics
-- Results saved to SQLite for comparison
+| Strategy | Type | Description |
+|----------|------|-------------|
+| `sma_crossover` | Trend | Buy when fast SMA crosses above slow SMA |
+| `ema_crossover` | Trend | EMA crossover (faster response) |
+| `rsi` | Oscillator | Buy at oversold, sell at overbought |
+| `bollinger_bands` | Mean Reversion | Trade band touches |
+| `macd` | Momentum | MACD line / signal line crossovers |
+| `mean_reversion` | Statistical | Z-score based mean reversion |
+| `momentum` | Momentum | Rate of change breakouts |
+| `volume_weighted` | Volume | Trend + volume confirmation |
+| `triple_ema` | Trend | 3-EMA alignment (short/mid/long) |
+| `rsi_macd_combo` | Multi-factor | Dual confirmation signals |
+| `pairs_spread` | Stat Arb | Spread z-score trading |
 
 ## Quick Start
 
 ```bash
 # Install dependencies
-pip3 install numpy pandas ccxt
+pip3 install numpy pandas ccxt scikit-learn xgboost scipy
 
-# Run all strategies on BTC/USDT daily (fetches data automatically)
-python3 run_backtest.py
+# Run all strategies on BTC/USDT
+python3 run_backtest.py --mode compare --symbol BTC/USDT
 
-# Run a specific strategy
-python3 run_backtest.py -s sma_crossover --symbol BTC/USDT --timeframe 1d --since 2022-01-01
+# Multi-asset comparison
+python3 run_backtest.py --mode multi --symbols BTC/USDT ETH/USDT SOL/USDT BNB/USDT
 
-# Available strategies: sma_crossover, rsi, bollinger_bands, all
-python3 run_backtest.py -s rsi --capital 5000
+# Walk-forward optimization
+python3 run_backtest.py --mode optimize --strategy macd --symbol BTC/USDT
+
+# Paper trading (real-time)
+python3 live_trader.py --strategy macd --symbols BTC/USDT ETH/USDT --capital 10000
+
+# Paper trading with custom settings
+python3 live_trader.py --strategy bollinger_bands --symbols BTC/USDT --interval 300 --max-drawdown 10
 ```
 
-## Configuration
+## Risk Management
 
-Default parameters (editable in `run_backtest.py`):
+Built-in safety features:
+- **Position sizing**: Max 20% per position, $5,000 hard cap
+- **Exposure limits**: Max 80% total, 30% single asset
+- **Daily loss limit**: -5% stops all trading
+- **Max drawdown**: -15% kill switch
+- **Circuit breaker**: 5 consecutive losses → 60min cooldown
+- **Paper mode default**: Live requires explicit `--live` flag + API keys
 
-| Strategy | Parameter | Default |
-|----------|-----------|---------|
-| SMA Crossover | fast_period | 20 |
-| SMA Crossover | slow_period | 50 |
-| RSI | period | 14 |
-| RSI | overbought | 70 |
-| RSI | oversold | 30 |
-| Bollinger Bands | period | 20 |
-| Bollinger Bands | num_std | 2.0 |
+## ML Models
 
-## Backtest Assumptions
+XGBoost-based signal prediction:
+- 23 features (returns, volatility, RSI, MACD, Bollinger, ATR, volume)
+- Lightweight: ~50MB RAM, works on 2GB boxes
+- Time-series aware train/test split (no look-ahead)
+- Model persistence (pickle)
 
-- **Starting capital**: $1,000
-- **Commission**: 0.1% per trade (Binance spot fee)
-- **Slippage**: 0.05% per trade
-- **Position sizing**: 100% of capital per trade (no partial positions)
-- **Long only**: No short selling in Phase 1
+```python
+from ml_models import MLSignalModel, train_and_backtest_ml
+from data_fetcher import load_cached_data
+
+df = load_cached_data("BTC/USDT", "1d")
+result = train_and_backtest_ml(df, symbol="BTC/USDT")
+```
+
+## Portfolio Optimization
+
+- Mean-variance (Markowitz) via Monte Carlo
+- Strategy correlation analysis
+- Performance attribution
+
+```python
+from portfolio_optimizer import mean_variance_optimize, format_portfolio_report
+opt = mean_variance_optimize(returns_df)
+print(format_portfolio_report(opt))
+```
+
+## Live Trading
+
+```bash
+# Paper mode (default, safe)
+python3 live_trader.py --strategy macd --symbols BTC/USDT ETH/USDT
+
+# ⚠️ Live mode (real money!)
+python3 live_trader.py --strategy macd --symbols BTC/USDT --live --api-key KEY --api-secret SECRET
+```
+
+Safety guards in live mode:
+- 5-second countdown before starting
+- All risk management rules enforced
+- Circuit breakers active
+- Graceful shutdown on Ctrl+C
+- Daily PnL reporting
 
 ## Data Storage
 
-All data is stored in `trading_bot.db` (SQLite):
-- `ohlcv` table: Cached price candles
-- `backtest_results` table: Strategy performance history
+SQLite database (`trading_bot.db`):
+- `ohlcv`: Cached price candles (fetch once, backtest many times)
+- `backtest_results`: Strategy performance history
 
-## Roadmap
+## Exchange
 
-- **Phase 2**: More strategies, walk-forward optimization, paper trading
-- **Phase 3**: Exchange integration, order management
-- **Phase 4**: Live trading with risk management
-- **Phase 5**: ML models, multi-exchange arbitrage
+Uses **Binance US** (`binanceus`) via ccxt. Regular Binance is geo-blocked.
 
-See `TRADING_BOT_PLAN.md` in the parent directory for the full roadmap.
+## Dependencies
+
+```
+numpy pandas ccxt scikit-learn xgboost scipy
+```
