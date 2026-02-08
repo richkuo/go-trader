@@ -1,34 +1,26 @@
 #!/usr/bin/env python3
 """
-Run backtests with different strategies and parameters.
-Main entry point for Phase 1 trading bot.
+Run backtests with multiple strategies across multiple assets and timeframes.
+Main entry point for strategy evaluation.
 """
 
 import sys
 import argparse
+from typing import List, Optional
 
 from data_fetcher import fetch_full_history, load_cached_data
-from indicators import sma_crossover, rsi, bollinger_bands
+from strategies import apply_strategy, list_strategies, STRATEGY_REGISTRY
 from backtester import Backtester, format_results
+from optimizer import walk_forward_optimize, DEFAULT_PARAM_RANGES
+from reporter import (
+    format_single_report, format_comparison_report,
+    format_multi_asset_report, format_walk_forward_report,
+    generate_full_report,
+)
 
 
-STRATEGIES = {
-    "sma_crossover": {
-        "fn": sma_crossover,
-        "default_params": {"fast_period": 20, "slow_period": 50},
-        "description": "SMA Crossover — buy when fast SMA crosses above slow SMA",
-    },
-    "rsi": {
-        "fn": rsi,
-        "default_params": {"period": 14, "overbought": 70, "oversold": 30},
-        "description": "RSI — buy at oversold, sell at overbought",
-    },
-    "bollinger_bands": {
-        "fn": bollinger_bands,
-        "default_params": {"period": 20, "num_std": 2.0},
-        "description": "Bollinger Bands — mean reversion at band touches",
-    },
-}
+DEFAULT_SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
+DEFAULT_TIMEFRAMES = ["4h", "1d"]
 
 
 def run_single_backtest(
@@ -38,20 +30,18 @@ def run_single_backtest(
     since: str = "2022-01-01",
     capital: float = 1000.0,
     params: dict = None,
-):
+) -> Optional[dict]:
     """Run a single backtest and print results."""
-    if strategy_name not in STRATEGIES:
+    strat = STRATEGY_REGISTRY.get(strategy_name)
+    if not strat:
         print(f"Unknown strategy: {strategy_name}")
-        print(f"Available: {', '.join(STRATEGIES.keys())}")
+        print(f"Available: {list_strategies()}")
         return None
 
-    strategy = STRATEGIES[strategy_name]
-    strat_params = params or strategy["default_params"]
-
-    print(f"\n▶ Strategy: {strategy['description']}")
+    strat_params = params or strat["default_params"]
+    print(f"\n▶ Strategy: {strat['description']}")
     print(f"  Params: {strat_params}")
     print(f"  Symbol: {symbol} | Timeframe: {timeframe} | Since: {since}")
-    print(f"  Capital: ${capital:,.2f}")
 
     # Fetch data
     df = load_cached_data(symbol, timeframe, start_date=since)
@@ -61,8 +51,8 @@ def run_single_backtest(
 
     print(f"  Data: {len(df)} candles from {df.index[0]} to {df.index[-1]}")
 
-    # Apply indicator/strategy
-    df_signals = strategy["fn"](df, **strat_params)
+    # Apply strategy
+    df_signals = apply_strategy(strategy_name, df, strat_params)
 
     # Run backtest
     bt = Backtester(initial_capital=capital)
@@ -74,57 +64,145 @@ def run_single_backtest(
         params=strat_params,
     )
 
-    print(format_results(results))
-
-    # Print individual trades
-    if results["trades"]:
-        print(f"\n  TRADE LOG ({len(results['trades'])} trades):")
-        print(f"  {'Entry Date':<22} {'Exit Date':<22} {'Entry $':>10} {'Exit $':>10} {'PnL %':>8}")
-        print(f"  {'─'*74}")
-        for t in results["trades"]:
-            print(f"  {t['entry_date'][:19]:<22} {t['exit_date'][:19]:<22} "
-                  f"{t['entry_price']:>10,.2f} {t['exit_price']:>10,.2f} {t['pnl_pct']:>+7.2f}%")
-
+    print(format_single_report(results))
     return results
 
 
-def run_all_strategies(symbol="BTC/USDT", timeframe="1d", since="2022-01-01", capital=1000.0):
-    """Run all available strategies and compare."""
+def run_all_strategies(
+    symbol: str = "BTC/USDT",
+    timeframe: str = "1d",
+    since: str = "2022-01-01",
+    capital: float = 1000.0,
+    strategies: Optional[List[str]] = None,
+) -> list:
+    """Run multiple strategies on one asset and compare."""
+    strat_list = strategies or list_strategies()
     print(f"\n{'#'*60}")
-    print(f"  RUNNING ALL STRATEGIES")
+    print(f"  RUNNING {len(strat_list)} STRATEGIES")
     print(f"  {symbol} | {timeframe} | since {since} | ${capital:,.0f}")
     print(f"{'#'*60}")
 
     all_results = []
-    for name in STRATEGIES:
+    for name in strat_list:
         result = run_single_backtest(name, symbol, timeframe, since, capital)
         if result:
             all_results.append(result)
 
     if all_results:
-        print(f"\n\n{'='*60}")
-        print(f"  STRATEGY COMPARISON")
-        print(f"{'='*60}")
-        print(f"  {'Strategy':<20} {'Return':>8} {'Sharpe':>8} {'MaxDD':>8} {'WinRate':>8} {'Trades':>7}")
-        print(f"  {'─'*60}")
-        for r in sorted(all_results, key=lambda x: x["total_return_pct"], reverse=True):
-            print(f"  {r['strategy_name']:<20} {r['total_return_pct']:>+7.1f}% "
-                  f"{r['sharpe_ratio']:>7.2f} {r['max_drawdown_pct']:>+7.1f}% "
-                  f"{r['win_rate']:>6.1f}% {r['total_trades']:>6}")
+        print(format_comparison_report(all_results))
 
     return all_results
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Crypto Trading Bot - Backtester")
-    parser.add_argument("--strategy", "-s", default="all", choices=list(STRATEGIES.keys()) + ["all"])
-    parser.add_argument("--symbol", default="BTC/USDT")
-    parser.add_argument("--timeframe", "-tf", default="1d")
-    parser.add_argument("--since", default="2022-01-01")
-    parser.add_argument("--capital", type=float, default=1000.0)
+def run_multi_asset(
+    strategies: Optional[List[str]] = None,
+    symbols: Optional[List[str]] = None,
+    timeframe: str = "1d",
+    since: str = "2022-01-01",
+    capital: float = 1000.0,
+) -> dict:
+    """Run strategies across multiple assets."""
+    strat_list = strategies or list_strategies()
+    sym_list = symbols or DEFAULT_SYMBOLS
+
+    print(f"\n{'#'*60}")
+    print(f"  MULTI-ASSET BACKTEST")
+    print(f"  Strategies: {len(strat_list)} | Assets: {len(sym_list)}")
+    print(f"  Timeframe: {timeframe} | Since: {since}")
+    print(f"{'#'*60}")
+
+    results_by_asset = {}
+    for symbol in sym_list:
+        print(f"\n{'─'*40}")
+        print(f"  Asset: {symbol}")
+        print(f"{'─'*40}")
+        results_by_asset[symbol] = []
+        for strat_name in strat_list:
+            result = run_single_backtest(strat_name, symbol, timeframe, since, capital)
+            if result:
+                results_by_asset[symbol].append(result)
+
+    print(format_multi_asset_report(results_by_asset))
+    return results_by_asset
+
+
+def run_walk_forward(
+    strategy_name: str,
+    symbol: str = "BTC/USDT",
+    timeframe: str = "1d",
+    since: str = "2020-01-01",
+    n_splits: int = 5,
+    capital: float = 1000.0,
+) -> Optional[dict]:
+    """Run walk-forward optimization for a strategy."""
+    param_ranges = DEFAULT_PARAM_RANGES.get(strategy_name)
+    if not param_ranges:
+        print(f"No default param ranges for {strategy_name}")
+        return None
+
+    df = load_cached_data(symbol, timeframe, start_date=since)
+    if df.empty:
+        print("No data available!")
+        return None
+
+    result = walk_forward_optimize(
+        df, strategy_name, param_ranges,
+        n_splits=n_splits,
+        initial_capital=capital,
+        symbol=symbol,
+        timeframe=timeframe,
+        verbose=True,
+    )
+
+    print(format_walk_forward_report(result))
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Crypto Trading Bot — Backtester")
+    parser.add_argument("--strategy", "-s", default="all",
+                        help=f"Strategy name or 'all'. Available: {list_strategies()}")
+    parser.add_argument("--symbol", default="BTC/USDT",
+                        help="Trading pair")
+    parser.add_argument("--symbols", nargs="+", default=None,
+                        help="Multiple trading pairs for multi-asset mode")
+    parser.add_argument("--timeframe", "-tf", default="1d",
+                        help="Candle timeframe (1h, 4h, 1d)")
+    parser.add_argument("--since", default="2022-01-01",
+                        help="Start date")
+    parser.add_argument("--capital", type=float, default=1000.0,
+                        help="Starting capital")
+    parser.add_argument("--mode", choices=["single", "compare", "multi", "optimize"],
+                        default="compare",
+                        help="Run mode: single/compare/multi/optimize")
+    parser.add_argument("--splits", type=int, default=5,
+                        help="Walk-forward splits (optimize mode)")
     args = parser.parse_args()
 
-    if args.strategy == "all":
-        run_all_strategies(args.symbol, args.timeframe, args.since, args.capital)
-    else:
+    if args.mode == "single":
+        if args.strategy == "all":
+            print("Specify a strategy for single mode: --strategy <name>")
+            sys.exit(1)
         run_single_backtest(args.strategy, args.symbol, args.timeframe, args.since, args.capital)
+
+    elif args.mode == "compare":
+        strategies = None if args.strategy == "all" else [args.strategy]
+        run_all_strategies(args.symbol, args.timeframe, args.since, args.capital, strategies)
+
+    elif args.mode == "multi":
+        strategies = None if args.strategy == "all" else [args.strategy]
+        symbols = args.symbols or DEFAULT_SYMBOLS
+        run_multi_asset(strategies, symbols, args.timeframe, args.since, args.capital)
+
+    elif args.mode == "optimize":
+        if args.strategy == "all":
+            # Optimize all strategies
+            for strat in list_strategies():
+                if strat in DEFAULT_PARAM_RANGES:
+                    run_walk_forward(strat, args.symbol, args.timeframe, args.since, args.splits, args.capital)
+        else:
+            run_walk_forward(args.strategy, args.symbol, args.timeframe, args.since, args.splits, args.capital)
+
+
+if __name__ == "__main__":
+    main()
