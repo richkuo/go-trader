@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+trading_bot.db
+*.db-wal
+*.db-shm
+.env
