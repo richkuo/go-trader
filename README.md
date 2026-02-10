@@ -126,8 +126,25 @@ SQLite database (`trading_bot.db`):
 
 Uses **Binance US** (`binanceus`) via ccxt. Regular Binance is geo-blocked.
 
+## Arbitrage Opportunity Tracker
+
+Track arbitrage opportunities between Polymarket prediction markets and Binance spot prices:
+
+```bash
+# Test system connectivity
+python3 test_arb_system.py
+
+# Start arbitrage tracking
+python3 arb_tracker.py
+
+# Analyze opportunities
+python3 arb_analyzer.py
+```
+
+See [ARBITRAGE.md](ARBITRAGE.md) for detailed documentation on the arbitrage tracking system.
+
 ## Dependencies
 
 ```
-numpy pandas ccxt scikit-learn xgboost scipy
+numpy pandas ccxt scikit-learn xgboost scipy requests
 ```
