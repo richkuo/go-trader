@@ -10,7 +10,7 @@ Go scheduler (always running, ~8MB idle)
     python3 scripts/check_strategy.py <strategy> <symbol> <timeframe>   → JSON signal
     python3 scripts/check_options.py <strategy> <underlying> <positions> → JSON signal + actions
   ↓ processes signals
-    Executes paper trades, manages risk, logs everything
+    Executes paper trades, manages risk
   ↓ saves state
     scheduler/state.json (survives restarts)
 ```
@@ -30,7 +30,7 @@ trading-bot/
 │   ├── portfolio.go           # Spot position tracking, paper trades
 │   ├── options.go             # Options position tracking, Greeks, scoring
 │   ├── risk.go                # Drawdown, circuit breakers, loss limits
-│   ├── logger.go              # Per-strategy + combined logging
+│   ├── logger.go              # Stdout-only logging
 │   ├── server.go              # HTTP status endpoint (:8099)
 │   └── go.mod
 ├── scripts/                   # Run-and-exit check scripts
@@ -56,7 +56,6 @@ trading-bot/
 │   ├── reporter.py            # Performance reporting
 │   └── run_backtest.py        # Main backtesting entry point
 ├── archive/                   # Old/unused files
-├── logs/                      # Per-strategy log files
 └── README.md
 ```
 
@@ -144,7 +143,6 @@ Edit `scheduler/config.json`:
 ```json
 {
   "interval_seconds": 600,
-  "log_dir": "logs",
   "state_file": "scheduler/state.json",
   "strategies": [
     {
@@ -201,7 +199,7 @@ To rebuild this entire system from scratch, give an AI this prompt:
 > - For options: tracks positions with premium, Greeks (delta/gamma/theta/vega), expiry dates, auto-expires worthless OTM options
 > - Passes existing option positions as JSON to Python scripts so they can do portfolio-aware trade scoring
 > - Saves/loads state to a human-readable JSON file for restart recovery
-> - Logs per-strategy to individual files + prints combined cycle summary (strategies checked, trades executed, total value, elapsed time)
+> - Prints cycle summary to stdout (strategies checked, trades executed, total value, elapsed time)
 > - HTTP status endpoint (localhost:8099/status) returning JSON of all portfolios
 > - Graceful shutdown on SIGINT/SIGTERM — saves state before exit
 > - `--once` flag to run a single cycle and exit (for testing)
@@ -218,8 +216,8 @@ To rebuild this entire system from scratch, give an AI this prompt:
 >
 > **Options scoring system**: Before executing a new options trade, score it against existing positions. Factors: strike distance bonus (>10% apart = +0.4, <5% = -0.3), expiry spread bonus (different date = +0.3), Greek balancing (delta toward neutral = +0.2, skewing = -0.3), premium efficiency. Min score 0.3 to execute. Hard cap 2 positions per strategy.
 >
-> **Directory structure**: `scheduler/` (Go binary + config), `scripts/` (run-and-exit check scripts), `strategies/` (spot strategies + indicators), `options/` (options adapter + strategies + risk), `core/` (exchange adapter, data fetcher, risk manager, storage), `backtest/` (backtesting tools), `logs/` (runtime logs), `archive/` (old/unused files).
+> **Directory structure**: `scheduler/` (Go binary + config), `scripts/` (run-and-exit check scripts), `strategies/` (spot strategies + indicators), `options/` (options adapter + strategies + risk), `core/` (exchange adapter, data fetcher, risk manager, storage), `backtest/` (backtesting tools), `archive/` (old/unused files).
 >
 > **Tech stack**: Go 1.23+ for scheduler (no external deps), Python 3 with numpy, pandas, ccxt, scipy. CCXT connects to Binance for spot data, Deribit testnet for options. Deploy as systemd service with Restart=always.
 >
-> **Config format**: JSON file with interval_seconds, log_dir, state_file, and array of strategy objects. Each strategy has: id, type (spot/options), script path (e.g. `scripts/check_strategy.py`), args array, capital, max_drawdown_pct.
+> **Config format**: JSON file with interval_seconds, state_file, and array of strategy objects. Each strategy has: id, type (spot/options), script path (e.g. `scripts/check_strategy.py`), args array, capital, max_drawdown_pct.
