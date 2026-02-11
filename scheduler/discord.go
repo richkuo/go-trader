@@ -58,9 +58,15 @@ func (d *DiscordNotifier) SendMessage(content string) error {
 	return nil
 }
 
-// isSmallBot returns true if a strategy is a "$200 bot" (capital < 500)
-func isSmallBot(cfg StrategyConfig) bool {
-	return cfg.Capital < 500
+// stratCategory returns "spot", "deribit", or "ibkr" based on strategy ID
+func stratCategory(id string) string {
+	if strings.HasPrefix(id, "deribit-") {
+		return "deribit"
+	}
+	if strings.HasPrefix(id, "ibkr-") {
+		return "ibkr"
+	}
+	return "spot"
 }
 
 // FormatCycleSummary creates a Discord message from cycle results
@@ -99,48 +105,32 @@ func FormatCycleSummary(
 		sb.WriteString("```\n")
 	}
 
-	// Split strategies into main and $200 bots
-	var mainValue, smallValue float64
-	var mainPositions, smallPositions []string
+	// Split strategies into spot / deribit / ibkr
+	cats := map[string]*catData{
+		"spot":    {},
+		"deribit": {},
+		"ibkr":    {},
+	}
 
 	for _, sc := range strategies {
 		ss := state.Strategies[sc.ID]
 		if ss == nil {
 			continue
 		}
+		cat := stratCategory(sc.ID)
+		cd := cats[cat]
+		cd.count++
 		pv := PortfolioValue(ss, prices)
-		posLines := collectPositions(sc.ID, ss, prices)
-
-		if isSmallBot(sc) {
-			smallValue += pv
-			smallPositions = append(smallPositions, posLines...)
-		} else {
-			mainValue += pv
-			mainPositions = append(mainPositions, posLines...)
-		}
+		cd.value += pv
+		cd.positions = append(cd.positions, collectPositions(sc.ID, ss, prices)...)
 	}
 
-	// Main portfolio
-	sb.WriteString(fmt.Sprintf("\n💰 **Main Portfolio** ($1K bots): **$%.2f**\n", mainValue))
-	if len(mainPositions) > 0 {
-		sb.WriteString("**Open Positions:**\n")
-		for _, p := range mainPositions {
-			sb.WriteString(fmt.Sprintf("• %s\n", p))
-		}
-	} else {
-		sb.WriteString("No open positions\n")
-	}
-
-	// $200 bots
-	sb.WriteString(fmt.Sprintf("\n🪙 **$200 Bots**: **$%.2f**\n", smallValue))
-	if len(smallPositions) > 0 {
-		sb.WriteString("**Open Positions:**\n")
-		for _, p := range smallPositions {
-			sb.WriteString(fmt.Sprintf("• %s\n", p))
-		}
-	} else {
-		sb.WriteString("No open positions\n")
-	}
+	// Spot
+	writeCatSection(&sb, "📈 Spot", cats["spot"])
+	// Deribit Options
+	writeCatSection(&sb, "🎯 Deribit Options", cats["deribit"])
+	// IBKR Options
+	writeCatSection(&sb, "🏦 IBKR Options", cats["ibkr"])
 
 	// Total
 	sb.WriteString(fmt.Sprintf("\n**Total: $%.2f** | Trades: **%d**\n", totalValue, totalTrades))
@@ -154,6 +144,23 @@ func FormatCycleSummary(
 	}
 
 	return sb.String()
+}
+
+type catData struct {
+	value     float64
+	positions []string
+	count     int
+}
+
+func writeCatSection(sb *strings.Builder, label string, cd *catData) {
+	sb.WriteString(fmt.Sprintf("\n%s (%d bots): **$%.2f**\n", label, cd.count, cd.value))
+	if len(cd.positions) > 0 {
+		for _, p := range cd.positions {
+			sb.WriteString(fmt.Sprintf("• %s\n", p))
+		}
+	} else {
+		sb.WriteString("No open positions\n")
+	}
 }
 
 // collectPositions returns human-readable position lines for a strategy
