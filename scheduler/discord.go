@@ -171,8 +171,8 @@ func writeCatLine(sb *strings.Builder, label string, ci *catInfo) {
 	if ci.capital > 0 {
 		pnlPct = (ci.pnl / ci.capital) * 100
 	}
-	sb.WriteString(fmt.Sprintf("%s: **$%.0f** (%s$%.0f / %s%.1f%%) — %d bots, %d positions\n",
-		label, ci.value, pnlSign, ci.pnl, pnlSign, pnlPct, ci.count, ci.posCount))
+	sb.WriteString(fmt.Sprintf("%s: **$%.0f → $%.0f** (%s$%.0f / %s%.1f%%) — %d bots, %d positions\n",
+		label, ci.capital, ci.value, pnlSign, ci.pnl, pnlSign, pnlPct, ci.count, ci.posCount))
 }
 
 type catInfo struct {
