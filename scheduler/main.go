@@ -248,9 +248,12 @@ func processSpot(sc StrategyConfig, s *StrategyState, prices map[string]float64,
 }
 
 func processOptions(sc StrategyConfig, s *StrategyState, logger *StrategyLogger) int {
-	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
+	// Pass current position count so script can enforce max positions
+	posCount := len(s.OptionPositions)
+	args := append(sc.Args, fmt.Sprintf("%d", posCount))
+	logger.Info("Running: python3 %s %v", sc.Script, args)
 
-	result, stderr, err := RunOptionsCheck(sc.Script, sc.Args)
+	result, stderr, err := RunOptionsCheck(sc.Script, args)
 	if err != nil {
 		logger.Error("Script failed: %v", err)
 		if stderr != "" {

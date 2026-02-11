@@ -301,15 +301,33 @@ STRATEGY_MAP = {
 }
 
 
+MAX_POSITIONS_PER_STRATEGY = 2
+
+
 def main():
     if len(sys.argv) < 3:
         print(json.dumps({
-            "error": f"Usage: {sys.argv[0]} <strategy> <underlying>"
+            "error": f"Usage: {sys.argv[0]} <strategy> <underlying> [current_positions]"
         }))
         sys.exit(1)
 
     strategy_name = sys.argv[1]
     underlying = sys.argv[2].upper()
+
+    # Check current position count (passed by Go scheduler)
+    current_positions = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+    if current_positions >= MAX_POSITIONS_PER_STRATEGY:
+        print(json.dumps({
+            "strategy": strategy_name,
+            "underlying": underlying,
+            "signal": 0,
+            "spot_price": 0,
+            "actions": [],
+            "iv_rank": 0,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "skip_reason": f"Max positions reached ({current_positions}/{MAX_POSITIONS_PER_STRATEGY})"
+        }))
+        return
 
     try:
         if strategy_name not in STRATEGY_MAP:
