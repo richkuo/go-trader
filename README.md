@@ -7,8 +7,8 @@ A Go + Python hybrid trading system. Go scheduler (single binary, ~8MB RAM) orch
 ```
 Go scheduler (always running, ~8MB idle)
   ↓ every 10 min, sequentially runs:
-    python3 check_strategy.py <strategy> <symbol> <timeframe>   → JSON signal
-    python3 check_options.py <strategy> <underlying> <positions> → JSON signal + actions
+    python3 scripts/check_strategy.py <strategy> <symbol> <timeframe>   → JSON signal
+    python3 scripts/check_options.py <strategy> <underlying> <positions> → JSON signal + actions
   ↓ processes signals
     Executes paper trades, manages risk, logs everything
   ↓ saves state
@@ -20,7 +20,7 @@ Go scheduler (always running, ~8MB idle)
 ```
 trading-bot/
 ├── go-trader                  # Go binary (built from scheduler/)
-├── scheduler/
+├── scheduler/                 # Go scheduler
 │   ├── main.go                # Entry point, main loop, graceful shutdown
 │   ├── config.go              # Config types and loading
 │   ├── config.json            # Strategy configuration (22 strategies)
@@ -33,20 +33,31 @@ trading-bot/
 │   ├── logger.go              # Per-strategy + combined logging
 │   ├── server.go              # HTTP status endpoint (:8099)
 │   └── go.mod
-├── check_strategy.py          # Spot strategy checker (stateless, run-and-exit)
-├── check_options.py           # Options strategy checker with portfolio-aware scoring
-├── check_price.py             # Quick multi-symbol price fetcher
-├── strategies.py              # 11 spot trading strategies
-├── indicators.py              # Technical indicator primitives
-├── options_adapter.py         # Deribit options adapter, Black-Scholes, Greeks
-├── options_strategies.py      # 4 options strategies
-├── options_risk.py            # Options-specific risk management
-├── exchange_adapter.py        # Binance US spot adapter via CCXT
-├── risk_manager.py            # Spot risk management rules
-├── data_fetcher.py            # OHLCV data fetching
-├── backtester.py              # Backtesting engine
-├── live_trader.py             # Legacy persistent paper trader
-└── logs/                      # Per-strategy log files
+├── scripts/                   # Run-and-exit check scripts
+│   ├── check_strategy.py      # Spot strategy checker
+│   ├── check_options.py       # Options checker with portfolio-aware scoring
+│   └── check_price.py         # Quick multi-symbol price fetcher
+├── strategies/                # Spot strategy logic
+│   ├── strategies.py          # 11 trading strategies
+│   ├── indicators.py          # Technical indicator primitives (SMA, EMA, etc.)
+│   └── alerts.py              # Alert system
+├── options/                   # Options trading logic
+│   ├── options_adapter.py     # Deribit adapter, Black-Scholes, Greeks
+│   ├── options_strategies.py  # 4 options strategies
+│   └── options_risk.py        # Options-specific risk management
+├── core/                      # Shared infrastructure
+│   ├── exchange_adapter.py    # Binance US spot adapter via CCXT
+│   ├── data_fetcher.py        # OHLCV data fetching
+│   ├── risk_manager.py        # Spot risk management rules
+│   └── storage.py             # SQLite storage layer
+├── backtest/                  # Backtesting tools
+│   ├── backtester.py          # Event-driven backtesting engine
+│   ├── optimizer.py           # Walk-forward optimization
+│   ├── reporter.py            # Performance reporting
+│   └── run_backtest.py        # Main backtesting entry point
+├── archive/                   # Old/unused files
+├── logs/                      # Per-strategy log files
+└── README.md
 ```
 
 ## Strategies (22 active)
@@ -118,15 +129,12 @@ sudo systemctl status go-trader
 
 ```bash
 # Run individual strategy checks
-python3 check_strategy.py momentum BTC/USDT 1h
-python3 check_options.py vol_mean_reversion BTC '[]'
-python3 check_price.py BTC/USDT SOL/USDT ETH/USDT
+python3 scripts/check_strategy.py momentum BTC/USDT 1h
+python3 scripts/check_options.py vol_mean_reversion BTC '[]'
+python3 scripts/check_price.py BTC/USDT SOL/USDT ETH/USDT
 
 # Backtest a strategy
-python3 run_backtest.py --mode compare --symbol BTC/USDT
-
-# Legacy paper trader (persistent Python — not recommended)
-python3 live_trader.py --strategy macd --symbols BTC/USDT --capital 1000
+python3 backtest/run_backtest.py --mode compare --symbol BTC/USDT
 ```
 
 ## Configuration
@@ -199,17 +207,19 @@ To rebuild this entire system from scratch, give an AI this prompt:
 > - `--once` flag to run a single cycle and exit (for testing)
 > - `--config` flag to specify config file path
 >
-> **Python check scripts** (stateless, run-and-exit, ~5 seconds each):
-> - `check_strategy.py <strategy> <symbol> <timeframe>` — fetches OHLCV via CCXT (Binance), runs technical analysis (SMA, EMA, RSI, MACD, Bollinger, momentum ROC, volume weighted, pairs spread), outputs JSON: `{strategy, symbol, timeframe, signal: 1/-1/0, price, indicators, timestamp}`
-> - `check_options.py <strategy> <underlying> <positions_json>` — fetches spot price via CCXT, evaluates options strategy (momentum options, vol mean reversion, protective puts, covered calls), scores proposed trades against existing positions (strike distance, expiry spread, Greek concentration, premium efficiency), filters by min score threshold, outputs JSON: `{strategy, underlying, signal, spot_price, actions: [{action, option_type, strike, expiry, dte, premium, premium_usd, greeks, score, score_reason}], iv_rank, timestamp}`
-> - `check_price.py <symbols...>` — fetches current prices, outputs JSON map: `{"BTC/USDT": 67000.00, "ETH/USDT": 1940.00}`
+> **Python check scripts** in `scripts/` (stateless, run-and-exit, ~5 seconds each):
+> - `scripts/check_strategy.py <strategy> <symbol> <timeframe>` — fetches OHLCV via CCXT (Binance), runs technical analysis from `strategies/` and data fetching from `core/`, outputs JSON: `{strategy, symbol, timeframe, signal: 1/-1/0, price, indicators, timestamp}`
+> - `scripts/check_options.py <strategy> <underlying> <positions_json>` — fetches spot price via CCXT, evaluates options strategy (momentum options, vol mean reversion, protective puts, covered calls), scores proposed trades against existing positions (strike distance, expiry spread, Greek concentration, premium efficiency), filters by min score threshold, outputs JSON: `{strategy, underlying, signal, spot_price, actions: [{action, option_type, strike, expiry, dte, premium, premium_usd, greeks, score, score_reason}], iv_rank, timestamp}`
+> - `scripts/check_price.py <symbols...>` — fetches current prices, outputs JSON map: `{"BTC/USDT": 67000.00, "ETH/USDT": 1940.00}`
 >
-> **Spot strategies** (11 in strategies.py): SMA crossover, EMA crossover, RSI, Bollinger bands, MACD, mean reversion, momentum (ROC), volume weighted, triple EMA, RSI+MACD combo, pairs spread. Each takes a pandas DataFrame with OHLCV, returns it with a signal column (1=buy, -1=sell, 0=hold).
+> **Spot strategies** (11 in `strategies/strategies.py`): SMA crossover, EMA crossover, RSI, Bollinger bands, MACD, mean reversion, momentum (ROC), volume weighted, triple EMA, RSI+MACD combo, pairs spread. Each takes a pandas DataFrame with OHLCV, returns it with a signal column (1=buy, -1=sell, 0=hold). Indicators in `strategies/indicators.py`.
 >
-> **Options strategies** (4): Momentum options (ROC signals → buy ATM calls/puts 30-45 DTE), volatility mean reversion (high IV rank >75% → sell strangles, low IV <25% → buy straddles), protective puts (buy 12% OTM puts 45 DTE), covered calls (sell 12% OTM calls 21 DTE).
+> **Options strategies** (4 in `options/`): Momentum options (ROC signals → buy ATM calls/puts 30-45 DTE), volatility mean reversion (high IV rank >75% → sell strangles, low IV <25% → buy straddles), protective puts (buy 12% OTM puts 45 DTE), covered calls (sell 12% OTM calls 21 DTE). Adapter with Black-Scholes/Greeks in `options/options_adapter.py`.
 >
 > **Options scoring system**: Before executing a new options trade, score it against existing positions. Factors: strike distance bonus (>10% apart = +0.4, <5% = -0.3), expiry spread bonus (different date = +0.3), Greek balancing (delta toward neutral = +0.2, skewing = -0.3), premium efficiency. Min score 0.3 to execute. Hard cap 2 positions per strategy.
 >
+> **Directory structure**: `scheduler/` (Go binary + config), `scripts/` (run-and-exit check scripts), `strategies/` (spot strategies + indicators), `options/` (options adapter + strategies + risk), `core/` (exchange adapter, data fetcher, risk manager, storage), `backtest/` (backtesting tools), `logs/` (runtime logs), `archive/` (old/unused files).
+>
 > **Tech stack**: Go 1.23+ for scheduler (no external deps), Python 3 with numpy, pandas, ccxt, scipy. CCXT connects to Binance for spot data, Deribit testnet for options. Deploy as systemd service with Restart=always.
 >
-> **Config format**: JSON file with interval_seconds, log_dir, state_file, and array of strategy objects. Each strategy has: id, type (spot/options), script, args array, capital, max_drawdown_pct.
+> **Config format**: JSON file with interval_seconds, log_dir, state_file, and array of strategy objects. Each strategy has: id, type (spot/options), script path (e.g. `scripts/check_strategy.py`), args array, capital, max_drawdown_pct.
