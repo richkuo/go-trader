@@ -138,6 +138,127 @@ def evaluate_vol_mean_reversion(underlying, spot_price, hist_vol, iv_rank):
     return signal, actions
 
 
+def evaluate_momentum_options(underlying, spot_price, hist_vol, iv_rank):
+    """
+    Momentum-based options on CME.
+    Uses ROC on 4h candles — bullish → buy call, bearish → buy put.
+    """
+    try:
+        import ccxt
+        exchange = ccxt.binanceus({"enableRateLimit": True})
+        symbol = f"{underlying}/USDT"
+        ohlcv = exchange.fetch_ohlcv(symbol, "4h", limit=100)
+
+        if not ohlcv or len(ohlcv) < 30:
+            return 0, []
+
+        closes = [c[4] for c in ohlcv]
+        roc_period = 14
+        threshold = 5.0
+
+        current_roc = (closes[-1] - closes[-1 - roc_period]) / closes[-1 - roc_period] * 100
+        prev_roc = (closes[-2] - closes[-2 - roc_period]) / closes[-2 - roc_period] * 100
+
+        signal = 0
+        if current_roc > threshold and prev_roc <= threshold:
+            signal = 1
+        elif current_roc < -threshold and prev_roc >= -threshold:
+            signal = -1
+
+        if signal == 0:
+            return 0, []
+
+        strike_info = adapter.get_available_strikes(underlying, spot_price)
+        interval = strike_info["interval"]
+        multiplier = adapter.get_multiplier(underlying)
+
+        expiry_date = datetime.now(timezone.utc) + timedelta(days=37)
+        expiry_str = expiry_date.strftime("%Y-%m-%d")
+        dte = 37
+
+        actions = []
+        if signal == 1:
+            strike = math.ceil(spot_price * 1.02 / interval) * interval
+            est = adapter.estimate_premium(underlying, spot_price, strike, dte, hist_vol, "call")
+            actions.append({
+                "action": "buy", "option_type": "call", "strike": strike,
+                "expiry": expiry_str, "dte": dte,
+                "premium": round(est["premium_per_unit"] / spot_price, 4),
+                "premium_usd": est["premium_usd"], "multiplier": multiplier,
+                "contract_spec": "CME_MICRO", "greeks": est["greeks"],
+            })
+        else:
+            strike = math.floor(spot_price * 0.98 / interval) * interval
+            est = adapter.estimate_premium(underlying, spot_price, strike, dte, hist_vol, "put")
+            actions.append({
+                "action": "buy", "option_type": "put", "strike": strike,
+                "expiry": expiry_str, "dte": dte,
+                "premium": round(est["premium_per_unit"] / spot_price, 4),
+                "premium_usd": est["premium_usd"], "multiplier": multiplier,
+                "contract_spec": "CME_MICRO", "greeks": est["greeks"],
+            })
+
+        return signal, actions
+
+    except Exception as e:
+        print(f"Momentum options eval failed: {e}", file=sys.stderr)
+        return 0, []
+
+
+def evaluate_protective_puts(underlying, spot_price, hist_vol, iv_rank):
+    """
+    Protective puts on CME — buy OTM puts to hedge.
+    12% OTM, 45 DTE.
+    """
+    strike_info = adapter.get_available_strikes(underlying, spot_price)
+    interval = strike_info["interval"]
+    multiplier = adapter.get_multiplier(underlying)
+
+    strike = math.floor(spot_price * 0.88 / interval) * interval
+    expiry_date = datetime.now(timezone.utc) + timedelta(days=45)
+    expiry_str = expiry_date.strftime("%Y-%m-%d")
+    dte = 45
+
+    est = adapter.estimate_premium(underlying, spot_price, strike, dte, hist_vol, "put")
+
+    actions = [{
+        "action": "buy", "option_type": "put", "strike": strike,
+        "expiry": expiry_str, "dte": dte,
+        "premium": round(est["premium_per_unit"] / spot_price, 4),
+        "premium_usd": est["premium_usd"], "multiplier": multiplier,
+        "contract_spec": "CME_MICRO", "greeks": est["greeks"],
+    }]
+
+    return 1, actions
+
+
+def evaluate_covered_calls(underlying, spot_price, hist_vol, iv_rank):
+    """
+    Covered calls on CME — sell OTM calls for income.
+    12% OTM, 21 DTE.
+    """
+    strike_info = adapter.get_available_strikes(underlying, spot_price)
+    interval = strike_info["interval"]
+    multiplier = adapter.get_multiplier(underlying)
+
+    strike = math.ceil(spot_price * 1.12 / interval) * interval
+    expiry_date = datetime.now(timezone.utc) + timedelta(days=21)
+    expiry_str = expiry_date.strftime("%Y-%m-%d")
+    dte = 21
+
+    est = adapter.estimate_premium(underlying, spot_price, strike, dte, hist_vol, "call")
+
+    actions = [{
+        "action": "sell", "option_type": "call", "strike": strike,
+        "expiry": expiry_str, "dte": dte,
+        "premium": round(est["premium_per_unit"] / spot_price, 4),
+        "premium_usd": est["premium_usd"], "multiplier": multiplier,
+        "contract_spec": "CME_MICRO", "greeks": est["greeks"],
+    }]
+
+    return -1, actions
+
+
 def score_new_trade(proposed_action, existing_positions, spot_price):
     """Score a proposed trade against existing positions."""
     if not existing_positions:
@@ -189,6 +310,9 @@ def score_new_trade(proposed_action, existing_positions, spot_price):
 
 STRATEGY_MAP = {
     "vol_mean_reversion": evaluate_vol_mean_reversion,
+    "momentum_options": evaluate_momentum_options,
+    "protective_puts": evaluate_protective_puts,
+    "covered_calls": evaluate_covered_calls,
 }
 
 
