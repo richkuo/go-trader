@@ -203,3 +203,50 @@ go 1.23+ (no external dependencies, uses standard library only)
 # System
 systemd (for service management)
 ```
+
+## Regeneration Prompt
+
+To rebuild this entire system from scratch, give an AI this prompt:
+
+> Build a Go + Python hybrid trading bot called "go-trader".
+>
+> **Go scheduler** (single always-running binary, ~8MB RAM):
+> - Reads a JSON config listing N strategies, each with: id, type (spot/options), script path, args, capital, risk params, and per-strategy `interval_seconds`
+> - Main loop ticks at the shortest strategy interval (currently 300s). Each tick, only runs strategies whose individual interval has elapsed since last run
+> - Sequentially spawns each due strategy's Python script, reads JSON output from stdout, processes the signal
+> - Manages all state in memory: portfolios per strategy (cash + positions), trade history, risk state (drawdown kill switch, circuit breakers, daily loss limits, consecutive loss tracking)
+> - For spot: tracks positions by symbol, simulates market fills at current price, calculates portfolio value
+> - For options: tracks positions with premium, Greeks (delta/gamma/theta/vega), expiry dates, auto-expires worthless OTM options
+> - Passes existing option positions as JSON to Python scripts so they can do portfolio-aware trade scoring
+> - Saves/loads state to a human-readable JSON file for restart recovery
+> - On startup, initializes new strategies from config and **auto-prunes** strategies in state that are no longer in config
+> - Prints cycle summary to stdout only (no file logging)
+> - HTTP status endpoint (localhost:8099/status) that **fetches live prices** from a Python price script and returns JSON with portfolio_value, pnl, and pnl_pct per strategy
+> - Graceful shutdown on SIGINT/SIGTERM — saves state before exit
+> - `--once` flag to run a single cycle and exit (for testing)
+> - `--config` flag to specify config file path
+>
+> **Python check scripts** in `scripts/` (stateless, run-and-exit, ~5 seconds each):
+> - `scripts/check_strategy.py <strategy> <symbol> <timeframe>` — fetches OHLCV via CCXT (Binance US), runs technical analysis, outputs JSON: `{strategy, symbol, timeframe, signal: 1/-1/0, price, indicators, timestamp}`
+> - `scripts/check_options.py <strategy> <underlying> <positions_json>` — Deribit-style options. Fetches spot price via CCXT, evaluates options strategy, scores proposed trades against existing positions, outputs JSON with actions
+> - `scripts/check_options_ibkr.py <strategy> <underlying> <positions_json>` — IBKR/CME-style options. Same strategies as Deribit but uses CME Micro contract specs (BTC=0.1x multiplier, ETH=0.5x), CME strike intervals ($1000 for BTC, $50 for ETH), and Black-Scholes for premium estimation
+> - `scripts/check_price.py <symbols...>` — fetches current prices, outputs JSON map
+>
+> **30 strategies in 3 groups:**
+> - **14 spot** (5min interval, $1K each): momentum, rsi, macd, volume_weighted, pairs_spread across BTC/ETH/SOL via Binance US CCXT
+> - **8 Deribit options** (20min interval, $1K each): vol_mean_reversion, momentum_options, protective_puts, covered_calls on BTC/ETH with 1x multiplier
+> - **8 IBKR/CME options** (20min interval, $1K each): same 4 strategies on BTC/ETH but with CME Micro contract multipliers (0.1x BTC, 0.5x ETH) for head-to-head comparison
+>
+> **Spot strategies** (11 in `strategies/strategies.py`): SMA crossover, EMA crossover, RSI, Bollinger bands, MACD, mean reversion, momentum (ROC), volume weighted, triple EMA, RSI+MACD combo, pairs spread. Each takes a pandas DataFrame with OHLCV, returns it with a signal column (1=buy, -1=sell, 0=hold).
+>
+> **Options strategies** (4, implemented in both `check_options.py` and `check_options_ibkr.py`): Momentum options (ROC signals → buy ATM calls/puts 37 DTE), volatility mean reversion (IV rank >75% → sell strangles, <25% → buy straddles, 30 DTE), protective puts (buy 12% OTM puts 45 DTE), covered calls (sell 12% OTM calls 21 DTE). Black-Scholes pricing and Greeks in `options/options_adapter.py` (Deribit) and `options/ibkr_adapter.py` (IBKR/CME).
+>
+> **Options scoring system**: Before executing a new options trade, score it against existing positions. Factors: strike distance bonus (>10% apart = +0.4, <5% = -0.3), expiry spread bonus (different date = +0.3), Greek balancing (delta toward neutral = +0.2, skewing = -0.3), premium efficiency. Min score 0.3 to execute. Hard cap **4 positions per strategy**.
+>
+> **Directory structure**: `scheduler/` (Go source + config + state), `scripts/` (stateless check scripts), `strategies/` (spot strategies + indicators), `options/` (Deribit adapter, IBKR adapter, strategies, risk), `core/` (exchange adapter, data fetcher, risk manager), `backtest/` (backtesting tools incl. options backtester with Black-Scholes).
+>
+> **Tech stack**: Go 1.23+ for scheduler (standard library only, no external deps), Python 3 with numpy, pandas, ccxt, scipy, ib_insync. CCXT connects to Binance US for spot data. Deploy as systemd service with Restart=always, stdout/stderr to /dev/null (no file logging).
+>
+> **Config format**: JSON with interval_seconds (global default), state_file, and strategies array. Each strategy: id, type (spot/options), script, args, capital, max_drawdown_pct, interval_seconds (per-strategy override).
+>
+> **Status endpoint**: GET localhost:8099/status returns JSON with cycle_count, live prices (fetched from exchange), and per-strategy: id, type, cash, initial_capital, positions, option_positions, trade_count, portfolio_value, pnl, pnl_pct, risk_state.
