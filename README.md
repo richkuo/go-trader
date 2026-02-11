@@ -1,6 +1,6 @@
 # go-trader — Crypto Trading Bot
 
-A Go + Python hybrid trading system. Go scheduler (single binary, ~8MB RAM) orchestrates 22 trading strategies across spot and options markets by spawning short-lived Python scripts every 10 minutes.
+A Go + Python hybrid trading system. Go scheduler (single binary, ~8MB RAM) orchestrates 24 trading strategies across spot and options markets by spawning short-lived Python scripts every 5 minutes. Features theta harvesting for BTC options and Discord notifications.
 
 ## Architecture
 
@@ -32,6 +32,7 @@ trading-bot/
 │   ├── risk.go                # Drawdown, circuit breakers, loss limits
 │   ├── logger.go              # Stdout-only logging
 │   ├── server.go              # HTTP status endpoint (:8099)
+│   ├── discord.go             # Discord notifications (cycle summaries to #trading)
 │   └── go.mod
 ├── scripts/                   # Run-and-exit check scripts
 │   ├── check_strategy.py      # Spot strategy checker
@@ -52,6 +53,9 @@ trading-bot/
 │   └── storage.py             # SQLite storage layer
 ├── backtest/                  # Backtesting tools
 │   ├── backtester.py          # Event-driven backtesting engine
+│   ├── backtest_options.py    # Options strategy backtester
+│   ├── backtest_theta.py      # Theta harvesting comparison backtester
+│   ├── THETA_HARVEST_RESULTS.md # Theta harvest backtest results & analysis
 │   ├── optimizer.py           # Walk-forward optimization
 │   ├── reporter.py            # Performance reporting
 │   └── run_backtest.py        # Main backtesting entry point
@@ -79,6 +83,27 @@ trading-bot/
 | `vol_mean_reversion` | BTC, ETH | High IV → sell strangles, Low IV → buy straddles |
 | `protective_puts` | BTC, ETH | OTM puts to hedge spot holdings |
 | `covered_calls` | BTC, ETH | Sell OTM calls for income |
+
+### Theta Harvesting (BTC Options)
+
+Instead of holding sold options to expiry, the scheduler automatically buys back positions once a target profit % has been captured. This locks in gains and frees capital for new trades.
+
+**Backtested settings (see `backtest/THETA_HARVEST_RESULTS.md`):**
+
+| Asset | Profit Target | Stop Loss | Min DTE Close | Result |
+|-------|--------------|-----------|---------------|--------|
+| **BTC** | 70% | 200% | 2 days | Sharpe 2.14, DD 37.8% (vs 1.77/61.8% no harvest) |
+| **ETH** | Disabled | — | — | No harvest wins (Sharpe 2.56, DD 17.4%) |
+
+BTC benefits from theta harvesting due to higher volatility — locking in 70% and recycling capital beats holding. ETH premiums are too thin; early exits lose edge.
+
+### Discord Notifications
+
+The scheduler posts cycle summaries to a Discord channel after each run via `scheduler/discord.go`. Shows:
+- Current prices (BTC, ETH, SOL)
+- Main portfolio ($1K bots) with open positions
+- $200 bots (now $1K) with open positions  
+- Trade alerts with 🚨 when trades execute
 
 ### Portfolio-Aware Options Scoring
 

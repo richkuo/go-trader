@@ -197,6 +197,12 @@ func main() {
 				trades, detail = processSpot(sc, stratState, prices, logger)
 			case "options":
 				trades, detail = processOptions(sc, stratState, logger)
+				// Run theta harvesting check on options positions
+				if sc.ThetaHarvest != nil {
+					harvestTrades, harvestDetails := CheckThetaHarvest(stratState, sc.ThetaHarvest, logger)
+					trades += harvestTrades
+					tradeDetails = append(tradeDetails, harvestDetails...)
+				}
 			default:
 				logger.Error("Unknown strategy type: %s", sc.Type)
 			}
@@ -237,7 +243,9 @@ func main() {
 
 		// Discord notification
 		if discord != nil {
-			msg := FormatCycleSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue, prices, tradeDetails)
+			mu.RLock()
+			msg := FormatCycleSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue, prices, tradeDetails, cfg.Strategies, state)
+			mu.RUnlock()
 			if err := discord.SendMessage(msg); err != nil {
 				fmt.Printf("[WARN] Discord notification failed: %v\n", err)
 			}

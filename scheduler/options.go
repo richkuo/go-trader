@@ -255,6 +255,115 @@ func EncodePositionsJSON(positions map[string]*OptionPosition) string {
 	return string(b)
 }
 
+// CheckThetaHarvest evaluates open options positions for early exit.
+// Returns trade details for any positions that were closed.
+func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *StrategyLogger) (int, []string) {
+	if cfg == nil || !cfg.Enabled {
+		return 0, nil
+	}
+
+	trades := 0
+	var details []string
+
+	// Collect positions to close (can't modify map while iterating)
+	type closeAction struct {
+		id     string
+		reason string
+	}
+	var toClose []closeAction
+
+	for id, pos := range s.OptionPositions {
+		// Theta harvesting only applies to sold options
+		if pos.Action != "sell" {
+			continue
+		}
+
+		entryPremium := pos.EntryPremiumUSD
+		if entryPremium <= 0 {
+			continue
+		}
+
+		// Current cost to buy back = absolute value of current liability
+		currentCost := -pos.CurrentValueUSD // CurrentValueUSD is negative for sold options
+		if currentCost < 0 {
+			currentCost = 0
+		}
+
+		// Profit captured so far
+		profitUSD := entryPremium - currentCost
+		profitPct := (profitUSD / entryPremium) * 100
+
+		// Check profit target (e.g. captured 60% of premium)
+		if cfg.ProfitTargetPct > 0 && profitPct >= cfg.ProfitTargetPct {
+			toClose = append(toClose, closeAction{
+				id:     id,
+				reason: fmt.Sprintf("🎯 Theta harvest: %.0f%% profit captured ($%.2f of $%.2f premium)", profitPct, profitUSD, entryPremium),
+			})
+			continue
+		}
+
+		// Check stop loss (e.g. loss exceeds 200% of premium)
+		if cfg.StopLossPct > 0 && profitPct < 0 {
+			lossPct := -profitPct
+			if lossPct >= cfg.StopLossPct {
+				toClose = append(toClose, closeAction{
+					id:     id,
+					reason: fmt.Sprintf("🛑 Stop loss: %.0f%% loss on sold option ($%.2f)", lossPct, -profitUSD),
+				})
+				continue
+			}
+		}
+
+		// Check DTE floor — force close near expiry to avoid gamma risk
+		if cfg.MinDTEClose > 0 && pos.DTE > 0 && pos.DTE <= cfg.MinDTEClose {
+			toClose = append(toClose, closeAction{
+				id:     id,
+				reason: fmt.Sprintf("⏰ DTE exit: %.1f days to expiry (min: %.0f)", pos.DTE, cfg.MinDTEClose),
+			})
+			continue
+		}
+	}
+
+	// Execute closes
+	for _, c := range toClose {
+		pos := s.OptionPositions[c.id]
+		if pos == nil {
+			continue
+		}
+
+		// Buy back the sold option at current value
+		buybackCost := -pos.CurrentValueUSD
+		if buybackCost < 0 {
+			buybackCost = 0
+		}
+		pnl := pos.EntryPremiumUSD - buybackCost
+
+		s.Cash -= buybackCost
+
+		trade := Trade{
+			Timestamp:  time.Now().UTC(),
+			StrategyID: s.ID,
+			Symbol:     pos.ID,
+			Side:       "close",
+			Quantity:   pos.Quantity,
+			Price:      buybackCost,
+			Value:      buybackCost,
+			TradeType:  "options",
+			Details:    fmt.Sprintf("Theta harvest close %s PnL=$%.2f", pos.ID, pnl),
+		}
+		s.TradeHistory = append(s.TradeHistory, trade)
+
+		logger.Info("%s | %s | PnL: $%.2f", c.reason, pos.ID, pnl)
+		detail := fmt.Sprintf("[%s] CLOSE %s — %s (PnL: $%.2f)", s.ID, pos.ID, c.reason, pnl)
+		details = append(details, detail)
+
+		delete(s.OptionPositions, c.id)
+		trades++
+	}
+
+	return trades, details
+}
+
 // UpdateOptionPositions refreshes DTE and current values for tracked options.
 func UpdateOptionPositions(s *StrategyState) {
 	now := time.Now().UTC()
