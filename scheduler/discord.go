@@ -91,22 +91,24 @@ func FormatCycleSummary(
 
 	sb.WriteString(fmt.Sprintf("Cycle #%d | %d strategies | %.1fs\n", cycle, strategiesRun, elapsed.Seconds()))
 
-	// Prices
+	// Prices inline
 	if len(prices) > 0 {
-		sb.WriteString("```\n")
 		syms := make([]string, 0, len(prices))
 		for s := range prices {
 			syms = append(syms, s)
 		}
 		sort.Strings(syms)
+		parts := make([]string, 0, len(syms))
 		for _, sym := range syms {
-			sb.WriteString(fmt.Sprintf("%-10s $%.2f\n", sym, prices[sym]))
+			short := strings.TrimSuffix(sym, "/USDT")
+			parts = append(parts, fmt.Sprintf("%s $%.0f", short, prices[sym]))
 		}
-		sb.WriteString("```\n")
+		sb.WriteString(strings.Join(parts, " | "))
+		sb.WriteString("\n")
 	}
 
 	// Split strategies into spot / deribit / ibkr
-	cats := map[string]*catData{
+	cats := map[string]*catInfo{
 		"spot":    {},
 		"deribit": {},
 		"ibkr":    {},
@@ -118,24 +120,35 @@ func FormatCycleSummary(
 			continue
 		}
 		cat := stratCategory(sc.ID)
-		cd := cats[cat]
-		cd.count++
+		ci := cats[cat]
+		ci.count++
+		ci.capital += sc.Capital
 		pv := PortfolioValue(ss, prices)
-		cd.value += pv
-		cd.positions = append(cd.positions, collectPositions(sc.ID, ss, prices)...)
+		ci.value += pv
+		ci.pnl += pv - sc.Capital
+		ci.posCount += len(ss.Positions) + len(ss.OptionPositions)
 	}
 
-	// Spot
-	writeCatSection(&sb, "📈 Spot", cats["spot"])
-	// Deribit Options
-	writeCatSection(&sb, "🎯 Deribit Options", cats["deribit"])
-	// IBKR Options
-	writeCatSection(&sb, "🏦 IBKR Options", cats["ibkr"])
+	// Compact category lines
+	writeCatLine(&sb, "📈 Spot", cats["spot"])
+	writeCatLine(&sb, "🎯 Deribit", cats["deribit"])
+	writeCatLine(&sb, "🏦 IBKR", cats["ibkr"])
 
 	// Total
-	sb.WriteString(fmt.Sprintf("\n**Total: $%.2f** | Trades: **%d**\n", totalValue, totalTrades))
+	totalCap := cats["spot"].capital + cats["deribit"].capital + cats["ibkr"].capital
+	totalPnl := totalValue - totalCap
+	pnlPct := 0.0
+	if totalCap > 0 {
+		pnlPct = (totalPnl / totalCap) * 100
+	}
+	pnlSign := "+"
+	if totalPnl < 0 {
+		pnlSign = ""
+	}
+	sb.WriteString(fmt.Sprintf("\n**Total: $%.0f** (%s$%.0f / %s%.1f%%) | Trades: **%d**\n",
+		totalValue, pnlSign, totalPnl, pnlSign, pnlPct, totalTrades))
 
-	// Trade details
+	// Trade details (always shown)
 	if len(tradeDetails) > 0 {
 		sb.WriteString("\n**Trades:**\n")
 		for _, td := range tradeDetails {
@@ -146,50 +159,50 @@ func FormatCycleSummary(
 	return sb.String()
 }
 
-type catData struct {
-	value     float64
-	positions []string
-	count     int
-}
-
-func writeCatSection(sb *strings.Builder, label string, cd *catData) {
-	sb.WriteString(fmt.Sprintf("\n%s (%d bots): **$%.2f**\n", label, cd.count, cd.value))
-	if len(cd.positions) > 0 {
-		for _, p := range cd.positions {
-			sb.WriteString(fmt.Sprintf("• %s\n", p))
-		}
-	} else {
-		sb.WriteString("No open positions\n")
+func writeCatLine(sb *strings.Builder, label string, ci *catInfo) {
+	if ci.count == 0 {
+		return
 	}
+	pnlSign := "+"
+	if ci.pnl < 0 {
+		pnlSign = ""
+	}
+	pnlPct := 0.0
+	if ci.capital > 0 {
+		pnlPct = (ci.pnl / ci.capital) * 100
+	}
+	sb.WriteString(fmt.Sprintf("%s: **$%.0f** (%s$%.0f / %s%.1f%%) — %d bots, %d positions\n",
+		label, ci.value, pnlSign, ci.pnl, pnlSign, pnlPct, ci.count, ci.posCount))
 }
 
-// collectPositions returns human-readable position lines for a strategy
+type catInfo struct {
+	value    float64
+	count    int
+	posCount int
+	pnl      float64
+	capital  float64
+}
+
+// collectPositions returns human-readable position lines for a strategy (used by trade alerts)
 func collectPositions(stratID string, ss *StrategyState, prices map[string]float64) []string {
 	var lines []string
-
 	for sym, pos := range ss.Positions {
 		currentPrice := prices[sym]
 		if currentPrice == 0 {
 			currentPrice = pos.AvgCost
 		}
-		value := pos.Quantity * currentPrice
-		pnl := 0.0
-		if pos.Side == "long" {
-			pnl = pos.Quantity * (currentPrice - pos.AvgCost)
-		} else {
+		pnl := pos.Quantity * (currentPrice - pos.AvgCost)
+		if pos.Side != "long" {
 			pnl = pos.Quantity * (pos.AvgCost - currentPrice)
 		}
-		pnlSign := "+"
+		sign := "+"
 		if pnl < 0 {
-			pnlSign = ""
+			sign = ""
 		}
-		lines = append(lines, fmt.Sprintf("[%s] %s %s %.6f @ $%.2f → $%.2f (%s$%.2f)",
-			stratID, strings.ToUpper(pos.Side), sym, pos.Quantity, pos.AvgCost, value, pnlSign, pnl))
+		lines = append(lines, fmt.Sprintf("%s %s %s (%s$%.0f)", stratID, strings.ToUpper(pos.Side), sym, sign, pnl))
 	}
-
 	for key, opt := range ss.OptionPositions {
-		lines = append(lines, fmt.Sprintf("[%s] OPT %s (val: $%.2f)", stratID, key, opt.CurrentValueUSD))
+		lines = append(lines, fmt.Sprintf("%s OPT %s ($%.0f)", stratID, key, opt.CurrentValueUSD))
 	}
-
 	return lines
 }
