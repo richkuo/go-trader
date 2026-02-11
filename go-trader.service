@@ -1,0 +1,15 @@
+[Unit]
+Description=Trading Scheduler (Go)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/.openclaw/workspace/trading-bot
+ExecStart=/root/.openclaw/workspace/trading-bot/go-trader --config scheduler/config.json
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/.openclaw/workspace/trading-bot/logs/scheduler.log
+StandardError=append:/root/.openclaw/workspace/trading-bot/logs/scheduler.log
+
+[Install]
+WantedBy=multi-user.target
