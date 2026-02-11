@@ -214,7 +214,7 @@ State file is the source of truth. Config defines what runs. Both are in the rep
 
 ```
 # Python
-pip3 install numpy pandas ccxt scipy ib_insync
+pip3 install numpy pandas ccxt scipy ib_insync requests
 
 # Go
 go 1.23+ (no external dependencies, uses standard library only)
@@ -236,20 +236,23 @@ To rebuild this entire system from scratch, give an AI this prompt:
 > - Manages all state in memory: portfolios per strategy (cash + positions), trade history, risk state (drawdown kill switch, circuit breakers, daily loss limits, consecutive loss tracking)
 > - For spot: tracks positions by symbol, simulates market fills at current price, calculates portfolio value
 > - For options: tracks positions with premium, Greeks (delta/gamma/theta/vega), expiry dates, auto-expires worthless OTM options
+> - **Live option pricing** via Deribit REST API (`scheduler/deribit.go`): fetches live mark prices every cycle, updates CurrentValueUSD for all option positions with real market data (not static entry values)
+> - **Smart expiry mapping**: if exact option expiry doesn't exist on Deribit, finds nearest available expiry with same strike for mark-to-market
 > - Passes existing option positions as JSON to Python scripts so they can do portfolio-aware trade scoring
 > - Saves/loads state to a human-readable JSON file for restart recovery
 > - On startup, initializes new strategies from config and **auto-prunes** strategies in state that are no longer in config
 > - Prints cycle summary to stdout only (no file logging)
-> - HTTP status endpoint (localhost:8099/status) that **fetches live prices** from a Python price script and returns JSON with portfolio_value, pnl, and pnl_pct per strategy
+> - HTTP status endpoint (localhost:8099/status) that **fetches live prices** from exchange and returns JSON with real-time portfolio_value, pnl, and pnl_pct per strategy
 > - Graceful shutdown on SIGINT/SIGTERM — saves state before exit
 > - `--once` flag to run a single cycle and exit (for testing)
 > - `--config` flag to specify config file path
 >
 > **Python check scripts** in `scripts/` (stateless, run-and-exit, ~5 seconds each):
 > - `scripts/check_strategy.py <strategy> <symbol> <timeframe>` — fetches OHLCV via CCXT (Binance US), runs technical analysis, outputs JSON: `{strategy, symbol, timeframe, signal: 1/-1/0, price, indicators, timestamp}`
-> - `scripts/check_options.py <strategy> <underlying> <positions_json>` — Deribit-style options. Fetches spot price via CCXT, evaluates options strategy, scores proposed trades against existing positions, outputs JSON with actions
+> - `scripts/check_options.py <strategy> <underlying> <positions_json>` — Deribit-style options. Fetches spot price via CCXT, evaluates options strategy, scores proposed trades against existing positions, outputs JSON with actions. Uses `deribit_utils.py` to fetch real Deribit expiries and strikes for new trades (no fictional expiries)
 > - `scripts/check_options_ibkr.py <strategy> <underlying> <positions_json>` — IBKR/CME-style options. Same strategies as Deribit but uses CME Micro contract specs (BTC=0.1x multiplier, ETH=0.5x), CME strike intervals ($1000 for BTC, $50 for ETH), and Black-Scholes for premium estimation
 > - `scripts/check_price.py <symbols...>` — fetches current prices, outputs JSON map
+> - `scripts/deribit_utils.py` — utilities for fetching real Deribit option expiries and strikes via REST API. Functions: `fetch_available_expiries(underlying, min_dte, max_dte)`, `find_closest_expiry(underlying, target_dte)`, `find_closest_strike(underlying, expiry, option_type, target_strike)`
 >
 > **30 strategies in 3 groups:**
 > - **14 spot** (5min interval, $1K each): momentum, rsi, macd, volume_weighted, pairs_spread across BTC/ETH/SOL via Binance US CCXT
@@ -262,9 +265,9 @@ To rebuild this entire system from scratch, give an AI this prompt:
 >
 > **Options scoring system**: Before executing a new options trade, score it against existing positions. Factors: strike distance bonus (>10% apart = +0.4, <5% = -0.3), expiry spread bonus (different date = +0.3), Greek balancing (delta toward neutral = +0.2, skewing = -0.3), premium efficiency. Min score 0.3 to execute. Hard cap **4 positions per strategy**.
 >
-> **Directory structure**: `scheduler/` (Go source + config + state), `scripts/` (stateless check scripts), `strategies/` (spot strategies + indicators), `options/` (Deribit adapter, IBKR adapter, strategies, risk), `core/` (exchange adapter, data fetcher, risk manager), `backtest/` (backtesting tools incl. options backtester with Black-Scholes).
+> **Directory structure**: `scheduler/` (Go source + config + state + deribit.go for live pricing), `scripts/` (stateless check scripts + deribit_utils.py for expiry/strike lookups), `strategies/` (spot strategies + indicators), `options/` (Deribit adapter, IBKR adapter, strategies, risk), `core/` (exchange adapter, data fetcher, risk manager), `backtest/` (backtesting tools incl. options backtester with Black-Scholes).
 >
-> **Tech stack**: Go 1.23+ for scheduler (standard library only, no external deps), Python 3 with numpy, pandas, ccxt, scipy, ib_insync. CCXT connects to Binance US for spot data. Deploy as systemd service with Restart=always, stdout/stderr to /dev/null (no file logging).
+> **Tech stack**: Go 1.23+ for scheduler (standard library only, no external deps), Python 3 with numpy, pandas, ccxt, scipy, ib_insync, requests. CCXT connects to Binance US for spot data. Deribit REST API (public endpoints, no auth) for live option pricing and expiry/strike lookups. Deploy as systemd service with Restart=always, stdout/stderr to /dev/null (no file logging).
 >
 > **Config format**: JSON with interval_seconds (global default), state_file, and strategies array. Each strategy: id, type (spot/options), script, args, capital, max_drawdown_pct, interval_seconds (per-strategy override).
 >
