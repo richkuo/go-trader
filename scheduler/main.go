@@ -71,6 +71,25 @@ func main() {
 		close(stopCh)
 	}()
 
+	// Track last-run time per strategy for per-strategy intervals
+	lastRun := make(map[string]time.Time)
+
+	// Determine tick interval: GCD of all strategy intervals, min 60s
+	tickSeconds := cfg.IntervalSeconds
+	for _, sc := range cfg.Strategies {
+		si := sc.IntervalSeconds
+		if si <= 0 {
+			si = cfg.IntervalSeconds
+		}
+		if si < tickSeconds {
+			tickSeconds = si
+		}
+	}
+	if tickSeconds < 60 {
+		tickSeconds = 60
+	}
+	fmt.Printf("Tick interval: %ds (strategies have individual intervals)\n", tickSeconds)
+
 	// Main loop
 	for {
 		cycleStart := time.Now()
@@ -78,7 +97,35 @@ func main() {
 		cycle := state.CycleCount
 		totalTrades := 0
 
-		fmt.Printf("\n=== Cycle %d starting at %s ===\n", cycle, cycleStart.UTC().Format("2006-01-02 15:04:05 UTC"))
+		// Determine which strategies are due this tick
+		dueStrategies := make([]StrategyConfig, 0)
+		for _, sc := range cfg.Strategies {
+			interval := sc.IntervalSeconds
+			if interval <= 0 {
+				interval = cfg.IntervalSeconds
+			}
+			last, exists := lastRun[sc.ID]
+			if !exists || time.Since(last) >= time.Duration(interval)*time.Second {
+				dueStrategies = append(dueStrategies, sc)
+			}
+		}
+
+		if len(dueStrategies) == 0 {
+			// Nothing due, wait for next tick
+			timer := time.NewTimer(time.Duration(tickSeconds) * time.Second)
+			select {
+			case <-timer.C:
+				continue
+			case <-stopCh:
+				timer.Stop()
+				fmt.Println("Shutdown complete.")
+				return
+			}
+		}
+
+		fmt.Printf("\n=== Cycle %d starting at %s (%d/%d strategies due) ===\n",
+			cycle, cycleStart.UTC().Format("2006-01-02 15:04:05 UTC"),
+			len(dueStrategies), len(cfg.Strategies))
 
 		// Collect symbols that need prices
 		symbolSet := make(map[string]bool)
@@ -108,8 +155,8 @@ func main() {
 			}
 		}
 
-		// Process each strategy sequentially
-		for _, sc := range cfg.Strategies {
+		// Process only due strategies
+		for _, sc := range dueStrategies {
 			stratState := state.Strategies[sc.ID]
 			if stratState == nil {
 				continue
@@ -130,6 +177,7 @@ func main() {
 			if !allowed {
 				logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
 				logger.Close()
+				lastRun[sc.ID] = time.Now()
 				continue
 			}
 
@@ -158,6 +206,7 @@ func main() {
 				stratState.Cash, posCount, pv, trades)
 
 			logger.Close()
+			lastRun[sc.ID] = time.Now()
 		}
 
 		// Calculate total portfolio value
@@ -171,7 +220,7 @@ func main() {
 		mu.RUnlock()
 
 		elapsed := time.Since(cycleStart)
-		logMgr.LogSummary(cycle, elapsed, len(cfg.Strategies), totalTrades, totalValue)
+		logMgr.LogSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue)
 
 		// Save state after each cycle
 		mu.Lock()
@@ -185,11 +234,11 @@ func main() {
 			return
 		}
 
-		// Wait for next cycle or shutdown
-		timer := time.NewTimer(time.Duration(cfg.IntervalSeconds) * time.Second)
+		// Wait for next tick or shutdown
+		timer := time.NewTimer(time.Duration(tickSeconds) * time.Second)
 		select {
 		case <-timer.C:
-			// Next cycle
+			// Next tick
 		case <-stopCh:
 			timer.Stop()
 			fmt.Println("Shutdown complete.")

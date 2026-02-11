@@ -68,3 +68,28 @@
 
 [2026-02-11 08:32:28] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $67079.00
 [2026-02-11 08:32:28] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:42:54] [momentum-btc] [INFO] Running: python3 scripts/check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 08:42:55] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:42:55] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $66995.40
+[2026-02-11 08:42:55] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:50:39] [momentum-btc] [INFO] Running: python3 scripts/check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 08:50:40] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:50:40] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $67026.29
+[2026-02-11 08:50:40] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:01:09] [momentum-btc] [INFO] Running: python3 scripts/check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 09:01:10] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 09:01:10] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $67012.69
+[2026-02-11 09:01:10] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:02:59] [momentum-btc] [INFO] Running: python3 scripts/check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 09:03:01] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 09:03:01] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $67040.22
+[2026-02-11 09:03:01] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:08:30] [momentum-btc] [INFO] Running: python3 scripts/check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 09:08:31] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 09:08:31] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $66916.79
+[2026-02-11 09:08:31] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

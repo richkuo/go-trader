@@ -82,3 +82,19 @@ h] [INFO] Running: python3 check_options.py [vol_mean_reversion ETH]
 [2026-02-11 08:32:48] [options-vol-eth] [INFO] Running: python3 scripts/check_options.py [vol_mean_reversion ETH]
 [2026-02-11 08:32:48] [options-vol-eth] [INFO] Signal: HOLD | ETH spot=$0.00 | IV rank=0.0 | 0 actions
 [2026-02-11 08:32:48] [options-vol-eth] [INFO] Status: cash=$1964.54 | positions=4 | value=$1789.41 | trades=0
+[2026-02-11 08:43:14] [options-vol-eth] [INFO] Running: python3 scripts/check_options.py [vol_mean_reversion ETH]
+[2026-02-11 08:43:14] [options-vol-eth] [INFO] Signal: HOLD | ETH spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 08:43:14] [options-vol-eth] [INFO] Status: cash=$1964.54 | positions=4 | value=$1789.41 | trades=0
+[2026-02-11 08:51:01] [options-vol-eth] [INFO] Running: python3 scripts/check_options.py [vol_mean_reversion ETH]
+[2026-02-11 08:51:02] [options-vol-eth] [INFO] Signal: BEARISH | ETH spot=$1951.65 | IV rank=90.5 | 2 actions
+[2026-02-11 08:51:02] [options-vol-eth] [INFO] SELL OPTION ETH call strike=2100 exp=2026-03-13 | +$48.79
+[2026-02-11 08:51:02] [options-vol-eth] [INFO] SELL OPTION ETH put strike=1800 exp=2026-03-13 | +$39.03
+[2026-02-11 08:51:02] [options-vol-eth] [INFO] Status: cash=$1087.82 | positions=2 | value=$1000.00 | trades=2
+[2026-02-11 09:01:30] [options-vol-eth] [INFO] Running: python3 scripts/check_options.py [vol_mean_reversion ETH]
+[2026-02-11 09:01:30] [options-vol-eth] [INFO] Signal: HOLD | ETH spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 09:01:30] [options-vol-eth] [INFO] Status: cash=$1087.82 | positions=2 | value=$1000.00 | trades=0
+[2026-02-11 09:03:22] [options-vol-eth] [INFO] Running: python3 scripts/check_options.py [vol_mean_reversion ETH]
+[2026-02-11 09:03:23] [options-vol-eth] [INFO] Signal: BEARISH | ETH spot=$1952.13 | IV rank=90.5 | 2 actions
+[2026-02-11 09:03:23] [options-vol-eth] [INFO] SELL OPTION ETH call strike=2100 exp=2026-03-13 | +$48.80
+[2026-02-11 09:03:23] [options-vol-eth] [INFO] SELL OPTION ETH put strike=1800 exp=2026-03-13 | +$39.04
+[2026-02-11 09:03:23] [options-vol-eth] [INFO] Status: cash=$1087.84 | positions=2 | value=$1000.00 | trades=2

@@ -28,3 +28,21 @@
 
 [2026-02-11 08:32:51] [options-puts-eth] [INFO] Signal: HOLD | ETH spot=$1946.45 | IV rank=66.1 | 0 actions
 [2026-02-11 08:32:51] [options-puts-eth] [INFO] Status: cash=$941.73 | positions=1 | value=$970.90 | trades=0
+[2026-02-11 08:43:16] [options-puts-eth] [INFO] Running: python3 scripts/check_options.py [protective_puts ETH]
+[2026-02-11 08:43:17] [options-puts-eth] [INFO] stderr: Skipping buy put strike=1700.0: score=0.1 (overlapping strikes 0.0%; same expiry)
+
+[2026-02-11 08:43:17] [options-puts-eth] [INFO] Signal: HOLD | ETH spot=$1952.52 | IV rank=66.1 | 0 actions
+[2026-02-11 08:43:17] [options-puts-eth] [INFO] Status: cash=$941.73 | positions=1 | value=$970.90 | trades=0
+[2026-02-11 08:51:04] [options-puts-eth] [INFO] Running: python3 scripts/check_options.py [protective_puts ETH]
+[2026-02-11 08:51:05] [options-puts-eth] [INFO] Signal: BULLISH | ETH spot=$1951.65 | IV rank=66.1 | 1 actions
+[2026-02-11 08:51:05] [options-puts-eth] [INFO] BUY OPTION ETH put strike=1700 exp=2026-03-28 | $29.27
+[2026-02-11 08:51:05] [options-puts-eth] [INFO] Status: cash=$970.73 | positions=1 | value=$1000.00 | trades=1
+[2026-02-11 09:01:31] [options-puts-eth] [INFO] Running: python3 scripts/check_options.py [protective_puts ETH]
+[2026-02-11 09:01:33] [options-puts-eth] [INFO] stderr: Skipping buy put strike=1700.0: score=0.1 (overlapping strikes 0.0%; same expiry)
+
+[2026-02-11 09:01:33] [options-puts-eth] [INFO] Signal: HOLD | ETH spot=$1951.41 | IV rank=66.1 | 0 actions
+[2026-02-11 09:01:33] [options-puts-eth] [INFO] Status: cash=$970.73 | positions=1 | value=$1000.00 | trades=0
+[2026-02-11 09:03:25] [options-puts-eth] [INFO] Running: python3 scripts/check_options.py [protective_puts ETH]
+[2026-02-11 09:03:26] [options-puts-eth] [INFO] Signal: BULLISH | ETH spot=$1952.13 | IV rank=66.1 | 1 actions
+[2026-02-11 09:03:26] [options-puts-eth] [INFO] BUY OPTION ETH put strike=1700 exp=2026-03-28 | $29.28
+[2026-02-11 09:03:26] [options-puts-eth] [INFO] Status: cash=$970.72 | positions=1 | value=$1000.00 | trades=1

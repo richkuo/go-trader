@@ -82,3 +82,19 @@ c] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
 [2026-02-11 08:32:48] [options-vol-btc] [INFO] Running: python3 scripts/check_options.py [vol_mean_reversion BTC]
 [2026-02-11 08:32:48] [options-vol-btc] [INFO] Signal: HOLD | BTC spot=$0.00 | IV rank=0.0 | 0 actions
 [2026-02-11 08:32:48] [options-vol-btc] [INFO] Status: cash=$34165.12 | positions=8 | value=$21770.56 | trades=0
+[2026-02-11 08:43:14] [options-vol-btc] [INFO] Running: python3 scripts/check_options.py [vol_mean_reversion BTC]
+[2026-02-11 08:43:14] [options-vol-btc] [INFO] Signal: HOLD | BTC spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 08:43:14] [options-vol-btc] [INFO] Status: cash=$34165.12 | positions=8 | value=$21770.56 | trades=0
+[2026-02-11 08:51:00] [options-vol-btc] [INFO] Running: python3 scripts/check_options.py [vol_mean_reversion BTC]
+[2026-02-11 08:51:01] [options-vol-btc] [INFO] Signal: BEARISH | BTC spot=$67026.29 | IV rank=100.0 | 2 actions
+[2026-02-11 08:51:01] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73700 exp=2026-03-13 | +$1675.66
+[2026-02-11 08:51:01] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60300 exp=2026-03-13 | +$1340.53
+[2026-02-11 08:51:01] [options-vol-btc] [INFO] Status: cash=$4016.19 | positions=2 | value=$1000.00 | trades=2
+[2026-02-11 09:01:30] [options-vol-btc] [INFO] Running: python3 scripts/check_options.py [vol_mean_reversion BTC]
+[2026-02-11 09:01:30] [options-vol-btc] [INFO] Signal: HOLD | BTC spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 09:01:30] [options-vol-btc] [INFO] Status: cash=$4016.19 | positions=2 | value=$1000.00 | trades=0
+[2026-02-11 09:03:21] [options-vol-btc] [INFO] Running: python3 scripts/check_options.py [vol_mean_reversion BTC]
+[2026-02-11 09:03:22] [options-vol-btc] [INFO] Signal: BEARISH | BTC spot=$67040.22 | IV rank=100.0 | 2 actions
+[2026-02-11 09:03:22] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73700 exp=2026-03-13 | +$1676.01
+[2026-02-11 09:03:22] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60300 exp=2026-03-13 | +$1340.80
+[2026-02-11 09:03:22] [options-vol-btc] [INFO] Status: cash=$4016.81 | positions=2 | value=$1000.00 | trades=2

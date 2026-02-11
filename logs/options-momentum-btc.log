@@ -68,3 +68,19 @@ um-btc] [INFO] Running: python3 check_options.py [momentum_options BTC]
 [2026-02-11 08:32:47] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$67079.00 | IV rank=85.3 | 1 actions
 [2026-02-11 08:32:47] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2683.16)
 [2026-02-11 08:32:47] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:43:12] [options-momentum-btc] [INFO] Running: python3 scripts/check_options.py [momentum_options BTC]
+[2026-02-11 08:43:13] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$66995.40 | IV rank=86.7 | 1 actions
+[2026-02-11 08:43:13] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2679.82)
+[2026-02-11 08:43:13] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:50:56] [options-momentum-btc] [INFO] Running: python3 scripts/check_options.py [momentum_options BTC]
+[2026-02-11 08:50:58] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$67026.29 | IV rank=86.2 | 1 actions
+[2026-02-11 08:50:58] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2681.05)
+[2026-02-11 08:50:58] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:01:27] [options-momentum-btc] [INFO] Running: python3 scripts/check_options.py [momentum_options BTC]
+[2026-02-11 09:01:28] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$67012.69 | IV rank=86.4 | 1 actions
+[2026-02-11 09:01:28] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2680.51)
+[2026-02-11 09:01:28] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:03:18] [options-momentum-btc] [INFO] Running: python3 scripts/check_options.py [momentum_options BTC]
+[2026-02-11 09:03:19] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$67040.22 | IV rank=86.0 | 1 actions
+[2026-02-11 09:03:19] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2681.61)
+[2026-02-11 09:03:19] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

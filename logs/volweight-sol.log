@@ -68,3 +68,28 @@
 
 [2026-02-11 08:32:38] [volweight-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
 [2026-02-11 08:32:38] [volweight-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:43:03] [volweight-sol] [INFO] Running: python3 scripts/check_strategy.py [volume_weighted SOL/USDT 1h]
+[2026-02-11 08:43:05] [volweight-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:43:05] [volweight-sol] [INFO] Signal: HOLD | SOL/USDT @ $81.03
+[2026-02-11 08:43:05] [volweight-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:50:48] [volweight-sol] [INFO] Running: python3 scripts/check_strategy.py [volume_weighted SOL/USDT 1h]
+[2026-02-11 08:50:49] [volweight-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:50:49] [volweight-sol] [INFO] Signal: HOLD | SOL/USDT @ $81.03
+[2026-02-11 08:50:49] [volweight-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:01:18] [volweight-sol] [INFO] Running: python3 scripts/check_strategy.py [volume_weighted SOL/USDT 1h]
+[2026-02-11 09:01:19] [volweight-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 09:01:19] [volweight-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.96
+[2026-02-11 09:01:19] [volweight-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:03:08] [volweight-sol] [INFO] Running: python3 scripts/check_strategy.py [volume_weighted SOL/USDT 1h]
+[2026-02-11 09:03:10] [volweight-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 09:03:10] [volweight-sol] [INFO] Signal: HOLD | SOL/USDT @ $81.20
+[2026-02-11 09:03:10] [volweight-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:08:40] [volweight-sol] [INFO] Running: python3 scripts/check_strategy.py [volume_weighted SOL/USDT 1h]
+[2026-02-11 09:08:41] [volweight-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 09:08:41] [volweight-sol] [INFO] Signal: HOLD | SOL/USDT @ $81.20
+[2026-02-11 09:08:41] [volweight-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

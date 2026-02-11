@@ -16,12 +16,13 @@ type Config struct {
 
 // StrategyConfig describes a single strategy job.
 type StrategyConfig struct {
-	ID             string   `json:"id"`
-	Type           string   `json:"type"` // "spot" or "options"
-	Script         string   `json:"script"`
-	Args           []string `json:"args"`
-	Capital        float64  `json:"capital"`
-	MaxDrawdownPct float64  `json:"max_drawdown_pct"`
+	ID              string   `json:"id"`
+	Type            string   `json:"type"` // "spot" or "options"
+	Script          string   `json:"script"`
+	Args            []string `json:"args"`
+	Capital         float64  `json:"capital"`
+	MaxDrawdownPct  float64  `json:"max_drawdown_pct"`
+	IntervalSeconds int      `json:"interval_seconds,omitempty"` // per-strategy override (0 = use global)
 }
 
 func LoadConfig(path string) (*Config, error) {
