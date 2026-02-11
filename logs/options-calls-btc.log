@@ -40,3 +40,13 @@
 [2026-02-11 09:03:28] [options-calls-btc] [INFO] Signal: BEARISH | BTC spot=$67040.22 | IV rank=68.8 | 1 actions
 [2026-02-11 09:03:28] [options-calls-btc] [INFO] SELL OPTION BTC call strike=75100 exp=2026-03-04 | +$1340.80
 [2026-02-11 09:03:28] [options-calls-btc] [INFO] Status: cash=$2340.80 | positions=1 | value=$1000.00 | trades=1
+[2026-02-11 09:23:14] [options-calls-btc] [INFO] Running: python3 scripts/check_options.py [covered_calls BTC]
+[2026-02-11 09:23:15] [options-calls-btc] [INFO] stderr: Skipping sell call strike=74900.0: score=0.1 (overlapping strikes 0.3%; same expiry)
+
+[2026-02-11 09:23:15] [options-calls-btc] [INFO] Signal: HOLD | BTC spot=$66872.87 | IV rank=68.8 | 0 actions
+[2026-02-11 09:23:15] [options-calls-btc] [INFO] Status: cash=$2340.80 | positions=1 | value=$1000.00 | trades=0
+[2026-02-11 09:29:08] [options-calls-btc] [INFO] Running: python3 scripts/check_options.py [covered_calls BTC]
+[2026-02-11 09:29:09] [options-calls-btc] [INFO] stderr: Skipping sell call strike=74900.0: score=0.1 (overlapping strikes 0.3%; same expiry)
+
+[2026-02-11 09:29:09] [options-calls-btc] [INFO] Signal: HOLD | BTC spot=$66872.87 | IV rank=68.8 | 0 actions
+[2026-02-11 09:29:09] [options-calls-btc] [INFO] Status: cash=$2340.80 | positions=1 | value=$1000.00 | trades=0

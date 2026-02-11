@@ -6,11 +6,19 @@ import (
 	"os"
 )
 
+// DiscordConfig holds Discord notification settings.
+type DiscordConfig struct {
+	Enabled   bool   `json:"enabled"`
+	Token     string `json:"token"`
+	ChannelID string `json:"channel_id"`
+}
+
 // Config is the top-level scheduler configuration.
 type Config struct {
 	IntervalSeconds int              `json:"interval_seconds"`
 	LogDir          string           `json:"log_dir"`
 	StateFile       string           `json:"state_file"`
+	Discord         DiscordConfig    `json:"discord"`
 	Strategies      []StrategyConfig `json:"strategies"`
 }
 

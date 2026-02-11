@@ -46,3 +46,13 @@
 [2026-02-11 09:03:29] [options-calls-eth] [INFO] Signal: BEARISH | ETH spot=$1952.13 | IV rank=66.1 | 1 actions
 [2026-02-11 09:03:29] [options-calls-eth] [INFO] SELL OPTION ETH call strike=2200 exp=2026-03-04 | +$39.04
 [2026-02-11 09:03:29] [options-calls-eth] [INFO] Status: cash=$1039.04 | positions=1 | value=$1000.00 | trades=1
+[2026-02-11 09:23:15] [options-calls-eth] [INFO] Running: python3 scripts/check_options.py [covered_calls ETH]
+[2026-02-11 09:23:17] [options-calls-eth] [INFO] stderr: Skipping sell call strike=2200.0: score=0.1 (overlapping strikes 0.0%; same expiry)
+
+[2026-02-11 09:23:17] [options-calls-eth] [INFO] Signal: HOLD | ETH spot=$1950.87 | IV rank=66.1 | 0 actions
+[2026-02-11 09:23:17] [options-calls-eth] [INFO] Status: cash=$1039.04 | positions=1 | value=$1000.00 | trades=0
+[2026-02-11 09:29:09] [options-calls-eth] [INFO] Running: python3 scripts/check_options.py [covered_calls ETH]
+[2026-02-11 09:29:11] [options-calls-eth] [INFO] stderr: Skipping sell call strike=2200.0: score=0.1 (overlapping strikes 0.0%; same expiry)
+
+[2026-02-11 09:29:11] [options-calls-eth] [INFO] Signal: HOLD | ETH spot=$1949.87 | IV rank=66.1 | 0 actions
+[2026-02-11 09:29:11] [options-calls-eth] [INFO] Status: cash=$1039.04 | positions=1 | value=$1000.00 | trades=0

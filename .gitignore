@@ -6,3 +6,4 @@ trading_bot.db
 *.db-shm
 .env
 trading-scheduler
+logs/

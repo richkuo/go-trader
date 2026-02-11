@@ -93,3 +93,28 @@
 
 [2026-02-11 09:08:36] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $66916.79
 [2026-02-11 09:08:36] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:13:54] [pairs-btc] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 09:13:55] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 09:13:55] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $66872.87
+[2026-02-11 09:13:55] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:19:13] [pairs-btc] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 09:19:14] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 09:19:14] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $66872.87
+[2026-02-11 09:19:14] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:22:52] [pairs-btc] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 09:22:53] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 09:22:53] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $66872.87
+[2026-02-11 09:22:53] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:23] [pairs-btc] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 09:28:24] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 09:28:24] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $66872.87
+[2026-02-11 09:28:24] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:42] [pairs-btc] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 09:28:43] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 09:28:43] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $66872.87
+[2026-02-11 09:28:43] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

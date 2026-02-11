@@ -58,3 +58,28 @@
 
 [2026-02-11 09:08:37] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.61
 [2026-02-11 09:08:37] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:13:55] [pairs-eth] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread ETH/USDT 1d]
+[2026-02-11 09:13:56] [pairs-eth] [INFO] stderr: Fetching ETH/USDT 1d...
+
+[2026-02-11 09:13:56] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.56
+[2026-02-11 09:13:56] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:19:14] [pairs-eth] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread ETH/USDT 1d]
+[2026-02-11 09:19:15] [pairs-eth] [INFO] stderr: Fetching ETH/USDT 1d...
+
+[2026-02-11 09:19:15] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1950.87
+[2026-02-11 09:19:15] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:22:53] [pairs-eth] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread ETH/USDT 1d]
+[2026-02-11 09:22:54] [pairs-eth] [INFO] stderr: Fetching ETH/USDT 1d...
+
+[2026-02-11 09:22:54] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1950.87
+[2026-02-11 09:22:54] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:24] [pairs-eth] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread ETH/USDT 1d]
+[2026-02-11 09:28:26] [pairs-eth] [INFO] stderr: Fetching ETH/USDT 1d...
+
+[2026-02-11 09:28:26] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1949.87
+[2026-02-11 09:28:26] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:43] [pairs-eth] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread ETH/USDT 1d]
+[2026-02-11 09:28:44] [pairs-eth] [INFO] stderr: Fetching ETH/USDT 1d...
+
+[2026-02-11 09:28:44] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1949.87
+[2026-02-11 09:28:44] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

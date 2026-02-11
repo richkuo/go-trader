@@ -63,3 +63,28 @@
 
 [2026-02-11 09:08:44] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $66916.79
 [2026-02-11 09:08:44] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:14:01] [rsi-btc] [INFO] Running: python3 scripts/check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 09:14:02] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 09:14:02] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $66872.87
+[2026-02-11 09:14:02] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:19:21] [rsi-btc] [INFO] Running: python3 scripts/check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 09:19:22] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 09:19:22] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $66872.87
+[2026-02-11 09:19:22] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:22:59] [rsi-btc] [INFO] Running: python3 scripts/check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 09:23:00] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 09:23:00] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $66872.87
+[2026-02-11 09:23:00] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:31] [rsi-btc] [INFO] Running: python3 scripts/check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 09:28:32] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 09:28:32] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $66872.87
+[2026-02-11 09:28:32] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:49] [rsi-btc] [INFO] Running: python3 scripts/check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 09:28:51] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 09:28:51] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $66872.87
+[2026-02-11 09:28:51] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

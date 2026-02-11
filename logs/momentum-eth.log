@@ -63,3 +63,28 @@
 
 [2026-02-11 09:08:34] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.61
 [2026-02-11 09:08:34] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:13:53] [momentum-eth] [INFO] Running: python3 scripts/check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 09:13:54] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:13:54] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.56
+[2026-02-11 09:13:54] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:19:11] [momentum-eth] [INFO] Running: python3 scripts/check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 09:19:13] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:19:13] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1950.87
+[2026-02-11 09:19:13] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:22:50] [momentum-eth] [INFO] Running: python3 scripts/check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 09:22:52] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:22:52] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1950.87
+[2026-02-11 09:22:52] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:21] [momentum-eth] [INFO] Running: python3 scripts/check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 09:28:23] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:28:23] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1950.87
+[2026-02-11 09:28:23] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:41] [momentum-eth] [INFO] Running: python3 scripts/check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 09:28:42] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:28:42] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1949.87
+[2026-02-11 09:28:42] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

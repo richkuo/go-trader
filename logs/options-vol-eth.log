@@ -98,3 +98,15 @@ h] [INFO] Running: python3 check_options.py [vol_mean_reversion ETH]
 [2026-02-11 09:03:23] [options-vol-eth] [INFO] SELL OPTION ETH call strike=2100 exp=2026-03-13 | +$48.80
 [2026-02-11 09:03:23] [options-vol-eth] [INFO] SELL OPTION ETH put strike=1800 exp=2026-03-13 | +$39.04
 [2026-02-11 09:03:23] [options-vol-eth] [INFO] Status: cash=$1087.84 | positions=2 | value=$1000.00 | trades=2
+[2026-02-11 09:23:09] [options-vol-eth] [INFO] Running: python3 scripts/check_options.py [vol_mean_reversion ETH]
+[2026-02-11 09:23:11] [options-vol-eth] [INFO] stderr: Skipping sell call strike=2100.0: score=0.2 (overlapping strikes 0.0%; same expiry; better premium)
+Skipping sell put strike=1800.0: score=0.1 (overlapping strikes 0.0%; same expiry)
+
+[2026-02-11 09:23:11] [options-vol-eth] [INFO] Signal: HOLD | ETH spot=$1950.87 | IV rank=90.5 | 0 actions
+[2026-02-11 09:23:11] [options-vol-eth] [INFO] Status: cash=$1087.84 | positions=2 | value=$1000.00 | trades=0
+[2026-02-11 09:29:01] [options-vol-eth] [INFO] Running: python3 scripts/check_options.py [vol_mean_reversion ETH]
+[2026-02-11 09:29:02] [options-vol-eth] [INFO] stderr: Skipping sell call strike=2100.0: score=0.2 (overlapping strikes 0.0%; same expiry; better premium)
+Skipping sell put strike=1800.0: score=0.1 (overlapping strikes 0.0%; same expiry)
+
+[2026-02-11 09:29:02] [options-vol-eth] [INFO] Signal: HOLD | ETH spot=$1949.87 | IV rank=90.5 | 0 actions
+[2026-02-11 09:29:02] [options-vol-eth] [INFO] Status: cash=$1087.84 | positions=2 | value=$1000.00 | trades=0

@@ -58,3 +58,28 @@
 
 [2026-02-11 09:08:39] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $81.20
 [2026-02-11 09:08:39] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:13:56] [pairs-sol] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread SOL/USDT 1d]
+[2026-02-11 09:13:58] [pairs-sol] [INFO] stderr: Fetching SOL/USDT 1d...
+
+[2026-02-11 09:13:58] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $81.20
+[2026-02-11 09:13:58] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:19:15] [pairs-sol] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread SOL/USDT 1d]
+[2026-02-11 09:19:17] [pairs-sol] [INFO] stderr: Fetching SOL/USDT 1d...
+
+[2026-02-11 09:19:17] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $81.20
+[2026-02-11 09:19:17] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:22:54] [pairs-sol] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread SOL/USDT 1d]
+[2026-02-11 09:22:55] [pairs-sol] [INFO] stderr: Fetching SOL/USDT 1d...
+
+[2026-02-11 09:22:55] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $81.20
+[2026-02-11 09:22:55] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:26] [pairs-sol] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread SOL/USDT 1d]
+[2026-02-11 09:28:27] [pairs-sol] [INFO] stderr: Fetching SOL/USDT 1d...
+
+[2026-02-11 09:28:27] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.98
+[2026-02-11 09:28:27] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:44] [pairs-sol] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread SOL/USDT 1d]
+[2026-02-11 09:28:46] [pairs-sol] [INFO] stderr: Fetching SOL/USDT 1d...
+
+[2026-02-11 09:28:46] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.98
+[2026-02-11 09:28:46] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

@@ -63,3 +63,28 @@
 
 [2026-02-11 09:08:40] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $66916.79
 [2026-02-11 09:08:40] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:13:58] [volweight-btc] [INFO] Running: python3 scripts/check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 09:13:59] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 09:13:59] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $66872.87
+[2026-02-11 09:13:59] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:19:17] [volweight-btc] [INFO] Running: python3 scripts/check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 09:19:18] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 09:19:18] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $66872.87
+[2026-02-11 09:19:18] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:22:55] [volweight-btc] [INFO] Running: python3 scripts/check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 09:22:57] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 09:22:57] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $66872.87
+[2026-02-11 09:22:57] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:27] [volweight-btc] [INFO] Running: python3 scripts/check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 09:28:29] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 09:28:29] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $66872.87
+[2026-02-11 09:28:29] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:46] [volweight-btc] [INFO] Running: python3 scripts/check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 09:28:47] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 09:28:47] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $66872.87
+[2026-02-11 09:28:47] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

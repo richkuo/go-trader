@@ -63,3 +63,28 @@
 
 [2026-02-11 09:08:43] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.61
 [2026-02-11 09:08:43] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:14:00] [volweight-eth] [INFO] Running: python3 scripts/check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 09:14:01] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:14:01] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.56
+[2026-02-11 09:14:01] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:19:19] [volweight-eth] [INFO] Running: python3 scripts/check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 09:19:21] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:19:21] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1950.87
+[2026-02-11 09:19:21] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:22:58] [volweight-eth] [INFO] Running: python3 scripts/check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 09:22:59] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:22:59] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1950.87
+[2026-02-11 09:22:59] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:30] [volweight-eth] [INFO] Running: python3 scripts/check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 09:28:31] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:28:31] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1949.87
+[2026-02-11 09:28:31] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:48] [volweight-eth] [INFO] Running: python3 scripts/check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 09:28:49] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:28:49] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1949.87
+[2026-02-11 09:28:49] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

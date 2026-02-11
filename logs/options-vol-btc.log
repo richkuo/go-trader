@@ -98,3 +98,15 @@ c] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
 [2026-02-11 09:03:22] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73700 exp=2026-03-13 | +$1676.01
 [2026-02-11 09:03:22] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60300 exp=2026-03-13 | +$1340.80
 [2026-02-11 09:03:22] [options-vol-btc] [INFO] Status: cash=$4016.81 | positions=2 | value=$1000.00 | trades=2
+[2026-02-11 09:23:08] [options-vol-btc] [INFO] Running: python3 scripts/check_options.py [vol_mean_reversion BTC]
+[2026-02-11 09:23:09] [options-vol-btc] [INFO] stderr: Skipping sell call strike=73600.0: score=0.2 (overlapping strikes 0.1%; same expiry; better premium)
+Skipping sell put strike=60200.0: score=0.1 (overlapping strikes 0.1%; same expiry)
+
+[2026-02-11 09:23:09] [options-vol-btc] [INFO] Signal: HOLD | BTC spot=$66872.87 | IV rank=100.0 | 0 actions
+[2026-02-11 09:23:09] [options-vol-btc] [INFO] Status: cash=$4016.81 | positions=2 | value=$1000.00 | trades=0
+[2026-02-11 09:28:59] [options-vol-btc] [INFO] Running: python3 scripts/check_options.py [vol_mean_reversion BTC]
+[2026-02-11 09:29:01] [options-vol-btc] [INFO] stderr: Skipping sell call strike=73600.0: score=0.2 (overlapping strikes 0.1%; same expiry; better premium)
+Skipping sell put strike=60200.0: score=0.1 (overlapping strikes 0.1%; same expiry)
+
+[2026-02-11 09:29:01] [options-vol-btc] [INFO] Signal: HOLD | BTC spot=$66872.87 | IV rank=100.0 | 0 actions
+[2026-02-11 09:29:01] [options-vol-btc] [INFO] Status: cash=$4016.81 | positions=2 | value=$1000.00 | trades=0

@@ -63,3 +63,28 @@
 
 [2026-02-11 09:08:49] [macd-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.61
 [2026-02-11 09:08:49] [macd-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:14:06] [macd-eth] [INFO] Running: python3 scripts/check_strategy.py [macd ETH/USDT 1h]
+[2026-02-11 09:14:08] [macd-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:14:08] [macd-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.56
+[2026-02-11 09:14:08] [macd-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:19:25] [macd-eth] [INFO] Running: python3 scripts/check_strategy.py [macd ETH/USDT 1h]
+[2026-02-11 09:19:27] [macd-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:19:27] [macd-eth] [INFO] Signal: HOLD | ETH/USDT @ $1950.87
+[2026-02-11 09:19:27] [macd-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:23:04] [macd-eth] [INFO] Running: python3 scripts/check_strategy.py [macd ETH/USDT 1h]
+[2026-02-11 09:23:05] [macd-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:23:05] [macd-eth] [INFO] Signal: HOLD | ETH/USDT @ $1950.87
+[2026-02-11 09:23:05] [macd-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:36] [macd-eth] [INFO] Running: python3 scripts/check_strategy.py [macd ETH/USDT 1h]
+[2026-02-11 09:28:37] [macd-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:28:37] [macd-eth] [INFO] Signal: HOLD | ETH/USDT @ $1949.87
+[2026-02-11 09:28:37] [macd-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:55] [macd-eth] [INFO] Running: python3 scripts/check_strategy.py [macd ETH/USDT 1h]
+[2026-02-11 09:28:56] [macd-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:28:56] [macd-eth] [INFO] Signal: HOLD | ETH/USDT @ $1949.87
+[2026-02-11 09:28:56] [macd-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

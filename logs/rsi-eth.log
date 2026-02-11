@@ -63,3 +63,28 @@
 
 [2026-02-11 09:08:46] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.61
 [2026-02-11 09:08:46] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:14:04] [rsi-eth] [INFO] Running: python3 scripts/check_strategy.py [rsi ETH/USDT 1h]
+[2026-02-11 09:14:05] [rsi-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:14:05] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.56
+[2026-02-11 09:14:05] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:19:23] [rsi-eth] [INFO] Running: python3 scripts/check_strategy.py [rsi ETH/USDT 1h]
+[2026-02-11 09:19:24] [rsi-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:19:24] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1950.87
+[2026-02-11 09:19:24] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:23:01] [rsi-eth] [INFO] Running: python3 scripts/check_strategy.py [rsi ETH/USDT 1h]
+[2026-02-11 09:23:02] [rsi-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:23:02] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1950.87
+[2026-02-11 09:23:02] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:33] [rsi-eth] [INFO] Running: python3 scripts/check_strategy.py [rsi ETH/USDT 1h]
+[2026-02-11 09:28:34] [rsi-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:28:34] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1949.87
+[2026-02-11 09:28:34] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 09:28:52] [rsi-eth] [INFO] Running: python3 scripts/check_strategy.py [rsi ETH/USDT 1h]
+[2026-02-11 09:28:54] [rsi-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 09:28:54] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1949.87
+[2026-02-11 09:28:54] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

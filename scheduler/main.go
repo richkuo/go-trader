@@ -71,6 +71,13 @@ func main() {
 		close(stopCh)
 	}()
 
+	// Discord notifier
+	var discord *DiscordNotifier
+	if cfg.Discord.Enabled && cfg.Discord.Token != "" && cfg.Discord.ChannelID != "" {
+		discord = NewDiscordNotifier(cfg.Discord.Token, cfg.Discord.ChannelID)
+		fmt.Println("Discord notifications enabled")
+	}
+
 	// Track last-run time per strategy for per-strategy intervals
 	lastRun := make(map[string]time.Time)
 
@@ -96,6 +103,7 @@ func main() {
 		state.CycleCount++
 		cycle := state.CycleCount
 		totalTrades := 0
+		tradeDetails := make([]string, 0)
 
 		// Determine which strategies are due this tick
 		dueStrategies := make([]StrategyConfig, 0)
@@ -183,13 +191,18 @@ func main() {
 
 			// Run appropriate check script
 			trades := 0
+			var detail string
 			switch sc.Type {
 			case "spot":
-				trades = processSpot(sc, stratState, prices, logger)
+				trades, detail = processSpot(sc, stratState, prices, logger)
 			case "options":
-				trades = processOptions(sc, stratState, logger)
+				trades, detail = processOptions(sc, stratState, logger)
 			default:
 				logger.Error("Unknown strategy type: %s", sc.Type)
+			}
+
+			if trades > 0 && detail != "" {
+				tradeDetails = append(tradeDetails, detail)
 			}
 
 			// Update option positions
@@ -222,6 +235,14 @@ func main() {
 		elapsed := time.Since(cycleStart)
 		logMgr.LogSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue)
 
+		// Discord notification
+		if discord != nil {
+			msg := FormatCycleSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue, prices, tradeDetails)
+			if err := discord.SendMessage(msg); err != nil {
+				fmt.Printf("[WARN] Discord notification failed: %v\n", err)
+			}
+		}
+
 		// Save state after each cycle
 		mu.Lock()
 		if err := SaveState(cfg.StateFile, state); err != nil {
@@ -247,7 +268,7 @@ func main() {
 	}
 }
 
-func processSpot(sc StrategyConfig, s *StrategyState, prices map[string]float64, logger *StrategyLogger) int {
+func processSpot(sc StrategyConfig, s *StrategyState, prices map[string]float64, logger *StrategyLogger) (int, string) {
 	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
 
 	result, stderr, err := RunSpotCheck(sc.Script, sc.Args)
@@ -256,7 +277,7 @@ func processSpot(sc StrategyConfig, s *StrategyState, prices map[string]float64,
 		if stderr != "" {
 			logger.Error("stderr: %s", stderr)
 		}
-		return 0
+		return 0, ""
 	}
 	if stderr != "" {
 		logger.Info("stderr: %s", stderr)
@@ -264,7 +285,7 @@ func processSpot(sc StrategyConfig, s *StrategyState, prices map[string]float64,
 
 	if result.Error != "" {
 		logger.Error("Script returned error: %s", result.Error)
-		return 0
+		return 0, ""
 	}
 
 	signalStr := "HOLD"
@@ -285,18 +306,23 @@ func processSpot(sc StrategyConfig, s *StrategyState, prices map[string]float64,
 
 	if price <= 0 {
 		logger.Error("No price available for %s", result.Symbol)
-		return 0
+		return 0, ""
 	}
 
 	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, price, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
-		return 0
+		return 0, ""
 	}
-	return trades
+
+	detail := ""
+	if trades > 0 {
+		detail = fmt.Sprintf("[%s] %s %s @ $%.2f", sc.ID, signalStr, result.Symbol, price)
+	}
+	return trades, detail
 }
 
-func processOptions(sc StrategyConfig, s *StrategyState, logger *StrategyLogger) int {
+func processOptions(sc StrategyConfig, s *StrategyState, logger *StrategyLogger) (int, string) {
 	// Pass current positions as JSON so script can do portfolio-aware scoring
 	posJSON := EncodePositionsJSON(s.OptionPositions)
 	args := append(sc.Args, posJSON)
@@ -308,7 +334,7 @@ func processOptions(sc StrategyConfig, s *StrategyState, logger *StrategyLogger)
 		if stderr != "" {
 			logger.Error("stderr: %s", stderr)
 		}
-		return 0
+		return 0, ""
 	}
 	if stderr != "" {
 		logger.Info("stderr: %s", stderr)
@@ -316,7 +342,7 @@ func processOptions(sc StrategyConfig, s *StrategyState, logger *StrategyLogger)
 
 	if result.Error != "" {
 		logger.Error("Script returned error: %s", result.Error)
-		return 0
+		return 0, ""
 	}
 
 	signalStr := "HOLD"
@@ -331,7 +357,12 @@ func processOptions(sc StrategyConfig, s *StrategyState, logger *StrategyLogger)
 	trades, err := ExecuteOptionsSignal(s, result, logger)
 	if err != nil {
 		logger.Error("Options execution failed: %v", err)
-		return 0
+		return 0, ""
 	}
-	return trades
+
+	detail := ""
+	if trades > 0 {
+		detail = fmt.Sprintf("[%s] %s %s spot=$%.2f IV=%.1f", sc.ID, signalStr, result.Underlying, result.SpotPrice, result.IVRank)
+	}
+	return trades, detail
 }
