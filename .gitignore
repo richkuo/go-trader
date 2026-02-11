@@ -5,3 +5,4 @@ trading_bot.db
 *.db-wal
 *.db-shm
 .env
+trading-scheduler
