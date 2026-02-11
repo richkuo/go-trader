@@ -254,12 +254,23 @@ func main() {
 		logMgr.LogSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue)
 
 		// Discord notification
+		// Spot-only cycles post once per hour; options cycles + trades always post
 		if discord != nil {
-			mu.RLock()
-			msg := FormatCycleSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue, prices, tradeDetails, cfg.Strategies, state)
-			mu.RUnlock()
-			if err := discord.SendMessage(msg); err != nil {
-				fmt.Printf("[WARN] Discord notification failed: %v\n", err)
+			optionsRan := false
+			for _, sc := range dueStrategies {
+				if stratCategory(sc.ID) != "spot" {
+					optionsRan = true
+					break
+				}
+			}
+			shouldPost := optionsRan || totalTrades > 0 || (cycle%12 == 0)
+			if shouldPost {
+				mu.RLock()
+				msg := FormatCycleSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue, prices, tradeDetails, cfg.Strategies, state)
+				mu.RUnlock()
+				if err := discord.SendMessage(msg); err != nil {
+					fmt.Printf("[WARN] Discord notification failed: %v\n", err)
+				}
 			}
 		}
 
