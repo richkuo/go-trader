@@ -255,6 +255,7 @@ To rebuild this entire system from scratch, give an AI this prompt:
 > - Graceful shutdown on SIGINT/SIGTERM — saves state before exit
 > - `--once` flag to run a single cycle and exit (for testing)
 > - `--config` flag to specify config file path
+> - **Discord cycle summary format**: Shows starting balance → current balance (total portfolio value including open positions), P&L in dollars and percentage, trade count. Categories collapsed into 3 lines (Spot, Deribit, IBKR) with per-category P&L and position counts. Trade details always listed when trades executed.
 >
 > **Python check scripts** in `scripts/` (stateless, run-and-exit, ~5 seconds each):
 > - `scripts/check_strategy.py <strategy> <symbol> <timeframe>` — fetches OHLCV via CCXT (Binance US), runs technical analysis, outputs JSON: `{strategy, symbol, timeframe, signal: 1/-1/0, price, indicators, timestamp}`

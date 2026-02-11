@@ -145,8 +145,8 @@ func FormatCycleSummary(
 	if totalPnl < 0 {
 		pnlSign = ""
 	}
-	sb.WriteString(fmt.Sprintf("\n**Total: $%.0f** (%s$%.0f / %s%.1f%%) | Trades: **%d**\n",
-		totalValue, pnlSign, totalPnl, pnlSign, pnlPct, totalTrades))
+	sb.WriteString(fmt.Sprintf("\n**Starting: $%.0f → Current: $%.0f** (%s$%.0f / %s%.1f%%) | Trades: **%d**\n",
+		totalCap, totalValue, pnlSign, totalPnl, pnlSign, pnlPct, totalTrades))
 
 	// Trade details (always shown)
 	if len(tradeDetails) > 0 {
