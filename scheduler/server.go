@@ -40,6 +40,27 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
 
+	// Collect symbols that need live prices
+	symbolSet := make(map[string]bool)
+	for _, s := range ss.state.Strategies {
+		for sym := range s.Positions {
+			symbolSet[sym] = true
+		}
+	}
+	symbols := make([]string, 0, len(symbolSet))
+	for s := range symbolSet {
+		symbols = append(symbols, s)
+	}
+
+	// Fetch live prices
+	prices := make(map[string]float64)
+	if len(symbols) > 0 {
+		p, err := FetchPrices(symbols)
+		if err == nil {
+			prices = p
+		}
+	}
+
 	type StratStatus struct {
 		ID              string                     `json:"id"`
 		Type            string                     `json:"type"`
@@ -48,20 +69,31 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Positions       map[string]*Position       `json:"positions"`
 		OptionPositions map[string]*OptionPosition `json:"option_positions"`
 		TradeCount      int                        `json:"trade_count"`
+		PortfolioValue  float64                    `json:"portfolio_value"`
+		PnL             float64                    `json:"pnl"`
+		PnLPct          float64                    `json:"pnl_pct"`
 		RiskState       RiskState                  `json:"risk_state"`
 	}
 
 	type StatusResp struct {
 		CycleCount int                    `json:"cycle_count"`
+		Prices     map[string]float64     `json:"prices"`
 		Strategies map[string]StratStatus `json:"strategies"`
 	}
 
 	resp := StatusResp{
 		CycleCount: ss.state.CycleCount,
+		Prices:     prices,
 		Strategies: make(map[string]StratStatus),
 	}
 
 	for id, s := range ss.state.Strategies {
+		pv := PortfolioValue(s, prices)
+		pnl := pv - s.InitialCapital
+		pnlPct := 0.0
+		if s.InitialCapital > 0 {
+			pnlPct = (pnl / s.InitialCapital) * 100
+		}
 		resp.Strategies[id] = StratStatus{
 			ID:              s.ID,
 			Type:            s.Type,
@@ -70,6 +102,9 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			Positions:       s.Positions,
 			OptionPositions: s.OptionPositions,
 			TradeCount:      len(s.TradeHistory),
+			PortfolioValue:  pv,
+			PnL:             pnl,
+			PnLPct:          pnlPct,
 			RiskState:       s.RiskState,
 		}
 	}
