@@ -60,5 +60,9 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.StateFile == "" {
 		cfg.StateFile = "scheduler/state.json"
 	}
+	// Discord token from env var takes priority over config file
+	if envToken := os.Getenv("DISCORD_BOT_TOKEN"); envToken != "" {
+		cfg.Discord.Token = envToken
+	}
 	return &cfg, nil
 }
