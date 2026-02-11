@@ -236,8 +236,17 @@ To rebuild this entire system from scratch, give an AI this prompt:
 > - Manages all state in memory: portfolios per strategy (cash + positions), trade history, risk state (drawdown kill switch, circuit breakers, daily loss limits, consecutive loss tracking)
 > - For spot: tracks positions by symbol, simulates market fills at current price, calculates portfolio value
 > - For options: tracks positions with premium, Greeks (delta/gamma/theta/vega), expiry dates, auto-expires worthless OTM options
-> - **Live option pricing** via Deribit REST API (`scheduler/deribit.go`): fetches live mark prices every cycle, updates CurrentValueUSD for all option positions with real market data (not static entry values)
-> - **Smart expiry mapping**: if exact option expiry doesn't exist on Deribit, finds nearest available expiry with same strike for mark-to-market
+> - **Live option pricing** via Deribit REST API (`scheduler/deribit.go`): 
+>   - Fetches live mark prices from Deribit ticker endpoint every cycle
+>   - Updates `CurrentValueUSD` for ALL option positions (Deribit + IBKR) with real market data (not static entry values)
+>   - IBKR positions use Deribit as pricing proxy (same underlying/strikes)
+>   - `NewDeribitPricer()` creates HTTP client, `GetOptionPrice(underlying, expiry, strike, optionType)` returns live mark price
+>   - `MarkOptionPositions(positions)` updates entire portfolio in one pass
+> - **Smart expiry mapping** in `deribit.go` for legacy positions with fictional expiries:
+>   - Tries exact instrument match first (e.g. `BTC-13MAR26-75000-C`)
+>   - Falls back to `findNearestExpiry()` which searches Deribit's full option chain for nearest real expiry with same strike
+>   - Logs warning with details (original expiry → mapped expiry, days difference) when fallback used
+>   - Handles expired options gracefully (returns $0 mark price)
 > - Passes existing option positions as JSON to Python scripts so they can do portfolio-aware trade scoring
 > - Saves/loads state to a human-readable JSON file for restart recovery
 > - On startup, initializes new strategies from config and **auto-prunes** strategies in state that are no longer in config
@@ -249,10 +258,10 @@ To rebuild this entire system from scratch, give an AI this prompt:
 >
 > **Python check scripts** in `scripts/` (stateless, run-and-exit, ~5 seconds each):
 > - `scripts/check_strategy.py <strategy> <symbol> <timeframe>` — fetches OHLCV via CCXT (Binance US), runs technical analysis, outputs JSON: `{strategy, symbol, timeframe, signal: 1/-1/0, price, indicators, timestamp}`
-> - `scripts/check_options.py <strategy> <underlying> <positions_json>` — Deribit-style options. Fetches spot price via CCXT, evaluates options strategy, scores proposed trades against existing positions, outputs JSON with actions. Uses `deribit_utils.py` to fetch real Deribit expiries and strikes for new trades (no fictional expiries)
+> - `scripts/check_options.py <strategy> <underlying> <positions_json>` — Deribit-style options. Fetches spot price via CCXT, evaluates options strategy, scores proposed trades against existing positions, outputs JSON with actions. **CRITICAL:** Uses `deribit_utils.py` to fetch real Deribit expiries and strikes for ALL new trades (never generates fictional expiries). Helpers: `get_real_expiry(underlying, target_dte)` returns closest real expiry, `get_real_strike(underlying, expiry, option_type, target_strike)` returns closest available strike
 > - `scripts/check_options_ibkr.py <strategy> <underlying> <positions_json>` — IBKR/CME-style options. Same strategies as Deribit but uses CME Micro contract specs (BTC=0.1x multiplier, ETH=0.5x), CME strike intervals ($1000 for BTC, $50 for ETH), and Black-Scholes for premium estimation
 > - `scripts/check_price.py <symbols...>` — fetches current prices, outputs JSON map
-> - `scripts/deribit_utils.py` — utilities for fetching real Deribit option expiries and strikes via REST API. Functions: `fetch_available_expiries(underlying, min_dte, max_dte)`, `find_closest_expiry(underlying, target_dte)`, `find_closest_strike(underlying, expiry, option_type, target_strike)`
+> - `scripts/deribit_utils.py` — **Required utility** for fetching real Deribit option chains via REST API (public endpoints, no auth). Core functions: `fetch_available_expiries(underlying, min_dte, max_dte)` returns list of ISO expiry strings, `find_closest_expiry(underlying, target_dte)` maps target DTE to nearest real expiry, `fetch_available_strikes(underlying, expiry)` gets available strikes for given expiry, `find_closest_strike(underlying, expiry, option_type, target_strike)` finds nearest strike. All strategies in `check_options.py` must call these helpers instead of calculating synthetic expiries
 >
 > **30 strategies in 3 groups:**
 > - **14 spot** (5min interval, $1K each): momentum, rsi, macd, volume_weighted, pairs_spread across BTC/ETH/SOL via Binance US CCXT
