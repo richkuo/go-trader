@@ -38,6 +38,18 @@ func main() {
 		}
 	}
 
+	// Prune strategies from state that are no longer in config
+	configIDs := make(map[string]bool)
+	for _, sc := range cfg.Strategies {
+		configIDs[sc.ID] = true
+	}
+	for id := range state.Strategies {
+		if !configIDs[id] {
+			delete(state.Strategies, id)
+			fmt.Printf("  Pruned stale strategy: %s\n", id)
+		}
+	}
+
 	// Setup logging
 	logMgr, err := NewLogManager(cfg.LogDir)
 	if err != nil {
