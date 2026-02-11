@@ -43,3 +43,23 @@
 
 [2026-02-11 08:10:21] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $66852.63
 [2026-02-11 08:10:21] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:11:53] [pairs-btc] [INFO] Running: python3 check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 08:11:54] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 08:11:54] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $66943.58
+[2026-02-11 08:11:54] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:53] [pairs-btc] [INFO] Running: python3 check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 08:12:54] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 08:12:54] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $66976.49
+[2026-02-11 08:12:54] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:18] [pairs-btc] [INFO] Running: python3 check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 08:18:19] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 08:18:19] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $66917.82
+[2026-02-11 08:18:19] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:40] [pairs-btc] [INFO] Running: python3 check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 08:23:42] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 08:23:42] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $67079.00
+[2026-02-11 08:23:42] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

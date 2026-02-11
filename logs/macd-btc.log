@@ -8,3 +8,28 @@
 
 [2026-02-11 08:09:31] [macd-btc] [INFO] Signal: HOLD | BTC/USDT @ $66926.48
 [2026-02-11 08:09:31] [macd-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:33] [macd-btc] [INFO] Running: python3 check_strategy.py [macd BTC/USDT 1h]
+[2026-02-11 08:10:34] [macd-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:10:34] [macd-btc] [INFO] Signal: HOLD | BTC/USDT @ $66852.63
+[2026-02-11 08:10:34] [macd-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:04] [macd-btc] [INFO] Running: python3 check_strategy.py [macd BTC/USDT 1h]
+[2026-02-11 08:12:05] [macd-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:12:05] [macd-btc] [INFO] Signal: HOLD | BTC/USDT @ $66943.58
+[2026-02-11 08:12:05] [macd-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:05] [macd-btc] [INFO] Running: python3 check_strategy.py [macd BTC/USDT 1h]
+[2026-02-11 08:13:06] [macd-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:13:06] [macd-btc] [INFO] Signal: HOLD | BTC/USDT @ $66976.49
+[2026-02-11 08:13:06] [macd-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:29] [macd-btc] [INFO] Running: python3 check_strategy.py [macd BTC/USDT 1h]
+[2026-02-11 08:18:31] [macd-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:18:31] [macd-btc] [INFO] Signal: HOLD | BTC/USDT @ $66917.82
+[2026-02-11 08:18:31] [macd-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:52] [macd-btc] [INFO] Running: python3 check_strategy.py [macd BTC/USDT 1h]
+[2026-02-11 08:23:53] [macd-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:23:53] [macd-btc] [INFO] Signal: HOLD | BTC/USDT @ $67079.00
+[2026-02-11 08:23:53] [macd-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

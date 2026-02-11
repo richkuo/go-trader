@@ -42,3 +42,18 @@ um-eth] [INFO] Running: python3 check_options.py [momentum_options ETH]
 [2026-02-11 08:09:34] [options-momentum-eth] [INFO] Running: python3 check_options.py [momentum_options ETH]
 [2026-02-11 08:09:35] [options-momentum-eth] [INFO] Signal: HOLD | ETH spot=$1942.08 | IV rank=76.3 | 0 actions
 [2026-02-11 08:09:35] [options-momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:37] [options-momentum-eth] [INFO] Running: python3 check_options.py [momentum_options ETH]
+[2026-02-11 08:10:39] [options-momentum-eth] [INFO] Signal: HOLD | ETH spot=$1939.67 | IV rank=77.3 | 0 actions
+[2026-02-11 08:10:39] [options-momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:08] [options-momentum-eth] [INFO] Running: python3 check_options.py [momentum_options ETH]
+[2026-02-11 08:12:10] [options-momentum-eth] [INFO] Signal: HOLD | ETH spot=$1939.67 | IV rank=77.3 | 0 actions
+[2026-02-11 08:12:10] [options-momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:09] [options-momentum-eth] [INFO] Running: python3 check_options.py [momentum_options ETH]
+[2026-02-11 08:13:11] [options-momentum-eth] [INFO] Signal: HOLD | ETH spot=$1939.67 | IV rank=77.3 | 0 actions
+[2026-02-11 08:13:11] [options-momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:34] [options-momentum-eth] [INFO] Running: python3 check_options.py [momentum_options ETH 0]
+[2026-02-11 08:18:35] [options-momentum-eth] [INFO] Signal: HOLD | ETH spot=$1944.99 | IV rank=75.1 | 0 actions
+[2026-02-11 08:18:35] [options-momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:56] [options-momentum-eth] [INFO] Running: python3 check_options.py [momentum_options ETH]
+[2026-02-11 08:23:57] [options-momentum-eth] [INFO] Signal: HOLD | ETH spot=$1948.23 | IV rank=73.8 | 0 actions
+[2026-02-11 08:23:57] [options-momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

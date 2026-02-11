@@ -13,3 +13,23 @@
 
 [2026-02-11 08:10:20] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1941.34
 [2026-02-11 08:10:20] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:11:51] [momentum-eth] [INFO] Running: python3 check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 08:11:53] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:11:53] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:11:53] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:52] [momentum-eth] [INFO] Running: python3 check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 08:12:53] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:12:53] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:12:53] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:17] [momentum-eth] [INFO] Running: python3 check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 08:18:18] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:18:18] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1944.99
+[2026-02-11 08:18:18] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:39] [momentum-eth] [INFO] Running: python3 check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 08:23:40] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:23:40] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.23
+[2026-02-11 08:23:40] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

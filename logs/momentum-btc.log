@@ -43,3 +43,23 @@
 
 [2026-02-11 08:10:18] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $66852.63
 [2026-02-11 08:10:18] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:11:49] [momentum-btc] [INFO] Running: python3 check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 08:11:50] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:11:50] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $66943.58
+[2026-02-11 08:11:50] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:49] [momentum-btc] [INFO] Running: python3 check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 08:12:50] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:12:50] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $66976.49
+[2026-02-11 08:12:50] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:14] [momentum-btc] [INFO] Running: python3 check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 08:18:15] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:18:15] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $66917.82
+[2026-02-11 08:18:15] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:37] [momentum-btc] [INFO] Running: python3 check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 08:23:38] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:23:38] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $67079.00
+[2026-02-11 08:23:38] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

@@ -8,3 +8,28 @@
 
 [2026-02-11 08:09:26] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1942.08
 [2026-02-11 08:09:26] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:27] [volweight-eth] [INFO] Running: python3 check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 08:10:29] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:10:29] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:10:29] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:11:59] [volweight-eth] [INFO] Running: python3 check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 08:12:00] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:12:00] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:12:00] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:00] [volweight-eth] [INFO] Running: python3 check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 08:13:01] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:13:01] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:13:01] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:24] [volweight-eth] [INFO] Running: python3 check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 08:18:25] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:18:25] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1944.99
+[2026-02-11 08:18:25] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:47] [volweight-eth] [INFO] Running: python3 check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 08:23:48] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:23:48] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.23
+[2026-02-11 08:23:48] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

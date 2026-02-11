@@ -667,3 +667,898 @@ Prices: ETH/USDT=$1941.34 BTC/USDT=$66852.63 SOL/USDT=$80.95
 [2026-02-11 08:10:21] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
 [2026-02-11 08:10:21] [pairs-eth] [INFO] Running: python3 check_strategy.py [pairs_spread ETH/USDT 1d]
 [2026-02-11 08:10:21] [pairs-eth] [INFO] Running: python3 check_strategy.py [pairs_spread ETH/USDT 1d]
+[2026-02-11 08:10:23] [pairs-eth] [INFO] stderr: Fetching ETH/USDT 1d...
+
+[2026-02-11 08:10:23] [pairs-eth] [INFO] stderr: Fetching ETH/USDT 1d...
+
+[2026-02-11 08:10:23] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:10:23] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:10:23] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:23] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:23] [pairs-sol] [INFO] Running: python3 check_strategy.py [pairs_spread SOL/USDT 1d]
+[2026-02-11 08:10:23] [pairs-sol] [INFO] Running: python3 check_strategy.py [pairs_spread SOL/USDT 1d]
+[2026-02-11 08:10:24] [pairs-sol] [INFO] stderr: Fetching SOL/USDT 1d...
+
+[2026-02-11 08:10:24] [pairs-sol] [INFO] stderr: Fetching SOL/USDT 1d...
+
+[2026-02-11 08:10:24] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:10:24] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:10:24] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:24] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:24] [volweight-btc] [INFO] Running: python3 check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 08:10:24] [volweight-btc] [INFO] Running: python3 check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 08:10:26] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:10:26] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:10:26] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $66852.63
+[2026-02-11 08:10:26] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $66852.63
+[2026-02-11 08:10:26] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:26] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:26] [volweight-sol] [INFO] Running: python3 check_strategy.py [volume_weighted SOL/USDT 1h]
+[2026-02-11 08:10:26] [volweight-sol] [INFO] Running: python3 check_strategy.py [volume_weighted SOL/USDT 1h]
+[2026-02-11 08:10:27] [volweight-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:10:27] [volweight-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:10:27] [volweight-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:10:27] [volweight-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:10:27] [volweight-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:27] [volweight-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:27] [volweight-eth] [INFO] Running: python3 check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 08:10:27] [volweight-eth] [INFO] Running: python3 check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 08:10:29] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:10:29] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:10:29] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:10:29] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:10:29] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:29] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:29] [rsi-btc] [INFO] Running: python3 check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 08:10:29] [rsi-btc] [INFO] Running: python3 check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 08:10:30] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:10:30] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:10:30] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $66852.63
+[2026-02-11 08:10:30] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $66852.63
+[2026-02-11 08:10:30] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:30] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:30] [rsi-sol] [INFO] Running: python3 check_strategy.py [rsi SOL/USDT 1h]
+[2026-02-11 08:10:30] [rsi-sol] [INFO] Running: python3 check_strategy.py [rsi SOL/USDT 1h]
+[2026-02-11 08:10:32] [rsi-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:10:32] [rsi-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:10:32] [rsi-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:10:32] [rsi-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:10:32] [rsi-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:32] [rsi-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:32] [rsi-eth] [INFO] Running: python3 check_strategy.py [rsi ETH/USDT 1h]
+[2026-02-11 08:10:32] [rsi-eth] [INFO] Running: python3 check_strategy.py [rsi ETH/USDT 1h]
+[2026-02-11 08:10:33] [rsi-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:10:33] [rsi-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:10:33] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:10:33] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:10:33] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:33] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:33] [macd-btc] [INFO] Running: python3 check_strategy.py [macd BTC/USDT 1h]
+[2026-02-11 08:10:33] [macd-btc] [INFO] Running: python3 check_strategy.py [macd BTC/USDT 1h]
+[2026-02-11 08:10:34] [macd-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:10:34] [macd-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:10:34] [macd-btc] [INFO] Signal: HOLD | BTC/USDT @ $66852.63
+[2026-02-11 08:10:34] [macd-btc] [INFO] Signal: HOLD | BTC/USDT @ $66852.63
+[2026-02-11 08:10:34] [macd-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:34] [macd-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:34] [macd-eth] [INFO] Running: python3 check_strategy.py [macd ETH/USDT 1h]
+[2026-02-11 08:10:34] [macd-eth] [INFO] Running: python3 check_strategy.py [macd ETH/USDT 1h]
+[2026-02-11 08:10:36] [macd-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:10:36] [macd-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:10:36] [macd-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:10:36] [macd-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:10:36] [macd-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:36] [macd-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:36] [options-momentum-btc] [INFO] Running: python3 check_options.py [momentum_options BTC]
+[2026-02-11 08:10:36] [options-momentum-btc] [INFO] Running: python3 check_options.py [momentum_options BTC]
+[2026-02-11 08:10:37] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$66858.98 | IV rank=88.9 | 1 actions
+[2026-02-11 08:10:37] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$66858.98 | IV rank=88.9 | 1 actions
+[2026-02-11 08:10:37] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2674.36)
+[2026-02-11 08:10:37] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2674.36)
+[2026-02-11 08:10:37] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:37] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:37] [options-momentum-eth] [INFO] Running: python3 check_options.py [momentum_options ETH]
+[2026-02-11 08:10:37] [options-momentum-eth] [INFO] Running: python3 check_options.py [momentum_options ETH]
+[2026-02-11 08:10:39] [options-momentum-eth] [INFO] Signal: HOLD | ETH spot=$1939.67 | IV rank=77.3 | 0 actions
+[2026-02-11 08:10:39] [options-momentum-eth] [INFO] Signal: HOLD | ETH spot=$1939.67 | IV rank=77.3 | 0 actions
+[2026-02-11 08:10:39] [options-momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:39] [options-momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:39] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
+[2026-02-11 08:10:39] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
+[2026-02-11 08:10:40] [options-vol-btc] [INFO] Signal: BEARISH | BTC spot=$66841.15 | IV rank=100.0 | 2 actions
+[2026-02-11 08:10:40] [options-vol-btc] [INFO] Signal: BEARISH | BTC spot=$66841.15 | IV rank=100.0 | 2 actions
+[2026-02-11 08:10:40] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73500 exp=2026-03-13 | +$1671.03
+[2026-02-11 08:10:40] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73500 exp=2026-03-13 | +$1671.03
+[2026-02-11 08:10:40] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60200 exp=2026-03-13 | +$1336.82
+[2026-02-11 08:10:40] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60200 exp=2026-03-13 | +$1336.82
+[2026-02-11 08:10:40] [options-vol-btc] [INFO] Status: cash=$28138.72 | positions=8 | value=$15744.66 | trades=2
+[2026-02-11 08:10:40] [options-vol-btc] [INFO] Status: cash=$28138.72 | positions=8 | value=$15744.66 | trades=2
+[2026-02-11 08:10:40] [options-vol-eth] [INFO] Running: python3 check_options.py [vol_mean_reversion ETH]
+[2026-02-11 08:10:40] [options-vol-eth] [INFO] Running: python3 check_options.py [vol_mean_reversion ETH]
+[2026-02-11 08:10:41] [options-vol-eth] [INFO] Signal: BEARISH | ETH spot=$1939.67 | IV rank=90.7 | 2 actions
+[2026-02-11 08:10:41] [options-vol-eth] [INFO] Signal: BEARISH | ETH spot=$1939.67 | IV rank=90.7 | 2 actions
+[2026-02-11 08:10:41] [options-vol-eth] [INFO] SELL OPTION ETH call strike=2100 exp=2026-03-13 | +$48.49
+[2026-02-11 08:10:41] [options-vol-eth] [INFO] SELL OPTION ETH call strike=2100 exp=2026-03-13 | +$48.49
+[2026-02-11 08:10:41] [options-vol-eth] [INFO] SELL OPTION ETH put strike=1700 exp=2026-03-13 | +$38.79
+[2026-02-11 08:10:41] [options-vol-eth] [INFO] SELL OPTION ETH put strike=1700 exp=2026-03-13 | +$38.79
+[2026-02-11 08:10:41] [options-vol-eth] [INFO] Status: cash=$1789.98 | positions=4 | value=$1614.85 | trades=2
+[2026-02-11 08:10:41] [options-vol-eth] [INFO] Status: cash=$1789.98 | positions=4 | value=$1614.85 | trades=2
+[2026-02-11 08:10:41] [options-puts-btc] [INFO] Running: python3 check_options.py [protective_puts BTC]
+[2026-02-11 08:10:41] [options-puts-btc] [INFO] Running: python3 check_options.py [protective_puts BTC]
+[2026-02-11 08:10:41] [options-puts-btc] [ERROR] Script returned error: Unknown strategy: protective_puts. Available: ['momentum_options', 'vol_mean_reversion']
+[2026-02-11 08:10:41] [options-puts-btc] [ERROR] Script returned error: Unknown strategy: protective_puts. Available: ['momentum_options', 'vol_mean_reversion']
+[2026-02-11 08:10:41] [options-puts-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:41] [options-puts-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:41] [options-puts-eth] [INFO] Running: python3 check_options.py [protective_puts ETH]
+[2026-02-11 08:10:41] [options-puts-eth] [INFO] Running: python3 check_options.py [protective_puts ETH]
+[2026-02-11 08:10:41] [options-puts-eth] [ERROR] Script returned error: Unknown strategy: protective_puts. Available: ['momentum_options', 'vol_mean_reversion']
+[2026-02-11 08:10:41] [options-puts-eth] [ERROR] Script returned error: Unknown strategy: protective_puts. Available: ['momentum_options', 'vol_mean_reversion']
+[2026-02-11 08:10:41] [options-puts-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:41] [options-puts-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:41] [options-calls-btc] [INFO] Running: python3 check_options.py [covered_calls BTC]
+[2026-02-11 08:10:41] [options-calls-btc] [INFO] Running: python3 check_options.py [covered_calls BTC]
+[2026-02-11 08:10:41] [options-calls-btc] [ERROR] Script returned error: Unknown strategy: covered_calls. Available: ['momentum_options', 'vol_mean_reversion']
+[2026-02-11 08:10:41] [options-calls-btc] [ERROR] Script returned error: Unknown strategy: covered_calls. Available: ['momentum_options', 'vol_mean_reversion']
+[2026-02-11 08:10:41] [options-calls-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:41] [options-calls-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:41] [options-calls-eth] [INFO] Running: python3 check_options.py [covered_calls ETH]
+[2026-02-11 08:10:41] [options-calls-eth] [INFO] Running: python3 check_options.py [covered_calls ETH]
+[2026-02-11 08:10:42] [options-calls-eth] [ERROR] Script returned error: Unknown strategy: covered_calls. Available: ['momentum_options', 'vol_mean_reversion']
+[2026-02-11 08:10:42] [options-calls-eth] [ERROR] Script returned error: Unknown strategy: covered_calls. Available: ['momentum_options', 'vol_mean_reversion']
+[2026-02-11 08:10:42] [options-calls-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:42] [options-calls-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10 UTC] Cycle 9 complete (27.3s) | 22 strategies checked | 4 trades | Total value: $37359.51
+[2026-02-11 08:10 UTC] Cycle 9 complete (27.3s) | 22 strategies checked | 4 trades | Total value: $37359.51
+
+Received terminated, saving state and shutting down...
+State saved successfully.
+Shutdown complete.
+[2026-02-11 08:11:49] [momentum-btc] [INFO] Running: python3 check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 08:11:50] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:11:50] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $66943.58
+[2026-02-11 08:11:50] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:11:50] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 08:11:51] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:11:51] [momentum-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:11:51] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:11:51] [momentum-eth] [INFO] Running: python3 check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 08:11:53] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:11:53] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:11:53] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:11:53] [pairs-btc] [INFO] Running: python3 check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 08:11:54] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 08:11:54] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $66943.58
+[2026-02-11 08:11:54] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:11:54] [pairs-eth] [INFO] Running: python3 check_strategy.py [pairs_spread ETH/USDT 1d]
+[2026-02-11 08:11:55] [pairs-eth] [INFO] stderr: Fetching ETH/USDT 1d...
+
+[2026-02-11 08:11:55] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:11:55] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:11:55] [pairs-sol] [INFO] Running: python3 check_strategy.py [pairs_spread SOL/USDT 1d]
+[2026-02-11 08:11:56] [pairs-sol] [INFO] stderr: Fetching SOL/USDT 1d...
+
+[2026-02-11 08:11:56] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:11:56] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:11:56] [volweight-btc] [INFO] Running: python3 check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 08:11:58] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:11:58] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $66943.58
+[2026-02-11 08:11:58] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:11:58] [volweight-sol] [INFO] Running: python3 check_strategy.py [volume_weighted SOL/USDT 1h]
+[2026-02-11 08:11:59] [volweight-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:11:59] [volweight-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:11:59] [volweight-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:11:59] [volweight-eth] [INFO] Running: python3 check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 08:12:00] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:12:00] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:12:00] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:00] [rsi-btc] [INFO] Running: python3 check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 08:12:01] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:12:01] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $66943.58
+[2026-02-11 08:12:01] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:01] [rsi-sol] [INFO] Running: python3 check_strategy.py [rsi SOL/USDT 1h]
+[2026-02-11 08:12:02] [rsi-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:12:02] [rsi-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:12:02] [rsi-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:02] [rsi-eth] [INFO] Running: python3 check_strategy.py [rsi ETH/USDT 1h]
+[2026-02-11 08:12:04] [rsi-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:12:04] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:12:04] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:04] [macd-btc] [INFO] Running: python3 check_strategy.py [macd BTC/USDT 1h]
+[2026-02-11 08:12:05] [macd-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:12:05] [macd-btc] [INFO] Signal: HOLD | BTC/USDT @ $66943.58
+[2026-02-11 08:12:05] [macd-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:05] [macd-eth] [INFO] Running: python3 check_strategy.py [macd ETH/USDT 1h]
+[2026-02-11 08:12:07] [macd-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:12:07] [macd-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:12:07] [macd-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:07] [options-momentum-btc] [INFO] Running: python3 check_options.py [momentum_options BTC]
+[2026-02-11 08:12:08] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$66943.58 | IV rank=87.5 | 1 actions
+[2026-02-11 08:12:08] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2677.74)
+[2026-02-11 08:12:08] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:08] [options-momentum-eth] [INFO] Running: python3 check_options.py [momentum_options ETH]
+[2026-02-11 08:12:10] [options-momentum-eth] [INFO] Signal: HOLD | ETH spot=$1939.67 | IV rank=77.3 | 0 actions
+[2026-02-11 08:12:10] [options-momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:10] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
+[2026-02-11 08:12:11] [options-vol-btc] [INFO] Signal: BEARISH | BTC spot=$66943.58 | IV rank=100.0 | 2 actions
+[2026-02-11 08:12:11] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73600 exp=2026-03-13 | +$1673.59
+[2026-02-11 08:12:11] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60200 exp=2026-03-13 | +$1338.87
+[2026-02-11 08:12:11] [options-vol-btc] [INFO] Status: cash=$31151.18 | positions=8 | value=$18754.64 | trades=2
+[2026-02-11 08:12:11] [options-vol-eth] [INFO] Running: python3 check_options.py [vol_mean_reversion ETH]
+[2026-02-11 08:12:13] [options-vol-eth] [INFO] Signal: BEARISH | ETH spot=$1939.67 | IV rank=90.7 | 2 actions
+[2026-02-11 08:12:13] [options-vol-eth] [INFO] SELL OPTION ETH call strike=2100 exp=2026-03-13 | +$48.49
+[2026-02-11 08:12:13] [options-vol-eth] [INFO] SELL OPTION ETH put strike=1700 exp=2026-03-13 | +$38.79
+[2026-02-11 08:12:13] [options-vol-eth] [INFO] Status: cash=$1877.26 | positions=4 | value=$1702.13 | trades=2
+[2026-02-11 08:12:13] [options-puts-btc] [INFO] Running: python3 check_options.py [protective_puts BTC]
+[2026-02-11 08:12:13] [options-puts-btc] [ERROR] Script returned error: Unknown strategy: protective_puts. Available: ['momentum_options', 'vol_mean_reversion']
+[2026-02-11 08:12:13] [options-puts-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:13] [options-puts-eth] [INFO] Running: python3 check_options.py [protective_puts ETH]
+[2026-02-11 08:12:13] [options-puts-eth] [ERROR] Script returned error: Unknown strategy: protective_puts. Available: ['momentum_options', 'vol_mean_reversion']
+[2026-02-11 08:12:13] [options-puts-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:13] [options-calls-btc] [INFO] Running: python3 check_options.py [covered_calls BTC]
+[2026-02-11 08:12:13] [options-calls-btc] [ERROR] Script returned error: Unknown strategy: covered_calls. Available: ['momentum_options', 'vol_mean_reversion']
+[2026-02-11 08:12:13] [options-calls-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:13] [options-calls-eth] [INFO] Running: python3 check_options.py [covered_calls ETH]
+[2026-02-11 08:12:13] [options-calls-eth] [ERROR] Script returned error: Unknown strategy: covered_calls. Available: ['momentum_options', 'vol_mean_reversion']
+[2026-02-11 08:12:13] [options-calls-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12 UTC] Cycle 10 complete (25.3s) | 22 strategies checked | 4 trades | Total value: $40456.77
+Loaded config: 22 strategies, interval=600s
+[server] Status endpoint at http://localhost:8099/status
+
+=== Cycle 11 starting at 2026-02-11 08:12:48 UTC ===
+Prices: ETH/USDT=$1939.67 BTC/USDT=$66976.49 SOL/USDT=$80.95 
+[2026-02-11 08:12:49] [momentum-btc] [INFO] Running: python3 check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 08:12:49] [momentum-btc] [INFO] Running: python3 check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 08:12:50] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:12:50] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:12:50] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $66976.49
+[2026-02-11 08:12:50] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $66976.49
+[2026-02-11 08:12:50] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:50] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:50] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 08:12:50] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 08:12:52] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:12:52] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:12:52] [momentum-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:12:52] [momentum-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:12:52] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:52] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:52] [momentum-eth] [INFO] Running: python3 check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 08:12:52] [momentum-eth] [INFO] Running: python3 check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 08:12:53] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:12:53] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:12:53] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:12:53] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:12:53] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:53] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:53] [pairs-btc] [INFO] Running: python3 check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 08:12:53] [pairs-btc] [INFO] Running: python3 check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 08:12:54] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 08:12:54] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 08:12:54] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $66976.49
+[2026-02-11 08:12:54] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $66976.49
+[2026-02-11 08:12:54] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:54] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:54] [pairs-eth] [INFO] Running: python3 check_strategy.py [pairs_spread ETH/USDT 1d]
+[2026-02-11 08:12:54] [pairs-eth] [INFO] Running: python3 check_strategy.py [pairs_spread ETH/USDT 1d]
+[2026-02-11 08:12:56] [pairs-eth] [INFO] stderr: Fetching ETH/USDT 1d...
+
+[2026-02-11 08:12:56] [pairs-eth] [INFO] stderr: Fetching ETH/USDT 1d...
+
+[2026-02-11 08:12:56] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:12:56] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:12:56] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:56] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:56] [pairs-sol] [INFO] Running: python3 check_strategy.py [pairs_spread SOL/USDT 1d]
+[2026-02-11 08:12:56] [pairs-sol] [INFO] Running: python3 check_strategy.py [pairs_spread SOL/USDT 1d]
+[2026-02-11 08:12:57] [pairs-sol] [INFO] stderr: Fetching SOL/USDT 1d...
+
+[2026-02-11 08:12:57] [pairs-sol] [INFO] stderr: Fetching SOL/USDT 1d...
+
+[2026-02-11 08:12:57] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:12:57] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:12:57] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:57] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:57] [volweight-btc] [INFO] Running: python3 check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 08:12:57] [volweight-btc] [INFO] Running: python3 check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 08:12:58] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:12:58] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:12:58] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $66976.49
+[2026-02-11 08:12:58] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $66976.49
+[2026-02-11 08:12:58] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:58] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:12:58] [volweight-sol] [INFO] Running: python3 check_strategy.py [volume_weighted SOL/USDT 1h]
+[2026-02-11 08:12:58] [volweight-sol] [INFO] Running: python3 check_strategy.py [volume_weighted SOL/USDT 1h]
+[2026-02-11 08:13:00] [volweight-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:13:00] [volweight-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:13:00] [volweight-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:13:00] [volweight-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:13:00] [volweight-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:00] [volweight-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:00] [volweight-eth] [INFO] Running: python3 check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 08:13:00] [volweight-eth] [INFO] Running: python3 check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 08:13:01] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:13:01] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:13:01] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:13:01] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:13:01] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:01] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:01] [rsi-btc] [INFO] Running: python3 check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 08:13:01] [rsi-btc] [INFO] Running: python3 check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 08:13:03] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:13:03] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:13:03] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $66976.49
+[2026-02-11 08:13:03] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $66976.49
+[2026-02-11 08:13:03] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:03] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:03] [rsi-sol] [INFO] Running: python3 check_strategy.py [rsi SOL/USDT 1h]
+[2026-02-11 08:13:03] [rsi-sol] [INFO] Running: python3 check_strategy.py [rsi SOL/USDT 1h]
+[2026-02-11 08:13:04] [rsi-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:13:04] [rsi-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:13:04] [rsi-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:13:04] [rsi-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:13:04] [rsi-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:04] [rsi-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:04] [rsi-eth] [INFO] Running: python3 check_strategy.py [rsi ETH/USDT 1h]
+[2026-02-11 08:13:04] [rsi-eth] [INFO] Running: python3 check_strategy.py [rsi ETH/USDT 1h]
+[2026-02-11 08:13:05] [rsi-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:13:05] [rsi-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:13:05] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:13:05] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:13:05] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:05] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:05] [macd-btc] [INFO] Running: python3 check_strategy.py [macd BTC/USDT 1h]
+[2026-02-11 08:13:05] [macd-btc] [INFO] Running: python3 check_strategy.py [macd BTC/USDT 1h]
+[2026-02-11 08:13:06] [macd-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:13:06] [macd-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:13:06] [macd-btc] [INFO] Signal: HOLD | BTC/USDT @ $66976.49
+[2026-02-11 08:13:06] [macd-btc] [INFO] Signal: HOLD | BTC/USDT @ $66976.49
+[2026-02-11 08:13:06] [macd-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:06] [macd-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:06] [macd-eth] [INFO] Running: python3 check_strategy.py [macd ETH/USDT 1h]
+[2026-02-11 08:13:06] [macd-eth] [INFO] Running: python3 check_strategy.py [macd ETH/USDT 1h]
+[2026-02-11 08:13:08] [macd-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:13:08] [macd-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:13:08] [macd-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:13:08] [macd-eth] [INFO] Signal: HOLD | ETH/USDT @ $1939.67
+[2026-02-11 08:13:08] [macd-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:08] [macd-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:08] [options-momentum-btc] [INFO] Running: python3 check_options.py [momentum_options BTC]
+[2026-02-11 08:13:08] [options-momentum-btc] [INFO] Running: python3 check_options.py [momentum_options BTC]
+[2026-02-11 08:13:09] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$66976.49 | IV rank=87.0 | 1 actions
+[2026-02-11 08:13:09] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$66976.49 | IV rank=87.0 | 1 actions
+[2026-02-11 08:13:09] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2679.06)
+[2026-02-11 08:13:09] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2679.06)
+[2026-02-11 08:13:09] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:09] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:09] [options-momentum-eth] [INFO] Running: python3 check_options.py [momentum_options ETH]
+[2026-02-11 08:13:09] [options-momentum-eth] [INFO] Running: python3 check_options.py [momentum_options ETH]
+[2026-02-11 08:13:11] [options-momentum-eth] [INFO] Signal: HOLD | ETH spot=$1939.67 | IV rank=77.3 | 0 actions
+[2026-02-11 08:13:11] [options-momentum-eth] [INFO] Signal: HOLD | ETH spot=$1939.67 | IV rank=77.3 | 0 actions
+[2026-02-11 08:13:11] [options-momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:11] [options-momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:11] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
+[2026-02-11 08:13:11] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
+[2026-02-11 08:13:12] [options-vol-btc] [INFO] Signal: BEARISH | BTC spot=$66976.49 | IV rank=100.0 | 2 actions
+[2026-02-11 08:13:12] [options-vol-btc] [INFO] Signal: BEARISH | BTC spot=$66976.49 | IV rank=100.0 | 2 actions
+[2026-02-11 08:13:12] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73700 exp=2026-03-13 | +$1674.41
+[2026-02-11 08:13:12] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73700 exp=2026-03-13 | +$1674.41
+[2026-02-11 08:13:12] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60300 exp=2026-03-13 | +$1339.53
+[2026-02-11 08:13:12] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60300 exp=2026-03-13 | +$1339.53
+[2026-02-11 08:13:12] [options-vol-btc] [INFO] Status: cash=$34165.12 | positions=8 | value=$21770.56 | trades=2
+[2026-02-11 08:13:12] [options-vol-btc] [INFO] Status: cash=$34165.12 | positions=8 | value=$21770.56 | trades=2
+[2026-02-11 08:13:12] [options-vol-eth] [INFO] Running: python3 check_options.py [vol_mean_reversion ETH]
+[2026-02-11 08:13:12] [options-vol-eth] [INFO] Running: python3 check_options.py [vol_mean_reversion ETH]
+[2026-02-11 08:13:14] [options-vol-eth] [INFO] Signal: BEARISH | ETH spot=$1939.67 | IV rank=90.7 | 2 actions
+[2026-02-11 08:13:14] [options-vol-eth] [INFO] Signal: BEARISH | ETH spot=$1939.67 | IV rank=90.7 | 2 actions
+[2026-02-11 08:13:14] [options-vol-eth] [INFO] SELL OPTION ETH call strike=2100 exp=2026-03-13 | +$48.49
+[2026-02-11 08:13:14] [options-vol-eth] [INFO] SELL OPTION ETH call strike=2100 exp=2026-03-13 | +$48.49
+[2026-02-11 08:13:14] [options-vol-eth] [INFO] SELL OPTION ETH put strike=1700 exp=2026-03-13 | +$38.79
+[2026-02-11 08:13:14] [options-vol-eth] [INFO] SELL OPTION ETH put strike=1700 exp=2026-03-13 | +$38.79
+[2026-02-11 08:13:14] [options-vol-eth] [INFO] Status: cash=$1964.54 | positions=4 | value=$1789.41 | trades=2
+[2026-02-11 08:13:14] [options-vol-eth] [INFO] Status: cash=$1964.54 | positions=4 | value=$1789.41 | trades=2
+[2026-02-11 08:13:14] [options-puts-btc] [INFO] Running: python3 check_options.py [protective_puts BTC]
+[2026-02-11 08:13:14] [options-puts-btc] [INFO] Running: python3 check_options.py [protective_puts BTC]
+[2026-02-11 08:13:15] [options-puts-btc] [INFO] Signal: BULLISH | BTC spot=$66976.49 | IV rank=68.8 | 1 actions
+[2026-02-11 08:13:15] [options-puts-btc] [INFO] Signal: BULLISH | BTC spot=$66976.49 | IV rank=68.8 | 1 actions
+[2026-02-11 08:13:15] [options-puts-btc] [INFO] Insufficient cash ($1000.00) for option buy ($1004.65)
+[2026-02-11 08:13:15] [options-puts-btc] [INFO] Insufficient cash ($1000.00) for option buy ($1004.65)
+[2026-02-11 08:13:15] [options-puts-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:15] [options-puts-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:13:15] [options-puts-eth] [INFO] Running: python3 check_options.py [protective_puts ETH]
+[2026-02-11 08:13:15] [options-puts-eth] [INFO] Running: python3 check_options.py [protective_puts ETH]
+[2026-02-11 08:13:17] [options-puts-eth] [INFO] Signal: BULLISH | ETH spot=$1939.67 | IV rank=66.1 | 1 actions
+[2026-02-11 08:13:17] [options-puts-eth] [INFO] Signal: BULLISH | ETH spot=$1939.67 | IV rank=66.1 | 1 actions
+[2026-02-11 08:13:17] [options-puts-eth] [INFO] BUY OPTION ETH put strike=1700 exp=2026-03-28 | $29.10
+[2026-02-11 08:13:17] [options-puts-eth] [INFO] BUY OPTION ETH put strike=1700 exp=2026-03-28 | $29.10
+[2026-02-11 08:13:17] [options-puts-eth] [INFO] Status: cash=$970.90 | positions=1 | value=$1000.00 | trades=1
+[2026-02-11 08:13:17] [options-puts-eth] [INFO] Status: cash=$970.90 | positions=1 | value=$1000.00 | trades=1
+[2026-02-11 08:13:17] [options-calls-btc] [INFO] Running: python3 check_options.py [covered_calls BTC]
+[2026-02-11 08:13:17] [options-calls-btc] [INFO] Running: python3 check_options.py [covered_calls BTC]
+[2026-02-11 08:13:19] [options-calls-btc] [INFO] Signal: BEARISH | BTC spot=$66976.49 | IV rank=68.8 | 1 actions
+[2026-02-11 08:13:19] [options-calls-btc] [INFO] Signal: BEARISH | BTC spot=$66976.49 | IV rank=68.8 | 1 actions
+[2026-02-11 08:13:19] [options-calls-btc] [INFO] SELL OPTION BTC call strike=75000 exp=2026-03-04 | +$1339.53
+[2026-02-11 08:13:19] [options-calls-btc] [INFO] SELL OPTION BTC call strike=75000 exp=2026-03-04 | +$1339.53
+[2026-02-11 08:13:19] [options-calls-btc] [INFO] Status: cash=$2339.53 | positions=1 | value=$1000.00 | trades=1
+[2026-02-11 08:13:19] [options-calls-btc] [INFO] Status: cash=$2339.53 | positions=1 | value=$1000.00 | trades=1
+[2026-02-11 08:13:19] [options-calls-eth] [INFO] Running: python3 check_options.py [covered_calls ETH]
+[2026-02-11 08:13:19] [options-calls-eth] [INFO] Running: python3 check_options.py [covered_calls ETH]
+[2026-02-11 08:13:20] [options-calls-eth] [INFO] Signal: BEARISH | ETH spot=$1939.67 | IV rank=66.1 | 1 actions
+[2026-02-11 08:13:20] [options-calls-eth] [INFO] Signal: BEARISH | ETH spot=$1939.67 | IV rank=66.1 | 1 actions
+[2026-02-11 08:13:20] [options-calls-eth] [INFO] SELL OPTION ETH call strike=2200 exp=2026-03-04 | +$38.79
+[2026-02-11 08:13:20] [options-calls-eth] [INFO] SELL OPTION ETH call strike=2200 exp=2026-03-04 | +$38.79
+[2026-02-11 08:13:20] [options-calls-eth] [INFO] Status: cash=$1038.79 | positions=1 | value=$1000.00 | trades=1
+[2026-02-11 08:13:20] [options-calls-eth] [INFO] Status: cash=$1038.79 | positions=1 | value=$1000.00 | trades=1
+[2026-02-11 08:13 UTC] Cycle 11 complete (32.4s) | 22 strategies checked | 7 trades | Total value: $43559.97
+[2026-02-11 08:13 UTC] Cycle 11 complete (32.4s) | 22 strategies checked | 7 trades | Total value: $43559.97
+
+Received terminated, saving state and shutting down...
+State saved successfully.
+Shutdown complete.
+Loaded config: 22 strategies, interval=600s
+[server] Status endpoint at http://localhost:8099/status
+
+=== Cycle 12 starting at 2026-02-11 08:18:13 UTC ===
+Prices: SOL/USDT=$80.95 ETH/USDT=$1944.99 BTC/USDT=$66917.82 
+[2026-02-11 08:18:14] [momentum-btc] [INFO] Running: python3 check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 08:18:14] [momentum-btc] [INFO] Running: python3 check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 08:18:15] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:18:15] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:18:15] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $66917.82
+[2026-02-11 08:18:15] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $66917.82
+[2026-02-11 08:18:15] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:15] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:15] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 08:18:15] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 08:18:17] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:18:17] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:18:17] [momentum-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:18:17] [momentum-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:18:17] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:17] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:17] [momentum-eth] [INFO] Running: python3 check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 08:18:17] [momentum-eth] [INFO] Running: python3 check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 08:18:18] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:18:18] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:18:18] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1944.99
+[2026-02-11 08:18:18] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1944.99
+[2026-02-11 08:18:18] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:18] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:18] [pairs-btc] [INFO] Running: python3 check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 08:18:18] [pairs-btc] [INFO] Running: python3 check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 08:18:19] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 08:18:19] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 08:18:19] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $66917.82
+[2026-02-11 08:18:19] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $66917.82
+[2026-02-11 08:18:19] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:19] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:19] [pairs-eth] [INFO] Running: python3 check_strategy.py [pairs_spread ETH/USDT 1d]
+[2026-02-11 08:18:19] [pairs-eth] [INFO] Running: python3 check_strategy.py [pairs_spread ETH/USDT 1d]
+[2026-02-11 08:18:20] [pairs-eth] [INFO] stderr: Fetching ETH/USDT 1d...
+
+[2026-02-11 08:18:20] [pairs-eth] [INFO] stderr: Fetching ETH/USDT 1d...
+
+[2026-02-11 08:18:20] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1944.99
+[2026-02-11 08:18:20] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1944.99
+[2026-02-11 08:18:20] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:20] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:20] [pairs-sol] [INFO] Running: python3 check_strategy.py [pairs_spread SOL/USDT 1d]
+[2026-02-11 08:18:20] [pairs-sol] [INFO] Running: python3 check_strategy.py [pairs_spread SOL/USDT 1d]
+[2026-02-11 08:18:22] [pairs-sol] [INFO] stderr: Fetching SOL/USDT 1d...
+
+[2026-02-11 08:18:22] [pairs-sol] [INFO] stderr: Fetching SOL/USDT 1d...
+
+[2026-02-11 08:18:22] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:18:22] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:18:22] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:22] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:22] [volweight-btc] [INFO] Running: python3 check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 08:18:22] [volweight-btc] [INFO] Running: python3 check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 08:18:23] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:18:23] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:18:23] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $66917.82
+[2026-02-11 08:18:23] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $66917.82
+[2026-02-11 08:18:23] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:23] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:23] [volweight-sol] [INFO] Running: python3 check_strategy.py [volume_weighted SOL/USDT 1h]
+[2026-02-11 08:18:23] [volweight-sol] [INFO] Running: python3 check_strategy.py [volume_weighted SOL/USDT 1h]
+[2026-02-11 08:18:24] [volweight-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:18:24] [volweight-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:18:24] [volweight-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:18:24] [volweight-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:18:24] [volweight-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:24] [volweight-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:24] [volweight-eth] [INFO] Running: python3 check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 08:18:24] [volweight-eth] [INFO] Running: python3 check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 08:18:25] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:18:25] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:18:25] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1944.99
+[2026-02-11 08:18:25] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1944.99
+[2026-02-11 08:18:25] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:25] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:25] [rsi-btc] [INFO] Running: python3 check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 08:18:25] [rsi-btc] [INFO] Running: python3 check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 08:18:27] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:18:27] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:18:27] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $66917.82
+[2026-02-11 08:18:27] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $66917.82
+[2026-02-11 08:18:27] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:27] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:27] [rsi-sol] [INFO] Running: python3 check_strategy.py [rsi SOL/USDT 1h]
+[2026-02-11 08:18:27] [rsi-sol] [INFO] Running: python3 check_strategy.py [rsi SOL/USDT 1h]
+[2026-02-11 08:18:28] [rsi-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:18:28] [rsi-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:18:28] [rsi-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:18:28] [rsi-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:18:28] [rsi-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:28] [rsi-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:28] [rsi-eth] [INFO] Running: python3 check_strategy.py [rsi ETH/USDT 1h]
+[2026-02-11 08:18:28] [rsi-eth] [INFO] Running: python3 check_strategy.py [rsi ETH/USDT 1h]
+[2026-02-11 08:18:29] [rsi-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:18:29] [rsi-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:18:29] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1944.99
+[2026-02-11 08:18:29] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1944.99
+[2026-02-11 08:18:29] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:29] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:29] [macd-btc] [INFO] Running: python3 check_strategy.py [macd BTC/USDT 1h]
+[2026-02-11 08:18:29] [macd-btc] [INFO] Running: python3 check_strategy.py [macd BTC/USDT 1h]
+[2026-02-11 08:18:31] [macd-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:18:31] [macd-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:18:31] [macd-btc] [INFO] Signal: HOLD | BTC/USDT @ $66917.82
+[2026-02-11 08:18:31] [macd-btc] [INFO] Signal: HOLD | BTC/USDT @ $66917.82
+[2026-02-11 08:18:31] [macd-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:31] [macd-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:31] [macd-eth] [INFO] Running: python3 check_strategy.py [macd ETH/USDT 1h]
+[2026-02-11 08:18:31] [macd-eth] [INFO] Running: python3 check_strategy.py [macd ETH/USDT 1h]
+[2026-02-11 08:18:32] [macd-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:18:32] [macd-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:18:32] [macd-eth] [INFO] Signal: HOLD | ETH/USDT @ $1944.99
+[2026-02-11 08:18:32] [macd-eth] [INFO] Signal: HOLD | ETH/USDT @ $1944.99
+[2026-02-11 08:18:32] [macd-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:32] [macd-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:32] [options-momentum-btc] [INFO] Running: python3 check_options.py [momentum_options BTC 0]
+[2026-02-11 08:18:32] [options-momentum-btc] [INFO] Running: python3 check_options.py [momentum_options BTC 0]
+[2026-02-11 08:18:34] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$66917.82 | IV rank=87.9 | 1 actions
+[2026-02-11 08:18:34] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$66917.82 | IV rank=87.9 | 1 actions
+[2026-02-11 08:18:34] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2676.71)
+[2026-02-11 08:18:34] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2676.71)
+[2026-02-11 08:18:34] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:34] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:34] [options-momentum-eth] [INFO] Running: python3 check_options.py [momentum_options ETH 0]
+[2026-02-11 08:18:34] [options-momentum-eth] [INFO] Running: python3 check_options.py [momentum_options ETH 0]
+[2026-02-11 08:18:35] [options-momentum-eth] [INFO] Signal: HOLD | ETH spot=$1944.99 | IV rank=75.1 | 0 actions
+[2026-02-11 08:18:35] [options-momentum-eth] [INFO] Signal: HOLD | ETH spot=$1944.99 | IV rank=75.1 | 0 actions
+[2026-02-11 08:18:35] [options-momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:35] [options-momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:35] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC 8]
+[2026-02-11 08:18:35] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC 8]
+[2026-02-11 08:18:35] [options-vol-btc] [INFO] Signal: HOLD | BTC spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 08:18:35] [options-vol-btc] [INFO] Signal: HOLD | BTC spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 08:18:35] [options-vol-btc] [INFO] Status: cash=$34165.12 | positions=8 | value=$21770.56 | trades=0
+[2026-02-11 08:18:35] [options-vol-btc] [INFO] Status: cash=$34165.12 | positions=8 | value=$21770.56 | trades=0
+[2026-02-11 08:18:35] [options-vol-eth] [INFO] Running: python3 check_options.py [vol_mean_reversion ETH 4]
+[2026-02-11 08:18:35] [options-vol-eth] [INFO] Running: python3 check_options.py [vol_mean_reversion ETH 4]
+[2026-02-11 08:18:35] [options-vol-eth] [INFO] Signal: HOLD | ETH spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 08:18:35] [options-vol-eth] [INFO] Signal: HOLD | ETH spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 08:18:35] [options-vol-eth] [INFO] Status: cash=$1964.54 | positions=4 | value=$1789.41 | trades=0
+[2026-02-11 08:18:35] [options-vol-eth] [INFO] Status: cash=$1964.54 | positions=4 | value=$1789.41 | trades=0
+[2026-02-11 08:18:35] [options-puts-btc] [INFO] Running: python3 check_options.py [protective_puts BTC 0]
+[2026-02-11 08:18:35] [options-puts-btc] [INFO] Running: python3 check_options.py [protective_puts BTC 0]
+[2026-02-11 08:18:36] [options-puts-btc] [INFO] Signal: BULLISH | BTC spot=$66917.82 | IV rank=68.8 | 1 actions
+[2026-02-11 08:18:36] [options-puts-btc] [INFO] Signal: BULLISH | BTC spot=$66917.82 | IV rank=68.8 | 1 actions
+[2026-02-11 08:18:36] [options-puts-btc] [INFO] Insufficient cash ($1000.00) for option buy ($1003.77)
+[2026-02-11 08:18:36] [options-puts-btc] [INFO] Insufficient cash ($1000.00) for option buy ($1003.77)
+[2026-02-11 08:18:36] [options-puts-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:36] [options-puts-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:18:36] [options-puts-eth] [INFO] Running: python3 check_options.py [protective_puts ETH 1]
+[2026-02-11 08:18:36] [options-puts-eth] [INFO] Running: python3 check_options.py [protective_puts ETH 1]
+[2026-02-11 08:18:38] [options-puts-eth] [INFO] Signal: BULLISH | ETH spot=$1944.99 | IV rank=66.1 | 1 actions
+[2026-02-11 08:18:38] [options-puts-eth] [INFO] Signal: BULLISH | ETH spot=$1944.99 | IV rank=66.1 | 1 actions
+[2026-02-11 08:18:38] [options-puts-eth] [INFO] BUY OPTION ETH put strike=1700 exp=2026-03-28 | $29.17
+[2026-02-11 08:18:38] [options-puts-eth] [INFO] BUY OPTION ETH put strike=1700 exp=2026-03-28 | $29.17
+[2026-02-11 08:18:38] [options-puts-eth] [INFO] Status: cash=$941.73 | positions=1 | value=$970.90 | trades=1
+[2026-02-11 08:18:38] [options-puts-eth] [INFO] Status: cash=$941.73 | positions=1 | value=$970.90 | trades=1
+[2026-02-11 08:18:38] [options-calls-btc] [INFO] Running: python3 check_options.py [covered_calls BTC 1]
+[2026-02-11 08:18:38] [options-calls-btc] [INFO] Running: python3 check_options.py [covered_calls BTC 1]
+[2026-02-11 08:18:40] [options-calls-btc] [INFO] Signal: BEARISH | BTC spot=$66917.82 | IV rank=68.8 | 1 actions
+[2026-02-11 08:18:40] [options-calls-btc] [INFO] Signal: BEARISH | BTC spot=$66917.82 | IV rank=68.8 | 1 actions
+[2026-02-11 08:18:40] [options-calls-btc] [INFO] SELL OPTION BTC call strike=74900 exp=2026-03-04 | +$1338.36
+[2026-02-11 08:18:40] [options-calls-btc] [INFO] SELL OPTION BTC call strike=74900 exp=2026-03-04 | +$1338.36
+[2026-02-11 08:18:40] [options-calls-btc] [INFO] Status: cash=$3677.89 | positions=2 | value=$1000.00 | trades=1
+[2026-02-11 08:18:40] [options-calls-btc] [INFO] Status: cash=$3677.89 | positions=2 | value=$1000.00 | trades=1
+[2026-02-11 08:18:40] [options-calls-eth] [INFO] Running: python3 check_options.py [covered_calls ETH 1]
+[2026-02-11 08:18:40] [options-calls-eth] [INFO] Running: python3 check_options.py [covered_calls ETH 1]
+[2026-02-11 08:18:41] [options-calls-eth] [INFO] Signal: BEARISH | ETH spot=$1944.99 | IV rank=66.1 | 1 actions
+[2026-02-11 08:18:41] [options-calls-eth] [INFO] Signal: BEARISH | ETH spot=$1944.99 | IV rank=66.1 | 1 actions
+[2026-02-11 08:18:41] [options-calls-eth] [INFO] SELL OPTION ETH call strike=2200 exp=2026-03-04 | +$38.90
+[2026-02-11 08:18:41] [options-calls-eth] [INFO] SELL OPTION ETH call strike=2200 exp=2026-03-04 | +$38.90
+[2026-02-11 08:18:41] [options-calls-eth] [INFO] Status: cash=$1077.69 | positions=1 | value=$1038.79 | trades=1
+[2026-02-11 08:18:41] [options-calls-eth] [INFO] Status: cash=$1077.69 | positions=1 | value=$1038.79 | trades=1
+[2026-02-11 08:18 UTC] Cycle 12 complete (28.2s) | 22 strategies checked | 3 trades | Total value: $43569.66
+[2026-02-11 08:18 UTC] Cycle 12 complete (28.2s) | 22 strategies checked | 3 trades | Total value: $43569.66
+
+Received terminated, saving state and shutting down...
+State saved successfully.
+Shutdown complete.
+Loaded config: 22 strategies, interval=600s
+[server] Status endpoint at http://localhost:8099/status
+
+=== Cycle 13 starting at 2026-02-11 08:23:36 UTC ===
+Prices: BTC/USDT=$67079.00 SOL/USDT=$80.95 ETH/USDT=$1948.23 
+[2026-02-11 08:23:37] [momentum-btc] [INFO] Running: python3 check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 08:23:37] [momentum-btc] [INFO] Running: python3 check_strategy.py [momentum BTC/USDT 1h]
+[2026-02-11 08:23:38] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:23:38] [momentum-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:23:38] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $67079.00
+[2026-02-11 08:23:38] [momentum-btc] [INFO] Signal: HOLD | BTC/USDT @ $67079.00
+[2026-02-11 08:23:38] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:38] [momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:38] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 08:23:38] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 08:23:39] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:23:39] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:23:39] [momentum-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:23:39] [momentum-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:23:39] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:39] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:39] [momentum-eth] [INFO] Running: python3 check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 08:23:39] [momentum-eth] [INFO] Running: python3 check_strategy.py [momentum ETH/USDT 1h]
+[2026-02-11 08:23:40] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:23:40] [momentum-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:23:40] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.23
+[2026-02-11 08:23:40] [momentum-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.23
+[2026-02-11 08:23:40] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:40] [momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:40] [pairs-btc] [INFO] Running: python3 check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 08:23:40] [pairs-btc] [INFO] Running: python3 check_strategy.py [pairs_spread BTC/USDT 1d]
+[2026-02-11 08:23:42] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 08:23:42] [pairs-btc] [INFO] stderr: Fetching BTC/USDT 1d...
+
+[2026-02-11 08:23:42] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $67079.00
+[2026-02-11 08:23:42] [pairs-btc] [INFO] Signal: HOLD | BTC/USDT @ $67079.00
+[2026-02-11 08:23:42] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:42] [pairs-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:42] [pairs-eth] [INFO] Running: python3 check_strategy.py [pairs_spread ETH/USDT 1d]
+[2026-02-11 08:23:42] [pairs-eth] [INFO] Running: python3 check_strategy.py [pairs_spread ETH/USDT 1d]
+[2026-02-11 08:23:43] [pairs-eth] [INFO] stderr: Fetching ETH/USDT 1d...
+
+[2026-02-11 08:23:43] [pairs-eth] [INFO] stderr: Fetching ETH/USDT 1d...
+
+[2026-02-11 08:23:43] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.23
+[2026-02-11 08:23:43] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.23
+[2026-02-11 08:23:43] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:43] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:43] [pairs-sol] [INFO] Running: python3 check_strategy.py [pairs_spread SOL/USDT 1d]
+[2026-02-11 08:23:43] [pairs-sol] [INFO] Running: python3 check_strategy.py [pairs_spread SOL/USDT 1d]
+[2026-02-11 08:23:44] [pairs-sol] [INFO] stderr: Fetching SOL/USDT 1d...
+
+[2026-02-11 08:23:44] [pairs-sol] [INFO] stderr: Fetching SOL/USDT 1d...
+
+[2026-02-11 08:23:44] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:23:44] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:23:44] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:44] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:44] [volweight-btc] [INFO] Running: python3 check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 08:23:44] [volweight-btc] [INFO] Running: python3 check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 08:23:46] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:23:46] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:23:46] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $67079.00
+[2026-02-11 08:23:46] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $67079.00
+[2026-02-11 08:23:46] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:46] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:46] [volweight-sol] [INFO] Running: python3 check_strategy.py [volume_weighted SOL/USDT 1h]
+[2026-02-11 08:23:46] [volweight-sol] [INFO] Running: python3 check_strategy.py [volume_weighted SOL/USDT 1h]
+[2026-02-11 08:23:47] [volweight-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:23:47] [volweight-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:23:47] [volweight-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:23:47] [volweight-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:23:47] [volweight-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:47] [volweight-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:47] [volweight-eth] [INFO] Running: python3 check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 08:23:47] [volweight-eth] [INFO] Running: python3 check_strategy.py [volume_weighted ETH/USDT 1h]
+[2026-02-11 08:23:48] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:23:48] [volweight-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:23:48] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.23
+[2026-02-11 08:23:48] [volweight-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.23
+[2026-02-11 08:23:48] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:48] [volweight-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:48] [rsi-btc] [INFO] Running: python3 check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 08:23:48] [rsi-btc] [INFO] Running: python3 check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 08:23:49] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:23:49] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:23:49] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $67079.00
+[2026-02-11 08:23:49] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $67079.00
+[2026-02-11 08:23:49] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:49] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:49] [rsi-sol] [INFO] Running: python3 check_strategy.py [rsi SOL/USDT 1h]
+[2026-02-11 08:23:49] [rsi-sol] [INFO] Running: python3 check_strategy.py [rsi SOL/USDT 1h]
+[2026-02-11 08:23:51] [rsi-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:23:51] [rsi-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:23:51] [rsi-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:23:51] [rsi-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:23:51] [rsi-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:51] [rsi-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:51] [rsi-eth] [INFO] Running: python3 check_strategy.py [rsi ETH/USDT 1h]
+[2026-02-11 08:23:51] [rsi-eth] [INFO] Running: python3 check_strategy.py [rsi ETH/USDT 1h]
+[2026-02-11 08:23:52] [rsi-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:23:52] [rsi-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:23:52] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.23
+[2026-02-11 08:23:52] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.23
+[2026-02-11 08:23:52] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:52] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:52] [macd-btc] [INFO] Running: python3 check_strategy.py [macd BTC/USDT 1h]
+[2026-02-11 08:23:52] [macd-btc] [INFO] Running: python3 check_strategy.py [macd BTC/USDT 1h]
+[2026-02-11 08:23:53] [macd-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:23:53] [macd-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:23:53] [macd-btc] [INFO] Signal: HOLD | BTC/USDT @ $67079.00
+[2026-02-11 08:23:53] [macd-btc] [INFO] Signal: HOLD | BTC/USDT @ $67079.00
+[2026-02-11 08:23:53] [macd-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:53] [macd-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:53] [macd-eth] [INFO] Running: python3 check_strategy.py [macd ETH/USDT 1h]
+[2026-02-11 08:23:53] [macd-eth] [INFO] Running: python3 check_strategy.py [macd ETH/USDT 1h]
+[2026-02-11 08:23:54] [macd-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:23:54] [macd-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:23:54] [macd-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.23
+[2026-02-11 08:23:54] [macd-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.23
+[2026-02-11 08:23:54] [macd-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:54] [macd-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:54] [options-momentum-btc] [INFO] Running: python3 check_options.py [momentum_options BTC]
+[2026-02-11 08:23:54] [options-momentum-btc] [INFO] Running: python3 check_options.py [momentum_options BTC]
+[2026-02-11 08:23:56] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$67079.00 | IV rank=85.3 | 1 actions
+[2026-02-11 08:23:56] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$67079.00 | IV rank=85.3 | 1 actions
+[2026-02-11 08:23:56] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2683.16)
+[2026-02-11 08:23:56] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2683.16)
+[2026-02-11 08:23:56] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:56] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:56] [options-momentum-eth] [INFO] Running: python3 check_options.py [momentum_options ETH]
+[2026-02-11 08:23:56] [options-momentum-eth] [INFO] Running: python3 check_options.py [momentum_options ETH]
+[2026-02-11 08:23:57] [options-momentum-eth] [INFO] Signal: HOLD | ETH spot=$1948.23 | IV rank=73.8 | 0 actions
+[2026-02-11 08:23:57] [options-momentum-eth] [INFO] Signal: HOLD | ETH spot=$1948.23 | IV rank=73.8 | 0 actions
+[2026-02-11 08:23:57] [options-momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:57] [options-momentum-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:57] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
+[2026-02-11 08:23:57] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
+[2026-02-11 08:23:57] [options-vol-btc] [INFO] Signal: HOLD | BTC spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 08:23:57] [options-vol-btc] [INFO] Signal: HOLD | BTC spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 08:23:57] [options-vol-btc] [INFO] Status: cash=$34165.12 | positions=8 | value=$21770.56 | trades=0
+[2026-02-11 08:23:57] [options-vol-btc] [INFO] Status: cash=$34165.12 | positions=8 | value=$21770.56 | trades=0
+[2026-02-11 08:23:57] [options-vol-eth] [INFO] Running: python3 check_options.py [vol_mean_reversion ETH]
+[2026-02-11 08:23:57] [options-vol-eth] [INFO] Running: python3 check_options.py [vol_mean_reversion ETH]
+[2026-02-11 08:23:57] [options-vol-eth] [INFO] Signal: HOLD | ETH spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 08:23:57] [options-vol-eth] [INFO] Signal: HOLD | ETH spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 08:23:57] [options-vol-eth] [INFO] Status: cash=$1964.54 | positions=4 | value=$1789.41 | trades=0
+[2026-02-11 08:23:57] [options-vol-eth] [INFO] Status: cash=$1964.54 | positions=4 | value=$1789.41 | trades=0
+[2026-02-11 08:23:57] [options-puts-btc] [INFO] Running: python3 check_options.py [protective_puts BTC]
+[2026-02-11 08:23:57] [options-puts-btc] [INFO] Running: python3 check_options.py [protective_puts BTC]
+[2026-02-11 08:23:59] [options-puts-btc] [INFO] Signal: BULLISH | BTC spot=$67079.00 | IV rank=68.8 | 1 actions
+[2026-02-11 08:23:59] [options-puts-btc] [INFO] Signal: BULLISH | BTC spot=$67079.00 | IV rank=68.8 | 1 actions
+[2026-02-11 08:23:59] [options-puts-btc] [INFO] Insufficient cash ($1000.00) for option buy ($1006.18)
+[2026-02-11 08:23:59] [options-puts-btc] [INFO] Insufficient cash ($1000.00) for option buy ($1006.18)
+[2026-02-11 08:23:59] [options-puts-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:59] [options-puts-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:23:59] [options-puts-eth] [INFO] Running: python3 check_options.py [protective_puts ETH]
+[2026-02-11 08:23:59] [options-puts-eth] [INFO] Running: python3 check_options.py [protective_puts ETH]
+[2026-02-11 08:24:00] [options-puts-eth] [INFO] stderr: Skipping buy put strike=1700.0: score=0.1 (overlapping strikes 0.0%; same expiry)
+
+[2026-02-11 08:24:00] [options-puts-eth] [INFO] stderr: Skipping buy put strike=1700.0: score=0.1 (overlapping strikes 0.0%; same expiry)
+
+[2026-02-11 08:24:00] [options-puts-eth] [INFO] Signal: HOLD | ETH spot=$1948.23 | IV rank=66.1 | 0 actions
+[2026-02-11 08:24:00] [options-puts-eth] [INFO] Signal: HOLD | ETH spot=$1948.23 | IV rank=66.1 | 0 actions
+[2026-02-11 08:24:00] [options-puts-eth] [INFO] Status: cash=$941.73 | positions=1 | value=$970.90 | trades=0
+[2026-02-11 08:24:00] [options-puts-eth] [INFO] Status: cash=$941.73 | positions=1 | value=$970.90 | trades=0
+[2026-02-11 08:24:00] [options-calls-btc] [INFO] Running: python3 check_options.py [covered_calls BTC]
+[2026-02-11 08:24:00] [options-calls-btc] [INFO] Running: python3 check_options.py [covered_calls BTC]
+[2026-02-11 08:24:00] [options-calls-btc] [INFO] Signal: HOLD | BTC spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 08:24:00] [options-calls-btc] [INFO] Signal: HOLD | BTC spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 08:24:00] [options-calls-btc] [INFO] Status: cash=$3677.89 | positions=2 | value=$1000.00 | trades=0
+[2026-02-11 08:24:00] [options-calls-btc] [INFO] Status: cash=$3677.89 | positions=2 | value=$1000.00 | trades=0
+[2026-02-11 08:24:00] [options-calls-eth] [INFO] Running: python3 check_options.py [covered_calls ETH]
+[2026-02-11 08:24:00] [options-calls-eth] [INFO] Running: python3 check_options.py [covered_calls ETH]
+[2026-02-11 08:24:01] [options-calls-eth] [INFO] stderr: Skipping sell call strike=2200.0: score=0.1 (overlapping strikes 0.0%; same expiry)
+
+[2026-02-11 08:24:01] [options-calls-eth] [INFO] stderr: Skipping sell call strike=2200.0: score=0.1 (overlapping strikes 0.0%; same expiry)
+
+[2026-02-11 08:24:01] [options-calls-eth] [INFO] Signal: HOLD | ETH spot=$1948.23 | IV rank=66.1 | 0 actions
+[2026-02-11 08:24:01] [options-calls-eth] [INFO] Signal: HOLD | ETH spot=$1948.23 | IV rank=66.1 | 0 actions
+[2026-02-11 08:24:01] [options-calls-eth] [INFO] Status: cash=$1077.69 | positions=1 | value=$1038.79 | trades=0
+[2026-02-11 08:24:01] [options-calls-eth] [INFO] Status: cash=$1077.69 | positions=1 | value=$1038.79 | trades=0
+[2026-02-11 08:24 UTC] Cycle 13 complete (25.8s) | 22 strategies checked | 0 trades | Total value: $43569.66
+[2026-02-11 08:24 UTC] Cycle 13 complete (25.8s) | 22 strategies checked | 0 trades | Total value: $43569.66
