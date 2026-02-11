@@ -11,11 +11,28 @@ Go scheduler (always running, ~8MB idle)
     python3 scripts/check_options.py <strategy> <underlying> <positions>      → JSON signal (Deribit)
     python3 scripts/check_options_ibkr.py <strategy> <underlying> <positions> → JSON signal (IBKR/CME)
   ↓ processes signals, executes paper trades, manages risk
+  ↓ marks options to market via Deribit REST API (live prices every cycle)
   ↓ saves state → scheduler/state.json (survives restarts)
-  ↓ HTTP status → localhost:8099/status (live prices + portfolio values)
+  ↓ HTTP status → localhost:8099/status (live prices + real-time P&L)
 ```
 
 **Why this design:** Python gets the quant libraries (pandas, numpy, scipy, CCXT). Go gets memory efficiency. 30 strategies cost ~220MB peak for ~30 seconds, then ~8MB idle. Down from 1.6GB with persistent Python processes.
+
+## Live Option Pricing
+
+**Options positions are marked to market with live Deribit prices every cycle:**
+
+- **Deribit REST API** integration in `scheduler/deribit.go` fetches live mark prices
+- **Smart fallback** — maps fictional paper trading expiries to nearest real Deribit expiry
+- **Real-time P&L** — `CurrentValueUSD` updates based on live market data (not static entry values)
+- **IBKR positions** use Deribit prices as proxy (same underlying/strikes)
+
+**Python scripts** use `scripts/deribit_utils.py` to fetch real Deribit expiries and strikes for new trades:
+- `fetch_available_expiries(underlying, min_dte, max_dte)` — returns list of real Deribit expiries
+- `find_closest_expiry(underlying, target_dte)` — maps target DTE to closest real expiry
+- `find_closest_strike(underlying, expiry, option_type, target_strike)` — finds nearest available strike
+
+This ensures new paper trades use real option contracts that exist on Deribit, and existing positions are valued at current market prices.
 
 ## Strategies (30 active)
 
@@ -66,6 +83,7 @@ trading-bot/
 │   ├── executor.go              # Python script runner
 │   ├── portfolio.go             # Spot position tracking
 │   ├── options.go               # Options position tracking, Greeks
+│   ├── deribit.go               # Deribit REST API client for live option pricing
 │   ├── risk.go                  # Drawdown, circuit breakers
 │   ├── logger.go                # Stdout-only (no file logging)
 │   ├── server.go                # HTTP status with live prices + P&L
@@ -75,7 +93,8 @@ trading-bot/
 │   ├── check_strategy.py        # Spot strategy checker (Binance via CCXT)
 │   ├── check_options.py         # Deribit options checker
 │   ├── check_options_ibkr.py    # IBKR/CME options checker
-│   └── check_price.py           # Multi-symbol price fetcher
+│   ├── check_price.py           # Multi-symbol price fetcher
+│   └── deribit_utils.py         # Deribit expiry/strike lookup utilities
 ├── strategies/                  # Spot strategy logic
 │   ├── strategies.py            # 11 trading strategies
 │   └── indicators.py            # Technical indicators (SMA, EMA, RSI, etc.)

@@ -90,6 +90,10 @@ func main() {
 		fmt.Println("Discord notifications enabled")
 	}
 
+	// Deribit pricer for live option prices
+	deribitPricer := NewDeribitPricer()
+	fmt.Println("Deribit live pricing enabled")
+
 	// Track last-run time per strategy for per-strategy intervals
 	lastRun := make(map[string]time.Time)
 
@@ -223,9 +227,13 @@ func main() {
 				tradeDetails = append(tradeDetails, detail)
 			}
 
-			// Update option positions
+			// Update option positions with live Deribit prices
 			mu.Lock()
-			UpdateOptionPositions(stratState)
+			if len(stratState.OptionPositions) > 0 {
+				if err := MarkOptionPositions(stratState, deribitPricer, logger); err != nil {
+					logger.Warn("Failed to mark option positions: %v", err)
+				}
+			}
 			pv = PortfolioValue(stratState, prices)
 			mu.Unlock()
 

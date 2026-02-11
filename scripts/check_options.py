@@ -11,6 +11,14 @@ import json
 import traceback
 from datetime import datetime, timezone, timedelta
 
+# Import Deribit utilities for real expiries
+try:
+    from deribit_utils import find_closest_expiry, find_closest_strike
+    USE_REAL_EXPIRIES = True
+except ImportError:
+    print("Warning: deribit_utils not found, using synthetic expiries", file=sys.stderr)
+    USE_REAL_EXPIRIES = False
+
 
 def get_spot_price(underlying):
     """Fetch current spot price for the underlying."""
@@ -23,6 +31,39 @@ def get_spot_price(underlying):
     except Exception as e:
         print(f"Spot price fetch failed for {underlying}: {e}", file=sys.stderr)
         return 0
+
+
+def get_real_expiry(underlying, target_dte):
+    """
+    Get real Deribit expiry closest to target DTE.
+    Falls back to synthetic expiry if Deribit fetch fails.
+    """
+    if USE_REAL_EXPIRIES:
+        result = find_closest_expiry(underlying, target_dte)
+        if result:
+            expiry_str, actual_dte = result
+            return expiry_str, actual_dte
+    
+    # Fallback to synthetic
+    expiry_date = datetime.now(timezone.utc) + timedelta(days=target_dte)
+    return expiry_date.strftime("%Y-%m-%d"), target_dte
+
+
+def get_real_strike(underlying, expiry_str, option_type, target_strike):
+    """
+    Get real Deribit strike closest to target.
+    Falls back to rounded target if Deribit fetch fails.
+    """
+    if USE_REAL_EXPIRIES:
+        result = find_closest_strike(underlying, expiry_str, option_type, target_strike)
+        if result:
+            return result
+    
+    # Fallback: round to nearest 1000 for BTC, 50 for ETH
+    if underlying == "BTC":
+        return round(target_strike, -3)
+    else:
+        return round(target_strike / 50) * 50
 
 
 def evaluate_momentum_options(underlying, spot_price):
@@ -54,13 +95,12 @@ def evaluate_momentum_options(underlying, spot_price):
 
         actions = []
         if signal != 0:
-            # Suggest a simple option trade
-            expiry_date = datetime.now(timezone.utc) + timedelta(days=37)
-            expiry_str = expiry_date.strftime("%Y-%m-%d")
-            dte = 37
+            # Get real Deribit expiry closest to 37 DTE
+            expiry_str, dte = get_real_expiry(underlying, 37)
 
             if signal == 1:
-                strike = round(spot_price * 1.02, -2)  # slightly OTM call
+                target_strike = spot_price * 1.02  # slightly OTM call
+                strike = get_real_strike(underlying, expiry_str, "call", target_strike)
                 premium_pct = 0.045
                 actions.append({
                     "action": "buy",
@@ -78,7 +118,8 @@ def evaluate_momentum_options(underlying, spot_price):
                     }
                 })
             else:
-                strike = round(spot_price * 0.98, -2)  # slightly OTM put
+                target_strike = spot_price * 0.98  # slightly OTM put
+                strike = get_real_strike(underlying, expiry_str, "put", target_strike)
                 premium_pct = 0.040
                 actions.append({
                     "action": "buy",
@@ -136,21 +177,22 @@ def evaluate_vol_mean_reversion(underlying, spot_price):
 
         signal = 0
         actions = []
-        expiry_date = datetime.now(timezone.utc) + timedelta(days=30)
-        expiry_str = expiry_date.strftime("%Y-%m-%d")
+        expiry_str, dte = get_real_expiry(underlying, 30)
 
         if iv_rank > 75:
             # High IV → sell strangle
             signal = -1
-            call_strike = round(spot_price * 1.10, -2)
-            put_strike = round(spot_price * 0.90, -2)
+            call_target = spot_price * 1.10
+            put_target = spot_price * 0.90
+            call_strike = get_real_strike(underlying, expiry_str, "call", call_target)
+            put_strike = get_real_strike(underlying, expiry_str, "put", put_target)
             actions = [
                 {
                     "action": "sell",
                     "option_type": "call",
                     "strike": call_strike,
                     "expiry": expiry_str,
-                    "dte": 30,
+                    "dte": dte,
                     "premium": 0.025,
                     "premium_usd": round(0.025 * spot_price, 2),
                     "greeks": {"delta": 0.20, "gamma": 0.0005, "theta": 25.0, "vega": -80.0}
@@ -160,7 +202,7 @@ def evaluate_vol_mean_reversion(underlying, spot_price):
                     "option_type": "put",
                     "strike": put_strike,
                     "expiry": expiry_str,
-                    "dte": 30,
+                    "dte": dte,
                     "premium": 0.020,
                     "premium_usd": round(0.020 * spot_price, 2),
                     "greeks": {"delta": -0.18, "gamma": 0.0004, "theta": 22.0, "vega": -75.0}
@@ -169,14 +211,14 @@ def evaluate_vol_mean_reversion(underlying, spot_price):
         elif iv_rank < 25:
             # Low IV → buy straddle
             signal = 1
-            strike = round(spot_price, -2)
+            strike = get_real_strike(underlying, expiry_str, "call", spot_price)
             actions = [
                 {
                     "action": "buy",
                     "option_type": "call",
                     "strike": strike,
                     "expiry": expiry_str,
-                    "dte": 30,
+                    "dte": dte,
                     "premium": 0.035,
                     "premium_usd": round(0.035 * spot_price, 2),
                     "greeks": {"delta": 0.50, "gamma": 0.001, "theta": -18.0, "vega": 130.0}
@@ -186,7 +228,7 @@ def evaluate_vol_mean_reversion(underlying, spot_price):
                     "option_type": "put",
                     "strike": strike,
                     "expiry": expiry_str,
-                    "dte": 30,
+                    "dte": dte,
                     "premium": 0.030,
                     "premium_usd": round(0.030 * spot_price, 2),
                     "greeks": {"delta": -0.50, "gamma": 0.001, "theta": -17.0, "vega": 125.0}
@@ -224,9 +266,9 @@ def evaluate_protective_puts(underlying, spot_price):
 
         # Always buy protective puts if not already holding
         signal = 1
-        strike = round(spot_price * 0.88, -2)  # 12% OTM
-        expiry_date = datetime.now(timezone.utc) + timedelta(days=45)
-        expiry_str = expiry_date.strftime("%Y-%m-%d")
+        expiry_str, dte = get_real_expiry(underlying, 45)
+        target_strike = spot_price * 0.88  # 12% OTM
+        strike = get_real_strike(underlying, expiry_str, "put", target_strike)
         premium_pct = 0.015  # ~1.5% for OTM put
 
         actions = [{
@@ -234,7 +276,7 @@ def evaluate_protective_puts(underlying, spot_price):
             "option_type": "put",
             "strike": strike,
             "expiry": expiry_str,
-            "dte": 45,
+            "dte": dte,
             "premium": premium_pct,
             "premium_usd": round(premium_pct * spot_price, 2),
             "greeks": {"delta": -0.15, "gamma": 0.0003, "theta": -5.0, "vega": 60.0}
@@ -270,9 +312,9 @@ def evaluate_covered_calls(underlying, spot_price):
 
         # Sell covered calls — better when IV is higher
         signal = -1
-        strike = round(spot_price * 1.12, -2)  # 12% OTM
-        expiry_date = datetime.now(timezone.utc) + timedelta(days=21)
-        expiry_str = expiry_date.strftime("%Y-%m-%d")
+        expiry_str, dte = get_real_expiry(underlying, 21)
+        target_strike = spot_price * 1.12  # 12% OTM
+        strike = get_real_strike(underlying, expiry_str, "call", target_strike)
         premium_pct = 0.020  # ~2% for OTM call
 
         actions = [{
@@ -280,7 +322,7 @@ def evaluate_covered_calls(underlying, spot_price):
             "option_type": "call",
             "strike": strike,
             "expiry": expiry_str,
-            "dte": 21,
+            "dte": dte,
             "premium": premium_pct,
             "premium_usd": round(premium_pct * spot_price, 2),
             "greeks": {"delta": 0.18, "gamma": 0.0004, "theta": 12.0, "vega": -55.0}
