@@ -1,0 +1,10 @@
+[2026-02-11 08:07:28] [rsi-btc] [INFO] Running: python3 check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 08:07:30] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:07:30] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $67020.51
+[2026-02-11 08:07:30] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:09:26] [rsi-btc] [INFO] Running: python3 check_strategy.py [rsi BTC/USDT 1h]
+[2026-02-11 08:09:27] [rsi-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:09:27] [rsi-btc] [INFO] Signal: HOLD | BTC/USDT @ $66926.48
+[2026-02-11 08:09:27] [rsi-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

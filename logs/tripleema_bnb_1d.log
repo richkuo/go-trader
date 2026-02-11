@@ -1,0 +1,21 @@
+/root/.openclaw/workspace/trading-bot/live_trader.py:76: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  self.start_time = datetime.utcnow()
+
+[21:18:39] ℹ️ 🤖 Trading Bot Started [PAPER]
+  Strategy: triple_ema
+  Symbols: BNB/USDT
+  Timeframe: 1d
+  Capital: $1,000.00
+
+============================================================
+  TRADING BOT — PAPER MODE
+  Strategy: triple_ema
+  Symbols: BNB/USDT
+  Timeframe: 1d
+  Check interval: 3600.0s
+============================================================
+
+/root/.openclaw/workspace/trading-bot/live_trader.py:119: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow()
+
+[2026-02-08 21:18 UTC] Iteration 1 | Portfolio: $1,000.00 | Positions: {}

@@ -1,0 +1,6 @@
+[2026-02-11 08:09:19] [pairs-eth] [INFO] Running: python3 check_strategy.py [pairs_spread ETH/USDT 1d]
+[2026-02-11 08:09:20] [pairs-eth] [INFO] stderr: Fetching ETH/USDT 1d...
+
+[2026-02-11 08:09:20] [pairs-eth] [INFO] Signal: HOLD | ETH/USDT @ $1942.08
+[2026-02-11 08:09:20] [pairs-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:21] [pairs-eth] [INFO] Running: python3 check_strategy.py [pairs_spread ETH/USDT 1d]

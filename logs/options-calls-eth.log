@@ -1,0 +1,6 @@
+[2026-02-11 08:07:41] [options-calls-eth] [INFO] Running: python3 check_options.py [covered_calls ETH]
+[2026-02-11 08:07:41] [options-calls-eth] [ERROR] Script returned error: Unknown strategy: covered_calls. Available: ['momentum_options', 'vol_mean_reversion']
+[2026-02-11 08:07:41] [options-calls-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:09:38] [options-calls-eth] [INFO] Running: python3 check_options.py [covered_calls ETH]
+[2026-02-11 08:09:38] [options-calls-eth] [ERROR] Script returned error: Unknown strategy: covered_calls. Available: ['momentum_options', 'vol_mean_reversion']
+[2026-02-11 08:09:38] [options-calls-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

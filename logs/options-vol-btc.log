@@ -1,0 +1,60 @@
+/root/.openclaw/workspace/trading-bot/options_trader.py:33: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+Logging to logs/options_vol_mean_reversion_BTC_20260211_071244.log
+/root/.openclaw/workspace/trading-bot/options_trader.py:112: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  self.start_time = datetime.utcnow()
+
+============================================================
+  OPTIONS TRADING BOT — SANDBOX PAPER MODE
+  Strategy:    vol_mean_reversion
+  Underlyings: BTC
+  Capital:     $1,000.00
+  Interval:    600.0s
+============================================================
+
+/root/.openclaw/workspace/trading-bot/options_trader.py:145: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow()
+[Iter 1] Portfolio: $1,000.00 (+0.00 / +0.00%) | Cash: $1,000.00 | Positions: 0 | Δ: +0.000 | Θ: $+0.00/day
+[Iter 2] Portfolio: $1,000.00 (+0.00 / +0.00%) | Cash: $1,000.00 | Positions: 0 | Δ: +0.000 | Θ: $+0.00/day
+
+⚠️  Shutdown signal received...
+c] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
+[2026-02-11 07:28:12] [options-vol-btc] [INFO] Signal: BEARISH | BTC spot=$66916.86 | IV rank=100.0 | 2 actions
+[2026-02-11 07:28:12] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73600 exp=2026-03-13 | +$1672.92
+[2026-02-11 07:28:12] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60200 exp=2026-03-13 | +$1338.34
+[2026-02-11 07:28:12] [options-vol-btc] [INFO] Status: cash=$4011.26 | positions=2 | value=$1000.00 | trades=2
+[2026-02-11 07:28:47] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
+[2026-02-11 07:28:48] [options-vol-btc] [INFO] Signal: BEARISH | BTC spot=$66993.23 | IV rank=100.0 | 2 actions
+[2026-02-11 07:28:48] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73700 exp=2026-03-13 | +$1674.83
+[2026-02-11 07:28:48] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60300 exp=2026-03-13 | +$1339.86
+[2026-02-11 07:28:48] [options-vol-btc] [INFO] Status: cash=$7025.95 | positions=4 | value=$1000.00 | trades=2
+[2026-02-11 07:29:19] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
+[2026-02-11 07:29:20] [options-vol-btc] [INFO] Signal: BEARISH | BTC spot=$66993.23 | IV rank=100.0 | 2 actions
+[2026-02-11 07:29:20] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73700 exp=2026-03-13 | +$1674.83
+[2026-02-11 07:29:20] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60300 exp=2026-03-13 | +$1339.86
+[2026-02-11 07:29:20] [options-vol-btc] [INFO] Status: cash=$10040.64 | positions=4 | value=$4014.69 | trades=2
+[2026-02-11 07:39:30] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
+[2026-02-11 07:39:32] [options-vol-btc] [INFO] Signal: BEARISH | BTC spot=$67163.75 | IV rank=100.0 | 2 actions
+[2026-02-11 07:39:32] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73900 exp=2026-03-13 | +$1679.09
+[2026-02-11 07:39:32] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60400 exp=2026-03-13 | +$1343.28
+[2026-02-11 07:39:32] [options-vol-btc] [INFO] Status: cash=$13063.01 | positions=6 | value=$4014.69 | trades=2
+[2026-02-11 07:49:42] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
+[2026-02-11 07:49:44] [options-vol-btc] [INFO] Signal: BEARISH | BTC spot=$67156.21 | IV rank=100.0 | 2 actions
+[2026-02-11 07:49:44] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73900 exp=2026-03-13 | +$1678.91
+[2026-02-11 07:49:44] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60400 exp=2026-03-13 | +$1343.12
+[2026-02-11 07:49:44] [options-vol-btc] [INFO] Status: cash=$16085.04 | positions=6 | value=$7037.06 | trades=2
+[2026-02-11 07:58:28] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
+[2026-02-11 07:58:29] [options-vol-btc] [INFO] Signal: BEARISH | BTC spot=$67071.72 | IV rank=100.0 | 2 actions
+[2026-02-11 07:58:29] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73800 exp=2026-03-13 | +$1676.79
+[2026-02-11 07:58:29] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60400 exp=2026-03-13 | +$1341.43
+[2026-02-11 07:58:29] [options-vol-btc] [INFO] Status: cash=$19103.26 | positions=7 | value=$8380.18 | trades=2
+[2026-02-11 08:07:38] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
+[2026-02-11 08:07:39] [options-vol-btc] [INFO] Signal: BEARISH | BTC spot=$67020.51 | IV rank=100.0 | 2 actions
+[2026-02-11 08:07:39] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73700 exp=2026-03-13 | +$1675.51
+[2026-02-11 08:07:39] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60300 exp=2026-03-13 | +$1340.41
+[2026-02-11 08:07:39] [options-vol-btc] [INFO] Status: cash=$22119.18 | positions=7 | value=$11394.87 | trades=2
+[2026-02-11 08:09:35] [options-vol-btc] [INFO] Running: python3 check_options.py [vol_mean_reversion BTC]
+[2026-02-11 08:09:37] [options-vol-btc] [INFO] Signal: BEARISH | BTC spot=$66926.48 | IV rank=100.0 | 2 actions
+[2026-02-11 08:09:37] [options-vol-btc] [INFO] SELL OPTION BTC call strike=73600 exp=2026-03-13 | +$1673.16
+[2026-02-11 08:09:37] [options-vol-btc] [INFO] SELL OPTION BTC put strike=60200 exp=2026-03-13 | +$1338.53
+[2026-02-11 08:09:37] [options-vol-btc] [INFO] Status: cash=$25130.87 | positions=7 | value=$14406.13 | trades=2

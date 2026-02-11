@@ -1,0 +1,18 @@
+2026-02-11 07:12:44 | INFO    | Logging to logs/options_vol_mean_reversion_BTC_20260211_071244.log
+2026-02-11 07:12:44 | INFO    | 
+============================================================
+2026-02-11 07:12:44 | INFO    |   OPTIONS TRADING BOT — SANDBOX PAPER MODE
+2026-02-11 07:12:44 | INFO    |   Strategy:    vol_mean_reversion
+2026-02-11 07:12:44 | INFO    |   Underlyings: BTC
+2026-02-11 07:12:44 | INFO    |   Capital:     $1,000.00
+2026-02-11 07:12:44 | INFO    |   Interval:    600.0s
+2026-02-11 07:12:44 | INFO    | ============================================================
+
+2026-02-11 07:12:44 | DEBUG   | --- Iteration 1 @ 2026-02-11 07:12 UTC ---
+2026-02-11 07:12:45 | DEBUG   |   [BTC] IV rank 50% — neutral zone (25-75)
+2026-02-11 07:12:45 | INFO    | [Iter 1] Portfolio: $1,000.00 (+0.00 / +0.00%) | Cash: $1,000.00 | Positions: 0 | Δ: +0.000 | Θ: $+0.00/day
+2026-02-11 07:22:45 | DEBUG   | --- Iteration 2 @ 2026-02-11 07:22 UTC ---
+2026-02-11 07:22:46 | DEBUG   |   [BTC] IV rank 50% — neutral zone (25-75)
+2026-02-11 07:22:46 | INFO    | [Iter 2] Portfolio: $1,000.00 (+0.00 / +0.00%) | Cash: $1,000.00 | Positions: 0 | Δ: +0.000 | Θ: $+0.00/day
+2026-02-11 07:28:59 | INFO    | 
+⚠️  Shutdown signal received...

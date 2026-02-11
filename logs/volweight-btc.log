@@ -1,0 +1,10 @@
+[2026-02-11 08:07:24] [volweight-btc] [INFO] Running: python3 check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 08:07:26] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:07:26] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $67020.51
+[2026-02-11 08:07:26] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:09:22] [volweight-btc] [INFO] Running: python3 check_strategy.py [volume_weighted BTC/USDT 1h]
+[2026-02-11 08:09:23] [volweight-btc] [INFO] stderr: Fetching BTC/USDT 1h...
+
+[2026-02-11 08:09:23] [volweight-btc] [INFO] Signal: HOLD | BTC/USDT @ $66926.48
+[2026-02-11 08:09:23] [volweight-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

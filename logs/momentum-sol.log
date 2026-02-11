@@ -1,0 +1,48 @@
+[2026-02-11 07:28:04] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 07:28:05] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 07:28:05] [momentum-sol] [INFO] Signal: SELL | SOL/USDT @ $80.37
+[2026-02-11 07:28:05] [momentum-sol] [INFO] No long position in SOL/USDT to sell, skipping
+[2026-02-11 07:28:05] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 07:28:40] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 07:28:41] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 07:28:41] [momentum-sol] [INFO] Signal: SELL | SOL/USDT @ $80.37
+[2026-02-11 07:28:41] [momentum-sol] [INFO] No long position in SOL/USDT to sell, skipping
+[2026-02-11 07:28:41] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 07:29:12] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 07:29:13] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 07:29:13] [momentum-sol] [INFO] Signal: SELL | SOL/USDT @ $80.37
+[2026-02-11 07:29:13] [momentum-sol] [INFO] No long position in SOL/USDT to sell, skipping
+[2026-02-11 07:29:13] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 07:39:24] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 07:39:25] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 07:39:25] [momentum-sol] [INFO] Signal: HOLD | SOL/USDT @ $81.12
+[2026-02-11 07:39:25] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 07:49:36] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 07:49:37] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 07:49:37] [momentum-sol] [INFO] Signal: HOLD | SOL/USDT @ $81.18
+[2026-02-11 07:49:37] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 07:58:20] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 07:58:22] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 07:58:22] [momentum-sol] [INFO] Signal: HOLD | SOL/USDT @ $81.35
+[2026-02-11 07:58:22] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:07:21] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 08:07:22] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:07:22] [momentum-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:07:22] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:09:15] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 08:09:16] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:09:16] [momentum-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:09:16] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:10:18] [momentum-sol] [INFO] Running: python3 check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 08:10:19] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:10:19] [momentum-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:10:19] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

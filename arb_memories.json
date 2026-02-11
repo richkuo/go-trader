@@ -1,0 +1,191 @@
+{
+  "total_opportunities": 219558,
+  "by_symbol": {
+    "BTC": {
+      "count": 82345,
+      "total_spread": 1464275.439999865,
+      "avg_spread": 17.78,
+      "max_spread": 48.81,
+      "directions": {
+        "BUY_YES": 7732,
+        "BUY_NO": 74613
+      }
+    },
+    "ETH": {
+      "count": 81186,
+      "total_spread": 1671458.4300000875,
+      "avg_spread": 20.59,
+      "max_spread": 49.5,
+      "directions": {
+        "BUY_YES": 3866,
+        "BUY_NO": 77320
+      }
+    },
+    "SOL": {
+      "count": 56027,
+      "total_spread": 904130.0,
+      "avg_spread": 16.14,
+      "max_spread": 47.5,
+      "directions": {
+        "BUY_YES": 0,
+        "BUY_NO": 56027
+      }
+    }
+  },
+  "by_hour": {
+    "21": 18468,
+    "22": 20463,
+    "23": 20520,
+    "0": 20463,
+    "1": 20520,
+    "2": 20245,
+    "3": 20160,
+    "4": 20379,
+    "5": 20378,
+    "6": 20520,
+    "7": 17442
+  },
+  "largest_spreads": [
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:06:05.116894+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:06:15.125760+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:06:25.133594+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:06:35.145675+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:06:45.159448+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:06:55.175666+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:07:05.184950+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:07:15.198152+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:07:25.208621+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:07:35.215933+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:07:45.225286+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:07:55.240993+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:08:05.250955+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:08:15.260371+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:08:25.272998+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:08:35.280350+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:08:45.292862+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:08:55.304065+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:09:05.312213+00:00"
+    },
+    {
+      "spread_pct": 49.5,
+      "symbol": "ETH",
+      "direction": "BUY_NO",
+      "question": "Will Ethena reach $0.52 by December 31, 2026?",
+      "timestamp": "2026-02-10T21:09:15.319023+00:00"
+    }
+  ],
+  "last_updated": "2026-02-11T07:51:02.252357+00:00"
+}
