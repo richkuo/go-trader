@@ -7,9 +7,14 @@ Usage: python3 check_strategy.py <strategy> <symbol> <timeframe>
 """
 
 import sys
+import os
 import json
 import traceback
 from datetime import datetime, timezone
+
+# Add parent dirs to path so we can import from strategies/ and core/
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'strategies'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'core'))
 
 
 def main():

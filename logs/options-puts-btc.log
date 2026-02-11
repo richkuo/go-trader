@@ -22,3 +22,7 @@
 [2026-02-11 08:23:59] [options-puts-btc] [INFO] Signal: BULLISH | BTC spot=$67079.00 | IV rank=68.8 | 1 actions
 [2026-02-11 08:23:59] [options-puts-btc] [INFO] Insufficient cash ($1000.00) for option buy ($1006.18)
 [2026-02-11 08:23:59] [options-puts-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:32:48] [options-puts-btc] [INFO] Running: python3 scripts/check_options.py [protective_puts BTC]
+[2026-02-11 08:32:49] [options-puts-btc] [INFO] Signal: BULLISH | BTC spot=$67079.00 | IV rank=68.8 | 1 actions
+[2026-02-11 08:32:49] [options-puts-btc] [INFO] Insufficient cash ($1000.00) for option buy ($1006.18)
+[2026-02-11 08:32:49] [options-puts-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

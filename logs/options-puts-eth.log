@@ -23,3 +23,8 @@
 
 [2026-02-11 08:24:00] [options-puts-eth] [INFO] Signal: HOLD | ETH spot=$1948.23 | IV rank=66.1 | 0 actions
 [2026-02-11 08:24:00] [options-puts-eth] [INFO] Status: cash=$941.73 | positions=1 | value=$970.90 | trades=0
+[2026-02-11 08:32:49] [options-puts-eth] [INFO] Running: python3 scripts/check_options.py [protective_puts ETH]
+[2026-02-11 08:32:51] [options-puts-eth] [INFO] stderr: Skipping buy put strike=1700.0: score=0.1 (overlapping strikes 0.0%; same expiry)
+
+[2026-02-11 08:32:51] [options-puts-eth] [INFO] Signal: HOLD | ETH spot=$1946.45 | IV rank=66.1 | 0 actions
+[2026-02-11 08:32:51] [options-puts-eth] [INFO] Status: cash=$941.73 | positions=1 | value=$970.90 | trades=0

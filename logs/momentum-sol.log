@@ -66,3 +66,8 @@
 
 [2026-02-11 08:23:39] [momentum-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
 [2026-02-11 08:23:39] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:32:28] [momentum-sol] [INFO] Running: python3 scripts/check_strategy.py [momentum SOL/USDT 1h]
+[2026-02-11 08:32:29] [momentum-sol] [INFO] stderr: Fetching SOL/USDT 1h...
+
+[2026-02-11 08:32:29] [momentum-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:32:29] [momentum-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

@@ -33,3 +33,8 @@
 
 [2026-02-11 08:23:52] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1948.23
 [2026-02-11 08:23:52] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:32:42] [rsi-eth] [INFO] Running: python3 scripts/check_strategy.py [rsi ETH/USDT 1h]
+[2026-02-11 08:32:43] [rsi-eth] [INFO] stderr: Fetching ETH/USDT 1h...
+
+[2026-02-11 08:32:43] [rsi-eth] [INFO] Signal: HOLD | ETH/USDT @ $1946.45
+[2026-02-11 08:32:43] [rsi-eth] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

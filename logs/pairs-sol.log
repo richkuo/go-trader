@@ -28,3 +28,8 @@
 
 [2026-02-11 08:23:44] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
 [2026-02-11 08:23:44] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:32:34] [pairs-sol] [INFO] Running: python3 scripts/check_strategy.py [pairs_spread SOL/USDT 1d]
+[2026-02-11 08:32:35] [pairs-sol] [INFO] stderr: Fetching SOL/USDT 1d...
+
+[2026-02-11 08:32:35] [pairs-sol] [INFO] Signal: HOLD | SOL/USDT @ $80.95
+[2026-02-11 08:32:35] [pairs-sol] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

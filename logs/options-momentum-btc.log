@@ -64,3 +64,7 @@ um-btc] [INFO] Running: python3 check_options.py [momentum_options BTC]
 [2026-02-11 08:23:56] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$67079.00 | IV rank=85.3 | 1 actions
 [2026-02-11 08:23:56] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2683.16)
 [2026-02-11 08:23:56] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0
+[2026-02-11 08:32:45] [options-momentum-btc] [INFO] Running: python3 scripts/check_options.py [momentum_options BTC]
+[2026-02-11 08:32:47] [options-momentum-btc] [INFO] Signal: BEARISH | BTC spot=$67079.00 | IV rank=85.3 | 1 actions
+[2026-02-11 08:32:47] [options-momentum-btc] [INFO] Insufficient cash ($1000.00) for option buy ($2683.16)
+[2026-02-11 08:32:47] [options-momentum-btc] [INFO] Status: cash=$1000.00 | positions=0 | value=$1000.00 | trades=0

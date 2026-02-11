@@ -23,3 +23,8 @@
 
 [2026-02-11 08:24:01] [options-calls-eth] [INFO] Signal: HOLD | ETH spot=$1948.23 | IV rank=66.1 | 0 actions
 [2026-02-11 08:24:01] [options-calls-eth] [INFO] Status: cash=$1077.69 | positions=1 | value=$1038.79 | trades=0
+[2026-02-11 08:32:51] [options-calls-eth] [INFO] Running: python3 scripts/check_options.py [covered_calls ETH]
+[2026-02-11 08:32:53] [options-calls-eth] [INFO] stderr: Skipping sell call strike=2200.0: score=0.1 (overlapping strikes 0.0%; same expiry)
+
+[2026-02-11 08:32:53] [options-calls-eth] [INFO] Signal: HOLD | ETH spot=$1946.45 | IV rank=66.1 | 0 actions
+[2026-02-11 08:32:53] [options-calls-eth] [INFO] Status: cash=$1077.69 | positions=1 | value=$1038.79 | trades=0

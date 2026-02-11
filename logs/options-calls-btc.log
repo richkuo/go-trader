@@ -21,3 +21,6 @@
 [2026-02-11 08:24:00] [options-calls-btc] [INFO] Running: python3 check_options.py [covered_calls BTC]
 [2026-02-11 08:24:00] [options-calls-btc] [INFO] Signal: HOLD | BTC spot=$0.00 | IV rank=0.0 | 0 actions
 [2026-02-11 08:24:00] [options-calls-btc] [INFO] Status: cash=$3677.89 | positions=2 | value=$1000.00 | trades=0
+[2026-02-11 08:32:51] [options-calls-btc] [INFO] Running: python3 scripts/check_options.py [covered_calls BTC]
+[2026-02-11 08:32:51] [options-calls-btc] [INFO] Signal: HOLD | BTC spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 08:32:51] [options-calls-btc] [INFO] Status: cash=$3677.89 | positions=2 | value=$1000.00 | trades=0

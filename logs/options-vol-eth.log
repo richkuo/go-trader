@@ -79,3 +79,6 @@ h] [INFO] Running: python3 check_options.py [vol_mean_reversion ETH]
 [2026-02-11 08:23:57] [options-vol-eth] [INFO] Running: python3 check_options.py [vol_mean_reversion ETH]
 [2026-02-11 08:23:57] [options-vol-eth] [INFO] Signal: HOLD | ETH spot=$0.00 | IV rank=0.0 | 0 actions
 [2026-02-11 08:23:57] [options-vol-eth] [INFO] Status: cash=$1964.54 | positions=4 | value=$1789.41 | trades=0
+[2026-02-11 08:32:48] [options-vol-eth] [INFO] Running: python3 scripts/check_options.py [vol_mean_reversion ETH]
+[2026-02-11 08:32:48] [options-vol-eth] [INFO] Signal: HOLD | ETH spot=$0.00 | IV rank=0.0 | 0 actions
+[2026-02-11 08:32:48] [options-vol-eth] [INFO] Status: cash=$1964.54 | positions=4 | value=$1789.41 | trades=0
