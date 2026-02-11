@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -216,6 +217,42 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 		}
 	}
 	return closed, nil
+}
+
+// EncodePositionsJSON serializes current option positions for passing to Python scripts.
+func EncodePositionsJSON(positions map[string]*OptionPosition) string {
+	if len(positions) == 0 {
+		return "[]"
+	}
+	type posInfo struct {
+		OptionType string  `json:"option_type"`
+		Strike     float64 `json:"strike"`
+		Expiry     string  `json:"expiry"`
+		DTE        float64 `json:"dte"`
+		Action     string  `json:"action"`
+		Premium    float64 `json:"entry_premium_usd"`
+		Delta      float64 `json:"delta"`
+		Gamma      float64 `json:"gamma"`
+		Theta      float64 `json:"theta"`
+		Vega       float64 `json:"vega"`
+	}
+	var out []posInfo
+	for _, p := range positions {
+		out = append(out, posInfo{
+			OptionType: p.OptionType,
+			Strike:     p.Strike,
+			Expiry:     p.Expiry,
+			DTE:        p.DTE,
+			Action:     p.Action,
+			Premium:    p.EntryPremiumUSD,
+			Delta:      p.Greeks.Delta,
+			Gamma:      p.Greeks.Gamma,
+			Theta:      p.Greeks.Theta,
+			Vega:       p.Greeks.Vega,
+		})
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
 }
 
 // UpdateOptionPositions refreshes DTE and current values for tracked options.

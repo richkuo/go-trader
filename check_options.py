@@ -302,21 +302,101 @@ STRATEGY_MAP = {
 
 
 MAX_POSITIONS_PER_STRATEGY = 2
+MIN_SCORE_THRESHOLD = 0.3
+
+
+def score_new_trade(proposed_action, existing_positions, spot_price):
+    """
+    Score a proposed trade against existing positions.
+    Returns a score from 0.0 (don't trade) to 1.0+ (great trade).
+
+    Factors:
+    - Strike distance from existing positions (farther = more diversified)
+    - Expiry spread (different expiries = better)
+    - Greek concentration (adding to existing skew = bad)
+    - Premium efficiency (more premium for same risk = good)
+    """
+    if not existing_positions:
+        return 1.0, "first position"
+
+    score = 0.5  # base score for having room
+    reasons = []
+
+    p_strike = proposed_action.get("strike", 0)
+    p_expiry = proposed_action.get("expiry", "")
+    p_type = proposed_action.get("option_type", "")
+    p_delta = proposed_action.get("greeks", {}).get("delta", 0)
+
+    # 1. Strike distance bonus (0 to +0.4)
+    same_type_positions = [p for p in existing_positions if p.get("option_type") == p_type]
+    if same_type_positions and spot_price > 0:
+        min_strike_dist = min(
+            abs(p_strike - p["strike"]) / spot_price
+            for p in same_type_positions
+        )
+        if min_strike_dist > 0.10:  # >10% apart
+            score += 0.4
+            reasons.append(f"strike distance {min_strike_dist:.1%}")
+        elif min_strike_dist > 0.05:  # 5-10% apart
+            score += 0.2
+            reasons.append(f"moderate strike distance {min_strike_dist:.1%}")
+        else:  # <5% apart — basically same strike
+            score -= 0.3
+            reasons.append(f"overlapping strikes {min_strike_dist:.1%}")
+
+    # 2. Expiry spread bonus (0 to +0.3)
+    existing_expiries = set(p.get("expiry", "") for p in existing_positions)
+    if p_expiry not in existing_expiries:
+        score += 0.3
+        reasons.append("different expiry")
+    else:
+        score -= 0.1
+        reasons.append("same expiry")
+
+    # 3. Greek concentration penalty (0 to -0.3)
+    net_delta = sum(p.get("delta", 0) for p in existing_positions)
+    # If adding this trade pushes delta further from zero, penalize
+    new_net_delta = net_delta + p_delta
+    if abs(new_net_delta) > abs(net_delta) and abs(new_net_delta) > 0.5:
+        score -= 0.3
+        reasons.append(f"delta concentration {new_net_delta:+.2f}")
+    elif abs(new_net_delta) < abs(net_delta):
+        score += 0.2
+        reasons.append(f"delta balancing {new_net_delta:+.2f}")
+
+    # 4. Premium efficiency (+0.1 if collecting more per unit risk)
+    if proposed_action.get("action") == "sell":
+        avg_existing_premium = 0
+        sell_positions = [p for p in existing_positions if p.get("action") == "sell"]
+        if sell_positions:
+            avg_existing_premium = sum(p.get("entry_premium_usd", 0) for p in sell_positions) / len(sell_positions)
+            if proposed_action.get("premium_usd", 0) > avg_existing_premium * 1.1:
+                score += 0.1
+                reasons.append("better premium")
+
+    return round(score, 2), "; ".join(reasons) if reasons else "default"
 
 
 def main():
     if len(sys.argv) < 3:
         print(json.dumps({
-            "error": f"Usage: {sys.argv[0]} <strategy> <underlying> [current_positions]"
+            "error": f"Usage: {sys.argv[0]} <strategy> <underlying> [positions_json]"
         }))
         sys.exit(1)
 
     strategy_name = sys.argv[1]
     underlying = sys.argv[2].upper()
 
-    # Check current position count (passed by Go scheduler)
-    current_positions = int(sys.argv[3]) if len(sys.argv) > 3 else 0
-    if current_positions >= MAX_POSITIONS_PER_STRATEGY:
+    # Parse existing positions from Go scheduler
+    existing_positions = []
+    if len(sys.argv) > 3:
+        try:
+            existing_positions = json.loads(sys.argv[3])
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Hard cap check
+    if len(existing_positions) >= MAX_POSITIONS_PER_STRATEGY:
         print(json.dumps({
             "strategy": strategy_name,
             "underlying": underlying,
@@ -325,7 +405,7 @@ def main():
             "actions": [],
             "iv_rank": 0,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "skip_reason": f"Max positions reached ({current_positions}/{MAX_POSITIONS_PER_STRATEGY})"
+            "skip_reason": f"Max positions reached ({len(existing_positions)}/{MAX_POSITIONS_PER_STRATEGY})"
         }))
         return
 
@@ -360,12 +440,29 @@ def main():
         evaluate_fn = STRATEGY_MAP[strategy_name]
         signal, actions, iv_rank = evaluate_fn(underlying, spot_price)
 
+        # Score each proposed action against existing positions
+        scored_actions = []
+        for action in actions:
+            score, reason = score_new_trade(action, existing_positions, spot_price)
+            action["score"] = score
+            action["score_reason"] = reason
+            if score >= MIN_SCORE_THRESHOLD:
+                scored_actions.append(action)
+            else:
+                print(f"Skipping {action.get('action')} {action.get('option_type')} "
+                      f"strike={action.get('strike')}: score={score} ({reason})",
+                      file=sys.stderr)
+
+        # If all actions were filtered out, signal becomes hold
+        if actions and not scored_actions:
+            signal = 0
+
         output = {
             "strategy": strategy_name,
             "underlying": underlying,
             "signal": signal,
             "spot_price": round(spot_price, 2),
-            "actions": actions,
+            "actions": scored_actions,
             "iv_rank": iv_rank,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }

@@ -248,10 +248,10 @@ func processSpot(sc StrategyConfig, s *StrategyState, prices map[string]float64,
 }
 
 func processOptions(sc StrategyConfig, s *StrategyState, logger *StrategyLogger) int {
-	// Pass current position count so script can enforce max positions
-	posCount := len(s.OptionPositions)
-	args := append(sc.Args, fmt.Sprintf("%d", posCount))
-	logger.Info("Running: python3 %s %v", sc.Script, args)
+	// Pass current positions as JSON so script can do portfolio-aware scoring
+	posJSON := EncodePositionsJSON(s.OptionPositions)
+	args := append(sc.Args, posJSON)
+	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
 
 	result, stderr, err := RunOptionsCheck(sc.Script, args)
 	if err != nil {
