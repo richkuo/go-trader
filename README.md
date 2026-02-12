@@ -121,13 +121,16 @@ trading-bot/
 ## Quick Start
 
 ```bash
-# Install Python dependencies
-pip3 install numpy pandas ccxt scipy ib_insync
+# Install uv (Python package manager)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install Go
+# Sync Python dependencies (creates .venv from lockfile)
+uv sync
+
+# Install Go (if not already installed)
 curl -sL https://go.dev/dl/go1.23.6.linux-amd64.tar.gz | tar -C /usr/local -xzf -
 
-# Build
+# Build Go scheduler
 cd scheduler && go build -o ../go-trader . && cd ..
 
 # Test one cycle
@@ -137,7 +140,7 @@ cd scheduler && go build -o ../go-trader . && cd ..
 ./go-trader --config scheduler/config.json
 
 # Check status (live prices + P&L)
-curl localhost:8099/status | python3 -m json.tool
+curl localhost:8099/status | uv run python -m json.tool
 ```
 
 ### systemd Service
@@ -155,19 +158,19 @@ The service file sends stdout/stderr to /dev/null (no logging). State persists i
 
 ```bash
 # Spot
-python3 scripts/check_strategy.py momentum BTC/USDT 1h
+uv run python scripts/check_strategy.py momentum BTC/USDT 1h
 
 # Deribit options
-python3 scripts/check_options.py vol_mean_reversion BTC '[]'
+uv run python scripts/check_options.py vol_mean_reversion BTC '[]'
 
 # IBKR/CME options
-python3 scripts/check_options_ibkr.py vol_mean_reversion BTC '[]'
+uv run python scripts/check_options_ibkr.py vol_mean_reversion BTC '[]'
 
 # Prices
-python3 scripts/check_price.py BTC/USDT SOL/USDT ETH/USDT
+uv run python scripts/check_price.py BTC/USDT SOL/USDT ETH/USDT
 
 # Backtest options
-python3 backtest/backtest_options.py --underlying BTC --since 2023-01-01 --capital 1000 --max-positions 4
+uv run python backtest/backtest_options.py --underlying BTC --since 2023-01-01 --capital 1000 --max-positions 4
 ```
 
 ## Configuration
