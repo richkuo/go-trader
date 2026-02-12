@@ -1,7 +1,7 @@
 [project]
-name = "trading-bot"
+name = "go-trader"
 version = "0.1.0"
-description = "Add your description here"
+description = "Crypto trading bot — backtesting, paper trading, live trading with risk management"
 requires-python = ">=3.12"
 dependencies = [
     "ccxt>=4.5.37",
