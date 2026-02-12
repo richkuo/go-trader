@@ -74,8 +74,8 @@ func stratCategory(id string) string {
 	return "spot"
 }
 
-// FormatCycleSummary creates a Discord message from cycle results
-func FormatCycleSummary(
+// FormatCategorySummary creates a Discord message for specific categories (spot or options)
+func FormatCategorySummary(
 	cycle int,
 	elapsed time.Duration,
 	strategiesRun int,
@@ -85,16 +85,26 @@ func FormatCycleSummary(
 	tradeDetails []string,
 	strategies []StrategyConfig,
 	state *AppState,
+	categoryFilter string, // "spot" or "options"
 ) string {
 	var sb strings.Builder
 
-	if totalTrades > 0 {
-		sb.WriteString("🚨 **TRADES EXECUTED**\n")
+	// Title based on category
+	if categoryFilter == "spot" {
+		if totalTrades > 0 {
+			sb.WriteString("📈 **SPOT TRADES**\n")
+		} else {
+			sb.WriteString("📈 **Spot Summary**\n")
+		}
 	} else {
-		sb.WriteString("📊 **Cycle Summary**\n")
+		if totalTrades > 0 {
+			sb.WriteString("🎯 **OPTIONS TRADES**\n")
+		} else {
+			sb.WriteString("🎯 **Options Summary**\n")
+		}
 	}
 
-	sb.WriteString(fmt.Sprintf("Cycle #%d | %d strategies | %.1fs\n", cycle, strategiesRun, elapsed.Seconds()))
+	sb.WriteString(fmt.Sprintf("Cycle #%d | %.1fs\n", cycle, elapsed.Seconds()))
 
 	// Prices inline
 	if len(prices) > 0 {
@@ -112,7 +122,7 @@ func FormatCycleSummary(
 		sb.WriteString("\n")
 	}
 
-	// Split strategies into spot / deribit / ibkr
+	// Split strategies into spot / deribit / ibkr (filtered by categoryFilter)
 	cats := map[string]*catInfo{
 		"spot":    {bots: []botInfo{}},
 		"deribit": {bots: []botInfo{}},
@@ -125,6 +135,15 @@ func FormatCycleSummary(
 			continue
 		}
 		cat := stratCategory(sc.ID)
+		
+		// Filter based on categoryFilter
+		if categoryFilter == "spot" && cat != "spot" {
+			continue
+		}
+		if categoryFilter == "options" && cat == "spot" {
+			continue
+		}
+		
 		ci := cats[cat]
 		ci.count++
 		ci.capital += sc.Capital
@@ -152,14 +171,31 @@ func FormatCycleSummary(
 		})
 	}
 
-	// Category lines with bot details
-	writeCatLineDetailed(&sb, "📈 Spot", cats["spot"])
-	writeCatLineDetailed(&sb, "🎯 Deribit", cats["deribit"])
-	writeCatLineDetailed(&sb, "🏦 IBKR", cats["ibkr"])
+	// Category lines with bot details (filtered)
+	if categoryFilter == "spot" {
+		writeCatLineDetailed(&sb, "📈 Spot", cats["spot"])
+	} else {
+		writeCatLineDetailed(&sb, "🎯 Deribit", cats["deribit"])
+		writeCatLineDetailed(&sb, "🏦 IBKR", cats["ibkr"])
+	}
 
-	// Total
-	totalCap := cats["spot"].capital + cats["deribit"].capital + cats["ibkr"].capital
-	totalPnl := totalValue - totalCap
+	// Total for filtered categories
+	var totalCap float64
+	if categoryFilter == "spot" {
+		totalCap = cats["spot"].capital
+	} else {
+		totalCap = cats["deribit"].capital + cats["ibkr"].capital
+	}
+	
+	// Calculate filtered total value
+	var filteredValue float64
+	if categoryFilter == "spot" {
+		filteredValue = cats["spot"].value
+	} else {
+		filteredValue = cats["deribit"].value + cats["ibkr"].value
+	}
+	
+	totalPnl := filteredValue - totalCap
 	pnlPct := 0.0
 	if totalCap > 0 {
 		pnlPct = (totalPnl / totalCap) * 100
@@ -168,8 +204,8 @@ func FormatCycleSummary(
 	if totalPnl < 0 {
 		pnlSign = ""
 	}
-	sb.WriteString(fmt.Sprintf("\n**Starting: $%.0f → Current: $%.0f** (%s$%.0f / %s%.1f%%) | Trades: **%d**\n",
-		totalCap, totalValue, pnlSign, totalPnl, pnlSign, pnlPct, totalTrades))
+	sb.WriteString(fmt.Sprintf("\n**Starting: $%.0f → Current: $%.0f** (%s$%.0f / %s%.1f%%)\n",
+		totalCap, filteredValue, pnlSign, totalPnl, pnlSign, pnlPct))
 
 	// Trade details (always shown)
 	if len(tradeDetails) > 0 {

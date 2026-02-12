@@ -261,25 +261,39 @@ func main() {
 		elapsed := time.Since(cycleStart)
 		logMgr.LogSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue)
 
-		// Discord notification
-		// Spot-only cycles post once per hour; options cycles + trades always post
+		// Discord notification - separate spot and options reports
 		if discord != nil {
+			mu.RLock()
+			
+			// Check which categories ran
+			spotRan := false
 			optionsRan := false
 			for _, sc := range dueStrategies {
-				if stratCategory(sc.ID) != "spot" {
+				cat := stratCategory(sc.ID)
+				if cat == "spot" {
+					spotRan = true
+				} else {
 					optionsRan = true
-					break
 				}
 			}
-			shouldPost := optionsRan || totalTrades > 0 || (cycle%12 == 0)
-			if shouldPost {
-				mu.RLock()
-				msg := FormatCycleSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue, prices, tradeDetails, cfg.Strategies, state)
-				mu.RUnlock()
+			
+			// Send spot summary (hourly or with trades)
+			if spotRan && (cycle%12 == 0 || totalTrades > 0) {
+				msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue, prices, tradeDetails, cfg.Strategies, state, "spot")
 				if err := discord.SendMessage(msg); err != nil {
-					fmt.Printf("[WARN] Discord notification failed: %v\n", err)
+					fmt.Printf("[WARN] Discord spot summary failed: %v\n", err)
 				}
 			}
+			
+			// Send options summary (every run or with trades)
+			if optionsRan {
+				msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue, prices, tradeDetails, cfg.Strategies, state, "options")
+				if err := discord.SendMessage(msg); err != nil {
+					fmt.Printf("[WARN] Discord options summary failed: %v\n", err)
+				}
+			}
+			
+			mu.RUnlock()
 		}
 
 		// Save state after each cycle
