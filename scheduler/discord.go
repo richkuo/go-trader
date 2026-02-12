@@ -136,11 +136,13 @@ func FormatCycleSummary(
 			pnlPct = (pnl / sc.Capital) * 100
 		}
 		
+		asset := extractAsset(sc)
 		ci.bots = append(ci.bots, botInfo{
-			id:          sc.ID,
-			strategy:    stratName,
-			pnlPct:      pnlPct,
-			trades:      len(ss.TradeHistory),
+			id:           sc.ID,
+			strategy:     stratName,
+			asset:        asset,
+			pnlPct:       pnlPct,
+			trades:       len(ss.TradeHistory),
 			tradeHistory: ss.TradeHistory,
 		})
 	}
@@ -187,6 +189,7 @@ type catInfo struct {
 type botInfo struct {
 	id           string
 	strategy     string
+	asset        string
 	pnlPct       float64
 	trades       int
 	tradeHistory []Trade
@@ -202,6 +205,24 @@ func extractStrategyName(sc StrategyConfig) string {
 		return parts[0]
 	}
 	return "unknown"
+}
+
+func extractAsset(sc StrategyConfig) string {
+	// Extract asset from strategy ID
+	// Examples: "momentum-btc" -> "BTC", "deribit-vol-eth" -> "ETH", "ibkr-wheel-btc" -> "BTC"
+	parts := strings.Split(sc.ID, "-")
+	if len(parts) > 0 {
+		lastPart := strings.ToUpper(parts[len(parts)-1])
+		// Check if it's a known asset
+		if lastPart == "BTC" || lastPart == "ETH" || lastPart == "SOL" {
+			return lastPart
+		}
+	}
+	// For options, try args
+	if sc.Type == "options" && len(sc.Args) > 1 {
+		return strings.ToUpper(sc.Args[1])
+	}
+	return ""
 }
 
 func writeCatLineDetailed(sb *strings.Builder, label string, ci *catInfo) {
@@ -227,7 +248,11 @@ func writeCatLineDetailed(sb *strings.Builder, label string, ci *catInfo) {
 		if bot.pnlPct < 0 {
 			sign = ""
 		}
-		sb.WriteString(fmt.Sprintf("  • %s (%s%.1f%%) — %d trades\n", bot.strategy, sign, bot.pnlPct, bot.trades))
+		assetLabel := ""
+		if bot.asset != "" {
+			assetLabel = bot.asset + " "
+		}
+		sb.WriteString(fmt.Sprintf("  • %s%s (%s%.1f%%) — %d trades\n", assetLabel, bot.strategy, sign, bot.pnlPct, bot.trades))
 		
 		// Show all trades for this bot
 		if len(bot.tradeHistory) > 0 {

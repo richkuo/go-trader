@@ -256,7 +256,7 @@ To rebuild this entire system from scratch, give an AI this prompt:
 > - Graceful shutdown on SIGINT/SIGTERM — saves state before exit
 > - `--once` flag to run a single cycle and exit (for testing)
 > - `--config` flag to specify config file path
-> - **Discord cycle summary format**: Shows starting balance → current balance for EACH category (Spot, Deribit, IBKR) AND total. Each category expands to show individual bots with strategy names, P&L percentages, trade counts, and ALL trades. Format: Category header `**$X → $Y** (+$PnL / +%)`, then bullet list of bots: `• strategy_name (+X.X%) — N trades` followed by indented trade list: `- BUY/SELL symbol @ $price (timestamp)` for every trade executed. Provides complete visibility into each bot's full trading history.
+> - **Discord cycle summary format**: Shows starting balance → current balance for EACH category (Spot, Deribit, IBKR) AND total. Each category expands to show individual bots with asset labels, strategy names, P&L percentages, trade counts, and ALL trades. Format: Category header `**$X → $Y** (+$PnL / +%)`, then bullet list of bots: `• ASSET strategy_name (+X.X%) — N trades` followed by indented trade list: `- BUY/SELL symbol @ $price (timestamp)` for every trade executed. Provides complete visibility into each bot's full trading history.
 >
 > **Python check scripts** in `scripts/` (stateless, run-and-exit, ~5 seconds each):
 > - `scripts/check_strategy.py <strategy> <symbol> <timeframe>` — fetches OHLCV via CCXT (Binance US), runs technical analysis, outputs JSON: `{strategy, symbol, timeframe, signal: 1/-1/0, price, indicators, timestamp}`
