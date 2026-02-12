@@ -140,6 +140,7 @@ func FormatCycleSummary(
 			id:       sc.ID,
 			strategy: stratName,
 			pnlPct:   pnlPct,
+			trades:   len(ss.TradeHistory),
 		})
 	}
 
@@ -186,6 +187,7 @@ type botInfo struct {
 	id       string
 	strategy string
 	pnlPct   float64
+	trades   int
 }
 
 func extractStrategyName(sc StrategyConfig) string {
@@ -223,7 +225,7 @@ func writeCatLineDetailed(sb *strings.Builder, label string, ci *catInfo) {
 		if bot.pnlPct < 0 {
 			sign = ""
 		}
-		sb.WriteString(fmt.Sprintf("  • %s (%s%.1f%%)\n", bot.strategy, sign, bot.pnlPct))
+		sb.WriteString(fmt.Sprintf("  • %s (%s%.1f%%) — %d trades\n", bot.strategy, sign, bot.pnlPct, bot.trades))
 	}
 }
 
