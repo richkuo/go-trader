@@ -193,6 +193,19 @@ On restart, the scheduler:
 - **Auto-prunes** strategies in state that are no longer in config
 - Preserves existing positions for strategies still in config
 
+## Trading Fees & Slippage
+
+**Spot trades (Binance US simulation):**
+- Taker fee: **0.1%** of trade value
+- Slippage: **±0.05%** random (5 basis points)
+
+**Options trades:**
+- **Deribit:** 0.03% of premium
+- **IBKR/CME:** $0.25 per contract (CME Micro fee)
+- Slippage: not currently simulated for options (fixed premium from scripts)
+
+All fees are deducted from cash on execution. Slippage is applied randomly to simulate market impact.
+
 ## Risk Management
 
 **Spot:** Max 95% capital per position, drawdown kill switch (configurable), circuit breaker on consecutive losses.
@@ -235,8 +248,8 @@ To rebuild this entire system from scratch, give an AI this prompt:
 > - Main loop ticks at the shortest strategy interval (currently 300s). Each tick, only runs strategies whose individual interval has elapsed since last run
 > - Sequentially spawns each due strategy's Python script, reads JSON output from stdout, processes the signal
 > - Manages all state in memory: portfolios per strategy (cash + positions), trade history, risk state (drawdown kill switch, circuit breakers, daily loss limits, consecutive loss tracking)
-> - For spot: tracks positions by symbol, simulates market fills at current price, calculates portfolio value
-> - For options: tracks positions with premium, Greeks (delta/gamma/theta/vega), expiry dates, auto-expires worthless OTM options
+> - For spot: tracks positions by symbol, simulates market fills at current price with slippage (±0.05%), applies trading fees (0.1% Binance taker), calculates portfolio value
+> - For options: tracks positions with premium, Greeks (delta/gamma/theta/vega), expiry dates, auto-expires worthless OTM options; applies exchange-specific fees (Deribit 0.03%, IBKR $0.25/contract)
 > - **Live option pricing** via Deribit REST API (`scheduler/deribit.go`): 
 >   - Fetches live mark prices from Deribit ticker endpoint every cycle
 >   - Updates `CurrentValueUSD` for ALL option positions (Deribit + IBKR) with real market data (not static entry values)

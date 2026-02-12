@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -102,15 +103,25 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 	if cost <= 0 {
 		cost = action.Premium * result.SpotPrice
 	}
-	if cost > s.Cash*0.95 {
-		logger.Info("Insufficient cash ($%.2f) for option buy ($%.2f)", s.Cash, cost)
+	
+	// Calculate fees based on strategy type (deribit vs ibkr)
+	var fee float64
+	if strings.HasPrefix(s.ID, "ibkr-") {
+		fee = CalculateIBKROptionFee(1.0)
+	} else {
+		fee = CalculateDeribitOptionFee(cost)
+	}
+	
+	totalCost := cost + fee
+	if totalCost > s.Cash*0.95 {
+		logger.Info("Insufficient cash ($%.2f) for option buy ($%.2f + $%.2f fee)", s.Cash, cost, fee)
 		return 0, nil
 	}
 
 	posID := fmt.Sprintf("%s-%s-%s-%.0f-%s",
 		result.Underlying, action.OptionType, action.Action, action.Strike, action.Expiry)
 
-	s.Cash -= cost
+	s.Cash -= totalCost
 	s.OptionPositions[posID] = &OptionPosition{
 		ID:              posID,
 		Underlying:      result.Underlying,
@@ -134,12 +145,12 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 		Side:       "buy",
 		Quantity:   1.0,
 		Price:      cost,
-		Value:      cost,
+		Value:      totalCost,
 		TradeType:  "options",
-		Details:    fmt.Sprintf("Buy %s %s strike=%.0f exp=%s premium=$%.2f", result.Underlying, action.OptionType, action.Strike, action.Expiry, cost),
+		Details:    fmt.Sprintf("Buy %s %s strike=%.0f exp=%s premium=$%.2f fee=$%.2f", result.Underlying, action.OptionType, action.Strike, action.Expiry, cost, fee),
 	}
 	s.TradeHistory = append(s.TradeHistory, trade)
-	logger.Info("BUY OPTION %s %s strike=%.0f exp=%s | $%.2f", result.Underlying, action.OptionType, action.Strike, action.Expiry, cost)
+	logger.Info("BUY OPTION %s %s strike=%.0f exp=%s | $%.2f (fee $%.2f)", result.Underlying, action.OptionType, action.Strike, action.Expiry, cost, fee)
 
 	return 1, nil
 }
@@ -149,11 +160,21 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 	if premium <= 0 {
 		premium = action.Premium * result.SpotPrice
 	}
+	
+	// Calculate fees
+	var fee float64
+	if strings.HasPrefix(s.ID, "ibkr-") {
+		fee = CalculateIBKROptionFee(1.0)
+	} else {
+		fee = CalculateDeribitOptionFee(premium)
+	}
+	
+	netPremium := premium - fee
 
 	posID := fmt.Sprintf("%s-%s-%s-%.0f-%s",
 		result.Underlying, action.OptionType, action.Action, action.Strike, action.Expiry)
 
-	s.Cash += premium
+	s.Cash += netPremium
 	s.OptionPositions[posID] = &OptionPosition{
 		ID:              posID,
 		Underlying:      result.Underlying,
@@ -164,8 +185,8 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 		Action:          "sell",
 		Quantity:        1.0,
 		EntryPremium:    action.Premium,
-		EntryPremiumUSD: premium,
-		CurrentValueUSD: -premium, // liability
+		EntryPremiumUSD: netPremium, // net after fees
+		CurrentValueUSD: -netPremium, // liability
 		Greeks:          action.Greeks,
 		OpenedAt:        time.Now().UTC(),
 	}
@@ -177,12 +198,12 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 		Side:       "sell",
 		Quantity:   1.0,
 		Price:      premium,
-		Value:      premium,
+		Value:      netPremium,
 		TradeType:  "options",
-		Details:    fmt.Sprintf("Sell %s %s strike=%.0f exp=%s premium=$%.2f", result.Underlying, action.OptionType, action.Strike, action.Expiry, premium),
+		Details:    fmt.Sprintf("Sell %s %s strike=%.0f exp=%s premium=$%.2f fee=$%.2f", result.Underlying, action.OptionType, action.Strike, action.Expiry, premium, fee),
 	}
 	s.TradeHistory = append(s.TradeHistory, trade)
-	logger.Info("SELL OPTION %s %s strike=%.0f exp=%s | +$%.2f", result.Underlying, action.OptionType, action.Strike, action.Expiry, premium)
+	logger.Info("SELL OPTION %s %s strike=%.0f exp=%s | +$%.2f (fee $%.2f)", result.Underlying, action.OptionType, action.Strike, action.Expiry, premium, fee)
 
 	return 1, nil
 }

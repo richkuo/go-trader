@@ -63,22 +63,26 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 		}
 		// Close short if exists
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" {
-			pnl := pos.Quantity * (pos.AvgCost - price)
-			s.Cash += pos.Quantity*pos.AvgCost + pnl
+			execPrice := ApplySlippage(price)
+			buyCost := pos.Quantity * execPrice
+			fee := CalculateSpotFee(buyCost)
+			totalCost := buyCost + fee
+			pnl := pos.Quantity*pos.AvgCost - totalCost
+			s.Cash += pos.Quantity*pos.AvgCost - totalCost
 			trade := Trade{
 				Timestamp:  time.Now().UTC(),
 				StrategyID: s.ID,
 				Symbol:     symbol,
 				Side:       "buy",
 				Quantity:   pos.Quantity,
-				Price:      price,
-				Value:      pos.Quantity * price,
+				Price:      execPrice,
+				Value:      totalCost,
 				TradeType:  "spot",
-				Details:    fmt.Sprintf("Close short, PnL: $%.2f", pnl),
+				Details:    fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
 			}
 			s.TradeHistory = append(s.TradeHistory, trade)
 			delete(s.Positions, symbol)
-			logger.Info("Closed short %s @ $%.2f | PnL: $%.2f", symbol, price, pnl)
+			logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
 			tradesExecuted++
 		}
 		// Open long — use 95% of cash
@@ -87,12 +91,16 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 			logger.Info("Insufficient cash ($%.2f) to buy %s", s.Cash, symbol)
 			return tradesExecuted, nil
 		}
-		qty := budget / price
-		s.Cash -= qty * price
+		// Apply slippage
+		execPrice := ApplySlippage(price)
+		qty := budget / execPrice
+		tradeCost := qty * execPrice
+		fee := CalculateSpotFee(tradeCost)
+		s.Cash -= tradeCost + fee
 		s.Positions[symbol] = &Position{
 			Symbol:   symbol,
 			Quantity: qty,
-			AvgCost:  price,
+			AvgCost:  execPrice,
 			Side:     "long",
 		}
 		trade := Trade{
@@ -101,34 +109,38 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 			Symbol:     symbol,
 			Side:       "buy",
 			Quantity:   qty,
-			Price:      price,
-			Value:      qty * price,
+			Price:      execPrice,
+			Value:      tradeCost + fee,
 			TradeType:  "spot",
-			Details:    fmt.Sprintf("Open long %.6f @ $%.2f", qty, price),
+			Details:    fmt.Sprintf("Open long %.6f @ $%.2f (fee $%.2f)", qty, execPrice, fee),
 		}
 		s.TradeHistory = append(s.TradeHistory, trade)
-		logger.Info("BUY %s: %.6f @ $%.2f ($%.2f)", symbol, qty, price, qty*price)
+		logger.Info("BUY %s: %.6f @ $%.2f (fee $%.2f, total $%.2f)", symbol, qty, execPrice, fee, tradeCost+fee)
 		tradesExecuted++
 
 	} else if signal == -1 { // Sell
 		// Close long if exists
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
-			pnl := pos.Quantity * (price - pos.AvgCost)
-			s.Cash += pos.Quantity * price
+			execPrice := ApplySlippage(price)
+			saleValue := pos.Quantity * execPrice
+			fee := CalculateSpotFee(saleValue)
+			netProceeds := saleValue - fee
+			pnl := netProceeds - (pos.Quantity * pos.AvgCost)
+			s.Cash += netProceeds
 			trade := Trade{
 				Timestamp:  time.Now().UTC(),
 				StrategyID: s.ID,
 				Symbol:     symbol,
 				Side:       "sell",
 				Quantity:   pos.Quantity,
-				Price:      price,
-				Value:      pos.Quantity * price,
+				Price:      execPrice,
+				Value:      netProceeds,
 				TradeType:  "spot",
-				Details:    fmt.Sprintf("Close long, PnL: $%.2f", pnl),
+				Details:    fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
 			}
 			s.TradeHistory = append(s.TradeHistory, trade)
 			delete(s.Positions, symbol)
-			logger.Info("SELL %s: %.6f @ $%.2f | PnL: $%.2f", symbol, pos.Quantity, price, pnl)
+			logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, pos.Quantity, execPrice, fee, pnl)
 			tradesExecuted++
 		} else {
 			logger.Info("No long position in %s to sell, skipping", symbol)
