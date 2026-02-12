@@ -384,12 +384,109 @@ def evaluate_wheel(underlying, spot_price):
         return 0, [], 0
 
 
+def evaluate_butterfly(underlying, spot_price):
+    """
+    Butterfly spread — neutral strategy that profits from low volatility.
+    Structure: Buy 1 ITM, Sell 2 ATM, Buy 1 OTM (calls or puts).
+    
+    Max profit when price stays at middle strike at expiry.
+    Limited risk = net debit paid.
+    
+    Best when expecting price to trade in a range (low volatility).
+    """
+    try:
+        import ccxt
+        exchange = ccxt.binanceus({"enableRateLimit": True})
+        symbol = f"{underlying}/USDT"
+        ohlcv = exchange.fetch_ohlcv(symbol, "1d", limit=30)
+
+        if not ohlcv or len(ohlcv) < 10:
+            return 0, [], 0
+
+        closes = [c[4] for c in ohlcv]
+        returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
+        import math
+        recent_vol = math.sqrt(sum(r**2 for r in returns[-14:]) / max(len(returns[-14:]), 1)) * math.sqrt(365) * 100
+        hist_vol = math.sqrt(sum(r**2 for r in returns) / len(returns)) * math.sqrt(365) * 100
+        iv_rank = min(max((recent_vol / max(hist_vol, 0.001)) * 50, 0), 100)
+
+        # Only trade butterfly when volatility is moderate (not too high, not too low)
+        # High IV = expensive to buy wings, Low IV = not enough premium
+        if iv_rank < 30 or iv_rank > 70:
+            return 0, [], round(iv_rank, 1)
+
+        # Butterfly setup: ±5% wing width, 30 DTE
+        signal = 1  # Neutral (buying butterfly)
+        expiry_str, dte = get_real_expiry(underlying, 30)
+        
+        # Use call butterfly (can also do put butterfly, same P&L)
+        lower_target = spot_price * 0.95  # 5% below
+        middle_target = spot_price  # ATM
+        upper_target = spot_price * 1.05  # 5% above
+        
+        lower_strike = get_real_strike(underlying, expiry_str, "call", lower_target)
+        middle_strike = get_real_strike(underlying, expiry_str, "call", middle_target)
+        upper_strike = get_real_strike(underlying, expiry_str, "call", upper_target)
+        
+        # Premiums (typical butterfly: net debit ~1-2% of spot)
+        # Buy ITM call = more expensive
+        # Sell 2 ATM calls = collect premium
+        # Buy OTM call = cheaper
+        lower_premium_pct = 0.055  # ITM call
+        middle_premium_pct = 0.035  # ATM call
+        upper_premium_pct = 0.015  # OTM call
+        
+        # Net debit = lower + upper - 2*middle
+        net_debit_pct = lower_premium_pct + upper_premium_pct - (2 * middle_premium_pct)
+        
+        actions = [
+            {
+                "action": "buy",
+                "option_type": "call",
+                "strike": lower_strike,
+                "expiry": expiry_str,
+                "dte": dte,
+                "premium": lower_premium_pct,
+                "premium_usd": round(lower_premium_pct * spot_price, 2),
+                "greeks": {"delta": 0.65, "gamma": 0.0008, "theta": -12.0, "vega": 95.0}
+            },
+            {
+                "action": "sell",
+                "option_type": "call",
+                "strike": middle_strike,
+                "expiry": expiry_str,
+                "dte": dte,
+                "premium": middle_premium_pct,
+                "premium_usd": round(middle_premium_pct * spot_price, 2),
+                "greeks": {"delta": 0.50, "gamma": 0.001, "theta": 15.0, "vega": -120.0},
+                "quantity": 2  # Sell 2 middle strikes
+            },
+            {
+                "action": "buy",
+                "option_type": "call",
+                "strike": upper_strike,
+                "expiry": expiry_str,
+                "dte": dte,
+                "premium": upper_premium_pct,
+                "premium_usd": round(upper_premium_pct * spot_price, 2),
+                "greeks": {"delta": 0.35, "gamma": 0.0009, "theta": -10.0, "vega": 85.0}
+            }
+        ]
+
+        return signal, actions, round(iv_rank, 1)
+
+    except Exception as e:
+        print(f"Butterfly evaluation failed: {e}", file=sys.stderr)
+        return 0, [], 0
+
+
 STRATEGY_MAP = {
     "momentum_options": evaluate_momentum_options,
     "vol_mean_reversion": evaluate_vol_mean_reversion,
     "protective_puts": evaluate_protective_puts,
     "covered_calls": evaluate_covered_calls,
     "wheel": evaluate_wheel,
+    "butterfly": evaluate_butterfly,
 }
 
 

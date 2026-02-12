@@ -345,12 +345,92 @@ def evaluate_wheel(underlying, spot_price, hist_vol, iv_rank):
     return signal, actions
 
 
+def evaluate_butterfly(underlying, spot_price, hist_vol, iv_rank):
+    """
+    Butterfly spread on CME crypto options (IBKR).
+    Structure: Buy 1 ITM call, Sell 2 ATM calls, Buy 1 OTM call.
+    
+    Neutral strategy that profits from low volatility.
+    Max profit when price stays at middle strike at expiry.
+    Limited risk = net debit paid.
+    """
+    # Only trade when IV rank is moderate (30-70)
+    if iv_rank < 30 or iv_rank > 70:
+        return 0, []
+    
+    signal = 1  # Neutral/buy spread
+    actions = []
+
+    # Target 30 DTE
+    dte = 30
+    expiry_date = datetime.now(timezone.utc) + timedelta(days=dte)
+    expiry_str = expiry_date.strftime("%Y-%m-%d")
+    
+    # Strike interval (BTC=$1000, ETH=$50)
+    interval = 1000 if underlying == "BTC" else 50
+    multiplier = adapter.get_multiplier(underlying)
+    
+    # Butterfly strikes: ±5% wings
+    lower_strike = round(spot_price * 0.95 / interval) * interval  # ITM
+    middle_strike = round(spot_price / interval) * interval  # ATM
+    upper_strike = round(spot_price * 1.05 / interval) * interval  # OTM
+    
+    # Estimate premiums for each leg
+    lower_est = adapter.estimate_premium(underlying, spot_price, lower_strike, dte, hist_vol, "call")
+    middle_est = adapter.estimate_premium(underlying, spot_price, middle_strike, dte, hist_vol, "call")
+    upper_est = adapter.estimate_premium(underlying, spot_price, upper_strike, dte, hist_vol, "call")
+    
+    # Build butterfly spread legs
+    actions = [
+        {
+            "action": "buy",
+            "option_type": "call",
+            "strike": lower_strike,
+            "expiry": expiry_str,
+            "dte": dte,
+            "premium": round(lower_est["premium_per_unit"] / spot_price, 4),
+            "premium_usd": lower_est["premium_usd"],
+            "multiplier": multiplier,
+            "contract_spec": "CME_MICRO",
+            "greeks": lower_est["greeks"],
+        },
+        {
+            "action": "sell",
+            "option_type": "call",
+            "strike": middle_strike,
+            "expiry": expiry_str,
+            "dte": dte,
+            "premium": round(middle_est["premium_per_unit"] / spot_price, 4),
+            "premium_usd": middle_est["premium_usd"],
+            "multiplier": multiplier,
+            "contract_spec": "CME_MICRO",
+            "greeks": middle_est["greeks"],
+            "quantity": 2,  # Sell 2 middle strikes
+        },
+        {
+            "action": "buy",
+            "option_type": "call",
+            "strike": upper_strike,
+            "expiry": expiry_str,
+            "dte": dte,
+            "premium": round(upper_est["premium_per_unit"] / spot_price, 4),
+            "premium_usd": upper_est["premium_usd"],
+            "multiplier": multiplier,
+            "contract_spec": "CME_MICRO",
+            "greeks": upper_est["greeks"],
+        },
+    ]
+    
+    return signal, actions
+
+
 STRATEGY_MAP = {
     "vol_mean_reversion": evaluate_vol_mean_reversion,
     "momentum_options": evaluate_momentum_options,
     "protective_puts": evaluate_protective_puts,
     "covered_calls": evaluate_covered_calls,
     "wheel": evaluate_wheel,
+    "butterfly": evaluate_butterfly,
 }
 
 
