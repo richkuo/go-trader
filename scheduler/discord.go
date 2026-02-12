@@ -30,6 +30,11 @@ func NewDiscordNotifier(token, channelID string) *DiscordNotifier {
 }
 
 func (d *DiscordNotifier) SendMessage(content string) error {
+	// Discord has a 2000 character limit, truncate if needed
+	if len(content) > 2000 {
+		content = content[:1997] + "..."
+	}
+	
 	url := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, d.ChannelID)
 
 	payload := map[string]string{"content": content}
@@ -254,9 +259,14 @@ func writeCatLineDetailed(sb *strings.Builder, label string, ci *catInfo) {
 		}
 		sb.WriteString(fmt.Sprintf("  • %s%s (%s%.1f%%) — %d trades\n", assetLabel, bot.strategy, sign, bot.pnlPct, bot.trades))
 		
-		// Show all trades for this bot
+		// Show last 3 trades only (to keep message under 2000 char Discord limit)
 		if len(bot.tradeHistory) > 0 {
-			for _, trade := range bot.tradeHistory {
+			start := 0
+			if len(bot.tradeHistory) > 3 {
+				start = len(bot.tradeHistory) - 3
+			}
+			for i := start; i < len(bot.tradeHistory); i++ {
+				trade := bot.tradeHistory[i]
 				sb.WriteString(fmt.Sprintf("    - %s %s @ $%.0f (%s)\n",
 					strings.ToUpper(trade.Side),
 					trade.Symbol,
