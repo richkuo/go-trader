@@ -12,30 +12,27 @@ import (
 
 const (
 	discordAPIBase = "https://discord.com/api/v10"
-	tradingChannel = "1471072739472183430"
 )
 
 type DiscordNotifier struct {
-	Token     string
-	ChannelID string
-	client    *http.Client
+	Token  string
+	client *http.Client
 }
 
-func NewDiscordNotifier(token, channelID string) *DiscordNotifier {
+func NewDiscordNotifier(token string) *DiscordNotifier {
 	return &DiscordNotifier{
-		Token:     token,
-		ChannelID: channelID,
-		client:    &http.Client{Timeout: 10 * time.Second},
+		Token:  token,
+		client: &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
-func (d *DiscordNotifier) SendMessage(content string) error {
+func (d *DiscordNotifier) SendMessage(channelID string, content string) error {
 	// Discord has a 2000 character limit, truncate if needed
 	if len(content) > 2000 {
 		content = content[:1997] + "..."
 	}
 	
-	url := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, d.ChannelID)
+	url := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, channelID)
 
 	payload := map[string]string{"content": content}
 	body, err := json.Marshal(payload)

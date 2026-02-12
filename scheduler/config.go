@@ -6,11 +6,17 @@ import (
 	"os"
 )
 
+// DiscordChannels holds channel IDs for different report types.
+type DiscordChannels struct {
+	Spot    string `json:"spot"`
+	Options string `json:"options"`
+}
+
 // DiscordConfig holds Discord notification settings.
 type DiscordConfig struct {
-	Enabled   bool   `json:"enabled"`
-	Token     string `json:"token"`
-	ChannelID string `json:"channel_id"`
+	Enabled  bool             `json:"enabled"`
+	Token    string           `json:"token"`
+	Channels DiscordChannels  `json:"channels"`
 }
 
 // Config is the top-level scheduler configuration.

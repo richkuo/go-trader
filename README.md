@@ -184,9 +184,22 @@ python3 backtest/backtest_options.py --underlying BTC --since 2023-01-01 --capit
     {"id": "deribit-vol-btc", "type": "options", "script": "scripts/check_options.py",
      "args": ["vol_mean_reversion", "BTC"], "capital": 1000,
      "max_drawdown_pct": 20, "interval_seconds": 1200}
-  ]
+  ],
+  "discord": {
+    "enabled": true,
+    "channels": {
+      "spot": "1234567890",
+      "options": "0987654321"
+    }
+  }
 }
 ```
+
+**Discord configuration:**
+- `discord.enabled`: Enable/disable Discord notifications
+- `discord.channels.spot`: Channel ID for spot trading summaries (hourly)
+- `discord.channels.options`: Channel ID for options trading summaries (every 20min)
+- Discord bot token is read from `DISCORD_BOT_TOKEN` environment variable
 
 On restart, the scheduler:
 - Initializes new strategies from config
@@ -269,7 +282,7 @@ To rebuild this entire system from scratch, give an AI this prompt:
 > - Graceful shutdown on SIGINT/SIGTERM — saves state before exit
 > - `--once` flag to run a single cycle and exit (for testing)
 > - `--config` flag to specify config file path
-> - **Discord cycle summary format**: Two separate reports - **Spot Summary** (hourly) and **Options Summary** (every 20min). Each shows starting → current balance for relevant categories only. Spot report shows 📈 Spot category. Options report shows 🎯 Deribit and 🏦 IBKR categories. Each bot displays: asset label, strategy name, P&L %, trade count, and last 3 trades. Format: `• ASSET strategy_name (+X.X%) — N trades` followed by `- BUY/SELL symbol @ $price (timestamp)`. Messages auto-truncate at 2000 characters (Discord limit).
+> - **Discord cycle summary format**: Two separate reports sent to different channels - **Spot Summary** (hourly) and **Options Summary** (every 20min). Config specifies separate channel IDs for each report type in `discord.channels.spot` and `discord.channels.options`. Each shows starting → current balance for relevant categories only. Spot report shows 📈 Spot category. Options report shows 🎯 Deribit and 🏦 IBKR categories. Each bot displays: asset label, strategy name, P&L %, trade count, and last 3 trades. Format: `• ASSET strategy_name (+X.X%) — N trades` followed by `- BUY/SELL symbol @ $price (timestamp)`. Messages auto-truncate at 2000 characters (Discord limit).
 >
 > **Python check scripts** in `scripts/` (stateless, run-and-exit, ~5 seconds each):
 > - `scripts/check_strategy.py <strategy> <symbol> <timeframe>` — fetches OHLCV via CCXT (Binance US), runs technical analysis, outputs JSON: `{strategy, symbol, timeframe, signal: 1/-1/0, price, indicators, timestamp}`

@@ -85,9 +85,12 @@ func main() {
 
 	// Discord notifier
 	var discord *DiscordNotifier
-	if cfg.Discord.Enabled && cfg.Discord.Token != "" && cfg.Discord.ChannelID != "" {
-		discord = NewDiscordNotifier(cfg.Discord.Token, cfg.Discord.ChannelID)
-		fmt.Println("Discord notifications enabled")
+	if cfg.Discord.Enabled && cfg.Discord.Token != "" {
+		if cfg.Discord.Channels.Spot != "" || cfg.Discord.Channels.Options != "" {
+			discord = NewDiscordNotifier(cfg.Discord.Token)
+			fmt.Printf("Discord notifications enabled (spot: %s, options: %s)\n",
+				cfg.Discord.Channels.Spot, cfg.Discord.Channels.Options)
+		}
 	}
 
 	// Deribit pricer for live option prices
@@ -278,17 +281,17 @@ func main() {
 			}
 			
 			// Send spot summary (hourly or with trades)
-			if spotRan && (cycle%12 == 0 || totalTrades > 0) {
+			if spotRan && (cycle%12 == 0 || totalTrades > 0) && cfg.Discord.Channels.Spot != "" {
 				msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue, prices, tradeDetails, cfg.Strategies, state, "spot")
-				if err := discord.SendMessage(msg); err != nil {
+				if err := discord.SendMessage(cfg.Discord.Channels.Spot, msg); err != nil {
 					fmt.Printf("[WARN] Discord spot summary failed: %v\n", err)
 				}
 			}
 			
 			// Send options summary (every run or with trades)
-			if optionsRan {
+			if optionsRan && cfg.Discord.Channels.Options != "" {
 				msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue, prices, tradeDetails, cfg.Strategies, state, "options")
-				if err := discord.SendMessage(msg); err != nil {
+				if err := discord.SendMessage(cfg.Discord.Channels.Options, msg); err != nil {
 					fmt.Printf("[WARN] Discord options summary failed: %v\n", err)
 				}
 			}
