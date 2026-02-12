@@ -229,14 +229,9 @@ func writeCatLineDetailed(sb *strings.Builder, label string, ci *catInfo) {
 		}
 		sb.WriteString(fmt.Sprintf("  • %s (%s%.1f%%) — %d trades\n", bot.strategy, sign, bot.pnlPct, bot.trades))
 		
-		// Show last 3 trades for this bot
+		// Show all trades for this bot
 		if len(bot.tradeHistory) > 0 {
-			start := 0
-			if len(bot.tradeHistory) > 3 {
-				start = len(bot.tradeHistory) - 3
-			}
-			for i := start; i < len(bot.tradeHistory); i++ {
-				trade := bot.tradeHistory[i]
+			for _, trade := range bot.tradeHistory {
 				sb.WriteString(fmt.Sprintf("    - %s %s @ $%.0f (%s)\n",
 					strings.ToUpper(trade.Side),
 					trade.Symbol,
