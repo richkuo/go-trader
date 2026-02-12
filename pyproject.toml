@@ -1,0 +1,10 @@
+[project]
+name = "trading-bot"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "ccxt>=4.5.37",
+    "numpy>=2.4.2",
+    "pandas>=3.0.0",
+]

@@ -29,7 +29,7 @@ func RunPythonScript(script string, args []string) ([]byte, []byte, error) {
 	defer cancel()
 
 	cmdArgs := append([]string{script}, args...)
-	cmd := exec.CommandContext(ctx, "python3", cmdArgs...)
+	cmd := exec.CommandContext(ctx, ".venv/bin/python3", cmdArgs...)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

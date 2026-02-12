@@ -240,23 +240,30 @@ State file is the source of truth. Config defines what runs. Both are in the rep
 
 ## Dependencies
 
+**Python:** Managed entirely with [uv](https://github.com/astral-sh/uv) (10-100x faster than pip, with lockfiles):
+
 ```bash
-# Python (using uv — 10-100x faster than pip)
+# Install uv (if not already installed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv pip install numpy pandas ccxt scipy ib_insync requests
 
-# Or for development (creates .venv):
-uv venv
-uv pip install -r requirements.txt
+# Sync dependencies from lockfile (creates .venv automatically)
+uv sync
 
-# Go
-go 1.23+ (no external dependencies, uses standard library only)
-
-# System
-systemd (for service management)
+# Or add new packages
+uv add <package>
 ```
 
-**Note:** The Go scheduler calls `python3` directly, using system-installed packages. For development, use `uv` for faster installs and better dependency resolution.
+**Current versions:**
+- ccxt 4.5.37
+- pandas 3.0.0
+- numpy 2.4.2
+- Python 3.12+
+
+**Go:** 1.23+ (no external dependencies, uses standard library only)
+
+**System:** systemd (for service management)
+
+**Architecture:** The Go scheduler calls `.venv/bin/python3` for all Python scripts. Dependency isolation via uv's virtual environment ensures reproducible builds.
 
 ## Regeneration Prompt
 
@@ -267,7 +274,7 @@ To rebuild this entire system from scratch, give an AI this prompt:
 > **Go scheduler** (single always-running binary, ~8MB RAM):
 > - Reads a JSON config listing N strategies, each with: id, type (spot/options), script path, args, capital, risk params, and per-strategy `interval_seconds`
 > - Main loop ticks at the shortest strategy interval (currently 300s). Each tick, only runs strategies whose individual interval has elapsed since last run
-> - Sequentially spawns each due strategy's Python script, reads JSON output from stdout, processes the signal
+> - Sequentially spawns each due strategy's Python script via `.venv/bin/python3` (isolated uv environment), reads JSON output from stdout, processes the signal
 > - Manages all state in memory: portfolios per strategy (cash + positions), trade history, risk state (drawdown kill switch, circuit breakers, daily loss limits, consecutive loss tracking)
 > - For spot: tracks positions by symbol, simulates market fills at current price with slippage (±0.05%), applies trading fees (0.1% Binance taker), calculates portfolio value
 > - For options: tracks positions with premium, Greeks (delta/gamma/theta/vega), expiry dates, auto-expires worthless OTM options; applies exchange-specific fees (Deribit 0.03%, IBKR $0.25/contract)
@@ -312,7 +319,9 @@ To rebuild this entire system from scratch, give an AI this prompt:
 >
 > **Directory structure**: `scheduler/` (Go source + config + state + deribit.go for live pricing), `scripts/` (stateless check scripts + deribit_utils.py for expiry/strike lookups), `strategies/` (spot strategies + indicators), `options/` (Deribit adapter, IBKR adapter, strategies, risk), `core/` (exchange adapter, data fetcher, risk manager), `backtest/` (backtesting tools incl. options backtester with Black-Scholes).
 >
-> **Tech stack**: Go 1.23+ for scheduler (standard library only, no external deps), Python 3 with numpy, pandas, ccxt, scipy, ib_insync, requests. CCXT connects to Binance US for spot data. Deribit REST API (public endpoints, no auth) for live option pricing and expiry/strike lookups. Deploy as systemd service with Restart=always, stdout/stderr to /dev/null (no file logging).
+> **Tech stack**: Go 1.23+ for scheduler (standard library only, no external deps), Python 3.12+ with dependencies managed by [uv](https://github.com/astral-sh/uv) (ccxt 4.5.37, pandas 3.0.0, numpy 2.4.2). Go calls `.venv/bin/python3` for all Python scripts (isolated environment with lockfile). CCXT connects to Binance US for spot data. Deribit REST API (public endpoints, no auth) for live option pricing and expiry/strike lookups. Deploy as systemd service with Restart=always, stdout/stderr to /dev/null (no file logging).
+>
+> **Setup**: Install uv (`curl -LsSf https://astral.sh/uv/install.sh | sh`), run `uv sync` to create `.venv` from `uv.lock`. Go scheduler uses `.venv/bin/python3` for reproducible, isolated Python execution.
 >
 > **Config format**: JSON with interval_seconds (global default), state_file, and strategies array. Each strategy: id, type (spot/options), script, args, capital, max_drawdown_pct, interval_seconds (per-strategy override).
 >
