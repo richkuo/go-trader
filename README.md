@@ -240,9 +240,14 @@ State file is the source of truth. Config defines what runs. Both are in the rep
 
 ## Dependencies
 
-```
-# Python
-pip3 install numpy pandas ccxt scipy ib_insync requests
+```bash
+# Python (using uv — 10-100x faster than pip)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv pip install numpy pandas ccxt scipy ib_insync requests
+
+# Or for development (creates .venv):
+uv venv
+uv pip install -r requirements.txt
 
 # Go
 go 1.23+ (no external dependencies, uses standard library only)
@@ -250,6 +255,8 @@ go 1.23+ (no external dependencies, uses standard library only)
 # System
 systemd (for service management)
 ```
+
+**Note:** The Go scheduler calls `python3` directly, using system-installed packages. For development, use `uv` for faster installs and better dependency resolution.
 
 ## Regeneration Prompt
 
