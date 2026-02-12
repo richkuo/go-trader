@@ -34,7 +34,7 @@ Go scheduler (always running, ~8MB idle)
 
 This ensures new paper trades use real option contracts that exist on Deribit, and existing positions are valued at current market prices.
 
-## Strategies (30 active)
+## Strategies (34 active)
 
 ### Spot (14 strategies, 5min interval, $1K each)
 
@@ -46,9 +46,9 @@ This ensures new paper trades use real option contracts that exist on Deribit, a
 | `volume_weighted` | BTC, ETH, SOL | 1h | Trend + volume confirmation |
 | `pairs_spread` | BTC, ETH, SOL | 1d | Spread z-score stat arb |
 
-### Options — Deribit vs IBKR/CME (8+8 strategies, 20min interval, $1K each)
+### Options — Deribit vs IBKR/CME (10+10 strategies, 20min interval, $1K each)
 
-Same 4 strategies run on both exchanges for head-to-head comparison:
+Same 5 strategies run on both exchanges for head-to-head comparison:
 
 | Strategy | Deribit IDs | IBKR IDs | Description |
 |----------|------------|----------|-------------|
@@ -56,6 +56,7 @@ Same 4 strategies run on both exchanges for head-to-head comparison:
 | `momentum_options` | deribit-momentum-btc/eth | ibkr-momentum-btc/eth | ROC breakout → buy directional options |
 | `protective_puts` | deribit-puts-btc/eth | ibkr-puts-btc/eth | Buy 12% OTM puts, 45 DTE |
 | `covered_calls` | deribit-calls-btc/eth | ibkr-calls-btc/eth | Sell 12% OTM calls, 21 DTE |
+| `wheel` | deribit-wheel-btc/eth | ibkr-wheel-btc/eth | Sell 6% OTM puts, 37 DTE, ~2% premium |
 
 **Key differences:**
 - **Deribit:** Direct crypto options, 1x multiplier, $100 strike intervals
@@ -264,14 +265,14 @@ To rebuild this entire system from scratch, give an AI this prompt:
 > - `scripts/check_price.py <symbols...>` — fetches current prices, outputs JSON map
 > - `scripts/deribit_utils.py` — **Required utility** for fetching real Deribit option chains via REST API (public endpoints, no auth). Core functions: `fetch_available_expiries(underlying, min_dte, max_dte)` returns list of ISO expiry strings, `find_closest_expiry(underlying, target_dte)` maps target DTE to nearest real expiry, `fetch_available_strikes(underlying, expiry)` gets available strikes for given expiry, `find_closest_strike(underlying, expiry, option_type, target_strike)` finds nearest strike. All strategies in `check_options.py` must call these helpers instead of calculating synthetic expiries
 >
-> **30 strategies in 3 groups:**
+> **34 strategies in 3 groups:**
 > - **14 spot** (5min interval, $1K each): momentum, rsi, macd, volume_weighted, pairs_spread across BTC/ETH/SOL via Binance US CCXT
-> - **8 Deribit options** (20min interval, $1K each): vol_mean_reversion, momentum_options, protective_puts, covered_calls on BTC/ETH with 1x multiplier
-> - **8 IBKR/CME options** (20min interval, $1K each): same 4 strategies on BTC/ETH but with CME Micro contract multipliers (0.1x BTC, 0.5x ETH) for head-to-head comparison
+> - **10 Deribit options** (20min interval, $1K each): vol_mean_reversion, momentum_options, protective_puts, covered_calls, wheel on BTC/ETH with 1x multiplier
+> - **10 IBKR/CME options** (20min interval, $1K each): same 5 strategies on BTC/ETH but with CME Micro contract multipliers (0.1x BTC, 0.5x ETH) for head-to-head comparison
 >
 > **Spot strategies** (11 in `strategies/strategies.py`): SMA crossover, EMA crossover, RSI, Bollinger bands, MACD, mean reversion, momentum (ROC), volume weighted, triple EMA, RSI+MACD combo, pairs spread. Each takes a pandas DataFrame with OHLCV, returns it with a signal column (1=buy, -1=sell, 0=hold).
 >
-> **Options strategies** (4, implemented in both `check_options.py` and `check_options_ibkr.py`): Momentum options (ROC signals → buy ATM calls/puts 37 DTE), volatility mean reversion (IV rank >75% → sell strangles, <25% → buy straddles, 30 DTE), protective puts (buy 12% OTM puts 45 DTE), covered calls (sell 12% OTM calls 21 DTE). Black-Scholes pricing and Greeks in `options/options_adapter.py` (Deribit) and `options/ibkr_adapter.py` (IBKR/CME).
+> **Options strategies** (5, implemented in both `check_options.py` and `check_options_ibkr.py`): Momentum options (ROC signals → buy ATM calls/puts 37 DTE), volatility mean reversion (IV rank >75% → sell strangles, <25% → buy straddles, 30 DTE), protective puts (buy 12% OTM puts 45 DTE), covered calls (sell 12% OTM calls 21 DTE), wheel (sell 6% OTM puts 37 DTE for ~2% premium). Black-Scholes pricing and Greeks in `options/options_adapter.py` (Deribit) and `options/ibkr_adapter.py` (IBKR/CME).
 >
 > **Options scoring system**: Before executing a new options trade, score it against existing positions. Factors: strike distance bonus (>10% apart = +0.4, <5% = -0.3), expiry spread bonus (different date = +0.3), Greek balancing (delta toward neutral = +0.2, skewing = -0.3), premium efficiency. Min score 0.3 to execute. Hard cap **4 positions per strategy**.
 >
