@@ -109,9 +109,9 @@ func FormatCycleSummary(
 
 	// Split strategies into spot / deribit / ibkr
 	cats := map[string]*catInfo{
-		"spot":    {},
-		"deribit": {},
-		"ibkr":    {},
+		"spot":    {bots: []botInfo{}},
+		"deribit": {bots: []botInfo{}},
+		"ibkr":    {bots: []botInfo{}},
 	}
 
 	for _, sc := range strategies {
@@ -125,14 +125,28 @@ func FormatCycleSummary(
 		ci.capital += sc.Capital
 		pv := PortfolioValue(ss, prices)
 		ci.value += pv
-		ci.pnl += pv - sc.Capital
+		pnl := pv - sc.Capital
+		ci.pnl += pnl
 		ci.posCount += len(ss.Positions) + len(ss.OptionPositions)
+		
+		// Extract strategy name from args or ID
+		stratName := extractStrategyName(sc)
+		pnlPct := 0.0
+		if sc.Capital > 0 {
+			pnlPct = (pnl / sc.Capital) * 100
+		}
+		
+		ci.bots = append(ci.bots, botInfo{
+			id:       sc.ID,
+			strategy: stratName,
+			pnlPct:   pnlPct,
+		})
 	}
 
-	// Compact category lines
-	writeCatLine(&sb, "📈 Spot", cats["spot"])
-	writeCatLine(&sb, "🎯 Deribit", cats["deribit"])
-	writeCatLine(&sb, "🏦 IBKR", cats["ibkr"])
+	// Category lines with bot details
+	writeCatLineDetailed(&sb, "📈 Spot", cats["spot"])
+	writeCatLineDetailed(&sb, "🎯 Deribit", cats["deribit"])
+	writeCatLineDetailed(&sb, "🏦 IBKR", cats["ibkr"])
 
 	// Total
 	totalCap := cats["spot"].capital + cats["deribit"].capital + cats["ibkr"].capital
@@ -159,7 +173,34 @@ func FormatCycleSummary(
 	return sb.String()
 }
 
-func writeCatLine(sb *strings.Builder, label string, ci *catInfo) {
+type catInfo struct {
+	value    float64
+	count    int
+	posCount int
+	pnl      float64
+	capital  float64
+	bots     []botInfo
+}
+
+type botInfo struct {
+	id       string
+	strategy string
+	pnlPct   float64
+}
+
+func extractStrategyName(sc StrategyConfig) string {
+	if sc.Type == "options" && len(sc.Args) > 0 {
+		return sc.Args[0]
+	}
+	// For spot, extract from ID (e.g., "momentum-btc" -> "momentum")
+	parts := strings.Split(sc.ID, "-")
+	if len(parts) > 0 {
+		return parts[0]
+	}
+	return "unknown"
+}
+
+func writeCatLineDetailed(sb *strings.Builder, label string, ci *catInfo) {
 	if ci.count == 0 {
 		return
 	}
@@ -171,16 +212,19 @@ func writeCatLine(sb *strings.Builder, label string, ci *catInfo) {
 	if ci.capital > 0 {
 		pnlPct = (ci.pnl / ci.capital) * 100
 	}
-	sb.WriteString(fmt.Sprintf("%s: **$%.0f → $%.0f** (%s$%.0f / %s%.1f%%) — %d bots, %d positions\n",
-		label, ci.capital, ci.value, pnlSign, ci.pnl, pnlSign, pnlPct, ci.count, ci.posCount))
-}
-
-type catInfo struct {
-	value    float64
-	count    int
-	posCount int
-	pnl      float64
-	capital  float64
+	
+	// Category header
+	sb.WriteString(fmt.Sprintf("\n%s: **$%.0f → $%.0f** (%s$%.0f / %s%.1f%%)\n",
+		label, ci.capital, ci.value, pnlSign, ci.pnl, pnlSign, pnlPct))
+	
+	// Individual bots
+	for _, bot := range ci.bots {
+		sign := "+"
+		if bot.pnlPct < 0 {
+			sign = ""
+		}
+		sb.WriteString(fmt.Sprintf("  • %s (%s%.1f%%)\n", bot.strategy, sign, bot.pnlPct))
+	}
 }
 
 // collectPositions returns human-readable position lines for a strategy (used by trade alerts)
