@@ -308,11 +308,49 @@ def score_new_trade(proposed_action, existing_positions, spot_price):
     return round(score, 2), "; ".join(reasons) if reasons else "default"
 
 
+def evaluate_wheel(underlying, spot_price, hist_vol, iv_rank):
+    """
+    Wheel strategy on CME crypto options (IBKR).
+    Sell cash-secured puts to collect premium and aim for good entry.
+    """
+    signal = -1  # Sell puts (step 1 of wheel)
+    actions = []
+
+    # Target 37 DTE, 6% OTM put
+    dte = 37
+    expiry_date = datetime.now(timezone.utc) + timedelta(days=dte)
+    expiry_str = expiry_date.strftime("%Y-%m-%d")
+    
+    # Strike interval (BTC=$1000, ETH=$50)
+    interval = 1000 if underlying == "BTC" else 50
+    strike_target = spot_price * 0.94  # 6% OTM
+    strike = round(strike_target / interval) * interval
+    
+    # Use adapter's estimate_premium method
+    est = adapter.estimate_premium(underlying, spot_price, strike, dte, hist_vol, "put")
+    
+    actions.append({
+        "action": "sell",
+        "option_type": "put",
+        "strike": strike,
+        "expiry": expiry_str,
+        "dte": dte,
+        "premium": round(est["premium_per_unit"] / spot_price, 4),
+        "premium_usd": est["premium_usd"],
+        "multiplier": est.get("multiplier", adapter.get_multiplier(underlying)),
+        "contract_spec": "CME_MICRO",
+        "greeks": est["greeks"],
+    })
+    
+    return signal, actions
+
+
 STRATEGY_MAP = {
     "vol_mean_reversion": evaluate_vol_mean_reversion,
     "momentum_options": evaluate_momentum_options,
     "protective_puts": evaluate_protective_puts,
     "covered_calls": evaluate_covered_calls,
+    "wheel": evaluate_wheel,
 }
 
 

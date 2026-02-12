@@ -335,11 +335,61 @@ def evaluate_covered_calls(underlying, spot_price):
         return 0, [], 0
 
 
+def evaluate_wheel(underlying, spot_price):
+    """
+    Wheel strategy — sell cash-secured puts, if assigned sell covered calls.
+    Phase 1: Sell puts to collect premium (aiming for assignment at good entry)
+    Phase 2: If "assigned" (simulated), sell calls against position
+    
+    For paper trading: we simulate assignment when put goes ITM at expiry.
+    """
+    try:
+        import ccxt
+        exchange = ccxt.binanceus({"enableRateLimit": True})
+        symbol = f"{underlying}/USDT"
+        ohlcv = exchange.fetch_ohlcv(symbol, "1d", limit=30)
+
+        if not ohlcv or len(ohlcv) < 10:
+            return 0, [], 0
+
+        closes = [c[4] for c in ohlcv]
+        returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
+        import math
+        recent_vol = math.sqrt(sum(r**2 for r in returns[-14:]) / max(len(returns[-14:]), 1)) * math.sqrt(365) * 100
+        hist_vol = math.sqrt(sum(r**2 for r in returns) / len(returns)) * math.sqrt(365) * 100
+        iv_rank = min(max((recent_vol / max(hist_vol, 0.001)) * 50, 0), 100)
+
+        # Wheel: sell 5-8% OTM puts, 30-45 DTE, target 1.5-2.5% premium
+        signal = -1  # Always selling puts (step 1 of wheel)
+        expiry_str, dte = get_real_expiry(underlying, 37)
+        target_strike = spot_price * 0.94  # 6% OTM
+        strike = get_real_strike(underlying, expiry_str, "put", target_strike)
+        premium_pct = 0.020  # ~2% for OTM put
+
+        actions = [{
+            "action": "sell",
+            "option_type": "put",
+            "strike": strike,
+            "expiry": expiry_str,
+            "dte": dte,
+            "premium": premium_pct,
+            "premium_usd": round(premium_pct * spot_price, 2),
+            "greeks": {"delta": -0.22, "gamma": 0.0005, "theta": 18.0, "vega": -65.0}
+        }]
+
+        return signal, actions, round(iv_rank, 1)
+
+    except Exception as e:
+        print(f"Wheel evaluation failed: {e}", file=sys.stderr)
+        return 0, [], 0
+
+
 STRATEGY_MAP = {
     "momentum_options": evaluate_momentum_options,
     "vol_mean_reversion": evaluate_vol_mean_reversion,
     "protective_puts": evaluate_protective_puts,
     "covered_calls": evaluate_covered_calls,
+    "wheel": evaluate_wheel,
 }
 
 
