@@ -300,7 +300,7 @@ func writeCatLineDetailed(sb *strings.Builder, label string, ci *catInfo) {
 			}
 			for i := start; i < len(bot.tradeHistory); i++ {
 				trade := bot.tradeHistory[i]
-				sb.WriteString(fmt.Sprintf("    - %s %s @ $%.0f (%s)\n",
+				sb.WriteString(fmt.Sprintf("    ↳ %s %s @ $%.0f (%s)\n",
 					strings.ToUpper(trade.Side),
 					trade.Symbol,
 					trade.Price,
