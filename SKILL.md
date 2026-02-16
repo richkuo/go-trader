@@ -54,10 +54,10 @@ read BOT_TOKEN
 **Discord Channel IDs:**
 ```
 "Discord channel ID for SPOT trading alerts?
-Example: 1471332556896211128"
+Example: 1234567890123456789"
 
 "Discord channel ID for OPTIONS trading alerts?
-Example: 1471072739472183430"
+Example: 9876543210987654321"
 ```
 
 **Exchange API Keys (optional for paper trading):**
