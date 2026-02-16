@@ -1,0 +1,41 @@
+{
+  "interval_seconds": 300,
+  "state_file": "scheduler/state.json",
+  "strategies": [
+    {
+      "id": "momentum-btc",
+      "type": "spot",
+      "script": "scripts/check_strategy.py",
+      "args": [
+        "momentum",
+        "BTC/USDT",
+        "1h"
+      ],
+      "capital": 1000,
+      "max_drawdown_pct": 60,
+      "interval_seconds": 300
+    },
+    {
+      "id": "deribit-vol-btc",
+      "type": "options",
+      "script": "scripts/check_options.py",
+      "args": [
+        "vol_mean_reversion",
+        "BTC"
+      ],
+      "capital": 1000,
+      "max_drawdown_pct": 20,
+      "interval_seconds": 1200
+    }
+  ],
+  "discord": {
+    "enabled": true,
+    "token": "",
+    "channels": {
+      "spot": "",
+      "options": ""
+    },
+    "spot_summary_freq": "hourly",
+    "options_summary_freq": "per_check"
+  }
+}

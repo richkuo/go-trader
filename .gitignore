@@ -8,3 +8,5 @@ trading_bot.db
 trading-scheduler
 logs/
 .venv/
+scheduler/config.json
+scheduler/state.json
