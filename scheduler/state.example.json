@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "strategies": {
+    "momentum-btc": {
+      "id": "momentum-btc",
+      "type": "spot",
+      "cash": 1000.0,
+      "initial_capital": 1000.0,
+      "positions": {},
+      "option_positions": {},
+      "trade_count": 0,
+      "portfolio_value": 1000.0,
+      "pnl": 0.0,
+      "pnl_pct": 0.0,
+      "risk_state": {
+        "peak_value": 1000.0,
+        "max_drawdown_pct": 60,
+        "current_drawdown_pct": 0.0,
+        "daily_pnl": 0.0,
+        "daily_pnl_date": "2026-01-01",
+        "consecutive_losses": 0,
+        "circuit_breaker": false,
+        "circuit_breaker_until": "0001-01-01T00:00:00Z",
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0
+      }
+    }
+  }
+}
