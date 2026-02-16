@@ -41,27 +41,14 @@ Ask in order:
 ```
 "Discord bot token for trade alerts?
 This will be used to post cycle summaries and trade notifications.
-Format: MTQ3..."
+Format: MTQ3...
+(Get from Discord Developer Portal)"
 ```
 
-Check if OpenClaw has a Discord bot token configured:
+Prompt for the token:
 ```bash
-BOT_TOKEN=$(openclaw config get channels.discord.token 2>/dev/null || echo "")
-```
-
-If not set, prompt for it and configure OpenClaw:
-```bash
-if [ -z "$BOT_TOKEN" ]; then
-  echo "OpenClaw doesn't have a Discord bot token configured."
-  echo "Discord bot token? (get from Discord Developer Portal)"
-  read USER_BOT_TOKEN
-  
-  openclaw config set channels.discord.token "$USER_BOT_TOKEN"
-  openclaw config set channels.discord.enabled true
-  
-  BOT_TOKEN="$USER_BOT_TOKEN"
-  echo "✓ Discord bot token configured in OpenClaw"
-fi
+echo "Discord bot token?"
+read BOT_TOKEN
 ```
 
 **Discord Channel IDs:**
@@ -141,18 +128,7 @@ Verify binary runs without errors.
 
 ### 9. Set up systemd service
 
-Copy the token to environment file:
-```bash
-# Create environment file for systemd
-cat > /etc/systemd/system/go-trader.env << EOF
-DISCORD_BOT_TOKEN=${BOT_TOKEN}
-EOF
-
-# Secure the env file
-chmod 600 /etc/systemd/system/go-trader.env
-```
-
-Install and start service:
+The Discord token is already in `scheduler/config.json`, so just install the service:
 ```bash
 sudo cp go-trader.service /etc/systemd/system/
 sudo systemctl daemon-reload
