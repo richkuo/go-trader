@@ -51,13 +51,22 @@ echo "Discord bot token?"
 read BOT_TOKEN
 ```
 
+**Discord Server (Guild) ID:**
+```
+"Discord server (guild) ID where you want alerts posted?
+Example: 1234567890123456789
+(Right-click server icon → Copy Server ID)"
+```
+
 **Discord Channel IDs:**
 ```
 "Discord channel ID for SPOT trading alerts?
-Example: 1234567890123456789"
+Example: 1111111111111111111
+(Right-click channel → Copy Channel ID)"
 
 "Discord channel ID for OPTIONS trading alerts?
-Example: 9876543210987654321"
+Example: 2222222222222222222
+(Right-click channel → Copy Channel ID)"
 ```
 
 **Exchange API Keys (optional for paper trading):**
@@ -66,10 +75,11 @@ Example: 9876543210987654321"
 "Binance API secret? (leave blank for paper trading mode)"
 ```
 
-### 5. Write values to config.json
+### 5. Write values to config.json and OpenClaw allowlist
 
 Update the Discord configuration:
 ```bash
+GUILD_ID="${USER_GUILD_ID}"
 SPOT_CHANNEL="${USER_SPOT_CHANNEL}"
 OPTIONS_CHANNEL="${USER_OPTIONS_CHANNEL}"
 
@@ -92,12 +102,16 @@ print("✓ Config updated")
 EOF
 ```
 
-**Important:** Ensure Discord channels are in OpenClaw's allowlist:
+**Add channels to OpenClaw's Discord allowlist:**
 ```bash
-if [ -n "$SPOT_CHANNEL" ] || [ -n "$OPTIONS_CHANNEL" ]; then
-  echo "✓ Discord configured"
-  echo "  Make sure these channels are in OpenClaw's Discord allowlist"
-  echo "  Run: openclaw config get channels.discord.guilds"
+if [ -n "$GUILD_ID" ] && [ -n "$SPOT_CHANNEL" ]; then
+  openclaw config set "channels.discord.guilds.${GUILD_ID}.channels.${SPOT_CHANNEL}.requireMention" false
+  echo "✓ Added spot channel ${SPOT_CHANNEL} to OpenClaw's allowlist"
+fi
+
+if [ -n "$GUILD_ID" ] && [ -n "$OPTIONS_CHANNEL" ]; then
+  openclaw config set "channels.discord.guilds.${GUILD_ID}.channels.${OPTIONS_CHANNEL}.requireMention" false
+  echo "✓ Added options channel ${OPTIONS_CHANNEL} to OpenClaw's allowlist"
 fi
 ```
 
@@ -144,13 +158,13 @@ curl -s localhost:8099/status | jq .
 
 ### 11. Confirm to user
 
-Determine mode:
+Determine mode and Discord status:
 ```bash
 MODE="paper trading"
 [ -n "$BINANCE_API_KEY" ] && MODE="live trading"
 
 DISCORD_STATUS="disabled"
-[ -n "$SPOT_CHANNEL" ] && DISCORD_STATUS="enabled → spot: ${SPOT_CHANNEL}, options: ${OPTIONS_CHANNEL}"
+[ -n "$GUILD_ID" ] && [ -n "$SPOT_CHANNEL" ] && DISCORD_STATUS="enabled (guild: ${GUILD_ID})"
 ```
 
 Message:
