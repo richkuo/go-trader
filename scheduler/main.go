@@ -122,7 +122,10 @@ func main() {
 		state.CycleCount++
 		cycle := state.CycleCount
 		totalTrades := 0
-		tradeDetails := make([]string, 0)
+		spotTrades := 0
+		optionsTrades := 0
+		spotTradeDetails := make([]string, 0)
+		optionsTradeDetails := make([]string, 0)
 
 		// Determine which strategies are due this tick
 		dueStrategies := make([]StrategyConfig, 0)
@@ -214,21 +217,27 @@ func main() {
 			switch sc.Type {
 			case "spot":
 				trades, detail = processSpot(sc, stratState, prices, logger)
+				if trades > 0 && detail != "" {
+					spotTradeDetails = append(spotTradeDetails, detail)
+				}
+				spotTrades += trades
 			case "options":
 				trades, detail = processOptions(sc, stratState, logger)
 				// Run theta harvesting check on options positions
 				if sc.ThetaHarvest != nil {
 					harvestTrades, harvestDetails := CheckThetaHarvest(stratState, sc.ThetaHarvest, logger)
 					trades += harvestTrades
-					tradeDetails = append(tradeDetails, harvestDetails...)
+					optionsTradeDetails = append(optionsTradeDetails, harvestDetails...)
 				}
+				if trades > 0 && detail != "" {
+					optionsTradeDetails = append(optionsTradeDetails, detail)
+				}
+				optionsTrades += trades
 			default:
 				logger.Error("Unknown strategy type: %s", sc.Type)
 			}
 
-			if trades > 0 && detail != "" {
-				tradeDetails = append(tradeDetails, detail)
-			}
+			totalTrades += trades
 
 			// Update option positions with live Deribit prices
 			mu.Lock()
@@ -251,12 +260,21 @@ func main() {
 			lastRun[sc.ID] = time.Now()
 		}
 
-		// Calculate total portfolio value
+		// Calculate total portfolio value and separate spot/options values
 		mu.RLock()
 		totalValue := 0.0
+		spotValue := 0.0
+		optionsValue := 0.0
 		for _, sc := range cfg.Strategies {
 			if s, ok := state.Strategies[sc.ID]; ok {
-				totalValue += PortfolioValue(s, prices)
+				pv := PortfolioValue(s, prices)
+				totalValue += pv
+				cat := stratCategory(sc.ID)
+				if cat == "spot" {
+					spotValue += pv
+				} else {
+					optionsValue += pv
+				}
 			}
 		}
 		mu.RUnlock()
@@ -281,8 +299,8 @@ func main() {
 			}
 			
 			// Send spot summary (hourly or with trades)
-			if spotRan && (cycle%12 == 0 || totalTrades > 0) && cfg.Discord.Channels.Spot != "" {
-				msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue, prices, tradeDetails, cfg.Strategies, state, "spot")
+			if spotRan && (cycle%12 == 0 || spotTrades > 0) && cfg.Discord.Channels.Spot != "" {
+				msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), spotTrades, spotValue, prices, spotTradeDetails, cfg.Strategies, state, "spot")
 				if err := discord.SendMessage(cfg.Discord.Channels.Spot, msg); err != nil {
 					fmt.Printf("[WARN] Discord spot summary failed: %v\n", err)
 				}
@@ -290,7 +308,7 @@ func main() {
 			
 			// Send options summary (every run or with trades)
 			if optionsRan && cfg.Discord.Channels.Options != "" {
-				msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue, prices, tradeDetails, cfg.Strategies, state, "options")
+				msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), optionsTrades, optionsValue, prices, optionsTradeDetails, cfg.Strategies, state, "options")
 				if err := discord.SendMessage(cfg.Discord.Channels.Options, msg); err != nil {
 					fmt.Printf("[WARN] Discord options summary failed: %v\n", err)
 				}
