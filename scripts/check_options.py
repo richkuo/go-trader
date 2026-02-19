@@ -654,11 +654,19 @@ def main():
     strategy_name = sys.argv[1]
     underlying = sys.argv[2].upper()
 
-    # Parse existing positions from Go scheduler
+    # Parse existing positions from Go scheduler.
+    # Prefer stdin (avoids /proc/pid/cmdline leakage); fall back to argv[3] for manual testing.
     existing_positions = []
     if len(sys.argv) > 3:
         try:
             existing_positions = json.loads(sys.argv[3])
+        except (json.JSONDecodeError, ValueError):
+            pass
+    elif not sys.stdin.isatty():
+        try:
+            stdin_data = sys.stdin.read().strip()
+            if stdin_data:
+                existing_positions = json.loads(stdin_data)
         except (json.JSONDecodeError, ValueError):
             pass
 

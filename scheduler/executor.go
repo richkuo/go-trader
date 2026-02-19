@@ -73,6 +73,52 @@ func RunSpotCheck(script string, args []string) (*SpotResult, string, error) {
 	return &result, stderrStr, nil
 }
 
+// RunPythonScriptWithStdin executes a Python script, piping stdinData to its stdin.
+func RunPythonScriptWithStdin(script string, args []string, stdinData []byte) ([]byte, []byte, error) {
+	pythonSemaphore <- struct{}{}
+	defer func() { <-pythonSemaphore }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
+	defer cancel()
+
+	cmdArgs := append([]string{script}, args...)
+	cmd := exec.CommandContext(ctx, ".venv/bin/python3", cmdArgs...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Stdin = bytes.NewReader(stdinData)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		if cmd.Process != nil {
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("script timed out after %s", scriptTimeout)
+	}
+	return stdout.Bytes(), stderr.Bytes(), err
+}
+
+// RunOptionsCheckWithStdin runs check_options.py, passing positionsJSON via stdin.
+func RunOptionsCheckWithStdin(script string, args []string, positionsJSON string) (*OptionsResult, string, error) {
+	stdout, stderr, err := RunPythonScriptWithStdin(script, args, []byte(positionsJSON))
+	stderrStr := string(stderr)
+	if err != nil {
+		var result OptionsResult
+		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
+			return &result, stderrStr, nil
+		}
+		return nil, stderrStr, fmt.Errorf("script error: %w (stderr: %s)", err, stderrStr)
+	}
+
+	var result OptionsResult
+	if err := json.Unmarshal(stdout, &result); err != nil {
+		return nil, stderrStr, fmt.Errorf("parse output: %w (stdout: %s)", err, string(stdout))
+	}
+	return &result, stderrStr, nil
+}
+
 // RunOptionsCheck runs check_options.py and parses the result.
 func RunOptionsCheck(script string, args []string) (*OptionsResult, string, error) {
 	stdout, stderr, err := RunPythonScript(script, args)

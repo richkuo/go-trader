@@ -407,14 +407,11 @@ func processSpot(sc StrategyConfig, s *StrategyState, prices map[string]float64,
 }
 
 func processOptions(sc StrategyConfig, s *StrategyState, logger *StrategyLogger) (int, string) {
-	// Pass current positions as JSON so script can do portfolio-aware scoring
+	// Pass current positions via stdin to avoid /proc/pid/cmdline leakage (#35).
 	posJSON := EncodePositionsJSON(s.OptionPositions)
-	args := make([]string, len(sc.Args)+1)
-	copy(args, sc.Args)
-	args[len(sc.Args)] = posJSON
 	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
 
-	result, stderr, err := RunOptionsCheck(sc.Script, args)
+	result, stderr, err := RunOptionsCheckWithStdin(sc.Script, sc.Args, posJSON)
 	if err != nil {
 		logger.Error("Script failed: %v", err)
 		if stderr != "" {
