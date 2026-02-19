@@ -29,6 +29,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to load state: %v\n", err)
 		os.Exit(1)
 	}
+	ValidateState(state)
 
 	// Initialize strategy states for any new strategies
 	for _, sc := range cfg.Strategies {

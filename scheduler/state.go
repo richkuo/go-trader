@@ -83,6 +83,45 @@ func LoadState(path string) (*AppState, error) {
 	return &state, nil
 }
 
+// ValidateState checks loaded state for invalid entries and removes or clamps them (#39).
+// Logs warnings for each corrected field rather than refusing to start.
+func ValidateState(state *AppState) {
+	for id, s := range state.Strategies {
+		if s.InitialCapital <= 0 {
+			fmt.Printf("[WARN] state: strategy %s has invalid initial_capital=%g, resetting to 0\n", id, s.InitialCapital)
+			s.InitialCapital = 0
+		}
+		if s.Cash < 0 {
+			fmt.Printf("[WARN] state: strategy %s has negative cash=%g, clamping to 0\n", id, s.Cash)
+			s.Cash = 0
+		}
+		for sym, pos := range s.Positions {
+			if pos.Quantity <= 0 {
+				fmt.Printf("[WARN] state: strategy %s position %s has invalid quantity=%g, removing\n", id, sym, pos.Quantity)
+				delete(s.Positions, sym)
+			}
+		}
+		for key, op := range s.OptionPositions {
+			valid := true
+			if op.Action != "buy" && op.Action != "sell" {
+				fmt.Printf("[WARN] state: strategy %s option %s has invalid action=%q, removing\n", id, key, op.Action)
+				valid = false
+			}
+			if op.OptionType != "call" && op.OptionType != "put" {
+				fmt.Printf("[WARN] state: strategy %s option %s has invalid option_type=%q, removing\n", id, key, op.OptionType)
+				valid = false
+			}
+			if op.Quantity <= 0 {
+				fmt.Printf("[WARN] state: strategy %s option %s has invalid quantity=%g, removing\n", id, key, op.Quantity)
+				valid = false
+			}
+			if !valid {
+				delete(s.OptionPositions, key)
+			}
+		}
+	}
+}
+
 func SaveState(path string, state *AppState) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
