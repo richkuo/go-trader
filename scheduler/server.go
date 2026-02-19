@@ -10,13 +10,26 @@ import (
 
 // StatusServer provides an HTTP endpoint for portfolio status.
 type StatusServer struct {
-	state       *AppState
-	mu          *sync.RWMutex
-	statusToken string // if non-empty, /status requires Authorization: Bearer <token>
+	state        *AppState
+	mu           *sync.RWMutex
+	statusToken  string   // if non-empty, /status requires Authorization: Bearer <token>
+	priceSymbols []string // symbols to always fetch prices for
 }
 
-func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string) *StatusServer {
-	return &StatusServer{state: state, mu: mu, statusToken: statusToken}
+func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig) *StatusServer {
+	// Extract all traded symbols from strategy configs so prices are always fetched,
+	// even when no positions are open.
+	symbolSet := make(map[string]bool)
+	for _, sc := range strategies {
+		if sc.Type == "spot" && len(sc.Args) >= 2 {
+			symbolSet[sc.Args[1]] = true // e.g., "BTC/USDT"
+		}
+	}
+	symbols := make([]string, 0, len(symbolSet))
+	for s := range symbolSet {
+		symbols = append(symbols, s)
+	}
+	return &StatusServer{state: state, mu: mu, statusToken: statusToken, priceSymbols: symbols}
 }
 
 func (ss *StatusServer) Start(port int) {
@@ -60,10 +73,13 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Collect symbols under a brief read lock — do NOT call FetchPrices while holding the lock
-	// since FetchPrices runs a subprocess that can take up to 30s.
-	ss.mu.RLock()
+	// Always fetch prices for all configured symbols + any with open positions.
 	symbolSet := make(map[string]bool)
+	for _, sym := range ss.priceSymbols {
+		symbolSet[sym] = true
+	}
+	// Also include symbols from open positions (in case config changed).
+	ss.mu.RLock()
 	for _, s := range ss.state.Strategies {
 		for sym := range s.Positions {
 			symbolSet[sym] = true
