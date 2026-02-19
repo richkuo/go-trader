@@ -5,11 +5,24 @@
 - Python venv at `.venv/bin/python3` (used by executor.go at runtime)
 - Python deps managed with `uv` (see `pyproject.toml` / `uv.lock`)
 
+## Setup
+- `uv sync` — install Python deps into `.venv`
+- Copy `scheduler/config.example.json` → `scheduler/config.json` and fill in API keys
+
 ## Repo Structure
 - `scheduler/` — Go scheduler (single `package main`); all .go files compile together
+  - `executor.go` — Python subprocess runner; max 4 concurrent, 30s timeout per script
+  - `server.go` — HTTP status server (`/status`, `/health` endpoints)
+  - `discord.go` — Discord alert notifications
 - `scripts/` — Python strategy scripts called as subprocesses by the scheduler
+  - `check_strategy.py` — spot strategy signal checker
+  - `check_options.py` / `check_options_ibkr.py` — options signal checkers (Deribit / IBKR)
+  - `check_price.py` — price check script
 - `core/` — shared Python data utilities (data_fetcher, storage)
 - `strategies/` — strategy logic imported by check_strategy.py
+- `options/` — IBKR options adapter (`ibkr_adapter.py`, `options_adapter.py`, etc.)
+- `backtest/` — backtesting and paper trading scripts
+- `archive/` — retired/unused modules
 
 ## Key Patterns
 - Scheduler communicates with Python scripts via subprocess stdout JSON; scripts must always output valid JSON even on error
@@ -19,6 +32,7 @@
 - Per-strategy loop uses 6 fine-grained lock phases: RLock(read inputs) → Lock(CheckRisk) → no lock(subprocess) → Lock(execute signal) → RLock/no lock/Lock(mark prices) → RLock(status log)
 - Audit lock balance: `grep -n "mu\.\(R\)\?Lock\(\)\|mu\.\(R\)\?Unlock\(\)" scheduler/main.go`
 - `deribit_utils.py` is imported by `check_options.py` — both must be updated together for Deribit API changes
+- State persisted to `scheduler/state.json` (path set in config); survives restarts
 
 ## Build & Deploy
 - Build: `cd scheduler && /usr/local/go/bin/go build -o ../go-trader .`
@@ -30,5 +44,7 @@
 
 ## Testing
 - `python3 -m py_compile <file>` — syntax check Python files
-- `go build ./scheduler/` — compile check (requires Go in PATH)
-- No automated test suite; smoke test with `./go-trader --once`
+- `go build ./scheduler/` — compile check (requires Go in PATH; skip if unavailable)
+- `go test ./scheduler/` — run unit tests in `risk_test.go` (requires Go in PATH)
+- Smoke test: `./go-trader --once`
+- Run with config: `./go-trader --config scheduler/config.json`

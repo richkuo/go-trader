@@ -14,7 +14,7 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | 1   | **RecordTradeResult never called** — ConsecutiveLosses always 0, win/loss counters inert, consecutive-loss circuit breaker dead code             | [ORIG] | YES     | 4        |
 | 2   | **Double trade counting** — `totalTrades += trades` appears twice per options strategy                                                           | [ORIG] | YES     | 2        |
 | 3   | **Go append slice mutation** — `args := append(sc.Args, posJSON)` could mutate backing array                                                     | [ORIG] | YES     | 3        |
-| 4   | **Butterfly quantity ignored** — Middle leg quantity=2 from Python ignored; Go hardcodes Quantity:1.0                                            | [ORIG] | YES     | 4        |
+| 4   | **Butterfly quantity ignored** — Middle leg quantity=2 from Python ignored; Go hardcodes Quantity:1.0                                            | [ORIG] | needs review | 4        |
 | 5   | **DTE uses local time** — `time.Until(expiry)` mixes local Now() with UTC expiry date. 1-day error on non-UTC servers                            | [ORIG] | YES     | 4        |
 | 6   | **Protective puts always fire** — Returns signal=1 every cycle regardless of existing holdings                                                   | [ORIG] | YES     | 5        |
 | 7   | **Covered calls always fire** — Returns signal=-1 every cycle                                                                                    | [ORIG] | YES     | 5        |
@@ -40,7 +40,7 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | 27  | **Daily PnL reset is naive** — Resets on first check after midnight UTC, breaks if check missed at boundary                                      | [NEW]  | YES     | 2        |
 | 28  | **No expiry/assignment modeling** — Sold ITM options treated as worthless at expiry instead of modeling assignment                               | [NEW]  | YES     | 4        |
 | 29  | **Subprocess orphan risk** — No process group management, no concurrency limit on Python processes                                               | [NEW]  | YES     | 3        |
-| 30  | **Global state in Python Order class** — `_id_counter` class variable not thread-safe, resets on restart (in unused exchange_adapter.py)         | [NEW]  | YES     | 1        |
+| 30  | **Global state in Python Order class** — `_id_counter` class variable not thread-safe, resets on restart (in unused exchange_adapter.py)         | [NEW]  | needs review | 1        |
 
 
 ## Security
@@ -127,10 +127,10 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 
 | Category  | Total  | Fixed  | Unfixed                |
 | --------- | ------ | ------ | ---------------------- |
-| Bug       | 30     | 27     | 2 (+1 partial)         |
+| Bug       | 30     | 28     | 2 (needs review)       |
 | Security  | 9      | 9      | 0                      |
 | Feature   | 19     | 1      | 18                     |
 | Other     | 16     | 2      | 14                     |
-| **Total** | **74** | **39** | **32**                 |
+| **Total** | **74** | **40** | **34**                 |
 
 
