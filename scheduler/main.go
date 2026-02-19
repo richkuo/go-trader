@@ -211,7 +211,7 @@ func main() {
 				pv := PortfolioValue(stratState, prices)
 				var posJSON string
 				if sc.Type == "options" {
-					posJSON = EncodePositionsJSON(stratState.OptionPositions)
+					posJSON = EncodeAllPositionsJSON(stratState.OptionPositions, stratState.Positions)
 				}
 				mu.RUnlock()
 

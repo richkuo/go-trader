@@ -283,6 +283,13 @@ type markResult struct {
 	Greeks          OptGreeks
 	Expired         bool // position should be deleted after applying
 	Fetched         bool // price was successfully retrieved
+	// Assignment fields — set when a sold option expires ITM.
+	Assigned         bool
+	AssignUnderlying string
+	AssignOptionType string // "put" or "call"
+	AssignStrike     float64
+	AssignSpotPrice  float64
+	AssignQuantity   float64
 }
 
 // collectMarkRequests reads position data and computes DTE. Call under RLock.
@@ -316,24 +323,41 @@ func fetchMarkPrices(requests []markRequest, pricer *DeribitPricer, logger *Stra
 		if req.Expired {
 			spotPrice, spotErr := pricer.fetchSpotPrice(req.Underlying)
 			intrinsic := 0.0
+			itm := false
 			if spotErr == nil && spotPrice > 0 {
 				if req.OptionType == "put" && spotPrice < req.Strike {
 					intrinsic = (req.Strike - spotPrice) * req.Quantity
+					itm = true
 				} else if req.OptionType == "call" && spotPrice > req.Strike {
 					intrinsic = (spotPrice - req.Strike) * req.Quantity
+					itm = true
 				}
 			}
 			currentValue := intrinsic
 			if req.Action == "sell" {
 				currentValue = -intrinsic
 			}
-			logger.Info("Position %s expired (DTE=%.1f), intrinsic=$%.2f, scheduling removal", req.ID, req.DTE, intrinsic)
-			results = append(results, markResult{
+			res := markResult{
 				ID:              req.ID,
 				DTE:             req.DTE,
 				CurrentValueUSD: currentValue,
 				Expired:         true,
-			})
+			}
+			// Sold options that expire ITM trigger assignment / call-away.
+			if req.Action == "sell" && itm {
+				res.Assigned = true
+				res.AssignUnderlying = req.Underlying
+				res.AssignOptionType = req.OptionType
+				res.AssignStrike = req.Strike
+				res.AssignSpotPrice = spotPrice
+				res.AssignQuantity = req.Quantity
+			}
+			assignedStr := ""
+			if res.Assigned {
+				assignedStr = " [ASSIGNED]"
+			}
+			logger.Info("Position %s expired (DTE=%.1f), intrinsic=$%.2f%s, scheduling removal", req.ID, req.DTE, intrinsic, assignedStr)
+			results = append(results, res)
 			continue
 		}
 
@@ -370,12 +394,84 @@ func applyMarkResults(s *StrategyState, results []markResult, logger *StrategyLo
 		if r.Expired {
 			pos.CurrentValueUSD = r.CurrentValueUSD
 			delete(s.OptionPositions, r.ID)
-			logger.Info("Removed expired position %s", r.ID)
+			if r.Assigned {
+				applyAssignment(s, r, logger)
+			} else {
+				logger.Info("Removed expired position %s (OTM, worthless)", r.ID)
+			}
 			continue
 		}
 		if r.Fetched {
 			pos.CurrentValueUSD = r.CurrentValueUSD
 			pos.Greeks = r.Greeks
 		}
+	}
+}
+
+// applyAssignment models option assignment for expired sold ITM options. Call under Lock.
+func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
+	symbol := strings.ToUpper(r.AssignUnderlying)
+	switch r.AssignOptionType {
+	case "put":
+		// Sold put ITM: we are obligated to buy the underlying at strike.
+		cost := r.AssignStrike * r.AssignQuantity
+		s.Cash -= cost
+		if existing, ok := s.Positions[symbol]; ok && existing.Side == "long" {
+			// Weighted average cost with existing long position.
+			totalQty := existing.Quantity + r.AssignQuantity
+			existing.AvgCost = (existing.AvgCost*existing.Quantity + r.AssignStrike*r.AssignQuantity) / totalQty
+			existing.Quantity = totalQty
+		} else {
+			s.Positions[symbol] = &Position{
+				Symbol:   symbol,
+				Quantity: r.AssignQuantity,
+				AvgCost:  r.AssignStrike,
+				Side:     "long",
+			}
+		}
+		s.TradeHistory = append(s.TradeHistory, Trade{
+			Timestamp:  time.Now().UTC(),
+			StrategyID: s.ID,
+			Symbol:     symbol,
+			Side:       "buy",
+			Quantity:   r.AssignQuantity,
+			Price:      r.AssignStrike,
+			Value:      cost,
+			TradeType:  "assignment",
+			Details: fmt.Sprintf("Wheel assignment: sold put expired ITM (spot=$%.2f), bought %.4f %s @ $%.0f",
+				r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike),
+		})
+		logger.Info("ASSIGNMENT: sold put %s-%.0f expired ITM (spot=$%.2f), bought %.4f %s @ $%.0f (cash debit=$%.2f)",
+			r.AssignUnderlying, r.AssignStrike, r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, cost)
+
+	case "call":
+		// Sold call ITM (call-away): we must sell the underlying at strike.
+		proceeds := r.AssignStrike * r.AssignQuantity
+		s.Cash += proceeds
+		pnl := 0.0
+		if existing, ok := s.Positions[symbol]; ok && existing.Side == "long" {
+			pnl = (r.AssignStrike - existing.AvgCost) * r.AssignQuantity
+			newQty := existing.Quantity - r.AssignQuantity
+			if newQty <= 0 {
+				delete(s.Positions, symbol)
+			} else {
+				existing.Quantity = newQty
+			}
+			RecordTradeResult(&s.RiskState, pnl)
+		}
+		s.TradeHistory = append(s.TradeHistory, Trade{
+			Timestamp:  time.Now().UTC(),
+			StrategyID: s.ID,
+			Symbol:     symbol,
+			Side:       "sell",
+			Quantity:   r.AssignQuantity,
+			Price:      r.AssignStrike,
+			Value:      proceeds,
+			TradeType:  "assignment",
+			Details: fmt.Sprintf("Wheel call-away: sold call expired ITM (spot=$%.2f), sold %.4f %s @ $%.0f PnL=$%.2f",
+				r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, pnl),
+		})
+		logger.Info("CALL-AWAY: sold call %s-%.0f expired ITM (spot=$%.2f), sold %.4f %s @ $%.0f (proceeds=$%.2f, PnL=$%.2f)",
+			r.AssignUnderlying, r.AssignStrike, r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, proceeds, pnl)
 	}
 }

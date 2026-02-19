@@ -32,7 +32,7 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | 19  | **Hardcoded premiums** — Option premiums are hardcoded percentages unrelated to live IV/market quotes. Paper P&L unreliable                      | [ORIG] | YES     |
 | 20  | **Greeks not updated from Deribit** — Stale from entry time, never refreshed despite Deribit ticker providing live Greeks                        | [BOTH] | YES     |
 | 21  | **Pairs strategies broken** — Requires close_b column for second asset. Data fetcher provides single asset only. Degrades to self-mean-reversion | [NEW]  | NO      |
-| 22  | **Wheel strategy incomplete** — Phase 2 (covered calls after assignment) described but never implemented                                         | [ORIG] | PARTIAL |
+| 22  | **Wheel strategy incomplete** — Phase 2 (covered calls after assignment) described but never implemented                                         | [ORIG] | YES     |
 | 23  | **Wheel collateral model broken** — Sells puts with strike >> allocated capital. No margin enforcement                                           | [NEW]  | YES     |
 | 24  | **Logger ignores LogDir config** — NewLogManager discards argument, all output to stdout                                                         | [BOTH] | YES     |
 | 25  | **Deribit expiry fallback too loose** — Could match expiry weeks away from target                                                                | [NEW]  | PARTIAL |

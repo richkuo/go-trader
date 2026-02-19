@@ -302,6 +302,62 @@ func EncodePositionsJSON(positions map[string]*OptionPosition) string {
 	return string(b)
 }
 
+// EncodeAllPositionsJSON serializes both option and spot positions into a single JSON array.
+// Spot positions include "position_type": "spot" so Python wheel logic can distinguish them.
+// Option entries omit position_type (backward-compatible: existing Python code ignores unknown items).
+func EncodeAllPositionsJSON(optPos map[string]*OptionPosition, spotPos map[string]*Position) string {
+	// Use interface{} slice so option and spot entries can coexist in one array.
+	type optEntry struct {
+		OptionType string  `json:"option_type"`
+		Strike     float64 `json:"strike"`
+		Expiry     string  `json:"expiry"`
+		DTE        float64 `json:"dte"`
+		Action     string  `json:"action"`
+		Premium    float64 `json:"entry_premium_usd"`
+		Delta      float64 `json:"delta"`
+		Gamma      float64 `json:"gamma"`
+		Theta      float64 `json:"theta"`
+		Vega       float64 `json:"vega"`
+	}
+	type spotEntry struct {
+		PositionType string  `json:"position_type"` // always "spot"
+		Symbol       string  `json:"symbol"`
+		Quantity     float64 `json:"quantity"`
+		AvgCost      float64 `json:"avg_cost"`
+		Side         string  `json:"side"`
+	}
+
+	var out []interface{}
+	for _, p := range optPos {
+		out = append(out, optEntry{
+			OptionType: p.OptionType,
+			Strike:     p.Strike,
+			Expiry:     p.Expiry,
+			DTE:        p.DTE,
+			Action:     p.Action,
+			Premium:    p.EntryPremiumUSD,
+			Delta:      p.Greeks.Delta,
+			Gamma:      p.Greeks.Gamma,
+			Theta:      p.Greeks.Theta,
+			Vega:       p.Greeks.Vega,
+		})
+	}
+	for _, p := range spotPos {
+		out = append(out, spotEntry{
+			PositionType: "spot",
+			Symbol:       p.Symbol,
+			Quantity:     p.Quantity,
+			AvgCost:      p.AvgCost,
+			Side:         p.Side,
+		})
+	}
+	if len(out) == 0 {
+		return "[]"
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
+}
+
 // CheckThetaHarvest evaluates open options positions for early exit.
 // Returns trade details for any positions that were closed.
 func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *StrategyLogger) (int, []string) {

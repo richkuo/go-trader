@@ -38,6 +38,21 @@ MIN_SCORE_THRESHOLD = 0.3
 adapter = IBKRPaperAdapter()
 
 
+def parse_positions_context(raw_positions):
+    """
+    Split the combined position list sent by Go into option and spot position lists.
+    Spot entries carry position_type="spot"; option entries have no position_type field.
+    """
+    option_positions = []
+    spot_positions = []
+    for p in (raw_positions or []):
+        if isinstance(p, dict) and p.get("position_type") == "spot":
+            spot_positions.append(p)
+        elif isinstance(p, dict):
+            option_positions.append(p)
+    return option_positions, spot_positions
+
+
 def evaluate_vol_mean_reversion(underlying, spot_price, hist_vol, iv_rank):
     """
     Volatility mean reversion on CME crypto options.
@@ -308,41 +323,88 @@ def score_new_trade(proposed_action, existing_positions, spot_price):
     return round(score, 2), "; ".join(reasons) if reasons else "default"
 
 
-def evaluate_wheel(underlying, spot_price, hist_vol, iv_rank):
+def evaluate_wheel(underlying, spot_price, hist_vol, iv_rank,
+                   existing_positions=None, spot_positions=None):
     """
-    Wheel strategy on CME crypto options (IBKR).
-    Sell cash-secured puts to collect premium and aim for good entry.
+    Wheel strategy on CME crypto options (IBKR) — full lifecycle:
+    Phase 1 (no spot holdings): Sell cash-secured OTM puts (6% OTM, 37 DTE).
+    Phase 2 (spot holdings from assignment): Sell OTM covered calls (10% OTM, 21 DTE).
     """
-    signal = -1  # Sell puts (step 1 of wheel)
-    actions = []
+    if existing_positions is None:
+        existing_positions = []
+    if spot_positions is None:
+        spot_positions = []
 
-    # Target 37 DTE, 6% OTM put
-    dte = 37
-    expiry_date = datetime.now(timezone.utc) + timedelta(days=dte)
-    expiry_str = expiry_date.strftime("%Y-%m-%d")
-    
-    # Strike interval (BTC=$1000, ETH=$50)
     interval = 1000 if underlying == "BTC" else 50
-    strike_target = spot_price * 0.94  # 6% OTM
-    strike = round(strike_target / interval) * interval
-    
-    # Use adapter's estimate_premium method
-    est = adapter.estimate_premium(underlying, spot_price, strike, dte, hist_vol, "put")
-    
-    actions.append({
-        "action": "sell",
-        "option_type": "put",
-        "strike": strike,
-        "expiry": expiry_str,
-        "dte": dte,
-        "premium": round(est["premium_per_unit"] / spot_price, 4),
-        "premium_usd": est["premium_usd"],
-        "multiplier": est.get("multiplier", adapter.get_multiplier(underlying)),
-        "contract_spec": "CME_MICRO",
-        "greeks": est["greeks"],
-    })
-    
-    return signal, actions
+    multiplier = adapter.get_multiplier(underlying)
+
+    # Detect whether we have spot holdings from a prior put assignment.
+    has_assigned_spot = any(
+        p.get("symbol", "").upper() == underlying.upper()
+        and p.get("side") == "long"
+        and p.get("quantity", 0) > 0
+        for p in spot_positions
+    )
+
+    if has_assigned_spot:
+        # Phase 2: sell covered call against the spot position.
+        has_active_call = any(
+            p.get("option_type") == "call" and p.get("action") == "sell"
+            for p in existing_positions
+        )
+        if has_active_call:
+            return 0, []
+
+        dte = 21
+        expiry_date = datetime.now(timezone.utc) + timedelta(days=dte)
+        expiry_str = expiry_date.strftime("%Y-%m-%d")
+        strike_target = spot_price * 1.10  # 10% OTM call
+        strike = math.ceil(strike_target / interval) * interval
+
+        est = adapter.estimate_premium(underlying, spot_price, strike, dte, hist_vol, "call")
+        return -1, [{
+            "action": "sell",
+            "option_type": "call",
+            "strike": strike,
+            "expiry": expiry_str,
+            "dte": dte,
+            "premium": round(est["premium_per_unit"] / spot_price, 4),
+            "premium_usd": est["premium_usd"],
+            "multiplier": multiplier,
+            "contract_spec": "CME_MICRO",
+            "greeks": est["greeks"],
+            "wheel_phase": 2,
+        }]
+
+    else:
+        # Phase 1: sell cash-secured put.
+        has_wheel_put = any(
+            p.get("option_type") == "put" and p.get("action") == "sell"
+            for p in existing_positions
+        )
+        if has_wheel_put:
+            return 0, []
+
+        dte = 37
+        expiry_date = datetime.now(timezone.utc) + timedelta(days=dte)
+        expiry_str = expiry_date.strftime("%Y-%m-%d")
+        strike_target = spot_price * 0.94  # 6% OTM put
+        strike = round(strike_target / interval) * interval
+
+        est = adapter.estimate_premium(underlying, spot_price, strike, dte, hist_vol, "put")
+        return -1, [{
+            "action": "sell",
+            "option_type": "put",
+            "strike": strike,
+            "expiry": expiry_str,
+            "dte": dte,
+            "premium": round(est["premium_per_unit"] / spot_price, 4),
+            "premium_usd": est["premium_usd"],
+            "multiplier": est.get("multiplier", multiplier),
+            "contract_spec": "CME_MICRO",
+            "greeks": est["greeks"],
+            "wheel_phase": 1,
+        }]
 
 
 def evaluate_butterfly(underlying, spot_price, hist_vol, iv_rank):
@@ -442,14 +504,24 @@ def main():
     strategy_name = sys.argv[1]
     underlying = sys.argv[2].upper()
 
-    existing_positions = []
+    raw_positions = []
     if len(sys.argv) > 3:
         try:
-            existing_positions = json.loads(sys.argv[3])
+            raw_positions = json.loads(sys.argv[3])
+        except (json.JSONDecodeError, ValueError):
+            pass
+    elif not sys.stdin.isatty():
+        try:
+            stdin_data = sys.stdin.read().strip()
+            if stdin_data:
+                raw_positions = json.loads(stdin_data)
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # Hard cap
+    # Split combined Go payload; cap check counts only option positions.
+    existing_positions, spot_positions = parse_positions_context(raw_positions)
+
+    # Hard cap (option positions only)
     if len(existing_positions) >= MAX_POSITIONS_PER_STRATEGY:
         print(json.dumps({
             "strategy": strategy_name,
@@ -497,9 +569,16 @@ def main():
         hist_vol, iv_rank = calc_vol_and_iv_rank(underlying)
 
         evaluate_fn = STRATEGY_MAP[strategy_name]
-        signal, actions = evaluate_fn(underlying, spot_price, hist_vol, iv_rank)
+        # Wheel receives spot_positions to detect phase (put-sell vs covered-call).
+        if strategy_name == "wheel":
+            signal, actions = evaluate_fn(
+                underlying, spot_price, hist_vol, iv_rank,
+                existing_positions, spot_positions
+            )
+        else:
+            signal, actions = evaluate_fn(underlying, spot_price, hist_vol, iv_rank)
 
-        # Score actions
+        # Score actions against option positions only
         scored_actions = []
         for action in actions:
             score, reason = score_new_trade(action, existing_positions, spot_price)

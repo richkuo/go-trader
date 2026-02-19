@@ -132,6 +132,21 @@ def get_real_strike(underlying, expiry_str, option_type, target_strike):
         return round(target_strike / 50) * 50
 
 
+def parse_positions_context(raw_positions):
+    """
+    Split the combined position list sent by Go into option and spot position lists.
+    Spot entries carry position_type="spot"; option entries have no position_type field.
+    """
+    option_positions = []
+    spot_positions = []
+    for p in (raw_positions or []):
+        if isinstance(p, dict) and p.get("position_type") == "spot":
+            spot_positions.append(p)
+        elif isinstance(p, dict):
+            option_positions.append(p)
+    return option_positions, spot_positions
+
+
 
 def compute_iv_rank(returns, window=14):
     """
@@ -449,16 +464,17 @@ def evaluate_covered_calls(underlying, spot_price, existing_positions=None):
         return 0, [], 0
 
 
-def evaluate_wheel(underlying, spot_price, existing_positions=None):
+def evaluate_wheel(underlying, spot_price, existing_positions=None, spot_positions=None):
     """
-    Wheel strategy — sell cash-secured puts, if assigned sell covered calls.
-    Phase 1: Sell puts to collect premium (aiming for assignment at good entry)
-    Phase 2: If "assigned" (simulated), sell calls against position
-    
-    For paper trading: we simulate assignment when put goes ITM at expiry.
+    Wheel strategy — full lifecycle:
+    Phase 1 (no spot holdings): Sell cash-secured OTM puts to collect premium.
+    Phase 2 (spot holdings from assignment): Sell OTM covered calls against the holding.
+    Transitions back to Phase 1 once calls expire or are called away.
     """
     if existing_positions is None:
         existing_positions = []
+    if spot_positions is None:
+        spot_positions = []
     try:
         import ccxt
         exchange = ccxt.binanceus({"enableRateLimit": True})
@@ -475,33 +491,71 @@ def evaluate_wheel(underlying, spot_price, existing_positions=None):
         vol_annual = recent_vol / 100.0
         iv_rank = compute_iv_rank(returns)
 
-        # Wheel: sell 5-8% OTM puts, 30-45 DTE, target 1.5-2.5% premium
-        # Only open a new position if not already in a wheel position
-        has_wheel_position = any(
-            p.get("option_type") == "put" and p.get("action") == "sell"
-            for p in existing_positions
+        # Detect whether we have spot holdings from a prior put assignment.
+        has_assigned_spot = any(
+            p.get("symbol", "").upper() == underlying.upper()
+            and p.get("side") == "long"
+            and p.get("quantity", 0) > 0
+            for p in spot_positions
         )
-        if has_wheel_position:
-            return 0, [], round(iv_rank, 1)
 
-        signal = -1
-        expiry_str, dte = get_real_expiry(underlying, 37)
-        target_strike = spot_price * 0.94  # 6% OTM
-        strike = get_real_strike(underlying, expiry_str, "put", target_strike)
-        premium_pct, premium_usd, greeks = get_premium_and_greeks(underlying, "put", strike, expiry_str, dte, 0.020, spot_price, vol_annual)
+        if has_assigned_spot:
+            # Phase 2: sell covered call against the spot position.
+            has_active_call = any(
+                p.get("option_type") == "call" and p.get("action") == "sell"
+                for p in existing_positions
+            )
+            if has_active_call:
+                return 0, [], round(iv_rank, 1)
 
-        actions = [{
-            "action": "sell",
-            "option_type": "put",
-            "strike": strike,
-            "expiry": expiry_str,
-            "dte": dte,
-            "premium": premium_pct,
-            "premium_usd": premium_usd,
-            "greeks": greeks
-        }]
+            signal = -1
+            expiry_str, dte = get_real_expiry(underlying, 21)
+            target_strike = spot_price * 1.10  # 10% OTM call
+            strike = get_real_strike(underlying, expiry_str, "call", target_strike)
+            premium_pct, premium_usd, greeks = get_premium_and_greeks(
+                underlying, "call", strike, expiry_str, dte, 0.020, spot_price, vol_annual
+            )
+            actions = [{
+                "action": "sell",
+                "option_type": "call",
+                "strike": strike,
+                "expiry": expiry_str,
+                "dte": dte,
+                "premium": premium_pct,
+                "premium_usd": premium_usd,
+                "greeks": greeks,
+                "wheel_phase": 2,
+            }]
+            return signal, actions, round(iv_rank, 1)
 
-        return signal, actions, round(iv_rank, 1)
+        else:
+            # Phase 1: sell cash-secured put.
+            has_wheel_put = any(
+                p.get("option_type") == "put" and p.get("action") == "sell"
+                for p in existing_positions
+            )
+            if has_wheel_put:
+                return 0, [], round(iv_rank, 1)
+
+            signal = -1
+            expiry_str, dte = get_real_expiry(underlying, 37)
+            target_strike = spot_price * 0.94  # 6% OTM put
+            strike = get_real_strike(underlying, expiry_str, "put", target_strike)
+            premium_pct, premium_usd, greeks = get_premium_and_greeks(
+                underlying, "put", strike, expiry_str, dte, 0.020, spot_price, vol_annual
+            )
+            actions = [{
+                "action": "sell",
+                "option_type": "put",
+                "strike": strike,
+                "expiry": expiry_str,
+                "dte": dte,
+                "premium": premium_pct,
+                "premium_usd": premium_usd,
+                "greeks": greeks,
+                "wheel_phase": 1,
+            }]
+            return signal, actions, round(iv_rank, 1)
 
     except Exception as e:
         print(f"Wheel evaluation failed: {e}", file=sys.stderr)
@@ -699,21 +753,25 @@ def main():
 
     # Parse existing positions from Go scheduler.
     # Prefer stdin (avoids /proc/pid/cmdline leakage); fall back to argv[3] for manual testing.
-    existing_positions = []
+    raw_positions = []
     if len(sys.argv) > 3:
         try:
-            existing_positions = json.loads(sys.argv[3])
+            raw_positions = json.loads(sys.argv[3])
         except (json.JSONDecodeError, ValueError):
             pass
     elif not sys.stdin.isatty():
         try:
             stdin_data = sys.stdin.read().strip()
             if stdin_data:
-                existing_positions = json.loads(stdin_data)
+                raw_positions = json.loads(stdin_data)
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # Hard cap check
+    # Split combined Go payload into option and spot positions.
+    # Cap check counts only option positions; spot holdings don't consume strategy slots.
+    existing_positions, spot_positions = parse_positions_context(raw_positions)
+
+    # Hard cap check (option positions only)
     if len(existing_positions) >= MAX_POSITIONS_PER_STRATEGY:
         print(json.dumps({
             "strategy": strategy_name,
@@ -756,9 +814,13 @@ def main():
             return
 
         evaluate_fn = STRATEGY_MAP[strategy_name]
-        signal, actions, iv_rank = evaluate_fn(underlying, spot_price, existing_positions)
+        # Wheel receives spot_positions to detect phase (put-sell vs covered-call).
+        if strategy_name == "wheel":
+            signal, actions, iv_rank = evaluate_fn(underlying, spot_price, existing_positions, spot_positions)
+        else:
+            signal, actions, iv_rank = evaluate_fn(underlying, spot_price, existing_positions)
 
-        # Score each proposed action against existing positions
+        # Score each proposed action against option positions only
         scored_actions = []
         for action in actions:
             score, reason = score_new_trade(action, existing_positions, spot_price)
