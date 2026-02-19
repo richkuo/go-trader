@@ -20,6 +20,14 @@
 - Audit lock balance: `grep -n "mu\.\(R\)\?Lock\(\)\|mu\.\(R\)\?Unlock\(\)" scheduler/main.go`
 - `deribit_utils.py` is imported by `check_options.py` — both must be updated together for Deribit API changes
 
+## Build & Deploy
+- Build: `cd scheduler && /usr/local/go/bin/go build -o ../go-trader .`
+- Restart: `systemctl restart go-trader`
+- Only needed when `scheduler/*.go` files change
+- Python script changes take effect on next scheduler cycle (no rebuild needed)
+- Config changes: `systemctl restart go-trader` (no rebuild)
+- Service file changes: `systemctl daemon-reload && systemctl restart go-trader`
+
 ## Testing
 - `python3 -m py_compile <file>` — syntax check Python files
 - `go build ./scheduler/` — compile check (requires Go in PATH)
