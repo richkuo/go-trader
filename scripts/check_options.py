@@ -85,9 +85,12 @@ def bs_greeks(spot, strike, dte_days, vol_annual, option_type):
         delta = _norm_cdf(d1) - 1
     gamma = pdf_d1 / (spot * vol_annual * sqrt_t) if (spot * vol_annual * sqrt_t) > 0 else 0.0
     vega = spot * pdf_d1 * sqrt_t / 100.0  # per 1% vol change
-    theta_annual = -(spot * pdf_d1 * vol_annual) / (2 * sqrt_t) - 0.05 * strike * math.exp(-0.05 * t) * (
-        _norm_cdf(d2) if option_type.lower() == "call" else _norm_cdf(-d2)
-    )
+    decay = -(spot * pdf_d1 * vol_annual) / (2 * sqrt_t)
+    rterm = 0.05 * strike * math.exp(-0.05 * t)
+    if option_type.lower() == "call":
+        theta_annual = decay - rterm * _norm_cdf(d2)
+    else:
+        theta_annual = decay + rterm * _norm_cdf(-d2)
     theta = theta_annual / 365.0  # daily
     return {
         "delta": round(delta, 4),
@@ -109,10 +112,11 @@ def get_premium_and_greeks(underlying, option_type, strike, expiry_str, dte, fal
             mark = quote["mark_price"]
             premium_usd = round(mark * spot_price, 2)
             return mark, premium_usd, quote["greeks"]
-    premium_pct, premium_usd = get_premium(underlying, option_type, strike, expiry_str, fallback_pct, spot_price)
+    # Live quote unavailable — use fallback premium and BS Greeks.
+    # Skip the second API call inside get_premium() by computing fallback directly.
     vol = vol_annual if vol_annual is not None and vol_annual > 0 else 0.5
     greeks = bs_greeks(spot_price, strike, dte, vol, option_type)
-    return premium_pct, premium_usd, greeks
+    return fallback_pct, round(fallback_pct * spot_price, 2), greeks
 
 
 def get_real_strike(underlying, expiry_str, option_type, target_strike):
@@ -214,7 +218,7 @@ def evaluate_momentum_options(underlying, spot_price, existing_positions=None):
             # Get real Deribit expiry closest to 37 DTE
             expiry_str, dte = get_real_expiry(underlying, 37)
             returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-            vol_annual = (math.sqrt(sum(r**2 for r in returns[-14:]) / max(len(returns[-14:]), 1)) * math.sqrt(365)) / 100.0 if len(returns) >= 14 else None
+            vol_annual = math.sqrt(sum(r**2 for r in returns[-14:]) / max(len(returns[-14:]), 1)) * math.sqrt(365) if len(returns) >= 14 else None
 
             if signal == 1:
                 target_strike = spot_price * 1.02  # slightly OTM call
