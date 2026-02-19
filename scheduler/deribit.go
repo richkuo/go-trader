@@ -152,6 +152,12 @@ func (d *DeribitPricer) findNearestExpiry(underlying, optionType string, strike 
 		return "", fmt.Errorf("no matching strike %.0f found", strike)
 	}
 
+	const maxToleranceSeconds = 7 * 24 * 3600
+	if minDiff > maxToleranceSeconds {
+		return "", fmt.Errorf("nearest expiry %s is %.1f days away, too far from target %s",
+			bestInstrument, float64(minDiff)/86400, targetExpiry)
+	}
+
 	return bestInstrument, nil
 }
 
