@@ -6,8 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"syscall"
 	"time"
 )
+
+// pythonSemaphore limits concurrent Python subprocess executions.
+var pythonSemaphore = make(chan struct{}, 4)
 
 const scriptTimeout = 30 * time.Second
 
@@ -25,11 +29,15 @@ type SpotResult struct {
 
 // RunPythonScript executes a Python script and returns stdout/stderr.
 func RunPythonScript(script string, args []string) ([]byte, []byte, error) {
+	pythonSemaphore <- struct{}{}
+	defer func() { <-pythonSemaphore }()
+
 	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
 	defer cancel()
 
 	cmdArgs := append([]string{script}, args...)
 	cmd := exec.CommandContext(ctx, ".venv/bin/python3", cmdArgs...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -37,6 +45,9 @@ func RunPythonScript(script string, args []string) ([]byte, []byte, error) {
 
 	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
+		if cmd.Process != nil {
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
 		return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("script timed out after %s", scriptTimeout)
 	}
 	return stdout.Bytes(), stderr.Bytes(), err
