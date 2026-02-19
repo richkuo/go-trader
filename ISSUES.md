@@ -90,7 +90,7 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 
 | #   | Issue                                                                                                   | Source | Fixed?  |
 | --- | ------------------------------------------------------------------------------------------------------- | ------ | ------- |
-| 59  | **Unused Python modules** — core/risk_manager.py and exchange_adapter.py never imported by Go scheduler | [BOTH] | NO      |
+| 59  | **Unused Python modules** — core/risk_manager.py and exchange_adapter.py never imported by Go scheduler | [BOTH] | YES     |
 | 60  | **check_options.py 700+ line mega-file** — 6 strategy functions with duplicated logic                   | [NEW]  | PARTIAL |
 | 61  | **Magic numbers throughout Go code** — 0.95 budget multiplier, hardcoded fee rates, 24h CB duration     | [NEW]  | NO      |
 | 62  | **main.go main() is 200+ lines** — Needs extraction into smaller functions                              | [NEW]  | NO      |
@@ -130,7 +130,7 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | Bug       | 30     | 26     | 2 (+1 N/A, +1 partial) |
 | Security  | 9      | 9      | 0                      |
 | Feature   | 19     | 1      | 18                     |
-| Other     | 16     | 0      | 15 (+1 partial)        |
-| **Total** | **74** | **36** | **35**                 |
+| Other     | 16     | 1      | 14 (+1 partial)        |
+| **Total** | **74** | **37** | **34**                 |
 
 

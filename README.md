@@ -112,9 +112,8 @@ trading-bot/
 │   ├── optimizer.py             # Walk-forward optimization
 │   └── reporter.py              # Performance reporting
 ├── core/                        # Shared infrastructure
-│   ├── exchange_adapter.py      # Binance US adapter
 │   ├── data_fetcher.py          # OHLCV data fetching
-│   └── risk_manager.py          # Spot risk management
+│   └── storage.py               # Local DB path config
 └── README.md
 ```
 
@@ -320,7 +319,7 @@ To rebuild this entire system from scratch, give an AI this prompt:
 >
 > **Options scoring system**: Before executing a new options trade, score it against existing positions. Factors: strike distance bonus (>10% apart = +0.4, <5% = -0.3), expiry spread bonus (different date = +0.3), Greek balancing (delta toward neutral = +0.2, skewing = -0.3), premium efficiency. Min score 0.3 to execute. Hard cap **4 positions per strategy**.
 >
-> **Directory structure**: `scheduler/` (Go source + config + state + deribit.go for live pricing), `scripts/` (stateless check scripts + deribit_utils.py for expiry/strike lookups), `strategies/` (spot strategies + indicators), `options/` (Deribit adapter, IBKR adapter, strategies, risk), `core/` (exchange adapter, data fetcher, risk manager), `backtest/` (backtesting tools incl. options backtester with Black-Scholes).
+> **Directory structure**: `scheduler/` (Go source + config + state + deribit.go for live pricing), `scripts/` (stateless check scripts + deribit_utils.py for expiry/strike lookups), `strategies/` (spot strategies + indicators), `options/` (Deribit adapter, IBKR adapter, strategies, risk), `core/` (data fetcher, storage), `backtest/` (backtesting tools incl. options backtester with Black-Scholes).
 >
 > **Tech stack**: Go 1.23+ for scheduler (standard library only, no external deps), Python 3.12+ with dependencies managed by [uv](https://github.com/astral-sh/uv) (ccxt 4.5.37, pandas 3.0.0, numpy 2.4.2). Go calls `.venv/bin/python3` for all Python scripts (isolated environment with lockfile). CCXT connects to Binance US for spot data. Deribit REST API (public endpoints, no auth) for live option pricing and expiry/strike lookups. Deploy as systemd service with Restart=always, stdout/stderr to /dev/null (no file logging).
 >
