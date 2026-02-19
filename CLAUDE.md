@@ -16,6 +16,8 @@
 - Python scripts exit 1 on error (Go parses JSON from stdout regardless of exit code)
 - Option positions stored in `StrategyState.OptionPositions map[string]*OptionPosition`
 - Mutex `mu sync.RWMutex` guards `state`; RLock for reads, Lock for all mutations
+- Per-strategy loop uses 6 fine-grained lock phases: RLock(read inputs) → Lock(CheckRisk) → no lock(subprocess) → Lock(execute signal) → RLock/no lock/Lock(mark prices) → RLock(status log)
+- Audit lock balance: `grep -n "mu\.\(R\)\?Lock\(\)\|mu\.\(R\)\?Unlock\(\)" scheduler/main.go`
 - `deribit_utils.py` is imported by `check_options.py` — both must be updated together for Deribit API changes
 
 ## Testing
