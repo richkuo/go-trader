@@ -151,7 +151,6 @@ def parse_positions_context(raw_positions):
     return option_positions, spot_positions
 
 
-
 def compute_iv_rank(returns, window=14):
     """
     Compute IV rank using a rolling historical-volatility approach.
@@ -186,24 +185,92 @@ def compute_iv_rank(returns, window=14):
     return round(min(max((recent_hv / max(hist_hv, 0.001)) * 50, 0.0), 100.0), 1)
 
 
+# ─────────────────────────────────────────────
+# Shared evaluation helpers
+# ─────────────────────────────────────────────
+
+def _fetch_ohlcv_closes(underlying, timeframe, limit, min_len):
+    """
+    Fetch OHLCV from Binance US and return a list of closing prices.
+    Returns None when data is missing or shorter than min_len.
+    Raises ccxt or network exceptions for the caller's except block to catch.
+    """
+    import ccxt
+    exchange = ccxt.binanceus({"enableRateLimit": True})
+    ohlcv = exchange.fetch_ohlcv(f"{underlying}/USDT", timeframe, limit=limit)
+    if not ohlcv or len(ohlcv) < min_len:
+        return None
+    return [c[4] for c in ohlcv]
+
+
+def _price_returns(closes):
+    """Compute simple percentage returns from a list of closing prices."""
+    return [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, len(closes))]
+
+
+def _vol_metrics(returns, window=14, safe_window=True):
+    """
+    Compute annualised volatility fraction and IV rank from a return series.
+
+    safe_window: when True (default), guards the window count against return
+      lists shorter than `window`.  Pass False for vol_mean_reversion, which
+      intentionally uses a fixed /14 divisor matching its original formula.
+
+    Returns (vol_annual, iv_rank).
+    """
+    divisor = max(len(returns[-window:]), 1) if safe_window else window
+    vol_annual = math.sqrt(sum(r ** 2 for r in returns[-window:]) / divisor) * math.sqrt(365)
+    iv_rank = compute_iv_rank(returns)
+    return vol_annual, iv_rank
+
+
+def _build_action(action, option_type, strike, expiry_str, dte,
+                  premium_pct, premium_usd, greeks, **extra):
+    """Construct a standard option action dict, merging any strategy-specific extra fields."""
+    d = {
+        "action": action,
+        "option_type": option_type,
+        "strike": strike,
+        "expiry": expiry_str,
+        "dte": dte,
+        "premium": premium_pct,
+        "premium_usd": premium_usd,
+        "greeks": greeks,
+    }
+    d.update(extra)
+    return d
+
+
+def _option_leg(underlying, action, option_type, target_strike,
+                expiry_str, dte, fallback_pct, spot_price, vol_annual, **extra):
+    """
+    Look up the nearest real strike, fetch premium + Greeks, and return an action dict.
+    Passes **extra straight through to _build_action (e.g. quantity=2, wheel_phase=1).
+    """
+    strike = get_real_strike(underlying, expiry_str, option_type, target_strike)
+    prem_pct, prem_usd, greeks = get_premium_and_greeks(
+        underlying, option_type, strike, expiry_str, dte, fallback_pct, spot_price, vol_annual
+    )
+    return _build_action(action, option_type, strike, expiry_str, dte,
+                         prem_pct, prem_usd, greeks, **extra)
+
+
+# ─────────────────────────────────────────────
+# Strategy evaluators
+# ─────────────────────────────────────────────
+
 def evaluate_momentum_options(underlying, spot_price, existing_positions=None):
     """
     Momentum-based options strategy.
     Uses ROC on 4h candles to determine direction, suggests calls/puts.
     """
     try:
-        import ccxt
-        exchange = ccxt.binanceus({"enableRateLimit": True})
-        symbol = f"{underlying}/USDT"
-        ohlcv = exchange.fetch_ohlcv(symbol, "4h", limit=100)
-
-        if not ohlcv or len(ohlcv) < 30:
+        closes = _fetch_ohlcv_closes(underlying, "4h", 100, 30)
+        if closes is None:
             return 0, [], 0
 
-        closes = [c[4] for c in ohlcv]
         roc_period = 14
         threshold = 5.0
-
         current_roc = (closes[-1] - closes[-1 - roc_period]) / closes[-1 - roc_period] * 100
         prev_roc = (closes[-2] - closes[-2 - roc_period]) / closes[-2 - roc_period] * 100
 
@@ -213,45 +280,22 @@ def evaluate_momentum_options(underlying, spot_price, existing_positions=None):
         elif current_roc < -threshold and prev_roc >= -threshold:
             signal = -1
 
+        returns = _price_returns(closes)
+        vol_annual, iv_rank = _vol_metrics(returns)
+
         actions = []
         if signal != 0:
-            # Get real Deribit expiry closest to 37 DTE
             expiry_str, dte = get_real_expiry(underlying, 37)
-            returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-            vol_annual = math.sqrt(sum(r**2 for r in returns[-14:]) / max(len(returns[-14:]), 1)) * math.sqrt(365) if len(returns) >= 14 else None
-
             if signal == 1:
-                target_strike = spot_price * 1.02  # slightly OTM call
-                strike = get_real_strike(underlying, expiry_str, "call", target_strike)
-                premium_pct, premium_usd, greeks = get_premium_and_greeks(underlying, "call", strike, expiry_str, dte, 0.045, spot_price, vol_annual)
-                actions.append({
-                    "action": "buy",
-                    "option_type": "call",
-                    "strike": strike,
-                    "expiry": expiry_str,
-                    "dte": dte,
-                    "premium": premium_pct,
-                    "premium_usd": premium_usd,
-                    "greeks": greeks
-                })
+                actions.append(_option_leg(
+                    underlying, "buy", "call", spot_price * 1.02,
+                    expiry_str, dte, 0.045, spot_price, vol_annual,
+                ))
             else:
-                target_strike = spot_price * 0.98  # slightly OTM put
-                strike = get_real_strike(underlying, expiry_str, "put", target_strike)
-                premium_pct, premium_usd, greeks = get_premium_and_greeks(underlying, "put", strike, expiry_str, dte, 0.040, spot_price, vol_annual)
-                actions.append({
-                    "action": "buy",
-                    "option_type": "put",
-                    "strike": strike,
-                    "expiry": expiry_str,
-                    "dte": dte,
-                    "premium": premium_pct,
-                    "premium_usd": premium_usd,
-                    "greeks": greeks
-                })
-
-        # Estimate IV rank via rolling HV windows
-        returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-        iv_rank = compute_iv_rank(returns)
+                actions.append(_option_leg(
+                    underlying, "buy", "put", spot_price * 0.98,
+                    expiry_str, dte, 0.040, spot_price, vol_annual,
+                ))
 
         return signal, actions, round(iv_rank, 1)
 
@@ -267,23 +311,13 @@ def evaluate_vol_mean_reversion(underlying, spot_price, existing_positions=None)
     High IV → sell premium, Low IV → buy straddles.
     """
     try:
-        import ccxt
-        exchange = ccxt.binanceus({"enableRateLimit": True})
-        symbol = f"{underlying}/USDT"
-        ohlcv = exchange.fetch_ohlcv(symbol, "1d", limit=90)
-
-        if not ohlcv or len(ohlcv) < 30:
+        closes = _fetch_ohlcv_closes(underlying, "1d", 90, 30)
+        if closes is None:
             return 0, [], 0
 
-        closes = [c[4] for c in ohlcv]
-
-        # Calculate historical volatility
-        returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-        recent_vol = math.sqrt(sum(r**2 for r in returns[-14:]) / 14) * math.sqrt(365) * 100
-        hist_vol = math.sqrt(sum(r**2 for r in returns) / len(returns)) * math.sqrt(365) * 100
-        vol_annual = recent_vol / 100.0
-
-        iv_rank = compute_iv_rank(returns)
+        returns = _price_returns(closes)
+        # safe_window=False preserves the original /14 fixed divisor for this strategy.
+        vol_annual, iv_rank = _vol_metrics(returns, safe_window=False)
 
         signal = 0
         actions = []
@@ -292,61 +326,27 @@ def evaluate_vol_mean_reversion(underlying, spot_price, existing_positions=None)
         if iv_rank > 75:
             # High IV → sell strangle
             signal = -1
-            call_target = spot_price * 1.10
-            put_target = spot_price * 0.90
-            call_strike = get_real_strike(underlying, expiry_str, "call", call_target)
-            put_strike = get_real_strike(underlying, expiry_str, "put", put_target)
-            call_pct, call_usd, call_greeks = get_premium_and_greeks(underlying, "call", call_strike, expiry_str, dte, 0.025, spot_price, vol_annual)
-            put_pct, put_usd, put_greeks = get_premium_and_greeks(underlying, "put", put_strike, expiry_str, dte, 0.020, spot_price, vol_annual)
             actions = [
-                {
-                    "action": "sell",
-                    "option_type": "call",
-                    "strike": call_strike,
-                    "expiry": expiry_str,
-                    "dte": dte,
-                    "premium": call_pct,
-                    "premium_usd": call_usd,
-                    "greeks": call_greeks
-                },
-                {
-                    "action": "sell",
-                    "option_type": "put",
-                    "strike": put_strike,
-                    "expiry": expiry_str,
-                    "dte": dte,
-                    "premium": put_pct,
-                    "premium_usd": put_usd,
-                    "greeks": put_greeks
-                }
+                _option_leg(underlying, "sell", "call", spot_price * 1.10,
+                            expiry_str, dte, 0.025, spot_price, vol_annual),
+                _option_leg(underlying, "sell", "put", spot_price * 0.90,
+                            expiry_str, dte, 0.020, spot_price, vol_annual),
             ]
         elif iv_rank < 25:
-            # Low IV → buy straddle
+            # Low IV → buy straddle (both legs share the same ATM strike)
             signal = 1
-            strike = get_real_strike(underlying, expiry_str, "call", spot_price)
-            call_pct, call_usd, call_greeks = get_premium_and_greeks(underlying, "call", strike, expiry_str, dte, 0.035, spot_price, vol_annual)
-            put_pct, put_usd, put_greeks = get_premium_and_greeks(underlying, "put", strike, expiry_str, dte, 0.030, spot_price, vol_annual)
+            atm_strike = get_real_strike(underlying, expiry_str, "call", spot_price)
+            call_pct, call_usd, call_greeks = get_premium_and_greeks(
+                underlying, "call", atm_strike, expiry_str, dte, 0.035, spot_price, vol_annual
+            )
+            put_pct, put_usd, put_greeks = get_premium_and_greeks(
+                underlying, "put", atm_strike, expiry_str, dte, 0.030, spot_price, vol_annual
+            )
             actions = [
-                {
-                    "action": "buy",
-                    "option_type": "call",
-                    "strike": strike,
-                    "expiry": expiry_str,
-                    "dte": dte,
-                    "premium": call_pct,
-                    "premium_usd": call_usd,
-                    "greeks": call_greeks
-                },
-                {
-                    "action": "buy",
-                    "option_type": "put",
-                    "strike": strike,
-                    "expiry": expiry_str,
-                    "dte": dte,
-                    "premium": put_pct,
-                    "premium_usd": put_usd,
-                    "greeks": put_greeks
-                }
+                _build_action("buy", "call", atm_strike, expiry_str, dte,
+                              call_pct, call_usd, call_greeks),
+                _build_action("buy", "put", atm_strike, expiry_str, dte,
+                              put_pct, put_usd, put_greeks),
             ]
 
         return signal, actions, round(iv_rank, 1)
@@ -365,20 +365,12 @@ def evaluate_protective_puts(underlying, spot_price, existing_positions=None):
     if existing_positions is None:
         existing_positions = []
     try:
-        import ccxt
-        exchange = ccxt.binanceus({"enableRateLimit": True})
-        symbol = f"{underlying}/USDT"
-        ohlcv = exchange.fetch_ohlcv(symbol, "1d", limit=30)
-
-        if not ohlcv or len(ohlcv) < 10:
+        closes = _fetch_ohlcv_closes(underlying, "1d", 30, 10)
+        if closes is None:
             return 0, [], 0
 
-        closes = [c[4] for c in ohlcv]
-        returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-        recent_vol = math.sqrt(sum(r**2 for r in returns[-14:]) / max(len(returns[-14:]), 1)) * math.sqrt(365) * 100
-        hist_vol = math.sqrt(sum(r**2 for r in returns) / len(returns)) * math.sqrt(365) * 100
-        vol_annual = recent_vol / 100.0
-        iv_rank = compute_iv_rank(returns)
+        returns = _price_returns(closes)
+        vol_annual, iv_rank = _vol_metrics(returns)
 
         # Only buy if not already holding a protective put
         has_protective_put = any(
@@ -390,20 +382,10 @@ def evaluate_protective_puts(underlying, spot_price, existing_positions=None):
 
         signal = 1
         expiry_str, dte = get_real_expiry(underlying, 45)
-        target_strike = spot_price * 0.88  # 12% OTM
-        strike = get_real_strike(underlying, expiry_str, "put", target_strike)
-        premium_pct, premium_usd, greeks = get_premium_and_greeks(underlying, "put", strike, expiry_str, dte, 0.015, spot_price, vol_annual)
-
-        actions = [{
-            "action": "buy",
-            "option_type": "put",
-            "strike": strike,
-            "expiry": expiry_str,
-            "dte": dte,
-            "premium": premium_pct,
-            "premium_usd": premium_usd,
-            "greeks": greeks
-        }]
+        actions = [
+            _option_leg(underlying, "buy", "put", spot_price * 0.88,
+                        expiry_str, dte, 0.015, spot_price, vol_annual),
+        ]
 
         return signal, actions, round(iv_rank, 1)
 
@@ -420,20 +402,12 @@ def evaluate_covered_calls(underlying, spot_price, existing_positions=None):
     if existing_positions is None:
         existing_positions = []
     try:
-        import ccxt
-        exchange = ccxt.binanceus({"enableRateLimit": True})
-        symbol = f"{underlying}/USDT"
-        ohlcv = exchange.fetch_ohlcv(symbol, "1d", limit=30)
-
-        if not ohlcv or len(ohlcv) < 10:
+        closes = _fetch_ohlcv_closes(underlying, "1d", 30, 10)
+        if closes is None:
             return 0, [], 0
 
-        closes = [c[4] for c in ohlcv]
-        returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-        recent_vol = math.sqrt(sum(r**2 for r in returns[-14:]) / max(len(returns[-14:]), 1)) * math.sqrt(365) * 100
-        hist_vol = math.sqrt(sum(r**2 for r in returns) / len(returns)) * math.sqrt(365) * 100
-        vol_annual = recent_vol / 100.0
-        iv_rank = compute_iv_rank(returns)
+        returns = _price_returns(closes)
+        vol_annual, iv_rank = _vol_metrics(returns)
 
         # Only sell if not already holding a covered call
         has_covered_call = any(
@@ -446,20 +420,10 @@ def evaluate_covered_calls(underlying, spot_price, existing_positions=None):
         # Sell covered calls — better when IV is higher
         signal = -1
         expiry_str, dte = get_real_expiry(underlying, 21)
-        target_strike = spot_price * 1.12  # 12% OTM
-        strike = get_real_strike(underlying, expiry_str, "call", target_strike)
-        premium_pct, premium_usd, greeks = get_premium_and_greeks(underlying, "call", strike, expiry_str, dte, 0.020, spot_price, vol_annual)
-
-        actions = [{
-            "action": "sell",
-            "option_type": "call",
-            "strike": strike,
-            "expiry": expiry_str,
-            "dte": dte,
-            "premium": premium_pct,
-            "premium_usd": premium_usd,
-            "greeks": greeks
-        }]
+        actions = [
+            _option_leg(underlying, "sell", "call", spot_price * 1.12,
+                        expiry_str, dte, 0.020, spot_price, vol_annual),
+        ]
 
         return signal, actions, round(iv_rank, 1)
 
@@ -480,20 +444,12 @@ def evaluate_wheel(underlying, spot_price, existing_positions=None, spot_positio
     if spot_positions is None:
         spot_positions = []
     try:
-        import ccxt
-        exchange = ccxt.binanceus({"enableRateLimit": True})
-        symbol = f"{underlying}/USDT"
-        ohlcv = exchange.fetch_ohlcv(symbol, "1d", limit=30)
-
-        if not ohlcv or len(ohlcv) < 10:
+        closes = _fetch_ohlcv_closes(underlying, "1d", 30, 10)
+        if closes is None:
             return 0, [], 0
 
-        closes = [c[4] for c in ohlcv]
-        returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-        recent_vol = math.sqrt(sum(r**2 for r in returns[-14:]) / max(len(returns[-14:]), 1)) * math.sqrt(365) * 100
-        hist_vol = math.sqrt(sum(r**2 for r in returns) / len(returns)) * math.sqrt(365) * 100
-        vol_annual = recent_vol / 100.0
-        iv_rank = compute_iv_rank(returns)
+        returns = _price_returns(closes)
+        vol_annual, iv_rank = _vol_metrics(returns)
 
         # Detect whether we have spot holdings from a prior put assignment.
         has_assigned_spot = any(
@@ -512,25 +468,13 @@ def evaluate_wheel(underlying, spot_price, existing_positions=None, spot_positio
             if has_active_call:
                 return 0, [], round(iv_rank, 1)
 
-            signal = -1
             expiry_str, dte = get_real_expiry(underlying, 21)
-            target_strike = spot_price * 1.10  # 10% OTM call
-            strike = get_real_strike(underlying, expiry_str, "call", target_strike)
-            premium_pct, premium_usd, greeks = get_premium_and_greeks(
-                underlying, "call", strike, expiry_str, dte, 0.020, spot_price, vol_annual
-            )
-            actions = [{
-                "action": "sell",
-                "option_type": "call",
-                "strike": strike,
-                "expiry": expiry_str,
-                "dte": dte,
-                "premium": premium_pct,
-                "premium_usd": premium_usd,
-                "greeks": greeks,
-                "wheel_phase": 2,
-            }]
-            return signal, actions, round(iv_rank, 1)
+            actions = [
+                _option_leg(underlying, "sell", "call", spot_price * 1.10,
+                            expiry_str, dte, 0.020, spot_price, vol_annual,
+                            wheel_phase=2),
+            ]
+            return -1, actions, round(iv_rank, 1)
 
         else:
             # Phase 1: sell cash-secured put.
@@ -541,25 +485,13 @@ def evaluate_wheel(underlying, spot_price, existing_positions=None, spot_positio
             if has_wheel_put:
                 return 0, [], round(iv_rank, 1)
 
-            signal = -1
             expiry_str, dte = get_real_expiry(underlying, 37)
-            target_strike = spot_price * 0.94  # 6% OTM put
-            strike = get_real_strike(underlying, expiry_str, "put", target_strike)
-            premium_pct, premium_usd, greeks = get_premium_and_greeks(
-                underlying, "put", strike, expiry_str, dte, 0.020, spot_price, vol_annual
-            )
-            actions = [{
-                "action": "sell",
-                "option_type": "put",
-                "strike": strike,
-                "expiry": expiry_str,
-                "dte": dte,
-                "premium": premium_pct,
-                "premium_usd": premium_usd,
-                "greeks": greeks,
-                "wheel_phase": 1,
-            }]
-            return signal, actions, round(iv_rank, 1)
+            actions = [
+                _option_leg(underlying, "sell", "put", spot_price * 0.94,
+                            expiry_str, dte, 0.020, spot_price, vol_annual,
+                            wheel_phase=1),
+            ]
+            return -1, actions, round(iv_rank, 1)
 
     except Exception as e:
         print(f"Wheel evaluation failed: {e}", file=sys.stderr)
@@ -577,20 +509,12 @@ def evaluate_butterfly(underlying, spot_price, existing_positions=None):
     Best when expecting price to trade in a range (low volatility).
     """
     try:
-        import ccxt
-        exchange = ccxt.binanceus({"enableRateLimit": True})
-        symbol = f"{underlying}/USDT"
-        ohlcv = exchange.fetch_ohlcv(symbol, "1d", limit=30)
-
-        if not ohlcv or len(ohlcv) < 10:
+        closes = _fetch_ohlcv_closes(underlying, "1d", 30, 10)
+        if closes is None:
             return 0, [], 0
 
-        closes = [c[4] for c in ohlcv]
-        returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-        recent_vol = math.sqrt(sum(r**2 for r in returns[-14:]) / max(len(returns[-14:]), 1)) * math.sqrt(365) * 100
-        hist_vol = math.sqrt(sum(r**2 for r in returns) / len(returns)) * math.sqrt(365) * 100
-        vol_annual = recent_vol / 100.0
-        iv_rank = compute_iv_rank(returns)
+        returns = _price_returns(closes)
+        vol_annual, iv_rank = _vol_metrics(returns)
 
         # Only trade butterfly when volatility is moderate (not too high, not too low)
         # High IV = expensive to buy wings, Low IV = not enough premium
@@ -600,56 +524,15 @@ def evaluate_butterfly(underlying, spot_price, existing_positions=None):
         # Butterfly setup: ±5% wing width, 30 DTE
         signal = 1  # Neutral (buying butterfly)
         expiry_str, dte = get_real_expiry(underlying, 30)
-        
-        # Use call butterfly (can also do put butterfly, same P&L)
-        lower_target = spot_price * 0.95  # 5% below
-        middle_target = spot_price  # ATM
-        upper_target = spot_price * 1.05  # 5% above
-        
-        lower_strike = get_real_strike(underlying, expiry_str, "call", lower_target)
-        middle_strike = get_real_strike(underlying, expiry_str, "call", middle_target)
-        upper_strike = get_real_strike(underlying, expiry_str, "call", upper_target)
-        
-        # Premiums and Greeks (live or BS fallback) per leg
-        lower_premium_pct, lower_premium_usd, lower_greeks = get_premium_and_greeks(underlying, "call", lower_strike, expiry_str, dte, 0.055, spot_price, vol_annual)
-        middle_premium_pct, middle_premium_usd, middle_greeks = get_premium_and_greeks(underlying, "call", middle_strike, expiry_str, dte, 0.035, spot_price, vol_annual)
-        upper_premium_pct, upper_premium_usd, upper_greeks = get_premium_and_greeks(underlying, "call", upper_strike, expiry_str, dte, 0.015, spot_price, vol_annual)
-
-        # Net debit = lower + upper - 2*middle
-        net_debit_pct = lower_premium_pct + upper_premium_pct - (2 * middle_premium_pct)
 
         actions = [
-            {
-                "action": "buy",
-                "option_type": "call",
-                "strike": lower_strike,
-                "expiry": expiry_str,
-                "dte": dte,
-                "premium": lower_premium_pct,
-                "premium_usd": lower_premium_usd,
-                "greeks": lower_greeks
-            },
-            {
-                "action": "sell",
-                "option_type": "call",
-                "strike": middle_strike,
-                "expiry": expiry_str,
-                "dte": dte,
-                "premium": middle_premium_pct,
-                "premium_usd": middle_premium_usd,
-                "greeks": middle_greeks,
-                "quantity": 2  # Sell 2 middle strikes
-            },
-            {
-                "action": "buy",
-                "option_type": "call",
-                "strike": upper_strike,
-                "expiry": expiry_str,
-                "dte": dte,
-                "premium": upper_premium_pct,
-                "premium_usd": upper_premium_usd,
-                "greeks": upper_greeks
-            }
+            _option_leg(underlying, "buy", "call", spot_price * 0.95,
+                        expiry_str, dte, 0.055, spot_price, vol_annual),
+            _option_leg(underlying, "sell", "call", spot_price,
+                        expiry_str, dte, 0.035, spot_price, vol_annual,
+                        quantity=2),
+            _option_leg(underlying, "buy", "call", spot_price * 1.05,
+                        expiry_str, dte, 0.015, spot_price, vol_annual),
         ]
 
         return signal, actions, round(iv_rank, 1)
