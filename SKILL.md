@@ -1,168 +1,381 @@
-# Go Trading Bot Setup Skill
+# Agent Setup Guide — go-trader
 
-This skill guides setup of the Go trading bot (spot + options crypto strategies with Discord alerts).
+This is a step-by-step guide for AI agents to set up go-trader. Follow each step in order. Every user-facing prompt includes the exact text to present and what to do with the response.
 
-## Invocation
-User says: "Set up go-trader", "Install go trading bot", or "Configure go-trader"
+**For OpenClaw agents:** This file is the skill entry point. Read it when a user says "set up go-trader", "install go trading bot", or "configure go-trader".
 
-## Prerequisites
-- OpenClaw agent with filesystem access
-- Go runtime (1.23.6+) — on this server: `/usr/local/go/bin/go`
-- Python 3.12+ with uv package manager
-- Git installed
+---
 
-## Setup Flow
+## Step 1: Prerequisites
 
-### 1. Check Existing Installation
+Check each prerequisite. Install anything missing (ask user before installing).
+
+### 1a. Python 3.12+
 ```bash
-test -f scheduler/config.json && echo "EXISTS" || echo "FRESH"
+python3 --version
 ```
-If config exists, ask: "go-trader is already configured. Do you want to reconfigure or just update?"
+If missing or < 3.12, ask:
+> Python 3.12+ is required. Want me to install it?
 
-### 2. Clone Repository (if needed)
+### 1b. uv (Python package manager)
 ```bash
-cd /root/.openclaw/workspace
+uv --version 2>/dev/null || echo "NOT_INSTALLED"
+```
+If missing, install:
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### 1c. Go runtime (1.23+)
+```bash
+go version 2>/dev/null || /usr/local/go/bin/go version 2>/dev/null || echo "NOT_INSTALLED"
+```
+If missing, ask:
+> Go 1.23+ is required to build the scheduler. Want me to install it?
+
+Install with:
+```bash
+curl -sL https://go.dev/dl/go1.23.6.linux-amd64.tar.gz | tar -C /usr/local -xzf -
+```
+Note: Go may not be in PATH. Use `/usr/local/go/bin/go` if `go` doesn't resolve.
+
+### 1d. Git
+```bash
+git --version
+```
+
+---
+
+## Step 2: Clone Repository
+
+Check if already installed:
+```bash
+test -d go-trader/scheduler && echo "EXISTS" || echo "FRESH"
+```
+
+**If EXISTS**, ask:
+> go-trader is already installed. Do you want to:
+> 1. Reconfigure (keep code, redo setup)
+> 2. Update (pull latest + rebuild)
+> 3. Fresh install (delete and start over)
+
+**If FRESH:**
+```bash
 git clone https://github.com/richkuo/go-trader.git
 cd go-trader
 ```
 
-### 3. Create Config from Example
+---
+
+## Step 3: Install Python Dependencies
+
 ```bash
-cp scheduler/config.example.json scheduler/config.json
-cp scheduler/state.example.json scheduler/state.json
+cd go-trader
+uv sync
 ```
+**Verify:** `.venv/bin/python3` should exist after this.
 
-### 4. Gather User Input
+No user input needed for this step.
 
-Prompt for each value in order. Explain what each is for and where to find it.
+---
 
-#### 4a. Discord Setup
+## Step 4: Discord Configuration
 
-**Discord Bot Token:**
-> I need your Discord bot token for trade alerts. This posts cycle summaries and trade notifications to your server.
+Ask:
+> Do you want Discord trade alerts? The bot will post summaries and trade notifications to Discord channels.
 >
-> Get it from the [Discord Developer Portal](https://discord.com/developers/applications) → your bot → Bot → Token.
->
-> Format: `MTQ3MDAwMDE2...`
->
-> **Security note:** I'll store this as an environment variable in the systemd service, not in config.json.
+> (yes / no)
 
-If user provides token, store it for step 7. If blank, Discord alerts will be disabled.
+### If no:
+Set `discord.enabled = false` in config. Skip to Step 5.
 
-**Discord Channel for Spot Alerts:**
-> Which Discord channel should receive **spot trading** alerts? These include:
-> - Hourly summaries with PnL per strategy (BTC/ETH/SOL momentum, RSI, MACD, etc.)
+### If yes:
+
+#### 4a. Discord Bot Token
+Ask:
+> I need your Discord bot token. This is used to post trade alerts.
+>
+> Where to find it: [Discord Developer Portal](https://discord.com/developers/applications) → your application → Bot → Token
+>
+> **Security:** I'll store this as a systemd environment variable, not in config files.
+>
+> Paste your bot token:
+
+Store the token for use in Step 8 (systemd service). Do NOT write it to config.json.
+
+#### 4b. Spot Alerts Channel
+Ask:
+> Which Discord channel should receive **spot trading** alerts?
+>
+> This channel will get:
+> - Hourly summaries showing PnL for each spot strategy (BTC/ETH/SOL)
 > - Immediate notifications when a spot trade executes
 >
-> I need the **channel ID** — right-click the channel → Copy Channel ID.
-> (Enable Developer Mode in Discord Settings → Advanced if you don't see this option.)
+> I need the **channel ID** — right-click the channel → "Copy Channel ID"
+> (Enable Developer Mode in Discord Settings → Advanced if you don't see this option)
+>
+> Spot channel ID:
 
-**Discord Channel for Options Alerts:**
-> Which Discord channel should receive **options trading** alerts? These include:
+#### 4c. Options Alerts Channel
+Ask:
+> Which Discord channel should receive **options trading** alerts?
+>
+> This channel will get:
 > - Per-check summaries split by exchange (Deribit + IBKR)
-> - Individual strategy PnL with trade history
-> - Immediate notifications on options trades
+> - Individual strategy PnL with recent trade history
+> - Immediate trade notifications
 >
-> This can be the same channel as spot, or a different one to keep things organized.
-> I need the **channel ID**.
-
-**Discord Server (Guild) ID:**
-> What's the Discord server ID where these channels live?
-> Right-click the server icon → Copy Server ID.
+> This can be the same channel as spot, or a different one.
 >
-> I need this to add the channels to OpenClaw's Discord allowlist so the bot can post there.
+> Options channel ID:
 
-**Summary Frequency (optional):**
-> How often should spot summaries post?
-> - `hourly` (default) — one summary per hour, trades posted immediately
-> - `per_check` — summary every 5 minutes (noisy)
+#### 4d. Discord Server (Guild) ID
+Ask:
+> What's the Discord server (guild) ID where these channels are?
 >
-> Options summaries always post per-check (every 20 minutes).
-
-Default to `hourly` for spot, `per_check` for options if user doesn't specify.
-
-#### 4b. Exchange API Keys
-
-**Binance API Key (optional):**
-> Do you have Binance API credentials for live trading?
-> Leave blank to run in **paper trading mode** (simulated trades, no real money).
+> Right-click the server icon → "Copy Server ID"
 >
-> Paper mode is recommended for initial setup — you can add API keys later.
+> Server ID:
 
-If blank, skip Binance secret prompt.
+Store this for OpenClaw allowlist configuration in Step 7.
 
-#### 4c. Capital & Risk (optional)
+#### 4e. Summary Frequency
+Ask:
+> How often should spot summaries post to Discord?
+>
+> 1. **Hourly** (recommended) — one summary per hour, trades posted immediately
+> 2. **Per check** — summary every 5 minutes (can be noisy)
+>
+> Options summaries always post per check (every 20 minutes).
+>
+> Your preference: (1 or 2, default: 1)
 
-**Per-Strategy Capital:**
-> Each strategy starts with $1,000 by default. Want a different amount?
-> This applies to all 30 strategies (14 spot + 16 options).
+Map response:
+- 1 or blank → `"hourly"`
+- 2 → `"per_check"`
 
-**Max Drawdown:**
-> Default max drawdown is 60% for spot, 20% for options. Circuit breakers pause trading when hit.
-> Want to customize?
+---
 
-Most users should keep defaults.
+## Step 5: Trading Configuration
 
-### 5. Write Configuration
+#### 5a. Trading Mode
+Ask:
+> Do you want to run in paper trading mode (simulated) or live trading?
+>
+> **Paper mode** (recommended): No real money. Simulates trades with virtual capital. Good for testing strategies before going live.
+>
+> **Live mode**: Requires exchange API keys. Real trades with real money.
+>
+> (paper / live, default: paper)
 
-**Update config.json:**
-```python
-python3 << 'EOF'
-import json
+**If live**, prompt for exchange API keys:
+> Binance API key:
+> Binance API secret:
 
-with open('scheduler/config.json', 'r') as f:
-    config = json.load(f)
+Store these for the systemd environment in Step 8.
 
-# Discord channels (token goes in env var, NOT config)
-config['discord']['enabled'] = True
-config['discord']['token'] = ''  # Intentionally blank — use env var
-config['discord']['channels']['spot'] = '${SPOT_CHANNEL}'
-config['discord']['channels']['options'] = '${OPTIONS_CHANNEL}'
-config['discord']['spot_summary_freq'] = '${SPOT_FREQ}'
-config['discord']['options_summary_freq'] = '${OPTIONS_FREQ}'
+#### 5b. Per-Strategy Capital
+Ask:
+> How much starting capital per strategy (in USD)?
+>
+> Default is $1,000 per strategy. With 30 strategies, that's $30,000 total paper capital.
+>
+> You can change individual strategy amounts later in the config.
+>
+> Capital per strategy: (default: 1000)
 
-with open('scheduler/config.json', 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
+#### 5c. Risk Tolerance — Max Drawdown
+Ask:
+> What's your maximum drawdown tolerance? When a strategy's losses exceed this percentage, a circuit breaker pauses trading for 24 hours.
+>
+> - **Spot strategies** default: 60%
+> - **Options strategies** default: 20% (options are more volatile)
+>
+> Do you want to customize these, or use the defaults?
+>
+> 1. Use defaults (recommended)
+> 2. Set custom values
+>
+> (1 or 2, default: 1)
 
-print("✓ Config written")
-EOF
-```
+**If 2:**
+> Max drawdown for spot strategies (%, default: 60):
+> Max drawdown for options strategies (%, default: 20):
 
-**Add channels to OpenClaw's Discord allowlist:**
-This is required so the bot (which shares OpenClaw's Discord token) can post to these channels.
+---
+
+## Step 6: Strategy Selection
+
+Ask:
+> go-trader comes with 30 strategies across three groups:
+>
+> **Spot (14 strategies)** — BTC, ETH, SOL on Binance
+>   momentum, RSI, MACD, volume-weighted, pairs spread
+>
+> **Deribit Options (8 strategies)** — BTC, ETH options
+>   vol mean reversion, momentum, puts, calls, wheel, butterfly
+>
+> **IBKR/CME Options (8 strategies)** — BTC, ETH options (CME Micro)
+>   Same 6 strategies as Deribit, for head-to-head comparison
+>
+> Do you want to:
+> 1. **Run all 30** (recommended for paper trading)
+> 2. **Choose by group** (enable/disable spot, Deribit, IBKR)
+> 3. **Pick individual strategies**
+>
+> (1, 2, or 3, default: 1)
+
+### If 1 (all strategies):
+Use the full default strategy set. Skip to Step 6b.
+
+### If 2 (by group):
+Ask for each group:
+> Enable **spot strategies** (momentum, RSI, MACD, volume-weighted, pairs on BTC/ETH/SOL)? (yes/no, default: yes)
+> Enable **Deribit options** (vol MR, momentum, puts, calls, wheel, butterfly on BTC/ETH)? (yes/no, default: yes)
+> Enable **IBKR/CME options** (same strategies as Deribit, CME Micro contracts)? (yes/no, default: yes)
+
+### If 3 (individual):
+Present each strategy and ask yes/no. Group them for readability:
+
+> **Spot Strategies** (5-minute checks):
+>
+> | # | Strategy | Assets | Description | Enable? |
+> |---|----------|--------|-------------|---------|
+> | 1 | momentum | BTC, ETH, SOL | Rate of change breakouts | (y/n) |
+> | 2 | rsi | BTC, ETH, SOL | Buy oversold, sell overbought | (y/n) |
+> | 3 | macd | BTC, ETH | MACD/signal crossovers | (y/n) |
+> | 4 | volume_weighted | BTC, ETH, SOL | Trend + volume confirmation | (y/n) |
+> | 5 | pairs_spread | BTC/ETH, BTC/SOL, ETH/SOL | Spread z-score stat arb | (y/n) |
+>
+> Which spot strategies do you want? (e.g., "1,2,4" or "all" or "none")
+
+Then repeat for options:
+> **Deribit Options** (20-minute checks, BTC + ETH each):
+>
+> | # | Strategy | Description | Enable? |
+> |---|----------|-------------|---------|
+> | 1 | vol_mean_reversion | High IV → sell strangles, Low IV → buy straddles | (y/n) |
+> | 2 | momentum_options | ROC breakout → directional options | (y/n) |
+> | 3 | protective_puts | Buy 12% OTM puts, 45 DTE | (y/n) |
+> | 4 | covered_calls | Sell 12% OTM calls, 21 DTE | (y/n) |
+> | 5 | wheel | Sell 6% OTM puts, 37 DTE | (y/n) |
+> | 6 | butterfly | ±5% wing butterfly spread, 30 DTE | (y/n) |
+>
+> Which Deribit strategies? (e.g., "1,3,6" or "all" or "none")
+
+> **IBKR/CME Options** — Same strategies as Deribit but using CME Micro contracts:
+>
+> Run the same selection as Deribit, or choose differently?
+> 1. Same as Deribit
+> 2. Choose individually
+> 3. None
+>
+> (1, 2, or 3)
+
+### 6b. Theta Harvesting (Options)
+Only ask if any options strategies were enabled:
+
+Ask:
+> **Theta harvesting** lets the bot close sold options early instead of holding to expiry:
+> - **Profit target**: Close when X% of premium captured (e.g., 60%)
+> - **Stop loss**: Close if loss exceeds X% of premium (e.g., 200% = 2× premium)
+> - **Min DTE**: Force-close when fewer than N days to expiry (avoid gamma risk)
+>
+> Do you want to configure theta harvesting?
+> 1. **Enable with defaults** (60% profit, 200% stop, 3 days min DTE) — recommended
+> 2. **Custom values**
+> 3. **Disable** (options ride to expiry or circuit breaker)
+>
+> (1, 2, or 3, default: 1)
+
+**If 2:**
+> Profit target (% of premium to capture before closing, default: 60):
+> Stop loss (% of premium loss before closing, default: 200):
+> Minimum DTE to force-close (days, default: 3):
+
+---
+
+## Step 7: Write Configuration
+
+Using all gathered inputs, generate `scheduler/config.json`.
+
+### 7a. Build config.json
+
+Start from `scheduler/config.example.json` as a template. For each enabled strategy, add an entry with:
+- `id`: Use the naming convention `{strategy}-{asset}` for spot, `deribit-{strategy}-{asset}` or `ibkr-{strategy}-{asset}` for options
+- `type`: `"spot"` or `"options"`
+- `script`: `"scripts/check_strategy.py"` (spot), `"scripts/check_options.py"` (Deribit), `"scripts/check_options_ibkr.py"` (IBKR)
+- `args`: Strategy-specific arguments (see config.example.json for format)
+- `capital`: User's chosen amount
+- `max_drawdown_pct`: User's chosen value (spot vs options)
+- `interval_seconds`: 300 for spot, 1200 for options
+- `theta_harvest`: If enabled, include the config block
+
+Discord config:
+- `discord.enabled`: true/false based on Step 4
+- `discord.token`: Always `""` (token comes from env var)
+- `discord.channels.spot`: Channel ID from Step 4b
+- `discord.channels.options`: Channel ID from Step 4c
+- `discord.spot_summary_freq`: From Step 4e
+- `discord.options_summary_freq`: `"per_check"`
+
+### 7b. OpenClaw Discord Allowlist (if applicable)
+
+If the agent is running inside OpenClaw and Discord was configured, add the channels to OpenClaw's guild allowlist so the bot can post:
 
 ```bash
-# Use gateway config.patch to add channels to the guild allowlist
-# The agent should use the gateway tool:
-# gateway config.patch with:
-#   channels.discord.guilds.<GUILD_ID>.channels.<SPOT_CHANNEL>.requireMention = false
-#   channels.discord.guilds.<GUILD_ID>.channels.<OPTIONS_CHANNEL>.requireMention = false
+# Using OpenClaw gateway config.patch:
+# channels.discord.guilds.<GUILD_ID>.channels.<SPOT_CHANNEL>.requireMention = false
+# channels.discord.guilds.<GUILD_ID>.channels.<OPTIONS_CHANNEL>.requireMention = false
 ```
 
-Or via OpenClaw CLI:
+Or via CLI:
 ```bash
 openclaw config set "channels.discord.guilds.${GUILD_ID}.channels.${SPOT_CHANNEL}.requireMention" false
 openclaw config set "channels.discord.guilds.${GUILD_ID}.channels.${OPTIONS_CHANNEL}.requireMention" false
 ```
 
-### 6. Install Python Dependencies
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh  # if uv not installed
-uv venv
-uv sync
-```
+### 7c. Confirm with User
 
-### 7. Build Go Scheduler
+Show the user a summary before proceeding:
+> Here's your configuration:
+>
+> **Mode:** Paper trading
+> **Strategies:** {N} total ({spot_count} spot, {deribit_count} Deribit, {ibkr_count} IBKR)
+> **Capital:** ${amount} per strategy (${total} total)
+> **Risk:** {spot_drawdown}% max drawdown (spot), {options_drawdown}% (options)
+> **Theta harvesting:** {enabled/disabled} {details if enabled}
+> **Discord:** {enabled/disabled}
+>   📈 Spot alerts → #{channel_name} ({freq})
+>   🎯 Options alerts → #{channel_name} (per check)
+>
+> Proceed? (yes / no)
+
+If no, ask which part they want to change and loop back to the relevant step.
+
+---
+
+## Step 8: Build & Install
+
+### 8a. Build Go Binary
 ```bash
 cd scheduler
 /usr/local/go/bin/go build -o ../go-trader .
 cd ..
 ```
+If `go` is in PATH, just use `go build`. Check both.
 
-### 8. Install systemd Service
+**Verify:** `./go-trader --help` should print usage.
 
-Write the service file with the Discord token as an environment variable:
+### 8b. Test Run
+```bash
+./go-trader --config scheduler/config.json --once
+```
+Check for errors. If Discord is configured, a summary should appear in the channels.
+
+### 8c. Install systemd Service
+
+Create or update the service file. Include the Discord token and any exchange API keys as environment variables:
 
 ```ini
 [Unit]
@@ -171,82 +384,90 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root/.openclaw/workspace/go-trader
-ExecStart=/root/.openclaw/workspace/go-trader/go-trader --config scheduler/config.json
-Environment="DISCORD_BOT_TOKEN=${BOT_TOKEN}"
+WorkingDirectory={PROJECT_DIR}
+ExecStart={PROJECT_DIR}/go-trader --config scheduler/config.json
+Environment="DISCORD_BOT_TOKEN={token}"
 Restart=always
 RestartSec=10
-StandardOutput=append:/root/.openclaw/workspace/go-trader/logs/scheduler.log
-StandardError=append:/root/.openclaw/workspace/go-trader/logs/scheduler.log
+StandardOutput=append:{PROJECT_DIR}/logs/scheduler.log
+StandardError=append:{PROJECT_DIR}/logs/scheduler.log
 
 [Install]
 WantedBy=multi-user.target
 ```
 
+If live trading, also add:
+```ini
+Environment="BINANCE_API_KEY={key}"
+Environment="BINANCE_API_SECRET={secret}"
+```
+
 ```bash
+mkdir -p logs
 sudo cp go-trader.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable go-trader
 sudo systemctl start go-trader
 ```
 
-### 9. Verify
+---
 
+## Step 9: Verification
+
+### 9a. Service Running
 ```bash
 systemctl is-active go-trader
-curl -s localhost:8099/status | python3 -m json.tool
+```
+Expected: `active`
+
+### 9b. Status Endpoint
+```bash
+curl -s localhost:8099/status | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(f'Cycle: {d[\"cycle_count\"]}')
+print(f'Strategies: {len(d[\"strategies\"])}')
+for sym, price in d.get('prices', {}).items():
+    print(f'  {sym}: \${price:,.2f}')
+"
 ```
 
-Wait for first cycle (~5 min), then check the Discord channels for the first summary.
+### 9c. Discord Check
+If Discord is enabled, wait for the first cycle to complete (~5 minutes) and verify messages appear in the configured channels.
 
-### 10. Confirm to User
+### 9d. Report to User
 
-```
-✅ Go trading bot is running!
+> ✅ **go-trader is running!**
+>
+> **Mode:** {paper/live}
+> **Strategies:** {N} active
+> **Status:** `curl localhost:8099/status`
+> **Logs:** `journalctl -u go-trader -f`
+>
+> Spot strategies check every 5 minutes (summaries {freq}).
+> Options strategies check every 20 minutes (summaries per check).
+> Trades post immediately to Discord.
+>
+> **Useful commands:**
+> - Stop: `sudo systemctl stop go-trader`
+> - Restart: `sudo systemctl restart go-trader`
+> - Status: `curl -s localhost:8099/status | python3 -m json.tool`
+> - Reset positions: `cp scheduler/state.example.json scheduler/state.json && sudo systemctl restart go-trader`
 
-Mode: ${MODE}  (paper trading / live)
-Strategies: 30 (14 spot + 16 options)
-Discord alerts:
-  📈 Spot → #${SPOT_CHANNEL_NAME} (${SPOT_FREQ})
-  🎯 Options → #${OPTIONS_CHANNEL_NAME} (per check)
-Status: curl localhost:8099/status
-Logs: journalctl -u go-trader -f
-
-Spot strategies check every 5 minutes, summaries ${SPOT_FREQ}.
-Options strategies check every 20 minutes, summaries per check.
-Trades post immediately to the relevant channel.
-```
-
-## Discord Output Format
-
-The bot posts two types of messages:
-
-**Spot Summary (📈):**
-- Prices: BTC, ETH, SOL
-- Per-strategy PnL with trade count
-- Last 3 trades per strategy
-- Starting capital → current value with total PnL
-
-**Options Summary (🎯):**
-- Split into Deribit and IBKR sections
-- Per-strategy PnL with trade history
-- Shows option positions and current values
-
-**Trade Alerts:**
-- Posted immediately when a trade executes
-- Shows side (BUY/SELL), symbol, price, timestamp
+---
 
 ## Reconfiguration
 
+These can be done after initial setup without re-running the full guide.
+
 ### Change Discord Channels
-Edit `scheduler/config.json` → `discord.channels`, then:
+Edit `scheduler/config.json` → `discord.channels`, then restart:
 ```bash
-systemctl restart go-trader
+sudo systemctl restart go-trader
 ```
-Also update OpenClaw's allowlist if the new channels aren't already added.
+If new channels, also add to OpenClaw allowlist.
 
 ### Change Discord Token
-Update the systemd environment variable:
 ```bash
 sudo systemctl edit go-trader
 # Add: Environment="DISCORD_BOT_TOKEN=new_token_here"
@@ -254,43 +475,77 @@ sudo systemctl restart go-trader
 ```
 
 ### Add/Remove Strategies
-Edit `scheduler/config.json` → `strategies` array, then:
-```bash
-systemctl restart go-trader
-```
-State for removed strategies is auto-pruned. New strategies initialize with fresh capital.
+Edit `scheduler/config.json` → `strategies` array, then restart. Removed strategies are auto-pruned from state. New strategies initialize with fresh capital.
 
-### Switch to Live Trading
-Add exchange API keys to environment:
+### Adjust Risk Settings
+Edit `max_drawdown_pct` per strategy in config.json, then restart.
+
+### Enable/Disable Theta Harvesting
+Add or remove the `theta_harvest` block from individual strategy entries in config.json, then restart.
+
+### Switch Paper → Live
+Add exchange API keys to systemd environment:
 ```bash
 sudo systemctl edit go-trader
-# Add:
+# [Service]
 # Environment="BINANCE_API_KEY=..."
 # Environment="BINANCE_API_SECRET=..."
 sudo systemctl restart go-trader
 ```
 
-## Strategy Reference
+---
 
-**Spot (5-min checks, hourly Discord summaries):**
-- Momentum, RSI, MACD, Volume Weighted, Pairs Spread
-- Assets: BTC/USDT, ETH/USDT, SOL/USDT
-- Default: $1K capital, 60% max drawdown
+## Strategy Reference (for config generation)
 
-**Options (20-min checks, per-check Discord summaries):**
-- Vol Mean Reversion, Momentum, Protective Puts, Covered Calls, Wheel, Butterfly
-- Exchanges: Deribit (testnet), IBKR (simulated)
-- Assets: BTC, ETH
-- Default: $1K capital, 20% max drawdown
+### Spot Strategy Entries
 
-## Troubleshooting
+Each spot strategy needs entries for each asset it supports:
 
-**No Discord messages:** Check token is set (`echo $DISCORD_BOT_TOKEN` in service env), channel IDs are correct, bot has Send Messages permission in the channel, and channels are in OpenClaw's allowlist.
+```json
+{"id": "momentum-btc", "type": "spot", "script": "scripts/check_strategy.py", "args": ["momentum", "BTC/USDT", "1h"], "capital": 1000, "max_drawdown_pct": 60, "interval_seconds": 300}
+{"id": "momentum-eth", "type": "spot", "script": "scripts/check_strategy.py", "args": ["momentum", "ETH/USDT", "1h"], "capital": 1000, "max_drawdown_pct": 60, "interval_seconds": 300}
+{"id": "momentum-sol", "type": "spot", "script": "scripts/check_strategy.py", "args": ["momentum", "SOL/USDT", "1h"], "capital": 1000, "max_drawdown_pct": 60, "interval_seconds": 300}
+```
 
-**Service won't start:** `journalctl -u go-trader -n 50`
+**Strategies and their assets:**
+- `momentum`: BTC, ETH, SOL
+- `rsi`: BTC, ETH, SOL
+- `macd`: BTC, ETH
+- `volume_weighted`: BTC, ETH, SOL
+- `pairs_spread`: Requires two assets — `args: ["pairs_spread", "BTC/USDT", "1d", "ETH/USDT"]`
 
-**Rebuild after Go code changes:** `cd scheduler && /usr/local/go/bin/go build -o ../go-trader . && systemctl restart go-trader`
+**Pairs strategy IDs and args:**
+```json
+{"id": "pairs-btc-eth", "args": ["pairs_spread", "BTC/USDT", "1d", "ETH/USDT"], "interval_seconds": 86400}
+{"id": "pairs-btc-sol", "args": ["pairs_spread", "BTC/USDT", "1d", "SOL/USDT"], "interval_seconds": 86400}
+{"id": "pairs-eth-sol", "args": ["pairs_spread", "ETH/USDT", "1d", "SOL/USDT"], "interval_seconds": 86400}
+```
 
-**Python changes:** Just `systemctl restart go-trader` (no rebuild needed).
+### Deribit Options Entries
 
-**Reset all positions:** `cp scheduler/state.example.json scheduler/state.json && systemctl restart go-trader`
+Each Deribit strategy runs on BTC and ETH:
+
+```json
+{"id": "deribit-vol-btc", "type": "options", "script": "scripts/check_options.py", "args": ["vol_mean_reversion", "BTC"], "capital": 1000, "max_drawdown_pct": 20, "interval_seconds": 1200}
+{"id": "deribit-vol-eth", "type": "options", "script": "scripts/check_options.py", "args": ["vol_mean_reversion", "ETH"], "capital": 1000, "max_drawdown_pct": 20, "interval_seconds": 1200}
+```
+
+**Strategy arg names:** `vol_mean_reversion`, `momentum_options`, `protective_puts`, `covered_calls`, `wheel`, `butterfly`
+
+**ID convention:** `deribit-{strategy_short}-{asset}` where strategy_short is:
+- `vol_mean_reversion` → `vol`
+- `momentum_options` → `momentum`
+- `protective_puts` → `puts`
+- `covered_calls` → `calls`
+- `wheel` → `wheel`
+- `butterfly` → `butterfly`
+
+### IBKR/CME Options Entries
+
+Same as Deribit but with different script and ID prefix:
+
+```json
+{"id": "ibkr-vol-btc", "type": "options", "script": "scripts/check_options_ibkr.py", "args": ["vol_mean_reversion", "BTC"], "capital": 1000, "max_drawdown_pct": 20, "interval_seconds": 1200}
+```
+
+**ID convention:** `ibkr-{strategy_short}-{asset}` (same short names as Deribit)
