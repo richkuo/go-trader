@@ -1,8 +1,10 @@
 # Agent Setup Guide — go-trader
 
-This is a step-by-step guide for AI agents to set up go-trader. Follow each step in order. Every user-facing prompt includes the exact text to present and what to do with the response.
+**Repository:** `https://github.com/richkuo/go-trader.git`
 
-**For OpenClaw agents:** This file is the skill entry point. Read it when a user says "set up go-trader", "install go trading bot", or "configure go-trader".
+This is a self-contained setup guide for AI agents. Give this file to any AI coding agent and it will handle the full installation — cloning the repo, installing dependencies, configuring Discord/strategies/risk, building, and starting the service.
+
+**For OpenClaw agents:** This is the skill entry point. Read it when a user says "set up go-trader", "install go trading bot", or "configure go-trader".
 
 ---
 
@@ -59,11 +61,15 @@ test -d go-trader/scheduler && echo "EXISTS" || echo "FRESH"
 > 2. Update (pull latest + rebuild)
 > 3. Fresh install (delete and start over)
 
-**If FRESH:**
+**If FRESH**, clone from GitHub:
 ```bash
 git clone https://github.com/richkuo/go-trader.git
 cd go-trader
 ```
+
+**If the clone fails** (private repo or auth issue), ask:
+> I couldn't clone the repository. Do you have a GitHub token or SSH key configured?
+> You can also download it manually: https://github.com/richkuo/go-trader
 
 ---
 
