@@ -101,7 +101,7 @@ func SaveState(path string, state *AppState) error {
 		return fmt.Errorf("marshal state: %w", err)
 	}
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
 		return fmt.Errorf("write state: %w", err)
 	}
 	return os.Rename(tmpPath, path)
