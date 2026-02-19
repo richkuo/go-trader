@@ -122,8 +122,10 @@ func main() {
 	// Main loop
 	for {
 		cycleStart := time.Now()
+		mu.Lock()
 		state.CycleCount++
 		cycle := state.CycleCount
+		mu.Unlock()
 		totalTrades := 0
 		spotTrades := 0
 		optionsTrades := 0
@@ -204,38 +206,46 @@ func main() {
 					continue
 				}
 
-				// Check risk before running (read-only)
+				// Phase 1: RLock — read inputs needed for subprocess
 				mu.RLock()
 				pv := PortfolioValue(stratState, prices)
+				var posJSON string
+				if sc.Type == "options" {
+					posJSON = EncodePositionsJSON(stratState.OptionPositions)
+				}
 				mu.RUnlock()
 
-				// Acquire lock for all state mutations: CheckRisk through MarkOptionPositions
+				// Phase 2: Lock — CheckRisk (fast, no I/O)
 				mu.Lock()
 				allowed, reason := CheckRisk(stratState, pv)
+				mu.Unlock()
 				if !allowed {
-					mu.Unlock()
 					logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
 					logger.Close()
 					lastRun[sc.ID] = time.Now()
 					continue
 				}
 
-				// Run appropriate check script
+				// Phase 3 (no lock) + Phase 4 (Lock): subprocess then state mutation
 				trades := 0
 				var detail string
 				switch sc.Type {
 				case "spot":
-					trades, detail = processSpot(sc, stratState, prices, logger)
+					if result, signalStr, price, ok := runSpotCheck(sc, prices, logger); ok {
+						mu.Lock()
+						trades, detail = executeSpotResult(sc, stratState, result, signalStr, price, logger)
+						mu.Unlock()
+					}
 					if trades > 0 && detail != "" {
 						spotTradeDetails = append(spotTradeDetails, detail)
 					}
 					spotTrades += trades
 				case "options":
-					trades, detail = processOptions(sc, stratState, logger)
-					// Run theta harvesting check on options positions
-					if sc.ThetaHarvest != nil {
-						harvestTrades, harvestDetails := CheckThetaHarvest(stratState, sc.ThetaHarvest, logger)
-						trades += harvestTrades
+					if result, signalStr, ok := runOptionsCheck(sc, posJSON, logger); ok {
+						mu.Lock()
+						var harvestDetails []string
+						trades, detail, harvestDetails = executeOptionsResult(sc, stratState, result, signalStr, logger)
+						mu.Unlock()
 						optionsTradeDetails = append(optionsTradeDetails, harvestDetails...)
 					}
 					if trades > 0 && detail != "" {
@@ -248,19 +258,26 @@ func main() {
 
 				totalTrades += trades
 
-				// Update option positions with live Deribit prices
-				if len(stratState.OptionPositions) > 0 {
-					if err := MarkOptionPositions(stratState, deribitPricer, logger); err != nil {
-						logger.Warn("Failed to mark option positions: %v", err)
-					}
+				// Phase 5: mark option positions with live Deribit prices
+				mu.RLock()
+				markReqs := collectMarkRequests(stratState)
+				mu.RUnlock()
+				if len(markReqs) > 0 {
+					markResults := fetchMarkPrices(markReqs, deribitPricer, logger)
+					mu.Lock()
+					applyMarkResults(stratState, markResults, logger)
+					mu.Unlock()
 				}
-				pv = PortfolioValue(stratState, prices)
 
-				// Status line
+				// Phase 6: RLock — status log
+				mu.RLock()
+				pv = PortfolioValue(stratState, prices)
 				posCount := len(stratState.Positions) + len(stratState.OptionPositions)
+				cash := stratState.Cash
+				mu.RUnlock()
+
 				logger.Info("Status: cash=$%.2f | positions=%d | value=$%.2f | trades=%d",
-					stratState.Cash, posCount, pv, trades)
-				mu.Unlock()
+					cash, posCount, pv, trades)
 
 				logger.Close()
 				lastRun[sc.ID] = time.Now()
@@ -292,7 +309,7 @@ func main() {
 		// Discord notification - separate spot and options reports
 		if discord != nil {
 			mu.RLock()
-			
+
 			// Check which categories ran
 			spotRan := false
 			optionsRan := false
@@ -304,7 +321,7 @@ func main() {
 					optionsRan = true
 				}
 			}
-			
+
 			// Send spot summary (hourly or with trades)
 			if spotRan && (cycle%12 == 0 || spotTrades > 0) && cfg.Discord.Channels.Spot != "" {
 				msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), spotTrades, spotValue, prices, spotTradeDetails, cfg.Strategies, state, "spot")
@@ -312,7 +329,7 @@ func main() {
 					fmt.Printf("[WARN] Discord spot summary failed: %v\n", err)
 				}
 			}
-			
+
 			// Send options summary (every run or with trades)
 			if optionsRan && cfg.Discord.Channels.Options != "" {
 				msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), optionsTrades, optionsValue, prices, optionsTradeDetails, cfg.Strategies, state, "options")
@@ -320,7 +337,7 @@ func main() {
 					fmt.Printf("[WARN] Discord options summary failed: %v\n", err)
 				}
 			}
-			
+
 			mu.RUnlock()
 		}
 
@@ -353,7 +370,9 @@ func main() {
 	}
 }
 
-func processSpot(sc StrategyConfig, s *StrategyState, prices map[string]float64, logger *StrategyLogger) (int, string) {
+// runSpotCheck runs the spot check subprocess and returns the parsed result.
+// No state access. Returns (result, signalStr, price, ok); ok=false means skip execution.
+func runSpotCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*SpotResult, string, float64, bool) {
 	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
 
 	result, stderr, err := RunSpotCheck(sc.Script, sc.Args)
@@ -362,7 +381,7 @@ func processSpot(sc StrategyConfig, s *StrategyState, prices map[string]float64,
 		if stderr != "" {
 			logger.Error("stderr: %s", stderr)
 		}
-		return 0, ""
+		return nil, "", 0, false
 	}
 	if stderr != "" {
 		logger.Info("stderr: %s", stderr)
@@ -370,7 +389,7 @@ func processSpot(sc StrategyConfig, s *StrategyState, prices map[string]float64,
 
 	if result.Error != "" {
 		logger.Error("Script returned error: %s", result.Error)
-		return 0, ""
+		return nil, "", 0, false
 	}
 
 	signalStr := "HOLD"
@@ -391,9 +410,14 @@ func processSpot(sc StrategyConfig, s *StrategyState, prices map[string]float64,
 
 	if price <= 0 {
 		logger.Error("No price available for %s", result.Symbol)
-		return 0, ""
+		return nil, "", 0, false
 	}
 
+	return result, signalStr, price, true
+}
+
+// executeSpotResult applies a spot signal to state. Must be called under Lock.
+func executeSpotResult(sc StrategyConfig, s *StrategyState, result *SpotResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
 	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, price, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
@@ -407,9 +431,9 @@ func processSpot(sc StrategyConfig, s *StrategyState, prices map[string]float64,
 	return trades, detail
 }
 
-func processOptions(sc StrategyConfig, s *StrategyState, logger *StrategyLogger) (int, string) {
-	// Pass current positions via stdin to avoid /proc/pid/cmdline leakage (#35).
-	posJSON := EncodePositionsJSON(s.OptionPositions)
+// runOptionsCheck runs the options check subprocess and returns the parsed result.
+// No state access. Returns (result, signalStr, ok); ok=false means skip execution.
+func runOptionsCheck(sc StrategyConfig, posJSON string, logger *StrategyLogger) (*OptionsResult, string, bool) {
 	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
 
 	result, stderr, err := RunOptionsCheckWithStdin(sc.Script, sc.Args, posJSON)
@@ -418,7 +442,7 @@ func processOptions(sc StrategyConfig, s *StrategyState, logger *StrategyLogger)
 		if stderr != "" {
 			logger.Error("stderr: %s", stderr)
 		}
-		return 0, ""
+		return nil, "", false
 	}
 	if stderr != "" {
 		logger.Info("stderr: %s", stderr)
@@ -426,7 +450,7 @@ func processOptions(sc StrategyConfig, s *StrategyState, logger *StrategyLogger)
 
 	if result.Error != "" {
 		logger.Error("Script returned error: %s", result.Error)
-		return 0, ""
+		return nil, "", false
 	}
 
 	signalStr := "HOLD"
@@ -438,15 +462,29 @@ func processOptions(sc StrategyConfig, s *StrategyState, logger *StrategyLogger)
 	logger.Info("Signal: %s | %s spot=$%.2f | IV rank=%.1f | %d actions",
 		signalStr, result.Underlying, result.SpotPrice, result.IVRank, len(result.Actions))
 
+	return result, signalStr, true
+}
+
+// executeOptionsResult applies an options signal and theta harvest to state. Must be called under Lock.
+// Returns (trades, detail, harvestDetails).
+func executeOptionsResult(sc StrategyConfig, s *StrategyState, result *OptionsResult, signalStr string, logger *StrategyLogger) (int, string, []string) {
 	trades, err := ExecuteOptionsSignal(s, result, logger)
 	if err != nil {
 		logger.Error("Options execution failed: %v", err)
-		return 0, ""
+		return 0, "", nil
 	}
 
 	detail := ""
 	if trades > 0 {
 		detail = fmt.Sprintf("[%s] %s %s spot=$%.2f IV=%.1f", sc.ID, signalStr, result.Underlying, result.SpotPrice, result.IVRank)
 	}
-	return trades, detail
+
+	var harvestDetails []string
+	if sc.ThetaHarvest != nil {
+		harvestTrades, hDetails := CheckThetaHarvest(s, sc.ThetaHarvest, logger)
+		trades += harvestTrades
+		harvestDetails = hDetails
+	}
+
+	return trades, detail, harvestDetails
 }

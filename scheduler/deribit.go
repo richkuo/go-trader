@@ -260,73 +260,122 @@ func (d *DeribitPricer) formatInstrument(underlying, optionType string, strike f
 	return instrument
 }
 
-// MarkOptionPositions updates all option positions with live Deribit prices
-func MarkOptionPositions(s *StrategyState, pricer *DeribitPricer, logger *StrategyLogger) error {
-	if len(s.OptionPositions) == 0 {
-		return nil
-	}
+// markRequest holds the data needed to fetch a live mark price for one position.
+// Populated under RLock; no mutation.
+type markRequest struct {
+	ID         string
+	Underlying string
+	OptionType string
+	Expiry     string
+	Action     string
+	Strike     float64
+	DTE        float64
+	Quantity   float64
+	Expired    bool
+}
 
-	var toDelete []string
+// markResult holds the fetched data to be applied back to a position.
+// Produced without any lock; applied under Lock.
+type markResult struct {
+	ID              string
+	DTE             float64
+	CurrentValueUSD float64
+	Greeks          OptGreeks
+	Expired         bool // position should be deleted after applying
+	Fetched         bool // price was successfully retrieved
+}
+
+// collectMarkRequests reads position data and computes DTE. Call under RLock.
+func collectMarkRequests(s *StrategyState) []markRequest {
+	var reqs []markRequest
 	for id, pos := range s.OptionPositions {
-		// Update DTE first
 		expiry, err := time.Parse("2006-01-02", pos.Expiry)
 		if err != nil {
-			logger.Warn("Invalid expiry for %s: %v", id, err)
 			continue
 		}
-		// Use UTC for both sides to avoid 1-day errors on non-UTC servers
 		dte := expiry.UTC().Sub(time.Now().UTC()).Hours() / 24
-		pos.DTE = dte
+		reqs = append(reqs, markRequest{
+			ID:         id,
+			Underlying: pos.Underlying,
+			OptionType: pos.OptionType,
+			Expiry:     pos.Expiry,
+			Action:     pos.Action,
+			Strike:     pos.Strike,
+			DTE:        dte,
+			Quantity:   pos.Quantity,
+			Expired:    dte <= 0,
+		})
+	}
+	return reqs
+}
 
-		// Mark expired positions — model assignment cost for sold ITM options
-		if dte <= 0 {
-			spotPrice, spotErr := pricer.fetchSpotPrice(pos.Underlying)
+// fetchMarkPrices makes Deribit HTTP calls for each request. No lock held.
+func fetchMarkPrices(requests []markRequest, pricer *DeribitPricer, logger *StrategyLogger) []markResult {
+	var results []markResult
+	for _, req := range requests {
+		if req.Expired {
+			spotPrice, spotErr := pricer.fetchSpotPrice(req.Underlying)
 			intrinsic := 0.0
 			if spotErr == nil && spotPrice > 0 {
-				if pos.OptionType == "put" && spotPrice < pos.Strike {
-					intrinsic = (pos.Strike - spotPrice) * pos.Quantity
-				} else if pos.OptionType == "call" && spotPrice > pos.Strike {
-					intrinsic = (spotPrice - pos.Strike) * pos.Quantity
+				if req.OptionType == "put" && spotPrice < req.Strike {
+					intrinsic = (req.Strike - spotPrice) * req.Quantity
+				} else if req.OptionType == "call" && spotPrice > req.Strike {
+					intrinsic = (spotPrice - req.Strike) * req.Quantity
 				}
 			}
-			if pos.Action == "buy" {
-				pos.CurrentValueUSD = intrinsic
-			} else {
-				pos.CurrentValueUSD = -intrinsic
+			currentValue := intrinsic
+			if req.Action == "sell" {
+				currentValue = -intrinsic
 			}
-			logger.Info("Position %s expired (DTE=%.1f), intrinsic=$%.2f, scheduling removal", id, dte, intrinsic)
-			toDelete = append(toDelete, id)
+			logger.Info("Position %s expired (DTE=%.1f), intrinsic=$%.2f, scheduling removal", req.ID, req.DTE, intrinsic)
+			results = append(results, markResult{
+				ID:              req.ID,
+				DTE:             req.DTE,
+				CurrentValueUSD: currentValue,
+				Expired:         true,
+			})
 			continue
 		}
 
-		// Fetch live price and Greeks from Deribit
-		markPrice, spotPrice, greeks, err := pricer.GetOptionPriceFull(pos.Underlying, pos.OptionType, pos.Strike, pos.Expiry)
+		markPrice, spotPrice, greeks, err := pricer.GetOptionPriceFull(req.Underlying, req.OptionType, req.Strike, req.Expiry)
 		if err != nil {
-			logger.Warn("Failed to fetch price for %s: %v", id, err)
+			logger.Warn("Failed to fetch price for %s: %v", req.ID, err)
 			continue
 		}
 
-		// Convert mark price (in BTC/ETH terms) to USD
 		priceUSD := markPrice * spotPrice
-
-		// Update current value based on action
-		if pos.Action == "buy" {
-			pos.CurrentValueUSD = priceUSD
-		} else { // sell
-			pos.CurrentValueUSD = -priceUSD
+		currentValue := priceUSD
+		if req.Action == "sell" {
+			currentValue = -priceUSD
 		}
-
-		// Update Greeks with live values from Deribit
-		pos.Greeks = greeks
-
-		_ = id // mark used
+		results = append(results, markResult{
+			ID:              req.ID,
+			DTE:             req.DTE,
+			CurrentValueUSD: currentValue,
+			Greeks:          greeks,
+			Fetched:         true,
+		})
 	}
+	return results
+}
 
-	// Remove expired positions accumulated above
-	for _, id := range toDelete {
-		delete(s.OptionPositions, id)
-		logger.Info("Removed expired position %s", id)
+// applyMarkResults writes prices/Greeks back and deletes expired positions. Call under Lock.
+func applyMarkResults(s *StrategyState, results []markResult, logger *StrategyLogger) {
+	for _, r := range results {
+		pos, ok := s.OptionPositions[r.ID]
+		if !ok {
+			continue
+		}
+		pos.DTE = r.DTE
+		if r.Expired {
+			pos.CurrentValueUSD = r.CurrentValueUSD
+			delete(s.OptionPositions, r.ID)
+			logger.Info("Removed expired position %s", r.ID)
+			continue
+		}
+		if r.Fetched {
+			pos.CurrentValueUSD = r.CurrentValueUSD
+			pos.Greeks = r.Greeks
+		}
 	}
-
-	return nil
 }
