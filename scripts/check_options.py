@@ -669,7 +669,7 @@ def main():
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": str(e)
         }))
-        sys.exit(0)
+        sys.exit(1)  # Exit 1; Go will still parse the JSON error field
 
 
 if __name__ == "__main__":

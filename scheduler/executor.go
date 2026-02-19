@@ -58,6 +58,11 @@ func RunSpotCheck(script string, args []string) (*SpotResult, string, error) {
 	stdout, stderr, err := RunPythonScript(script, args)
 	stderrStr := string(stderr)
 	if err != nil {
+		// Try to parse JSON even on non-zero exit (script may exit(1) with JSON error output)
+		var result SpotResult
+		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
+			return &result, stderrStr, nil
+		}
 		return nil, stderrStr, fmt.Errorf("script error: %w (stderr: %s)", err, stderrStr)
 	}
 
@@ -73,6 +78,11 @@ func RunOptionsCheck(script string, args []string) (*OptionsResult, string, erro
 	stdout, stderr, err := RunPythonScript(script, args)
 	stderrStr := string(stderr)
 	if err != nil {
+		// Try to parse JSON even on non-zero exit (script may exit(1) with JSON error output)
+		var result OptionsResult
+		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
+			return &result, stderrStr, nil
+		}
 		return nil, stderrStr, fmt.Errorf("script error: %w (stderr: %s)", err, stderrStr)
 	}
 
