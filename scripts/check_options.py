@@ -60,6 +60,24 @@ def get_premium(underlying, option_type, strike, expiry_str, fallback_pct, spot_
     return fallback_pct, round(fallback_pct * spot_price, 2)
 
 
+def get_real_strike(underlying, expiry_str, option_type, target_strike):
+    """
+    Get real Deribit strike closest to target.
+    Falls back to rounded target if Deribit fetch fails.
+    """
+    if USE_REAL_EXPIRIES:
+        result = find_closest_strike(underlying, expiry_str, option_type, target_strike)
+        if result:
+            return result
+    
+    # Fallback: round to nearest 1000 for BTC, 50 for ETH
+    if underlying == "BTC":
+        return round(target_strike, -3)
+    else:
+        return round(target_strike / 50) * 50
+
+
+
 def compute_iv_rank(returns, window=14):
     """
     Compute IV rank using a rolling historical-volatility approach.
@@ -93,23 +111,6 @@ def compute_iv_rank(returns, window=14):
     # Fallback: ratio vs full-period HV
     hist_hv = hv_annualised(returns)
     return round(min(max((recent_hv / max(hist_hv, 0.001)) * 50, 0.0), 100.0), 1)
-
-
-def get_real_strike(underlying, expiry_str, option_type, target_strike):
-    """
-    Get real Deribit strike closest to target.
-    Falls back to rounded target if Deribit fetch fails.
-    """
-    if USE_REAL_EXPIRIES:
-        result = find_closest_strike(underlying, expiry_str, option_type, target_strike)
-        if result:
-            return result
-    
-    # Fallback: round to nearest 1000 for BTC, 50 for ETH
-    if underlying == "BTC":
-        return round(target_strike, -3)
-    else:
-        return round(target_strike / 50) * 50
 
 
 def evaluate_momentum_options(underlying, spot_price, existing_positions=None):
@@ -407,7 +408,7 @@ def evaluate_wheel(underlying, spot_price, existing_positions=None):
     Wheel strategy — sell cash-secured puts, if assigned sell covered calls.
     Phase 1: Sell puts to collect premium (aiming for assignment at good entry)
     Phase 2: If "assigned" (simulated), sell calls against position
-
+    
     For paper trading: we simulate assignment when put goes ITM at expiry.
     """
     if existing_positions is None:
@@ -465,10 +466,10 @@ def evaluate_butterfly(underlying, spot_price, existing_positions=None):
     """
     Butterfly spread — neutral strategy that profits from low volatility.
     Structure: Buy 1 ITM, Sell 2 ATM, Buy 1 OTM (calls or puts).
-
+    
     Max profit when price stays at middle strike at expiry.
     Limited risk = net debit paid.
-
+    
     Best when expecting price to trade in a range (low volatility).
     """
     try:
