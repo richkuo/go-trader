@@ -112,8 +112,36 @@ def find_closest_strike(underlying: str, expiry_str: str, option_type: str, targ
     strikes = fetch_available_strikes(underlying, expiry_str, option_type)
     if not strikes:
         return None
-    
+
     return min(strikes, key=lambda s: abs(s - target_strike))
+
+
+def get_live_premium(underlying: str, option_type: str, strike: float, expiry_str: str) -> Optional[float]:
+    """
+    Fetch live option mark price from Deribit public ticker.
+    Returns mark price in underlying terms (e.g. BTC per contract), or None if unavailable.
+    """
+    try:
+        t = datetime.strptime(expiry_str, "%Y-%m-%d")
+        day = t.strftime("%d")
+        month = t.strftime("%b").upper()
+        year = t.strftime("%y")
+        opt_type = "C" if option_type.lower() == "call" else "P"
+        instrument = f"{underlying.upper()}-{day}{month}{year}-{int(strike)}-{opt_type}"
+
+        url = f"{DERIBIT_API_BASE}/public/ticker?instrument_name={instrument}"
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        result = data.get("result", {})
+        mark_price = result.get("mark_price")
+        if mark_price is not None and mark_price > 0:
+            return float(mark_price)
+        return None
+    except Exception as e:
+        print(f"Failed to fetch live premium for {underlying} {option_type} {strike} {expiry_str}: {e}", file=sys.stderr)
+        return None
 
 
 if __name__ == "__main__":
