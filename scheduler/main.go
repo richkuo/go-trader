@@ -63,7 +63,7 @@ func main() {
 	var mu sync.RWMutex
 
 	// Start HTTP status server
-	server := NewStatusServer(state, &mu)
+	server := NewStatusServer(state, &mu, cfg.StatusToken)
 	server.Start(8099)
 
 	// Graceful shutdown

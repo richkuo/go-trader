@@ -26,6 +26,7 @@ type Config struct {
 	IntervalSeconds int              `json:"interval_seconds"`
 	LogDir          string           `json:"log_dir"`
 	StateFile       string           `json:"state_file"`
+	StatusToken     string           `json:"-"` // loaded from STATUS_AUTH_TOKEN env var only
 	Discord         DiscordConfig    `json:"discord"`
 	Strategies      []StrategyConfig `json:"strategies"`
 }
@@ -81,6 +82,9 @@ func LoadConfig(path string) (*Config, error) {
 	} else if configHasToken {
 		fmt.Println("[WARN] Discord token found in config file. Prefer setting DISCORD_BOT_TOKEN env var instead.")
 	}
+
+	// Optional auth token for the /status HTTP endpoint.
+	cfg.StatusToken = os.Getenv("STATUS_AUTH_TOKEN")
 
 	if err := ValidateConfig(&cfg); err != nil {
 		return nil, err

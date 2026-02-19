@@ -10,12 +10,13 @@ import (
 
 // StatusServer provides an HTTP endpoint for portfolio status.
 type StatusServer struct {
-	state *AppState
-	mu    *sync.RWMutex
+	state       *AppState
+	mu          *sync.RWMutex
+	statusToken string // if non-empty, /status requires Authorization: Bearer <token>
 }
 
-func NewStatusServer(state *AppState, mu *sync.RWMutex) *StatusServer {
-	return &StatusServer{state: state, mu: mu}
+func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string) *StatusServer {
+	return &StatusServer{state: state, mu: mu, statusToken: statusToken}
 }
 
 func (ss *StatusServer) Start(port int) {
@@ -49,6 +50,16 @@ func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	// #38: Optional bearer token auth for /status.
+	if ss.statusToken != "" {
+		if r.Header.Get("Authorization") != "Bearer "+ss.statusToken {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+	}
+
 	// Collect symbols under a brief read lock — do NOT call FetchPrices while holding the lock
 	// since FetchPrices runs a subprocess that can take up to 30s.
 	ss.mu.RLock()
