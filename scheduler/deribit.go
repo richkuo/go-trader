@@ -67,6 +67,74 @@ func (d *DeribitPricer) GetOptionPrice(underlying, optionType string, strike flo
 	return markPrice, spotPrice, nil
 }
 
+// fetchTickerFull retrieves full ticker data including Greeks.
+func (d *DeribitPricer) fetchTickerFull(instrument string) (*DeribitTickerResponse, error) {
+	url := fmt.Sprintf("%s/public/ticker?instrument_name=%s", deribitAPIBase, instrument)
+	resp, err := d.client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("deribit API error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("deribit API status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var ticker DeribitTickerResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ticker); err != nil {
+		return nil, fmt.Errorf("decode error: %w", err)
+	}
+
+	return &ticker, nil
+}
+
+// fetchSpotPrice fetches the current spot price for an underlying via its perpetual instrument.
+func (d *DeribitPricer) fetchSpotPrice(underlying string) (float64, error) {
+	ticker, err := d.fetchTickerFull(strings.ToUpper(underlying) + "-PERPETUAL")
+	if err != nil {
+		return 0, err
+	}
+	return ticker.Result.UnderlyingPrice, nil
+}
+
+// GetOptionPriceFull fetches live mark price, spot price, and Greeks for an option.
+func (d *DeribitPricer) GetOptionPriceFull(underlying, optionType string, strike float64, expiry string) (float64, float64, OptGreeks, error) {
+	instrument := d.formatInstrument(underlying, optionType, strike, expiry)
+	if instrument == "" {
+		return 0, 0, OptGreeks{}, fmt.Errorf("invalid instrument format")
+	}
+
+	ticker, err := d.fetchTickerFull(instrument)
+	if err == nil {
+		g := OptGreeks{
+			Delta: ticker.Result.Greeks.Delta,
+			Gamma: ticker.Result.Greeks.Gamma,
+			Theta: ticker.Result.Greeks.Theta,
+			Vega:  ticker.Result.Greeks.Vega,
+		}
+		return ticker.Result.MarkPrice, ticker.Result.UnderlyingPrice, g, nil
+	}
+
+	nearestInstrument, findErr := d.findNearestExpiry(underlying, optionType, strike, expiry)
+	if findErr != nil {
+		return 0, 0, OptGreeks{}, fmt.Errorf("exact match failed: %w, nearest search failed: %w", err, findErr)
+	}
+
+	ticker, err = d.fetchTickerFull(nearestInstrument)
+	if err != nil {
+		return 0, 0, OptGreeks{}, fmt.Errorf("nearest expiry %s failed: %w", nearestInstrument, err)
+	}
+
+	g := OptGreeks{
+		Delta: ticker.Result.Greeks.Delta,
+		Gamma: ticker.Result.Greeks.Gamma,
+		Theta: ticker.Result.Greeks.Theta,
+		Vega:  ticker.Result.Greeks.Vega,
+	}
+	return ticker.Result.MarkPrice, ticker.Result.UnderlyingPrice, g, nil
+}
+
 // fetchTicker retrieves ticker data for a specific instrument
 func (d *DeribitPricer) fetchTicker(instrument string) (float64, float64, error) {
 	url := fmt.Sprintf("%s/public/ticker?instrument_name=%s", deribitAPIBase, instrument)
@@ -198,6 +266,7 @@ func MarkOptionPositions(s *StrategyState, pricer *DeribitPricer, logger *Strate
 		return nil
 	}
 
+	var toDelete []string
 	for id, pos := range s.OptionPositions {
 		// Update DTE first
 		expiry, err := time.Parse("2006-01-02", pos.Expiry)
@@ -205,22 +274,19 @@ func MarkOptionPositions(s *StrategyState, pricer *DeribitPricer, logger *Strate
 			logger.Warn("Invalid expiry for %s: %v", id, err)
 			continue
 		}
-		dte := time.Until(expiry).Hours() / 24
+		// Use UTC for both sides to avoid 1-day errors on non-UTC servers
+		dte := expiry.UTC().Sub(time.Now().UTC()).Hours() / 24
 		pos.DTE = dte
 
 		// Skip expired positions
 		if dte <= 0 {
-			if pos.Action == "buy" {
-				pos.CurrentValueUSD = 0
-			} else {
-				pos.CurrentValueUSD = 0 // liability expired worthless
-			}
-			logger.Info("Position %s expired (DTE=%.1f)", id, dte)
+			logger.Info("Position %s expired (DTE=%.1f), scheduling removal", id, dte)
+			toDelete = append(toDelete, id)
 			continue
 		}
 
-		// Fetch live price from Deribit
-		markPrice, spotPrice, err := pricer.GetOptionPrice(pos.Underlying, pos.OptionType, pos.Strike, pos.Expiry)
+		// Fetch live price and Greeks from Deribit
+		markPrice, spotPrice, greeks, err := pricer.GetOptionPriceFull(pos.Underlying, pos.OptionType, pos.Strike, pos.Expiry)
 		if err != nil {
 			logger.Warn("Failed to fetch price for %s: %v", id, err)
 			continue
@@ -236,10 +302,16 @@ func MarkOptionPositions(s *StrategyState, pricer *DeribitPricer, logger *Strate
 			pos.CurrentValueUSD = -priceUSD
 		}
 
-		// Update Greeks if available (optional, could fetch from ticker response)
-		// pos.Greeks = ...
+		// Update Greeks with live values from Deribit
+		pos.Greeks = greeks
 
 		_ = id // mark used
+	}
+
+	// Remove expired positions accumulated above
+	for _, id := range toDelete {
+		delete(s.OptionPositions, id)
+		logger.Info("Removed expired position %s", id)
 	}
 
 	return nil
