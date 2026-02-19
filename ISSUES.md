@@ -55,7 +55,7 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | 35  | **Positions passed as CLI args** — Visible in /proc/[pid]/cmdline, could hit ARG_MAX                  | [ORIG] | YES    | 3        |
 | 36  | **No config validation** — No validation for negative capital, invalid drawdown %, empty script paths | [ORIG] | YES    | 4        |
 | 37  | **State file permissions 0644** — World-readable. Should be 0600                                      | [NEW]  | YES    | 3        |
-| 38  | **HTTP status endpoint no auth** — Any local user reads portfolio state (localhost-only, low risk)    | [NEW]  | YES    | 2        |
+| 38  | **HTTP status endpoint no auth** — Optional bearer auth exists, but endpoint remains open if token unset | [NEW]  | needs review | 2        |
 | 39  | **No state validation on load** — No checks for negative balances, invalid positions, corrupted data  | [NEW]  | YES    | 4        |
 
 
@@ -128,9 +128,9 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | Category  | Total  | Fixed  | Unfixed                |
 | --------- | ------ | ------ | ---------------------- |
 | Bug       | 30     | 28     | 2 (needs review)       |
-| Security  | 9      | 9      | 0                      |
+| Security  | 9      | 8      | 1 (needs review)       |
 | Feature   | 19     | 1      | 18                     |
 | Other     | 16     | 2      | 14                     |
-| **Total** | **74** | **40** | **34**                 |
+| **Total** | **74** | **39** | **35**                 |
 
 
