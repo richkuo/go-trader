@@ -104,15 +104,27 @@ def fetch_full_history(
 
     print(f"Fetching {symbol} {timeframe} from {since}...")
 
+    rate_limit_retries = 0
+    network_retries = 0
     while current_since < now_ts:
         try:
             candles = exchange.fetch_ohlcv(symbol, timeframe, since=current_since, limit=500)
+            rate_limit_retries = 0
+            network_retries = 0
         except ccxt.RateLimitExceeded:
-            print("Rate limited, sleeping 10s...")
+            rate_limit_retries += 1
+            if rate_limit_retries >= 5:
+                print(f"Rate limit exceeded {rate_limit_retries} times, aborting fetch")
+                break
+            print(f"Rate limited, sleeping 10s... ({rate_limit_retries}/5)")
             time.sleep(10)
             continue
         except ccxt.NetworkError as e:
-            print(f"Network error: {e}, retrying in 5s...")
+            network_retries += 1
+            if network_retries >= 5:
+                print(f"Network error after {network_retries} retries, aborting fetch: {e}")
+                break
+            print(f"Network error: {e}, retrying in 5s... ({network_retries}/5)")
             time.sleep(5)
             continue
 
