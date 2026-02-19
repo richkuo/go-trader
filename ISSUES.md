@@ -22,23 +22,23 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | 10 | **State file grows unbounded** — TradeHistory never truncated | [ORIG] | YES |
 | 11 | **Expired options never cleaned up** — Remain in positions map indefinitely | [ORIG] | YES |
 | 12 | **Inconsistent mutex usage** — CheckRisk, processSpot, processOptions modify state without holding lock. HTTP server reads mid-write | [BOTH] | NO |
-| 13 | **Division by zero risk** — `qty := budget / execPrice` in portfolio.go has no guard on execPrice > 0 | [NEW] | NO |
-| 14 | **Zero-premium trades execute** — If both PremiumUSD and Premium are 0, options trades execute at zero cost | [NEW] | NO |
-| 15 | **Python sys.exit(0) on errors** — check_strategy.py exits 0 on exception. Go sees success exit code, errors masked | [NEW] | NO |
-| 16 | **Phantom circuit breaker** — Drawdown CB triggers with 0 trades if mark-to-market drops portfolio below peak | [NEW] | NO |
-| 17 | **State save failure continues execution** — If state.json write fails, scheduler keeps trading. Trades lost on restart | [NEW] | NO |
-| 18 | **Hardcoded Greeks** — All strategies return static delta/gamma/theta/vega. Portfolio Greeks tracking is decorative | [BOTH] | NO |
-| 19 | **Hardcoded premiums** — Option premiums are hardcoded percentages unrelated to live IV/market quotes. Paper P&L unreliable | [ORIG] | NO |
-| 20 | **Greeks not updated from Deribit** — Stale from entry time, never refreshed despite Deribit ticker providing live Greeks | [BOTH] | NO |
+| 13 | **Division by zero risk** — `qty := budget / execPrice` in portfolio.go has no guard on execPrice > 0 | [NEW] | YES |
+| 14 | **Zero-premium trades execute** — If both PremiumUSD and Premium are 0, options trades execute at zero cost | [NEW] | YES |
+| 15 | **Python sys.exit(0) on errors** — check_strategy.py exits 0 on exception. Go sees success exit code, errors masked | [NEW] | YES |
+| 16 | **Phantom circuit breaker** — Drawdown CB triggers with 0 trades if mark-to-market drops portfolio below peak | [NEW] | YES |
+| 17 | **State save failure continues execution** — If state.json write fails, scheduler keeps trading. Trades lost on restart | [NEW] | YES |
+| 18 | **Hardcoded Greeks** — All strategies return static delta/gamma/theta/vega. Portfolio Greeks tracking is decorative | [BOTH] | PARTIAL |
+| 19 | **Hardcoded premiums** — Option premiums are hardcoded percentages unrelated to live IV/market quotes. Paper P&L unreliable | [ORIG] | YES |
+| 20 | **Greeks not updated from Deribit** — Stale from entry time, never refreshed despite Deribit ticker providing live Greeks | [BOTH] | YES |
 | 21 | **Pairs strategies broken** — Requires close_b column for second asset. Data fetcher provides single asset only. Degrades to self-mean-reversion | [NEW] | NO |
 | 22 | **Wheel strategy incomplete** — Phase 2 (covered calls after assignment) described but never implemented | [ORIG] | PARTIAL |
-| 23 | **Wheel collateral model broken** — Sells puts with strike >> allocated capital. No margin enforcement | [NEW] | NO |
-| 24 | **Logger ignores LogDir config** — NewLogManager discards argument, all output to stdout | [BOTH] | NO |
-| 25 | **Deribit expiry fallback too loose** — Could match expiry weeks away from target | [NEW] | NO |
-| 26 | **Python data_fetcher infinite retry on rate limit** — `continue` loop on RateLimitExceeded with no max retries | [NEW] | NO |
+| 23 | **Wheel collateral model broken** — Sells puts with strike >> allocated capital. No margin enforcement | [NEW] | YES |
+| 24 | **Logger ignores LogDir config** — NewLogManager discards argument, all output to stdout | [BOTH] | YES |
+| 25 | **Deribit expiry fallback too loose** — Could match expiry weeks away from target | [NEW] | PARTIAL |
+| 26 | **Python data_fetcher infinite retry on rate limit** — `continue` loop on RateLimitExceeded with no max retries | [NEW] | YES |
 | 27 | **Daily PnL reset is naive** — Resets on first check after midnight UTC, breaks if check missed at boundary | [NEW] | NO |
-| 28 | **No expiry/assignment modeling** — Sold ITM options treated as worthless at expiry instead of modeling assignment | [NEW] | NO |
-| 29 | **Subprocess orphan risk** — No process group management, no concurrency limit on Python processes | [NEW] | NO |
+| 28 | **No expiry/assignment modeling** — Sold ITM options treated as worthless at expiry instead of modeling assignment | [NEW] | YES |
+| 29 | **Subprocess orphan risk** — No process group management, no concurrency limit on Python processes | [NEW] | YES |
 | 30 | **Global state in Python Order class** — `_id_counter` class variable not thread-safe, resets on restart (in unused exchange_adapter.py) | [NEW] | N/A |
 
 ## Security
@@ -116,8 +116,8 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 
 | Category | Total | Fixed | Unfixed |
 |----------|-------|-------|---------|
-| Bug | 30 | 11 | 18 (+1 N/A) |
+| Bug | 30 | 23 | 5 (+1 N/A, +2 partial) |
 | Security | 9 | 9 | 0 |
 | Feature | 19 | 1 | 18 |
 | Other | 16 | 0 | 15 (+1 partial) |
-| **Total** | **74** | **21** | **50** |
+| **Total** | **74** | **33** | **38** |
