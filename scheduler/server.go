@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // StatusServer provides an HTTP endpoint for portfolio status.
@@ -33,26 +34,38 @@ func (ss *StatusServer) Start(port int) {
 
 func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
+	ss.mu.RLock()
+	lastCycle := ss.state.LastCycle
+	ss.mu.RUnlock()
+
+	// Stale if main loop hasn't completed a cycle in the last 30 minutes
+	if !lastCycle.IsZero() && time.Since(lastCycle) > 30*time.Minute {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"status":"unhealthy","reason":"main loop stale"}`))
+		return
+	}
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
 func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	// Collect symbols under a brief read lock — do NOT call FetchPrices while holding the lock
+	// since FetchPrices runs a subprocess that can take up to 30s.
 	ss.mu.RLock()
-	defer ss.mu.RUnlock()
-
-	// Collect symbols that need live prices
 	symbolSet := make(map[string]bool)
 	for _, s := range ss.state.Strategies {
 		for sym := range s.Positions {
 			symbolSet[sym] = true
 		}
 	}
+	ss.mu.RUnlock()
+
 	symbols := make([]string, 0, len(symbolSet))
 	for s := range symbolSet {
 		symbols = append(symbols, s)
 	}
 
-	// Fetch live prices
+	// Fetch live prices WITHOUT holding the lock
 	prices := make(map[string]float64)
 	if len(symbols) > 0 {
 		p, err := FetchPrices(symbols)
@@ -60,6 +73,10 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			prices = p
 		}
 	}
+
+	// Re-acquire read lock to build the response
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
 
 	type StratStatus struct {
 		ID              string                     `json:"id"`

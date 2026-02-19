@@ -325,6 +325,7 @@ func main() {
 
 		// Save state after each cycle
 		mu.Lock()
+		state.LastCycle = time.Now().UTC()
 		if err := SaveState(cfg.StateFile, state); err != nil {
 			saveFailures++
 			fmt.Printf("[CRITICAL] Save state failed (%d/3): %v\n", saveFailures, err)

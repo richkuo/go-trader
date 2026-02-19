@@ -5,24 +5,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
+
+// maxTradeHistory is the maximum number of trades to retain per strategy.
+const maxTradeHistory = 1000
 
 // AppState holds all persistent state across restarts.
 type AppState struct {
-	CycleCount int                        `json:"cycle_count"`
-	Strategies map[string]*StrategyState  `json:"strategies"`
+	CycleCount int                       `json:"cycle_count"`
+	LastCycle  time.Time                 `json:"last_cycle"`
+	Strategies map[string]*StrategyState `json:"strategies"`
 }
 
 // StrategyState is the per-strategy persistent state.
 type StrategyState struct {
-	ID              string            `json:"id"`
-	Type            string            `json:"type"`
-	Cash            float64           `json:"cash"`
-	InitialCapital  float64           `json:"initial_capital"`
-	Positions       map[string]*Position `json:"positions"`
+	ID              string                     `json:"id"`
+	Type            string                     `json:"type"`
+	Cash            float64                    `json:"cash"`
+	InitialCapital  float64                    `json:"initial_capital"`
+	Positions       map[string]*Position       `json:"positions"`
 	OptionPositions map[string]*OptionPosition `json:"option_positions"`
-	TradeHistory    []Trade           `json:"trade_history"`
-	RiskState       RiskState         `json:"risk_state"`
+	TradeHistory    []Trade                    `json:"trade_history"`
+	RiskState       RiskState                  `json:"risk_state"`
 }
 
 func NewStrategyState(cfg StrategyConfig) *StrategyState {
@@ -83,6 +88,14 @@ func SaveState(path string, state *AppState) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
 	}
+
+	// Trim trade history to prevent unbounded growth
+	for _, s := range state.Strategies {
+		if len(s.TradeHistory) > maxTradeHistory {
+			s.TradeHistory = s.TradeHistory[len(s.TradeHistory)-maxTradeHistory:]
+		}
+	}
+
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)
