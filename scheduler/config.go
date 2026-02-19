@@ -88,16 +88,25 @@ func LoadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// ValidateConfig checks script paths for each strategy (#34).
+// ValidateConfig checks script paths and strategy fields (#34, #36).
 func ValidateConfig(cfg *Config) error {
 	var errs []string
+	seenIDs := make(map[string]bool)
 
 	for i, sc := range cfg.Strategies {
 		prefix := fmt.Sprintf("strategy[%d]", i)
-		if sc.ID != "" {
+
+		// ID must be non-empty and unique.
+		if sc.ID == "" {
+			errs = append(errs, fmt.Sprintf("%s: id is empty", prefix))
+		} else if seenIDs[sc.ID] {
+			errs = append(errs, fmt.Sprintf("%s: duplicate id %q", prefix, sc.ID))
+		} else {
+			seenIDs[sc.ID] = true
 			prefix = fmt.Sprintf("strategy[%s]", sc.ID)
 		}
 
+		// #34: Script path validation.
 		if sc.Script == "" {
 			errs = append(errs, fmt.Sprintf("%s: script is empty", prefix))
 		} else {
@@ -109,6 +118,40 @@ func ValidateConfig(cfg *Config) error {
 			}
 			if strings.HasPrefix(filepath.Clean(sc.Script), "..") {
 				errs = append(errs, fmt.Sprintf("%s: script path escapes working directory: %q", prefix, sc.Script))
+			}
+		}
+
+		// #36: Type must be "spot" or "options".
+		if sc.Type != "spot" && sc.Type != "options" {
+			errs = append(errs, fmt.Sprintf("%s: type must be \"spot\" or \"options\", got %q", prefix, sc.Type))
+		}
+
+		// #36: Capital must be > 0.
+		if sc.Capital <= 0 {
+			errs = append(errs, fmt.Sprintf("%s: capital must be > 0, got %g", prefix, sc.Capital))
+		}
+
+		// #36: MaxDrawdownPct must be in (0, 100].
+		if sc.MaxDrawdownPct <= 0 || sc.MaxDrawdownPct > 100 {
+			errs = append(errs, fmt.Sprintf("%s: max_drawdown_pct must be in (0, 100], got %g", prefix, sc.MaxDrawdownPct))
+		}
+
+		// #36: IntervalSeconds must be >= 0 (0 means use global).
+		if sc.IntervalSeconds < 0 {
+			errs = append(errs, fmt.Sprintf("%s: interval_seconds must be >= 0, got %d", prefix, sc.IntervalSeconds))
+		}
+
+		// #36: ThetaHarvest fields must be non-negative when present.
+		if sc.ThetaHarvest != nil {
+			th := sc.ThetaHarvest
+			if th.ProfitTargetPct < 0 {
+				errs = append(errs, fmt.Sprintf("%s: theta_harvest.profit_target_pct must be >= 0", prefix))
+			}
+			if th.StopLossPct < 0 {
+				errs = append(errs, fmt.Sprintf("%s: theta_harvest.stop_loss_pct must be >= 0", prefix))
+			}
+			if th.MinDTEClose < 0 {
+				errs = append(errs, fmt.Sprintf("%s: theta_harvest.min_dte_close must be >= 0", prefix))
 			}
 		}
 	}
