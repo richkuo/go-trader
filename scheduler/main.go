@@ -116,6 +116,8 @@ func main() {
 	}
 	fmt.Printf("Tick interval: %ds (strategies have individual intervals)\n", tickSeconds)
 
+	saveFailures := 0
+
 	// Main loop
 	for {
 		cycleStart := time.Now()
@@ -186,78 +188,82 @@ func main() {
 		}
 
 		// Process only due strategies
-		for _, sc := range dueStrategies {
-			stratState := state.Strategies[sc.ID]
-			if stratState == nil {
-				continue
-			}
+		if saveFailures >= 3 {
+			fmt.Println("[CRITICAL] State save failed 3x, skipping trades this cycle")
+		} else {
+			for _, sc := range dueStrategies {
+				stratState := state.Strategies[sc.ID]
+				if stratState == nil {
+					continue
+				}
 
-			logger, err := logMgr.GetStrategyLogger(sc.ID)
-			if err != nil {
-				fmt.Printf("[ERROR] Logger for %s: %v\n", sc.ID, err)
-				continue
-			}
+				logger, err := logMgr.GetStrategyLogger(sc.ID)
+				if err != nil {
+					fmt.Printf("[ERROR] Logger for %s: %v\n", sc.ID, err)
+					continue
+				}
 
-			// Check risk before running (read-only)
-			mu.RLock()
-			pv := PortfolioValue(stratState, prices)
-			mu.RUnlock()
+				// Check risk before running (read-only)
+				mu.RLock()
+				pv := PortfolioValue(stratState, prices)
+				mu.RUnlock()
 
-			// Acquire lock for all state mutations: CheckRisk through MarkOptionPositions
-			mu.Lock()
-			allowed, reason := CheckRisk(stratState, pv)
-			if !allowed {
+				// Acquire lock for all state mutations: CheckRisk through MarkOptionPositions
+				mu.Lock()
+				allowed, reason := CheckRisk(stratState, pv)
+				if !allowed {
+					mu.Unlock()
+					logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
+					logger.Close()
+					lastRun[sc.ID] = time.Now()
+					continue
+				}
+
+				// Run appropriate check script
+				trades := 0
+				var detail string
+				switch sc.Type {
+				case "spot":
+					trades, detail = processSpot(sc, stratState, prices, logger)
+					if trades > 0 && detail != "" {
+						spotTradeDetails = append(spotTradeDetails, detail)
+					}
+					spotTrades += trades
+				case "options":
+					trades, detail = processOptions(sc, stratState, logger)
+					// Run theta harvesting check on options positions
+					if sc.ThetaHarvest != nil {
+						harvestTrades, harvestDetails := CheckThetaHarvest(stratState, sc.ThetaHarvest, logger)
+						trades += harvestTrades
+						optionsTradeDetails = append(optionsTradeDetails, harvestDetails...)
+					}
+					if trades > 0 && detail != "" {
+						optionsTradeDetails = append(optionsTradeDetails, detail)
+					}
+					optionsTrades += trades
+				default:
+					logger.Error("Unknown strategy type: %s", sc.Type)
+				}
+
+				totalTrades += trades
+
+				// Update option positions with live Deribit prices
+				if len(stratState.OptionPositions) > 0 {
+					if err := MarkOptionPositions(stratState, deribitPricer, logger); err != nil {
+						logger.Warn("Failed to mark option positions: %v", err)
+					}
+				}
+				pv = PortfolioValue(stratState, prices)
+
+				// Status line
+				posCount := len(stratState.Positions) + len(stratState.OptionPositions)
+				logger.Info("Status: cash=$%.2f | positions=%d | value=$%.2f | trades=%d",
+					stratState.Cash, posCount, pv, trades)
 				mu.Unlock()
-				logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
+
 				logger.Close()
 				lastRun[sc.ID] = time.Now()
-				continue
 			}
-
-			// Run appropriate check script
-			trades := 0
-			var detail string
-			switch sc.Type {
-			case "spot":
-				trades, detail = processSpot(sc, stratState, prices, logger)
-				if trades > 0 && detail != "" {
-					spotTradeDetails = append(spotTradeDetails, detail)
-				}
-				spotTrades += trades
-			case "options":
-				trades, detail = processOptions(sc, stratState, logger)
-				// Run theta harvesting check on options positions
-				if sc.ThetaHarvest != nil {
-					harvestTrades, harvestDetails := CheckThetaHarvest(stratState, sc.ThetaHarvest, logger)
-					trades += harvestTrades
-					optionsTradeDetails = append(optionsTradeDetails, harvestDetails...)
-				}
-				if trades > 0 && detail != "" {
-					optionsTradeDetails = append(optionsTradeDetails, detail)
-				}
-				optionsTrades += trades
-			default:
-				logger.Error("Unknown strategy type: %s", sc.Type)
-			}
-
-			totalTrades += trades
-
-			// Update option positions with live Deribit prices
-			if len(stratState.OptionPositions) > 0 {
-				if err := MarkOptionPositions(stratState, deribitPricer, logger); err != nil {
-					logger.Warn("Failed to mark option positions: %v", err)
-				}
-			}
-			pv = PortfolioValue(stratState, prices)
-
-			// Status line
-			posCount := len(stratState.Positions) + len(stratState.OptionPositions)
-			logger.Info("Status: cash=$%.2f | positions=%d | value=$%.2f | trades=%d",
-				stratState.Cash, posCount, pv, trades)
-			mu.Unlock()
-
-			logger.Close()
-			lastRun[sc.ID] = time.Now()
 		}
 
 		// Calculate total portfolio value and separate spot/options values
@@ -320,7 +326,10 @@ func main() {
 		// Save state after each cycle
 		mu.Lock()
 		if err := SaveState(cfg.StateFile, state); err != nil {
-			fmt.Printf("[ERROR] Save state: %v\n", err)
+			saveFailures++
+			fmt.Printf("[CRITICAL] Save state failed (%d/3): %v\n", saveFailures, err)
+		} else {
+			saveFailures = 0
 		}
 		mu.Unlock()
 
@@ -399,7 +408,9 @@ func processSpot(sc StrategyConfig, s *StrategyState, prices map[string]float64,
 func processOptions(sc StrategyConfig, s *StrategyState, logger *StrategyLogger) (int, string) {
 	// Pass current positions as JSON so script can do portfolio-aware scoring
 	posJSON := EncodePositionsJSON(s.OptionPositions)
-	args := append(sc.Args, posJSON)
+	args := make([]string, len(sc.Args)+1)
+	copy(args, sc.Args)
+	args[len(sc.Args)] = posJSON
 	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
 
 	result, stderr, err := RunOptionsCheck(sc.Script, args)
