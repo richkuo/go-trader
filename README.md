@@ -7,7 +7,7 @@ A Go + Python hybrid trading system. Single Go binary (~8MB RAM) orchestrates 38
 ```
 Go scheduler (always running, ~8MB idle)
   ↓ spot: every 5min | options: every 20min
-    python3 scripts/check_strategy.py <strategy> <symbol> <timeframe>        → JSON signal
+    python3 scripts/check_strategy.py <strategy> <symbol> <timeframe> [symbol_b] → JSON signal
     python3 scripts/check_options.py <strategy> <underlying> <positions>      → JSON signal (Deribit)
     python3 scripts/check_options_ibkr.py <strategy> <underlying> <positions> → JSON signal (IBKR/CME)
   ↓ processes signals, executes paper trades, manages risk
@@ -44,7 +44,7 @@ This ensures new paper trades use real option contracts that exist on Deribit, a
 | `rsi` | BTC, ETH, SOL | 1h | Buy oversold, sell overbought |
 | `macd` | BTC, ETH | 1h | MACD/signal line crossovers |
 | `volume_weighted` | BTC, ETH, SOL | 1h | Trend + volume confirmation |
-| `pairs_spread` | BTC, ETH, SOL | 1d | Spread z-score stat arb |
+| `pairs_spread` | BTC/ETH, BTC/SOL, ETH/SOL | 1d | Spread z-score stat arb (requires secondary symbol as 4th arg) |
 
 ### Options — Deribit vs IBKR/CME (12+12 strategies, 20min interval, $1K each)
 
@@ -303,14 +303,14 @@ To rebuild this entire system from scratch, give an AI this prompt:
 > - **Discord cycle summary format**: Two separate reports sent to different channels - **Spot Summary** (hourly) and **Options Summary** (every 20min). Config specifies separate channel IDs for each report type in `discord.channels.spot` and `discord.channels.options`. Each shows starting → current balance for relevant categories only. Spot report shows 📈 Spot category. Options report shows 🎯 Deribit and 🏦 IBKR categories. Each bot displays: asset label, strategy name, P&L %, trade count, and last 3 trades. Format: `• ASSET strategy_name (+X.X%) — N trades` followed by `- BUY/SELL symbol @ $price (timestamp)`. Messages auto-truncate at 2000 characters (Discord limit).
 >
 > **Python check scripts** in `scripts/` (stateless, run-and-exit, ~5 seconds each):
-> - `scripts/check_strategy.py <strategy> <symbol> <timeframe>` — fetches OHLCV via CCXT (Binance US), runs technical analysis, outputs JSON: `{strategy, symbol, timeframe, signal: 1/-1/0, price, indicators, timestamp}`
+> - `scripts/check_strategy.py <strategy> <symbol> <timeframe> [symbol_b]` — fetches OHLCV via CCXT (Binance US), runs technical analysis, outputs JSON: `{strategy, symbol, timeframe, signal: 1/-1/0, price, indicators, timestamp}`. Optional `symbol_b` (4th argument) enables proper pairs trading: secondary asset OHLCV is fetched and merged on the datetime index as `close_b`, so `pairs_spread` runs real stat-arb instead of degrading to self-mean-reversion.
 > - `scripts/check_options.py <strategy> <underlying> <positions_json>` — Deribit-style options. Fetches spot price via CCXT, evaluates options strategy, scores proposed trades against existing positions, outputs JSON with actions. **CRITICAL:** Uses `deribit_utils.py` to fetch real Deribit expiries and strikes for ALL new trades (never generates fictional expiries). Helpers: `get_real_expiry(underlying, target_dte)` returns closest real expiry, `get_real_strike(underlying, expiry, option_type, target_strike)` returns closest available strike
 > - `scripts/check_options_ibkr.py <strategy> <underlying> <positions_json>` — IBKR/CME-style options. Same strategies as Deribit but uses CME Micro contract specs (BTC=0.1x multiplier, ETH=0.5x), CME strike intervals ($1000 for BTC, $50 for ETH), and Black-Scholes for premium estimation
 > - `scripts/check_price.py <symbols...>` — fetches current prices, outputs JSON map
 > - `scripts/deribit_utils.py` — **Required utility** for fetching real Deribit option chains via REST API (public endpoints, no auth). Core functions: `fetch_available_expiries(underlying, min_dte, max_dte)` returns list of ISO expiry strings, `find_closest_expiry(underlying, target_dte)` maps target DTE to nearest real expiry, `fetch_available_strikes(underlying, expiry)` gets available strikes for given expiry, `find_closest_strike(underlying, expiry, option_type, target_strike)` finds nearest strike. All strategies in `check_options.py` must call these helpers instead of calculating synthetic expiries
 >
 > **38 strategies in 3 groups:**
-> - **14 spot** (5min interval, $1K each): momentum, rsi, macd, volume_weighted, pairs_spread across BTC/ETH/SOL via Binance US CCXT
+> - **14 spot** (5min interval, $1K each): momentum, rsi, macd, volume_weighted across BTC/ETH/SOL; pairs_spread on BTC/ETH, BTC/SOL, ETH/SOL pairs — all via Binance US CCXT
 > - **12 Deribit options** (20min interval, $1K each): vol_mean_reversion, momentum_options, protective_puts, covered_calls, wheel, butterfly on BTC/ETH with 1x multiplier
 > - **12 IBKR/CME options** (20min interval, $1K each): same 6 strategies on BTC/ETH but with CME Micro contract multipliers (0.1x BTC, 0.5x ETH) for head-to-head comparison
 >

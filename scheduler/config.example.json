@@ -16,6 +16,20 @@
       "interval_seconds": 300
     },
     {
+      "id": "pairs-btc-eth",
+      "type": "spot",
+      "script": "scripts/check_strategy.py",
+      "args": [
+        "pairs_spread",
+        "BTC/USDT",
+        "1d",
+        "ETH/USDT"
+      ],
+      "capital": 1000,
+      "max_drawdown_pct": 60,
+      "interval_seconds": 86400
+    },
+    {
       "id": "deribit-vol-btc",
       "type": "options",
       "script": "scripts/check_options.py",

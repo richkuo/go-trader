@@ -3,7 +3,12 @@
 Stateless spot strategy check script.
 Fetches data, runs strategy, outputs JSON to stdout, exits.
 
-Usage: python3 check_strategy.py <strategy> <symbol> <timeframe>
+Usage: python3 check_strategy.py <strategy> <symbol> <timeframe> [symbol_b]
+
+  symbol_b  Optional second asset symbol for pairs_spread (e.g. ETH/USDT).
+            When provided, close prices of symbol_b are merged into the
+            dataframe as the 'close_b' column so the strategy runs proper
+            stat-arb.  Without it, pairs_spread degrades to self-mean-reversion.
 """
 
 import sys
@@ -20,13 +25,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'core'))
 def main():
     if len(sys.argv) < 4:
         print(json.dumps({
-            "error": f"Usage: {sys.argv[0]} <strategy> <symbol> <timeframe>"
+            "error": f"Usage: {sys.argv[0]} <strategy> <symbol> <timeframe> [symbol_b]"
         }))
         sys.exit(1)
 
     strategy_name = sys.argv[1]
     symbol = sys.argv[2]
     timeframe = sys.argv[3]
+    symbol_b = sys.argv[4] if len(sys.argv) >= 5 else None
 
     try:
         from strategies import apply_strategy, get_strategy
@@ -35,13 +41,38 @@ def main():
         # Verify strategy exists
         get_strategy(strategy_name)
 
-        # Warn about known limitations
-        if strategy_name == "pairs_spread":
-            print("Warning: pairs_spread requires close_b column; degrading to self-mean-reversion", file=sys.stderr)
+        # Warn when pairs_spread will degrade due to missing secondary symbol
+        if strategy_name == "pairs_spread" and not symbol_b:
+            print(
+                "Warning: pairs_spread requires a secondary symbol (symbol_b); "
+                "degrading to self-mean-reversion. Pass a 4th argument to enable "
+                "proper stat-arb (e.g. ETH/USDT for a BTC/USDT primary).",
+                file=sys.stderr,
+            )
 
-        # Fetch latest data
+        # Fetch primary data
         print(f"Fetching {symbol} {timeframe}...", file=sys.stderr)
         df = fetch_ohlcv(symbol=symbol, timeframe=timeframe, limit=200, store=False)
+
+        # Fetch and merge secondary data for pairs strategies
+        if strategy_name == "pairs_spread" and symbol_b:
+            print(f"Fetching secondary {symbol_b} {timeframe}...", file=sys.stderr)
+            df_b = fetch_ohlcv(symbol=symbol_b, timeframe=timeframe, limit=200, store=False)
+            if df_b.empty:
+                print(json.dumps({
+                    "strategy": strategy_name,
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "signal": 0,
+                    "price": 0,
+                    "indicators": {},
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": f"No data returned for secondary symbol {symbol_b}",
+                }))
+                sys.exit(1)
+            # Inner join on datetime index so both assets have the same timestamps
+            df = df.join(df_b[["close"]].rename(columns={"close": "close_b"}), how="inner")
+            print(f"Merged pair: {len(df)} aligned candles ({symbol} / {symbol_b})", file=sys.stderr)
 
         if df.empty or len(df) < 30:
             print(json.dumps({
@@ -75,7 +106,7 @@ def main():
         # Collect relevant indicators
         indicators = {}
         indicator_cols = [c for c in result_df.columns
-                         if c not in ("open", "high", "low", "close", "volume",
+                         if c not in ("open", "high", "low", "close", "close_b", "volume",
                                       "timestamp", "signal", "position", "datetime")]
         for col in indicator_cols:
             val = last.get(col)
