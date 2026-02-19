@@ -278,9 +278,23 @@ func MarkOptionPositions(s *StrategyState, pricer *DeribitPricer, logger *Strate
 		dte := expiry.UTC().Sub(time.Now().UTC()).Hours() / 24
 		pos.DTE = dte
 
-		// Skip expired positions
+		// Mark expired positions — model assignment cost for sold ITM options
 		if dte <= 0 {
-			logger.Info("Position %s expired (DTE=%.1f), scheduling removal", id, dte)
+			spotPrice, spotErr := pricer.fetchSpotPrice(pos.Underlying)
+			intrinsic := 0.0
+			if spotErr == nil && spotPrice > 0 {
+				if pos.OptionType == "put" && spotPrice < pos.Strike {
+					intrinsic = (pos.Strike - spotPrice) * pos.Quantity
+				} else if pos.OptionType == "call" && spotPrice > pos.Strike {
+					intrinsic = (spotPrice - pos.Strike) * pos.Quantity
+				}
+			}
+			if pos.Action == "buy" {
+				pos.CurrentValueUSD = intrinsic
+			} else {
+				pos.CurrentValueUSD = -intrinsic
+			}
+			logger.Info("Position %s expired (DTE=%.1f), intrinsic=$%.2f, scheduling removal", id, dte, intrinsic)
 			toDelete = append(toDelete, id)
 			continue
 		}
