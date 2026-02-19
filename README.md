@@ -14,13 +14,13 @@ A Go + Python hybrid trading system. A single Go binary (~8MB RAM) orchestrates 
 
 ### AI Agent Setup (Recommended)
 
-The fastest way to get running. Any AI coding agent can set this up by following the [Agent Setup Guide](SKILL.md).
+The fastest way to get running. Give your AI agent the [Agent Setup Guide](SKILL.md) — it's fully self-contained with the repo URL, step-by-step instructions, and exact prompts. The agent will clone the repo, install dependencies, walk you through configuration (Discord channels, strategy selection, risk settings), build the binary, and start the service.
+
+**Raw link for agents:** `https://raw.githubusercontent.com/richkuo/go-trader/main/SKILL.md`
 
 Using [OpenClaw](https://openclaw.ai)? Just say:
 
 > "Set up go-trader"
-
-Your agent will clone the repo, install dependencies, walk you through configuration (Discord channels, strategy selection, risk settings), build the binary, and start the service.
 
 ### Manual Setup
 
