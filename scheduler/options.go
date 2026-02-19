@@ -41,6 +41,7 @@ type OptionsAction struct {
 	DTE        float64   `json:"dte"`
 	Premium    float64   `json:"premium"`
 	PremiumUSD float64   `json:"premium_usd"`
+	Quantity   float64   `json:"quantity,omitempty"` // defaults to 1 if absent
 	Greeks     OptGreeks `json:"greeks"`
 }
 
@@ -99,11 +100,20 @@ func ExecuteOptionsSignal(s *StrategyState, result *OptionsResult, logger *Strat
 }
 
 func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAction, logger *StrategyLogger) (int, error) {
+	qty := action.Quantity
+	if qty <= 0 {
+		qty = 1.0
+	}
 	cost := action.PremiumUSD
 	if cost <= 0 {
 		cost = action.Premium * result.SpotPrice
 	}
-	
+	cost *= qty
+	if cost <= 0 {
+		logger.Info("Zero premium, skipping option buy")
+		return 0, nil
+	}
+
 	// Calculate fees based on strategy type (deribit vs ibkr)
 	var fee float64
 	if strings.HasPrefix(s.ID, "ibkr-") {
@@ -130,7 +140,7 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 		Expiry:          action.Expiry,
 		DTE:             action.DTE,
 		Action:          "buy",
-		Quantity:        1.0,
+		Quantity:        qty,
 		EntryPremium:    action.Premium,
 		EntryPremiumUSD: cost,
 		CurrentValueUSD: cost, // initial value = cost
@@ -143,7 +153,7 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 		StrategyID: s.ID,
 		Symbol:     fmt.Sprintf("%s-%s-%.0f-%s", result.Underlying, action.OptionType, action.Strike, action.Expiry),
 		Side:       "buy",
-		Quantity:   1.0,
+		Quantity:   qty,
 		Price:      cost,
 		Value:      totalCost,
 		TradeType:  "options",
@@ -156,11 +166,20 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 }
 
 func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsAction, logger *StrategyLogger) (int, error) {
+	qty := action.Quantity
+	if qty <= 0 {
+		qty = 1.0
+	}
 	premium := action.PremiumUSD
 	if premium <= 0 {
 		premium = action.Premium * result.SpotPrice
 	}
-	
+	premium *= qty
+	if premium <= 0 {
+		logger.Info("Zero premium, skipping option sell")
+		return 0, nil
+	}
+
 	// Calculate fees
 	var fee float64
 	if strings.HasPrefix(s.ID, "ibkr-") {
@@ -183,7 +202,7 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 		Expiry:          action.Expiry,
 		DTE:             action.DTE,
 		Action:          "sell",
-		Quantity:        1.0,
+		Quantity:        qty,
 		EntryPremium:    action.Premium,
 		EntryPremiumUSD: netPremium, // net after fees
 		CurrentValueUSD: -netPremium, // liability
@@ -196,7 +215,7 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 		StrategyID: s.ID,
 		Symbol:     fmt.Sprintf("%s-%s-%.0f-%s", result.Underlying, action.OptionType, action.Strike, action.Expiry),
 		Side:       "sell",
-		Quantity:   1.0,
+		Quantity:   qty,
 		Price:      premium,
 		Value:      netPremium,
 		TradeType:  "options",
@@ -232,6 +251,7 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 				Details:    fmt.Sprintf("Close %s PnL=$%.2f", pos.ID, pnl),
 			}
 			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTradeResult(&s.RiskState, pnl)
 			logger.Info("CLOSE OPTION %s | PnL: $%.2f", pos.ID, pnl)
 			delete(s.OptionPositions, id)
 			closed++
@@ -373,6 +393,7 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 			Details:    fmt.Sprintf("Theta harvest close %s PnL=$%.2f", pos.ID, pnl),
 		}
 		s.TradeHistory = append(s.TradeHistory, trade)
+		RecordTradeResult(&s.RiskState, pnl)
 
 		logger.Info("%s | %s | PnL: $%.2f", c.reason, pos.ID, pnl)
 		detail := fmt.Sprintf("[%s] CLOSE %s — %s (PnL: $%.2f)", s.ID, pos.ID, c.reason, pnl)
