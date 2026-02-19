@@ -501,9 +501,9 @@ sudo systemctl restart go-trader
 
 ---
 
-## `/trader-status` Command
+## `/go-trader` Command
 
-When the user says `/trader-status`, "check bot status", "show strategy health", or "how are the bots doing", run this:
+When the user says `/go-trader`, "check bot status", "show strategy health", or "how are the bots doing", run this:
 
 ```bash
 curl -s localhost:8099/status | python3 -c "
