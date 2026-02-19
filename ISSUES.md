@@ -47,13 +47,13 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 |---|-------|--------|--------|
 | 31 | **Service runs as root** — No User= directive, Python scripts execute as root | [BOTH] | YES |
 | 32 | **Compiled binary in repo** — 8.5MB go-trader binary was tracked in git | [ORIG] | YES |
-| 33 | **Discord token storage** — In config.json (gitignored) or env var. Env var preferred | [BOTH] | PARTIAL |
-| 34 | **Script path not validated** — Strategy Script field passed directly to exec.Command | [ORIG] | NO |
-| 35 | **Positions passed as CLI args** — Visible in /proc/[pid]/cmdline, could hit ARG_MAX | [ORIG] | NO |
-| 36 | **No config validation** — No validation for negative capital, invalid drawdown %, empty script paths | [ORIG] | NO |
-| 37 | **State file permissions 0644** — World-readable. Should be 0600 | [NEW] | NO |
-| 38 | **HTTP status endpoint no auth** — Any local user reads portfolio state (localhost-only, low risk) | [NEW] | NO |
-| 39 | **No state validation on load** — No checks for negative balances, invalid positions, corrupted data | [NEW] | NO |
+| 33 | **Discord token storage** — In config.json (gitignored) or env var. Env var preferred | [BOTH] | YES |
+| 34 | **Script path not validated** — Strategy Script field passed directly to exec.Command | [ORIG] | YES |
+| 35 | **Positions passed as CLI args** — Visible in /proc/[pid]/cmdline, could hit ARG_MAX | [ORIG] | YES |
+| 36 | **No config validation** — No validation for negative capital, invalid drawdown %, empty script paths | [ORIG] | YES |
+| 37 | **State file permissions 0644** — World-readable. Should be 0600 | [NEW] | YES |
+| 38 | **HTTP status endpoint no auth** — Any local user reads portfolio state (localhost-only, low risk) | [NEW] | YES |
+| 39 | **No state validation on load** — No checks for negative balances, invalid positions, corrupted data | [NEW] | YES |
 
 ## Feature (missing capability)
 
@@ -117,7 +117,7 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | Category | Total | Fixed | Unfixed |
 |----------|-------|-------|---------|
 | Bug | 30 | 11 | 18 (+1 N/A) |
-| Security | 9 | 2 | 6 (+1 partial) |
+| Security | 9 | 9 | 0 |
 | Feature | 19 | 1 | 18 |
 | Other | 16 | 0 | 15 (+1 partial) |
-| **Total** | **74** | **14** | **57** |
+| **Total** | **74** | **21** | **50** |
