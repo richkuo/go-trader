@@ -1,148 +1,188 @@
 # Go Trading Bot Setup Skill
 
-This skill guides first-time setup of the Go trading bot (spot + options strategies for crypto).
+This skill guides setup of the Go trading bot (spot + options crypto strategies with Discord alerts).
 
 ## Invocation
-User says: "Set up go-trader" or "Install go trading bot" or "Configure go-trader"
+User says: "Set up go-trader", "Install go trading bot", or "Configure go-trader"
 
 ## Prerequisites
-- OpenClaw agent with file system access
-- Go runtime installed (1.23.6+)
+- OpenClaw agent with filesystem access
+- Go runtime (1.23.6+) — on this server: `/usr/local/go/bin/go`
 - Python 3.12+ with uv package manager
 - Git installed
 
-## Steps
+## Setup Flow
 
-### 1. Check if already set up
+### 1. Check Existing Installation
 ```bash
-test -f /root/.openclaw/workspace/go-trader/scheduler/config.json && echo "Already configured"
+test -f scheduler/config.json && echo "EXISTS" || echo "FRESH"
 ```
+If config exists, ask: "go-trader is already configured. Do you want to reconfigure or just update?"
 
-If `config.json` exists, ask user if they want to reconfigure.
-
-### 2. Clone repository (if needed)
+### 2. Clone Repository (if needed)
 ```bash
 cd /root/.openclaw/workspace
 git clone https://github.com/richkuo/go-trader.git
 cd go-trader
 ```
 
-### 3. Copy example configs
+### 3. Create Config from Example
 ```bash
 cp scheduler/config.example.json scheduler/config.json
 cp scheduler/state.example.json scheduler/state.json
 ```
 
-### 4. Prompt user for values
+### 4. Gather User Input
 
-Ask in order:
+Prompt for each value in order. Explain what each is for and where to find it.
+
+#### 4a. Discord Setup
 
 **Discord Bot Token:**
-```
-"Discord bot token for trade alerts?
-This will be used to post cycle summaries and trade notifications.
-Format: MTQ3...
-(Get from Discord Developer Portal)"
-```
+> I need your Discord bot token for trade alerts. This posts cycle summaries and trade notifications to your server.
+>
+> Get it from the [Discord Developer Portal](https://discord.com/developers/applications) → your bot → Bot → Token.
+>
+> Format: `MTQ3MDAwMDE2...`
+>
+> **Security note:** I'll store this as an environment variable in the systemd service, not in config.json.
 
-Prompt for the token:
-```bash
-echo "Discord bot token?"
-read BOT_TOKEN
-```
+If user provides token, store it for step 7. If blank, Discord alerts will be disabled.
+
+**Discord Channel for Spot Alerts:**
+> Which Discord channel should receive **spot trading** alerts? These include:
+> - Hourly summaries with PnL per strategy (BTC/ETH/SOL momentum, RSI, MACD, etc.)
+> - Immediate notifications when a spot trade executes
+>
+> I need the **channel ID** — right-click the channel → Copy Channel ID.
+> (Enable Developer Mode in Discord Settings → Advanced if you don't see this option.)
+
+**Discord Channel for Options Alerts:**
+> Which Discord channel should receive **options trading** alerts? These include:
+> - Per-check summaries split by exchange (Deribit + IBKR)
+> - Individual strategy PnL with trade history
+> - Immediate notifications on options trades
+>
+> This can be the same channel as spot, or a different one to keep things organized.
+> I need the **channel ID**.
 
 **Discord Server (Guild) ID:**
-```
-"Discord server (guild) ID where you want alerts posted?
-Example: 1234567890123456789
-(Right-click server icon → Copy Server ID)"
-```
+> What's the Discord server ID where these channels live?
+> Right-click the server icon → Copy Server ID.
+>
+> I need this to add the channels to OpenClaw's Discord allowlist so the bot can post there.
 
-**Discord Channel IDs:**
-```
-"Discord channel ID for SPOT trading alerts?
-Example: 1111111111111111111
-(Right-click channel → Copy Channel ID)"
+**Summary Frequency (optional):**
+> How often should spot summaries post?
+> - `hourly` (default) — one summary per hour, trades posted immediately
+> - `per_check` — summary every 5 minutes (noisy)
+>
+> Options summaries always post per-check (every 20 minutes).
 
-"Discord channel ID for OPTIONS trading alerts?
-Example: 2222222222222222222
-(Right-click channel → Copy Channel ID)"
-```
+Default to `hourly` for spot, `per_check` for options if user doesn't specify.
 
-**Exchange API Keys (optional for paper trading):**
-```
-"Binance API key? (leave blank for paper trading mode)"
-"Binance API secret? (leave blank for paper trading mode)"
-```
+#### 4b. Exchange API Keys
 
-### 5. Write values to config.json and OpenClaw allowlist
+**Binance API Key (optional):**
+> Do you have Binance API credentials for live trading?
+> Leave blank to run in **paper trading mode** (simulated trades, no real money).
+>
+> Paper mode is recommended for initial setup — you can add API keys later.
 
-Update the Discord configuration:
-```bash
-GUILD_ID="${USER_GUILD_ID}"
-SPOT_CHANNEL="${USER_SPOT_CHANNEL}"
-OPTIONS_CHANNEL="${USER_OPTIONS_CHANNEL}"
+If blank, skip Binance secret prompt.
 
-# Use Python to update the JSON config
-python3 << EOF
+#### 4c. Capital & Risk (optional)
+
+**Per-Strategy Capital:**
+> Each strategy starts with $1,000 by default. Want a different amount?
+> This applies to all 30 strategies (14 spot + 16 options).
+
+**Max Drawdown:**
+> Default max drawdown is 60% for spot, 20% for options. Circuit breakers pause trading when hit.
+> Want to customize?
+
+Most users should keep defaults.
+
+### 5. Write Configuration
+
+**Update config.json:**
+```python
+python3 << 'EOF'
 import json
 
 with open('scheduler/config.json', 'r') as f:
     config = json.load(f)
 
-config['discord']['token'] = '${BOT_TOKEN}'
+# Discord channels (token goes in env var, NOT config)
+config['discord']['enabled'] = True
+config['discord']['token'] = ''  # Intentionally blank — use env var
 config['discord']['channels']['spot'] = '${SPOT_CHANNEL}'
 config['discord']['channels']['options'] = '${OPTIONS_CHANNEL}'
+config['discord']['spot_summary_freq'] = '${SPOT_FREQ}'
+config['discord']['options_summary_freq'] = '${OPTIONS_FREQ}'
 
 with open('scheduler/config.json', 'w') as f:
     json.dump(config, f, indent=2)
     f.write('\n')
 
-print("✓ Config updated")
+print("✓ Config written")
 EOF
 ```
 
 **Add channels to OpenClaw's Discord allowlist:**
-```bash
-if [ -n "$GUILD_ID" ] && [ -n "$SPOT_CHANNEL" ]; then
-  openclaw config set "channels.discord.guilds.${GUILD_ID}.channels.${SPOT_CHANNEL}.requireMention" false
-  echo "✓ Added spot channel ${SPOT_CHANNEL} to OpenClaw's allowlist"
-fi
+This is required so the bot (which shares OpenClaw's Discord token) can post to these channels.
 
-if [ -n "$GUILD_ID" ] && [ -n "$OPTIONS_CHANNEL" ]; then
-  openclaw config set "channels.discord.guilds.${GUILD_ID}.channels.${OPTIONS_CHANNEL}.requireMention" false
-  echo "✓ Added options channel ${OPTIONS_CHANNEL} to OpenClaw's allowlist"
-fi
+```bash
+# Use gateway config.patch to add channels to the guild allowlist
+# The agent should use the gateway tool:
+# gateway config.patch with:
+#   channels.discord.guilds.<GUILD_ID>.channels.<SPOT_CHANNEL>.requireMention = false
+#   channels.discord.guilds.<GUILD_ID>.channels.<OPTIONS_CHANNEL>.requireMention = false
 ```
 
-### 6. Install Python dependencies
+Or via OpenClaw CLI:
 ```bash
-# Install uv if not present
-curl -LsSf https://astral.sh/uv/install.sh | sh
+openclaw config set "channels.discord.guilds.${GUILD_ID}.channels.${SPOT_CHANNEL}.requireMention" false
+openclaw config set "channels.discord.guilds.${GUILD_ID}.channels.${OPTIONS_CHANNEL}.requireMention" false
+```
 
-# Create virtual environment and install dependencies
+### 6. Install Python Dependencies
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh  # if uv not installed
 uv venv
 uv sync
 ```
 
-### 7. Build Go scheduler
+### 7. Build Go Scheduler
 ```bash
 cd scheduler
-go build -o trading-scheduler .
+/usr/local/go/bin/go build -o ../go-trader .
 cd ..
 ```
 
-### 8. Test configuration
-```bash
-# Quick test run (won't place trades)
-./scheduler/trading-scheduler --help
+### 8. Install systemd Service
+
+Write the service file with the Discord token as an environment variable:
+
+```ini
+[Unit]
+Description=Go Trading Scheduler
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/.openclaw/workspace/go-trader
+ExecStart=/root/.openclaw/workspace/go-trader/go-trader --config scheduler/config.json
+Environment="DISCORD_BOT_TOKEN=${BOT_TOKEN}"
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/.openclaw/workspace/go-trader/logs/scheduler.log
+StandardError=append:/root/.openclaw/workspace/go-trader/logs/scheduler.log
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-Verify binary runs without errors.
-
-### 9. Set up systemd service
-
-The Discord token is already in `scheduler/config.json`, so just install the service:
 ```bash
 sudo cp go-trader.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -150,92 +190,107 @@ sudo systemctl enable go-trader
 sudo systemctl start go-trader
 ```
 
-### 10. Verify service is running
+### 9. Verify
+
 ```bash
-sudo systemctl status go-trader
-curl -s localhost:8099/status | jq .
+systemctl is-active go-trader
+curl -s localhost:8099/status | python3 -m json.tool
 ```
 
-### 11. Confirm to user
+Wait for first cycle (~5 min), then check the Discord channels for the first summary.
 
-Determine mode and Discord status:
-```bash
-MODE="paper trading"
-[ -n "$BINANCE_API_KEY" ] && MODE="live trading"
+### 10. Confirm to User
 
-DISCORD_STATUS="disabled"
-[ -n "$GUILD_ID" ] && [ -n "$SPOT_CHANNEL" ] && DISCORD_STATUS="enabled (guild: ${GUILD_ID})"
 ```
+✅ Go trading bot is running!
 
-Message:
-```
-✅ Go trading bot installed and running!
-
-Mode: ${MODE}
+Mode: ${MODE}  (paper trading / live)
 Strategies: 30 (14 spot + 16 options)
-Discord alerts: ${DISCORD_STATUS}
-Port: 8099
+Discord alerts:
+  📈 Spot → #${SPOT_CHANNEL_NAME} (${SPOT_FREQ})
+  🎯 Options → #${OPTIONS_CHANNEL_NAME} (per check)
+Status: curl localhost:8099/status
 Logs: journalctl -u go-trader -f
 
-Check status: systemctl status go-trader
-Web status: curl localhost:8099/status
-
-Spot strategies run every 5 minutes
-Options strategies run every 20 minutes
-Discord summaries: spot hourly, options per check
+Spot strategies check every 5 minutes, summaries ${SPOT_FREQ}.
+Options strategies check every 20 minutes, summaries per check.
+Trades post immediately to the relevant channel.
 ```
 
-## Notes
+## Discord Output Format
 
-- **Paper trading mode** by default (no exchange API keys = simulated trades only)
-- Bot runs **30 strategies** across spot (Binance) and options (Deribit + IBKR)
-- **Discord setup**: Bot uses OpenClaw's Discord bot token (shared)
-  - Spot channel: hourly summaries + immediate trade alerts
-  - Options channel: per-check summaries + immediate trade alerts
-  - Channels must be in OpenClaw's Discord allowlist
-- **State persistence**: `scheduler/state.json` tracks positions, P&L, circuit breakers
-- **Config changes**: Edit `scheduler/config.json`, then `systemctl restart go-trader`
-- Service auto-restarts on failure (10 second delay)
+The bot posts two types of messages:
 
-## Strategy Overview
+**Spot Summary (📈):**
+- Prices: BTC, ETH, SOL
+- Per-strategy PnL with trade count
+- Last 3 trades per strategy
+- Starting capital → current value with total PnL
 
-**Spot strategies (5-minute interval):**
-- Momentum (BTC, ETH, SOL)
-- RSI (BTC, ETH, SOL)
-- MACD (BTC, ETH)
-- Volume Weighted (BTC, ETH, SOL)
-- Pairs Spread (BTC, ETH, SOL)
+**Options Summary (🎯):**
+- Split into Deribit and IBKR sections
+- Per-strategy PnL with trade history
+- Shows option positions and current values
 
-**Options strategies (20-minute interval):**
-- Deribit: vol mean reversion, momentum, protective puts, covered calls, wheel, butterfly
-- IBKR: same 6 strategies mirrored for CME crypto options
+**Trade Alerts:**
+- Posted immediately when a trade executes
+- Shows side (BUY/SELL), symbol, price, timestamp
 
-All strategies start with $1,000 capital and 60% max drawdown (spot) or 20% (options).
+## Reconfiguration
+
+### Change Discord Channels
+Edit `scheduler/config.json` → `discord.channels`, then:
+```bash
+systemctl restart go-trader
+```
+Also update OpenClaw's allowlist if the new channels aren't already added.
+
+### Change Discord Token
+Update the systemd environment variable:
+```bash
+sudo systemctl edit go-trader
+# Add: Environment="DISCORD_BOT_TOKEN=new_token_here"
+sudo systemctl restart go-trader
+```
+
+### Add/Remove Strategies
+Edit `scheduler/config.json` → `strategies` array, then:
+```bash
+systemctl restart go-trader
+```
+State for removed strategies is auto-pruned. New strategies initialize with fresh capital.
+
+### Switch to Live Trading
+Add exchange API keys to environment:
+```bash
+sudo systemctl edit go-trader
+# Add:
+# Environment="BINANCE_API_KEY=..."
+# Environment="BINANCE_API_SECRET=..."
+sudo systemctl restart go-trader
+```
+
+## Strategy Reference
+
+**Spot (5-min checks, hourly Discord summaries):**
+- Momentum, RSI, MACD, Volume Weighted, Pairs Spread
+- Assets: BTC/USDT, ETH/USDT, SOL/USDT
+- Default: $1K capital, 60% max drawdown
+
+**Options (20-min checks, per-check Discord summaries):**
+- Vol Mean Reversion, Momentum, Protective Puts, Covered Calls, Wheel, Butterfly
+- Exchanges: Deribit (testnet), IBKR (simulated)
+- Assets: BTC, ETH
+- Default: $1K capital, 20% max drawdown
 
 ## Troubleshooting
 
-**Service won't start:**
-```bash
-journalctl -u go-trader -n 50
-```
+**No Discord messages:** Check token is set (`echo $DISCORD_BOT_TOKEN` in service env), channel IDs are correct, bot has Send Messages permission in the channel, and channels are in OpenClaw's allowlist.
 
-**Rebuild Go binary:**
-```bash
-cd scheduler
-go build -o trading-scheduler .
-```
+**Service won't start:** `journalctl -u go-trader -n 50`
 
-**Reset state (clear all positions):**
-```bash
-cp scheduler/state.example.json scheduler/state.json
-systemctl restart go-trader
-```
+**Rebuild after Go code changes:** `cd scheduler && /usr/local/go/bin/go build -o ../go-trader . && systemctl restart go-trader`
 
-**Change Discord channels:**
-```bash
-# Edit scheduler/config.json manually or use Python/jq
-systemctl restart go-trader
-```
+**Python changes:** Just `systemctl restart go-trader` (no rebuild needed).
 
-**Update strategies:**
-Edit `scheduler/config.json` → `strategies` array, then restart.
+**Reset all positions:** `cp scheduler/state.example.json scheduler/state.json && systemctl restart go-trader`
