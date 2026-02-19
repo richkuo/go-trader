@@ -102,17 +102,138 @@ func TestRecordTradeResult_SameDayAccumulation(t *testing.T) {
 // day rollover so the risk check always operates on the correct day's budget.
 func TestCheckRisk_RollsOverDailyPnL(t *testing.T) {
 	s := &StrategyState{
-		RiskState: newRiskState(yesterday(), 500.0),
+		RiskState:       newRiskState(yesterday(), 500.0),
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
 	}
 	s.RiskState.PeakValue = 1000.0
 	s.RiskState.MaxDrawdownPct = 50.0
 
-	CheckRisk(s, 1000.0)
+	CheckRisk(s, 1000.0, nil, nil)
 
 	if s.RiskState.DailyPnL != 0 {
 		t.Errorf("expected DailyPnL reset to 0 by CheckRisk; got %.2f", s.RiskState.DailyPnL)
 	}
 	if s.RiskState.DailyPnLDate != todayUTC() {
 		t.Errorf("expected DailyPnLDate=%s; got %s", todayUTC(), s.RiskState.DailyPnLDate)
+	}
+}
+
+// TestCheckRisk_ForceCloseOnDrawdown verifies that positions are liquidated when
+// the max drawdown circuit breaker fires.
+func TestCheckRisk_ForceCloseOnDrawdown(t *testing.T) {
+	s := &StrategyState{
+		ID:   "test-strategy",
+		Cash: 5000.0,
+		RiskState: RiskState{
+			PeakValue:      10000.0,
+			MaxDrawdownPct: 20.0,
+			TotalTrades:    1,
+			DailyPnLDate:   todayUTC(),
+		},
+		InitialCapital: 10000.0,
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000.0, Side: "long"},
+		},
+		OptionPositions: map[string]*OptionPosition{
+			"BTC-call-60000-2026-03-01": {
+				ID:              "BTC-call-60000-2026-03-01",
+				Action:          "buy",
+				Quantity:        1,
+				EntryPremiumUSD: 1000.0,
+				CurrentValueUSD: 500.0,
+			},
+			"BTC-put-50000-2026-03-01": {
+				ID:              "BTC-put-50000-2026-03-01",
+				Action:          "sell",
+				Quantity:        1,
+				EntryPremiumUSD: 600.0,
+				CurrentValueUSD: -800.0,
+			},
+		},
+		TradeHistory: []Trade{},
+	}
+
+	// BTC at $45000 → portfolio ≈ $5000 + 0.1*45000 + 500 + (-800) = $5000+4500+500-800 = $9200
+	// drawdown = (10000-9200)/10000 = 8% → below 20% threshold
+	// We need drawdown > 20%, so use BTC=$30000:
+	// portfolio = $5000 + 0.1*30000 + 500 + (-800) = $5000+3000+500-800 = $7700
+	// drawdown = (10000-7700)/10000 = 23% > 20% ✓
+	prices := map[string]float64{"BTC": 30000.0}
+	pv := PortfolioValue(s, prices)
+
+	allowed, reason := CheckRisk(s, pv, prices, nil)
+
+	if allowed {
+		t.Error("expected CheckRisk to return false on drawdown breach")
+	}
+	if len(reason) == 0 {
+		t.Error("expected non-empty reason")
+	}
+
+	// All positions should be closed
+	if len(s.Positions) != 0 {
+		t.Errorf("expected Positions empty after force-close; got %d entries", len(s.Positions))
+	}
+	if len(s.OptionPositions) != 0 {
+		t.Errorf("expected OptionPositions empty after force-close; got %d entries", len(s.OptionPositions))
+	}
+
+	// 3 trades recorded (1 spot + 2 options)
+	if len(s.TradeHistory) != 3 {
+		t.Errorf("expected 3 trades in history; got %d", len(s.TradeHistory))
+	}
+
+	// RiskState.TotalTrades incremented by 3 (was 1, now 4)
+	if s.RiskState.TotalTrades != 4 {
+		t.Errorf("expected TotalTrades=4; got %d", s.RiskState.TotalTrades)
+	}
+
+	// Cash: started $5000
+	// + long BTC close: 0.1 * 30000 = $3000 → pnl = 3000 - 0.1*50000 = -$2000
+	// + bought call close: +$500 → pnl = 500 - 1000 = -$500
+	// + sold put close: buyback = 800 → cash -= 800 → pnl = 600 - 800 = -$200
+	// expected Cash = 5000 + 3000 + 500 - 800 = $7700
+	expectedCash := 7700.0
+	if s.Cash != expectedCash {
+		t.Errorf("expected Cash=%.2f after force-close; got %.2f", expectedCash, s.Cash)
+	}
+}
+
+// TestCheckRisk_ConsecutiveLossesNoForceClose verifies that the consecutive-losses
+// circuit breaker does NOT force-close positions.
+func TestCheckRisk_ConsecutiveLossesNoForceClose(t *testing.T) {
+	s := &StrategyState{
+		ID:   "test-strategy",
+		Cash: 5000.0,
+		RiskState: RiskState{
+			PeakValue:         10000.0,
+			MaxDrawdownPct:    50.0,
+			TotalTrades:       5,
+			ConsecutiveLosses: 5,
+			DailyPnLDate:      todayUTC(),
+		},
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000.0, Side: "long"},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+
+	prices := map[string]float64{"BTC": 50000.0}
+	pv := PortfolioValue(s, prices)
+
+	allowed, reason := CheckRisk(s, pv, prices, nil)
+
+	if allowed {
+		t.Errorf("expected circuit breaker to fire; reason=%s", reason)
+	}
+
+	// Positions must NOT be closed
+	if len(s.Positions) != 1 {
+		t.Errorf("expected Positions untouched; got %d entries", len(s.Positions))
+	}
+	if len(s.TradeHistory) != 0 {
+		t.Errorf("expected no trades recorded; got %d", len(s.TradeHistory))
 	}
 }

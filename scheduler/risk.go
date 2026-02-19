@@ -33,8 +33,78 @@ func rolloverDailyPnL(r *RiskState) {
 	}
 }
 
+// forceCloseAllPositions liquidates all open positions at current prices.
+// Called only from the drawdown circuit breaker path.
+func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger *StrategyLogger) {
+	now := time.Now().UTC()
+
+	for symbol, pos := range s.Positions {
+		price, ok := prices[symbol]
+		if !ok {
+			price = pos.AvgCost
+		}
+		var pnl float64
+		if pos.Side == "long" {
+			proceeds := pos.Quantity * price
+			pnl = proceeds - pos.Quantity*pos.AvgCost
+			s.Cash += proceeds
+		} else {
+			pnl = pos.Quantity * (pos.AvgCost - price)
+			s.Cash += pos.Quantity*pos.AvgCost - pos.Quantity*price
+		}
+		if logger != nil {
+			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)
+		}
+		trade := Trade{
+			Timestamp:  now,
+			StrategyID: s.ID,
+			Symbol:     symbol,
+			Side:       "close",
+			Quantity:   pos.Quantity,
+			Price:      price,
+			Value:      pos.Quantity * price,
+			TradeType:  "spot",
+			Details:    fmt.Sprintf("Circuit breaker force-close, PnL: $%.2f", pnl),
+		}
+		s.TradeHistory = append(s.TradeHistory, trade)
+		RecordTradeResult(&s.RiskState, pnl)
+		delete(s.Positions, symbol)
+	}
+
+	for id, pos := range s.OptionPositions {
+		var pnl, closePrice float64
+		if pos.Action == "buy" {
+			pnl = pos.CurrentValueUSD - pos.EntryPremiumUSD
+			s.Cash += pos.CurrentValueUSD
+			closePrice = pos.CurrentValueUSD
+		} else {
+			buybackCost := -pos.CurrentValueUSD
+			pnl = pos.EntryPremiumUSD - buybackCost
+			s.Cash -= buybackCost
+			closePrice = buybackCost
+		}
+		if logger != nil {
+			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Action, id, closePrice, pnl)
+		}
+		trade := Trade{
+			Timestamp:  now,
+			StrategyID: s.ID,
+			Symbol:     id,
+			Side:       "close",
+			Quantity:   pos.Quantity,
+			Price:      closePrice,
+			Value:      closePrice,
+			TradeType:  "options",
+			Details:    fmt.Sprintf("Circuit breaker force-close, PnL: $%.2f", pnl),
+		}
+		s.TradeHistory = append(s.TradeHistory, trade)
+		RecordTradeResult(&s.RiskState, pnl)
+		delete(s.OptionPositions, id)
+	}
+}
+
 // CheckRisk evaluates risk state and returns whether trading is allowed.
-func CheckRisk(s *StrategyState, portfolioValue float64) (bool, string) {
+func CheckRisk(s *StrategyState, portfolioValue float64, prices map[string]float64, logger *StrategyLogger) (bool, string) {
 	r := &s.RiskState
 	now := time.Now().UTC()
 
@@ -60,6 +130,7 @@ func CheckRisk(s *StrategyState, portfolioValue float64) (bool, string) {
 		if r.TotalTrades > 0 && r.CurrentDrawdownPct > r.MaxDrawdownPct {
 			r.CircuitBreaker = true
 			r.CircuitBreakerUntil = now.Add(24 * time.Hour)
+			forceCloseAllPositions(s, prices, logger)
 			return false, fmt.Sprintf("max drawdown exceeded (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f)",
 				r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue)
 		}

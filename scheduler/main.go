@@ -223,7 +223,7 @@ func main() {
 
 				// Phase 2: Lock — CheckRisk (fast, no I/O)
 				mu.Lock()
-				allowed, reason := CheckRisk(stratState, pv)
+				allowed, reason := CheckRisk(stratState, pv, prices, logger)
 				mu.Unlock()
 				if !allowed {
 					logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
