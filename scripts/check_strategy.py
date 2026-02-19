@@ -35,6 +35,10 @@ def main():
         # Verify strategy exists
         get_strategy(strategy_name)
 
+        # Warn about known limitations
+        if strategy_name == "pairs_spread":
+            print("Warning: pairs_spread requires close_b column; degrading to self-mean-reversion", file=sys.stderr)
+
         # Fetch latest data
         print(f"Fetching {symbol} {timeframe}...", file=sys.stderr)
         df = fetch_ohlcv(symbol=symbol, timeframe=timeframe, limit=200, store=False)
