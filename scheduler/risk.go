@@ -20,17 +20,25 @@ type RiskState struct {
 	LosingTrades       int      `json:"losing_trades"`
 }
 
+// rolloverDailyPnL resets DailyPnL to zero whenever the UTC date has advanced
+// past DailyPnLDate. Calling this at both risk-check time and trade-record time
+// ensures the reset is applied regardless of which code path runs first after
+// midnight — fixing issue #27 where a skipped or late risk check could cause
+// trades to be counted against the wrong day.
+func rolloverDailyPnL(r *RiskState) {
+	today := time.Now().UTC().Format("2006-01-02")
+	if r.DailyPnLDate != today {
+		r.DailyPnL = 0
+		r.DailyPnLDate = today
+	}
+}
+
 // CheckRisk evaluates risk state and returns whether trading is allowed.
 func CheckRisk(s *StrategyState, portfolioValue float64) (bool, string) {
 	r := &s.RiskState
 	now := time.Now().UTC()
 
-	// Reset daily PnL if new day
-	today := now.Format("2006-01-02")
-	if r.DailyPnLDate != today {
-		r.DailyPnL = 0
-		r.DailyPnLDate = today
-	}
+	rolloverDailyPnL(r)
 
 	// Check circuit breaker
 	if r.CircuitBreaker {
@@ -69,6 +77,7 @@ func CheckRisk(s *StrategyState, portfolioValue float64) (bool, string) {
 
 // RecordTradeResult updates risk state with trade outcome.
 func RecordTradeResult(r *RiskState, pnl float64) {
+	rolloverDailyPnL(r)
 	r.TotalTrades++
 	r.DailyPnL += pnl
 	if pnl >= 0 {

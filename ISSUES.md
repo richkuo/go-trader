@@ -37,7 +37,7 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | 24  | **Logger ignores LogDir config** — NewLogManager discards argument, all output to stdout                                                         | [BOTH] | YES     |
 | 25  | **Deribit expiry fallback too loose** — Could match expiry weeks away from target                                                                | [NEW]  | YES     |
 | 26  | **Python data_fetcher infinite retry on rate limit** — `continue` loop on RateLimitExceeded with no max retries                                  | [NEW]  | YES     |
-| 27  | **Daily PnL reset is naive** — Resets on first check after midnight UTC, breaks if check missed at boundary                                      | [NEW]  | NO      |
+| 27  | **Daily PnL reset is naive** — Resets on first check after midnight UTC, breaks if check missed at boundary                                      | [NEW]  | YES     |
 | 28  | **No expiry/assignment modeling** — Sold ITM options treated as worthless at expiry instead of modeling assignment                               | [NEW]  | YES     |
 | 29  | **Subprocess orphan risk** — No process group management, no concurrency limit on Python processes                                               | [NEW]  | YES     |
 | 30  | **Global state in Python Order class** — `_id_counter` class variable not thread-safe, resets on restart (in unused exchange_adapter.py)         | [NEW]  | N/A     |
@@ -127,10 +127,10 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 
 | Category  | Total  | Fixed  | Unfixed                |
 | --------- | ------ | ------ | ---------------------- |
-| Bug       | 30     | 25     | 3 (+1 N/A, +1 partial) |
+| Bug       | 30     | 26     | 2 (+1 N/A, +1 partial) |
 | Security  | 9      | 9      | 0                      |
 | Feature   | 19     | 1      | 18                     |
 | Other     | 16     | 0      | 15 (+1 partial)        |
-| **Total** | **74** | **35** | **36**                 |
+| **Total** | **74** | **36** | **35**                 |
 
 
