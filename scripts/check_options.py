@@ -6,14 +6,15 @@ Evaluates options strategies and outputs JSON to stdout.
 Usage: python3 check_options.py <strategy> <underlying>
 """
 
+import math
 import sys
 import json
 import traceback
 from datetime import datetime, timezone, timedelta
 
-# Import Deribit utilities for real expiries
+# Import Deribit utilities for real expiries and live quote (premium + Greeks)
 try:
-    from deribit_utils import find_closest_expiry, find_closest_strike, get_live_premium
+    from deribit_utils import find_closest_expiry, find_closest_strike, get_live_premium, get_live_quote
     USE_REAL_EXPIRIES = True
     USE_LIVE_PREMIUMS = True
 except ImportError:
@@ -60,6 +61,60 @@ def get_premium(underlying, option_type, strike, expiry_str, fallback_pct, spot_
     return fallback_pct, round(fallback_pct * spot_price, 2)
 
 
+def _norm_cdf(x):
+    """Standard normal CDF (math only, no scipy)."""
+    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+
+
+def bs_greeks(spot, strike, dte_days, vol_annual, option_type):
+    """
+    Black-Scholes Greeks for fallback when live Deribit quote is unavailable.
+    vol_annual: annualized volatility as decimal (e.g. 0.5 = 50%).
+    Returns dict with delta, gamma, theta (per day), vega.
+    """
+    if dte_days <= 0 or vol_annual <= 0 or spot <= 0:
+        return {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
+    t = dte_days / 365.0
+    sqrt_t = math.sqrt(t)
+    d1 = (math.log(spot / strike) + (0.05 + 0.5 * vol_annual ** 2) * t) / (vol_annual * sqrt_t)
+    d2 = d1 - vol_annual * sqrt_t
+    pdf_d1 = math.exp(-0.5 * d1 ** 2) / math.sqrt(2 * math.pi)
+    if option_type.lower() == "call":
+        delta = _norm_cdf(d1)
+    else:
+        delta = _norm_cdf(d1) - 1
+    gamma = pdf_d1 / (spot * vol_annual * sqrt_t) if (spot * vol_annual * sqrt_t) > 0 else 0.0
+    vega = spot * pdf_d1 * sqrt_t / 100.0  # per 1% vol change
+    theta_annual = -(spot * pdf_d1 * vol_annual) / (2 * sqrt_t) - 0.05 * strike * math.exp(-0.05 * t) * (
+        _norm_cdf(d2) if option_type.lower() == "call" else _norm_cdf(-d2)
+    )
+    theta = theta_annual / 365.0  # daily
+    return {
+        "delta": round(delta, 4),
+        "gamma": round(gamma, 6),
+        "theta": round(theta, 2),
+        "vega": round(vega, 2),
+    }
+
+
+def get_premium_and_greeks(underlying, option_type, strike, expiry_str, dte, fallback_pct, spot_price, vol_annual=None):
+    """
+    Get premium (pct in underlying terms, USD) and Greeks in one go.
+    Uses live Deribit quote when available; otherwise fallback premium + BS-estimated Greeks.
+    vol_annual: optional annualized vol for BS fallback (decimal); default 0.5 if None.
+    """
+    if USE_LIVE_PREMIUMS:
+        quote = get_live_quote(underlying, option_type, strike, expiry_str)
+        if quote:
+            mark = quote["mark_price"]
+            premium_usd = round(mark * spot_price, 2)
+            return mark, premium_usd, quote["greeks"]
+    premium_pct, premium_usd = get_premium(underlying, option_type, strike, expiry_str, fallback_pct, spot_price)
+    vol = vol_annual if vol_annual is not None and vol_annual > 0 else 0.5
+    greeks = bs_greeks(spot_price, strike, dte, vol, option_type)
+    return premium_pct, premium_usd, greeks
+
+
 def get_real_strike(underlying, expiry_str, option_type, target_strike):
     """
     Get real Deribit strike closest to target.
@@ -84,7 +139,6 @@ def compute_iv_rank(returns, window=14):
     Standard formula: (current_HV - period_min_HV) / (period_max_HV - period_min_HV) * 100
     Falls back to ratio method when insufficient data for rolling windows.
     """
-    import math
     if not returns or len(returns) < 2:
         return 50.0
 
@@ -144,11 +198,13 @@ def evaluate_momentum_options(underlying, spot_price, existing_positions=None):
         if signal != 0:
             # Get real Deribit expiry closest to 37 DTE
             expiry_str, dte = get_real_expiry(underlying, 37)
+            returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
+            vol_annual = (math.sqrt(sum(r**2 for r in returns[-14:]) / max(len(returns[-14:]), 1)) * math.sqrt(365)) / 100.0 if len(returns) >= 14 else None
 
             if signal == 1:
                 target_strike = spot_price * 1.02  # slightly OTM call
                 strike = get_real_strike(underlying, expiry_str, "call", target_strike)
-                premium_pct, premium_usd = get_premium(underlying, "call", strike, expiry_str, 0.045, spot_price)
+                premium_pct, premium_usd, greeks = get_premium_and_greeks(underlying, "call", strike, expiry_str, dte, 0.045, spot_price, vol_annual)
                 actions.append({
                     "action": "buy",
                     "option_type": "call",
@@ -157,17 +213,12 @@ def evaluate_momentum_options(underlying, spot_price, existing_positions=None):
                     "dte": dte,
                     "premium": premium_pct,
                     "premium_usd": premium_usd,
-                    "greeks": {
-                        "delta": 0.45,
-                        "gamma": 0.001,
-                        "theta": -15.2,
-                        "vega": 120.5
-                    }
+                    "greeks": greeks
                 })
             else:
                 target_strike = spot_price * 0.98  # slightly OTM put
                 strike = get_real_strike(underlying, expiry_str, "put", target_strike)
-                premium_pct, premium_usd = get_premium(underlying, "put", strike, expiry_str, 0.040, spot_price)
+                premium_pct, premium_usd, greeks = get_premium_and_greeks(underlying, "put", strike, expiry_str, dte, 0.040, spot_price, vol_annual)
                 actions.append({
                     "action": "buy",
                     "option_type": "put",
@@ -176,12 +227,7 @@ def evaluate_momentum_options(underlying, spot_price, existing_positions=None):
                     "dte": dte,
                     "premium": premium_pct,
                     "premium_usd": premium_usd,
-                    "greeks": {
-                        "delta": -0.40,
-                        "gamma": 0.001,
-                        "theta": -14.8,
-                        "vega": 115.3
-                    }
+                    "greeks": greeks
                 })
 
         # Estimate IV rank via rolling HV windows
@@ -214,9 +260,9 @@ def evaluate_vol_mean_reversion(underlying, spot_price, existing_positions=None)
 
         # Calculate historical volatility
         returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-        import math
         recent_vol = math.sqrt(sum(r**2 for r in returns[-14:]) / 14) * math.sqrt(365) * 100
         hist_vol = math.sqrt(sum(r**2 for r in returns) / len(returns)) * math.sqrt(365) * 100
+        vol_annual = recent_vol / 100.0
 
         iv_rank = compute_iv_rank(returns)
 
@@ -231,8 +277,8 @@ def evaluate_vol_mean_reversion(underlying, spot_price, existing_positions=None)
             put_target = spot_price * 0.90
             call_strike = get_real_strike(underlying, expiry_str, "call", call_target)
             put_strike = get_real_strike(underlying, expiry_str, "put", put_target)
-            call_pct, call_usd = get_premium(underlying, "call", call_strike, expiry_str, 0.025, spot_price)
-            put_pct, put_usd = get_premium(underlying, "put", put_strike, expiry_str, 0.020, spot_price)
+            call_pct, call_usd, call_greeks = get_premium_and_greeks(underlying, "call", call_strike, expiry_str, dte, 0.025, spot_price, vol_annual)
+            put_pct, put_usd, put_greeks = get_premium_and_greeks(underlying, "put", put_strike, expiry_str, dte, 0.020, spot_price, vol_annual)
             actions = [
                 {
                     "action": "sell",
@@ -242,7 +288,7 @@ def evaluate_vol_mean_reversion(underlying, spot_price, existing_positions=None)
                     "dte": dte,
                     "premium": call_pct,
                     "premium_usd": call_usd,
-                    "greeks": {"delta": 0.20, "gamma": 0.0005, "theta": 25.0, "vega": -80.0}
+                    "greeks": call_greeks
                 },
                 {
                     "action": "sell",
@@ -252,15 +298,15 @@ def evaluate_vol_mean_reversion(underlying, spot_price, existing_positions=None)
                     "dte": dte,
                     "premium": put_pct,
                     "premium_usd": put_usd,
-                    "greeks": {"delta": -0.18, "gamma": 0.0004, "theta": 22.0, "vega": -75.0}
+                    "greeks": put_greeks
                 }
             ]
         elif iv_rank < 25:
             # Low IV → buy straddle
             signal = 1
             strike = get_real_strike(underlying, expiry_str, "call", spot_price)
-            call_pct, call_usd = get_premium(underlying, "call", strike, expiry_str, 0.035, spot_price)
-            put_pct, put_usd = get_premium(underlying, "put", strike, expiry_str, 0.030, spot_price)
+            call_pct, call_usd, call_greeks = get_premium_and_greeks(underlying, "call", strike, expiry_str, dte, 0.035, spot_price, vol_annual)
+            put_pct, put_usd, put_greeks = get_premium_and_greeks(underlying, "put", strike, expiry_str, dte, 0.030, spot_price, vol_annual)
             actions = [
                 {
                     "action": "buy",
@@ -270,7 +316,7 @@ def evaluate_vol_mean_reversion(underlying, spot_price, existing_positions=None)
                     "dte": dte,
                     "premium": call_pct,
                     "premium_usd": call_usd,
-                    "greeks": {"delta": 0.50, "gamma": 0.001, "theta": -18.0, "vega": 130.0}
+                    "greeks": call_greeks
                 },
                 {
                     "action": "buy",
@@ -280,7 +326,7 @@ def evaluate_vol_mean_reversion(underlying, spot_price, existing_positions=None)
                     "dte": dte,
                     "premium": put_pct,
                     "premium_usd": put_usd,
-                    "greeks": {"delta": -0.50, "gamma": 0.001, "theta": -17.0, "vega": 125.0}
+                    "greeks": put_greeks
                 }
             ]
 
@@ -310,9 +356,9 @@ def evaluate_protective_puts(underlying, spot_price, existing_positions=None):
 
         closes = [c[4] for c in ohlcv]
         returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-        import math
         recent_vol = math.sqrt(sum(r**2 for r in returns[-14:]) / max(len(returns[-14:]), 1)) * math.sqrt(365) * 100
         hist_vol = math.sqrt(sum(r**2 for r in returns) / len(returns)) * math.sqrt(365) * 100
+        vol_annual = recent_vol / 100.0
         iv_rank = compute_iv_rank(returns)
 
         # Only buy if not already holding a protective put
@@ -327,7 +373,7 @@ def evaluate_protective_puts(underlying, spot_price, existing_positions=None):
         expiry_str, dte = get_real_expiry(underlying, 45)
         target_strike = spot_price * 0.88  # 12% OTM
         strike = get_real_strike(underlying, expiry_str, "put", target_strike)
-        premium_pct, premium_usd = get_premium(underlying, "put", strike, expiry_str, 0.015, spot_price)
+        premium_pct, premium_usd, greeks = get_premium_and_greeks(underlying, "put", strike, expiry_str, dte, 0.015, spot_price, vol_annual)
 
         actions = [{
             "action": "buy",
@@ -337,7 +383,7 @@ def evaluate_protective_puts(underlying, spot_price, existing_positions=None):
             "dte": dte,
             "premium": premium_pct,
             "premium_usd": premium_usd,
-            "greeks": {"delta": -0.15, "gamma": 0.0003, "theta": -5.0, "vega": 60.0}
+            "greeks": greeks
         }]
 
         return signal, actions, round(iv_rank, 1)
@@ -365,9 +411,9 @@ def evaluate_covered_calls(underlying, spot_price, existing_positions=None):
 
         closes = [c[4] for c in ohlcv]
         returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-        import math
         recent_vol = math.sqrt(sum(r**2 for r in returns[-14:]) / max(len(returns[-14:]), 1)) * math.sqrt(365) * 100
         hist_vol = math.sqrt(sum(r**2 for r in returns) / len(returns)) * math.sqrt(365) * 100
+        vol_annual = recent_vol / 100.0
         iv_rank = compute_iv_rank(returns)
 
         # Only sell if not already holding a covered call
@@ -383,7 +429,7 @@ def evaluate_covered_calls(underlying, spot_price, existing_positions=None):
         expiry_str, dte = get_real_expiry(underlying, 21)
         target_strike = spot_price * 1.12  # 12% OTM
         strike = get_real_strike(underlying, expiry_str, "call", target_strike)
-        premium_pct, premium_usd = get_premium(underlying, "call", strike, expiry_str, 0.020, spot_price)
+        premium_pct, premium_usd, greeks = get_premium_and_greeks(underlying, "call", strike, expiry_str, dte, 0.020, spot_price, vol_annual)
 
         actions = [{
             "action": "sell",
@@ -393,7 +439,7 @@ def evaluate_covered_calls(underlying, spot_price, existing_positions=None):
             "dte": dte,
             "premium": premium_pct,
             "premium_usd": premium_usd,
-            "greeks": {"delta": 0.18, "gamma": 0.0004, "theta": 12.0, "vega": -55.0}
+            "greeks": greeks
         }]
 
         return signal, actions, round(iv_rank, 1)
@@ -424,9 +470,9 @@ def evaluate_wheel(underlying, spot_price, existing_positions=None):
 
         closes = [c[4] for c in ohlcv]
         returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-        import math
         recent_vol = math.sqrt(sum(r**2 for r in returns[-14:]) / max(len(returns[-14:]), 1)) * math.sqrt(365) * 100
         hist_vol = math.sqrt(sum(r**2 for r in returns) / len(returns)) * math.sqrt(365) * 100
+        vol_annual = recent_vol / 100.0
         iv_rank = compute_iv_rank(returns)
 
         # Wheel: sell 5-8% OTM puts, 30-45 DTE, target 1.5-2.5% premium
@@ -442,7 +488,7 @@ def evaluate_wheel(underlying, spot_price, existing_positions=None):
         expiry_str, dte = get_real_expiry(underlying, 37)
         target_strike = spot_price * 0.94  # 6% OTM
         strike = get_real_strike(underlying, expiry_str, "put", target_strike)
-        premium_pct, premium_usd = get_premium(underlying, "put", strike, expiry_str, 0.020, spot_price)
+        premium_pct, premium_usd, greeks = get_premium_and_greeks(underlying, "put", strike, expiry_str, dte, 0.020, spot_price, vol_annual)
 
         actions = [{
             "action": "sell",
@@ -452,7 +498,7 @@ def evaluate_wheel(underlying, spot_price, existing_positions=None):
             "dte": dte,
             "premium": premium_pct,
             "premium_usd": premium_usd,
-            "greeks": {"delta": -0.22, "gamma": 0.0005, "theta": 18.0, "vega": -65.0}
+            "greeks": greeks
         }]
 
         return signal, actions, round(iv_rank, 1)
@@ -483,9 +529,9 @@ def evaluate_butterfly(underlying, spot_price, existing_positions=None):
 
         closes = [c[4] for c in ohlcv]
         returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-        import math
         recent_vol = math.sqrt(sum(r**2 for r in returns[-14:]) / max(len(returns[-14:]), 1)) * math.sqrt(365) * 100
         hist_vol = math.sqrt(sum(r**2 for r in returns) / len(returns)) * math.sqrt(365) * 100
+        vol_annual = recent_vol / 100.0
         iv_rank = compute_iv_rank(returns)
 
         # Only trade butterfly when volatility is moderate (not too high, not too low)
@@ -506,13 +552,10 @@ def evaluate_butterfly(underlying, spot_price, existing_positions=None):
         middle_strike = get_real_strike(underlying, expiry_str, "call", middle_target)
         upper_strike = get_real_strike(underlying, expiry_str, "call", upper_target)
         
-        # Premiums (typical butterfly: net debit ~1-2% of spot)
-        # Buy ITM call = more expensive
-        # Sell 2 ATM calls = collect premium
-        # Buy OTM call = cheaper
-        lower_premium_pct, lower_premium_usd = get_premium(underlying, "call", lower_strike, expiry_str, 0.055, spot_price)
-        middle_premium_pct, middle_premium_usd = get_premium(underlying, "call", middle_strike, expiry_str, 0.035, spot_price)
-        upper_premium_pct, upper_premium_usd = get_premium(underlying, "call", upper_strike, expiry_str, 0.015, spot_price)
+        # Premiums and Greeks (live or BS fallback) per leg
+        lower_premium_pct, lower_premium_usd, lower_greeks = get_premium_and_greeks(underlying, "call", lower_strike, expiry_str, dte, 0.055, spot_price, vol_annual)
+        middle_premium_pct, middle_premium_usd, middle_greeks = get_premium_and_greeks(underlying, "call", middle_strike, expiry_str, dte, 0.035, spot_price, vol_annual)
+        upper_premium_pct, upper_premium_usd, upper_greeks = get_premium_and_greeks(underlying, "call", upper_strike, expiry_str, dte, 0.015, spot_price, vol_annual)
 
         # Net debit = lower + upper - 2*middle
         net_debit_pct = lower_premium_pct + upper_premium_pct - (2 * middle_premium_pct)
@@ -526,7 +569,7 @@ def evaluate_butterfly(underlying, spot_price, existing_positions=None):
                 "dte": dte,
                 "premium": lower_premium_pct,
                 "premium_usd": lower_premium_usd,
-                "greeks": {"delta": 0.65, "gamma": 0.0008, "theta": -12.0, "vega": 95.0}
+                "greeks": lower_greeks
             },
             {
                 "action": "sell",
@@ -536,7 +579,7 @@ def evaluate_butterfly(underlying, spot_price, existing_positions=None):
                 "dte": dte,
                 "premium": middle_premium_pct,
                 "premium_usd": middle_premium_usd,
-                "greeks": {"delta": 0.50, "gamma": 0.001, "theta": 15.0, "vega": -120.0},
+                "greeks": middle_greeks,
                 "quantity": 2  # Sell 2 middle strikes
             },
             {
@@ -547,7 +590,7 @@ def evaluate_butterfly(underlying, spot_price, existing_positions=None):
                 "dte": dte,
                 "premium": upper_premium_pct,
                 "premium_usd": upper_premium_usd,
-                "greeks": {"delta": 0.35, "gamma": 0.0009, "theta": -10.0, "vega": 85.0}
+                "greeks": upper_greeks
             }
         ]
 

@@ -28,7 +28,7 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | 15  | **Python sys.exit(0) on errors** — check_strategy.py exits 0 on exception. Go sees success exit code, errors masked                              | [NEW]  | YES     |
 | 16  | **Phantom circuit breaker** — Drawdown CB triggers with 0 trades if mark-to-market drops portfolio below peak                                    | [NEW]  | YES     |
 | 17  | **State save failure continues execution** — If state.json write fails, scheduler keeps trading. Trades lost on restart                          | [NEW]  | YES     |
-| 18  | **Hardcoded Greeks** — All strategies return static delta/gamma/theta/vega. Portfolio Greeks tracking is decorative                              | [BOTH] | PARTIAL |
+| 18  | **Hardcoded Greeks** — All strategies return static delta/gamma/theta/vega. Portfolio Greeks tracking is decorative                              | [BOTH] | YES     |
 | 19  | **Hardcoded premiums** — Option premiums are hardcoded percentages unrelated to live IV/market quotes. Paper P&L unreliable                      | [ORIG] | YES     |
 | 20  | **Greeks not updated from Deribit** — Stale from entry time, never refreshed despite Deribit ticker providing live Greeks                        | [BOTH] | YES     |
 | 21  | **Pairs strategies broken** — Requires close_b column for second asset. Data fetcher provides single asset only. Degrades to self-mean-reversion | [NEW]  | NO      |
