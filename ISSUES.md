@@ -22,7 +22,7 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | 9   | **Status endpoint blocks on subprocess** — `/status` holds RLock during 30s Python FetchPrices call                                              | [ORIG] | YES     |
 | 10  | **State file grows unbounded** — TradeHistory never truncated                                                                                    | [ORIG] | YES     |
 | 11  | **Expired options never cleaned up** — Remain in positions map indefinitely                                                                      | [ORIG] | YES     |
-| 12  | **Inconsistent mutex usage** — CheckRisk, processSpot, processOptions modify state without holding lock. HTTP server reads mid-write             | [BOTH] | NO      |
+| 12  | **Inconsistent mutex usage** — CheckRisk, processSpot, processOptions modify state without holding lock. HTTP server reads mid-write             | [BOTH] | YES     |
 | 13  | **Division by zero risk** — `qty := budget / execPrice` in portfolio.go has no guard on execPrice > 0                                            | [NEW]  | YES     |
 | 14  | **Zero-premium trades execute** — If both PremiumUSD and Premium are 0, options trades execute at zero cost                                      | [NEW]  | YES     |
 | 15  | **Python sys.exit(0) on errors** — check_strategy.py exits 0 on exception. Go sees success exit code, errors masked                              | [NEW]  | YES     |
