@@ -2,33 +2,66 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"time"
 )
 
-// StrategyLogger handles per-strategy logging to stdout only.
+// StrategyLogger handles per-strategy logging to stdout and optionally a file.
 type StrategyLogger struct {
 	stratID string
+	writer  io.Writer
+	file    *os.File
 }
 
-// LogManager creates and manages loggers (stdout only, no files).
-type LogManager struct{}
+// LogManager creates and manages loggers.
+type LogManager struct {
+	logDir string
+}
 
-func NewLogManager(_ string) (*LogManager, error) {
-	return &LogManager{}, nil
+func NewLogManager(logDir string) (*LogManager, error) {
+	if logDir != "" {
+		if err := os.MkdirAll(logDir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create log directory %s: %w", logDir, err)
+		}
+	}
+	return &LogManager{logDir: logDir}, nil
 }
 
 func (lm *LogManager) Close() {}
 
 func (lm *LogManager) GetStrategyLogger(stratID string) (*StrategyLogger, error) {
-	return &StrategyLogger{stratID: stratID}, nil
+	sl := &StrategyLogger{
+		stratID: stratID,
+		writer:  os.Stdout,
+	}
+
+	if lm.logDir != "" {
+		filePath := filepath.Join(lm.logDir, stratID+".log")
+		f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Printf("[WARN] Failed to open log file %s: %v\n", filePath, err)
+		} else {
+			sl.file = f
+			sl.writer = io.MultiWriter(os.Stdout, f)
+		}
+	}
+
+	return sl, nil
 }
 
-func (sl *StrategyLogger) Close() {}
+func (sl *StrategyLogger) Close() {
+	if sl.file != nil {
+		sl.file.Close()
+		sl.file = nil
+	}
+}
 
 func (sl *StrategyLogger) log(level, format string, args ...interface{}) {
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
 	msg := fmt.Sprintf(format, args...)
-	fmt.Printf("[%s] [%s] [%s] %s\n", now, sl.stratID, level, msg)
+	fmt.Fprintf(sl.writer, "[%s] [%s] [%s] %s\n", now, sl.stratID, level, msg)
 }
 
 func (sl *StrategyLogger) Info(format string, args ...interface{}) {
