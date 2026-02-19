@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 // DiscordChannels holds channel IDs for different report types.
@@ -80,5 +82,39 @@ func LoadConfig(path string) (*Config, error) {
 		fmt.Println("[WARN] Discord token found in config file. Prefer setting DISCORD_BOT_TOKEN env var instead.")
 	}
 
+	if err := ValidateConfig(&cfg); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
+}
+
+// ValidateConfig checks script paths for each strategy (#34).
+func ValidateConfig(cfg *Config) error {
+	var errs []string
+
+	for i, sc := range cfg.Strategies {
+		prefix := fmt.Sprintf("strategy[%d]", i)
+		if sc.ID != "" {
+			prefix = fmt.Sprintf("strategy[%s]", sc.ID)
+		}
+
+		if sc.Script == "" {
+			errs = append(errs, fmt.Sprintf("%s: script is empty", prefix))
+		} else {
+			if filepath.IsAbs(sc.Script) {
+				errs = append(errs, fmt.Sprintf("%s: script must be a relative path, got %q", prefix, sc.Script))
+			}
+			if !strings.HasSuffix(sc.Script, ".py") {
+				errs = append(errs, fmt.Sprintf("%s: script must end with .py, got %q", prefix, sc.Script))
+			}
+			if strings.HasPrefix(filepath.Clean(sc.Script), "..") {
+				errs = append(errs, fmt.Sprintf("%s: script path escapes working directory: %q", prefix, sc.Script))
+			}
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
+	}
+	return nil
 }
