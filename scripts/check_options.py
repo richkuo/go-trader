@@ -38,8 +38,8 @@ def get_spot_price(underlying):
 
 def get_real_expiry(underlying, target_dte):
     """
-    Get real Deribit expiry closest to target DTE.
-    Falls back to synthetic expiry if Deribit fetch fails.
+    Get real Deribit expiry closest to target DTE (within 7-day tolerance).
+    Falls back to synthetic expiry if Deribit fetch fails or no expiry is within tolerance.
     """
     if USE_REAL_EXPIRIES:
         result = find_closest_expiry(underlying, target_dte)

@@ -35,7 +35,7 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | 22  | **Wheel strategy incomplete** — Phase 2 (covered calls after assignment) described but never implemented                                         | [ORIG] | YES     |
 | 23  | **Wheel collateral model broken** — Sells puts with strike >> allocated capital. No margin enforcement                                           | [NEW]  | YES     |
 | 24  | **Logger ignores LogDir config** — NewLogManager discards argument, all output to stdout                                                         | [BOTH] | YES     |
-| 25  | **Deribit expiry fallback too loose** — Could match expiry weeks away from target                                                                | [NEW]  | PARTIAL |
+| 25  | **Deribit expiry fallback too loose** — Could match expiry weeks away from target                                                                | [NEW]  | YES     |
 | 26  | **Python data_fetcher infinite retry on rate limit** — `continue` loop on RateLimitExceeded with no max retries                                  | [NEW]  | YES     |
 | 27  | **Daily PnL reset is naive** — Resets on first check after midnight UTC, breaks if check missed at boundary                                      | [NEW]  | NO      |
 | 28  | **No expiry/assignment modeling** — Sold ITM options treated as worthless at expiry instead of modeling assignment                               | [NEW]  | YES     |
@@ -127,10 +127,10 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 
 | Category  | Total  | Fixed  | Unfixed                |
 | --------- | ------ | ------ | ---------------------- |
-| Bug       | 30     | 23     | 5 (+1 N/A, +2 partial) |
+| Bug       | 30     | 24     | 4 (+1 N/A, +1 partial) |
 | Security  | 9      | 9      | 0                      |
 | Feature   | 19     | 1      | 18                     |
 | Other     | 16     | 0      | 15 (+1 partial)        |
-| **Total** | **74** | **33** | **38**                 |
+| **Total** | **74** | **34** | **37**                 |
 
 

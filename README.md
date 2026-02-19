@@ -23,13 +23,13 @@ Go scheduler (always running, ~8MB idle)
 **Options positions are marked to market with live Deribit prices every cycle:**
 
 - **Deribit REST API** integration in `scheduler/deribit.go` fetches live mark prices
-- **Smart fallback** — maps fictional paper trading expiries to nearest real Deribit expiry
+- **Smart fallback** — maps fictional paper trading expiries to nearest real Deribit expiry (within 7-day tolerance; falls back to synthetic if none close enough)
 - **Real-time P&L** — `CurrentValueUSD` updates based on live market data (not static entry values)
 - **IBKR positions** use Deribit prices as proxy (same underlying/strikes)
 
 **Python scripts** use `scripts/deribit_utils.py` to fetch real Deribit expiries and strikes for new trades:
 - `fetch_available_expiries(underlying, min_dte, max_dte)` — returns list of real Deribit expiries
-- `find_closest_expiry(underlying, target_dte)` — maps target DTE to closest real expiry
+- `find_closest_expiry(underlying, target_dte)` — maps target DTE to closest real expiry within 7-day tolerance; returns `None` if no expiry is close enough
 - `find_closest_strike(underlying, expiry, option_type, target_strike)` — finds nearest available strike
 
 This ensures new paper trades use real option contracts that exist on Deribit, and existing positions are valued at current market prices.

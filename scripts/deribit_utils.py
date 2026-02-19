@@ -56,17 +56,28 @@ def fetch_available_expiries(underlying: str, min_dte: int = 7, max_dte: int = 6
         return []
 
 
-def find_closest_expiry(underlying: str, target_dte: int) -> Optional[Tuple[str, int]]:
+def find_closest_expiry(underlying: str, target_dte: int, max_tolerance_days: int = 7) -> Optional[Tuple[str, int]]:
     """
-    Find the Deribit expiry closest to target DTE.
-    Returns (expiry_str, actual_dte) or None if nothing found.
+    Find the Deribit expiry closest to target DTE within tolerance.
+    Returns (expiry_str, actual_dte) or None if nothing found within max_tolerance_days.
+    Matches the 7-day tolerance enforced by the Go pricer in deribit.go findNearestExpiry().
     """
     expiries = fetch_available_expiries(underlying, min_dte=1, max_dte=365)
     if not expiries:
         return None
-    
+
     # Find closest DTE
     best = min(expiries, key=lambda x: abs(x[1] - target_dte))
+    expiry_str, actual_dte = best
+
+    if abs(actual_dte - target_dte) > max_tolerance_days:
+        print(
+            f"No Deribit expiry within {max_tolerance_days}d of target {target_dte} DTE "
+            f"(closest: {expiry_str} at {actual_dte} DTE, diff={abs(actual_dte - target_dte)}d)",
+            file=sys.stderr,
+        )
+        return None
+
     return best
 
 
