@@ -198,13 +198,16 @@ func main() {
 				continue
 			}
 
-			// Check risk before running
+			// Check risk before running (read-only)
 			mu.RLock()
 			pv := PortfolioValue(stratState, prices)
 			mu.RUnlock()
 
+			// Acquire lock for all state mutations: CheckRisk through MarkOptionPositions
+			mu.Lock()
 			allowed, reason := CheckRisk(stratState, pv)
 			if !allowed {
+				mu.Unlock()
 				logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
 				logger.Close()
 				lastRun[sc.ID] = time.Now()
@@ -240,21 +243,18 @@ func main() {
 			totalTrades += trades
 
 			// Update option positions with live Deribit prices
-			mu.Lock()
 			if len(stratState.OptionPositions) > 0 {
 				if err := MarkOptionPositions(stratState, deribitPricer, logger); err != nil {
 					logger.Warn("Failed to mark option positions: %v", err)
 				}
 			}
 			pv = PortfolioValue(stratState, prices)
-			mu.Unlock()
-
-			totalTrades += trades
 
 			// Status line
 			posCount := len(stratState.Positions) + len(stratState.OptionPositions)
 			logger.Info("Status: cash=$%.2f | positions=%d | value=$%.2f | trades=%d",
 				stratState.Cash, posCount, pv, trades)
+			mu.Unlock()
 
 			logger.Close()
 			lastRun[sc.ID] = time.Now()
