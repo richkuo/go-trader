@@ -81,6 +81,7 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 				Details:    fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
 			}
 			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTradeResult(&s.RiskState, pnl)
 			delete(s.Positions, symbol)
 			logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
 			tradesExecuted++
@@ -93,6 +94,9 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 		}
 		// Apply slippage
 		execPrice := ApplySlippage(price)
+		if execPrice <= 0 {
+			return tradesExecuted, nil
+		}
 		qty := budget / execPrice
 		tradeCost := qty * execPrice
 		fee := CalculateSpotFee(tradeCost)
@@ -139,6 +143,7 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 				Details:    fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
 			}
 			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTradeResult(&s.RiskState, pnl)
 			delete(s.Positions, symbol)
 			logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, pos.Quantity, execPrice, fee, pnl)
 			tradesExecuted++
