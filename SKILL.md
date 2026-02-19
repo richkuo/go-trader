@@ -501,6 +501,139 @@ sudo systemctl restart go-trader
 
 ---
 
+## Bot Status Command
+
+When the user asks to check bot status, show strategy health, or see how trading is going, run this:
+
+```bash
+curl -s localhost:8099/status | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+prices = d.get('prices', {})
+strats = d.get('strategies', {})
+
+print(f'=== GO-TRADER (Cycle {d[\"cycle_count\"]}) ===')
+for sym, p in sorted(prices.items()):
+    print(f'  {sym}: \${p:,.2f}')
+
+total_val = sum(s['portfolio_value'] for s in strats.values())
+total_cap = sum(s['initial_capital'] for s in strats.values())
+total_pnl = total_val - total_cap
+pct = (total_pnl/total_cap)*100 if total_cap else 0
+print(f'\nPortfolio: \${total_cap:,.0f} → \${total_val:,.0f} ({total_pnl:+,.0f} / {pct:+.1f}%)')
+print(f'Strategies: {len(strats)}')
+
+# Circuit breakers
+cb_active = [(id,s) for id,s in strats.items()
+             if s['risk_state'].get('circuit_breaker_until','').startswith('20')]
+print(f'Circuit breakers active: {len(cb_active)}')
+
+# Rank by PnL
+ranked = sorted(strats.items(), key=lambda x: x[1]['pnl_pct'], reverse=True)
+print(f'\nTop 5:')
+for id, s in ranked[:5]:
+    print(f'  {id}: {s[\"pnl_pct\"]:+.1f}% (\${s[\"pnl\"]:+,.0f}) | {s[\"trade_count\"]} trades')
+print(f'\nBottom 5:')
+for id, s in ranked[-5:]:
+    print(f'  {id}: {s[\"pnl_pct\"]:+.1f}% (\${s[\"pnl\"]:+,.0f}) | {s[\"trade_count\"]} trades')
+
+# Dead strategies
+dead = [id for id,s in strats.items() if s['trade_count'] == 0]
+if dead:
+    print(f'\nDead (0 trades): {len(dead)} — {dead}')
+
+# Circuit breaker details
+if cb_active:
+    print(f'\nCircuit breaker details:')
+    for id, s in cb_active:
+        rs = s['risk_state']
+        print(f'  {id}: dd={rs[\"current_drawdown_pct\"]:.1f}% / max={rs[\"max_drawdown_pct\"]:.0f}% | until {rs[\"circuit_breaker_until\"][:19]}')
+"
+```
+
+Present the output to the user in a readable format. Highlight any circuit breakers, dead strategies, or notable PnL changes.
+
+---
+
+## Adjustable Settings Reference
+
+All settings live in `scheduler/config.json`. After any change, restart the service:
+```bash
+sudo systemctl restart go-trader
+```
+
+Config changes are synced to state on startup — no need to reset positions.
+
+### Global Settings
+
+| Setting | Key | Default | Description |
+|---------|-----|---------|-------------|
+| Check interval | `interval_seconds` | 300 (5 min) | Global default cycle interval in seconds |
+| State file path | `state_file` | `scheduler/state.json` | Where positions and trade history are stored |
+
+### Per-Strategy Settings
+
+Each entry in the `strategies` array supports:
+
+| Setting | Key | Default | Description |
+|---------|-----|---------|-------------|
+| Capital | `capital` | 1000 | Starting capital in USD for this strategy |
+| Max drawdown | `max_drawdown_pct` | Spot: 60, Options: 40 | Circuit breaker triggers when drawdown from peak exceeds this %. Measured from the strategy's peak portfolio value, not initial capital. |
+| Check interval | `interval_seconds` | Uses global | How often this strategy checks for signals (seconds). 0 = use global default. Spot typically 300 (5 min), options 1200 (20 min). |
+| Theta harvest | `theta_harvest.enabled` | false | Enable early exit on sold options |
+| Theta profit target | `theta_harvest.profit_target_pct` | 60 | Close sold option when this % of premium is captured |
+| Theta stop loss | `theta_harvest.stop_loss_pct` | 200 | Close sold option if loss exceeds this % of premium (200 = 2× premium) |
+| Theta min DTE | `theta_harvest.min_dte_close` | 3 | Force-close positions with fewer than N days to expiry |
+
+### Discord Settings
+
+| Setting | Key | Default | Description |
+|---------|-----|---------|-------------|
+| Enable Discord | `discord.enabled` | true | Turn Discord notifications on/off |
+| Spot channel | `discord.channels.spot` | — | Channel ID for spot trading summaries |
+| Options channel | `discord.channels.options` | — | Channel ID for options trading summaries |
+| Spot frequency | `discord.spot_summary_freq` | `"hourly"` | How often spot summaries post: `"hourly"` or `"per_check"` |
+| Options frequency | `discord.options_summary_freq` | `"per_check"` | How often options summaries post: `"per_check"` or `"hourly"` |
+
+### Environment Variables
+
+Set via systemd override (`sudo systemctl edit go-trader`):
+
+| Variable | Description |
+|----------|-------------|
+| `DISCORD_BOT_TOKEN` | Discord bot token (never store in config.json) |
+| `STATUS_AUTH_TOKEN` | Optional: require Bearer token for /status endpoint |
+| `BINANCE_API_KEY` | Binance API key (live trading only) |
+| `BINANCE_API_SECRET` | Binance API secret (live trading only) |
+
+### Example: Adjusting a Strategy
+
+To change deribit-vol-btc to $2,000 capital with 50% max drawdown and theta harvesting:
+
+```json
+{
+  "id": "deribit-vol-btc",
+  "type": "options",
+  "script": "scripts/check_options.py",
+  "args": ["vol_mean_reversion", "BTC"],
+  "capital": 2000,
+  "max_drawdown_pct": 50,
+  "interval_seconds": 1200,
+  "theta_harvest": {
+    "enabled": true,
+    "profit_target_pct": 60,
+    "stop_loss_pct": 200,
+    "min_dte_close": 3
+  }
+}
+```
+
+Then restart: `sudo systemctl restart go-trader`
+
+**Note:** Changing `capital` on an existing strategy does NOT reset its positions or cash. It only changes the `initial_capital` reference for PnL calculations. To fully reset a strategy, delete it from `scheduler/state.json` and restart.
+
+---
+
 ## Strategy Reference (for config generation)
 
 ### Spot Strategy Entries
