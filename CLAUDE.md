@@ -1,7 +1,7 @@
 # go-trader Project Context
 
 ## Environment
-- Go is not in PATH; `go build` will fail — verify syntax manually or via `python3 -m py_compile` for Python files
+- Go is not in PATH via shell; use `/opt/homebrew/bin/go` directly (e.g. `cd scheduler && /opt/homebrew/bin/go build .`)
 - Python venv at `.venv/bin/python3` (used by executor.go at runtime)
 - Python deps managed with `uv` (see `pyproject.toml` / `uv.lock`)
 
@@ -35,7 +35,7 @@
 - State persisted to `scheduler/state.json` (path set in config); survives restarts
 
 ## Build & Deploy
-- Build: `cd scheduler && /usr/local/go/bin/go build -o ../go-trader .`
+- Build: `cd scheduler && /opt/homebrew/bin/go build -o ../go-trader .`
 - Restart: `systemctl restart go-trader`
 - Only needed when `scheduler/*.go` files change
 - Python script changes take effect on next scheduler cycle (no rebuild needed)
@@ -44,7 +44,7 @@
 
 ## Testing
 - `python3 -m py_compile <file>` — syntax check Python files
-- `go build ./scheduler/` — compile check (requires Go in PATH; skip if unavailable)
-- `go test ./scheduler/` — run unit tests in `risk_test.go` (requires Go in PATH)
+- `cd scheduler && /opt/homebrew/bin/go build .` — compile check
+- `cd scheduler && /opt/homebrew/bin/go test ./...` — run all unit tests
 - Smoke test: `./go-trader --once`
 - Run with config: `./go-trader --config scheduler/config.json`
