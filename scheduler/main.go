@@ -31,11 +31,17 @@ func main() {
 	}
 	ValidateState(state)
 
-	// Initialize strategy states for any new strategies
+	// Initialize new strategies and sync config values for existing ones
 	for _, sc := range cfg.Strategies {
-		if _, exists := state.Strategies[sc.ID]; !exists {
+		if s, exists := state.Strategies[sc.ID]; !exists {
 			state.Strategies[sc.ID] = NewStrategyState(sc)
 			fmt.Printf("  Initialized strategy: %s (type=%s, capital=$%.0f)\n", sc.ID, sc.Type, sc.Capital)
+		} else {
+			// Sync max_drawdown_pct from config → state (config is source of truth)
+			if s.RiskState.MaxDrawdownPct != sc.MaxDrawdownPct {
+				fmt.Printf("  Updated %s max_drawdown_pct: %.0f%% → %.0f%%\n", sc.ID, s.RiskState.MaxDrawdownPct, sc.MaxDrawdownPct)
+				s.RiskState.MaxDrawdownPct = sc.MaxDrawdownPct
+			}
 		}
 	}
 

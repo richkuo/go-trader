@@ -86,6 +86,17 @@ func LoadConfig(path string) (*Config, error) {
 	// Optional auth token for the /status HTTP endpoint.
 	cfg.StatusToken = os.Getenv("STATUS_AUTH_TOKEN")
 
+	// Apply default drawdown thresholds if not explicitly set (0 means unset).
+	for i := range cfg.Strategies {
+		if cfg.Strategies[i].MaxDrawdownPct == 0 {
+			if cfg.Strategies[i].Type == "options" {
+				cfg.Strategies[i].MaxDrawdownPct = 40 // options are volatile, 20% is too tight
+			} else {
+				cfg.Strategies[i].MaxDrawdownPct = 60
+			}
+		}
+	}
+
 	if err := ValidateConfig(&cfg); err != nil {
 		return nil, err
 	}

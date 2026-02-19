@@ -195,7 +195,7 @@ Ask:
 > What's your maximum drawdown tolerance? When a strategy's losses exceed this percentage, a circuit breaker pauses trading for 24 hours.
 >
 > - **Spot strategies** default: 60%
-> - **Options strategies** default: 20% (options are more volatile)
+> - **Options strategies** default: 40% (measured from peak value)
 >
 > Do you want to customize these, or use the defaults?
 >
@@ -313,7 +313,7 @@ Start from `scheduler/config.example.json` as a template. For each enabled strat
 - `script`: `"scripts/check_strategy.py"` (spot), `"scripts/check_options.py"` (Deribit), `"scripts/check_options_ibkr.py"` (IBKR)
 - `args`: Strategy-specific arguments (see config.example.json for format)
 - `capital`: User's chosen amount
-- `max_drawdown_pct`: User's chosen value (spot vs options)
+- `max_drawdown_pct`: User's chosen value (spot default: 60, options default: 40)
 - `interval_seconds`: 300 for spot, 1200 for options
 - `theta_harvest`: If enabled, include the config block
 
@@ -532,8 +532,8 @@ Each spot strategy needs entries for each asset it supports:
 Each Deribit strategy runs on BTC and ETH:
 
 ```json
-{"id": "deribit-vol-btc", "type": "options", "script": "scripts/check_options.py", "args": ["vol_mean_reversion", "BTC"], "capital": 1000, "max_drawdown_pct": 20, "interval_seconds": 1200}
-{"id": "deribit-vol-eth", "type": "options", "script": "scripts/check_options.py", "args": ["vol_mean_reversion", "ETH"], "capital": 1000, "max_drawdown_pct": 20, "interval_seconds": 1200}
+{"id": "deribit-vol-btc", "type": "options", "script": "scripts/check_options.py", "args": ["vol_mean_reversion", "BTC"], "capital": 1000, "max_drawdown_pct": 40, "interval_seconds": 1200}
+{"id": "deribit-vol-eth", "type": "options", "script": "scripts/check_options.py", "args": ["vol_mean_reversion", "ETH"], "capital": 1000, "max_drawdown_pct": 40, "interval_seconds": 1200}
 ```
 
 **Strategy arg names:** `vol_mean_reversion`, `momentum_options`, `protective_puts`, `covered_calls`, `wheel`, `butterfly`
@@ -551,7 +551,7 @@ Each Deribit strategy runs on BTC and ETH:
 Same as Deribit but with different script and ID prefix:
 
 ```json
-{"id": "ibkr-vol-btc", "type": "options", "script": "scripts/check_options_ibkr.py", "args": ["vol_mean_reversion", "BTC"], "capital": 1000, "max_drawdown_pct": 20, "interval_seconds": 1200}
+{"id": "ibkr-vol-btc", "type": "options", "script": "scripts/check_options_ibkr.py", "args": ["vol_mean_reversion", "BTC"], "capital": 1000, "max_drawdown_pct": 40, "interval_seconds": 1200}
 ```
 
 **ID convention:** `ibkr-{strategy_short}-{asset}` (same short names as Deribit)

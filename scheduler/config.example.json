@@ -38,7 +38,7 @@
         "BTC"
       ],
       "capital": 1000,
-      "max_drawdown_pct": 20,
+      "max_drawdown_pct": 40,
       "interval_seconds": 1200
     }
   ],

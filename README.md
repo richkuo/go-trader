@@ -146,7 +146,7 @@ New options trades are scored against existing positions for strike distance, ex
 | `script` | Python script path (relative) | Required |
 | `args` | Arguments passed to script | Required |
 | `capital` | Starting capital in USD | 1000 |
-| `max_drawdown_pct` | Circuit breaker threshold | Spot: 60%, Options: 20% |
+| `max_drawdown_pct` | Circuit breaker threshold (from peak) | Spot: 60%, Options: 40% |
 | `interval_seconds` | Check interval (0 = use global) | 0 |
 | `theta_harvest` | Early exit config for sold options | null |
 
