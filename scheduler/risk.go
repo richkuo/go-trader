@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -48,10 +49,11 @@ func CheckRisk(s *StrategyState, portfolioValue float64) (bool, string) {
 	// Check drawdown
 	if r.PeakValue > 0 {
 		r.CurrentDrawdownPct = ((r.PeakValue - portfolioValue) / r.PeakValue) * 100
-		if r.CurrentDrawdownPct > r.MaxDrawdownPct {
+		if r.TotalTrades > 0 && r.CurrentDrawdownPct > r.MaxDrawdownPct {
 			r.CircuitBreaker = true
 			r.CircuitBreakerUntil = now.Add(24 * time.Hour)
-			return false, "max drawdown exceeded"
+			return false, fmt.Sprintf("max drawdown exceeded (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f)",
+				r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue)
 		}
 	}
 
