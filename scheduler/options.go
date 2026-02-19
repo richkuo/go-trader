@@ -180,6 +180,12 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 		return 0, nil
 	}
 
+	// Collateral check for naked puts
+	if action.OptionType == "put" && action.Strike*qty > s.Cash {
+		logger.Info("Insufficient collateral for naked put: strike*qty=$%.2f > cash=$%.2f", action.Strike*qty, s.Cash)
+		return 0, nil
+	}
+
 	// Calculate fees
 	var fee float64
 	if strings.HasPrefix(s.ID, "ibkr-") {
