@@ -8,6 +8,10 @@ A Go + Python hybrid trading system. A single Go binary (~8MB RAM) orchestrates 
 
 **Discord alerts**: Separate channels for spot and options summaries, with immediate trade notifications.
 
+## Community
+
+Join the Discord: [https://discord.gg/46d7Fa2dXz](https://discord.gg/46d7Fa2dXz)
+
 ---
 
 ## Getting Started
