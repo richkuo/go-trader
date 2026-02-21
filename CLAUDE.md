@@ -1,6 +1,7 @@
 # go-trader Project Context
 
 ## Environment
+- Requires Go 1.26.0 — install via Homebrew: `brew install go@1.26`
 - Go is not in PATH via shell; use `/opt/homebrew/bin/go` directly (e.g. `cd scheduler && /opt/homebrew/bin/go build .`)
 - Python venv at `.venv/bin/python3` (used by executor.go at runtime)
 - Python deps managed with `uv` (see `pyproject.toml` / `uv.lock`)
