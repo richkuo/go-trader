@@ -34,7 +34,7 @@ func rolloverDailyPnL(r *RiskState) {
 }
 
 // forceCloseAllPositions liquidates all open positions at current prices.
-// Called only from the drawdown circuit breaker path.
+// Called when any circuit breaker fires.
 func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger *StrategyLogger) {
 	now := time.Now().UTC()
 
@@ -136,10 +136,11 @@ func CheckRisk(s *StrategyState, portfolioValue float64, prices map[string]float
 		}
 	}
 
-	// Consecutive losses circuit breaker (5 in a row → pause 1h)
+	// Consecutive losses circuit breaker (5 in a row → pause 1h, close positions)
 	if r.ConsecutiveLosses >= 5 {
 		r.CircuitBreaker = true
 		r.CircuitBreakerUntil = now.Add(1 * time.Hour)
+		forceCloseAllPositions(s, prices, logger)
 		return false, "5 consecutive losses"
 	}
 

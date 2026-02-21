@@ -200,9 +200,9 @@ func TestCheckRisk_ForceCloseOnDrawdown(t *testing.T) {
 	}
 }
 
-// TestCheckRisk_ConsecutiveLossesNoForceClose verifies that the consecutive-losses
-// circuit breaker does NOT force-close positions.
-func TestCheckRisk_ConsecutiveLossesNoForceClose(t *testing.T) {
+// TestCheckRisk_ConsecutiveLossesForceClose verifies that the consecutive-losses
+// circuit breaker force-closes all open positions.
+func TestCheckRisk_ConsecutiveLossesForceClose(t *testing.T) {
 	s := &StrategyState{
 		ID:   "test-strategy",
 		Cash: 5000.0,
@@ -229,11 +229,16 @@ func TestCheckRisk_ConsecutiveLossesNoForceClose(t *testing.T) {
 		t.Errorf("expected circuit breaker to fire; reason=%s", reason)
 	}
 
-	// Positions must NOT be closed
-	if len(s.Positions) != 1 {
-		t.Errorf("expected Positions untouched; got %d entries", len(s.Positions))
+	// Positions must be force-closed
+	if len(s.Positions) != 0 {
+		t.Errorf("expected Positions empty after force-close; got %d entries", len(s.Positions))
 	}
-	if len(s.TradeHistory) != 0 {
-		t.Errorf("expected no trades recorded; got %d", len(s.TradeHistory))
+	if len(s.TradeHistory) != 1 {
+		t.Errorf("expected 1 trade recorded for force-close; got %d", len(s.TradeHistory))
+	}
+	// BTC long: proceeds = 0.1 * 50000 = 5000, cash = 5000 + 5000 = 10000
+	expectedCash := 10000.0
+	if s.Cash != expectedCash {
+		t.Errorf("expected Cash=%.2f after force-close; got %.2f", expectedCash, s.Cash)
 	}
 }
