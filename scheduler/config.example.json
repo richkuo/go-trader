@@ -39,7 +39,13 @@
       ],
       "capital": 1000,
       "max_drawdown_pct": 40,
-      "interval_seconds": 1200
+      "interval_seconds": 1200,
+      "theta_harvest": {
+        "enabled": true,
+        "profit_target_pct": 60,
+        "stop_loss_pct": 200,
+        "min_dte_close": 3
+      }
     }
   ],
   "discord": {

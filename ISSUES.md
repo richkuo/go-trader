@@ -80,7 +80,7 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | 53  | **State save only per-cycle** — Crash mid-cycle loses all trades from that cycle                      | [ORIG] | NO     | 4        |
 | 54  | **No state file backups** — Corruption or deletion is unrecoverable                                   | [NEW]  | NO     | 4        |
 | 55  | **No backtest-to-live validation** — No mechanism to validate strategy params before deployment       | [ORIG] | NO     | 3        |
-| 56  | **Theta harvesting not enabled by default** — If not in config.json, sold options have no early exit  | [NEW]  | NO     | 4        |
+| 56  | **Theta harvesting not enabled by default** — If not in config.json, sold options have no early exit  | [NEW]  | YES    | 4        |
 | 57  | **Discord messages not rate-limited** — Could trigger Discord API rate limits                         | [NEW]  | NO     | 2        |
 | 58  | **No fee modeling for maker orders** — Assumes all orders are taker                                   | [NEW]  | NO     | 2        |
 
@@ -129,8 +129,8 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | --------- | ------ | ------ | ---------------------- |
 | Bug       | 30     | 28     | 2 (needs review)       |
 | Security  | 9      | 8      | 1 (needs review)       |
-| Feature   | 19     | 1      | 18                     |
+| Feature   | 19     | 2      | 17                     |
 | Other     | 16     | 2      | 14                     |
-| **Total** | **74** | **39** | **35**                 |
+| **Total** | **74** | **40** | **34**                 |
 
 

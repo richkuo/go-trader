@@ -95,6 +95,17 @@ func LoadConfig(path string) (*Config, error) {
 				cfg.Strategies[i].MaxDrawdownPct = 60
 			}
 		}
+		// #56: Default theta harvest for options strategies — sold options
+		// must always have an automatic exit to prevent unbounded losses.
+		if cfg.Strategies[i].Type == "options" && cfg.Strategies[i].ThetaHarvest == nil {
+			cfg.Strategies[i].ThetaHarvest = &ThetaHarvestConfig{
+				Enabled:         true,
+				ProfitTargetPct: 60,
+				StopLossPct:     200,
+				MinDTEClose:     3,
+			}
+			fmt.Printf("[INFO] %s: no theta_harvest config, applying defaults (profit=60%%, stop=200%%, dte=3)\n", cfg.Strategies[i].ID)
+		}
 	}
 
 	if err := ValidateConfig(&cfg); err != nil {
