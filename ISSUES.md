@@ -74,7 +74,7 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | 47  | **Deribit rate limiting** — Sequential API calls per position, no backoff                             | [BOTH] | NO     | 4        |
 | 48  | **No error alerting** — Failures logged to stdout only, no Discord notification                       | [ORIG] | NO     | 3        |
 | 49  | **No circuit breaker Discord alerts** — CB triggers are silent                                        | [NEW]  | NO     | 3        |
-| 50  | **Price fetch failure doesn't halt execution** — Strategies run with stale/zero prices                | [NEW]  | NO     | 5        |
+| 50  | **Price fetch failure doesn't halt execution** — Strategies run with stale/zero prices                | [NEW]  | YES    | 5        |
 | 51  | **No dormant strategy alerting** — Strategies at 0 trades for days go undetected                      | [NEW]  | NO     | 2        |
 | 52  | **No lastRun persistence** — On restart all strategies fire immediately                               | [ORIG] | NO     | 3        |
 | 53  | **State save only per-cycle** — Crash mid-cycle loses all trades from that cycle                      | [ORIG] | NO     | 4        |
@@ -129,8 +129,8 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | --------- | ------ | ------ | ---------------------- |
 | Bug       | 30     | 28     | 2 (needs review)       |
 | Security  | 9      | 8      | 1 (needs review)       |
-| Feature   | 19     | 5      | 14                     |
+| Feature   | 19     | 6      | 13                     |
 | Other     | 16     | 2      | 14                     |
-| **Total** | **74** | **43** | **31**                 |
+| **Total** | **74** | **44** | **30**                 |
 
 

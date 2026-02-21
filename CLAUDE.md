@@ -49,6 +49,9 @@
 - `backtest_options.py`: `.venv/bin/python3 backtest/backtest_options.py --underlying BTC --since YYYY-MM-DD --capital 10000`
 - `backtest_theta.py`: `.venv/bin/python3 backtest/backtest_theta.py --underlying BTC --since YYYY-MM-DD --capital 10000`
 
+## ISSUES.md
+- When marking an issue fixed: update the row (`NO` → `YES`) **and** the Summary table at the bottom (`Fixed` count +1, `Unfixed` count -1 for that category and Total)
+
 ## Testing
 - `python3 -m py_compile <file>` — syntax check Python files
 - `cd scheduler && /opt/homebrew/bin/go build .` — compile check

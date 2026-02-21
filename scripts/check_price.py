@@ -28,15 +28,14 @@ def main():
                 prices[symbol] = round(ticker["last"], 2)
             except Exception as e:
                 print(f"Failed to fetch {symbol}: {e}", file=sys.stderr)
-                prices[symbol] = 0
+                # Omit failed symbols so Go can detect missing prices
 
         print(json.dumps(prices))
 
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        # Return zeros so Go can still parse
-        print(json.dumps({s: 0 for s in symbols}))
-        sys.exit(0)
+        print(json.dumps({}))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

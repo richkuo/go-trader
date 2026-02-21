@@ -195,15 +195,26 @@ func main() {
 		if len(symbols) > 0 {
 			p, err := FetchPrices(symbols)
 			if err != nil {
-				fmt.Printf("[WARN] Price fetch failed: %v\n", err)
-			} else {
-				prices = p
-				fmt.Printf("Prices: ")
-				for sym, price := range prices {
-					fmt.Printf("%s=$%.2f ", sym, price)
-				}
-				fmt.Println()
+				fmt.Printf("[CRITICAL] Price fetch failed: %v — skipping cycle\n", err)
+				continue
 			}
+			// Filter out any zero prices returned by the script
+			for sym, price := range p {
+				if price > 0 {
+					prices[sym] = price
+				} else {
+					fmt.Printf("[WARN] Skipping zero price for %s\n", sym)
+				}
+			}
+			if len(prices) == 0 {
+				fmt.Printf("[CRITICAL] All prices are zero/missing — skipping cycle\n")
+				continue
+			}
+			fmt.Printf("Prices: ")
+			for sym, price := range prices {
+				fmt.Printf("%s=$%.2f ", sym, price)
+			}
+			fmt.Println()
 		}
 
 		// Process only due strategies
