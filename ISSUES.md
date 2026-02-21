@@ -66,8 +66,8 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | --- | ----------------------------------------------------------------------------------------------------- | ------ | ------ | -------- |
 | 40  | **Health endpoint was always OK** — No liveness check                                                 | [ORIG] | YES    | 2        |
 | 41  | **Circuit breakers don't close positions** — CB only pauses new trades; bleeding positions stay open  | [NEW]  | YES    | 5        |
-| 42  | **No portfolio-level kill switch** — No aggregate drawdown limit, no global notional cap              | [NEW]  | NO     | 5        |
-| 43  | **No notional exposure tracking** — Options notional not tracked or limited. Hidden leverage          | [NEW]  | NO     | 5        |
+| 42  | **No portfolio-level kill switch** — No aggregate drawdown limit, no global notional cap              | [NEW]  | YES    | 5        |
+| 43  | **No notional exposure tracking** — Options notional not tracked or limited. Hidden leverage          | [NEW]  | YES    | 5        |
 | 44  | **No stop-loss for sold options** — Without theta_harvest config, sold options have no automatic exit | [NEW]  | NO     | 5        |
 | 45  | **No correlation tracking** — Multiple strategies selling BTC puts simultaneously. All lose together  | [NEW]  | NO     | 4        |
 | 46  | **No retry logic** — All external calls fail once with no retry                                       | [ORIG] | NO     | 3        |
@@ -129,8 +129,8 @@ Cross-referenced original review (31 issues) with second audit (59 issues). Each
 | --------- | ------ | ------ | ---------------------- |
 | Bug       | 30     | 28     | 2 (needs review)       |
 | Security  | 9      | 8      | 1 (needs review)       |
-| Feature   | 19     | 2      | 17                     |
+| Feature   | 19     | 4      | 15                     |
 | Other     | 16     | 2      | 14                     |
-| **Total** | **74** | **40** | **34**                 |
+| **Total** | **74** | **42** | **32**                 |
 
 
