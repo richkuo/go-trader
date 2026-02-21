@@ -426,14 +426,14 @@ Ask the user which update method they prefer:
 
 #### Option A: Cron Job (recommended — no code change)
 
-Add a cron entry to pull once a day (e.g. at 03:00):
+Add a cron entry to pull once a day (e.g. at 03:00). Only rebuilds and restarts if there are actual changes:
 ```bash
 crontab -e
 # Add this line:
-0 3 * * * cd /path/to/go-trader && git pull --ff-only >> /tmp/go-trader-pull.log 2>&1
+0 3 * * * cd /root/.openclaw/workspace/go-trader && git pull --ff-only | grep -q 'Already up to date' || (cd scheduler && /usr/local/go/bin/go build -o ../go-trader . && systemctl restart go-trader) >> /var/log/go-trader-autoupdate.log 2>&1
 ```
 
-> **Note:** Python script and config changes apply automatically on the next scheduler cycle. Go source changes still require a manual rebuild (`cd scheduler && /opt/homebrew/bin/go build -o ../go-trader .`) and restart (`sudo systemctl restart go-trader`).
+> Logs to `/var/log/go-trader-autoupdate.log`. Rebuild and restart only trigger when upstream has changes.
 
 #### Option B: Heartbeat in Scheduler Loop (integrated — requires Go change)
 
