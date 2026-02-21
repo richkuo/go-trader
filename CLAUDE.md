@@ -22,8 +22,9 @@
 - `core/` — shared Python data utilities (data_fetcher, storage)
 - `strategies/` — strategy logic imported by check_strategy.py
 - `options/` — IBKR options adapter (`ibkr_adapter.py`, `options_adapter.py`, etc.)
-- `backtest/` — backtesting and paper trading scripts
+- `backtest/` — backtesting and paper trading scripts; `run_backtest.py` needs `PYTHONPATH=core:strategies`
 - `archive/` — retired/unused modules
+- `SKILL.md` — agent operations guide (setup, deploy, backtest commands)
 
 ## Key Patterns
 - Scheduler communicates with Python scripts via subprocess stdout JSON; scripts must always output valid JSON even on error
@@ -42,6 +43,11 @@
 - Python script changes take effect on next scheduler cycle (no rebuild needed)
 - Config changes: `systemctl restart go-trader` (no rebuild)
 - Service file changes: `systemctl daemon-reload && systemctl restart go-trader`
+
+## Backtest
+- `run_backtest.py`: `PYTHONPATH=core:strategies .venv/bin/python3 backtest/run_backtest.py --strategy <n> --symbol BTC/USDT --timeframe 1h --mode single`
+- `backtest_options.py`: `.venv/bin/python3 backtest/backtest_options.py --underlying BTC --since YYYY-MM-DD --capital 10000`
+- `backtest_theta.py`: `.venv/bin/python3 backtest/backtest_theta.py --underlying BTC --since YYYY-MM-DD --capital 10000`
 
 ## Testing
 - `python3 -m py_compile <file>` — syntax check Python files

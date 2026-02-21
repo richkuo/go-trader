@@ -462,6 +462,66 @@ If Discord is enabled, wait for the first cycle to complete (~5 minutes) and ver
 
 ---
 
+## Backtesting
+
+Run historical simulations using scripts in `backtest/`. All require `.venv/bin/python3` since dependencies (ccxt, pandas, numpy) are installed in the venv.
+
+### Spot Strategy Backtest (`backtest/run_backtest.py`)
+
+Requires `PYTHONPATH=core:strategies` to resolve imports.
+
+```bash
+# Single strategy run
+PYTHONPATH=core:strategies .venv/bin/python3 backtest/run_backtest.py \
+  --strategy <name> --symbol BTC/USDT --timeframe 1h --mode single
+
+# Compare two strategies
+PYTHONPATH=core:strategies .venv/bin/python3 backtest/run_backtest.py \
+  --strategy <name> --symbol BTC/USDT --timeframe 1h --mode compare
+
+# Multi-symbol sweep
+PYTHONPATH=core:strategies .venv/bin/python3 backtest/run_backtest.py \
+  --strategy <name> --timeframe 1h --mode multi
+
+# Parameter optimization
+PYTHONPATH=core:strategies .venv/bin/python3 backtest/run_backtest.py \
+  --strategy <name> --symbol BTC/USDT --timeframe 1h --mode optimize
+
+# Limit history (e.g. last 90 days)
+PYTHONPATH=core:strategies .venv/bin/python3 backtest/run_backtest.py \
+  --strategy <name> --symbol BTC/USDT --timeframe 1h --since 90
+```
+
+Key flags: `--strategy`, `--symbol`, `--timeframe`, `--mode` (single/compare/multi/optimize), `--since` (days)
+
+### Options Backtest (`backtest/backtest_options.py`)
+
+Self-contained (only imports ccxt).
+
+```bash
+.venv/bin/python3 backtest/backtest_options.py \
+  --underlying BTC --since 90 --capital 10000
+
+# Verbose output
+.venv/bin/python3 backtest/backtest_options.py \
+  --underlying BTC --since 90 --capital 10000 --verbose
+```
+
+Key flags: `--underlying`, `--since` (days), `--capital`, `--verbose`
+
+### Theta Harvest Comparison (`backtest/backtest_theta.py`)
+
+Self-contained.
+
+```bash
+.venv/bin/python3 backtest/backtest_theta.py \
+  --underlying BTC --since 90 --capital 10000
+```
+
+Key flags: `--underlying`, `--since` (days), `--capital`
+
+---
+
 ## Reconfiguration
 
 These can be done after initial setup without re-running the full guide.
