@@ -416,6 +416,48 @@ sudo systemctl enable go-trader
 sudo systemctl start go-trader
 ```
 
+### Step 8d: Auto-Update (Git Pull)
+
+Ask the user which update method they prefer:
+
+- **A) Cron job** — daily automatic pull, no code change
+- **B) Heartbeat** — integrated into scheduler loop, requires Go change
+- **C) Manual** — pull on demand when needed
+
+#### Option A: Cron Job (recommended — no code change)
+
+Add a cron entry to pull once a day (e.g. at 03:00):
+```bash
+crontab -e
+# Add this line:
+0 3 * * * cd /path/to/go-trader && git pull --ff-only >> /tmp/go-trader-pull.log 2>&1
+```
+
+> **Note:** Python script and config changes apply automatically on the next scheduler cycle. Go source changes still require a manual rebuild (`cd scheduler && /opt/homebrew/bin/go build -o ../go-trader .`) and restart (`sudo systemctl restart go-trader`).
+
+#### Option B: Heartbeat in Scheduler Loop (integrated — requires Go change)
+
+Add a `git_pull_interval_cycles` field to `scheduler/config.json` (e.g., `12` = every ~1 hour at 5-min cycles), then add a `runGitPull()` call in the scheduler's main loop that fires every N cycles.
+
+> **Note:** Same caveat — Go source changes still need a rebuild + restart to take effect even with this enabled. This option is best for Python/config-only workflows.
+
+#### Option C: Manual
+
+No configuration needed. Pull whenever you push changes:
+```bash
+cd /path/to/go-trader && git pull --ff-only
+sudo systemctl restart go-trader  # only needed for Go source or config changes
+```
+
+After adding the cron or heartbeat, verify it works:
+```bash
+# Cron: check the log after the scheduled time
+tail /tmp/go-trader-pull.log
+
+# Heartbeat: check scheduler logs after N cycles
+journalctl -u go-trader -f | grep -i "git pull"
+```
+
 ---
 
 ## Step 9: Verification
@@ -548,6 +590,12 @@ Edit `max_drawdown_pct` per strategy in config.json, then restart.
 
 ### Enable/Disable Theta Harvesting
 Add or remove the `theta_harvest` block from individual strategy entries in config.json, then restart.
+
+### Enable/Disable Auto-Pull (Git Pull)
+
+**Cron-based:** Add or remove the cron entry (`crontab -e`). No restart needed.
+
+**Heartbeat-based:** Set or remove `git_pull_interval_cycles` in config.json, then restart.
 
 ### Switch Paper → Live
 Add exchange API keys to systemd environment:
