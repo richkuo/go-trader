@@ -57,6 +57,16 @@ func main() {
 		}
 	}
 
+	// #42: Initialize portfolio peak from sum of capitals on first run.
+	if state.PortfolioRisk.PeakValue == 0 {
+		total := 0.0
+		for _, sc := range cfg.Strategies {
+			total += sc.Capital
+		}
+		state.PortfolioRisk.PeakValue = total
+		fmt.Printf("  Portfolio peak initialized: $%.0f\n", total)
+	}
+
 	// Setup logging
 	logMgr, err := NewLogManager(cfg.LogDir)
 	if err != nil {
@@ -200,94 +210,148 @@ func main() {
 		if saveFailures >= 3 {
 			fmt.Println("[CRITICAL] State save failed 3x, skipping trades this cycle")
 		} else {
-			for _, sc := range dueStrategies {
-				stratState := state.Strategies[sc.ID]
-				if stratState == nil {
-					continue
+			// #42: Portfolio-level risk check before running any strategy.
+			killSwitchFired := false
+			notionalBlocked := false
+			mu.RLock()
+			totalPV := 0.0
+			for _, sc := range cfg.Strategies {
+				if s, ok := state.Strategies[sc.ID]; ok {
+					totalPV += PortfolioValue(s, prices)
 				}
+			}
+			totalNotional := PortfolioNotional(state.Strategies, prices)
+			mu.RUnlock()
 
-				logger, err := logMgr.GetStrategyLogger(sc.ID)
-				if err != nil {
-					fmt.Printf("[ERROR] Logger for %s: %v\n", sc.ID, err)
-					continue
+			mu.Lock()
+			portfolioAllowed, nb, portfolioReason := CheckPortfolioRisk(&state.PortfolioRisk, cfg.PortfolioRisk, totalPV, totalNotional)
+			if !portfolioAllowed {
+				killSwitchFired = true
+				fmt.Printf("[CRITICAL] Portfolio kill switch: %s\n", portfolioReason)
+				for _, sc := range cfg.Strategies {
+					if s, ok := state.Strategies[sc.ID]; ok {
+						forceCloseAllPositions(s, prices, nil)
+					}
 				}
+			}
+			notionalBlocked = nb
+			if notionalBlocked {
+				fmt.Printf("[WARN] %s\n", portfolioReason)
+			}
+			mu.Unlock()
 
-				// Phase 1: RLock — read inputs needed for subprocess
-				mu.RLock()
-				pv := PortfolioValue(stratState, prices)
-				var posJSON string
-				if sc.Type == "options" {
-					posJSON = EncodeAllPositionsJSON(stratState.OptionPositions, stratState.Positions)
+			if killSwitchFired && discord != nil {
+				msg := fmt.Sprintf("**PORTFOLIO KILL SWITCH**\n%s\nAll positions force-closed. Manual reset required.", portfolioReason)
+				if cfg.Discord.Channels.Spot != "" {
+					if err := discord.SendMessage(cfg.Discord.Channels.Spot, msg); err != nil {
+						fmt.Printf("[WARN] Discord kill switch alert failed: %v\n", err)
+					}
 				}
-				mu.RUnlock()
+				if cfg.Discord.Channels.Options != "" {
+					if err := discord.SendMessage(cfg.Discord.Channels.Options, msg); err != nil {
+						fmt.Printf("[WARN] Discord kill switch alert failed: %v\n", err)
+					}
+				}
+			}
 
-				// Phase 2: Lock — CheckRisk (fast, no I/O)
-				mu.Lock()
-				allowed, reason := CheckRisk(stratState, pv, prices, logger)
-				mu.Unlock()
-				if !allowed {
-					logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
+			if !killSwitchFired {
+				for _, sc := range dueStrategies {
+					stratState := state.Strategies[sc.ID]
+					if stratState == nil {
+						continue
+					}
+
+					logger, err := logMgr.GetStrategyLogger(sc.ID)
+					if err != nil {
+						fmt.Printf("[ERROR] Logger for %s: %v\n", sc.ID, err)
+						continue
+					}
+
+					// Phase 1: RLock — read inputs needed for subprocess
+					mu.RLock()
+					pv := PortfolioValue(stratState, prices)
+					var posJSON string
+					if sc.Type == "options" {
+						posJSON = EncodeAllPositionsJSON(stratState.OptionPositions, stratState.Positions)
+					}
+					mu.RUnlock()
+
+					// Phase 2: Lock — CheckRisk (fast, no I/O)
+					mu.Lock()
+					allowed, reason := CheckRisk(stratState, pv, prices, logger)
+					mu.Unlock()
+					if !allowed {
+						logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
+						logger.Close()
+						lastRun[sc.ID] = time.Now()
+						continue
+					}
+
+					// #42: Notional cap blocks new trades for this strategy.
+					if notionalBlocked {
+						logger.Warn("Notional cap exceeded — skipping new trades")
+						logger.Close()
+						lastRun[sc.ID] = time.Now()
+						continue
+					}
+
+					// Phase 3 (no lock) + Phase 4 (Lock): subprocess then state mutation
+					trades := 0
+					var detail string
+					switch sc.Type {
+					case "spot":
+						if result, signalStr, price, ok := runSpotCheck(sc, prices, logger); ok {
+							mu.Lock()
+							trades, detail = executeSpotResult(sc, stratState, result, signalStr, price, logger)
+							mu.Unlock()
+						}
+						if trades > 0 && detail != "" {
+							spotTradeDetails = append(spotTradeDetails, detail)
+						}
+						spotTrades += trades
+					case "options":
+						if result, signalStr, ok := runOptionsCheck(sc, posJSON, logger); ok {
+							mu.Lock()
+							var harvestDetails []string
+							trades, detail, harvestDetails = executeOptionsResult(sc, stratState, result, signalStr, logger)
+							mu.Unlock()
+							optionsTradeDetails = append(optionsTradeDetails, harvestDetails...)
+						}
+						if trades > 0 && detail != "" {
+							optionsTradeDetails = append(optionsTradeDetails, detail)
+						}
+						optionsTrades += trades
+					default:
+						logger.Error("Unknown strategy type: %s", sc.Type)
+					}
+
+					totalTrades += trades
+
+					// Phase 5: mark option positions with live Deribit prices
+					mu.RLock()
+					markReqs := collectMarkRequests(stratState)
+					mu.RUnlock()
+					if len(markReqs) > 0 {
+						markResults := fetchMarkPrices(markReqs, deribitPricer, logger)
+						mu.Lock()
+						applyMarkResults(stratState, markResults, logger)
+						mu.Unlock()
+					}
+
+					// Phase 6: RLock — status log
+					mu.RLock()
+					pv = PortfolioValue(stratState, prices)
+					posCount := len(stratState.Positions) + len(stratState.OptionPositions)
+					cash := stratState.Cash
+					mu.RUnlock()
+
+					logger.Info("Status: cash=$%.2f | positions=%d | value=$%.2f | trades=%d",
+						cash, posCount, pv, trades)
+
 					logger.Close()
 					lastRun[sc.ID] = time.Now()
-					continue
 				}
-
-				// Phase 3 (no lock) + Phase 4 (Lock): subprocess then state mutation
-				trades := 0
-				var detail string
-				switch sc.Type {
-				case "spot":
-					if result, signalStr, price, ok := runSpotCheck(sc, prices, logger); ok {
-						mu.Lock()
-						trades, detail = executeSpotResult(sc, stratState, result, signalStr, price, logger)
-						mu.Unlock()
-					}
-					if trades > 0 && detail != "" {
-						spotTradeDetails = append(spotTradeDetails, detail)
-					}
-					spotTrades += trades
-				case "options":
-					if result, signalStr, ok := runOptionsCheck(sc, posJSON, logger); ok {
-						mu.Lock()
-						var harvestDetails []string
-						trades, detail, harvestDetails = executeOptionsResult(sc, stratState, result, signalStr, logger)
-						mu.Unlock()
-						optionsTradeDetails = append(optionsTradeDetails, harvestDetails...)
-					}
-					if trades > 0 && detail != "" {
-						optionsTradeDetails = append(optionsTradeDetails, detail)
-					}
-					optionsTrades += trades
-				default:
-					logger.Error("Unknown strategy type: %s", sc.Type)
-				}
-
-				totalTrades += trades
-
-				// Phase 5: mark option positions with live Deribit prices
-				mu.RLock()
-				markReqs := collectMarkRequests(stratState)
-				mu.RUnlock()
-				if len(markReqs) > 0 {
-					markResults := fetchMarkPrices(markReqs, deribitPricer, logger)
-					mu.Lock()
-					applyMarkResults(stratState, markResults, logger)
-					mu.Unlock()
-				}
-
-				// Phase 6: RLock — status log
-				mu.RLock()
-				pv = PortfolioValue(stratState, prices)
-				posCount := len(stratState.Positions) + len(stratState.OptionPositions)
-				cash := stratState.Cash
-				mu.RUnlock()
-
-				logger.Info("Status: cash=$%.2f | positions=%d | value=$%.2f | trades=%d",
-					cash, posCount, pv, trades)
-
-				logger.Close()
-				lastRun[sc.ID] = time.Now()
-			}
+			} // end if !killSwitchFired
 		}
 
 		// Calculate total portfolio value and separate spot/options values

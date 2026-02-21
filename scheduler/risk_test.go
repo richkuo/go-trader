@@ -200,6 +200,158 @@ func TestCheckRisk_ForceCloseOnDrawdown(t *testing.T) {
 	}
 }
 
+// TestCheckPortfolioRisk_DrawdownKillSwitch verifies the kill switch fires at the
+// drawdown threshold and latches on subsequent calls.
+func TestCheckPortfolioRisk_DrawdownKillSwitch(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxNotionalUSD: 0}
+	prs := &PortfolioRiskState{PeakValue: 10000.0}
+
+	// Just under threshold — should be allowed.
+	allowed, nb, reason := CheckPortfolioRisk(prs, cfg, 7600.0, 0)
+	if !allowed {
+		t.Errorf("expected allowed below threshold; got reason=%s", reason)
+	}
+	if nb {
+		t.Error("expected notionalBlocked=false")
+	}
+
+	// Peak should not change (value dropped).
+	if prs.PeakValue != 10000.0 {
+		t.Errorf("expected peak=10000; got %.2f", prs.PeakValue)
+	}
+
+	// Drawdown = (10000-7400)/10000 = 26% > 25% — kill switch fires.
+	allowed, nb, reason = CheckPortfolioRisk(prs, cfg, 7400.0, 0)
+	if allowed {
+		t.Error("expected kill switch to fire at 26% drawdown")
+	}
+	if nb {
+		t.Error("expected notionalBlocked=false when kill switch fires")
+	}
+	if reason == "" {
+		t.Error("expected non-empty reason")
+	}
+	if !prs.KillSwitchActive {
+		t.Error("expected KillSwitchActive=true after firing")
+	}
+	if prs.KillSwitchAt.IsZero() {
+		t.Error("expected KillSwitchAt to be set")
+	}
+
+	// Subsequent call — still latched even with recovered value.
+	allowed, _, _ = CheckPortfolioRisk(prs, cfg, 10000.0, 0)
+	if allowed {
+		t.Error("expected kill switch to remain latched on subsequent call")
+	}
+}
+
+// TestCheckPortfolioRisk_NotionalCap verifies the notional cap blocks new trades
+// without triggering the kill switch.
+func TestCheckPortfolioRisk_NotionalCap(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxNotionalUSD: 50000}
+	prs := &PortfolioRiskState{PeakValue: 10000.0}
+
+	// Under cap — allowed, not notional-blocked.
+	allowed, nb, _ := CheckPortfolioRisk(prs, cfg, 10000.0, 30000.0)
+	if !allowed {
+		t.Error("expected allowed under notional cap")
+	}
+	if nb {
+		t.Error("expected notionalBlocked=false under cap")
+	}
+
+	// Over cap — allowed=true, notionalBlocked=true, kill switch NOT active.
+	allowed, nb, reason := CheckPortfolioRisk(prs, cfg, 10000.0, 60000.0)
+	if !allowed {
+		t.Error("expected allowed=true (notional cap doesn't kill switch)")
+	}
+	if !nb {
+		t.Errorf("expected notionalBlocked=true over cap; reason=%s", reason)
+	}
+	if prs.KillSwitchActive {
+		t.Error("expected kill switch NOT fired for notional cap breach")
+	}
+}
+
+// TestCheckPortfolioRisk_PeakTracking verifies the peak high-water mark only
+// ratchets upward, never down.
+func TestCheckPortfolioRisk_PeakTracking(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 50, MaxNotionalUSD: 0}
+	prs := &PortfolioRiskState{PeakValue: 5000.0}
+
+	// Value rises — peak should update.
+	CheckPortfolioRisk(prs, cfg, 8000.0, 0)
+	if prs.PeakValue != 8000.0 {
+		t.Errorf("expected peak=8000 after rise; got %.2f", prs.PeakValue)
+	}
+
+	// Value drops — peak should NOT update.
+	CheckPortfolioRisk(prs, cfg, 6000.0, 0)
+	if prs.PeakValue != 8000.0 {
+		t.Errorf("expected peak=8000 unchanged after drop; got %.2f", prs.PeakValue)
+	}
+
+	// Value rises again — peak updates.
+	CheckPortfolioRisk(prs, cfg, 9000.0, 0)
+	if prs.PeakValue != 9000.0 {
+		t.Errorf("expected peak=9000 after new high; got %.2f", prs.PeakValue)
+	}
+
+	// Drawdown tracked correctly: (9000-6000)/9000 ≈ 33.3%.
+	CheckPortfolioRisk(prs, cfg, 6000.0, 0)
+	expectedDD := (9000.0 - 6000.0) / 9000.0 * 100
+	if prs.CurrentDrawdownPct < expectedDD-0.01 || prs.CurrentDrawdownPct > expectedDD+0.01 {
+		t.Errorf("expected drawdown≈%.2f%%; got %.2f%%", expectedDD, prs.CurrentDrawdownPct)
+	}
+}
+
+// TestPortfolioNotional verifies notional computation for spot + sold options +
+// bought options.
+func TestPortfolioNotional(t *testing.T) {
+	strategies := map[string]*StrategyState{
+		"spot-strat": {
+			Positions: map[string]*Position{
+				"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 40000.0, Side: "long"},
+				"ETH": {Symbol: "ETH", Quantity: 10.0, AvgCost: 3000.0, Side: "long"},
+			},
+			OptionPositions: make(map[string]*OptionPosition),
+		},
+		"options-strat": {
+			Positions: make(map[string]*Position),
+			OptionPositions: map[string]*OptionPosition{
+				"BTC-put-40000-sell": {
+					Action:          "sell",
+					Strike:          40000.0,
+					Quantity:        2.0,
+					CurrentValueUSD: -500.0,
+				},
+				"BTC-call-50000-buy": {
+					Action:          "buy",
+					Strike:          50000.0,
+					Quantity:        1.0,
+					CurrentValueUSD: 800.0,
+				},
+			},
+		},
+	}
+
+	prices := map[string]float64{
+		"BTC": 50000.0,
+		"ETH": 3500.0,
+	}
+
+	notional := PortfolioNotional(strategies, prices)
+
+	// Spot: 0.5*50000 + 10*3500 = 25000 + 35000 = 60000
+	// Sold put: 40000 * 2 = 80000
+	// Bought call: CurrentValueUSD = 800 (positive)
+	// Total = 60000 + 80000 + 800 = 140800
+	expected := 140800.0
+	if notional < expected-0.01 || notional > expected+0.01 {
+		t.Errorf("expected notional=%.2f; got %.2f", expected, notional)
+	}
+}
+
 // TestCheckRisk_ConsecutiveLossesForceClose verifies that the consecutive-losses
 // circuit breaker force-closes all open positions.
 func TestCheckRisk_ConsecutiveLossesForceClose(t *testing.T) {

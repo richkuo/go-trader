@@ -53,5 +53,6 @@
 - `python3 -m py_compile <file>` — syntax check Python files
 - `cd scheduler && /opt/homebrew/bin/go build .` — compile check
 - `cd scheduler && /opt/homebrew/bin/go test ./...` — run all unit tests
+- `cd scheduler && /opt/homebrew/bin/gofmt -w <file>.go` — format after editing Go files (`-l *.go` lists all files needing formatting)
 - Smoke test: `./go-trader --once`
 - Run with config: `./go-trader --config scheduler/config.json`

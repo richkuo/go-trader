@@ -31,7 +31,7 @@ func (d *DiscordNotifier) SendMessage(channelID string, content string) error {
 	if len(content) > 2000 {
 		content = content[:1997] + "..."
 	}
-	
+
 	url := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, channelID)
 
 	payload := map[string]string{"content": content}
@@ -132,7 +132,7 @@ func FormatCategorySummary(
 			continue
 		}
 		cat := stratCategory(sc.ID)
-		
+
 		// Filter based on categoryFilter
 		if categoryFilter == "spot" && cat != "spot" {
 			continue
@@ -140,7 +140,7 @@ func FormatCategorySummary(
 		if categoryFilter == "options" && cat == "spot" {
 			continue
 		}
-		
+
 		ci := cats[cat]
 		ci.count++
 		ci.capital += sc.Capital
@@ -149,14 +149,14 @@ func FormatCategorySummary(
 		pnl := pv - sc.Capital
 		ci.pnl += pnl
 		ci.posCount += len(ss.Positions) + len(ss.OptionPositions)
-		
+
 		// Extract strategy name from args or ID
 		stratName := extractStrategyName(sc)
 		pnlPct := 0.0
 		if sc.Capital > 0 {
 			pnlPct = (pnl / sc.Capital) * 100
 		}
-		
+
 		asset := extractAsset(sc)
 		ci.bots = append(ci.bots, botInfo{
 			id:           sc.ID,
@@ -183,7 +183,7 @@ func FormatCategorySummary(
 	} else {
 		totalCap = cats["deribit"].capital + cats["ibkr"].capital
 	}
-	
+
 	// Calculate filtered total value
 	var filteredValue float64
 	if categoryFilter == "spot" {
@@ -191,7 +191,7 @@ func FormatCategorySummary(
 	} else {
 		filteredValue = cats["deribit"].value + cats["ibkr"].value
 	}
-	
+
 	totalPnl := filteredValue - totalCap
 	pnlPct := 0.0
 	if totalCap > 0 {
@@ -275,11 +275,11 @@ func writeCatLineDetailed(sb *strings.Builder, label string, ci *catInfo) {
 	if ci.capital > 0 {
 		pnlPct = (ci.pnl / ci.capital) * 100
 	}
-	
+
 	// Category header
 	sb.WriteString(fmt.Sprintf("\n%s: **$%.0f → $%.0f** (%s$%.0f / %s%.1f%%)\n",
 		label, ci.capital, ci.value, pnlSign, ci.pnl, pnlSign, pnlPct))
-	
+
 	// Individual bots
 	for _, bot := range ci.bots {
 		sign := "+"
@@ -291,7 +291,7 @@ func writeCatLineDetailed(sb *strings.Builder, label string, ci *catInfo) {
 			assetLabel = bot.asset + " "
 		}
 		sb.WriteString(fmt.Sprintf("  • %s%s (%s%.1f%%) — %d trades\n", assetLabel, bot.strategy, sign, bot.pnlPct, bot.trades))
-		
+
 		// Show last 3 trades only (to keep message under 2000 char Discord limit)
 		if len(bot.tradeHistory) > 0 {
 			start := 0

@@ -14,12 +14,12 @@ const deribitAPIBase = "https://www.deribit.com/api/v2"
 // DeribitTickerResponse from /public/ticker endpoint
 type DeribitTickerResponse struct {
 	Result struct {
-		InstrumentName string  `json:"instrument_name"`
-		MarkPrice      float64 `json:"mark_price"`
+		InstrumentName  string  `json:"instrument_name"`
+		MarkPrice       float64 `json:"mark_price"`
 		UnderlyingPrice float64 `json:"underlying_price"`
-		Bid            float64 `json:"best_bid_price"`
-		Ask            float64 `json:"best_ask_price"`
-		Greeks         struct {
+		Bid             float64 `json:"best_bid_price"`
+		Ask             float64 `json:"best_ask_price"`
+		Greeks          struct {
 			Delta float64 `json:"delta"`
 			Gamma float64 `json:"gamma"`
 			Theta float64 `json:"theta"`

@@ -120,15 +120,27 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type StatusResp struct {
-		CycleCount int                    `json:"cycle_count"`
-		Prices     map[string]float64     `json:"prices"`
-		Strategies map[string]StratStatus `json:"strategies"`
+		CycleCount    int                    `json:"cycle_count"`
+		Prices        map[string]float64     `json:"prices"`
+		Strategies    map[string]StratStatus `json:"strategies"`
+		PortfolioRisk PortfolioRiskState     `json:"portfolio_risk"`
+		TotalValue    float64                `json:"total_value"`
+		TotalNotional float64                `json:"total_notional"`
 	}
 
+	totalValue := 0.0
+	for _, s := range ss.state.Strategies {
+		totalValue += PortfolioValue(s, prices)
+	}
+	totalNotional := PortfolioNotional(ss.state.Strategies, prices)
+
 	resp := StatusResp{
-		CycleCount: ss.state.CycleCount,
-		Prices:     prices,
-		Strategies: make(map[string]StratStatus),
+		CycleCount:    ss.state.CycleCount,
+		Prices:        prices,
+		Strategies:    make(map[string]StratStatus),
+		PortfolioRisk: ss.state.PortfolioRisk,
+		TotalValue:    totalValue,
+		TotalNotional: totalNotional,
 	}
 
 	for id, s := range ss.state.Strategies {

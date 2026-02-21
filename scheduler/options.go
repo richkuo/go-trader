@@ -17,7 +17,7 @@ type OptionPosition struct {
 	DTE             float64   `json:"dte"`
 	Action          string    `json:"action"` // "buy" or "sell"
 	Quantity        float64   `json:"quantity"`
-	EntryPremium    float64   `json:"entry_premium"`     // in underlying terms
+	EntryPremium    float64   `json:"entry_premium"` // in underlying terms
 	EntryPremiumUSD float64   `json:"entry_premium_usd"`
 	CurrentValueUSD float64   `json:"current_value_usd"`
 	Greeks          OptGreeks `json:"greeks"`
@@ -47,14 +47,14 @@ type OptionsAction struct {
 
 // OptionsResult is the JSON output from check_options.py.
 type OptionsResult struct {
-	Strategy  string          `json:"strategy"`
-	Underlying string         `json:"underlying"`
-	Signal    int             `json:"signal"`
-	SpotPrice float64         `json:"spot_price"`
-	Actions   []OptionsAction `json:"actions"`
-	IVRank    float64         `json:"iv_rank"`
-	Timestamp string          `json:"timestamp"`
-	Error     string          `json:"error,omitempty"`
+	Strategy   string          `json:"strategy"`
+	Underlying string          `json:"underlying"`
+	Signal     int             `json:"signal"`
+	SpotPrice  float64         `json:"spot_price"`
+	Actions    []OptionsAction `json:"actions"`
+	IVRank     float64         `json:"iv_rank"`
+	Timestamp  string          `json:"timestamp"`
+	Error      string          `json:"error,omitempty"`
 }
 
 // ExecuteOptionsSignal processes options signals and manages positions.
@@ -121,7 +121,7 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 	} else {
 		fee = CalculateDeribitOptionFee(cost)
 	}
-	
+
 	totalCost := cost + fee
 	if totalCost > s.Cash*0.95 {
 		logger.Info("Insufficient cash ($%.2f) for option buy ($%.2f + $%.2f fee)", s.Cash, cost, fee)
@@ -193,7 +193,7 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 	} else {
 		fee = CalculateDeribitOptionFee(premium)
 	}
-	
+
 	netPremium := premium - fee
 
 	posID := fmt.Sprintf("%s-%s-%s-%.0f-%s",
@@ -210,7 +210,7 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 		Action:          "sell",
 		Quantity:        qty,
 		EntryPremium:    action.Premium,
-		EntryPremiumUSD: netPremium, // net after fees
+		EntryPremiumUSD: netPremium,  // net after fees
 		CurrentValueUSD: -netPremium, // liability
 		Greeks:          action.Greeks,
 		OpenedAt:        time.Now().UTC(),

@@ -21,14 +21,21 @@ type DiscordConfig struct {
 	Channels DiscordChannels `json:"channels"`
 }
 
+// PortfolioRiskConfig controls aggregate portfolio-level risk (#42).
+type PortfolioRiskConfig struct {
+	MaxDrawdownPct float64 `json:"max_drawdown_pct"` // kill switch threshold (default 25)
+	MaxNotionalUSD float64 `json:"max_notional_usd"` // 0 = disabled
+}
+
 // Config is the top-level scheduler configuration.
 type Config struct {
-	IntervalSeconds int              `json:"interval_seconds"`
-	LogDir          string           `json:"log_dir"`
-	StateFile       string           `json:"state_file"`
-	StatusToken     string           `json:"-"` // loaded from STATUS_AUTH_TOKEN env var only
-	Discord         DiscordConfig    `json:"discord"`
-	Strategies      []StrategyConfig `json:"strategies"`
+	IntervalSeconds int                  `json:"interval_seconds"`
+	LogDir          string               `json:"log_dir"`
+	StateFile       string               `json:"state_file"`
+	StatusToken     string               `json:"-"` // loaded from STATUS_AUTH_TOKEN env var only
+	Discord         DiscordConfig        `json:"discord"`
+	Strategies      []StrategyConfig     `json:"strategies"`
+	PortfolioRisk   *PortfolioRiskConfig `json:"portfolio_risk,omitempty"`
 }
 
 // ThetaHarvestConfig controls early exit on sold options.
@@ -108,6 +115,11 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
+	// #42: Apply portfolio risk defaults if not configured.
+	if cfg.PortfolioRisk == nil {
+		cfg.PortfolioRisk = &PortfolioRiskConfig{MaxDrawdownPct: 25}
+	}
+
 	if err := ValidateConfig(&cfg); err != nil {
 		return nil, err
 	}
@@ -179,6 +191,16 @@ func ValidateConfig(cfg *Config) error {
 			if th.MinDTEClose < 0 {
 				errs = append(errs, fmt.Sprintf("%s: theta_harvest.min_dte_close must be >= 0", prefix))
 			}
+		}
+	}
+
+	// #42: Validate portfolio risk config.
+	if cfg.PortfolioRisk != nil {
+		if cfg.PortfolioRisk.MaxDrawdownPct <= 0 || cfg.PortfolioRisk.MaxDrawdownPct > 100 {
+			errs = append(errs, fmt.Sprintf("portfolio_risk.max_drawdown_pct must be in (0, 100], got %g", cfg.PortfolioRisk.MaxDrawdownPct))
+		}
+		if cfg.PortfolioRisk.MaxNotionalUSD < 0 {
+			errs = append(errs, fmt.Sprintf("portfolio_risk.max_notional_usd must be >= 0, got %g", cfg.PortfolioRisk.MaxNotionalUSD))
 		}
 	}
 

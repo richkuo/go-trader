@@ -5,19 +5,86 @@ import (
 	"time"
 )
 
+// PortfolioRiskState tracks aggregate portfolio-level risk (#42).
+type PortfolioRiskState struct {
+	PeakValue          float64   `json:"peak_value"`
+	CurrentDrawdownPct float64   `json:"current_drawdown_pct"`
+	KillSwitchActive   bool      `json:"kill_switch_active"`
+	KillSwitchAt       time.Time `json:"kill_switch_at,omitempty"`
+}
+
+// CheckPortfolioRisk evaluates aggregate portfolio risk.
+// Returns (allowed, notionalBlocked, reason).
+// allowed=false means the kill switch has fired or is latched; notionalBlocked=true
+// means new trades should be skipped but existing positions kept.
+func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional float64) (allowed, notionalBlocked bool, reason string) {
+	if prs.KillSwitchActive {
+		return false, false, fmt.Sprintf("portfolio kill switch is latched (triggered at %s, manual reset required)",
+			prs.KillSwitchAt.Format("2006-01-02 15:04:05 UTC"))
+	}
+
+	// Ratchet peak high-water mark upward only.
+	if totalValue > prs.PeakValue {
+		prs.PeakValue = totalValue
+	}
+
+	// Check drawdown kill switch.
+	if prs.PeakValue > 0 {
+		prs.CurrentDrawdownPct = (prs.PeakValue - totalValue) / prs.PeakValue * 100
+		if prs.CurrentDrawdownPct > cfg.MaxDrawdownPct {
+			prs.KillSwitchActive = true
+			prs.KillSwitchAt = time.Now().UTC()
+			return false, false, fmt.Sprintf("portfolio drawdown %.1f%% exceeds limit %.1f%% (value=$%.2f, peak=$%.2f)",
+				prs.CurrentDrawdownPct, cfg.MaxDrawdownPct, totalValue, prs.PeakValue)
+		}
+	}
+
+	// Check notional cap — blocks new trades but does not force-close.
+	if cfg.MaxNotionalUSD > 0 && totalNotional > cfg.MaxNotionalUSD {
+		return true, true, fmt.Sprintf("portfolio notional $%.2f exceeds cap $%.2f — new trades blocked",
+			totalNotional, cfg.MaxNotionalUSD)
+	}
+
+	return true, false, ""
+}
+
+// PortfolioNotional computes gross market exposure across all strategies.
+// Spot: quantity * price. Options sold: strike * quantity (max obligation).
+// Options bought: CurrentValueUSD if positive.
+func PortfolioNotional(strategies map[string]*StrategyState, prices map[string]float64) float64 {
+	total := 0.0
+	for _, s := range strategies {
+		for sym, pos := range s.Positions {
+			price, ok := prices[sym]
+			if !ok {
+				price = pos.AvgCost
+			}
+			total += pos.Quantity * price
+		}
+		for _, opt := range s.OptionPositions {
+			if opt.Action == "sell" {
+				total += opt.Strike * opt.Quantity
+			} else if opt.CurrentValueUSD > 0 {
+				total += opt.CurrentValueUSD
+			}
+		}
+	}
+	return total
+}
+
 // RiskState tracks risk metrics for a strategy.
 type RiskState struct {
-	PeakValue         float64   `json:"peak_value"`
-	MaxDrawdownPct    float64   `json:"max_drawdown_pct"`
-	CurrentDrawdownPct float64  `json:"current_drawdown_pct"`
-	DailyPnL          float64   `json:"daily_pnl"`
-	DailyPnLDate       string   `json:"daily_pnl_date"`
-	ConsecutiveLosses  int      `json:"consecutive_losses"`
-	CircuitBreaker     bool     `json:"circuit_breaker"`
+	PeakValue           float64   `json:"peak_value"`
+	MaxDrawdownPct      float64   `json:"max_drawdown_pct"`
+	CurrentDrawdownPct  float64   `json:"current_drawdown_pct"`
+	DailyPnL            float64   `json:"daily_pnl"`
+	DailyPnLDate        string    `json:"daily_pnl_date"`
+	ConsecutiveLosses   int       `json:"consecutive_losses"`
+	CircuitBreaker      bool      `json:"circuit_breaker"`
 	CircuitBreakerUntil time.Time `json:"circuit_breaker_until"`
-	TotalTrades        int      `json:"total_trades"`
-	WinningTrades      int      `json:"winning_trades"`
-	LosingTrades       int      `json:"losing_trades"`
+	TotalTrades         int       `json:"total_trades"`
+	WinningTrades       int       `json:"winning_trades"`
+	LosingTrades        int       `json:"losing_trades"`
 }
 
 // rolloverDailyPnL resets DailyPnL to zero whenever the UTC date has advanced

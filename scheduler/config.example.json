@@ -1,6 +1,10 @@
 {
   "interval_seconds": 300,
   "state_file": "scheduler/state.json",
+  "portfolio_risk": {
+    "max_drawdown_pct": 25,
+    "max_notional_usd": 0
+  },
   "strategies": [
     {
       "id": "momentum-btc",
