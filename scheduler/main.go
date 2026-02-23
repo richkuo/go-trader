@@ -404,7 +404,8 @@ func main() {
 			}
 
 			// Send spot summary (hourly or with trades)
-			if spotRan && (cycle%12 == 0 || spotTrades > 0) && cfg.Discord.Channels.Spot != "" {
+			// (cycle-1)%12==0 fires at cycles 1, 13, 25... so first summary posts immediately on startup
+			if spotRan && ((cycle-1)%12 == 0 || spotTrades > 0) && cfg.Discord.Channels.Spot != "" {
 				msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), spotTrades, spotValue, prices, spotTradeDetails, cfg.Strategies, state, "spot")
 				if err := discord.SendMessage(cfg.Discord.Channels.Spot, msg); err != nil {
 					fmt.Printf("[WARN] Discord spot summary failed: %v\n", err)
