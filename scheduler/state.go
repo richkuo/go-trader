@@ -66,8 +66,6 @@ func LoadState(path string) (*AppState, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("parse state: %w", err)
 	}
-	// Always start cycle count from 1 on each boot
-	state.CycleCount = 0
 	if state.Strategies == nil {
 		state.Strategies = make(map[string]*StrategyState)
 	}
