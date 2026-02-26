@@ -14,7 +14,7 @@
 - `scheduler/` — Go scheduler (single `package main`); all .go files compile together
   - `executor.go` — Python subprocess runner; max 4 concurrent, 30s timeout per script
   - `server.go` — HTTP status server (`/status`, `/health` endpoints)
-  - `discord.go` — Discord alert notifications
+  - `discord.go` — Discord alert notifications; `FormatCategorySummary` outputs a monospace code-block table (Strategy/Value/PnL/PnL%) via `writeCatTable`; `fmtComma` handles comma formatting — always pass absolute values (never signed floats)
 - `shared_scripts/` — Python entry-point scripts called by the scheduler
   - `check_strategy.py` — spot strategy signal checker
   - `check_options.py` — unified options checker (`--platform=deribit|ibkr`)
