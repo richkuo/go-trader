@@ -27,15 +27,22 @@ type PortfolioRiskConfig struct {
 	MaxNotionalUSD float64 `json:"max_notional_usd"` // 0 = disabled
 }
 
+// PlatformConfig holds per-platform settings (state file path and optional risk overrides).
+type PlatformConfig struct {
+	StateFile string               `json:"state_file"`     // e.g. "platforms/deribit/state.json"
+	Risk      *PortfolioRiskConfig `json:"risk,omitempty"` // overrides portfolio-level defaults
+}
+
 // Config is the top-level scheduler configuration.
 type Config struct {
-	IntervalSeconds int                  `json:"interval_seconds"`
-	LogDir          string               `json:"log_dir"`
-	StateFile       string               `json:"state_file"`
-	StatusToken     string               `json:"-"` // loaded from STATUS_AUTH_TOKEN env var only
-	Discord         DiscordConfig        `json:"discord"`
-	Strategies      []StrategyConfig     `json:"strategies"`
-	PortfolioRisk   *PortfolioRiskConfig `json:"portfolio_risk,omitempty"`
+	IntervalSeconds int                        `json:"interval_seconds"`
+	LogDir          string                     `json:"log_dir"`
+	StateFile       string                     `json:"state_file"`
+	StatusToken     string                     `json:"-"` // loaded from STATUS_AUTH_TOKEN env var only
+	Discord         DiscordConfig              `json:"discord"`
+	Strategies      []StrategyConfig           `json:"strategies"`
+	PortfolioRisk   *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
+	Platforms       map[string]*PlatformConfig `json:"platforms,omitempty"`
 }
 
 // ThetaHarvestConfig controls early exit on sold options.
@@ -49,7 +56,8 @@ type ThetaHarvestConfig struct {
 // StrategyConfig describes a single strategy job.
 type StrategyConfig struct {
 	ID              string              `json:"id"`
-	Type            string              `json:"type"` // "spot" or "options"
+	Type            string              `json:"type"`     // "spot" or "options"
+	Platform        string              `json:"platform"` // "deribit", "ibkr", "binanceus", etc.
 	Script          string              `json:"script"`
 	Args            []string            `json:"args"`
 	Capital         float64             `json:"capital"`
@@ -93,15 +101,45 @@ func LoadConfig(path string) (*Config, error) {
 	// Optional auth token for the /status HTTP endpoint.
 	cfg.StatusToken = os.Getenv("STATUS_AUTH_TOKEN")
 
-	// Apply default drawdown thresholds if not explicitly set (0 means unset).
+	// Initialize platforms map.
+	if cfg.Platforms == nil {
+		cfg.Platforms = make(map[string]*PlatformConfig)
+	}
+	// Apply default state file paths for any declared platforms.
+	for name, pc := range cfg.Platforms {
+		if pc.StateFile == "" {
+			pc.StateFile = fmt.Sprintf("platforms/%s/state.json", name)
+		}
+	}
+
+	// Apply per-strategy defaults.
 	for i := range cfg.Strategies {
+		// Infer platform from ID prefix for backwards compatibility.
+		if cfg.Strategies[i].Platform == "" {
+			switch {
+			case strings.HasPrefix(cfg.Strategies[i].ID, "ibkr-"):
+				cfg.Strategies[i].Platform = "ibkr"
+			case strings.HasPrefix(cfg.Strategies[i].ID, "deribit-"):
+				cfg.Strategies[i].Platform = "deribit"
+			case cfg.Strategies[i].Type == "options":
+				cfg.Strategies[i].Platform = "deribit"
+			default:
+				cfg.Strategies[i].Platform = "binanceus"
+			}
+		}
+
+		// Hierarchical risk: strategy-specific > platform > type default.
 		if cfg.Strategies[i].MaxDrawdownPct == 0 {
-			if cfg.Strategies[i].Type == "options" {
+			platform := cfg.Strategies[i].Platform
+			if pc := cfg.Platforms[platform]; pc != nil && pc.Risk != nil && pc.Risk.MaxDrawdownPct > 0 {
+				cfg.Strategies[i].MaxDrawdownPct = pc.Risk.MaxDrawdownPct
+			} else if cfg.Strategies[i].Type == "options" {
 				cfg.Strategies[i].MaxDrawdownPct = 40 // options are volatile, 20% is too tight
 			} else {
 				cfg.Strategies[i].MaxDrawdownPct = 60
 			}
 		}
+
 		// #56: Default theta harvest for options strategies — sold options
 		// must always have an automatic exit to prevent unbounded losses.
 		if cfg.Strategies[i].Type == "options" && cfg.Strategies[i].ThetaHarvest == nil {

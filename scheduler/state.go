@@ -23,6 +23,7 @@ type AppState struct {
 type StrategyState struct {
 	ID              string                     `json:"id"`
 	Type            string                     `json:"type"`
+	Platform        string                     `json:"platform,omitempty"`
 	Cash            float64                    `json:"cash"`
 	InitialCapital  float64                    `json:"initial_capital"`
 	Positions       map[string]*Position       `json:"positions"`
@@ -35,6 +36,7 @@ func NewStrategyState(cfg StrategyConfig) *StrategyState {
 	return &StrategyState{
 		ID:              cfg.ID,
 		Type:            cfg.Type,
+		Platform:        cfg.Platform,
 		Cash:            cfg.Capital,
 		InitialCapital:  cfg.Capital,
 		Positions:       make(map[string]*Position),
@@ -121,6 +123,84 @@ func ValidateState(state *AppState) {
 			}
 		}
 	}
+}
+
+// LoadPlatformStates loads state from per-platform state files and merges them into one AppState.
+// Falls back to cfg.StateFile for backwards compatibility when no platforms are configured.
+func LoadPlatformStates(cfg *Config) (*AppState, error) {
+	if len(cfg.Platforms) == 0 {
+		return LoadState(cfg.StateFile)
+	}
+
+	merged := NewAppState()
+	for name, pc := range cfg.Platforms {
+		stateFile := pc.StateFile
+		if stateFile == "" {
+			stateFile = fmt.Sprintf("platforms/%s/state.json", name)
+		}
+		s, err := LoadState(stateFile)
+		if err != nil {
+			return nil, fmt.Errorf("platform %s: %w", name, err)
+		}
+		for id, stratState := range s.Strategies {
+			if stratState.Platform == "" {
+				stratState.Platform = name
+			}
+			merged.Strategies[id] = stratState
+		}
+		if merged.CycleCount < s.CycleCount {
+			merged.CycleCount = s.CycleCount
+		}
+		if s.LastCycle.After(merged.LastCycle) {
+			merged.LastCycle = s.LastCycle
+		}
+		if s.PortfolioRisk.PeakValue > merged.PortfolioRisk.PeakValue {
+			merged.PortfolioRisk.PeakValue = s.PortfolioRisk.PeakValue
+		}
+	}
+	return merged, nil
+}
+
+// SavePlatformStates splits the merged AppState by platform and saves each platform's state file.
+// Falls back to cfg.StateFile for backwards compatibility when no platforms are configured.
+func SavePlatformStates(state *AppState, cfg *Config) error {
+	if len(cfg.Platforms) == 0 {
+		return SaveState(cfg.StateFile, state)
+	}
+
+	// Build per-platform AppState instances.
+	platformStates := make(map[string]*AppState)
+	for name := range cfg.Platforms {
+		platformStates[name] = &AppState{
+			CycleCount:    state.CycleCount,
+			LastCycle:     state.LastCycle,
+			Strategies:    make(map[string]*StrategyState),
+			PortfolioRisk: state.PortfolioRisk,
+		}
+	}
+
+	// Assign each strategy to its platform.
+	for id, s := range state.Strategies {
+		platform := s.Platform
+		if platform == "" {
+			platform = "binanceus"
+		}
+		if ps, ok := platformStates[platform]; ok {
+			ps.Strategies[id] = s
+		}
+	}
+
+	// Save each platform's state file.
+	for name, ps := range platformStates {
+		stateFile := cfg.Platforms[name].StateFile
+		if stateFile == "" {
+			stateFile = fmt.Sprintf("platforms/%s/state.json", name)
+		}
+		if err := SaveState(stateFile, ps); err != nil {
+			return fmt.Errorf("platform %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func SaveState(path string, state *AppState) error {
