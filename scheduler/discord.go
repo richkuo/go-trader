@@ -60,15 +60,16 @@ func (d *DiscordNotifier) SendMessage(channelID string, content string) error {
 	return nil
 }
 
-// stratCategory returns "spot", "deribit", or "ibkr" based on strategy ID
-func stratCategory(id string) string {
-	if strings.HasPrefix(id, "deribit-") {
+// stratCategory returns "spot", "deribit", or "ibkr" based on the strategy's platform.
+func stratCategory(platform string) string {
+	switch platform {
+	case "deribit":
 		return "deribit"
-	}
-	if strings.HasPrefix(id, "ibkr-") {
+	case "ibkr":
 		return "ibkr"
+	default:
+		return "spot"
 	}
-	return "spot"
 }
 
 // FormatCategorySummary creates a Discord message for specific categories (spot or options)
@@ -131,7 +132,7 @@ func FormatCategorySummary(
 		if ss == nil {
 			continue
 		}
-		cat := stratCategory(sc.ID)
+		cat := stratCategory(sc.Platform)
 
 		// Filter based on categoryFilter
 		if categoryFilter == "spot" && cat != "spot" {

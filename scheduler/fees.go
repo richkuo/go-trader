@@ -38,3 +38,11 @@ func CalculateDeribitOptionFee(premiumUSD float64) float64 {
 func CalculateIBKROptionFee(quantity float64) float64 {
 	return quantity * IBKROptionFeeFixed
 }
+
+// CalculateOptionFee dispatches to the appropriate fee calculator based on platform.
+func CalculateOptionFee(platform string, premiumUSD, quantity float64) float64 {
+	if platform == "ibkr" {
+		return CalculateIBKROptionFee(quantity)
+	}
+	return CalculateDeribitOptionFee(premiumUSD)
+}

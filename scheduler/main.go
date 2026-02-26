@@ -23,8 +23,8 @@ func main() {
 	}
 	fmt.Printf("Loaded config: %d strategies, interval=%ds\n", len(cfg.Strategies), cfg.IntervalSeconds)
 
-	// Load or initialize state
-	state, err := LoadState(cfg.StateFile)
+	// Load or initialize state (platform-aware when platforms are configured).
+	state, err := LoadPlatformStates(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load state: %v\n", err)
 		os.Exit(1)
@@ -37,11 +37,12 @@ func main() {
 			state.Strategies[sc.ID] = NewStrategyState(sc)
 			fmt.Printf("  Initialized strategy: %s (type=%s, capital=$%.0f)\n", sc.ID, sc.Type, sc.Capital)
 		} else {
-			// Sync max_drawdown_pct from config → state (config is source of truth)
+			// Sync config → state (config is source of truth).
 			if s.RiskState.MaxDrawdownPct != sc.MaxDrawdownPct {
 				fmt.Printf("  Updated %s max_drawdown_pct: %.0f%% → %.0f%%\n", sc.ID, s.RiskState.MaxDrawdownPct, sc.MaxDrawdownPct)
 				s.RiskState.MaxDrawdownPct = sc.MaxDrawdownPct
 			}
+			s.Platform = sc.Platform
 		}
 	}
 
@@ -91,7 +92,7 @@ func main() {
 		sig := <-sigCh
 		fmt.Printf("\nReceived %s, saving state and shutting down...\n", sig)
 		mu.Lock()
-		if err := SaveState(cfg.StateFile, state); err != nil {
+		if err := SavePlatformStates(state, cfg); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to save state: %v\n", err)
 		} else {
 			fmt.Println("State saved successfully.")
@@ -110,9 +111,9 @@ func main() {
 		}
 	}
 
-	// Deribit pricer for live option prices
+	// Platform pricers: Deribit uses live API; IBKR uses Black-Scholes with cached spot prices.
 	deribitPricer := NewDeribitPricer()
-	fmt.Println("Deribit live pricing enabled")
+	fmt.Println("Option pricers ready (deribit: live API, ibkr: Black-Scholes)")
 
 	// Track last-run time per strategy for per-strategy intervals
 	lastRun := make(map[string]time.Time)
@@ -338,12 +339,18 @@ func main() {
 
 					totalTrades += trades
 
-					// Phase 5: mark option positions with live Deribit prices
+					// Phase 5: mark option positions with live prices (platform-aware).
 					mu.RLock()
 					markReqs := collectMarkRequests(stratState)
 					mu.RUnlock()
 					if len(markReqs) > 0 {
-						markResults := fetchMarkPrices(markReqs, deribitPricer, logger)
+						var pricer OptionPricer
+						if sc.Platform == "ibkr" {
+							pricer = NewIBKRPricer(prices)
+						} else {
+							pricer = deribitPricer
+						}
+						markResults := fetchMarkPrices(markReqs, pricer, logger)
 						mu.Lock()
 						applyMarkResults(stratState, markResults, logger)
 						mu.Unlock()
@@ -374,7 +381,7 @@ func main() {
 			if s, ok := state.Strategies[sc.ID]; ok {
 				pv := PortfolioValue(s, prices)
 				totalValue += pv
-				cat := stratCategory(sc.ID)
+				cat := stratCategory(sc.Platform)
 				if cat == "spot" {
 					spotValue += pv
 				} else {
@@ -395,7 +402,7 @@ func main() {
 			spotRan := false
 			optionsRan := false
 			for _, sc := range dueStrategies {
-				cat := stratCategory(sc.ID)
+				cat := stratCategory(sc.Platform)
 				if cat == "spot" {
 					spotRan = true
 				} else {
@@ -425,7 +432,7 @@ func main() {
 		// Save state after each cycle
 		mu.Lock()
 		state.LastCycle = time.Now().UTC()
-		if err := SaveState(cfg.StateFile, state); err != nil {
+		if err := SavePlatformStates(state, cfg); err != nil {
 			saveFailures++
 			fmt.Printf("[CRITICAL] Save state failed (%d/3): %v\n", saveFailures, err)
 		} else {
