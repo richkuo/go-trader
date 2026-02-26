@@ -9,7 +9,7 @@
     {
       "id": "momentum-btc",
       "type": "spot",
-      "script": "scripts/check_strategy.py",
+      "script": "shared_scripts/check_strategy.py",
       "args": [
         "momentum",
         "BTC/USDT",
@@ -22,7 +22,7 @@
     {
       "id": "pairs-btc-eth",
       "type": "spot",
-      "script": "scripts/check_strategy.py",
+      "script": "shared_scripts/check_strategy.py",
       "args": [
         "pairs_spread",
         "BTC/USDT",
@@ -36,10 +36,11 @@
     {
       "id": "deribit-vol-btc",
       "type": "options",
-      "script": "scripts/check_options.py",
+      "script": "shared_scripts/check_options.py",
       "args": [
         "vol_mean_reversion",
-        "BTC"
+        "BTC",
+        "--platform=deribit"
       ],
       "capital": 1000,
       "max_drawdown_pct": 40,
