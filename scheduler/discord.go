@@ -149,7 +149,9 @@ func FormatCategorySummary(
 		ci.value += pv
 		pnl := pv - sc.Capital
 		ci.pnl += pnl
-		ci.posCount += len(ss.Positions) + len(ss.OptionPositions)
+		openPos := len(ss.Positions) + len(ss.OptionPositions)
+		ci.posCount += openPos
+		ci.closedTrades += ss.RiskState.TotalTrades
 
 		// Extract strategy name from args or ID
 		stratName := extractStrategyName(sc)
@@ -160,12 +162,14 @@ func FormatCategorySummary(
 
 		asset := extractAsset(sc)
 		ci.bots = append(ci.bots, botInfo{
-			id:           sc.ID,
-			strategy:     stratName,
-			asset:        asset,
-			pnlPct:       pnlPct,
-			trades:       len(ss.TradeHistory),
-			tradeHistory: ss.TradeHistory,
+			id:            sc.ID,
+			strategy:      stratName,
+			asset:         asset,
+			pnlPct:        pnlPct,
+			trades:        len(ss.TradeHistory),
+			openPositions: openPos,
+			closedTrades:  ss.RiskState.TotalTrades,
+			tradeHistory:  ss.TradeHistory,
 		})
 	}
 
@@ -217,21 +221,24 @@ func FormatCategorySummary(
 }
 
 type catInfo struct {
-	value    float64
-	count    int
-	posCount int
-	pnl      float64
-	capital  float64
-	bots     []botInfo
+	value        float64
+	count        int
+	posCount     int
+	closedTrades int
+	pnl          float64
+	capital      float64
+	bots         []botInfo
 }
 
 type botInfo struct {
-	id           string
-	strategy     string
-	asset        string
-	pnlPct       float64
-	trades       int
-	tradeHistory []Trade
+	id            string
+	strategy      string
+	asset         string
+	pnlPct        float64
+	trades        int
+	openPositions int
+	closedTrades  int
+	tradeHistory  []Trade
 }
 
 func extractStrategyName(sc StrategyConfig) string {
@@ -278,8 +285,8 @@ func writeCatLineDetailed(sb *strings.Builder, label string, ci *catInfo) {
 	}
 
 	// Category header
-	sb.WriteString(fmt.Sprintf("\n%s: **$%.0f → $%.0f** (%s$%.0f / %s%.1f%%)\n",
-		label, ci.capital, ci.value, pnlSign, ci.pnl, pnlSign, pnlPct))
+	sb.WriteString(fmt.Sprintf("\n%s: **$%.0f → $%.0f** (%s$%.0f / %s%.1f%%) — %d closed | %d open\n",
+		label, ci.capital, ci.value, pnlSign, ci.pnl, pnlSign, pnlPct, ci.closedTrades, ci.posCount))
 
 	// Individual bots
 	for _, bot := range ci.bots {
@@ -291,7 +298,7 @@ func writeCatLineDetailed(sb *strings.Builder, label string, ci *catInfo) {
 		if bot.asset != "" {
 			assetLabel = bot.asset + " "
 		}
-		sb.WriteString(fmt.Sprintf("  • %s%s (%s%.1f%%) — %d trades\n", assetLabel, bot.strategy, sign, bot.pnlPct, bot.trades))
+		sb.WriteString(fmt.Sprintf("  • %s%s (%s%.1f%%) — %d closed | %d open\n", assetLabel, bot.strategy, sign, bot.pnlPct, bot.closedTrades, bot.openPositions))
 
 		// Show last 3 trades only (to keep message under 2000 char Discord limit)
 		if len(bot.tradeHistory) > 0 {
