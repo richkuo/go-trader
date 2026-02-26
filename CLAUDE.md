@@ -32,6 +32,8 @@
 - `SKILL.md` — agent operations guide (setup, deploy, backtest commands)
 
 ## Key Patterns
+- Git commands: always run from repo root, not from `scheduler/` (git add/commit fail with path errors otherwise)
+- Platform adapters loaded via `importlib` in `check_options.py`; class discovered by `endswith("ExchangeAdapter")` — all adapter classes must use that suffix
 - Scheduler communicates with Python scripts via subprocess stdout JSON; scripts must always output valid JSON even on error
 - Python scripts exit 1 on error (Go parses JSON from stdout regardless of exit code)
 - Option positions stored in `StrategyState.OptionPositions map[string]*OptionPosition`
