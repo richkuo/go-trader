@@ -141,7 +141,7 @@ func RunOptionsCheck(script string, args []string) (*OptionsResult, string, erro
 
 // FetchPrices runs check_price.py and returns a map of symbol→price.
 func FetchPrices(symbols []string) (map[string]float64, error) {
-	stdout, stderr, err := RunPythonScript("scripts/check_price.py", symbols)
+	stdout, stderr, err := RunPythonScript("shared_scripts/check_price.py", symbols)
 	if err != nil {
 		return nil, fmt.Errorf("price fetch error: %w (stderr: %s)", err, string(stderr))
 	}
