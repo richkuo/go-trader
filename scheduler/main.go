@@ -23,8 +23,8 @@ func main() {
 	}
 	fmt.Printf("Loaded config: %d strategies, interval=%ds\n", len(cfg.Strategies), cfg.IntervalSeconds)
 
-	// Load or initialize state
-	state, err := LoadState(cfg.StateFile)
+	// Load or initialize state (platform-aware when platforms are configured).
+	state, err := LoadPlatformStates(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load state: %v\n", err)
 		os.Exit(1)
@@ -37,11 +37,12 @@ func main() {
 			state.Strategies[sc.ID] = NewStrategyState(sc)
 			fmt.Printf("  Initialized strategy: %s (type=%s, capital=$%.0f)\n", sc.ID, sc.Type, sc.Capital)
 		} else {
-			// Sync max_drawdown_pct from config → state (config is source of truth)
+			// Sync config → state (config is source of truth).
 			if s.RiskState.MaxDrawdownPct != sc.MaxDrawdownPct {
 				fmt.Printf("  Updated %s max_drawdown_pct: %.0f%% → %.0f%%\n", sc.ID, s.RiskState.MaxDrawdownPct, sc.MaxDrawdownPct)
 				s.RiskState.MaxDrawdownPct = sc.MaxDrawdownPct
 			}
+			s.Platform = sc.Platform
 		}
 	}
 
@@ -91,7 +92,7 @@ func main() {
 		sig := <-sigCh
 		fmt.Printf("\nReceived %s, saving state and shutting down...\n", sig)
 		mu.Lock()
-		if err := SaveState(cfg.StateFile, state); err != nil {
+		if err := SavePlatformStates(state, cfg); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to save state: %v\n", err)
 		} else {
 			fmt.Println("State saved successfully.")
@@ -110,9 +111,9 @@ func main() {
 		}
 	}
 
-	// Deribit pricer for live option prices
+	// Platform pricers: Deribit uses live API; IBKR uses Black-Scholes with cached spot prices.
 	deribitPricer := NewDeribitPricer()
-	fmt.Println("Deribit live pricing enabled")
+	fmt.Println("Option pricers ready (deribit: live API, ibkr: Black-Scholes)")
 
 	// Track last-run time per strategy for per-strategy intervals
 	lastRun := make(map[string]time.Time)
@@ -285,6 +286,16 @@ func main() {
 					if sc.Type == "options" {
 						posJSON = EncodeAllPositionsJSON(stratState.OptionPositions, stratState.Positions)
 					}
+					var hlCash float64
+					var hlPosQty float64
+					if sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
+						hlCash = stratState.Cash
+						if sym := hyperliquidSymbol(sc.Args); sym != "" {
+							if pos, ok := stratState.Positions[sym]; ok {
+								hlPosQty = pos.Quantity
+							}
+						}
+					}
 					mu.RUnlock()
 
 					// Phase 2: Lock — CheckRisk (fast, no I/O)
@@ -332,18 +343,41 @@ func main() {
 							optionsTradeDetails = append(optionsTradeDetails, detail)
 						}
 						optionsTrades += trades
+					case "perps":
+						if result, signalStr, price, ok := runHyperliquidCheck(sc, prices, logger); ok {
+							prices[result.Symbol] = price
+							var execResult *HyperliquidExecuteResult
+							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
+								if er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, logger); ok2 {
+									execResult = er
+								}
+							}
+							mu.Lock()
+							trades, detail = executeHyperliquidResult(sc, stratState, result, execResult, signalStr, price, logger)
+							mu.Unlock()
+						}
+						if trades > 0 && detail != "" {
+							spotTradeDetails = append(spotTradeDetails, detail)
+						}
+						spotTrades += trades
 					default:
 						logger.Error("Unknown strategy type: %s", sc.Type)
 					}
 
 					totalTrades += trades
 
-					// Phase 5: mark option positions with live Deribit prices
+					// Phase 5: mark option positions with live prices (platform-aware).
 					mu.RLock()
 					markReqs := collectMarkRequests(stratState)
 					mu.RUnlock()
 					if len(markReqs) > 0 {
-						markResults := fetchMarkPrices(markReqs, deribitPricer, logger)
+						var pricer OptionPricer
+						if sc.Platform == "ibkr" {
+							pricer = NewIBKRPricer(prices)
+						} else {
+							pricer = deribitPricer
+						}
+						markResults := fetchMarkPrices(markReqs, pricer, logger)
 						mu.Lock()
 						applyMarkResults(stratState, markResults, logger)
 						mu.Unlock()
@@ -374,7 +408,7 @@ func main() {
 			if s, ok := state.Strategies[sc.ID]; ok {
 				pv := PortfolioValue(s, prices)
 				totalValue += pv
-				cat := stratCategory(sc.ID)
+				cat := stratCategory(sc.Platform)
 				if cat == "spot" {
 					spotValue += pv
 				} else {
@@ -395,7 +429,7 @@ func main() {
 			spotRan := false
 			optionsRan := false
 			for _, sc := range dueStrategies {
-				cat := stratCategory(sc.ID)
+				cat := stratCategory(sc.Platform)
 				if cat == "spot" {
 					spotRan = true
 				} else {
@@ -426,7 +460,7 @@ func main() {
 		// Save state after each cycle
 		mu.Lock()
 		state.LastCycle = time.Now().UTC()
-		if err := SaveState(cfg.StateFile, state); err != nil {
+		if err := SavePlatformStates(state, cfg); err != nil {
 			saveFailures++
 			fmt.Printf("[CRITICAL] Save state failed (%d/3): %v\n", saveFailures, err)
 		} else {
@@ -569,4 +603,130 @@ func executeOptionsResult(sc StrategyConfig, s *StrategyState, result *OptionsRe
 	}
 
 	return trades, detail, harvestDetails
+}
+
+// hyperliquidIsLive reports whether --mode=live appears in strategy args.
+func hyperliquidIsLive(args []string) bool {
+	for _, arg := range args {
+		if arg == "--mode=live" {
+			return true
+		}
+	}
+	return false
+}
+
+// hyperliquidSymbol extracts the coin symbol from perps strategy args (e.g. "BTC").
+func hyperliquidSymbol(args []string) string {
+	if len(args) >= 2 {
+		return args[1]
+	}
+	return ""
+}
+
+// runHyperliquidCheck runs check_hyperliquid.py signal-check mode (Phase 3, no lock).
+func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
+	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
+
+	result, stderr, err := RunHyperliquidCheck(sc.Script, sc.Args)
+	if err != nil {
+		logger.Error("Script failed: %v", err)
+		if stderr != "" {
+			logger.Error("stderr: %s", stderr)
+		}
+		return nil, "", 0, false
+	}
+	if stderr != "" {
+		logger.Info("stderr: %s", stderr)
+	}
+	if result.Error != "" {
+		logger.Error("Script returned error: %s", result.Error)
+		return nil, "", 0, false
+	}
+
+	signalStr := "HOLD"
+	if result.Signal == 1 {
+		signalStr = "BUY"
+	} else if result.Signal == -1 {
+		signalStr = "SELL"
+	}
+	logger.Info("Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)
+
+	price := result.Price
+	if price <= 0 {
+		if p, ok := prices[result.Symbol]; ok {
+			price = p
+		}
+	}
+	if price <= 0 {
+		logger.Error("No price available for %s", result.Symbol)
+		return nil, "", 0, false
+	}
+	return result, signalStr, price, true
+}
+
+// runHyperliquidExecuteOrder places a live market order (Phase 3, no lock).
+// Returns (execResult, ok); ok=false means order failed, skip state update.
+func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+	isBuy := result.Signal == 1
+	var size float64
+	if isBuy {
+		budget := cash * 0.95
+		if budget < 1 || price <= 0 {
+			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
+			return nil, false
+		}
+		size = budget / price
+	} else {
+		if posQty <= 0 {
+			logger.Info("No position to close for %s", result.Symbol)
+			return nil, false
+		}
+		size = posQty
+	}
+
+	side := "buy"
+	if !isBuy {
+		side = "sell"
+	}
+	logger.Info("Placing live %s %s size=%.6f", side, result.Symbol, size)
+
+	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size)
+	if stderr != "" {
+		logger.Info("execute stderr: %s", stderr)
+	}
+	if err != nil {
+		logger.Error("Live execute failed: %v", err)
+		return nil, false
+	}
+	if execResult.Error != "" {
+		logger.Error("Live execute returned error: %s", execResult.Error)
+		return nil, false
+	}
+	return execResult, true
+}
+
+// executeHyperliquidResult applies a hyperliquid result to state. Must be called under Lock.
+// execResult is non-nil for successful live orders; nil for paper mode.
+func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
+	fillPrice := price
+	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
+		fillPrice = execResult.Execution.Fill.AvgPx
+		logger.Info("Live fill at $%.2f (mid was $%.2f)", fillPrice, price)
+	}
+
+	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, logger)
+	if err != nil {
+		logger.Error("Trade execution failed: %v", err)
+		return 0, ""
+	}
+
+	detail := ""
+	if trades > 0 {
+		prefix := ""
+		if execResult != nil {
+			prefix = "LIVE "
+		}
+		detail = fmt.Sprintf("[%s] %s%s %s @ $%.2f", sc.ID, prefix, signalStr, result.Symbol, fillPrice)
+	}
+	return trades, detail
 }

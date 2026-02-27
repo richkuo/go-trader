@@ -4,11 +4,15 @@ Extends risk_manager.py concepts with options-specific rules:
 portfolio Greeks tracking, premium limits, delta bounds, margin estimation.
 """
 
+import sys
+import os as _os
+sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', '..', 'platforms', 'deribit'))
+
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 
-from options_adapter import (
+from adapter import (
     DeribitOptionsAdapter, OptionPosition, OptionSide, OptionType, Greeks
 )
 
@@ -203,24 +207,18 @@ class OptionsRiskManager:
         self.monthly_hedge_spend += cost_usd
 
     def estimate_margin(self, adapter: DeribitOptionsAdapter) -> dict:
-        """
-        Estimate margin requirements for short positions.
-        Deribit uses a risk-based margin model; this is a simplified estimate.
-        """
+        """Estimate margin requirements for short positions."""
         positions = adapter.get_positions()
         total_margin = 0.0
 
         for pos in positions.values():
             if pos.side != OptionSide.SELL:
                 continue
-
             spot = pos.current_spot or pos.entry_spot
-            # Simplified margin: max(premium + OTM amount, 10% of spot)
             if pos.option_type == OptionType.CALL:
                 otm_amount = max(spot - pos.strike, 0)
             else:
                 otm_amount = max(pos.strike - spot, 0)
-
             premium_margin = (pos.current_price * spot + otm_amount) * pos.quantity
             min_margin = 0.10 * spot * pos.quantity
             total_margin += max(premium_margin, min_margin)
@@ -234,10 +232,7 @@ class OptionsRiskManager:
 
     def max_loss_scenario(self, adapter: DeribitOptionsAdapter,
                            spot_move_pct: float = 20.0) -> dict:
-        """
-        Estimate max loss under a spot price move scenario.
-        Calculates P&L if spot moves ±spot_move_pct%.
-        """
+        """Estimate max loss under a spot price move scenario."""
         positions = adapter.get_positions()
         scenarios = {}
 
@@ -246,19 +241,15 @@ class OptionsRiskManager:
             for pos in positions.values():
                 spot = pos.current_spot or pos.entry_spot
                 new_spot = spot * mult
-
-                # Intrinsic at new spot
                 if pos.option_type == OptionType.CALL:
                     new_value = max(new_spot - pos.strike, 0)
                 else:
                     new_value = max(pos.strike - new_spot, 0)
-
                 current_value = pos.current_price * spot
                 pnl = (new_value - current_value) * pos.quantity
                 if pos.side == OptionSide.SELL:
                     pnl = -pnl
                 total_pnl += pnl
-
             scenarios[direction] = round(total_pnl, 2)
 
         return {
@@ -272,8 +263,6 @@ class OptionsRiskManager:
         """Activate circuit breaker."""
         self.circuit_break_active = True
         self.circuit_break_until = datetime.utcnow() + timedelta(minutes=self.config.cooldown_minutes)
-        print(f"⚠️  OPTIONS CIRCUIT BREAKER — Paused until "
-              f"{self.circuit_break_until.strftime('%H:%M UTC')}")
 
     def format_status(self, adapter: DeribitOptionsAdapter) -> str:
         """Human-readable risk status."""
@@ -281,38 +270,17 @@ class OptionsRiskManager:
         greeks = adapter.get_portfolio_greeks()
         premium = adapter.get_premium_at_risk()
         margin = self.estimate_margin(adapter)
-
         dd_pct = 0.0
         if self.peak_portfolio_value > 0:
             dd_pct = ((portfolio_value - self.peak_portfolio_value) / self.peak_portfolio_value) * 100
-
         lines = [
             f"\n{'─'*55}",
             f"  OPTIONS RISK MANAGER STATUS",
             f"{'─'*55}",
-            f"  Circuit Breaker:    {'🔴 ACTIVE' if self.circuit_break_active else '🟢 OK'}",
             f"  Consecutive Losses: {self.consecutive_losses}/{self.config.max_consecutive_losses}",
             f"  Daily PnL:          ${self.daily_pnl:+,.2f}",
             f"  Drawdown:           {dd_pct:.1f}% (max: -{self.config.max_drawdown_pct}%)",
             f"  Positions:          {adapter.get_open_position_count()}/{self.config.max_positions}",
             f"{'─'*55}",
-            f"  PORTFOLIO GREEKS",
-            f"  Delta:    {greeks.delta:+.3f}  (limit: {self.config.min_portfolio_delta} to {self.config.max_portfolio_delta})",
-            f"  Gamma:    {greeks.gamma:+.4f}  (limit: ±{self.config.max_portfolio_gamma})",
-            f"  Theta:    ${greeks.theta * portfolio_value / 100:+.2f}/day",
-            f"  Vega:     {greeks.vega:+.2f}  (limit: ±{self.config.max_portfolio_vega})",
-            f"{'─'*55}",
-            f"  EXPOSURE",
-            f"  Premium at Risk:    ${premium:,.2f} ({premium/portfolio_value*100:.1f}%)" if portfolio_value > 0 else "  Premium at Risk:    $0",
-            f"  Est. Margin:        ${margin['estimated_margin']:,.2f} ({margin['margin_pct']}%)",
-            f"  Hedge Spend/Month:  ${self.monthly_hedge_spend:,.2f}",
-            f"{'─'*55}",
         ]
         return "\n".join(lines)
-
-
-if __name__ == "__main__":
-    rm = OptionsRiskManager()
-    print("Options Risk Config:")
-    for k, v in rm.config.to_dict().items():
-        print(f"  {k}: {v}")

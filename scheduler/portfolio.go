@@ -65,7 +65,7 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" {
 			execPrice := ApplySlippage(price)
 			buyCost := pos.Quantity * execPrice
-			fee := CalculateSpotFee(buyCost)
+			fee := CalculatePlatformSpotFee(s.Platform, buyCost)
 			totalCost := buyCost + fee
 			pnl := pos.Quantity*pos.AvgCost - totalCost
 			s.Cash += pos.Quantity*pos.AvgCost - totalCost
@@ -99,7 +99,7 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 		}
 		qty := budget / execPrice
 		tradeCost := qty * execPrice
-		fee := CalculateSpotFee(tradeCost)
+		fee := CalculatePlatformSpotFee(s.Platform, tradeCost)
 		s.Cash -= tradeCost + fee
 		s.Positions[symbol] = &Position{
 			Symbol:   symbol,
@@ -127,7 +127,7 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
 			execPrice := ApplySlippage(price)
 			saleValue := pos.Quantity * execPrice
-			fee := CalculateSpotFee(saleValue)
+			fee := CalculatePlatformSpotFee(s.Platform, saleValue)
 			netProceeds := saleValue - fee
 			pnl := netProceeds - (pos.Quantity * pos.AvgCost)
 			s.Cash += netProceeds

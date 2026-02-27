@@ -310,7 +310,7 @@ Using all gathered inputs, generate `scheduler/config.json`.
 Start from `scheduler/config.example.json` as a template. For each enabled strategy, add an entry with:
 - `id`: Use the naming convention `{strategy}-{asset}` for spot, `deribit-{strategy}-{asset}` or `ibkr-{strategy}-{asset}` for options
 - `type`: `"spot"` or `"options"`
-- `script`: `"scripts/check_strategy.py"` (spot), `"scripts/check_options.py"` (Deribit), `"scripts/check_options_ibkr.py"` (IBKR)
+- `script`: `"shared_scripts/check_strategy.py"` (spot), `"shared_scripts/check_options.py"` (options — any platform)
 - `args`: Strategy-specific arguments (see config.example.json for format)
 - `capital`: User's chosen amount
 - `max_drawdown_pct`: User's chosen value (spot default: 60, options default: 40)
@@ -786,8 +786,8 @@ To change deribit-vol-btc to $2,000 capital with 50% max drawdown and theta harv
 {
   "id": "deribit-vol-btc",
   "type": "options",
-  "script": "scripts/check_options.py",
-  "args": ["vol_mean_reversion", "BTC"],
+  "script": "shared_scripts/check_options.py",
+  "args": ["vol_mean_reversion", "BTC", "--platform=deribit"],
   "capital": 2000,
   "max_drawdown_pct": 50,
   "interval_seconds": 1200,
@@ -813,9 +813,9 @@ Then restart: `sudo systemctl restart go-trader`
 Each spot strategy needs entries for each asset it supports:
 
 ```json
-{"id": "momentum-btc", "type": "spot", "script": "scripts/check_strategy.py", "args": ["momentum", "BTC/USDT", "1h"], "capital": 1000, "max_drawdown_pct": 60, "interval_seconds": 300}
-{"id": "momentum-eth", "type": "spot", "script": "scripts/check_strategy.py", "args": ["momentum", "ETH/USDT", "1h"], "capital": 1000, "max_drawdown_pct": 60, "interval_seconds": 300}
-{"id": "momentum-sol", "type": "spot", "script": "scripts/check_strategy.py", "args": ["momentum", "SOL/USDT", "1h"], "capital": 1000, "max_drawdown_pct": 60, "interval_seconds": 300}
+{"id": "momentum-btc", "type": "spot", "script": "shared_scripts/check_strategy.py", "args": ["momentum", "BTC/USDT", "1h"], "capital": 1000, "max_drawdown_pct": 60, "interval_seconds": 300}
+{"id": "momentum-eth", "type": "spot", "script": "shared_scripts/check_strategy.py", "args": ["momentum", "ETH/USDT", "1h"], "capital": 1000, "max_drawdown_pct": 60, "interval_seconds": 300}
+{"id": "momentum-sol", "type": "spot", "script": "shared_scripts/check_strategy.py", "args": ["momentum", "SOL/USDT", "1h"], "capital": 1000, "max_drawdown_pct": 60, "interval_seconds": 300}
 ```
 
 **Strategies and their assets:**
@@ -837,8 +837,8 @@ Each spot strategy needs entries for each asset it supports:
 Each Deribit strategy runs on BTC and ETH:
 
 ```json
-{"id": "deribit-vol-btc", "type": "options", "script": "scripts/check_options.py", "args": ["vol_mean_reversion", "BTC"], "capital": 1000, "max_drawdown_pct": 40, "interval_seconds": 1200}
-{"id": "deribit-vol-eth", "type": "options", "script": "scripts/check_options.py", "args": ["vol_mean_reversion", "ETH"], "capital": 1000, "max_drawdown_pct": 40, "interval_seconds": 1200}
+{"id": "deribit-vol-btc", "type": "options", "script": "shared_scripts/check_options.py", "args": ["vol_mean_reversion", "BTC", "--platform=deribit"], "capital": 1000, "max_drawdown_pct": 40, "interval_seconds": 1200}
+{"id": "deribit-vol-eth", "type": "options", "script": "shared_scripts/check_options.py", "args": ["vol_mean_reversion", "ETH", "--platform=deribit"], "capital": 1000, "max_drawdown_pct": 40, "interval_seconds": 1200}
 ```
 
 **Strategy arg names:** `vol_mean_reversion`, `momentum_options`, `protective_puts`, `covered_calls`, `wheel`, `butterfly`
@@ -856,7 +856,7 @@ Each Deribit strategy runs on BTC and ETH:
 Same as Deribit but with different script and ID prefix:
 
 ```json
-{"id": "ibkr-vol-btc", "type": "options", "script": "scripts/check_options_ibkr.py", "args": ["vol_mean_reversion", "BTC"], "capital": 1000, "max_drawdown_pct": 40, "interval_seconds": 1200}
+{"id": "ibkr-vol-btc", "type": "options", "script": "shared_scripts/check_options.py", "args": ["vol_mean_reversion", "BTC", "--platform=ibkr"], "capital": 1000, "max_drawdown_pct": 40, "interval_seconds": 1200}
 ```
 
 **ID convention:** `ibkr-{strategy_short}-{asset}` (same short names as Deribit)

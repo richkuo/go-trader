@@ -3,6 +3,11 @@ Options trading strategies — modular strategy framework for options.
 Each strategy evaluates market conditions and returns trade actions.
 """
 
+import sys
+import os as _os
+sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', '..', 'platforms', 'deribit'))
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+
 from typing import Dict, Any, List, Optional, Callable
 from datetime import datetime, timedelta
 from dataclasses import dataclass
@@ -10,11 +15,11 @@ from dataclasses import dataclass
 import pandas as pd
 import numpy as np
 
-from options_adapter import (
+from adapter import (
     DeribitOptionsAdapter, OptionContract, OptionPosition, OptionType,
     OptionSide, Greeks
 )
-from options_risk import OptionsRiskManager
+from risk import OptionsRiskManager
 
 
 # ─────────────────────────────────────────────

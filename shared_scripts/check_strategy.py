@@ -18,8 +18,8 @@ import traceback
 from datetime import datetime, timezone
 
 # Add parent dirs to path so we can import from strategies/ and core/
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'strategies'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'core'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'spot'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 
 def main():

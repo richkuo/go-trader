@@ -89,8 +89,11 @@ func (d *DeribitPricer) fetchTickerFull(instrument string) (*DeribitTickerRespon
 	return &ticker, nil
 }
 
-// fetchSpotPrice fetches the current spot price for an underlying via its perpetual instrument.
-func (d *DeribitPricer) fetchSpotPrice(underlying string) (float64, error) {
+// Name satisfies OptionPricer.
+func (d *DeribitPricer) Name() string { return "deribit" }
+
+// FetchSpotPrice fetches the current spot price for an underlying via its perpetual instrument.
+func (d *DeribitPricer) FetchSpotPrice(underlying string) (float64, error) {
 	ticker, err := d.fetchTickerFull(strings.ToUpper(underlying) + "-PERPETUAL")
 	if err != nil {
 		return 0, err
@@ -316,12 +319,12 @@ func collectMarkRequests(s *StrategyState) []markRequest {
 	return reqs
 }
 
-// fetchMarkPrices makes Deribit HTTP calls for each request. No lock held.
-func fetchMarkPrices(requests []markRequest, pricer *DeribitPricer, logger *StrategyLogger) []markResult {
+// fetchMarkPrices fetches live prices for each request using the provided pricer. No lock held.
+func fetchMarkPrices(requests []markRequest, pricer OptionPricer, logger *StrategyLogger) []markResult {
 	var results []markResult
 	for _, req := range requests {
 		if req.Expired {
-			spotPrice, spotErr := pricer.fetchSpotPrice(req.Underlying)
+			spotPrice, spotErr := pricer.FetchSpotPrice(req.Underlying)
 			intrinsic := 0.0
 			itm := false
 			if spotErr == nil && spotPrice > 0 {

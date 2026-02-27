@@ -60,15 +60,16 @@ func (d *DiscordNotifier) SendMessage(channelID string, content string) error {
 	return nil
 }
 
-// stratCategory returns "spot", "deribit", or "ibkr" based on strategy ID
-func stratCategory(id string) string {
-	if strings.HasPrefix(id, "deribit-") {
+// stratCategory returns "spot", "deribit", or "ibkr" based on the strategy's platform.
+func stratCategory(platform string) string {
+	switch platform {
+	case "deribit":
 		return "deribit"
-	}
-	if strings.HasPrefix(id, "ibkr-") {
+	case "ibkr":
 		return "ibkr"
+	default:
+		return "spot"
 	}
-	return "spot"
 }
 
 // FormatCategorySummary creates a Discord message for specific categories (spot or options)
@@ -131,7 +132,7 @@ func FormatCategorySummary(
 		if ss == nil {
 			continue
 		}
-		cat := stratCategory(sc.ID)
+		cat := stratCategory(sc.Platform)
 
 		// Filter based on categoryFilter
 		if categoryFilter == "spot" && cat != "spot" {
@@ -148,7 +149,9 @@ func FormatCategorySummary(
 		ci.value += pv
 		pnl := pv - sc.Capital
 		ci.pnl += pnl
-		ci.posCount += len(ss.Positions) + len(ss.OptionPositions)
+		openPos := len(ss.Positions) + len(ss.OptionPositions)
+		ci.posCount += openPos
+		ci.closedTrades += ss.RiskState.TotalTrades
 
 		// Extract strategy name from args or ID
 		stratName := extractStrategyName(sc)
@@ -159,50 +162,37 @@ func FormatCategorySummary(
 
 		asset := extractAsset(sc)
 		ci.bots = append(ci.bots, botInfo{
-			id:           sc.ID,
-			strategy:     stratName,
-			asset:        asset,
-			pnlPct:       pnlPct,
-			trades:       len(ss.TradeHistory),
-			tradeHistory: ss.TradeHistory,
+			id:            sc.ID,
+			strategy:      stratName,
+			asset:         asset,
+			value:         pv,
+			pnl:           pnl,
+			pnlPct:        pnlPct,
+			trades:        len(ss.TradeHistory),
+			openPositions: openPos,
+			closedTrades:  ss.RiskState.TotalTrades,
+			tradeHistory:  ss.TradeHistory,
 		})
 	}
 
-	// Category lines with bot details (filtered)
+	// Build merged bot list and totals for the table
+	var tableBots []botInfo
+	var totalCap, filteredValue float64
 	if categoryFilter == "spot" {
-		writeCatLineDetailed(&sb, "📈 Spot", cats["spot"])
-	} else {
-		writeCatLineDetailed(&sb, "🎯 Deribit", cats["deribit"])
-		writeCatLineDetailed(&sb, "🏦 IBKR", cats["ibkr"])
-	}
-
-	// Total for filtered categories
-	var totalCap float64
-	if categoryFilter == "spot" {
+		tableBots = cats["spot"].bots
 		totalCap = cats["spot"].capital
-	} else {
-		totalCap = cats["deribit"].capital + cats["ibkr"].capital
-	}
-
-	// Calculate filtered total value
-	var filteredValue float64
-	if categoryFilter == "spot" {
 		filteredValue = cats["spot"].value
 	} else {
+		tableBots = append(cats["deribit"].bots, cats["ibkr"].bots...)
+		totalCap = cats["deribit"].capital + cats["ibkr"].capital
 		filteredValue = cats["deribit"].value + cats["ibkr"].value
 	}
-
 	totalPnl := filteredValue - totalCap
-	pnlPct := 0.0
+	totalPnlPct := 0.0
 	if totalCap > 0 {
-		pnlPct = (totalPnl / totalCap) * 100
+		totalPnlPct = (totalPnl / totalCap) * 100
 	}
-	pnlSign := "+"
-	if totalPnl < 0 {
-		pnlSign = ""
-	}
-	sb.WriteString(fmt.Sprintf("\n**Starting: $%.0f → Current: $%.0f** (%s$%.0f / %s%.1f%%)\n",
-		totalCap, filteredValue, pnlSign, totalPnl, pnlSign, pnlPct))
+	writeCatTable(&sb, tableBots, filteredValue, totalPnl, totalPnlPct)
 
 	// Trade details (always shown)
 	if len(tradeDetails) > 0 {
@@ -216,21 +206,26 @@ func FormatCategorySummary(
 }
 
 type catInfo struct {
-	value    float64
-	count    int
-	posCount int
-	pnl      float64
-	capital  float64
-	bots     []botInfo
+	value        float64
+	count        int
+	posCount     int
+	closedTrades int
+	pnl          float64
+	capital      float64
+	bots         []botInfo
 }
 
 type botInfo struct {
-	id           string
-	strategy     string
-	asset        string
-	pnlPct       float64
-	trades       int
-	tradeHistory []Trade
+	id            string
+	strategy      string
+	asset         string
+	value         float64
+	pnl           float64
+	pnlPct        float64
+	trades        int
+	openPositions int
+	closedTrades  int
+	tradeHistory  []Trade
 }
 
 func extractStrategyName(sc StrategyConfig) string {
@@ -263,51 +258,72 @@ func extractAsset(sc StrategyConfig) string {
 	return ""
 }
 
-func writeCatLineDetailed(sb *strings.Builder, label string, ci *catInfo) {
-	if ci.count == 0 {
+// fmtComma formats a float as a comma-separated integer string (e.g. 1234567 -> "1,234,567").
+func fmtComma(v float64) string {
+	n := int(v)
+	if n < 0 {
+		return "-" + fmtComma(-v)
+	}
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+	var out []byte
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, byte(c))
+	}
+	return string(out)
+}
+
+// writeCatTable writes a monospace code-block table to sb.
+func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, totalPnlPct float64) {
+	if len(bots) == 0 {
 		return
 	}
-	pnlSign := "+"
-	if ci.pnl < 0 {
-		pnlSign = ""
-	}
-	pnlPct := 0.0
-	if ci.capital > 0 {
-		pnlPct = (ci.pnl / ci.capital) * 100
-	}
-
-	// Category header
-	sb.WriteString(fmt.Sprintf("\n%s: **$%.0f → $%.0f** (%s$%.0f / %s%.1f%%)\n",
-		label, ci.capital, ci.value, pnlSign, ci.pnl, pnlSign, pnlPct))
-
-	// Individual bots
-	for _, bot := range ci.bots {
-		sign := "+"
+	const sep = "-----------------------------------------------"
+	sb.WriteString("\n```\n")
+	sb.WriteString(fmt.Sprintf("%-20s %10s %10s %7s\n", "Strategy", "Value", "PnL", "PnL%"))
+	sb.WriteString(sep + "\n")
+	for _, bot := range bots {
+		label := bot.id
+		if len(label) > 20 {
+			label = label[:20]
+		}
+		valStr := "$ " + fmtComma(bot.value)
+		pnlSign := "+"
+		absPnl := bot.pnl
+		if bot.pnl < 0 {
+			pnlSign = "-"
+			absPnl = -bot.pnl
+		}
+		pnlStr := "$ " + pnlSign + fmtComma(absPnl)
+		pctSign := "+"
 		if bot.pnlPct < 0 {
-			sign = ""
+			pctSign = ""
 		}
-		assetLabel := ""
-		if bot.asset != "" {
-			assetLabel = bot.asset + " "
-		}
-		sb.WriteString(fmt.Sprintf("  • %s%s (%s%.1f%%) — %d trades\n", assetLabel, bot.strategy, sign, bot.pnlPct, bot.trades))
-
-		// Show last 3 trades only (to keep message under 2000 char Discord limit)
-		if len(bot.tradeHistory) > 0 {
-			start := 0
-			if len(bot.tradeHistory) > 3 {
-				start = len(bot.tradeHistory) - 3
-			}
-			for i := start; i < len(bot.tradeHistory); i++ {
-				trade := bot.tradeHistory[i]
-				sb.WriteString(fmt.Sprintf("    ↳ %s %s @ $%.0f (%s)\n",
-					strings.ToUpper(trade.Side),
-					trade.Symbol,
-					trade.Price,
-					trade.Timestamp.Format("Jan 02 15:04")))
-			}
-		}
+		pctStr := fmt.Sprintf("%s%.1f%%", pctSign, bot.pnlPct)
+		sb.WriteString(fmt.Sprintf("%-20s %10s %10s %7s\n", label, valStr, pnlStr, pctStr))
 	}
+	sb.WriteString(sep + "\n")
+	// TOTAL row
+	totValStr := "$ " + fmtComma(totalValue)
+	totPnlSign := "+"
+	absTotPnl := totalPnl
+	if totalPnl < 0 {
+		totPnlSign = "-"
+		absTotPnl = -totalPnl
+	}
+	totPnlStr := "$ " + totPnlSign + fmtComma(absTotPnl)
+	totPctSign := "+"
+	if totalPnlPct < 0 {
+		totPctSign = ""
+	}
+	totPctStr := fmt.Sprintf("%s%.1f%%", totPctSign, totalPnlPct)
+	sb.WriteString(fmt.Sprintf("%-20s %10s %10s %7s\n", "TOTAL", totValStr, totPnlStr, totPctStr))
+	sb.WriteString("```\n")
 }
 
 // collectPositions returns human-readable position lines for a strategy (used by trade alerts)

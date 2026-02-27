@@ -14,28 +14,40 @@
 - `scheduler/` — Go scheduler (single `package main`); all .go files compile together
   - `executor.go` — Python subprocess runner; max 4 concurrent, 30s timeout per script
   - `server.go` — HTTP status server (`/status`, `/health` endpoints)
-  - `discord.go` — Discord alert notifications
+  - `discord.go` — Discord alert notifications; `FormatCategorySummary` outputs a monospace code-block table (Strategy/Value/PnL/PnL%) via `writeCatTable`; `fmtComma` handles comma formatting — always pass absolute values (never signed floats)
 - `shared_scripts/` — Python entry-point scripts called by the scheduler
   - `check_strategy.py` — spot strategy signal checker
   - `check_options.py` — unified options checker (`--platform=deribit|ibkr`)
   - `check_price.py` — price check script
-- `platforms/` — platform-specific adapters (deribit, ibkr, binanceus)
+  - `check_hyperliquid.py` — Hyperliquid perps checker (`<strategy> <symbol> <timeframe> [--mode=paper|live]`; `--execute` for live orders)
+- `platforms/` — platform-specific adapters (deribit, ibkr, binanceus, hyperliquid)
+  - `deribit/adapter.py` — DeribitExchangeAdapter (live quotes, real expiries/strikes)
+  - `ibkr/adapter.py` — IBKRExchangeAdapter (CME strikes, Black-Scholes pricing)
+  - `binanceus/adapter.py` — BinanceUSExchangeAdapter (spot only)
+  - `hyperliquid/adapter.py` — HyperliquidExchangeAdapter (live perps prices, paper/live trading via `HYPERLIQUID_SECRET_KEY`)
 - `shared_tools/` — shared Python utilities (pricing.py, exchange_base.py, data_fetcher, storage)
 - `shared_strategies/` — shared strategy logic (spot/, options/)
-- `core/`, `strategies/` — legacy; used by backtest via `PYTHONPATH=core:strategies`
+- `core/` — legacy data utilities used by backtest (data_fetcher, storage)
+- `strategies/` — legacy spot strategy logic used by backtest
 - `backtest/` — backtesting and paper trading scripts; `run_backtest.py` needs `PYTHONPATH=core:strategies`
 - `archive/` — retired/unused modules
 - `SKILL.md` — agent operations guide (setup, deploy, backtest commands)
 
 ## Key Patterns
+- Git commands: always run from repo root, not from `scheduler/` (git add/commit fail with path errors otherwise)
+- Platform adapters loaded via `importlib` in `check_options.py`; class discovered by `endswith("ExchangeAdapter")` — all adapter classes must use that suffix
 - Scheduler communicates with Python scripts via subprocess stdout JSON; scripts must always output valid JSON even on error
 - Python scripts exit 1 on error (Go parses JSON from stdout regardless of exit code)
 - Option positions stored in `StrategyState.OptionPositions map[string]*OptionPosition`
 - Mutex `mu sync.RWMutex` guards `state`; RLock for reads, Lock for all mutations
 - Per-strategy loop uses 6 fine-grained lock phases: RLock(read inputs) → Lock(CheckRisk) → no lock(subprocess) → Lock(execute signal) → RLock/no lock/Lock(mark prices) → RLock(status log)
 - Audit lock balance: `grep -n "mu\.\(R\)\?Lock\(\)\|mu\.\(R\)\?Unlock\(\)" scheduler/main.go`
-- Platform adapters loaded via importlib; class discovered by `endswith("ExchangeAdapter")` — all adapter classes must use that suffix
-- State persisted to `scheduler/state.json` (path set in config); survives restarts
+- Platform dispatch: `StrategyConfig.Platform` field (inferred from ID prefix in LoadConfig); use `s.Platform == "ibkr"` not ID prefix checks
+- ID prefix → platform: `hl-` → hyperliquid, `ibkr-` → ibkr, `deribit-` → deribit, else → binanceus
+- Strategy types: "spot", "options", "perps" — perps paper mode reuses `ExecuteSpotSignal`; live mode calls `RunHyperliquidExecute` before state update
+- Hyperliquid sys.path conflict: SDK installs as `hyperliquid` package — clashes with `platforms/hyperliquid/`; fix: add `platforms/hyperliquid/` directly to sys.path (not `platforms/`), then `from adapter import HyperliquidExchangeAdapter`
+- Fee dispatch: `CalculatePlatformSpotFee(platform, value)` — 0.035% hyperliquid, 0.1% binanceus (replaces bare `CalculateSpotFee` for platform-aware spot/perps trades)
+- State persisted to `scheduler/state.json` (path set in config); per-platform files at `platforms/<name>/state.json`
 
 ## Build & Deploy
 - Build: `cd scheduler && /opt/homebrew/bin/go build -o ../go-trader .`
@@ -58,5 +70,6 @@
 - `cd scheduler && /opt/homebrew/bin/go build .` — compile check
 - `cd scheduler && /opt/homebrew/bin/go test ./...` — run all unit tests
 - `cd scheduler && /opt/homebrew/bin/gofmt -w <file>.go` — format after editing Go files (`-l *.go` lists all files needing formatting)
+- Multi-line Go edits with tabs: Edit tool may fail on tab-indented blocks; fallback: `python3 -c "content=open(f).read(); open(f,'w').write(content.replace(old,new,1))"`
 - Smoke test: `./go-trader --once`
 - Run with config: `./go-trader --config scheduler/config.json`

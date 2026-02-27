@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -114,13 +113,8 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 		return 0, nil
 	}
 
-	// Calculate fees based on strategy type (deribit vs ibkr)
-	var fee float64
-	if strings.HasPrefix(s.ID, "ibkr-") {
-		fee = CalculateIBKROptionFee(1.0)
-	} else {
-		fee = CalculateDeribitOptionFee(cost)
-	}
+	// Calculate fees based on platform.
+	fee := CalculateOptionFee(s.Platform, cost, 1.0)
 
 	totalCost := cost + fee
 	if totalCost > s.Cash*0.95 {
@@ -186,13 +180,8 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 		return 0, nil
 	}
 
-	// Calculate fees
-	var fee float64
-	if strings.HasPrefix(s.ID, "ibkr-") {
-		fee = CalculateIBKROptionFee(1.0)
-	} else {
-		fee = CalculateDeribitOptionFee(premium)
-	}
+	// Calculate fees based on platform.
+	fee := CalculateOptionFee(s.Platform, premium, 1.0)
 
 	netPremium := premium - fee
 
