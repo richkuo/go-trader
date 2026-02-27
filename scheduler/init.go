@@ -114,6 +114,7 @@ func generateConfig(opts InitOptions) *Config {
 				cfg.Strategies = append(cfg.Strategies, StrategyConfig{
 					ID:              id,
 					Type:            "spot",
+					Platform:        "binanceus",
 					Script:          "shared_scripts/check_strategy.py",
 					Args:            []string{stratID, sym, "1h"},
 					Capital:         opts.SpotCapital,
@@ -131,6 +132,7 @@ func generateConfig(opts InitOptions) *Config {
 				cfg.Strategies = append(cfg.Strategies, StrategyConfig{
 					ID:              id,
 					Type:            "spot",
+					Platform:        "binanceus",
 					Script:          "shared_scripts/check_strategy.py",
 					Args:            []string{"pairs_spread", assetSymbol[a1], "1d", assetSymbol[a2]},
 					Capital:         opts.SpotCapital,
@@ -154,6 +156,7 @@ func generateConfig(opts InitOptions) *Config {
 					cfg.Strategies = append(cfg.Strategies, StrategyConfig{
 						ID:              id,
 						Type:            "options",
+						Platform:        platform,
 						Script:          "shared_scripts/check_options.py",
 						Args:            []string{stratID, assetName, fmt.Sprintf("--platform=%s", platform)},
 						Capital:         opts.OptionsCapital,
@@ -180,6 +183,7 @@ func generateConfig(opts InitOptions) *Config {
 				cfg.Strategies = append(cfg.Strategies, StrategyConfig{
 					ID:              id,
 					Type:            "perps",
+					Platform:        "hyperliquid",
 					Script:          "shared_scripts/check_hyperliquid.py",
 					Args:            []string{strat.ID, assetName, "1h", fmt.Sprintf("--mode=%s", opts.PerpsMode)},
 					Capital:         opts.PerpsCapital,
@@ -411,7 +415,7 @@ func runInit(_ []string) int {
 		fmt.Fprintf(os.Stderr, "Error marshaling config: %v\n", err)
 		return 1
 	}
-	if err := os.WriteFile(outputPath, data, 0644); err != nil {
+	if err := os.WriteFile(outputPath, data, 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", outputPath, err)
 		return 1
 	}
