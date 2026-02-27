@@ -85,6 +85,36 @@ No user input needed for this step.
 
 ---
 
+## Step 3b: Quick Config via `go-trader init` (Recommended for Human Users)
+
+Before proceeding with Steps 4–7 (manual config), build the binary first so the wizard is available:
+
+```bash
+cd scheduler && /usr/local/go/bin/go build -o ../go-trader . && cd ..
+```
+
+Then run the interactive wizard:
+
+```bash
+./go-trader init
+```
+
+The wizard walks through:
+1. **Assets** — BTC, ETH, SOL (multi-select)
+2. **Spot strategies** — momentum, mean reversion, pairs spread (BinanceUS)
+3. **Options strategies** — covered call, cash-secured put; Deribit and/or IBKR
+4. **Perps strategies** — momentum on Hyperliquid (paper or live mode)
+5. **Capital & max drawdown** per strategy type
+6. **Discord** — channel IDs for spot and options alerts
+
+A summary is shown before writing. If `scheduler/config.json` already exists, you'll be prompted to confirm overwrite.
+
+After `go-trader init` completes, **skip to Step 8** (Build & Install). Steps 4–7 are only needed for manual or agent-driven config generation.
+
+> **Note for agents:** Steps 4–7 below describe the manual config procedure. Use those when you need fine-grained control (e.g. partial reconfiguration, custom strategy sets, or piping specific values). For a full fresh config, you can also drive the wizard via stdin: `printf "answers\n" | ./go-trader init`
+
+---
+
 ## Step 4: Discord Configuration
 
 Ask:
@@ -735,6 +765,16 @@ Key flags: `--underlying`, `--since` (days), `--capital`
 
 These can be done after initial setup without re-running the full guide.
 
+### Regenerate Config from Scratch
+
+Run the interactive wizard to produce a fresh `config.json` (will prompt before overwriting):
+
+```bash
+./go-trader init
+```
+
+Then restart: `sudo systemctl restart go-trader`
+
 ### Change Discord Channels
 Edit `scheduler/config.json` → `discord.channels`, then restart:
 ```bash
@@ -880,7 +920,8 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    /menu       — this overview
    /go-trader  — live status dashboard (cycle, prices, PnL, circuit breakers)
    Setup:
-     Add custom platform — say "add a custom platform" (runs Step 9 guided flow)
+     ./go-trader init      — interactive config wizard (regenerate config.json)
+     Add custom platform   — say "add a custom platform" (runs Step 9 guided flow)
    System:
      sudo systemctl start|stop|restart go-trader
      sudo systemctl status go-trader
