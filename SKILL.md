@@ -460,15 +460,182 @@ journalctl -u go-trader -f | grep -i "git pull"
 
 ---
 
-## Step 9: Verification
+## Step 9: Custom Platform Integration (Optional)
 
-### 9a. Service Running
+### 9a. Initial Prompt
+
+Ask:
+> Would you like to add a custom trading platform integration? This lets you connect go-trader to an exchange not included by default (spot, perps, or options).
+>
+> (yes / no)
+
+If no, skip to Step 10.
+
+### 9b. Token Cost Warning
+
+Ask:
+> Building a custom platform integration may consume 50,000–100,000+ tokens depending on complexity (adapter code, Go wiring, config generation, and testing). This will be a multi-step implementation.
+>
+> Proceed? (yes / no)
+
+If no, skip to Step 10.
+
+### 9c. Gather Platform Details
+
+Ask the following questions (can be asked all at once or one at a time):
+
+> **Platform name** (lowercase, no spaces — used for directory name and ID prefix, e.g. `kraken`, `okx`, `bybit`):
+
+> **Platform type** — what does this exchange support? (select all that apply)
+> 1. Spot trading
+> 2. Perpetual futures (perps)
+> 3. Options
+>
+> (e.g. "1", "1,2", "all")
+
+> **API documentation** — paste the URL to the exchange's REST API docs, or type `ccxt` if this exchange is supported by the ccxt library (I'll fetch and read the docs):
+
+> **API credential environment variable names** — what env vars will hold the API keys? (e.g. `KRAKEN_API_KEY`, `KRAKEN_API_SECRET`). Type `none` if this is paper-only (no live trading):
+
+> **Fee structure:**
+> - Taker fee %: (e.g. `0.1` for 0.1%)
+> - Maker fee %: (e.g. `0.05`)
+> - Per-contract fee (options only, in USD, or `none`):
+
+> **Assets to trade** (e.g. `BTC, ETH` or `BTC/USDT, SOL/USDT`):
+
+> **Strategies to run** — which strategy types should this platform use?
+> - Spot: momentum, rsi, macd, volume_weighted, pairs_spread
+> - Perps: (same as spot strategies, executed via check_hyperliquid.py pattern)
+> - Options: vol_mean_reversion, momentum_options, protective_puts, covered_calls, wheel, butterfly
+>
+> List the strategies, or type `all` for the appropriate type:
+
+If API docs URL was provided (not `ccxt`), use WebFetch to read the docs before proceeding.
+If `ccxt` was specified, note that the adapter should use `ccxt.<ExchangeName>()` — no custom HTTP needed.
+
+### 9d. Implementation Checklist
+
+Build the integration in this order. Each item is required unless noted.
+
+#### Python Adapter
+
+Create `platforms/<name>/__init__.py` (empty file):
+```bash
+touch platforms/<name>/__init__.py
+```
+
+Create `platforms/<name>/adapter.py` with a class named `<Name>ExchangeAdapter` (must end in `ExchangeAdapter` for auto-discovery):
+
+- Inherit from `shared_tools/exchange_base.py` `ExchangeAdapterBase` protocol
+- Implement: `get_price(symbol)`, `get_orderbook(symbol)`, `place_order(...)`, `get_positions()`, `get_balance()`
+- For perps: also implement `get_funding_rate(symbol)`, `set_leverage(symbol, leverage)`
+- For options: also implement `get_options_chain(underlying)`, `get_option_quote(instrument_id)`
+- Reference adapters:
+  - Spot: `platforms/binanceus/adapter.py`
+  - Perps: `platforms/hyperliquid/adapter.py`
+  - Options: `platforms/deribit/adapter.py`
+- If live trading: read credentials from env vars (never hardcode)
+- If paper-only: simulate fills at mid-price; persist state to `platforms/<name>/state.json`
+
+**If new entry script needed** (perps or non-standard execution flow), create `shared_scripts/check_<name>.py`:
+- Must output valid JSON to stdout even on error
+- Exit 1 on error (Go reads stdout regardless of exit code)
+- Follow the pattern in `shared_scripts/check_hyperliquid.py`
+
+#### Go: config.go — ID Prefix Mapping
+
+Add the new platform's ID prefix to the `LoadConfig` platform inference block:
+```go
+// In the switch/if-else that maps ID prefix → platform
+case strings.HasPrefix(id, "<name>-"):
+    sc.Platform = "<name>"
+```
+
+#### Go: fees.go — Fee Dispatch
+
+Add a case to `CalculatePlatformSpotFee`:
+```go
+case "<name>":
+    return value * 0.001 // replace with actual taker fee
+```
+
+If options, also add to `CalculateOptionFee` if it has per-platform dispatch.
+
+#### Go: executor.go — New Script Wiring (if new script)
+
+If a new `check_<name>.py` was created, add the invocation pattern to `executor.go` following the existing `RunHyperliquidExecute` pattern (or add a new `Run<Name>Execute` function).
+
+#### Go: main.go — New Strategy Type (only if adding a new type)
+
+Only modify `main.go` if a brand-new strategy type is needed (not "spot", "options", or "perps"). If reusing an existing type, no change needed.
+
+#### Go: discord.go — Category Routing
+
+Add the new platform's strategies to the Discord category routing so summaries post to the right channel. Check `discord.go` for the category map and add an entry for the new platform/strategy type.
+
+#### Config: config.example.json
+
+Add example strategy entries for the new platform:
+```json
+{"id": "<name>-momentum-btc", "type": "spot", "script": "shared_scripts/check_strategy.py",
+ "args": ["momentum", "BTC/USDT", "1h"], "capital": 1000, "max_drawdown_pct": 60, "interval_seconds": 300}
+```
+Adjust `type`, `script`, and `args` for perps or options as appropriate.
+
+#### Config: Platform State File
+
+If the adapter uses a platform-level state file, add a `platforms` entry to `config.example.json`:
+```json
+"platforms": {
+  "<name>": {"state_file": "platforms/<name>/state.json"}
+}
+```
+
+#### Systemd: Environment Variables
+
+If live trading credentials are needed, add to the service file instructions:
+```ini
+Environment="<NAME>_API_KEY=..."
+Environment="<NAME>_API_SECRET=..."
+```
+Document in Step 10 (Verification) and in the Adjustable Settings → Environment Variables section.
+
+### 9e. Verification
+
+After implementation:
+
+1. Syntax-check the adapter:
+```bash
+python3 -m py_compile platforms/<name>/adapter.py
+```
+If a new entry script was created:
+```bash
+python3 -m py_compile shared_scripts/check_<name>.py
+```
+
+2. Build Go:
+```bash
+cd scheduler && /usr/local/go/bin/go build .
+```
+
+3. Smoke test:
+```bash
+./go-trader --config scheduler/config.json --once
+```
+Check that the new platform's strategies appear in the output without errors.
+
+---
+
+## Step 10: Verification
+
+### 10a. Service Running
 ```bash
 systemctl is-active go-trader
 ```
 Expected: `active`
 
-### 9b. Status Endpoint
+### 10b. Status Endpoint
 ```bash
 curl -s localhost:8099/status | python3 -c "
 import json, sys
@@ -480,10 +647,10 @@ for sym, price in d.get('prices', {}).items():
 "
 ```
 
-### 9c. Discord Check
+### 10c. Discord Check
 If Discord is enabled, wait for the first cycle to complete (~5 minutes) and verify messages appear in the configured channels.
 
-### 9d. Report to User
+### 10d. Report to User
 
 > ✅ **go-trader is running!**
 >
@@ -597,6 +764,9 @@ Add or remove the `theta_harvest` block from individual strategy entries in conf
 
 **Heartbeat-based:** Set or remove `git_pull_interval_cycles` in config.json, then restart.
 
+### Add Custom Platform Integration
+To add a new exchange (spot, perps, or options), follow the guided flow in Step 9. It will walk through gathering platform details, building the Python adapter, wiring Go changes, and updating config.
+
 ### Switch Paper → Live
 Add exchange API keys to systemd environment:
 ```bash
@@ -674,6 +844,8 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    • Binance US  — spot trading: BTC, ETH, SOL
    • Deribit     — options trading: BTC, ETH
    • IBKR / CME  — options trading: BTC, ETH (CME Micro contracts, Black-Scholes pricing)
+   • Hyperliquid — perps trading: any HL-listed asset (paper + live)
+   • Custom      — add your own exchange via Step 9 (guided setup)
 
 2. AVAILABLE STRATEGIES  (30 total)
    Spot (14):
@@ -707,6 +879,8 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
 4. COMMANDS
    /menu       — this overview
    /go-trader  — live status dashboard (cycle, prices, PnL, circuit breakers)
+   Setup:
+     Add custom platform — say "add a custom platform" (runs Step 9 guided flow)
    System:
      sudo systemctl start|stop|restart go-trader
      sudo systemctl status go-trader
