@@ -15,13 +15,14 @@
   - `executor.go` — Python subprocess runner; max 4 concurrent, 30s timeout per script
   - `server.go` — HTTP status server (`/status`, `/health` endpoints)
   - `discord.go` — Discord alert notifications
-- `scripts/` — Python strategy scripts called as subprocesses by the scheduler
+- `shared_scripts/` — Python entry-point scripts called by the scheduler
   - `check_strategy.py` — spot strategy signal checker
-  - `check_options.py` / `check_options_ibkr.py` — options signal checkers (Deribit / IBKR)
+  - `check_options.py` — unified options checker (`--platform=deribit|ibkr`)
   - `check_price.py` — price check script
-- `core/` — shared Python data utilities (data_fetcher, storage)
-- `strategies/` — strategy logic imported by check_strategy.py
-- `options/` — IBKR options adapter (`ibkr_adapter.py`, `options_adapter.py`, etc.)
+- `platforms/` — platform-specific adapters (deribit, ibkr, binanceus)
+- `shared_tools/` — shared Python utilities (pricing.py, exchange_base.py, data_fetcher, storage)
+- `shared_strategies/` — shared strategy logic (spot/, options/)
+- `core/`, `strategies/` — legacy; used by backtest via `PYTHONPATH=core:strategies`
 - `backtest/` — backtesting and paper trading scripts; `run_backtest.py` needs `PYTHONPATH=core:strategies`
 - `archive/` — retired/unused modules
 - `SKILL.md` — agent operations guide (setup, deploy, backtest commands)
@@ -33,7 +34,7 @@
 - Mutex `mu sync.RWMutex` guards `state`; RLock for reads, Lock for all mutations
 - Per-strategy loop uses 6 fine-grained lock phases: RLock(read inputs) → Lock(CheckRisk) → no lock(subprocess) → Lock(execute signal) → RLock/no lock/Lock(mark prices) → RLock(status log)
 - Audit lock balance: `grep -n "mu\.\(R\)\?Lock\(\)\|mu\.\(R\)\?Unlock\(\)" scheduler/main.go`
-- `deribit_utils.py` is imported by `check_options.py` — both must be updated together for Deribit API changes
+- Platform adapters loaded via importlib; class discovered by `endswith("ExchangeAdapter")` — all adapter classes must use that suffix
 - State persisted to `scheduler/state.json` (path set in config); survives restarts
 
 ## Build & Deploy

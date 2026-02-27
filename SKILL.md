@@ -663,6 +663,70 @@ Present the output to the user in a readable format. Highlight any circuit break
 
 ---
 
+## `/menu` Command
+
+When the user says `/menu`, "show menu", "what can I configure", "what's available", or "help me get started", output the following overview directly (no bash command needed):
+
+```
+=== GO-TRADER MENU ===
+
+1. TRADING PLATFORMS
+   • Binance US  — spot trading: BTC, ETH, SOL
+   • Deribit     — options trading: BTC, ETH
+   • IBKR / CME  — options trading: BTC, ETH (CME Micro contracts, Black-Scholes pricing)
+
+2. AVAILABLE STRATEGIES  (30 total)
+   Spot (14):
+     momentum (BTC,ETH,SOL), rsi (BTC,ETH,SOL), macd (BTC,ETH,SOL),
+     volume_weighted (BTC), pairs_spread (BTC/ETH)
+   Deribit Options (8):
+     vol_mean_reversion, momentum_options, protective_puts, covered_calls,
+     wheel, butterfly  — BTC + ETH each
+   IBKR Options (8):
+     same 6 strategies as Deribit — BTC + ETH each
+
+3. ADJUSTABLE SETTINGS  (edit scheduler/config.json, then: sudo systemctl restart go-trader)
+   Global:
+     interval_seconds  — default cycle interval (seconds)
+     state_file        — path to position/trade history file
+     max_drawdown_pct  — portfolio-level circuit breaker
+     notional_cap_usd  — max total notional exposure
+   Per-strategy:
+     capital           — starting capital (USD)
+     max_drawdown_pct  — strategy-level circuit breaker
+     interval_seconds  — per-strategy check frequency (0 = use global)
+     theta_harvest.*   — profit_target_pct, stop_loss_pct, min_dte_close
+   Discord:
+     enabled           — true/false
+     channel_id        — channel for alerts
+     summary_interval  — how often to post summaries
+   Environment (sudo systemctl edit go-trader):
+     DISCORD_BOT_TOKEN, STATUS_AUTH_TOKEN
+     BINANCE_API_KEY, BINANCE_API_SECRET
+
+4. COMMANDS
+   /menu       — this overview
+   /go-trader  — live status dashboard (cycle, prices, PnL, circuit breakers)
+   System:
+     sudo systemctl start|stop|restart go-trader
+     sudo systemctl status go-trader
+     journalctl -u go-trader -n 50 --no-pager
+     curl -s localhost:8099/status | python3 -m json.tool
+
+5. BACKTESTING
+   Spot:
+     PYTHONPATH=core:strategies .venv/bin/python3 backtest/run_backtest.py \
+       --strategy <n> --symbol BTC/USDT --timeframe 1h \
+       --mode single|compare|multi|optimize
+   Options:
+     .venv/bin/python3 backtest/backtest_options.py --underlying BTC --since YYYY-MM-DD --capital 10000
+     .venv/bin/python3 backtest/backtest_theta.py   --underlying BTC --since YYYY-MM-DD --capital 10000
+
+For full details on any section, ask about it or see the relevant section in SKILL.md.
+```
+
+---
+
 ## Adjustable Settings Reference
 
 All settings live in `scheduler/config.json`. After any change, restart the service:
