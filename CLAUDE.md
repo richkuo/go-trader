@@ -15,6 +15,8 @@
   - `executor.go` — Python subprocess runner; max 4 concurrent, 30s timeout per script
   - `server.go` — HTTP status server (`/status`, `/health` endpoints)
   - `discord.go` — Discord alert notifications; `FormatCategorySummary` outputs a monospace code-block table (Strategy/Value/PnL/PnL%) via `writeCatTable`; `fmtComma` handles comma formatting — always pass absolute values (never signed floats)
+  - `init.go` — `go-trader init` interactive wizard; `generateConfig(InitOptions) *Config` is pure/testable; `runInit` orchestrates I/O
+  - `prompt.go` — `Prompter` struct (String/YesNo/Choice/MultiSelect/Float); inject `NewPrompterFromReader(r,w)` for tests
 - `shared_scripts/` — Python entry-point scripts called by the scheduler
   - `check_strategy.py` — spot strategy signal checker
   - `check_options.py` — unified options checker (`--platform=deribit|ibkr`)
@@ -73,3 +75,4 @@
 - Multi-line Go edits with tabs: Edit tool may fail on tab-indented blocks; fallback: `python3 -c "content=open(f).read(); open(f,'w').write(content.replace(old,new,1))"`
 - Smoke test: `./go-trader --once`
 - Run with config: `./go-trader --config scheduler/config.json`
+- Smoke test interactive CLI: `printf "answer1\nanswer2\n" | ./go-trader init`

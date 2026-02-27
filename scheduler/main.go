@@ -11,6 +11,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "init" {
+		os.Exit(runInit(os.Args[2:]))
+	}
+
 	configPath := flag.String("config", "scheduler/config.json", "Path to config file")
 	once := flag.Bool("once", false, "Run one cycle and exit")
 	flag.Parse()
