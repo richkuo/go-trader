@@ -121,6 +121,8 @@ func LoadConfig(path string) (*Config, error) {
 				cfg.Strategies[i].Platform = "ibkr"
 			case strings.HasPrefix(cfg.Strategies[i].ID, "deribit-"):
 				cfg.Strategies[i].Platform = "deribit"
+			case strings.HasPrefix(cfg.Strategies[i].ID, "hl-"):
+				cfg.Strategies[i].Platform = "hyperliquid"
 			case cfg.Strategies[i].Type == "options":
 				cfg.Strategies[i].Platform = "deribit"
 			default:
@@ -134,7 +136,9 @@ func LoadConfig(path string) (*Config, error) {
 			if pc := cfg.Platforms[platform]; pc != nil && pc.Risk != nil && pc.Risk.MaxDrawdownPct > 0 {
 				cfg.Strategies[i].MaxDrawdownPct = pc.Risk.MaxDrawdownPct
 			} else if cfg.Strategies[i].Type == "options" {
-				cfg.Strategies[i].MaxDrawdownPct = 40 // options are volatile, 20% is too tight
+				cfg.Strategies[i].MaxDrawdownPct = 40 // options are volatile
+			} else if cfg.Strategies[i].Type == "perps" {
+				cfg.Strategies[i].MaxDrawdownPct = 50 // perps: between spot (60) and options (40)
 			} else {
 				cfg.Strategies[i].MaxDrawdownPct = 60
 			}
@@ -197,9 +201,21 @@ func ValidateConfig(cfg *Config) error {
 			}
 		}
 
-		// #36: Type must be "spot" or "options".
-		if sc.Type != "spot" && sc.Type != "options" {
-			errs = append(errs, fmt.Sprintf("%s: type must be \"spot\" or \"options\", got %q", prefix, sc.Type))
+		// #36: Type must be "spot", "options", or "perps".
+		if sc.Type != "spot" && sc.Type != "options" && sc.Type != "perps" {
+			errs = append(errs, fmt.Sprintf("%s: type must be \"spot\", \"options\", or \"perps\", got %q", prefix, sc.Type))
+		}
+
+		// Live-mode perps require HYPERLIQUID_SECRET_KEY env var.
+		if sc.Type == "perps" {
+			for _, arg := range sc.Args {
+				if arg == "--mode=live" {
+					if os.Getenv("HYPERLIQUID_SECRET_KEY") == "" {
+						errs = append(errs, fmt.Sprintf("%s: --mode=live requires HYPERLIQUID_SECRET_KEY env var", prefix))
+					}
+					break
+				}
+			}
 		}
 
 		// #36: Capital must be > 0.

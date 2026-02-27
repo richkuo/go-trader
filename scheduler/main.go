@@ -286,6 +286,16 @@ func main() {
 					if sc.Type == "options" {
 						posJSON = EncodeAllPositionsJSON(stratState.OptionPositions, stratState.Positions)
 					}
+					var hlCash float64
+					var hlPosQty float64
+					if sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
+						hlCash = stratState.Cash
+						if sym := hyperliquidSymbol(sc.Args); sym != "" {
+							if pos, ok := stratState.Positions[sym]; ok {
+								hlPosQty = pos.Quantity
+							}
+						}
+					}
 					mu.RUnlock()
 
 					// Phase 2: Lock — CheckRisk (fast, no I/O)
@@ -333,6 +343,23 @@ func main() {
 							optionsTradeDetails = append(optionsTradeDetails, detail)
 						}
 						optionsTrades += trades
+					case "perps":
+						if result, signalStr, price, ok := runHyperliquidCheck(sc, prices, logger); ok {
+							prices[result.Symbol] = price
+							var execResult *HyperliquidExecuteResult
+							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
+								if er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, logger); ok2 {
+									execResult = er
+								}
+							}
+							mu.Lock()
+							trades, detail = executeHyperliquidResult(sc, stratState, result, execResult, signalStr, price, logger)
+							mu.Unlock()
+						}
+						if trades > 0 && detail != "" {
+							spotTradeDetails = append(spotTradeDetails, detail)
+						}
+						spotTrades += trades
 					default:
 						logger.Error("Unknown strategy type: %s", sc.Type)
 					}
@@ -575,4 +602,130 @@ func executeOptionsResult(sc StrategyConfig, s *StrategyState, result *OptionsRe
 	}
 
 	return trades, detail, harvestDetails
+}
+
+// hyperliquidIsLive reports whether --mode=live appears in strategy args.
+func hyperliquidIsLive(args []string) bool {
+	for _, arg := range args {
+		if arg == "--mode=live" {
+			return true
+		}
+	}
+	return false
+}
+
+// hyperliquidSymbol extracts the coin symbol from perps strategy args (e.g. "BTC").
+func hyperliquidSymbol(args []string) string {
+	if len(args) >= 2 {
+		return args[1]
+	}
+	return ""
+}
+
+// runHyperliquidCheck runs check_hyperliquid.py signal-check mode (Phase 3, no lock).
+func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
+	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
+
+	result, stderr, err := RunHyperliquidCheck(sc.Script, sc.Args)
+	if err != nil {
+		logger.Error("Script failed: %v", err)
+		if stderr != "" {
+			logger.Error("stderr: %s", stderr)
+		}
+		return nil, "", 0, false
+	}
+	if stderr != "" {
+		logger.Info("stderr: %s", stderr)
+	}
+	if result.Error != "" {
+		logger.Error("Script returned error: %s", result.Error)
+		return nil, "", 0, false
+	}
+
+	signalStr := "HOLD"
+	if result.Signal == 1 {
+		signalStr = "BUY"
+	} else if result.Signal == -1 {
+		signalStr = "SELL"
+	}
+	logger.Info("Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)
+
+	price := result.Price
+	if price <= 0 {
+		if p, ok := prices[result.Symbol]; ok {
+			price = p
+		}
+	}
+	if price <= 0 {
+		logger.Error("No price available for %s", result.Symbol)
+		return nil, "", 0, false
+	}
+	return result, signalStr, price, true
+}
+
+// runHyperliquidExecuteOrder places a live market order (Phase 3, no lock).
+// Returns (execResult, ok); ok=false means order failed, skip state update.
+func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+	isBuy := result.Signal == 1
+	var size float64
+	if isBuy {
+		budget := cash * 0.95
+		if budget < 1 || price <= 0 {
+			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
+			return nil, false
+		}
+		size = budget / price
+	} else {
+		if posQty <= 0 {
+			logger.Info("No position to close for %s", result.Symbol)
+			return nil, false
+		}
+		size = posQty
+	}
+
+	side := "buy"
+	if !isBuy {
+		side = "sell"
+	}
+	logger.Info("Placing live %s %s size=%.6f", side, result.Symbol, size)
+
+	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size)
+	if stderr != "" {
+		logger.Info("execute stderr: %s", stderr)
+	}
+	if err != nil {
+		logger.Error("Live execute failed: %v", err)
+		return nil, false
+	}
+	if execResult.Error != "" {
+		logger.Error("Live execute returned error: %s", execResult.Error)
+		return nil, false
+	}
+	return execResult, true
+}
+
+// executeHyperliquidResult applies a hyperliquid result to state. Must be called under Lock.
+// execResult is non-nil for successful live orders; nil for paper mode.
+func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
+	fillPrice := price
+	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
+		fillPrice = execResult.Execution.Fill.AvgPx
+		logger.Info("Live fill at $%.2f (mid was $%.2f)", fillPrice, price)
+	}
+
+	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, logger)
+	if err != nil {
+		logger.Error("Trade execution failed: %v", err)
+		return 0, ""
+	}
+
+	detail := ""
+	if trades > 0 {
+		prefix := ""
+		if execResult != nil {
+			prefix = "LIVE "
+		}
+		detail = fmt.Sprintf("[%s] %s%s %s @ $%.2f", sc.ID, prefix, signalStr, result.Symbol, fillPrice)
+	}
+	return trades, detail
 }

@@ -13,6 +13,9 @@ const (
 	// IBKR options fees (per contract, CME Micro)
 	IBKROptionFeeFixed = 0.25 // $0.25 per contract (CME Micro fee)
 
+	// Hyperliquid perps taker fee
+	HyperliquidTakerFeePct = 0.00035 // 0.035% taker fee
+
 	// Slippage simulation (random +/- this pct)
 	SlippagePct = 0.0005 // 0.05% (5 basis points)
 )
@@ -24,9 +27,22 @@ func ApplySlippage(price float64) float64 {
 	return price * (1 + slippage)
 }
 
-// CalculateSpotFee calculates trading fee for spot trade
+// CalculateSpotFee calculates trading fee for spot trade (BinanceUS default).
 func CalculateSpotFee(value float64) float64 {
 	return value * BinanceSpotFeePct
+}
+
+// CalculateHyperliquidFee calculates trading fee for Hyperliquid perps.
+func CalculateHyperliquidFee(notionalUSD float64) float64 {
+	return notionalUSD * HyperliquidTakerFeePct
+}
+
+// CalculatePlatformSpotFee dispatches spot fee calculation based on platform.
+func CalculatePlatformSpotFee(platform string, value float64) float64 {
+	if platform == "hyperliquid" {
+		return CalculateHyperliquidFee(value)
+	}
+	return CalculateSpotFee(value)
 }
 
 // CalculateDeribitOptionFee calculates trading fee for Deribit options

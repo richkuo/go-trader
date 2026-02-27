@@ -27,6 +27,42 @@ type SpotResult struct {
 	Error      string                 `json:"error,omitempty"`
 }
 
+// HyperliquidResult is the JSON output from check_hyperliquid.py (signal check mode).
+type HyperliquidResult struct {
+	Strategy   string                 `json:"strategy"`
+	Symbol     string                 `json:"symbol"`
+	Timeframe  string                 `json:"timeframe"`
+	Signal     int                    `json:"signal"`
+	Price      float64                `json:"price"`
+	Indicators map[string]interface{} `json:"indicators"`
+	Mode       string                 `json:"mode"`
+	Platform   string                 `json:"platform"`
+	Timestamp  string                 `json:"timestamp"`
+	Error      string                 `json:"error,omitempty"`
+}
+
+// HyperliquidFill holds fill details from a live Hyperliquid order.
+type HyperliquidFill struct {
+	AvgPx   float64 `json:"avg_px"`
+	TotalSz float64 `json:"total_sz"`
+}
+
+// HyperliquidExecution is the execution block from check_hyperliquid.py --execute output.
+type HyperliquidExecution struct {
+	Action string           `json:"action"`
+	Symbol string           `json:"symbol"`
+	Size   float64          `json:"size"`
+	Fill   *HyperliquidFill `json:"fill,omitempty"`
+}
+
+// HyperliquidExecuteResult is the top-level JSON from check_hyperliquid.py --execute.
+type HyperliquidExecuteResult struct {
+	Execution *HyperliquidExecution `json:"execution"`
+	Platform  string                `json:"platform"`
+	Timestamp string                `json:"timestamp"`
+	Error     string                `json:"error,omitempty"`
+}
+
 // RunPythonScript executes a Python script and returns stdout/stderr.
 func RunPythonScript(script string, args []string) ([]byte, []byte, error) {
 	pythonSemaphore <- struct{}{}
@@ -135,6 +171,51 @@ func RunOptionsCheck(script string, args []string) (*OptionsResult, string, erro
 	var result OptionsResult
 	if err := json.Unmarshal(stdout, &result); err != nil {
 		return nil, stderrStr, fmt.Errorf("parse output: %w (stdout: %s)", err, string(stdout))
+	}
+	return &result, stderrStr, nil
+}
+
+// RunHyperliquidCheck runs check_hyperliquid.py in signal check mode and parses the result.
+func RunHyperliquidCheck(script string, args []string) (*HyperliquidResult, string, error) {
+	stdout, stderr, err := RunPythonScript(script, args)
+	stderrStr := string(stderr)
+	if err != nil {
+		var result HyperliquidResult
+		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
+			return &result, stderrStr, nil
+		}
+		return nil, stderrStr, fmt.Errorf("script error: %w (stderr: %s)", err, stderrStr)
+	}
+
+	var result HyperliquidResult
+	if err := json.Unmarshal(stdout, &result); err != nil {
+		return nil, stderrStr, fmt.Errorf("parse output: %w (stdout: %s)", err, string(stdout))
+	}
+	return &result, stderrStr, nil
+}
+
+// RunHyperliquidExecute runs check_hyperliquid.py in execute mode (live orders).
+func RunHyperliquidExecute(script, symbol, side string, size float64) (*HyperliquidExecuteResult, string, error) {
+	args := []string{
+		"--execute",
+		fmt.Sprintf("--symbol=%s", symbol),
+		fmt.Sprintf("--side=%s", side),
+		fmt.Sprintf("--size=%g", size),
+		"--mode=live",
+	}
+	stdout, stderr, err := RunPythonScript(script, args)
+	stderrStr := string(stderr)
+	if err != nil {
+		var result HyperliquidExecuteResult
+		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
+			return &result, stderrStr, nil
+		}
+		return nil, stderrStr, fmt.Errorf("execute error: %w (stderr: %s)", err, stderrStr)
+	}
+
+	var result HyperliquidExecuteResult
+	if err := json.Unmarshal(stdout, &result); err != nil {
+		return nil, stderrStr, fmt.Errorf("parse execute output: %w (stdout: %s)", err, string(stdout))
 	}
 	return &result, stderrStr, nil
 }

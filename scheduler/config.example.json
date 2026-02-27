@@ -10,11 +10,7 @@
       "id": "momentum-btc",
       "type": "spot",
       "script": "shared_scripts/check_strategy.py",
-      "args": [
-        "momentum",
-        "BTC/USDT",
-        "1h"
-      ],
+      "args": ["momentum", "BTC/USDT", "1h"],
       "capital": 1000,
       "max_drawdown_pct": 60,
       "interval_seconds": 300
@@ -23,12 +19,7 @@
       "id": "pairs-btc-eth",
       "type": "spot",
       "script": "shared_scripts/check_strategy.py",
-      "args": [
-        "pairs_spread",
-        "BTC/USDT",
-        "1d",
-        "ETH/USDT"
-      ],
+      "args": ["pairs_spread", "BTC/USDT", "1d", "ETH/USDT"],
       "capital": 1000,
       "max_drawdown_pct": 60,
       "interval_seconds": 86400
@@ -37,11 +28,7 @@
       "id": "deribit-vol-btc",
       "type": "options",
       "script": "shared_scripts/check_options.py",
-      "args": [
-        "vol_mean_reversion",
-        "BTC",
-        "--platform=deribit"
-      ],
+      "args": ["vol_mean_reversion", "BTC", "--platform=deribit"],
       "capital": 1000,
       "max_drawdown_pct": 40,
       "interval_seconds": 1200,
@@ -51,8 +38,22 @@
         "stop_loss_pct": 200,
         "min_dte_close": 3
       }
+    },
+    {
+      "id": "hl-momentum-btc",
+      "type": "perps",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "args": ["momentum", "BTC", "1h", "--mode=paper"],
+      "capital": 1000,
+      "max_drawdown_pct": 50,
+      "interval_seconds": 300
     }
   ],
+  "platforms": {
+    "hyperliquid": {
+      "state_file": "platforms/hyperliquid/state.json"
+    }
+  },
   "discord": {
     "enabled": true,
     "token": "",
