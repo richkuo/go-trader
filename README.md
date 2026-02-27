@@ -1,12 +1,16 @@
 # go-trader — Crypto Trading Bot
 
-A Go + Python hybrid trading system. A single Go binary (~8MB RAM) orchestrates 30+ paper trading strategies across spot and options markets by spawning short-lived Python scripts.
+A Go + Python hybrid trading system. A single Go binary (~8MB RAM) orchestrates 50+ paper trading strategies across spot, options, and perpetual futures markets by spawning short-lived Python scripts.
 
-**Spot markets** via Binance (CCXT): momentum, RSI, MACD, volume-weighted, and pairs spread strategies on BTC, ETH, and SOL.
+**Spot markets** via Binance US (CCXT): SMA/EMA crossovers, momentum, RSI, Bollinger Bands, MACD, and pairs spread strategies on BTC, ETH, and SOL.
 
-**Options markets** via Deribit + IBKR/CME: volatility mean reversion, momentum, protective puts, covered calls, wheel, and butterfly strategies on BTC and ETH — running head-to-head across both exchanges.
+**Options markets** via Deribit + IBKR/CME: volatility mean reversion, momentum, protective puts, and covered calls on BTC and ETH — running head-to-head across both exchanges.
+
+**Perpetual futures** via Hyperliquid: momentum strategy on BTC, ETH, and SOL with paper and live trading support.
 
 **Discord alerts**: Separate channels for spot and options summaries, with immediate trade notifications.
+
+Supported platforms: Binance US, Deribit, IBKR/CME, Hyperliquid.
 
 ## Community
 
@@ -26,6 +30,16 @@ Using [OpenClaw](https://openclaw.ai)? Just say:
 
 > "Set up go-trader"
 
+### Interactive Setup (go-trader init)
+
+After building the binary, run the interactive config wizard — the easiest way to generate a config without manual JSON editing:
+
+```bash
+./go-trader init
+```
+
+The wizard walks you through asset selection, strategy types (spot/options/perps), platform selection, capital and risk settings, and Discord configuration, then writes a ready-to-use `scheduler/config.json`.
+
 ### Manual Setup
 
 ```bash
@@ -37,27 +51,25 @@ cd go-trader
 curl -LsSf https://astral.sh/uv/install.sh | sh   # install uv if needed
 uv sync                                             # creates .venv from lockfile
 
-# 3. Create config from template
-cp scheduler/config.example.json scheduler/config.json
-
-# 4. Edit scheduler/config.json
-#    - Add Discord channel IDs (or set enabled: false)
-#    - Adjust strategies, capital, risk settings as needed
-#    - Leave discord.token blank (use env var instead)
-
-# 5. Build
+# 3. Build (requires Go 1.26.0)
 cd scheduler && go build -o ../go-trader . && cd ..
 
-# 6. Test one cycle
+# 4. Generate config
+./go-trader init                                    # interactive wizard (recommended)
+# — or —
+cp scheduler/config.example.json scheduler/config.json
+# then edit scheduler/config.json manually
+
+# 5. Test one cycle
 ./go-trader --config scheduler/config.json --once
 
-# 7. Run as service
+# 6. Run as service
 export DISCORD_BOT_TOKEN="your-token"
 sudo cp go-trader.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now go-trader
 
-# 8. Verify
+# 7. Verify
 curl -s localhost:8099/status | python3 -m json.tool
 ```
 
@@ -67,36 +79,49 @@ curl -s localhost:8099/status | python3 -m json.tool
 
 ```
 Go scheduler (always running, ~8MB idle)
-  ↓ spot: every 5min | options: every 20min
-    .venv/bin/python3 scripts/check_strategy.py → JSON signal
-    .venv/bin/python3 scripts/check_options.py  → JSON signal (Deribit)
-    .venv/bin/python3 scripts/check_options_ibkr.py → JSON signal (IBKR/CME)
+  ↓ spot/perps: every 1h | options: every 4h
+    .venv/bin/python3 shared_scripts/check_strategy.py    → JSON signal (spot)
+    .venv/bin/python3 shared_scripts/check_options.py     → JSON signal (--platform=deribit|ibkr)
+    .venv/bin/python3 shared_scripts/check_hyperliquid.py → JSON signal (perps)
+    .venv/bin/python3 shared_scripts/check_price.py       → live prices
   ↓ processes signals, executes paper trades, manages risk
   ↓ marks options to market via Deribit REST API (live prices every cycle)
   ↓ saves state → scheduler/state.json (atomic writes, survives restarts)
   ↓ HTTP status → localhost:8099/status
   ↓ Discord → spot channel + options channel
+
+Platform adapters (Python):
+  platforms/binanceus/adapter.py  — spot (CCXT)
+  platforms/deribit/adapter.py    — options (live quotes, real expiries/strikes)
+  platforms/ibkr/adapter.py       — options (CME Micro, Black-Scholes pricing)
+  platforms/hyperliquid/adapter.py — perps (paper + live, SDK)
 ```
 
-Python gets the quant libraries (pandas, numpy, scipy, CCXT). Go gets memory efficiency. 30+ strategies cost ~220MB peak for ~30 seconds, then ~8MB idle.
+Python gets the quant libraries (pandas, numpy, scipy, CCXT). Go gets memory efficiency. 50+ strategies cost ~220MB peak for ~30 seconds, then ~8MB idle.
 
 ---
 
 ## Strategies
 
-### Spot (14 strategies, 5min interval)
+### Spot (10 strategies, 1h interval, BTC/ETH/SOL)
 
-| Strategy | Assets | Timeframe | Description |
-|----------|--------|-----------|-------------|
-| `momentum` | BTC, ETH, SOL | 1h | Rate of change breakouts |
-| `rsi` | BTC, ETH, SOL | 1h | Buy oversold, sell overbought |
-| `macd` | BTC, ETH | 1h | MACD/signal line crossovers |
-| `volume_weighted` | BTC, ETH, SOL | 1h | Trend + volume confirmation |
-| `pairs_spread` | BTC/ETH, BTC/SOL, ETH/SOL | 1d | Spread z-score stat arb |
+| Strategy | Description |
+|----------|-------------|
+| `sma_crossover` | Simple moving average crossover |
+| `ema_crossover` | Exponential moving average crossover |
+| `momentum` | Rate of change breakouts |
+| `rsi` | Buy oversold, sell overbought |
+| `bollinger_bands` | Mean reversion at band extremes |
+| `macd` | MACD/signal line crossovers |
+| `rsi_sma` | RSI filtered by SMA trend |
+| `rsi_ema` | RSI filtered by EMA trend |
+| `ema_rsi_macd` | EMA + RSI + MACD combo |
+| `rsi_macd_combo` | RSI and MACD confluence |
+| `pairs_spread` | BTC/ETH, BTC/SOL, ETH/SOL spread z-score stat arb (1d) |
 
-### Options (16 strategies, 20min interval)
+### Options (4 strategies, 4h interval, BTC/ETH)
 
-Same 6 strategies on both Deribit and IBKR/CME for comparison:
+Same 4 strategies on both Deribit and IBKR/CME for comparison:
 
 | Strategy | Description |
 |----------|-------------|
@@ -104,10 +129,27 @@ Same 6 strategies on both Deribit and IBKR/CME for comparison:
 | `momentum_options` | ROC breakout → buy directional options |
 | `protective_puts` | Buy 12% OTM puts, 45 DTE |
 | `covered_calls` | Sell 12% OTM calls, 21 DTE |
-| `wheel` | Sell 6% OTM puts, 37 DTE |
-| `butterfly` | Buy ITM, Sell 2× ATM, Buy OTM (±5% wings), 30 DTE |
 
 New options trades are scored against existing positions for strike distance, expiry spread, and Greek balancing. Max 4 positions per strategy, min score 0.3 to execute.
+
+### Perps (1 strategy, 1h interval, BTC/ETH/SOL)
+
+| Strategy | Platform | Modes | Description |
+|----------|----------|-------|-------------|
+| `momentum` | Hyperliquid | paper / live | Rate of change breakouts on perpetual futures |
+
+Live mode requires `HYPERLIQUID_SECRET_KEY` env var. Paper mode simulates trades without a key.
+
+---
+
+## Platforms
+
+| Platform | Type | Assets | Features |
+|----------|------|--------|----------|
+| Binance US | Spot | BTC, ETH, SOL | CCXT, paper trading |
+| Deribit | Options | BTC, ETH | Live quotes, real expiries/strikes |
+| IBKR/CME | Options | BTC, ETH | CME Micro contracts, Black-Scholes pricing |
+| Hyperliquid | Perps | BTC, ETH, SOL | Paper + live trading via SDK |
 
 ---
 
@@ -115,10 +157,17 @@ New options trades are scored against existing positions for strike distance, ex
 
 ### `scheduler/config.json`
 
+Use `./go-trader init` to generate this file interactively. The full structure:
+
 ```json
 {
-  "interval_seconds": 300,
+  "interval_seconds": 3600,
   "state_file": "scheduler/state.json",
+  "log_dir": "logs",
+  "portfolio_risk": {
+    "max_drawdown_pct": 25,
+    "max_notional_usd": 0
+  },
   "discord": {
     "enabled": true,
     "token": "",
@@ -126,9 +175,21 @@ New options trades are scored against existing positions for strike distance, ex
     "spot_summary_freq": "hourly",
     "options_summary_freq": "per_check"
   },
+  "platforms": {
+    "hyperliquid": {
+      "state_file": "platforms/hyperliquid/state.json"
+    }
+  },
   "strategies": [ ... ]
 }
 ```
+
+### Portfolio Risk
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `portfolio_risk.max_drawdown_pct` | Kill switch — halt all trading if portfolio drops this % from peak | 25 |
+| `portfolio_risk.max_notional_usd` | Hard cap on total notional exposure (0 = disabled) | 0 |
 
 ### Discord Settings
 
@@ -145,12 +206,13 @@ New options trades are scored against existing positions for strike distance, ex
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `id` | Unique identifier (e.g., `momentum-btc`) | Required |
-| `type` | `"spot"` or `"options"` | Required |
+| `id` | Unique identifier (e.g., `momentum-btc`, `hl-momentum-btc`) | Required |
+| `type` | `"spot"`, `"options"`, or `"perps"` | Required |
+| `platform` | `"binanceus"`, `"deribit"`, `"ibkr"`, or `"hyperliquid"` | Required |
 | `script` | Python script path (relative) | Required |
 | `args` | Arguments passed to script | Required |
 | `capital` | Starting capital in USD | 1000 |
-| `max_drawdown_pct` | Circuit breaker threshold (from peak) | Spot: 60%, Options: 40% |
+| `max_drawdown_pct` | Circuit breaker threshold (from peak) | Spot: 5%, Options: 10%, Perps: 5% |
 | `interval_seconds` | Check interval (0 = use global) | 0 |
 | `theta_harvest` | Early exit config for sold options | null |
 
@@ -186,8 +248,6 @@ Closes sold options early based on profit target, stop loss, or approaching expi
 | Config changes | `systemctl restart go-trader` |
 | Service file changes | `systemctl daemon-reload && systemctl restart go-trader` |
 
-Go path on this server: `/usr/local/go/bin/go`
-
 ---
 
 ## Monitoring
@@ -203,6 +263,8 @@ journalctl -u go-trader -n 50           # recent logs
 
 ## Risk Management
 
+- **Portfolio kill switch** — halt all trading if portfolio drawdown exceeds threshold (default: 25%)
+- **Notional cap** — optional hard limit on total notional exposure
 - **Per-strategy circuit breakers** — pause trading when max drawdown exceeded (24h cooldown)
 - **Consecutive loss tracking** — 5 losses in a row → 1h pause
 - **Spot**: max 95% capital per position
@@ -215,9 +277,10 @@ journalctl -u go-trader -n 50           # recent logs
 
 | Market | Fee | Slippage |
 |--------|-----|----------|
-| Binance Spot | 0.1% taker | ±0.05% |
+| Binance US Spot | 0.1% taker | ±0.05% |
 | Deribit Options | 0.03% of premium | — |
 | IBKR/CME Options | $0.25/contract | — |
+| Hyperliquid Perps | 0.035% taker | ±0.05% |
 
 ---
 
@@ -237,19 +300,29 @@ go-trader/
 │   ├── discord.go          # Discord notifications
 │   ├── server.go           # HTTP status endpoint
 │   ├── fees.go             # Trading fee calculations
+│   ├── pricer.go           # OptionPricer interface
+│   ├── ibkr_pricer.go      # IBKR Black-Scholes pricer
+│   ├── init.go             # go-trader init wizard
+│   ├── prompt.go           # Interactive prompt helpers
 │   ├── logger.go           # Logging
 │   ├── config.example.json # Config template
 │   └── state.example.json  # State template
-├── scripts/                # Stateless Python check scripts
-│   ├── check_strategy.py   # Spot checker (Binance via CCXT)
-│   ├── check_options.py    # Deribit options checker
-│   ├── check_options_ibkr.py # IBKR/CME options checker
-│   ├── check_price.py      # Multi-symbol price fetcher
-│   └── deribit_utils.py    # Deribit expiry/strike lookup
-├── strategies/             # Spot strategy logic + indicators
-├── options/                # Options adapters, strategies, risk
-├── core/                   # Shared utilities (data fetcher, storage)
+├── shared_scripts/         # Stateless Python entry-point scripts
+│   ├── check_strategy.py   # Spot checker (Binance US via CCXT)
+│   ├── check_options.py    # Options checker (--platform=deribit|ibkr)
+│   ├── check_hyperliquid.py # Hyperliquid perps checker
+│   └── check_price.py      # Multi-symbol price fetcher
+├── platforms/              # Platform-specific adapters
+│   ├── binanceus/          # BinanceUS spot adapter
+│   ├── deribit/            # Deribit options adapter
+│   ├── ibkr/               # IBKR/CME options adapter
+│   └── hyperliquid/        # Hyperliquid perps adapter
+├── shared_tools/           # Shared Python utilities (pricing, exchange_base, storage)
+├── shared_strategies/      # Shared strategy logic (spot/, options/)
+├── core/                   # Legacy data utilities (used by backtest)
+├── strategies/             # Legacy spot strategy logic (used by backtest)
 ├── backtest/               # Backtesting tools
+├── archive/                # Retired/unused modules
 ├── SKILL.md                # AI agent setup guide
 ├── CLAUDE.md               # AI agent project context
 ├── ISSUES.md               # Known issues tracker
@@ -260,8 +333,8 @@ go-trader/
 
 ## Dependencies
 
-- **Python 3.12+** — managed by [uv](https://github.com/astral-sh/uv) (ccxt, pandas, numpy, scipy)
-- **Go 1.23+** — standard library only
+- **Python 3.12+** — managed by [uv](https://github.com/astral-sh/uv) (ccxt, pandas, numpy, scipy, hyperliquid-python-sdk)
+- **Go 1.26.0** — standard library only
 - **systemd** — service management
 
 ---
@@ -274,3 +347,4 @@ go-trader/
 | Service won't start | `journalctl -u go-trader -n 50` |
 | Strategy not trading | Check circuit breaker in `/status`, verify params |
 | Reset positions | `cp scheduler/state.example.json scheduler/state.json && systemctl restart go-trader` |
+| Hyperliquid live mode fails | Set `HYPERLIQUID_SECRET_KEY` env var; paper mode works without it |
