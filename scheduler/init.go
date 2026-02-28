@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -224,8 +225,76 @@ func makePairs(assets []string) [][2]string {
 	return pairs
 }
 
+// runInitFromJSON generates a config from a JSON blob of InitOptions. Returns exit code.
+func runInitFromJSON(jsonStr string, outputPath string) int {
+	var opts InitOptions
+	if err := json.Unmarshal([]byte(jsonStr), &opts); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing --json: %v\n", err)
+		return 1
+	}
+
+	if opts.OutputPath == "" {
+		if outputPath != "" {
+			opts.OutputPath = outputPath
+		} else {
+			opts.OutputPath = "scheduler/config.json"
+		}
+	}
+
+	if len(opts.Assets) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: at least one asset required")
+		return 1
+	}
+	if !opts.EnableSpot && !opts.EnableOptions && !opts.EnablePerps {
+		fmt.Fprintln(os.Stderr, "Error: at least one strategy type must be enabled")
+		return 1
+	}
+	if opts.EnableSpot && len(opts.SpotStrategies) == 0 && !opts.IncludePairs {
+		fmt.Fprintln(os.Stderr, "Error: spot enabled but no spot strategies selected")
+		return 1
+	}
+	if opts.EnableOptions && len(opts.OptStrategies) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: options enabled but no options strategies selected")
+		return 1
+	}
+	if opts.EnableOptions && len(opts.OptionPlatforms) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: options enabled but no option platforms selected")
+		return 1
+	}
+	if opts.EnablePerps && opts.PerpsMode == "" {
+		opts.PerpsMode = "paper"
+	}
+
+	cfg := generateConfig(opts)
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error marshaling config: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(opts.OutputPath, data, 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", opts.OutputPath, err)
+		return 1
+	}
+
+	fmt.Println(opts.OutputPath)
+	return 0
+}
+
 // runInit executes the interactive init wizard. Returns exit code.
-func runInit(_ []string) int {
+func runInit(args []string) int {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	jsonFlag := fs.String("json", "", "JSON blob of InitOptions for non-interactive config generation")
+	outputFlag := fs.String("output", "scheduler/config.json", "output config file path")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
+		return 1
+	}
+
+	if *jsonFlag != "" {
+		return runInitFromJSON(*jsonFlag, *outputFlag)
+	}
+
 	p := NewPrompter()
 
 	fmt.Println()
