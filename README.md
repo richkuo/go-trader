@@ -40,6 +40,12 @@ After building the binary, run the interactive config wizard — the easiest way
 
 The wizard walks you through asset selection, strategy types (spot/options/perps), platform selection, capital and risk settings, and Discord configuration, then writes a ready-to-use `scheduler/config.json`.
 
+For scripted/automated deployments (e.g. from OpenClaw or CI), use `--json` to generate a config non-interactively:
+
+```bash
+./go-trader init --json '{"assets":["BTC"],"enableSpot":true,"spotStrategies":["sma_crossover"],"spotCapital":1000,"spotDrawdown":10}' --output config.json
+```
+
 ### Manual Setup
 
 ```bash
@@ -56,6 +62,8 @@ cd scheduler && go build -o ../go-trader . && cd ..
 
 # 4. Generate config
 ./go-trader init                                    # interactive wizard (recommended)
+# — or —
+./go-trader init --json '{"assets":["BTC"],...}'   # non-interactive (scripted)
 # — or —
 cp scheduler/config.example.json scheduler/config.json
 # then edit scheduler/config.json manually
@@ -157,7 +165,7 @@ Live mode requires `HYPERLIQUID_SECRET_KEY` env var. Paper mode simulates trades
 
 ### `scheduler/config.json`
 
-Use `./go-trader init` to generate this file interactively. The full structure:
+Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripted) to generate this file. The full structure:
 
 ```json
 {
