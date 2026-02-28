@@ -1,5 +1,7 @@
 # go-trader — Crypto Trading Bot
 
+[![GitHub release](https://img.shields.io/github/v/release/richkuo/go-trader)](https://github.com/richkuo/go-trader/releases/latest)
+
 A Go + Python hybrid trading system. A single Go binary (~8MB RAM) orchestrates 50+ paper trading strategies across spot, options, and perpetual futures markets by spawning short-lived Python scripts.
 
 **Spot markets** via Binance US (CCXT): SMA/EMA crossovers, momentum, RSI, Bollinger Bands, MACD, and pairs spread strategies on BTC, ETH, and SOL.
