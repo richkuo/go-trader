@@ -111,7 +111,11 @@ A summary is shown before writing. If `scheduler/config.json` already exists, yo
 
 After `go-trader init` completes, **skip to Step 8** (Build & Install). Steps 4–7 are only needed for manual or agent-driven config generation.
 
-> **Note for agents:** Steps 4–7 below describe the manual config procedure. Use those when you need fine-grained control (e.g. partial reconfiguration, custom strategy sets, or piping specific values). For a full fresh config, you can also drive the wizard via stdin: `printf "answers\n" | ./go-trader init`
+> **Note for agents:** For scripted/automated config generation, use `--json` instead of Steps 4–7:
+> ```bash
+> ./go-trader init --json '{"assets":["BTC","ETH"],"enableSpot":true,"spotStrategies":["momentum","rsi"],"spotCapital":1000,"spotDrawdown":60}' --output scheduler/config.json
+> ```
+> Steps 4–7 describe the manual procedure — use those only when you need fine-grained control (partial reconfiguration, custom strategy sets, etc.).
 
 ---
 
@@ -773,6 +777,12 @@ Run the interactive wizard to produce a fresh `config.json` (will prompt before 
 ./go-trader init
 ```
 
+Or non-interactively (for agents or scripted setups):
+
+```bash
+./go-trader init --json '{"assets":["BTC"],"enableSpot":true,"spotStrategies":["momentum"],"spotCapital":1000,"spotDrawdown":60}' --output scheduler/config.json
+```
+
 Then restart: `sudo systemctl restart go-trader`
 
 ### Change Discord Channels
@@ -920,8 +930,9 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    /menu       — this overview
    /go-trader  — live status dashboard (cycle, prices, PnL, circuit breakers)
    Setup:
-     ./go-trader init      — interactive config wizard (regenerate config.json)
-     Add custom platform   — say "add a custom platform" (runs Step 9 guided flow)
+     ./go-trader init                    — interactive config wizard (regenerate config.json)
+     ./go-trader init --json '{...}'     — non-interactive config generation (agents/scripts)
+     Add custom platform                 — say "add a custom platform" (runs Step 9 guided flow)
    System:
      sudo systemctl start|stop|restart go-trader
      sudo systemctl status go-trader
