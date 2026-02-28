@@ -15,7 +15,7 @@
   - `executor.go` — Python subprocess runner; max 4 concurrent, 30s timeout per script
   - `server.go` — HTTP status server (`/status`, `/health` endpoints)
   - `discord.go` — Discord alert notifications; `FormatCategorySummary` outputs a monospace code-block table (Strategy/Value/PnL/PnL%) via `writeCatTable`; `fmtComma` handles comma formatting — always pass absolute values (never signed floats)
-  - `init.go` — `go-trader init` interactive wizard; `generateConfig(InitOptions) *Config` is pure/testable; `runInit` orchestrates I/O
+  - `init.go` — `go-trader init` interactive wizard + `--json <blob>` non-interactive mode; `generateConfig(InitOptions) *Config` is pure/testable; `runInitFromJSON(jsonStr, outputPath)` for scripted config gen (e.g. from OpenClaw); `runInit` orchestrates I/O
   - `prompt.go` — `Prompter` struct (String/YesNo/Choice/MultiSelect/Float); inject `NewPrompterFromReader(r,w)` for tests
 - `shared_scripts/` — Python entry-point scripts called by the scheduler
   - `check_strategy.py` — spot strategy signal checker
@@ -76,3 +76,4 @@
 - Smoke test: `./go-trader --once`
 - Run with config: `./go-trader --config scheduler/config.json`
 - Smoke test interactive CLI: `printf "answer1\nanswer2\n" | ./go-trader init`
+- Smoke test JSON CLI: `./go-trader init --json '{"assets":["BTC"],"enableSpot":true,"spotStrategies":["sma_crossover"],"spotCapital":1000,"spotDrawdown":10}' --output /tmp/test.json`

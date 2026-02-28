@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -463,5 +466,80 @@ func TestStratShortName(t *testing.T) {
 	// Unknown strategy falls back to the ID itself.
 	if got := stratShortName(spotStrategies, "unknown_strat"); got != "unknown_strat" {
 		t.Errorf("expected unknown_strat, got %s", got)
+	}
+}
+
+func TestRunInitFromJSON_Valid(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "config.json")
+	jsonStr := `{"assets":["BTC"],"enableSpot":true,"spotStrategies":["sma_crossover"],"spotCapital":1000,"spotDrawdown":10}`
+	code := runInitFromJSON(jsonStr, out)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("expected output file to exist: %v", err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if len(cfg.Strategies) == 0 {
+		t.Error("expected at least one strategy in generated config")
+	}
+}
+
+func TestRunInitFromJSON_MissingAssets(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "config.json")
+	jsonStr := `{"enableSpot":true,"spotStrategies":["sma_crossover"]}`
+	code := runInitFromJSON(jsonStr, out)
+	if code != 1 {
+		t.Fatalf("expected exit 1 for missing assets, got %d", code)
+	}
+}
+
+func TestRunInitFromJSON_NoStrategyTypes(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "config.json")
+	jsonStr := `{"assets":["BTC"]}`
+	code := runInitFromJSON(jsonStr, out)
+	if code != 1 {
+		t.Fatalf("expected exit 1 for no strategy types, got %d", code)
+	}
+}
+
+func TestRunInitFromJSON_SpotEnabledNoStrategies(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "config.json")
+	jsonStr := `{"assets":["BTC"],"enableSpot":true}`
+	code := runInitFromJSON(jsonStr, out)
+	if code != 1 {
+		t.Fatalf("expected exit 1 for spot enabled with no strategies, got %d", code)
+	}
+}
+
+func TestRunInitFromJSON_PerpsNoModeDefaultsPaper(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "config.json")
+	jsonStr := `{"assets":["BTC"],"enablePerps":true}`
+	code := runInitFromJSON(jsonStr, out)
+	if code != 0 {
+		t.Fatalf("expected exit 0 with perps default paper mode, got %d", code)
+	}
+	data, _ := os.ReadFile(out)
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	for _, s := range cfg.Strategies {
+		if s.Type != "perps" {
+			continue
+		}
+		found := false
+		for _, arg := range s.Args {
+			if arg == "--mode=paper" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected --mode=paper in args for %s, got %v", s.ID, s.Args)
+		}
 	}
 }
