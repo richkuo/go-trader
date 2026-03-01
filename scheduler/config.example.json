@@ -59,7 +59,8 @@
     "token": "",
     "channels": {
       "spot": "",
-      "options": ""
+      "options": "",
+      "hyperliquid": ""
     },
     "spot_summary_freq": "hourly",
     "options_summary_freq": "per_check"

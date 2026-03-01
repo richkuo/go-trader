@@ -164,8 +164,9 @@ type InitOptions struct {
 	OptionsDrawdown  float64
 	PerpsDrawdown    float64
 	DiscordEnabled   bool
-	SpotChannelID    string
-	OptionsChannelID string
+	SpotChannelID    string            // deprecated: use ChannelMap
+	OptionsChannelID string            // deprecated: use ChannelMap
+	ChannelMap       map[string]string // keyed by platform/type ("spot", "hyperliquid", "deribit", etc.)
 }
 
 // generateConfig builds a Config from InitOptions. Pure function, no I/O.
@@ -179,11 +180,8 @@ func generateConfig(opts InitOptions) *Config {
 			MaxNotionalUSD: 0,
 		},
 		Discord: DiscordConfig{
-			Enabled: opts.DiscordEnabled,
-			Channels: DiscordChannels{
-				Spot:    opts.SpotChannelID,
-				Options: opts.OptionsChannelID,
-			},
+			Enabled:  opts.DiscordEnabled,
+			Channels: opts.ChannelMap,
 		},
 		Platforms: make(map[string]*PlatformConfig),
 	}
@@ -369,6 +367,17 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		}
 	}
 
+	// Migrate deprecated SpotChannelID/OptionsChannelID into ChannelMap.
+	if opts.ChannelMap == nil && (opts.SpotChannelID != "" || opts.OptionsChannelID != "") {
+		opts.ChannelMap = make(map[string]string)
+		if opts.SpotChannelID != "" {
+			opts.ChannelMap["spot"] = opts.SpotChannelID
+		}
+		if opts.OptionsChannelID != "" {
+			opts.ChannelMap["options"] = opts.OptionsChannelID
+		}
+	}
+
 	cfg := generateConfig(opts)
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
@@ -540,11 +549,25 @@ func runInit(args []string) int {
 	// Step 9: Discord.
 	fmt.Println("\n--- Discord Notifications ---")
 	discordEnabled := p.YesNo("Enable Discord notifications?", false)
-	spotChannelID := ""
-	optionsChannelID := ""
+	channelMap := make(map[string]string)
 	if discordEnabled {
-		spotChannelID = p.String("Spot channel ID (leave blank to skip)", "")
-		optionsChannelID = p.String("Options channel ID (leave blank to skip)", "")
+		if enableSpot || includePairs {
+			if ch := p.String("Spot channel ID (leave blank to skip)", ""); ch != "" {
+				channelMap["spot"] = ch
+			}
+		}
+		if enableOptions {
+			for _, plt := range optionPlatforms {
+				if ch := p.String(fmt.Sprintf("%s channel ID (leave blank to skip)", plt), ""); ch != "" {
+					channelMap[plt] = ch
+				}
+			}
+		}
+		if enablePerps {
+			if ch := p.String("Hyperliquid channel ID (leave blank to skip)", ""); ch != "" {
+				channelMap["hyperliquid"] = ch
+			}
+		}
 	}
 
 	// Collect all perps strategy IDs (auto-selected, no user prompt).
@@ -554,26 +577,25 @@ func runInit(args []string) int {
 	}
 
 	opts := InitOptions{
-		OutputPath:       outputPath,
-		Assets:           selectedAssets,
-		EnableSpot:       enableSpot,
-		EnableOptions:    enableOptions,
-		EnablePerps:      enablePerps,
-		OptionPlatforms:  optionPlatforms,
-		PerpsMode:        perpsMode,
-		SpotStrategies:   selectedSpotStrats,
-		IncludePairs:     includePairs,
-		OptStrategies:    selectedOptStrats,
-		PerpsStrategies:  perpsStratIDs,
-		SpotCapital:      spotCapital,
-		OptionsCapital:   optionsCapital,
-		PerpsCapital:     perpsCapital,
-		SpotDrawdown:     spotDrawdown,
-		OptionsDrawdown:  optionsDrawdown,
-		PerpsDrawdown:    perpsDrawdown,
-		DiscordEnabled:   discordEnabled,
-		SpotChannelID:    spotChannelID,
-		OptionsChannelID: optionsChannelID,
+		OutputPath:      outputPath,
+		Assets:          selectedAssets,
+		EnableSpot:      enableSpot,
+		EnableOptions:   enableOptions,
+		EnablePerps:     enablePerps,
+		OptionPlatforms: optionPlatforms,
+		PerpsMode:       perpsMode,
+		SpotStrategies:  selectedSpotStrats,
+		IncludePairs:    includePairs,
+		OptStrategies:   selectedOptStrats,
+		PerpsStrategies: perpsStratIDs,
+		SpotCapital:     spotCapital,
+		OptionsCapital:  optionsCapital,
+		PerpsCapital:    perpsCapital,
+		SpotDrawdown:    spotDrawdown,
+		OptionsDrawdown: optionsDrawdown,
+		PerpsDrawdown:   perpsDrawdown,
+		DiscordEnabled:  discordEnabled,
+		ChannelMap:      channelMap,
 	}
 
 	cfg := generateConfig(opts)

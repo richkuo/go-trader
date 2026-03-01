@@ -429,19 +429,21 @@ func TestGenerateConfig_PortfolioRiskDefaults(t *testing.T) {
 func TestGenerateConfig_DiscordEnabled(t *testing.T) {
 	opts := baseOpts()
 	opts.DiscordEnabled = true
-	opts.SpotChannelID = "111222333"
-	opts.OptionsChannelID = "444555666"
+	opts.ChannelMap = map[string]string{
+		"spot":    "111222333",
+		"options": "444555666",
+	}
 
 	cfg := generateConfig(opts)
 
 	if !cfg.Discord.Enabled {
 		t.Error("expected Discord.Enabled=true")
 	}
-	if cfg.Discord.Channels.Spot != "111222333" {
-		t.Errorf("expected spot channel 111222333, got %s", cfg.Discord.Channels.Spot)
+	if cfg.Discord.Channels["spot"] != "111222333" {
+		t.Errorf("expected spot channel 111222333, got %s", cfg.Discord.Channels["spot"])
 	}
-	if cfg.Discord.Channels.Options != "444555666" {
-		t.Errorf("expected options channel 444555666, got %s", cfg.Discord.Channels.Options)
+	if cfg.Discord.Channels["options"] != "444555666" {
+		t.Errorf("expected options channel 444555666, got %s", cfg.Discord.Channels["options"])
 	}
 }
 
