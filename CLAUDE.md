@@ -17,6 +17,7 @@
   - `discord.go` — Discord alert notifications; `FormatCategorySummary(cycle, elapsed, strategiesRun, trades, value, prices, tradeDetails, channelStrategies []StrategyConfig, state, channelKey string)` outputs a monospace code-block table via `writeCatTable`; `resolveChannel(channels, platform, stratType)` maps strategy to channel ID; `fmtComma` — always pass absolute values (never signed floats)
   - `init.go` — `go-trader init` interactive wizard + `--json <blob>` non-interactive mode; `generateConfig(InitOptions) *Config` is pure/testable; `runInitFromJSON(jsonStr, outputPath)` for scripted config gen (e.g. from OpenClaw); `runInit` orchestrates I/O
   - `prompt.go` — `Prompter` struct (String/YesNo/Choice/MultiSelect/Float); inject `NewPrompterFromReader(r,w)` for tests
+  - `updater.go` — update checker; `checkForUpdates(cfg, discord, &lastNotifiedHash)` — git fetch, Discord notify, dedup by remote hash; logs `[update]` prefix
 - `shared_scripts/` — Python entry-point scripts called by the scheduler
   - `check_strategy.py` — spot strategy signal checker
   - `check_options.py` — unified options checker (`--platform=deribit|ibkr`)
@@ -51,6 +52,7 @@
 - Fee dispatch: `CalculatePlatformSpotFee(platform, value)` — 0.035% hyperliquid, 0.1% binanceus (replaces bare `CalculateSpotFee` for platform-aware spot/perps trades)
 - State persisted to `scheduler/state.json` (path set in config); per-platform files at `platforms/<name>/state.json`
 - `cfg.Discord.Channels` is `map[string]string` (not a struct); keys: "spot", "options", "hyperliquid", etc. — old `.Spot`/`.Options` field access is invalid
+- `cfg.AutoUpdate` — `"off"` (default), `"daily"` (once/day), `"heartbeat"` (every cycle); handled in main.go loop + startup; uses `dailyCycles = (24*3600)/tickSeconds`
 - Strategy discovery: `shared_strategies/spot/strategies.py --list-json` and `shared_strategies/options/strategies.py --list-json` output JSON arrays of `{"id":..., "description":...}`
 
 ## Build & Deploy
