@@ -10,9 +10,9 @@ A Go + Python hybrid trading system. A single Go binary (~8MB RAM) orchestrates 
 
 **Options markets** via Deribit + IBKR/CME: volatility mean reversion, momentum, protective puts, and covered calls on BTC and ETH — running head-to-head across both exchanges.
 
-**Perpetual futures** via Hyperliquid: momentum strategy on BTC, ETH, and SOL with paper and live trading support.
+**Perpetual futures** via Hyperliquid: full spot strategy suite on any HL-listed asset, with paper and live trading support.
 
-**Discord alerts**: Separate channels for spot and options summaries, with immediate trade notifications.
+**Discord alerts**: Per-platform channels for spot, options, and hyperliquid summaries, with immediate trade notifications.
 
 Supported platforms: Binance US, Deribit, IBKR/CME, Hyperliquid.
 
@@ -100,7 +100,7 @@ Go scheduler (always running, ~8MB idle)
   ↓ marks options to market via Deribit REST API (live prices every cycle)
   ↓ saves state → scheduler/state.json (atomic writes, survives restarts)
   ↓ HTTP status → localhost:8099/status
-  ↓ Discord → spot channel + options channel
+  ↓ Discord → per-platform channels (spot, options, hyperliquid)
 
 Platform adapters (Python):
   platforms/binanceus/adapter.py  — spot (CCXT)
@@ -125,9 +125,9 @@ Python gets the quant libraries (pandas, numpy, scipy, CCXT). Go gets memory eff
 | `rsi` | Buy oversold, sell overbought |
 | `bollinger_bands` | Mean reversion at band extremes |
 | `macd` | MACD/signal line crossovers |
-| `rsi_sma` | RSI filtered by SMA trend |
-| `rsi_ema` | RSI filtered by EMA trend |
-| `ema_rsi_macd` | EMA + RSI + MACD combo |
+| `mean_reversion` | Statistical mean reversion |
+| `volume_weighted` | Trend + volume confirmation |
+| `triple_ema` | Triple EMA crossover |
 | `rsi_macd_combo` | RSI and MACD confluence |
 | `pairs_spread` | BTC/ETH, BTC/SOL, ETH/SOL spread z-score stat arb (1d) |
 
@@ -144,11 +144,9 @@ Same 4 strategies on both Deribit and IBKR/CME for comparison:
 
 New options trades are scored against existing positions for strike distance, expiry spread, and Greek balancing. Max 4 positions per strategy, min score 0.3 to execute.
 
-### Perps (1 strategy, 1h interval, BTC/ETH/SOL)
+### Perps (10 strategies, 1h interval, any HL-listed asset)
 
-| Strategy | Platform | Modes | Description |
-|----------|----------|-------|-------------|
-| `momentum` | Hyperliquid | paper / live | Rate of change breakouts on perpetual futures |
+Full spot strategy suite on Hyperliquid perpetual futures. Strategies are auto-discovered at `go-trader init` time: `momentum`, `sma_crossover`, `ema_crossover`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `volume_weighted`, `triple_ema`, `rsi_macd_combo`.
 
 Live mode requires `HYPERLIQUID_SECRET_KEY` env var. Paper mode simulates trades without a key.
 
@@ -183,9 +181,7 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
   "discord": {
     "enabled": true,
     "token": "",
-    "channels": { "spot": "CHANNEL_ID", "options": "CHANNEL_ID" },
-    "spot_summary_freq": "hourly",
-    "options_summary_freq": "per_check"
+    "channels": { "spot": "CHANNEL_ID", "options": "CHANNEL_ID", "hyperliquid": "CHANNEL_ID" }
   },
   "platforms": {
     "hyperliquid": {
@@ -209,10 +205,7 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
 |-------|-------------|
 | `discord.enabled` | Enable/disable Discord notifications |
 | `discord.token` | Leave blank — use `DISCORD_BOT_TOKEN` env var |
-| `discord.channels.spot` | Channel for spot summaries (📈 hourly + trade alerts) |
-| `discord.channels.options` | Channel for options summaries (🎯 per-check, Deribit/IBKR split) |
-| `discord.spot_summary_freq` | `"hourly"` (default) or `"per_check"` |
-| `discord.options_summary_freq` | `"per_check"` (default) or `"hourly"` |
+| `discord.channels` | Map of channel IDs keyed by platform/type — `"spot"`, `"options"`, `"hyperliquid"`, etc. Options post per-check; others post hourly + on trades. |
 
 ### Strategy Entry
 

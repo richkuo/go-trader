@@ -103,9 +103,9 @@ The wizard walks through:
 1. **Assets** — BTC, ETH, SOL (multi-select)
 2. **Spot strategies** — momentum, mean reversion, pairs spread (BinanceUS)
 3. **Options strategies** — covered call, cash-secured put; Deribit and/or IBKR
-4. **Perps strategies** — momentum on Hyperliquid (paper or live mode)
+4. **Perps strategies** — full spot strategy suite on Hyperliquid (paper or live mode)
 5. **Capital & max drawdown** per strategy type
-6. **Discord** — channel IDs for spot and options alerts
+6. **Discord** — per-platform channel IDs (spot, options, hyperliquid if perps enabled)
 
 A summary is shown before writing. If `scheduler/config.json` already exists, you'll be prompted to confirm overwrite.
 
@@ -157,7 +157,7 @@ Ask:
 > Spot channel ID:
 
 #### 4c. Options Alerts Channel
-Ask:
+Ask (only if options strategies will be enabled):
 > Which Discord channel should receive **options trading** alerts?
 >
 > This channel will get:
@@ -167,9 +167,21 @@ Ask:
 >
 > This can be the same channel as spot, or a different one.
 >
-> Options channel ID:
+> Options channel ID (or press Enter to skip):
 
-#### 4d. Discord Server (Guild) ID
+#### 4d. Hyperliquid Alerts Channel
+Ask (only if perps/hyperliquid strategies will be enabled):
+> Which Discord channel should receive **Hyperliquid perps** alerts?
+>
+> This channel will get:
+> - Hourly summaries of all Hyperliquid strategy PnL
+> - Immediate trade notifications
+>
+> This can be the same channel as spot, or a different one.
+>
+> Hyperliquid channel ID (or press Enter to skip):
+
+#### 4e. Discord Server (Guild) ID
 Ask:
 > What's the Discord server (guild) ID where these channels are?
 >
@@ -179,20 +191,7 @@ Ask:
 
 Store this for OpenClaw allowlist configuration in Step 7.
 
-#### 4e. Summary Frequency
-Ask:
-> How often should spot summaries post to Discord?
->
-> 1. **Hourly** (recommended) — one summary per hour, trades posted immediately
-> 2. **Per check** — summary every 5 minutes (can be noisy)
->
-> Options summaries always post per check (every 20 minutes).
->
-> Your preference: (1 or 2, default: 1)
-
-Map response:
-- 1 or blank → `"hourly"`
-- 2 → `"per_check"`
+> **Note:** Summary frequency is automatic — spot and hyperliquid summaries post hourly (plus immediate trade alerts), options summaries post every check cycle. No configuration needed.
 
 ---
 
@@ -247,10 +246,11 @@ Ask:
 ## Step 6: Strategy Selection
 
 Ask:
-> go-trader comes with 30 strategies across three groups:
+> go-trader comes with strategies across three groups:
 >
-> **Spot (14 strategies)** — BTC, ETH, SOL on Binance
->   momentum, RSI, MACD, volume-weighted, pairs spread
+> **Spot (10 strategies)** — BTC, ETH, SOL on Binance
+>   sma_crossover, ema_crossover, momentum, rsi, bollinger_bands, macd,
+>   mean_reversion, volume_weighted, triple_ema, rsi_macd_combo, pairs_spread
 >
 > **Deribit Options (8 strategies)** — BTC, ETH options
 >   vol mean reversion, momentum, puts, calls, wheel, butterfly
@@ -259,7 +259,7 @@ Ask:
 >   Same 6 strategies as Deribit, for head-to-head comparison
 >
 > Do you want to:
-> 1. **Run all 30** (recommended for paper trading)
+> 1. **Run all** (recommended for paper trading)
 > 2. **Choose by group** (enable/disable spot, Deribit, IBKR)
 > 3. **Pick individual strategies**
 >
@@ -270,7 +270,7 @@ Use the full default strategy set. Skip to Step 6b.
 
 ### If 2 (by group):
 Ask for each group:
-> Enable **spot strategies** (momentum, RSI, MACD, volume-weighted, pairs on BTC/ETH/SOL)? (yes/no, default: yes)
+> Enable **spot strategies** (sma_crossover, ema_crossover, momentum, rsi, bollinger_bands, macd, mean_reversion, volume_weighted, triple_ema, rsi_macd_combo, pairs_spread on BTC/ETH/SOL)? (yes/no, default: yes)
 > Enable **Deribit options** (vol MR, momentum, puts, calls, wheel, butterfly on BTC/ETH)? (yes/no, default: yes)
 > Enable **IBKR/CME options** (same strategies as Deribit, CME Micro contracts)? (yes/no, default: yes)
 
@@ -281,13 +281,19 @@ Present each strategy and ask yes/no. Group them for readability:
 >
 > | # | Strategy | Assets | Description | Enable? |
 > |---|----------|--------|-------------|---------|
-> | 1 | momentum | BTC, ETH, SOL | Rate of change breakouts | (y/n) |
-> | 2 | rsi | BTC, ETH, SOL | Buy oversold, sell overbought | (y/n) |
-> | 3 | macd | BTC, ETH | MACD/signal crossovers | (y/n) |
-> | 4 | volume_weighted | BTC, ETH, SOL | Trend + volume confirmation | (y/n) |
-> | 5 | pairs_spread | BTC/ETH, BTC/SOL, ETH/SOL | Spread z-score stat arb | (y/n) |
+> | 1 | sma_crossover | BTC, ETH, SOL | Simple moving average crossover | (y/n) |
+> | 2 | ema_crossover | BTC, ETH, SOL | Exponential moving average crossover | (y/n) |
+> | 3 | momentum | BTC, ETH, SOL | Rate of change breakouts | (y/n) |
+> | 4 | rsi | BTC, ETH, SOL | Buy oversold, sell overbought | (y/n) |
+> | 5 | bollinger_bands | BTC, ETH, SOL | Mean reversion at band extremes | (y/n) |
+> | 6 | macd | BTC, ETH, SOL | MACD/signal line crossovers | (y/n) |
+> | 7 | mean_reversion | BTC, ETH, SOL | Statistical mean reversion | (y/n) |
+> | 8 | volume_weighted | BTC, ETH, SOL | Trend + volume confirmation | (y/n) |
+> | 9 | triple_ema | BTC, ETH, SOL | Triple EMA crossover | (y/n) |
+> | 10 | rsi_macd_combo | BTC, ETH, SOL | RSI and MACD confluence | (y/n) |
+> | 11 | pairs_spread | BTC/ETH, BTC/SOL, ETH/SOL | Spread z-score stat arb (1d) | (y/n) |
 >
-> Which spot strategies do you want? (e.g., "1,2,4" or "all" or "none")
+> Which spot strategies do you want? (e.g., "1,3,11" or "all" or "none")
 
 Then repeat for options:
 > **Deribit Options** (20-minute checks, BTC + ETH each):
@@ -354,10 +360,8 @@ Start from `scheduler/config.example.json` as a template. For each enabled strat
 Discord config:
 - `discord.enabled`: true/false based on Step 4
 - `discord.token`: Always `""` (token comes from env var)
-- `discord.channels.spot`: Channel ID from Step 4b
-- `discord.channels.options`: Channel ID from Step 4c
-- `discord.spot_summary_freq`: From Step 4e
-- `discord.options_summary_freq`: `"per_check"`
+- `discord.channels`: Map of channel IDs for enabled platform types, e.g. `{"spot": "ID_FROM_4b", "options": "ID_FROM_4c", "hyperliquid": "ID_FROM_4d"}` — omit keys for platforms not in use
+- Summary frequency is automatic: options post per-check, spot/hyperliquid post hourly + on trades (no config field needed)
 
 ### 7b. OpenClaw Discord Allowlist (if applicable)
 
@@ -386,8 +390,9 @@ Show the user a summary before proceeding:
 > **Risk:** {spot_drawdown}% max drawdown (spot), {options_drawdown}% (options)
 > **Theta harvesting:** {enabled/disabled} {details if enabled}
 > **Discord:** {enabled/disabled}
->   📈 Spot alerts → #{channel_name} ({freq})
+>   📈 Spot alerts → #{channel_name} (hourly + on trade)
 >   🎯 Options alerts → #{channel_name} (per check)
+>   ⚡ Hyperliquid alerts → #{channel_name} (hourly + on trade)  {if perps enabled}
 >
 > Proceed? (yes / no)
 
@@ -539,7 +544,7 @@ Ask the following questions (can be asked all at once or one at a time):
 > **Assets to trade** (e.g. `BTC, ETH` or `BTC/USDT, SOL/USDT`):
 
 > **Strategies to run** — which strategy types should this platform use?
-> - Spot: momentum, rsi, macd, volume_weighted, pairs_spread
+> - Spot: sma_crossover, ema_crossover, momentum, rsi, bollinger_bands, macd, mean_reversion, volume_weighted, triple_ema, rsi_macd_combo, pairs_spread
 > - Perps: (same as spot strategies, executed via check_hyperliquid.py pattern)
 > - Options: vol_mean_reversion, momentum_options, protective_puts, covered_calls, wheel, butterfly
 >
@@ -604,9 +609,9 @@ If a new `check_<name>.py` was created, add the invocation pattern to `executor.
 
 Only modify `main.go` if a brand-new strategy type is needed (not "spot", "options", or "perps"). If reusing an existing type, no change needed.
 
-#### Go: discord.go — Category Routing
+#### Go: discord.go — Channel Routing
 
-Add the new platform's strategies to the Discord category routing so summaries post to the right channel. Check `discord.go` for the category map and add an entry for the new platform/strategy type.
+Channels are resolved dynamically via `resolveChannel(channels, platform, stratType)` — platform key takes priority over type key. No code change needed; just add the new platform's key to `discord.channels` in `config.json` (e.g. `"myplatform": "CHANNEL_ID"`).
 
 #### Config: config.example.json
 
@@ -786,7 +791,7 @@ Or non-interactively (for agents or scripted setups):
 Then restart: `sudo systemctl restart go-trader`
 
 ### Change Discord Channels
-Edit `scheduler/config.json` → `discord.channels`, then restart:
+Edit `scheduler/config.json` → `discord.channels` (map keyed by platform/type), then restart:
 ```bash
 sudo systemctl restart go-trader
 ```
@@ -897,10 +902,10 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    • Hyperliquid — perps trading: any HL-listed asset (paper + live)
    • Custom      — add your own exchange via Step 9 (guided setup)
 
-2. AVAILABLE STRATEGIES  (30 total)
-   Spot (14):
-     momentum (BTC,ETH,SOL), rsi (BTC,ETH,SOL), macd (BTC,ETH,SOL),
-     volume_weighted (BTC), pairs_spread (BTC/ETH)
+2. AVAILABLE STRATEGIES
+   Spot (10 strategies):
+     sma_crossover, ema_crossover, momentum, rsi, bollinger_bands, macd,
+     mean_reversion, volume_weighted, triple_ema, rsi_macd_combo, pairs_spread
    Deribit Options (8):
      vol_mean_reversion, momentum_options, protective_puts, covered_calls,
      wheel, butterfly  — BTC + ETH each
@@ -988,10 +993,7 @@ Each entry in the `strategies` array supports:
 | Setting | Key | Default | Description |
 |---------|-----|---------|-------------|
 | Enable Discord | `discord.enabled` | true | Turn Discord notifications on/off |
-| Spot channel | `discord.channels.spot` | — | Channel ID for spot trading summaries |
-| Options channel | `discord.channels.options` | — | Channel ID for options trading summaries |
-| Spot frequency | `discord.spot_summary_freq` | `"hourly"` | How often spot summaries post: `"hourly"` or `"per_check"` |
-| Options frequency | `discord.options_summary_freq` | `"per_check"` | How often options summaries post: `"per_check"` or `"hourly"` |
+| Channels | `discord.channels` | — | Map of channel IDs keyed by platform/type: `"spot"`, `"options"`, `"hyperliquid"`, etc. |
 
 ### Environment Variables
 
@@ -1045,10 +1047,7 @@ Each spot strategy needs entries for each asset it supports:
 ```
 
 **Strategies and their assets:**
-- `momentum`: BTC, ETH, SOL
-- `rsi`: BTC, ETH, SOL
-- `macd`: BTC, ETH
-- `volume_weighted`: BTC, ETH, SOL
+- `sma_crossover`, `ema_crossover`, `momentum`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `volume_weighted`, `triple_ema`, `rsi_macd_combo`: BTC, ETH, SOL
 - `pairs_spread`: Requires two assets — `args: ["pairs_spread", "BTC/USDT", "1d", "ETH/USDT"]`
 
 **Pairs strategy IDs and args:**
