@@ -60,19 +60,40 @@ func (d *DiscordNotifier) SendMessage(channelID string, content string) error {
 	return nil
 }
 
-// stratCategory returns "spot", "deribit", or "ibkr" based on the strategy's platform.
-func stratCategory(platform string) string {
-	switch platform {
-	case "deribit":
-		return "deribit"
-	case "ibkr":
-		return "ibkr"
-	default:
-		return "spot"
+// resolveChannel returns the Discord channel ID for a strategy.
+// Lookup order: channels[platform] -> channels[stratType] -> "" (no channel).
+func resolveChannel(channels map[string]string, platform, stratType string) string {
+	if ch, ok := channels[platform]; ok && ch != "" {
+		return ch
 	}
+	if ch, ok := channels[stratType]; ok && ch != "" {
+		return ch
+	}
+	return ""
 }
 
-// FormatCategorySummary creates a Discord message for specific categories (spot or options)
+// channelKeyFromID returns the map key for a given channel ID (reverse lookup for display labels).
+func channelKeyFromID(channels map[string]string, chID string) string {
+	for k, v := range channels {
+		if v == chID {
+			return k
+		}
+	}
+	return chID
+}
+
+// isOptionsType returns true if any strategy in the list is an options strategy.
+func isOptionsType(strats []StrategyConfig) bool {
+	for _, sc := range strats {
+		if sc.Type == "options" {
+			return true
+		}
+	}
+	return false
+}
+
+// FormatCategorySummary creates a Discord message for a set of strategies sharing a channel.
+// channelStrategies is pre-filtered by the caller; channelKey is the display label.
 func FormatCategorySummary(
 	cycle int,
 	elapsed time.Duration,
@@ -81,25 +102,24 @@ func FormatCategorySummary(
 	totalValue float64,
 	prices map[string]float64,
 	tradeDetails []string,
-	strategies []StrategyConfig,
+	channelStrategies []StrategyConfig,
 	state *AppState,
-	categoryFilter string, // "spot" or "options"
+	channelKey string,
 ) string {
 	var sb strings.Builder
 
-	// Title based on category
-	if categoryFilter == "spot" {
-		if totalTrades > 0 {
-			sb.WriteString("📈 **SPOT TRADES**\n")
-		} else {
-			sb.WriteString("📈 **Spot Summary**\n")
-		}
+	// Icon and title based on strategy types and channel key.
+	icon := "📊"
+	if isOptionsType(channelStrategies) {
+		icon = "🎯"
+	} else if channelKey == "spot" {
+		icon = "📈"
+	}
+	title := strings.ToUpper(channelKey[:1]) + channelKey[1:]
+	if totalTrades > 0 {
+		sb.WriteString(fmt.Sprintf("%s **%s TRADES**\n", icon, strings.ToUpper(title)))
 	} else {
-		if totalTrades > 0 {
-			sb.WriteString("🎯 **OPTIONS TRADES**\n")
-		} else {
-			sb.WriteString("🎯 **Options Summary**\n")
-		}
+		sb.WriteString(fmt.Sprintf("%s **%s Summary**\n", icon, title))
 	}
 
 	sb.WriteString(fmt.Sprintf("Cycle #%d | %.1fs\n", cycle, elapsed.Seconds()))
@@ -120,48 +140,26 @@ func FormatCategorySummary(
 		sb.WriteString("\n")
 	}
 
-	// Split strategies into spot / deribit / ibkr (filtered by categoryFilter)
-	cats := map[string]*catInfo{
-		"spot":    {bots: []botInfo{}},
-		"deribit": {bots: []botInfo{}},
-		"ibkr":    {bots: []botInfo{}},
-	}
-
-	for _, sc := range strategies {
+	// Build flat bot list from the provided channel strategies.
+	var tableBots []botInfo
+	var totalCap, filteredValue float64
+	for _, sc := range channelStrategies {
 		ss := state.Strategies[sc.ID]
 		if ss == nil {
 			continue
 		}
-		cat := stratCategory(sc.Platform)
-
-		// Filter based on categoryFilter
-		if categoryFilter == "spot" && cat != "spot" {
-			continue
-		}
-		if categoryFilter == "options" && cat == "spot" {
-			continue
-		}
-
-		ci := cats[cat]
-		ci.count++
-		ci.capital += sc.Capital
 		pv := PortfolioValue(ss, prices)
-		ci.value += pv
+		totalCap += sc.Capital
+		filteredValue += pv
 		pnl := pv - sc.Capital
-		ci.pnl += pnl
 		openPos := len(ss.Positions) + len(ss.OptionPositions)
-		ci.posCount += openPos
-		ci.closedTrades += ss.RiskState.TotalTrades
-
-		// Extract strategy name from args or ID
 		stratName := extractStrategyName(sc)
 		pnlPct := 0.0
 		if sc.Capital > 0 {
 			pnlPct = (pnl / sc.Capital) * 100
 		}
-
 		asset := extractAsset(sc)
-		ci.bots = append(ci.bots, botInfo{
+		tableBots = append(tableBots, botInfo{
 			id:            sc.ID,
 			strategy:      stratName,
 			asset:         asset,
@@ -175,18 +173,6 @@ func FormatCategorySummary(
 		})
 	}
 
-	// Build merged bot list and totals for the table
-	var tableBots []botInfo
-	var totalCap, filteredValue float64
-	if categoryFilter == "spot" {
-		tableBots = cats["spot"].bots
-		totalCap = cats["spot"].capital
-		filteredValue = cats["spot"].value
-	} else {
-		tableBots = append(cats["deribit"].bots, cats["ibkr"].bots...)
-		totalCap = cats["deribit"].capital + cats["ibkr"].capital
-		filteredValue = cats["deribit"].value + cats["ibkr"].value
-	}
 	totalPnl := filteredValue - totalCap
 	totalPnlPct := 0.0
 	if totalCap > 0 {
@@ -203,16 +189,6 @@ func FormatCategorySummary(
 	}
 
 	return sb.String()
-}
-
-type catInfo struct {
-	value        float64
-	count        int
-	posCount     int
-	closedTrades int
-	pnl          float64
-	capital      float64
-	bots         []botInfo
 }
 
 type botInfo struct {

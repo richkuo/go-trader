@@ -108,10 +108,9 @@ func main() {
 	// Discord notifier
 	var discord *DiscordNotifier
 	if cfg.Discord.Enabled && cfg.Discord.Token != "" {
-		if cfg.Discord.Channels.Spot != "" || cfg.Discord.Channels.Options != "" {
+		if len(cfg.Discord.Channels) > 0 {
 			discord = NewDiscordNotifier(cfg.Discord.Token)
-			fmt.Printf("Discord notifications enabled (spot: %s, options: %s)\n",
-				cfg.Discord.Channels.Spot, cfg.Discord.Channels.Options)
+			fmt.Printf("Discord notifications enabled (%d channels)\n", len(cfg.Discord.Channels))
 		}
 	}
 
@@ -148,10 +147,8 @@ func main() {
 		cycle := state.CycleCount
 		mu.Unlock()
 		totalTrades := 0
-		spotTrades := 0
-		optionsTrades := 0
-		spotTradeDetails := make([]string, 0)
-		optionsTradeDetails := make([]string, 0)
+		channelTrades := make(map[string]int)
+		channelTradeDetails := make(map[string][]string)
 
 		// Determine which strategies are due this tick
 		dueStrategies := make([]StrategyConfig, 0)
@@ -258,14 +255,13 @@ func main() {
 
 			if killSwitchFired && discord != nil {
 				msg := fmt.Sprintf("**PORTFOLIO KILL SWITCH**\n%s\nAll positions force-closed. Manual reset required.", portfolioReason)
-				if cfg.Discord.Channels.Spot != "" {
-					if err := discord.SendMessage(cfg.Discord.Channels.Spot, msg); err != nil {
-						fmt.Printf("[WARN] Discord kill switch alert failed: %v\n", err)
-					}
-				}
-				if cfg.Discord.Channels.Options != "" {
-					if err := discord.SendMessage(cfg.Discord.Channels.Options, msg); err != nil {
-						fmt.Printf("[WARN] Discord kill switch alert failed: %v\n", err)
+				seen := make(map[string]bool)
+				for _, ch := range cfg.Discord.Channels {
+					if ch != "" && !seen[ch] {
+						seen[ch] = true
+						if err := discord.SendMessage(ch, msg); err != nil {
+							fmt.Printf("[WARN] Discord kill switch alert failed: %v\n", err)
+						}
 					}
 				}
 			}
@@ -331,22 +327,16 @@ func main() {
 							trades, detail = executeSpotResult(sc, stratState, result, signalStr, price, logger)
 							mu.Unlock()
 						}
-						if trades > 0 && detail != "" {
-							spotTradeDetails = append(spotTradeDetails, detail)
-						}
-						spotTrades += trades
 					case "options":
 						if result, signalStr, ok := runOptionsCheck(sc, posJSON, logger); ok {
 							mu.Lock()
 							var harvestDetails []string
 							trades, detail, harvestDetails = executeOptionsResult(sc, stratState, result, signalStr, logger)
 							mu.Unlock()
-							optionsTradeDetails = append(optionsTradeDetails, harvestDetails...)
+							if ch := resolveChannel(cfg.Discord.Channels, sc.Platform, sc.Type); ch != "" {
+								channelTradeDetails[ch] = append(channelTradeDetails[ch], harvestDetails...)
+							}
 						}
-						if trades > 0 && detail != "" {
-							optionsTradeDetails = append(optionsTradeDetails, detail)
-						}
-						optionsTrades += trades
 					case "perps":
 						if result, signalStr, price, ok := runHyperliquidCheck(sc, prices, logger); ok {
 							prices[result.Symbol] = price
@@ -360,12 +350,14 @@ func main() {
 							trades, detail = executeHyperliquidResult(sc, stratState, result, execResult, signalStr, price, logger)
 							mu.Unlock()
 						}
-						if trades > 0 && detail != "" {
-							spotTradeDetails = append(spotTradeDetails, detail)
-						}
-						spotTrades += trades
 					default:
 						logger.Error("Unknown strategy type: %s", sc.Type)
+					}
+					if trades > 0 && detail != "" {
+						if ch := resolveChannel(cfg.Discord.Channels, sc.Platform, sc.Type); ch != "" {
+							channelTrades[ch] += trades
+							channelTradeDetails[ch] = append(channelTradeDetails[ch], detail)
+						}
 					}
 
 					totalTrades += trades
@@ -403,20 +395,18 @@ func main() {
 			} // end if !killSwitchFired
 		}
 
-		// Calculate total portfolio value and separate spot/options values
+		// Calculate total portfolio value and per-channel values/strategies.
 		mu.RLock()
 		totalValue := 0.0
-		spotValue := 0.0
-		optionsValue := 0.0
+		channelValue := make(map[string]float64)
+		channelStrats := make(map[string][]StrategyConfig)
 		for _, sc := range cfg.Strategies {
 			if s, ok := state.Strategies[sc.ID]; ok {
 				pv := PortfolioValue(s, prices)
 				totalValue += pv
-				cat := stratCategory(sc.Platform)
-				if cat == "spot" {
-					spotValue += pv
-				} else {
-					optionsValue += pv
+				if ch := resolveChannel(cfg.Discord.Channels, sc.Platform, sc.Type); ch != "" {
+					channelValue[ch] += pv
+					channelStrats[ch] = append(channelStrats[ch], sc)
 				}
 			}
 		}
@@ -425,39 +415,34 @@ func main() {
 		elapsed := time.Since(cycleStart)
 		logMgr.LogSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue)
 
-		// Discord notification - separate spot and options reports
+		// Discord notification — one message per channel, dynamic platform support.
 		if discord != nil {
 			mu.RLock()
-
-			// Check which categories ran
-			spotRan := false
-			optionsRan := false
-			for _, sc := range dueStrategies {
-				cat := stratCategory(sc.Platform)
-				if cat == "spot" {
-					spotRan = true
-				} else {
-					optionsRan = true
+			for ch, chStrats := range channelStrats {
+				// Only post if at least one due strategy maps to this channel.
+				chRan := false
+				for _, sc := range dueStrategies {
+					if resolveChannel(cfg.Discord.Channels, sc.Platform, sc.Type) == ch {
+						chRan = true
+						break
+					}
+				}
+				if !chRan {
+					continue
+				}
+				chTrades := channelTrades[ch]
+				chDetails := channelTradeDetails[ch]
+				chValue := channelValue[ch]
+				// Options: post every run. Others: hourly or on trade.
+				// (cycle-1)%12==0 fires at cycles 1,13,25... so first summary posts on startup.
+				if isOptionsType(chStrats) || chTrades > 0 || (cycle-1)%12 == 0 {
+					chKey := channelKeyFromID(cfg.Discord.Channels, ch)
+					msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chValue, prices, chDetails, chStrats, state, chKey)
+					if err := discord.SendMessage(ch, msg); err != nil {
+						fmt.Printf("[WARN] Discord %s summary failed: %v\n", chKey, err)
+					}
 				}
 			}
-
-			// Send spot summary (hourly or with trades)
-			// (cycle-1)%12==0 fires at cycles 1, 13, 25... so first summary posts immediately on startup
-			if spotRan && ((cycle-1)%12 == 0 || spotTrades > 0) && cfg.Discord.Channels.Spot != "" {
-				msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), spotTrades, spotValue, prices, spotTradeDetails, cfg.Strategies, state, "spot")
-				if err := discord.SendMessage(cfg.Discord.Channels.Spot, msg); err != nil {
-					fmt.Printf("[WARN] Discord spot summary failed: %v\n", err)
-				}
-			}
-
-			// Send options summary (every run or with trades)
-			if optionsRan && cfg.Discord.Channels.Options != "" {
-				msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), optionsTrades, optionsValue, prices, optionsTradeDetails, cfg.Strategies, state, "options")
-				if err := discord.SendMessage(cfg.Discord.Channels.Options, msg); err != nil {
-					fmt.Printf("[WARN] Discord options summary failed: %v\n", err)
-				}
-			}
-
 			mu.RUnlock()
 		}
 

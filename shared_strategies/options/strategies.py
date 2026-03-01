@@ -584,8 +584,12 @@ class CoveredCallsStrategy(BaseOptionsStrategy):
 
 
 if __name__ == "__main__":
-    print(f"Registered options strategies: {list_options_strategies()}")
-    for name in list_options_strategies():
-        s = OPTIONS_STRATEGY_REGISTRY[name]
-        print(f"  {name}: {s['description']}")
-        print(f"    Defaults: {s['default_params']}")
+    import json
+    if "--list-json" in sys.argv:
+        print(json.dumps([{"id": name, "description": OPTIONS_STRATEGY_REGISTRY[name]["description"]} for name in list_options_strategies()]))
+    else:
+        print(f"Registered options strategies: {list_options_strategies()}")
+        for name in list_options_strategies():
+            s = OPTIONS_STRATEGY_REGISTRY[name]
+            print(f"  {name}: {s['description']}")
+            print(f"    Defaults: {s['default_params']}")

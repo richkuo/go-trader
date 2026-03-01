@@ -20,35 +20,128 @@ var supportedAssets = []asset{
 	{Name: "SOL", Symbol: "SOL/USDT"},
 }
 
-// stratDef defines a strategy template with its ID, short name for config IDs, and supported assets.
+// stratDef defines a strategy template with its ID and short name for config IDs.
 type stratDef struct {
-	ID        string   // strategy arg used in script invocation
-	ShortName string   // abbreviated name used in config IDs
-	Assets    []string // supported asset names (not currently filtered — handled at generation time)
+	ID        string // strategy arg used in script invocation
+	ShortName string // abbreviated name used in config IDs
 }
 
-var spotStrategies = []stratDef{
-	{ID: "sma_crossover", ShortName: "sma", Assets: []string{"BTC", "ETH", "SOL"}},
-	{ID: "ema_crossover", ShortName: "ema", Assets: []string{"BTC", "ETH", "SOL"}},
-	{ID: "momentum", ShortName: "momentum", Assets: []string{"BTC", "ETH", "SOL"}},
-	{ID: "rsi", ShortName: "rsi", Assets: []string{"BTC", "ETH", "SOL"}},
-	{ID: "bollinger_bands", ShortName: "bb", Assets: []string{"BTC", "ETH", "SOL"}},
-	{ID: "macd", ShortName: "macd", Assets: []string{"BTC", "ETH", "SOL"}},
-	{ID: "rsi_sma", ShortName: "rsi-sma", Assets: []string{"BTC", "ETH", "SOL"}},
-	{ID: "rsi_ema", ShortName: "rsi-ema", Assets: []string{"BTC", "ETH", "SOL"}},
-	{ID: "ema_rsi_macd", ShortName: "erm", Assets: []string{"BTC", "ETH", "SOL"}},
-	{ID: "rsi_macd_combo", ShortName: "rmc", Assets: []string{"BTC", "ETH", "SOL"}},
+// knownShortNames maps strategy IDs to abbreviated config ID prefixes.
+var knownShortNames = map[string]string{
+	"sma_crossover":      "sma",
+	"ema_crossover":      "ema",
+	"momentum":           "momentum",
+	"rsi":                "rsi",
+	"bollinger_bands":    "bb",
+	"macd":               "macd",
+	"mean_reversion":     "mr",
+	"volume_weighted":    "vw",
+	"triple_ema":         "tema",
+	"rsi_macd_combo":     "rmc",
+	"vol_mean_reversion": "vol",
+	"momentum_options":   "mom",
+	"protective_puts":    "pput",
+	"covered_calls":      "ccall",
 }
 
-var optionsStrategies = []stratDef{
-	{ID: "vol_mean_reversion", ShortName: "vol", Assets: []string{"BTC", "ETH"}},
-	{ID: "momentum_options", ShortName: "mom", Assets: []string{"BTC", "ETH"}},
-	{ID: "protective_puts", ShortName: "pput", Assets: []string{"BTC", "ETH"}},
-	{ID: "covered_calls", ShortName: "ccall", Assets: []string{"BTC", "ETH"}},
+// deriveShortName returns a short abbreviation for a strategy ID.
+// Uses knownShortNames override map; falls back to first letter of each word.
+func deriveShortName(id string) string {
+	if name, ok := knownShortNames[id]; ok {
+		return name
+	}
+	parts := strings.Split(id, "_")
+	var sb strings.Builder
+	for _, p := range parts {
+		if len(p) > 0 {
+			sb.WriteByte(p[0])
+		}
+	}
+	return sb.String()
 }
 
-var perpsStrategies = []stratDef{
-	{ID: "momentum", ShortName: "momentum", Assets: []string{"BTC", "ETH", "SOL"}},
+// defaultSpotStrategies is the fallback list when Python discovery fails.
+var defaultSpotStrategies = []stratDef{
+	{ID: "sma_crossover", ShortName: "sma"},
+	{ID: "ema_crossover", ShortName: "ema"},
+	{ID: "momentum", ShortName: "momentum"},
+	{ID: "rsi", ShortName: "rsi"},
+	{ID: "bollinger_bands", ShortName: "bb"},
+	{ID: "macd", ShortName: "macd"},
+	{ID: "mean_reversion", ShortName: "mr"},
+	{ID: "volume_weighted", ShortName: "vw"},
+	{ID: "triple_ema", ShortName: "tema"},
+	{ID: "rsi_macd_combo", ShortName: "rmc"},
+}
+
+var defaultOptionsStrategies = []stratDef{
+	{ID: "vol_mean_reversion", ShortName: "vol"},
+	{ID: "momentum_options", ShortName: "mom"},
+	{ID: "protective_puts", ShortName: "pput"},
+	{ID: "covered_calls", ShortName: "ccall"},
+}
+
+var defaultPerpsStrategies = []stratDef{
+	{ID: "momentum", ShortName: "momentum"},
+}
+
+// Live strategy lists — populated by discoverStrategies() at startup.
+// Tests set these via init() to avoid Python dependency.
+var (
+	spotStrategies    []stratDef
+	optionsStrategies []stratDef
+	perpsStrategies   []stratDef
+)
+
+// stratListEntry is one element from --list-json output.
+type stratListEntry struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+}
+
+// discoverPythonStrategies calls a Python strategy module with --list-json and parses the result.
+// Returns nil on any error (caller falls back to defaults).
+func discoverPythonStrategies(script string) []stratDef {
+	stdout, _, err := RunPythonScript(script, []string{"--list-json"})
+	if err != nil {
+		return nil
+	}
+	var entries []stratListEntry
+	if err := json.Unmarshal(stdout, &entries); err != nil {
+		return nil
+	}
+	strats := make([]stratDef, 0, len(entries))
+	for _, e := range entries {
+		strats = append(strats, stratDef{
+			ID:        e.ID,
+			ShortName: deriveShortName(e.ID),
+		})
+	}
+	return strats
+}
+
+// discoverStrategies populates module-level strategy lists from Python.
+// Falls back to defaults on any error — safe to call at startup.
+func discoverStrategies() {
+	spotStrategies = defaultSpotStrategies
+	optionsStrategies = defaultOptionsStrategies
+	perpsStrategies = defaultPerpsStrategies
+
+	if discovered := discoverPythonStrategies("shared_strategies/spot/strategies.py"); len(discovered) > 0 {
+		var filtered []stratDef
+		for _, s := range discovered {
+			if s.ID != "pairs_spread" {
+				filtered = append(filtered, s)
+			}
+		}
+		if len(filtered) > 0 {
+			spotStrategies = filtered
+			perpsStrategies = filtered // perps supports the same set as spot
+		}
+	}
+	if discovered := discoverPythonStrategies("shared_strategies/options/strategies.py"); len(discovered) > 0 {
+		optionsStrategies = discovered
+	}
 }
 
 // InitOptions captures all user choices from the interactive wizard.
@@ -63,6 +156,7 @@ type InitOptions struct {
 	SpotStrategies   []string // selected spot strategy IDs
 	IncludePairs     bool
 	OptStrategies    []string // selected options strategy IDs
+	PerpsStrategies  []string // selected perps strategy IDs (auto-populated if empty)
 	SpotCapital      float64
 	OptionsCapital   float64
 	PerpsCapital     float64
@@ -70,8 +164,9 @@ type InitOptions struct {
 	OptionsDrawdown  float64
 	PerpsDrawdown    float64
 	DiscordEnabled   bool
-	SpotChannelID    string
-	OptionsChannelID string
+	SpotChannelID    string            // deprecated: use ChannelMap
+	OptionsChannelID string            // deprecated: use ChannelMap
+	ChannelMap       map[string]string // keyed by platform/type ("spot", "hyperliquid", "deribit", etc.)
 }
 
 // generateConfig builds a Config from InitOptions. Pure function, no I/O.
@@ -85,11 +180,8 @@ func generateConfig(opts InitOptions) *Config {
 			MaxNotionalUSD: 0,
 		},
 		Discord: DiscordConfig{
-			Enabled: opts.DiscordEnabled,
-			Channels: DiscordChannels{
-				Spot:    opts.SpotChannelID,
-				Options: opts.OptionsChannelID,
-			},
+			Enabled:  opts.DiscordEnabled,
+			Channels: opts.ChannelMap,
 		},
 		Platforms: make(map[string]*PlatformConfig),
 	}
@@ -105,7 +197,7 @@ func generateConfig(opts InitOptions) *Config {
 	// Spot strategies.
 	if opts.EnableSpot {
 		for _, stratID := range opts.SpotStrategies {
-			shortName := stratShortName(spotStrategies, stratID)
+			shortName := deriveShortName(stratID)
 			for _, assetName := range opts.Assets {
 				sym := assetSymbol[assetName]
 				if sym == "" {
@@ -147,7 +239,7 @@ func generateConfig(opts InitOptions) *Config {
 	// Options strategies.
 	if opts.EnableOptions {
 		for _, stratID := range opts.OptStrategies {
-			shortName := stratShortName(optionsStrategies, stratID)
+			shortName := deriveShortName(stratID)
 			for _, platform := range opts.OptionPlatforms {
 				for _, assetName := range opts.Assets {
 					if assetName == "SOL" {
@@ -178,15 +270,16 @@ func generateConfig(opts InitOptions) *Config {
 	// Perps strategies (Hyperliquid only).
 	if opts.EnablePerps {
 		usesHyperliquid = true
-		for _, strat := range perpsStrategies {
+		for _, stratID := range opts.PerpsStrategies {
+			shortName := deriveShortName(stratID)
 			for _, assetName := range opts.Assets {
-				id := fmt.Sprintf("hl-%s-%s", strat.ID, strings.ToLower(assetName))
+				id := fmt.Sprintf("hl-%s-%s", shortName, strings.ToLower(assetName))
 				cfg.Strategies = append(cfg.Strategies, StrategyConfig{
 					ID:              id,
 					Type:            "perps",
 					Platform:        "hyperliquid",
 					Script:          "shared_scripts/check_hyperliquid.py",
-					Args:            []string{strat.ID, assetName, "1h", fmt.Sprintf("--mode=%s", opts.PerpsMode)},
+					Args:            []string{stratID, assetName, "1h", fmt.Sprintf("--mode=%s", opts.PerpsMode)},
 					Capital:         opts.PerpsCapital,
 					MaxDrawdownPct:  opts.PerpsDrawdown,
 					IntervalSeconds: 3600,
@@ -227,6 +320,8 @@ func makePairs(assets []string) [][2]string {
 
 // runInitFromJSON generates a config from a JSON blob of InitOptions. Returns exit code.
 func runInitFromJSON(jsonStr string, outputPath string) int {
+	discoverStrategies()
+
 	var opts InitOptions
 	if err := json.Unmarshal([]byte(jsonStr), &opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing --json: %v\n", err)
@@ -265,6 +360,24 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		opts.PerpsMode = "paper"
 	}
 
+	// Auto-populate PerpsStrategies from discovered list if not specified.
+	if opts.EnablePerps && len(opts.PerpsStrategies) == 0 {
+		for _, s := range perpsStrategies {
+			opts.PerpsStrategies = append(opts.PerpsStrategies, s.ID)
+		}
+	}
+
+	// Migrate deprecated SpotChannelID/OptionsChannelID into ChannelMap.
+	if opts.ChannelMap == nil && (opts.SpotChannelID != "" || opts.OptionsChannelID != "") {
+		opts.ChannelMap = make(map[string]string)
+		if opts.SpotChannelID != "" {
+			opts.ChannelMap["spot"] = opts.SpotChannelID
+		}
+		if opts.OptionsChannelID != "" {
+			opts.ChannelMap["options"] = opts.OptionsChannelID
+		}
+	}
+
 	cfg := generateConfig(opts)
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
@@ -294,6 +407,8 @@ func runInit(args []string) int {
 	if *jsonFlag != "" {
 		return runInitFromJSON(*jsonFlag, *outputFlag)
 	}
+
+	discoverStrategies()
 
 	p := NewPrompter()
 
@@ -434,33 +549,53 @@ func runInit(args []string) int {
 	// Step 9: Discord.
 	fmt.Println("\n--- Discord Notifications ---")
 	discordEnabled := p.YesNo("Enable Discord notifications?", false)
-	spotChannelID := ""
-	optionsChannelID := ""
+	channelMap := make(map[string]string)
 	if discordEnabled {
-		spotChannelID = p.String("Spot channel ID (leave blank to skip)", "")
-		optionsChannelID = p.String("Options channel ID (leave blank to skip)", "")
+		if enableSpot || includePairs {
+			if ch := p.String("Spot channel ID (leave blank to skip)", ""); ch != "" {
+				channelMap["spot"] = ch
+			}
+		}
+		if enableOptions {
+			for _, plt := range optionPlatforms {
+				if ch := p.String(fmt.Sprintf("%s channel ID (leave blank to skip)", plt), ""); ch != "" {
+					channelMap[plt] = ch
+				}
+			}
+		}
+		if enablePerps {
+			if ch := p.String("Hyperliquid channel ID (leave blank to skip)", ""); ch != "" {
+				channelMap["hyperliquid"] = ch
+			}
+		}
+	}
+
+	// Collect all perps strategy IDs (auto-selected, no user prompt).
+	perpsStratIDs := make([]string, len(perpsStrategies))
+	for i, s := range perpsStrategies {
+		perpsStratIDs[i] = s.ID
 	}
 
 	opts := InitOptions{
-		OutputPath:       outputPath,
-		Assets:           selectedAssets,
-		EnableSpot:       enableSpot,
-		EnableOptions:    enableOptions,
-		EnablePerps:      enablePerps,
-		OptionPlatforms:  optionPlatforms,
-		PerpsMode:        perpsMode,
-		SpotStrategies:   selectedSpotStrats,
-		IncludePairs:     includePairs,
-		OptStrategies:    selectedOptStrats,
-		SpotCapital:      spotCapital,
-		OptionsCapital:   optionsCapital,
-		PerpsCapital:     perpsCapital,
-		SpotDrawdown:     spotDrawdown,
-		OptionsDrawdown:  optionsDrawdown,
-		PerpsDrawdown:    perpsDrawdown,
-		DiscordEnabled:   discordEnabled,
-		SpotChannelID:    spotChannelID,
-		OptionsChannelID: optionsChannelID,
+		OutputPath:      outputPath,
+		Assets:          selectedAssets,
+		EnableSpot:      enableSpot,
+		EnableOptions:   enableOptions,
+		EnablePerps:     enablePerps,
+		OptionPlatforms: optionPlatforms,
+		PerpsMode:       perpsMode,
+		SpotStrategies:  selectedSpotStrats,
+		IncludePairs:    includePairs,
+		OptStrategies:   selectedOptStrats,
+		PerpsStrategies: perpsStratIDs,
+		SpotCapital:     spotCapital,
+		OptionsCapital:  optionsCapital,
+		PerpsCapital:    perpsCapital,
+		SpotDrawdown:    spotDrawdown,
+		OptionsDrawdown: optionsDrawdown,
+		PerpsDrawdown:   perpsDrawdown,
+		DiscordEnabled:  discordEnabled,
+		ChannelMap:      channelMap,
 	}
 
 	cfg := generateConfig(opts)
