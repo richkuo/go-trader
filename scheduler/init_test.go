@@ -8,6 +8,13 @@ import (
 	"testing"
 )
 
+// init sets module-level strategy lists to defaults so tests don't depend on Python.
+func init() {
+	spotStrategies = defaultSpotStrategies
+	optionsStrategies = defaultOptionsStrategies
+	perpsStrategies = defaultPerpsStrategies
+}
+
 // baseOpts returns an InitOptions suitable as a starting point for tests.
 func baseOpts() InitOptions {
 	return InitOptions{
@@ -40,6 +47,7 @@ func TestGenerateConfig_AllTypes(t *testing.T) {
 		SpotStrategies:  []string{"momentum"},
 		IncludePairs:    true,
 		OptStrategies:   []string{"vol_mean_reversion"},
+		PerpsStrategies: []string{"momentum"},
 		SpotCapital:     1000,
 		OptionsCapital:  5000,
 		PerpsCapital:    1000,
@@ -135,6 +143,7 @@ func TestGenerateConfig_PerpsLiveMode(t *testing.T) {
 	opts.EnableSpot = false
 	opts.EnablePerps = true
 	opts.PerpsMode = "live"
+	opts.PerpsStrategies = []string{"momentum"}
 
 	cfg := generateConfig(opts)
 
@@ -160,6 +169,7 @@ func TestGenerateConfig_PerpsDefaultPaperMode(t *testing.T) {
 	opts.EnableSpot = false
 	opts.EnablePerps = true
 	opts.PerpsMode = "paper"
+	opts.PerpsStrategies = []string{"momentum"}
 
 	cfg := generateConfig(opts)
 
@@ -264,6 +274,7 @@ func TestGenerateConfig_SpotScriptAndArgs(t *testing.T) {
 func TestGenerateConfig_HyperliquidPlatformAdded(t *testing.T) {
 	opts := baseOpts()
 	opts.EnablePerps = true
+	opts.PerpsStrategies = []string{"momentum"}
 
 	cfg := generateConfig(opts)
 
@@ -340,6 +351,7 @@ func TestGenerateConfig_PerpsScriptAndArgs(t *testing.T) {
 	opts.EnablePerps = true
 	opts.Assets = []string{"BTC"}
 	opts.PerpsMode = "paper"
+	opts.PerpsStrategies = []string{"momentum"}
 
 	cfg := generateConfig(opts)
 
@@ -369,6 +381,7 @@ func TestGenerateConfig_IntervalDefaults(t *testing.T) {
 		SpotStrategies:  []string{"momentum"},
 		IncludePairs:    true,
 		OptStrategies:   []string{"vol_mean_reversion"},
+		PerpsStrategies: []string{"momentum"},
 		SpotCapital:     1000,
 		OptionsCapital:  5000,
 		PerpsCapital:    1000,
@@ -541,5 +554,60 @@ func TestRunInitFromJSON_PerpsNoModeDefaultsPaper(t *testing.T) {
 		if !found {
 			t.Errorf("expected --mode=paper in args for %s, got %v", s.ID, s.Args)
 		}
+	}
+}
+
+func TestDeriveShortName(t *testing.T) {
+	cases := []struct {
+		id   string
+		want string
+	}{
+		{"sma_crossover", "sma"},
+		{"ema_crossover", "ema"},
+		{"momentum", "momentum"},
+		{"bollinger_bands", "bb"},
+		{"mean_reversion", "mr"},
+		{"volume_weighted", "vw"},
+		{"triple_ema", "tema"},
+		{"rsi_macd_combo", "rmc"},
+		{"vol_mean_reversion", "vol"},
+		{"momentum_options", "mom"},
+		// unknown: first letter of each word
+		{"my_new_strategy", "mns"},
+		{"alpha_beta_gamma", "abg"},
+	}
+	for _, tc := range cases {
+		if got := deriveShortName(tc.id); got != tc.want {
+			t.Errorf("deriveShortName(%q) = %q, want %q", tc.id, got, tc.want)
+		}
+	}
+}
+
+func TestGenerateConfig_PerpsMultipleStrategies(t *testing.T) {
+	opts := baseOpts()
+	opts.EnableSpot = false
+	opts.EnablePerps = true
+	opts.Assets = []string{"BTC"}
+	opts.PerpsMode = "paper"
+	opts.PerpsStrategies = []string{"momentum", "rsi_macd_combo"}
+
+	cfg := generateConfig(opts)
+
+	// 2 strategies × 1 asset = 2 perps strategies
+	if len(cfg.Strategies) != 2 {
+		t.Fatalf("expected 2 perps strategies, got %d", len(cfg.Strategies))
+	}
+	ids := map[string]bool{}
+	for _, s := range cfg.Strategies {
+		ids[s.ID] = true
+		if s.Type != "perps" {
+			t.Errorf("expected perps type, got %s for %s", s.Type, s.ID)
+		}
+	}
+	if !ids["hl-momentum-btc"] {
+		t.Error("expected hl-momentum-btc")
+	}
+	if !ids["hl-rmc-btc"] {
+		t.Error("expected hl-rmc-btc")
 	}
 }

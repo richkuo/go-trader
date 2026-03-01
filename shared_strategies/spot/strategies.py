@@ -268,8 +268,13 @@ def pairs_spread_strategy(df: pd.DataFrame, lookback: int = 30, entry_z: float =
 
 
 if __name__ == "__main__":
-    print(f"Registered strategies: {list_strategies()}")
-    for name in list_strategies():
-        s = STRATEGY_REGISTRY[name]
-        print(f"  {name}: {s['description']}")
-        print(f"    Defaults: {s['default_params']}")
+    import sys
+    import json
+    if "--list-json" in sys.argv:
+        print(json.dumps([{"id": name, "description": STRATEGY_REGISTRY[name]["description"]} for name in list_strategies()]))
+    else:
+        print(f"Registered strategies: {list_strategies()}")
+        for name in list_strategies():
+            s = STRATEGY_REGISTRY[name]
+            print(f"  {name}: {s['description']}")
+            print(f"    Defaults: {s['default_params']}")
