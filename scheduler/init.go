@@ -167,6 +167,7 @@ type InitOptions struct {
 	SpotChannelID    string            // deprecated: use ChannelMap
 	OptionsChannelID string            // deprecated: use ChannelMap
 	ChannelMap       map[string]string // keyed by platform/type ("spot", "hyperliquid", "deribit", etc.)
+	AutoUpdate       string            // "off", "daily", "heartbeat" (default: "off")
 }
 
 // generateConfig builds a Config from InitOptions. Pure function, no I/O.
@@ -183,7 +184,8 @@ func generateConfig(opts InitOptions) *Config {
 			Enabled:  opts.DiscordEnabled,
 			Channels: opts.ChannelMap,
 		},
-		Platforms: make(map[string]*PlatformConfig),
+		AutoUpdate: opts.AutoUpdate,
+		Platforms:  make(map[string]*PlatformConfig),
 	}
 
 	// Build asset name → exchange symbol map.
@@ -570,6 +572,17 @@ func runInit(args []string) int {
 		}
 	}
 
+	// Step 10: Auto-update preference.
+	fmt.Println("\n--- Auto-Update ---")
+	autoUpdateOptions := []string{
+		"off — manual updates only (default)",
+		"daily — check for updates once per day",
+		"heartbeat — check for updates every scheduler cycle",
+	}
+	autoUpdateIdx := p.Choice("Check for new releases automatically?", autoUpdateOptions, 0)
+	autoUpdateModes := []string{"off", "daily", "heartbeat"}
+	autoUpdate := autoUpdateModes[autoUpdateIdx]
+
 	// Collect all perps strategy IDs (auto-selected, no user prompt).
 	perpsStratIDs := make([]string, len(perpsStrategies))
 	for i, s := range perpsStrategies {
@@ -596,6 +609,7 @@ func runInit(args []string) int {
 		PerpsDrawdown:   perpsDrawdown,
 		DiscordEnabled:  discordEnabled,
 		ChannelMap:      channelMap,
+		AutoUpdate:      autoUpdate,
 	}
 
 	cfg := generateConfig(opts)
@@ -604,6 +618,7 @@ func runInit(args []string) int {
 	fmt.Println("\n--- Summary ---")
 	fmt.Printf("Output:     %s\n", outputPath)
 	fmt.Printf("Assets:     %s\n", strings.Join(selectedAssets, ", "))
+	fmt.Printf("Auto-update: %s\n", autoUpdate)
 	fmt.Printf("Strategies: %d\n", len(cfg.Strategies))
 	for _, s := range cfg.Strategies {
 		fmt.Printf("  - %-35s (%s, $%.0f)\n", s.ID, s.Type, s.Capital)

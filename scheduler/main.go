@@ -114,6 +114,14 @@ func main() {
 		}
 	}
 
+	// Track the last remote hash we notified about to avoid re-notifying on every cycle.
+	var lastNotifiedHash string
+
+	// Check for updates on startup (best-effort, non-blocking).
+	if cfg.AutoUpdate != "off" {
+		checkForUpdates(cfg, discord, &lastNotifiedHash)
+	}
+
 	// Platform pricers: Deribit uses live API; IBKR uses Black-Scholes with cached spot prices.
 	deribitPricer := NewDeribitPricer()
 	fmt.Println("Option pricers ready (deribit: live API, ibkr: Black-Scholes)")
@@ -136,6 +144,12 @@ func main() {
 		tickSeconds = 60
 	}
 	fmt.Printf("Tick interval: %ds (strategies have individual intervals)\n", tickSeconds)
+
+	// Cycles per day, used for "daily" update check mode.
+	dailyCycles := (24 * 3600) / tickSeconds
+	if dailyCycles < 1 {
+		dailyCycles = 1
+	}
 
 	saveFailures := 0
 
@@ -456,6 +470,13 @@ func main() {
 			saveFailures = 0
 		}
 		mu.Unlock()
+
+		// Periodic update check (heartbeat: every cycle; daily: once per day).
+		if cfg.AutoUpdate == "heartbeat" {
+			checkForUpdates(cfg, discord, &lastNotifiedHash)
+		} else if cfg.AutoUpdate == "daily" && cycle%dailyCycles == 0 {
+			checkForUpdates(cfg, discord, &lastNotifiedHash)
+		}
 
 		if *once {
 			fmt.Println("--once flag set, exiting after single cycle.")

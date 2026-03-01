@@ -106,6 +106,7 @@ The wizard walks through:
 4. **Perps strategies** — full spot strategy suite on Hyperliquid (paper or live mode)
 5. **Capital & max drawdown** per strategy type
 6. **Discord** — per-platform channel IDs (spot, options, hyperliquid if perps enabled)
+7. **Auto-update** — off / daily / heartbeat (default: off)
 
 A summary is shown before writing. If `scheduler/config.json` already exists, you'll be prompted to confirm overwrite.
 
@@ -455,46 +456,44 @@ sudo systemctl enable go-trader
 sudo systemctl start go-trader
 ```
 
-### Step 8d: Auto-Update (Git Pull)
+### Step 8d: Auto-Update Notifications
 
-Ask the user which update method they prefer:
+go-trader can automatically check for updates and notify you via Discord when a new version is available. It uses `git fetch` (does **not** auto-apply changes) and posts a message to all active channels with the release notes and the commands to update.
 
-- **A) Cron job** — daily automatic pull, no code change
-- **B) Heartbeat** — integrated into scheduler loop, requires Go change
-- **C) Manual** — pull on demand when needed
+Configure this during `go-trader init` (or set `auto_update` in `config.json` directly):
 
-#### Option A: Cron Job (recommended — no code change)
+| Mode | Behavior |
+|------|----------|
+| `off` | No automatic checking (default) |
+| `daily` | Checks once per day |
+| `heartbeat` | Checks every scheduler cycle |
 
-Add a cron entry to pull once a day (e.g. at 03:00). Only rebuilds and restarts if there are actual changes:
-```bash
-crontab -e
-# Add this line:
-0 3 * * * cd /root/.openclaw/workspace/go-trader && git pull --ff-only | grep -q 'Already up to date' || (cd scheduler && /usr/local/go/bin/go build -o ../go-trader . && systemctl restart go-trader) >> /var/log/go-trader-autoupdate.log 2>&1
+When an update is found, Discord channels receive a message like:
+```
+**go-trader Update Available**    ← or **New Release: v0.5.0** if tagged
+`b204163a` → `f8c2e91b`
+```
+feat: add auto-update notifications
+fix: discord channel resolution
+```
+To update:
+  cd /path/to/go-trader && git pull --ff-only
+  cd scheduler && go build -o ../go-trader . && systemctl restart go-trader
 ```
 
-> Logs to `/var/log/go-trader-autoupdate.log`. Rebuild and restart only trigger when upstream has changes.
+The scheduler will not re-notify for the same remote version until a newer one appears.
 
-#### Option B: Heartbeat in Scheduler Loop (integrated — requires Go change)
-
-Add a `git_pull_interval_cycles` field to `scheduler/config.json` (e.g., `12` = every ~1 hour at 5-min cycles), then add a `runGitPull()` call in the scheduler's main loop that fires every N cycles.
-
-> **Note:** Same caveat — Go source changes still need a rebuild + restart to take effect even with this enabled. This option is best for Python/config-only workflows.
-
-#### Option C: Manual
-
-No configuration needed. Pull whenever you push changes:
+**Manual update (always works regardless of setting):**
 ```bash
 cd /path/to/go-trader && git pull --ff-only
-sudo systemctl restart go-trader  # only needed for Go source or config changes
+# Only rebuild if Go source files changed:
+cd scheduler && /usr/local/go/bin/go build -o ../go-trader . && cd ..
+sudo systemctl restart go-trader
 ```
 
-After adding the cron or heartbeat, verify it works:
+**Verify the update check is working:**
 ```bash
-# Cron: check the log after the scheduled time
-tail /tmp/go-trader-pull.log
-
-# Heartbeat: check scheduler logs after N cycles
-journalctl -u go-trader -f | grep -i "git pull"
+journalctl -u go-trader -f | grep -i "\[update\]"
 ```
 
 ---
@@ -813,11 +812,12 @@ Edit `max_drawdown_pct` per strategy in config.json, then restart.
 ### Enable/Disable Theta Harvesting
 Add or remove the `theta_harvest` block from individual strategy entries in config.json, then restart.
 
-### Enable/Disable Auto-Pull (Git Pull)
+### Change Auto-Update Mode
 
-**Cron-based:** Add or remove the cron entry (`crontab -e`). No restart needed.
-
-**Heartbeat-based:** Set or remove `git_pull_interval_cycles` in config.json, then restart.
+Edit `auto_update` in `scheduler/config.json` (`"off"`, `"daily"`, or `"heartbeat"`), then restart:
+```bash
+sudo systemctl restart go-trader
+```
 
 ### Add Custom Platform Integration
 To add a new exchange (spot, perps, or options), follow the guided flow in Step 9. It will walk through gathering platform details, building the Python adapter, wiring Go changes, and updating config.
@@ -973,6 +973,7 @@ Config changes are synced to state on startup — no need to reset positions.
 |---------|-----|---------|-------------|
 | Check interval | `interval_seconds` | 300 (5 min) | Global default cycle interval in seconds |
 | State file path | `state_file` | `scheduler/state.json` | Where positions and trade history are stored |
+| Auto-update | `auto_update` | `"off"` | Update check mode: `"off"`, `"daily"`, `"heartbeat"` |
 
 ### Per-Strategy Settings
 

@@ -34,6 +34,7 @@ type Config struct {
 	StateFile       string                     `json:"state_file"`
 	StatusToken     string                     `json:"-"` // loaded from STATUS_AUTH_TOKEN env var only
 	Discord         DiscordConfig              `json:"discord"`
+	AutoUpdate      string                     `json:"auto_update,omitempty"` // "off", "daily", "heartbeat" (default: "off")
 	Strategies      []StrategyConfig           `json:"strategies"`
 	PortfolioRisk   *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
 	Platforms       map[string]*PlatformConfig `json:"platforms,omitempty"`
@@ -77,6 +78,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.StateFile == "" {
 		cfg.StateFile = "scheduler/state.json"
+	}
+	if cfg.AutoUpdate == "" {
+		cfg.AutoUpdate = "off"
 	}
 
 	// Discord token from env var takes priority over config file.
