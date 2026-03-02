@@ -192,6 +192,22 @@ Ask:
 
 Store this for OpenClaw allowlist configuration in Step 7.
 
+#### 4f. Owner ID for DM Upgrades
+Ask:
+> Would you like the bot to DM you directly when a new version is available, and offer to upgrade automatically?
+>
+> If yes, I need your **Discord user ID**:
+> - Enable Developer Mode: Discord Settings → Advanced → Developer Mode
+> - Right-click your own username → "Copy User ID"
+>
+> This enables:
+> - DM upgrade prompt — reply **yes** to auto-upgrade (git pull, rebuild, restart)
+> - Post-upgrade config migration — the bot DMs you about any new config fields
+>
+> Owner Discord user ID (or press Enter to skip):
+
+If provided, store as `DISCORD_OWNER_ID` for the systemd service (Step 8c). Do NOT write it to config.json.
+
 > **Note:** Summary frequency is automatic — spot and hyperliquid summaries post hourly (plus immediate trade alerts), options summaries post every check cycle. No configuration needed.
 
 ---
@@ -433,6 +449,7 @@ Type=simple
 WorkingDirectory={PROJECT_DIR}
 ExecStart={PROJECT_DIR}/go-trader --config scheduler/config.json
 Environment="DISCORD_BOT_TOKEN={token}"
+Environment="DISCORD_OWNER_ID={owner_discord_user_id}"
 Restart=always
 RestartSec=10
 StandardOutput=append:{PROJECT_DIR}/logs/scheduler.log
@@ -456,11 +473,11 @@ sudo systemctl enable go-trader
 sudo systemctl start go-trader
 ```
 
-### Step 8d: Auto-Update Notifications
+### Step 8d: Auto-Update & DM Upgrades
 
-go-trader can automatically check for updates and notify you via Discord when a new version is available. It uses `git fetch` (does **not** auto-apply changes) and posts a message to all active channels with the release notes and the commands to update.
+go-trader checks for updates via `git fetch` and notifies all active Discord channels. If `DISCORD_OWNER_ID` is set, it also **DMs the owner** offering to upgrade automatically.
 
-Configure this during `go-trader init` (or set `auto_update` in `config.json` directly):
+Configure during `go-trader init` (or set `auto_update` in `config.json`):
 
 | Mode | Behavior |
 |------|----------|
@@ -468,25 +485,19 @@ Configure this during `go-trader init` (or set `auto_update` in `config.json` di
 | `daily` | Checks once per day |
 | `heartbeat` | Checks every scheduler cycle |
 
-When an update is found, Discord channels receive a message like:
-```
-**go-trader Update Available**    ← or **New Release: v0.5.0** if tagged
-`b204163a` → `f8c2e91b`
-```
-feat: add auto-update notifications
-fix: discord channel resolution
-```
-To update:
-  cd /path/to/go-trader && git pull --ff-only
-  cd scheduler && go build -o ../go-trader . && systemctl restart go-trader
-```
+**DM upgrade flow** (when `owner_id` is configured):
+1. Bot DMs: _"Update available: `abc123` → `def456` — upgrade automatically? (yes/no)"_
+2. Reply **yes** within 30 minutes → bot runs `git pull --ff-only`, rebuilds binary, saves state, and restarts
+3. Reply **no** or ignore → channels still got the notification; upgrade is skipped
+
+**Post-upgrade config migration:**
+On the first startup after an upgrade, if new config fields were introduced, the bot DMs you about each one (10-minute reply window). Defaults are applied silently if you don't respond or if no owner ID is set.
 
 The scheduler will not re-notify for the same remote version until a newer one appears.
 
 **Manual update (always works regardless of setting):**
 ```bash
 cd /path/to/go-trader && git pull --ff-only
-# Only rebuild if Go source files changed:
 cd scheduler && /usr/local/go/bin/go build -o ../go-trader . && cd ..
 sudo systemctl restart go-trader
 ```
@@ -995,6 +1006,7 @@ Each entry in the `strategies` array supports:
 |---------|-----|---------|-------------|
 | Enable Discord | `discord.enabled` | true | Turn Discord notifications on/off |
 | Channels | `discord.channels` | — | Map of channel IDs keyed by platform/type: `"spot"`, `"options"`, `"hyperliquid"`, etc. |
+| Owner ID | `discord.owner_id` | — | Your Discord user ID — enables DM upgrade prompts and post-upgrade config migration. Use `DISCORD_OWNER_ID` env var (preferred). |
 
 ### Environment Variables
 
@@ -1003,6 +1015,7 @@ Set via systemd override (`sudo systemctl edit go-trader`):
 | Variable | Description |
 |----------|-------------|
 | `DISCORD_BOT_TOKEN` | Discord bot token (never store in config.json) |
+| `DISCORD_OWNER_ID` | Your Discord user ID for DM upgrades and config migration (optional) |
 | `STATUS_AUTH_TOKEN` | Optional: require Bearer token for /status endpoint |
 | `BINANCE_API_KEY` | Binance API key (live trading only) |
 | `BINANCE_API_SECRET` | Binance API secret (live trading only) |
