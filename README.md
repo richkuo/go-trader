@@ -12,7 +12,7 @@ A Go + Python hybrid trading system. A single Go binary (~8MB RAM) orchestrates 
 
 **Perpetual futures** via Hyperliquid: full spot strategy suite on any HL-listed asset, with paper and live trading support.
 
-**Discord alerts**: Per-platform channels for spot, options, and hyperliquid summaries, with immediate trade notifications.
+**Discord alerts**: Per-platform channels for spot, options, and hyperliquid summaries, with immediate trade notifications. When a new release is detected, the bot DMs you directly — reply **yes** and it upgrades, rebuilds, and restarts itself automatically.
 
 Supported platforms: Binance US, Deribit, IBKR/CME, Hyperliquid.
 
@@ -171,9 +171,11 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
 
 ```json
 {
+  "config_version": 2,
   "interval_seconds": 3600,
   "state_file": "scheduler/state.json",
   "log_dir": "logs",
+  "auto_update": "daily",
   "portfolio_risk": {
     "max_drawdown_pct": 25,
     "max_notional_usd": 0
@@ -181,6 +183,7 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
   "discord": {
     "enabled": true,
     "token": "",
+    "owner_id": "",
     "channels": { "spot": "CHANNEL_ID", "options": "CHANNEL_ID", "hyperliquid": "CHANNEL_ID" }
   },
   "platforms": {
@@ -199,13 +202,38 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
 | `portfolio_risk.max_drawdown_pct` | Kill switch — halt all trading if portfolio drops this % from peak | 25 |
 | `portfolio_risk.max_notional_usd` | Hard cap on total notional exposure (0 = disabled) | 0 |
 
+### Auto-Update & DM Upgrades
+
+Set `auto_update` in config to enable automatic update checks:
+
+| Value | Behavior |
+|-------|----------|
+| `"off"` | No automatic checking (default) |
+| `"daily"` | Check once per day |
+| `"heartbeat"` | Check every scheduler cycle |
+
+When an update is found, all active Discord channels receive a notification. If `discord.owner_id` is set, the bot also **DMs you directly**:
+
+```
+Update available: `b204163a` → `f8c2e91b`
+Would you like me to upgrade automatically? (yes/no)
+```
+
+Reply **yes** → the bot runs `git pull`, rebuilds the binary, and restarts itself. Reply **no** or ignore → skipped.
+
+After a restart following an upgrade, any new config fields introduced since your `config_version` are collected via DM (with a 10-minute reply window per field). Replies are written back to `config.json` atomically before the bot confirms completion.
+
+To get your Discord user ID: right-click your username in Discord → **Copy User ID** (requires Developer Mode: Settings → Advanced).
+
 ### Discord Settings
 
 | Field | Description |
 |-------|-------------|
 | `discord.enabled` | Enable/disable Discord notifications |
 | `discord.token` | Leave blank — use `DISCORD_BOT_TOKEN` env var |
+| `discord.owner_id` | Your Discord user ID — enables DM upgrade prompts and post-upgrade config migration. Use `DISCORD_OWNER_ID` env var. |
 | `discord.channels` | Map of channel IDs keyed by platform/type — `"spot"`, `"options"`, `"hyperliquid"`, etc. Options post per-check; others post hourly + on trades. |
+| `config_version` | Schema version (set automatically by `go-trader init`; migration runs on startup when behind current version) |
 
 ### Strategy Entry
 
@@ -302,7 +330,9 @@ go-trader/
 │   ├── options.go          # Options positions, Greeks, theta harvest
 │   ├── risk.go             # Drawdown, circuit breakers
 │   ├── deribit.go          # Deribit REST API for live pricing
-│   ├── discord.go          # Discord notifications
+│   ├── discord.go          # Discord gateway (discordgo), SendMessage/SendDM/AskDM
+│   ├── updater.go          # Update checker, DM upgrade flow, applyUpgrade/restartSelf
+│   ├── config_migration.go # Config version registry, MigrateConfig, DM-based migration
 │   ├── server.go           # HTTP status endpoint
 │   ├── fees.go             # Trading fee calculations
 │   ├── pricer.go           # OptionPricer interface
@@ -339,7 +369,7 @@ go-trader/
 ## Dependencies
 
 - **Python 3.12+** — managed by [uv](https://github.com/astral-sh/uv) (ccxt, pandas, numpy, scipy, hyperliquid-python-sdk)
-- **Go 1.26.0** — standard library only
+- **Go 1.26.0** — [`github.com/bwmarrin/discordgo`](https://github.com/bwmarrin/discordgo) for WebSocket gateway (DM support)
 - **systemd** — service management
 
 ---
