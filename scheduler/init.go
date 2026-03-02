@@ -164,6 +164,7 @@ type InitOptions struct {
 	OptionsDrawdown  float64
 	PerpsDrawdown    float64
 	DiscordEnabled   bool
+	DiscordOwnerID   string            // Discord user ID for DM features (upgrade prompts, config migration)
 	SpotChannelID    string            // deprecated: use ChannelMap
 	OptionsChannelID string            // deprecated: use ChannelMap
 	ChannelMap       map[string]string // keyed by platform/type ("spot", "hyperliquid", "deribit", etc.)
@@ -173,6 +174,7 @@ type InitOptions struct {
 // generateConfig builds a Config from InitOptions. Pure function, no I/O.
 func generateConfig(opts InitOptions) *Config {
 	cfg := &Config{
+		ConfigVersion:   CurrentConfigVersion,
 		IntervalSeconds: 3600,
 		LogDir:          "logs",
 		StateFile:       "scheduler/state.json",
@@ -182,6 +184,7 @@ func generateConfig(opts InitOptions) *Config {
 		},
 		Discord: DiscordConfig{
 			Enabled:  opts.DiscordEnabled,
+			OwnerID:  opts.DiscordOwnerID,
 			Channels: opts.ChannelMap,
 		},
 		AutoUpdate: opts.AutoUpdate,
@@ -552,6 +555,7 @@ func runInit(args []string) int {
 	fmt.Println("\n--- Discord Notifications ---")
 	discordEnabled := p.YesNo("Enable Discord notifications?", false)
 	channelMap := make(map[string]string)
+	discordOwnerID := ""
 	if discordEnabled {
 		if enableSpot || includePairs {
 			if ch := p.String("Spot channel ID (leave blank to skip)", ""); ch != "" {
@@ -570,14 +574,15 @@ func runInit(args []string) int {
 				channelMap["hyperliquid"] = ch
 			}
 		}
+		discordOwnerID = p.String("Your Discord user ID for DM upgrades (leave blank to skip)", "")
 	}
 
 	// Step 10: Auto-update preference.
 	fmt.Println("\n--- Auto-Update ---")
 	autoUpdateOptions := []string{
 		"off — manual updates only (default)",
-		"daily — check for updates once per day",
-		"heartbeat — check for updates every scheduler cycle",
+		"daily — check for updates once per day (DMs owner if configured)",
+		"heartbeat — check for updates every scheduler cycle (DMs owner if configured)",
 	}
 	autoUpdateIdx := p.Choice("Check for new releases automatically?", autoUpdateOptions, 0)
 	autoUpdateModes := []string{"off", "daily", "heartbeat"}
@@ -608,6 +613,7 @@ func runInit(args []string) int {
 		OptionsDrawdown: optionsDrawdown,
 		PerpsDrawdown:   perpsDrawdown,
 		DiscordEnabled:  discordEnabled,
+		DiscordOwnerID:  discordOwnerID,
 		ChannelMap:      channelMap,
 		AutoUpdate:      autoUpdate,
 	}

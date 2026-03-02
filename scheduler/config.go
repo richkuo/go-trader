@@ -12,7 +12,8 @@ import (
 type DiscordConfig struct {
 	Enabled  bool              `json:"enabled"`
 	Token    string            `json:"token"`
-	Channels map[string]string `json:"channels"` // keyed by platform or type ("spot", "hyperliquid", "deribit", etc.)
+	OwnerID  string            `json:"owner_id,omitempty"` // Discord user ID for DM features (upgrade prompts, config migration)
+	Channels map[string]string `json:"channels"`           // keyed by platform or type ("spot", "hyperliquid", "deribit", etc.)
 }
 
 // PortfolioRiskConfig controls aggregate portfolio-level risk (#42).
@@ -29,6 +30,7 @@ type PlatformConfig struct {
 
 // Config is the top-level scheduler configuration.
 type Config struct {
+	ConfigVersion   int                        `json:"config_version,omitempty"` // bumped when new fields are added; 0/missing = v1 baseline
 	IntervalSeconds int                        `json:"interval_seconds"`
 	LogDir          string                     `json:"log_dir"`
 	StateFile       string                     `json:"state_file"`
@@ -94,6 +96,11 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Discord.Token = envToken
 	} else if configHasToken {
 		fmt.Println("[WARN] Discord token found in config file. Prefer setting DISCORD_BOT_TOKEN env var instead.")
+	}
+
+	// Discord owner ID from env var takes priority over config file.
+	if ownerID := os.Getenv("DISCORD_OWNER_ID"); ownerID != "" {
+		cfg.Discord.OwnerID = ownerID
 	}
 
 	// Optional auth token for the /status HTTP endpoint.

@@ -1,63 +1,149 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/bwmarrin/discordgo"
 )
 
-const (
-	discordAPIBase = "https://discord.com/api/v10"
-)
+// ErrDMTimeout is returned when no DM response arrives within the deadline.
+var ErrDMTimeout = errors.New("DM response timeout")
 
+type dmHandler struct {
+	userID  string
+	ch      chan string
+	expires time.Time
+}
+
+// DiscordNotifier wraps a discordgo.Session for sending messages and two-way DM communication.
 type DiscordNotifier struct {
-	Token  string
-	client *http.Client
+	session    *discordgo.Session
+	ownerID    string
+	dmHandlers []dmHandler
+	mu         sync.Mutex
 }
 
-func NewDiscordNotifier(token string) *DiscordNotifier {
-	return &DiscordNotifier{
-		Token:  token,
-		client: &http.Client{Timeout: 10 * time.Second},
+// NewDiscordNotifier creates a discordgo session, registers the DM message handler, and opens the gateway.
+func NewDiscordNotifier(token, ownerID string) (*DiscordNotifier, error) {
+	session, err := discordgo.New("Bot " + token)
+	if err != nil {
+		return nil, fmt.Errorf("create session: %w", err)
 	}
+
+	d := &DiscordNotifier{
+		session: session,
+		ownerID: ownerID,
+	}
+	session.Identify.Intents = discordgo.IntentsDirectMessages
+	session.AddHandler(d.messageCreate)
+
+	if err := session.Open(); err != nil {
+		return nil, fmt.Errorf("open gateway: %w", err)
+	}
+
+	return d, nil
 }
 
+// Close shuts down the gateway connection.
+func (d *DiscordNotifier) Close() {
+	d.session.Close()
+}
+
+// SendMessage posts content to a channel. Truncates to 2000 chars.
 func (d *DiscordNotifier) SendMessage(channelID string, content string) error {
-	// Discord has a 2000 character limit, truncate if needed
 	if len(content) > 2000 {
 		content = content[:1997] + "..."
 	}
+	_, err := d.session.ChannelMessageSend(channelID, content)
+	return err
+}
 
-	url := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, channelID)
-
-	payload := map[string]string{"content": content}
-	body, err := json.Marshal(payload)
+// SendDM opens a DM channel with userID and sends content.
+func (d *DiscordNotifier) SendDM(userID, content string) error {
+	ch, err := d.session.UserChannelCreate(userID)
 	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
+		return fmt.Errorf("create DM channel: %w", err)
+	}
+	if len(content) > 2000 {
+		content = content[:1997] + "..."
+	}
+	_, err = d.session.ChannelMessageSend(ch.ID, content)
+	return err
+}
+
+// AskDM sends question to userID via DM and waits up to timeout for a reply.
+// Returns ErrDMTimeout if no response arrives in time.
+func (d *DiscordNotifier) AskDM(userID, question string, timeout time.Duration) (string, error) {
+	if err := d.SendDM(userID, question); err != nil {
+		return "", fmt.Errorf("send DM: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("request: %w", err)
+	ch := make(chan string, 1)
+	h := dmHandler{
+		userID:  userID,
+		ch:      ch,
+		expires: time.Now().Add(timeout),
 	}
 
-	req.Header.Set("Authorization", "Bot "+d.Token)
-	req.Header.Set("Content-Type", "application/json")
+	d.mu.Lock()
+	d.dmHandlers = append(d.dmHandlers, h)
+	d.mu.Unlock()
 
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("send: %w", err)
+	select {
+	case resp := <-ch:
+		return resp, nil
+	case <-time.After(timeout):
+		d.mu.Lock()
+		for i, hh := range d.dmHandlers {
+			if hh.ch == ch {
+				d.dmHandlers = append(d.dmHandlers[:i], d.dmHandlers[i+1:]...)
+				break
+			}
+		}
+		d.mu.Unlock()
+		return "", ErrDMTimeout
 	}
-	defer resp.Body.Close()
+}
 
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("discord API error: %d", resp.StatusCode)
+// messageCreate handles incoming Discord messages, routing DM replies to waiting AskDM callers.
+func (d *DiscordNotifier) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
+	if m.Author == nil || s.State == nil || s.State.User == nil {
+		return
 	}
-	return nil
+	if m.Author.ID == s.State.User.ID {
+		return // ignore own messages
+	}
+	if m.GuildID != "" {
+		return // only handle DMs
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	now := time.Now()
+	dispatched := false
+	var remaining []dmHandler
+	for _, h := range d.dmHandlers {
+		if h.expires.Before(now) {
+			continue // drop expired
+		}
+		if !dispatched && h.userID == m.Author.ID {
+			select {
+			case h.ch <- m.Content:
+			default:
+			}
+			dispatched = true
+			// consumed: not added to remaining
+		} else {
+			remaining = append(remaining, h)
+		}
+	}
+	d.dmHandlers = remaining
 }
 
 // resolveChannel returns the Discord channel ID for a strategy.
