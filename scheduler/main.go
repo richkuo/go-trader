@@ -105,13 +105,26 @@ func main() {
 		close(stopCh)
 	}()
 
-	// Discord notifier
+	// Discord notifier (WebSocket gateway connection for two-way DM support).
 	var discord *DiscordNotifier
 	if cfg.Discord.Enabled && cfg.Discord.Token != "" {
-		if len(cfg.Discord.Channels) > 0 {
-			discord = NewDiscordNotifier(cfg.Discord.Token)
-			fmt.Printf("Discord notifications enabled (%d channels)\n", len(cfg.Discord.Channels))
+		var err error
+		discord, err = NewDiscordNotifier(cfg.Discord.Token, cfg.Discord.OwnerID)
+		if err != nil {
+			fmt.Printf("[WARN] Discord init failed: %v — continuing without Discord\n", err)
+		} else {
+			fmt.Printf("Discord gateway connected (%d channels", len(cfg.Discord.Channels))
+			if cfg.Discord.OwnerID != "" {
+				fmt.Printf(", DM owner enabled")
+			}
+			fmt.Println(")")
+			defer discord.Close()
 		}
+	}
+
+	// Config migration: DM owner about new fields if config is behind current version.
+	if cfg.ConfigVersion < CurrentConfigVersion {
+		go runConfigMigrationDM(cfg, discord, *configPath)
 	}
 
 	// Track the last remote hash we notified about to avoid re-notifying on every cycle.
@@ -119,7 +132,7 @@ func main() {
 
 	// Check for updates on startup (best-effort, non-blocking).
 	if cfg.AutoUpdate != "off" {
-		checkForUpdates(cfg, discord, &lastNotifiedHash)
+		checkForUpdates(cfg, discord, &lastNotifiedHash, &mu, state)
 	}
 
 	// Platform pricers: Deribit uses live API; IBKR uses Black-Scholes with cached spot prices.
@@ -473,9 +486,9 @@ func main() {
 
 		// Periodic update check (heartbeat: every cycle; daily: once per day).
 		if cfg.AutoUpdate == "heartbeat" {
-			checkForUpdates(cfg, discord, &lastNotifiedHash)
+			checkForUpdates(cfg, discord, &lastNotifiedHash, &mu, state)
 		} else if cfg.AutoUpdate == "daily" && cycle%dailyCycles == 0 {
-			checkForUpdates(cfg, discord, &lastNotifiedHash)
+			checkForUpdates(cfg, discord, &lastNotifiedHash, &mu, state)
 		}
 
 		if *once {

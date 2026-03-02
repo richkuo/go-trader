@@ -14,10 +14,11 @@
 - `scheduler/` — Go scheduler (single `package main`); all .go files compile together
   - `executor.go` — Python subprocess runner; max 4 concurrent, 30s timeout per script
   - `server.go` — HTTP status server (`/status`, `/health` endpoints)
-  - `discord.go` — Discord alert notifications; `FormatCategorySummary(cycle, elapsed, strategiesRun, trades, value, prices, tradeDetails, channelStrategies []StrategyConfig, state, channelKey string)` outputs a monospace code-block table via `writeCatTable`; `resolveChannel(channels, platform, stratType)` maps strategy to channel ID; `fmtComma` — always pass absolute values (never signed floats)
+  - `discord.go` — `discordgo.Session` wrapper for two-way Discord communication; `NewDiscordNotifier(token, ownerID string) (*DiscordNotifier, error)` — opens WebSocket gateway; `SendMessage(channelID, content)` — channel posts; `SendDM(userID, content)` — DM send; `AskDM(userID, question, timeout)` — send + block on reply (returns `ErrDMTimeout`); intents: `discordgo.IntentsDirectMessages`; DM detection: `m.GuildID == ""`; `FormatCategorySummary(...)` outputs monospace code-block table; `fmtComma` — always pass absolute values
   - `init.go` — `go-trader init` interactive wizard + `--json <blob>` non-interactive mode; `generateConfig(InitOptions) *Config` is pure/testable; `runInitFromJSON(jsonStr, outputPath)` for scripted config gen (e.g. from OpenClaw); `runInit` orchestrates I/O
   - `prompt.go` — `Prompter` struct (String/YesNo/Choice/MultiSelect/Float); inject `NewPrompterFromReader(r,w)` for tests
-  - `updater.go` — update checker; `checkForUpdates(cfg, discord, &lastNotifiedHash)` — git fetch, Discord notify, dedup by remote hash; logs `[update]` prefix
+  - `updater.go` — update checker; `checkForUpdates(cfg, discord, &lastNotifiedHash, &mu, state)` — git fetch, channel notify + DM upgrade prompt (goroutine); `applyUpgrade(discord, ownerID, mu, state, cfg)` — git pull + go build + state save + restart; `restartSelf()` — systemctl → syscall.Exec fallback; logs `[update]` prefix
+  - `config_migration.go` — `CurrentConfigVersion = 2`; `NewFieldsSince(version)` returns new fields; `MigrateConfig(path, values)` atomic JSON patch + version bump; `runConfigMigrationDM(cfg, discord, configPath)` DMs owner per new field with 10min timeout
 - `shared_scripts/` — Python entry-point scripts called by the scheduler
   - `check_strategy.py` — spot strategy signal checker
   - `check_options.py` — unified options checker (`--platform=deribit|ibkr`)
@@ -52,6 +53,8 @@
 - Fee dispatch: `CalculatePlatformSpotFee(platform, value)` — 0.035% hyperliquid, 0.1% binanceus (replaces bare `CalculateSpotFee` for platform-aware spot/perps trades)
 - State persisted to `scheduler/state.json` (path set in config); per-platform files at `platforms/<name>/state.json`
 - `cfg.Discord.Channels` is `map[string]string` (not a struct); keys: "spot", "options", "hyperliquid", etc. — old `.Spot`/`.Options` field access is invalid
+- `cfg.Discord.OwnerID` — Discord user ID for DM upgrade prompts + config migration; loaded from `DISCORD_OWNER_ID` env var (takes priority over config file)
+- `cfg.ConfigVersion` — int, schema version (`0`/missing = v1 baseline); `CurrentConfigVersion = 2` in config_migration.go; startup triggers `runConfigMigrationDM` when below current version
 - `cfg.AutoUpdate` — `"off"` (default), `"daily"` (once/day), `"heartbeat"` (every cycle); handled in main.go loop + startup; uses `dailyCycles = (24*3600)/tickSeconds`
 - Strategy discovery: `shared_strategies/spot/strategies.py --list-json` and `shared_strategies/options/strategies.py --list-json` output JSON arrays of `{"id":..., "description":...}`
 
@@ -74,7 +77,7 @@
 ## Testing
 - `python3 -m py_compile <file>` — syntax check Python files
 - `cd scheduler && /opt/homebrew/bin/go build .` — compile check
-- `/opt/homebrew/bin/go test ./...` — run all unit tests (run from repo root, NOT from scheduler/)
+- `cd scheduler && /opt/homebrew/bin/go test ./...` — run all unit tests (must run from scheduler/ where go.mod lives; repo root has no go.mod)
 - `cd scheduler && /opt/homebrew/bin/gofmt -w <file>.go` — format after editing Go files (`-l *.go` lists all files needing formatting)
 - Multi-line Go edits with tabs: Edit tool may fail on tab-indented blocks; fallback: `python3 -c "content=open(f).read(); open(f,'w').write(content.replace(old,new,1))"`
 - Smoke test: `./go-trader --once`
