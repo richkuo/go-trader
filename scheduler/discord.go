@@ -202,6 +202,8 @@ func FormatCategorySummary(
 		icon = "🎯"
 	} else if channelKey == "spot" {
 		icon = "📈"
+	} else if channelKey == "perps" || channelKey == "hyperliquid" {
+		icon = "⚡"
 	}
 	title := strings.ToUpper(channelKey[:1]) + channelKey[1:]
 	assetSuffix := ""
@@ -310,8 +312,12 @@ func extractStrategyName(sc StrategyConfig) string {
 	if sc.Type == "options" && len(sc.Args) > 0 {
 		return sc.Args[0]
 	}
-	// For spot, extract from ID (e.g., "momentum-btc" -> "momentum")
 	parts := strings.Split(sc.ID, "-")
+	// For perps: "hl-sma-btc" -> "sma" (skip "hl" prefix and asset suffix)
+	if sc.Type == "perps" && len(parts) >= 3 && parts[0] == "hl" {
+		return parts[1]
+	}
+	// For spot: "momentum-btc" -> "momentum"
 	if len(parts) > 0 {
 		return parts[0]
 	}
@@ -392,6 +398,7 @@ func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, to
 	sb.WriteString(fmt.Sprintf("%-20s %10s %10s %7s\n", "Strategy", "Value", "PnL", "PnL%"))
 	sb.WriteString(sep + "\n")
 	for _, bot := range bots {
+		// Use the full ID as the label — always unique, avoids duplicates for multi-asset pairs
 		label := bot.id
 		if len(label) > 20 {
 			label = label[:20]
