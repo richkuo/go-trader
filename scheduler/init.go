@@ -758,7 +758,7 @@ func runInit(args []string) int {
 
 	cfg := generateConfig(opts)
 
-	// Step 10: Summary + confirm.
+	// Step 11: Summary + confirm.
 	fmt.Println("\n--- Summary ---")
 	fmt.Printf("Output:     %s\n", outputPath)
 	fmt.Printf("Assets:     %s\n", strings.Join(selectedAssets, ", "))

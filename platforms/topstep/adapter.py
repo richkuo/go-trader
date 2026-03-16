@@ -11,20 +11,30 @@ Environment variables:
 """
 
 import os
+import sys
 import time
 from datetime import datetime, timezone, timedelta
 
-# TopStepX API base URL
 API_BASE_URL = "https://api.topstepx.com"
 
-# CME contract specifications
+# Yahoo Finance symbol mapping for paper mode market data
+YAHOO_SYMBOL_MAP = {
+    "ES": "ES=F",
+    "NQ": "NQ=F",
+    "MES": "MES=F",
+    "MNQ": "MNQ=F",
+    "CL": "CL=F",
+    "GC": "GC=F",
+}
+
+# CME contract specifications (margin = approximate CME initial margin per contract)
 CONTRACT_SPECS = {
-    "ES": {"tick_size": 0.25, "tick_value": 12.50, "multiplier": 50, "type": "index"},
-    "NQ": {"tick_size": 0.25, "tick_value": 5.00, "multiplier": 20, "type": "index"},
-    "MES": {"tick_size": 0.25, "tick_value": 1.25, "multiplier": 5, "type": "index"},
-    "MNQ": {"tick_size": 0.25, "tick_value": 0.50, "multiplier": 2, "type": "index"},
-    "CL": {"tick_size": 0.01, "tick_value": 10.00, "multiplier": 1000, "type": "energy"},
-    "GC": {"tick_size": 0.10, "tick_value": 10.00, "multiplier": 100, "type": "metals"},
+    "ES": {"tick_size": 0.25, "tick_value": 12.50, "multiplier": 50, "margin": 15400, "type": "index"},
+    "NQ": {"tick_size": 0.25, "tick_value": 5.00, "multiplier": 20, "margin": 21000, "type": "index"},
+    "MES": {"tick_size": 0.25, "tick_value": 1.25, "multiplier": 5, "margin": 1540, "type": "index"},
+    "MNQ": {"tick_size": 0.25, "tick_value": 0.50, "multiplier": 2, "margin": 2100, "type": "index"},
+    "CL": {"tick_size": 0.01, "tick_value": 10.00, "multiplier": 1000, "margin": 7500, "type": "energy"},
+    "GC": {"tick_size": 0.10, "tick_value": 10.00, "multiplier": 100, "margin": 11000, "type": "metals"},
 }
 
 
@@ -90,7 +100,7 @@ class TopStepExchangeAdapter:
     def get_price(self, symbol: str) -> float:
         """Get current price for a futures symbol."""
         if not self.is_live:
-            return 0.0
+            return self._get_yahoo_price(symbol)
         try:
             resp = self._session.get(
                 f"{API_BASE_URL}/v1/market/quote",
@@ -100,7 +110,8 @@ class TopStepExchangeAdapter:
             resp.raise_for_status()
             data = resp.json()
             return float(data.get("lastPrice", 0))
-        except Exception:
+        except Exception as e:
+            print(f"[topstep] get_price error: {e}", file=sys.stderr)
             return 0.0
 
     def get_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
@@ -110,7 +121,7 @@ class TopStepExchangeAdapter:
         Returns list of [timestamp_ms, open, high, low, close, volume].
         """
         if not self.is_live:
-            return []
+            return self._get_yahoo_ohlcv(symbol, interval, limit)
         try:
             resp = self._session.get(
                 f"{API_BASE_URL}/v1/market/candles",
@@ -135,7 +146,8 @@ class TopStepExchangeAdapter:
                     float(c.get("volume", 0)),
                 ])
             return result
-        except Exception:
+        except Exception as e:
+            print(f"[topstep] get_ohlcv error: {e}", file=sys.stderr)
             return []
 
     # ─────────────────────────────────────────────
@@ -166,7 +178,73 @@ class TopStepExchangeAdapter:
                     "unrealized_pnl": float(pos.get("unrealizedPnl", 0)),
                 })
             return positions
-        except Exception:
+        except Exception as e:
+            print(f"[topstep] get_open_positions error: {e}", file=sys.stderr)
+            return []
+
+    # ─────────────────────────────────────────────
+    # Yahoo Finance helpers (paper mode)
+    # ─────────────────────────────────────────────
+
+    def _get_yahoo_price(self, symbol: str) -> float:
+        """Fetch current price via yfinance for paper mode."""
+        yahoo_sym = YAHOO_SYMBOL_MAP.get(symbol)
+        if not yahoo_sym:
+            return 0.0
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker(yahoo_sym)
+            hist = ticker.history(period="1d")
+            if hist.empty:
+                return 0.0
+            return float(hist["Close"].iloc[-1])
+        except ImportError:
+            print("[topstep] yfinance not installed — paper mode has no price data. Run: uv add yfinance", file=sys.stderr)
+            return 0.0
+        except Exception as e:
+            print(f"[topstep] yahoo price error for {symbol}: {e}", file=sys.stderr)
+            return 0.0
+
+    def _get_yahoo_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
+        """Fetch OHLCV via yfinance for paper mode."""
+        yahoo_sym = YAHOO_SYMBOL_MAP.get(symbol)
+        if not yahoo_sym:
+            return []
+        try:
+            import yfinance as yf
+            # Map interval: "1h" → "1h", "15m" → "15m", "1d" → "1d"
+            # yfinance accepts: 1m,2m,5m,15m,30m,60m,90m,1h,1d,5d,1wk,1mo,3mo
+            yf_interval = interval
+            # Determine period based on interval and limit
+            if "m" in interval:
+                period = "5d"  # yfinance limits intraday to recent data
+            elif interval in ("1h", "60m"):
+                period = "30d"
+            else:
+                period = "1y"
+            ticker = yf.Ticker(yahoo_sym)
+            hist = ticker.history(period=period, interval=yf_interval)
+            if hist.empty:
+                return []
+            # Convert to [timestamp_ms, open, high, low, close, volume]
+            result = []
+            for idx, row in hist.iterrows():
+                ts_ms = int(idx.timestamp() * 1000)
+                result.append([
+                    ts_ms,
+                    float(row["Open"]),
+                    float(row["High"]),
+                    float(row["Low"]),
+                    float(row["Close"]),
+                    float(row.get("Volume", 0)),
+                ])
+            # Return last `limit` candles
+            return result[-limit:]
+        except ImportError:
+            print("[topstep] yfinance not installed — paper mode has no OHLCV data. Run: uv add yfinance", file=sys.stderr)
+            return []
+        except Exception as e:
+            print(f"[topstep] yahoo ohlcv error for {symbol}: {e}", file=sys.stderr)
             return []
 
     # ─────────────────────────────────────────────

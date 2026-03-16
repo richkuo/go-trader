@@ -107,7 +107,11 @@ func PortfolioNotional(strategies map[string]*StrategyState, prices map[string]f
 			if !ok {
 				price = pos.AvgCost
 			}
-			total += pos.Quantity * price
+			if pos.Multiplier > 0 {
+				total += pos.Quantity * pos.Multiplier * price
+			} else {
+				total += pos.Quantity * price
+			}
 		}
 		for _, opt := range s.OptionPositions {
 			if opt.Action == "sell" {
@@ -158,14 +162,27 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 		if !ok {
 			price = pos.AvgCost
 		}
-		var pnl float64
-		if pos.Side == "long" {
+		var pnl, value float64
+		tradeType := "spot"
+		if pos.Multiplier > 0 {
+			// Futures: PnL-based (contracts * multiplier * price delta)
+			tradeType = "futures"
+			if pos.Side == "long" {
+				pnl = pos.Quantity * pos.Multiplier * (price - pos.AvgCost)
+			} else {
+				pnl = pos.Quantity * pos.Multiplier * (pos.AvgCost - price)
+			}
+			s.Cash += pnl
+			value = pos.Quantity * pos.Multiplier * price
+		} else if pos.Side == "long" {
 			proceeds := pos.Quantity * price
 			pnl = proceeds - pos.Quantity*pos.AvgCost
 			s.Cash += proceeds
+			value = proceeds
 		} else {
 			pnl = pos.Quantity * (pos.AvgCost - price)
 			s.Cash += pos.Quantity*pos.AvgCost - pos.Quantity*price
+			value = pos.Quantity * price
 		}
 		if logger != nil {
 			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)
@@ -177,8 +194,8 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			Side:       "close",
 			Quantity:   pos.Quantity,
 			Price:      price,
-			Value:      pos.Quantity * price,
-			TradeType:  "spot",
+			Value:      value,
+			TradeType:  tradeType,
 			Details:    fmt.Sprintf("Circuit breaker force-close, PnL: $%.2f", pnl),
 		}
 		s.TradeHistory = append(s.TradeHistory, trade)

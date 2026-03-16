@@ -171,8 +171,8 @@ def run_execute(symbol, side, contracts, mode):
                 "avg_px": float(result.get("avgPrice", 0) or 0),
                 "total_contracts": int(result.get("filledQuantity", contracts) or contracts),
             }
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[topstep] fill parse error: {e}", file=sys.stderr)
 
         print(json.dumps({
             "execution": {

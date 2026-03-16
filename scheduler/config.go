@@ -233,6 +233,12 @@ func ValidateConfig(cfg *Config) error {
 					if os.Getenv("TOPSTEP_API_KEY") == "" {
 						errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_API_KEY env var", prefix))
 					}
+					if os.Getenv("TOPSTEP_API_SECRET") == "" {
+						errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_API_SECRET env var", prefix))
+					}
+					if os.Getenv("TOPSTEP_ACCOUNT_ID") == "" {
+						errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_ACCOUNT_ID env var", prefix))
+					}
 					break
 				}
 			}

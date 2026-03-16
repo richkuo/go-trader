@@ -225,6 +225,7 @@ type ContractSpec struct {
 	TickSize   float64 `json:"tick_size"`
 	TickValue  float64 `json:"tick_value"`
 	Multiplier float64 `json:"multiplier"`
+	Margin     float64 `json:"margin"`
 }
 
 // TopStepResult is the JSON output from check_topstep.py (signal check mode).

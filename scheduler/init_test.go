@@ -637,10 +637,10 @@ func TestGenerateConfig_FuturesEnabled(t *testing.T) {
 
 	// 1 strategy × 2 symbols = 2 futures strategies
 	if len(cfg.Strategies) != 2 {
-		t.Fatalf("expected 2 futures strategies, got %d", len(cfg.Strategies))
 		for _, s := range cfg.Strategies {
 			t.Logf("  %s (%s)", s.ID, s.Type)
 		}
+		t.Fatalf("expected 2 futures strategies, got %d", len(cfg.Strategies))
 	}
 
 	ids := map[string]bool{}

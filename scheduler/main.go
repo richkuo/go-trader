@@ -926,14 +926,20 @@ func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cas
 	var contracts int
 	if isBuy {
 		budget := cash * 0.95
-		multiplier := result.ContractSpec.Multiplier
-		if budget < 1 || price <= 0 || multiplier <= 0 {
+		margin := result.ContractSpec.Margin
+		if margin <= 0 {
+			margin = price * result.ContractSpec.Multiplier // fallback
+		}
+		if budget < 1 || price <= 0 || margin <= 0 {
 			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
 			return nil, false
 		}
-		contracts = int(budget / (price * multiplier))
+		contracts = int(budget / margin)
+		if sc.FuturesConfig != nil && sc.FuturesConfig.MaxContracts > 0 && contracts > sc.FuturesConfig.MaxContracts {
+			contracts = sc.FuturesConfig.MaxContracts
+		}
 		if contracts < 1 {
-			logger.Info("Insufficient cash ($%.2f) for even 1 contract", cash)
+			logger.Info("Insufficient cash ($%.2f) for even 1 contract (margin=$%.0f)", cash, margin)
 			return nil, false
 		}
 	} else {
@@ -974,11 +980,13 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, result *TopStepRe
 	}
 
 	var feePerContract float64
+	var maxContracts int
 	if sc.FuturesConfig != nil {
 		feePerContract = sc.FuturesConfig.FeePerContract
+		maxContracts = sc.FuturesConfig.MaxContracts
 	}
 
-	trades, err := ExecuteFuturesSignal(s, result.Signal, result.Symbol, fillPrice, result.ContractSpec, feePerContract, logger)
+	trades, err := ExecuteFuturesSignal(s, result.Signal, result.Symbol, fillPrice, result.ContractSpec, feePerContract, maxContracts, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
