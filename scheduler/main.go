@@ -165,6 +165,7 @@ func main() {
 	}
 
 	saveFailures := 0
+	resetGoroutineRunning := false
 
 	// Main loop
 	for {
@@ -264,7 +265,7 @@ func main() {
 			mu.RUnlock()
 
 			mu.Lock()
-			portfolioAllowed, nb, portfolioReason := CheckPortfolioRisk(&state.PortfolioRisk, cfg.PortfolioRisk, totalPV, totalNotional)
+			portfolioAllowed, nb, portfolioWarning, portfolioReason := CheckPortfolioRisk(&state.PortfolioRisk, cfg.PortfolioRisk, totalPV, totalNotional)
 			if !portfolioAllowed {
 				killSwitchFired = true
 				fmt.Printf("[CRITICAL] Portfolio kill switch: %s\n", portfolioReason)
@@ -291,6 +292,56 @@ func main() {
 						}
 					}
 				}
+			}
+
+			// Warning alert: drawdown approaching kill switch threshold.
+			if portfolioWarning && discord != nil {
+				mu.Lock()
+				addKillSwitchEvent(&state.PortfolioRisk, "warning", state.PortfolioRisk.CurrentDrawdownPct, totalPV, state.PortfolioRisk.PeakValue, portfolioReason)
+				mu.Unlock()
+				warnMsg := fmt.Sprintf("**PORTFOLIO WARNING**\n%s", portfolioReason)
+				seen := make(map[string]bool)
+				for _, ch := range cfg.Discord.Channels {
+					if ch != "" && !seen[ch] {
+						seen[ch] = true
+						if err := discord.SendMessage(ch, warnMsg); err != nil {
+							fmt.Printf("[WARN] Discord warning alert failed: %v\n", err)
+						}
+					}
+				}
+				ownerID := cfg.Discord.OwnerID
+				if ownerID != "" {
+					_ = discord.SendDM(ownerID, warnMsg)
+				}
+				fmt.Printf("[WARN] %s\n", portfolioReason)
+			}
+
+			// Kill switch reset goroutine: prompt owner to reset via DM.
+			if killSwitchFired && discord != nil && cfg.Discord.OwnerID != "" && !resetGoroutineRunning {
+				resetGoroutineRunning = true
+				go func() {
+					defer func() { resetGoroutineRunning = false }()
+					ownerID := cfg.Discord.OwnerID
+					resp, err := discord.AskDM(ownerID, "Kill switch active. Reply 'reset' to resume trading.", 30*time.Minute)
+					if err != nil {
+						fmt.Printf("[update] Kill switch reset DM timed out or failed: %v\n", err)
+						return
+					}
+					if resp != "reset" {
+						fmt.Printf("[update] Kill switch reset DM got unexpected reply: %q\n", resp)
+						return
+					}
+					mu.Lock()
+					state.PortfolioRisk.KillSwitchActive = false
+					state.PortfolioRisk.KillSwitchAt = time.Time{}
+					addKillSwitchEvent(&state.PortfolioRisk, "reset", state.PortfolioRisk.CurrentDrawdownPct, 0, state.PortfolioRisk.PeakValue, "manual reset via Discord DM")
+					if err := SavePlatformStates(state, cfg); err != nil {
+						fmt.Printf("[CRITICAL] Failed to save state after kill switch reset: %v\n", err)
+					}
+					mu.Unlock()
+					_ = discord.SendDM(ownerID, "Kill switch reset. Trading will resume next cycle.")
+					fmt.Println("[update] Kill switch reset by owner via Discord DM")
+				}()
 			}
 
 			if !killSwitchFired {

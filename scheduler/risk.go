@@ -5,21 +5,51 @@ import (
 	"time"
 )
 
+const maxKillSwitchEvents = 50
+
+// KillSwitchEvent records a kill switch lifecycle event for audit purposes.
+type KillSwitchEvent struct {
+	Timestamp      time.Time `json:"timestamp"`
+	Type           string    `json:"type"` // "triggered", "reset", "warning"
+	DrawdownPct    float64   `json:"drawdown_pct"`
+	PortfolioValue float64   `json:"portfolio_value"`
+	PeakValue      float64   `json:"peak_value"`
+	Details        string    `json:"details"`
+}
+
 // PortfolioRiskState tracks aggregate portfolio-level risk (#42).
 type PortfolioRiskState struct {
-	PeakValue          float64   `json:"peak_value"`
-	CurrentDrawdownPct float64   `json:"current_drawdown_pct"`
-	KillSwitchActive   bool      `json:"kill_switch_active"`
-	KillSwitchAt       time.Time `json:"kill_switch_at,omitempty"`
+	PeakValue          float64           `json:"peak_value"`
+	CurrentDrawdownPct float64           `json:"current_drawdown_pct"`
+	KillSwitchActive   bool              `json:"kill_switch_active"`
+	KillSwitchAt       time.Time         `json:"kill_switch_at,omitempty"`
+	WarningSent        bool              `json:"warning_sent,omitempty"`
+	Events             []KillSwitchEvent `json:"events,omitempty"`
+}
+
+// addKillSwitchEvent appends an event and trims to maxKillSwitchEvents.
+func addKillSwitchEvent(prs *PortfolioRiskState, eventType string, drawdownPct, portfolioValue, peakValue float64, details string) {
+	prs.Events = append(prs.Events, KillSwitchEvent{
+		Timestamp:      time.Now().UTC(),
+		Type:           eventType,
+		DrawdownPct:    drawdownPct,
+		PortfolioValue: portfolioValue,
+		PeakValue:      peakValue,
+		Details:        details,
+	})
+	if len(prs.Events) > maxKillSwitchEvents {
+		prs.Events = prs.Events[len(prs.Events)-maxKillSwitchEvents:]
+	}
 }
 
 // CheckPortfolioRisk evaluates aggregate portfolio risk.
-// Returns (allowed, notionalBlocked, reason).
+// Returns (allowed, notionalBlocked, warning, reason).
 // allowed=false means the kill switch has fired or is latched; notionalBlocked=true
-// means new trades should be skipped but existing positions kept.
-func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional float64) (allowed, notionalBlocked bool, reason string) {
+// means new trades should be skipped but existing positions kept; warning=true
+// means drawdown is approaching the kill switch threshold.
+func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional float64) (allowed, notionalBlocked, warning bool, reason string) {
 	if prs.KillSwitchActive {
-		return false, false, fmt.Sprintf("portfolio kill switch is latched (triggered at %s, manual reset required)",
+		return false, false, false, fmt.Sprintf("portfolio kill switch is latched (triggered at %s, manual reset required)",
 			prs.KillSwitchAt.Format("2006-01-02 15:04:05 UTC"))
 	}
 
@@ -31,21 +61,39 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 	// Check drawdown kill switch.
 	if prs.PeakValue > 0 {
 		prs.CurrentDrawdownPct = (prs.PeakValue - totalValue) / prs.PeakValue * 100
+
+		// Kill switch fires if drawdown exceeds limit.
 		if prs.CurrentDrawdownPct > cfg.MaxDrawdownPct {
 			prs.KillSwitchActive = true
 			prs.KillSwitchAt = time.Now().UTC()
-			return false, false, fmt.Sprintf("portfolio drawdown %.1f%% exceeds limit %.1f%% (value=$%.2f, peak=$%.2f)",
+			r := fmt.Sprintf("portfolio drawdown %.1f%% exceeds limit %.1f%% (value=$%.2f, peak=$%.2f)",
 				prs.CurrentDrawdownPct, cfg.MaxDrawdownPct, totalValue, prs.PeakValue)
+			addKillSwitchEvent(prs, "triggered", prs.CurrentDrawdownPct, totalValue, prs.PeakValue, r)
+			return false, false, false, r
+		}
+
+		// Warning check: approaching kill switch threshold.
+		warnDrawdownPct := cfg.MaxDrawdownPct * cfg.WarnThresholdPct / 100
+		if prs.CurrentDrawdownPct > warnDrawdownPct {
+			if !prs.WarningSent {
+				prs.WarningSent = true
+				warning = true
+				reason = fmt.Sprintf("portfolio drawdown %.1f%% approaching kill switch limit %.1f%% (warn at %.1f%%, value=$%.2f, peak=$%.2f)",
+					prs.CurrentDrawdownPct, cfg.MaxDrawdownPct, warnDrawdownPct, totalValue, prs.PeakValue)
+			}
+		} else {
+			// Recovered below warning threshold — reset so it can fire again.
+			prs.WarningSent = false
 		}
 	}
 
 	// Check notional cap — blocks new trades but does not force-close.
 	if cfg.MaxNotionalUSD > 0 && totalNotional > cfg.MaxNotionalUSD {
-		return true, true, fmt.Sprintf("portfolio notional $%.2f exceeds cap $%.2f — new trades blocked",
+		return true, true, warning, fmt.Sprintf("portfolio notional $%.2f exceeds cap $%.2f — new trades blocked",
 			totalNotional, cfg.MaxNotionalUSD)
 	}
 
-	return true, false, ""
+	return true, false, warning, reason
 }
 
 // PortfolioNotional computes gross market exposure across all strategies.

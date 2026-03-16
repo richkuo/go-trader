@@ -203,11 +203,11 @@ func TestCheckRisk_ForceCloseOnDrawdown(t *testing.T) {
 // TestCheckPortfolioRisk_DrawdownKillSwitch verifies the kill switch fires at the
 // drawdown threshold and latches on subsequent calls.
 func TestCheckPortfolioRisk_DrawdownKillSwitch(t *testing.T) {
-	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxNotionalUSD: 0}
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxNotionalUSD: 0, WarnThresholdPct: 80}
 	prs := &PortfolioRiskState{PeakValue: 10000.0}
 
 	// Just under threshold — should be allowed.
-	allowed, nb, reason := CheckPortfolioRisk(prs, cfg, 7600.0, 0)
+	allowed, nb, _, reason := CheckPortfolioRisk(prs, cfg, 7600.0, 0)
 	if !allowed {
 		t.Errorf("expected allowed below threshold; got reason=%s", reason)
 	}
@@ -221,7 +221,7 @@ func TestCheckPortfolioRisk_DrawdownKillSwitch(t *testing.T) {
 	}
 
 	// Drawdown = (10000-7400)/10000 = 26% > 25% — kill switch fires.
-	allowed, nb, reason = CheckPortfolioRisk(prs, cfg, 7400.0, 0)
+	allowed, nb, _, reason = CheckPortfolioRisk(prs, cfg, 7400.0, 0)
 	if allowed {
 		t.Error("expected kill switch to fire at 26% drawdown")
 	}
@@ -239,7 +239,7 @@ func TestCheckPortfolioRisk_DrawdownKillSwitch(t *testing.T) {
 	}
 
 	// Subsequent call — still latched even with recovered value.
-	allowed, _, _ = CheckPortfolioRisk(prs, cfg, 10000.0, 0)
+	allowed, _, _, _ = CheckPortfolioRisk(prs, cfg, 10000.0, 0)
 	if allowed {
 		t.Error("expected kill switch to remain latched on subsequent call")
 	}
@@ -248,11 +248,11 @@ func TestCheckPortfolioRisk_DrawdownKillSwitch(t *testing.T) {
 // TestCheckPortfolioRisk_NotionalCap verifies the notional cap blocks new trades
 // without triggering the kill switch.
 func TestCheckPortfolioRisk_NotionalCap(t *testing.T) {
-	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxNotionalUSD: 50000}
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxNotionalUSD: 50000, WarnThresholdPct: 80}
 	prs := &PortfolioRiskState{PeakValue: 10000.0}
 
 	// Under cap — allowed, not notional-blocked.
-	allowed, nb, _ := CheckPortfolioRisk(prs, cfg, 10000.0, 30000.0)
+	allowed, nb, _, _ := CheckPortfolioRisk(prs, cfg, 10000.0, 30000.0)
 	if !allowed {
 		t.Error("expected allowed under notional cap")
 	}
@@ -261,7 +261,7 @@ func TestCheckPortfolioRisk_NotionalCap(t *testing.T) {
 	}
 
 	// Over cap — allowed=true, notionalBlocked=true, kill switch NOT active.
-	allowed, nb, reason := CheckPortfolioRisk(prs, cfg, 10000.0, 60000.0)
+	allowed, nb, _, reason := CheckPortfolioRisk(prs, cfg, 10000.0, 60000.0)
 	if !allowed {
 		t.Error("expected allowed=true (notional cap doesn't kill switch)")
 	}
@@ -276,7 +276,7 @@ func TestCheckPortfolioRisk_NotionalCap(t *testing.T) {
 // TestCheckPortfolioRisk_PeakTracking verifies the peak high-water mark only
 // ratchets upward, never down.
 func TestCheckPortfolioRisk_PeakTracking(t *testing.T) {
-	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 50, MaxNotionalUSD: 0}
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 50, MaxNotionalUSD: 0, WarnThresholdPct: 80}
 	prs := &PortfolioRiskState{PeakValue: 5000.0}
 
 	// Value rises — peak should update.
@@ -392,5 +392,107 @@ func TestCheckRisk_ConsecutiveLossesForceClose(t *testing.T) {
 	expectedCash := 10000.0
 	if s.Cash != expectedCash {
 		t.Errorf("expected Cash=%.2f after force-close; got %.2f", expectedCash, s.Cash)
+	}
+}
+
+// TestCheckPortfolioRisk_WarningFires verifies that drawdown at 80% of limit
+// triggers a warning once but not again on second call.
+func TestCheckPortfolioRisk_WarningFires(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	prs := &PortfolioRiskState{PeakValue: 10000.0}
+
+	// Warn threshold = 25 * 80/100 = 20%. Drawdown = (10000-7900)/10000 = 21% > 20%.
+	_, _, warning, reason := CheckPortfolioRisk(prs, cfg, 7900.0, 0)
+	if !warning {
+		t.Error("expected warning=true at 21% drawdown (warn threshold=20%)")
+	}
+	if reason == "" {
+		t.Error("expected non-empty reason for warning")
+	}
+	if !prs.WarningSent {
+		t.Error("expected WarningSent=true after warning fires")
+	}
+
+	// Second call at same drawdown — warning should NOT fire again.
+	_, _, warning, _ = CheckPortfolioRisk(prs, cfg, 7900.0, 0)
+	if warning {
+		t.Error("expected warning=false on second call (already sent)")
+	}
+}
+
+// TestCheckPortfolioRisk_WarningResetOnRecovery verifies that recovery below
+// the warning threshold resets WarningSent so it can fire again.
+func TestCheckPortfolioRisk_WarningResetOnRecovery(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	prs := &PortfolioRiskState{PeakValue: 10000.0}
+
+	// Trigger warning at 21% drawdown.
+	CheckPortfolioRisk(prs, cfg, 7900.0, 0)
+	if !prs.WarningSent {
+		t.Fatal("expected WarningSent=true after first warning")
+	}
+
+	// Recover to 15% drawdown (below 20% warn threshold).
+	CheckPortfolioRisk(prs, cfg, 8500.0, 0)
+	if prs.WarningSent {
+		t.Error("expected WarningSent=false after recovery below warn threshold")
+	}
+
+	// Cross warning threshold again — should warn again.
+	_, _, warning, _ := CheckPortfolioRisk(prs, cfg, 7900.0, 0)
+	if !warning {
+		t.Error("expected warning=true after recovery and re-crossing threshold")
+	}
+}
+
+// TestCheckPortfolioRisk_WarningNotAfterKillSwitch verifies that past the kill
+// threshold the kill switch fires and no warning is returned.
+func TestCheckPortfolioRisk_WarningNotAfterKillSwitch(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	prs := &PortfolioRiskState{PeakValue: 10000.0}
+
+	// 26% drawdown > 25% kill switch threshold.
+	allowed, _, warning, _ := CheckPortfolioRisk(prs, cfg, 7400.0, 0)
+	if allowed {
+		t.Error("expected kill switch to fire")
+	}
+	if warning {
+		t.Error("expected warning=false when kill switch fires (kill takes precedence)")
+	}
+}
+
+// TestAddKillSwitchEvent_MaxCap verifies that events are capped at maxKillSwitchEvents.
+func TestAddKillSwitchEvent_MaxCap(t *testing.T) {
+	prs := &PortfolioRiskState{}
+
+	for i := 0; i < 60; i++ {
+		addKillSwitchEvent(prs, "warning", float64(i), 1000, 2000, "test")
+	}
+
+	if len(prs.Events) != maxKillSwitchEvents {
+		t.Errorf("expected %d events; got %d", maxKillSwitchEvents, len(prs.Events))
+	}
+	// Oldest event should be the 11th one added (index 10).
+	if prs.Events[0].DrawdownPct != 10 {
+		t.Errorf("expected oldest event drawdown=10; got %.0f", prs.Events[0].DrawdownPct)
+	}
+}
+
+// TestCheckPortfolioRisk_EventLoggedOnTrigger verifies that a "triggered" event
+// is appended when the kill switch fires.
+func TestCheckPortfolioRisk_EventLoggedOnTrigger(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	prs := &PortfolioRiskState{PeakValue: 10000.0}
+
+	CheckPortfolioRisk(prs, cfg, 7400.0, 0)
+
+	if len(prs.Events) != 1 {
+		t.Fatalf("expected 1 event; got %d", len(prs.Events))
+	}
+	if prs.Events[0].Type != "triggered" {
+		t.Errorf("expected event type='triggered'; got %q", prs.Events[0].Type)
+	}
+	if prs.Events[0].PortfolioValue != 7400.0 {
+		t.Errorf("expected portfolio_value=7400; got %.2f", prs.Events[0].PortfolioValue)
 	}
 }

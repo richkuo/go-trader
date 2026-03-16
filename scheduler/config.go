@@ -18,8 +18,9 @@ type DiscordConfig struct {
 
 // PortfolioRiskConfig controls aggregate portfolio-level risk (#42).
 type PortfolioRiskConfig struct {
-	MaxDrawdownPct float64 `json:"max_drawdown_pct"` // kill switch threshold (default 25)
-	MaxNotionalUSD float64 `json:"max_notional_usd"` // 0 = disabled
+	MaxDrawdownPct   float64 `json:"max_drawdown_pct"`             // kill switch threshold (default 25)
+	MaxNotionalUSD   float64 `json:"max_notional_usd"`             // 0 = disabled
+	WarnThresholdPct float64 `json:"warn_threshold_pct,omitempty"` // % of MaxDrawdownPct to warn (default 80)
 }
 
 // PlatformConfig holds per-platform settings (state file path and optional risk overrides).
@@ -166,6 +167,9 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.PortfolioRisk == nil {
 		cfg.PortfolioRisk = &PortfolioRiskConfig{MaxDrawdownPct: 25}
 	}
+	if cfg.PortfolioRisk.WarnThresholdPct == 0 {
+		cfg.PortfolioRisk.WarnThresholdPct = 80
+	}
 
 	if err := ValidateConfig(&cfg); err != nil {
 		return nil, err
@@ -260,6 +264,9 @@ func ValidateConfig(cfg *Config) error {
 		}
 		if cfg.PortfolioRisk.MaxNotionalUSD < 0 {
 			errs = append(errs, fmt.Sprintf("portfolio_risk.max_notional_usd must be >= 0, got %g", cfg.PortfolioRisk.MaxNotionalUSD))
+		}
+		if cfg.PortfolioRisk.WarnThresholdPct <= 0 || cfg.PortfolioRisk.WarnThresholdPct > 100 {
+			errs = append(errs, fmt.Sprintf("portfolio_risk.warn_threshold_pct must be in (0, 100], got %g", cfg.PortfolioRisk.WarnThresholdPct))
 		}
 	}
 
