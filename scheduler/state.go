@@ -13,10 +13,11 @@ const maxTradeHistory = 1000
 
 // AppState holds all persistent state across restarts.
 type AppState struct {
-	CycleCount    int                       `json:"cycle_count"`
-	LastCycle     time.Time                 `json:"last_cycle"`
-	Strategies    map[string]*StrategyState `json:"strategies"`
-	PortfolioRisk PortfolioRiskState        `json:"portfolio_risk"`
+	CycleCount          int                       `json:"cycle_count"`
+	LastCycle           time.Time                 `json:"last_cycle"`
+	Strategies          map[string]*StrategyState `json:"strategies"`
+	PortfolioRisk       PortfolioRiskState        `json:"portfolio_risk"`
+	CorrelationSnapshot *CorrelationSnapshot      `json:"correlation_snapshot,omitempty"`
 }
 
 // StrategyState is the per-strategy persistent state.

@@ -126,6 +126,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PortfolioRisk PortfolioRiskState     `json:"portfolio_risk"`
 		TotalValue    float64                `json:"total_value"`
 		TotalNotional float64                `json:"total_notional"`
+		Correlation   *CorrelationSnapshot   `json:"correlation,omitempty"`
 	}
 
 	totalValue := 0.0
@@ -141,6 +142,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PortfolioRisk: ss.state.PortfolioRisk,
 		TotalValue:    totalValue,
 		TotalNotional: totalNotional,
+		Correlation:   ss.state.CorrelationSnapshot,
 	}
 
 	for id, s := range ss.state.Strategies {

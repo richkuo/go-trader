@@ -29,6 +29,13 @@ type PlatformConfig struct {
 	Risk      *PortfolioRiskConfig `json:"risk,omitempty"` // overrides portfolio-level defaults
 }
 
+// CorrelationConfig controls portfolio-level directional exposure tracking.
+type CorrelationConfig struct {
+	Enabled             bool    `json:"enabled"`
+	MaxConcentrationPct float64 `json:"max_concentration_pct"`  // warn when one asset > X% of gross (default 60)
+	MaxSameDirectionPct float64 `json:"max_same_direction_pct"` // warn when >X% of strategies share direction (default 75)
+}
+
 // Config is the top-level scheduler configuration.
 type Config struct {
 	ConfigVersion   int                        `json:"config_version,omitempty"` // bumped when new fields are added; 0/missing = v1 baseline
@@ -40,6 +47,7 @@ type Config struct {
 	AutoUpdate      string                     `json:"auto_update,omitempty"` // "off", "daily", "heartbeat" (default: "off")
 	Strategies      []StrategyConfig           `json:"strategies"`
 	PortfolioRisk   *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
+	Correlation     *CorrelationConfig         `json:"correlation,omitempty"`
 	Platforms       map[string]*PlatformConfig `json:"platforms,omitempty"`
 }
 
@@ -169,6 +177,11 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.PortfolioRisk.WarnThresholdPct == 0 {
 		cfg.PortfolioRisk.WarnThresholdPct = 80
+	}
+
+	// Correlation tracking defaults.
+	if cfg.Correlation == nil {
+		cfg.Correlation = &CorrelationConfig{Enabled: true, MaxConcentrationPct: 60, MaxSameDirectionPct: 75}
 	}
 
 	if err := ValidateConfig(&cfg); err != nil {

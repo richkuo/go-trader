@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -314,6 +315,27 @@ func main() {
 					_ = discord.SendDM(ownerID, warnMsg)
 				}
 				fmt.Printf("[WARN] %s\n", portfolioReason)
+			}
+
+			// Correlation tracking: compute per-asset directional exposure.
+			var corrWarnings []string
+			if cfg.Correlation != nil && cfg.Correlation.Enabled {
+				mu.Lock()
+				corrSnap := ComputeCorrelation(state.Strategies, cfg.Strategies, prices, cfg.Correlation)
+				state.CorrelationSnapshot = corrSnap
+				corrWarnings = corrSnap.Warnings
+				mu.Unlock()
+			}
+
+			if len(corrWarnings) > 0 && discord != nil {
+				msg := "**CORRELATION WARNING**\n" + strings.Join(corrWarnings, "\n")
+				seen := make(map[string]bool)
+				for _, ch := range cfg.Discord.Channels {
+					if ch != "" && !seen[ch] {
+						seen[ch] = true
+						_ = discord.SendMessage(ch, msg)
+					}
+				}
 			}
 
 			// Kill switch reset goroutine: prompt owner to reset via DM.
