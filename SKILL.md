@@ -929,6 +929,7 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
      state_file        — path to position/trade history file
      max_drawdown_pct  — portfolio-level circuit breaker
      notional_cap_usd  — max total notional exposure
+     correlation.*     — per-asset directional exposure tracking (enabled, max_concentration_pct, max_same_direction_pct)
    Per-strategy:
      capital           — starting capital (USD)
      max_drawdown_pct  — strategy-level circuit breaker
@@ -985,6 +986,16 @@ Config changes are synced to state on startup — no need to reset positions.
 | Check interval | `interval_seconds` | 300 (5 min) | Global default cycle interval in seconds |
 | State file path | `state_file` | `scheduler/state.json` | Where positions and trade history are stored |
 | Auto-update | `auto_update` | `"off"` | Update check mode: `"off"`, `"daily"`, `"heartbeat"` |
+
+### Correlation Tracking
+
+| Setting | Key | Default | Description |
+|---------|-----|---------|-------------|
+| Enable correlation | `correlation.enabled` | false | Track per-asset directional exposure across strategies |
+| Max concentration | `correlation.max_concentration_pct` | 60 | Warn when one asset exceeds this % of portfolio gross exposure |
+| Max same direction | `correlation.max_same_direction_pct` | 75 | Warn when more than this % of strategies on an asset share a direction |
+
+When enabled, warnings are sent to all active Discord channels and DM'd to the owner. The correlation snapshot is also available via `/status`.
 
 ### Per-Strategy Settings
 

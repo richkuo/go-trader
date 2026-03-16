@@ -202,6 +202,28 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
 | `portfolio_risk.max_drawdown_pct` | Kill switch — halt all trading if portfolio drops this % from peak | 25 |
 | `portfolio_risk.max_notional_usd` | Hard cap on total notional exposure (0 = disabled) | 0 |
 
+### Correlation Tracking
+
+Monitor portfolio-level directional exposure across all strategies. Disabled by default — opt in by setting `correlation.enabled: true`.
+
+```json
+{
+  "correlation": {
+    "enabled": true,
+    "max_concentration_pct": 60,
+    "max_same_direction_pct": 75
+  }
+}
+```
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `correlation.enabled` | Enable correlation tracking and warnings | false |
+| `correlation.max_concentration_pct` | Warn when one asset exceeds this % of portfolio gross exposure | 60 |
+| `correlation.max_same_direction_pct` | Warn when more than this % of strategies on an asset share a direction | 75 |
+
+When thresholds are exceeded, warnings are sent to all active Discord channels and DM'd to the owner (if configured). The correlation snapshot is also available via the `/status` endpoint.
+
 ### Auto-Update & DM Upgrades
 
 Set `auto_update` in config to enable automatic update checks:
@@ -298,6 +320,7 @@ journalctl -u go-trader -n 50           # recent logs
 
 - **Portfolio kill switch** — halt all trading if portfolio drawdown exceeds threshold (default: 25%)
 - **Notional cap** — optional hard limit on total notional exposure
+- **Correlation tracking** — per-asset directional exposure monitoring; warns when a single asset exceeds concentration threshold (default: 60%) or too many strategies share the same direction (default: 75%); opt-in via `correlation.enabled`
 - **Per-strategy circuit breakers** — pause trading when max drawdown exceeded (24h cooldown)
 - **Consecutive loss tracking** — 5 losses in a row → 1h pause
 - **Spot**: max 95% capital per position
@@ -332,6 +355,7 @@ go-trader/
 │   ├── deribit.go          # Deribit REST API for live pricing
 │   ├── discord.go          # Discord gateway (discordgo), SendMessage/SendDM/AskDM
 │   ├── updater.go          # Update checker, DM upgrade flow, applyUpgrade/restartSelf
+│   ├── correlation.go      # Per-asset directional exposure tracking
 │   ├── config_migration.go # Config version registry, MigrateConfig, DM-based migration
 │   ├── server.go           # HTTP status endpoint
 │   ├── fees.go             # Trading fee calculations

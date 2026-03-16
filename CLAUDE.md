@@ -18,6 +18,7 @@
   - `init.go` — `go-trader init` interactive wizard + `--json <blob>` non-interactive mode; `generateConfig(InitOptions) *Config` is pure/testable; `runInitFromJSON(jsonStr, outputPath)` for scripted config gen (e.g. from OpenClaw); `runInit` orchestrates I/O
   - `prompt.go` — `Prompter` struct (String/YesNo/Choice/MultiSelect/Float); inject `NewPrompterFromReader(r,w)` for tests
   - `updater.go` — update checker; `checkForUpdates(cfg, discord, &lastNotifiedHash, &mu, state)` — git fetch, channel notify + DM upgrade prompt (goroutine); `applyUpgrade(discord, ownerID, mu, state, cfg)` — git pull + go build + state save + restart; `restartSelf()` — systemctl → syscall.Exec fallback; logs `[update]` prefix
+  - `correlation.go` — `ComputeCorrelation(strategies, cfgStrategies, prices, corrCfg)` — per-asset directional exposure (delta-USD) across all strategies; `CorrelationSnapshot` with `AssetExposure` per asset; warns on concentration and same-direction thresholds; `findSpotPrice(asset, prices)` resolves asset to price
   - `config_migration.go` — `CurrentConfigVersion = 2`; `NewFieldsSince(version)` returns new fields; `MigrateConfig(path, values)` atomic JSON patch + version bump; `runConfigMigrationDM(cfg, discord, configPath)` DMs owner per new field with 10min timeout
 - `shared_scripts/` — Python entry-point scripts called by the scheduler
   - `check_strategy.py` — spot strategy signal checker
@@ -55,6 +56,7 @@
 - `cfg.Discord.Channels` is `map[string]string` (not a struct); keys: "spot", "options", "hyperliquid", etc. — old `.Spot`/`.Options` field access is invalid
 - `cfg.Discord.OwnerID` — Discord user ID for DM upgrade prompts + config migration; loaded from `DISCORD_OWNER_ID` env var (takes priority over config file)
 - `cfg.ConfigVersion` — int, schema version (`0`/missing = v1 baseline); `CurrentConfigVersion = 2` in config_migration.go; startup triggers `runConfigMigrationDM` when below current version
+- `cfg.Correlation` — `*CorrelationConfig` with `Enabled` (default false), `MaxConcentrationPct` (default 60), `MaxSameDirectionPct` (default 75); computed under RLock, state assigned under Lock; warnings sent to all Discord channels + owner DM
 - `cfg.AutoUpdate` — `"off"` (default), `"daily"` (once/day), `"heartbeat"` (every cycle); handled in main.go loop + startup; uses `dailyCycles = (24*3600)/tickSeconds`
 - Strategy discovery: `shared_strategies/spot/strategies.py --list-json` and `shared_strategies/options/strategies.py --list-json` output JSON arrays of `{"id":..., "description":...}`
 
