@@ -181,7 +181,14 @@ func LoadConfig(path string) (*Config, error) {
 
 	// Correlation tracking defaults.
 	if cfg.Correlation == nil {
-		cfg.Correlation = &CorrelationConfig{Enabled: true, MaxConcentrationPct: 60, MaxSameDirectionPct: 75}
+		cfg.Correlation = &CorrelationConfig{Enabled: false, MaxConcentrationPct: 60, MaxSameDirectionPct: 75}
+	}
+
+	if cfg.Correlation.MaxConcentrationPct == 0 {
+		cfg.Correlation.MaxConcentrationPct = 60
+	}
+	if cfg.Correlation.MaxSameDirectionPct == 0 {
+		cfg.Correlation.MaxSameDirectionPct = 75
 	}
 
 	if err := ValidateConfig(&cfg); err != nil {
@@ -280,6 +287,16 @@ func ValidateConfig(cfg *Config) error {
 		}
 		if cfg.PortfolioRisk.WarnThresholdPct <= 0 || cfg.PortfolioRisk.WarnThresholdPct > 100 {
 			errs = append(errs, fmt.Sprintf("portfolio_risk.warn_threshold_pct must be in (0, 100], got %g", cfg.PortfolioRisk.WarnThresholdPct))
+		}
+	}
+
+	// Validate correlation config.
+	if cfg.Correlation != nil && cfg.Correlation.Enabled {
+		if cfg.Correlation.MaxConcentrationPct <= 0 || cfg.Correlation.MaxConcentrationPct > 100 {
+			errs = append(errs, fmt.Sprintf("correlation.max_concentration_pct must be in (0, 100], got %g", cfg.Correlation.MaxConcentrationPct))
+		}
+		if cfg.Correlation.MaxSameDirectionPct <= 0 || cfg.Correlation.MaxSameDirectionPct > 100 {
+			errs = append(errs, fmt.Sprintf("correlation.max_same_direction_pct must be in (0, 100], got %g", cfg.Correlation.MaxSameDirectionPct))
 		}
 	}
 

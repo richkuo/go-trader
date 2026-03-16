@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -40,8 +41,8 @@ func TestComputeCorrelation_SpotLong(t *testing.T) {
 	if ae.NetDeltaUSD != 15000 {
 		t.Errorf("expected NetDeltaUSD=15000, got %f", ae.NetDeltaUSD)
 	}
-	if ae.StrategyCount != 2 {
-		t.Errorf("expected 2 strategies, got %d", ae.StrategyCount)
+	if len(ae.Strategies) != 2 {
+		t.Errorf("expected 2 strategies, got %d", len(ae.Strategies))
 	}
 	// 100% concentration (only one asset)
 	if ae.ConcentrationPct != 100 {
@@ -100,7 +101,7 @@ func TestComputeCorrelation_MixedDirections(t *testing.T) {
 	// No concentration warning
 	hasConcentrationWarning := false
 	for _, w := range snap.Warnings {
-		if contains(w, "concentration") {
+		if strings.Contains(w, "concentration") {
 			hasConcentrationWarning = true
 		}
 	}
@@ -314,7 +315,7 @@ func TestComputeCorrelation_SameDirectionWarning(t *testing.T) {
 	// 3/4 strategies are long = 75% > 70% threshold
 	hasSameDirectionWarning := false
 	for _, w := range snap.Warnings {
-		if contains(w, "same-direction") {
+		if strings.Contains(w, "same-direction") {
 			hasSameDirectionWarning = true
 		}
 	}
@@ -323,15 +324,74 @@ func TestComputeCorrelation_SameDirectionWarning(t *testing.T) {
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchSubstring(s, substr)
+func TestComputeCorrelation_OptionsCoarseDelta(t *testing.T) {
+	strategies := map[string]*StrategyState{
+		"opt-strat": {
+			ID:        "opt-strat",
+			Type:      "options",
+			Positions: make(map[string]*Position),
+			OptionPositions: map[string]*OptionPosition{
+				"BTC-CALL-70000": {
+					Underlying: "BTC",
+					OptionType: "call",
+					Action:     "buy",
+					Quantity:   2.0,
+					Greeks:     OptGreeks{Delta: 0}, // zero greeks → coarse fallback
+				},
+				"BTC-PUT-40000": {
+					Underlying: "BTC",
+					OptionType: "put",
+					Action:     "buy",
+					Quantity:   1.0,
+					Greeks:     OptGreeks{Delta: 0}, // zero greeks → coarse fallback
+				},
+			},
+		},
+	}
+	cfgStrategies := []StrategyConfig{
+		{ID: "opt-strat", Type: "options", Args: []string{"straddle", "BTC"}},
+	}
+	prices := map[string]float64{"BTC/USDT": 50000}
+	corrCfg := &CorrelationConfig{Enabled: true, MaxConcentrationPct: 60, MaxSameDirectionPct: 75}
+
+	snap := ComputeCorrelation(strategies, cfgStrategies, prices, corrCfg)
+
+	ae := snap.Assets["BTC"]
+	if ae == nil {
+		t.Fatal("expected BTC asset exposure")
+	}
+	// Bought call coarse delta=+1: +1 * 1.0 * 2.0 * 50000 = +100000
+	// Bought put coarse delta=-1: +1 * -1.0 * 1.0 * 50000 = -50000
+	// Net: 100000 - 50000 = 50000
+	expectedNet := 50000.0
+	if ae.NetDeltaUSD != expectedNet {
+		t.Errorf("expected NetDeltaUSD=%f, got %f", expectedNet, ae.NetDeltaUSD)
+	}
 }
 
-func searchSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+func TestComputeCorrelation_NilConfig(t *testing.T) {
+	strategies := map[string]*StrategyState{
+		"sma-btc": {
+			ID:   "sma-btc",
+			Type: "spot",
+			Positions: map[string]*Position{
+				"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.1, Side: "long"},
+			},
+			OptionPositions: make(map[string]*OptionPosition),
+		},
 	}
-	return false
+	cfgStrategies := []StrategyConfig{
+		{ID: "sma-btc", Type: "spot", Args: []string{"sma_crossover", "BTC/USDT"}},
+	}
+	prices := map[string]float64{"BTC/USDT": 50000}
+
+	// nil corrCfg should not panic and should produce exposures without warnings.
+	snap := ComputeCorrelation(strategies, cfgStrategies, prices, nil)
+
+	if snap.Assets["BTC"] == nil {
+		t.Fatal("expected BTC asset exposure even with nil config")
+	}
+	if len(snap.Warnings) != 0 {
+		t.Errorf("expected no warnings with nil config, got %v", snap.Warnings)
+	}
 }

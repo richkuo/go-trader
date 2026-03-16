@@ -320,10 +320,13 @@ func main() {
 			// Correlation tracking: compute per-asset directional exposure.
 			var corrWarnings []string
 			if cfg.Correlation != nil && cfg.Correlation.Enabled {
-				mu.Lock()
+				mu.RLock()
 				corrSnap := ComputeCorrelation(state.Strategies, cfg.Strategies, prices, cfg.Correlation)
-				state.CorrelationSnapshot = corrSnap
+				mu.RUnlock()
 				corrWarnings = corrSnap.Warnings
+
+				mu.Lock()
+				state.CorrelationSnapshot = corrSnap
 				mu.Unlock()
 			}
 
@@ -333,8 +336,14 @@ func main() {
 				for _, ch := range cfg.Discord.Channels {
 					if ch != "" && !seen[ch] {
 						seen[ch] = true
-						_ = discord.SendMessage(ch, msg)
+						if err := discord.SendMessage(ch, msg); err != nil {
+							fmt.Printf("[discord] failed to send correlation warning to channel %s: %v\n", ch, err)
+						}
 					}
+				}
+				ownerID := cfg.Discord.OwnerID
+				if ownerID != "" {
+					_ = discord.SendDM(ownerID, msg)
 				}
 			}
 

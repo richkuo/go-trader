@@ -19,7 +19,6 @@ type AssetExposure struct {
 	Asset            string             `json:"asset"`
 	NetDeltaUSD      float64            `json:"net_delta_usd"`
 	GrossDeltaUSD    float64            `json:"gross_delta_usd"`
-	StrategyCount    int                `json:"strategy_count"`
 	Strategies       []StrategyExposure `json:"strategies"`
 	ConcentrationPct float64            `json:"concentration_pct"` // |net|/portfolio_gross * 100
 }
@@ -116,7 +115,6 @@ func ComputeCorrelation(strategies map[string]*StrategyState, cfgStrategies []St
 		})
 		ae.NetDeltaUSD += deltaUSD
 		ae.GrossDeltaUSD += math.Abs(deltaUSD)
-		ae.StrategyCount++
 	}
 
 	// Compute portfolio gross.
@@ -145,7 +143,7 @@ func ComputeCorrelation(strategies map[string]*StrategyState, cfgStrategies []St
 	// Same-direction warning: check if too many strategies share a direction per asset.
 	if corrCfg != nil {
 		for _, ae := range snap.Assets {
-			if ae.StrategyCount < 2 {
+			if len(ae.Strategies) < 2 {
 				continue
 			}
 			longCount, shortCount := 0, 0
@@ -162,11 +160,11 @@ func ComputeCorrelation(strategies map[string]*StrategyState, cfgStrategies []St
 				maxSame = shortCount
 				direction = "short"
 			}
-			sameDirectionPct := float64(maxSame) / float64(ae.StrategyCount) * 100
+			sameDirectionPct := float64(maxSame) / float64(len(ae.Strategies)) * 100
 			if sameDirectionPct > corrCfg.MaxSameDirectionPct {
 				snap.Warnings = append(snap.Warnings,
 					fmt.Sprintf("%s: %d/%d strategies %s (%.0f%%) exceeds %.0f%% same-direction threshold",
-						ae.Asset, maxSame, ae.StrategyCount, direction, sameDirectionPct, corrCfg.MaxSameDirectionPct))
+						ae.Asset, maxSame, len(ae.Strategies), direction, sameDirectionPct, corrCfg.MaxSameDirectionPct))
 			}
 		}
 	}
