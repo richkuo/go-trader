@@ -178,6 +178,32 @@ func isOptionsType(strats []StrategyConfig) bool {
 	return false
 }
 
+// isFuturesType returns true if any strategy in the list is a futures strategy.
+func isFuturesType(strats []StrategyConfig) bool {
+	for _, sc := range strats {
+		if sc.Type == "futures" {
+			return true
+		}
+	}
+	return false
+}
+
+// futuresFullNames maps ticker symbols to their full contract names.
+var futuresFullNames = map[string]string{
+	"MES": "Micro E-mini S&P 500",
+	"MNQ": "Micro E-mini Nasdaq-100",
+	"ES":  "E-mini S&P 500",
+	"NQ":  "E-mini Nasdaq-100",
+}
+
+// futuresDisplayName returns "TICKER (Full Name)" if known, else just the ticker.
+func futuresDisplayName(ticker string) string {
+	if name, ok := futuresFullNames[strings.ToUpper(ticker)]; ok {
+		return fmt.Sprintf("%s (%s)", strings.ToUpper(ticker), name)
+	}
+	return strings.ToUpper(ticker)
+}
+
 // FormatCategorySummary creates a Discord message for a set of strategies sharing a channel.
 // channelStrategies is pre-filtered by the caller; channelKey is the display label.
 // asset, when non-empty, appends " — <ASSET>" to the title and filters the prices line.
@@ -197,6 +223,7 @@ func FormatCategorySummary(
 	var sb strings.Builder
 
 	// Icon and title based on strategy types and channel key.
+	isFutures := isFuturesType(channelStrategies) || channelKey == "futures" || channelKey == "ibkr"
 	icon := "📊"
 	if isOptionsType(channelStrategies) {
 		icon = "🎯"
@@ -204,11 +231,17 @@ func FormatCategorySummary(
 		icon = "📈"
 	} else if channelKey == "perps" || channelKey == "hyperliquid" {
 		icon = "⚡"
+	} else if isFutures {
+		icon = "🏦"
 	}
 	title := strings.ToUpper(channelKey[:1]) + channelKey[1:]
 	assetSuffix := ""
 	if asset != "" {
-		assetSuffix = " — " + asset
+		if isFutures {
+			assetSuffix = " — " + futuresDisplayName(asset)
+		} else {
+			assetSuffix = " — " + asset
+		}
 	}
 	if totalTrades > 0 {
 		sb.WriteString(fmt.Sprintf("%s **%s TRADES%s**\n", icon, strings.ToUpper(title), assetSuffix))
@@ -238,7 +271,15 @@ func FormatCategorySummary(
 		parts := make([]string, 0, len(syms))
 		for _, sym := range syms {
 			short := strings.TrimSuffix(sym, "/USDT")
-			parts = append(parts, fmt.Sprintf("%s $%.0f", short, displayPrices[sym]))
+			if isFutures {
+				if fullName, ok := futuresFullNames[strings.ToUpper(short)]; ok {
+					parts = append(parts, fmt.Sprintf("%s (%s) $%.0f", short, fullName, displayPrices[sym]))
+				} else {
+					parts = append(parts, fmt.Sprintf("%s $%.0f", short, displayPrices[sym]))
+				}
+			} else {
+				parts = append(parts, fmt.Sprintf("%s $%.0f", short, displayPrices[sym]))
+			}
 		}
 		sb.WriteString(strings.Join(parts, " | "))
 		sb.WriteString("\n")
