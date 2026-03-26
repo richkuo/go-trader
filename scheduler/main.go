@@ -37,9 +37,12 @@ func main() {
 	ValidateState(state)
 
 	// Initialize new strategies and sync config values for existing ones
-	for _, sc := range cfg.Strategies {
+	for i := range cfg.Strategies {
+		sc := &cfg.Strategies[i]
+		// For live Hyperliquid strategies, override capital with the real wallet balance.
+		syncHyperliquidLiveCapital(sc)
 		if s, exists := state.Strategies[sc.ID]; !exists {
-			state.Strategies[sc.ID] = NewStrategyState(sc)
+			state.Strategies[sc.ID] = NewStrategyState(*sc)
 			fmt.Printf("  Initialized strategy: %s (type=%s, capital=$%.0f)\n", sc.ID, sc.Type, sc.Capital)
 		} else {
 			// Sync config → state (config is source of truth).
