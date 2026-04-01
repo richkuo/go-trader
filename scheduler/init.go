@@ -43,6 +43,7 @@ var knownShortNames = map[string]string{
 	"protective_puts":    "pput",
 	"covered_calls":      "ccall",
 	"breakout":           "bo",
+	"atr_breakout":       "atrbo",
 }
 
 // deriveShortName returns a short abbreviation for a strategy ID.

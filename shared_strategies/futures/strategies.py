@@ -152,6 +152,28 @@ def breakout_strategy(df: pd.DataFrame, lookback: int = 20, atr_period: int = 14
 
 
 @register_strategy(
+    "atr_breakout",
+    "ATR Breakout — enter on volatility breakout beyond ATR band",
+    {"atr_period": 14, "multiplier": 1.5}
+)
+def atr_breakout_strategy(df: pd.DataFrame, atr_period: int = 14, multiplier: float = 1.5) -> pd.DataFrame:
+    result = df.copy()
+    tr = pd.concat([
+        result["high"] - result["low"],
+        (result["high"] - result["close"].shift(1)).abs(),
+        (result["low"] - result["close"].shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    result["atr"] = tr.rolling(window=atr_period).mean()
+    prev_close = result["close"].shift(1)
+    upper = prev_close + (multiplier * result["atr"])
+    lower = prev_close - (multiplier * result["atr"])
+    result["signal"] = 0
+    result.loc[(result["close"] > upper) & (result["close"].shift(1) <= upper.shift(1)), "signal"] = 1
+    result.loc[(result["close"] < lower) & (result["close"].shift(1) >= lower.shift(1)), "signal"] = -1
+    return result
+
+
+@register_strategy(
     "amd_ifvg",
     "AMD+IFVG — ICT Accumulation-Manipulation-Distribution with Implied Fair Value Gap (15m, session-aware)",
     {

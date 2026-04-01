@@ -65,6 +65,7 @@
 - `cfg.AutoUpdate` — `"off"` (default), `"daily"` (once/day), `"heartbeat"` (every cycle); handled in main.go loop + startup; uses `dailyCycles = (24*3600)/tickSeconds`
 - Strategy registry imports: `check_hyperliquid.py` and `check_strategy.py` import from `shared_strategies/spot/strategies.py`; `check_topstep.py` imports from `shared_strategies/futures/strategies.py` — a new strategy must be registered in both if it needs to work across platforms
 - Adding a cross-platform strategy: create core logic in `shared_strategies/<name>.py`, then import+register in both `spot/strategies.py` and `futures/strategies.py` (same pattern as indicators.py)
+- Adding a new spot/futures strategy (no new platform): (1) add `@register_strategy` function to `shared_strategies/spot/strategies.py`, (2) add same to `shared_strategies/futures/strategies.py`, (3) add short name to `knownShortNames` in `scheduler/init.go` — auto-discovery handles all platform configs
 - Strategy discovery: `shared_strategies/spot/strategies.py --list-json`, `shared_strategies/options/strategies.py --list-json`, and `shared_strategies/futures/strategies.py --list-json` output JSON arrays of `{"id":..., "description":...}`
 
 ## Build & Deploy
