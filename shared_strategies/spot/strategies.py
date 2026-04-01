@@ -246,6 +246,55 @@ def rsi_macd_combo_strategy(df: pd.DataFrame,
 
 
 @register_strategy(
+    "supertrend",
+    "Supertrend — ATR-based trend following with dynamic support/resistance",
+    {"atr_period": 10, "multiplier": 3.0}
+)
+def supertrend_strategy(df: pd.DataFrame, atr_period: int = 10, multiplier: float = 3.0) -> pd.DataFrame:
+    result = df.copy()
+    tr = pd.concat([
+        result["high"] - result["low"],
+        (result["high"] - result["close"].shift(1)).abs(),
+        (result["low"] - result["close"].shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(window=atr_period).mean()
+
+    hl2 = (result["high"] + result["low"]) / 2
+    basic_upper = hl2 + (multiplier * atr)
+    basic_lower = hl2 - (multiplier * atr)
+
+    n = len(result)
+    final_upper = basic_upper.copy()
+    final_lower = basic_lower.copy()
+    direction = pd.Series(0, index=result.index, dtype=int)
+
+    for i in range(1, n):
+        if basic_upper.iloc[i] < final_upper.iloc[i-1] or result["close"].iloc[i-1] > final_upper.iloc[i-1]:
+            final_upper.iloc[i] = basic_upper.iloc[i]
+        else:
+            final_upper.iloc[i] = final_upper.iloc[i-1]
+
+        if basic_lower.iloc[i] > final_lower.iloc[i-1] or result["close"].iloc[i-1] < final_lower.iloc[i-1]:
+            final_lower.iloc[i] = basic_lower.iloc[i]
+        else:
+            final_lower.iloc[i] = final_lower.iloc[i-1]
+
+        prev_dir = direction.iloc[i-1]
+        if prev_dir <= 0:
+            direction.iloc[i] = 1 if result["close"].iloc[i] > final_upper.iloc[i] else -1
+        else:
+            direction.iloc[i] = -1 if result["close"].iloc[i] < final_lower.iloc[i] else 1
+
+    result["supertrend"] = np.where(direction == 1, final_lower, final_upper)
+    result["st_direction"] = direction
+    result["signal"] = 0
+    dir_series = pd.Series(direction.values, index=result.index)
+    result.loc[(dir_series == 1) & (dir_series.shift(1) == -1), "signal"] = 1
+    result.loc[(dir_series == -1) & (dir_series.shift(1) == 1), "signal"] = -1
+    return result
+
+
+@register_strategy(
     "pairs_spread",
     "Pairs/Spread Trading — trade z-score of price ratio between two assets (needs 'close_b' column)",
     {"lookback": 30, "entry_z": 2.0, "exit_z": 0.5}
