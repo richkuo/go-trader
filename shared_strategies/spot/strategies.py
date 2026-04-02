@@ -356,6 +356,58 @@ def pairs_spread_strategy(df: pd.DataFrame, lookback: int = 30, entry_z: float =
 
 
 @register_strategy(
+    "squeeze_momentum",
+    "Squeeze Momentum — BB inside KC detects coiling, trades breakout with momentum confirmation",
+    {"bb_period": 20, "bb_std": 2.0, "kc_period": 20, "kc_mult": 1.5, "mom_lookback": 12}
+)
+def squeeze_momentum_strategy(df: pd.DataFrame,
+                              bb_period: int = 20, bb_std: float = 2.0,
+                              kc_period: int = 20, kc_mult: float = 1.5,
+                              mom_lookback: int = 12) -> pd.DataFrame:
+    result = df.copy()
+    # Bollinger Bands
+    bb_mid = sma(result["close"], bb_period)
+    bb_stddev = result["close"].rolling(window=bb_period).std()
+    bb_upper = bb_mid + (bb_std * bb_stddev)
+    bb_lower = bb_mid - (bb_std * bb_stddev)
+    # Keltner Channels (EMA + ATR)
+    kc_mid = ema(result["close"], kc_period)
+    tr = pd.concat([
+        result["high"] - result["low"],
+        (result["high"] - result["close"].shift(1)).abs(),
+        (result["low"] - result["close"].shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(window=kc_period).mean()
+    kc_upper = kc_mid + (kc_mult * atr)
+    kc_lower = kc_mid - (kc_mult * atr)
+    # Squeeze detection: BB inside KC = squeeze ON
+    result["squeeze_on"] = (bb_lower > kc_lower) & (bb_upper < kc_upper)
+    # Momentum: close minus midline, then linear regression over lookback
+    highest_high = result["high"].rolling(window=kc_period).max()
+    lowest_low = result["low"].rolling(window=kc_period).min()
+    midline = ((highest_high + lowest_low) / 2 + bb_mid) / 2
+    delta = result["close"] - midline
+    # Rolling linear regression value (fitted value at last point in window)
+    x = np.arange(mom_lookback, dtype=float)
+    x_mean = x.mean()
+    x_var = ((x - x_mean) ** 2).sum()
+    def _linreg_last(window):
+        if len(window) < mom_lookback or np.isnan(window).any():
+            return np.nan
+        slope = ((x - x_mean) * (window - window.mean())).sum() / x_var
+        return slope * (mom_lookback - 1 - x_mean) + window.mean()
+    result["squeeze_mom"] = delta.rolling(window=mom_lookback).apply(_linreg_last, raw=True)
+    # Signals: squeeze fires (ON -> OFF) + momentum direction
+    squeeze_fired = (~result["squeeze_on"]) & (result["squeeze_on"].shift(1) == True)
+    mom_pos_rising = (result["squeeze_mom"] > 0) & (result["squeeze_mom"] > result["squeeze_mom"].shift(1))
+    mom_neg_falling = (result["squeeze_mom"] < 0) & (result["squeeze_mom"] < result["squeeze_mom"].shift(1))
+    result["signal"] = 0
+    result.loc[squeeze_fired & mom_pos_rising, "signal"] = 1
+    result.loc[squeeze_fired & mom_neg_falling, "signal"] = -1
+    return result
+
+
+@register_strategy(
     "amd_ifvg",
     "AMD+IFVG — ICT Accumulation-Manipulation-Distribution with Implied Fair Value Gap (15m, session-aware)",
     {
