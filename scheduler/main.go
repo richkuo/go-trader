@@ -408,6 +408,16 @@ func main() {
 							}
 						}
 					}
+					var okxCash float64
+					var okxPosQty float64
+					if sc.Platform == "okx" && okxIsLive(sc.Args) {
+						okxCash = stratState.Cash
+						if sym := okxSymbol(sc.Args); sym != "" {
+							if pos, ok := stratState.Positions[sym]; ok {
+								okxPosQty = pos.Quantity
+							}
+						}
+					}
 					var rhCash float64
 					var rhPosQty float64
 					if sc.Platform == "robinhood" && robinhoodIsLive(sc.Args) {
@@ -454,7 +464,20 @@ func main() {
 					var detail string
 					switch sc.Type {
 					case "spot":
-						if sc.Platform == "robinhood" {
+						if sc.Platform == "okx" {
+							if result, signalStr, price, ok := runOKXCheck(sc, prices, logger); ok {
+								prices[result.Symbol] = price
+								var execResult *OKXExecuteResult
+								if okxIsLive(sc.Args) && result.Signal != 0 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, logger); ok2 {
+										execResult = er
+									}
+								}
+								mu.Lock()
+								trades, detail = executeOKXResult(sc, stratState, result, execResult, signalStr, price, logger)
+								mu.Unlock()
+							}
+						} else if sc.Platform == "robinhood" {
 							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, logger); ok {
 								prices[result.Symbol] = price
 								var execResult *RobinhoodExecuteResult
@@ -484,7 +507,20 @@ func main() {
 							}
 						}
 					case "perps":
-						if result, signalStr, price, ok := runHyperliquidCheck(sc, prices, logger); ok {
+						if sc.Platform == "okx" {
+							if result, signalStr, price, ok := runOKXCheck(sc, prices, logger); ok {
+								prices[result.Symbol] = price
+								var execResult *OKXExecuteResult
+								if okxIsLive(sc.Args) && result.Signal != 0 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, logger); ok2 {
+										execResult = er
+									}
+								}
+								mu.Lock()
+								trades, detail = executeOKXResult(sc, stratState, result, execResult, signalStr, price, logger)
+								mu.Unlock()
+							}
+						} else if result, signalStr, price, ok := runHyperliquidCheck(sc, prices, logger); ok {
 							prices[result.Symbol] = price
 							var execResult *HyperliquidExecuteResult
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
@@ -531,7 +567,7 @@ func main() {
 						if sc.Platform == "ibkr" {
 							pricer = NewIBKRPricer(prices)
 						} else {
-							pricer = deribitPricer
+							pricer = deribitPricer // also used for OKX options
 						}
 						markResults := fetchMarkPrices(markReqs, pricer, logger)
 						mu.Lock()
@@ -1176,6 +1212,145 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 
 // executeRobinhoodResult applies a Robinhood result to state. Must be called under Lock.
 func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, result *RobinhoodResult, execResult *RobinhoodExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
+	fillPrice := price
+	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
+		fillPrice = execResult.Execution.Fill.AvgPx
+		logger.Info("Live fill at $%.2f (mid was $%.2f)", fillPrice, price)
+	}
+
+	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, logger)
+	if err != nil {
+		logger.Error("Trade execution failed: %v", err)
+		return 0, ""
+	}
+
+	detail := ""
+	if trades > 0 {
+		prefix := ""
+		if execResult != nil {
+			prefix = "LIVE "
+		}
+		detail = fmt.Sprintf("[%s] %s%s %s @ $%.2f", sc.ID, prefix, signalStr, result.Symbol, fillPrice)
+	}
+	return trades, detail
+}
+
+// okxIsLive reports whether --mode=live appears in strategy args.
+func okxIsLive(args []string) bool {
+	for _, arg := range args {
+		if arg == "--mode=live" {
+			return true
+		}
+	}
+	return false
+}
+
+// okxSymbol extracts the coin symbol from OKX strategy args (e.g. "BTC").
+func okxSymbol(args []string) string {
+	if len(args) >= 2 {
+		return args[1]
+	}
+	return ""
+}
+
+// okxInstType extracts --inst-type from strategy args (default "swap").
+func okxInstType(args []string) string {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--inst-type=") {
+			return strings.TrimPrefix(arg, "--inst-type=")
+		}
+	}
+	return "swap"
+}
+
+// runOKXCheck runs check_okx.py signal-check mode (Phase 3, no lock).
+func runOKXCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
+	args := sc.Args
+	if sc.HTFFilter {
+		args = append(append([]string{}, args...), "--htf-filter")
+	}
+	logger.Info("Running: python3 %s %v", sc.Script, args)
+
+	result, stderr, err := RunOKXCheck(sc.Script, args)
+	if err != nil {
+		logger.Error("Script failed: %v", err)
+		if stderr != "" {
+			logger.Error("stderr: %s", stderr)
+		}
+		return nil, "", 0, false
+	}
+	if stderr != "" {
+		logger.Info("stderr: %s", stderr)
+	}
+	if result.Error != "" {
+		logger.Error("Script returned error: %s", result.Error)
+		return nil, "", 0, false
+	}
+
+	signalStr := "HOLD"
+	if result.Signal == 1 {
+		signalStr = "BUY"
+	} else if result.Signal == -1 {
+		signalStr = "SELL"
+	}
+	logger.Info("Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)
+
+	price := result.Price
+	if price <= 0 {
+		if p, ok := prices[result.Symbol]; ok {
+			price = p
+		}
+	}
+	if price <= 0 {
+		logger.Error("No price available for %s", result.Symbol)
+		return nil, "", 0, false
+	}
+	return result, signalStr, price, true
+}
+
+// runOKXExecuteOrder places a live market order on OKX (Phase 3, no lock).
+func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, logger *StrategyLogger) (*OKXExecuteResult, bool) {
+	isBuy := result.Signal == 1
+	var size float64
+	if isBuy {
+		budget := cash * 0.95
+		if budget < 1 || price <= 0 {
+			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
+			return nil, false
+		}
+		size = budget / price
+	} else {
+		if posQty <= 0 {
+			logger.Info("No position to close for %s", result.Symbol)
+			return nil, false
+		}
+		size = posQty
+	}
+
+	side := "buy"
+	if !isBuy {
+		side = "sell"
+	}
+	instType := okxInstType(sc.Args)
+	logger.Info("Placing live %s %s size=%.6f inst_type=%s", side, result.Symbol, size, instType)
+
+	execResult, stderr, err := RunOKXExecute(sc.Script, result.Symbol, side, size, instType)
+	if stderr != "" {
+		logger.Info("execute stderr: %s", stderr)
+	}
+	if err != nil {
+		logger.Error("Live execute failed: %v", err)
+		return nil, false
+	}
+	if execResult.Error != "" {
+		logger.Error("Live execute returned error: %s", execResult.Error)
+		return nil, false
+	}
+	return execResult, true
+}
+
+// executeOKXResult applies an OKX result to state. Must be called under Lock.
+func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
 	fillPrice := price
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
 		fillPrice = execResult.Execution.Fill.AvgPx

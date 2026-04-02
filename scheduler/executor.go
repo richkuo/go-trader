@@ -397,6 +397,88 @@ func RunRobinhoodExecute(script, symbol, side string, amountUSD, quantity float6
 	return &result, stderrStr, nil
 }
 
+// OKXResult is the JSON output from check_okx.py (signal check mode).
+type OKXResult struct {
+	Strategy   string                 `json:"strategy"`
+	Symbol     string                 `json:"symbol"`
+	Timeframe  string                 `json:"timeframe"`
+	Signal     int                    `json:"signal"`
+	Price      float64                `json:"price"`
+	Indicators map[string]interface{} `json:"indicators"`
+	Mode       string                 `json:"mode"`
+	Platform   string                 `json:"platform"`
+	Timestamp  string                 `json:"timestamp"`
+	Error      string                 `json:"error,omitempty"`
+}
+
+// OKXFill holds fill details from a live OKX order.
+type OKXFill struct {
+	AvgPx   float64 `json:"avg_px"`
+	TotalSz float64 `json:"total_sz"`
+}
+
+// OKXExecution is the execution block from check_okx.py --execute output.
+type OKXExecution struct {
+	Action string   `json:"action"`
+	Symbol string   `json:"symbol"`
+	Size   float64  `json:"size"`
+	Fill   *OKXFill `json:"fill,omitempty"`
+}
+
+// OKXExecuteResult is the top-level JSON from check_okx.py --execute.
+type OKXExecuteResult struct {
+	Execution *OKXExecution `json:"execution"`
+	Platform  string        `json:"platform"`
+	Timestamp string        `json:"timestamp"`
+	Error     string        `json:"error,omitempty"`
+}
+
+// RunOKXCheck runs check_okx.py in signal check mode and parses the result.
+func RunOKXCheck(script string, args []string) (*OKXResult, string, error) {
+	stdout, stderr, err := RunPythonScript(script, args)
+	stderrStr := string(stderr)
+	if err != nil {
+		var result OKXResult
+		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
+			return &result, stderrStr, nil
+		}
+		return nil, stderrStr, fmt.Errorf("script error: %w (stderr: %s)", err, stderrStr)
+	}
+
+	var result OKXResult
+	if err := json.Unmarshal(stdout, &result); err != nil {
+		return nil, stderrStr, fmt.Errorf("parse output: %w (stdout: %s)", err, string(stdout))
+	}
+	return &result, stderrStr, nil
+}
+
+// RunOKXExecute runs check_okx.py in execute mode (live orders).
+func RunOKXExecute(script, symbol, side string, size float64, instType string) (*OKXExecuteResult, string, error) {
+	args := []string{
+		"--execute",
+		fmt.Sprintf("--symbol=%s", symbol),
+		fmt.Sprintf("--side=%s", side),
+		fmt.Sprintf("--size=%g", size),
+		"--mode=live",
+		fmt.Sprintf("--inst-type=%s", instType),
+	}
+	stdout, stderr, err := RunPythonScript(script, args)
+	stderrStr := string(stderr)
+	if err != nil {
+		var result OKXExecuteResult
+		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
+			return &result, stderrStr, nil
+		}
+		return nil, stderrStr, fmt.Errorf("execute error: %w (stderr: %s)", err, stderrStr)
+	}
+
+	var result OKXExecuteResult
+	if err := json.Unmarshal(stdout, &result); err != nil {
+		return nil, stderrStr, fmt.Errorf("parse execute output: %w (stdout: %s)", err, string(stdout))
+	}
+	return &result, stderrStr, nil
+}
+
 // FetchPrices runs check_price.py and returns a map of symbol→price.
 func FetchPrices(symbols []string) (map[string]float64, error) {
 	stdout, stderr, err := RunPythonScript("shared_scripts/check_price.py", symbols)

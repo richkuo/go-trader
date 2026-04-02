@@ -151,6 +151,8 @@ func LoadConfig(path string) (*Config, error) {
 				cfg.Strategies[i].Platform = "robinhood"
 			case strings.HasPrefix(cfg.Strategies[i].ID, "luno-"):
 				cfg.Strategies[i].Platform = "luno"
+			case strings.HasPrefix(cfg.Strategies[i].ID, "okx-"):
+				cfg.Strategies[i].Platform = "okx"
 			case cfg.Strategies[i].Type == "options":
 				cfg.Strategies[i].Platform = "deribit"
 			default:
@@ -287,12 +289,24 @@ func ValidateConfig(cfg *Config) error {
 			}
 		}
 
-		// Live-mode perps require HYPERLIQUID_SECRET_KEY env var.
-		if sc.Type == "perps" {
+		// Live-mode perps require platform-specific env vars.
+		if sc.Type == "perps" || (sc.Platform == "okx" && sc.Type == "spot") {
 			for _, arg := range sc.Args {
 				if arg == "--mode=live" {
-					if os.Getenv("HYPERLIQUID_SECRET_KEY") == "" {
-						errs = append(errs, fmt.Sprintf("%s: --mode=live requires HYPERLIQUID_SECRET_KEY env var", prefix))
+					if sc.Platform == "okx" {
+						if os.Getenv("OKX_API_KEY") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_API_KEY env var", prefix))
+						}
+						if os.Getenv("OKX_API_SECRET") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_API_SECRET env var", prefix))
+						}
+						if os.Getenv("OKX_PASSPHRASE") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_PASSPHRASE env var", prefix))
+						}
+					} else if sc.Platform == "hyperliquid" || sc.Platform == "" {
+						if os.Getenv("HYPERLIQUID_SECRET_KEY") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires HYPERLIQUID_SECRET_KEY env var", prefix))
+						}
 					}
 					break
 				}

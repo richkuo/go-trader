@@ -22,6 +22,11 @@ const (
 	// Robinhood options regulatory fee (per contract)
 	RobinhoodOptionFeeFixed = 0.03 // $0.03/contract (SEC/FINRA regulatory fee)
 
+	// OKX trading fees (standard tier)
+	OKXSpotTakerFeePct  = 0.001  // 0.1% taker fee
+	OKXPerpsTakerFeePct = 0.0005 // 0.05% taker fee
+	OKXOptionFeePct     = 0.0003 // 0.03% of contract value
+
 	// Slippage simulation (random +/- this pct)
 	SlippagePct = 0.0005 // 0.05% (5 basis points)
 )
@@ -52,6 +57,8 @@ func CalculatePlatformSpotFee(platform string, value float64) float64 {
 		return value * LunoTakerFeePct
 	case "robinhood":
 		return 0 // Robinhood charges no crypto commission
+	case "okx":
+		return value * OKXSpotTakerFeePct
 	default:
 		return CalculateSpotFee(value)
 	}
@@ -79,6 +86,8 @@ func CalculateOptionFee(platform string, premiumUSD, quantity float64) float64 {
 		return CalculateIBKROptionFee(quantity)
 	case "robinhood":
 		return CalculateRobinhoodOptionFee(quantity)
+	case "okx":
+		return premiumUSD * OKXOptionFeePct
 	default:
 		return CalculateDeribitOptionFee(premiumUSD)
 	}

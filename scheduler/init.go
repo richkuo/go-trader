@@ -227,7 +227,13 @@ type InitOptions struct {
 	RobinhoodCapital        float64
 	RobinhoodDrawdown       float64
 	RobinhoodOptionsSymbols []string // stock tickers for Robinhood options (e.g. ["SPY", "QQQ"])
-	HTFFilter               bool     // higher-timeframe trend filter for all strategies
+	EnableOKX               bool
+	OKXMode                 string   // "paper" or "live"
+	OKXSpotStrategies       []string // selected spot strategy IDs for OKX
+	OKXPerpsStrategies      []string // selected perps strategy IDs for OKX
+	OKXCapital              float64
+	OKXDrawdown             float64
+	HTFFilter               bool // higher-timeframe trend filter for all strategies
 	DiscordEnabled          bool
 	DiscordOwnerID          string            // Discord user ID for DM features (upgrade prompts, config migration)
 	SpotChannelID           string            // deprecated: use ChannelMap
@@ -459,6 +465,49 @@ func generateConfig(opts InitOptions) *Config {
 		}
 	}
 
+	usesOKX := false
+	if opts.EnableOKX {
+		usesOKX = true
+		okxMode := opts.OKXMode
+		if okxMode == "" {
+			okxMode = "paper"
+		}
+		// OKX spot strategies
+		for _, stratID := range opts.OKXSpotStrategies {
+			shortName := deriveShortName(stratID)
+			for _, assetName := range opts.Assets {
+				id := fmt.Sprintf("okx-%s-%s", shortName, strings.ToLower(assetName))
+				cfg.Strategies = append(cfg.Strategies, StrategyConfig{
+					ID:              id,
+					Type:            "spot",
+					Platform:        "okx",
+					Script:          "shared_scripts/check_okx.py",
+					Args:            []string{stratID, assetName, "1h", fmt.Sprintf("--mode=%s", okxMode), "--inst-type=spot"},
+					Capital:         opts.OKXCapital,
+					MaxDrawdownPct:  opts.OKXDrawdown,
+					IntervalSeconds: 3600,
+				})
+			}
+		}
+		// OKX perps strategies
+		for _, stratID := range opts.OKXPerpsStrategies {
+			shortName := deriveShortName(stratID)
+			for _, assetName := range opts.Assets {
+				id := fmt.Sprintf("okx-%s-%s-perp", shortName, strings.ToLower(assetName))
+				cfg.Strategies = append(cfg.Strategies, StrategyConfig{
+					ID:              id,
+					Type:            "perps",
+					Platform:        "okx",
+					Script:          "shared_scripts/check_okx.py",
+					Args:            []string{stratID, assetName, "1h", fmt.Sprintf("--mode=%s", okxMode), "--inst-type=swap"},
+					Capital:         opts.OKXCapital,
+					MaxDrawdownPct:  opts.OKXDrawdown,
+					IntervalSeconds: 3600,
+				})
+			}
+		}
+	}
+
 	if usesRobinhood {
 		cfg.Platforms["robinhood"] = &PlatformConfig{
 			StateFile: "platforms/robinhood/state.json",
@@ -468,6 +517,12 @@ func generateConfig(opts InitOptions) *Config {
 	if usesLuno {
 		cfg.Platforms["luno"] = &PlatformConfig{
 			StateFile: "platforms/luno/state.json",
+		}
+	}
+
+	if usesOKX {
+		cfg.Platforms["okx"] = &PlatformConfig{
+			StateFile: "platforms/okx/state.json",
 		}
 	}
 
@@ -526,7 +581,7 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		fmt.Fprintln(os.Stderr, "Error: at least one asset required")
 		return 1
 	}
-	if !opts.EnableSpot && !opts.EnableOptions && !opts.EnablePerps && !opts.EnableFutures && !opts.EnableRobinhood && !opts.EnableLuno {
+	if !opts.EnableSpot && !opts.EnableOptions && !opts.EnablePerps && !opts.EnableFutures && !opts.EnableRobinhood && !opts.EnableLuno && !opts.EnableOKX {
 		fmt.Fprintln(os.Stderr, "Error: at least one strategy type must be enabled")
 		return 1
 	}
@@ -616,6 +671,29 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		}
 	}
 
+	// Auto-populate OKX defaults.
+	if opts.EnableOKX {
+		if opts.OKXMode == "" {
+			opts.OKXMode = "paper"
+		}
+		if len(opts.OKXSpotStrategies) == 0 {
+			for _, s := range spotStrategies {
+				opts.OKXSpotStrategies = append(opts.OKXSpotStrategies, s.ID)
+			}
+		}
+		if len(opts.OKXPerpsStrategies) == 0 {
+			for _, s := range perpsStrategies {
+				opts.OKXPerpsStrategies = append(opts.OKXPerpsStrategies, s.ID)
+			}
+		}
+		if opts.OKXCapital == 0 {
+			opts.OKXCapital = 1000
+		}
+		if opts.OKXDrawdown == 0 {
+			opts.OKXDrawdown = 5
+		}
+	}
+
 	// Migrate deprecated SpotChannelID/OptionsChannelID into ChannelMap.
 	if opts.ChannelMap == nil && (opts.SpotChannelID != "" || opts.OptionsChannelID != "") {
 		opts.ChannelMap = make(map[string]string)
@@ -691,9 +769,9 @@ func runInit(args []string) int {
 	}
 
 	// Step 3: Strategy types.
-	stratTypeNames := []string{"spot", "options", "perps", "futures", "robinhood", "luno"}
+	stratTypeNames := []string{"spot", "options", "perps", "futures", "robinhood", "luno", "okx"}
 	stratTypeIdxs := p.MultiSelect("\nSelect strategy types:", stratTypeNames, false)
-	enableSpot, enableOptions, enablePerps, enableFutures, enableRobinhood, enableLuno := false, false, false, false, false, false
+	enableSpot, enableOptions, enablePerps, enableFutures, enableRobinhood, enableLuno, enableOKX := false, false, false, false, false, false, false
 	for _, idx := range stratTypeIdxs {
 		switch stratTypeNames[idx] {
 		case "spot":
@@ -708,9 +786,11 @@ func runInit(args []string) int {
 			enableRobinhood = true
 		case "luno":
 			enableLuno = true
+		case "okx":
+			enableOKX = true
 		}
 	}
-	if !enableSpot && !enableOptions && !enablePerps && !enableFutures && !enableRobinhood && !enableLuno {
+	if !enableSpot && !enableOptions && !enablePerps && !enableFutures && !enableRobinhood && !enableLuno && !enableOKX {
 		fmt.Println("No strategy types selected. Aborted.")
 		return 1
 	}
@@ -718,7 +798,7 @@ func runInit(args []string) int {
 	// Step 4: Options platform.
 	var optionPlatforms []string
 	if enableOptions {
-		platOptions := []string{"deribit", "ibkr", "robinhood", "all"}
+		platOptions := []string{"deribit", "ibkr", "robinhood", "okx", "all"}
 		platIdx := p.Choice("\nOptions platform:", platOptions, 0)
 		switch platOptions[platIdx] {
 		case "deribit":
@@ -727,8 +807,10 @@ func runInit(args []string) int {
 			optionPlatforms = []string{"ibkr"}
 		case "robinhood":
 			optionPlatforms = []string{"robinhood"}
+		case "okx":
+			optionPlatforms = []string{"okx"}
 		case "all":
-			optionPlatforms = []string{"deribit", "ibkr", "robinhood"}
+			optionPlatforms = []string{"deribit", "ibkr", "robinhood", "okx"}
 		}
 	}
 
@@ -779,6 +861,15 @@ func runInit(args []string) int {
 		modeOptions := []string{"paper (safe default — signal only, no orders)", "live (requires ROBINHOOD_USERNAME/PASSWORD/TOTP_SECRET)"}
 		if p.Choice("\nRobinhood trading mode:", modeOptions, 0) == 1 {
 			robinhoodMode = "live"
+		}
+	}
+
+	// Step 5d: OKX mode.
+	okxMode := "paper"
+	if enableOKX {
+		modeOptions := []string{"paper (safe default)", "live (requires OKX_API_KEY/API_SECRET/PASSPHRASE)"}
+		if p.Choice("\nOKX trading mode:", modeOptions, 0) == 1 {
+			okxMode = "live"
 		}
 	}
 
@@ -843,7 +934,32 @@ func runInit(args []string) int {
 		}
 	}
 
-	if len(selectedSpotStrats) == 0 && !includePairs && len(selectedOptStrats) == 0 && !enablePerps && !enableFutures && !enableRobinhood && !enableLuno {
+	// Step 7d: OKX strategy selection.
+	var selectedOKXSpotStrats []string
+	var selectedOKXPerpsStrats []string
+	if enableOKX {
+		fmt.Println("\n--- OKX Spot Strategies ---")
+		okxSpotNames := make([]string, len(spotStrategies))
+		for i, s := range spotStrategies {
+			okxSpotNames[i] = s.ID
+		}
+		okxSpotIdxs := p.MultiSelect("\nSelect OKX spot strategies:", okxSpotNames, false)
+		for _, idx := range okxSpotIdxs {
+			selectedOKXSpotStrats = append(selectedOKXSpotStrats, spotStrategies[idx].ID)
+		}
+
+		fmt.Println("\n--- OKX Perps Strategies ---")
+		okxPerpsNames := make([]string, len(perpsStrategies))
+		for i, s := range perpsStrategies {
+			okxPerpsNames[i] = s.ID
+		}
+		okxPerpsIdxs := p.MultiSelect("\nSelect OKX perps strategies:", okxPerpsNames, false)
+		for _, idx := range okxPerpsIdxs {
+			selectedOKXPerpsStrats = append(selectedOKXPerpsStrats, perpsStrategies[idx].ID)
+		}
+	}
+
+	if len(selectedSpotStrats) == 0 && !includePairs && len(selectedOptStrats) == 0 && !enablePerps && !enableFutures && !enableRobinhood && !enableLuno && !enableOKX {
 		fmt.Println("No strategies selected. Aborted.")
 		return 1
 	}
@@ -893,6 +1009,13 @@ func runInit(args []string) int {
 		futuresFeePerContract = p.Float("Futures fee per contract ($)", 1.50)
 	}
 
+	okxCapital := 1000.0
+	okxDrawdown := 5.0
+	if enableOKX {
+		okxCapital = p.Float("OKX capital per strategy ($)", 1000)
+		okxDrawdown = p.Float("OKX max drawdown (%)", 5)
+	}
+
 	// Step 9: Discord.
 	fmt.Println("\n--- Discord Notifications ---")
 	discordEnabled := p.YesNo("Enable Discord notifications?", false)
@@ -929,6 +1052,11 @@ func runInit(args []string) int {
 		if enableLuno {
 			if ch := p.String("Luno channel ID (leave blank to skip)", ""); ch != "" {
 				channelMap["luno"] = ch
+			}
+		}
+		if enableOKX {
+			if ch := p.String("OKX channel ID (leave blank to skip)", ""); ch != "" {
+				channelMap["okx"] = ch
 			}
 		}
 		discordOwnerID = p.String("Your Discord user ID for DM upgrades (leave blank to skip)", "")
@@ -979,6 +1107,20 @@ func runInit(args []string) int {
 		}
 	}
 
+	// Collect OKX strategy IDs.
+	okxSpotStratIDs := selectedOKXSpotStrats
+	if enableOKX && len(okxSpotStratIDs) == 0 {
+		for _, s := range spotStrategies {
+			okxSpotStratIDs = append(okxSpotStratIDs, s.ID)
+		}
+	}
+	okxPerpsStratIDs := selectedOKXPerpsStrats
+	if enableOKX && len(okxPerpsStratIDs) == 0 {
+		for _, s := range perpsStrategies {
+			okxPerpsStratIDs = append(okxPerpsStratIDs, s.ID)
+		}
+	}
+
 	opts := InitOptions{
 		OutputPath:              outputPath,
 		Assets:                  selectedAssets,
@@ -1014,6 +1156,12 @@ func runInit(args []string) int {
 		FuturesCapital:          futuresCapital,
 		FuturesDrawdown:         futuresDrawdown,
 		FuturesFeePerContract:   futuresFeePerContract,
+		EnableOKX:               enableOKX,
+		OKXMode:                 okxMode,
+		OKXSpotStrategies:       okxSpotStratIDs,
+		OKXPerpsStrategies:      okxPerpsStratIDs,
+		OKXCapital:              okxCapital,
+		OKXDrawdown:             okxDrawdown,
 		HTFFilter:               htfFilter,
 		DiscordEnabled:          discordEnabled,
 		DiscordOwnerID:          discordOwnerID,

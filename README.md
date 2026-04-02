@@ -16,7 +16,7 @@ A Go + Python hybrid trading system. A single Go binary (~8MB RAM) orchestrates 
 
 **Crypto** via Robinhood: spot crypto trading using the full strategy suite (SMA, EMA, RSI, MACD, etc.) — paper mode uses Yahoo Finance for OHLCV data, live mode places real orders via robin_stocks with TOTP MFA.
 
-**Discord alerts**: Per-platform channels for spot, options, hyperliquid, topstep, and robinhood summaries, with immediate trade notifications. When a new release is detected, the bot DMs you directly — reply **yes** and it upgrades, rebuilds, and restarts itself automatically.
+**Discord alerts**: Per-platform channels for spot, options, hyperliquid, topstep, robinhood, and okx summaries, with immediate trade notifications. When a new release is detected, the bot DMs you directly — reply **yes** and it upgrades, rebuilds, and restarts itself automatically.
 
 Supported platforms: Binance US, Deribit, IBKR/CME, Hyperliquid, TopStep, Robinhood.
 
@@ -101,12 +101,13 @@ Go scheduler (always running, ~8MB idle)
     .venv/bin/python3 shared_scripts/check_hyperliquid.py → JSON signal (perps)
     .venv/bin/python3 shared_scripts/check_topstep.py     → JSON signal (futures)
     .venv/bin/python3 shared_scripts/check_robinhood.py  → JSON signal (crypto)
+    .venv/bin/python3 shared_scripts/check_okx.py         → JSON signal (spot/perps)
     .venv/bin/python3 shared_scripts/check_price.py       → live prices
   ↓ processes signals, executes paper trades, manages risk
   ↓ marks options to market via Deribit REST API (live prices every cycle)
   ↓ saves state → scheduler/state.json (atomic writes, survives restarts)
   ↓ HTTP status → localhost:8099/status
-  ↓ Discord → per-platform channels (spot, options, hyperliquid, topstep, robinhood)
+  ↓ Discord → per-platform channels (spot, options, hyperliquid, topstep, robinhood, okx)
 
 Platform adapters (Python):
   platforms/binanceus/adapter.py   — spot (CCXT)
@@ -115,6 +116,7 @@ Platform adapters (Python):
   platforms/hyperliquid/adapter.py — perps (paper + live, SDK)
   platforms/topstep/adapter.py     — futures (CME, paper via yfinance + live via TopStepX)
   platforms/robinhood/adapter.py   — crypto (paper via yfinance + live via robin_stocks)
+  platforms/okx/adapter.py         — spot + perps + options (CCXT, paper + live)
 ```
 
 Python gets the quant libraries (pandas, numpy, scipy, CCXT). Go gets memory efficiency. 50+ strategies cost ~220MB peak for ~30 seconds, then ~8MB idle.
@@ -174,6 +176,12 @@ CME futures on TopStep. Live mode requires `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRE
 
 Same spot strategy suite as Binance US, running on Robinhood crypto. Paper mode uses Yahoo Finance for OHLCV data (no credentials needed). Live mode requires `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` env vars.
 
+### OKX (spot + perps + options, BTC/ETH/SOL)
+
+Full spot and perpetual swap strategies on OKX. Options support via `check_options.py --platform=okx` for BTC/ETH options. Uses CCXT for all API interactions.
+
+Paper mode uses public OKX API (no credentials). Live mode requires `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_PASSPHRASE` env vars. Set `OKX_SANDBOX=1` for the OKX demo trading environment.
+
 ### Robinhood Stock Options (6 strategies, 4h interval)
 
 US equity options on SPY, QQQ, AAPL, etc. using the same options strategies as Deribit/IBKR (covered_calls, protective_puts, momentum_options, vol_mean_reversion, wheel, butterfly). Paper mode uses Black-Scholes pricing. Live mode uses robin_stocks for real options chains and greeks.
@@ -191,6 +199,7 @@ US equity options on SPY, QQQ, AAPL, etc. using the same options strategies as D
 | TopStep | Futures | ES, NQ, MES, MNQ, CL, GC | Paper (yfinance) + live trading via TopStepX API |
 | Robinhood | Crypto | BTC, ETH, SOL, DOGE, etc. | Paper (yfinance) + live trading via robin_stocks |
 | Robinhood | Options | SPY, QQQ, AAPL, MSFT, etc. | Paper (Black-Scholes) + live chains via robin_stocks |
+| OKX | Spot + Perps + Options | BTC, ETH, SOL | CCXT, paper + live, MiCA/EU licensed |
 
 ---
 
@@ -215,7 +224,7 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
     "enabled": true,
     "token": "",
     "owner_id": "",
-    "channels": { "spot": "CHANNEL_ID", "options": "CHANNEL_ID", "hyperliquid": "CHANNEL_ID", "topstep": "CHANNEL_ID", "robinhood": "CHANNEL_ID" }
+    "channels": { "spot": "CHANNEL_ID", "options": "CHANNEL_ID", "hyperliquid": "CHANNEL_ID", "topstep": "CHANNEL_ID", "robinhood": "CHANNEL_ID", "okx": "CHANNEL_ID" }
   },
   "platforms": {
     "hyperliquid": {
@@ -226,6 +235,9 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
     },
     "robinhood": {
       "state_file": "platforms/robinhood/state.json"
+    },
+    "okx": {
+      "state_file": "platforms/okx/state.json"
     }
   },
   "strategies": [ ... ]
@@ -291,7 +303,7 @@ To get your Discord user ID: right-click your username in Discord → **Copy Use
 | `discord.enabled` | Enable/disable Discord notifications |
 | `discord.token` | Leave blank — use `DISCORD_BOT_TOKEN` env var |
 | `discord.owner_id` | Your Discord user ID — enables DM upgrade prompts and post-upgrade config migration. Use `DISCORD_OWNER_ID` env var. |
-| `discord.channels` | Map of channel IDs keyed by platform/type — `"spot"`, `"options"`, `"hyperliquid"`, `"topstep"`, `"robinhood"`, etc. Options post per-check; others post hourly + on trades. |
+| `discord.channels` | Map of channel IDs keyed by platform/type — `"spot"`, `"options"`, `"hyperliquid"`, `"topstep"`, `"robinhood"`, `"okx"`, etc. Options post per-check; others post hourly + on trades. |
 | `config_version` | Schema version (set automatically by `go-trader init`; migration runs on startup when behind current version) |
 
 ### Strategy Entry
@@ -300,7 +312,7 @@ To get your Discord user ID: right-click your username in Discord → **Copy Use
 |-------|-------------|---------|
 | `id` | Unique identifier (e.g., `momentum-btc`, `hl-momentum-btc`) | Required |
 | `type` | `"spot"`, `"options"`, `"perps"`, or `"futures"` | Required |
-| `platform` | `"binanceus"`, `"deribit"`, `"ibkr"`, `"hyperliquid"`, `"topstep"`, or `"robinhood"` | Required |
+| `platform` | `"binanceus"`, `"deribit"`, `"ibkr"`, `"hyperliquid"`, `"topstep"`, `"robinhood"`, or `"okx"` | Required |
 | `script` | Python script path (relative) | Required |
 | `args` | Arguments passed to script | Required |
 | `capital` | Starting capital in USD | 1000 |
@@ -410,6 +422,7 @@ go-trader/
 │   ├── check_strategy.py   # Spot checker (Binance US via CCXT)
 │   ├── check_options.py    # Options checker (--platform=deribit|ibkr)
 │   ├── check_hyperliquid.py # Hyperliquid perps checker
+│   ├── check_okx.py         # OKX spot/perps checker
 │   ├── check_topstep.py    # TopStep futures checker
 │   ├── check_robinhood.py  # Robinhood crypto checker
 │   └── check_price.py      # Multi-symbol price fetcher
@@ -419,7 +432,8 @@ go-trader/
 │   ├── ibkr/               # IBKR/CME options adapter
 │   ├── hyperliquid/        # Hyperliquid perps adapter
 │   ├── topstep/            # TopStep futures adapter
-│   └── robinhood/          # Robinhood crypto adapter
+│   ├── robinhood/          # Robinhood crypto adapter
+│   └── okx/                # OKX spot/perps/options adapter (CCXT)
 ├── shared_tools/           # Shared Python utilities (pricing, exchange_base, storage)
 ├── shared_strategies/      # Shared strategy logic (spot/, options/, futures/)
 ├── core/                   # Legacy data utilities (used by backtest)
@@ -453,6 +467,7 @@ go-trader/
 | Hyperliquid live mode fails | Set `HYPERLIQUID_SECRET_KEY` env var; paper mode works without it |
 | TopStep live mode fails | Set `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRET`, `TOPSTEP_ACCOUNT_ID` env vars |
 | Robinhood live mode fails | Set `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` env vars |
+| OKX live mode fails | Set `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_PASSPHRASE` env vars; use `OKX_SANDBOX=1` for demo |
 
 ---
 

@@ -106,7 +106,7 @@ The wizard walks through:
 4. **Perps strategies** — full spot strategy suite on Hyperliquid (paper or live mode)
 5. **Futures strategies** — momentum, mean_reversion, rsi, macd, breakout on CME futures (TopStep, paper or live mode)
 6. **Capital & max drawdown** per strategy type
-7. **Discord** — per-platform channel IDs (spot, options, hyperliquid if perps enabled, topstep if futures enabled)
+7. **Discord** — per-platform channel IDs (spot, options, hyperliquid if perps enabled, topstep if futures enabled, okx if OKX enabled)
 8. **Auto-update** — off / daily / heartbeat (default: off)
 
 A summary is shown before writing. If `scheduler/config.json` already exists, you'll be prompted to confirm overwrite.
@@ -398,8 +398,8 @@ Start from `scheduler/config.example.json` as a template. For each enabled strat
 Discord config:
 - `discord.enabled`: true/false based on Step 4
 - `discord.token`: Always `""` (token comes from env var)
-- `discord.channels`: Map of channel IDs for enabled platform types, e.g. `{"spot": "ID_FROM_4b", "options": "ID_FROM_4c", "hyperliquid": "ID_FROM_4d", "topstep": "ID_FROM_4e"}` — omit keys for platforms not in use
-- Summary frequency is automatic: options post per-check, spot/hyperliquid post hourly + on trades (no config field needed)
+- `discord.channels`: Map of channel IDs for enabled platform types, e.g. `{"spot": "ID_FROM_4b", "options": "ID_FROM_4c", "hyperliquid": "ID_FROM_4d", "topstep": "ID_FROM_4e", "okx": "ID_FROM_4f"}` — omit keys for platforms not in use
+- Summary frequency is automatic: options post per-check, spot/hyperliquid/okx post hourly + on trades (no config field needed)
 
 ### 7b. OpenClaw Discord Allowlist (if applicable)
 
@@ -972,7 +972,7 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
      theta_harvest.*   — profit_target_pct, stop_loss_pct, min_dte_close
    Discord:
      enabled           — true/false
-     channels          — map: "spot", "options", "hyperliquid", "topstep", "robinhood"
+     channels          — map: "spot", "options", "hyperliquid", "topstep", "robinhood", "okx"
      summary_interval  — how often to post summaries
    Environment (sudo systemctl edit go-trader):
      DISCORD_BOT_TOKEN, STATUS_AUTH_TOKEN
@@ -1053,7 +1053,7 @@ Each entry in the `strategies` array supports:
 | Setting | Key | Default | Description |
 |---------|-----|---------|-------------|
 | Enable Discord | `discord.enabled` | true | Turn Discord notifications on/off |
-| Channels | `discord.channels` | — | Map of channel IDs keyed by platform/type: `"spot"`, `"options"`, `"hyperliquid"`, `"topstep"`, etc. |
+| Channels | `discord.channels` | — | Map of channel IDs keyed by platform/type: `"spot"`, `"options"`, `"hyperliquid"`, `"topstep"`, `"okx"`, etc. |
 | Owner ID | `discord.owner_id` | — | Your Discord user ID — enables DM upgrade prompts and post-upgrade config migration. Use `DISCORD_OWNER_ID` env var (preferred). |
 
 ### Environment Variables
@@ -1194,3 +1194,35 @@ Each Robinhood options strategy runs on US equity symbols (SPY, QQQ, AAPL, etc.)
 **ID convention:** `rh-{strategy_short}-{symbol}` (e.g. `rh-ccall-spy`, `rh-vol-qqq`)
 
 Paper mode uses Black-Scholes pricing (no credentials needed). Live mode uses robin_stocks for real options chains and greeks. Requires `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` env vars.
+
+### OKX Spot Entries
+
+Each OKX spot strategy runs the shared spot strategy suite on crypto assets:
+
+```json
+{"id": "okx-sma-btc", "type": "spot", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": ["sma_crossover", "BTC", "1h", "--mode=paper", "--inst-type=spot"], "capital": 1000, "max_drawdown_pct": 5, "interval_seconds": 3600}
+{"id": "okx-momentum-eth", "type": "spot", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": ["momentum", "ETH", "1h", "--mode=paper", "--inst-type=spot"], "capital": 1000, "max_drawdown_pct": 5, "interval_seconds": 3600}
+```
+
+### OKX Perps Entries
+
+Each OKX perps strategy runs on USDT-margined perpetual swaps:
+
+```json
+{"id": "okx-sma-btc-perp", "type": "perps", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": ["sma_crossover", "BTC", "1h", "--mode=paper", "--inst-type=swap"], "capital": 1000, "max_drawdown_pct": 5, "interval_seconds": 3600}
+{"id": "okx-momentum-eth-perp", "type": "perps", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": ["momentum", "ETH", "1h", "--mode=paper", "--inst-type=swap"], "capital": 1000, "max_drawdown_pct": 5, "interval_seconds": 3600}
+```
+
+### OKX Options Entries
+
+OKX options use the unified `check_options.py` with `--platform=okx`:
+
+```json
+{"id": "okx-mom-btc", "type": "options", "platform": "okx", "script": "shared_scripts/check_options.py", "args": ["momentum_options", "BTC", "--platform=okx"], "capital": 5000, "max_drawdown_pct": 10, "interval_seconds": 14400, "theta_harvest": {"enabled": true, "profit_target_pct": 60, "stop_loss_pct": 200, "min_dte_close": 3}}
+```
+
+**ID convention:** `okx-{strategy_short}-{asset}` (spot), `okx-{strategy_short}-{asset}-perp` (perps)
+
+Paper mode uses public OKX API (no credentials). For live trading, change `--mode=paper` to `--mode=live`. Requires `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_PASSPHRASE` env vars. Set `OKX_SANDBOX=1` for the OKX demo trading environment.
+
+Discord channel keys: `"okx"` for spot/perps, `"okx-options"` for options.
