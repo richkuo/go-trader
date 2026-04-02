@@ -597,6 +597,43 @@ def order_blocks_strategy(df: pd.DataFrame,
     return result
 
 
+@register_strategy(
+    "vwap_reversion",
+    "VWAP Reversion — buy when price drops below VWAP by N std devs, sell when above",
+    {"entry_std": 1.5, "exit_std": 0.2}
+)
+def vwap_reversion_strategy(df: pd.DataFrame, entry_std: float = 1.5, exit_std: float = 0.2) -> pd.DataFrame:
+    result = df.copy()
+    # Detect daily boundaries for VWAP reset
+    if isinstance(result.index, pd.DatetimeIndex):
+        day = result.index.date
+    else:
+        day = pd.to_datetime(result.index).date
+    result["_day"] = day
+    typical_price = (result["high"] + result["low"] + result["close"]) / 3
+    result["_tp_vol"] = typical_price * result["volume"]
+    # Cumulative sums reset each day
+    result["_cum_tp_vol"] = result.groupby("_day")["_tp_vol"].cumsum()
+    result["_cum_vol"] = result.groupby("_day")["volume"].cumsum()
+    result["vwap"] = result["_cum_tp_vol"] / result["_cum_vol"]
+    # Rolling std of price deviation from VWAP (use intraday window)
+    result["vwap_std"] = result.groupby("_day")["close"].transform(
+        lambda x: (x - result.loc[x.index, "vwap"]).expanding().std()
+    )
+    result["vwap_std"] = result["vwap_std"].fillna(0)
+    result["signal"] = 0
+    # BUY: price crosses below VWAP - entry_std * std
+    lower = result["vwap"] - entry_std * result["vwap_std"]
+    upper = result["vwap"] + entry_std * result["vwap_std"]
+    buy_cross = (result["close"] < lower) & (result["close"].shift(1) >= lower.shift(1))
+    sell_cross = (result["close"] > upper) & (result["close"].shift(1) <= upper.shift(1))
+    result.loc[buy_cross, "signal"] = 1
+    result.loc[sell_cross, "signal"] = -1
+    # Clean up temp columns
+    result.drop(columns=["_day", "_tp_vol", "_cum_tp_vol", "_cum_vol"], inplace=True)
+    return result
+
+
 if __name__ == "__main__":
     import json
     if "--list-json" in sys.argv:

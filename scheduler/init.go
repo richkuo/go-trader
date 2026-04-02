@@ -47,6 +47,7 @@ var knownShortNames = map[string]string{
 	"stoch_rsi":          "stochrsi",
 	"ichimoku_cloud":     "ichi",
 	"order_blocks":       "ob",
+	"vwap_reversion":     "vwap",
 }
 
 // deriveShortName returns a short abbreviation for a strategy ID.
@@ -80,6 +81,7 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "stoch_rsi", ShortName: "stochrsi"},
 	{ID: "ichimoku_cloud", ShortName: "ichi"},
 	{ID: "order_blocks", ShortName: "ob"},
+	{ID: "vwap_reversion", ShortName: "vwap"},
 }
 
 var defaultOptionsStrategies = []stratDef{
@@ -102,6 +104,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "stoch_rsi", ShortName: "stochrsi"},
 	{ID: "ichimoku_cloud", ShortName: "ichi"},
 	{ID: "order_blocks", ShortName: "ob"},
+	{ID: "vwap_reversion", ShortName: "vwap"},
 }
 
 // Supported CME futures symbols for the init wizard.
@@ -200,6 +203,10 @@ type InitOptions struct {
 	FuturesCapital          float64
 	FuturesDrawdown         float64
 	FuturesFeePerContract   float64
+	EnableLuno              bool
+	LunoStrategies          []string // selected spot strategy IDs for Luno
+	LunoCapital             float64
+	LunoDrawdown            float64
 	EnableRobinhood         bool
 	RobinhoodMode           string   // "paper" or "live"
 	RobinhoodStrategies     []string // selected crypto strategy IDs
@@ -378,6 +385,32 @@ func generateConfig(opts InitOptions) *Config {
 		}
 	}
 
+	// Luno spot strategies (reuses check_strategy.py, platform=luno for fees).
+	usesLuno := false
+	if opts.EnableLuno {
+		usesLuno = true
+		for _, stratID := range opts.LunoStrategies {
+			shortName := deriveShortName(stratID)
+			for _, assetName := range opts.Assets {
+				sym := assetSymbol[assetName]
+				if sym == "" {
+					continue
+				}
+				id := fmt.Sprintf("luno-%s-%s", shortName, strings.ToLower(assetName))
+				cfg.Strategies = append(cfg.Strategies, StrategyConfig{
+					ID:              id,
+					Type:            "spot",
+					Platform:        "luno",
+					Script:          "shared_scripts/check_strategy.py",
+					Args:            []string{stratID, sym, "1h"},
+					Capital:         opts.LunoCapital,
+					MaxDrawdownPct:  opts.LunoDrawdown,
+					IntervalSeconds: 3600,
+				})
+			}
+		}
+	}
+
 	// Robinhood crypto strategies (reuses spot strategies on Robinhood crypto).
 	usesRobinhood := false
 	if opts.EnableRobinhood {
@@ -414,6 +447,12 @@ func generateConfig(opts InitOptions) *Config {
 	if usesRobinhood {
 		cfg.Platforms["robinhood"] = &PlatformConfig{
 			StateFile: "platforms/robinhood/state.json",
+		}
+	}
+
+	if usesLuno {
+		cfg.Platforms["luno"] = &PlatformConfig{
+			StateFile: "platforms/luno/state.json",
 		}
 	}
 
@@ -463,7 +502,7 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		fmt.Fprintln(os.Stderr, "Error: at least one asset required")
 		return 1
 	}
-	if !opts.EnableSpot && !opts.EnableOptions && !opts.EnablePerps && !opts.EnableFutures && !opts.EnableRobinhood {
+	if !opts.EnableSpot && !opts.EnableOptions && !opts.EnablePerps && !opts.EnableFutures && !opts.EnableRobinhood && !opts.EnableLuno {
 		fmt.Fprintln(os.Stderr, "Error: at least one strategy type must be enabled")
 		return 1
 	}
@@ -535,6 +574,21 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		}
 		if opts.RobinhoodDrawdown == 0 {
 			opts.RobinhoodDrawdown = 5
+		}
+	}
+
+	// Auto-populate Luno defaults.
+	if opts.EnableLuno {
+		if len(opts.LunoStrategies) == 0 {
+			for _, s := range spotStrategies {
+				opts.LunoStrategies = append(opts.LunoStrategies, s.ID)
+			}
+		}
+		if opts.LunoCapital == 0 {
+			opts.LunoCapital = 500
+		}
+		if opts.LunoDrawdown == 0 {
+			opts.LunoDrawdown = 5
 		}
 	}
 
@@ -613,9 +667,9 @@ func runInit(args []string) int {
 	}
 
 	// Step 3: Strategy types.
-	stratTypeNames := []string{"spot", "options", "perps", "futures", "robinhood"}
+	stratTypeNames := []string{"spot", "options", "perps", "futures", "robinhood", "luno"}
 	stratTypeIdxs := p.MultiSelect("\nSelect strategy types:", stratTypeNames, false)
-	enableSpot, enableOptions, enablePerps, enableFutures, enableRobinhood := false, false, false, false, false
+	enableSpot, enableOptions, enablePerps, enableFutures, enableRobinhood, enableLuno := false, false, false, false, false, false
 	for _, idx := range stratTypeIdxs {
 		switch stratTypeNames[idx] {
 		case "spot":
@@ -628,9 +682,11 @@ func runInit(args []string) int {
 			enableFutures = true
 		case "robinhood":
 			enableRobinhood = true
+		case "luno":
+			enableLuno = true
 		}
 	}
-	if !enableSpot && !enableOptions && !enablePerps && !enableFutures && !enableRobinhood {
+	if !enableSpot && !enableOptions && !enablePerps && !enableFutures && !enableRobinhood && !enableLuno {
 		fmt.Println("No strategy types selected. Aborted.")
 		return 1
 	}
@@ -750,7 +806,20 @@ func runInit(args []string) int {
 		}
 	}
 
-	if len(selectedSpotStrats) == 0 && !includePairs && len(selectedOptStrats) == 0 && !enablePerps && !enableFutures && !enableRobinhood {
+	// Step 7c: Luno strategy selection.
+	var selectedLunoStrats []string
+	if enableLuno {
+		lunoNames := make([]string, len(spotStrategies))
+		for i, s := range spotStrategies {
+			lunoNames[i] = s.ID
+		}
+		lunoIdxs := p.MultiSelect("\nSelect Luno strategies:", lunoNames, false)
+		for _, idx := range lunoIdxs {
+			selectedLunoStrats = append(selectedLunoStrats, spotStrategies[idx].ID)
+		}
+	}
+
+	if len(selectedSpotStrats) == 0 && !includePairs && len(selectedOptStrats) == 0 && !enablePerps && !enableFutures && !enableRobinhood && !enableLuno {
 		fmt.Println("No strategies selected. Aborted.")
 		return 1
 	}
@@ -782,6 +851,13 @@ func runInit(args []string) int {
 	if enableRobinhood {
 		robinhoodCapital = p.Float("Robinhood crypto capital per strategy ($)", 500)
 		robinhoodDrawdown = p.Float("Robinhood max drawdown (%)", 5)
+	}
+
+	lunoCapital := 500.0
+	lunoDrawdown := 5.0
+	if enableLuno {
+		lunoCapital = p.Float("Luno capital per strategy ($)", 500)
+		lunoDrawdown = p.Float("Luno max drawdown (%)", 5)
 	}
 
 	futuresCapital := 5000.0
@@ -826,6 +902,11 @@ func runInit(args []string) int {
 				channelMap["robinhood"] = ch
 			}
 		}
+		if enableLuno {
+			if ch := p.String("Luno channel ID (leave blank to skip)", ""); ch != "" {
+				channelMap["luno"] = ch
+			}
+		}
 		discordOwnerID = p.String("Your Discord user ID for DM upgrades (leave blank to skip)", "")
 	}
 
@@ -862,6 +943,14 @@ func runInit(args []string) int {
 		}
 	}
 
+	// Collect Luno strategy IDs.
+	lunoStratIDs := selectedLunoStrats
+	if enableLuno && len(lunoStratIDs) == 0 {
+		for _, s := range spotStrategies {
+			lunoStratIDs = append(lunoStratIDs, s.ID)
+		}
+	}
+
 	opts := InitOptions{
 		OutputPath:              outputPath,
 		Assets:                  selectedAssets,
@@ -886,6 +975,10 @@ func runInit(args []string) int {
 		RobinhoodStrategies:     robinhoodStratIDs,
 		RobinhoodCapital:        robinhoodCapital,
 		RobinhoodDrawdown:       robinhoodDrawdown,
+		EnableLuno:              enableLuno,
+		LunoStrategies:          lunoStratIDs,
+		LunoCapital:             lunoCapital,
+		LunoDrawdown:            lunoDrawdown,
 		EnableFutures:           enableFutures,
 		FuturesMode:             futuresMode,
 		FuturesStrategies:       futuresStratIDs,
