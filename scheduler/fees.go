@@ -16,6 +16,9 @@ const (
 	// Hyperliquid perps taker fee
 	HyperliquidTakerFeePct = 0.00035 // 0.035% taker fee
 
+	// Luno spot taker fee (base rate; volume-tiered down to 0.03%)
+	LunoTakerFeePct = 0.01 // 1.00% taker fee
+
 	// Robinhood options regulatory fee (per contract)
 	RobinhoodOptionFeeFixed = 0.03 // $0.03/contract (SEC/FINRA regulatory fee)
 
@@ -45,6 +48,8 @@ func CalculatePlatformSpotFee(platform string, value float64) float64 {
 	switch platform {
 	case "hyperliquid":
 		return CalculateHyperliquidFee(value)
+	case "luno":
+		return value * LunoTakerFeePct
 	case "robinhood":
 		return 0 // Robinhood charges no crypto commission
 	default:

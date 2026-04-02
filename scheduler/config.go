@@ -148,6 +148,8 @@ func LoadConfig(path string) (*Config, error) {
 				cfg.Strategies[i].Platform = "topstep"
 			case strings.HasPrefix(cfg.Strategies[i].ID, "rh-"):
 				cfg.Strategies[i].Platform = "robinhood"
+			case strings.HasPrefix(cfg.Strategies[i].ID, "luno-"):
+				cfg.Strategies[i].Platform = "luno"
 			case cfg.Strategies[i].Type == "options":
 				cfg.Strategies[i].Platform = "deribit"
 			default:
