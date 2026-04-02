@@ -14,6 +14,7 @@ from indicators import sma, ema
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from amd_ifvg import amd_ifvg_core
 from chart_patterns import chart_pattern_core
+from liquidity_sweeps import liquidity_sweep_core
 
 
 # ─────────────────────────────────────────────
@@ -642,6 +643,15 @@ def vwap_reversion_strategy(df: pd.DataFrame, entry_std: float = 1.5, exit_std: 
 )
 def chart_pattern_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return chart_pattern_core(df, **params)
+
+
+@register_strategy(
+    "liquidity_sweeps",
+    "Liquidity Sweeps (ICT) — fades stop-hunt wicks beyond swing highs/lows after price closes back inside range",
+    {"swing_lookback": 20, "confirmation": 1}
+)
+def liquidity_sweeps_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return liquidity_sweep_core(df, **params)
 
 
 if __name__ == "__main__":

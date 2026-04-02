@@ -65,10 +65,10 @@
 - `cfg.Correlation` — `*CorrelationConfig` with `Enabled` (default false), `MaxConcentrationPct` (default 60), `MaxSameDirectionPct` (default 75); computed under RLock, state assigned under Lock; warnings sent to all Discord channels + owner DM
 - `cfg.AutoUpdate` — `"off"` (default), `"daily"` (once/day), `"heartbeat"` (every cycle); handled in main.go loop + startup; uses `dailyCycles = (24*3600)/tickSeconds`
 - Strategy registry imports: `check_hyperliquid.py` and `check_strategy.py` import from `shared_strategies/spot/strategies.py`; `check_topstep.py` imports from `shared_strategies/futures/strategies.py` — a new strategy must be registered in both if it needs to work across platforms
-- Adding a cross-platform strategy: create core logic in `shared_strategies/<name>.py`, then import+register in both `spot/strategies.py` and `futures/strategies.py` (same pattern as indicators.py)
+- Adding a cross-platform strategy: create core logic in `shared_strategies/<name>.py` (see `chart_patterns.py`, `liquidity_sweeps.py`), then import+register in both `spot/strategies.py` and `futures/strategies.py`; thin wrapper: `@register_strategy(...)` + `def x(df, **params): return x_core(df, **params)`
 - Adding a new spot/futures strategy (no new platform): (1) add `@register_strategy` function to `shared_strategies/spot/strategies.py`, (2) add same to `shared_strategies/futures/strategies.py`, (3) add short name to `knownShortNames` in `scheduler/init.go` — auto-discovery handles all platform configs
 - Spot and futures have independent `STRATEGY_REGISTRY` dicts — a new strategy must be added to both files with `@register_strategy` decorator; perps auto-discovers from spot via `discoverStrategies()`
-- New strategies also need: (1) `knownShortNames` entry in `init.go` for the `"name": "abbrev"` mapping, (2) `defaultSpotStrategies` / `defaultFuturesStrategies` fallback entries in `init.go`
+- New strategies also need: (1) `knownShortNames` entry in `init.go` for the `"name": "abbrev"` mapping, (2) `defaultSpotStrategies` / `defaultPerpsStrategies` / `defaultFuturesStrategies` fallback entries in `init.go`
 - Strategy discovery: `shared_strategies/spot/strategies.py --list-json`, `shared_strategies/options/strategies.py --list-json`, and `shared_strategies/futures/strategies.py --list-json` output JSON arrays of `{"id":..., "description":...}`
 
 ## Pull Requests
