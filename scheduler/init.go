@@ -46,6 +46,7 @@ var knownShortNames = map[string]string{
 	"atr_breakout":       "atrbo",
 	"stoch_rsi":          "stochrsi",
 	"ichimoku_cloud":     "ichi",
+	"vwap_reversion":     "vwap",
 }
 
 // deriveShortName returns a short abbreviation for a strategy ID.
@@ -78,6 +79,7 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "rsi_macd_combo", ShortName: "rmc"},
 	{ID: "stoch_rsi", ShortName: "stochrsi"},
 	{ID: "ichimoku_cloud", ShortName: "ichi"},
+	{ID: "vwap_reversion", ShortName: "vwap"},
 }
 
 var defaultOptionsStrategies = []stratDef{
@@ -99,6 +101,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "breakout", ShortName: "bo"},
 	{ID: "stoch_rsi", ShortName: "stochrsi"},
 	{ID: "ichimoku_cloud", ShortName: "ichi"},
+	{ID: "vwap_reversion", ShortName: "vwap"},
 }
 
 // Supported CME futures symbols for the init wizard.
