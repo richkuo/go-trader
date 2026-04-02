@@ -429,6 +429,85 @@ def vwap_reversion_strategy(df: pd.DataFrame, entry_std: float = 1.5, exit_std: 
     return result
 
 
+@register_strategy(
+    "parabolic_sar",
+    "Parabolic SAR — trend-following stop and reverse with accelerating trailing stop",
+    {"iaf": 0.02, "af_step": 0.02, "max_af": 0.2}
+)
+def parabolic_sar_strategy(df: pd.DataFrame, iaf: float = 0.02, af_step: float = 0.02, max_af: float = 0.2) -> pd.DataFrame:
+    result = df.copy()
+    high = result["high"].values
+    low = result["low"].values
+    close = result["close"].values
+    n = len(close)
+    sar = np.zeros(n)
+    trend = np.zeros(n, dtype=int)  # 1 = uptrend, -1 = downtrend
+    af = np.zeros(n)
+    ep = np.zeros(n)  # extreme point
+
+    if n < 2:
+        result["sar"] = np.nan
+        result["signal"] = 0
+        return result
+
+    trend[0] = 1 if close[1] >= close[0] else -1
+    if trend[0] == 1:
+        sar[0] = low[0]
+        ep[0] = high[0]
+    else:
+        sar[0] = high[0]
+        ep[0] = low[0]
+    af[0] = iaf
+
+    for i in range(1, n):
+        prev_sar = sar[i - 1]
+        prev_af = af[i - 1]
+        prev_ep = ep[i - 1]
+        prev_trend = trend[i - 1]
+
+        new_sar = prev_sar + prev_af * (prev_ep - prev_sar)
+
+        if prev_trend == 1:
+            new_sar = min(new_sar, low[i - 1])
+            if i >= 2:
+                new_sar = min(new_sar, low[i - 2])
+        else:
+            new_sar = max(new_sar, high[i - 1])
+            if i >= 2:
+                new_sar = max(new_sar, high[i - 2])
+
+        if prev_trend == 1 and low[i] < new_sar:
+            trend[i] = -1
+            sar[i] = prev_ep
+            ep[i] = low[i]
+            af[i] = iaf
+        elif prev_trend == -1 and high[i] > new_sar:
+            trend[i] = 1
+            sar[i] = prev_ep
+            ep[i] = high[i]
+            af[i] = iaf
+        else:
+            trend[i] = prev_trend
+            sar[i] = new_sar
+            if prev_trend == 1:
+                ep[i] = max(prev_ep, high[i])
+            else:
+                ep[i] = min(prev_ep, low[i])
+            if ep[i] != prev_ep:
+                af[i] = min(prev_af + af_step, max_af)
+            else:
+                af[i] = prev_af
+
+    result["sar"] = sar
+    result["signal"] = 0
+    trend_series = pd.Series(trend, index=result.index)
+    buy = (trend_series == 1) & (trend_series.shift(1) == -1)
+    sell = (trend_series == -1) & (trend_series.shift(1) == 1)
+    result.loc[buy, "signal"] = 1
+    result.loc[sell, "signal"] = -1
+    return result
+
+
 if __name__ == "__main__":
     if "--list-json" in sys.argv:
         print(json.dumps([{"id": name, "description": STRATEGY_REGISTRY[name]["description"]} for name in list_strategies()]))
