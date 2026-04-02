@@ -68,6 +68,7 @@
 - Adding a cross-platform strategy: create core logic in `shared_strategies/<name>.py`, then import+register in both `spot/strategies.py` and `futures/strategies.py` (same pattern as indicators.py)
 - Adding a new spot/futures strategy (no new platform): (1) add `@register_strategy` function to `shared_strategies/spot/strategies.py`, (2) add same to `shared_strategies/futures/strategies.py`, (3) add short name to `knownShortNames` in `scheduler/init.go` — auto-discovery handles all platform configs
 - Spot and futures have independent `STRATEGY_REGISTRY` dicts — a new strategy must be added to both files with `@register_strategy` decorator; perps auto-discovers from spot via `discoverStrategies()`
+- New strategies also need: (1) `knownShortNames` entry in `init.go` for the `"name": "abbrev"` mapping, (2) `defaultSpotStrategies` / `defaultFuturesStrategies` fallback entries in `init.go`
 - Strategy discovery: `shared_strategies/spot/strategies.py --list-json`, `shared_strategies/options/strategies.py --list-json`, and `shared_strategies/futures/strategies.py --list-json` output JSON arrays of `{"id":..., "description":...}`
 
 ## Pull Requests

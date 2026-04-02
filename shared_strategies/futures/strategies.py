@@ -235,6 +235,40 @@ def supertrend_strategy(df: pd.DataFrame, atr_period: int = 10, multiplier: floa
 
 
 @register_strategy(
+    "ichimoku_cloud",
+    "Ichimoku Cloud — trend confirmation via Tenkan/Kijun cross, cloud position, and Chikou span",
+    {"tenkan_period": 9, "kijun_period": 26, "senkou_b_period": 52}
+)
+def ichimoku_cloud_strategy(df: pd.DataFrame, tenkan_period: int = 9, kijun_period: int = 26, senkou_b_period: int = 52) -> pd.DataFrame:
+    result = df.copy()
+    high, low, close = result["high"], result["low"], result["close"]
+
+    tenkan = (high.rolling(window=tenkan_period).max() + low.rolling(window=tenkan_period).min()) / 2
+    kijun = (high.rolling(window=kijun_period).max() + low.rolling(window=kijun_period).min()) / 2
+    senkou_a = (tenkan + kijun) / 2
+    senkou_b = (high.rolling(window=senkou_b_period).max() + low.rolling(window=senkou_b_period).min()) / 2
+
+    result["tenkan"] = tenkan
+    result["kijun"] = kijun
+    result["senkou_a"] = senkou_a
+    result["senkou_b"] = senkou_b
+
+    cloud_top = np.maximum(senkou_a, senkou_b)
+    cloud_bottom = np.minimum(senkou_a, senkou_b)
+    above_cloud = close > cloud_top
+    below_cloud = close < cloud_bottom
+    tk_cross_up = (tenkan > kijun) & (tenkan.shift(1) <= kijun.shift(1))
+    tk_cross_down = (tenkan < kijun) & (tenkan.shift(1) >= kijun.shift(1))
+    chikou_bull = close > close.shift(kijun_period)
+    chikou_bear = close < close.shift(kijun_period)
+
+    result["signal"] = 0
+    result.loc[above_cloud & tk_cross_up & chikou_bull, "signal"] = 1
+    result.loc[below_cloud & tk_cross_down & chikou_bear, "signal"] = -1
+    return result
+
+
+@register_strategy(
     "atr_breakout",
     "ATR Breakout — enter on volatility breakout beyond ATR band",
     {"atr_period": 14, "multiplier": 1.5}

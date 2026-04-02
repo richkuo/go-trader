@@ -45,6 +45,7 @@ var knownShortNames = map[string]string{
 	"breakout":           "bo",
 	"atr_breakout":       "atrbo",
 	"stoch_rsi":          "stochrsi",
+	"ichimoku_cloud":     "ichi",
 }
 
 // deriveShortName returns a short abbreviation for a strategy ID.
@@ -76,6 +77,7 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "triple_ema", ShortName: "tema"},
 	{ID: "rsi_macd_combo", ShortName: "rmc"},
 	{ID: "stoch_rsi", ShortName: "stochrsi"},
+	{ID: "ichimoku_cloud", ShortName: "ichi"},
 }
 
 var defaultOptionsStrategies = []stratDef{
@@ -96,6 +98,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "macd", ShortName: "macd"},
 	{ID: "breakout", ShortName: "bo"},
 	{ID: "stoch_rsi", ShortName: "stochrsi"},
+	{ID: "ichimoku_cloud", ShortName: "ichi"},
 }
 
 // Supported CME futures symbols for the init wizard.
