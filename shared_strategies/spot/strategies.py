@@ -13,6 +13,7 @@ from indicators import sma, ema
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from amd_ifvg import amd_ifvg_core
+from chart_patterns import chart_pattern_core
 
 
 # ─────────────────────────────────────────────
@@ -548,6 +549,15 @@ def vwap_reversion_strategy(df: pd.DataFrame, entry_std: float = 1.5, exit_std: 
     # Clean up temp columns
     result.drop(columns=["_day", "_tp_vol", "_cum_tp_vol", "_cum_vol"], inplace=True)
     return result
+
+
+@register_strategy(
+    "chart_pattern",
+    "Chart Pattern — detects Double Top/Bottom, H&S, Flags, Triangles with volume confirmation",
+    {"pivot_lookback": 5, "tolerance": 0.03, "vol_multiplier": 1.5, "vol_period": 20}
+)
+def chart_pattern_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return chart_pattern_core(df, **params)
 
 
 if __name__ == "__main__":
