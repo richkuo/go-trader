@@ -16,6 +16,14 @@ type DiscordConfig struct {
 	Channels map[string]string `json:"channels"`           // keyed by platform or type ("spot", "hyperliquid", "deribit", etc.)
 }
 
+// TelegramConfig holds Telegram notification settings.
+type TelegramConfig struct {
+	Enabled     bool              `json:"enabled"`
+	BotToken    string            `json:"bot_token"`
+	OwnerChatID string            `json:"owner_chat_id,omitempty"` // Owner's Telegram chat ID for DMs/upgrade prompts
+	Channels    map[string]string `json:"channels"`                // keyed by platform or type ("spot", "hyperliquid", etc.)
+}
+
 // PortfolioRiskConfig controls aggregate portfolio-level risk (#42).
 type PortfolioRiskConfig struct {
 	MaxDrawdownPct   float64 `json:"max_drawdown_pct"`             // kill switch threshold (default 25)
@@ -44,6 +52,7 @@ type Config struct {
 	StateFile       string                     `json:"state_file"`
 	StatusToken     string                     `json:"-"` // loaded from STATUS_AUTH_TOKEN env var only
 	Discord         DiscordConfig              `json:"discord"`
+	Telegram        TelegramConfig             `json:"telegram,omitempty"`
 	AutoUpdate      string                     `json:"auto_update,omitempty"` // "off", "daily", "heartbeat" (default: "off")
 	Strategies      []StrategyConfig           `json:"strategies"`
 	PortfolioRisk   *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
@@ -118,6 +127,15 @@ func LoadConfig(path string) (*Config, error) {
 	// Discord owner ID from env var takes priority over config file.
 	if ownerID := os.Getenv("DISCORD_OWNER_ID"); ownerID != "" {
 		cfg.Discord.OwnerID = ownerID
+	}
+
+	// Telegram bot token from env var takes priority over config file.
+	if telegramToken := os.Getenv("TELEGRAM_BOT_TOKEN"); telegramToken != "" {
+		cfg.Telegram.BotToken = telegramToken
+	}
+	// Telegram owner chat ID from env var takes priority over config file.
+	if telegramOwner := os.Getenv("TELEGRAM_OWNER_CHAT_ID"); telegramOwner != "" {
+		cfg.Telegram.OwnerChatID = telegramOwner
 	}
 
 	// Optional auth token for the /status HTTP endpoint.

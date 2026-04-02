@@ -16,7 +16,7 @@ import (
 // and, if OwnerID is configured, a DM offering to auto-upgrade.
 // Best-effort: errors are logged but never block startup or the main loop.
 // Returns true if updates are available.
-func checkForUpdates(cfg *Config, discord *DiscordNotifier, lastNotifiedHash *string, mu *sync.RWMutex, state *AppState) bool {
+func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *string, mu *sync.RWMutex, state *AppState) bool {
 	// Must be a git repo.
 	if err := gitCheck(); err != nil {
 		fmt.Printf("[update] Not a git repo or git unavailable: %v\n", err)
@@ -59,30 +59,21 @@ func checkForUpdates(cfg *Config, discord *DiscordNotifier, lastNotifiedHash *st
 
 	msg := formatUpdateMessage(localHash, remoteHash, commitLog, newTag, goChanged)
 
-	if discord != nil && len(cfg.Discord.Channels) > 0 {
-		seen := make(map[string]bool)
-		for _, ch := range cfg.Discord.Channels {
-			if ch != "" && !seen[ch] {
-				seen[ch] = true
-				if err := discord.SendMessage(ch, msg); err != nil {
-					fmt.Printf("[update] Discord notify failed: %v\n", err)
-				}
-			}
-		}
+	if notifier != nil && notifier.HasBackends() {
+		notifier.SendToAllChannels(msg)
 	}
 
 	// DM the owner offering auto-upgrade (non-blocking goroutine).
-	if discord != nil && cfg.Discord.OwnerID != "" {
-		ownerID := cfg.Discord.OwnerID
+	if notifier != nil && notifier.HasOwner() {
 		go func() {
 			dmMsg := fmt.Sprintf("**Update available**: `%s` → `%s`\nWould you like me to upgrade automatically? (yes/no)\n_This will: git pull, rebuild, and restart._",
 				localHash[:8], remoteHash[:8])
-			resp, err := discord.AskDM(ownerID, dmMsg, 30*time.Minute)
+			resp, err := notifier.AskOwnerDM(dmMsg, 30*time.Minute)
 			if err != nil || strings.ToLower(strings.TrimSpace(resp)) != "yes" {
-				_ = discord.SendDM(ownerID, "Upgrade skipped.")
+				notifier.SendOwnerDM("Upgrade skipped.")
 				return
 			}
-			applyUpgrade(discord, ownerID, mu, state, cfg)
+			applyUpgrade(notifier, mu, state, cfg)
 		}()
 	}
 
@@ -94,18 +85,18 @@ func checkForUpdates(cfg *Config, discord *DiscordNotifier, lastNotifiedHash *st
 }
 
 // applyUpgrade performs git pull, rebuild, and restart after user confirmation.
-func applyUpgrade(discord *DiscordNotifier, ownerID string, mu *sync.RWMutex, state *AppState, cfg *Config) {
-	_ = discord.SendDM(ownerID, "Starting upgrade...")
+func applyUpgrade(notifier *MultiNotifier, mu *sync.RWMutex, state *AppState, cfg *Config) {
+	notifier.SendOwnerDM("Starting upgrade...")
 
 	// Step 1: git pull --ff-only
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "git", "pull", "--ff-only").CombinedOutput()
 	if err != nil {
-		_ = discord.SendDM(ownerID, fmt.Sprintf("**git pull failed**:\n```\n%s\n```\n%v", strings.TrimSpace(string(out)), err))
+		notifier.SendOwnerDM(fmt.Sprintf("**git pull failed**:\n```\n%s\n```\n%v", strings.TrimSpace(string(out)), err))
 		return
 	}
-	_ = discord.SendDM(ownerID, fmt.Sprintf("git pull OK:\n```\n%s\n```", strings.TrimSpace(string(out))))
+	notifier.SendOwnerDM(fmt.Sprintf("git pull OK:\n```\n%s\n```", strings.TrimSpace(string(out))))
 
 	// Step 2: rebuild
 	goBinary, err := exec.LookPath("go")
@@ -118,10 +109,10 @@ func applyUpgrade(discord *DiscordNotifier, ownerID string, mu *sync.RWMutex, st
 	buildCmd.Dir = "scheduler"
 	buildOut, buildErr := buildCmd.CombinedOutput()
 	if buildErr != nil {
-		_ = discord.SendDM(ownerID, fmt.Sprintf("**Build failed**:\n```\n%s\n```\n%v", strings.TrimSpace(string(buildOut)), buildErr))
+		notifier.SendOwnerDM(fmt.Sprintf("**Build failed**:\n```\n%s\n```\n%v", strings.TrimSpace(string(buildOut)), buildErr))
 		return
 	}
-	_ = discord.SendDM(ownerID, "Build OK. Saving state and restarting...")
+	notifier.SendOwnerDM("Build OK. Saving state and restarting...")
 
 	// Step 3: save state safely
 	mu.Lock()
@@ -130,8 +121,8 @@ func applyUpgrade(discord *DiscordNotifier, ownerID string, mu *sync.RWMutex, st
 	}
 	mu.Unlock()
 
-	// Step 4: close Discord connection
-	discord.Close()
+	// Step 4: close notifier connections
+	notifier.Close()
 
 	// Step 5: restart the process
 	if err := restartSelf(); err != nil {

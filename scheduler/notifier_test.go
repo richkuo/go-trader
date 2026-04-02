@@ -1,0 +1,319 @@
+package main
+
+import (
+	"fmt"
+	"sync"
+	"testing"
+	"time"
+)
+
+// mockNotifier is a test double that records all calls.
+type mockNotifier struct {
+	mu       sync.Mutex
+	messages []mockMessage
+	dms      []mockDM
+	askResp  string
+	askErr   error
+	closed   bool
+}
+
+type mockMessage struct {
+	channelID string
+	content   string
+}
+
+type mockDM struct {
+	userID  string
+	content string
+}
+
+func (m *mockNotifier) SendMessage(channelID string, content string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.messages = append(m.messages, mockMessage{channelID, content})
+	return nil
+}
+
+func (m *mockNotifier) SendDM(userID, content string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dms = append(m.dms, mockDM{userID, content})
+	return nil
+}
+
+func (m *mockNotifier) AskDM(userID, question string, timeout time.Duration) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dms = append(m.dms, mockDM{userID, question})
+	return m.askResp, m.askErr
+}
+
+func (m *mockNotifier) Close() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closed = true
+}
+
+func TestMultiNotifier_NoBackends(t *testing.T) {
+	mn := NewMultiNotifier()
+	if mn.HasBackends() {
+		t.Error("expected no backends")
+	}
+	if mn.BackendCount() != 0 {
+		t.Errorf("expected 0 backends, got %d", mn.BackendCount())
+	}
+	if mn.HasOwner() {
+		t.Error("expected no owner")
+	}
+
+	// Operations should not panic.
+	mn.SendToAllChannels("test")
+	mn.SendOwnerDM("test")
+	mn.Close()
+}
+
+func TestMultiNotifier_SingleBackend(t *testing.T) {
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{
+		notifier: mock,
+		channels: map[string]string{"spot": "ch1", "hyperliquid": "ch2"},
+		ownerID:  "owner1",
+	})
+
+	if !mn.HasBackends() {
+		t.Error("expected backends")
+	}
+	if mn.BackendCount() != 1 {
+		t.Errorf("expected 1 backend, got %d", mn.BackendCount())
+	}
+	if !mn.HasOwner() {
+		t.Error("expected owner")
+	}
+	if mn.OwnerID() != "owner1" {
+		t.Errorf("expected owner1, got %s", mn.OwnerID())
+	}
+
+	// SendToChannel
+	mn.SendToChannel("binanceus", "spot", "spot message")
+	if len(mock.messages) != 1 || mock.messages[0].channelID != "ch1" {
+		t.Errorf("expected message to ch1, got %v", mock.messages)
+	}
+
+	mn.SendToChannel("hyperliquid", "perps", "perps message")
+	if len(mock.messages) != 2 || mock.messages[1].channelID != "ch2" {
+		t.Errorf("expected message to ch2, got %v", mock.messages)
+	}
+
+	// SendToChannel with no match
+	mn.SendToChannel("unknown", "unknown", "no match")
+	if len(mock.messages) != 2 {
+		t.Errorf("expected no new messages, got %d", len(mock.messages))
+	}
+
+	// SendOwnerDM
+	mn.SendOwnerDM("hello owner")
+	if len(mock.dms) != 1 || mock.dms[0].userID != "owner1" {
+		t.Errorf("expected DM to owner1, got %v", mock.dms)
+	}
+
+	// SendToAllChannels
+	mock.messages = nil
+	mn.SendToAllChannels("broadcast")
+	if len(mock.messages) != 2 {
+		t.Errorf("expected 2 broadcasts (ch1 + ch2), got %d", len(mock.messages))
+	}
+}
+
+func TestMultiNotifier_DualBackends(t *testing.T) {
+	discord := &mockNotifier{}
+	telegram := &mockNotifier{}
+
+	mn := NewMultiNotifier(
+		notifierBackend{
+			notifier: discord,
+			channels: map[string]string{"spot": "discord-ch1"},
+			ownerID:  "discord-owner",
+		},
+		notifierBackend{
+			notifier: telegram,
+			channels: map[string]string{"spot": "telegram-ch1"},
+			ownerID:  "telegram-owner",
+		},
+	)
+
+	if mn.BackendCount() != 2 {
+		t.Errorf("expected 2 backends, got %d", mn.BackendCount())
+	}
+
+	// SendToChannel sends to both backends
+	mn.SendToChannel("binanceus", "spot", "spot msg")
+	if len(discord.messages) != 1 || discord.messages[0].channelID != "discord-ch1" {
+		t.Errorf("expected discord message to discord-ch1, got %v", discord.messages)
+	}
+	if len(telegram.messages) != 1 || telegram.messages[0].channelID != "telegram-ch1" {
+		t.Errorf("expected telegram message to telegram-ch1, got %v", telegram.messages)
+	}
+
+	// SendOwnerDM sends to both owners
+	mn.SendOwnerDM("update available")
+	if len(discord.dms) != 1 || discord.dms[0].userID != "discord-owner" {
+		t.Errorf("expected discord DM to discord-owner, got %v", discord.dms)
+	}
+	if len(telegram.dms) != 1 || telegram.dms[0].userID != "telegram-owner" {
+		t.Errorf("expected telegram DM to telegram-owner, got %v", telegram.dms)
+	}
+
+	// AskOwnerDM uses first backend with owner
+	discord.askResp = "yes"
+	resp, err := mn.AskOwnerDM("upgrade?", 5*time.Second)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if resp != "yes" {
+		t.Errorf("expected 'yes', got %q", resp)
+	}
+
+	// Close shuts down all
+	mn.Close()
+	if !discord.closed || !telegram.closed {
+		t.Error("expected both backends closed")
+	}
+}
+
+func TestMultiNotifier_ResolveChannelKey(t *testing.T) {
+	mn := NewMultiNotifier(
+		notifierBackend{
+			notifier: &mockNotifier{},
+			channels: map[string]string{"spot": "ch1", "hyperliquid": "ch2"},
+		},
+	)
+
+	if key := mn.resolveChannelKey("hyperliquid", "perps"); key != "hyperliquid" {
+		t.Errorf("expected 'hyperliquid', got %q", key)
+	}
+	if key := mn.resolveChannelKey("binanceus", "spot"); key != "spot" {
+		t.Errorf("expected 'spot', got %q", key)
+	}
+	if key := mn.resolveChannelKey("unknown", "unknown"); key != "" {
+		t.Errorf("expected '', got %q", key)
+	}
+}
+
+func TestMultiNotifier_HasChannel(t *testing.T) {
+	mn := NewMultiNotifier(
+		notifierBackend{
+			notifier: &mockNotifier{},
+			channels: map[string]string{"spot": "ch1"},
+		},
+	)
+
+	if !mn.HasChannel("binanceus", "spot") {
+		t.Error("expected HasChannel to be true for spot")
+	}
+	if mn.HasChannel("unknown", "unknown") {
+		t.Error("expected HasChannel to be false for unknown")
+	}
+}
+
+func TestMultiNotifier_NilBackendFiltered(t *testing.T) {
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(
+		notifierBackend{notifier: nil, channels: nil},
+		notifierBackend{notifier: mock, channels: map[string]string{"spot": "ch1"}, ownerID: "o1"},
+	)
+	if mn.BackendCount() != 1 {
+		t.Errorf("expected 1 backend (nil filtered), got %d", mn.BackendCount())
+	}
+}
+
+func TestMultiNotifier_AskOwnerDM_NoOwner(t *testing.T) {
+	mn := NewMultiNotifier(notifierBackend{
+		notifier: &mockNotifier{},
+		channels: map[string]string{"spot": "ch1"},
+		ownerID:  "",
+	})
+	_, err := mn.AskOwnerDM("question?", 1*time.Second)
+	if err != ErrDMTimeout {
+		t.Errorf("expected ErrDMTimeout, got %v", err)
+	}
+}
+
+func TestMultiNotifier_SendToAllChannels_Deduplicated(t *testing.T) {
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{
+		notifier: mock,
+		channels: map[string]string{"spot": "ch1", "perps": "ch1"}, // same channel
+		ownerID:  "o1",
+	})
+
+	mn.SendToAllChannels("broadcast")
+	// Should only send once to ch1 (deduplicated)
+	if len(mock.messages) != 1 {
+		t.Errorf("expected 1 message (deduplicated), got %d: %v", len(mock.messages), mock.messages)
+	}
+}
+
+func TestMultiNotifier_AllChannelKeys(t *testing.T) {
+	mn := NewMultiNotifier(
+		notifierBackend{
+			notifier: &mockNotifier{},
+			channels: map[string]string{"spot": "ch1"},
+		},
+		notifierBackend{
+			notifier: &mockNotifier{},
+			channels: map[string]string{"spot": "ch2", "hyperliquid": "ch3"},
+		},
+	)
+	keys := mn.AllChannelKeys()
+	if len(keys) != 2 {
+		t.Errorf("expected 2 keys (spot, hyperliquid), got %d: %v", len(keys), keys)
+	}
+	if !keys["spot"] || !keys["hyperliquid"] {
+		t.Errorf("missing expected keys: %v", keys)
+	}
+}
+
+func TestMultiNotifier_AskDM_MatchesOwner(t *testing.T) {
+	discord := &mockNotifier{askResp: "discord-reply"}
+	telegram := &mockNotifier{askResp: "telegram-reply"}
+
+	mn := NewMultiNotifier(
+		notifierBackend{notifier: discord, ownerID: "discord-owner"},
+		notifierBackend{notifier: telegram, ownerID: "telegram-owner"},
+	)
+
+	// AskDM with matching owner should route correctly
+	resp, err := mn.AskDM("telegram-owner", "question?", 5*time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp != "telegram-reply" {
+		t.Errorf("expected 'telegram-reply', got %q", resp)
+	}
+}
+
+// errNotifier always returns errors.
+type errNotifier struct{}
+
+func (e *errNotifier) SendMessage(channelID string, content string) error {
+	return fmt.Errorf("send failed")
+}
+func (e *errNotifier) SendDM(userID, content string) error {
+	return fmt.Errorf("dm failed")
+}
+func (e *errNotifier) AskDM(userID, question string, timeout time.Duration) (string, error) {
+	return "", fmt.Errorf("ask failed")
+}
+func (e *errNotifier) Close() {}
+
+func TestMultiNotifier_SendMessage_ReturnsFirstError(t *testing.T) {
+	mn := NewMultiNotifier(
+		notifierBackend{notifier: &errNotifier{}},
+		notifierBackend{notifier: &mockNotifier{}},
+	)
+
+	err := mn.SendMessage("ch1", "test")
+	if err == nil {
+		t.Error("expected error from first backend")
+	}
+}

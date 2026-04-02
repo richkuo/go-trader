@@ -109,11 +109,11 @@ func main() {
 		close(stopCh)
 	}()
 
-	// Discord notifier (WebSocket gateway connection for two-way DM support).
-	var discord *DiscordNotifier
+	// Initialize notification backends (Discord and/or Telegram).
+	var backends []notifierBackend
+
 	if cfg.Discord.Enabled && cfg.Discord.Token != "" {
-		var err error
-		discord, err = NewDiscordNotifier(cfg.Discord.Token, cfg.Discord.OwnerID)
+		discord, err := NewDiscordNotifier(cfg.Discord.Token, cfg.Discord.OwnerID)
 		if err != nil {
 			fmt.Printf("[WARN] Discord init failed: %v — continuing without Discord\n", err)
 		} else {
@@ -122,13 +122,40 @@ func main() {
 				fmt.Printf(", DM owner enabled")
 			}
 			fmt.Println(")")
+			backends = append(backends, notifierBackend{
+				notifier: discord,
+				channels: cfg.Discord.Channels,
+				ownerID:  cfg.Discord.OwnerID,
+			})
 			defer discord.Close()
 		}
 	}
 
+	if cfg.Telegram.Enabled && cfg.Telegram.BotToken != "" {
+		tg, err := NewTelegramNotifier(cfg.Telegram.BotToken, cfg.Telegram.OwnerChatID)
+		if err != nil {
+			fmt.Printf("[WARN] Telegram init failed: %v — continuing without Telegram\n", err)
+		} else {
+			fmt.Printf("Telegram bot connected (%d channels", len(cfg.Telegram.Channels))
+			if cfg.Telegram.OwnerChatID != "" {
+				fmt.Printf(", DM owner enabled")
+			}
+			fmt.Println(")")
+			backends = append(backends, notifierBackend{
+				notifier: tg,
+				channels: cfg.Telegram.Channels,
+				ownerID:  cfg.Telegram.OwnerChatID,
+			})
+			defer tg.Close()
+		}
+	}
+
+	notifier := NewMultiNotifier(backends...)
+	fmt.Printf("Notification backends: %d active\n", notifier.BackendCount())
+
 	// Config migration: DM owner about new fields if config is behind current version.
 	if cfg.ConfigVersion < CurrentConfigVersion {
-		go runConfigMigrationDM(cfg, discord, *configPath)
+		go runConfigMigrationDM(cfg, notifier, *configPath)
 	}
 
 	// Track the last remote hash we notified about to avoid re-notifying on every cycle.
@@ -136,7 +163,7 @@ func main() {
 
 	// Check for updates on startup (best-effort, non-blocking).
 	if cfg.AutoUpdate != "off" {
-		checkForUpdates(cfg, discord, &lastNotifiedHash, &mu, state)
+		checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state)
 	}
 
 	// Platform pricers: Deribit uses live API; IBKR uses Black-Scholes with cached spot prices.
@@ -285,38 +312,19 @@ func main() {
 			}
 			mu.Unlock()
 
-			if killSwitchFired && discord != nil {
+			if killSwitchFired && notifier.HasBackends() {
 				msg := fmt.Sprintf("**PORTFOLIO KILL SWITCH**\n%s\nAll positions force-closed. Manual reset required.", portfolioReason)
-				seen := make(map[string]bool)
-				for _, ch := range cfg.Discord.Channels {
-					if ch != "" && !seen[ch] {
-						seen[ch] = true
-						if err := discord.SendMessage(ch, msg); err != nil {
-							fmt.Printf("[WARN] Discord kill switch alert failed: %v\n", err)
-						}
-					}
-				}
+				notifier.SendToAllChannels(msg)
 			}
 
 			// Warning alert: drawdown approaching kill switch threshold.
-			if portfolioWarning && discord != nil {
+			if portfolioWarning && notifier.HasBackends() {
 				mu.Lock()
 				addKillSwitchEvent(&state.PortfolioRisk, "warning", state.PortfolioRisk.CurrentDrawdownPct, totalPV, state.PortfolioRisk.PeakValue, portfolioReason)
 				mu.Unlock()
 				warnMsg := fmt.Sprintf("**PORTFOLIO WARNING**\n%s", portfolioReason)
-				seen := make(map[string]bool)
-				for _, ch := range cfg.Discord.Channels {
-					if ch != "" && !seen[ch] {
-						seen[ch] = true
-						if err := discord.SendMessage(ch, warnMsg); err != nil {
-							fmt.Printf("[WARN] Discord warning alert failed: %v\n", err)
-						}
-					}
-				}
-				ownerID := cfg.Discord.OwnerID
-				if ownerID != "" {
-					_ = discord.SendDM(ownerID, warnMsg)
-				}
+				notifier.SendToAllChannels(warnMsg)
+				notifier.SendOwnerDM(warnMsg)
 				fmt.Printf("[WARN] %s\n", portfolioReason)
 			}
 
@@ -333,30 +341,18 @@ func main() {
 				mu.Unlock()
 			}
 
-			if len(corrWarnings) > 0 && discord != nil {
+			if len(corrWarnings) > 0 && notifier.HasBackends() {
 				msg := "**CORRELATION WARNING**\n" + strings.Join(corrWarnings, "\n")
-				seen := make(map[string]bool)
-				for _, ch := range cfg.Discord.Channels {
-					if ch != "" && !seen[ch] {
-						seen[ch] = true
-						if err := discord.SendMessage(ch, msg); err != nil {
-							fmt.Printf("[discord] failed to send correlation warning to channel %s: %v\n", ch, err)
-						}
-					}
-				}
-				ownerID := cfg.Discord.OwnerID
-				if ownerID != "" {
-					_ = discord.SendDM(ownerID, msg)
-				}
+				notifier.SendToAllChannels(msg)
+				notifier.SendOwnerDM(msg)
 			}
 
 			// Kill switch reset goroutine: prompt owner to reset via DM.
-			if killSwitchFired && discord != nil && cfg.Discord.OwnerID != "" && !resetGoroutineRunning {
+			if killSwitchFired && notifier.HasOwner() && !resetGoroutineRunning {
 				resetGoroutineRunning = true
 				go func() {
 					defer func() { resetGoroutineRunning = false }()
-					ownerID := cfg.Discord.OwnerID
-					resp, err := discord.AskDM(ownerID, "Kill switch active. Reply 'reset' to resume trading.", 30*time.Minute)
+					resp, err := notifier.AskOwnerDM("Kill switch active. Reply 'reset' to resume trading.", 30*time.Minute)
 					if err != nil {
 						fmt.Printf("[update] Kill switch reset DM timed out or failed: %v\n", err)
 						return
@@ -368,13 +364,13 @@ func main() {
 					mu.Lock()
 					state.PortfolioRisk.KillSwitchActive = false
 					state.PortfolioRisk.KillSwitchAt = time.Time{}
-					addKillSwitchEvent(&state.PortfolioRisk, "reset", state.PortfolioRisk.CurrentDrawdownPct, 0, state.PortfolioRisk.PeakValue, "manual reset via Discord DM")
+					addKillSwitchEvent(&state.PortfolioRisk, "reset", state.PortfolioRisk.CurrentDrawdownPct, 0, state.PortfolioRisk.PeakValue, "manual reset via DM")
 					if err := SavePlatformStates(state, cfg); err != nil {
 						fmt.Printf("[CRITICAL] Failed to save state after kill switch reset: %v\n", err)
 					}
 					mu.Unlock()
-					_ = discord.SendDM(ownerID, "Kill switch reset. Trading will resume next cycle.")
-					fmt.Println("[update] Kill switch reset by owner via Discord DM")
+					notifier.SendOwnerDM("Kill switch reset. Trading will resume next cycle.")
+					fmt.Println("[update] Kill switch reset by owner via DM")
 				}()
 			}
 
@@ -478,8 +474,8 @@ func main() {
 							var harvestDetails []string
 							trades, detail, harvestDetails = executeOptionsResult(sc, stratState, result, signalStr, logger)
 							mu.Unlock()
-							if ch := resolveChannel(cfg.Discord.Channels, sc.Platform, sc.Type); ch != "" {
-								key := ch + "|" + extractAsset(sc)
+							if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type); chKey != "" {
+								key := chKey + "|" + extractAsset(sc)
 								channelTradeDetails[key] = append(channelTradeDetails[key], harvestDetails...)
 							}
 						}
@@ -513,9 +509,9 @@ func main() {
 						logger.Error("Unknown strategy type: %s", sc.Type)
 					}
 					if trades > 0 && detail != "" {
-						if ch := resolveChannel(cfg.Discord.Channels, sc.Platform, sc.Type); ch != "" {
-							channelTrades[ch] += trades
-							key := ch + "|" + extractAsset(sc)
+						if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type); chKey != "" {
+							channelTrades[chKey] += trades
+							key := chKey + "|" + extractAsset(sc)
 							channelTradeDetails[key] = append(channelTradeDetails[key], detail)
 						}
 					}
@@ -556,6 +552,7 @@ func main() {
 		}
 
 		// Calculate total portfolio value and per-channel values/strategies.
+		// Group by logical channel key (platform or type) so summaries work with any backend.
 		mu.RLock()
 		totalValue := 0.0
 		channelValue := make(map[string]float64)
@@ -564,9 +561,9 @@ func main() {
 			if s, ok := state.Strategies[sc.ID]; ok {
 				pv := PortfolioValue(s, prices)
 				totalValue += pv
-				if ch := resolveChannel(cfg.Discord.Channels, sc.Platform, sc.Type); ch != "" {
-					channelValue[ch] += pv
-					channelStrats[ch] = append(channelStrats[ch], sc)
+				if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type); chKey != "" {
+					channelValue[chKey] += pv
+					channelStrats[chKey] = append(channelStrats[chKey], sc)
 				}
 			}
 		}
@@ -575,14 +572,14 @@ func main() {
 		elapsed := time.Since(cycleStart)
 		logMgr.LogSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue)
 
-		// Discord notification — one message per channel per asset, dynamic platform support.
-		if discord != nil {
+		// Notification — one message per channel per asset, sent to all backends.
+		if notifier.HasBackends() {
 			mu.RLock()
-			for ch, chStrats := range channelStrats {
-				// Only post if at least one due strategy maps to this channel.
+			for chKey, chStrats := range channelStrats {
+				// Only post if at least one due strategy maps to this channel key.
 				chRan := false
 				for _, sc := range dueStrategies {
-					if resolveChannel(cfg.Discord.Channels, sc.Platform, sc.Type) == ch {
+					if notifier.resolveChannelKey(sc.Platform, sc.Type) == chKey {
 						chRan = true
 						break
 					}
@@ -590,31 +587,28 @@ func main() {
 				if !chRan {
 					continue
 				}
-				chTrades := channelTrades[ch]
+				chTrades := channelTrades[chKey]
 				// Options: post every run. Others: hourly or on trade.
 				// (cycle-1)%12==0 fires at cycles 1,13,25... so first summary posts on startup.
 				if !isOptionsType(chStrats) && !isFuturesType(chStrats) && chTrades == 0 && (cycle-1)%12 != 0 {
 					continue
 				}
-				chKey := channelKeyFromID(cfg.Discord.Channels, ch)
 				assetGroups, assetKeys := groupByAsset(chStrats)
 				if len(assetKeys) <= 1 {
 					// Single asset (or none) → backwards-compatible single message without asset label.
-					detailKey := ch + "|"
+					detailKey := chKey + "|"
 					if len(assetKeys) == 1 {
-						detailKey = ch + "|" + assetKeys[0]
+						detailKey = chKey + "|" + assetKeys[0]
 					}
 					chDetails := channelTradeDetails[detailKey]
-					chValue := channelValue[ch]
+					chValue := channelValue[chKey]
 					msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chValue, prices, chDetails, chStrats, state, chKey, "")
-					if err := discord.SendMessage(ch, msg); err != nil {
-						fmt.Printf("[WARN] Discord %s summary failed: %v\n", chKey, err)
-					}
+					notifier.SendToChannel(chKey, chKey, msg)
 				} else {
 					// Multiple assets → one message per asset.
 					for _, asset := range assetKeys {
 						assetStrats := assetGroups[asset]
-						assetDetails := channelTradeDetails[ch+"|"+asset]
+						assetDetails := channelTradeDetails[chKey+"|"+asset]
 						assetValue := 0.0
 						for _, sc := range assetStrats {
 							if s, ok := state.Strategies[sc.ID]; ok {
@@ -623,9 +617,7 @@ func main() {
 						}
 						assetTrades := len(assetDetails)
 						msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetValue, prices, assetDetails, assetStrats, state, chKey, asset)
-						if err := discord.SendMessage(ch, msg); err != nil {
-							fmt.Printf("[WARN] Discord %s/%s summary failed: %v\n", chKey, asset, err)
-						}
+						notifier.SendToChannel(chKey, chKey, msg)
 					}
 				}
 			}
@@ -645,9 +637,9 @@ func main() {
 
 		// Periodic update check (heartbeat: every cycle; daily: once per day).
 		if cfg.AutoUpdate == "heartbeat" {
-			checkForUpdates(cfg, discord, &lastNotifiedHash, &mu, state)
+			checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state)
 		} else if cfg.AutoUpdate == "daily" && cycle%dailyCycles == 0 {
-			checkForUpdates(cfg, discord, &lastNotifiedHash, &mu, state)
+			checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state)
 		}
 
 		if *once {

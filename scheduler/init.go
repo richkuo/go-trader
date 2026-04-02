@@ -233,6 +233,9 @@ type InitOptions struct {
 	SpotChannelID           string            // deprecated: use ChannelMap
 	OptionsChannelID        string            // deprecated: use ChannelMap
 	ChannelMap              map[string]string // keyed by platform/type ("spot", "hyperliquid", "deribit", etc.)
+	TelegramEnabled         bool
+	TelegramOwnerChatID     string            // Telegram chat ID for owner DMs
+	TelegramChannelMap      map[string]string // keyed by platform/type ("spot", "hyperliquid", etc.)
 	AutoUpdate              string            // "off", "daily", "heartbeat" (default: "off")
 }
 
@@ -251,6 +254,11 @@ func generateConfig(opts InitOptions) *Config {
 			Enabled:  opts.DiscordEnabled,
 			OwnerID:  opts.DiscordOwnerID,
 			Channels: opts.ChannelMap,
+		},
+		Telegram: TelegramConfig{
+			Enabled:     opts.TelegramEnabled,
+			OwnerChatID: opts.TelegramOwnerChatID,
+			Channels:    opts.TelegramChannelMap,
 		},
 		AutoUpdate: opts.AutoUpdate,
 		Platforms:  make(map[string]*PlatformConfig),
@@ -934,6 +942,47 @@ func runInit(args []string) int {
 		discordOwnerID = p.String("Your Discord user ID for DM upgrades (leave blank to skip)", "")
 	}
 
+	// Step 9b: Telegram.
+	fmt.Println("\n--- Telegram Notifications ---")
+	telegramEnabled := p.YesNo("Enable Telegram notifications?", false)
+	telegramChannelMap := make(map[string]string)
+	telegramOwnerChatID := ""
+	if telegramEnabled {
+		if enableSpot || includePairs {
+			if ch := p.String("Spot Telegram chat ID (leave blank to skip)", ""); ch != "" {
+				telegramChannelMap["spot"] = ch
+			}
+		}
+		if enableOptions {
+			for _, plt := range optionPlatforms {
+				if ch := p.String(fmt.Sprintf("%s Telegram chat ID (leave blank to skip)", plt), ""); ch != "" {
+					telegramChannelMap[plt] = ch
+				}
+			}
+		}
+		if enablePerps {
+			if ch := p.String("Hyperliquid Telegram chat ID (leave blank to skip)", ""); ch != "" {
+				telegramChannelMap["hyperliquid"] = ch
+			}
+		}
+		if enableFutures {
+			if ch := p.String("TopStep Telegram chat ID (leave blank to skip)", ""); ch != "" {
+				telegramChannelMap["topstep"] = ch
+			}
+		}
+		if enableRobinhood {
+			if ch := p.String("Robinhood Telegram chat ID (leave blank to skip)", ""); ch != "" {
+				telegramChannelMap["robinhood"] = ch
+			}
+		}
+		if enableLuno {
+			if ch := p.String("Luno Telegram chat ID (leave blank to skip)", ""); ch != "" {
+				telegramChannelMap["luno"] = ch
+			}
+		}
+		telegramOwnerChatID = p.String("Your Telegram chat ID for DM upgrades (leave blank to skip)", "")
+	}
+
 	// Step 10: Auto-update preference.
 	fmt.Println("\n--- Auto-Update ---")
 	autoUpdateOptions := []string{
@@ -1018,6 +1067,9 @@ func runInit(args []string) int {
 		DiscordEnabled:          discordEnabled,
 		DiscordOwnerID:          discordOwnerID,
 		ChannelMap:              channelMap,
+		TelegramEnabled:         telegramEnabled,
+		TelegramOwnerChatID:     telegramOwnerChatID,
+		TelegramChannelMap:      telegramChannelMap,
 		AutoUpdate:              autoUpdate,
 	}
 
