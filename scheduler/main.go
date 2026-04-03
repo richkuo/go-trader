@@ -477,14 +477,19 @@ func main() {
 							if result, signalStr, price, ok := runOKXCheck(sc, prices, logger); ok {
 								prices[result.Symbol] = price
 								var execResult *OKXExecuteResult
+								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
 									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, logger); ok2 {
 										execResult = er
+									} else {
+										liveExecFailed = true
 									}
 								}
-								mu.Lock()
-								trades, detail = executeOKXResult(sc, stratState, result, execResult, signalStr, price, logger)
-								mu.Unlock()
+								if !liveExecFailed {
+									mu.Lock()
+									trades, detail = executeOKXResult(sc, stratState, result, execResult, signalStr, price, logger)
+									mu.Unlock()
+								}
 							}
 						} else if sc.Platform == "robinhood" {
 							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, logger); ok {
@@ -532,27 +537,37 @@ func main() {
 						} else if result, signalStr, price, ok := runHyperliquidCheck(sc, prices, logger); ok {
 							prices[result.Symbol] = price
 							var execResult *HyperliquidExecuteResult
+							liveExecFailed := false
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
 								if er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, logger); ok2 {
 									execResult = er
+								} else {
+									liveExecFailed = true
 								}
 							}
-							mu.Lock()
-							trades, detail = executeHyperliquidResult(sc, stratState, result, execResult, signalStr, price, logger)
-							mu.Unlock()
+							if !liveExecFailed {
+								mu.Lock()
+								trades, detail = executeHyperliquidResult(sc, stratState, result, execResult, signalStr, price, logger)
+								mu.Unlock()
+							}
 						}
 					case "futures":
 						if result, signalStr, price, ok := runTopStepCheck(sc, prices, logger); ok {
 							prices[result.Symbol] = price
 							var execResult *TopStepExecuteResult
+							liveExecFailed := false
 							if topstepIsLive(sc.Args) && result.Signal != 0 {
 								if er, ok2 := runTopStepExecuteOrder(sc, result, price, tsCash, tsContracts, logger); ok2 {
 									execResult = er
+								} else {
+									liveExecFailed = true
 								}
 							}
-							mu.Lock()
-							trades, detail = executeTopStepResult(sc, stratState, result, execResult, signalStr, price, logger)
-							mu.Unlock()
+							if !liveExecFailed {
+								mu.Lock()
+								trades, detail = executeTopStepResult(sc, stratState, result, execResult, signalStr, price, logger)
+								mu.Unlock()
+							}
 						}
 					default:
 						logger.Error("Unknown strategy type: %s", sc.Type)
