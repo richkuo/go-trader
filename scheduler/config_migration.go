@@ -10,7 +10,7 @@ import (
 
 // CurrentConfigVersion is the version embedded in newly generated configs.
 // When the binary starts and cfg.ConfigVersion < CurrentConfigVersion, migration runs.
-const CurrentConfigVersion = 3
+const CurrentConfigVersion = 4
 
 // ConfigField describes a config field introduced in a specific version.
 type ConfigField struct {
@@ -36,6 +36,34 @@ var configFieldRegistry = []ConfigField{
 		Description: "Percentage of max_drawdown_pct at which to send a warning alert (e.g. 80 means warn at 80% of the kill switch threshold).",
 		Default:     "80",
 		FieldType:   "float",
+	},
+	{
+		Version:     4,
+		JSONPath:    "discord.dm_live_trades",
+		Description: "Send a DM to the bot owner on every live trade execution (true/false).",
+		Default:     "false",
+		FieldType:   "bool",
+	},
+	{
+		Version:     4,
+		JSONPath:    "discord.dm_paper_trades",
+		Description: "Send a DM to the bot owner on every paper trade execution (true/false).",
+		Default:     "false",
+		FieldType:   "bool",
+	},
+	{
+		Version:     4,
+		JSONPath:    "telegram.dm_live_trades",
+		Description: "Send a Telegram message on every live trade execution (true/false).",
+		Default:     "false",
+		FieldType:   "bool",
+	},
+	{
+		Version:     4,
+		JSONPath:    "telegram.dm_paper_trades",
+		Description: "Send a Telegram message on every paper trade execution (true/false).",
+		Default:     "false",
+		FieldType:   "bool",
 	},
 }
 

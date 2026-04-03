@@ -16,9 +16,12 @@ type Notifier interface {
 
 // notifierBackend pairs a Notifier with its provider-specific config.
 type notifierBackend struct {
-	notifier Notifier
-	channels map[string]string // channel map from config (keyed by platform/type)
-	ownerID  string
+	notifier      Notifier
+	channels      map[string]string // channel map from config (keyed by platform/type)
+	ownerID       string
+	dmPaperTrades bool // send DM on paper trade execution
+	dmLiveTrades  bool // send DM on live trade execution
+	plainText     bool // use plain-text formatting (no markdown)
 }
 
 // MultiNotifier fans out calls to all configured notification providers.

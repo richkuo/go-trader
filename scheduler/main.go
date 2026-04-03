@@ -128,9 +128,11 @@ func main() {
 			}
 			fmt.Println(")")
 			backends = append(backends, notifierBackend{
-				notifier: discord,
-				channels: cfg.Discord.Channels,
-				ownerID:  cfg.Discord.OwnerID,
+				notifier:      discord,
+				channels:      cfg.Discord.Channels,
+				ownerID:       cfg.Discord.OwnerID,
+				dmPaperTrades: cfg.Discord.DMPaperTrades,
+				dmLiveTrades:  cfg.Discord.DMLiveTrades,
 			})
 			defer discord.Close()
 		}
@@ -147,9 +149,12 @@ func main() {
 			}
 			fmt.Println(")")
 			backends = append(backends, notifierBackend{
-				notifier: tg,
-				channels: cfg.Telegram.Channels,
-				ownerID:  cfg.Telegram.OwnerChatID,
+				notifier:      tg,
+				channels:      cfg.Telegram.Channels,
+				ownerID:       cfg.Telegram.OwnerChatID,
+				dmPaperTrades: cfg.Telegram.DMPaperTrades,
+				dmLiveTrades:  cfg.Telegram.DMLiveTrades,
+				plainText:     true,
 			})
 			defer tg.Close()
 		}
@@ -558,6 +563,8 @@ func main() {
 							key := chKey + "|" + extractAsset(sc)
 							channelTradeDetails[key] = append(channelTradeDetails[key], detail)
 						}
+						// DM trade alerts (Discord + Telegram)
+						sendTradeAlerts(sc, stratState, &mu, notifier)
 					}
 
 					totalTrades += trades
@@ -828,6 +835,54 @@ func executeOptionsResult(sc StrategyConfig, s *StrategyState, result *OptionsRe
 }
 
 // hyperliquidIsLive reports whether --mode=live appears in strategy args.
+// isLiveArgs reports whether --mode=live appears in strategy args.
+func isLiveArgs(args []string) bool {
+	for _, arg := range args {
+		if arg == "--mode=live" {
+			return true
+		}
+	}
+	return false
+}
+
+// sendTradeAlerts sends DM trade alerts to the owner via all configured backends.
+func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, mu *sync.RWMutex, notifier *MultiNotifier) {
+	isLive := isLiveArgs(sc.Args)
+	mode := "paper"
+	if isLive {
+		mode = "live"
+	}
+
+	var lastTrade Trade
+	mu.RLock()
+	if n := len(stratState.TradeHistory); n > 0 {
+		lastTrade = stratState.TradeHistory[n-1]
+	} else {
+		mu.RUnlock()
+		return
+	}
+	mu.RUnlock()
+
+	for _, b := range notifier.backends {
+		if b.ownerID == "" {
+			continue
+		}
+		dmEnabled := (isLive && b.dmLiveTrades) || (!isLive && b.dmPaperTrades)
+		if !dmEnabled {
+			continue
+		}
+		var msg string
+		if b.plainText {
+			msg = FormatTradeDMPlain(sc, lastTrade, mode)
+		} else {
+			msg = FormatTradeDM(sc, lastTrade, mode)
+		}
+		if err := b.notifier.SendDM(b.ownerID, msg); err != nil {
+			fmt.Printf("[notify] DM trade alert failed: %v\n", err)
+		}
+	}
+}
+
 func hyperliquidIsLive(args []string) bool {
 	for _, arg := range args {
 		if arg == "--mode=live" {

@@ -501,3 +501,52 @@ func collectPositions(stratID string, ss *StrategyState, prices map[string]float
 	}
 	return lines
 }
+
+// FormatTradeDM formats a Trade into a concise DM message for the bot owner.
+func FormatTradeDM(sc StrategyConfig, trade Trade, mode string) string {
+	isClose := strings.Contains(trade.Details, "Close")
+
+	icon := "🟢"
+	header := "TRADE EXECUTED"
+	if isClose {
+		icon = "🔴"
+		header = "TRADE CLOSED"
+	}
+
+	platformLabel := sc.Platform
+	if len(platformLabel) > 0 {
+		platformLabel = strings.ToUpper(platformLabel[:1]) + platformLabel[1:]
+	}
+	typeLabel := sc.Type
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s **%s**\n", icon, header))
+	sb.WriteString(fmt.Sprintf("Strategy: %s (%s %s)\n", sc.ID, platformLabel, typeLabel))
+	sb.WriteString(fmt.Sprintf("%s — %s %.6g @ $%s\n", trade.Symbol, strings.ToUpper(trade.Side), trade.Quantity, fmtComma(trade.Price)))
+
+	valueLine := fmt.Sprintf("Value: $%s", fmtComma(trade.Value))
+	if isClose {
+		if pnl, ok := extractPnL(trade.Details); ok {
+			valueLine += fmt.Sprintf(" | PnL: $%s", pnl)
+		}
+	}
+	valueLine += fmt.Sprintf(" | Mode: %s", mode)
+	sb.WriteString(valueLine)
+
+	return sb.String()
+}
+
+// extractPnL parses the PnL value from a trade Details string.
+// Handles both "PnL: $123.45" and "PnL=$123.45" formats.
+func extractPnL(details string) (string, bool) {
+	for _, prefix := range []string{"PnL: $", "PnL=$"} {
+		if idx := strings.Index(details, prefix); idx >= 0 {
+			pnlStr := details[idx+len(prefix):]
+			if end := strings.Index(pnlStr, " "); end >= 0 {
+				pnlStr = pnlStr[:end]
+			}
+			return pnlStr, true
+		}
+	}
+	return "", false
+}

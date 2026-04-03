@@ -59,10 +59,10 @@ type telegramUpdate struct {
 }
 
 type telegramMsg struct {
-	MessageID int64        `json:"message_id"`
+	MessageID int64         `json:"message_id"`
 	From      *telegramUser `json:"from,omitempty"`
-	Chat      telegramChat `json:"chat"`
-	Text      string       `json:"text"`
+	Chat      telegramChat  `json:"chat"`
+	Text      string        `json:"text"`
 }
 
 type telegramUser struct {
@@ -74,10 +74,10 @@ type telegramChat struct {
 }
 
 type telegramCBData struct {
-	ID      string       `json:"id"`
+	ID      string        `json:"id"`
 	From    *telegramUser `json:"from,omitempty"`
 	Message *telegramMsg  `json:"message,omitempty"`
-	Data    string       `json:"data"`
+	Data    string        `json:"data"`
 }
 
 // apiCall makes a POST request to the Telegram Bot API.
@@ -225,4 +225,38 @@ func (t *TelegramNotifier) Close() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.closed = true
+}
+
+// FormatTradeDMPlain formats a Trade into a plain-text DM (no Discord markdown).
+func FormatTradeDMPlain(sc StrategyConfig, trade Trade, mode string) string {
+	isClose := strings.Contains(trade.Details, "Close")
+
+	icon := "🟢"
+	header := "TRADE EXECUTED"
+	if isClose {
+		icon = "🔴"
+		header = "TRADE CLOSED"
+	}
+
+	platformLabel := sc.Platform
+	if len(platformLabel) > 0 {
+		platformLabel = strings.ToUpper(platformLabel[:1]) + platformLabel[1:]
+	}
+	typeLabel := sc.Type
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s %s\n", icon, header))
+	sb.WriteString(fmt.Sprintf("Strategy: %s (%s %s)\n", sc.ID, platformLabel, typeLabel))
+	sb.WriteString(fmt.Sprintf("%s — %s %.6g @ $%s\n", trade.Symbol, strings.ToUpper(trade.Side), trade.Quantity, fmtComma(trade.Price)))
+
+	valueLine := fmt.Sprintf("Value: $%s", fmtComma(trade.Value))
+	if isClose {
+		if pnl, ok := extractPnL(trade.Details); ok {
+			valueLine += fmt.Sprintf(" | PnL: $%s", pnl)
+		}
+	}
+	valueLine += fmt.Sprintf(" | Mode: %s", mode)
+	sb.WriteString(valueLine)
+
+	return sb.String()
 }
