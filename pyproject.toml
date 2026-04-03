@@ -1,6 +1,6 @@
 [project]
 name = "go-trader"
-version = "0.1.0"
+version = "0.16.0"
 description = "Crypto trading bot — backtesting, paper trading, live trading with risk management"
 requires-python = ">=3.12"
 dependencies = [
