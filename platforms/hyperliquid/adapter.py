@@ -201,6 +201,11 @@ class HyperliquidExchangeAdapter:
             raise RuntimeError(
                 "market_open requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
+        # Round to asset's tick precision to avoid float_to_wire rounding error
+        sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3)
+        size = round(size, sz_decimals)
+        if size <= 0:
+            raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
         return self._exchange.market_open(symbol, is_buy, size, None, 0.01)
 
     def market_close(self, symbol: str) -> dict:
