@@ -128,9 +128,11 @@ func main() {
 			}
 			fmt.Println(")")
 			backends = append(backends, notifierBackend{
-				notifier: discord,
-				channels: cfg.Discord.Channels,
-				ownerID:  cfg.Discord.OwnerID,
+				notifier:      discord,
+				channels:      cfg.Discord.Channels,
+				ownerID:       cfg.Discord.OwnerID,
+				dmPaperTrades: cfg.Discord.DMPaperTrades,
+				dmLiveTrades:  cfg.Discord.DMLiveTrades,
 			})
 			defer discord.Close()
 		}
@@ -147,9 +149,12 @@ func main() {
 			}
 			fmt.Println(")")
 			backends = append(backends, notifierBackend{
-				notifier: tg,
-				channels: cfg.Telegram.Channels,
-				ownerID:  cfg.Telegram.OwnerChatID,
+				notifier:      tg,
+				channels:      cfg.Telegram.Channels,
+				ownerID:       cfg.Telegram.OwnerChatID,
+				dmPaperTrades: cfg.Telegram.DMPaperTrades,
+				dmLiveTrades:  cfg.Telegram.DMLiveTrades,
+				plainText:     true,
 			})
 			defer tg.Close()
 		}
@@ -559,7 +564,7 @@ func main() {
 							channelTradeDetails[key] = append(channelTradeDetails[key], detail)
 						}
 						// DM trade alerts (Discord + Telegram)
-						sendTradeAlerts(sc, stratState, &mu, cfg, notifier)
+						sendTradeAlerts(sc, stratState, &mu, notifier)
 					}
 
 					totalTrades += trades
@@ -840,8 +845,8 @@ func isLiveArgs(args []string) bool {
 	return false
 }
 
-// sendTradeAlerts sends DM trade alerts to the owner via Discord and/or Telegram.
-func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, mu *sync.RWMutex, cfg *Config, notifier *MultiNotifier) {
+// sendTradeAlerts sends DM trade alerts to the owner via all configured backends.
+func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, mu *sync.RWMutex, notifier *MultiNotifier) {
 	isLive := isLiveArgs(sc.Args)
 	mode := "paper"
 	if isLive {
@@ -862,19 +867,18 @@ func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, mu *sync.RWMu
 		if b.ownerID == "" {
 			continue
 		}
-		switch b.notifier.(type) {
-		case *DiscordNotifier:
-			if (isLive && cfg.Discord.DMLiveTrades) || (!isLive && cfg.Discord.DMPaperTrades) {
-				if err := b.notifier.SendDM(b.ownerID, FormatTradeDM(sc, lastTrade, mode)); err != nil {
-					fmt.Printf("[discord] DM trade alert failed: %v\n", err)
-				}
-			}
-		case *TelegramNotifier:
-			if (isLive && cfg.Telegram.DMLiveTrades) || (!isLive && cfg.Telegram.DMPaperTrades) {
-				if err := b.notifier.SendDM(b.ownerID, FormatTradeDMPlain(sc, lastTrade, mode)); err != nil {
-					fmt.Printf("[telegram] trade alert failed: %v\n", err)
-				}
-			}
+		dmEnabled := (isLive && b.dmLiveTrades) || (!isLive && b.dmPaperTrades)
+		if !dmEnabled {
+			continue
+		}
+		var msg string
+		if b.plainText {
+			msg = FormatTradeDMPlain(sc, lastTrade, mode)
+		} else {
+			msg = FormatTradeDM(sc, lastTrade, mode)
+		}
+		if err := b.notifier.SendDM(b.ownerID, msg); err != nil {
+			fmt.Printf("[notify] DM trade alert failed: %v\n", err)
 		}
 	}
 }

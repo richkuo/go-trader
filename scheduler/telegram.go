@@ -238,7 +238,10 @@ func FormatTradeDMPlain(sc StrategyConfig, trade Trade, mode string) string {
 		header = "TRADE CLOSED"
 	}
 
-	platformLabel := strings.ToUpper(sc.Platform[:1]) + sc.Platform[1:]
+	platformLabel := sc.Platform
+	if len(platformLabel) > 0 {
+		platformLabel = strings.ToUpper(platformLabel[:1]) + platformLabel[1:]
+	}
 	typeLabel := sc.Type
 
 	var sb strings.Builder
@@ -248,12 +251,8 @@ func FormatTradeDMPlain(sc StrategyConfig, trade Trade, mode string) string {
 
 	valueLine := fmt.Sprintf("Value: $%s", fmtComma(trade.Value))
 	if isClose {
-		if idx := strings.Index(trade.Details, "PnL: $"); idx >= 0 {
-			pnlStr := trade.Details[idx+len("PnL: $"):]
-			if end := strings.Index(pnlStr, " "); end >= 0 {
-				pnlStr = pnlStr[:end]
-			}
-			valueLine += fmt.Sprintf(" | PnL: $%s", pnlStr)
+		if pnl, ok := extractPnL(trade.Details); ok {
+			valueLine += fmt.Sprintf(" | PnL: $%s", pnl)
 		}
 	}
 	valueLine += fmt.Sprintf(" | Mode: %s", mode)

@@ -243,3 +243,49 @@ func TestFormatTradeDM_FuturesTrade(t *testing.T) {
 		t.Errorf("expected ES symbol, got:\n%s", msg)
 	}
 }
+
+func TestFormatTradeDM_OptionsPnLFormat(t *testing.T) {
+	sc := StrategyConfig{ID: "deribit-wheel-btc", Platform: "deribit", Type: "options"}
+	trade := Trade{
+		Symbol:   "BTC",
+		Side:     "sell",
+		Quantity: 1,
+		Price:    500,
+		Value:    500,
+		Details:  "Close BTC-call-50000-2026-01-17 PnL=$123.45",
+	}
+	msg := FormatTradeDM(sc, trade, "paper")
+
+	if !strings.Contains(msg, "PnL: $123.45") {
+		t.Errorf("expected PnL extracted from options format (PnL=$), got:\n%s", msg)
+	}
+}
+
+func TestExtractPnL(t *testing.T) {
+	cases := []struct {
+		details string
+		want    string
+		ok      bool
+	}{
+		{"Close long, PnL: $34.35 (fee $1.23)", "34.35", true},
+		{"Close BTC-call-50000 PnL=$123.45", "123.45", true},
+		{"Theta harvest close BTC-put PnL=$-50.00", "-50.00", true},
+		{"Open long 0.15 @ $67845.00 (fee $10.18)", "", false},
+	}
+	for _, c := range cases {
+		got, ok := extractPnL(c.details)
+		if ok != c.ok || got != c.want {
+			t.Errorf("extractPnL(%q) = (%q, %v), want (%q, %v)", c.details, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestFormatTradeDM_EmptyPlatform(t *testing.T) {
+	sc := StrategyConfig{ID: "test", Platform: "", Type: "spot"}
+	trade := Trade{Symbol: "BTC", Side: "buy", Quantity: 1, Price: 100, Value: 100, Details: "Open long"}
+	// Should not panic
+	msg := FormatTradeDM(sc, trade, "paper")
+	if !strings.Contains(msg, "TRADE EXECUTED") {
+		t.Errorf("expected message, got:\n%s", msg)
+	}
+}

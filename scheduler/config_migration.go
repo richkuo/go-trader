@@ -41,7 +41,7 @@ var configFieldRegistry = []ConfigField{
 		Version:     4,
 		JSONPath:    "discord.dm_live_trades",
 		Description: "Send a DM to the bot owner on every live trade execution (true/false).",
-		Default:     "true",
+		Default:     "false",
 		FieldType:   "bool",
 	},
 	{
@@ -55,7 +55,7 @@ var configFieldRegistry = []ConfigField{
 		Version:     4,
 		JSONPath:    "telegram.dm_live_trades",
 		Description: "Send a Telegram message on every live trade execution (true/false).",
-		Default:     "true",
+		Default:     "false",
 		FieldType:   "bool",
 	},
 	{

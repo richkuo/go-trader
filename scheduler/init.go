@@ -1133,6 +1133,11 @@ func runInit(args []string) int {
 				telegramChannelMap["luno"] = ch
 			}
 		}
+		if enableOKX {
+			if ch := p.String("OKX Telegram chat ID (leave blank to skip)", ""); ch != "" {
+				telegramChannelMap["okx"] = ch
+			}
+		}
 		telegramOwnerChatID = p.String("Your Telegram chat ID for DM upgrades (leave blank to skip)", "")
 		if telegramOwnerChatID != "" {
 			telegramDMLive = p.YesNo("Send Telegram alert on live trade executions?", true)
