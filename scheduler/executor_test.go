@@ -5,6 +5,9 @@ import (
 	"testing"
 )
 
+// These tests verify JSON deserialization of executor result structs, not subprocess
+// execution behavior (timeouts, concurrency limits, etc.).
+
 func TestSpotResultJSON(t *testing.T) {
 	raw := `{
 		"strategy": "sma_crossover",

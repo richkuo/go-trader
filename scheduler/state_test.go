@@ -153,7 +153,9 @@ func TestLoadStateNilMapsFixed(t *testing.T) {
 func TestLoadStateInvalidJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
-	os.WriteFile(path, []byte("not json"), 0600)
+	if err := os.WriteFile(path, []byte("not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := LoadState(path)
 	if err == nil {

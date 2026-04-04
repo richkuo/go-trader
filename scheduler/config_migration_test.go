@@ -65,7 +65,9 @@ func TestMigrateConfigBasic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(path, data, 0600)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	values := map[string]string{
 		"discord.owner_id": "12345",
@@ -114,7 +116,9 @@ func TestMigrateConfigCreatesNestedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(path, data, 0600)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	values := map[string]string{
 		"discord.dm_live_trades": "true",
@@ -147,7 +151,9 @@ func TestMigrateConfigNilValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(path, data, 0600)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	// nil values — just bump version
 	if err := MigrateConfig(path, nil); err != nil {
@@ -178,9 +184,13 @@ func TestMigrateConfigAtomicWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(path, data, 0600)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
 
-	MigrateConfig(path, nil)
+	if err := MigrateConfig(path, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	// tmp file should not remain
 	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
@@ -198,7 +208,9 @@ func TestMigrateConfigMissingFile(t *testing.T) {
 func TestMigrateConfigInvalidJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	os.WriteFile(path, []byte("not json"), 0600)
+	if err := os.WriteFile(path, []byte("not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	err := MigrateConfig(path, nil)
 	if err == nil {
