@@ -14,12 +14,19 @@ import ccxt
 import sys
 from unittest.mock import MagicMock as _MagicMock
 
+_real_storage = sys.modules.get("storage")
 _mock_storage = _MagicMock()
 _mock_storage.store_ohlcv = _MagicMock()
 _mock_storage.load_ohlcv = _MagicMock(return_value=pd.DataFrame())
 sys.modules["storage"] = _mock_storage
 
 from data_fetcher import get_exchange, fetch_ohlcv, fetch_full_history, load_cached_data
+
+# Restore so test_storage.py (imported later) gets the real module
+if _real_storage is not None:
+    sys.modules["storage"] = _real_storage
+else:
+    del sys.modules["storage"]
 
 
 # ─── Fixtures ──────────────────────────────────

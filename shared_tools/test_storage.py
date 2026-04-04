@@ -294,7 +294,6 @@ class TestBacktestRoundTrip:
         assert len(df["created_at"].iloc[0]) > 0
 
     def test_multiple_results_ordered_desc(self, db_path):
-        import time
         for i in range(3):
             r = _sample_backtest_result()
             r["strategy_name"] = f"strategy_{i}"
@@ -304,3 +303,4 @@ class TestBacktestRoundTrip:
         assert len(df) == 3
         # Results ordered by created_at DESC (most recent first)
         # All created in same second, but insertion order preserved with ROWID
+        assert df["strategy_name"].iloc[0] == "strategy_2"

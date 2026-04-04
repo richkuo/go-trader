@@ -18,3 +18,6 @@ test = [
     "pytest>=8.0.0",
     "pytest-mock>=3.14.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["shared_tools"]
