@@ -18,6 +18,7 @@ func main() {
 
 	configPath := flag.String("config", "scheduler/config.json", "Path to config file")
 	once := flag.Bool("once", false, "Run one cycle and exit")
+	summary := flag.String("summary", "", "Post snapshot summary for the specified channel (e.g., hyperliquid, spot, options) and exit")
 	flag.Parse()
 
 	// Load config
@@ -203,6 +204,11 @@ func main() {
 	dailyCycles := (24 * 3600) / tickSeconds
 	if dailyCycles < 1 {
 		dailyCycles = 1
+	}
+
+	// -summary mode: post snapshot summary for the specified channel and exit.
+	if *summary != "" {
+		runSummaryAndExit(*summary, cfg, state, notifier)
 	}
 
 	saveFailures := 0
@@ -724,6 +730,92 @@ func main() {
 			return
 		}
 	}
+}
+
+// runSummaryAndExit posts a snapshot summary for the given channel key and exits.
+// It fetches current prices, formats the summary using the same logic as the hourly
+// summaries, posts to all notification backends, and exits immediately.
+func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier *MultiNotifier) {
+	if !notifier.HasBackends() {
+		fmt.Fprintf(os.Stderr, "No notification backends configured\n")
+		os.Exit(1)
+	}
+
+	if !notifier.HasChannel(channelKey, channelKey) {
+		fmt.Fprintf(os.Stderr, "No channel configured for %q\n", channelKey)
+		os.Exit(1)
+	}
+
+	// Collect strategies for this channel.
+	var chStrats []StrategyConfig
+	for _, sc := range cfg.Strategies {
+		if notifier.resolveChannelKey(sc.Platform, sc.Type) == channelKey {
+			chStrats = append(chStrats, sc)
+		}
+	}
+	if len(chStrats) == 0 {
+		fmt.Fprintf(os.Stderr, "No strategies found for channel %q\n", channelKey)
+		os.Exit(1)
+	}
+
+	// Collect symbols that need prices.
+	symbolSet := make(map[string]bool)
+	for _, sc := range cfg.Strategies {
+		if sc.Type == "spot" && len(sc.Args) >= 2 {
+			symbolSet[sc.Args[1]] = true
+		}
+	}
+	symbols := make([]string, 0, len(symbolSet))
+	for s := range symbolSet {
+		symbols = append(symbols, s)
+	}
+
+	// Fetch current prices.
+	prices := make(map[string]float64)
+	if len(symbols) > 0 {
+		p, err := FetchPrices(symbols)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Price fetch failed: %v\n", err)
+			os.Exit(1)
+		}
+		for sym, price := range p {
+			if price > 0 {
+				prices[sym] = price
+			}
+		}
+	}
+
+	// Calculate channel value.
+	chValue := 0.0
+	for _, sc := range chStrats {
+		if s, ok := state.Strategies[sc.ID]; ok {
+			chValue += PortfolioValue(s, prices)
+		}
+	}
+
+	// Format and send summary using the same asset-grouping logic as the main loop.
+	assetGroups, assetKeys := groupByAsset(chStrats)
+	if len(assetKeys) <= 1 {
+		msg := FormatCategorySummary(state.CycleCount, 0, 0, 0, chValue, prices, nil, chStrats, state, channelKey, "")
+		notifier.SendToChannel(channelKey, channelKey, msg)
+		fmt.Println(msg)
+	} else {
+		for _, asset := range assetKeys {
+			assetStrats := assetGroups[asset]
+			assetValue := 0.0
+			for _, sc := range assetStrats {
+				if s, ok := state.Strategies[sc.ID]; ok {
+					assetValue += PortfolioValue(s, prices)
+				}
+			}
+			msg := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetValue, prices, nil, assetStrats, state, channelKey, asset)
+			notifier.SendToChannel(channelKey, channelKey, msg)
+			fmt.Println(msg)
+		}
+	}
+
+	fmt.Printf("-summary=%s: posted, exiting.\n", channelKey)
+	os.Exit(0)
 }
 
 // runSpotCheck runs the spot check subprocess and returns the parsed result.
