@@ -20,4 +20,4 @@ test = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["shared_tools"]
+testpaths = ["shared_tools", "platforms"]
