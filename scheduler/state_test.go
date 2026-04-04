@@ -243,9 +243,9 @@ func TestValidateState(t *testing.T) {
 		InitialCapital: -100, // invalid
 		Cash:           -50,  // negative
 		Positions: map[string]*Position{
-			"BTC/USDT":  {Quantity: 0.01, Side: "long"},
-			"ETH/USDT":  {Quantity: 0, Side: "long"},   // invalid: zero
-			"SOL/USDT":  {Quantity: -1, Side: "short"},  // invalid: negative
+			"BTC/USDT": {Quantity: 0.01, Side: "long"},
+			"ETH/USDT": {Quantity: 0, Side: "long"},   // invalid: zero
+			"SOL/USDT": {Quantity: -1, Side: "short"}, // invalid: negative
 		},
 		OptionPositions: map[string]*OptionPosition{
 			"valid":   {Action: "buy", OptionType: "call", Quantity: 1},

@@ -32,7 +32,7 @@ func TestStdNormPDF(t *testing.T) {
 		x    float64
 		want float64
 	}{
-		{0.0, 0.3989},  // 1/sqrt(2*pi)
+		{0.0, 0.3989}, // 1/sqrt(2*pi)
 		{1.0, 0.2420},
 		{-1.0, 0.2420}, // symmetric
 	}
@@ -99,7 +99,7 @@ func TestBsPricePutBasic(t *testing.T) {
 func TestBsPriceZeroInputs(t *testing.T) {
 	// All zero/invalid inputs should return zeros
 	cases := []struct {
-		name  string
+		name              string
 		S, K, T, r, sigma float64
 	}{
 		{"zero T", 100, 100, 0, 0.05, 0.3},
