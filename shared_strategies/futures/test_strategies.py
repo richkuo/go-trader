@@ -321,6 +321,34 @@ class TestLiquiditySweeps:
         _valid_signals(result)
 
 
+# ─── AMD+IFVG ──────────────────────────────
+
+class TestAMDIFVG:
+    def test_returns_signal_column(self):
+        """AMD+IFVG should return signal column with datetime index."""
+        n = 96  # 24 hours of 15-min candles
+        idx = pd.date_range("2024-01-01", periods=n, freq="15min")
+        closes = make_volatile(n, center=100, amplitude=5)
+        result = _run("amd_ifvg", closes, index=idx)
+        assert "signal" in result.columns
+        _valid_signals(result)
+        assert "asian_high" in result.columns
+        assert "asian_low" in result.columns
+
+    def test_short_data_no_signal(self):
+        """Less than 3 bars should return all zeros."""
+        idx = pd.date_range("2024-01-01", periods=2, freq="15min")
+        result = _run("amd_ifvg", [100.0, 101.0], index=idx)
+        assert (result["signal"] == 0).all()
+
+    def test_no_crash_flat(self):
+        """Flat data with datetime index should not crash."""
+        n = 96
+        idx = pd.date_range("2024-01-01", periods=n, freq="15min")
+        result = _run("amd_ifvg", make_flat(n), index=idx)
+        assert "signal" in result.columns
+
+
 # ─── Edge Cases ─────────────────────────────
 
 class TestEdgeCases:
@@ -328,6 +356,8 @@ class TestEdgeCases:
         "momentum", "mean_reversion", "rsi", "macd", "breakout",
         "stoch_rsi", "supertrend", "squeeze_momentum",
         "atr_breakout", "heikin_ashi_ema", "parabolic_sar",
+        "ichimoku_cloud", "order_blocks", "delta_neutral_funding",
+        "vwap_reversion", "chart_pattern", "liquidity_sweeps", "amd_ifvg",
     ])
     def test_empty_dataframe(self, name):
         df = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
@@ -337,6 +367,9 @@ class TestEdgeCases:
     @pytest.mark.parametrize("name", [
         "momentum", "mean_reversion", "rsi", "macd", "breakout",
         "stoch_rsi", "atr_breakout", "heikin_ashi_ema",
+        "supertrend", "squeeze_momentum", "ichimoku_cloud",
+        "order_blocks", "delta_neutral_funding",
+        "chart_pattern", "liquidity_sweeps", "parabolic_sar", "amd_ifvg",
     ])
     def test_single_row(self, name):
         df = make_ohlcv([100.0])

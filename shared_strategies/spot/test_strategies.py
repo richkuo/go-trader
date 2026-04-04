@@ -215,16 +215,13 @@ class TestMomentum:
         result = _run_strategy("momentum", closes, {"roc_period": 14, "threshold": 5.0})
         _assert_valid_signals(result)
         assert "roc" in result.columns
-        # ROC at end should be positive
-        valid_roc = result["roc"].dropna()
-        assert valid_roc.iloc[-1] > 0
+        assert (result["signal"] == 1).any()
 
     def test_sell_on_strong_downtrend(self):
         closes = list(np.linspace(100, 100, 30)) + list(np.linspace(100, 70, 30))
         result = _run_strategy("momentum", closes, {"roc_period": 14, "threshold": 5.0})
         _assert_valid_signals(result)
-        valid_roc = result["roc"].dropna()
-        assert valid_roc.iloc[-1] < 0
+        assert (result["signal"] == -1).any()
 
     def test_flat_no_signal(self):
         result = _run_strategy("momentum", make_flat(60))
@@ -541,6 +538,34 @@ class TestSqueezeMomentum:
         assert (result["signal"] == 0).all()
 
 
+# ─── AMD+IFVG ──────────────────────────────
+
+class TestAMDIFVG:
+    def test_returns_signal_column(self):
+        """AMD+IFVG should return signal column with datetime index."""
+        n = 96  # 24 hours of 15-min candles
+        idx = pd.date_range("2024-01-01", periods=n, freq="15min")
+        closes = make_volatile(n, center=100, amplitude=5)
+        result = _run_strategy("amd_ifvg", closes, index=idx)
+        assert "signal" in result.columns
+        _assert_valid_signals(result)
+        assert "asian_high" in result.columns
+        assert "asian_low" in result.columns
+
+    def test_short_data_no_signal(self):
+        """Less than 3 bars should return all zeros."""
+        idx = pd.date_range("2024-01-01", periods=2, freq="15min")
+        result = _run_strategy("amd_ifvg", [100.0, 101.0], index=idx)
+        assert (result["signal"] == 0).all()
+
+    def test_no_crash_flat(self):
+        """Flat data with datetime index should not crash."""
+        n = 96
+        idx = pd.date_range("2024-01-01", periods=n, freq="15min")
+        result = _run_strategy("amd_ifvg", make_flat(n), index=idx)
+        assert "signal" in result.columns
+
+
 # ─── Edge Cases (all strategies) ────────────
 
 class TestEdgeCases:
@@ -548,7 +573,7 @@ class TestEdgeCases:
         "sma_crossover", "ema_crossover", "rsi", "bollinger_bands", "macd",
         "mean_reversion", "momentum", "volume_weighted", "triple_ema",
         "rsi_macd_combo", "stoch_rsi", "supertrend", "atr_breakout",
-        "heikin_ashi_ema", "parabolic_sar",
+        "heikin_ashi_ema", "parabolic_sar", "amd_ifvg",
     ])
     def test_empty_dataframe(self, name):
         """All strategies should handle empty DataFrames without crashing."""
@@ -560,7 +585,7 @@ class TestEdgeCases:
         "sma_crossover", "ema_crossover", "rsi", "bollinger_bands", "macd",
         "mean_reversion", "momentum", "volume_weighted", "triple_ema",
         "rsi_macd_combo", "stoch_rsi", "atr_breakout",
-        "heikin_ashi_ema",
+        "heikin_ashi_ema", "amd_ifvg",
     ])
     def test_single_row(self, name):
         """All strategies should handle a single-row DataFrame."""
