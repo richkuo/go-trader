@@ -188,6 +188,16 @@ func isFuturesType(strats []StrategyConfig) bool {
 	return false
 }
 
+// isPerpsType returns true if any strategy in the list is a perps strategy.
+func isPerpsType(strats []StrategyConfig) bool {
+	for _, sc := range strats {
+		if sc.Type == "perps" {
+			return true
+		}
+	}
+	return false
+}
+
 // futuresFullNames maps ticker symbols to their full contract names.
 var futuresFullNames = map[string]string{
 	"MES": "Micro E-mini S&P 500",

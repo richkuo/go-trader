@@ -656,7 +656,7 @@ func main() {
 				chTrades := channelTrades[chKey]
 				// Options: post every run. Others: hourly or on trade.
 				// (cycle-1)%12==0 fires at cycles 1,13,25... so first summary posts on startup.
-				if !isOptionsType(chStrats) && !isFuturesType(chStrats) && chTrades == 0 && (cycle-1)%12 != 0 {
+				if !isOptionsType(chStrats) && !isFuturesType(chStrats) && !isPerpsType(chStrats) && chTrades == 0 && (cycle-1)%12 != 0 {
 					continue
 				}
 				assetGroups, assetKeys := groupByAsset(chStrats)
