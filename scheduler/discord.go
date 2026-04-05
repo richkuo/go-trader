@@ -335,6 +335,17 @@ func FormatCategorySummary(
 	}
 	writeCatTable(&sb, tableBots, filteredValue, totalPnl, totalPnlPct)
 
+	// Positions summary (#145)
+	totalOpenPos := 0
+	for _, bot := range tableBots {
+		totalOpenPos += bot.openPositions
+	}
+	if totalOpenPos == 0 {
+		sb.WriteString("Positions: no open positions\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("Positions: %d open\n", totalOpenPos))
+	}
+
 	// Trade details (always shown)
 	if len(tradeDetails) > 0 {
 		sb.WriteString("\n**Trades:**\n")
