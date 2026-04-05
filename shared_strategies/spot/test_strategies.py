@@ -124,8 +124,9 @@ class TestRSI:
         )
         result = _run_strategy("rsi", closes)
         _assert_valid_signals(result)
-        # RSI should have recovered from oversold — may produce buy signal
         assert "rsi" in result.columns
+        # RSI should cross back above oversold (30) during recovery
+        assert (result["signal"] == 1).any(), "Expected buy signal when RSI recovers from oversold"
 
     def test_sell_on_overbought_drop(self):
         closes = (
@@ -135,6 +136,8 @@ class TestRSI:
         )
         result = _run_strategy("rsi", closes)
         _assert_valid_signals(result)
+        # RSI should cross below overbought (70) during the drop
+        assert (result["signal"] == -1).any(), "Expected sell signal when RSI drops from overbought"
 
     def test_rsi_range(self):
         closes = make_volatile(200, amplitude=15)
@@ -158,6 +161,19 @@ class TestBollingerBands:
         )
         result = _run_strategy("bollinger_bands", closes)
         _assert_valid_signals(result)
+        # Price dips below lower band then recovers — should trigger buy
+        assert (result["signal"] == 1).any(), "Expected buy signal when price recovers from below lower band"
+
+    def test_sell_at_upper_band(self):
+        closes = (
+            list(np.linspace(100, 100, 30)) +
+            list(np.linspace(100, 125, 15)) +
+            list(np.linspace(125, 105, 20))
+        )
+        result = _run_strategy("bollinger_bands", closes)
+        _assert_valid_signals(result)
+        # Price rises above upper band then drops back — should trigger sell
+        assert (result["signal"] == -1).any(), "Expected sell signal when price drops from above upper band"
 
     def test_flat_no_signal(self):
         result = _run_strategy("bollinger_bands", make_flat(50))
@@ -200,6 +216,8 @@ class TestMeanReversion:
         result = _run_strategy("mean_reversion", closes)
         _assert_valid_signals(result)
         assert "z_score" in result.columns
+        # Z-score should cross back above -entry_std during recovery
+        assert (result["signal"] == 1).any(), "Expected buy signal when z-score recovers from dip"
 
     def test_flat_no_signal(self):
         result = _run_strategy("mean_reversion", make_flat(60))
@@ -241,6 +259,8 @@ class TestVolumeWeighted:
             vol[i] = 300.0
         result = _run_strategy("volume_weighted", closes, volume=vol)
         _assert_valid_signals(result)
+        # Price crosses above SMA with high volume — should trigger buy
+        assert (result["signal"] == 1).any(), "Expected buy signal on upward SMA cross with high volume"
 
     def test_low_volume_filters_signal(self):
         # Same price pattern but low volume — should have fewer signals
@@ -278,26 +298,36 @@ class TestRSIMACDCombo:
         _assert_valid_signals(result)
         assert "rsi" in result.columns
         assert "macd_line" in result.columns
+        # MACD bullish cross with RSI < 50 during recovery
+        assert (result["signal"] == 1).any(), "Expected buy signal on MACD bullish cross with RSI < 50"
 
     def test_sell_signal(self):
         closes = list(np.linspace(80, 140, 60)) + list(np.linspace(140, 80, 60))
         result = _run_strategy("rsi_macd_combo", closes)
         _assert_valid_signals(result)
+        # MACD bearish cross with RSI > 50 during decline
+        assert (result["signal"] == -1).any(), "Expected sell signal on MACD bearish cross with RSI > 50"
 
 
 # ─── Stochastic RSI ─────────────────────────
 
 class TestStochRSI:
     def test_buy_in_oversold(self):
+        # Decline → bounce (sets stoch max) → decline to new low (stoch ≈ 0) → slight recovery
+        # This creates a %K cross above %D while %K < 20
         closes = (
-            list(np.linspace(100, 100, 30)) +
-            list(np.linspace(100, 60, 25)) +
-            list(np.linspace(60, 80, 25))
+            list(np.linspace(100, 100, 20)) +
+            list(np.linspace(100, 50, 30)) +
+            list(np.linspace(50, 65, 10)) +
+            list(np.linspace(65, 45, 15)) +
+            list(np.linspace(45, 48, 5))
         )
         result = _run_strategy("stoch_rsi", closes)
         _assert_valid_signals(result)
         assert "stoch_k" in result.columns
         assert "stoch_d" in result.columns
+        # %K should cross above %D in oversold zone during recovery
+        assert (result["signal"] == 1).any(), "Expected buy signal on stoch RSI oversold crossover"
 
     def test_flat_data(self):
         result = _run_strategy("stoch_rsi", make_flat(80))
@@ -385,6 +415,8 @@ class TestATRBreakout:
         closes = list(np.linspace(100, 100, 30)) + list(np.linspace(100, 130, 10))
         result = _run_strategy("atr_breakout", closes, {"atr_period": 14, "multiplier": 1.0})
         _assert_valid_signals(result)
+        # Sharp move up should exceed ATR-based upper threshold
+        assert (result["signal"] == 1).any(), "Expected buy signal on upside ATR breakout"
 
     def test_flat_no_breakout(self):
         result = _run_strategy("atr_breakout", make_flat(50))
