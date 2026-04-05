@@ -600,7 +600,7 @@ func main() {
 							channelTradeDetails[key] = append(channelTradeDetails[key], detail)
 						}
 						// DM trade alerts (Discord + Telegram)
-						sendTradeAlerts(sc, stratState, &mu, notifier)
+						sendTradeAlerts(sc, stratState, trades, &mu, notifier)
 					}
 
 					totalTrades += trades
@@ -968,21 +968,26 @@ func isLiveArgs(args []string) bool {
 }
 
 // sendTradeAlerts sends DM trade alerts to the owner via all configured backends.
-func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, mu *sync.RWMutex, notifier *MultiNotifier) {
+// trades is the number of new trades appended during this cycle.
+func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, mu *sync.RWMutex, notifier *MultiNotifier) {
 	isLive := isLiveArgs(sc.Args)
 	mode := "paper"
 	if isLive {
 		mode = "live"
 	}
 
-	var lastTrade Trade
 	mu.RLock()
-	if n := len(stratState.TradeHistory); n > 0 {
-		lastTrade = stratState.TradeHistory[n-1]
-	} else {
+	n := len(stratState.TradeHistory)
+	if n == 0 || trades <= 0 {
 		mu.RUnlock()
 		return
 	}
+	start := n - trades
+	if start < 0 {
+		start = 0
+	}
+	newTrades := make([]Trade, trades)
+	copy(newTrades, stratState.TradeHistory[start:n])
 	mu.RUnlock()
 
 	for _, b := range notifier.backends {
@@ -993,14 +998,16 @@ func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, mu *sync.RWMu
 		if !dmEnabled {
 			continue
 		}
-		var msg string
-		if b.plainText {
-			msg = FormatTradeDMPlain(sc, lastTrade, mode)
-		} else {
-			msg = FormatTradeDM(sc, lastTrade, mode)
-		}
-		if err := b.notifier.SendDM(b.ownerID, msg); err != nil {
-			fmt.Printf("[notify] DM trade alert failed: %v\n", err)
+		for _, t := range newTrades {
+			var msg string
+			if b.plainText {
+				msg = FormatTradeDMPlain(sc, t, mode)
+			} else {
+				msg = FormatTradeDM(sc, t, mode)
+			}
+			if err := b.notifier.SendDM(b.ownerID, msg); err != nil {
+				fmt.Printf("[notify] DM trade alert failed: %v\n", err)
+			}
 		}
 	}
 }
