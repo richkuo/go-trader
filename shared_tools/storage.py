@@ -160,7 +160,7 @@ def get_backtest_results(strategy_name: Optional[str] = None,
     if strategy_name:
         query += " WHERE strategy_name = ?"
         params.append(strategy_name)
-    query += " ORDER BY created_at DESC"
+    query += " ORDER BY created_at DESC, id DESC"
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
     return df
