@@ -64,16 +64,13 @@ class TestContractSpecs:
 
 class TestMarketDataPaper:
     def test_get_price_paper_yahoo(self):
+        import pandas as pd
         adapter = TopStepExchangeAdapter(mode="paper")
-        mock_hist = MagicMock()
-        mock_hist.empty = False
-        mock_close = MagicMock()
-        mock_close.iloc.__getitem__ = MagicMock(return_value=5500.0)
-        mock_hist.__getitem__ = MagicMock(return_value=mock_close)
+        hist = pd.DataFrame({"Close": [5400.0, 5450.0, 5500.0]})
 
         mock_yf = MagicMock()
         mock_ticker = MagicMock()
-        mock_ticker.history.return_value = mock_hist
+        mock_ticker.history.return_value = hist
         mock_yf.Ticker.return_value = mock_ticker
         with patch.dict(sys.modules, {"yfinance": mock_yf}):
             price = adapter.get_price("ES")
