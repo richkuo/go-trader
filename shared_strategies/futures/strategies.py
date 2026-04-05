@@ -547,7 +547,7 @@ def parabolic_sar_strategy(df: pd.DataFrame, iaf: float = 0.02, af_step: float =
         result["signal"] = 0
         return result
 
-    trend[0] = 1 if close[1] >= close[0] else -1
+    trend[0] = 1  # neutral default; avoids look-ahead bias from peeking at close[1] (#104)
     if trend[0] == 1:
         sar[0] = low[0]
         ep[0] = high[0]
