@@ -225,6 +225,11 @@ func main() {
 		channelTrades := make(map[string]int)
 		channelTradeDetails := make(map[string][]string)
 
+		// #87: Resolve capital_pct → capital for strategies with dynamic sizing.
+		// Must run on cfg.Strategies (not dueStrategies) so resolved capital persists
+		// across cycles and is picked up by the value-copies in dueStrategies.
+		resolveCapitalPct(cfg.Strategies)
+
 		// Determine which strategies are due this tick
 		dueStrategies := make([]StrategyConfig, 0)
 		for _, sc := range cfg.Strategies {
@@ -293,9 +298,6 @@ func main() {
 			}
 			fmt.Println()
 		}
-
-		// #87: Resolve capital_pct → capital for strategies with dynamic sizing.
-		resolveCapitalPct(dueStrategies)
 
 		// Process only due strategies
 		if saveFailures >= 3 {
