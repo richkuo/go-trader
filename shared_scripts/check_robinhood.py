@@ -77,9 +77,9 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
 
         price = float(last["close"])
 
-        # Apply HTF trend filter if enabled
+        # Apply HTF trend filter if enabled (skip for funding-rate strategies — #103)
         htf_info = {}
-        if htf_filter_enabled:
+        if htf_filter_enabled and strategy_name != "delta_neutral_funding":
             from htf_filter import htf_trend_filter, apply_htf_filter
 
             def _fetch_htf(sym, tf, limit):

@@ -544,9 +544,10 @@ func generateConfig(opts InitOptions) *Config {
 	}
 
 	// Apply HTF filter to all non-options strategies if enabled.
+	// Skip delta_neutral_funding — trend direction is irrelevant to funding-rate harvesting (#103).
 	if opts.HTFFilter {
 		for i := range cfg.Strategies {
-			if cfg.Strategies[i].Type != "options" {
+			if cfg.Strategies[i].Type != "options" && (len(cfg.Strategies[i].Args) == 0 || cfg.Strategies[i].Args[0] != "delta_neutral_funding") {
 				cfg.Strategies[i].HTFFilter = true
 			}
 		}
