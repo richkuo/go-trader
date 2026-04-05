@@ -26,7 +26,17 @@ apply_strategy = _mod.apply_strategy
 list_strategies = _mod.list_strategies
 get_strategy = _mod.get_strategy
 
-from conftest import make_ohlcv, make_trending_up, make_trending_down, make_flat, make_volatile
+# Load conftest helpers via file path so imports work regardless of CWD
+_conftest_spec = importlib.util.spec_from_file_location(
+    "conftest_helpers", os.path.join(_shared_dir, "conftest.py"))
+_conftest_mod = importlib.util.module_from_spec(_conftest_spec)
+_conftest_spec.loader.exec_module(_conftest_mod)
+
+make_ohlcv = _conftest_mod.make_ohlcv
+make_trending_up = _conftest_mod.make_trending_up
+make_trending_down = _conftest_mod.make_trending_down
+make_flat = _conftest_mod.make_flat
+make_volatile = _conftest_mod.make_volatile
 
 
 # ─── Registry ───────────────────────────────
