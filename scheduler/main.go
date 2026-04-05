@@ -164,6 +164,14 @@ func main() {
 	notifier := NewMultiNotifier(backends...)
 	fmt.Printf("Notification backends: %d active\n", notifier.BackendCount())
 
+	// -summary mode: post snapshot summary for the specified channel and exit.
+	// Checked early since it only needs config, state, and notifier — avoids
+	// launching the config-migration goroutine, update checks, and pricers
+	// that would be hard-killed by os.Exit.
+	if *summary != "" {
+		runSummaryAndExit(*summary, cfg, state, notifier)
+	}
+
 	// Config migration: DM owner about new fields if config is behind current version.
 	if cfg.ConfigVersion < CurrentConfigVersion {
 		go runConfigMigrationDM(cfg, notifier, *configPath)
@@ -204,11 +212,6 @@ func main() {
 	dailyCycles := (24 * 3600) / tickSeconds
 	if dailyCycles < 1 {
 		dailyCycles = 1
-	}
-
-	// -summary mode: post snapshot summary for the specified channel and exit.
-	if *summary != "" {
-		runSummaryAndExit(*summary, cfg, state, notifier)
 	}
 
 	saveFailures := 0
