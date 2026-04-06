@@ -14,6 +14,7 @@ Usage: python3 check_strategy.py <strategy> <symbol> <timeframe> [symbol_b]
 import sys
 import os
 import json
+import math
 import traceback
 from datetime import datetime, timezone
 
@@ -148,7 +149,9 @@ def main():
             val = last.get(col)
             if val is not None:
                 try:
-                    indicators[col] = round(float(val), 6)
+                    fval = float(val)
+                    if math.isfinite(fval):
+                        indicators[col] = round(fval, 6)
                 except (ValueError, TypeError):
                     pass
 

@@ -13,6 +13,7 @@ Execution mode (live only, called by Go as phase 2):
 import sys
 import os
 import json
+import math
 import traceback
 from datetime import datetime, timezone
 
@@ -129,7 +130,9 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             val = last.get(col)
             if val is not None:
                 try:
-                    indicators[col] = round(float(val), 6)
+                    fval = float(val)
+                    if math.isfinite(fval):
+                        indicators[col] = round(fval, 6)
                 except (ValueError, TypeError):
                     pass
 
