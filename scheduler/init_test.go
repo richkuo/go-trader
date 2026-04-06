@@ -777,6 +777,7 @@ func TestGenerateConfig_NoCapitalPct(t *testing.T) {
 }
 
 func TestValidateConfig_CapitalPctValid(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xTEST")
 	cfg := &Config{
 		IntervalSeconds: 600,
 		StateFile:       "state.json",
