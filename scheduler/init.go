@@ -52,6 +52,9 @@ var knownShortNames = map[string]string{
 	"liquidity_sweeps":      "liqsw",
 	"parabolic_sar":         "psar",
 	"delta_neutral_funding": "dnf",
+	"supertrend":            "st",
+	"squeeze_momentum":      "sqm",
+	"heikin_ashi_ema":       "hae",
 }
 
 // deriveShortName returns a short abbreviation for a strategy ID.

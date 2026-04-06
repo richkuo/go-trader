@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -836,9 +837,15 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 // runSpotCheck runs the spot check subprocess and returns the parsed result.
 // No state access. Returns (result, signalStr, price, ok); ok=false means skip execution.
 func runSpotCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*SpotResult, string, float64, bool) {
-	args := sc.Args
+	args := append([]string{}, sc.Args...)
 	if sc.HTFFilter {
-		args = append(append([]string{}, args...), "--htf-filter")
+		args = append(args, "--htf-filter")
+	}
+	if len(sc.Params) > 0 {
+		paramsJSON, err := json.Marshal(sc.Params)
+		if err == nil {
+			args = append(args, "--params", string(paramsJSON))
+		}
 	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
 
@@ -1031,9 +1038,15 @@ func hyperliquidSymbol(args []string) string {
 
 // runHyperliquidCheck runs check_hyperliquid.py signal-check mode (Phase 3, no lock).
 func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
-	args := sc.Args
+	args := append([]string{}, sc.Args...)
 	if sc.HTFFilter {
-		args = append(append([]string{}, args...), "--htf-filter")
+		args = append(args, "--htf-filter")
+	}
+	if len(sc.Params) > 0 {
+		paramsJSON, err := json.Marshal(sc.Params)
+		if err == nil {
+			args = append(args, "--params", string(paramsJSON))
+		}
 	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
 
@@ -1161,9 +1174,15 @@ func topstepSymbol(args []string) string {
 
 // runTopStepCheck runs check_topstep.py signal-check mode (Phase 3, no lock).
 func runTopStepCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*TopStepResult, string, float64, bool) {
-	args := sc.Args
+	args := append([]string{}, sc.Args...)
 	if sc.HTFFilter {
-		args = append(append([]string{}, args...), "--htf-filter")
+		args = append(args, "--htf-filter")
+	}
+	if len(sc.Params) > 0 {
+		paramsJSON, err := json.Marshal(sc.Params)
+		if err == nil {
+			args = append(args, "--params", string(paramsJSON))
+		}
 	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
 
@@ -1312,9 +1331,15 @@ func robinhoodSymbol(args []string) string {
 
 // runRobinhoodCheck runs check_robinhood.py signal-check mode (Phase 3, no lock).
 func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*RobinhoodResult, string, float64, bool) {
-	args := sc.Args
+	args := append([]string{}, sc.Args...)
 	if sc.HTFFilter {
-		args = append(append([]string{}, args...), "--htf-filter")
+		args = append(args, "--htf-filter")
+	}
+	if len(sc.Params) > 0 {
+		paramsJSON, err := json.Marshal(sc.Params)
+		if err == nil {
+			args = append(args, "--params", string(paramsJSON))
+		}
 	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
 
@@ -1449,9 +1474,15 @@ func okxInstType(args []string) string {
 
 // runOKXCheck runs check_okx.py signal-check mode (Phase 3, no lock).
 func runOKXCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
-	args := sc.Args
+	args := append([]string{}, sc.Args...)
 	if sc.HTFFilter {
-		args = append(append([]string{}, args...), "--htf-filter")
+		args = append(args, "--htf-filter")
+	}
+	if len(sc.Params) > 0 {
+		paramsJSON, err := json.Marshal(sc.Params)
+		if err == nil {
+			args = append(args, "--params", string(paramsJSON))
+		}
 	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
 

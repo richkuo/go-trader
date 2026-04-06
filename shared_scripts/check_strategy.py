@@ -25,7 +25,25 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 def main():
     # Parse optional flags from argv before positional args
     htf_filter_enabled = "--htf-filter" in sys.argv
-    positional_args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    strategy_params = None
+    if "--params" in sys.argv:
+        idx = sys.argv.index("--params")
+        if idx + 1 < len(sys.argv):
+            strategy_params = json.loads(sys.argv[idx + 1])
+    # Filter out --flag and --params <value> (skip the arg after --params)
+    filtered = []
+    skip_next = False
+    for a in sys.argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if a == "--params":
+            skip_next = True
+            continue
+        if a.startswith("--"):
+            continue
+        filtered.append(a)
+    positional_args = filtered
 
     if len(positional_args) < 3:
         print(json.dumps({
@@ -92,7 +110,7 @@ def main():
             return
 
         # Run the strategy
-        result_df = apply_strategy(strategy_name, df)
+        result_df = apply_strategy(strategy_name, df, strategy_params)
 
         # Get the last row's signal
         last = result_df.iloc[-1]

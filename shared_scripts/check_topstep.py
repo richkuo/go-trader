@@ -32,7 +32,7 @@ def _make_dataframe(candles):
     return df
 
 
-def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False):
+def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False, strategy_params=None):
     """Run strategy signal check using TopStep market data."""
     try:
         from adapter import TopStepExchangeAdapter
@@ -82,7 +82,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             sys.exit(1)
 
         df = _make_dataframe(candles)
-        result_df = apply_strategy(strategy_name, df)
+        result_df = apply_strategy(strategy_name, df, strategy_params)
 
         last = result_df.iloc[-1]
         signal = int(last.get("signal", 0))
@@ -236,8 +236,10 @@ def main():
         parser.add_argument("timeframe")
         parser.add_argument("--mode", default="paper")
         parser.add_argument("--htf-filter", action="store_true", default=False)
+        parser.add_argument("--params", default=None)
         args = parser.parse_args()
-        run_signal_check(args.strategy, args.symbol, args.timeframe, args.mode, args.htf_filter)
+        params_parsed = json.loads(args.params) if args.params else None
+        run_signal_check(args.strategy, args.symbol, args.timeframe, args.mode, args.htf_filter, params_parsed)
 
 
 if __name__ == "__main__":

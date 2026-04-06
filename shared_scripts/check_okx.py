@@ -33,7 +33,7 @@ def _make_dataframe(candles):
     return df
 
 
-def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False, inst_type="swap"):
+def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False, inst_type="swap", strategy_params_override=None):
     """Run strategy signal check using OKX OHLCV data."""
     try:
         from adapter import OKXExchangeAdapter
@@ -81,6 +81,9 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             sys.exit(1)
 
         df = _make_dataframe(candles)
+        if strategy_params_override:
+            merged = {**strategy_params_override, **strategy_params}
+            strategy_params = merged
         result_df = apply_strategy(strategy_name, df, strategy_params or None)
 
         last = result_df.iloc[-1]
@@ -238,8 +241,10 @@ def main():
         parser.add_argument("--mode", default="paper")
         parser.add_argument("--htf-filter", action="store_true", default=False)
         parser.add_argument("--inst-type", default="swap", choices=["spot", "swap"])
+        parser.add_argument("--params", default=None)
         args = parser.parse_args()
-        run_signal_check(args.strategy, args.symbol, args.timeframe, args.mode, args.htf_filter, args.inst_type)
+        params_override = json.loads(args.params) if args.params else None
+        run_signal_check(args.strategy, args.symbol, args.timeframe, args.mode, args.htf_filter, args.inst_type, params_override)
 
 
 if __name__ == "__main__":
