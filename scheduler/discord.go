@@ -455,15 +455,15 @@ func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, to
 	if len(bots) == 0 {
 		return
 	}
-	const sep = "-----------------------------------------------"
+	const sep = "---------------------------------------"
 	sb.WriteString("\n```\n")
-	sb.WriteString(fmt.Sprintf("%-20s %10s %10s %7s\n", "Strategy", "Value", "PnL", "PnL%"))
+	sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s\n", "Strategy", "Value", "PnL", "PnL%"))
 	sb.WriteString(sep + "\n")
 	for _, bot := range bots {
 		// Use the full ID as the label — always unique, avoids duplicates for multi-asset pairs
 		label := bot.id
-		if len(label) > 20 {
-			label = label[:20]
+		if len(label) > 12 {
+			label = label[:12]
 		}
 		valStr := "$ " + fmtComma(bot.value)
 		pnlSign := "+"
@@ -478,7 +478,7 @@ func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, to
 			pctSign = ""
 		}
 		pctStr := fmt.Sprintf("%s%.1f%%", pctSign, bot.pnlPct)
-		sb.WriteString(fmt.Sprintf("%-20s %10s %10s %7s\n", label, valStr, pnlStr, pctStr))
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s\n", label, valStr, pnlStr, pctStr))
 	}
 	sb.WriteString(sep + "\n")
 	// TOTAL row
@@ -495,7 +495,7 @@ func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, to
 		totPctSign = ""
 	}
 	totPctStr := fmt.Sprintf("%s%.1f%%", totPctSign, totalPnlPct)
-	sb.WriteString(fmt.Sprintf("%-20s %10s %10s %7s\n", "TOTAL", totValStr, totPnlStr, totPctStr))
+	sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s\n", "TOTAL", totValStr, totPnlStr, totPctStr))
 	sb.WriteString("```\n")
 }
 
