@@ -28,6 +28,7 @@ jobs:
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           claude_args: '--model claude-opus-4-6 --effort high'
+          allowed_bots: 'claude'
 
       - name: Post review results to PR
         if: always() && steps.claude-review.outputs.result
