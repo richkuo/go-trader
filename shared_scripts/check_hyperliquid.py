@@ -13,8 +13,30 @@ Execution mode (live only, called by Go as phase 2):
 import sys
 import os
 import json
+import math
 import traceback
 from datetime import datetime, timezone
+
+
+class SafeEncoder(json.JSONEncoder):
+    """JSON encoder that converts NaN/Inf to null (Python None)."""
+
+    def default(self, obj):
+        return super().default(obj)
+
+    def encode(self, o):
+        return super().encode(self._sanitize(o))
+
+    def _sanitize(self, obj):
+        if isinstance(obj, float):
+            if math.isnan(obj) or math.isinf(obj):
+                return None
+            return obj
+        if isinstance(obj, dict):
+            return {k: self._sanitize(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [self._sanitize(v) for v in obj]
+        return obj
 
 # Add paths: platforms/hyperliquid/ directly (avoids naming conflict with hyperliquid SDK),
 # shared_strategies/spot/ for apply_strategy, shared_tools/ for utilities.
@@ -74,7 +96,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 "platform": "hyperliquid",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "error": f"Insufficient data: {len(candles) if candles else 0} candles",
-            }))
+            }, cls=SafeEncoder))
             sys.exit(1)
 
         df = _make_dataframe(candles)
@@ -128,7 +150,9 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             val = last.get(col)
             if val is not None:
                 try:
-                    indicators[col] = round(float(val), 6)
+                    fval = float(val)
+                    if math.isfinite(fval):
+                        indicators[col] = round(fval, 6)
                 except (ValueError, TypeError):
                     pass
 
@@ -148,7 +172,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "mode": mode,
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-        }))
+        }, cls=SafeEncoder))
 
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
@@ -163,14 +187,14 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": str(e),
-        }))
+        }, cls=SafeEncoder))
         sys.exit(1)
 
 
 def run_execute(symbol, side, size, mode):
     """Place a live market order on Hyperliquid."""
     if mode != "live":
-        print(json.dumps({"error": "--execute requires --mode=live"}))
+        print(json.dumps({"error": "--execute requires --mode=live"}, cls=SafeEncoder))
         sys.exit(1)
 
     try:
@@ -203,7 +227,7 @@ def run_execute(symbol, side, size, mode):
             },
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-        }))
+        }, cls=SafeEncoder))
 
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
@@ -212,7 +236,7 @@ def run_execute(symbol, side, size, mode):
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": str(e),
-        }))
+        }, cls=SafeEncoder))
         sys.exit(1)
 
 
