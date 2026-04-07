@@ -323,7 +323,7 @@ class OKXExchangeAdapter:
                 if (market.get("type") == "option"
                         and market.get("base", "").upper() == underlying.upper()
                         and market.get("optionType") == option_type
-                        and market.get("strike") == strike
+                        and float(market.get("strike") or 0) == strike
                         and market.get("active", True)):
                     mkt_exp = market.get("expiry")
                     if mkt_exp and exp_start <= int(mkt_exp) < exp_end:
