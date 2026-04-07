@@ -335,7 +335,7 @@ func FormatCategorySummary(
 	}
 	writeCatTable(&sb, tableBots, filteredValue, totalPnl, totalPnlPct)
 
-	// Positions summary (#145)
+	// Positions summary (#145, #162)
 	totalOpenPos := 0
 	for _, bot := range tableBots {
 		totalOpenPos += bot.openPositions
@@ -344,6 +344,15 @@ func FormatCategorySummary(
 		sb.WriteString("Positions: no open positions\n")
 	} else {
 		sb.WriteString(fmt.Sprintf("Positions: %d open\n", totalOpenPos))
+		for _, sc := range channelStrategies {
+			ss := state.Strategies[sc.ID]
+			if ss == nil {
+				continue
+			}
+			for _, line := range collectPositions(sc.ID, ss, prices) {
+				sb.WriteString(fmt.Sprintf("  • %s\n", line))
+			}
+		}
 	}
 
 	// Trade details (always shown)
@@ -499,7 +508,7 @@ func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, to
 	sb.WriteString("```\n")
 }
 
-// collectPositions returns human-readable position lines for a strategy (used by trade alerts)
+// collectPositions returns human-readable position lines for a strategy.
 func collectPositions(stratID string, ss *StrategyState, prices map[string]float64) []string {
 	var lines []string
 	for sym, pos := range ss.Positions {
@@ -515,7 +524,7 @@ func collectPositions(stratID string, ss *StrategyState, prices map[string]float
 		if pnl < 0 {
 			sign = ""
 		}
-		lines = append(lines, fmt.Sprintf("%s %s %s (%s$%.0f)", stratID, strings.ToUpper(pos.Side), sym, sign, pnl))
+		lines = append(lines, fmt.Sprintf("%s %s %s x%g @ $%.2f (%s$%.0f)", stratID, pos.Side, sym, pos.Quantity, pos.AvgCost, sign, pnl))
 	}
 	for key, opt := range ss.OptionPositions {
 		lines = append(lines, fmt.Sprintf("%s OPT %s ($%.0f)", stratID, key, opt.CurrentValueUSD))
