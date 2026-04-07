@@ -4,6 +4,35 @@ import (
 	"testing"
 )
 
+func TestShouldSkipZeroCapital(t *testing.T) {
+	cases := []struct {
+		name       string
+		capitalPct float64
+		capital    float64
+		want       bool
+	}{
+		{"capital_pct set and capital is zero", 0.5, 0, true},
+		{"capital_pct set and capital is negative", 0.25, -100, true},
+		{"capital_pct set and capital resolved", 0.5, 500, false},
+		{"no capital_pct (fixed capital)", 0, 1000, false},
+		{"no capital_pct and no capital", 0, 0, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := StrategyConfig{
+				ID:         "test-strategy",
+				CapitalPct: tc.capitalPct,
+				Capital:    tc.capital,
+			}
+			if got := shouldSkipZeroCapital(sc); got != tc.want {
+				t.Errorf("shouldSkipZeroCapital(pct=%g, cap=%g) = %v, want %v",
+					tc.capitalPct, tc.capital, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsLiveArgs(t *testing.T) {
 	cases := []struct {
 		name string

@@ -255,7 +255,7 @@ func main() {
 		for _, sc := range cfg.Strategies {
 			// #100: Skip strategies where capital_pct is set but capital resolved to $0
 			// (balance fetch failed and no fallback capital configured).
-			if sc.CapitalPct > 0 && sc.Capital <= 0 {
+			if shouldSkipZeroCapital(sc) {
 				fmt.Printf("[ERROR] %s: capital_pct set but capital resolved to $0 — skipping\n", sc.ID)
 				continue
 			}
@@ -989,6 +989,13 @@ func executeOptionsResult(sc StrategyConfig, s *StrategyState, result *OptionsRe
 	}
 
 	return trades, detail, harvestDetails
+}
+
+// shouldSkipZeroCapital reports whether a strategy should be skipped because
+// capital_pct is set but capital resolved to $0 (balance fetch failed and
+// no fallback capital configured).
+func shouldSkipZeroCapital(sc StrategyConfig) bool {
+	return sc.CapitalPct > 0 && sc.Capital <= 0
 }
 
 // hyperliquidIsLive reports whether --mode=live appears in strategy args.
