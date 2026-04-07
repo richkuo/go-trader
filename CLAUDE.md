@@ -48,6 +48,7 @@
 - Adding a new platform: (1) `platforms/<name>/adapter.py` + `__init__.py`, (2) `shared_scripts/check_<name>.py`, (3) `executor.go` (result types + runner), (4) `config.go` (prefix inference + validation), (5) `fees.go` (fee dispatch), (6) `main.go` (dispatch case + helpers), (7) `init.go` (wizard + generateConfig), (8) `pyproject.toml` (deps)
 - Adding options to an existing platform: extend adapter with Protocol methods (`get_vol_metrics`, `get_real_expiry`, `get_real_strike`, `get_premium_and_greeks`), add platform to `check_options.py` usage + `CalculateOptionFee` dispatch, add to init wizard `OptionPlatforms`; no main.go/executor.go changes needed (options dispatch is platform-agnostic)
 - Platform adapters loaded via `importlib` in `check_options.py`; class discovered by `endswith("ExchangeAdapter")` — only one adapter class per file; `_fetch_ohlcv_closes()` supports adapter-aware fallback via `get_ohlcv_closes()` method for non-BinanceUS platforms
+- Check scripts (`shared_scripts/check_*.py`) must only call public adapter methods — never access private attributes like `_exchange` directly; if a needed method doesn't exist on the adapter, add it there first
 - Scheduler communicates with Python scripts via subprocess stdout JSON; scripts must always output valid JSON even on error
 - Python scripts exit 1 on error (Go parses JSON from stdout regardless of exit code)
 - Option positions stored in `StrategyState.OptionPositions map[string]*OptionPosition`
