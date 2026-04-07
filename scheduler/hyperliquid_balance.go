@@ -67,54 +67,12 @@ func fetchHyperliquidBalance(accountAddress string) (float64, error) {
 	return val, nil
 }
 
-// syncHyperliquidLiveCapital checks if a strategy is a live Hyperliquid strategy
-// and if so, fetches the real account balance and updates the strategy config's Capital
-// to match. Logs a warning and falls back to the configured capital on any error.
-//
-// This ensures the bot trades 95% of the actual wallet balance rather than a
-// stale config value.
+// syncHyperliquidLiveCapital is a no-op kept for backward compatibility.
+// Capital is now managed per-strategy via config (Capital field) or capital_pct.
+// With multiple strategies on one account, overriding each strategy's capital
+// with the full wallet balance would double-count funds.
 func syncHyperliquidLiveCapital(sc *StrategyConfig) {
-	if sc.Platform != "hyperliquid" {
-		return
-	}
-
-	// Only sync in live mode (--mode=live arg present)
-	isLive := false
-	for _, arg := range sc.Args {
-		if arg == "--mode=live" {
-			isLive = true
-			break
-		}
-	}
-	if !isLive {
-		return
-	}
-
-	// HYPERLIQUID_ACCOUNT_ADDRESS must be set explicitly; address derivation
-	// from HYPERLIQUID_SECRET_KEY requires go-ethereum which is not in scope.
-	accountAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
-	if accountAddr == "" {
-		fmt.Printf("[WARN] hl-live-balance: no account address for %s, using config capital=$%.2f\n",
-			sc.ID, sc.Capital)
-		return
-	}
-
-	balance, err := fetchHyperliquidBalance(accountAddr)
-	if err != nil {
-		fmt.Printf("[WARN] hl-live-balance: failed to fetch balance for %s (%s): %v — using config capital=$%.2f\n",
-			sc.ID, accountAddr, err, sc.Capital)
-		return
-	}
-
-	if balance <= 0 {
-		fmt.Printf("[WARN] hl-live-balance: live balance is $%.2f for %s — wallet may be unfunded, using config capital=$%.2f\n",
-			balance, sc.ID, sc.Capital)
-		return
-	}
-
-	fmt.Printf("[INFO] hl-live-balance: synced %s capital from config $%.2f → live balance $%.2f\n",
-		sc.ID, sc.Capital, balance)
-	sc.Capital = balance
+	// Intentionally empty — capital is set from config or resolveCapitalPct.
 }
 
 // fetchHyperliquidState fetches the account value and open positions from the
@@ -186,10 +144,11 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 	return balance, positions, nil
 }
 
-// reconcileHyperliquidPositions applies on-chain position data to a StrategyState.
-// It updates, adds, or removes the position for the given symbol and syncs cash.
+// reconcileHyperliquidPositions applies on-chain position data to a single StrategyState.
+// It updates or removes the position for the given symbol based on ownership.
+// Does NOT sync cash (each strategy manages its own virtual cash).
 // Returns true if any state was changed. Must be called under Lock.
-func reconcileHyperliquidPositions(stratState *StrategyState, sym string, balance float64, positions []HLPosition, logger *StrategyLogger) bool {
+func reconcileHyperliquidPositions(stratState *StrategyState, sym string, positions []HLPosition, logger *StrategyLogger) bool {
 	changed := false
 
 	// Find the on-chain position for this strategy's symbol.
@@ -203,25 +162,14 @@ func reconcileHyperliquidPositions(stratState *StrategyState, sym string, balanc
 
 	statePos := stratState.Positions[sym]
 
-	if onChainPos != nil {
+	if onChainPos != nil && statePos != nil {
+		// Both exist — reconcile quantity/side if they differ.
 		qty := math.Abs(onChainPos.Size)
 		side := "long"
 		if onChainPos.Size < 0 {
 			side = "short"
 		}
-
-		if statePos == nil {
-			// Position exists on-chain but not in state — add it.
-			stratState.Positions[sym] = &Position{
-				Symbol:   sym,
-				Quantity: qty,
-				AvgCost:  onChainPos.EntryPrice,
-				Side:     side,
-			}
-			logger.Info("hl-sync: discovered on-chain %s position %.6f %s @ $%.2f", side, qty, sym, onChainPos.EntryPrice)
-			changed = true
-		} else if statePos.Quantity != qty || statePos.Side != side {
-			// Position exists in both but differs — update state to match on-chain.
+		if statePos.Quantity != qty || statePos.Side != side {
 			logger.Info("hl-sync: reconciled %s: state=%.6f %s → on-chain=%.6f %s @ $%.2f",
 				sym, statePos.Quantity, statePos.Side, qty, side, onChainPos.EntryPrice)
 			statePos.Quantity = qty
@@ -229,49 +177,94 @@ func reconcileHyperliquidPositions(stratState *StrategyState, sym string, balanc
 			statePos.AvgCost = onChainPos.EntryPrice
 			changed = true
 		}
-	} else if statePos != nil {
-		// Position in state but not on-chain — it was closed externally.
+	} else if onChainPos == nil && statePos != nil {
+		// Position in state but not on-chain — closed externally.
 		logger.Info("hl-sync: %s position (%.6f %s) no longer on-chain, removing",
 			sym, statePos.Quantity, statePos.Side)
 		delete(stratState.Positions, sym)
 		changed = true
 	}
-
-	// Sync cash with on-chain account value.
-	if balance > 0 && balance != stratState.Cash {
-		logger.Info("hl-sync: cash $%.2f → $%.2f (on-chain)", stratState.Cash, balance)
-		stratState.Cash = balance
-		changed = true
-	}
+	// If on-chain exists but NOT in this strategy's state, we skip it —
+	// it either belongs to another strategy or is an unowned manual trade.
 
 	return changed
 }
 
-// syncHyperliquidPositions fetches on-chain positions from Hyperliquid and
-// reconciles them with the internal StrategyState. This ensures hlPosQty and
-// hlCash reflect reality before each execution cycle.
+// syncHyperliquidAccountPositions fetches on-chain positions once and reconciles
+// them across all live HL strategies using ownership tracking. Positions are only
+// assigned to the strategy that opened them (via OwnerStrategyID).
+// Unowned on-chain positions are logged as warnings but not assigned.
 // Must be called WITHOUT holding any lock; acquires Lock internally.
-func syncHyperliquidPositions(sc StrategyConfig, stratState *StrategyState, mu *sync.RWMutex, logger *StrategyLogger) bool {
+func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager) bool {
 	accountAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 	if accountAddr == "" {
 		return false
 	}
 
-	sym := hyperliquidSymbol(sc.Args)
-	if sym == "" {
-		return false
-	}
-
-	// Fetch on-chain state (no lock held — I/O).
-	balance, positions, err := fetchHyperliquidState(accountAddr)
+	// Fetch on-chain state once (no lock — I/O).
+	_, positions, err := fetchHyperliquidState(accountAddr)
 	if err != nil {
-		logger.Warn("hl-sync: failed to fetch on-chain state: %v", err)
+		fmt.Printf("[WARN] hl-sync: failed to fetch on-chain state: %v\n", err)
 		return false
 	}
 
-	// Reconcile under Lock.
 	mu.Lock()
-	changed := reconcileHyperliquidPositions(stratState, sym, balance, positions, logger)
-	mu.Unlock()
+	defer mu.Unlock()
+
+	changed := false
+
+	// Build ownership index: coin → strategyID from existing state positions.
+	owned := make(map[string]string) // coin → strategy ID
+	for _, sc := range hlStrategies {
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		sym := hyperliquidSymbol(sc.Args)
+		if sym == "" {
+			continue
+		}
+		if pos, ok := ss.Positions[sym]; ok && pos.OwnerStrategyID != "" {
+			if existing, dup := owned[sym]; dup {
+				fmt.Printf("[WARN] hl-sync: coin %s claimed by both %s and %s — skipping duplicate\n", sym, existing, sc.ID)
+				continue
+			}
+			owned[sym] = sc.ID
+		}
+	}
+
+	// Reconcile each strategy's position against on-chain data.
+	for _, sc := range hlStrategies {
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		sym := hyperliquidSymbol(sc.Args)
+		if sym == "" {
+			continue
+		}
+		logger, err := logMgr.GetStrategyLogger(sc.ID)
+		if err != nil {
+			fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", sc.ID, err)
+			continue
+		}
+		if reconcileHyperliquidPositions(ss, sym, positions, logger) {
+			changed = true
+		}
+	}
+
+	// Warn about unowned on-chain positions.
+	for _, p := range positions {
+		if _, ok := owned[p.Coin]; !ok {
+			qty := math.Abs(p.Size)
+			side := "long"
+			if p.Size < 0 {
+				side = "short"
+			}
+			fmt.Printf("[WARN] hl-sync: unowned on-chain position: %s %.6f %s @ $%.2f (no strategy claims it)\n",
+				side, qty, p.Coin, p.EntryPrice)
+		}
+	}
+
 	return changed
 }

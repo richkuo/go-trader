@@ -431,6 +431,17 @@ func main() {
 			}
 
 			if !killSwitchFired {
+				// Pre-phase: sync on-chain positions for all live HL strategies at once.
+				var hlLiveStrategies []StrategyConfig
+				for _, sc := range dueStrategies {
+					if sc.Platform == "hyperliquid" && sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
+						hlLiveStrategies = append(hlLiveStrategies, sc)
+					}
+				}
+				if len(hlLiveStrategies) > 0 {
+					syncHyperliquidAccountPositions(hlLiveStrategies, state, &mu, logMgr)
+				}
+
 				for _, sc := range dueStrategies {
 					stratState := state.Strategies[sc.ID]
 					if stratState == nil {
@@ -441,11 +452,6 @@ func main() {
 					if err != nil {
 						fmt.Printf("[ERROR] Logger for %s: %v\n", sc.ID, err)
 						continue
-					}
-
-					// Pre-phase: sync on-chain positions for live Hyperliquid strategies.
-					if sc.Platform == "hyperliquid" && sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
-						syncHyperliquidPositions(sc, stratState, &mu, logger)
 					}
 
 					// Phase 1: RLock — read inputs needed for subprocess

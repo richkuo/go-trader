@@ -105,6 +105,11 @@ func ValidateState(state *AppState) {
 			if pos.Quantity <= 0 {
 				fmt.Printf("[WARN] state: strategy %s position %s has invalid quantity=%g, removing\n", id, sym, pos.Quantity)
 				delete(s.Positions, sym)
+				continue
+			}
+			// Migrate legacy positions: stamp ownership if missing.
+			if pos.OwnerStrategyID == "" {
+				pos.OwnerStrategyID = id
 			}
 		}
 		for key, op := range s.OptionPositions {

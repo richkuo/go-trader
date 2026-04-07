@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,50 +12,7 @@ import (
 
 // Tests in this file mutate package-level hlMainnetURL and must NOT use t.Parallel().
 
-func TestSyncHyperliquidLiveCapitalSkipsNonHL(t *testing.T) {
-	sc := &StrategyConfig{
-		ID:       "spot-btc",
-		Platform: "binanceus",
-		Capital:  1000,
-		Args:     []string{"sma", "BTC", "1h", "--mode=live"},
-	}
-	original := sc.Capital
-	syncHyperliquidLiveCapital(sc)
-	if sc.Capital != original {
-		t.Errorf("capital should not change for non-hyperliquid, got %g", sc.Capital)
-	}
-}
-
-func TestSyncHyperliquidLiveCapitalSkipsPaper(t *testing.T) {
-	sc := &StrategyConfig{
-		ID:       "hl-btc",
-		Platform: "hyperliquid",
-		Capital:  1000,
-		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
-	}
-	original := sc.Capital
-	syncHyperliquidLiveCapital(sc)
-	if sc.Capital != original {
-		t.Errorf("capital should not change for paper mode, got %g", sc.Capital)
-	}
-}
-
-func TestSyncHyperliquidLiveCapitalSkipsNoMode(t *testing.T) {
-	sc := &StrategyConfig{
-		ID:       "hl-btc",
-		Platform: "hyperliquid",
-		Capital:  1000,
-		Args:     []string{"sma", "BTC", "1h"},
-	}
-	original := sc.Capital
-	syncHyperliquidLiveCapital(sc)
-	if sc.Capital != original {
-		t.Errorf("capital should not change without --mode=live, got %g", sc.Capital)
-	}
-}
-
-func TestSyncHyperliquidLiveCapitalNoAddress(t *testing.T) {
-	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
+func TestSyncHyperliquidLiveCapitalIsNoOp(t *testing.T) {
 	sc := &StrategyConfig{
 		ID:       "hl-btc",
 		Platform: "hyperliquid",
@@ -63,9 +21,8 @@ func TestSyncHyperliquidLiveCapitalNoAddress(t *testing.T) {
 	}
 	original := sc.Capital
 	syncHyperliquidLiveCapital(sc)
-	// Should fall back to config capital when no address
 	if sc.Capital != original {
-		t.Errorf("capital should not change without account address, got %g", sc.Capital)
+		t.Errorf("capital should not change (no-op), got %g", sc.Capital)
 	}
 }
 
@@ -168,77 +125,18 @@ func newTestLogger(t *testing.T) *StrategyLogger {
 	return &StrategyLogger{stratID: "test", writer: os.Stdout}
 }
 
-func TestReconcileDiscoverNewPosition(t *testing.T) {
-	s := &StrategyState{
-		ID:        "hl-btc",
-		Cash:      5000,
-		Positions: make(map[string]*Position),
-	}
-	logger := newTestLogger(t)
-	positions := []HLPosition{{Coin: "BTC", Size: 0.5, EntryPrice: 40000}}
-
-	changed := reconcileHyperliquidPositions(s, "BTC", 8000, positions, logger)
-
-	if !changed {
-		t.Error("expected changed=true")
-	}
-	pos, ok := s.Positions["BTC"]
-	if !ok {
-		t.Fatal("BTC position should exist in state")
-	}
-	if pos.Quantity != 0.5 {
-		t.Errorf("quantity = %g, want 0.5", pos.Quantity)
-	}
-	if pos.Side != "long" {
-		t.Errorf("side = %s, want long", pos.Side)
-	}
-	if pos.AvgCost != 40000 {
-		t.Errorf("avg_cost = %g, want 40000", pos.AvgCost)
-	}
-	if s.Cash != 8000 {
-		t.Errorf("cash = %g, want 8000", s.Cash)
-	}
-}
-
-func TestReconcileDiscoverShortPosition(t *testing.T) {
-	s := &StrategyState{
-		ID:        "hl-eth",
-		Cash:      5000,
-		Positions: make(map[string]*Position),
-	}
-	logger := newTestLogger(t)
-	positions := []HLPosition{{Coin: "ETH", Size: -2.0, EntryPrice: 3000}}
-
-	changed := reconcileHyperliquidPositions(s, "ETH", 5000, positions, logger)
-
-	if !changed {
-		t.Error("expected changed=true")
-	}
-	pos := s.Positions["ETH"]
-	if pos == nil {
-		t.Fatal("ETH position should exist")
-	}
-	if pos.Quantity != 2.0 {
-		t.Errorf("quantity = %g, want 2.0", pos.Quantity)
-	}
-	if pos.Side != "short" {
-		t.Errorf("side = %s, want short", pos.Side)
-	}
-}
-
-func TestReconcileUpdateDriftedPosition(t *testing.T) {
+func TestReconcileUpdatesExistingOwnedPosition(t *testing.T) {
 	s := &StrategyState{
 		ID:   "hl-btc",
 		Cash: 5000,
 		Positions: map[string]*Position{
-			"BTC": {Symbol: "BTC", Quantity: 0.229, AvgCost: 41000, Side: "long"},
+			"BTC": {Symbol: "BTC", Quantity: 0.229, AvgCost: 41000, Side: "long", OwnerStrategyID: "hl-btc"},
 		},
 	}
 	logger := newTestLogger(t)
-	// On-chain shows larger position than state (e.g., manual trade added size)
 	positions := []HLPosition{{Coin: "BTC", Size: 0.334, EntryPrice: 42000}}
 
-	changed := reconcileHyperliquidPositions(s, "BTC", 5000, positions, logger)
+	changed := reconcileHyperliquidPositions(s, "BTC", positions, logger)
 
 	if !changed {
 		t.Error("expected changed=true")
@@ -249,6 +147,10 @@ func TestReconcileUpdateDriftedPosition(t *testing.T) {
 	if s.Positions["BTC"].AvgCost != 42000 {
 		t.Errorf("avg_cost = %g, want 42000", s.Positions["BTC"].AvgCost)
 	}
+	// Cash should NOT be synced from on-chain.
+	if s.Cash != 5000 {
+		t.Errorf("cash = %g, want 5000 (should not change)", s.Cash)
+	}
 }
 
 func TestReconcileRemoveClosedPosition(t *testing.T) {
@@ -256,14 +158,13 @@ func TestReconcileRemoveClosedPosition(t *testing.T) {
 		ID:   "hl-btc",
 		Cash: 5000,
 		Positions: map[string]*Position{
-			"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 40000, Side: "long"},
+			"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 40000, Side: "long", OwnerStrategyID: "hl-btc"},
 		},
 	}
 	logger := newTestLogger(t)
-	// No on-chain position for BTC (closed externally)
-	positions := []HLPosition{}
+	positions := []HLPosition{} // No on-chain position
 
-	changed := reconcileHyperliquidPositions(s, "BTC", 10000, positions, logger)
+	changed := reconcileHyperliquidPositions(s, "BTC", positions, logger)
 
 	if !changed {
 		t.Error("expected changed=true")
@@ -271,8 +172,9 @@ func TestReconcileRemoveClosedPosition(t *testing.T) {
 	if _, ok := s.Positions["BTC"]; ok {
 		t.Error("BTC position should have been removed")
 	}
-	if s.Cash != 10000 {
-		t.Errorf("cash = %g, want 10000", s.Cash)
+	// Cash should not change.
+	if s.Cash != 5000 {
+		t.Errorf("cash = %g, want 5000", s.Cash)
 	}
 }
 
@@ -281,17 +183,37 @@ func TestReconcileNoChange(t *testing.T) {
 		ID:   "hl-btc",
 		Cash: 5000,
 		Positions: map[string]*Position{
-			"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 40000, Side: "long"},
+			"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 40000, Side: "long", OwnerStrategyID: "hl-btc"},
 		},
 	}
 	logger := newTestLogger(t)
-	// On-chain matches state exactly
 	positions := []HLPosition{{Coin: "BTC", Size: 0.5, EntryPrice: 40000}}
 
-	changed := reconcileHyperliquidPositions(s, "BTC", 5000, positions, logger)
+	changed := reconcileHyperliquidPositions(s, "BTC", positions, logger)
 
 	if changed {
 		t.Error("expected changed=false when state matches on-chain")
+	}
+}
+
+func TestReconcileSkipsUnownedOnChainPosition(t *testing.T) {
+	// Strategy has no position in state; on-chain position exists.
+	// The new behavior should NOT add it (unlike the old behavior).
+	s := &StrategyState{
+		ID:        "hl-btc",
+		Cash:      5000,
+		Positions: make(map[string]*Position),
+	}
+	logger := newTestLogger(t)
+	positions := []HLPosition{{Coin: "BTC", Size: 0.5, EntryPrice: 40000}}
+
+	changed := reconcileHyperliquidPositions(s, "BTC", positions, logger)
+
+	if changed {
+		t.Error("expected changed=false — should not adopt unowned position")
+	}
+	if _, ok := s.Positions["BTC"]; ok {
+		t.Error("BTC position should NOT be added to a strategy that doesn't own it")
 	}
 }
 
@@ -302,57 +224,200 @@ func TestReconcileNoPositionBothSides(t *testing.T) {
 		Positions: make(map[string]*Position),
 	}
 	logger := newTestLogger(t)
-	// No on-chain position, no state position
 	positions := []HLPosition{}
 
-	changed := reconcileHyperliquidPositions(s, "BTC", 5000, positions, logger)
+	changed := reconcileHyperliquidPositions(s, "BTC", positions, logger)
 
 	if changed {
 		t.Error("expected changed=false when no position on either side")
 	}
 }
 
-func TestSyncHyperliquidPositionsSkipsNoAddress(t *testing.T) {
-	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
-	sc := StrategyConfig{
-		ID:       "hl-btc",
-		Platform: "hyperliquid",
-		Args:     []string{"sma", "BTC", "1h", "--mode=live"},
+// --- syncHyperliquidAccountPositions tests ---
+
+func setupHLTestServer(balance float64, positions []HLPosition) *httptest.Server {
+	resp := map[string]interface{}{
+		"marginSummary": map[string]string{
+			"accountValue": fmt.Sprintf("%.2f", balance),
+		},
+		"assetPositions": func() []interface{} {
+			var out []interface{}
+			for _, p := range positions {
+				out = append(out, map[string]interface{}{
+					"position": map[string]string{
+						"coin":    p.Coin,
+						"szi":     fmt.Sprintf("%.6f", p.Size),
+						"entryPx": fmt.Sprintf("%.2f", p.EntryPrice),
+					},
+				})
+			}
+			return out
+		}(),
 	}
-	s := &StrategyState{
-		ID:        "hl-btc",
-		Cash:      5000,
-		Positions: make(map[string]*Position),
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(resp)
+	}))
+}
+
+func TestAccountSyncTwoStrategiesDifferentCoins(t *testing.T) {
+	ts := setupHLTestServer(50000, []HLPosition{
+		{Coin: "BTC", Size: 0.5, EntryPrice: 40000},
+		{Coin: "ETH", Size: 2.0, EntryPrice: 3000},
+	})
+	defer ts.Close()
+
+	origURL := hlMainnetURL
+	hlMainnetURL = ts.URL
+	defer func() { hlMainnetURL = origURL }()
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-momentum-btc": {
+				ID: "hl-momentum-btc", Cash: 10000,
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 0.3, AvgCost: 39000, Side: "long", OwnerStrategyID: "hl-momentum-btc"},
+				},
+			},
+			"hl-amd-eth": {
+				ID: "hl-amd-eth", Cash: 8000,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1.5, AvgCost: 2800, Side: "long", OwnerStrategyID: "hl-amd-eth"},
+				},
+			},
+		},
 	}
+
+	strategies := []StrategyConfig{
+		{ID: "hl-momentum-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"momentum", "BTC", "1h", "--mode=live"}},
+		{ID: "hl-amd-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"amd", "ETH", "1h", "--mode=live"}},
+	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	logger := newTestLogger(t)
 
-	syncHyperliquidPositions(sc, s, &mu, logger)
+	changed := syncHyperliquidAccountPositions(strategies, state, &mu, logMgr)
+	if !changed {
+		t.Error("expected changed=true (quantities differ)")
+	}
 
-	// Should be a no-op
-	if len(s.Positions) != 0 {
-		t.Error("should not add positions without account address")
+	// BTC should be reconciled to on-chain values, owned by hl-momentum-btc.
+	btcPos := state.Strategies["hl-momentum-btc"].Positions["BTC"]
+	if btcPos == nil {
+		t.Fatal("hl-momentum-btc should have BTC position")
+	}
+	if btcPos.Quantity != 0.5 {
+		t.Errorf("BTC quantity = %g, want 0.5", btcPos.Quantity)
+	}
+	if btcPos.OwnerStrategyID != "hl-momentum-btc" {
+		t.Errorf("BTC owner = %s, want hl-momentum-btc", btcPos.OwnerStrategyID)
+	}
+
+	// ETH should be reconciled, owned by hl-amd-eth.
+	ethPos := state.Strategies["hl-amd-eth"].Positions["ETH"]
+	if ethPos == nil {
+		t.Fatal("hl-amd-eth should have ETH position")
+	}
+	if ethPos.Quantity != 2.0 {
+		t.Errorf("ETH quantity = %g, want 2.0", ethPos.Quantity)
+	}
+
+	// Neither strategy should have the OTHER coin's position.
+	if _, ok := state.Strategies["hl-momentum-btc"].Positions["ETH"]; ok {
+		t.Error("hl-momentum-btc should NOT have ETH position")
+	}
+	if _, ok := state.Strategies["hl-amd-eth"].Positions["BTC"]; ok {
+		t.Error("hl-amd-eth should NOT have BTC position")
+	}
+
+	// Cash should NOT be synced from on-chain.
+	if state.Strategies["hl-momentum-btc"].Cash != 10000 {
+		t.Errorf("hl-momentum-btc cash = %g, want 10000", state.Strategies["hl-momentum-btc"].Cash)
+	}
+	if state.Strategies["hl-amd-eth"].Cash != 8000 {
+		t.Errorf("hl-amd-eth cash = %g, want 8000", state.Strategies["hl-amd-eth"].Cash)
 	}
 }
 
-func TestSyncHyperliquidPositionsSkipsNoSymbol(t *testing.T) {
-	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xabc")
-	sc := StrategyConfig{
-		ID:       "hl-btc",
-		Platform: "hyperliquid",
-		Args:     []string{"sma"}, // no symbol arg
+func TestAccountSyncUnownedPositionNotAssigned(t *testing.T) {
+	// On-chain has SOL position, but no strategy trades SOL.
+	ts := setupHLTestServer(50000, []HLPosition{
+		{Coin: "BTC", Size: 0.5, EntryPrice: 40000},
+		{Coin: "SOL", Size: 10.0, EntryPrice: 150},
+	})
+	defer ts.Close()
+
+	origURL := hlMainnetURL
+	hlMainnetURL = ts.URL
+	defer func() { hlMainnetURL = origURL }()
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-btc": {
+				ID: "hl-btc", Cash: 10000,
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 40000, Side: "long", OwnerStrategyID: "hl-btc"},
+				},
+			},
+		},
 	}
-	s := &StrategyState{
-		ID:        "hl-btc",
-		Cash:      5000,
-		Positions: make(map[string]*Position),
+
+	strategies := []StrategyConfig{
+		{ID: "hl-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}},
 	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	logger := newTestLogger(t)
 
-	syncHyperliquidPositions(sc, s, &mu, logger)
+	syncHyperliquidAccountPositions(strategies, state, &mu, logMgr)
 
-	if len(s.Positions) != 0 {
-		t.Error("should not add positions without symbol")
+	// SOL should NOT appear in any strategy.
+	for id, ss := range state.Strategies {
+		if _, ok := ss.Positions["SOL"]; ok {
+			t.Errorf("strategy %s should NOT have SOL position", id)
+		}
+	}
+}
+
+func TestAccountSyncSkipsNoAddress(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-btc": {ID: "hl-btc", Cash: 5000, Positions: make(map[string]*Position)},
+		},
+	}
+
+	strategies := []StrategyConfig{
+		{ID: "hl-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+
+	changed := syncHyperliquidAccountPositions(strategies, state, &mu, logMgr)
+	if changed {
+		t.Error("should return false without account address")
+	}
+}
+
+func TestValidateStateMigratesOwnership(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-btc": {
+				ID: "hl-btc", Cash: 5000,
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 40000, Side: "long"},
+				},
+			},
+		},
+	}
+
+	ValidateState(state)
+
+	pos := state.Strategies["hl-btc"].Positions["BTC"]
+	if pos.OwnerStrategyID != "hl-btc" {
+		t.Errorf("OwnerStrategyID = %q, want %q", pos.OwnerStrategyID, "hl-btc")
 	}
 }

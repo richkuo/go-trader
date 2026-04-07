@@ -352,3 +352,92 @@ func TestExecuteFuturesSignalHold(t *testing.T) {
 		t.Error("should not trade on hold signal")
 	}
 }
+
+func TestExecuteSpotSignalSetsOwnerStrategyID(t *testing.T) {
+	s := &StrategyState{
+		ID:              "hl-momentum-btc",
+		Cash:            1000,
+		Platform:        "hyperliquid",
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	_, err := ExecuteSpotSignal(s, 1, "BTC", 50000, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pos := s.Positions["BTC"]
+	if pos == nil {
+		t.Fatal("should have BTC position")
+	}
+	if pos.OwnerStrategyID != "hl-momentum-btc" {
+		t.Errorf("OwnerStrategyID = %q, want %q", pos.OwnerStrategyID, "hl-momentum-btc")
+	}
+}
+
+func TestExecuteFuturesSignalSetsOwnerStrategyID(t *testing.T) {
+	s := &StrategyState{
+		ID:              "ts-momentum-es",
+		Cash:            10000,
+		Platform:        "topstep",
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 500}
+	_, err := ExecuteFuturesSignal(s, 1, "ES", 5000, spec, 2.5, 5, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pos := s.Positions["ES"]
+	if pos == nil {
+		t.Fatal("should have ES position")
+	}
+	if pos.OwnerStrategyID != "ts-momentum-es" {
+		t.Errorf("OwnerStrategyID = %q, want %q", pos.OwnerStrategyID, "ts-momentum-es")
+	}
+}
+
+func TestExecuteFuturesSignalShortSetsOwnerStrategyID(t *testing.T) {
+	s := &StrategyState{
+		ID:              "ts-trend-es",
+		Cash:            10000,
+		Platform:        "topstep",
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 500}
+	_, err := ExecuteFuturesSignal(s, -1, "ES", 5000, spec, 2.5, 5, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pos := s.Positions["ES"]
+	if pos == nil {
+		t.Fatal("should have ES short position")
+	}
+	if pos.Side != "short" {
+		t.Errorf("side = %q, want %q", pos.Side, "short")
+	}
+	if pos.OwnerStrategyID != "ts-trend-es" {
+		t.Errorf("OwnerStrategyID = %q, want %q", pos.OwnerStrategyID, "ts-trend-es")
+	}
+}
