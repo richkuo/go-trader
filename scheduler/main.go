@@ -131,11 +131,13 @@ func main() {
 			}
 			fmt.Println(")")
 			backends = append(backends, notifierBackend{
-				notifier:      discord,
-				channels:      cfg.Discord.Channels,
-				ownerID:       cfg.Discord.OwnerID,
-				dmPaperTrades: cfg.Discord.DMPaperTrades,
-				dmLiveTrades:  cfg.Discord.DMLiveTrades,
+				notifier:           discord,
+				channels:           cfg.Discord.Channels,
+				ownerID:            cfg.Discord.OwnerID,
+				dmPaperTrades:      cfg.Discord.DMPaperTrades,
+				dmLiveTrades:       cfg.Discord.DMLiveTrades,
+				channelPaperTrades: cfg.Discord.ChannelPaperTrades,
+				channelLiveTrades:  cfg.Discord.ChannelLiveTrades,
 			})
 			defer discord.Close()
 		}
@@ -152,12 +154,14 @@ func main() {
 			}
 			fmt.Println(")")
 			backends = append(backends, notifierBackend{
-				notifier:      tg,
-				channels:      cfg.Telegram.Channels,
-				ownerID:       cfg.Telegram.OwnerChatID,
-				dmPaperTrades: cfg.Telegram.DMPaperTrades,
-				dmLiveTrades:  cfg.Telegram.DMLiveTrades,
-				plainText:     true,
+				notifier:           tg,
+				channels:           cfg.Telegram.Channels,
+				ownerID:            cfg.Telegram.OwnerChatID,
+				dmPaperTrades:      cfg.Telegram.DMPaperTrades,
+				dmLiveTrades:       cfg.Telegram.DMLiveTrades,
+				channelPaperTrades: cfg.Telegram.ChannelPaperTrades,
+				channelLiveTrades:  cfg.Telegram.ChannelLiveTrades,
+				plainText:          true,
 			})
 			defer tg.Close()
 		}
@@ -1009,7 +1013,7 @@ func isLiveArgs(args []string) bool {
 	return false
 }
 
-// sendTradeAlerts sends DM trade alerts to the owner via all configured backends.
+// sendTradeAlerts sends trade alerts via DM and/or channel for all configured backends.
 // trades is the number of new trades appended during this cycle.
 func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, mu *sync.RWMutex, notifier *MultiNotifier) {
 	isLive := isLiveArgs(sc.Args)
@@ -1033,13 +1037,17 @@ func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, m
 	mu.RUnlock()
 
 	for _, b := range notifier.backends {
-		if b.ownerID == "" {
+		dmEnabled := b.ownerID != "" && ((isLive && b.dmLiveTrades) || (!isLive && b.dmPaperTrades))
+		channelEnabled := (isLive && b.channelLiveTrades) || (!isLive && b.channelPaperTrades)
+		if !dmEnabled && !channelEnabled {
 			continue
 		}
-		dmEnabled := (isLive && b.dmLiveTrades) || (!isLive && b.dmPaperTrades)
-		if !dmEnabled {
-			continue
+
+		ch := ""
+		if channelEnabled {
+			ch = resolveChannel(b.channels, sc.Platform, sc.Type)
 		}
+
 		for _, t := range newTrades {
 			var msg string
 			if b.plainText {
@@ -1047,8 +1055,15 @@ func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, m
 			} else {
 				msg = FormatTradeDM(sc, t, mode)
 			}
-			if err := b.notifier.SendDM(b.ownerID, msg); err != nil {
-				fmt.Printf("[notify] DM trade alert failed: %v\n", err)
+			if dmEnabled {
+				if err := b.notifier.SendDM(b.ownerID, msg); err != nil {
+					fmt.Printf("[notify] DM trade alert failed: %v\n", err)
+				}
+			}
+			if ch != "" {
+				if err := b.notifier.SendMessage(ch, msg); err != nil {
+					fmt.Printf("[notify] Channel trade alert failed: %v\n", err)
+				}
 			}
 		}
 	}
