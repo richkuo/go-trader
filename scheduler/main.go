@@ -1046,6 +1046,9 @@ func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, m
 		ch := ""
 		if channelEnabled {
 			ch = resolveChannel(b.channels, sc.Platform, sc.Type)
+			if ch == "" {
+				fmt.Printf("[notify] channel trade alerts enabled but no channel configured for platform=%q type=%q\n", sc.Platform, sc.Type)
+			}
 		}
 
 		for _, t := range newTrades {
