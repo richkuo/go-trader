@@ -1,7 +1,9 @@
 package main
 
 import (
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestShouldSkipZeroCapital(t *testing.T) {
@@ -192,5 +194,195 @@ func TestOKXInstType(t *testing.T) {
 				t.Errorf("okxInstType(%v) = %q, want %q", tc.args, got, tc.want)
 			}
 		})
+	}
+}
+
+// helper to build a trade for testing sendTradeAlerts
+func testTrade() Trade {
+	return Trade{
+		Timestamp:  time.Now(),
+		StrategyID: "test-spot-sma",
+		Symbol:     "BTC/USDT",
+		Side:       "buy",
+		Quantity:   0.01,
+		Price:      50000,
+		Value:      500,
+		TradeType:  "spot",
+		Details:    "Open long BTC/USDT",
+	}
+}
+
+func TestSendTradeAlerts_DMAndChannel(t *testing.T) {
+	mock := &mockNotifier{}
+	sc := StrategyConfig{
+		ID:       "test-spot-sma",
+		Type:     "spot",
+		Platform: "binanceus",
+		Args:     []string{"sma", "BTC/USDT", "1h", "--mode=paper"},
+	}
+	state := &StrategyState{
+		TradeHistory: []Trade{testTrade()},
+	}
+	var mu sync.RWMutex
+	notifier := &MultiNotifier{
+		backends: []notifierBackend{
+			{
+				notifier:           mock,
+				ownerID:            "owner123",
+				channels:           map[string]string{"spot": "ch-spot-123"},
+				dmPaperTrades:      true,
+				channelPaperTrades: true,
+			},
+		},
+	}
+
+	sendTradeAlerts(sc, state, 1, &mu, notifier)
+
+	if len(mock.dms) != 1 {
+		t.Errorf("expected 1 DM message, got %d", len(mock.dms))
+	}
+	if len(mock.messages) != 1 {
+		t.Errorf("expected 1 channel message, got %d", len(mock.messages))
+	}
+	if len(mock.messages) > 0 && mock.messages[0].channelID != "ch-spot-123" {
+		t.Errorf("expected channel message to ch-spot-123, got %s", mock.messages[0].channelID)
+	}
+}
+
+func TestSendTradeAlerts_DMOnly(t *testing.T) {
+	mock := &mockNotifier{}
+	sc := StrategyConfig{
+		ID:       "test-spot-sma",
+		Type:     "spot",
+		Platform: "binanceus",
+		Args:     []string{"sma", "BTC/USDT", "1h", "--mode=paper"},
+	}
+	state := &StrategyState{
+		TradeHistory: []Trade{testTrade()},
+	}
+	var mu sync.RWMutex
+	notifier := &MultiNotifier{
+		backends: []notifierBackend{
+			{
+				notifier:           mock,
+				ownerID:            "owner123",
+				channels:           map[string]string{"spot": "ch-spot-123"},
+				dmPaperTrades:      true,
+				channelPaperTrades: false,
+			},
+		},
+	}
+
+	sendTradeAlerts(sc, state, 1, &mu, notifier)
+
+	if len(mock.dms) != 1 {
+		t.Errorf("expected 1 DM message, got %d", len(mock.dms))
+	}
+	if len(mock.messages) != 0 {
+		t.Errorf("expected no channel messages, got %d", len(mock.messages))
+	}
+}
+
+func TestSendTradeAlerts_ChannelOnly(t *testing.T) {
+	mock := &mockNotifier{}
+	sc := StrategyConfig{
+		ID:       "test-spot-sma",
+		Type:     "spot",
+		Platform: "binanceus",
+		Args:     []string{"sma", "BTC/USDT", "1h", "--mode=paper"},
+	}
+	state := &StrategyState{
+		TradeHistory: []Trade{testTrade()},
+	}
+	var mu sync.RWMutex
+	notifier := &MultiNotifier{
+		backends: []notifierBackend{
+			{
+				notifier:           mock,
+				ownerID:            "owner123",
+				channels:           map[string]string{"spot": "ch-spot-123"},
+				dmPaperTrades:      false,
+				channelPaperTrades: true,
+			},
+		},
+	}
+
+	sendTradeAlerts(sc, state, 1, &mu, notifier)
+
+	if len(mock.dms) != 0 {
+		t.Errorf("expected no DM messages, got %d", len(mock.dms))
+	}
+	if len(mock.messages) != 1 {
+		t.Errorf("expected 1 channel message, got %d", len(mock.messages))
+	}
+}
+
+func TestSendTradeAlerts_NeitherEnabled(t *testing.T) {
+	mock := &mockNotifier{}
+	sc := StrategyConfig{
+		ID:       "test-spot-sma",
+		Type:     "spot",
+		Platform: "binanceus",
+		Args:     []string{"sma", "BTC/USDT", "1h", "--mode=paper"},
+	}
+	state := &StrategyState{
+		TradeHistory: []Trade{testTrade()},
+	}
+	var mu sync.RWMutex
+	notifier := &MultiNotifier{
+		backends: []notifierBackend{
+			{
+				notifier:           mock,
+				ownerID:            "owner123",
+				channels:           map[string]string{"spot": "ch-spot-123"},
+				dmPaperTrades:      false,
+				channelPaperTrades: false,
+			},
+		},
+	}
+
+	sendTradeAlerts(sc, state, 1, &mu, notifier)
+
+	if len(mock.dms) != 0 {
+		t.Errorf("expected no DM messages, got %d", len(mock.dms))
+	}
+	if len(mock.messages) != 0 {
+		t.Errorf("expected no channel messages, got %d", len(mock.messages))
+	}
+}
+
+func TestSendTradeAlerts_ChannelEnabledButNotConfigured(t *testing.T) {
+	mock := &mockNotifier{}
+	sc := StrategyConfig{
+		ID:       "hl-perps-sma",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
+	}
+	state := &StrategyState{
+		TradeHistory: []Trade{testTrade()},
+	}
+	var mu sync.RWMutex
+	// Channel map has "spot" but not "hyperliquid" or "perps"
+	notifier := &MultiNotifier{
+		backends: []notifierBackend{
+			{
+				notifier:           mock,
+				ownerID:            "owner123",
+				channels:           map[string]string{"spot": "ch-spot-123"},
+				dmPaperTrades:      false,
+				channelPaperTrades: true,
+			},
+		},
+	}
+
+	sendTradeAlerts(sc, state, 1, &mu, notifier)
+
+	// Channel enabled but no channel for platform=hyperliquid type=perps, so no messages sent
+	if len(mock.dms) != 0 {
+		t.Errorf("expected no DM messages, got %d", len(mock.dms))
+	}
+	if len(mock.messages) != 0 {
+		t.Errorf("expected no channel messages, got %d", len(mock.messages))
 	}
 }
