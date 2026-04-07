@@ -10,7 +10,7 @@ import (
 
 // CurrentConfigVersion is the version embedded in newly generated configs.
 // When the binary starts and cfg.ConfigVersion < CurrentConfigVersion, migration runs.
-const CurrentConfigVersion = 4
+const CurrentConfigVersion = 5
 
 // ConfigField describes a config field introduced in a specific version.
 type ConfigField struct {
@@ -62,6 +62,34 @@ var configFieldRegistry = []ConfigField{
 		Version:     4,
 		JSONPath:    "telegram.dm_paper_trades",
 		Description: "Send a Telegram message on every paper trade execution (true/false).",
+		Default:     "false",
+		FieldType:   "bool",
+	},
+	{
+		Version:     5,
+		JSONPath:    "discord.channel_live_trades",
+		Description: "Post individual trade alerts to the platform's Discord channel on every live trade execution (true/false).",
+		Default:     "false",
+		FieldType:   "bool",
+	},
+	{
+		Version:     5,
+		JSONPath:    "discord.channel_paper_trades",
+		Description: "Post individual trade alerts to the platform's Discord channel on every paper trade execution (true/false).",
+		Default:     "false",
+		FieldType:   "bool",
+	},
+	{
+		Version:     5,
+		JSONPath:    "telegram.channel_live_trades",
+		Description: "Post individual trade alerts to the platform's Telegram channel on every live trade execution (true/false).",
+		Default:     "false",
+		FieldType:   "bool",
+	},
+	{
+		Version:     5,
+		JSONPath:    "telegram.channel_paper_trades",
+		Description: "Post individual trade alerts to the platform's Telegram channel on every paper trade execution (true/false).",
 		Default:     "false",
 		FieldType:   "bool",
 	},

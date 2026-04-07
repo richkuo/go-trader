@@ -12,10 +12,11 @@ func TestNewFieldsSince(t *testing.T) {
 		version  int
 		minCount int // at least this many fields
 	}{
-		{0, 6},                    // all fields; update counts when adding new config versions
-		{1, 6},                    // v1 baseline, should get all v2+ fields
-		{2, 4},                    // should get v3+ fields
-		{3, 4},                    // should get v4 fields
+		{0, 10},                   // all fields; update counts when adding new config versions
+		{1, 10},                   // v1 baseline, should get all v2+ fields
+		{2, 8},                    // should get v3+ fields
+		{3, 8},                    // should get v4+ fields
+		{4, 4},                    // should get v5 fields
 		{CurrentConfigVersion, 0}, // no new fields
 		{999, 0},                  // future version
 	}
