@@ -275,6 +275,54 @@ func PostLeaderboard(cfg *Config, notifier *MultiNotifier) error {
 	return nil
 }
 
+// FormatHyperliquidTop10 builds a top-10 summary message for hyperliquid strategies,
+// sorted by PnL% descending. Returns "" if no hyperliquid strategies exist.
+func FormatHyperliquidTop10(cfg *Config, state *AppState, prices map[string]float64) string {
+	var entries []LeaderboardEntry
+	for _, sc := range cfg.Strategies {
+		if sc.Platform != "hyperliquid" {
+			continue
+		}
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		pv := PortfolioValue(ss, prices)
+		capital := sc.Capital
+		if capital <= 0 {
+			capital = ss.InitialCapital
+		}
+		pnl := pv - capital
+		pnlPct := 0.0
+		if capital > 0 {
+			pnlPct = (pnl / capital) * 100
+		}
+		entries = append(entries, LeaderboardEntry{
+			ID:      sc.ID,
+			Type:    sc.Type,
+			Value:   pv,
+			Capital: capital,
+			PnL:     pnl,
+			PnLPct:  pnlPct,
+		})
+	}
+
+	if len(entries) == 0 {
+		return ""
+	}
+
+	// Sort by PnL% descending, take top 10.
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].PnLPct > entries[j].PnLPct
+	})
+	n := 10
+	if len(entries) < n {
+		n = len(entries)
+	}
+
+	return formatLeaderboardMessage("⚡", "Hyperliquid Top 10", entries[:n], false)
+}
+
 // fmtSignedDollar formats a dollar value with +/- prefix.
 func fmtSignedDollar(v float64) string {
 	if v >= 0 {

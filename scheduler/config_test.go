@@ -412,6 +412,79 @@ func TestValidateConfigValidConfig(t *testing.T) {
 	}
 }
 
+func TestLoadConfigHyperliquidTop10Freq(t *testing.T) {
+	dir := t.TempDir()
+	cfg := `{
+		"hyperliquid_top10_freq": "6h",
+		"strategies": [{
+			"id": "hl-sma-btc",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "BTC/USDT", "1h"],
+			"capital": 1000
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfg)
+
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if loaded.HyperliquidTop10Freq != "6h" {
+		t.Errorf("HyperliquidTop10Freq = %q, want %q", loaded.HyperliquidTop10Freq, "6h")
+	}
+}
+
+func TestValidateConfigHyperliquidTop10FreqInvalid(t *testing.T) {
+	cfg := Config{
+		HyperliquidTop10Freq: "not-a-duration",
+		Strategies: []StrategyConfig{{
+			ID: "test", Type: "spot", Script: "check.py", Capital: 100, MaxDrawdownPct: 10,
+		}},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	err := ValidateConfig(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid duration")
+	}
+	if !strings.Contains(err.Error(), "hyperliquid_top10_freq") {
+		t.Errorf("error should mention hyperliquid_top10_freq: %v", err)
+	}
+}
+
+func TestValidateConfigHyperliquidTop10FreqTooShort(t *testing.T) {
+	cfg := Config{
+		HyperliquidTop10Freq: "30s",
+		Strategies: []StrategyConfig{{
+			ID: "test", Type: "spot", Script: "check.py", Capital: 100, MaxDrawdownPct: 10,
+		}},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	err := ValidateConfig(&cfg)
+	if err == nil {
+		t.Fatal("expected error for too-short duration")
+	}
+	if !strings.Contains(err.Error(), ">= 1m") {
+		t.Errorf("error should mention >= 1m: %v", err)
+	}
+}
+
+func TestValidateConfigHyperliquidTop10FreqValid(t *testing.T) {
+	cfg := Config{
+		HyperliquidTop10Freq: "6h",
+		Strategies: []StrategyConfig{{
+			ID: "test", Type: "spot", Script: "shared_scripts/check_strategy.py",
+			Args: []string{"sma_crossover", "BTC/USDT", "1h"}, Capital: 100, MaxDrawdownPct: 10,
+			Platform: "binanceus",
+		}},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	if err := ValidateConfig(&cfg); err != nil {
+		t.Errorf("expected valid config with HyperliquidTop10Freq=6h, got: %v", err)
+	}
+}
+
 func TestValidateConfigPortfolioRisk(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{{

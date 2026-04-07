@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -172,6 +173,111 @@ func TestFmtSignedPct(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("fmtSignedPct(%v) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestFormatHyperliquidTop10(t *testing.T) {
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			{ID: "hl-sma-btc", Type: "perps", Capital: 1000, Platform: "hyperliquid", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
+			{ID: "hl-rsi-eth", Type: "perps", Capital: 500, Platform: "hyperliquid", Args: []string{"rsi_divergence", "ETH/USDT", "1h"}},
+			{ID: "hl-mom-sol", Type: "perps", Capital: 800, Platform: "hyperliquid", Args: []string{"momentum", "SOL/USDT", "1h"}},
+			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
+		},
+	}
+
+	state := NewAppState()
+	for _, sc := range cfg.Strategies {
+		ss := NewStrategyState(sc)
+		switch sc.ID {
+		case "hl-sma-btc":
+			ss.Cash = 1200 // +20%
+		case "hl-rsi-eth":
+			ss.Cash = 400 // -20%
+		case "hl-mom-sol":
+			ss.Cash = 880 // +10%
+		case "sma-btc":
+			ss.Cash = 1500 // +50% — should be excluded (not hyperliquid)
+		}
+		state.Strategies[sc.ID] = ss
+	}
+
+	prices := map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000, "SOL/USDT": 150}
+	msg := FormatHyperliquidTop10(cfg, state, prices)
+
+	if msg == "" {
+		t.Fatal("Expected non-empty message")
+	}
+	if !containsStr(msg, "Hyperliquid Top 10") {
+		t.Error("Message should contain title")
+	}
+	if !containsStr(msg, "hl-sma-btc") {
+		t.Error("Message should contain hl-sma-btc")
+	}
+	if !containsStr(msg, "hl-rsi-eth") {
+		t.Error("Message should contain hl-rsi-eth")
+	}
+	if !containsStr(msg, "hl-mom-sol") {
+		t.Error("Message should contain hl-mom-sol")
+	}
+	// Spot strategy should NOT appear.
+	if containsStr(msg, "sma-btc") && !containsStr(msg, "hl-sma-btc") {
+		t.Error("Message should not contain non-hyperliquid strategies")
+	}
+}
+
+func TestFormatHyperliquidTop10_NoHLStrategies(t *testing.T) {
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus"},
+		},
+	}
+	state := NewAppState()
+	state.Strategies["sma-btc"] = &StrategyState{Cash: 1100, InitialCapital: 1000, Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}, TradeHistory: []Trade{}}
+
+	msg := FormatHyperliquidTop10(cfg, state, nil)
+	if msg != "" {
+		t.Errorf("Expected empty message when no HL strategies, got %q", msg)
+	}
+}
+
+func TestFormatHyperliquidTop10_SortOrder(t *testing.T) {
+	// Create 12 hyperliquid strategies to verify only top 10 are included.
+	var strats []StrategyConfig
+	for i := 0; i < 12; i++ {
+		strats = append(strats, StrategyConfig{
+			ID:       fmt.Sprintf("hl-s%02d-btc", i),
+			Type:     "perps",
+			Capital:  1000,
+			Platform: "hyperliquid",
+			Args:     []string{"sma", "BTC/USDT", "1h"},
+		})
+	}
+	cfg := &Config{Strategies: strats}
+
+	state := NewAppState()
+	for i, sc := range cfg.Strategies {
+		ss := NewStrategyState(sc)
+		// Strategy 0 = worst (-10%), strategy 11 = best (+1%)
+		ss.Cash = 1000 + float64(i-10)*10 // -100, -90, ..., +10
+		state.Strategies[sc.ID] = ss
+	}
+
+	msg := FormatHyperliquidTop10(cfg, state, nil)
+	if msg == "" {
+		t.Fatal("Expected non-empty message")
+	}
+
+	// The worst strategy (hl-s00-btc at -10%) should NOT appear (only top 10 of 12).
+	if containsStr(msg, "hl-s00-btc") {
+		t.Error("Worst strategy should be excluded from top 10")
+	}
+	if containsStr(msg, "hl-s01-btc") {
+		t.Error("Second worst strategy should be excluded from top 10")
+	}
+	// Best strategy should appear.
+	if !containsStr(msg, "hl-s11-btc") {
+		t.Error("Best strategy should appear in top 10")
 	}
 }
 
