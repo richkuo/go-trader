@@ -253,6 +253,12 @@ func main() {
 		// Determine which strategies are due this tick
 		dueStrategies := make([]StrategyConfig, 0)
 		for _, sc := range cfg.Strategies {
+			// #100: Skip strategies where capital_pct is set but capital resolved to $0
+			// (balance fetch failed and no fallback capital configured).
+			if sc.CapitalPct > 0 && sc.Capital <= 0 {
+				fmt.Printf("[ERROR] %s: capital_pct set but capital resolved to $0 — skipping\n", sc.ID)
+				continue
+			}
 			interval := sc.IntervalSeconds
 			if interval <= 0 {
 				interval = cfg.IntervalSeconds
