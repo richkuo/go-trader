@@ -301,8 +301,8 @@ func TestFormatCategorySummary_SharedWallet(t *testing.T) {
 	}
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
-			"hl-rmc-eth":  {Cash: 1085}, // full wallet value
-			"hl-tema-eth": {Cash: 1085}, // full wallet value
+			"hl-rmc-eth":  {Cash: 1085, InitialCapital: 500}, // full wallet value
+			"hl-tema-eth": {Cash: 1085, InitialCapital: 500}, // full wallet value
 		},
 	}
 	prices := map[string]float64{"ETH/USDT": 3000}
@@ -312,6 +312,10 @@ func TestFormatCategorySummary_SharedWallet(t *testing.T) {
 	// Should contain Wallet% column
 	if !strings.Contains(msg, "Wallet%") {
 		t.Errorf("expected 'Wallet%%' column header, got:\n%s", msg)
+	}
+	// Should contain Init column
+	if !strings.Contains(msg, "Init") {
+		t.Errorf("expected 'Init' column header, got:\n%s", msg)
 	}
 	// Should contain 50.0% for each strategy
 	if !strings.Contains(msg, "50.0%") {
@@ -329,6 +333,10 @@ func TestFormatCategorySummary_SharedWallet(t *testing.T) {
 	if !strings.Contains(msg, "$ 542") {
 		t.Errorf("expected individual value ~$542, got:\n%s", msg)
 	}
+	// Initial capital should show $500 for each strategy
+	if !strings.Contains(msg, "$ 500") {
+		t.Errorf("expected initial capital '$ 500', got:\n%s", msg)
+	}
 }
 
 func TestFormatCategorySummary_NoSharedWallet(t *testing.T) {
@@ -339,8 +347,8 @@ func TestFormatCategorySummary_NoSharedWallet(t *testing.T) {
 	}
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
-			"hl-rmc-eth":  {Cash: 500},
-			"hl-tema-eth": {Cash: 600},
+			"hl-rmc-eth":  {Cash: 500, InitialCapital: 500},
+			"hl-tema-eth": {Cash: 600, InitialCapital: 500},
 		},
 	}
 	prices := map[string]float64{"ETH/USDT": 3000}
@@ -349,5 +357,9 @@ func TestFormatCategorySummary_NoSharedWallet(t *testing.T) {
 
 	if strings.Contains(msg, "Wallet%") {
 		t.Errorf("should not show Wallet%% column without shared wallet, got:\n%s", msg)
+	}
+	// Should still show Init column even without shared wallet
+	if !strings.Contains(msg, "Init") {
+		t.Errorf("expected 'Init' column header, got:\n%s", msg)
 	}
 }

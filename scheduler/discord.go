@@ -347,6 +347,7 @@ func FormatCategorySummary(
 			strategy:      stratName,
 			asset:         asset,
 			value:         pv,
+			initialCap:    ss.InitialCapital,
 			pnl:           pnl,
 			pnlPct:        pnlPct,
 			walletPct:     walletPct,
@@ -400,6 +401,7 @@ type botInfo struct {
 	strategy      string
 	asset         string
 	value         float64
+	initialCap    float64
 	pnl           float64
 	pnlPct        float64
 	walletPct     float64 // 0 = not a shared wallet; >0 = strategy's share of the wallet
@@ -497,47 +499,55 @@ func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, to
 	}
 	sb.WriteString("\n```\n")
 	if showWalletPct {
-		const sep = "-------------------------------------------------"
-		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s %8s\n", "Strategy", "Value", "PnL", "PnL%", "Wallet%"))
+		const sep = "------------------------------------------------------------"
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s\n", "Strategy", "Value", "Init", "PnL", "PnL%", "Wallet%"))
 		sb.WriteString(sep + "\n")
+		var totalInit float64
 		for _, bot := range bots {
 			label := bot.id
 			if len(label) > 12 {
 				label = label[:12]
 			}
 			valStr := "$ " + fmtComma(bot.value)
+			initStr := "$ " + fmtComma(bot.initialCap)
 			pnlStr := fmtPnl(bot.pnl)
 			pctStr := fmtPnlPct(bot.pnlPct)
 			wpStr := ""
 			if bot.walletPct > 0 {
 				wpStr = fmt.Sprintf("%.1f%%", bot.walletPct)
 			}
-			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s %8s\n", label, valStr, pnlStr, pctStr, wpStr))
+			totalInit += bot.initialCap
+			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s\n", label, valStr, initStr, pnlStr, pctStr, wpStr))
 		}
 		sb.WriteString(sep + "\n")
 		totValStr := "$ " + fmtComma(totalValue)
+		totInitStr := "$ " + fmtComma(totalInit)
 		totPnlStr := fmtPnl(totalPnl)
 		totPctStr := fmtPnlPct(totalPnlPct)
-		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s %8s\n", "TOTAL", totValStr, totPnlStr, totPctStr, "100.0%"))
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s\n", "TOTAL", totValStr, totInitStr, totPnlStr, totPctStr, "100.0%"))
 	} else {
-		const sep = "---------------------------------------"
-		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s\n", "Strategy", "Value", "PnL", "PnL%"))
+		const sep = "--------------------------------------------------"
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s\n", "Strategy", "Value", "Init", "PnL", "PnL%"))
 		sb.WriteString(sep + "\n")
+		var totalInit float64
 		for _, bot := range bots {
 			label := bot.id
 			if len(label) > 12 {
 				label = label[:12]
 			}
 			valStr := "$ " + fmtComma(bot.value)
+			initStr := "$ " + fmtComma(bot.initialCap)
 			pnlStr := fmtPnl(bot.pnl)
 			pctStr := fmtPnlPct(bot.pnlPct)
-			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s\n", label, valStr, pnlStr, pctStr))
+			totalInit += bot.initialCap
+			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s\n", label, valStr, initStr, pnlStr, pctStr))
 		}
 		sb.WriteString(sep + "\n")
 		totValStr := "$ " + fmtComma(totalValue)
+		totInitStr := "$ " + fmtComma(totalInit)
 		totPnlStr := fmtPnl(totalPnl)
 		totPctStr := fmtPnlPct(totalPnlPct)
-		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s\n", "TOTAL", totValStr, totPnlStr, totPctStr))
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s\n", "TOTAL", totValStr, totInitStr, totPnlStr, totPctStr))
 	}
 	sb.WriteString("```\n")
 }
