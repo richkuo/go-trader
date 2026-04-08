@@ -12,9 +12,9 @@ import (
 type StatusServer struct {
 	state        *AppState
 	mu           *sync.RWMutex
-	statusToken  string              // if non-empty, /status requires Authorization: Bearer <token>
-	priceSymbols []string            // symbols to always fetch prices for
-	strategies   []StrategyConfig    // strategy configs for initial capital lookup
+	statusToken  string           // if non-empty, /status requires Authorization: Bearer <token>
+	priceSymbols []string         // symbols to always fetch prices for
+	strategies   []StrategyConfig // strategy configs for initial capital lookup
 }
 
 func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig) *StatusServer {

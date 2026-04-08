@@ -94,8 +94,8 @@ type StrategyConfig struct {
 	Script          string                 `json:"script"`
 	Args            []string               `json:"args"`
 	Capital         float64                `json:"capital"`
-	CapitalPct      float64                `json:"capital_pct,omitempty"`      // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
-	InitialCapital  float64                `json:"initial_capital,omitempty"`  // fixed starting balance for PnL display (never overwritten by capital_pct)
+	CapitalPct      float64                `json:"capital_pct,omitempty"`     // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
+	InitialCapital  float64                `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
 	MaxDrawdownPct  float64                `json:"max_drawdown_pct"`
 	IntervalSeconds int                    `json:"interval_seconds,omitempty"` // per-strategy override (0 = use global)
 	HTFFilter       bool                   `json:"htf_filter,omitempty"`       // higher-timeframe trend filter
