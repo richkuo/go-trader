@@ -347,7 +347,7 @@ func FormatCategorySummary(
 			strategy:      stratName,
 			asset:         asset,
 			value:         pv,
-			initialCap:    ss.InitialCapital,
+			initialCap:    initCap,
 			pnl:           pnl,
 			pnlPct:        pnlPct,
 			walletPct:     walletPct,

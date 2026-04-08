@@ -386,3 +386,114 @@ func TestSendTradeAlerts_ChannelEnabledButNotConfigured(t *testing.T) {
 		t.Errorf("expected no channel messages, got %d", len(mock.messages))
 	}
 }
+
+func TestSendTradeAlerts_LiveChannelRouting(t *testing.T) {
+	// Live trades should post to both the primary channel and the <platform>-live channel.
+	mock := &mockNotifier{}
+	sc := StrategyConfig{
+		ID:       "hl-sma-btc",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Args:     []string{"sma", "BTC", "1h", "--mode=live"},
+	}
+	state := &StrategyState{
+		TradeHistory: []Trade{testTrade()},
+	}
+	var mu sync.RWMutex
+	notifier := &MultiNotifier{
+		backends: []notifierBackend{
+			{
+				notifier:          mock,
+				ownerID:           "owner123",
+				channels:          map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl-live"},
+				dmLiveTrades:      true,
+				channelLiveTrades: true,
+			},
+		},
+	}
+
+	sendTradeAlerts(sc, state, 1, &mu, notifier)
+
+	// Should get 1 DM + 2 channel messages (primary + live)
+	if len(mock.dms) != 1 {
+		t.Errorf("expected 1 DM, got %d", len(mock.dms))
+	}
+	if len(mock.messages) != 2 {
+		t.Errorf("expected 2 channel messages (primary + live), got %d", len(mock.messages))
+	}
+	channels := map[string]bool{}
+	for _, m := range mock.messages {
+		channels[m.channelID] = true
+	}
+	if !channels["ch-hl"] {
+		t.Error("expected message to primary channel ch-hl")
+	}
+	if !channels["ch-hl-live"] {
+		t.Error("expected message to live channel ch-hl-live")
+	}
+}
+
+func TestSendTradeAlerts_LiveChannelDedup(t *testing.T) {
+	// When <platform>-live resolves to the same channel as <platform>, no double-post.
+	mock := &mockNotifier{}
+	sc := StrategyConfig{
+		ID:       "hl-sma-btc",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Args:     []string{"sma", "BTC", "1h", "--mode=live"},
+	}
+	state := &StrategyState{
+		TradeHistory: []Trade{testTrade()},
+	}
+	var mu sync.RWMutex
+	notifier := &MultiNotifier{
+		backends: []notifierBackend{
+			{
+				notifier:          mock,
+				ownerID:           "",
+				channels:          map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl"}, // same channel
+				channelLiveTrades: true,
+			},
+		},
+	}
+
+	sendTradeAlerts(sc, state, 1, &mu, notifier)
+
+	if len(mock.messages) != 1 {
+		t.Errorf("expected 1 channel message (dedup), got %d", len(mock.messages))
+	}
+}
+
+func TestSendTradeAlerts_PaperNoLiveChannel(t *testing.T) {
+	// Paper trades should NOT post to the <platform>-live channel.
+	mock := &mockNotifier{}
+	sc := StrategyConfig{
+		ID:       "hl-sma-btc",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
+	}
+	state := &StrategyState{
+		TradeHistory: []Trade{testTrade()},
+	}
+	var mu sync.RWMutex
+	notifier := &MultiNotifier{
+		backends: []notifierBackend{
+			{
+				notifier:           mock,
+				ownerID:            "",
+				channels:           map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl-live"},
+				channelPaperTrades: true,
+			},
+		},
+	}
+
+	sendTradeAlerts(sc, state, 1, &mu, notifier)
+
+	if len(mock.messages) != 1 {
+		t.Errorf("expected 1 channel message (primary only), got %d", len(mock.messages))
+	}
+	if len(mock.messages) > 0 && mock.messages[0].channelID != "ch-hl" {
+		t.Errorf("expected message to primary channel ch-hl, got %s", mock.messages[0].channelID)
+	}
+}
