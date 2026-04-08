@@ -596,3 +596,92 @@ func TestLoadConfigLeaderboardPostTime(t *testing.T) {
 		t.Errorf("LeaderboardPostTime = %q, want %q", cfg.LeaderboardPostTime, "09:30")
 	}
 }
+
+func TestEffectiveInitialCapital(t *testing.T) {
+	tests := []struct {
+		name string
+		sc   StrategyConfig
+		ss   *StrategyState
+		want float64
+	}{
+		{
+			name: "config initial_capital takes priority",
+			sc:   StrategyConfig{Capital: 600, InitialCapital: 500},
+			ss:   &StrategyState{InitialCapital: 550},
+			want: 500,
+		},
+		{
+			name: "state initial_capital when config not set",
+			sc:   StrategyConfig{Capital: 600},
+			ss:   &StrategyState{InitialCapital: 550},
+			want: 550,
+		},
+		{
+			name: "falls back to config capital",
+			sc:   StrategyConfig{Capital: 600},
+			ss:   &StrategyState{InitialCapital: 0},
+			want: 600,
+		},
+		{
+			name: "nil state falls back to config capital",
+			sc:   StrategyConfig{Capital: 600},
+			ss:   nil,
+			want: 600,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EffectiveInitialCapital(tt.sc, tt.ss)
+			if got != tt.want {
+				t.Errorf("EffectiveInitialCapital() = %g, want %g", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateConfigInitialCapitalNegative(t *testing.T) {
+	cfg := &Config{
+		Strategies: []StrategyConfig{{
+			ID:             "test",
+			Type:           "spot",
+			Script:         "test.py",
+			Capital:        1000,
+			InitialCapital: -100,
+			MaxDrawdownPct: 10,
+		}},
+	}
+	err := ValidateConfig(cfg)
+	if err == nil {
+		t.Fatal("expected error for negative initial_capital")
+	}
+	if !strings.Contains(err.Error(), "initial_capital") {
+		t.Errorf("error should mention initial_capital: %v", err)
+	}
+}
+
+func TestLoadConfigInitialCapital(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "sma-btc",
+			"type": "spot",
+			"script": "shared_scripts/check_strategy.py",
+			"args": ["sma", "BTC/USDT"],
+			"capital": 600,
+			"initial_capital": 505,
+			"max_drawdown_pct": 10
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if sc.InitialCapital != 505 {
+		t.Errorf("InitialCapital = %g, want 505", sc.InitialCapital)
+	}
+	if sc.Capital != 600 {
+		t.Errorf("Capital = %g, want 600 (should not be overwritten)", sc.Capital)
+	}
+}

@@ -47,21 +47,18 @@ func PrecomputeLeaderboard(cfg *Config, state *AppState, prices map[string]float
 			continue
 		}
 		pv := PortfolioValue(ss, prices)
-		capital := sc.Capital
-		if capital <= 0 {
-			capital = ss.InitialCapital
-		}
-		pnl := pv - capital
+		initCap := EffectiveInitialCapital(sc, ss)
+		pnl := pv - initCap
 		pnlPct := 0.0
-		if capital > 0 {
-			pnlPct = (pnl / capital) * 100
+		if initCap > 0 {
+			pnlPct = (pnl / initCap) * 100
 		}
 
 		entry := LeaderboardEntry{
 			ID:      sc.ID,
 			Type:    sc.Type,
 			Value:   pv,
-			Capital: capital,
+			Capital: initCap,
 			PnL:     pnl,
 			PnLPct:  pnlPct,
 		}
@@ -288,20 +285,17 @@ func FormatHyperliquidTop10(cfg *Config, state *AppState, prices map[string]floa
 			continue
 		}
 		pv := PortfolioValue(ss, prices)
-		capital := sc.Capital
-		if capital <= 0 {
-			capital = ss.InitialCapital
-		}
-		pnl := pv - capital
+		initCap := EffectiveInitialCapital(sc, ss)
+		pnl := pv - initCap
 		pnlPct := 0.0
-		if capital > 0 {
-			pnlPct = (pnl / capital) * 100
+		if initCap > 0 {
+			pnlPct = (pnl / initCap) * 100
 		}
 		entries = append(entries, LeaderboardEntry{
 			ID:      sc.ID,
 			Type:    sc.Type,
 			Value:   pv,
-			Capital: capital,
+			Capital: initCap,
 			PnL:     pnl,
 			PnLPct:  pnlPct,
 		})

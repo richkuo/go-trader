@@ -36,12 +36,16 @@ type StrategyState struct {
 }
 
 func NewStrategyState(cfg StrategyConfig) *StrategyState {
+	initCap := cfg.Capital
+	if cfg.InitialCapital > 0 {
+		initCap = cfg.InitialCapital
+	}
 	return &StrategyState{
 		ID:              cfg.ID,
 		Type:            cfg.Type,
 		Platform:        cfg.Platform,
 		Cash:            cfg.Capital,
-		InitialCapital:  cfg.Capital,
+		InitialCapital:  initCap,
 		Positions:       make(map[string]*Position),
 		OptionPositions: make(map[string]*OptionPosition),
 		TradeHistory:    []Trade{},

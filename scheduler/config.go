@@ -94,13 +94,26 @@ type StrategyConfig struct {
 	Script          string                 `json:"script"`
 	Args            []string               `json:"args"`
 	Capital         float64                `json:"capital"`
-	CapitalPct      float64                `json:"capital_pct,omitempty"` // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
+	CapitalPct      float64                `json:"capital_pct,omitempty"`      // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
+	InitialCapital  float64                `json:"initial_capital,omitempty"`  // fixed starting balance for PnL display (never overwritten by capital_pct)
 	MaxDrawdownPct  float64                `json:"max_drawdown_pct"`
 	IntervalSeconds int                    `json:"interval_seconds,omitempty"` // per-strategy override (0 = use global)
 	HTFFilter       bool                   `json:"htf_filter,omitempty"`       // higher-timeframe trend filter
 	Params          map[string]interface{} `json:"params,omitempty"`           // custom strategy parameters passed to Python
 	ThetaHarvest    *ThetaHarvestConfig    `json:"theta_harvest,omitempty"`
 	FuturesConfig   *FuturesConfig         `json:"futures,omitempty"`
+}
+
+// EffectiveInitialCapital returns the fixed starting balance for PnL display.
+// Priority: config InitialCapital > state InitialCapital > config Capital.
+func EffectiveInitialCapital(sc StrategyConfig, ss *StrategyState) float64 {
+	if sc.InitialCapital > 0 {
+		return sc.InitialCapital
+	}
+	if ss != nil && ss.InitialCapital > 0 {
+		return ss.InitialCapital
+	}
+	return sc.Capital
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -394,6 +407,11 @@ func ValidateConfig(cfg *Config) error {
 					errs = append(errs, fmt.Sprintf("%s: capital_pct requires HYPERLIQUID_ACCOUNT_ADDRESS env var", prefix))
 				}
 			}
+		}
+
+		// initial_capital validation: must be > 0 when set.
+		if sc.InitialCapital < 0 {
+			errs = append(errs, fmt.Sprintf("%s: initial_capital must be > 0 when set, got %g", prefix, sc.InitialCapital))
 		}
 
 		// #36: Capital must be > 0 (unless capital_pct is set).

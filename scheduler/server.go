@@ -12,8 +12,9 @@ import (
 type StatusServer struct {
 	state        *AppState
 	mu           *sync.RWMutex
-	statusToken  string   // if non-empty, /status requires Authorization: Bearer <token>
-	priceSymbols []string // symbols to always fetch prices for
+	statusToken  string              // if non-empty, /status requires Authorization: Bearer <token>
+	priceSymbols []string            // symbols to always fetch prices for
+	strategies   []StrategyConfig    // strategy configs for initial capital lookup
 }
 
 func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig) *StatusServer {
@@ -29,7 +30,7 @@ func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, stra
 	for s := range symbolSet {
 		symbols = append(symbols, s)
 	}
-	return &StatusServer{state: state, mu: mu, statusToken: statusToken, priceSymbols: symbols}
+	return &StatusServer{state: state, mu: mu, statusToken: statusToken, priceSymbols: symbols, strategies: strategies}
 }
 
 func (ss *StatusServer) Start(port int) {
@@ -145,18 +146,26 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Correlation:   ss.state.CorrelationSnapshot,
 	}
 
+	// Build config lookup for EffectiveInitialCapital.
+	cfgByID := make(map[string]StrategyConfig, len(ss.strategies))
+	for _, sc := range ss.strategies {
+		cfgByID[sc.ID] = sc
+	}
+
 	for id, s := range ss.state.Strategies {
 		pv := PortfolioValue(s, prices)
-		pnl := pv - s.InitialCapital
+		sc := cfgByID[id]
+		initCap := EffectiveInitialCapital(sc, s)
+		pnl := pv - initCap
 		pnlPct := 0.0
-		if s.InitialCapital > 0 {
-			pnlPct = (pnl / s.InitialCapital) * 100
+		if initCap > 0 {
+			pnlPct = (pnl / initCap) * 100
 		}
 		resp.Strategies[id] = StratStatus{
 			ID:              s.ID,
 			Type:            s.Type,
 			Cash:            s.Cash,
-			InitialCapital:  s.InitialCapital,
+			InitialCapital:  initCap,
 			Positions:       s.Positions,
 			OptionPositions: s.OptionPositions,
 			TradeCount:      len(s.TradeHistory),

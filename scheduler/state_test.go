@@ -438,3 +438,37 @@ func TestSavePlatformStatesNoPlatforms(t *testing.T) {
 		t.Errorf("CycleCount = %d, want 7", loaded.CycleCount)
 	}
 }
+
+func TestNewStrategyState_ConfigInitialCapital(t *testing.T) {
+	// When config has InitialCapital set, it should be used instead of Capital.
+	cfg := StrategyConfig{
+		ID:             "hl-sma-btc",
+		Type:           "perps",
+		Platform:       "hyperliquid",
+		Capital:        600,
+		InitialCapital: 505,
+		MaxDrawdownPct: 10,
+	}
+	s := NewStrategyState(cfg)
+	if s.InitialCapital != 505 {
+		t.Errorf("InitialCapital = %g, want 505 (from config)", s.InitialCapital)
+	}
+	if s.Cash != 600 {
+		t.Errorf("Cash = %g, want 600 (from Capital)", s.Cash)
+	}
+}
+
+func TestNewStrategyState_NoConfigInitialCapital(t *testing.T) {
+	// When config has no InitialCapital, it should fall back to Capital.
+	cfg := StrategyConfig{
+		ID:             "hl-sma-btc",
+		Type:           "perps",
+		Platform:       "hyperliquid",
+		Capital:        600,
+		MaxDrawdownPct: 10,
+	}
+	s := NewStrategyState(cfg)
+	if s.InitialCapital != 600 {
+		t.Errorf("InitialCapital = %g, want 600 (from Capital fallback)", s.InitialCapital)
+	}
+}

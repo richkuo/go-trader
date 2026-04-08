@@ -328,10 +328,7 @@ func FormatCategorySummary(
 			walletPct = sc.CapitalPct * 100
 		}
 
-		initCap := ss.InitialCapital
-		if initCap == 0 {
-			initCap = sc.Capital // fallback for strategies without InitialCapital set
-		}
+		initCap := EffectiveInitialCapital(sc, ss)
 		totalInitCap += initCap
 		filteredValue += pv
 		pnl := pv - initCap
