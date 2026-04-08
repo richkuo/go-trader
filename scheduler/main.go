@@ -75,10 +75,20 @@ func main() {
 	}
 
 	// #42: Initialize portfolio peak from sum of capitals on first run.
+	// For shared wallet strategies (capital_pct > 0), count each platform wallet
+	// once using the actual balance (Capital / CapitalPct) to avoid double-counting.
 	if state.PortfolioRisk.PeakValue == 0 {
 		total := 0.0
+		walletCounted := make(map[string]bool)
 		for _, sc := range cfg.Strategies {
-			total += sc.Capital
+			if sc.CapitalPct > 0 {
+				if !walletCounted[sc.Platform] {
+					total += sc.Capital / sc.CapitalPct
+					walletCounted[sc.Platform] = true
+				}
+			} else {
+				total += sc.Capital
+			}
 		}
 		state.PortfolioRisk.PeakValue = total
 		fmt.Printf("  Portfolio peak initialized: $%.0f\n", total)
@@ -796,8 +806,9 @@ func main() {
 		mu.Unlock()
 
 		// Post top-10 outside the lock to avoid holding mu during I/O.
+		// Route to dedicated leaderboard channel; falls back to platform channel.
 		if top10Msg != "" {
-			notifier.SendToChannel("hyperliquid", "perps", top10Msg)
+			notifier.SendToChannel("hyperliquid-leaderboard", "hyperliquid", top10Msg)
 			fmt.Println("[top10] Posted hyperliquid top-10 summary")
 		}
 
@@ -1111,6 +1122,15 @@ func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, m
 			}
 		}
 
+		// Also post live trades to a dedicated "<platform>-live" channel if configured.
+		var liveCh string
+		if isLive && channelEnabled {
+			liveCh = resolveChannel(b.channels, sc.Platform+"-live", "")
+			if liveCh == ch {
+				liveCh = "" // avoid double-posting to the same channel
+			}
+		}
+
 		for _, t := range newTrades {
 			var msg string
 			if b.plainText {
@@ -1126,6 +1146,11 @@ func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, m
 			if ch != "" {
 				if err := b.notifier.SendMessage(ch, msg); err != nil {
 					fmt.Printf("[notify] Channel trade alert failed: %v\n", err)
+				}
+			}
+			if liveCh != "" {
+				if err := b.notifier.SendMessage(liveCh, msg); err != nil {
+					fmt.Printf("[notify] Live channel trade alert failed: %v\n", err)
 				}
 			}
 		}

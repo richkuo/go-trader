@@ -293,16 +293,15 @@ func TestFormatTradeDM_EmptyPlatform(t *testing.T) {
 func TestFormatCategorySummary_SharedWallet(t *testing.T) {
 	// Two strategies share a Hyperliquid wallet via capital_pct=0.5 each.
 	// Wallet balance = $1085, so each strategy's Capital = $542.50.
-	// PortfolioValue returns the full wallet value ($1085) for each —
-	// the summary should show proportional shares, not double-counted values.
+	// Each strategy's cash is its proportional share (no double-scaling).
 	strats := []StrategyConfig{
 		{ID: "hl-rmc-eth", Type: "perps", Platform: "hyperliquid", Capital: 542.50, CapitalPct: 0.5, Args: []string{"rmc", "ETH", "1h"}},
 		{ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid", Capital: 542.50, CapitalPct: 0.5, Args: []string{"tema", "ETH", "1h"}},
 	}
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
-			"hl-rmc-eth":  {Cash: 1085, InitialCapital: 500}, // full wallet value
-			"hl-tema-eth": {Cash: 1085, InitialCapital: 500}, // full wallet value
+			"hl-rmc-eth":  {Cash: 542.50, InitialCapital: 500},
+			"hl-tema-eth": {Cash: 542.50, InitialCapital: 500},
 		},
 	}
 	prices := map[string]float64{"ETH/USDT": 3000}
@@ -325,17 +324,23 @@ func TestFormatCategorySummary_SharedWallet(t *testing.T) {
 	if !strings.Contains(msg, "100.0%") {
 		t.Errorf("expected '100.0%%' total wallet share, got:\n%s", msg)
 	}
-	// TOTAL value should be ~$1,085, not ~$2,170 (double-counted)
+	// TOTAL value should be ~$1,085 (sum of both strategy values)
 	if !strings.Contains(msg, "$ 1,085") {
-		t.Errorf("expected total value ~$1,085 (not double-counted), got:\n%s", msg)
+		t.Errorf("expected total value ~$1,085, got:\n%s", msg)
 	}
 	// Individual values should be ~$542
 	if !strings.Contains(msg, "$ 542") {
 		t.Errorf("expected individual value ~$542, got:\n%s", msg)
 	}
-	// Initial capital should show $500 for each strategy
+	// PnL should use InitialCapital ($500), not runtime Capital ($542.50)
 	if !strings.Contains(msg, "$ 500") {
 		t.Errorf("expected initial capital '$ 500', got:\n%s", msg)
+	}
+	// Column order should be Init | Value (not Value | Init)
+	initIdx := strings.Index(msg, "Init")
+	valueIdx := strings.Index(msg, "Value")
+	if initIdx >= valueIdx {
+		t.Errorf("expected Init column before Value column, got:\n%s", msg)
 	}
 }
 

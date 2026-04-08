@@ -314,7 +314,7 @@ func FormatCategorySummary(
 
 	// Build flat bot list from the provided channel strategies.
 	var tableBots []botInfo
-	var totalCap, filteredValue float64
+	var totalInitCap, filteredValue float64
 	for _, sc := range channelStrategies {
 		ss := state.Strategies[sc.ID]
 		if ss == nil {
@@ -323,23 +323,23 @@ func FormatCategorySummary(
 		pv := PortfolioValue(ss, prices)
 		walletPct := 0.0
 
-		// Adjust for shared wallet: proportional share of portfolio value.
+		// Shared wallet indicator (no value scaling — cash is already split by capital_pct).
 		if sc.CapitalPct > 0 && walletCount[sc.Platform] > 1 {
-			total := walletCapital[sc.Platform]
-			if total > 0 {
-				walletPct = sc.CapitalPct * 100
-				pv = pv * (sc.Capital / total)
-			}
+			walletPct = sc.CapitalPct * 100
 		}
 
-		totalCap += sc.Capital
+		initCap := ss.InitialCapital
+		if initCap == 0 {
+			initCap = sc.Capital // fallback for strategies without InitialCapital set
+		}
+		totalInitCap += initCap
 		filteredValue += pv
-		pnl := pv - sc.Capital
+		pnl := pv - initCap
 		openPos := len(ss.Positions) + len(ss.OptionPositions)
 		stratName := extractStrategyName(sc)
 		pnlPct := 0.0
-		if sc.Capital > 0 {
-			pnlPct = (pnl / sc.Capital) * 100
+		if initCap > 0 {
+			pnlPct = (pnl / initCap) * 100
 		}
 		asset := extractAsset(sc)
 		tableBots = append(tableBots, botInfo{
@@ -358,10 +358,10 @@ func FormatCategorySummary(
 		})
 	}
 
-	totalPnl := filteredValue - totalCap
+	totalPnl := filteredValue - totalInitCap
 	totalPnlPct := 0.0
-	if totalCap > 0 {
-		totalPnlPct = (totalPnl / totalCap) * 100
+	if totalInitCap > 0 {
+		totalPnlPct = (totalPnl / totalInitCap) * 100
 	}
 	writeCatTable(&sb, tableBots, filteredValue, totalPnl, totalPnlPct, hasSharedWallet)
 
@@ -500,7 +500,7 @@ func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, to
 	sb.WriteString("\n```\n")
 	if showWalletPct {
 		const sep = "------------------------------------------------------------"
-		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s\n", "Strategy", "Value", "Init", "PnL", "PnL%", "Wallet%"))
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Wallet%"))
 		sb.WriteString(sep + "\n")
 		var totalInit float64
 		for _, bot := range bots {
@@ -517,17 +517,17 @@ func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, to
 				wpStr = fmt.Sprintf("%.1f%%", bot.walletPct)
 			}
 			totalInit += bot.initialCap
-			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s\n", label, valStr, initStr, pnlStr, pctStr, wpStr))
+			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s\n", label, initStr, valStr, pnlStr, pctStr, wpStr))
 		}
 		sb.WriteString(sep + "\n")
 		totValStr := "$ " + fmtComma(totalValue)
 		totInitStr := "$ " + fmtComma(totalInit)
 		totPnlStr := fmtPnl(totalPnl)
 		totPctStr := fmtPnlPct(totalPnlPct)
-		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s\n", "TOTAL", totValStr, totInitStr, totPnlStr, totPctStr, "100.0%"))
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "100.0%"))
 	} else {
 		const sep = "--------------------------------------------------"
-		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s\n", "Strategy", "Value", "Init", "PnL", "PnL%"))
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s\n", "Strategy", "Init", "Value", "PnL", "PnL%"))
 		sb.WriteString(sep + "\n")
 		var totalInit float64
 		for _, bot := range bots {
@@ -540,14 +540,14 @@ func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, to
 			pnlStr := fmtPnl(bot.pnl)
 			pctStr := fmtPnlPct(bot.pnlPct)
 			totalInit += bot.initialCap
-			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s\n", label, valStr, initStr, pnlStr, pctStr))
+			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s\n", label, initStr, valStr, pnlStr, pctStr))
 		}
 		sb.WriteString(sep + "\n")
 		totValStr := "$ " + fmtComma(totalValue)
 		totInitStr := "$ " + fmtComma(totalInit)
 		totPnlStr := fmtPnl(totalPnl)
 		totPctStr := fmtPnlPct(totalPnlPct)
-		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s\n", "TOTAL", totValStr, totInitStr, totPnlStr, totPctStr))
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr))
 	}
 	sb.WriteString("```\n")
 }
