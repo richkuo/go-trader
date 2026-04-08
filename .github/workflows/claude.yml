@@ -41,6 +41,9 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --frozen --extra test
 
+      - name: Clean up lockfile changes before Claude checkout
+        run: git checkout -- uv.lock
+
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
