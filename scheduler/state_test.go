@@ -439,6 +439,198 @@ func TestSavePlatformStatesNoPlatforms(t *testing.T) {
 	}
 }
 
+func TestLoadStateWithDB_SQLitePrimary(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	jsonPath := filepath.Join(dir, "state.json")
+
+	db, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Seed SQLite with data.
+	original := &AppState{
+		CycleCount: 10,
+		Strategies: map[string]*StrategyState{
+			"test": {ID: "test", Type: "spot", Cash: 500, InitialCapital: 1000,
+				Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition), TradeHistory: []Trade{}},
+		},
+	}
+	if err := db.SaveState(original); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write different data to JSON (should be ignored).
+	jsonState := NewAppState()
+	jsonState.CycleCount = 99
+	if err := SaveState(jsonPath, jsonState); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{StateFile: jsonPath}
+	loaded, err := LoadStateWithDB(cfg, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.CycleCount != 10 {
+		t.Errorf("CycleCount = %d, want 10 (from SQLite, not JSON's 99)", loaded.CycleCount)
+	}
+}
+
+func TestLoadStateWithDB_JSONFallbackAndMigration(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	jsonPath := filepath.Join(dir, "state.json")
+
+	// Write data to JSON only (SQLite is empty).
+	jsonState := &AppState{
+		CycleCount: 7,
+		Strategies: map[string]*StrategyState{
+			"s1": {ID: "s1", Type: "spot", Cash: 300, InitialCapital: 500,
+				Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition), TradeHistory: []Trade{}},
+		},
+	}
+	if err := SaveState(jsonPath, jsonState); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := &Config{StateFile: jsonPath}
+	loaded, err := LoadStateWithDB(cfg, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.CycleCount != 7 {
+		t.Errorf("CycleCount = %d, want 7 (from JSON fallback)", loaded.CycleCount)
+	}
+	if _, ok := loaded.Strategies["s1"]; !ok {
+		t.Error("strategy s1 should be loaded from JSON")
+	}
+
+	// Verify one-time migration: SQLite should now have the data.
+	dbState, err := db.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbState == nil {
+		t.Fatal("SQLite should have data after migration")
+	}
+	if dbState.CycleCount != 7 {
+		t.Errorf("SQLite CycleCount = %d, want 7 (migrated from JSON)", dbState.CycleCount)
+	}
+}
+
+func TestLoadStateWithDB_BothEmpty(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	jsonPath := filepath.Join(dir, "state.json") // does not exist
+
+	db, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := &Config{StateFile: jsonPath}
+	loaded, err := LoadStateWithDB(cfg, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.CycleCount != 0 {
+		t.Errorf("CycleCount = %d, want 0 (fresh start)", loaded.CycleCount)
+	}
+	if len(loaded.Strategies) != 0 {
+		t.Errorf("strategies = %d, want 0", len(loaded.Strategies))
+	}
+}
+
+func TestSaveStateWithDB_DualWrite(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	jsonPath := filepath.Join(dir, "state.json")
+
+	db, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	state := &AppState{
+		CycleCount: 3,
+		Strategies: map[string]*StrategyState{
+			"test": {ID: "test", Type: "spot", Cash: 800, InitialCapital: 1000,
+				Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition), TradeHistory: []Trade{}},
+		},
+	}
+
+	cfg := &Config{StateFile: jsonPath}
+	if err := SaveStateWithDB(state, cfg, db); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify SQLite has data.
+	dbState, err := db.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbState.CycleCount != 3 {
+		t.Errorf("SQLite CycleCount = %d, want 3", dbState.CycleCount)
+	}
+
+	// Verify JSON was also written.
+	jsonLoaded, err := LoadState(jsonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jsonLoaded.CycleCount != 3 {
+		t.Errorf("JSON CycleCount = %d, want 3", jsonLoaded.CycleCount)
+	}
+}
+
+func TestSaveStateWithDB_SQLiteFailFallsBackToJSON(t *testing.T) {
+	dir := t.TempDir()
+	jsonPath := filepath.Join(dir, "state.json")
+
+	// Create a broken StateDB by closing it before use.
+	dbPath := filepath.Join(dir, "state.db")
+	db, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close() // close to force SQLite errors
+
+	state := &AppState{
+		CycleCount: 5,
+		Strategies: map[string]*StrategyState{
+			"test": {ID: "test", Type: "spot", Cash: 100, InitialCapital: 100,
+				Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition), TradeHistory: []Trade{}},
+		},
+	}
+
+	cfg := &Config{StateFile: jsonPath}
+	// Should fall back to JSON since SQLite is closed.
+	err = SaveStateWithDB(state, cfg, db)
+	if err != nil {
+		t.Fatalf("SaveStateWithDB should succeed via JSON fallback, got: %v", err)
+	}
+
+	// Verify JSON was written.
+	jsonLoaded, err := LoadState(jsonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jsonLoaded.CycleCount != 5 {
+		t.Errorf("JSON CycleCount = %d, want 5", jsonLoaded.CycleCount)
+	}
+}
+
 func TestNewStrategyState_ConfigInitialCapital(t *testing.T) {
 	// When config has InitialCapital set, it should be used instead of Capital.
 	cfg := StrategyConfig{
