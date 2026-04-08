@@ -289,3 +289,65 @@ func TestFormatTradeDM_EmptyPlatform(t *testing.T) {
 		t.Errorf("expected message, got:\n%s", msg)
 	}
 }
+
+func TestFormatCategorySummary_SharedWallet(t *testing.T) {
+	// Two strategies share a Hyperliquid wallet via capital_pct=0.5 each.
+	// Wallet balance = $1085, so each strategy's Capital = $542.50.
+	// PortfolioValue returns the full wallet value ($1085) for each —
+	// the summary should show proportional shares, not double-counted values.
+	strats := []StrategyConfig{
+		{ID: "hl-rmc-eth", Type: "perps", Platform: "hyperliquid", Capital: 542.50, CapitalPct: 0.5, Args: []string{"rmc", "ETH", "1h"}},
+		{ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid", Capital: 542.50, CapitalPct: 0.5, Args: []string{"tema", "ETH", "1h"}},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-rmc-eth":  {Cash: 1085}, // full wallet value
+			"hl-tema-eth": {Cash: 1085}, // full wallet value
+		},
+	}
+	prices := map[string]float64{"ETH/USDT": 3000}
+
+	msg := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH")
+
+	// Should contain Wallet% column
+	if !strings.Contains(msg, "Wallet%") {
+		t.Errorf("expected 'Wallet%%' column header, got:\n%s", msg)
+	}
+	// Should contain 50.0% for each strategy
+	if !strings.Contains(msg, "50.0%") {
+		t.Errorf("expected '50.0%%' wallet share, got:\n%s", msg)
+	}
+	// Should contain 100.0% in TOTAL row
+	if !strings.Contains(msg, "100.0%") {
+		t.Errorf("expected '100.0%%' total wallet share, got:\n%s", msg)
+	}
+	// TOTAL value should be ~$1,085, not ~$2,170 (double-counted)
+	if !strings.Contains(msg, "$ 1,085") {
+		t.Errorf("expected total value ~$1,085 (not double-counted), got:\n%s", msg)
+	}
+	// Individual values should be ~$542
+	if !strings.Contains(msg, "$ 542") {
+		t.Errorf("expected individual value ~$542, got:\n%s", msg)
+	}
+}
+
+func TestFormatCategorySummary_NoSharedWallet(t *testing.T) {
+	// Strategies without capital_pct should not show Wallet% column.
+	strats := []StrategyConfig{
+		{ID: "hl-rmc-eth", Type: "perps", Platform: "hyperliquid", Capital: 500, Args: []string{"rmc", "ETH", "1h"}},
+		{ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid", Capital: 500, Args: []string{"tema", "ETH", "1h"}},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-rmc-eth":  {Cash: 500},
+			"hl-tema-eth": {Cash: 600},
+		},
+	}
+	prices := map[string]float64{"ETH/USDT": 3000}
+
+	msg := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH")
+
+	if strings.Contains(msg, "Wallet%") {
+		t.Errorf("should not show Wallet%% column without shared wallet, got:\n%s", msg)
+	}
+}

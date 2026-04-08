@@ -295,6 +295,23 @@ func FormatCategorySummary(
 		sb.WriteString("\n")
 	}
 
+	// Detect shared wallet groups: strategies on same platform with CapitalPct > 0.
+	walletCapital := make(map[string]float64) // platform -> sum of capitals
+	walletCount := make(map[string]int)       // platform -> count of strategies
+	for _, sc := range channelStrategies {
+		if sc.CapitalPct > 0 {
+			walletCapital[sc.Platform] += sc.Capital
+			walletCount[sc.Platform]++
+		}
+	}
+	hasSharedWallet := false
+	for _, n := range walletCount {
+		if n > 1 {
+			hasSharedWallet = true
+			break
+		}
+	}
+
 	// Build flat bot list from the provided channel strategies.
 	var tableBots []botInfo
 	var totalCap, filteredValue float64
@@ -304,6 +321,17 @@ func FormatCategorySummary(
 			continue
 		}
 		pv := PortfolioValue(ss, prices)
+		walletPct := 0.0
+
+		// Adjust for shared wallet: proportional share of portfolio value.
+		if sc.CapitalPct > 0 && walletCount[sc.Platform] > 1 {
+			total := walletCapital[sc.Platform]
+			if total > 0 {
+				walletPct = (sc.Capital / total) * 100
+				pv = pv * (sc.Capital / total)
+			}
+		}
+
 		totalCap += sc.Capital
 		filteredValue += pv
 		pnl := pv - sc.Capital
@@ -321,6 +349,7 @@ func FormatCategorySummary(
 			value:         pv,
 			pnl:           pnl,
 			pnlPct:        pnlPct,
+			walletPct:     walletPct,
 			trades:        len(ss.TradeHistory),
 			openPositions: openPos,
 			closedTrades:  ss.RiskState.TotalTrades,
@@ -333,7 +362,7 @@ func FormatCategorySummary(
 	if totalCap > 0 {
 		totalPnlPct = (totalPnl / totalCap) * 100
 	}
-	writeCatTable(&sb, tableBots, filteredValue, totalPnl, totalPnlPct)
+	writeCatTable(&sb, tableBots, filteredValue, totalPnl, totalPnlPct, hasSharedWallet)
 
 	// Positions summary (#145, #162)
 	totalOpenPos := 0
@@ -373,6 +402,7 @@ type botInfo struct {
 	value         float64
 	pnl           float64
 	pnlPct        float64
+	walletPct     float64 // 0 = not a shared wallet; >0 = strategy's share of the wallet
 	trades        int
 	openPositions int
 	closedTrades  int
@@ -460,52 +490,74 @@ func fmtComma(v float64) string {
 }
 
 // writeCatTable writes a monospace code-block table to sb.
-func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, totalPnlPct float64) {
+// When showWalletPct is true, an extra "Wallet%" column is rendered for shared-wallet strategies.
+func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, totalPnlPct float64, showWalletPct bool) {
 	if len(bots) == 0 {
 		return
 	}
-	const sep = "---------------------------------------"
 	sb.WriteString("\n```\n")
-	sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s\n", "Strategy", "Value", "PnL", "PnL%"))
-	sb.WriteString(sep + "\n")
-	for _, bot := range bots {
-		// Use the full ID as the label — always unique, avoids duplicates for multi-asset pairs
-		label := bot.id
-		if len(label) > 12 {
-			label = label[:12]
+	if showWalletPct {
+		const sep = "-------------------------------------------------"
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s %8s\n", "Strategy", "Value", "PnL", "PnL%", "Wallet%"))
+		sb.WriteString(sep + "\n")
+		for _, bot := range bots {
+			label := bot.id
+			if len(label) > 12 {
+				label = label[:12]
+			}
+			valStr := "$ " + fmtComma(bot.value)
+			pnlStr := fmtPnl(bot.pnl)
+			pctStr := fmtPnlPct(bot.pnlPct)
+			wpStr := ""
+			if bot.walletPct > 0 {
+				wpStr = fmt.Sprintf("%.1f%%", bot.walletPct)
+			}
+			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s %8s\n", label, valStr, pnlStr, pctStr, wpStr))
 		}
-		valStr := "$ " + fmtComma(bot.value)
-		pnlSign := "+"
-		absPnl := bot.pnl
-		if bot.pnl < 0 {
-			pnlSign = "-"
-			absPnl = -bot.pnl
+		sb.WriteString(sep + "\n")
+		totValStr := "$ " + fmtComma(totalValue)
+		totPnlStr := fmtPnl(totalPnl)
+		totPctStr := fmtPnlPct(totalPnlPct)
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s %8s\n", "TOTAL", totValStr, totPnlStr, totPctStr, "100.0%"))
+	} else {
+		const sep = "---------------------------------------"
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s\n", "Strategy", "Value", "PnL", "PnL%"))
+		sb.WriteString(sep + "\n")
+		for _, bot := range bots {
+			label := bot.id
+			if len(label) > 12 {
+				label = label[:12]
+			}
+			valStr := "$ " + fmtComma(bot.value)
+			pnlStr := fmtPnl(bot.pnl)
+			pctStr := fmtPnlPct(bot.pnlPct)
+			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s\n", label, valStr, pnlStr, pctStr))
 		}
-		pnlStr := "$ " + pnlSign + fmtComma(absPnl)
-		pctSign := "+"
-		if bot.pnlPct < 0 {
-			pctSign = ""
-		}
-		pctStr := fmt.Sprintf("%s%.1f%%", pctSign, bot.pnlPct)
-		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s\n", label, valStr, pnlStr, pctStr))
+		sb.WriteString(sep + "\n")
+		totValStr := "$ " + fmtComma(totalValue)
+		totPnlStr := fmtPnl(totalPnl)
+		totPctStr := fmtPnlPct(totalPnlPct)
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s\n", "TOTAL", totValStr, totPnlStr, totPctStr))
 	}
-	sb.WriteString(sep + "\n")
-	// TOTAL row
-	totValStr := "$ " + fmtComma(totalValue)
-	totPnlSign := "+"
-	absTotPnl := totalPnl
-	if totalPnl < 0 {
-		totPnlSign = "-"
-		absTotPnl = -totalPnl
-	}
-	totPnlStr := "$ " + totPnlSign + fmtComma(absTotPnl)
-	totPctSign := "+"
-	if totalPnlPct < 0 {
-		totPctSign = ""
-	}
-	totPctStr := fmt.Sprintf("%s%.1f%%", totPctSign, totalPnlPct)
-	sb.WriteString(fmt.Sprintf("%-12s %10s %10s %7s\n", "TOTAL", totValStr, totPnlStr, totPctStr))
 	sb.WriteString("```\n")
+}
+
+func fmtPnl(pnl float64) string {
+	sign := "+"
+	abs := pnl
+	if pnl < 0 {
+		sign = "-"
+		abs = -pnl
+	}
+	return "$ " + sign + fmtComma(abs)
+}
+
+func fmtPnlPct(pct float64) string {
+	sign := "+"
+	if pct < 0 {
+		sign = ""
+	}
+	return fmt.Sprintf("%s%.1f%%", sign, pct)
 }
 
 // collectPositions returns human-readable position lines for a strategy.
