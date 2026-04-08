@@ -60,7 +60,8 @@ type Config struct {
 	IntervalSeconds      int                        `json:"interval_seconds"`
 	LogDir               string                     `json:"log_dir"`
 	StateFile            string                     `json:"state_file"`
-	StatusToken          string                     `json:"-"` // loaded from STATUS_AUTH_TOKEN env var only
+	DBFile               string                     `json:"db_file,omitempty"` // SQLite state DB path (default: "scheduler/state.db")
+	StatusToken          string                     `json:"-"`                 // loaded from STATUS_AUTH_TOKEN env var only
 	Discord              DiscordConfig              `json:"discord"`
 	Telegram             TelegramConfig             `json:"telegram,omitempty"`
 	AutoUpdate           string                     `json:"auto_update,omitempty"`            // "off", "daily", "heartbeat" (default: "off")
@@ -133,6 +134,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.StateFile == "" {
 		cfg.StateFile = "scheduler/state.json"
+	}
+	if cfg.DBFile == "" {
+		cfg.DBFile = "scheduler/state.db"
 	}
 	if cfg.AutoUpdate == "" {
 		cfg.AutoUpdate = "off"

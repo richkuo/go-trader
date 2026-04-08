@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -15,9 +16,10 @@ type StatusServer struct {
 	statusToken  string           // if non-empty, /status requires Authorization: Bearer <token>
 	priceSymbols []string         // symbols to always fetch prices for
 	strategies   []StrategyConfig // strategy configs for initial capital lookup
+	stateDB      *StateDB         // SQLite DB for /history queries (may be nil)
 }
 
-func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig) *StatusServer {
+func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig, stateDB *StateDB) *StatusServer {
 	// Extract all traded symbols from strategy configs so prices are always fetched,
 	// even when no positions are open.
 	symbolSet := make(map[string]bool)
@@ -30,13 +32,14 @@ func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, stra
 	for s := range symbolSet {
 		symbols = append(symbols, s)
 	}
-	return &StatusServer{state: state, mu: mu, statusToken: statusToken, priceSymbols: symbols, strategies: strategies}
+	return &StatusServer{state: state, mu: mu, statusToken: statusToken, priceSymbols: symbols, strategies: strategies, stateDB: stateDB}
 }
 
 func (ss *StatusServer) Start(port int) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", ss.handleStatus)
 	mux.HandleFunc("/health", ss.handleHealth)
+	mux.HandleFunc("/history", ss.handleHistory)
 
 	addr := fmt.Sprintf("localhost:%d", port)
 	go func() {
@@ -178,4 +181,66 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (ss *StatusServer) handleHistory(w http.ResponseWriter, r *http.Request) {
+	if ss.statusToken != "" {
+		if r.Header.Get("Authorization") != "Bearer "+ss.statusToken {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+	}
+
+	if ss.stateDB == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":"database not available"}`))
+		return
+	}
+
+	q := r.URL.Query()
+	strategyID := q.Get("strategy")
+	symbol := q.Get("symbol")
+
+	limit := 50
+	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 {
+		limit = v
+	}
+	offset := 0
+	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v >= 0 {
+		offset = v
+	}
+
+	var since, until time.Time
+	if s := q.Get("since"); s != "" {
+		since, _ = time.Parse(time.RFC3339, s)
+	}
+	if u := q.Get("until"); u != "" {
+		until, _ = time.Parse(time.RFC3339, u)
+	}
+
+	trades, total, err := ss.stateDB.QueryTradeHistory(strategyID, symbol, since, until, limit, offset)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	type HistoryResp struct {
+		Trades []Trade `json:"trades"`
+		Total  int     `json:"total"`
+		Limit  int     `json:"limit"`
+		Offset int     `json:"offset"`
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(HistoryResp{
+		Trades: trades,
+		Total:  total,
+		Limit:  limit,
+		Offset: offset,
+	})
 }

@@ -238,3 +238,46 @@ func SaveState(path string, state *AppState) error {
 	}
 	return os.Rename(tmpPath, path)
 }
+
+// LoadStateWithDB loads state from SQLite first, falling back to JSON with auto-migration.
+func LoadStateWithDB(cfg *Config, sdb *StateDB) (*AppState, error) {
+	state, err := sdb.LoadState()
+	if err != nil {
+		return nil, fmt.Errorf("sqlite load: %w", err)
+	}
+	if state != nil {
+		fmt.Println("[state] Loaded from SQLite")
+		return state, nil
+	}
+
+	// SQLite empty — fall back to JSON.
+	state, err = LoadPlatformStates(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	// One-time migration: persist JSON data into SQLite.
+	if state.CycleCount > 0 || len(state.Strategies) > 0 {
+		fmt.Println("[state] Migrating JSON → SQLite (one-time)")
+		if err := sdb.SaveState(state); err != nil {
+			fmt.Printf("[WARN] SQLite migration failed: %v — continuing with JSON\n", err)
+		}
+	}
+
+	return state, nil
+}
+
+// SaveStateWithDB saves state to SQLite (primary) then JSON (dual-write for rollback safety).
+func SaveStateWithDB(state *AppState, cfg *Config, sdb *StateDB) error {
+	if err := sdb.SaveState(state); err != nil {
+		fmt.Printf("[WARN] SQLite save failed: %v — falling back to JSON only\n", err)
+		return SavePlatformStates(state, cfg)
+	}
+
+	// JSON dual-write for rollback safety.
+	if err := SavePlatformStates(state, cfg); err != nil {
+		fmt.Printf("[WARN] JSON dual-write failed: %v — SQLite save succeeded\n", err)
+		// Not fatal since SQLite succeeded.
+	}
+	return nil
+}

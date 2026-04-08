@@ -16,7 +16,7 @@ import (
 // and, if OwnerID is configured, a DM offering to auto-upgrade.
 // Best-effort: errors are logged but never block startup or the main loop.
 // Returns true if updates are available.
-func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *string, mu *sync.RWMutex, state *AppState) bool {
+func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *string, mu *sync.RWMutex, state *AppState, stateDB *StateDB) bool {
 	// Must be a git repo.
 	if err := gitCheck(); err != nil {
 		fmt.Printf("[update] Not a git repo or git unavailable: %v\n", err)
@@ -73,7 +73,7 @@ func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *str
 				notifier.SendOwnerDM("Upgrade skipped.")
 				return
 			}
-			applyUpgrade(notifier, mu, state, cfg)
+			applyUpgrade(notifier, mu, state, cfg, stateDB)
 		}()
 	}
 
@@ -85,7 +85,7 @@ func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *str
 }
 
 // applyUpgrade performs git pull, rebuild, and restart after user confirmation.
-func applyUpgrade(notifier *MultiNotifier, mu *sync.RWMutex, state *AppState, cfg *Config) {
+func applyUpgrade(notifier *MultiNotifier, mu *sync.RWMutex, state *AppState, cfg *Config, stateDB *StateDB) {
 	notifier.SendOwnerDM("Starting upgrade...")
 
 	// Step 1: git pull --ff-only
@@ -116,7 +116,7 @@ func applyUpgrade(notifier *MultiNotifier, mu *sync.RWMutex, state *AppState, cf
 
 	// Step 3: save state safely
 	mu.Lock()
-	if err := SavePlatformStates(state, cfg); err != nil {
+	if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
 		fmt.Printf("[upgrade] Failed to save state: %v\n", err)
 	}
 	mu.Unlock()

@@ -31,8 +31,16 @@ func main() {
 	}
 	fmt.Printf("Loaded config: %d strategies, interval=%ds\n", len(cfg.Strategies), cfg.IntervalSeconds)
 
-	// Load or initialize state (platform-aware when platforms are configured).
-	state, err := LoadPlatformStates(cfg)
+	// Open SQLite state database.
+	stateDB, err := OpenStateDB(cfg.DBFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
+		os.Exit(1)
+	}
+	defer stateDB.Close()
+
+	// Load state: SQLite primary, JSON fallback with auto-migration.
+	state, err := LoadStateWithDB(cfg, stateDB)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load state: %v\n", err)
 		os.Exit(1)
@@ -106,7 +114,7 @@ func main() {
 	var mu sync.RWMutex
 
 	// Start HTTP status server
-	server := NewStatusServer(state, &mu, cfg.StatusToken, cfg.Strategies)
+	server := NewStatusServer(state, &mu, cfg.StatusToken, cfg.Strategies, stateDB)
 	server.Start(8099)
 
 	// Graceful shutdown
@@ -118,7 +126,7 @@ func main() {
 		sig := <-sigCh
 		fmt.Printf("\nReceived %s, saving state and shutting down...\n", sig)
 		mu.Lock()
-		if err := SavePlatformStates(state, cfg); err != nil {
+		if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to save state: %v\n", err)
 		} else {
 			fmt.Println("State saved successfully.")
@@ -213,7 +221,7 @@ func main() {
 
 	// Check for updates on startup (best-effort, non-blocking).
 	if cfg.AutoUpdate != "off" {
-		checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state)
+		checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state, stateDB)
 	}
 
 	// Platform pricers: Deribit uses live API; IBKR uses Black-Scholes with cached spot prices.
@@ -431,7 +439,7 @@ func main() {
 					state.PortfolioRisk.KillSwitchActive = false
 					state.PortfolioRisk.KillSwitchAt = time.Time{}
 					addKillSwitchEvent(&state.PortfolioRisk, "reset", state.PortfolioRisk.CurrentDrawdownPct, 0, state.PortfolioRisk.PeakValue, "manual reset via DM")
-					if err := SavePlatformStates(state, cfg); err != nil {
+					if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
 						fmt.Printf("[CRITICAL] Failed to save state after kill switch reset: %v\n", err)
 					}
 					mu.Unlock()
@@ -781,7 +789,7 @@ func main() {
 			}
 		}
 
-		if err := SavePlatformStates(state, cfg); err != nil {
+		if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
 			saveFailures++
 			fmt.Printf("[CRITICAL] Save state failed (%d/3): %v\n", saveFailures, err)
 		} else {
@@ -826,9 +834,9 @@ func main() {
 
 		// Periodic update check (heartbeat: every cycle; daily: once per day).
 		if cfg.AutoUpdate == "heartbeat" {
-			checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state)
+			checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state, stateDB)
 		} else if cfg.AutoUpdate == "daily" && cycle%dailyCycles == 0 {
-			checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state)
+			checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state, stateDB)
 		}
 
 		if *once {

@@ -12,6 +12,7 @@ logs/
 .venv/
 scheduler/config.json
 scheduler/state.json
+scheduler/state.db
 .worktrees/
 
 # macOS
