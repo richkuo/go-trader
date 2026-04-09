@@ -27,7 +27,7 @@ jobs:
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment'
-          claude_args: '--model claude-opus-4-6 --effort high --allowedTools "Bash(gh api *),Bash(gh pr *),Write"'
+          claude_args: '--model claude-opus-4-6 --effort high --allowedTools "Bash(gh api *),Bash(gh pr *),Bash(go *),Bash(cd scheduler && go *),Bash(gofmt *),Bash(cd scheduler && gofmt *),Bash(find *),Write"'
           allowed_bots: 'claude'
           show_full_output: true
 
