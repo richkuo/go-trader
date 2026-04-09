@@ -18,6 +18,7 @@ type LeaderboardEntry struct {
 	Capital float64 `json:"capital"`
 	PnL     float64 `json:"pnl"`
 	PnLPct  float64 `json:"pnl_pct"`
+	Trades  int     `json:"trades"`
 }
 
 // LeaderboardData is the pre-computed leaderboard written to disk each cycle.
@@ -61,6 +62,7 @@ func PrecomputeLeaderboard(cfg *Config, state *AppState, prices map[string]float
 			Capital: initCap,
 			PnL:     pnl,
 			PnLPct:  pnlPct,
+			Trades:  len(ss.TradeHistory),
 		}
 		allEntries = append(allEntries, entry)
 		typeEntries[sc.Type] = append(typeEntries[sc.Type], entry)
@@ -131,10 +133,12 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 
 	// Totals across ALL strategies in this category.
 	var totalValue, totalCapital float64
+	totalTrades := 0
 	winning, losing, flat := 0, 0, 0
 	for _, e := range entries {
 		totalValue += e.Value
 		totalCapital += e.Capital
+		totalTrades += e.Trades
 		if e.PnLPct > 0 {
 			winning++
 		} else if e.PnLPct < 0 {
@@ -155,12 +159,12 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 		top = top[:5]
 	}
 
-	const sep = "-----------------------------------------------------------"
+	const sep = "--------------------------------------------------------------------"
 	sb.WriteString("\n```\n")
 	if showType {
-		sb.WriteString(fmt.Sprintf("%-22s %-6s %10s %10s %7s\n", "Strategy", "Type", "Value", "PnL", "PnL%"))
+		sb.WriteString(fmt.Sprintf("%-22s %-6s %10s %10s %7s %8s\n", "Strategy", "Type", "Value", "PnL", "PnL%", "Trades"))
 	} else {
-		sb.WriteString(fmt.Sprintf("%-26s %10s %10s %7s\n", "Strategy", "Value", "PnL", "PnL%"))
+		sb.WriteString(fmt.Sprintf("%-26s %10s %10s %7s %8s\n", "Strategy", "Value", "PnL", "PnL%", "Trades"))
 	}
 	sb.WriteString(sep + "\n")
 
@@ -169,16 +173,17 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 		valStr := "$" + fmtComma(e.Value)
 		pnlStr := fmtSignedDollar(e.PnL)
 		pctStr := fmtSignedPct(e.PnLPct)
+		tradesStr := fmt.Sprintf("%d", e.Trades)
 		if showType {
 			if len(label) > 22 {
 				label = label[:22]
 			}
-			sb.WriteString(fmt.Sprintf("%-22s %-6s %10s %10s %7s\n", label, e.Type, valStr, pnlStr, pctStr))
+			sb.WriteString(fmt.Sprintf("%-22s %-6s %10s %10s %7s %8s\n", label, e.Type, valStr, pnlStr, pctStr, tradesStr))
 		} else {
 			if len(label) > 26 {
 				label = label[:26]
 			}
-			sb.WriteString(fmt.Sprintf("%-26s %10s %10s %7s\n", label, valStr, pnlStr, pctStr))
+			sb.WriteString(fmt.Sprintf("%-26s %10s %10s %7s %8s\n", label, valStr, pnlStr, pctStr, tradesStr))
 		}
 	}
 	sb.WriteString(sep + "\n")
@@ -187,10 +192,11 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 	totValStr := "$" + fmtComma(totalValue)
 	totPnlStr := fmtSignedDollar(totalPnl)
 	totPctStr := fmtSignedPct(totalPnlPct)
+	totTradesStr := fmt.Sprintf("%d", totalTrades)
 	if showType {
-		sb.WriteString(fmt.Sprintf("%-22s %-6s %10s %10s %7s\n", totalLabel, "", totValStr, totPnlStr, totPctStr))
+		sb.WriteString(fmt.Sprintf("%-22s %-6s %10s %10s %7s %8s\n", totalLabel, "", totValStr, totPnlStr, totPctStr, totTradesStr))
 	} else {
-		sb.WriteString(fmt.Sprintf("%-26s %10s %10s %7s\n", totalLabel, totValStr, totPnlStr, totPctStr))
+		sb.WriteString(fmt.Sprintf("%-26s %10s %10s %7s %8s\n", totalLabel, totValStr, totPnlStr, totPctStr, totTradesStr))
 	}
 	sb.WriteString("```\n")
 	sb.WriteString(fmt.Sprintf("🟢 %d winning · 🔴 %d losing · ⚪ %d flat\n", winning, losing, flat))
@@ -298,6 +304,7 @@ func FormatHyperliquidTop10(cfg *Config, state *AppState, prices map[string]floa
 			Capital: initCap,
 			PnL:     pnl,
 			PnLPct:  pnlPct,
+			Trades:  len(ss.TradeHistory),
 		})
 	}
 

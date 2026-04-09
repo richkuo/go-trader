@@ -30,10 +30,13 @@ func TestPrecomputeLeaderboard(t *testing.T) {
 		switch sc.ID {
 		case "sma-btc":
 			ss.Cash = 1100 // +10%
+			ss.TradeHistory = []Trade{{StrategyID: "sma-btc"}, {StrategyID: "sma-btc"}, {StrategyID: "sma-btc"}}
 		case "rsi-eth":
 			ss.Cash = 450 // -10%
+			ss.TradeHistory = []Trade{{StrategyID: "rsi-eth"}}
 		case "hl-sma-btc":
 			ss.Cash = 2200 // +10%
+			ss.TradeHistory = []Trade{{StrategyID: "hl-sma-btc"}, {StrategyID: "hl-sma-btc"}}
 		case "deribit-ccall-btc":
 			ss.Cash = 1050 // +5%
 		case "ts-breakout-es":
@@ -105,6 +108,15 @@ func TestPrecomputeLeaderboard(t *testing.T) {
 	}
 	if !containsStr(spotMsg, "winning") {
 		t.Error("Spot message should contain winning/losing/flat counts")
+	}
+	if !containsStr(spotMsg, "Trades") {
+		t.Error("Spot message should contain Trades column header")
+	}
+
+	// Verify top10 message also contains Trades column.
+	top10Msg := lb.Messages["top10"]
+	if !containsStr(top10Msg, "Trades") {
+		t.Error("Top10 message should contain Trades column header")
 	}
 }
 
@@ -192,10 +204,13 @@ func TestFormatHyperliquidTop10(t *testing.T) {
 		switch sc.ID {
 		case "hl-sma-btc":
 			ss.Cash = 1200 // +20%
+			ss.TradeHistory = []Trade{{StrategyID: "hl-sma-btc"}, {StrategyID: "hl-sma-btc"}}
 		case "hl-rsi-eth":
 			ss.Cash = 400 // -20%
+			ss.TradeHistory = []Trade{{StrategyID: "hl-rsi-eth"}}
 		case "hl-mom-sol":
 			ss.Cash = 880 // +10%
+			ss.TradeHistory = []Trade{{StrategyID: "hl-mom-sol"}, {StrategyID: "hl-mom-sol"}, {StrategyID: "hl-mom-sol"}}
 		case "sma-btc":
 			ss.Cash = 1500 // +50% — should be excluded (not hyperliquid)
 		}
@@ -223,6 +238,10 @@ func TestFormatHyperliquidTop10(t *testing.T) {
 	// Spot strategy should NOT appear.
 	if containsStr(msg, "sma-btc") && !containsStr(msg, "hl-sma-btc") {
 		t.Error("Message should not contain non-hyperliquid strategies")
+	}
+	// Trades column should appear.
+	if !containsStr(msg, "Trades") {
+		t.Error("Message should contain Trades column header")
 	}
 }
 
