@@ -214,7 +214,15 @@ func futuresDisplayName(ticker string) string {
 	return strings.ToUpper(ticker)
 }
 
-// FormatCategorySummary creates a Discord message for a set of strategies sharing a channel.
+// discordCharLimit is the maximum characters per Discord message.
+const discordCharLimit = 2000
+
+// discordSplitThreshold is the soft limit at which we start splitting messages.
+const discordSplitThreshold = 1980
+
+// FormatCategorySummary creates Discord messages for a set of strategies sharing a channel.
+// Returns a slice of messages; when the content exceeds Discord's 2000-char limit,
+// the position list is split across multiple messages.
 // channelStrategies is pre-filtered by the caller; channelKey is the display label.
 // asset, when non-empty, appends " — <ASSET>" to the title and filters the prices line.
 func FormatCategorySummary(
@@ -229,7 +237,7 @@ func FormatCategorySummary(
 	state *AppState,
 	channelKey string,
 	asset string,
-) string {
+) []string {
 	var sb strings.Builder
 
 	// Icon and title based on strategy types and channel key.
@@ -362,35 +370,126 @@ func FormatCategorySummary(
 	}
 	writeCatTable(&sb, tableBots, filteredValue, totalPnl, totalPnlPct, hasSharedWallet)
 
-	// Positions summary (#145, #162)
+	header := sb.String()
+
+	// Collect position lines.
 	totalOpenPos := 0
 	for _, bot := range tableBots {
 		totalOpenPos += bot.openPositions
 	}
-	if totalOpenPos == 0 {
-		sb.WriteString("Positions: no open positions\n")
-	} else {
-		sb.WriteString(fmt.Sprintf("Positions: %d open\n", totalOpenPos))
+	var posLines []string
+	if totalOpenPos > 0 {
 		for _, sc := range channelStrategies {
 			ss := state.Strategies[sc.ID]
 			if ss == nil {
 				continue
 			}
-			for _, line := range collectPositions(sc.ID, ss, prices) {
-				sb.WriteString(fmt.Sprintf("  • %s\n", line))
-			}
+			posLines = append(posLines, collectPositions(sc.ID, ss, prices)...)
 		}
 	}
 
-	// Trade details (always shown)
-	if len(tradeDetails) > 0 {
-		sb.WriteString("\n**Trades:**\n")
-		for _, td := range tradeDetails {
-			sb.WriteString(fmt.Sprintf("• %s\n", td))
-		}
+	// Collect trade detail lines.
+	var tradeLines []string
+	for _, td := range tradeDetails {
+		tradeLines = append(tradeLines, fmt.Sprintf("• %s", td))
 	}
 
-	return sb.String()
+	return splitCategorySummary(header, totalOpenPos, posLines, tradeLines)
+}
+
+// splitCategorySummary assembles the header, position lines, and trade lines into
+// one or more Discord messages, splitting at logical boundaries to stay under the
+// 2000-char Discord limit.
+func splitCategorySummary(header string, totalOpenPos int, posLines []string, tradeLines []string) []string {
+	var sb strings.Builder
+	sb.WriteString(header)
+
+	// Position header
+	if totalOpenPos == 0 {
+		sb.WriteString("Positions: no open positions\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("Positions: %d open\n", totalOpenPos))
+	}
+
+	// Trade details section
+	var tradeSuffix string
+	if len(tradeLines) > 0 {
+		var tsb strings.Builder
+		tsb.WriteString("\n**Trades:**\n")
+		for _, tl := range tradeLines {
+			tsb.WriteString(tl + "\n")
+		}
+		tradeSuffix = tsb.String()
+	}
+
+	// If no positions, just append trades and return.
+	if totalOpenPos == 0 || len(posLines) == 0 {
+		sb.WriteString(tradeSuffix)
+		return []string{sb.String()}
+	}
+
+	// Try fitting everything in one message.
+	fullMsg := sb.String()
+	for _, line := range posLines {
+		fullMsg += fmt.Sprintf("  • %s\n", line)
+	}
+	fullMsg += tradeSuffix
+	if len(fullMsg) <= discordSplitThreshold {
+		return []string{fullMsg}
+	}
+
+	// Need to split: add positions until we approach the limit.
+	firstMsg := sb.String() // header + "Positions: N open\n"
+	included := 0
+	for _, line := range posLines {
+		candidate := fmt.Sprintf("  • %s\n", line)
+		// Reserve room for the "... and N more" indicator.
+		remaining := len(posLines) - included - 1
+		moreIndicator := ""
+		if remaining > 0 {
+			moreIndicator = fmt.Sprintf("  ... and %d more\n", remaining)
+		}
+		if len(firstMsg)+len(candidate)+len(moreIndicator) > discordSplitThreshold {
+			break
+		}
+		firstMsg += candidate
+		included++
+	}
+
+	if included < len(posLines) {
+		firstMsg += fmt.Sprintf("  ... and %d more\n", len(posLines)-included)
+	}
+
+	// If all positions fit (edge case where trades push us over), include trades in second message.
+	if included >= len(posLines) {
+		// Trades caused the overflow. Put all positions in first message, trades in second.
+		firstMsg = sb.String()
+		for _, line := range posLines {
+			firstMsg += fmt.Sprintf("  • %s\n", line)
+		}
+		if len(tradeSuffix) > 0 {
+			return []string{firstMsg, tradeSuffix}
+		}
+		return []string{firstMsg}
+	}
+
+	// Build continuation message(s) with remaining positions + trades.
+	var msgs []string
+	msgs = append(msgs, firstMsg)
+
+	contMsg := fmt.Sprintf("Positions (cont'd %d/%d):\n", included+1, len(posLines))
+	for _, line := range posLines[included:] {
+		candidate := fmt.Sprintf("  • %s\n", line)
+		if len(contMsg)+len(candidate) > discordSplitThreshold {
+			msgs = append(msgs, contMsg)
+			contMsg = fmt.Sprintf("Positions (cont'd):\n")
+		}
+		contMsg += candidate
+	}
+	contMsg += tradeSuffix
+	msgs = append(msgs, contMsg)
+
+	return msgs
 }
 
 type botInfo struct {
@@ -583,10 +682,18 @@ func collectPositions(stratID string, ss *StrategyState, prices map[string]float
 		if pnl < 0 {
 			sign = ""
 		}
-		lines = append(lines, fmt.Sprintf("%s %s %s x%g @ $%.2f (%s$%.0f)", stratID, pos.Side, sym, pos.Quantity, pos.AvgCost, sign, pnl))
+		dateStr := ""
+		if !pos.OpenedAt.IsZero() {
+			dateStr = fmt.Sprintf(" [%s]", pos.OpenedAt.Format("Jan 02 15:04"))
+		}
+		lines = append(lines, fmt.Sprintf("%s %s %s x%g @ $%.2f (%s$%.0f)%s", stratID, pos.Side, sym, pos.Quantity, pos.AvgCost, sign, pnl, dateStr))
 	}
 	for key, opt := range ss.OptionPositions {
-		lines = append(lines, fmt.Sprintf("%s OPT %s ($%.0f)", stratID, key, opt.CurrentValueUSD))
+		dateStr := ""
+		if !opt.OpenedAt.IsZero() {
+			dateStr = fmt.Sprintf(" [%s]", opt.OpenedAt.Format("Jan 02 15:04"))
+		}
+		lines = append(lines, fmt.Sprintf("%s OPT %s ($%.0f)%s", stratID, key, opt.CurrentValueUSD, dateStr))
 	}
 	return lines
 }

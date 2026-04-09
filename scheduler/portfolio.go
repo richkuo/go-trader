@@ -7,12 +7,13 @@ import (
 
 // Position represents a spot or futures position.
 type Position struct {
-	Symbol          string  `json:"symbol"`
-	Quantity        float64 `json:"quantity"`
-	AvgCost         float64 `json:"avg_cost"`
-	Side            string  `json:"side"`                        // "long" or "short"
-	Multiplier      float64 `json:"multiplier,omitempty"`        // futures contract multiplier (0 = spot)
-	OwnerStrategyID string  `json:"owner_strategy_id,omitempty"` // strategy that opened this position
+	Symbol          string    `json:"symbol"`
+	Quantity        float64   `json:"quantity"`
+	AvgCost         float64   `json:"avg_cost"`
+	Side            string    `json:"side"`                        // "long" or "short"
+	Multiplier      float64   `json:"multiplier,omitempty"`        // futures contract multiplier (0 = spot)
+	OwnerStrategyID string    `json:"owner_strategy_id,omitempty"` // strategy that opened this position
+	OpenedAt        time.Time `json:"opened_at,omitempty"`         // when the position was opened
 }
 
 // Trade represents a completed trade.
@@ -114,15 +115,17 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 		tradeCost := qty * execPrice
 		fee := CalculatePlatformSpotFee(feePlatform, tradeCost)
 		s.Cash -= tradeCost + fee
+		now := time.Now().UTC()
 		s.Positions[symbol] = &Position{
 			Symbol:          symbol,
 			Quantity:        qty,
 			AvgCost:         execPrice,
 			Side:            "long",
 			OwnerStrategyID: s.ID,
+			OpenedAt:        now,
 		}
 		trade := Trade{
-			Timestamp:  time.Now().UTC(),
+			Timestamp:  now,
 			StrategyID: s.ID,
 			Symbol:     symbol,
 			Side:       "buy",
@@ -227,6 +230,7 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 		}
 		fee := CalculateFuturesFee(contracts, feePerContract)
 		s.Cash -= fee // futures use margin, not full notional; deduct fee only
+		now := time.Now().UTC()
 		s.Positions[symbol] = &Position{
 			Symbol:          symbol,
 			Quantity:        float64(contracts),
@@ -234,9 +238,10 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 			Side:            "long",
 			Multiplier:      multiplier,
 			OwnerStrategyID: s.ID,
+			OpenedAt:        now,
 		}
 		trade := Trade{
-			Timestamp:  time.Now().UTC(),
+			Timestamp:  now,
 			StrategyID: s.ID,
 			Symbol:     symbol,
 			Side:       "buy",
@@ -298,6 +303,7 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 			}
 			fee := CalculateFuturesFee(contracts, feePerContract)
 			s.Cash -= fee
+			now := time.Now().UTC()
 			s.Positions[symbol] = &Position{
 				Symbol:          symbol,
 				Quantity:        float64(contracts),
@@ -305,9 +311,10 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 				Side:            "short",
 				Multiplier:      multiplier,
 				OwnerStrategyID: s.ID,
+				OpenedAt:        now,
 			}
 			trade := Trade{
-				Timestamp:  time.Now().UTC(),
+				Timestamp:  now,
 				StrategyID: s.ID,
 				Symbol:     symbol,
 				Side:       "sell",

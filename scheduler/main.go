@@ -750,8 +750,10 @@ func main() {
 					}
 					chDetails := channelTradeDetails[detailKey]
 					chValue := channelValue[chKey]
-					msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chValue, prices, chDetails, chStrats, state, chKey, "")
-					notifier.SendToChannel(chKey, chKey, msg)
+					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chValue, prices, chDetails, chStrats, state, chKey, "")
+					for _, msg := range msgs {
+						notifier.SendToChannel(chKey, chKey, msg)
+					}
 				} else {
 					// Multiple assets → one message per asset.
 					for _, asset := range assetKeys {
@@ -764,8 +766,10 @@ func main() {
 							}
 						}
 						assetTrades := len(assetDetails)
-						msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetValue, prices, assetDetails, assetStrats, state, chKey, asset)
-						notifier.SendToChannel(chKey, chKey, msg)
+						msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetValue, prices, assetDetails, assetStrats, state, chKey, asset)
+						for _, msg := range msgs {
+							notifier.SendToChannel(chKey, chKey, msg)
+						}
 					}
 				}
 			}
@@ -921,9 +925,11 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 	// Format and send summary using the same asset-grouping logic as the main loop.
 	assetGroups, assetKeys := groupByAsset(chStrats)
 	if len(assetKeys) <= 1 {
-		msg := FormatCategorySummary(state.CycleCount, 0, 0, 0, chValue, prices, nil, chStrats, state, channelKey, "")
-		notifier.SendToChannel(channelKey, channelKey, msg)
-		fmt.Println(msg)
+		msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, chValue, prices, nil, chStrats, state, channelKey, "")
+		for _, msg := range msgs {
+			notifier.SendToChannel(channelKey, channelKey, msg)
+			fmt.Println(msg)
+		}
 	} else {
 		for _, asset := range assetKeys {
 			assetStrats := assetGroups[asset]
@@ -933,9 +939,11 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 					assetValue += PortfolioValue(s, prices)
 				}
 			}
-			msg := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetValue, prices, nil, assetStrats, state, channelKey, asset)
-			notifier.SendToChannel(channelKey, channelKey, msg)
-			fmt.Println(msg)
+			msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetValue, prices, nil, assetStrats, state, channelKey, asset)
+			for _, msg := range msgs {
+				notifier.SendToChannel(channelKey, channelKey, msg)
+				fmt.Println(msg)
+			}
 		}
 	}
 

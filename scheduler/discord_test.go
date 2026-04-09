@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveChannel(t *testing.T) {
@@ -130,7 +132,8 @@ func TestFormatCategorySummary_WithAsset(t *testing.T) {
 	prices := map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}
 
 	// With asset — title should contain " — BTC" and only BTC price shown
-	msg := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC")
+	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC")
+	msg := strings.Join(msgs, "\n")
 	if !strings.Contains(msg, "— BTC") {
 		t.Errorf("expected '— BTC' in title, got:\n%s", msg)
 	}
@@ -139,7 +142,8 @@ func TestFormatCategorySummary_WithAsset(t *testing.T) {
 	}
 
 	// Without asset — no suffix in title
-	msg2 := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "")
+	msgs2 := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "")
+	msg2 := strings.Join(msgs2, "\n")
 	if strings.Contains(msg2, "— ") {
 		t.Errorf("expected no asset suffix when asset='', got:\n%s", msg2)
 	}
@@ -306,7 +310,8 @@ func TestFormatCategorySummary_SharedWallet(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH/USDT": 3000}
 
-	msg := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH")
+	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH")
+	msg := strings.Join(msgs, "\n")
 
 	// Should contain Wallet% column
 	if !strings.Contains(msg, "Wallet%") {
@@ -361,7 +366,8 @@ func TestFormatCategorySummary_WalletPctFromConfig(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH/USDT": 3000}
 
-	msg := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH")
+	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH")
+	msg := strings.Join(msgs, "\n")
 
 	if !strings.Contains(msg, "30.0%") {
 		t.Errorf("expected '30.0%%' from capital_pct=0.3, got:\n%s", msg)
@@ -385,7 +391,8 @@ func TestFormatCategorySummary_NoSharedWallet(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH/USDT": 3000}
 
-	msg := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH")
+	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH")
+	msg := strings.Join(msgs, "\n")
 
 	if strings.Contains(msg, "Wallet%") {
 		t.Errorf("should not show Wallet%% column without shared wallet, got:\n%s", msg)
@@ -393,5 +400,175 @@ func TestFormatCategorySummary_NoSharedWallet(t *testing.T) {
 	// Should still show Init column even without shared wallet
 	if !strings.Contains(msg, "Init") {
 		t.Errorf("expected 'Init' column header, got:\n%s", msg)
+	}
+}
+
+func TestFormatCategorySummary_MessageSplitting(t *testing.T) {
+	// Create enough positions to exceed Discord's 2000-char limit.
+	strats := make([]StrategyConfig, 20)
+	strategies := make(map[string]*StrategyState, 20)
+	for i := 0; i < 20; i++ {
+		id := fmt.Sprintf("hl-strat%02d-btc", i)
+		strats[i] = StrategyConfig{ID: id, Type: "perps", Platform: "hyperliquid", Capital: 500, Args: []string{fmt.Sprintf("strat%02d", i), "BTC", "1h"}}
+		strategies[id] = &StrategyState{
+			Cash: 450,
+			Positions: map[string]*Position{
+				"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 50000, Side: "long", OpenedAt: time.Date(2026, 3, 15, 10, 30, 0, 0, time.UTC)},
+			},
+		}
+	}
+	state := &AppState{Strategies: strategies}
+	prices := map[string]float64{"BTC/USDT": 51000}
+
+	msgs := FormatCategorySummary(1, 0, 20, 0, 10000, prices, nil, strats, state, "hyperliquid", "BTC")
+
+	// Should produce multiple messages.
+	if len(msgs) < 2 {
+		totalLen := 0
+		for _, m := range msgs {
+			totalLen += len(m)
+		}
+		t.Errorf("expected multiple messages for 20 positions, got %d (total chars: %d)", len(msgs), totalLen)
+	}
+
+	// First message should contain "... and N more".
+	if !strings.Contains(msgs[0], "... and") {
+		t.Errorf("first message should contain '... and N more' indicator, got:\n%s", msgs[0])
+	}
+
+	// First message should not exceed the split threshold.
+	if len(msgs[0]) > discordCharLimit {
+		t.Errorf("first message exceeds %d chars: %d", discordCharLimit, len(msgs[0]))
+	}
+
+	// Second message should contain continuation header.
+	if !strings.Contains(msgs[1], "cont'd") {
+		t.Errorf("second message should contain continuation header, got:\n%s", msgs[1])
+	}
+
+	// All position lines should appear across all messages.
+	allMsgs := strings.Join(msgs, "\n")
+	if !strings.Contains(allMsgs, "Positions: 20 open") {
+		t.Errorf("expected 'Positions: 20 open' header, got:\n%s", allMsgs)
+	}
+}
+
+func TestFormatCategorySummary_NoSplitWhenShort(t *testing.T) {
+	// A small number of positions should produce a single message.
+	strats := []StrategyConfig{
+		{ID: "hl-rsi-btc", Type: "perps", Platform: "hyperliquid", Capital: 1000, Args: []string{"rsi", "BTC", "1h"}},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-rsi-btc": {
+				Cash: 900,
+				Positions: map[string]*Position{
+					"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 50000, Side: "long"},
+				},
+			},
+		},
+	}
+	prices := map[string]float64{"BTC/USDT": 51000}
+
+	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC")
+
+	if len(msgs) != 1 {
+		t.Errorf("expected single message for 1 position, got %d", len(msgs))
+	}
+	if !strings.Contains(msgs[0], "Positions: 1 open") {
+		t.Errorf("expected 'Positions: 1 open', got:\n%s", msgs[0])
+	}
+}
+
+func TestCollectPositions_WithTimestamp(t *testing.T) {
+	opened := time.Date(2026, 3, 15, 10, 30, 0, 0, time.UTC)
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.5, AvgCost: 50000, Side: "long", OpenedAt: opened},
+		},
+	}
+	prices := map[string]float64{"BTC/USDT": 51000}
+
+	lines := collectPositions("hl-rsi-btc", ss, prices)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], "[Mar 15 10:30]") {
+		t.Errorf("expected timestamp '[Mar 15 10:30]', got: %s", lines[0])
+	}
+}
+
+func TestCollectPositions_WithoutTimestamp(t *testing.T) {
+	// Legacy positions without OpenedAt should not show a date.
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.5, AvgCost: 50000, Side: "long"},
+		},
+	}
+	prices := map[string]float64{"BTC/USDT": 51000}
+
+	lines := collectPositions("hl-rsi-btc", ss, prices)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if strings.Contains(lines[0], "[") {
+		t.Errorf("legacy position without OpenedAt should not show date, got: %s", lines[0])
+	}
+}
+
+func TestCollectPositions_OptionTimestamp(t *testing.T) {
+	opened := time.Date(2026, 4, 1, 8, 0, 0, 0, time.UTC)
+	ss := &StrategyState{
+		OptionPositions: map[string]*OptionPosition{
+			"BTC-call-50000": {ID: "BTC-call-50000", CurrentValueUSD: 500, OpenedAt: opened},
+		},
+	}
+	prices := map[string]float64{}
+
+	lines := collectPositions("deribit-wheel-btc", ss, prices)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], "[Apr 01 08:00]") {
+		t.Errorf("expected option timestamp '[Apr 01 08:00]', got: %s", lines[0])
+	}
+}
+
+func TestSplitCategorySummary_SingleMessage(t *testing.T) {
+	header := "Header line\n"
+	posLines := []string{"pos1", "pos2"}
+	tradeLines := []string{"• trade1"}
+
+	msgs := splitCategorySummary(header, 2, posLines, tradeLines)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if !strings.Contains(msgs[0], "pos1") || !strings.Contains(msgs[0], "pos2") {
+		t.Errorf("single message should contain all positions, got:\n%s", msgs[0])
+	}
+	if !strings.Contains(msgs[0], "trade1") {
+		t.Errorf("single message should contain trades, got:\n%s", msgs[0])
+	}
+}
+
+func TestSplitCategorySummary_MultiMessage(t *testing.T) {
+	// Create a header that uses ~1900 chars, leaving very little room for positions.
+	header := strings.Repeat("x", 1900) + "\n"
+	posLines := []string{"position-line-1-aaaa", "position-line-2-bbbb", "position-line-3-cccc"}
+
+	msgs := splitCategorySummary(header, 3, posLines, nil)
+	if len(msgs) < 2 {
+		t.Fatalf("expected multiple messages with large header, got %d", len(msgs))
+	}
+	// First message should have "... and N more"
+	if !strings.Contains(msgs[0], "... and") {
+		t.Errorf("expected '... and N more' in first message, got:\n%s", msgs[0][:100])
+	}
+	// All positions should appear across messages
+	all := strings.Join(msgs, "\n")
+	for _, pl := range posLines {
+		if !strings.Contains(all, pl) {
+			t.Errorf("position %q missing from messages", pl)
+		}
 	}
 }

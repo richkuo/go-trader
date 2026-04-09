@@ -438,6 +438,7 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 				Quantity: r.AssignQuantity,
 				AvgCost:  r.AssignStrike,
 				Side:     "long",
+				OpenedAt: time.Now().UTC(),
 			}
 		}
 		s.TradeHistory = append(s.TradeHistory, Trade{
