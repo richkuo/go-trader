@@ -486,8 +486,15 @@ func splitCategorySummary(header string, totalOpenPos int, posLines []string, tr
 		}
 		contMsg += candidate
 	}
-	contMsg += tradeSuffix
-	msgs = append(msgs, contMsg)
+	if len(contMsg)+len(tradeSuffix) > discordSplitThreshold {
+		msgs = append(msgs, contMsg)
+		if tradeSuffix != "" {
+			msgs = append(msgs, tradeSuffix)
+		}
+	} else {
+		contMsg += tradeSuffix
+		msgs = append(msgs, contMsg)
+	}
 
 	return msgs
 }
