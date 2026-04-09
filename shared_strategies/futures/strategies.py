@@ -22,6 +22,7 @@ from amd_ifvg import amd_ifvg_core
 from chart_patterns import chart_pattern_core
 from liquidity_sweeps import liquidity_sweep_core
 from range_scalper import range_scalper_core
+from sweep_squeeze_combo import sweep_squeeze_combo_core
 
 # ─────────────────────────────────────────────
 # Strategy registry
@@ -613,6 +614,15 @@ def parabolic_sar_strategy(df: pd.DataFrame, iaf: float = 0.02, af_step: float =
 )
 def range_scalper_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return range_scalper_core(df, **params)
+
+
+@register_strategy(
+    "sweep_squeeze_combo",
+    "Sweep Squeeze Combo — 2-of-3 consensus (liquidity sweeps + squeeze momentum + stochastic RSI) for high-conviction reversals",
+    {"swing_lookback": 10, "min_agree": 2}
+)
+def sweep_squeeze_combo_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return sweep_squeeze_combo_core(df, **params)
 
 
 @register_strategy(

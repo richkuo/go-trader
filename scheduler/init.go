@@ -56,6 +56,7 @@ var knownShortNames = map[string]string{
 	"squeeze_momentum":      "sqm",
 	"heikin_ashi_ema":       "hae",
 	"range_scalper":         "rs",
+	"sweep_squeeze_combo":   "ssc",
 }
 
 // deriveShortName returns a short abbreviation for a strategy ID.
