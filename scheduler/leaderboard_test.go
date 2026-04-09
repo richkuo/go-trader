@@ -300,6 +300,81 @@ func TestFormatHyperliquidTop10_SortOrder(t *testing.T) {
 	}
 }
 
+func TestFormatPlatformTop10(t *testing.T) {
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			{ID: "hl-sma-btc", Type: "perps", Capital: 1000, Platform: "hyperliquid", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
+			{ID: "deribit-ccall-btc", Type: "options", Capital: 1000, Platform: "deribit", Args: []string{"covered_call", "BTC/USDT"}},
+			{ID: "deribit-vol-eth", Type: "options", Capital: 500, Platform: "deribit", Args: []string{"vol_smile", "ETH/USDT"}},
+			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
+		},
+	}
+
+	state := NewAppState()
+	for _, sc := range cfg.Strategies {
+		ss := NewStrategyState(sc)
+		switch sc.ID {
+		case "hl-sma-btc":
+			ss.Cash = 1200 // +20%
+			ss.TradeHistory = []Trade{{StrategyID: "hl-sma-btc"}}
+		case "deribit-ccall-btc":
+			ss.Cash = 1150 // +15%
+			ss.TradeHistory = []Trade{{StrategyID: "deribit-ccall-btc"}, {StrategyID: "deribit-ccall-btc"}}
+		case "deribit-vol-eth":
+			ss.Cash = 450 // -10%
+			ss.TradeHistory = []Trade{{StrategyID: "deribit-vol-eth"}}
+		case "sma-btc":
+			ss.Cash = 1500 // +50%
+		}
+		state.Strategies[sc.ID] = ss
+	}
+
+	prices := map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}
+
+	// Test Deribit platform leaderboard.
+	msg := FormatPlatformTop10("deribit", "🎯", "Deribit Top 10", cfg, state, prices)
+	if msg == "" {
+		t.Fatal("Expected non-empty message for deribit")
+	}
+	if !containsStr(msg, "Deribit Top 10") {
+		t.Error("Message should contain Deribit title")
+	}
+	if !containsStr(msg, "deribit-ccall-btc") {
+		t.Error("Message should contain deribit-ccall-btc")
+	}
+	if !containsStr(msg, "deribit-vol-eth") {
+		t.Error("Message should contain deribit-vol-eth")
+	}
+	// Non-deribit strategies should NOT appear.
+	if containsStr(msg, "hl-sma-btc") {
+		t.Error("Message should not contain hyperliquid strategies")
+	}
+	if containsStr(msg, "sma-btc") {
+		t.Error("Message should not contain binanceus strategies")
+	}
+	if !containsStr(msg, "Trades") {
+		t.Error("Message should contain Trades column header")
+	}
+
+	// Test platform with no strategies returns empty.
+	msg = FormatPlatformTop10("okx", "🔶", "OKX Top 10", cfg, state, prices)
+	if msg != "" {
+		t.Errorf("Expected empty message for platform with no strategies, got %q", msg)
+	}
+
+	// Test that FormatHyperliquidTop10 still works via the wrapper.
+	hlMsg := FormatHyperliquidTop10(cfg, state, prices)
+	if hlMsg == "" {
+		t.Fatal("Expected non-empty message from FormatHyperliquidTop10 wrapper")
+	}
+	if !containsStr(hlMsg, "Hyperliquid Top 10") {
+		t.Error("Wrapper message should contain Hyperliquid title")
+	}
+	if !containsStr(hlMsg, "hl-sma-btc") {
+		t.Error("Wrapper message should contain hl-sma-btc")
+	}
+}
+
 func containsStr(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && findSubstring(s, substr))
 }
