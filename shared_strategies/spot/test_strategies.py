@@ -665,6 +665,7 @@ class TestEdgeCases:
         "mean_reversion", "momentum", "volume_weighted", "triple_ema",
         "rsi_macd_combo", "stoch_rsi", "atr_breakout",
         "heikin_ashi_ema", "amd_ifvg", "range_scalper",
+        "sweep_squeeze_combo",
     ])
     def test_single_row(self, name):
         """All strategies should handle a single-row DataFrame."""
@@ -672,3 +673,125 @@ class TestEdgeCases:
         result = apply_strategy(name, df)
         assert len(result) == 1
         assert "signal" in result.columns
+
+
+class TestSweepSqueezeCombo:
+    """Tests for sweep_squeeze_combo strategy."""
+
+    def test_registered(self):
+        assert "sweep_squeeze_combo" in STRATEGY_REGISTRY
+
+    def test_output_columns(self):
+        """Should produce signal + sub-signal diagnostic columns."""
+        df = make_ohlcv(make_trending_up(80))
+        result = apply_strategy("sweep_squeeze_combo", df)
+        for col in ["signal", "ls_signal", "sq_signal", "sr_signal", "buy_votes", "sell_votes"]:
+            assert col in result.columns, f"Missing column: {col}"
+
+    def test_no_signal_on_flat(self):
+        """Flat data should produce no consensus signals."""
+        df = make_ohlcv(make_flat(80))
+        result = apply_strategy("sweep_squeeze_combo", df)
+        assert (result["signal"] == 0).all()
+
+    def test_sweep_with_recovery_produces_buy(self):
+        """Simulate a liquidity sweep: wick below swing low, close above it."""
+        n = 80
+        # Downtrend to establish a swing low, then range, then sweep candle
+        prices = list(np.linspace(110, 95, 25))   # downtrend
+        prices += list(np.linspace(96, 105, 15))   # recovery (swing low at ~95)
+        prices += list(np.linspace(105, 100, 15))  # drift back down
+        # Sweep candle: close above swing low but wick below
+        prices += [96.0]  # close above 95 (swing low)
+        prices += list(np.linspace(98, 108, n - len(prices)))  # rally
+        df = make_ohlcv(prices, noise=0.3)
+        # Make the sweep candle (index 55) wick below the swing low
+        df.loc[df.index[55], "low"] = 93.0   # wick below 95 swing low
+        df.loc[df.index[55], "close"] = 96.0  # close above 95
+        result = apply_strategy("sweep_squeeze_combo", df, {"swing_lookback": 5})
+        # Liquidity sweep sub-signal should fire on the sweep candle
+        assert (result["ls_signal"] == 1).any(), \
+            "Expected liquidity sweep buy signal on sweep candle"
+
+    def test_short_data_no_crash(self):
+        """Should handle very short data without crashing."""
+        df = make_ohlcv([100.0, 101.0, 99.0])
+        result = apply_strategy("sweep_squeeze_combo", df)
+        assert "signal" in result.columns
+        assert len(result) == 3
+
+    def test_default_swing_lookback_is_10(self):
+        """Default params should have swing_lookback=10."""
+        defaults = STRATEGY_REGISTRY["sweep_squeeze_combo"]["default_params"]
+        assert defaults["swing_lookback"] == 10
+
+    def test_min_agree_default_is_2(self):
+        """Default params should require 2-of-3 agreement."""
+        defaults = STRATEGY_REGISTRY["sweep_squeeze_combo"]["default_params"]
+        assert defaults["min_agree"] == 2
+
+    def test_consensus_signal_with_two_agreeing(self):
+        """Verify consensus signal fires when 2 of 3 sub-signals agree."""
+        from unittest.mock import patch
+
+        n = 50
+        df = make_ohlcv(make_flat(n))
+
+        # Fake sub-signals: liquidity sweep + stochastic RSI agree on buy at bar 25
+        fake_ls_df = df.copy()
+        fake_ls_df["signal"] = 0
+        fake_ls_df.iloc[25, fake_ls_df.columns.get_loc("signal")] = 1
+        fake_sq = pd.Series(0, index=df.index)
+        fake_sr = pd.Series(0, index=df.index)
+        fake_sr.iloc[25] = 1  # 2-of-3 agree on buy
+
+        with patch("sweep_squeeze_combo.liquidity_sweep_core", return_value=fake_ls_df), \
+             patch("sweep_squeeze_combo._squeeze_signals", return_value=fake_sq), \
+             patch("sweep_squeeze_combo._stoch_rsi_signals", return_value=fake_sr):
+            result = apply_strategy("sweep_squeeze_combo", df, {"min_agree": 2})
+
+        assert result.loc[result.index[25], "signal"] == 1, \
+            "Expected consensus buy signal=1 when 2 of 3 sub-signals agree"
+        assert result.loc[result.index[25], "buy_votes"] == 2
+
+    def test_consensus_sell_signal_with_two_agreeing(self):
+        """Verify consensus sell signal fires when 2 of 3 sub-signals agree."""
+        from unittest.mock import patch
+
+        n = 50
+        df = make_ohlcv(make_flat(n))
+
+        # Fake sub-signals: squeeze + stochastic RSI agree on sell at bar 30
+        fake_ls_df = df.copy()
+        fake_ls_df["signal"] = 0
+        fake_sq = pd.Series(0, index=df.index)
+        fake_sq.iloc[30] = -1
+        fake_sr = pd.Series(0, index=df.index)
+        fake_sr.iloc[30] = -1  # 2-of-3 agree on sell
+
+        with patch("sweep_squeeze_combo.liquidity_sweep_core", return_value=fake_ls_df), \
+             patch("sweep_squeeze_combo._squeeze_signals", return_value=fake_sq), \
+             patch("sweep_squeeze_combo._stoch_rsi_signals", return_value=fake_sr):
+            result = apply_strategy("sweep_squeeze_combo", df, {"min_agree": 2})
+
+        assert (result["signal"] == -1).any(), \
+            "Expected consensus sell signal=-1 when 2 of 3 sub-signals agree"
+        assert result.loc[result.index[30], "sell_votes"] == 2
+
+    def test_consensus_buy_signal_with_sweep(self):
+        """Consensus buy signal=1 fires when liquidity sweep sub-signal is counted."""
+        n = 80
+        prices = list(np.linspace(110, 95, 25))
+        prices += list(np.linspace(96, 105, 15))
+        prices += list(np.linspace(105, 100, 15))
+        prices += [96.0]
+        prices += list(np.linspace(98, 108, n - len(prices)))
+        df = make_ohlcv(prices, noise=0.3)
+        df.loc[df.index[55], "low"] = 93.0
+        df.loc[df.index[55], "close"] = 96.0
+        result = apply_strategy("sweep_squeeze_combo", df, {
+            "swing_lookback": 5,
+            "min_agree": 1,
+        })
+        assert (result["signal"] == 1).any(), \
+            "Expected consensus buy signal=1 with min_agree=1 and ls_signal firing"
