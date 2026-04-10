@@ -23,6 +23,7 @@ from chart_patterns import chart_pattern_core
 from liquidity_sweeps import liquidity_sweep_core
 from range_scalper import range_scalper_core
 from sweep_squeeze_combo import sweep_squeeze_combo_core
+from adx_trend import adx_trend_core
 
 # ─────────────────────────────────────────────
 # Strategy registry
@@ -623,6 +624,15 @@ def range_scalper_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 )
 def sweep_squeeze_combo_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return sweep_squeeze_combo_core(df, **params)
+
+
+@register_strategy(
+    "adx_trend",
+    "ADX Trend Rider — enters on DI crossovers when ADX confirms strong trend (>25)",
+    {"adx_period": 14, "adx_threshold": 25}
+)
+def adx_trend_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return adx_trend_core(df, **params)
 
 
 @register_strategy(
