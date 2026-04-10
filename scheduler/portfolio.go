@@ -242,12 +242,12 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 		var execPrice float64
 		var contracts int
 		marginPerContract := spec.Margin
-		if marginPerContract <= 0 {
-			marginPerContract = price * multiplier // fallback if margin not set
-		}
 		if fillContracts > 0 {
 			execPrice = price
 			contracts = fillContracts
+			if marginPerContract <= 0 {
+				marginPerContract = price * multiplier
+			}
 		} else {
 			execPrice = ApplySlippage(price)
 			if marginPerContract <= 0 {
@@ -330,12 +330,12 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 			var execPrice float64
 			var contracts int
 			marginPerContract := spec.Margin
-			if marginPerContract <= 0 {
-				marginPerContract = price * multiplier
-			}
 			if fillContracts > 0 {
 				execPrice = price
 				contracts = fillContracts
+				if marginPerContract <= 0 {
+					marginPerContract = price * multiplier
+				}
 			} else {
 				execPrice = ApplySlippage(price)
 				if marginPerContract <= 0 {
