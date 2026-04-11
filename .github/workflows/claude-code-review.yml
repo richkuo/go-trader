@@ -1,11 +1,19 @@
 name: Claude Code Review
 
 on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
 
 jobs:
   claude-review:
+    if: |
+      github.event.issue.pull_request &&
+      (
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude review')) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude review'))
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -26,7 +34,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment'
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.issue.number }} --comment'
           claude_args: '--model claude-opus-4-6 --effort high --allowedTools "Bash(gh api *),Bash(gh pr *),Bash(go *),Bash(cd scheduler && go *),Bash(gofmt *),Bash(cd scheduler && gofmt *),Bash(find *),Write"'
           allowed_bots: 'claude'
           show_full_output: true
@@ -51,6 +59,6 @@ jobs:
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
+              issue_number: context.payload.issue.number,
               body: truncated
             });
