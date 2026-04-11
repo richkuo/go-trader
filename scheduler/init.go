@@ -57,6 +57,7 @@ var knownShortNames = map[string]string{
 	"heikin_ashi_ema":       "hae",
 	"range_scalper":         "rs",
 	"sweep_squeeze_combo":   "ssc",
+	"adx_trend":             "adxt",
 	"donchian_breakout":     "dbo",
 }
 
@@ -97,6 +98,7 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "parabolic_sar", ShortName: "psar"},
 	{ID: "range_scalper", ShortName: "rs"},
 	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
+	{ID: "adx_trend", ShortName: "adxt"},
 	{ID: "donchian_breakout", ShortName: "dbo"},
 }
 
@@ -114,6 +116,7 @@ var defaultPerpsStrategies = []stratDef{
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
 	{ID: "range_scalper", ShortName: "rs"},
 	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
+	{ID: "adx_trend", ShortName: "adxt"},
 	{ID: "donchian_breakout", ShortName: "dbo"},
 }
 
@@ -133,6 +136,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
 	{ID: "range_scalper", ShortName: "rs"},
 	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
+	{ID: "adx_trend", ShortName: "adxt"},
 	{ID: "donchian_breakout", ShortName: "dbo"},
 }
 
