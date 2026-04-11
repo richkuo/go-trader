@@ -149,6 +149,62 @@ func TestFormatCategorySummary_WithAsset(t *testing.T) {
 	}
 }
 
+func TestFormatCategorySummary_CircuitBreakerActive(t *testing.T) {
+	strats := []StrategyConfig{
+		{ID: "hl-rsi-btc", Type: "perps", Args: []string{"rsi", "BTC", "1h"}, Capital: 1000},
+		{ID: "hl-sma-btc", Type: "perps", Args: []string{"sma", "BTC", "1h"}, Capital: 1000},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-rsi-btc": {
+				Cash: 1000,
+				RiskState: RiskState{
+					CircuitBreaker:      true,
+					CircuitBreakerUntil: time.Now().UTC().Add(30 * time.Minute),
+				},
+			},
+			"hl-sma-btc": {Cash: 1000},
+		},
+	}
+	prices := map[string]float64{"BTC/USDT": 50000}
+
+	msgs := FormatCategorySummary(1, 0, 2, 0, 2000, prices, nil, strats, state, "hyperliquid", "BTC")
+	msg := strings.Join(msgs, "\n")
+
+	if !strings.Contains(msg, "Circuit breaker active") {
+		t.Errorf("expected circuit breaker warning, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "hl-rsi-btc") {
+		t.Errorf("expected hl-rsi-btc in circuit breaker list, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "resumes in") {
+		t.Errorf("expected 'resumes in' time remaining, got:\n%s", msg)
+	}
+	// hl-sma-btc should NOT be in the circuit breaker list
+	if strings.Contains(msg, "hl-sma-btc") && strings.Contains(msg, "hl-sma-btc (resumes") {
+		t.Errorf("hl-sma-btc should not have circuit breaker warning, got:\n%s", msg)
+	}
+}
+
+func TestFormatCategorySummary_NoCircuitBreaker(t *testing.T) {
+	strats := []StrategyConfig{
+		{ID: "hl-rsi-btc", Type: "perps", Args: []string{"rsi", "BTC", "1h"}, Capital: 1000},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-rsi-btc": {Cash: 1000},
+		},
+	}
+	prices := map[string]float64{"BTC/USDT": 50000}
+
+	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC")
+	msg := strings.Join(msgs, "\n")
+
+	if strings.Contains(msg, "Circuit breaker") {
+		t.Errorf("should not show circuit breaker when none active, got:\n%s", msg)
+	}
+}
+
 func TestDiscordChannels_BackwardsCompatJSON(t *testing.T) {
 	// Old config format {"spot":"x","options":"y"} should still parse into map[string]string.
 	raw := `{"enabled":true,"token":"","channels":{"spot":"ch1","options":"ch2"}}`
