@@ -198,8 +198,6 @@ func discoverStrategies() {
 		}
 		if len(filtered) > 0 {
 			spotStrategies = filtered
-			// perps supports the same set as spot + delta_neutral_funding (perps-only, #102)
-			perpsStrategies = append(filtered, stratDef{ID: "delta_neutral_funding", ShortName: "dnf"})
 		}
 	}
 	if discovered := discoverPythonStrategies("shared_strategies/options/strategies.py"); len(discovered) > 0 {
@@ -208,6 +206,10 @@ func discoverStrategies() {
 	futuresStrategies = defaultFuturesStrategies
 	if discovered := discoverPythonStrategies("shared_strategies/futures/strategies.py"); len(discovered) > 0 {
 		futuresStrategies = discovered
+		// Perps uses the same strategy registry as futures (#221).
+		// check_hyperliquid.py and check_okx.py (swap mode) import from
+		// shared_strategies/futures/, so perps must match that registry.
+		perpsStrategies = discovered
 	}
 }
 

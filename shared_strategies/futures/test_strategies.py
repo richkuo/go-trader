@@ -45,8 +45,10 @@ make_volatile = _conftest_mod.make_volatile
 class TestFuturesRegistry:
     def test_strategies_registered(self):
         names = list_strategies()
-        assert len(names) >= 15
-        for expected in ["momentum", "mean_reversion", "rsi", "macd", "breakout",
+        assert len(names) >= 21
+        for expected in ["sma_crossover", "ema_crossover", "bollinger_bands",
+                         "volume_weighted", "triple_ema", "rsi_macd_combo",
+                         "momentum", "mean_reversion", "rsi", "macd", "breakout",
                          "stoch_rsi", "supertrend", "squeeze_momentum",
                          "ichimoku_cloud", "atr_breakout", "heikin_ashi_ema",
                          "order_blocks", "parabolic_sar", "delta_neutral_funding"]:
@@ -73,6 +75,111 @@ def _run(name, closes, params=None, volume=None, index=None):
 def _valid_signals(result):
     signals = result["signal"].dropna()
     assert set(signals.unique()).issubset({-1.0, 0.0, 1.0})
+
+
+# ─── SMA Crossover ─────────────────────────
+
+class TestSMACrossover:
+    def test_buy_signal(self):
+        # Trending up should produce buy signal when fast crosses above slow
+        closes = list(np.linspace(120, 80, 60)) + list(np.linspace(80, 140, 60))
+        result = _run("sma_crossover", closes)
+        _valid_signals(result)
+        assert "sma_fast" in result.columns
+        assert "sma_slow" in result.columns
+        assert (result["signal"] == 1).any()
+
+    def test_flat_no_signal(self):
+        result = _run("sma_crossover", make_flat(80))
+        assert (result["signal"].dropna() == 0).all()
+
+
+# ─── EMA Crossover ─────────────────────────
+
+class TestEMACrossover:
+    def test_buy_signal(self):
+        closes = list(np.linspace(120, 80, 50)) + list(np.linspace(80, 140, 50))
+        result = _run("ema_crossover", closes)
+        _valid_signals(result)
+        assert "ema_fast" in result.columns
+        assert "ema_slow" in result.columns
+        assert (result["signal"] == 1).any()
+
+    def test_flat_no_signal(self):
+        result = _run("ema_crossover", make_flat(80))
+        assert (result["signal"].dropna() == 0).all()
+
+
+# ─── Bollinger Bands ───────────────────────
+
+class TestBollingerBands:
+    def test_buy_signal(self):
+        # Flat → sharp dip → recovery forces price below lower band then cross back up
+        closes = list(np.full(30, 100.0)) + list(np.linspace(100, 80, 10)) + list(np.linspace(80, 105, 10))
+        result = _run("bollinger_bands", closes)
+        assert "bb_middle" in result.columns
+        assert "bb_upper" in result.columns
+        assert "bb_lower" in result.columns
+        _valid_signals(result)
+        assert (result["signal"] == 1).any()
+
+    def test_flat_no_signal(self):
+        result = _run("bollinger_bands", make_flat(40))
+        assert (result["signal"] == 0).all()
+
+
+# ─── Volume Weighted ──────────────────────
+
+class TestVolumeWeighted:
+    def test_buy_signal(self):
+        # Down → up crossover with volume spike at the crossover point
+        closes = list(np.linspace(120, 80, 30)) + list(np.linspace(80, 130, 30))
+        volume = [100.0] * 60
+        volume[35] = 500.0  # spike volume at the crossover bar
+        volume[36] = 500.0
+        result = _run("volume_weighted", closes, volume=volume)
+        assert "price_sma" in result.columns
+        assert "vol_sma" in result.columns
+        _valid_signals(result)
+        assert (result["signal"] == 1).any()
+
+    def test_flat_no_signal(self):
+        result = _run("volume_weighted", make_flat(40))
+        assert (result["signal"] == 0).all()
+
+
+# ─── Triple EMA ───────────────────────────
+
+class TestTripleEMA:
+    def test_buy_signal(self):
+        closes = make_trending_up(80)
+        result = _run("triple_ema", closes)
+        assert "ema_short" in result.columns
+        assert "ema_mid" in result.columns
+        assert "ema_long" in result.columns
+        _valid_signals(result)
+        assert (result["signal"] == 1).any()
+
+    def test_flat_no_signal(self):
+        result = _run("triple_ema", make_flat(80))
+        assert (result["signal"].dropna() == 0).all()
+
+
+# ─── RSI MACD Combo ──────────────────────
+
+class TestRSIMACDCombo:
+    def test_buy_signal(self):
+        closes = list(np.linspace(120, 80, 50)) + list(np.linspace(80, 140, 50))
+        result = _run("rsi_macd_combo", closes)
+        assert "rsi" in result.columns
+        assert "macd_line" in result.columns
+        assert "macd_signal_line" in result.columns
+        _valid_signals(result)
+        assert (result["signal"] == 1).any() or (result["signal"] == -1).any()
+
+    def test_flat_no_signal(self):
+        result = _run("rsi_macd_combo", make_flat(80))
+        assert (result["signal"] == 0).all()
 
 
 # ─── Momentum ───────────────────────────────
@@ -364,6 +471,8 @@ class TestAMDIFVG:
 
 class TestEdgeCases:
     @pytest.mark.parametrize("name", [
+        "sma_crossover", "ema_crossover", "bollinger_bands",
+        "volume_weighted", "triple_ema", "rsi_macd_combo",
         "momentum", "mean_reversion", "rsi", "macd", "breakout",
         "stoch_rsi", "supertrend", "squeeze_momentum",
         "atr_breakout", "heikin_ashi_ema", "parabolic_sar",
@@ -376,6 +485,8 @@ class TestEdgeCases:
         assert len(result) == 0
 
     @pytest.mark.parametrize("name", [
+        "sma_crossover", "ema_crossover", "bollinger_bands",
+        "volume_weighted", "triple_ema", "rsi_macd_combo",
         "momentum", "mean_reversion", "rsi", "macd", "breakout",
         "stoch_rsi", "atr_breakout", "heikin_ashi_ema",
         "supertrend", "squeeze_momentum", "ichimoku_cloud",
