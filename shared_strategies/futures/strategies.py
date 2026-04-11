@@ -23,6 +23,7 @@ from chart_patterns import chart_pattern_core
 from liquidity_sweeps import liquidity_sweep_core
 from range_scalper import range_scalper_core
 from sweep_squeeze_combo import sweep_squeeze_combo_core
+from donchian_breakout import donchian_breakout_core
 
 # ─────────────────────────────────────────────
 # Strategy registry
@@ -653,6 +654,15 @@ def delta_neutral_funding_strategy(df: pd.DataFrame,
     elif avg < exit_threshold:
         result.iloc[-1, result.columns.get_loc("signal")] = 1   # exit short
     return result
+
+
+@register_strategy(
+    "donchian_breakout",
+    "Donchian Channel Breakout — turtle-trading style entry on new high/low channel breakouts",
+    {"entry_period": 20, "exit_period": 10}
+)
+def donchian_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return donchian_breakout_core(df, **params)
 
 
 if __name__ == "__main__":
