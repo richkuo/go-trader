@@ -17,11 +17,21 @@ import math
 import traceback
 from datetime import datetime, timezone
 
-# Add paths: platforms/okx/ for adapter, shared_strategies/spot/ for apply_strategy,
-# shared_tools/ for utilities.
+# Add paths: platforms/okx/ for adapter, shared_tools/ for utilities.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'platforms', 'okx'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'spot'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
+
+# Use futures registry for perps (swap), spot registry for spot.
+# Default is swap, matching argparse defaults below.
+_inst_type = "swap"
+for _arg in sys.argv:
+    if _arg.startswith("--inst-type="):
+        _inst_type = _arg.split("=", 1)[1]
+        break
+if _inst_type == "spot":
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'spot'))
+else:
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'futures'))
 
 
 def _make_dataframe(candles):

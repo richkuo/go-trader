@@ -39,9 +39,9 @@ class SafeEncoder(json.JSONEncoder):
         return obj
 
 # Add paths: platforms/hyperliquid/ directly (avoids naming conflict with hyperliquid SDK),
-# shared_strategies/spot/ for apply_strategy, shared_tools/ for utilities.
+# shared_strategies/futures/ for apply_strategy (Hyperliquid is a perps exchange), shared_tools/ for utilities.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'platforms', 'hyperliquid'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'spot'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'futures'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 
