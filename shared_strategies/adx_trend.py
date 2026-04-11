@@ -107,6 +107,10 @@ def adx_trend_core(
     if adx_start >= n:
         return result
 
+    adx_start = period * 2 - 1
+    if adx_start >= n:
+        return result
+
     adx[adx_start] = np.mean(dx[period : adx_start + 1])
 
     for i in range(adx_start + 1, n):
