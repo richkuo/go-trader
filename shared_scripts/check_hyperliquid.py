@@ -215,6 +215,14 @@ def run_execute(symbol, side, size, mode):
                     "avg_px": float(filled.get("avgPx", 0) or 0),
                     "total_sz": float(filled.get("totalSz", 0) or 0),
                 }
+                # Extract exchange order ID if present
+                oid = filled.get("oid")
+                if oid is not None:
+                    fill["oid"] = int(oid)
+                # Extract fee if present in response
+                fee = filled.get("fee")
+                if fee is not None:
+                    fill["fee"] = float(fee)
         except Exception:
             pass
 

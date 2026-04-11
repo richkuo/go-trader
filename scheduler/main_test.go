@@ -497,3 +497,80 @@ func TestSendTradeAlerts_PaperNoLiveChannel(t *testing.T) {
 		t.Errorf("expected message to primary channel ch-hl, got %s", mock.messages[0].channelID)
 	}
 }
+
+func TestExecuteHyperliquidResult_StampsExchangeData(t *testing.T) {
+	s := &StrategyState{
+		ID:              "hl-test-btc",
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		Cash:            1000,
+		InitialCapital:  1000,
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{PeakValue: 1000},
+	}
+	sc := StrategyConfig{ID: "hl-test-btc", Type: "perps", Platform: "hyperliquid"}
+	result := &HyperliquidResult{Signal: 1, Symbol: "BTC", Price: 50000}
+	execResult := &HyperliquidExecuteResult{
+		Execution: &HyperliquidExecution{
+			Action: "buy", Symbol: "BTC", Size: 0.015,
+			Fill: &HyperliquidFill{AvgPx: 50000.5, TotalSz: 0.015, OID: 1234567890, Fee: 1.75},
+		},
+		Platform: "hyperliquid",
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	trades, _ := executeHyperliquidResult(sc, s, result, execResult, "BUY", 50000, logger)
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory len = %d, want 1", len(s.TradeHistory))
+	}
+
+	tr := s.TradeHistory[0]
+	if tr.ExchangeOrderID != "1234567890" {
+		t.Errorf("ExchangeOrderID = %q, want %q", tr.ExchangeOrderID, "1234567890")
+	}
+	if tr.ExchangeFee != 1.75 {
+		t.Errorf("ExchangeFee = %g, want 1.75", tr.ExchangeFee)
+	}
+}
+
+func TestExecuteHyperliquidResult_PaperModeNoExchangeData(t *testing.T) {
+	s := &StrategyState{
+		ID:              "hl-paper-btc",
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		Cash:            1000,
+		InitialCapital:  1000,
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{PeakValue: 1000},
+	}
+	sc := StrategyConfig{ID: "hl-paper-btc", Type: "perps", Platform: "hyperliquid"}
+	result := &HyperliquidResult{Signal: 1, Symbol: "BTC", Price: 50000}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	// Paper mode: execResult is nil
+	trades, _ := executeHyperliquidResult(sc, s, result, nil, "BUY", 50000, logger)
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+
+	tr := s.TradeHistory[0]
+	if tr.ExchangeOrderID != "" {
+		t.Errorf("ExchangeOrderID should be empty in paper mode, got %q", tr.ExchangeOrderID)
+	}
+	if tr.ExchangeFee != 0 {
+		t.Errorf("ExchangeFee should be 0 in paper mode, got %g", tr.ExchangeFee)
+	}
+}

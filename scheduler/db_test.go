@@ -1,11 +1,14 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 func openTestDB(t *testing.T) *StateDB {
@@ -675,5 +678,306 @@ func TestSaveState_EmptyStrategies(t *testing.T) {
 	}
 	if len(loaded.Strategies) != 0 {
 		t.Errorf("strategies count = %d, want 0", len(loaded.Strategies))
+	}
+}
+
+func TestTradeExchangeFieldsRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Nanosecond)
+
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{
+			"hl-test": {
+				ID: "hl-test", Type: "perps", Platform: "hyperliquid",
+				Cash: 1000, InitialCapital: 1000,
+				Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition),
+				TradeHistory: []Trade{
+					{
+						Timestamp: now.Add(-1 * time.Hour), StrategyID: "hl-test", Symbol: "BTC",
+						Side: "buy", Quantity: 0.1, Price: 50000, Value: 5000, TradeType: "perps",
+						Details: "live buy", ExchangeOrderID: "1234567890", ExchangeFee: 1.75,
+					},
+					{
+						Timestamp: now, StrategyID: "hl-test", Symbol: "BTC",
+						Side: "sell", Quantity: 0.1, Price: 51000, Value: 5100, TradeType: "perps",
+						Details: "live sell", ExchangeOrderID: "1234567891", ExchangeFee: 1.79,
+					},
+				},
+			},
+		},
+	}
+
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+
+	hlStrat := loaded.Strategies["hl-test"]
+	if hlStrat == nil {
+		t.Fatal("missing strategy hl-test")
+	}
+	if len(hlStrat.TradeHistory) != 2 {
+		t.Fatalf("trade count = %d, want 2", len(hlStrat.TradeHistory))
+	}
+
+	// Verify exchange fields persisted on first trade.
+	t1 := hlStrat.TradeHistory[0]
+	if t1.ExchangeOrderID != "1234567890" {
+		t.Errorf("trade[0].ExchangeOrderID = %q, want %q", t1.ExchangeOrderID, "1234567890")
+	}
+	if t1.ExchangeFee != 1.75 {
+		t.Errorf("trade[0].ExchangeFee = %g, want 1.75", t1.ExchangeFee)
+	}
+
+	// Verify exchange fields persisted on second trade.
+	t2 := hlStrat.TradeHistory[1]
+	if t2.ExchangeOrderID != "1234567891" {
+		t.Errorf("trade[1].ExchangeOrderID = %q, want %q", t2.ExchangeOrderID, "1234567891")
+	}
+	if t2.ExchangeFee != 1.79 {
+		t.Errorf("trade[1].ExchangeFee = %g, want 1.79", t2.ExchangeFee)
+	}
+}
+
+func TestTradeExchangeFields_EmptyByDefault(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Nanosecond)
+
+	// Trades without exchange fields should default to empty/zero.
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{
+			"spot-test": {
+				ID: "spot-test", Type: "spot", Platform: "binanceus",
+				Cash: 1000, InitialCapital: 1000,
+				Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition),
+				TradeHistory: []Trade{
+					{Timestamp: now, StrategyID: "spot-test", Symbol: "BTC/USDT", Side: "buy",
+						Quantity: 0.01, Price: 50000, Value: 500, TradeType: "spot", Details: "paper trade"},
+				},
+			},
+		},
+	}
+
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+
+	tr := loaded.Strategies["spot-test"].TradeHistory[0]
+	if tr.ExchangeOrderID != "" {
+		t.Errorf("ExchangeOrderID should be empty for paper trade, got %q", tr.ExchangeOrderID)
+	}
+	if tr.ExchangeFee != 0 {
+		t.Errorf("ExchangeFee should be 0 for paper trade, got %g", tr.ExchangeFee)
+	}
+}
+
+func TestQueryTradeHistory_ExchangeFields(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Nanosecond)
+
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{
+			"hl-test": {
+				ID: "hl-test", Type: "perps", Platform: "hyperliquid",
+				Cash: 1000, InitialCapital: 1000,
+				Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition),
+				TradeHistory: []Trade{
+					{Timestamp: now, StrategyID: "hl-test", Symbol: "BTC", Side: "buy",
+						Quantity: 0.1, Price: 50000, Value: 5000, TradeType: "perps",
+						Details: "live", ExchangeOrderID: "9876543210", ExchangeFee: 2.50},
+				},
+			},
+		},
+	}
+
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	trades, total, err := db.QueryTradeHistory("hl-test", "", time.Time{}, time.Time{}, 50, 0)
+	if err != nil {
+		t.Fatalf("QueryTradeHistory: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("total = %d, want 1", total)
+	}
+	if trades[0].ExchangeOrderID != "9876543210" {
+		t.Errorf("ExchangeOrderID = %q, want %q", trades[0].ExchangeOrderID, "9876543210")
+	}
+	if trades[0].ExchangeFee != 2.50 {
+		t.Errorf("ExchangeFee = %g, want 2.50", trades[0].ExchangeFee)
+	}
+}
+
+func TestMigrateSchema_AddsExchangeColumns(t *testing.T) {
+	// Create a DB with the old schema (no exchange columns), then verify migration adds them.
+	path := filepath.Join(t.TempDir(), "state.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	// Create old-schema trades table without exchange columns.
+	oldSchema := `
+	CREATE TABLE IF NOT EXISTS app_state (
+	    id INTEGER PRIMARY KEY CHECK (id = 1),
+	    cycle_count INTEGER NOT NULL DEFAULT 0,
+	    last_cycle TEXT NOT NULL DEFAULT '',
+	    last_top10_summary TEXT NOT NULL DEFAULT '',
+	    last_leaderboard_post_date TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE IF NOT EXISTS strategies (
+	    id TEXT PRIMARY KEY,
+	    type TEXT NOT NULL,
+	    platform TEXT NOT NULL DEFAULT '',
+	    cash REAL NOT NULL DEFAULT 0,
+	    initial_capital REAL NOT NULL DEFAULT 0,
+	    risk_peak_value REAL NOT NULL DEFAULT 0,
+	    risk_max_drawdown_pct REAL NOT NULL DEFAULT 0,
+	    risk_current_drawdown_pct REAL NOT NULL DEFAULT 0,
+	    risk_daily_pnl REAL NOT NULL DEFAULT 0,
+	    risk_daily_pnl_date TEXT NOT NULL DEFAULT '',
+	    risk_consecutive_losses INTEGER NOT NULL DEFAULT 0,
+	    risk_circuit_breaker INTEGER NOT NULL DEFAULT 0,
+	    risk_circuit_breaker_until TEXT NOT NULL DEFAULT '',
+	    risk_total_trades INTEGER NOT NULL DEFAULT 0,
+	    risk_winning_trades INTEGER NOT NULL DEFAULT 0,
+	    risk_losing_trades INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE IF NOT EXISTS positions (
+	    strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
+	    symbol TEXT NOT NULL,
+	    quantity REAL NOT NULL,
+	    avg_cost REAL NOT NULL,
+	    side TEXT NOT NULL,
+	    multiplier REAL NOT NULL DEFAULT 0,
+	    owner_strategy_id TEXT NOT NULL DEFAULT '',
+	    PRIMARY KEY (strategy_id, symbol)
+	);
+	CREATE TABLE IF NOT EXISTS option_positions (
+	    strategy_id TEXT NOT NULL, id TEXT NOT NULL, underlying TEXT NOT NULL,
+	    option_type TEXT NOT NULL, strike REAL NOT NULL, expiry TEXT NOT NULL,
+	    dte REAL NOT NULL DEFAULT 0, action TEXT NOT NULL, quantity REAL NOT NULL,
+	    entry_premium REAL NOT NULL DEFAULT 0, entry_premium_usd REAL NOT NULL DEFAULT 0,
+	    current_value_usd REAL NOT NULL DEFAULT 0, delta REAL NOT NULL DEFAULT 0,
+	    gamma REAL NOT NULL DEFAULT 0, theta REAL NOT NULL DEFAULT 0,
+	    vega REAL NOT NULL DEFAULT 0, opened_at TEXT NOT NULL DEFAULT '',
+	    PRIMARY KEY (strategy_id, id)
+	);
+	CREATE TABLE IF NOT EXISTS trades (
+	    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+	    strategy_id TEXT NOT NULL,
+	    timestamp TEXT NOT NULL,
+	    symbol TEXT NOT NULL,
+	    side TEXT NOT NULL,
+	    quantity REAL NOT NULL,
+	    price REAL NOT NULL,
+	    value REAL NOT NULL,
+	    trade_type TEXT NOT NULL DEFAULT '',
+	    details TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE IF NOT EXISTS portfolio_risk (
+	    id INTEGER PRIMARY KEY CHECK (id = 1),
+	    peak_value REAL NOT NULL DEFAULT 0,
+	    current_drawdown_pct REAL NOT NULL DEFAULT 0,
+	    kill_switch_active INTEGER NOT NULL DEFAULT 0,
+	    kill_switch_at TEXT NOT NULL DEFAULT '',
+	    warning_sent INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE IF NOT EXISTS kill_switch_events (
+	    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+	    timestamp TEXT NOT NULL,
+	    type TEXT NOT NULL,
+	    drawdown_pct REAL NOT NULL DEFAULT 0,
+	    portfolio_value REAL NOT NULL DEFAULT 0,
+	    peak_value REAL NOT NULL DEFAULT 0,
+	    details TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE IF NOT EXISTS correlation_snapshot (
+	    id INTEGER PRIMARY KEY CHECK (id = 1),
+	    snapshot_json TEXT NOT NULL DEFAULT '{}'
+	);`
+
+	if _, err := db.Exec(oldSchema); err != nil {
+		t.Fatalf("create old schema: %v", err)
+	}
+
+	// Insert a trade without exchange columns.
+	if _, err := db.Exec(`INSERT INTO app_state (id, cycle_count) VALUES (1, 1)`); err != nil {
+		t.Fatalf("insert app_state: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO strategies (id, type) VALUES ('test', 'perps')`); err != nil {
+		t.Fatalf("insert strategy: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details)
+		VALUES ('test', '2026-01-01T00:00:00Z', 'BTC', 'buy', 0.1, 50000, 5000, 'perps', 'old trade')`); err != nil {
+		t.Fatalf("insert old trade: %v", err)
+	}
+	db.Close()
+
+	// Re-open via OpenStateDB which runs migration.
+	sdb, err := OpenStateDB(path)
+	if err != nil {
+		t.Fatalf("OpenStateDB after migration: %v", err)
+	}
+	defer sdb.Close()
+
+	// Verify old trade can be loaded with new columns defaulting to empty/zero.
+	loaded, err := sdb.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState after migration: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("loaded state is nil")
+	}
+	strat := loaded.Strategies["test"]
+	if strat == nil {
+		t.Fatal("missing strategy 'test'")
+	}
+	if len(strat.TradeHistory) != 1 {
+		t.Fatalf("trade count = %d, want 1", len(strat.TradeHistory))
+	}
+	tr := strat.TradeHistory[0]
+	if tr.ExchangeOrderID != "" {
+		t.Errorf("migrated trade ExchangeOrderID = %q, want empty", tr.ExchangeOrderID)
+	}
+	if tr.ExchangeFee != 0 {
+		t.Errorf("migrated trade ExchangeFee = %g, want 0", tr.ExchangeFee)
+	}
+
+	// Verify new trades with exchange fields can be saved and loaded.
+	strat.TradeHistory = append(strat.TradeHistory, Trade{
+		Timestamp: time.Now().UTC(), StrategyID: "test", Symbol: "BTC", Side: "sell",
+		Quantity: 0.1, Price: 51000, Value: 5100, TradeType: "perps",
+		Details: "new live trade", ExchangeOrderID: "999888777", ExchangeFee: 1.50,
+	})
+	if err := sdb.SaveState(loaded); err != nil {
+		t.Fatalf("SaveState with new trade: %v", err)
+	}
+
+	loaded2, err := sdb.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState after new trade: %v", err)
+	}
+	trades := loaded2.Strategies["test"].TradeHistory
+	if len(trades) != 2 {
+		t.Fatalf("trade count = %d, want 2", len(trades))
+	}
+	if trades[1].ExchangeOrderID != "999888777" {
+		t.Errorf("new trade ExchangeOrderID = %q, want %q", trades[1].ExchangeOrderID, "999888777")
+	}
+	if trades[1].ExchangeFee != 1.50 {
+		t.Errorf("new trade ExchangeFee = %g, want 1.50", trades[1].ExchangeFee)
 	}
 }

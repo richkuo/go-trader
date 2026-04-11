@@ -45,6 +45,8 @@ type HyperliquidResult struct {
 type HyperliquidFill struct {
 	AvgPx   float64 `json:"avg_px"`
 	TotalSz float64 `json:"total_sz"`
+	OID     int64   `json:"oid,omitempty"` // exchange order ID
+	Fee     float64 `json:"fee,omitempty"` // exchange fee (if available)
 }
 
 // HyperliquidExecution is the execution block from check_hyperliquid.py --execute output.

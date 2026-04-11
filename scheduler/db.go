@@ -82,7 +82,9 @@ CREATE TABLE IF NOT EXISTS trades (
     price REAL NOT NULL,
     value REAL NOT NULL,
     trade_type TEXT NOT NULL DEFAULT '',
-    details TEXT NOT NULL DEFAULT ''
+    details TEXT NOT NULL DEFAULT '',
+    exchange_order_id TEXT NOT NULL DEFAULT '',
+    exchange_fee REAL NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy_id);
@@ -146,7 +148,32 @@ func OpenStateDB(path string) (*StateDB, error) {
 		db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
-	return &StateDB{db: db}, nil
+
+	sdb := &StateDB{db: db}
+	if err := sdb.migrateSchema(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
+	return sdb, nil
+}
+
+// migrateSchema adds columns that may be missing from older databases.
+func (sdb *StateDB) migrateSchema() error {
+	// Add exchange_order_id and exchange_fee to trades table (added in #219).
+	migrations := []string{
+		"ALTER TABLE trades ADD COLUMN exchange_order_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE trades ADD COLUMN exchange_fee REAL NOT NULL DEFAULT 0",
+	}
+	for _, ddl := range migrations {
+		if _, err := sdb.db.Exec(ddl); err != nil {
+			// "duplicate column name" means the column already exists — skip.
+			if strings.Contains(err.Error(), "duplicate column") {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // Close closes the database connection.
@@ -241,8 +268,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 
 	// 4. Append-only trades: find the latest timestamp per strategy already in DB,
 	//    insert only newer trades.
-	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare trade insert: %w", err)
 	}
@@ -260,7 +287,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		for _, t := range s.TradeHistory {
 			ts := formatTime(t.Timestamp)
 			if ts > latestTS {
-				if _, err := stmtTrade.Exec(s.ID, ts, t.Symbol, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details); err != nil {
+				if _, err := stmtTrade.Exec(s.ID, ts, t.Symbol, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee); err != nil {
 					return fmt.Errorf("insert trade for %s: %w", s.ID, err)
 				}
 			}
@@ -428,7 +455,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 
 	// 5. Load most recent 1000 trades per strategy (full history stays in SQLite).
 	for id, s := range state.Strategies {
-		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, side, quantity, price, value, trade_type, details
+		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee
 			FROM trades WHERE strategy_id = ? ORDER BY timestamp ASC`, id)
 		if err != nil {
 			return nil, fmt.Errorf("load trades for %s: %w", id, err)
@@ -437,7 +464,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		for tradeRows.Next() {
 			var t Trade
 			var tsStr string
-			if err := tradeRows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details); err != nil {
+			if err := tradeRows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee); err != nil {
 				tradeRows.Close()
 				return nil, fmt.Errorf("scan trade: %w", err)
 			}
@@ -546,7 +573,7 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 		limit = 500
 	}
 
-	query := fmt.Sprintf("SELECT timestamp, strategy_id, symbol, side, quantity, price, value, trade_type, details FROM trades %s ORDER BY timestamp DESC LIMIT ? OFFSET ?", whereClause)
+	query := fmt.Sprintf("SELECT timestamp, strategy_id, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee FROM trades %s ORDER BY timestamp DESC LIMIT ? OFFSET ?", whereClause)
 	queryArgs := append(args, limit, offset)
 	rows, err := sdb.db.Query(query, queryArgs...)
 	if err != nil {
@@ -558,7 +585,7 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 	for rows.Next() {
 		var t Trade
 		var tsStr string
-		if err := rows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details); err != nil {
+		if err := rows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee); err != nil {
 			return nil, 0, fmt.Errorf("scan trade: %w", err)
 		}
 		t.Timestamp = parseTime(tsStr)
