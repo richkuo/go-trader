@@ -18,15 +18,17 @@ type Position struct {
 
 // Trade represents a completed trade.
 type Trade struct {
-	Timestamp  time.Time `json:"timestamp"`
-	StrategyID string    `json:"strategy_id"`
-	Symbol     string    `json:"symbol"`
-	Side       string    `json:"side"` // "buy" or "sell"
-	Quantity   float64   `json:"quantity"`
-	Price      float64   `json:"price"`
-	Value      float64   `json:"value"`
-	TradeType  string    `json:"trade_type"` // "spot", "options", or "futures"
-	Details    string    `json:"details"`
+	Timestamp       time.Time `json:"timestamp"`
+	StrategyID      string    `json:"strategy_id"`
+	Symbol          string    `json:"symbol"`
+	Side            string    `json:"side"` // "buy" or "sell"
+	Quantity        float64   `json:"quantity"`
+	Price           float64   `json:"price"`
+	Value           float64   `json:"value"`
+	TradeType       string    `json:"trade_type"` // "spot", "options", or "futures"
+	Details         string    `json:"details"`
+	ExchangeOrderID string    `json:"exchange_order_id,omitempty"` // exchange-provided order ID (e.g. Hyperliquid oid)
+	ExchangeFee     float64   `json:"exchange_fee,omitempty"`      // fee charged by exchange (if available)
 }
 
 // PortfolioValue calculates total value of a strategy's portfolio.

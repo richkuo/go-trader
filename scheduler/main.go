@@ -1295,10 +1295,27 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
+	prevTradeCount := len(s.TradeHistory)
 	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, fillQty, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
+	}
+
+	// Stamp exchange metadata on newly created trades from live fills.
+	if trades > 0 && execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil {
+		fill := execResult.Execution.Fill
+		orderID := ""
+		if fill.OID != 0 {
+			orderID = fmt.Sprintf("%d", fill.OID)
+		}
+		for i := prevTradeCount; i < len(s.TradeHistory); i++ {
+			s.TradeHistory[i].ExchangeOrderID = orderID
+			s.TradeHistory[i].ExchangeFee = fill.Fee
+		}
+		if orderID != "" {
+			logger.Info("Exchange order ID: %s", orderID)
+		}
 	}
 
 	detail := ""

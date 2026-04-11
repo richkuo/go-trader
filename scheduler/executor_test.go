@@ -106,6 +106,57 @@ func TestHyperliquidExecuteResultJSON(t *testing.T) {
 	}
 }
 
+func TestHyperliquidExecuteResultJSON_WithOID(t *testing.T) {
+	raw := `{
+		"execution": {
+			"action": "buy",
+			"symbol": "BTC",
+			"size": 0.01,
+			"fill": {"avg_px": 55000.5, "total_sz": 0.01, "oid": 1234567890, "fee": 0.35}
+		},
+		"platform": "hyperliquid",
+		"timestamp": "2026-01-01T00:00:00Z"
+	}`
+
+	var result HyperliquidExecuteResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Execution == nil || result.Execution.Fill == nil {
+		t.Fatal("Execution and Fill should not be nil")
+	}
+	if result.Execution.Fill.OID != 1234567890 {
+		t.Errorf("OID = %d, want 1234567890", result.Execution.Fill.OID)
+	}
+	if result.Execution.Fill.Fee != 0.35 {
+		t.Errorf("Fee = %g, want 0.35", result.Execution.Fill.Fee)
+	}
+}
+
+func TestHyperliquidExecuteResultJSON_NoOID(t *testing.T) {
+	// Backwards compatibility: fill without oid/fee should still parse
+	raw := `{
+		"execution": {
+			"action": "sell",
+			"symbol": "ETH",
+			"size": 0.5,
+			"fill": {"avg_px": 2100, "total_sz": 0.5}
+		},
+		"platform": "hyperliquid"
+	}`
+
+	var result HyperliquidExecuteResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Execution.Fill.OID != 0 {
+		t.Errorf("OID should be 0 when absent, got %d", result.Execution.Fill.OID)
+	}
+	if result.Execution.Fill.Fee != 0 {
+		t.Errorf("Fee should be 0 when absent, got %g", result.Execution.Fill.Fee)
+	}
+}
+
 func TestTopStepResultJSON(t *testing.T) {
 	raw := `{
 		"strategy": "sma",
