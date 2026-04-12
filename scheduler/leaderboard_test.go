@@ -617,6 +617,120 @@ func TestPostLeaderboard_FallbackRouting(t *testing.T) {
 	}
 }
 
+// TestPostLeaderboard_MixedBackends is the regression test for the bug where
+// HasLeaderboardChannel returning true on *any* backend caused all other
+// backends to silently drop leaderboard messages. With per-backend routing,
+// Discord (with dedicated channel) should receive every message on lb-ch and
+// Telegram (without) should still get the legacy per-category / broadcast
+// routing.
+func TestPostLeaderboard_MixedBackends(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{StateFile: filepath.Join(dir, "state.json")}
+
+	lb := LeaderboardData{
+		Messages: map[string]string{
+			"spot":     "spot-msg",
+			"perps":    "perps-msg",
+			"options":  "options-msg",
+			"futures":  "futures-msg",
+			"top10":    "top10-msg",
+			"bottom10": "bottom10-msg",
+		},
+	}
+	raw, _ := json.Marshal(lb)
+	if err := os.WriteFile(leaderboardPath(cfg), raw, 0600); err != nil {
+		t.Fatalf("write leaderboard: %v", err)
+	}
+
+	discord := &mockNotifier{}
+	telegram := &mockNotifier{}
+	notifier := NewMultiNotifier(
+		notifierBackend{
+			notifier: discord,
+			channels: map[string]string{
+				"spot":    "discord-spot",
+				"perps":   "discord-perps",
+				"options": "discord-options",
+				"futures": "discord-futures",
+			},
+			leaderboardChannel: "discord-lb",
+		},
+		notifierBackend{
+			notifier: telegram,
+			channels: map[string]string{
+				"spot":    "telegram-spot",
+				"perps":   "telegram-perps",
+				"options": "telegram-options",
+				"futures": "telegram-futures",
+			},
+		},
+	)
+
+	if err := PostLeaderboard(cfg, notifier); err != nil {
+		t.Fatalf("PostLeaderboard: %v", err)
+	}
+
+	// Discord: every one of the 6 messages should land on discord-lb.
+	if len(discord.messages) != 6 {
+		t.Fatalf("expected 6 discord messages on discord-lb, got %d: %v", len(discord.messages), discord.messages)
+	}
+	for _, m := range discord.messages {
+		if m.channelID != "discord-lb" {
+			t.Errorf("expected all discord messages on discord-lb, got %s (content=%q)", m.channelID, m.content)
+		}
+	}
+
+	// Telegram: legacy routing.
+	//   spot     → telegram-spot     (1)
+	//   perps    → telegram-perps    (1)
+	//   options  → telegram-options  (1)
+	//   futures  → telegram-futures  (1)
+	//   top10    → broadcast to all 4 unique channels (4)
+	//   bottom10 → broadcast to all 4 unique channels (4)
+	// Total = 12.
+	if len(telegram.messages) != 12 {
+		t.Fatalf("expected 12 telegram messages from legacy routing, got %d: %v", len(telegram.messages), telegram.messages)
+	}
+
+	// Verify each per-category message lands on its matching telegram channel.
+	expectCategory := map[string]string{
+		"spot-msg":    "telegram-spot",
+		"perps-msg":   "telegram-perps",
+		"options-msg": "telegram-options",
+		"futures-msg": "telegram-futures",
+	}
+	for content, wantCh := range expectCategory {
+		hits := 0
+		for _, m := range telegram.messages {
+			if m.content == content {
+				if m.channelID != wantCh {
+					t.Errorf("%s: expected telegram channel %s, got %s", content, wantCh, m.channelID)
+				}
+				hits++
+			}
+		}
+		if hits != 1 {
+			t.Errorf("%s: expected 1 telegram send, got %d", content, hits)
+		}
+	}
+
+	// top10 / bottom10 should each broadcast to all 4 telegram channels.
+	for _, content := range []string{"top10-msg", "bottom10-msg"} {
+		seen := map[string]bool{}
+		for _, m := range telegram.messages {
+			if m.content == content {
+				seen[m.channelID] = true
+			}
+		}
+		expected := []string{"telegram-spot", "telegram-perps", "telegram-options", "telegram-futures"}
+		for _, ch := range expected {
+			if !seen[ch] {
+				t.Errorf("%s: expected broadcast to %s, missing (got %v)", content, ch, seen)
+			}
+		}
+	}
+}
+
 func containsStr(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && findSubstring(s, substr))
 }
