@@ -430,13 +430,13 @@ func TestFormatCategorySummary_TfIntColumn(t *testing.T) {
 	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 3600)
 	msg := strings.Join(msgs, "\n")
 
-	// Tf/Int column header should be present.
-	if !strings.Contains(msg, "Tf/Int") {
-		t.Errorf("expected 'Tf/Int' column header, got:\n%s", msg)
+	// Separate Tf and Int column headers should be present (at end of table).
+	if !strings.Contains(msg, "Tf") || !strings.Contains(msg, "Int") {
+		t.Errorf("expected 'Tf' and 'Int' column headers, got:\n%s", msg)
 	}
-	// Strategy timeframe "1h" and per-strategy interval 600s → "10m".
-	if !strings.Contains(msg, "1h/10m") {
-		t.Errorf("expected '1h/10m' for perps with 1h timeframe and 600s interval, got:\n%s", msg)
+	// Row should render timeframe "1h" and interval "10m" as separate values.
+	if !strings.Contains(msg, "1h") || !strings.Contains(msg, "10m") {
+		t.Errorf("expected '1h' and '10m' for perps with 1h timeframe and 600s interval, got:\n%s", msg)
 	}
 }
 
@@ -455,9 +455,9 @@ func TestFormatCategorySummary_TfIntGlobalFallback(t *testing.T) {
 	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "spot", "", 3600)
 	msg := strings.Join(msgs, "\n")
 
-	// No timeframe for spot → "—", global interval 3600s → "1h".
-	if !strings.Contains(msg, "—/1h") {
-		t.Errorf("expected '—/1h' for spot with global 3600s interval, got:\n%s", msg)
+	// No timeframe for spot → "—"; global interval 3600s → "1h". Separate columns now.
+	if !strings.Contains(msg, "—") || !strings.Contains(msg, "1h") {
+		t.Errorf("expected '—' and '1h' for spot with global 3600s interval, got:\n%s", msg)
 	}
 }
 
