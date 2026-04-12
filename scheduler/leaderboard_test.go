@@ -375,6 +375,91 @@ func TestFormatPlatformTop10(t *testing.T) {
 	}
 }
 
+// TestLeaderboardTopNDefault verifies that leaderboardTopN returns 5 when unset.
+func TestLeaderboardTopNDefault(t *testing.T) {
+	cfg := &Config{}
+	if got := leaderboardTopN(cfg); got != 5 {
+		t.Errorf("leaderboardTopN with zero value = %d, want 5", got)
+	}
+}
+
+// TestLeaderboardTopNConfigured verifies that leaderboardTopN respects the configured value.
+func TestLeaderboardTopNConfigured(t *testing.T) {
+	cfg := &Config{Discord: DiscordConfig{LeaderboardTopN: 10}}
+	if got := leaderboardTopN(cfg); got != 10 {
+		t.Errorf("leaderboardTopN with configured value = %d, want 10", got)
+	}
+}
+
+// TestLeaderboardTopNNegative verifies that leaderboardTopN ignores negative values.
+func TestLeaderboardTopNNegative(t *testing.T) {
+	cfg := &Config{Discord: DiscordConfig{LeaderboardTopN: -1}}
+	if got := leaderboardTopN(cfg); got != 5 {
+		t.Errorf("leaderboardTopN with negative value = %d, want 5", got)
+	}
+}
+
+// TestPrecomputeLeaderboardTopN verifies that LeaderboardTopN limits the entries shown.
+func TestPrecomputeLeaderboardTopN(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := fmt.Sprintf("%s/state.json", dir)
+
+	// Create 8 spot strategies.
+	var strats []StrategyConfig
+	for i := 0; i < 8; i++ {
+		strats = append(strats, StrategyConfig{
+			ID:       fmt.Sprintf("sma-s%02d", i),
+			Type:     "spot",
+			Capital:  1000,
+			Platform: "binanceus",
+			Args:     []string{"sma_crossover", "BTC/USDT", "1h"},
+		})
+	}
+
+	cfg := &Config{
+		StateFile:  stateFile,
+		Strategies: strats,
+		Discord:    DiscordConfig{LeaderboardTopN: 3},
+	}
+
+	state := NewAppState()
+	for i, sc := range cfg.Strategies {
+		ss := NewStrategyState(sc)
+		ss.Cash = 1000 + float64(i)*10 // different PnL for each
+		state.Strategies[sc.ID] = ss
+	}
+
+	prices := map[string]float64{"BTC/USDT": 50000}
+	if err := PrecomputeLeaderboard(cfg, state, prices); err != nil {
+		t.Fatalf("PrecomputeLeaderboard failed: %v", err)
+	}
+
+	lb, err := LoadLeaderboard(cfg)
+	if err != nil {
+		t.Fatalf("LoadLeaderboard failed: %v", err)
+	}
+
+	spotMsg := lb.Messages["spot"]
+	if spotMsg == "" {
+		t.Fatal("Expected non-empty spot message")
+	}
+
+	// The best strategy (sma-s07) should appear (top 3).
+	if !containsStr(spotMsg, "sma-s07") {
+		t.Error("Best strategy sma-s07 should appear in top 3")
+	}
+	if !containsStr(spotMsg, "sma-s06") {
+		t.Error("Second-best strategy sma-s06 should appear in top 3")
+	}
+	if !containsStr(spotMsg, "sma-s05") {
+		t.Error("Third-best strategy sma-s05 should appear in top 3")
+	}
+	// sma-s04 is 4th — should NOT appear in top 3.
+	if containsStr(spotMsg, "sma-s04") {
+		t.Error("4th strategy sma-s04 should not appear when top_n=3")
+	}
+}
+
 func containsStr(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && findSubstring(s, substr))
 }

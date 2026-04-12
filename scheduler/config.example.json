@@ -73,6 +73,7 @@
       "hyperliquid": ""
     },
     "spot_summary_freq": "hourly",
-    "options_summary_freq": "per_check"
+    "options_summary_freq": "per_check",
+    "leaderboard_top_n": 5
   }
 }
