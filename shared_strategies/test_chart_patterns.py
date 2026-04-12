@@ -308,6 +308,93 @@ class TestCupAndHandle:
         # At least no crash; geometry may or may not trigger
 
 
+# ─── DatetimeIndex regression ────────────────
+
+class TestDatetimeIndex:
+    """Regression tests: _get_swing_indices must return integer positions even
+    when the DataFrame carries a DatetimeIndex (not a RangeIndex)."""
+
+    def _make_datetime_ohlcv(self, closes, volume=None, noise=0.5):
+        df = make_ohlcv(closes, volume=volume, noise=noise)
+        df.index = pd.date_range("2024-01-01", periods=len(df), freq="1h")
+        return df
+
+    def test_get_swing_indices_with_datetime_index(self):
+        prices = list(range(100, 90, -1)) + list(range(90, 101))
+        df = self._make_datetime_ohlcv(prices)
+        sh, sl = find_swing_points(df["high"], df["low"], lookback=3)
+        indices = _get_swing_indices(sl)
+        # All returned values must be plain integers, not Timestamps
+        assert all(isinstance(i, (int, np.integer)) for i in indices), (
+            f"Expected integer positions, got: {[type(i) for i in indices]}"
+        )
+
+    def test_chart_pattern_core_with_datetime_index(self):
+        """chart_pattern_core must not raise TypeError with a DatetimeIndex."""
+        prices = (
+            list(np.linspace(80, 100, 20)) +
+            list(np.linspace(100, 90, 15)) +
+            list(np.linspace(90, 99, 15)) +
+            list(np.linspace(99, 85, 20)) +
+            [85] * 30
+        )
+        df = self._make_datetime_ohlcv(prices, volume=[100] * len(prices))
+        result = chart_pattern_core(df, pivot_lookback=3)
+        assert "signal" in result.columns
+        assert set(result["signal"].unique()).issubset({-1, 0, 1})
+
+    def test_detect_double_top_with_datetime_index(self):
+        prices = (
+            list(np.linspace(80, 100, 20)) +
+            list(np.linspace(100, 90, 15)) +
+            list(np.linspace(90, 99, 15)) +
+            list(np.linspace(99, 85, 20)) +
+            [85] * 30
+        )
+        df = self._make_datetime_ohlcv(prices)
+        sh, sl = find_swing_points(df["high"], df["low"], lookback=3)
+        # Must not raise TypeError
+        matches = detect_double_top(df["high"], df["low"], df["close"], sh, sl, tolerance=0.03)
+        assert isinstance(matches, list)
+
+    def test_detect_flag_pole_low_bar_with_datetime_index(self):
+        """Regression: `_detect_flag` computes `pole_low_bar` via
+        `segment.values.argmin() + pole_start`. Under a DatetimeIndex the
+        prior `.idxmin()`-based path returned a Timestamp and crashed when
+        the result was used with `.iloc[]`. This test exercises both bull
+        and bear flag paths end-to-end on a DatetimeIndex DataFrame.
+        """
+        # Bull flag: pole then mild pullback then breakout
+        bull_prices = (
+            list(np.linspace(80, 120, 15)) +
+            list(np.linspace(120, 115, 10)) +
+            list(np.linspace(115, 125, 10)) +
+            [125] * 15
+        )
+        vol = [200] * 15 + [100] * (len(bull_prices) - 15)
+        df_bull = self._make_datetime_ohlcv(bull_prices, volume=vol)
+        sh_b, sl_b = find_swing_points(df_bull["high"], df_bull["low"], lookback=3)
+        # Must not raise TypeError on the pole_low_bar calculation
+        bull_matches = detect_bull_flag(
+            df_bull["high"], df_bull["low"], df_bull["close"], df_bull["volume"], sh_b, sl_b,
+        )
+        assert isinstance(bull_matches, list)
+
+        # Bear flag: symmetric drop then mild bounce then breakdown
+        bear_prices = (
+            list(np.linspace(120, 80, 15)) +
+            list(np.linspace(80, 85, 10)) +
+            list(np.linspace(85, 75, 10)) +
+            [75] * 15
+        )
+        df_bear = self._make_datetime_ohlcv(bear_prices, volume=vol)
+        sh_b2, sl_b2 = find_swing_points(df_bear["high"], df_bear["low"], lookback=3)
+        bear_matches = detect_bear_flag(
+            df_bear["high"], df_bear["low"], df_bear["close"], df_bear["volume"], sh_b2, sl_b2,
+        )
+        assert isinstance(bear_matches, list)
+
+
 # ─── Orchestrator ────────────────────────────
 
 class TestChartPatternCore:
