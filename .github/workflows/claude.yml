@@ -133,8 +133,6 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          model: ${{ steps.resolve_model.outputs.model_id }}
-          effort: ${{ steps.resolve_model.outputs.effort }}
 
           # Allow Claude's own bot user to trigger reviews on its own PRs
           allowed_bots: 'claude'
@@ -156,7 +154,7 @@ jobs:
           # Optional: Add claude_args to customize behavior and configuration
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
-          claude_args: --allowedTools "Bash(go *),Bash(cd scheduler && go *),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *)"
+          claude_args: --model ${{ steps.resolve_model.outputs.model_id }} --effort ${{ steps.resolve_model.outputs.effort }} --allowedTools "Bash(go *),Bash(cd scheduler && go *),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *)"
 
       - name: Append model/effort footer to Claude comment
         if: steps.verify_invocation.outputs.invoked == 'true'
@@ -192,8 +190,8 @@ jobs:
 
           NEW_BODY="${BODY}
 
----
-Generated with: ${MODEL_NAME} | Effort: ${EFFORT}"
+          ---
+          Generated with: ${MODEL_NAME} | Effort: ${EFFORT}"
 
           gh api "repos/$REPO/issues/comments/$COMMENT_ID" \
             --method PATCH \
