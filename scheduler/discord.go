@@ -698,23 +698,10 @@ func formatInterval(seconds int) string {
 	return fmt.Sprintf("%ds", seconds)
 }
 
-// writeCatTable writes a monospace code-block table to sb.
-// When showWalletPct is true, an extra "Wallet%" column is rendered for shared-wallet strategies.
-func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, totalPnlPct float64, showWalletPct bool) {
-	if len(bots) == 0 {
-		return
-	}
-	var totalInit float64
-	for _, bot := range bots {
-		totalInit += bot.initialCap
-	}
-	writeCatTablePartial(sb, bots, showWalletPct, true, totalInit, totalValue, totalPnl, totalPnlPct)
-}
-
 // writeCatTablePartial writes a single code-block table containing the supplied
 // bots. When includeTotals is true the trailing TOTAL row is appended using the
 // supplied totals (which should be computed from the FULL bot list, not just
-// this chunk). Used by writeCatTable and writeCatTableChunks.
+// this chunk). Used by writeCatTableChunks.
 func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, includeTotals bool, totalInit, totalValue, totalPnl, totalPnlPct float64) {
 	if len(bots) == 0 {
 		return
