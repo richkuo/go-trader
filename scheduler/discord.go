@@ -755,7 +755,7 @@ func collectPositions(stratID string, ss *StrategyState, prices map[string]float
 		if !pos.OpenedAt.IsZero() {
 			dateStr = fmt.Sprintf(" [%s]", pos.OpenedAt.Format("Jan 02 15:04"))
 		}
-		lines = append(lines, fmt.Sprintf("%s %s %s x%g @ $%.2f (%s$%.0f)%s", stratID, pos.Side, sym, pos.Quantity, pos.AvgCost, sign, pnl, dateStr))
+		lines = append(lines, fmt.Sprintf("%s %s %s x%g (%s$%.0f)%s", stratID, pos.Side, sym, pos.Quantity, sign, pnl, dateStr))
 	}
 	for key, opt := range ss.OptionPositions {
 		dateStr := ""
