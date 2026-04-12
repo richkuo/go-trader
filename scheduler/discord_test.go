@@ -706,7 +706,7 @@ func TestSplitCategorySummary_SingleMessage(t *testing.T) {
 	posLines := []string{"pos1", "pos2"}
 	tradeLines := []string{"• trade1"}
 
-	msgs := splitCategorySummary(header, 2, posLines, tradeLines)
+	msgs := splitCategorySummary(header, 2, posLines, tradeLines, nil)
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
@@ -718,12 +718,102 @@ func TestSplitCategorySummary_SingleMessage(t *testing.T) {
 	}
 }
 
+func TestFormatCategorySummary_LargeTableChunked(t *testing.T) {
+	// Reproduces #249: 28 perps strategies on a single asset produces a table
+	// that, prior to the fix, exceeded Discord's 2000-char limit and was silently
+	// truncated mid-code-block. The fix caps the table at 20 rows per message and
+	// emits the rest as continuation messages, each wrapped in its own code block.
+	const stratCount = 28
+	strats := make([]StrategyConfig, stratCount)
+	strategies := make(map[string]*StrategyState, stratCount)
+	for i := 0; i < stratCount; i++ {
+		id := fmt.Sprintf("hl-strat%02d-btc", i)
+		strats[i] = StrategyConfig{ID: id, Type: "perps", Platform: "hyperliquid", Capital: 500, Args: []string{fmt.Sprintf("strat%02d", i), "BTC", "1h"}}
+		strategies[id] = &StrategyState{Cash: 500}
+	}
+	state := &AppState{Strategies: strategies}
+	prices := map[string]float64{"BTC/USDT": 51000}
+
+	msgs := FormatCategorySummary(1, 0, stratCount, 0, 14000, prices, nil, strats, state, "hyperliquid", "BTC", 600)
+
+	if len(msgs) < 2 {
+		t.Fatalf("expected at least 2 messages for %d strategies, got %d", stratCount, len(msgs))
+	}
+	for i, m := range msgs {
+		if len(m) > discordCharLimit {
+			t.Errorf("msg[%d] exceeds Discord limit: %d chars", i, len(m))
+		}
+		// Every message containing table content must have a closed code block.
+		if strings.Count(m, "```")%2 != 0 {
+			t.Errorf("msg[%d] has unbalanced code-block fences:\n%s", i, m)
+		}
+	}
+
+	// First message holds rows 1–20; the totals row stays with the LAST table chunk.
+	if !strings.Contains(msgs[0], "hl-strat00-b") {
+		t.Errorf("first message should contain first strategy row, got:\n%s", msgs[0])
+	}
+	if !strings.Contains(msgs[0], "hl-strat19-b") {
+		t.Errorf("first message should contain 20th strategy row, got:\n%s", msgs[0])
+	}
+	if strings.Contains(msgs[0], "TOTAL") {
+		t.Errorf("first message should NOT contain TOTAL row when table is split, got:\n%s", msgs[0])
+	}
+
+	// Second message is the table continuation: own code block + label + remaining rows + TOTAL.
+	if !strings.Contains(msgs[1], "cont'd") {
+		t.Errorf("second message should be the continuation table label, got:\n%s", msgs[1])
+	}
+	if !strings.Contains(msgs[1], "```") {
+		t.Errorf("continuation table must be wrapped in a code block, got:\n%s", msgs[1])
+	}
+	if !strings.Contains(msgs[1], "hl-strat20-b") {
+		t.Errorf("continuation should contain row 21, got:\n%s", msgs[1])
+	}
+	if !strings.Contains(msgs[1], "hl-strat27-b") {
+		t.Errorf("continuation should contain final row 28, got:\n%s", msgs[1])
+	}
+	if !strings.Contains(msgs[1], "TOTAL") {
+		t.Errorf("final continuation chunk must contain the TOTAL row, got:\n%s", msgs[1])
+	}
+
+	// All 28 strategy rows should appear across the messages.
+	all := strings.Join(msgs, "\n")
+	for i := 0; i < stratCount; i++ {
+		want := fmt.Sprintf("hl-strat%02d-b", i)
+		if !strings.Contains(all, want) {
+			t.Errorf("strategy row %s missing from messages", want)
+		}
+	}
+}
+
+func TestSplitCategorySummary_ContinuationTablesInserted(t *testing.T) {
+	// Continuation tables should be spliced in immediately after the first message.
+	header := "Header line\n"
+	posLines := []string{"pos1", "pos2"}
+	conts := []string{"```\nchunk2\n```\n", "```\nchunk3\n```\n"}
+
+	msgs := splitCategorySummary(header, 2, posLines, nil, conts)
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages (1 main + 2 continuation tables), got %d", len(msgs))
+	}
+	if !strings.Contains(msgs[0], "Header line") {
+		t.Errorf("msg[0] should contain header, got: %s", msgs[0])
+	}
+	if msgs[1] != conts[0] {
+		t.Errorf("msg[1] should be first continuation table, got: %s", msgs[1])
+	}
+	if msgs[2] != conts[1] {
+		t.Errorf("msg[2] should be second continuation table, got: %s", msgs[2])
+	}
+}
+
 func TestSplitCategorySummary_MultiMessage(t *testing.T) {
 	// Create a header that uses ~1900 chars, leaving very little room for positions.
 	header := strings.Repeat("x", 1900) + "\n"
 	posLines := []string{"position-line-1-aaaa", "position-line-2-bbbb", "position-line-3-cccc"}
 
-	msgs := splitCategorySummary(header, 3, posLines, nil)
+	msgs := splitCategorySummary(header, 3, posLines, nil, nil)
 	if len(msgs) < 2 {
 		t.Fatalf("expected multiple messages with large header, got %d", len(msgs))
 	}

@@ -220,6 +220,11 @@ const discordCharLimit = 2000
 // discordSplitThreshold is the soft limit at which we start splitting messages.
 const discordSplitThreshold = 1980
 
+// catTableMaxRows caps how many strategy rows render per Discord message before
+// the table is continued in a follow-up message. With 20 rows the rendered table
+// (including header/sep/totals) stays comfortably under the 2000-char limit.
+const catTableMaxRows = 20
+
 // FormatCategorySummary creates Discord messages for a set of strategies sharing a channel.
 // Returns a slice of messages; when the content exceeds Discord's 2000-char limit,
 // the position list is split across multiple messages.
@@ -399,9 +404,27 @@ func FormatCategorySummary(
 	if totalInitCap > 0 {
 		totalPnlPct = (totalPnl / totalInitCap) * 100
 	}
-	writeCatTable(&sb, tableBots, filteredValue, totalPnl, totalPnlPct, hasSharedWallet)
+
+	// Render the strategy table in chunks of catTableMaxRows. The first chunk
+	// is appended to the in-message header; any extra chunks become standalone
+	// continuation messages so the table never overflows the 2000-char limit.
+	tableChunks := writeCatTableChunks(tableBots, filteredValue, totalPnl, totalPnlPct, hasSharedWallet)
+	if len(tableChunks) > 0 {
+		sb.WriteString(tableChunks[0])
+	}
 
 	header := sb.String()
+
+	var continuationTables []string
+	for i := 1; i < len(tableChunks); i++ {
+		rowStart := i*catTableMaxRows + 1
+		rowEnd := i*catTableMaxRows + catTableMaxRows
+		if rowEnd > len(tableBots) {
+			rowEnd = len(tableBots)
+		}
+		label := fmt.Sprintf("📊 **Strategies (cont'd %d–%d/%d)**", rowStart, rowEnd, len(tableBots))
+		continuationTables = append(continuationTables, label+tableChunks[i])
+	}
 
 	// Collect position lines.
 	totalOpenPos := 0
@@ -425,13 +448,32 @@ func FormatCategorySummary(
 		tradeLines = append(tradeLines, fmt.Sprintf("• %s", td))
 	}
 
-	return splitCategorySummary(header, totalOpenPos, posLines, tradeLines)
+	return splitCategorySummary(header, totalOpenPos, posLines, tradeLines, continuationTables)
 }
 
 // splitCategorySummary assembles the header, position lines, and trade lines into
 // one or more Discord messages, splitting at logical boundaries to stay under the
-// 2000-char Discord limit.
-func splitCategorySummary(header string, totalOpenPos int, posLines []string, tradeLines []string) []string {
+// 2000-char Discord limit. continuationTables are extra strategy-table chunks
+// (already formatted as their own code blocks) that get inserted right after the
+// first message so the rest of the table is the very next thing the user sees.
+func splitCategorySummary(header string, totalOpenPos int, posLines []string, tradeLines []string, continuationTables []string) []string {
+	msgs := splitCategorySummaryCore(header, totalOpenPos, posLines, tradeLines)
+	if len(continuationTables) == 0 {
+		return msgs
+	}
+	// Insert continuation table chunks immediately after the first message so
+	// readers see the rest of the strategy table before any position overflow.
+	out := make([]string, 0, len(msgs)+len(continuationTables))
+	out = append(out, msgs[0])
+	out = append(out, continuationTables...)
+	out = append(out, msgs[1:]...)
+	return out
+}
+
+// splitCategorySummaryCore builds the message list without considering
+// strategy-table continuation chunks. Callers wanting continuation handling
+// should call splitCategorySummary instead.
+func splitCategorySummaryCore(header string, totalOpenPos int, posLines []string, tradeLines []string) []string {
 	var sb strings.Builder
 	sb.WriteString(header)
 
@@ -662,12 +704,26 @@ func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, to
 	if len(bots) == 0 {
 		return
 	}
+	var totalInit float64
+	for _, bot := range bots {
+		totalInit += bot.initialCap
+	}
+	writeCatTablePartial(sb, bots, showWalletPct, true, totalInit, totalValue, totalPnl, totalPnlPct)
+}
+
+// writeCatTablePartial writes a single code-block table containing the supplied
+// bots. When includeTotals is true the trailing TOTAL row is appended using the
+// supplied totals (which should be computed from the FULL bot list, not just
+// this chunk). Used by writeCatTable and writeCatTableChunks.
+func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, includeTotals bool, totalInit, totalValue, totalPnl, totalPnlPct float64) {
+	if len(bots) == 0 {
+		return
+	}
 	sb.WriteString("\n```\n")
 	if showWalletPct {
 		const sep = "--------------------------------------------------------------------------"
 		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Wallet%", "Tf", "Int"))
 		sb.WriteString(sep + "\n")
-		var totalInit float64
 		for _, bot := range bots {
 			label := bot.id
 			if len(label) > 12 {
@@ -681,20 +737,20 @@ func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, to
 			if bot.walletPct > 0 {
 				wpStr = fmt.Sprintf("%.1f%%", bot.walletPct)
 			}
-			totalInit += bot.initialCap
 			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s %5s %5s\n", label, initStr, valStr, pnlStr, pctStr, wpStr, bot.timeframe, bot.interval))
 		}
-		sb.WriteString(sep + "\n")
-		totValStr := "$ " + fmtComma(totalValue)
-		totInitStr := "$ " + fmtComma(totalInit)
-		totPnlStr := fmtPnl(totalPnl)
-		totPctStr := fmtPnlPct(totalPnlPct)
-		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s %5s %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "100.0%", "", ""))
+		if includeTotals {
+			sb.WriteString(sep + "\n")
+			totValStr := "$ " + fmtComma(totalValue)
+			totInitStr := "$ " + fmtComma(totalInit)
+			totPnlStr := fmtPnl(totalPnl)
+			totPctStr := fmtPnlPct(totalPnlPct)
+			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s %5s %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "100.0%", "", ""))
+		}
 	} else {
 		const sep = "-----------------------------------------------------------------"
 		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Tf", "Int"))
 		sb.WriteString(sep + "\n")
-		var totalInit float64
 		for _, bot := range bots {
 			label := bot.id
 			if len(label) > 12 {
@@ -704,17 +760,44 @@ func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, to
 			initStr := "$ " + fmtComma(bot.initialCap)
 			pnlStr := fmtPnl(bot.pnl)
 			pctStr := fmtPnlPct(bot.pnlPct)
-			totalInit += bot.initialCap
 			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %5s %5s\n", label, initStr, valStr, pnlStr, pctStr, bot.timeframe, bot.interval))
 		}
-		sb.WriteString(sep + "\n")
-		totValStr := "$ " + fmtComma(totalValue)
-		totInitStr := "$ " + fmtComma(totalInit)
-		totPnlStr := fmtPnl(totalPnl)
-		totPctStr := fmtPnlPct(totalPnlPct)
-		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %5s %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "", ""))
+		if includeTotals {
+			sb.WriteString(sep + "\n")
+			totValStr := "$ " + fmtComma(totalValue)
+			totInitStr := "$ " + fmtComma(totalInit)
+			totPnlStr := fmtPnl(totalPnl)
+			totPctStr := fmtPnlPct(totalPnlPct)
+			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %5s %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "", ""))
+		}
 	}
 	sb.WriteString("```\n")
+}
+
+// writeCatTableChunks splits bots into catTableMaxRows-sized chunks and returns
+// one rendered code-block table per chunk. The TOTAL row appears only in the
+// final chunk so totals always show against the same numbers regardless of how
+// the table was split. Returns nil if bots is empty.
+func writeCatTableChunks(bots []botInfo, totalValue, totalPnl, totalPnlPct float64, showWalletPct bool) []string {
+	if len(bots) == 0 {
+		return nil
+	}
+	var totalInit float64
+	for _, bot := range bots {
+		totalInit += bot.initialCap
+	}
+	var chunks []string
+	for start := 0; start < len(bots); start += catTableMaxRows {
+		end := start + catTableMaxRows
+		if end > len(bots) {
+			end = len(bots)
+		}
+		isLast := end == len(bots)
+		var sb strings.Builder
+		writeCatTablePartial(&sb, bots[start:end], showWalletPct, isLast, totalInit, totalValue, totalPnl, totalPnlPct)
+		chunks = append(chunks, sb.String())
+	}
+	return chunks
 }
 
 func fmtPnl(pnl float64) string {
