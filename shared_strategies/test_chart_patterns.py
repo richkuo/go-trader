@@ -357,6 +357,43 @@ class TestDatetimeIndex:
         matches = detect_double_top(df["high"], df["low"], df["close"], sh, sl, tolerance=0.03)
         assert isinstance(matches, list)
 
+    def test_detect_flag_pole_low_bar_with_datetime_index(self):
+        """Regression: `_detect_flag` computes `pole_low_bar` via
+        `segment.values.argmin() + pole_start`. Under a DatetimeIndex the
+        prior `.idxmin()`-based path returned a Timestamp and crashed when
+        the result was used with `.iloc[]`. This test exercises both bull
+        and bear flag paths end-to-end on a DatetimeIndex DataFrame.
+        """
+        # Bull flag: pole then mild pullback then breakout
+        bull_prices = (
+            list(np.linspace(80, 120, 15)) +
+            list(np.linspace(120, 115, 10)) +
+            list(np.linspace(115, 125, 10)) +
+            [125] * 15
+        )
+        vol = [200] * 15 + [100] * (len(bull_prices) - 15)
+        df_bull = self._make_datetime_ohlcv(bull_prices, volume=vol)
+        sh_b, sl_b = find_swing_points(df_bull["high"], df_bull["low"], lookback=3)
+        # Must not raise TypeError on the pole_low_bar calculation
+        bull_matches = detect_bull_flag(
+            df_bull["high"], df_bull["low"], df_bull["close"], df_bull["volume"], sh_b, sl_b,
+        )
+        assert isinstance(bull_matches, list)
+
+        # Bear flag: symmetric drop then mild bounce then breakdown
+        bear_prices = (
+            list(np.linspace(120, 80, 15)) +
+            list(np.linspace(80, 85, 10)) +
+            list(np.linspace(85, 75, 10)) +
+            [75] * 15
+        )
+        df_bear = self._make_datetime_ohlcv(bear_prices, volume=vol)
+        sh_b2, sl_b2 = find_swing_points(df_bear["high"], df_bear["low"], lookback=3)
+        bear_matches = detect_bear_flag(
+            df_bear["high"], df_bear["low"], df_bear["close"], df_bear["volume"], sh_b2, sl_b2,
+        )
+        assert isinstance(bear_matches, list)
+
 
 # ─── Orchestrator ────────────────────────────
 

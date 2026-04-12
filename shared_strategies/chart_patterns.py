@@ -63,9 +63,11 @@ def find_swing_points(
     return swing_highs, swing_lows
 
 
-def _get_swing_indices(swing_series: pd.Series) -> list:
-    """Return sorted list of integer positions where swing points exist."""
-    return list(np.where(swing_series.notna())[0])
+def _get_swing_indices(swing_series: pd.Series) -> list[int]:
+    """Return sorted list of integer positions (not index labels) where swing
+    points exist. Positions are suitable for use with `.iloc[]` regardless of
+    the underlying index type (RangeIndex, DatetimeIndex, etc.)."""
+    return np.where(swing_series.notna())[0].tolist()
 
 
 # ─────────────────────────────────────────────
