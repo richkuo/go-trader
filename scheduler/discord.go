@@ -287,6 +287,8 @@ func FormatCategorySummary(
 		for _, cb := range cbActive {
 			sb.WriteString(fmt.Sprintf("  • %s\n", cb))
 		}
+	} else {
+		sb.WriteString("✅ **Trading active**\n")
 	}
 
 	// Prices inline — filter to just this asset when asset is specified.
