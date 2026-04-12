@@ -97,6 +97,12 @@ jobs:
           echo "model_id=$MODEL_ID" >> "$GITHUB_OUTPUT"
           echo "::notice::Using model: $MODEL_ID"
 
+          # Extract optional effort level from comment: "effort:low", "effort:medium", "effort:high"
+          EFFORT_RAW=$(printf '%s' "$STRIPPED" | grep -oiE 'effort:(low|medium|high)' | head -1 | tr '[:upper:]' '[:lower:]' | cut -d: -f2 || true)
+          EFFORT="${EFFORT_RAW:-high}"
+          echo "effort=$EFFORT" >> "$GITHUB_OUTPUT"
+          echo "::notice::Using effort: $EFFORT"
+
       - name: Checkout repository
         if: steps.verify_invocation.outputs.invoked == 'true'
         uses: actions/checkout@v4
@@ -128,7 +134,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ steps.resolve_model.outputs.model_id }}
-          effort: high
+          effort: ${{ steps.resolve_model.outputs.effort }}
 
           # Allow Claude's own bot user to trigger reviews on its own PRs
           allowed_bots: 'claude'
@@ -151,3 +157,44 @@ jobs:
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
           claude_args: --allowedTools "Bash(go *),Bash(cd scheduler && go *),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *)"
+
+      - name: Append model/effort footer to Claude comment
+        if: steps.verify_invocation.outputs.invoked == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODEL_ID: ${{ steps.resolve_model.outputs.model_id }}
+          EFFORT: ${{ steps.resolve_model.outputs.effort }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          case "$MODEL_ID" in
+            claude-opus-4-6)   MODEL_NAME="Claude Opus 4.6" ;;
+            claude-sonnet-4-6) MODEL_NAME="Claude Sonnet 4.6" ;;
+            claude-haiku-4-5)  MODEL_NAME="Claude Haiku 4.5" ;;
+            *)                 MODEL_NAME="$MODEL_ID" ;;
+          esac
+
+          COMMENT=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
+            --jq '[.[] | select(.user.login == "claude[bot]")] | sort_by(.updated_at) | last')
+
+          COMMENT_ID=$(echo "$COMMENT" | jq -r '.id')
+          BODY=$(echo "$COMMENT" | jq -r '.body')
+
+          if [ -z "$COMMENT_ID" ] || [ "$COMMENT_ID" = "null" ]; then
+            echo "No claude[bot] comment found"
+            exit 0
+          fi
+
+          if echo "$BODY" | grep -q "Generated with:"; then
+            echo "Footer already present"
+            exit 0
+          fi
+
+          NEW_BODY="${BODY}
+
+---
+Generated with: ${MODEL_NAME} | Effort: ${EFFORT}"
+
+          gh api "repos/$REPO/issues/comments/$COMMENT_ID" \
+            --method PATCH \
+            --field body="$NEW_BODY"
