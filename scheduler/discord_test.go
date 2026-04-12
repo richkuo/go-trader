@@ -184,6 +184,9 @@ func TestFormatCategorySummary_CircuitBreakerActive(t *testing.T) {
 	if strings.Contains(msg, "hl-sma-btc") && strings.Contains(msg, "hl-sma-btc (resumes") {
 		t.Errorf("hl-sma-btc should not have circuit breaker warning, got:\n%s", msg)
 	}
+	if strings.Contains(msg, "Trading active") {
+		t.Errorf("should not show 'Trading active' when circuit breaker is active, got:\n%s", msg)
+	}
 }
 
 func TestFormatCategorySummary_NoCircuitBreaker(t *testing.T) {
@@ -202,6 +205,9 @@ func TestFormatCategorySummary_NoCircuitBreaker(t *testing.T) {
 
 	if strings.Contains(msg, "Circuit breaker") {
 		t.Errorf("should not show circuit breaker when none active, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "Trading active") {
+		t.Errorf("expected 'Trading active' status when no circuit breaker, got:\n%s", msg)
 	}
 }
 
