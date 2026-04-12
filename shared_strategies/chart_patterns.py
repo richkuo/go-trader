@@ -64,8 +64,8 @@ def find_swing_points(
 
 
 def _get_swing_indices(swing_series: pd.Series) -> list:
-    """Return sorted list of integer indices where swing points exist."""
-    return sorted(swing_series.dropna().index.tolist())
+    """Return sorted list of integer positions where swing points exist."""
+    return list(np.where(swing_series.notna())[0])
 
 
 # ─────────────────────────────────────────────
@@ -371,13 +371,12 @@ def _detect_flag(
 
             # Find pole start: the low before the peak
             pole_start = max(0, peak_bar - pole_max_bars)
-            pole_low_bar = pole_start + close.iloc[pole_start:peak_bar].idxmin()
+            segment = close.iloc[pole_start:peak_bar]
+            if len(segment) == 0:
+                continue
+            pole_low_bar = int(segment.values.argmin()) + pole_start
             if not (pole_min_bars <= peak_bar - pole_low_bar <= pole_max_bars):
-                # Try using the actual iloc index
-                segment = close.iloc[pole_start:peak_bar]
-                pole_low_bar = segment.values.argmin() + pole_start
-                if not (pole_min_bars <= peak_bar - pole_low_bar <= pole_max_bars):
-                    continue
+                continue
             pole_move = peak_price - close.iloc[pole_low_bar]
             if atr.iloc[peak_bar] > 0 and pole_move < pole_atr_mult * atr.iloc[peak_bar]:
                 continue
