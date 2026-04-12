@@ -269,6 +269,26 @@ func FormatCategorySummary(
 
 	sb.WriteString(fmt.Sprintf("Cycle #%d | %.1fs\n", cycle, elapsed.Seconds()))
 
+	// Circuit breaker status — show warning for any strategy with active breaker.
+	var cbActive []string
+	now := time.Now().UTC()
+	for _, sc := range channelStrategies {
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		if ss.RiskState.CircuitBreaker && now.Before(ss.RiskState.CircuitBreakerUntil) {
+			remaining := ss.RiskState.CircuitBreakerUntil.Sub(now).Truncate(time.Minute)
+			cbActive = append(cbActive, fmt.Sprintf("%s (resumes in %s)", sc.ID, remaining))
+		}
+	}
+	if len(cbActive) > 0 {
+		sb.WriteString("🚫 **Circuit breaker active — trading disabled**\n")
+		for _, cb := range cbActive {
+			sb.WriteString(fmt.Sprintf("  • %s\n", cb))
+		}
+	}
+
 	// Prices inline — filter to just this asset when asset is specified.
 	displayPrices := prices
 	if asset != "" {
