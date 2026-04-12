@@ -19,13 +19,47 @@ jobs:
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pull-requests: read
-      issues: read
+      contents: write
+      pull-requests: write
+      issues: write
       id-token: write
       actions: read # Required for Claude to read CI results on PRs
     steps:
+      - name: Verify @claude is an actual invocation (not in a code block or example)
+        id: verify_invocation
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          REVIEW_BODY: ${{ github.event.review.body }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          # Select body based on event type
+          case "$EVENT_NAME" in
+            issue_comment|pull_request_review_comment)
+              BODY="$COMMENT_BODY"
+              ;;
+            pull_request_review)
+              BODY="$REVIEW_BODY"
+              ;;
+            issues)
+              BODY="$ISSUE_BODY"
+              ;;
+          esac
+
+          # Strip fenced code blocks (``` ... ```) and inline code spans (` ... `)
+          # shellcheck disable=SC2016  # single quotes are intentional — Perl regex has no shell vars
+          STRIPPED=$(printf '%s' "$BODY" | perl -0777 -pe 's/```.*?```//gs' | sed 's/`[^`]*`//g')
+
+          # @claude is a real invocation only when it appears at the start of a line
+          if printf '%s' "$STRIPPED" | grep -qE '(^|(\r?\n))[[:space:]]*@claude([[:space:]]|$)'; then
+            echo "invoked=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "invoked=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::@claude found but only inside code blocks or examples — skipping."
+          fi
+
       - name: Resolve model from @claude invocation
+        if: steps.verify_invocation.outputs.invoked == 'true'
         id: resolve_model
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -47,6 +81,7 @@ jobs:
           esac
 
           # Strip fenced code blocks (``` ... ```) and inline code spans (` ... `)
+          # shellcheck disable=SC2016  # single quotes are intentional — Perl regex has no shell vars
           STRIPPED=$(printf '%s' "$BODY" | perl -0777 -pe 's/```.*?```//gs' | sed 's/`[^`]*`//g')
 
           # Extract optional model shorthand after @claude on a line boundary
@@ -63,25 +98,31 @@ jobs:
           echo "::notice::Using model: $MODEL_ID"
 
       - name: Checkout repository
+        if: steps.verify_invocation.outputs.invoked == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
       - name: Set up Go
+        if: steps.verify_invocation.outputs.invoked == 'true'
         uses: actions/setup-go@v5
         with:
           go-version: '1.26'
 
       - name: Set up Python (uv)
+        if: steps.verify_invocation.outputs.invoked == 'true'
         uses: astral-sh/setup-uv@v6
 
       - name: Install Python dependencies
+        if: steps.verify_invocation.outputs.invoked == 'true'
         run: uv sync --frozen --extra test
 
       - name: Clean up lockfile changes before Claude checkout
+        if: steps.verify_invocation.outputs.invoked == 'true'
         run: git checkout -- uv.lock
 
       - name: Run Claude Code
+        if: steps.verify_invocation.outputs.invoked == 'true'
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
