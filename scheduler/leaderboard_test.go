@@ -188,7 +188,7 @@ func TestFmtSignedPct(t *testing.T) {
 	}
 }
 
-func TestFormatHyperliquidTop10(t *testing.T) {
+func TestFormatHyperliquidTopN(t *testing.T) {
 	cfg := &Config{
 		Strategies: []StrategyConfig{
 			{ID: "hl-sma-btc", Type: "perps", Capital: 1000, Platform: "hyperliquid", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
@@ -218,13 +218,14 @@ func TestFormatHyperliquidTop10(t *testing.T) {
 	}
 
 	prices := map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000, "SOL/USDT": 150}
-	msg := FormatHyperliquidTop10(cfg, state, prices)
+	msg := FormatHyperliquidTopN(cfg, state, prices)
 
 	if msg == "" {
 		t.Fatal("Expected non-empty message")
 	}
-	if !containsStr(msg, "Hyperliquid Top 10") {
-		t.Error("Message should contain title")
+	// Default LeaderboardTopN is 5, so title should be "Hyperliquid Top 5".
+	if !containsStr(msg, "Hyperliquid Top 5") {
+		t.Error("Message should contain dynamic title reflecting default topN=5")
 	}
 	if !containsStr(msg, "hl-sma-btc") {
 		t.Error("Message should contain hl-sma-btc")
@@ -245,7 +246,7 @@ func TestFormatHyperliquidTop10(t *testing.T) {
 	}
 }
 
-func TestFormatHyperliquidTop10_NoHLStrategies(t *testing.T) {
+func TestFormatHyperliquidTopN_NoHLStrategies(t *testing.T) {
 	cfg := &Config{
 		Strategies: []StrategyConfig{
 			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus"},
@@ -254,14 +255,14 @@ func TestFormatHyperliquidTop10_NoHLStrategies(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["sma-btc"] = &StrategyState{Cash: 1100, InitialCapital: 1000, Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}, TradeHistory: []Trade{}}
 
-	msg := FormatHyperliquidTop10(cfg, state, nil)
+	msg := FormatHyperliquidTopN(cfg, state, nil)
 	if msg != "" {
 		t.Errorf("Expected empty message when no HL strategies, got %q", msg)
 	}
 }
 
-func TestFormatHyperliquidTop10_SortOrder(t *testing.T) {
-	// Create 12 hyperliquid strategies to verify only top 10 are included.
+func TestFormatHyperliquidTopN_SortOrder(t *testing.T) {
+	// Create 12 hyperliquid strategies to verify only topN are included.
 	var strats []StrategyConfig
 	for i := 0; i < 12; i++ {
 		strats = append(strats, StrategyConfig{
@@ -272,7 +273,11 @@ func TestFormatHyperliquidTop10_SortOrder(t *testing.T) {
 			Args:     []string{"sma", "BTC/USDT", "1h"},
 		})
 	}
-	cfg := &Config{Strategies: strats}
+	// Explicitly set LeaderboardTopN=10 to preserve original test intent.
+	cfg := &Config{
+		Strategies: strats,
+		Discord:    DiscordConfig{LeaderboardTopN: 10},
+	}
 
 	state := NewAppState()
 	for i, sc := range cfg.Strategies {
@@ -282,11 +287,15 @@ func TestFormatHyperliquidTop10_SortOrder(t *testing.T) {
 		state.Strategies[sc.ID] = ss
 	}
 
-	msg := FormatHyperliquidTop10(cfg, state, nil)
+	msg := FormatHyperliquidTopN(cfg, state, nil)
 	if msg == "" {
 		t.Fatal("Expected non-empty message")
 	}
 
+	// Dynamic title should reflect configured topN=10.
+	if !containsStr(msg, "Hyperliquid Top 10") {
+		t.Error("Message should contain dynamic title reflecting configured topN=10")
+	}
 	// The worst strategy (hl-s00-btc at -10%) should NOT appear (only top 10 of 12).
 	if containsStr(msg, "hl-s00-btc") {
 		t.Error("Worst strategy should be excluded from top 10")
@@ -300,7 +309,7 @@ func TestFormatHyperliquidTop10_SortOrder(t *testing.T) {
 	}
 }
 
-func TestFormatPlatformTop10(t *testing.T) {
+func TestFormatPlatformTopN(t *testing.T) {
 	cfg := &Config{
 		Strategies: []StrategyConfig{
 			{ID: "hl-sma-btc", Type: "perps", Capital: 1000, Platform: "hyperliquid", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
@@ -332,7 +341,7 @@ func TestFormatPlatformTop10(t *testing.T) {
 	prices := map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}
 
 	// Test Deribit platform leaderboard.
-	msg := FormatPlatformTop10("deribit", "🎯", "Deribit Top 10", cfg, state, prices)
+	msg := FormatPlatformTopN("deribit", "🎯", "Deribit Top 10", cfg, state, prices)
 	if msg == "" {
 		t.Fatal("Expected non-empty message for deribit")
 	}
@@ -357,21 +366,141 @@ func TestFormatPlatformTop10(t *testing.T) {
 	}
 
 	// Test platform with no strategies returns empty.
-	msg = FormatPlatformTop10("okx", "🔶", "OKX Top 10", cfg, state, prices)
+	msg = FormatPlatformTopN("okx", "🔶", "OKX Top 10", cfg, state, prices)
 	if msg != "" {
 		t.Errorf("Expected empty message for platform with no strategies, got %q", msg)
 	}
 
-	// Test that FormatHyperliquidTop10 still works via the wrapper.
-	hlMsg := FormatHyperliquidTop10(cfg, state, prices)
+	// Test that FormatHyperliquidTopN still works via the wrapper.
+	hlMsg := FormatHyperliquidTopN(cfg, state, prices)
 	if hlMsg == "" {
-		t.Fatal("Expected non-empty message from FormatHyperliquidTop10 wrapper")
+		t.Fatal("Expected non-empty message from FormatHyperliquidTopN wrapper")
 	}
-	if !containsStr(hlMsg, "Hyperliquid Top 10") {
-		t.Error("Wrapper message should contain Hyperliquid title")
+	// Default topN is 5, so wrapper title should reflect "Hyperliquid Top 5".
+	if !containsStr(hlMsg, "Hyperliquid Top 5") {
+		t.Error("Wrapper message should contain Hyperliquid Top 5 title")
 	}
 	if !containsStr(hlMsg, "hl-sma-btc") {
 		t.Error("Wrapper message should contain hl-sma-btc")
+	}
+}
+
+// TestLeaderboardTopNDefault verifies that leaderboardTopN returns 5 when unset.
+func TestLeaderboardTopNDefault(t *testing.T) {
+	cfg := &Config{}
+	if got := leaderboardTopN(cfg); got != 5 {
+		t.Errorf("leaderboardTopN with zero value = %d, want 5", got)
+	}
+}
+
+// TestLeaderboardTopNConfigured verifies that leaderboardTopN respects the configured value.
+func TestLeaderboardTopNConfigured(t *testing.T) {
+	cfg := &Config{Discord: DiscordConfig{LeaderboardTopN: 10}}
+	if got := leaderboardTopN(cfg); got != 10 {
+		t.Errorf("leaderboardTopN with configured value = %d, want 10", got)
+	}
+}
+
+// TestLeaderboardTopNNegative verifies that leaderboardTopN ignores negative values.
+func TestLeaderboardTopNNegative(t *testing.T) {
+	cfg := &Config{Discord: DiscordConfig{LeaderboardTopN: -1}}
+	if got := leaderboardTopN(cfg); got != 5 {
+		t.Errorf("leaderboardTopN with negative value = %d, want 5", got)
+	}
+}
+
+// TestPrecomputeLeaderboardTopN verifies that LeaderboardTopN limits the entries shown.
+func TestPrecomputeLeaderboardTopN(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := fmt.Sprintf("%s/state.json", dir)
+
+	// Create 8 spot strategies.
+	var strats []StrategyConfig
+	for i := 0; i < 8; i++ {
+		strats = append(strats, StrategyConfig{
+			ID:       fmt.Sprintf("sma-s%02d", i),
+			Type:     "spot",
+			Capital:  1000,
+			Platform: "binanceus",
+			Args:     []string{"sma_crossover", "BTC/USDT", "1h"},
+		})
+	}
+
+	cfg := &Config{
+		StateFile:  stateFile,
+		Strategies: strats,
+		Discord:    DiscordConfig{LeaderboardTopN: 3},
+	}
+
+	state := NewAppState()
+	for i, sc := range cfg.Strategies {
+		ss := NewStrategyState(sc)
+		ss.Cash = 1000 + float64(i)*10 // different PnL for each
+		state.Strategies[sc.ID] = ss
+	}
+
+	prices := map[string]float64{"BTC/USDT": 50000}
+	if err := PrecomputeLeaderboard(cfg, state, prices); err != nil {
+		t.Fatalf("PrecomputeLeaderboard failed: %v", err)
+	}
+
+	lb, err := LoadLeaderboard(cfg)
+	if err != nil {
+		t.Fatalf("LoadLeaderboard failed: %v", err)
+	}
+
+	spotMsg := lb.Messages["spot"]
+	if spotMsg == "" {
+		t.Fatal("Expected non-empty spot message")
+	}
+
+	// The best strategy (sma-s07) should appear (top 3).
+	if !containsStr(spotMsg, "sma-s07") {
+		t.Error("Best strategy sma-s07 should appear in top 3")
+	}
+	if !containsStr(spotMsg, "sma-s06") {
+		t.Error("Second-best strategy sma-s06 should appear in top 3")
+	}
+	if !containsStr(spotMsg, "sma-s05") {
+		t.Error("Third-best strategy sma-s05 should appear in top 3")
+	}
+	// sma-s04 is 4th — should NOT appear in top 3.
+	if containsStr(spotMsg, "sma-s04") {
+		t.Error("4th strategy sma-s04 should not appear when top_n=3")
+	}
+
+	// All-time top/bottom messages use a different code path
+	// (formatAllTimeMessage) and must also respect LeaderboardTopN.
+	top10Msg := lb.Messages["top10"]
+	if top10Msg == "" {
+		t.Fatal("Expected non-empty top10 all-time message")
+	}
+	// Top 3 by PnL%: sma-s07, sma-s06, sma-s05.
+	if !containsStr(top10Msg, "sma-s07") {
+		t.Error("top10 all-time should contain sma-s07 when top_n=3")
+	}
+	if !containsStr(top10Msg, "sma-s05") {
+		t.Error("top10 all-time should contain sma-s05 when top_n=3")
+	}
+	// sma-s04 is 4th — should NOT appear.
+	if containsStr(top10Msg, "sma-s04") {
+		t.Error("top10 all-time should not contain sma-s04 when top_n=3")
+	}
+
+	bottom10Msg := lb.Messages["bottom10"]
+	if bottom10Msg == "" {
+		t.Fatal("Expected non-empty bottom10 all-time message")
+	}
+	// Bottom 3 by PnL%: sma-s00, sma-s01, sma-s02.
+	if !containsStr(bottom10Msg, "sma-s00") {
+		t.Error("bottom10 all-time should contain sma-s00 when top_n=3")
+	}
+	if !containsStr(bottom10Msg, "sma-s02") {
+		t.Error("bottom10 all-time should contain sma-s02 when top_n=3")
+	}
+	// sma-s03 is 4th-worst — should NOT appear.
+	if containsStr(bottom10Msg, "sma-s03") {
+		t.Error("bottom10 all-time should not contain sma-s03 when top_n=3")
 	}
 }
 

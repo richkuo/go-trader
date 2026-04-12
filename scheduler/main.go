@@ -787,7 +787,7 @@ func main() {
 		// Periodic hyperliquid top-10 summary (#176).
 		var top10Msg string
 		if top10Freq > 0 && time.Since(state.LastTop10Summary) >= top10Freq {
-			top10Msg = FormatHyperliquidTop10(cfg, state, prices)
+			top10Msg = FormatHyperliquidTopN(cfg, state, prices)
 			if top10Msg != "" {
 				state.LastTop10Summary = time.Now().UTC()
 			}

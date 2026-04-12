@@ -20,6 +20,7 @@ type DiscordConfig struct {
 	ChannelPaperTrades bool              `json:"channel_paper_trades,omitempty"` // post paper trade alerts to platform channel
 	ChannelLiveTrades  bool              `json:"channel_live_trades,omitempty"`  // post live trade alerts to platform channel
 	Channels           map[string]string `json:"channels"`                       // keyed by platform or type ("spot", "hyperliquid", "deribit", etc.)
+	LeaderboardTopN    int               `json:"leaderboard_top_n,omitempty"`    // number of entries shown in leaderboard messages (default 5)
 }
 
 // TelegramConfig holds Telegram notification settings.
