@@ -82,22 +82,13 @@ func main() {
 		}
 	}
 
-	// #42: Initialize portfolio peak from sum of capitals on first run.
-	// For shared wallet strategies (capital_pct > 0), count each platform wallet
-	// once using the actual balance (Capital / CapitalPct) to avoid double-counting.
+	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
+	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
+	// perps strategies on the same account), use the real on-exchange balance
+	// once instead of summing per-strategy capital — otherwise the peak is
+	// inflated and the kill switch can fire prematurely.
 	if state.PortfolioRisk.PeakValue == 0 {
-		total := 0.0
-		walletCounted := make(map[string]bool)
-		for _, sc := range cfg.Strategies {
-			if sc.CapitalPct > 0 {
-				if !walletCounted[sc.Platform] {
-					total += sc.Capital / sc.CapitalPct
-					walletCounted[sc.Platform] = true
-				}
-			} else {
-				total += sc.Capital
-			}
-		}
+		total := computeInitialPortfolioPeak(cfg.Strategies, nil)
 		state.PortfolioRisk.PeakValue = total
 		fmt.Printf("  Portfolio peak initialized: $%.0f\n", total)
 	}
@@ -357,16 +348,20 @@ func main() {
 		if saveFailures >= 3 {
 			fmt.Println("[CRITICAL] State save failed 3x, skipping trades this cycle")
 		} else {
-			// #42: Portfolio-level risk check before running any strategy.
+			// #42 / #243: Portfolio-level risk check before running any strategy.
+			// Fetch live wallet balances OUTSIDE the lock (network I/O), then
+			// compute total PV under RLock using real exchange balances for
+			// shared wallets so multiple HL perps strategies on the same
+			// account don't get double-counted.
 			killSwitchFired := false
 			notionalBlocked := false
-			mu.RLock()
-			totalPV := 0.0
-			for _, sc := range cfg.Strategies {
-				if s, ok := state.Strategies[sc.ID]; ok {
-					totalPV += PortfolioValue(s, prices)
-				}
+			walletBalances, walletErrs := fetchSharedWalletBalances(cfg.Strategies, nil)
+			for key, err := range walletErrs {
+				fmt.Printf("[WARN] shared-wallet balance fetch failed for %s/%s: %v — falling back to per-strategy sum\n",
+					key.Platform, key.Account, err)
 			}
+			mu.RLock()
+			totalPV := computeTotalPortfolioValue(cfg.Strategies, state, prices, walletBalances)
 			totalNotional := PortfolioNotional(state.Strategies, prices)
 			mu.RUnlock()
 
