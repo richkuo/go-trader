@@ -110,17 +110,22 @@ func TestComputeTotalPortfolioValue_SharedWalletUsesRealBalance(t *testing.T) {
 		{Platform: "hyperliquid", Account: "0xtest"}: 5000,
 	}
 
-	got := computeTotalPortfolioValue(strategies, state, nil, walletBalances)
+	got, usedFallback := computeTotalPortfolioValue(strategies, state, nil, walletBalances, nil)
 	want := 5000.0 // single wallet, NOT 5000 + 5000
 	if got != want {
 		t.Errorf("expected total=%v (real wallet balance); got %v (likely double-counted)", want, got)
 	}
+	if usedFallback {
+		t.Errorf("expected usedFallback=false when balance was provided")
+	}
 }
 
-// TestComputeTotalPortfolioValue_FallbackOnFetchFailure verifies that when the
-// real-balance fetch fails (wallet missing from balances map), the function
-// falls back to the per-strategy sum so the risk loop never sees a 0 wallet.
-func TestComputeTotalPortfolioValue_FallbackOnFetchFailure(t *testing.T) {
+// TestComputeTotalPortfolioValue_FallbackUsesMaxNotSum verifies that when the
+// real-balance fetch fails for a shared wallet, the function falls back to the
+// MAX of member strategies' PVs — NOT the sum. Summing members would
+// re-introduce the exact #243 double-count bug during transient fetch failures
+// and could permanently inflate PortfolioRisk.PeakValue.
+func TestComputeTotalPortfolioValue_FallbackUsesMaxNotSum(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
 	strategies := []StrategyConfig{
@@ -134,11 +139,47 @@ func TestComputeTotalPortfolioValue_FallbackOnFetchFailure(t *testing.T) {
 		},
 	}
 
-	// Empty walletBalances (simulates fetch failure) — should fall back to per-strategy sum.
-	got := computeTotalPortfolioValue(strategies, state, nil, nil)
-	want := 10000.0 // 4000 + 6000 fallback
+	// Empty walletBalances (simulates fetch failure) — should fall back to
+	// MAX(4000, 6000) = 6000, NOT 4000 + 6000 = 10000 (which would be the
+	// #243 double-count bug in disguise).
+	got, usedFallback := computeTotalPortfolioValue(strategies, state, nil, nil, nil)
+	want := 6000.0
 	if got != want {
-		t.Errorf("expected fallback total=%v; got %v", want, got)
+		t.Errorf("expected fallback total=%v (max of members); got %v — sum of members would re-introduce #243", want, got)
+	}
+	if !usedFallback {
+		t.Errorf("expected usedFallback=true on fetch failure so caller can freeze peak")
+	}
+}
+
+// TestComputeTotalPortfolioValue_FallbackPreventsPeakInflation is a tabletop
+// verification of the peak-protection contract: two members with PVs that
+// summed would exceed PeakValue must NOT produce a total above the max member.
+func TestComputeTotalPortfolioValue_FallbackPreventsPeakInflation(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
+
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 5000},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 5000},
+	}
+	// Simulate a real wallet of ~7000 split across two strategies.
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {ID: "hl-a", Cash: 3500, Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}},
+			"hl-b": {ID: "hl-b", Cash: 3500, Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}},
+		},
+	}
+
+	got, usedFallback := computeTotalPortfolioValue(strategies, state, nil, nil, nil)
+	// Must NOT be 7000 (sum) — that's the #243 bug. Should be 3500 (max).
+	if got == 7000 {
+		t.Errorf("fallback total=%v matches sum-of-members — #243 double-count bug returned!", got)
+	}
+	if got != 3500 {
+		t.Errorf("expected fallback total=3500 (max of members); got %v", got)
+	}
+	if !usedFallback {
+		t.Errorf("usedFallback must be true so main.go can freeze peak")
 	}
 }
 
@@ -164,10 +205,52 @@ func TestComputeTotalPortfolioValue_MixedSharedAndNonShared(t *testing.T) {
 		{Platform: "hyperliquid", Account: "0xtest"}: 7500, // wallet has dropped from 10k to 7500
 	}
 
-	got := computeTotalPortfolioValue(strategies, state, nil, walletBalances)
+	got, usedFallback := computeTotalPortfolioValue(strategies, state, nil, walletBalances, nil)
 	want := 9500.0 // 7500 (shared wallet) + 2000 (spot)
 	if got != want {
 		t.Errorf("expected mixed total=%v; got %v", want, got)
+	}
+	if usedFallback {
+		t.Errorf("expected usedFallback=false when balance was provided")
+	}
+}
+
+// TestComputeTotalPortfolioValue_MixedPaperAndLiveHL verifies the edge case
+// raised in the PR review (#256): one --mode=paper HL strategy and one
+// --mode=live HL strategy on the same env-var address. walletKeyFor filters
+// on live-mode, so neither should be classified as shared (the single live
+// strategy is alone on its wallet); the live strategy contributes its own PV
+// like any non-shared strategy, and the paper strategy is always non-shared.
+// No real-balance fetch should be needed because nothing is shared.
+func TestComputeTotalPortfolioValue_MixedPaperAndLiveHL(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
+
+	strategies := []StrategyConfig{
+		{ID: "hl-paper-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=paper"}, Capital: 5000},
+		{ID: "hl-live-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 5000},
+	}
+
+	// Sanity-check that detection matches expectation: nothing shared, since
+	// only one live strategy is on the wallet.
+	shared := detectSharedWallets(strategies)
+	if len(shared) != 0 {
+		t.Fatalf("expected no shared wallets in mixed paper+live setup; got %d", len(shared))
+	}
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-paper-btc": {ID: "hl-paper-btc", Cash: 5000, Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}},
+			"hl-live-eth":  {ID: "hl-live-eth", Cash: 4500, Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}},
+		},
+	}
+
+	got, usedFallback := computeTotalPortfolioValue(strategies, state, nil, nil, nil)
+	want := 9500.0 // both strategies contribute their PV independently
+	if got != want {
+		t.Errorf("expected mixed paper+live total=%v; got %v", want, got)
+	}
+	if usedFallback {
+		t.Errorf("expected usedFallback=false; nothing was classified as shared")
 	}
 }
 
@@ -189,10 +272,13 @@ func TestComputeTotalPortfolioValue_NoSharedWalletsBehavesLikeOldSum(t *testing.
 		},
 	}
 
-	got := computeTotalPortfolioValue(strategies, state, nil, nil)
+	got, usedFallback := computeTotalPortfolioValue(strategies, state, nil, nil, nil)
 	want := 5000.0
 	if got != want {
 		t.Errorf("expected total=%v; got %v", want, got)
+	}
+	if usedFallback {
+		t.Errorf("expected usedFallback=false when no shared wallets exist")
 	}
 }
 

@@ -24,6 +24,12 @@ type SharedWalletBalanceFetcher func(SharedWalletKey) (float64, error)
 // Currently only Hyperliquid live perps strategies are recognized: they all
 // trade from the address in HYPERLIQUID_ACCOUNT_ADDRESS, so any two such
 // strategies share the wallet by definition.
+//
+// TODO(#243-extension): extend to other live perps/futures platforms once they
+// grow multi-strategy setups on a single account (candidates: okx live swap,
+// topstep live, robinhood live). Each needs its own env-var / account-id source
+// and live-mode predicate. Consider a small registry keyed on
+// (platform, type, live-mode flag) to keep this centralized.
 func walletKeyFor(sc StrategyConfig) (SharedWalletKey, bool) {
 	if sc.Platform == "hyperliquid" && sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
 		addr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
@@ -70,6 +76,11 @@ func defaultSharedWalletFetcher(key SharedWalletKey) (float64, error) {
 // referenced by the strategy list. Performs network I/O and MUST be called
 // without holding any state lock. Wallets whose fetch fails are reported via
 // the returned error map so the caller can fall back to per-strategy sums.
+//
+// NOTE: main.go bypasses this helper and fetches clearinghouseState directly
+// so the same HTTP call can feed both the risk check and the position sync
+// (see fetchHyperliquidState). This function is retained for tests and for
+// any caller that only needs balances.
 func fetchSharedWalletBalances(
 	strategies []StrategyConfig,
 	fetcher SharedWalletBalanceFetcher,
@@ -97,20 +108,33 @@ func fetchSharedWalletBalances(
 //
 // Strategies whose wallet is shared with at least one other strategy are
 // excluded from the per-strategy sum and replaced with a single fetched
-// balance per wallet. Wallets missing from `walletBalances` (e.g. because the
-// fetch failed) fall back to the per-strategy sum so the risk loop never runs
-// with a zero wallet contribution.
+// balance per wallet.
+//
+// Fallback: when a shared-wallet balance is missing from walletBalances (e.g.
+// transient API failure), the function uses the MAX of member strategies'
+// PortfolioValue — NOT the sum. Summing members would re-introduce the exact
+// #243 double-count bug and can permanently inflate PortfolioRisk.PeakValue
+// (peak is sticky). Max is a lower-bound approximation that never exceeds a
+// single strategy's slice of the wallet. The returned usedFallback flag tells
+// the caller to skip peak ratcheting for that cycle so a network blip cannot
+// move the high-water mark.
 //
 // This function only reads state and does NOT perform network I/O — call
-// fetchSharedWalletBalances first (without the lock), then call this under
-// the state read lock.
+// fetchSharedWalletBalances (or fetch clearinghouseState directly) first
+// without the lock, then call this under the state read lock.
+//
+// The sharedWallets parameter is pre-computed by the caller so the map is
+// built once per cycle instead of twice (detection + computation).
 func computeTotalPortfolioValue(
 	strategies []StrategyConfig,
 	state *AppState,
 	prices map[string]float64,
 	walletBalances map[SharedWalletKey]float64,
-) float64 {
-	sharedWallets := detectSharedWallets(strategies)
+	sharedWallets map[SharedWalletKey][]string,
+) (float64, bool) {
+	if sharedWallets == nil {
+		sharedWallets = detectSharedWallets(strategies)
+	}
 
 	// Build a quick lookup of strategy IDs that belong to a shared wallet.
 	sharedStrategyIDs := make(map[string]bool)
@@ -132,21 +156,31 @@ func computeTotalPortfolioValue(
 		}
 	}
 
-	// One real-balance contribution per shared wallet (fall back to summing
-	// member strategies when the balance was not provided).
+	// One real-balance contribution per shared wallet. On fetch failure,
+	// use MAX of member strategies' PVs (never the sum — that's #243).
+	usedFallback := false
 	for key, ids := range sharedWallets {
 		if bal, ok := walletBalances[key]; ok {
 			total += bal
 			continue
 		}
+		usedFallback = true
+		maxPV := 0.0
 		for _, id := range ids {
-			if s, ok := state.Strategies[id]; ok {
-				total += PortfolioValue(s, prices)
+			s, ok := state.Strategies[id]
+			if !ok {
+				continue
+			}
+			if pv := PortfolioValue(s, prices); pv > maxPV {
+				maxPV = pv
 			}
 		}
+		fmt.Printf("[WARN] shared-wallet %s/%s: balance fetch missing, falling back to max(member PV)=$%.2f (peak will NOT be updated this cycle)\n",
+			key.Platform, key.Account, maxPV)
+		total += maxPV
 	}
 
-	return total
+	return total, usedFallback
 }
 
 // computeInitialPortfolioPeak returns the initial PortfolioRisk.PeakValue used
@@ -156,6 +190,12 @@ func computeTotalPortfolioValue(
 // non-shared platform fall back to the legacy "wallet balance once per
 // platform" computation (Capital / CapitalPct) so existing single-strategy
 // setups are unaffected.
+//
+// Behavioral note (for release notes): a single live HL strategy with
+// CapitalPct > 0 is NOT shared (only one strategy on the wallet) and still
+// takes the legacy Capital/CapitalPct path. Adding a second live HL strategy
+// later flips the peak init to the real on-exchange balance — usually more
+// accurate, but a visible behavior change for existing users.
 //
 // Performs network I/O for shared-wallet platforms — call from startup, not
 // from inside the hot loop.

@@ -349,24 +349,74 @@ func main() {
 			fmt.Println("[CRITICAL] State save failed 3x, skipping trades this cycle")
 		} else {
 			// #42 / #243: Portfolio-level risk check before running any strategy.
-			// Fetch live wallet balances OUTSIDE the lock (network I/O), then
-			// compute total PV under RLock using real exchange balances for
-			// shared wallets so multiple HL perps strategies on the same
-			// account don't get double-counted.
+			//
+			// Fetch live Hyperliquid clearinghouseState ONCE per cycle (outside
+			// the lock) and reuse it for BOTH the shared-wallet balance (risk
+			// check) AND the on-chain position sync below — this halves the HL
+			// API round-trips when multiple live HL strategies are configured.
+			//
+			// Uses real exchange balances for shared wallets so multiple HL
+			// perps strategies on the same account don't get double-counted.
 			killSwitchFired := false
 			notionalBlocked := false
-			walletBalances, walletErrs := fetchSharedWalletBalances(cfg.Strategies, nil)
-			for key, err := range walletErrs {
-				fmt.Printf("[WARN] shared-wallet balance fetch failed for %s/%s: %v — falling back to per-strategy sum\n",
-					key.Platform, key.Account, err)
+
+			// Partition HL live strategies up-front: shared-wallet detection
+			// must see all strategies in cfg, while position sync only touches
+			// due strategies.
+			var hlLiveAll []StrategyConfig
+			for _, sc := range cfg.Strategies {
+				if sc.Platform == "hyperliquid" && sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
+					hlLiveAll = append(hlLiveAll, sc)
+				}
 			}
+			var hlLiveDue []StrategyConfig
+			for _, sc := range dueStrategies {
+				if sc.Platform == "hyperliquid" && sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
+					hlLiveDue = append(hlLiveDue, sc)
+				}
+			}
+
+			sharedWallets := detectSharedWallets(cfg.Strategies)
+			hlAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
+			hlKey := SharedWalletKey{Platform: "hyperliquid", Account: hlAddr}
+			_, hlShared := sharedWallets[hlKey]
+
+			// Fetch HL clearinghouseState once if any consumer needs it:
+			// - shared-wallet risk check (2+ live HL strategies in cfg)
+			// - position sync for at least one due HL strategy
+			walletBalances := make(map[SharedWalletKey]float64)
+			var hlPositions []HLPosition
+			var hlStateFetched bool
+			if hlAddr != "" && (hlShared || len(hlLiveDue) > 0) {
+				bal, pos, err := fetchHyperliquidState(hlAddr)
+				if err != nil {
+					fmt.Printf("[WARN] hyperliquid clearinghouseState fetch failed: %v — falling back to per-wallet max and skipping position sync this cycle\n", err)
+				} else {
+					hlStateFetched = true
+					hlPositions = pos
+					if hlShared {
+						walletBalances[hlKey] = bal
+					}
+				}
+			}
+
 			mu.RLock()
-			totalPV := computeTotalPortfolioValue(cfg.Strategies, state, prices, walletBalances)
+			totalPV, usedPVFallback := computeTotalPortfolioValue(cfg.Strategies, state, prices, walletBalances, sharedWallets)
 			totalNotional := PortfolioNotional(state.Strategies, prices)
 			mu.RUnlock()
 
 			mu.Lock()
+			// #243: Freeze peak during fallback cycles so a transient HL API
+			// blip cannot ratchet the high-water mark (peak is sticky, so a
+			// false peak would persist and could later trip a false drawdown).
+			// CheckPortfolioRisk auto-ratchets PeakValue when totalValue > peak;
+			// we snapshot before the call and restore if we're on a fallback
+			// cycle. Drawdown detection still runs against the frozen peak.
+			origPeak := state.PortfolioRisk.PeakValue
 			portfolioAllowed, nb, portfolioWarning, portfolioReason := CheckPortfolioRisk(&state.PortfolioRisk, cfg.PortfolioRisk, totalPV, totalNotional)
+			if usedPVFallback && state.PortfolioRisk.PeakValue > origPeak {
+				state.PortfolioRisk.PeakValue = origPeak
+			}
 			if !portfolioAllowed {
 				killSwitchFired = true
 				fmt.Printf("[CRITICAL] Portfolio kill switch: %s\n", portfolioReason)
@@ -445,15 +495,12 @@ func main() {
 			}
 
 			if !killSwitchFired {
-				// Pre-phase: sync on-chain positions for all live HL strategies at once.
-				var hlLiveStrategies []StrategyConfig
-				for _, sc := range dueStrategies {
-					if sc.Platform == "hyperliquid" && sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
-						hlLiveStrategies = append(hlLiveStrategies, sc)
-					}
-				}
-				if len(hlLiveStrategies) > 0 {
-					syncHyperliquidAccountPositions(hlLiveStrategies, state, &mu, logMgr)
+				// Pre-phase: sync on-chain positions for due live HL strategies.
+				// Reuses the clearinghouseState already fetched above for the
+				// shared-wallet risk check (#243 review feedback) so we don't
+				// pay two HL API round-trips per cycle.
+				if len(hlLiveDue) > 0 && hlStateFetched {
+					reconcileHyperliquidAccountPositions(hlLiveDue, state, &mu, logMgr, hlPositions)
 				}
 
 				for _, sc := range dueStrategies {

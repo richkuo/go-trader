@@ -195,6 +195,11 @@ func reconcileHyperliquidPositions(stratState *StrategyState, sym string, positi
 // assigned to the strategy that opened them (via OwnerStrategyID).
 // Unowned on-chain positions are logged as warnings but not assigned.
 // Must be called WITHOUT holding any lock; acquires Lock internally.
+//
+// This is the self-contained entry point that fetches its own state. When the
+// scheduler has already fetched clearinghouseState earlier in the cycle (e.g.
+// for shared-wallet balance), use reconcileHyperliquidAccountPositions instead
+// to avoid a second round-trip to the HL API.
 func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager) bool {
 	accountAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 	if accountAddr == "" {
@@ -208,6 +213,16 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 		return false
 	}
 
+	return reconcileHyperliquidAccountPositions(hlStrategies, state, mu, logMgr, positions)
+}
+
+// reconcileHyperliquidAccountPositions reconciles pre-fetched on-chain positions
+// against strategy state. Use this when the caller has already fetched
+// clearinghouseState earlier in the cycle (e.g. main.go fetches once for the
+// shared-wallet balance and reuses the positions here to avoid a duplicate
+// HTTP round-trip — see #243 review feedback).
+// Must be called WITHOUT holding any lock; acquires Lock internally.
+func reconcileHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, positions []HLPosition) bool {
 	mu.Lock()
 	defer mu.Unlock()
 
