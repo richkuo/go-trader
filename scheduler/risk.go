@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -25,6 +26,101 @@ type PortfolioRiskState struct {
 	KillSwitchAt       time.Time         `json:"kill_switch_at,omitempty"`
 	WarningSent        bool              `json:"warning_sent,omitempty"`
 	Events             []KillSwitchEvent `json:"events,omitempty"`
+}
+
+// SharedWalletBalanceFetcher returns the real on-chain balance for a given
+// platform. Implementations are expected to encapsulate any address/credential
+// lookup (e.g. environment variables) and return a non-nil error on any
+// network or configuration failure.
+type SharedWalletBalanceFetcher func(platform string) (float64, error)
+
+// detectSharedWalletPlatforms returns the list of platforms that have more
+// than one strategy sharing the same wallet (capital_pct > 0). A single
+// strategy with capital_pct alone is not a "shared" wallet — there is no
+// double-counting risk to recover from. The result is sorted alphabetically
+// for deterministic iteration order (callers rely on this).
+func detectSharedWalletPlatforms(strategies []StrategyConfig) []string {
+	walletCount := make(map[string]int)
+	for _, sc := range strategies {
+		if sc.CapitalPct > 0 {
+			walletCount[sc.Platform]++
+		}
+	}
+	var platforms []string
+	for plat, n := range walletCount {
+		if n > 1 {
+			platforms = append(platforms, plat)
+		}
+	}
+	sort.Strings(platforms)
+	return platforms
+}
+
+// ClearLatchedKillSwitchSharedWallet auto-clears a latched portfolio kill
+// switch on startup when a shared wallet is in use AND the real on-chain
+// balance can be successfully fetched for every shared-wallet platform. This
+// protects against legacy state where an inflated PortfolioRisk.PeakValue
+// (e.g. from earlier shared-wallet double-counting) would otherwise leave the
+// kill switch latched forever across restarts. See issue #244.
+//
+// Guards (all must hold):
+//   - the kill switch must currently be active (otherwise no-op)
+//   - at least one platform must host a shared wallet (capital_pct > 0 with
+//     more than one strategy on the same platform)
+//   - fetcher must successfully return a real balance for EVERY shared-wallet
+//     platform — any network/config failure preserves the kill switch so the
+//     re-baselined peak reflects the full portfolio-wide truth rather than a
+//     partial slice that would under-baseline PeakValue
+//
+// On success, PortfolioRisk.PeakValue is re-baselined to the verified total
+// balance (and CurrentDrawdownPct zeroed) so the very next CheckPortfolioRisk
+// call cannot immediately re-latch the kill switch using a stale inflated
+// peak — the original root cause from #244.
+//
+// CONCURRENCY: This function mutates state.PortfolioRisk without holding any
+// lock. It is only safe to call during startup, before the state mutex is
+// created and before any goroutines are spawned. See main.go:109.
+//
+// Returns true iff the kill switch was cleared.
+func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyConfig, fetcher SharedWalletBalanceFetcher) bool {
+	if state == nil || !state.PortfolioRisk.KillSwitchActive {
+		return false
+	}
+
+	sharedPlatforms := detectSharedWalletPlatforms(strategies)
+	if len(sharedPlatforms) == 0 {
+		return false
+	}
+
+	// Fetch every shared-wallet platform up front. Any failure aborts the
+	// clear so we never re-baseline PeakValue from an incomplete picture.
+	totalBalance := 0.0
+	for _, plat := range sharedPlatforms {
+		balance, err := fetcher(plat)
+		if err != nil {
+			fmt.Printf("[INFO] Shared wallet (%s): kill switch NOT cleared — balance fetch failed: %v\n", plat, err)
+			return false
+		}
+		totalBalance += balance
+	}
+
+	latchedAt := state.PortfolioRisk.KillSwitchAt.Format("2006-01-02 15:04 UTC")
+	fmt.Printf("[INFO] Shared wallet (%v): clearing kill switch (was latched at %s, real total balance=$%.2f, prior peak=$%.2f)\n",
+		sharedPlatforms, latchedAt, totalBalance, state.PortfolioRisk.PeakValue)
+
+	state.PortfolioRisk.KillSwitchActive = false
+	state.PortfolioRisk.KillSwitchAt = time.Time{}
+	state.PortfolioRisk.WarningSent = false
+	// Re-baseline peak to the verified on-chain total so CheckPortfolioRisk
+	// does not immediately re-latch on the first tick using the stale
+	// (potentially double-counted) peak.
+	state.PortfolioRisk.PeakValue = totalBalance
+	state.PortfolioRisk.CurrentDrawdownPct = 0
+	addKillSwitchEvent(&state.PortfolioRisk, "auto_reset",
+		0, totalBalance, totalBalance,
+		fmt.Sprintf("startup auto-clear: shared wallets %v reachable, total balance=$%.2f (peak re-baselined)",
+			sharedPlatforms, totalBalance))
+	return true
 }
 
 // addKillSwitchEvent appends an event and trims to maxKillSwitchEvents.

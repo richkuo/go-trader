@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -494,5 +495,305 @@ func TestCheckPortfolioRisk_EventLoggedOnTrigger(t *testing.T) {
 	}
 	if prs.Events[0].PortfolioValue != 7400.0 {
 		t.Errorf("expected portfolio_value=7400; got %.2f", prs.Events[0].PortfolioValue)
+	}
+}
+
+// --- ClearLatchedKillSwitchSharedWallet (#244) ---
+
+// latchedSharedWalletState builds an AppState with a latched kill switch and
+// shared-wallet strategies for use in #244 regression tests.
+func latchedSharedWalletState() *AppState {
+	return &AppState{
+		Strategies: map[string]*StrategyState{},
+		PortfolioRisk: PortfolioRiskState{
+			PeakValue:          10000,
+			CurrentDrawdownPct: 50,
+			KillSwitchActive:   true,
+			KillSwitchAt:       time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+		},
+	}
+}
+
+func sharedHLStrategies() []StrategyConfig {
+	return []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
+		{ID: "hl-b", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
+	}
+}
+
+// TestClearLatchedKillSwitchSharedWallet_Success verifies the kill switch is
+// cleared when a shared wallet's real balance is fetched successfully, and
+// that PeakValue is re-baselined so the next CheckPortfolioRisk call does
+// not immediately re-latch the switch (#244 regression).
+func TestClearLatchedKillSwitchSharedWallet_Success(t *testing.T) {
+	state := latchedSharedWalletState()
+	strategies := sharedHLStrategies()
+
+	calls := 0
+	fetcher := func(platform string) (float64, error) {
+		calls++
+		if platform != "hyperliquid" {
+			t.Errorf("expected fetcher called for hyperliquid; got %q", platform)
+		}
+		return 4500, nil
+	}
+
+	cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher)
+	if !cleared {
+		t.Fatal("expected ClearLatchedKillSwitchSharedWallet to return true")
+	}
+	if calls != 1 {
+		t.Errorf("expected 1 fetcher call; got %d", calls)
+	}
+	if state.PortfolioRisk.KillSwitchActive {
+		t.Error("expected KillSwitchActive=false after clear")
+	}
+	if !state.PortfolioRisk.KillSwitchAt.IsZero() {
+		t.Errorf("expected KillSwitchAt zeroed; got %v", state.PortfolioRisk.KillSwitchAt)
+	}
+	if state.PortfolioRisk.WarningSent {
+		t.Error("expected WarningSent reset to false")
+	}
+	// Peak should be re-baselined from the fetched balance (was 10000, now 4500).
+	if state.PortfolioRisk.PeakValue != 4500 {
+		t.Errorf("expected PeakValue re-baselined to 4500; got %.2f", state.PortfolioRisk.PeakValue)
+	}
+	if state.PortfolioRisk.CurrentDrawdownPct != 0 {
+		t.Errorf("expected CurrentDrawdownPct reset to 0; got %.2f", state.PortfolioRisk.CurrentDrawdownPct)
+	}
+	if len(state.PortfolioRisk.Events) != 1 {
+		t.Fatalf("expected 1 audit event; got %d", len(state.PortfolioRisk.Events))
+	}
+	evt := state.PortfolioRisk.Events[0]
+	if evt.Type != "auto_reset" {
+		t.Errorf("expected event type=auto_reset; got %q", evt.Type)
+	}
+	if evt.PortfolioValue != 4500 {
+		t.Errorf("expected event portfolio_value=4500 (fetched balance); got %.2f", evt.PortfolioValue)
+	}
+	if evt.PeakValue != 4500 {
+		t.Errorf("expected event peak_value=4500 (re-baselined); got %.2f", evt.PeakValue)
+	}
+}
+
+// TestClearLatchedKillSwitchSharedWallet_NoRelatchOnNextTick is the core
+// #244 regression test: after an auto-clear, the very next CheckPortfolioRisk
+// call must NOT re-latch the kill switch using the stale inflated PeakValue.
+// This reproduces the exact scenario from the issue — a $20K peak from
+// shared-wallet double-counting against a real $5K balance.
+func TestClearLatchedKillSwitchSharedWallet_NoRelatchOnNextTick(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{},
+		PortfolioRisk: PortfolioRiskState{
+			PeakValue:          20000, // inflated (double-counted)
+			CurrentDrawdownPct: 75,
+			KillSwitchActive:   true,
+			KillSwitchAt:       time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+		},
+	}
+	strategies := sharedHLStrategies()
+
+	// Real balance is $5K — well below the stale $20K peak.
+	fetcher := func(platform string) (float64, error) {
+		return 5000, nil
+	}
+
+	if cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher); !cleared {
+		t.Fatal("expected auto-clear to succeed")
+	}
+
+	// First tick after restart: CheckPortfolioRisk with real balance ~= $5K.
+	// With a properly re-baselined peak, drawdown is 0% and the kill switch
+	// stays cleared. With the old buggy behavior (peak still $20K), drawdown
+	// would be 75% and the kill switch would re-latch immediately.
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	allowed, _, _, reason := CheckPortfolioRisk(&state.PortfolioRisk, cfg, 5000, 0)
+	if !allowed {
+		t.Fatalf("expected kill switch to stay cleared after auto-clear; got reason=%s", reason)
+	}
+	if state.PortfolioRisk.KillSwitchActive {
+		t.Error("expected KillSwitchActive=false after first post-clear tick — stale peak re-latched the switch")
+	}
+}
+
+// TestClearLatchedKillSwitchSharedWallet_FetchFailurePreservesLatch verifies
+// that a network/config failure on the balance fetch leaves the kill switch
+// latched (acceptance criterion #2).
+func TestClearLatchedKillSwitchSharedWallet_FetchFailurePreservesLatch(t *testing.T) {
+	state := latchedSharedWalletState()
+	strategies := sharedHLStrategies()
+	originalLatchedAt := state.PortfolioRisk.KillSwitchAt
+
+	fetcher := func(platform string) (float64, error) {
+		return 0, fmt.Errorf("simulated network failure")
+	}
+
+	cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher)
+	if cleared {
+		t.Fatal("expected ClearLatchedKillSwitchSharedWallet to return false on fetch failure")
+	}
+	if !state.PortfolioRisk.KillSwitchActive {
+		t.Error("expected KillSwitchActive to remain true after fetch failure")
+	}
+	if !state.PortfolioRisk.KillSwitchAt.Equal(originalLatchedAt) {
+		t.Errorf("expected KillSwitchAt unchanged; got %v", state.PortfolioRisk.KillSwitchAt)
+	}
+	if len(state.PortfolioRisk.Events) != 0 {
+		t.Errorf("expected no audit event on failure; got %d", len(state.PortfolioRisk.Events))
+	}
+}
+
+// TestClearLatchedKillSwitchSharedWallet_NoSharedWalletNoOp verifies that
+// non-shared-wallet setups are unaffected (acceptance criterion #3).
+func TestClearLatchedKillSwitchSharedWallet_NoSharedWalletNoOp(t *testing.T) {
+	state := latchedSharedWalletState()
+	// Strategies without capital_pct (or only one strategy on a wallet) are
+	// not "shared" — there is no double-counting risk to recover from.
+	strategies := []StrategyConfig{
+		{ID: "spot-a", Platform: "binanceus", Capital: 1000},
+		{ID: "spot-b", Platform: "binanceus", Capital: 1000},
+		{ID: "hl-solo", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
+	}
+
+	calls := 0
+	fetcher := func(platform string) (float64, error) {
+		calls++
+		return 5000, nil
+	}
+
+	cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher)
+	if cleared {
+		t.Error("expected no clear when no shared wallet detected")
+	}
+	if calls != 0 {
+		t.Errorf("expected fetcher NOT called for non-shared wallets; got %d calls", calls)
+	}
+	if !state.PortfolioRisk.KillSwitchActive {
+		t.Error("expected KillSwitchActive to remain true")
+	}
+}
+
+// TestClearLatchedKillSwitchSharedWallet_InactiveSwitchNoOp verifies the
+// helper is a no-op (and skips the network fetch entirely) when the kill
+// switch is not active.
+func TestClearLatchedKillSwitchSharedWallet_InactiveSwitchNoOp(t *testing.T) {
+	state := &AppState{
+		PortfolioRisk: PortfolioRiskState{PeakValue: 10000, KillSwitchActive: false},
+	}
+	strategies := sharedHLStrategies()
+
+	calls := 0
+	fetcher := func(platform string) (float64, error) {
+		calls++
+		return 5000, nil
+	}
+
+	if cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher); cleared {
+		t.Error("expected no clear when switch already inactive")
+	}
+	if calls != 0 {
+		t.Errorf("expected fetcher NOT called when switch inactive; got %d calls", calls)
+	}
+}
+
+// TestClearLatchedKillSwitchSharedWallet_MultiPlatformAllSuccess verifies
+// that when multiple shared-wallet platforms are configured, the kill
+// switch is cleared and PeakValue is re-baselined to the SUM of all
+// fetched balances (not just the first).
+func TestClearLatchedKillSwitchSharedWallet_MultiPlatformAllSuccess(t *testing.T) {
+	state := latchedSharedWalletState()
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
+		{ID: "hl-b", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
+		{ID: "okx-a", Platform: "okx", CapitalPct: 0.3, Capital: 300},
+		{ID: "okx-b", Platform: "okx", CapitalPct: 0.7, Capital: 700},
+	}
+
+	fetcher := func(platform string) (float64, error) {
+		switch platform {
+		case "hyperliquid":
+			return 3000, nil
+		case "okx":
+			return 2000, nil
+		}
+		return 0, fmt.Errorf("unexpected platform %q", platform)
+	}
+
+	if cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher); !cleared {
+		t.Fatal("expected kill switch to clear when all platforms fetch successfully")
+	}
+	if state.PortfolioRisk.KillSwitchActive {
+		t.Error("expected KillSwitchActive=false")
+	}
+	// PeakValue must be re-baselined to the SUM (3000 + 2000 = 5000), not
+	// just the first platform's balance.
+	if state.PortfolioRisk.PeakValue != 5000 {
+		t.Errorf("expected PeakValue=5000 (sum of hyperliquid+okx); got %.2f", state.PortfolioRisk.PeakValue)
+	}
+	if len(state.PortfolioRisk.Events) != 1 {
+		t.Fatalf("expected 1 audit event; got %d", len(state.PortfolioRisk.Events))
+	}
+	if state.PortfolioRisk.Events[0].PortfolioValue != 5000 {
+		t.Errorf("expected audit event portfolio_value=5000 (total); got %.2f",
+			state.PortfolioRisk.Events[0].PortfolioValue)
+	}
+}
+
+// TestClearLatchedKillSwitchSharedWallet_MultiPlatformAnyFailPreservesLatch
+// verifies that if ANY shared-wallet platform fails to fetch, the kill
+// switch is preserved. We require the full portfolio-wide truth before
+// re-baselining peak — a partial slice would under-baseline and still be
+// unsafe.
+func TestClearLatchedKillSwitchSharedWallet_MultiPlatformAnyFailPreservesLatch(t *testing.T) {
+	state := latchedSharedWalletState()
+	originalLatchedAt := state.PortfolioRisk.KillSwitchAt
+	originalPeak := state.PortfolioRisk.PeakValue
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
+		{ID: "hl-b", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
+		{ID: "okx-a", Platform: "okx", CapitalPct: 0.3, Capital: 300},
+		{ID: "okx-b", Platform: "okx", CapitalPct: 0.7, Capital: 700},
+	}
+
+	// hyperliquid fails; okx would succeed — but we should NOT partially
+	// clear because the re-baselined peak would miss hyperliquid capital.
+	fetcher := func(platform string) (float64, error) {
+		if platform == "hyperliquid" {
+			return 0, fmt.Errorf("hyperliquid unreachable")
+		}
+		return 2000, nil
+	}
+
+	if cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher); cleared {
+		t.Fatal("expected kill switch to remain latched when any platform fails")
+	}
+	if !state.PortfolioRisk.KillSwitchActive {
+		t.Error("expected KillSwitchActive to remain true")
+	}
+	if !state.PortfolioRisk.KillSwitchAt.Equal(originalLatchedAt) {
+		t.Error("expected KillSwitchAt unchanged")
+	}
+	if state.PortfolioRisk.PeakValue != originalPeak {
+		t.Errorf("expected PeakValue unchanged; got %.2f", state.PortfolioRisk.PeakValue)
+	}
+	if len(state.PortfolioRisk.Events) != 0 {
+		t.Errorf("expected no audit event on partial failure; got %d", len(state.PortfolioRisk.Events))
+	}
+}
+
+// TestDetectSharedWalletPlatforms verifies the shared-wallet detector picks
+// out platforms with > 1 capital_pct strategy and ignores everything else.
+func TestDetectSharedWalletPlatforms(t *testing.T) {
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", CapitalPct: 0.5},
+		{ID: "hl-b", Platform: "hyperliquid", CapitalPct: 0.5},
+		{ID: "okx-solo", Platform: "okx", CapitalPct: 0.5},   // only one — not shared
+		{ID: "spot-a", Platform: "binanceus", Capital: 1000}, // no capital_pct
+		{ID: "spot-b", Platform: "binanceus", Capital: 1000},
+	}
+
+	got := detectSharedWalletPlatforms(strategies)
+	if len(got) != 1 || got[0] != "hyperliquid" {
+		t.Errorf("expected [hyperliquid]; got %v", got)
 	}
 }

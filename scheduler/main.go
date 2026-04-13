@@ -102,6 +102,12 @@ func main() {
 		fmt.Printf("  Portfolio peak initialized: $%.0f\n", total)
 	}
 
+	// #244: A latched portfolio kill switch should not survive a restart
+	// indefinitely on shared-wallet setups. If the real on-chain balance is
+	// fetchable for any shared wallet, treat startup as a safe reset point
+	// and unlatch the kill switch. Network failures preserve the latch.
+	ClearLatchedKillSwitchSharedWallet(state, cfg.Strategies, defaultSharedWalletBalance)
+
 	// Setup logging
 	logMgr, err := NewLogManager(cfg.LogDir)
 	if err != nil {

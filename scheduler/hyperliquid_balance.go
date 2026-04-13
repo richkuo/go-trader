@@ -67,6 +67,22 @@ func fetchHyperliquidBalance(accountAddress string) (float64, error) {
 	return val, nil
 }
 
+// defaultSharedWalletBalance dispatches a real on-chain balance lookup by
+// platform name for use with ClearLatchedKillSwitchSharedWallet (#244).
+// Returns an error for any platform that does not (yet) expose a real
+// balance endpoint, so callers preserve the kill switch on uncertainty.
+func defaultSharedWalletBalance(platform string) (float64, error) {
+	switch platform {
+	case "hyperliquid":
+		addr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
+		if addr == "" {
+			return 0, fmt.Errorf("HYPERLIQUID_ACCOUNT_ADDRESS not set")
+		}
+		return fetchHyperliquidBalance(addr)
+	}
+	return 0, fmt.Errorf("no shared-wallet balance fetcher for platform %q", platform)
+}
+
 // syncHyperliquidLiveCapital is a no-op kept for backward compatibility.
 // Capital is now managed per-strategy via config (Capital field) or capital_pct.
 // With multiple strategies on one account, overriding each strategy's capital
