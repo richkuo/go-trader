@@ -6,7 +6,7 @@ import (
 )
 
 // stubFetcher returns canned balances/errors for tests so we never hit the network.
-func stubFetcher(balances map[SharedWalletKey]float64, errs map[SharedWalletKey]error) SharedWalletBalanceFetcher {
+func stubFetcher(balances map[SharedWalletKey]float64, errs map[SharedWalletKey]error) WalletBalanceFetcher {
 	return func(key SharedWalletKey) (float64, error) {
 		if err, ok := errs[key]; ok {
 			return 0, err

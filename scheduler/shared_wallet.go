@@ -14,9 +14,14 @@ type SharedWalletKey struct {
 	Account  string
 }
 
-// SharedWalletBalanceFetcher returns the live wallet balance for a given key.
+// WalletBalanceFetcher returns the live wallet balance for a given key.
 // Injected so tests can stub out network calls.
-type SharedWalletBalanceFetcher func(SharedWalletKey) (float64, error)
+//
+// NOTE: distinct from risk.go's SharedWalletBalanceFetcher (#244), which is
+// keyed by platform string and used by ClearLatchedKillSwitchSharedWallet on
+// startup. This one is keyed by SharedWalletKey (platform + account) so a
+// single platform can host multiple distinct wallets if that ever comes up.
+type WalletBalanceFetcher func(SharedWalletKey) (float64, error)
 
 // walletKeyFor returns the shared-wallet key for a strategy if it trades from
 // a shared on-exchange account, otherwise (zero, false).
@@ -83,7 +88,7 @@ func defaultSharedWalletFetcher(key SharedWalletKey) (float64, error) {
 // any caller that only needs balances.
 func fetchSharedWalletBalances(
 	strategies []StrategyConfig,
-	fetcher SharedWalletBalanceFetcher,
+	fetcher WalletBalanceFetcher,
 ) (map[SharedWalletKey]float64, map[SharedWalletKey]error) {
 	if fetcher == nil {
 		fetcher = defaultSharedWalletFetcher
@@ -199,7 +204,7 @@ func computeTotalPortfolioValue(
 //
 // Performs network I/O for shared-wallet platforms — call from startup, not
 // from inside the hot loop.
-func computeInitialPortfolioPeak(strategies []StrategyConfig, fetcher SharedWalletBalanceFetcher) float64 {
+func computeInitialPortfolioPeak(strategies []StrategyConfig, fetcher WalletBalanceFetcher) float64 {
 	if fetcher == nil {
 		fetcher = defaultSharedWalletFetcher
 	}
