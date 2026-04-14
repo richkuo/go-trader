@@ -495,37 +495,56 @@ func FetchPrices(symbols []string) (map[string]float64, error) {
 	return prices, nil
 }
 
+// FuturesMarkModePaperFallback is the mode string returned by
+// fetch_futures_marks.py when live mode init failed (e.g. missing deps,
+// network error) and the script silently degraded to yfinance paper quotes.
+// Callers that care about surfacing the downgrade compare against this
+// constant. "live" and "paper" are also valid mode strings but represent
+// expected states, so the Go side does not act on them.
+const FuturesMarkModePaperFallback = "paper_fallback"
+
 // FetchFuturesMarks runs fetch_futures_marks.py and returns a map of
-// contract-symbol→mark-price for CME futures (TopStep). Mirrors FetchPrices
-// but routes through the TopStep adapter (yfinance in paper mode, TopStepX
-// REST in live mode) because BinanceUS does not quote ES/NQ/MES/MNQ/CL.
-// See issue #261: without this, PortfolioNotional revalued futures positions
+// contract-symbol→mark-price for CME futures (TopStep), plus the mode
+// string embedded by the Python script. Mirrors FetchPrices but routes
+// through the TopStep adapter (yfinance in paper mode, TopStepX REST in
+// live mode) because BinanceUS does not quote ES/NQ/MES/MNQ/CL. See
+// issue #261: without this, PortfolioNotional revalued futures positions
 // at pos.AvgCost, freezing exposure at entry cost.
 //
 // The script embeds a reserved "_mode" metadata key in its JSON output
-// (one of "live", "paper", "paper_fallback"). paper_fallback indicates
-// that live-mode init failed (e.g. missing deps, network init error) and
-// the script silently degraded to yfinance paper quotes — we log a
-// [WARN] so operators aren't blind to the downgrade, since a single
-// stderr line is easy to miss on a long-running scheduler.
-func FetchFuturesMarks(symbols []string) (map[string]float64, error) {
+// (one of "live", "paper", "paper_fallback"). We strip it from the
+// returned marks map (this is also the *only* filter site for "_mode" —
+// mergeFuturesMarks never sees it) and return it as a separate value so
+// callers can decide how to surface paper_fallback. Logging is NOT done
+// here because this function is called from both the main cycle loop
+// (naturally rate-limited) and /status (polled frequently, needs
+// throttled logging to avoid spam during sustained downgrades).
+func FetchFuturesMarks(symbols []string) (map[string]float64, string, error) {
 	if len(symbols) == 0 {
-		return map[string]float64{}, nil
+		return map[string]float64{}, "", nil
 	}
 	stdout, stderr, err := RunPythonScript("shared_scripts/fetch_futures_marks.py", symbols)
 	if err != nil {
-		return nil, fmt.Errorf("futures marks fetch error: %w (stderr: %s)", err, string(stderr))
+		return nil, "", fmt.Errorf("futures marks fetch error: %w (stderr: %s)", err, string(stderr))
 	}
 
 	// The script mixes float prices with a string "_mode" metadata key,
 	// so decode into interface{} first, then split into the
-	// float-keyed marks map and the mode string.
+	// float-keyed marks map and the mode string. This loop is the only
+	// place "_mode" is filtered out — downstream code (mergeFuturesMarks,
+	// PortfolioNotional) operates on the already-clean map[string]float64
+	// and never has to defend against the string key. If a future refactor
+	// changes this return type, the filter must move with it.
 	var raw map[string]interface{}
 	if err := json.Unmarshal(stdout, &raw); err != nil {
-		return nil, fmt.Errorf("parse futures marks: %w (stdout: %s)", err, string(stdout))
+		return nil, "", fmt.Errorf("parse futures marks: %w (stdout: %s)", err, string(stdout))
 	}
 
 	marks := make(map[string]float64, len(raw))
+	// mode is parsed on every call so callers can detect silent downgrades
+	// (paper_fallback); "live" and "paper" are expected happy-path states
+	// and are intentionally not logged anywhere — see callers in main.go
+	// and server.go which only branch on FuturesMarkModePaperFallback.
 	mode := ""
 	for k, v := range raw {
 		if k == "_mode" {
@@ -538,8 +557,5 @@ func FetchFuturesMarks(symbols []string) (map[string]float64, error) {
 			marks[k] = f
 		}
 	}
-	if mode == "paper_fallback" {
-		fmt.Printf("[WARN] fetch_futures_marks: live mode init failed, degraded to paper (yfinance) — check TopStepX creds and network\n")
-	}
-	return marks, nil
+	return marks, mode, nil
 }

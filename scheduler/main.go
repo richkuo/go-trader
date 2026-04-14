@@ -347,10 +347,17 @@ func main() {
 		// pos.AvgCost in PortfolioNotional/Value (same as pre-#261), it is
 		// NOT a hard cycle skip. Log a [WARN] so stale exposure is visible.
 		if len(futuresSymbols) > 0 {
-			marks, err := FetchFuturesMarks(futuresSymbols)
+			marks, mode, err := FetchFuturesMarks(futuresSymbols)
 			if err != nil {
 				fmt.Printf("[WARN] Futures marks fetch failed for %v: %v — portfolio notional will use entry cost for open futures positions\n", futuresSymbols, err)
 			} else {
+				// Main cycle loop is naturally rate-limited by the tick
+				// interval, so the paper_fallback warning can fire
+				// unthrottled here — one log per cycle on a sustained
+				// downgrade. /status uses a throttled logger instead.
+				if mode == FuturesMarkModePaperFallback {
+					fmt.Printf("[WARN] fetch_futures_marks: live mode init failed, degraded to paper (yfinance) — check TopStepX creds and network\n")
+				}
 				mergeFuturesMarks(prices, marks)
 				for _, sym := range futuresSymbols {
 					if _, ok := prices[sym]; !ok {
@@ -974,10 +981,14 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 		mirrorPerpsPrices(prices, perpsMirror)
 	}
 	if len(futuresSymbols) > 0 {
-		marks, err := FetchFuturesMarks(futuresSymbols)
+		marks, mode, err := FetchFuturesMarks(futuresSymbols)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[WARN] Futures marks fetch failed for %v: %v — summary will use entry cost\n", futuresSymbols, err)
 		} else {
+			// One-shot summary path — not polled, so unthrottled log is fine.
+			if mode == FuturesMarkModePaperFallback {
+				fmt.Fprintf(os.Stderr, "[WARN] fetch_futures_marks: live mode init failed, degraded to paper (yfinance) — check TopStepX creds and network\n")
+			}
 			mergeFuturesMarks(prices, marks)
 		}
 	}

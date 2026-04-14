@@ -86,7 +86,7 @@ def main():
             print(json.dumps({}))
             sys.exit(1)
 
-    marks: dict = {}
+    marks: "dict[str, float | str]" = {}
     for symbol in symbols:
         try:
             price = adapter.get_price(symbol)
@@ -107,11 +107,18 @@ def main():
             )
             # Omit failed symbols so Go can detect misses.
 
-    # Attach mode metadata under a reserved "_mode" key so the Go merge
-    # layer can distinguish normal live-mode output from a silent
-    # downgrade. mergeFuturesMarks skips non-positive values, so this
-    # string key will not pollute the prices map even if downstream code
-    # naively iterates without a string-type check.
+    # Attach mode metadata under a reserved "_mode" key so the Go side can
+    # distinguish normal live/paper output from a silent paper_fallback
+    # downgrade. The type-splitting happens in FetchFuturesMarks
+    # (scheduler/executor.go): that function decodes the JSON into
+    # map[string]interface{}, strips "_mode" into a separate string return
+    # value, and only then populates the float-typed marks map. By the
+    # time mergeFuturesMarks runs, "_mode" has already been filtered out,
+    # so the skip-if-exists / skip-non-positive guards in mergeFuturesMarks
+    # are *separate* safeguards for numeric prices — not defenses against
+    # this metadata key. Do NOT "simplify" by relying on mergeFuturesMarks
+    # to filter "_mode"; if FetchFuturesMarks is ever refactored to return
+    # map[string]interface{} directly, that filter has to move with it.
     marks["_mode"] = effective_mode
     print(json.dumps(marks))
 

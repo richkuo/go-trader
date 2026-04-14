@@ -20,14 +20,17 @@ type StatusServer struct {
 	strategies     []StrategyConfig  // strategy configs for initial capital lookup
 	stateDB        *StateDB          // SQLite DB for /history queries (may be nil)
 
-	// Throttled logging for repeated fetch_futures_marks.py failures on
-	// the /status rail. /status can be polled frequently (oncall dashboard,
-	// monitoring), so we don't want to spam logs on every hit — but
-	// silently discarding the error leaves operators blind to a broken
-	// TopStep rail. Emit the first error immediately, then at most once
-	// per futuresErrLogInterval while the failures continue.
-	futuresErrMu           sync.Mutex
-	lastFuturesErrLoggedAt time.Time
+	// Throttled logging for repeated fetch_futures_marks.py failures and
+	// paper_fallback mode on the /status rail. /status can be polled
+	// frequently (oncall dashboard, monitoring), so we don't want to spam
+	// logs on every hit — but silently discarding the error (or the
+	// silent live→paper downgrade) leaves operators blind to a broken
+	// TopStep rail. For each signal (err / paper_fallback), emit the
+	// first occurrence immediately, then at most once per
+	// futuresErrLogInterval while the condition persists.
+	futuresErrMu            sync.Mutex
+	lastFuturesErrLoggedAt  time.Time
+	lastFuturesModeLoggedAt time.Time
 }
 
 // futuresErrLogInterval caps how often /status logs repeated
@@ -71,6 +74,25 @@ func (ss *StatusServer) logFuturesErrThrottled(err error) {
 	ss.lastFuturesErrLoggedAt = now
 	fmt.Printf("[WARN] /status futures marks fetch failed for %v: %v — PortfolioNotional/Value will fall back to entry cost (throttled, next log in %s)\n",
 		ss.futuresSymbols, err, futuresErrLogInterval)
+}
+
+// logFuturesModeThrottled emits a [WARN] line when fetch_futures_marks
+// silently downgraded from live to paper mode on the /status path. Uses
+// the same 5m window as logFuturesErrThrottled so a sustained outage
+// still produces a reasonable trail without drowning the log on every
+// dashboard poll. Thread-safe. Shares futuresErrMu with the error
+// throttle since the state is a handful of timestamps and contention
+// is negligible.
+func (ss *StatusServer) logFuturesModeThrottled() {
+	ss.futuresErrMu.Lock()
+	defer ss.futuresErrMu.Unlock()
+	now := time.Now()
+	if !ss.lastFuturesModeLoggedAt.IsZero() && now.Sub(ss.lastFuturesModeLoggedAt) < futuresErrLogInterval {
+		return
+	}
+	ss.lastFuturesModeLoggedAt = now
+	fmt.Printf("[WARN] /status fetch_futures_marks: live mode init failed, degraded to paper (yfinance) — check TopStepX creds and network (throttled, next log in %s)\n",
+		futuresErrLogInterval)
 }
 
 func (ss *StatusServer) Start(port int) {
@@ -151,7 +173,10 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// on a sustained outage, but the first failure (and periodic
 	// reminders) are still visible.
 	if len(ss.futuresSymbols) > 0 {
-		if marks, err := FetchFuturesMarks(ss.futuresSymbols); err == nil {
+		if marks, mode, err := FetchFuturesMarks(ss.futuresSymbols); err == nil {
+			if mode == FuturesMarkModePaperFallback {
+				ss.logFuturesModeThrottled()
+			}
 			mergeFuturesMarks(prices, marks)
 		} else {
 			ss.logFuturesErrThrottled(err)
