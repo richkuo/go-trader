@@ -188,10 +188,15 @@ jobs:
             exit 0
           fi
 
-          NEW_BODY="${BODY}
+          USAGE=$(npx --yes ccusage@latest session --json 2>/dev/null || echo "[]")
+          COST=$(printf '%s' "$USAGE" | jq -r 'if type == "array" and length > 0 then .[0] | "Tokens: \(.inputTokens // 0) in / \(.outputTokens // 0) out | Cost: $\(.totalCost // 0 | . * 100 | round / 100)" else "" end' 2>/dev/null || true)
 
-          ---
-          Generated with: ${MODEL_NAME} | Effort: ${EFFORT}"
+          FOOTER="---"$'\n'"Generated with: ${MODEL_NAME} | Effort: ${EFFORT}"
+          if [ -n "$COST" ]; then
+            FOOTER="${FOOTER} | ${COST}"
+          fi
+
+          NEW_BODY="${BODY}"$'\n\n'"${FOOTER}"
 
           gh api "repos/$REPO/issues/comments/$COMMENT_ID" \
             --method PATCH \
