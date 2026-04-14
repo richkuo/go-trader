@@ -18,6 +18,7 @@ type HLPosition struct {
 	Coin       string
 	Size       float64 // signed: positive = long, negative = short
 	EntryPrice float64
+	Leverage   float64 // on-chain leverage value (#254)
 }
 
 var hlMainnetURL = "https://api.hyperliquid.xyz"
@@ -125,9 +126,13 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 		} `json:"marginSummary"`
 		AssetPositions []struct {
 			Position struct {
-				Coin    string `json:"coin"`
-				Szi     string `json:"szi"`
-				EntryPx string `json:"entryPx"`
+				Coin     string `json:"coin"`
+				Szi      string `json:"szi"`
+				EntryPx  string `json:"entryPx"`
+				Leverage struct {
+					Type  string      `json:"type"`
+					Value json.Number `json:"value"`
+				} `json:"leverage"`
 			} `json:"position"`
 		} `json:"assetPositions"`
 	}
@@ -150,10 +155,19 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 		if err != nil {
 			fmt.Printf("[WARN] hl-sync: failed to parse entryPx %q for %s: %v\n", ap.Position.EntryPx, ap.Position.Coin, err)
 		}
+		// #254: HL per-position leverage from clearinghouseState. Value is a
+		// number in the API but tolerated as string; default 1 on parse error.
+		lev := 1.0
+		if lvStr := ap.Position.Leverage.Value.String(); lvStr != "" {
+			if parsed, lerr := strconv.ParseFloat(lvStr, 64); lerr == nil && parsed > 0 {
+				lev = parsed
+			}
+		}
 		positions = append(positions, HLPosition{
 			Coin:       ap.Position.Coin,
 			Size:       szi,
 			EntryPrice: entryPx,
+			Leverage:   lev,
 		})
 	}
 
@@ -191,6 +205,19 @@ func reconcileHyperliquidPositions(stratState *StrategyState, sym string, positi
 			statePos.Quantity = qty
 			statePos.Side = side
 			statePos.AvgCost = onChainPos.EntryPrice
+			changed = true
+		}
+		// #254: always pull the current on-chain leverage and ensure Multiplier=1
+		// so PortfolioValue uses the PnL branch. Also migrates legacy positions
+		// that were stored with Multiplier=0 (treated as spot/full-notional).
+		if statePos.Multiplier != 1 {
+			logger.Info("hl-sync: %s migrate multiplier %v → 1 (perps PnL valuation) (#254)", sym, statePos.Multiplier)
+			statePos.Multiplier = 1
+			changed = true
+		}
+		if onChainPos.Leverage > 0 && statePos.Leverage != onChainPos.Leverage {
+			logger.Info("hl-sync: %s leverage %v → %v", sym, statePos.Leverage, onChainPos.Leverage)
+			statePos.Leverage = onChainPos.Leverage
 			changed = true
 		}
 	} else if onChainPos == nil && statePos != nil {

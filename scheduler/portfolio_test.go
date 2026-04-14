@@ -482,6 +482,181 @@ func TestExecuteSpotSignalLiveFill(t *testing.T) {
 	}
 }
 
+// #254: ExecutePerpsSignal — margin-based accounting. Paper buy should NOT
+// deplete cash by the full notional (unlike spot). Only the fee leaves cash,
+// and the opened position is stamped with Multiplier=1 so PortfolioValue
+// routes through the PnL branch.
+func TestExecutePerpsSignalPaperBuyNoNotionalDeduction(t *testing.T) {
+	s := &StrategyState{
+		ID:              "hl-test-eth",
+		Cash:            1000,
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 5, 0, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+
+	pos := s.Positions["ETH"]
+	if pos == nil {
+		t.Fatal("should have ETH position")
+	}
+	if pos.Side != "long" {
+		t.Errorf("side = %q, want long", pos.Side)
+	}
+	if pos.Multiplier != 1 {
+		t.Errorf("multiplier = %v, want 1 (for PnL branch in PortfolioValue)", pos.Multiplier)
+	}
+	if pos.Leverage != 5 {
+		t.Errorf("leverage = %v, want 5", pos.Leverage)
+	}
+	// With leverage=5, budget = 1000 * 5 * 0.95 = 4750 notional
+	// qty ≈ 4750 / 2000 = 2.375 (modulo slippage on execPrice)
+	if pos.Quantity < 2.0 || pos.Quantity > 2.8 {
+		t.Errorf("quantity = %v, want ~2.375 (5x leverage)", pos.Quantity)
+	}
+	// Cash must be untouched except for fee. fee ≈ notional * 0.00035
+	// (hyperliquid fee), so cash should remain > 990.
+	if s.Cash < 990 {
+		t.Errorf("cash = %v, want ~1000 (only fee deducted, not notional)", s.Cash)
+	}
+	if s.Cash >= 1000 {
+		t.Errorf("cash = %v, should have some fee deducted", s.Cash)
+	}
+}
+
+// #254: verify PortfolioValue handles the perps position correctly using the
+// futures branch (qty * multiplier * (price - avgCost)). Cash is preserved,
+// and a favorable price move shows up as PnL on top of cash.
+func TestExecutePerpsSignalPortfolioValueAfterMove(t *testing.T) {
+	s := &StrategyState{
+		ID:              "hl-test-eth",
+		Cash:            1000,
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	// Open at exactly 2000 via live fill (no slippage).
+	_, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.5, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cashAfterOpen := s.Cash
+	valueAtEntry := PortfolioValue(s, map[string]float64{"ETH": 2000})
+	// At entry, PnL=0, value = cashAfterOpen.
+	if math.Abs(valueAtEntry-cashAfterOpen) > 1e-6 {
+		t.Errorf("at entry value = %v, cash = %v, want equal (PnL=0)", valueAtEntry, cashAfterOpen)
+	}
+	// Price moves +$10: PnL = 0.5 * (2010 - 2000) = $5.
+	valueAfterMove := PortfolioValue(s, map[string]float64{"ETH": 2010})
+	expected := cashAfterOpen + 5.0
+	if math.Abs(valueAfterMove-expected) > 1e-6 {
+		t.Errorf("value after +$10 move = %v, want %v (cash + PnL)", valueAfterMove, expected)
+	}
+	// Price moves -$10: PnL = -$5.
+	valueAfterDrop := PortfolioValue(s, map[string]float64{"ETH": 1990})
+	expectedDrop := cashAfterOpen - 5.0
+	if math.Abs(valueAfterDrop-expectedDrop) > 1e-6 {
+		t.Errorf("value after -$10 move = %v, want %v (cash + PnL)", valueAfterDrop, expectedDrop)
+	}
+}
+
+// #254: regression — before the fix, perps positions stored with
+// Multiplier=0 hit the spot branch (qty * price) which inflated portfolio
+// value by the full notional. After the fix, ExecutePerpsSignal stamps
+// Multiplier=1 so valuation uses the PnL branch. This test pins the wrong
+// "spot-like" valuation vs the correct "perps" valuation to prevent drift.
+func TestExecutePerpsSignalNotInflatedByNotional(t *testing.T) {
+	s := &StrategyState{
+		ID:              "hl-rmc-eth-live",
+		Cash:            644,
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	// Live fill 0.279 ETH @ 2210.71 (matching the issue example).
+	_, err := ExecutePerpsSignal(s, 1, "ETH", 2210.71, 1, 0.279, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := PortfolioValue(s, map[string]float64{"ETH": 2201.10})
+	// At $2201.10 vs entry $2210.71: PnL = 0.279 * (2201.10 - 2210.71) ≈ -$2.68
+	// Expected value ≈ 644 - fee - 2.68 ≈ ~641.3 — NOT inflated.
+	// The buggy spot-branch valuation would be cash (~644) + 0.279*2201 ≈ 1258.
+	if value > 700 {
+		t.Errorf("value = %v, leaking into spot-branch (>$700 means notional not stripped)", value)
+	}
+	if value < 600 || value > 650 {
+		t.Errorf("value = %v, want ~641 (initial capital + unrealized PnL)", value)
+	}
+}
+
+// #254: closing a perps long realizes PnL directly (not notional swing).
+func TestExecutePerpsSignalCloseLong(t *testing.T) {
+	s := &StrategyState{
+		ID:       "hl-test-eth",
+		Cash:     990,
+		Platform: "hyperliquid",
+		Type:     "perps",
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol:     "ETH",
+				Quantity:   0.5,
+				AvgCost:    2000,
+				Side:       "long",
+				Multiplier: 1,
+				Leverage:   2,
+			},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{PeakValue: 1000},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	// Close at 2100 — PnL = 0.5 * (2100 - 2000) = $50 gross.
+	_, err := ExecutePerpsSignal(s, -1, "ETH", 2100, 1, 0.5, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Positions["ETH"]; ok {
+		t.Error("position should be closed")
+	}
+	// Expected: 990 + 50 - fee(0.5*2100=1050). HL fee ≈ 1050 * 0.00035 ≈ 0.37.
+	if s.Cash < 1039 || s.Cash > 1040.5 {
+		t.Errorf("cash = %v, want ~1039.6 (990 + 50 - fee)", s.Cash)
+	}
+}
+
 func TestExecuteFuturesSignalLiveFill(t *testing.T) {
 	s := &StrategyState{
 		ID:              "ts-momentum-es",

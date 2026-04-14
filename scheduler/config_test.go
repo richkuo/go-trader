@@ -685,3 +685,98 @@ func TestLoadConfigInitialCapital(t *testing.T) {
 		t.Errorf("Capital = %g, want 600 (should not be overwritten)", sc.Capital)
 	}
 }
+
+// #254: perps strategies get default Leverage=1 when unset.
+func TestLoadConfigPerpsLeverageDefault(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if sc.Leverage != 1 {
+		t.Errorf("Leverage = %g, want 1 (default)", sc.Leverage)
+	}
+}
+
+// #254: explicit perps Leverage is preserved.
+func TestLoadConfigPerpsLeverageExplicit(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"leverage": 10
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.Strategies[0].Leverage != 10 {
+		t.Errorf("Leverage = %g, want 10", cfg.Strategies[0].Leverage)
+	}
+}
+
+// #254: Leverage must be rejected on non-perps types.
+func TestLoadConfigLeverageRejectsSpot(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "test-spot",
+			"type": "spot",
+			"script": "shared_scripts/check_strategy.py",
+			"args": ["sma_crossover", "BTC/USDT", "1h"],
+			"capital": 1000,
+			"leverage": 5
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for leverage on spot strategy")
+	}
+	if !strings.Contains(err.Error(), "leverage is only supported for perps") {
+		t.Errorf("error = %v, want 'leverage is only supported for perps'", err)
+	}
+}
+
+// #254: Leverage must be in [1, 100].
+func TestLoadConfigLeverageRejectsOutOfRange(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"leverage": 150
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for leverage=150")
+	}
+	if !strings.Contains(err.Error(), "leverage must be in") {
+		t.Errorf("error = %v, want 'leverage must be in'", err)
+	}
+}

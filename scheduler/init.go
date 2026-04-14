@@ -229,6 +229,7 @@ type InitOptions struct {
 	SpotCapital             float64
 	OptionsCapital          float64
 	PerpsCapital            float64
+	PerpsLeverage           float64 // perps leverage multiplier (default 1 = no leverage) (#254)
 	SpotDrawdown            float64
 	OptionsDrawdown         float64
 	PerpsDrawdown           float64
@@ -408,6 +409,10 @@ func generateConfig(opts InitOptions) *Config {
 	// Perps strategies (Hyperliquid only).
 	if opts.EnablePerps {
 		usesHyperliquid = true
+		perpsLeverage := opts.PerpsLeverage
+		if perpsLeverage <= 0 {
+			perpsLeverage = 1
+		}
 		for _, stratID := range opts.PerpsStrategies {
 			shortName := deriveShortName(stratID)
 			for _, assetName := range opts.Assets {
@@ -421,6 +426,7 @@ func generateConfig(opts InitOptions) *Config {
 					Capital:         opts.PerpsCapital,
 					MaxDrawdownPct:  opts.PerpsDrawdown,
 					IntervalSeconds: 3600,
+					Leverage:        perpsLeverage,
 				})
 			}
 		}
@@ -537,6 +543,10 @@ func generateConfig(opts InitOptions) *Config {
 			}
 		}
 		// OKX perps strategies
+		okxPerpsLeverage := opts.PerpsLeverage
+		if okxPerpsLeverage <= 0 {
+			okxPerpsLeverage = 1
+		}
 		for _, stratID := range opts.OKXPerpsStrategies {
 			shortName := deriveShortName(stratID)
 			for _, assetName := range opts.Assets {
@@ -550,6 +560,7 @@ func generateConfig(opts InitOptions) *Config {
 					Capital:         opts.OKXCapital,
 					MaxDrawdownPct:  opts.OKXDrawdown,
 					IntervalSeconds: 3600,
+					Leverage:        okxPerpsLeverage,
 				})
 			}
 		}
@@ -654,6 +665,10 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 	}
 	if opts.EnablePerps && opts.PerpsMode == "" {
 		opts.PerpsMode = "paper"
+	}
+	// #254: perps leverage defaults to 1x if not specified.
+	if opts.EnablePerps && opts.PerpsLeverage <= 0 {
+		opts.PerpsLeverage = 1
 	}
 
 	// Auto-populate PerpsStrategies from discovered list if not specified.
@@ -1027,6 +1042,7 @@ func runInit(args []string) int {
 	spotDrawdown := 5.0
 	optionsDrawdown := 10.0
 	perpsDrawdown := 5.0
+	perpsLeverage := 1.0 // #254 default: 1x (no leverage); user can edit config
 	robinhoodCapital := 500.0
 	robinhoodDrawdown := 5.0
 	lunoCapital := 500.0
@@ -1116,6 +1132,7 @@ func runInit(args []string) int {
 		SpotCapital:             spotCapital,
 		OptionsCapital:          optionsCapital,
 		PerpsCapital:            perpsCapital,
+		PerpsLeverage:           perpsLeverage,
 		SpotDrawdown:            spotDrawdown,
 		OptionsDrawdown:         optionsDrawdown,
 		PerpsDrawdown:           perpsDrawdown,

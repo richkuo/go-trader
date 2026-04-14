@@ -183,11 +183,13 @@ func TestReconcileNoChange(t *testing.T) {
 		ID:   "hl-btc",
 		Cash: 5000,
 		Positions: map[string]*Position{
-			"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 40000, Side: "long", OwnerStrategyID: "hl-btc"},
+			// #254: Multiplier=1 + Leverage=2 so reconcile sees a fully
+			// up-to-date perps position and doesn't flip any fields.
+			"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 40000, Side: "long", Multiplier: 1, Leverage: 2, OwnerStrategyID: "hl-btc"},
 		},
 	}
 	logger := newTestLogger(t)
-	positions := []HLPosition{{Coin: "BTC", Size: 0.5, EntryPrice: 40000}}
+	positions := []HLPosition{{Coin: "BTC", Size: 0.5, EntryPrice: 40000, Leverage: 2}}
 
 	changed := reconcileHyperliquidPositions(s, "BTC", positions, logger)
 
@@ -419,5 +421,99 @@ func TestValidateStateMigratesOwnership(t *testing.T) {
 	pos := state.Strategies["hl-btc"].Positions["BTC"]
 	if pos.OwnerStrategyID != "hl-btc" {
 		t.Errorf("OwnerStrategyID = %q, want %q", pos.OwnerStrategyID, "hl-btc")
+	}
+}
+
+// #254: reconcile migrates a legacy position stored with Multiplier=0 up to
+// Multiplier=1 so PortfolioValue uses the perps PnL branch. It also copies
+// the on-chain leverage into the Position.
+func TestReconcileMigratesLegacyMultiplierAndSyncsLeverage(t *testing.T) {
+	s := &StrategyState{
+		ID:   "hl-eth",
+		Cash: 27.15,
+		Positions: map[string]*Position{
+			// Legacy perps position as stored before #254: Multiplier=0.
+			"ETH": {Symbol: "ETH", Quantity: 0.279, AvgCost: 2210.71, Side: "long", OwnerStrategyID: "hl-eth"},
+		},
+	}
+	logger := newTestLogger(t)
+	positions := []HLPosition{{Coin: "ETH", Size: 0.279, EntryPrice: 2210.71, Leverage: 20}}
+
+	changed := reconcileHyperliquidPositions(s, "ETH", positions, logger)
+
+	if !changed {
+		t.Fatal("expected changed=true (migration)")
+	}
+	pos := s.Positions["ETH"]
+	if pos.Multiplier != 1 {
+		t.Errorf("Multiplier = %v, want 1 after migration", pos.Multiplier)
+	}
+	if pos.Leverage != 20 {
+		t.Errorf("Leverage = %v, want 20 (from on-chain)", pos.Leverage)
+	}
+	if pos.Quantity != 0.279 || pos.AvgCost != 2210.71 {
+		t.Errorf("qty/avgCost changed unexpectedly: %v @ %v", pos.Quantity, pos.AvgCost)
+	}
+}
+
+// #254: after migration, PortfolioValue reflects margin + PnL, not inflated
+// notional. This is the direct regression for the issue.
+func TestReconcileLegacyPositionPortfolioValueAfterMigration(t *testing.T) {
+	s := &StrategyState{
+		ID:              "hl-eth",
+		Cash:            27.15,
+		OptionPositions: make(map[string]*OptionPosition),
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.279, AvgCost: 2210.71, Side: "long", OwnerStrategyID: "hl-eth"},
+		},
+	}
+	// Pre-fix value (spot branch): 27.15 + 0.279 * 2201.10 = 641.23 — inflated.
+	preFix := PortfolioValue(s, map[string]float64{"ETH": 2201.10})
+	if preFix < 600 || preFix > 700 {
+		t.Logf("pre-migration value = %v (spot branch)", preFix)
+	}
+
+	logger := newTestLogger(t)
+	reconcileHyperliquidPositions(s, "ETH",
+		[]HLPosition{{Coin: "ETH", Size: 0.279, EntryPrice: 2210.71, Leverage: 20}}, logger)
+
+	// Post-migration value: cash + qty*(price-entry) = 27.15 + 0.279*(2201.10-2210.71) = ~24.47
+	postFix := PortfolioValue(s, map[string]float64{"ETH": 2201.10})
+	expected := 27.15 + 0.279*(2201.10-2210.71)
+	if postFix-expected > 0.01 || expected-postFix > 0.01 {
+		t.Errorf("post-migration value = %v, want %v (cash + PnL)", postFix, expected)
+	}
+	if postFix >= preFix-1 {
+		t.Errorf("post-migration value (%v) should be much lower than pre-fix (%v)", postFix, preFix)
+	}
+}
+
+// #254: parse leverage out of clearinghouseState JSON.
+func TestFetchHyperliquidStateParsesLeverage(t *testing.T) {
+	body := `{
+		"marginSummary": {"accountValue": "1000.0"},
+		"assetPositions": [
+			{"position": {"coin": "ETH", "szi": "0.5", "entryPx": "2000.0", "leverage": {"type": "cross", "value": 20}}}
+		]
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	savedURL := hlMainnetURL
+	hlMainnetURL = srv.URL
+	defer func() { hlMainnetURL = savedURL }()
+
+	_, positions, err := fetchHyperliquidState("0xdeadbeef")
+	if err != nil {
+		t.Fatalf("fetchHyperliquidState: %v", err)
+	}
+	if len(positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(positions))
+	}
+	if positions[0].Leverage != 20 {
+		t.Errorf("Leverage = %v, want 20", positions[0].Leverage)
 	}
 }

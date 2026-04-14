@@ -1283,9 +1283,17 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, logger *S
 // Returns (execResult, ok); ok=false means order failed, skip state update.
 func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	isBuy := result.Signal == 1
+	// #254: perps use leverage to size notional; mirror OKX's guard so any
+	// future HL spot mode can't accidentally over-size.
+	sizingLeverage := 1.0
+	if sc.Type == "perps" && sc.Leverage > 0 {
+		sizingLeverage = sc.Leverage
+	}
 	var size float64
 	if isBuy {
-		budget := cash * 0.95
+		// #254: sizing uses leveraged notional = cash * leverage * 0.95.
+		// The actual margin locked on-chain will be notional/leverage.
+		budget := cash * sizingLeverage * 0.95
 		if budget < 1 || price <= 0 {
 			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
 			return nil, false
@@ -1332,7 +1340,11 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 	}
 
 	prevTradeCount := len(s.TradeHistory)
-	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, fillQty, logger)
+	leverage := sc.Leverage
+	if leverage <= 0 {
+		leverage = 1
+	}
+	trades, err := ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -1747,9 +1759,14 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyL
 // runOKXExecuteOrder places a live market order on OKX (Phase 3, no lock).
 func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, logger *StrategyLogger) (*OKXExecuteResult, bool) {
 	isBuy := result.Signal == 1
+	// #254: perps use leverage to size notional; spot is unaffected.
+	sizingLeverage := 1.0
+	if sc.Type == "perps" && sc.Leverage > 0 {
+		sizingLeverage = sc.Leverage
+	}
 	var size float64
 	if isBuy {
-		budget := cash * 0.95
+		budget := cash * sizingLeverage * 0.95
 		if budget < 1 || price <= 0 {
 			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
 			return nil, false
@@ -1795,7 +1812,17 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, ex
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, fillQty, logger)
+	var trades int
+	var err error
+	if sc.Type == "perps" {
+		leverage := sc.Leverage
+		if leverage <= 0 {
+			leverage = 1
+		}
+		trades, err = ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, logger)
+	} else {
+		trades, err = ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, fillQty, logger)
+	}
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""

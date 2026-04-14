@@ -5,13 +5,14 @@ import (
 	"time"
 )
 
-// Position represents a spot or futures position.
+// Position represents a spot, futures, or perps position.
 type Position struct {
 	Symbol          string    `json:"symbol"`
 	Quantity        float64   `json:"quantity"`
 	AvgCost         float64   `json:"avg_cost"`
 	Side            string    `json:"side"`                        // "long" or "short"
-	Multiplier      float64   `json:"multiplier,omitempty"`        // futures contract multiplier (0 = spot)
+	Multiplier      float64   `json:"multiplier,omitempty"`        // contract multiplier (0 = spot, >0 = futures/perps PnL branch; canonical perps value is 1 — do NOT set to leverage)
+	Leverage        float64   `json:"leverage,omitempty"`          // perps leverage (informational; PnL is not scaled by leverage) (#254)
 	OwnerStrategyID string    `json:"owner_strategy_id,omitempty"` // strategy that opened this position
 	OpenedAt        time.Time `json:"opened_at,omitempty"`         // when the position was opened
 }
@@ -58,6 +59,151 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 		total += opt.CurrentValueUSD
 	}
 	return total
+}
+
+// ExecutePerpsSignal processes a perps (perpetual futures) signal with
+// margin-based accounting (#254). Unlike spot, perps positions do NOT consume
+// the full notional from cash — only the fee is deducted, matching the
+// futures model. The resulting Position is stamped with Multiplier=1 so
+// PortfolioValue takes the PnL branch (cash + qty*(price-entry)).
+//
+// leverage determines notional sizing in paper mode: quantity =
+// cash * leverage * 0.95 / price. With leverage=1 (default) the sizing
+// matches 1x spot notional, but without depleting cash.
+//
+// fillQty > 0 means a live fill: use price and fillQty as-is (no slippage,
+// no notional recalc). fillQty == 0 means paper mode: compute qty from
+// leveraged budget with slippage applied.
+func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, logger *StrategyLogger) (int, error) {
+	if signal == 0 {
+		return 0, nil
+	}
+	if leverage <= 0 {
+		leverage = 1
+	}
+	tradesExecuted := 0
+
+	// Fee dispatch: for Hyperliquid spot+perps and OKX perps the existing
+	// CalculatePlatformSpotFee table already encodes the correct taker fee.
+	feePlatform := s.Platform
+	if s.Platform == "okx" && s.Type == "perps" {
+		feePlatform = "okx-perps"
+	}
+
+	if signal == 1 { // Buy — go long (close short first if any)
+		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
+			logger.Info("Already long %s (qty=%.6f), skipping buy", symbol, pos.Quantity)
+			return 0, nil
+		}
+		// Close short if exists — realize PnL only (no notional swing).
+		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" {
+			var execPrice float64
+			if fillQty > 0 {
+				execPrice = price
+			} else {
+				execPrice = ApplySlippage(price)
+			}
+			pnl := pos.Quantity * (pos.AvgCost - execPrice)
+			fee := CalculatePlatformSpotFee(feePlatform, pos.Quantity*execPrice)
+			pnl -= fee
+			s.Cash += pnl
+			trade := Trade{
+				Timestamp:  time.Now().UTC(),
+				StrategyID: s.ID,
+				Symbol:     symbol,
+				Side:       "buy",
+				Quantity:   pos.Quantity,
+				Price:      execPrice,
+				Value:      pos.Quantity * execPrice,
+				TradeType:  "perps",
+				Details:    fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
+			}
+			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTradeResult(&s.RiskState, pnl)
+			delete(s.Positions, symbol)
+			logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
+			tradesExecuted++
+		}
+		// Open long
+		if s.Cash < 1 {
+			logger.Info("Insufficient cash ($%.2f) to open long %s perp", s.Cash, symbol)
+			return tradesExecuted, nil
+		}
+		var execPrice, qty float64
+		if fillQty > 0 {
+			execPrice = price
+			qty = fillQty
+		} else {
+			execPrice = ApplySlippage(price)
+			if execPrice <= 0 {
+				return tradesExecuted, nil
+			}
+			// Leveraged notional: cash * leverage * 0.95
+			budget := s.Cash * leverage * 0.95
+			qty = budget / execPrice
+		}
+		notional := qty * execPrice
+		fee := CalculatePlatformSpotFee(feePlatform, notional)
+		s.Cash -= fee // margin-based: only fee leaves cash, notional stays virtual
+		now := time.Now().UTC()
+		s.Positions[symbol] = &Position{
+			Symbol:          symbol,
+			Quantity:        qty,
+			AvgCost:         execPrice,
+			Side:            "long",
+			Multiplier:      1, // perps use 1:1 contract size; PnL-branch in PortfolioValue
+			Leverage:        leverage,
+			OwnerStrategyID: s.ID,
+			OpenedAt:        now,
+		}
+		trade := Trade{
+			Timestamp:  now,
+			StrategyID: s.ID,
+			Symbol:     symbol,
+			Side:       "buy",
+			Quantity:   qty,
+			Price:      execPrice,
+			Value:      notional,
+			TradeType:  "perps",
+			Details:    fmt.Sprintf("Open long %.6f @ $%.2f (%.1fx, fee $%.2f)", qty, execPrice, leverage, fee),
+		}
+		s.TradeHistory = append(s.TradeHistory, trade)
+		logger.Info("BUY %s: %.6f @ $%.2f (%.1fx, notional $%.2f, fee $%.2f)", symbol, qty, execPrice, leverage, notional, fee)
+		tradesExecuted++
+
+	} else if signal == -1 { // Sell — close long (no auto-open-short; matches current spot wrapper)
+		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
+			var execPrice float64
+			if fillQty > 0 {
+				execPrice = price
+			} else {
+				execPrice = ApplySlippage(price)
+			}
+			pnl := pos.Quantity * (execPrice - pos.AvgCost)
+			fee := CalculatePlatformSpotFee(feePlatform, pos.Quantity*execPrice)
+			pnl -= fee
+			s.Cash += pnl
+			trade := Trade{
+				Timestamp:  time.Now().UTC(),
+				StrategyID: s.ID,
+				Symbol:     symbol,
+				Side:       "sell",
+				Quantity:   pos.Quantity,
+				Price:      execPrice,
+				Value:      pos.Quantity * execPrice,
+				TradeType:  "perps",
+				Details:    fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
+			}
+			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTradeResult(&s.RiskState, pnl)
+			delete(s.Positions, symbol)
+			logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, pos.Quantity, execPrice, fee, pnl)
+			tradesExecuted++
+		} else {
+			logger.Info("No long position in %s to sell, skipping", symbol)
+		}
+	}
+	return tradesExecuted, nil
 }
 
 // ExecuteSpotSignal processes a spot signal and executes paper or live trades.

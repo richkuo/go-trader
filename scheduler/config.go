@@ -102,6 +102,7 @@ type StrategyConfig struct {
 	MaxDrawdownPct  float64                `json:"max_drawdown_pct"`
 	IntervalSeconds int                    `json:"interval_seconds,omitempty"` // per-strategy override (0 = use global)
 	HTFFilter       bool                   `json:"htf_filter,omitempty"`       // higher-timeframe trend filter
+	Leverage        float64                `json:"leverage,omitempty"`         // perps leverage multiplier (default 1 = no leverage); used for notional sizing and margin-based valuation (#254)
 	Params          map[string]interface{} `json:"params,omitempty"`           // custom strategy parameters passed to Python
 	ThetaHarvest    *ThetaHarvestConfig    `json:"theta_harvest,omitempty"`
 	FuturesConfig   *FuturesConfig         `json:"futures,omitempty"`
@@ -233,6 +234,13 @@ func LoadConfig(path string) (*Config, error) {
 			} else {
 				cfg.Strategies[i].MaxDrawdownPct = 60
 			}
+		}
+
+		// #254: Default leverage for perps strategies is 1x (no leverage)
+		// when unset. Spot/options/futures ignore Leverage; only perps uses it
+		// for notional sizing and setting Position.Multiplier.
+		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].Leverage <= 0 {
+			cfg.Strategies[i].Leverage = 1
 		}
 
 		// #56: Default theta harvest for options strategies — sold options
@@ -433,6 +441,16 @@ func ValidateConfig(cfg *Config) error {
 		// #36: IntervalSeconds must be >= 0 (0 means use global).
 		if sc.IntervalSeconds < 0 {
 			errs = append(errs, fmt.Sprintf("%s: interval_seconds must be >= 0, got %d", prefix, sc.IntervalSeconds))
+		}
+
+		// #254: Leverage must be >= 1 when set. Only applicable to perps.
+		if sc.Leverage != 0 {
+			if sc.Type != "perps" {
+				errs = append(errs, fmt.Sprintf("%s: leverage is only supported for perps strategies (got type %q)", prefix, sc.Type))
+			}
+			if sc.Leverage < 1 || sc.Leverage > 100 {
+				errs = append(errs, fmt.Sprintf("%s: leverage must be in [1, 100], got %g", prefix, sc.Leverage))
+			}
 		}
 
 		// #36: ThetaHarvest fields must be non-negative when present.
