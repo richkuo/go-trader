@@ -1283,15 +1283,17 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, logger *S
 // Returns (execResult, ok); ok=false means order failed, skip state update.
 func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	isBuy := result.Signal == 1
-	leverage := sc.Leverage
-	if leverage <= 0 {
-		leverage = 1
+	// #254: perps use leverage to size notional; mirror OKX's guard so any
+	// future HL spot mode can't accidentally over-size.
+	sizingLeverage := 1.0
+	if sc.Type == "perps" && sc.Leverage > 0 {
+		sizingLeverage = sc.Leverage
 	}
 	var size float64
 	if isBuy {
 		// #254: sizing uses leveraged notional = cash * leverage * 0.95.
 		// The actual margin locked on-chain will be notional/leverage.
-		budget := cash * leverage * 0.95
+		budget := cash * sizingLeverage * 0.95
 		if budget < 1 || price <= 0 {
 			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
 			return nil, false
@@ -1342,7 +1344,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 	if leverage <= 0 {
 		leverage = 1
 	}
-	trades, err := ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, 0, logger)
+	trades, err := ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -1817,7 +1819,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, ex
 		if leverage <= 0 {
 			leverage = 1
 		}
-		trades, err = ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, 0, logger)
+		trades, err = ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, logger)
 	} else {
 		trades, err = ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, fillQty, logger)
 	}

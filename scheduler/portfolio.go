@@ -11,7 +11,7 @@ type Position struct {
 	Quantity        float64   `json:"quantity"`
 	AvgCost         float64   `json:"avg_cost"`
 	Side            string    `json:"side"`                        // "long" or "short"
-	Multiplier      float64   `json:"multiplier,omitempty"`        // contract multiplier (0 = spot, >0 = futures/perps PnL branch)
+	Multiplier      float64   `json:"multiplier,omitempty"`        // contract multiplier (0 = spot, >0 = futures/perps PnL branch; canonical perps value is 1 — do NOT set to leverage)
 	Leverage        float64   `json:"leverage,omitempty"`          // perps leverage (informational; PnL is not scaled by leverage) (#254)
 	OwnerStrategyID string    `json:"owner_strategy_id,omitempty"` // strategy that opened this position
 	OpenedAt        time.Time `json:"opened_at,omitempty"`         // when the position was opened
@@ -74,7 +74,7 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 // fillQty > 0 means a live fill: use price and fillQty as-is (no slippage,
 // no notional recalc). fillQty == 0 means paper mode: compute qty from
 // leveraged budget with slippage applied.
-func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, feePerContract float64, logger *StrategyLogger) (int, error) {
+func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, logger *StrategyLogger) (int, error) {
 	if signal == 0 {
 		return 0, nil
 	}
@@ -83,11 +83,8 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 	}
 	tradesExecuted := 0
 
-	// perPlatformFee picks the right fee dispatch for a given strategy
-	// platform. For Hyperliquid spot+perps and OKX perps the existing
-	// CalculatePlatformSpotFee table already encodes the correct taker fee;
-	// feePerContract is reserved for future expansion (unused for now).
-	_ = feePerContract
+	// Fee dispatch: for Hyperliquid spot+perps and OKX perps the existing
+	// CalculatePlatformSpotFee table already encodes the correct taker fee.
 	feePlatform := s.Platform
 	if s.Platform == "okx" && s.Type == "perps" {
 		feePlatform = "okx-perps"
