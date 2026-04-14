@@ -102,6 +102,7 @@
 
 ## Pull Requests
 - PR descriptions must reference the related GitHub issue if one exists, using `Closes #<number>` in the body (e.g. `Closes #46`)
+- In GitHub comments and PR reviews, avoid using `#N` notation for numbered list items or steps (e.g. "step #1", "point #2") — GitHub auto-links these to issues/PRs. Use `(1)`, `1.`, or `step 1` instead. Only use `#N` when intentionally linking to a specific issue or PR.
 
 ## Build & Deploy
 - Build: `cd scheduler && /opt/homebrew/bin/go build -o ../go-trader .` — always rebuild before smoke-testing `./go-trader`; stale binary gives misleading results
