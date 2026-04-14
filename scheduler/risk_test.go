@@ -356,8 +356,10 @@ func TestPortfolioNotional(t *testing.T) {
 // TestPortfolioNotional_IncludesPerps verifies that perps positions (keyed
 // by base asset, e.g. "BTC" for Hyperliquid/OKX) are included in notional
 // exposure once their fetch price has been mirrored into the position key.
-// Regression test for issue #245: perps were silently dropped from
-// PortfolioNotional because the symbolSet builder only picked up spot.
+// Regression test for issue #245: before the fix, perps notional was
+// frozen at pos.AvgCost because the symbolSet builder only picked up spot
+// strategies, so prices[sym] missed for perps and the function fell back
+// to entry cost.
 func TestPortfolioNotional_IncludesPerps(t *testing.T) {
 	strategies := map[string]*StrategyState{
 		"hl-momentum-btc": {
@@ -392,6 +394,39 @@ func TestPortfolioNotional_IncludesPerps(t *testing.T) {
 	expected := 25000.0
 	if notional < expected-0.01 || notional > expected+0.01 {
 		t.Errorf("expected notional=%.2f; got %.2f", expected, notional)
+	}
+}
+
+// TestPortfolioNotional_IncludesPerpsShort verifies that a perps short
+// also contributes positive exposure to notional (absolute-value
+// interpretation) and is revalued at the live mark rather than frozen at
+// entry cost. HL shorts are stored with positive Quantity + Side:"short"
+// (see hyperliquid_balance.go syncs the on-chain |Size|), so the
+// pre-fix fallback to AvgCost would have understated notional after a
+// price rally and overstated it after a drawdown — this pins the fix
+// against the sign path, not just longs.
+func TestPortfolioNotional_IncludesPerpsShort(t *testing.T) {
+	strategies := map[string]*StrategyState{
+		"hl-mean-rev-eth": {
+			Type: "perps",
+			Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 2.0, AvgCost: 3000.0, Side: "short"},
+			},
+			OptionPositions: make(map[string]*OptionPosition),
+		},
+	}
+	// Live mark diverges from entry — this is what the fix unlocks.
+	prices := map[string]float64{
+		"ETH/USDT": 3200.0,
+		"ETH":      3200.0,
+	}
+
+	notional := PortfolioNotional(strategies, prices)
+
+	// Short notional at live mark: 2.0 * 3200 = 6400 (not 2.0 * 3000 = 6000).
+	expected := 6400.0
+	if notional < expected-0.01 || notional > expected+0.01 {
+		t.Errorf("expected short notional at live mark=%.2f; got %.2f", expected, notional)
 	}
 }
 
@@ -445,11 +480,11 @@ func TestCollectPriceSymbols(t *testing.T) {
 	}
 }
 
-// TestCollectPriceSymbols_PerpsAlreadyNormalized verifies that a perps
-// strategy whose args already use a slash-form symbol (hypothetical OKX
-// swap "BTC/USDT:USDT" or similar) is passed through unchanged and not
-// double-suffixed, and that no mirror entry is created (fetch key == pos
-// key).
+// TestCollectPriceSymbols_PerpsAlreadyNormalized is a defensive guardrail:
+// today neither hyperliquidSymbol nor okxSymbol ever returns a slash-form
+// string (both return args[1] = base coin), but should a caller ever pass
+// a slash-form symbol through, the normalizer must not double-suffix it
+// and must not create a mirror entry (fetch key already == pos key).
 func TestCollectPriceSymbols_PerpsAlreadyNormalized(t *testing.T) {
 	strategies := []StrategyConfig{
 		{ID: "okx-btc-swap", Type: "perps", Platform: "okx", Args: []string{"sma", "BTC/USDT", "1h"}},

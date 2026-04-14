@@ -18,11 +18,24 @@ import (
 // caller fetches under the normalized key and then invokes
 // mirrorPerpsPrices to populate the base-asset alias so that both
 // PortfolioNotional and PortfolioValue can resolve prices for open perps
-// positions — fixes issue #245 where perps exposure was silently dropped
-// from portfolio-notional risk checks.
-func collectPriceSymbols(strategies []StrategyConfig) (symbols []string, mirror map[string]string) {
+// positions — fixes issue #245 where perps exposure in portfolio-notional
+// risk checks was frozen at entry cost (pos.AvgCost) instead of being
+// revalued at the live mark, causing notional to drift away from true
+// exposure after price moved.
+//
+// Assumptions and limits:
+//   - The fetch-key quote is hardcoded to "/USDT". HL and OKX perps today
+//     both settle vs. USDT and BinanceUS quotes BTC/USDT, so this holds.
+//     A future USDC- or BTC-settled perps platform would need a
+//     per-platform fetch-key derivation (likely pushed into the adapter
+//     layer).
+//   - BinanceUS coverage is best-effort. HL lists many coins BinanceUS
+//     doesn't (HYPE, kPEPE, kSHIB, PURR, …); for those, FetchPrices will
+//     return 0 → mirrorPerpsPrices skips → PortfolioNotional/Value fall
+//     back to pos.AvgCost, same as before this fix (not a regression).
+func collectPriceSymbols(strategies []StrategyConfig) ([]string, map[string]string) {
 	set := make(map[string]bool)
-	mirror = make(map[string]string)
+	mirror := make(map[string]string)
 	for _, sc := range strategies {
 		if len(sc.Args) < 2 {
 			continue
@@ -34,6 +47,7 @@ func collectPriceSymbols(strategies []StrategyConfig) (symbols []string, mirror 
 			baseSym := sc.Args[1]
 			fetchSym := baseSym
 			if !strings.Contains(baseSym, "/") {
+				// HL/OKX perps quote vs. USDT — see "Assumptions" above.
 				fetchSym = baseSym + "/USDT"
 			}
 			set[fetchSym] = true
@@ -42,7 +56,7 @@ func collectPriceSymbols(strategies []StrategyConfig) (symbols []string, mirror 
 			}
 		}
 	}
-	symbols = make([]string, 0, len(set))
+	symbols := make([]string, 0, len(set))
 	for s := range set {
 		symbols = append(symbols, s)
 	}
