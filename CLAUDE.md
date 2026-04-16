@@ -1,7 +1,7 @@
 # go-trader Project Context
 
 ## Environment
-- Requires Go 1.26.0 — install via Homebrew: `brew install go@1.26`
+- Requires Go 1.26.2 — install via Homebrew (macOS): `brew install go@1.26` or Linux tarball: `curl -sL https://go.dev/dl/go1.26.2.linux-amd64.tar.gz | tar -C /usr/local -xzf -`
 - Go is not in PATH via shell; use `/opt/homebrew/bin/go` directly (e.g. `cd scheduler && /opt/homebrew/bin/go build .`)
 - Python venv at `.venv/bin/python3` (used by executor.go at runtime)
 - In git worktrees, `.venv` is NOT copied — use the main repo's venv: `/Users/richardkuo/Work/openclaw/go-trader/.venv/bin/python3`

@@ -65,7 +65,7 @@ cd go-trader
 curl -LsSf https://astral.sh/uv/install.sh | sh   # install uv if needed
 uv sync                                             # creates .venv from lockfile
 
-# 3. Build (requires Go 1.26.0)
+# 3. Build (requires Go 1.26.2)
 cd scheduler && go build -o ../go-trader . && cd ..
 
 # 4. Generate config
@@ -486,7 +486,7 @@ go-trader/
 ## Dependencies
 
 - **Python 3.12+** — managed by [uv](https://github.com/astral-sh/uv) (ccxt, pandas, numpy, scipy, hyperliquid-python-sdk)
-- **Go 1.26.0** — [`github.com/bwmarrin/discordgo`](https://github.com/bwmarrin/discordgo) for WebSocket gateway (DM support)
+- **Go 1.26.2** — [`github.com/bwmarrin/discordgo`](https://github.com/bwmarrin/discordgo) for WebSocket gateway (DM support)
 - **systemd** — service management
 
 ---

@@ -28,17 +28,17 @@ If missing, install:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### 1c. Go runtime (1.26.0)
+### 1c. Go runtime (1.26.2)
 ```bash
 go version 2>/dev/null || /usr/local/go/bin/go version 2>/dev/null || /opt/homebrew/bin/go version 2>/dev/null || echo "NOT_INSTALLED"
 ```
 If missing, ask:
-> Go 1.26.0 is required to build the scheduler. Want me to install it?
+> Go 1.26.2 is required to build the scheduler. Want me to install it?
 
 Install with:
 ```bash
 # Linux
-curl -sL https://go.dev/dl/go1.26.0.linux-amd64.tar.gz | tar -C /usr/local -xzf -
+curl -sL https://go.dev/dl/go1.26.2.linux-amd64.tar.gz | tar -C /usr/local -xzf -
 # macOS (Homebrew)
 brew install go@1.26
 ```
