@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -37,10 +38,6 @@ type StatusServer struct {
 // failures. 5m produces a reasonable audit trail without drowning the log
 // on sustained outages during frequent dashboard polling.
 const perpsErrLogInterval = 5 * time.Minute
-
-// futuresErrLogInterval is an alias kept for callers that reference it by
-// name; both futures and perps use the same 5-minute window.
-const futuresErrLogInterval = perpsErrLogInterval
 
 func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig, stateDB *StateDB) *StatusServer {
 	// Spot symbols fetched via BinanceUS; perps marks now sourced from the
@@ -173,17 +170,8 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		for sym := range s.Positions {
 			// Include only spot-style keys (contain "/") to avoid routing
 			// HL/OKX perps position keys through BinanceUS (#263).
-			if len(sym) > 0 {
-				hasSlash := false
-				for _, ch := range sym {
-					if ch == '/' {
-						hasSlash = true
-						break
-					}
-				}
-				if hasSlash {
-					symbolSet[sym] = true
-				}
+			if strings.Contains(sym, "/") {
+				symbolSet[sym] = true
 			}
 		}
 	}

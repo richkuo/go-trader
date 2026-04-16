@@ -88,12 +88,12 @@ func TestPortfolioValueShort(t *testing.T) {
 // perps short must use the exchange-native mark, NOT a BinanceUS spot quote.
 // The test drives prices["ETH"] with the HL mark (3200.10) and asserts the
 // result is NOT equal to what BinanceUS spot (3199.85) would produce — a
-// 10 bp basis delta that should not appear as phantom PnL.
+// 25-cent (~0.78 bp) basis delta that should not appear as phantom PnL.
 //
 // Scenario from the issue:
 //
 //	HL mark: ETH-PERP = 3200.10
-//	BinanceUS spot: ETH/USDT = 3199.85  (25 bp basis)
+//	BinanceUS spot: ETH/USDT = 3199.85  (25-cent basis)
 //	Short position: 0.01 ETH @ 3000 AvgCost (Multiplier=1 → PnL branch)
 func TestPortfolioValueShort_UsesExchangeMarkNotSpotBasis(t *testing.T) {
 	s := &StrategyState{
@@ -107,7 +107,7 @@ func TestPortfolioValueShort_UsesExchangeMarkNotSpotBasis(t *testing.T) {
 
 	// Correct oracle: HL exchange mark.
 	hlMark := 3200.10
-	// Wrong oracle: BinanceUS spot (25-cent basis).
+	// Wrong oracle: BinanceUS spot (~25-cent basis vs the HL mark).
 	spotPrice := 3199.85
 
 	// Pass the HL mark as prices["ETH"] — exactly what fetchHyperliquidMids

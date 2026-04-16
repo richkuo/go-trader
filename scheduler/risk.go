@@ -26,7 +26,11 @@ func collectPriceSymbols(strategies []StrategyConfig) []string {
 		if len(sc.Args) < 2 {
 			continue
 		}
-		set[sc.Args[1]] = true
+		sym := sc.Args[1]
+		if sym == "" {
+			continue
+		}
+		set[sym] = true
 	}
 	symbols := make([]string, 0, len(set))
 	for s := range set {
