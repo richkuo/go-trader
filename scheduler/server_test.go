@@ -159,17 +159,19 @@ func TestNewStatusServerExtractsSymbols(t *testing.T) {
 		{Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}},
 		{Type: "spot", Args: []string{"rsi", "ETH/USDT", "1h"}},
 		{Type: "options", Args: []string{"vol", "BTC"}}, // options skipped
-		// #245: perps must also populate priceSymbols, normalized to "<base>/USDT",
-		// and register a mirror entry so the handler can back-fill the base-asset
-		// alias after FetchPrices returns.
+		// #263: HL perps must populate hlPerpsCoins (venue-native mark),
+		// NOT priceSymbols (BinanceUS spot). The old #245 "/USDT" normalisation
+		// and priceMirror path have been removed — perps are now sourced from
+		// the exchange they live on.
 		{Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "SOL", "1h"}},
+		{Type: "perps", Platform: "okx", Args: []string{"ema", "BTC", "1h"}},
 	}
 	state := NewAppState()
 	var mu sync.RWMutex
 
 	ss := NewStatusServer(state, &mu, "", strategies, nil)
 
-	// Check that priceSymbols were extracted
+	// Spot symbols must be in priceSymbols.
 	symbolSet := make(map[string]bool)
 	for _, s := range ss.priceSymbols {
 		symbolSet[s] = true
@@ -180,14 +182,30 @@ func TestNewStatusServerExtractsSymbols(t *testing.T) {
 	if !symbolSet["ETH/USDT"] {
 		t.Error("ETH/USDT should be in priceSymbols")
 	}
-	if !symbolSet["SOL/USDT"] {
-		t.Error("SOL/USDT should be in priceSymbols (perps must be fetched — #245)")
+	// Perps must NOT be in priceSymbols — they live in hlPerpsCoins/okxPerpsCoins.
+	if symbolSet["SOL/USDT"] {
+		t.Error("SOL/USDT must not be in priceSymbols (HL perps now venue-native — #263)")
 	}
-	if len(ss.priceSymbols) != 3 {
-		t.Errorf("priceSymbols len = %d, want 3", len(ss.priceSymbols))
+	if len(ss.priceSymbols) != 2 {
+		t.Errorf("priceSymbols len = %d, want 2 (spot only)", len(ss.priceSymbols))
 	}
-	if ss.priceMirror["SOL"] != "SOL/USDT" {
-		t.Errorf("priceMirror[SOL] = %q, want %q", ss.priceMirror["SOL"], "SOL/USDT")
+
+	// HL perps coin must appear in hlPerpsCoins.
+	hlSet := make(map[string]bool)
+	for _, c := range ss.hlPerpsCoins {
+		hlSet[c] = true
+	}
+	if !hlSet["SOL"] {
+		t.Errorf("hlPerpsCoins missing SOL; got %v", ss.hlPerpsCoins)
+	}
+
+	// OKX perps coin must appear in okxPerpsCoins.
+	okxSet := make(map[string]bool)
+	for _, c := range ss.okxPerpsCoins {
+		okxSet[c] = true
+	}
+	if !okxSet["BTC"] {
+		t.Errorf("okxPerpsCoins missing BTC; got %v", ss.okxPerpsCoins)
 	}
 }
 

@@ -3,80 +3,103 @@ package main
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 )
 
-// collectPriceSymbols returns the list of symbols to fetch for portfolio
-// valuation/notional and a mirror map (position-key → fetch-key) used to
-// back-fill prices for perps positions.
+// collectPriceSymbols returns the list of BinanceUS-format symbols to fetch
+// for spot strategy valuation/notional. Only "spot" strategy types are
+// included — spot positions are stored and fetched under the same key
+// (e.g. "BTC/USDT"), so no aliasing is needed.
 //
-// Spot positions are stored under the same key the price fetcher uses
-// (e.g. "BTC/USDT"), so they need no mirroring. Perps positions are stored
-// under the base asset only (e.g. "BTC" for Hyperliquid/OKX perps), but
-// check_price.py queries BinanceUS which requires "BTC/USDT" format. The
-// caller fetches under the normalized key and then invokes
-// mirrorPerpsPrices to populate the base-asset alias so that both
-// PortfolioNotional and PortfolioValue can resolve prices for open perps
-// positions — fixes issue #245 where perps exposure in portfolio-notional
-// risk checks was frozen at entry cost (pos.AvgCost) instead of being
-// revalued at the live mark, causing notional to drift away from true
-// exposure after price moved.
-//
-// Assumptions and limits:
-//   - The fetch-key quote is hardcoded to "/USDT". HL and OKX perps today
-//     both settle vs. USDT and BinanceUS quotes BTC/USDT, so this holds.
-//     A future USDC- or BTC-settled perps platform would need a
-//     per-platform fetch-key derivation (likely pushed into the adapter
-//     layer).
-//   - BinanceUS coverage is best-effort. HL lists many coins BinanceUS
-//     doesn't (HYPE, kPEPE, kSHIB, PURR, …); for those, FetchPrices will
-//     return 0 → mirrorPerpsPrices skips → PortfolioNotional/Value fall
-//     back to pos.AvgCost, same as before this fix (not a regression).
-func collectPriceSymbols(strategies []StrategyConfig) ([]string, map[string]string) {
+// Perps strategies are intentionally excluded: HL and OKX perps marks are
+// now sourced from the venues they live on via fetchHyperliquidMids and
+// FetchOKXPerpsMarks (see collectPerpsMarkSymbols). Routing perps through
+// BinanceUS spot introduced phantom PnL on shorts due to spot/perps basis
+// drift — fixes issue #263 as a side effect (HL-only coins like HYPE,
+// kPEPE, PURR no longer emit [WARN] Skipping zero price — fixes #262).
+func collectPriceSymbols(strategies []StrategyConfig) []string {
 	set := make(map[string]bool)
-	mirror := make(map[string]string)
 	for _, sc := range strategies {
+		if sc.Type != "spot" {
+			continue
+		}
 		if len(sc.Args) < 2 {
 			continue
 		}
-		switch sc.Type {
-		case "spot":
-			set[sc.Args[1]] = true
-		case "perps":
-			baseSym := sc.Args[1]
-			fetchSym := baseSym
-			if !strings.Contains(baseSym, "/") {
-				// HL/OKX perps quote vs. USDT — see "Assumptions" above.
-				fetchSym = baseSym + "/USDT"
-			}
-			set[fetchSym] = true
-			if fetchSym != baseSym {
-				mirror[baseSym] = fetchSym
-			}
+		sym := sc.Args[1]
+		if sym == "" {
+			continue
 		}
+		set[sym] = true
 	}
 	symbols := make([]string, 0, len(set))
 	for s := range set {
 		symbols = append(symbols, s)
 	}
-	return symbols, mirror
+	return symbols
 }
 
-// mirrorPerpsPrices back-fills price aliases so that fetched quotes keyed
-// under a normalized fetch symbol (e.g. "BTC/USDT") are also available
-// under the position-storage key (e.g. "BTC") used by perps state. An
-// existing price under the position key is preserved — if a strategy has
-// already published a live exchange mid via result.Symbol during the same
-// cycle, that value wins over the (possibly stale) BinanceUS spot quote.
-func mirrorPerpsPrices(prices map[string]float64, mirror map[string]string) {
-	for posKey, fetchKey := range mirror {
-		if _, exists := prices[posKey]; exists {
+// collectPerpsMarkSymbols returns two sorted slices of base-coin symbols
+// for which the scheduler should fetch venue-native perps marks this cycle.
+// hlCoins contains coins traded on Hyperliquid; okxCoins contains coins
+// traded on OKX — each slice is deduplicated and sorted for deterministic
+// iteration. Strategies with Type != "perps" are ignored.
+//
+// The returned coins are used as inputs to fetchHyperliquidMids and
+// FetchOKXPerpsMarks respectively. This is the correct oracle for perps
+// positions; see issue #263 for why BinanceUS spot is wrong.
+func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []string) {
+	hlSet := make(map[string]bool)
+	okxSet := make(map[string]bool)
+	for _, sc := range strategies {
+		if sc.Type != "perps" {
 			continue
 		}
-		if p, ok := prices[fetchKey]; ok && p > 0 {
-			prices[posKey] = p
+		if len(sc.Args) < 2 {
+			continue
 		}
+		coin := sc.Args[1]
+		if coin == "" {
+			continue
+		}
+		switch sc.Platform {
+		case "hyperliquid":
+			hlSet[coin] = true
+		case "okx":
+			okxSet[coin] = true
+		}
+	}
+	hlCoins = make([]string, 0, len(hlSet))
+	for c := range hlSet {
+		hlCoins = append(hlCoins, c)
+	}
+	sort.Strings(hlCoins)
+
+	okxCoins = make([]string, 0, len(okxSet))
+	for c := range okxSet {
+		okxCoins = append(okxCoins, c)
+	}
+	sort.Strings(okxCoins)
+	return hlCoins, okxCoins
+}
+
+// mergePerpsMarks copies non-zero perps mark prices into the shared prices
+// map. An existing entry wins — a mark published by a strategy earlier in
+// the cycle (ground truth for that cycle) must not be overwritten by a
+// potentially staler exchange snapshot. Zero and negative marks are skipped.
+//
+// DO NOT remove the skip-if-exists guard: it preserves the invariant that
+// strategy-published marks always win over fetcher snapshots. This mirrors
+// the mergeFuturesMarks contract (scheduler/risk.go).
+func mergePerpsMarks(prices map[string]float64, marks map[string]float64) {
+	for sym, p := range marks {
+		if p <= 0 {
+			continue
+		}
+		if _, exists := prices[sym]; exists {
+			continue
+		}
+		prices[sym] = p
 	}
 }
 
