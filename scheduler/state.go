@@ -10,15 +10,30 @@ import (
 // maxTradeHistory is the maximum number of trades to retain per strategy.
 const maxTradeHistory = 1000
 
+// ReconciliationGap tracks the drift between virtual per-strategy positions and
+// the actual on-chain position for a coin that is traded by multiple strategies
+// on the same shared wallet (#258). When two strategies trade the same coin,
+// per-strategy reconciliation is skipped (to prevent phantom circuit breakers)
+// and this gap is computed instead.
+type ReconciliationGap struct {
+	Coin       string    `json:"coin"`
+	OnChainQty float64   `json:"on_chain_qty"` // signed: positive = long, negative = short
+	VirtualQty float64   `json:"virtual_qty"`  // sum of all strategies' positions (signed)
+	DeltaQty   float64   `json:"delta_qty"`    // virtual - on_chain
+	Strategies []string  `json:"strategies"`   // strategy IDs configured to trade this coin
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
 // AppState holds all persistent state across restarts.
 type AppState struct {
-	CycleCount              int                       `json:"cycle_count"`
-	LastCycle               time.Time                 `json:"last_cycle"`
-	Strategies              map[string]*StrategyState `json:"strategies"`
-	PortfolioRisk           PortfolioRiskState        `json:"portfolio_risk"`
-	CorrelationSnapshot     *CorrelationSnapshot      `json:"correlation_snapshot,omitempty"`
-	LastTop10Summary        time.Time                 `json:"last_top10_summary,omitempty"`
-	LastLeaderboardPostDate string                    `json:"last_leaderboard_post_date,omitempty"`
+	CycleCount              int                           `json:"cycle_count"`
+	LastCycle               time.Time                     `json:"last_cycle"`
+	Strategies              map[string]*StrategyState     `json:"strategies"`
+	PortfolioRisk           PortfolioRiskState            `json:"portfolio_risk"`
+	CorrelationSnapshot     *CorrelationSnapshot          `json:"correlation_snapshot,omitempty"`
+	ReconciliationGaps      map[string]*ReconciliationGap `json:"reconciliation_gaps,omitempty"`
+	LastTop10Summary        time.Time                     `json:"last_top10_summary,omitempty"`
+	LastLeaderboardPostDate string                        `json:"last_leaderboard_post_date,omitempty"`
 }
 
 // StrategyState is the per-strategy persistent state.

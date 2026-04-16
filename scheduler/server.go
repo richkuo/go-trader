@@ -202,13 +202,14 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type StatusResp struct {
-		CycleCount    int                    `json:"cycle_count"`
-		Prices        map[string]float64     `json:"prices"`
-		Strategies    map[string]StratStatus `json:"strategies"`
-		PortfolioRisk PortfolioRiskState     `json:"portfolio_risk"`
-		TotalValue    float64                `json:"total_value"`
-		TotalNotional float64                `json:"total_notional"`
-		Correlation   *CorrelationSnapshot   `json:"correlation,omitempty"`
+		CycleCount         int                           `json:"cycle_count"`
+		Prices             map[string]float64            `json:"prices"`
+		Strategies         map[string]StratStatus        `json:"strategies"`
+		PortfolioRisk      PortfolioRiskState            `json:"portfolio_risk"`
+		TotalValue         float64                       `json:"total_value"`
+		TotalNotional      float64                       `json:"total_notional"`
+		Correlation        *CorrelationSnapshot          `json:"correlation,omitempty"`
+		ReconciliationGaps map[string]*ReconciliationGap `json:"reconciliation_gaps,omitempty"`
 	}
 
 	totalValue := 0.0
@@ -218,13 +219,14 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	totalNotional := PortfolioNotional(ss.state.Strategies, prices)
 
 	resp := StatusResp{
-		CycleCount:    ss.state.CycleCount,
-		Prices:        prices,
-		Strategies:    make(map[string]StratStatus),
-		PortfolioRisk: ss.state.PortfolioRisk,
-		TotalValue:    totalValue,
-		TotalNotional: totalNotional,
-		Correlation:   ss.state.CorrelationSnapshot,
+		CycleCount:         ss.state.CycleCount,
+		Prices:             prices,
+		Strategies:         make(map[string]StratStatus),
+		PortfolioRisk:      ss.state.PortfolioRisk,
+		TotalValue:         totalValue,
+		TotalNotional:      totalNotional,
+		Correlation:        ss.state.CorrelationSnapshot,
+		ReconciliationGaps: ss.state.ReconciliationGaps,
 	}
 
 	// Build config lookup for EffectiveInitialCapital.
