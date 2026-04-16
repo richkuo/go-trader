@@ -20,7 +20,7 @@
   - `prompt.go` — `Prompter` struct (String/YesNo/Choice/MultiSelect/Float); inject `NewPrompterFromReader(r,w)` for tests
   - `updater.go` — update checker; `checkForUpdates(cfg, discord, &lastNotifiedHash, &mu, state)` — git fetch, channel notify + DM upgrade prompt (goroutine); `applyUpgrade(discord, ownerID, mu, state, cfg)` — git pull + go build + state save + restart; `restartSelf()` — systemctl → syscall.Exec fallback; logs `[update]` prefix
   - `correlation.go` — per-asset directional exposure tracking; `ComputeCorrelation` warns on concentration/same-direction thresholds
-  - `config_migration.go` — `CurrentConfigVersion = 5`; auto-migrates config via Discord DM on startup
+  - `config_migration.go` — `CurrentConfigVersion = 7`; auto-migrates config via Discord DM on startup
   - `balance.go` — balance tracking and capital management
   - `hyperliquid_balance.go` — Hyperliquid-specific balance sync (`syncHyperliquidAccountPositions`)
   - `leaderboard.go` — pre-computed strategy leaderboard for Discord summaries
@@ -82,7 +82,7 @@
 - State persisted to `scheduler/state.json` (path set in config); per-platform files at `platforms/<name>/state.json`
 - `cfg.Discord.Channels` is `map[string]string` (not a struct); keys: "spot", "options", "hyperliquid", etc. — old `.Spot`/`.Options` field access is invalid
 - `cfg.Discord.OwnerID` — Discord user ID for DM upgrade prompts + config migration; loaded from `DISCORD_OWNER_ID` env var (takes priority over config file)
-- `cfg.ConfigVersion` — int, schema version (`0`/missing = v1 baseline); `CurrentConfigVersion = 5` in config_migration.go; startup triggers `runConfigMigrationDM` when below current version
+- `cfg.ConfigVersion` — int, schema version (`0`/missing = v1 baseline); `CurrentConfigVersion = 7` in config_migration.go; startup triggers `runConfigMigrationDM` when below current version
 - `cfg.Correlation` — `*CorrelationConfig` with `Enabled` (default false), `MaxConcentrationPct` (default 60), `MaxSameDirectionPct` (default 75); computed under RLock, state assigned under Lock; warnings sent to all Discord channels + owner DM
 - `cfg.AutoUpdate` — `"off"` (default), `"daily"` (once/day), `"heartbeat"` (every cycle); handled in main.go loop + startup; uses `dailyCycles = (24*3600)/tickSeconds`
 - Strategy registry imports: `check_strategy.py` imports from `shared_strategies/spot/strategies.py`; `check_hyperliquid.py`, `check_topstep.py`, and `check_okx.py` (swap mode) import from `shared_strategies/futures/strategies.py` — a new strategy must be registered in both if it needs to work across platforms

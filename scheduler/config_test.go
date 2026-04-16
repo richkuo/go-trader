@@ -780,3 +780,124 @@ func TestLoadConfigLeverageRejectsOutOfRange(t *testing.T) {
 		t.Errorf("error = %v, want 'leverage must be in'", err)
 	}
 }
+
+func TestValidateConfigDMChannelsInvalidKey(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "t-spot",
+			"type": "spot",
+			"script": "shared_scripts/check_strategy.py",
+			"args": ["sma_crossover", "BTC/USDT", "1h"],
+			"capital": 1000,
+			"max_drawdown_pct": 60
+		}],
+		"discord": {
+			"enabled": false,
+			"channels": {},
+			"dm_channels": { "hyperliquid-paper-extra": "123456789" }
+		}
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for invalid dm_channels key")
+	}
+	if !strings.Contains(err.Error(), "dm_channels key") {
+		t.Errorf("error = %v, want mention of dm_channels key", err)
+	}
+}
+
+func TestValidateConfigDMChannelsEmptyValue(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "t-spot",
+			"type": "spot",
+			"script": "shared_scripts/check_strategy.py",
+			"args": ["sma_crossover", "BTC/USDT", "1h"],
+			"capital": 1000,
+			"max_drawdown_pct": 60
+		}],
+		"discord": {
+			"enabled": false,
+			"channels": {},
+			"dm_channels": { "hyperliquid-paper": "" }
+		}
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for empty dm_channels value")
+	}
+	if !strings.Contains(err.Error(), "dm_channels[\"hyperliquid-paper\"]") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestValidateConfigDMChannelsValidKeys(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "BTC", "1h", "--mode=paper"],
+			"capital": 1000,
+			"max_drawdown_pct": 50
+		}],
+		"discord": {
+			"enabled": false,
+			"channels": {},
+			"dm_channels": {
+				"hyperliquid": "111",
+				"hyperliquid-paper": "222",
+				"deribit": "333"
+			}
+		},
+		"telegram": {
+			"enabled": false,
+			"channels": {},
+			"dm_channels": { "okx-paper": "444" }
+		}
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.Discord.DMChannels["hyperliquid"] != "111" || loaded.Discord.DMChannels["hyperliquid-paper"] != "222" {
+		t.Errorf("discord dm_channels mismatch: %#v", loaded.Discord.DMChannels)
+	}
+	if loaded.Telegram.DMChannels["okx-paper"] != "444" {
+		t.Errorf("telegram dm_channels mismatch: %#v", loaded.Telegram.DMChannels)
+	}
+}
+
+func TestValidateConfigDMChannelsOrphanSuffix(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "t-spot",
+			"type": "spot",
+			"script": "shared_scripts/check_strategy.py",
+			"args": ["sma_crossover", "BTC/USDT", "1h"],
+			"capital": 1000,
+			"max_drawdown_pct": 60
+		}],
+		"discord": {
+			"enabled": false,
+			"channels": {},
+			"dm_channels": { "-paper": "123" }
+		}
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for orphan -paper key")
+	}
+	if !strings.Contains(err.Error(), "platform prefix is empty") {
+		t.Errorf("error = %v, want mention of empty platform prefix", err)
+	}
+}

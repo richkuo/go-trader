@@ -9,12 +9,13 @@ import (
 
 // mockNotifier is a test double that records all calls.
 type mockNotifier struct {
-	mu       sync.Mutex
-	messages []mockMessage
-	dms      []mockDM
-	askResp  string
-	askErr   error
-	closed   bool
+	mu         sync.Mutex
+	messages   []mockMessage
+	dms        []mockDM
+	askResp    string
+	askErr     error
+	closed     bool
+	failSendDM bool // when true, SendDM errors (exercises SendMessage fallback in sendTradeDestination)
 }
 
 type mockMessage struct {
@@ -37,6 +38,9 @@ func (m *mockNotifier) SendMessage(channelID string, content string) error {
 func (m *mockNotifier) SendDM(userID, content string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failSendDM {
+		return fmt.Errorf("mock SendDM failed")
+	}
 	m.dms = append(m.dms, mockDM{userID, content})
 	return nil
 }
@@ -52,6 +56,32 @@ func (m *mockNotifier) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.closed = true
+}
+
+func TestSendTradeDestination_PrefersSendDM(t *testing.T) {
+	m := &mockNotifier{}
+	if err := sendTradeDestination(m, "user-1", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.dms) != 1 || m.dms[0].userID != "user-1" {
+		t.Fatalf("expected 1 DM, got %#v", m.dms)
+	}
+	if len(m.messages) != 0 {
+		t.Fatalf("expected no channel messages, got %#v", m.messages)
+	}
+}
+
+func TestSendTradeDestination_FallsBackToSendMessage(t *testing.T) {
+	m := &mockNotifier{failSendDM: true}
+	if err := sendTradeDestination(m, "channel-99", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.dms) != 0 {
+		t.Fatalf("expected no DMs when SendDM fails, got %#v", m.dms)
+	}
+	if len(m.messages) != 1 || m.messages[0].channelID != "channel-99" {
+		t.Fatalf("expected 1 channel message, got %#v", m.messages)
+	}
 }
 
 func TestMultiNotifier_NoBackends(t *testing.T) {

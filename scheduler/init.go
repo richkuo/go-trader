@@ -267,10 +267,6 @@ type InitOptions struct {
 	TelegramOwnerChatID     string            // Telegram chat ID for owner DMs
 	TelegramChannelMap      map[string]string // keyed by platform/type ("spot", "hyperliquid", etc.)
 	AutoUpdate              string            // "off", "daily", "heartbeat" (default: "off")
-	DMPaperTrades           bool              // DM owner on paper trade execution
-	DMLiveTrades            bool              // DM owner on live trade execution
-	TelegramDMPaper         bool              // Telegram: send on paper trade
-	TelegramDMLive          bool              // Telegram: send on live trade
 }
 
 // generateConfig builds a Config from InitOptions. Pure function, no I/O.
@@ -285,18 +281,14 @@ func generateConfig(opts InitOptions) *Config {
 			MaxNotionalUSD: 0,
 		},
 		Discord: DiscordConfig{
-			Enabled:       opts.DiscordEnabled,
-			OwnerID:       opts.DiscordOwnerID,
-			DMPaperTrades: opts.DMPaperTrades,
-			DMLiveTrades:  opts.DMLiveTrades,
-			Channels:      opts.ChannelMap,
+			Enabled:  opts.DiscordEnabled,
+			OwnerID:  opts.DiscordOwnerID,
+			Channels: opts.ChannelMap,
 		},
 		Telegram: TelegramConfig{
-			Enabled:       opts.TelegramEnabled,
-			OwnerChatID:   opts.TelegramOwnerChatID,
-			DMPaperTrades: opts.TelegramDMPaper,
-			DMLiveTrades:  opts.TelegramDMLive,
-			Channels:      opts.TelegramChannelMap,
+			Enabled:     opts.TelegramEnabled,
+			OwnerChatID: opts.TelegramOwnerChatID,
+			Channels:    opts.TelegramChannelMap,
 		},
 		AutoUpdate: opts.AutoUpdate,
 		Platforms:  make(map[string]*PlatformConfig),
@@ -1049,13 +1041,9 @@ func runInit(args []string) int {
 	discordEnabled := false
 	channelMap := make(map[string]string)
 	discordOwnerID := ""
-	dmLiveTrades := false
-	dmPaperTrades := false
 	telegramEnabled := false
 	telegramChannelMap := make(map[string]string)
 	telegramOwnerChatID := ""
-	telegramDMLive := false
-	telegramDMPaper := false
 
 	// Auto-update defaults to off; HTF filter defaults to enabled.
 	autoUpdate := "off"
@@ -1155,10 +1143,6 @@ func runInit(args []string) int {
 		TelegramOwnerChatID:     telegramOwnerChatID,
 		TelegramChannelMap:      telegramChannelMap,
 		AutoUpdate:              autoUpdate,
-		DMPaperTrades:           dmPaperTrades,
-		DMLiveTrades:            dmLiveTrades,
-		TelegramDMPaper:         telegramDMPaper,
-		TelegramDMLive:          telegramDMLive,
 	}
 
 	cfg := generateConfig(opts)

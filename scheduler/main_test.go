@@ -227,10 +227,10 @@ func TestSendTradeAlerts_DMAndChannel(t *testing.T) {
 	notifier := &MultiNotifier{
 		backends: []notifierBackend{
 			{
-				notifier:      mock,
-				ownerID:       "owner123",
-				channels:      map[string]string{"spot": "ch-spot-123"},
-				dmPaperTrades: true,
+				notifier:   mock,
+				ownerID:    "owner123",
+				channels:   map[string]string{"spot": "ch-spot-123"},
+				dmChannels: map[string]string{"binanceus-paper": "owner123"},
 			},
 		},
 	}
@@ -264,10 +264,10 @@ func TestSendTradeAlerts_DMOnly(t *testing.T) {
 	notifier := &MultiNotifier{
 		backends: []notifierBackend{
 			{
-				notifier:      mock,
-				ownerID:       "owner123",
-				channels:      map[string]string{}, // no channels configured
-				dmPaperTrades: true,
+				notifier:   mock,
+				ownerID:    "owner123",
+				channels:   map[string]string{}, // no channels configured
+				dmChannels: map[string]string{"binanceus-paper": "owner123"},
 			},
 		},
 	}
@@ -397,10 +397,10 @@ func TestSendTradeAlerts_LiveChannelRouting(t *testing.T) {
 	notifier := &MultiNotifier{
 		backends: []notifierBackend{
 			{
-				notifier:     mock,
-				ownerID:      "owner123",
-				channels:     map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl-live"},
-				dmLiveTrades: true,
+				notifier:   mock,
+				ownerID:    "owner123",
+				channels:   map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl-live"},
+				dmChannels: map[string]string{"hyperliquid": "owner123"},
 			},
 		},
 	}
@@ -556,6 +556,107 @@ func TestSendTradeAlerts_PaperFallbackToBase(t *testing.T) {
 	}
 	if len(mock.messages) > 0 && mock.messages[0].channelID != "ch-hl" {
 		t.Errorf("expected message to base channel ch-hl, got %s", mock.messages[0].channelID)
+	}
+}
+
+func TestSendTradeAlerts_DMChannelPaper(t *testing.T) {
+	mock := &mockNotifier{}
+	sc := StrategyConfig{
+		ID:       "hl-sma-btc",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
+	}
+	state := &StrategyState{TradeHistory: []Trade{testTrade()}}
+	var mu sync.RWMutex
+	notifier := &MultiNotifier{
+		backends: []notifierBackend{
+			{
+				notifier:   mock,
+				dmChannels: map[string]string{"hyperliquid-paper": "user-paper-dm"},
+			},
+		},
+	}
+	sendTradeAlerts(sc, state, 1, &mu, notifier)
+	if len(mock.dms) != 1 || mock.dms[0].userID != "user-paper-dm" {
+		t.Errorf("expected 1 DM to user-paper-dm, got %#v", mock.dms)
+	}
+}
+
+func TestSendTradeAlerts_DMChannelLive(t *testing.T) {
+	mock := &mockNotifier{}
+	sc := StrategyConfig{
+		ID:       "hl-sma-btc",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Args:     []string{"sma", "BTC", "1h", "--mode=live"},
+	}
+	state := &StrategyState{TradeHistory: []Trade{testTrade()}}
+	var mu sync.RWMutex
+	notifier := &MultiNotifier{
+		backends: []notifierBackend{
+			{
+				notifier:   mock,
+				dmChannels: map[string]string{"hyperliquid": "user-live-dm"},
+			},
+		},
+	}
+	sendTradeAlerts(sc, state, 1, &mu, notifier)
+	if len(mock.dms) != 1 || mock.dms[0].userID != "user-live-dm" {
+		t.Errorf("expected 1 DM to user-live-dm, got %#v", mock.dms)
+	}
+}
+
+func TestSendTradeAlerts_DMMissingKey(t *testing.T) {
+	// Paper trade but only live key in dm_channels — no DM, no channel.
+	mock := &mockNotifier{}
+	sc := StrategyConfig{
+		ID:       "hl-sma-btc",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
+	}
+	state := &StrategyState{TradeHistory: []Trade{testTrade()}}
+	var mu sync.RWMutex
+	notifier := &MultiNotifier{
+		backends: []notifierBackend{
+			{
+				notifier:   mock,
+				dmChannels: map[string]string{"hyperliquid": "only-live"},
+				channels:   map[string]string{},
+			},
+		},
+	}
+	sendTradeAlerts(sc, state, 1, &mu, notifier)
+	if len(mock.dms) != 0 || len(mock.messages) != 0 {
+		t.Errorf("expected no messages, dms=%d messages=%d", len(mock.dms), len(mock.messages))
+	}
+}
+
+func TestSendTradeAlerts_DMChannelFallback(t *testing.T) {
+	mock := &mockNotifier{failSendDM: true}
+	sc := StrategyConfig{
+		ID:       "hl-sma-btc",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
+	}
+	state := &StrategyState{TradeHistory: []Trade{testTrade()}}
+	var mu sync.RWMutex
+	notifier := &MultiNotifier{
+		backends: []notifierBackend{
+			{
+				notifier:   mock,
+				dmChannels: map[string]string{"hyperliquid-paper": "private-log-channel"},
+			},
+		},
+	}
+	sendTradeAlerts(sc, state, 1, &mu, notifier)
+	if len(mock.dms) != 0 {
+		t.Errorf("expected SendDM to fail without recording DM, got %d dms", len(mock.dms))
+	}
+	if len(mock.messages) != 1 || mock.messages[0].channelID != "private-log-channel" {
+		t.Errorf("expected 1 channel message to private-log-channel, got %#v", mock.messages)
 	}
 }
 

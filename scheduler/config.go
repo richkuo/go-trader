@@ -15,8 +15,7 @@ type DiscordConfig struct {
 	Enabled            bool              `json:"enabled"`
 	Token              string            `json:"token"`
 	OwnerID            string            `json:"owner_id,omitempty"`            // Discord user ID for DM features (upgrade prompts, config migration)
-	DMPaperTrades      bool              `json:"dm_paper_trades,omitempty"`     // DM owner on paper trade execution
-	DMLiveTrades       bool              `json:"dm_live_trades,omitempty"`      // DM owner on live trade execution
+	DMChannels         map[string]string `json:"dm_channels,omitempty"`         // per-platform DM-style trade alerts: "<platform>" (live), "<platform>-paper" (paper); value = user ID or channel ID
 	Channels           map[string]string `json:"channels"`                      // keyed by platform or type; "<platform>-paper" for paper-specific channels
 	LeaderboardTopN    int               `json:"leaderboard_top_n,omitempty"`   // number of entries shown in leaderboard messages (default 5)
 	LeaderboardChannel string            `json:"leaderboard_channel,omitempty"` // dedicated Discord channel ID for leaderboard posts; when set, all leaderboards route here instead of being broadcast across platform channels
@@ -24,12 +23,11 @@ type DiscordConfig struct {
 
 // TelegramConfig holds Telegram notification settings.
 type TelegramConfig struct {
-	Enabled       bool              `json:"enabled"`
-	BotToken      string            `json:"bot_token"`
-	OwnerChatID   string            `json:"owner_chat_id,omitempty"`   // Owner's Telegram chat ID for DMs/upgrade prompts
-	DMPaperTrades bool              `json:"dm_paper_trades,omitempty"` // send message on paper trade execution
-	DMLiveTrades  bool              `json:"dm_live_trades,omitempty"`  // send message on live trade execution
-	Channels      map[string]string `json:"channels"`                  // keyed by platform or type; "<platform>-paper" for paper-specific channels
+	Enabled     bool              `json:"enabled"`
+	BotToken    string            `json:"bot_token"`
+	OwnerChatID string            `json:"owner_chat_id,omitempty"` // Owner's Telegram chat ID for DMs/upgrade prompts
+	DMChannels  map[string]string `json:"dm_channels,omitempty"`   // per-platform trade alerts: "<platform>" (live), "<platform>-paper" (paper); value = chat ID
+	Channels    map[string]string `json:"channels"`                // keyed by platform or type; "<platform>-paper" for paper-specific channels
 }
 
 // PortfolioRiskConfig controls aggregate portfolio-level risk (#42).
@@ -497,8 +495,48 @@ func ValidateConfig(cfg *Config) error {
 		}
 	}
 
+	knownPlatforms := make(map[string]bool)
+	for _, sc := range cfg.Strategies {
+		if p := strings.TrimSpace(sc.Platform); p != "" {
+			knownPlatforms[p] = true
+		}
+	}
+	validateDMChannelsMap(cfg.Discord.DMChannels, "discord", knownPlatforms, &errs)
+	validateDMChannelsMap(cfg.Telegram.DMChannels, "telegram", knownPlatforms, &errs)
+
 	if len(errs) > 0 {
 		return fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
 	}
 	return nil
+}
+
+// validateDMChannelsMap checks dm_channels keys and values (#248).
+// Keys must be "<platform>" or "<platform>-paper" with a non-empty platform prefix.
+// Unknown platforms (not present in cfg.Strategies) produce a warning log but not a validation error.
+func validateDMChannelsMap(m map[string]string, label string, knownPlatforms map[string]bool, errs *[]string) {
+	if m == nil {
+		return
+	}
+	for k, v := range m {
+		if k == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: dm_channels has empty key", label))
+			continue
+		}
+		if strings.Contains(k, "-paper") && !strings.HasSuffix(k, "-paper") {
+			*errs = append(*errs, fmt.Sprintf("%s: dm_channels key %q is invalid (only optional suffix is \"-paper\")", label, k))
+			continue
+		}
+		platform := strings.TrimSuffix(k, "-paper")
+		if platform == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: dm_channels key %q is invalid (platform prefix is empty)", label, k))
+			continue
+		}
+		if strings.TrimSpace(v) == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: dm_channels[%q] must be non-empty", label, k))
+			continue
+		}
+		if len(knownPlatforms) > 0 && !knownPlatforms[platform] {
+			fmt.Printf("[WARN] %s: dm_channels[%q] references platform %q with no configured strategies — possible typo\n", label, k, platform)
+		}
+	}
 }

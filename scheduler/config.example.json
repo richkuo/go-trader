@@ -1,4 +1,5 @@
 {
+  "config_version": 7,
   "interval_seconds": 300,
   "state_file": "scheduler/state.json",
   "portfolio_risk": {
@@ -72,6 +73,10 @@
       "options": "",
       "hyperliquid": "",
       "hyperliquid-paper": ""
+    },
+    "dm_channels": {
+      "hyperliquid": "PASTE_DISCORD_USER_OR_CHANNEL_ID",
+      "hyperliquid-paper": "PASTE_DISCORD_USER_OR_CHANNEL_ID"
     },
     "spot_summary_freq": "hourly",
     "options_summary_freq": "per_check",

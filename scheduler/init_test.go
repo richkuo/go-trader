@@ -885,17 +885,11 @@ func TestGenerateConfig_DefaultsForOptionalFields(t *testing.T) {
 	if cfg.Telegram.Enabled {
 		t.Error("expected Telegram.Enabled=false by default")
 	}
-	if cfg.Discord.DMPaperTrades {
-		t.Error("expected Discord.DMPaperTrades=false by default")
+	if cfg.Discord.DMChannels != nil {
+		t.Errorf("expected Discord.DMChannels=nil by default, got %v", cfg.Discord.DMChannels)
 	}
-	if cfg.Discord.DMLiveTrades {
-		t.Error("expected Discord.DMLiveTrades=false by default")
-	}
-	if cfg.Telegram.DMPaperTrades {
-		t.Error("expected Telegram.DMPaperTrades=false by default")
-	}
-	if cfg.Telegram.DMLiveTrades {
-		t.Error("expected Telegram.DMLiveTrades=false by default")
+	if cfg.Telegram.DMChannels != nil {
+		t.Errorf("expected Telegram.DMChannels=nil by default, got %v", cfg.Telegram.DMChannels)
 	}
 
 	// Auto-update should default to empty (off).
