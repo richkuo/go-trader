@@ -308,14 +308,16 @@ func main() {
 			len(dueStrategies), len(cfg.Strategies))
 
 		// Collect symbols that need prices. Spot strategies use the
-		// BinanceUS-formatted symbol directly; perps strategies use the base
-		// asset as their position key, so we fetch under a normalized
-		// "<base>/USDT" form and mirror the result back — #245.
-		symbols, perpsMirror := collectPriceSymbols(cfg.Strategies)
-		// Futures (TopStep CME) are on a separate price rail — BinanceUS
-		// doesn't quote ES/NQ/MES/MNQ/CL, so dispatch to the TopStep
-		// adapter via fetch_futures_marks.py — #261.
+		// BinanceUS-formatted symbol directly (e.g. "BTC/USDT").
+		// Perps marks now come from the venues they live on — see
+		// collectPerpsMarkSymbols below — so perps are intentionally
+		// absent from this list, closing the HL-only coin [WARN] noise
+		// (#262) as a side effect.
+		symbols := collectPriceSymbols(cfg.Strategies)
+		// Futures (TopStep CME) on a separate price rail — #261.
 		futuresSymbols := collectFuturesMarkSymbols(cfg.Strategies)
+		// Perps marks sourced from the venue the position lives on — #263.
+		hlPerpsCoins, okxPerpsCoins := collectPerpsMarkSymbols(cfg.Strategies)
 
 		// Fetch current prices for portfolio valuation
 		prices := make(map[string]float64)
@@ -333,10 +335,37 @@ func main() {
 					fmt.Printf("[WARN] Skipping zero price for %s\n", sym)
 				}
 			}
-			mirrorPerpsPrices(prices, perpsMirror)
 			if len(prices) == 0 {
 				fmt.Printf("[CRITICAL] All prices are zero/missing — skipping cycle\n")
 				continue
+			}
+		}
+		// HL perps marks — best-effort; failure falls back to pos.AvgCost.
+		if len(hlPerpsCoins) > 0 {
+			hlMarks, err := fetchHyperliquidMids(hlPerpsCoins)
+			if err != nil {
+				fmt.Printf("[WARN] HL perps marks fetch failed for %v: %v — portfolio notional will use entry cost for open HL perps positions\n", hlPerpsCoins, err)
+			} else {
+				mergePerpsMarks(prices, hlMarks)
+				for _, coin := range hlPerpsCoins {
+					if _, ok := prices[coin]; !ok {
+						fmt.Printf("[WARN] No HL perps mark for %s — PortfolioNotional/Value will fall back to entry cost\n", coin)
+					}
+				}
+			}
+		}
+		// OKX perps marks — best-effort; failure falls back to pos.AvgCost.
+		if len(okxPerpsCoins) > 0 {
+			okxMarks, err := FetchOKXPerpsMarks(okxPerpsCoins)
+			if err != nil {
+				fmt.Printf("[WARN] OKX perps marks fetch failed for %v: %v — portfolio notional will use entry cost for open OKX perps positions\n", okxPerpsCoins, err)
+			} else {
+				mergePerpsMarks(prices, okxMarks)
+				for _, coin := range okxPerpsCoins {
+					if _, ok := prices[coin]; !ok {
+						fmt.Printf("[WARN] No OKX perps mark for %s — PortfolioNotional/Value will fall back to entry cost\n", coin)
+					}
+				}
 			}
 		}
 		// Futures marks are best-effort: a failed fetch falls back to
@@ -956,10 +985,11 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 		os.Exit(1)
 	}
 
-	// Collect symbols that need prices (spot + perps, #245).
-	symbols, perpsMirror := collectPriceSymbols(cfg.Strategies)
-	// Futures marks live on a separate rail (#261).
+	// Collect symbols for the one-shot summary. Spot via BinanceUS; perps
+	// via venue-native marks (#263); futures via TopStep adapter (#261).
+	symbols := collectPriceSymbols(cfg.Strategies)
 	futuresSymbols := collectFuturesMarkSymbols(cfg.Strategies)
+	hlPerpsCoins, okxPerpsCoins := collectPerpsMarkSymbols(cfg.Strategies)
 
 	// Fetch current prices.
 	prices := make(map[string]float64)
@@ -974,7 +1004,22 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 				prices[sym] = price
 			}
 		}
-		mirrorPerpsPrices(prices, perpsMirror)
+	}
+	if len(hlPerpsCoins) > 0 {
+		hlMarks, err := fetchHyperliquidMids(hlPerpsCoins)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] HL perps marks fetch failed for %v: %v — summary will use entry cost\n", hlPerpsCoins, err)
+		} else {
+			mergePerpsMarks(prices, hlMarks)
+		}
+	}
+	if len(okxPerpsCoins) > 0 {
+		okxMarks, err := FetchOKXPerpsMarks(okxPerpsCoins)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] OKX perps marks fetch failed for %v: %v — summary will use entry cost\n", okxPerpsCoins, err)
+		} else {
+			mergePerpsMarks(prices, okxMarks)
+		}
 	}
 	if len(futuresSymbols) > 0 {
 		marks, mode, err := FetchFuturesMarks(futuresSymbols)

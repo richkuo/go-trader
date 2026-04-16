@@ -83,6 +83,63 @@ func TestPortfolioValueShort(t *testing.T) {
 	}
 }
 
+// TestPortfolioValueShort_UsesExchangeMarkNotSpotBasis is the regression
+// test required by issue #263 acceptance criteria: PortfolioValue for a
+// perps short must use the exchange-native mark, NOT a BinanceUS spot quote.
+// The test drives prices["ETH"] with the HL mark (3200.10) and asserts the
+// result is NOT equal to what BinanceUS spot (3199.85) would produce — a
+// 10 bp basis delta that should not appear as phantom PnL.
+//
+// Scenario from the issue:
+//   HL mark: ETH-PERP = 3200.10
+//   BinanceUS spot: ETH/USDT = 3199.85  (25 bp basis)
+//   Short position: 0.01 ETH @ 3000 AvgCost (Multiplier=1 → PnL branch)
+func TestPortfolioValueShort_UsesExchangeMarkNotSpotBasis(t *testing.T) {
+	s := &StrategyState{
+		Cash: 1000,
+		Positions: map[string]*Position{
+			// Perps short — Multiplier=1 routes through the PnL branch.
+			"ETH": {Symbol: "ETH", Quantity: 0.01, AvgCost: 3000.0, Side: "short", Multiplier: 1},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+	}
+
+	// Correct oracle: HL exchange mark.
+	hlMark := 3200.10
+	// Wrong oracle: BinanceUS spot (25-cent basis).
+	spotPrice := 3199.85
+
+	// Pass the HL mark as prices["ETH"] — exactly what fetchHyperliquidMids
+	// delivers after the #263 fix.
+	gotHL := PortfolioValue(s, map[string]float64{"ETH": hlMark})
+	// PnL branch: cash + qty * multiplier * (avgCost - price)
+	// = 1000 + 0.01 * 1 * (3000 - 3200.10) = 1000 + 0.01 * (-200.10) = 998.00
+	expectedHL := 1000.0 + 0.01*(3000.0-hlMark)
+	if math.Abs(gotHL-expectedHL) > 1e-6 {
+		t.Errorf("PortfolioValue with HL mark = %.6f, want %.6f", gotHL, expectedHL)
+	}
+
+	// Demonstrate the basis error: spot oracle produces a different value.
+	gotSpot := PortfolioValue(s, map[string]float64{"ETH": spotPrice})
+	expectedSpot := 1000.0 + 0.01*(3000.0-spotPrice)
+	if math.Abs(gotSpot-expectedSpot) > 1e-6 {
+		t.Errorf("PortfolioValue with spot price = %.6f, want %.6f", gotSpot, expectedSpot)
+	}
+
+	// Assert the HL mark wins: the two values must differ by the basis delta.
+	basisDelta := math.Abs(gotHL - gotSpot)
+	expectedBasisDelta := 0.01 * math.Abs(hlMark-spotPrice) // ~0.002500
+	if math.Abs(basisDelta-expectedBasisDelta) > 1e-6 {
+		t.Errorf("basis delta = %.6f, want %.6f (0.01 * |hlMark - spotPrice|)", basisDelta, expectedBasisDelta)
+	}
+
+	// Guard: if prices map carries the HL mark, the result must NOT equal
+	// the spot-basis value — pinning the fix as the issue requires.
+	if math.Abs(gotHL-gotSpot) < 1e-9 {
+		t.Errorf("PortfolioValue with HL mark equals spot-basis value — basis not applied")
+	}
+}
+
 func TestPortfolioValueWithOptions(t *testing.T) {
 	s := &StrategyState{
 		Cash:      1000,

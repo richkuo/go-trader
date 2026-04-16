@@ -559,3 +559,28 @@ func FetchFuturesMarks(symbols []string) (map[string]float64, string, error) {
 	}
 	return marks, mode, nil
 }
+
+// FetchOKXPerpsMarks runs fetch_okx_perps_marks.py and returns a map of
+// base-coin→mark-price for OKX perpetual swaps. Routes through the OKX
+// adapter (ccxt fetch_ticker for USDT-margined swaps) because BinanceUS
+// does not quote OKX perps and the OKX swap mark diverges from the
+// BinanceUS spot quote (perps basis, funding, exchange-specific liquidity).
+// Fixes the phantom-PnL oracle for OKX perps shorts — see issue #263.
+//
+// Best-effort: callers treat an error or missing coin as a signal to fall
+// back to pos.AvgCost via the prices-miss path in PortfolioValue /
+// PortfolioNotional — same degradation semantics as FetchFuturesMarks.
+func FetchOKXPerpsMarks(coins []string) (map[string]float64, error) {
+	if len(coins) == 0 {
+		return map[string]float64{}, nil
+	}
+	stdout, stderr, err := RunPythonScript("shared_scripts/fetch_okx_perps_marks.py", coins)
+	if err != nil {
+		return nil, fmt.Errorf("okx perps marks fetch error: %w (stderr: %s)", err, string(stderr))
+	}
+	var marks map[string]float64
+	if err := json.Unmarshal(stdout, &marks); err != nil {
+		return nil, fmt.Errorf("parse okx perps marks: %w (stdout: %s)", err, string(stdout))
+	}
+	return marks, nil
+}

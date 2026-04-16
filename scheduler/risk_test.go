@@ -588,30 +588,32 @@ func TestPortfolioNotional_IncludesPerpsShort(t *testing.T) {
 	}
 }
 
-// TestCollectPriceSymbols verifies that spot and perps strategies both
-// contribute to the fetch list, that perps base-asset symbols are
-// normalized to "<base>/USDT", and that the mirror map captures the
-// position-key alias for each normalized perps symbol.
+// TestCollectPriceSymbols verifies that only spot strategies contribute to the
+// BinanceUS fetch list (#263). Perps strategies must NOT appear — they are
+// sourced from venue-native marks via collectPerpsMarkSymbols. Options and
+// short-arg strategies are also excluded.
 func TestCollectPriceSymbols(t *testing.T) {
 	strategies := []StrategyConfig{
 		{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
 		{ID: "sma-eth", Type: "spot", Platform: "binanceus", Args: []string{"sma", "ETH/USDT", "1h"}},
+		// Perps must NOT appear in the BinanceUS fetch list — venue-native marks only.
 		{ID: "hl-momentum-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "BTC", "1h"}},
 		{ID: "okx-ema-sol-perp", Type: "perps", Platform: "okx", Args: []string{"ema", "SOL", "1h"}},
-		// Options should be ignored by the collector.
+		// Options must be ignored.
 		{ID: "deribit-vol-btc", Type: "options", Platform: "deribit", Args: []string{"vol", "BTC"}},
-		// Short-arg strategies should be ignored (no symbol to fetch).
+		// Short-arg strategies must be ignored.
 		{ID: "short", Type: "spot", Args: []string{"sma"}},
 	}
 
-	symbols, mirror := collectPriceSymbols(strategies)
+	symbols := collectPriceSymbols(strategies)
 
 	got := make(map[string]bool, len(symbols))
 	for _, s := range symbols {
 		got[s] = true
 	}
 
-	wantSymbols := []string{"BTC/USDT", "ETH/USDT", "SOL/USDT"}
+	// Only spot symbols should appear.
+	wantSymbols := []string{"BTC/USDT", "ETH/USDT"}
 	for _, sym := range wantSymbols {
 		if !got[sym] {
 			t.Errorf("symbols missing %q; got %v", sym, symbols)
@@ -621,75 +623,107 @@ func TestCollectPriceSymbols(t *testing.T) {
 		t.Errorf("symbols len = %d (%v), want %d (%v)", len(symbols), symbols, len(wantSymbols), wantSymbols)
 	}
 
-	// Perps mirror: base-asset → fetch key.
-	if mirror["BTC"] != "BTC/USDT" {
-		t.Errorf("mirror[BTC] = %q, want %q", mirror["BTC"], "BTC/USDT")
-	}
-	if mirror["SOL"] != "SOL/USDT" {
-		t.Errorf("mirror[SOL] = %q, want %q", mirror["SOL"], "SOL/USDT")
-	}
-	// Spot symbols must not appear in the mirror — the fetch key is
-	// already the position key.
-	if _, ok := mirror["BTC/USDT"]; ok {
-		t.Errorf("mirror should not contain spot symbol %q", "BTC/USDT")
-	}
-	if len(mirror) != 2 {
-		t.Errorf("mirror len = %d, want 2 (got %v)", len(mirror), mirror)
+	// Perps base coins must NOT appear in the spot fetch list.
+	for _, notWanted := range []string{"BTC", "SOL", "BTC/USDT:USDT", "SOL/USDT"} {
+		if got[notWanted] {
+			t.Errorf("symbol %q should not be in the BinanceUS fetch list (perps now venue-native)", notWanted)
+		}
 	}
 }
 
-// TestCollectPriceSymbols_PerpsAlreadyNormalized is a defensive guardrail:
-// today neither hyperliquidSymbol nor okxSymbol ever returns a slash-form
-// string (both return args[1] = base coin), but should a caller ever pass
-// a slash-form symbol through, the normalizer must not double-suffix it
-// and must not create a mirror entry (fetch key already == pos key).
-func TestCollectPriceSymbols_PerpsAlreadyNormalized(t *testing.T) {
+// TestCollectPerpsMarkSymbols verifies that collectPerpsMarkSymbols splits
+// HL and OKX perps into separate slices, deduplicates symbols, sorts them,
+// and ignores spot/options/futures/short-arg strategies.
+func TestCollectPerpsMarkSymbols(t *testing.T) {
 	strategies := []StrategyConfig{
-		{ID: "okx-btc-swap", Type: "perps", Platform: "okx", Args: []string{"sma", "BTC/USDT", "1h"}},
+		// HL perps — two strategies on the same coin to test dedup.
+		{ID: "hl-momentum-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "BTC", "1h"}},
+		{ID: "hl-mr-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"mean_rev", "BTC", "15m"}},
+		{ID: "hl-trend-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "ETH", "1h"}},
+		// OKX perps.
+		{ID: "okx-ema-sol-perp", Type: "perps", Platform: "okx", Args: []string{"ema", "SOL", "1h"}},
+		{ID: "okx-ema-btc-perp", Type: "perps", Platform: "okx", Args: []string{"ema", "BTC", "1h"}},
+		// Non-perps — all must be ignored.
+		{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
+		{ID: "deribit-vol-btc", Type: "options", Platform: "deribit", Args: []string{"vol", "BTC"}},
+		{ID: "ts-trend-es", Type: "futures", Platform: "topstep", Args: []string{"trend", "ES", "1h"}},
+		// Short-arg perps must be ignored.
+		{ID: "hl-short", Type: "perps", Platform: "hyperliquid", Args: []string{"trend"}},
+		// Empty-symbol perps must be ignored.
+		{ID: "hl-empty", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "", "1h"}},
 	}
 
-	symbols, mirror := collectPriceSymbols(strategies)
+	hlCoins, okxCoins := collectPerpsMarkSymbols(strategies)
 
-	if len(symbols) != 1 || symbols[0] != "BTC/USDT" {
-		t.Errorf("symbols = %v, want [BTC/USDT]", symbols)
+	// HL: BTC (dedup'd) + ETH, sorted.
+	wantHL := []string{"BTC", "ETH"}
+	if len(hlCoins) != len(wantHL) {
+		t.Fatalf("hlCoins = %v, want %v", hlCoins, wantHL)
 	}
-	if len(mirror) != 0 {
-		t.Errorf("mirror = %v, want empty (fetch key already matches pos key)", mirror)
+	for i, c := range wantHL {
+		if hlCoins[i] != c {
+			t.Errorf("hlCoins[%d] = %q, want %q", i, hlCoins[i], c)
+		}
+	}
+
+	// OKX: BTC + SOL, sorted.
+	wantOKX := []string{"BTC", "SOL"}
+	if len(okxCoins) != len(wantOKX) {
+		t.Fatalf("okxCoins = %v, want %v", okxCoins, wantOKX)
+	}
+	for i, c := range wantOKX {
+		if okxCoins[i] != c {
+			t.Errorf("okxCoins[%d] = %q, want %q", i, okxCoins[i], c)
+		}
 	}
 }
 
-// TestMirrorPerpsPrices verifies that mirrorPerpsPrices back-fills the
-// position-key alias from its fetch key, preserves an existing position-key
-// entry (so a live exchange mid published by the strategy run wins over a
-// stale BinanceUS quote), and skips missing/zero fetch prices.
-func TestMirrorPerpsPrices(t *testing.T) {
-	mirror := map[string]string{
-		"BTC":  "BTC/USDT",
-		"ETH":  "ETH/USDT",
-		"SOL":  "SOL/USDT",
-		"DOGE": "DOGE/USDT",
+// TestCollectPerpsMarkSymbols_Empty verifies that collectPerpsMarkSymbols
+// returns nil slices (no allocation) when no perps strategies are configured.
+func TestCollectPerpsMarkSymbols_Empty(t *testing.T) {
+	strategies := []StrategyConfig{
+		{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
 	}
+	hlCoins, okxCoins := collectPerpsMarkSymbols(strategies)
+	if len(hlCoins) != 0 {
+		t.Errorf("hlCoins = %v, want empty", hlCoins)
+	}
+	if len(okxCoins) != 0 {
+		t.Errorf("okxCoins = %v, want empty", okxCoins)
+	}
+}
+
+// TestMergePerpsMarks verifies that mergePerpsMarks copies non-zero marks
+// into the shared prices map, preserves existing entries (strategy-published
+// mark wins over a fetcher snapshot), and skips zero/negative values.
+func TestMergePerpsMarks(t *testing.T) {
 	prices := map[string]float64{
-		"BTC/USDT":  50000.0,
-		"ETH/USDT":  3000.0,
-		"ETH":       2999.5, // live mid already published — must be preserved
-		"SOL/USDT":  0,      // zero must not be mirrored
-		"DOGE/USDT": 0.08,
+		"BTC/USDT": 50000.0, // unrelated spot — must be untouched
+		"ETH":      3199.5,  // strategy already published live mark — must win
+	}
+	marks := map[string]float64{
+		"ETH":  3200.1, // stale — must not overwrite the existing live mark
+		"BTC":  67500.5,
+		"SOL":  0,   // zero — must be skipped
+		"DOGE": -1,  // negative — must be skipped
 	}
 
-	mirrorPerpsPrices(prices, mirror)
+	mergePerpsMarks(prices, marks)
 
-	if prices["BTC"] != 50000.0 {
-		t.Errorf("prices[BTC] = %v, want 50000", prices["BTC"])
+	if prices["BTC/USDT"] != 50000.0 {
+		t.Errorf("prices[BTC/USDT] = %v, want 50000 (unrelated entry mutated)", prices["BTC/USDT"])
 	}
-	if prices["ETH"] != 2999.5 {
-		t.Errorf("prices[ETH] = %v, want 2999.5 (existing live mid), mirror must not overwrite", prices["ETH"])
+	if prices["ETH"] != 3199.5 {
+		t.Errorf("prices[ETH] = %v, want 3199.5 (existing live mark must win)", prices["ETH"])
+	}
+	if prices["BTC"] != 67500.5 {
+		t.Errorf("prices[BTC] = %v, want 67500.5 (new mark must be merged)", prices["BTC"])
 	}
 	if _, ok := prices["SOL"]; ok {
-		t.Errorf("prices[SOL] should not be set when fetch price is zero (got %v)", prices["SOL"])
+		t.Errorf("prices[SOL] should not be set when mark is zero (got %v)", prices["SOL"])
 	}
-	if prices["DOGE"] != 0.08 {
-		t.Errorf("prices[DOGE] = %v, want 0.08", prices["DOGE"])
+	if _, ok := prices["DOGE"]; ok {
+		t.Errorf("prices[DOGE] should not be set when mark is negative (got %v)", prices["DOGE"])
 	}
 }
 
