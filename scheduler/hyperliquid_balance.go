@@ -243,6 +243,9 @@ func reconcileHyperliquidPositions(stratState *StrategyState, sym string, positi
 // scheduler has already fetched clearinghouseState earlier in the cycle (e.g.
 // for shared-wallet balance), use reconcileHyperliquidAccountPositions instead
 // to avoid a second round-trip to the HL API.
+//
+// hlStrategies must include ALL live HL strategies (not a subset) for shared-coin
+// detection to work correctly. It is passed as both dueStrategies and allStrategies.
 func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager) bool {
 	accountAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 	if accountAddr == "" {
@@ -355,22 +358,29 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 			// Sum signed virtual qty.
 			if pos.Side == "long" {
 				virtualQty += pos.Quantity
-			} else {
+			} else if pos.Side == "short" {
 				virtualQty -= pos.Quantity
+			} else {
+				fmt.Printf("[WARN] hl-sync: strategy %s coin %s has unexpected side=%q, skipping in virtual qty\n", id, coin, pos.Side)
 			}
-			// Non-destructive: migrate multiplier (#254).
+			// Non-destructive updates applied to ALL strategies (not just due) since
+			// multiplier migration and leverage sync are idempotent corrections that
+			// should not wait for the strategy's next scheduled cycle.
 			if pos.Multiplier != 1 {
-				logger, _ := logMgr.GetStrategyLogger(id)
-				if logger != nil {
+				logger, err := logMgr.GetStrategyLogger(id)
+				if err != nil {
+					fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", id, err)
+				} else {
 					logger.Info("hl-sync: %s migrate multiplier %v → 1 (shared coin) (#254)", coin, pos.Multiplier)
 				}
 				pos.Multiplier = 1
 				changed = true
 			}
-			// Non-destructive: sync leverage from on-chain.
 			if onChainPos != nil && onChainPos.Leverage > 0 && pos.Leverage != onChainPos.Leverage {
-				logger, _ := logMgr.GetStrategyLogger(id)
-				if logger != nil {
+				logger, err := logMgr.GetStrategyLogger(id)
+				if err != nil {
+					fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", id, err)
+				} else {
 					logger.Info("hl-sync: %s leverage %v → %v (shared coin)", coin, pos.Leverage, onChainPos.Leverage)
 				}
 				pos.Leverage = onChainPos.Leverage

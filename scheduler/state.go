@@ -19,18 +19,19 @@ type ReconciliationGap struct {
 	Coin       string    `json:"coin"`
 	OnChainQty float64   `json:"on_chain_qty"` // signed: positive = long, negative = short
 	VirtualQty float64   `json:"virtual_qty"`  // sum of all strategies' positions (signed)
-	DeltaQty   float64   `json:"delta_qty"`    // virtual - on_chain
+	DeltaQty   float64   `json:"delta_qty"`    // computed: VirtualQty - OnChainQty
 	Strategies []string  `json:"strategies"`   // strategy IDs configured to trade this coin
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // AppState holds all persistent state across restarts.
 type AppState struct {
-	CycleCount              int                           `json:"cycle_count"`
-	LastCycle               time.Time                     `json:"last_cycle"`
-	Strategies              map[string]*StrategyState     `json:"strategies"`
-	PortfolioRisk           PortfolioRiskState            `json:"portfolio_risk"`
-	CorrelationSnapshot     *CorrelationSnapshot          `json:"correlation_snapshot,omitempty"`
+	CycleCount          int                       `json:"cycle_count"`
+	LastCycle           time.Time                 `json:"last_cycle"`
+	Strategies          map[string]*StrategyState `json:"strategies"`
+	PortfolioRisk       PortfolioRiskState        `json:"portfolio_risk"`
+	CorrelationSnapshot *CorrelationSnapshot      `json:"correlation_snapshot,omitempty"`
+	// ReconciliationGaps is ephemeral — recomputed each sync cycle, not persisted to SQLite.
 	ReconciliationGaps      map[string]*ReconciliationGap `json:"reconciliation_gaps,omitempty"`
 	LastTop10Summary        time.Time                     `json:"last_top10_summary,omitempty"`
 	LastLeaderboardPostDate string                        `json:"last_leaderboard_post_date,omitempty"`
@@ -91,6 +92,9 @@ func LoadState(path string) (*AppState, error) {
 	}
 	if state.Strategies == nil {
 		state.Strategies = make(map[string]*StrategyState)
+	}
+	if state.ReconciliationGaps == nil {
+		state.ReconciliationGaps = make(map[string]*ReconciliationGap)
 	}
 	// Fix nil maps
 	for _, s := range state.Strategies {

@@ -608,6 +608,13 @@ func TestAccountSyncSharedCoinSkipsReconciliation(t *testing.T) {
 	if math.Abs(gap.DeltaQty-expectedDelta) > 0.000001 {
 		t.Errorf("gap DeltaQty = %g, want %g", gap.DeltaQty, expectedDelta)
 	}
+	// Strategies field should list both strategy IDs.
+	if len(gap.Strategies) != 2 {
+		t.Errorf("gap Strategies = %v, want 2 entries", gap.Strategies)
+	}
+	if gap.UpdatedAt.IsZero() {
+		t.Error("gap UpdatedAt should be set")
+	}
 }
 
 // TestAccountSyncSharedCoinNotRemovedWhenOnChainGone verifies the phantom
@@ -667,6 +674,12 @@ func TestAccountSyncSharedCoinNotRemovedWhenOnChainGone(t *testing.T) {
 	}
 	if gap.VirtualQty != 0.212 {
 		t.Errorf("gap VirtualQty = %g, want 0.212", gap.VirtualQty)
+	}
+	if len(gap.Strategies) != 2 {
+		t.Errorf("gap Strategies = %v, want 2 entries", gap.Strategies)
+	}
+	if gap.UpdatedAt.IsZero() {
+		t.Error("gap UpdatedAt should be set")
 	}
 }
 
@@ -814,6 +827,9 @@ func TestAccountSyncMixedSharedAndNonShared(t *testing.T) {
 	if gap.OnChainQty != 0.315 {
 		t.Errorf("ETH gap OnChainQty = %g, want 0.315", gap.OnChainQty)
 	}
+	if len(gap.Strategies) != 2 {
+		t.Errorf("ETH gap Strategies = %v, want 2 entries", gap.Strategies)
+	}
 }
 
 // TestAccountSyncSharedCoinGapClearedWhenNoLongerShared verifies that
@@ -866,5 +882,269 @@ func TestAccountSyncSharedCoinGapClearedWhenNoLongerShared(t *testing.T) {
 	// Stale gap should be cleaned up.
 	if _, ok := state.ReconciliationGaps["ETH"]; ok {
 		t.Error("ETH reconciliation gap should be removed (no longer shared)")
+	}
+}
+
+// TestReconcileDueSubsetOfAllDetectsSharedCoins calls reconcileHyperliquidAccountPositions
+// directly with dueStrategies as a strict subset of allStrategies. This is the production
+// call pattern from main.go where not all strategies are due every cycle.
+func TestReconcileDueSubsetOfAllDetectsSharedCoins(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-rmc-eth": {
+				ID: "hl-rmc-eth", Cash: 500,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2100, Side: "long", Multiplier: 1, Leverage: 20, OwnerStrategyID: "hl-rmc-eth"},
+				},
+			},
+			"hl-tema-eth": {
+				ID: "hl-tema-eth", Cash: 500,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.3, AvgCost: 2200, Side: "long", Multiplier: 1, Leverage: 20, OwnerStrategyID: "hl-tema-eth"},
+				},
+			},
+			"hl-sma-eth": {
+				ID: "hl-sma-eth", Cash: 500,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.2, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 20, OwnerStrategyID: "hl-sma-eth"},
+				},
+			},
+		},
+	}
+
+	allStrategies := []StrategyConfig{
+		{ID: "hl-rmc-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-tema-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-sma-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	// Only rmc is due this cycle.
+	dueStrategies := allStrategies[:1]
+
+	positions := []HLPosition{
+		{Coin: "ETH", Size: 0.4, EntryPrice: 2100, Leverage: 20},
+	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+
+	reconcileHyperliquidAccountPositions(dueStrategies, allStrategies, state, &mu, logMgr, positions)
+
+	// Even though only rmc is due, allStrategies reveals ETH is shared by 3
+	// strategies, so rmc's position must NOT be reconciled to on-chain.
+	rmcPos := state.Strategies["hl-rmc-eth"].Positions["ETH"]
+	if rmcPos == nil {
+		t.Fatal("hl-rmc-eth should still have ETH position")
+	}
+	if rmcPos.Quantity != 0.5 {
+		t.Errorf("rmc ETH quantity = %g, want 0.5 (shared coin, not reconciled)", rmcPos.Quantity)
+	}
+
+	// Non-due strategies should also be untouched.
+	temaPos := state.Strategies["hl-tema-eth"].Positions["ETH"]
+	if temaPos == nil || temaPos.Quantity != 0.3 {
+		t.Errorf("tema ETH = %+v, want quantity 0.3 (not due, not reconciled)", temaPos)
+	}
+	smaPos := state.Strategies["hl-sma-eth"].Positions["ETH"]
+	if smaPos == nil || smaPos.Quantity != 0.2 {
+		t.Errorf("sma ETH = %+v, want quantity 0.2 (not due, not reconciled)", smaPos)
+	}
+
+	// Gap should list all 3 strategies.
+	gap := state.ReconciliationGaps["ETH"]
+	if gap == nil {
+		t.Fatal("expected reconciliation gap for ETH")
+	}
+	if len(gap.Strategies) != 3 {
+		t.Errorf("gap Strategies = %v, want 3 entries", gap.Strategies)
+	}
+	expectedVirtual := 0.5 + 0.3 + 0.2
+	if math.Abs(gap.VirtualQty-expectedVirtual) > 0.000001 {
+		t.Errorf("gap VirtualQty = %g, want %g", gap.VirtualQty, expectedVirtual)
+	}
+}
+
+// TestReconcileSharedCoinShortAndMixedPositions verifies the signed virtual qty
+// computation for shared coins with short and mixed long/short positions.
+func TestReconcileSharedCoinShortAndMixedPositions(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-long-eth": {
+				ID: "hl-long-eth", Cash: 500,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.8, AvgCost: 2100, Side: "long", Multiplier: 1, Leverage: 20, OwnerStrategyID: "hl-long-eth"},
+				},
+			},
+			"hl-short-eth": {
+				ID: "hl-short-eth", Cash: 500,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.3, AvgCost: 2200, Side: "short", Multiplier: 1, Leverage: 20, OwnerStrategyID: "hl-short-eth"},
+				},
+			},
+		},
+	}
+
+	allStrategies := []StrategyConfig{
+		{ID: "hl-long-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-short-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}},
+	}
+
+	// On-chain: net long 0.5 (= 0.8 long - 0.3 short).
+	positions := []HLPosition{
+		{Coin: "ETH", Size: 0.5, EntryPrice: 2150, Leverage: 20},
+	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions)
+
+	// Positions should be unchanged.
+	longPos := state.Strategies["hl-long-eth"].Positions["ETH"]
+	if longPos == nil || longPos.Quantity != 0.8 || longPos.Side != "long" {
+		t.Errorf("long ETH = %+v, want 0.8 long (unchanged)", longPos)
+	}
+	shortPos := state.Strategies["hl-short-eth"].Positions["ETH"]
+	if shortPos == nil || shortPos.Quantity != 0.3 || shortPos.Side != "short" {
+		t.Errorf("short ETH = %+v, want 0.3 short (unchanged)", shortPos)
+	}
+
+	gap := state.ReconciliationGaps["ETH"]
+	if gap == nil {
+		t.Fatal("expected reconciliation gap for ETH")
+	}
+	// Virtual: +0.8 (long) - 0.3 (short) = 0.5.
+	expectedVirtual := 0.5
+	if math.Abs(gap.VirtualQty-expectedVirtual) > 0.000001 {
+		t.Errorf("gap VirtualQty = %g, want %g (long 0.8 - short 0.3)", gap.VirtualQty, expectedVirtual)
+	}
+	// On-chain is also 0.5, so delta should be ~0.
+	if math.Abs(gap.DeltaQty) > 0.000001 {
+		t.Errorf("gap DeltaQty = %g, want ~0 (virtual matches on-chain)", gap.DeltaQty)
+	}
+	if gap.OnChainQty != 0.5 {
+		t.Errorf("gap OnChainQty = %g, want 0.5", gap.OnChainQty)
+	}
+}
+
+// TestReconcileSharedCoinBothShort verifies virtual qty computation when both
+// strategies are short on a shared coin.
+func TestReconcileSharedCoinBothShort(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a-eth": {
+				ID: "hl-a-eth", Cash: 500,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.4, AvgCost: 2100, Side: "short", Multiplier: 1, Leverage: 20, OwnerStrategyID: "hl-a-eth"},
+				},
+			},
+			"hl-b-eth": {
+				ID: "hl-b-eth", Cash: 500,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.6, AvgCost: 2200, Side: "short", Multiplier: 1, Leverage: 20, OwnerStrategyID: "hl-b-eth"},
+				},
+			},
+		},
+	}
+
+	allStrategies := []StrategyConfig{
+		{ID: "hl-a-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-b-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}},
+	}
+
+	// On-chain: short 1.0 (negative size).
+	positions := []HLPosition{
+		{Coin: "ETH", Size: -1.0, EntryPrice: 2150, Leverage: 20},
+	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions)
+
+	gap := state.ReconciliationGaps["ETH"]
+	if gap == nil {
+		t.Fatal("expected reconciliation gap for ETH")
+	}
+	// Virtual: -0.4 + -0.6 = -1.0.
+	expectedVirtual := -1.0
+	if math.Abs(gap.VirtualQty-expectedVirtual) > 0.000001 {
+		t.Errorf("gap VirtualQty = %g, want %g (both short)", gap.VirtualQty, expectedVirtual)
+	}
+	// On-chain is -1.0, so delta should be ~0.
+	if gap.OnChainQty != -1.0 {
+		t.Errorf("gap OnChainQty = %g, want -1.0", gap.OnChainQty)
+	}
+	if math.Abs(gap.DeltaQty) > 0.000001 {
+		t.Errorf("gap DeltaQty = %g, want ~0", gap.DeltaQty)
+	}
+}
+
+// TestReconciliationGapJSONRoundTrip verifies that AppState with ReconciliationGaps
+// survives JSON marshal/unmarshal (catches struct tag typos or type mismatches).
+func TestReconciliationGapJSONRoundTrip(t *testing.T) {
+	original := &AppState{
+		CycleCount: 42,
+		Strategies: map[string]*StrategyState{},
+		ReconciliationGaps: map[string]*ReconciliationGap{
+			"ETH": {
+				Coin:       "ETH",
+				OnChainQty: 0.5,
+				VirtualQty: 0.8,
+				DeltaQty:   0.3,
+				Strategies: []string{"hl-a", "hl-b"},
+			},
+		},
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var restored AppState
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	gap := restored.ReconciliationGaps["ETH"]
+	if gap == nil {
+		t.Fatal("ETH gap missing after round-trip")
+	}
+	if gap.Coin != "ETH" {
+		t.Errorf("Coin = %q, want ETH", gap.Coin)
+	}
+	if gap.OnChainQty != 0.5 {
+		t.Errorf("OnChainQty = %g, want 0.5", gap.OnChainQty)
+	}
+	if gap.VirtualQty != 0.8 {
+		t.Errorf("VirtualQty = %g, want 0.8", gap.VirtualQty)
+	}
+	if gap.DeltaQty != 0.3 {
+		t.Errorf("DeltaQty = %g, want 0.3", gap.DeltaQty)
+	}
+	if len(gap.Strategies) != 2 {
+		t.Errorf("Strategies = %v, want 2 entries", gap.Strategies)
+	}
+}
+
+// TestReconciliationGapOmittedWhenEmpty verifies that an empty ReconciliationGaps
+// map is omitted from JSON (omitempty behavior).
+func TestReconciliationGapOmittedWhenEmpty(t *testing.T) {
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{},
+	}
+
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	if _, ok := raw["reconciliation_gaps"]; ok {
+		t.Error("reconciliation_gaps should be omitted when nil/empty")
 	}
 }
