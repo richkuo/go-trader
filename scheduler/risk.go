@@ -13,7 +13,7 @@ import (
 //
 // Perps strategies are intentionally excluded: HL and OKX perps marks are
 // now sourced from the venues they live on via fetchHyperliquidMids and
-// FetchOKXPerpsMarks (see collectPerpsMarkSymbols). Routing perps through
+// fetchOKXPerpsMids (see collectPerpsMarkSymbols). Routing perps through
 // BinanceUS spot introduced phantom PnL on shorts due to spot/perps basis
 // drift — fixes issue #263 as a side effect (HL-only coins like HYPE,
 // kPEPE, PURR no longer emit [WARN] Skipping zero price — fixes #262).
@@ -46,7 +46,7 @@ func collectPriceSymbols(strategies []StrategyConfig) []string {
 // iteration. Strategies with Type != "perps" are ignored.
 //
 // The returned coins are used as inputs to fetchHyperliquidMids and
-// FetchOKXPerpsMarks respectively. This is the correct oracle for perps
+// fetchOKXPerpsMids respectively. This is the correct oracle for perps
 // positions; see issue #263 for why BinanceUS spot is wrong.
 func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []string) {
 	hlSet := make(map[string]bool)

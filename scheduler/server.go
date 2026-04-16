@@ -200,7 +200,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	// OKX perps marks — venue-native oracle (#263). Best-effort.
 	if len(ss.okxPerpsCoins) > 0 {
-		if okxMarks, err := FetchOKXPerpsMarks(ss.okxPerpsCoins); err == nil {
+		if okxMarks, err := fetchOKXPerpsMids(ss.okxPerpsCoins); err == nil {
 			mergePerpsMarks(prices, okxMarks)
 		} else {
 			ss.logOKXPerpsErrThrottled(err)

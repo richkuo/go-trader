@@ -354,7 +354,7 @@ func main() {
 		}
 		// OKX perps marks — best-effort; failure falls back to pos.AvgCost.
 		if len(okxPerpsCoins) > 0 {
-			okxMarks, err := FetchOKXPerpsMarks(okxPerpsCoins)
+			okxMarks, err := fetchOKXPerpsMids(okxPerpsCoins)
 			if err != nil {
 				fmt.Printf("[WARN] OKX perps marks fetch failed for %v: %v — portfolio notional will use entry cost for open OKX perps positions\n", okxPerpsCoins, err)
 			} else {
@@ -1012,7 +1012,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 		}
 	}
 	if len(okxPerpsCoins) > 0 {
-		okxMarks, err := FetchOKXPerpsMarks(okxPerpsCoins)
+		okxMarks, err := fetchOKXPerpsMids(okxPerpsCoins)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[WARN] OKX perps marks fetch failed for %v: %v — summary will use entry cost\n", okxPerpsCoins, err)
 		} else {
