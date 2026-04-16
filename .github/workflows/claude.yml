@@ -89,9 +89,10 @@ jobs:
           MODEL_SHORT=$(printf '%s' "$STRIPPED" | grep -oE '(^|(\r?\n))[[:space:]]*@claude[[:space:]]+[a-z]+' | head -1 | awk '{print $NF}' || true)
 
           case "$MODEL_SHORT" in
-            sonnet) MODEL_ID="claude-sonnet-4-6" ;;
-            haiku)  MODEL_ID="claude-haiku-4-5" ;;
-            *)      MODEL_ID="claude-opus-4-6" ;;  # default (covers "opus" and no model)
+            sonnet)  MODEL_ID="claude-sonnet-4-6[1m]" ;;
+            haiku)   MODEL_ID="claude-haiku-4-5" ;;
+            opus1m)  MODEL_ID="claude-opus-4-6[1m]" ;;
+            *)       MODEL_ID="claude-opus-4-6[1m]" ;;  # default (covers "opus" and no model)
           esac
 
           echo "model_id=$MODEL_ID" >> "$GITHUB_OUTPUT"
@@ -154,7 +155,7 @@ jobs:
           # Optional: Add claude_args to customize behavior and configuration
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
-          claude_args: --model ${{ steps.resolve_model.outputs.model_id }} --effort ${{ steps.resolve_model.outputs.effort }} --allowedTools "Bash(go *),Bash(cd scheduler && go *),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *)"
+          claude_args: --model ${{ steps.resolve_model.outputs.model_id }} --effort ${{ steps.resolve_model.outputs.effort }} --allowedTools "Bash(go *),Bash(cd scheduler && go *),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *),Bash(git *)"
 
       - name: Append model/effort footer to Claude comment
         if: steps.verify_invocation.outputs.invoked == 'true'
@@ -166,10 +167,12 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           case "$MODEL_ID" in
-            claude-opus-4-6)   MODEL_NAME="Claude Opus 4.6" ;;
-            claude-sonnet-4-6) MODEL_NAME="Claude Sonnet 4.6" ;;
-            claude-haiku-4-5)  MODEL_NAME="Claude Haiku 4.5" ;;
-            *)                 MODEL_NAME="$MODEL_ID" ;;
+            claude-opus-4-6)       MODEL_NAME="Claude Opus 4.6" ;;
+            "claude-opus-4-6[1m]") MODEL_NAME="Claude Opus 4.6 (1M)" ;;
+            claude-sonnet-4-6)     MODEL_NAME="Claude Sonnet 4.6" ;;
+            "claude-sonnet-4-6[1m]") MODEL_NAME="Claude Sonnet 4.6 (1M)" ;;
+            claude-haiku-4-5)      MODEL_NAME="Claude Haiku 4.5" ;;
+            *)                     MODEL_NAME="$MODEL_ID" ;;
           esac
 
           COMMENT=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
