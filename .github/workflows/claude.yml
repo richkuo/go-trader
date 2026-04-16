@@ -89,10 +89,10 @@ jobs:
           MODEL_SHORT=$(printf '%s' "$STRIPPED" | grep -oE '(^|(\r?\n))[[:space:]]*@claude[[:space:]]+[a-z]+' | head -1 | awk '{print $NF}' || true)
 
           case "$MODEL_SHORT" in
+            opus)    MODEL_ID="claude-opus-4-6[1m]" ;;
             sonnet)  MODEL_ID="claude-sonnet-4-6[1m]" ;;
             haiku)   MODEL_ID="claude-haiku-4-5" ;;
-            opus1m)  MODEL_ID="claude-opus-4-6[1m]" ;;
-            *)       MODEL_ID="claude-opus-4-6[1m]" ;;  # default (covers "opus" and no model)
+            *)       MODEL_ID="claude-opus-4-6[1m]" ;;  # default (no model specified)
           esac
 
           echo "model_id=$MODEL_ID" >> "$GITHUB_OUTPUT"
@@ -167,12 +167,10 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           case "$MODEL_ID" in
-            claude-opus-4-6)       MODEL_NAME="Claude Opus 4.6" ;;
-            "claude-opus-4-6[1m]") MODEL_NAME="Claude Opus 4.6 (1M)" ;;
-            claude-sonnet-4-6)     MODEL_NAME="Claude Sonnet 4.6" ;;
+            "claude-opus-4-6[1m]")   MODEL_NAME="Claude Opus 4.6 (1M)" ;;
             "claude-sonnet-4-6[1m]") MODEL_NAME="Claude Sonnet 4.6 (1M)" ;;
-            claude-haiku-4-5)      MODEL_NAME="Claude Haiku 4.5" ;;
-            *)                     MODEL_NAME="$MODEL_ID" ;;
+            claude-haiku-4-5)        MODEL_NAME="Claude Haiku 4.5" ;;
+            *)                       MODEL_NAME="$MODEL_ID" ;;
           esac
 
           COMMENT=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
