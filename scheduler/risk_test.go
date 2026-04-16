@@ -704,8 +704,8 @@ func TestMergePerpsMarks(t *testing.T) {
 	marks := map[string]float64{
 		"ETH":  3200.1, // stale — must not overwrite the existing live mark
 		"BTC":  67500.5,
-		"SOL":  0,   // zero — must be skipped
-		"DOGE": -1,  // negative — must be skipped
+		"SOL":  0,  // zero — must be skipped
+		"DOGE": -1, // negative — must be skipped
 	}
 
 	mergePerpsMarks(prices, marks)

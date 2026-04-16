@@ -91,9 +91,10 @@ func TestPortfolioValueShort(t *testing.T) {
 // 10 bp basis delta that should not appear as phantom PnL.
 //
 // Scenario from the issue:
-//   HL mark: ETH-PERP = 3200.10
-//   BinanceUS spot: ETH/USDT = 3199.85  (25 bp basis)
-//   Short position: 0.01 ETH @ 3000 AvgCost (Multiplier=1 → PnL branch)
+//
+//	HL mark: ETH-PERP = 3200.10
+//	BinanceUS spot: ETH/USDT = 3199.85  (25 bp basis)
+//	Short position: 0.01 ETH @ 3000 AvgCost (Multiplier=1 → PnL branch)
 func TestPortfolioValueShort_UsesExchangeMarkNotSpotBasis(t *testing.T) {
 	s := &StrategyState{
 		Cash: 1000,
