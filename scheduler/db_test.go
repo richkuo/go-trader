@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -367,42 +366,6 @@ func TestLoadState_NilMapsInitialized(t *testing.T) {
 	}
 }
 
-func TestImportFromJSON(t *testing.T) {
-	db := openTestDB(t)
-	original := makeTestState()
-
-	// Write as JSON.
-	jsonPath := filepath.Join(t.TempDir(), "state.json")
-	data, err := json.MarshalIndent(original, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := os.WriteFile(jsonPath, data, 0600); err != nil {
-		t.Fatalf("write json: %v", err)
-	}
-
-	// Import into SQLite.
-	jsonState, err := LoadState(jsonPath)
-	if err != nil {
-		t.Fatalf("LoadState from JSON: %v", err)
-	}
-	if err := db.SaveState(jsonState); err != nil {
-		t.Fatalf("SaveState after JSON import: %v", err)
-	}
-
-	// Verify round-trip.
-	loaded, err := db.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState from DB: %v", err)
-	}
-	if loaded.CycleCount != original.CycleCount {
-		t.Errorf("CycleCount = %d, want %d", loaded.CycleCount, original.CycleCount)
-	}
-	if len(loaded.Strategies) != len(original.Strategies) {
-		t.Errorf("strategy count = %d, want %d", len(loaded.Strategies), len(original.Strategies))
-	}
-}
-
 func TestQueryTradeHistory_NoFilter(t *testing.T) {
 	db := openTestDB(t)
 	state := makeTestState()
@@ -618,9 +581,8 @@ func TestCorrelationSnapshotRoundTrip(t *testing.T) {
 func TestSaveState_DuplicateStrategyIDs(t *testing.T) {
 	db := openTestDB(t)
 
-	// Simulate the bug from issue #207: two map entries with different keys
-	// but the same s.ID. This happens when loadJSONPlatformStates merges
-	// overlapping platform state files.
+	// Regression test for issue #207: two map entries with different keys but
+	// the same s.ID must not trigger a UNIQUE constraint violation.
 	state := &AppState{
 		CycleCount: 1,
 		Strategies: map[string]*StrategyState{

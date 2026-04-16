@@ -1,7 +1,7 @@
 {
   "config_version": 7,
   "interval_seconds": 300,
-  "state_file": "scheduler/state.json",
+  "db_file": "scheduler/state.db",
   "portfolio_risk": {
     "max_drawdown_pct": 25,
     "max_notional_usd": 0
@@ -60,11 +60,6 @@
     }
   ],
   "leaderboard_post_time": "11:00",
-  "platforms": {
-    "hyperliquid": {
-      "state_file": "platforms/hyperliquid/state.json"
-    }
-  },
   "discord": {
     "enabled": true,
     "token": "",

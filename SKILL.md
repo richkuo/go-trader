@@ -618,7 +618,7 @@ Create `platforms/<name>/adapter.py` with a class named `<Name>ExchangeAdapter` 
   - Futures: `platforms/topstep/adapter.py`
   - Options: `platforms/deribit/adapter.py`
 - If live trading: read credentials from env vars (never hardcode)
-- If paper-only: simulate fills at mid-price; persist state to `platforms/<name>/state.json`
+- If paper-only: simulate fills at mid-price; positions are persisted by the scheduler to `scheduler/state.db`
 
 **If new entry script needed** (perps or non-standard execution flow), create `shared_scripts/check_<name>.py`:
 - Must output valid JSON to stdout even on error
@@ -665,12 +665,12 @@ Add example strategy entries for the new platform:
 ```
 Adjust `type`, `script`, and `args` for perps or options as appropriate.
 
-#### Config: Platform State File
+#### Config: Platform Risk Overrides (optional)
 
-If the adapter uses a platform-level state file, add a `platforms` entry to `config.example.json`:
+State is persisted to SQLite (`cfg.DBFile`); there are no per-platform state files. Add a `platforms` entry only if you need a risk override:
 ```json
 "platforms": {
-  "<name>": {"state_file": "platforms/<name>/state.json"}
+  "<name>": {"risk": {"max_drawdown_pct": 50}}
 }
 ```
 
@@ -749,7 +749,7 @@ If Discord is enabled, wait for the first cycle to complete (~5 minutes) and ver
 > - Stop: `sudo systemctl stop go-trader`
 > - Restart: `sudo systemctl restart go-trader`
 > - Status: `curl -s localhost:8099/status | python3 -m json.tool`
-> - Reset positions: `cp scheduler/state.example.json scheduler/state.json && sudo systemctl restart go-trader`
+> - Reset positions: `rm scheduler/state.db && sudo systemctl restart go-trader`
 
 ---
 
@@ -965,7 +965,7 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
 3. ADJUSTABLE SETTINGS  (edit scheduler/config.json, then: sudo systemctl restart go-trader)
    Global:
      interval_seconds  — default cycle interval (seconds)
-     state_file        — path to position/trade history file
+     db_file           — SQLite path for positions/trades/risk state
      max_drawdown_pct  — portfolio-level circuit breaker
      notional_cap_usd  — max total notional exposure
      correlation.*     — per-asset directional exposure tracking (enabled, max_concentration_pct, max_same_direction_pct)
@@ -1027,8 +1027,7 @@ Config changes are synced to state on startup — no need to reset positions.
 | Setting | Key | Default | Description |
 |---------|-----|---------|-------------|
 | Check interval | `interval_seconds` | 300 (5 min) | Global default cycle interval in seconds |
-| State DB path | `db_file` | `scheduler/state.db` | SQLite DB — sole store for positions, trades, and risk state at runtime |
-| Legacy state file | `state_file` | `scheduler/state.json` | One-time migration source only: read on first boot when SQLite is empty, then ignored. Safe to omit from new configs. |
+| State DB path | `db_file` | `scheduler/state.db` | SQLite DB — sole store for positions, trades, and risk state |
 | Auto-update | `auto_update` | `"off"` | Update check mode: `"off"`, `"daily"`, `"heartbeat"` |
 
 ### Correlation Tracking
@@ -1133,7 +1132,7 @@ To run supertrend on ES futures with a tighter multiplier for faster signals:
 
 The `params` field overrides strategy defaults — here it uses a 2.0 multiplier (default 3.0) for faster trend-flip detection on 5-minute candles.
 
-**Note:** Changing `capital` on an existing strategy does NOT reset its positions or cash. It only changes the `initial_capital` reference for PnL calculations. To fully reset a strategy, delete it from `scheduler/state.json` and restart.
+**Note:** Changing `capital` on an existing strategy does NOT reset its positions or cash. It only changes the `initial_capital` reference for PnL calculations. To fully reset a strategy, delete the `scheduler/state.db` file (or that strategy's row in the `strategies` table) and restart.
 
 ---
 

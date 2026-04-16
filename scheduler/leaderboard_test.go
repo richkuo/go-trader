@@ -10,10 +10,10 @@ import (
 
 func TestPrecomputeLeaderboard(t *testing.T) {
 	dir := t.TempDir()
-	stateFile := filepath.Join(dir, "state.json")
+	stateFile := filepath.Join(dir, "state.db")
 
 	cfg := &Config{
-		StateFile: stateFile,
+		DBFile: stateFile,
 		Strategies: []StrategyConfig{
 			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
 			{ID: "rsi-eth", Type: "spot", Capital: 500, Platform: "binanceus", Args: []string{"rsi_divergence", "ETH/USDT", "1h"}},
@@ -122,8 +122,8 @@ func TestPrecomputeLeaderboard(t *testing.T) {
 
 func TestLoadLeaderboard(t *testing.T) {
 	dir := t.TempDir()
-	stateFile := filepath.Join(dir, "state.json")
-	cfg := &Config{StateFile: stateFile}
+	stateFile := filepath.Join(dir, "state.db")
+	cfg := &Config{DBFile: stateFile}
 
 	// No file yet — should error.
 	_, err := LoadLeaderboard(cfg)
@@ -412,7 +412,7 @@ func TestLeaderboardTopNNegative(t *testing.T) {
 // TestPrecomputeLeaderboardTopN verifies that LeaderboardTopN limits the entries shown.
 func TestPrecomputeLeaderboardTopN(t *testing.T) {
 	dir := t.TempDir()
-	stateFile := fmt.Sprintf("%s/state.json", dir)
+	stateFile := fmt.Sprintf("%s/state.db", dir)
 
 	// Create 8 spot strategies.
 	var strats []StrategyConfig
@@ -427,7 +427,7 @@ func TestPrecomputeLeaderboardTopN(t *testing.T) {
 	}
 
 	cfg := &Config{
-		StateFile:  stateFile,
+		DBFile:     stateFile,
 		Strategies: strats,
 		Discord:    DiscordConfig{LeaderboardTopN: 3},
 	}
@@ -510,7 +510,7 @@ func TestPrecomputeLeaderboardTopN(t *testing.T) {
 // broadcasting across the per-platform channels.
 func TestPostLeaderboard_DedicatedChannel(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{StateFile: filepath.Join(dir, "state.json")}
+	cfg := &Config{DBFile: filepath.Join(dir, "state.db")}
 
 	// Pre-write a leaderboard file with messages for every category.
 	lb := LeaderboardData{
@@ -556,7 +556,7 @@ func TestPostLeaderboard_DedicatedChannel(t *testing.T) {
 // channels.
 func TestPostLeaderboard_FallbackRouting(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{StateFile: filepath.Join(dir, "state.json")}
+	cfg := &Config{DBFile: filepath.Join(dir, "state.db")}
 
 	lb := LeaderboardData{
 		Messages: map[string]string{
@@ -625,7 +625,7 @@ func TestPostLeaderboard_FallbackRouting(t *testing.T) {
 // routing.
 func TestPostLeaderboard_MixedBackends(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{StateFile: filepath.Join(dir, "state.json")}
+	cfg := &Config{DBFile: filepath.Join(dir, "state.db")}
 
 	lb := LeaderboardData{
 		Messages: map[string]string{

@@ -1,9 +1,7 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 )
 
@@ -78,39 +76,6 @@ func NewAppState() *AppState {
 	}
 }
 
-func LoadState(path string) (*AppState, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return NewAppState(), nil
-		}
-		return nil, fmt.Errorf("read state: %w", err)
-	}
-	var state AppState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("parse state: %w", err)
-	}
-	if state.Strategies == nil {
-		state.Strategies = make(map[string]*StrategyState)
-	}
-	if state.ReconciliationGaps == nil {
-		state.ReconciliationGaps = make(map[string]*ReconciliationGap)
-	}
-	// Fix nil maps
-	for _, s := range state.Strategies {
-		if s.Positions == nil {
-			s.Positions = make(map[string]*Position)
-		}
-		if s.OptionPositions == nil {
-			s.OptionPositions = make(map[string]*OptionPosition)
-		}
-		if s.TradeHistory == nil {
-			s.TradeHistory = []Trade{}
-		}
-	}
-	return &state, nil
-}
-
 // ValidateState checks loaded state for invalid entries and removes or clamps them (#39).
 // Logs warnings for each corrected field rather than refusing to start.
 func ValidateState(state *AppState) {
@@ -155,48 +120,7 @@ func ValidateState(state *AppState) {
 	}
 }
 
-// loadJSONPlatformStates loads state from legacy JSON files for one-time migration to SQLite.
-// Falls back to cfg.StateFile when no platforms are configured.
-func loadJSONPlatformStates(cfg *Config) (*AppState, error) {
-	if len(cfg.Platforms) == 0 {
-		return LoadState(cfg.StateFile)
-	}
-
-	merged := NewAppState()
-	for name, pc := range cfg.Platforms {
-		stateFile := pc.StateFile
-		if stateFile == "" {
-			stateFile = fmt.Sprintf("platforms/%s/state.json", name)
-		}
-		s, err := LoadState(stateFile)
-		if err != nil {
-			return nil, fmt.Errorf("platform %s: %w", name, err)
-		}
-		for _, stratState := range s.Strategies {
-			if stratState.Platform == "" {
-				stratState.Platform = name
-			}
-			if _, dup := merged.Strategies[stratState.ID]; dup {
-				fmt.Printf("[state] skipping duplicate strategy %s from %s\n", stratState.ID, stateFile)
-				continue
-			}
-			merged.Strategies[stratState.ID] = stratState
-		}
-		if merged.CycleCount < s.CycleCount {
-			merged.CycleCount = s.CycleCount
-		}
-		if s.LastCycle.After(merged.LastCycle) {
-			merged.LastCycle = s.LastCycle
-		}
-		if s.PortfolioRisk.PeakValue > merged.PortfolioRisk.PeakValue {
-			merged.PortfolioRisk.PeakValue = s.PortfolioRisk.PeakValue
-		}
-	}
-	return merged, nil
-}
-
-// LoadStateWithDB loads state from SQLite. If SQLite is empty, attempts one-time
-// migration from legacy JSON state files.
+// LoadStateWithDB loads state from SQLite. Returns a fresh AppState when the DB is empty.
 func LoadStateWithDB(cfg *Config, sdb *StateDB) (*AppState, error) {
 	state, err := sdb.LoadState()
 	if err != nil {
@@ -206,22 +130,7 @@ func LoadStateWithDB(cfg *Config, sdb *StateDB) (*AppState, error) {
 		fmt.Println("[state] Loaded from SQLite")
 		return state, nil
 	}
-
-	// SQLite empty — try legacy JSON migration.
-	state, err = loadJSONPlatformStates(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	// One-time migration: persist JSON data into SQLite.
-	if state.CycleCount > 0 || len(state.Strategies) > 0 {
-		fmt.Println("[state] Migrating JSON → SQLite (one-time)")
-		if err := sdb.SaveState(state); err != nil {
-			fmt.Printf("[WARN] SQLite migration failed: %v\n", err)
-		}
-	}
-
-	return state, nil
+	return NewAppState(), nil
 }
 
 // SaveStateWithDB saves state to SQLite.

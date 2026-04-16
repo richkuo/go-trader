@@ -40,8 +40,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if loaded.LogDir != "logs" {
 		t.Errorf("LogDir = %q, want %q", loaded.LogDir, "logs")
 	}
-	if loaded.StateFile != "scheduler/state.json" {
-		t.Errorf("StateFile = %q, want %q", loaded.StateFile, "scheduler/state.json")
+	if loaded.DBFile != "scheduler/state.db" {
+		t.Errorf("DBFile = %q, want %q", loaded.DBFile, "scheduler/state.db")
 	}
 	if loaded.AutoUpdate != "off" {
 		t.Errorf("AutoUpdate = %q, want %q", loaded.AutoUpdate, "off")
