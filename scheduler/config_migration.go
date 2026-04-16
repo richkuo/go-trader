@@ -76,6 +76,10 @@ var v6DeprecatedFields = []string{
 	"telegram.channel_paper_trades",
 }
 
+const v6DeprecationNotice = "**Note:** `channel_paper_trades` and `channel_live_trades` have been removed. " +
+	"Channel trade alerts are now controlled by channel presence: add `\"<platform>-paper\"` keys to " +
+	"your channels map for paper-specific routing. See issue #247."
+
 // NewFieldsSince returns all ConfigFields added after the given version number.
 func NewFieldsSince(version int) []ConfigField {
 	var fields []ConfigField
@@ -105,8 +109,10 @@ func MigrateConfig(configPath string, fieldValues map[string]string) error {
 	}
 
 	// v6: remove deprecated channel boolean fields (replaced by <platform>-paper convention).
-	for _, path := range v6DeprecatedFields {
-		removeNestedField(raw, path)
+	if version, ok := raw["config_version"].(float64); !ok || int(version) < 6 {
+		for _, path := range v6DeprecatedFields {
+			removeNestedField(raw, path)
+		}
 	}
 
 	raw["config_version"] = CurrentConfigVersion
@@ -162,6 +168,14 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 		if err := MigrateConfig(configPath, nil); err != nil {
 			fmt.Printf("[migration] Failed to bump config version: %v\n", err)
 		}
+		// v6: notify about deprecated channel boolean removal.
+		if cfg.ConfigVersion < 6 {
+			if notifier != nil && notifier.HasOwner() {
+				notifier.SendOwnerDM(v6DeprecationNotice)
+			} else {
+				fmt.Printf("[migration] %s\n", v6DeprecationNotice)
+			}
+		}
 		return
 	}
 
@@ -177,6 +191,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 		}
 		if err := MigrateConfig(configPath, values); err != nil {
 			fmt.Printf("[migration] Failed to migrate config: %v\n", err)
+		}
+		if cfg.ConfigVersion < 6 {
+			fmt.Printf("[migration] %s\n", v6DeprecationNotice)
 		}
 		return
 	}
@@ -209,8 +226,6 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 
 	// v6: notify about deprecated channel boolean removal.
 	if cfg.ConfigVersion < 6 {
-		notifier.SendOwnerDM("**Note:** `channel_paper_trades` and `channel_live_trades` have been removed. " +
-			"Channel trade alerts are now controlled by channel presence: add `\"<platform>-paper\"` keys to " +
-			"your channels map for paper-specific routing. See issue #247.")
+		notifier.SendOwnerDM(v6DeprecationNotice)
 	}
 }

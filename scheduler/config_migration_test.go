@@ -268,6 +268,50 @@ func TestRemoveNestedField(t *testing.T) {
 	removeNestedField(obj, "nonexistent.path")
 }
 
+func TestMigrateConfigV6SkipsRemovalForCurrentVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	// Config already at v6 with fields that happen to match deprecated names
+	// should NOT have them removed (version guard).
+	original := map[string]interface{}{
+		"config_version": 6,
+		"discord": map[string]interface{}{
+			"channel_paper_trades": true,
+			"channel_live_trades":  true,
+		},
+	}
+	data, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MigrateConfig(path, nil); err != nil {
+		t.Fatalf("MigrateConfig failed: %v", err)
+	}
+
+	result, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated map[string]interface{}
+	if err := json.Unmarshal(result, &updated); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fields should still be present since config was already at v6.
+	discord := updated["discord"].(map[string]interface{})
+	if _, ok := discord["channel_paper_trades"]; !ok {
+		t.Error("discord.channel_paper_trades should NOT have been removed for v6+ config")
+	}
+	if _, ok := discord["channel_live_trades"]; !ok {
+		t.Error("discord.channel_live_trades should NOT have been removed for v6+ config")
+	}
+}
+
 func TestMigrateConfigV6RemovesChannelBooleans(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
