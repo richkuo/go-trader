@@ -275,6 +275,7 @@ func generateConfig(opts InitOptions) *Config {
 		ConfigVersion:   CurrentConfigVersion,
 		IntervalSeconds: 3600,
 		LogDir:          "logs",
+		DBFile:          "scheduler/state.db",
 		PortfolioRisk: &PortfolioRiskConfig{
 			MaxDrawdownPct: 25,
 			MaxNotionalUSD: 0,
@@ -290,7 +291,6 @@ func generateConfig(opts InitOptions) *Config {
 			Channels:    opts.TelegramChannelMap,
 		},
 		AutoUpdate: opts.AutoUpdate,
-		Platforms:  make(map[string]*PlatformConfig),
 	}
 
 	// Build asset name → exchange symbol map.

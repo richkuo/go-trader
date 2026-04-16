@@ -2,7 +2,7 @@
 
 ## Overview
 
-Read strategy data from two JSON files and post daily summaries to Discord.
+Read strategy data from the SQLite state DB and the JSON config, then post daily summaries to Discord.
 
 ## Data Sources
 
