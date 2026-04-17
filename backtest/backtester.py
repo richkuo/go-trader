@@ -105,7 +105,8 @@ class Backtester:
 
     def run(self, df: pd.DataFrame, strategy_name: str = "Unknown",
             symbol: str = "BTC/USDT", timeframe: str = "1d",
-            params: Optional[dict] = None, save: bool = True) -> dict:
+            params: Optional[dict] = None, save: bool = True,
+            starting_long: Optional[dict] = None) -> dict:
         """
         Run backtest on a DataFrame that already has a 'signal' column.
         signal: 1 = buy, -1 = sell, 0 = hold
@@ -114,6 +115,15 @@ class Backtester:
         close of bar t is read after the bar finishes and filled at bar t+1's
         open (no look-ahead bias). Falls back to close when an ``open`` column
         is not present.
+
+        starting_long: optional dict with keys ``entry_price`` (float, USD)
+            and ``entry_date`` (index value, defaults to df.index[0]).
+            When provided, the run begins already-long: the full
+            ``initial_capital`` is treated as committed at ``entry_price``
+            (minus one commission for the implicit buy). Use for carrying
+            walk-forward position state across a fold boundary so SELL
+            signals in the first train bars actually close the warmup
+            position instead of being dropped as "sell while flat".
 
         Returns dict with all performance metrics.
         """
@@ -130,6 +140,18 @@ class Backtester:
         trades = []
         current_trade = None
         equity_curve = []
+
+        if starting_long:
+            effective_entry = starting_long["entry_price"]
+            entry_commission = self.initial_capital * self.commission_pct
+            available = self.initial_capital - entry_commission
+            position = available / effective_entry
+            cash = 0.0
+            current_trade = Trade(
+                starting_long.get("entry_date", df.index[0]),
+                effective_entry, "long",
+            )
+            current_trade.shares = position
 
         for i, (idx, row) in enumerate(df.iterrows()):
             fill_price = row["open"] if has_open else row["close"]

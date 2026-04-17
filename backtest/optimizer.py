@@ -28,6 +28,46 @@ def generate_param_grid(param_ranges: Dict[str, list]) -> List[dict]:
     return [dict(zip(keys, combo)) for combo in combos]
 
 
+def warmup_exit_long_entry(warmup_with_signal: pd.DataFrame,
+                             slippage_pct: float) -> Optional[dict]:
+    """Walk through warmup signals to find whether the strategy ends the
+    warmup period already long, and if so at what effective entry price.
+
+    Mirrors Backtester's execution model: ``signal`` is shifted by one bar
+    (signal at bar t fills at bar t+1's open), slippage is added on entry.
+
+    Returns ``{"entry_price": float, "entry_date": idx}`` when the warmup
+    ends long, or ``None`` when flat. The caller passes the dict to
+    ``Backtester.run(starting_long=...)`` so a SELL in the train window
+    actually closes the warmup position rather than being silently dropped.
+    """
+    if len(warmup_with_signal) == 0 or "signal" not in warmup_with_signal.columns:
+        return None
+
+    shifted = warmup_with_signal.copy()
+    shifted["signal"] = shifted["signal"].shift(1).fillna(0)
+    has_open = "open" in shifted.columns
+
+    in_position = False
+    entry_price = None
+    entry_date = None
+    for idx, row in shifted.iterrows():
+        fill_price = row["open"] if has_open else row["close"]
+        sig = row["signal"]
+        if sig == 1 and not in_position:
+            entry_price = fill_price * (1 + slippage_pct)
+            entry_date = idx
+            in_position = True
+        elif sig == -1 and in_position:
+            in_position = False
+            entry_price = None
+            entry_date = None
+
+    if in_position and entry_price is not None:
+        return {"entry_price": entry_price, "entry_date": entry_date}
+    return None
+
+
 def max_indicator_lookback(param_ranges: Dict[str, list]) -> int:
     """Heuristic warmup size for walk-forward folds.
 
@@ -137,9 +177,16 @@ def walk_forward_optimize(
             try:
                 signals_ext = apply_strategy(strategy_name, train_ext_df, params)
                 signals_df = signals_ext.iloc[train_trim:]
+                # Carry warmup position state so SELL signals in the first
+                # train bars close a real warmup entry instead of being
+                # dropped as "sell while flat".
+                train_seed = warmup_exit_long_entry(
+                    signals_ext.iloc[:train_trim], bt.slippage_pct,
+                ) if train_trim else None
                 result = bt.run(signals_df, strategy_name=strategy_name,
                               symbol=symbol, timeframe=timeframe,
-                              params=params, save=False)
+                              params=params, save=False,
+                              starting_long=train_seed)
                 metric_val = result.get(optimize_metric, 0)
                 if isinstance(metric_val, (int, float)) and metric_val > best_metric:
                     best_metric = metric_val
@@ -156,9 +203,13 @@ def walk_forward_optimize(
         try:
             test_signals_ext = apply_strategy(strategy_name, test_ext_df, best_params)
             test_signals = test_signals_ext.iloc[test_trim:]
+            test_seed = warmup_exit_long_entry(
+                test_signals_ext.iloc[:test_trim], bt.slippage_pct,
+            ) if test_trim else None
             test_result = bt.run(test_signals, strategy_name=strategy_name,
                                symbol=symbol, timeframe=timeframe,
-                               params=best_params, save=False)
+                               params=best_params, save=False,
+                               starting_long=test_seed)
         except _EXPECTED_FOLD_ERRORS as e:
             if verbose:
                 print(f"    [skip] fold {fold+1} validation {strategy_name}: {type(e).__name__}: {e}")

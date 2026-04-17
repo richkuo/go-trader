@@ -5,7 +5,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from optimizer import max_indicator_lookback, walk_forward_optimize
+from backtester import Backtester
+from optimizer import (
+    max_indicator_lookback,
+    walk_forward_optimize,
+    warmup_exit_long_entry,
+)
 
 
 def _trending_ohlc(n: int = 500, seed: int = 7) -> pd.DataFrame:
@@ -108,3 +113,75 @@ def test_warmup_does_not_leak_future_data():
         initial_capital=1000.0, verbose=False,
     )
     assert result["n_valid_folds"] >= 2, result
+
+
+def _warmup_train_df() -> pd.DataFrame:
+    """60-bar frame with a BUY signal deep in the warmup prefix and a
+    SELL signal in the train portion. Without position-state carry, the
+    SELL fires while the Backtester is flat and is silently dropped —
+    a round-trip trade vanishes from the fold's metrics."""
+    opens  = [100.0] * 60
+    closes = [100.0] * 60
+    signals = [0] * 60
+    signals[5]  = 1   # BUY in warmup (fills at bar 6 open)
+    signals[45] = -1  # SELL in train (fills at bar 46 open)
+    idx = pd.date_range("2024-01-01", periods=60, freq="D")
+    return pd.DataFrame(
+        {"open": opens, "close": closes, "signal": signals}, index=idx,
+    )
+
+
+def test_warmup_exit_long_entry_detects_unclosed_buy():
+    df = _warmup_train_df()
+    # Warmup runs from bar 0 through bar 29; SELL on bar 45 is in train.
+    seed = warmup_exit_long_entry(df.iloc[:30], slippage_pct=0.0)
+    assert seed is not None, "warmup ends long — seed must be non-None"
+    assert seed["entry_price"] == pytest.approx(100.0)
+
+
+def test_warmup_exit_long_entry_returns_none_when_flat():
+    df = _warmup_train_df()
+    # Need bars 0..46 inclusive: SELL on bar 45 shifts to fill on bar 46,
+    # so bar 46 must be inside the scanned slice for the exit to register.
+    seed = warmup_exit_long_entry(df.iloc[:47], slippage_pct=0.0)
+    assert seed is None
+
+
+def test_train_fold_captures_trade_spanning_warmup_boundary():
+    """Without the starting_long seed, SELL at bar 45 fires while the
+    Backtester is flat and is silently dropped — train fold reports 0
+    trades. With the seed, the warmup BUY is carried forward and the
+    SELL correctly closes the position."""
+    df = _warmup_train_df()
+    train_signals = df.iloc[30:]  # drop warmup
+    warmup_signals = df.iloc[:30]
+
+    # Without seed — demonstrates the counterfactual
+    bt_unseeded = Backtester(
+        initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0,
+    )
+    unseeded = bt_unseeded.run(train_signals, save=False)
+    assert unseeded["total_trades"] == 0, (
+        "Pre-seed counterfactual: SELL on a flat position is ignored. "
+        "If this changes, the seed mechanism's justification needs review."
+    )
+
+    # With seed — the trade round-trips
+    seed = warmup_exit_long_entry(warmup_signals, slippage_pct=0.0)
+    assert seed is not None
+    bt_seeded = Backtester(
+        initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0,
+    )
+    seeded = bt_seeded.run(train_signals, save=False, starting_long=seed)
+    assert seeded["total_trades"] == 1, (
+        f"Seeded run should capture the warmup→train round trip; "
+        f"got {seeded['total_trades']} trades"
+    )
+
+
+def test_no_seed_when_fold_zero_has_no_warmup():
+    """Fold 0 starts at bar 0 → train_trim=0 → no warmup to scan →
+    warmup_exit_long_entry called on empty slice returns None without
+    error."""
+    empty = pd.DataFrame(columns=["open", "close", "signal"])
+    assert warmup_exit_long_entry(empty, slippage_pct=0.0) is None
