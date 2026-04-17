@@ -35,7 +35,8 @@ def walk_forward_optimize(
     initial_capital: float = 1000.0,
     symbol: str = "BTC/USDT",
     timeframe: str = "1d",
-    platform: str = "spot",
+    registry: str = "spot",
+    platform: str = "binanceus",
     verbose: bool = True,
 ) -> dict:
     """
@@ -64,8 +65,8 @@ def walk_forward_optimize(
     if window_size < 50:
         raise ValueError(f"Not enough data: {total_len} rows / {n_splits} splits = {window_size} rows per window. Need >= 50.")
 
-    registry = load_registry(platform)
-    apply_strategy = registry.apply_strategy
+    reg = load_registry(registry)
+    apply_strategy = reg.apply_strategy
 
     param_grid = generate_param_grid(param_ranges)
     if verbose:
@@ -74,7 +75,7 @@ def walk_forward_optimize(
         print(f"  Parameter combinations: {len(param_grid)}")
         print(f"  Optimizing: {optimize_metric}")
 
-    bt = Backtester(initial_capital=initial_capital)
+    bt = Backtester(initial_capital=initial_capital, platform=platform)
     window_results = []
 
     for fold in range(n_splits):

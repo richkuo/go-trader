@@ -19,6 +19,24 @@ import pandas as pd
 from storage import store_backtest_result
 
 
+# Taker fee rates per platform — mirrors scheduler/fees.go:CalculatePlatformSpotFee
+# and related constants. Keep in sync with the Go source.
+PLATFORM_FEE_PCT = {
+    "binanceus":   0.001,    # BinanceSpotFeePct
+    "hyperliquid": 0.00035,  # HyperliquidTakerFeePct
+    "robinhood":   0.0,      # RobinhoodCryptoFeePct (no commission)
+    "luno":        0.01,     # LunoTakerFeePct
+    "okx":         0.001,    # OKXSpotTakerFeePct
+    "okx-perps":   0.0005,   # OKXPerpsTakerFeePct
+}
+
+
+def fee_pct_for_platform(platform: str) -> float:
+    """Return taker fee rate for ``platform``; defaults to BinanceUS spot rate
+    (0.1%) to match ``scheduler/fees.go:CalculateSpotFee``."""
+    return PLATFORM_FEE_PCT.get(platform, PLATFORM_FEE_PCT["binanceus"])
+
+
 class Trade:
     """Represents a single round-trip trade."""
     def __init__(self, entry_date, entry_price, side="long"):
@@ -62,16 +80,28 @@ class Backtester:
         results = bt.run(df_with_signals, strategy_name="SMA Crossover")
     """
 
-    def __init__(self, initial_capital: float = 1000.0, commission_pct: float = 0.001,
-                 slippage_pct: float = 0.0005):
+    def __init__(self, initial_capital: float = 1000.0,
+                 commission_pct: Optional[float] = None,
+                 slippage_pct: float = 0.0005,
+                 platform: str = "binanceus"):
         """
         Args:
-            initial_capital: Starting portfolio value
-            commission_pct: Commission per trade as fraction (0.001 = 0.1%)
-            slippage_pct: Slippage per trade as fraction (0.0005 = 0.05%)
+            initial_capital: Starting portfolio value.
+            commission_pct: Commission per trade as fraction. If ``None``,
+                derived from ``platform`` using ``PLATFORM_FEE_PCT`` (which
+                mirrors ``scheduler/fees.go``). Pass an explicit value to
+                override (e.g. in tests).
+            slippage_pct: Slippage per trade as fraction (0.0005 = 5 bps).
+            platform: Exchange fee model — one of ``PLATFORM_FEE_PCT`` keys.
+                Unknown platforms fall back to BinanceUS (0.1%) with no
+                warning, matching the Go dispatch default.
         """
         self.initial_capital = initial_capital
-        self.commission_pct = commission_pct
+        self.platform = platform
+        self.commission_pct = (
+            commission_pct if commission_pct is not None
+            else fee_pct_for_platform(platform)
+        )
         self.slippage_pct = slippage_pct
 
     def run(self, df: pd.DataFrame, strategy_name: str = "Unknown",

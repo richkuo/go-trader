@@ -10,7 +10,7 @@ import argparse
 from typing import List, Optional
 
 # shared_tools is needed for data_fetcher; the strategy registry is loaded
-# dynamically per-platform via registry_loader.
+# dynamically per-registry via registry_loader.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from data_fetcher import fetch_full_history, load_cached_data
@@ -35,14 +35,21 @@ def run_single_backtest(
     since: str = "2022-01-01",
     capital: float = 1000.0,
     params: dict = None,
-    platform: str = "spot",
+    registry: str = "spot",
+    platform: str = "binanceus",
 ) -> Optional[dict]:
-    """Run a single backtest and print results."""
-    registry = load_registry(platform)
-    strat = registry.STRATEGY_REGISTRY.get(strategy_name)
+    """Run a single backtest and print results.
+
+    ``registry`` selects the strategy registry (``"spot"`` or ``"futures"``).
+    ``platform`` selects the exchange fee model (``"binanceus"``,
+    ``"hyperliquid"``, ``"robinhood"``, ``"luno"``, ``"okx"``,
+    ``"okx-perps"``), matching ``scheduler/fees.go:CalculatePlatformSpotFee``.
+    """
+    reg = load_registry(registry)
+    strat = reg.STRATEGY_REGISTRY.get(strategy_name)
     if not strat:
-        print(f"Unknown strategy '{strategy_name}' on platform '{platform}'")
-        print(f"Available: {registry.list_strategies()}")
+        print(f"Unknown strategy '{strategy_name}' in '{registry}' registry")
+        print(f"Available: {reg.list_strategies()}")
         return None
 
     strat_params = params or strat["default_params"]
@@ -57,9 +64,9 @@ def run_single_backtest(
 
     print(f"  Data: {len(df)} candles from {df.index[0]} to {df.index[-1]}")
 
-    df_signals = registry.apply_strategy(strategy_name, df, strat_params)
+    df_signals = reg.apply_strategy(strategy_name, df, strat_params)
 
-    bt = Backtester(initial_capital=capital)
+    bt = Backtester(initial_capital=capital, platform=platform)
     results = bt.run(
         df_signals,
         strategy_name=strategy_name,
@@ -78,19 +85,23 @@ def run_all_strategies(
     since: str = "2022-01-01",
     capital: float = 1000.0,
     strategies: Optional[List[str]] = None,
-    platform: str = "spot",
+    registry: str = "spot",
+    platform: str = "binanceus",
 ) -> list:
     """Run multiple strategies on one asset and compare."""
-    registry = load_registry(platform)
-    strat_list = strategies or registry.list_strategies()
+    reg = load_registry(registry)
+    strat_list = strategies or reg.list_strategies()
     print(f"\n{'#'*60}")
-    print(f"  RUNNING {len(strat_list)} STRATEGIES ({platform})")
+    print(f"  RUNNING {len(strat_list)} STRATEGIES ({registry} / {platform})")
     print(f"  {symbol} | {timeframe} | since {since} | ${capital:,.0f}")
     print(f"{'#'*60}")
 
     all_results = []
     for name in strat_list:
-        result = run_single_backtest(name, symbol, timeframe, since, capital, platform=platform)
+        result = run_single_backtest(
+            name, symbol, timeframe, since, capital,
+            registry=registry, platform=platform,
+        )
         if result:
             all_results.append(result)
 
@@ -106,15 +117,16 @@ def run_multi_asset(
     timeframe: str = "1d",
     since: str = "2022-01-01",
     capital: float = 1000.0,
-    platform: str = "spot",
+    registry: str = "spot",
+    platform: str = "binanceus",
 ) -> dict:
     """Run strategies across multiple assets."""
-    registry = load_registry(platform)
-    strat_list = strategies or registry.list_strategies()
+    reg = load_registry(registry)
+    strat_list = strategies or reg.list_strategies()
     sym_list = symbols or DEFAULT_SYMBOLS
 
     print(f"\n{'#'*60}")
-    print(f"  MULTI-ASSET BACKTEST ({platform})")
+    print(f"  MULTI-ASSET BACKTEST ({registry} / {platform})")
     print(f"  Strategies: {len(strat_list)} | Assets: {len(sym_list)}")
     print(f"  Timeframe: {timeframe} | Since: {since}")
     print(f"{'#'*60}")
@@ -127,7 +139,8 @@ def run_multi_asset(
         results_by_asset[symbol] = []
         for strat_name in strat_list:
             result = run_single_backtest(
-                strat_name, symbol, timeframe, since, capital, platform=platform,
+                strat_name, symbol, timeframe, since, capital,
+                registry=registry, platform=platform,
             )
             if result:
                 results_by_asset[symbol].append(result)
@@ -143,20 +156,20 @@ def run_walk_forward(
     since: str = "2020-01-01",
     n_splits: int = 5,
     capital: float = 1000.0,
-    platform: str = "spot",
+    registry: str = "spot",
+    platform: str = "binanceus",
 ) -> Optional[dict]:
     """Run walk-forward optimization for a strategy."""
-    registry = load_registry(platform)
-    strat = registry.STRATEGY_REGISTRY.get(strategy_name)
+    reg = load_registry(registry)
+    strat = reg.STRATEGY_REGISTRY.get(strategy_name)
     if not strat:
-        print(f"Unknown strategy '{strategy_name}' on platform '{platform}'")
+        print(f"Unknown strategy '{strategy_name}' in '{registry}' registry")
         return None
 
     param_ranges = DEFAULT_PARAM_RANGES.get(strategy_name)
     if not param_ranges:
-        # Fall back to a single-point grid built from the strategy's default
-        # params so the run proceeds with a clear warning instead of silently
-        # returning None.
+        # Fall back to a single-point grid built from default_params with a
+        # clear warning, instead of silently returning None.
         print(f"[warn] No DEFAULT_PARAM_RANGES for '{strategy_name}' — "
               f"using single-point grid from default_params. "
               f"Add a range entry in optimizer.DEFAULT_PARAM_RANGES for "
@@ -177,6 +190,7 @@ def run_walk_forward(
         initial_capital=capital,
         symbol=symbol,
         timeframe=timeframe,
+        registry=registry,
         platform=platform,
         verbose=True,
     )
@@ -189,8 +203,13 @@ def main():
     parser = argparse.ArgumentParser(description="Crypto Trading Bot — Backtester")
     parser.add_argument("--strategy", "-s", default="all",
                         help="Strategy name or 'all'")
-    parser.add_argument("--platform", choices=["spot", "futures"], default="spot",
+    parser.add_argument("--registry", choices=["spot", "futures"], default="spot",
                         help="Strategy registry to load (spot or futures)")
+    parser.add_argument("--platform",
+                        choices=["binanceus", "hyperliquid", "robinhood",
+                                 "luno", "okx", "okx-perps"],
+                        default="binanceus",
+                        help="Exchange fee model (matches fees.go)")
     parser.add_argument("--symbol", default="BTC/USDT",
                         help="Trading pair")
     parser.add_argument("--symbols", nargs="+", default=None,
@@ -208,36 +227,39 @@ def main():
                         help="Walk-forward splits (optimize mode)")
     args = parser.parse_args()
 
-    registry = load_registry(args.platform)
+    reg = load_registry(args.registry)
 
     if args.mode == "single":
         if args.strategy == "all":
             print("Specify a strategy for single mode: --strategy <name>")
             sys.exit(1)
         run_single_backtest(args.strategy, args.symbol, args.timeframe,
-                            args.since, args.capital, platform=args.platform)
+                            args.since, args.capital,
+                            registry=args.registry, platform=args.platform)
 
     elif args.mode == "compare":
         strategies = None if args.strategy == "all" else [args.strategy]
         run_all_strategies(args.symbol, args.timeframe, args.since, args.capital,
-                           strategies, platform=args.platform)
+                           strategies,
+                           registry=args.registry, platform=args.platform)
 
     elif args.mode == "multi":
         strategies = None if args.strategy == "all" else [args.strategy]
         symbols = args.symbols or DEFAULT_SYMBOLS
         run_multi_asset(strategies, symbols, args.timeframe, args.since,
-                        args.capital, platform=args.platform)
+                        args.capital,
+                        registry=args.registry, platform=args.platform)
 
     elif args.mode == "optimize":
         if args.strategy == "all":
-            for strat in registry.list_strategies():
+            for strat in reg.list_strategies():
                 run_walk_forward(strat, args.symbol, args.timeframe,
                                  args.since, args.splits, args.capital,
-                                 platform=args.platform)
+                                 registry=args.registry, platform=args.platform)
         else:
             run_walk_forward(args.strategy, args.symbol, args.timeframe,
                              args.since, args.splits, args.capital,
-                             platform=args.platform)
+                             registry=args.registry, platform=args.platform)
 
 
 if __name__ == "__main__":
