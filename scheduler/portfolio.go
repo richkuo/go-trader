@@ -17,6 +17,117 @@ type Position struct {
 	OpenedAt        time.Time `json:"opened_at,omitempty"`         // when the position was opened
 }
 
+// ClosedPosition is a historical record of a position after it closed (#288).
+// Emitted to the closed_positions table so downstream analytics have explicit
+// opened_at/closed_at timestamps without deriving them from trade pairs.
+//
+// DurationSeconds == 0 means "unknown" (position migrated from before #288
+// without an OpenedAt timestamp) — not "instant close." Analytics that bucket
+// by duration should treat zero as a sentinel, not a real value.
+//
+// ClosePrice note: for the synthetic "hl_sync_external" reason — positions
+// that disappeared from the exchange between reconcile cycles — both
+// ClosePrice and RealizedPnL are 0 (the real fill price is unknown). Downstream
+// analytics that compute avg close price or slippage should filter
+// `close_reason != 'hl_sync_external'`.
+//
+// The JSON tags on this struct are for ad-hoc marshalling by callers (status
+// endpoint responses, leaderboard summaries); StrategyState.ClosedPositions
+// itself is `json:"-"` because history lives only in SQLite.
+type ClosedPosition struct {
+	StrategyID      string    `json:"strategy_id"`
+	Symbol          string    `json:"symbol"`
+	Quantity        float64   `json:"quantity"`
+	AvgCost         float64   `json:"avg_cost"`
+	Side            string    `json:"side"`
+	Multiplier      float64   `json:"multiplier,omitempty"`
+	OpenedAt        time.Time `json:"opened_at"`
+	ClosedAt        time.Time `json:"closed_at"`
+	ClosePrice      float64   `json:"close_price"`
+	RealizedPnL     float64   `json:"realized_pnl"`
+	CloseReason     string    `json:"close_reason"`
+	DurationSeconds int64     `json:"duration_seconds"`
+}
+
+// ClosedOptionPosition is a historical record of an option position after it
+// closed (#288). Same lifecycle notes as ClosedPosition: DurationSeconds == 0
+// means unknown opened_at; expiry-based closes (expired_worthless,
+// expired_itm) record ClosePriceUSD as the intrinsic value at expiry.
+type ClosedOptionPosition struct {
+	StrategyID      string    `json:"strategy_id"`
+	PositionID      string    `json:"position_id"`
+	Underlying      string    `json:"underlying"`
+	OptionType      string    `json:"option_type"` // "call" or "put"
+	Strike          float64   `json:"strike"`
+	Expiry          string    `json:"expiry"`
+	Action          string    `json:"action"` // original direction: "buy" or "sell"
+	Quantity        float64   `json:"quantity"`
+	EntryPremiumUSD float64   `json:"entry_premium_usd"`
+	ClosePriceUSD   float64   `json:"close_price_usd"`
+	RealizedPnL     float64   `json:"realized_pnl"`
+	OpenedAt        time.Time `json:"opened_at"`
+	ClosedAt        time.Time `json:"closed_at"`
+	CloseReason     string    `json:"close_reason"`
+	DurationSeconds int64     `json:"duration_seconds"`
+}
+
+// recordClosedPosition appends a ClosedPosition entry to the strategy's buffer.
+// The buffer is flushed to SQLite by SaveState and cleared on successful commit.
+//
+// Durability boundary: this records to an in-memory buffer only. Call sites
+// invoke it immediately before delete(s.Positions, symbol), so a crash between
+// the close and the next SaveState loses the closed_position row (the Trade
+// row is still persisted eagerly via the tradeRecorder hook). Downstream
+// analytics that must survive every crash should be derived from the trades
+// table, not closed_positions.
+func recordClosedPosition(s *StrategyState, pos *Position, closePrice, realizedPnL float64, reason string, closedAt time.Time) {
+	var duration int64
+	if !pos.OpenedAt.IsZero() {
+		duration = int64(closedAt.Sub(pos.OpenedAt).Seconds())
+	}
+	s.ClosedPositions = append(s.ClosedPositions, ClosedPosition{
+		StrategyID:      s.ID,
+		Symbol:          pos.Symbol,
+		Quantity:        pos.Quantity,
+		AvgCost:         pos.AvgCost,
+		Side:            pos.Side,
+		Multiplier:      pos.Multiplier,
+		OpenedAt:        pos.OpenedAt,
+		ClosedAt:        closedAt,
+		ClosePrice:      closePrice,
+		RealizedPnL:     realizedPnL,
+		CloseReason:     reason,
+		DurationSeconds: duration,
+	})
+}
+
+// recordClosedOptionPosition appends a ClosedOptionPosition entry to the
+// strategy's buffer. Same durability boundary as recordClosedPosition —
+// in-memory until SaveState commits.
+func recordClosedOptionPosition(s *StrategyState, pos *OptionPosition, closePriceUSD, realizedPnL float64, reason string, closedAt time.Time) {
+	var duration int64
+	if !pos.OpenedAt.IsZero() {
+		duration = int64(closedAt.Sub(pos.OpenedAt).Seconds())
+	}
+	s.ClosedOptionPositions = append(s.ClosedOptionPositions, ClosedOptionPosition{
+		StrategyID:      s.ID,
+		PositionID:      pos.ID,
+		Underlying:      pos.Underlying,
+		OptionType:      pos.OptionType,
+		Strike:          pos.Strike,
+		Expiry:          pos.Expiry,
+		Action:          pos.Action,
+		Quantity:        pos.Quantity,
+		EntryPremiumUSD: pos.EntryPremiumUSD,
+		ClosePriceUSD:   closePriceUSD,
+		RealizedPnL:     realizedPnL,
+		OpenedAt:        pos.OpenedAt,
+		ClosedAt:        closedAt,
+		CloseReason:     reason,
+		DurationSeconds: duration,
+	})
+}
+
 // Trade represents a completed trade.
 type Trade struct {
 	Timestamp       time.Time `json:"timestamp"`
@@ -135,12 +246,13 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			fee := CalculatePlatformSpotFee(feePlatform, pos.Quantity*execPrice)
 			pnl -= fee
 			s.Cash += pnl
+			now := time.Now().UTC()
 			// Synthetic close — no exchange metadata stamped; the real fill
 			// (if any) is attributed to the open-long trade below. Prevents
 			// fee double-count when a flip produces two in-memory trades
 			// from a single exchange fill.
 			trade := Trade{
-				Timestamp:  time.Now().UTC(),
+				Timestamp:  now,
 				StrategyID: s.ID,
 				Symbol:     symbol,
 				Side:       "buy",
@@ -152,6 +264,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
+			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
 			logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
 			tradesExecuted++
@@ -217,8 +330,9 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			fee := CalculatePlatformSpotFee(feePlatform, pos.Quantity*execPrice)
 			pnl -= fee
 			s.Cash += pnl
+			now := time.Now().UTC()
 			trade := Trade{
-				Timestamp:       time.Now().UTC(),
+				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
 				Side:            "sell",
@@ -232,6 +346,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
+			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
 			logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, pos.Quantity, execPrice, fee, pnl)
 			tradesExecuted++
@@ -274,8 +389,9 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 			totalCost := buyCost + fee
 			pnl := pos.Quantity*pos.AvgCost - totalCost
 			s.Cash += pos.Quantity*pos.AvgCost - totalCost
+			now := time.Now().UTC()
 			trade := Trade{
-				Timestamp:  time.Now().UTC(),
+				Timestamp:  now,
 				StrategyID: s.ID,
 				Symbol:     symbol,
 				Side:       "buy",
@@ -287,6 +403,7 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
+			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
 			logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
 			tradesExecuted++
@@ -349,8 +466,9 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 			netProceeds := saleValue - fee
 			pnl := netProceeds - (pos.Quantity * pos.AvgCost)
 			s.Cash += netProceeds
+			now := time.Now().UTC()
 			trade := Trade{
-				Timestamp:  time.Now().UTC(),
+				Timestamp:  now,
 				StrategyID: s.ID,
 				Symbol:     symbol,
 				Side:       "sell",
@@ -362,6 +480,7 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
+			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
 			logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, pos.Quantity, execPrice, fee, pnl)
 			tradesExecuted++
@@ -400,8 +519,9 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 			fee := CalculateFuturesFee(contracts, feePerContract)
 			pnl -= fee
 			s.Cash += pnl
+			now := time.Now().UTC()
 			trade := Trade{
-				Timestamp:  time.Now().UTC(),
+				Timestamp:  now,
 				StrategyID: s.ID,
 				Symbol:     symbol,
 				Side:       "buy",
@@ -413,6 +533,7 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
+			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
 			logger.Info("Closed short %s %d contracts @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, contracts, execPrice, fee, pnl)
 			tradesExecuted++
@@ -487,8 +608,9 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 			fee := CalculateFuturesFee(contracts, feePerContract)
 			pnl -= fee
 			s.Cash += pnl
+			now := time.Now().UTC()
 			trade := Trade{
-				Timestamp:  time.Now().UTC(),
+				Timestamp:  now,
 				StrategyID: s.ID,
 				Symbol:     symbol,
 				Side:       "sell",
@@ -500,6 +622,7 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
+			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
 			logger.Info("SELL %s: %d contracts @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, contracts, execPrice, fee, pnl)
 			tradesExecuted++

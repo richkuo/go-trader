@@ -224,6 +224,11 @@ func reconcileHyperliquidPositions(stratState *StrategyState, sym string, positi
 		// Position in state but not on-chain — closed externally.
 		logger.Info("hl-sync: %s position (%.6f %s) no longer on-chain, removing",
 			sym, statePos.Quantity, statePos.Side)
+		// Close price is unknown — the fill happened off-scheduler between
+		// reconcile cycles. Record 0 in both fields; downstream analytics
+		// that compute avg close price / slippage must filter
+		// close_reason != 'hl_sync_external' to avoid biased aggregates.
+		recordClosedPosition(stratState, statePos, 0, 0, "hl_sync_external", time.Now().UTC())
 		delete(stratState.Positions, sym)
 		changed = true
 	}

@@ -227,15 +227,19 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 	for id, pos := range s.OptionPositions {
 		if pos.Underlying == result.Underlying && pos.Strike == action.Strike && pos.OptionType == action.OptionType {
 			pnl := 0.0
+			var closePriceUSD float64
 			if pos.Action == "buy" {
 				pnl = pos.CurrentValueUSD - pos.EntryPremiumUSD
 				s.Cash += pos.CurrentValueUSD
+				closePriceUSD = pos.CurrentValueUSD
 			} else {
 				pnl = pos.EntryPremiumUSD - action.PremiumUSD
 				s.Cash -= action.PremiumUSD
+				closePriceUSD = action.PremiumUSD
 			}
+			now := time.Now().UTC()
 			trade := Trade{
-				Timestamp:  time.Now().UTC(),
+				Timestamp:  now,
 				StrategyID: s.ID,
 				Symbol:     pos.ID,
 				Side:       "close",
@@ -247,6 +251,7 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
+			recordClosedOptionPosition(s, pos, closePriceUSD, pnl, "signal", now)
 			logger.Info("CLOSE OPTION %s | PnL: $%.2f", pos.ID, pnl)
 			delete(s.OptionPositions, id)
 			closed++
@@ -432,8 +437,9 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 
 		s.Cash -= buybackCost
 
+		now := time.Now().UTC()
 		trade := Trade{
-			Timestamp:  time.Now().UTC(),
+			Timestamp:  now,
 			StrategyID: s.ID,
 			Symbol:     pos.ID,
 			Side:       "close",
@@ -445,6 +451,7 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 		}
 		RecordTrade(s, trade)
 		RecordTradeResult(&s.RiskState, pnl)
+		recordClosedOptionPosition(s, pos, buybackCost, pnl, "theta_harvest", now)
 
 		logger.Info("%s | %s | PnL: $%.2f", c.reason, pos.ID, pnl)
 		detail := fmt.Sprintf("[%s] CLOSE %s — %s (PnL: $%.2f)", s.ID, pos.ID, c.reason, pnl)

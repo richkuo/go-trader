@@ -192,7 +192,7 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 		t.Errorf("OwnerStrategyID = %q, want %q", btcPos.OwnerStrategyID, "hl-momentum-btc")
 	}
 	if btcPos.OpenedAt.IsZero() {
-		t.Error("position OpenedAt should not be zero after round-trip")
+		t.Error("position OpenedAt should round-trip, got zero")
 	}
 
 	// Option position round-trip.
@@ -944,5 +944,368 @@ func TestMigrateSchema_AddsExchangeColumns(t *testing.T) {
 	}
 	if trades[1].ExchangeFee != 1.50 {
 		t.Errorf("new trade ExchangeFee = %g, want 1.50", trades[1].ExchangeFee)
+	}
+}
+
+// TestClosedPositions_Flush verifies that ClosedPosition buffer entries are
+// persisted to the closed_positions table on SaveState and that the buffer
+// is cleared after a successful commit (#288).
+func TestClosedPositions_Flush(t *testing.T) {
+	sdb := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{
+			"test": {
+				ID: "test", Type: "spot", Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+				TradeHistory: []Trade{},
+				ClosedPositions: []ClosedPosition{
+					{
+						StrategyID: "test", Symbol: "BTC", Quantity: 0.1, AvgCost: 50000,
+						Side: "long", Multiplier: 0,
+						OpenedAt: now.Add(-24 * time.Hour), ClosedAt: now,
+						ClosePrice: 52000, RealizedPnL: 200,
+						CloseReason: "signal", DurationSeconds: 86400,
+					},
+				},
+			},
+		},
+	}
+
+	if err := sdb.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	// Buffer should be cleared after successful commit.
+	if len(state.Strategies["test"].ClosedPositions) != 0 {
+		t.Errorf("ClosedPositions buffer not cleared after save, len=%d", len(state.Strategies["test"].ClosedPositions))
+	}
+
+	// Table should contain the row.
+	var count int
+	if err := sdb.db.QueryRow("SELECT COUNT(*) FROM closed_positions").Scan(&count); err != nil {
+		t.Fatalf("count closed_positions: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("closed_positions rows = %d, want 1", count)
+	}
+
+	// QueryClosedPositions round-trip.
+	rows, total, err := sdb.QueryClosedPositions("", "", time.Time{}, time.Time{}, 10, 0)
+	if err != nil {
+		t.Fatalf("QueryClosedPositions: %v", err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("QueryClosedPositions: total=%d len=%d, want 1/1", total, len(rows))
+	}
+	cp := rows[0]
+	if cp.Symbol != "BTC" || cp.Side != "long" || cp.RealizedPnL != 200 || cp.CloseReason != "signal" {
+		t.Errorf("closed_position mismatch: %+v", cp)
+	}
+	if cp.DurationSeconds != 86400 {
+		t.Errorf("DurationSeconds = %d, want 86400", cp.DurationSeconds)
+	}
+	if cp.OpenedAt.IsZero() || cp.ClosedAt.IsZero() {
+		t.Errorf("timestamps should round-trip, got opened=%v closed=%v", cp.OpenedAt, cp.ClosedAt)
+	}
+
+	// Second save with no new closes should not re-insert.
+	if err := sdb.SaveState(state); err != nil {
+		t.Fatalf("second SaveState: %v", err)
+	}
+	if err := sdb.db.QueryRow("SELECT COUNT(*) FROM closed_positions").Scan(&count); err != nil {
+		t.Fatalf("count after second save: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("closed_positions rows after re-save = %d, want 1", count)
+	}
+}
+
+// TestRecordClosedPosition_ExecuteSignal verifies that closing a position via
+// ExecuteSpotSignal appends to the ClosedPositions buffer with the correct
+// PnL, reason, and duration (#288).
+func TestRecordClosedPosition_ExecuteSignal(t *testing.T) {
+	openedAt := time.Now().UTC().Add(-2 * time.Hour)
+	s := &StrategyState{
+		ID: "test", Type: "spot", Platform: "binanceus",
+		Cash: 0, // zero so we can't re-buy — isolates the close path
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 1.0, AvgCost: 100, Side: "long", OpenedAt: openedAt},
+		},
+	}
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	if _, err := ExecuteSpotSignal(s, -1, "BTC", 110, 0, logger); err != nil {
+		t.Fatalf("ExecuteSpotSignal: %v", err)
+	}
+	if _, exists := s.Positions["BTC"]; exists {
+		t.Fatal("position should have been closed")
+	}
+	if len(s.ClosedPositions) != 1 {
+		t.Fatalf("ClosedPositions len = %d, want 1", len(s.ClosedPositions))
+	}
+	cp := s.ClosedPositions[0]
+	if cp.Symbol != "BTC" || cp.Side != "long" {
+		t.Errorf("closed position mismatch: %+v", cp)
+	}
+	if cp.CloseReason != "signal" {
+		t.Errorf("CloseReason = %q, want %q", cp.CloseReason, "signal")
+	}
+	if cp.RealizedPnL <= 0 {
+		t.Errorf("RealizedPnL = %g, expected positive (bought @100 sold @~110)", cp.RealizedPnL)
+	}
+	if cp.DurationSeconds < 7100 || cp.DurationSeconds > 7300 {
+		t.Errorf("DurationSeconds = %d, expected ~7200 (2h)", cp.DurationSeconds)
+	}
+	if !cp.OpenedAt.Equal(openedAt) {
+		t.Errorf("OpenedAt mismatch: got %v, want %v", cp.OpenedAt, openedAt)
+	}
+}
+
+// TestQueryClosedPositions_Filters exercises strategy/symbol/since/until
+// filters and verifies that two successive SaveState calls append rather than
+// replace (regression guard for anyone changing formatTime away from a
+// lexicographically-comparable representation).
+func TestQueryClosedPositions_Filters(t *testing.T) {
+	sdb := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{
+			"s1": {
+				ID: "s1", Type: "spot", Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+				ClosedPositions: []ClosedPosition{
+					{StrategyID: "s1", Symbol: "BTC", Quantity: 1, AvgCost: 100, Side: "long", OpenedAt: now.Add(-3 * time.Hour), ClosedAt: now.Add(-2 * time.Hour), ClosePrice: 110, RealizedPnL: 10, CloseReason: "signal", DurationSeconds: 3600},
+					{StrategyID: "s1", Symbol: "ETH", Quantity: 2, AvgCost: 50, Side: "long", OpenedAt: now.Add(-2 * time.Hour), ClosedAt: now.Add(-1 * time.Hour), ClosePrice: 60, RealizedPnL: 20, CloseReason: "signal", DurationSeconds: 3600},
+				},
+			},
+			"s2": {
+				ID: "s2", Type: "spot", Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+				ClosedPositions: []ClosedPosition{
+					{StrategyID: "s2", Symbol: "BTC", Quantity: 1, AvgCost: 100, Side: "short", OpenedAt: now.Add(-4 * time.Hour), ClosedAt: now.Add(-30 * time.Minute), ClosePrice: 90, RealizedPnL: 10, CloseReason: "circuit_breaker", DurationSeconds: 12600},
+				},
+			},
+		},
+	}
+	if err := sdb.SaveState(state); err != nil {
+		t.Fatalf("first SaveState: %v", err)
+	}
+
+	// Filter by strategy_id.
+	rows, total, err := sdb.QueryClosedPositions("s1", "", time.Time{}, time.Time{}, 50, 0)
+	if err != nil {
+		t.Fatalf("filter strategy: %v", err)
+	}
+	if total != 2 || len(rows) != 2 {
+		t.Errorf("strategy filter: total=%d len=%d, want 2/2", total, len(rows))
+	}
+	for _, cp := range rows {
+		if cp.StrategyID != "s1" {
+			t.Errorf("strategy filter leaked %q", cp.StrategyID)
+		}
+	}
+
+	// Filter by symbol across strategies.
+	rows, total, err = sdb.QueryClosedPositions("", "BTC", time.Time{}, time.Time{}, 50, 0)
+	if err != nil {
+		t.Fatalf("filter symbol: %v", err)
+	}
+	if total != 2 || len(rows) != 2 {
+		t.Errorf("symbol filter: total=%d len=%d, want 2/2", total, len(rows))
+	}
+
+	// since bound excludes the oldest s1 BTC close.
+	since := now.Add(-90 * time.Minute)
+	rows, total, err = sdb.QueryClosedPositions("", "", since, time.Time{}, 50, 0)
+	if err != nil {
+		t.Fatalf("filter since: %v", err)
+	}
+	if total != 2 || len(rows) != 2 {
+		t.Errorf("since filter: total=%d len=%d, want 2/2", total, len(rows))
+	}
+
+	// until bound excludes s2 (most recent).
+	until := now.Add(-45 * time.Minute)
+	rows, total, err = sdb.QueryClosedPositions("", "", time.Time{}, until, 50, 0)
+	if err != nil {
+		t.Fatalf("filter until: %v", err)
+	}
+	if total != 2 || len(rows) != 2 {
+		t.Errorf("until filter: total=%d len=%d, want 2/2 (s1 BTC + s1 ETH)", total, len(rows))
+	}
+
+	// Combined strategy + symbol.
+	rows, total, err = sdb.QueryClosedPositions("s2", "BTC", time.Time{}, time.Time{}, 50, 0)
+	if err != nil {
+		t.Fatalf("combined filter: %v", err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Errorf("combined filter: total=%d len=%d, want 1/1", total, len(rows))
+	}
+	if len(rows) == 1 && rows[0].CloseReason != "circuit_breaker" {
+		t.Errorf("combined filter close_reason=%q, want circuit_breaker", rows[0].CloseReason)
+	}
+
+	// Second SaveState with a fresh close appends rather than replaces.
+	state.Strategies["s1"].ClosedPositions = []ClosedPosition{
+		{StrategyID: "s1", Symbol: "SOL", Quantity: 5, AvgCost: 20, Side: "long", OpenedAt: now.Add(-30 * time.Minute), ClosedAt: now, ClosePrice: 25, RealizedPnL: 25, CloseReason: "signal", DurationSeconds: 1800},
+	}
+	if err := sdb.SaveState(state); err != nil {
+		t.Fatalf("second SaveState: %v", err)
+	}
+	_, total, err = sdb.QueryClosedPositions("", "", time.Time{}, time.Time{}, 50, 0)
+	if err != nil {
+		t.Fatalf("total after second save: %v", err)
+	}
+	if total != 4 {
+		t.Errorf("total after append = %d, want 4 (3 original + 1 new)", total)
+	}
+}
+
+// TestClosedOptionPositions_Flush verifies that ClosedOptionPosition buffer
+// entries round-trip through SaveState and QueryClosedOptionPositions (#288).
+func TestClosedOptionPositions_Flush(t *testing.T) {
+	sdb := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{
+			"test": {
+				ID: "test", Type: "options", Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+				ClosedOptionPositions: []ClosedOptionPosition{
+					{
+						StrategyID: "test", PositionID: "BTC-call-buy-55000-2026-05-01",
+						Underlying: "BTC", OptionType: "call", Strike: 55000,
+						Expiry: "2026-05-01", Action: "buy", Quantity: 1,
+						EntryPremiumUSD: 2500, ClosePriceUSD: 3000, RealizedPnL: 500,
+						OpenedAt: now.Add(-24 * time.Hour), ClosedAt: now,
+						CloseReason: "signal", DurationSeconds: 86400,
+					},
+				},
+			},
+		},
+	}
+	if err := sdb.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	if len(state.Strategies["test"].ClosedOptionPositions) != 0 {
+		t.Errorf("ClosedOptionPositions buffer not cleared")
+	}
+
+	rows, total, err := sdb.QueryClosedOptionPositions("", "", time.Time{}, time.Time{}, 10, 0)
+	if err != nil {
+		t.Fatalf("QueryClosedOptionPositions: %v", err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("total=%d len=%d, want 1/1", total, len(rows))
+	}
+	cp := rows[0]
+	if cp.Underlying != "BTC" || cp.OptionType != "call" || cp.Strike != 55000 {
+		t.Errorf("mismatch: %+v", cp)
+	}
+	if cp.RealizedPnL != 500 || cp.CloseReason != "signal" {
+		t.Errorf("pnl/reason mismatch: %+v", cp)
+	}
+	if cp.DurationSeconds != 86400 {
+		t.Errorf("DurationSeconds = %d, want 86400", cp.DurationSeconds)
+	}
+
+	// Filter by underlying.
+	rows, total, err = sdb.QueryClosedOptionPositions("", "ETH", time.Time{}, time.Time{}, 10, 0)
+	if err != nil {
+		t.Fatalf("filter underlying: %v", err)
+	}
+	if total != 0 || len(rows) != 0 {
+		t.Errorf("ETH filter should be empty, got total=%d", total)
+	}
+}
+
+// TestRecordClosedOptionPosition_ExecuteClose verifies that
+// executeOptionClose records a ClosedOptionPosition on the strategy buffer.
+func TestRecordClosedOptionPosition_ExecuteClose(t *testing.T) {
+	openedAt := time.Now().UTC().Add(-3 * time.Hour)
+	pos := &OptionPosition{
+		ID: "BTC-call-buy-55000-2026-05-01", Underlying: "BTC", OptionType: "call",
+		Strike: 55000, Expiry: "2026-05-01", Action: "buy", Quantity: 1,
+		EntryPremium: 0.04, EntryPremiumUSD: 2000, CurrentValueUSD: 2500,
+		OpenedAt: openedAt,
+	}
+	s := &StrategyState{
+		ID: "test", Type: "options", Platform: "deribit",
+		Cash:            0,
+		Positions:       map[string]*Position{},
+		OptionPositions: map[string]*OptionPosition{pos.ID: pos},
+	}
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	result := &OptionsResult{
+		Underlying: "BTC", SpotPrice: 60000, Signal: -1,
+		Actions: []OptionsAction{{Action: "close", OptionType: "call", Strike: 55000, PremiumUSD: 2500}},
+	}
+	if _, err := ExecuteOptionsSignal(s, result, logger); err != nil {
+		t.Fatalf("ExecuteOptionsSignal: %v", err)
+	}
+	if _, exists := s.OptionPositions[pos.ID]; exists {
+		t.Fatal("option should have been closed")
+	}
+	if len(s.ClosedOptionPositions) != 1 {
+		t.Fatalf("ClosedOptionPositions len=%d, want 1", len(s.ClosedOptionPositions))
+	}
+	cp := s.ClosedOptionPositions[0]
+	if cp.CloseReason != "signal" {
+		t.Errorf("CloseReason=%q, want signal", cp.CloseReason)
+	}
+	if cp.RealizedPnL <= 0 {
+		t.Errorf("RealizedPnL=%g, want positive", cp.RealizedPnL)
+	}
+	if cp.DurationSeconds < 10700 || cp.DurationSeconds > 11000 {
+		t.Errorf("DurationSeconds=%d, want ~10800 (3h)", cp.DurationSeconds)
+	}
+}
+
+// TestMigrateSchema_AddsOpenedAt verifies that re-opening an older DB without
+// the positions.opened_at column successfully applies the ALTER migration.
+func TestMigrateSchema_AddsOpenedAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+
+	// Create a DB with the legacy positions schema (no opened_at column).
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy: %v", err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE positions (
+		strategy_id TEXT NOT NULL,
+		symbol TEXT NOT NULL,
+		quantity REAL NOT NULL,
+		avg_cost REAL NOT NULL,
+		side TEXT NOT NULL,
+		multiplier REAL NOT NULL DEFAULT 0,
+		owner_strategy_id TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (strategy_id, symbol)
+	)`); err != nil {
+		t.Fatalf("create legacy positions: %v", err)
+	}
+	legacy.Close()
+
+	// Re-open with the current code — migrateSchema should add opened_at.
+	db, err := OpenStateDB(path)
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	defer db.Close()
+
+	var colCount int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('positions') WHERE name='opened_at'`).Scan(&colCount); err != nil {
+		t.Fatalf("pragma query: %v", err)
+	}
+	if colCount != 1 {
+		t.Errorf("opened_at column not added, count=%d", colCount)
 	}
 }

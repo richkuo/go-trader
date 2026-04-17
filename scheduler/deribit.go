@@ -396,6 +396,7 @@ func fetchMarkPrices(requests []markRequest, pricer OptionPricer, logger *Strate
 
 // applyMarkResults writes prices/Greeks back and deletes expired positions. Call under Lock.
 func applyMarkResults(s *StrategyState, results []markResult, logger *StrategyLogger) {
+	now := time.Now().UTC()
 	for _, r := range results {
 		pos, ok := s.OptionPositions[r.ID]
 		if !ok {
@@ -404,6 +405,25 @@ func applyMarkResults(s *StrategyState, results []markResult, logger *StrategyLo
 		pos.DTE = r.DTE
 		if r.Expired {
 			pos.CurrentValueUSD = r.CurrentValueUSD
+			// Realized PnL at expiry: for bought options, value - entry; for
+			// sold options the stored CurrentValueUSD is the (negative) remaining
+			// liability, so realized PnL = entry - intrinsic.
+			var pnl, closePriceUSD float64
+			intrinsic := r.CurrentValueUSD
+			if pos.Action == "sell" {
+				intrinsic = -intrinsic
+			}
+			if pos.Action == "buy" {
+				pnl = intrinsic - pos.EntryPremiumUSD
+			} else {
+				pnl = pos.EntryPremiumUSD - intrinsic
+			}
+			closePriceUSD = intrinsic
+			reason := "expired_worthless"
+			if r.Assigned {
+				reason = "expired_itm"
+			}
+			recordClosedOptionPosition(s, pos, closePriceUSD, pnl, reason, now)
 			delete(s.OptionPositions, r.ID)
 			if r.Assigned {
 				applyAssignment(s, r, logger)
@@ -465,6 +485,7 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 			pnl = (r.AssignStrike - existing.AvgCost) * r.AssignQuantity
 			newQty := existing.Quantity - r.AssignQuantity
 			if newQty <= 0 {
+				recordClosedPosition(s, existing, r.AssignStrike, pnl, "assignment", time.Now().UTC())
 				delete(s.Positions, symbol)
 			} else {
 				existing.Quantity = newQty
