@@ -180,6 +180,31 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 	return total
 }
 
+// PerpsOrderSkipReason returns a non-empty reason when ExecutePerpsSignal
+// would treat (signal, current position side) as a no-op. Callers that place
+// live orders BEFORE invoking ExecutePerpsSignal (e.g. runHyperliquidExecuteOrder)
+// must consult this guard first — otherwise the on-chain fill happens but the
+// in-memory execution path returns 0 and no Trade is recorded, leaving
+// virtual state permanently behind actual exchange positions (#298).
+//
+// posSide is "" when no position exists; "long" or "short" otherwise. The
+// conditions here MUST mirror the skip conditions at the top of each branch
+// in ExecutePerpsSignal — if a new no-op path is added there, add it here
+// too.
+func PerpsOrderSkipReason(signal int, posSide string) string {
+	switch signal {
+	case 1:
+		if posSide == "long" {
+			return "already long, skipping buy"
+		}
+	case -1:
+		if posSide != "long" {
+			return "no long position to sell, skipping"
+		}
+	}
+	return ""
+}
+
 // ExecutePerpsSignal processes a perps (perpetual futures) signal with
 // margin-based accounting (#254). Unlike spot, perps positions do NOT consume
 // the full notional from cash — only the fee is deducted, matching the

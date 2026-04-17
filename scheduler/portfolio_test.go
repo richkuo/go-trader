@@ -715,6 +715,81 @@ func TestExecutePerpsSignalCloseLong(t *testing.T) {
 	}
 }
 
+// #298 regression — PerpsOrderSkipReason must mirror every skip branch of
+// ExecutePerpsSignal. Live execution paths consult this guard BEFORE placing
+// on-chain orders; a missed case re-introduces the "trade fills but isn't
+// recorded" gap that lost 0.716 ETH on Hyperliquid.
+func TestPerpsOrderSkipReason(t *testing.T) {
+	cases := []struct {
+		name    string
+		signal  int
+		posSide string
+		wantSet bool
+	}{
+		{"buy_flat_allowed", 1, "", false},
+		{"buy_short_allowed_flip", 1, "short", false},
+		{"buy_long_skipped", 1, "long", true},
+		{"sell_long_allowed", -1, "long", false},
+		{"sell_flat_skipped", -1, "", true},
+		{"sell_short_skipped", -1, "short", true},
+		{"signal_zero_flat", 0, "", false},
+		{"signal_zero_long", 0, "long", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := PerpsOrderSkipReason(tc.signal, tc.posSide)
+			if (got != "") != tc.wantSet {
+				t.Errorf("PerpsOrderSkipReason(%d, %q) = %q, wantSet=%v", tc.signal, tc.posSide, got, tc.wantSet)
+			}
+		})
+	}
+}
+
+// #298 — demonstrates the in-memory contract the guard protects: when
+// ExecutePerpsSignal is called while already long with signal=1, it returns
+// trades=0 and no Trade is recorded. If a live fill has already happened
+// at this point, it's lost. The guard in runHyperliquidExecuteOrder prevents
+// the live fill from firing in this state; this test pins the behavior that
+// ExecutePerpsSignal itself performs no side-effects in the skip case, so
+// the guard is sufficient (no cleanup needed after a skipped live call).
+func TestExecutePerpsSignalAlreadyLongIsInertNoOp(t *testing.T) {
+	s := &StrategyState{
+		ID:       "hl-test-eth",
+		Cash:     1000,
+		Platform: "hyperliquid",
+		Type:     "perps",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.212, AvgCost: 2300, Side: "long", Multiplier: 1, Leverage: 1},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	cashBefore := s.Cash
+	qtyBefore := s.Positions["ETH"].Quantity
+	tradesBefore := len(s.TradeHistory)
+
+	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2334, 1, 0.238, "oid-123", 0.42, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trades != 0 {
+		t.Errorf("trades = %d, want 0 (skip path)", trades)
+	}
+	if s.Cash != cashBefore {
+		t.Errorf("cash mutated in skip path: %v → %v", cashBefore, s.Cash)
+	}
+	if s.Positions["ETH"].Quantity != qtyBefore {
+		t.Errorf("quantity mutated in skip path: %v → %v", qtyBefore, s.Positions["ETH"].Quantity)
+	}
+	if len(s.TradeHistory) != tradesBefore {
+		t.Errorf("trade history mutated in skip path: %d → %d", tradesBefore, len(s.TradeHistory))
+	}
+}
+
 func TestExecuteFuturesSignalLiveFill(t *testing.T) {
 	s := &StrategyState{
 		ID:              "ts-momentum-es",

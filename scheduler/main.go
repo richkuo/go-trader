@@ -592,11 +592,13 @@ func main() {
 					}
 					var hlCash float64
 					var hlPosQty float64
+					var hlPosSide string
 					if sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
 						hlCash = stratState.Cash
 						if sym := hyperliquidSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
 								hlPosQty = pos.Quantity
+								hlPosSide = pos.Side
 							}
 						}
 					}
@@ -732,7 +734,7 @@ func main() {
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
-								if er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, logger); ok2 {
+								if er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, logger); ok2 {
 									execResult = er
 								} else {
 									liveExecFailed = true
@@ -1381,8 +1383,21 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, logger *S
 }
 
 // runHyperliquidExecuteOrder places a live market order (Phase 3, no lock).
-// Returns (execResult, ok); ok=false means order failed, skip state update.
-func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+// Returns (execResult, ok); ok=false means order failed or was skipped, so
+// caller must not apply state updates.
+//
+// posSide is the current position side captured under RLock in Phase 1
+// ("long", "short", or "" for flat). We consult PerpsOrderSkipReason BEFORE
+// calling the Python executor: if ExecutePerpsSignal would treat the result
+// as a no-op, placing the live order would fill on-chain but never produce a
+// Trade record, leaving state silently behind actual exchange holdings. See
+// issue #298 — 0.716 ETH of live fills were lost this way because the
+// "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
+func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+	if reason := PerpsOrderSkipReason(result.Signal, posSide); reason != "" {
+		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
+		return nil, false
+	}
 	isBuy := result.Signal == 1
 	// #254: perps use leverage to size notional; mirror OKX's guard so any
 	// future HL spot mode can't accidentally over-size.
