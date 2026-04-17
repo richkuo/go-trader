@@ -414,7 +414,7 @@ go-trader/
 │   ├── config.go           # Config parsing + validation
 │   ├── config_migration.go # Config version registry, MigrateConfig, DM-based migration
 │   ├── executor.go         # Python subprocess runner
-│   ├── db.go               # SQLite state persistence (modernc.org/sqlite)
+│   ├── db.go               # SQLite state persistence (modernc.org/sqlite); closed_positions history, immediate trade writes
 │   ├── state.go            # In-memory state loading wrapper
 │   ├── portfolio.go        # Spot position tracking
 │   ├── options.go          # Options positions, Greeks, theta harvest
@@ -438,8 +438,7 @@ go-trader/
 │   ├── init.go             # go-trader init wizard
 │   ├── prompt.go           # Interactive prompt helpers
 │   ├── logger.go           # Logging
-│   ├── config.example.json # Config template
-│   └── state.example.json  # State template
+│   └── config.example.json # Config template
 ├── shared_scripts/         # Stateless Python entry-point scripts
 │   ├── check_strategy.py   # Spot checker (Binance US via CCXT)
 │   ├── check_options.py    # Options checker (--platform=deribit|ibkr|robinhood|okx)
