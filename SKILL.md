@@ -263,7 +263,7 @@ Ask:
 
 #### 5c. Risk Tolerance — Max Drawdown
 Ask:
-> What's your maximum drawdown tolerance? When a strategy's losses exceed this percentage, a circuit breaker pauses trading for 24 hours.
+> What's your maximum drawdown tolerance? When a strategy's losses exceed this percentage, a circuit breaker pauses trading for 24 hours. Spot/options/futures measure drawdown from peak portfolio value; perps measure it relative to deployed margin (capital at risk) so leveraged positions fire the breaker before margin is wiped.
 >
 > - **Spot strategies** default: 60%
 > - **Options strategies** default: 40% (measured from peak value)
