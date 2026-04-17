@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS positions (
     side TEXT NOT NULL,
     multiplier REAL NOT NULL DEFAULT 0,
     owner_strategy_id TEXT NOT NULL DEFAULT '',
+    opened_at TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (strategy_id, symbol)
 );
 
@@ -163,6 +164,7 @@ func (sdb *StateDB) migrateSchema() error {
 	migrations := []string{
 		"ALTER TABLE trades ADD COLUMN exchange_order_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE trades ADD COLUMN exchange_fee REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE positions ADD COLUMN opened_at TEXT NOT NULL DEFAULT ''",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -217,8 +219,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	defer stmtStrat.Close()
 
-	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, quantity, avg_cost, side, multiplier, owner_strategy_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`)
+	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, quantity, avg_cost, side, multiplier, owner_strategy_id, opened_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare position insert: %w", err)
 	}
@@ -249,7 +251,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 
 		for _, pos := range s.Positions {
-			if _, err := stmtPos.Exec(s.ID, pos.Symbol, pos.Quantity, pos.AvgCost, pos.Side, pos.Multiplier, pos.OwnerStrategyID); err != nil {
+			if _, err := stmtPos.Exec(s.ID, pos.Symbol, pos.Quantity, pos.AvgCost, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt)); err != nil {
 				return fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
 			}
 		}
@@ -405,7 +407,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	}
 
 	// 3. Load positions for each strategy.
-	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, quantity, avg_cost, side, multiplier, owner_strategy_id FROM positions")
+	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, quantity, avg_cost, side, multiplier, owner_strategy_id, opened_at FROM positions")
 	if err != nil {
 		return nil, fmt.Errorf("load positions: %w", err)
 	}
@@ -413,9 +415,11 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	for posRows.Next() {
 		var stratID string
 		var pos Position
-		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.Quantity, &pos.AvgCost, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID); err != nil {
+		var openedAtStr string
+		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.Quantity, &pos.AvgCost, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
+		pos.OpenedAt = parseTime(openedAtStr)
 		if s, ok := state.Strategies[stratID]; ok {
 			s.Positions[pos.Symbol] = &pos
 		}

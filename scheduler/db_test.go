@@ -84,7 +84,7 @@ func makeTestState() *AppState {
 				Cash:           950.50,
 				InitialCapital: 1000.0,
 				Positions: map[string]*Position{
-					"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "long", Multiplier: 0, OwnerStrategyID: "hl-momentum-btc"},
+					"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "long", Multiplier: 0, OwnerStrategyID: "hl-momentum-btc", OpenedAt: now.Add(-12 * time.Hour)},
 				},
 				OptionPositions: map[string]*OptionPosition{
 					"opt-1": {
@@ -191,6 +191,9 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 	}
 	if btcPos.OwnerStrategyID != "hl-momentum-btc" {
 		t.Errorf("OwnerStrategyID = %q, want %q", btcPos.OwnerStrategyID, "hl-momentum-btc")
+	}
+	if btcPos.OpenedAt.IsZero() {
+		t.Error("position OpenedAt should not be zero after round-trip")
 	}
 
 	// Option position round-trip.
