@@ -84,16 +84,56 @@ def calc_historical_vol(closes: list, window: int = 14) -> float:
     return math.sqrt(variance * 365)
 
 
-def calc_iv_rank(closes: list, recent_window: int = 14) -> float:
-    """Calculate IV rank (simplified: recent vol vs historical vol)."""
-    if len(closes) < 30:
+def calc_iv_rank(closes: list, recent_window: int = 14,
+                  lookback_days: int = 60) -> float:
+    """IV rank — percentile of current realised vol within a trailing window.
+
+    Defined as ``(current - min) / (max - min) * 100`` over the past
+    ``lookback_days`` days of rolling ``recent_window``-day realised vol,
+    matching the shape of ``adapter.get_iv_rank()`` in the live
+    ``VolMeanReversionStrategy``.
+
+    The previous implementation returned ``(recent / hist) * 50`` — an IV
+    *ratio* halved and clipped, which reached 100 whenever recent vol was
+    merely 2× historical vol rather than at a true lookback high. That
+    triggered strangles at entirely different moments than live.
+    """
+    # Need enough bars for a full rolling window plus lookback.
+    if len(closes) < recent_window + lookback_days + 1:
         return 50.0
-    
-    returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-    recent_vol = math.sqrt(sum(r**2 for r in returns[-recent_window:]) / recent_window) * math.sqrt(365) * 100
-    hist_vol = math.sqrt(sum(r**2 for r in returns) / len(returns)) * math.sqrt(365) * 100
-    
-    return min(max((recent_vol / max(hist_vol, 0.001)) * 50, 0), 100)
+
+    log_returns = [
+        math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))
+    ]
+
+    def _rolling_vol(end_idx: int) -> float:
+        # Annualised realised vol of the ``recent_window`` log returns ending
+        # at index ``end_idx`` (inclusive). Uses variance around the sample
+        # mean — same formula family as calc_historical_vol.
+        window = log_returns[end_idx - recent_window + 1: end_idx + 1]
+        mean = sum(window) / len(window)
+        variance = sum((r - mean) ** 2 for r in window) / len(window)
+        return math.sqrt(variance * 365)
+
+    # Current realised vol — most recent full window.
+    current = _rolling_vol(len(log_returns) - 1)
+
+    # Trailing rolling-vol distribution over the lookback window.
+    history = [
+        _rolling_vol(end)
+        for end in range(
+            len(log_returns) - 1 - lookback_days,
+            len(log_returns),
+        )
+    ]
+
+    lo, hi = min(history), max(history)
+    if hi - lo <= 1e-12:
+        # Vol has been constant across the lookback — rank is ill-defined.
+        return 50.0
+
+    rank = (current - lo) / (hi - lo) * 100.0
+    return min(max(rank, 0.0), 100.0)
 
 
 class OptionPosition:
