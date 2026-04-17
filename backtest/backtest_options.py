@@ -64,25 +64,69 @@ def black_scholes_price(spot: float, strike: float, dte_days: float, vol: float,
 
 
 def calc_historical_vol(closes: list, window: int = 14) -> float:
-    """Calculate annualized historical volatility from daily closes."""
+    """Annualized historical volatility from daily closes.
+
+    Uses log returns (correct for multiplicative price processes) and
+    population variance around the sample mean. The previous implementation
+    used simple returns with ``sum(r**2) / n`` — the latter is the mean of
+    squared returns, which equals variance only when the mean return is
+    exactly zero. For crypto over short windows that assumption is false,
+    inflating vol and overpricing every Black-Scholes premium.
+    """
     if len(closes) < window + 1:
         return 0.5  # default 50%
-    
-    returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(-window, 0)]
-    variance = sum(r**2 for r in returns) / len(returns)
+
+    log_returns = [
+        math.log(closes[i] / closes[i - 1]) for i in range(-window, 0)
+    ]
+    mean = sum(log_returns) / len(log_returns)
+    variance = sum((r - mean) ** 2 for r in log_returns) / len(log_returns)
     return math.sqrt(variance * 365)
 
 
-def calc_iv_rank(closes: list, recent_window: int = 14) -> float:
-    """Calculate IV rank (simplified: recent vol vs historical vol)."""
-    if len(closes) < 30:
+def calc_iv_rank(closes: list, recent_window: int = 14,
+                  lookback_days: int = 60) -> float:
+    """IV rank — percentile of current realised vol within a trailing window.
+
+    Defined as ``(current - min) / (max - min) * 100`` over the past
+    ``lookback_days`` days of rolling ``recent_window``-day realised vol,
+    matching the shape of ``adapter.get_iv_rank()`` in the live
+    ``VolMeanReversionStrategy``.
+
+    The previous implementation returned ``(recent / hist) * 50`` — an IV
+    *ratio* halved and clipped, which reached 100 whenever recent vol was
+    merely 2× historical vol rather than at a true lookback high. That
+    triggered strangles at entirely different moments than live.
+    """
+    if len(closes) < recent_window + lookback_days + 1:
         return 50.0
-    
-    returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, len(closes))]
-    recent_vol = math.sqrt(sum(r**2 for r in returns[-recent_window:]) / recent_window) * math.sqrt(365) * 100
-    hist_vol = math.sqrt(sum(r**2 for r in returns) / len(returns)) * math.sqrt(365) * 100
-    
-    return min(max((recent_vol / max(hist_vol, 0.001)) * 50, 0), 100)
+
+    log_returns = [
+        math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))
+    ]
+
+    def _rolling_vol(end_idx: int) -> float:
+        window = log_returns[end_idx - recent_window + 1: end_idx + 1]
+        mean = sum(window) / len(window)
+        variance = sum((r - mean) ** 2 for r in window) / len(window)
+        return math.sqrt(variance * 365)
+
+    current = _rolling_vol(len(log_returns) - 1)
+    history = [
+        _rolling_vol(end)
+        for end in range(
+            len(log_returns) - 1 - lookback_days,
+            len(log_returns),
+        )
+    ]
+
+    lo, hi = min(history), max(history)
+    if hi - lo <= 1e-12:
+        # Degenerate range — rank is ill-defined, return neutral.
+        return 50.0
+
+    rank = (current - lo) / (hi - lo) * 100.0
+    return min(max(rank, 0.0), 100.0)
 
 
 class OptionPosition:

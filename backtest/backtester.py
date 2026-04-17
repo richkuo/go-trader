@@ -82,10 +82,20 @@ class Backtester:
         Run backtest on a DataFrame that already has a 'signal' column.
         signal: 1 = buy, -1 = sell, 0 = hold
 
+        Execution model matches the live scheduler: a signal produced by the
+        close of bar t is read after the bar finishes and filled at bar t+1's
+        open (no look-ahead bias). Falls back to close when an ``open`` column
+        is not present.
+
         Returns dict with all performance metrics.
         """
         if "signal" not in df.columns:
             raise ValueError("DataFrame must have a 'signal' column")
+
+        df = df.copy()
+        df["signal"] = df["signal"].shift(1).fillna(0)
+
+        has_open = "open" in df.columns
 
         cash = self.initial_capital
         position = 0.0  # shares held
@@ -94,17 +104,16 @@ class Backtester:
         equity_curve = []
 
         for i, (idx, row) in enumerate(df.iterrows()):
-            price = row["close"]
+            fill_price = row["open"] if has_open else row["close"]
+            mark_price = row["close"]
             signal = row["signal"]
 
-            # Calculate current equity
-            equity = cash + position * price
+            equity = cash + position * mark_price
             equity_curve.append({"date": idx, "equity": equity})
 
-            # Process signals
             if signal == 1 and position == 0:
                 # BUY — go long with all available cash
-                effective_price = price * (1 + self.slippage_pct)
+                effective_price = fill_price * (1 + self.slippage_pct)
                 commission = cash * self.commission_pct
                 available = cash - commission
                 shares = available / effective_price
@@ -116,7 +125,7 @@ class Backtester:
 
             elif signal == -1 and position > 0:
                 # SELL — close long position
-                effective_price = price * (1 - self.slippage_pct)
+                effective_price = fill_price * (1 - self.slippage_pct)
                 proceeds = position * effective_price
                 commission = proceeds * self.commission_pct
                 cash = proceeds - commission
