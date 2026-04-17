@@ -7,11 +7,38 @@ Uses Black-Scholes for premium estimation and simulates expiry settlement.
 Usage: python3 backtest_options.py [--strategy vol_mean_reversion] [--underlying BTC] [--since 2023-01-01] [--capital 1000]
 """
 
+import os
 import sys
 import math
 import argparse
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
+
+# Use the same BS pricing used by live adapters (shared_tools/pricing.py) so
+# backtest premium ≡ live adapter fallback premium on identical inputs.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
+from pricing import bs_price, bs_price_and_greeks  # type: ignore
+
+
+# Deribit strike-grid granularity per underlying — mirrors
+# platforms/deribit/adapter.py:get_real_strike fallback. A backtest that
+# rounds BTC strikes to $100 (previous behavior) requests strikes that
+# don't exist on Deribit, producing premiums at non-listed levels.
+ADAPTER_STRIKE_STEP = {
+    "BTC": 1000.0,
+    "ETH": 50.0,
+}
+
+
+def adapter_strike(underlying: str, target_strike: float) -> float:
+    """Round ``target_strike`` to the nearest listed strike for ``underlying``.
+
+    Matches ``DeribitExchangeAdapter.get_real_strike`` fallback logic so
+    backtest fills land on the same price grid the live system would.
+    Unknown underlyings fall back to BTC's $1000 grid.
+    """
+    step = ADAPTER_STRIKE_STEP.get(underlying.upper(), ADAPTER_STRIKE_STEP["BTC"])
+    return round(target_strike / step) * step
 
 
 def fetch_historical_data(underlying: str, since: str, timeframe: str = "1d") -> list:
@@ -37,30 +64,12 @@ def fetch_historical_data(underlying: str, since: str, timeframe: str = "1d") ->
     return all_candles
 
 
-def black_scholes_price(spot: float, strike: float, dte_days: float, vol: float, 
+def black_scholes_price(spot: float, strike: float, dte_days: float, vol: float,
                          risk_free: float = 0.05, option_type: str = "call") -> float:
-    """Black-Scholes option price."""
-    if dte_days <= 0 or vol <= 0 or spot <= 0:
-        # At expiry: intrinsic value
-        if option_type == "call":
-            return max(spot - strike, 0)
-        else:
-            return max(strike - spot, 0)
-    
-    t = dte_days / 365.0
-    d1 = (math.log(spot / strike) + (risk_free + 0.5 * vol**2) * t) / (vol * math.sqrt(t))
-    d2 = d1 - vol * math.sqrt(t)
-    
-    # Standard normal CDF approximation
-    def norm_cdf(x):
-        return 0.5 * (1 + math.erf(x / math.sqrt(2)))
-    
-    if option_type == "call":
-        price = spot * norm_cdf(d1) - strike * math.exp(-risk_free * t) * norm_cdf(d2)
-    else:
-        price = strike * math.exp(-risk_free * t) * norm_cdf(-d2) - spot * norm_cdf(-d1)
-    
-    return max(price, 0)
+    """Thin wrapper around shared_tools.pricing.bs_price — kept so existing
+    callers keep working. New code should call ``bs_price_and_greeks`` to
+    also surface delta/gamma for the trade log."""
+    return bs_price(spot, strike, dte_days, vol, risk_free, option_type)
 
 
 def calc_historical_vol(closes: list, window: int = 14) -> float:
@@ -131,7 +140,8 @@ def calc_iv_rank(closes: list, recent_window: int = 14,
 
 class OptionPosition:
     def __init__(self, option_type: str, action: str, strike: float, expiry_idx: int,
-                 premium: float, premium_usd: float, opened_idx: int):
+                 premium: float, premium_usd: float, opened_idx: int,
+                 greeks: Optional[dict] = None):
         self.option_type = option_type  # "call" or "put"
         self.action = action            # "buy" or "sell"
         self.strike = strike
@@ -139,6 +149,7 @@ class OptionPosition:
         self.premium = premium          # as fraction of spot
         self.premium_usd = premium_usd
         self.opened_idx = opened_idx
+        self.greeks = greeks or {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
     
     def settlement_pnl(self, spot_at_expiry: float) -> float:
         """Calculate P&L at expiry."""
@@ -230,20 +241,26 @@ class OptionsBacktester:
             # Strategy logic
             if len(self.positions) < self.max_positions:
                 if iv_rank > 75:
-                    # High IV → sell strangle
-                    call_strike = round(spot * 1.10, -2)
-                    put_strike = round(spot * 0.90, -2)
+                    # High IV → sell strangle. Strikes land on the adapter's
+                    # listed-strike grid (BTC $1000, ETH $50) so backtest and
+                    # live request the same instruments.
+                    call_strike = adapter_strike(underlying, spot * 1.10)
+                    put_strike = adapter_strike(underlying, spot * 0.90)
                     dte = 30
                     expiry_idx = min(i + dte, len(candles) - 1)
-                    
-                    # Price with Black-Scholes using current vol
-                    call_premium = black_scholes_price(spot, call_strike, dte, hist_vol, option_type="call")
-                    put_premium = black_scholes_price(spot, put_strike, dte, hist_vol, option_type="put")
-                    
-                    # Sell call
+
+                    call_premium, call_greeks = bs_price_and_greeks(
+                        spot, call_strike, dte, hist_vol, option_type="call"
+                    )
+                    put_premium, put_greeks = bs_price_and_greeks(
+                        spot, put_strike, dte, hist_vol, option_type="put"
+                    )
+
                     if len(self.positions) < self.max_positions:
-                        pos_call = OptionPosition("call", "sell", call_strike, expiry_idx,
-                                                   call_premium / spot, call_premium, i)
+                        pos_call = OptionPosition(
+                            "call", "sell", call_strike, expiry_idx,
+                            call_premium / spot, call_premium, i, greeks=call_greeks,
+                        )
                         self.positions.append(pos_call)
                         self.cash += call_premium  # collect premium upfront
                         self.total_premium_collected += call_premium
@@ -258,12 +275,14 @@ class OptionsBacktester:
                             "iv_rank": round(iv_rank, 1),
                             "vol": round(hist_vol * 100, 1),
                             "dte": dte,
+                            "delta": call_greeks["delta"],
                         })
-                    
-                    # Sell put
+
                     if len(self.positions) < self.max_positions:
-                        pos_put = OptionPosition("put", "sell", put_strike, expiry_idx,
-                                                  put_premium / spot, put_premium, i)
+                        pos_put = OptionPosition(
+                            "put", "sell", put_strike, expiry_idx,
+                            put_premium / spot, put_premium, i, greeks=put_greeks,
+                        )
                         self.positions.append(pos_put)
                         self.cash += put_premium
                         self.total_premium_collected += put_premium
@@ -278,22 +297,29 @@ class OptionsBacktester:
                             "iv_rank": round(iv_rank, 1),
                             "vol": round(hist_vol * 100, 1),
                             "dte": dte,
+                            "delta": put_greeks["delta"],
                         })
-                
+
                 elif iv_rank < 25:
-                    # Low IV → buy straddle
-                    strike = round(spot, -2)
+                    # Low IV → buy straddle at the ATM listed strike.
+                    strike = adapter_strike(underlying, spot)
                     dte = 30
                     expiry_idx = min(i + dte, len(candles) - 1)
-                    
-                    call_premium = black_scholes_price(spot, strike, dte, hist_vol, option_type="call")
-                    put_premium = black_scholes_price(spot, strike, dte, hist_vol, option_type="put")
-                    
+
+                    call_premium, call_greeks = bs_price_and_greeks(
+                        spot, strike, dte, hist_vol, option_type="call"
+                    )
+                    put_premium, put_greeks = bs_price_and_greeks(
+                        spot, strike, dte, hist_vol, option_type="put"
+                    )
+
                     total_cost = call_premium + put_premium
                     if total_cost <= self.cash * 0.5:  # don't spend more than 50% on one trade
                         if len(self.positions) < self.max_positions:
-                            pos_call = OptionPosition("call", "buy", strike, expiry_idx,
-                                                       call_premium / spot, call_premium, i)
+                            pos_call = OptionPosition(
+                                "call", "buy", strike, expiry_idx,
+                                call_premium / spot, call_premium, i, greeks=call_greeks,
+                            )
                             self.positions.append(pos_call)
                             self.cash -= call_premium
                             self.total_premium_paid += call_premium
@@ -308,11 +334,14 @@ class OptionsBacktester:
                                 "iv_rank": round(iv_rank, 1),
                                 "vol": round(hist_vol * 100, 1),
                                 "dte": dte,
+                                "delta": call_greeks["delta"],
                             })
-                        
+
                         if len(self.positions) < self.max_positions:
-                            pos_put = OptionPosition("put", "buy", strike, expiry_idx,
-                                                      put_premium / spot, put_premium, i)
+                            pos_put = OptionPosition(
+                                "put", "buy", strike, expiry_idx,
+                                put_premium / spot, put_premium, i, greeks=put_greeks,
+                            )
                             self.positions.append(pos_put)
                             self.cash -= put_premium
                             self.total_premium_paid += put_premium
@@ -327,14 +356,17 @@ class OptionsBacktester:
                                 "iv_rank": round(iv_rank, 1),
                                 "vol": round(hist_vol * 100, 1),
                                 "dte": dte,
+                                "delta": put_greeks["delta"],
                             })
             
             # Mark-to-market for equity curve
             mtm = self.cash
             for pos in self.positions:
                 days_left = max(pos.expiry_idx - i, 0)
-                current_price = black_scholes_price(spot, pos.strike, days_left, hist_vol, 
-                                                     option_type=pos.option_type)
+                current_price = bs_price(
+                    spot, pos.strike, days_left, hist_vol,
+                    option_type=pos.option_type,
+                )
                 if pos.action == "sell":
                     mtm -= current_price  # liability
                 else:
