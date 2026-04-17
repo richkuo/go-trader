@@ -2,11 +2,11 @@
 
 ## Overview
 
-Read strategy data from two JSON files and post daily summaries to Discord.
+Read strategy data from the SQLite state DB and the JSON config, then post daily summaries to Discord.
 
 ## Data Sources
 
-- `scheduler/state.json` — live strategy state (cash, portfolio_value, initial_capital, positions per strategy)
+- `scheduler/state.db` — live strategy state (cash, portfolio_value, initial_capital, positions per strategy)
 - `scheduler/config.json` — strategy definitions (id, type, platform per strategy)
 
 ## How to Calculate P&L Per Strategy

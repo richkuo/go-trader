@@ -37,10 +37,9 @@ type PortfolioRiskConfig struct {
 	WarnThresholdPct float64 `json:"warn_threshold_pct,omitempty"` // % of MaxDrawdownPct to warn (default 80)
 }
 
-// PlatformConfig holds per-platform settings (state file path and optional risk overrides).
+// PlatformConfig holds per-platform optional risk overrides.
 type PlatformConfig struct {
-	StateFile string               `json:"state_file"`     // e.g. "platforms/deribit/state.json"
-	Risk      *PortfolioRiskConfig `json:"risk,omitempty"` // overrides portfolio-level defaults
+	Risk *PortfolioRiskConfig `json:"risk,omitempty"` // overrides portfolio-level defaults
 }
 
 // CorrelationConfig controls portfolio-level directional exposure tracking.
@@ -55,7 +54,6 @@ type Config struct {
 	ConfigVersion        int                        `json:"config_version,omitempty"` // bumped when new fields are added; 0/missing = v1 baseline
 	IntervalSeconds      int                        `json:"interval_seconds"`
 	LogDir               string                     `json:"log_dir"`
-	StateFile            string                     `json:"state_file"`
 	DBFile               string                     `json:"db_file,omitempty"` // SQLite state DB path (default: "scheduler/state.db")
 	StatusToken          string                     `json:"-"`                 // loaded from STATUS_AUTH_TOKEN env var only
 	Discord              DiscordConfig              `json:"discord"`
@@ -129,9 +127,6 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.LogDir == "" {
 		cfg.LogDir = "logs"
 	}
-	if cfg.StateFile == "" {
-		cfg.StateFile = "scheduler/state.json"
-	}
 	if cfg.DBFile == "" {
 		cfg.DBFile = "scheduler/state.db"
 	}
@@ -180,12 +175,6 @@ func LoadConfig(path string) (*Config, error) {
 	// Initialize platforms map.
 	if cfg.Platforms == nil {
 		cfg.Platforms = make(map[string]*PlatformConfig)
-	}
-	// Apply default state file paths for any declared platforms.
-	for name, pc := range cfg.Platforms {
-		if pc.StateFile == "" {
-			pc.StateFile = fmt.Sprintf("platforms/%s/state.json", name)
-		}
 	}
 
 	// Apply per-strategy defaults.

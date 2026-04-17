@@ -1,8 +1,6 @@
 package main
 
 import (
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -61,59 +59,6 @@ func TestNewStrategyState(t *testing.T) {
 	}
 }
 
-func TestLoadStateMissingFile(t *testing.T) {
-	state, err := LoadState(filepath.Join(t.TempDir(), "nonexistent.json"))
-	if err != nil {
-		t.Fatalf("LoadState should not error for missing file: %v", err)
-	}
-	if state.CycleCount != 0 {
-		t.Errorf("CycleCount = %d, want 0", state.CycleCount)
-	}
-	if state.Strategies == nil {
-		t.Error("Strategies should be initialized")
-	}
-}
-
-func TestLoadStateNilMapsFixed(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
-
-	// Write state with nil maps (simulated by omitting fields)
-	raw := `{"cycle_count": 1, "strategies": {"s1": {"id": "s1"}}}`
-	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	state, err := LoadState(path)
-	if err != nil {
-		t.Fatalf("LoadState failed: %v", err)
-	}
-
-	s := state.Strategies["s1"]
-	if s.Positions == nil {
-		t.Error("Positions should be initialized, not nil")
-	}
-	if s.OptionPositions == nil {
-		t.Error("OptionPositions should be initialized, not nil")
-	}
-	if s.TradeHistory == nil {
-		t.Error("TradeHistory should be initialized, not nil")
-	}
-}
-
-func TestLoadStateInvalidJSON(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
-	if err := os.WriteFile(path, []byte("not json"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := LoadState(path)
-	if err == nil {
-		t.Error("expected error for invalid JSON")
-	}
-}
-
 func TestValidateState(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["s1"] = &StrategyState{
@@ -166,26 +111,9 @@ func TestValidateState(t *testing.T) {
 	}
 }
 
-// writeTestJSON writes a JSON state file for migration tests.
-func writeTestJSON(t *testing.T, path string, state *AppState) {
-	t.Helper()
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal state: %v", err)
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatalf("write state: %v", err)
-	}
-}
-
 func TestLoadStateWithDB_SQLitePrimary(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
-	jsonPath := filepath.Join(dir, "state.json")
 
 	db, err := OpenStateDB(dbPath)
 	if err != nil {
@@ -193,7 +121,6 @@ func TestLoadStateWithDB_SQLitePrimary(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Seed SQLite with data.
 	original := &AppState{
 		CycleCount: 10,
 		Strategies: map[string]*StrategyState{
@@ -205,35 +132,19 @@ func TestLoadStateWithDB_SQLitePrimary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Write different data to JSON (should be ignored).
-	jsonState := NewAppState()
-	jsonState.CycleCount = 99
-	writeTestJSON(t, jsonPath, jsonState)
-
-	cfg := &Config{StateFile: jsonPath}
+	cfg := &Config{DBFile: dbPath}
 	loaded, err := LoadStateWithDB(cfg, db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if loaded.CycleCount != 10 {
-		t.Errorf("CycleCount = %d, want 10 (from SQLite, not JSON's 99)", loaded.CycleCount)
+		t.Errorf("CycleCount = %d, want 10", loaded.CycleCount)
 	}
 }
 
-func TestLoadStateWithDB_JSONFallbackAndMigration(t *testing.T) {
+func TestLoadStateWithDB_EmptyDB(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
-	jsonPath := filepath.Join(dir, "state.json")
-
-	// Write data to JSON only (SQLite is empty).
-	jsonState := &AppState{
-		CycleCount: 7,
-		Strategies: map[string]*StrategyState{
-			"s1": {ID: "s1", Type: "spot", Cash: 300, InitialCapital: 500,
-				Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition), TradeHistory: []Trade{}},
-		},
-	}
-	writeTestJSON(t, jsonPath, jsonState)
 
 	db, err := OpenStateDB(dbPath)
 	if err != nil {
@@ -241,43 +152,7 @@ func TestLoadStateWithDB_JSONFallbackAndMigration(t *testing.T) {
 	}
 	defer db.Close()
 
-	cfg := &Config{StateFile: jsonPath}
-	loaded, err := LoadStateWithDB(cfg, db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.CycleCount != 7 {
-		t.Errorf("CycleCount = %d, want 7 (from JSON fallback)", loaded.CycleCount)
-	}
-	if _, ok := loaded.Strategies["s1"]; !ok {
-		t.Error("strategy s1 should be loaded from JSON")
-	}
-
-	// Verify one-time migration: SQLite should now have the data.
-	dbState, err := db.LoadState()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dbState == nil {
-		t.Fatal("SQLite should have data after migration")
-	}
-	if dbState.CycleCount != 7 {
-		t.Errorf("SQLite CycleCount = %d, want 7 (migrated from JSON)", dbState.CycleCount)
-	}
-}
-
-func TestLoadStateWithDB_BothEmpty(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "state.db")
-	jsonPath := filepath.Join(dir, "state.json") // does not exist
-
-	db, err := OpenStateDB(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	cfg := &Config{StateFile: jsonPath}
+	cfg := &Config{DBFile: dbPath}
 	loaded, err := LoadStateWithDB(cfg, db)
 	if err != nil {
 		t.Fatal(err)
@@ -313,7 +188,6 @@ func TestSaveStateWithDB(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Verify SQLite has data.
 	dbState, err := db.LoadState()
 	if err != nil {
 		t.Fatal(err)
@@ -339,84 +213,6 @@ func TestSaveStateWithDB_Error(t *testing.T) {
 	err = SaveStateWithDB(state, cfg, db)
 	if err == nil {
 		t.Error("expected error when SQLite is closed")
-	}
-}
-
-func TestLoadStateWithDB_DuplicateStrategyMigration(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "state.db")
-
-	// Create two platform state files with overlapping strategy IDs.
-	hlDir := filepath.Join(dir, "platforms", "hyperliquid")
-	buDir := filepath.Join(dir, "platforms", "binanceus")
-	if err := os.MkdirAll(hlDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(buDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Both files contain strategy "hl-sma-btc" — simulates the monolithic
-	// state.json being copied into per-platform files.
-	hlState := &AppState{
-		CycleCount: 5,
-		Strategies: map[string]*StrategyState{
-			"hl-sma-btc": {ID: "hl-sma-btc", Type: "perps", Cash: 500, InitialCapital: 1000,
-				Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition), TradeHistory: []Trade{}},
-		},
-	}
-	buState := &AppState{
-		CycleCount: 5,
-		Strategies: map[string]*StrategyState{
-			"hl-sma-btc": {ID: "hl-sma-btc", Type: "perps", Cash: 600, InitialCapital: 1000,
-				Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition), TradeHistory: []Trade{}},
-			"bu-rsi-eth": {ID: "bu-rsi-eth", Type: "spot", Cash: 800, InitialCapital: 1000,
-				Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition), TradeHistory: []Trade{}},
-		},
-	}
-	writeTestJSON(t, filepath.Join(hlDir, "state.json"), hlState)
-	writeTestJSON(t, filepath.Join(buDir, "state.json"), buState)
-
-	db, err := OpenStateDB(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	cfg := &Config{
-		StateFile: filepath.Join(dir, "state.json"), // does not exist
-		Platforms: map[string]*PlatformConfig{
-			"hyperliquid": {StateFile: filepath.Join(hlDir, "state.json")},
-			"binanceus":   {StateFile: filepath.Join(buDir, "state.json")},
-		},
-	}
-
-	loaded, err := LoadStateWithDB(cfg, db)
-	if err != nil {
-		t.Fatalf("LoadStateWithDB: %v", err)
-	}
-
-	// Should have 2 unique strategies (duplicate hl-sma-btc merged).
-	if len(loaded.Strategies) != 2 {
-		t.Errorf("expected 2 strategies, got %d", len(loaded.Strategies))
-	}
-	if _, ok := loaded.Strategies["hl-sma-btc"]; !ok {
-		t.Error("missing strategy hl-sma-btc")
-	}
-	if _, ok := loaded.Strategies["bu-rsi-eth"]; !ok {
-		t.Error("missing strategy bu-rsi-eth")
-	}
-
-	// Verify SQLite has the migrated data.
-	dbState, err := db.LoadState()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dbState == nil {
-		t.Fatal("SQLite should have data after migration")
-	}
-	if len(dbState.Strategies) != 2 {
-		t.Errorf("SQLite strategies = %d, want 2", len(dbState.Strategies))
 	}
 }
 

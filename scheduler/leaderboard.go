@@ -32,9 +32,9 @@ type LeaderboardData struct {
 }
 
 // leaderboardPath returns the path for the pre-computed leaderboard file,
-// stored next to the state file.
+// stored next to the SQLite state DB.
 func leaderboardPath(cfg *Config) string {
-	dir := filepath.Dir(cfg.StateFile)
+	dir := filepath.Dir(cfg.DBFile)
 	return filepath.Join(dir, "leaderboard.json")
 }
 

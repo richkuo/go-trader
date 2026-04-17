@@ -279,29 +279,6 @@ func TestGenerateConfig_SpotScriptAndArgs(t *testing.T) {
 	}
 }
 
-func TestGenerateConfig_HyperliquidPlatformAdded(t *testing.T) {
-	opts := baseOpts()
-	opts.EnablePerps = true
-	opts.PerpsStrategies = []string{"momentum"}
-
-	cfg := generateConfig(opts)
-
-	if _, ok := cfg.Platforms["hyperliquid"]; !ok {
-		t.Error("expected hyperliquid platform config when perps enabled")
-	}
-}
-
-func TestGenerateConfig_NoHyperliquidWithoutPerps(t *testing.T) {
-	opts := baseOpts()
-	opts.EnablePerps = false
-
-	cfg := generateConfig(opts)
-
-	if _, ok := cfg.Platforms["hyperliquid"]; ok {
-		t.Error("expected no hyperliquid platform config when perps disabled")
-	}
-}
-
 func TestGenerateConfig_SOLSkippedForOptions(t *testing.T) {
 	opts := baseOpts()
 	opts.Assets = []string{"BTC", "ETH", "SOL"}
@@ -674,11 +651,6 @@ func TestGenerateConfig_FuturesEnabled(t *testing.T) {
 	if !ids["ts-momentum-mes"] {
 		t.Error("expected ts-momentum-mes")
 	}
-
-	// TopStep platform config should be added
-	if _, ok := cfg.Platforms["topstep"]; !ok {
-		t.Error("expected topstep platform config when futures enabled")
-	}
 }
 
 func TestGenerateConfig_FuturesScriptAndArgs(t *testing.T) {
@@ -780,7 +752,6 @@ func TestValidateConfig_CapitalPctValid(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xTEST")
 	cfg := &Config{
 		IntervalSeconds: 600,
-		StateFile:       "state.json",
 		Strategies: []StrategyConfig{
 			{
 				ID:             "test-pct",
@@ -802,7 +773,6 @@ func TestValidateConfig_CapitalPctValid(t *testing.T) {
 func TestValidateConfig_CapitalPctInvalid(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 600,
-		StateFile:       "state.json",
 		Strategies: []StrategyConfig{
 			{
 				ID:             "test-bad-pct",
@@ -824,7 +794,6 @@ func TestValidateConfig_CapitalPctInvalid(t *testing.T) {
 func TestValidateConfig_CapitalPctNegative(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 600,
-		StateFile:       "state.json",
 		Strategies: []StrategyConfig{
 			{
 				ID:             "test-neg-pct",
@@ -846,7 +815,6 @@ func TestValidateConfig_CapitalPctNegative(t *testing.T) {
 func TestValidateConfig_NoCapitalNoCapitalPct(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 600,
-		StateFile:       "state.json",
 		Strategies: []StrategyConfig{
 			{
 				ID:             "test-no-cap",

@@ -275,7 +275,7 @@ func generateConfig(opts InitOptions) *Config {
 		ConfigVersion:   CurrentConfigVersion,
 		IntervalSeconds: 3600,
 		LogDir:          "logs",
-		StateFile:       "scheduler/state.json",
+		DBFile:          "scheduler/state.db",
 		PortfolioRisk: &PortfolioRiskConfig{
 			MaxDrawdownPct: 25,
 			MaxNotionalUSD: 0,
@@ -291,7 +291,6 @@ func generateConfig(opts InitOptions) *Config {
 			Channels:    opts.TelegramChannelMap,
 		},
 		AutoUpdate: opts.AutoUpdate,
-		Platforms:  make(map[string]*PlatformConfig),
 	}
 
 	// Build asset name → exchange symbol map.
@@ -299,8 +298,6 @@ func generateConfig(opts InitOptions) *Config {
 	for _, a := range supportedAssets {
 		assetSymbol[a.Name] = a.Symbol
 	}
-
-	usesHyperliquid := false
 
 	// Spot strategies.
 	if opts.EnableSpot {
@@ -392,7 +389,6 @@ func generateConfig(opts InitOptions) *Config {
 
 	// Perps strategies (Hyperliquid only).
 	if opts.EnablePerps {
-		usesHyperliquid = true
 		perpsLeverage := opts.PerpsLeverage
 		if perpsLeverage <= 0 {
 			perpsLeverage = 1
@@ -417,9 +413,7 @@ func generateConfig(opts InitOptions) *Config {
 	}
 
 	// Futures strategies (TopStep).
-	usesTopstep := false
 	if opts.EnableFutures {
-		usesTopstep = true
 		feePerContract := opts.FuturesFeePerContract
 		for _, stratID := range opts.FuturesStrategies {
 			shortName := deriveShortName(stratID)
@@ -444,9 +438,7 @@ func generateConfig(opts InitOptions) *Config {
 	}
 
 	// Luno spot strategies (reuses check_strategy.py, platform=luno for fees).
-	usesLuno := false
 	if opts.EnableLuno {
-		usesLuno = true
 		for _, stratID := range opts.LunoStrategies {
 			shortName := deriveShortName(stratID)
 			for _, assetName := range opts.Assets {
@@ -470,9 +462,7 @@ func generateConfig(opts InitOptions) *Config {
 	}
 
 	// Robinhood crypto strategies (reuses spot strategies on Robinhood crypto).
-	usesRobinhood := false
 	if opts.EnableRobinhood {
-		usesRobinhood = true
 		for _, stratID := range opts.RobinhoodStrategies {
 			shortName := deriveShortName(stratID)
 			for _, assetName := range opts.Assets {
@@ -491,20 +481,7 @@ func generateConfig(opts InitOptions) *Config {
 		}
 	}
 
-	if usesHyperliquid {
-		cfg.Platforms["hyperliquid"] = &PlatformConfig{
-			StateFile: "platforms/hyperliquid/state.json",
-		}
-	}
-	if usesTopstep {
-		cfg.Platforms["topstep"] = &PlatformConfig{
-			StateFile: "platforms/topstep/state.json",
-		}
-	}
-
-	usesOKX := false
 	if opts.EnableOKX {
-		usesOKX = true
 		okxMode := opts.OKXMode
 		if okxMode == "" {
 			okxMode = "paper"
@@ -547,24 +524,6 @@ func generateConfig(opts InitOptions) *Config {
 					Leverage:        okxPerpsLeverage,
 				})
 			}
-		}
-	}
-
-	if usesRobinhood {
-		cfg.Platforms["robinhood"] = &PlatformConfig{
-			StateFile: "platforms/robinhood/state.json",
-		}
-	}
-
-	if usesLuno {
-		cfg.Platforms["luno"] = &PlatformConfig{
-			StateFile: "platforms/luno/state.json",
-		}
-	}
-
-	if usesOKX {
-		cfg.Platforms["okx"] = &PlatformConfig{
-			StateFile: "platforms/okx/state.json",
 		}
 	}
 

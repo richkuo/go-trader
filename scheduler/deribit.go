@@ -441,7 +441,7 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 				OpenedAt: time.Now().UTC(),
 			}
 		}
-		s.TradeHistory = append(s.TradeHistory, Trade{
+		RecordTrade(s, Trade{
 			Timestamp:  time.Now().UTC(),
 			StrategyID: s.ID,
 			Symbol:     symbol,
@@ -472,7 +472,7 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 			}
 			RecordTradeResult(&s.RiskState, pnl)
 		}
-		s.TradeHistory = append(s.TradeHistory, Trade{
+		RecordTrade(s, Trade{
 			Timestamp:  time.Now().UTC(),
 			StrategyID: s.ID,
 			Symbol:     symbol,

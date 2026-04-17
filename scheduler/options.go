@@ -153,7 +153,7 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 		TradeType:  "options",
 		Details:    fmt.Sprintf("Buy %s %s strike=%.0f exp=%s premium=$%.2f fee=$%.2f", result.Underlying, action.OptionType, action.Strike, action.Expiry, cost, fee),
 	}
-	s.TradeHistory = append(s.TradeHistory, trade)
+	RecordTrade(s, trade)
 	logger.Info("BUY OPTION %s %s strike=%.0f exp=%s | $%.2f (fee $%.2f)", result.Underlying, action.OptionType, action.Strike, action.Expiry, cost, fee)
 
 	return 1, nil
@@ -216,7 +216,7 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 		TradeType:  "options",
 		Details:    fmt.Sprintf("Sell %s %s strike=%.0f exp=%s premium=$%.2f fee=$%.2f", result.Underlying, action.OptionType, action.Strike, action.Expiry, premium, fee),
 	}
-	s.TradeHistory = append(s.TradeHistory, trade)
+	RecordTrade(s, trade)
 	logger.Info("SELL OPTION %s %s strike=%.0f exp=%s | +$%.2f (fee $%.2f)", result.Underlying, action.OptionType, action.Strike, action.Expiry, premium, fee)
 
 	return 1, nil
@@ -245,7 +245,7 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 				TradeType:  "options",
 				Details:    fmt.Sprintf("Close %s PnL=$%.2f", pos.ID, pnl),
 			}
-			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			logger.Info("CLOSE OPTION %s | PnL: $%.2f", pos.ID, pnl)
 			delete(s.OptionPositions, id)
@@ -443,7 +443,7 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 			TradeType:  "options",
 			Details:    fmt.Sprintf("Theta harvest close %s PnL=$%.2f", pos.ID, pnl),
 		}
-		s.TradeHistory = append(s.TradeHistory, trade)
+		RecordTrade(s, trade)
 		RecordTradeResult(&s.RiskState, pnl)
 
 		logger.Info("%s | %s | PnL: $%.2f", c.reason, pos.ID, pnl)

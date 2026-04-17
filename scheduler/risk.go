@@ -471,7 +471,7 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			TradeType:  tradeType,
 			Details:    fmt.Sprintf("Circuit breaker force-close, PnL: $%.2f", pnl),
 		}
-		s.TradeHistory = append(s.TradeHistory, trade)
+		RecordTrade(s, trade)
 		RecordTradeResult(&s.RiskState, pnl)
 		recordClosedPosition(s, pos, price, pnl, "circuit_breaker", now)
 		delete(s.Positions, symbol)
@@ -503,7 +503,7 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			TradeType:  "options",
 			Details:    fmt.Sprintf("Circuit breaker force-close, PnL: $%.2f", pnl),
 		}
-		s.TradeHistory = append(s.TradeHistory, trade)
+		RecordTrade(s, trade)
 		RecordTradeResult(&s.RiskState, pnl)
 		delete(s.OptionPositions, id)
 	}

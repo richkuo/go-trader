@@ -204,6 +204,25 @@ func (sdb *StateDB) Close() error {
 	return sdb.db.Close()
 }
 
+// InsertTrade persists a single trade row immediately (#289). This is invoked
+// via the tradeRecorder hook the moment a trade is appended to TradeHistory,
+// so trades survive mid-cycle crashes even if SaveState never runs.
+func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
+	if sdb == nil || sdb.db == nil {
+		return fmt.Errorf("state db unavailable")
+	}
+	_, err := sdb.db.Exec(`INSERT INTO trades
+		(strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		strategyID, formatTime(trade.Timestamp), trade.Symbol, trade.Side,
+		trade.Quantity, trade.Price, trade.Value, trade.TradeType, trade.Details,
+		trade.ExchangeOrderID, trade.ExchangeFee)
+	if err != nil {
+		return fmt.Errorf("insert trade for %s: %w", strategyID, err)
+	}
+	return nil
+}
+
 // SaveState writes the full AppState to SQLite within a single transaction.
 func (sdb *StateDB) SaveState(state *AppState) error {
 	tx, err := sdb.db.Begin()
@@ -289,8 +308,13 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 	}
 
-	// 4. Append-only trades: find the latest timestamp per strategy already in DB,
-	//    insert only newer trades.
+	// 4. Append-only trades: insert any TradeHistory rows that have not yet been
+	//    persisted (t.persisted == false). LoadState and successful RecordTrade
+	//    both flip the flag to true, so SaveState only flushes the backlog —
+	//    including any rows whose eager InsertTrade earlier in the cycle
+	//    failed, even if later-timestamped rows were persisted successfully
+	//    (fixes the MAX(timestamp) dedup gap that would silently drop
+	//    out-of-order retries).
 	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
@@ -298,22 +322,24 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	defer stmtTrade.Close()
 
+	// Track which rows were flushed in this tx so we can mark them persisted
+	// only after Commit succeeds (avoids marking true on a rolled-back tx).
+	type trackedFlush struct {
+		strat *StrategyState
+		index int
+	}
+	var flushed []trackedFlush
+
 	for _, s := range state.Strategies {
-		if len(s.TradeHistory) == 0 {
-			continue
-		}
-		var latestTS string
-		err := tx.QueryRow("SELECT COALESCE(MAX(timestamp), '') FROM trades WHERE strategy_id = ?", s.ID).Scan(&latestTS)
-		if err != nil {
-			return fmt.Errorf("query latest trade for %s: %w", s.ID, err)
-		}
-		for _, t := range s.TradeHistory {
-			ts := formatTime(t.Timestamp)
-			if ts > latestTS {
-				if _, err := stmtTrade.Exec(s.ID, ts, t.Symbol, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee); err != nil {
-					return fmt.Errorf("insert trade for %s: %w", s.ID, err)
-				}
+		for i := range s.TradeHistory {
+			if s.TradeHistory[i].persisted {
+				continue
 			}
+			t := s.TradeHistory[i]
+			if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee); err != nil {
+				return fmt.Errorf("insert trade for %s: %w", s.ID, err)
+			}
+			flushed = append(flushed, trackedFlush{strat: s, index: i})
 		}
 	}
 
@@ -393,6 +419,12 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	// mid-transaction failure does not silently lose history entries.
 	for _, s := range state.Strategies {
 		s.ClosedPositions = nil
+	}
+	// Mark flushed trades as persisted only after the tx has committed —
+	// otherwise a rollback would leave the flag claiming rows are in DB when
+	// they aren't, and the next SaveState would silently skip them.
+	for _, f := range flushed {
+		f.strat.TradeHistory[f.index].persisted = true
 	}
 	return nil
 }
@@ -590,6 +622,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 				return nil, fmt.Errorf("scan trade: %w", err)
 			}
 			t.Timestamp = parseTime(tsStr)
+			t.persisted = true // loaded from DB → already persisted; SaveState will skip.
 			allTrades = append(allTrades, t)
 		}
 		tradeRows.Close()

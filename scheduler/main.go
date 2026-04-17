@@ -39,6 +39,11 @@ func main() {
 	}
 	defer stateDB.Close()
 
+	// Wire the immediate trade-persistence hook (#289) so every trade is
+	// written to SQLite the moment it is appended to TradeHistory — this
+	// survives mid-cycle crashes that would otherwise lose the in-memory batch.
+	tradeRecorder = stateDB.InsertTrade
+
 	// Load state: SQLite primary, JSON fallback with auto-migration.
 	state, err := LoadStateWithDB(cfg, stateDB)
 	if err != nil {
@@ -179,6 +184,16 @@ func main() {
 
 	notifier := NewMultiNotifier(backends...)
 	fmt.Printf("Notification backends: %d active\n", notifier.BackendCount())
+
+	// Route trade-persist warnings (#289) to owner DM so operators see
+	// immediate trade-DB failures instead of only stderr. Safe to wire after
+	// OpenStateDB — any RecordTrade calls between those two points still log
+	// to stderr via the nil-check in state.go.
+	if notifier.HasOwner() {
+		tradePersistWarn = func(msg string) {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
 
 	// -summary mode: post snapshot summary for the specified channel and exit.
 	// Checked early since it only needs config, state, and notifier — avoids
@@ -1425,31 +1440,33 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	prevTradeCount := len(s.TradeHistory)
 	leverage := sc.Leverage
 	if leverage <= 0 {
 		leverage = 1
 	}
-	trades, err := ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, logger)
+
+	// Thread exchange metadata into ExecutePerpsSignal so each Trade is built
+	// with the OID and fee before RecordTrade persists it (#289). Stamping the
+	// fields onto s.TradeHistory after the fact would never reach SQLite — the
+	// eager INSERT has already happened and SaveState's timestamp dedup skips
+	// re-inserts for the same trade.
+	var fillOID string
+	var fillFee float64
+	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil {
+		fill := execResult.Execution.Fill
+		if fill.OID != 0 {
+			fillOID = fmt.Sprintf("%d", fill.OID)
+		}
+		fillFee = fill.Fee
+	}
+
+	trades, err := ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, fillOID, fillFee, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
 	}
-
-	// Stamp exchange metadata on newly created trades from live fills.
-	if trades > 0 && execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil {
-		fill := execResult.Execution.Fill
-		orderID := ""
-		if fill.OID != 0 {
-			orderID = fmt.Sprintf("%d", fill.OID)
-		}
-		for i := prevTradeCount; i < len(s.TradeHistory); i++ {
-			s.TradeHistory[i].ExchangeOrderID = orderID
-			s.TradeHistory[i].ExchangeFee = fill.Fee
-		}
-		if orderID != "" {
-			logger.Info("Exchange order ID: %s", orderID)
-		}
+	if trades > 0 && fillOID != "" {
+		logger.Info("Exchange order ID: %s", fillOID)
 	}
 
 	detail := ""
@@ -1905,7 +1922,9 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, ex
 		if leverage <= 0 {
 			leverage = 1
 		}
-		trades, err = ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, logger)
+		// OKXFill does not carry OID/fee today; pass empties and let SaveState
+		// backfill from any future adapter extension via the usual path.
+		trades, err = ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, "", 0, logger)
 	} else {
 		trades, err = ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, fillQty, logger)
 	}

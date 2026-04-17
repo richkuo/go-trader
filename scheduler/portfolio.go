@@ -71,6 +71,14 @@ type Trade struct {
 	Details         string    `json:"details"`
 	ExchangeOrderID string    `json:"exchange_order_id,omitempty"` // exchange-provided order ID (e.g. Hyperliquid oid)
 	ExchangeFee     float64   `json:"exchange_fee,omitempty"`      // fee charged by exchange (if available)
+
+	// persisted tracks whether this Trade has been written to SQLite — set by
+	// RecordTrade on successful InsertTrade and by LoadState for DB-loaded
+	// rows. SaveState uses this flag instead of a MAX(timestamp) check so an
+	// out-of-order RecordTrade failure (T1 fails, T2 succeeds) is picked up
+	// on the next flush rather than silently dropped because T1 < latestTS.
+	// Not serialized — purely in-memory bookkeeping.
+	persisted bool
 }
 
 // PortfolioValue calculates total value of a strategy's portfolio.
@@ -115,7 +123,27 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 // fillQty > 0 means a live fill: use price and fillQty as-is (no slippage,
 // no notional recalc). fillQty == 0 means paper mode: compute qty from
 // leveraged budget with slippage applied.
-func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, logger *StrategyLogger) (int, error) {
+//
+// fillOID/fillFee carry exchange metadata for live fills (empty/zero for
+// paper). They are stamped ONLY on the trade that represents the new
+// position — the opening trade on signal=1, the closing trade on
+// signal=-1. The rationale: one live fill = one exchange fee; if a buy
+// signal encounters an existing short, ExecutePerpsSignal synthesizes a
+// close-short + open-long pair for in-memory accounting, but the real
+// exchange action was the single fill that opened the long. Stamping the
+// same fee on both legs would double-count it in analytics. The close-leg
+// row therefore carries empty exchange metadata — accurate, since no
+// distinct exchange order closed it. See #289.
+//
+// In current live mode the flip branch is unreachable: signal=-1 does not
+// open shorts, and runHyperliquidExecuteOrder sizes buys as a fresh open,
+// not close+open. The policy above exists so the invariant survives any
+// future adapter that does model flips as two fills or adds short-open.
+// The same policy is correct if an adapter ever reports a single atomic
+// net-flip fill (one OID, one fee, exchange reduces short and opens long
+// in one shot) — the single real fee lands on the opener, which is the
+// trade that represents the one exchange action.
+func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, fillOID string, fillFee float64, logger *StrategyLogger) (int, error) {
 	if signal == 0 {
 		return 0, nil
 	}
@@ -149,6 +177,10 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			pnl -= fee
 			s.Cash += pnl
 			now := time.Now().UTC()
+			// Synthetic close — no exchange metadata stamped; the real fill
+			// (if any) is attributed to the open-long trade below. Prevents
+			// fee double-count when a flip produces two in-memory trades
+			// from a single exchange fill.
 			trade := Trade{
 				Timestamp:  now,
 				StrategyID: s.ID,
@@ -160,7 +192,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 				TradeType:  "perps",
 				Details:    fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
 			}
-			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
@@ -200,17 +232,19 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			OpenedAt:        now,
 		}
 		trade := Trade{
-			Timestamp:  now,
-			StrategyID: s.ID,
-			Symbol:     symbol,
-			Side:       "buy",
-			Quantity:   qty,
-			Price:      execPrice,
-			Value:      notional,
-			TradeType:  "perps",
-			Details:    fmt.Sprintf("Open long %.6f @ $%.2f (%.1fx, fee $%.2f)", qty, execPrice, leverage, fee),
+			Timestamp:       now,
+			StrategyID:      s.ID,
+			Symbol:          symbol,
+			Side:            "buy",
+			Quantity:        qty,
+			Price:           execPrice,
+			Value:           notional,
+			TradeType:       "perps",
+			Details:         fmt.Sprintf("Open long %.6f @ $%.2f (%.1fx, fee $%.2f)", qty, execPrice, leverage, fee),
+			ExchangeOrderID: fillOID,
+			ExchangeFee:     fillFee,
 		}
-		s.TradeHistory = append(s.TradeHistory, trade)
+		RecordTrade(s, trade)
 		logger.Info("BUY %s: %.6f @ $%.2f (%.1fx, notional $%.2f, fee $%.2f)", symbol, qty, execPrice, leverage, notional, fee)
 		tradesExecuted++
 
@@ -228,17 +262,19 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			s.Cash += pnl
 			now := time.Now().UTC()
 			trade := Trade{
-				Timestamp:  now,
-				StrategyID: s.ID,
-				Symbol:     symbol,
-				Side:       "sell",
-				Quantity:   pos.Quantity,
-				Price:      execPrice,
-				Value:      pos.Quantity * execPrice,
-				TradeType:  "perps",
-				Details:    fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
+				Timestamp:       now,
+				StrategyID:      s.ID,
+				Symbol:          symbol,
+				Side:            "sell",
+				Quantity:        pos.Quantity,
+				Price:           execPrice,
+				Value:           pos.Quantity * execPrice,
+				TradeType:       "perps",
+				Details:         fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
+				ExchangeOrderID: fillOID,
+				ExchangeFee:     fillFee,
 			}
-			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
@@ -295,7 +331,7 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 				TradeType:  "spot",
 				Details:    fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
 			}
-			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
@@ -342,7 +378,7 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 			TradeType:  "spot",
 			Details:    fmt.Sprintf("Open long %.6f @ $%.2f (fee $%.2f)", qty, execPrice, fee),
 		}
-		s.TradeHistory = append(s.TradeHistory, trade)
+		RecordTrade(s, trade)
 		logger.Info("BUY %s: %.6f @ $%.2f (fee $%.2f, total $%.2f)", symbol, qty, execPrice, fee, tradeCost+fee)
 		tradesExecuted++
 
@@ -372,7 +408,7 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 				TradeType:  "spot",
 				Details:    fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
 			}
-			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
@@ -425,7 +461,7 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 				TradeType:  "futures",
 				Details:    fmt.Sprintf("Close short %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee),
 			}
-			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
@@ -484,7 +520,7 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 			TradeType:  "futures",
 			Details:    fmt.Sprintf("Open long %d contracts @ $%.2f (fee $%.2f)", contracts, execPrice, fee),
 		}
-		s.TradeHistory = append(s.TradeHistory, trade)
+		RecordTrade(s, trade)
 		logger.Info("BUY %s: %d contracts @ $%.2f (fee $%.2f)", symbol, contracts, execPrice, fee)
 		tradesExecuted++
 
@@ -514,7 +550,7 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 				TradeType:  "futures",
 				Details:    fmt.Sprintf("Close long %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee),
 			}
-			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
@@ -574,7 +610,7 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 				TradeType:  "futures",
 				Details:    fmt.Sprintf("Open short %d contracts @ $%.2f (fee $%.2f)", contracts, execPrice, fee),
 			}
-			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTrade(s, trade)
 			logger.Info("SHORT %s: %d contracts @ $%.2f (fee $%.2f)", symbol, contracts, execPrice, fee)
 			tradesExecuted++
 		}

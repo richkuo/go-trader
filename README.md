@@ -215,7 +215,6 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
 {
   "config_version": 7,
   "interval_seconds": 3600,
-  "state_file": "scheduler/state.json",
   "db_file": "scheduler/state.db",
   "log_dir": "logs",
   "auto_update": "daily",
@@ -230,18 +229,7 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
     "channels": { "spot": "CHANNEL_ID", "options": "CHANNEL_ID", "hyperliquid": "CHANNEL_ID", "topstep": "CHANNEL_ID", "robinhood": "CHANNEL_ID", "okx": "CHANNEL_ID", "luno": "CHANNEL_ID" }
   },
   "platforms": {
-    "hyperliquid": {
-      "state_file": "platforms/hyperliquid/state.json"
-    },
-    "topstep": {
-      "state_file": "platforms/topstep/state.json"
-    },
-    "robinhood": {
-      "state_file": "platforms/robinhood/state.json"
-    },
-    "okx": {
-      "state_file": "platforms/okx/state.json"
-    }
+    "hyperliquid": { "risk": { "max_drawdown_pct": 50 } }
   },
   "strategies": [ ... ]
 }
@@ -498,7 +486,7 @@ go-trader/
 | No Discord messages | Check `DISCORD_BOT_TOKEN` env var, channel IDs, bot permissions |
 | Service won't start | `journalctl -u go-trader -n 50` |
 | Strategy not trading | Check circuit breaker in `/status`, verify params |
-| Reset positions | `cp scheduler/state.example.json scheduler/state.json && systemctl restart go-trader` |
+| Reset positions | `rm scheduler/state.db && systemctl restart go-trader` |
 | Hyperliquid live mode fails | Set `HYPERLIQUID_SECRET_KEY` env var; paper mode works without it |
 | TopStep live mode fails | Set `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRET`, `TOPSTEP_ACCOUNT_ID` env vars |
 | Robinhood live mode fails | Set `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` env vars |
