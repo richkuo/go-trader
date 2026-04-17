@@ -10,8 +10,7 @@ import math
 from datetime import datetime
 from typing import Callable, Optional
 
-# Resolve shared modules so backtest can run without PYTHONPATH hacks
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'spot'))
+# shared_tools is needed for storage.store_backtest_result.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 import numpy as np

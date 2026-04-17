@@ -10,14 +10,10 @@ import itertools
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import timedelta
 
-# Resolve shared modules so backtest can run without PYTHONPATH hacks
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'spot'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
-
 import numpy as np
 import pandas as pd
 
-from strategies import apply_strategy, get_strategy
+from registry_loader import load_registry
 from backtester import Backtester
 
 
@@ -39,6 +35,7 @@ def walk_forward_optimize(
     initial_capital: float = 1000.0,
     symbol: str = "BTC/USDT",
     timeframe: str = "1d",
+    platform: str = "spot",
     verbose: bool = True,
 ) -> dict:
     """
@@ -66,6 +63,9 @@ def walk_forward_optimize(
     window_size = total_len // n_splits
     if window_size < 50:
         raise ValueError(f"Not enough data: {total_len} rows / {n_splits} splits = {window_size} rows per window. Need >= 50.")
+
+    registry = load_registry(platform)
+    apply_strategy = registry.apply_strategy
 
     param_grid = generate_param_grid(param_ranges)
     if verbose:
@@ -183,7 +183,11 @@ def walk_forward_optimize(
     return summary
 
 
-# Predefined parameter ranges for optimization
+# Predefined parameter ranges for optimization.
+# Grids are kept small (≤ ~32 combinations) to bound walk-forward runtime;
+# each strategy registered in shared_strategies/{spot,futures}/strategies.py
+# should have an entry here. Missing entries fall back to the strategy's
+# default_params (single-point grid) so optimize mode still runs.
 DEFAULT_PARAM_RANGES = {
     "sma_crossover": {
         "fast_period": [10, 15, 20, 25],
@@ -232,6 +236,96 @@ DEFAULT_PARAM_RANGES = {
         "macd_fast": [8, 12],
         "macd_slow": [21, 26],
         "macd_signal": [7, 9],
+    },
+    "stoch_rsi": {
+        "rsi_period": [10, 14, 21],
+        "stoch_period": [10, 14, 21],
+        "overbought": [75, 80, 85],
+        "oversold": [15, 20, 25],
+    },
+    "supertrend": {
+        "atr_period": [7, 10, 14],
+        "multiplier": [2.0, 3.0, 4.0],
+    },
+    "ichimoku_cloud": {
+        "tenkan_period": [7, 9, 11],
+        "kijun_period": [22, 26, 30],
+        "senkou_b_period": [44, 52, 60],
+    },
+    "pairs_spread": {
+        "lookback": [20, 30, 40, 50],
+        "entry_z": [1.5, 2.0, 2.5],
+        "exit_z": [0.0, 0.5, 1.0],
+    },
+    "squeeze_momentum": {
+        "bb_period": [15, 20, 25],
+        "kc_period": [15, 20, 25],
+        "kc_mult": [1.0, 1.5, 2.0],
+        "mom_lookback": [8, 12, 16],
+    },
+    "atr_breakout": {
+        "atr_period": [10, 14, 20],
+        "multiplier": [1.0, 1.5, 2.0],
+    },
+    "amd_ifvg": {
+        "min_ifvg_pct": [0.03, 0.05, 0.1],
+        "sweep_threshold_pct": [0.005, 0.01, 0.02],
+    },
+    "heikin_ashi_ema": {
+        "ema_period": [13, 21, 34],
+        "confirmation": [1, 2, 3],
+    },
+    "order_blocks": {
+        "atr_period": [10, 14, 20],
+        "displacement_mult": [1.0, 1.5, 2.0],
+        "ob_lookback": [15, 20, 30],
+        "max_ob_age": [30, 50, 80],
+    },
+    "vwap_reversion": {
+        "entry_std": [1.0, 1.5, 2.0],
+        "exit_std": [0.0, 0.2, 0.5],
+    },
+    "chart_pattern": {
+        "pivot_lookback": [3, 5, 7],
+        "tolerance": [0.02, 0.03, 0.05],
+        "vol_multiplier": [1.2, 1.5, 2.0],
+    },
+    "liquidity_sweeps": {
+        "swing_lookback": [10, 20, 30],
+        "confirmation": [1, 2, 3],
+    },
+    "parabolic_sar": {
+        "iaf": [0.01, 0.02, 0.03],
+        "af_step": [0.01, 0.02, 0.03],
+        "max_af": [0.1, 0.2, 0.3],
+    },
+    "range_scalper": {
+        "bb_period": [10, 14, 20],
+        "bw_threshold": [0.005, 0.008, 0.012],
+        "rsi_period": [5, 7, 10],
+    },
+    "sweep_squeeze_combo": {
+        "swing_lookback": [5, 10, 15],
+        "min_agree": [2, 3],
+    },
+    "adx_trend": {
+        "adx_period": [10, 14, 20],
+        "adx_threshold": [20, 25, 30],
+    },
+    "donchian_breakout": {
+        "entry_period": [10, 20, 30],
+        "exit_period": [5, 10, 15],
+    },
+    # Futures-only
+    "breakout": {
+        "lookback": [10, 20, 30],
+        "atr_period": [10, 14, 20],
+        "atr_multiplier": [1.0, 1.5, 2.0],
+    },
+    "delta_neutral_funding": {
+        "entry_threshold": [0.00005, 0.0001, 0.00015],
+        "exit_threshold": [0.0, 0.00002, 0.00005],
+        "drift_threshold": [1.5, 2.0, 2.5],
     },
 }
 
