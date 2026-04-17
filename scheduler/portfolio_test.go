@@ -559,7 +559,7 @@ func TestExecutePerpsSignalPaperBuyNoNotionalDeduction(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 5, 0, logger)
+	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 5, 0, "", 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,7 +614,7 @@ func TestExecutePerpsSignalPortfolioValueAfterMove(t *testing.T) {
 	defer logger.Close()
 
 	// Open at exactly 2000 via live fill (no slippage).
-	_, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.5, logger)
+	_, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.5, "", 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -659,7 +659,7 @@ func TestExecutePerpsSignalNotInflatedByNotional(t *testing.T) {
 	defer logger.Close()
 
 	// Live fill 0.279 ETH @ 2210.71 (matching the issue example).
-	_, err := ExecutePerpsSignal(s, 1, "ETH", 2210.71, 1, 0.279, logger)
+	_, err := ExecutePerpsSignal(s, 1, "ETH", 2210.71, 1, 0.279, "", 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -702,7 +702,7 @@ func TestExecutePerpsSignalCloseLong(t *testing.T) {
 	defer logger.Close()
 
 	// Close at 2100 — PnL = 0.5 * (2100 - 2000) = $50 gross.
-	_, err := ExecutePerpsSignal(s, -1, "ETH", 2100, 1, 0.5, logger)
+	_, err := ExecutePerpsSignal(s, -1, "ETH", 2100, 1, 0.5, "", 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

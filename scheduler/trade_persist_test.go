@@ -178,6 +178,70 @@ func TestRecordTrade_SurvivesCrashBeforeSave(t *testing.T) {
 	}
 }
 
+// TestExecutePerpsSignal_PersistsExchangeMetadata is the #289 regression guard
+// for the fix that threads fillOID/fillFee into ExecutePerpsSignal so every
+// Trade is constructed complete before RecordTrade persists it. Prior to the
+// fix the OID/fee were stamped onto s.TradeHistory AFTER RecordTrade had
+// already written an empty-metadata row; SaveState's timestamp-dedup then
+// skipped re-insertion and the DB stayed stale. Reload + assert fills.
+func TestExecutePerpsSignal_PersistsExchangeMetadata(t *testing.T) {
+	db := openTestDB(t)
+	prev := tradeRecorder
+	tradeRecorder = db.InsertTrade
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	// Seed the strategy row so LoadState has something to hang trades on.
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{
+			"hl-live": {
+				ID:              "hl-live",
+				Platform:        "hyperliquid",
+				Type:            "perps",
+				Cash:            1000,
+				InitialCapital:  1000,
+				Positions:       map[string]*Position{},
+				OptionPositions: map[string]*OptionPosition{},
+				TradeHistory:    []Trade{},
+			},
+		},
+	}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("seed SaveState: %v", err)
+	}
+
+	logger := newTestLogger(t)
+	s := state.Strategies["hl-live"]
+
+	// Live open-long @ $2000, qty=0.5, OID=12345, fee=$0.42.
+	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.5, "12345", 0.42, logger)
+	if err != nil {
+		t.Fatalf("ExecutePerpsSignal: %v", err)
+	}
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+
+	// Reload from SQLite — simulates mid-cycle crash before SaveState runs.
+	// The persisted row must carry the exchange metadata, not the zero values
+	// that eager-INSERT-then-stamp would have left behind.
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	ss := loaded.Strategies["hl-live"]
+	if ss == nil || len(ss.TradeHistory) != 1 {
+		t.Fatalf("loaded trades = %d, want 1", len(ss.TradeHistory))
+	}
+	got := ss.TradeHistory[0]
+	if got.ExchangeOrderID != "12345" {
+		t.Errorf("persisted ExchangeOrderID = %q, want %q (stamp never reached DB)", got.ExchangeOrderID, "12345")
+	}
+	if got.ExchangeFee != 0.42 {
+		t.Errorf("persisted ExchangeFee = %v, want 0.42 (stamp never reached DB)", got.ExchangeFee)
+	}
+}
+
 // TestExecuteSpotSignal_PersistsImmediately verifies that the production
 // execution path (ExecuteSpotSignal) writes trades through the tradeRecorder
 // hook, not just the end-of-cycle SaveState batch.

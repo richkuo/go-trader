@@ -74,7 +74,12 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 // fillQty > 0 means a live fill: use price and fillQty as-is (no slippage,
 // no notional recalc). fillQty == 0 means paper mode: compute qty from
 // leveraged budget with slippage applied.
-func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, logger *StrategyLogger) (int, error) {
+//
+// fillOID/fillFee carry exchange metadata for live fills (empty/zero for
+// paper); they are stamped onto every Trade constructed in this call so
+// RecordTrade persists the complete row on the first INSERT — see #289 for
+// why post-hoc mutation of TradeHistory entries no longer reaches SQLite.
+func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, fillOID string, fillFee float64, logger *StrategyLogger) (int, error) {
 	if signal == 0 {
 		return 0, nil
 	}
@@ -108,15 +113,17 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			pnl -= fee
 			s.Cash += pnl
 			trade := Trade{
-				Timestamp:  time.Now().UTC(),
-				StrategyID: s.ID,
-				Symbol:     symbol,
-				Side:       "buy",
-				Quantity:   pos.Quantity,
-				Price:      execPrice,
-				Value:      pos.Quantity * execPrice,
-				TradeType:  "perps",
-				Details:    fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
+				Timestamp:       time.Now().UTC(),
+				StrategyID:      s.ID,
+				Symbol:          symbol,
+				Side:            "buy",
+				Quantity:        pos.Quantity,
+				Price:           execPrice,
+				Value:           pos.Quantity * execPrice,
+				TradeType:       "perps",
+				Details:         fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
+				ExchangeOrderID: fillOID,
+				ExchangeFee:     fillFee,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
@@ -157,15 +164,17 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			OpenedAt:        now,
 		}
 		trade := Trade{
-			Timestamp:  now,
-			StrategyID: s.ID,
-			Symbol:     symbol,
-			Side:       "buy",
-			Quantity:   qty,
-			Price:      execPrice,
-			Value:      notional,
-			TradeType:  "perps",
-			Details:    fmt.Sprintf("Open long %.6f @ $%.2f (%.1fx, fee $%.2f)", qty, execPrice, leverage, fee),
+			Timestamp:       now,
+			StrategyID:      s.ID,
+			Symbol:          symbol,
+			Side:            "buy",
+			Quantity:        qty,
+			Price:           execPrice,
+			Value:           notional,
+			TradeType:       "perps",
+			Details:         fmt.Sprintf("Open long %.6f @ $%.2f (%.1fx, fee $%.2f)", qty, execPrice, leverage, fee),
+			ExchangeOrderID: fillOID,
+			ExchangeFee:     fillFee,
 		}
 		RecordTrade(s, trade)
 		logger.Info("BUY %s: %.6f @ $%.2f (%.1fx, notional $%.2f, fee $%.2f)", symbol, qty, execPrice, leverage, notional, fee)
@@ -184,15 +193,17 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			pnl -= fee
 			s.Cash += pnl
 			trade := Trade{
-				Timestamp:  time.Now().UTC(),
-				StrategyID: s.ID,
-				Symbol:     symbol,
-				Side:       "sell",
-				Quantity:   pos.Quantity,
-				Price:      execPrice,
-				Value:      pos.Quantity * execPrice,
-				TradeType:  "perps",
-				Details:    fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
+				Timestamp:       time.Now().UTC(),
+				StrategyID:      s.ID,
+				Symbol:          symbol,
+				Side:            "sell",
+				Quantity:        pos.Quantity,
+				Price:           execPrice,
+				Value:           pos.Quantity * execPrice,
+				TradeType:       "perps",
+				Details:         fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
+				ExchangeOrderID: fillOID,
+				ExchangeFee:     fillFee,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
