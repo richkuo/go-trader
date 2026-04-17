@@ -18,6 +18,32 @@ import pandas as pd
 from storage import store_backtest_result
 
 
+# Equity-curve points per year per timeframe — used to derive the Sharpe
+# annualization factor. Crypto trades 24/7, so a 1d run has ~365 points/yr,
+# a 4h run has ~365*6, etc. Hardcoding sqrt(365) overstated Sharpe by
+# sqrt(periods_per_day) for any sub-daily timeframe (issue #304 M3).
+TIMEFRAME_PERIODS_PER_YEAR = {
+    "1m":  365 * 24 * 60,
+    "5m":  365 * 24 * 12,
+    "15m": 365 * 24 * 4,
+    "30m": 365 * 24 * 2,
+    "1h":  365 * 24,
+    "2h":  365 * 12,
+    "4h":  365 * 6,
+    "6h":  365 * 4,
+    "8h":  365 * 3,
+    "12h": 365 * 2,
+    "1d":  365,
+    "1w":  52,
+    "1M":  12,
+}
+
+
+def periods_per_year(timeframe: str) -> int:
+    """Equity-curve samples per year for ``timeframe``; defaults to daily."""
+    return TIMEFRAME_PERIODS_PER_YEAR.get(timeframe, 365)
+
+
 # Taker fee rates per platform — mirrors scheduler/fees.go:CalculatePlatformSpotFee
 # and related constants. test_platform_fees.py scrapes fees.go to enforce parity.
 PLATFORM_FEE_PCT = {
@@ -138,7 +164,19 @@ class Backtester:
             raise ValueError("DataFrame must have a 'signal' column")
 
         df = df.copy()
-        df["signal"] = df["signal"].shift(1).fillna(0)
+        # Contract: signal ∈ {-1, 0, 1}. position.diff() emits floats and some
+        # strategies emit ints; cast to int so equality checks against literal
+        # ints below are unambiguous, and reject any out-of-domain value
+        # (e.g. +2 "double size") explicitly rather than silently filling
+        # nothing — see issue #304 M1.
+        sig_int = df["signal"].fillna(0).astype(int)
+        bad = sig_int[~sig_int.isin([-1, 0, 1])]
+        if not bad.empty:
+            raise ValueError(
+                f"signal column must be in {{-1, 0, 1}} — got "
+                f"unexpected values {sorted(bad.unique().tolist())}"
+            )
+        df["signal"] = sig_int.shift(1).fillna(0).astype(int)
 
         has_open = "open" in df.columns
 
@@ -209,7 +247,7 @@ class Backtester:
         equity_df = pd.DataFrame(equity_curve).set_index("date")
 
         # Calculate metrics
-        metrics = self._calculate_metrics(equity_df, trades, df)
+        metrics = self._calculate_metrics(equity_df, trades, df, timeframe)
         metrics.update({
             "strategy_name": strategy_name,
             "symbol": symbol,
@@ -228,9 +266,10 @@ class Backtester:
         return metrics
 
     def _calculate_metrics(self, equity_df: pd.DataFrame, trades: list,
-                           df: pd.DataFrame) -> dict:
+                           df: pd.DataFrame, timeframe: str = "1d") -> dict:
         """Calculate comprehensive performance metrics."""
         equity = equity_df["equity"]
+        ann_factor = math.sqrt(periods_per_year(timeframe))
 
         # Anchor return + drawdown at initial_capital so seeded runs (where
         # equity[0] reflects the starting_long mark-to-market, not the true
@@ -246,16 +285,18 @@ class Backtester:
         # Daily returns for ratio calculations
         daily_returns = equity.pct_change().dropna()
 
-        # Sharpe Ratio (annualized, assuming 365 trading days for crypto)
+        # Sharpe Ratio — annualized using the timeframe's periods-per-year
+        # (sqrt(365*6) for 4h, sqrt(365*24) for 1h, etc.) so sub-daily
+        # timeframes don't get inflated by a factor of sqrt(periods_per_day).
         if len(daily_returns) > 1 and daily_returns.std() > 0:
-            sharpe = (daily_returns.mean() / daily_returns.std()) * np.sqrt(365)
+            sharpe = (daily_returns.mean() / daily_returns.std()) * ann_factor
         else:
             sharpe = 0.0
 
         # Sortino Ratio (only downside deviation)
         downside = daily_returns[daily_returns < 0]
         if len(downside) > 1 and downside.std() > 0:
-            sortino = (daily_returns.mean() / downside.std()) * np.sqrt(365)
+            sortino = (daily_returns.mean() / downside.std()) * ann_factor
         else:
             sortino = 0.0
 
@@ -286,8 +327,8 @@ class Backtester:
             avg_win = 0
             avg_loss = 0
 
-        # Volatility (annualized)
-        volatility = daily_returns.std() * np.sqrt(365) if len(daily_returns) > 1 else 0
+        # Volatility (annualized) — same timeframe-aware factor as Sharpe.
+        volatility = daily_returns.std() * ann_factor if len(daily_returns) > 1 else 0
 
         # Calmar ratio
         calmar = annual_return / abs(max_drawdown) if max_drawdown != 0 else 0

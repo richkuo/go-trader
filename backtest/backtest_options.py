@@ -39,16 +39,32 @@ def adapter_strike(underlying: str, target_strike: float) -> float:
     return round(target_strike / step) * step
 
 
-def fetch_historical_data(underlying: str, since: str, timeframe: str = "1d") -> list:
-    """Fetch historical OHLCV data from Binance US."""
+SUPPORTED_UNDERLYING_EXCHANGES = ("binanceus", "binance", "okx", "kraken", "coinbase")
+
+
+def fetch_historical_data(underlying: str, since: str, timeframe: str = "1d",
+                          exchange_name: str = "binanceus") -> list:
+    """Fetch historical OHLCV data from a CCXT exchange (default BinanceUS).
+
+    Options live on Deribit / OKX / IBKR / Robinhood, but we use a spot
+    exchange here only to fetch the *underlying* price series for premium
+    pricing. ``exchange_name`` lets callers pick a non-BinanceUS source
+    when BinanceUS is geo-blocked or missing the symbol; unknown exchanges
+    fall back to BinanceUS with a warning (issue #304 L2).
+    """
     import ccxt
-    exchange = ccxt.binanceus({"enableRateLimit": True})
+    if exchange_name not in SUPPORTED_UNDERLYING_EXCHANGES:
+        print(f"[warn] unknown --exchange '{exchange_name}', falling back to binanceus. "
+              f"Supported: {SUPPORTED_UNDERLYING_EXCHANGES}")
+        exchange_name = "binanceus"
+    exchange_cls = getattr(ccxt, exchange_name)
+    exchange = exchange_cls({"enableRateLimit": True})
     symbol = f"{underlying}/USDT"
-    
+
     since_ts = exchange.parse8601(f"{since}T00:00:00Z")
     all_candles = []
-    
-    print(f"Fetching {symbol} {timeframe} data from {since}...")
+
+    print(f"Fetching {symbol} {timeframe} data from {since} ({exchange_name})...")
     while True:
         candles = exchange.fetch_ohlcv(symbol, timeframe, since=since_ts, limit=1000)
         if not candles:
@@ -166,6 +182,15 @@ class OptionsBacktester:
     def __init__(self, initial_capital: float = 1000.0, max_positions: int = 2,
                  check_interval: int = 1):
         self.initial_capital = initial_capital
+        if max_positions < 2:
+            # Strangles and straddles open two legs simultaneously; with only
+            # one slot the second leg is silently skipped, leaving a naked
+            # call/put. Reject upfront rather than producing wrong results
+            # (issue #304 M4).
+            raise ValueError(
+                f"max_positions must be >= 2 for two-legged options "
+                f"strategies (strangle/straddle); got {max_positions}"
+            )
         self.max_positions = max_positions
         self.check_interval = check_interval  # days between checks
         self.cash = initial_capital
@@ -393,6 +418,14 @@ class OptionsBacktester:
         
         return self._generate_report(underlying, dates[0], dates[-1], closes[0], closes[-1])
     
+    def _elapsed_days(self) -> int:
+        """Calendar days between first and last equity-curve timestamps."""
+        if len(self.equity_curve) < 2:
+            return 0
+        first = datetime.strptime(self.equity_curve[0][0], "%Y-%m-%d")
+        last = datetime.strptime(self.equity_curve[-1][0], "%Y-%m-%d")
+        return max((last - first).days, 0)
+
     def _generate_report(self, underlying: str, start_date: str, end_date: str,
                           start_price: float, end_price: float) -> dict:
         """Generate backtest results report."""
@@ -415,15 +448,22 @@ class OptionsBacktester:
         # Win rate
         win_rate = (self.winning_trades / self.total_trades * 100) if self.total_trades > 0 else 0
         
-        # Annualized return
-        days = len(self.equity_curve)
-        years = days / 365
+        # Annualized return — use elapsed calendar days between the first
+        # and last equity-curve dates, NOT len(equity_curve). With
+        # check_interval=7 the curve only samples weekly, so a 1-year run
+        # would report days=52 → years=0.14 → wildly inflated annualized
+        # return (issue #304 M5).
+        days = self._elapsed_days()
+        years = days / 365.0
         if years > 0 and final_value > 0:
             ann_return = ((final_value / self.initial_capital) ** (1 / years) - 1) * 100
         else:
             ann_return = 0
-        
-        # Sharpe ratio (simplified)
+
+        # Sharpe ratio — annualized using the actual periods-per-year of the
+        # equity-curve sampling rate (1 / check_interval per day), not the
+        # hardcoded 365 that assumes daily samples (issue #304 M3).
+        sample_periods_per_year = 365.0 / max(self.check_interval, 1)
         if len(self.equity_curve) > 1:
             daily_returns = []
             for i in range(1, len(self.equity_curve)):
@@ -434,7 +474,7 @@ class OptionsBacktester:
             if daily_returns:
                 avg_ret = sum(daily_returns) / len(daily_returns)
                 std_ret = math.sqrt(sum((r - avg_ret)**2 for r in daily_returns) / len(daily_returns))
-                sharpe = (avg_ret / std_ret * math.sqrt(365)) if std_ret > 0 else 0
+                sharpe = (avg_ret / std_ret * math.sqrt(sample_periods_per_year)) if std_ret > 0 else 0
             else:
                 sharpe = 0
         else:
@@ -532,11 +572,16 @@ def main():
                         help="Max concurrent positions per strategy")
     parser.add_argument("--check-interval", type=int, default=1,
                         help="Days between strategy checks")
+    parser.add_argument("--exchange", default="binanceus",
+                        choices=SUPPORTED_UNDERLYING_EXCHANGES,
+                        help="CCXT exchange for the underlying spot series "
+                             "(default binanceus)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Show individual trades")
     args = parser.parse_args()
-    
-    candles = fetch_historical_data(args.underlying, args.since)
+
+    candles = fetch_historical_data(args.underlying, args.since,
+                                    exchange_name=args.exchange)
     if not candles or len(candles) < 100:
         print("Not enough data for backtest")
         sys.exit(1)

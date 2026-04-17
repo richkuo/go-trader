@@ -238,7 +238,10 @@ class ThetaHarvestBacktester:
                     mtm += current_price
             self.equity_curve.append((date, round(mtm, 2)))
 
-        # Force-close remaining
+        # Force-close remaining — mirror backtest_options.py:303-321 so the
+        # trade log records the terminal closes; previously these positions
+        # were settled into cash but never appended to ``trade_log``, so
+        # verbose output silently omitted them (issue #304 L5).
         final_spot = closes[-1]
         final_date = dates[-1]
         for pos in self.positions:
@@ -249,6 +252,16 @@ class ThetaHarvestBacktester:
                 self.winning_trades += 1
             else:
                 self.losing_trades += 1
+            self.trade_log.append({
+                "date": final_date,
+                "event": "force_close",
+                "type": pos.option_type,
+                "action": pos.action,
+                "strike": pos.strike,
+                "spot_at_expiry": final_spot,
+                "pnl": round(pnl, 2),
+                "cash_after": round(self.cash, 2),
+            })
         self.positions = []
 
         return self._report(underlying, dates[lookback], dates[-1], closes[lookback], closes[-1])
