@@ -186,9 +186,17 @@ func mergeFuturesMarks(prices map[string]float64, marks map[string]float64) {
 const maxKillSwitchEvents = 50
 
 // KillSwitchEvent records a kill switch lifecycle event for audit purposes.
+//
+// Source identifies which drawdown signal drove a "triggered" or "warning"
+// event: "equity" (classic peak-relative equity drawdown) or "margin" (perps
+// unrealized loss vs. deployed margin, #296). Empty for events that predate
+// #296 or are signal-agnostic (e.g. "reset", "auto_reset"). DrawdownPct is the
+// percentage of the signal named by Source, so tailing the event log for a
+// post-incident review gives an arithmetically consistent record.
 type KillSwitchEvent struct {
 	Timestamp      time.Time `json:"timestamp"`
 	Type           string    `json:"type"` // "triggered", "reset", "warning"
+	Source         string    `json:"source,omitempty"`
 	DrawdownPct    float64   `json:"drawdown_pct"`
 	PortfolioValue float64   `json:"portfolio_value"`
 	PeakValue      float64   `json:"peak_value"`
@@ -196,13 +204,21 @@ type KillSwitchEvent struct {
 }
 
 // PortfolioRiskState tracks aggregate portfolio-level risk (#42).
+//
+// CurrentDrawdownPct is pure equity drawdown ((PeakValue - totalValue) /
+// PeakValue). CurrentMarginDrawdownPct is the #296 perps-margin drawdown
+// (perps unrealized loss / deployed margin). Keeping them as separate fields
+// preserves the arithmetic invariant that (PeakValue, CurrentDrawdownPct) is
+// reconstructable, while still exposing the margin signal for operators and
+// the kill switch. The kill switch fires on whichever signal breaches first.
 type PortfolioRiskState struct {
-	PeakValue          float64           `json:"peak_value"`
-	CurrentDrawdownPct float64           `json:"current_drawdown_pct"`
-	KillSwitchActive   bool              `json:"kill_switch_active"`
-	KillSwitchAt       time.Time         `json:"kill_switch_at,omitempty"`
-	WarningSent        bool              `json:"warning_sent,omitempty"`
-	Events             []KillSwitchEvent `json:"events,omitempty"`
+	PeakValue                float64           `json:"peak_value"`
+	CurrentDrawdownPct       float64           `json:"current_drawdown_pct"`
+	CurrentMarginDrawdownPct float64           `json:"current_margin_drawdown_pct,omitempty"`
+	KillSwitchActive         bool              `json:"kill_switch_active"`
+	KillSwitchAt             time.Time         `json:"kill_switch_at,omitempty"`
+	WarningSent              bool              `json:"warning_sent,omitempty"`
+	Events                   []KillSwitchEvent `json:"events,omitempty"`
 }
 
 // SharedWalletBalanceFetcher returns the real on-chain balance for a given
@@ -293,7 +309,7 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 	// (potentially double-counted) peak.
 	state.PortfolioRisk.PeakValue = totalBalance
 	state.PortfolioRisk.CurrentDrawdownPct = 0
-	addKillSwitchEvent(&state.PortfolioRisk, "auto_reset",
+	addKillSwitchEvent(&state.PortfolioRisk, "auto_reset", "",
 		0, totalBalance, totalBalance,
 		fmt.Sprintf("startup auto-clear: shared wallets %v reachable, total balance=$%.2f (peak re-baselined)",
 			sharedPlatforms, totalBalance))
@@ -301,10 +317,18 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 }
 
 // addKillSwitchEvent appends an event and trims to maxKillSwitchEvents.
-func addKillSwitchEvent(prs *PortfolioRiskState, eventType string, drawdownPct, portfolioValue, peakValue float64, details string) {
+//
+// source identifies which drawdown signal drove the event: "equity", "margin",
+// or "" (unknown / signal-agnostic). For "triggered" and "warning" events it
+// must be set; for "reset" / "auto_reset" it is typically empty. DrawdownPct
+// is interpreted as a pct of the signal named by source — do not pass
+// max(equity, margin) here; pass the value for the specific source, otherwise
+// the event log becomes arithmetically inconsistent.
+func addKillSwitchEvent(prs *PortfolioRiskState, eventType, source string, drawdownPct, portfolioValue, peakValue float64, details string) {
 	prs.Events = append(prs.Events, KillSwitchEvent{
 		Timestamp:      time.Now().UTC(),
 		Type:           eventType,
+		Source:         source,
 		DrawdownPct:    drawdownPct,
 		PortfolioValue: portfolioValue,
 		PeakValue:      peakValue,
@@ -315,12 +339,59 @@ func addKillSwitchEvent(prs *PortfolioRiskState, eventType string, drawdownPct, 
 	}
 }
 
+// AggregatePerpsMarginInputs sums unrealized loss and deployed margin across
+// every perps strategy in the portfolio. It returns the numerator and
+// denominator inputs of the drawdown ratio (not a ratio itself) — matches the
+// per-strategy counterpart perpsMarginDrawdownInputs (#292), aggregated to the
+// portfolio level for the kill switch (#296).
+//
+// Only strategies with Type == "perps" contribute; the inner filter (Multiplier
+// > 0 && Leverage > 0) inside perpsMarginDrawdownInputs is the second guard
+// against any hypothetical non-perps leveraged position leaking through.
+//
+// Returns (0, 0) when no perps margin is deployed — the caller treats a zero
+// margin as "no perps signal this cycle" and falls back to pure equity
+// drawdown. This preserves existing behavior for all-spot / all-options
+// portfolios.
+func AggregatePerpsMarginInputs(strategies map[string]*StrategyState, prices map[string]float64) (unrealizedLoss, margin float64) {
+	for _, s := range strategies {
+		if s.Type != "perps" {
+			continue
+		}
+		loss, m := perpsMarginDrawdownInputs(s, prices)
+		unrealizedLoss += loss
+		margin += m
+	}
+	return unrealizedLoss, margin
+}
+
 // CheckPortfolioRisk evaluates aggregate portfolio risk.
 // Returns (allowed, notionalBlocked, warning, reason).
 // allowed=false means the kill switch has fired or is latched; notionalBlocked=true
 // means new trades should be skipped but existing positions kept; warning=true
 // means drawdown is approaching the kill switch threshold.
-func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional float64) (allowed, notionalBlocked, warning bool, reason string) {
+//
+// Two independent drawdown signals feed the kill switch:
+//
+//  1. Equity drawdown — (peak - totalValue) / peak. Captures spot/options
+//     PnL and overall cash erosion. Persisted as CurrentDrawdownPct.
+//  2. Perps margin drawdown (#296) — perpsUnrealizedLoss / perpsMargin.
+//     Captures leveraged-position losses against deployed margin, which a
+//     pure equity view understates dramatically for all-perps accounts: a
+//     50% loss on 10x margin shows up as ~5% of total account value, so the
+//     equity-only kill switch fires far too late (or not at all before
+//     liquidation). Persisted as CurrentMarginDrawdownPct.
+//
+// The two signals live on separate fields so (PeakValue, CurrentDrawdownPct)
+// remains an arithmetically consistent equity tuple for post-incident review.
+// The kill switch fires on whichever signal breaches cfg.MaxDrawdownPct
+// first, so a mixed portfolio is guarded on both fronts. For all-perps
+// accounts, the margin signal dominates; for all-spot/options, the margin
+// inputs are zero and behavior is identical to the pre-#296 baseline.
+//
+// The emitted KillSwitchEvent.Source records whether equity or margin drove
+// the fire/warning so operators can tell at a glance which lever tripped.
+func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin float64) (allowed, notionalBlocked, warning bool, reason string) {
 	if prs.KillSwitchActive {
 		return false, false, false, fmt.Sprintf("portfolio kill switch is latched (triggered at %s, manual reset required)",
 			prs.KillSwitchAt.Format("2006-01-02 15:04:05 UTC"))
@@ -331,28 +402,76 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 		prs.PeakValue = totalValue
 	}
 
-	// Check drawdown kill switch.
+	// Compute both drawdown signals independently. Each is persisted to its
+	// own field so (PeakValue, CurrentDrawdownPct) stays internally consistent
+	// and operators can see both lenses at once.
+	var equityDD, marginDD float64
 	if prs.PeakValue > 0 {
-		prs.CurrentDrawdownPct = (prs.PeakValue - totalValue) / prs.PeakValue * 100
-
-		// Kill switch fires if drawdown exceeds limit.
-		if prs.CurrentDrawdownPct > cfg.MaxDrawdownPct {
-			prs.KillSwitchActive = true
-			prs.KillSwitchAt = time.Now().UTC()
-			r := fmt.Sprintf("portfolio drawdown %.1f%% exceeds limit %.1f%% (value=$%.2f, peak=$%.2f)",
-				prs.CurrentDrawdownPct, cfg.MaxDrawdownPct, totalValue, prs.PeakValue)
-			addKillSwitchEvent(prs, "triggered", prs.CurrentDrawdownPct, totalValue, prs.PeakValue, r)
-			return false, false, false, r
+		equityDD = (prs.PeakValue - totalValue) / prs.PeakValue * 100
+		if equityDD < 0 {
+			equityDD = 0
 		}
+		prs.CurrentDrawdownPct = equityDD
+	}
+	if perpsMargin > 0 && perpsUnrealizedLoss > 0 {
+		marginDD = perpsUnrealizedLoss / perpsMargin * 100
+	}
+	prs.CurrentMarginDrawdownPct = marginDD
 
-		// Warning check: approaching kill switch threshold.
+	// Kill switch: fire if either signal breaches the limit. The reason names
+	// the breaching signal so operators know whether to investigate spot /
+	// options equity or perps margin.
+	//
+	// Note: this branch runs even when PeakValue == 0, so a cold-start
+	// account that blows up margin on bar 1 (before any equity snapshot) is
+	// still protected — equityDD is zero in that case and only the margin
+	// signal can fire.
+	if equityDD > cfg.MaxDrawdownPct || marginDD > cfg.MaxDrawdownPct {
+		prs.KillSwitchActive = true
+		prs.KillSwitchAt = time.Now().UTC()
+		var r, source string
+		var dd float64
+		// Tie-break to margin when the two signals are equal: the margin
+		// signal is the newer, more sensitive lens (#296) and surfacing it
+		// preferentially helps operators notice leveraged blow-ups.
+		if marginDD >= equityDD {
+			source = "margin"
+			dd = marginDD
+			r = fmt.Sprintf("portfolio perps margin drawdown %.1f%% exceeds limit %.1f%% (unrealized loss=$%.2f, margin=$%.2f, value=$%.2f, peak=$%.2f)",
+				marginDD, cfg.MaxDrawdownPct, perpsUnrealizedLoss, perpsMargin, totalValue, prs.PeakValue)
+		} else {
+			source = "equity"
+			dd = equityDD
+			r = fmt.Sprintf("portfolio drawdown %.1f%% exceeds limit %.1f%% (value=$%.2f, peak=$%.2f)",
+				equityDD, cfg.MaxDrawdownPct, totalValue, prs.PeakValue)
+		}
+		addKillSwitchEvent(prs, "triggered", source, dd, totalValue, prs.PeakValue, r)
+		return false, false, false, r
+	}
+
+	// Warning check: approaching kill switch threshold on either signal.
+	if cfg.MaxDrawdownPct > 0 {
 		warnDrawdownPct := cfg.MaxDrawdownPct * cfg.WarnThresholdPct / 100
-		if prs.CurrentDrawdownPct > warnDrawdownPct {
+		equityWarn := equityDD > warnDrawdownPct
+		marginWarn := marginDD > warnDrawdownPct
+		if equityWarn || marginWarn {
 			if !prs.WarningSent {
 				prs.WarningSent = true
 				warning = true
-				reason = fmt.Sprintf("portfolio drawdown %.1f%% approaching kill switch limit %.1f%% (warn at %.1f%%, value=$%.2f, peak=$%.2f)",
-					prs.CurrentDrawdownPct, cfg.MaxDrawdownPct, warnDrawdownPct, totalValue, prs.PeakValue)
+				switch {
+				case equityWarn && marginWarn:
+					// Both breached — surface both in the reason so a
+					// correlated move is visible to the operator. Ties go
+					// to margin (see kill-switch branch above).
+					reason = fmt.Sprintf("portfolio drawdown approaching kill switch limit %.1f%% (warn at %.1f%%): equity=%.1f%% (value=$%.2f, peak=$%.2f); perps margin=%.1f%% (unrealized loss=$%.2f, margin=$%.2f)",
+						cfg.MaxDrawdownPct, warnDrawdownPct, equityDD, totalValue, prs.PeakValue, marginDD, perpsUnrealizedLoss, perpsMargin)
+				case marginWarn:
+					reason = fmt.Sprintf("portfolio perps margin drawdown %.1f%% approaching kill switch limit %.1f%% (warn at %.1f%%, unrealized loss=$%.2f, margin=$%.2f)",
+						marginDD, cfg.MaxDrawdownPct, warnDrawdownPct, perpsUnrealizedLoss, perpsMargin)
+				default:
+					reason = fmt.Sprintf("portfolio drawdown %.1f%% approaching kill switch limit %.1f%% (warn at %.1f%%, value=$%.2f, peak=$%.2f)",
+						equityDD, cfg.MaxDrawdownPct, warnDrawdownPct, totalValue, prs.PeakValue)
+				}
 			}
 		} else {
 			// Recovered below warning threshold — reset so it can fire again.

@@ -122,11 +122,11 @@ func makeTestState() *AppState {
 			},
 		},
 		PortfolioRisk: PortfolioRiskState{
-			PeakValue: 2050, CurrentDrawdownPct: 1.5,
+			PeakValue: 2050, CurrentDrawdownPct: 1.5, CurrentMarginDrawdownPct: 18.7,
 			KillSwitchActive: false,
 			WarningSent:      true,
 			Events: []KillSwitchEvent{
-				{Timestamp: now.Add(-3 * time.Hour), Type: "warning", DrawdownPct: 5, PortfolioValue: 1950, PeakValue: 2050, Details: "approaching threshold"},
+				{Timestamp: now.Add(-3 * time.Hour), Type: "warning", Source: "margin", DrawdownPct: 18.7, PortfolioValue: 1950, PeakValue: 2050, Details: "approaching threshold"},
 			},
 		},
 		CorrelationSnapshot: &CorrelationSnapshot{
@@ -236,6 +236,12 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 	if loaded.PortfolioRisk.PeakValue != 2050 {
 		t.Errorf("PortfolioRisk.PeakValue = %f, want 2050", loaded.PortfolioRisk.PeakValue)
 	}
+	if loaded.PortfolioRisk.CurrentDrawdownPct != 1.5 {
+		t.Errorf("PortfolioRisk.CurrentDrawdownPct = %f, want 1.5", loaded.PortfolioRisk.CurrentDrawdownPct)
+	}
+	if loaded.PortfolioRisk.CurrentMarginDrawdownPct != 18.7 {
+		t.Errorf("PortfolioRisk.CurrentMarginDrawdownPct = %f, want 18.7", loaded.PortfolioRisk.CurrentMarginDrawdownPct)
+	}
 	if !loaded.PortfolioRisk.WarningSent {
 		t.Error("PortfolioRisk.WarningSent should be true")
 	}
@@ -244,6 +250,9 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 	}
 	if loaded.PortfolioRisk.Events[0].Type != "warning" {
 		t.Errorf("event type = %q, want %q", loaded.PortfolioRisk.Events[0].Type, "warning")
+	}
+	if loaded.PortfolioRisk.Events[0].Source != "margin" {
+		t.Errorf("event source = %q, want %q", loaded.PortfolioRisk.Events[0].Source, "margin")
 	}
 
 	// Correlation snapshot round-trip.

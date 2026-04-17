@@ -471,6 +471,11 @@ func main() {
 			mu.RLock()
 			totalPV, usedPVFallback := computeTotalPortfolioValue(cfg.Strategies, state, prices, walletBalances, sharedWallets)
 			totalNotional := PortfolioNotional(state.Strategies, prices)
+			// #296: aggregate perps margin drawdown inputs alongside the
+			// equity total so the portfolio kill switch can fire on a
+			// leveraged margin blow-up that would otherwise hide inside
+			// equity-only drawdown for all-perps accounts.
+			perpsLoss, perpsMargin := AggregatePerpsMarginInputs(state.Strategies, prices)
 			mu.RUnlock()
 
 			mu.Lock()
@@ -481,7 +486,7 @@ func main() {
 			// we snapshot before the call and restore if we're on a fallback
 			// cycle. Drawdown detection still runs against the frozen peak.
 			origPeak := state.PortfolioRisk.PeakValue
-			portfolioAllowed, nb, portfolioWarning, portfolioReason := CheckPortfolioRisk(&state.PortfolioRisk, cfg.PortfolioRisk, totalPV, totalNotional)
+			portfolioAllowed, nb, portfolioWarning, portfolioReason := CheckPortfolioRisk(&state.PortfolioRisk, cfg.PortfolioRisk, totalPV, totalNotional, perpsLoss, perpsMargin)
 			if usedPVFallback && state.PortfolioRisk.PeakValue > origPeak {
 				state.PortfolioRisk.PeakValue = origPeak
 			}
@@ -508,7 +513,15 @@ func main() {
 			// Warning alert: drawdown approaching kill switch threshold.
 			if portfolioWarning && notifier.HasBackends() {
 				mu.Lock()
-				addKillSwitchEvent(&state.PortfolioRisk, "warning", state.PortfolioRisk.CurrentDrawdownPct, totalPV, state.PortfolioRisk.PeakValue, portfolioReason)
+				// Source mirrors CheckPortfolioRisk's tie-break: margin wins
+				// ties so the newer #296 signal is surfaced preferentially.
+				source := "equity"
+				warnDD := state.PortfolioRisk.CurrentDrawdownPct
+				if state.PortfolioRisk.CurrentMarginDrawdownPct >= warnDD {
+					source = "margin"
+					warnDD = state.PortfolioRisk.CurrentMarginDrawdownPct
+				}
+				addKillSwitchEvent(&state.PortfolioRisk, "warning", source, warnDD, totalPV, state.PortfolioRisk.PeakValue, portfolioReason)
 				mu.Unlock()
 				warnMsg := fmt.Sprintf("**PORTFOLIO WARNING**\n%s", portfolioReason)
 				notifier.SendToAllChannels(warnMsg)
@@ -552,7 +565,7 @@ func main() {
 					mu.Lock()
 					state.PortfolioRisk.KillSwitchActive = false
 					state.PortfolioRisk.KillSwitchAt = time.Time{}
-					addKillSwitchEvent(&state.PortfolioRisk, "reset", state.PortfolioRisk.CurrentDrawdownPct, 0, state.PortfolioRisk.PeakValue, "manual reset via DM")
+					addKillSwitchEvent(&state.PortfolioRisk, "reset", "", state.PortfolioRisk.CurrentDrawdownPct, 0, state.PortfolioRisk.PeakValue, "manual reset via DM")
 					if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
 						fmt.Printf("[CRITICAL] Failed to save state after kill switch reset: %v\n", err)
 					}

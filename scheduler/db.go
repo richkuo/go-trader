@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS portfolio_risk (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     peak_value REAL NOT NULL DEFAULT 0,
     current_drawdown_pct REAL NOT NULL DEFAULT 0,
+    current_margin_drawdown_pct REAL NOT NULL DEFAULT 0,
     kill_switch_active INTEGER NOT NULL DEFAULT 0,
     kill_switch_at TEXT NOT NULL DEFAULT '',
     warning_sent INTEGER NOT NULL DEFAULT 0
@@ -148,6 +149,7 @@ CREATE TABLE IF NOT EXISTS kill_switch_events (
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
     type TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
     drawdown_pct REAL NOT NULL DEFAULT 0,
     portfolio_value REAL NOT NULL DEFAULT 0,
     peak_value REAL NOT NULL DEFAULT 0,
@@ -209,6 +211,9 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE trades ADD COLUMN exchange_fee REAL NOT NULL DEFAULT 0",
 		// Position lifecycle tracking (#288).
 		"ALTER TABLE positions ADD COLUMN opened_at TEXT NOT NULL DEFAULT ''",
+		// Portfolio margin drawdown + kill-switch source tracking (#296 review).
+		"ALTER TABLE portfolio_risk ADD COLUMN current_margin_drawdown_pct REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE kill_switch_events ADD COLUMN source TEXT NOT NULL DEFAULT ''",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -439,9 +444,9 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	if state.PortfolioRisk.WarningSent {
 		warnSent = 1
 	}
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO portfolio_risk (id, peak_value, current_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent)
-		VALUES (1, ?, ?, ?, ?, ?)`,
-		state.PortfolioRisk.PeakValue, state.PortfolioRisk.CurrentDrawdownPct,
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO portfolio_risk (id, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent)
+		VALUES (1, ?, ?, ?, ?, ?, ?)`,
+		state.PortfolioRisk.PeakValue, state.PortfolioRisk.CurrentDrawdownPct, state.PortfolioRisk.CurrentMarginDrawdownPct,
 		ksActive, formatTime(state.PortfolioRisk.KillSwitchAt), warnSent,
 	); err != nil {
 		return fmt.Errorf("upsert portfolio_risk: %w", err)
@@ -452,14 +457,14 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		return fmt.Errorf("delete kill_switch_events: %w", err)
 	}
 	if len(state.PortfolioRisk.Events) > 0 {
-		stmtEvt, err := tx.Prepare(`INSERT INTO kill_switch_events (timestamp, type, drawdown_pct, portfolio_value, peak_value, details)
-			VALUES (?, ?, ?, ?, ?, ?)`)
+		stmtEvt, err := tx.Prepare(`INSERT INTO kill_switch_events (timestamp, type, source, drawdown_pct, portfolio_value, peak_value, details)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			return fmt.Errorf("prepare kill_switch_event insert: %w", err)
 		}
 		defer stmtEvt.Close()
 		for _, evt := range state.PortfolioRisk.Events {
-			if _, err := stmtEvt.Exec(formatTime(evt.Timestamp), evt.Type, evt.DrawdownPct, evt.PortfolioValue, evt.PeakValue, evt.Details); err != nil {
+			if _, err := stmtEvt.Exec(formatTime(evt.Timestamp), evt.Type, evt.Source, evt.DrawdownPct, evt.PortfolioValue, evt.PeakValue, evt.Details); err != nil {
 				return fmt.Errorf("insert kill_switch_event: %w", err)
 			}
 		}
@@ -789,8 +794,8 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	// 6. Load portfolio_risk.
 	var ksActiveInt, warnSentInt int
 	var ksAtStr string
-	err = sdb.db.QueryRow("SELECT peak_value, current_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent FROM portfolio_risk WHERE id = 1").
-		Scan(&state.PortfolioRisk.PeakValue, &state.PortfolioRisk.CurrentDrawdownPct,
+	err = sdb.db.QueryRow("SELECT peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent FROM portfolio_risk WHERE id = 1").
+		Scan(&state.PortfolioRisk.PeakValue, &state.PortfolioRisk.CurrentDrawdownPct, &state.PortfolioRisk.CurrentMarginDrawdownPct,
 			&ksActiveInt, &ksAtStr, &warnSentInt)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("load portfolio_risk: %w", err)
@@ -800,7 +805,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	state.PortfolioRisk.WarningSent = warnSentInt != 0
 
 	// 7. Load kill switch events.
-	evtRows, err := sdb.db.Query("SELECT timestamp, type, drawdown_pct, portfolio_value, peak_value, details FROM kill_switch_events ORDER BY rowid ASC")
+	evtRows, err := sdb.db.Query("SELECT timestamp, type, source, drawdown_pct, portfolio_value, peak_value, details FROM kill_switch_events ORDER BY rowid ASC")
 	if err != nil {
 		return nil, fmt.Errorf("load kill_switch_events: %w", err)
 	}
@@ -808,7 +813,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	for evtRows.Next() {
 		var evt KillSwitchEvent
 		var tsStr string
-		if err := evtRows.Scan(&tsStr, &evt.Type, &evt.DrawdownPct, &evt.PortfolioValue, &evt.PeakValue, &evt.Details); err != nil {
+		if err := evtRows.Scan(&tsStr, &evt.Type, &evt.Source, &evt.DrawdownPct, &evt.PortfolioValue, &evt.PeakValue, &evt.Details); err != nil {
 			return nil, fmt.Errorf("scan kill_switch_event: %w", err)
 		}
 		evt.Timestamp = parseTime(tsStr)
