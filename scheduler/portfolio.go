@@ -209,6 +209,60 @@ func PerpsOrderSkipReason(signal int, posSide string) string {
 	return ""
 }
 
+// SpotOrderSkipReason mirrors PerpsOrderSkipReason for spot. ExecuteSpotSignal's
+// side-based skip branches ("already long, skipping buy" at signal=1,
+// "No long position to sell, skipping" at signal=-1) must be consulted BEFORE
+// the live helper spawns a Python order placer — otherwise a live fill lands
+// on the exchange but ExecuteSpotSignal returns 0 and no Trade is recorded,
+// leaving virtual state behind real holdings. See #298 / #300.
+//
+// Matching conditions to ExecuteSpotSignal:
+//   - signal == 1 && pos.Side == "long"  → "Already long, skipping buy"
+//   - signal == -1 && no long position    → "No long position to sell, skipping"
+//
+// Cash-insufficient skips inside the open-long path are not mirrored here —
+// live helpers guard cash upstream before placing the order.
+func SpotOrderSkipReason(signal int, posSide string) string {
+	switch signal {
+	case 1:
+		if posSide == "long" {
+			return "already long, skipping buy"
+		}
+	case -1:
+		if posSide != "long" {
+			return "no long position to sell, skipping"
+		}
+	}
+	return ""
+}
+
+// FuturesOrderSkipReason is the futures peer of PerpsOrderSkipReason. It
+// reflects the CLOSE-LONG-ONLY semantics of the current TopStep live helper
+// (runTopStepExecuteOrder treats signal=-1 as close-long and never opens a
+// live short, even though paper-mode ExecuteFuturesSignal can). With those
+// semantics, the guard matches spot/perps:
+//   - signal == 1 && pos.Side == "long" → "Already long, skipping buy"
+//   - signal == -1 && no long position   → "No long position to sell, skipping"
+//
+// Without this guard, a live sell fires with posSide=="short" (Quantity is
+// always positive so the posQty<=0 check does not catch it) but
+// ExecuteFuturesSignal is a side-based no-op when already short, producing a
+// silent state drift identical in shape to #298. If the live helper is ever
+// extended to open shorts, this guard must be revisited.
+func FuturesOrderSkipReason(signal int, posSide string) string {
+	switch signal {
+	case 1:
+		if posSide == "long" {
+			return "already long, skipping buy"
+		}
+	case -1:
+		if posSide != "long" {
+			return "no long position to sell, skipping"
+		}
+	}
+	return ""
+}
+
 // ExecutePerpsSignal processes a perps (perpetual futures) signal with
 // margin-based accounting (#254). Unlike spot, perps positions do NOT consume
 // the full notional from cash — only the fee is deducted, matching the

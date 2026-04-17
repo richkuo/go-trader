@@ -617,31 +617,37 @@ func main() {
 					}
 					var okxCash float64
 					var okxPosQty float64
+					var okxPosSide string
 					if sc.Platform == "okx" && okxIsLive(sc.Args) {
 						okxCash = stratState.Cash
 						if sym := okxSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
 								okxPosQty = pos.Quantity
+								okxPosSide = pos.Side
 							}
 						}
 					}
 					var rhCash float64
 					var rhPosQty float64
+					var rhPosSide string
 					if sc.Platform == "robinhood" && robinhoodIsLive(sc.Args) {
 						rhCash = stratState.Cash
 						if sym := robinhoodSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
 								rhPosQty = pos.Quantity
+								rhPosSide = pos.Side
 							}
 						}
 					}
 					var tsCash float64
 					var tsContracts float64
+					var tsPosSide string
 					if sc.Type == "futures" && topstepIsLive(sc.Args) {
 						tsCash = stratState.Cash
 						if sym := topstepSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
 								tsContracts = pos.Quantity
+								tsPosSide = pos.Side
 							}
 						}
 					}
@@ -677,7 +683,7 @@ func main() {
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, logger); ok2 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
@@ -695,7 +701,7 @@ func main() {
 								var execResult *RobinhoodExecuteResult
 								liveExecFailed := false
 								if robinhoodIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runRobinhoodExecuteOrder(sc, result, price, rhCash, rhPosQty, logger); ok2 {
+									if er, ok2 := runRobinhoodExecuteOrder(sc, result, price, rhCash, rhPosQty, rhPosSide, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
@@ -730,7 +736,7 @@ func main() {
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, logger); ok2 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
@@ -765,7 +771,7 @@ func main() {
 							var execResult *TopStepExecuteResult
 							liveExecFailed := false
 							if topstepIsLive(sc.Args) && result.Signal != 0 {
-								if er, ok2 := runTopStepExecuteOrder(sc, result, price, tsCash, tsContracts, logger); ok2 {
+								if er, ok2 := runTopStepExecuteOrder(sc, result, price, tsCash, tsContracts, tsPosSide, logger); ok2 {
 									execResult = er
 								} else {
 									liveExecFailed = true
@@ -1585,7 +1591,18 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, logger *Strat
 }
 
 // runTopStepExecuteOrder places a live futures order (Phase 3, no lock).
-func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cash, posQty float64, logger *StrategyLogger) (*TopStepExecuteResult, bool) {
+//
+// posSide is the current position side captured under RLock in Phase 1
+// ("long", "short", or "" for flat). We consult FuturesOrderSkipReason BEFORE
+// calling the Python executor: without this guard a live sell fires while
+// posSide=="short" (Quantity is always positive so posQty<=0 cannot
+// distinguish short from flat) but ExecuteFuturesSignal is a no-op in that
+// state — producing a silent state drift identical in shape to #298/#300.
+func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cash, posQty float64, posSide string, logger *StrategyLogger) (*TopStepExecuteResult, bool) {
+	if reason := FuturesOrderSkipReason(result.Signal, posSide); reason != "" {
+		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
+		return nil, false
+	}
 	isBuy := result.Signal == 1
 	var contracts int
 	if isBuy {
@@ -1741,7 +1758,17 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, logger *Str
 }
 
 // runRobinhoodExecuteOrder places a live crypto order (Phase 3, no lock).
-func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price, cash, posQty float64, logger *StrategyLogger) (*RobinhoodExecuteResult, bool) {
+//
+// posSide is the current position side captured under RLock in Phase 1
+// ("long", "short", or "" for flat). We consult SpotOrderSkipReason BEFORE
+// calling the Python executor: otherwise a no-op ExecuteSpotSignal (e.g.
+// already-long with signal=1) would not record the live fill — the same bug
+// class as #298. See #300.
+func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price, cash, posQty float64, posSide string, logger *StrategyLogger) (*RobinhoodExecuteResult, bool) {
+	if reason := SpotOrderSkipReason(result.Signal, posSide); reason != "" {
+		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
+		return nil, false
+	}
 	isBuy := result.Signal == 1
 	var amountUSD float64
 	var quantity float64
@@ -1888,7 +1915,25 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyL
 }
 
 // runOKXExecuteOrder places a live market order on OKX (Phase 3, no lock).
-func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, logger *StrategyLogger) (*OKXExecuteResult, bool) {
+//
+// posSide is the current position side captured under RLock in Phase 1
+// ("long", "short", or "" for flat). We consult Perps/SpotOrderSkipReason
+// BEFORE calling the Python executor — OKX covers both spot and perps, and
+// each has its own side-based no-op branches in ExecuteSpotSignal /
+// ExecutePerpsSignal that must be mirrored to avoid the #298 bug class
+// (live fill placed but no Trade recorded because the in-memory execution
+// returned 0). See #300.
+func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, posSide string, logger *StrategyLogger) (*OKXExecuteResult, bool) {
+	var skip string
+	if sc.Type == "perps" {
+		skip = PerpsOrderSkipReason(result.Signal, posSide)
+	} else {
+		skip = SpotOrderSkipReason(result.Signal, posSide)
+	}
+	if skip != "" {
+		logger.Info("Skipping live order for %s: %s", result.Symbol, skip)
+		return nil, false
+	}
 	isBuy := result.Signal == 1
 	// #254: perps use leverage to size notional; spot is unaffected.
 	sizingLeverage := 1.0

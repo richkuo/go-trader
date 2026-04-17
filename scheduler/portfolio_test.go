@@ -745,6 +745,68 @@ func TestPerpsOrderSkipReason(t *testing.T) {
 	}
 }
 
+// #300 regression — SpotOrderSkipReason must mirror every side-based skip
+// branch of ExecuteSpotSignal. Live helpers (Robinhood, OKX spot) consult
+// this guard BEFORE placing live orders; a missed case re-introduces the
+// #298 "fill lands but no Trade" class of bug on those platforms.
+func TestSpotOrderSkipReason(t *testing.T) {
+	cases := []struct {
+		name    string
+		signal  int
+		posSide string
+		wantSet bool
+	}{
+		{"buy_flat_allowed", 1, "", false},
+		{"buy_short_allowed_flip", 1, "short", false},
+		{"buy_long_skipped", 1, "long", true},
+		{"sell_long_allowed", -1, "long", false},
+		{"sell_flat_skipped", -1, "", true},
+		{"sell_short_skipped", -1, "short", true},
+		{"signal_zero_flat", 0, "", false},
+		{"signal_zero_long", 0, "long", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SpotOrderSkipReason(tc.signal, tc.posSide)
+			if (got != "") != tc.wantSet {
+				t.Errorf("SpotOrderSkipReason(%d, %q) = %q, wantSet=%v", tc.signal, tc.posSide, got, tc.wantSet)
+			}
+		})
+	}
+}
+
+// #300 regression — FuturesOrderSkipReason mirrors the close-long-only
+// semantics of the current TopStep live helper. The critical case that was
+// previously unprotected is `sell_short`: Position.Quantity is always
+// positive, so the existing posQty<=0 check could not distinguish a flat
+// account from a short one, allowing a live sell to fire while
+// ExecuteFuturesSignal would treat it as a no-op (same #298-class drift).
+func TestFuturesOrderSkipReason(t *testing.T) {
+	cases := []struct {
+		name    string
+		signal  int
+		posSide string
+		wantSet bool
+	}{
+		{"buy_flat_allowed", 1, "", false},
+		{"buy_short_allowed_flip", 1, "short", false},
+		{"buy_long_skipped", 1, "long", true},
+		{"sell_long_allowed", -1, "long", false},
+		{"sell_flat_skipped", -1, "", true},
+		{"sell_short_skipped", -1, "short", true},
+		{"signal_zero_flat", 0, "", false},
+		{"signal_zero_long", 0, "long", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FuturesOrderSkipReason(tc.signal, tc.posSide)
+			if (got != "") != tc.wantSet {
+				t.Errorf("FuturesOrderSkipReason(%d, %q) = %q, wantSet=%v", tc.signal, tc.posSide, got, tc.wantSet)
+			}
+		})
+	}
+}
+
 // #298 — demonstrates the in-memory contract the guard protects: when
 // ExecutePerpsSignal is called while already long with signal=1, it returns
 // trades=0 and no Trade is recorded. If a live fill has already happened
