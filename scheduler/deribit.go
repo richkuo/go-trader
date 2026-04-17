@@ -465,6 +465,7 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 			pnl = (r.AssignStrike - existing.AvgCost) * r.AssignQuantity
 			newQty := existing.Quantity - r.AssignQuantity
 			if newQty <= 0 {
+				recordClosedPosition(s, existing, r.AssignStrike, pnl, "assignment", time.Now().UTC())
 				delete(s.Positions, symbol)
 			} else {
 				existing.Quantity = newQty

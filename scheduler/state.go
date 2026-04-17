@@ -48,6 +48,11 @@ type StrategyState struct {
 	OptionPositions map[string]*OptionPosition `json:"option_positions"`
 	TradeHistory    []Trade                    `json:"trade_history"`
 	RiskState       RiskState                  `json:"risk_state"`
+	// ClosedPositions is an in-memory buffer of positions closed during the
+	// current cycle. SaveState appends these to the closed_positions table and
+	// clears the buffer on successful commit. Not serialized to JSON state
+	// files — history lives exclusively in SQLite. (#288)
+	ClosedPositions []ClosedPosition `json:"-"`
 }
 
 func NewStrategyState(cfg StrategyConfig) *StrategyState {

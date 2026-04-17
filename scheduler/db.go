@@ -48,8 +48,29 @@ CREATE TABLE IF NOT EXISTS positions (
     side TEXT NOT NULL,
     multiplier REAL NOT NULL DEFAULT 0,
     owner_strategy_id TEXT NOT NULL DEFAULT '',
+    opened_at TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (strategy_id, symbol)
 );
+
+CREATE TABLE IF NOT EXISTS closed_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    avg_cost REAL NOT NULL,
+    side TEXT NOT NULL,
+    multiplier REAL NOT NULL DEFAULT 0,
+    opened_at TEXT NOT NULL DEFAULT '',
+    closed_at TEXT NOT NULL DEFAULT '',
+    close_price REAL NOT NULL DEFAULT 0,
+    realized_pnl REAL NOT NULL DEFAULT 0,
+    close_reason TEXT NOT NULL DEFAULT '',
+    duration_seconds INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_closed_positions_strategy ON closed_positions(strategy_id);
+CREATE INDEX IF NOT EXISTS idx_closed_positions_symbol ON closed_positions(symbol);
+CREATE INDEX IF NOT EXISTS idx_closed_positions_closed_at ON closed_positions(closed_at DESC);
 
 CREATE TABLE IF NOT EXISTS option_positions (
     strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
@@ -163,6 +184,8 @@ func (sdb *StateDB) migrateSchema() error {
 	migrations := []string{
 		"ALTER TABLE trades ADD COLUMN exchange_order_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE trades ADD COLUMN exchange_fee REAL NOT NULL DEFAULT 0",
+		// Position lifecycle tracking (#288).
+		"ALTER TABLE positions ADD COLUMN opened_at TEXT NOT NULL DEFAULT ''",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -217,8 +240,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	defer stmtStrat.Close()
 
-	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, quantity, avg_cost, side, multiplier, owner_strategy_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`)
+	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, quantity, avg_cost, side, multiplier, owner_strategy_id, opened_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare position insert: %w", err)
 	}
@@ -249,7 +272,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 
 		for _, pos := range s.Positions {
-			if _, err := stmtPos.Exec(s.ID, pos.Symbol, pos.Quantity, pos.AvgCost, pos.Side, pos.Multiplier, pos.OwnerStrategyID); err != nil {
+			if _, err := stmtPos.Exec(s.ID, pos.Symbol, pos.Quantity, pos.AvgCost, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt)); err != nil {
 				return fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
 			}
 		}
@@ -290,6 +313,27 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 				if _, err := stmtTrade.Exec(s.ID, ts, t.Symbol, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee); err != nil {
 					return fmt.Errorf("insert trade for %s: %w", s.ID, err)
 				}
+			}
+		}
+	}
+
+	// 4b. Append buffered ClosedPosition records (#288).
+	stmtClosed, err := tx.Prepare(`INSERT INTO closed_positions
+		(strategy_id, symbol, quantity, avg_cost, side, multiplier,
+		 opened_at, closed_at, close_price, realized_pnl, close_reason, duration_seconds)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare closed_position insert: %w", err)
+	}
+	defer stmtClosed.Close()
+	for _, s := range state.Strategies {
+		for _, cp := range s.ClosedPositions {
+			if _, err := stmtClosed.Exec(
+				cp.StrategyID, cp.Symbol, cp.Quantity, cp.AvgCost, cp.Side, cp.Multiplier,
+				formatTime(cp.OpenedAt), formatTime(cp.ClosedAt),
+				cp.ClosePrice, cp.RealizedPnL, cp.CloseReason, cp.DurationSeconds,
+			); err != nil {
+				return fmt.Errorf("insert closed_position %s/%s: %w", cp.StrategyID, cp.Symbol, err)
 			}
 		}
 	}
@@ -342,7 +386,82 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		return fmt.Errorf("upsert correlation_snapshot: %w", err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Clear buffered ClosedPositions only after a successful commit so that a
+	// mid-transaction failure does not silently lose history entries.
+	for _, s := range state.Strategies {
+		s.ClosedPositions = nil
+	}
+	return nil
+}
+
+// QueryClosedPositions returns closed-position history ordered by closed_at desc,
+// optionally filtered by strategy/symbol/time bounds. Used by status endpoints
+// and leaderboard analytics (#288).
+func (sdb *StateDB) QueryClosedPositions(strategyID, symbol string, since, until time.Time, limit, offset int) ([]ClosedPosition, int, error) {
+	var where []string
+	var args []interface{}
+	if strategyID != "" {
+		where = append(where, "strategy_id = ?")
+		args = append(args, strategyID)
+	}
+	if symbol != "" {
+		where = append(where, "symbol = ?")
+		args = append(args, symbol)
+	}
+	if !since.IsZero() {
+		where = append(where, "closed_at >= ?")
+		args = append(args, formatTime(since))
+	}
+	if !until.IsZero() {
+		where = append(where, "closed_at <= ?")
+		args = append(args, formatTime(until))
+	}
+	whereClause := ""
+	if len(where) > 0 {
+		whereClause = "WHERE " + strings.Join(where, " AND ")
+	}
+	var total int
+	if err := sdb.db.QueryRow("SELECT COUNT(*) FROM closed_positions "+whereClause, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count closed_positions: %w", err)
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	query := fmt.Sprintf(`SELECT strategy_id, symbol, quantity, avg_cost, side, multiplier,
+		opened_at, closed_at, close_price, realized_pnl, close_reason, duration_seconds
+		FROM closed_positions %s ORDER BY closed_at DESC LIMIT ? OFFSET ?`, whereClause)
+	queryArgs := append(args, limit, offset)
+	rows, err := sdb.db.Query(query, queryArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query closed_positions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ClosedPosition
+	for rows.Next() {
+		var cp ClosedPosition
+		var openedStr, closedStr string
+		if err := rows.Scan(&cp.StrategyID, &cp.Symbol, &cp.Quantity, &cp.AvgCost, &cp.Side, &cp.Multiplier,
+			&openedStr, &closedStr, &cp.ClosePrice, &cp.RealizedPnL, &cp.CloseReason, &cp.DurationSeconds); err != nil {
+			return nil, 0, fmt.Errorf("scan closed_position: %w", err)
+		}
+		cp.OpenedAt = parseTime(openedStr)
+		cp.ClosedAt = parseTime(closedStr)
+		out = append(out, cp)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate closed_positions: %w", err)
+	}
+	if out == nil {
+		out = []ClosedPosition{}
+	}
+	return out, total, nil
 }
 
 // LoadState reads the full AppState from SQLite.
@@ -405,7 +524,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	}
 
 	// 3. Load positions for each strategy.
-	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, quantity, avg_cost, side, multiplier, owner_strategy_id FROM positions")
+	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, quantity, avg_cost, side, multiplier, owner_strategy_id, opened_at FROM positions")
 	if err != nil {
 		return nil, fmt.Errorf("load positions: %w", err)
 	}
@@ -413,9 +532,11 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	for posRows.Next() {
 		var stratID string
 		var pos Position
-		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.Quantity, &pos.AvgCost, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID); err != nil {
+		var openedAtStr string
+		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.Quantity, &pos.AvgCost, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
+		pos.OpenedAt = parseTime(openedAtStr)
 		if s, ok := state.Strategies[stratID]; ok {
 			s.Positions[pos.Symbol] = &pos
 		}
