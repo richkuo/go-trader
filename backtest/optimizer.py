@@ -25,6 +25,26 @@ def generate_param_grid(param_ranges: Dict[str, list]) -> List[dict]:
     return [dict(zip(keys, combo)) for combo in combos]
 
 
+def max_indicator_lookback(param_ranges: Dict[str, list]) -> int:
+    """Heuristic warmup size for walk-forward folds.
+
+    Scans the integer values in the parameter grid and returns the largest.
+    Period/lookback-style params are ints (``fast_period``, ``slow_period``,
+    ``atr_period``, ``swing_lookback``, etc.) and dominate warmup cost;
+    non-integer params (multipliers, thresholds) are ignored since they
+    don't add history requirements.
+
+    Returns 0 if no integer params found — matches the pre-warmup behavior
+    for grids like ``vwap_reversion`` that only tune std-dev thresholds.
+    """
+    max_lb = 0
+    for values in param_ranges.values():
+        for v in values:
+            if isinstance(v, int) and v > max_lb:
+                max_lb = v
+    return max_lb
+
+
 def walk_forward_optimize(
     df: pd.DataFrame,
     strategy_name: str,
@@ -69,10 +89,12 @@ def walk_forward_optimize(
     apply_strategy = reg.apply_strategy
 
     param_grid = generate_param_grid(param_ranges)
+    warmup = max_indicator_lookback(param_ranges)
     if verbose:
         print(f"\nWalk-Forward Optimization: {strategy_name}")
         print(f"  Data: {len(df)} candles | Splits: {n_splits} | Train: {train_pct:.0%}")
         print(f"  Parameter combinations: {len(param_grid)}")
+        print(f"  Warmup bars per fold: {warmup}")
         print(f"  Optimizing: {optimize_metric}")
 
     bt = Backtester(initial_capital=initial_capital, platform=platform)
@@ -90,6 +112,18 @@ def walk_forward_optimize(
         if len(train_df) < 30 or len(test_df) < 10:
             continue
 
+        # Pre-roll indicator state with ``warmup`` bars of preceding history
+        # before train/test. Without this, a 100-bar window against an SMA-80
+        # grid produces all-NaN signals and "wins" with zero trades — the
+        # silent-failure path the warmup fix is preventing.
+        train_boundary = start_idx + train_size
+        train_start_ext = max(0, start_idx - warmup)
+        test_start_ext = max(0, train_boundary - warmup)
+        train_ext_df = df.iloc[train_start_ext:train_boundary]
+        test_ext_df = df.iloc[test_start_ext:end_idx]
+        train_trim = start_idx - train_start_ext
+        test_trim = train_boundary - test_start_ext
+
         if verbose:
             print(f"\n  Fold {fold+1}/{n_splits}: "
                   f"Train {train_df.index[0].strftime('%Y-%m-%d')}→{train_df.index[-1].strftime('%Y-%m-%d')} "
@@ -100,7 +134,8 @@ def walk_forward_optimize(
         best_params = None
         for params in param_grid:
             try:
-                signals_df = apply_strategy(strategy_name, train_df, params)
+                signals_ext = apply_strategy(strategy_name, train_ext_df, params)
+                signals_df = signals_ext.iloc[train_trim:]
                 result = bt.run(signals_df, strategy_name=strategy_name,
                               symbol=symbol, timeframe=timeframe,
                               params=params, save=False)
@@ -116,7 +151,8 @@ def walk_forward_optimize(
 
         # Validate on test data with best params
         try:
-            test_signals = apply_strategy(strategy_name, test_df, best_params)
+            test_signals_ext = apply_strategy(strategy_name, test_ext_df, best_params)
+            test_signals = test_signals_ext.iloc[test_trim:]
             test_result = bt.run(test_signals, strategy_name=strategy_name,
                                symbol=symbol, timeframe=timeframe,
                                params=best_params, save=False)
