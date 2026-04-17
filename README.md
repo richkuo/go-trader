@@ -307,7 +307,7 @@ To get your Discord user ID: right-click your username in Discord → **Copy Use
 | `script` | Python script path (relative) | Required |
 | `args` | Arguments passed to script | Required |
 | `capital` | Starting capital in USD | 1000 |
-| `max_drawdown_pct` | Circuit breaker threshold (from peak) | Spot: 5%, Options: 10%, Perps: 5% |
+| `max_drawdown_pct` | Circuit breaker threshold — peak-relative for spot/options/futures; margin-relative for perps (#292) | Spot: 5%, Options: 10%, Perps: 5% |
 | `interval_seconds` | Check interval (0 = use global) | 0 |
 | `htf_filter` | Enable higher-timeframe trend filter | false |
 | `params` | Custom strategy parameters (e.g. `{"multiplier": 2.0}`) | null |
@@ -383,7 +383,7 @@ journalctl -u go-trader -n 50           # recent logs
 - **Portfolio kill switch** — halt all trading if portfolio drawdown exceeds threshold (default: 25%)
 - **Notional cap** — optional hard limit on total notional exposure
 - **Correlation tracking** — per-asset directional exposure monitoring; warns when a single asset exceeds concentration threshold (default: 60%) or too many strategies share the same direction (default: 75%); opt-in via `correlation.enabled`
-- **Per-strategy circuit breakers** — pause trading when max drawdown exceeded (24h cooldown)
+- **Per-strategy circuit breakers** — pause trading when max drawdown exceeded (24h cooldown); spot/options/futures measure drawdown peak-relative, perps measure it relative to deployed margin so leveraged margin wipes fire the breaker in time (#292)
 - **Consecutive loss tracking** — 5 losses in a row → 1h pause
 - **Spot**: max 95% capital per position
 - **Options**: max 4 positions per strategy, portfolio-aware scoring
