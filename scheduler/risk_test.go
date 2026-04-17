@@ -1155,14 +1155,15 @@ func TestClearLatchedKillSwitchSharedWallet_MultiPlatformAnyFailPreservesLatch(t
 	}
 }
 
-// TestPerpsMarginDeployed_OnlyPerpsCount verifies that spot and futures
+// TestPerpsMarginDrawdownInputs_OnlyPerpsCount verifies that spot and futures
 // positions are excluded from margin deployed — only positions with both
 // Multiplier > 0 AND Leverage > 0 contribute. Prevents the #292 denominator
 // from picking up unleveraged exposure.
-func TestPerpsMarginDeployed_OnlyPerpsCount(t *testing.T) {
+func TestPerpsMarginDrawdownInputs_OnlyPerpsCount(t *testing.T) {
 	s := &StrategyState{
 		Positions: map[string]*Position{
 			// Perp: notional 0.2 * $3000 = $600, margin @ 20x = $30
+			// PnL: 0.2 * 1 * (3000 - 2000) = $200 gain → clamps to 0 loss
 			"ETH": {Symbol: "ETH", Quantity: 0.2, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 20},
 			// Spot — Multiplier=0, must be ignored
 			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.05, AvgCost: 50000, Side: "long"},
@@ -1172,62 +1173,87 @@ func TestPerpsMarginDeployed_OnlyPerpsCount(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH": 3000, "BTC/USDT": 60000, "ES": 4500}
 
-	got := perpsMarginDeployed(s, prices)
-	want := 30.0
-	if got < want-0.001 || got > want+0.001 {
-		t.Errorf("perpsMarginDeployed = %.4f; want %.4f", got, want)
+	loss, margin := perpsMarginDrawdownInputs(s, prices)
+	if margin < 29.999 || margin > 30.001 {
+		t.Errorf("margin = %.4f; want 30.0 (only perps count)", margin)
+	}
+	if loss != 0 {
+		t.Errorf("loss = %.4f; want 0 (ETH has unrealized gain, not loss)", loss)
 	}
 }
 
-// TestPerpsMarginDeployed_FallbackToAvgCost verifies that margin uses
+// TestPerpsMarginDrawdownInputs_UnrealizedLoss verifies the unrealized-loss
+// numerator tracks negative PnL on open perps positions — the key change in
+// the #292 review: numerator is tied to currently-open positions, not to
+// cumulative loss from peak.
+func TestPerpsMarginDrawdownInputs_UnrealizedLoss(t *testing.T) {
+	s := &StrategyState{
+		Positions: map[string]*Position{
+			// Long ETH down 10%: PnL = 1 * 1 * (2700 - 3000) = -$300
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 10},
+			// Short BTC down 5% (gain for short): PnL = 0.1 * 1 * (50000 - 47500) = +$250 → clamp
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", Multiplier: 1, Leverage: 10},
+		},
+	}
+	prices := map[string]float64{"ETH": 2700, "BTC": 47500}
+	loss, margin := perpsMarginDrawdownInputs(s, prices)
+	// margin = (1 * 2700 / 10) + (0.1 * 47500 / 10) = 270 + 475 = 745
+	if margin < 744.999 || margin > 745.001 {
+		t.Errorf("margin = %.4f; want 745", margin)
+	}
+	if loss < 299.999 || loss > 300.001 {
+		t.Errorf("loss = %.4f; want 300 (only ETH is underwater)", loss)
+	}
+}
+
+// TestPerpsMarginDrawdownInputs_FallbackToAvgCost verifies that margin uses
 // AvgCost when no mark price is available — matches the valuation fallback
 // in PortfolioValue so margin and PnL use a consistent basis.
-func TestPerpsMarginDeployed_FallbackToAvgCost(t *testing.T) {
+func TestPerpsMarginDrawdownInputs_FallbackToAvgCost(t *testing.T) {
 	s := &StrategyState{
 		Positions: map[string]*Position{
 			"HYPE": {Symbol: "HYPE", Quantity: 100, AvgCost: 20, Side: "long", Multiplier: 1, Leverage: 10},
 		},
 	}
 	// Prices map is empty — should fall back to AvgCost ($20).
-	got := perpsMarginDeployed(s, map[string]float64{})
+	// PnL at entry == mark → 0 loss.
+	_, margin := perpsMarginDrawdownInputs(s, map[string]float64{})
 	want := 100.0 * 20.0 / 10.0 // $200
-	if got < want-0.001 || got > want+0.001 {
-		t.Errorf("perpsMarginDeployed with missing price = %.4f; want %.4f", got, want)
+	if margin < want-0.001 || margin > want+0.001 {
+		t.Errorf("margin with missing price = %.4f; want %.4f", margin, want)
 	}
 
 	// Zero/negative mark price must also fall back to AvgCost.
-	got = perpsMarginDeployed(s, map[string]float64{"HYPE": 0})
-	if got < want-0.001 || got > want+0.001 {
-		t.Errorf("perpsMarginDeployed with zero price = %.4f; want %.4f", got, want)
+	_, margin = perpsMarginDrawdownInputs(s, map[string]float64{"HYPE": 0})
+	if margin < want-0.001 || margin > want+0.001 {
+		t.Errorf("margin with zero price = %.4f; want %.4f", margin, want)
 	}
 }
 
-// TestPerpsMarginDeployed_NoPositions verifies zero return when strategy has
-// no positions — the caller uses this signal to fall back to peak-relative
+// TestPerpsMarginDrawdownInputs_NoPositions verifies zero return when strategy
+// has no positions — the caller uses this signal to fall back to peak-relative
 // drawdown.
-func TestPerpsMarginDeployed_NoPositions(t *testing.T) {
+func TestPerpsMarginDrawdownInputs_NoPositions(t *testing.T) {
 	s := &StrategyState{Positions: map[string]*Position{}}
-	if got := perpsMarginDeployed(s, nil); got != 0 {
-		t.Errorf("perpsMarginDeployed with no positions = %.4f; want 0", got)
+	loss, margin := perpsMarginDrawdownInputs(s, nil)
+	if loss != 0 || margin != 0 {
+		t.Errorf("perpsMarginDrawdownInputs with no positions = (%.4f, %.4f); want (0, 0)", loss, margin)
 	}
 }
 
 // TestCheckRisk_PerpsMarginDrawdown_FiresEarly is the core #292 regression.
 // Reproduces the issue scenario: a 20x ETH long where margin is tiny
-// relative to cash. A ~1.25% adverse ETH move wipes 25% of margin — the
-// new denominator fires the circuit breaker where the old portfolio-relative
-// calculation would have shown ~1.4% drawdown and allowed the position to
-// continue decaying toward liquidation.
+// relative to cash. An adverse ETH move that wipes a large fraction of
+// margin fires the circuit breaker where the old portfolio-relative
+// calculation would have shown only a few-percent drawdown and allowed the
+// position to continue decaying toward liquidation.
 func TestCheckRisk_PerpsMarginDrawdown_FiresEarly(t *testing.T) {
 	// Strategy: $584 cash, 0.236 ETH long @ $2357 (20x cross).
-	// Margin deployed = 0.236 * 2357 / 20 = $27.81
-	// After -1.25% ETH move to $2327.54:
-	//   unrealized PnL = 0.236 * (2327.54 - 2357) = -$6.95
-	//   portfolio value = 584 + (-6.95) = $577.05
-	//   peak (pre-open) = $589
-	//   loss from peak = 589 - 577.05 = $11.95
-	//   margin-based drawdown = 11.95 / 27.81 * 100 ≈ 42.9%  ← fires @ 25%
-	//   portfolio-based drawdown = 11.95 / 589 * 100 ≈ 2.0%   ← would NOT fire
+	// After -2.1% ETH move to $2307.5:
+	//   unrealized PnL = 0.236 * 1 * (2307.5 - 2357) = -$11.68
+	//   margin at mark   = 0.236 * 2307.5 / 20 = $27.22
+	//   margin-based drawdown = 11.68 / 27.22 * 100 ≈ 42.9%  ← fires @ 25%
+	//   portfolio-based drawdown would be ≈ 2% and would NOT fire
 	s := &StrategyState{
 		ID:   "hl-test",
 		Type: "perps",
@@ -1251,7 +1277,7 @@ func TestCheckRisk_PerpsMarginDrawdown_FiresEarly(t *testing.T) {
 		OptionPositions: make(map[string]*OptionPosition),
 		TradeHistory:    []Trade{},
 	}
-	prices := map[string]float64{"ETH": 2327.54}
+	prices := map[string]float64{"ETH": 2307.5}
 	pv := PortfolioValue(s, prices)
 
 	allowed, reason := CheckRisk(s, pv, prices, nil)
@@ -1262,8 +1288,7 @@ func TestCheckRisk_PerpsMarginDrawdown_FiresEarly(t *testing.T) {
 	if s.RiskState.CurrentDrawdownPct < 25.0 {
 		t.Errorf("expected CurrentDrawdownPct > 25 on margin basis; got %.2f", s.RiskState.CurrentDrawdownPct)
 	}
-	// Sanity — old portfolio-basis would have been < 5%.
-	if s.RiskState.CurrentDrawdownPct < 30 {
+	if s.RiskState.CurrentDrawdownPct < 40 {
 		t.Errorf("expected margin-based drawdown well above threshold; got %.2f", s.RiskState.CurrentDrawdownPct)
 	}
 	// Positions liquidated on circuit-breaker fire.
@@ -1276,8 +1301,10 @@ func TestCheckRisk_PerpsMarginDrawdown_FiresEarly(t *testing.T) {
 // strategy is allowed to continue when margin-based drawdown is under the
 // circuit-breaker limit.
 func TestCheckRisk_PerpsMarginDrawdown_BelowThreshold(t *testing.T) {
-	// Same setup as above but only a ~$3 unrealized loss — margin drawdown
-	// ~10.8%, well under the 25% threshold.
+	// Same 0.236 ETH @ $2357 20x setup.
+	// At price 2355: PnL = 0.236 * (2355 - 2357) = -$0.47;
+	//                margin = 0.236 * 2355 / 20 = $27.78;
+	//                drawdown ≈ 1.7% — well under 25%.
 	s := &StrategyState{
 		Type: "perps",
 		Cash: 584.0,
@@ -1292,9 +1319,7 @@ func TestCheckRisk_PerpsMarginDrawdown_BelowThreshold(t *testing.T) {
 		},
 		OptionPositions: make(map[string]*OptionPosition),
 	}
-	// Small -0.5% move: PnL = 0.236 * (2345.2 - 2357) = -$2.78; loss from peak ≈ $7.78;
-	// margin drawdown = 7.78 / 27.81 = 28% — still fires. Pick a smaller move.
-	prices := map[string]float64{"ETH": 2355.0} // -0.085% move
+	prices := map[string]float64{"ETH": 2355.0}
 	pv := PortfolioValue(s, prices)
 	allowed, reason := CheckRisk(s, pv, prices, nil)
 	if !allowed {
@@ -1303,6 +1328,45 @@ func TestCheckRisk_PerpsMarginDrawdown_BelowThreshold(t *testing.T) {
 	}
 	if s.RiskState.CurrentDrawdownPct >= 25 {
 		t.Errorf("expected drawdown < 25%%; got %.2f", s.RiskState.CurrentDrawdownPct)
+	}
+}
+
+// TestCheckRisk_PerpsPriorRealizedLossesDoNotInflateDrawdown is the review
+// regression for the "stale peak meets fresh margin" concern. A strategy
+// that took realized losses in the past ($1000 peak → $900 cash) then opens
+// a fresh untouched small position must NOT fire the circuit breaker on the
+// very first tick: cumulative peak-relative loss ($100) against tiny
+// new-position margin ($0.15) would otherwise blow past any threshold even
+// though the open position itself is flat. (#292 code review)
+func TestCheckRisk_PerpsPriorRealizedLossesDoNotInflateDrawdown(t *testing.T) {
+	s := &StrategyState{
+		Type: "perps",
+		Cash: 900.0, // prior realized losses brought cash from $1000 → $900
+		RiskState: RiskState{
+			PeakValue:      1000.0,
+			MaxDrawdownPct: 25.0,
+			TotalTrades:    5,
+			DailyPnLDate:   todayUTC(),
+		},
+		Positions: map[string]*Position{
+			// Fresh tiny position, mark == entry → 0 unrealized PnL
+			"ETH": {Symbol: "ETH", Quantity: 0.001, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+	}
+	prices := map[string]float64{"ETH": 3000}
+	pv := PortfolioValue(s, prices)
+	allowed, reason := CheckRisk(s, pv, prices, nil)
+	if !allowed {
+		t.Errorf("expected fresh position with no unrealized PnL to NOT fire; reason=%s dd=%.2f",
+			reason, s.RiskState.CurrentDrawdownPct)
+	}
+	if s.RiskState.CurrentDrawdownPct > 0.001 {
+		t.Errorf("expected drawdown ≈ 0 (no unrealized loss on open position); got %.2f",
+			s.RiskState.CurrentDrawdownPct)
+	}
+	if len(s.Positions) != 1 {
+		t.Errorf("expected position to survive; got %d", len(s.Positions))
 	}
 }
 

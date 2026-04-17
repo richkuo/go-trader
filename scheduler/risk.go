@@ -510,14 +510,27 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 	}
 }
 
-// perpsMarginDeployed returns the sum of margin (notional / leverage) across
-// open perps positions in the strategy. Perps positions are identified by
-// Multiplier > 0 AND Leverage > 0 — futures also set Multiplier > 0 but do
-// not set Leverage, so they are excluded. Falls back to AvgCost when the
-// symbol's mark price is missing or non-positive. Returns 0 when no perps
-// positions are open or no leverage info is available. (#292)
-func perpsMarginDeployed(s *StrategyState, prices map[string]float64) float64 {
-	var total float64
+// perpsMarginDrawdownInputs iterates open perps positions and returns the sum
+// of unrealized losses (positive number; gains clamp to zero) and the sum of
+// deployed margin (notional / leverage). These are the numerator and
+// denominator of the perps-specific drawdown ratio introduced in #292.
+//
+// Positions are filtered by Leverage > 0; Multiplier > 0 is also required as
+// a double-belt guard against any future code path that might attach Leverage
+// to a non-PnL-branch position. The outer s.Type == "perps" check at the call
+// site is the primary guard.
+//
+// The unrealized-loss numerator (rather than peakValue - portfolioValue) keeps
+// the drawdown ratio referenced to the currently-open position: prior realized
+// losses that already live in Cash below the high-water mark do NOT inflate
+// drawdown against a fresh small position's margin. See #292 code review.
+//
+// Mark price falls back to AvgCost when missing or non-positive so numerator
+// and denominator share the same basis as PortfolioValue's valuation.
+//
+// Returns (0, 0) when no perps positions are open; the caller uses a zero
+// margin as the signal to fall back to peak-relative drawdown.
+func perpsMarginDrawdownInputs(s *StrategyState, prices map[string]float64) (unrealizedLoss, margin float64) {
 	for sym, pos := range s.Positions {
 		if pos.Multiplier <= 0 || pos.Leverage <= 0 {
 			continue
@@ -533,9 +546,19 @@ func perpsMarginDeployed(s *StrategyState, prices map[string]float64) float64 {
 		if notional <= 0 {
 			continue
 		}
-		total += notional / pos.Leverage
+		margin += notional / pos.Leverage
+
+		var pnl float64
+		if pos.Side == "long" {
+			pnl = pos.Quantity * pos.Multiplier * (price - pos.AvgCost)
+		} else {
+			pnl = pos.Quantity * pos.Multiplier * (pos.AvgCost - price)
+		}
+		if pnl < 0 {
+			unrealizedLoss += -pnl
+		}
 	}
-	return total
+	return unrealizedLoss, margin
 }
 
 // CheckRisk evaluates risk state and returns whether trading is allowed.
@@ -562,11 +585,18 @@ func CheckRisk(s *StrategyState, portfolioValue float64, prices map[string]float
 	// Check drawdown.
 	//
 	// For perps strategies with open leveraged positions, drawdown is measured
-	// against deployed margin (capital at risk) rather than portfolio value.
-	// A 20x leveraged position only puts ~5% of notional at risk as margin;
-	// using the full portfolio as denominator under-states near-100% margin
-	// losses as a few-percent drawdown, so the circuit breaker would only fire
-	// after the position had already been liquidated. See #292.
+	// as unrealized loss on currently-open positions divided by deployed margin
+	// (capital at risk). A 20x leveraged position only puts ~5% of notional at
+	// risk as margin; using the full portfolio as denominator with peak-relative
+	// numerator under-states near-100% margin losses as a few-percent drawdown,
+	// so the circuit breaker would only fire after the position had already been
+	// liquidated. See #292.
+	//
+	// Referencing the numerator to unrealized PnL on *currently-open* positions
+	// (rather than peak - portfolioValue, which is cumulative from the
+	// high-water mark) keeps prior realized losses from inflating drawdown
+	// against a freshly opened position's margin. A strategy that has taken
+	// past losses but just opened a small untouched position should not fire.
 	//
 	// When the strategy has no perps margin deployed (all positions closed,
 	// leverage unset, or non-perps type), we fall back to the classic
@@ -574,16 +604,17 @@ func CheckRisk(s *StrategyState, portfolioValue float64, prices map[string]float
 	// to before.
 	if r.PeakValue > 0 {
 		loss := r.PeakValue - portfolioValue
-		if loss < 0 {
-			loss = 0
-		}
 		denom := r.PeakValue
 		denomLabel := "peak"
 		if s.Type == "perps" {
-			if margin := perpsMarginDeployed(s, prices); margin > 0 {
+			if pnlLoss, margin := perpsMarginDrawdownInputs(s, prices); margin > 0 {
+				loss = pnlLoss
 				denom = margin
 				denomLabel = "margin"
 			}
+		}
+		if loss < 0 {
+			loss = 0
 		}
 		if denom > 0 {
 			r.CurrentDrawdownPct = (loss / denom) * 100

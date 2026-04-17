@@ -106,8 +106,8 @@
 - `shared_tools/htf_filter.py` — `htf_trend_filter(symbol, timeframe, fetch_fn)` returns HTF trend via 50 EMA; `apply_htf_filter(signal, htf_trend)` filters counter-trend signals; `fetch_fn` is a callable `(symbol, tf, limit) → DataFrame` so it works across all platforms
 - `StrategyConfig.HTFFilter` — per-strategy bool (`htf_filter` in JSON); Go appends `--htf-filter` to script args; not applied to options strategies or `delta_neutral_funding` (funding-rate harvest is direction-agnostic); guard in both `generateConfig` and all Python check scripts
 - `delta_neutral_funding` is perps-only (not in spot registry); function lives in `spot/strategies.py` but without `@register_strategy`; registered only in `futures/strategies.py`
-- Perps vs futures at Position level: both set `Multiplier > 0`; only perps sets `Leverage > 0`. Use the two-field check (`Multiplier > 0 && Leverage > 0`) when iterating positions for leverage-aware metrics — see `perpsMarginDeployed` in `risk.go` (#292)
-- Per-strategy drawdown denominator: spot/options/futures use peak portfolio value; perps uses deployed margin (`Σ qty*price/leverage`) when positions are open, falling back to peak when no margin is deployed — see `CheckRisk` in `risk.go` (#292)
+- Perps vs futures at Position level: both set `Multiplier > 0`; only perps sets `Leverage > 0`. Use the two-field check (`Multiplier > 0 && Leverage > 0`) when iterating positions for leverage-aware metrics — see `perpsMarginDrawdownInputs` in `risk.go` (#292)
+- Per-strategy drawdown: spot/options/futures use `(peak - portfolio) / peak`; perps uses `unrealized_loss_on_open_positions / deployed_margin` when positions are open (referenced to currently-open positions so prior realized losses do not inflate drawdown against a fresh small position's margin), falling back to peak-relative when no margin is deployed — see `perpsMarginDrawdownInputs` + `CheckRisk` in `risk.go` (#292)
 
 ## Pull Requests
 - PR descriptions must reference the related GitHub issue if one exists, using `Closes #<number>` in the body (e.g. `Closes #46`)
