@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // LeaderboardEntry holds pre-computed PnL data for one strategy.
@@ -296,13 +298,14 @@ func PostLeaderboard(cfg *Config, notifier *MultiNotifier) error {
 }
 
 // titleCase capitalizes the first rune of s and lowercases the rest.
-// Used for human-readable platform names in leaderboard titles.
+// Rune-aware so non-ASCII platform names don't produce mojibake.
 func titleCase(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	if s == "" {
 		return s
 	}
-	return strings.ToUpper(s[:1]) + s[1:]
+	r, size := utf8.DecodeRuneInString(s)
+	return string(unicode.ToUpper(r)) + s[size:]
 }
 
 // platformIcon returns a short icon for a platform; used by leaderboard summaries.
