@@ -1153,6 +1153,7 @@ Each spot strategy needs entries for each asset it supports:
 **Strategies and their assets:**
 - `sma_crossover`, `ema_crossover`, `momentum`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `volume_weighted`, `triple_ema`, `rsi_macd_combo`: BTC, ETH, SOL
 - `pairs_spread`: Requires two assets — `args: ["pairs_spread", "BTC/USDT", "1d", "ETH/USDT"]`
+- `triple_ema_bidir`: futures/perps only (not registered for spot); bidirectional — set `"allow_shorts": true` on the strategy entry so the scheduler opens shorts from flat and flips on reversal.
 
 **Pairs strategy IDs and args:**
 ```json
