@@ -87,6 +87,12 @@ func main() {
 		}
 	}
 
+	// #336: Detect perps shorts held under AllowShorts=false strategies. The
+	// executor can't reconcile this on its own — a fresh-open buy against an
+	// existing short nets on the exchange but flips virtually. Collect here,
+	// forward to owner DM once the notifier is wired below.
+	allowShortsWarnings := ValidatePerpsAllowShortsConfig(state, cfg)
+
 	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
 	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
 	// perps strategies on the same account), use the real on-exchange balance
@@ -191,6 +197,14 @@ func main() {
 	// to stderr via the nil-check in state.go.
 	if notifier.HasOwner() {
 		tradePersistWarn = func(msg string) {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+
+	// #336: Forward startup AllowShorts warnings to the owner so the desync is
+	// surfaced even when the operator isn't tailing stderr.
+	if len(allowShortsWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range allowShortsWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}

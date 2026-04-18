@@ -179,6 +179,41 @@ func ValidateState(state *AppState) {
 	}
 }
 
+// ValidatePerpsAllowShortsConfig flags short positions that belong to a perps
+// strategy currently configured with AllowShorts=false (#336). The desync can
+// arise from state migration, paper→live handoff, operator edits of state.db,
+// or a config toggle from true→false without first closing the short. When the
+// strategy next emits a buy signal, the executor's fresh-open sizing will
+// collide with the pre-existing short and leave virtual state out of sync with
+// the exchange. We warn-and-continue (matching ValidateState's precedent)
+// rather than force-closing — marks may be unavailable at startup and silent
+// auto-close of an operator-seeded position is worse than a loud warning.
+//
+// Returns human-readable warnings so the caller can both log them and forward
+// to the operator via DM once the notifier is ready.
+func ValidatePerpsAllowShortsConfig(state *AppState, cfg *Config) []string {
+	var warnings []string
+	for i := range cfg.Strategies {
+		sc := &cfg.Strategies[i]
+		if sc.Type != "perps" || sc.AllowShorts {
+			continue
+		}
+		s, ok := state.Strategies[sc.ID]
+		if !ok {
+			continue
+		}
+		for sym, pos := range s.Positions {
+			if pos.Side != "short" {
+				continue
+			}
+			msg := fmt.Sprintf("perps state-vs-config gap: strategy %s has short %s qty=%g (AllowShorts=false). Position was likely seeded by migration, paper→live handoff, or a prior AllowShorts=true config. Close manually before the next buy signal — the executor's fresh-open sizing will otherwise desync virtual state from the exchange.", sc.ID, sym, pos.Quantity)
+			fmt.Printf("[WARN] %s\n", msg)
+			warnings = append(warnings, msg)
+		}
+	}
+	return warnings
+}
+
 // LoadStateWithDB loads state from SQLite. Returns a fresh AppState when the DB is empty.
 func LoadStateWithDB(cfg *Config, sdb *StateDB) (*AppState, error) {
 	state, err := sdb.LoadState()

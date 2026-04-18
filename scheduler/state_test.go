@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -108,6 +109,101 @@ func TestValidateState(t *testing.T) {
 	}
 	if _, ok := s.OptionPositions["badqty"]; ok {
 		t.Error("zero-quantity option should be removed")
+	}
+}
+
+// TestValidatePerpsAllowShortsConfig exercises the #336 startup check: a short
+// position seeded into SQLite (via migration, paper→live handoff, or operator
+// edit) under a perps strategy whose config has AllowShorts=false must be
+// flagged so the operator sees it before the executor's flip path quietly
+// desyncs virtual state from the exchange on the next buy signal.
+func TestValidatePerpsAllowShortsConfig(t *testing.T) {
+	state := NewAppState()
+	state.Strategies["hl-triple-ema-eth"] = &StrategyState{
+		ID:   "hl-triple-ema-eth",
+		Type: "perps",
+		Positions: map[string]*Position{
+			// The gap case: short under AllowShorts=false.
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "short", Multiplier: 1, Leverage: 1},
+		},
+	}
+	state.Strategies["hl-bidir-btc"] = &StrategyState{
+		ID:   "hl-bidir-btc",
+		Type: "perps",
+		Positions: map[string]*Position{
+			// Allowed short: AllowShorts=true in config below, must not warn.
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 60000, Side: "short", Multiplier: 1, Leverage: 1},
+		},
+	}
+	state.Strategies["bn-sma-btc"] = &StrategyState{
+		ID:   "bn-sma-btc",
+		Type: "spot",
+		Positions: map[string]*Position{
+			// Non-perps: AllowShorts is meaningless, must not warn.
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 60000, Side: "long"},
+		},
+	}
+
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			{ID: "hl-triple-ema-eth", Type: "perps", Platform: "hyperliquid", AllowShorts: false},
+			{ID: "hl-bidir-btc", Type: "perps", Platform: "hyperliquid", AllowShorts: true},
+			{ID: "bn-sma-btc", Type: "spot", Platform: "binanceus", AllowShorts: false},
+		},
+	}
+
+	warnings := ValidatePerpsAllowShortsConfig(state, cfg)
+	if len(warnings) != 1 {
+		t.Fatalf("want 1 warning, got %d: %v", len(warnings), warnings)
+	}
+	w := warnings[0]
+	if !strings.Contains(w, "hl-triple-ema-eth") {
+		t.Errorf("warning should name the offending strategy, got: %s", w)
+	}
+	if !strings.Contains(w, "ETH") {
+		t.Errorf("warning should name the symbol, got: %s", w)
+	}
+	if !strings.Contains(w, "AllowShorts=false") {
+		t.Errorf("warning should cite the config gap, got: %s", w)
+	}
+}
+
+// TestValidatePerpsAllowShortsConfig_NoShorts confirms the validator is silent
+// when all perps positions match their strategy's AllowShorts setting.
+func TestValidatePerpsAllowShortsConfig_NoShorts(t *testing.T) {
+	state := NewAppState()
+	state.Strategies["hl-triple-ema-eth"] = &StrategyState{
+		ID:   "hl-triple-ema-eth",
+		Type: "perps",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 1},
+		},
+	}
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			{ID: "hl-triple-ema-eth", Type: "perps", Platform: "hyperliquid", AllowShorts: false},
+		},
+	}
+	if warnings := ValidatePerpsAllowShortsConfig(state, cfg); len(warnings) != 0 {
+		t.Errorf("want no warnings for a long-only state, got: %v", warnings)
+	}
+}
+
+// TestValidatePerpsAllowShortsConfig_OrphanState verifies we don't crash when
+// state has a strategy that's been removed from config (pruning happens
+// separately in main.go but validators must tolerate the intermediate state).
+func TestValidatePerpsAllowShortsConfig_OrphanState(t *testing.T) {
+	state := NewAppState()
+	state.Strategies["gone"] = &StrategyState{
+		ID:   "gone",
+		Type: "perps",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, Side: "short", Multiplier: 1, Leverage: 1},
+		},
+	}
+	cfg := &Config{Strategies: []StrategyConfig{}}
+	if warnings := ValidatePerpsAllowShortsConfig(state, cfg); len(warnings) != 0 {
+		t.Errorf("orphan state should not produce warnings, got: %v", warnings)
 	}
 }
 
