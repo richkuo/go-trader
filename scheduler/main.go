@@ -31,6 +31,16 @@ func main() {
 	}
 	fmt.Printf("Loaded config: %d strategies, interval=%ds\n", len(cfg.Strategies), cfg.IntervalSeconds)
 
+	// #339: Detect a missing state DB on a live deployment *before* OpenStateDB
+	// creates it — a wiped directory (vs. an in-place `git pull`) would otherwise
+	// silently produce a fresh empty DB and desync from exchange positions.
+	// Captured here and replayed to the owner DM once the notifier is wired.
+	var missingStateWarning string
+	if msg := CheckStatePresence(cfg.DBFile, cfg.Strategies); msg != "" && !AllowMissingState() {
+		fmt.Fprintln(os.Stderr, msg)
+		missingStateWarning = msg
+	}
+
 	// Open SQLite state database.
 	stateDB, err := OpenStateDB(cfg.DBFile)
 	if err != nil {
@@ -207,6 +217,13 @@ func main() {
 		for _, msg := range allowShortsWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
+	}
+
+	// #339: Forward the missing-state-DB warning to the owner. Captured before
+	// OpenStateDB ran (which would have created an empty DB), surfaced here
+	// once the notifier is available.
+	if missingStateWarning != "" && notifier.HasOwner() {
+		notifier.SendOwnerDM("[state] " + missingStateWarning)
 	}
 
 	// -summary mode: post snapshot summary for the specified channel and exit.
