@@ -859,6 +859,53 @@ func TestValidateConfigLeaderboardSummariesInvalid(t *testing.T) {
 	}
 }
 
+// TestValidateConfigLeaderboardSummariesDuplicateKey covers review item 4 on
+// #309: two entries with identical platform/ticker/channel share a single
+// LastLeaderboardSummaries timestamp, so whichever posts first silently blocks
+// the other. Detect the collision at config load instead.
+func TestValidateConfigLeaderboardSummariesDuplicateKey(t *testing.T) {
+	cfg := &Config{
+		IntervalSeconds: 60,
+		Strategies: []StrategyConfig{
+			{ID: "s1", Type: "spot", Platform: "binanceus", Capital: 100, MaxDrawdownPct: 10, Script: "x.py"},
+		},
+		LeaderboardSummaries: []LeaderboardSummaryConfig{
+			{Platform: "hyperliquid", Ticker: "ETH", Channel: "chan-1", Frequency: "6h"},
+			// Case-insensitive collision — Key() normalizes to lowercase.
+			{Platform: "Hyperliquid", Ticker: "eth", Channel: "chan-1", Frequency: "12h"},
+		},
+	}
+	err := ValidateConfig(cfg)
+	if err == nil {
+		t.Fatal("expected duplicate-key validation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate entry") {
+		t.Errorf("expected error to mention 'duplicate entry', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "leaderboard_summaries[0]") {
+		t.Errorf("expected error to reference first-occurrence index [0], got: %v", err)
+	}
+}
+
+// TestValidateConfigLeaderboardSummariesDistinctTickersSameChannel confirms we
+// don't flag legitimate configurations where the same channel hosts multiple
+// leaderboards scoped by distinct tickers.
+func TestValidateConfigLeaderboardSummariesDistinctTickersSameChannel(t *testing.T) {
+	cfg := &Config{
+		IntervalSeconds: 60,
+		Strategies: []StrategyConfig{
+			{ID: "s1", Type: "spot", Platform: "binanceus", Capital: 100, MaxDrawdownPct: 10, Script: "x.py"},
+		},
+		LeaderboardSummaries: []LeaderboardSummaryConfig{
+			{Platform: "hyperliquid", Channel: "hl-ch", Frequency: "6h"},                 // unfiltered
+			{Platform: "hyperliquid", Ticker: "ETH", Channel: "hl-ch", Frequency: "12h"}, // ticker-scoped
+		},
+	}
+	if err := ValidateConfig(cfg); err != nil {
+		t.Errorf("expected distinct-ticker same-channel config to validate, got: %v", err)
+	}
+}
+
 func TestValidateConfigLeaderboardSummariesValid(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 60,

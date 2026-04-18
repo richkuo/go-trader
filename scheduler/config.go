@@ -500,12 +500,19 @@ func ValidateConfig(cfg *Config) error {
 	}
 
 	// Validate leaderboard_summaries (#308).
+	// seenKeys detects collisions on Key() (platform:ticker:channel). Two entries
+	// that share a key would share one LastLeaderboardSummaries[key] timestamp,
+	// so whichever fires first silently blocks the other for the whole Frequency
+	// window — review item 4 on #309.
+	seenKeys := make(map[string]int)
 	for i, lc := range cfg.LeaderboardSummaries {
 		prefix := fmt.Sprintf("leaderboard_summaries[%d]", i)
-		if strings.TrimSpace(lc.Platform) == "" {
+		platformOK := strings.TrimSpace(lc.Platform) != ""
+		channelOK := strings.TrimSpace(lc.Channel) != ""
+		if !platformOK {
 			errs = append(errs, fmt.Sprintf("%s: platform is required", prefix))
 		}
-		if strings.TrimSpace(lc.Channel) == "" {
+		if !channelOK {
 			errs = append(errs, fmt.Sprintf("%s: channel is required", prefix))
 		}
 		if lc.TopN < 0 {
@@ -517,6 +524,14 @@ func ValidateConfig(cfg *Config) error {
 				errs = append(errs, fmt.Sprintf("%s: frequency invalid duration %q: %v", prefix, lc.Frequency, err))
 			} else if d < 1*time.Minute {
 				errs = append(errs, fmt.Sprintf("%s: frequency must be >= 1m, got %s", prefix, lc.Frequency))
+			}
+		}
+		if platformOK && channelOK {
+			key := lc.Key()
+			if prev, dup := seenKeys[key]; dup {
+				errs = append(errs, fmt.Sprintf("%s: duplicate entry — platform/ticker/channel (%s) already defined at leaderboard_summaries[%d]", prefix, key, prev))
+			} else {
+				seenKeys[key] = i
 			}
 		}
 	}
