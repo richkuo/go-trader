@@ -129,6 +129,7 @@ type StrategyConfig struct {
 	MaxDrawdownPct  float64                `json:"max_drawdown_pct"`
 	IntervalSeconds int                    `json:"interval_seconds,omitempty"` // per-strategy override (0 = use global)
 	HTFFilter       bool                   `json:"htf_filter,omitempty"`       // higher-timeframe trend filter
+	AllowShorts     bool                   `json:"allow_shorts,omitempty"`     // perps only: opt-in to bidirectional execution — signal=-1 from flat opens a short, long+(-1) closes-and-flips. Default false preserves close-long-only behavior for strategies like triple_ema that emit -1 only as a long-exit (#328)
 	Leverage        float64                `json:"leverage,omitempty"`         // perps leverage multiplier (default 1 = no leverage); used for notional sizing and margin-based valuation (#254)
 	Params          map[string]interface{} `json:"params,omitempty"`           // custom strategy parameters passed to Python
 	ThetaHarvest    *ThetaHarvestConfig    `json:"theta_harvest,omitempty"`

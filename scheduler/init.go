@@ -37,6 +37,7 @@ var knownShortNames = map[string]string{
 	"mean_reversion":        "mr",
 	"volume_weighted":       "vw",
 	"triple_ema":            "tema",
+	"triple_ema_bidir":      "temab",
 	"rsi_macd_combo":        "rmc",
 	"vol_mean_reversion":    "vol",
 	"momentum_options":      "mom",
@@ -59,6 +60,18 @@ var knownShortNames = map[string]string{
 	"sweep_squeeze_combo":   "ssc",
 	"adx_trend":             "adxt",
 	"donchian_breakout":     "dbo",
+}
+
+// bidirectionalPerpsStrategies lists strategy IDs that emit signal=-1 as a
+// short-entry (not just a long-exit). Configs generated for these strategies
+// set AllowShorts=true so ExecutePerpsSignal opens shorts from flat instead
+// of skipping the signal (#328).
+var bidirectionalPerpsStrategies = map[string]bool{
+	"triple_ema_bidir": true,
+}
+
+func isBidirectionalPerpsStrategy(id string) bool {
+	return bidirectionalPerpsStrategies[id]
 }
 
 // deriveShortName returns a short abbreviation for a strategy ID.
@@ -111,6 +124,7 @@ var defaultOptionsStrategies = []stratDef{
 
 var defaultPerpsStrategies = []stratDef{
 	{ID: "momentum", ShortName: "momentum"},
+	{ID: "triple_ema_bidir", ShortName: "temab"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
@@ -126,6 +140,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "rsi", ShortName: "rsi"},
 	{ID: "macd", ShortName: "macd"},
 	{ID: "breakout", ShortName: "bo"},
+	{ID: "triple_ema_bidir", ShortName: "temab"},
 	{ID: "stoch_rsi", ShortName: "stochrsi"},
 	{ID: "ichimoku_cloud", ShortName: "ichi"},
 	{ID: "order_blocks", ShortName: "ob"},
@@ -395,6 +410,11 @@ func generateConfig(opts InitOptions) *Config {
 		}
 		for _, stratID := range opts.PerpsStrategies {
 			shortName := deriveShortName(stratID)
+			// Strategies that emit bidirectional signals must opt in to
+			// short-opening execution, otherwise ExecutePerpsSignal drops
+			// their signal=-1 from flat and the strategy becomes effectively
+			// long-only at the executor layer (#328 review feedback).
+			allowShorts := isBidirectionalPerpsStrategy(stratID)
 			for _, assetName := range opts.Assets {
 				id := fmt.Sprintf("hl-%s-%s", shortName, strings.ToLower(assetName))
 				cfg.Strategies = append(cfg.Strategies, StrategyConfig{
@@ -407,6 +427,7 @@ func generateConfig(opts InitOptions) *Config {
 					MaxDrawdownPct:  opts.PerpsDrawdown,
 					IntervalSeconds: 3600,
 					Leverage:        perpsLeverage,
+					AllowShorts:     allowShorts,
 				})
 			}
 		}

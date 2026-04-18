@@ -147,6 +147,24 @@ def triple_ema_strategy(df: pd.DataFrame, short_period: int = 8, mid_period: int
 
 
 @register_strategy(
+    "triple_ema_bidir",
+    "Triple EMA Bidirectional — long on bullish stack, short on bearish stack",
+    {"short_period": 8, "mid_period": 21, "long_period": 55}
+)
+def triple_ema_bidir_strategy(df: pd.DataFrame, short_period: int = 8, mid_period: int = 21, long_period: int = 55) -> pd.DataFrame:
+    result = df.copy()
+    result["ema_short"] = ema(result["close"], short_period)
+    result["ema_mid"] = ema(result["close"], mid_period)
+    result["ema_long"] = ema(result["close"], long_period)
+    bullish = (result["ema_short"] > result["ema_mid"]) & (result["ema_mid"] > result["ema_long"])
+    bearish = (result["ema_short"] < result["ema_mid"]) & (result["ema_mid"] < result["ema_long"])
+    result["position"] = np.where(bullish, 1, np.where(bearish, -1, 0))
+    # A direct bullish→bearish flip yields diff == -2; clamp so downstream sees {-1, 0, 1}.
+    result["signal"] = result["position"].diff().clip(-1, 1)
+    return result
+
+
+@register_strategy(
     "rsi_macd_combo",
     "RSI+MACD Combo — dual confirmation for higher quality signals",
     {"rsi_period": 14, "rsi_oversold": 35, "rsi_overbought": 65,

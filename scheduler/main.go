@@ -608,24 +608,28 @@ func main() {
 					var hlCash float64
 					var hlPosQty float64
 					var hlPosSide string
+					var hlAvgCost float64
 					if sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
 						hlCash = stratState.Cash
 						if sym := hyperliquidSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
 								hlPosQty = pos.Quantity
 								hlPosSide = pos.Side
+								hlAvgCost = pos.AvgCost
 							}
 						}
 					}
 					var okxCash float64
 					var okxPosQty float64
 					var okxPosSide string
+					var okxAvgCost float64
 					if sc.Platform == "okx" && okxIsLive(sc.Args) {
 						okxCash = stratState.Cash
 						if sym := okxSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
 								okxPosQty = pos.Quantity
 								okxPosSide = pos.Side
+								okxAvgCost = pos.AvgCost
 							}
 						}
 					}
@@ -685,7 +689,7 @@ func main() {
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, logger); ok2 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, okxAvgCost, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
@@ -738,7 +742,7 @@ func main() {
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, logger); ok2 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, okxAvgCost, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
@@ -755,7 +759,7 @@ func main() {
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
-								if er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, logger); ok2 {
+								if er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, logger); ok2 {
 									execResult = er
 								} else {
 									liveExecFailed = true
@@ -1417,8 +1421,8 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, logger *S
 // Trade record, leaving state silently behind actual exchange holdings. See
 // issue #298 — 0.716 ETH of live fills were lost this way because the
 // "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
-func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
-	if reason := PerpsOrderSkipReason(result.Signal, posSide); reason != "" {
+func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+	if reason := PerpsOrderSkipReason(result.Signal, posSide, sc.AllowShorts); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
 	}
@@ -1429,22 +1433,10 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	if sc.Type == "perps" && sc.Leverage > 0 {
 		sizingLeverage = sc.Leverage
 	}
-	var size float64
-	if isBuy {
-		// #254: sizing uses leveraged notional = cash * leverage * 0.95.
-		// The actual margin locked on-chain will be notional/leverage.
-		budget := cash * sizingLeverage * 0.95
-		if budget < 1 || price <= 0 {
-			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
-			return nil, false
-		}
-		size = budget / price
-	} else {
-		if posQty <= 0 {
-			logger.Info("No position to close for %s", result.Symbol)
-			return nil, false
-		}
-		size = posQty
+	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, posSide, sc.AllowShorts)
+	if !ok {
+		logger.Info("%s for %s", reason, result.Symbol)
+		return nil, false
 	}
 
 	side := "buy"
@@ -1499,7 +1491,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 		fillFee = fill.Fee
 	}
 
-	trades, err := ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, fillOID, fillFee, logger)
+	trades, err := ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, fillOID, fillFee, sc.AllowShorts, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -1928,10 +1920,10 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyL
 // ExecutePerpsSignal that must be mirrored to avoid the #298 bug class
 // (live fill placed but no Trade recorded because the in-memory execution
 // returned 0). See #300.
-func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, posSide string, logger *StrategyLogger) (*OKXExecuteResult, bool) {
+func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, posSide string, avgCost float64, logger *StrategyLogger) (*OKXExecuteResult, bool) {
 	var skip string
 	if sc.Type == "perps" {
-		skip = PerpsOrderSkipReason(result.Signal, posSide)
+		skip = PerpsOrderSkipReason(result.Signal, posSide, sc.AllowShorts)
 	} else {
 		skip = SpotOrderSkipReason(result.Signal, posSide)
 	}
@@ -1946,19 +1938,32 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 		sizingLeverage = sc.Leverage
 	}
 	var size float64
-	if isBuy {
-		budget := cash * sizingLeverage * 0.95
-		if budget < 1 || price <= 0 {
-			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
+	if sc.Type == "perps" {
+		var ok bool
+		var reason string
+		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, posSide, sc.AllowShorts)
+		if !ok {
+			logger.Info("%s for %s", reason, result.Symbol)
 			return nil, false
 		}
-		size = budget / price
 	} else {
-		if posQty <= 0 {
-			logger.Info("No position to close for %s", result.Symbol)
-			return nil, false
+		// Spot sizing: buy opens from cash, sell closes posQty. AllowShorts
+		// does not apply to spot — SpotOrderSkipReason already blocked any
+		// signal=-1 without a long above.
+		if isBuy {
+			budget := cash * sizingLeverage * 0.95
+			if budget < 1 || price <= 0 {
+				logger.Info("Insufficient cash ($%.2f) for live buy %s", cash, result.Symbol)
+				return nil, false
+			}
+			size = budget / price
+		} else {
+			if posQty <= 0 {
+				logger.Info("No position to close for %s", result.Symbol)
+				return nil, false
+			}
+			size = posQty
 		}
-		size = posQty
 	}
 
 	side := "buy"
@@ -2002,7 +2007,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, ex
 		}
 		// OKXFill does not carry OID/fee today; pass empties and let SaveState
 		// backfill from any future adapter extension via the usual path.
-		trades, err = ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, "", 0, logger)
+		trades, err = ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, "", 0, sc.AllowShorts, logger)
 	} else {
 		trades, err = ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, fillQty, logger)
 	}

@@ -556,6 +556,7 @@ func TestDeriveShortName(t *testing.T) {
 		{"mean_reversion", "mr"},
 		{"volume_weighted", "vw"},
 		{"triple_ema", "tema"},
+		{"triple_ema_bidir", "temab"},
 		{"rsi_macd_combo", "rmc"},
 		{"vol_mean_reversion", "vol"},
 		{"momentum_options", "mom"},
@@ -566,6 +567,42 @@ func TestDeriveShortName(t *testing.T) {
 	for _, tc := range cases {
 		if got := deriveShortName(tc.id); got != tc.want {
 			t.Errorf("deriveShortName(%q) = %q, want %q", tc.id, got, tc.want)
+		}
+	}
+}
+
+// #328 — triple_ema_bidir must generate AllowShorts=true in perps configs so
+// ExecutePerpsSignal opens shorts from flat. Long-only strategies must keep
+// AllowShorts=false so they can't silently flip into short positions.
+func TestGenerateConfig_PerpsAllowShortsWiring(t *testing.T) {
+	opts := baseOpts()
+	opts.EnableSpot = false
+	opts.EnablePerps = true
+	opts.Assets = []string{"ETH"}
+	opts.PerpsMode = "paper"
+	opts.PerpsStrategies = []string{"triple_ema_bidir", "triple_ema", "rsi_macd_combo"}
+
+	cfg := generateConfig(opts)
+
+	want := map[string]bool{
+		"hl-temab-eth": true,  // bidirectional — must allow shorts
+		"hl-tema-eth":  false, // long-only — must NOT allow shorts
+		"hl-rmc-eth":   false, // long-only — must NOT allow shorts
+	}
+	seen := map[string]bool{}
+	for _, s := range cfg.Strategies {
+		expected, ok := want[s.ID]
+		if !ok {
+			continue
+		}
+		seen[s.ID] = true
+		if s.AllowShorts != expected {
+			t.Errorf("%s AllowShorts = %v, want %v", s.ID, s.AllowShorts, expected)
+		}
+	}
+	for id := range want {
+		if !seen[id] {
+			t.Errorf("expected generated config for %s, not found", id)
 		}
 	}
 }
