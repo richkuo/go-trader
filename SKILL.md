@@ -419,8 +419,8 @@ If the agent is running inside OpenClaw and Discord was configured, add the chan
 
 Or via CLI:
 ```bash
-openclaw config set "channels.discord.guilds.${GUILD_ID}.channels.${SPOT_CHANNEL}.requireMention" false
-openclaw config set "channels.discord.guilds.${GUILD_ID}.channels.${OPTIONS_CHANNEL}.requireMention" false
+openclaw config set "channels.discord.guilds.<GUILD_ID>.channels.<SPOT_CHANNEL>.requireMention" false
+openclaw config set "channels.discord.guilds.<GUILD_ID>.channels.<OPTIONS_CHANNEL>.requireMention" false
 ```
 
 ### 7c. Confirm with User
