@@ -318,6 +318,37 @@ class TestRSIMACDCombo:
         # MACD bearish cross with RSI > 50 during decline
         assert (result["signal"] == -1).any(), "Expected sell signal on MACD bearish cross with RSI > 50"
 
+    def test_loosened_short_gate_catches_more_shorts(self):
+        # Rally → drop (cross at high RSI) → bounce → extended drop (cross at low RSI).
+        # Default rsi_short_min=50 blocks the second cross; permissive catches both.
+        closes = (list(np.linspace(80, 160, 50)) +
+                  list(np.linspace(160, 100, 20)) +
+                  list(np.linspace(100, 115, 15)) +
+                  list(np.linspace(115, 60, 40)))
+        strict = _run_strategy("rsi_macd_combo", closes)
+        loose = _run_strategy("rsi_macd_combo", closes, params={"rsi_short_min": 0})
+        _assert_valid_signals(strict)
+        _assert_valid_signals(loose)
+        assert (loose["signal"] == -1).sum() > (strict["signal"] == -1).sum()
+
+    def test_loosened_long_gate_catches_more_longs(self):
+        closes = (list(np.linspace(140, 70, 50)) +
+                  list(np.linspace(70, 130, 20)) +
+                  list(np.linspace(130, 115, 15)) +
+                  list(np.linspace(115, 180, 40)))
+        strict = _run_strategy("rsi_macd_combo", closes)
+        loose = _run_strategy("rsi_macd_combo", closes, params={"rsi_long_max": 100})
+        _assert_valid_signals(strict)
+        _assert_valid_signals(loose)
+        assert (loose["signal"] == 1).sum() >= (strict["signal"] == 1).sum()
+
+    def test_params_forwarded_via_apply_strategy(self):
+        closes = list(np.linspace(140, 70, 80))
+        result = _run_strategy("rsi_macd_combo", closes,
+                               params={"rsi_short_min": 30, "rsi_long_max": 70})
+        assert "rsi" in result.columns
+        _assert_valid_signals(result)
+
 
 # ─── Stochastic RSI ─────────────────────────
 

@@ -219,11 +219,13 @@ def triple_ema_strategy(df: pd.DataFrame, short_period: int = 8, mid_period: int
     "rsi_macd_combo",
     "RSI+MACD Combo — dual confirmation for higher quality signals",
     {"rsi_period": 14, "rsi_oversold": 35, "rsi_overbought": 65,
-     "macd_fast": 12, "macd_slow": 26, "macd_signal": 9}
+     "macd_fast": 12, "macd_slow": 26, "macd_signal": 9,
+     "rsi_short_min": 50, "rsi_long_max": 50}
 )
 def rsi_macd_combo_strategy(df: pd.DataFrame,
                              rsi_period: int = 14, rsi_oversold: float = 35, rsi_overbought: float = 65,
-                             macd_fast: int = 12, macd_slow: int = 26, macd_signal: int = 9) -> pd.DataFrame:
+                             macd_fast: int = 12, macd_slow: int = 26, macd_signal: int = 9,
+                             rsi_short_min: float = 50, rsi_long_max: float = 50) -> pd.DataFrame:
     result = df.copy()
     # RSI
     delta = result["close"].diff()
@@ -240,13 +242,15 @@ def rsi_macd_combo_strategy(df: pd.DataFrame,
     result["macd_signal_line"] = ema(result["macd_line"], macd_signal)
     # Combined signals
     result["signal"] = 0
-    # Buy: RSI recovering from oversold AND MACD bullish cross
+    # Buy: MACD bullish cross AND RSI below rsi_long_max (default 50 = not already overbought).
+    # Lower rsi_long_max to require a more oversold RSI before longing.
     macd_bull = (result["macd_line"] > result["macd_signal_line"]) & (result["macd_line"].shift(1) <= result["macd_signal_line"].shift(1))
-    rsi_ok = result["rsi"] < 50  # RSI not overbought
+    rsi_ok = result["rsi"] < rsi_long_max
     result.loc[macd_bull & rsi_ok, "signal"] = 1
-    # Sell: RSI dropping from overbought AND MACD bearish cross
+    # Sell: MACD bearish cross AND RSI above rsi_short_min (default 50 = not already oversold).
+    # Lower rsi_short_min to allow shorts deeper into a downtrend.
     macd_bear = (result["macd_line"] < result["macd_signal_line"]) & (result["macd_line"].shift(1) >= result["macd_signal_line"].shift(1))
-    rsi_high = result["rsi"] > 50
+    rsi_high = result["rsi"] > rsi_short_min
     result.loc[macd_bear & rsi_high, "signal"] = -1
     return result
 

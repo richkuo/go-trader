@@ -177,6 +177,52 @@ class TestRSIMACDCombo:
         _valid_signals(result)
         assert (result["signal"] == 1).any() or (result["signal"] == -1).any()
 
+    def test_default_gate_preserves_legacy_behavior(self):
+        # The default rsi_short_min / rsi_long_max values (50) must match the
+        # pre-PR hard-coded gates. A straight down-then-up series should still
+        # produce at least one -1 signal with defaults.
+        closes = list(np.linspace(80, 140, 60)) + list(np.linspace(140, 80, 60))
+        result = _run("rsi_macd_combo", closes)
+        _valid_signals(result)
+        assert (result["signal"] == -1).any()
+
+    def test_loosened_short_gate_catches_more_shorts(self):
+        # Series: rally → sharp drop (first MACD bearish cross at high RSI) → small
+        # bounce → extended drop (second bearish cross, now at low RSI). Default
+        # gate (rsi_short_min=50) blocks the second cross; permissive gate catches both.
+        closes = (list(np.linspace(80, 160, 50)) +
+                  list(np.linspace(160, 100, 20)) +
+                  list(np.linspace(100, 115, 15)) +
+                  list(np.linspace(115, 60, 40)))
+        strict = _run("rsi_macd_combo", closes)
+        loose = _run("rsi_macd_combo", closes, params={"rsi_short_min": 0})
+        _valid_signals(strict)
+        _valid_signals(loose)
+        assert (loose["signal"] == -1).sum() > (strict["signal"] == -1).sum(), \
+            "loosening rsi_short_min must allow more short signals"
+
+    def test_loosened_long_gate_catches_more_longs(self):
+        # Symmetric pattern: crash → sharp rally (first cross at low RSI) → dip →
+        # extended rally (second bullish cross at higher RSI). Permissive gate
+        # (rsi_long_max=100) should catch at least as many longs as default.
+        closes = (list(np.linspace(140, 70, 50)) +
+                  list(np.linspace(70, 130, 20)) +
+                  list(np.linspace(130, 115, 15)) +
+                  list(np.linspace(115, 180, 40)))
+        strict = _run("rsi_macd_combo", closes)
+        loose = _run("rsi_macd_combo", closes, params={"rsi_long_max": 100})
+        _valid_signals(strict)
+        _valid_signals(loose)
+        assert (loose["signal"] == 1).sum() >= (strict["signal"] == 1).sum()
+
+    def test_params_forwarded_via_apply_strategy(self):
+        # Sanity: the new params propagate through apply_strategy without error.
+        closes = make_trending_down(80)
+        result = _run("rsi_macd_combo", closes,
+                      params={"rsi_short_min": 30, "rsi_long_max": 70})
+        assert "rsi" in result.columns
+        _valid_signals(result)
+
     def test_flat_no_signal(self):
         result = _run("rsi_macd_combo", make_flat(80))
         assert (result["signal"] == 0).all()
