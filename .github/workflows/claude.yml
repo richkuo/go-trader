@@ -163,10 +163,12 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: "Use the Skill tool to invoke the 'claude-md-management:revise-claude-md' skill. Review the changes made in this session (use git log and git diff to inspect them) and update CLAUDE.md with any new patterns, conventions, or important context learned."
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugin_marketplaces: |
+            https://github.com/anthropics/claude-code.git
+            https://github.com/anthropics/claude-plugins-official.git
           plugins: |
             code-review@claude-code-plugins
-            claude-md-management@claude-code-plugins
+            claude-md-management@claude-plugins-official
           claude_args: --model ${{ steps.resolve_model.outputs.model_id }} --allowedTools "Bash(git *),Edit,Read,Grep,Glob,Write"
 
       - name: Append model/effort footer to Claude comment
