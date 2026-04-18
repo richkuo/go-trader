@@ -372,8 +372,12 @@ func TestPostLeaderboard_NoStrategies(t *testing.T) {
 	mock := &mockNotifier{}
 	notifier := NewMultiNotifier(notifierBackend{notifier: mock, channels: map[string]string{"spot": "spot-ch"}})
 
-	if err := PostLeaderboard(cfg, state, nil, notifier); err == nil {
+	err := PostLeaderboard(cfg, state, nil, notifier)
+	if err == nil {
 		t.Error("expected error when no strategies configured")
+	}
+	if err != nil && !strings.Contains(err.Error(), "no strategies to leaderboard") {
+		t.Errorf("unexpected error message: %q", err.Error())
 	}
 	if len(mock.messages) != 0 {
 		t.Errorf("expected no messages sent, got %d", len(mock.messages))
