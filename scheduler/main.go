@@ -965,8 +965,14 @@ func main() {
 			if err := postLeaderboardMessages(lbMessages, notifier); err != nil {
 				fmt.Printf("[WARN] Leaderboard auto-post failed: %v\n", err)
 			} else {
+				// Issue #319: persist LastLeaderboardPostDate immediately so a
+				// crash before the next cycle's SaveState cannot cause a duplicate
+				// daily post on restart.
 				mu.Lock()
 				state.LastLeaderboardPostDate = time.Now().UTC().Format("2006-01-02")
+				if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
+					fmt.Printf("[WARN] Leaderboard post-date save failed: %v\n", err)
+				}
 				mu.Unlock()
 			}
 		}
