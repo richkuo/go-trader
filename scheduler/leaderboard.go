@@ -351,6 +351,94 @@ func FormatHyperliquidTopN(cfg *Config, state *AppState, prices map[string]float
 	return FormatPlatformTopN("hyperliquid", "⚡", title, cfg, state, prices)
 }
 
+// titleCase capitalizes the first rune of s and lowercases the rest.
+// Used for human-readable platform names in leaderboard titles.
+func titleCase(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// platformIcon returns a short icon for a platform; used by leaderboard summaries.
+func platformIcon(platform string) string {
+	switch strings.ToLower(platform) {
+	case "hyperliquid":
+		return "⚡"
+	case "deribit", "ibkr":
+		return "🎯"
+	case "topstep":
+		return "🏦"
+	case "binanceus", "okx", "robinhood", "luno":
+		return "📈"
+	default:
+		return "📊"
+	}
+}
+
+// BuildLeaderboardSummary constructs a leaderboard message for a single
+// LeaderboardSummaryConfig entry: strategies filtered by platform (and
+// optionally ticker) sorted by PnL% descending, truncated to TopN. Returns ""
+// if no strategies match — caller should skip posting in that case.
+// Issue #308.
+func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *AppState, prices map[string]float64) string {
+	topN := lc.TopN
+	if topN <= 0 {
+		topN = 5
+	}
+	tickerFilter := strings.ToUpper(strings.TrimSpace(lc.Ticker))
+
+	var entries []LeaderboardEntry
+	for _, sc := range cfg.Strategies {
+		if !strings.EqualFold(sc.Platform, lc.Platform) {
+			continue
+		}
+		if tickerFilter != "" && extractAsset(sc) != tickerFilter {
+			continue
+		}
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		pv := PortfolioValue(ss, prices)
+		initCap := EffectiveInitialCapital(sc, ss)
+		pnl := pv - initCap
+		pnlPct := 0.0
+		if initCap > 0 {
+			pnlPct = (pnl / initCap) * 100
+		}
+		entries = append(entries, LeaderboardEntry{
+			ID:      sc.ID,
+			Type:    sc.Type,
+			Value:   pv,
+			Capital: initCap,
+			PnL:     pnl,
+			PnLPct:  pnlPct,
+			Trades:  len(ss.TradeHistory),
+		})
+	}
+
+	if len(entries) == 0 {
+		return ""
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].PnLPct > entries[j].PnLPct
+	})
+	n := topN
+	if len(entries) < n {
+		n = len(entries)
+	}
+
+	platformTitle := titleCase(lc.Platform)
+	title := fmt.Sprintf("%s Top %d", platformTitle, n)
+	if tickerFilter != "" {
+		title = fmt.Sprintf("%s %s Top %d", platformTitle, tickerFilter, n)
+	}
+	return formatLeaderboardMessage(platformIcon(lc.Platform), title, entries[:n], false, n)
+}
+
 // fmtSignedDollar formats a dollar value with +/- prefix.
 func fmtSignedDollar(v float64) string {
 	if v >= 0 {

@@ -77,5 +77,20 @@
     "options_summary_freq": "per_check",
     "leaderboard_top_n": 5,
     "leaderboard_channel": ""
-  }
+  },
+  "leaderboard_summaries": [
+    {
+      "platform": "hyperliquid",
+      "top_n": 10,
+      "channel": "PASTE_HYPERLIQUID_LEADERBOARD_CHANNEL_ID",
+      "frequency": "6h"
+    },
+    {
+      "platform": "hyperliquid",
+      "ticker": "eth",
+      "top_n": 5,
+      "channel": "PASTE_HYPERLIQUID_ETH_CHANNEL_ID",
+      "frequency": "12h"
+    }
+  ]
 }

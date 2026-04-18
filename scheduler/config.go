@@ -49,6 +49,41 @@ type CorrelationConfig struct {
 	MaxSameDirectionPct float64 `json:"max_same_direction_pct"` // warn when >X% of strategies share direction (default 75)
 }
 
+// LeaderboardSummaryConfig describes a single configurable leaderboard-summary
+// post: a platform slice (optionally filtered to one ticker), top-N sort by
+// PnL%, sent to a specific channel, optionally on a recurring frequency.
+// Issue #308.
+type LeaderboardSummaryConfig struct {
+	Platform  string `json:"platform"`            // required: e.g. "hyperliquid", "binanceus", "deribit"; matches StrategyConfig.Platform
+	Ticker    string `json:"ticker,omitempty"`    // optional: e.g. "ETH", "BTC" (case-insensitive); empty = all tickers
+	TopN      int    `json:"top_n,omitempty"`     // optional: entries shown; defaults to 5
+	Channel   string `json:"channel"`             // required: channel ID to post to (Discord)
+	Frequency string `json:"frequency,omitempty"` // optional: Go duration like "6h"; empty = on-demand only
+}
+
+// ParsedFrequency returns the parsed duration of Frequency, or 0 if empty/invalid.
+// Validation catches invalid values at startup; callers can treat 0 as "disabled".
+func (lc LeaderboardSummaryConfig) ParsedFrequency() time.Duration {
+	if lc.Frequency == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(lc.Frequency)
+	if err != nil {
+		return 0
+	}
+	return d
+}
+
+// Key returns a stable identifier for tracking last-post timestamps in state.
+// Matches the "platform:ticker:channel" format (ticker lowercased, empty = "*").
+func (lc LeaderboardSummaryConfig) Key() string {
+	ticker := strings.ToLower(strings.TrimSpace(lc.Ticker))
+	if ticker == "" {
+		ticker = "*"
+	}
+	return fmt.Sprintf("%s:%s:%s", strings.ToLower(lc.Platform), ticker, lc.Channel)
+}
+
 // Config is the top-level scheduler configuration.
 type Config struct {
 	ConfigVersion        int                        `json:"config_version,omitempty"` // bumped when new fields are added; 0/missing = v1 baseline
@@ -65,6 +100,7 @@ type Config struct {
 	PortfolioRisk        *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
 	Correlation          *CorrelationConfig         `json:"correlation,omitempty"`
 	Platforms            map[string]*PlatformConfig `json:"platforms,omitempty"`
+	LeaderboardSummaries []LeaderboardSummaryConfig `json:"leaderboard_summaries,omitempty"` // #308 — configurable per-channel leaderboards
 }
 
 // ThetaHarvestConfig controls early exit on sold options.
@@ -471,6 +507,28 @@ func ValidateConfig(cfg *Config) error {
 			errs = append(errs, fmt.Sprintf("hyperliquid_top10_freq: invalid duration %q: %v", cfg.HyperliquidTop10Freq, err))
 		} else if d < 1*time.Minute {
 			errs = append(errs, fmt.Sprintf("hyperliquid_top10_freq: must be >= 1m, got %s", cfg.HyperliquidTop10Freq))
+		}
+	}
+
+	// Validate leaderboard_summaries (#308).
+	for i, lc := range cfg.LeaderboardSummaries {
+		prefix := fmt.Sprintf("leaderboard_summaries[%d]", i)
+		if strings.TrimSpace(lc.Platform) == "" {
+			errs = append(errs, fmt.Sprintf("%s: platform is required", prefix))
+		}
+		if strings.TrimSpace(lc.Channel) == "" {
+			errs = append(errs, fmt.Sprintf("%s: channel is required", prefix))
+		}
+		if lc.TopN < 0 {
+			errs = append(errs, fmt.Sprintf("%s: top_n must be >= 0, got %d", prefix, lc.TopN))
+		}
+		if lc.Frequency != "" {
+			d, err := time.ParseDuration(lc.Frequency)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: frequency invalid duration %q: %v", prefix, lc.Frequency, err))
+			} else if d < 1*time.Minute {
+				errs = append(errs, fmt.Sprintf("%s: frequency must be >= 1m, got %s", prefix, lc.Frequency))
+			}
 		}
 	}
 

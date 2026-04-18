@@ -925,6 +925,11 @@ func main() {
 			}
 		}
 
+		// Periodic configurable leaderboard summaries (#308). Runs under Lock
+		// because it updates state.LastLeaderboardSummaries; notifier SendMessage
+		// is a fast fire-and-forget send to the Discord gateway.
+		runDueLeaderboardSummaries(cfg, state, notifier, prices)
+
 		if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
 			saveFailures++
 			fmt.Printf("[CRITICAL] Save state failed (%d/3): %v\n", saveFailures, err)
@@ -994,12 +999,25 @@ func main() {
 }
 
 // runSummaryAndExit posts a snapshot summary for the given channel key and exits.
-// It fetches current prices, formats the summary using the same logic as the hourly
-// summaries, posts to all notification backends, and exits immediately.
+//
+// Lookup order (#308):
+//  1. If channelKey matches a cfg.LeaderboardSummaries[].Channel, build and
+//     post that configured leaderboard (platform + optional ticker + topN).
+//  2. Otherwise fall back to the legacy asset-grouped category summary, which
+//     requires strategies whose notifier-resolved channel key equals channelKey.
+//
+// It fetches current prices, formats the summary, posts to all notification
+// backends, and exits immediately.
 func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier *MultiNotifier) {
 	if !notifier.HasBackends() {
 		fmt.Fprintf(os.Stderr, "No notification backends configured\n")
 		os.Exit(1)
+	}
+
+	// #308: Manual trigger for configured leaderboard summaries.
+	if lc, ok := findLeaderboardSummaryByChannel(cfg, channelKey); ok {
+		runLeaderboardSummaryAndExit(lc, cfg, state, notifier)
+		return
 	}
 
 	if !notifier.HasChannel(channelKey, channelKey) {
@@ -2015,4 +2033,112 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, ex
 		detail = fmt.Sprintf("[%s] %s%s %s @ $%.2f", sc.ID, prefix, signalStr, result.Symbol, fillPrice)
 	}
 	return trades, detail
+}
+
+// findLeaderboardSummaryByChannel returns the first LeaderboardSummaryConfig
+// whose Channel matches channelID. Used by the -summary flag to route manual
+// triggers to configured leaderboards. (#308)
+func findLeaderboardSummaryByChannel(cfg *Config, channelID string) (LeaderboardSummaryConfig, bool) {
+	for _, lc := range cfg.LeaderboardSummaries {
+		if lc.Channel == channelID {
+			return lc, true
+		}
+	}
+	return LeaderboardSummaryConfig{}, false
+}
+
+// fetchPricesForSummary fetches all mark prices needed to revalue positions
+// across spot, HL perps, OKX perps, and futures. Failures are logged but
+// non-fatal — positions fall back to entry cost in the summary. (#308)
+func fetchPricesForSummary(cfg *Config) map[string]float64 {
+	prices := make(map[string]float64)
+	symbols := collectPriceSymbols(cfg.Strategies)
+	futuresSymbols := collectFuturesMarkSymbols(cfg.Strategies)
+	hlPerpsCoins, okxPerpsCoins := collectPerpsMarkSymbols(cfg.Strategies)
+
+	if len(symbols) > 0 {
+		if p, err := FetchPrices(symbols); err == nil {
+			for sym, price := range p {
+				if price > 0 {
+					prices[sym] = price
+				}
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "[WARN] Price fetch failed: %v — summary will use entry cost\n", err)
+		}
+	}
+	if len(hlPerpsCoins) > 0 {
+		if hlMarks, err := fetchHyperliquidMids(hlPerpsCoins); err == nil {
+			mergePerpsMarks(prices, hlMarks)
+		} else {
+			fmt.Fprintf(os.Stderr, "[WARN] HL perps marks fetch failed for %v: %v\n", hlPerpsCoins, err)
+		}
+	}
+	if len(okxPerpsCoins) > 0 {
+		if okxMarks, err := fetchOKXPerpsMids(okxPerpsCoins); err == nil {
+			mergePerpsMarks(prices, okxMarks)
+		} else {
+			fmt.Fprintf(os.Stderr, "[WARN] OKX perps marks fetch failed for %v: %v\n", okxPerpsCoins, err)
+		}
+	}
+	if len(futuresSymbols) > 0 {
+		if marks, _, err := FetchFuturesMarks(futuresSymbols); err == nil {
+			mergeFuturesMarks(prices, marks)
+		} else {
+			fmt.Fprintf(os.Stderr, "[WARN] Futures marks fetch failed for %v: %v\n", futuresSymbols, err)
+		}
+	}
+	return prices
+}
+
+// runLeaderboardSummaryAndExit posts one configured leaderboard summary and exits.
+// Called by -summary <channel> when channel matches a LeaderboardSummaries entry. (#308)
+func runLeaderboardSummaryAndExit(lc LeaderboardSummaryConfig, cfg *Config, state *AppState, notifier *MultiNotifier) {
+	prices := fetchPricesForSummary(cfg)
+	msg := BuildLeaderboardSummary(lc, cfg, state, prices)
+	if msg == "" {
+		fmt.Fprintf(os.Stderr, "No strategies match leaderboard summary platform=%s ticker=%s\n", lc.Platform, lc.Ticker)
+		os.Exit(1)
+	}
+	if err := notifier.SendMessage(lc.Channel, msg); err != nil {
+		fmt.Fprintf(os.Stderr, "[WARN] Send to channel %s failed: %v\n", lc.Channel, err)
+	}
+	fmt.Println(msg)
+	fmt.Printf("-summary=%s: posted leaderboard summary (platform=%s, ticker=%s), exiting.\n", lc.Channel, lc.Platform, lc.Ticker)
+	os.Exit(0)
+}
+
+// runDueLeaderboardSummaries auto-posts any LeaderboardSummaries entries whose
+// Frequency has elapsed since the last post. Updates state.LastLeaderboardSummaries.
+// Caller must hold the write lock on state. (#308)
+func runDueLeaderboardSummaries(cfg *Config, state *AppState, notifier *MultiNotifier, prices map[string]float64) {
+	if len(cfg.LeaderboardSummaries) == 0 || !notifier.HasBackends() {
+		return
+	}
+	if state.LastLeaderboardSummaries == nil {
+		state.LastLeaderboardSummaries = make(map[string]time.Time)
+	}
+	now := time.Now().UTC()
+	for _, lc := range cfg.LeaderboardSummaries {
+		freq := lc.ParsedFrequency()
+		if freq <= 0 {
+			continue
+		}
+		key := lc.Key()
+		last := state.LastLeaderboardSummaries[key]
+		if !last.IsZero() && now.Sub(last) < freq {
+			continue
+		}
+		msg := BuildLeaderboardSummary(lc, cfg, state, prices)
+		if msg == "" {
+			continue
+		}
+		if err := notifier.SendMessage(lc.Channel, msg); err != nil {
+			fmt.Printf("[WARN] Leaderboard summary send to channel %s failed: %v\n", lc.Channel, err)
+			continue
+		}
+		state.LastLeaderboardSummaries[key] = now
+		fmt.Printf("[leaderboard-summary] Posted platform=%s ticker=%s top_n=%d channel=%s\n",
+			lc.Platform, lc.Ticker, lc.TopN, lc.Channel)
+	}
 }

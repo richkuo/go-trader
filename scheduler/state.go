@@ -81,6 +81,10 @@ type AppState struct {
 	ReconciliationGaps      map[string]*ReconciliationGap `json:"reconciliation_gaps,omitempty"`
 	LastTop10Summary        time.Time                     `json:"last_top10_summary,omitempty"`
 	LastLeaderboardPostDate string                        `json:"last_leaderboard_post_date,omitempty"`
+	// LastLeaderboardSummaries tracks the last-post time for each configured
+	// leaderboard_summaries entry, keyed by LeaderboardSummaryConfig.Key().
+	// Used by the scheduler to avoid reposting within the configured frequency. (#308)
+	LastLeaderboardSummaries map[string]time.Time `json:"last_leaderboard_summaries,omitempty"`
 }
 
 // StrategyState is the per-strategy persistent state.

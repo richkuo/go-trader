@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS app_state (
     cycle_count INTEGER NOT NULL DEFAULT 0,
     last_cycle TEXT NOT NULL DEFAULT '',
     last_top10_summary TEXT NOT NULL DEFAULT '',
-    last_leaderboard_post_date TEXT NOT NULL DEFAULT ''
+    last_leaderboard_post_date TEXT NOT NULL DEFAULT '',
+    last_leaderboard_summaries TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS strategies (
@@ -214,6 +215,8 @@ func (sdb *StateDB) migrateSchema() error {
 		// Portfolio margin drawdown + kill-switch source tracking (#296 review).
 		"ALTER TABLE portfolio_risk ADD COLUMN current_margin_drawdown_pct REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE kill_switch_events ADD COLUMN source TEXT NOT NULL DEFAULT ''",
+		// Per-leaderboard-summary last-post timestamps stored as JSON (#308).
+		"ALTER TABLE app_state ADD COLUMN last_leaderboard_summaries TEXT NOT NULL DEFAULT ''",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -260,12 +263,21 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	defer tx.Rollback()
 
 	// 1. Upsert app_state singleton.
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO app_state (id, cycle_count, last_cycle, last_top10_summary, last_leaderboard_post_date)
-		VALUES (1, ?, ?, ?, ?)`,
+	lbSummariesJSON := ""
+	if len(state.LastLeaderboardSummaries) > 0 {
+		raw, err := json.Marshal(state.LastLeaderboardSummaries)
+		if err != nil {
+			return fmt.Errorf("marshal last_leaderboard_summaries: %w", err)
+		}
+		lbSummariesJSON = string(raw)
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO app_state (id, cycle_count, last_cycle, last_top10_summary, last_leaderboard_post_date, last_leaderboard_summaries)
+		VALUES (1, ?, ?, ?, ?, ?)`,
 		state.CycleCount,
 		formatTime(state.LastCycle),
 		formatTime(state.LastTop10Summary),
 		state.LastLeaderboardPostDate,
+		lbSummariesJSON,
 	); err != nil {
 		return fmt.Errorf("upsert app_state: %w", err)
 	}
@@ -653,9 +665,9 @@ func (sdb *StateDB) QueryClosedOptionPositions(strategyID, underlying string, si
 func (sdb *StateDB) LoadState() (*AppState, error) {
 	// 1. Load app_state singleton.
 	var cycleCount int
-	var lastCycleStr, lastTop10Str, lastLeaderboardDate string
-	err := sdb.db.QueryRow("SELECT cycle_count, last_cycle, last_top10_summary, last_leaderboard_post_date FROM app_state WHERE id = 1").
-		Scan(&cycleCount, &lastCycleStr, &lastTop10Str, &lastLeaderboardDate)
+	var lastCycleStr, lastTop10Str, lastLeaderboardDate, lastLBSummariesJSON string
+	err := sdb.db.QueryRow("SELECT cycle_count, last_cycle, last_top10_summary, last_leaderboard_post_date, last_leaderboard_summaries FROM app_state WHERE id = 1").
+		Scan(&cycleCount, &lastCycleStr, &lastTop10Str, &lastLeaderboardDate, &lastLBSummariesJSON)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -663,12 +675,20 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		return nil, fmt.Errorf("load app_state: %w", err)
 	}
 
+	lbSummaries := make(map[string]time.Time)
+	if lastLBSummariesJSON != "" {
+		if err := json.Unmarshal([]byte(lastLBSummariesJSON), &lbSummaries); err != nil {
+			return nil, fmt.Errorf("parse last_leaderboard_summaries: %w", err)
+		}
+	}
+
 	state := &AppState{
-		CycleCount:              cycleCount,
-		LastCycle:               parseTime(lastCycleStr),
-		LastTop10Summary:        parseTime(lastTop10Str),
-		LastLeaderboardPostDate: lastLeaderboardDate,
-		Strategies:              make(map[string]*StrategyState),
+		CycleCount:               cycleCount,
+		LastCycle:                parseTime(lastCycleStr),
+		LastTop10Summary:         parseTime(lastTop10Str),
+		LastLeaderboardPostDate:  lastLeaderboardDate,
+		LastLeaderboardSummaries: lbSummaries,
+		Strategies:               make(map[string]*StrategyState),
 	}
 
 	// 2. Load strategies.

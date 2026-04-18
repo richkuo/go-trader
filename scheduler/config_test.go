@@ -901,3 +901,83 @@ func TestValidateConfigDMChannelsOrphanSuffix(t *testing.T) {
 		t.Errorf("error = %v, want mention of empty platform prefix", err)
 	}
 }
+
+func TestValidateConfigLeaderboardSummariesInvalid(t *testing.T) {
+	tests := []struct {
+		name string
+		lc   LeaderboardSummaryConfig
+		want string
+	}{
+		{"missing platform", LeaderboardSummaryConfig{Channel: "c1"}, "platform is required"},
+		{"missing channel", LeaderboardSummaryConfig{Platform: "hyperliquid"}, "channel is required"},
+		{"negative top_n", LeaderboardSummaryConfig{Platform: "hl", Channel: "c1", TopN: -1}, "top_n must be >= 0"},
+		{"invalid freq", LeaderboardSummaryConfig{Platform: "hl", Channel: "c1", Frequency: "abc"}, "frequency invalid"},
+		{"freq too short", LeaderboardSummaryConfig{Platform: "hl", Channel: "c1", Frequency: "30s"}, "frequency must be >= 1m"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				IntervalSeconds:      60,
+				Strategies:           []StrategyConfig{{ID: "s1", Type: "spot", Platform: "binanceus", Capital: 100, MaxDrawdownPct: 10, Script: "x.py"}},
+				LeaderboardSummaries: []LeaderboardSummaryConfig{tt.lc},
+			}
+			err := ValidateConfig(cfg)
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tt.name)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("expected error containing %q, got: %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestValidateConfigLeaderboardSummariesValid(t *testing.T) {
+	cfg := &Config{
+		IntervalSeconds: 60,
+		Strategies: []StrategyConfig{
+			{ID: "s1", Type: "spot", Platform: "binanceus", Capital: 100, MaxDrawdownPct: 10, Script: "x.py"},
+		},
+		LeaderboardSummaries: []LeaderboardSummaryConfig{
+			{Platform: "hyperliquid", TopN: 10, Channel: "chan-1", Frequency: "6h"},
+			{Platform: "hyperliquid", Ticker: "eth", TopN: 5, Channel: "chan-2", Frequency: "12h"},
+			{Platform: "binanceus", TopN: 5, Channel: "chan-3"}, // no freq = on-demand only
+		},
+	}
+	if err := ValidateConfig(cfg); err != nil {
+		t.Errorf("expected valid config, got: %v", err)
+	}
+}
+
+func TestLoadConfigLeaderboardSummaries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{
+		"interval_seconds": 60,
+		"log_dir": "logs",
+		"discord": {"enabled": false, "token": "", "channels": {}},
+		"strategies": [
+			{"id": "hl-sma-btc", "type": "perps", "platform": "hyperliquid", "script": "x.py", "capital": 1000, "max_drawdown_pct": 10}
+		],
+		"leaderboard_summaries": [
+			{"platform": "hyperliquid", "ticker": null, "top_n": 10, "channel": "1490924126712365115", "frequency": "6h"},
+			{"platform": "hyperliquid", "ticker": "eth", "top_n": 5, "channel": "1477762393181523981", "frequency": "12h"}
+		]
+	}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(loaded.LeaderboardSummaries) != 2 {
+		t.Fatalf("expected 2 summaries, got %d", len(loaded.LeaderboardSummaries))
+	}
+	if loaded.LeaderboardSummaries[0].TopN != 10 || loaded.LeaderboardSummaries[0].Frequency != "6h" {
+		t.Errorf("first summary wrong: %+v", loaded.LeaderboardSummaries[0])
+	}
+	if loaded.LeaderboardSummaries[1].Ticker != "eth" {
+		t.Errorf("second summary ticker: got %q, want 'eth'", loaded.LeaderboardSummaries[1].Ticker)
+	}
+}
