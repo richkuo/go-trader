@@ -73,7 +73,6 @@ func makeTestState() *AppState {
 	return &AppState{
 		CycleCount:              42,
 		LastCycle:               now,
-		LastTop10Summary:        now.Add(-1 * time.Hour),
 		LastLeaderboardPostDate: "2026-04-08",
 		Strategies: map[string]*StrategyState{
 			"hl-momentum-btc": {
@@ -1316,5 +1315,43 @@ func TestMigrateSchema_AddsOpenedAt(t *testing.T) {
 	}
 	if colCount != 1 {
 		t.Errorf("opened_at column not added, count=%d", colCount)
+	}
+}
+
+func TestSaveLoadState_LeaderboardSummaries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+	sdb, err := OpenStateDB(path)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer sdb.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	state := NewAppState()
+	state.LastLeaderboardSummaries = map[string]time.Time{
+		"hyperliquid:*:123":   now.Add(-1 * time.Hour),
+		"hyperliquid:eth:456": now.Add(-2 * time.Hour),
+	}
+	if err := sdb.SaveState(state); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	loaded, err := sdb.LoadState()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(loaded.LastLeaderboardSummaries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(loaded.LastLeaderboardSummaries))
+	}
+	for k, want := range state.LastLeaderboardSummaries {
+		got, ok := loaded.LastLeaderboardSummaries[k]
+		if !ok {
+			t.Errorf("key %q missing after reload", k)
+			continue
+		}
+		if !got.Equal(want) {
+			t.Errorf("key %q: got %v, want %v", k, got, want)
+		}
 	}
 }

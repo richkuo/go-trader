@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestPrecomputeLeaderboard(t *testing.T) {
@@ -185,203 +187,6 @@ func TestFmtSignedPct(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("fmtSignedPct(%v) = %q, want %q", tt.input, got, tt.want)
 		}
-	}
-}
-
-func TestFormatHyperliquidTopN(t *testing.T) {
-	cfg := &Config{
-		Strategies: []StrategyConfig{
-			{ID: "hl-sma-btc", Type: "perps", Capital: 1000, Platform: "hyperliquid", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
-			{ID: "hl-rsi-eth", Type: "perps", Capital: 500, Platform: "hyperliquid", Args: []string{"rsi_divergence", "ETH/USDT", "1h"}},
-			{ID: "hl-mom-sol", Type: "perps", Capital: 800, Platform: "hyperliquid", Args: []string{"momentum", "SOL/USDT", "1h"}},
-			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
-		},
-	}
-
-	state := NewAppState()
-	for _, sc := range cfg.Strategies {
-		ss := NewStrategyState(sc)
-		switch sc.ID {
-		case "hl-sma-btc":
-			ss.Cash = 1200 // +20%
-			ss.TradeHistory = []Trade{{StrategyID: "hl-sma-btc"}, {StrategyID: "hl-sma-btc"}}
-		case "hl-rsi-eth":
-			ss.Cash = 400 // -20%
-			ss.TradeHistory = []Trade{{StrategyID: "hl-rsi-eth"}}
-		case "hl-mom-sol":
-			ss.Cash = 880 // +10%
-			ss.TradeHistory = []Trade{{StrategyID: "hl-mom-sol"}, {StrategyID: "hl-mom-sol"}, {StrategyID: "hl-mom-sol"}}
-		case "sma-btc":
-			ss.Cash = 1500 // +50% — should be excluded (not hyperliquid)
-		}
-		state.Strategies[sc.ID] = ss
-	}
-
-	prices := map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000, "SOL/USDT": 150}
-	msg := FormatHyperliquidTopN(cfg, state, prices)
-
-	if msg == "" {
-		t.Fatal("Expected non-empty message")
-	}
-	// Default LeaderboardTopN is 5, so title should be "Hyperliquid Top 5".
-	if !containsStr(msg, "Hyperliquid Top 5") {
-		t.Error("Message should contain dynamic title reflecting default topN=5")
-	}
-	if !containsStr(msg, "hl-sma-btc") {
-		t.Error("Message should contain hl-sma-btc")
-	}
-	if !containsStr(msg, "hl-rsi-eth") {
-		t.Error("Message should contain hl-rsi-eth")
-	}
-	if !containsStr(msg, "hl-mom-sol") {
-		t.Error("Message should contain hl-mom-sol")
-	}
-	// Spot strategy should NOT appear.
-	if containsStr(msg, "sma-btc") && !containsStr(msg, "hl-sma-btc") {
-		t.Error("Message should not contain non-hyperliquid strategies")
-	}
-	// Trades column should appear.
-	if !containsStr(msg, "Trades") {
-		t.Error("Message should contain Trades column header")
-	}
-}
-
-func TestFormatHyperliquidTopN_NoHLStrategies(t *testing.T) {
-	cfg := &Config{
-		Strategies: []StrategyConfig{
-			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus"},
-		},
-	}
-	state := NewAppState()
-	state.Strategies["sma-btc"] = &StrategyState{Cash: 1100, InitialCapital: 1000, Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}, TradeHistory: []Trade{}}
-
-	msg := FormatHyperliquidTopN(cfg, state, nil)
-	if msg != "" {
-		t.Errorf("Expected empty message when no HL strategies, got %q", msg)
-	}
-}
-
-func TestFormatHyperliquidTopN_SortOrder(t *testing.T) {
-	// Create 12 hyperliquid strategies to verify only topN are included.
-	var strats []StrategyConfig
-	for i := 0; i < 12; i++ {
-		strats = append(strats, StrategyConfig{
-			ID:       fmt.Sprintf("hl-s%02d-btc", i),
-			Type:     "perps",
-			Capital:  1000,
-			Platform: "hyperliquid",
-			Args:     []string{"sma", "BTC/USDT", "1h"},
-		})
-	}
-	// Explicitly set LeaderboardTopN=10 to preserve original test intent.
-	cfg := &Config{
-		Strategies: strats,
-		Discord:    DiscordConfig{LeaderboardTopN: 10},
-	}
-
-	state := NewAppState()
-	for i, sc := range cfg.Strategies {
-		ss := NewStrategyState(sc)
-		// Strategy 0 = worst (-10%), strategy 11 = best (+1%)
-		ss.Cash = 1000 + float64(i-10)*10 // -100, -90, ..., +10
-		state.Strategies[sc.ID] = ss
-	}
-
-	msg := FormatHyperliquidTopN(cfg, state, nil)
-	if msg == "" {
-		t.Fatal("Expected non-empty message")
-	}
-
-	// Dynamic title should reflect configured topN=10.
-	if !containsStr(msg, "Hyperliquid Top 10") {
-		t.Error("Message should contain dynamic title reflecting configured topN=10")
-	}
-	// The worst strategy (hl-s00-btc at -10%) should NOT appear (only top 10 of 12).
-	if containsStr(msg, "hl-s00-btc") {
-		t.Error("Worst strategy should be excluded from top 10")
-	}
-	if containsStr(msg, "hl-s01-btc") {
-		t.Error("Second worst strategy should be excluded from top 10")
-	}
-	// Best strategy should appear.
-	if !containsStr(msg, "hl-s11-btc") {
-		t.Error("Best strategy should appear in top 10")
-	}
-}
-
-func TestFormatPlatformTopN(t *testing.T) {
-	cfg := &Config{
-		Strategies: []StrategyConfig{
-			{ID: "hl-sma-btc", Type: "perps", Capital: 1000, Platform: "hyperliquid", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
-			{ID: "deribit-ccall-btc", Type: "options", Capital: 1000, Platform: "deribit", Args: []string{"covered_call", "BTC/USDT"}},
-			{ID: "deribit-vol-eth", Type: "options", Capital: 500, Platform: "deribit", Args: []string{"vol_smile", "ETH/USDT"}},
-			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
-		},
-	}
-
-	state := NewAppState()
-	for _, sc := range cfg.Strategies {
-		ss := NewStrategyState(sc)
-		switch sc.ID {
-		case "hl-sma-btc":
-			ss.Cash = 1200 // +20%
-			ss.TradeHistory = []Trade{{StrategyID: "hl-sma-btc"}}
-		case "deribit-ccall-btc":
-			ss.Cash = 1150 // +15%
-			ss.TradeHistory = []Trade{{StrategyID: "deribit-ccall-btc"}, {StrategyID: "deribit-ccall-btc"}}
-		case "deribit-vol-eth":
-			ss.Cash = 450 // -10%
-			ss.TradeHistory = []Trade{{StrategyID: "deribit-vol-eth"}}
-		case "sma-btc":
-			ss.Cash = 1500 // +50%
-		}
-		state.Strategies[sc.ID] = ss
-	}
-
-	prices := map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}
-
-	// Test Deribit platform leaderboard.
-	msg := FormatPlatformTopN("deribit", "🎯", "Deribit Top 10", cfg, state, prices)
-	if msg == "" {
-		t.Fatal("Expected non-empty message for deribit")
-	}
-	if !containsStr(msg, "Deribit Top 10") {
-		t.Error("Message should contain Deribit title")
-	}
-	if !containsStr(msg, "deribit-ccall-btc") {
-		t.Error("Message should contain deribit-ccall-btc")
-	}
-	if !containsStr(msg, "deribit-vol-eth") {
-		t.Error("Message should contain deribit-vol-eth")
-	}
-	// Non-deribit strategies should NOT appear.
-	if containsStr(msg, "hl-sma-btc") {
-		t.Error("Message should not contain hyperliquid strategies")
-	}
-	if containsStr(msg, "sma-btc") {
-		t.Error("Message should not contain binanceus strategies")
-	}
-	if !containsStr(msg, "Trades") {
-		t.Error("Message should contain Trades column header")
-	}
-
-	// Test platform with no strategies returns empty.
-	msg = FormatPlatformTopN("okx", "🔶", "OKX Top 10", cfg, state, prices)
-	if msg != "" {
-		t.Errorf("Expected empty message for platform with no strategies, got %q", msg)
-	}
-
-	// Test that FormatHyperliquidTopN still works via the wrapper.
-	hlMsg := FormatHyperliquidTopN(cfg, state, prices)
-	if hlMsg == "" {
-		t.Fatal("Expected non-empty message from FormatHyperliquidTopN wrapper")
-	}
-	// Default topN is 5, so wrapper title should reflect "Hyperliquid Top 5".
-	if !containsStr(hlMsg, "Hyperliquid Top 5") {
-		t.Error("Wrapper message should contain Hyperliquid Top 5 title")
-	}
-	if !containsStr(hlMsg, "hl-sma-btc") {
-		t.Error("Wrapper message should contain hl-sma-btc")
 	}
 }
 
@@ -742,4 +547,189 @@ func findSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestBuildLeaderboardSummary_PlatformOnly(t *testing.T) {
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			{ID: "hl-sma-btc", Type: "perps", Capital: 1000, Platform: "hyperliquid", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
+			{ID: "hl-rsi-eth", Type: "perps", Capital: 500, Platform: "hyperliquid", Args: []string{"rsi_divergence", "ETH/USDT", "1h"}},
+			{ID: "hl-mom-sol", Type: "perps", Capital: 800, Platform: "hyperliquid", Args: []string{"momentum", "SOL/USDT", "1h"}},
+			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
+		},
+	}
+	state := NewAppState()
+	for _, sc := range cfg.Strategies {
+		ss := NewStrategyState(sc)
+		switch sc.ID {
+		case "hl-sma-btc":
+			ss.Cash = 1200
+		case "hl-rsi-eth":
+			ss.Cash = 400
+		case "hl-mom-sol":
+			ss.Cash = 880
+		case "sma-btc":
+			ss.Cash = 1500
+		}
+		state.Strategies[sc.ID] = ss
+	}
+
+	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", TopN: 10, Channel: "chan-1"}
+	msg := BuildLeaderboardSummary(lc, cfg, state, nil)
+	if msg == "" {
+		t.Fatal("Expected non-empty message")
+	}
+	if !containsStr(msg, "Hyperliquid Top 3") {
+		t.Errorf("Expected title 'Hyperliquid Top 3' (3 HL strategies), got:\n%s", msg)
+	}
+	if !containsStr(msg, "hl-sma-btc") || !containsStr(msg, "hl-rsi-eth") || !containsStr(msg, "hl-mom-sol") {
+		t.Errorf("Expected all 3 HL strategies in message, got:\n%s", msg)
+	}
+	// Non-HL strategy must be excluded.
+	if containsStr(msg, " sma-btc ") {
+		t.Errorf("Expected non-HL strategy to be excluded, got:\n%s", msg)
+	}
+}
+
+func TestBuildLeaderboardSummary_TickerFilter(t *testing.T) {
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			{ID: "hl-sma-btc", Type: "perps", Capital: 1000, Platform: "hyperliquid", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
+			{ID: "hl-rsi-eth", Type: "perps", Capital: 500, Platform: "hyperliquid", Args: []string{"rsi_divergence", "ETH/USDT", "1h"}},
+			{ID: "hl-mom-eth", Type: "perps", Capital: 800, Platform: "hyperliquid", Args: []string{"momentum", "ETH/USDT", "1h"}},
+		},
+	}
+	state := NewAppState()
+	for _, sc := range cfg.Strategies {
+		ss := NewStrategyState(sc)
+		ss.Cash = sc.Capital + 100 // all profitable
+		state.Strategies[sc.ID] = ss
+	}
+
+	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", Ticker: "eth", TopN: 5, Channel: "chan-1"}
+	msg := BuildLeaderboardSummary(lc, cfg, state, nil)
+	if msg == "" {
+		t.Fatal("Expected non-empty message")
+	}
+	if !containsStr(msg, "Hyperliquid ETH Top 2") {
+		t.Errorf("Expected title with ETH ticker, got:\n%s", msg)
+	}
+	if containsStr(msg, "hl-sma-btc") {
+		t.Errorf("BTC strategy should be excluded by ticker filter, got:\n%s", msg)
+	}
+	if !containsStr(msg, "hl-rsi-eth") || !containsStr(msg, "hl-mom-eth") {
+		t.Errorf("Expected both ETH strategies, got:\n%s", msg)
+	}
+	// Sort order: hl-rsi-eth yields +$100/$500 = +20%; hl-mom-eth yields
+	// +$100/$800 = +12.5%. Higher PnL% must appear first. (#309 review nit)
+	rsiIdx := strings.Index(msg, "hl-rsi-eth")
+	momIdx := strings.Index(msg, "hl-mom-eth")
+	if rsiIdx < 0 || momIdx < 0 || rsiIdx >= momIdx {
+		t.Errorf("Expected hl-rsi-eth (+20%%) before hl-mom-eth (+12.5%%), got rsi=%d mom=%d in:\n%s", rsiIdx, momIdx, msg)
+	}
+}
+
+func TestBuildLeaderboardSummary_DefaultTopN(t *testing.T) {
+	var strats []StrategyConfig
+	for i := 0; i < 8; i++ {
+		strats = append(strats, StrategyConfig{
+			ID:       fmt.Sprintf("hl-s%02d-btc", i),
+			Type:     "perps",
+			Capital:  1000,
+			Platform: "hyperliquid",
+			Args:     []string{"sma", "BTC/USDT", "1h"},
+		})
+	}
+	cfg := &Config{Strategies: strats}
+	state := NewAppState()
+	for _, sc := range cfg.Strategies {
+		ss := NewStrategyState(sc)
+		ss.Cash = 1100
+		state.Strategies[sc.ID] = ss
+	}
+
+	// TopN=0 means default (5).
+	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", Channel: "c1"}
+	msg := BuildLeaderboardSummary(lc, cfg, state, nil)
+	if !containsStr(msg, "Hyperliquid Top 5") {
+		t.Errorf("Expected default TopN=5 in title, got:\n%s", msg)
+	}
+}
+
+func TestBuildLeaderboardSummary_NoMatches(t *testing.T) {
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
+		},
+	}
+	state := NewAppState()
+	state.Strategies["sma-btc"] = NewStrategyState(cfg.Strategies[0])
+
+	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", Channel: "c1"}
+	if msg := BuildLeaderboardSummary(lc, cfg, state, nil); msg != "" {
+		t.Errorf("Expected empty message when no strategies match, got:\n%s", msg)
+	}
+}
+
+func TestLeaderboardSummaryConfig_Key(t *testing.T) {
+	tests := []struct {
+		lc   LeaderboardSummaryConfig
+		want string
+	}{
+		{LeaderboardSummaryConfig{Platform: "hyperliquid", Ticker: "ETH", Channel: "123"}, "hyperliquid:eth:123"},
+		{LeaderboardSummaryConfig{Platform: "hyperliquid", Channel: "123"}, "hyperliquid:*:123"},
+		{LeaderboardSummaryConfig{Platform: "BinanceUS", Ticker: "btc", Channel: "456"}, "binanceus:btc:456"},
+	}
+	for i, tt := range tests {
+		if got := tt.lc.Key(); got != tt.want {
+			t.Errorf("case %d: Key()=%q, want %q", i, got, tt.want)
+		}
+	}
+}
+
+func TestLeaderboardSummaryConfig_ParsedFrequency(t *testing.T) {
+	tests := []struct {
+		freq string
+		want time.Duration
+	}{
+		{"", 0},
+		{"6h", 6 * time.Hour},
+		{"12h", 12 * time.Hour},
+		{"invalid", 0},
+	}
+	for _, tt := range tests {
+		lc := LeaderboardSummaryConfig{Frequency: tt.freq}
+		if got := lc.ParsedFrequency(); got != tt.want {
+			t.Errorf("Frequency=%q: got %v, want %v", tt.freq, got, tt.want)
+		}
+	}
+}
+
+// TestFindLeaderboardSummariesByChannel covers the multi-match case called out
+// in review item 3 on #309: -summary <ch> should surface every configured entry
+// sharing a channel, in config order.
+func TestFindLeaderboardSummariesByChannel(t *testing.T) {
+	cfg := &Config{
+		LeaderboardSummaries: []LeaderboardSummaryConfig{
+			{Platform: "hyperliquid", Channel: "hl-ch", Frequency: "6h"},
+			{Platform: "hyperliquid", Ticker: "ETH", Channel: "hl-ch", Frequency: "12h"},
+			{Platform: "okx", Channel: "okx-ch", Frequency: "6h"},
+		},
+	}
+
+	got := findLeaderboardSummariesByChannel(cfg, "hl-ch")
+	if len(got) != 2 {
+		t.Fatalf("hl-ch matches: got %d, want 2", len(got))
+	}
+	if got[0].Ticker != "" || got[1].Ticker != "ETH" {
+		t.Errorf("expected config order [unfiltered, ETH], got [%q, %q]", got[0].Ticker, got[1].Ticker)
+	}
+
+	if got := findLeaderboardSummariesByChannel(cfg, "okx-ch"); len(got) != 1 {
+		t.Errorf("okx-ch matches: got %d, want 1", len(got))
+	}
+
+	if got := findLeaderboardSummariesByChannel(cfg, "none"); got != nil {
+		t.Errorf("unknown channel should return nil, got %v", got)
+	}
 }

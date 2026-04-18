@@ -412,79 +412,6 @@ func TestValidateConfigValidConfig(t *testing.T) {
 	}
 }
 
-func TestLoadConfigHyperliquidTop10Freq(t *testing.T) {
-	dir := t.TempDir()
-	cfg := `{
-		"hyperliquid_top10_freq": "6h",
-		"strategies": [{
-			"id": "hl-sma-btc",
-			"type": "perps",
-			"platform": "hyperliquid",
-			"script": "shared_scripts/check_hyperliquid.py",
-			"args": ["sma_crossover", "BTC/USDT", "1h"],
-			"capital": 1000
-		}]
-	}`
-	path := writeTestConfig(t, dir, cfg)
-
-	loaded, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig failed: %v", err)
-	}
-	if loaded.HyperliquidTop10Freq != "6h" {
-		t.Errorf("HyperliquidTop10Freq = %q, want %q", loaded.HyperliquidTop10Freq, "6h")
-	}
-}
-
-func TestValidateConfigHyperliquidTop10FreqInvalid(t *testing.T) {
-	cfg := Config{
-		HyperliquidTop10Freq: "not-a-duration",
-		Strategies: []StrategyConfig{{
-			ID: "test", Type: "spot", Script: "check.py", Capital: 100, MaxDrawdownPct: 10,
-		}},
-		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
-	}
-	err := ValidateConfig(&cfg)
-	if err == nil {
-		t.Fatal("expected error for invalid duration")
-	}
-	if !strings.Contains(err.Error(), "hyperliquid_top10_freq") {
-		t.Errorf("error should mention hyperliquid_top10_freq: %v", err)
-	}
-}
-
-func TestValidateConfigHyperliquidTop10FreqTooShort(t *testing.T) {
-	cfg := Config{
-		HyperliquidTop10Freq: "30s",
-		Strategies: []StrategyConfig{{
-			ID: "test", Type: "spot", Script: "check.py", Capital: 100, MaxDrawdownPct: 10,
-		}},
-		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
-	}
-	err := ValidateConfig(&cfg)
-	if err == nil {
-		t.Fatal("expected error for too-short duration")
-	}
-	if !strings.Contains(err.Error(), ">= 1m") {
-		t.Errorf("error should mention >= 1m: %v", err)
-	}
-}
-
-func TestValidateConfigHyperliquidTop10FreqValid(t *testing.T) {
-	cfg := Config{
-		HyperliquidTop10Freq: "6h",
-		Strategies: []StrategyConfig{{
-			ID: "test", Type: "spot", Script: "shared_scripts/check_strategy.py",
-			Args: []string{"sma_crossover", "BTC/USDT", "1h"}, Capital: 100, MaxDrawdownPct: 10,
-			Platform: "binanceus",
-		}},
-		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
-	}
-	if err := ValidateConfig(&cfg); err != nil {
-		t.Errorf("expected valid config with HyperliquidTop10Freq=6h, got: %v", err)
-	}
-}
-
 func TestValidateConfigPortfolioRisk(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{{
@@ -899,5 +826,132 @@ func TestValidateConfigDMChannelsOrphanSuffix(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "platform prefix is empty") {
 		t.Errorf("error = %v, want mention of empty platform prefix", err)
+	}
+}
+
+func TestValidateConfigLeaderboardSummariesInvalid(t *testing.T) {
+	tests := []struct {
+		name string
+		lc   LeaderboardSummaryConfig
+		want string
+	}{
+		{"missing platform", LeaderboardSummaryConfig{Channel: "c1"}, "platform is required"},
+		{"missing channel", LeaderboardSummaryConfig{Platform: "hyperliquid"}, "channel is required"},
+		{"negative top_n", LeaderboardSummaryConfig{Platform: "hl", Channel: "c1", TopN: -1}, "top_n must be >= 0"},
+		{"invalid freq", LeaderboardSummaryConfig{Platform: "hl", Channel: "c1", Frequency: "abc"}, "frequency invalid"},
+		{"freq too short", LeaderboardSummaryConfig{Platform: "hl", Channel: "c1", Frequency: "30s"}, "frequency must be >= 1m"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				IntervalSeconds:      60,
+				Strategies:           []StrategyConfig{{ID: "s1", Type: "spot", Platform: "binanceus", Capital: 100, MaxDrawdownPct: 10, Script: "x.py"}},
+				LeaderboardSummaries: []LeaderboardSummaryConfig{tt.lc},
+			}
+			err := ValidateConfig(cfg)
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tt.name)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("expected error containing %q, got: %v", tt.want, err)
+			}
+		})
+	}
+}
+
+// TestValidateConfigLeaderboardSummariesDuplicateKey covers review item 4 on
+// #309: two entries with identical platform/ticker/channel share a single
+// LastLeaderboardSummaries timestamp, so whichever posts first silently blocks
+// the other. Detect the collision at config load instead.
+func TestValidateConfigLeaderboardSummariesDuplicateKey(t *testing.T) {
+	cfg := &Config{
+		IntervalSeconds: 60,
+		Strategies: []StrategyConfig{
+			{ID: "s1", Type: "spot", Platform: "binanceus", Capital: 100, MaxDrawdownPct: 10, Script: "x.py"},
+		},
+		LeaderboardSummaries: []LeaderboardSummaryConfig{
+			{Platform: "hyperliquid", Ticker: "ETH", Channel: "chan-1", Frequency: "6h"},
+			// Case-insensitive collision — Key() normalizes to lowercase.
+			{Platform: "Hyperliquid", Ticker: "eth", Channel: "chan-1", Frequency: "12h"},
+		},
+	}
+	err := ValidateConfig(cfg)
+	if err == nil {
+		t.Fatal("expected duplicate-key validation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate entry") {
+		t.Errorf("expected error to mention 'duplicate entry', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "leaderboard_summaries[0]") {
+		t.Errorf("expected error to reference first-occurrence index [0], got: %v", err)
+	}
+}
+
+// TestValidateConfigLeaderboardSummariesDistinctTickersSameChannel confirms we
+// don't flag legitimate configurations where the same channel hosts multiple
+// leaderboards scoped by distinct tickers.
+func TestValidateConfigLeaderboardSummariesDistinctTickersSameChannel(t *testing.T) {
+	cfg := &Config{
+		IntervalSeconds: 60,
+		Strategies: []StrategyConfig{
+			{ID: "s1", Type: "spot", Platform: "binanceus", Capital: 100, MaxDrawdownPct: 10, Script: "x.py"},
+		},
+		LeaderboardSummaries: []LeaderboardSummaryConfig{
+			{Platform: "hyperliquid", Channel: "hl-ch", Frequency: "6h"},                 // unfiltered
+			{Platform: "hyperliquid", Ticker: "ETH", Channel: "hl-ch", Frequency: "12h"}, // ticker-scoped
+		},
+	}
+	if err := ValidateConfig(cfg); err != nil {
+		t.Errorf("expected distinct-ticker same-channel config to validate, got: %v", err)
+	}
+}
+
+func TestValidateConfigLeaderboardSummariesValid(t *testing.T) {
+	cfg := &Config{
+		IntervalSeconds: 60,
+		Strategies: []StrategyConfig{
+			{ID: "s1", Type: "spot", Platform: "binanceus", Capital: 100, MaxDrawdownPct: 10, Script: "x.py"},
+		},
+		LeaderboardSummaries: []LeaderboardSummaryConfig{
+			{Platform: "hyperliquid", TopN: 10, Channel: "chan-1", Frequency: "6h"},
+			{Platform: "hyperliquid", Ticker: "eth", TopN: 5, Channel: "chan-2", Frequency: "12h"},
+			{Platform: "binanceus", TopN: 5, Channel: "chan-3"}, // no freq = on-demand only
+		},
+	}
+	if err := ValidateConfig(cfg); err != nil {
+		t.Errorf("expected valid config, got: %v", err)
+	}
+}
+
+func TestLoadConfigLeaderboardSummaries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{
+		"interval_seconds": 60,
+		"log_dir": "logs",
+		"discord": {"enabled": false, "token": "", "channels": {}},
+		"strategies": [
+			{"id": "hl-sma-btc", "type": "perps", "platform": "hyperliquid", "script": "x.py", "capital": 1000, "max_drawdown_pct": 10}
+		],
+		"leaderboard_summaries": [
+			{"platform": "hyperliquid", "ticker": null, "top_n": 10, "channel": "1490924126712365115", "frequency": "6h"},
+			{"platform": "hyperliquid", "ticker": "eth", "top_n": 5, "channel": "1477762393181523981", "frequency": "12h"}
+		]
+	}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(loaded.LeaderboardSummaries) != 2 {
+		t.Fatalf("expected 2 summaries, got %d", len(loaded.LeaderboardSummaries))
+	}
+	if loaded.LeaderboardSummaries[0].TopN != 10 || loaded.LeaderboardSummaries[0].Frequency != "6h" {
+		t.Errorf("first summary wrong: %+v", loaded.LeaderboardSummaries[0])
+	}
+	if loaded.LeaderboardSummaries[1].Ticker != "eth" {
+		t.Errorf("second summary ticker: got %q, want 'eth'", loaded.LeaderboardSummaries[1].Ticker)
 	}
 }

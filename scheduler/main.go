@@ -263,11 +263,6 @@ func main() {
 	saveFailures := 0
 	resetGoroutineRunning := false
 
-	var top10Freq time.Duration
-	if cfg.HyperliquidTop10Freq != "" {
-		top10Freq, _ = time.ParseDuration(cfg.HyperliquidTop10Freq)
-	}
-
 	// Main loop
 	for {
 		cycleStart := time.Now()
@@ -916,13 +911,12 @@ func main() {
 			fmt.Printf("[WARN] Leaderboard pre-compute failed: %v\n", err)
 		}
 
-		// Periodic hyperliquid top-10 summary (#176).
-		var top10Msg string
-		if top10Freq > 0 && time.Since(state.LastTop10Summary) >= top10Freq {
-			top10Msg = FormatHyperliquidTopN(cfg, state, prices)
-			if top10Msg != "" {
-				state.LastTop10Summary = time.Now().UTC()
-			}
+		// Periodic configurable leaderboard summaries (#308). Compute + update
+		// state.LastLeaderboardSummaries under Lock; post outside so Discord
+		// HTTPS latency can't stall the scheduler cycle.
+		var duePending []pendingLeaderboardSummary
+		if notifier.HasBackends() {
+			duePending = collectDueLeaderboardSummaries(cfg, state, prices)
 		}
 
 		if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
@@ -949,11 +943,14 @@ func main() {
 		}
 		mu.Unlock()
 
-		// Post top-10 outside the lock to avoid holding mu during I/O.
-		// Route to dedicated leaderboard channel; falls back to platform channel.
-		if top10Msg != "" {
-			notifier.SendToChannel("hyperliquid-leaderboard", "hyperliquid", top10Msg)
-			fmt.Println("[top10] Posted hyperliquid top-10 summary")
+		// Post any configurable leaderboard summaries (#308) outside the lock.
+		for _, p := range duePending {
+			if err := notifier.SendMessage(p.channel, p.msg); err != nil {
+				fmt.Printf("[WARN] Leaderboard summary send to channel %s failed: %v\n", p.channel, err)
+				continue
+			}
+			fmt.Printf("[leaderboard-summary] Posted key=%s top_n=%d channel=%s\n",
+				p.key, p.topN, p.channel)
 		}
 
 		// Post leaderboard outside the lock to avoid holding mu during I/O.
@@ -994,12 +991,25 @@ func main() {
 }
 
 // runSummaryAndExit posts a snapshot summary for the given channel key and exits.
-// It fetches current prices, formats the summary using the same logic as the hourly
-// summaries, posts to all notification backends, and exits immediately.
+//
+// Lookup order (#308):
+//  1. If channelKey matches a cfg.LeaderboardSummaries[].Channel, build and
+//     post that configured leaderboard (platform + optional ticker + topN).
+//  2. Otherwise fall back to the legacy asset-grouped category summary, which
+//     requires strategies whose notifier-resolved channel key equals channelKey.
+//
+// It fetches current prices, formats the summary, posts to all notification
+// backends, and exits immediately.
 func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier *MultiNotifier) {
 	if !notifier.HasBackends() {
 		fmt.Fprintf(os.Stderr, "No notification backends configured\n")
 		os.Exit(1)
+	}
+
+	// #308: Manual trigger for configured leaderboard summaries.
+	if lcs := findLeaderboardSummariesByChannel(cfg, channelKey); len(lcs) > 0 {
+		runLeaderboardSummariesAndExit(lcs, cfg, state, notifier)
+		return
 	}
 
 	if !notifier.HasChannel(channelKey, channelKey) {
@@ -1019,11 +1029,8 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 		os.Exit(1)
 	}
 
-	// Collect symbols for the one-shot summary. Spot via BinanceUS; perps
-	// via venue-native marks (#263); futures via TopStep adapter (#261).
+	// Collect spot symbols; perps/futures go through augmentMarksBestEffort.
 	symbols := collectPriceSymbols(cfg.Strategies)
-	futuresSymbols := collectFuturesMarkSymbols(cfg.Strategies)
-	hlPerpsCoins, okxPerpsCoins := collectPerpsMarkSymbols(cfg.Strategies)
 
 	// Fetch current prices.
 	prices := make(map[string]float64)
@@ -1039,34 +1046,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 			}
 		}
 	}
-	if len(hlPerpsCoins) > 0 {
-		hlMarks, err := fetchHyperliquidMids(hlPerpsCoins)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[WARN] HL perps marks fetch failed for %v: %v — summary will use entry cost\n", hlPerpsCoins, err)
-		} else {
-			mergePerpsMarks(prices, hlMarks)
-		}
-	}
-	if len(okxPerpsCoins) > 0 {
-		okxMarks, err := fetchOKXPerpsMids(okxPerpsCoins)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[WARN] OKX perps marks fetch failed for %v: %v — summary will use entry cost\n", okxPerpsCoins, err)
-		} else {
-			mergePerpsMarks(prices, okxMarks)
-		}
-	}
-	if len(futuresSymbols) > 0 {
-		marks, mode, err := FetchFuturesMarks(futuresSymbols)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[WARN] Futures marks fetch failed for %v: %v — summary will use entry cost\n", futuresSymbols, err)
-		} else {
-			// One-shot summary path — not polled, so unthrottled log is fine.
-			if mode == FuturesMarkModePaperFallback {
-				fmt.Fprintf(os.Stderr, "[WARN] fetch_futures_marks: live mode init failed, degraded to paper (yfinance) — check TopStepX creds and network\n")
-			}
-			mergeFuturesMarks(prices, marks)
-		}
-	}
+	augmentMarksBestEffort(cfg, prices)
 
 	// Calculate channel value.
 	chValue := 0.0
@@ -2015,4 +1995,151 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, ex
 		detail = fmt.Sprintf("[%s] %s%s %s @ $%.2f", sc.ID, prefix, signalStr, result.Symbol, fillPrice)
 	}
 	return trades, detail
+}
+
+// findLeaderboardSummariesByChannel returns every LeaderboardSummaryConfig
+// whose Channel matches channelID, preserving config order. A single channel
+// may have multiple entries (e.g. one unfiltered + one ticker-scoped); all are
+// returned so -summary posts what the operator configured. (#308, review item
+// 3 on #309)
+func findLeaderboardSummariesByChannel(cfg *Config, channelID string) []LeaderboardSummaryConfig {
+	var out []LeaderboardSummaryConfig
+	for _, lc := range cfg.LeaderboardSummaries {
+		if lc.Channel == channelID {
+			out = append(out, lc)
+		}
+	}
+	return out
+}
+
+// augmentMarksBestEffort fills prices with HL perps, OKX perps, and futures
+// marks for every position referenced by cfg.Strategies. Failures log [WARN]
+// to stderr; missing marks fall back to entry cost via PortfolioValue.
+// Shared by the one-shot channel-summary path and the configurable
+// leaderboard-summary path. (#308)
+func augmentMarksBestEffort(cfg *Config, prices map[string]float64) {
+	hlPerpsCoins, okxPerpsCoins := collectPerpsMarkSymbols(cfg.Strategies)
+	futuresSymbols := collectFuturesMarkSymbols(cfg.Strategies)
+
+	if len(hlPerpsCoins) > 0 {
+		if marks, err := fetchHyperliquidMids(hlPerpsCoins); err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] HL perps marks fetch failed for %v: %v — summary will use entry cost\n", hlPerpsCoins, err)
+		} else {
+			mergePerpsMarks(prices, marks)
+		}
+	}
+	if len(okxPerpsCoins) > 0 {
+		if marks, err := fetchOKXPerpsMids(okxPerpsCoins); err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] OKX perps marks fetch failed for %v: %v — summary will use entry cost\n", okxPerpsCoins, err)
+		} else {
+			mergePerpsMarks(prices, marks)
+		}
+	}
+	if len(futuresSymbols) > 0 {
+		if marks, mode, err := FetchFuturesMarks(futuresSymbols); err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] Futures marks fetch failed for %v: %v — summary will use entry cost\n", futuresSymbols, err)
+		} else {
+			if mode == FuturesMarkModePaperFallback {
+				fmt.Fprintf(os.Stderr, "[WARN] fetch_futures_marks: live mode init failed, degraded to paper (yfinance) — check TopStepX creds and network\n")
+			}
+			mergeFuturesMarks(prices, marks)
+		}
+	}
+}
+
+// fetchPricesForSummary fetches spot + best-effort perps/futures marks needed
+// to revalue positions for the leaderboard summary. Failures are logged but
+// non-fatal — positions fall back to entry cost. (#308)
+func fetchPricesForSummary(cfg *Config) map[string]float64 {
+	prices := make(map[string]float64)
+	symbols := collectPriceSymbols(cfg.Strategies)
+
+	if len(symbols) > 0 {
+		if p, err := FetchPrices(symbols); err == nil {
+			for sym, price := range p {
+				if price > 0 {
+					prices[sym] = price
+				}
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "[WARN] Price fetch failed: %v — summary will use entry cost\n", err)
+		}
+	}
+	augmentMarksBestEffort(cfg, prices)
+	return prices
+}
+
+// runLeaderboardSummariesAndExit posts every matching LeaderboardSummaryConfig
+// and exits. Prices are fetched once and shared across all entries. Each
+// empty-result entry is reported to stderr but does not abort siblings; exits
+// 1 only if every entry produced no message. (#308, review item 3 on #309)
+func runLeaderboardSummariesAndExit(lcs []LeaderboardSummaryConfig, cfg *Config, state *AppState, notifier *MultiNotifier) {
+	prices := fetchPricesForSummary(cfg)
+	posted := 0
+	for _, lc := range lcs {
+		msg := BuildLeaderboardSummary(lc, cfg, state, prices)
+		if msg == "" {
+			fmt.Fprintf(os.Stderr, "No strategies match leaderboard summary platform=%s ticker=%s\n", lc.Platform, lc.Ticker)
+			continue
+		}
+		if err := notifier.SendMessage(lc.Channel, msg); err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] Send to channel %s failed: %v\n", lc.Channel, err)
+		}
+		fmt.Println(msg)
+		fmt.Printf("-summary=%s: posted leaderboard summary (platform=%s, ticker=%s)\n", lc.Channel, lc.Platform, lc.Ticker)
+		posted++
+	}
+	if posted == 0 {
+		os.Exit(1)
+	}
+	fmt.Printf("-summary=%s: posted %d leaderboard summaries, exiting.\n", lcs[0].Channel, posted)
+	os.Exit(0)
+}
+
+// pendingLeaderboardSummary carries a computed summary from under-lock
+// computation to post-unlock I/O. (#308)
+type pendingLeaderboardSummary struct {
+	channel string
+	msg     string
+	key     string
+	topN    int
+}
+
+// collectDueLeaderboardSummaries builds summaries for LeaderboardSummaries
+// entries whose Frequency has elapsed. Marks state.LastLeaderboardSummaries
+// optimistically so duplicate posts are avoided if the caller's Discord send
+// fails; same semantics as the previous in-lock implementation. Caller must
+// hold the write lock on state. (#308)
+func collectDueLeaderboardSummaries(cfg *Config, state *AppState, prices map[string]float64) []pendingLeaderboardSummary {
+	if len(cfg.LeaderboardSummaries) == 0 {
+		return nil
+	}
+	if state.LastLeaderboardSummaries == nil {
+		state.LastLeaderboardSummaries = make(map[string]time.Time)
+	}
+	now := time.Now().UTC()
+	var pending []pendingLeaderboardSummary
+	for _, lc := range cfg.LeaderboardSummaries {
+		freq := lc.ParsedFrequency()
+		if freq <= 0 {
+			continue
+		}
+		key := lc.Key()
+		last := state.LastLeaderboardSummaries[key]
+		if !last.IsZero() && now.Sub(last) < freq {
+			continue
+		}
+		msg := BuildLeaderboardSummary(lc, cfg, state, prices)
+		if msg == "" {
+			continue
+		}
+		state.LastLeaderboardSummaries[key] = now
+		pending = append(pending, pendingLeaderboardSummary{
+			channel: lc.Channel,
+			msg:     msg,
+			key:     key,
+			topN:    lc.TopN,
+		})
+	}
+	return pending
 }

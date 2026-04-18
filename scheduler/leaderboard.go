@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // LeaderboardEntry holds pre-computed PnL data for one strategy.
@@ -295,13 +297,51 @@ func PostLeaderboard(cfg *Config, notifier *MultiNotifier) error {
 	return nil
 }
 
-// FormatPlatformTopN builds a top-N summary message for strategies on a given platform,
-// sorted by PnL% descending. N is controlled by Discord.LeaderboardTopN (default 5).
-// Returns "" if no strategies exist for that platform.
-func FormatPlatformTopN(platform, icon, title string, cfg *Config, state *AppState, prices map[string]float64) string {
+// titleCase capitalizes the first rune of s and lowercases the rest.
+// Rune-aware so non-ASCII platform names don't produce mojibake.
+func titleCase(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return s
+	}
+	r, size := utf8.DecodeRuneInString(s)
+	return string(unicode.ToUpper(r)) + s[size:]
+}
+
+// platformIcon returns a short icon for a platform; used by leaderboard summaries.
+func platformIcon(platform string) string {
+	switch strings.ToLower(platform) {
+	case "hyperliquid":
+		return "⚡"
+	case "deribit", "ibkr":
+		return "🎯"
+	case "topstep":
+		return "🏦"
+	case "binanceus", "okx", "robinhood", "luno":
+		return "📈"
+	default:
+		return "📊"
+	}
+}
+
+// BuildLeaderboardSummary constructs a leaderboard message for a single
+// LeaderboardSummaryConfig entry: strategies filtered by platform (and
+// optionally ticker) sorted by PnL% descending, truncated to TopN. Returns ""
+// if no strategies match — caller should skip posting in that case.
+// Issue #308.
+func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *AppState, prices map[string]float64) string {
+	topN := lc.TopN
+	if topN <= 0 {
+		topN = 5
+	}
+	tickerFilter := strings.ToUpper(strings.TrimSpace(lc.Ticker))
+
 	var entries []LeaderboardEntry
 	for _, sc := range cfg.Strategies {
-		if sc.Platform != platform {
+		if !strings.EqualFold(sc.Platform, lc.Platform) {
+			continue
+		}
+		if tickerFilter != "" && extractAsset(sc) != tickerFilter {
 			continue
 		}
 		ss := state.Strategies[sc.ID]
@@ -330,25 +370,20 @@ func FormatPlatformTopN(platform, icon, title string, cfg *Config, state *AppSta
 		return ""
 	}
 
-	// Sort by PnL% descending, take top N.
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].PnLPct > entries[j].PnLPct
 	})
-	topN := leaderboardTopN(cfg)
 	n := topN
 	if len(entries) < n {
 		n = len(entries)
 	}
 
-	return formatLeaderboardMessage(icon, title, entries[:n], false, n)
-}
-
-// FormatHyperliquidTopN builds a top-N summary message for hyperliquid strategies,
-// sorted by PnL% descending. N is controlled by Discord.LeaderboardTopN (default 5).
-// Returns "" if no hyperliquid strategies exist.
-func FormatHyperliquidTopN(cfg *Config, state *AppState, prices map[string]float64) string {
-	title := fmt.Sprintf("Hyperliquid Top %d", leaderboardTopN(cfg))
-	return FormatPlatformTopN("hyperliquid", "⚡", title, cfg, state, prices)
+	platformTitle := titleCase(lc.Platform)
+	title := fmt.Sprintf("%s Top %d", platformTitle, n)
+	if tickerFilter != "" {
+		title = fmt.Sprintf("%s %s Top %d", platformTitle, tickerFilter, n)
+	}
+	return formatLeaderboardMessage(platformIcon(lc.Platform), title, entries[:n], false, n)
 }
 
 // fmtSignedDollar formats a dollar value with +/- prefix.
