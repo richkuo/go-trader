@@ -934,8 +934,8 @@ func TestLoadConfigLeaderboardSummaries(t *testing.T) {
 			{"id": "hl-sma-btc", "type": "perps", "platform": "hyperliquid", "script": "x.py", "capital": 1000, "max_drawdown_pct": 10}
 		],
 		"leaderboard_summaries": [
-			{"platform": "hyperliquid", "ticker": null, "top_n": 10, "channel": "1490924126712365115", "frequency": "6h"},
-			{"platform": "hyperliquid", "ticker": "eth", "top_n": 5, "channel": "1477762393181523981", "frequency": "12h"}
+			{"platform": "hyperliquid", "ticker": null, "top_n": 10, "channel": "11111111111111111", "frequency": "6h"},
+			{"platform": "hyperliquid", "ticker": "eth", "top_n": 5, "channel": "22222222222222222", "frequency": "12h"}
 		]
 	}`
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {

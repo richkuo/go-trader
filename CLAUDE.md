@@ -4,10 +4,11 @@
 - Requires Go 1.26.2 — install via Homebrew (macOS): `brew install go@1.26` or Linux tarball: `curl -sL https://go.dev/dl/go1.26.2.linux-amd64.tar.gz | tar -C /usr/local -xzf -`
 - Go is not in PATH via shell; use `/opt/homebrew/bin/go` directly (e.g. `cd scheduler && /opt/homebrew/bin/go build .`)
 - Python venv at `.venv/bin/python3` (used by executor.go at runtime)
-- In git worktrees, `.venv` is NOT copied — use the main repo's venv: `/Users/richardkuo/Work/openclaw/go-trader/.venv/bin/python3`
+- In git worktrees, `.venv` is NOT copied — use the main repo's venv: `<main-repo>/.venv/bin/python3`
 - Python deps managed with `uv` (see `pyproject.toml` / `uv.lock`)
 
 ## Setup
+- **Quick flow for a new server:** tell OpenClaw `install https://github.com/richkuo/go-trader and init`.
 - `uv sync` — install Python deps into `.venv`
 - Copy `scheduler/config.example.json` → `scheduler/config.json` and fill in API keys
 
@@ -137,7 +138,7 @@
 - `cd scheduler && /opt/homebrew/bin/go test ./...` — run all unit tests (must run from scheduler/ where go.mod lives; repo root has no go.mod)
 - `cd scheduler && /opt/homebrew/bin/gofmt -w <file>.go` — format after editing Go files (`-l *.go` lists all files needing formatting)
 - Multi-line Go edits with tabs: Edit tool may fail on tab-indented blocks; use heredoc form (one-liner fails on multi-line strings with quotes): `python3 << 'PYEOF'` / `content=open(f).read()` / `open(f,'w').write(content.replace(old,new,1))` / `PYEOF`
-- Strategy listing: `cd shared_strategies/spot && ../../.venv/bin/python3 strategies.py --list-json` (must use venv for numpy/pandas; in worktrees use absolute path: `/Users/richardkuo/Work/openclaw/go-trader/.venv/bin/python3`)
+- Strategy listing: `cd shared_strategies/spot && ../../.venv/bin/python3 strategies.py --list-json` (must use venv for numpy/pandas; in worktrees use absolute path: `<main-repo>/.venv/bin/python3`)
 - Smoke test: `./go-trader --once`
 - Run with config: `./go-trader --config scheduler/config.json`
 - Smoke test interactive CLI: `printf "answer1\nanswer2\n" | ./go-trader init`
