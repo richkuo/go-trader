@@ -958,19 +958,28 @@ func main() {
 		// post without the lock held so Discord HTTPS latency can't stall
 		// other goroutines.
 		if postLeaderboard {
+			stampDate := func() {
+				mu.Lock()
+				state.LastLeaderboardPostDate = time.Now().UTC().Format("2006-01-02")
+				mu.Unlock()
+			}
 			if len(cfg.Strategies) == 0 {
 				fmt.Println("[leaderboard] Auto-post skipped: no strategies configured")
+				stampDate()
 			} else {
-				fmt.Printf("[leaderboard] Auto-posting daily leaderboard (configured time: %s UTC)\n", cfg.LeaderboardPostTime)
 				mu.RLock()
 				lbMessages := BuildLeaderboardMessages(cfg, state, prices)
 				mu.RUnlock()
-				if err := postLeaderboardMessages(lbMessages, notifier); err != nil {
-					fmt.Printf("[WARN] Leaderboard auto-post failed: %v\n", err)
+				if len(lbMessages) == 0 {
+					fmt.Println("[leaderboard] Auto-post skipped: no strategy state to leaderboard yet")
+					stampDate()
 				} else {
-					mu.Lock()
-					state.LastLeaderboardPostDate = time.Now().UTC().Format("2006-01-02")
-					mu.Unlock()
+					fmt.Printf("[leaderboard] Auto-posting daily leaderboard (configured time: %s UTC)\n", cfg.LeaderboardPostTime)
+					if err := postLeaderboardMessages(lbMessages, notifier); err != nil {
+						fmt.Printf("[WARN] Leaderboard auto-post failed: %v\n", err)
+					} else {
+						stampDate()
+					}
 				}
 			}
 		}
