@@ -939,6 +939,9 @@ func TestExecutePerpsSignalOpenShortFromFlat(t *testing.T) {
 	if pos.Multiplier != 1 {
 		t.Errorf("Multiplier = %g, want 1 (perps PnL branch)", pos.Multiplier)
 	}
+	if pos.Leverage != 1 {
+		t.Errorf("Leverage = %g, want 1 (matches leverage arg; risk.go reads this)", pos.Leverage)
+	}
 	if pos.OwnerStrategyID != s.ID {
 		t.Errorf("OwnerStrategyID = %q, want %q", pos.OwnerStrategyID, s.ID)
 	}
@@ -1014,7 +1017,10 @@ func TestExecutePerpsSignalFlipLongToShort(t *testing.T) {
 		RiskState:       RiskState{},
 	}
 
-	trades, err := ExecutePerpsSignal(s, -1, "ETH", 2000, 1, 0.5, "live-flip-oid", 0.5, true, logger)
+	// Live flip: exchange executes a single net-flip sell of size
+	// (closeLongQty + newShortQty) = 0.5 + 0.5 = 1.0. ExecutePerpsSignal
+	// subtracts the close leg when sizing the new short side.
+	trades, err := ExecutePerpsSignal(s, -1, "ETH", 2000, 1, 1.0, "live-flip-oid", 0.5, true, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignal: %v", err)
 	}
@@ -1024,6 +1030,9 @@ func TestExecutePerpsSignalFlipLongToShort(t *testing.T) {
 	pos := s.Positions["ETH"]
 	if pos == nil || pos.Side != "short" {
 		t.Fatalf("expected ETH short after flip, got %+v", pos)
+	}
+	if pos.Quantity != 0.5 {
+		t.Errorf("new short Quantity = %g, want 0.5 (fillQty=1.0 minus closed long 0.5)", pos.Quantity)
 	}
 	if len(s.TradeHistory) != 2 {
 		t.Fatalf("TradeHistory len = %d, want 2", len(s.TradeHistory))
@@ -1070,5 +1079,60 @@ func TestExecutePerpsSignalAlreadyShortIsInertNoOp(t *testing.T) {
 	}
 	if len(s.TradeHistory) != 0 {
 		t.Error("no Trade should be recorded on dedupe")
+	}
+}
+
+// #330 (follow-up review) — regression: the live perps order size MUST include
+// the close-leg quantity when AllowShorts + opposite-side position, so a
+// single exchange order net-flips the position. Without this, the scheduler's
+// virtual close+open lands against an exchange fill that only closed,
+// leaving virtual state ahead of the exchange (same class of desync as #298).
+func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
+	// cash=1000, leverage=1, price=2000 → newSize = 1000*0.95/2000 = 0.475
+	cases := []struct {
+		name       string
+		signal     int
+		posQty     float64
+		posSide    string
+		allowShort bool
+		wantSize   float64
+		wantOK     bool
+	}{
+		// Fresh opens
+		{"long_from_flat", 1, 0, "", false, 0.475, true},
+		{"short_from_flat_allowed", -1, 0, "", true, 0.475, true},
+		// Close-only (legacy)
+		{"close_long_legacy", -1, 0.3, "long", false, 0.3, true},
+		// Flips (the reviewer's blocker)
+		{"flip_long_to_short", -1, 0.5, "long", true, 0.975, true}, // 0.5 + 0.475
+		{"flip_short_to_long", 1, 0.5, "short", true, 0.975, true}, // 0.5 + 0.475
+		// Legacy buy against migrated short is NOT a flip (AllowShorts=false):
+		// sizing stays at newSize — the legacy behavior pre-dating #328.
+		{"buy_vs_short_legacy_not_flip", 1, 0.5, "short", false, 0.475, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			size, ok, reason := perpsLiveOrderSize(tc.signal, 2000, 1000, tc.posQty, 1.0, tc.posSide, tc.allowShort)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v (reason=%q), want %v", ok, reason, tc.wantOK)
+			}
+			if ok && size != tc.wantSize {
+				t.Errorf("size = %g, want %g", size, tc.wantSize)
+			}
+		})
+	}
+}
+
+// #330 (follow-up) — pin the sizing contract at the boundary where it
+// matters: a long-to-short flip must size to posQty + newSize, NOT posQty
+// (the old close-only behavior that silently broke bidirectional execution).
+func TestPerpsLiveOrderSize_FlipLongToShortExceedsCloseOnly(t *testing.T) {
+	posQty := 0.5
+	size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, posQty, 1.0, "long", true)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if size <= posQty {
+		t.Errorf("flip size = %g, must exceed close-only posQty (%g) for a net-flip", size, posQty)
 	}
 }

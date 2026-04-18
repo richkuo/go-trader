@@ -217,6 +217,62 @@ func PerpsOrderSkipReason(signal int, posSide string, allowShorts bool) string {
 	return ""
 }
 
+// perpsLiveOrderSize returns the market-order size to place for a live perps
+// execution. PerpsOrderSkipReason must already have passed (no skip). The
+// four cases:
+//
+//   - Fresh open (posQty <= 0):
+//   - signal=1           → size = cash*lev*0.95/price (long from flat)
+//   - signal=-1 + AllowShorts → size = cash*lev*0.95/price (short from flat)
+//   - Close-only (legacy, !AllowShorts):
+//   - signal=-1 + long   → size = posQty
+//   - Flip (AllowShorts + opposite-side position):
+//   - signal=1 + short   → size = posQty + cash*lev*0.95/price
+//   - signal=-1 + long   → size = posQty + cash*lev*0.95/price
+//
+// The flip branch is what this helper exists for: without `posQty + newSize`
+// a bidirectional scheduler tells ExecutePerpsSignal to virtually close+open
+// in one step, but the exchange only closes (size = newSize or size = posQty
+// picked either way would desync). A single net-flip order of
+// `posQty + newSize` settles to the new side at the intended notional and
+// matches the virtual-state transition exactly — see PR #330 review.
+//
+// Returns (size, ok); when ok is false `reason` is a log-ready string.
+func perpsLiveOrderSize(signal int, price, cash, posQty, sizingLeverage float64, posSide string, allowShorts bool) (size float64, ok bool, reason string) {
+	isBuy := signal == 1
+	flipping := allowShorts && posQty > 0 && ((isBuy && posSide == "short") || (!isBuy && posSide == "long"))
+	// Fresh open: buy always fresh-sizes (legacy buy-vs-migrated-short kept
+	// the pre-#330 fresh-open sizing for that edge case), or AllowShorts
+	// short-from-flat. Sell + !AllowShorts + no long is unreachable —
+	// PerpsOrderSkipReason handled it.
+	openingFresh := isBuy || (!isBuy && allowShorts && posQty <= 0)
+
+	if openingFresh || flipping {
+		budget := cash * sizingLeverage * 0.95
+		if budget < 1 || price <= 0 {
+			label := "buy"
+			if flipping && isBuy {
+				label = "buy (flip)"
+			} else if flipping {
+				label = "sell (flip)"
+			} else if !isBuy {
+				label = "sell (short-open)"
+			}
+			return 0, false, fmt.Sprintf("insufficient cash ($%.2f) for live %s", cash, label)
+		}
+		newSize := budget / price
+		if flipping {
+			return posQty + newSize, true, ""
+		}
+		return newSize, true, ""
+	}
+	// close-only: signal=-1 + long + !allowShorts
+	if posQty <= 0 {
+		return 0, false, "no position to close"
+	}
+	return posQty, true, ""
+}
+
 // SpotOrderSkipReason mirrors PerpsOrderSkipReason for spot. ExecuteSpotSignal's
 // side-based skip branches ("already long, skipping buy" at signal=1,
 // "No long position to sell, skipping" at signal=-1) must be consulted BEFORE
@@ -326,6 +382,13 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 		feePlatform = "okx-perps"
 	}
 
+	// flipCloseQty lets the open leg subtract the close-leg qty from a live
+	// fill when the exchange executes a single net-flip order of
+	// (posQty + newSize). Only set when AllowShorts=true — legacy paths (e.g.
+	// a migrated short being closed by a long-only strategy) keep fillQty as
+	// the open-side-only qty to preserve #289's single-fee-per-fill invariant.
+	var flipCloseQty float64
+
 	if signal == 1 { // Buy — go long (close short first if any)
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
 			logger.Info("Already long %s (qty=%.6f), skipping buy", symbol, pos.Quantity)
@@ -333,6 +396,9 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 		}
 		// Close short if exists — realize PnL only (no notional swing).
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" {
+			if allowShorts {
+				flipCloseQty = pos.Quantity
+			}
 			var execPrice float64
 			if fillQty > 0 {
 				execPrice = price
@@ -374,7 +440,11 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 		var execPrice, qty float64
 		if fillQty > 0 {
 			execPrice = price
-			qty = fillQty
+			qty = fillQty - flipCloseQty
+			if qty <= 0 {
+				logger.Info("Flip fill qty (%.6f) did not cover new long after closing short (%.6f); leaving flat", fillQty, flipCloseQty)
+				return tradesExecuted, nil
+			}
 		} else {
 			execPrice = ApplySlippage(price)
 			if execPrice <= 0 {
@@ -424,6 +494,9 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 		}
 		// Close long if exists — realize PnL.
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
+			if allowShorts {
+				flipCloseQty = pos.Quantity
+			}
 			var execPrice float64
 			if fillQty > 0 {
 				execPrice = price
@@ -464,14 +537,17 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			delete(s.Positions, symbol)
 			logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, pos.Quantity, execPrice, fee, pnl)
 			tradesExecuted++
-		} else if !allowShorts {
-			logger.Info("No long position in %s to sell, skipping", symbol)
-			return tradesExecuted, nil
 		}
-		// Open short when bidirectional execution is enabled.
+		// Legacy long-only path: whether we closed a long or had nothing to
+		// close, AllowShorts=false never opens a short. Log only when we did
+		// nothing (close-path already logged).
 		if !allowShorts {
+			if tradesExecuted == 0 {
+				logger.Info("No long position in %s to sell, skipping", symbol)
+			}
 			return tradesExecuted, nil
 		}
+		// Open short (AllowShorts=true).
 		if s.Cash < 1 {
 			logger.Info("Insufficient cash ($%.2f) to open short %s perp", s.Cash, symbol)
 			return tradesExecuted, nil
@@ -479,7 +555,11 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 		var execPrice, qty float64
 		if fillQty > 0 {
 			execPrice = price
-			qty = fillQty
+			qty = fillQty - flipCloseQty
+			if qty <= 0 {
+				logger.Info("Flip fill qty (%.6f) did not cover new short after closing long (%.6f); leaving flat", fillQty, flipCloseQty)
+				return tradesExecuted, nil
+			}
 		} else {
 			execPrice = ApplySlippage(price)
 			if execPrice <= 0 {

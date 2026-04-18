@@ -1429,25 +1429,10 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	if sc.Type == "perps" && sc.Leverage > 0 {
 		sizingLeverage = sc.Leverage
 	}
-	// sell-from-flat path: AllowShorts lets signal=-1 open a short sized from
-	// the leveraged cash budget, mirroring the buy path. Without AllowShorts
-	// the skip-reason above already returned for flat+(-1), so we only reach
-	// this else-block with an existing long to close.
-	openingShort := !isBuy && sc.AllowShorts && posQty <= 0
-	var size float64
-	if isBuy || openingShort {
-		budget := cash * sizingLeverage * 0.95
-		if budget < 1 || price <= 0 {
-			logger.Info("Insufficient cash ($%.2f) for live %s", cash, map[bool]string{true: "buy", false: "sell (short-open)"}[isBuy])
-			return nil, false
-		}
-		size = budget / price
-	} else {
-		if posQty <= 0 {
-			logger.Info("No position to close for %s", result.Symbol)
-			return nil, false
-		}
-		size = posQty
+	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, sizingLeverage, posSide, sc.AllowShorts)
+	if !ok {
+		logger.Info("%s for %s", reason, result.Symbol)
+		return nil, false
 	}
 
 	side := "buy"
@@ -1948,23 +1933,33 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 	if sc.Type == "perps" && sc.Leverage > 0 {
 		sizingLeverage = sc.Leverage
 	}
-	// Mirror hyperliquid: AllowShorts on perps lets signal=-1 open a short
-	// sized from leveraged cash budget (#328).
-	openingShort := !isBuy && sc.Type == "perps" && sc.AllowShorts && posQty <= 0
 	var size float64
-	if isBuy || openingShort {
-		budget := cash * sizingLeverage * 0.95
-		if budget < 1 || price <= 0 {
-			logger.Info("Insufficient cash ($%.2f) for live %s", cash, map[bool]string{true: "buy", false: "sell (short-open)"}[isBuy])
+	if sc.Type == "perps" {
+		var ok bool
+		var reason string
+		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, sizingLeverage, posSide, sc.AllowShorts)
+		if !ok {
+			logger.Info("%s for %s", reason, result.Symbol)
 			return nil, false
 		}
-		size = budget / price
 	} else {
-		if posQty <= 0 {
-			logger.Info("No position to close for %s", result.Symbol)
-			return nil, false
+		// Spot sizing: buy opens from cash, sell closes posQty. AllowShorts
+		// does not apply to spot — SpotOrderSkipReason already blocked any
+		// signal=-1 without a long above.
+		if isBuy {
+			budget := cash * sizingLeverage * 0.95
+			if budget < 1 || price <= 0 {
+				logger.Info("Insufficient cash ($%.2f) for live buy %s", cash, result.Symbol)
+				return nil, false
+			}
+			size = budget / price
+		} else {
+			if posQty <= 0 {
+				logger.Info("No position to close for %s", result.Symbol)
+				return nil, false
+			}
+			size = posQty
 		}
-		size = posQty
 	}
 
 	side := "buy"
