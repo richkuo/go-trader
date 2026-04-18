@@ -227,8 +227,8 @@ func PerpsOrderSkipReason(signal int, posSide string, allowShorts bool) string {
 //   - Close-only (legacy, !AllowShorts):
 //   - signal=-1 + long   → size = posQty
 //   - Flip (AllowShorts + opposite-side position):
-//   - signal=1 + short   → size = posQty + cash*lev*0.95/price
-//   - signal=-1 + long   → size = posQty + cash*lev*0.95/price
+//   - signal=1 + short   → size = posQty + (cash+expectedClosePnL)*lev*0.95/price
+//   - signal=-1 + long   → size = posQty + (cash+expectedClosePnL)*lev*0.95/price
 //
 // The flip branch is what this helper exists for: without `posQty + newSize`
 // a bidirectional scheduler tells ExecutePerpsSignal to virtually close+open
@@ -237,8 +237,15 @@ func PerpsOrderSkipReason(signal int, posSide string, allowShorts bool) string {
 // `posQty + newSize` settles to the new side at the intended notional and
 // matches the virtual-state transition exactly — see PR #330 review.
 //
+// avgCost is the entry price of the existing position (0 when flat). For a
+// flip, the new-side budget uses `cash + expectedClosePnL` rather than raw
+// `cash` so a losing long→short flip at higher leverage doesn't over-size
+// past post-close exchange margin. expectedClosePnL can be negative; if it
+// zeroes out the post-close budget the flip degrades to close-only sizing
+// (reported as insufficient cash rather than silently undersizing).
+//
 // Returns (size, ok); when ok is false `reason` is a log-ready string.
-func perpsLiveOrderSize(signal int, price, cash, posQty, sizingLeverage float64, posSide string, allowShorts bool) (size float64, ok bool, reason string) {
+func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage float64, posSide string, allowShorts bool) (size float64, ok bool, reason string) {
 	isBuy := signal == 1
 	flipping := allowShorts && posQty > 0 && ((isBuy && posSide == "short") || (!isBuy && posSide == "long"))
 	// Fresh open: buy always fresh-sizes (legacy buy-vs-migrated-short kept
@@ -248,7 +255,20 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, sizingLeverage float64,
 	openingFresh := isBuy || (!isBuy && allowShorts && posQty <= 0)
 
 	if openingFresh || flipping {
-		budget := cash * sizingLeverage * 0.95
+		effectiveCash := cash
+		if flipping {
+			// Close leg realizes PnL before the new side opens on-chain;
+			// size the new side against post-close margin so a losing flip
+			// at higher leverage doesn't exceed exchange capacity.
+			var closePnL float64
+			if isBuy { // short → long: profit when price < avgCost
+				closePnL = posQty * (avgCost - price)
+			} else { // long → short: profit when price > avgCost
+				closePnL = posQty * (price - avgCost)
+			}
+			effectiveCash = cash + closePnL
+		}
+		budget := effectiveCash * sizingLeverage * 0.95
 		if budget < 1 || price <= 0 {
 			label := "buy"
 			if flipping && isBuy {
@@ -258,7 +278,7 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, sizingLeverage float64,
 			} else if !isBuy {
 				label = "sell (short-open)"
 			}
-			return 0, false, fmt.Sprintf("insufficient cash ($%.2f) for live %s", cash, label)
+			return 0, false, fmt.Sprintf("insufficient cash ($%.2f effective) for live %s", effectiveCash, label)
 		}
 		newSize := budget / price
 		if flipping {

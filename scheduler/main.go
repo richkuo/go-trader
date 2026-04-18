@@ -608,24 +608,28 @@ func main() {
 					var hlCash float64
 					var hlPosQty float64
 					var hlPosSide string
+					var hlAvgCost float64
 					if sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
 						hlCash = stratState.Cash
 						if sym := hyperliquidSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
 								hlPosQty = pos.Quantity
 								hlPosSide = pos.Side
+								hlAvgCost = pos.AvgCost
 							}
 						}
 					}
 					var okxCash float64
 					var okxPosQty float64
 					var okxPosSide string
+					var okxAvgCost float64
 					if sc.Platform == "okx" && okxIsLive(sc.Args) {
 						okxCash = stratState.Cash
 						if sym := okxSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
 								okxPosQty = pos.Quantity
 								okxPosSide = pos.Side
+								okxAvgCost = pos.AvgCost
 							}
 						}
 					}
@@ -685,7 +689,7 @@ func main() {
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, logger); ok2 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, okxAvgCost, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
@@ -738,7 +742,7 @@ func main() {
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, logger); ok2 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, okxAvgCost, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
@@ -755,7 +759,7 @@ func main() {
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
-								if er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, logger); ok2 {
+								if er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, logger); ok2 {
 									execResult = er
 								} else {
 									liveExecFailed = true
@@ -1417,7 +1421,7 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, logger *S
 // Trade record, leaving state silently behind actual exchange holdings. See
 // issue #298 — 0.716 ETH of live fills were lost this way because the
 // "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
-func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	if reason := PerpsOrderSkipReason(result.Signal, posSide, sc.AllowShorts); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
@@ -1429,7 +1433,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	if sc.Type == "perps" && sc.Leverage > 0 {
 		sizingLeverage = sc.Leverage
 	}
-	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, sizingLeverage, posSide, sc.AllowShorts)
+	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, posSide, sc.AllowShorts)
 	if !ok {
 		logger.Info("%s for %s", reason, result.Symbol)
 		return nil, false
@@ -1916,7 +1920,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyL
 // ExecutePerpsSignal that must be mirrored to avoid the #298 bug class
 // (live fill placed but no Trade recorded because the in-memory execution
 // returned 0). See #300.
-func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, posSide string, logger *StrategyLogger) (*OKXExecuteResult, bool) {
+func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, posSide string, avgCost float64, logger *StrategyLogger) (*OKXExecuteResult, bool) {
 	var skip string
 	if sc.Type == "perps" {
 		skip = PerpsOrderSkipReason(result.Signal, posSide, sc.AllowShorts)
@@ -1937,7 +1941,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 	if sc.Type == "perps" {
 		var ok bool
 		var reason string
-		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, sizingLeverage, posSide, sc.AllowShorts)
+		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, posSide, sc.AllowShorts)
 		if !ok {
 			logger.Info("%s for %s", reason, result.Symbol)
 			return nil, false

@@ -1088,31 +1088,33 @@ func TestExecutePerpsSignalAlreadyShortIsInertNoOp(t *testing.T) {
 // virtual close+open lands against an exchange fill that only closed,
 // leaving virtual state ahead of the exchange (same class of desync as #298).
 func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
-	// cash=1000, leverage=1, price=2000 → newSize = 1000*0.95/2000 = 0.475
+	// cash=1000, leverage=1, price=2000, avgCost=2000 (no PnL on close) →
+	// newSize = 1000*0.95/2000 = 0.475
 	cases := []struct {
 		name       string
 		signal     int
 		posQty     float64
+		avgCost    float64
 		posSide    string
 		allowShort bool
 		wantSize   float64
 		wantOK     bool
 	}{
-		// Fresh opens
-		{"long_from_flat", 1, 0, "", false, 0.475, true},
-		{"short_from_flat_allowed", -1, 0, "", true, 0.475, true},
+		// Fresh opens — avgCost is 0 (no position)
+		{"long_from_flat", 1, 0, 0, "", false, 0.475, true},
+		{"short_from_flat_allowed", -1, 0, 0, "", true, 0.475, true},
 		// Close-only (legacy)
-		{"close_long_legacy", -1, 0.3, "long", false, 0.3, true},
-		// Flips (the reviewer's blocker)
-		{"flip_long_to_short", -1, 0.5, "long", true, 0.975, true}, // 0.5 + 0.475
-		{"flip_short_to_long", 1, 0.5, "short", true, 0.975, true}, // 0.5 + 0.475
+		{"close_long_legacy", -1, 0.3, 2000, "long", false, 0.3, true},
+		// Flat-PnL flips: avgCost == price so effectiveCash == cash.
+		{"flip_long_to_short_flat_pnl", -1, 0.5, 2000, "long", true, 0.975, true}, // 0.5 + 0.475
+		{"flip_short_to_long_flat_pnl", 1, 0.5, 2000, "short", true, 0.975, true}, // 0.5 + 0.475
 		// Legacy buy against migrated short is NOT a flip (AllowShorts=false):
 		// sizing stays at newSize — the legacy behavior pre-dating #328.
-		{"buy_vs_short_legacy_not_flip", 1, 0.5, "short", false, 0.475, true},
+		{"buy_vs_short_legacy_not_flip", 1, 0.5, 2000, "short", false, 0.475, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			size, ok, reason := perpsLiveOrderSize(tc.signal, 2000, 1000, tc.posQty, 1.0, tc.posSide, tc.allowShort)
+			size, ok, reason := perpsLiveOrderSize(tc.signal, 2000, 1000, tc.posQty, tc.avgCost, 1.0, tc.posSide, tc.allowShort)
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v (reason=%q), want %v", ok, reason, tc.wantOK)
 			}
@@ -1128,11 +1130,57 @@ func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
 // (the old close-only behavior that silently broke bidirectional execution).
 func TestPerpsLiveOrderSize_FlipLongToShortExceedsCloseOnly(t *testing.T) {
 	posQty := 0.5
-	size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, posQty, 1.0, "long", true)
+	size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, posQty, 2000, 1.0, "long", true)
 	if !ok {
 		t.Fatal("expected ok")
 	}
 	if size <= posQty {
 		t.Errorf("flip size = %g, must exceed close-only posQty (%g) for a net-flip", size, posQty)
+	}
+}
+
+// #335 — a losing long→short flip must size against post-close margin, not
+// pre-close cash. Without the expectedClosePnL adjustment, the new-side
+// budget overstates available margin and a leveraged flip can exceed what
+// the exchange will fill, yielding a partial-fill / rejection and the same
+// class of virtual-vs-exchange desync as #298.
+func TestPerpsLiveOrderSize_FlipSizesAgainstPostCloseMargin(t *testing.T) {
+	// long 0.5 ETH @ 2000, price drops to 1900, 5x leverage, cash=1000.
+	// Close leg realizes: 0.5 * (1900 - 2000) = -50 → post-close cash = 950.
+	// New-side budget: 950 * 5 * 0.95 / 1900 = 2.375 → flip size = 0.5 + 2.375 = 2.875.
+	// Pre-close sizing (bug) would yield: 1000 * 5 * 0.95 / 1900 = 2.5 → 3.0, over-sized.
+	size, ok, reason := perpsLiveOrderSize(-1, 1900, 1000, 0.5, 2000, 5.0, "long", true)
+	if !ok {
+		t.Fatalf("expected ok, got reason=%q", reason)
+	}
+	wantSize := 0.5 + (1000-50)*5*0.95/1900
+	if diff := size - wantSize; diff > 1e-9 || diff < -1e-9 {
+		t.Errorf("size = %g, want %g (post-close margin sizing)", size, wantSize)
+	}
+	// Regression guard: must be strictly LESS than the buggy pre-close sizing.
+	preCloseSize := 0.5 + 1000*5*0.95/1900
+	if size >= preCloseSize {
+		t.Errorf("size = %g must be < pre-close-sized %g to avoid over-sizing on a losing flip", size, preCloseSize)
+	}
+}
+
+// #335 — profitable flips should size LARGER than pre-close sizing: the
+// close leg adds realized gains to available margin, letting the new side
+// take a proportionally bigger position. Mirror of the losing-flip case.
+func TestPerpsLiveOrderSize_FlipProfitableFlipUsesRealizedGain(t *testing.T) {
+	// short 0.5 ETH @ 2000, price drops to 1900 (profit on short), 5x leverage.
+	// Close leg realizes: 0.5 * (2000 - 1900) = +50 → post-close cash = 1050.
+	// New-side budget: 1050 * 5 * 0.95 / 1900 = 2.625 → flip size = 0.5 + 2.625 = 3.125.
+	size, ok, _ := perpsLiveOrderSize(1, 1900, 1000, 0.5, 2000, 5.0, "short", true)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	wantSize := 0.5 + (1000+50)*5*0.95/1900
+	if diff := size - wantSize; diff > 1e-9 || diff < -1e-9 {
+		t.Errorf("size = %g, want %g (post-close margin sizing, profit added)", size, wantSize)
+	}
+	preCloseSize := 0.5 + 1000*5*0.95/1900
+	if size <= preCloseSize {
+		t.Errorf("profitable flip size = %g must exceed pre-close-sized %g", size, preCloseSize)
 	}
 }
