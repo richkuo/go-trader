@@ -112,7 +112,8 @@ func PrecomputeLeaderboard(cfg *Config, state *AppState, prices map[string]float
 	return os.Rename(tmpPath, path)
 }
 
-// formatLeaderboardMessage formats a single category leaderboard message.
+// formatLeaderboardMessage formats a leaderboard message for a sorted slice of entries.
+// Used by formatAllTimeMessage (top10/bottom10) and BuildLeaderboardSummary (per-platform summaries).
 // Callers are responsible for passing a positive topN (see leaderboardTopN).
 func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, showType bool, topN int) string {
 	// Sort by PnL% descending.
