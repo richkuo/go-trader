@@ -1418,7 +1418,7 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, logger *S
 // issue #298 — 0.716 ETH of live fills were lost this way because the
 // "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
 func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
-	if reason := PerpsOrderSkipReason(result.Signal, posSide); reason != "" {
+	if reason := PerpsOrderSkipReason(result.Signal, posSide, sc.AllowShorts); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
 	}
@@ -1429,13 +1429,16 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	if sc.Type == "perps" && sc.Leverage > 0 {
 		sizingLeverage = sc.Leverage
 	}
+	// sell-from-flat path: AllowShorts lets signal=-1 open a short sized from
+	// the leveraged cash budget, mirroring the buy path. Without AllowShorts
+	// the skip-reason above already returned for flat+(-1), so we only reach
+	// this else-block with an existing long to close.
+	openingShort := !isBuy && sc.AllowShorts && posQty <= 0
 	var size float64
-	if isBuy {
-		// #254: sizing uses leveraged notional = cash * leverage * 0.95.
-		// The actual margin locked on-chain will be notional/leverage.
+	if isBuy || openingShort {
 		budget := cash * sizingLeverage * 0.95
 		if budget < 1 || price <= 0 {
-			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
+			logger.Info("Insufficient cash ($%.2f) for live %s", cash, map[bool]string{true: "buy", false: "sell (short-open)"}[isBuy])
 			return nil, false
 		}
 		size = budget / price
@@ -1499,7 +1502,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 		fillFee = fill.Fee
 	}
 
-	trades, err := ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, fillOID, fillFee, logger)
+	trades, err := ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, fillOID, fillFee, sc.AllowShorts, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -1931,7 +1934,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyL
 func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, posSide string, logger *StrategyLogger) (*OKXExecuteResult, bool) {
 	var skip string
 	if sc.Type == "perps" {
-		skip = PerpsOrderSkipReason(result.Signal, posSide)
+		skip = PerpsOrderSkipReason(result.Signal, posSide, sc.AllowShorts)
 	} else {
 		skip = SpotOrderSkipReason(result.Signal, posSide)
 	}
@@ -1945,11 +1948,14 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 	if sc.Type == "perps" && sc.Leverage > 0 {
 		sizingLeverage = sc.Leverage
 	}
+	// Mirror hyperliquid: AllowShorts on perps lets signal=-1 open a short
+	// sized from leveraged cash budget (#328).
+	openingShort := !isBuy && sc.Type == "perps" && sc.AllowShorts && posQty <= 0
 	var size float64
-	if isBuy {
+	if isBuy || openingShort {
 		budget := cash * sizingLeverage * 0.95
 		if budget < 1 || price <= 0 {
-			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
+			logger.Info("Insufficient cash ($%.2f) for live %s", cash, map[bool]string{true: "buy", false: "sell (short-open)"}[isBuy])
 			return nil, false
 		}
 		size = budget / price
@@ -2002,7 +2008,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, ex
 		}
 		// OKXFill does not carry OID/fee today; pass empties and let SaveState
 		// backfill from any future adapter extension via the usual path.
-		trades, err = ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, "", 0, logger)
+		trades, err = ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, "", 0, sc.AllowShorts, logger)
 	} else {
 		trades, err = ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, fillQty, logger)
 	}

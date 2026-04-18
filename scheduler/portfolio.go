@@ -187,22 +187,30 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 // in-memory execution path returns 0 and no Trade is recorded, leaving
 // virtual state permanently behind actual exchange positions (#298).
 //
-// posSide is "" when no position exists; "long" or "short" otherwise. The
-// conditions here mirror the SIDE-BASED skip conditions in
-// ExecutePerpsSignal (the "already long, skipping buy" and "no long position
-// to sell" branches). The `s.Cash < 1` branch inside the open-long path is
-// NOT mirrored here because cash after a flip-close leg cannot be derived
-// from (signal, posSide) alone — live callers already guard cash upstream
-// before placing the order (see runHyperliquidExecuteOrder). If a new
-// side-based no-op branch is added to ExecutePerpsSignal, add it here too.
-func PerpsOrderSkipReason(signal int, posSide string) string {
+// posSide is "" when no position exists; "long" or "short" otherwise.
+// allowShorts toggles the branches that ExecutePerpsSignal exposes when
+// bidirectional execution is enabled (#328):
+//   - allowShorts=false (legacy): signal=-1 with no long is a skip (close-long-only).
+//   - allowShorts=true: signal=-1 with no position opens a short; signal=-1
+//     while already short is a skip (mirrors "already long, skipping buy").
+//
+// The `s.Cash < 1` branch inside the open paths is NOT mirrored here because
+// cash after a flip-close leg cannot be derived from (signal, posSide) alone —
+// live callers guard cash upstream before placing the order (see
+// runHyperliquidExecuteOrder). If a new side-based no-op branch is added to
+// ExecutePerpsSignal, add it here too.
+func PerpsOrderSkipReason(signal int, posSide string, allowShorts bool) string {
 	switch signal {
 	case 1:
 		if posSide == "long" {
 			return "already long, skipping buy"
 		}
 	case -1:
-		if posSide != "long" {
+		if allowShorts {
+			if posSide == "short" {
+				return "already short, skipping sell"
+			}
+		} else if posSide != "long" {
 			return "no long position to sell, skipping"
 		}
 	}
@@ -288,15 +296,21 @@ func FuturesOrderSkipReason(signal int, posSide string) string {
 // row therefore carries empty exchange metadata — accurate, since no
 // distinct exchange order closed it. See #289.
 //
-// In current live mode the flip branch is unreachable: signal=-1 does not
-// open shorts, and runHyperliquidExecuteOrder sizes buys as a fresh open,
-// not close+open. The policy above exists so the invariant survives any
-// future adapter that does model flips as two fills or adds short-open.
-// The same policy is correct if an adapter ever reports a single atomic
-// net-flip fill (one OID, one fee, exchange reduces short and opens long
-// in one shot) — the single real fee lands on the opener, which is the
-// trade that represents the one exchange action.
-func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, fillOID string, fillFee float64, logger *StrategyLogger) (int, error) {
+// allowShorts toggles bidirectional semantics (#328). When true, signal=-1
+// from flat opens a short, and signal=-1 on an existing long flips to a
+// short after closing (mirrored to the existing signal=1 + short branch
+// which already closes-and-flips). When false (default), signal=-1 only
+// closes a long and never opens a short — the legacy long-only behavior
+// that strategies like triple_ema and rsi_macd_combo depend on.
+//
+// Fill metadata rationale: one live fill = one exchange fee; if a signal
+// encounters an opposite-side position, ExecutePerpsSignal synthesizes a
+// close+open pair for in-memory accounting, but the real exchange action
+// was the single fill that opened the new side. Stamping the same fee on
+// both legs would double-count it in analytics. The close leg therefore
+// carries empty exchange metadata — accurate, since no distinct exchange
+// order closed it. See #289.
+func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, fillOID string, fillFee float64, allowShorts bool, logger *StrategyLogger) (int, error) {
 	if signal == 0 {
 		return 0, nil
 	}
@@ -401,7 +415,14 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 		logger.Info("BUY %s: %.6f @ $%.2f (%.1fx, notional $%.2f, fee $%.2f)", symbol, qty, execPrice, leverage, notional, fee)
 		tradesExecuted++
 
-	} else if signal == -1 { // Sell — close long (no auto-open-short; matches current spot wrapper)
+	} else if signal == -1 { // Sell
+		// Dedupe: already short and allowShorts means nothing new to do (mirrors
+		// the "already long, skipping buy" branch above).
+		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" && allowShorts {
+			logger.Info("Already short %s (qty=%.6f), skipping sell", symbol, pos.Quantity)
+			return 0, nil
+		}
+		// Close long if exists — realize PnL.
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
 			var execPrice float64
 			if fillQty > 0 {
@@ -414,6 +435,16 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			pnl -= fee
 			s.Cash += pnl
 			now := time.Now().UTC()
+			// When flipping to short, the close-long leg is the synthetic half of
+			// a single real exchange fill — same rationale as the close-short leg
+			// in the signal=1 branch. Stamp exchange metadata only on the new
+			// opener so the fee is not double-counted.
+			var closeOID string
+			var closeFee float64
+			if !allowShorts {
+				closeOID = fillOID
+				closeFee = fillFee
+			}
 			trade := Trade{
 				Timestamp:       now,
 				StrategyID:      s.ID,
@@ -424,8 +455,8 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 				Value:           pos.Quantity * execPrice,
 				TradeType:       "perps",
 				Details:         fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
-				ExchangeOrderID: fillOID,
-				ExchangeFee:     fillFee,
+				ExchangeOrderID: closeOID,
+				ExchangeFee:     closeFee,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
@@ -433,9 +464,60 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			delete(s.Positions, symbol)
 			logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, pos.Quantity, execPrice, fee, pnl)
 			tradesExecuted++
-		} else {
+		} else if !allowShorts {
 			logger.Info("No long position in %s to sell, skipping", symbol)
+			return tradesExecuted, nil
 		}
+		// Open short when bidirectional execution is enabled.
+		if !allowShorts {
+			return tradesExecuted, nil
+		}
+		if s.Cash < 1 {
+			logger.Info("Insufficient cash ($%.2f) to open short %s perp", s.Cash, symbol)
+			return tradesExecuted, nil
+		}
+		var execPrice, qty float64
+		if fillQty > 0 {
+			execPrice = price
+			qty = fillQty
+		} else {
+			execPrice = ApplySlippage(price)
+			if execPrice <= 0 {
+				return tradesExecuted, nil
+			}
+			budget := s.Cash * leverage * 0.95
+			qty = budget / execPrice
+		}
+		notional := qty * execPrice
+		fee := CalculatePlatformSpotFee(feePlatform, notional)
+		s.Cash -= fee // margin-based: only fee leaves cash
+		now := time.Now().UTC()
+		s.Positions[symbol] = &Position{
+			Symbol:          symbol,
+			Quantity:        qty,
+			AvgCost:         execPrice,
+			Side:            "short",
+			Multiplier:      1,
+			Leverage:        leverage,
+			OwnerStrategyID: s.ID,
+			OpenedAt:        now,
+		}
+		trade := Trade{
+			Timestamp:       now,
+			StrategyID:      s.ID,
+			Symbol:          symbol,
+			Side:            "sell",
+			Quantity:        qty,
+			Price:           execPrice,
+			Value:           notional,
+			TradeType:       "perps",
+			Details:         fmt.Sprintf("Open short %.6f @ $%.2f (%.1fx, fee $%.2f)", qty, execPrice, leverage, fee),
+			ExchangeOrderID: fillOID,
+			ExchangeFee:     fillFee,
+		}
+		RecordTrade(s, trade)
+		logger.Info("SELL %s: %.6f @ $%.2f (%.1fx, notional $%.2f, fee $%.2f) [open short]", symbol, qty, execPrice, leverage, notional, fee)
+		tradesExecuted++
 	}
 	return tradesExecuted, nil
 }

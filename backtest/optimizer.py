@@ -328,6 +328,11 @@ DEFAULT_PARAM_RANGES = {
         "mid_period": [15, 21, 30],
         "long_period": [40, 55, 80],
     },
+    "triple_ema_bidir": {
+        "short_period": [5, 8, 13],
+        "mid_period": [15, 21, 30],
+        "long_period": [40, 55, 80],
+    },
     "rsi_macd_combo": {
         "rsi_period": [10, 14],
         "rsi_oversold": [30, 35, 40],

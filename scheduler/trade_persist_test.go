@@ -216,7 +216,7 @@ func TestExecutePerpsSignal_PersistsExchangeMetadata(t *testing.T) {
 	s := state.Strategies["hl-live"]
 
 	// Live open-long @ $2000, qty=0.5, OID=12345, fee=$0.42.
-	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.5, "12345", 0.42, logger)
+	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.5, "12345", 0.42, false, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignal: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestExecutePerpsSignal_FlipDoesNotDoubleCountFee(t *testing.T) {
 
 	// Live buy @ $2000 qty=0.3 → closes the full 0.5 short + opens new 0.3
 	// long = 2 in-memory trades, 1 real exchange fill worth $0.42.
-	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.3, "99999", 0.42, logger)
+	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.3, "99999", 0.42, false, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignal: %v", err)
 	}

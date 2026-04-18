@@ -62,6 +62,18 @@ var knownShortNames = map[string]string{
 	"donchian_breakout":     "dbo",
 }
 
+// bidirectionalPerpsStrategies lists strategy IDs that emit signal=-1 as a
+// short-entry (not just a long-exit). Configs generated for these strategies
+// set AllowShorts=true so ExecutePerpsSignal opens shorts from flat instead
+// of skipping the signal (#328).
+var bidirectionalPerpsStrategies = map[string]bool{
+	"triple_ema_bidir": true,
+}
+
+func isBidirectionalPerpsStrategy(id string) bool {
+	return bidirectionalPerpsStrategies[id]
+}
+
 // deriveShortName returns a short abbreviation for a strategy ID.
 // Uses knownShortNames override map; falls back to first letter of each word.
 func deriveShortName(id string) string {
@@ -398,6 +410,11 @@ func generateConfig(opts InitOptions) *Config {
 		}
 		for _, stratID := range opts.PerpsStrategies {
 			shortName := deriveShortName(stratID)
+			// Strategies that emit bidirectional signals must opt in to
+			// short-opening execution, otherwise ExecutePerpsSignal drops
+			// their signal=-1 from flat and the strategy becomes effectively
+			// long-only at the executor layer (#328 review feedback).
+			allowShorts := isBidirectionalPerpsStrategy(stratID)
 			for _, assetName := range opts.Assets {
 				id := fmt.Sprintf("hl-%s-%s", shortName, strings.ToLower(assetName))
 				cfg.Strategies = append(cfg.Strategies, StrategyConfig{
@@ -410,6 +427,7 @@ func generateConfig(opts InitOptions) *Config {
 					MaxDrawdownPct:  opts.PerpsDrawdown,
 					IntervalSeconds: 3600,
 					Leverage:        perpsLeverage,
+					AllowShorts:     allowShorts,
 				})
 			}
 		}
