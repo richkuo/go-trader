@@ -146,29 +146,6 @@ func (m *MultiNotifier) SendToChannel(platform, stratType, content string) {
 	}
 }
 
-// PostLeaderboardCategory routes a per-category leaderboard message
-// (spot/perps/options/futures) on a per-backend basis. For each backend: if a
-// dedicated leaderboardChannel is configured, the message is sent there;
-// otherwise it falls back to the legacy per-platform channel routing. This
-// lets users wire up a dedicated leaderboard channel on one backend (e.g.
-// Discord) without silently dropping leaderboard posts on backends that
-// haven't been migrated yet (e.g. Telegram).
-func (m *MultiNotifier) PostLeaderboardCategory(stratType, content string) {
-	for _, b := range m.backends {
-		if b.leaderboardChannel != "" {
-			if err := b.notifier.SendMessage(b.leaderboardChannel, content); err != nil {
-				fmt.Printf("[WARN] Notifier send to leaderboard channel %s failed: %v\n", b.leaderboardChannel, err)
-			}
-			continue
-		}
-		if ch := resolveChannel(b.channels, stratType, stratType); ch != "" {
-			if err := b.notifier.SendMessage(ch, content); err != nil {
-				fmt.Printf("[WARN] Notifier send to channel failed: %v\n", err)
-			}
-		}
-	}
-}
-
 // PostLeaderboardBroadcast routes an all-time leaderboard message
 // (top10/bottom10) on a per-backend basis. For each backend: if a dedicated
 // leaderboardChannel is configured, the message is sent there once; otherwise

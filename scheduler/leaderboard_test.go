@@ -69,24 +69,18 @@ func TestPrecomputeLeaderboard(t *testing.T) {
 		t.Fatalf("Failed to parse leaderboard: %v", err)
 	}
 
-	// Verify we have category messages.
-	if _, ok := lb.Messages["spot"]; !ok {
-		t.Error("Missing spot leaderboard message")
-	}
-	if _, ok := lb.Messages["perps"]; !ok {
-		t.Error("Missing perps leaderboard message")
-	}
-	if _, ok := lb.Messages["options"]; !ok {
-		t.Error("Missing options leaderboard message")
-	}
-	if _, ok := lb.Messages["futures"]; !ok {
-		t.Error("Missing futures leaderboard message")
-	}
+	// Only aggregate top10/bottom10 messages are produced now; per-product
+	// sections were removed in issue #310.
 	if _, ok := lb.Messages["top10"]; !ok {
 		t.Error("Missing top10 leaderboard message")
 	}
 	if _, ok := lb.Messages["bottom10"]; !ok {
 		t.Error("Missing bottom10 leaderboard message")
+	}
+	for _, key := range []string{"spot", "perps", "options", "futures"} {
+		if _, ok := lb.Messages[key]; ok {
+			t.Errorf("Per-product section %q should no longer be emitted", key)
+		}
 	}
 
 	// Verify timestamp is recent.
@@ -94,31 +88,25 @@ func TestPrecomputeLeaderboard(t *testing.T) {
 		t.Error("Leaderboard timestamp is zero")
 	}
 
-	// Spot message should contain strategy IDs and PnL data.
-	spotMsg := lb.Messages["spot"]
-	if spotMsg == "" {
-		t.Fatal("Spot message is empty")
-	}
-	if !containsStr(spotMsg, "sma-btc") {
-		t.Error("Spot message should contain sma-btc")
-	}
-	if !containsStr(spotMsg, "Spot Leaderboard") {
-		t.Error("Spot message should contain title")
-	}
-	if !containsStr(spotMsg, "TOTAL") {
-		t.Error("Spot message should contain TOTAL row")
-	}
-	if !containsStr(spotMsg, "winning") {
-		t.Error("Spot message should contain winning/losing/flat counts")
-	}
-	if !containsStr(spotMsg, "Trades") {
-		t.Error("Spot message should contain Trades column header")
-	}
-
-	// Verify top10 message also contains Trades column.
+	// Top10 should contain strategy IDs, PnL data, and the Trades column.
 	top10Msg := lb.Messages["top10"]
+	if top10Msg == "" {
+		t.Fatal("top10 message is empty")
+	}
+	if !containsStr(top10Msg, "sma-btc") {
+		t.Error("top10 message should contain sma-btc")
+	}
+	if !containsStr(top10Msg, "Top All-Time Performers") {
+		t.Error("top10 message should contain title")
+	}
+	if !containsStr(top10Msg, "TOTAL") {
+		t.Error("top10 message should contain TOTAL row")
+	}
+	if !containsStr(top10Msg, "winning") {
+		t.Error("top10 message should contain winning/losing/flat counts")
+	}
 	if !containsStr(top10Msg, "Trades") {
-		t.Error("Top10 message should contain Trades column header")
+		t.Error("top10 message should contain Trades column header")
 	}
 }
 
@@ -254,28 +242,7 @@ func TestPrecomputeLeaderboardTopN(t *testing.T) {
 		t.Fatalf("LoadLeaderboard failed: %v", err)
 	}
 
-	spotMsg := lb.Messages["spot"]
-	if spotMsg == "" {
-		t.Fatal("Expected non-empty spot message")
-	}
-
-	// The best strategy (sma-s07) should appear (top 3).
-	if !containsStr(spotMsg, "sma-s07") {
-		t.Error("Best strategy sma-s07 should appear in top 3")
-	}
-	if !containsStr(spotMsg, "sma-s06") {
-		t.Error("Second-best strategy sma-s06 should appear in top 3")
-	}
-	if !containsStr(spotMsg, "sma-s05") {
-		t.Error("Third-best strategy sma-s05 should appear in top 3")
-	}
-	// sma-s04 is 4th — should NOT appear in top 3.
-	if containsStr(spotMsg, "sma-s04") {
-		t.Error("4th strategy sma-s04 should not appear when top_n=3")
-	}
-
-	// All-time top/bottom messages use a different code path
-	// (formatAllTimeMessage) and must also respect LeaderboardTopN.
+	// All-time top/bottom messages must respect LeaderboardTopN.
 	top10Msg := lb.Messages["top10"]
 	if top10Msg == "" {
 		t.Fatal("Expected non-empty top10 all-time message")
@@ -317,7 +284,8 @@ func TestPostLeaderboard_DedicatedChannel(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{DBFile: filepath.Join(dir, "state.db")}
 
-	// Pre-write a leaderboard file with messages for every category.
+	// Pre-write a leaderboard file. Per-product keys, even if present in a
+	// stale file, should be ignored — only top10 + bottom10 are posted.
 	lb := LeaderboardData{
 		Messages: map[string]string{
 			"spot":     "spot-msg",
@@ -344,21 +312,23 @@ func TestPostLeaderboard_DedicatedChannel(t *testing.T) {
 		t.Fatalf("PostLeaderboard: %v", err)
 	}
 
-	// All 6 messages should land on the dedicated channel.
-	if len(mock.messages) != 6 {
-		t.Fatalf("expected 6 messages on dedicated channel, got %d: %v", len(mock.messages), mock.messages)
+	// Only top10 + bottom10 should land on the dedicated channel.
+	if len(mock.messages) != 2 {
+		t.Fatalf("expected 2 messages on dedicated channel, got %d: %v", len(mock.messages), mock.messages)
 	}
 	for _, m := range mock.messages {
 		if m.channelID != "lb-ch" {
 			t.Errorf("expected channel lb-ch, got %s (content=%q)", m.channelID, m.content)
 		}
+		if m.content != "top10-msg" && m.content != "bottom10-msg" {
+			t.Errorf("unexpected message content %q on dedicated channel", m.content)
+		}
 	}
 }
 
-// TestPostLeaderboard_FallbackRouting verifies that when no LeaderboardChannel is
-// configured, PostLeaderboard preserves the legacy behavior: category messages
-// go to the matching platform channel, and top10/bottom10 broadcast to all
-// channels.
+// TestPostLeaderboard_FallbackRouting verifies that when no LeaderboardChannel
+// is configured, top10/bottom10 broadcast to all configured channels. Stale
+// per-product keys in the file are ignored.
 func TestPostLeaderboard_FallbackRouting(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{DBFile: filepath.Join(dir, "state.db")}
@@ -386,26 +356,17 @@ func TestPostLeaderboard_FallbackRouting(t *testing.T) {
 	}
 
 	// Expected sends:
-	//   spot     → spot-ch  (1)
 	//   top10    → broadcast to all unique channels (spot-ch, perps-ch) = 2
 	//   bottom10 → broadcast to all unique channels (spot-ch, perps-ch) = 2
-	// Total = 5
-	if len(mock.messages) != 5 {
-		t.Fatalf("expected 5 messages from fallback routing, got %d: %v", len(mock.messages), mock.messages)
+	// Total = 4. Stale "spot" key must be ignored.
+	if len(mock.messages) != 4 {
+		t.Fatalf("expected 4 messages from fallback routing, got %d: %v", len(mock.messages), mock.messages)
 	}
 
-	// Spot message should hit only spot-ch.
-	spotHits := 0
 	for _, m := range mock.messages {
 		if m.content == "spot-msg" {
-			if m.channelID != "spot-ch" {
-				t.Errorf("spot-msg should route to spot-ch, got %s", m.channelID)
-			}
-			spotHits++
+			t.Errorf("stale per-product spot-msg should not be posted, got channel=%s", m.channelID)
 		}
-	}
-	if spotHits != 1 {
-		t.Errorf("expected 1 spot-msg send, got %d", spotHits)
 	}
 
 	// top10 and bottom10 each broadcast to both channels.
@@ -425,19 +386,14 @@ func TestPostLeaderboard_FallbackRouting(t *testing.T) {
 // TestPostLeaderboard_MixedBackends is the regression test for the bug where
 // HasLeaderboardChannel returning true on *any* backend caused all other
 // backends to silently drop leaderboard messages. With per-backend routing,
-// Discord (with dedicated channel) should receive every message on lb-ch and
-// Telegram (without) should still get the legacy per-category / broadcast
-// routing.
+// Discord (with dedicated channel) should receive top10/bottom10 on lb-ch and
+// Telegram (without) should broadcast top10/bottom10 across all its channels.
 func TestPostLeaderboard_MixedBackends(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{DBFile: filepath.Join(dir, "state.db")}
 
 	lb := LeaderboardData{
 		Messages: map[string]string{
-			"spot":     "spot-msg",
-			"perps":    "perps-msg",
-			"options":  "options-msg",
-			"futures":  "futures-msg",
 			"top10":    "top10-msg",
 			"bottom10": "bottom10-msg",
 		},
@@ -475,9 +431,9 @@ func TestPostLeaderboard_MixedBackends(t *testing.T) {
 		t.Fatalf("PostLeaderboard: %v", err)
 	}
 
-	// Discord: every one of the 6 messages should land on discord-lb.
-	if len(discord.messages) != 6 {
-		t.Fatalf("expected 6 discord messages on discord-lb, got %d: %v", len(discord.messages), discord.messages)
+	// Discord: top10 + bottom10 should land on discord-lb.
+	if len(discord.messages) != 2 {
+		t.Fatalf("expected 2 discord messages on discord-lb, got %d: %v", len(discord.messages), discord.messages)
 	}
 	for _, m := range discord.messages {
 		if m.channelID != "discord-lb" {
@@ -485,41 +441,11 @@ func TestPostLeaderboard_MixedBackends(t *testing.T) {
 		}
 	}
 
-	// Telegram: legacy routing.
-	//   spot     → telegram-spot     (1)
-	//   perps    → telegram-perps    (1)
-	//   options  → telegram-options  (1)
-	//   futures  → telegram-futures  (1)
-	//   top10    → broadcast to all 4 unique channels (4)
-	//   bottom10 → broadcast to all 4 unique channels (4)
-	// Total = 12.
-	if len(telegram.messages) != 12 {
-		t.Fatalf("expected 12 telegram messages from legacy routing, got %d: %v", len(telegram.messages), telegram.messages)
+	// Telegram: top10 and bottom10 each broadcast to all 4 channels = 8 total.
+	if len(telegram.messages) != 8 {
+		t.Fatalf("expected 8 telegram messages from broadcast routing, got %d: %v", len(telegram.messages), telegram.messages)
 	}
 
-	// Verify each per-category message lands on its matching telegram channel.
-	expectCategory := map[string]string{
-		"spot-msg":    "telegram-spot",
-		"perps-msg":   "telegram-perps",
-		"options-msg": "telegram-options",
-		"futures-msg": "telegram-futures",
-	}
-	for content, wantCh := range expectCategory {
-		hits := 0
-		for _, m := range telegram.messages {
-			if m.content == content {
-				if m.channelID != wantCh {
-					t.Errorf("%s: expected telegram channel %s, got %s", content, wantCh, m.channelID)
-				}
-				hits++
-			}
-		}
-		if hits != 1 {
-			t.Errorf("%s: expected 1 telegram send, got %d", content, hits)
-		}
-	}
-
-	// top10 / bottom10 should each broadcast to all 4 telegram channels.
 	for _, content := range []string{"top10-msg", "bottom10-msg"} {
 		seen := map[string]bool{}
 		for _, m := range telegram.messages {

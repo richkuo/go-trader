@@ -26,8 +26,7 @@ type LeaderboardEntry struct {
 // LeaderboardData is the pre-computed leaderboard written to disk each cycle.
 type LeaderboardData struct {
 	Timestamp time.Time `json:"timestamp"`
-	// Messages is keyed by category: "spot", "perps", "options", "futures",
-	// "top10", "bottom10". The "top10"/"bottom10" keys are retained for
+	// Messages keys: "top10" and "bottom10". The names are retained for
 	// backwards compatibility with the on-disk leaderboard.json schema; the
 	// entry count is actually controlled by Discord.LeaderboardTopN.
 	Messages map[string]string `json:"messages"`
@@ -54,7 +53,6 @@ func leaderboardTopN(cfg *Config) int {
 func PrecomputeLeaderboard(cfg *Config, state *AppState, prices map[string]float64) error {
 	// Build entries for all strategies.
 	var allEntries []LeaderboardEntry
-	typeEntries := make(map[string][]LeaderboardEntry)
 
 	for _, sc := range cfg.Strategies {
 		ss := state.Strategies[sc.ID]
@@ -69,7 +67,7 @@ func PrecomputeLeaderboard(cfg *Config, state *AppState, prices map[string]float
 			pnlPct = (pnl / initCap) * 100
 		}
 
-		entry := LeaderboardEntry{
+		allEntries = append(allEntries, LeaderboardEntry{
 			ID:      sc.ID,
 			Type:    sc.Type,
 			Value:   pv,
@@ -77,35 +75,16 @@ func PrecomputeLeaderboard(cfg *Config, state *AppState, prices map[string]float
 			PnL:     pnl,
 			PnLPct:  pnlPct,
 			Trades:  len(ss.TradeHistory),
-		}
-		allEntries = append(allEntries, entry)
-		typeEntries[sc.Type] = append(typeEntries[sc.Type], entry)
+		})
 	}
 
 	messages := make(map[string]string)
 	topN := leaderboardTopN(cfg)
 
-	// Per-category leaderboards.
-	categories := []struct {
-		key   string
-		icon  string
-		title string
-	}{
-		{"spot", "📈", "Spot Leaderboard"},
-		{"perps", "⚡", "Perps Leaderboard (Hyperliquid)"},
-		{"options", "🎯", "Options Leaderboard (Deribit/IBKR)"},
-		{"futures", "🏦", "Futures Leaderboard (TopStep/IBKR)"},
-	}
-
-	for _, cat := range categories {
-		entries := typeEntries[cat.key]
-		if len(entries) == 0 {
-			continue
-		}
-		messages[cat.key] = formatLeaderboardMessage(cat.icon, cat.title, entries, false, topN)
-	}
-
-	// All-time top-N and bottom-N across all categories.
+	// All-time top-N and bottom-N across all strategies. Per-product sections
+	// (spot/perps/options/futures) are delivered via BuildLeaderboardSummary
+	// to individual platform channels; the dedicated leaderboard channel shows
+	// only the aggregate view. Issue #310.
 	if len(allEntries) > 0 {
 		messages["top10"] = formatAllTimeMessage("🏆", "Top All-Time Performers", allEntries, true, topN)
 		messages["bottom10"] = formatAllTimeMessage("💀", "Bottom All-Time Performers", allEntries, false, topN)
@@ -133,7 +112,8 @@ func PrecomputeLeaderboard(cfg *Config, state *AppState, prices map[string]float
 	return os.Rename(tmpPath, path)
 }
 
-// formatLeaderboardMessage formats a single category leaderboard message.
+// formatLeaderboardMessage formats a leaderboard message for a sorted slice of entries.
+// Used by formatAllTimeMessage (top10/bottom10) and BuildLeaderboardSummary (per-platform summaries).
 // Callers are responsible for passing a positive topN (see leaderboardTopN).
 func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, showType bool, topN int) string {
 	// Sort by PnL% descending.
@@ -267,12 +247,11 @@ func PostLeaderboard(cfg *Config, notifier *MultiNotifier) error {
 		return err
 	}
 
-	// Post category messages in a fixed order with 1s delay between them.
+	// Post aggregate top/bottom messages with 1s delay between them.
 	// Routing is decided per-backend inside the notifier: backends with a
-	// dedicated leaderboard channel route there, others fall back to the legacy
-	// per-category / broadcast routing. This avoids silently dropping
-	// leaderboard posts on backends that don't have a leaderboard channel set.
-	order := []string{"spot", "perps", "options", "futures", "top10", "bottom10"}
+	// dedicated leaderboard channel route there, others fall back to broadcast
+	// across all configured channels. Issue #310.
+	order := []string{"top10", "bottom10"}
 	first := true
 	for _, key := range order {
 		msg, ok := lb.Messages[key]
@@ -284,12 +263,7 @@ func PostLeaderboard(cfg *Config, notifier *MultiNotifier) error {
 		}
 		first = false
 
-		switch key {
-		case "top10", "bottom10":
-			notifier.PostLeaderboardBroadcast(msg)
-		default:
-			notifier.PostLeaderboardCategory(key, msg)
-		}
+		notifier.PostLeaderboardBroadcast(msg)
 		fmt.Println(msg)
 	}
 
