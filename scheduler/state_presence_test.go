@@ -23,6 +23,15 @@ func TestHasLiveStrategy(t *testing.T) {
 		{"mode=live suffix only does not match", []StrategyConfig{
 			{ID: "a", Args: []string{"mode=live"}},
 		}, false},
+		{"two-token --mode live form", []StrategyConfig{
+			{ID: "a", Args: []string{"--mode", "live"}},
+		}, true},
+		{"two-token --mode paper form", []StrategyConfig{
+			{ID: "a", Args: []string{"--mode", "paper"}},
+		}, false},
+		{"trailing --mode with no value", []StrategyConfig{
+			{ID: "a", Args: []string{"--mode"}},
+		}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -56,5 +65,33 @@ func TestCheckStatePresence(t *testing.T) {
 	}
 	if got := CheckStatePresence(existing, liveCfg); got != "" {
 		t.Fatalf("expected no warning for existing DB, got %q", got)
+	}
+}
+
+func TestAllowMissingState(t *testing.T) {
+	cases := []struct {
+		name string
+		val  string
+		set  bool
+		want bool
+	}{
+		{"unset", "", false, false},
+		{"empty", "", true, false},
+		{"one", "1", true, true},
+		{"true string not accepted", "true", true, false},
+		{"yes string not accepted", "yes", true, false},
+		{"zero", "0", true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.set {
+				t.Setenv("GO_TRADER_ALLOW_MISSING_STATE", c.val)
+			} else {
+				os.Unsetenv("GO_TRADER_ALLOW_MISSING_STATE")
+			}
+			if got := AllowMissingState(); got != c.want {
+				t.Fatalf("AllowMissingState=%v want %v", got, c.want)
+			}
+		})
 	}
 }

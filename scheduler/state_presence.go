@@ -12,8 +12,11 @@ import (
 // exist.
 func HasLiveStrategy(strategies []StrategyConfig) bool {
 	for _, sc := range strategies {
-		for _, arg := range sc.Args {
+		for i, arg := range sc.Args {
 			if arg == "--mode=live" {
+				return true
+			}
+			if arg == "--mode" && i+1 < len(sc.Args) && sc.Args[i+1] == "live" {
 				return true
 			}
 		}
@@ -35,6 +38,10 @@ func CheckStatePresence(dbPath string, strategies []StrategyConfig) string {
 	if _, err := os.Stat(dbPath); err == nil {
 		return ""
 	} else if !os.IsNotExist(err) {
+		// Non-IsNotExist errors (permission denied, transient I/O) are
+		// deliberately ignored — the #339 concern is specifically the
+		// wiped-directory case, and warning on transient filesystem hiccups
+		// would generate false positives.
 		return ""
 	}
 	return fmt.Sprintf(
