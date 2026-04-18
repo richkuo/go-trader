@@ -128,6 +128,11 @@ jobs:
         if: steps.verify_invocation.outputs.invoked == 'true'
         run: git checkout -- uv.lock
 
+      - name: Record HEAD sha before Claude runs
+        if: steps.verify_invocation.outputs.invoked == 'true'
+        id: pre_claude
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Run Claude Code
         if: steps.verify_invocation.outputs.invoked == 'true'
         id: claude
@@ -157,8 +162,23 @@ jobs:
           # or https://code.claude.com/docs/en/cli-reference for available options
           claude_args: --model ${{ steps.resolve_model.outputs.model_id }} --effort ${{ steps.resolve_model.outputs.effort }} --allowedTools "Bash(go *),Bash(cd scheduler && go *),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *),Bash(git *)"
 
-      - name: Revise CLAUDE.md with session learnings
+      - name: Detect if Claude made commits
         if: steps.verify_invocation.outputs.invoked == 'true' && steps.claude.outcome == 'success'
+        id: claude_changes
+        env:
+          PRE_SHA: ${{ steps.pre_claude.outputs.sha }}
+        run: |
+          git fetch --quiet origin "$GITHUB_REF_NAME" 2>/dev/null || true
+          CURRENT_SHA=$(git rev-parse HEAD)
+          if [ "$PRE_SHA" != "$CURRENT_SHA" ] || ! git diff --quiet || [ -n "$(git status --porcelain)" ]; then
+            echo "made_commits=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "made_commits=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Claude made no code changes — skipping CLAUDE.md revision."
+          fi
+
+      - name: Revise CLAUDE.md with session learnings
+        if: steps.verify_invocation.outputs.invoked == 'true' && steps.claude.outcome == 'success' && steps.claude_changes.outputs.made_commits == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
