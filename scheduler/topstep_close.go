@@ -168,6 +168,11 @@ func forceCloseTopStepLive(ctx context.Context, positions []TopStepPosition, tsL
 			report.Errors[p.Coin] = fmt.Errorf("close budget exhausted before submit: %w", err)
 			continue
 		}
+		// No adapter-side already_flat branch (unlike HL/OKX/RH in #350):
+		// TopStepX's market_close endpoint rejects close-on-flat with an
+		// error rather than returning a no-op envelope, so any close after
+		// an eventual-consistency flat surfaces here as report.Errors and
+		// keeps the kill switch latched until the next cycle re-fetches.
 		if _, err := closer(p.Coin); err != nil {
 			report.Errors[p.Coin] = err
 			continue

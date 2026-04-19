@@ -234,9 +234,15 @@ type HyperliquidCloseFill struct {
 }
 
 // HyperliquidClose is the close block from close_hyperliquid_position.py.
+// AlreadyFlat is set by the Python script when the SDK reports an empty
+// statuses list (no position to close at submit time, eventual-consistency
+// window after the Go-side fetch). The Go side reads this to route the
+// outcome through AlreadyFlat instead of ClosedCoins so operator messaging
+// distinguishes "we sent a close order" from "nothing to close" (#350).
 type HyperliquidClose struct {
-	Symbol string                `json:"symbol"`
-	Fill   *HyperliquidCloseFill `json:"fill,omitempty"`
+	Symbol      string                `json:"symbol"`
+	Fill        *HyperliquidCloseFill `json:"fill,omitempty"`
+	AlreadyFlat bool                  `json:"already_flat,omitempty"`
 }
 
 // HyperliquidCloseResult is the top-level JSON from close_hyperliquid_position.py.
@@ -696,10 +702,14 @@ type OKXCloseFill struct {
 	Fee     float64 `json:"fee,omitempty"`
 }
 
-// OKXClose is the close block from close_okx_position.py.
+// OKXClose is the close block from close_okx_position.py. AlreadyFlat is
+// set by the Python script when adapter.market_close returns {} (adapter
+// found no open position at submit time, eventual-consistency window
+// after the Go-side fetch). See HyperliquidClose for the reasoning (#350).
 type OKXClose struct {
-	Symbol string        `json:"symbol"`
-	Fill   *OKXCloseFill `json:"fill,omitempty"`
+	Symbol      string        `json:"symbol"`
+	Fill        *OKXCloseFill `json:"fill,omitempty"`
+	AlreadyFlat bool          `json:"already_flat,omitempty"`
 }
 
 // OKXCloseResult is the top-level JSON from close_okx_position.py.
@@ -833,9 +843,13 @@ type RobinhoodCloseFill struct {
 }
 
 // RobinhoodClose is the close block from close_robinhood_position.py.
+// AlreadyFlat is set by the Python script when adapter.get_crypto_positions
+// returns qty<=0 at submit time (eventual-consistency window after the
+// Go-side fetch). See HyperliquidClose for the reasoning (#350).
 type RobinhoodClose struct {
-	Symbol string              `json:"symbol"`
-	Fill   *RobinhoodCloseFill `json:"fill,omitempty"`
+	Symbol      string              `json:"symbol"`
+	Fill        *RobinhoodCloseFill `json:"fill,omitempty"`
+	AlreadyFlat bool                `json:"already_flat,omitempty"`
 }
 
 // RobinhoodCloseResult is the top-level JSON from close_robinhood_position.py.

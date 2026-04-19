@@ -413,6 +413,24 @@ func TestParseHyperliquidCloseOutput_MalformedJSON(t *testing.T) {
 	}
 }
 
+// already_flat field round-trips through the parser so the Go-side
+// AlreadyFlat routing has the signal it needs (#350). Without this, a
+// silent struct-tag regression would make every adapter-side already-flat
+// case fall back to ClosedCoins.
+func TestParseHyperliquidCloseOutput_AlreadyFlatFieldParsed(t *testing.T) {
+	stdout := []byte(`{"close":{"symbol":"ETH","fill":{},"already_flat":true},"platform":"hyperliquid","timestamp":"x"}`)
+	result, _, err := parseHyperliquidCloseOutput(stdout, "", nil)
+	if err != nil {
+		t.Fatalf("expected nil err, got %v", err)
+	}
+	if result == nil || result.Close == nil {
+		t.Fatalf("expected populated result.Close, got %+v", result)
+	}
+	if !result.Close.AlreadyFlat {
+		t.Errorf("AlreadyFlat = false, want true — Go side cannot route to AlreadyFlat slice without this field")
+	}
+}
+
 // ── OKX close parser tests (#345) ──────────────────────────────────────
 // Same 5-case matrix as parseHyperliquidCloseOutput — mirrors the HL tests
 // one-to-one because the two parsers implement the same contract. Any
@@ -471,6 +489,20 @@ func TestParseOKXCloseOutput_Exit1WithoutErrorField(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no error field") {
 		t.Errorf("err message should mention missing error field, got %v", err)
+	}
+}
+
+func TestParseOKXCloseOutput_AlreadyFlatFieldParsed(t *testing.T) {
+	stdout := []byte(`{"close":{"symbol":"BTC","fill":{},"already_flat":true},"platform":"okx","timestamp":"x"}`)
+	result, _, err := parseOKXCloseOutput(stdout, "", nil)
+	if err != nil {
+		t.Fatalf("expected nil err, got %v", err)
+	}
+	if result == nil || result.Close == nil {
+		t.Fatalf("expected populated result.Close, got %+v", result)
+	}
+	if !result.Close.AlreadyFlat {
+		t.Errorf("AlreadyFlat = false, want true (#350)")
 	}
 }
 

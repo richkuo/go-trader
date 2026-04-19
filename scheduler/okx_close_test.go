@@ -147,6 +147,41 @@ func TestForceCloseOKXLive_SpotStrategiesIgnored(t *testing.T) {
 	}
 }
 
+// Adapter-side AlreadyFlat: closer returns success with already_flat=true
+// (eventual-consistency window between Go-side fetch and adapter submit).
+// The coin must land in AlreadyFlat, NOT ClosedCoins, so operator messaging
+// distinguishes "we sent a close order" from "nothing to close" (#350).
+func TestForceCloseOKXLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.T) {
+	okxLive := []StrategyConfig{
+		{ID: "okx-btc", Platform: "okx", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+	positions := []OKXPosition{{Coin: "BTC", Size: 0.01, Side: "long"}}
+	var calls []string
+	closer := func(sym string) (*OKXCloseResult, error) {
+		calls = append(calls, sym)
+		return &OKXCloseResult{
+			Close:    &OKXClose{Symbol: sym, AlreadyFlat: true},
+			Platform: "okx",
+		}, nil
+	}
+
+	report := forceCloseOKXLive(context.Background(), positions, okxLive, closer)
+
+	if !report.ConfirmedFlat() {
+		t.Errorf("expected ConfirmedFlat, got errors=%v", report.Errors)
+	}
+	if len(report.ClosedCoins) != 0 {
+		t.Errorf("ClosedCoins should be empty when adapter reports already_flat, got %v", report.ClosedCoins)
+	}
+	if len(report.AlreadyFlat) != 1 || report.AlreadyFlat[0] != "BTC" {
+		t.Errorf("AlreadyFlat = %v, want [BTC]", report.AlreadyFlat)
+	}
+	if len(calls) != 1 || calls[0] != "BTC" {
+		t.Errorf("closer should be called once (Go side saw non-zero size), got %v", calls)
+	}
+}
+
 // SortedErrorCoins determinism — same rationale as HL
 // (HyperliquidLiveCloseReport.SortedErrorCoins): Go map iteration is
 // randomized and the Discord output must be byte-stable across calls for

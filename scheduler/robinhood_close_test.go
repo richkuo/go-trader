@@ -173,6 +173,42 @@ func TestForceCloseRobinhoodLive_OptionsStrategiesIgnored(t *testing.T) {
 	}
 }
 
+// Adapter-side AlreadyFlat: closer returns success with already_flat=true
+// (eventual-consistency window — Go-side fetch saw qty>0, but by the time
+// the adapter ran get_crypto_positions it returned qty<=0). The coin must
+// land in AlreadyFlat, NOT ClosedCoins, so operator messaging
+// distinguishes "we sent a close order" from "nothing to close" (#350).
+func TestForceCloseRobinhoodLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.T) {
+	rhLive := []StrategyConfig{
+		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
+			Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
+	}
+	positions := []RobinhoodPosition{{Coin: "BTC", Size: 0.01, AvgPrice: 42000}}
+	var calls []string
+	closer := func(sym string) (*RobinhoodCloseResult, error) {
+		calls = append(calls, sym)
+		return &RobinhoodCloseResult{
+			Close:    &RobinhoodClose{Symbol: sym, AlreadyFlat: true},
+			Platform: "robinhood",
+		}, nil
+	}
+
+	report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, closer)
+
+	if !report.ConfirmedFlat() {
+		t.Errorf("expected ConfirmedFlat, got errors=%v", report.Errors)
+	}
+	if len(report.ClosedCoins) != 0 {
+		t.Errorf("ClosedCoins should be empty when adapter reports already_flat, got %v", report.ClosedCoins)
+	}
+	if len(report.AlreadyFlat) != 1 || report.AlreadyFlat[0] != "BTC" {
+		t.Errorf("AlreadyFlat = %v, want [BTC]", report.AlreadyFlat)
+	}
+	if len(calls) != 1 || calls[0] != "BTC" {
+		t.Errorf("closer should be called once (Go side saw qty>0), got %v", calls)
+	}
+}
+
 // SortedErrorCoins determinism — same rationale as HL / OKX: Go map
 // iteration is randomized and Discord output must be byte-stable across
 // calls for operator triage.
@@ -233,6 +269,20 @@ func TestParseRobinhoodCloseOutput_ExitNonZeroNoErrorField(t *testing.T) {
 	_, _, err := parseRobinhoodCloseOutput(stdout, "stderr msg", fmt.Errorf("exit 2"))
 	if err == nil {
 		t.Fatal("expected non-nil err on non-zero exit with no error field")
+	}
+}
+
+func TestParseRobinhoodCloseOutput_AlreadyFlatFieldParsed(t *testing.T) {
+	stdout := []byte(`{"close":{"symbol":"BTC","fill":{},"already_flat":true},"platform":"robinhood","timestamp":"x"}`)
+	result, _, err := parseRobinhoodCloseOutput(stdout, "", nil)
+	if err != nil {
+		t.Fatalf("expected nil err, got %v", err)
+	}
+	if result == nil || result.Close == nil {
+		t.Fatalf("expected populated result.Close, got %+v", result)
+	}
+	if !result.Close.AlreadyFlat {
+		t.Errorf("AlreadyFlat = false, want true (#350)")
 	}
 }
 

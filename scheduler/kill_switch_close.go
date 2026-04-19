@@ -69,7 +69,34 @@ type KillSwitchCloseInputs struct {
 	TSFetcher TopStepPositionsFetcher
 
 	PortfolioReason string
-	CloseTimeout    time.Duration
+
+	// CloseTimeout is the default per-platform close-budget when a
+	// platform-specific override is unset (zero). Each platform gets its
+	// OWN context.WithTimeout — they do not share a single budget — but a
+	// single tunable here was insufficient for platforms with very different
+	// per-call costs (Robinhood adds TOTP login overhead per submit). The
+	// per-platform fields below let the caller widen RH without giving HL
+	// extra headroom.
+	CloseTimeout time.Duration
+
+	// Per-platform overrides. Zero means "use CloseTimeout". Each platform's
+	// context is independent so one slow platform's budget cannot starve
+	// the others.
+	HLCloseTimeout  time.Duration
+	OKXCloseTimeout time.Duration
+	RHCloseTimeout  time.Duration
+	TSCloseTimeout  time.Duration
+}
+
+// platformCloseBudget returns the effective close-budget for a platform,
+// preferring the per-platform override and falling back to CloseTimeout.
+// Centralized so a future "minimum 30s per platform" floor lives in one
+// place rather than four switch arms.
+func (in KillSwitchCloseInputs) platformCloseBudget(override time.Duration) time.Duration {
+	if override > 0 {
+		return override
+	}
+	return in.CloseTimeout
 }
 
 // KillSwitchClosePlan is the output of planKillSwitchClose — everything the
@@ -181,21 +208,32 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 	// from config while the wallet still holds positions from a previous
 	// deploy or manual trade. Kill switch must not report "no exposure"
 	// without actually checking (#341 review, false-reassurance case).
-	if !hlStateFetched && in.HLAddr != "" && in.HLFetcher != nil {
-		pos, err := in.HLFetcher(in.HLAddr)
-		if err != nil {
+	if !hlStateFetched && in.HLAddr != "" {
+		switch {
+		case in.HLFetcher != nil:
+			pos, err := in.HLFetcher(in.HLAddr)
+			if err != nil {
+				plan.LogLines = append(plan.LogLines,
+					fmt.Sprintf("[CRITICAL] hl-close: kill switch unable to fetch HL state: %v — cannot confirm on-chain flat", err))
+				plan.OnChainConfirmedFlat = false
+			} else {
+				hlPositions = pos
+				hlStateFetched = true
+			}
+		default:
+			// Defense-in-depth: production wires HLFetcher in main.go, but a
+			// future regression that drops the assignment would otherwise
+			// silently bypass the kill switch (false-reassurance, latch
+			// stays clear). Latch and log instead. (#350)
 			plan.LogLines = append(plan.LogLines,
-				fmt.Sprintf("[CRITICAL] hl-close: kill switch unable to fetch HL state: %v — cannot confirm on-chain flat", err))
+				"[CRITICAL] hl-close: HLAddr configured but HLFetcher unwired — cannot confirm on-chain flat (kill switch will retry next cycle)")
 			plan.OnChainConfirmedFlat = false
-		} else {
-			hlPositions = pos
-			hlStateFetched = true
 		}
 	}
 
 	switch {
 	case hlStateFetched && len(in.HLLiveAll) > 0:
-		ctx, cancel := context.WithTimeout(context.Background(), in.CloseTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), in.platformCloseBudget(in.HLCloseTimeout))
 		plan.CloseReport = forceCloseHyperliquidLive(ctx, hlPositions, in.HLLiveAll, in.HLCloser)
 		cancel()
 		if !plan.CloseReport.ConfirmedFlat() {
@@ -241,14 +279,22 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 	// Perps: always attempt fetch when there's a perps strategy or fetcher
 	// — mirrors the HL opportunistic-fetch guard. Unlike HL there is no
 	// pre-fetch to reuse; OKX always requires a subprocess round-trip.
-	if len(in.OKXLiveAllPerps) > 0 && in.OKXFetcher != nil {
+	switch {
+	case len(in.OKXLiveAllPerps) > 0 && in.OKXFetcher == nil:
+		// Defense-in-depth (#350): a future main.go regression that drops
+		// OKXFetcher would otherwise silently skip OKX and clear virtual
+		// state with on-chain exposure live. Latch and log.
+		plan.LogLines = append(plan.LogLines,
+			"[CRITICAL] okx-close: OKX live perps strategies configured but OKXFetcher unwired — cannot confirm on-chain flat (kill switch will retry next cycle)")
+		plan.OnChainConfirmedFlat = false
+	case len(in.OKXLiveAllPerps) > 0:
 		okxPositions, err := in.OKXFetcher()
 		if err != nil {
 			plan.LogLines = append(plan.LogLines,
 				fmt.Sprintf("[CRITICAL] okx-close: kill switch unable to fetch OKX positions: %v — cannot confirm on-chain flat", err))
 			plan.OnChainConfirmedFlat = false
 		} else {
-			ctx, cancel := context.WithTimeout(context.Background(), in.CloseTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), in.platformCloseBudget(in.OKXCloseTimeout))
 			plan.OKXCloseReport = forceCloseOKXLive(ctx, okxPositions, in.OKXLiveAllPerps, in.OKXCloser)
 			cancel()
 			if !plan.OKXCloseReport.ConfirmedFlat() {
@@ -297,14 +343,22 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 	// — mirrors the OKX opportunistic-fetch guard. Robinhood has no
 	// pre-fetch to reuse; every cycle requires a subprocess round-trip
 	// (TOTP-authenticated).
-	if len(in.RHLiveCrypto) > 0 && in.RHFetcher != nil {
+	switch {
+	case len(in.RHLiveCrypto) > 0 && in.RHFetcher == nil:
+		// Defense-in-depth (#350): a future main.go regression that drops
+		// RHFetcher would otherwise silently skip Robinhood and clear
+		// virtual state with on-account exposure live. Latch and log.
+		plan.LogLines = append(plan.LogLines,
+			"[CRITICAL] rh-close: Robinhood live crypto strategies configured but RHFetcher unwired — cannot confirm flat (kill switch will retry next cycle)")
+		plan.OnChainConfirmedFlat = false
+	case len(in.RHLiveCrypto) > 0:
 		rhPositions, err := in.RHFetcher()
 		if err != nil {
 			plan.LogLines = append(plan.LogLines,
 				fmt.Sprintf("[CRITICAL] rh-close: kill switch unable to fetch Robinhood positions: %v — cannot confirm flat", err))
 			plan.OnChainConfirmedFlat = false
 		} else {
-			ctx, cancel := context.WithTimeout(context.Background(), in.CloseTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), in.platformCloseBudget(in.RHCloseTimeout))
 			plan.RHCloseReport = forceCloseRobinhoodLive(ctx, rhPositions, in.RHLiveCrypto, in.RHCloser)
 			cancel()
 			if !plan.RHCloseReport.ConfirmedFlat() {
@@ -343,14 +397,22 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 	// CME trading-hour restriction: fires outside RTH will surface a venue
 	// error here, latching the kill switch until the next in-hours cycle.
 	// This is the correct behavior — do not attempt to bypass the venue.
-	if len(in.TSLiveAll) > 0 && in.TSFetcher != nil {
+	switch {
+	case len(in.TSLiveAll) > 0 && in.TSFetcher == nil:
+		// Defense-in-depth (#350): a future main.go regression that drops
+		// TSFetcher would otherwise silently skip TopStep and clear virtual
+		// state with on-account exposure live. Latch and log.
+		plan.LogLines = append(plan.LogLines,
+			"[CRITICAL] ts-close: TopStep live futures strategies configured but TSFetcher unwired — cannot confirm flat (kill switch will retry next cycle)")
+		plan.OnChainConfirmedFlat = false
+	case len(in.TSLiveAll) > 0:
 		tsPositions, err := in.TSFetcher()
 		if err != nil {
 			plan.LogLines = append(plan.LogLines,
 				fmt.Sprintf("[CRITICAL] ts-close: kill switch unable to fetch TopStep positions: %v — cannot confirm flat", err))
 			plan.OnChainConfirmedFlat = false
 		} else {
-			ctx, cancel := context.WithTimeout(context.Background(), in.CloseTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), in.platformCloseBudget(in.TSCloseTimeout))
 			plan.TSCloseReport = forceCloseTopStepLive(ctx, tsPositions, in.TSLiveAll, in.TSCloser)
 			cancel()
 			if !plan.TSCloseReport.ConfirmedFlat() {

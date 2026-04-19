@@ -1183,3 +1183,142 @@ func TestPlanKillSwitchClose_TopStepFailureStillLatchesAcrossPlatforms(t *testin
 		t.Errorf("HL close should still run: got %v", plan.CloseReport.ClosedCoins)
 	}
 }
+
+// Per-platform CloseTimeout overrides take precedence over the
+// CloseTimeout fallback. Without this, RH (TOTP-slow) and HL (fast) would
+// share a single budget that could not be tuned independently. (#350)
+func TestPlanKillSwitchClose_PlatformBudgetOverrides(t *testing.T) {
+	in := KillSwitchCloseInputs{
+		CloseTimeout:    90 * time.Second,
+		HLCloseTimeout:  10 * time.Second,
+		OKXCloseTimeout: 0,
+		RHCloseTimeout:  150 * time.Second,
+		TSCloseTimeout:  0,
+	}
+	if got := in.platformCloseBudget(in.HLCloseTimeout); got != 10*time.Second {
+		t.Errorf("HL budget = %v, want 10s override", got)
+	}
+	if got := in.platformCloseBudget(in.OKXCloseTimeout); got != 90*time.Second {
+		t.Errorf("OKX budget = %v, want 90s fallback", got)
+	}
+	if got := in.platformCloseBudget(in.RHCloseTimeout); got != 150*time.Second {
+		t.Errorf("RH budget = %v, want 150s override", got)
+	}
+	if got := in.platformCloseBudget(in.TSCloseTimeout); got != 90*time.Second {
+		t.Errorf("TS budget = %v, want 90s fallback", got)
+	}
+}
+
+// HL fetcher unwired while HLAddr configured: must latch with a CRITICAL
+// log line. Defense-in-depth against a future main.go regression that
+// drops HLFetcher; without this, the kill switch would silently bypass
+// HL exposure. (#350)
+func TestPlanKillSwitchClose_HLFetcherUnwiredLatches(t *testing.T) {
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		HLAddr:          "0xabc",
+		HLStateFetched:  false,
+		HLFetcher:       nil,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("expected NOT ConfirmedFlat when HLFetcher unwired with HLAddr set")
+	}
+	found := false
+	for _, line := range plan.LogLines {
+		if strings.Contains(line, "HLFetcher unwired") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected log line mentioning HLFetcher unwired, got: %v", plan.LogLines)
+	}
+}
+
+// OKX fetcher unwired while strategies configured: must latch. Without
+// the else branch, len(strategies)>0 && fetcher==nil silently skipped
+// OKX and cleared OnChainConfirmedFlat=true. (#350)
+func TestPlanKillSwitchClose_OKXFetcherUnwiredLatches(t *testing.T) {
+	okxLive := []StrategyConfig{
+		{ID: "okx-sma-btc", Platform: "okx", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		OKXLiveAllPerps: okxLive,
+		OKXFetcher:      nil,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("expected NOT ConfirmedFlat when OKXFetcher unwired with strategies configured")
+	}
+	found := false
+	for _, line := range plan.LogLines {
+		if strings.Contains(line, "OKXFetcher unwired") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected log line mentioning OKXFetcher unwired, got: %v", plan.LogLines)
+	}
+}
+
+// RH fetcher unwired while strategies configured: must latch. (#350)
+func TestPlanKillSwitchClose_RHFetcherUnwiredLatches(t *testing.T) {
+	rhLive := []StrategyConfig{
+		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
+			Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
+	}
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		RHLiveCrypto:    rhLive,
+		RHFetcher:       nil,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("expected NOT ConfirmedFlat when RHFetcher unwired with strategies configured")
+	}
+	found := false
+	for _, line := range plan.LogLines {
+		if strings.Contains(line, "RHFetcher unwired") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected log line mentioning RHFetcher unwired, got: %v", plan.LogLines)
+	}
+}
+
+// TS fetcher unwired while strategies configured: must latch. (#350)
+func TestPlanKillSwitchClose_TSFetcherUnwiredLatches(t *testing.T) {
+	tsLive := []StrategyConfig{
+		{ID: "ts-momentum-es", Platform: "topstep", Type: "futures",
+			Args: []string{"momentum", "ES", "1h", "--mode=live"}},
+	}
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		TSLiveAll:       tsLive,
+		TSFetcher:       nil,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("expected NOT ConfirmedFlat when TSFetcher unwired with strategies configured")
+	}
+	found := false
+	for _, line := range plan.LogLines {
+		if strings.Contains(line, "TSFetcher unwired") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected log line mentioning TSFetcher unwired, got: %v", plan.LogLines)
+	}
+}

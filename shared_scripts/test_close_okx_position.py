@@ -152,6 +152,10 @@ class TestAlreadyFlat:
         assert out["close"]["symbol"] == "BTC"
         assert out["close"]["fill"] == {}
         assert "error" not in out
+        # already_flat must be set so the Go side routes this through
+        # AlreadyFlat instead of ClosedCoins (#350) — operator messaging
+        # must distinguish "we sent a close order" from "nothing to close".
+        assert out["close"]["already_flat"] is True
 
 
 class TestFailurePaths:

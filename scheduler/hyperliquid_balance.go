@@ -483,7 +483,13 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 // so future readers see the predicate spelled out.
 type HyperliquidLiveCloseReport struct {
 	ClosedCoins []string
-	AlreadyFlat []string // unreachable in production (see forceCloseHyperliquidLive); kept as defense-in-depth
+	// AlreadyFlat is set from two sources: the pre-submit szi==0 short-circuit
+	// in forceCloseHyperliquidLive (defense-in-depth — FetchHyperliquidPositions
+	// pre-filters szi≠0, so this branch should not fire in production) AND the
+	// adapter-side already_flat envelope flag, which IS production-reachable
+	// when the eventual-consistency window between the Go-side fetch and the
+	// SDK submit lets a position close out from under us (#350).
+	AlreadyFlat []string
 	// Errors is non-nil so coin-keyed writes don't panic; len() works on nil maps too.
 	Errors map[string]error
 }
@@ -563,8 +569,18 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 			report.Errors[p.Coin] = fmt.Errorf("close budget exhausted before submit: %w", err)
 			continue
 		}
-		if _, err := closer(p.Coin); err != nil {
+		result, err := closer(p.Coin)
+		if err != nil {
 			report.Errors[p.Coin] = err
+			continue
+		}
+		// Adapter may report already_flat when its own pre-submit position
+		// check finds nothing to close (eventual-consistency window between
+		// the Go-side fetch and the close submit). Route through AlreadyFlat
+		// so operator messaging accurately distinguishes "we sent a close
+		// order" from "nothing to close" (#350).
+		if result != nil && result.Close != nil && result.Close.AlreadyFlat {
+			report.AlreadyFlat = append(report.AlreadyFlat, p.Coin)
 			continue
 		}
 		report.ClosedCoins = append(report.ClosedCoins, p.Coin)

@@ -79,8 +79,11 @@ def main():
         # Empty dict — adapter found no open position to close. Treat as
         # already-flat success so the kill switch can release the latch when
         # on-chain is genuinely flat (eventual-consistency window between the
-        # Go-side fetch and this submit).
-        _emit_success(args.symbol, fill={})
+        # Go-side fetch and this submit). Set already_flat=True so the Go
+        # side routes this through the AlreadyFlat report slice rather than
+        # ClosedCoins — operator messaging must distinguish "we sent a
+        # close order" from "nothing to close" (#350).
+        _emit_success(args.symbol, fill={}, already_flat=True)
         return
 
     # ccxt unified order response: extract best-effort fill telemetry. Missing
@@ -108,9 +111,12 @@ def main():
     _emit_success(args.symbol, fill)
 
 
-def _emit_success(symbol, fill):
+def _emit_success(symbol, fill, already_flat=False):
+    close = {"symbol": symbol, "fill": fill}
+    if already_flat:
+        close["already_flat"] = True
     print(json.dumps({
-        "close": {"symbol": symbol, "fill": fill},
+        "close": close,
         "platform": "okx",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }))

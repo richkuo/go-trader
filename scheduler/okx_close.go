@@ -167,8 +167,17 @@ func forceCloseOKXLive(ctx context.Context, positions []OKXPosition, okxLiveAll 
 			report.Errors[p.Coin] = fmt.Errorf("close budget exhausted before submit: %w", err)
 			continue
 		}
-		if _, err := closer(p.Coin); err != nil {
+		result, err := closer(p.Coin)
+		if err != nil {
 			report.Errors[p.Coin] = err
+			continue
+		}
+		// Adapter may report already_flat when its own pre-submit position
+		// check finds nothing to close (eventual-consistency window). Route
+		// through AlreadyFlat so operator messaging distinguishes "we sent a
+		// close order" from "nothing to close" (#350).
+		if result != nil && result.Close != nil && result.Close.AlreadyFlat {
+			report.AlreadyFlat = append(report.AlreadyFlat, p.Coin)
 			continue
 		}
 		report.ClosedCoins = append(report.ClosedCoins, p.Coin)

@@ -78,8 +78,12 @@ def main():
         if qty <= 0:
             # Already flat — treat as success so the kill switch can release
             # the latch when on-chain is genuinely empty (eventual-consistency
-            # window between the Go-side fetch and this submit).
-            _emit_success(args.symbol, fill={})
+            # window between the Go-side fetch and this submit). Set
+            # already_flat=True so the Go side routes this through the
+            # AlreadyFlat report slice rather than ClosedCoins — operator
+            # messaging must distinguish "we sent a close order" from
+            # "nothing to close" (#350).
+            _emit_success(args.symbol, fill={}, already_flat=True)
             return
 
         result = adapter.market_sell(args.symbol, qty)
@@ -120,9 +124,12 @@ def main():
     _emit_success(args.symbol, fill)
 
 
-def _emit_success(symbol, fill):
+def _emit_success(symbol, fill, already_flat=False):
+    close = {"symbol": symbol, "fill": fill}
+    if already_flat:
+        close["already_flat"] = True
     print(json.dumps({
-        "close": {"symbol": symbol, "fill": fill},
+        "close": close,
         "platform": "robinhood",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }))

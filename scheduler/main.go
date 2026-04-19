@@ -645,6 +645,12 @@ func main() {
 					TSFetcher:       defaultTopStepPositionsFetcher,
 					PortfolioReason: portfolioReason,
 					CloseTimeout:    90 * time.Second,
+					// Per-platform overrides: each platform gets its own
+					// independent context.WithTimeout so a slow platform
+					// cannot starve the others. Robinhood adds TOTP login
+					// overhead to every submit, so it gets a wider budget;
+					// the rest stay at the 90s default. (#350)
+					RHCloseTimeout: 150 * time.Second,
 				}
 				plan = planKillSwitchClose(inputs)
 				for _, line := range plan.LogLines {

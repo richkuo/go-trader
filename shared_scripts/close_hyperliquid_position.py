@@ -79,7 +79,11 @@ def main():
     # for the eventual-consistency window where on-chain just-flattened between
     # the Go-side fetch and our submit.
     if not statuses:
-        _emit_success(args.symbol, fill={})
+        # Set already_flat=True so the Go side routes this through the
+        # AlreadyFlat report slice rather than ClosedCoins — operator
+        # messaging must distinguish "we sent a close order" from
+        # "nothing to close" (#350).
+        _emit_success(args.symbol, fill={}, already_flat=True)
         return
 
     first = statuses[0]
@@ -111,9 +115,12 @@ def main():
     _emit_success(args.symbol, fill)
 
 
-def _emit_success(symbol, fill):
+def _emit_success(symbol, fill, already_flat=False):
+    close = {"symbol": symbol, "fill": fill}
+    if already_flat:
+        close["already_flat"] = True
     print(json.dumps({
-        "close": {"symbol": symbol, "fill": fill},
+        "close": close,
         "platform": "hyperliquid",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }))

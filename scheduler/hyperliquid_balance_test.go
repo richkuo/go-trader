@@ -1367,3 +1367,40 @@ func TestForceCloseHyperliquidLive_EmptyInputs(t *testing.T) {
 		t.Errorf("expected empty report, got %+v", report)
 	}
 }
+
+// Adapter-side AlreadyFlat: closer returns success with already_flat=true
+// (eventual-consistency window — Go-side fetch saw non-zero szi, but by
+// the time the SDK submitted, the position was already flat). The coin
+// must land in AlreadyFlat, NOT ClosedCoins, so operator messaging
+// distinguishes "we sent a close order" from "nothing to close" (#350).
+func TestForceCloseHyperliquidLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.T) {
+	hlLiveAll := []StrategyConfig{
+		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}
+
+	var calls []string
+	closer := func(symbol string) (*HyperliquidCloseResult, error) {
+		calls = append(calls, symbol)
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},
+			Platform: "hyperliquid",
+		}, nil
+	}
+
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer)
+
+	if len(report.Errors) != 0 {
+		t.Errorf("expected no errors, got %v", report.Errors)
+	}
+	if len(report.ClosedCoins) != 0 {
+		t.Errorf("ClosedCoins should be empty when adapter reports already_flat, got %v", report.ClosedCoins)
+	}
+	if len(report.AlreadyFlat) != 1 || report.AlreadyFlat[0] != "ETH" {
+		t.Errorf("AlreadyFlat = %v, want [ETH]", report.AlreadyFlat)
+	}
+	if len(calls) != 1 || calls[0] != "ETH" {
+		t.Errorf("closer should still be called once (Go side saw non-zero szi), got %v", calls)
+	}
+}
