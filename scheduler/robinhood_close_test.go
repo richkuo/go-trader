@@ -122,8 +122,8 @@ func TestForceCloseRobinhoodLive_NegativeSizeNotTraded(t *testing.T) {
 			Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
 	}
 	positions := []RobinhoodPosition{
-		{Coin: "BTC", Size: -0.01},  // owned coin, hypothetical negative
-		{Coin: "DOGE", Size: -100},  // unowned coin, hypothetical negative
+		{Coin: "BTC", Size: -0.01}, // owned coin, hypothetical negative
+		{Coin: "DOGE", Size: -100}, // unowned coin, hypothetical negative
 	}
 	var calls []string
 	closer := func(sym string) (*RobinhoodCloseResult, error) {
