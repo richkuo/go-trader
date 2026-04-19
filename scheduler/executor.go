@@ -264,8 +264,14 @@ func RunHyperliquidClose(script, symbol string) (*HyperliquidCloseResult, string
 		"--mode=live",
 	}
 	stdout, stderr, runErr := RunPythonScript(script, args)
-	stderrStr := string(stderr)
+	return parseHyperliquidCloseOutput(stdout, string(stderr), runErr)
+}
 
+// parseHyperliquidCloseOutput turns the raw subprocess result into
+// (*HyperliquidCloseResult, stderr, error) following the RunHyperliquidClose
+// contract. Extracted from RunHyperliquidClose so the decision logic can be
+// tested without spawning .venv/bin/python3 (absent in the Go CI job).
+func parseHyperliquidCloseOutput(stdout []byte, stderrStr string, runErr error) (*HyperliquidCloseResult, string, error) {
 	var result HyperliquidCloseResult
 	parseErr := json.Unmarshal(stdout, &result)
 

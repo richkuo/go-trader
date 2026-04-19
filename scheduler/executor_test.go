@@ -3,8 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -329,35 +327,14 @@ func TestContractSpecJSON(t *testing.T) {
 // JSON-parse boundary. Test-side: writes a temporary Python script that
 // behaves like close_hyperliquid_position.py but with controllable output.
 
-// makeHLCloseStubScript writes a minimal Python script to a temp dir that
-// emits stdout (verbatim) and exits with the given status code. Returns the
-// script path; tmp dir is auto-cleaned by t.TempDir().
-//
-// Also chdirs to the repo root for the duration of the test because
-// RunPythonScript hardcodes .venv/bin/python3 as a CWD-relative path — the
-// scheduler's runtime convention is to invoke from repo root (CLAUDE.md).
-// t.Chdir (Go 1.24+) restores CWD automatically on test completion.
-func makeHLCloseStubScript(t *testing.T, stdout string, exitCode int) string {
-	t.Helper()
-	t.Chdir("..") // scheduler/ → repo root where .venv/ lives
-	dir := t.TempDir()
-	path := filepath.Join(dir, "stub_close.py")
-	body := fmt.Sprintf(`import sys
-sys.stdout.write(%q)
-sys.exit(%d)
-`, stdout, exitCode)
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatalf("write stub: %v", err)
-	}
-	return path
-}
+// These tests exercise parseHyperliquidCloseOutput directly (the pure decision
+// helper extracted from RunHyperliquidClose) so they don't depend on
+// .venv/bin/python3, which isn't installed in the Go CI job.
 
-// Case 1: clean success.
-func TestRunHyperliquidClose_CleanSuccess(t *testing.T) {
-	stub := makeHLCloseStubScript(t,
-		`{"close":{"symbol":"ETH","fill":{"avg_px":3000,"total_sz":0.5,"oid":12345,"fee":0.6}},"platform":"hyperliquid","timestamp":"2026-04-19T00:00:00Z"}`,
-		0)
-	result, _, err := RunHyperliquidClose(stub, "ETH")
+// Case 1: clean success — exit 0, valid JSON, no error field.
+func TestParseHyperliquidCloseOutput_CleanSuccess(t *testing.T) {
+	stdout := []byte(`{"close":{"symbol":"ETH","fill":{"avg_px":3000,"total_sz":0.5,"oid":12345,"fee":0.6}},"platform":"hyperliquid","timestamp":"2026-04-19T00:00:00Z"}`)
+	result, _, err := parseHyperliquidCloseOutput(stdout, "", nil)
 	if err != nil {
 		t.Fatalf("expected nil err, got %v", err)
 	}
@@ -377,11 +354,9 @@ func TestRunHyperliquidClose_CleanSuccess(t *testing.T) {
 
 // Case 2: exit 0 with populated error field — should NOT be silently treated
 // as success (the JSON envelope is authoritative).
-func TestRunHyperliquidClose_Exit0WithError(t *testing.T) {
-	stub := makeHLCloseStubScript(t,
-		`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"sdk timeout"}`,
-		0)
-	result, _, err := RunHyperliquidClose(stub, "ETH")
+func TestParseHyperliquidCloseOutput_Exit0WithError(t *testing.T) {
+	stdout := []byte(`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"sdk timeout"}`)
+	result, _, err := parseHyperliquidCloseOutput(stdout, "", nil)
 	if err == nil {
 		t.Fatal("expected non-nil err for exit 0 with error envelope")
 	}
@@ -394,11 +369,10 @@ func TestRunHyperliquidClose_Exit0WithError(t *testing.T) {
 }
 
 // Case 3: exit 1 with valid JSON error — the expected failure path.
-func TestRunHyperliquidClose_Exit1WithError(t *testing.T) {
-	stub := makeHLCloseStubScript(t,
-		`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"hl rate limited"}`,
-		1)
-	result, _, err := RunHyperliquidClose(stub, "ETH")
+func TestParseHyperliquidCloseOutput_Exit1WithError(t *testing.T) {
+	stdout := []byte(`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"hl rate limited"}`)
+	runErr := fmt.Errorf("exit status 1")
+	result, _, err := parseHyperliquidCloseOutput(stdout, "", runErr)
 	if err == nil {
 		t.Fatal("expected non-nil err for exit 1 — kill switch must latch")
 	}
@@ -415,11 +389,10 @@ func TestRunHyperliquidClose_Exit1WithError(t *testing.T) {
 // non-zero exit. Without this test, a regression that drops the exit-code
 // check would let the kill switch clear virtual state on a script crash
 // that happened to print parseable JSON before dying.
-func TestRunHyperliquidClose_Exit1WithoutErrorField(t *testing.T) {
-	stub := makeHLCloseStubScript(t,
-		`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x"}`,
-		1)
-	_, _, err := RunHyperliquidClose(stub, "ETH")
+func TestParseHyperliquidCloseOutput_Exit1WithoutErrorField(t *testing.T) {
+	stdout := []byte(`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x"}`)
+	runErr := fmt.Errorf("exit status 1")
+	_, _, err := parseHyperliquidCloseOutput(stdout, "", runErr)
 	if err == nil {
 		t.Fatal("expected non-nil err for exit 1 even without error field")
 	}
@@ -430,9 +403,8 @@ func TestRunHyperliquidClose_Exit1WithoutErrorField(t *testing.T) {
 
 // Case 5: malformed JSON. Always a failure regardless of exit code, because
 // the kill switch cannot infer outcome from garbage.
-func TestRunHyperliquidClose_MalformedJSON(t *testing.T) {
-	stub := makeHLCloseStubScript(t, "this is not json", 0)
-	result, _, err := RunHyperliquidClose(stub, "ETH")
+func TestParseHyperliquidCloseOutput_MalformedJSON(t *testing.T) {
+	result, _, err := parseHyperliquidCloseOutput([]byte("this is not json"), "", nil)
 	if err == nil {
 		t.Fatal("expected non-nil err for malformed JSON")
 	}
