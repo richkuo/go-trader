@@ -974,3 +974,212 @@ func TestPlanKillSwitchClose_OKXDeterministicErrorOrder(t *testing.T) {
 		t.Errorf("expected alphabetical BTC < ETH < SOL in: %s", prev)
 	}
 }
+
+// ── TopStep tests (#347) ───────────────────────────────────────────────
+
+// stubTSLiveCloser mirrors stubHLLiveCloser / stubOKXLiveCloser / stubRHLiveCloser
+// for TopStep. Missing-symbol entries yield a synthetic success.
+func stubTSLiveCloser(errs map[string]error) (TopStepLiveCloser, *[]string) {
+	var calls []string
+	closer := func(symbol string) (*TopStepCloseResult, error) {
+		calls = append(calls, symbol)
+		if err, ok := errs[symbol]; ok && err != nil {
+			return nil, err
+		}
+		return &TopStepCloseResult{
+			Close:    &TopStepClose{Symbol: symbol, Fill: &TopStepCloseFill{TotalContracts: 1, AvgPx: 5000}},
+			Platform: "topstep",
+		}, nil
+	}
+	return closer, &calls
+}
+
+// stubTSPositionsFetcher returns a TopStepPositionsFetcher that replays a
+// fixed response and records invocation count.
+func stubTSPositionsFetcher(positions []TopStepPosition, err error) (TopStepPositionsFetcher, *int) {
+	var calls int
+	fetcher := func() ([]TopStepPosition, error) {
+		calls++
+		if err != nil {
+			return nil, err
+		}
+		return positions, nil
+	}
+	return fetcher, &calls
+}
+
+// TopStep happy path: one live futures strategy with an open ES position.
+// Plan reports ConfirmedFlat, closer called once, Discord message mentions
+// TopStep closes. The #347 analog of HL/OKX/Robinhood happy-path.
+func TestPlanKillSwitchClose_TopStepHappyPath(t *testing.T) {
+	tsLive := []StrategyConfig{
+		{ID: "ts-momentum-es", Platform: "topstep", Type: "futures",
+			Args: []string{"momentum", "ES", "1h", "--mode=live"}},
+	}
+	positions := []TopStepPosition{{Coin: "ES", Size: 2, AvgPrice: 5000, Side: "long"}}
+	closer, calls := stubTSLiveCloser(nil)
+	fetcher, fetchCalls := stubTSPositionsFetcher(positions, nil)
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		TSLiveAll:       tsLive,
+		TSCloser:        closer,
+		TSFetcher:       fetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if !plan.OnChainConfirmedFlat {
+		t.Fatalf("expected ConfirmedFlat, got plan=%+v", plan)
+	}
+	if *fetchCalls != 1 {
+		t.Errorf("TopStep fetcher should be called exactly once, got %d", *fetchCalls)
+	}
+	if len(*calls) != 1 || (*calls)[0] != "ES" {
+		t.Errorf("closer calls = %v, want [ES]", *calls)
+	}
+	if !strings.Contains(plan.DiscordMessage, "TopStep closes: [ES]") {
+		t.Errorf("expected TopStep closes in message, got: %s", plan.DiscordMessage)
+	}
+}
+
+// TopStep close failure: the load-bearing #347 correctness case. Without
+// latching on a failed close, virtual state would clear while CME exposure
+// remained — exactly the #341 bug shape.
+func TestPlanKillSwitchClose_TopStepCloseError(t *testing.T) {
+	tsLive := []StrategyConfig{
+		{ID: "ts-momentum-es", Platform: "topstep", Type: "futures",
+			Args: []string{"momentum", "ES", "1h", "--mode=live"}},
+	}
+	positions := []TopStepPosition{{Coin: "ES", Size: 2}}
+	closer, _ := stubTSLiveCloser(map[string]error{"ES": fmt.Errorf("market closed")})
+	fetcher, _ := stubTSPositionsFetcher(positions, nil)
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		TSLiveAll:       tsLive,
+		TSCloser:        closer,
+		TSFetcher:       fetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("expected NOT ConfirmedFlat on TopStep close error — would clear virtual state while CME is still active")
+	}
+	if got, ok := plan.TSCloseReport.Errors["ES"]; !ok || got == nil {
+		t.Errorf("expected ES error in TopStep report, got %v", plan.TSCloseReport.Errors)
+	}
+	if !strings.Contains(plan.DiscordMessage, "LATCHED, RETRYING") {
+		t.Errorf("expected LATCHED message, got: %s", plan.DiscordMessage)
+	}
+	if !strings.Contains(plan.DiscordMessage, "market closed") {
+		t.Errorf("expected TopStep error detail in message, got: %s", plan.DiscordMessage)
+	}
+}
+
+// TopStep fetch failure: fetcher errors → kill switch must latch, closer
+// must NOT be invoked. Same guard as HL/OKX/Robinhood fetch failure. This
+// branch also covers the CME-closed-hours case when the fetch itself can't
+// reach TopStepX (credentials, auth token expired, etc).
+func TestPlanKillSwitchClose_TopStepFetchFailure(t *testing.T) {
+	tsLive := []StrategyConfig{
+		{ID: "ts-momentum-es", Platform: "topstep", Type: "futures",
+			Args: []string{"momentum", "ES", "1h", "--mode=live"}},
+	}
+	closer, calls := stubTSLiveCloser(nil)
+	fetcher, _ := stubTSPositionsFetcher(nil, fmt.Errorf("topstepx 401"))
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		TSLiveAll:       tsLive,
+		TSCloser:        closer,
+		TSFetcher:       fetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("expected NOT ConfirmedFlat on TopStep fetch failure")
+	}
+	if len(*calls) != 0 {
+		t.Errorf("closer must not be invoked when fetch failed, got %v", *calls)
+	}
+	if !strings.Contains(plan.DiscordMessage, "LATCHED, RETRYING") {
+		t.Errorf("expected LATCHED message, got: %s", plan.DiscordMessage)
+	}
+}
+
+// TopStep unconfigured: fetcher reports a position for a symbol no live
+// futures strategy trades. Kill switch refuses to liquidate and latches.
+func TestPlanKillSwitchClose_TopStepUnconfiguredBlocksReset(t *testing.T) {
+	tsLive := []StrategyConfig{
+		{ID: "ts-momentum-es", Platform: "topstep", Type: "futures",
+			Args: []string{"momentum", "ES", "1h", "--mode=live"}},
+	}
+	positions := []TopStepPosition{
+		{Coin: "ES", Size: 2},
+		{Coin: "NQ", Size: 1},
+	}
+	closer, calls := stubTSLiveCloser(nil)
+	fetcher, _ := stubTSPositionsFetcher(positions, nil)
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		TSLiveAll:       tsLive,
+		TSCloser:        closer,
+		TSFetcher:       fetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("expected NOT ConfirmedFlat — unconfigured NQ position is still live")
+	}
+	if len(plan.TSUnconfigured) != 1 || plan.TSUnconfigured[0].Coin != "NQ" {
+		t.Errorf("expected TSUnconfigured=[NQ], got %v", plan.TSUnconfigured)
+	}
+	if len(*calls) != 1 || (*calls)[0] != "ES" {
+		t.Errorf("closer calls = %v, want [ES]", *calls)
+	}
+	if !strings.Contains(plan.DiscordMessage, "manual intervention required") {
+		t.Errorf("expected manual intervention note, got: %s", plan.DiscordMessage)
+	}
+}
+
+// Cross-platform latch: HL happy but TopStep fails — plan must still
+// latch across the board. Mirrors the existing
+// RobinhoodFailureStillLatchesAcrossPlatforms test. Proves either
+// platform flipping ConfirmedFlat=false cascades correctly.
+func TestPlanKillSwitchClose_TopStepFailureStillLatchesAcrossPlatforms(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-mom-btc", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"momentum", "BTC", "1h", "--mode=live"}},
+	}
+	hlPositions := []HLPosition{{Coin: "BTC", Size: 0.5}}
+	hlCloser, _ := stubHLLiveCloser(nil)
+
+	tsLive := []StrategyConfig{
+		{ID: "ts-momentum-es", Platform: "topstep", Type: "futures",
+			Args: []string{"momentum", "ES", "1h", "--mode=live"}},
+	}
+	tsPositions := []TopStepPosition{{Coin: "ES", Size: 2}}
+	tsCloser, _ := stubTSLiveCloser(map[string]error{"ES": fmt.Errorf("venue down")})
+	tsFetcher, _ := stubTSPositionsFetcher(tsPositions, nil)
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		HLAddr:          "0xabc",
+		HLStateFetched:  true,
+		HLPositions:     hlPositions,
+		HLLiveAll:       hlLive,
+		HLCloser:        hlCloser,
+		TSLiveAll:       tsLive,
+		TSCloser:        tsCloser,
+		TSFetcher:       tsFetcher,
+		PortfolioReason: "reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("expected NOT ConfirmedFlat when TopStep fails even though HL succeeded")
+	}
+	if len(plan.CloseReport.ClosedCoins) != 1 || plan.CloseReport.ClosedCoins[0] != "BTC" {
+		t.Errorf("HL close should still run: got %v", plan.CloseReport.ClosedCoins)
+	}
+}

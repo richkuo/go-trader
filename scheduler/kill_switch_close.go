@@ -59,6 +59,15 @@ type KillSwitchCloseInputs struct {
 	RHCloser      RobinhoodLiveCloser
 	RHFetcher     RobinhoodPositionsFetcher
 
+	// TSLiveAll: every live TopStep futures strategy configured. Used to
+	// decide which symbols to close and to detect "unconfigured" positions.
+	// TopStep has no public unauthenticated endpoint — we always call
+	// TSFetcher when there's at least one live TopStep futures strategy,
+	// rather than trying to reuse a pre-fetch. (#347)
+	TSLiveAll []StrategyConfig
+	TSCloser  TopStepLiveCloser
+	TSFetcher TopStepPositionsFetcher
+
 	PortfolioReason string
 	CloseTimeout    time.Duration
 }
@@ -116,6 +125,15 @@ type KillSwitchClosePlan struct {
 	// (hard-latch would freeze the scheduler for any Robinhood options
 	// user with no available close path). Mirrors OKXSpotPresent.
 	RHOptionsPresent bool
+
+	// TSCloseReport is the TopStep per-symbol outcome. Zero value when no
+	// TopStep close was attempted.
+	TSCloseReport TopStepLiveCloseReport
+
+	// TSUnconfigured lists live TopStep positions for symbols no configured
+	// live TopStep futures strategy trades. Same manual-intervention
+	// semantic as HL/OKX/Robinhood Unconfigured.
+	TSUnconfigured []TopStepPosition
 
 	// DiscordMessage is the formatted notification string; empty when no
 	// Discord message should be sent. Caller checks notifier.HasBackends()
@@ -316,6 +334,52 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 		}
 	}
 
+	// ── TopStep ─────────────────────────────────────────────────────
+	// Futures: always attempt fetch when there's a configured futures
+	// strategy — mirrors the OKX / Robinhood opportunistic-fetch guard.
+	// TopStep has no pre-fetch to reuse; every cycle requires a subprocess
+	// round-trip (TopStepX REST, authenticated).
+	//
+	// CME trading-hour restriction: fires outside RTH will surface a venue
+	// error here, latching the kill switch until the next in-hours cycle.
+	// This is the correct behavior — do not attempt to bypass the venue.
+	if len(in.TSLiveAll) > 0 && in.TSFetcher != nil {
+		tsPositions, err := in.TSFetcher()
+		if err != nil {
+			plan.LogLines = append(plan.LogLines,
+				fmt.Sprintf("[CRITICAL] ts-close: kill switch unable to fetch TopStep positions: %v — cannot confirm flat", err))
+			plan.OnChainConfirmedFlat = false
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), in.CloseTimeout)
+			plan.TSCloseReport = forceCloseTopStepLive(ctx, tsPositions, in.TSLiveAll, in.TSCloser)
+			cancel()
+			if !plan.TSCloseReport.ConfirmedFlat() {
+				plan.OnChainConfirmedFlat = false
+			}
+			if len(plan.TSCloseReport.ClosedCoins) > 0 {
+				plan.LogLines = append(plan.LogLines,
+					fmt.Sprintf("[CRITICAL] ts-close: confirmed close for %v", plan.TSCloseReport.ClosedCoins))
+			}
+			if len(plan.TSCloseReport.AlreadyFlat) > 0 {
+				plan.LogLines = append(plan.LogLines,
+					fmt.Sprintf("[INFO] ts-close: already flat: %v", plan.TSCloseReport.AlreadyFlat))
+			}
+			for _, coin := range plan.TSCloseReport.SortedErrorCoins() {
+				plan.LogLines = append(plan.LogLines,
+					fmt.Sprintf("[CRITICAL] ts-close: %s failed: %v (kill switch will retry next cycle)", coin, plan.TSCloseReport.Errors[coin]))
+			}
+
+			plan.TSUnconfigured = plan.TSCloseReport.Unconfigured
+			if len(plan.TSUnconfigured) > 0 {
+				plan.OnChainConfirmedFlat = false
+				for _, p := range plan.TSUnconfigured {
+					plan.LogLines = append(plan.LogLines,
+						fmt.Sprintf("[CRITICAL] ts-close: live position for unconfigured symbol %s (size=%d) — manual intervention required, kill switch will retry next cycle", p.Coin, p.Size))
+				}
+			}
+		}
+	}
+
 	plan.DiscordMessage = formatKillSwitchMessage(in.HLAddr, plan, in.PortfolioReason)
 	return plan
 }
@@ -347,6 +411,9 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 		}
 		if len(plan.RHCloseReport.ClosedCoins) > 0 {
 			parts = append(parts, fmt.Sprintf("Robinhood closes: %v", plan.RHCloseReport.ClosedCoins))
+		}
+		if len(plan.TSCloseReport.ClosedCoins) > 0 {
+			parts = append(parts, fmt.Sprintf("TopStep closes: %v", plan.TSCloseReport.ClosedCoins))
 		}
 		header := "**PORTFOLIO KILL SWITCH**"
 		gapNotes := []string{}
@@ -410,6 +477,21 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 		}
 		sort.Strings(names)
 		segments = append(segments, "Live Robinhood balances for unconfigured coins (manual intervention required) — "+strings.Join(names, "; "))
+	}
+	if len(plan.TSCloseReport.Errors) > 0 {
+		parts := make([]string, 0, len(plan.TSCloseReport.Errors))
+		for _, coin := range plan.TSCloseReport.SortedErrorCoins() {
+			parts = append(parts, fmt.Sprintf("%s: %v", coin, plan.TSCloseReport.Errors[coin]))
+		}
+		segments = append(segments, "TopStep live close errors — "+strings.Join(parts, "; "))
+	}
+	if len(plan.TSUnconfigured) > 0 {
+		names := make([]string, 0, len(plan.TSUnconfigured))
+		for _, p := range plan.TSUnconfigured {
+			names = append(names, fmt.Sprintf("%s size=%d", p.Coin, p.Size))
+		}
+		sort.Strings(names)
+		segments = append(segments, "Live TopStep positions for unconfigured symbols (manual intervention required) — "+strings.Join(names, "; "))
 	}
 	if plan.OKXSpotPresent {
 		segments = append(segments, "OKX spot strategies present — verify manually (kill switch cannot auto-close spot)")
