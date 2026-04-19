@@ -386,27 +386,50 @@ class RobinhoodExchangeAdapter:
         return result or {}
 
     def get_crypto_positions(self) -> list:
-        """Get current crypto positions from Robinhood."""
+        """Get current crypto positions from Robinhood.
+
+        Best-effort variant: swallows exceptions and returns []. Suitable for
+        signal/strategy paths where a transient Robinhood outage shouldn't
+        crash the cycle. **Do not use for kill-switch flat-confirmation** —
+        a silent [] there would clear virtual state while live exposure
+        remained (see get_crypto_positions_strict, #346 review).
+        """
         if not self._logged_in:
             return []
         try:
-            import robin_stocks.robinhood as rh
-            positions = rh.crypto.get_crypto_positions()
-            result = []
-            for pos in positions:
-                qty = float(pos.get("quantity", 0) or 0)
-                if qty <= 0:
-                    continue
-                currency = pos.get("currency", {})
-                symbol = currency.get("code", "")
-                cost_basis = float(pos.get("cost_bases", [{}])[0].get("direct_cost_basis", 0) or 0)
-                avg_price = cost_basis / qty if qty > 0 else 0
-                result.append({
-                    "symbol": symbol,
-                    "quantity": qty,
-                    "avg_price": avg_price,
-                })
-            return result
+            return self.get_crypto_positions_strict()
         except Exception as e:
             print(f"[robinhood] get_crypto_positions error: {e}", file=sys.stderr)
             return []
+
+    def get_crypto_positions_strict(self) -> list:
+        """Strict variant of get_crypto_positions used by the kill-switch
+        position fetcher (#346). Propagates every error rather than masking
+        it as an empty list — the caller (fetch_robinhood_positions.py)
+        relies on exceptions to emit a JSON error envelope so the Go-side
+        kill switch latches instead of clearing virtual state on a silent
+        empty.
+
+        Raises RuntimeError if the adapter never authenticated.
+        """
+        if not self._logged_in:
+            raise RuntimeError(
+                "Robinhood adapter not logged in — cannot fetch crypto positions"
+            )
+        import robin_stocks.robinhood as rh
+        positions = rh.crypto.get_crypto_positions()
+        result = []
+        for pos in positions:
+            qty = float(pos.get("quantity", 0) or 0)
+            if qty <= 0:
+                continue
+            currency = pos.get("currency", {})
+            symbol = currency.get("code", "")
+            cost_basis = float(pos.get("cost_bases", [{}])[0].get("direct_cost_basis", 0) or 0)
+            avg_price = cost_basis / qty if qty > 0 else 0
+            result.append({
+                "symbol": symbol,
+                "quantity": qty,
+                "avg_price": avg_price,
+            })
+        return result
