@@ -43,6 +43,22 @@ type KillSwitchCloseInputs struct {
 	OKXCloser      OKXLiveCloser
 	OKXFetcher     OKXPositionsFetcher
 
+	// RHLiveCrypto: every live Robinhood crypto (Type=="spot") strategy
+	// configured. Used to decide which coins to close and to detect
+	// "unconfigured" crypto balances. Robinhood has no public unauthenticated
+	// position endpoint — we always call RHFetcher when there's at least
+	// one live Robinhood crypto strategy, rather than trying to reuse a
+	// pre-fetch. (#346)
+	RHLiveCrypto []StrategyConfig
+	// RHLiveOptions: every live Robinhood options strategy configured.
+	// Surfaced in the Discord message as a known gap — stock options close
+	// semantics (sell-to-close vs buy-to-close per leg) require dispatch
+	// that the kill switch doesn't yet handle (#346 follow-up). Does NOT
+	// block OnChainConfirmedFlat; matches the OKXSpotPresent semantic.
+	RHLiveOptions []StrategyConfig
+	RHCloser      RobinhoodLiveCloser
+	RHFetcher     RobinhoodPositionsFetcher
+
 	PortfolioReason string
 	CloseTimeout    time.Duration
 }
@@ -84,6 +100,22 @@ type KillSwitchClosePlan struct {
 	// whether there is actual spot exposure, and blocking would latch
 	// forever).
 	OKXSpotPresent bool
+
+	// RHCloseReport is the Robinhood per-coin outcome. Zero value when no
+	// Robinhood crypto close was attempted.
+	RHCloseReport RobinhoodLiveCloseReport
+
+	// RHUnconfigured lists live Robinhood crypto balances for coins no
+	// configured live Robinhood crypto strategy trades. Same manual-
+	// intervention semantic as HL Unconfigured / OKX Unconfigured.
+	RHUnconfigured []RobinhoodPosition
+
+	// RHOptionsPresent is true when there is at least one live Robinhood
+	// options strategy configured. Signals an unhandled gap — surfaced in
+	// the Discord message but does NOT block OnChainConfirmedFlat
+	// (hard-latch would freeze the scheduler for any Robinhood options
+	// user with no available close path). Mirrors OKXSpotPresent.
+	RHOptionsPresent bool
 
 	// DiscordMessage is the formatted notification string; empty when no
 	// Discord message should be sent. Caller checks notifier.HasBackends()
@@ -233,6 +265,57 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 		}
 	}
 
+	// ── Robinhood ───────────────────────────────────────────────────
+	// Options are surfaced as a known gap (like OKX spot) — stock options
+	// close semantics are complex enough that the kill switch cannot safely
+	// auto-close them. Crypto (spot) is handled below.
+	plan.RHOptionsPresent = len(in.RHLiveOptions) > 0
+	if plan.RHOptionsPresent {
+		plan.LogLines = append(plan.LogLines,
+			fmt.Sprintf("[CRITICAL] rh-close: %d live Robinhood options strategies configured — kill switch cannot auto-close options (sell-to-close vs buy-to-close semantics); operator must verify manually (#346)", len(in.RHLiveOptions)))
+	}
+
+	// Crypto: always attempt fetch when there's a configured crypto strategy
+	// — mirrors the OKX opportunistic-fetch guard. Robinhood has no
+	// pre-fetch to reuse; every cycle requires a subprocess round-trip
+	// (TOTP-authenticated).
+	if len(in.RHLiveCrypto) > 0 && in.RHFetcher != nil {
+		rhPositions, err := in.RHFetcher()
+		if err != nil {
+			plan.LogLines = append(plan.LogLines,
+				fmt.Sprintf("[CRITICAL] rh-close: kill switch unable to fetch Robinhood positions: %v — cannot confirm flat", err))
+			plan.OnChainConfirmedFlat = false
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), in.CloseTimeout)
+			plan.RHCloseReport = forceCloseRobinhoodLive(ctx, rhPositions, in.RHLiveCrypto, in.RHCloser)
+			cancel()
+			if !plan.RHCloseReport.ConfirmedFlat() {
+				plan.OnChainConfirmedFlat = false
+			}
+			if len(plan.RHCloseReport.ClosedCoins) > 0 {
+				plan.LogLines = append(plan.LogLines,
+					fmt.Sprintf("[CRITICAL] rh-close: confirmed close for %v", plan.RHCloseReport.ClosedCoins))
+			}
+			if len(plan.RHCloseReport.AlreadyFlat) > 0 {
+				plan.LogLines = append(plan.LogLines,
+					fmt.Sprintf("[INFO] rh-close: already flat: %v", plan.RHCloseReport.AlreadyFlat))
+			}
+			for _, coin := range plan.RHCloseReport.SortedErrorCoins() {
+				plan.LogLines = append(plan.LogLines,
+					fmt.Sprintf("[CRITICAL] rh-close: %s failed: %v (kill switch will retry next cycle)", coin, plan.RHCloseReport.Errors[coin]))
+			}
+
+			plan.RHUnconfigured = plan.RHCloseReport.Unconfigured
+			if len(plan.RHUnconfigured) > 0 {
+				plan.OnChainConfirmedFlat = false
+				for _, p := range plan.RHUnconfigured {
+					plan.LogLines = append(plan.LogLines,
+						fmt.Sprintf("[CRITICAL] rh-close: live balance for unconfigured coin %s (size=%.6f) — manual intervention required, kill switch will retry next cycle", p.Coin, p.Size))
+				}
+			}
+		}
+	}
+
 	plan.DiscordMessage = formatKillSwitchMessage(in.HLAddr, plan, in.PortfolioReason)
 	return plan
 }
@@ -241,9 +324,10 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 // Split out so tests can call it directly and so main.go delivery stays a
 // one-liner. Returns three distinct shapes:
 //   - "PORTFOLIO KILL SWITCH" — confirmed-flat, no spot gap.
-//   - "PORTFOLIO KILL SWITCH (SPOT GAP — VERIFY MANUALLY)" — confirmed-flat
-//     for perps, but OKX spot strategies are configured and the scheduler
-//     has no safe auto-close path (#345). Header is distinct so an
+//   - "PORTFOLIO KILL SWITCH (GAPS — VERIFY MANUALLY)" — confirmed-flat
+//     for closable platforms, but at least one unhandled exposure class
+//     (OKX spot #345, Robinhood options #346) is configured and the
+//     scheduler has no safe auto-close path. Header is distinct so an
 //     operator skimming does not read "Virtual state cleared" as
 //     "everything is closed."
 //   - "PORTFOLIO KILL SWITCH (LATCHED, RETRYING)" — some on-chain
@@ -261,10 +345,20 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 		if len(plan.OKXCloseReport.ClosedCoins) > 0 {
 			parts = append(parts, fmt.Sprintf("OKX closes: %v", plan.OKXCloseReport.ClosedCoins))
 		}
+		if len(plan.RHCloseReport.ClosedCoins) > 0 {
+			parts = append(parts, fmt.Sprintf("Robinhood closes: %v", plan.RHCloseReport.ClosedCoins))
+		}
 		header := "**PORTFOLIO KILL SWITCH**"
+		gapNotes := []string{}
 		if plan.OKXSpotPresent {
-			header = "**PORTFOLIO KILL SWITCH (SPOT GAP — VERIFY MANUALLY)**"
-			parts = append(parts, "OKX spot strategies present — kill switch cannot auto-close spot, verify balances manually")
+			gapNotes = append(gapNotes, "OKX spot strategies present — kill switch cannot auto-close spot, verify balances manually")
+		}
+		if plan.RHOptionsPresent {
+			gapNotes = append(gapNotes, "Robinhood options strategies present — kill switch cannot auto-close options, verify manually")
+		}
+		if len(gapNotes) > 0 {
+			header = "**PORTFOLIO KILL SWITCH (GAPS — VERIFY MANUALLY)**"
+			parts = append(parts, gapNotes...)
 		}
 		summary := strings.Join(parts, "; ")
 		return fmt.Sprintf("%s\n%s\n%s. Virtual state cleared. Manual reset required.", header, portfolioReason, summary)
@@ -302,8 +396,26 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 		sort.Strings(names)
 		segments = append(segments, "On-chain OKX positions for unconfigured coins (manual intervention required) — "+strings.Join(names, "; "))
 	}
+	if len(plan.RHCloseReport.Errors) > 0 {
+		parts := make([]string, 0, len(plan.RHCloseReport.Errors))
+		for _, coin := range plan.RHCloseReport.SortedErrorCoins() {
+			parts = append(parts, fmt.Sprintf("%s: %v", coin, plan.RHCloseReport.Errors[coin]))
+		}
+		segments = append(segments, "Robinhood live close errors — "+strings.Join(parts, "; "))
+	}
+	if len(plan.RHUnconfigured) > 0 {
+		names := make([]string, 0, len(plan.RHUnconfigured))
+		for _, p := range plan.RHUnconfigured {
+			names = append(names, fmt.Sprintf("%s size=%.6f", p.Coin, p.Size))
+		}
+		sort.Strings(names)
+		segments = append(segments, "Live Robinhood balances for unconfigured coins (manual intervention required) — "+strings.Join(names, "; "))
+	}
 	if plan.OKXSpotPresent {
 		segments = append(segments, "OKX spot strategies present — verify manually (kill switch cannot auto-close spot)")
+	}
+	if plan.RHOptionsPresent {
+		segments = append(segments, "Robinhood options strategies present — verify manually (kill switch cannot auto-close options)")
 	}
 	if len(segments) == 0 {
 		// Fallback: HL fetch failure path doesn't populate Errors/Unconfigured.

@@ -700,6 +700,122 @@ func parseOKXPositionsOutput(stdout []byte, stderrStr string, runErr error) (*OK
 	}
 }
 
+// RobinhoodCloseFill is the parsed fill block from close_robinhood_position.py.
+// Mirrors OKXCloseFill. OID is a string (robin_stocks order IDs are opaque
+// UUIDs), fields are optional — empty {} means the adapter found no position
+// to close (already-flat success).
+type RobinhoodCloseFill struct {
+	AvgPx   float64 `json:"avg_px,omitempty"`
+	TotalSz float64 `json:"total_sz,omitempty"`
+	OID     string  `json:"oid,omitempty"`
+}
+
+// RobinhoodClose is the close block from close_robinhood_position.py.
+type RobinhoodClose struct {
+	Symbol string              `json:"symbol"`
+	Fill   *RobinhoodCloseFill `json:"fill,omitempty"`
+}
+
+// RobinhoodCloseResult is the top-level JSON from close_robinhood_position.py.
+// Used by the portfolio kill switch to liquidate live Robinhood crypto
+// exposure (#346).
+type RobinhoodCloseResult struct {
+	Close     *RobinhoodClose `json:"close"`
+	Platform  string          `json:"platform"`
+	Timestamp string          `json:"timestamp"`
+	Error     string          `json:"error,omitempty"`
+}
+
+// RunRobinhoodClose runs close_robinhood_position.py to submit a market close
+// for a single Robinhood crypto coin (#346). Contract mirrors
+// RunHyperliquidClose / RunOKXClose: any failure path returns a non-nil
+// error so the kill switch stays latched on ambiguous responses.
+func RunRobinhoodClose(script, symbol string) (*RobinhoodCloseResult, string, error) {
+	args := []string{
+		fmt.Sprintf("--symbol=%s", symbol),
+		"--mode=live",
+	}
+	stdout, stderr, runErr := RunPythonScript(script, args)
+	return parseRobinhoodCloseOutput(stdout, string(stderr), runErr)
+}
+
+// parseRobinhoodCloseOutput turns raw subprocess output into
+// (*RobinhoodCloseResult, stderr, error) following the RunRobinhoodClose
+// contract. Extracted so decision logic can be tested without spawning
+// .venv/bin/python3 — same pattern as parseHyperliquidCloseOutput /
+// parseOKXCloseOutput (#341/#342/#345).
+func parseRobinhoodCloseOutput(stdout []byte, stderrStr string, runErr error) (*RobinhoodCloseResult, string, error) {
+	var result RobinhoodCloseResult
+	parseErr := json.Unmarshal(stdout, &result)
+
+	switch {
+	case runErr == nil && parseErr == nil && result.Error == "":
+		return &result, stderrStr, nil
+
+	case runErr == nil && parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("close reported error despite exit 0: %s", result.Error)
+
+	case parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("close failed: %s", result.Error)
+
+	case parseErr == nil && runErr != nil:
+		return &result, stderrStr, fmt.Errorf("close subprocess exit %v with no error field (stderr: %s)", runErr, stderrStr)
+
+	default:
+		return nil, stderrStr, fmt.Errorf("parse close output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
+	}
+}
+
+// RobinhoodPositionsResult is the JSON output from fetch_robinhood_positions.py.
+// Size is unsigned — Robinhood crypto is spot, no short positions.
+type RobinhoodPositionsResult struct {
+	Positions []RobinhoodPositionJSON `json:"positions"`
+	Platform  string                  `json:"platform"`
+	Timestamp string                  `json:"timestamp"`
+	Error     string                  `json:"error,omitempty"`
+}
+
+// RobinhoodPositionJSON is the per-position payload from
+// fetch_robinhood_positions.py.
+type RobinhoodPositionJSON struct {
+	Coin     string  `json:"coin"`
+	Size     float64 `json:"size"`
+	AvgPrice float64 `json:"avg_price"`
+}
+
+// RunRobinhoodFetchPositions runs fetch_robinhood_positions.py and returns
+// the parsed result (#346). Like RunRobinhoodClose, any failure path
+// returns a non-nil error so the kill switch can latch and retry.
+func RunRobinhoodFetchPositions(script string) (*RobinhoodPositionsResult, string, error) {
+	stdout, stderr, runErr := RunPythonScript(script, nil)
+	return parseRobinhoodPositionsOutput(stdout, string(stderr), runErr)
+}
+
+// parseRobinhoodPositionsOutput is the pure parser, extracted from
+// RunRobinhoodFetchPositions so the decision logic can be tested without
+// spawning Python. Mirrors parseOKXPositionsOutput's 5-case matrix.
+func parseRobinhoodPositionsOutput(stdout []byte, stderrStr string, runErr error) (*RobinhoodPositionsResult, string, error) {
+	var result RobinhoodPositionsResult
+	parseErr := json.Unmarshal(stdout, &result)
+
+	switch {
+	case runErr == nil && parseErr == nil && result.Error == "":
+		return &result, stderrStr, nil
+
+	case runErr == nil && parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("fetch positions reported error despite exit 0: %s", result.Error)
+
+	case parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("fetch positions failed: %s", result.Error)
+
+	case parseErr == nil && runErr != nil:
+		return &result, stderrStr, fmt.Errorf("fetch positions subprocess exit %v with no error field (stderr: %s)", runErr, stderrStr)
+
+	default:
+		return nil, stderrStr, fmt.Errorf("parse positions output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
+	}
+}
+
 // FetchPrices runs check_price.py and returns a map of symbol→price.
 func FetchPrices(symbols []string) (map[string]float64, error) {
 	stdout, stderr, err := RunPythonScript("shared_scripts/check_price.py", symbols)

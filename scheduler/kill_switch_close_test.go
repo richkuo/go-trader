@@ -596,6 +596,343 @@ func TestPlanKillSwitchClose_OKXUnconfiguredBlocksReset(t *testing.T) {
 	}
 }
 
+// ── Robinhood tests (#346) ─────────────────────────────────────────────
+
+// stubRHLiveCloser mirrors stubHLLiveCloser / stubOKXLiveCloser for
+// Robinhood. Missing-coin entries yield a synthetic success.
+func stubRHLiveCloser(errs map[string]error) (RobinhoodLiveCloser, *[]string) {
+	var calls []string
+	closer := func(symbol string) (*RobinhoodCloseResult, error) {
+		calls = append(calls, symbol)
+		if err, ok := errs[symbol]; ok && err != nil {
+			return nil, err
+		}
+		return &RobinhoodCloseResult{
+			Close:    &RobinhoodClose{Symbol: symbol, Fill: &RobinhoodCloseFill{TotalSz: 1.0, AvgPx: 100}},
+			Platform: "robinhood",
+		}, nil
+	}
+	return closer, &calls
+}
+
+// stubRHPositionsFetcher returns a RobinhoodPositionsFetcher that replays a
+// fixed response and records invocation count.
+func stubRHPositionsFetcher(positions []RobinhoodPosition, err error) (RobinhoodPositionsFetcher, *int) {
+	var calls int
+	fetcher := func() ([]RobinhoodPosition, error) {
+		calls++
+		if err != nil {
+			return nil, err
+		}
+		return positions, nil
+	}
+	return fetcher, &calls
+}
+
+// Robinhood happy path: one live Robinhood crypto strategy with an open
+// position. Plan reports ConfirmedFlat, closer called once, Discord
+// message mentions Robinhood closes. The #346 analog of HL/OKX happy-path.
+func TestPlanKillSwitchClose_RobinhoodHappyPath(t *testing.T) {
+	rhLive := []StrategyConfig{
+		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
+			Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
+	}
+	positions := []RobinhoodPosition{{Coin: "BTC", Size: 0.01, AvgPrice: 42000}}
+	closer, calls := stubRHLiveCloser(nil)
+	fetcher, fetchCalls := stubRHPositionsFetcher(positions, nil)
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		RHLiveCrypto:    rhLive,
+		RHCloser:        closer,
+		RHFetcher:       fetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if !plan.OnChainConfirmedFlat {
+		t.Fatalf("expected ConfirmedFlat, got plan=%+v", plan)
+	}
+	if *fetchCalls != 1 {
+		t.Errorf("Robinhood fetcher should be called exactly once, got %d", *fetchCalls)
+	}
+	if len(*calls) != 1 || (*calls)[0] != "BTC" {
+		t.Errorf("closer calls = %v, want [BTC]", *calls)
+	}
+	if !strings.Contains(plan.DiscordMessage, "Robinhood closes: [BTC]") {
+		t.Errorf("expected Robinhood closes in message, got: %s", plan.DiscordMessage)
+	}
+}
+
+// Robinhood close failure: closer errors, plan must latch. Mirrors the
+// HL/OKX close-error tests — this is the load-bearing #346 correctness
+// case. Without it, a silent Robinhood close failure would clear virtual
+// state while on-account exposure remained.
+func TestPlanKillSwitchClose_RobinhoodCloseError(t *testing.T) {
+	rhLive := []StrategyConfig{
+		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
+			Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
+	}
+	positions := []RobinhoodPosition{{Coin: "BTC", Size: 0.01}}
+	closer, _ := stubRHLiveCloser(map[string]error{"BTC": fmt.Errorf("rh rate limited")})
+	fetcher, _ := stubRHPositionsFetcher(positions, nil)
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		RHLiveCrypto:    rhLive,
+		RHCloser:        closer,
+		RHFetcher:       fetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("expected NOT ConfirmedFlat on Robinhood close error — would clear virtual state while live is still active")
+	}
+	if got, ok := plan.RHCloseReport.Errors["BTC"]; !ok || got == nil {
+		t.Errorf("expected BTC error in Robinhood report, got %v", plan.RHCloseReport.Errors)
+	}
+	if !strings.Contains(plan.DiscordMessage, "LATCHED, RETRYING") {
+		t.Errorf("expected LATCHED message, got: %s", plan.DiscordMessage)
+	}
+	if !strings.Contains(plan.DiscordMessage, "rh rate limited") {
+		t.Errorf("expected Robinhood error detail in message, got: %s", plan.DiscordMessage)
+	}
+}
+
+// Robinhood fetch failure: fetcher errors → kill switch must latch,
+// closer must NOT be invoked (we don't know which coins to close). Same
+// guard semantic as HL/OKX fetch failure.
+func TestPlanKillSwitchClose_RobinhoodFetchFailure(t *testing.T) {
+	rhLive := []StrategyConfig{
+		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
+			Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
+	}
+	closer, calls := stubRHLiveCloser(nil)
+	fetcher, _ := stubRHPositionsFetcher(nil, fmt.Errorf("rh auth failed"))
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		RHLiveCrypto:    rhLive,
+		RHCloser:        closer,
+		RHFetcher:       fetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("expected NOT ConfirmedFlat on Robinhood fetch failure")
+	}
+	if len(*calls) != 0 {
+		t.Errorf("closer must not be invoked when fetch failed, got %v", *calls)
+	}
+	if !strings.Contains(plan.DiscordMessage, "LATCHED, RETRYING") {
+		t.Errorf("expected LATCHED message, got: %s", plan.DiscordMessage)
+	}
+}
+
+// Robinhood options strategy present: surface as unhandled gap. Does NOT
+// block ConfirmedFlat (hard-latch would freeze the scheduler forever for
+// any Robinhood options user). Mirrors OKX spot semantic.
+func TestPlanKillSwitchClose_RobinhoodOptionsSurfacesGap(t *testing.T) {
+	rhOptions := []StrategyConfig{
+		{ID: "rh-ccall-spy", Platform: "robinhood", Type: "options",
+			Args: []string{"covered_call", "SPY", "1d", "--mode=live"}},
+	}
+	closer, _ := stubRHLiveCloser(nil)
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		RHLiveOptions:   rhOptions,
+		RHCloser:        closer,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if !plan.OnChainConfirmedFlat {
+		t.Errorf("options-only presence must not block ConfirmedFlat, got plan=%+v", plan)
+	}
+	if !plan.RHOptionsPresent {
+		t.Error("expected RHOptionsPresent=true")
+	}
+	if !strings.Contains(plan.DiscordMessage, "Robinhood options") {
+		t.Errorf("expected options gap note in message, got: %s", plan.DiscordMessage)
+	}
+}
+
+// Robinhood unconfigured: fetcher reports a balance for a coin no live
+// crypto strategy trades. Kill switch refuses to liquidate and latches.
+func TestPlanKillSwitchClose_RobinhoodUnconfiguredBlocksReset(t *testing.T) {
+	rhLive := []StrategyConfig{
+		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
+			Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
+	}
+	positions := []RobinhoodPosition{
+		{Coin: "BTC", Size: 0.01},
+		{Coin: "DOGE", Size: 100}, // unconfigured
+	}
+	closer, calls := stubRHLiveCloser(nil)
+	fetcher, _ := stubRHPositionsFetcher(positions, nil)
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		RHLiveCrypto:    rhLive,
+		RHCloser:        closer,
+		RHFetcher:       fetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("expected NOT ConfirmedFlat — unconfigured DOGE balance is still live")
+	}
+	if len(plan.RHUnconfigured) != 1 || plan.RHUnconfigured[0].Coin != "DOGE" {
+		t.Errorf("expected RHUnconfigured=[DOGE], got %v", plan.RHUnconfigured)
+	}
+	// BTC should still be closed (it's configured).
+	if len(*calls) != 1 || (*calls)[0] != "BTC" {
+		t.Errorf("closer calls = %v, want [BTC]", *calls)
+	}
+	if !strings.Contains(plan.DiscordMessage, "manual intervention required") {
+		t.Errorf("expected manual intervention note, got: %s", plan.DiscordMessage)
+	}
+}
+
+// Combined: HL + OKX + Robinhood all succeeding. Plan ConfirmedFlat,
+// message lists all three.
+func TestPlanKillSwitchClose_HLAndOKXAndRobinhoodHappyPath(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	okxLive := []StrategyConfig{
+		{ID: "okx-btc", Platform: "okx", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+	rhLive := []StrategyConfig{
+		{ID: "rh-sma-sol", Platform: "robinhood", Type: "spot",
+			Args: []string{"sma_crossover", "SOL", "1h", "--mode=live"}},
+	}
+	hlPos := []HLPosition{{Coin: "ETH", Size: 0.5}}
+	okxPos := []OKXPosition{{Coin: "BTC", Size: 0.01, Side: "long"}}
+	rhPos := []RobinhoodPosition{{Coin: "SOL", Size: 2.5}}
+
+	hlCloser, _ := stubHLLiveCloser(nil)
+	hlFetcher, _ := stubHLStateFetcher(nil, nil)
+	okxCloser, _ := stubOKXLiveCloser(nil)
+	okxFetcher, _ := stubOKXPositionsFetcher(okxPos, nil)
+	rhCloser, rhCalls := stubRHLiveCloser(nil)
+	rhFetcher, _ := stubRHPositionsFetcher(rhPos, nil)
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		HLAddr:          "0xaddr",
+		HLStateFetched:  true,
+		HLPositions:     hlPos,
+		HLLiveAll:       hlLive,
+		HLCloser:        hlCloser,
+		HLFetcher:       hlFetcher,
+		OKXLiveAllPerps: okxLive,
+		OKXCloser:       okxCloser,
+		OKXFetcher:      okxFetcher,
+		RHLiveCrypto:    rhLive,
+		RHCloser:        rhCloser,
+		RHFetcher:       rhFetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if !plan.OnChainConfirmedFlat {
+		t.Fatalf("expected ConfirmedFlat, got plan=%+v", plan)
+	}
+	if len(*rhCalls) != 1 || (*rhCalls)[0] != "SOL" {
+		t.Errorf("Robinhood closer calls = %v, want [SOL]", *rhCalls)
+	}
+	if !strings.Contains(plan.DiscordMessage, "HL closes: [ETH]") {
+		t.Errorf("expected HL closes in message, got: %s", plan.DiscordMessage)
+	}
+	if !strings.Contains(plan.DiscordMessage, "OKX closes: [BTC]") {
+		t.Errorf("expected OKX closes in message, got: %s", plan.DiscordMessage)
+	}
+	if !strings.Contains(plan.DiscordMessage, "Robinhood closes: [SOL]") {
+		t.Errorf("expected Robinhood closes in message, got: %s", plan.DiscordMessage)
+	}
+}
+
+// Any platform failing latches the switch: HL + OKX succeed, Robinhood
+// fails. Without this test a silent Robinhood failure could be hidden
+// behind the other platforms' successes (the #346 bug class).
+func TestPlanKillSwitchClose_RobinhoodFailureStillLatchesAcrossPlatforms(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	rhLive := []StrategyConfig{
+		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
+			Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
+	}
+	hlPos := []HLPosition{{Coin: "ETH", Size: 0.5}}
+	rhPos := []RobinhoodPosition{{Coin: "BTC", Size: 0.01}}
+
+	hlCloser, _ := stubHLLiveCloser(nil)
+	hlFetcher, _ := stubHLStateFetcher(nil, nil)
+	rhCloser, _ := stubRHLiveCloser(map[string]error{"BTC": fmt.Errorf("rh err")})
+	rhFetcher, _ := stubRHPositionsFetcher(rhPos, nil)
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		HLAddr:          "0xaddr",
+		HLStateFetched:  true,
+		HLPositions:     hlPos,
+		HLLiveAll:       hlLive,
+		HLCloser:        hlCloser,
+		HLFetcher:       hlFetcher,
+		RHLiveCrypto:    rhLive,
+		RHCloser:        rhCloser,
+		RHFetcher:       rhFetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("Robinhood failure must latch the switch even when HL succeeded")
+	}
+	if !strings.Contains(plan.DiscordMessage, "rh err") {
+		t.Errorf("Robinhood error missing from message, got: %s", plan.DiscordMessage)
+	}
+}
+
+// Robinhood deterministic error ordering: multiple failing coins produce
+// a stable message. Mirrors HL/OKX determinism tests.
+func TestPlanKillSwitchClose_RobinhoodDeterministicErrorOrder(t *testing.T) {
+	rhLive := []StrategyConfig{
+		{ID: "rh-btc", Platform: "robinhood", Type: "spot", Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+		{ID: "rh-eth", Platform: "robinhood", Type: "spot", Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+		{ID: "rh-doge", Platform: "robinhood", Type: "spot", Args: []string{"sma", "DOGE", "1h", "--mode=live"}},
+	}
+	positions := []RobinhoodPosition{
+		{Coin: "BTC", Size: 0.01}, {Coin: "ETH", Size: 0.1}, {Coin: "DOGE", Size: 100},
+	}
+	errs := map[string]error{
+		"BTC": fmt.Errorf("err"), "ETH": fmt.Errorf("err"), "DOGE": fmt.Errorf("err"),
+	}
+	var prev string
+	for i := 0; i < 10; i++ {
+		closer, _ := stubRHLiveCloser(errs)
+		fetcher, _ := stubRHPositionsFetcher(positions, nil)
+		plan := planKillSwitchClose(KillSwitchCloseInputs{
+			RHLiveCrypto:    rhLive,
+			RHCloser:        closer,
+			RHFetcher:       fetcher,
+			PortfolioReason: "reason",
+			CloseTimeout:    time.Second,
+		})
+		if prev != "" && plan.DiscordMessage != prev {
+			t.Fatalf("message should be deterministic, iter %d:\n%s\nprev:\n%s", i, plan.DiscordMessage, prev)
+		}
+		prev = plan.DiscordMessage
+	}
+	btcPos := strings.Index(prev, "BTC:")
+	dogePos := strings.Index(prev, "DOGE:")
+	ethPos := strings.Index(prev, "ETH:")
+	if !(btcPos < dogePos && dogePos < ethPos) {
+		t.Errorf("expected alphabetical BTC < DOGE < ETH in: %s", prev)
+	}
+}
+
 // OKX deterministic error ordering: multiple failing coins produce a stable
 // message. Mirrors TestPlanKillSwitchClose_DeterministicErrorOrder for the
 // OKX path — Go map iteration randomization would otherwise produce

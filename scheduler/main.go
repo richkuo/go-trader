@@ -520,6 +520,23 @@ func main() {
 				}
 			}
 
+			// #346: Partition live Robinhood strategies for the kill-switch
+			// close path. Crypto (Type=="spot") is closable via market_sell;
+			// options is surfaced as a manual-intervention gap (sell-to-
+			// close vs buy-to-close semantics not yet handled).
+			var rhLiveCrypto []StrategyConfig
+			var rhLiveOptions []StrategyConfig
+			for _, sc := range cfg.Strategies {
+				if sc.Platform != "robinhood" || !robinhoodIsLive(sc.Args) {
+					continue
+				}
+				if sc.Type == "spot" {
+					rhLiveCrypto = append(rhLiveCrypto, sc)
+				} else if sc.Type == "options" {
+					rhLiveOptions = append(rhLiveOptions, sc)
+				}
+			}
+
 			sharedWallets := detectSharedWallets(cfg.Strategies)
 			hlAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 			hlKey := SharedWalletKey{Platform: "hyperliquid", Account: hlAddr}
@@ -581,14 +598,14 @@ func main() {
 			}
 			mu.Unlock()
 
-			// #341 / #345: Submit reduce-only market closes to Hyperliquid
-			// AND OKX for every non-zero on-chain position belonging to a
-			// configured live perps strategy. The planning step
+			// #341 / #345 / #346: Submit market closes to Hyperliquid,
+			// OKX, AND Robinhood for every non-zero on-chain position
+			// belonging to a configured live strategy. The planning step
 			// (planKillSwitchClose) runs OUTSIDE the lock — the close
-			// scripts are subprocesses that can take seconds. OKX spot is
-			// surfaced as a known gap (no reduce-only equivalent for spot).
-			// Robinhood/TopStep have the same underlying bug but are
-			// tracked separately.
+			// scripts are subprocesses that can take seconds. OKX spot
+			// and Robinhood options are surfaced as known gaps (no
+			// unified close primitive). TopStep has the same underlying
+			// bug but is tracked separately.
 			//
 			// Latch semantics: virtual state is mutated only when
 			// plan.OnChainConfirmedFlat is true (either platform failing
@@ -608,6 +625,10 @@ func main() {
 					OKXLiveAllSpot:  okxLiveSpot,
 					OKXCloser:       defaultOKXLiveCloser,
 					OKXFetcher:      defaultOKXPositionsFetcher,
+					RHLiveCrypto:    rhLiveCrypto,
+					RHLiveOptions:   rhLiveOptions,
+					RHCloser:        defaultRobinhoodLiveCloser,
+					RHFetcher:       defaultRobinhoodPositionsFetcher,
 					PortfolioReason: portfolioReason,
 					CloseTimeout:    90 * time.Second,
 				}
