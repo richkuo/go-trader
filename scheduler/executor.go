@@ -394,6 +394,128 @@ func RunTopStepExecute(script, symbol, side string, contracts int) (*TopStepExec
 	return &result, stderrStr, nil
 }
 
+// TopStepCloseFill is the parsed fill block from close_topstep_position.py.
+// Mirrors TopStepFill but fields are optional (empty {} means already-flat
+// success) and OID is a string (TopStepX order IDs are opaque).
+type TopStepCloseFill struct {
+	AvgPx          float64 `json:"avg_px,omitempty"`
+	TotalContracts int     `json:"total_contracts,omitempty"`
+	OID            string  `json:"oid,omitempty"`
+}
+
+// TopStepClose is the close block from close_topstep_position.py.
+type TopStepClose struct {
+	Symbol string            `json:"symbol"`
+	Fill   *TopStepCloseFill `json:"fill,omitempty"`
+}
+
+// TopStepCloseResult is the top-level JSON from close_topstep_position.py.
+// Used by the portfolio kill switch to liquidate live TopStep futures
+// exposure (#347).
+type TopStepCloseResult struct {
+	Close     *TopStepClose `json:"close"`
+	Platform  string        `json:"platform"`
+	Timestamp string        `json:"timestamp"`
+	Error     string        `json:"error,omitempty"`
+}
+
+// RunTopStepClose runs close_topstep_position.py to submit a market-flatten
+// for a single TopStep futures symbol (#347). Contract mirrors
+// RunHyperliquidClose / RunOKXClose / RunRobinhoodClose: any failure path
+// returns a non-nil error so the kill switch stays latched on ambiguous
+// responses.
+func RunTopStepClose(script, symbol string) (*TopStepCloseResult, string, error) {
+	args := []string{
+		fmt.Sprintf("--symbol=%s", symbol),
+		"--mode=live",
+	}
+	stdout, stderr, runErr := RunPythonScript(script, args)
+	return parseTopStepCloseOutput(stdout, string(stderr), runErr)
+}
+
+// parseTopStepCloseOutput turns raw subprocess output into
+// (*TopStepCloseResult, stderr, error) following the RunTopStepClose
+// contract. Extracted so decision logic can be tested without spawning
+// .venv/bin/python3 — same pattern as parseHyperliquidCloseOutput /
+// parseOKXCloseOutput / parseRobinhoodCloseOutput (#341/#342/#345/#346).
+func parseTopStepCloseOutput(stdout []byte, stderrStr string, runErr error) (*TopStepCloseResult, string, error) {
+	var result TopStepCloseResult
+	parseErr := json.Unmarshal(stdout, &result)
+
+	switch {
+	case runErr == nil && parseErr == nil && result.Error == "":
+		return &result, stderrStr, nil
+
+	case runErr == nil && parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("close reported error despite exit 0: %s", result.Error)
+
+	case parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("close failed: %s", result.Error)
+
+	case parseErr == nil && runErr != nil:
+		return &result, stderrStr, fmt.Errorf("close subprocess exit %v with no error field (stderr: %s)", runErr, stderrStr)
+
+	default:
+		return nil, stderrStr, fmt.Errorf("parse close output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
+	}
+}
+
+// TopStepPositionsResult is the JSON output from fetch_topstep_positions.py.
+// Size is signed (positive = long, negative = short) to mirror OKX/HL so
+// the kill-switch plan builder can treat all platforms symmetrically.
+type TopStepPositionsResult struct {
+	Positions []TopStepPositionJSON `json:"positions"`
+	Platform  string                `json:"platform"`
+	Timestamp string                `json:"timestamp"`
+	Error     string                `json:"error,omitempty"`
+}
+
+// TopStepPositionJSON is the per-position payload from
+// fetch_topstep_positions.py. Size is integer contracts (futures have no
+// fractional sizing).
+type TopStepPositionJSON struct {
+	Coin     string  `json:"coin"`
+	Size     int     `json:"size"`
+	AvgPrice float64 `json:"avg_price"`
+	Side     string  `json:"side"`
+}
+
+// RunTopStepFetchPositions runs fetch_topstep_positions.py and returns the
+// parsed result (#347). Like RunTopStepClose, any failure path returns a
+// non-nil error so the kill switch can latch and retry — a silent parse
+// failure would otherwise look like "no positions" and clear virtual state
+// while live exposure remained.
+func RunTopStepFetchPositions(script string) (*TopStepPositionsResult, string, error) {
+	stdout, stderr, runErr := RunPythonScript(script, nil)
+	return parseTopStepPositionsOutput(stdout, string(stderr), runErr)
+}
+
+// parseTopStepPositionsOutput is the pure parser, extracted from
+// RunTopStepFetchPositions so decision logic can be tested without
+// spawning Python. Mirrors parseOKXPositionsOutput / parseRobinhoodPositionsOutput
+// 5-case matrix.
+func parseTopStepPositionsOutput(stdout []byte, stderrStr string, runErr error) (*TopStepPositionsResult, string, error) {
+	var result TopStepPositionsResult
+	parseErr := json.Unmarshal(stdout, &result)
+
+	switch {
+	case runErr == nil && parseErr == nil && result.Error == "":
+		return &result, stderrStr, nil
+
+	case runErr == nil && parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("fetch positions reported error despite exit 0: %s", result.Error)
+
+	case parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("fetch positions failed: %s", result.Error)
+
+	case parseErr == nil && runErr != nil:
+		return &result, stderrStr, fmt.Errorf("fetch positions subprocess exit %v with no error field (stderr: %s)", runErr, stderrStr)
+
+	default:
+		return nil, stderrStr, fmt.Errorf("parse positions output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
+	}
+}
+
 // RobinhoodResult is the JSON output from check_robinhood.py (signal check mode).
 type RobinhoodResult struct {
 	Strategy   string                 `json:"strategy"`

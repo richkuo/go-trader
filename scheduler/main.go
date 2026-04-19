@@ -537,6 +537,18 @@ func main() {
 				}
 			}
 
+			// #347: Partition live TopStep futures strategies for the
+			// kill-switch close path. TopStepX supports reduce-all via
+			// market_close; CME trading-hour restrictions are handled by
+			// the latch-until-flat semantic (fires outside RTH stay
+			// latched until the venue reopens).
+			var tsLiveAll []StrategyConfig
+			for _, sc := range cfg.Strategies {
+				if sc.Platform == "topstep" && sc.Type == "futures" && topstepIsLive(sc.Args) {
+					tsLiveAll = append(tsLiveAll, sc)
+				}
+			}
+
 			sharedWallets := detectSharedWallets(cfg.Strategies)
 			hlAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 			hlKey := SharedWalletKey{Platform: "hyperliquid", Account: hlAddr}
@@ -598,14 +610,13 @@ func main() {
 			}
 			mu.Unlock()
 
-			// #341 / #345 / #346: Submit market closes to Hyperliquid,
-			// OKX, AND Robinhood for every non-zero on-chain position
-			// belonging to a configured live strategy. The planning step
-			// (planKillSwitchClose) runs OUTSIDE the lock — the close
-			// scripts are subprocesses that can take seconds. OKX spot
-			// and Robinhood options are surfaced as known gaps (no
-			// unified close primitive). TopStep has the same underlying
-			// bug but is tracked separately.
+			// #341 / #345 / #346 / #347: Submit market closes to
+			// Hyperliquid, OKX, Robinhood, AND TopStep for every non-zero
+			// on-chain / on-account position belonging to a configured
+			// live strategy. The planning step (planKillSwitchClose)
+			// runs OUTSIDE the lock — the close scripts are subprocesses
+			// that can take seconds. OKX spot and Robinhood options are
+			// surfaced as known gaps (no unified close primitive).
 			//
 			// Latch semantics: virtual state is mutated only when
 			// plan.OnChainConfirmedFlat is true (either platform failing
@@ -629,6 +640,9 @@ func main() {
 					RHLiveOptions:   rhLiveOptions,
 					RHCloser:        defaultRobinhoodLiveCloser,
 					RHFetcher:       defaultRobinhoodPositionsFetcher,
+					TSLiveAll:       tsLiveAll,
+					TSCloser:        defaultTopStepLiveCloser,
+					TSFetcher:       defaultTopStepPositionsFetcher,
 					PortfolioReason: portfolioReason,
 					CloseTimeout:    90 * time.Second,
 				}
