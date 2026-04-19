@@ -39,7 +39,7 @@ def main():
         if not adapter.is_live:
             _emit_error("TopStep adapter not live — set TOPSTEP_API_KEY / TOPSTEP_API_SECRET / TOPSTEP_ACCOUNT_ID")
             return
-        raw = adapter.get_open_positions()
+        raw = adapter.get_open_positions_raise()
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         _emit_error(str(e))

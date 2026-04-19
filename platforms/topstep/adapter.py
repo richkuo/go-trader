@@ -155,32 +155,57 @@ class TopStepExchangeAdapter:
     # ─────────────────────────────────────────────
 
     def get_open_positions(self) -> list:
-        """Get open positions for the configured account."""
+        """Get open positions for the configured account.
+
+        Soft-fails on error (returns []) to keep signal-check / paper paths
+        resilient. Callers that must distinguish "no positions" from "fetch
+        failed" (e.g. the portfolio kill switch) should use
+        :meth:`get_open_positions_raise` instead.
+        """
         if not self.is_live:
             return []
         try:
-            resp = self._session.get(
-                f"{API_BASE_URL}/v1/account/positions",
-                params={"accountId": self._account_id},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            positions = []
-            for pos in resp.json().get("positions", []):
-                qty = int(pos.get("quantity", 0))
-                if qty == 0:
-                    continue
-                positions.append({
-                    "symbol": pos.get("symbol", ""),
-                    "quantity": qty,
-                    "avg_price": float(pos.get("avgPrice", 0)),
-                    "side": "long" if qty > 0 else "short",
-                    "unrealized_pnl": float(pos.get("unrealizedPnl", 0)),
-                })
-            return positions
+            return self._fetch_open_positions()
         except Exception as e:
             print(f"[topstep] get_open_positions error: {e}", file=sys.stderr)
             return []
+
+    def get_open_positions_raise(self) -> list:
+        """Same as :meth:`get_open_positions` but re-raises on failure.
+
+        Used by the kill-switch fetch path so auth/network errors propagate
+        into the error envelope instead of being silently swallowed as an
+        empty position list (issue #347 follow-up).
+        """
+        if self._mode != "live":
+            raise RuntimeError("TopStep adapter not in live mode")
+        if self._session is None:
+            raise RuntimeError(
+                "TopStep live session not initialized — missing "
+                "TOPSTEP_API_KEY / TOPSTEP_API_SECRET / TOPSTEP_ACCOUNT_ID"
+            )
+        return self._fetch_open_positions()
+
+    def _fetch_open_positions(self) -> list:
+        resp = self._session.get(
+            f"{API_BASE_URL}/v1/account/positions",
+            params={"accountId": self._account_id},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        positions = []
+        for pos in resp.json().get("positions", []):
+            qty = int(pos.get("quantity", 0))
+            if qty == 0:
+                continue
+            positions.append({
+                "symbol": pos.get("symbol", ""),
+                "quantity": qty,
+                "avg_price": float(pos.get("avgPrice", 0)),
+                "side": "long" if qty > 0 else "short",
+                "unrealized_pnl": float(pos.get("unrealizedPnl", 0)),
+            })
+        return positions
 
     # ─────────────────────────────────────────────
     # Yahoo Finance helpers (paper mode)
