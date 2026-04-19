@@ -19,7 +19,18 @@ func openTestDB(t *testing.T) *StateDB {
 		t.Fatalf("OpenStateDB: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
+	resetInitialCapitalGuardDedup(t)
 	return db
+}
+
+// resetInitialCapitalGuardDedup wipes the package-level dedup map so a test
+// that asserts on warn counts (or simply triggers the guard repeatedly) is
+// not influenced by prior tests in the same package run. Registers a Cleanup
+// so the next test also starts from a clean slate even if this one panics.
+func resetInitialCapitalGuardDedup(t *testing.T) {
+	t.Helper()
+	initialCapitalGuardWarned = sync.Map{}
+	t.Cleanup(func() { initialCapitalGuardWarned = sync.Map{} })
 }
 
 func TestOpenStateDB(t *testing.T) {
@@ -1610,9 +1621,8 @@ func TestSetInitialCapital_RejectsInvalid(t *testing.T) {
 // per-cycle SaveState calls don't spam the operator DM.
 func TestSaveState_GuardWarnIsOneShot(t *testing.T) {
 	db := openTestDB(t)
-
-	// Reset the dedup map so prior tests don't leak.
-	initialCapitalGuardWarned = sync.Map{}
+	// Dedup map is reset by openTestDB → resetInitialCapitalGuardDedup so
+	// prior tests don't leak warn counts into this assertion.
 
 	var warns int
 	prev := initialCapitalGuardWarn

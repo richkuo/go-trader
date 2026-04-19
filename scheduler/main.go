@@ -70,7 +70,7 @@ func main() {
 	// silently revert a legitimate "bump initial_capital in config.json" edit
 	// on the next cycle. Captured here, surfaced to the owner DM once the
 	// notifier is wired below.
-	initialCapitalChangeWarnings := ReconcileConfigInitialCapital(cfg, state, stateDB)
+	initialCapitalChangeInfos, initialCapitalChangeErrors := ReconcileConfigInitialCapital(cfg, state, stateDB)
 
 	// Initialize new strategies and sync config values for existing ones
 	for i := range cfg.Strategies {
@@ -224,12 +224,16 @@ func main() {
 		}
 	}
 
-	// #343: Forward startup config-driven baseline changes to the owner. These
-	// are routine when the operator intentionally bumps initial_capital in
-	// config, but worth surfacing so the change is visible in DMs.
-	if len(initialCapitalChangeWarnings) > 0 && notifier.HasOwner() {
-		for _, msg := range initialCapitalChangeWarnings {
+	// #343: Forward startup config-driven baseline changes to the owner. Info
+	// DMs confirm a deliberate bump; ERROR DMs surface a persist failure where
+	// the DB still holds the prior baseline. Both are routine but worth
+	// surfacing so the change (or its failure) is visible.
+	if notifier.HasOwner() {
+		for _, msg := range initialCapitalChangeInfos {
 			notifier.SendOwnerDM("[state] " + msg)
+		}
+		for _, msg := range initialCapitalChangeErrors {
+			notifier.SendOwnerDM("[state] ERROR: " + msg)
 		}
 	}
 

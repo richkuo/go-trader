@@ -368,6 +368,14 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 		existingInitCaps[id] = existing
 	}
+	// rows.Next() returns false on both exhaustion and mid-iteration error;
+	// without this Err() check a transient SQLite failure would yield a
+	// silently-incomplete snapshot and leave un-snapshotted strategies
+	// unprotected by the baseline guard for this save cycle.
+	if err := existingRows.Err(); err != nil {
+		existingRows.Close()
+		return fmt.Errorf("iterate existing initial_capital: %w", err)
+	}
 	existingRows.Close()
 
 	// 3. Delete all strategies (CASCADE deletes positions + option_positions).

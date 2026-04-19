@@ -355,6 +355,7 @@ func TestReconcileConfigInitialCapital(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	resetInitialCapitalGuardDedup(t)
 
 	// Seed DB with a $505 baseline.
 	state := &AppState{
@@ -382,9 +383,12 @@ func TestReconcileConfigInitialCapital(t *testing.T) {
 		},
 	}
 
-	warnings := ReconcileConfigInitialCapital(cfg, state, db)
-	if len(warnings) != 1 {
-		t.Fatalf("warnings = %d, want 1 (only hl-tema-eth changed)", len(warnings))
+	infos, errs := ReconcileConfigInitialCapital(cfg, state, db)
+	if len(infos) != 1 {
+		t.Fatalf("infos = %d, want 1 (only hl-tema-eth changed)", len(infos))
+	}
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
 	}
 
 	// In-memory mutation must happen so same-process risk calcs see the new value.
@@ -416,6 +420,7 @@ func TestReconcileConfigInitialCapital_NoOpWhenAligned(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	resetInitialCapitalGuardDedup(t)
 
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -429,7 +434,7 @@ func TestReconcileConfigInitialCapital_NoOpWhenAligned(t *testing.T) {
 	cfg := &Config{Strategies: []StrategyConfig{
 		{ID: "s", Type: "spot", Capital: 1000, InitialCapital: 1000},
 	}}
-	if w := ReconcileConfigInitialCapital(cfg, state, db); len(w) != 0 {
-		t.Errorf("warnings = %v, want none when config matches DB", w)
+	if infos, errs := ReconcileConfigInitialCapital(cfg, state, db); len(infos) != 0 || len(errs) != 0 {
+		t.Errorf("infos=%v errs=%v, want none when config matches DB", infos, errs)
 	}
 }

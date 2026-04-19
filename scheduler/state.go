@@ -226,17 +226,19 @@ func ValidatePerpsAllowShortsConfig(state *AppState, cfg *Config) []string {
 //     path so the guard's snapshot picks it up next cycle.
 //   - Mutate the in-memory StrategyState so any startup-time PnL/risk
 //     calculation in the same process sees the new value immediately.
-//   - Return human-readable warnings so main.go can DM the owner — a
-//     baseline change is rare and worth surfacing.
+//   - Return separate info messages (successful applies) and error messages
+//     (persist failures) so main.go can DM the owner with a clear distinction
+//     — a baseline change is rare and worth surfacing either way, but the
+//     caller should be able to tell success from failure without parsing the
+//     string.
 //
 // Strategies that omit initial_capital from config are ignored: Capital is a
 // runtime field that drifts with PnL and capital_pct rebases, so it is not a
 // reliable signal of "operator wants to change the baseline." The explicit
 // path is `initial_capital` in config or a direct SetInitialCapital call.
-func ReconcileConfigInitialCapital(cfg *Config, state *AppState, sdb *StateDB) []string {
-	var warnings []string
+func ReconcileConfigInitialCapital(cfg *Config, state *AppState, sdb *StateDB) (infos []string, errors []string) {
 	if state == nil || sdb == nil {
-		return warnings
+		return nil, nil
 	}
 	for _, sc := range cfg.Strategies {
 		if sc.InitialCapital <= 0 {
@@ -251,16 +253,16 @@ func ReconcileConfigInitialCapital(cfg *Config, state *AppState, sdb *StateDB) [
 			msg := fmt.Sprintf("config-driven initial_capital change for %s ($%.2f → $%.2f) failed to persist: %v — DB still holds $%.2f",
 				sc.ID, prev, sc.InitialCapital, err, prev)
 			fmt.Fprintf(os.Stderr, "[state] WARN: %s\n", msg)
-			warnings = append(warnings, msg)
+			errors = append(errors, msg)
 			continue
 		}
 		s.InitialCapital = sc.InitialCapital
 		msg := fmt.Sprintf("config-driven initial_capital change applied for %s: $%.2f → $%.2f (#343)",
 			sc.ID, prev, sc.InitialCapital)
 		fmt.Fprintf(os.Stderr, "[state] %s\n", msg)
-		warnings = append(warnings, msg)
+		infos = append(infos, msg)
 	}
-	return warnings
+	return infos, errors
 }
 
 // LoadStateWithDB loads state from SQLite. Returns a fresh AppState when the DB is empty.
