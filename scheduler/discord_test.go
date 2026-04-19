@@ -222,6 +222,31 @@ func TestFormatCategorySummary_CircuitBreakerActive(t *testing.T) {
 	}
 }
 
+func TestFormatCategorySummary_StrategiesSortedByID(t *testing.T) {
+	// Issue #354: table rows should follow strategy ID order, not config order.
+	strats := []StrategyConfig{
+		{ID: "hl-zebra-btc", Type: "perps", Args: []string{"zebra", "BTC", "1h"}, Capital: 1000},
+		{ID: "hl-adx-btc", Type: "perps", Args: []string{"adx", "BTC", "1h"}, Capital: 1000},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-zebra-btc": {Cash: 1000},
+			"hl-adx-btc":   {Cash: 1000},
+		},
+	}
+	prices := map[string]float64{"BTC/USDT": 50000}
+	msgs := FormatCategorySummary(1, 0, 1, 0, 2000, prices, nil, strats, state, "hyperliquid", "BTC", 600)
+	msg := strings.Join(msgs, "\n")
+	idxAdx := strings.Index(msg, "hl-adx-btc")
+	idxZebra := strings.Index(msg, "hl-zebra-btc")
+	if idxAdx < 0 || idxZebra < 0 {
+		t.Fatalf("expected both strategy IDs in output:\n%s", msg)
+	}
+	if idxAdx >= idxZebra {
+		t.Errorf("expected hl-adx-btc before hl-zebra-btc (sorted by ID), got adx@%d zebra@%d", idxAdx, idxZebra)
+	}
+}
+
 func TestFormatCategorySummary_NoCircuitBreaker(t *testing.T) {
 	strats := []StrategyConfig{
 		{ID: "hl-rsi-btc", Type: "perps", Args: []string{"rsi", "BTC", "1h"}, Capital: 1000},

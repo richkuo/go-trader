@@ -260,10 +260,17 @@ func FormatCategorySummary(
 ) []string {
 	var sb strings.Builder
 
+	// Summaries scan better with strategies ordered A→Z by ID (#354). Callers often
+	// pass config file order, which is not necessarily alphabetical.
+	strategies := append([]StrategyConfig(nil), channelStrategies...)
+	sort.SliceStable(strategies, func(i, j int) bool {
+		return strategies[i].ID < strategies[j].ID
+	})
+
 	// Icon and title based on strategy types and channel key.
-	isFutures := isFuturesType(channelStrategies) || channelKey == "futures" || channelKey == "ibkr"
+	isFutures := isFuturesType(strategies) || channelKey == "futures" || channelKey == "ibkr"
 	icon := "📊"
-	if isOptionsType(channelStrategies) {
+	if isOptionsType(strategies) {
 		icon = "🎯"
 	} else if channelKey == "spot" {
 		icon = "📈"
@@ -292,7 +299,7 @@ func FormatCategorySummary(
 	// Circuit breaker status — show warning for any strategy with active breaker.
 	var cbActive []string
 	now := time.Now().UTC()
-	for _, sc := range channelStrategies {
+	for _, sc := range strategies {
 		ss := state.Strategies[sc.ID]
 		if ss == nil {
 			continue
@@ -349,7 +356,7 @@ func FormatCategorySummary(
 	// Detect shared wallet groups: strategies on same platform with CapitalPct > 0.
 	walletCapital := make(map[string]float64) // platform -> sum of capitals
 	walletCount := make(map[string]int)       // platform -> count of strategies
-	for _, sc := range channelStrategies {
+	for _, sc := range strategies {
 		if sc.CapitalPct > 0 {
 			walletCapital[sc.Platform] += sc.Capital
 			walletCount[sc.Platform]++
@@ -366,7 +373,7 @@ func FormatCategorySummary(
 	// Build flat bot list from the provided channel strategies.
 	var tableBots []botInfo
 	var totalInitCap, filteredValue float64
-	for _, sc := range channelStrategies {
+	for _, sc := range strategies {
 		ss := state.Strategies[sc.ID]
 		if ss == nil {
 			continue
@@ -447,7 +454,7 @@ func FormatCategorySummary(
 	}
 	var posLines []string
 	if totalOpenPos > 0 {
-		for _, sc := range channelStrategies {
+		for _, sc := range strategies {
 			ss := state.Strategies[sc.ID]
 			if ss == nil {
 				continue
