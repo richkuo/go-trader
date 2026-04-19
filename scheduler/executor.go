@@ -562,6 +562,128 @@ func RunOKXExecute(script, symbol, side string, size float64, instType string) (
 	return &result, stderrStr, nil
 }
 
+// OKXCloseFill is the parsed fill block from close_okx_position.py.
+// Mirrors HyperliquidCloseFill so kill-switch accounting is symmetric
+// across platforms. OID is a string (ccxt order IDs are opaque strings,
+// unlike HL's int64) and all fields are optional — empty {} means the
+// adapter found no position to close (already-flat success).
+type OKXCloseFill struct {
+	AvgPx   float64 `json:"avg_px,omitempty"`
+	TotalSz float64 `json:"total_sz,omitempty"`
+	OID     string  `json:"oid,omitempty"`
+	Fee     float64 `json:"fee,omitempty"`
+}
+
+// OKXClose is the close block from close_okx_position.py.
+type OKXClose struct {
+	Symbol string        `json:"symbol"`
+	Fill   *OKXCloseFill `json:"fill,omitempty"`
+}
+
+// OKXCloseResult is the top-level JSON from close_okx_position.py.
+// Used by the portfolio kill switch to liquidate on-chain OKX perps
+// positions (#345).
+type OKXCloseResult struct {
+	Close     *OKXClose `json:"close"`
+	Platform  string    `json:"platform"`
+	Timestamp string    `json:"timestamp"`
+	Error     string    `json:"error,omitempty"`
+}
+
+// RunOKXClose runs close_okx_position.py to submit a reduce-only market
+// close for a single OKX swap coin (#345).
+//
+// Contract mirrors RunHyperliquidClose: a non-nil error is returned for
+// ANY failure — non-zero subprocess exit, malformed JSON, or a JSON
+// envelope with `error` populated. Callers that see (result, nil) can
+// treat the close as confirmed by the adapter. Kill-switch correctness
+// depends on this: any ambiguous response must surface as error so the
+// switch stays latched and retries next cycle.
+func RunOKXClose(script, symbol string) (*OKXCloseResult, string, error) {
+	args := []string{
+		fmt.Sprintf("--symbol=%s", symbol),
+		"--mode=live",
+	}
+	stdout, stderr, runErr := RunPythonScript(script, args)
+	return parseOKXCloseOutput(stdout, string(stderr), runErr)
+}
+
+// parseOKXCloseOutput turns raw subprocess output into
+// (*OKXCloseResult, stderr, error) following the RunOKXClose contract.
+// Extracted so the decision logic can be tested without spawning
+// .venv/bin/python3 (absent in the Go CI job — same reason as
+// parseHyperliquidCloseOutput, #341/#342).
+func parseOKXCloseOutput(stdout []byte, stderrStr string, runErr error) (*OKXCloseResult, string, error) {
+	var result OKXCloseResult
+	parseErr := json.Unmarshal(stdout, &result)
+
+	switch {
+	case runErr == nil && parseErr == nil && result.Error == "":
+		return &result, stderrStr, nil
+
+	case runErr == nil && parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("close reported error despite exit 0: %s", result.Error)
+
+	case parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("close failed: %s", result.Error)
+
+	case parseErr == nil && runErr != nil:
+		return &result, stderrStr, fmt.Errorf("close subprocess exit %v with no error field (stderr: %s)", runErr, stderrStr)
+
+	default:
+		return nil, stderrStr, fmt.Errorf("parse close output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
+	}
+}
+
+// OKXPositionsResult is the JSON output from fetch_okx_positions.py.
+// Size is signed (positive = long, negative = short) to mirror HLPosition.
+type OKXPositionsResult struct {
+	Positions []OKXPositionJSON `json:"positions"`
+	Platform  string            `json:"platform"`
+	Timestamp string            `json:"timestamp"`
+	Error     string            `json:"error,omitempty"`
+}
+
+// OKXPositionJSON is the per-position payload from fetch_okx_positions.py.
+type OKXPositionJSON struct {
+	Coin       string  `json:"coin"`
+	Size       float64 `json:"size"`
+	EntryPrice float64 `json:"entry_price"`
+	Side       string  `json:"side"`
+}
+
+// RunOKXFetchPositions runs fetch_okx_positions.py and returns the parsed
+// result (#345). Like RunOKXClose, any failure path returns a non-nil
+// error so the kill switch can latch and retry — a silent parse failure
+// would otherwise look like "no positions" and clear virtual state while
+// on-chain exposure remained.
+func RunOKXFetchPositions(script string) (*OKXPositionsResult, string, error) {
+	stdout, stderr, runErr := RunPythonScript(script, nil)
+	return parseOKXPositionsOutput(stdout, string(stderr), runErr)
+}
+
+// parseOKXPositionsOutput is the pure parser, extracted from
+// RunOKXFetchPositions so the decision logic can be tested without
+// spawning Python (mirrors parseOKXCloseOutput / parseHyperliquidCloseOutput).
+func parseOKXPositionsOutput(stdout []byte, stderrStr string, runErr error) (*OKXPositionsResult, string, error) {
+	var result OKXPositionsResult
+	parseErr := json.Unmarshal(stdout, &result)
+
+	switch {
+	case runErr == nil && parseErr == nil && result.Error == "":
+		return &result, stderrStr, nil
+
+	case parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("fetch positions failed: %s", result.Error)
+
+	case parseErr == nil && runErr != nil:
+		return &result, stderrStr, fmt.Errorf("fetch positions subprocess exit %v with no error field (stderr: %s)", runErr, stderrStr)
+
+	default:
+		return nil, stderrStr, fmt.Errorf("parse positions output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
+	}
+}
+
 // FetchPrices runs check_price.py and returns a map of symbol→price.
 func FetchPrices(symbols []string) (map[string]float64, error) {
 	stdout, stderr, err := RunPythonScript("shared_scripts/check_price.py", symbols)

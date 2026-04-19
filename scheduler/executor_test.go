@@ -412,3 +412,125 @@ func TestParseHyperliquidCloseOutput_MalformedJSON(t *testing.T) {
 		t.Errorf("result should be nil for unparseable output, got %+v", result)
 	}
 }
+
+// ── OKX close parser tests (#345) ──────────────────────────────────────
+// Same 5-case matrix as parseHyperliquidCloseOutput — mirrors the HL tests
+// one-to-one because the two parsers implement the same contract. Any
+// relaxation of the contract on one side must fail a test on that side so
+// kill-switch correctness parity is mechanically enforced.
+
+func TestParseOKXCloseOutput_CleanSuccess(t *testing.T) {
+	stdout := []byte(`{"close":{"symbol":"BTC","fill":{"avg_px":42000,"total_sz":0.01,"oid":"abc123","fee":0.02}},"platform":"okx","timestamp":"2026-04-19T00:00:00Z"}`)
+	result, _, err := parseOKXCloseOutput(stdout, "", nil)
+	if err != nil {
+		t.Fatalf("expected nil err, got %v", err)
+	}
+	if result == nil || result.Close == nil || result.Close.Fill == nil {
+		t.Fatalf("expected populated result, got %+v", result)
+	}
+	if result.Close.Fill.TotalSz != 0.01 {
+		t.Errorf("TotalSz = %g, want 0.01", result.Close.Fill.TotalSz)
+	}
+	if result.Close.Fill.OID != "abc123" {
+		t.Errorf("OID = %q, want abc123 (ccxt IDs are strings, unlike HL ints)", result.Close.Fill.OID)
+	}
+	if result.Close.Fill.Fee != 0.02 {
+		t.Errorf("Fee = %g, want 0.02 — fee parsing is load-bearing for post-kill accounting", result.Close.Fill.Fee)
+	}
+}
+
+func TestParseOKXCloseOutput_Exit0WithError(t *testing.T) {
+	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"okx","timestamp":"x","error":"okx auth failed"}`)
+	_, _, err := parseOKXCloseOutput(stdout, "", nil)
+	if err == nil {
+		t.Fatal("expected non-nil err for exit 0 with error envelope")
+	}
+	if !strings.Contains(err.Error(), "okx auth failed") {
+		t.Errorf("err must surface envelope error, got %v", err)
+	}
+}
+
+func TestParseOKXCloseOutput_Exit1WithError(t *testing.T) {
+	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"okx","timestamp":"x","error":"okx rate limited"}`)
+	runErr := fmt.Errorf("exit status 1")
+	_, _, err := parseOKXCloseOutput(stdout, "", runErr)
+	if err == nil {
+		t.Fatal("expected non-nil err for exit 1 — kill switch must latch")
+	}
+	if !strings.Contains(err.Error(), "okx rate limited") {
+		t.Errorf("err must include underlying error, got %v", err)
+	}
+}
+
+func TestParseOKXCloseOutput_Exit1WithoutErrorField(t *testing.T) {
+	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"okx","timestamp":"x"}`)
+	runErr := fmt.Errorf("exit status 1")
+	_, _, err := parseOKXCloseOutput(stdout, "", runErr)
+	if err == nil {
+		t.Fatal("expected non-nil err for exit 1 even without error field — silent crash must not clear virtual state")
+	}
+	if !strings.Contains(err.Error(), "no error field") {
+		t.Errorf("err message should mention missing error field, got %v", err)
+	}
+}
+
+func TestParseOKXCloseOutput_MalformedJSON(t *testing.T) {
+	result, _, err := parseOKXCloseOutput([]byte("not json"), "", nil)
+	if err == nil {
+		t.Fatal("expected non-nil err for malformed JSON")
+	}
+	if result != nil {
+		t.Errorf("result should be nil for unparseable output, got %+v", result)
+	}
+}
+
+// ── OKX positions fetcher parser tests (#345) ───────────────────────────
+
+func TestParseOKXPositionsOutput_Success(t *testing.T) {
+	stdout := []byte(`{"positions":[{"coin":"BTC","size":0.01,"entry_price":42000,"side":"long"},{"coin":"ETH","size":-0.5,"entry_price":3000,"side":"short"}],"platform":"okx","timestamp":"x"}`)
+	result, _, err := parseOKXPositionsOutput(stdout, "", nil)
+	if err != nil {
+		t.Fatalf("expected nil err, got %v", err)
+	}
+	if len(result.Positions) != 2 {
+		t.Fatalf("expected 2 positions, got %d", len(result.Positions))
+	}
+	if result.Positions[0].Coin != "BTC" || result.Positions[0].Size != 0.01 {
+		t.Errorf("position[0] = %+v", result.Positions[0])
+	}
+	// Short size must be negative — load-bearing for on-chain direction
+	// classification in forceCloseOKXLive.
+	if result.Positions[1].Size != -0.5 {
+		t.Errorf("short size must be signed negative, got %g", result.Positions[1].Size)
+	}
+}
+
+func TestParseOKXPositionsOutput_EmptyIsSuccess(t *testing.T) {
+	stdout := []byte(`{"positions":[],"platform":"okx","timestamp":"x"}`)
+	result, _, err := parseOKXPositionsOutput(stdout, "", nil)
+	if err != nil {
+		t.Fatalf("empty positions must be success, got err=%v", err)
+	}
+	if len(result.Positions) != 0 {
+		t.Errorf("expected 0 positions, got %d", len(result.Positions))
+	}
+}
+
+func TestParseOKXPositionsOutput_ErrorEnvelope(t *testing.T) {
+	stdout := []byte(`{"positions":[],"platform":"okx","timestamp":"x","error":"OKX auth failed"}`)
+	runErr := fmt.Errorf("exit status 1")
+	_, _, err := parseOKXPositionsOutput(stdout, "", runErr)
+	if err == nil {
+		t.Fatal("expected non-nil err when envelope has error field — kill switch must latch")
+	}
+	if !strings.Contains(err.Error(), "OKX auth failed") {
+		t.Errorf("err must include envelope error, got %v", err)
+	}
+}
+
+func TestParseOKXPositionsOutput_MalformedJSON(t *testing.T) {
+	_, _, err := parseOKXPositionsOutput([]byte("garbage"), "", nil)
+	if err == nil {
+		t.Fatal("expected non-nil err for malformed JSON — cannot infer positions from garbage")
+	}
+}

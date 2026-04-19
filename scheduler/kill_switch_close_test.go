@@ -7,14 +7,12 @@ import (
 	"time"
 )
 
-// Tests for planKillSwitchClose — the orchestration seam for #341. The 7
-// tests in hyperliquid_balance_test.go cover forceCloseHyperliquidLive in
-// isolation; these cover the "latch until flat" wiring that is the actual
-// fix. Without them, the load-bearing
-// `killSwitchFired && plan.OnChainConfirmedFlat` guard around
-// forceCloseAllPositions could regress silently — exactly the shape of the
-// original #341 bug (virtual state mutated without confirming on-chain
-// closure).
+// Tests for planKillSwitchClose — the orchestration seam for #341 / #345.
+// Covers the "latch until flat" wiring that is the actual fix. Without
+// them, the load-bearing `killSwitchFired && plan.OnChainConfirmedFlat`
+// guard around forceCloseAllPositions could regress silently — exactly
+// the shape of the original #341 bug (virtual state mutated without
+// confirming on-chain closure).
 
 // stubHLLiveCloser returns a HyperliquidLiveCloser that records every invocation
 // and maps coin → canned error. Missing keys yield a synthetic success.
@@ -47,6 +45,56 @@ func stubHLStateFetcher(positions []HLPosition, err error) (HLStateFetcher, *int
 	return fetcher, &calls
 }
 
+// stubOKXLiveCloser mirrors stubHLLiveCloser for OKX. Used in tests that
+// want to ensure the OKX path isn't invoked — the default (empty errs) is
+// a synthetic success that should never be triggered in HL-only tests.
+func stubOKXLiveCloser(errs map[string]error) (OKXLiveCloser, *[]string) {
+	var calls []string
+	closer := func(symbol string) (*OKXCloseResult, error) {
+		calls = append(calls, symbol)
+		if err, ok := errs[symbol]; ok && err != nil {
+			return nil, err
+		}
+		return &OKXCloseResult{
+			Close:    &OKXClose{Symbol: symbol, Fill: &OKXCloseFill{TotalSz: 1.0, AvgPx: 100}},
+			Platform: "okx",
+		}, nil
+	}
+	return closer, &calls
+}
+
+// stubOKXPositionsFetcher returns an OKXPositionsFetcher that replays a
+// fixed response and records invocation count.
+func stubOKXPositionsFetcher(positions []OKXPosition, err error) (OKXPositionsFetcher, *int) {
+	var calls int
+	fetcher := func() ([]OKXPosition, error) {
+		calls++
+		if err != nil {
+			return nil, err
+		}
+		return positions, nil
+	}
+	return fetcher, &calls
+}
+
+// defaultHLInputs builds a KillSwitchCloseInputs for an HL-only test. Any
+// OKX fields are zeroed — the OKX plan branch only fires when
+// OKXLiveAllPerps is non-empty, so these tests stay HL-exclusive.
+func defaultHLInputs(hlAddr string, fetched bool, positions []HLPosition,
+	hlLive []StrategyConfig, reason string, timeout time.Duration,
+	closer HyperliquidLiveCloser, fetcher HLStateFetcher) KillSwitchCloseInputs {
+	return KillSwitchCloseInputs{
+		HLAddr:          hlAddr,
+		HLStateFetched:  fetched,
+		HLPositions:     positions,
+		HLLiveAll:       hlLive,
+		HLCloser:        closer,
+		HLFetcher:       fetcher,
+		PortfolioReason: reason,
+		CloseTimeout:    timeout,
+	}
+}
+
 // Happy path: HL configured, on-chain state already fetched, one live strategy
 // with an open position. Plan reports ConfirmedFlat, closer called once,
 // Discord message is the success shape. This is the test that locks in the
@@ -62,9 +110,9 @@ func TestPlanKillSwitchClose_HappyPath(t *testing.T) {
 	closer, calls := stubHLLiveCloser(nil)
 	fetcher, fetchCalls := stubHLStateFetcher(nil, nil)
 
-	plan := planKillSwitchClose("0xaddr", true, positions, hlLive,
+	plan := planKillSwitchClose(defaultHLInputs("0xaddr", true, positions, hlLive,
 		"portfolio drawdown 25.0% exceeds limit 20.0%",
-		time.Second, closer, fetcher)
+		time.Second, closer, fetcher))
 
 	if !plan.OnChainConfirmedFlat {
 		t.Fatalf("expected ConfirmedFlat, got plan=%+v", plan)
@@ -88,10 +136,7 @@ func TestPlanKillSwitchClose_HappyPath(t *testing.T) {
 }
 
 // Close failure: closer errors for one coin. Plan must NOT be ConfirmedFlat
-// — caller must keep virtual state intact and retry next cycle. Discord
-// message must be the "LATCHED, RETRYING" shape with the specific error
-// surfaced. This is the test that prevents regression of the retry loop
-// (the whole point of latch-until-flat).
+// — caller must keep virtual state intact and retry next cycle.
 func TestPlanKillSwitchClose_CloseError(t *testing.T) {
 	hlLive := []StrategyConfig{
 		{ID: "hl-ema-eth", Platform: "hyperliquid", Type: "perps",
@@ -101,9 +146,9 @@ func TestPlanKillSwitchClose_CloseError(t *testing.T) {
 	closer, _ := stubHLLiveCloser(map[string]error{"ETH": fmt.Errorf("hl rate limited")})
 	fetcher, _ := stubHLStateFetcher(nil, nil)
 
-	plan := planKillSwitchClose("0xaddr", true, positions, hlLive,
+	plan := planKillSwitchClose(defaultHLInputs("0xaddr", true, positions, hlLive,
 		"portfolio drawdown 25.0% exceeds limit 20.0%",
-		time.Second, closer, fetcher)
+		time.Second, closer, fetcher))
 
 	if plan.OnChainConfirmedFlat {
 		t.Fatal("expected NOT ConfirmedFlat on close error — kill switch would clear virtual state while on-chain is still live")
@@ -123,9 +168,8 @@ func TestPlanKillSwitchClose_CloseError(t *testing.T) {
 }
 
 // Opportunistic fetch: HL configured but main.go didn't fetch state this
-// cycle (no due strategies, no shared wallet). planKillSwitchClose must
-// re-fetch — otherwise the kill switch reports "no live HL exposure" without
-// checking, which is the false-reassurance case the PR review flagged.
+// cycle. planKillSwitchClose must re-fetch — otherwise the kill switch
+// reports "no live HL exposure" without checking.
 func TestPlanKillSwitchClose_OpportunisticFetch(t *testing.T) {
 	hlLive := []StrategyConfig{
 		{ID: "hl-ema-eth", Platform: "hyperliquid", Type: "perps",
@@ -135,8 +179,8 @@ func TestPlanKillSwitchClose_OpportunisticFetch(t *testing.T) {
 	closer, calls := stubHLLiveCloser(nil)
 	fetcher, fetchCalls := stubHLStateFetcher(positions, nil)
 
-	plan := planKillSwitchClose("0xaddr", false, nil, hlLive,
-		"drawdown reason", time.Second, closer, fetcher)
+	plan := planKillSwitchClose(defaultHLInputs("0xaddr", false, nil, hlLive,
+		"drawdown reason", time.Second, closer, fetcher))
 
 	if *fetchCalls != 1 {
 		t.Fatalf("fetcher should be called once, got %d", *fetchCalls)
@@ -151,8 +195,7 @@ func TestPlanKillSwitchClose_OpportunisticFetch(t *testing.T) {
 
 // Opportunistic fetch failure: HL configured, fetch errors. Plan must NOT be
 // ConfirmedFlat — we cannot verify on-chain state, so caller must not clear
-// virtual state. This is the test that guards against silent desync when HL
-// API is flaky.
+// virtual state.
 func TestPlanKillSwitchClose_FetchFailure(t *testing.T) {
 	hlLive := []StrategyConfig{
 		{ID: "hl-ema-eth", Platform: "hyperliquid", Type: "perps",
@@ -161,8 +204,8 @@ func TestPlanKillSwitchClose_FetchFailure(t *testing.T) {
 	closer, calls := stubHLLiveCloser(nil)
 	fetcher, fetchCalls := stubHLStateFetcher(nil, fmt.Errorf("hl 503"))
 
-	plan := planKillSwitchClose("0xaddr", false, nil, hlLive,
-		"drawdown reason", time.Second, closer, fetcher)
+	plan := planKillSwitchClose(defaultHLInputs("0xaddr", false, nil, hlLive,
+		"drawdown reason", time.Second, closer, fetcher))
 
 	if *fetchCalls != 1 {
 		t.Fatalf("fetcher should be called once on fetch failure, got %d", *fetchCalls)
@@ -182,19 +225,17 @@ func TestPlanKillSwitchClose_FetchFailure(t *testing.T) {
 }
 
 // False-reassurance case: HL configured but no live HL strategies are
-// configured, yet the wallet still has on-chain positions (previous deploy,
-// manual trade). planKillSwitchClose must fetch state, detect the positions,
-// block virtual state mutation, and surface them in the Discord message so
-// the operator manually intervenes. Before the fix, the plan would report
-// "no live HL exposure" — the original #341 review's HIGH finding.
+// configured, yet the wallet still has on-chain positions. planKillSwitchClose
+// must fetch state, detect the positions, block virtual state mutation, and
+// surface them in the Discord message.
 func TestPlanKillSwitchClose_UnconfiguredPositionBlocksReset(t *testing.T) {
 	positions := []HLPosition{{Coin: "ETH", Size: 0.517}}
 	closer, calls := stubHLLiveCloser(nil)
 	fetcher, _ := stubHLStateFetcher(positions, nil)
 
-	plan := planKillSwitchClose("0xaddr", false, nil,
+	plan := planKillSwitchClose(defaultHLInputs("0xaddr", false, nil,
 		[]StrategyConfig{}, // NO live HL strategies configured
-		"drawdown reason", time.Second, closer, fetcher)
+		"drawdown reason", time.Second, closer, fetcher))
 
 	if plan.OnChainConfirmedFlat {
 		t.Fatal("expected NOT ConfirmedFlat — on-chain position exists for unconfigured coin")
@@ -215,13 +256,13 @@ func TestPlanKillSwitchClose_UnconfiguredPositionBlocksReset(t *testing.T) {
 
 // No HL at all: hlAddr="" and no live HL strategies. Kill switch should
 // proceed normally (ConfirmedFlat=true) so spot/options/futures-only users
-// don't regress. Message must not imply HL was checked.
+// don't regress.
 func TestPlanKillSwitchClose_NoHLConfigured(t *testing.T) {
 	closer, calls := stubHLLiveCloser(nil)
 	fetcher, fetchCalls := stubHLStateFetcher(nil, nil)
 
-	plan := planKillSwitchClose("", false, nil, nil,
-		"drawdown reason", time.Second, closer, fetcher)
+	plan := planKillSwitchClose(defaultHLInputs("", false, nil, nil,
+		"drawdown reason", time.Second, closer, fetcher))
 
 	if !plan.OnChainConfirmedFlat {
 		t.Fatal("expected ConfirmedFlat when HL is not configured at all")
@@ -239,8 +280,6 @@ func TestPlanKillSwitchClose_NoHLConfigured(t *testing.T) {
 
 // Stable error ordering (bot review #3): when multiple coins fail with the
 // same errors, the Discord message must be byte-identical across calls.
-// Without sort, Go map iteration randomization produces different messages
-// for identical failures — confusing for operator triage.
 func TestPlanKillSwitchClose_DeterministicErrorOrder(t *testing.T) {
 	hlLive := []StrategyConfig{
 		{ID: "hl-btc", Platform: "hyperliquid", Type: "perps",
@@ -264,14 +303,13 @@ func TestPlanKillSwitchClose_DeterministicErrorOrder(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		closer, _ := stubHLLiveCloser(errs)
 		fetcher, _ := stubHLStateFetcher(nil, nil)
-		plan := planKillSwitchClose("0xaddr", true, positions, hlLive,
-			"reason", time.Second, closer, fetcher)
+		plan := planKillSwitchClose(defaultHLInputs("0xaddr", true, positions, hlLive,
+			"reason", time.Second, closer, fetcher))
 		if prev != "" && plan.DiscordMessage != prev {
 			t.Fatalf("message should be deterministic across calls\niter %d: %s\nprev: %s", i, plan.DiscordMessage, prev)
 		}
 		prev = plan.DiscordMessage
 	}
-	// Also verify coins are alphabetically sorted in the output.
 	btcPos := strings.Index(prev, "BTC:")
 	dogePos := strings.Index(prev, "DOGE:")
 	ethPos := strings.Index(prev, "ETH:")
@@ -290,8 +328,312 @@ func TestPlanKillSwitchClose_DeterministicErrorOrder(t *testing.T) {
 func TestPlanKillSwitchClose_ZeroInputsAreSafe(t *testing.T) {
 	closer, _ := stubHLLiveCloser(nil)
 	fetcher, _ := stubHLStateFetcher(nil, nil)
-	plan := planKillSwitchClose("", false, nil, nil, "", time.Second, closer, fetcher)
+	plan := planKillSwitchClose(defaultHLInputs("", false, nil, nil, "", time.Second, closer, fetcher))
 	if !plan.OnChainConfirmedFlat {
 		t.Errorf("zero inputs should yield ConfirmedFlat=true, got %+v", plan)
+	}
+}
+
+// ── OKX tests (#345) ───────────────────────────────────────────────────
+
+// OKX happy path: one live OKX perps strategy with an open position. Plan
+// reports ConfirmedFlat, closer called once, Discord message mentions OKX
+// closes. This is the #345 analog of TestPlanKillSwitchClose_HappyPath.
+func TestPlanKillSwitchClose_OKXHappyPath(t *testing.T) {
+	okxLive := []StrategyConfig{
+		{ID: "okx-sma-btc", Platform: "okx", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+	positions := []OKXPosition{{Coin: "BTC", Size: 0.01, EntryPrice: 42000, Side: "long"}}
+	closer, calls := stubOKXLiveCloser(nil)
+	fetcher, fetchCalls := stubOKXPositionsFetcher(positions, nil)
+
+	in := KillSwitchCloseInputs{
+		OKXLiveAllPerps: okxLive,
+		OKXCloser:       closer,
+		OKXFetcher:      fetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	}
+	plan := planKillSwitchClose(in)
+
+	if !plan.OnChainConfirmedFlat {
+		t.Fatalf("expected ConfirmedFlat, got plan=%+v", plan)
+	}
+	if *fetchCalls != 1 {
+		t.Errorf("OKX fetcher should be called exactly once, got %d", *fetchCalls)
+	}
+	if len(*calls) != 1 || (*calls)[0] != "BTC" {
+		t.Errorf("closer calls = %v, want [BTC]", *calls)
+	}
+	if !strings.Contains(plan.DiscordMessage, "OKX closes: [BTC]") {
+		t.Errorf("expected OKX closes in message, got: %s", plan.DiscordMessage)
+	}
+}
+
+// OKX close failure: closer errors, plan must latch. Mirrors the HL close-
+// error test — this is the load-bearing #345 correctness case. Without
+// this, a silent OKX close failure would clear virtual state while on-chain
+// exposure remained (the exact #341/#345 bug class).
+func TestPlanKillSwitchClose_OKXCloseError(t *testing.T) {
+	okxLive := []StrategyConfig{
+		{ID: "okx-sma-btc", Platform: "okx", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+	positions := []OKXPosition{{Coin: "BTC", Size: 0.01, Side: "long"}}
+	closer, _ := stubOKXLiveCloser(map[string]error{"BTC": fmt.Errorf("okx rate limited")})
+	fetcher, _ := stubOKXPositionsFetcher(positions, nil)
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		OKXLiveAllPerps: okxLive,
+		OKXCloser:       closer,
+		OKXFetcher:      fetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("expected NOT ConfirmedFlat on OKX close error — would clear virtual state while on-chain is live")
+	}
+	if got, ok := plan.OKXCloseReport.Errors["BTC"]; !ok || got == nil {
+		t.Errorf("expected BTC error in OKX report, got %v", plan.OKXCloseReport.Errors)
+	}
+	if !strings.Contains(plan.DiscordMessage, "LATCHED, RETRYING") {
+		t.Errorf("expected LATCHED message, got: %s", plan.DiscordMessage)
+	}
+	if !strings.Contains(plan.DiscordMessage, "okx rate limited") {
+		t.Errorf("expected OKX error detail in message, got: %s", plan.DiscordMessage)
+	}
+}
+
+// OKX fetch failure: fetcher errors → kill switch must latch, closer
+// must NOT be invoked (we don't know which coins to close). Same guard
+// semantic as TestPlanKillSwitchClose_FetchFailure.
+func TestPlanKillSwitchClose_OKXFetchFailure(t *testing.T) {
+	okxLive := []StrategyConfig{
+		{ID: "okx-sma-btc", Platform: "okx", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+	closer, calls := stubOKXLiveCloser(nil)
+	fetcher, _ := stubOKXPositionsFetcher(nil, fmt.Errorf("okx auth failed"))
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		OKXLiveAllPerps: okxLive,
+		OKXCloser:       closer,
+		OKXFetcher:      fetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("expected NOT ConfirmedFlat on OKX fetch failure")
+	}
+	if len(*calls) != 0 {
+		t.Errorf("closer must not be invoked when fetch failed, got %v", *calls)
+	}
+	if !strings.Contains(plan.DiscordMessage, "LATCHED, RETRYING") {
+		t.Errorf("expected LATCHED message on fetch failure, got: %s", plan.DiscordMessage)
+	}
+}
+
+// OKX spot strategy present: surface as unhandled gap. Does NOT block
+// ConfirmedFlat (we have no reliable way to check spot balances — a hard
+// latch would freeze the scheduler forever for any OKX spot user).
+func TestPlanKillSwitchClose_OKXSpotSurfacesGap(t *testing.T) {
+	okxSpot := []StrategyConfig{
+		{ID: "okx-sma-btc-spot", Platform: "okx", Type: "spot",
+			Args: []string{"sma", "BTC", "1h", "--mode=live", "--inst-type=spot"}},
+	}
+	closer, _ := stubOKXLiveCloser(nil)
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		OKXLiveAllSpot:  okxSpot,
+		OKXCloser:       closer,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	// Spot gap alone does NOT latch — the Discord message surfaces it.
+	if !plan.OnChainConfirmedFlat {
+		t.Errorf("spot-only presence must not block ConfirmedFlat, got plan=%+v", plan)
+	}
+	if !plan.OKXSpotPresent {
+		t.Error("expected OKXSpotPresent=true")
+	}
+	if !strings.Contains(plan.DiscordMessage, "OKX spot") {
+		t.Errorf("expected spot gap note in message, got: %s", plan.DiscordMessage)
+	}
+}
+
+// HL + OKX combined: both platforms have successful closes. Plan is
+// ConfirmedFlat, message lists both. Verifies the two platforms compose
+// rather than clobber each other's report.
+func TestPlanKillSwitchClose_HLAndOKXHappyPath(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	okxLive := []StrategyConfig{
+		{ID: "okx-btc", Platform: "okx", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+	hlPos := []HLPosition{{Coin: "ETH", Size: 0.5}}
+	okxPos := []OKXPosition{{Coin: "BTC", Size: 0.01, Side: "long"}}
+	hlCloser, hlCalls := stubHLLiveCloser(nil)
+	hlFetcher, _ := stubHLStateFetcher(nil, nil)
+	okxCloser, okxCalls := stubOKXLiveCloser(nil)
+	okxFetcher, _ := stubOKXPositionsFetcher(okxPos, nil)
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		HLAddr:          "0xaddr",
+		HLStateFetched:  true,
+		HLPositions:     hlPos,
+		HLLiveAll:       hlLive,
+		HLCloser:        hlCloser,
+		HLFetcher:       hlFetcher,
+		OKXLiveAllPerps: okxLive,
+		OKXCloser:       okxCloser,
+		OKXFetcher:      okxFetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if !plan.OnChainConfirmedFlat {
+		t.Fatalf("expected ConfirmedFlat when both platforms succeed, got plan=%+v", plan)
+	}
+	if len(*hlCalls) != 1 || (*hlCalls)[0] != "ETH" {
+		t.Errorf("HL closer calls = %v, want [ETH]", *hlCalls)
+	}
+	if len(*okxCalls) != 1 || (*okxCalls)[0] != "BTC" {
+		t.Errorf("OKX closer calls = %v, want [BTC]", *okxCalls)
+	}
+	if !strings.Contains(plan.DiscordMessage, "HL closes: [ETH]") {
+		t.Errorf("expected HL closes in message, got: %s", plan.DiscordMessage)
+	}
+	if !strings.Contains(plan.DiscordMessage, "OKX closes: [BTC]") {
+		t.Errorf("expected OKX closes in message, got: %s", plan.DiscordMessage)
+	}
+}
+
+// Either platform failing latches the switch: HL succeeds, OKX fails.
+// Critical correctness test — without it, OKX-side failures would be
+// hidden behind an HL-side success (exactly the #345 bug class).
+func TestPlanKillSwitchClose_HLSuccessOKXFailureStillLatches(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	okxLive := []StrategyConfig{
+		{ID: "okx-btc", Platform: "okx", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+	hlPos := []HLPosition{{Coin: "ETH", Size: 0.5}}
+	okxPos := []OKXPosition{{Coin: "BTC", Size: 0.01, Side: "long"}}
+	hlCloser, _ := stubHLLiveCloser(nil)
+	hlFetcher, _ := stubHLStateFetcher(nil, nil)
+	okxCloser, _ := stubOKXLiveCloser(map[string]error{"BTC": fmt.Errorf("okx err")})
+	okxFetcher, _ := stubOKXPositionsFetcher(okxPos, nil)
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		HLAddr:          "0xaddr",
+		HLStateFetched:  true,
+		HLPositions:     hlPos,
+		HLLiveAll:       hlLive,
+		HLCloser:        hlCloser,
+		HLFetcher:       hlFetcher,
+		OKXLiveAllPerps: okxLive,
+		OKXCloser:       okxCloser,
+		OKXFetcher:      okxFetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("OKX failure must latch the switch even when HL succeeded")
+	}
+	if !strings.Contains(plan.DiscordMessage, "LATCHED, RETRYING") {
+		t.Errorf("expected LATCHED message, got: %s", plan.DiscordMessage)
+	}
+	if !strings.Contains(plan.DiscordMessage, "okx err") {
+		t.Errorf("OKX error missing from message, got: %s", plan.DiscordMessage)
+	}
+}
+
+// OKX unconfigured: fetcher reports a position for a coin no live perps
+// strategy trades. Kill switch refuses to liquidate and latches.
+func TestPlanKillSwitchClose_OKXUnconfiguredBlocksReset(t *testing.T) {
+	okxLive := []StrategyConfig{
+		{ID: "okx-btc", Platform: "okx", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+	positions := []OKXPosition{
+		{Coin: "BTC", Size: 0.01, Side: "long"},
+		{Coin: "SOL", Size: 100, Side: "long"}, // not configured
+	}
+	closer, calls := stubOKXLiveCloser(nil)
+	fetcher, _ := stubOKXPositionsFetcher(positions, nil)
+
+	plan := planKillSwitchClose(KillSwitchCloseInputs{
+		OKXLiveAllPerps: okxLive,
+		OKXCloser:       closer,
+		OKXFetcher:      fetcher,
+		PortfolioReason: "drawdown reason",
+		CloseTimeout:    time.Second,
+	})
+
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("expected NOT ConfirmedFlat — unconfigured SOL position is still on-chain")
+	}
+	if len(plan.OKXUnconfigured) != 1 || plan.OKXUnconfigured[0].Coin != "SOL" {
+		t.Errorf("expected OKXUnconfigured=[SOL], got %v", plan.OKXUnconfigured)
+	}
+	// BTC should still be closed (it's configured).
+	if len(*calls) != 1 || (*calls)[0] != "BTC" {
+		t.Errorf("closer calls = %v, want [BTC]", *calls)
+	}
+	if !strings.Contains(plan.DiscordMessage, "manual intervention required") {
+		t.Errorf("expected manual intervention note, got: %s", plan.DiscordMessage)
+	}
+}
+
+// OKX deterministic error ordering: multiple failing coins produce a stable
+// message. Mirrors TestPlanKillSwitchClose_DeterministicErrorOrder for the
+// OKX path — Go map iteration randomization would otherwise produce
+// flaky messages for identical failures.
+func TestPlanKillSwitchClose_OKXDeterministicErrorOrder(t *testing.T) {
+	okxLive := []StrategyConfig{
+		{ID: "okx-btc", Platform: "okx", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+		{ID: "okx-eth", Platform: "okx", Type: "perps", Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+		{ID: "okx-sol", Platform: "okx", Type: "perps", Args: []string{"sma", "SOL", "1h", "--mode=live"}},
+	}
+	positions := []OKXPosition{
+		{Coin: "BTC", Size: 0.01, Side: "long"},
+		{Coin: "ETH", Size: 0.1, Side: "long"},
+		{Coin: "SOL", Size: 1.0, Side: "long"},
+	}
+	errs := map[string]error{
+		"BTC": fmt.Errorf("err"), "ETH": fmt.Errorf("err"), "SOL": fmt.Errorf("err"),
+	}
+	var prev string
+	for i := 0; i < 10; i++ {
+		closer, _ := stubOKXLiveCloser(errs)
+		fetcher, _ := stubOKXPositionsFetcher(positions, nil)
+		plan := planKillSwitchClose(KillSwitchCloseInputs{
+			OKXLiveAllPerps: okxLive,
+			OKXCloser:       closer,
+			OKXFetcher:      fetcher,
+			PortfolioReason: "reason",
+			CloseTimeout:    time.Second,
+		})
+		if prev != "" && plan.DiscordMessage != prev {
+			t.Fatalf("message should be deterministic, iter %d:\n%s\nprev:\n%s", i, plan.DiscordMessage, prev)
+		}
+		prev = plan.DiscordMessage
+	}
+	btcPos := strings.Index(prev, "BTC:")
+	ethPos := strings.Index(prev, "ETH:")
+	solPos := strings.Index(prev, "SOL:")
+	if !(btcPos < ethPos && ethPos < solPos) {
+		t.Errorf("expected alphabetical BTC < ETH < SOL in: %s", prev)
 	}
 }

@@ -503,6 +503,23 @@ func main() {
 				}
 			}
 
+			// #345: Partition live OKX strategies for the kill-switch close
+			// path. Perps and spot are separated because only perps support
+			// a reduce-only close; spot is surfaced as a manual-intervention
+			// gap in the Discord message (see planKillSwitchClose).
+			var okxLivePerps []StrategyConfig
+			var okxLiveSpot []StrategyConfig
+			for _, sc := range cfg.Strategies {
+				if sc.Platform != "okx" || !okxIsLive(sc.Args) {
+					continue
+				}
+				if sc.Type == "perps" {
+					okxLivePerps = append(okxLivePerps, sc)
+				} else if sc.Type == "spot" {
+					okxLiveSpot = append(okxLiveSpot, sc)
+				}
+			}
+
 			sharedWallets := detectSharedWallets(cfg.Strategies)
 			hlAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 			hlKey := SharedWalletKey{Platform: "hyperliquid", Account: hlAddr}
@@ -564,31 +581,37 @@ func main() {
 			}
 			mu.Unlock()
 
-			// #341: Submit reduce-only market closes to Hyperliquid for every
-			// non-zero on-chain position belonging to a configured live HL
-			// strategy. The planning step (planKillSwitchClose) runs OUTSIDE
-			// the lock — close_hyperliquid_position.py is a subprocess that
-			// can take seconds. HL-only this PR; OKX/Robinhood/TopStep have
-			// the same underlying bug but route orders through subprocesses
-			// without a native Go on-chain fetcher (tracked separately).
+			// #341 / #345: Submit reduce-only market closes to Hyperliquid
+			// AND OKX for every non-zero on-chain position belonging to a
+			// configured live perps strategy. The planning step
+			// (planKillSwitchClose) runs OUTSIDE the lock — the close
+			// scripts are subprocesses that can take seconds. OKX spot is
+			// surfaced as a known gap (no reduce-only equivalent for spot).
+			// Robinhood/TopStep have the same underlying bug but are
+			// tracked separately.
 			//
 			// Latch semantics: virtual state is mutated only when
-			// plan.OnChainConfirmedFlat is true. Otherwise the kill switch
-			// stays latched and the next cycle re-enters this branch
-			// (CheckPortfolioRisk early-returns false while KillSwitchActive
-			// is true) and retries.
+			// plan.OnChainConfirmedFlat is true (either platform failing
+			// flips the flag). Otherwise the kill switch stays latched and
+			// the next cycle re-enters this branch (CheckPortfolioRisk
+			// early-returns false while KillSwitchActive is true) and retries.
 			var plan KillSwitchClosePlan
 			if killSwitchFired {
-				plan = planKillSwitchClose(
-					hlAddr,
-					hlStateFetched,
-					hlPositions,
-					hlLiveAll,
-					portfolioReason,
-					90*time.Second,
-					defaultHyperliquidLiveCloser,
-					defaultHLStateFetcher,
-				)
+				inputs := KillSwitchCloseInputs{
+					HLAddr:          hlAddr,
+					HLStateFetched:  hlStateFetched,
+					HLPositions:     hlPositions,
+					HLLiveAll:       hlLiveAll,
+					HLCloser:        defaultHyperliquidLiveCloser,
+					HLFetcher:       defaultHLStateFetcher,
+					OKXLiveAllPerps: okxLivePerps,
+					OKXLiveAllSpot:  okxLiveSpot,
+					OKXCloser:       defaultOKXLiveCloser,
+					OKXFetcher:      defaultOKXPositionsFetcher,
+					PortfolioReason: portfolioReason,
+					CloseTimeout:    90 * time.Second,
+				}
+				plan = planKillSwitchClose(inputs)
 				for _, line := range plan.LogLines {
 					fmt.Println(line)
 				}
