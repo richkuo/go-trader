@@ -384,7 +384,7 @@ journalctl -u go-trader -n 50           # recent logs
 
 ## Risk Management
 
-- **Portfolio kill switch** — halt all trading if portfolio drawdown exceeds threshold (default: 25%)
+- **Portfolio kill switch** — halt all trading if portfolio drawdown exceeds threshold (default: 25%); when it fires, the scheduler also submits real close orders on Hyperliquid, OKX perps, Robinhood crypto, and TopStep futures live positions and only clears virtual state after every platform confirms flat (#341, #345, #346, #347, #350)
 - **Notional cap** — optional hard limit on total notional exposure
 - **Correlation tracking** — per-asset directional exposure monitoring; warns when a single asset exceeds concentration threshold (default: 60%) or too many strategies share the same direction (default: 75%); opt-in via `correlation.enabled`
 - **Per-strategy circuit breakers** — pause trading when max drawdown exceeded (24h cooldown); spot/options/futures measure drawdown peak-relative, perps measure it relative to deployed margin so leveraged margin wipes fire the breaker in time (#292)
@@ -428,6 +428,11 @@ go-trader/
 │   ├── okx_marks.go        # Native Go OKX perps tickers fetcher
 │   ├── shared_wallet.go    # Shared-wallet key (prevents double-counting HL capital)
 │   ├── risk.go             # Drawdown, circuit breakers
+│   ├── kill_switch_close.go   # Cross-platform live-close plan builder (HL/OKX/RH/TS)
+│   ├── okx_close.go           # OKX live-close adapter
+│   ├── robinhood_close.go     # Robinhood live-close adapter
+│   ├── topstep_close.go       # TopStep live-close adapter
+│   ├── state_presence.go   # Startup warning when live strategies run without state DB (#339)
 │   ├── deribit.go          # Deribit REST API for live pricing
 │   ├── discord.go          # Discord gateway (discordgo), SendMessage/SendDM/AskDM
 │   ├── notifier.go         # MultiNotifier (Discord + Telegram)
@@ -494,6 +499,7 @@ go-trader/
 | TopStep live mode fails | Set `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRET`, `TOPSTEP_ACCOUNT_ID` env vars |
 | Robinhood live mode fails | Set `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` env vars |
 | OKX live mode fails | Set `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_PASSPHRASE` env vars; use `OKX_SANDBOX=1` for demo |
+| "state DB missing but live strategies configured" warning on startup | The update process likely wiped the repo directory instead of `git pull`ing in place. Restore `scheduler/state.db` from backup, or set `GO_TRADER_ALLOW_MISSING_STATE=1` for a genuine first-run deployment (#339). |
 
 ---
 

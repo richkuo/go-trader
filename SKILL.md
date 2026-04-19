@@ -968,7 +968,7 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    Global:
      interval_seconds  — default cycle interval (seconds)
      db_file           — SQLite path for positions/trades/risk state
-     max_drawdown_pct  — portfolio-level circuit breaker
+     max_drawdown_pct  — portfolio-level circuit breaker (triggers live-close on HL/OKX/Robinhood/TopStep)
      notional_cap_usd  — max total notional exposure
      correlation.*     — per-asset directional exposure tracking (enabled, max_concentration_pct, max_same_direction_pct)
    Per-strategy:
@@ -1091,6 +1091,7 @@ Set via systemd override (`sudo systemctl edit go-trader`):
 | `OKX_SANDBOX` | Set to `1` to target OKX demo trading environment |
 | `LUNO_API_KEY_ID` | Luno API key ID (live trading only) |
 | `LUNO_API_KEY_SECRET` | Luno API secret (live trading only) |
+| `GO_TRADER_ALLOW_MISSING_STATE` | Set to `1` to silence the "state DB missing but live strategies configured" startup warning (#339). Only use for genuine first-run deployments. |
 
 ### Example: Adjusting a Strategy
 
