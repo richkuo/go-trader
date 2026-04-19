@@ -111,6 +111,42 @@ func TestForceCloseRobinhoodLive_CtxExpiredBeforeSubmit(t *testing.T) {
 	}
 }
 
+func TestForceCloseRobinhoodLive_NegativeSizeNotTraded(t *testing.T) {
+	// Robinhood crypto is spot-only — negative sizes shouldn't appear in
+	// practice. If a future change ever populates a negative balance (e.g.
+	// lent / staked), the close gate must NOT fire a market sell for |size|.
+	// Forward-compat guard against the Size > 0 vs Size != 0 ambiguity
+	// flagged in the #346 review.
+	rhLive := []StrategyConfig{
+		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
+			Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
+	}
+	positions := []RobinhoodPosition{
+		{Coin: "BTC", Size: -0.01},  // owned coin, hypothetical negative
+		{Coin: "DOGE", Size: -100},  // unowned coin, hypothetical negative
+	}
+	var calls []string
+	closer := func(sym string) (*RobinhoodCloseResult, error) {
+		calls = append(calls, sym)
+		return &RobinhoodCloseResult{}, nil
+	}
+
+	report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, closer)
+
+	if len(calls) != 0 {
+		t.Errorf("negative-size position must NOT trigger close, got calls=%v", calls)
+	}
+	if len(report.Unconfigured) != 0 {
+		t.Errorf("negative-size unowned position must NOT be Unconfigured, got %+v", report.Unconfigured)
+	}
+	if len(report.AlreadyFlat) != 1 || report.AlreadyFlat[0] != "BTC" {
+		t.Errorf("negative-size owned position should be treated as already-flat, got %v", report.AlreadyFlat)
+	}
+	if !report.ConfirmedFlat() {
+		t.Errorf("negative-size positions must not block ConfirmedFlat, got errors=%v", report.Errors)
+	}
+}
+
 func TestForceCloseRobinhoodLive_OptionsStrategiesIgnored(t *testing.T) {
 	// Options strategies live in RHLiveOptions and must NOT appear in the
 	// crypto close loop — forceCloseRobinhoodLive should not attempt to

@@ -39,7 +39,11 @@ def main():
         if not adapter.is_live:
             _emit_error("Robinhood adapter not live — set ROBINHOOD_USERNAME / ROBINHOOD_PASSWORD / ROBINHOOD_TOTP_SECRET")
             return
-        raw = adapter.get_crypto_positions()
+        # Strict variant propagates exceptions instead of silently returning
+        # [] — required by the kill switch so a Robinhood outage latches
+        # rather than clears virtual state while live exposure remains
+        # (#346 review).
+        raw = adapter.get_crypto_positions_strict()
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         _emit_error(str(e))

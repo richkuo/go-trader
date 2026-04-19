@@ -148,13 +148,16 @@ func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition,
 			// Unowned position — kill switch only acts on coins this
 			// scheduler is configured to trade. Non-zero sizes are surfaced
 			// to the caller via Unconfigured so the plan can latch the
-			// switch and prompt manual intervention.
-			if p.Size != 0 {
+			// switch and prompt manual intervention. Robinhood crypto is
+			// spot-only so Size should never be < 0; guard with > 0 so a
+			// future change that mistakenly populates a negative balance
+			// (e.g. lent / staked) doesn't trigger a market sell for |size|.
+			if p.Size > 0 {
 				report.Unconfigured = append(report.Unconfigured, p)
 			}
 			continue
 		}
-		if p.Size == 0 {
+		if p.Size <= 0 {
 			report.AlreadyFlat = append(report.AlreadyFlat, p.Coin)
 			continue
 		}
