@@ -664,19 +664,35 @@ func RunOKXFetchPositions(script string) (*OKXPositionsResult, string, error) {
 
 // parseOKXPositionsOutput is the pure parser, extracted from
 // RunOKXFetchPositions so the decision logic can be tested without
-// spawning Python (mirrors parseOKXCloseOutput / parseHyperliquidCloseOutput).
+// spawning Python. Mirrors parseOKXCloseOutput / parseHyperliquidCloseOutput
+// 5-case matrix (contract drift here would be bad — the kill switch reads
+// every parser result the same way).
 func parseOKXPositionsOutput(stdout []byte, stderrStr string, runErr error) (*OKXPositionsResult, string, error) {
 	var result OKXPositionsResult
 	parseErr := json.Unmarshal(stdout, &result)
 
 	switch {
 	case runErr == nil && parseErr == nil && result.Error == "":
+		// Clean success: exit 0, valid JSON, no error field.
 		return &result, stderrStr, nil
 
+	case runErr == nil && parseErr == nil && result.Error != "":
+		// Exit 0 but the script reported an error — shouldn't happen with
+		// the current Python contract (every error path exits 1) but we
+		// honor the JSON envelope as authoritative and surface it as a
+		// contract-drift diagnostic.
+		return &result, stderrStr, fmt.Errorf("fetch positions reported error despite exit 0: %s", result.Error)
+
 	case parseErr == nil && result.Error != "":
+		// Expected error path: exit non-zero, valid JSON envelope. Surface
+		// as a non-nil error so callers don't need to double-check.
 		return &result, stderrStr, fmt.Errorf("fetch positions failed: %s", result.Error)
 
 	case parseErr == nil && runErr != nil:
+		// Exit non-zero with valid JSON but no error field — unexpected.
+		// Treat as failure to avoid silently reporting "no positions" on a
+		// non-zero exit (kill switch would clear virtual state while
+		// on-chain exposure remained — the #345 bug class).
 		return &result, stderrStr, fmt.Errorf("fetch positions subprocess exit %v with no error field (stderr: %s)", runErr, stderrStr)
 
 	default:

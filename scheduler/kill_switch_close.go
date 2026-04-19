@@ -217,23 +217,12 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 					fmt.Sprintf("[CRITICAL] okx-close: %s failed: %v (kill switch will retry next cycle)", coin, plan.OKXCloseReport.Errors[coin]))
 			}
 
-			// Unconfigured OKX positions: traded coins vs. on-chain. Same
-			// semantic as HL: kill switch refuses to unilaterally liquidate
-			// positions for coins it isn't configured to trade.
-			tradedCoins := make(map[string]bool)
-			for _, sc := range in.OKXLiveAllPerps {
-				if sc.Type != "perps" {
-					continue
-				}
-				if sym := okxSymbol(sc.Args); sym != "" {
-					tradedCoins[sym] = true
-				}
-			}
-			for _, p := range okxPositions {
-				if !tradedCoins[p.Coin] && p.Size != 0 {
-					plan.OKXUnconfigured = append(plan.OKXUnconfigured, p)
-				}
-			}
+			// Unconfigured OKX positions are detected in forceCloseOKXLive
+			// so the traded-coins partition has a single source of truth.
+			// Semantic matches HL Unconfigured: kill switch refuses to
+			// unilaterally liquidate positions for coins it isn't
+			// configured to trade.
+			plan.OKXUnconfigured = plan.OKXCloseReport.Unconfigured
 			if len(plan.OKXUnconfigured) > 0 {
 				plan.OnChainConfirmedFlat = false
 				for _, p := range plan.OKXUnconfigured {
@@ -250,8 +239,15 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 
 // formatKillSwitchMessage builds the Discord notification string from a plan.
 // Split out so tests can call it directly and so main.go delivery stays a
-// one-liner. Returns two distinct shapes: "PORTFOLIO KILL SWITCH" on
-// confirmed-flat, "PORTFOLIO KILL SWITCH (LATCHED, RETRYING)" otherwise.
+// one-liner. Returns three distinct shapes:
+//   - "PORTFOLIO KILL SWITCH" — confirmed-flat, no spot gap.
+//   - "PORTFOLIO KILL SWITCH (SPOT GAP — VERIFY MANUALLY)" — confirmed-flat
+//     for perps, but OKX spot strategies are configured and the scheduler
+//     has no safe auto-close path (#345). Header is distinct so an
+//     operator skimming does not read "Virtual state cleared" as
+//     "everything is closed."
+//   - "PORTFOLIO KILL SWITCH (LATCHED, RETRYING)" — some on-chain
+//     exposure could not be confirmed closed; retry next cycle.
 func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioReason string) string {
 	if plan.OnChainConfirmedFlat {
 		var parts []string
@@ -265,11 +261,13 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 		if len(plan.OKXCloseReport.ClosedCoins) > 0 {
 			parts = append(parts, fmt.Sprintf("OKX closes: %v", plan.OKXCloseReport.ClosedCoins))
 		}
+		header := "**PORTFOLIO KILL SWITCH**"
 		if plan.OKXSpotPresent {
-			parts = append(parts, "OKX spot strategies present — verify manually (kill switch cannot auto-close spot)")
+			header = "**PORTFOLIO KILL SWITCH (SPOT GAP — VERIFY MANUALLY)**"
+			parts = append(parts, "OKX spot strategies present — kill switch cannot auto-close spot, verify balances manually")
 		}
 		summary := strings.Join(parts, "; ")
-		return fmt.Sprintf("**PORTFOLIO KILL SWITCH**\n%s\n%s. Virtual state cleared. Manual reset required.", portfolioReason, summary)
+		return fmt.Sprintf("%s\n%s\n%s. Virtual state cleared. Manual reset required.", header, portfolioReason, summary)
 	}
 
 	var segments []string

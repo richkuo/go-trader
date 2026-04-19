@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 )
 
 // forceCloseOKXLive unit tests — mirror the HL tests in
@@ -37,6 +36,13 @@ func TestForceCloseOKXLive_ClosesOwnedCoinsOnly(t *testing.T) {
 	}
 	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "BTC" {
 		t.Errorf("ClosedCoins = %v, want [BTC]", report.ClosedCoins)
+	}
+	// Unowned positions must be surfaced via Unconfigured so the kill-switch
+	// plan can latch for manual intervention (dedup: single source of truth
+	// for the traded-coins partition lives in forceCloseOKXLive, not the
+	// plan builder).
+	if len(report.Unconfigured) != 1 || report.Unconfigured[0].Coin != "SOL" {
+		t.Errorf("Unconfigured = %v, want [SOL]", report.Unconfigured)
 	}
 }
 
@@ -99,7 +105,6 @@ func TestForceCloseOKXLive_CtxExpiredBeforeSubmit(t *testing.T) {
 	positions := []OKXPosition{{Coin: "BTC", Size: 0.01, Side: "long"}}
 	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	cancel()
-	time.Sleep(time.Millisecond) // ensure Err() is non-nil
 	var calls []string
 	closer := func(sym string) (*OKXCloseResult, error) {
 		calls = append(calls, sym)

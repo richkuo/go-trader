@@ -37,7 +37,7 @@ def main():
         if not adapter.is_live:
             _emit_error("OKX adapter not live — set OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE")
             return
-        raw = adapter._exchange.fetch_positions()
+        raw = adapter.fetch_open_positions()
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         _emit_error(str(e))

@@ -49,7 +49,9 @@ type OKXPositionsFetcher func() ([]OKXPosition, error)
 
 // defaultOKXPositionsFetcher wraps fetch_okx_positions.py for production
 // use. Returns a typed slice so callers don't have to decode the JSON
-// envelope themselves.
+// envelope themselves. Python-side filters stale zero-size entries
+// upstream (fetch_okx_positions.py), and forceCloseOKXLive has its own
+// size==0 defense-in-depth — no need for a third filtering layer here.
 func defaultOKXPositionsFetcher() ([]OKXPosition, error) {
 	result, stderr, err := RunOKXFetchPositions(okxFetchPositionsScript)
 	if stderr != "" {
@@ -60,9 +62,6 @@ func defaultOKXPositionsFetcher() ([]OKXPosition, error) {
 	}
 	positions := make([]OKXPosition, 0, len(result.Positions))
 	for _, p := range result.Positions {
-		if p.Size == 0 {
-			continue
-		}
 		positions = append(positions, OKXPosition{
 			Coin:       p.Coin,
 			Size:       p.Size,
@@ -76,16 +75,27 @@ func defaultOKXPositionsFetcher() ([]OKXPosition, error) {
 // OKXLiveCloseReport summarizes a forceCloseOKXLive run. Mirrors
 // HyperliquidLiveCloseReport so the kill-switch plan can treat both
 // platforms symmetrically. Errors is the load-bearing correctness signal —
-// only when it's empty does the caller mutate virtual state. See
+// ConfirmedFlat() returns true only when it's empty. See
 // HyperliquidLiveCloseReport doc for the rationale.
+//
+// Unconfigured lists on-chain positions for coins no configured live perps
+// strategy trades. Computed here (rather than in the plan builder) so the
+// "which coins is this scheduler authorized to touch" partition has a
+// single source of truth — if the perps-vs-spot partition rule ever
+// changes, only this function needs to be updated. The plan builder
+// consumes Unconfigured separately from ConfirmedFlat to decide whether
+// to latch the kill switch for manual intervention.
 type OKXLiveCloseReport struct {
-	ClosedCoins []string
-	AlreadyFlat []string
-	Errors      map[string]error
+	ClosedCoins  []string
+	AlreadyFlat  []string
+	Unconfigured []OKXPosition
+	Errors       map[string]error
 }
 
 // ConfirmedFlat reports whether every configured live OKX coin reached a
-// terminal closed/flat state without errors.
+// terminal closed/flat state without errors. Mirrors HL shape
+// (Errors-only); Unconfigured is a separate signal the plan builder
+// consumes to decide whether to latch the switch for manual intervention.
 func (r OKXLiveCloseReport) ConfirmedFlat() bool {
 	return len(r.Errors) == 0
 }
@@ -141,7 +151,12 @@ func forceCloseOKXLive(ctx context.Context, positions []OKXPosition, okxLiveAll 
 	for _, p := range positions {
 		if !tradedCoins[p.Coin] {
 			// Unowned position — kill switch only acts on coins this
-			// scheduler is configured to trade.
+			// scheduler is configured to trade. Non-zero sizes are surfaced
+			// to the caller via Unconfigured so the plan can latch the
+			// switch and prompt manual intervention.
+			if p.Size != 0 {
+				report.Unconfigured = append(report.Unconfigured, p)
+			}
 			continue
 		}
 		if p.Size == 0 {

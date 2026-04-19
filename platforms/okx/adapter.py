@@ -159,6 +159,19 @@ class OKXExchangeAdapter:
     # Order execution (live mode only)
     # ─────────────────────────────────────────────
 
+    def fetch_open_positions(self) -> list:
+        """Return every open perpetual swap position on the account.
+
+        Thin wrapper around ccxt's ``fetch_positions`` — exists so shared
+        scripts can stay off the private ``_exchange`` attribute (CLAUDE.md
+        rule). Raises in paper mode: position queries require auth.
+        """
+        if not self._is_live:
+            raise RuntimeError(
+                "fetch_open_positions requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
+            )
+        return self._exchange.fetch_positions() or []
+
     def market_open(self, symbol: str, is_buy: bool, size: float, inst_type: str = "spot") -> dict:
         """
         Place a market order.

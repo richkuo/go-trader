@@ -35,13 +35,11 @@ def _run_script(positions_or_exc, is_live=True):
     mock_adapter_cls = MagicMock()
     mock_adapter = MagicMock()
     mock_adapter.is_live = is_live
-    mock_exchange = MagicMock()
-    mock_adapter._exchange = mock_exchange
     mock_adapter_cls.return_value = mock_adapter
     if isinstance(positions_or_exc, Exception):
-        mock_exchange.fetch_positions.side_effect = positions_or_exc
+        mock_adapter.fetch_open_positions.side_effect = positions_or_exc
     else:
-        mock_exchange.fetch_positions.return_value = positions_or_exc
+        mock_adapter.fetch_open_positions.return_value = positions_or_exc
 
     captured = StringIO()
     exit_code = {"value": 0}
