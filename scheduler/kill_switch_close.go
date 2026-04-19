@@ -79,9 +79,9 @@ type KillSwitchCloseInputs struct {
 	// extra headroom.
 	CloseTimeout time.Duration
 
-	// Per-platform overrides. Zero means "use CloseTimeout". A minimum
-	// guarantee ensures one slow platform's budget cannot starve the others
-	// — each platform's context is independent.
+	// Per-platform overrides. Zero means "use CloseTimeout". Each platform's
+	// context is independent so one slow platform's budget cannot starve
+	// the others.
 	HLCloseTimeout  time.Duration
 	OKXCloseTimeout time.Duration
 	RHCloseTimeout  time.Duration
