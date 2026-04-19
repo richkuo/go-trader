@@ -253,6 +253,33 @@ func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
 	return nil
 }
 
+// SetInitialCapital is the ONLY sanctioned way to change a strategy's
+// initial_capital baseline (#343). All other write paths go through SaveState,
+// which preserves the existing baseline. Callers are expected to be an
+// explicit user command (CLI flag, admin script, migration), not normal
+// runtime state persistence.
+func (sdb *StateDB) SetInitialCapital(strategyID string, value float64) error {
+	if sdb == nil || sdb.db == nil {
+		return fmt.Errorf("state db unavailable")
+	}
+	if value <= 0 {
+		return fmt.Errorf("initial_capital must be > 0, got %g", value)
+	}
+	res, err := sdb.db.Exec("UPDATE strategies SET initial_capital = ? WHERE id = ?", value, strategyID)
+	if err != nil {
+		return fmt.Errorf("update initial_capital for %s: %w", strategyID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("no strategy row for id=%q", strategyID)
+	}
+	fmt.Printf("[state] initial_capital override for %s set to $%.2f (#343)\n", strategyID, value)
+	return nil
+}
+
 // SaveState writes the full AppState to SQLite within a single transaction.
 func (sdb *StateDB) SaveState(state *AppState) error {
 	tx, err := sdb.db.Begin()
@@ -280,12 +307,31 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		return fmt.Errorf("upsert app_state: %w", err)
 	}
 
-	// 2. Delete all strategies (CASCADE deletes positions + option_positions).
+	// 2. Snapshot existing initial_capital per strategy so the save path can
+	// never silently rewrite a PnL baseline (#343). Captured before DELETE so
+	// the CASCADE doesn't erase the prior values first.
+	existingInitCaps := make(map[string]float64)
+	existingRows, err := tx.Query("SELECT id, initial_capital FROM strategies")
+	if err != nil {
+		return fmt.Errorf("read existing initial_capital: %w", err)
+	}
+	for existingRows.Next() {
+		var id string
+		var cap float64
+		if err := existingRows.Scan(&id, &cap); err != nil {
+			existingRows.Close()
+			return fmt.Errorf("scan existing initial_capital: %w", err)
+		}
+		existingInitCaps[id] = cap
+	}
+	existingRows.Close()
+
+	// 3. Delete all strategies (CASCADE deletes positions + option_positions).
 	if _, err := tx.Exec("DELETE FROM strategies"); err != nil {
 		return fmt.Errorf("delete strategies: %w", err)
 	}
 
-	// 3. Insert strategies with flattened risk state.
+	// 4. Insert strategies with flattened risk state.
 	stmtStrat, err := tx.Prepare(`INSERT OR REPLACE INTO strategies (id, type, platform, cash, initial_capital,
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
@@ -314,6 +360,17 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	defer stmtOpt.Close()
 
 	for _, s := range state.Strategies {
+		// Immutable baseline guard (#343): if a prior initial_capital exists
+		// and the incoming value disagrees, keep the prior value so PnL
+		// history stays comparable across restarts, state restores, and
+		// position closes. A baseline change requires an explicit override
+		// via StateDB.SetInitialCapital.
+		if prev, ok := existingInitCaps[s.ID]; ok && prev > 0 && s.InitialCapital != prev {
+			fmt.Printf("[WARN] state: blocking initial_capital change for %s ($%.2f → $%.2f); baseline preserved (#343)\n",
+				s.ID, prev, s.InitialCapital)
+			s.InitialCapital = prev
+		}
+
 		cbInt := 0
 		if s.RiskState.CircuitBreaker {
 			cbInt = 1
@@ -346,7 +403,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 	}
 
-	// 4. Append-only trades: insert any TradeHistory rows that have not yet been
+	// 5. Append-only trades: insert any TradeHistory rows that have not yet been
 	//    persisted (t.persisted == false). LoadState and successful RecordTrade
 	//    both flip the flag to true, so SaveState only flushes the backlog —
 	//    including any rows whose eager InsertTrade earlier in the cycle
@@ -445,7 +502,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 	}
 
-	// 5. Upsert portfolio_risk singleton.
+	// 6. Upsert portfolio_risk singleton.
 	ksActive := 0
 	if state.PortfolioRisk.KillSwitchActive {
 		ksActive = 1
@@ -462,7 +519,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		return fmt.Errorf("upsert portfolio_risk: %w", err)
 	}
 
-	// 6. Kill switch events: replace all (capped at maxKillSwitchEvents).
+	// 7. Kill switch events: replace all (capped at maxKillSwitchEvents).
 	if _, err := tx.Exec("DELETE FROM kill_switch_events"); err != nil {
 		return fmt.Errorf("delete kill_switch_events: %w", err)
 	}
@@ -480,7 +537,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 	}
 
-	// 7. Upsert correlation_snapshot singleton as JSON.
+	// 8. Upsert correlation_snapshot singleton as JSON.
 	snapJSON := "{}"
 	if state.CorrelationSnapshot != nil {
 		data, err := json.Marshal(state.CorrelationSnapshot)
