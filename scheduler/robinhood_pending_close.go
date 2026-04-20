@@ -199,6 +199,10 @@ func runPendingRobinhoodCircuitCloses(
 		}
 		sc := lookupStrategyConfig(strategies, j.stratID)
 		if sc == nil || sc.Platform != "robinhood" || sc.Type != "spot" || !robinhoodIsLive(sc.Args) {
+			// Strategy was removed from config (or flipped to paper / non-RH)
+			// between enqueue and drain — clear the orphaned pending leg so
+			// the map does not leak stale entries forever. Same bail-out as
+			// the HL / OKX drains.
 			mu.Lock()
 			if ss := state.Strategies[j.stratID]; ss != nil {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhood)
@@ -209,10 +213,6 @@ func runPendingRobinhoodCircuitCloses(
 
 		allOK := true
 		for _, c := range j.pending.Symbols {
-			if err := ctxOverall.Err(); err != nil {
-				allOK = false
-				break
-			}
 			// Defense in depth: re-check the on-account balance right before
 			// submit (it may have drained since enqueue via stuck-CB recovery
 			// or manual intervention). Zero → already flat; skip silently.
@@ -221,11 +221,13 @@ func runPendingRobinhoodCircuitCloses(
 				continue
 			}
 
-			// Sole-ownership gate at submit time — strictly necessary here
-			// because cfg may change between enqueue and drain. Shared-coin
-			// strategies DM the owner and clear the pending for this coin; the
-			// stuck-CB recovery path will re-surface the same DM next cycle
-			// while the CB stays latched.
+			// Sole-ownership gate — checked BEFORE ctxOverall so the DM fires
+			// on the same cycle the drain reached this leg even if the
+			// remaining budget has been exhausted. DM formatting is purely
+			// local work (no RPC) so honoring it under an expired budget is
+			// safe. Shared-coin strategies DM the owner and clear the pending
+			// for this coin; the stuck-CB recovery path will re-surface the
+			// same DM next cycle while the CB stays latched.
 			peers := rhLiveStrategiesForCoin(c.Symbol, rhLiveAll)
 			if len(peers) > 1 {
 				msg := formatRobinhoodSharedOwnerDM(j.stratID, c.Symbol, peers)
@@ -237,6 +239,14 @@ func runPendingRobinhoodCircuitCloses(
 				// we did NOT close the position, so don't report success.
 				allOK = false
 				continue
+			}
+
+			// Submit gate: Robinhood TOTP login + market_sell are the only
+			// RPCs in this loop, so the overall-budget guard sits here (not
+			// at the top of the iteration).
+			if err := ctxOverall.Err(); err != nil {
+				allOK = false
+				break
 			}
 
 			result, err := closer(c.Symbol)

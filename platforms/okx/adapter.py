@@ -192,9 +192,18 @@ class OKXExchangeAdapter:
             params = {"tdMode": "cash"}
         return self._exchange.create_market_order(pair, side, size, params=params)
 
-    def market_close(self, symbol: str) -> dict:
+    def market_close(self, symbol: str, sz: float | None = None) -> dict:
         """
-        Close all open perpetual swap positions for a symbol.
+        Close an open perpetual swap position for a symbol (reduce-only).
+
+        When ``sz`` is None, closes the full on-chain contracts for the
+        position (portfolio kill switch / sole-owner circuit breakers).
+        When ``sz`` is set, submits a reduce-only market order for that
+        contract quantity only — used for shared-wallet per-strategy
+        circuit breakers (#360). The caller is responsible for sizing;
+        OKX enforces reduceOnly=True on the order itself so an oversized
+        request cannot flip the position.
+
         Only available in live mode; raises RuntimeError in paper mode.
         """
         if not self._is_live:
@@ -209,11 +218,37 @@ class OKXExchangeAdapter:
             if contracts > 0:
                 pos_side = pos.get("side", "")
                 close_side = "sell" if pos_side == "long" else "buy"
+                close_sz = contracts
+                if sz is not None:
+                    if sz <= 0:
+                        continue
+                    close_sz = min(float(sz), contracts)
+                    if close_sz <= 0:
+                        continue
                 results.append(self._exchange.create_market_order(
-                    pair, close_side, contracts,
+                    pair, close_side, close_sz,
                     params={"tdMode": "cross", "reduceOnly": True}
                 ))
         return results[0] if results else {}
+
+    def get_account_balance(self) -> float:
+        """Return total USDT-denominated account value for shared-wallet
+        aggregation (#360 phase 2 — unlocks multi-strategy OKX portfolio
+        value correctness). Sums free + used USDT; callers that need to
+        include open-position PnL should rely on ccxt's total field.
+
+        Only available in live mode; raises RuntimeError in paper mode.
+        """
+        if not self._is_live:
+            raise RuntimeError(
+                "get_account_balance requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
+            )
+        bal = self._exchange.fetch_balance()
+        total = bal.get("total") or {}
+        try:
+            return float(total.get("USDT") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
 
     # ─────────────────────────────────────────────
     # Options Protocol methods

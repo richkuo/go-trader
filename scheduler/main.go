@@ -577,6 +577,36 @@ func main() {
 				}
 			}
 
+			// #360: Fetch OKX positions once if any live OKX perps strategy
+			// exists. Drives per-strategy circuit-breaker pending closes
+			// (PlatformRiskAssist.OKXPositions). Gated on OKX_API_KEY so
+			// paper-only configs skip the subprocess entirely.
+			okxHasCreds := os.Getenv("OKX_API_KEY") != ""
+			okxKey := SharedWalletKey{Platform: "okx", Account: os.Getenv("OKX_API_KEY")}
+			_, okxShared := sharedWallets[okxKey]
+			var okxPositions []OKXPosition
+			var okxStateFetched bool
+			if okxHasCreds && len(okxLivePerps) > 0 {
+				pos, err := defaultOKXPositionsFetcher()
+				if err != nil {
+					fmt.Printf("[WARN] okx fetch_positions failed: %v — skipping per-strategy OKX circuit enqueue this cycle\n", err)
+				} else {
+					okxStateFetched = true
+					okxPositions = pos
+				}
+			}
+			// #360 phase 2 of #357: fetch the unified USDT balance for the
+			// shared-wallet risk check when 2+ live OKX perps strategies share
+			// an API key. Independent subprocess so a fetch_positions outage
+			// doesn't starve the balance read.
+			if okxHasCreds && okxShared {
+				if bal, err := defaultSharedWalletBalance("okx"); err != nil {
+					fmt.Printf("[WARN] okx balance fetch failed: %v — falling back to per-wallet max this cycle\n", err)
+				} else {
+					walletBalances[okxKey] = bal
+				}
+			}
+
 			mu.RLock()
 			totalPV, usedPVFallback := computeTotalPortfolioValue(cfg.Strategies, state, prices, walletBalances, sharedWallets)
 			totalNotional := PortfolioNotional(state.Strategies, prices)
@@ -607,10 +637,12 @@ func main() {
 				// from the exchange (#341): closing virtually but never sending
 				// the reduce-only order left on-chain positions live, and once
 				// virtual was empty no future cycle could detect the leak.
-				// Portfolio kill owns all HL closes — drop per-strategy pending.
+				// Portfolio kill owns all platform closes — drop per-strategy pending.
 				for _, ss := range state.Strategies {
 					if ss != nil {
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
+						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseOKX)
+						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhood)
 					}
 				}
 			}
@@ -769,6 +801,22 @@ func main() {
 						&mu,
 					)
 				}
+				// #360: Live OKX per-strategy circuit breaker closes. Same shape
+				// as the HL drain — the pending map is keyed per platform.
+				if len(okxLivePerps) > 0 && okxHasCreds {
+					runPendingOKXCircuitCloses(
+						context.Background(),
+						state,
+						cfg.Strategies,
+						okxHasCreds,
+						okxPositions,
+						okxStateFetched,
+						defaultOKXPositionsFetcher,
+						defaultOKXLiveCloser,
+						90*time.Second,
+						&mu,
+					)
+				}
 				// #361 phase 3: Live Robinhood crypto per-strategy circuit breaker
 				// closes. RH crypto has no reduce-only primitive, so each pending
 				// leg is a full-account market_sell guarded by a sole-ownership
@@ -873,8 +921,16 @@ func main() {
 
 					// Phase 2: Lock — CheckRisk (fast, no I/O)
 					var riskAssist *PlatformRiskAssist
-					if hlStateFetched && len(hlLiveAll) > 0 {
-						riskAssist = &PlatformRiskAssist{HLPositions: hlPositions, HLLiveAll: hlLiveAll}
+					if (hlStateFetched && len(hlLiveAll) > 0) || (okxStateFetched && len(okxLivePerps) > 0) {
+						riskAssist = &PlatformRiskAssist{}
+						if hlStateFetched && len(hlLiveAll) > 0 {
+							riskAssist.HLPositions = hlPositions
+							riskAssist.HLLiveAll = hlLiveAll
+						}
+						if okxStateFetched && len(okxLivePerps) > 0 {
+							riskAssist.OKXPositions = okxPositions
+							riskAssist.OKXLiveAll = okxLivePerps
+						}
 					}
 					mu.Lock()
 					allowed, reason := CheckRisk(&sc, stratState, pv, prices, logger, riskAssist)

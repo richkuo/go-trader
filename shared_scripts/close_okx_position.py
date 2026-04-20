@@ -14,6 +14,11 @@ for the spot follow-up.
 
 Usage:
     close_okx_position.py --symbol=BTC --mode=live
+    close_okx_position.py --symbol=BTC --mode=live --sz=0.25
+
+Optional ``--sz`` submits a partial reduce-only close (contract units). Omit
+for full position close (portfolio kill switch and sole-owner circuit
+breakers). Used by shared-wallet per-strategy circuit breakers (#360).
 
 Live mode is required (kill switch is meaningful only against real
 positions). Stdout is always a single JSON envelope matching the shape of
@@ -43,6 +48,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", required=True)
     parser.add_argument("--mode", default="live")
+    parser.add_argument(
+        "--sz",
+        type=float,
+        default=None,
+        help="partial close size in contract units (omit for full position)",
+    )
     args = parser.parse_args()
 
     if args.mode != "live":
@@ -60,7 +71,7 @@ def main():
         if not adapter.is_live:
             _emit_error(args.symbol, "OKX adapter not live — set OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE")
             return
-        result = adapter.market_close(args.symbol)
+        result = adapter.market_close(args.symbol, args.sz)
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         _emit_error(args.symbol, str(e))
