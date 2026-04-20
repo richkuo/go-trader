@@ -673,7 +673,10 @@ func main() {
 				for _, sc := range cfg.Strategies {
 					if s, ok := state.Strategies[sc.ID]; ok {
 						forceCloseAllPositions(s, prices, nil)
-						s.RiskState.PendingHyperliquidCircuitClose = nil
+						// Pending HL circuit close was already cleared above
+						// when portfolio kill fired (line ~611); nothing to do
+						// here. The per-strategy pending field is owned by the
+						// portfolio kill path once it takes over flattening.
 					}
 				}
 				mu.Unlock()

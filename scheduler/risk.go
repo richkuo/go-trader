@@ -557,12 +557,19 @@ type HLRiskAssist struct {
 }
 
 // MarshalPendingHLCloseJSON returns a DB-safe JSON blob for the pending field.
+// A marshal error is logged loudly rather than silently swallowed — on a
+// simple {string, float64} struct this branch is essentially unreachable,
+// but silently returning "" would persist a blank column that wipes the
+// pending close on reload. Logging gives operators a chance to notice if
+// this ever fires (#356 review).
 func (r *RiskState) MarshalPendingHLCloseJSON() string {
 	if r == nil || r.PendingHyperliquidCircuitClose == nil {
 		return ""
 	}
 	b, err := json.Marshal(r.PendingHyperliquidCircuitClose)
 	if err != nil {
+		fmt.Printf("[CRITICAL] MarshalPendingHLCloseJSON: refusing to persist pending HL circuit close — json.Marshal failed: %v (pending=%+v)\n",
+			err, r.PendingHyperliquidCircuitClose)
 		return ""
 	}
 	return string(b)
