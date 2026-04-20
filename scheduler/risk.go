@@ -531,8 +531,12 @@ type RiskState struct {
 	WinningTrades       int       `json:"winning_trades"`
 	LosingTrades        int       `json:"losing_trades"`
 	// PendingCircuitCloses holds venue-appropriate reduce-only / flatten close
-	// requests queued by per-strategy circuit breakers, keyed by platform string
-	// ("hyperliquid", "okx", "topstep", "robinhood"). Serialized to SQLite as
+	// requests queued by per-strategy circuit breakers, keyed by platform string.
+	// The key MUST match StrategyConfig.Platform ("hyperliquid", "okx",
+	// "topstep", "robinhood") — not the strategy-ID prefix (hl-/ts-/rh-/okx-)
+	// and not an ad-hoc label — so the drain runners can correlate pending
+	// entries with live strategies by platform. Use the PlatformPendingClose*
+	// constants when setting or reading entries. Serialized to SQLite as
 	// risk_pending_circuit_closes_json. Drained out-of-lock by platform-specific
 	// runners (e.g. runPendingHyperliquidCircuitCloses for "hyperliquid").
 	//
@@ -644,10 +648,10 @@ func (r *RiskState) UnmarshalPendingCircuitClosesJSON(raw string) {
 	}
 
 	// Legacy shape fallback: {"coins":[{"coin":"ETH","sz":0.1}]} from #356.
-	// A successful new-map unmarshal with the legacy payload would land in the
-	// "coins" key with a nil/empty value (the array cannot decode into a
-	// *PendingCircuitClose) and get filtered out above, so execution falls
-	// through here.
+	// json.Unmarshal into map[string]*PendingCircuitClose errors out on the
+	// legacy payload (the "coins" value is an array, which cannot decode into
+	// a *PendingCircuitClose), so the new-shape attempt above returns non-nil
+	// err and execution falls through here.
 	var legacy struct {
 		Coins []struct {
 			Coin string  `json:"coin"`

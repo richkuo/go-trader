@@ -1762,3 +1762,104 @@ func TestSaveAndLoadDB_LegacyPendingHLJSON_MigratesOnLoad(t *testing.T) {
 		t.Errorf("legacy-migrated pending symbol=%q size=%g want ETH 0.2585", p.Symbols[0].Symbol, p.Symbols[0].Size)
 	}
 }
+
+// TestMigrateSchema_PendingCircuitClosesColumn_Idempotent verifies the PR #365
+// review fix: running migrateSchema repeatedly must leave exactly one pending
+// column (risk_pending_circuit_closes_json) and never re-add the legacy
+// risk_pending_hl_close_json. The pre-fix migration unconditionally ran
+// ADD COLUMN risk_pending_hl_close_json + RENAME, which grew a ghost legacy
+// column on every post-rename startup.
+func TestMigrateSchema_PendingCircuitClosesColumn_Idempotent(t *testing.T) {
+	db := openTestDB(t)
+	// openTestDB already ran migrateSchema once via OpenStateDB. Run it again
+	// to simulate a second scheduler startup on an already-migrated DB.
+	if err := db.migrateSchema(); err != nil {
+		t.Fatalf("second migrateSchema: %v", err)
+	}
+	// And a third, to lock in the fixed-point claim.
+	if err := db.migrateSchema(); err != nil {
+		t.Fatalf("third migrateSchema: %v", err)
+	}
+
+	hasLegacy, hasNew, err := db.strategiesColumnPresence()
+	if err != nil {
+		t.Fatalf("strategiesColumnPresence: %v", err)
+	}
+	if !hasNew {
+		t.Error("expected risk_pending_circuit_closes_json column to exist")
+	}
+	if hasLegacy {
+		t.Error("risk_pending_hl_close_json should not be re-added on subsequent startups")
+	}
+}
+
+// TestMigrateSchema_PendingCircuitClosesColumn_FromLegacyDB verifies the
+// post-#356, pre-#359 upgrade path: a DB that has risk_pending_hl_close_json
+// but not the new column must be renamed in place, preserving row data.
+func TestMigrateSchema_PendingCircuitClosesColumn_FromLegacyDB(t *testing.T) {
+	db := openTestDB(t)
+
+	// Simulate a pre-#359 DB: drop the new column and re-add the legacy name
+	// with a row of data we can check survives the rename. SQLite doesn't
+	// support DROP COLUMN on all versions, so we rebuild the table.
+	_, err := db.db.Exec(`CREATE TABLE strategies_legacy AS SELECT
+		id, type, platform, cash, initial_capital,
+		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
+		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
+		risk_circuit_breaker, risk_circuit_breaker_until,
+		risk_pending_circuit_closes_json AS risk_pending_hl_close_json,
+		risk_total_trades, risk_winning_trades, risk_losing_trades
+		FROM strategies`)
+	if err != nil {
+		t.Fatalf("build legacy table: %v", err)
+	}
+	if _, err := db.db.Exec("DROP TABLE strategies"); err != nil {
+		t.Fatalf("drop strategies: %v", err)
+	}
+	if _, err := db.db.Exec("ALTER TABLE strategies_legacy RENAME TO strategies"); err != nil {
+		t.Fatalf("rename legacy table: %v", err)
+	}
+
+	// Seed a pending value into the legacy column so we can verify data survives.
+	if _, err := db.db.Exec(
+		"INSERT INTO strategies (id, type, platform, cash, initial_capital, risk_pending_hl_close_json) VALUES (?, ?, ?, ?, ?, ?)",
+		"hl-rename", "perps", "hyperliquid", 100.0, 100.0,
+		`{"coins":[{"coin":"ETH","sz":0.3}]}`,
+	); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+
+	// Pre-check: only the legacy column is present.
+	hasLegacy, hasNew, err := db.strategiesColumnPresence()
+	if err != nil {
+		t.Fatalf("pre-check presence: %v", err)
+	}
+	if !hasLegacy || hasNew {
+		t.Fatalf("expected legacy-only table; hasLegacy=%v hasNew=%v", hasLegacy, hasNew)
+	}
+
+	if err := db.migrateSchema(); err != nil {
+		t.Fatalf("migrateSchema on legacy DB: %v", err)
+	}
+
+	hasLegacy, hasNew, err = db.strategiesColumnPresence()
+	if err != nil {
+		t.Fatalf("post-check presence: %v", err)
+	}
+	if hasLegacy {
+		t.Error("risk_pending_hl_close_json should be gone after rename")
+	}
+	if !hasNew {
+		t.Error("risk_pending_circuit_closes_json should exist after rename")
+	}
+
+	var raw string
+	if err := db.db.QueryRow(
+		"SELECT risk_pending_circuit_closes_json FROM strategies WHERE id = ?", "hl-rename",
+	).Scan(&raw); err != nil {
+		t.Fatalf("read renamed column: %v", err)
+	}
+	if raw != `{"coins":[{"coin":"ETH","sz":0.3}]}` {
+		t.Errorf("row data lost in rename; got %q", raw)
+	}
+}
