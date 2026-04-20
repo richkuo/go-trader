@@ -932,6 +932,53 @@ Present the output to the user in a readable format. Highlight any circuit break
 
 ---
 
+## Operator-Required Circuit Breakers (OKX spot / Robinhood options)
+
+Some live venues have no safe automated-close primitive. When a per-strategy circuit breaker fires on one of these, the scheduler cannot flatten on its own — it enqueues a pending close with `operator_required: true` and emits a CRITICAL warning on every cycle (stderr, Discord, Telegram) until the operator intervenes.
+
+### Affected venues
+
+| Platform | Type | Why no auto-close | Pending-close key |
+| --- | --- | --- | --- |
+| OKX | spot | No reduce-only semantic on asset balances; net-close could wipe other holdings | `okx_spot` |
+| Robinhood | options | Leg-aware close semantics (sell-to-close vs buy-to-close, multi-leg spreads) are high-risk to automate | `robinhood_options` |
+
+These gaps are documented separately from the portfolio kill-switch equivalents in #345 (OKX spot) and #346 (Robinhood options); the per-strategy path (#363) reuses the same operator-intervention framing.
+
+### Detecting the condition
+
+**Via `/status`:** look under `strategies.<id>.risk_state.pending_circuit_closes` for entries with `operator_required: true`. Ignore HL / OKX-perps / TopStep / Robinhood-crypto pending entries — those drain automatically.
+
+```bash
+curl -s localhost:8080/status | .venv/bin/python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for sid, s in d['strategies'].items():
+    pc = s['risk_state'].get('pending_circuit_closes') or {}
+    for platform, p in pc.items():
+        if p.get('operator_required'):
+            legs = ', '.join(f\"{x['symbol']} size={x['size']}\" for x in p['symbols'])
+            print(f'{sid} [{platform}]: {legs}')
+"
+```
+
+**Via notifications:** Discord and Telegram receive a message titled `CIRCUIT BREAKER — OPERATOR INTERVENTION REQUIRED` listing each affected strategy, its legs, drawdown %, and CB-until timestamp.
+
+**Via logs:** every cycle prints one `[CRITICAL] operator-required-close: strategy <id> platform <key> — <legs> (circuit breaker fired, venue lacks safe auto-close; operator must flatten manually)` line per entry.
+
+### Response
+
+1. Open the venue UI (OKX web / mobile, Robinhood app).
+2. Flatten the listed positions manually.
+3. Confirm via `/status` that the underlying positions are gone.
+4. Do NOT manually clear the pending — the scheduler clears it automatically on the next natural circuit-breaker reset (24h default for max-drawdown, 1h for 5-consecutive-losses). If you need to resume trading sooner, reset the portfolio kill switch via owner DM (which also clears per-strategy operator-required pendings) or restart the scheduler after flattening.
+
+### Do not confuse with portfolio kill switch
+
+The portfolio kill switch (`KILL_SWITCH` in state, `PORTFOLIO KILL SWITCH` message header) is a higher-severity event that fires on total-portfolio drawdown and runs the platform-specific automated close paths. Operator-required warnings are the PER-STRATEGY equivalent: only the strategy hitting its own `max_drawdown_pct` is paused, not the whole portfolio. If both fire the portfolio kill takes over and clears per-strategy operator-required pendings to avoid double-notifying.
+
+---
+
 ## `/menu` Command
 
 When the user says `/menu`, "show menu", "what can I configure", "what's available", or "help me get started", output the following overview directly (no bash command needed):

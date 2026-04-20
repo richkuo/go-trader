@@ -552,12 +552,41 @@ type RiskState struct {
 // phase PRs (#360 OKX, #361 RH, #362 TS).
 const PlatformPendingCloseHyperliquid = "hyperliquid"
 
+// PlatformPendingCloseOKXSpot and PlatformPendingCloseRobinhoodOptions are map
+// keys for per-strategy circuit-breaker closes the scheduler CANNOT auto-close
+// safely (#363 phase 5, mirrors the portfolio-kill gaps from #345 / #346).
+//
+// OKX spot: no reduce-only semantic for asset balances; a net-close would wipe
+// holdings that other strategies or the operator's manual positions rely on.
+//
+// Robinhood options: stock options close semantics (sell-to-close vs
+// buy-to-close per leg, multi-leg spreads) are non-trivial to automate and the
+// failure mode is high-risk.
+//
+// Pending entries under these keys carry OperatorRequired=true. The drain does
+// NOT submit orders — it emits a CRITICAL warning once per cycle and leaves
+// the pending intact until the operator intervenes (or the CB naturally
+// resets). Deliberately distinct from "okx" / "robinhood" portfolio-kill keys
+// so the auto-close drains never dequeue an operator-required entry.
+const (
+	PlatformPendingCloseOKXSpot          = "okx_spot"
+	PlatformPendingCloseRobinhoodOptions = "robinhood_options"
+)
+
 // PendingCircuitClose is a queued request to close one or more positions on a
 // single venue after a per-strategy circuit breaker fired. The drain runner
 // for that venue (platform key in RiskState.PendingCircuitCloses) translates
 // the symbol/size legs into venue-specific orders.
+//
+// When OperatorRequired is true the scheduler will not attempt an automated
+// close — the venue lacks a safe reduce-only primitive or the close semantics
+// are leg-aware enough that automation is unsafe (OKX spot, Robinhood options;
+// #363). The drain emits a CRITICAL warning each cycle instead and leaves the
+// pending populated so /status, Discord, and Telegram all surface the gap
+// continuously until the operator clears it manually.
 type PendingCircuitClose struct {
-	Symbols []PendingCircuitCloseSymbol `json:"symbols"`
+	Symbols          []PendingCircuitCloseSymbol `json:"symbols"`
+	OperatorRequired bool                        `json:"operator_required,omitempty"`
 }
 
 // PendingCircuitCloseSymbol is one position leg of a pending close. Symbol is
@@ -732,6 +761,67 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
 		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
 	})
+}
+
+// setOperatorRequiredCircuitBreakerPending enqueues an OperatorRequired=true
+// pending close for OKX spot and Robinhood options strategies, the two live
+// venues the scheduler has no safe auto-close path for (#345 / #346 / #363).
+//
+// Unlike setHyperliquidCircuitBreakerPending, this helper does not size the
+// close — no subprocess round-trip is ever attempted, so a notional size is
+// unnecessary. Size is set to the strategy's virtual position quantity (or 0
+// when no virtual position exists, e.g. options strategies whose positions
+// live in OptionPositions rather than Positions) purely for operator-facing
+// context in the warning message.
+//
+// No-op when the strategy is not live, or when the strategy is not one of the
+// two covered operator-gap configurations (call sites can invoke it broadly;
+// the guard keeps it cheap).
+func setOperatorRequiredCircuitBreakerPending(sc *StrategyConfig, s *StrategyState) {
+	if sc == nil || s == nil {
+		return
+	}
+	switch {
+	case sc.Platform == "okx" && sc.Type == "spot" && okxIsLive(sc.Args):
+		sym := okxSymbol(sc.Args)
+		if sym == "" {
+			return
+		}
+		var size float64
+		if pos, ok := s.Positions[sym]; ok {
+			size = pos.Quantity
+		}
+		s.RiskState.setPendingCircuitClose(PlatformPendingCloseOKXSpot, &PendingCircuitClose{
+			Symbols:          []PendingCircuitCloseSymbol{{Symbol: sym, Size: size}},
+			OperatorRequired: true,
+		})
+	case sc.Platform == "robinhood" && sc.Type == "options" && robinhoodIsLive(sc.Args):
+		// Options positions live in s.OptionPositions keyed by option ID, not
+		// a single underlier. Collect every open leg's ID so the operator sees
+		// exactly which positions need manual close (not just the underlier).
+		symbols := make([]PendingCircuitCloseSymbol, 0, len(s.OptionPositions))
+		for id, op := range s.OptionPositions {
+			if op == nil {
+				continue
+			}
+			symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: id, Size: op.Quantity})
+		}
+		if len(symbols) == 0 {
+			// No open option legs — emit a single marker entry with the
+			// underlier so the operator still sees the strategy-level CB fire
+			// on /status and in notifications.
+			sym := robinhoodSymbol(sc.Args)
+			if sym == "" {
+				return
+			}
+			symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: 0})
+		}
+		sort.Slice(symbols, func(i, j int) bool { return symbols[i].Symbol < symbols[j].Symbol })
+		s.RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhoodOptions, &PendingCircuitClose{
+			Symbols:          symbols,
+			OperatorRequired: true,
+		})
+	}
 }
 
 // rolloverDailyPnL resets DailyPnL to zero whenever the UTC date has advanced
@@ -951,6 +1041,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 			r.CircuitBreaker = true
 			r.CircuitBreakerUntil = now.Add(24 * time.Hour)
 			setHyperliquidCircuitBreakerPending(sc, s, assist)
+			setOperatorRequiredCircuitBreakerPending(sc, s)
 			forceCloseAllPositions(s, prices, logger)
 			return false, fmt.Sprintf("max drawdown exceeded (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
 				r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
