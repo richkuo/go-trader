@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS strategies (
     risk_consecutive_losses INTEGER NOT NULL DEFAULT 0,
     risk_circuit_breaker INTEGER NOT NULL DEFAULT 0,
     risk_circuit_breaker_until TEXT NOT NULL DEFAULT '',
+    -- #356 legacy name; renamed to risk_pending_circuit_closes_json by migrateSchema.
+    -- Keeping the legacy name in CREATE TABLE lets fresh installs and pre-#356 DBs
+    -- take the same post-migration path (#359).
     risk_pending_hl_close_json TEXT NOT NULL DEFAULT '',
     risk_total_trades INTEGER NOT NULL DEFAULT 0,
     risk_winning_trades INTEGER NOT NULL DEFAULT 0,
@@ -230,13 +233,30 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE kill_switch_events ADD COLUMN source TEXT NOT NULL DEFAULT ''",
 		// Per-leaderboard-summary last-post timestamps stored as JSON (#308).
 		"ALTER TABLE app_state ADD COLUMN last_leaderboard_summaries TEXT NOT NULL DEFAULT ''",
-		// Per-strategy HL circuit-breaker pending closes (#356).
+		// Per-strategy HL circuit-breaker pending closes (#356). Preserved as
+		// the #356-era ADD COLUMN so pre-#356 DBs get the legacy column, which
+		// the next migration then renames to the generalized name.
 		"ALTER TABLE strategies ADD COLUMN risk_pending_hl_close_json TEXT NOT NULL DEFAULT ''",
+		// #359 phase 1b: rename the HL-specific column to a platform-agnostic
+		// name as pending-circuit-close plumbing generalizes to OKX/TS/RH.
+		// Idempotent — "no such column" is swallowed below (fires on DBs that
+		// already ran this rename or on fresh installs whose CREATE TABLE
+		// already used the new name).
+		"ALTER TABLE strategies RENAME COLUMN risk_pending_hl_close_json TO risk_pending_circuit_closes_json",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
-			// "duplicate column name" means the column already exists — skip.
-			if strings.Contains(err.Error(), "duplicate column") {
+			msg := err.Error()
+			// "duplicate column name" means the column already exists — skip
+			// (ADD COLUMN idempotency).
+			if strings.Contains(msg, "duplicate column") {
+				continue
+			}
+			// "no such column" fires on RENAME COLUMN when the source column
+			// is gone: either the rename already ran on a prior startup, or
+			// this is a fresh install whose CREATE TABLE used the target name
+			// directly. Either way, skip.
+			if strings.Contains(msg, "no such column") {
 				continue
 			}
 			return err
@@ -390,7 +410,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	stmtStrat, err := tx.Prepare(`INSERT OR REPLACE INTO strategies (id, type, platform, cash, initial_capital,
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
-		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_hl_close_json,
+		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json,
 		risk_total_trades, risk_winning_trades, risk_losing_trades)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
@@ -442,7 +462,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			s.RiskState.PeakValue, s.RiskState.MaxDrawdownPct, s.RiskState.CurrentDrawdownPct,
 			s.RiskState.DailyPnL, s.RiskState.DailyPnLDate, s.RiskState.ConsecutiveLosses,
 			cbInt, formatTime(s.RiskState.CircuitBreakerUntil),
-			s.RiskState.MarshalPendingHLCloseJSON(),
+			s.RiskState.MarshalPendingCircuitClosesJSON(),
 			s.RiskState.TotalTrades, s.RiskState.WinningTrades, s.RiskState.LosingTrades,
 		); err != nil {
 			return fmt.Errorf("insert strategy %s: %w", s.ID, err)
@@ -812,7 +832,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	rows, err := sdb.db.Query(`SELECT id, type, platform, cash, initial_capital,
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
-		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_hl_close_json,
+		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json,
 		risk_total_trades, risk_winning_trades, risk_losing_trades
 		FROM strategies`)
 	if err != nil {
@@ -823,19 +843,19 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	for rows.Next() {
 		var s StrategyState
 		var cbInt int
-		var cbUntilStr, pendingHLJSON string
+		var cbUntilStr, pendingCircuitClosesJSON string
 		if err := rows.Scan(
 			&s.ID, &s.Type, &s.Platform, &s.Cash, &s.InitialCapital,
 			&s.RiskState.PeakValue, &s.RiskState.MaxDrawdownPct, &s.RiskState.CurrentDrawdownPct,
 			&s.RiskState.DailyPnL, &s.RiskState.DailyPnLDate, &s.RiskState.ConsecutiveLosses,
-			&cbInt, &cbUntilStr, &pendingHLJSON,
+			&cbInt, &cbUntilStr, &pendingCircuitClosesJSON,
 			&s.RiskState.TotalTrades, &s.RiskState.WinningTrades, &s.RiskState.LosingTrades,
 		); err != nil {
 			return nil, fmt.Errorf("scan strategy: %w", err)
 		}
 		s.RiskState.CircuitBreaker = cbInt != 0
 		s.RiskState.CircuitBreakerUntil = parseTime(cbUntilStr)
-		s.RiskState.UnmarshalPendingHLCloseJSON(pendingHLJSON)
+		s.RiskState.UnmarshalPendingCircuitClosesJSON(pendingCircuitClosesJSON)
 		s.Positions = make(map[string]*Position)
 		s.OptionPositions = make(map[string]*OptionPosition)
 		s.TradeHistory = []Trade{}

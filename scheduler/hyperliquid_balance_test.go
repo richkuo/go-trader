@@ -1481,9 +1481,9 @@ func TestRunPendingHyperliquidCircuitCloses_RecoversStuckCB(t *testing.T) {
 				RiskState: RiskState{
 					// CB was fired on a prior cycle, but pending was never set
 					// because the HL fetch had failed at that time.
-					CircuitBreaker:                 true,
-					CircuitBreakerUntil:            time.Now().Add(24 * time.Hour),
-					PendingHyperliquidCircuitClose: nil,
+					CircuitBreaker:       true,
+					CircuitBreakerUntil:  time.Now().Add(24 * time.Hour),
+					PendingCircuitCloses: nil,
 				},
 			},
 		},
@@ -1520,7 +1520,7 @@ func TestRunPendingHyperliquidCircuitCloses_RecoversStuckCB(t *testing.T) {
 	if len(calls) != 1 || calls[0] != "ETH:0.4" {
 		t.Errorf("closer calls=%v want [ETH:0.4] (recovered pending should drain full szi as sole owner)", calls)
 	}
-	if state.Strategies["hl-a"].RiskState.PendingHyperliquidCircuitClose != nil {
+	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
 		t.Error("expected pending cleared after successful recovery close")
 	}
 }
@@ -1565,7 +1565,7 @@ func TestRunPendingHyperliquidCircuitCloses_StuckCBNoOnChainPositionIsNoOp(t *te
 	if len(calls) != 0 {
 		t.Errorf("expected no closer calls when no on-chain position, got %v", calls)
 	}
-	if state.Strategies["hl-a"].RiskState.PendingHyperliquidCircuitClose != nil {
+	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
 		t.Error("pending should remain nil when recovery has no on-chain position to close")
 	}
 }
@@ -1576,8 +1576,10 @@ func TestRunPendingHyperliquidCircuitCloses_ClearsOnSuccess(t *testing.T) {
 			"hl-a": {
 				ID: "hl-a",
 				RiskState: RiskState{
-					PendingHyperliquidCircuitClose: &HyperliquidCircuitClosePending{
-						Coins: []HyperliquidCircuitCloseCoin{{Coin: "ETH", Sz: 0.1}},
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseHyperliquid: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.1}},
+						},
 					},
 				},
 			},
@@ -1612,7 +1614,7 @@ func TestRunPendingHyperliquidCircuitCloses_ClearsOnSuccess(t *testing.T) {
 		30*time.Second,
 		&mu,
 	)
-	if state.Strategies["hl-a"].RiskState.PendingHyperliquidCircuitClose != nil {
+	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
 		t.Error("expected pending cleared after successful close")
 	}
 	if len(calls) != 1 || calls[0] != "ETH:0.1" {

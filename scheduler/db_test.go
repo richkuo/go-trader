@@ -1679,7 +1679,7 @@ func TestSaveState_GuardWarnIsOneShot(t *testing.T) {
 	}
 }
 
-func TestSaveAndLoadDB_PendingHLCloseRoundTrip(t *testing.T) {
+func TestSaveAndLoadDB_PendingCircuitCloseRoundTrip(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	state := &AppState{
@@ -1691,8 +1691,10 @@ func TestSaveAndLoadDB_PendingHLCloseRoundTrip(t *testing.T) {
 				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
 				RiskState: RiskState{
 					PeakValue: 100, MaxDrawdownPct: 25,
-					PendingHyperliquidCircuitClose: &HyperliquidCircuitClosePending{
-						Coins: []HyperliquidCircuitCloseCoin{{Coin: "ETH", Sz: 0.2585}},
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseHyperliquid: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.2585}},
+						},
 					},
 				},
 			},
@@ -1705,11 +1707,58 @@ func TestSaveAndLoadDB_PendingHLCloseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
-	p := loaded.Strategies["hl-a"].RiskState.PendingHyperliquidCircuitClose
-	if p == nil || len(p.Coins) != 1 {
+	p := loaded.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+	if p == nil || len(p.Symbols) != 1 {
 		t.Fatalf("pending missing: %+v", p)
 	}
-	if p.Coins[0].Coin != "ETH" || p.Coins[0].Sz != 0.2585 {
-		t.Errorf("pending coin=%q sz=%g want ETH 0.2585", p.Coins[0].Coin, p.Coins[0].Sz)
+	if p.Symbols[0].Symbol != "ETH" || p.Symbols[0].Size != 0.2585 {
+		t.Errorf("pending symbol=%q size=%g want ETH 0.2585", p.Symbols[0].Symbol, p.Symbols[0].Size)
+	}
+}
+
+// TestSaveAndLoadDB_LegacyPendingHLJSON_MigratesOnLoad verifies the #359 phase
+// 1b backwards-compat path: a pre-#359 row where the JSON blob is in the legacy
+// {"coins":[...]} shape must transparently convert to the new map-keyed shape
+// on load, without losing the pending close.
+func TestSaveAndLoadDB_LegacyPendingHLJSON_MigratesOnLoad(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Seed a strategy via the normal SaveState path (writes new-format JSON),
+	// then overwrite just the pending column with legacy-format JSON to
+	// simulate a DB carried over from a pre-#359 scheduler build.
+	state := &AppState{
+		CycleCount: 1,
+		LastCycle:  now,
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID: "hl-a", Type: "perps", Platform: "hyperliquid", Cash: 100, InitialCapital: 100,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+				RiskState: RiskState{PeakValue: 100, MaxDrawdownPct: 25},
+			},
+		},
+	}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("seed SaveState: %v", err)
+	}
+
+	legacyJSON := `{"coins":[{"coin":"ETH","sz":0.2585}]}`
+	if _, err := db.db.Exec(
+		"UPDATE strategies SET risk_pending_circuit_closes_json = ? WHERE id = ?",
+		legacyJSON, "hl-a",
+	); err != nil {
+		t.Fatalf("inject legacy JSON: %v", err)
+	}
+
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	p := loaded.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+	if p == nil || len(p.Symbols) != 1 {
+		t.Fatalf("legacy JSON did not migrate on load: %+v", p)
+	}
+	if p.Symbols[0].Symbol != "ETH" || p.Symbols[0].Size != 0.2585 {
+		t.Errorf("legacy-migrated pending symbol=%q size=%g want ETH 0.2585", p.Symbols[0].Symbol, p.Symbols[0].Size)
 	}
 }

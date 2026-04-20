@@ -530,70 +530,185 @@ type RiskState struct {
 	TotalTrades         int       `json:"total_trades"`
 	WinningTrades       int       `json:"winning_trades"`
 	LosingTrades        int       `json:"losing_trades"`
-	// PendingHyperliquidCircuitClose is set when a live HL perps strategy trips
-	// a per-strategy circuit breaker (#356). The main loop drains this with
-	// reduce-only closes (full or proportional for shared coins) before
-	// clearing the field. Serialized to SQLite as risk_pending_hl_close_json.
-	PendingHyperliquidCircuitClose *HyperliquidCircuitClosePending `json:"pending_hl_circuit_close,omitempty"`
+	// PendingCircuitCloses holds venue-appropriate reduce-only / flatten close
+	// requests queued by per-strategy circuit breakers, keyed by platform string
+	// ("hyperliquid", "okx", "topstep", "robinhood"). Serialized to SQLite as
+	// risk_pending_circuit_closes_json. Drained out-of-lock by platform-specific
+	// runners (e.g. runPendingHyperliquidCircuitCloses for "hyperliquid").
+	//
+	// Generalized from the HL-specific PendingHyperliquidCircuitClose field in
+	// #359 phase 1b. The per-platform drain code interprets the symbol/size
+	// pairs according to its API; HL uses coin name + base-unit size, other
+	// venues will use their own identifier conventions (phases 2-4).
+	PendingCircuitCloses map[string]*PendingCircuitClose `json:"pending_circuit_closes,omitempty"`
 }
 
-// HyperliquidCircuitClosePending requests on-chain reduce-only closes after a
-// per-strategy circuit breaker fired on a live Hyperliquid wallet (#356).
-type HyperliquidCircuitClosePending struct {
-	Coins []HyperliquidCircuitCloseCoin `json:"coins"`
+// PlatformPendingCloseHyperliquid is the map key in RiskState.PendingCircuitCloses
+// for Hyperliquid perps closes. Other platform constants land alongside their
+// phase PRs (#360 OKX, #361 RH, #362 TS).
+const PlatformPendingCloseHyperliquid = "hyperliquid"
+
+// PendingCircuitClose is a queued request to close one or more positions on a
+// single venue after a per-strategy circuit breaker fired. The drain runner
+// for that venue (platform key in RiskState.PendingCircuitCloses) translates
+// the symbol/size legs into venue-specific orders.
+type PendingCircuitClose struct {
+	Symbols []PendingCircuitCloseSymbol `json:"symbols"`
 }
 
-// HyperliquidCircuitCloseCoin is one coin leg of a pending HL circuit close.
-type HyperliquidCircuitCloseCoin struct {
-	Coin string  `json:"coin"`
-	Sz   float64 `json:"sz"` // positive magnitude in coin units
+// PendingCircuitCloseSymbol is one position leg of a pending close. Symbol is
+// venue-specific (e.g. HL coin "ETH", OKX inst_id "BTC-USDT-SWAP", TS
+// contract "ESM25"). Size is a positive magnitude; units are venue-specific
+// (coin units for HL, contracts for TS, quote-currency amount for OKX).
+type PendingCircuitCloseSymbol struct {
+	Symbol string  `json:"symbol"`
+	Size   float64 `json:"size"`
 }
 
-// HLRiskAssist carries pre-fetched Hyperliquid clearinghouse positions for
-// per-strategy circuit-breaker close sizing (#356). Nil disables HL pending.
-type HLRiskAssist struct {
+// PlatformRiskAssist carries pre-fetched venue state that
+// setCircuitBreakerPending helpers need to size per-strategy on-chain closes
+// when a CB fires. Nil fields disable pending enqueue for that platform; the
+// drain runner's stuck-CB recovery path then re-enqueues once the fetch
+// succeeds on a later cycle (#356).
+//
+// Only HL fields are populated today (#359 phase 1b generalizes HLRiskAssist).
+// Phases 2-4 will add OKX / TopStep / Robinhood fields as their per-strategy
+// close plumbing lands.
+type PlatformRiskAssist struct {
 	HLPositions []HLPosition
 	HLLiveAll   []StrategyConfig
 }
 
-// MarshalPendingHLCloseJSON returns a DB-safe JSON blob for the pending field.
-// A marshal error is logged loudly rather than silently swallowed — on a
-// simple {string, float64} struct this branch is essentially unreachable,
-// but silently returning "" would persist a blank column that wipes the
-// pending close on reload. Logging gives operators a chance to notice if
-// this ever fires (#356 review).
-func (r *RiskState) MarshalPendingHLCloseJSON() string {
-	if r == nil || r.PendingHyperliquidCircuitClose == nil {
+// MarshalPendingCircuitClosesJSON returns a DB-safe JSON blob for the pending
+// field. A marshal error is logged loudly rather than silently swallowed: the
+// map-of-struct payload is essentially unreachable for json.Marshal failures,
+// but silently returning "" would persist a blank column that wipes pending
+// closes on reload. Logging gives operators a chance to notice (#356 review).
+func (r *RiskState) MarshalPendingCircuitClosesJSON() string {
+	if r == nil || len(r.PendingCircuitCloses) == 0 {
 		return ""
 	}
-	b, err := json.Marshal(r.PendingHyperliquidCircuitClose)
+	// Drop platforms whose pending payload has no legs — persisting
+	// {"hyperliquid":{"symbols":[]}} is noise and makes reload ambiguous.
+	filtered := make(map[string]*PendingCircuitClose, len(r.PendingCircuitCloses))
+	for k, v := range r.PendingCircuitCloses {
+		if v == nil || len(v.Symbols) == 0 {
+			continue
+		}
+		filtered[k] = v
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(filtered)
 	if err != nil {
-		fmt.Printf("[CRITICAL] MarshalPendingHLCloseJSON: refusing to persist pending HL circuit close — json.Marshal failed: %v (pending=%+v)\n",
-			err, r.PendingHyperliquidCircuitClose)
+		fmt.Printf("[CRITICAL] MarshalPendingCircuitClosesJSON: refusing to persist pending circuit closes — json.Marshal failed: %v (pending=%+v)\n",
+			err, filtered)
 		return ""
 	}
 	return string(b)
 }
 
-// UnmarshalPendingHLCloseJSON restores PendingHyperliquidCircuitClose from DB.
-func (r *RiskState) UnmarshalPendingHLCloseJSON(raw string) {
+// UnmarshalPendingCircuitClosesJSON restores PendingCircuitCloses from DB.
+//
+// Accepts two JSON shapes for backwards-compatibility with rows written by
+// pre-#359 (#356) builds:
+//
+//  1. New map shape: {"hyperliquid":{"symbols":[{"symbol":"ETH","size":0.1}]}}
+//  2. Legacy HL-only shape: {"coins":[{"coin":"ETH","sz":0.1}]} — transparently
+//     converted to {"hyperliquid":{"symbols":[...]}} on first load. Subsequent
+//     saves write the new shape, so the DB self-heals within one cycle.
+func (r *RiskState) UnmarshalPendingCircuitClosesJSON(raw string) {
 	if r == nil {
 		return
 	}
 	if raw == "" {
-		r.PendingHyperliquidCircuitClose = nil
+		r.PendingCircuitCloses = nil
 		return
 	}
-	var p HyperliquidCircuitClosePending
-	if err := json.Unmarshal([]byte(raw), &p); err != nil || len(p.Coins) == 0 {
-		r.PendingHyperliquidCircuitClose = nil
+
+	// Try new map shape first.
+	var asMap map[string]*PendingCircuitClose
+	if err := json.Unmarshal([]byte(raw), &asMap); err == nil {
+		filtered := make(map[string]*PendingCircuitClose, len(asMap))
+		for k, v := range asMap {
+			if v == nil || len(v.Symbols) == 0 {
+				continue
+			}
+			filtered[k] = v
+		}
+		if len(filtered) > 0 {
+			r.PendingCircuitCloses = filtered
+			return
+		}
+	}
+
+	// Legacy shape fallback: {"coins":[{"coin":"ETH","sz":0.1}]} from #356.
+	// A successful new-map unmarshal with the legacy payload would land in the
+	// "coins" key with a nil/empty value (the array cannot decode into a
+	// *PendingCircuitClose) and get filtered out above, so execution falls
+	// through here.
+	var legacy struct {
+		Coins []struct {
+			Coin string  `json:"coin"`
+			Sz   float64 `json:"sz"`
+		} `json:"coins"`
+	}
+	if err := json.Unmarshal([]byte(raw), &legacy); err != nil || len(legacy.Coins) == 0 {
+		r.PendingCircuitCloses = nil
 		return
 	}
-	r.PendingHyperliquidCircuitClose = &p
+	symbols := make([]PendingCircuitCloseSymbol, 0, len(legacy.Coins))
+	for _, c := range legacy.Coins {
+		symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: c.Coin, Size: c.Sz})
+	}
+	r.PendingCircuitCloses = map[string]*PendingCircuitClose{
+		PlatformPendingCloseHyperliquid: {Symbols: symbols},
+	}
 }
 
-func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, hlAssist *HLRiskAssist) {
-	if sc == nil || hlAssist == nil || len(hlAssist.HLPositions) == 0 {
+// setPendingCircuitClose stores a pending close for the given platform,
+// creating the map on first use. Passing nil or an empty-symbols close deletes
+// the platform entry instead of storing an empty shell.
+func (r *RiskState) setPendingCircuitClose(platform string, pending *PendingCircuitClose) {
+	if r == nil {
+		return
+	}
+	if pending == nil || len(pending.Symbols) == 0 {
+		delete(r.PendingCircuitCloses, platform)
+		if len(r.PendingCircuitCloses) == 0 {
+			r.PendingCircuitCloses = nil
+		}
+		return
+	}
+	if r.PendingCircuitCloses == nil {
+		r.PendingCircuitCloses = make(map[string]*PendingCircuitClose)
+	}
+	r.PendingCircuitCloses[platform] = pending
+}
+
+// clearPendingCircuitClose removes the pending entry for a platform, if any.
+func (r *RiskState) clearPendingCircuitClose(platform string) {
+	if r == nil {
+		return
+	}
+	delete(r.PendingCircuitCloses, platform)
+	if len(r.PendingCircuitCloses) == 0 {
+		r.PendingCircuitCloses = nil
+	}
+}
+
+// getPendingCircuitClose returns the pending entry for a platform, or nil if
+// none is queued.
+func (r *RiskState) getPendingCircuitClose(platform string) *PendingCircuitClose {
+	if r == nil {
+		return nil
+	}
+	return r.PendingCircuitCloses[platform]
+}
+
+func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, assist *PlatformRiskAssist) {
+	if sc == nil || assist == nil || len(assist.HLPositions) == 0 {
 		return
 	}
 	if sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
@@ -606,13 +721,13 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, h
 	if _, ok := s.Positions[sym]; !ok {
 		return
 	}
-	qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, hlAssist.HLPositions, hlAssist.HLLiveAll)
+	qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll)
 	if !ok || qty <= 0 {
 		return
 	}
-	s.RiskState.PendingHyperliquidCircuitClose = &HyperliquidCircuitClosePending{
-		Coins: []HyperliquidCircuitCloseCoin{{Coin: sym, Sz: qty}},
-	}
+	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
+		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+	})
 }
 
 // rolloverDailyPnL resets DailyPnL to zero whenever the UTC date has advanced
@@ -765,10 +880,11 @@ func perpsMarginDrawdownInputs(s *StrategyState, prices map[string]float64) (unr
 }
 
 // CheckRisk evaluates risk state and returns whether trading is allowed.
-// sc is the strategy config for this state (nil in some tests — HL pending
-// logic is skipped). hlAssist carries HL clearinghouse positions when fetched
-// this cycle so live perps can enqueue on-chain closes on circuit breaker (#356).
-func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, prices map[string]float64, logger *StrategyLogger, hlAssist *HLRiskAssist) (bool, string) {
+// sc is the strategy config for this state (nil in some tests — platform
+// pending logic is skipped). assist carries pre-fetched per-platform state
+// (HL clearinghouse positions today; OKX/TS/RH in later phases) so live
+// strategies can enqueue on-chain closes on circuit breaker (#356 / #359).
+func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, prices map[string]float64, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string) {
 	r := &s.RiskState
 	now := time.Now().UTC()
 
@@ -830,7 +946,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		if r.TotalTrades > 0 && r.CurrentDrawdownPct > r.MaxDrawdownPct {
 			r.CircuitBreaker = true
 			r.CircuitBreakerUntil = now.Add(24 * time.Hour)
-			setHyperliquidCircuitBreakerPending(sc, s, hlAssist)
+			setHyperliquidCircuitBreakerPending(sc, s, assist)
 			forceCloseAllPositions(s, prices, logger)
 			return false, fmt.Sprintf("max drawdown exceeded (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
 				r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
@@ -841,7 +957,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 	if r.ConsecutiveLosses >= 5 {
 		r.CircuitBreaker = true
 		r.CircuitBreakerUntil = now.Add(1 * time.Hour)
-		setHyperliquidCircuitBreakerPending(sc, s, hlAssist)
+		setHyperliquidCircuitBreakerPending(sc, s, assist)
 		forceCloseAllPositions(s, prices, logger)
 		return false, "5 consecutive losses"
 	}

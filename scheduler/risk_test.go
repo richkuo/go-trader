@@ -1315,7 +1315,7 @@ func TestCheckRisk_LiveHLSharedCoin_SetsPendingPartialClose(t *testing.T) {
 			CapitalPct: 0.5, Capital: 500,
 			Args: []string{"rsi_macd", "ETH", "1h", "--mode=live"}},
 	}
-	assist := &HLRiskAssist{
+	assist := &PlatformRiskAssist{
 		HLPositions: []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}},
 		HLLiveAll:   hlLiveAll,
 	}
@@ -1342,19 +1342,20 @@ func TestCheckRisk_LiveHLSharedCoin_SetsPendingPartialClose(t *testing.T) {
 
 	_, _ = CheckRisk(&sc, s, pv, prices, nil, assist)
 
-	if s.RiskState.PendingHyperliquidCircuitClose == nil {
-		t.Fatal("expected PendingHyperliquidCircuitClose after CB fire")
+	p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+	if p == nil {
+		t.Fatal("expected PendingCircuitCloses[hyperliquid] after CB fire")
 	}
-	if len(s.RiskState.PendingHyperliquidCircuitClose.Coins) != 1 {
-		t.Fatalf("expected 1 pending coin, got %d", len(s.RiskState.PendingHyperliquidCircuitClose.Coins))
+	if len(p.Symbols) != 1 {
+		t.Fatalf("expected 1 pending symbol, got %d", len(p.Symbols))
 	}
-	c0 := s.RiskState.PendingHyperliquidCircuitClose.Coins[0]
-	if c0.Coin != "ETH" {
-		t.Errorf("coin=%q want ETH", c0.Coin)
+	c0 := p.Symbols[0]
+	if c0.Symbol != "ETH" {
+		t.Errorf("symbol=%q want ETH", c0.Symbol)
 	}
 	want := 0.517 * 0.5
-	if math.Abs(c0.Sz-want) > 1e-6 {
-		t.Errorf("pending sz=%.6f want %.6f (half of shared on-chain 0.517)", c0.Sz, want)
+	if math.Abs(c0.Size-want) > 1e-6 {
+		t.Errorf("pending size=%.6f want %.6f (half of shared on-chain 0.517)", c0.Size, want)
 	}
 }
 
@@ -1822,5 +1823,154 @@ func TestCheckPortfolioRisk_MarginWarning_FieldsPopulated(t *testing.T) {
 	}
 	if prs.CurrentMarginDrawdownPct < 9.9 || prs.CurrentMarginDrawdownPct > 10.1 {
 		t.Errorf("expected CurrentMarginDrawdownPct≈10%%; got %.2f", prs.CurrentMarginDrawdownPct)
+	}
+}
+
+// --- #359 phase 1b: generic PendingCircuitCloses plumbing ---
+
+// TestRiskState_PendingCircuitClose_Marshal_EmptyReturnsBlank verifies that an
+// empty or nil pending map serializes to "" so an empty blob never overwrites
+// a non-empty column on save.
+func TestRiskState_PendingCircuitClose_Marshal_EmptyReturnsBlank(t *testing.T) {
+	cases := []struct {
+		name string
+		r    *RiskState
+	}{
+		{"nil receiver", nil},
+		{"nil map", &RiskState{}},
+		{"empty map", &RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{}}},
+		{"entry with nil value", &RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{"hyperliquid": nil}}},
+		{"entry with empty symbols", &RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
+			"hyperliquid": {Symbols: nil},
+		}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.r.MarshalPendingCircuitClosesJSON()
+			if got != "" {
+				t.Errorf("expected empty marshal for %s; got %q", tc.name, got)
+			}
+		})
+	}
+}
+
+// TestRiskState_PendingCircuitClose_MarshalUnmarshalRoundTrip locks the
+// round-trip contract for the new map-keyed JSON shape.
+func TestRiskState_PendingCircuitClose_MarshalUnmarshalRoundTrip(t *testing.T) {
+	src := &RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
+		PlatformPendingCloseHyperliquid: {Symbols: []PendingCircuitCloseSymbol{
+			{Symbol: "ETH", Size: 0.2585},
+			{Symbol: "BTC", Size: 0.01},
+		}},
+	}}
+	blob := src.MarshalPendingCircuitClosesJSON()
+	if blob == "" {
+		t.Fatal("non-empty marshal expected")
+	}
+
+	var dst RiskState
+	dst.UnmarshalPendingCircuitClosesJSON(blob)
+
+	got := dst.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+	if got == nil || len(got.Symbols) != 2 {
+		t.Fatalf("round-trip missing entries: %+v", got)
+	}
+	byName := map[string]float64{}
+	for _, s := range got.Symbols {
+		byName[s.Symbol] = s.Size
+	}
+	if byName["ETH"] != 0.2585 || byName["BTC"] != 0.01 {
+		t.Errorf("round-trip sizes wrong: %+v", byName)
+	}
+}
+
+// TestRiskState_PendingCircuitClose_UnmarshalLegacyHL verifies the backwards-
+// compat path: a pre-#359 {"coins":[{"coin":..., "sz":...}]} payload must
+// transparently convert into the new map keyed by "hyperliquid". This is the
+// self-healing path for pre-#359 DB rows on first load after upgrade.
+func TestRiskState_PendingCircuitClose_UnmarshalLegacyHL(t *testing.T) {
+	var r RiskState
+	r.UnmarshalPendingCircuitClosesJSON(`{"coins":[{"coin":"ETH","sz":0.2585}]}`)
+
+	p := r.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+	if p == nil || len(p.Symbols) != 1 {
+		t.Fatalf("legacy JSON did not convert: %+v", p)
+	}
+	if p.Symbols[0].Symbol != "ETH" || p.Symbols[0].Size != 0.2585 {
+		t.Errorf("legacy conversion wrong: got symbol=%q size=%g", p.Symbols[0].Symbol, p.Symbols[0].Size)
+	}
+}
+
+// TestRiskState_PendingCircuitClose_UnmarshalEmptyClears verifies that an
+// empty string wipes the pending map (matches the prior HL-specific behavior).
+func TestRiskState_PendingCircuitClose_UnmarshalEmptyClears(t *testing.T) {
+	r := RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
+		PlatformPendingCloseHyperliquid: {Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 1}}},
+	}}
+	r.UnmarshalPendingCircuitClosesJSON("")
+	if r.PendingCircuitCloses != nil {
+		t.Errorf("expected nil map after empty unmarshal; got %+v", r.PendingCircuitCloses)
+	}
+}
+
+// TestRiskState_PendingCircuitClose_UnmarshalMalformedClears verifies that
+// a malformed JSON payload wipes the pending map rather than leaving stale
+// data in place.
+func TestRiskState_PendingCircuitClose_UnmarshalMalformedClears(t *testing.T) {
+	r := RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
+		PlatformPendingCloseHyperliquid: {Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 1}}},
+	}}
+	r.UnmarshalPendingCircuitClosesJSON(`not-json{`)
+	if r.PendingCircuitCloses != nil {
+		t.Errorf("expected nil map after malformed unmarshal; got %+v", r.PendingCircuitCloses)
+	}
+}
+
+// TestRiskState_PendingCircuitClose_SetClearGet verifies the setter/clearer/
+// getter contract: nil map is materialized lazily on set; clear deletes the
+// entry and nils the map when empty.
+func TestRiskState_PendingCircuitClose_SetClearGet(t *testing.T) {
+	var r RiskState
+
+	if r.getPendingCircuitClose("hyperliquid") != nil {
+		t.Fatal("expected nil for unset key")
+	}
+
+	r.setPendingCircuitClose("hyperliquid", &PendingCircuitClose{
+		Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.5}},
+	})
+	if got := r.getPendingCircuitClose("hyperliquid"); got == nil || got.Symbols[0].Size != 0.5 {
+		t.Errorf("setter did not store value: %+v", got)
+	}
+
+	// Set with empty symbols should clear the entry.
+	r.setPendingCircuitClose("hyperliquid", &PendingCircuitClose{Symbols: nil})
+	if r.getPendingCircuitClose("hyperliquid") != nil {
+		t.Error("empty-symbols set should have cleared entry")
+	}
+	if r.PendingCircuitCloses != nil {
+		t.Error("map should be nil after last entry cleared")
+	}
+
+	// Clear on missing key is a no-op.
+	r.clearPendingCircuitClose("hyperliquid")
+}
+
+// TestRiskState_PendingCircuitClose_MultiPlatformRoundTrip locks in that the
+// generic plumbing is not HL-limited: future phases 2-4 will co-exist in the
+// same map.
+func TestRiskState_PendingCircuitClose_MultiPlatformRoundTrip(t *testing.T) {
+	src := &RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
+		"hyperliquid": {Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.1}}},
+		"okx":         {Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC-USDT-SWAP", Size: 0.01}}},
+	}}
+	blob := src.MarshalPendingCircuitClosesJSON()
+	var dst RiskState
+	dst.UnmarshalPendingCircuitClosesJSON(blob)
+	if dst.getPendingCircuitClose("hyperliquid") == nil {
+		t.Error("hyperliquid entry lost in round-trip")
+	}
+	if dst.getPendingCircuitClose("okx") == nil {
+		t.Error("okx entry lost in round-trip")
 	}
 }

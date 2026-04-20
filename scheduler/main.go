@@ -610,7 +610,7 @@ func main() {
 				// Portfolio kill owns all HL closes — drop per-strategy pending.
 				for _, ss := range state.Strategies {
 					if ss != nil {
-						ss.RiskState.PendingHyperliquidCircuitClose = nil
+						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
 					}
 				}
 			}
@@ -851,12 +851,12 @@ func main() {
 					mu.RUnlock()
 
 					// Phase 2: Lock — CheckRisk (fast, no I/O)
-					var hlRiskAssist *HLRiskAssist
+					var riskAssist *PlatformRiskAssist
 					if hlStateFetched && len(hlLiveAll) > 0 {
-						hlRiskAssist = &HLRiskAssist{HLPositions: hlPositions, HLLiveAll: hlLiveAll}
+						riskAssist = &PlatformRiskAssist{HLPositions: hlPositions, HLLiveAll: hlLiveAll}
 					}
 					mu.Lock()
-					allowed, reason := CheckRisk(&sc, stratState, pv, prices, logger, hlRiskAssist)
+					allowed, reason := CheckRisk(&sc, stratState, pv, prices, logger, riskAssist)
 					mu.Unlock()
 					if !allowed {
 						logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)

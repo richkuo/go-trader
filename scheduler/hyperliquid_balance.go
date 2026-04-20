@@ -699,18 +699,19 @@ func lookupStrategyConfig(strategies []StrategyConfig, id string) *StrategyConfi
 	return nil
 }
 
-// runPendingHyperliquidCircuitCloses drains PendingHyperliquidCircuitClose for
-// every strategy, submitting reduce-only HL closes outside the state mutex.
-// Retries next scheduler cycle on failure (#356).
+// runPendingHyperliquidCircuitCloses drains the hyperliquid entry of
+// RiskState.PendingCircuitCloses for every strategy, submitting reduce-only HL
+// closes outside the state mutex. Retries next scheduler cycle on failure
+// (#356 / #359).
 //
 // Also recovers "stuck CB" strategies: if a per-strategy circuit breaker fires
 // on a cycle where the HL clearinghouse fetch failed, setHyperliquidCircuitBreakerPending
-// bails on the nil hlAssist and the pending close is never set. Subsequent
+// bails on the nil assist and the pending close is never set. Subsequent
 // CheckRisk calls early-return with "circuit breaker active" without re-enqueuing.
 // This drain detects the case (live HL perps strategy with CircuitBreaker=true
-// but pending=nil AND a matching non-zero on-chain position) and reconstructs
-// the pending so the reduce-only close eventually fires once HL is reachable
-// again (#356 review finding 1).
+// but no pending HL entry AND a matching non-zero on-chain position) and
+// reconstructs the pending so the reduce-only close eventually fires once HL
+// is reachable again (#356 review finding 1).
 func runPendingHyperliquidCircuitCloses(
 	ctx context.Context,
 	state *AppState,
@@ -745,7 +746,7 @@ func runPendingHyperliquidCircuitCloses(
 		if ss == nil {
 			continue
 		}
-		if ss.RiskState.PendingHyperliquidCircuitClose != nil {
+		if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
 			hasPending = true
 		}
 	}
@@ -754,7 +755,7 @@ func runPendingHyperliquidCircuitCloses(
 		if ss == nil {
 			continue
 		}
-		if ss.RiskState.PendingHyperliquidCircuitClose == nil && ss.RiskState.CircuitBreaker {
+		if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) == nil && ss.RiskState.CircuitBreaker {
 			hasStuckCB = true
 			break
 		}
@@ -790,7 +791,7 @@ func runPendingHyperliquidCircuitCloses(
 			if ss == nil {
 				continue
 			}
-			if ss.RiskState.PendingHyperliquidCircuitClose != nil {
+			if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
 				continue
 			}
 			if !ss.RiskState.CircuitBreaker {
@@ -804,9 +805,9 @@ func runPendingHyperliquidCircuitCloses(
 			if !ok || qty <= 0 {
 				continue
 			}
-			ss.RiskState.PendingHyperliquidCircuitClose = &HyperliquidCircuitClosePending{
-				Coins: []HyperliquidCircuitCloseCoin{{Coin: sym, Sz: qty}},
-			}
+			ss.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
+				Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+			})
 			fmt.Printf("[CRITICAL] hl-circuit-close: recovered pending for strategy %s coin %s sz=%.6f (CB latched, HL fetch had failed at fire time)\n",
 				sc.ID, sym, qty)
 		}
@@ -816,16 +817,16 @@ func runPendingHyperliquidCircuitCloses(
 	// Phase 3: re-snapshot jobs (may now include recovered entries).
 	type job struct {
 		stratID string
-		pending HyperliquidCircuitClosePending
+		pending PendingCircuitClose
 	}
 	var jobs []job
 	mu.RLock()
 	for id, ss := range state.Strategies {
-		if ss == nil || ss.RiskState.PendingHyperliquidCircuitClose == nil {
+		if ss == nil {
 			continue
 		}
-		p := ss.RiskState.PendingHyperliquidCircuitClose
-		if len(p.Coins) == 0 {
+		p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+		if p == nil || len(p.Symbols) == 0 {
 			continue
 		}
 		jobs = append(jobs, job{id, *p})
@@ -852,21 +853,21 @@ func runPendingHyperliquidCircuitCloses(
 		if sc == nil || sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
 			mu.Lock()
 			if ss := state.Strategies[j.stratID]; ss != nil {
-				ss.RiskState.PendingHyperliquidCircuitClose = nil
+				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
 			}
 			mu.Unlock()
 			continue
 		}
 
 		allOK := true
-		for _, c := range j.pending.Coins {
+		for _, c := range j.pending.Symbols {
 			if err := ctxOverall.Err(); err != nil {
 				allOK = false
 				break
 			}
-			sz := c.Sz
+			sz := c.Size
 			for _, p := range positions {
-				if p.Coin != c.Coin {
+				if p.Coin != c.Symbol {
 					continue
 				}
 				absOC := math.Abs(p.Size)
@@ -883,19 +884,19 @@ func runPendingHyperliquidCircuitCloses(
 				continue
 			}
 			partial := sz
-			_, err := closer(c.Coin, &partial)
+			_, err := closer(c.Symbol, &partial)
 			if err != nil {
-				fmt.Printf("[CRITICAL] hl-circuit-close: strategy %s coin %s sz=%.6f failed: %v\n", j.stratID, c.Coin, sz, err)
+				fmt.Printf("[CRITICAL] hl-circuit-close: strategy %s coin %s sz=%.6f failed: %v\n", j.stratID, c.Symbol, sz, err)
 				allOK = false
 				break
 			}
-			fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s submitted reduce-only close sz=%.6f\n", j.stratID, c.Coin, sz)
+			fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s submitted reduce-only close sz=%.6f\n", j.stratID, c.Symbol, sz)
 		}
 
 		if allOK {
 			mu.Lock()
-			if ss := state.Strategies[j.stratID]; ss != nil && ss.RiskState.PendingHyperliquidCircuitClose != nil {
-				ss.RiskState.PendingHyperliquidCircuitClose = nil
+			if ss := state.Strategies[j.stratID]; ss != nil {
+				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
 			}
 			mu.Unlock()
 		}
