@@ -567,8 +567,8 @@ const PlatformPendingCloseRobinhood = "robinhood"
 // PlatformPendingCloseTopStep is the map key in RiskState.PendingCircuitCloses
 // for TopStep futures closes. Size entries are integer contract counts encoded
 // as float64 (PendingCircuitCloseSymbol.Size is float64 across all venues for
-// storage uniformity; market_close has no size argument and flattens the full
-// position — Size is informational only for TopStep).
+// storage uniformity; the TopStep drain logs the live on-account count at
+// drain time — market_close has no size argument and flattens the full position).
 const PlatformPendingCloseTopStep = "topstep"
 
 // PendingCircuitClose is a queued request to close one or more positions on a

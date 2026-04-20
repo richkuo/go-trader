@@ -345,10 +345,11 @@ func runPendingTopStepCircuitCloses(
 			// eventual consistency after a prior successful submit). Without
 			// this guard, calling market_close on a flat position would error
 			// and keep the pending latched forever.
+			var absOC int
 			stillOpen := false
 			for _, p := range positions {
 				if p.Coin == c.Symbol {
-					absOC := p.Size
+					absOC = p.Size
 					if absOC < 0 {
 						absOC = -absOC
 					}
@@ -368,13 +369,13 @@ func runPendingTopStepCircuitCloses(
 				// any other close failure land here — we log and latch. The
 				// next cycle re-enters this drain and retries; virtual state
 				// stays untouched (CheckRisk already force-closed locally).
-				fmt.Printf("[CRITICAL] ts-circuit-close: strategy %s contract %s sz=%.0f failed: %v (will retry next cycle)\n",
-					j.stratID, c.Symbol, c.Size, err)
+				fmt.Printf("[CRITICAL] ts-circuit-close: strategy %s contract %s sz=%d failed: %v (will retry next cycle)\n",
+					j.stratID, c.Symbol, absOC, err)
 				allOK = false
 				break
 			}
-			fmt.Printf("[INFO] ts-circuit-close: strategy %s contract %s submitted market_close sz=%.0f\n",
-				j.stratID, c.Symbol, c.Size)
+			fmt.Printf("[INFO] ts-circuit-close: strategy %s contract %s submitted market_close sz=%d\n",
+				j.stratID, c.Symbol, absOC)
 		}
 
 		if allOK {
