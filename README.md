@@ -387,7 +387,7 @@ journalctl -u go-trader -n 50           # recent logs
 - **Portfolio kill switch** — halt all trading if portfolio drawdown exceeds threshold (default: 25%); when it fires, the scheduler also submits real close orders on Hyperliquid, OKX perps, Robinhood crypto, and TopStep futures live positions and only clears virtual state after every platform confirms flat (#341, #345, #346, #347, #350)
 - **Notional cap** — optional hard limit on total notional exposure
 - **Correlation tracking** — per-asset directional exposure monitoring; warns when a single asset exceeds concentration threshold (default: 60%) or too many strategies share the same direction (default: 75%); opt-in via `correlation.enabled`
-- **Per-strategy circuit breakers** — pause trading when max drawdown exceeded (24h cooldown); spot/options/futures measure drawdown peak-relative, perps measure it relative to deployed margin so leveraged margin wipes fire the breaker in time (#292)
+- **Per-strategy circuit breakers** — pause trading when max drawdown exceeded (24h cooldown); spot/options/futures measure drawdown peak-relative, perps measure it relative to deployed margin so leveraged margin wipes fire the breaker in time (#292). When a per-strategy CB fires on HL perps, OKX perps, Robinhood crypto, or TopStep futures the scheduler enqueues and drains a reduce-only on-chain close (#356, #360, #361, #362); OKX spot and Robinhood options have no safe auto-close primitive and surface an `operator-required` warning on every cycle until the operator flattens manually (#363).
 - **Consecutive loss tracking** — 5 losses in a row → 1h pause
 - **Spot**: max 95% capital per position
 - **Options**: max 4 positions per strategy, portfolio-aware scoring
