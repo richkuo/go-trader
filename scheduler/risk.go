@@ -552,6 +552,14 @@ type RiskState struct {
 // phase PRs (#360 OKX, #361 RH, #362 TS).
 const PlatformPendingCloseHyperliquid = "hyperliquid"
 
+// PlatformPendingCloseRobinhood is the map key in RiskState.PendingCircuitCloses
+// for Robinhood crypto closes (#361 phase 3). Robinhood crypto has no
+// reduce-only primitive — the drain submits a full market_sell of the coin's
+// on-account balance, gated on sole-ownership (only one live configured RH
+// crypto strategy trading that coin on the account). Shared-coin setups
+// cannot CB-close safely and are surfaced to the owner via DM instead.
+const PlatformPendingCloseRobinhood = "robinhood"
+
 // PendingCircuitClose is a queued request to close one or more positions on a
 // single venue after a per-strategy circuit breaker fired. The drain runner
 // for that venue (platform key in RiskState.PendingCircuitCloses) translates
@@ -575,12 +583,23 @@ type PendingCircuitCloseSymbol struct {
 // drain runner's stuck-CB recovery path then re-enqueues once the fetch
 // succeeds on a later cycle (#356).
 //
-// Only HL fields are populated today (#359 phase 1b generalizes HLRiskAssist).
-// Phases 2-4 will add OKX / TopStep / Robinhood fields as their per-strategy
-// close plumbing lands.
+// HL fields populated since #359 phase 1b; RH fields added in #361 phase 3.
+// OKX / TopStep fields land alongside their phase PRs.
 type PlatformRiskAssist struct {
 	HLPositions []HLPosition
 	HLLiveAll   []StrategyConfig
+	// RHPositions is the full live on-account Robinhood crypto position list
+	// fetched once per cycle (defaultRobinhoodPositionsFetcher). Nil disables
+	// per-strategy RH CB enqueue for the cycle; the drain's stuck-CB recovery
+	// path re-enqueues once the fetch succeeds on a later cycle.
+	RHPositions []RobinhoodPosition
+	// RHLiveAll is every live configured Robinhood crypto (Type=="spot")
+	// strategy — needed for the sole-owner check the drain applies before
+	// submitting a full-account close. An RH crypto strategy that shares a
+	// coin with another live strategy on the same account cannot safely
+	// CB-close (market_sell consumes the shared balance) and is surfaced to
+	// the owner via DM instead.
+	RHLiveAll []StrategyConfig
 }
 
 // MarshalPendingCircuitClosesJSON returns a DB-safe JSON blob for the pending
@@ -732,6 +751,55 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
 		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
 	})
+}
+
+// setRobinhoodCircuitBreakerPending enqueues a pending full-close for a live
+// Robinhood crypto strategy whose per-strategy circuit breaker fired (#361
+// phase 3). Robinhood crypto has no reduce-only primitive: market_sell
+// consumes the entire on-account balance for the coin. We still enqueue
+// unconditionally when an on-account position exists — the sole-ownership
+// gate lives in the drain (runPendingRobinhoodCircuitCloses) so that shared-
+// coin setups DM the owner exactly once per fire cycle rather than silently
+// stalling forever.
+//
+// No-op when assist is nil or lacks the RH snapshot (cycle-local fetch
+// failure — the drain's stuck-CB recovery re-enqueues once the fetch
+// succeeds on a later cycle, mirroring the HL pattern).
+func setRobinhoodCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, assist *PlatformRiskAssist) {
+	if sc == nil || assist == nil || len(assist.RHPositions) == 0 {
+		return
+	}
+	if sc.Platform != "robinhood" || sc.Type != "spot" || !robinhoodIsLive(sc.Args) {
+		return
+	}
+	coin := robinhoodSymbol(sc.Args)
+	if coin == "" {
+		return
+	}
+	if _, ok := s.Positions[coin]; !ok {
+		return
+	}
+	qty := robinhoodOnAccountSize(coin, assist.RHPositions)
+	if qty <= 0 {
+		return
+	}
+	s.RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{
+		Symbols: []PendingCircuitCloseSymbol{{Symbol: coin, Size: qty}},
+	})
+}
+
+// robinhoodOnAccountSize returns the unsigned on-account size of a coin,
+// or 0 if not found. Robinhood crypto is spot so Size is always >= 0.
+func robinhoodOnAccountSize(coin string, positions []RobinhoodPosition) float64 {
+	for i := range positions {
+		if positions[i].Coin == coin {
+			if positions[i].Size > 0 {
+				return positions[i].Size
+			}
+			return 0
+		}
+	}
+	return 0
 }
 
 // rolloverDailyPnL resets DailyPnL to zero whenever the UTC date has advanced
@@ -951,6 +1019,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 			r.CircuitBreaker = true
 			r.CircuitBreakerUntil = now.Add(24 * time.Hour)
 			setHyperliquidCircuitBreakerPending(sc, s, assist)
+			setRobinhoodCircuitBreakerPending(sc, s, assist)
 			forceCloseAllPositions(s, prices, logger)
 			return false, fmt.Sprintf("max drawdown exceeded (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
 				r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
@@ -962,6 +1031,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		r.CircuitBreaker = true
 		r.CircuitBreakerUntil = now.Add(1 * time.Hour)
 		setHyperliquidCircuitBreakerPending(sc, s, assist)
+		setRobinhoodCircuitBreakerPending(sc, s, assist)
 		forceCloseAllPositions(s, prices, logger)
 		return false, "5 consecutive losses"
 	}
