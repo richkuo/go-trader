@@ -211,9 +211,15 @@ class HyperliquidExchangeAdapter:
             raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
         return self._exchange.market_open(symbol, is_buy, size, None, 0.01)
 
-    def market_close(self, symbol: str) -> dict:
+    def market_close(self, symbol: str, sz: float | None = None) -> dict:
         """
-        Close all open positions for a symbol.
+        Close an open perp position for a symbol (reduce-only).
+
+        When ``sz`` is None, closes the full on-chain position (SDK default).
+        When ``sz`` is set, submits a reduce-only market order for that coin
+        quantity only — used for shared-wallet per-strategy circuit breakers
+        (#356).
+
         Only available in live mode; raises RuntimeError in paper mode.
         Returns raw SDK response dict.
         """
@@ -221,4 +227,4 @@ class HyperliquidExchangeAdapter:
             raise RuntimeError(
                 "market_close requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
-        return self._exchange.market_close(symbol)
+        return self._exchange.market_close(symbol, sz)

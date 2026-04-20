@@ -252,4 +252,16 @@ class TestOrderExecution:
 
         result = adapter.market_close("BTC")
         assert result == {"status": "closed"}
-        mock_exchange.market_close.assert_called_once_with("BTC")
+        mock_exchange.market_close.assert_called_once_with("BTC", None)
+
+    def test_market_close_partial_size_passes_sz(self):
+        mock_info = MagicMock()
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mock_exchange = MagicMock()
+        mock_exchange.market_close.return_value = {"status": "closed"}
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._exchange = mock_exchange
+
+        adapter.market_close("ETH", 0.25)
+        mock_exchange.market_close.assert_called_once_with("ETH", 0.25)

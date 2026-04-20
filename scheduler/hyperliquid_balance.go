@@ -35,15 +35,17 @@ var hyperliquidLiveCloseScript = "shared_scripts/close_hyperliquid_position.py"
 // inject a fake without spawning a real Python subprocess. Production
 // implementation is defaultHyperliquidLiveCloser, which shells out to
 // close_hyperliquid_position.py via RunHyperliquidClose.
-type HyperliquidLiveCloser func(symbol string) (*HyperliquidCloseResult, error)
+// When partialSz is nil, the full on-chain position is closed (#341). When
+// non-nil, submits a partial close for that coin quantity (#356).
+type HyperliquidLiveCloser func(symbol string, partialSz *float64) (*HyperliquidCloseResult, error)
 
 // defaultHyperliquidLiveCloser is the production close implementation. Writes
 // stderr to os.Stderr rather than a per-strategy logger — kill switch is a
 // system-level event, not strategy-scoped. Relies on RunHyperliquidClose's
 // uniform error contract: any non-nil err means the close was not confirmed
 // by the SDK and the kill switch must stay latched.
-func defaultHyperliquidLiveCloser(symbol string) (*HyperliquidCloseResult, error) {
-	result, stderr, err := RunHyperliquidClose(hyperliquidLiveCloseScript, symbol)
+func defaultHyperliquidLiveCloser(symbol string, partialSz *float64) (*HyperliquidCloseResult, error) {
+	result, stderr, err := RunHyperliquidClose(hyperliquidLiveCloseScript, symbol, partialSz)
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "[hl-close] %s stderr: %s\n", symbol, stderr)
 	}
@@ -569,7 +571,7 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 			report.Errors[p.Coin] = fmt.Errorf("close budget exhausted before submit: %w", err)
 			continue
 		}
-		result, err := closer(p.Coin)
+		result, err := closer(p.Coin, nil)
 		if err != nil {
 			report.Errors[p.Coin] = err
 			continue
@@ -587,4 +589,315 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 	}
 
 	return report
+}
+
+func hlLiveStrategiesForCoin(coin string, hlLiveAll []StrategyConfig) []StrategyConfig {
+	var out []StrategyConfig
+	for _, sc := range hlLiveAll {
+		if hyperliquidSymbol(sc.Args) == coin {
+			out = append(out, sc)
+		}
+	}
+	return out
+}
+
+func hlStrategyCapitalWeight(sc StrategyConfig) float64 {
+	if sc.CapitalPct > 0 {
+		return sc.CapitalPct
+	}
+	if sc.Capital > 0 {
+		return sc.Capital
+	}
+	return 1.0
+}
+
+// hlStrategyCapitalWeights returns per-peer weights for proportional close
+// sizing on a shared coin. When peers mix units (one declares CapitalPct as a
+// fraction, another declares raw Capital in dollars), their sum is nonsensical
+// (e.g. 0.5 + 1000 ≈ 1000.5) and the CapitalPct-only peer's share collapses to
+// ~0, producing a no-op close. Detect the mismatch and fall back to equal
+// weights (1.0 each) so the firing strategy still gets a meaningful share.
+// When all peers use the same field, behavior matches hlStrategyCapitalWeight
+// (#356 review).
+func hlStrategyCapitalWeights(peers []StrategyConfig) []float64 {
+	hasPct := false
+	hasAbs := false
+	for _, p := range peers {
+		switch {
+		case p.CapitalPct > 0:
+			hasPct = true
+		case p.Capital > 0:
+			hasAbs = true
+		}
+	}
+	mixed := hasPct && hasAbs
+	out := make([]float64, len(peers))
+	for i, p := range peers {
+		if mixed {
+			out[i] = 1.0
+			continue
+		}
+		out[i] = hlStrategyCapitalWeight(p)
+	}
+	return out
+}
+
+// computeHyperliquidCircuitCloseQty returns the unsigned coin quantity for a
+// reduce-only market_close when strategyID's per-strategy circuit breaker fires
+// (#356). For a coin traded by multiple live HL strategies on the same wallet,
+// the close size is proportional to capital_pct (or capital) weights. For a
+// sole configured trader of that coin, the full on-chain absolute size is used.
+// ok is false when there is no non-zero on-chain position for the coin.
+func computeHyperliquidCircuitCloseQty(coin, strategyID string, hlPositions []HLPosition, hlLiveAll []StrategyConfig) (qty float64, ok bool) {
+	var onChain float64
+	found := false
+	for i := range hlPositions {
+		if hlPositions[i].Coin == coin {
+			onChain = hlPositions[i].Size
+			found = true
+			break
+		}
+	}
+	if !found || onChain == 0 {
+		return 0, false
+	}
+	absSzi := math.Abs(onChain)
+	peers := hlLiveStrategiesForCoin(coin, hlLiveAll)
+	if len(peers) <= 1 {
+		return absSzi, true
+	}
+	weights := hlStrategyCapitalWeights(peers)
+	sumW := 0.0
+	var wFiring float64
+	foundFiring := false
+	for i, p := range peers {
+		sumW += weights[i]
+		if p.ID == strategyID {
+			wFiring = weights[i]
+			foundFiring = true
+		}
+	}
+	if !foundFiring || sumW <= 0 {
+		return absSzi, true
+	}
+	q := absSzi * (wFiring / sumW)
+	if q > absSzi {
+		q = absSzi
+	}
+	if q < 1e-12 {
+		return 0, false
+	}
+	return q, true
+}
+
+func lookupStrategyConfig(strategies []StrategyConfig, id string) *StrategyConfig {
+	for i := range strategies {
+		if strategies[i].ID == id {
+			return &strategies[i]
+		}
+	}
+	return nil
+}
+
+// runPendingHyperliquidCircuitCloses drains PendingHyperliquidCircuitClose for
+// every strategy, submitting reduce-only HL closes outside the state mutex.
+// Retries next scheduler cycle on failure (#356).
+//
+// Also recovers "stuck CB" strategies: if a per-strategy circuit breaker fires
+// on a cycle where the HL clearinghouse fetch failed, setHyperliquidCircuitBreakerPending
+// bails on the nil hlAssist and the pending close is never set. Subsequent
+// CheckRisk calls early-return with "circuit breaker active" without re-enqueuing.
+// This drain detects the case (live HL perps strategy with CircuitBreaker=true
+// but pending=nil AND a matching non-zero on-chain position) and reconstructs
+// the pending so the reduce-only close eventually fires once HL is reachable
+// again (#356 review finding 1).
+func runPendingHyperliquidCircuitCloses(
+	ctx context.Context,
+	state *AppState,
+	strategies []StrategyConfig,
+	hlAddr string,
+	hlPositions []HLPosition,
+	hlStateFetched bool,
+	hlFetcher HLStateFetcher,
+	closer HyperliquidLiveCloser,
+	totalBudget time.Duration,
+	mu *sync.RWMutex,
+) {
+	if hlAddr == "" || closer == nil || state == nil {
+		return
+	}
+
+	// Build the live HL perps roster from strategies — needed for both the
+	// stuck-CB recovery path and the shared-coin weight computation.
+	var hlLiveAll []StrategyConfig
+	for _, sc := range strategies {
+		if sc.Platform == "hyperliquid" && sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
+			hlLiveAll = append(hlLiveAll, sc)
+		}
+	}
+
+	// Phase 1: snapshot — detect pending jobs AND stuck-CB strategies that
+	// need their pending reconstructed.
+	mu.RLock()
+	hasPending := false
+	hasStuckCB := false
+	for _, ss := range state.Strategies {
+		if ss == nil {
+			continue
+		}
+		if ss.RiskState.PendingHyperliquidCircuitClose != nil {
+			hasPending = true
+		}
+	}
+	for _, sc := range hlLiveAll {
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		if ss.RiskState.PendingHyperliquidCircuitClose == nil && ss.RiskState.CircuitBreaker {
+			hasStuckCB = true
+			break
+		}
+	}
+	mu.RUnlock()
+
+	if !hasPending && !hasStuckCB {
+		return
+	}
+
+	ctxOverall, cancelOverall := context.WithTimeout(ctx, totalBudget)
+	defer cancelOverall()
+
+	positions := hlPositions
+	if !hlStateFetched && hlFetcher != nil {
+		pos, err := hlFetcher(hlAddr)
+		if err != nil {
+			fmt.Printf("[CRITICAL] hl-circuit-close: cannot fetch HL positions: %v — will retry next cycle\n", err)
+			return
+		}
+		positions = pos
+	}
+
+	// Phase 2: reconstruct pending for stuck-CB strategies.
+	if hasStuckCB {
+		// Sort hlLiveAll for deterministic recovery-log order.
+		recoverOrder := make([]StrategyConfig, len(hlLiveAll))
+		copy(recoverOrder, hlLiveAll)
+		sort.Slice(recoverOrder, func(i, j int) bool { return recoverOrder[i].ID < recoverOrder[j].ID })
+		mu.Lock()
+		for _, sc := range recoverOrder {
+			ss := state.Strategies[sc.ID]
+			if ss == nil {
+				continue
+			}
+			if ss.RiskState.PendingHyperliquidCircuitClose != nil {
+				continue
+			}
+			if !ss.RiskState.CircuitBreaker {
+				continue
+			}
+			sym := hyperliquidSymbol(sc.Args)
+			if sym == "" {
+				continue
+			}
+			qty, ok := computeHyperliquidCircuitCloseQty(sym, sc.ID, positions, hlLiveAll)
+			if !ok || qty <= 0 {
+				continue
+			}
+			ss.RiskState.PendingHyperliquidCircuitClose = &HyperliquidCircuitClosePending{
+				Coins: []HyperliquidCircuitCloseCoin{{Coin: sym, Sz: qty}},
+			}
+			fmt.Printf("[CRITICAL] hl-circuit-close: recovered pending for strategy %s coin %s sz=%.6f (CB latched, HL fetch had failed at fire time)\n",
+				sc.ID, sym, qty)
+		}
+		mu.Unlock()
+	}
+
+	// Phase 3: re-snapshot jobs (may now include recovered entries).
+	type job struct {
+		stratID string
+		pending HyperliquidCircuitClosePending
+	}
+	var jobs []job
+	mu.RLock()
+	for id, ss := range state.Strategies {
+		if ss == nil || ss.RiskState.PendingHyperliquidCircuitClose == nil {
+			continue
+		}
+		p := ss.RiskState.PendingHyperliquidCircuitClose
+		if len(p.Coins) == 0 {
+			continue
+		}
+		jobs = append(jobs, job{id, *p})
+	}
+	mu.RUnlock()
+
+	if len(jobs) == 0 {
+		return
+	}
+
+	// Deterministic drain order — operator-facing logs at lines below iterate
+	// this slice, and map iteration above would otherwise randomize which
+	// subset of strategies get serviced when the budget is partially exhausted
+	// (#356 review finding 2; CLAUDE.md "Sort map keys before formatting any
+	// operator-facing output").
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].stratID < jobs[j].stratID })
+
+	for _, j := range jobs {
+		if err := ctxOverall.Err(); err != nil {
+			fmt.Printf("[CRITICAL] hl-circuit-close: budget exhausted: %v\n", err)
+			return
+		}
+		sc := lookupStrategyConfig(strategies, j.stratID)
+		if sc == nil || sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
+			mu.Lock()
+			if ss := state.Strategies[j.stratID]; ss != nil {
+				ss.RiskState.PendingHyperliquidCircuitClose = nil
+			}
+			mu.Unlock()
+			continue
+		}
+
+		allOK := true
+		for _, c := range j.pending.Coins {
+			if err := ctxOverall.Err(); err != nil {
+				allOK = false
+				break
+			}
+			sz := c.Sz
+			for _, p := range positions {
+				if p.Coin != c.Coin {
+					continue
+				}
+				absOC := math.Abs(p.Size)
+				if absOC <= 1e-15 {
+					sz = 0
+					break
+				}
+				if sz > absOC {
+					sz = absOC
+				}
+				break
+			}
+			if sz <= 1e-15 {
+				continue
+			}
+			partial := sz
+			_, err := closer(c.Coin, &partial)
+			if err != nil {
+				fmt.Printf("[CRITICAL] hl-circuit-close: strategy %s coin %s sz=%.6f failed: %v\n", j.stratID, c.Coin, sz, err)
+				allOK = false
+				break
+			}
+			fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s submitted reduce-only close sz=%.6f\n", j.stratID, c.Coin, sz)
+		}
+
+		if allOK {
+			mu.Lock()
+			if ss := state.Strategies[j.stratID]; ss != nil && ss.RiskState.PendingHyperliquidCircuitClose != nil {
+				ss.RiskState.PendingHyperliquidCircuitClose = nil
+			}
+			mu.Unlock()
+		}
+	}
 }

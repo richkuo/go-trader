@@ -18,7 +18,7 @@ import (
 // and maps coin → canned error. Missing keys yield a synthetic success.
 func stubHLLiveCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) {
 	var calls []string
-	closer := func(symbol string) (*HyperliquidCloseResult, error) {
+	closer := func(symbol string, partialSz *float64) (*HyperliquidCloseResult, error) {
 		calls = append(calls, symbol)
 		if err, ok := errs[symbol]; ok && err != nil {
 			return nil, err

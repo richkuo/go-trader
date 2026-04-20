@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -560,7 +561,10 @@ func main() {
 			walletBalances := make(map[SharedWalletKey]float64)
 			var hlPositions []HLPosition
 			var hlStateFetched bool
-			if hlAddr != "" && (hlShared || len(hlLiveDue) > 0) {
+			// Fetch clearinghouseState whenever any live HL strategy exists (#356
+			// per-strategy circuit closes need fresh positions even if no HL
+			// strategy is due this cycle).
+			if hlAddr != "" && len(hlLiveAll) > 0 {
 				bal, pos, err := fetchHyperliquidState(hlAddr)
 				if err != nil {
 					fmt.Printf("[WARN] hyperliquid clearinghouseState fetch failed: %v — falling back to per-wallet max and skipping position sync this cycle\n", err)
@@ -603,6 +607,12 @@ func main() {
 				// from the exchange (#341): closing virtually but never sending
 				// the reduce-only order left on-chain positions live, and once
 				// virtual was empty no future cycle could detect the leak.
+				// Portfolio kill owns all HL closes — drop per-strategy pending.
+				for _, ss := range state.Strategies {
+					if ss != nil {
+						ss.RiskState.PendingHyperliquidCircuitClose = nil
+					}
+				}
 			}
 			notionalBlocked = nb
 			if notionalBlocked {
@@ -663,6 +673,10 @@ func main() {
 				for _, sc := range cfg.Strategies {
 					if s, ok := state.Strategies[sc.ID]; ok {
 						forceCloseAllPositions(s, prices, nil)
+						// Pending HL circuit close was already cleared above
+						// when portfolio kill fired (line ~611); nothing to do
+						// here. The per-strategy pending field is owned by the
+						// portfolio kill path once it takes over flattening.
 					}
 				}
 				mu.Unlock()
@@ -738,6 +752,23 @@ func main() {
 			}
 
 			if !killSwitchFired {
+				// #356: Live HL per-strategy circuit breaker closes (reduce-only,
+				// proportional on shared coins). Runs before reconcile so the next
+				// sync sees updated on-chain sizes.
+				if len(hlLiveAll) > 0 {
+					runPendingHyperliquidCircuitCloses(
+						context.Background(),
+						state,
+						cfg.Strategies,
+						hlAddr,
+						hlPositions,
+						hlStateFetched,
+						defaultHLStateFetcher,
+						defaultHyperliquidLiveCloser,
+						90*time.Second,
+						&mu,
+					)
+				}
 				// Pre-phase: sync on-chain positions for due live HL strategies.
 				// Reuses the clearinghouseState already fetched above for the
 				// shared-wallet risk check (#243 review feedback) so we don't
@@ -820,8 +851,12 @@ func main() {
 					mu.RUnlock()
 
 					// Phase 2: Lock — CheckRisk (fast, no I/O)
+					var hlRiskAssist *HLRiskAssist
+					if hlStateFetched && len(hlLiveAll) > 0 {
+						hlRiskAssist = &HLRiskAssist{HLPositions: hlPositions, HLLiveAll: hlLiveAll}
+					}
 					mu.Lock()
-					allowed, reason := CheckRisk(stratState, pv, prices, logger)
+					allowed, reason := CheckRisk(&sc, stratState, pv, prices, logger, hlRiskAssist)
 					mu.Unlock()
 					if !allowed {
 						logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -111,7 +112,7 @@ func TestCheckRisk_RollsOverDailyPnL(t *testing.T) {
 	s.RiskState.PeakValue = 1000.0
 	s.RiskState.MaxDrawdownPct = 50.0
 
-	CheckRisk(s, 1000.0, nil, nil)
+	CheckRisk(nil, s, 1000.0, nil, nil, nil)
 
 	if s.RiskState.DailyPnL != 0 {
 		t.Errorf("expected DailyPnL reset to 0 by CheckRisk; got %.2f", s.RiskState.DailyPnL)
@@ -164,7 +165,7 @@ func TestCheckRisk_ForceCloseOnDrawdown(t *testing.T) {
 	prices := map[string]float64{"BTC": 30000.0}
 	pv := PortfolioValue(s, prices)
 
-	allowed, reason := CheckRisk(s, pv, prices, nil)
+	allowed, reason := CheckRisk(nil, s, pv, prices, nil, nil)
 
 	if allowed {
 		t.Error("expected CheckRisk to return false on drawdown breach")
@@ -751,7 +752,7 @@ func TestCheckRisk_ConsecutiveLossesForceClose(t *testing.T) {
 	prices := map[string]float64{"BTC": 50000.0}
 	pv := PortfolioValue(s, prices)
 
-	allowed, reason := CheckRisk(s, pv, prices, nil)
+	allowed, reason := CheckRisk(nil, s, pv, prices, nil, nil)
 
 	if allowed {
 		t.Errorf("expected circuit breaker to fire; reason=%s", reason)
@@ -1281,7 +1282,7 @@ func TestCheckRisk_PerpsMarginDrawdown_FiresEarly(t *testing.T) {
 	prices := map[string]float64{"ETH": 2307.5}
 	pv := PortfolioValue(s, prices)
 
-	allowed, reason := CheckRisk(s, pv, prices, nil)
+	allowed, reason := CheckRisk(nil, s, pv, prices, nil, nil)
 
 	if allowed {
 		t.Errorf("expected circuit breaker to fire on margin-based drawdown; reason=%s", reason)
@@ -1295,6 +1296,65 @@ func TestCheckRisk_PerpsMarginDrawdown_FiresEarly(t *testing.T) {
 	// Positions liquidated on circuit-breaker fire.
 	if len(s.Positions) != 0 {
 		t.Errorf("expected positions force-closed; got %d", len(s.Positions))
+	}
+}
+
+// TestCheckRisk_LiveHLSharedCoin_SetsPendingPartialClose verifies #356: a live
+// HL strategy that shares a coin with another configured live HL strategy gets
+// a proportional pending on-chain close (capital_pct weights), not the full
+// wallet szi.
+func TestCheckRisk_LiveHLSharedCoin_SetsPendingPartialClose(t *testing.T) {
+	sc := StrategyConfig{
+		ID: "hl-tema", Platform: "hyperliquid", Type: "perps",
+		CapitalPct: 0.5, Capital: 500,
+		Args: []string{"triple_ema", "ETH", "1h", "--mode=live"},
+	}
+	hlLiveAll := []StrategyConfig{
+		sc,
+		{ID: "hl-rmc", Platform: "hyperliquid", Type: "perps",
+			CapitalPct: 0.5, Capital: 500,
+			Args: []string{"rsi_macd", "ETH", "1h", "--mode=live"}},
+	}
+	assist := &HLRiskAssist{
+		HLPositions: []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}},
+		HLLiveAll:   hlLiveAll,
+	}
+
+	s := &StrategyState{
+		ID:       sc.ID,
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Cash:     584.0,
+		RiskState: RiskState{
+			PeakValue:      589.0,
+			MaxDrawdownPct: 25.0,
+			TotalTrades:    1,
+			DailyPnLDate:   todayUTC(),
+		},
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.236, AvgCost: 2357.0, Side: "long", Multiplier: 1, Leverage: 20},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+	prices := map[string]float64{"ETH": 2307.5}
+	pv := PortfolioValue(s, prices)
+
+	_, _ = CheckRisk(&sc, s, pv, prices, nil, assist)
+
+	if s.RiskState.PendingHyperliquidCircuitClose == nil {
+		t.Fatal("expected PendingHyperliquidCircuitClose after CB fire")
+	}
+	if len(s.RiskState.PendingHyperliquidCircuitClose.Coins) != 1 {
+		t.Fatalf("expected 1 pending coin, got %d", len(s.RiskState.PendingHyperliquidCircuitClose.Coins))
+	}
+	c0 := s.RiskState.PendingHyperliquidCircuitClose.Coins[0]
+	if c0.Coin != "ETH" {
+		t.Errorf("coin=%q want ETH", c0.Coin)
+	}
+	want := 0.517 * 0.5
+	if math.Abs(c0.Sz-want) > 1e-6 {
+		t.Errorf("pending sz=%.6f want %.6f (half of shared on-chain 0.517)", c0.Sz, want)
 	}
 }
 
@@ -1322,7 +1382,7 @@ func TestCheckRisk_PerpsMarginDrawdown_BelowThreshold(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH": 2355.0}
 	pv := PortfolioValue(s, prices)
-	allowed, reason := CheckRisk(s, pv, prices, nil)
+	allowed, reason := CheckRisk(nil, s, pv, prices, nil, nil)
 	if !allowed {
 		t.Errorf("expected allowed below margin drawdown threshold; reason=%s dd=%.2f",
 			reason, s.RiskState.CurrentDrawdownPct)
@@ -1357,7 +1417,7 @@ func TestCheckRisk_PerpsPriorRealizedLossesDoNotInflateDrawdown(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH": 3000}
 	pv := PortfolioValue(s, prices)
-	allowed, reason := CheckRisk(s, pv, prices, nil)
+	allowed, reason := CheckRisk(nil, s, pv, prices, nil, nil)
 	if !allowed {
 		t.Errorf("expected fresh position with no unrealized PnL to NOT fire; reason=%s dd=%.2f",
 			reason, s.RiskState.CurrentDrawdownPct)
@@ -1390,7 +1450,7 @@ func TestCheckRisk_PerpsNoOpenPositions_FallsBackToPeak(t *testing.T) {
 	}
 	// Portfolio = cash only = $700. Peak-relative drawdown = 30% → fires.
 	pv := PortfolioValue(s, nil)
-	allowed, _ := CheckRisk(s, pv, nil, nil)
+	allowed, _ := CheckRisk(nil, s, pv, nil, nil, nil)
 	if allowed {
 		t.Error("expected peak-relative drawdown to fire when no perps margin deployed")
 	}
@@ -1421,7 +1481,7 @@ func TestCheckRisk_SpotUnchanged(t *testing.T) {
 	// Portfolio = 500 + 300 = $800. Peak drawdown = 20% < 25% → allowed.
 	prices := map[string]float64{"BTC/USDT": 30000}
 	pv := PortfolioValue(s, prices)
-	allowed, _ := CheckRisk(s, pv, prices, nil)
+	allowed, _ := CheckRisk(nil, s, pv, prices, nil, nil)
 	if !allowed {
 		t.Errorf("expected spot strategy to stay within 25%% peak drawdown; dd=%.2f",
 			s.RiskState.CurrentDrawdownPct)

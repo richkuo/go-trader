@@ -10,6 +10,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Tests in this file mutate package-level hlMainnetURL and must NOT use t.Parallel().
@@ -1162,8 +1163,12 @@ func TestReconciliationGapOmittedWhenEmpty(t *testing.T) {
 // invocation and returns either a canned success or an error per coin.
 func fakeCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) {
 	var calls []string
-	closer := func(symbol string) (*HyperliquidCloseResult, error) {
-		calls = append(calls, symbol)
+	closer := func(symbol string, partialSz *float64) (*HyperliquidCloseResult, error) {
+		if partialSz != nil {
+			calls = append(calls, fmt.Sprintf("%s:%g", symbol, *partialSz))
+		} else {
+			calls = append(calls, symbol)
+		}
 		if err, ok := errs[symbol]; ok {
 			return nil, err
 		}
@@ -1359,7 +1364,7 @@ func TestForceCloseHyperliquidLive_UnownedPositionIgnored(t *testing.T) {
 // no-op. The caller's onChainConfirmedFlat check then proceeds straight to
 // virtual state mutation, matching pre-#341 behavior for non-HL deployments.
 func TestForceCloseHyperliquidLive_EmptyInputs(t *testing.T) {
-	report := forceCloseHyperliquidLive(context.Background(), nil, nil, func(string) (*HyperliquidCloseResult, error) {
+	report := forceCloseHyperliquidLive(context.Background(), nil, nil, func(string, *float64) (*HyperliquidCloseResult, error) {
 		t.Fatalf("closer should not be called with empty inputs")
 		return nil, nil
 	})
@@ -1381,7 +1386,7 @@ func TestForceCloseHyperliquidLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.
 	positions := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}
 
 	var calls []string
-	closer := func(symbol string) (*HyperliquidCloseResult, error) {
+	closer := func(symbol string, partialSz *float64) (*HyperliquidCloseResult, error) {
 		calls = append(calls, symbol)
 		return &HyperliquidCloseResult{
 			Close:    &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},
@@ -1402,5 +1407,215 @@ func TestForceCloseHyperliquidLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.
 	}
 	if len(calls) != 1 || calls[0] != "ETH" {
 		t.Errorf("closer should still be called once (Go side saw non-zero szi), got %v", calls)
+	}
+}
+
+func TestComputeHyperliquidCircuitCloseQty_SoleOwnerFullSzi(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	pos := []HLPosition{{Coin: "ETH", Size: -0.4, EntryPrice: 3000}}
+	q, ok := computeHyperliquidCircuitCloseQty("ETH", "hl-eth", pos, hlLive)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if math.Abs(q-0.4) > 1e-9 {
+		t.Errorf("qty=%.6f want 0.4 (full abs szi for sole owner)", q)
+	}
+}
+
+func TestComputeHyperliquidCircuitCloseQty_Shared50_50(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000,
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000,
+			Args: []string{"ema", "ETH", "1h", "--mode=live"}},
+	}
+	pos := []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}}
+	q, ok := computeHyperliquidCircuitCloseQty("ETH", "hl-a", pos, hlLive)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	want := 0.517 * 0.5
+	if math.Abs(q-want) > 1e-9 {
+		t.Errorf("qty=%.6f want %.6f", q, want)
+	}
+}
+
+// Mixed-units weight normalization (#356 review finding 3): when peers on a
+// shared coin declare weights in different fields (fractional CapitalPct vs
+// absolute Capital), their sum is nonsensical. Detect the mismatch and fall
+// back to equal weights so the firing strategy still gets a meaningful share.
+func TestComputeHyperliquidCircuitCloseQty_MixedUnitsFallsBackToEqualWeights(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5,
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Capital: 1000,
+			Args: []string{"ema", "ETH", "1h", "--mode=live"}},
+	}
+	pos := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}
+	q, ok := computeHyperliquidCircuitCloseQty("ETH", "hl-a", pos, hlLive)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	// With equal 1.0/1.0 fallback, hl-a gets half of |szi| = 0.25. Without the
+	// fallback, the old logic would compute 0.5/(0.5+1000) ≈ 0.00025 — a no-op.
+	want := 0.25
+	if math.Abs(q-want) > 1e-9 {
+		t.Errorf("qty=%.6f want %.6f (equal-weight fallback on mixed units)", q, want)
+	}
+}
+
+// Recovery after HL-fetch-fail at CB fire time (#356 review finding 1).
+// When the clearinghouse fetch fails on the cycle a CB first fires, the
+// pending close is never enqueued (setHyperliquidCircuitBreakerPending bails
+// on nil hlAssist). Subsequent cycles must detect the stuck state (CB active,
+// pending nil, live HL perps, on-chain position still open) and reconstruct
+// the pending so the reduce-only close eventually fires.
+func TestRunPendingHyperliquidCircuitCloses_RecoversStuckCB(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID: "hl-a",
+				RiskState: RiskState{
+					// CB was fired on a prior cycle, but pending was never set
+					// because the HL fetch had failed at that time.
+					CircuitBreaker:                 true,
+					CircuitBreakerUntil:            time.Now().Add(24 * time.Hour),
+					PendingHyperliquidCircuitClose: nil,
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string, partialSz *float64) (*HyperliquidCloseResult, error) {
+		if partialSz != nil {
+			calls = append(calls, fmt.Sprintf("%s:%g", sym, *partialSz))
+		} else {
+			calls = append(calls, sym)
+		}
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.4, AvgPx: 1}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		"0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 0.4, EntryPrice: 1}},
+		true, // hl state already fetched this cycle
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+	)
+	if len(calls) != 1 || calls[0] != "ETH:0.4" {
+		t.Errorf("closer calls=%v want [ETH:0.4] (recovered pending should drain full szi as sole owner)", calls)
+	}
+	if state.Strategies["hl-a"].RiskState.PendingHyperliquidCircuitClose != nil {
+		t.Error("expected pending cleared after successful recovery close")
+	}
+}
+
+// If the stuck-CB strategy has no on-chain position (e.g. operator already
+// closed it manually), recovery must be a no-op rather than submitting a
+// zero-size order.
+func TestRunPendingHyperliquidCircuitCloses_StuckCBNoOnChainPositionIsNoOp(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID: "hl-a",
+				RiskState: RiskState{
+					CircuitBreaker:      true,
+					CircuitBreakerUntil: time.Now().Add(24 * time.Hour),
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string, partialSz *float64) (*HyperliquidCloseResult, error) {
+		calls = append(calls, sym)
+		return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: sym}, Platform: "hyperliquid"}, nil
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		"0xabc",
+		nil, // no on-chain positions
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+	)
+	if len(calls) != 0 {
+		t.Errorf("expected no closer calls when no on-chain position, got %v", calls)
+	}
+	if state.Strategies["hl-a"].RiskState.PendingHyperliquidCircuitClose != nil {
+		t.Error("pending should remain nil when recovery has no on-chain position to close")
+	}
+}
+
+func TestRunPendingHyperliquidCircuitCloses_ClearsOnSuccess(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID: "hl-a",
+				RiskState: RiskState{
+					PendingHyperliquidCircuitClose: &HyperliquidCircuitClosePending{
+						Coins: []HyperliquidCircuitCloseCoin{{Coin: "ETH", Sz: 0.1}},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string, partialSz *float64) (*HyperliquidCloseResult, error) {
+		if partialSz != nil {
+			calls = append(calls, fmt.Sprintf("%s:%g", sym, *partialSz))
+		} else {
+			calls = append(calls, sym)
+		}
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.1, AvgPx: 1}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		"0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 1}},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+	)
+	if state.Strategies["hl-a"].RiskState.PendingHyperliquidCircuitClose != nil {
+		t.Error("expected pending cleared after successful close")
+	}
+	if len(calls) != 1 || calls[0] != "ETH:0.1" {
+		t.Errorf("closer calls=%v want [ETH:0.1]", calls)
 	}
 }

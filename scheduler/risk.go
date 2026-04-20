@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -529,6 +530,89 @@ type RiskState struct {
 	TotalTrades         int       `json:"total_trades"`
 	WinningTrades       int       `json:"winning_trades"`
 	LosingTrades        int       `json:"losing_trades"`
+	// PendingHyperliquidCircuitClose is set when a live HL perps strategy trips
+	// a per-strategy circuit breaker (#356). The main loop drains this with
+	// reduce-only closes (full or proportional for shared coins) before
+	// clearing the field. Serialized to SQLite as risk_pending_hl_close_json.
+	PendingHyperliquidCircuitClose *HyperliquidCircuitClosePending `json:"pending_hl_circuit_close,omitempty"`
+}
+
+// HyperliquidCircuitClosePending requests on-chain reduce-only closes after a
+// per-strategy circuit breaker fired on a live Hyperliquid wallet (#356).
+type HyperliquidCircuitClosePending struct {
+	Coins []HyperliquidCircuitCloseCoin `json:"coins"`
+}
+
+// HyperliquidCircuitCloseCoin is one coin leg of a pending HL circuit close.
+type HyperliquidCircuitCloseCoin struct {
+	Coin string  `json:"coin"`
+	Sz   float64 `json:"sz"` // positive magnitude in coin units
+}
+
+// HLRiskAssist carries pre-fetched Hyperliquid clearinghouse positions for
+// per-strategy circuit-breaker close sizing (#356). Nil disables HL pending.
+type HLRiskAssist struct {
+	HLPositions []HLPosition
+	HLLiveAll   []StrategyConfig
+}
+
+// MarshalPendingHLCloseJSON returns a DB-safe JSON blob for the pending field.
+// A marshal error is logged loudly rather than silently swallowed — on a
+// simple {string, float64} struct this branch is essentially unreachable,
+// but silently returning "" would persist a blank column that wipes the
+// pending close on reload. Logging gives operators a chance to notice if
+// this ever fires (#356 review).
+func (r *RiskState) MarshalPendingHLCloseJSON() string {
+	if r == nil || r.PendingHyperliquidCircuitClose == nil {
+		return ""
+	}
+	b, err := json.Marshal(r.PendingHyperliquidCircuitClose)
+	if err != nil {
+		fmt.Printf("[CRITICAL] MarshalPendingHLCloseJSON: refusing to persist pending HL circuit close — json.Marshal failed: %v (pending=%+v)\n",
+			err, r.PendingHyperliquidCircuitClose)
+		return ""
+	}
+	return string(b)
+}
+
+// UnmarshalPendingHLCloseJSON restores PendingHyperliquidCircuitClose from DB.
+func (r *RiskState) UnmarshalPendingHLCloseJSON(raw string) {
+	if r == nil {
+		return
+	}
+	if raw == "" {
+		r.PendingHyperliquidCircuitClose = nil
+		return
+	}
+	var p HyperliquidCircuitClosePending
+	if err := json.Unmarshal([]byte(raw), &p); err != nil || len(p.Coins) == 0 {
+		r.PendingHyperliquidCircuitClose = nil
+		return
+	}
+	r.PendingHyperliquidCircuitClose = &p
+}
+
+func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, hlAssist *HLRiskAssist) {
+	if sc == nil || hlAssist == nil || len(hlAssist.HLPositions) == 0 {
+		return
+	}
+	if sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
+		return
+	}
+	sym := hyperliquidSymbol(sc.Args)
+	if sym == "" {
+		return
+	}
+	if _, ok := s.Positions[sym]; !ok {
+		return
+	}
+	qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, hlAssist.HLPositions, hlAssist.HLLiveAll)
+	if !ok || qty <= 0 {
+		return
+	}
+	s.RiskState.PendingHyperliquidCircuitClose = &HyperliquidCircuitClosePending{
+		Coins: []HyperliquidCircuitCloseCoin{{Coin: sym, Sz: qty}},
+	}
 }
 
 // rolloverDailyPnL resets DailyPnL to zero whenever the UTC date has advanced
@@ -681,7 +765,10 @@ func perpsMarginDrawdownInputs(s *StrategyState, prices map[string]float64) (unr
 }
 
 // CheckRisk evaluates risk state and returns whether trading is allowed.
-func CheckRisk(s *StrategyState, portfolioValue float64, prices map[string]float64, logger *StrategyLogger) (bool, string) {
+// sc is the strategy config for this state (nil in some tests — HL pending
+// logic is skipped). hlAssist carries HL clearinghouse positions when fetched
+// this cycle so live perps can enqueue on-chain closes on circuit breaker (#356).
+func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, prices map[string]float64, logger *StrategyLogger, hlAssist *HLRiskAssist) (bool, string) {
 	r := &s.RiskState
 	now := time.Now().UTC()
 
@@ -743,6 +830,7 @@ func CheckRisk(s *StrategyState, portfolioValue float64, prices map[string]float
 		if r.TotalTrades > 0 && r.CurrentDrawdownPct > r.MaxDrawdownPct {
 			r.CircuitBreaker = true
 			r.CircuitBreakerUntil = now.Add(24 * time.Hour)
+			setHyperliquidCircuitBreakerPending(sc, s, hlAssist)
 			forceCloseAllPositions(s, prices, logger)
 			return false, fmt.Sprintf("max drawdown exceeded (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
 				r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
@@ -753,6 +841,7 @@ func CheckRisk(s *StrategyState, portfolioValue float64, prices map[string]float
 	if r.ConsecutiveLosses >= 5 {
 		r.CircuitBreaker = true
 		r.CircuitBreakerUntil = now.Add(1 * time.Hour)
+		setHyperliquidCircuitBreakerPending(sc, s, hlAssist)
 		forceCloseAllPositions(s, prices, logger)
 		return false, "5 consecutive losses"
 	}

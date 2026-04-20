@@ -11,6 +11,10 @@ state can diverge from the on-chain net.
 
 Usage:
     close_hyperliquid_position.py --symbol=ETH --mode=live
+    close_hyperliquid_position.py --symbol=ETH --mode=live --sz=0.25
+
+Optional ``--sz`` submits a partial reduce-only close (coin units). Omit for
+full position close (portfolio kill switch and sole-owner circuit breakers).
 
 Live mode is required (kill switch is meaningful only against real
 positions). Stdout is always a single JSON envelope: `{"close": ..., "platform": ...,
@@ -34,6 +38,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", required=True)
     parser.add_argument("--mode", default="live")
+    parser.add_argument(
+        "--sz",
+        type=float,
+        default=None,
+        help="partial close size in coin units (omit for full position)",
+    )
     args = parser.parse_args()
 
     if args.mode != "live":
@@ -48,7 +58,7 @@ def main():
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
-        result = adapter.market_close(args.symbol)
+        result = adapter.market_close(args.symbol, args.sz)
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         _emit_error(args.symbol, str(e))

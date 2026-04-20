@@ -1678,3 +1678,38 @@ func TestSaveState_GuardWarnIsOneShot(t *testing.T) {
 		t.Errorf("warn fired %d times after override, want 2 (dedup must reset)", warns)
 	}
 }
+
+func TestSaveAndLoadDB_PendingHLCloseRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	state := &AppState{
+		CycleCount: 1,
+		LastCycle:  now,
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID: "hl-a", Type: "perps", Platform: "hyperliquid", Cash: 100, InitialCapital: 100,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+				RiskState: RiskState{
+					PeakValue: 100, MaxDrawdownPct: 25,
+					PendingHyperliquidCircuitClose: &HyperliquidCircuitClosePending{
+						Coins: []HyperliquidCircuitCloseCoin{{Coin: "ETH", Sz: 0.2585}},
+					},
+				},
+			},
+		},
+	}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	p := loaded.Strategies["hl-a"].RiskState.PendingHyperliquidCircuitClose
+	if p == nil || len(p.Coins) != 1 {
+		t.Fatalf("pending missing: %+v", p)
+	}
+	if p.Coins[0].Coin != "ETH" || p.Coins[0].Sz != 0.2585 {
+		t.Errorf("pending coin=%q sz=%g want ETH 0.2585", p.Coins[0].Coin, p.Coins[0].Sz)
+	}
+}

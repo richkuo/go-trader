@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -255,7 +256,8 @@ type HyperliquidCloseResult struct {
 }
 
 // RunHyperliquidClose runs close_hyperliquid_position.py to submit a reduce-only
-// market close for a single coin (#341).
+// market close for a single coin (#341). When partialSz is non-nil, submits a
+// partial close for that coin quantity (#356 shared-wallet circuit breakers).
 //
 // Contract (load-bearing for kill-switch correctness): a non-nil error is
 // returned for ANY failure path — non-zero subprocess exit, malformed JSON,
@@ -264,10 +266,13 @@ type HyperliquidCloseResult struct {
 // (result, nil) for "exit 1 + parseable JSON with error" which forced every
 // caller to also inspect result.Error and conflated subprocess success with
 // JSON-error success.
-func RunHyperliquidClose(script, symbol string) (*HyperliquidCloseResult, string, error) {
+func RunHyperliquidClose(script, symbol string, partialSz *float64) (*HyperliquidCloseResult, string, error) {
 	args := []string{
 		fmt.Sprintf("--symbol=%s", symbol),
 		"--mode=live",
+	}
+	if partialSz != nil {
+		args = append(args, fmt.Sprintf("--sz=%s", strconv.FormatFloat(*partialSz, 'f', -1, 64)))
 	}
 	stdout, stderr, runErr := RunPythonScript(script, args)
 	return parseHyperliquidCloseOutput(stdout, string(stderr), runErr)
