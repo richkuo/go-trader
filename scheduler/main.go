@@ -606,6 +606,24 @@ func main() {
 					walletBalances[okxKey] = bal
 				}
 			}
+			// #362: Fetch TopStep positions once per cycle when any live TS
+			// futures strategy exists, so per-strategy CB enqueue
+			// (setTopStepCircuitBreakerPending) has a sizing source. The
+			// kill-switch plan builder has its own fetch path; we let it do
+			// its own call rather than plumb a pre-fetched TS slice through
+			// KillSwitchCloseInputs — the fetch is cheap (one HTTPS call)
+			// and keeps the kill-switch plumbing untouched.
+			var tsPositions []TopStepPosition
+			var tsStateFetched bool
+			if len(tsLiveAll) > 0 {
+				pos, err := defaultTopStepPositionsFetcher()
+				if err != nil {
+					fmt.Printf("[WARN] topstep positions fetch failed: %v — per-strategy CB will use stuck-CB recovery on next cycle\n", err)
+				} else {
+					tsStateFetched = true
+					tsPositions = pos
+				}
+			}
 
 			mu.RLock()
 			totalPV, usedPVFallback := computeTotalPortfolioValue(cfg.Strategies, state, prices, walletBalances, sharedWallets)
@@ -637,12 +655,15 @@ func main() {
 				// from the exchange (#341): closing virtually but never sending
 				// the reduce-only order left on-chain positions live, and once
 				// virtual was empty no future cycle could detect the leak.
-				// Portfolio kill owns all platform closes — drop per-strategy pending.
+				// Portfolio kill owns all live closes — drop per-strategy pending
+				// so the per-strategy drains don't double-submit against an
+				// already-flattening venue.
 				for _, ss := range state.Strategies {
 					if ss != nil {
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseOKX)
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhood)
+						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseTopStep)
 					}
 				}
 			}
@@ -817,6 +838,24 @@ func main() {
 						&mu,
 					)
 				}
+				// #362: Live TopStep per-strategy circuit breaker closes
+				// (market_close full-flatten, sole-peer only — whole-contract
+				// futures have no partial-close primitive). Outside-RTH
+				// rejections and other TopStepX errors keep the pending
+				// latched; the drain retries on the next cycle.
+				if len(tsLiveAll) > 0 {
+					runPendingTopStepCircuitCloses(
+						context.Background(),
+						state,
+						cfg.Strategies,
+						tsPositions,
+						tsStateFetched,
+						defaultTopStepPositionsFetcher,
+						defaultTopStepLiveCloser,
+						90*time.Second,
+						&mu,
+					)
+				}
 				// #361 phase 3: Live Robinhood crypto per-strategy circuit breaker
 				// closes. RH crypto has no reduce-only primitive, so each pending
 				// leg is a full-account market_sell guarded by a sole-ownership
@@ -921,15 +960,22 @@ func main() {
 
 					// Phase 2: Lock — CheckRisk (fast, no I/O)
 					var riskAssist *PlatformRiskAssist
-					if (hlStateFetched && len(hlLiveAll) > 0) || (okxStateFetched && len(okxLivePerps) > 0) {
+					needHL := hlStateFetched && len(hlLiveAll) > 0
+					needOKX := okxStateFetched && len(okxLivePerps) > 0
+					needTS := tsStateFetched && len(tsLiveAll) > 0
+					if needHL || needOKX || needTS {
 						riskAssist = &PlatformRiskAssist{}
-						if hlStateFetched && len(hlLiveAll) > 0 {
+						if needHL {
 							riskAssist.HLPositions = hlPositions
 							riskAssist.HLLiveAll = hlLiveAll
 						}
-						if okxStateFetched && len(okxLivePerps) > 0 {
+						if needOKX {
 							riskAssist.OKXPositions = okxPositions
 							riskAssist.OKXLiveAll = okxLivePerps
+						}
+						if needTS {
+							riskAssist.TSPositions = tsPositions
+							riskAssist.TSLiveAll = tsLiveAll
 						}
 					}
 					mu.Lock()

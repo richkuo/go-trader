@@ -564,6 +564,13 @@ const PlatformPendingCloseOKX = "okx"
 // cannot CB-close safely and are surfaced to the owner via DM instead.
 const PlatformPendingCloseRobinhood = "robinhood"
 
+// PlatformPendingCloseTopStep is the map key in RiskState.PendingCircuitCloses
+// for TopStep futures closes. Size entries are integer contract counts encoded
+// as float64 (PendingCircuitCloseSymbol.Size is float64 across all venues for
+// storage uniformity; market_close has no size argument and flattens the full
+// position — Size is informational only for TopStep).
+const PlatformPendingCloseTopStep = "topstep"
+
 // PendingCircuitClose is a queued request to close one or more positions on a
 // single venue after a per-strategy circuit breaker fired. The drain runner
 // for that venue (platform key in RiskState.PendingCircuitCloses) translates
@@ -587,11 +594,10 @@ type PendingCircuitCloseSymbol struct {
 // drain runner's stuck-CB recovery path then re-enqueues once the fetch
 // succeeds on a later cycle (#356).
 //
-// HL and OKX fields are populated today (#356, #360). RH fields are defined
-// here for phase 3 (#361) but left unpopulated at the CheckRisk call site in
-// main.go — see setRobinhoodCircuitBreakerPending for why the RH enqueue is
-// driven exclusively by the drain's stuck-CB recovery path rather than at
-// CB-fire time. TopStep fields land in phase 4.
+// HL (#356), OKX (#360), Robinhood (#361), and TopStep (#362) fields are all
+// populated today. RH fields are left unpopulated at the CheckRisk call site —
+// see setRobinhoodCircuitBreakerPending for why the RH enqueue is driven
+// exclusively by the drain's stuck-CB recovery path rather than at CB-fire time.
 type PlatformRiskAssist struct {
 	HLPositions  []HLPosition
 	HLLiveAll    []StrategyConfig
@@ -604,10 +610,19 @@ type PlatformRiskAssist struct {
 	// even when no CB fires).
 	RHPositions []RobinhoodPosition
 	// RHLiveAll mirrors HLLiveAll/OKXLiveAll: every live configured Robinhood
-	// crypto (Type=="spot") strategy. Consumed by the sole-owner check in the
-	// drain before submitting a full-account market_sell. Left nil at the
-	// CheckRisk call site today — see setRobinhoodCircuitBreakerPending.
+	// crypto (Type=="spot") strategy. Left nil at the CheckRisk call site today
+	// — see setRobinhoodCircuitBreakerPending.
 	RHLiveAll []StrategyConfig
+	// TSPositions is the pre-fetched live TopStep futures position snapshot
+	// for the configured account. Populated in main.go from a once-per-cycle
+	// fetch_topstep_positions.py call (#362). Empty slice with TSLiveAll set
+	// is a successful fetch that found no open positions; nil slice signals
+	// a fetch failure (stuck-CB path will retry).
+	TSPositions []TopStepPosition
+	// TSLiveAll mirrors HLLiveAll — every configured live TopStep futures
+	// strategy on this scheduler. Needed by the sole-vs-shared-peer branch
+	// in computeTopStepCircuitCloseQty.
+	TSLiveAll []StrategyConfig
 }
 
 // MarshalPendingCircuitClosesJSON returns a DB-safe JSON blob for the pending
@@ -736,6 +751,41 @@ func (r *RiskState) getPendingCircuitClose(platform string) *PendingCircuitClose
 		return nil
 	}
 	return r.PendingCircuitCloses[platform]
+}
+
+// setTopStepCircuitBreakerPending enqueues a reduce-only flatten request for
+// the firing strategy's TopStep futures contract (#362). Sole-peer strategies
+// enqueue the full on-account contract count; multi-peer shared contracts are
+// skipped because TopStepX's market_close only flattens the entire on-account
+// size — no safe partial-close primitive exists for whole-contract futures.
+// The operator is notified via the virtual force-close (CheckRisk still calls
+// forceCloseAllPositions), and manual intervention is required to split a
+// shared contract.
+//
+// A nil or empty assist bails — same stuck-CB semantics as the HL helper:
+// a fetch failure at CB fire time leaves pending nil, and the drain's
+// stuck-CB recovery phase reconstructs the pending once TS is reachable.
+func setTopStepCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, assist *PlatformRiskAssist) {
+	if sc == nil || assist == nil || len(assist.TSPositions) == 0 {
+		return
+	}
+	if sc.Platform != "topstep" || sc.Type != "futures" || !topstepIsLive(sc.Args) {
+		return
+	}
+	sym := topstepSymbol(sc.Args)
+	if sym == "" {
+		return
+	}
+	if _, ok := s.Positions[sym]; !ok {
+		return
+	}
+	qty, ok := computeTopStepCircuitCloseQty(sym, s.ID, assist.TSPositions, assist.TSLiveAll)
+	if !ok || qty <= 0 {
+		return
+	}
+	s.RiskState.setPendingCircuitClose(PlatformPendingCloseTopStep, &PendingCircuitClose{
+		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: float64(qty)}},
+	})
 }
 
 func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, assist *PlatformRiskAssist) {
@@ -1070,6 +1120,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 			setHyperliquidCircuitBreakerPending(sc, s, assist)
 			setOKXCircuitBreakerPending(sc, s, assist)
 			setRobinhoodCircuitBreakerPending(sc, s, assist)
+			setTopStepCircuitBreakerPending(sc, s, assist)
 			forceCloseAllPositions(s, prices, logger)
 			return false, fmt.Sprintf("max drawdown exceeded (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
 				r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
