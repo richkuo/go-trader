@@ -1447,17 +1447,6 @@ func shouldSkipZeroCapital(sc StrategyConfig) bool {
 	return sc.CapitalPct > 0 && sc.Capital <= 0
 }
 
-// hyperliquidIsLive reports whether --mode=live appears in strategy args.
-// isLiveArgs reports whether --mode=live appears in strategy args.
-func isLiveArgs(args []string) bool {
-	for _, arg := range args {
-		if arg == "--mode=live" {
-			return true
-		}
-	}
-	return false
-}
-
 // sendTradeAlerts sends trade alerts via DM and/or channel for all configured backends.
 // trades is the number of new trades appended during this cycle.
 func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, mu *sync.RWMutex, notifier *MultiNotifier) {
@@ -1536,12 +1525,7 @@ func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, m
 }
 
 func hyperliquidIsLive(args []string) bool {
-	for _, arg := range args {
-		if arg == "--mode=live" {
-			return true
-		}
-	}
-	return false
+	return isLiveArgs(args)
 }
 
 // hyperliquidSymbol extracts the coin symbol from perps strategy args (e.g. "BTC").
@@ -1708,12 +1692,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 
 // topstepIsLive reports whether --mode=live appears in strategy args.
 func topstepIsLive(args []string) bool {
-	for _, arg := range args {
-		if arg == "--mode=live" {
-			return true
-		}
-	}
-	return false
+	return isLiveArgs(args)
 }
 
 // topstepSymbol extracts the futures symbol from strategy args (e.g. "ES").
@@ -1880,12 +1859,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, result *TopStepRe
 
 // robinhoodIsLive reports whether --mode=live appears in strategy args.
 func robinhoodIsLive(args []string) bool {
-	for _, arg := range args {
-		if arg == "--mode=live" {
-			return true
-		}
-	}
-	return false
+	return isLiveArgs(args)
 }
 
 // robinhoodSymbol extracts the coin symbol from strategy args (e.g. "BTC").
@@ -2027,12 +2001,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, result *Robinho
 
 // okxIsLive reports whether --mode=live appears in strategy args.
 func okxIsLive(args []string) bool {
-	for _, arg := range args {
-		if arg == "--mode=live" {
-			return true
-		}
-	}
-	return false
+	return isLiveArgs(args)
 }
 
 // okxSymbol extracts the coin symbol from OKX strategy args (e.g. "BTC").

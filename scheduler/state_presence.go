@@ -5,6 +5,23 @@ import (
 	"os"
 )
 
+// isLiveArgs reports whether a check-script arg list selects live mode. It
+// recognizes both the joined form (--mode=live) and the split form
+// (--mode live). Canonical predicate shared by HasLiveStrategy and every
+// per-platform <plat>IsLive helper so walletKeyFor, startup state-presence
+// checks, and live-execution guards agree on what "live" means (#364).
+func isLiveArgs(args []string) bool {
+	for i, arg := range args {
+		if arg == "--mode=live" {
+			return true
+		}
+		if arg == "--mode" && i+1 < len(args) && args[i+1] == "live" {
+			return true
+		}
+	}
+	return false
+}
+
 // HasLiveStrategy reports whether any configured strategy passes --mode=live
 // to its check script. Paper-only deployments don't hold persistent exchange
 // state, so a missing state.db on first startup is expected for them — the
@@ -12,13 +29,8 @@ import (
 // exist.
 func HasLiveStrategy(strategies []StrategyConfig) bool {
 	for _, sc := range strategies {
-		for i, arg := range sc.Args {
-			if arg == "--mode=live" {
-				return true
-			}
-			if arg == "--mode" && i+1 < len(sc.Args) && sc.Args[i+1] == "live" {
-				return true
-			}
+		if isLiveArgs(sc.Args) {
+			return true
 		}
 	}
 	return false

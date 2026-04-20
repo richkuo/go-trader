@@ -288,6 +288,64 @@ func TestHasSharedWalletBalanceFetcher_HLOnly(t *testing.T) {
 	}
 }
 
+// TestDetectSharedWallets_MixedHLAndOKX verifies that when HL and OKX live
+// strategies are configured together, HL is still grouped (fetcher exists) and
+// OKX is still filtered out (no fetcher yet) in the SAME detection pass. Guards
+// against future refactors accidentally cross-contaminating the platform
+// filter.
+func TestDetectSharedWallets_MixedHLAndOKX(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xhl")
+	t.Setenv("OKX_API_KEY", "okx-key-abc")
+
+	strategies := []StrategyConfig{
+		{ID: "hl-sma-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 5000},
+		{ID: "hl-rsi-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 5000},
+		{ID: "okx-sma-btc", Platform: "okx", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 5000},
+		{ID: "okx-rsi-eth", Platform: "okx", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 5000},
+	}
+
+	shared := detectSharedWallets(strategies)
+	if len(shared) != 1 {
+		t.Fatalf("expected exactly 1 shared wallet (HL); got %d entries %+v", len(shared), shared)
+	}
+	hlKey := SharedWalletKey{Platform: "hyperliquid", Account: "0xhl"}
+	ids, ok := shared[hlKey]
+	if !ok {
+		t.Fatalf("expected HL wallet in shared set; got %+v", shared)
+	}
+	if len(ids) != 2 {
+		t.Errorf("expected 2 HL strategies grouped; got %d (%v)", len(ids), ids)
+	}
+	// Confirm OKX was filtered at detection, not at walletKeyFor.
+	for _, sc := range strategies {
+		if sc.Platform != "okx" {
+			continue
+		}
+		if _, ok := walletKeyFor(sc); !ok {
+			t.Errorf("walletKeyFor should still recognize OKX strategy %s", sc.ID)
+		}
+	}
+}
+
+// TestWalletKeyFor_SplitModeLiveRecognized verifies that the split-form
+// "--mode live" (separate args) is recognized as live, not just the joined
+// "--mode=live" form. HasLiveStrategy accepts both forms; walletKeyFor must
+// agree so a split-form config does not silently bypass shared-wallet grouping.
+func TestWalletKeyFor_SplitModeLiveRecognized(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
+
+	sc := StrategyConfig{ID: "hl-sma-btc", Platform: "hyperliquid", Type: "perps",
+		Args: []string{"sma", "BTC", "1h", "--mode", "live"}}
+
+	key, ok := walletKeyFor(sc)
+	if !ok {
+		t.Fatalf("expected split-form --mode live to be recognized as live")
+	}
+	if key.Platform != "hyperliquid" || key.Account != "0xtest" {
+		t.Errorf("unexpected key %+v", key)
+	}
+}
+
 // TestDetectSharedWallets_NoEnvVar verifies that without HYPERLIQUID_ACCOUNT_ADDRESS
 // no wallets are detected as shared (we have no way to identify them).
 func TestDetectSharedWallets_NoEnvVar(t *testing.T) {

@@ -82,6 +82,21 @@ func walletKeyFor(sc StrategyConfig) (SharedWalletKey, bool) {
 	return SharedWalletKey{}, false
 }
 
+// platformsWithSharedWalletBalanceFetcher lists platforms for which
+// defaultSharedWalletFetcher can return a live balance. Keep this data-driven
+// (matches walletKeyRegistry style) so enabling a new platform = one-line flip
+// alongside its fetcher wiring in the corresponding phase PR.
+//
+// TODO(#357): this is keyed on platform alone, while walletKeyRegistry is keyed
+// on (platform, instrument). That's fine today because each platform has a
+// single instrument flavor in the registry, but if a platform ever gains a
+// second flavor (e.g. OKX spot in addition to OKX swap) the fetcher-capability
+// bit will auto-enable/disable both — confirm the fetcher handles every
+// registered instrument for the platform before flipping it on.
+var platformsWithSharedWalletBalanceFetcher = map[string]bool{
+	"hyperliquid": true,
+}
+
 // hasSharedWalletBalanceFetcher reports whether defaultSharedWalletFetcher can
 // return a live balance for the given platform. Platforms recognized by
 // walletKeyFor but without a fetcher are EXCLUDED from detectSharedWallets so
@@ -90,13 +105,10 @@ func walletKeyFor(sc StrategyConfig) (SharedWalletKey, bool) {
 // (#357 phase 1a preserves HL-only portfolio-value behavior).
 //
 // As phase 2-4 land real balance fetchers for OKX / TopStep / Robinhood, add
-// their platform strings here to enable double-count protection for them.
+// their platform strings to platformsWithSharedWalletBalanceFetcher to enable
+// double-count protection for them.
 func hasSharedWalletBalanceFetcher(platform string) bool {
-	switch platform {
-	case "hyperliquid":
-		return true
-	}
-	return false
+	return platformsWithSharedWalletBalanceFetcher[platform]
 }
 
 // detectSharedWallets returns the set of shared-wallet keys that have more
