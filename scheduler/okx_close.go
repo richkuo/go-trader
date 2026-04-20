@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"sort"
+	"sync"
+	"time"
 )
 
 // OKXPosition represents an on-chain OKX perpetual swap position. Size is
@@ -29,14 +32,18 @@ var okxFetchPositionsScript = "shared_scripts/fetch_okx_positions.py"
 // tests can inject a fake without spawning Python. Production implementation
 // is defaultOKXLiveCloser, which shells out to close_okx_position.py via
 // RunOKXClose.
-type OKXLiveCloser func(symbol string) (*OKXCloseResult, error)
+// When partialSz is nil, the full on-chain position is closed (portfolio
+// kill switch and sole-owner circuit breakers). When non-nil, submits a
+// reduce-only partial close for that coin quantity — used by per-strategy
+// circuit breakers on shared OKX wallets (#360 / phase 2 of #357).
+type OKXLiveCloser func(symbol string, partialSz *float64) (*OKXCloseResult, error)
 
 // defaultOKXLiveCloser is the production close implementation. Matches the
 // HL shape: stderr goes to os.Stderr (kill switch is a system-level event,
 // not strategy-scoped) and any non-nil err means the close was NOT confirmed
 // by the adapter so the kill switch must stay latched.
-func defaultOKXLiveCloser(symbol string) (*OKXCloseResult, error) {
-	result, stderr, err := RunOKXClose(okxLiveCloseScript, symbol)
+func defaultOKXLiveCloser(symbol string, partialSz *float64) (*OKXCloseResult, error) {
+	result, stderr, err := RunOKXClose(okxLiveCloseScript, symbol, partialSz)
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "[okx-close] %s stderr: %s\n", symbol, stderr)
 	}
@@ -167,7 +174,7 @@ func forceCloseOKXLive(ctx context.Context, positions []OKXPosition, okxLiveAll 
 			report.Errors[p.Coin] = fmt.Errorf("close budget exhausted before submit: %w", err)
 			continue
 		}
-		result, err := closer(p.Coin)
+		result, err := closer(p.Coin, nil)
 		if err != nil {
 			report.Errors[p.Coin] = err
 			continue
@@ -184,4 +191,311 @@ func forceCloseOKXLive(ctx context.Context, positions []OKXPosition, okxLiveAll 
 	}
 
 	return report
+}
+
+// okxLiveStrategiesForCoin returns every live OKX perps strategy configured to
+// trade the given coin. Mirrors hlLiveStrategiesForCoin.
+func okxLiveStrategiesForCoin(coin string, okxLiveAll []StrategyConfig) []StrategyConfig {
+	var out []StrategyConfig
+	for _, sc := range okxLiveAll {
+		if sc.Platform != "okx" || sc.Type != "perps" {
+			continue
+		}
+		if okxSymbol(sc.Args) == coin {
+			out = append(out, sc)
+		}
+	}
+	return out
+}
+
+// okxStrategyCapitalWeight returns a single strategy's proportional weight for
+// shared-coin close sizing. Matches hlStrategyCapitalWeight.
+func okxStrategyCapitalWeight(sc StrategyConfig) float64 {
+	if sc.CapitalPct > 0 {
+		return sc.CapitalPct
+	}
+	if sc.Capital > 0 {
+		return sc.Capital
+	}
+	return 1.0
+}
+
+// okxStrategyCapitalWeights returns per-peer weights for proportional close
+// sizing on a shared coin. Mixed-units guard matches hlStrategyCapitalWeights:
+// when peers declare CapitalPct (fractional) alongside raw Capital (dollars)
+// their sum is nonsensical and the CapitalPct-only peer's share collapses to
+// near-zero, producing a no-op close. Detect the mismatch and fall back to
+// equal weights so the firing strategy still gets a meaningful share.
+func okxStrategyCapitalWeights(peers []StrategyConfig) []float64 {
+	hasPct := false
+	hasAbs := false
+	for _, p := range peers {
+		switch {
+		case p.CapitalPct > 0:
+			hasPct = true
+		case p.Capital > 0:
+			hasAbs = true
+		}
+	}
+	mixed := hasPct && hasAbs
+	out := make([]float64, len(peers))
+	for i, p := range peers {
+		if mixed {
+			out[i] = 1.0
+			continue
+		}
+		out[i] = okxStrategyCapitalWeight(p)
+	}
+	return out
+}
+
+// computeOKXCircuitCloseQty returns the unsigned contract quantity for a
+// reduce-only market_close when strategyID's per-strategy circuit breaker
+// fires on OKX perps. For a coin traded by multiple live OKX strategies on the
+// same wallet, the close size is proportional to capital_pct (or capital)
+// weights. For a sole configured trader of that coin, the full on-chain
+// absolute size is used. ok is false when there is no non-zero on-chain
+// position for the coin. Mirrors computeHyperliquidCircuitCloseQty.
+func computeOKXCircuitCloseQty(coin, strategyID string, okxPositions []OKXPosition, okxLiveAll []StrategyConfig) (qty float64, ok bool) {
+	var onChain float64
+	found := false
+	for i := range okxPositions {
+		if okxPositions[i].Coin == coin {
+			onChain = okxPositions[i].Size
+			found = true
+			break
+		}
+	}
+	if !found || onChain == 0 {
+		return 0, false
+	}
+	absSzi := math.Abs(onChain)
+	peers := okxLiveStrategiesForCoin(coin, okxLiveAll)
+	if len(peers) <= 1 {
+		return absSzi, true
+	}
+	weights := okxStrategyCapitalWeights(peers)
+	sumW := 0.0
+	var wFiring float64
+	foundFiring := false
+	for i, p := range peers {
+		sumW += weights[i]
+		if p.ID == strategyID {
+			wFiring = weights[i]
+			foundFiring = true
+		}
+	}
+	if !foundFiring || sumW <= 0 {
+		return absSzi, true
+	}
+	q := absSzi * (wFiring / sumW)
+	if q > absSzi {
+		q = absSzi
+	}
+	if q < 1e-12 {
+		return 0, false
+	}
+	return q, true
+}
+
+// runPendingOKXCircuitCloses drains the "okx" entry of
+// RiskState.PendingCircuitCloses for every strategy, submitting reduce-only
+// OKX swap closes outside the state mutex. Retries next scheduler cycle on
+// failure. Mirrors runPendingHyperliquidCircuitCloses (#360).
+//
+// Also recovers "stuck CB" strategies: if a per-strategy circuit breaker fires
+// on a cycle where the OKX position fetch failed, setOKXCircuitBreakerPending
+// bails on the nil assist and the pending close is never set. Subsequent
+// CheckRisk calls early-return with "circuit breaker active" without
+// re-enqueueing. This drain detects the case (live OKX perps strategy with
+// CircuitBreaker=true but no pending OKX entry AND a matching non-zero
+// on-chain position) and reconstructs the pending so the reduce-only close
+// eventually fires once OKX is reachable again.
+//
+// okxHasCreds is used to decide whether fetching is worth attempting on a
+// cycle where the main loop did not already pre-fetch; it is the same gate as
+// the env-var check in defaultOKXPositionsFetcher. When false, this function
+// is a no-op.
+func runPendingOKXCircuitCloses(
+	ctx context.Context,
+	state *AppState,
+	strategies []StrategyConfig,
+	okxHasCreds bool,
+	okxPositions []OKXPosition,
+	okxStateFetched bool,
+	okxFetcher OKXPositionsFetcher,
+	closer OKXLiveCloser,
+	totalBudget time.Duration,
+	mu *sync.RWMutex,
+) {
+	if !okxHasCreds || closer == nil || state == nil {
+		return
+	}
+
+	// Build the live OKX perps roster from strategies — needed for both the
+	// stuck-CB recovery path and the shared-coin weight computation.
+	var okxLiveAll []StrategyConfig
+	for _, sc := range strategies {
+		if sc.Platform == "okx" && sc.Type == "perps" && okxIsLive(sc.Args) {
+			okxLiveAll = append(okxLiveAll, sc)
+		}
+	}
+
+	// Phase 1: snapshot — detect pending jobs AND stuck-CB strategies.
+	mu.RLock()
+	hasPending := false
+	hasStuckCB := false
+	for _, ss := range state.Strategies {
+		if ss == nil {
+			continue
+		}
+		if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseOKX) != nil {
+			hasPending = true
+		}
+	}
+	for _, sc := range okxLiveAll {
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseOKX) == nil && ss.RiskState.CircuitBreaker {
+			hasStuckCB = true
+			break
+		}
+	}
+	mu.RUnlock()
+
+	if !hasPending && !hasStuckCB {
+		return
+	}
+
+	ctxOverall, cancelOverall := context.WithTimeout(ctx, totalBudget)
+	defer cancelOverall()
+
+	positions := okxPositions
+	if !okxStateFetched && okxFetcher != nil {
+		pos, err := okxFetcher()
+		if err != nil {
+			fmt.Printf("[CRITICAL] okx-circuit-close: cannot fetch OKX positions: %v — will retry next cycle\n", err)
+			return
+		}
+		positions = pos
+	}
+
+	// Phase 2: reconstruct pending for stuck-CB strategies.
+	if hasStuckCB {
+		recoverOrder := make([]StrategyConfig, len(okxLiveAll))
+		copy(recoverOrder, okxLiveAll)
+		sort.Slice(recoverOrder, func(i, j int) bool { return recoverOrder[i].ID < recoverOrder[j].ID })
+		mu.Lock()
+		for _, sc := range recoverOrder {
+			ss := state.Strategies[sc.ID]
+			if ss == nil {
+				continue
+			}
+			if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseOKX) != nil {
+				continue
+			}
+			if !ss.RiskState.CircuitBreaker {
+				continue
+			}
+			sym := okxSymbol(sc.Args)
+			if sym == "" {
+				continue
+			}
+			qty, ok := computeOKXCircuitCloseQty(sym, sc.ID, positions, okxLiveAll)
+			if !ok || qty <= 0 {
+				continue
+			}
+			ss.RiskState.setPendingCircuitClose(PlatformPendingCloseOKX, &PendingCircuitClose{
+				Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+			})
+			fmt.Printf("[CRITICAL] okx-circuit-close: recovered pending for strategy %s coin %s sz=%.6f (CB latched, OKX fetch had failed at fire time)\n",
+				sc.ID, sym, qty)
+		}
+		mu.Unlock()
+	}
+
+	// Phase 3: re-snapshot jobs (may now include recovered entries).
+	type job struct {
+		stratID string
+		pending PendingCircuitClose
+	}
+	var jobs []job
+	mu.RLock()
+	for id, ss := range state.Strategies {
+		if ss == nil {
+			continue
+		}
+		p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseOKX)
+		if p == nil || len(p.Symbols) == 0 {
+			continue
+		}
+		jobs = append(jobs, job{id, *p})
+	}
+	mu.RUnlock()
+
+	if len(jobs) == 0 {
+		return
+	}
+
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].stratID < jobs[j].stratID })
+
+	for _, j := range jobs {
+		if err := ctxOverall.Err(); err != nil {
+			fmt.Printf("[CRITICAL] okx-circuit-close: budget exhausted: %v\n", err)
+			return
+		}
+		sc := lookupStrategyConfig(strategies, j.stratID)
+		if sc == nil || sc.Platform != "okx" || sc.Type != "perps" || !okxIsLive(sc.Args) {
+			mu.Lock()
+			if ss := state.Strategies[j.stratID]; ss != nil {
+				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseOKX)
+			}
+			mu.Unlock()
+			continue
+		}
+
+		allOK := true
+		for _, c := range j.pending.Symbols {
+			if err := ctxOverall.Err(); err != nil {
+				allOK = false
+				break
+			}
+			sz := c.Size
+			for _, p := range positions {
+				if p.Coin != c.Symbol {
+					continue
+				}
+				absOC := math.Abs(p.Size)
+				if absOC <= 1e-15 {
+					sz = 0
+					break
+				}
+				if sz > absOC {
+					sz = absOC
+				}
+				break
+			}
+			if sz <= 1e-15 {
+				continue
+			}
+			partial := sz
+			_, err := closer(c.Symbol, &partial)
+			if err != nil {
+				fmt.Printf("[CRITICAL] okx-circuit-close: strategy %s coin %s sz=%.6f failed: %v\n", j.stratID, c.Symbol, sz, err)
+				allOK = false
+				break
+			}
+			fmt.Printf("[INFO] okx-circuit-close: strategy %s coin %s submitted reduce-only close sz=%.6f\n", j.stratID, c.Symbol, sz)
+		}
+
+		if allOK {
+			mu.Lock()
+			if ss := state.Strategies[j.stratID]; ss != nil {
+				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseOKX)
+			}
+			mu.Unlock()
+		}
+	}
 }

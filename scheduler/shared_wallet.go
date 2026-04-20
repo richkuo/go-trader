@@ -95,6 +95,7 @@ func walletKeyFor(sc StrategyConfig) (SharedWalletKey, bool) {
 // registered instrument for the platform before flipping it on.
 var platformsWithSharedWalletBalanceFetcher = map[string]bool{
 	"hyperliquid": true,
+	"okx":         true, // #360 phase 2 of #357 — fetch_okx_balance.py
 }
 
 // hasSharedWalletBalanceFetcher reports whether defaultSharedWalletFetcher can
