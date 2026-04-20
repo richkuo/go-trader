@@ -588,7 +588,7 @@ const PlatformPendingCloseTopStep = "topstep"
 // resets). Deliberately distinct from "okx" / "robinhood" portfolio-kill keys
 // so the auto-close drains never dequeue an operator-required entry.
 const (
-	PlatformPendingCloseOKXSpot          = "okx_spot"
+	PlatformPendingCloseOKXSpot = "okx_spot"
 	PlatformPendingCloseRobinhoodOptions = "robinhood_options"
 )
 

@@ -20,7 +20,7 @@ type OperatorRequiredEntry struct {
 }
 
 // OperatorRequiredWarningPlan is the output of planOperatorRequiredWarning.
-// Callers deliver LogLines to stderr and, when HasEntries() is true, send
+// Callers deliver LogLines to stdout and, when HasEntries() is true, send
 // Message through every configured notifier backend.
 //
 // Pure data — no goroutines, no notifier side effects. Separated from the
@@ -154,10 +154,10 @@ func formatOperatorRequiredWarningMessage(entries []OperatorRequiredEntry) strin
 	return b.String()
 }
 
-// operatorRequiredNotifier is the narrow notifier surface drainOperator-
-// RequiredPendingCloses needs. *MultiNotifier satisfies it in production; tests
-// supply a capturing stub so the drain can be exercised without a live
-// Discord/Telegram connection.
+// operatorRequiredNotifier is the narrow notifier surface used by
+// drainOperatorRequiredPendingCloses. *MultiNotifier satisfies it in
+// production; tests supply a capturing stub so the drain can be exercised
+// without a live Discord/Telegram connection.
 type operatorRequiredNotifier interface {
 	HasBackends() bool
 	SendToAllChannels(content string)
@@ -170,10 +170,10 @@ type operatorRequiredNotifier interface {
 // RiskState and surfaces through /status, Discord, and Telegram on every
 // cycle until the operator flattens manually and the CB resets.
 //
-// Called from the main loop alongside runPendingHyperliquidCircuitCloses
-// (#363 phase 5). Takes the state mutex as an RWMutex; only a read lock is
-// ever held (state is not mutated here — the drain's job is to surface the
-// condition, not clear it).
+// Called from the main loop after all automated-close drains (HL, OKX perps,
+// RH crypto, TopStep) in phase 5 of #363. Takes the state mutex as an
+// RWMutex; only a read lock is ever held (state is not mutated here — the
+// drain's job is to surface the condition, not clear it).
 func drainOperatorRequiredPendingCloses(state *AppState, notifier operatorRequiredNotifier, mu *sync.RWMutex) {
 	if state == nil {
 		return
