@@ -552,6 +552,10 @@ type RiskState struct {
 // phase PRs (#360 OKX, #361 RH, #362 TS).
 const PlatformPendingCloseHyperliquid = "hyperliquid"
 
+// PlatformPendingCloseOKX is the map key in RiskState.PendingCircuitCloses for
+// OKX perpetual swap reduce-only closes (#360 phase 2 of #357).
+const PlatformPendingCloseOKX = "okx"
+
 // PendingCircuitClose is a queued request to close one or more positions on a
 // single venue after a per-strategy circuit breaker fired. The drain runner
 // for that venue (platform key in RiskState.PendingCircuitCloses) translates
@@ -575,12 +579,13 @@ type PendingCircuitCloseSymbol struct {
 // drain runner's stuck-CB recovery path then re-enqueues once the fetch
 // succeeds on a later cycle (#356).
 //
-// Only HL fields are populated today (#359 phase 1b generalizes HLRiskAssist).
-// Phases 2-4 will add OKX / TopStep / Robinhood fields as their per-strategy
-// close plumbing lands.
+// HL and OKX fields are populated today (#356, #360). TopStep / Robinhood
+// fields land in phases 3-4 as their per-strategy close plumbing ships.
 type PlatformRiskAssist struct {
-	HLPositions []HLPosition
-	HLLiveAll   []StrategyConfig
+	HLPositions  []HLPosition
+	HLLiveAll    []StrategyConfig
+	OKXPositions []OKXPosition
+	OKXLiveAll   []StrategyConfig
 }
 
 // MarshalPendingCircuitClosesJSON returns a DB-safe JSON blob for the pending
@@ -730,6 +735,33 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 		return
 	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
+		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+	})
+}
+
+// setOKXCircuitBreakerPending mirrors setHyperliquidCircuitBreakerPending for
+// OKX perps (#360 phase 2 of #357). Bails on any nil dependency or missing
+// fetched assist so the stuck-CB recovery path in runPendingOKXCircuitCloses
+// can reconstruct the pending on a later cycle once OKX is reachable again.
+func setOKXCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, assist *PlatformRiskAssist) {
+	if sc == nil || assist == nil || len(assist.OKXPositions) == 0 {
+		return
+	}
+	if sc.Platform != "okx" || sc.Type != "perps" || !okxIsLive(sc.Args) {
+		return
+	}
+	sym := okxSymbol(sc.Args)
+	if sym == "" {
+		return
+	}
+	if _, ok := s.Positions[sym]; !ok {
+		return
+	}
+	qty, ok := computeOKXCircuitCloseQty(sym, s.ID, assist.OKXPositions, assist.OKXLiveAll)
+	if !ok || qty <= 0 {
+		return
+	}
+	s.RiskState.setPendingCircuitClose(PlatformPendingCloseOKX, &PendingCircuitClose{
 		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
 	})
 }
@@ -951,6 +983,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 			r.CircuitBreaker = true
 			r.CircuitBreakerUntil = now.Add(24 * time.Hour)
 			setHyperliquidCircuitBreakerPending(sc, s, assist)
+			setOKXCircuitBreakerPending(sc, s, assist)
 			forceCloseAllPositions(s, prices, logger)
 			return false, fmt.Sprintf("max drawdown exceeded (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
 				r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)

@@ -50,7 +50,7 @@ func stubHLStateFetcher(positions []HLPosition, err error) (HLStateFetcher, *int
 // a synthetic success that should never be triggered in HL-only tests.
 func stubOKXLiveCloser(errs map[string]error) (OKXLiveCloser, *[]string) {
 	var calls []string
-	closer := func(symbol string) (*OKXCloseResult, error) {
+	closer := func(symbol string, partialSz *float64) (*OKXCloseResult, error) {
 		calls = append(calls, symbol)
 		if err, ok := errs[symbol]; ok && err != nil {
 			return nil, err

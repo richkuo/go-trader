@@ -212,12 +212,13 @@ func TestWalletKeyFor_Robinhood_OptionsNoKey(t *testing.T) {
 	}
 }
 
-// TestDetectSharedWallets_OKXExcludedNoFetcher is the critical regression test
-// for #357 phase 1a: two live OKX perps strategies on the same API key must NOT
-// be returned by detectSharedWallets because OKX has no registered balance
-// fetcher yet. Including them would cause computeTotalPortfolioValue to freeze
-// the portfolio peak every cycle via the max-of-members fallback.
-func TestDetectSharedWallets_OKXExcludedNoFetcher(t *testing.T) {
+// TestDetectSharedWallets_OKXIncludedAfterFetcher locks in #360 phase 2
+// of #357: two live OKX perps strategies on the same API key are now grouped
+// as a shared wallet because fetch_okx_balance.py provides real-balance
+// lookup via defaultSharedWalletBalance. Before #360, OKX was deliberately
+// excluded to avoid freezing the portfolio peak via max-of-members fallback
+// in computeTotalPortfolioValue.
+func TestDetectSharedWallets_OKXIncludedAfterFetcher(t *testing.T) {
 	t.Setenv("OKX_API_KEY", "okx-key-abc")
 
 	strategies := []StrategyConfig{
@@ -226,15 +227,12 @@ func TestDetectSharedWallets_OKXExcludedNoFetcher(t *testing.T) {
 	}
 
 	shared := detectSharedWallets(strategies)
-	if len(shared) != 0 {
-		t.Errorf("expected OKX to be excluded from detectSharedWallets until a balance fetcher exists; got %d entries", len(shared))
+	if len(shared) != 1 {
+		t.Fatalf("expected OKX to be grouped as one shared wallet (phase 2 #360), got %d entries", len(shared))
 	}
-
-	// walletKeyFor itself SHOULD recognize them — the exclusion is only at the
-	// detection layer. Future CB code relies on direct walletKeyFor calls.
 	for _, sc := range strategies {
 		if _, ok := walletKeyFor(sc); !ok {
-			t.Errorf("walletKeyFor should recognize %s even though detectSharedWallets filters it", sc.ID)
+			t.Errorf("walletKeyFor should recognize %s", sc.ID)
 		}
 	}
 }
@@ -269,13 +267,14 @@ func TestDetectSharedWallets_RobinhoodExcludedNoFetcher(t *testing.T) {
 	}
 }
 
-// TestHasSharedWalletBalanceFetcher_HLOnly locks in the contract that only HL
-// has a balance fetcher today. When phases 2-4 add fetchers for OKX / TS / RH,
-// this test should be updated in the same PR as the fetcher wiring.
-func TestHasSharedWalletBalanceFetcher_HLOnly(t *testing.T) {
+// TestHasSharedWalletBalanceFetcher_HLAndOKX locks in the contract that HL
+// and OKX have balance fetchers today (#360 phase 2 of #357). When phases
+// 3-4 add fetchers for TS / RH, this test should be updated in the same PR
+// as the fetcher wiring.
+func TestHasSharedWalletBalanceFetcher_HLAndOKX(t *testing.T) {
 	cases := map[string]bool{
 		"hyperliquid": true,
-		"okx":         false,
+		"okx":         true,
 		"topstep":     false,
 		"robinhood":   false,
 		"binanceus":   false,
@@ -289,10 +288,9 @@ func TestHasSharedWalletBalanceFetcher_HLOnly(t *testing.T) {
 }
 
 // TestDetectSharedWallets_MixedHLAndOKX verifies that when HL and OKX live
-// strategies are configured together, HL is still grouped (fetcher exists) and
-// OKX is still filtered out (no fetcher yet) in the SAME detection pass. Guards
-// against future refactors accidentally cross-contaminating the platform
-// filter.
+// strategies are configured together, BOTH are grouped as shared wallets
+// after #360 phase 2 of #357 (OKX gained a balance fetcher). Guards against
+// future refactors accidentally cross-contaminating the platform filter.
 func TestDetectSharedWallets_MixedHLAndOKX(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xhl")
 	t.Setenv("OKX_API_KEY", "okx-key-abc")
@@ -305,25 +303,16 @@ func TestDetectSharedWallets_MixedHLAndOKX(t *testing.T) {
 	}
 
 	shared := detectSharedWallets(strategies)
-	if len(shared) != 1 {
-		t.Fatalf("expected exactly 1 shared wallet (HL); got %d entries %+v", len(shared), shared)
+	if len(shared) != 2 {
+		t.Fatalf("expected 2 shared wallets (HL + OKX); got %d entries %+v", len(shared), shared)
 	}
 	hlKey := SharedWalletKey{Platform: "hyperliquid", Account: "0xhl"}
-	ids, ok := shared[hlKey]
-	if !ok {
-		t.Fatalf("expected HL wallet in shared set; got %+v", shared)
+	if ids, ok := shared[hlKey]; !ok || len(ids) != 2 {
+		t.Errorf("expected HL wallet with 2 strategies; got ok=%v ids=%v", ok, ids)
 	}
-	if len(ids) != 2 {
-		t.Errorf("expected 2 HL strategies grouped; got %d (%v)", len(ids), ids)
-	}
-	// Confirm OKX was filtered at detection, not at walletKeyFor.
-	for _, sc := range strategies {
-		if sc.Platform != "okx" {
-			continue
-		}
-		if _, ok := walletKeyFor(sc); !ok {
-			t.Errorf("walletKeyFor should still recognize OKX strategy %s", sc.ID)
-		}
+	okxKey := SharedWalletKey{Platform: "okx", Account: "okx-key-abc"}
+	if ids, ok := shared[okxKey]; !ok || len(ids) != 2 {
+		t.Errorf("expected OKX wallet with 2 strategies; got ok=%v ids=%v", ok, ids)
 	}
 }
 
