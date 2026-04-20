@@ -656,13 +656,19 @@ func main() {
 				// the reduce-only order left on-chain positions live, and once
 				// virtual was empty no future cycle could detect the leak.
 				// Portfolio kill owns all live closes — drop per-strategy pending
-				// so the per-strategy drains don't double-submit against an
-				// already-flattening venue.
+				// so per-strategy drains don't double-submit against an
+				// already-flattening venue. Operator-required pendings (OKX
+				// spot / RH options, #363) are also cleared: the portfolio
+				// kill path already surfaces those gaps via
+				// formatKillSwitchMessage, so leaving both sets of warnings
+				// in place would double-notify the operator.
 				for _, ss := range state.Strategies {
 					if ss != nil {
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseOKX)
+						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseOKXSpot)
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhood)
+						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhoodOptions)
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseTopStep)
 					}
 				}
@@ -877,6 +883,12 @@ func main() {
 						&mu,
 					)
 				}
+				// #363 phase 5: operator-gap per-strategy CB pending closes.
+				// OKX spot and Robinhood options have no safe automated close
+				// primitive — the drain emits a CRITICAL warning each cycle
+				// instead of submitting orders. Pending stays set until the
+				// operator flattens manually.
+				drainOperatorRequiredPendingCloses(state, notifier, &mu)
 				// Pre-phase: sync on-chain positions for due live HL strategies.
 				// Reuses the clearinghouseState already fetched above for the
 				// shared-wallet risk check (#243 review feedback) so we don't
