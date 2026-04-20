@@ -97,6 +97,10 @@ func fetchHyperliquidBalance(accountAddress string) (float64, error) {
 	return val, nil
 }
 
+// okxBalanceScript is the path to the Python balance fetcher. Exposed as a
+// var so tests can substitute.
+var okxBalanceScript = "shared_scripts/fetch_okx_balance.py"
+
 // defaultSharedWalletBalance dispatches a real on-chain balance lookup by
 // platform name for use with ClearLatchedKillSwitchSharedWallet (#244).
 // Returns an error for any platform that does not (yet) expose a real
@@ -109,6 +113,21 @@ func defaultSharedWalletBalance(platform string) (float64, error) {
 			return 0, fmt.Errorf("HYPERLIQUID_ACCOUNT_ADDRESS not set")
 		}
 		return fetchHyperliquidBalance(addr)
+	case "okx":
+		// #360 phase 2 of #357: unlocks multi-strategy OKX portfolio value
+		// correctness. fetch_okx_balance.py reads the CCXT-unified USDT
+		// total for the configured API key account.
+		if os.Getenv("OKX_API_KEY") == "" {
+			return 0, fmt.Errorf("OKX_API_KEY not set")
+		}
+		result, stderr, err := RunOKXFetchBalance(okxBalanceScript)
+		if stderr != "" {
+			fmt.Fprintf(os.Stderr, "[okx-balance] stderr: %s\n", stderr)
+		}
+		if err != nil {
+			return 0, err
+		}
+		return result.Balance, nil
 	}
 	return 0, fmt.Errorf("no shared-wallet balance fetcher for platform %q", platform)
 }

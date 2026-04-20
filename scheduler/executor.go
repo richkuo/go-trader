@@ -728,7 +728,9 @@ type OKXCloseResult struct {
 }
 
 // RunOKXClose runs close_okx_position.py to submit a reduce-only market
-// close for a single OKX swap coin (#345).
+// close for a single OKX swap coin (#345). When partialSz is non-nil, submits
+// a partial reduce-only close for that coin quantity (#360 shared-wallet
+// per-strategy circuit breakers).
 //
 // Contract mirrors RunHyperliquidClose: a non-nil error is returned for
 // ANY failure — non-zero subprocess exit, malformed JSON, or a JSON
@@ -736,10 +738,13 @@ type OKXCloseResult struct {
 // treat the close as confirmed by the adapter. Kill-switch correctness
 // depends on this: any ambiguous response must surface as error so the
 // switch stays latched and retries next cycle.
-func RunOKXClose(script, symbol string) (*OKXCloseResult, string, error) {
+func RunOKXClose(script, symbol string, partialSz *float64) (*OKXCloseResult, string, error) {
 	args := []string{
 		fmt.Sprintf("--symbol=%s", symbol),
 		"--mode=live",
+	}
+	if partialSz != nil {
+		args = append(args, fmt.Sprintf("--sz=%s", strconv.FormatFloat(*partialSz, 'f', -1, 64)))
 	}
 	stdout, stderr, runErr := RunPythonScript(script, args)
 	return parseOKXCloseOutput(stdout, string(stderr), runErr)
@@ -834,6 +839,50 @@ func parseOKXPositionsOutput(stdout []byte, stderrStr string, runErr error) (*OK
 
 	default:
 		return nil, stderrStr, fmt.Errorf("parse positions output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
+	}
+}
+
+// OKXBalanceResult is the JSON output from fetch_okx_balance.py (#360).
+type OKXBalanceResult struct {
+	Balance   float64 `json:"balance"`
+	Platform  string  `json:"platform"`
+	Timestamp string  `json:"timestamp"`
+	Error     string  `json:"error,omitempty"`
+}
+
+// RunOKXFetchBalance runs fetch_okx_balance.py and returns the parsed result
+// (#360 phase 2 of #357). Used by defaultSharedWalletBalance to unlock
+// multi-strategy OKX portfolio value correctness. Follows the same
+// contract as RunOKXClose / RunOKXFetchPositions: non-nil error on ANY
+// failure path so callers preserve the kill switch on uncertainty.
+func RunOKXFetchBalance(script string) (*OKXBalanceResult, string, error) {
+	stdout, stderr, runErr := RunPythonScript(script, nil)
+	return parseOKXBalanceOutput(stdout, string(stderr), runErr)
+}
+
+// parseOKXBalanceOutput is the pure parser for RunOKXFetchBalance. Extracted
+// so the decision logic can be tested without spawning .venv/bin/python3
+// (absent in the Go CI job). Mirrors parseOKXPositionsOutput's 5-case
+// matrix — contract drift across fetch parsers would be bad.
+func parseOKXBalanceOutput(stdout []byte, stderrStr string, runErr error) (*OKXBalanceResult, string, error) {
+	var result OKXBalanceResult
+	parseErr := json.Unmarshal(stdout, &result)
+
+	switch {
+	case runErr == nil && parseErr == nil && result.Error == "":
+		return &result, stderrStr, nil
+
+	case runErr == nil && parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("fetch balance reported error despite exit 0: %s", result.Error)
+
+	case parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("fetch balance failed: %s", result.Error)
+
+	case parseErr == nil && runErr != nil:
+		return &result, stderrStr, fmt.Errorf("fetch balance subprocess exit %v with no error field (stderr: %s)", runErr, stderrStr)
+
+	default:
+		return nil, stderrStr, fmt.Errorf("parse balance output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
 	}
 }
 

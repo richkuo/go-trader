@@ -1359,6 +1359,110 @@ func TestCheckRisk_LiveHLSharedCoin_SetsPendingPartialClose(t *testing.T) {
 	}
 }
 
+// TestCheckRisk_LiveTopStepCB_SetsPendingFullFlatten verifies #362: a live
+// TopStep futures strategy with a sole-peer contract gets a full-flatten
+// pending close enqueued when its per-strategy circuit breaker fires.
+func TestCheckRisk_LiveTopStepCB_SetsPendingFullFlatten(t *testing.T) {
+	sc := StrategyConfig{
+		ID: "ts-es", Platform: "topstep", Type: "futures",
+		Capital: 5000,
+		Args:    []string{"sma", "ES", "15m", "--mode=live"},
+	}
+	tsLiveAll := []StrategyConfig{sc}
+	assist := &PlatformRiskAssist{
+		TSPositions: []TopStepPosition{{Coin: "ES", Size: 3, Side: "long"}},
+		TSLiveAll:   tsLiveAll,
+	}
+
+	// Rig a max-drawdown breach so CheckRisk fires the CB.
+	s := &StrategyState{
+		ID:   sc.ID,
+		Type: "futures",
+		Cash: 3000.0,
+		RiskState: RiskState{
+			PeakValue:      5000.0,
+			MaxDrawdownPct: 25.0,
+			TotalTrades:    1,
+			DailyPnLDate:   todayUTC(),
+		},
+		Positions: map[string]*Position{
+			// Futures position with Multiplier > 0; no Leverage (TS isn't perps).
+			"ES": {Symbol: "ES", Quantity: 3, AvgCost: 5000, Side: "long", Multiplier: 50},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+	}
+	prices := map[string]float64{"ES": 4995}
+	pv := PortfolioValue(s, prices)
+
+	allowed, _ := CheckRisk(&sc, s, pv, prices, nil, assist)
+	if allowed {
+		t.Fatal("expected CB fire (drawdown exceeds 25%)")
+	}
+
+	p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep)
+	if p == nil {
+		t.Fatal("expected PendingCircuitCloses[topstep] after CB fire")
+	}
+	if len(p.Symbols) != 1 {
+		t.Fatalf("expected 1 pending symbol, got %d", len(p.Symbols))
+	}
+	c0 := p.Symbols[0]
+	if c0.Symbol != "ES" {
+		t.Errorf("symbol=%q want ES", c0.Symbol)
+	}
+	if c0.Size != 3 {
+		t.Errorf("pending size=%.0f want 3 (full flatten for sole peer)", c0.Size)
+	}
+}
+
+// Multi-peer: CheckRisk still fires CB and force-closes virtual state, but
+// setTopStepCircuitBreakerPending does NOT enqueue because market_close has
+// no partial-size variant — operator handles the shared contract manually.
+func TestCheckRisk_LiveTopStepCB_MultiPeerNoPending(t *testing.T) {
+	sc := StrategyConfig{
+		ID: "ts-a", Platform: "topstep", Type: "futures",
+		Capital: 5000,
+		Args:    []string{"sma", "ES", "15m", "--mode=live"},
+	}
+	tsLiveAll := []StrategyConfig{
+		sc,
+		{ID: "ts-b", Platform: "topstep", Type: "futures",
+			Capital: 5000,
+			Args:    []string{"rsi", "ES", "15m", "--mode=live"}},
+	}
+	assist := &PlatformRiskAssist{
+		TSPositions: []TopStepPosition{{Coin: "ES", Size: 5, Side: "long"}},
+		TSLiveAll:   tsLiveAll,
+	}
+
+	s := &StrategyState{
+		ID:   sc.ID,
+		Type: "futures",
+		Cash: 3000.0,
+		RiskState: RiskState{
+			PeakValue:      5000.0,
+			MaxDrawdownPct: 25.0,
+			TotalTrades:    1,
+			DailyPnLDate:   todayUTC(),
+		},
+		Positions: map[string]*Position{
+			"ES": {Symbol: "ES", Quantity: 2, AvgCost: 5000, Side: "long", Multiplier: 50},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+	}
+	prices := map[string]float64{"ES": 4995}
+	pv := PortfolioValue(s, prices)
+
+	allowed, _ := CheckRisk(&sc, s, pv, prices, nil, assist)
+	if allowed {
+		t.Fatal("expected CB fire")
+	}
+
+	if s.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep) != nil {
+		t.Error("expected no pending TS entry for multi-peer contract")
+	}
+}
+
 // TestCheckRisk_PerpsMarginDrawdown_BelowThreshold verifies the perps
 // strategy is allowed to continue when margin-based drawdown is under the
 // circuit-breaker limit.

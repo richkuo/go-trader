@@ -98,14 +98,13 @@ func planOperatorRequiredWarning(state *AppState) OperatorRequiredWarningPlan {
 }
 
 // formatOperatorRequiredLegs renders a pending-close symbol list as
-// "SYM1 (size=N), SYM2 (size=N)" with deterministic order.
+// "SYM1 (size=N, virtual), SYM2 (size=N, virtual)" with deterministic order.
+// Size is the scheduler's virtual position quantity — operators should
+// cross-check at the venue before acting on it.
 func formatOperatorRequiredLegs(legs []PendingCircuitCloseSymbol) string {
-	if len(legs) == 0 {
-		return "no open legs (marker entry)"
-	}
 	parts := make([]string, 0, len(legs))
 	for _, l := range legs {
-		parts = append(parts, fmt.Sprintf("%s (size=%.6f)", l.Symbol, l.Size))
+		parts = append(parts, fmt.Sprintf("%s (size=%.6f, virtual)", l.Symbol, l.Size))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -136,8 +135,12 @@ func formatOperatorRequiredWarningMessage(entries []OperatorRequiredEntry) strin
 	}
 	var b strings.Builder
 	b.WriteString("**CIRCUIT BREAKER — OPERATOR INTERVENTION REQUIRED**\n")
+	suffix := "s"
+	if len(entries) == 1 {
+		suffix = ""
+	}
 	b.WriteString(fmt.Sprintf("%d strategy-platform pair%s hit a per-strategy circuit breaker on a venue the scheduler cannot auto-close. Flatten manually.\n",
-		len(entries), pluralS(len(entries))))
+		len(entries), suffix))
 	for _, e := range entries {
 		cbSuffix := ""
 		if e.CBUntil != "" {
@@ -149,13 +152,6 @@ func formatOperatorRequiredWarningMessage(entries []OperatorRequiredEntry) strin
 	}
 	b.WriteString("No automated close will be attempted. Pending remains set until operator clears positions.")
 	return b.String()
-}
-
-func pluralS(n int) string {
-	if n == 1 {
-		return ""
-	}
-	return "s"
 }
 
 // operatorRequiredNotifier is the narrow notifier surface drainOperator-

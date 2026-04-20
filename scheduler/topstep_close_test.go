@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 )
 
 // forceCloseTopStepLive unit tests — mirror the Robinhood/OKX tests. Each
@@ -260,5 +262,417 @@ func TestParseTopStepPositionsOutput_MalformedJSON(t *testing.T) {
 	_, _, err := parseTopStepPositionsOutput([]byte(`garbage`), "", nil)
 	if err == nil {
 		t.Fatal("expected non-nil err on malformed JSON")
+	}
+}
+
+// --- #362 phase 4: per-strategy circuit-breaker close tests ---
+
+func TestComputeTopStepCircuitCloseQty_SolePeerFullFlatten(t *testing.T) {
+	tsLive := []StrategyConfig{
+		{ID: "ts-es", Platform: "topstep", Type: "futures",
+			Args: []string{"sma", "ES", "15m", "--mode=live"}},
+	}
+	pos := []TopStepPosition{{Coin: "ES", Size: 3, AvgPrice: 5000, Side: "long"}}
+	q, ok := computeTopStepCircuitCloseQty("ES", "ts-es", pos, tsLive)
+	if !ok {
+		t.Fatal("expected ok for sole peer")
+	}
+	if q != 3 {
+		t.Errorf("qty=%d want 3 (full abs size for sole peer)", q)
+	}
+}
+
+func TestComputeTopStepCircuitCloseQty_SolePeerShortFullFlatten(t *testing.T) {
+	tsLive := []StrategyConfig{
+		{ID: "ts-es", Platform: "topstep", Type: "futures",
+			Args: []string{"sma", "ES", "15m", "--mode=live"}},
+	}
+	// Short position reported as negative size.
+	pos := []TopStepPosition{{Coin: "ES", Size: -2, AvgPrice: 5000, Side: "short"}}
+	q, ok := computeTopStepCircuitCloseQty("ES", "ts-es", pos, tsLive)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if q != 2 {
+		t.Errorf("qty=%d want 2 (abs of -2)", q)
+	}
+}
+
+// TopStep has no partial-size market_close. When two live strategies share a
+// contract, we skip the enqueue so market_close doesn't flatten the peer's
+// share on behalf of the firing strategy. Operator intervenes manually.
+func TestComputeTopStepCircuitCloseQty_MultiPeerSkipped(t *testing.T) {
+	tsLive := []StrategyConfig{
+		{ID: "ts-a", Platform: "topstep", Type: "futures",
+			Args: []string{"sma", "ES", "15m", "--mode=live"}},
+		{ID: "ts-b", Platform: "topstep", Type: "futures",
+			Args: []string{"rsi", "ES", "15m", "--mode=live"}},
+	}
+	pos := []TopStepPosition{{Coin: "ES", Size: 5, Side: "long"}}
+	q, ok := computeTopStepCircuitCloseQty("ES", "ts-a", pos, tsLive)
+	if ok {
+		t.Fatalf("expected ok=false when multiple peers share contract, got qty=%d", q)
+	}
+	if q != 0 {
+		t.Errorf("qty=%d want 0 for multi-peer skip", q)
+	}
+}
+
+func TestComputeTopStepCircuitCloseQty_NoOnAccountPosition(t *testing.T) {
+	tsLive := []StrategyConfig{
+		{ID: "ts-es", Platform: "topstep", Type: "futures",
+			Args: []string{"sma", "ES", "15m", "--mode=live"}},
+	}
+	q, ok := computeTopStepCircuitCloseQty("ES", "ts-es", nil, tsLive)
+	if ok {
+		t.Errorf("expected ok=false when no position found, got qty=%d", q)
+	}
+}
+
+func TestComputeTopStepCircuitCloseQty_ZeroSizePosition(t *testing.T) {
+	tsLive := []StrategyConfig{
+		{ID: "ts-es", Platform: "topstep", Type: "futures",
+			Args: []string{"sma", "ES", "15m", "--mode=live"}},
+	}
+	pos := []TopStepPosition{{Coin: "ES", Size: 0, Side: "long"}}
+	q, ok := computeTopStepCircuitCloseQty("ES", "ts-es", pos, tsLive)
+	if ok {
+		t.Errorf("expected ok=false for zero-size position, got qty=%d", q)
+	}
+}
+
+func TestSetTopStepCircuitBreakerPending_SolePeerEnqueues(t *testing.T) {
+	sc := &StrategyConfig{
+		ID: "ts-es", Platform: "topstep", Type: "futures",
+		Args: []string{"sma", "ES", "15m", "--mode=live"},
+	}
+	s := &StrategyState{
+		ID:        "ts-es",
+		Positions: map[string]*Position{"ES": {Side: "long", Quantity: 3}},
+	}
+	assist := &PlatformRiskAssist{
+		TSPositions: []TopStepPosition{{Coin: "ES", Size: 3, Side: "long"}},
+		TSLiveAll:   []StrategyConfig{*sc},
+	}
+	setTopStepCircuitBreakerPending(sc, s, assist)
+
+	pending := s.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep)
+	if pending == nil {
+		t.Fatal("expected pending entry enqueued")
+	}
+	if len(pending.Symbols) != 1 || pending.Symbols[0].Symbol != "ES" || pending.Symbols[0].Size != 3 {
+		t.Errorf("pending=%+v want one ES sz=3", pending.Symbols)
+	}
+}
+
+func TestSetTopStepCircuitBreakerPending_NilAssistBails(t *testing.T) {
+	sc := &StrategyConfig{
+		ID: "ts-es", Platform: "topstep", Type: "futures",
+		Args: []string{"sma", "ES", "15m", "--mode=live"},
+	}
+	s := &StrategyState{
+		ID:        "ts-es",
+		Positions: map[string]*Position{"ES": {Side: "long", Quantity: 3}},
+	}
+	// Nil assist — simulates a TS-fetch failure at CB fire time.
+	setTopStepCircuitBreakerPending(sc, s, nil)
+	if s.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep) != nil {
+		t.Error("expected no enqueue when assist is nil (stuck-CB path will recover)")
+	}
+}
+
+func TestSetTopStepCircuitBreakerPending_PaperModeSkipped(t *testing.T) {
+	sc := &StrategyConfig{
+		ID: "ts-es", Platform: "topstep", Type: "futures",
+		Args: []string{"sma", "ES", "15m", "--mode=paper"},
+	}
+	s := &StrategyState{
+		ID:        "ts-es",
+		Positions: map[string]*Position{"ES": {Side: "long", Quantity: 3}},
+	}
+	assist := &PlatformRiskAssist{
+		TSPositions: []TopStepPosition{{Coin: "ES", Size: 3, Side: "long"}},
+		TSLiveAll:   []StrategyConfig{},
+	}
+	setTopStepCircuitBreakerPending(sc, s, assist)
+	if s.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep) != nil {
+		t.Error("expected no enqueue for paper-mode strategy")
+	}
+}
+
+func TestRunPendingTopStepCircuitCloses_DrainsAndClearsPending(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"ts-es": {
+				ID: "ts-es",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseTopStep: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ES", Size: 3}},
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "ts-es", Platform: "topstep", Type: "futures",
+			Args: []string{"sma", "ES", "15m", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string) (*TopStepCloseResult, error) {
+		calls = append(calls, sym)
+		return &TopStepCloseResult{Close: &TopStepClose{Symbol: sym}}, nil
+	}
+	runPendingTopStepCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		[]TopStepPosition{{Coin: "ES", Size: 3, Side: "long"}},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+	)
+	if len(calls) != 1 || calls[0] != "ES" {
+		t.Errorf("closer calls=%v want [ES]", calls)
+	}
+	if state.Strategies["ts-es"].RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep) != nil {
+		t.Error("expected pending cleared after successful close")
+	}
+}
+
+// Stuck-CB recovery (mirrors HL #356 finding 1): if TS fetch failed at CB
+// fire time, pending is nil; the drain must detect CircuitBreaker=true +
+// pending==nil + on-account position and enqueue on a later cycle.
+func TestRunPendingTopStepCircuitCloses_RecoversStuckCB(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"ts-es": {
+				ID: "ts-es",
+				RiskState: RiskState{
+					CircuitBreaker:       true,
+					CircuitBreakerUntil:  time.Now().Add(24 * time.Hour),
+					PendingCircuitCloses: nil,
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "ts-es", Platform: "topstep", Type: "futures",
+			Args: []string{"sma", "ES", "15m", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string) (*TopStepCloseResult, error) {
+		calls = append(calls, sym)
+		return &TopStepCloseResult{Close: &TopStepClose{Symbol: sym}}, nil
+	}
+	runPendingTopStepCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		[]TopStepPosition{{Coin: "ES", Size: 3, Side: "long"}},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+	)
+	if len(calls) != 1 || calls[0] != "ES" {
+		t.Errorf("closer calls=%v want [ES] (recovered pending should flatten full size)", calls)
+	}
+	if state.Strategies["ts-es"].RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep) != nil {
+		t.Error("expected pending cleared after successful recovery close")
+	}
+}
+
+// Session-gate defer: a TopStepX close that fails (outside RTH, venue error)
+// must keep the pending latched so the next cycle retries.
+func TestRunPendingTopStepCircuitCloses_CloseErrorLatchesPending(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"ts-es": {
+				ID: "ts-es",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseTopStep: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ES", Size: 3}},
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "ts-es", Platform: "topstep", Type: "futures",
+			Args: []string{"sma", "ES", "15m", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	closer := func(sym string) (*TopStepCloseResult, error) {
+		return nil, fmt.Errorf("market closed — outside RTH")
+	}
+	runPendingTopStepCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		[]TopStepPosition{{Coin: "ES", Size: 3, Side: "long"}},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+	)
+	pending := state.Strategies["ts-es"].RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep)
+	if pending == nil {
+		t.Fatal("expected pending to remain latched after close error (session-gate / venue error)")
+	}
+	if len(pending.Symbols) != 1 || pending.Symbols[0].Symbol != "ES" {
+		t.Errorf("pending.Symbols=%v want [{ES,3}]", pending.Symbols)
+	}
+}
+
+// If the drain runs but the on-account position already went flat between
+// enqueue and drain (operator manual close, eventual consistency), the
+// closer must NOT be called — otherwise market_close on a flat position
+// would error and latch the pending forever.
+func TestRunPendingTopStepCircuitCloses_AlreadyFlatSkipsCloserAndClears(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"ts-es": {
+				ID: "ts-es",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseTopStep: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ES", Size: 3}},
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "ts-es", Platform: "topstep", Type: "futures",
+			Args: []string{"sma", "ES", "15m", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string) (*TopStepCloseResult, error) {
+		calls = append(calls, sym)
+		return &TopStepCloseResult{Close: &TopStepClose{Symbol: sym}}, nil
+	}
+	runPendingTopStepCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		nil, // no positions on account
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+	)
+	if len(calls) != 0 {
+		t.Errorf("closer should not be called when position is already flat, got %v", calls)
+	}
+	if state.Strategies["ts-es"].RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep) != nil {
+		t.Error("expected pending cleared after already-flat skip")
+	}
+}
+
+func TestRunPendingTopStepCircuitCloses_StuckCBMultiPeerSkipped(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"ts-a": {
+				ID: "ts-a",
+				RiskState: RiskState{
+					CircuitBreaker:      true,
+					CircuitBreakerUntil: time.Now().Add(24 * time.Hour),
+				},
+			},
+		},
+	}
+	// Two live peers on contract ES — computeTopStepCircuitCloseQty returns
+	// (0, false), so stuck-CB recovery must NOT reconstruct a pending.
+	cfg := []StrategyConfig{
+		{ID: "ts-a", Platform: "topstep", Type: "futures",
+			Args: []string{"sma", "ES", "15m", "--mode=live"}},
+		{ID: "ts-b", Platform: "topstep", Type: "futures",
+			Args: []string{"rsi", "ES", "15m", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string) (*TopStepCloseResult, error) {
+		calls = append(calls, sym)
+		return &TopStepCloseResult{Close: &TopStepClose{Symbol: sym}}, nil
+	}
+	runPendingTopStepCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		[]TopStepPosition{{Coin: "ES", Size: 5}},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+	)
+	if len(calls) != 0 {
+		t.Errorf("closer should not be called for multi-peer contract, got %v", calls)
+	}
+	if state.Strategies["ts-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep) != nil {
+		t.Error("expected no pending reconstruction for multi-peer contract")
+	}
+}
+
+// When the fetcher is needed (tsStateFetched=false) and it returns an error,
+// the drain must bail without mutating pending entries.
+func TestRunPendingTopStepCircuitCloses_FetcherErrorBails(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"ts-es": {
+				ID: "ts-es",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseTopStep: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ES", Size: 3}},
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "ts-es", Platform: "topstep", Type: "futures",
+			Args: []string{"sma", "ES", "15m", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string) (*TopStepCloseResult, error) {
+		calls = append(calls, sym)
+		return &TopStepCloseResult{Close: &TopStepClose{Symbol: sym}}, nil
+	}
+	fetcher := func() ([]TopStepPosition, error) {
+		return nil, fmt.Errorf("topstep api 500")
+	}
+	runPendingTopStepCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		nil,
+		false,
+		fetcher,
+		closer,
+		30*time.Second,
+		&mu,
+	)
+	if len(calls) != 0 {
+		t.Errorf("closer should not be called when fetcher errors, got %v", calls)
+	}
+	// Pending must remain so the next cycle retries.
+	if state.Strategies["ts-es"].RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep) == nil {
+		t.Error("expected pending to remain latched when fetcher errors")
 	}
 }

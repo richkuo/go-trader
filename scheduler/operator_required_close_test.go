@@ -304,7 +304,7 @@ func TestPlanOperatorRequiredWarning_FormatsOKXAndRH(t *testing.T) {
 		"2 strategy-platform pairs",
 		"okx-sma-btc [OKX spot]",
 		"rh-ccall-spy [Robinhood options]",
-		"BTC-USDT (size=0.012500)",
+		"BTC-USDT (size=0.012500, virtual)",
 		"SPY-2026-05-15-450-C",
 		"drawdown 12.5%",
 		"CB until 2026-04-21T03:30:00Z",
@@ -428,5 +428,36 @@ func TestPendingCircuitClose_OperatorRequired_JSONRoundTrip(t *testing.T) {
 	hl := dst.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
 	if hl == nil || hl.OperatorRequired {
 		t.Errorf("HL entry OperatorRequired flipped true unexpectedly: %+v", hl)
+	}
+}
+
+// TestPendingCircuitClose_RHOptionsMarkerEntry_JSONRoundTrip locks in that a
+// Robinhood options pending with only a Size=0 underlier marker (no open legs)
+// survives marshal→unmarshal intact. The MarshalPendingCircuitClosesJSON filter
+// drops entries where len(Symbols)==0 but NOT entries with one marker symbol
+// whose Size happens to be 0 — this test pins that distinction.
+func TestPendingCircuitClose_RHOptionsMarkerEntry_JSONRoundTrip(t *testing.T) {
+	src := &RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
+		PlatformPendingCloseRobinhoodOptions: {
+			Symbols:          []PendingCircuitCloseSymbol{{Symbol: "QQQ", Size: 0}},
+			OperatorRequired: true,
+		},
+	}}
+	blob := src.MarshalPendingCircuitClosesJSON()
+	if blob == "" {
+		t.Fatal("marker-entry got filtered by marshal; expected non-empty blob")
+	}
+	dst := &RiskState{}
+	dst.UnmarshalPendingCircuitClosesJSON(blob)
+
+	rh := dst.getPendingCircuitClose(PlatformPendingCloseRobinhoodOptions)
+	if rh == nil {
+		t.Fatal("RH options marker entry missing after reload")
+	}
+	if !rh.OperatorRequired {
+		t.Error("OperatorRequired flag dropped on reload; want true")
+	}
+	if len(rh.Symbols) != 1 || rh.Symbols[0].Symbol != "QQQ" || rh.Symbols[0].Size != 0 {
+		t.Errorf("marker symbol wrong after reload: %+v", rh.Symbols)
 	}
 }

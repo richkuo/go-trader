@@ -577,6 +577,54 @@ func main() {
 				}
 			}
 
+			// #360: Fetch OKX positions once if any live OKX perps strategy
+			// exists. Drives per-strategy circuit-breaker pending closes
+			// (PlatformRiskAssist.OKXPositions). Gated on OKX_API_KEY so
+			// paper-only configs skip the subprocess entirely.
+			okxHasCreds := os.Getenv("OKX_API_KEY") != ""
+			okxKey := SharedWalletKey{Platform: "okx", Account: os.Getenv("OKX_API_KEY")}
+			_, okxShared := sharedWallets[okxKey]
+			var okxPositions []OKXPosition
+			var okxStateFetched bool
+			if okxHasCreds && len(okxLivePerps) > 0 {
+				pos, err := defaultOKXPositionsFetcher()
+				if err != nil {
+					fmt.Printf("[WARN] okx fetch_positions failed: %v — skipping per-strategy OKX circuit enqueue this cycle\n", err)
+				} else {
+					okxStateFetched = true
+					okxPositions = pos
+				}
+			}
+			// #360 phase 2 of #357: fetch the unified USDT balance for the
+			// shared-wallet risk check when 2+ live OKX perps strategies share
+			// an API key. Independent subprocess so a fetch_positions outage
+			// doesn't starve the balance read.
+			if okxHasCreds && okxShared {
+				if bal, err := defaultSharedWalletBalance("okx"); err != nil {
+					fmt.Printf("[WARN] okx balance fetch failed: %v — falling back to per-wallet max this cycle\n", err)
+				} else {
+					walletBalances[okxKey] = bal
+				}
+			}
+			// #362: Fetch TopStep positions once per cycle when any live TS
+			// futures strategy exists, so per-strategy CB enqueue
+			// (setTopStepCircuitBreakerPending) has a sizing source. The
+			// kill-switch plan builder has its own fetch path; we let it do
+			// its own call rather than plumb a pre-fetched TS slice through
+			// KillSwitchCloseInputs — the fetch is cheap (one HTTPS call)
+			// and keeps the kill-switch plumbing untouched.
+			var tsPositions []TopStepPosition
+			var tsStateFetched bool
+			if len(tsLiveAll) > 0 {
+				pos, err := defaultTopStepPositionsFetcher()
+				if err != nil {
+					fmt.Printf("[WARN] topstep positions fetch failed: %v — per-strategy CB will use stuck-CB recovery on next cycle\n", err)
+				} else {
+					tsStateFetched = true
+					tsPositions = pos
+				}
+			}
+
 			mu.RLock()
 			totalPV, usedPVFallback := computeTotalPortfolioValue(cfg.Strategies, state, prices, walletBalances, sharedWallets)
 			totalNotional := PortfolioNotional(state.Strategies, prices)
@@ -607,17 +655,21 @@ func main() {
 				// from the exchange (#341): closing virtually but never sending
 				// the reduce-only order left on-chain positions live, and once
 				// virtual was empty no future cycle could detect the leak.
-				// Portfolio kill owns all HL closes — drop per-strategy pending.
-				// Operator-required pendings (OKX spot / RH options, #363) are
-				// also cleared: the portfolio kill path surfaces those same
-				// gaps via formatKillSwitchMessage OKXSpotPresent /
-				// RHOptionsPresent, so leaving both sets of warnings in place
-				// would double-notify the operator.
+				// Portfolio kill owns all live closes — drop per-strategy pending
+				// so per-strategy drains don't double-submit against an
+				// already-flattening venue. Operator-required pendings (OKX
+				// spot / RH options, #363) are also cleared: the portfolio
+				// kill path already surfaces those gaps via
+				// formatKillSwitchMessage, so leaving both sets of warnings
+				// in place would double-notify the operator.
 				for _, ss := range state.Strategies {
 					if ss != nil {
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
+						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseOKX)
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseOKXSpot)
+						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhood)
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhoodOptions)
+						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseTopStep)
 					}
 				}
 			}
@@ -776,6 +828,61 @@ func main() {
 						&mu,
 					)
 				}
+				// #360: Live OKX per-strategy circuit breaker closes. Same shape
+				// as the HL drain — the pending map is keyed per platform.
+				if len(okxLivePerps) > 0 && okxHasCreds {
+					runPendingOKXCircuitCloses(
+						context.Background(),
+						state,
+						cfg.Strategies,
+						okxHasCreds,
+						okxPositions,
+						okxStateFetched,
+						defaultOKXPositionsFetcher,
+						defaultOKXLiveCloser,
+						90*time.Second,
+						&mu,
+					)
+				}
+				// #362: Live TopStep per-strategy circuit breaker closes
+				// (market_close full-flatten, sole-peer only — whole-contract
+				// futures have no partial-close primitive). Outside-RTH
+				// rejections and other TopStepX errors keep the pending
+				// latched; the drain retries on the next cycle.
+				if len(tsLiveAll) > 0 {
+					runPendingTopStepCircuitCloses(
+						context.Background(),
+						state,
+						cfg.Strategies,
+						tsPositions,
+						tsStateFetched,
+						defaultTopStepPositionsFetcher,
+						defaultTopStepLiveCloser,
+						90*time.Second,
+						&mu,
+					)
+				}
+				// #361 phase 3: Live Robinhood crypto per-strategy circuit breaker
+				// closes. RH crypto has no reduce-only primitive, so each pending
+				// leg is a full-account market_sell guarded by a sole-ownership
+				// gate (DM the owner when a shared-coin config prevents a safe
+				// close). Lazy fetch — drain only calls the positions fetcher
+				// when pending/stuck-CB work is present, so idle cycles skip the
+				// TOTP login round-trip entirely.
+				if len(rhLiveCrypto) > 0 {
+					runPendingRobinhoodCircuitCloses(
+						context.Background(),
+						state,
+						cfg.Strategies,
+						nil,
+						false,
+						defaultRobinhoodPositionsFetcher,
+						defaultRobinhoodLiveCloser,
+						notifier.SendOwnerDM,
+						150*time.Second,
+						&mu,
+					)
+				}
 				// #363 phase 5: operator-gap per-strategy CB pending closes.
 				// OKX spot and Robinhood options have no safe automated close
 				// primitive — the drain emits a CRITICAL warning each cycle
@@ -865,8 +972,23 @@ func main() {
 
 					// Phase 2: Lock — CheckRisk (fast, no I/O)
 					var riskAssist *PlatformRiskAssist
-					if hlStateFetched && len(hlLiveAll) > 0 {
-						riskAssist = &PlatformRiskAssist{HLPositions: hlPositions, HLLiveAll: hlLiveAll}
+					needHL := hlStateFetched && len(hlLiveAll) > 0
+					needOKX := okxStateFetched && len(okxLivePerps) > 0
+					needTS := tsStateFetched && len(tsLiveAll) > 0
+					if needHL || needOKX || needTS {
+						riskAssist = &PlatformRiskAssist{}
+						if needHL {
+							riskAssist.HLPositions = hlPositions
+							riskAssist.HLLiveAll = hlLiveAll
+						}
+						if needOKX {
+							riskAssist.OKXPositions = okxPositions
+							riskAssist.OKXLiveAll = okxLivePerps
+						}
+						if needTS {
+							riskAssist.TSPositions = tsPositions
+							riskAssist.TSLiveAll = tsLiveAll
+						}
 					}
 					mu.Lock()
 					allowed, reason := CheckRisk(&sc, stratState, pv, prices, logger, riskAssist)

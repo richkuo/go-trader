@@ -934,7 +934,7 @@ Present the output to the user in a readable format. Highlight any circuit break
 
 ## Operator-Required Circuit Breakers (OKX spot / Robinhood options)
 
-Some live venues have no safe automated-close primitive. When a per-strategy circuit breaker fires on one of these, the scheduler cannot flatten on its own — it enqueues a pending close with `operator_required: true` and emits a CRITICAL warning on every cycle (stderr, Discord, Telegram) until the operator intervenes.
+Some live venues have no safe automated-close primitive. When a per-strategy circuit breaker fires on one of these, the scheduler cannot flatten on its own — it enqueues a pending close with `operator_required: true` and emits a CRITICAL warning on every cycle (stdout, Discord, Telegram) until the operator intervenes.
 
 ### Affected venues
 
