@@ -499,3 +499,79 @@ func TestMigrateConfigV7RemovesDMBooleansWhenUnset(t *testing.T) {
 		t.Error("dm_channels should not be added when both dm booleans are false")
 	}
 }
+
+// TestMigrateConfigV8RemovesDeadSummaryFreqFields verifies that the dead
+// discord.spot_summary_freq / discord.options_summary_freq fields (replaced by
+// the top-level summary_frequency map in #30) are stripped when upgrading
+// from v7.
+func TestMigrateConfigV8RemovesDeadSummaryFreqFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	original := map[string]interface{}{
+		"config_version": 7,
+		"discord": map[string]interface{}{
+			"enabled":              true,
+			"spot_summary_freq":    "hourly",
+			"options_summary_freq": "per_check",
+		},
+	}
+	data, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateConfig(path, nil, nil); err != nil {
+		t.Fatalf("MigrateConfig failed: %v", err)
+	}
+	result, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated map[string]interface{}
+	if err := json.Unmarshal(result, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if v := int(updated["config_version"].(float64)); v != CurrentConfigVersion {
+		t.Errorf("config_version = %d, want %d", v, CurrentConfigVersion)
+	}
+	discord := updated["discord"].(map[string]interface{})
+	if _, ok := discord["spot_summary_freq"]; ok {
+		t.Error("discord.spot_summary_freq should have been removed")
+	}
+	if _, ok := discord["options_summary_freq"]; ok {
+		t.Error("discord.options_summary_freq should have been removed")
+	}
+}
+
+// TestMigrateConfigV8PreservesFieldsAtCurrentVersion verifies the version
+// guard — a config already at the current version must not have the v8
+// deprecated fields stripped if a user intentionally reintroduced them.
+func TestMigrateConfigV8PreservesFieldsAtCurrentVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	original := map[string]interface{}{
+		"config_version": CurrentConfigVersion,
+		"discord": map[string]interface{}{
+			"spot_summary_freq": "hourly",
+		},
+	}
+	data, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateConfig(path, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	result, _ := os.ReadFile(path)
+	var updated map[string]interface{}
+	_ = json.Unmarshal(result, &updated)
+	discord := updated["discord"].(map[string]interface{})
+	if _, ok := discord["spot_summary_freq"]; !ok {
+		t.Error("discord.spot_summary_freq should NOT be removed when already at CurrentConfigVersion")
+	}
+}

@@ -100,6 +100,91 @@ type Config struct {
 	Correlation          *CorrelationConfig         `json:"correlation,omitempty"`
 	Platforms            map[string]*PlatformConfig `json:"platforms,omitempty"`
 	LeaderboardSummaries []LeaderboardSummaryConfig `json:"leaderboard_summaries,omitempty"` // #308 — configurable per-channel leaderboards
+	SummaryFrequency     map[string]string          `json:"summary_frequency,omitempty"`     // #30 — per-channel summary cadence; keys match Discord/Telegram channel keys (e.g. "spot", "options", "hyperliquid"). Values: Go duration ("30m", "2h"), alias ("hourly", "every"/"per_check"/"always"), or empty for legacy default (continuous: every cycle; spot: hourly)
+}
+
+// ParseSummaryFrequency converts a summary_frequency value to a duration.
+// Returns -1 to mean "use legacy default", 0 to mean "every cycle", or a
+// positive duration when caller should post every duration. An unrecognized
+// value returns a non-nil error.
+func ParseSummaryFrequency(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return -1, nil
+	}
+	switch strings.ToLower(s) {
+	case "every", "per_check", "always":
+		return 0, nil
+	case "hourly":
+		return time.Hour, nil
+	case "daily":
+		return 24 * time.Hour, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("duration must be non-negative, got %s", s)
+	}
+	return d, nil
+}
+
+// ShouldPostSummary reports whether a channel summary should be posted on the
+// given cycle. hasTrades unconditionally forces a post (users want immediate
+// trade visibility). Otherwise the cadence is derived from freq:
+//   - freq empty → legacy default: continuous channels post every cycle;
+//     non-continuous channels post hourly.
+//   - freq "every"/"per_check"/"always" (or a duration shorter than the
+//     scheduler interval) → every cycle.
+//   - freq parseable as Go duration or alias → post every N cycles where
+//     N = max(1, duration/intervalSeconds).
+//
+// continuous is true for channel types (options/perps/futures) that legacy
+// posted every cycle.
+func ShouldPostSummary(freq string, cycle, intervalSeconds int, continuous, hasTrades bool) bool {
+	if hasTrades {
+		return true
+	}
+	cyclesBetween := summaryCyclesBetween(freq, intervalSeconds, continuous)
+	if cycle < 1 {
+		cycle = 1
+	}
+	return (cycle-1)%cyclesBetween == 0
+}
+
+// summaryCyclesBetween returns N such that a summary posts every N cycles.
+// Always >= 1.
+func summaryCyclesBetween(freq string, intervalSeconds int, continuous bool) int {
+	dur, err := ParseSummaryFrequency(freq)
+	if err != nil {
+		dur = -1
+	}
+	switch {
+	case dur < 0: // legacy default
+		if continuous {
+			return 1
+		}
+		if intervalSeconds > 0 {
+			n := 3600 / intervalSeconds
+			if n < 1 {
+				n = 1
+			}
+			return n
+		}
+		return 12
+	case dur == 0:
+		return 1
+	default:
+		if intervalSeconds <= 0 {
+			return 1
+		}
+		n := int(dur.Seconds()) / intervalSeconds
+		if n < 1 {
+			n = 1
+		}
+		return n
+	}
 }
 
 // ThetaHarvestConfig controls early exit on sold options.
@@ -555,6 +640,19 @@ func ValidateConfig(cfg *Config) error {
 	}
 	validateDMChannelsMap(cfg.Discord.DMChannels, "discord", knownPlatforms, &errs)
 	validateDMChannelsMap(cfg.Telegram.DMChannels, "telegram", knownPlatforms, &errs)
+
+	// Validate summary_frequency values (#30). Keys are free-form channel
+	// keys (matching DiscordConfig.Channels), so we don't validate them
+	// against a fixed allow-list — only the cadence values.
+	for k, v := range cfg.SummaryFrequency {
+		if strings.TrimSpace(k) == "" {
+			errs = append(errs, "summary_frequency: empty key")
+			continue
+		}
+		if _, err := ParseSummaryFrequency(v); err != nil {
+			errs = append(errs, fmt.Sprintf("summary_frequency[%q]: %v", k, err))
+		}
+	}
 
 	if len(errs) > 0 {
 		return fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))

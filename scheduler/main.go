@@ -1204,9 +1204,13 @@ func main() {
 					continue
 				}
 				chTrades := channelTrades[chKey]
-				// Options/perps/futures: post every run. Spot: hourly or on trade.
-				// (cycle-1)%12==0 fires at cycles 1,13,25... so first summary posts on startup.
-				if !isOptionsType(chStrats) && !isFuturesType(chStrats) && !isPerpsType(chStrats) && chTrades == 0 && (cycle-1)%12 != 0 {
+				// Per-channel summary cadence (#30). Legacy default: continuous
+				// channel types (options/perps/futures) post every cycle; spot
+				// posts hourly. Override per channel via cfg.SummaryFrequency.
+				// Trades always force a post so operators see executions
+				// immediately regardless of cadence.
+				continuous := isOptionsType(chStrats) || isFuturesType(chStrats) || isPerpsType(chStrats)
+				if !ShouldPostSummary(cfg.SummaryFrequency[chKey], cycle, cfg.IntervalSeconds, continuous, chTrades > 0) {
 					continue
 				}
 				assetGroups, assetKeys := groupByAsset(chStrats)

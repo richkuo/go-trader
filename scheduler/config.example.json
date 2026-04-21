@@ -1,5 +1,5 @@
 {
-  "config_version": 7,
+  "config_version": 8,
   "interval_seconds": 300,
   "db_file": "scheduler/state.db",
   "portfolio_risk": {
@@ -73,10 +73,14 @@
       "hyperliquid": "PASTE_DISCORD_USER_OR_CHANNEL_ID",
       "hyperliquid-paper": "PASTE_DISCORD_USER_OR_CHANNEL_ID"
     },
-    "spot_summary_freq": "hourly",
-    "options_summary_freq": "per_check",
     "leaderboard_top_n": 5,
     "leaderboard_channel": ""
+  },
+  "summary_frequency": {
+    "spot": "hourly",
+    "options": "every",
+    "hyperliquid": "every",
+    "topstep": "every"
   },
   "leaderboard_summaries": [
     {

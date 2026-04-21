@@ -10,7 +10,7 @@ import (
 
 // CurrentConfigVersion is the version embedded in newly generated configs.
 // When the binary starts and cfg.ConfigVersion < CurrentConfigVersion, migration runs.
-const CurrentConfigVersion = 7
+const CurrentConfigVersion = 8
 
 // ConfigField describes a config field introduced in a specific version.
 type ConfigField struct {
@@ -59,6 +59,19 @@ var v7DeprecatedFields = []string{
 	"telegram.dm_paper_trades",
 	"telegram.dm_live_trades",
 }
+
+// v8DeprecatedFields lists fields removed in v8 (replaced by top-level
+// summary_frequency map, #30). The old spot_summary_freq / options_summary_freq
+// fields under discord were never wired to the main loop.
+var v8DeprecatedFields = []string{
+	"discord.spot_summary_freq",
+	"discord.options_summary_freq",
+}
+
+const v8DeprecationNotice = "**Note:** `discord.spot_summary_freq` and `discord.options_summary_freq` have been replaced by " +
+	"a top-level `summary_frequency` map keyed by channel (e.g. `\"spot\": \"hourly\"`, `\"options\": \"every\"`). " +
+	"Values may be `\"every\"`/`\"per_check\"`/`\"always\"` (every cycle), `\"hourly\"` (1h), `\"daily\"` (24h), or any Go duration like `\"30m\"`. " +
+	"Empty/missing falls back to legacy defaults (options/perps/futures every cycle, spot hourly). See issue #30."
 
 const v7DeprecationNotice = "**Note:** `dm_paper_trades` and `dm_live_trades` have been replaced by a `dm_channels` map. " +
 	"Paper trades use `dm_channels[\"<platform>-paper\"]`; live trades use `dm_channels[\"<platform>\"]`. " +
@@ -112,6 +125,16 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 	if oldVer < 7 {
 		translateV7DMChannels(raw, cfg)
 		for _, path := range v7DeprecatedFields {
+			removeNestedField(raw, path)
+		}
+	}
+
+	// v8: remove dead discord.spot_summary_freq / options_summary_freq (#30).
+	// No translation — the old fields were never wired to the main loop, so
+	// silently dropping them changes no runtime behavior. Users opting in to
+	// per-channel cadence populate the top-level summary_frequency map.
+	if oldVer < 8 {
+		for _, path := range v8DeprecatedFields {
 			removeNestedField(raw, path)
 		}
 	}
@@ -279,6 +302,14 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 				fmt.Printf("[migration] %s\n", v7DeprecationNotice)
 			}
 		}
+		// v8: notify about summary_frequency migration (#30).
+		if cfg.ConfigVersion < 8 {
+			if notifier != nil && notifier.HasOwner() {
+				notifier.SendOwnerDM(v8DeprecationNotice)
+			} else {
+				fmt.Printf("[migration] %s\n", v8DeprecationNotice)
+			}
+		}
 		return
 	}
 
@@ -300,6 +331,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 		}
 		if cfg.ConfigVersion < 7 {
 			fmt.Printf("[migration] %s\n", v7DeprecationNotice)
+		}
+		if cfg.ConfigVersion < 8 {
+			fmt.Printf("[migration] %s\n", v8DeprecationNotice)
 		}
 		return
 	}
@@ -337,5 +371,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 	// v7: notify about dm_channels migration (#248).
 	if cfg.ConfigVersion < 7 {
 		notifier.SendOwnerDM(v7DeprecationNotice)
+	}
+	// v8: notify about summary_frequency migration (#30).
+	if cfg.ConfigVersion < 8 {
+		notifier.SendOwnerDM(v8DeprecationNotice)
 	}
 }
