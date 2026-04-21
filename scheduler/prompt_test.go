@@ -156,6 +156,35 @@ func TestPrompterFloat(t *testing.T) {
 	}
 }
 
+func TestPrompterFloatRange(t *testing.T) {
+	cases := []struct {
+		name       string
+		input      string
+		defaultVal float64
+		min, max   float64
+		want       float64
+	}{
+		{"in range", "50\n", 25, 0, 100, 50},
+		{"upper bound ok", "100\n", 25, 0, 100, 100},
+		{"empty uses default", "\n", 25, 0, 100, 25},
+		{"eof uses default", "", 25, 0, 100, 25},
+		{"zero rejected then valid", "0\n40\n", 25, 0, 100, 40},
+		{"over-max rejected then valid", "150\n80\n", 25, 0, 100, 80},
+		{"negative rejected then valid", "-5\n30\n", 25, 0, 100, 30},
+		{"invalid rejected then valid", "abc\n20\n", 25, 0, 100, 20},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _ := newTestPrompter(tc.input)
+			got := p.FloatRange("Enter pct:", tc.defaultVal, tc.min, tc.max)
+			if got != tc.want {
+				t.Errorf("FloatRange() = %g, want %g", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMultiSelectDefault(t *testing.T) {
 	options := []string{"A", "B", "C"}
 

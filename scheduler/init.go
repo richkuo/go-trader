@@ -1047,8 +1047,16 @@ func runInit(args []string) int {
 	if anyLive {
 		fmt.Println("\n--- Risk settings (live trading) ---")
 		fmt.Println("These guard real capital. Press Enter to accept defaults.")
-		perStrategyDD := p.Float("Per-strategy max drawdown % (applied to all strategies)", 20)
+		// Default 5 matches the existing per-platform default for every live-capable
+		// platform (spot/perps/robinhood/luno/futures/okx), so pressing Enter is a
+		// no-op for those. Options default is 10, so Enter tightens options to 5 —
+		// intentional: if real capital is at stake on any platform, apply the
+		// tighter bound uniformly. Operator can type a different value to widen.
+		perStrategyDD := p.FloatRange("Per-strategy max drawdown % (applied to all strategies)", 5, 0, 100)
 		if perStrategyDD > 0 {
+			// Override applies to every strategy type including spot/options/luno
+			// even when those are paper-mode: the operator has asked for a uniform
+			// per-strategy DD across the whole account.
 			spotDrawdown = perStrategyDD
 			optionsDrawdown = perStrategyDD
 			perpsDrawdown = perStrategyDD
@@ -1057,8 +1065,11 @@ func runInit(args []string) int {
 			futuresDrawdown = perStrategyDD
 			okxDrawdown = perStrategyDD
 		}
-		portfolioMaxDD = p.Float("Portfolio kill-switch max drawdown %", 25)
-		portfolioWarnPct = p.Float("Portfolio warn threshold % (of kill switch)", 80)
+		// Both portfolio fields are validated (0, 100] at config load time
+		// (config.go:492,498); re-prompt on out-of-range so the wizard can't
+		// produce a file that fails validateConfig on the next startup.
+		portfolioMaxDD = p.FloatRange("Portfolio kill-switch max drawdown %", 25, 0, 100)
+		portfolioWarnPct = p.FloatRange("Portfolio warn threshold % (of kill switch)", 80, 0, 100)
 	}
 
 	// Notifications default to disabled.

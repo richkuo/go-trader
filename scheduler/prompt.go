@@ -163,6 +163,33 @@ func (p *Prompter) Float(prompt string, defaultVal float64) float64 {
 	return v
 }
 
+// FloatRange prompts for a float64 value in the half-open range (min, max].
+// Re-prompts on out-of-range input so the wizard can only emit a value that
+// passes downstream validation. Empty input returns defaultVal without
+// re-prompting (the caller is responsible for picking a default inside range).
+func (p *Prompter) FloatRange(prompt string, defaultVal, min, max float64) float64 {
+	for {
+		fmt.Fprintf(p.out, "%s [%.0f]: ", prompt, defaultVal)
+		if !p.scanner.Scan() {
+			return defaultVal
+		}
+		input := strings.TrimSpace(p.scanner.Text())
+		if input == "" {
+			return defaultVal
+		}
+		v, err := strconv.ParseFloat(input, 64)
+		if err != nil {
+			fmt.Fprintln(p.out, "  Invalid number, try again.")
+			continue
+		}
+		if v <= min || v > max {
+			fmt.Fprintf(p.out, "  Must be in (%.0f, %.0f], try again.\n", min, max)
+			continue
+		}
+		return v
+	}
+}
+
 func multiSelectDefault(options []string, defaultAll bool) []int {
 	if defaultAll {
 		all := make([]int, len(options))
