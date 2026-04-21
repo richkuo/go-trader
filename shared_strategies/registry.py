@@ -40,6 +40,7 @@ from range_scalper import range_scalper_core
 from sweep_squeeze_combo import sweep_squeeze_combo_core
 from adx_trend import adx_trend_core
 from donchian_breakout import donchian_breakout_core
+from session_breakout import session_breakout_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -903,6 +904,19 @@ def donchian_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return donchian_breakout_core(df, **params)
 
 
+@register(
+    "session_breakout",
+    "Session Breakout — break of prior session (Asian/US open/US close) high/low with volume confirmation",
+    {
+        "session": "asian", "lookback": 1, "volume_threshold": 1.5,
+        "vol_period": 20, "atr_period": 14, "atr_multiplier": 0.0,
+    },
+    platforms=("futures",),
+)
+def session_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return session_breakout_core(df, **params)
+
+
 # ─────────────────────────────────────────────
 # Per-platform display order.
 # These lists MUST match the legacy registration order in each shim so
@@ -927,6 +941,6 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "delta_neutral_funding",
-        "donchian_breakout",
+        "donchian_breakout", "session_breakout",
     ],
 }

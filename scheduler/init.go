@@ -60,6 +60,7 @@ var knownShortNames = map[string]string{
 	"sweep_squeeze_combo":   "ssc",
 	"adx_trend":             "adxt",
 	"donchian_breakout":     "dbo",
+	"session_breakout":      "sbo",
 }
 
 // bidirectionalPerpsStrategies lists strategy IDs that emit signal=-1 as a
@@ -68,6 +69,7 @@ var knownShortNames = map[string]string{
 // of skipping the signal (#328).
 var bidirectionalPerpsStrategies = map[string]bool{
 	"triple_ema_bidir": true,
+	"session_breakout": true,
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {
@@ -132,6 +134,7 @@ var defaultPerpsStrategies = []stratDef{
 	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
 	{ID: "adx_trend", ShortName: "adxt"},
 	{ID: "donchian_breakout", ShortName: "dbo"},
+	{ID: "session_breakout", ShortName: "sbo"},
 }
 
 var defaultFuturesStrategies = []stratDef{
@@ -153,6 +156,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
 	{ID: "adx_trend", ShortName: "adxt"},
 	{ID: "donchian_breakout", ShortName: "dbo"},
+	{ID: "session_breakout", ShortName: "sbo"},
 }
 
 // Supported CME futures symbols for the init wizard.
