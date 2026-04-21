@@ -737,6 +737,9 @@ func TestCollectPositions_WithTimestamp(t *testing.T) {
 	if !strings.Contains(lines[0], "[Mar 15 10:30]") {
 		t.Errorf("expected timestamp '[Mar 15 10:30]', got: %s", lines[0])
 	}
+	if !strings.Contains(lines[0], "LONG") {
+		t.Errorf("expected 'LONG' direction label, got: %s", lines[0])
+	}
 }
 
 func TestCollectPositions_WithoutTimestamp(t *testing.T) {
@@ -816,6 +819,9 @@ func TestCollectPositions_EntryPrice(t *testing.T) {
 	if !strings.Contains(lines[0], "(+$2.70)") {
 		t.Errorf("expected PnL '(+$2.70)' in line, got: %s", lines[0])
 	}
+	if !strings.Contains(lines[0], "LONG") {
+		t.Errorf("expected 'LONG' direction label, got: %s", lines[0])
+	}
 }
 
 // TestCollectPositions_ShortEntryPrice verifies entry price + PnL rendering for
@@ -839,6 +845,9 @@ func TestCollectPositions_ShortEntryPrice(t *testing.T) {
 	// Short at 50k, price up to 51k → loss of 0.1 * 1000 = 100.
 	if !strings.Contains(lines[0], "(-$100.00)") {
 		t.Errorf("expected PnL '(-$100.00)' in line, got: %s", lines[0])
+	}
+	if !strings.Contains(lines[0], "SHORT") {
+		t.Errorf("expected 'SHORT' direction label, got: %s", lines[0])
 	}
 }
 
@@ -993,6 +1002,69 @@ func TestSplitCategorySummary_ContinuationTablesInserted(t *testing.T) {
 	}
 	if msgs[2] != conts[1] {
 		t.Errorf("msg[2] should be second continuation table, got: %s", msgs[2])
+	}
+}
+
+func TestFormatTradeDMPlain_OpenTrade(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-sma-btc", Platform: "hyperliquid", Type: "perps"}
+	trade := Trade{
+		Symbol:   "BTC",
+		Side:     "buy",
+		Quantity: 0.15,
+		Price:    67845.00,
+		Value:    10176.75,
+		Details:  "Open long 0.150000 @ $67845.00 (fee $10.18)",
+	}
+	msg := FormatTradeDMPlain(sc, trade, "paper")
+
+	if !strings.Contains(msg, "TRADE EXECUTED") {
+		t.Errorf("expected 'TRADE EXECUTED', got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "hl-sma-btc") {
+		t.Errorf("expected strategy ID, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "LONG") {
+		t.Errorf("expected LONG, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "Mode: paper") {
+		t.Errorf("expected 'Mode: paper', got:\n%s", msg)
+	}
+	if strings.Contains(msg, "PnL") {
+		t.Errorf("open trade should not contain PnL, got:\n%s", msg)
+	}
+	// Plain format: no Discord bold markdown (**).
+	if strings.Contains(msg, "**") {
+		t.Errorf("plain format should not contain Discord markdown '**', got:\n%s", msg)
+	}
+}
+
+func TestFormatTradeDMPlain_CloseTrade(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-rmc-eth", Platform: "hyperliquid", Type: "perps"}
+	trade := Trade{
+		Symbol:   "ETH",
+		Side:     "sell",
+		Quantity: 0.47,
+		Price:    3077.70,
+		Value:    1446.52,
+		Details:  "Close long, PnL: $34.35 (fee $1.23)",
+	}
+	msg := FormatTradeDMPlain(sc, trade, "live")
+
+	if !strings.Contains(msg, "TRADE CLOSED") {
+		t.Errorf("expected 'TRADE CLOSED', got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "SHORT") {
+		t.Errorf("expected SHORT, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "PnL: $34.35") {
+		t.Errorf("expected PnL in close trade, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "Mode: live") {
+		t.Errorf("expected 'Mode: live', got:\n%s", msg)
+	}
+	// Plain format: no Discord bold markdown (**).
+	if strings.Contains(msg, "**") {
+		t.Errorf("plain format should not contain Discord markdown '**', got:\n%s", msg)
 	}
 }
 
