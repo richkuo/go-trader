@@ -254,7 +254,7 @@ func FormatTradeDMPlain(sc StrategyConfig, trade Trade, mode string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("%s %s\n", icon, header))
 	sb.WriteString(fmt.Sprintf("Strategy: %s (%s %s)\n", sc.ID, platformLabel, typeLabel))
-	sb.WriteString(fmt.Sprintf("%s — %s %.6g @ $%s\n", trade.Symbol, strings.ToUpper(trade.Side), trade.Quantity, fmtComma(trade.Price)))
+	sb.WriteString(fmt.Sprintf("%s — %s %.6g @ $%s\n", trade.Symbol, tradeSideToDirection(trade.Side), trade.Quantity, fmtComma(trade.Price)))
 
 	valueLine := fmt.Sprintf("Value: $%s", fmtComma(trade.Value))
 	if isClose {

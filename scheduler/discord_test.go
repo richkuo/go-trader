@@ -311,8 +311,8 @@ func TestFormatTradeDM_OpenTrade(t *testing.T) {
 	if !strings.Contains(msg, "hl-sma-btc") {
 		t.Errorf("expected strategy ID, got:\n%s", msg)
 	}
-	if !strings.Contains(msg, "BUY") {
-		t.Errorf("expected BUY, got:\n%s", msg)
+	if !strings.Contains(msg, "LONG") {
+		t.Errorf("expected LONG, got:\n%s", msg)
 	}
 	if !strings.Contains(msg, "Mode: paper") {
 		t.Errorf("expected 'Mode: paper', got:\n%s", msg)
@@ -337,8 +337,8 @@ func TestFormatTradeDM_CloseTrade(t *testing.T) {
 	if !strings.Contains(msg, "TRADE CLOSED") {
 		t.Errorf("expected 'TRADE CLOSED', got:\n%s", msg)
 	}
-	if !strings.Contains(msg, "SELL") {
-		t.Errorf("expected SELL, got:\n%s", msg)
+	if !strings.Contains(msg, "SHORT") {
+		t.Errorf("expected SHORT, got:\n%s", msg)
 	}
 	if !strings.Contains(msg, "PnL: $34.35") {
 		t.Errorf("expected PnL in close trade, got:\n%s", msg)
@@ -411,6 +411,22 @@ func TestFormatTradeDM_EmptyPlatform(t *testing.T) {
 	msg := FormatTradeDM(sc, trade, "paper")
 	if !strings.Contains(msg, "TRADE EXECUTED") {
 		t.Errorf("expected message, got:\n%s", msg)
+	}
+}
+
+func TestTradeSideToDirection(t *testing.T) {
+	cases := []struct{ side, want string }{
+		{"buy", "LONG"},
+		{"BUY", "LONG"},
+		{"sell", "SHORT"},
+		{"SELL", "SHORT"},
+		{"other", "OTHER"},
+	}
+	for _, c := range cases {
+		got := tradeSideToDirection(c.side)
+		if got != c.want {
+			t.Errorf("tradeSideToDirection(%q) = %q, want %q", c.side, got, c.want)
+		}
 	}
 }
 

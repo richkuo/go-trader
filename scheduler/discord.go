@@ -869,7 +869,7 @@ func collectPositions(stratID string, ss *StrategyState, prices map[string]float
 		if !pos.OpenedAt.IsZero() {
 			dateStr = fmt.Sprintf(" [%s]", pos.OpenedAt.Format("Jan 02 15:04"))
 		}
-		lines = append(lines, fmt.Sprintf("%s %s %s x%g @ $%s (%s$%s)%s", stratID, pos.Side, sym, pos.Quantity, fmtComma2(pos.AvgCost), sign, fmtComma2(absPnl), dateStr))
+		lines = append(lines, fmt.Sprintf("%s %s %s x%g @ $%s (%s$%s)%s", stratID, strings.ToUpper(pos.Side), sym, pos.Quantity, fmtComma2(pos.AvgCost), sign, fmtComma2(absPnl), dateStr))
 	}
 	for key, opt := range ss.OptionPositions {
 		dateStr := ""
@@ -901,7 +901,7 @@ func FormatTradeDM(sc StrategyConfig, trade Trade, mode string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("%s **%s**\n", icon, header))
 	sb.WriteString(fmt.Sprintf("Strategy: %s (%s %s)\n", sc.ID, platformLabel, typeLabel))
-	sb.WriteString(fmt.Sprintf("%s — %s %.6g @ $%s\n", trade.Symbol, strings.ToUpper(trade.Side), trade.Quantity, fmtComma(trade.Price)))
+	sb.WriteString(fmt.Sprintf("%s — %s %.6g @ $%s\n", trade.Symbol, tradeSideToDirection(trade.Side), trade.Quantity, fmtComma(trade.Price)))
 
 	valueLine := fmt.Sprintf("Value: $%s", fmtComma(trade.Value))
 	if isClose {
@@ -913,6 +913,18 @@ func FormatTradeDM(sc StrategyConfig, trade Trade, mode string) string {
 	sb.WriteString(valueLine)
 
 	return sb.String()
+}
+
+// tradeSideToDirection converts buy/sell trade sides to LONG/SHORT direction labels.
+func tradeSideToDirection(side string) string {
+	switch strings.ToLower(side) {
+	case "buy":
+		return "LONG"
+	case "sell":
+		return "SHORT"
+	default:
+		return strings.ToUpper(side)
+	}
 }
 
 // extractPnL parses the PnL value from a trade Details string.
