@@ -567,9 +567,14 @@ func TestMigrateConfigV8PreservesFieldsAtCurrentVersion(t *testing.T) {
 	if err := MigrateConfig(path, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	result, _ := os.ReadFile(path)
+	result, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var updated map[string]interface{}
-	_ = json.Unmarshal(result, &updated)
+	if err := json.Unmarshal(result, &updated); err != nil {
+		t.Fatal(err)
+	}
 	discord := updated["discord"].(map[string]interface{})
 	if _, ok := discord["spot_summary_freq"]; !ok {
 		t.Error("discord.spot_summary_freq should NOT be removed when already at CurrentConfigVersion")
