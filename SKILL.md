@@ -109,10 +109,11 @@ The wizard walks through:
 2. **Spot strategies** — momentum, mean reversion, pairs spread (BinanceUS)
 3. **Options strategies** — covered call, cash-secured put; Deribit and/or IBKR
 4. **Perps strategies** — full spot strategy suite on Hyperliquid (paper or live mode)
-5. **Futures strategies** — momentum, mean_reversion, rsi, macd, breakout on CME futures (TopStep, paper or live mode)
+5. **Futures strategies** — momentum, mean_reversion, rsi, macd, breakout, session_breakout on CME futures (TopStep, paper or live mode)
 6. **Capital & max drawdown** per strategy type
-7. **Discord** — per-platform channel IDs (spot, options, hyperliquid if perps enabled, topstep if futures enabled, okx if OKX enabled)
-8. **Auto-update** — off / daily / heartbeat (default: off)
+7. **Risk settings** (live mode only) — per-strategy max drawdown %, portfolio kill-switch threshold %, and warn threshold %; these are prompted explicitly when any live platform is selected so the generated config is complete before first startup (#378)
+8. **Discord** — per-platform channel IDs (spot, options, hyperliquid if perps enabled, topstep if futures enabled, okx if OKX enabled)
+9. **Auto-update** — off / daily / heartbeat (default: off)
 
 A summary is shown before writing. If `scheduler/config.json` already exists, you'll be prompted to confirm overwrite.
 
@@ -226,7 +227,7 @@ Ask:
 
 If provided, store as `DISCORD_OWNER_ID` for the systemd service (Step 8c). Do NOT write it to config.json.
 
-> **Note:** Summary frequency is automatic — spot and hyperliquid summaries post hourly (plus immediate trade alerts), options summaries post every check cycle. No configuration needed.
+> **Note:** Summary cadence is configurable via the top-level `summary_frequency` map in `config.json`. Keys match channel names (e.g. `"spot"`, `"hyperliquid"`). Values: `"hourly"`, `"daily"`, `"every"`/`"per_check"`, or Go durations like `"30m"`. Omit a key for the legacy default (options/perps/futures: every cycle; spot: hourly). Trades always force an immediate post.
 
 ---
 
@@ -405,7 +406,7 @@ Discord config:
 - `discord.enabled`: true/false based on Step 4
 - `discord.token`: Always `""` (token comes from env var)
 - `discord.channels`: Map of channel IDs for enabled platform types, e.g. `{"spot": "ID_FROM_4b", "options": "ID_FROM_4c", "hyperliquid": "ID_FROM_4d", "topstep": "ID_FROM_4e", "okx": "ID_FROM_4f", "luno": "ID_FROM_4g"}` — omit keys for platforms not in use
-- Summary frequency is automatic: options post per-check, spot/hyperliquid/okx post hourly + on trades (no config field needed)
+- `summary_frequency`: Optional map controlling post cadence per channel. Keys match `discord.channels` keys. Values: `"hourly"`, `"daily"`, `"every"`/`"per_check"`, or Go durations like `"30m"`. Omit for legacy default (options/perps/futures every cycle; spot hourly). Example: `{"spot": "hourly", "options": "every", "hyperliquid": "every"}`. Trades always force an immediate post regardless of cadence.
 
 ### 7b. OpenClaw Discord Allowlist (if applicable)
 
@@ -1000,24 +1001,27 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    Spot (10 strategies):
      sma_crossover, ema_crossover, momentum, rsi, bollinger_bands, macd,
      mean_reversion, volume_weighted, triple_ema, rsi_macd_combo, pairs_spread
+   Futures-only (TopStep/perps only):
+     session_breakout
    Deribit Options (8):
      vol_mean_reversion, momentum_options, protective_puts, covered_calls,
      wheel, butterfly  — BTC + ETH each
    IBKR Options (8):
      same 6 strategies as Deribit — BTC + ETH each
-   Futures (5 strategies, TopStep/CME):
-     momentum, mean_reversion, rsi, macd, breakout
+   Futures (6 strategies, TopStep/CME):
+     momentum, mean_reversion, rsi, macd, breakout, session_breakout
    Robinhood Crypto (same 10 spot strategies):
      sma_crossover, ema_crossover, momentum, rsi, bollinger_bands, macd,
      mean_reversion, volume_weighted, triple_ema, rsi_macd_combo
 
 3. ADJUSTABLE SETTINGS  (edit scheduler/config.json, then: sudo systemctl restart go-trader)
    Global:
-     interval_seconds  — default cycle interval (seconds)
-     db_file           — SQLite path for positions/trades/risk state
-     max_drawdown_pct  — portfolio-level circuit breaker (triggers live-close on HL/OKX/Robinhood/TopStep)
-     notional_cap_usd  — max total notional exposure
-     correlation.*     — per-asset directional exposure tracking (enabled, max_concentration_pct, max_same_direction_pct)
+     interval_seconds   — default cycle interval (seconds)
+     db_file            — SQLite path for positions/trades/risk state
+     max_drawdown_pct   — portfolio-level circuit breaker (triggers live-close on HL/OKX/Robinhood/TopStep)
+     notional_cap_usd   — max total notional exposure
+     correlation.*      — per-asset directional exposure tracking (enabled, max_concentration_pct, max_same_direction_pct)
+     summary_frequency  — per-channel cadence map (hourly/daily/every/30m/2h); keys match discord.channels keys
    Per-strategy:
      capital           — starting capital (USD)
      max_drawdown_pct  — strategy-level circuit breaker
@@ -1202,6 +1206,7 @@ Each spot strategy needs entries for each asset it supports:
 - `sma_crossover`, `ema_crossover`, `momentum`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `volume_weighted`, `triple_ema`, `rsi_macd_combo`: BTC, ETH, SOL
 - `pairs_spread`: Requires two assets — `args: ["pairs_spread", "BTC/USDT", "1d", "ETH/USDT"]`
 - `triple_ema_bidir`: futures/perps only (not registered for spot); bidirectional — set `"allow_shorts": true` on the strategy entry so the scheduler opens shorts from flat and flips on reversal.
+- `session_breakout`: futures/perps only; short name `sbo`; ID convention `ts-sbo-es` (TopStep), `hl-sbo-btc` (Hyperliquid perps). Default params: `session=asian`, `lookback=1`, `volume_threshold=1.5`.
 
 **Pairs strategy IDs and args:**
 ```json

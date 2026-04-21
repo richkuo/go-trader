@@ -20,10 +20,10 @@
   - `server.go` — HTTP status server (`/status`, `/health` endpoints)
   - `discord.go` — `discordgo.Session` wrapper for two-way Discord communication; `SendMessage`, `SendDM`, `AskDM` (blocking DM with timeout); `FormatCategorySummary` per-asset Discord messages; `fmtComma` — always pass absolute values
   - `init.go` — `go-trader init` interactive wizard + `--json <blob>` non-interactive mode; `generateConfig(InitOptions) *Config` is pure/testable; `runInitFromJSON(jsonStr, outputPath)` for scripted config gen (e.g. from OpenClaw); `runInit` orchestrates I/O
-  - `prompt.go` — `Prompter` struct (String/YesNo/Choice/MultiSelect/Float); inject `NewPrompterFromReader(r,w)` for tests
+  - `prompt.go` — `Prompter` struct (String/YesNo/Choice/MultiSelect/Float/FloatRange); `FloatRange(prompt, default, min, max)` re-prompts on out-of-range input; inject `NewPrompterFromReader(r,w)` for tests
   - `updater.go` — update checker; `checkForUpdates(cfg, discord, &lastNotifiedHash, &mu, state)` — git fetch, channel notify + DM upgrade prompt (goroutine); `applyUpgrade(discord, ownerID, mu, state, cfg)` — git pull + go build + state save + restart; `restartSelf()` — systemctl → syscall.Exec fallback; logs `[update]` prefix
   - `correlation.go` — per-asset directional exposure tracking; `ComputeCorrelation` warns on concentration/same-direction thresholds
-  - `config_migration.go` — `CurrentConfigVersion = 7`; auto-migrates config via Discord DM on startup
+  - `config_migration.go` — `CurrentConfigVersion = 8`; auto-migrates config via Discord DM on startup; v8 migration strips dead `discord.spot_summary_freq` / `discord.options_summary_freq` fields and notifies owner
   - `balance.go` — balance tracking and capital management
   - `hyperliquid_balance.go` — Hyperliquid-specific balance sync (`syncHyperliquidAccountPositions`)
   - `leaderboard.go` — pre-computed strategy leaderboard for Discord summaries
@@ -96,7 +96,8 @@
 - Native Go mark fetchers: `fetchHyperliquidMids` (hyperliquid_marks.go), `fetchOKXPerpsMids` (okx_marks.go), and Deribit ticker fetcher (deribit.go) replace per-cycle Python subprocess calls — pattern: expose base URL as `var xxxMainnetURL` so httptest stubs can redirect in tests
 - `cfg.Discord.Channels` is `map[string]string` (not a struct); keys: "spot", "options", "hyperliquid", etc. — old `.Spot`/`.Options` field access is invalid
 - `cfg.Discord.OwnerID` — Discord user ID for DM upgrade prompts + config migration; loaded from `DISCORD_OWNER_ID` env var (takes priority over config file)
-- `cfg.ConfigVersion` — int, schema version (`0`/missing = v1 baseline); `CurrentConfigVersion = 7` in config_migration.go; startup triggers `runConfigMigrationDM` when below current version
+- `cfg.ConfigVersion` — int, schema version (`0`/missing = v1 baseline); `CurrentConfigVersion = 8` in config_migration.go; startup triggers `runConfigMigrationDM` when below current version
+- `cfg.SummaryFrequency` — `map[string]string` (`"summary_frequency"` in JSON); keys match `discord.channels` keys (e.g. `"spot"`, `"hyperliquid"`); values: Go duration (`"30m"`, `"2h"`), alias (`"hourly"`, `"daily"`, `"every"`/`"per_check"`/`"always"`), or empty for legacy default (continuous channels every cycle; spot hourly). `ParseSummaryFrequency(s)` converts to `time.Duration` (-1 = legacy). `ShouldPostSummary(freq, cycle, intervalSeconds, continuous, hasTrades)` — `hasTrades=true` always forces a post
 - `cfg.Correlation` — `*CorrelationConfig` with `Enabled` (default false), `MaxConcentrationPct` (default 60), `MaxSameDirectionPct` (default 75); computed under RLock, state assigned under Lock; warnings sent to all Discord channels + owner DM
 - `cfg.AutoUpdate` — `"off"` (default), `"daily"` (once/day), `"heartbeat"` (every cycle); handled in main.go loop + startup; uses `dailyCycles = (24*3600)/tickSeconds`
 - Strategy registry imports: `check_strategy.py` imports from `shared_strategies/spot/strategies.py`; `check_hyperliquid.py`, `check_topstep.py`, and `check_okx.py` (swap mode) import from `shared_strategies/futures/strategies.py` — a new strategy must be registered in both if it needs to work across platforms

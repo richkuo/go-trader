@@ -144,6 +144,12 @@ Python gets the quant libraries (pandas, numpy, scipy, CCXT). Go gets memory eff
 | `rsi_macd_combo` | RSI and MACD confluence |
 | `pairs_spread` | BTC/ETH, BTC/SOL, ETH/SOL spread z-score stat arb (1d) |
 
+### Futures-only (additional strategies, available on TopStep/perps)
+
+| Strategy | Description |
+|----------|-------------|
+| `session_breakout` | Break of prior session (Asian/US open/US close) high/low with volume confirmation |
+
 ### Options (4 strategies, 4h interval, BTC/ETH)
 
 Same 4 strategies on both Deribit and IBKR/CME for comparison:
@@ -159,13 +165,13 @@ New options trades are scored against existing positions for strike distance, ex
 
 ### Perps (1h interval, any HL-listed asset)
 
-Full spot strategy suite on Hyperliquid perpetual futures. Strategies are auto-discovered at `go-trader init` time: `momentum`, `sma_crossover`, `ema_crossover`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `volume_weighted`, `triple_ema`, `rsi_macd_combo`, `triple_ema_bidir`.
+Full spot strategy suite on Hyperliquid perpetual futures. Strategies are auto-discovered at `go-trader init` time: `momentum`, `sma_crossover`, `ema_crossover`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `volume_weighted`, `triple_ema`, `rsi_macd_combo`, `triple_ema_bidir`, `session_breakout`.
 
 Most strategies are long-only; `triple_ema_bidir` is the first bidirectional strategy (long on bullish EMA stack, short on bearish) and runs with `allow_shorts: true` so the scheduler opens shorts from flat and flips long↔short on reversals. New bidirectional strategies opt in per-strategy via the same flag — existing long-only strategies keep their semantics.
 
 Live mode requires `HYPERLIQUID_SECRET_KEY` env var. Paper mode simulates trades without a key.
 
-### Futures (5 strategies, 1h interval, ES/NQ/MES/MNQ/CL/GC)
+### Futures (6 strategies, 1h interval, ES/NQ/MES/MNQ/CL/GC)
 
 | Strategy | Description |
 |----------|-------------|
@@ -174,6 +180,7 @@ Live mode requires `HYPERLIQUID_SECRET_KEY` env var. Paper mode simulates trades
 | `rsi` | Buy oversold, sell overbought |
 | `macd` | MACD/signal line crossovers |
 | `breakout` | Price breakout detection |
+| `session_breakout` | Break of prior session (Asian/US open/US close) high/low with volume confirmation |
 
 CME futures on TopStep. Live mode requires `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRET`, `TOPSTEP_ACCOUNT_ID` env vars. Paper mode uses Yahoo Finance for price data.
 
@@ -217,7 +224,7 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
 
 ```json
 {
-  "config_version": 7,
+  "config_version": 8,
   "interval_seconds": 3600,
   "db_file": "scheduler/state.db",
   "log_dir": "logs",
@@ -300,6 +307,29 @@ To get your Discord user ID: right-click your username in Discord → **Copy Use
 | `discord.owner_id` | Your Discord user ID — enables DM upgrade prompts and post-upgrade config migration. Use `DISCORD_OWNER_ID` env var. |
 | `discord.channels` | Map of channel IDs keyed by platform/type — `"spot"`, `"options"`, `"hyperliquid"`, `"topstep"`, `"robinhood"`, `"okx"`, etc. Options post per-check; others post hourly + on trades. |
 | `config_version` | Schema version (set automatically by `go-trader init`; migration runs on startup when behind current version) |
+
+### Summary Frequency
+
+Control how often each channel posts a summary via the top-level `summary_frequency` map. Keys match the `discord.channels` keys (e.g. `"spot"`, `"hyperliquid"`). Trades always force an immediate post regardless of the configured cadence.
+
+```json
+{
+  "summary_frequency": {
+    "spot": "hourly",
+    "options": "every",
+    "hyperliquid": "every",
+    "topstep": "30m"
+  }
+}
+```
+
+| Value | Behavior |
+|-------|----------|
+| `"every"` / `"per_check"` / `"always"` | Post every scheduler cycle |
+| `"hourly"` | Post once per hour |
+| `"daily"` | Post once per day |
+| `"30m"`, `"2h"`, etc. | Post every N minutes/hours (Go duration syntax) |
+| `""` (omitted) | Legacy default — options/perps/futures post every cycle; spot posts hourly |
 
 ### Strategy Entry
 
