@@ -1,0 +1,39 @@
+name: Test claude-code-action fix branch
+
+# One-shot workflow to exercise richkuo/claude-code-action@fix/bun-tsconfig-realpath
+# on a real GitHub-hosted runner. Delete after verifying.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action_ref:
+        description: 'claude-code-action ref to test'
+        required: false
+        default: 'richkuo/claude-code-action@fix/bun-tsconfig-realpath'
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run action (agent mode, minimal prompt)
+        id: run
+        uses: richkuo/claude-code-action@fix/bun-tsconfig-realpath
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Reply with exactly the single word: PONG
+            Do not use any tools. Do not write any files.
+          claude_args: --model claude-haiku-4-5
+
+      - name: Assert bun step emitted no fd-mismatch error
+        if: always()
+        run: |
+          echo "Run step outcome: ${{ steps.run.outcome }}"
+          echo "Check the 'Run action' step logs manually for:"
+          echo "  - 'Internal error: directory mismatch' (bun fd bug noise)"
+          echo "  - Path shown in --tsconfig-override (should be a realpath, not a symlinked _actions/.../v1 path)"
