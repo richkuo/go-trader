@@ -430,6 +430,7 @@ DEFAULT_PARAM_RANGES = {
         "session": ["asian", "us_open", "us_close"],
         "lookback": [1, 2, 3],
         "volume_threshold": [1.2, 1.5, 2.0],
+        "atr_multiplier": [0.0, 0.5, 1.0],
     },
     "delta_neutral_funding": {
         "entry_threshold": [0.00005, 0.0001, 0.00015],

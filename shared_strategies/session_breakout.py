@@ -20,7 +20,7 @@ import pandas as pd
 # UTC hour windows [start, end). ``end`` is exclusive.
 SESSION_WINDOWS = {
     "asian":    (0, 8),     # Asian range
-    "us_open":  (13, 14),   # first hour after NYSE open (13:30 UTC → 13:xx bars)
+    "us_open":  (13, 15),   # NYSE open window: covers 13:30–15:00 UTC (DST) / 14:30–15:30 UTC (standard)
     "us_close": (20, 21),   # final hour before NYSE close
 }
 
@@ -70,7 +70,11 @@ def session_breakout_core(
     if not isinstance(result.index, pd.DatetimeIndex) or result.empty:
         return result
 
-    start_hour, end_hour = SESSION_WINDOWS.get(session, SESSION_WINDOWS["asian"])
+    if session not in SESSION_WINDOWS:
+        raise ValueError(
+            f"Unknown session {session!r}. Valid values: {list(SESSION_WINDOWS)}"
+        )
+    start_hour, end_hour = SESSION_WINDOWS[session]
     hours = result.index.hour
     in_session = (hours >= start_hour) & (hours < end_hour)
     dates = result.index.normalize()
@@ -85,20 +89,21 @@ def session_breakout_core(
         return result
 
     sess_df["level_high"] = (
-        sess_df["s_high"].rolling(window=lookback, min_periods=1).max().shift(1)
+        sess_df["s_high"].rolling(window=lookback, min_periods=1).max()
     )
     sess_df["level_low"] = (
-        sess_df["s_low"].rolling(window=lookback, min_periods=1).min().shift(1)
+        sess_df["s_low"].rolling(window=lookback, min_periods=1).min()
     )
 
-    # Forward-fill levels across days so a bar on day N uses the level built
-    # from the last ``lookback`` sessions ending on day N-1.
+    # Map each bar to its day's level (most-recently-completed session).
+    # ``after_session`` below prevents look-ahead: breakout bars can only fire
+    # once the session has closed, so the level is already fixed.
     level_high_by_day = sess_df["level_high"]
     level_low_by_day = sess_df["level_low"]
     result["session_high"] = dates.to_series(index=result.index).map(level_high_by_day)
     result["session_low"] = dates.to_series(index=result.index).map(level_low_by_day)
 
-    result["vol_sma"] = result["volume"].rolling(window=vol_period, min_periods=1).mean()
+    result["vol_sma"] = result["volume"].rolling(window=vol_period, min_periods=vol_period).mean()
     high_volume = result["volume"] > result["vol_sma"] * volume_threshold
 
     if atr_multiplier > 0:
@@ -110,7 +115,7 @@ def session_breakout_core(
             ],
             axis=1,
         ).max(axis=1)
-        atr = tr.rolling(window=atr_period, min_periods=1).mean()
+        atr = tr.rolling(window=atr_period, min_periods=atr_period).mean()
         atr_ok = tr > atr * atr_multiplier
     else:
         atr_ok = pd.Series(True, index=result.index)

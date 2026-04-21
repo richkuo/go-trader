@@ -138,15 +138,14 @@ def test_signal_not_repeated_across_consecutive_breakout_bars():
     assert signals == [1, 0]
 
 
-def test_unknown_session_falls_back_to_asian_defaults():
-    # Must not crash; defaults to asian window.
+def test_unknown_session_raises():
     rng = np.random.RandomState(0)
-    n = 96  # 4 days of hourly bars
+    n = 96
     idx = pd.date_range("2024-01-01", periods=n, freq="h")
     closes = 100 + rng.randn(n).cumsum() * 0.1
     df = pd.DataFrame({
         "open": closes, "high": closes + 0.5, "low": closes - 0.5,
         "close": closes, "volume": np.full(n, 100.0),
     }, index=idx)
-    result = session_breakout_core(df, session="not_a_real_session")
-    assert "signal" in result.columns
+    with pytest.raises(ValueError, match="Unknown session"):
+        session_breakout_core(df, session="not_a_real_session")
