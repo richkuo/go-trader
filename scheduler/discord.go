@@ -906,7 +906,7 @@ func FormatTradeDM(sc StrategyConfig, trade Trade, mode string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("%s **%s**\n", icon, header))
 	sb.WriteString(fmt.Sprintf("Strategy: %s (%s %s)\n", sc.ID, platformLabel, typeLabel))
-	sb.WriteString(fmt.Sprintf("%s — %s %.6g @ $%s\n", trade.Symbol, tradeSideToDirection(trade.Side), trade.Quantity, fmtComma(trade.Price)))
+	sb.WriteString(fmt.Sprintf("%s — %s %.6g @ $%s\n", trade.Symbol, tradeDirectionLabel(trade), trade.Quantity, fmtComma(trade.Price)))
 
 	valueLine := fmt.Sprintf("Value: $%s", fmtComma(trade.Value))
 	if isClose {
@@ -930,6 +930,26 @@ func tradeSideToDirection(side string) string {
 	default:
 		return strings.ToUpper(side)
 	}
+}
+
+// tradeDirectionLabel returns the LONG/SHORT label describing the *position*
+// the trade opens or closes. Details carries "Open long" / "Close long" /
+// "Open short" / "Close short" — authoritative for spot/perps/futures. Falls
+// back to mapping the execution Side (buy/sell) when Details has no such
+// marker (e.g. options wheel fills, circuit-breaker force-close).
+//
+// Why: close trades invert execution side vs position side — selling to close
+// a long execution Side="sell" would render as SHORT, but the position being
+// exited was LONG. See #386.
+func tradeDirectionLabel(trade Trade) string {
+	d := strings.ToLower(trade.Details)
+	switch {
+	case strings.Contains(d, "open long"), strings.Contains(d, "close long"):
+		return "LONG"
+	case strings.Contains(d, "open short"), strings.Contains(d, "close short"):
+		return "SHORT"
+	}
+	return tradeSideToDirection(trade.Side)
 }
 
 // extractPnL parses the PnL value from a trade Details string.

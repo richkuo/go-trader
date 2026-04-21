@@ -337,14 +337,38 @@ func TestFormatTradeDM_CloseTrade(t *testing.T) {
 	if !strings.Contains(msg, "TRADE CLOSED") {
 		t.Errorf("expected 'TRADE CLOSED', got:\n%s", msg)
 	}
-	if !strings.Contains(msg, "SHORT") {
-		t.Errorf("expected SHORT, got:\n%s", msg)
+	// Regression for #386: close alert must report the *position* side, not
+	// the execution side. Selling to close a long must render LONG, not SHORT.
+	if !strings.Contains(msg, "LONG") {
+		t.Errorf("expected LONG (position side), got:\n%s", msg)
+	}
+	if strings.Contains(msg, "SHORT") {
+		t.Errorf("close-long trade must not render SHORT, got:\n%s", msg)
 	}
 	if !strings.Contains(msg, "PnL: $34.35") {
 		t.Errorf("expected PnL in close trade, got:\n%s", msg)
 	}
 	if !strings.Contains(msg, "Mode: live") {
 		t.Errorf("expected 'Mode: live', got:\n%s", msg)
+	}
+}
+
+func TestFormatTradeDM_CloseShort(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-bidir-eth", Platform: "hyperliquid", Type: "perps"}
+	trade := Trade{
+		Symbol:   "ETH",
+		Side:     "buy",
+		Quantity: 0.47,
+		Price:    3077.70,
+		Value:    1446.52,
+		Details:  "Close short, PnL: $12.50 (fee $1.23)",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if !strings.Contains(msg, "SHORT") {
+		t.Errorf("expected SHORT (position side), got:\n%s", msg)
+	}
+	if strings.Contains(msg, "LONG") {
+		t.Errorf("close-short trade must not render LONG, got:\n%s", msg)
 	}
 }
 
@@ -427,6 +451,33 @@ func TestTradeSideToDirection(t *testing.T) {
 		if got != c.want {
 			t.Errorf("tradeSideToDirection(%q) = %q, want %q", c.side, got, c.want)
 		}
+	}
+}
+
+func TestTradeDirectionLabel(t *testing.T) {
+	cases := []struct {
+		name    string
+		side    string
+		details string
+		want    string
+	}{
+		{"close_long_from_sell", "sell", "Close long, PnL: $34.35 (fee $1.23)", "LONG"},
+		{"close_short_from_buy", "buy", "Close short, PnL: $12.50 (fee $1.23)", "SHORT"},
+		{"open_long", "buy", "Open long 0.15 @ $67845.00 (fee $10.18)", "LONG"},
+		{"open_short", "sell", "Open short 0.15 @ $67845.00 (fee $10.18)", "SHORT"},
+		{"futures_close_long", "sell", "Close long 2 contracts, PnL: $50.00 (fee $4.12)", "LONG"},
+		{"futures_close_short", "buy", "Close short 2 contracts, PnL: $50.00 (fee $4.12)", "SHORT"},
+		{"circuit_breaker_fallback", "close", "Circuit breaker force-close, PnL: $-12.00", "CLOSE"},
+		{"options_close_falls_back_to_side", "sell", "Close BTC-call-50000 PnL=$123.45", "SHORT"},
+		{"empty_details_falls_back", "buy", "", "LONG"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := tradeDirectionLabel(Trade{Side: c.side, Details: c.details})
+			if got != c.want {
+				t.Errorf("tradeDirectionLabel(side=%q, details=%q) = %q, want %q", c.side, c.details, got, c.want)
+			}
+		})
 	}
 }
 
@@ -1172,8 +1223,12 @@ func TestFormatTradeDMPlain_CloseTrade(t *testing.T) {
 	if !strings.Contains(msg, "TRADE CLOSED") {
 		t.Errorf("expected 'TRADE CLOSED', got:\n%s", msg)
 	}
-	if !strings.Contains(msg, "SHORT") {
-		t.Errorf("expected SHORT, got:\n%s", msg)
+	// Regression for #386: close alert must report the *position* side.
+	if !strings.Contains(msg, "LONG") {
+		t.Errorf("expected LONG (position side), got:\n%s", msg)
+	}
+	if strings.Contains(msg, "SHORT") {
+		t.Errorf("close-long trade must not render SHORT, got:\n%s", msg)
 	}
 	if !strings.Contains(msg, "PnL: $34.35") {
 		t.Errorf("expected PnL in close trade, got:\n%s", msg)
