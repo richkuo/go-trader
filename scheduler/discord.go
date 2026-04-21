@@ -750,7 +750,7 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 	}
 	sb.WriteString("\n```\n")
 	if showWalletPct {
-		const sep = "------------------------------------------------------------------------------------------"
+		const sep = "----------------------------------------------------------------------------------"
 		sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %8s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Wallet%", "Tf", "Int"))
 		sb.WriteString(sep + "\n")
 		for _, bot := range bots {
