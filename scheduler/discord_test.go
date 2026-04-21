@@ -535,6 +535,109 @@ func TestFormatCategorySummary_TfIntGlobalFallback(t *testing.T) {
 	}
 }
 
+func TestFormatCategorySummary_ClosedTradesColumn(t *testing.T) {
+	// Issue #381: strategy table should show closed-trade count per strategy.
+	// Standard variant (no shared wallet).
+	strats := []StrategyConfig{
+		{ID: "hl-rsi-btc", Type: "perps", Args: []string{"rsi", "BTC", "1h"}, Capital: 1000},
+		{ID: "hl-sma-btc", Type: "perps", Args: []string{"sma", "BTC", "1h"}, Capital: 1000},
+		{ID: "hl-mom-btc", Type: "perps", Args: []string{"mom", "BTC", "1h"}, Capital: 1000},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-rsi-btc": {Cash: 1000, RiskState: RiskState{TotalTrades: 7}},
+			"hl-sma-btc": {Cash: 1000, RiskState: RiskState{TotalTrades: 12}},
+			"hl-mom-btc": {Cash: 1000, RiskState: RiskState{TotalTrades: 0}},
+		},
+	}
+	prices := map[string]float64{"BTC/USDT": 50000}
+
+	msgs := FormatCategorySummary(1, 0, 3, 0, 3000, prices, nil, strats, state, "hyperliquid", "BTC", 600)
+	msg := strings.Join(msgs, "\n")
+
+	// Header should include #T column.
+	if !strings.Contains(msg, "#T") {
+		t.Errorf("expected '#T' column header, got:\n%s", msg)
+	}
+	// #T should appear AFTER Int (last column).
+	intIdx := strings.LastIndex(msg, "Int")
+	tIdx := strings.Index(msg, "#T")
+	if intIdx < 0 || tIdx < 0 || tIdx < intIdx {
+		t.Errorf("expected #T column to follow Int column, got Int@%d #T@%d:\n%s", intIdx, tIdx, msg)
+	}
+
+	// Each strategy row should render its TotalTrades count right-justified in 5 chars.
+	if !strings.Contains(msg, "    7\n") {
+		t.Errorf("expected closed-trade count '7' for hl-rsi-btc, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "   12\n") {
+		t.Errorf("expected closed-trade count '12' for hl-sma-btc, got:\n%s", msg)
+	}
+	// Strategy with zero trades should still render '0'.
+	if !strings.Contains(msg, "    0\n") {
+		t.Errorf("expected closed-trade count '0' for hl-mom-btc, got:\n%s", msg)
+	}
+	// TOTAL row should sum to 19 (7+12+0).
+	totalIdx := strings.Index(msg, "TOTAL")
+	if totalIdx < 0 {
+		t.Fatalf("expected TOTAL row, got:\n%s", msg)
+	}
+	totalLine := msg[totalIdx:]
+	if newline := strings.Index(totalLine, "\n"); newline >= 0 {
+		totalLine = totalLine[:newline]
+	}
+	if !strings.HasSuffix(totalLine, "   19") {
+		t.Errorf("expected TOTAL row to end with closed-trade sum '19', got TOTAL line: %q", totalLine)
+	}
+}
+
+func TestFormatCategorySummary_ClosedTradesColumn_SharedWallet(t *testing.T) {
+	// Issue #381: shared-wallet variant must also render #T column and TOTAL.
+	strats := []StrategyConfig{
+		{ID: "hl-rmc-eth", Type: "perps", Platform: "hyperliquid", Capital: 500, CapitalPct: 0.5, Args: []string{"rmc", "ETH", "1h"}},
+		{ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid", Capital: 500, CapitalPct: 0.5, Args: []string{"tema", "ETH", "1h"}},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-rmc-eth":  {Cash: 500, InitialCapital: 500, RiskState: RiskState{TotalTrades: 4}},
+			"hl-tema-eth": {Cash: 500, InitialCapital: 500, RiskState: RiskState{TotalTrades: 9}},
+		},
+	}
+	prices := map[string]float64{"ETH/USDT": 3000}
+
+	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH", 600)
+	msg := strings.Join(msgs, "\n")
+
+	if !strings.Contains(msg, "#T") {
+		t.Errorf("expected '#T' column header in shared-wallet variant, got:\n%s", msg)
+	}
+	// #T should appear AFTER Wallet% (the shared-wallet-only column).
+	walletIdx := strings.Index(msg, "Wallet%")
+	tIdx := strings.Index(msg, "#T")
+	if walletIdx < 0 || tIdx < walletIdx {
+		t.Errorf("expected #T after Wallet%% in shared-wallet variant, got Wallet%%@%d #T@%d:\n%s", walletIdx, tIdx, msg)
+	}
+	// Per-strategy counts.
+	if !strings.Contains(msg, "    4\n") {
+		t.Errorf("expected closed-trade count '4' for hl-rmc-eth, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "    9\n") {
+		t.Errorf("expected closed-trade count '9' for hl-tema-eth, got:\n%s", msg)
+	}
+	// TOTAL row should end with sum 13.
+	totalIdx := strings.Index(msg, "TOTAL")
+	if totalIdx < 0 {
+		t.Fatalf("expected TOTAL row, got:\n%s", msg)
+	}
+	totalLine := msg[totalIdx:]
+	if newline := strings.Index(totalLine, "\n"); newline >= 0 {
+		totalLine = totalLine[:newline]
+	}
+	if !strings.HasSuffix(totalLine, "   13") {
+		t.Errorf("expected TOTAL row to end with closed-trade sum '13', got TOTAL line: %q", totalLine)
+	}
+}
+
 func TestFormatCategorySummary_SharedWallet(t *testing.T) {
 	// Two strategies share a Hyperliquid wallet via capital_pct=0.5 each.
 	// Wallet balance = $1085, so each strategy's Capital = $542.50.
@@ -918,8 +1021,10 @@ func TestSplitCategorySummary_SingleMessage(t *testing.T) {
 func TestFormatCategorySummary_LargeTableChunked(t *testing.T) {
 	// Reproduces #249: 28 perps strategies on a single asset produces a table
 	// that, prior to the fix, exceeded Discord's 2000-char limit and was silently
-	// truncated mid-code-block. The fix caps the table at 20 rows per message and
-	// emits the rest as continuation messages, each wrapped in its own code block.
+	// truncated mid-code-block. The fix caps the table at catTableMaxRows rows
+	// per message and emits the rest as continuation messages, each wrapped in
+	// its own code block. (#381 reduced the cap from 20 to 15 after the row
+	// gained a #T column.)
 	const stratCount = 28
 	strats := make([]StrategyConfig, stratCount)
 	strategies := make(map[string]*StrategyState, stratCount)
@@ -946,12 +1051,14 @@ func TestFormatCategorySummary_LargeTableChunked(t *testing.T) {
 		}
 	}
 
-	// First message holds rows 1–20; the totals row stays with the LAST table chunk.
+	// First message holds rows 1–catTableMaxRows; the totals row stays with the LAST table chunk.
+	firstChunkLast := fmt.Sprintf("hl-strat%02d-b", catTableMaxRows-1)
+	contChunkFirst := fmt.Sprintf("hl-strat%02d-b", catTableMaxRows)
 	if !strings.Contains(msgs[0], "hl-strat00-b") {
 		t.Errorf("first message should contain first strategy row, got:\n%s", msgs[0])
 	}
-	if !strings.Contains(msgs[0], "hl-strat19-b") {
-		t.Errorf("first message should contain 20th strategy row, got:\n%s", msgs[0])
+	if !strings.Contains(msgs[0], firstChunkLast) {
+		t.Errorf("first message should contain row %d (%s), got:\n%s", catTableMaxRows, firstChunkLast, msgs[0])
 	}
 	if strings.Contains(msgs[0], "TOTAL") {
 		t.Errorf("first message should NOT contain TOTAL row when table is split, got:\n%s", msgs[0])
@@ -964,14 +1071,26 @@ func TestFormatCategorySummary_LargeTableChunked(t *testing.T) {
 	if !strings.Contains(msgs[1], "```") {
 		t.Errorf("continuation table must be wrapped in a code block, got:\n%s", msgs[1])
 	}
-	if !strings.Contains(msgs[1], "hl-strat20-b") {
-		t.Errorf("continuation should contain row 21, got:\n%s", msgs[1])
+	if !strings.Contains(msgs[1], contChunkFirst) {
+		t.Errorf("continuation should contain row %d (%s), got:\n%s", catTableMaxRows+1, contChunkFirst, msgs[1])
 	}
-	if !strings.Contains(msgs[1], "hl-strat27-b") {
-		t.Errorf("continuation should contain final row 28, got:\n%s", msgs[1])
+	// Final row must appear in one of the continuation messages.
+	finalRow := fmt.Sprintf("hl-strat%02d-b", stratCount-1)
+	finalSeen := false
+	totalSeen := false
+	for _, m := range msgs[1:] {
+		if strings.Contains(m, finalRow) {
+			finalSeen = true
+		}
+		if strings.Contains(m, "TOTAL") {
+			totalSeen = true
+		}
 	}
-	if !strings.Contains(msgs[1], "TOTAL") {
-		t.Errorf("final continuation chunk must contain the TOTAL row, got:\n%s", msgs[1])
+	if !finalSeen {
+		t.Errorf("continuation should contain final row %s, got:\n%s", finalRow, strings.Join(msgs[1:], "\n---\n"))
+	}
+	if !totalSeen {
+		t.Errorf("final continuation chunk must contain the TOTAL row, got:\n%s", strings.Join(msgs[1:], "\n---\n"))
 	}
 
 	// All 28 strategy rows should appear across the messages.
