@@ -750,54 +750,54 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 	}
 	sb.WriteString("\n```\n")
 	if showWalletPct {
-		const sep = "----------------------------------------------------------------------------------"
-		sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %8s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Wallet%", "Tf", "Int"))
+		const sep = "---------------------------------------------------------------------------------"
+		sb.WriteString(fmt.Sprintf("%-20s %10s %10s %9s %7s %8s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Wallet%", "Tf", "Int"))
 		sb.WriteString(sep + "\n")
 		for _, bot := range bots {
 			label := bot.id
 			if len(label) > 20 {
 				label = label[:20]
 			}
-			valStr := "$ " + fmtComma(bot.value)
-			initStr := "$ " + fmtComma(bot.initialCap)
+			valStr := fmtComma(bot.value)
+			initStr := fmtComma(bot.initialCap)
 			pnlStr := fmtPnl(bot.pnl)
 			pctStr := fmtPnlPct(bot.pnlPct)
 			wpStr := ""
 			if bot.walletPct > 0 {
 				wpStr = fmt.Sprintf("%.1f%%", bot.walletPct)
 			}
-			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %8s %5s %5s\n", label, initStr, valStr, pnlStr, pctStr, wpStr, bot.timeframe, bot.interval))
+			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %9s %7s %8s %5s %5s\n", label, initStr, valStr, pnlStr, pctStr, wpStr, bot.timeframe, bot.interval))
 		}
 		if includeTotals {
 			sb.WriteString(sep + "\n")
-			totValStr := "$ " + fmtComma(totalValue)
-			totInitStr := "$ " + fmtComma(totalInit)
+			totValStr := fmtComma(totalValue)
+			totInitStr := fmtComma(totalInit)
 			totPnlStr := fmtPnl(totalPnl)
 			totPctStr := fmtPnlPct(totalPnlPct)
-			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %8s %5s %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "100.0%", "", ""))
+			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %9s %7s %8s %5s %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "100.0%", "", ""))
 		}
 	} else {
-		const sep = "-------------------------------------------------------------------------"
-		sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Tf", "Int"))
+		const sep = "------------------------------------------------------------------------"
+		sb.WriteString(fmt.Sprintf("%-20s %10s %10s %9s %7s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Tf", "Int"))
 		sb.WriteString(sep + "\n")
 		for _, bot := range bots {
 			label := bot.id
 			if len(label) > 20 {
 				label = label[:20]
 			}
-			valStr := "$ " + fmtComma(bot.value)
-			initStr := "$ " + fmtComma(bot.initialCap)
+			valStr := fmtComma(bot.value)
+			initStr := fmtComma(bot.initialCap)
 			pnlStr := fmtPnl(bot.pnl)
 			pctStr := fmtPnlPct(bot.pnlPct)
-			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %5s %5s\n", label, initStr, valStr, pnlStr, pctStr, bot.timeframe, bot.interval))
+			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %9s %7s %5s %5s\n", label, initStr, valStr, pnlStr, pctStr, bot.timeframe, bot.interval))
 		}
 		if includeTotals {
 			sb.WriteString(sep + "\n")
-			totValStr := "$ " + fmtComma(totalValue)
-			totInitStr := "$ " + fmtComma(totalInit)
+			totValStr := fmtComma(totalValue)
+			totInitStr := fmtComma(totalInit)
 			totPnlStr := fmtPnl(totalPnl)
 			totPctStr := fmtPnlPct(totalPnlPct)
-			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %5s %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "", ""))
+			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %9s %7s %5s %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "", ""))
 		}
 	}
 	sb.WriteString("```\n")
@@ -836,7 +836,7 @@ func fmtPnl(pnl float64) string {
 		sign = "-"
 		abs = -pnl
 	}
-	return "$ " + sign + fmtComma(abs)
+	return sign + fmtComma(abs)
 }
 
 func fmtPnlPct(pct float64) string {
