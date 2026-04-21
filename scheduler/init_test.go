@@ -409,6 +409,60 @@ func TestGenerateConfig_PortfolioRiskDefaults(t *testing.T) {
 	if cfg.PortfolioRisk.MaxDrawdownPct != 25 {
 		t.Errorf("expected MaxDrawdownPct=25, got %.0f", cfg.PortfolioRisk.MaxDrawdownPct)
 	}
+	if cfg.PortfolioRisk.WarnThresholdPct != 80 {
+		t.Errorf("expected WarnThresholdPct=80, got %.0f", cfg.PortfolioRisk.WarnThresholdPct)
+	}
+}
+
+// #85: live-setup risk prompts feed into PortfolioRisk.* via InitOptions.
+func TestGenerateConfig_PortfolioRiskOverride(t *testing.T) {
+	opts := baseOpts()
+	opts.PortfolioMaxDrawdownPct = 15
+	opts.PortfolioWarnThresholdPct = 70
+
+	cfg := generateConfig(opts)
+
+	if cfg.PortfolioRisk == nil {
+		t.Fatal("expected PortfolioRisk to be set")
+	}
+	if cfg.PortfolioRisk.MaxDrawdownPct != 15 {
+		t.Errorf("expected MaxDrawdownPct=15, got %.0f", cfg.PortfolioRisk.MaxDrawdownPct)
+	}
+	if cfg.PortfolioRisk.WarnThresholdPct != 70 {
+		t.Errorf("expected WarnThresholdPct=70, got %.0f", cfg.PortfolioRisk.WarnThresholdPct)
+	}
+}
+
+// Zero values must not overwrite the safe defaults — the interactive wizard
+// only prompts when a live mode is enabled, so JSON configs that omit the
+// fields should still produce a valid portfolio_risk block.
+func TestGenerateConfig_PortfolioRiskZeroKeepsDefaults(t *testing.T) {
+	opts := baseOpts()
+	opts.PortfolioMaxDrawdownPct = 0
+	opts.PortfolioWarnThresholdPct = 0
+
+	cfg := generateConfig(opts)
+
+	if cfg.PortfolioRisk.MaxDrawdownPct != 25 || cfg.PortfolioRisk.WarnThresholdPct != 80 {
+		t.Errorf("expected defaults 25/80, got %.0f/%.0f",
+			cfg.PortfolioRisk.MaxDrawdownPct, cfg.PortfolioRisk.WarnThresholdPct)
+	}
+}
+
+// JSON-mode consumers (OpenClaw, scripted setup) pass risk values under the
+// camelCase tags; verify the unmarshal path wires them into generateConfig.
+func TestInitOptions_PortfolioRiskJSONTags(t *testing.T) {
+	blob := `{"portfolioMaxDrawdownPct": 18, "portfolioWarnThresholdPct": 65}`
+	var opts InitOptions
+	if err := json.Unmarshal([]byte(blob), &opts); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if opts.PortfolioMaxDrawdownPct != 18 {
+		t.Errorf("expected 18, got %.0f", opts.PortfolioMaxDrawdownPct)
+	}
+	if opts.PortfolioWarnThresholdPct != 65 {
+		t.Errorf("expected 65, got %.0f", opts.PortfolioWarnThresholdPct)
+	}
 }
 
 func TestGenerateConfig_DiscordEnabled(t *testing.T) {

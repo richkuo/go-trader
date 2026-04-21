@@ -277,27 +277,40 @@ type InitOptions struct {
 	OKXDrawdown             float64
 	CapitalPct              float64 `json:"capitalPct,omitempty"` // 0-1; global capital_pct applied to all strategies
 	HTFFilter               bool    // higher-timeframe trend filter for all strategies
-	DiscordEnabled          bool
-	DiscordOwnerID          string            // Discord user ID for DM features (upgrade prompts, config migration)
-	SpotChannelID           string            // deprecated: use ChannelMap
-	OptionsChannelID        string            // deprecated: use ChannelMap
-	ChannelMap              map[string]string // keyed by platform/type ("spot", "hyperliquid", "deribit", etc.)
-	TelegramEnabled         bool
-	TelegramOwnerChatID     string            // Telegram chat ID for owner DMs
-	TelegramChannelMap      map[string]string // keyed by platform/type ("spot", "hyperliquid", etc.)
-	AutoUpdate              string            // "off", "daily", "heartbeat" (default: "off")
+	// Risk settings — prompted explicitly during live-mode setup (#85) so operators
+	// don't hit the post-launch migration DM for portfolio_risk fields.
+	PortfolioMaxDrawdownPct   float64 `json:"portfolioMaxDrawdownPct,omitempty"`   // kill switch threshold; 0 → default 25
+	PortfolioWarnThresholdPct float64 `json:"portfolioWarnThresholdPct,omitempty"` // % of kill switch that triggers warnings; 0 → default 80
+	DiscordEnabled            bool
+	DiscordOwnerID            string            // Discord user ID for DM features (upgrade prompts, config migration)
+	SpotChannelID             string            // deprecated: use ChannelMap
+	OptionsChannelID          string            // deprecated: use ChannelMap
+	ChannelMap                map[string]string // keyed by platform/type ("spot", "hyperliquid", "deribit", etc.)
+	TelegramEnabled           bool
+	TelegramOwnerChatID       string            // Telegram chat ID for owner DMs
+	TelegramChannelMap        map[string]string // keyed by platform/type ("spot", "hyperliquid", etc.)
+	AutoUpdate                string            // "off", "daily", "heartbeat" (default: "off")
 }
 
 // generateConfig builds a Config from InitOptions. Pure function, no I/O.
 func generateConfig(opts InitOptions) *Config {
+	portfolioMaxDD := opts.PortfolioMaxDrawdownPct
+	if portfolioMaxDD <= 0 {
+		portfolioMaxDD = 25
+	}
+	portfolioWarn := opts.PortfolioWarnThresholdPct
+	if portfolioWarn <= 0 {
+		portfolioWarn = 80
+	}
 	cfg := &Config{
 		ConfigVersion:   CurrentConfigVersion,
 		IntervalSeconds: 3600,
 		LogDir:          "logs",
 		DBFile:          "scheduler/state.db",
 		PortfolioRisk: &PortfolioRiskConfig{
-			MaxDrawdownPct: 25,
-			MaxNotionalUSD: 0,
+			MaxDrawdownPct:   portfolioMaxDD,
+			MaxNotionalUSD:   0,
+			WarnThresholdPct: portfolioWarn,
 		},
 		Discord: DiscordConfig{
 			Enabled:  opts.DiscordEnabled,
@@ -1021,6 +1034,42 @@ func runInit(args []string) int {
 	okxCapital := 1000.0
 	okxDrawdown := 5.0
 
+	// Portfolio risk defaults (#85); overridden below if any live mode is enabled.
+	portfolioMaxDD := 25.0
+	portfolioWarnPct := 80.0
+
+	// #85: Live trading setup must prompt for risk parameters explicitly so
+	// operators don't hit the post-launch DM migration wizard. These fields
+	// gate the portfolio kill switch (portfolio_risk.max_drawdown_pct) and
+	// early-warning alert (portfolio_risk.warn_threshold_pct) that protect
+	// the whole account, so we ask up-front when real capital is at stake.
+	anyLive := perpsMode == "live" || futuresMode == "live" || robinhoodMode == "live" || okxMode == "live"
+	if anyLive {
+		fmt.Println("\n--- Risk settings (live trading) ---")
+		fmt.Println("These guard real capital. Press Enter to accept defaults.")
+		// Default 5 matches the existing per-platform default for every live-capable
+		// platform (spot/perps/robinhood/luno/futures/okx), so pressing Enter is a
+		// no-op for those. Options default is 10, so Enter tightens options to 5 —
+		// intentional: if real capital is at stake on any platform, apply the
+		// tighter bound uniformly. Operator can type a different value to widen.
+		perStrategyDD := p.FloatRange("Per-strategy max drawdown % (applied to all strategies)", 5, 0, 100)
+		// Override applies to every strategy type including spot/options/luno
+		// even when those are paper-mode: the operator has asked for a uniform
+		// per-strategy DD across the whole account.
+		spotDrawdown = perStrategyDD
+		optionsDrawdown = perStrategyDD
+		perpsDrawdown = perStrategyDD
+		robinhoodDrawdown = perStrategyDD
+		lunoDrawdown = perStrategyDD
+		futuresDrawdown = perStrategyDD
+		okxDrawdown = perStrategyDD
+		// Both portfolio fields are validated (0, 100] at config load time
+		// (config.go:492,498); re-prompt on out-of-range so the wizard can't
+		// produce a file that fails validateConfig on the next startup.
+		portfolioMaxDD = p.FloatRange("Portfolio kill-switch max drawdown %", 25, 0, 100)
+		portfolioWarnPct = p.FloatRange("Portfolio warn threshold % (of kill switch)", 80, 0, 100)
+	}
+
 	// Notifications default to disabled.
 	discordEnabled := false
 	channelMap := make(map[string]string)
@@ -1078,55 +1127,57 @@ func runInit(args []string) int {
 	}
 
 	opts := InitOptions{
-		OutputPath:              outputPath,
-		Assets:                  selectedAssets,
-		EnableSpot:              enableSpot,
-		EnableOptions:           enableOptions,
-		EnablePerps:             enablePerps,
-		OptionPlatforms:         optionPlatforms,
-		PerpsMode:               perpsMode,
-		SpotStrategies:          selectedSpotStrats,
-		IncludePairs:            includePairs,
-		OptStrategies:           selectedOptStrats,
-		PerpsStrategies:         perpsStratIDs,
-		SpotCapital:             spotCapital,
-		OptionsCapital:          optionsCapital,
-		PerpsCapital:            perpsCapital,
-		PerpsLeverage:           perpsLeverage,
-		SpotDrawdown:            spotDrawdown,
-		OptionsDrawdown:         optionsDrawdown,
-		PerpsDrawdown:           perpsDrawdown,
-		RobinhoodOptionsSymbols: robinhoodOptionsSymbols,
-		EnableRobinhood:         enableRobinhood,
-		RobinhoodMode:           robinhoodMode,
-		RobinhoodStrategies:     robinhoodStratIDs,
-		RobinhoodCapital:        robinhoodCapital,
-		RobinhoodDrawdown:       robinhoodDrawdown,
-		EnableLuno:              enableLuno,
-		LunoStrategies:          lunoStratIDs,
-		LunoCapital:             lunoCapital,
-		LunoDrawdown:            lunoDrawdown,
-		EnableFutures:           enableFutures,
-		FuturesMode:             futuresMode,
-		FuturesStrategies:       futuresStratIDs,
-		FuturesSymbols:          futuresSymbols,
-		FuturesCapital:          futuresCapital,
-		FuturesDrawdown:         futuresDrawdown,
-		FuturesFeePerContract:   futuresFeePerContract,
-		EnableOKX:               enableOKX,
-		OKXMode:                 okxMode,
-		OKXSpotStrategies:       okxSpotStratIDs,
-		OKXPerpsStrategies:      okxPerpsStratIDs,
-		OKXCapital:              okxCapital,
-		OKXDrawdown:             okxDrawdown,
-		HTFFilter:               htfFilter,
-		DiscordEnabled:          discordEnabled,
-		DiscordOwnerID:          discordOwnerID,
-		ChannelMap:              channelMap,
-		TelegramEnabled:         telegramEnabled,
-		TelegramOwnerChatID:     telegramOwnerChatID,
-		TelegramChannelMap:      telegramChannelMap,
-		AutoUpdate:              autoUpdate,
+		OutputPath:                outputPath,
+		Assets:                    selectedAssets,
+		EnableSpot:                enableSpot,
+		EnableOptions:             enableOptions,
+		EnablePerps:               enablePerps,
+		OptionPlatforms:           optionPlatforms,
+		PerpsMode:                 perpsMode,
+		SpotStrategies:            selectedSpotStrats,
+		IncludePairs:              includePairs,
+		OptStrategies:             selectedOptStrats,
+		PerpsStrategies:           perpsStratIDs,
+		SpotCapital:               spotCapital,
+		OptionsCapital:            optionsCapital,
+		PerpsCapital:              perpsCapital,
+		PerpsLeverage:             perpsLeverage,
+		SpotDrawdown:              spotDrawdown,
+		OptionsDrawdown:           optionsDrawdown,
+		PerpsDrawdown:             perpsDrawdown,
+		RobinhoodOptionsSymbols:   robinhoodOptionsSymbols,
+		EnableRobinhood:           enableRobinhood,
+		RobinhoodMode:             robinhoodMode,
+		RobinhoodStrategies:       robinhoodStratIDs,
+		RobinhoodCapital:          robinhoodCapital,
+		RobinhoodDrawdown:         robinhoodDrawdown,
+		EnableLuno:                enableLuno,
+		LunoStrategies:            lunoStratIDs,
+		LunoCapital:               lunoCapital,
+		LunoDrawdown:              lunoDrawdown,
+		EnableFutures:             enableFutures,
+		FuturesMode:               futuresMode,
+		FuturesStrategies:         futuresStratIDs,
+		FuturesSymbols:            futuresSymbols,
+		FuturesCapital:            futuresCapital,
+		FuturesDrawdown:           futuresDrawdown,
+		FuturesFeePerContract:     futuresFeePerContract,
+		EnableOKX:                 enableOKX,
+		OKXMode:                   okxMode,
+		OKXSpotStrategies:         okxSpotStratIDs,
+		OKXPerpsStrategies:        okxPerpsStratIDs,
+		OKXCapital:                okxCapital,
+		OKXDrawdown:               okxDrawdown,
+		HTFFilter:                 htfFilter,
+		PortfolioMaxDrawdownPct:   portfolioMaxDD,
+		PortfolioWarnThresholdPct: portfolioWarnPct,
+		DiscordEnabled:            discordEnabled,
+		DiscordOwnerID:            discordOwnerID,
+		ChannelMap:                channelMap,
+		TelegramEnabled:           telegramEnabled,
+		TelegramOwnerChatID:       telegramOwnerChatID,
+		TelegramChannelMap:        telegramChannelMap,
+		AutoUpdate:                autoUpdate,
 	}
 
 	cfg := generateConfig(opts)
