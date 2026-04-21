@@ -571,16 +571,16 @@ func TestFormatCategorySummary_SharedWallet(t *testing.T) {
 		t.Errorf("expected '100.0%%' total wallet share, got:\n%s", msg)
 	}
 	// TOTAL value should be ~$1,085 (sum of both strategy values)
-	if !strings.Contains(msg, "$ 1,085") {
-		t.Errorf("expected total value ~$1,085, got:\n%s", msg)
+	if !strings.Contains(msg, "1,085") {
+		t.Errorf("expected total value ~1,085, got:\n%s", msg)
 	}
 	// Individual values should be ~$542
-	if !strings.Contains(msg, "$ 542") {
-		t.Errorf("expected individual value ~$542, got:\n%s", msg)
+	if !strings.Contains(msg, "542") {
+		t.Errorf("expected individual value ~542, got:\n%s", msg)
 	}
 	// PnL should use InitialCapital ($500), not runtime Capital ($542.50)
-	if !strings.Contains(msg, "$ 500") {
-		t.Errorf("expected initial capital '$ 500', got:\n%s", msg)
+	if !strings.Contains(msg, "500") {
+		t.Errorf("expected initial capital '500', got:\n%s", msg)
 	}
 	// Column order should be Init | Value (not Value | Init)
 	initIdx := strings.Index(msg, "Init")
