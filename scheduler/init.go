@@ -1053,18 +1053,16 @@ func runInit(args []string) int {
 		// intentional: if real capital is at stake on any platform, apply the
 		// tighter bound uniformly. Operator can type a different value to widen.
 		perStrategyDD := p.FloatRange("Per-strategy max drawdown % (applied to all strategies)", 5, 0, 100)
-		if perStrategyDD > 0 {
-			// Override applies to every strategy type including spot/options/luno
-			// even when those are paper-mode: the operator has asked for a uniform
-			// per-strategy DD across the whole account.
-			spotDrawdown = perStrategyDD
-			optionsDrawdown = perStrategyDD
-			perpsDrawdown = perStrategyDD
-			robinhoodDrawdown = perStrategyDD
-			lunoDrawdown = perStrategyDD
-			futuresDrawdown = perStrategyDD
-			okxDrawdown = perStrategyDD
-		}
+		// Override applies to every strategy type including spot/options/luno
+		// even when those are paper-mode: the operator has asked for a uniform
+		// per-strategy DD across the whole account.
+		spotDrawdown = perStrategyDD
+		optionsDrawdown = perStrategyDD
+		perpsDrawdown = perStrategyDD
+		robinhoodDrawdown = perStrategyDD
+		lunoDrawdown = perStrategyDD
+		futuresDrawdown = perStrategyDD
+		okxDrawdown = perStrategyDD
 		// Both portfolio fields are validated (0, 100] at config load time
 		// (config.go:492,498); re-prompt on out-of-range so the wizard can't
 		// produce a file that fails validateConfig on the next startup.
