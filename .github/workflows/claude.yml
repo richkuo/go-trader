@@ -136,7 +136,7 @@ jobs:
       - name: Run Claude Code
         if: steps.verify_invocation.outputs.invoked == 'true'
         id: claude
-        uses: richkuo/claude-code-action@fix/bun-tsconfig-realpath
+        uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -179,7 +179,7 @@ jobs:
 
       - name: Revise CLAUDE.md with session learnings
         if: steps.verify_invocation.outputs.invoked == 'true' && steps.claude.outcome == 'success' && steps.claude_changes.outputs.made_commits == 'true'
-        uses: richkuo/claude-code-action@fix/bun-tsconfig-realpath
+        uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: "Use the Skill tool to invoke the 'claude-md-management:revise-claude-md' skill. Review the changes made in this session (use git log and git diff to inspect them) and update CLAUDE.md with any new patterns, conventions, or important context learned."
