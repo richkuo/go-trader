@@ -234,9 +234,11 @@ const discordCharLimit = 2000
 const discordSplitThreshold = 1980
 
 // catTableMaxRows caps how many strategy rows render per Discord message before
-// the table is continued in a follow-up message. With 20 rows the rendered table
-// (including header/sep/totals) stays comfortably under the 2000-char limit.
-const catTableMaxRows = 20
+// the table is continued in a follow-up message. Sized so the rendered table
+// (including header/sep/totals) plus the base summary header and the per-channel
+// position section stays under the 2000-char limit (#381 widened the row to fit
+// the new #T column, so this cap shrank from 20 to 15).
+const catTableMaxRows = 15
 
 // FormatCategorySummary creates Discord messages for a set of strategies sharing a channel.
 // Returns a slice of messages; when the content exceeds Discord's 2000-char limit,
@@ -743,15 +745,16 @@ func formatInterval(seconds int) string {
 // writeCatTablePartial writes a single code-block table containing the supplied
 // bots. When includeTotals is true the trailing TOTAL row is appended using the
 // supplied totals (which should be computed from the FULL bot list, not just
-// this chunk). Used by writeCatTableChunks.
-func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, includeTotals bool, totalInit, totalValue, totalPnl, totalPnlPct float64) {
+// this chunk). totalClosed is the sum of closedTrades across the full bot list
+// and is rendered in the #T column of the TOTAL row. Used by writeCatTableChunks.
+func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, includeTotals bool, totalInit, totalValue, totalPnl, totalPnlPct float64, totalClosed int) {
 	if len(bots) == 0 {
 		return
 	}
 	sb.WriteString("\n```\n")
 	if showWalletPct {
-		const sep = "----------------------------------------------------------------------------------"
-		sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %8s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Wallet%", "Tf", "Int"))
+		const sep = "----------------------------------------------------------------------------------------"
+		sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %8s %5s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Wallet%", "Tf", "Int", "#T"))
 		sb.WriteString(sep + "\n")
 		for _, bot := range bots {
 			label := bot.id
@@ -766,7 +769,7 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 			if bot.walletPct > 0 {
 				wpStr = fmt.Sprintf("%.1f%%", bot.walletPct)
 			}
-			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %8s %5s %5s\n", label, initStr, valStr, pnlStr, pctStr, wpStr, bot.timeframe, bot.interval))
+			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %8s %5s %5s %5d\n", label, initStr, valStr, pnlStr, pctStr, wpStr, bot.timeframe, bot.interval, bot.closedTrades))
 		}
 		if includeTotals {
 			sb.WriteString(sep + "\n")
@@ -774,11 +777,11 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 			totInitStr := "$ " + fmtComma(totalInit)
 			totPnlStr := fmtPnl(totalPnl)
 			totPctStr := fmtPnlPct(totalPnlPct)
-			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %8s %5s %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "100.0%", "", ""))
+			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %8s %5s %5s %5d\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "100.0%", "", "", totalClosed))
 		}
 	} else {
-		const sep = "-------------------------------------------------------------------------"
-		sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Tf", "Int"))
+		const sep = "-------------------------------------------------------------------------------"
+		sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %5s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Tf", "Int", "#T"))
 		sb.WriteString(sep + "\n")
 		for _, bot := range bots {
 			label := bot.id
@@ -789,7 +792,7 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 			initStr := "$ " + fmtComma(bot.initialCap)
 			pnlStr := fmtPnl(bot.pnl)
 			pctStr := fmtPnlPct(bot.pnlPct)
-			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %5s %5s\n", label, initStr, valStr, pnlStr, pctStr, bot.timeframe, bot.interval))
+			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %5s %5s %5d\n", label, initStr, valStr, pnlStr, pctStr, bot.timeframe, bot.interval, bot.closedTrades))
 		}
 		if includeTotals {
 			sb.WriteString(sep + "\n")
@@ -797,7 +800,7 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 			totInitStr := "$ " + fmtComma(totalInit)
 			totPnlStr := fmtPnl(totalPnl)
 			totPctStr := fmtPnlPct(totalPnlPct)
-			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %5s %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "", ""))
+			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %5s %5s %5d\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "", "", totalClosed))
 		}
 	}
 	sb.WriteString("```\n")
@@ -812,8 +815,10 @@ func writeCatTableChunks(bots []botInfo, totalValue, totalPnl, totalPnlPct float
 		return nil
 	}
 	var totalInit float64
+	var totalClosed int
 	for _, bot := range bots {
 		totalInit += bot.initialCap
+		totalClosed += bot.closedTrades
 	}
 	var chunks []string
 	for start := 0; start < len(bots); start += catTableMaxRows {
@@ -823,7 +828,7 @@ func writeCatTableChunks(bots []botInfo, totalValue, totalPnl, totalPnlPct float
 		}
 		isLast := end == len(bots)
 		var sb strings.Builder
-		writeCatTablePartial(&sb, bots[start:end], showWalletPct, isLast, totalInit, totalValue, totalPnl, totalPnlPct)
+		writeCatTablePartial(&sb, bots[start:end], showWalletPct, isLast, totalInit, totalValue, totalPnl, totalPnlPct, totalClosed)
 		chunks = append(chunks, sb.String())
 	}
 	return chunks
