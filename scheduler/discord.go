@@ -761,8 +761,8 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 			if len(label) > 20 {
 				label = label[:20]
 			}
-			valStr := "$ " + fmtComma(bot.value)
-			initStr := "$ " + fmtComma(bot.initialCap)
+			valStr := fmtComma(bot.value)
+			initStr := fmtComma(bot.initialCap)
 			pnlStr := fmtPnl(bot.pnl)
 			pctStr := fmtPnlPct(bot.pnlPct)
 			wpStr := ""
@@ -773,8 +773,8 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 		}
 		if includeTotals {
 			sb.WriteString(sep + "\n")
-			totValStr := "$ " + fmtComma(totalValue)
-			totInitStr := "$ " + fmtComma(totalInit)
+			totValStr := fmtComma(totalValue)
+			totInitStr := fmtComma(totalInit)
 			totPnlStr := fmtPnl(totalPnl)
 			totPctStr := fmtPnlPct(totalPnlPct)
 			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %8s %5s %5s %5d\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "100.0%", "", "", totalClosed))
@@ -788,16 +788,16 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 			if len(label) > 20 {
 				label = label[:20]
 			}
-			valStr := "$ " + fmtComma(bot.value)
-			initStr := "$ " + fmtComma(bot.initialCap)
+			valStr := fmtComma(bot.value)
+			initStr := fmtComma(bot.initialCap)
 			pnlStr := fmtPnl(bot.pnl)
 			pctStr := fmtPnlPct(bot.pnlPct)
 			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %5s %5s %5d\n", label, initStr, valStr, pnlStr, pctStr, bot.timeframe, bot.interval, bot.closedTrades))
 		}
 		if includeTotals {
 			sb.WriteString(sep + "\n")
-			totValStr := "$ " + fmtComma(totalValue)
-			totInitStr := "$ " + fmtComma(totalInit)
+			totValStr := fmtComma(totalValue)
+			totInitStr := fmtComma(totalInit)
 			totPnlStr := fmtPnl(totalPnl)
 			totPctStr := fmtPnlPct(totalPnlPct)
 			sb.WriteString(fmt.Sprintf("%-20s %10s %10s %10s %7s %5s %5s %5d\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "", "", totalClosed))
