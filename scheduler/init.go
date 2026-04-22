@@ -20,6 +20,13 @@ var supportedAssets = []asset{
 	{Name: "SOL", Symbol: "SOL/USDT"},
 }
 
+const (
+	starterAssetName      = "BTC"
+	starterSpotStrategyID = "momentum"
+	starterSpotCapital    = 1000.0
+	starterSpotDrawdown   = 5.0
+)
+
 // stratDef defines a strategy template with its ID and short name for config IDs.
 type stratDef struct {
 	ID        string // strategy arg used in script invocation
@@ -230,6 +237,53 @@ func discoverStrategies() {
 		// shared_strategies/futures/, so perps must match that registry.
 		perpsStrategies = discovered
 	}
+}
+
+func hasAnyEnabledStrategyType(opts InitOptions) bool {
+	return opts.EnableSpot || opts.EnableOptions || opts.EnablePerps || opts.EnableFutures || opts.EnableRobinhood || opts.EnableLuno || opts.EnableOKX
+}
+
+// applyMinimalStarterDefaults turns the empty/default init path into one safe,
+// easy-to-understand starter strategy: BTC spot momentum on BinanceUS.
+func applyMinimalStarterDefaults(opts *InitOptions) {
+	if !opts.EnableSpot && hasAnyEnabledStrategyType(*opts) {
+		return
+	}
+	if !opts.EnableSpot {
+		opts.EnableSpot = true
+	}
+	if len(opts.Assets) == 0 {
+		opts.Assets = []string{starterAssetName}
+		// pairs_spread needs ≥2 assets; clear IncludePairs rather than silently
+		// generating a 1-asset config with an inert pairs flag.
+		opts.IncludePairs = false
+	}
+	if len(opts.SpotStrategies) == 0 && (!opts.IncludePairs || len(opts.Assets) < 2) {
+		opts.SpotStrategies = []string{starterSpotStrategyID}
+	}
+	if opts.SpotCapital <= 0 {
+		opts.SpotCapital = starterSpotCapital
+	}
+	if opts.SpotDrawdown <= 0 {
+		opts.SpotDrawdown = starterSpotDrawdown
+	}
+}
+
+func selectionDefaults(options []string, preferred []string, fallbackFirst bool) []int {
+	indexByValue := make(map[string]int, len(options))
+	for i, option := range options {
+		indexByValue[option] = i
+	}
+	result := make([]int, 0, len(preferred))
+	for _, want := range preferred {
+		if idx, ok := indexByValue[want]; ok {
+			result = append(result, idx)
+		}
+	}
+	if len(result) == 0 && fallbackFirst && len(options) > 0 {
+		return []int{0}
+	}
+	return result
 }
 
 // InitOptions captures all user choices from the interactive wizard.
@@ -624,11 +678,13 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		}
 	}
 
+	applyMinimalStarterDefaults(&opts)
+
 	if len(opts.Assets) == 0 {
 		fmt.Fprintln(os.Stderr, "Error: at least one asset required")
 		return 1
 	}
-	if !opts.EnableSpot && !opts.EnableOptions && !opts.EnablePerps && !opts.EnableFutures && !opts.EnableRobinhood && !opts.EnableLuno && !opts.EnableOKX {
+	if !hasAnyEnabledStrategyType(opts) {
 		fmt.Fprintln(os.Stderr, "Error: at least one strategy type must be enabled")
 		return 1
 	}
@@ -809,7 +865,7 @@ func runInit(args []string) int {
 	for i, a := range supportedAssets {
 		assetNames[i] = a.Name
 	}
-	assetIdxs := p.MultiSelect("\nSelect assets to trade:", assetNames, true)
+	assetIdxs := p.MultiSelectWithDefaults("\nSelect assets to trade:", assetNames, selectionDefaults(assetNames, []string{starterAssetName}, true))
 	if len(assetIdxs) == 0 {
 		fmt.Println("No assets selected. Aborted.")
 		return 1
@@ -821,7 +877,7 @@ func runInit(args []string) int {
 
 	// Step 3: Strategy types.
 	stratTypeNames := []string{"spot", "options", "perps", "futures", "robinhood", "luno", "okx"}
-	stratTypeIdxs := p.MultiSelect("\nSelect strategy types:", stratTypeNames, false)
+	stratTypeIdxs := p.MultiSelectWithDefaults("\nSelect strategy types:", stratTypeNames, selectionDefaults(stratTypeNames, []string{"spot"}, true))
 	enableSpot, enableOptions, enablePerps, enableFutures, enableRobinhood, enableLuno, enableOKX := false, false, false, false, false, false, false
 	for _, idx := range stratTypeIdxs {
 		switch stratTypeNames[idx] {
@@ -936,7 +992,7 @@ func runInit(args []string) int {
 		if hasPairsOption {
 			spotNames = append(spotNames, "pairs_spread")
 		}
-		spotIdxs := p.MultiSelect("\nSelect spot strategies:", spotNames, false)
+		spotIdxs := p.MultiSelectWithDefaults("\nSelect spot strategies:", spotNames, selectionDefaults(spotNames, []string{starterSpotStrategyID}, true))
 		for _, idx := range spotIdxs {
 			if hasPairsOption && idx == len(spotStrategies) {
 				includePairs = true

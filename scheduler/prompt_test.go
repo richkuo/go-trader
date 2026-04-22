@@ -131,6 +131,38 @@ func TestPrompterMultiSelect(t *testing.T) {
 	}
 }
 
+func TestPrompterMultiSelectWithDefaults(t *testing.T) {
+	options := []string{"A", "B", "C", "D"}
+
+	cases := []struct {
+		name        string
+		input       string
+		defaultIdxs []int
+		want        []int
+	}{
+		{"empty uses custom defaults", "\n", []int{1, 3}, []int{1, 3}},
+		{"eof uses custom defaults", "", []int{2}, []int{2}},
+		{"none overrides defaults", "none\n", []int{1}, []int{}},
+		{"explicit selection overrides defaults", "1,4\n", []int{1}, []int{0, 3}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _ := newTestPrompter(tc.input)
+			got := p.MultiSelectWithDefaults("Pick items:", options, tc.defaultIdxs)
+			if len(got) != len(tc.want) {
+				t.Errorf("MultiSelectWithDefaults() len = %d, want %d", len(got), len(tc.want))
+				return
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("MultiSelectWithDefaults()[%d] = %d, want %d", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestPrompterFloat(t *testing.T) {
 	cases := []struct {
 		name       string

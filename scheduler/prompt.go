@@ -98,22 +98,26 @@ func (p *Prompter) Choice(prompt string, options []string, defaultIdx int) int {
 // Accepts comma-separated numbers (e.g. "1,3"), "all", or "none".
 // Returns a slice of 0-based indices.
 func (p *Prompter) MultiSelect(prompt string, options []string, defaultAll bool) []int {
+	return p.MultiSelectWithDefaults(prompt, options, multiSelectDefault(options, defaultAll))
+}
+
+// MultiSelectWithDefaults prompts the user to pick multiple options from a
+// numbered list, using defaultIdxs when the input is empty.
+func (p *Prompter) MultiSelectWithDefaults(prompt string, options []string, defaultIdxs []int) []int {
 	fmt.Fprintln(p.out, prompt)
 	for i, opt := range options {
 		fmt.Fprintf(p.out, "  %d) %s\n", i+1, opt)
 	}
-	def := "none"
-	if defaultAll {
-		def = "all"
-	}
+	defaultIdxs = normalizeMultiSelectIndices(defaultIdxs, len(options))
+	def := multiSelectPromptDefault(options, defaultIdxs)
 	for {
 		fmt.Fprintf(p.out, "Enter comma-separated numbers, \"all\", or \"none\" [%s]: ", def)
 		if !p.scanner.Scan() {
-			return multiSelectDefault(options, defaultAll)
+			return append([]int(nil), defaultIdxs...)
 		}
 		input := strings.TrimSpace(strings.ToLower(p.scanner.Text()))
 		if input == "" {
-			return multiSelectDefault(options, defaultAll)
+			return append([]int(nil), defaultIdxs...)
 		}
 		if input == "all" {
 			all := make([]int, len(options))
@@ -199,4 +203,40 @@ func multiSelectDefault(options []string, defaultAll bool) []int {
 		return all
 	}
 	return []int{}
+}
+
+func normalizeMultiSelectIndices(indices []int, optionCount int) []int {
+	seen := make(map[int]bool, len(indices))
+	result := make([]int, 0, len(indices))
+	for _, idx := range indices {
+		if idx < 0 || idx >= optionCount || seen[idx] {
+			continue
+		}
+		seen[idx] = true
+		result = append(result, idx)
+	}
+	return result
+}
+
+func multiSelectPromptDefault(options []string, defaultIdxs []int) string {
+	if len(defaultIdxs) == 0 {
+		return "none"
+	}
+	if len(defaultIdxs) == len(options) {
+		all := true
+		for i, idx := range defaultIdxs {
+			if idx != i {
+				all = false
+				break
+			}
+		}
+		if all {
+			return "all"
+		}
+	}
+	parts := make([]string, len(defaultIdxs))
+	for i, idx := range defaultIdxs {
+		parts[i] = strconv.Itoa(idx + 1)
+	}
+	return strings.Join(parts, ",")
 }
