@@ -543,30 +543,73 @@ func TestRunInitFromJSON_Valid(t *testing.T) {
 	}
 }
 
-func TestRunInitFromJSON_MissingAssets(t *testing.T) {
+func TestRunInitFromJSON_EmptyUsesStarterSpotDefaults(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "config.json")
-	jsonStr := `{"enableSpot":true,"spotStrategies":["sma_crossover"]}`
+	jsonStr := `{}`
 	code := runInitFromJSON(jsonStr, out)
-	if code != 1 {
-		t.Fatalf("expected exit 1 for missing assets, got %d", code)
+	if code != 0 {
+		t.Fatalf("expected exit 0 for starter defaults, got %d", code)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("expected output file to exist: %v", err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if len(cfg.Strategies) != 1 {
+		t.Fatalf("expected 1 starter strategy, got %d", len(cfg.Strategies))
+	}
+	s := cfg.Strategies[0]
+	if s.ID != "momentum-btc" {
+		t.Errorf("expected starter ID momentum-btc, got %s", s.ID)
+	}
+	if s.Type != "spot" || s.Platform != "binanceus" {
+		t.Errorf("expected starter spot strategy on binanceus, got %s/%s", s.Type, s.Platform)
+	}
+	if s.Capital != 1000 || s.MaxDrawdownPct != 5 {
+		t.Errorf("expected starter capital/drawdown 1000/5, got %.0f/%.0f", s.Capital, s.MaxDrawdownPct)
 	}
 }
 
-func TestRunInitFromJSON_NoStrategyTypes(t *testing.T) {
+func TestRunInitFromJSON_AssetsOnlyDefaultsToStarterSpot(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "config.json")
 	jsonStr := `{"assets":["BTC"]}`
 	code := runInitFromJSON(jsonStr, out)
-	if code != 1 {
-		t.Fatalf("expected exit 1 for no strategy types, got %d", code)
+	if code != 0 {
+		t.Fatalf("expected exit 0 for starter defaults, got %d", code)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("expected output file to exist: %v", err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if len(cfg.Strategies) != 1 || cfg.Strategies[0].ID != "momentum-btc" {
+		t.Fatalf("expected starter momentum-btc config, got %+v", cfg.Strategies)
 	}
 }
 
-func TestRunInitFromJSON_SpotEnabledNoStrategies(t *testing.T) {
+func TestRunInitFromJSON_SpotEnabledNoStrategiesUsesStarterStrategy(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "config.json")
 	jsonStr := `{"assets":["BTC"],"enableSpot":true}`
 	code := runInitFromJSON(jsonStr, out)
-	if code != 1 {
-		t.Fatalf("expected exit 1 for spot enabled with no strategies, got %d", code)
+	if code != 0 {
+		t.Fatalf("expected exit 0 for starter defaults, got %d", code)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("expected output file to exist: %v", err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if len(cfg.Strategies) != 1 || cfg.Strategies[0].ID != "momentum-btc" {
+		t.Fatalf("expected starter momentum-btc config, got %+v", cfg.Strategies)
 	}
 }
 
