@@ -1,0 +1,32 @@
+[Unit]
+Description=Go Trading Bot (instance %i)
+After=network.target
+
+[Service]
+Type=simple
+# Run as a dedicated non-root user.
+# Create before deploying: useradd --system --no-create-home go-trader
+User=go-trader
+Group=go-trader
+WorkingDirectory=/opt/go-trader-%i
+ExecStart=/opt/go-trader-%i/go-trader --config /opt/go-trader-%i/scheduler/config.json
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Prefer loading secrets from an instance-specific env file rather than embedding
+# them in the unit file or config.json:
+#   echo "DISCORD_BOT_TOKEN=Bot your-token-here" > /opt/go-trader-%i/.env
+#   chmod 600 /opt/go-trader-%i/.env
+EnvironmentFile=-/opt/go-trader-%i/.env
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# Allow writes only to the data directory
+ReadWritePaths=/opt/go-trader-%i/scheduler
+
+[Install]
+WantedBy=multi-user.target
