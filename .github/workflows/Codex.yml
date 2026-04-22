@@ -27,7 +27,6 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
-      id-token: write
       actions: read
     steps:
       - name: Verify @codex is an actual invocation (not in a code block or example)
@@ -147,8 +146,7 @@ jobs:
               headSha = pr.head?.sha || "";
               baseRef = pr.base?.ref || "";
 
-              const sameRepoHead =
-                pr.head?.repo?.full_name === repoFullName && !pr.head?.repo?.fork;
+              const sameRepoHead = pr.head?.repo?.full_name === repoFullName;
               if (sameRepoHead) {
                 checkoutRepository = pr.head.repo.full_name;
                 checkoutRef = pr.head.ref;
@@ -160,7 +158,7 @@ jobs:
             }
 
             core.setOutput("actor", context.actor);
-            core.setOutput("instruction", instruction || stripped);
+            core.setOutput("instruction", instruction);
             core.setOutput("is_pr", isPR ? "true" : "false");
             core.setOutput("issue_number", issueNumber);
             core.setOutput("pr_number", prNumber);
@@ -222,7 +220,7 @@ jobs:
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          allow-bots: true
+          allow-bots: false
           model: gpt-5.4
           effort: high
           sandbox: workspace-write
