@@ -613,6 +613,64 @@ func TestRunInitFromJSON_SpotEnabledNoStrategiesUsesStarterStrategy(t *testing.T
 	}
 }
 
+// When the user passes includePairs=true but no assets, the starter defaulter
+// populates Assets with the single starter asset. pairs_spread needs ≥2 assets,
+// so IncludePairs must be cleared rather than leaving an inert flag that would
+// silently generate a 1-asset config with no pair strategies.
+func TestApplyMinimalStarterDefaults_IncludePairsWithoutAssetsDrops(t *testing.T) {
+	opts := InitOptions{IncludePairs: true}
+	applyMinimalStarterDefaults(&opts)
+	if opts.IncludePairs {
+		t.Errorf("expected IncludePairs cleared when assets were defaulted, still true")
+	}
+	if len(opts.Assets) != 1 || opts.Assets[0] != starterAssetName {
+		t.Errorf("expected Assets=[%s], got %v", starterAssetName, opts.Assets)
+	}
+	if len(opts.SpotStrategies) != 1 || opts.SpotStrategies[0] != starterSpotStrategyID {
+		t.Errorf("expected SpotStrategies=[%s], got %v", starterSpotStrategyID, opts.SpotStrategies)
+	}
+}
+
+// If the user explicitly passes assets=["BTC","ETH"] and includePairs=true,
+// the defaulter must leave IncludePairs alone (pairs are valid with 2+ assets).
+func TestApplyMinimalStarterDefaults_IncludePairsWithMultipleAssetsPreserved(t *testing.T) {
+	opts := InitOptions{Assets: []string{"BTC", "ETH"}, IncludePairs: true}
+	applyMinimalStarterDefaults(&opts)
+	if !opts.IncludePairs {
+		t.Errorf("expected IncludePairs preserved when caller supplied 2+ assets")
+	}
+}
+
+// Guard against drift between the starter constants and the option lists the
+// interactive wizard uses: if `starterAssetName` is ever removed from
+// `supportedAssets` or `starterSpotStrategyID` disappears from the spot
+// registry, `selectionDefaults` silently falls back to index 0 — a first-run
+// user would end up with some other asset/strategy without warning. Pin them
+// here so the test fails loudly instead.
+func TestStarterConstants_PinnedToOptionLists(t *testing.T) {
+	found := false
+	for _, a := range supportedAssets {
+		if a.Name == starterAssetName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("starterAssetName %q not in supportedAssets — interactive wizard would silently fall back to index 0", starterAssetName)
+	}
+
+	found = false
+	for _, s := range spotStrategies {
+		if s.ID == starterSpotStrategyID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("starterSpotStrategyID %q not in spotStrategies — interactive wizard would silently fall back to index 0", starterSpotStrategyID)
+	}
+}
+
 func TestRunInitFromJSON_PerpsNoModeDefaultsPaper(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "config.json")
 	jsonStr := `{"assets":["BTC"],"enablePerps":true}`

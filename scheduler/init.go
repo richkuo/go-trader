@@ -254,6 +254,9 @@ func applyMinimalStarterDefaults(opts *InitOptions) {
 	}
 	if len(opts.Assets) == 0 {
 		opts.Assets = []string{starterAssetName}
+		// pairs_spread needs ≥2 assets; clear IncludePairs rather than silently
+		// generating a 1-asset config with an inert pairs flag.
+		opts.IncludePairs = false
 	}
 	if len(opts.SpotStrategies) == 0 && (!opts.IncludePairs || len(opts.Assets) < 2) {
 		opts.SpotStrategies = []string{starterSpotStrategyID}
