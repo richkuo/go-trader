@@ -95,9 +95,6 @@ jobs:
               return;
             }
 
-            const effortMatch = stripped.match(/effort:(low|medium|high)/i);
-            const effort = effortMatch ? effortMatch[1].toLowerCase() : "high";
-
             let checkoutRepository = repoFullName;
             let checkoutRef = payload.repository?.default_branch || "main";
             let canPush = "false";
@@ -130,7 +127,6 @@ jobs:
             }
 
             core.setOutput("actor", context.actor);
-            core.setOutput("effort", effort);
             core.setOutput("instruction", stripped.trim());
             core.setOutput("is_pr", isPR ? "true" : "false");
             core.setOutput("issue_number", issueNumber);
@@ -171,7 +167,8 @@ jobs:
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           sandbox: workspace-write
-          effort: ${{ steps.context.outputs.effort }}
+          model: gpt-5.4
+          effort: high
           prompt: |
             You are responding to a GitHub event for the repository `${{ github.repository }}`.
             Follow the repository instructions in `AGENTS.md` and any relevant local docs before making changes.
