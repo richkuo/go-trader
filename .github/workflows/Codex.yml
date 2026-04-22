@@ -27,9 +27,43 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
+      id-token: write
       actions: read
     steps:
-      - name: Resolve invocation and GitHub context
+      - name: Verify @codex is an actual invocation (not in a code block or example)
+        id: verify_invocation
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          REVIEW_BODY: ${{ github.event.review.body }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          case "$EVENT_NAME" in
+            issue_comment|pull_request_review_comment)
+              BODY="$COMMENT_BODY"
+              ;;
+            pull_request_review)
+              BODY="$REVIEW_BODY"
+              ;;
+            issues)
+              BODY=$(printf '%s\n\n%s' "$ISSUE_TITLE" "$ISSUE_BODY")
+              ;;
+          esac
+
+          # Strip fenced code blocks (``` ... ```) and inline code spans (` ... `)
+          # shellcheck disable=SC2016  # single quotes are intentional — Perl regex has no shell vars
+          STRIPPED=$(printf '%s' "$BODY" | perl -0777 -pe 's/```.*?```//gs' | sed 's/`[^`]*`//g')
+
+          if printf '%s' "$STRIPPED" | grep -qiE '(^|(\r?\n))[[:space:]]*@codex([[:space:]]|$)'; then
+            echo "invoked=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "invoked=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::@codex found but only inside code blocks or examples — skipping."
+          fi
+
+      - name: Resolve GitHub context for Codex
+        if: steps.verify_invocation.outputs.invoked == 'true'
         id: context
         uses: actions/github-script@v7
         with:
@@ -86,13 +120,12 @@ jobs:
 
             const stripped = rawText
               .replace(/```[\s\S]*?```/g, "")
-              .replace(/`[^`]*`/g, "");
-            const invoked = /(^|[\r\n])\s*@codex(\s|$)/i.test(stripped);
+              .replace(/`[^`]*`/g, "")
+              .trim();
 
-            core.setOutput("invoked", invoked ? "true" : "false");
-            if (!invoked) {
-              core.notice("@codex found only inside code blocks or examples; skipping.");
-              return;
+            let instruction = stripped;
+            if (/^@codex\b/i.test(instruction)) {
+              instruction = instruction.replace(/^@codex\b\s*/i, "");
             }
 
             let checkoutRepository = repoFullName;
@@ -107,7 +140,6 @@ jobs:
             let prUrl = "";
 
             if (isPR && pr) {
-              checkoutRepository = repoFullName;
               prTitle = pr.title || "";
               prBody = pr.body || "";
               prUrl = pr.html_url || "";
@@ -115,7 +147,8 @@ jobs:
               headSha = pr.head?.sha || "";
               baseRef = pr.base?.ref || "";
 
-              const sameRepoHead = pr.head?.repo?.full_name === repoFullName && !pr.head?.repo?.fork;
+              const sameRepoHead =
+                pr.head?.repo?.full_name === repoFullName && !pr.head?.repo?.fork;
               if (sameRepoHead) {
                 checkoutRepository = pr.head.repo.full_name;
                 checkoutRef = pr.head.ref;
@@ -127,7 +160,7 @@ jobs:
             }
 
             core.setOutput("actor", context.actor);
-            core.setOutput("instruction", stripped.trim());
+            core.setOutput("instruction", instruction || stripped);
             core.setOutput("is_pr", isPR ? "true" : "false");
             core.setOutput("issue_number", issueNumber);
             core.setOutput("pr_number", prNumber);
@@ -143,15 +176,33 @@ jobs:
             core.setOutput("pr_url", prUrl);
 
       - name: Checkout repository
-        if: steps.context.outputs.invoked == 'true'
-        uses: actions/checkout@v5
+        if: steps.verify_invocation.outputs.invoked == 'true'
+        uses: actions/checkout@v4
         with:
           repository: ${{ steps.context.outputs.checkout_repository }}
           ref: ${{ steps.context.outputs.checkout_ref }}
-          fetch-depth: 0
+          fetch-depth: 1
+
+      - name: Set up Go
+        if: steps.verify_invocation.outputs.invoked == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Set up Python (uv)
+        if: steps.verify_invocation.outputs.invoked == 'true'
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install Python dependencies
+        if: steps.verify_invocation.outputs.invoked == 'true'
+        run: uv sync --frozen --extra test
+
+      - name: Clean up lockfile changes before Codex runs
+        if: steps.verify_invocation.outputs.invoked == 'true'
+        run: git checkout -- uv.lock
 
       - name: Pre-fetch PR refs for review context
-        if: steps.context.outputs.invoked == 'true' && steps.context.outputs.is_pr == 'true'
+        if: steps.verify_invocation.outputs.invoked == 'true' && steps.context.outputs.is_pr == 'true'
         env:
           BASE_REF: ${{ steps.context.outputs.base_ref }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
@@ -160,26 +211,30 @@ jobs:
             "$BASE_REF" \
             "+refs/pull/$PR_NUMBER/head"
 
+      - name: Record HEAD sha before Codex runs
+        if: steps.verify_invocation.outputs.invoked == 'true'
+        id: pre_codex
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Run Codex
-        if: steps.context.outputs.invoked == 'true'
+        if: steps.verify_invocation.outputs.invoked == 'true'
         id: codex
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          sandbox: workspace-write
+          allow-bots: true
           model: gpt-5.4
           effort: high
+          sandbox: workspace-write
           prompt: |
-            You are responding to a GitHub event for the repository `${{ github.repository }}`.
-            Follow the repository instructions in `AGENTS.md` and any relevant local docs before making changes.
+            You are responding to a GitHub invocation for the repository `${{ github.repository }}`.
+            Follow `AGENTS.md` and any relevant local docs before making changes.
 
             Event: `${{ github.event_name }}`
             Actor: `@${{ steps.context.outputs.actor }}`
 
-            If this request is on a pull request, scope your review and changes to the PR diff between:
-            base `${{ steps.context.outputs.base_sha }}`
-            head `${{ steps.context.outputs.head_sha }}`
-
+            If this request is on a pull request, review only the changes introduced by the PR.
+            Use the diff between base `${{ steps.context.outputs.base_sha }}` and head `${{ steps.context.outputs.head_sha }}`.
             Pull request URL: ${{ steps.context.outputs.pr_url }}
             Pull request title: ${{ steps.context.outputs.pr_title }}
             Pull request body:
@@ -192,18 +247,22 @@ jobs:
             Human request:
             ${{ steps.context.outputs.instruction }}
 
-      - name: Detect Codex file changes
-        if: steps.context.outputs.invoked == 'true' && steps.context.outputs.can_push == 'true' && steps.codex.outcome == 'success'
-        id: changes
+      - name: Detect if Codex made changes
+        if: steps.verify_invocation.outputs.invoked == 'true' && steps.codex.outcome == 'success'
+        id: codex_changes
+        env:
+          PRE_SHA: ${{ steps.pre_codex.outputs.sha }}
         run: |
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+          CURRENT_SHA=$(git rev-parse HEAD)
+          if [ "$PRE_SHA" != "$CURRENT_SHA" ] || ! git diff --quiet || [ -n "$(git status --porcelain)" ]; then
+            echo "made_changes=true" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "made_changes=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Codex made no code changes."
           fi
 
       - name: Commit and push Codex changes
-        if: steps.context.outputs.invoked == 'true' && steps.context.outputs.can_push == 'true' && steps.changes.outputs.changed == 'true'
+        if: steps.verify_invocation.outputs.invoked == 'true' && steps.codex.outcome == 'success' && steps.context.outputs.can_push == 'true' && steps.codex_changes.outputs.made_changes == 'true'
         id: push
         env:
           BRANCH: ${{ steps.context.outputs.push_branch }}
@@ -211,13 +270,17 @@ jobs:
         run: |
           git config user.name "codex-actions[bot]"
           git config user.email "codex-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "codex: apply requested changes for #$TARGET_NUMBER"
+
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "codex: apply requested changes for #$TARGET_NUMBER"
+          fi
+
           git push origin "HEAD:$BRANCH"
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       - name: Post Codex response
-        if: steps.context.outputs.invoked == 'true' && steps.codex.outcome == 'success' && steps.codex.outputs.final-message != ''
+        if: steps.verify_invocation.outputs.invoked == 'true' && steps.codex.outcome == 'success' && steps.codex.outputs.final-message != ''
         uses: actions/github-script@v7
         env:
           CODEX_FINAL_MESSAGE: ${{ steps.codex.outputs.final-message }}
@@ -232,9 +295,12 @@ jobs:
               return;
             }
 
+            const footer = ["---", "Generated with: GPT-5.4 | Effort: high"];
             if (process.env.PUSHED === "true" && process.env.PUSH_BRANCH) {
-              body += `\n\nPushed changes to \`${process.env.PUSH_BRANCH}\`.`;
+              footer.push(`Pushed changes to \`${process.env.PUSH_BRANCH}\`.`);
             }
+
+            body = `${body}\n\n${footer.join("\n")}`;
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
