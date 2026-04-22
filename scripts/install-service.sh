@@ -40,6 +40,25 @@ fi
 UNIT_FILENAME="$(basename "$SRC")"
 DEST="/etc/systemd/system/$UNIT_FILENAME"
 
+resolve_unit_value() {
+  local value="$1"
+  if [[ "$UNIT_FILENAME" == *@.service ]]; then
+    value="${value//%i/$INSTANCE}"
+    value="${value//%I/$INSTANCE}"
+  fi
+  printf '%s\n' "$value"
+}
+
+read_unit_field() {
+  local key="$1"
+  local raw
+  raw="$(sed -n "s/^${key}=//p" "$SRC" | head -n 1)"
+  if [[ -z "$raw" ]]; then
+    return 0
+  fi
+  resolve_unit_value "$raw"
+}
+
 # For a template unit (go-trader@.service), the instance name is what gets
 # enabled/started (e.g. go-trader@live). For a plain unit, ignore $INSTANCE.
 if [[ "$UNIT_FILENAME" == *@.service ]]; then
@@ -53,8 +72,28 @@ else
   SERVICE_NAME="$UNIT_FILENAME"
 fi
 
+WORKING_DIR="$(read_unit_field WorkingDirectory)"
+SERVICE_USER="$(read_unit_field User)"
+SERVICE_GROUP="$(read_unit_field Group)"
+LOG_DIR=""
+if [[ -n "$WORKING_DIR" ]]; then
+  LOG_DIR="$WORKING_DIR/logs"
+fi
+
 echo "Installing $SRC -> $DEST"
 install -m 0644 "$SRC" "$DEST"
+
+if [[ -n "$LOG_DIR" ]]; then
+  echo "Ensuring log directory exists: $LOG_DIR"
+  install -d -m 0755 "$LOG_DIR"
+  if [[ -n "$SERVICE_USER" ]]; then
+    OWNER="$SERVICE_USER"
+    if [[ -n "$SERVICE_GROUP" ]]; then
+      OWNER="${SERVICE_USER}:${SERVICE_GROUP}"
+    fi
+    chown "$OWNER" "$LOG_DIR"
+  fi
+fi
 
 echo "Reloading systemd"
 systemctl daemon-reload

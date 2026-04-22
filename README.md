@@ -92,7 +92,9 @@ curl -s localhost:8099/status | python3 -m json.tool
 `scripts/install-service.sh` copies the unit into `/etc/systemd/system/`, runs
 `daemon-reload`, and **enables** the unit so it auto-starts on boot. Always
 install services this way (or pass `systemctl enable --now`) — a service that
-is only `start`ed will silently stay down after the next reboot.
+is only `start`ed will silently stay down after the next reboot. It also
+pre-creates `<WorkingDirectory>/logs` with the unit's configured user/group, so
+`ProtectSystem=strict` still lets the scheduler create log files on first boot.
 
 ### Running multiple instances (paper / live / testing)
 

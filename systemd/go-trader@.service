@@ -25,8 +25,8 @@ EnvironmentFile=-/opt/go-trader-%i/.env
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-# Allow writes only to the data directory
-ReadWritePaths=/opt/go-trader-%i/scheduler
+# Allow writes only to the data and logs directories
+ReadWritePaths=/opt/go-trader-%i/scheduler /opt/go-trader-%i/logs
 
 [Install]
 WantedBy=multi-user.target
