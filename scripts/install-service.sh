@@ -17,7 +17,7 @@
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
-  echo "error: must be run as root (try: sudo $0 $*)" >&2
+  echo "error: must be run as root (try: sudo $0 $@)" >&2
   exit 1
 fi
 
@@ -27,6 +27,13 @@ INSTANCE="${2:-}"
 
 if [[ ! -f "$SRC" ]]; then
   echo "error: unit file not found: $SRC" >&2
+  exit 1
+fi
+
+# systemd template instance names flow into the unit name and `systemctl enable`;
+# reject anything outside [A-Za-z0-9_.-] to avoid confusing systemd errors.
+if [[ -n "$INSTANCE" && "$INSTANCE" =~ [^a-zA-Z0-9_.-] ]]; then
+  echo "error: instance name must contain only alphanumerics, dash, dot, or underscore (got: $INSTANCE)" >&2
   exit 1
 fi
 
@@ -63,7 +70,9 @@ else
 fi
 
 echo
-systemctl is-enabled "$SERVICE_NAME" >/dev/null && echo "enabled: yes" || echo "enabled: no"
-systemctl is-active "$SERVICE_NAME"  >/dev/null && echo "active:  yes" || echo "active:  no"
+ENABLED_STATE="$(systemctl is-enabled "$SERVICE_NAME" 2>/dev/null || true)"
+ACTIVE_STATE="$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)"
+echo "enabled: $ENABLED_STATE"
+echo "active:  $ACTIVE_STATE"
 echo
 echo "Done. Tail logs: journalctl -u $SERVICE_NAME -f"
