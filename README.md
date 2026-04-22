@@ -81,15 +81,48 @@ cp scheduler/config.example.json scheduler/config.json
 # 5. Test one cycle
 ./go-trader --config scheduler/config.json --once
 
-# 6. Run as service
+# 6. Run as service (installs, reloads, enables, and starts — survives reboot)
 export DISCORD_BOT_TOKEN="your-token"
-sudo cp go-trader.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now go-trader
+sudo bash scripts/install-service.sh
 
 # 7. Verify
 curl -s localhost:8099/status | python3 -m json.tool
 ```
+
+`scripts/install-service.sh` copies the unit into `/etc/systemd/system/`, runs
+`daemon-reload`, and **enables** the unit so it auto-starts on boot. Always
+install services this way (or pass `systemctl enable --now`) — a service that
+is only `start`ed will silently stay down after the next reboot.
+
+### Running multiple instances (paper / live / testing)
+
+For ad hoc variants deployed alongside the main instance, use the templated
+unit at `systemd/go-trader@.service`. Each instance lives under
+`/opt/go-trader-<name>/` and is addressed as `go-trader@<name>.service`.
+
+Pre-populate the instance directory before installing the template (otherwise
+the unit will fail on `WorkingDirectory`):
+
+```bash
+# 1. Create the instance directory and copy in the binary + config
+sudo mkdir -p /opt/go-trader-paper-testing/scheduler
+sudo cp go-trader /opt/go-trader-paper-testing/
+sudo cp scheduler/config.json /opt/go-trader-paper-testing/scheduler/
+sudo chown -R go-trader:go-trader /opt/go-trader-paper-testing
+
+# 2. Install the templated unit for this instance
+sudo bash scripts/install-service.sh systemd/go-trader@.service paper-testing
+# → installs the template, enables + starts go-trader@paper-testing.service
+```
+
+Or copy `go-trader.service` to a named variant (e.g. `go-trader-paper-testing.service`),
+edit paths, and install:
+
+```bash
+sudo bash scripts/install-service.sh go-trader-paper-testing.service
+```
+
+Set `NO_START=1` to enable without starting immediately.
 
 ---
 
@@ -504,7 +537,11 @@ go-trader/
 ├── SKILL.md                # AI agent setup guide
 ├── CLAUDE.md               # AI agent project context
 ├── ISSUES.md               # Known issues tracker
-└── go-trader.service       # systemd unit file
+├── go-trader.service       # systemd unit file (single-instance canonical)
+├── systemd/                # Additional systemd assets
+│   └── go-trader@.service  # Templated unit for multi-instance deployments
+└── scripts/
+    └── install-service.sh  # Installs + daemon-reload + enable + start (survives reboot)
 ```
 
 ---
@@ -523,6 +560,7 @@ go-trader/
 |---------|----------|
 | No Discord messages | Check `DISCORD_BOT_TOKEN` env var, channel IDs, bot permissions |
 | Service won't start | `journalctl -u go-trader -n 50` |
+| Service didn't come back after reboot | Unit was installed but not enabled. Run `sudo bash scripts/install-service.sh` (or `systemctl enable <unit>`) — `systemctl start` alone does not survive reboot. |
 | Strategy not trading | Check circuit breaker in `/status`, verify params |
 | Reset positions | `rm scheduler/state.db && systemctl restart go-trader` |
 | Hyperliquid live mode fails | Set `HYPERLIQUID_SECRET_KEY` env var; paper mode works without it |
