@@ -35,6 +35,7 @@ type PortfolioRiskConfig struct {
 	MaxDrawdownPct   float64 `json:"max_drawdown_pct"`             // kill switch threshold (default 25)
 	MaxNotionalUSD   float64 `json:"max_notional_usd"`             // 0 = disabled
 	WarnThresholdPct float64 `json:"warn_threshold_pct,omitempty"` // % of MaxDrawdownPct to warn (default 80)
+	RiskFreeRate     float64 `json:"risk_free_rate,omitempty"`     // annual risk-free rate for Sharpe ratio (default 0.02 = 2%)
 }
 
 // PlatformConfig holds per-platform optional risk overrides.
@@ -366,6 +367,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.PortfolioRisk.WarnThresholdPct == 0 {
 		cfg.PortfolioRisk.WarnThresholdPct = 80
+	}
+	if cfg.PortfolioRisk.RiskFreeRate == 0 {
+		cfg.PortfolioRisk.RiskFreeRate = 0.02 // 2% annual risk-free rate default
 	}
 
 	// Correlation tracking defaults.

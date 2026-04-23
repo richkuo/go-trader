@@ -82,6 +82,10 @@ func main() {
 		}
 		if s, exists := state.Strategies[sc.ID]; !exists {
 			state.Strategies[sc.ID] = NewStrategyState(*sc)
+			// Set risk-free rate from portfolio config for Sharpe ratio calculation
+			if cfg.PortfolioRisk != nil {
+				state.Strategies[sc.ID].RiskState.RiskFreeRate = cfg.PortfolioRisk.RiskFreeRate
+			}
 			fmt.Printf("  Initialized strategy: %s (type=%s, capital=$%.0f)\n", sc.ID, sc.Type, sc.Capital)
 		} else {
 			// Sync config → state (config is source of truth).
@@ -90,6 +94,10 @@ func main() {
 				s.RiskState.MaxDrawdownPct = sc.MaxDrawdownPct
 			}
 			s.Platform = sc.Platform
+			// Sync risk-free rate from portfolio config for Sharpe ratio calculation
+			if cfg.PortfolioRisk != nil {
+				s.RiskState.RiskFreeRate = cfg.PortfolioRisk.RiskFreeRate
+			}
 		}
 	}
 

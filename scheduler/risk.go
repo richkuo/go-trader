@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"fmt"
 	"sort"
 	"time"
@@ -185,6 +186,11 @@ func mergeFuturesMarks(prices map[string]float64, marks map[string]float64) {
 }
 
 const maxKillSwitchEvents = 50
+
+// maxSharpeTradeHistory is the maximum number of trade PnL values retained
+// for Sharpe ratio calculation. A rolling window of 100 trades balances
+// statistical significance with memory usage (~800 bytes per strategy).
+const maxSharpeTradeHistory = 100
 
 // KillSwitchEvent records a kill switch lifecycle event for audit purposes.
 //
@@ -530,6 +536,14 @@ type RiskState struct {
 	TotalTrades         int       `json:"total_trades"`
 	WinningTrades       int       `json:"winning_trades"`
 	LosingTrades        int       `json:"losing_trades"`
+	SharpeRatio         float64   `json:"sharpe_ratio,omitempty"`
+	// TradePnLs stores the last N trade PnL values for Sharpe ratio calculation.
+	// Only closed-trade PnLs are stored; open position unrealized PnL is excluded.
+	// The slice is capped at maxSharpeTradeHistory to prevent unbounded growth.
+	TradePnLs           []float64 `json:"trade_pnls,omitempty"`
+	// RiskFreeRate is the annual risk-free rate used for Sharpe ratio calculation.
+	// Default is 0.02 (2%). Set from PortfolioRiskConfig.RiskFreeRate at init.
+	RiskFreeRate        float64   `json:"risk_free_rate,omitempty"`
 	// PendingCircuitCloses holds venue-appropriate reduce-only / flatten close
 	// requests queued by per-strategy circuit breakers, keyed by platform string.
 	// The key MUST match StrategyConfig.Platform ("hyperliquid", "okx",
@@ -1234,11 +1248,68 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 	return true, ""
 }
 
+
+// CalculateSharpeRatio computes the annualized Sharpe ratio from a history of
+// per-trade PnL values. Formula: (mean return - risk-free rate) / std dev of returns.
+// Returns 0 if fewer than 2 trades (insufficient data for meaningful std dev).
+//
+// The risk-free rate should be the annual rate (e.g. 0.05 for 5%). It is scaled
+// to per-trade basis assuming ~252 trading days per year.
+func CalculateSharpeRatio(tradePnLs []float64, riskFreeRate float64) float64 {
+	if len(tradePnLs) < 2 {
+		return 0
+	}
+
+	// Calculate mean return
+	var sum float64
+	for _, pnl := range tradePnLs {
+		sum += pnl
+	}
+	mean := sum / float64(len(tradePnLs))
+
+	// Calculate standard deviation (population std dev for full history)
+	var varianceSum float64
+	for _, pnl := range tradePnLs {
+		diff := pnl - mean
+		varianceSum += diff * diff
+	}
+	stdDev := varianceSum / float64(len(tradePnLs))
+	if stdDev <= 0 {
+		return 0
+	}
+	stdDev = math.Sqrt(stdDev)
+
+	// Scale annual risk-free rate to per-trade basis (~252 trading days)
+	sharpe := (mean - riskFreeRate/252) / stdDev
+	return sharpe
+}
+
+// appendTradePnL adds a trade PnL to the rolling history slice, capping at
+// maxSharpeTradeHistory. Called by RecordTradeResult after each closed trade.
+func appendTradePnL(r *RiskState, pnl float64) {
+	if r.TradePnLs == nil {
+		r.TradePnLs = make([]float64, 0, maxSharpeTradeHistory)
+	}
+	r.TradePnLs = append(r.TradePnLs, pnl)
+	if len(r.TradePnLs) > maxSharpeTradeHistory {
+		// Drop oldest entries from the front
+		r.TradePnLs = r.TradePnLs[len(r.TradePnLs)-maxSharpeTradeHistory:]
+	}
+}
+
 // RecordTradeResult updates risk state with trade outcome.
+// Sharpe ratio is recalculated automatically using r.RiskFreeRate (default 0.02).
 func RecordTradeResult(r *RiskState, pnl float64) {
 	rolloverDailyPnL(r)
 	r.TotalTrades++
 	r.DailyPnL += pnl
+	appendTradePnL(r, pnl)
+	// Use stored risk-free rate; default to 0.02 if not set
+	rfr := r.RiskFreeRate
+	if rfr == 0 {
+		rfr = 0.02
+	}
+	r.SharpeRatio = CalculateSharpeRatio(r.TradePnLs, rfr)
 	if pnl >= 0 {
 		r.WinningTrades++
 		r.ConsecutiveLosses = 0
