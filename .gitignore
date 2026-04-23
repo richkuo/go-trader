@@ -14,6 +14,7 @@ scheduler/config.json
 scheduler/state.json
 scheduler/state.db
 .worktrees/
+.claude/worktrees/
 
 # macOS
 .DS_Store
