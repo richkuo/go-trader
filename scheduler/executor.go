@@ -44,10 +44,12 @@ type HyperliquidResult struct {
 
 // HyperliquidFill holds fill details from a live Hyperliquid order.
 type HyperliquidFill struct {
-	AvgPx   float64 `json:"avg_px"`
-	TotalSz float64 `json:"total_sz"`
-	OID     int64   `json:"oid,omitempty"` // exchange order ID
-	Fee     float64 `json:"fee,omitempty"` // exchange fee (if available)
+	AvgPx             float64 `json:"avg_px"`
+	TotalSz           float64 `json:"total_sz"`
+	OID               int64   `json:"oid,omitempty"`                  // exchange order ID
+	Fee               float64 `json:"fee,omitempty"`                  // exchange fee (if available)
+	StopLossOID       int64   `json:"stop_loss_oid,omitempty"`        // resting trigger OID for the per-trade SL placed alongside the fill (#412)
+	StopLossTriggerPx float64 `json:"stop_loss_trigger_px,omitempty"` // SL trigger price (for logs/audit) (#412)
 }
 
 // HyperliquidExecution is the execution block from check_hyperliquid.py --execute output.
@@ -60,10 +62,12 @@ type HyperliquidExecution struct {
 
 // HyperliquidExecuteResult is the top-level JSON from check_hyperliquid.py --execute.
 type HyperliquidExecuteResult struct {
-	Execution *HyperliquidExecution `json:"execution"`
-	Platform  string                `json:"platform"`
-	Timestamp string                `json:"timestamp"`
-	Error     string                `json:"error,omitempty"`
+	Execution           *HyperliquidExecution `json:"execution"`
+	Platform            string                `json:"platform"`
+	Timestamp           string                `json:"timestamp"`
+	Error               string                `json:"error,omitempty"`
+	CancelStopLossError string                `json:"cancel_stop_loss_error,omitempty"` // non-fatal: SL cancel before order failed (#412)
+	StopLossError       string                `json:"stop_loss_error,omitempty"`        // non-fatal: SL placement after fill failed (#412)
 }
 
 // RunPythonScript executes a Python script and returns stdout/stderr.
@@ -198,7 +202,10 @@ func RunHyperliquidCheck(script string, args []string) (*HyperliquidResult, stri
 }
 
 // RunHyperliquidExecute runs check_hyperliquid.py in execute mode (live orders).
-func RunHyperliquidExecute(script, symbol, side string, size float64) (*HyperliquidExecuteResult, string, error) {
+// stopLossPct > 0 requests a reduce-only SL trigger after a successful open.
+// cancelStopLossOID > 0 cancels an existing trigger before placing the new order
+// (used on signal-based closes so the stale SL doesn't race the close fill).
+func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64) (*HyperliquidExecuteResult, string, error) {
 	args := []string{
 		"--execute",
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -206,14 +213,27 @@ func RunHyperliquidExecute(script, symbol, side string, size float64) (*Hyperliq
 		fmt.Sprintf("--size=%g", size),
 		"--mode=live",
 	}
+	if stopLossPct > 0 {
+		args = append(args, fmt.Sprintf("--stop-loss-pct=%g", stopLossPct))
+	}
+	if cancelStopLossOID > 0 {
+		args = append(args, fmt.Sprintf("--cancel-stop-loss-oid=%d", cancelStopLossOID))
+	}
 	stdout, stderr, err := RunPythonScript(script, args)
-	stderrStr := string(stderr)
-	if err != nil {
+	return parseHyperliquidExecuteOutput(stdout, string(stderr), err)
+}
+
+// parseHyperliquidExecuteOutput turns subprocess output into
+// (*HyperliquidExecuteResult, stderr, error). Extracted from RunHyperliquidExecute
+// so Go CI (no .venv) can test the parsing contract without spawning Python
+// — same pattern as parseHyperliquidCloseOutput (#341).
+func parseHyperliquidExecuteOutput(stdout []byte, stderrStr string, runErr error) (*HyperliquidExecuteResult, string, error) {
+	if runErr != nil {
 		var result HyperliquidExecuteResult
 		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
 			return &result, stderrStr, nil
 		}
-		return nil, stderrStr, fmt.Errorf("execute error: %w (stderr: %s)", err, stderrStr)
+		return nil, stderrStr, fmt.Errorf("execute error: %w (stderr: %s)", runErr, stderrStr)
 	}
 
 	var result HyperliquidExecuteResult

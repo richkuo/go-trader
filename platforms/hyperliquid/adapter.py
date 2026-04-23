@@ -228,3 +228,56 @@ class HyperliquidExchangeAdapter:
                 "market_close requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
         return self._exchange.market_close(symbol, sz)
+
+    def place_stop_loss(
+        self,
+        symbol: str,
+        sz: float,
+        trigger_px: float,
+        is_buy: bool,
+        limit_slippage_pct: float = 5.0,
+    ) -> dict:
+        """Place a reduce-only stop-loss trigger order (#412).
+
+        ``is_buy`` is the direction of the triggered order itself — a long
+        position's stop-loss is a SELL (is_buy=False); a short's is a BUY
+        (is_buy=True). HL requires a ``limit_px`` as the worst acceptable
+        fill price; a market-trigger uses a wide band off the trigger
+        (default 5%) so slippage around the stop doesn't reject the fill.
+
+        HL enforces a 10 trigger-orders-per-day cap per account (resets 00:00
+        UTC). Callers should track + warn upstream.
+        """
+        if not self._exchange:
+            raise RuntimeError(
+                "place_stop_loss requires live mode (set HYPERLIQUID_SECRET_KEY)"
+            )
+        if symbol not in self._info.asset_to_sz_decimals:
+            print(f"[WARN] sz_decimals not found for {symbol}, defaulting to 3", file=sys.stderr)
+        sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3)
+        sz = round(sz, sz_decimals)
+        if sz <= 0:
+            raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
+        if trigger_px <= 0:
+            raise ValueError(f"trigger_px must be > 0, got {trigger_px}")
+
+        slip = max(limit_slippage_pct, 0.0) / 100.0
+        if is_buy:
+            limit_px = trigger_px * (1.0 + slip)
+        else:
+            limit_px = trigger_px * (1.0 - slip)
+        limit_px = round(limit_px, 6)
+        trigger_px = round(trigger_px, 6)
+
+        order_type = {"trigger": {"triggerPx": trigger_px, "isMarket": True, "tpsl": "sl"}}
+        return self._exchange.order(
+            symbol, is_buy, sz, limit_px, order_type, reduce_only=True
+        )
+
+    def cancel_trigger_order(self, symbol: str, oid: int) -> dict:
+        """Cancel a resting trigger order by OID (#412)."""
+        if not self._exchange:
+            raise RuntimeError(
+                "cancel_trigger_order requires live mode (set HYPERLIQUID_SECRET_KEY)"
+            )
+        return self._exchange.cancel(symbol, int(oid))

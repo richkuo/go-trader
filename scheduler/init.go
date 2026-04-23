@@ -303,6 +303,7 @@ type InitOptions struct {
 	OptionsCapital          float64
 	PerpsCapital            float64
 	PerpsLeverage           float64 // perps leverage multiplier (default 1 = no leverage) (#254)
+	HLStopLossPct           float64 // HL perps only: per-trade stop-loss % from entry (0 = disabled) (#412)
 	SpotDrawdown            float64
 	OptionsDrawdown         float64
 	PerpsDrawdown           float64
@@ -499,6 +500,7 @@ func generateConfig(opts InitOptions) *Config {
 					IntervalSeconds: 3600,
 					Leverage:        perpsLeverage,
 					AllowShorts:     allowShorts,
+					StopLossPct:     opts.HLStopLossPct,
 				})
 			}
 		}
@@ -1080,6 +1082,7 @@ func runInit(args []string) int {
 	optionsDrawdown := 10.0
 	perpsDrawdown := 5.0
 	perpsLeverage := 1.0 // #254 default: 1x (no leverage); user can edit config
+	hlStopLossPct := 0.0 // #412 default: disabled; prompted below when HL perps goes live
 	robinhoodCapital := 500.0
 	robinhoodDrawdown := 5.0
 	lunoCapital := 500.0
@@ -1124,6 +1127,13 @@ func runInit(args []string) int {
 		// produce a file that fails validateConfig on the next startup.
 		portfolioMaxDD = p.FloatRange("Portfolio kill-switch max drawdown %", 25, 0, 100)
 		portfolioWarnPct = p.FloatRange("Portfolio warn threshold % (of kill switch)", 60, 0, 100)
+
+		// #412: per-trade stop-loss is HL-only today and only makes sense when
+		// perps are running live. Default 0 disables it; HL caps trigger orders
+		// at 10/day/account so starting disabled avoids burning slots by accident.
+		if enablePerps && perpsMode == "live" {
+			hlStopLossPct = p.FloatRange("HL perps per-trade stop-loss % from entry (0 = disabled)", 0, 0, 50)
+		}
 	}
 
 	// Notifications default to disabled.
@@ -1198,6 +1208,7 @@ func runInit(args []string) int {
 		OptionsCapital:            optionsCapital,
 		PerpsCapital:              perpsCapital,
 		PerpsLeverage:             perpsLeverage,
+		HLStopLossPct:             hlStopLossPct,
 		SpotDrawdown:              spotDrawdown,
 		OptionsDrawdown:           optionsDrawdown,
 		PerpsDrawdown:             perpsDrawdown,

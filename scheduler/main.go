@@ -938,6 +938,7 @@ func main() {
 					var hlPosQty float64
 					var hlPosSide string
 					var hlAvgCost float64
+					var hlStopLossOID int64
 					if sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
 						hlCash = stratState.Cash
 						if sym := hyperliquidSymbol(sc.Args); sym != "" {
@@ -945,6 +946,7 @@ func main() {
 								hlPosQty = pos.Quantity
 								hlPosSide = pos.Side
 								hlAvgCost = pos.AvgCost
+								hlStopLossOID = pos.StopLossOID
 							}
 						}
 					}
@@ -1108,7 +1110,7 @@ func main() {
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
-								if er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, logger); ok2 {
+								if er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, logger); ok2 {
 									execResult = er
 								} else {
 									liveExecFailed = true
@@ -1809,7 +1811,7 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, logger *S
 // Trade record, leaving state silently behind actual exchange holdings. See
 // issue #298 — 0.716 ETH of live fills were lost this way because the
 // "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
-func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, existingStopLossOID int64, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	if reason := PerpsOrderSkipReason(result.Signal, posSide, sc.AllowShorts); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
@@ -1831,9 +1833,27 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	if !isBuy {
 		side = "sell"
 	}
-	logger.Info("Placing live %s %s size=%.6f", side, result.Symbol, size)
 
-	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size)
+	// Stop-loss wiring (#412):
+	//   - cancel stale SL whenever a position exists with a known OID
+	//     (close path must free the trigger slot; flip path too, since the
+	//     new side gets a fresh SL below).
+	//   - place a new SL after the open leg unless the action is a pure close
+	//     (signal=-1 on a long without AllowShorts → no new position to
+	//     protect). Skip for non-HL platforms or when pct<=0.
+	pureClose := result.Signal == -1 && posSide == "long" && !sc.AllowShorts
+	var cancelOID int64
+	if existingStopLossOID > 0 && posQty > 0 {
+		cancelOID = existingStopLossOID
+	}
+	var slPct float64
+	if !pureClose && sc.StopLossPct > 0 && sc.Platform == "hyperliquid" {
+		slPct = sc.StopLossPct
+	}
+
+	logger.Info("Placing live %s %s size=%.6f (sl_pct=%.2f cancel_oid=%d)", side, result.Symbol, size, slPct, cancelOID)
+
+	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size, slPct, cancelOID)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
@@ -1844,6 +1864,12 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	if execResult.Error != "" {
 		logger.Error("Live execute returned error: %s", execResult.Error)
 		return nil, false
+	}
+	if execResult.CancelStopLossError != "" {
+		logger.Warn("SL cancel failed (non-fatal): %s", execResult.CancelStopLossError)
+	}
+	if execResult.StopLossError != "" {
+		logger.Warn("SL placement failed (non-fatal): %s", execResult.StopLossError)
 	}
 	return execResult, true
 }
@@ -1886,6 +1912,20 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 	}
 	if trades > 0 && fillOID != "" {
 		logger.Info("Exchange order ID: %s", fillOID)
+	}
+
+	// Stamp the SL trigger OID onto the freshly-opened Position so the next
+	// signal-based close can cancel it (#412). Only the open side of a flip
+	// carries a new SL — the close leg deleted its Position before the open
+	// leg created the new one, so we attach to whatever Position sits at the
+	// symbol now.
+	if trades > 0 && execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil {
+		if slOID := execResult.Execution.Fill.StopLossOID; slOID > 0 {
+			if pos, ok := s.Positions[result.Symbol]; ok {
+				pos.StopLossOID = slOID
+				logger.Info("SL trigger placed oid=%d @ $%.4f", slOID, execResult.Execution.Fill.StopLossTriggerPx)
+			}
+		}
 	}
 
 	detail := ""

@@ -15,6 +15,7 @@ type Position struct {
 	Leverage        float64   `json:"leverage,omitempty"`          // perps leverage (informational; PnL is not scaled by leverage) (#254)
 	OwnerStrategyID string    `json:"owner_strategy_id,omitempty"` // strategy that opened this position
 	OpenedAt        time.Time `json:"opened_at,omitempty"`         // when the position was opened
+	StopLossOID     int64     `json:"stop_loss_oid,omitempty"`     // HL perps: resting trigger-order OID for the per-trade stop-loss (0 = none) (#412)
 }
 
 // ClosedPosition is a historical record of a position after it closed (#288).

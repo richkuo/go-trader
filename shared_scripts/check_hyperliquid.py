@@ -8,6 +8,8 @@ Signal check mode (paper or live):
 
 Execution mode (live only, called by Go as phase 2):
     check_hyperliquid.py --execute --symbol=BTC --side=buy|sell --size=0.01 [--mode=live]
+        [--stop-loss-pct=3.0]         # optional: place a reduce-only SL trigger after fill (#412)
+        [--cancel-stop-loss-oid=OID]  # optional: cancel this trigger OID before the order
 """
 
 import sys
@@ -191,8 +193,31 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         sys.exit(1)
 
 
-def run_execute(symbol, side, size, mode):
-    """Place a live market order on Hyperliquid."""
+def _extract_resting_oid(sdk_response: dict):
+    """Return the resting OID from a trigger-order SDK response, or None.
+
+    HL returns resting orders as:
+      {"status":"ok","response":{"type":"order","data":{"statuses":[{"resting":{"oid":N}}]}}}
+
+    If the trigger was instantly filled (price already through the level),
+    the status dict is `{"filled": {...}}` with an oid — treat that as a no-op
+    (no resting SL to cancel later) and return None to surface the skip upstream.
+    """
+    try:
+        statuses = sdk_response.get("response", {}).get("data", {}).get("statuses", [])
+        if not statuses:
+            return None
+        resting = statuses[0].get("resting") if isinstance(statuses[0], dict) else None
+        if resting and resting.get("oid") is not None:
+            return int(resting["oid"])
+    except Exception:
+        pass
+    return None
+
+
+def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0):
+    """Place a live market order on Hyperliquid, optionally wrapping it with
+    a stop-loss trigger (open) or cancelling a stale SL trigger (close)."""
     if mode != "live":
         print(json.dumps({"error": "--execute requires --mode=live"}, cls=SafeEncoder))
         sys.exit(1)
@@ -202,6 +227,20 @@ def run_execute(symbol, side, size, mode):
         adapter = HyperliquidExchangeAdapter()
 
         is_buy = side.lower() == "buy"
+
+        # Cancel stale SL first: we want to free the trigger slot before
+        # possibly spending another one on the new entry. A cancel failure is
+        # non-fatal (SL may have already triggered on-chain, in which case the
+        # position sync will detect the close on the next cycle) but is
+        # surfaced in the JSON so the scheduler can log it.
+        cancel_err = ""
+        if cancel_oid > 0:
+            try:
+                adapter.cancel_trigger_order(symbol, cancel_oid)
+            except Exception as ce:
+                cancel_err = str(ce)
+                print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) failed: {ce}", file=sys.stderr)
+
         result = adapter.market_open(symbol, is_buy, size)
 
         # Extract fill info from SDK response structure:
@@ -226,7 +265,36 @@ def run_execute(symbol, side, size, mode):
         except Exception:
             pass
 
-        print(json.dumps({
+        # Place the stop-loss trigger on successful opens only. We only try to
+        # place an SL when the main order actually filled; a zero-size fill
+        # usually means the order was rejected and there's nothing to protect.
+        sl_err = ""
+        if stop_loss_pct > 0 and fill.get("avg_px", 0) > 0 and fill.get("total_sz", 0) > 0:
+            entry_px = fill["avg_px"]
+            filled_sz = fill["total_sz"]
+            # Stop-loss fires against the opposite direction of the open:
+            # long open (is_buy=True)  → SL sells when price drops below entry*(1-pct).
+            # short open (is_buy=False) → SL buys when price rises above entry*(1+pct).
+            if is_buy:
+                trigger_px = entry_px * (1.0 - stop_loss_pct / 100.0)
+                sl_is_buy = False
+            else:
+                trigger_px = entry_px * (1.0 + stop_loss_pct / 100.0)
+                sl_is_buy = True
+            try:
+                sl_resp = adapter.place_stop_loss(symbol, filled_sz, trigger_px, sl_is_buy)
+                sl_oid = _extract_resting_oid(sl_resp)
+                if sl_oid is not None:
+                    fill["stop_loss_oid"] = sl_oid
+                    fill["stop_loss_trigger_px"] = round(trigger_px, 6)
+                else:
+                    sl_err = f"place_stop_loss returned no resting OID: {sl_resp}"
+                    print(f"[WARN] {sl_err}", file=sys.stderr)
+            except Exception as se:
+                sl_err = str(se)
+                print(f"[WARN] place_stop_loss({symbol}, {filled_sz}, {trigger_px}) failed: {se}", file=sys.stderr)
+
+        out = {
             "execution": {
                 "action": "buy" if is_buy else "sell",
                 "symbol": symbol,
@@ -235,7 +303,12 @@ def run_execute(symbol, side, size, mode):
             },
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-        }, cls=SafeEncoder))
+        }
+        if cancel_err:
+            out["cancel_stop_loss_error"] = cancel_err
+        if sl_err:
+            out["stop_loss_error"] = sl_err
+        print(json.dumps(out, cls=SafeEncoder))
 
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
@@ -258,8 +331,13 @@ def main():
         parser.add_argument("--side", required=True, choices=["buy", "sell"])
         parser.add_argument("--size", type=float, required=True)
         parser.add_argument("--mode", default="live")
+        parser.add_argument("--stop-loss-pct", type=float, default=0.0,
+                            help="place a reduce-only SL trigger this pct away from fill (#412)")
+        parser.add_argument("--cancel-stop-loss-oid", type=int, default=0,
+                            help="cancel this trigger OID before placing the new order (#412)")
         args = parser.parse_args()
-        run_execute(args.symbol, args.side, args.size, args.mode)
+        run_execute(args.symbol, args.side, args.size, args.mode,
+                    stop_loss_pct=args.stop_loss_pct, cancel_oid=args.cancel_stop_loss_oid)
     else:
         # Signal check mode: <strategy> <symbol> <timeframe> [--mode=paper|live] [--htf-filter]
         import argparse
