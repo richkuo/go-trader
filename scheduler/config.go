@@ -89,9 +89,9 @@ type Config struct {
 	ConfigVersion        int                        `json:"config_version,omitempty"` // bumped when new fields are added; 0/missing = v1 baseline
 	IntervalSeconds      int                        `json:"interval_seconds"`
 	LogDir               string                     `json:"log_dir"`
-	DBFile               string                     `json:"db_file,omitempty"` // SQLite state DB path (default: "scheduler/state.db")
+	DBFile               string                     `json:"db_file,omitempty"`     // SQLite state DB path (default: "scheduler/state.db")
 	StatusPort           int                        `json:"status_port,omitempty"` // HTTP status server port (default: 8099; auto-fallback if taken)
-	StatusToken          string                     `json:"-"`                    // loaded from STATUS_AUTH_TOKEN env var only
+	StatusToken          string                     `json:"-"`                     // loaded from STATUS_AUTH_TOKEN env var only
 	Discord              DiscordConfig              `json:"discord"`
 	Telegram             TelegramConfig             `json:"telegram,omitempty"`
 	AutoUpdate           string                     `json:"auto_update,omitempty"`           // "off", "daily", "heartbeat" (default: "off")
@@ -254,6 +254,18 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.AutoUpdate == "" {
 		cfg.AutoUpdate = "off"
+	}
+
+	// Bounds-check status_port. Reject privileged ports (<1024 needs root)
+	// and values that would push the auto-fallback sweep past the TCP port
+	// ceiling. Zero/missing falls through to resolveStatusPort's default.
+	if cfg.StatusPort != 0 {
+		if cfg.StatusPort < 1024 {
+			return nil, fmt.Errorf("status_port %d is below 1024 (privileged ports require root and are not supported)", cfg.StatusPort)
+		}
+		if cfg.StatusPort > 65535-statusPortMaxAttempts+1 {
+			return nil, fmt.Errorf("status_port %d is too high (max %d to leave room for %d fallback attempts)", cfg.StatusPort, 65535-statusPortMaxAttempts+1, statusPortMaxAttempts)
+		}
 	}
 
 	// Discord token from env var takes priority over config file.

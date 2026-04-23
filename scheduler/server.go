@@ -40,6 +40,13 @@ type StatusServer struct {
 // on sustained outages during frequent dashboard polling.
 const perpsErrLogInterval = 5 * time.Minute
 
+// DefaultStatusPort is the default TCP port for the status HTTP server.
+const DefaultStatusPort = 8099
+
+// statusPortMaxAttempts bounds the auto-fallback sweep. On collision we try
+// port, port+1, ..., port+statusPortMaxAttempts-1 before giving up.
+const statusPortMaxAttempts = 5
+
 func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig, stateDB *StateDB) *StatusServer {
 	// Spot symbols fetched via BinanceUS; perps marks now sourced from the
 	// venue the position lives on (#263); futures on the TopStep rail (#261).
@@ -117,29 +124,63 @@ func (ss *StatusServer) logOKXPerpsErrThrottled(err error) {
 		ss.okxPerpsCoins, err, perpsErrLogInterval)
 }
 
+// resolveStatusPort applies the precedence CLI flag > config > DefaultStatusPort.
+// Non-positive values on either input are treated as "unset" and fall through
+// to the next layer. Returns DefaultStatusPort if neither is set.
+func resolveStatusPort(cliFlag, cfgPort int) int {
+	if cliFlag > 0 {
+		return cliFlag
+	}
+	if cfgPort > 0 {
+		return cfgPort
+	}
+	return DefaultStatusPort
+}
+
+// bindWithFallback tries to bind localhost:port, then port+1, ..., up to
+// maxAttempts consecutive ports. Returns the bound listener and the port
+// that actually succeeded, or an error if all attempts failed. Each failed
+// attempt is logged with the real net.Listen error (not a speculative
+// "busy" message), so permission-denied and parse errors aren't masked
+// as port collisions.
+func bindWithFallback(port, maxAttempts int) (net.Listener, int, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		tryPort := port + attempt
+		addr := fmt.Sprintf("localhost:%d", tryPort)
+		listener, err := net.Listen("tcp", addr)
+		if err == nil {
+			return listener, tryPort, nil
+		}
+		lastErr = err
+		fmt.Printf("[server] bind %s failed: %v\n", addr, err)
+	}
+	return nil, 0, fmt.Errorf("could not bind after %d attempts starting from %d: %w", maxAttempts, port, lastErr)
+}
+
 func (ss *StatusServer) Start(port int) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", ss.handleStatus)
 	mux.HandleFunc("/health", ss.handleHealth)
 	mux.HandleFunc("/history", ss.handleHistory)
 
-	const maxAttempts = 5
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		addr := fmt.Sprintf("localhost:%d", port+attempt)
-		listener, err := net.Listen("tcp", addr)
-		if err != nil {
-			fmt.Printf("[server] Port %d busy, trying %d\n", port+attempt, port+attempt+1)
-			continue
-		}
-		fmt.Printf("[server] Status endpoint at http://%s/status\n", addr)
-		go func() {
-			if err := http.Serve(listener, mux); err != nil {
-				fmt.Printf("[server] HTTP server error: %v\n", err)
-			}
-		}()
+	listener, boundPort, err := bindWithFallback(port, statusPortMaxAttempts)
+	if err != nil {
+		fmt.Printf("[server] WARNING: %v. Status endpoint unavailable.\n", err)
 		return
 	}
-	fmt.Printf("[server] WARNING: could not bind status port after %d attempts (starting from %d). Status endpoint unavailable.\n", maxAttempts, port)
+	if boundPort != port {
+		// Prominent fallback notice: operators running `--once` next to a
+		// live instance used to get a hard port-collision error; now the
+		// bind silently advances, so make the advance itself visible.
+		fmt.Printf("[server] NOTICE: requested port %d was in use, bound to %d instead\n", port, boundPort)
+	}
+	fmt.Printf("[server] Status endpoint at http://localhost:%d/status\n", boundPort)
+	go func() {
+		if err := http.Serve(listener, mux); err != nil {
+			fmt.Printf("[server] HTTP server error: %v\n", err)
+		}
+	}()
 }
 
 func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
