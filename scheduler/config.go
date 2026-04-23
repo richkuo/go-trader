@@ -420,6 +420,41 @@ func ParseLeaderboardPostTime(s string) (int, int, bool) {
 	return h, m, true
 }
 
+// strategyIntervalExceedsGlobalWarning returns a [WARN] message when the
+// per-strategy interval exceeds the top-level interval (#409), or "" otherwise.
+func strategyIntervalExceedsGlobalWarning(sc StrategyConfig, globalInterval int) string {
+	if sc.IntervalSeconds <= 0 || globalInterval <= 0 || sc.IntervalSeconds <= globalInterval {
+		return ""
+	}
+	ratio := sc.IntervalSeconds / globalInterval
+	if sc.IntervalSeconds%globalInterval != 0 {
+		ratio++
+	}
+	return fmt.Sprintf("[WARN] strategy %q interval_seconds=%d exceeds top-level interval_seconds=%d. Strategy will only run every %s portfolio cycle.",
+		sc.ID, sc.IntervalSeconds, globalInterval, ordinal(ratio))
+}
+
+// ordinal returns the English ordinal suffix form of n (e.g. 1 → "1st", 3 → "3rd", 11 → "11th").
+func ordinal(n int) string {
+	if n < 0 {
+		n = -n
+	}
+	mod100 := n % 100
+	if mod100 >= 11 && mod100 <= 13 {
+		return fmt.Sprintf("%dth", n)
+	}
+	switch n % 10 {
+	case 1:
+		return fmt.Sprintf("%dst", n)
+	case 2:
+		return fmt.Sprintf("%dnd", n)
+	case 3:
+		return fmt.Sprintf("%drd", n)
+	default:
+		return fmt.Sprintf("%dth", n)
+	}
+}
+
 // ValidateConfig checks script paths and strategy fields (#34, #36).
 func ValidateConfig(cfg *Config) error {
 	var errs []string
@@ -559,6 +594,12 @@ func ValidateConfig(cfg *Config) error {
 		// #36: IntervalSeconds must be >= 0 (0 means use global).
 		if sc.IntervalSeconds < 0 {
 			errs = append(errs, fmt.Sprintf("%s: interval_seconds must be >= 0, got %d", prefix, sc.IntervalSeconds))
+		}
+
+		// #409: warn when per-strategy interval exceeds the top-level interval;
+		// the strategy will only run every Nth portfolio cycle.
+		if msg := strategyIntervalExceedsGlobalWarning(sc, cfg.IntervalSeconds); msg != "" {
+			fmt.Println(msg)
 		}
 
 		// #254: Leverage must be >= 1 when set. Only applicable to perps.

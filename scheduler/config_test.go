@@ -955,3 +955,118 @@ func TestLoadConfigLeaderboardSummaries(t *testing.T) {
 		t.Errorf("second summary ticker: got %q, want 'eth'", loaded.LeaderboardSummaries[1].Ticker)
 	}
 }
+
+// TestStrategyIntervalExceedsGlobalWarning covers #409: per-strategy
+// interval_seconds greater than the top-level interval should emit a warning
+// describing the "every Nth portfolio cycle" cadence.
+func TestStrategyIntervalExceedsGlobalWarning(t *testing.T) {
+	cases := []struct {
+		name           string
+		strategyID     string
+		strategyInt    int
+		globalInt      int
+		wantWarn       bool
+		wantSubstrings []string
+	}{
+		{
+			name:        "strategy interval matches global",
+			strategyID:  "hl-tema-eth",
+			strategyInt: 300,
+			globalInt:   300,
+			wantWarn:    false,
+		},
+		{
+			name:        "strategy interval below global",
+			strategyID:  "hl-tema-eth",
+			strategyInt: 120,
+			globalInt:   300,
+			wantWarn:    false,
+		},
+		{
+			name:        "strategy interval zero uses global",
+			strategyID:  "hl-tema-eth",
+			strategyInt: 0,
+			globalInt:   300,
+			wantWarn:    false,
+		},
+		{
+			name:           "exact triple — every 3rd cycle",
+			strategyID:     "hl-tema-eth-live",
+			strategyInt:    900,
+			globalInt:      300,
+			wantWarn:       true,
+			wantSubstrings: []string{`"hl-tema-eth-live"`, "interval_seconds=900", "interval_seconds=300", "every 3rd portfolio cycle"},
+		},
+		{
+			name:           "non-multiple rounds up — every 2nd cycle",
+			strategyID:     "s1",
+			strategyInt:    400,
+			globalInt:      300,
+			wantWarn:       true,
+			wantSubstrings: []string{"every 2nd portfolio cycle"},
+		},
+		{
+			name:           "11x uses 'th' suffix",
+			strategyID:     "s1",
+			strategyInt:    3300,
+			globalInt:      300,
+			wantWarn:       true,
+			wantSubstrings: []string{"every 11th portfolio cycle"},
+		},
+		{
+			name:           "21x uses 'st' suffix",
+			strategyID:     "s1",
+			strategyInt:    6300,
+			globalInt:      300,
+			wantWarn:       true,
+			wantSubstrings: []string{"every 21st portfolio cycle"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := StrategyConfig{ID: tc.strategyID, IntervalSeconds: tc.strategyInt}
+			got := strategyIntervalExceedsGlobalWarning(sc, tc.globalInt)
+			if tc.wantWarn {
+				if got == "" {
+					t.Fatalf("expected warning, got empty string")
+				}
+				if !strings.HasPrefix(got, "[WARN] strategy ") {
+					t.Errorf("warning should start with '[WARN] strategy ', got %q", got)
+				}
+				for _, sub := range tc.wantSubstrings {
+					if !strings.Contains(got, sub) {
+						t.Errorf("warning %q missing substring %q", got, sub)
+					}
+				}
+			} else if got != "" {
+				t.Errorf("expected no warning, got %q", got)
+			}
+		})
+	}
+}
+
+// TestOrdinal spot-checks the ordinal suffix helper used by the #409 warning.
+func TestOrdinal(t *testing.T) {
+	cases := map[int]string{
+		1:   "1st",
+		2:   "2nd",
+		3:   "3rd",
+		4:   "4th",
+		11:  "11th",
+		12:  "12th",
+		13:  "13th",
+		21:  "21st",
+		22:  "22nd",
+		23:  "23rd",
+		101: "101st",
+		111: "111th",
+		112: "112th",
+		113: "113th",
+	}
+	for n, want := range cases {
+		if got := ordinal(n); got != want {
+			t.Errorf("ordinal(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
