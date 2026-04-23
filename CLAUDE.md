@@ -8,7 +8,7 @@
 - Python deps managed with `uv` (see `pyproject.toml` / `uv.lock`)
 
 ## Quick Flow
-- **New server:** tell OpenClaw `install https://github.com/richkuo/go-trader and init`.
+- **New server:** tell your agent `install https://github.com/richkuo/go-trader and init`.
 
 ## Setup
 - `uv sync` — install Python deps into `.venv`
@@ -16,22 +16,31 @@
 
 ## Repo Structure
 - `scheduler/` — Go scheduler (single `package main`); all .go files compile together
-  - `executor.go` — Python subprocess runner; max 4 concurrent, 30s timeout per script
-  - `server.go` — HTTP status server (`/status`, `/health` endpoints)
+  - `executor.go` — Python subprocess runner; `pythonSemaphore` caps concurrency at 4, `scriptTimeout = 30 * time.Second` per script (SIGKILL the process group on timeout)
+  - `server.go` — HTTP status server; endpoints `/status`, `/health`, `/history`; `DefaultStatusPort = 8099` with auto-fallback up to `statusPortMaxAttempts = 5` consecutive ports if the port is in use (PR #399); precedence: `--status-port` CLI flag > `cfg.StatusPort` > `DefaultStatusPort`; throttled `/status` mark-fetch error logging via `perpsErrLogInterval = 5 * time.Minute`
   - `discord.go` — `discordgo.Session` wrapper for two-way Discord communication; `SendMessage`, `SendDM`, `AskDM` (blocking DM with timeout); `FormatCategorySummary` per-asset Discord messages; `fmtComma` — always pass absolute values
-  - `init.go` — `go-trader init` interactive wizard + `--json <blob>` non-interactive mode; `generateConfig(InitOptions) *Config` is pure/testable; `runInitFromJSON(jsonStr, outputPath)` for scripted config gen (e.g. from OpenClaw); `runInit` orchestrates I/O
+  - `init.go` — `go-trader init` interactive wizard + `--json <blob>` non-interactive mode; `generateConfig(InitOptions) *Config` is pure/testable; `runInitFromJSON(jsonStr, outputPath)` for scripted config gen (e.g. from OpenClaw); `runInit` orchestrates I/O; `bidirectionalPerpsStrategies`, `knownShortNames`, `defaultSpotStrategies` / `defaultPerpsStrategies` / `defaultFuturesStrategies` live here
   - `prompt.go` — `Prompter` struct (String/YesNo/Choice/MultiSelect/Float/FloatRange); `FloatRange(prompt, default, min, max)` re-prompts on out-of-range input; inject `NewPrompterFromReader(r,w)` for tests
   - `updater.go` — update checker; `checkForUpdates(cfg, discord, &lastNotifiedHash, &mu, state)` — git fetch, channel notify + DM upgrade prompt (goroutine); `applyUpgrade(discord, ownerID, mu, state, cfg)` — git pull + go build + state save + restart; `restartSelf()` — systemctl → syscall.Exec fallback; logs `[update]` prefix
   - `correlation.go` — per-asset directional exposure tracking; `ComputeCorrelation` warns on concentration/same-direction thresholds
+  - `config.go` — `Config`, `DiscordConfig`, `TelegramConfig`, `StrategyConfig`; `LoadConfig` infers `Platform` from ID prefix; `validateDMChannelsMap` enforces `<platform>` / `<platform>-paper` key shape; `DBFile` defaults to `scheduler/state.db`
   - `config_migration.go` — `CurrentConfigVersion = 8`; auto-migrates config via Discord DM on startup; v8 migration strips dead `discord.spot_summary_freq` / `discord.options_summary_freq` fields and notifies owner
+  - `state.go` — `AppState`, `StrategyState`, `RecordTrade`, `LoadStateWithDB`, `SaveStateWithDB`, `ValidateState`, `ValidatePerpsAllowShortsConfig`, `ReconcileConfigInitialCapital`; `ReconciliationGap` for capital-mismatch reporting
+  - `state_presence.go` — `CheckStatePresence(dbPath, strategies)` warns when live strategies are configured but no state DB exists; `HasLiveStrategy`, `AllowMissingState` (`GO_TRADER_ALLOW_MISSING_STATE=1` for first-run deployments)
   - `balance.go` — balance tracking and capital management
-  - `hyperliquid_balance.go` — Hyperliquid-specific balance sync (`syncHyperliquidAccountPositions`)
-  - `leaderboard.go` — pre-computed strategy leaderboard for Discord summaries
+  - `hyperliquid_balance.go` — Hyperliquid-specific balance sync (`syncHyperliquidAccountPositions`); also drains `PlatformPendingCloseHyperliquid` per-strategy circuit-breaker closes
+  - `kill_switch_close.go` — cross-platform portfolio kill-switch plan builder; `planKillSwitchClose(KillSwitchCloseInputs)` → pure `KillSwitchClosePlan` with `OnChainConfirmedFlat bool` and per-platform `*LiveCloseReport`; `FormatKillSwitchMessage` summary
+  - `okx_close.go` — OKX perps live-close adapter + per-strategy circuit-breaker pending-close drain (`PlatformPendingCloseOKX`)
+  - `robinhood_close.go` — Robinhood live-close adapter for portfolio kill switch
+  - `robinhood_pending_close.go` — per-strategy Robinhood crypto circuit-breaker pending-close drain (`PlatformPendingCloseRobinhood`); separate from portfolio-kill `robinhood_close.go`
+  - `topstep_close.go` — TopStep futures live-close adapter + per-strategy CB drain (`PlatformPendingCloseTopStep`)
+  - `operator_required_close.go` — `planOperatorRequiredWarning` pure builder for OKX-spot / Robinhood-options operator-required CBs (no automated close path); drained by `drainOperatorRequiredPendingCloses` in main.go
+  - `leaderboard.go` — `BuildLeaderboardMessages` builds strategy leaderboard messages on demand (the per-cycle pre-compute was removed in #313)
   - `logger.go` — structured logging utilities
   - `notifier.go` — `MultiNotifier` wraps Discord + Telegram backends
   - `options.go` — options position management and expiry tracking
   - `portfolio.go` — portfolio-level aggregation and reporting
-  - `risk.go` — per-strategy risk checks (drawdown limits, position sizing)
+  - `risk.go` — per-strategy risk checks (drawdown limits, position sizing); `CheckRisk` takes `*PlatformRiskAssist`; `perpsMarginDrawdownInputs` for leverage-aware perps DD
   - `telegram.go` — Telegram notification backend
   - `pricer.go` — `OptionPricer` interface; `ibkr_pricer.go` — IBKRPricer with Black-Scholes
   - `db.go` — SQLite state persistence (`modernc.org/sqlite` pure-Go driver); `OpenStateDB(path)`, `SaveStateWithDB`, `LoadStateWithDB`; tables: `app_state`, `strategies`, `positions`, `closed_positions`, `option_positions`, `closed_option_positions`, `trades`, `portfolio_risk`, `kill_switch_events`, `correlation_snapshot`; `InsertTrade` writes trades immediately via `tradeRecorder` hook (wired to `StateDB.InsertTrade` at startup) — trades survive mid-cycle crashes; `QueryClosedPositions(strategyID, symbol, since, until, limit, offset)` queries closed position history; `ClosedPosition` struct + transient `StrategyState.ClosedPositions` buffer flushed by `SaveState` inside the same transaction
@@ -49,6 +58,9 @@
   - `check_okx.py` — OKX spot/perps checker (`<strategy> <symbol> <timeframe> [--mode=paper|live] [--inst-type=spot|swap]`; `--execute` for live orders; CCXT)
   - `check_balance.py` — balance/position checker for live account reconciliation
   - `fetch_futures_marks.py` — CME futures mark-price fetcher; revalues open TopStep positions at live marks (issue #261); TopStep adapter auto-selects TopStepX live quotes vs yfinance paper
+  - Per-strategy CB close + balance/position fetchers (invoked once per cycle from main.go to populate `PlatformRiskAssist` and drain pending closes):
+    - `close_hyperliquid_position.py`, `close_okx_position.py`, `close_robinhood_position.py`, `close_topstep_position.py`
+    - `fetch_okx_balance.py`, `fetch_okx_positions.py`, `fetch_robinhood_positions.py`, `fetch_topstep_positions.py`
 - `platforms/` — platform-specific adapters (deribit, ibkr, binanceus, hyperliquid, topstep, robinhood, okx, luno)
   - `deribit/adapter.py` — DeribitExchangeAdapter (live quotes, real expiries/strikes)
   - `ibkr/adapter.py` — IBKRExchangeAdapter (CME strikes, Black-Scholes pricing)
@@ -58,12 +70,20 @@
   - `robinhood/adapter.py` — RobinhoodExchangeAdapter (crypto spot + stock options, paper mode via yfinance/Black-Scholes, live via robin_stocks + TOTP MFA)
   - `okx/adapter.py` — OKXExchangeAdapter (spot + perps + options via CCXT; paper mode uses public API, live mode requires `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_PASSPHRASE`)
   - `luno/adapter.py` — LunoExchangeAdapter (South African crypto exchange)
-- `shared_tools/` — shared Python utilities (pricing.py, exchange_base.py, data_fetcher, storage)
-- `shared_strategies/` — shared strategy logic (spot/, options/, futures/)
-- `backtest/` — backtesting and paper trading scripts
+- `shared_tools/` — shared Python utilities (`pricing.py`, `exchange_base.py`, `data_fetcher.py`, `storage.py`, `htf_filter.py`)
+- `shared_strategies/` — shared strategy logic
+  - `registry.py` — single source of truth for every strategy implementation; `@register_strategy(...)` decorator; `build_registry(platform)` materializes a platform-filtered view; `PLATFORM_ORDER` at the bottom controls `--list-json` output ordering
+  - root-level cross-platform strategy modules: `adx_trend.py`, `amd_ifvg.py`, `chart_patterns.py`, `donchian_breakout.py`, `liquidity_sweeps.py`, `range_scalper.py`, `session_breakout.py`, `sweep_squeeze_combo.py`
+  - `spot/strategies.py`, `futures/strategies.py`, `options/strategies.py` — thin shims that build platform-filtered registries and serve `--list-json`; **do not edit these to add strategies** — edit `registry.py`
+  - `spot/indicators.py` — shared TA indicators
+  - `options/risk.py` — options-specific risk math
+  - `test_registry_parity.py` — enforces single-registration / variants-subset / PLATFORM_ORDER invariants
+- `backtest/` — backtesting and paper trading scripts (`backtester.py`, `optimizer.py`, `reporter.py`, `registry_loader.py`, `run_backtest.py`, `backtest_options.py`, `backtest_theta.py`, `tests/`)
 - `archive/` — retired/unused modules
 - `SKILL.md` — agent operations guide (setup, deploy, backtest commands)
-- `.github/workflows/claude.yml` — general-purpose `@claude` handler for PR/issue comments; handles code review, fixes, etc. — no separate review workflow needed
+- `.github/workflows/Codex.yml` — general-purpose `@codex` / `@Codex` handler for PR/issue comments; handles code review, fixes, etc. A parallel `claude.yml` does the same for `@claude`; both coexist — pick whichever AI provider you prefer
+- `.github/workflows/ci.yml` — Go + Python test matrix
+- `.github/workflows/discord-release.yml` — posts release notes to Discord on tag push
 
 ## Key Patterns
 - Git commands: always run from repo root, not from `scheduler/` (git add/commit fail with path errors otherwise)
@@ -87,19 +107,21 @@
 - `ExecutePerpsSignal(..., allowShorts, logger)` and `PerpsOrderSkipReason(signal, posSide, allowShorts)` — any new perps live-order helper (new platform, new adapter) must thread `sc.AllowShorts` through both, mirroring `runHyperliquidExecuteOrder` / `runOKXExecuteOrder`
 - Live order helpers (`runHyperliquidExecuteOrder`, `runOKXExecuteOrder`, `runRobinhoodExecuteOrder`, `runTopStepExecuteOrder`) must check the same skip conditions as the corresponding `ExecuteXxxSignal` BEFORE spawning the Python executor; otherwise on-chain fills land with no Trade record (#298, #300). Use `PerpsOrderSkipReason(signal, posSide)` for perps, `SpotOrderSkipReason` for spot (Robinhood, OKX spot), `FuturesOrderSkipReason` for futures (TopStep). OKX dispatches on `sc.Type` (perps vs spot). Capture `posSide` alongside `posQty` in Phase 1 RLock — `Position.Quantity` is always positive and does NOT encode side.
 - `dueStrategies` is built by value-copying `StrategyConfig` from `cfg.Strategies` — mutations to `dueStrategies` elements do NOT persist; any function that needs to update capital/config must operate on `cfg.Strategies` before `dueStrategies` is built
-- `notifier.go` — `MultiNotifier` wraps Discord + Telegram backends; new notification features should add methods to `MultiNotifier`, not access `backends` directly
+- New notification features should add methods to `MultiNotifier` (notifier.go), not access `backends` directly
 - Hyperliquid sys.path conflict: SDK installs as `hyperliquid` package — clashes with `platforms/hyperliquid/`; fix: add `platforms/hyperliquid/` directly to sys.path (not `platforms/`), then `from adapter import HyperliquidExchangeAdapter`
 - Hyperliquid SDK funding rates: `info.meta_and_asset_ctxs()` returns current predicted funding rate per asset (NOT `info.meta()` which only returns universe metadata); `info.funding_history(coin, startTime)` for historical rates; response uses parallel arrays — universe[i] matches asset_ctxs[i]
 - Fee dispatch: `CalculatePlatformSpotFee(platform, value)` — 0.035% hyperliquid, 0% robinhood, 0.1% binanceus (replaces bare `CalculateSpotFee` for platform-aware spot/perps trades); `CalculateFuturesFee(contracts, feePerContract)` and `CalculatePlatformFuturesFee(sc, contracts)` for futures per-contract fees
 - Position ownership: `Position.OwnerStrategyID` tracks which strategy opened a position; `syncHyperliquidAccountPositions` syncs on-chain positions once per cycle (not per-strategy) and only reconciles positions with their owner; `syncHyperliquidLiveCapital` is a no-op — capital is set from config or `capital_pct`
 - State persisted exclusively to SQLite: `scheduler/state.db` (`cfg.DBFile`, default `scheduler/state.db`) via `SaveStateWithDB`/`LoadStateWithDB`. Legacy `state_file` / `StateFile` config field and `LoadState`/`loadJSONPlatformStates` JSON paths were removed in #283; leaderboard messages are built on-demand (`BuildLeaderboardMessages`) at post time — the previous per-cycle `leaderboard.json` pre-compute was removed in #313; trades are written immediately via `RecordTrade` → `StateDB.InsertTrade` (not just on cycle-end flush); closed positions are appended to `StrategyState.ClosedPositions` at every closure site and flushed atomically by `SaveState`
 - Native Go mark fetchers: `fetchHyperliquidMids` (hyperliquid_marks.go), `fetchOKXPerpsMids` (okx_marks.go), and Deribit ticker fetcher (deribit.go) replace per-cycle Python subprocess calls — pattern: expose base URL as `var xxxMainnetURL` so httptest stubs can redirect in tests
-- `cfg.Discord.Channels` is `map[string]string` (not a struct); keys: "spot", "options", "hyperliquid", etc. — old `.Spot`/`.Options` field access is invalid
+- `cfg.Discord.Channels` and `cfg.Telegram.Channels` are `map[string]string` (not structs); keys: "spot", "options", "hyperliquid", "topstep", "robinhood", "okx", etc., plus optional `<platform>-paper` keys for paper-mode-specific channels — old `.Spot`/`.Options` field access is invalid
+- `cfg.Discord.DMChannels` / `cfg.Telegram.DMChannels` — `map[string]string` (`dm_channels` in JSON) for per-platform DM-style trade alerts; keys are `<platform>` (live) or `<platform>-paper` (paper); validated by `validateDMChannelsMap`
 - `cfg.Discord.OwnerID` — Discord user ID for DM upgrade prompts + config migration; loaded from `DISCORD_OWNER_ID` env var (takes priority over config file)
 - `cfg.ConfigVersion` — int, schema version (`0`/missing = v1 baseline); `CurrentConfigVersion = 8` in config_migration.go; startup triggers `runConfigMigrationDM` when below current version
 - `cfg.SummaryFrequency` — `map[string]string` (`"summary_frequency"` in JSON); keys match `discord.channels` keys (e.g. `"spot"`, `"hyperliquid"`); values: Go duration (`"30m"`, `"2h"`), alias (`"hourly"`, `"daily"`, `"every"`/`"per_check"`/`"always"`), or empty for legacy default (continuous channels every cycle; spot hourly). `ParseSummaryFrequency(s)` converts to `time.Duration` (-1 = legacy). `ShouldPostSummary(freq, cycle, intervalSeconds, continuous, hasTrades)` — `hasTrades=true` always forces a post
 - `cfg.Correlation` — `*CorrelationConfig` with `Enabled` (default false), `MaxConcentrationPct` (default 60), `MaxSameDirectionPct` (default 75); computed under RLock, state assigned under Lock; warnings sent to all Discord channels + owner DM
 - `cfg.AutoUpdate` — `"off"` (default), `"daily"` (once/day), `"heartbeat"` (every cycle); handled in main.go loop + startup; uses `dailyCycles = (24*3600)/tickSeconds`
+- `cfg.StatusPort` — int, optional; status server precedence: `--status-port` CLI flag > `cfg.StatusPort` > `DefaultStatusPort = 8099`; auto-falls-back to the next free port up to `statusPortMaxAttempts = 5` attempts on collision (PR #399)
 - Strategy registry imports: `check_strategy.py` imports from `shared_strategies/spot/strategies.py`; `check_hyperliquid.py`, `check_topstep.py`, and `check_okx.py` (swap mode) import from `shared_strategies/futures/strategies.py` — a new strategy must be registered in both if it needs to work across platforms
 - Adding a cross-platform strategy: create core logic in `shared_strategies/<name>.py` (see `chart_patterns.py`, `liquidity_sweeps.py`), then import+register in both `spot/strategies.py` and `futures/strategies.py`; thin wrapper: `@register_strategy(...)` + `def x(df, **params): return x_core(df, **params)`
 - Adding a new spot/futures strategy (no new platform): (1) add `@register` function to `shared_strategies/registry.py` with appropriate `platforms=(...)` tuple (default `("spot","futures")`); (2) append the name to the matching list(s) in `PLATFORM_ORDER` at the bottom of `registry.py` (controls `--list-json` order — keep this byte-stable for agent tooling); (3) if spot and futures flavors differ in description or defaults (see `momentum`, `rsi`, `macd`, `mean_reversion`), pass `variants={"futures": {"description": ..., "default_params": {...}}}` rather than duplicating the function; (4) add short name to `knownShortNames` in `scheduler/init.go`; (5) add param grid entry to `DEFAULT_PARAM_RANGES` in `backtest/optimizer.py` or CI's `test_param_ranges_cover_every_registered_strategy` will fail — auto-discovery handles all platform configs. `shared_strategies/spot/strategies.py` and `shared_strategies/futures/strategies.py` are thin shims that materialize a platform-filtered view via `build_registry(platform)` — **do not edit them to add strategies**
@@ -127,12 +149,12 @@
 - Per-strategy circuit-breaker pending close (#356/#359–#363): `RiskState.PendingCircuitCloses map[string]*PendingCircuitClose` holds queued closes keyed by platform constants — `PlatformPendingCloseHyperliquid` (#356), `PlatformPendingCloseOKX` (#360 perps), `PlatformPendingCloseRobinhood` (#361 crypto), `PlatformPendingCloseTopStep` (#362 futures), plus operator-required gaps `PlatformPendingCloseOKXSpot` / `PlatformPendingCloseRobinhoodOptions` (#363). Always use `setPendingCircuitClose` / `clearPendingCircuitClose` / `getPendingCircuitClose` accessors — never write the map directly. `CheckRisk` takes `*PlatformRiskAssist` (renamed from `*HLRiskAssist` in #359); HL/OKX/TS fields are populated at the CheckRisk call site, RH fields are nil and the RH enqueue runs exclusively from the drain's stuck-CB recovery path (skips TOTP cost when no CB fires). Each platform has its own `setXxxCircuitBreakerPending` sizing helper (`setHyperliquidCircuitBreakerPending`, `setOKXCircuitBreakerPending`, `setRobinhoodCircuitBreakerPending`, `setTopStepCircuitBreakerPending`). DB column: `risk_pending_circuit_closes_json`; `UnmarshalPendingCircuitClosesJSON` accepts both new map shape and legacy `{"coins":[...]}` array.
 - Operator-required per-strategy CB (#363): `PlatformPendingCloseOKXSpot` / `PlatformPendingCloseRobinhoodOptions` carry `PendingCircuitClose.OperatorRequired=true`. The drain does NOT submit orders — `drainOperatorRequiredPendingCloses` (main.go, wired after the auto-close drains) emits one CRITICAL log line + one `CIRCUIT BREAKER — OPERATOR INTERVENTION REQUIRED` notifier message per cycle until the CB naturally resets or the portfolio kill switch clears it. `planOperatorRequiredWarning` (operator_required_close.go) is a pure function — entries are sorted by `(StrategyID, Platform)` for byte-stable output per the map-iteration rule. Keep these keys distinct from `"okx"` / `"robinhood"` so auto-close drains never dequeue an operator-required entry.
 - SQLite column rename migration pattern (#359): use `PRAGMA table_info(tableName)` to detect the three states (neither column, legacy-only, new-only) and branch accordingly — ADD COLUMN for pre-#356 DBs, RENAME COLUMN for post-#356 pre-#359 DBs, no-op for already-migrated. This is idempotent under repeated startups and avoids re-adding ghost columns. `UnmarshalPendingCircuitClosesJSON` accepts both new map shape and legacy `{"coins":[...]}` array shape — DB self-heals to new shape within one cycle.
-- New test helper files added for phases 2-5 close plumbing: `scheduler/okx_close.go` + `_test.go`, `scheduler/robinhood_pending_close.go` + `_test.go` (per-strategy RH drain, separate from portfolio-kill `robinhood_close.go`), `scheduler/topstep_close.go` + `_test.go`, `scheduler/operator_required_close.go` + `_test.go`. Python-side: `shared_scripts/close_okx_position.py`, `close_robinhood_position.py`, `close_topstep_position.py`, `fetch_okx_balance.py`, `fetch_okx_positions.py`, `fetch_robinhood_positions.py`, `fetch_topstep_positions.py` — all invoked once per cycle from main.go to populate `PlatformRiskAssist` and drain pending closes.
+- Per-strategy CB plumbing test files: `scheduler/okx_close_test.go`, `scheduler/robinhood_pending_close_test.go` (per-strategy RH drain, separate from portfolio-kill `robinhood_close.go`), `scheduler/topstep_close_test.go`, `scheduler/operator_required_close_test.go`. Python-side: `shared_scripts/close_okx_position.py`, `close_robinhood_position.py`, `close_topstep_position.py`, `fetch_okx_balance.py`, `fetch_okx_positions.py`, `fetch_robinhood_positions.py`, `fetch_topstep_positions.py` — all invoked once per cycle from main.go to populate `PlatformRiskAssist` and drain pending closes.
 
 ## Pull Requests
 - PR descriptions must reference the related GitHub issue if one exists, using `Closes #<number>` in the body (e.g. `Closes #46`)
 - In GitHub comments and PR reviews, avoid using `#N` notation for numbered list items or steps (e.g. "step #1", "point #2") — GitHub auto-links these to issues/PRs. Use `1.` instead. Only use `#N` when intentionally linking to a specific issue or PR.
-- Fetch latest claude[bot] review on a PR: `gh api repos/richkuo/go-trader/issues/<N>/comments --jq '[.[] | select(.user.login=="claude[bot]")] | last | .body'` (top-level review summary lives on the **issues** endpoint, not pulls; inline review comments via `/pulls/<N>/comments`, review-object summaries via `/pulls/<N>/reviews`)
+- Fetch latest bot review on a PR: `gh api repos/richkuo/go-trader/issues/<N>/comments --jq '[.[] | select(.user.login=="codex[bot]" or .user.login=="claude[bot]")] | last | .body'` (top-level review summary lives on the **issues** endpoint, not pulls; inline review comments via `/pulls/<N>/comments`, review-object summaries via `/pulls/<N>/reviews`)
 - Before merging a long-running PR, `git fetch origin main && git diff origin/main..HEAD -- <paths>` to catch silent reverts from unrelated merges that landed on main while the PR was open. Rebase onto main if the diff shows unexpected deletions.
 
 ## Build & Deploy
@@ -164,6 +186,7 @@
 - Smoke test interactive CLI: `printf "answer1\nanswer2\n" | ./go-trader init`
 - Smoke test JSON CLI: `./go-trader init --json '{"assets":["BTC"],"enableSpot":true,"spotStrategies":["sma_crossover"],"spotCapital":1000,"spotDrawdown":10}' --output /tmp/test.json`
 - Smoke test HTF filter: `./go-trader init --json '{"assets":["BTC"],"enableSpot":true,"spotStrategies":["sma_crossover"],"spotCapital":1000,"spotDrawdown":10,"htfFilter":true}' --output /tmp/test.json` — verify `htf_filter: true` in output
+- Smoke test status port override: `./go-trader --once --status-port 9100` — verify the chosen port (or auto-fallback to `9101`..`9104` on collision) appears in the `[server] Status endpoint at http://localhost:<port>/status` log line
 - Python pytest: `uv run pytest shared_strategies/ -v` (spot + futures + options); `uv run pytest shared_tools/ -v`; `uv run pytest platforms/ -v`; `uv run pytest backtest/ -v` (registry coverage + backtester — run this when adding/modifying strategies)
 - Strategy tests must assert actual signal values (e.g. `assert (result["signal"] == 1).any()`), not just column existence
 - Strategy smoke tests that iterate every registered strategy must supply a `DatetimeIndex` (e.g. `pd.date_range("2024-01-01", periods=200, freq="15min")`) — `amd_ifvg` reads `index.hour`, `vwap_reversion` buckets by `index.date`; a `RangeIndex` crashes both
