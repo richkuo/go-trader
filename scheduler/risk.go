@@ -1140,6 +1140,16 @@ func perpsMarginDrawdownInputs(s *StrategyState, prices map[string]float64) (unr
 	return unrealizedLoss, margin
 }
 
+// Shared reason-string prefixes for CheckRisk return values. Consumers
+// (main.go notification dispatch, tests) must reference these constants
+// rather than re-typing literals so reason-string tweaks stay safe under
+// refactor.
+const (
+	RiskReasonCircuitBreakerActive = "circuit breaker active"
+	RiskReasonMaxDrawdownExceeded  = "max drawdown exceeded"
+	RiskReasonConsecutiveLosses    = "5 consecutive losses"
+)
+
 // CheckRisk evaluates risk state and returns whether trading is allowed.
 // sc is the strategy config for this state (nil in some tests — platform
 // pending logic is skipped). assist carries pre-fetched per-platform state
@@ -1154,7 +1164,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 	// Check circuit breaker
 	if r.CircuitBreaker {
 		if now.Before(r.CircuitBreakerUntil) {
-			return false, "circuit breaker active"
+			return false, RiskReasonCircuitBreakerActive
 		}
 		r.CircuitBreaker = false
 		r.ConsecutiveLosses = 0
@@ -1213,8 +1223,8 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 			setTopStepCircuitBreakerPending(sc, s, assist)
 			setOperatorRequiredCircuitBreakerPending(sc, s)
 			forceCloseAllPositions(s, prices, logger)
-			return false, fmt.Sprintf("max drawdown exceeded (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
-				r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
+			return false, fmt.Sprintf("%s (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
+				RiskReasonMaxDrawdownExceeded, r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
 		}
 	}
 
@@ -1228,7 +1238,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		setTopStepCircuitBreakerPending(sc, s, assist)
 		setOperatorRequiredCircuitBreakerPending(sc, s)
 		forceCloseAllPositions(s, prices, logger)
-		return false, "5 consecutive losses"
+		return false, RiskReasonConsecutiveLosses
 	}
 
 	return true, ""

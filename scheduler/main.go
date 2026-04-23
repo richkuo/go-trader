@@ -997,6 +997,7 @@ func main() {
 					allowed, reason := CheckRisk(&sc, stratState, pv, prices, logger, riskAssist)
 					mu.Unlock()
 					if !allowed {
+						notifyPerStrategyCircuitBreaker(sc, reason, pv, notifier, killSwitchFired)
 						logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
 						logger.Close()
 						lastRun[sc.ID] = time.Now()
@@ -1601,6 +1602,33 @@ func executeOptionsResult(sc StrategyConfig, s *StrategyState, result *OptionsRe
 // no fallback capital configured).
 func shouldSkipZeroCapital(sc StrategyConfig) bool {
 	return sc.CapitalPct > 0 && sc.Capital <= 0
+}
+
+func notifyPerStrategyCircuitBreaker(sc StrategyConfig, reason string, portfolioValue float64, notifier *MultiNotifier, portfolioKillSwitchFired bool) {
+	if notifier == nil || !notifier.HasBackends() || portfolioKillSwitchFired || !isFreshPerStrategyCircuitBreaker(reason) {
+		return
+	}
+	msg := formatPerStrategyCircuitBreakerMessage(sc.ID, reason, portfolioValue)
+	notifier.SendToAllChannels(msg)
+	notifier.SendOwnerDM(msg)
+}
+
+func isFreshPerStrategyCircuitBreaker(reason string) bool {
+	if reason == "" || reason == RiskReasonCircuitBreakerActive {
+		return false
+	}
+	return strings.HasPrefix(reason, RiskReasonMaxDrawdownExceeded) ||
+		strings.HasPrefix(reason, RiskReasonConsecutiveLosses)
+}
+
+func formatPerStrategyCircuitBreakerMessage(strategyID, reason string, portfolioValue float64) string {
+	// The max-drawdown reason already embeds a portfolio=$... token, so don't
+	// append a duplicate trailing value. Consecutive-losses reasons carry no
+	// portfolio context, so include it there.
+	if strings.Contains(reason, "portfolio=$") {
+		return fmt.Sprintf("**CIRCUIT BREAKER** [%s] %s", strategyID, reason)
+	}
+	return fmt.Sprintf("**CIRCUIT BREAKER** [%s] %s (portfolio=$%.2f)", strategyID, reason, portfolioValue)
 }
 
 // sendTradeAlerts sends trade alerts via DM and/or channel for all configured backends.

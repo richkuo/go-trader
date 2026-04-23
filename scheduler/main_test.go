@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +31,138 @@ func TestShouldSkipZeroCapital(t *testing.T) {
 			if got := shouldSkipZeroCapital(sc); got != tc.want {
 				t.Errorf("shouldSkipZeroCapital(pct=%g, cap=%g) = %v, want %v",
 					tc.capitalPct, tc.capital, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNotifyPerStrategyCircuitBreaker_BroadcastsFreshTriggers(t *testing.T) {
+	cases := []struct {
+		name                string
+		reason              string
+		wantTrailingPortVal bool
+	}{
+		{
+			name: "max drawdown",
+			reason: RiskReasonMaxDrawdownExceeded +
+				" (30.0% > 25.0%, portfolio=$700.00 peak=$1000.00, denom=peak=$1000.00)",
+			// Reason already embeds portfolio=$700.00 — formatter must not
+			// duplicate the value with a trailing (portfolio=$1234.56).
+			wantTrailingPortVal: false,
+		},
+		{
+			name:                "consecutive losses",
+			reason:              RiskReasonConsecutiveLosses,
+			wantTrailingPortVal: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockNotifier{}
+			notifier := &MultiNotifier{
+				backends: []notifierBackend{
+					{
+						notifier: mock,
+						ownerID:  "owner123",
+						channels: map[string]string{
+							"spot":        "ch-spot",
+							"hyperliquid": "ch-hl",
+						},
+					},
+				},
+			}
+			sc := StrategyConfig{ID: "test-strategy", Platform: "binanceus", Type: "spot"}
+
+			notifyPerStrategyCircuitBreaker(sc, tc.reason, 1234.56, notifier, false)
+
+			if len(mock.messages) != 2 {
+				t.Fatalf("expected 2 channel messages, got %d", len(mock.messages))
+			}
+			if len(mock.dms) != 1 {
+				t.Fatalf("expected 1 owner DM, got %d", len(mock.dms))
+			}
+			for _, msg := range []string{mock.messages[0].content, mock.messages[1].content, mock.dms[0].content} {
+				if !strings.Contains(msg, "**CIRCUIT BREAKER**") ||
+					!strings.Contains(msg, "[test-strategy]") ||
+					!strings.Contains(msg, tc.reason) {
+					t.Fatalf("notification missing required context: %q", msg)
+				}
+				hasTrailing := strings.Contains(msg, "(portfolio=$1234.56)")
+				if tc.wantTrailingPortVal && !hasTrailing {
+					t.Fatalf("expected trailing (portfolio=$1234.56) in %q", msg)
+				}
+				if !tc.wantTrailingPortVal && hasTrailing {
+					t.Fatalf("portfolio value duplicated when reason already embeds one: %q", msg)
+				}
+			}
+		})
+	}
+}
+
+func TestNotifyPerStrategyCircuitBreaker_SuppressesNonFreshAndPortfolioKill(t *testing.T) {
+	cases := []struct {
+		name                string
+		reason              string
+		portfolioKillFired  bool
+		notifierHasBackends bool
+		nilNotifier         bool
+		wantChannelMessages int
+		wantOwnerDMs        int
+	}{
+		{
+			name:                "latched circuit breaker no spam",
+			reason:              RiskReasonCircuitBreakerActive,
+			notifierHasBackends: true,
+		},
+		{
+			name:                "unknown reason strings are dropped",
+			reason:              "daily loss limit exceeded",
+			notifierHasBackends: true,
+		},
+		{
+			name:                "portfolio kill owns notification",
+			reason:              RiskReasonMaxDrawdownExceeded + " (30.0% > 25.0%)",
+			portfolioKillFired:  true,
+			notifierHasBackends: true,
+		},
+		{
+			name:                "no backends",
+			reason:              RiskReasonConsecutiveLosses,
+			notifierHasBackends: false,
+		},
+		{
+			name:        "nil notifier",
+			reason:      RiskReasonConsecutiveLosses,
+			nilNotifier: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockNotifier{}
+			var notifier *MultiNotifier
+			if !tc.nilNotifier {
+				notifier = &MultiNotifier{}
+				if tc.notifierHasBackends {
+					notifier.backends = []notifierBackend{
+						{
+							notifier: mock,
+							ownerID:  "owner123",
+							channels: map[string]string{"spot": "ch-spot"},
+						},
+					}
+				}
+			}
+			sc := StrategyConfig{ID: "test-strategy", Platform: "binanceus", Type: "spot"}
+
+			notifyPerStrategyCircuitBreaker(sc, tc.reason, 1234.56, notifier, tc.portfolioKillFired)
+
+			if len(mock.messages) != tc.wantChannelMessages {
+				t.Fatalf("channel messages = %d, want %d", len(mock.messages), tc.wantChannelMessages)
+			}
+			if len(mock.dms) != tc.wantOwnerDMs {
+				t.Fatalf("owner DMs = %d, want %d", len(mock.dms), tc.wantOwnerDMs)
 			}
 		})
 	}
