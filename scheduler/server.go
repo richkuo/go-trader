@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -122,13 +123,23 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/health", ss.handleHealth)
 	mux.HandleFunc("/history", ss.handleHistory)
 
-	addr := fmt.Sprintf("localhost:%d", port)
-	go func() {
-		fmt.Printf("[server] Status endpoint at http://%s/status\n", addr)
-		if err := http.ListenAndServe(addr, mux); err != nil {
-			fmt.Printf("[server] HTTP server error: %v\n", err)
+	const maxAttempts = 5
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		addr := fmt.Sprintf("localhost:%d", port+attempt)
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			fmt.Printf("[server] Port %d busy, trying %d\n", port+attempt, port+attempt+1)
+			continue
 		}
-	}()
+		fmt.Printf("[server] Status endpoint at http://%s/status\n", addr)
+		go func() {
+			if err := http.Serve(listener, mux); err != nil {
+				fmt.Printf("[server] HTTP server error: %v\n", err)
+			}
+		}()
+		return
+	}
+	fmt.Printf("[server] WARNING: could not bind status port after %d attempts (starting from %d). Status endpoint unavailable.\n", maxAttempts, port)
 }
 
 func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {

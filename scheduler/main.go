@@ -22,6 +22,7 @@ func main() {
 	once := flag.Bool("once", false, "Run one cycle and exit")
 	summary := flag.String("summary", "", "Post snapshot summary for the specified channel (e.g., hyperliquid, spot, options) and exit")
 	leaderboard := flag.Bool("leaderboard", false, "Post pre-computed daily leaderboard and exit")
+	statusPortFlag := flag.Int("status-port", 0, "HTTP status server port (overrides config, default: 8099)")
 	flag.Parse()
 
 	// Load config
@@ -140,8 +141,16 @@ func main() {
 	var mu sync.RWMutex
 
 	// Start HTTP status server
+	// Priority: CLI flag > config field > default 8099
+	statusPort := 8099
+	if cfg.StatusPort > 0 {
+		statusPort = cfg.StatusPort
+	}
+	if *statusPortFlag > 0 {
+		statusPort = *statusPortFlag
+	}
 	server := NewStatusServer(state, &mu, cfg.StatusToken, cfg.Strategies, stateDB)
-	server.Start(8099)
+	server.Start(statusPort)
 
 	// Graceful shutdown
 	sigCh := make(chan os.Signal, 1)
