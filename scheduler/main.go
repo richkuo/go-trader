@@ -321,6 +321,7 @@ func main() {
 		tickSeconds = 60
 	}
 	fmt.Printf("Tick interval: %ds (strategies have individual intervals)\n", tickSeconds)
+	drawdownWarnThresholdPct := configuredDrawdownWarnThresholdPct(cfg)
 
 	// Cycles per day, used for "daily" update check mode.
 	dailyCycles := (24 * 3600) / tickSeconds
@@ -356,19 +357,21 @@ func main() {
 				fmt.Printf("[ERROR] %s: capital_pct set but capital resolved to $0 — skipping\n", sc.ID)
 				continue
 			}
-			interval := sc.IntervalSeconds
-			if interval <= 0 {
-				interval = cfg.IntervalSeconds
-			}
+			mu.RLock()
+			interval := effectiveStrategyIntervalSeconds(sc, state.Strategies[sc.ID], cfg.IntervalSeconds, drawdownWarnThresholdPct)
+			mu.RUnlock()
 			last, exists := lastRun[sc.ID]
-			if !exists || time.Since(last) >= time.Duration(interval)*time.Second {
+			if !exists || cycleStart.Sub(last) >= time.Duration(interval)*time.Second {
 				dueStrategies = append(dueStrategies, sc)
 			}
 		}
 
 		if len(dueStrategies) == 0 {
 			// Nothing due, wait for next tick
-			timer := time.NewTimer(time.Duration(tickSeconds) * time.Second)
+			mu.RLock()
+			delay := schedulerDelay(cfg.Strategies, state.Strategies, lastRun, cfg.IntervalSeconds, drawdownWarnThresholdPct, time.Now(), tickSeconds)
+			mu.RUnlock()
+			timer := time.NewTimer(delay)
 			select {
 			case <-timer.C:
 				continue
@@ -1354,7 +1357,10 @@ func main() {
 		}
 
 		// Wait for next tick or shutdown
-		timer := time.NewTimer(time.Duration(tickSeconds) * time.Second)
+		mu.RLock()
+		delay := schedulerDelay(cfg.Strategies, state.Strategies, lastRun, cfg.IntervalSeconds, drawdownWarnThresholdPct, time.Now(), tickSeconds)
+		mu.RUnlock()
+		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
 			// Next tick
