@@ -105,7 +105,9 @@ func applyUpgrade(notifier *MultiNotifier, mu *sync.RWMutex, state *AppState, cf
 	}
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel2()
-	buildCmd := exec.CommandContext(ctx2, goBinary, "build", "-o", "../go-trader", ".")
+	ver := resolveBuildVersion()
+	buildArgs := []string{"build", "-ldflags", "-X main.Version=" + ver, "-o", "../go-trader", "."}
+	buildCmd := exec.CommandContext(ctx2, goBinary, buildArgs...)
 	buildCmd.Dir = "scheduler"
 	buildOut, buildErr := buildCmd.CombinedOutput()
 	if buildErr != nil {

@@ -182,6 +182,45 @@ func TestFormatCategorySummary_WithAsset(t *testing.T) {
 	}
 }
 
+// TestFormatCategorySummary_VersionSuffix guards that summary and trade titles
+// include the package-level Version so /upgrade can surface which revision is
+// running. Also covers the empty-Version edge case where the suffix should be
+// omitted entirely (no trailing "()").
+func TestFormatCategorySummary_VersionSuffix(t *testing.T) {
+	strats := []StrategyConfig{
+		{ID: "hl-rsi-btc", Type: "perps", Args: []string{"rsi", "BTC", "1h"}, Capital: 1000},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-rsi-btc": {Cash: 1000},
+		},
+	}
+	prices := map[string]float64{"BTC/USDT": 50000}
+
+	orig := Version
+	defer func() { Version = orig }()
+
+	Version = "v9.9.9-test"
+	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600)
+	summary := strings.Join(msgs, "\n")
+	if !strings.Contains(summary, "("+Version+")") {
+		t.Errorf("expected version %q in summary title, got:\n%s", Version, summary)
+	}
+
+	msgs = FormatCategorySummary(1, 0, 1, 3, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600)
+	trades := strings.Join(msgs, "\n")
+	if !strings.Contains(trades, "("+Version+")") {
+		t.Errorf("expected version %q in trades title, got:\n%s", Version, trades)
+	}
+
+	Version = ""
+	msgs = FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600)
+	empty := strings.Join(msgs, "\n")
+	if strings.Contains(empty, "()") {
+		t.Errorf("empty Version should omit the suffix, got:\n%s", empty)
+	}
+}
+
 func TestFormatCategorySummary_CircuitBreakerActive(t *testing.T) {
 	strats := []StrategyConfig{
 		{ID: "hl-rsi-btc", Type: "perps", Args: []string{"rsi", "BTC", "1h"}, Capital: 1000},
