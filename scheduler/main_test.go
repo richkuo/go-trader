@@ -38,16 +38,22 @@ func TestShouldSkipZeroCapital(t *testing.T) {
 
 func TestNotifyPerStrategyCircuitBreaker_BroadcastsFreshTriggers(t *testing.T) {
 	cases := []struct {
-		name   string
-		reason string
+		name                string
+		reason              string
+		wantTrailingPortVal bool
 	}{
 		{
-			name:   "max drawdown",
-			reason: "max drawdown exceeded (30.0% > 25.0%, portfolio=$700.00 peak=$1000.00, denom=peak=$1000.00)",
+			name: "max drawdown",
+			reason: RiskReasonMaxDrawdownExceeded +
+				" (30.0% > 25.0%, portfolio=$700.00 peak=$1000.00, denom=peak=$1000.00)",
+			// Reason already embeds portfolio=$700.00 — formatter must not
+			// duplicate the value with a trailing (portfolio=$1234.56).
+			wantTrailingPortVal: false,
 		},
 		{
-			name:   "consecutive losses",
-			reason: "5 consecutive losses",
+			name:                "consecutive losses",
+			reason:              RiskReasonConsecutiveLosses,
+			wantTrailingPortVal: true,
 		},
 	}
 
@@ -79,9 +85,15 @@ func TestNotifyPerStrategyCircuitBreaker_BroadcastsFreshTriggers(t *testing.T) {
 			for _, msg := range []string{mock.messages[0].content, mock.messages[1].content, mock.dms[0].content} {
 				if !strings.Contains(msg, "**CIRCUIT BREAKER**") ||
 					!strings.Contains(msg, "[test-strategy]") ||
-					!strings.Contains(msg, tc.reason) ||
-					!strings.Contains(msg, "portfolio=$1234.56") {
+					!strings.Contains(msg, tc.reason) {
 					t.Fatalf("notification missing required context: %q", msg)
+				}
+				hasTrailing := strings.Contains(msg, "(portfolio=$1234.56)")
+				if tc.wantTrailingPortVal && !hasTrailing {
+					t.Fatalf("expected trailing (portfolio=$1234.56) in %q", msg)
+				}
+				if !tc.wantTrailingPortVal && hasTrailing {
+					t.Fatalf("portfolio value duplicated when reason already embeds one: %q", msg)
 				}
 			}
 		})
@@ -94,43 +106,52 @@ func TestNotifyPerStrategyCircuitBreaker_SuppressesNonFreshAndPortfolioKill(t *t
 		reason              string
 		portfolioKillFired  bool
 		notifierHasBackends bool
+		nilNotifier         bool
 		wantChannelMessages int
 		wantOwnerDMs        int
 	}{
 		{
 			name:                "latched circuit breaker no spam",
-			reason:              "circuit breaker active",
+			reason:              RiskReasonCircuitBreakerActive,
 			notifierHasBackends: true,
 		},
 		{
-			name:                "ordinary risk block",
+			name:                "unknown reason strings are dropped",
 			reason:              "daily loss limit exceeded",
 			notifierHasBackends: true,
 		},
 		{
 			name:                "portfolio kill owns notification",
-			reason:              "max drawdown exceeded (30.0% > 25.0%)",
+			reason:              RiskReasonMaxDrawdownExceeded + " (30.0% > 25.0%)",
 			portfolioKillFired:  true,
 			notifierHasBackends: true,
 		},
 		{
 			name:                "no backends",
-			reason:              "5 consecutive losses",
+			reason:              RiskReasonConsecutiveLosses,
 			notifierHasBackends: false,
+		},
+		{
+			name:        "nil notifier",
+			reason:      RiskReasonConsecutiveLosses,
+			nilNotifier: true,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mock := &mockNotifier{}
-			notifier := &MultiNotifier{}
-			if tc.notifierHasBackends {
-				notifier.backends = []notifierBackend{
-					{
-						notifier: mock,
-						ownerID:  "owner123",
-						channels: map[string]string{"spot": "ch-spot"},
-					},
+			var notifier *MultiNotifier
+			if !tc.nilNotifier {
+				notifier = &MultiNotifier{}
+				if tc.notifierHasBackends {
+					notifier.backends = []notifierBackend{
+						{
+							notifier: mock,
+							ownerID:  "owner123",
+							channels: map[string]string{"spot": "ch-spot"},
+						},
+					}
 				}
 			}
 			sc := StrategyConfig{ID: "test-strategy", Platform: "binanceus", Type: "spot"}

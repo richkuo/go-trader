@@ -1614,16 +1614,20 @@ func notifyPerStrategyCircuitBreaker(sc StrategyConfig, reason string, portfolio
 }
 
 func isFreshPerStrategyCircuitBreaker(reason string) bool {
-	r := strings.ToLower(reason)
-	if r == "" || strings.Contains(r, "circuit breaker active") {
+	if reason == "" || reason == RiskReasonCircuitBreakerActive {
 		return false
 	}
-	return strings.Contains(r, "max drawdown exceeded") ||
-		strings.Contains(r, "consecutive losses") ||
-		strings.Contains(r, "circuit breaker")
+	return strings.HasPrefix(reason, RiskReasonMaxDrawdownExceeded) ||
+		strings.HasPrefix(reason, RiskReasonConsecutiveLosses)
 }
 
 func formatPerStrategyCircuitBreakerMessage(strategyID, reason string, portfolioValue float64) string {
+	// The max-drawdown reason already embeds a portfolio=$... token, so don't
+	// append a duplicate trailing value. Consecutive-losses reasons carry no
+	// portfolio context, so include it there.
+	if strings.Contains(reason, "portfolio=$") {
+		return fmt.Sprintf("**CIRCUIT BREAKER** [%s] %s", strategyID, reason)
+	}
 	return fmt.Sprintf("**CIRCUIT BREAKER** [%s] %s (portfolio=$%.2f)", strategyID, reason, portfolioValue)
 }
 
