@@ -303,7 +303,13 @@ func main() {
 	deribitPricer := NewDeribitPricer()
 	fmt.Println("Option pricers ready (deribit: live API, ibkr: Black-Scholes)")
 
-	// Track last-run time per strategy for per-strategy intervals
+	// Track last-run time per strategy for per-strategy intervals.
+	// Single-writer invariant: lastRun is only mutated from the scheduler
+	// goroutine (this for-loop and the per-strategy continuations below).
+	// Reads from the same goroutine (the dueStrategies loop and the
+	// schedulerDelay calls) are safe without additional synchronization.
+	// If you ever split writes across goroutines, add explicit locking —
+	// the existing `mu` lock guards `state`, not `lastRun`.
 	lastRun := make(map[string]time.Time)
 
 	// Determine tick interval: GCD of all strategy intervals, min 60s
@@ -323,11 +329,14 @@ func main() {
 	fmt.Printf("Tick interval: %ds (strategies have individual intervals)\n", tickSeconds)
 	drawdownWarnThresholdPct := configuredDrawdownWarnThresholdPct(cfg)
 
-	// Cycles per day, used for "daily" update check mode.
-	dailyCycles := (24 * 3600) / tickSeconds
-	if dailyCycles < 1 {
-		dailyCycles = 1
-	}
+	// Wall-clock tracker for cfg.AutoUpdate == "daily". Initialized to now so
+	// the first daily check fires after 24h (matching the previous
+	// cycle-based behavior). We can't use cycle counts anymore because the
+	// scheduler no longer sleeps a fixed tick — schedulerDelay returns a
+	// variable delay (1s when due, up to the longest strategy interval
+	// otherwise), so cycle increments no longer correspond to wall-clock
+	// time.
+	lastAutoUpdateCheck := time.Now()
 
 	saveFailures := 0
 	resetGoroutineRunning := false
@@ -348,6 +357,13 @@ func main() {
 		// across cycles and is picked up by the value-copies in dueStrategies.
 		resolveCapitalPct(cfg.Strategies)
 
+		// Compute effective per-strategy intervals once per cycle under
+		// RLock; reuse the same map for due-detection and schedulerDelay
+		// below to avoid re-entering the lock and recomputing per strategy.
+		mu.RLock()
+		intervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
+		mu.RUnlock()
+
 		// Determine which strategies are due this tick
 		dueStrategies := make([]StrategyConfig, 0)
 		for _, sc := range cfg.Strategies {
@@ -357,9 +373,7 @@ func main() {
 				fmt.Printf("[ERROR] %s: capital_pct set but capital resolved to $0 — skipping\n", sc.ID)
 				continue
 			}
-			mu.RLock()
-			interval := effectiveStrategyIntervalSeconds(sc, state.Strategies[sc.ID], cfg.IntervalSeconds, drawdownWarnThresholdPct)
-			mu.RUnlock()
+			interval := intervals[sc.ID]
 			last, exists := lastRun[sc.ID]
 			if !exists || cycleStart.Sub(last) >= time.Duration(interval)*time.Second {
 				dueStrategies = append(dueStrategies, sc)
@@ -368,9 +382,7 @@ func main() {
 
 		if len(dueStrategies) == 0 {
 			// Nothing due, wait for next tick
-			mu.RLock()
-			delay := schedulerDelay(cfg.Strategies, state.Strategies, lastRun, cfg.IntervalSeconds, drawdownWarnThresholdPct, time.Now(), tickSeconds)
-			mu.RUnlock()
+			delay := schedulerDelay(cfg.Strategies, intervals, lastRun, cfg.IntervalSeconds, time.Now(), tickSeconds)
 			timer := time.NewTimer(delay)
 			select {
 			case <-timer.C:
@@ -1344,11 +1356,14 @@ func main() {
 			}
 		}
 
-		// Periodic update check (heartbeat: every cycle; daily: once per day).
+		// Periodic update check (heartbeat: every cycle; daily: once per
+		// 24h wall-clock — was cycle-based, broke when schedulerDelay
+		// became variable, see lastAutoUpdateCheck above).
 		if cfg.AutoUpdate == "heartbeat" {
 			checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state, stateDB)
-		} else if cfg.AutoUpdate == "daily" && cycle%dailyCycles == 0 {
+		} else if cfg.AutoUpdate == "daily" && time.Since(lastAutoUpdateCheck) >= 24*time.Hour {
 			checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state, stateDB)
+			lastAutoUpdateCheck = time.Now()
 		}
 
 		if *once {
@@ -1356,10 +1371,14 @@ func main() {
 			return
 		}
 
-		// Wait for next tick or shutdown
+		// Wait for next tick or shutdown. Recompute intervals here under
+		// RLock — drawdown state may have changed during the cycle, so
+		// re-evaluating ensures a strategy that just entered (or exited)
+		// the warning band gets the fast (or slow) cadence immediately.
 		mu.RLock()
-		delay := schedulerDelay(cfg.Strategies, state.Strategies, lastRun, cfg.IntervalSeconds, drawdownWarnThresholdPct, time.Now(), tickSeconds)
+		endIntervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
 		mu.RUnlock()
+		delay := schedulerDelay(cfg.Strategies, endIntervals, lastRun, cfg.IntervalSeconds, time.Now(), tickSeconds)
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
