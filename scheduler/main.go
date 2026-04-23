@@ -278,7 +278,7 @@ func main() {
 			os.Exit(0)
 		}
 		prices := fetchPricesForSummary(cfg)
-		sharpeByStrategy := ComputeSharpeByStrategy(stateDB, cfg, state)
+		sharpeByStrategy := ComputeSharpeByStrategy(LoadClosedPositionsByStrategy(stateDB, cfg), cfg, state)
 		if err := PostLeaderboard(cfg, state, prices, sharpeByStrategy, notifier); err != nil {
 			fmt.Fprintf(os.Stderr, "Leaderboard post failed: %v\n", err)
 			os.Exit(1)
@@ -1191,6 +1191,13 @@ func main() {
 		elapsed := time.Since(cycleStart)
 		logMgr.LogSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue)
 
+		// Pre-compute closed-position history once per cycle so per-channel /
+		// per-asset Sharpe calls (and the later ComputeSharpeByStrategy for
+		// leaderboard summaries) don't each re-query the DB. Nil when stateDB
+		// is nil — downstream callers treat that as "Sharpe unavailable".
+		closedByStrategy := LoadClosedPositionsByStrategy(stateDB, cfg)
+		rfr := RiskFreeRateOrDefault(cfg)
+
 		// Notification — one message per channel per asset, sent to all backends.
 		if notifier.HasBackends() {
 			mu.RLock()
@@ -1225,7 +1232,7 @@ func main() {
 					}
 					chDetails := channelTradeDetails[detailKey]
 					chValue := channelValue[chKey]
-					chSharpe := aggregateSharpe(stateDB, chStrats, state, RiskFreeRateOrDefault(cfg))
+					chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
 					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chValue, prices, chDetails, chStrats, state, chKey, "", cfg.IntervalSeconds, chSharpe)
 					for _, msg := range msgs {
 						notifier.SendToChannel(chKey, chKey, msg)
@@ -1242,7 +1249,7 @@ func main() {
 							}
 						}
 						assetTrades := len(assetDetails)
-						assetSharpe := aggregateSharpe(stateDB, assetStrats, state, RiskFreeRateOrDefault(cfg))
+						assetSharpe := aggregateSharpe(closedByStrategy, assetStrats, state, rfr)
 						msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetValue, prices, assetDetails, assetStrats, state, chKey, asset, cfg.IntervalSeconds, assetSharpe)
 						for _, msg := range msgs {
 							notifier.SendToChannel(chKey, chKey, msg)
@@ -1262,7 +1269,7 @@ func main() {
 		// HTTPS latency can't stall the scheduler cycle.
 		var duePending []pendingLeaderboardSummary
 		if notifier.HasBackends() {
-			duePending = collectDueLeaderboardSummaries(cfg, state, prices, ComputeSharpeByStrategy(stateDB, cfg, state))
+			duePending = collectDueLeaderboardSummaries(cfg, state, prices, ComputeSharpeByStrategy(closedByStrategy, cfg, state))
 		}
 
 		if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
@@ -1316,7 +1323,7 @@ func main() {
 				fmt.Println("[leaderboard] Auto-post skipped: no strategies configured")
 				stampDate()
 			} else {
-				sharpeByStrategy := ComputeSharpeByStrategy(stateDB, cfg, state)
+				sharpeByStrategy := ComputeSharpeByStrategy(closedByStrategy, cfg, state)
 				mu.RLock()
 				lbMessages := BuildLeaderboardMessages(cfg, state, prices, sharpeByStrategy)
 				mu.RUnlock()
@@ -1426,9 +1433,11 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	}
 
 	// Format and send summary using the same asset-grouping logic as the main loop.
+	closedByStrategy := LoadClosedPositionsByStrategy(sdb, cfg)
+	rfr := RiskFreeRateOrDefault(cfg)
 	assetGroups, assetKeys := groupByAsset(chStrats)
 	if len(assetKeys) <= 1 {
-		chSharpe := aggregateSharpe(sdb, chStrats, state, RiskFreeRateOrDefault(cfg))
+		chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
 		msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, chValue, prices, nil, chStrats, state, channelKey, "", cfg.IntervalSeconds, chSharpe)
 		for _, msg := range msgs {
 			notifier.SendToChannel(channelKey, channelKey, msg)
@@ -1443,7 +1452,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 					assetValue += PortfolioValue(s, prices)
 				}
 			}
-			assetSharpe := aggregateSharpe(sdb, assetStrats, state, RiskFreeRateOrDefault(cfg))
+			assetSharpe := aggregateSharpe(closedByStrategy, assetStrats, state, rfr)
 			msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetValue, prices, nil, assetStrats, state, channelKey, asset, cfg.IntervalSeconds, assetSharpe)
 			for _, msg := range msgs {
 				notifier.SendToChannel(channelKey, channelKey, msg)
@@ -2416,7 +2425,7 @@ func fetchPricesForSummary(cfg *Config) map[string]float64 {
 // 1 only if every entry produced no message. (#308, review item 3 on #309)
 func runLeaderboardSummariesAndExit(lcs []LeaderboardSummaryConfig, cfg *Config, state *AppState, sdb *StateDB, notifier *MultiNotifier) {
 	prices := fetchPricesForSummary(cfg)
-	sharpeByStrategy := ComputeSharpeByStrategy(sdb, cfg, state)
+	sharpeByStrategy := ComputeSharpeByStrategy(LoadClosedPositionsByStrategy(sdb, cfg), cfg, state)
 	posted := 0
 	for _, lc := range lcs {
 		msg := BuildLeaderboardSummary(lc, cfg, state, prices, sharpeByStrategy)

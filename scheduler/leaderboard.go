@@ -18,7 +18,7 @@ type LeaderboardEntry struct {
 	PnL     float64 `json:"pnl"`
 	PnLPct  float64 `json:"pnl_pct"`
 	Trades  int     `json:"trades"`
-	Sharpe  float64 `json:"sharpe,omitempty"` // #397 — annualized Sharpe; 0 = undefined/no data
+	Sharpe  float64 `json:"sharpe"` // #397 — annualized Sharpe; 0 = undefined/no data. Kept in the serialized form (no omitempty) so consumers can distinguish "present but zero" from "omitted".
 }
 
 // leaderboardTopN returns the configured top-N count, defaulting to 5 when unset.

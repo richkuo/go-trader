@@ -441,12 +441,12 @@ func FormatCategorySummary(
 		sb.WriteString(tableChunks[0])
 	}
 
-	// Category-level Sharpe ratio (#397). Treated as portfolio Sharpe across the
-	// strategies in this category, computed from realized daily returns. Zero is
-	// rendered as "—" so operators can distinguish "no data yet" from a genuine
-	// zero Sharpe.
+	// Book Sharpe ratio (#397). "Book" meaning the pooled portfolio of every
+	// strategy in this channel/asset, not any one strategy's figure — per-strategy
+	// Sharpes are rendered in the leaderboard column. Computed from realized
+	// daily returns with zero-fill on flat days (see sharpe.go).
 	if categorySharpe != 0 {
-		sb.WriteString(fmt.Sprintf("📐 Sharpe (realized, annualized): %s\n", fmtSharpe(categorySharpe)))
+		sb.WriteString(fmt.Sprintf("📐 Book Sharpe (realized, annualized): %s\n", fmtSharpe(categorySharpe)))
 	}
 
 	header := sb.String()

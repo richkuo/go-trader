@@ -89,6 +89,46 @@ func TestBuildLeaderboardMessages(t *testing.T) {
 	}
 }
 
+// TestBuildLeaderboardMessages_SharpeColumn verifies that a populated
+// sharpeByStrategy map surfaces the Sharpe column header and at least one
+// non-N/A value in the rendered message. Regression for the review nit that
+// every leaderboard test previously passed nil and the column was exercised
+// only by fmtSharpe unit tests.
+func TestBuildLeaderboardMessages_SharpeColumn(t *testing.T) {
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
+			{ID: "rsi-eth", Type: "spot", Capital: 500, Platform: "binanceus", Args: []string{"rsi_divergence", "ETH/USDT", "1h"}},
+		},
+	}
+	state := NewAppState()
+	for _, sc := range cfg.Strategies {
+		ss := NewStrategyState(sc)
+		ss.Cash = sc.Capital + 100
+		state.Strategies[sc.ID] = ss
+	}
+	sharpe := map[string]float64{
+		"sma-btc": 1.42,
+		"rsi-eth": -0.33,
+	}
+
+	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}, sharpe)
+	if messages == nil {
+		t.Fatal("BuildLeaderboardMessages returned nil")
+	}
+	topMsg := messages["top"]
+	if !containsStr(topMsg, "Sharpe") {
+		t.Errorf("top message should contain Sharpe column header, got:\n%s", topMsg)
+	}
+	if !containsStr(topMsg, "+1.42") {
+		t.Errorf("top message should render sma-btc Sharpe +1.42, got:\n%s", topMsg)
+	}
+	bottomMsg := messages["bottom"]
+	if !containsStr(bottomMsg, "-0.33") {
+		t.Errorf("bottom message should render rsi-eth Sharpe -0.33, got:\n%s", bottomMsg)
+	}
+}
+
 // TestBuildLeaderboardMessages_Empty verifies BuildLeaderboardMessages returns
 // nil when no strategies have state. PostLeaderboard relies on this to surface
 // the "no strategies" error instead of posting empty messages.
