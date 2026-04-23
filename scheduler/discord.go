@@ -259,6 +259,7 @@ func FormatCategorySummary(
 	channelKey string,
 	asset string,
 	globalIntervalSeconds int,
+	categorySharpe float64,
 ) []string {
 	var sb strings.Builder
 
@@ -438,6 +439,14 @@ func FormatCategorySummary(
 	tableChunks := writeCatTableChunks(tableBots, filteredValue, totalPnl, totalPnlPct, hasSharedWallet)
 	if len(tableChunks) > 0 {
 		sb.WriteString(tableChunks[0])
+	}
+
+	// Category-level Sharpe ratio (#397). Treated as portfolio Sharpe across the
+	// strategies in this category, computed from realized daily returns. Zero is
+	// rendered as "—" so operators can distinguish "no data yet" from a genuine
+	// zero Sharpe.
+	if categorySharpe != 0 {
+		sb.WriteString(fmt.Sprintf("📐 Sharpe (realized, annualized): %s\n", fmtSharpe(categorySharpe)))
 	}
 
 	header := sb.String()

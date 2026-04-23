@@ -260,7 +260,7 @@ func main() {
 	// launching the config-migration goroutine, update checks, and pricers
 	// that would be hard-killed by os.Exit.
 	if *summary != "" {
-		runSummaryAndExit(*summary, cfg, state, notifier)
+		runSummaryAndExit(*summary, cfg, state, stateDB, notifier)
 	}
 
 	// -leaderboard mode: compute leaderboard on-demand and exit. Issue #313
@@ -278,7 +278,8 @@ func main() {
 			os.Exit(0)
 		}
 		prices := fetchPricesForSummary(cfg)
-		if err := PostLeaderboard(cfg, state, prices, notifier); err != nil {
+		sharpeByStrategy := ComputeSharpeByStrategy(stateDB, cfg, state)
+		if err := PostLeaderboard(cfg, state, prices, sharpeByStrategy, notifier); err != nil {
 			fmt.Fprintf(os.Stderr, "Leaderboard post failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -1224,7 +1225,8 @@ func main() {
 					}
 					chDetails := channelTradeDetails[detailKey]
 					chValue := channelValue[chKey]
-					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chValue, prices, chDetails, chStrats, state, chKey, "", cfg.IntervalSeconds)
+					chSharpe := aggregateSharpe(stateDB, chStrats, state, RiskFreeRateOrDefault(cfg))
+					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chValue, prices, chDetails, chStrats, state, chKey, "", cfg.IntervalSeconds, chSharpe)
 					for _, msg := range msgs {
 						notifier.SendToChannel(chKey, chKey, msg)
 					}
@@ -1240,7 +1242,8 @@ func main() {
 							}
 						}
 						assetTrades := len(assetDetails)
-						msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetValue, prices, assetDetails, assetStrats, state, chKey, asset, cfg.IntervalSeconds)
+						assetSharpe := aggregateSharpe(stateDB, assetStrats, state, RiskFreeRateOrDefault(cfg))
+						msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetValue, prices, assetDetails, assetStrats, state, chKey, asset, cfg.IntervalSeconds, assetSharpe)
 						for _, msg := range msgs {
 							notifier.SendToChannel(chKey, chKey, msg)
 						}
@@ -1259,7 +1262,7 @@ func main() {
 		// HTTPS latency can't stall the scheduler cycle.
 		var duePending []pendingLeaderboardSummary
 		if notifier.HasBackends() {
-			duePending = collectDueLeaderboardSummaries(cfg, state, prices)
+			duePending = collectDueLeaderboardSummaries(cfg, state, prices, ComputeSharpeByStrategy(stateDB, cfg, state))
 		}
 
 		if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
@@ -1313,8 +1316,9 @@ func main() {
 				fmt.Println("[leaderboard] Auto-post skipped: no strategies configured")
 				stampDate()
 			} else {
+				sharpeByStrategy := ComputeSharpeByStrategy(stateDB, cfg, state)
 				mu.RLock()
-				lbMessages := BuildLeaderboardMessages(cfg, state, prices)
+				lbMessages := BuildLeaderboardMessages(cfg, state, prices, sharpeByStrategy)
 				mu.RUnlock()
 				if len(lbMessages) == 0 {
 					fmt.Println("[leaderboard] Auto-post skipped: no strategy state to leaderboard yet")
@@ -1365,7 +1369,7 @@ func main() {
 //
 // It fetches current prices, formats the summary, posts to all notification
 // backends, and exits immediately.
-func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier *MultiNotifier) {
+func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *StateDB, notifier *MultiNotifier) {
 	if !notifier.HasBackends() {
 		fmt.Fprintf(os.Stderr, "No notification backends configured\n")
 		os.Exit(1)
@@ -1373,7 +1377,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 
 	// #308: Manual trigger for configured leaderboard summaries.
 	if lcs := findLeaderboardSummariesByChannel(cfg, channelKey); len(lcs) > 0 {
-		runLeaderboardSummariesAndExit(lcs, cfg, state, notifier)
+		runLeaderboardSummariesAndExit(lcs, cfg, state, sdb, notifier)
 		return
 	}
 
@@ -1424,7 +1428,8 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 	// Format and send summary using the same asset-grouping logic as the main loop.
 	assetGroups, assetKeys := groupByAsset(chStrats)
 	if len(assetKeys) <= 1 {
-		msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, chValue, prices, nil, chStrats, state, channelKey, "", cfg.IntervalSeconds)
+		chSharpe := aggregateSharpe(sdb, chStrats, state, RiskFreeRateOrDefault(cfg))
+		msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, chValue, prices, nil, chStrats, state, channelKey, "", cfg.IntervalSeconds, chSharpe)
 		for _, msg := range msgs {
 			notifier.SendToChannel(channelKey, channelKey, msg)
 			fmt.Println(msg)
@@ -1438,7 +1443,8 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 					assetValue += PortfolioValue(s, prices)
 				}
 			}
-			msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetValue, prices, nil, assetStrats, state, channelKey, asset, cfg.IntervalSeconds)
+			assetSharpe := aggregateSharpe(sdb, assetStrats, state, RiskFreeRateOrDefault(cfg))
+			msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetValue, prices, nil, assetStrats, state, channelKey, asset, cfg.IntervalSeconds, assetSharpe)
 			for _, msg := range msgs {
 				notifier.SendToChannel(channelKey, channelKey, msg)
 				fmt.Println(msg)
@@ -2408,11 +2414,12 @@ func fetchPricesForSummary(cfg *Config) map[string]float64 {
 // and exits. Prices are fetched once and shared across all entries. Each
 // empty-result entry is reported to stderr but does not abort siblings; exits
 // 1 only if every entry produced no message. (#308, review item 3 on #309)
-func runLeaderboardSummariesAndExit(lcs []LeaderboardSummaryConfig, cfg *Config, state *AppState, notifier *MultiNotifier) {
+func runLeaderboardSummariesAndExit(lcs []LeaderboardSummaryConfig, cfg *Config, state *AppState, sdb *StateDB, notifier *MultiNotifier) {
 	prices := fetchPricesForSummary(cfg)
+	sharpeByStrategy := ComputeSharpeByStrategy(sdb, cfg, state)
 	posted := 0
 	for _, lc := range lcs {
-		msg := BuildLeaderboardSummary(lc, cfg, state, prices)
+		msg := BuildLeaderboardSummary(lc, cfg, state, prices, sharpeByStrategy)
 		if msg == "" {
 			fmt.Fprintf(os.Stderr, "No strategies match leaderboard summary platform=%s ticker=%s\n", lc.Platform, lc.Ticker)
 			continue
@@ -2445,7 +2452,7 @@ type pendingLeaderboardSummary struct {
 // optimistically so duplicate posts are avoided if the caller's Discord send
 // fails; same semantics as the previous in-lock implementation. Caller must
 // hold the write lock on state. (#308)
-func collectDueLeaderboardSummaries(cfg *Config, state *AppState, prices map[string]float64) []pendingLeaderboardSummary {
+func collectDueLeaderboardSummaries(cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64) []pendingLeaderboardSummary {
 	if len(cfg.LeaderboardSummaries) == 0 {
 		return nil
 	}
@@ -2464,7 +2471,7 @@ func collectDueLeaderboardSummaries(cfg *Config, state *AppState, prices map[str
 		if !last.IsZero() && now.Sub(last) < freq {
 			continue
 		}
-		msg := BuildLeaderboardSummary(lc, cfg, state, prices)
+		msg := BuildLeaderboardSummary(lc, cfg, state, prices, sharpeByStrategy)
 		if msg == "" {
 			continue
 		}
