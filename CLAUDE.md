@@ -156,6 +156,12 @@
 - In GitHub comments and PR reviews, avoid using `#N` notation for numbered list items or steps (e.g. "step #1", "point #2") — GitHub auto-links these to issues/PRs. Use `1.` instead. Only use `#N` when intentionally linking to a specific issue or PR.
 - Fetch latest bot review on a PR: `gh api repos/richkuo/go-trader/issues/<N>/comments --jq '[.[] | select(.user.login=="codex[bot]" or .user.login=="claude[bot]")] | last | .body'` (top-level review summary lives on the **issues** endpoint, not pulls; inline review comments via `/pulls/<N>/comments`, review-object summaries via `/pulls/<N>/reviews`)
 - Before merging a long-running PR, `git fetch origin main && git diff origin/main..HEAD -- <paths>` to catch silent reverts from unrelated merges that landed on main while the PR was open. Rebase onto main if the diff shows unexpected deletions.
+- Replace the default `🤖 Generated with [Claude Code](https://claude.com/claude-code)` footer with a metadata footer, e.g.:
+  ```
+  ---
+  LLM: Claude Sonnet 4.6 | high
+  ```
+  Model name must match the model in use (Opus 4.7, Sonnet 4.6, Haiku 4.5, etc.). Effort is one of: low / medium / high. No `Co-Authored-By` trailer.
 
 ## Build & Deploy
 - Build: `cd scheduler && /opt/homebrew/bin/go build -o ../go-trader .` — always rebuild before smoke-testing `./go-trader`; stale binary gives misleading results
