@@ -68,7 +68,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh   # install uv if needed
 uv sync                                             # creates .venv from lockfile
 
 # 3. Build (requires Go 1.26.2)
-cd scheduler && go build -o ../go-trader . && cd ..
+VER=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+cd scheduler && go build -ldflags "-X main.Version=$VER" -o ../go-trader . && cd ..
 
 # 4. Generate config
 ./go-trader init                                    # interactive wizard (recommended)
@@ -429,7 +430,7 @@ Closes sold options early based on profit target, stop loss, or approaching expi
 
 | Change | Action |
 |--------|--------|
-| Go code (`scheduler/*.go`) | `cd scheduler && go build -o ../go-trader . && systemctl restart go-trader` |
+| Go code (`scheduler/*.go`) | `VER=$(git describe --tags --always --dirty); cd scheduler && go build -ldflags "-X main.Version=$VER" -o ../go-trader . && systemctl restart go-trader` |
 | Python scripts | `systemctl restart go-trader` (or wait for next cycle) |
 | Config changes | `systemctl restart go-trader` |
 | Service file changes | `systemctl daemon-reload && systemctl restart go-trader` |

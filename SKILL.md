@@ -95,7 +95,8 @@ No user input needed for this step.
 Before proceeding with Steps 4–7 (manual config), build the binary first so the wizard is available:
 
 ```bash
-cd scheduler && /usr/local/go/bin/go build -o ../go-trader . && cd ..
+VER=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+cd scheduler && /usr/local/go/bin/go build -ldflags "-X main.Version=$VER" -o ../go-trader . && cd ..
 ```
 
 Then run the interactive wizard:
@@ -450,10 +451,13 @@ If no, ask which part they want to change and loop back to the relevant step.
 ### 8a. Build Go Binary
 ```bash
 cd scheduler
-/usr/local/go/bin/go build -o ../go-trader .
+VER=$(git -C .. describe --tags --always --dirty 2>/dev/null || echo dev)
+/usr/local/go/bin/go build -ldflags "-X main.Version=$VER" -o ../go-trader .
 cd ..
 ```
-If `go` is in PATH, just use `go build`. Check both.
+If `go` is in PATH, just use `go build`. Check both. The `-ldflags` stamp
+surfaces the current revision in Discord summary titles (e.g. `(v1.2.3)`);
+without it the binary reports as `(dev)`.
 
 **Verify:** `./go-trader --help` should print usage.
 
@@ -533,7 +537,8 @@ The scheduler will not re-notify for the same remote version until a newer one a
 **Manual update (always works regardless of setting):**
 ```bash
 cd /path/to/go-trader && git pull --ff-only
-cd scheduler && /usr/local/go/bin/go build -o ../go-trader . && cd ..
+VER=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+cd scheduler && /usr/local/go/bin/go build -ldflags "-X main.Version=$VER" -o ../go-trader . && cd ..
 sudo systemctl restart go-trader
 ```
 

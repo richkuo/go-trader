@@ -290,10 +290,14 @@ func FormatCategorySummary(
 			assetSuffix = " — " + asset
 		}
 	}
+	verSuffix := ""
+	if Version != "" {
+		verSuffix = " (" + Version + ")"
+	}
 	if totalTrades > 0 {
-		sb.WriteString(fmt.Sprintf("%s **%s TRADES%s**\n", icon, strings.ToUpper(title), assetSuffix))
+		sb.WriteString(fmt.Sprintf("%s **%s TRADES%s**%s\n", icon, strings.ToUpper(title), assetSuffix, verSuffix))
 	} else {
-		sb.WriteString(fmt.Sprintf("%s **%s Summary%s**\n", icon, title, assetSuffix))
+		sb.WriteString(fmt.Sprintf("%s **%s Summary%s**%s\n", icon, title, assetSuffix, verSuffix))
 	}
 
 	sb.WriteString(fmt.Sprintf("Cycle #%d | %.1fs\n", cycle, elapsed.Seconds()))
