@@ -409,8 +409,8 @@ func TestGenerateConfig_PortfolioRiskDefaults(t *testing.T) {
 	if cfg.PortfolioRisk.MaxDrawdownPct != 25 {
 		t.Errorf("expected MaxDrawdownPct=25, got %.0f", cfg.PortfolioRisk.MaxDrawdownPct)
 	}
-	if cfg.PortfolioRisk.WarnThresholdPct != 80 {
-		t.Errorf("expected WarnThresholdPct=80, got %.0f", cfg.PortfolioRisk.WarnThresholdPct)
+	if cfg.PortfolioRisk.WarnThresholdPct != 60 {
+		t.Errorf("expected WarnThresholdPct=60, got %.0f", cfg.PortfolioRisk.WarnThresholdPct)
 	}
 }
 
@@ -443,8 +443,8 @@ func TestGenerateConfig_PortfolioRiskZeroKeepsDefaults(t *testing.T) {
 
 	cfg := generateConfig(opts)
 
-	if cfg.PortfolioRisk.MaxDrawdownPct != 25 || cfg.PortfolioRisk.WarnThresholdPct != 80 {
-		t.Errorf("expected defaults 25/80, got %.0f/%.0f",
+	if cfg.PortfolioRisk.MaxDrawdownPct != 25 || cfg.PortfolioRisk.WarnThresholdPct != 60 {
+		t.Errorf("expected defaults 25/60, got %.0f/%.0f",
 			cfg.PortfolioRisk.MaxDrawdownPct, cfg.PortfolioRisk.WarnThresholdPct)
 	}
 }

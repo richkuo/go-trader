@@ -354,7 +354,7 @@ func generateConfig(opts InitOptions) *Config {
 	}
 	portfolioWarn := opts.PortfolioWarnThresholdPct
 	if portfolioWarn <= 0 {
-		portfolioWarn = 80
+		portfolioWarn = 60
 	}
 	cfg := &Config{
 		ConfigVersion:   CurrentConfigVersion,
@@ -1092,7 +1092,7 @@ func runInit(args []string) int {
 
 	// Portfolio risk defaults (#85); overridden below if any live mode is enabled.
 	portfolioMaxDD := 25.0
-	portfolioWarnPct := 80.0
+	portfolioWarnPct := 60.0
 
 	// #85: Live trading setup must prompt for risk parameters explicitly so
 	// operators don't hit the post-launch DM migration wizard. These fields

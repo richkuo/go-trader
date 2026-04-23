@@ -33,8 +33,8 @@ var configFieldRegistry = []ConfigField{
 	{
 		Version:     3,
 		JSONPath:    "portfolio_risk.warn_threshold_pct",
-		Description: "Percentage of max_drawdown_pct at which to send a warning alert (e.g. 80 means warn at 80% of the kill switch threshold).",
-		Default:     "80",
+		Description: "Percentage of max_drawdown_pct at which to send a warning alert (e.g. 60 means warn at 60% of the kill switch threshold).",
+		Default:     "60",
 		FieldType:   "float",
 	},
 }

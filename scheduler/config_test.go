@@ -184,8 +184,8 @@ func TestLoadConfigPortfolioRiskDefaults(t *testing.T) {
 	if loaded.PortfolioRisk.MaxDrawdownPct != 25 {
 		t.Errorf("MaxDrawdownPct = %g, want 25", loaded.PortfolioRisk.MaxDrawdownPct)
 	}
-	if loaded.PortfolioRisk.WarnThresholdPct != 80 {
-		t.Errorf("WarnThresholdPct = %g, want 80", loaded.PortfolioRisk.WarnThresholdPct)
+	if loaded.PortfolioRisk.WarnThresholdPct != 60 {
+		t.Errorf("WarnThresholdPct = %g, want 60", loaded.PortfolioRisk.WarnThresholdPct)
 	}
 }
 

@@ -34,7 +34,7 @@ type TelegramConfig struct {
 type PortfolioRiskConfig struct {
 	MaxDrawdownPct   float64 `json:"max_drawdown_pct"`             // kill switch threshold (default 25)
 	MaxNotionalUSD   float64 `json:"max_notional_usd"`             // 0 = disabled
-	WarnThresholdPct float64 `json:"warn_threshold_pct,omitempty"` // % of MaxDrawdownPct to warn (default 80)
+	WarnThresholdPct float64 `json:"warn_threshold_pct,omitempty"` // % of MaxDrawdownPct to warn (default 60)
 }
 
 // PlatformConfig holds per-platform optional risk overrides.
@@ -379,7 +379,7 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.PortfolioRisk = &PortfolioRiskConfig{MaxDrawdownPct: 25}
 	}
 	if cfg.PortfolioRisk.WarnThresholdPct == 0 {
-		cfg.PortfolioRisk.WarnThresholdPct = 80
+		cfg.PortfolioRisk.WarnThresholdPct = 60
 	}
 
 	// Correlation tracking defaults.
