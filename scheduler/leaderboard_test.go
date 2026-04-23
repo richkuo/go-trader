@@ -49,7 +49,7 @@ func TestBuildLeaderboardMessages(t *testing.T) {
 		"ETH/USDT": 3000,
 	}
 
-	messages := BuildLeaderboardMessages(cfg, state, prices)
+	messages := BuildLeaderboardMessages(cfg, state, prices, nil)
 	if messages == nil {
 		t.Fatal("BuildLeaderboardMessages returned nil")
 	}
@@ -89,6 +89,46 @@ func TestBuildLeaderboardMessages(t *testing.T) {
 	}
 }
 
+// TestBuildLeaderboardMessages_SharpeColumn verifies that a populated
+// sharpeByStrategy map surfaces the Sharpe column header and at least one
+// non-N/A value in the rendered message. Regression for the review nit that
+// every leaderboard test previously passed nil and the column was exercised
+// only by fmtSharpe unit tests.
+func TestBuildLeaderboardMessages_SharpeColumn(t *testing.T) {
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
+			{ID: "rsi-eth", Type: "spot", Capital: 500, Platform: "binanceus", Args: []string{"rsi_divergence", "ETH/USDT", "1h"}},
+		},
+	}
+	state := NewAppState()
+	for _, sc := range cfg.Strategies {
+		ss := NewStrategyState(sc)
+		ss.Cash = sc.Capital + 100
+		state.Strategies[sc.ID] = ss
+	}
+	sharpe := map[string]float64{
+		"sma-btc": 1.42,
+		"rsi-eth": -0.33,
+	}
+
+	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}, sharpe)
+	if messages == nil {
+		t.Fatal("BuildLeaderboardMessages returned nil")
+	}
+	topMsg := messages["top"]
+	if !containsStr(topMsg, "Sharpe") {
+		t.Errorf("top message should contain Sharpe column header, got:\n%s", topMsg)
+	}
+	if !containsStr(topMsg, "+1.42") {
+		t.Errorf("top message should render sma-btc Sharpe +1.42, got:\n%s", topMsg)
+	}
+	bottomMsg := messages["bottom"]
+	if !containsStr(bottomMsg, "-0.33") {
+		t.Errorf("bottom message should render rsi-eth Sharpe -0.33, got:\n%s", bottomMsg)
+	}
+}
+
 // TestBuildLeaderboardMessages_Empty verifies BuildLeaderboardMessages returns
 // nil when no strategies have state. PostLeaderboard relies on this to surface
 // the "no strategies" error instead of posting empty messages.
@@ -96,7 +136,7 @@ func TestBuildLeaderboardMessages_Empty(t *testing.T) {
 	cfg := &Config{DBFile: filepath.Join(t.TempDir(), "state.db")}
 	state := NewAppState()
 
-	if messages := BuildLeaderboardMessages(cfg, state, nil); messages != nil {
+	if messages := BuildLeaderboardMessages(cfg, state, nil, nil); messages != nil {
 		t.Errorf("Expected nil messages for empty state, got %v", messages)
 	}
 }
@@ -186,7 +226,7 @@ func TestBuildLeaderboardMessages_TopN(t *testing.T) {
 		state.Strategies[sc.ID] = ss
 	}
 
-	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000})
+	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000}, nil)
 	if messages == nil {
 		t.Fatal("BuildLeaderboardMessages returned nil")
 	}
@@ -252,7 +292,7 @@ func TestPostLeaderboard_DedicatedChannel(t *testing.T) {
 		leaderboardChannel: "lb-ch",
 	})
 
-	if err := PostLeaderboard(cfg, state, prices, notifier); err != nil {
+	if err := PostLeaderboard(cfg, state, prices, nil, notifier); err != nil {
 		t.Fatalf("PostLeaderboard: %v", err)
 	}
 
@@ -278,7 +318,7 @@ func TestPostLeaderboard_FallbackRouting(t *testing.T) {
 		channels: map[string]string{"spot": "spot-ch", "perps": "perps-ch"},
 	})
 
-	if err := PostLeaderboard(cfg, state, prices, notifier); err != nil {
+	if err := PostLeaderboard(cfg, state, prices, nil, notifier); err != nil {
 		t.Fatalf("PostLeaderboard: %v", err)
 	}
 
@@ -331,7 +371,7 @@ func TestPostLeaderboard_MixedBackends(t *testing.T) {
 		},
 	)
 
-	if err := PostLeaderboard(cfg, state, prices, notifier); err != nil {
+	if err := PostLeaderboard(cfg, state, prices, nil, notifier); err != nil {
 		t.Fatalf("PostLeaderboard: %v", err)
 	}
 
@@ -372,7 +412,7 @@ func TestPostLeaderboard_NoStrategies(t *testing.T) {
 	mock := &mockNotifier{}
 	notifier := NewMultiNotifier(notifierBackend{notifier: mock, channels: map[string]string{"spot": "spot-ch"}})
 
-	err := PostLeaderboard(cfg, state, nil, notifier)
+	err := PostLeaderboard(cfg, state, nil, nil, notifier)
 	if err == nil {
 		t.Error("expected error when no strategies configured")
 	}
@@ -423,7 +463,7 @@ func TestBuildLeaderboardSummary_PlatformOnly(t *testing.T) {
 	}
 
 	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", TopN: 10, Channel: "chan-1"}
-	msg := BuildLeaderboardSummary(lc, cfg, state, nil)
+	msg := BuildLeaderboardSummary(lc, cfg, state, nil, nil)
 	if msg == "" {
 		t.Fatal("Expected non-empty message")
 	}
@@ -455,7 +495,7 @@ func TestBuildLeaderboardSummary_TickerFilter(t *testing.T) {
 	}
 
 	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", Ticker: "eth", TopN: 5, Channel: "chan-1"}
-	msg := BuildLeaderboardSummary(lc, cfg, state, nil)
+	msg := BuildLeaderboardSummary(lc, cfg, state, nil, nil)
 	if msg == "" {
 		t.Fatal("Expected non-empty message")
 	}
@@ -498,7 +538,7 @@ func TestBuildLeaderboardSummary_DefaultTopN(t *testing.T) {
 
 	// TopN=0 means default (5).
 	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", Channel: "c1"}
-	msg := BuildLeaderboardSummary(lc, cfg, state, nil)
+	msg := BuildLeaderboardSummary(lc, cfg, state, nil, nil)
 	if !containsStr(msg, "Hyperliquid Top 5") {
 		t.Errorf("Expected default TopN=5 in title, got:\n%s", msg)
 	}
@@ -514,7 +554,7 @@ func TestBuildLeaderboardSummary_NoMatches(t *testing.T) {
 	state.Strategies["sma-btc"] = NewStrategyState(cfg.Strategies[0])
 
 	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", Channel: "c1"}
-	if msg := BuildLeaderboardSummary(lc, cfg, state, nil); msg != "" {
+	if msg := BuildLeaderboardSummary(lc, cfg, state, nil, nil); msg != "" {
 		t.Errorf("Expected empty message when no strategies match, got:\n%s", msg)
 	}
 }

@@ -259,6 +259,7 @@ func FormatCategorySummary(
 	channelKey string,
 	asset string,
 	globalIntervalSeconds int,
+	categorySharpe float64,
 ) []string {
 	var sb strings.Builder
 
@@ -438,6 +439,14 @@ func FormatCategorySummary(
 	tableChunks := writeCatTableChunks(tableBots, filteredValue, totalPnl, totalPnlPct, hasSharedWallet)
 	if len(tableChunks) > 0 {
 		sb.WriteString(tableChunks[0])
+	}
+
+	// Book Sharpe ratio (#397). "Book" meaning the pooled portfolio of every
+	// strategy in this channel/asset, not any one strategy's figure — per-strategy
+	// Sharpes are rendered in the leaderboard column. Computed from realized
+	// daily returns with zero-fill on flat days (see sharpe.go).
+	if categorySharpe != 0 {
+		sb.WriteString(fmt.Sprintf("📐 Book Sharpe (realized, annualized): %s\n", fmtSharpe(categorySharpe)))
 	}
 
 	header := sb.String()

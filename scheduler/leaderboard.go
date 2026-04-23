@@ -18,6 +18,7 @@ type LeaderboardEntry struct {
 	PnL     float64 `json:"pnl"`
 	PnLPct  float64 `json:"pnl_pct"`
 	Trades  int     `json:"trades"`
+	Sharpe  float64 `json:"sharpe"` // #397 — annualized Sharpe; 0 = undefined/no data. Kept in the serialized form (no omitempty) so consumers can distinguish "present but zero" from "omitted".
 }
 
 // leaderboardTopN returns the configured top-N count, defaulting to 5 when unset.
@@ -33,7 +34,7 @@ func leaderboardTopN(cfg *Config) int {
 // the actual entry count is controlled by Discord.LeaderboardTopN. Returns nil
 // if no strategies have state. Issue #313 moved this to an on-demand compute
 // (previously written to leaderboard.json every cycle).
-func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]float64) map[string]string {
+func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64) map[string]string {
 	var allEntries []LeaderboardEntry
 
 	for _, sc := range cfg.Strategies {
@@ -57,6 +58,7 @@ func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]fl
 			PnL:     pnl,
 			PnLPct:  pnlPct,
 			Trades:  len(ss.TradeHistory),
+			Sharpe:  sharpeByStrategy[sc.ID],
 		})
 	}
 
@@ -114,12 +116,12 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 		top = top[:topN]
 	}
 
-	const sep = "--------------------------------------------------------------------"
+	const sep = "--------------------------------------------------------------------------------"
 	sb.WriteString("\n```\n")
 	if showType {
-		sb.WriteString(fmt.Sprintf("%-22s %-6s %10s %10s %7s %8s\n", "Strategy", "Type", "Value", "PnL", "PnL%", "Trades"))
+		sb.WriteString(fmt.Sprintf("%-22s %-6s %10s %10s %7s %8s %7s\n", "Strategy", "Type", "Value", "PnL", "PnL%", "Trades", "Sharpe"))
 	} else {
-		sb.WriteString(fmt.Sprintf("%-26s %10s %10s %7s %8s\n", "Strategy", "Value", "PnL", "PnL%", "Trades"))
+		sb.WriteString(fmt.Sprintf("%-26s %10s %10s %7s %8s %7s\n", "Strategy", "Value", "PnL", "PnL%", "Trades", "Sharpe"))
 	}
 	sb.WriteString(sep + "\n")
 
@@ -129,16 +131,17 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 		pnlStr := fmtSignedDollar(e.PnL)
 		pctStr := fmtSignedPct(e.PnLPct)
 		tradesStr := fmt.Sprintf("%d", e.Trades)
+		sharpeStr := fmtSharpe(e.Sharpe)
 		if showType {
 			if len(label) > 22 {
 				label = label[:22]
 			}
-			sb.WriteString(fmt.Sprintf("%-22s %-6s %10s %10s %7s %8s\n", label, e.Type, valStr, pnlStr, pctStr, tradesStr))
+			sb.WriteString(fmt.Sprintf("%-22s %-6s %10s %10s %7s %8s %7s\n", label, e.Type, valStr, pnlStr, pctStr, tradesStr, sharpeStr))
 		} else {
 			if len(label) > 26 {
 				label = label[:26]
 			}
-			sb.WriteString(fmt.Sprintf("%-26s %10s %10s %7s %8s\n", label, valStr, pnlStr, pctStr, tradesStr))
+			sb.WriteString(fmt.Sprintf("%-26s %10s %10s %7s %8s %7s\n", label, valStr, pnlStr, pctStr, tradesStr, sharpeStr))
 		}
 	}
 	sb.WriteString(sep + "\n")
@@ -149,9 +152,9 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 	totPctStr := fmtSignedPct(totalPnlPct)
 	totTradesStr := fmt.Sprintf("%d", totalTrades)
 	if showType {
-		sb.WriteString(fmt.Sprintf("%-22s %-6s %10s %10s %7s %8s\n", totalLabel, "", totValStr, totPnlStr, totPctStr, totTradesStr))
+		sb.WriteString(fmt.Sprintf("%-22s %-6s %10s %10s %7s %8s %7s\n", totalLabel, "", totValStr, totPnlStr, totPctStr, totTradesStr, ""))
 	} else {
-		sb.WriteString(fmt.Sprintf("%-26s %10s %10s %7s %8s\n", totalLabel, totValStr, totPnlStr, totPctStr, totTradesStr))
+		sb.WriteString(fmt.Sprintf("%-26s %10s %10s %7s %8s %7s\n", totalLabel, totValStr, totPnlStr, totPctStr, totTradesStr, ""))
 	}
 	sb.WriteString("```\n")
 	sb.WriteString(fmt.Sprintf("🟢 %d winning · 🔴 %d losing · ⚪ %d flat\n", winning, losing, flat))
@@ -189,8 +192,8 @@ func formatAllTimeMessage(icon, title string, entries []LeaderboardEntry, isTop 
 // pre-computed leaderboard.json (which was rewritten every cycle) to computing
 // fresh data at post time — the data is only used by the daily cron post and
 // the --leaderboard flag, so there is no benefit to pre-computation.
-func PostLeaderboard(cfg *Config, state *AppState, prices map[string]float64, notifier *MultiNotifier) error {
-	return postLeaderboardMessages(BuildLeaderboardMessages(cfg, state, prices), notifier)
+func PostLeaderboard(cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, notifier *MultiNotifier) error {
+	return postLeaderboardMessages(BuildLeaderboardMessages(cfg, state, prices, sharpeByStrategy), notifier)
 }
 
 // postLeaderboardMessages posts pre-built leaderboard messages. Separated from
@@ -257,7 +260,7 @@ func platformIcon(platform string) string {
 // optionally ticker) sorted by PnL% descending, truncated to TopN. Returns ""
 // if no strategies match — caller should skip posting in that case.
 // Issue #308.
-func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *AppState, prices map[string]float64) string {
+func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64) string {
 	topN := lc.TopN
 	if topN <= 0 {
 		topN = 5
@@ -291,6 +294,7 @@ func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *Ap
 			PnL:     pnl,
 			PnLPct:  pnlPct,
 			Trades:  len(ss.TradeHistory),
+			Sharpe:  sharpeByStrategy[sc.ID],
 		})
 	}
 
