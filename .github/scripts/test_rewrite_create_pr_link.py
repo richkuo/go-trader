@@ -14,7 +14,7 @@ import unittest
 import urllib.parse
 
 SCRIPT = os.path.join(os.path.dirname(__file__), "rewrite_create_pr_link.py")
-FOOTER = "---\nLLM: Claude Opus 4.7 (1M)"
+FOOTER = "---\nLLM: Claude Opus 4.7 (1M) | high"
 
 
 def run(body_in, footer=FOOTER):

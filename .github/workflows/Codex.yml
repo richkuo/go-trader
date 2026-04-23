@@ -293,7 +293,7 @@ jobs:
               return;
             }
 
-            const footer = ["---", "LLM: GPT-5.4"];
+            const footer = ["---", "LLM: GPT-5.4 | high"];
             if (process.env.PUSHED === "true" && process.env.PUSH_BRANCH) {
               footer.push(`Pushed changes to \`${process.env.PUSH_BRANCH}\`.`);
             }
