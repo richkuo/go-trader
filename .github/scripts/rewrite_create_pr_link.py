@@ -21,7 +21,7 @@ body = os.environ["BODY_IN"]
 footer = os.environ["FOOTER_TEXT"]
 
 default_attr = re.compile(
-    r"\n*Generated with \[Claude Code\]\(https://claude\.com/claude-code\)\s*\Z"
+    r"\n*Generated with \[Claude Code\]\(https://claude\.(?:com/claude-code|ai/code)\)\s*\Z"
 )
 
 

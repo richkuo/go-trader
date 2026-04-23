@@ -51,6 +51,19 @@ class RewriteCreatePRLinkTest(unittest.TestCase):
         self.assertTrue(new_body.endswith(FOOTER))
         self.assertIn("## Summary", new_body)
 
+    def test_replaces_claude_ai_code_attribution(self):
+        default_attr = "Generated with [Claude Code](https://claude.ai/code)"
+        pr_body = f"## Summary\n- did a thing\n\n{default_attr}"
+        encoded = urllib.parse.quote(pr_body, safe="")
+        comment = f"[Create PR](https://github.com/owner/repo/compare/main...feat?quick_pull=1&body={encoded})"
+
+        out = run(comment)
+        new_body = extract_body_param(out)
+
+        self.assertNotIn("claude.ai/code", new_body)
+        self.assertTrue(new_body.endswith(FOOTER))
+        self.assertIn("## Summary", new_body)
+
     def test_appends_when_no_default_attribution(self):
         pr_body = "## Summary\n- did a thing"
         encoded = urllib.parse.quote(pr_body, safe="")
