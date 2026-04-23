@@ -334,7 +334,7 @@ type InitOptions struct {
 	// Risk settings — prompted explicitly during live-mode setup (#85) so operators
 	// don't hit the post-launch migration DM for portfolio_risk fields.
 	PortfolioMaxDrawdownPct   float64 `json:"portfolioMaxDrawdownPct,omitempty"`   // kill switch threshold; 0 → default 25
-	PortfolioWarnThresholdPct float64 `json:"portfolioWarnThresholdPct,omitempty"` // % of kill switch that triggers warnings; 0 → default 80
+	PortfolioWarnThresholdPct float64 `json:"portfolioWarnThresholdPct,omitempty"` // % of kill switch that triggers warnings; 0 → default 60
 	DiscordEnabled            bool
 	DiscordOwnerID            string            // Discord user ID for DM features (upgrade prompts, config migration)
 	SpotChannelID             string            // deprecated: use ChannelMap
@@ -1123,7 +1123,7 @@ func runInit(args []string) int {
 		// (config.go:492,498); re-prompt on out-of-range so the wizard can't
 		// produce a file that fails validateConfig on the next startup.
 		portfolioMaxDD = p.FloatRange("Portfolio kill-switch max drawdown %", 25, 0, 100)
-		portfolioWarnPct = p.FloatRange("Portfolio warn threshold % (of kill switch)", 80, 0, 100)
+		portfolioWarnPct = p.FloatRange("Portfolio warn threshold % (of kill switch)", 60, 0, 100)
 	}
 
 	// Notifications default to disabled.
