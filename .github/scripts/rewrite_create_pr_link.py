@@ -6,10 +6,10 @@ Reads the comment body from $BODY_IN and the footer text from $FOOTER_TEXT.
 Prints the rewritten comment body to stdout.
 
 Not idempotent on its own: if a Create-PR link's `body=` already ends with a
-`Generated with: ...` footer (not the default Claude Code attribution), the
+`LLM: ...` footer (not the default Claude Code attribution), the
 else-branch in `rewrite` will append a second footer. The caller in
 .github/workflows/claude.yml guards against re-runs with a
-`grep -q "Generated with:"` check before invoking this script.
+`grep -q "LLM:"` check before invoking this script.
 """
 
 import os

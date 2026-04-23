@@ -14,7 +14,7 @@ import unittest
 import urllib.parse
 
 SCRIPT = os.path.join(os.path.dirname(__file__), "rewrite_create_pr_link.py")
-FOOTER = "---\nGenerated with: Claude Opus 4.7 (1M) | Effort: high"
+FOOTER = "---\nLLM: Claude Opus 4.7 (1M)"
 
 
 def run(body_in, footer=FOOTER):
@@ -61,7 +61,7 @@ class RewriteCreatePRLinkTest(unittest.TestCase):
 
         self.assertTrue(new_body.endswith(FOOTER))
         self.assertIn("## Summary", new_body)
-        self.assertEqual(new_body.count("Generated with:"), 1)
+        self.assertEqual(new_body.count("LLM:"), 1)
 
     def test_no_link_leaves_body_unchanged(self):
         comment = "Just a plain comment with no Create PR link."
@@ -74,13 +74,13 @@ class RewriteCreatePRLinkTest(unittest.TestCase):
         comment = f"first {link} and second {link}"
 
         out = run(comment)
-        # `Generated with:` appears URL-encoded inside the `body=` param —
+        # `LLM:` appears URL-encoded inside the `body=` param —
         # decode the whole output to count occurrences across both links.
-        self.assertEqual(urllib.parse.unquote(out).count("Generated with:"), 2)
+        self.assertEqual(urllib.parse.unquote(out).count("LLM:"), 2)
 
     def test_non_idempotent_without_shell_guard(self):
         """Documents the idempotency caveat: running twice appends twice.
-        The shell guard in claude.yml (grep -q 'Generated with:') is what
+        The shell guard in claude.yml (grep -q 'LLM:') is what
         prevents this in production."""
         pr_body = "## Summary"
         encoded = urllib.parse.quote(pr_body, safe="")
@@ -89,8 +89,8 @@ class RewriteCreatePRLinkTest(unittest.TestCase):
         once = run(comment)
         twice = run(once)
 
-        self.assertEqual(urllib.parse.unquote(once).count("Generated with:"), 1)
-        self.assertEqual(urllib.parse.unquote(twice).count("Generated with:"), 2)
+        self.assertEqual(urllib.parse.unquote(once).count("LLM:"), 1)
+        self.assertEqual(urllib.parse.unquote(twice).count("LLM:"), 2)
 
 
 if __name__ == "__main__":

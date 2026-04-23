@@ -293,7 +293,7 @@ jobs:
               return;
             }
 
-            const footer = ["---", "Generated with: GPT-5.4 | Effort: high"];
+            const footer = ["---", "LLM: GPT-5.4"];
             if (process.env.PUSHED === "true" && process.env.PUSH_BRANCH) {
               footer.push(`Pushed changes to \`${process.env.PUSH_BRANCH}\`.`);
             }

@@ -191,12 +191,11 @@ jobs:
             claude-md-management@claude-plugins-official
           claude_args: --model ${{ steps.resolve_model.outputs.model_id }} --allowedTools "Bash(git *),Edit,Read,Grep,Glob,Write"
 
-      - name: Append model/effort footer to Claude comment
+      - name: Append LLM footer to Claude comment
         if: steps.verify_invocation.outputs.invoked == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           MODEL_ID: ${{ steps.resolve_model.outputs.model_id }}
-          EFFORT: ${{ steps.resolve_model.outputs.effort }}
           ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
@@ -218,7 +217,7 @@ jobs:
             exit 0
           fi
 
-          if echo "$BODY" | grep -q "Generated with:"; then
+          if echo "$BODY" | grep -q "LLM:"; then
             echo "Footer already present"
             exit 0
           fi
@@ -228,7 +227,7 @@ jobs:
           [ -s /tmp/ccusage-err ] && echo "ccusage stderr: $(cat /tmp/ccusage-err)"
           COST=$(printf '%s' "$USAGE" | jq -r 'if .sessions and (.sessions | length) > 0 then .sessions[0] | "Tokens: \(.inputTokens // 0) in / \(.outputTokens // 0) out | Cache: \(.cacheReadTokens // 0) read / \(.cacheCreationTokens // 0) written | Cost: $\(.totalCost // 0 | . * 100 | round / 100)" else "" end' 2>/dev/null || true)
 
-          FOOTER="---"$'\n'"Generated with: ${MODEL_NAME} | Effort: ${EFFORT}"
+          FOOTER="---"$'\n'"LLM: ${MODEL_NAME}"
           if [ -n "$COST" ]; then
             FOOTER="${FOOTER} | ${COST}"
           fi
