@@ -440,7 +440,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 				Details:    fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
 			}
 			RecordTrade(s, trade)
-			RecordTradeResult(&s.RiskState, pnl)
+			RecordTradeResult(&s.RiskState, pnl, s.InitialCapital)
 			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
 			logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
@@ -550,7 +550,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 				ExchangeFee:     closeFee,
 			}
 			RecordTrade(s, trade)
-			RecordTradeResult(&s.RiskState, pnl)
+			RecordTradeResult(&s.RiskState, pnl, s.InitialCapital)
 			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
 			logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, pos.Quantity, execPrice, fee, pnl)
@@ -665,7 +665,7 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 				Details:    fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
 			}
 			RecordTrade(s, trade)
-			RecordTradeResult(&s.RiskState, pnl)
+			RecordTradeResult(&s.RiskState, pnl, s.InitialCapital)
 			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
 			logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
@@ -742,7 +742,7 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 				Details:    fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
 			}
 			RecordTrade(s, trade)
-			RecordTradeResult(&s.RiskState, pnl)
+			RecordTradeResult(&s.RiskState, pnl, s.InitialCapital)
 			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
 			logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, pos.Quantity, execPrice, fee, pnl)
@@ -795,7 +795,7 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 				Details:    fmt.Sprintf("Close short %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee),
 			}
 			RecordTrade(s, trade)
-			RecordTradeResult(&s.RiskState, pnl)
+			RecordTradeResult(&s.RiskState, pnl, s.InitialCapital)
 			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
 			logger.Info("Closed short %s %d contracts @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, contracts, execPrice, fee, pnl)
@@ -884,7 +884,7 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 				Details:    fmt.Sprintf("Close long %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee),
 			}
 			RecordTrade(s, trade)
-			RecordTradeResult(&s.RiskState, pnl)
+			RecordTradeResult(&s.RiskState, pnl, s.InitialCapital)
 			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
 			logger.Info("SELL %s: %d contracts @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, contracts, execPrice, fee, pnl)

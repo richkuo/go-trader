@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -772,7 +773,7 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 				wpStr = fmt.Sprintf("%.1f%%", bot.walletPct)
 			}
 			sharpeStr := ""
-			if bot.sharpeRatio != 0 {
+			if !math.IsNaN(bot.sharpeRatio) {
 				sharpeStr = fmt.Sprintf("%.2f", bot.sharpeRatio)
 			}
 			sb.WriteString(fmt.Sprintf("%-16s %9s %9s %7s %7s %8s %5s %5s %5s %5d\n", label, initStr, valStr, pnlStr, pctStr, wpStr, bot.timeframe, bot.interval, sharpeStr, bot.closedTrades))
@@ -799,7 +800,7 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 			pnlStr := fmtPnl(bot.pnl)
 			pctStr := fmtPnlPct(bot.pnlPct)
 			sharpeStr := ""
-			if bot.sharpeRatio != 0 {
+			if !math.IsNaN(bot.sharpeRatio) {
 				sharpeStr = fmt.Sprintf("%.2f", bot.sharpeRatio)
 			}
 			sb.WriteString(fmt.Sprintf("%-16s %9s %9s %7s %7s %5s %5s %5s %5d\n", label, initStr, valStr, pnlStr, pctStr, bot.timeframe, bot.interval, sharpeStr, bot.closedTrades))

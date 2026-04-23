@@ -250,7 +250,7 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 				Details:    fmt.Sprintf("Close %s PnL=$%.2f", pos.ID, pnl),
 			}
 			RecordTrade(s, trade)
-			RecordTradeResult(&s.RiskState, pnl)
+			RecordTradeResult(&s.RiskState, pnl, s.InitialCapital)
 			recordClosedOptionPosition(s, pos, closePriceUSD, pnl, "signal", now)
 			logger.Info("CLOSE OPTION %s | PnL: $%.2f", pos.ID, pnl)
 			delete(s.OptionPositions, id)
@@ -450,7 +450,7 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 			Details:    fmt.Sprintf("Theta harvest close %s PnL=$%.2f", pos.ID, pnl),
 		}
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
+		RecordTradeResult(&s.RiskState, pnl, s.InitialCapital)
 		recordClosedOptionPosition(s, pos, buybackCost, pnl, "theta_harvest", now)
 
 		logger.Info("%s | %s | PnL: $%.2f", c.reason, pos.ID, pnl)

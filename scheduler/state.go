@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"time"
 )
@@ -124,6 +125,10 @@ func NewStrategyState(cfg StrategyConfig) *StrategyState {
 		RiskState: RiskState{
 			PeakValue:      cfg.Capital,
 			MaxDrawdownPct: cfg.MaxDrawdownPct,
+			// NaN is the "insufficient data" sentinel surfaced by
+			// CalculateSharpeRatio — keeps a brand-new strategy distinct
+			// from one that has converged on 0.0 over its first trades.
+			SharpeRatio: math.NaN(),
 		},
 	}
 }

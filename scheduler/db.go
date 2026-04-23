@@ -55,7 +55,10 @@ CREATE TABLE IF NOT EXISTS strategies (
     risk_pending_hl_close_json TEXT NOT NULL DEFAULT '',
     risk_total_trades INTEGER NOT NULL DEFAULT 0,
     risk_winning_trades INTEGER NOT NULL DEFAULT 0,
-    risk_losing_trades INTEGER NOT NULL DEFAULT 0
+    risk_losing_trades INTEGER NOT NULL DEFAULT 0,
+    risk_sharpe_ratio REAL NOT NULL DEFAULT 0,
+    risk_trade_returns_json TEXT NOT NULL DEFAULT '',
+    risk_free_rate REAL NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS positions (
@@ -234,6 +237,10 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE kill_switch_events ADD COLUMN source TEXT NOT NULL DEFAULT ''",
 		// Per-leaderboard-summary last-post timestamps stored as JSON (#308).
 		"ALTER TABLE app_state ADD COLUMN last_leaderboard_summaries TEXT NOT NULL DEFAULT ''",
+		// Per-strategy Sharpe ratio tracking (#398).
+		"ALTER TABLE strategies ADD COLUMN risk_sharpe_ratio REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE strategies ADD COLUMN risk_trade_returns_json TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE strategies ADD COLUMN risk_free_rate REAL NOT NULL DEFAULT 0",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -454,8 +461,9 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
 		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json,
-		risk_total_trades, risk_winning_trades, risk_losing_trades)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		risk_total_trades, risk_winning_trades, risk_losing_trades,
+		risk_sharpe_ratio, risk_trade_returns_json, risk_free_rate)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare strategy insert: %w", err)
 	}
@@ -507,6 +515,9 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			cbInt, formatTime(s.RiskState.CircuitBreakerUntil),
 			s.RiskState.MarshalPendingCircuitClosesJSON(),
 			s.RiskState.TotalTrades, s.RiskState.WinningTrades, s.RiskState.LosingTrades,
+			marshalSharpeForDB(s.RiskState.SharpeRatio),
+			marshalTradeReturns(s.RiskState.TradeReturns),
+			s.RiskState.RiskFreeRate,
 		); err != nil {
 			return fmt.Errorf("insert strategy %s: %w", s.ID, err)
 		}
@@ -876,7 +887,8 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
 		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json,
-		risk_total_trades, risk_winning_trades, risk_losing_trades
+		risk_total_trades, risk_winning_trades, risk_losing_trades,
+		risk_sharpe_ratio, risk_trade_returns_json, risk_free_rate
 		FROM strategies`)
 	if err != nil {
 		return nil, fmt.Errorf("load strategies: %w", err)
@@ -886,19 +898,23 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	for rows.Next() {
 		var s StrategyState
 		var cbInt int
-		var cbUntilStr, pendingCircuitClosesJSON string
+		var cbUntilStr, pendingCircuitClosesJSON, tradeReturnsJSON string
+		var sharpeStored float64
 		if err := rows.Scan(
 			&s.ID, &s.Type, &s.Platform, &s.Cash, &s.InitialCapital,
 			&s.RiskState.PeakValue, &s.RiskState.MaxDrawdownPct, &s.RiskState.CurrentDrawdownPct,
 			&s.RiskState.DailyPnL, &s.RiskState.DailyPnLDate, &s.RiskState.ConsecutiveLosses,
 			&cbInt, &cbUntilStr, &pendingCircuitClosesJSON,
 			&s.RiskState.TotalTrades, &s.RiskState.WinningTrades, &s.RiskState.LosingTrades,
+			&sharpeStored, &tradeReturnsJSON, &s.RiskState.RiskFreeRate,
 		); err != nil {
 			return nil, fmt.Errorf("scan strategy: %w", err)
 		}
 		s.RiskState.CircuitBreaker = cbInt != 0
 		s.RiskState.CircuitBreakerUntil = parseTime(cbUntilStr)
 		s.RiskState.UnmarshalPendingCircuitClosesJSON(pendingCircuitClosesJSON)
+		s.RiskState.TradeReturns = unmarshalTradeReturns(tradeReturnsJSON)
+		s.RiskState.SharpeRatio = unmarshalSharpeFromDB(sharpeStored, len(s.RiskState.TradeReturns))
 		s.Positions = make(map[string]*Position)
 		s.OptionPositions = make(map[string]*OptionPosition)
 		s.TradeHistory = []Trade{}

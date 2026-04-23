@@ -490,7 +490,7 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 			} else {
 				existing.Quantity = newQty
 			}
-			RecordTradeResult(&s.RiskState, pnl)
+			RecordTradeResult(&s.RiskState, pnl, s.InitialCapital)
 		}
 		RecordTrade(s, Trade{
 			Timestamp:  time.Now().UTC(),
