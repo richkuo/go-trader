@@ -4,6 +4,12 @@ PR body ends with our model/effort footer instead of the default
 
 Reads the comment body from $BODY_IN and the footer text from $FOOTER_TEXT.
 Prints the rewritten comment body to stdout.
+
+Not idempotent on its own: if a Create-PR link's `body=` already ends with a
+`Generated with: ...` footer (not the default Claude Code attribution), the
+else-branch in `rewrite` will append a second footer. The caller in
+.github/workflows/claude.yml guards against re-runs with a
+`grep -q "Generated with:"` check before invoking this script.
 """
 
 import os
@@ -31,7 +37,7 @@ def rewrite(match):
             else:
                 v = v.rstrip() + "\n\n" + footer
         new_qs.append((k, v))
-    new_query = urllib.parse.urlencode(new_qs, quote_via=urllib.parse.quote)
+    new_query = urllib.parse.urlencode(new_qs, safe="", quote_via=urllib.parse.quote)
     new_url = urllib.parse.urlunsplit(
         (parts.scheme, parts.netloc, parts.path, new_query, parts.fragment)
     )
@@ -44,3 +50,4 @@ body = re.sub(
     body,
 )
 sys.stdout.write(body)
+sys.stdout.write("\n")
