@@ -227,7 +227,7 @@ func formatUpdateMessage(localHash, remoteHash, commitLog, newTag string, goChan
 	sb.WriteString("To update:\n```\n")
 	sb.WriteString("cd /path/to/go-trader && git pull --ff-only\n")
 	if goChanged {
-		sb.WriteString("cd scheduler && go build -o ../go-trader . && cd ..\n")
+		sb.WriteString("cd scheduler && go build -ldflags \"-X main.Version=$(git describe --tags --always)\" -o ../go-trader . && cd ..\n")
 	}
 	sb.WriteString("systemctl restart go-trader\n```")
 
