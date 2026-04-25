@@ -772,8 +772,8 @@ func TestCheckRisk_ConsecutiveLossesForceClose(t *testing.T) {
 	}
 }
 
-// TestCheckPortfolioRisk_WarningFires verifies that drawdown at 80% of limit
-// triggers a warning once but not again on second call.
+// TestCheckPortfolioRisk_WarningFires verifies that drawdown in the warn band
+// triggers a warning on every cycle until recovery (#420).
 func TestCheckPortfolioRisk_WarningFires(t *testing.T) {
 	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
 	prs := &PortfolioRiskState{PeakValue: 10000.0}
@@ -790,10 +790,35 @@ func TestCheckPortfolioRisk_WarningFires(t *testing.T) {
 		t.Error("expected WarningSent=true after warning fires")
 	}
 
-	// Second call at same drawdown — warning should NOT fire again.
-	_, _, warning, _ = CheckPortfolioRisk(prs, cfg, 7900.0, 0, 0, 0)
-	if warning {
-		t.Error("expected warning=false on second call (already sent)")
+	// Second call at same drawdown — warning fires again every cycle (#420).
+	_, _, warning, reason2 := CheckPortfolioRisk(prs, cfg, 7900.0, 0, 0, 0)
+	if !warning {
+		t.Error("expected warning=true on second call (warn band still breached)")
+	}
+	if reason2 == "" {
+		t.Error("expected non-empty reason on second call")
+	}
+}
+
+// TestCheckPortfolioRisk_WarningRepeatsAcrossCycles verifies that warning
+// fires on every cycle while drawdown remains in the warn band, even with no
+// recovery in between (#420).
+func TestCheckPortfolioRisk_WarningRepeatsAcrossCycles(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	prs := &PortfolioRiskState{PeakValue: 10000.0}
+
+	// Warn threshold = 20%. Hold portfolio at 21% drawdown across many cycles.
+	for i := 0; i < 5; i++ {
+		_, _, warning, reason := CheckPortfolioRisk(prs, cfg, 7900.0, 0, 0, 0)
+		if !warning {
+			t.Errorf("cycle %d: expected warning=true while in warn band", i)
+		}
+		if reason == "" {
+			t.Errorf("cycle %d: expected non-empty reason", i)
+		}
+		if !prs.WarningSent {
+			t.Errorf("cycle %d: expected WarningSent=true while in warn band", i)
+		}
 	}
 }
 
