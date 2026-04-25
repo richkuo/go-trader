@@ -17,18 +17,30 @@ import (
 // stubHLLiveCloser returns a HyperliquidLiveCloser that records every invocation
 // and maps coin → canned error. Missing keys yield a synthetic success.
 func stubHLLiveCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) {
+	closer, calls, _ := stubHLLiveCloserWithCancel(errs)
+	return closer, calls
+}
+
+// stubHLLiveCloserWithCancel mirrors stubHLLiveCloser but also surfaces the
+// per-call cancelStopLossOID so #421 tests can assert the kill-switch /
+// CB-drain plumbing actually threads the OID through. cancels[symbol]
+// holds the most recent OID seen for that coin (0 = no cancel attempted).
+func stubHLLiveCloserWithCancel(errs map[string]error) (HyperliquidLiveCloser, *[]string, *map[string]int64) {
 	var calls []string
-	closer := func(symbol string, partialSz *float64) (*HyperliquidCloseResult, error) {
+	cancels := make(map[string]int64)
+	closer := func(symbol string, partialSz *float64, cancelStopLossOID int64) (*HyperliquidCloseResult, error) {
 		calls = append(calls, symbol)
+		cancels[symbol] = cancelStopLossOID
 		if err, ok := errs[symbol]; ok && err != nil {
 			return nil, err
 		}
 		return &HyperliquidCloseResult{
-			Close:    &HyperliquidClose{Symbol: symbol, Fill: &HyperliquidCloseFill{TotalSz: 1.0, AvgPx: 100}},
-			Platform: "hyperliquid",
+			Close:                   &HyperliquidClose{Symbol: symbol, Fill: &HyperliquidCloseFill{TotalSz: 1.0, AvgPx: 100}},
+			Platform:                "hyperliquid",
+			CancelStopLossSucceeded: cancelStopLossOID > 0,
 		}, nil
 	}
-	return closer, &calls
+	return closer, &calls, &cancels
 }
 
 // stubHLStateFetcher returns an HLStateFetcher that replays a fixed response list

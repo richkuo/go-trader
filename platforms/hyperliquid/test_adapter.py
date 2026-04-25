@@ -265,3 +265,106 @@ class TestOrderExecution:
 
         adapter.market_close("ETH", 0.25)
         mock_exchange.market_close.assert_called_once_with("ETH", 0.25)
+
+
+# ─── Stop Loss / Trigger Orders (#412 / #421) ──────
+
+class TestStopLossPlacement:
+    """Coverage for place_stop_loss + cancel_trigger_order added in #412 and
+    refined for tick-size rules in #421 review point 5."""
+
+    def _live_adapter(self, sz_decimals=None):
+        mock_info = MagicMock()
+        mock_info.asset_to_sz_decimals = sz_decimals or {"BTC": 5, "ETH": 4}
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        mock_exchange = MagicMock()
+        adapter._exchange = mock_exchange
+        adapter._info = mock_info
+        return adapter, mock_exchange, mod
+
+    def test_place_stop_loss_paper_mode_raises(self):
+        mock_info = MagicMock()
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        with pytest.raises(RuntimeError, match="live mode"):
+            adapter.place_stop_loss("BTC", 0.01, 60000, False)
+
+    def test_place_stop_loss_long_uses_sell_with_lower_limit(self):
+        adapter, ex, _ = self._live_adapter()
+        ex.order.return_value = {"status": "ok"}
+        adapter.place_stop_loss("ETH", 0.5, 3000.0, is_buy=False, limit_slippage_pct=5.0)
+        args, kwargs = ex.order.call_args
+        sym, is_buy, sz, limit_px, order_type = args
+        assert sym == "ETH"
+        assert is_buy is False
+        # limit_px is below trigger_px for a sell-stop
+        assert limit_px < 3000.0
+        assert kwargs == {"reduce_only": True}
+        assert order_type["trigger"]["tpsl"] == "sl"
+        assert order_type["trigger"]["isMarket"] is True
+
+    def test_place_stop_loss_short_uses_buy_with_higher_limit(self):
+        adapter, ex, _ = self._live_adapter()
+        ex.order.return_value = {"status": "ok"}
+        adapter.place_stop_loss("ETH", 0.5, 3000.0, is_buy=True, limit_slippage_pct=5.0)
+        _, _, _, limit_px, _ = ex.order.call_args.args
+        # limit_px is above trigger_px for a buy-stop
+        assert limit_px > 3000.0
+
+    def test_place_stop_loss_size_rounds_to_zero_raises(self):
+        adapter, _, _ = self._live_adapter(sz_decimals={"BTC": 0})
+        with pytest.raises(ValueError, match="rounded to zero"):
+            adapter.place_stop_loss("BTC", 0.4, 60000, False)
+
+    def test_place_stop_loss_invalid_trigger_px_raises(self):
+        adapter, _, _ = self._live_adapter()
+        with pytest.raises(ValueError, match="trigger_px must be > 0"):
+            adapter.place_stop_loss("BTC", 0.01, 0, False)
+
+    def test_place_stop_loss_high_priced_asset_uses_per_asset_px_decimals(self):
+        # BTC has sz_decimals=5 → px_decimals = 6 - 5 = 1. Fixed-6-decimal
+        # rounding (the pre-#421 behavior) would produce e.g. 60000.000000;
+        # the new logic must round to ≤1 decimal, capped at 5 sig figs.
+        adapter, ex, mod = self._live_adapter(sz_decimals={"BTC": 5})
+        ex.order.return_value = {"status": "ok"}
+        # Use a trigger_px that would produce extra decimals after the
+        # slip-band multiplication. trigger_px = 63123.456 → after rounding
+        # to px_decimals=1 we expect 63123.5 (but capped at 5 sig figs to 63120).
+        adapter.place_stop_loss("BTC", 0.001, 63123.456, is_buy=False)
+        _, _, _, limit_px, order_type = ex.order.call_args.args
+        # 5-sig-fig rounding for ~63000 → tens place (63120 or 63130).
+        assert limit_px == round(limit_px, 0) or limit_px == round(limit_px, -1)
+        assert order_type["trigger"]["triggerPx"] == round(order_type["trigger"]["triggerPx"], 0) or \
+               order_type["trigger"]["triggerPx"] == round(order_type["trigger"]["triggerPx"], -1)
+
+    def test_round_perps_px_high_price(self):
+        # Direct unit test of the helper. BTC at $63500 with sz_decimals=5
+        # → px_decimals=1, but 5 sig fig cap takes priority and rounds to
+        # tens place.
+        from importlib import reload  # noqa: F401
+        mod = _load_hl_adapter(mock_info_cls=MagicMock(return_value=MagicMock()))
+        # 63123.456 with 5 sig figs → 63123 (decimals=0)
+        assert mod._round_perps_px(63123.456, sz_decimals=5) == 63123
+        # 0.123456 with 5 sig figs and sz_decimals=2 → px_decimals=4, sig_decimals=5
+        # → use min(4, 5) = 4 decimals → 0.1235
+        assert mod._round_perps_px(0.123456, sz_decimals=2) == 0.1235
+        # Edge case: zero / negative passes through unchanged.
+        assert mod._round_perps_px(0, sz_decimals=5) == 0
+        assert mod._round_perps_px(-1.5, sz_decimals=5) == -1.5
+
+    def test_cancel_trigger_order_paper_mode_raises(self):
+        mock_info = MagicMock()
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        with pytest.raises(RuntimeError, match="live mode"):
+            adapter.cancel_trigger_order("BTC", 12345)
+
+    def test_cancel_trigger_order_passes_int_oid(self):
+        adapter, ex, _ = self._live_adapter()
+        ex.cancel.return_value = {"status": "ok"}
+        adapter.cancel_trigger_order("BTC", "12345")
+        ex.cancel.assert_called_once_with("BTC", 12345)

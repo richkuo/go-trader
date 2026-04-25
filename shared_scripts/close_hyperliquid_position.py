@@ -12,9 +12,18 @@ state can diverge from the on-chain net.
 Usage:
     close_hyperliquid_position.py --symbol=ETH --mode=live
     close_hyperliquid_position.py --symbol=ETH --mode=live --sz=0.25
+    close_hyperliquid_position.py --symbol=ETH --mode=live --cancel-stop-loss-oid=123
 
 Optional ``--sz`` submits a partial reduce-only close (coin units). Omit for
 full position close (portfolio kill switch and sole-owner circuit breakers).
+
+Optional ``--cancel-stop-loss-oid`` cancels a resting trigger order BEFORE
+the close fires. Used by per-strategy circuit breakers and the portfolio
+kill switch to free the trigger slot from `Position.StopLossOID` so the
+SL doesn't sit orphaned on HL's book consuming one of the 10/day account
+trigger-order slots (#421 review point 1). Cancel failure is non-fatal
+(SL may have already triggered on-chain) and is surfaced as
+``cancel_stop_loss_error`` in the JSON envelope.
 
 Live mode is required (kill switch is meaningful only against real
 positions). Stdout is always a single JSON envelope: `{"close": ..., "platform": ...,
@@ -44,6 +53,12 @@ def main():
         default=None,
         help="partial close size in coin units (omit for full position)",
     )
+    parser.add_argument(
+        "--cancel-stop-loss-oid",
+        type=int,
+        default=0,
+        help="cancel this trigger OID before the close (frees HL's 10/day cap; #421)",
+    )
     args = parser.parse_args()
 
     if args.mode != "live":
@@ -55,13 +70,29 @@ def main():
         }))
         sys.exit(1)
 
+    cancel_err = ""
+    cancel_succeeded = False
+
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
+        # Cancel stale SL trigger first so it doesn't sit orphaned on HL's
+        # book after the close completes (#421 review point 1). A cancel
+        # failure is non-fatal — the SL may have already triggered, in
+        # which case the close itself will hit "no position" and route
+        # through already_flat. Cancel state is surfaced in the JSON
+        # envelope so the Go side can clear pos.StopLossOID either way.
+        if args.cancel_stop_loss_oid > 0:
+            try:
+                adapter.cancel_trigger_order(args.symbol, args.cancel_stop_loss_oid)
+                cancel_succeeded = True
+            except Exception as ce:
+                cancel_err = str(ce)
+                print(f"[WARN] cancel_trigger_order({args.symbol}, {args.cancel_stop_loss_oid}) failed: {ce}", file=sys.stderr)
         result = adapter.market_close(args.symbol, args.sz)
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        _emit_error(args.symbol, str(e))
+        _emit_error(args.symbol, str(e), cancel_err=cancel_err, cancel_succeeded=cancel_succeeded)
         return
 
     # SDK reduce-only close response shape mirrors market_open:
@@ -72,13 +103,15 @@ def main():
     # (the original #341 failure mode shifted into the Python layer).
 
     if not isinstance(result, dict):
-        _emit_error(args.symbol, f"unexpected SDK response type {type(result).__name__}: {result!r}")
+        _emit_error(args.symbol, f"unexpected SDK response type {type(result).__name__}: {result!r}",
+                    cancel_err=cancel_err, cancel_succeeded=cancel_succeeded)
         return
 
     # Outer status must be "ok" or absent — anything else is an SDK rejection.
     outer_status = result.get("status")
     if outer_status not in (None, "ok"):
-        _emit_error(args.symbol, f"sdk status={outer_status!r}: {result}")
+        _emit_error(args.symbol, f"sdk status={outer_status!r}: {result}",
+                    cancel_err=cancel_err, cancel_succeeded=cancel_succeeded)
         return
 
     statuses = result.get("response", {}).get("data", {}).get("statuses", [])
@@ -93,7 +126,8 @@ def main():
         # AlreadyFlat report slice rather than ClosedCoins — operator
         # messaging must distinguish "we sent a close order" from
         # "nothing to close" (#350).
-        _emit_success(args.symbol, fill={}, already_flat=True)
+        _emit_success(args.symbol, fill={}, already_flat=True,
+                      cancel_err=cancel_err, cancel_succeeded=cancel_succeeded)
         return
 
     first = statuses[0]
@@ -101,14 +135,16 @@ def main():
     # Per-status error (e.g. "order has zero size", "no position", rate limit).
     # Surface so the kill switch latches and retries next cycle.
     if "error" in first:
-        _emit_error(args.symbol, f"per-status error: {first['error']}")
+        _emit_error(args.symbol, f"per-status error: {first['error']}",
+                    cancel_err=cancel_err, cancel_succeeded=cancel_succeeded)
         return
 
     # "resting" means a limit order is sitting on the book — for market_close
     # this should never happen (market orders fill or fail), but guard anyway.
     # Not "filled" => not closed => kill switch must NOT release the latch.
     if "filled" not in first:
-        _emit_error(args.symbol, f"close not filled (status keys={list(first.keys())}): {first}")
+        _emit_error(args.symbol, f"close not filled (status keys={list(first.keys())}): {first}",
+                    cancel_err=cancel_err, cancel_succeeded=cancel_succeeded)
         return
 
     filled = first["filled"]
@@ -122,27 +158,37 @@ def main():
     fee = filled.get("fee")
     if fee is not None:
         fill["fee"] = float(fee)
-    _emit_success(args.symbol, fill)
+    _emit_success(args.symbol, fill, cancel_err=cancel_err, cancel_succeeded=cancel_succeeded)
 
 
-def _emit_success(symbol, fill, already_flat=False):
+def _emit_success(symbol, fill, already_flat=False, cancel_err="", cancel_succeeded=False):
     close = {"symbol": symbol, "fill": fill}
     if already_flat:
         close["already_flat"] = True
-    print(json.dumps({
+    out = {
         "close": close,
         "platform": "hyperliquid",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-    }))
+    }
+    if cancel_err:
+        out["cancel_stop_loss_error"] = cancel_err
+    if cancel_succeeded:
+        out["cancel_stop_loss_succeeded"] = True
+    print(json.dumps(out))
 
 
-def _emit_error(symbol, message):
-    print(json.dumps({
+def _emit_error(symbol, message, cancel_err="", cancel_succeeded=False):
+    out = {
         "close": {"symbol": symbol, "fill": {}},
         "platform": "hyperliquid",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "error": message,
-    }))
+    }
+    if cancel_err:
+        out["cancel_stop_loss_error"] = cancel_err
+    if cancel_succeeded:
+        out["cancel_stop_loss_succeeded"] = True
+    print(json.dumps(out))
     sys.exit(1)
 
 

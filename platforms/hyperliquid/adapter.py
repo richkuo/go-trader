@@ -10,6 +10,7 @@ Environment variables:
     HYPERLIQUID_TESTNET=1        — use testnet instead of mainnet
 """
 
+import math
 import os
 import sys
 import time
@@ -29,6 +30,29 @@ except ImportError:
     _HLInfo = None
     _HLExchange = None
     _SDK_AVAILABLE = False
+
+
+def _round_perps_px(px: float, sz_decimals: int) -> float:
+    """Round a perps price to HL's tick rules.
+
+    Two constraints apply simultaneously:
+      - At most (MAX_DECIMALS - sz_decimals) decimal places, where
+        MAX_DECIMALS=6 for perps. Higher-priced assets (BTC sz_decimals=5)
+        therefore allow only 1 decimal of price precision.
+      - At most 5 significant figures.
+
+    The earlier fixed-6-decimal round was fine for tiny-priced coins but
+    routinely produced HL "price has too many decimals" rejections on
+    majors, leaving the position unprotected with the SL slot consumed
+    (#421 review point 5).
+    """
+    if px <= 0:
+        return px
+    px_decimals = max(0, 6 - sz_decimals)
+    log = math.floor(math.log10(abs(px)))
+    sig_decimals = max(0, 5 - 1 - int(log))
+    decimals = min(px_decimals, sig_decimals)
+    return round(px, decimals)
 
 
 class HyperliquidExchangeAdapter:
@@ -246,7 +270,10 @@ class HyperliquidExchangeAdapter:
         (default 5%) so slippage around the stop doesn't reject the fill.
 
         HL enforces a 10 trigger-orders-per-day cap per account (resets 00:00
-        UTC). Callers should track + warn upstream.
+        UTC). Cap exhaustion surfaces as an order-status error string (e.g.
+        "Too many open trigger orders") in the SDK response; the scheduler
+        detects it via isHLTriggerCapRejection and escalates to CRITICAL +
+        notifier — no proactive client-side counter is required.
         """
         if not self._exchange:
             raise RuntimeError(
@@ -266,8 +293,13 @@ class HyperliquidExchangeAdapter:
             limit_px = trigger_px * (1.0 + slip)
         else:
             limit_px = trigger_px * (1.0 - slip)
-        limit_px = round(limit_px, 6)
-        trigger_px = round(trigger_px, 6)
+        # HL perps: prices use at most (MAX_DECIMALS - sz_decimals) decimals
+        # AND at most 5 significant figures. Fixed-6-decimal rounding here
+        # was rejected by HL on high-priced assets like BTC (sz_decimals=5,
+        # so px_decimals=1) — the trigger sat resting only because the order
+        # got rejected (#421 review point 5).
+        limit_px = _round_perps_px(limit_px, sz_decimals)
+        trigger_px = _round_perps_px(trigger_px, sz_decimals)
 
         order_type = {"trigger": {"triggerPx": trigger_px, "isMarket": True, "tpsl": "sl"}}
         return self._exchange.order(

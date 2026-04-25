@@ -1,11 +1,22 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
+
+// silentStrategyLogger returns a StrategyLogger that writes to io.Discard
+// so tests don't pollute test output. The constructor name follows the
+// project convention of platform/feature-prefixed test helpers (CLAUDE.md).
+func silentStrategyLogger(id string) *StrategyLogger {
+	return &StrategyLogger{stratID: id, writer: io.Discard}
+}
 
 // Tests for the stop-loss plumbing added in #412. We exercise the pure
 // output parser (which Go CI can run without .venv/bin/python3) plus
@@ -271,4 +282,184 @@ func TestValidateConfig_StopLossPctBounds(t *testing.T) {
 
 func containsStopLossErr(s string) bool {
 	return strings.Contains(s, "stop_loss_pct")
+}
+
+// #421 review point 2: when StopLossFilledImmediately is true, the on-chain
+// position is flat (the trigger fired at submit). executeHyperliquidResult
+// must reconcile virtual state by synthesizing a close at trigger_px,
+// otherwise the next reconcile cycle silently delete()s the phantom
+// position with PnL=0 and the realized loss is dropped from history.
+func TestExecuteHyperliquidResult_StopLossFilledImmediately_ReconcilesState(t *testing.T) {
+	sc := StrategyConfig{
+		ID:       "hl-test-eth",
+		Platform: "hyperliquid",
+		Type:     "perps",
+		Capital:  1000,
+		Leverage: 5,
+	}
+	state := &StrategyState{
+		ID:        "hl-test-eth",
+		Platform:  "hyperliquid",
+		Type:      "perps",
+		Cash:      1000,
+		Positions: map[string]*Position{},
+	}
+	result := &HyperliquidResult{Symbol: "ETH", Signal: 1, Price: 3200}
+	execResult := &HyperliquidExecuteResult{
+		Execution: &HyperliquidExecution{
+			Action: "buy",
+			Symbol: "ETH",
+			Size:   0.1,
+			Fill: &HyperliquidFill{
+				AvgPx:             3200,
+				TotalSz:           0.1,
+				OID:               1,
+				StopLossTriggerPx: 3104.0,
+				// note: no StopLossOID — instant fill leaves no resting OID
+			},
+		},
+		StopLossFilledImmediately: true,
+	}
+
+	logger := silentStrategyLogger("hl-test-eth")
+	defer logger.Close()
+	trades, _ := executeHyperliquidResult(sc, state, result, execResult, "BUY", 3200, logger)
+
+	// Open + synthetic close = 2 trades.
+	if trades != 2 {
+		t.Errorf("trades=%d, want 2 (open + synthetic close)", trades)
+	}
+	// On-chain is flat → virtual state must also be flat.
+	if _, exists := state.Positions["ETH"]; exists {
+		t.Errorf("Position should have been deleted; got %+v", state.Positions["ETH"])
+	}
+	// One ClosedPosition entry recorded with the trigger price as ClosePrice
+	// and the realized PnL on the books (not zero).
+	if len(state.ClosedPositions) != 1 {
+		t.Fatalf("ClosedPositions=%d, want 1", len(state.ClosedPositions))
+	}
+	cp := state.ClosedPositions[0]
+	if cp.CloseReason != "stop_loss_immediate" {
+		t.Errorf("CloseReason=%q, want stop_loss_immediate", cp.CloseReason)
+	}
+	if cp.ClosePrice != 3104.0 {
+		t.Errorf("ClosePrice=%v, want 3104", cp.ClosePrice)
+	}
+	if cp.RealizedPnL >= 0 {
+		t.Errorf("RealizedPnL=%v should be negative for a long stopped out below entry", cp.RealizedPnL)
+	}
+}
+
+// Defensive: when the instant-fill flag is set but trigger_px is missing
+// (shouldn't happen with the current Python contract), the reconcile is
+// skipped and the position is left as opened — better than crashing on a
+// divide-by-zero or producing nonsense PnL.
+func TestExecuteHyperliquidResult_StopLossFilledImmediately_NoTriggerPxIsNoOp(t *testing.T) {
+	sc := StrategyConfig{ID: "hl", Platform: "hyperliquid", Type: "perps", Leverage: 1}
+	state := &StrategyState{ID: "hl", Platform: "hyperliquid", Type: "perps", Cash: 1000, Positions: map[string]*Position{}}
+	result := &HyperliquidResult{Symbol: "ETH", Signal: 1, Price: 3200}
+	execResult := &HyperliquidExecuteResult{
+		Execution:                 &HyperliquidExecution{Action: "buy", Symbol: "ETH", Size: 0.1, Fill: &HyperliquidFill{AvgPx: 3200, TotalSz: 0.1}},
+		StopLossFilledImmediately: true,
+	}
+	logger := silentStrategyLogger("hl")
+	defer logger.Close()
+	trades, _ := executeHyperliquidResult(sc, state, result, execResult, "BUY", 3200, logger)
+	if trades != 1 {
+		t.Errorf("trades=%d, want 1 (only open recorded; reconcile skipped)", trades)
+	}
+	if _, ok := state.Positions["ETH"]; !ok {
+		t.Errorf("Position should still exist when trigger_px is missing")
+	}
+}
+
+// #421 review point 1: per-strategy circuit-breaker drain must thread
+// pos.StopLossOID through to the closer so the resting trigger is
+// cancelled before the close fires. Otherwise it sits orphaned on HL's
+// book consuming one of the 10/day account-wide trigger slots.
+func TestRunPendingHyperliquidCircuitCloses_CancelsStopLossOID(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID: "hl-a",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 5, StopLossOID: 99887766},
+				},
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseHyperliquid: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.5}},
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+
+	var seenCancelOID int64
+	closer := func(sym string, partialSz *float64, cancelStopLossOID int64) (*HyperliquidCloseResult, error) {
+		seenCancelOID = cancelStopLossOID
+		return &HyperliquidCloseResult{
+			Close:                   &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: *partialSz, AvgPx: 3000}},
+			Platform:                "hyperliquid",
+			CancelStopLossSucceeded: cancelStopLossOID > 0,
+		}, nil
+	}
+
+	runPendingHyperliquidCircuitCloses(
+		context.Background(), state, cfg, "0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}, true,
+		nil, closer, 30*time.Second, &mu,
+	)
+
+	if seenCancelOID != 99887766 {
+		t.Errorf("closer received cancelStopLossOID=%d, want 99887766", seenCancelOID)
+	}
+	// And the StopLossOID was cleared in state since the cancel succeeded.
+	if got := state.Strategies["hl-a"].Positions["ETH"].StopLossOID; got != 0 {
+		t.Errorf("StopLossOID should be cleared after cancel succeeded, got %d", got)
+	}
+}
+
+// #421 review point 1: kill-switch close must thread the per-coin
+// StopLossOID map through forceCloseHyperliquidLive so resting SL triggers
+// are cancelled along with the close.
+func TestForceCloseHyperliquidLive_ThreadsStopLossOIDs(t *testing.T) {
+	hlLiveAll := []StrategyConfig{
+		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-btc", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{
+		{Coin: "ETH", Size: 0.5, EntryPrice: 3000},
+		{Coin: "BTC", Size: 0.01, EntryPrice: 60000},
+	}
+	slOIDs := map[string]int64{"ETH": 1111, "BTC": 0} // BTC has no resting SL
+
+	seen := map[string]int64{}
+	closer := func(sym string, partialSz *float64, cancelStopLossOID int64) (*HyperliquidCloseResult, error) {
+		seen[sym] = cancelStopLossOID
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 1, AvgPx: 1}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, slOIDs)
+	if len(report.Errors) != 0 {
+		t.Fatalf("expected no errors, got %v", report.Errors)
+	}
+	if seen["ETH"] != 1111 {
+		t.Errorf("ETH closer got cancelStopLossOID=%d, want 1111", seen["ETH"])
+	}
+	if seen["BTC"] != 0 {
+		t.Errorf("BTC closer got cancelStopLossOID=%d, want 0 (no SL)", seen["BTC"])
+	}
 }

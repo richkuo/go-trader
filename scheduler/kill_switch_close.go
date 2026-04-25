@@ -32,6 +32,12 @@ type KillSwitchCloseInputs struct {
 	HLLiveAll      []StrategyConfig
 	HLCloser       HyperliquidLiveCloser
 	HLFetcher      HLStateFetcher
+	// HLStopLossOIDs maps coin → resting per-trade SL trigger OID so the
+	// kill-switch close path can cancel them before flattening. Without
+	// this, kill-switch wipes virtual state but the on-chain triggers sit
+	// resting and burn HL's 10/day account-wide cap (#421 review point 1).
+	// nil/empty disables; coins with no resting SL are simply absent.
+	HLStopLossOIDs map[string]int64
 
 	// OKXLiveAllPerps: every live OKX perps strategy configured (used to
 	// decide which coins to close and to detect "unconfigured" positions).
@@ -234,7 +240,7 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 	switch {
 	case hlStateFetched && len(in.HLLiveAll) > 0:
 		ctx, cancel := context.WithTimeout(context.Background(), in.platformCloseBudget(in.HLCloseTimeout))
-		plan.CloseReport = forceCloseHyperliquidLive(ctx, hlPositions, in.HLLiveAll, in.HLCloser)
+		plan.CloseReport = forceCloseHyperliquidLive(ctx, hlPositions, in.HLLiveAll, in.HLCloser, in.HLStopLossOIDs)
 		cancel()
 		if !plan.CloseReport.ConfirmedFlat() {
 			plan.OnChainConfirmedFlat = false
