@@ -316,12 +316,16 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
             else:
                 trigger_px = entry_px * (1.0 + stop_loss_pct / 100.0)
                 sl_is_buy = True
+            # Pre-round to HL's per-asset px tick so the recorded value matches
+            # the price the order actually rests at — the scheduler books PnL
+            # off this field on StopLossFilledImmediately (#421 review).
+            trigger_px = adapter.round_perps_trigger_px(symbol, trigger_px)
             try:
                 sl_resp = adapter.place_stop_loss(symbol, sl_size, trigger_px, sl_is_buy)
                 kind, payload = _classify_sl_response(sl_resp)
                 if kind == "resting":
                     fill["stop_loss_oid"] = payload
-                    fill["stop_loss_trigger_px"] = round(trigger_px, 6)
+                    fill["stop_loss_trigger_px"] = trigger_px
                 elif kind == "filled":
                     # Price was already through the trigger — the SL filled at
                     # submit time, so the position just got stopped out. No OID
@@ -329,7 +333,7 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
                     # can reconcile virtual state instead of treating it as a
                     # placement error and leaving the position recorded as open.
                     sl_filled_immediately = True
-                    fill["stop_loss_trigger_px"] = round(trigger_px, 6)
+                    fill["stop_loss_trigger_px"] = trigger_px
                     print(f"[WARN] stop-loss filled immediately at submit (price already through {trigger_px})", file=sys.stderr)
                 elif kind == "error":
                     sl_err = f"place_stop_loss SDK error: {payload}"

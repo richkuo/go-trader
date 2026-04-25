@@ -253,6 +253,16 @@ class HyperliquidExchangeAdapter:
             )
         return self._exchange.market_close(symbol, sz)
 
+    def round_perps_trigger_px(self, symbol: str, px: float) -> float:
+        """Public wrapper around HL's per-asset price-tick rounding.
+
+        Callers that need to record the post-rounding trigger price (for PnL
+        bookkeeping when the SL fills) can pre-round before calling
+        ``place_stop_loss``; rounding is idempotent.
+        """
+        sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3) if self._info else 3
+        return _round_perps_px(px, sz_decimals)
+
     def place_stop_loss(
         self,
         symbol: str,

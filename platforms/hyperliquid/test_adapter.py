@@ -355,6 +355,15 @@ class TestStopLossPlacement:
         assert mod._round_perps_px(0, sz_decimals=5) == 0
         assert mod._round_perps_px(-1.5, sz_decimals=5) == -1.5
 
+    def test_round_perps_trigger_px_matches_internal_helper(self):
+        # Public wrapper must produce the same value place_stop_loss would
+        # submit, so callers can record the post-rounding price for PnL.
+        adapter, _, mod = self._live_adapter(sz_decimals={"BTC": 5})
+        assert adapter.round_perps_trigger_px("BTC", 63123.456) == mod._round_perps_px(63123.456, 5)
+        # Idempotent — rounding a rounded value returns the same value.
+        rounded = adapter.round_perps_trigger_px("BTC", 63123.456)
+        assert adapter.round_perps_trigger_px("BTC", rounded) == rounded
+
     def test_cancel_trigger_order_paper_mode_raises(self):
         mock_info = MagicMock()
         mock_info_cls = MagicMock(return_value=mock_info)
