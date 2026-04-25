@@ -2047,11 +2047,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 				} else {
 					pnl = qty * (avgCost - triggerPx)
 				}
-				feePlatform := sc.Platform
-				if sc.Platform == "okx" && sc.Type == "perps" {
-					feePlatform = "okx-perps"
-				}
-				fee := CalculatePlatformSpotFee(feePlatform, qty*triggerPx)
+				fee := CalculatePlatformSpotFee(sc.Platform, qty*triggerPx)
 				pnl -= fee
 				s.Cash += pnl
 				closeSide := "sell"
