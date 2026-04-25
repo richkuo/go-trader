@@ -2019,6 +2019,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 		if slOID := execResult.Execution.Fill.StopLossOID; slOID > 0 {
 			if pos, ok := s.Positions[result.Symbol]; ok {
 				pos.StopLossOID = slOID
+				pos.StopLossTriggerPx = execResult.Execution.Fill.StopLossTriggerPx
 				logger.Info("SL trigger placed oid=%d @ $%.4f", slOID, execResult.Execution.Fill.StopLossTriggerPx)
 			}
 		}
@@ -2035,43 +2036,8 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 	if trades > 0 && execResult != nil && execResult.StopLossFilledImmediately &&
 		execResult.Execution != nil && execResult.Execution.Fill != nil {
 		triggerPx := execResult.Execution.Fill.StopLossTriggerPx
-		if triggerPx > 0 {
-			if pos, ok := s.Positions[result.Symbol]; ok {
-				now := time.Now().UTC()
-				qty := pos.Quantity
-				avgCost := pos.AvgCost
-				side := pos.Side
-				var pnl float64
-				if side == "long" {
-					pnl = qty * (triggerPx - avgCost)
-				} else {
-					pnl = qty * (avgCost - triggerPx)
-				}
-				fee := CalculatePlatformSpotFee(sc.Platform, qty*triggerPx)
-				pnl -= fee
-				s.Cash += pnl
-				closeSide := "sell"
-				if side == "short" {
-					closeSide = "buy"
-				}
-				trade := Trade{
-					Timestamp:  now,
-					StrategyID: s.ID,
-					Symbol:     result.Symbol,
-					Side:       closeSide,
-					Quantity:   qty,
-					Price:      triggerPx,
-					Value:      qty * triggerPx,
-					TradeType:  "perps",
-					Details:    fmt.Sprintf("SL filled at submit, PnL: $%.2f (fee $%.2f)", pnl, fee),
-				}
-				RecordTrade(s, trade)
-				RecordTradeResult(&s.RiskState, pnl)
-				recordClosedPosition(s, pos, triggerPx, pnl, "stop_loss_immediate", now)
-				delete(s.Positions, result.Symbol)
-				trades++
-				logger.Warn("SL filled at submit @ $%.4f, PnL: $%.2f (fee $%.2f) — virtual state reconciled", triggerPx, pnl, fee)
-			}
+		if recordPerpsStopLossClose(s, result.Symbol, triggerPx, "stop_loss_immediate", logger) {
+			trades++
 		}
 	}
 

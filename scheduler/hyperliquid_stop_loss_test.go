@@ -138,7 +138,7 @@ func TestStrategyConfig_StopLossPctJSON(t *testing.T) {
 }
 
 func TestPosition_StopLossOIDJSON(t *testing.T) {
-	p := Position{Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", StopLossOID: 42}
+	p := Position{Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", StopLossOID: 42, StopLossTriggerPx: 2900}
 	b, err := json.Marshal(p)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -150,10 +150,16 @@ func TestPosition_StopLossOIDJSON(t *testing.T) {
 	if round.StopLossOID != 42 {
 		t.Errorf("round-trip StopLossOID: got %v", round.StopLossOID)
 	}
+	if round.StopLossTriggerPx != 2900 {
+		t.Errorf("round-trip StopLossTriggerPx: got %v", round.StopLossTriggerPx)
+	}
 	// omitempty: zero should drop from JSON.
 	b2, _ := json.Marshal(Position{Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long"})
 	if containsKey(b2, "stop_loss_oid") {
 		t.Errorf("zero StopLossOID should be omitted; got %s", b2)
+	}
+	if containsKey(b2, "stop_loss_trigger_px") {
+		t.Errorf("zero StopLossTriggerPx should be omitted; got %s", b2)
 	}
 }
 
@@ -370,6 +376,61 @@ func TestExecuteHyperliquidResult_StopLossFilledImmediately_NoTriggerPxIsNoOp(t 
 	}
 	if _, ok := state.Positions["ETH"]; !ok {
 		t.Errorf("Position should still exist when trigger_px is missing")
+	}
+}
+
+func TestReconcileHyperliquidPositions_RestingStopLossFillBooksPnL(t *testing.T) {
+	state := &StrategyState{
+		ID:       "hl-test-eth",
+		Platform: "hyperliquid",
+		Type:     "perps",
+		Cash:     1000,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol:            "ETH",
+				Quantity:          0.1,
+				AvgCost:           3200,
+				Side:              "long",
+				Multiplier:        1,
+				Leverage:          5,
+				OwnerStrategyID:   "hl-test-eth",
+				OpenedAt:          time.Now().UTC().Add(-time.Hour),
+				StopLossOID:       12345,
+				StopLossTriggerPx: 3104,
+			},
+		},
+	}
+	logger := silentStrategyLogger("hl-test-eth")
+	defer logger.Close()
+
+	changed := reconcileHyperliquidPositions(state, "ETH", nil, logger)
+	if !changed {
+		t.Fatalf("expected reconcile to report a state change")
+	}
+	if _, ok := state.Positions["ETH"]; ok {
+		t.Fatalf("position should be removed after tracked SL fill: %+v", state.Positions["ETH"])
+	}
+	if len(state.ClosedPositions) != 1 {
+		t.Fatalf("ClosedPositions=%d, want 1", len(state.ClosedPositions))
+	}
+	cp := state.ClosedPositions[0]
+	if cp.CloseReason != "stop_loss" {
+		t.Errorf("CloseReason=%q, want stop_loss", cp.CloseReason)
+	}
+	if cp.ClosePrice != 3104 {
+		t.Errorf("ClosePrice=%v, want 3104", cp.ClosePrice)
+	}
+	if cp.RealizedPnL >= 0 {
+		t.Errorf("RealizedPnL=%v should be negative for stopped long", cp.RealizedPnL)
+	}
+	if state.Cash >= 1000 {
+		t.Errorf("Cash=%v should decrease by the realized stop loss", state.Cash)
+	}
+	if len(state.TradeHistory) != 1 || state.TradeHistory[0].Side != "sell" {
+		t.Errorf("expected one synthetic sell trade, got %+v", state.TradeHistory)
+	}
+	if state.RiskState.TotalTrades != 1 || state.RiskState.LosingTrades != 1 {
+		t.Errorf("risk stats not updated for SL fill: %+v", state.RiskState)
 	}
 }
 
