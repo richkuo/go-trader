@@ -773,7 +773,8 @@ func TestCheckRisk_ConsecutiveLossesForceClose(t *testing.T) {
 }
 
 // TestCheckPortfolioRisk_WarningFires verifies that drawdown at 80% of limit
-// triggers a warning once but not again on second call.
+// triggers a warning on every call while the portfolio remains in the warning
+// band.
 func TestCheckPortfolioRisk_WarningFires(t *testing.T) {
 	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
 	prs := &PortfolioRiskState{PeakValue: 10000.0}
@@ -790,15 +791,19 @@ func TestCheckPortfolioRisk_WarningFires(t *testing.T) {
 		t.Error("expected WarningSent=true after warning fires")
 	}
 
-	// Second call at same drawdown — warning should NOT fire again.
-	_, _, warning, _ = CheckPortfolioRisk(prs, cfg, 7900.0, 0, 0, 0)
-	if warning {
-		t.Error("expected warning=false on second call (already sent)")
+	// Second call at same drawdown — warning should fire again so operators get
+	// a reminder each cycle while the account remains in the warning band.
+	_, _, warning, reason = CheckPortfolioRisk(prs, cfg, 7900.0, 0, 0, 0)
+	if !warning {
+		t.Error("expected warning=true on second call while still in warning band")
+	}
+	if reason == "" {
+		t.Error("expected non-empty reason for repeated warning")
 	}
 }
 
 // TestCheckPortfolioRisk_WarningResetOnRecovery verifies that recovery below
-// the warning threshold resets WarningSent so it can fire again.
+// the warning threshold resets WarningSent.
 func TestCheckPortfolioRisk_WarningResetOnRecovery(t *testing.T) {
 	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
 	prs := &PortfolioRiskState{PeakValue: 10000.0}
@@ -1783,6 +1788,14 @@ func TestCheckPortfolioRisk_MarginWarning(t *testing.T) {
 	}
 	if prs.KillSwitchActive {
 		t.Error("expected kill switch NOT active (warning, not fire)")
+	}
+
+	_, _, warning, reason = CheckPortfolioRisk(prs, cfg, 10000, 0, 210, 1000)
+	if !warning {
+		t.Errorf("expected repeated warning=true while margin drawdown remains above threshold; reason=%q", reason)
+	}
+	if !strings.Contains(reason, "margin") {
+		t.Errorf("expected repeated warning reason to reference margin; got %q", reason)
 	}
 }
 

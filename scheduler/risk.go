@@ -212,6 +212,9 @@ type KillSwitchEvent struct {
 // preserves the arithmetic invariant that (PeakValue, CurrentDrawdownPct) is
 // reconstructable, while still exposing the margin signal for operators and
 // the kill switch. The kill switch fires on whichever signal breaches first.
+// WarningSent is retained for persisted status visibility and is true while
+// either drawdown signal is in the warning band; notifications are emitted on
+// every cycle in that band.
 type PortfolioRiskState struct {
 	PeakValue                float64           `json:"peak_value"`
 	CurrentDrawdownPct       float64           `json:"current_drawdown_pct"`
@@ -456,26 +459,24 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 		equityWarn := equityDD > warnDrawdownPct
 		marginWarn := marginDD > warnDrawdownPct
 		if equityWarn || marginWarn {
-			if !prs.WarningSent {
-				prs.WarningSent = true
-				warning = true
-				switch {
-				case equityWarn && marginWarn:
-					// Both breached — surface both in the reason so a
-					// correlated move is visible to the operator. Ties go
-					// to margin (see kill-switch branch above).
-					reason = fmt.Sprintf("portfolio drawdown approaching kill switch limit %.1f%% (warn at %.1f%%): equity=%.1f%% (value=$%.2f, peak=$%.2f); perps margin=%.1f%% (unrealized loss=$%.2f, margin=$%.2f)",
-						cfg.MaxDrawdownPct, warnDrawdownPct, equityDD, totalValue, prs.PeakValue, marginDD, perpsUnrealizedLoss, perpsMargin)
-				case marginWarn:
-					reason = fmt.Sprintf("portfolio perps margin drawdown %.1f%% approaching kill switch limit %.1f%% (warn at %.1f%%, unrealized loss=$%.2f, margin=$%.2f)",
-						marginDD, cfg.MaxDrawdownPct, warnDrawdownPct, perpsUnrealizedLoss, perpsMargin)
-				default:
-					reason = fmt.Sprintf("portfolio drawdown %.1f%% approaching kill switch limit %.1f%% (warn at %.1f%%, value=$%.2f, peak=$%.2f)",
-						equityDD, cfg.MaxDrawdownPct, warnDrawdownPct, totalValue, prs.PeakValue)
-				}
+			prs.WarningSent = true
+			warning = true
+			switch {
+			case equityWarn && marginWarn:
+				// Both breached — surface both in the reason so a
+				// correlated move is visible to the operator. Ties go
+				// to margin (see kill-switch branch above).
+				reason = fmt.Sprintf("portfolio drawdown approaching kill switch limit %.1f%% (warn at %.1f%%): equity=%.1f%% (value=$%.2f, peak=$%.2f); perps margin=%.1f%% (unrealized loss=$%.2f, margin=$%.2f)",
+					cfg.MaxDrawdownPct, warnDrawdownPct, equityDD, totalValue, prs.PeakValue, marginDD, perpsUnrealizedLoss, perpsMargin)
+			case marginWarn:
+				reason = fmt.Sprintf("portfolio perps margin drawdown %.1f%% approaching kill switch limit %.1f%% (warn at %.1f%%, unrealized loss=$%.2f, margin=$%.2f)",
+					marginDD, cfg.MaxDrawdownPct, warnDrawdownPct, perpsUnrealizedLoss, perpsMargin)
+			default:
+				reason = fmt.Sprintf("portfolio drawdown %.1f%% approaching kill switch limit %.1f%% (warn at %.1f%%, value=$%.2f, peak=$%.2f)",
+					equityDD, cfg.MaxDrawdownPct, warnDrawdownPct, totalValue, prs.PeakValue)
 			}
 		} else {
-			// Recovered below warning threshold — reset so it can fire again.
+			// Recovered below warning threshold — no active warning band.
 			prs.WarningSent = false
 		}
 	}
