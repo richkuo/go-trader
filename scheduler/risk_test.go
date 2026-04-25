@@ -824,6 +824,42 @@ func TestCheckPortfolioRisk_WarningRepeatsAcrossCycles(t *testing.T) {
 	}
 }
 
+// TestCheckPortfolioRisk_WarnBandEnteredTransition verifies that the
+// prevWarningSent snapshot pattern used by main.go correctly identifies only
+// the first cycle as a warn-band entry. This prevents the kill-switch event
+// log from being flooded by repeat "warning" entries while drawdown stays in
+// the warn band.
+func TestCheckPortfolioRisk_WarnBandEnteredTransition(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	prs := &PortfolioRiskState{PeakValue: 10000.0}
+
+	for i := 0; i < 5; i++ {
+		prevWarningSent := prs.WarningSent
+		_, _, warning, _ := CheckPortfolioRisk(prs, cfg, 7900.0, 0, 0, 0)
+		enteredWarnBand := warning && !prevWarningSent
+		if i == 0 {
+			if !enteredWarnBand {
+				t.Error("cycle 0: expected enteredWarnBand=true on first entry")
+			}
+		} else {
+			if enteredWarnBand {
+				t.Errorf("cycle %d: expected enteredWarnBand=false while already in warn band", i)
+			}
+		}
+	}
+
+	// After recovery, re-entering the band should produce enteredWarnBand=true again.
+	CheckPortfolioRisk(prs, cfg, 8500.0, 0, 0, 0) // recover below warn threshold
+	prevWarningSent := prs.WarningSent
+	_, _, warning, _ := CheckPortfolioRisk(prs, cfg, 7900.0, 0, 0, 0)
+	if !warning {
+		t.Error("expected warning=true after re-crossing warn threshold")
+	}
+	if !warning || prevWarningSent {
+		t.Error("expected enteredWarnBand=true on re-entry after recovery")
+	}
+}
+
 // TestCheckPortfolioRisk_WarningResetOnRecovery verifies that recovery below
 // the warning threshold resets WarningSent.
 func TestCheckPortfolioRisk_WarningResetOnRecovery(t *testing.T) {

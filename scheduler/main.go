@@ -661,7 +661,12 @@ func main() {
 			// we snapshot before the call and restore if we're on a fallback
 			// cycle. Drawdown detection still runs against the frozen peak.
 			origPeak := state.PortfolioRisk.PeakValue
+			prevWarningSent := state.PortfolioRisk.WarningSent
 			portfolioAllowed, nb, portfolioWarning, portfolioReason := CheckPortfolioRisk(&state.PortfolioRisk, cfg.PortfolioRisk, totalPV, totalNotional, perpsLoss, perpsMargin)
+			// True only on the cycle that first enters the warn band; false on
+			// repeat cycles while still in band. Used to gate kill-switch event
+			// log appends — notifications still fire every cycle via portfolioWarning.
+			portfolioWarnBandEntered := portfolioWarning && !prevWarningSent
 			if usedPVFallback && state.PortfolioRisk.PeakValue > origPeak {
 				state.PortfolioRisk.PeakValue = origPeak
 			}
@@ -774,7 +779,13 @@ func main() {
 					source = "margin"
 					warnDD = state.PortfolioRisk.CurrentMarginDrawdownPct
 				}
-				addKillSwitchEvent(&state.PortfolioRisk, "warning", source, warnDD, totalPV, state.PortfolioRisk.PeakValue, portfolioReason)
+				// Only append a kill-switch event on the transition INTO the
+				// warn band. Notifications repeat every cycle (portfolioWarning)
+				// but the 50-entry ring buffer must not be evicted by repeating
+				// "warning" entries that drown out triggered/reset transitions.
+				if portfolioWarnBandEntered {
+					addKillSwitchEvent(&state.PortfolioRisk, "warning", source, warnDD, totalPV, state.PortfolioRisk.PeakValue, portfolioReason)
+				}
 				mu.Unlock()
 				warnMsg := fmt.Sprintf("**PORTFOLIO WARNING**\n%s", portfolioReason)
 				notifier.SendToAllChannels(warnMsg)
