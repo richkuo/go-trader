@@ -136,3 +136,80 @@ class TestFillExtraction:
         }
         result = self._run_execute_with_mock_response(sdk_response)
         assert result["execution"]["fill"] == {}
+
+
+class TestClassifySLResponse:
+    """Unit coverage for _classify_sl_response added in #421. The classifier
+    is the load-bearing piece that distinguishes a resting SL from an instant
+    fill or rejection — getting it wrong means either virtual state thinks
+    the position is open when it's flat, or the scheduler treats a happy
+    instant fill as a placement error."""
+
+    def _classify(self, response):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        return mod._classify_sl_response(response)
+
+    def test_resting(self):
+        kind, oid = self._classify({
+            "response": {"type": "order", "data": {"statuses": [
+                {"resting": {"oid": 12345}}
+            ]}}
+        })
+        assert kind == "resting"
+        assert oid == 12345
+
+    def test_resting_missing_oid_returns_zero(self):
+        kind, oid = self._classify({
+            "response": {"type": "order", "data": {"statuses": [
+                {"resting": {}}
+            ]}}
+        })
+        assert kind == "resting"
+        assert oid == 0
+
+    def test_filled_immediate_with_oid(self):
+        kind, oid = self._classify({
+            "response": {"type": "order", "data": {"statuses": [
+                {"filled": {"oid": 67890, "avgPx": "3000"}}
+            ]}}
+        })
+        assert kind == "filled"
+        assert oid == 67890
+
+    def test_filled_immediate_without_oid(self):
+        kind, oid = self._classify({
+            "response": {"type": "order", "data": {"statuses": [
+                {"filled": {}}
+            ]}}
+        })
+        assert kind == "filled"
+        assert oid == 0
+
+    def test_per_status_error(self):
+        kind, payload = self._classify({
+            "response": {"type": "order", "data": {"statuses": [
+                {"error": "Too many open trigger orders"}
+            ]}}
+        })
+        assert kind == "error"
+        assert "Too many" in payload
+
+    def test_missing_when_no_statuses(self):
+        kind, payload = self._classify({
+            "response": {"type": "order", "data": {"statuses": []}}
+        })
+        assert kind == "missing"
+        assert payload is None
+
+    def test_missing_when_completely_malformed(self):
+        kind, payload = self._classify({})
+        assert kind == "missing"
+        assert payload is None
+
+    def test_missing_when_status_is_not_dict(self):
+        kind, payload = self._classify({
+            "response": {"type": "order", "data": {"statuses": ["not a dict"]}}
+        })
+        assert kind == "missing"
+        assert payload is None

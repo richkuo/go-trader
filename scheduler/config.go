@@ -218,6 +218,7 @@ type StrategyConfig struct {
 	HTFFilter       bool                   `json:"htf_filter,omitempty"`       // higher-timeframe trend filter
 	AllowShorts     bool                   `json:"allow_shorts,omitempty"`     // perps only: opt-in to bidirectional execution — signal=-1 from flat opens a short, long+(-1) closes-and-flips. Default false preserves close-long-only behavior for strategies like triple_ema that emit -1 only as a long-exit (#328)
 	Leverage        float64                `json:"leverage,omitempty"`         // perps leverage multiplier (default 1 = no leverage); used for notional sizing and margin-based valuation (#254)
+	StopLossPct     float64                `json:"stop_loss_pct,omitempty"`    // HL perps only: % from entry to place a reduce-only stop-loss trigger (0 = disabled) (#412)
 	Params          map[string]interface{} `json:"params,omitempty"`           // custom strategy parameters passed to Python
 	ThetaHarvest    *ThetaHarvestConfig    `json:"theta_harvest,omitempty"`
 	FuturesConfig   *FuturesConfig         `json:"futures,omitempty"`
@@ -609,6 +610,19 @@ func ValidateConfig(cfg *Config) error {
 			}
 			if sc.Leverage < 1 || sc.Leverage > 100 {
 				errs = append(errs, fmt.Sprintf("%s: leverage must be in [1, 100], got %g", prefix, sc.Leverage))
+			}
+		}
+
+		// #421: bound-check stop_loss_pct to mirror the init wizard's range.
+		// A hand-edited config with stop_loss_pct=200 would otherwise silently
+		// place an SL at $0 (long) or 3× entry (short) — both never trigger,
+		// breaking the safety feature without any warning.
+		if sc.StopLossPct != 0 {
+			if sc.StopLossPct < 0 || sc.StopLossPct > 50 {
+				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct must be in [0, 50], got %g", prefix, sc.StopLossPct))
+			}
+			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 		}
 

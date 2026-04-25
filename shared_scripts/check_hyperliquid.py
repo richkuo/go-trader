@@ -8,6 +8,10 @@ Signal check mode (paper or live):
 
 Execution mode (live only, called by Go as phase 2):
     check_hyperliquid.py --execute --symbol=BTC --side=buy|sell --size=0.01 [--mode=live]
+        [--stop-loss-pct=3.0]         # optional: place a reduce-only SL trigger after fill (#412)
+        [--cancel-stop-loss-oid=OID]  # optional: cancel this trigger OID before the order
+        [--prev-pos-qty=0.5]          # optional: existing position qty being flipped, so the SL
+                                      # is sized against the *new* net position (total_sz - prev) (#421)
 """
 
 import sys
@@ -191,17 +195,82 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         sys.exit(1)
 
 
-def run_execute(symbol, side, size, mode):
-    """Place a live market order on Hyperliquid."""
+def _classify_sl_response(sdk_response: dict):
+    """Classify a trigger-order SDK response into one of:
+
+      ("resting", oid)        — order is now resting on the book (happy path)
+      ("filled",  oid_or_0)   — order filled at submit (price was already through the trigger)
+      ("error",   reason_str) — SDK reported an error in the status payload
+      ("missing", None)       — couldn't find a status entry (malformed response)
+
+    HL responses look like:
+      {"status":"ok","response":{"type":"order","data":{"statuses":[ <status> ]}}}
+
+    where <status> is one of `{"resting":{"oid":N}}`, `{"filled":{...,"oid":N}}`,
+    or `{"error":"..."}`. Distinguishing these matters because an instant-fill
+    means the position is already closed on-chain — surfacing it as "no resting
+    OID" the way the previous _extract_resting_oid did made the scheduler log
+    a placement error and leave virtual state thinking the position is open. (#421)
+    """
+    try:
+        statuses = sdk_response.get("response", {}).get("data", {}).get("statuses", [])
+        if not statuses:
+            return ("missing", None)
+        status = statuses[0] if isinstance(statuses[0], dict) else {}
+        if "resting" in status and isinstance(status["resting"], dict):
+            oid = status["resting"].get("oid")
+            return ("resting", int(oid) if oid is not None else 0)
+        if "filled" in status and isinstance(status["filled"], dict):
+            oid = status["filled"].get("oid")
+            return ("filled", int(oid) if oid is not None else 0)
+        if "error" in status:
+            return ("error", str(status["error"]))
+    except Exception as e:
+        return ("error", f"_classify_sl_response: {e}")
+    return ("missing", None)
+
+
+def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0):
+    """Place a live market order on Hyperliquid, optionally wrapping it with
+    a stop-loss trigger (open) or cancelling a stale SL trigger (close).
+
+    ``prev_pos_qty`` is the absolute quantity of any existing position being
+    flipped through (e.g. long→short). On a flip, total_sz from the fill is
+    closeQty + newQty, so the SL must be sized against ``total_sz - prev_pos_qty``
+    to avoid placing an oversized reduce-only trigger that HL may reject (#421).
+    For pure opens from flat (no flip), pass 0 — full total_sz is the new
+    position size."""
     if mode != "live":
         print(json.dumps({"error": "--execute requires --mode=live"}, cls=SafeEncoder))
         sys.exit(1)
+
+    # Track cancel state outside the main try/except so the scheduler still
+    # learns whether the stale SL was freed even if the subsequent market_open
+    # raises. Otherwise pos.StopLossOID points at a dead OID for another cycle
+    # and the next signal tries to cancel a non-existent order. (#421)
+    cancel_err = ""
+    cancel_attempted = cancel_oid > 0
+    cancel_succeeded = False
 
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
 
         is_buy = side.lower() == "buy"
+
+        # Cancel stale SL first: we want to free the trigger slot before
+        # possibly spending another one on the new entry. A cancel failure is
+        # non-fatal (SL may have already triggered on-chain, in which case the
+        # position sync will detect the close on the next cycle) but is
+        # surfaced in the JSON so the scheduler can log it.
+        if cancel_attempted:
+            try:
+                adapter.cancel_trigger_order(symbol, cancel_oid)
+                cancel_succeeded = True
+            except Exception as ce:
+                cancel_err = str(ce)
+                print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) failed: {ce}", file=sys.stderr)
+
         result = adapter.market_open(symbol, is_buy, size)
 
         # Extract fill info from SDK response structure:
@@ -226,7 +295,57 @@ def run_execute(symbol, side, size, mode):
         except Exception:
             pass
 
-        print(json.dumps({
+        # Place the stop-loss trigger on successful opens only. We only try to
+        # place an SL when the main order actually filled; a zero-size fill
+        # usually means the order was rejected and there's nothing to protect.
+        sl_err = ""
+        sl_filled_immediately = False
+        # Net new-position size: on a flip (long→short or vice versa) total_sz
+        # is closeQty + newQty, but reduce-only triggers must be sized against
+        # the resulting net position (#421).
+        net_new_sz = max(fill.get("total_sz", 0) - max(prev_pos_qty, 0.0), 0.0)
+        if stop_loss_pct > 0 and fill.get("avg_px", 0) > 0 and net_new_sz > 0:
+            entry_px = fill["avg_px"]
+            sl_size = net_new_sz
+            # Stop-loss fires against the opposite direction of the open:
+            # long open (is_buy=True)  → SL sells when price drops below entry*(1-pct).
+            # short open (is_buy=False) → SL buys when price rises above entry*(1+pct).
+            if is_buy:
+                trigger_px = entry_px * (1.0 - stop_loss_pct / 100.0)
+                sl_is_buy = False
+            else:
+                trigger_px = entry_px * (1.0 + stop_loss_pct / 100.0)
+                sl_is_buy = True
+            # Pre-round to HL's per-asset px tick so the recorded value matches
+            # the price the order actually rests at — the scheduler books PnL
+            # off this field on StopLossFilledImmediately (#421 review).
+            trigger_px = adapter.round_perps_trigger_px(symbol, trigger_px)
+            try:
+                sl_resp = adapter.place_stop_loss(symbol, sl_size, trigger_px, sl_is_buy)
+                kind, payload = _classify_sl_response(sl_resp)
+                if kind == "resting":
+                    fill["stop_loss_oid"] = payload
+                    fill["stop_loss_trigger_px"] = trigger_px
+                elif kind == "filled":
+                    # Price was already through the trigger — the SL filled at
+                    # submit time, so the position just got stopped out. No OID
+                    # to track. Surface as a distinct field so the scheduler
+                    # can reconcile virtual state instead of treating it as a
+                    # placement error and leaving the position recorded as open.
+                    sl_filled_immediately = True
+                    fill["stop_loss_trigger_px"] = trigger_px
+                    print(f"[WARN] stop-loss filled immediately at submit (price already through {trigger_px})", file=sys.stderr)
+                elif kind == "error":
+                    sl_err = f"place_stop_loss SDK error: {payload}"
+                    print(f"[WARN] {sl_err}", file=sys.stderr)
+                else:
+                    sl_err = f"place_stop_loss returned no usable status: {sl_resp}"
+                    print(f"[WARN] {sl_err}", file=sys.stderr)
+            except Exception as se:
+                sl_err = str(se)
+                print(f"[WARN] place_stop_loss({symbol}, {sl_size}, {trigger_px}) failed: {se}", file=sys.stderr)
+
+        out = {
             "execution": {
                 "action": "buy" if is_buy else "sell",
                 "symbol": symbol,
@@ -235,16 +354,32 @@ def run_execute(symbol, side, size, mode):
             },
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-        }, cls=SafeEncoder))
+        }
+        if cancel_err:
+            out["cancel_stop_loss_error"] = cancel_err
+        if cancel_succeeded:
+            out["cancel_stop_loss_succeeded"] = True
+        if sl_err:
+            out["stop_loss_error"] = sl_err
+        if sl_filled_immediately:
+            out["stop_loss_filled_immediately"] = True
+        print(json.dumps(out, cls=SafeEncoder))
 
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        print(json.dumps({
+        err_payload = {
             "execution": None,
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": str(e),
-        }, cls=SafeEncoder))
+        }
+        # Always surface cancel state on failure paths too so the scheduler
+        # can clear pos.StopLossOID even when the subsequent open raises (#421).
+        if cancel_err:
+            err_payload["cancel_stop_loss_error"] = cancel_err
+        if cancel_succeeded:
+            err_payload["cancel_stop_loss_succeeded"] = True
+        print(json.dumps(err_payload, cls=SafeEncoder))
         sys.exit(1)
 
 
@@ -258,8 +393,16 @@ def main():
         parser.add_argument("--side", required=True, choices=["buy", "sell"])
         parser.add_argument("--size", type=float, required=True)
         parser.add_argument("--mode", default="live")
+        parser.add_argument("--stop-loss-pct", type=float, default=0.0,
+                            help="place a reduce-only SL trigger this pct away from fill (#412)")
+        parser.add_argument("--cancel-stop-loss-oid", type=int, default=0,
+                            help="cancel this trigger OID before placing the new order (#412)")
+        parser.add_argument("--prev-pos-qty", type=float, default=0.0,
+                            help="abs qty of existing position being flipped, so SL is sized against the new net position (#421)")
         args = parser.parse_args()
-        run_execute(args.symbol, args.side, args.size, args.mode)
+        run_execute(args.symbol, args.side, args.size, args.mode,
+                    stop_loss_pct=args.stop_loss_pct, cancel_oid=args.cancel_stop_loss_oid,
+                    prev_pos_qty=args.prev_pos_qty)
     else:
         # Signal check mode: <strategy> <symbol> <timeframe> [--mode=paper|live] [--htf-filter]
         import argparse

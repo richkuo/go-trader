@@ -36,16 +36,18 @@ var hyperliquidLiveCloseScript = "shared_scripts/close_hyperliquid_position.py"
 // implementation is defaultHyperliquidLiveCloser, which shells out to
 // close_hyperliquid_position.py via RunHyperliquidClose.
 // When partialSz is nil, the full on-chain position is closed (#341). When
-// non-nil, submits a partial close for that coin quantity (#356).
-type HyperliquidLiveCloser func(symbol string, partialSz *float64) (*HyperliquidCloseResult, error)
+// non-nil, submits a partial close for that coin quantity (#356). When
+// cancelStopLossOIDs is non-empty, the script also cancels those resting
+// trigger orders before the close so per-strategy SL slots are freed (#421).
+type HyperliquidLiveCloser func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error)
 
 // defaultHyperliquidLiveCloser is the production close implementation. Writes
 // stderr to os.Stderr rather than a per-strategy logger — kill switch is a
 // system-level event, not strategy-scoped. Relies on RunHyperliquidClose's
 // uniform error contract: any non-nil err means the close was not confirmed
 // by the SDK and the kill switch must stay latched.
-func defaultHyperliquidLiveCloser(symbol string, partialSz *float64) (*HyperliquidCloseResult, error) {
-	result, stderr, err := RunHyperliquidClose(hyperliquidLiveCloseScript, symbol, partialSz)
+func defaultHyperliquidLiveCloser(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+	result, stderr, err := RunHyperliquidClose(hyperliquidLiveCloseScript, symbol, partialSz, cancelStopLossOIDs)
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "[hl-close] %s stderr: %s\n", symbol, stderr)
 	}
@@ -272,6 +274,11 @@ func reconcileHyperliquidPositions(stratState *StrategyState, sym string, positi
 		// Position in state but not on-chain — closed externally.
 		logger.Info("hl-sync: %s position (%.6f %s) no longer on-chain, removing",
 			sym, statePos.Quantity, statePos.Side)
+		if statePos.StopLossOID > 0 && statePos.StopLossTriggerPx > 0 {
+			if recordPerpsStopLossClose(stratState, sym, statePos.StopLossTriggerPx, "stop_loss", logger) {
+				return true
+			}
+		}
 		// Close price is unknown — the fill happened off-scheduler between
 		// reconcile cycles. Record 0 in both fields; downstream analytics
 		// that compute avg close price / slippage must filter
@@ -560,7 +567,12 @@ func (r HyperliquidLiveCloseReport) SortedErrorCoins() []string {
 // remaining unprocessed coins are added to Errors so the kill switch stays
 // latched and retries next cycle. Pass context.Background() to disable the
 // overall bound.
-func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLiveAll []StrategyConfig, closer HyperliquidLiveCloser) HyperliquidLiveCloseReport {
+//
+// stopLossOIDsByCoin carries any resting per-trade SL trigger OIDs that
+// should be cancelled before the close fires, so kill-switch flattening
+// doesn't leave orphan triggers consuming HL's 10/day account-wide cap
+// (#421). nil/empty disables the cancel; the closer is otherwise unchanged.
+func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLiveAll []StrategyConfig, closer HyperliquidLiveCloser, stopLossOIDsByCoin map[string][]int64) HyperliquidLiveCloseReport {
 	report := HyperliquidLiveCloseReport{Errors: make(map[string]error)}
 
 	tradedCoins := make(map[string]bool)
@@ -590,7 +602,11 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 			report.Errors[p.Coin] = fmt.Errorf("close budget exhausted before submit: %w", err)
 			continue
 		}
-		result, err := closer(p.Coin, nil)
+		var slOIDs []int64
+		if stopLossOIDsByCoin != nil {
+			slOIDs = stopLossOIDsByCoin[p.Coin]
+		}
+		result, err := closer(p.Coin, nil, slOIDs)
 		if err != nil {
 			report.Errors[p.Coin] = err
 			continue
@@ -834,9 +850,15 @@ func runPendingHyperliquidCircuitCloses(
 	}
 
 	// Phase 3: re-snapshot jobs (may now include recovered entries).
+	// Also snapshot per-symbol StopLossOID so the closer can cancel any
+	// resting SL trigger before flattening — leaving them orphaned would
+	// burn one of HL's 10/day account-wide trigger slots per CB fire and
+	// silently degrade the safety feature for every other strategy on the
+	// same wallet (#421 review point 1).
 	type job struct {
 		stratID string
 		pending PendingCircuitClose
+		slOIDs  map[string][]int64
 	}
 	var jobs []job
 	mu.RLock()
@@ -848,7 +870,13 @@ func runPendingHyperliquidCircuitCloses(
 		if p == nil || len(p.Symbols) == 0 {
 			continue
 		}
-		jobs = append(jobs, job{id, *p})
+		slOIDs := make(map[string][]int64, len(p.Symbols))
+		for _, c := range p.Symbols {
+			if pos, ok := ss.Positions[c.Symbol]; ok && pos != nil && pos.StopLossOID > 0 {
+				slOIDs[c.Symbol] = []int64{pos.StopLossOID}
+			}
+		}
+		jobs = append(jobs, job{id, *p, slOIDs})
 	}
 	mu.RUnlock()
 
@@ -903,13 +931,27 @@ func runPendingHyperliquidCircuitCloses(
 				continue
 			}
 			partial := sz
-			_, err := closer(c.Symbol, &partial)
+			cancelOIDs := j.slOIDs[c.Symbol]
+			result, err := closer(c.Symbol, &partial, cancelOIDs)
 			if err != nil {
 				fmt.Printf("[CRITICAL] hl-circuit-close: strategy %s coin %s sz=%.6f failed: %v\n", j.stratID, c.Symbol, sz, err)
 				allOK = false
 				break
 			}
 			fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s submitted reduce-only close sz=%.6f\n", j.stratID, c.Symbol, sz)
+			// Clear the StopLossOID under Lock when the cancel went
+			// through, so a follow-up cycle doesn't try to cancel the
+			// already-cancelled trigger.
+			cancelOID := firstPositiveStopLossOID(cancelOIDs)
+			if cancelOID > 0 && result != nil && result.CancelStopLossSucceeded {
+				mu.Lock()
+				if ss := state.Strategies[j.stratID]; ss != nil {
+					if pos, ok := ss.Positions[c.Symbol]; ok && pos != nil && pos.StopLossOID == cancelOID {
+						pos.StopLossOID = 0
+					}
+				}
+				mu.Unlock()
+			}
 		}
 
 		if allOK {
@@ -920,4 +962,25 @@ func runPendingHyperliquidCircuitCloses(
 			mu.Unlock()
 		}
 	}
+}
+
+func firstPositiveStopLossOID(oids []int64) int64 {
+	for _, oid := range oids {
+		if oid > 0 {
+			return oid
+		}
+	}
+	return 0
+}
+
+func appendUniquePositiveStopLossOID(oids []int64, oid int64) []int64 {
+	if oid <= 0 {
+		return oids
+	}
+	for _, existing := range oids {
+		if existing == oid {
+			return oids
+		}
+	}
+	return append(oids, oid)
 }

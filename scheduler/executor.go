@@ -44,10 +44,12 @@ type HyperliquidResult struct {
 
 // HyperliquidFill holds fill details from a live Hyperliquid order.
 type HyperliquidFill struct {
-	AvgPx   float64 `json:"avg_px"`
-	TotalSz float64 `json:"total_sz"`
-	OID     int64   `json:"oid,omitempty"` // exchange order ID
-	Fee     float64 `json:"fee,omitempty"` // exchange fee (if available)
+	AvgPx             float64 `json:"avg_px"`
+	TotalSz           float64 `json:"total_sz"`
+	OID               int64   `json:"oid,omitempty"`                  // exchange order ID
+	Fee               float64 `json:"fee,omitempty"`                  // exchange fee (if available)
+	StopLossOID       int64   `json:"stop_loss_oid,omitempty"`        // resting trigger OID for the per-trade SL placed alongside the fill (#412)
+	StopLossTriggerPx float64 `json:"stop_loss_trigger_px,omitempty"` // SL trigger price (for logs/audit) (#412)
 }
 
 // HyperliquidExecution is the execution block from check_hyperliquid.py --execute output.
@@ -60,10 +62,14 @@ type HyperliquidExecution struct {
 
 // HyperliquidExecuteResult is the top-level JSON from check_hyperliquid.py --execute.
 type HyperliquidExecuteResult struct {
-	Execution *HyperliquidExecution `json:"execution"`
-	Platform  string                `json:"platform"`
-	Timestamp string                `json:"timestamp"`
-	Error     string                `json:"error,omitempty"`
+	Execution                 *HyperliquidExecution `json:"execution"`
+	Platform                  string                `json:"platform"`
+	Timestamp                 string                `json:"timestamp"`
+	Error                     string                `json:"error,omitempty"`
+	CancelStopLossError       string                `json:"cancel_stop_loss_error,omitempty"`       // non-fatal: SL cancel before order failed (#412)
+	CancelStopLossSucceeded   bool                  `json:"cancel_stop_loss_succeeded,omitempty"`   // SL cancel went through (set even if subsequent open failed) so caller can clear stale pos.StopLossOID (#421)
+	StopLossError             string                `json:"stop_loss_error,omitempty"`              // non-fatal: SL placement after fill failed (#412)
+	StopLossFilledImmediately bool                  `json:"stop_loss_filled_immediately,omitempty"` // SL trigger filled at submit (price already through the level) — position is flat on-chain (#421)
 }
 
 // RunPythonScript executes a Python script and returns stdout/stderr.
@@ -198,7 +204,14 @@ func RunHyperliquidCheck(script string, args []string) (*HyperliquidResult, stri
 }
 
 // RunHyperliquidExecute runs check_hyperliquid.py in execute mode (live orders).
-func RunHyperliquidExecute(script, symbol, side string, size float64) (*HyperliquidExecuteResult, string, error) {
+// stopLossPct > 0 requests a reduce-only SL trigger after a successful open.
+// cancelStopLossOID > 0 cancels an existing trigger before placing the new order
+// (used on signal-based closes so the stale SL doesn't race the close fill).
+// prevPosQty > 0 indicates a flip is in progress: total_sz from the fill is
+// closeQty + newQty, and the SL must be sized against (total_sz - prevPosQty)
+// or HL will reject the oversized reduce-only trigger (#421). These trailing
+// args are HL-specific: OKX/TopStep have their own execute helpers and signatures.
+func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64) (*HyperliquidExecuteResult, string, error) {
 	args := []string{
 		"--execute",
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -206,14 +219,30 @@ func RunHyperliquidExecute(script, symbol, side string, size float64) (*Hyperliq
 		fmt.Sprintf("--size=%g", size),
 		"--mode=live",
 	}
+	if stopLossPct > 0 {
+		args = append(args, fmt.Sprintf("--stop-loss-pct=%g", stopLossPct))
+	}
+	if cancelStopLossOID > 0 {
+		args = append(args, fmt.Sprintf("--cancel-stop-loss-oid=%d", cancelStopLossOID))
+	}
+	if prevPosQty > 0 {
+		args = append(args, fmt.Sprintf("--prev-pos-qty=%g", prevPosQty))
+	}
 	stdout, stderr, err := RunPythonScript(script, args)
-	stderrStr := string(stderr)
-	if err != nil {
+	return parseHyperliquidExecuteOutput(stdout, string(stderr), err)
+}
+
+// parseHyperliquidExecuteOutput turns subprocess output into
+// (*HyperliquidExecuteResult, stderr, error). Extracted from RunHyperliquidExecute
+// so Go CI (no .venv) can test the parsing contract without spawning Python
+// — same pattern as parseHyperliquidCloseOutput (#341).
+func parseHyperliquidExecuteOutput(stdout []byte, stderrStr string, runErr error) (*HyperliquidExecuteResult, string, error) {
+	if runErr != nil {
 		var result HyperliquidExecuteResult
 		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
 			return &result, stderrStr, nil
 		}
-		return nil, stderrStr, fmt.Errorf("execute error: %w (stderr: %s)", err, stderrStr)
+		return nil, stderrStr, fmt.Errorf("execute error: %w (stderr: %s)", runErr, stderrStr)
 	}
 
 	var result HyperliquidExecuteResult
@@ -248,16 +277,24 @@ type HyperliquidClose struct {
 
 // HyperliquidCloseResult is the top-level JSON from close_hyperliquid_position.py.
 // Used by the portfolio kill switch to liquidate on-chain positions (#341).
+// CancelStopLossSucceeded / CancelStopLossError surface the optional
+// pre-close trigger-cancel that frees `Position.StopLossOID` when a CB or
+// kill switch flattens a strategy carrying a resting SL (#421).
 type HyperliquidCloseResult struct {
-	Close     *HyperliquidClose `json:"close"`
-	Platform  string            `json:"platform"`
-	Timestamp string            `json:"timestamp"`
-	Error     string            `json:"error,omitempty"`
+	Close                   *HyperliquidClose `json:"close"`
+	Platform                string            `json:"platform"`
+	Timestamp               string            `json:"timestamp"`
+	Error                   string            `json:"error,omitempty"`
+	CancelStopLossError     string            `json:"cancel_stop_loss_error,omitempty"`
+	CancelStopLossSucceeded bool              `json:"cancel_stop_loss_succeeded,omitempty"`
 }
 
 // RunHyperliquidClose runs close_hyperliquid_position.py to submit a reduce-only
 // market close for a single coin (#341). When partialSz is non-nil, submits a
 // partial close for that coin quantity (#356 shared-wallet circuit breakers).
+// When cancelStopLossOIDs is non-empty, the script first cancels those resting
+// trigger orders so per-strategy CB / kill-switch closes don't leave orphaned SLs
+// burning HL's 10/day account-wide trigger-order cap (#421).
 //
 // Contract (load-bearing for kill-switch correctness): a non-nil error is
 // returned for ANY failure path — non-zero subprocess exit, malformed JSON,
@@ -266,13 +303,18 @@ type HyperliquidCloseResult struct {
 // (result, nil) for "exit 1 + parseable JSON with error" which forced every
 // caller to also inspect result.Error and conflated subprocess success with
 // JSON-error success.
-func RunHyperliquidClose(script, symbol string, partialSz *float64) (*HyperliquidCloseResult, string, error) {
+func RunHyperliquidClose(script, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, string, error) {
 	args := []string{
 		fmt.Sprintf("--symbol=%s", symbol),
 		"--mode=live",
 	}
 	if partialSz != nil {
 		args = append(args, fmt.Sprintf("--sz=%s", strconv.FormatFloat(*partialSz, 'f', -1, 64)))
+	}
+	for _, oid := range cancelStopLossOIDs {
+		if oid > 0 {
+			args = append(args, fmt.Sprintf("--cancel-stop-loss-oid=%d", oid))
+		}
 	}
 	stdout, stderr, runErr := RunPythonScript(script, args)
 	return parseHyperliquidCloseOutput(stdout, string(stderr), runErr)

@@ -10,6 +10,7 @@ Environment variables:
     HYPERLIQUID_TESTNET=1        — use testnet instead of mainnet
 """
 
+import math
 import os
 import sys
 import time
@@ -29,6 +30,29 @@ except ImportError:
     _HLInfo = None
     _HLExchange = None
     _SDK_AVAILABLE = False
+
+
+def _round_perps_px(px: float, sz_decimals: int) -> float:
+    """Round a perps price to HL's tick rules.
+
+    Two constraints apply simultaneously:
+      - At most (MAX_DECIMALS - sz_decimals) decimal places, where
+        MAX_DECIMALS=6 for perps. Higher-priced assets (BTC sz_decimals=5)
+        therefore allow only 1 decimal of price precision.
+      - At most 5 significant figures.
+
+    The earlier fixed-6-decimal round was fine for tiny-priced coins but
+    routinely produced HL "price has too many decimals" rejections on
+    majors, leaving the position unprotected with the SL slot consumed
+    (#421 review point 5).
+    """
+    if px <= 0:
+        return px
+    px_decimals = max(0, 6 - sz_decimals)
+    log = math.floor(math.log10(abs(px)))
+    sig_decimals = max(0, 5 - 1 - int(log))
+    decimals = min(px_decimals, sig_decimals)
+    return round(px, decimals)
 
 
 class HyperliquidExchangeAdapter:
@@ -228,3 +252,74 @@ class HyperliquidExchangeAdapter:
                 "market_close requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
         return self._exchange.market_close(symbol, sz)
+
+    def round_perps_trigger_px(self, symbol: str, px: float) -> float:
+        """Public wrapper around HL's per-asset price-tick rounding.
+
+        Callers that need to record the post-rounding trigger price (for PnL
+        bookkeeping when the SL fills) can pre-round before calling
+        ``place_stop_loss``; rounding is idempotent.
+        """
+        sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3) if self._info else 3
+        return _round_perps_px(px, sz_decimals)
+
+    def place_stop_loss(
+        self,
+        symbol: str,
+        sz: float,
+        trigger_px: float,
+        is_buy: bool,
+        limit_slippage_pct: float = 5.0,
+    ) -> dict:
+        """Place a reduce-only stop-loss trigger order (#412).
+
+        ``is_buy`` is the direction of the triggered order itself — a long
+        position's stop-loss is a SELL (is_buy=False); a short's is a BUY
+        (is_buy=True). HL requires a ``limit_px`` as the worst acceptable
+        fill price; a market-trigger uses a wide band off the trigger
+        (default 5%) so slippage around the stop doesn't reject the fill.
+
+        HL enforces a 10 trigger-orders-per-day cap per account (resets 00:00
+        UTC). Cap exhaustion surfaces as an order-status error string (e.g.
+        "Too many open trigger orders") in the SDK response; the scheduler
+        detects it via isHLTriggerCapRejection and escalates to CRITICAL +
+        notifier — no proactive client-side counter is required.
+        """
+        if not self._exchange:
+            raise RuntimeError(
+                "place_stop_loss requires live mode (set HYPERLIQUID_SECRET_KEY)"
+            )
+        if symbol not in self._info.asset_to_sz_decimals:
+            print(f"[WARN] sz_decimals not found for {symbol}, defaulting to 3", file=sys.stderr)
+        sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3)
+        sz = round(sz, sz_decimals)
+        if sz <= 0:
+            raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
+        if trigger_px <= 0:
+            raise ValueError(f"trigger_px must be > 0, got {trigger_px}")
+
+        slip = max(limit_slippage_pct, 0.0) / 100.0
+        if is_buy:
+            limit_px = trigger_px * (1.0 + slip)
+        else:
+            limit_px = trigger_px * (1.0 - slip)
+        # HL perps: prices use at most (MAX_DECIMALS - sz_decimals) decimals
+        # AND at most 5 significant figures. Fixed-6-decimal rounding here
+        # was rejected by HL on high-priced assets like BTC (sz_decimals=5,
+        # so px_decimals=1) — the trigger sat resting only because the order
+        # got rejected (#421 review point 5).
+        limit_px = _round_perps_px(limit_px, sz_decimals)
+        trigger_px = _round_perps_px(trigger_px, sz_decimals)
+
+        order_type = {"trigger": {"triggerPx": trigger_px, "isMarket": True, "tpsl": "sl"}}
+        return self._exchange.order(
+            symbol, is_buy, sz, limit_px, order_type, reduce_only=True
+        )
+
+    def cancel_trigger_order(self, symbol: str, oid: int) -> dict:
+        """Cancel a resting trigger order by OID (#412)."""
+        if not self._exchange:
+            raise RuntimeError(
+                "cancel_trigger_order requires live mode (set HYPERLIQUID_SECRET_KEY)"
+            )
+        return self._exchange.cancel(symbol, int(oid))

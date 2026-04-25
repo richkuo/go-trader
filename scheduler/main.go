@@ -717,6 +717,27 @@ func main() {
 			// early-returns false while KillSwitchActive is true) and retries.
 			var plan KillSwitchClosePlan
 			if killSwitchFired {
+				// Snapshot per-coin StopLossOIDs so the kill-switch close
+				// path can cancel resting SLs before flattening, freeing
+				// HL's 10/day account-wide trigger-order cap (#421 review
+				// point 1). Sole-source: every live HL strategy's Position
+				// for the coin it trades. Shared coins may have multiple
+				// per-strategy SL triggers, so preserve every OID.
+				hlSLOIDs := map[string][]int64{}
+				mu.RLock()
+				for _, sc := range hlLiveAll {
+					sym := hyperliquidSymbol(sc.Args)
+					if sym == "" {
+						continue
+					}
+					if ss, ok := state.Strategies[sc.ID]; ok && ss != nil {
+						if pos, pok := ss.Positions[sym]; pok && pos != nil && pos.StopLossOID > 0 {
+							hlSLOIDs[sym] = appendUniquePositiveStopLossOID(hlSLOIDs[sym], pos.StopLossOID)
+						}
+					}
+				}
+				mu.RUnlock()
+
 				inputs := KillSwitchCloseInputs{
 					HLAddr:          hlAddr,
 					HLStateFetched:  hlStateFetched,
@@ -724,6 +745,7 @@ func main() {
 					HLLiveAll:       hlLiveAll,
 					HLCloser:        defaultHyperliquidLiveCloser,
 					HLFetcher:       defaultHLStateFetcher,
+					HLStopLossOIDs:  hlSLOIDs,
 					OKXLiveAllPerps: okxLivePerps,
 					OKXLiveAllSpot:  okxLiveSpot,
 					OKXCloser:       defaultOKXLiveCloser,
@@ -949,6 +971,7 @@ func main() {
 					var hlPosQty float64
 					var hlPosSide string
 					var hlAvgCost float64
+					var hlStopLossOID int64
 					if sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
 						hlCash = stratState.Cash
 						if sym := hyperliquidSymbol(sc.Args); sym != "" {
@@ -956,6 +979,7 @@ func main() {
 								hlPosQty = pos.Quantity
 								hlPosSide = pos.Side
 								hlAvgCost = pos.AvgCost
+								hlStopLossOID = pos.StopLossOID
 							}
 						}
 					}
@@ -1119,10 +1143,26 @@ func main() {
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
-								if er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, logger); ok2 {
+								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, notifier, logger)
+								if ok2 {
 									execResult = er
 								} else {
 									liveExecFailed = true
+									// Even on failure, if the Python side
+									// confirmed the stale-SL cancel went
+									// through, drop the dead OID so the next
+									// cycle doesn't try to cancel it again.
+									if er != nil && er.CancelStopLossSucceeded && hlStopLossOID > 0 {
+										sym := hyperliquidSymbol(sc.Args)
+										if sym != "" {
+											mu.Lock()
+											if pos, ok3 := stratState.Positions[sym]; ok3 && pos.StopLossOID == hlStopLossOID {
+												pos.StopLossOID = 0
+												logger.Info("cleared stale SL OID=%d after open failed but cancel succeeded", hlStopLossOID)
+											}
+											mu.Unlock()
+										}
+									}
 								}
 							}
 							if !liveExecFailed {
@@ -1820,7 +1860,7 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, logger *S
 // Trade record, leaving state silently behind actual exchange holdings. See
 // issue #298 — 0.716 ETH of live fills were lost this way because the
 // "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
-func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, existingStopLossOID int64, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	if reason := PerpsOrderSkipReason(result.Signal, posSide, sc.AllowShorts); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
@@ -1842,21 +1882,102 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	if !isBuy {
 		side = "sell"
 	}
-	logger.Info("Placing live %s %s size=%.6f", side, result.Symbol, size)
 
-	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size)
+	// Stop-loss wiring (#412):
+	//   - cancel stale SL whenever a position exists with a known OID
+	//     (close path must free the trigger slot; flip path too, since the
+	//     new side gets a fresh SL below).
+	//   - place a new SL after the open leg unless the action is a pure close
+	//     (signal=-1 on a long without AllowShorts → no new position to
+	//     protect). Skip for non-HL platforms or when pct<=0.
+	//   - on a flip, pass prev_pos_qty so the SL is sized against the new
+	//     net position (#421) — total_sz alone is closeQty+newQty.
+	pureClose := result.Signal == -1 && posSide == "long" && !sc.AllowShorts
+	// flipping predicate must mirror perpsLiveOrderSize exactly — both branches
+	// require sc.AllowShorts. A long-only strategy that inherited a short
+	// position (e.g. AllowShorts toggled true→false between restarts) would
+	// otherwise see prevPosQty=posQty here while perpsLiveOrderSize sized it
+	// as a fresh open without that offset, leaving net_new_sz negative and
+	// the SL silently undersized (#421 review point 6).
+	flipping := sc.AllowShorts && posQty > 0 && ((result.Signal == 1 && posSide == "short") || (result.Signal == -1 && posSide == "long"))
+	var cancelOID int64
+	if existingStopLossOID > 0 && posQty > 0 {
+		cancelOID = existingStopLossOID
+	}
+	var slPct float64
+	if !pureClose && sc.StopLossPct > 0 && sc.Platform == "hyperliquid" {
+		slPct = sc.StopLossPct
+	}
+	var prevPosQty float64
+	if flipping {
+		prevPosQty = posQty
+	}
+
+	// Only log SL fields when at least one is set, to keep the common
+	// no-stop-loss case quiet.
+	if slPct > 0 || cancelOID > 0 || prevPosQty > 0 {
+		logger.Info("Placing live %s %s size=%.6f (sl_pct=%.2f cancel_oid=%d prev_pos_qty=%.6f)",
+			side, result.Symbol, size, slPct, cancelOID, prevPosQty)
+	} else {
+		logger.Info("Placing live %s %s size=%.6f", side, result.Symbol, size)
+	}
+
+	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
+	// On failure, the Python script may still report cancel_stop_loss_succeeded
+	// — propagate execResult to the caller so the stale OID can be cleared
+	// even when the open leg fails (#421). Caller treats ok=false as "do not
+	// apply state mutations" but inspects execResult.CancelStopLossSucceeded
+	// before discarding it.
 	if err != nil {
 		logger.Error("Live execute failed: %v", err)
-		return nil, false
+		return execResult, false
 	}
 	if execResult.Error != "" {
 		logger.Error("Live execute returned error: %s", execResult.Error)
-		return nil, false
+		return execResult, false
+	}
+	if execResult.CancelStopLossError != "" {
+		logger.Warn("SL cancel failed (non-fatal): %s", execResult.CancelStopLossError)
+	}
+	if execResult.StopLossError != "" {
+		// Surface HL trigger-cap exhaustion as CRITICAL — the position is
+		// live without protection, and one noisy strategy can deplete the
+		// 10/day account-wide pool for everything else (#421 review #5).
+		// Also route to notifier so operators see the unprotected-position
+		// state in chat, not just in stderr logs (#421 review point 7,
+		// mirrors the per-strategy CB notifier precedent in #415).
+		if isHLTriggerCapRejection(execResult.StopLossError) {
+			logger.Error("CRITICAL: HL trigger-cap rejected SL placement for %s — position is unprotected: %s",
+				result.Symbol, execResult.StopLossError)
+			if notifier != nil && notifier.HasBackends() {
+				msg := fmt.Sprintf("**HL TRIGGER-CAP EXHAUSTED** [%s] %s position is UNPROTECTED — SL placement rejected: %s",
+					sc.ID, result.Symbol, execResult.StopLossError)
+				notifier.SendToAllChannels(msg)
+				notifier.SendOwnerDM(msg)
+			}
+		} else {
+			logger.Warn("SL placement failed (non-fatal): %s", execResult.StopLossError)
+		}
+	}
+	if execResult.StopLossFilledImmediately {
+		logger.Warn("SL trigger filled at submit (price was already through the level) for %s — position is flat on-chain", result.Symbol)
 	}
 	return execResult, true
+}
+
+// isHLTriggerCapRejection detects HL's "10 trigger-orders-per-day" rejection
+// strings so the scheduler can escalate them above WARN. The exact wording
+// has historically been one of "Too many open trigger orders" or "trigger
+// order rate limit"; we match either substring case-insensitively. Conservative
+// rather than exhaustive — false negatives (logged as WARN) are acceptable;
+// we only escalate on confirmed cap-rejection language to avoid CRITICAL
+// noise on unrelated failures.
+func isHLTriggerCapRejection(errStr string) bool {
+	lower := strings.ToLower(errStr)
+	return strings.Contains(lower, "trigger order") && (strings.Contains(lower, "too many") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "max"))
 }
 
 // executeHyperliquidResult applies a hyperliquid result to state. Must be called under Lock.
@@ -1897,6 +2018,37 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 	}
 	if trades > 0 && fillOID != "" {
 		logger.Info("Exchange order ID: %s", fillOID)
+	}
+
+	// Stamp the SL trigger OID onto the freshly-opened Position so the next
+	// signal-based close can cancel it (#412). Only the open side of a flip
+	// carries a new SL — the close leg deleted its Position before the open
+	// leg created the new one, so we attach to whatever Position sits at the
+	// symbol now.
+	if trades > 0 && execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil {
+		if slOID := execResult.Execution.Fill.StopLossOID; slOID > 0 {
+			if pos, ok := s.Positions[result.Symbol]; ok {
+				pos.StopLossOID = slOID
+				pos.StopLossTriggerPx = execResult.Execution.Fill.StopLossTriggerPx
+				logger.Info("SL trigger placed oid=%d @ $%.4f", slOID, execResult.Execution.Fill.StopLossTriggerPx)
+			}
+		}
+	}
+
+	// Reconcile instant-fill stop-loss: when price was already through the
+	// trigger at submit, HL fills the SL immediately and the on-chain
+	// position is flat. Without this branch, virtual state would carry a
+	// phantom open position with StopLossOID=0 until the next reconcile
+	// cycle silently delete()s it via recordClosedPosition with PnL=0,
+	// losing the actual stop-loss in trade history (#421 review point 2).
+	// We synthesize the close at trigger_px so virtual state matches and
+	// the realized loss is booked correctly.
+	if trades > 0 && execResult != nil && execResult.StopLossFilledImmediately &&
+		execResult.Execution != nil && execResult.Execution.Fill != nil {
+		triggerPx := execResult.Execution.Fill.StopLossTriggerPx
+		if recordPerpsStopLossClose(s, result.Symbol, triggerPx, "stop_loss_immediate", logger) {
+			trades++
+		}
 	}
 
 	detail := ""

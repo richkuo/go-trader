@@ -7,14 +7,16 @@ import (
 
 // Position represents a spot, futures, or perps position.
 type Position struct {
-	Symbol          string    `json:"symbol"`
-	Quantity        float64   `json:"quantity"`
-	AvgCost         float64   `json:"avg_cost"`
-	Side            string    `json:"side"`                        // "long" or "short"
-	Multiplier      float64   `json:"multiplier,omitempty"`        // contract multiplier (0 = spot, >0 = futures/perps PnL branch; canonical perps value is 1 — do NOT set to leverage)
-	Leverage        float64   `json:"leverage,omitempty"`          // perps leverage (informational; PnL is not scaled by leverage) (#254)
-	OwnerStrategyID string    `json:"owner_strategy_id,omitempty"` // strategy that opened this position
-	OpenedAt        time.Time `json:"opened_at,omitempty"`         // when the position was opened
+	Symbol            string    `json:"symbol"`
+	Quantity          float64   `json:"quantity"`
+	AvgCost           float64   `json:"avg_cost"`
+	Side              string    `json:"side"`                           // "long" or "short"
+	Multiplier        float64   `json:"multiplier,omitempty"`           // contract multiplier (0 = spot, >0 = futures/perps PnL branch; canonical perps value is 1 — do NOT set to leverage)
+	Leverage          float64   `json:"leverage,omitempty"`             // perps leverage (informational; PnL is not scaled by leverage) (#254)
+	OwnerStrategyID   string    `json:"owner_strategy_id,omitempty"`    // strategy that opened this position
+	OpenedAt          time.Time `json:"opened_at,omitempty"`            // when the position was opened
+	StopLossOID       int64     `json:"stop_loss_oid,omitempty"`        // HL perps: resting trigger-order OID for the per-trade stop-loss (0 = none) (#412)
+	StopLossTriggerPx float64   `json:"stop_loss_trigger_px,omitempty"` // HL perps: trigger price for the resting stop-loss (0 = unknown) (#421)
 }
 
 // ClosedPosition is a historical record of a position after it closed (#288).
@@ -99,6 +101,61 @@ func recordClosedPosition(s *StrategyState, pos *Position, closePrice, realizedP
 		CloseReason:     reason,
 		DurationSeconds: duration,
 	})
+}
+
+// recordPerpsStopLossClose books a tracked perps stop-loss fill and removes the
+// virtual position. Used both when HL reports an immediate trigger fill at
+// submit time and when a previously-resting trigger has fired between cycles.
+func recordPerpsStopLossClose(s *StrategyState, symbol string, triggerPx float64, reason string, logger *StrategyLogger) bool {
+	if triggerPx <= 0 {
+		return false
+	}
+	pos, ok := s.Positions[symbol]
+	if !ok || pos == nil {
+		return false
+	}
+
+	now := time.Now().UTC()
+	qty := pos.Quantity
+	avgCost := pos.AvgCost
+	side := pos.Side
+	var pnl float64
+	if side == "long" {
+		pnl = qty * (triggerPx - avgCost)
+	} else {
+		pnl = qty * (avgCost - triggerPx)
+	}
+	feePlatform := s.Platform
+	if s.Platform == "okx" && s.Type == "perps" {
+		feePlatform = "okx-perps"
+	}
+	fee := CalculatePlatformSpotFee(feePlatform, qty*triggerPx)
+	pnl -= fee
+	s.Cash += pnl
+
+	closeSide := "sell"
+	if side == "short" {
+		closeSide = "buy"
+	}
+	trade := Trade{
+		Timestamp:  now,
+		StrategyID: s.ID,
+		Symbol:     symbol,
+		Side:       closeSide,
+		Quantity:   qty,
+		Price:      triggerPx,
+		Value:      qty * triggerPx,
+		TradeType:  "perps",
+		Details:    fmt.Sprintf("Stop loss close, PnL: $%.2f (fee $%.2f)", pnl, fee),
+	}
+	RecordTrade(s, trade)
+	RecordTradeResult(&s.RiskState, pnl)
+	recordClosedPosition(s, pos, triggerPx, pnl, reason, now)
+	delete(s.Positions, symbol)
+	if logger != nil {
+		logger.Warn("SL close reconciled @ $%.4f, PnL: $%.2f (fee $%.2f)", triggerPx, pnl, fee)
+	}
+	return true
 }
 
 // recordClosedOptionPosition appends a ClosedOptionPosition entry to the
