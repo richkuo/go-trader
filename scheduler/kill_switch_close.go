@@ -32,12 +32,12 @@ type KillSwitchCloseInputs struct {
 	HLLiveAll      []StrategyConfig
 	HLCloser       HyperliquidLiveCloser
 	HLFetcher      HLStateFetcher
-	// HLStopLossOIDs maps coin → resting per-trade SL trigger OID so the
+	// HLStopLossOIDs maps coin → resting per-trade SL trigger OIDs so the
 	// kill-switch close path can cancel them before flattening. Without
 	// this, kill-switch wipes virtual state but the on-chain triggers sit
 	// resting and burn HL's 10/day account-wide cap (#421 review point 1).
 	// nil/empty disables; coins with no resting SL are simply absent.
-	HLStopLossOIDs map[string]int64
+	HLStopLossOIDs map[string][]int64
 
 	// OKXLiveAllPerps: every live OKX perps strategy configured (used to
 	// decide which coins to close and to detect "unconfigured" positions).

@@ -1163,7 +1163,7 @@ func TestReconciliationGapOmittedWhenEmpty(t *testing.T) {
 // invocation and returns either a canned success or an error per coin.
 func fakeCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) {
 	var calls []string
-	closer := func(symbol string, partialSz *float64, cancelStopLossOID int64) (*HyperliquidCloseResult, error) {
+	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		if partialSz != nil {
 			calls = append(calls, fmt.Sprintf("%s:%g", symbol, *partialSz))
 		} else {
@@ -1175,7 +1175,7 @@ func fakeCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) {
 		return &HyperliquidCloseResult{
 			Close:                   &HyperliquidClose{Symbol: symbol, Fill: &HyperliquidCloseFill{TotalSz: 1.0, AvgPx: 100}},
 			Platform:                "hyperliquid",
-			CancelStopLossSucceeded: cancelStopLossOID > 0,
+			CancelStopLossSucceeded: firstPositiveStopLossOID(cancelStopLossOIDs) > 0,
 		}, nil
 	}
 	return closer, &calls
@@ -1365,7 +1365,7 @@ func TestForceCloseHyperliquidLive_UnownedPositionIgnored(t *testing.T) {
 // no-op. The caller's onChainConfirmedFlat check then proceeds straight to
 // virtual state mutation, matching pre-#341 behavior for non-HL deployments.
 func TestForceCloseHyperliquidLive_EmptyInputs(t *testing.T) {
-	report := forceCloseHyperliquidLive(context.Background(), nil, nil, func(string, *float64, int64) (*HyperliquidCloseResult, error) {
+	report := forceCloseHyperliquidLive(context.Background(), nil, nil, func(string, *float64, []int64) (*HyperliquidCloseResult, error) {
 		t.Fatalf("closer should not be called with empty inputs")
 		return nil, nil
 	}, nil)
@@ -1387,7 +1387,7 @@ func TestForceCloseHyperliquidLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.
 	positions := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}
 
 	var calls []string
-	closer := func(symbol string, partialSz *float64, cancelStopLossOID int64) (*HyperliquidCloseResult, error) {
+	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		calls = append(calls, symbol)
 		return &HyperliquidCloseResult{
 			Close:    &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},
@@ -1495,7 +1495,7 @@ func TestRunPendingHyperliquidCircuitCloses_RecoversStuckCB(t *testing.T) {
 	}
 	var mu sync.RWMutex
 	var calls []string
-	closer := func(sym string, partialSz *float64, cancelStopLossOID int64) (*HyperliquidCloseResult, error) {
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		if partialSz != nil {
 			calls = append(calls, fmt.Sprintf("%s:%g", sym, *partialSz))
 		} else {
@@ -1547,7 +1547,7 @@ func TestRunPendingHyperliquidCircuitCloses_StuckCBNoOnChainPositionIsNoOp(t *te
 	}
 	var mu sync.RWMutex
 	var calls []string
-	closer := func(sym string, partialSz *float64, cancelStopLossOID int64) (*HyperliquidCloseResult, error) {
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		calls = append(calls, sym)
 		return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: sym}, Platform: "hyperliquid"}, nil
 	}
@@ -1592,7 +1592,7 @@ func TestRunPendingHyperliquidCircuitCloses_ClearsOnSuccess(t *testing.T) {
 	}
 	var mu sync.RWMutex
 	var calls []string
-	closer := func(sym string, partialSz *float64, cancelStopLossOID int64) (*HyperliquidCloseResult, error) {
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		if partialSz != nil {
 			calls = append(calls, fmt.Sprintf("%s:%g", sym, *partialSz))
 		} else {

@@ -13,15 +13,16 @@ Usage:
     close_hyperliquid_position.py --symbol=ETH --mode=live
     close_hyperliquid_position.py --symbol=ETH --mode=live --sz=0.25
     close_hyperliquid_position.py --symbol=ETH --mode=live --cancel-stop-loss-oid=123
+    close_hyperliquid_position.py --symbol=ETH --mode=live --cancel-stop-loss-oid=123 --cancel-stop-loss-oid=456
 
 Optional ``--sz`` submits a partial reduce-only close (coin units). Omit for
 full position close (portfolio kill switch and sole-owner circuit breakers).
 
-Optional ``--cancel-stop-loss-oid`` cancels a resting trigger order BEFORE
+Optional ``--cancel-stop-loss-oid`` (repeatable) cancels resting trigger orders BEFORE
 the close fires. Used by per-strategy circuit breakers and the portfolio
 kill switch to free the trigger slot from `Position.StopLossOID` so the
 SL doesn't sit orphaned on HL's book consuming one of the 10/day account
-trigger-order slots (#421 review point 1). Cancel failure is non-fatal
+trigger-order slots (#421 review point 1). Cancel failures are non-fatal
 (SL may have already triggered on-chain) and is surfaced as
 ``cancel_stop_loss_error`` in the JSON envelope.
 
@@ -56,8 +57,9 @@ def main():
     parser.add_argument(
         "--cancel-stop-loss-oid",
         type=int,
-        default=0,
-        help="cancel this trigger OID before the close (frees HL's 10/day cap; #421)",
+        action="append",
+        default=[],
+        help="cancel this trigger OID before the close; repeat for shared-coin triggers (#421)",
     )
     args = parser.parse_args()
 
@@ -82,13 +84,18 @@ def main():
         # which case the close itself will hit "no position" and route
         # through already_flat. Cancel state is surfaced in the JSON
         # envelope so the Go side can clear pos.StopLossOID either way.
-        if args.cancel_stop_loss_oid > 0:
+        cancel_errors = []
+        for oid in args.cancel_stop_loss_oid:
+            if oid <= 0:
+                continue
             try:
-                adapter.cancel_trigger_order(args.symbol, args.cancel_stop_loss_oid)
+                adapter.cancel_trigger_order(args.symbol, oid)
                 cancel_succeeded = True
             except Exception as ce:
-                cancel_err = str(ce)
-                print(f"[WARN] cancel_trigger_order({args.symbol}, {args.cancel_stop_loss_oid}) failed: {ce}", file=sys.stderr)
+                cancel_errors.append(f"{oid}: {ce}")
+                print(f"[WARN] cancel_trigger_order({args.symbol}, {oid}) failed: {ce}", file=sys.stderr)
+        if cancel_errors:
+            cancel_err = "; ".join(cancel_errors)
         result = adapter.market_close(args.symbol, args.sz)
     except Exception as e:
         traceback.print_exc(file=sys.stderr)

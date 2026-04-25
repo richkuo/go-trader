@@ -292,8 +292,8 @@ type HyperliquidCloseResult struct {
 // RunHyperliquidClose runs close_hyperliquid_position.py to submit a reduce-only
 // market close for a single coin (#341). When partialSz is non-nil, submits a
 // partial close for that coin quantity (#356 shared-wallet circuit breakers).
-// When cancelStopLossOID > 0, the script first cancels that resting trigger
-// order so per-strategy CB / kill-switch closes don't leave orphaned SLs
+// When cancelStopLossOIDs is non-empty, the script first cancels those resting
+// trigger orders so per-strategy CB / kill-switch closes don't leave orphaned SLs
 // burning HL's 10/day account-wide trigger-order cap (#421).
 //
 // Contract (load-bearing for kill-switch correctness): a non-nil error is
@@ -303,7 +303,7 @@ type HyperliquidCloseResult struct {
 // (result, nil) for "exit 1 + parseable JSON with error" which forced every
 // caller to also inspect result.Error and conflated subprocess success with
 // JSON-error success.
-func RunHyperliquidClose(script, symbol string, partialSz *float64, cancelStopLossOID int64) (*HyperliquidCloseResult, string, error) {
+func RunHyperliquidClose(script, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, string, error) {
 	args := []string{
 		fmt.Sprintf("--symbol=%s", symbol),
 		"--mode=live",
@@ -311,8 +311,10 @@ func RunHyperliquidClose(script, symbol string, partialSz *float64, cancelStopLo
 	if partialSz != nil {
 		args = append(args, fmt.Sprintf("--sz=%s", strconv.FormatFloat(*partialSz, 'f', -1, 64)))
 	}
-	if cancelStopLossOID > 0 {
-		args = append(args, fmt.Sprintf("--cancel-stop-loss-oid=%d", cancelStopLossOID))
+	for _, oid := range cancelStopLossOIDs {
+		if oid > 0 {
+			args = append(args, fmt.Sprintf("--cancel-stop-loss-oid=%d", oid))
+		}
 	}
 	stdout, stderr, runErr := RunPythonScript(script, args)
 	return parseHyperliquidCloseOutput(stdout, string(stderr), runErr)

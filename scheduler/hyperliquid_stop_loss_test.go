@@ -464,12 +464,12 @@ func TestRunPendingHyperliquidCircuitCloses_CancelsStopLossOID(t *testing.T) {
 	var mu sync.RWMutex
 
 	var seenCancelOID int64
-	closer := func(sym string, partialSz *float64, cancelStopLossOID int64) (*HyperliquidCloseResult, error) {
-		seenCancelOID = cancelStopLossOID
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		seenCancelOID = firstPositiveStopLossOID(cancelStopLossOIDs)
 		return &HyperliquidCloseResult{
 			Close:                   &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: *partialSz, AvgPx: 3000}},
 			Platform:                "hyperliquid",
-			CancelStopLossSucceeded: cancelStopLossOID > 0,
+			CancelStopLossSucceeded: seenCancelOID > 0,
 		}, nil
 	}
 
@@ -502,11 +502,11 @@ func TestForceCloseHyperliquidLive_ThreadsStopLossOIDs(t *testing.T) {
 		{Coin: "ETH", Size: 0.5, EntryPrice: 3000},
 		{Coin: "BTC", Size: 0.01, EntryPrice: 60000},
 	}
-	slOIDs := map[string]int64{"ETH": 1111, "BTC": 0} // BTC has no resting SL
+	slOIDs := map[string][]int64{"ETH": {1111}, "BTC": nil} // BTC has no resting SL
 
-	seen := map[string]int64{}
-	closer := func(sym string, partialSz *float64, cancelStopLossOID int64) (*HyperliquidCloseResult, error) {
-		seen[sym] = cancelStopLossOID
+	seen := map[string][]int64{}
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		seen[sym] = append([]int64(nil), cancelStopLossOIDs...)
 		return &HyperliquidCloseResult{
 			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 1, AvgPx: 1}},
 			Platform: "hyperliquid",
@@ -517,10 +517,44 @@ func TestForceCloseHyperliquidLive_ThreadsStopLossOIDs(t *testing.T) {
 	if len(report.Errors) != 0 {
 		t.Fatalf("expected no errors, got %v", report.Errors)
 	}
-	if seen["ETH"] != 1111 {
-		t.Errorf("ETH closer got cancelStopLossOID=%d, want 1111", seen["ETH"])
+	if got := seen["ETH"]; len(got) != 1 || got[0] != 1111 {
+		t.Errorf("ETH closer got cancelStopLossOIDs=%v, want [1111]", got)
 	}
-	if seen["BTC"] != 0 {
-		t.Errorf("BTC closer got cancelStopLossOID=%d, want 0 (no SL)", seen["BTC"])
+	if got := seen["BTC"]; len(got) != 0 {
+		t.Errorf("BTC closer got cancelStopLossOIDs=%v, want [] (no SL)", got)
+	}
+}
+
+func TestForceCloseHyperliquidLive_CancelsAllSharedCoinStopLossOIDs(t *testing.T) {
+	hlLiveAll := []StrategyConfig{
+		{ID: "hl-a-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-b-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"ema", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}
+	slOIDs := map[string][]int64{"ETH": {1111, 2222}}
+
+	var calls int
+	var seen []int64
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		calls++
+		seen = append([]int64(nil), cancelStopLossOIDs...)
+		return &HyperliquidCloseResult{
+			Close:                   &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 1, AvgPx: 1}},
+			Platform:                "hyperliquid",
+			CancelStopLossSucceeded: len(cancelStopLossOIDs) > 0,
+		}, nil
+	}
+
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, slOIDs)
+	if len(report.Errors) != 0 {
+		t.Fatalf("expected no errors, got %v", report.Errors)
+	}
+	if calls != 1 {
+		t.Fatalf("closer calls=%d, want 1 market close for shared ETH", calls)
+	}
+	if len(seen) != 2 || seen[0] != 1111 || seen[1] != 2222 {
+		t.Errorf("closer saw cancel OIDs=%v, want [1111 2222]", seen)
 	}
 }

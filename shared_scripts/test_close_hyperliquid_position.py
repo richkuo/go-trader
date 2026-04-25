@@ -305,6 +305,17 @@ class TestCancelStopLossOID:
         adapter.cancel_trigger_order.assert_called_once_with("ETH", 12345)
         assert out.get("cancel_stop_loss_succeeded") is True
 
+    def test_multiple_cancel_oids_are_all_attempted(self):
+        out, code, adapter = _run_script_with_cancel(
+            self._filled_response(), {"status": "ok"},
+            ["--symbol=ETH", "--mode=live",
+             "--cancel-stop-loss-oid=12345", "--cancel-stop-loss-oid=67890"])
+        assert code == 0
+        adapter.cancel_trigger_order.assert_any_call("ETH", 12345)
+        adapter.cancel_trigger_order.assert_any_call("ETH", 67890)
+        assert adapter.cancel_trigger_order.call_count == 2
+        assert out.get("cancel_stop_loss_succeeded") is True
+
     def test_cancel_failure_is_non_fatal(self):
         """Cancel may fail because the SL already triggered — close should
         still proceed and the failure is surfaced for the Go side to log."""

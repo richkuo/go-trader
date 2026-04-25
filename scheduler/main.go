@@ -712,14 +712,13 @@ func main() {
 			// early-returns false while KillSwitchActive is true) and retries.
 			var plan KillSwitchClosePlan
 			if killSwitchFired {
-				// Snapshot per-coin StopLossOID so the kill-switch close
+				// Snapshot per-coin StopLossOIDs so the kill-switch close
 				// path can cancel resting SLs before flattening, freeing
 				// HL's 10/day account-wide trigger-order cap (#421 review
 				// point 1). Sole-source: every live HL strategy's Position
-				// for the coin it trades. Last-write-wins on shared coins
-				// is fine — any one strategy's OID is enough to free the
-				// slot, and shared coins are rare in practice.
-				hlSLOIDs := map[string]int64{}
+				// for the coin it trades. Shared coins may have multiple
+				// per-strategy SL triggers, so preserve every OID.
+				hlSLOIDs := map[string][]int64{}
 				mu.RLock()
 				for _, sc := range hlLiveAll {
 					sym := hyperliquidSymbol(sc.Args)
@@ -728,7 +727,7 @@ func main() {
 					}
 					if ss, ok := state.Strategies[sc.ID]; ok && ss != nil {
 						if pos, pok := ss.Positions[sym]; pok && pos != nil && pos.StopLossOID > 0 {
-							hlSLOIDs[sym] = pos.StopLossOID
+							hlSLOIDs[sym] = appendUniquePositiveStopLossOID(hlSLOIDs[sym], pos.StopLossOID)
 						}
 					}
 				}

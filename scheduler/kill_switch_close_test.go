@@ -22,22 +22,22 @@ func stubHLLiveCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) 
 }
 
 // stubHLLiveCloserWithCancel mirrors stubHLLiveCloser but also surfaces the
-// per-call cancelStopLossOID so #421 tests can assert the kill-switch /
+// per-call cancelStopLossOIDs so #421 tests can assert the kill-switch /
 // CB-drain plumbing actually threads the OID through. cancels[symbol]
-// holds the most recent OID seen for that coin (0 = no cancel attempted).
-func stubHLLiveCloserWithCancel(errs map[string]error) (HyperliquidLiveCloser, *[]string, *map[string]int64) {
+// holds the OIDs seen for that coin.
+func stubHLLiveCloserWithCancel(errs map[string]error) (HyperliquidLiveCloser, *[]string, *map[string][]int64) {
 	var calls []string
-	cancels := make(map[string]int64)
-	closer := func(symbol string, partialSz *float64, cancelStopLossOID int64) (*HyperliquidCloseResult, error) {
+	cancels := make(map[string][]int64)
+	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		calls = append(calls, symbol)
-		cancels[symbol] = cancelStopLossOID
+		cancels[symbol] = append([]int64(nil), cancelStopLossOIDs...)
 		if err, ok := errs[symbol]; ok && err != nil {
 			return nil, err
 		}
 		return &HyperliquidCloseResult{
 			Close:                   &HyperliquidClose{Symbol: symbol, Fill: &HyperliquidCloseFill{TotalSz: 1.0, AvgPx: 100}},
 			Platform:                "hyperliquid",
-			CancelStopLossSucceeded: cancelStopLossOID > 0,
+			CancelStopLossSucceeded: firstPositiveStopLossOID(cancelStopLossOIDs) > 0,
 		}, nil
 	}
 	return closer, &calls, &cancels
