@@ -62,12 +62,14 @@ type HyperliquidExecution struct {
 
 // HyperliquidExecuteResult is the top-level JSON from check_hyperliquid.py --execute.
 type HyperliquidExecuteResult struct {
-	Execution           *HyperliquidExecution `json:"execution"`
-	Platform            string                `json:"platform"`
-	Timestamp           string                `json:"timestamp"`
-	Error               string                `json:"error,omitempty"`
-	CancelStopLossError string                `json:"cancel_stop_loss_error,omitempty"` // non-fatal: SL cancel before order failed (#412)
-	StopLossError       string                `json:"stop_loss_error,omitempty"`        // non-fatal: SL placement after fill failed (#412)
+	Execution                 *HyperliquidExecution `json:"execution"`
+	Platform                  string                `json:"platform"`
+	Timestamp                 string                `json:"timestamp"`
+	Error                     string                `json:"error,omitempty"`
+	CancelStopLossError       string                `json:"cancel_stop_loss_error,omitempty"`       // non-fatal: SL cancel before order failed (#412)
+	CancelStopLossSucceeded   bool                  `json:"cancel_stop_loss_succeeded,omitempty"`   // SL cancel went through (set even if subsequent open failed) so caller can clear stale pos.StopLossOID (#421)
+	StopLossError             string                `json:"stop_loss_error,omitempty"`              // non-fatal: SL placement after fill failed (#412)
+	StopLossFilledImmediately bool                  `json:"stop_loss_filled_immediately,omitempty"` // SL trigger filled at submit (price already through the level) — position is flat on-chain (#421)
 }
 
 // RunPythonScript executes a Python script and returns stdout/stderr.
@@ -205,7 +207,11 @@ func RunHyperliquidCheck(script string, args []string) (*HyperliquidResult, stri
 // stopLossPct > 0 requests a reduce-only SL trigger after a successful open.
 // cancelStopLossOID > 0 cancels an existing trigger before placing the new order
 // (used on signal-based closes so the stale SL doesn't race the close fill).
-func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64) (*HyperliquidExecuteResult, string, error) {
+// prevPosQty > 0 indicates a flip is in progress: total_sz from the fill is
+// closeQty + newQty, and the SL must be sized against (total_sz - prevPosQty)
+// or HL will reject the oversized reduce-only trigger (#421). These trailing
+// args are HL-specific: OKX/TopStep have their own execute helpers and signatures.
+func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64) (*HyperliquidExecuteResult, string, error) {
 	args := []string{
 		"--execute",
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -218,6 +224,9 @@ func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float6
 	}
 	if cancelStopLossOID > 0 {
 		args = append(args, fmt.Sprintf("--cancel-stop-loss-oid=%d", cancelStopLossOID))
+	}
+	if prevPosQty > 0 {
+		args = append(args, fmt.Sprintf("--prev-pos-qty=%g", prevPosQty))
 	}
 	stdout, stderr, err := RunPythonScript(script, args)
 	return parseHyperliquidExecuteOutput(stdout, string(stderr), err)

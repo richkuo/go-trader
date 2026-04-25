@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -152,4 +153,122 @@ func containsKey(b []byte, key string) bool {
 	}
 	_, ok := m[key]
 	return ok
+}
+
+func TestParseHyperliquidExecuteOutput_StopLossFilledImmediately(t *testing.T) {
+	// Issue 421: when price is already through the trigger at submit, HL
+	// fills the SL immediately. The Python side surfaces this as
+	// stop_loss_filled_immediately=true (no OID) so the scheduler can
+	// reconcile virtual state instead of treating it as a placement error.
+	stdout := []byte(`{
+		"execution": {"action": "buy", "symbol": "ETH", "size": 0.1, "fill": {"avg_px": 3200, "total_sz": 0.1, "oid": 1}},
+		"platform": "hyperliquid",
+		"timestamp": "2026-04-25T00:00:00+00:00",
+		"stop_loss_filled_immediately": true
+	}`)
+	result, _, err := parseHyperliquidExecuteOutput(stdout, "", nil)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !result.StopLossFilledImmediately {
+		t.Errorf("expected StopLossFilledImmediately=true, got %+v", result)
+	}
+	if result.Execution.Fill.StopLossOID != 0 {
+		t.Errorf("instant-fill should have no resting OID; got %d", result.Execution.Fill.StopLossOID)
+	}
+}
+
+func TestParseHyperliquidExecuteOutput_CancelSucceededOnFailure(t *testing.T) {
+	// Issue 421 (review point 3): when the cancel succeeds but the subsequent
+	// open fails, the Python error path still emits cancel_stop_loss_succeeded
+	// so the scheduler can drop the dead OID from pos.StopLossOID.
+	stdout := []byte(`{
+		"execution": null,
+		"platform": "hyperliquid",
+		"timestamp": "2026-04-25T00:00:00+00:00",
+		"error": "market_open: insufficient balance",
+		"cancel_stop_loss_succeeded": true
+	}`)
+	runErr := errors.New("exit status 1")
+	result, _, err := parseHyperliquidExecuteOutput(stdout, "", runErr)
+	if err != nil {
+		t.Fatalf("parse should swallow runErr when JSON carries .error: %v", err)
+	}
+	if !result.CancelStopLossSucceeded {
+		t.Errorf("CancelStopLossSucceeded should be true, got %+v", result)
+	}
+	if result.Error == "" {
+		t.Errorf("error payload should be preserved")
+	}
+}
+
+func TestIsHLTriggerCapRejection(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"too many", "Too many open trigger orders", true},
+		{"rate limit", "trigger order rate limit exceeded", true},
+		{"max", "max trigger orders per day reached", true},
+		{"unrelated", "insufficient margin", false},
+		{"empty", "", false},
+		{"trigger only", "trigger price out of range", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isHLTriggerCapRejection(c.in); got != c.want {
+				t.Errorf("isHLTriggerCapRejection(%q)=%v, want %v", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestValidateConfig_StopLossPctBounds(t *testing.T) {
+	// Issue 421 (review point 4): hand-edited configs with out-of-range
+	// stop_loss_pct must fail validation rather than silently break the
+	// safety feature.
+	cases := []struct {
+		name      string
+		pct       float64
+		platform  string
+		typ       string
+		wantError bool
+	}{
+		{"zero ok", 0, "hyperliquid", "perps", false},
+		{"in range", 5, "hyperliquid", "perps", false},
+		{"max boundary", 50, "hyperliquid", "perps", false},
+		{"too high", 200, "hyperliquid", "perps", true},
+		{"negative", -1, "hyperliquid", "perps", true},
+		{"non-HL platform", 5, "okx", "perps", true},
+		{"non-perps type", 5, "hyperliquid", "spot", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := &Config{
+				IntervalSeconds: 60,
+				Strategies: []StrategyConfig{
+					{
+						ID:             "test",
+						Type:           c.typ,
+						Platform:       c.platform,
+						Script:         "shared_scripts/check_hyperliquid.py",
+						Capital:        1000,
+						MaxDrawdownPct: 10,
+						StopLossPct:    c.pct,
+					},
+				},
+				PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
+			}
+			err := ValidateConfig(cfg)
+			gotErr := err != nil && containsStopLossErr(err.Error())
+			if gotErr != c.wantError {
+				t.Errorf("got err=%v wantStopLossErr=%v (full err: %v)", gotErr, c.wantError, err)
+			}
+		})
+	}
+}
+
+func containsStopLossErr(s string) bool {
+	return strings.Contains(s, "stop_loss_pct")
 }

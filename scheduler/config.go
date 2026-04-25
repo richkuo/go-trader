@@ -613,6 +613,19 @@ func ValidateConfig(cfg *Config) error {
 			}
 		}
 
+		// #421: bound-check stop_loss_pct to mirror the init wizard's range.
+		// A hand-edited config with stop_loss_pct=200 would otherwise silently
+		// place an SL at $0 (long) or 3× entry (short) — both never trigger,
+		// breaking the safety feature without any warning.
+		if sc.StopLossPct != 0 {
+			if sc.StopLossPct < 0 || sc.StopLossPct > 50 {
+				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct must be in [0, 50], got %g", prefix, sc.StopLossPct))
+			}
+			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			}
+		}
+
 		// #36: ThetaHarvest fields must be non-negative when present.
 		if sc.ThetaHarvest != nil {
 			th := sc.ThetaHarvest

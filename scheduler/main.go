@@ -1110,10 +1110,26 @@ func main() {
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
-								if er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, logger); ok2 {
+								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, logger)
+								if ok2 {
 									execResult = er
 								} else {
 									liveExecFailed = true
+									// Even on failure, if the Python side
+									// confirmed the stale-SL cancel went
+									// through, drop the dead OID so the next
+									// cycle doesn't try to cancel it again.
+									if er != nil && er.CancelStopLossSucceeded && hlStopLossOID > 0 {
+										sym := hyperliquidSymbol(sc.Args)
+										if sym != "" {
+											mu.Lock()
+											if pos, ok3 := stratState.Positions[sym]; ok3 && pos.StopLossOID == hlStopLossOID {
+												pos.StopLossOID = 0
+												logger.Info("cleared stale SL OID=%d after open failed but cancel succeeded", hlStopLossOID)
+											}
+											mu.Unlock()
+										}
+									}
 								}
 							}
 							if !liveExecFailed {
@@ -1841,7 +1857,10 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	//   - place a new SL after the open leg unless the action is a pure close
 	//     (signal=-1 on a long without AllowShorts → no new position to
 	//     protect). Skip for non-HL platforms or when pct<=0.
+	//   - on a flip, pass prev_pos_qty so the SL is sized against the new
+	//     net position (#421) — total_sz alone is closeQty+newQty.
 	pureClose := result.Signal == -1 && posSide == "long" && !sc.AllowShorts
+	flipping := posQty > 0 && ((result.Signal == 1 && posSide == "short") || (result.Signal == -1 && posSide == "long" && sc.AllowShorts))
 	var cancelOID int64
 	if existingStopLossOID > 0 && posQty > 0 {
 		cancelOID = existingStopLossOID
@@ -1850,28 +1869,67 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	if !pureClose && sc.StopLossPct > 0 && sc.Platform == "hyperliquid" {
 		slPct = sc.StopLossPct
 	}
+	var prevPosQty float64
+	if flipping {
+		prevPosQty = posQty
+	}
 
-	logger.Info("Placing live %s %s size=%.6f (sl_pct=%.2f cancel_oid=%d)", side, result.Symbol, size, slPct, cancelOID)
+	// Only log SL fields when at least one is set, to keep the common
+	// no-stop-loss case quiet.
+	if slPct > 0 || cancelOID > 0 || prevPosQty > 0 {
+		logger.Info("Placing live %s %s size=%.6f (sl_pct=%.2f cancel_oid=%d prev_pos_qty=%.6f)",
+			side, result.Symbol, size, slPct, cancelOID, prevPosQty)
+	} else {
+		logger.Info("Placing live %s %s size=%.6f", side, result.Symbol, size)
+	}
 
-	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size, slPct, cancelOID)
+	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
+	// On failure, the Python script may still report cancel_stop_loss_succeeded
+	// — propagate execResult to the caller so the stale OID can be cleared
+	// even when the open leg fails (#421). Caller treats ok=false as "do not
+	// apply state mutations" but inspects execResult.CancelStopLossSucceeded
+	// before discarding it.
 	if err != nil {
 		logger.Error("Live execute failed: %v", err)
-		return nil, false
+		return execResult, false
 	}
 	if execResult.Error != "" {
 		logger.Error("Live execute returned error: %s", execResult.Error)
-		return nil, false
+		return execResult, false
 	}
 	if execResult.CancelStopLossError != "" {
 		logger.Warn("SL cancel failed (non-fatal): %s", execResult.CancelStopLossError)
 	}
 	if execResult.StopLossError != "" {
-		logger.Warn("SL placement failed (non-fatal): %s", execResult.StopLossError)
+		// Surface HL trigger-cap exhaustion as CRITICAL — the position is
+		// live without protection, and one noisy strategy can deplete the
+		// 10/day account-wide pool for everything else (#421 review #5).
+		if isHLTriggerCapRejection(execResult.StopLossError) {
+			logger.Error("CRITICAL: HL trigger-cap rejected SL placement for %s — position is unprotected: %s",
+				result.Symbol, execResult.StopLossError)
+		} else {
+			logger.Warn("SL placement failed (non-fatal): %s", execResult.StopLossError)
+		}
+	}
+	if execResult.StopLossFilledImmediately {
+		logger.Warn("SL trigger filled at submit (price was already through the level) for %s — position is flat on-chain", result.Symbol)
 	}
 	return execResult, true
+}
+
+// isHLTriggerCapRejection detects HL's "10 trigger-orders-per-day" rejection
+// strings so the scheduler can escalate them above WARN. The exact wording
+// has historically been one of "Too many open trigger orders" or "trigger
+// order rate limit"; we match either substring case-insensitively. Conservative
+// rather than exhaustive — false negatives (logged as WARN) are acceptable;
+// we only escalate on confirmed cap-rejection language to avoid CRITICAL
+// noise on unrelated failures.
+func isHLTriggerCapRejection(errStr string) bool {
+	lower := strings.ToLower(errStr)
+	return strings.Contains(lower, "trigger order") && (strings.Contains(lower, "too many") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "max"))
 }
 
 // executeHyperliquidResult applies a hyperliquid result to state. Must be called under Lock.
