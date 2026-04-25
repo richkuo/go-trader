@@ -802,6 +802,28 @@ func TestCheckPortfolioRisk_WarningFires(t *testing.T) {
 	}
 }
 
+// TestCheckPortfolioRisk_WarningRepeatsAcrossCycles verifies that warning
+// fires on every cycle while drawdown remains in the warn band, even with no
+// recovery in between.
+func TestCheckPortfolioRisk_WarningRepeatsAcrossCycles(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	prs := &PortfolioRiskState{PeakValue: 10000.0}
+
+	// Warn threshold = 20%. Hold portfolio at 21% drawdown across many cycles.
+	for i := 0; i < 5; i++ {
+		_, _, warning, reason := CheckPortfolioRisk(prs, cfg, 7900.0, 0, 0, 0)
+		if !warning {
+			t.Errorf("cycle %d: expected warning=true while in warn band", i)
+		}
+		if reason == "" {
+			t.Errorf("cycle %d: expected non-empty reason", i)
+		}
+		if !prs.WarningSent {
+			t.Errorf("cycle %d: expected WarningSent=true while in warn band", i)
+		}
+	}
+}
+
 // TestCheckPortfolioRisk_WarningResetOnRecovery verifies that recovery below
 // the warning threshold resets WarningSent.
 func TestCheckPortfolioRisk_WarningResetOnRecovery(t *testing.T) {
