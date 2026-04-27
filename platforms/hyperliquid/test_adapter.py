@@ -254,17 +254,53 @@ class TestOrderExecution:
         assert result == {"status": "closed"}
         mock_exchange.market_close.assert_called_once_with("BTC", None)
 
-    def test_market_close_partial_size_passes_sz(self):
+    def test_market_close_partial_size_rounds_to_sz_decimals(self):
+        # Issue #425: unrounded sz (e.g. 0.250965 from per-strategy CB sizing
+        # of a shared-wallet position) must be rounded to the asset's
+        # sz_decimals before reaching the SDK or HL rejects with
+        # `float_to_wire causes rounding`. Mirrors market_open / place_stop_loss.
         mock_info = MagicMock()
+        mock_info.asset_to_sz_decimals = {"ETH": 4}
         mock_info_cls = MagicMock(return_value=mock_info)
         mock_exchange = MagicMock()
         mock_exchange.market_close.return_value = {"status": "closed"}
         mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
         adapter = mod.HyperliquidExchangeAdapter()
         adapter._exchange = mock_exchange
+        adapter._info = mock_info
 
-        adapter.market_close("ETH", 0.25)
-        mock_exchange.market_close.assert_called_once_with("ETH", 0.25)
+        adapter.market_close("ETH", 0.2509645272613055)
+        mock_exchange.market_close.assert_called_once_with("ETH", 0.251)
+
+    def test_market_close_full_close_passes_none_unchanged(self):
+        # sz=None must bypass rounding (SDK closes the full on-chain position
+        # internally). A naive round(None, ...) would raise TypeError.
+        mock_info = MagicMock()
+        mock_info.asset_to_sz_decimals = {"BTC": 5}
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mock_exchange = MagicMock()
+        mock_exchange.market_close.return_value = {"status": "closed"}
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._exchange = mock_exchange
+        adapter._info = mock_info
+
+        adapter.market_close("BTC")
+        mock_exchange.market_close.assert_called_once_with("BTC", None)
+
+    def test_market_close_partial_size_rounded_to_zero_raises(self):
+        mock_info = MagicMock()
+        mock_info.asset_to_sz_decimals = {"BTC": 0}
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mock_exchange = MagicMock()
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._exchange = mock_exchange
+        adapter._info = mock_info
+
+        with pytest.raises(ValueError, match="Size rounded to zero"):
+            adapter.market_close("BTC", 0.4)
+        mock_exchange.market_close.assert_not_called()
 
 
 # ─── Stop Loss / Trigger Orders (#412 / #421) ──────

@@ -251,6 +251,14 @@ class HyperliquidExchangeAdapter:
             raise RuntimeError(
                 "market_close requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
+        if sz is not None:
+            # Round to asset's tick precision to avoid float_to_wire rounding error (#425)
+            if symbol not in self._info.asset_to_sz_decimals:
+                print(f"[WARN] sz_decimals not found for {symbol}, defaulting to 3", file=sys.stderr)
+            sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3)
+            sz = round(sz, sz_decimals)
+            if sz <= 0:
+                raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
         return self._exchange.market_close(symbol, sz)
 
     def round_perps_trigger_px(self, symbol: str, px: float) -> float:
