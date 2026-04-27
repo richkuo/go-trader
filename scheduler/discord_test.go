@@ -731,7 +731,6 @@ func TestFormatCategorySummary_ClosedTradesColumn_SharedWallet(t *testing.T) {
 }
 
 func TestFmtWinLossRatio(t *testing.T) {
-	// Issue #434: format wins/losses pair as a W/L ratio for strategy summaries.
 	cases := []struct {
 		name     string
 		wins     int
@@ -757,7 +756,6 @@ func TestFmtWinLossRatio(t *testing.T) {
 }
 
 func TestFormatCategorySummary_WinLossColumn(t *testing.T) {
-	// Issue #434: strategy table should show W/L ratio per strategy and on the TOTAL row.
 	strats := []StrategyConfig{
 		{ID: "hl-rsi-btc", Type: "perps", Args: []string{"rsi", "BTC", "1h"}, Capital: 1000},
 		{ID: "hl-sma-btc", Type: "perps", Args: []string{"sma", "BTC", "1h"}, Capital: 1000},

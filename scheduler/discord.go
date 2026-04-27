@@ -764,7 +764,7 @@ func formatInterval(seconds int) string {
 // supplied totals (which should be computed from the FULL bot list, not just
 // this chunk). totalClosed is the sum of closedTrades across the full bot list
 // and is rendered in the #T column of the TOTAL row. totalWins/totalLosses
-// drive the W/L column in the TOTAL row (issue #434). Used by writeCatTableChunks.
+// drive the W/L column in the TOTAL row. Used by writeCatTableChunks.
 func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, includeTotals bool, totalInit, totalValue, totalPnl, totalPnlPct float64, totalClosed, totalWins, totalLosses int) {
 	if len(bots) == 0 {
 		return
@@ -861,7 +861,6 @@ func writeCatTableChunks(bots []botInfo, totalValue, totalPnl, totalPnlPct float
 // fmtWinLossRatio formats a wins/losses pair as a Win-Loss ratio string for the
 // strategy summary table. Returns "—" when no trades have closed, "∞" when
 // every closed trade won (no losses to divide by), and "N.NN" otherwise.
-// Issue #434.
 func fmtWinLossRatio(wins, losses int) string {
 	if wins == 0 && losses == 0 {
 		return "—"
