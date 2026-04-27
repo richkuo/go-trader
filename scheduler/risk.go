@@ -349,20 +349,31 @@ func addKillSwitchEvent(prs *PortfolioRiskState, eventType, source string, drawd
 // per-strategy counterpart perpsMarginDrawdownInputs (#292), aggregated to the
 // portfolio level for the kill switch (#296).
 //
-// Only strategies with Type == "perps" contribute; the inner filter (Multiplier
-// > 0 && Leverage > 0) inside perpsMarginDrawdownInputs is the second guard
-// against any hypothetical non-perps leveraged position leaking through.
+// Only strategies with Type == "perps" contribute. configs maps strategy ID
+// to StrategyConfig — used to source sc.Leverage so the margin denominator
+// matches the trader's configured leverage rather than the on-chain margin
+// tier (#418). Strategies whose config is missing or has Leverage <= 0 are
+// skipped; they don't contribute to the perps margin signal and the kill
+// switch falls back to equity drawdown for them.
 //
 // Returns (0, 0) when no perps margin is deployed — the caller treats a zero
 // margin as "no perps signal this cycle" and falls back to pure equity
 // drawdown. This preserves existing behavior for all-spot / all-options
 // portfolios.
-func AggregatePerpsMarginInputs(strategies map[string]*StrategyState, prices map[string]float64) (unrealizedLoss, margin float64) {
-	for _, s := range strategies {
+func AggregatePerpsMarginInputs(strategies map[string]*StrategyState, configs []StrategyConfig, prices map[string]float64) (unrealizedLoss, margin float64) {
+	leverageByID := make(map[string]float64, len(configs))
+	for _, sc := range configs {
+		leverageByID[sc.ID] = sc.Leverage
+	}
+	for id, s := range strategies {
 		if s.Type != "perps" {
 			continue
 		}
-		loss, m := perpsMarginDrawdownInputs(s, prices)
+		lev := leverageByID[id]
+		if lev <= 0 {
+			continue
+		}
+		loss, m := perpsMarginDrawdownInputs(s, lev, prices)
 		unrealizedLoss += loss
 		margin += m
 	}
@@ -1095,10 +1106,19 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 // deployed margin (notional / leverage). These are the numerator and
 // denominator of the perps-specific drawdown ratio introduced in #292.
 //
-// Positions are filtered by Leverage > 0; Multiplier > 0 is also required as
-// a double-belt guard against any future code path that might attach Leverage
-// to a non-PnL-branch position. The outer s.Type == "perps" check at the call
-// site is the primary guard.
+// configLeverage is the strategy-config leverage (sc.Leverage) — NOT
+// pos.Leverage. This avoids #418 where reconcileHyperliquidPositions overwrites
+// statePos.Leverage with the on-chain margin tier (e.g. HL exchange-side max
+// leverage of 20) and inflates the drawdown denominator by 10x against the
+// trader's intended leverage (e.g. 2). Sizing paths (runHyperliquidExecuteOrder,
+// perpsLiveOrderSize) already use sc.Leverage; this aligns the risk-math
+// denominator with the same source of truth so on-chain leverage drift becomes
+// harmless metadata rather than a CB amplifier.
+//
+// Positions are filtered by Multiplier > 0 (perps marker). The outer
+// s.Type == "perps" check at the call site is the primary guard. configLeverage
+// must be > 0 — when zero, the function returns (0, 0) and the caller falls
+// back to peak-relative drawdown.
 //
 // The unrealized-loss numerator (rather than peakValue - portfolioValue) keeps
 // the drawdown ratio referenced to the currently-open position: prior realized
@@ -1110,9 +1130,12 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 //
 // Returns (0, 0) when no perps positions are open; the caller uses a zero
 // margin as the signal to fall back to peak-relative drawdown.
-func perpsMarginDrawdownInputs(s *StrategyState, prices map[string]float64) (unrealizedLoss, margin float64) {
+func perpsMarginDrawdownInputs(s *StrategyState, configLeverage float64, prices map[string]float64) (unrealizedLoss, margin float64) {
+	if configLeverage <= 0 {
+		return 0, 0
+	}
 	for sym, pos := range s.Positions {
-		if pos.Multiplier <= 0 || pos.Leverage <= 0 {
+		if pos.Multiplier <= 0 {
 			continue
 		}
 		price, ok := prices[sym]
@@ -1126,7 +1149,7 @@ func perpsMarginDrawdownInputs(s *StrategyState, prices map[string]float64) (unr
 		if notional <= 0 {
 			continue
 		}
-		margin += notional / pos.Leverage
+		margin += notional / configLeverage
 
 		var pnl float64
 		if pos.Side == "long" {
@@ -1201,7 +1224,11 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		denom := r.PeakValue
 		denomLabel := "peak"
 		if s.Type == "perps" {
-			if pnlLoss, margin := perpsMarginDrawdownInputs(s, prices); margin > 0 {
+			var configLev float64
+			if sc != nil {
+				configLev = sc.Leverage
+			}
+			if pnlLoss, margin := perpsMarginDrawdownInputs(s, configLev, prices); margin > 0 {
 				loss = pnlLoss
 				denom = margin
 				denomLabel = "margin"

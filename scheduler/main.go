@@ -650,7 +650,7 @@ func main() {
 			// equity total so the portfolio kill switch can fire on a
 			// leveraged margin blow-up that would otherwise hide inside
 			// equity-only drawdown for all-perps accounts.
-			perpsLoss, perpsMargin := AggregatePerpsMarginInputs(state.Strategies, prices)
+			perpsLoss, perpsMargin := AggregatePerpsMarginInputs(state.Strategies, cfg.Strategies, prices)
 			mu.RUnlock()
 
 			mu.Lock()

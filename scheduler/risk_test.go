@@ -1221,24 +1221,23 @@ func TestClearLatchedKillSwitchSharedWallet_MultiPlatformAnyFailPreservesLatch(t
 }
 
 // TestPerpsMarginDrawdownInputs_OnlyPerpsCount verifies that spot and futures
-// positions are excluded from margin deployed — only positions with both
-// Multiplier > 0 AND Leverage > 0 contribute. Prevents the #292 denominator
-// from picking up unleveraged exposure.
+// positions are excluded from margin deployed — only positions with
+// Multiplier > 0 contribute when configLeverage > 0. Prevents the #292
+// denominator from picking up unleveraged spot/options exposure mixed into a
+// perps strategy state.
 func TestPerpsMarginDrawdownInputs_OnlyPerpsCount(t *testing.T) {
 	s := &StrategyState{
 		Positions: map[string]*Position{
-			// Perp: notional 0.2 * $3000 = $600, margin @ 20x = $30
+			// Perp: notional 0.2 * $3000 = $600, margin @ configLev=20 = $30
 			// PnL: 0.2 * 1 * (3000 - 2000) = $200 gain → clamps to 0 loss
 			"ETH": {Symbol: "ETH", Quantity: 0.2, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 20},
 			// Spot — Multiplier=0, must be ignored
 			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.05, AvgCost: 50000, Side: "long"},
-			// Futures — Multiplier>0 but Leverage=0, must be ignored
-			"ES": {Symbol: "ES", Quantity: 2, AvgCost: 4500, Side: "long", Multiplier: 50},
 		},
 	}
 	prices := map[string]float64{"ETH": 3000, "BTC/USDT": 60000, "ES": 4500}
 
-	loss, margin := perpsMarginDrawdownInputs(s, prices)
+	loss, margin := perpsMarginDrawdownInputs(s, 20, prices)
 	if margin < 29.999 || margin > 30.001 {
 		t.Errorf("margin = %.4f; want 30.0 (only perps count)", margin)
 	}
@@ -1261,7 +1260,7 @@ func TestPerpsMarginDrawdownInputs_UnrealizedLoss(t *testing.T) {
 		},
 	}
 	prices := map[string]float64{"ETH": 2700, "BTC": 47500}
-	loss, margin := perpsMarginDrawdownInputs(s, prices)
+	loss, margin := perpsMarginDrawdownInputs(s, 10, prices)
 	// margin = (1 * 2700 / 10) + (0.1 * 47500 / 10) = 270 + 475 = 745
 	if margin < 744.999 || margin > 745.001 {
 		t.Errorf("margin = %.4f; want 745", margin)
@@ -1282,14 +1281,14 @@ func TestPerpsMarginDrawdownInputs_FallbackToAvgCost(t *testing.T) {
 	}
 	// Prices map is empty — should fall back to AvgCost ($20).
 	// PnL at entry == mark → 0 loss.
-	_, margin := perpsMarginDrawdownInputs(s, map[string]float64{})
+	_, margin := perpsMarginDrawdownInputs(s, 10, map[string]float64{})
 	want := 100.0 * 20.0 / 10.0 // $200
 	if margin < want-0.001 || margin > want+0.001 {
 		t.Errorf("margin with missing price = %.4f; want %.4f", margin, want)
 	}
 
 	// Zero/negative mark price must also fall back to AvgCost.
-	_, margin = perpsMarginDrawdownInputs(s, map[string]float64{"HYPE": 0})
+	_, margin = perpsMarginDrawdownInputs(s, 10, map[string]float64{"HYPE": 0})
 	if margin < want-0.001 || margin > want+0.001 {
 		t.Errorf("margin with zero price = %.4f; want %.4f", margin, want)
 	}
@@ -1300,9 +1299,101 @@ func TestPerpsMarginDrawdownInputs_FallbackToAvgCost(t *testing.T) {
 // drawdown.
 func TestPerpsMarginDrawdownInputs_NoPositions(t *testing.T) {
 	s := &StrategyState{Positions: map[string]*Position{}}
-	loss, margin := perpsMarginDrawdownInputs(s, nil)
+	loss, margin := perpsMarginDrawdownInputs(s, 10, nil)
 	if loss != 0 || margin != 0 {
 		t.Errorf("perpsMarginDrawdownInputs with no positions = (%.4f, %.4f); want (0, 0)", loss, margin)
+	}
+}
+
+// #418: config leverage (sc.Leverage) is the source of truth for the
+// margin-drawdown denominator, NOT pos.Leverage. This regression test fails
+// before the fix: pos.Leverage = 20 (on-chain margin tier overwrite from
+// reconcileHyperliquidPositions) would inflate the drawdown ratio 10x against
+// a config Leverage of 2.
+func TestPerpsMarginDrawdownInputs_UsesConfigLeverageNotPosLeverage(t *testing.T) {
+	s := &StrategyState{
+		Positions: map[string]*Position{
+			// pos.Leverage = 20 simulates the corrupted state that
+			// reconcileHyperliquidPositions writes when on-chain margin tier
+			// (HL exchange max leverage) differs from trader's intent.
+			"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
+		},
+	}
+	prices := map[string]float64{"ETH": 2900}
+
+	// configLeverage = 2 — what the trader actually configured. Margin
+	// denominator MUST use this, not the corrupted pos.Leverage.
+	loss, margin := perpsMarginDrawdownInputs(s, 2, prices)
+
+	// notional = 1 * 2900 = 2900; margin @ configLev=2 = 1450 (not 145 @ 20x)
+	wantMargin := 1450.0
+	if math.Abs(margin-wantMargin) > 1e-6 {
+		t.Errorf("margin = %.4f; want %.4f (must use configLeverage=2, NOT pos.Leverage=20)", margin, wantMargin)
+	}
+	// PnL: 1 * (2900 - 3000) = -100 → loss = 100
+	if math.Abs(loss-100) > 1e-6 {
+		t.Errorf("loss = %.4f; want 100", loss)
+	}
+}
+
+// #418: configLeverage <= 0 → (0, 0) so caller falls back to peak-relative.
+func TestPerpsMarginDrawdownInputs_ZeroConfigLeverageReturnsZero(t *testing.T) {
+	s := &StrategyState{
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
+		},
+	}
+	loss, margin := perpsMarginDrawdownInputs(s, 0, map[string]float64{"ETH": 2900})
+	if loss != 0 || margin != 0 {
+		t.Errorf("zero configLeverage must return (0, 0); got (%.4f, %.4f)", loss, margin)
+	}
+}
+
+// #418: AggregatePerpsMarginInputs portfolio-kill-switch variant must also
+// source leverage from configs, not from pos.Leverage. Two strategies, one
+// with corrupted pos.Leverage from on-chain overwrite — the aggregate must
+// still compute against config values.
+func TestAggregatePerpsMarginInputs_UsesConfigLeverage(t *testing.T) {
+	strategies := map[string]*StrategyState{
+		"hl-eth": {
+			Type: "perps",
+			Positions: map[string]*Position{
+				// pos.Leverage = 20 (corrupted by hl-sync overwrite).
+				"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
+			},
+		},
+	}
+	configs := []StrategyConfig{
+		{ID: "hl-eth", Leverage: 2}, // trader's intent
+	}
+	prices := map[string]float64{"ETH": 2900}
+	loss, margin := AggregatePerpsMarginInputs(strategies, configs, prices)
+
+	// Margin = notional / configLev = 2900 / 2 = 1450 (NOT 145 @ 20x).
+	if math.Abs(margin-1450) > 1e-6 {
+		t.Errorf("margin = %.4f; want 1450 (config leverage, not pos.Leverage)", margin)
+	}
+	if math.Abs(loss-100) > 1e-6 {
+		t.Errorf("loss = %.4f; want 100", loss)
+	}
+}
+
+// #418: a perps strategy whose config is missing from the configs slice (or
+// has Leverage=0) must contribute 0 to the aggregate so the kill switch
+// falls back to equity drawdown for it rather than dividing by a corrupted
+// on-chain value.
+func TestAggregatePerpsMarginInputs_MissingConfigSkipsStrategy(t *testing.T) {
+	strategies := map[string]*StrategyState{
+		"hl-orphan": {
+			Type: "perps",
+			Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
+			},
+		},
+	}
+	loss, margin := AggregatePerpsMarginInputs(strategies, nil, map[string]float64{"ETH": 2900})
+	if loss != 0 || margin != 0 {
+		t.Errorf("orphan strategy without config must contribute 0; got (%.4f, %.4f)", loss, margin)
 	}
 }
 
@@ -1345,7 +1436,11 @@ func TestCheckRisk_PerpsMarginDrawdown_FiresEarly(t *testing.T) {
 	prices := map[string]float64{"ETH": 2307.5}
 	pv := PortfolioValue(s, prices)
 
-	allowed, reason := CheckRisk(nil, s, pv, prices, nil, nil)
+	// sc.Leverage is now load-bearing for the margin-drawdown calc (#418):
+	// without a config leverage, perpsMarginDrawdownInputs returns (0, 0)
+	// and the path falls back to peak-relative drawdown.
+	sc := &StrategyConfig{ID: "hl-test", Platform: "hyperliquid", Type: "perps", Leverage: 20}
+	allowed, reason := CheckRisk(sc, s, pv, prices, nil, nil)
 
 	if allowed {
 		t.Errorf("expected circuit breaker to fire on margin-based drawdown; reason=%s", reason)
@@ -1369,13 +1464,13 @@ func TestCheckRisk_PerpsMarginDrawdown_FiresEarly(t *testing.T) {
 func TestCheckRisk_LiveHLSharedCoin_SetsPendingPartialClose(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "hl-tema", Platform: "hyperliquid", Type: "perps",
-		CapitalPct: 0.5, Capital: 500,
+		CapitalPct: 0.5, Capital: 500, Leverage: 20,
 		Args: []string{"triple_ema", "ETH", "1h", "--mode=live"},
 	}
 	hlLiveAll := []StrategyConfig{
 		sc,
 		{ID: "hl-rmc", Platform: "hyperliquid", Type: "perps",
-			CapitalPct: 0.5, Capital: 500,
+			CapitalPct: 0.5, Capital: 500, Leverage: 20,
 			Args: []string{"rsi_macd", "ETH", "1h", "--mode=live"}},
 	}
 	assist := &PlatformRiskAssist{
@@ -1550,7 +1645,8 @@ func TestCheckRisk_PerpsMarginDrawdown_BelowThreshold(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH": 2355.0}
 	pv := PortfolioValue(s, prices)
-	allowed, reason := CheckRisk(nil, s, pv, prices, nil, nil)
+	sc := &StrategyConfig{ID: "hl-test", Platform: "hyperliquid", Type: "perps", Leverage: 20}
+	allowed, reason := CheckRisk(sc, s, pv, prices, nil, nil)
 	if !allowed {
 		t.Errorf("expected allowed below margin drawdown threshold; reason=%s dd=%.2f",
 			reason, s.RiskState.CurrentDrawdownPct)
@@ -1585,7 +1681,8 @@ func TestCheckRisk_PerpsPriorRealizedLossesDoNotInflateDrawdown(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH": 3000}
 	pv := PortfolioValue(s, prices)
-	allowed, reason := CheckRisk(nil, s, pv, prices, nil, nil)
+	sc := &StrategyConfig{ID: "hl-test", Platform: "hyperliquid", Type: "perps", Leverage: 20}
+	allowed, reason := CheckRisk(sc, s, pv, prices, nil, nil)
 	if !allowed {
 		t.Errorf("expected fresh position with no unrealized PnL to NOT fire; reason=%s dd=%.2f",
 			reason, s.RiskState.CurrentDrawdownPct)
@@ -1902,8 +1999,12 @@ func TestAggregatePerpsMarginInputs(t *testing.T) {
 		"SOL/USDT": 200,
 		"ES":       5100,
 	}
+	configs := []StrategyConfig{
+		{ID: "hl-btc", Leverage: 10},
+		{ID: "hl-eth", Leverage: 5},
+	}
 
-	loss, margin := AggregatePerpsMarginInputs(strategies, prices)
+	loss, margin := AggregatePerpsMarginInputs(strategies, configs, prices)
 
 	// Only the losing BTC short contributes to loss: 2000.
 	// Margin includes both perps positions: 4200 + 6200 = 10400.
@@ -1929,7 +2030,7 @@ func TestAggregatePerpsMarginInputs_NoPerpsReturnsZero(t *testing.T) {
 			},
 		},
 	}
-	loss, margin := AggregatePerpsMarginInputs(strategies, map[string]float64{"BTC/USDT": 50000})
+	loss, margin := AggregatePerpsMarginInputs(strategies, nil, map[string]float64{"BTC/USDT": 50000})
 	if loss != 0 || margin != 0 {
 		t.Errorf("expected (0, 0) for no perps; got (%.2f, %.2f)", loss, margin)
 	}

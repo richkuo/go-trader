@@ -222,6 +222,57 @@ func TestReconcileSkipsUnownedOnChainPosition(t *testing.T) {
 	}
 }
 
+// #418 RC3 write-path guard: a configured pos.Leverage must NOT be
+// overwritten when on-chain margin tier differs (e.g. trader sized at 2x but
+// HL exchange-side leverage is 20x). Without this guard, hl-sync corrupts
+// pos.Leverage to the on-chain value — and any future code path reading
+// pos.Leverage (legacy callers, analytics, future sizing logic) sees the
+// inflated value. The risk math now reads sc.Leverage, but this is
+// belt-and-suspenders defense at the storage layer.
+func TestReconcilePreservesConfiguredLeverage(t *testing.T) {
+	s := &StrategyState{
+		ID:   "hl-eth",
+		Cash: 1000,
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long",
+				Multiplier: 1, Leverage: 2, OwnerStrategyID: "hl-eth"},
+		},
+	}
+	logger := newTestLogger(t)
+	// On-chain reports 20x (HL account margin tier). Pre-fix this overwrote
+	// pos.Leverage and inflated the drawdown denominator 10x.
+	positions := []HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 3000, Leverage: 20}}
+
+	reconcileHyperliquidPositions(s, "ETH", positions, logger)
+
+	if s.Positions["ETH"].Leverage != 2 {
+		t.Errorf("Leverage = %v; want 2 (configured value must be preserved against on-chain 20)", s.Positions["ETH"].Leverage)
+	}
+}
+
+// #418 RC3 write-path guard: a zero-value pos.Leverage (legacy/migrated
+// position with no configured leverage) IS still seeded from on-chain so
+// pre-#418 state.db rows don't lose their leverage metadata entirely.
+func TestReconcileSeedsZeroLeverageFromOnChain(t *testing.T) {
+	s := &StrategyState{
+		ID:   "hl-eth",
+		Cash: 1000,
+		Positions: map[string]*Position{
+			// Leverage=0 — legacy/uninitialised
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long",
+				Multiplier: 1, OwnerStrategyID: "hl-eth"},
+		},
+	}
+	logger := newTestLogger(t)
+	positions := []HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 3000, Leverage: 10}}
+
+	reconcileHyperliquidPositions(s, "ETH", positions, logger)
+
+	if s.Positions["ETH"].Leverage != 10 {
+		t.Errorf("Leverage = %v; want 10 (zero-value position seeded from on-chain)", s.Positions["ETH"].Leverage)
+	}
+}
+
 func TestReconcileNoPositionBothSides(t *testing.T) {
 	s := &StrategyState{
 		ID:        "hl-btc",
@@ -725,20 +776,24 @@ func TestAccountSyncSharedCoinMultiplierMigration(t *testing.T) {
 
 	changed := syncHyperliquidAccountPositions(strategies, state, &mu, logMgr)
 	if !changed {
-		t.Error("expected changed=true (multiplier migration + leverage sync)")
+		t.Error("expected changed=true (multiplier migration + zero-leverage init)")
 	}
 
 	posA := state.Strategies["hl-a-eth"].Positions["ETH"]
 	if posA.Multiplier != 1 {
 		t.Errorf("hl-a-eth ETH multiplier = %v, want 1 (migrated)", posA.Multiplier)
 	}
+	// hl-a-eth had Leverage=0 (zero-value/legacy position) → seeded from on-chain.
 	if posA.Leverage != 10 {
-		t.Errorf("hl-a-eth ETH leverage = %v, want 10 (from on-chain)", posA.Leverage)
+		t.Errorf("hl-a-eth ETH leverage = %v, want 10 (zero-value init from on-chain)", posA.Leverage)
 	}
 
+	// #418: hl-b-eth had Leverage=5 (configured) — must NOT be overwritten by
+	// on-chain margin tier (10). Risk math reads sc.Leverage, but the storage
+	// guard prevents corruption of pos.Leverage for any future readers.
 	posB := state.Strategies["hl-b-eth"].Positions["ETH"]
-	if posB.Leverage != 10 {
-		t.Errorf("hl-b-eth ETH leverage = %v, want 10 (synced from on-chain)", posB.Leverage)
+	if posB.Leverage != 5 {
+		t.Errorf("hl-b-eth ETH leverage = %v, want 5 (configured leverage preserved; on-chain overwrite blocked by #418 RC3 write-path guard)", posB.Leverage)
 	}
 
 	// Quantities must NOT change.
@@ -1620,5 +1675,229 @@ func TestRunPendingHyperliquidCircuitCloses_ClearsOnSuccess(t *testing.T) {
 	}
 	if len(calls) != 1 || calls[0] != "ETH:0.1" {
 		t.Errorf("closer calls=%v want [ETH:0.1]", calls)
+	}
+}
+
+// #418 Fix 1: a closer that returns Fill.TotalSz < requested size must NOT
+// clear pending — the residual must remain queued for retry next cycle, and
+// virtual state must reflect only what actually filled.
+func TestRunPendingHyperliquidCircuitCloses_PartialFillKeepsPendingAndDecrements(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID:   "hl-a",
+				Type: "perps",
+				Cash: 1000,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 5},
+				},
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseHyperliquid: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 1.0}},
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Leverage: 5,
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		// HL only filled half: partial fill from market depth or slippage cap.
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.5, AvgPx: 3000, Fee: 0.75}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(), state, cfg, "0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 1.0, EntryPrice: 3000}}, true,
+		nil, closer, 30*time.Second, &mu,
+	)
+
+	// Pending must NOT be cleared — residual 0.5 must retry next cycle.
+	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) == nil {
+		t.Error("expected pending preserved after partial fill (allOK=false), got nil")
+	}
+	// Virtual quantity must decrement by what filled (0.5), not by what was
+	// requested (1.0). Without this, next-cycle reconcile sees the residual
+	// and re-fires the CB against an inflated denominator (#418).
+	pos, ok := state.Strategies["hl-a"].Positions["ETH"]
+	if !ok || pos == nil {
+		t.Fatal("expected ETH position to remain (partial fill, residual 0.5)")
+	}
+	if math.Abs(pos.Quantity-0.5) > 1e-9 {
+		t.Errorf("Quantity = %.6f; want 0.5 (1.0 - 0.5 partial fill)", pos.Quantity)
+	}
+	// AvgCost is preserved across partial closes.
+	if pos.AvgCost != 3000 {
+		t.Errorf("AvgCost = %.2f; want 3000 (must not change on partial close)", pos.AvgCost)
+	}
+	// Trade was recorded for the close fill.
+	if len(state.Strategies["hl-a"].TradeHistory) != 1 {
+		t.Errorf("expected 1 close trade recorded, got %d", len(state.Strategies["hl-a"].TradeHistory))
+	}
+	if len(state.Strategies["hl-a"].TradeHistory) > 0 {
+		tr := state.Strategies["hl-a"].TradeHistory[0]
+		if tr.Side != "sell" || tr.Quantity != 0.5 || tr.Price != 3000 {
+			t.Errorf("close trade = %+v; want sell 0.5 @ 3000", tr)
+		}
+	}
+}
+
+// #418 Fix 2: full-fill CB close must decrement virtual state to zero,
+// remove the position, record a Trade with realized PnL, and clear pending.
+func TestRunPendingHyperliquidCircuitCloses_FullFillDecrementsAndClears(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID:   "hl-a",
+				Type: "perps",
+				Cash: 1000,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 5},
+				},
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseHyperliquid: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.5}},
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Leverage: 5,
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		// Adverse fill at $2900: realized PnL = 0.5 * (2900-3000) = -$50, fee $0.50.
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.5, AvgPx: 2900, Fee: 0.5}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(), state, cfg, "0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}, true,
+		nil, closer, 30*time.Second, &mu,
+	)
+
+	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
+		t.Error("expected pending cleared after full close")
+	}
+	if _, ok := state.Strategies["hl-a"].Positions["ETH"]; ok {
+		t.Error("expected ETH position removed after full close")
+	}
+	// Cash should reflect realized PnL: 1000 + (-50) - 0.5 = 949.5
+	wantCash := 949.5
+	if math.Abs(state.Strategies["hl-a"].Cash-wantCash) > 1e-6 {
+		t.Errorf("Cash = %.4f; want %.4f (PnL -$50 - $0.50 fee)", state.Strategies["hl-a"].Cash, wantCash)
+	}
+	// One Trade recorded.
+	if len(state.Strategies["hl-a"].TradeHistory) != 1 {
+		t.Fatalf("expected 1 close trade, got %d", len(state.Strategies["hl-a"].TradeHistory))
+	}
+	// One ClosedPosition recorded.
+	if len(state.Strategies["hl-a"].ClosedPositions) != 1 {
+		t.Fatalf("expected 1 closed-position row, got %d", len(state.Strategies["hl-a"].ClosedPositions))
+	}
+	cp := state.Strategies["hl-a"].ClosedPositions[0]
+	if cp.CloseReason != "circuit_breaker" || cp.ClosePrice != 2900 {
+		t.Errorf("closed position = %+v; want circuit_breaker @ 2900", cp)
+	}
+}
+
+// #418 Fix 2 shared-coin variant: a weighted partial close (the firing
+// strategy's share of a shared on-chain position) must still decrement the
+// firing strategy's virtual quantity, because reconcileHyperliquidPositions
+// deliberately does NOT overwrite virtual quantities for shared coins (#258).
+// Without this decrement, the firing strategy's virtual position stays at
+// 100% while on-chain dropped to its weighted share — and on the next cycle
+// the inflated virtual notional re-fires the CB.
+func TestRunPendingHyperliquidCircuitCloses_SharedCoinDecrementsFiringStrategy(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-tema": {
+				ID:   "hl-tema",
+				Type: "perps",
+				Cash: 500,
+				Positions: map[string]*Position{
+					// Strategy thinks it owns 0.5 of a shared 1.0 wallet.
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10},
+				},
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseHyperliquid: {
+							// Equal weights → close 0.5 of the shared 1.0 wallet.
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.5}},
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-tema", Platform: "hyperliquid", Type: "perps", Leverage: 10,
+			Capital: 500, CapitalPct: 0.5,
+			Args: []string{"triple_ema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-rmc", Platform: "hyperliquid", Type: "perps", Leverage: 10,
+			Capital: 500, CapitalPct: 0.5,
+			Args: []string{"rsi_macd", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.5, AvgPx: 3000, Fee: 0.5}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(), state, cfg, "0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 1.0, EntryPrice: 3000}}, true,
+		nil, closer, 30*time.Second, &mu,
+	)
+
+	// Firing strategy's virtual position should be fully closed.
+	if _, ok := state.Strategies["hl-tema"].Positions["ETH"]; ok {
+		t.Error("firing strategy's ETH position must be removed after weighted close fill (#418)")
+	}
+}
+
+// #418 Fix 1: helper-level test for applyHyperliquidCircuitCloseFill —
+// partial close preserves AvgCost and only reduces Quantity.
+func TestApplyHyperliquidCircuitCloseFill_PartialPreservesAvgCost(t *testing.T) {
+	s := &StrategyState{
+		ID:   "hl-x",
+		Cash: 1000,
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 1.0, AvgCost: 50000, Side: "long", Multiplier: 1, Leverage: 5},
+		},
+	}
+	applyHyperliquidCircuitCloseFill(s, "BTC", 0.3, 49000, 1.5)
+
+	pos, ok := s.Positions["BTC"]
+	if !ok {
+		t.Fatal("BTC position must remain after partial close")
+	}
+	if math.Abs(pos.Quantity-0.7) > 1e-9 {
+		t.Errorf("Quantity = %.6f; want 0.7 (1.0 - 0.3)", pos.Quantity)
+	}
+	if pos.AvgCost != 50000 {
+		t.Errorf("AvgCost = %.2f; want 50000 (must not change on partial close — #418 review gap 3)", pos.AvgCost)
+	}
+	// PnL: 0.3 * (49000 - 50000) - 1.5 = -301.5
+	wantCash := 1000 + (-301.5)
+	if math.Abs(s.Cash-wantCash) > 1e-6 {
+		t.Errorf("Cash = %.4f; want %.4f", s.Cash, wantCash)
 	}
 }
