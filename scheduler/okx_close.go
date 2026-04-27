@@ -327,7 +327,7 @@ func runPendingOKXCircuitCloses(
 	closer OKXLiveCloser,
 	totalBudget time.Duration,
 	mu *sync.RWMutex,
-	notifier operatorRequiredNotifier,
+	ownerDM func(string),
 ) {
 	if !okxHasCreds || closer == nil || state == nil {
 		return
@@ -458,6 +458,9 @@ func runPendingOKXCircuitCloses(
 		}
 
 		allOK := true
+		var failedSym string
+		var failedSz float64
+		var failedErr error
 		for _, c := range j.pending.Symbols {
 			if err := ctxOverall.Err(); err != nil {
 				allOK = false
@@ -484,38 +487,36 @@ func runPendingOKXCircuitCloses(
 			partial := sz
 			_, err := closer(c.Symbol, &partial)
 			if err != nil {
-				errMsg := err.Error()
 				fmt.Printf("[CRITICAL] okx-circuit-close: strategy %s coin %s sz=%.6f failed: %v\n", j.stratID, c.Symbol, sz, err)
 				allOK = false
-				now := time.Now().UTC()
-				mu.Lock()
-				if ss := state.Strategies[j.stratID]; ss != nil {
-					if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseOKX); p != nil {
-						p.FailureCount++
-						if shouldNotifyDrainFailure(p.FailureCount, p.LastNotifiedAt, now) {
-							p.LastNotifiedAt = now
-							mu.Unlock()
-							if notifier != nil && notifier.HasBackends() {
-								msg := formatDrainFailureAlert("okx", j.stratID, c.Symbol, sz, errMsg, p.FailureCount)
-								notifier.SendToAllChannels(msg)
-								notifier.SendOwnerDM(msg)
-							}
-							mu.Lock()
-						}
-					}
-				}
-				mu.Unlock()
+				failedSym = c.Symbol
+				failedSz = sz
+				failedErr = err
 				break
 			}
 			fmt.Printf("[INFO] okx-circuit-close: strategy %s coin %s submitted reduce-only close sz=%.6f\n", j.stratID, c.Symbol, sz)
 		}
 
-		if allOK {
-			mu.Lock()
-			if ss := state.Strategies[j.stratID]; ss != nil {
+		var failCount int
+		var shouldAlert bool
+		now := time.Now().UTC()
+		mu.Lock()
+		if ss := state.Strategies[j.stratID]; ss != nil {
+			if allOK {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseOKX)
+			} else if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseOKX); p != nil {
+				p.ConsecutiveFailures++
+				failCount = p.ConsecutiveFailures
+				if shouldNotifyDrainFailure(p.ConsecutiveFailures, p.LastNotifiedAt, now) {
+					p.LastNotifiedAt = now
+					shouldAlert = true
+				}
 			}
-			mu.Unlock()
+		}
+		mu.Unlock()
+
+		if shouldAlert && ownerDM != nil {
+			ownerDM(formatDrainFailureAlert("okx", j.stratID, failedSym, failedSz, failedErr.Error(), failCount))
 		}
 	}
 }

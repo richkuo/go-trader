@@ -2106,18 +2106,8 @@ func TestApplyHyperliquidCircuitCloseFill_NoPositionLongCloseRecordsSell(t *test
 	}
 }
 
-// captureHLNotifier implements operatorRequiredNotifier for tests.
-type captureHLNotifier struct {
-	channels []string
-	dms      []string
-}
-
-func (n *captureHLNotifier) HasBackends() bool          { return true }
-func (n *captureHLNotifier) SendToAllChannels(c string) { n.channels = append(n.channels, c) }
-func (n *captureHLNotifier) SendOwnerDM(c string)       { n.dms = append(n.dms, c) }
-
 // TestRunPendingHyperliquidCircuitCloses_FailureIncrementsCountAndNotifies
-// verifies that a close error increments FailureCount to 1 and fires the
+// verifies that a close error increments ConsecutiveFailures to 1 and fires the
 // notifier exactly once (#427).
 func TestRunPendingHyperliquidCircuitCloses_FailureIncrementsCountAndNotifies(t *testing.T) {
 	state := &AppState{
@@ -2142,7 +2132,8 @@ func TestRunPendingHyperliquidCircuitCloses_FailureIncrementsCountAndNotifies(t 
 	closer := func(symbol string, sz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
 		return nil, fmt.Errorf("float_to_wire causes rounding")
 	}
-	notifier := &captureHLNotifier{}
+	var dmMsgs []string
+	ownerDM := func(msg string) { dmMsgs = append(dmMsgs, msg) }
 	runPendingHyperliquidCircuitCloses(
 		context.Background(),
 		state,
@@ -2154,20 +2145,17 @@ func TestRunPendingHyperliquidCircuitCloses_FailureIncrementsCountAndNotifies(t 
 		closer,
 		30*time.Second,
 		&mu,
-		notifier,
+		ownerDM,
 	)
 	p := state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
 	if p == nil {
 		t.Fatal("pending should be preserved on close failure")
 	}
-	if p.FailureCount != 1 {
-		t.Errorf("FailureCount: got %d, want 1", p.FailureCount)
+	if p.ConsecutiveFailures != 1 {
+		t.Errorf("ConsecutiveFailures: got %d, want 1", p.ConsecutiveFailures)
 	}
-	if len(notifier.dms) != 1 {
-		t.Errorf("expected 1 DM on first failure, got %d", len(notifier.dms))
-	}
-	if len(notifier.channels) != 1 {
-		t.Errorf("expected 1 channel message on first failure, got %d", len(notifier.channels))
+	if len(dmMsgs) != 1 {
+		t.Errorf("expected 1 DM on first failure, got %d", len(dmMsgs))
 	}
 }
 
@@ -2181,9 +2169,9 @@ func TestRunPendingHyperliquidCircuitCloses_RepeatedFailureThrottlesNotifier(t *
 				RiskState: RiskState{
 					PendingCircuitCloses: map[string]*PendingCircuitClose{
 						PlatformPendingCloseHyperliquid: {
-							Symbols:        []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.25}},
-							FailureCount:   1,
-							LastNotifiedAt: time.Now(),
+							Symbols:             []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.25}},
+							ConsecutiveFailures: 1,
+							LastNotifiedAt:      time.Now(),
 						},
 					},
 				},
@@ -2198,7 +2186,8 @@ func TestRunPendingHyperliquidCircuitCloses_RepeatedFailureThrottlesNotifier(t *
 	closer := func(symbol string, sz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
 		return nil, fmt.Errorf("float_to_wire causes rounding")
 	}
-	notifier := &captureHLNotifier{}
+	var dmMsgs []string
+	ownerDM := func(msg string) { dmMsgs = append(dmMsgs, msg) }
 	runPendingHyperliquidCircuitCloses(
 		context.Background(),
 		state,
@@ -2210,10 +2199,10 @@ func TestRunPendingHyperliquidCircuitCloses_RepeatedFailureThrottlesNotifier(t *
 		closer,
 		30*time.Second,
 		&mu,
-		notifier,
+		ownerDM,
 	)
-	if len(notifier.dms) != 0 {
-		t.Errorf("expected 0 DMs on failure #2 (suppressed), got %d", len(notifier.dms))
+	if len(dmMsgs) != 0 {
+		t.Errorf("expected 0 DMs on failure #2 (suppressed), got %d", len(dmMsgs))
 	}
 }
 
@@ -2227,9 +2216,9 @@ func TestRunPendingHyperliquidCircuitCloses_TenthFailureNotifies(t *testing.T) {
 				RiskState: RiskState{
 					PendingCircuitCloses: map[string]*PendingCircuitClose{
 						PlatformPendingCloseHyperliquid: {
-							Symbols:        []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.25}},
-							FailureCount:   9,
-							LastNotifiedAt: time.Now(),
+							Symbols:             []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.25}},
+							ConsecutiveFailures: 9,
+							LastNotifiedAt:      time.Now(),
 						},
 					},
 				},
@@ -2244,7 +2233,8 @@ func TestRunPendingHyperliquidCircuitCloses_TenthFailureNotifies(t *testing.T) {
 	closer := func(symbol string, sz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
 		return nil, fmt.Errorf("float_to_wire causes rounding")
 	}
-	notifier := &captureHLNotifier{}
+	var dmMsgs []string
+	ownerDM := func(msg string) { dmMsgs = append(dmMsgs, msg) }
 	runPendingHyperliquidCircuitCloses(
 		context.Background(),
 		state,
@@ -2256,13 +2246,13 @@ func TestRunPendingHyperliquidCircuitCloses_TenthFailureNotifies(t *testing.T) {
 		closer,
 		30*time.Second,
 		&mu,
-		notifier,
+		ownerDM,
 	)
 	p := state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
-	if p == nil || p.FailureCount != 10 {
-		t.Fatalf("expected FailureCount=10, got %v", p)
+	if p == nil || p.ConsecutiveFailures != 10 {
+		t.Fatalf("expected ConsecutiveFailures=10, got %v", p)
 	}
-	if len(notifier.dms) != 1 {
-		t.Errorf("expected 1 DM on failure #10 (every-10th cadence), got %d", len(notifier.dms))
+	if len(dmMsgs) != 1 {
+		t.Errorf("expected 1 DM on failure #10 (every-10th cadence), got %d", len(dmMsgs))
 	}
 }

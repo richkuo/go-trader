@@ -683,16 +683,6 @@ func TestRunPendingTopStepCircuitCloses_FetcherErrorBails(t *testing.T) {
 	}
 }
 
-// captureTSNotifier implements operatorRequiredNotifier for tests.
-type captureTSNotifier struct {
-	channels []string
-	dms      []string
-}
-
-func (n *captureTSNotifier) HasBackends() bool          { return true }
-func (n *captureTSNotifier) SendToAllChannels(c string) { n.channels = append(n.channels, c) }
-func (n *captureTSNotifier) SendOwnerDM(c string)       { n.dms = append(n.dms, c) }
-
 func TestRunPendingTopStepCircuitCloses_FailureIncrementsCountAndNotifies(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -716,7 +706,8 @@ func TestRunPendingTopStepCircuitCloses_FailureIncrementsCountAndNotifies(t *tes
 	closer := func(sym string) (*TopStepCloseResult, error) {
 		return nil, fmt.Errorf("topstep API 503")
 	}
-	notifier := &captureTSNotifier{}
+	var dmMsgs []string
+	ownerDM := func(msg string) { dmMsgs = append(dmMsgs, msg) }
 	runPendingTopStepCircuitCloses(
 		context.Background(),
 		state,
@@ -727,17 +718,17 @@ func TestRunPendingTopStepCircuitCloses_FailureIncrementsCountAndNotifies(t *tes
 		closer,
 		30*time.Second,
 		&mu,
-		notifier,
+		ownerDM,
 	)
 	p := state.Strategies["ts-es"].RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep)
 	if p == nil {
 		t.Fatal("pending should be preserved on failure")
 	}
-	if p.FailureCount != 1 {
-		t.Errorf("FailureCount: got %d, want 1", p.FailureCount)
+	if p.ConsecutiveFailures != 1 {
+		t.Errorf("ConsecutiveFailures: got %d, want 1", p.ConsecutiveFailures)
 	}
-	if len(notifier.dms) != 1 {
-		t.Errorf("expected 1 DM on first failure, got %d", len(notifier.dms))
+	if len(dmMsgs) != 1 {
+		t.Errorf("expected 1 DM on first failure, got %d", len(dmMsgs))
 	}
 }
 
@@ -749,9 +740,9 @@ func TestRunPendingTopStepCircuitCloses_RepeatedFailureThrottlesNotifier(t *test
 				RiskState: RiskState{
 					PendingCircuitCloses: map[string]*PendingCircuitClose{
 						PlatformPendingCloseTopStep: {
-							Symbols:        []PendingCircuitCloseSymbol{{Symbol: "ES", Size: 1}},
-							FailureCount:   1,
-							LastNotifiedAt: time.Now(),
+							Symbols:             []PendingCircuitCloseSymbol{{Symbol: "ES", Size: 1}},
+							ConsecutiveFailures: 1,
+							LastNotifiedAt:      time.Now(),
 						},
 					},
 				},
@@ -766,7 +757,8 @@ func TestRunPendingTopStepCircuitCloses_RepeatedFailureThrottlesNotifier(t *test
 	closer := func(sym string) (*TopStepCloseResult, error) {
 		return nil, fmt.Errorf("topstep API 503")
 	}
-	notifier := &captureTSNotifier{}
+	var dmMsgs []string
+	ownerDM := func(msg string) { dmMsgs = append(dmMsgs, msg) }
 	runPendingTopStepCircuitCloses(
 		context.Background(),
 		state,
@@ -777,9 +769,9 @@ func TestRunPendingTopStepCircuitCloses_RepeatedFailureThrottlesNotifier(t *test
 		closer,
 		30*time.Second,
 		&mu,
-		notifier,
+		ownerDM,
 	)
-	if len(notifier.dms) != 0 {
-		t.Errorf("expected 0 DMs on failure #2 (suppressed), got %d", len(notifier.dms))
+	if len(dmMsgs) != 0 {
+		t.Errorf("expected 0 DMs on failure #2 (suppressed), got %d", len(dmMsgs))
 	}
 }

@@ -53,7 +53,6 @@ func TestRunPendingRobinhoodCircuitCloses_SoleOwnerFullClose(t *testing.T) {
 		dm,
 		30*time.Second,
 		&mu,
-		nil,
 	)
 
 	if len(calls) != 1 || calls[0] != "BTC" {
@@ -104,7 +103,6 @@ func TestRunPendingRobinhoodCircuitCloses_RecoversStuckCB(t *testing.T) {
 		nil,
 		30*time.Second,
 		&mu,
-		nil,
 	)
 
 	if len(calls) != 1 || calls[0] != "BTC" {
@@ -151,7 +149,6 @@ func TestRunPendingRobinhoodCircuitCloses_StuckCBNoOnAccountPositionIsNoOp(t *te
 		nil,
 		30*time.Second,
 		&mu,
-		nil,
 	)
 
 	if len(calls) != 0 {
@@ -206,7 +203,6 @@ func TestRunPendingRobinhoodCircuitCloses_SharedOwnershipSkipsAndDMs(t *testing.
 		dm,
 		30*time.Second,
 		&mu,
-		nil,
 	)
 
 	if len(calls) != 0 {
@@ -272,7 +268,6 @@ func TestRunPendingRobinhoodCircuitCloses_StuckCBSharedOwnershipSkipDMs(t *testi
 		dm,
 		30*time.Second,
 		&mu,
-		nil,
 	)
 
 	if len(calls) != 0 {
@@ -322,7 +317,6 @@ func TestRunPendingRobinhoodCircuitCloses_SubmitErrorRetainsPending(t *testing.T
 		nil,
 		30*time.Second,
 		&mu,
-		nil,
 	)
 
 	pending := state.Strategies["rh-sma-btc"].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood)
@@ -374,7 +368,6 @@ func TestRunPendingRobinhoodCircuitCloses_AlreadyFlatClearsPending(t *testing.T)
 		nil,
 		30*time.Second,
 		&mu,
-		nil,
 	)
 
 	if state.Strategies["rh-sma-btc"].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) != nil {
@@ -508,16 +501,6 @@ func TestFormatRobinhoodSharedOwnerDM_DeterministicPeerOrder(t *testing.T) {
 	}
 }
 
-// captureRHNotifier implements operatorRequiredNotifier for tests.
-type captureRHNotifier struct {
-	channels []string
-	dms      []string
-}
-
-func (n *captureRHNotifier) HasBackends() bool          { return true }
-func (n *captureRHNotifier) SendToAllChannels(c string) { n.channels = append(n.channels, c) }
-func (n *captureRHNotifier) SendOwnerDM(c string)       { n.dms = append(n.dms, c) }
-
 func TestRunPendingRobinhoodCircuitCloses_FailureIncrementsCountAndNotifies(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -541,7 +524,8 @@ func TestRunPendingRobinhoodCircuitCloses_FailureIncrementsCountAndNotifies(t *t
 	closer := func(sym string) (*RobinhoodCloseResult, error) {
 		return nil, fmt.Errorf("rh timeout")
 	}
-	notifier := &captureRHNotifier{}
+	var dmMsgs []string
+	ownerDM := func(msg string) { dmMsgs = append(dmMsgs, msg) }
 	runPendingRobinhoodCircuitCloses(
 		context.Background(),
 		state,
@@ -550,20 +534,19 @@ func TestRunPendingRobinhoodCircuitCloses_FailureIncrementsCountAndNotifies(t *t
 		true,
 		nil,
 		closer,
-		nil,
+		ownerDM,
 		30*time.Second,
 		&mu,
-		notifier,
 	)
 	p := state.Strategies["rh-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood)
 	if p == nil {
 		t.Fatal("pending should be preserved on failure")
 	}
-	if p.FailureCount != 1 {
-		t.Errorf("FailureCount: got %d, want 1", p.FailureCount)
+	if p.ConsecutiveFailures != 1 {
+		t.Errorf("ConsecutiveFailures: got %d, want 1", p.ConsecutiveFailures)
 	}
-	if len(notifier.dms) != 1 {
-		t.Errorf("expected 1 DM on first failure, got %d", len(notifier.dms))
+	if len(dmMsgs) != 1 {
+		t.Errorf("expected 1 DM on first failure, got %d", len(dmMsgs))
 	}
 }
 
@@ -575,9 +558,9 @@ func TestRunPendingRobinhoodCircuitCloses_RepeatedFailureThrottlesNotifier(t *te
 				RiskState: RiskState{
 					PendingCircuitCloses: map[string]*PendingCircuitClose{
 						PlatformPendingCloseRobinhood: {
-							Symbols:        []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.01}},
-							FailureCount:   1,
-							LastNotifiedAt: time.Now(),
+							Symbols:             []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.01}},
+							ConsecutiveFailures: 1,
+							LastNotifiedAt:      time.Now(),
 						},
 					},
 				},
@@ -592,7 +575,8 @@ func TestRunPendingRobinhoodCircuitCloses_RepeatedFailureThrottlesNotifier(t *te
 	closer := func(sym string) (*RobinhoodCloseResult, error) {
 		return nil, fmt.Errorf("rh timeout")
 	}
-	notifier := &captureRHNotifier{}
+	var dmMsgs []string
+	ownerDM := func(msg string) { dmMsgs = append(dmMsgs, msg) }
 	runPendingRobinhoodCircuitCloses(
 		context.Background(),
 		state,
@@ -601,12 +585,11 @@ func TestRunPendingRobinhoodCircuitCloses_RepeatedFailureThrottlesNotifier(t *te
 		true,
 		nil,
 		closer,
-		nil,
+		ownerDM,
 		30*time.Second,
 		&mu,
-		notifier,
 	)
-	if len(notifier.dms) != 0 {
-		t.Errorf("expected 0 DMs on failure #2 (suppressed), got %d", len(notifier.dms))
+	if len(dmMsgs) != 0 {
+		t.Errorf("expected 0 DMs on failure #2 (suppressed), got %d", len(dmMsgs))
 	}
 }

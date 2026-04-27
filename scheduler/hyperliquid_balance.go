@@ -769,7 +769,7 @@ func runPendingHyperliquidCircuitCloses(
 	closer HyperliquidLiveCloser,
 	totalBudget time.Duration,
 	mu *sync.RWMutex,
-	notifier operatorRequiredNotifier,
+	ownerDM func(string),
 ) {
 	if hlAddr == "" || closer == nil || state == nil {
 		return
@@ -919,6 +919,10 @@ func runPendingHyperliquidCircuitCloses(
 		}
 
 		allOK := true
+		drainError := false // set on closer() error; not set for under-fills (partial progress)
+		var drainErrSym string
+		var drainErrSz float64
+		var drainErrMsg string
 		for _, c := range j.pending.Symbols {
 			if err := ctxOverall.Err(); err != nil {
 				allOK = false
@@ -948,27 +952,12 @@ func runPendingHyperliquidCircuitCloses(
 			cancelOIDs := j.slOIDs[c.Symbol]
 			result, err := closer(c.Symbol, &partial, cancelOIDs)
 			if err != nil {
-				errMsg := err.Error()
 				fmt.Printf("[CRITICAL] hl-circuit-close: strategy %s coin %s sz=%.6f failed: %v\n", j.stratID, c.Symbol, sz, err)
 				allOK = false
-				now := time.Now().UTC()
-				mu.Lock()
-				if ss := state.Strategies[j.stratID]; ss != nil {
-					if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p != nil {
-						p.FailureCount++
-						if shouldNotifyDrainFailure(p.FailureCount, p.LastNotifiedAt, now) {
-							p.LastNotifiedAt = now
-							mu.Unlock()
-							if notifier != nil && notifier.HasBackends() {
-								msg := formatDrainFailureAlert("hyperliquid", j.stratID, c.Symbol, sz, errMsg, p.FailureCount)
-								notifier.SendToAllChannels(msg)
-								notifier.SendOwnerDM(msg)
-							}
-							mu.Lock()
-						}
-					}
-				}
-				mu.Unlock()
+				drainError = true
+				drainErrSym = c.Symbol
+				drainErrSz = sz
+				drainErrMsg = err.Error()
 				break
 			}
 
@@ -1024,26 +1013,6 @@ func runPendingHyperliquidCircuitCloses(
 				fmt.Printf("[CRITICAL] hl-circuit-close: strategy %s coin %s PARTIAL fill %.6f/%.6f — leaving pending for retry%s\n",
 					j.stratID, c.Symbol, fillSz, sz, slNote)
 				allOK = false
-				now := time.Now().UTC()
-				mu.Lock()
-				if ss := state.Strategies[j.stratID]; ss != nil {
-					if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p != nil {
-						p.FailureCount++
-						if shouldNotifyDrainFailure(p.FailureCount, p.LastNotifiedAt, now) {
-							p.LastNotifiedAt = now
-							mu.Unlock()
-							if notifier != nil && notifier.HasBackends() {
-								residual := sz - fillSz
-								errMsg := fmt.Sprintf("partial fill %.6f/%.6f — residual %.6f pending%s", fillSz, sz, residual, slNote)
-								msg := formatDrainFailureAlert("hyperliquid", j.stratID, c.Symbol, residual, errMsg, p.FailureCount)
-								notifier.SendToAllChannels(msg)
-								notifier.SendOwnerDM(msg)
-							}
-							mu.Lock()
-						}
-					}
-				}
-				mu.Unlock()
 			} else {
 				fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s closed sz=%.6f (filled %.6f)\n", j.stratID, c.Symbol, sz, fillSz)
 			}
@@ -1072,12 +1041,36 @@ func runPendingHyperliquidCircuitCloses(
 			}
 		}
 
-		if allOK {
-			mu.Lock()
-			if ss := state.Strategies[j.stratID]; ss != nil {
+		// Post-loop: update ConsecutiveFailures counter and fire owner DM.
+		// drainError = true only on a hard closer() error; under-fills are
+		// partial progress and reset the counter so the next hard error re-fires
+		// the first-failure alert.
+		var failCount int
+		var shouldAlert bool
+		now := time.Now().UTC()
+		mu.Lock()
+		if ss := state.Strategies[j.stratID]; ss != nil {
+			if allOK {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
+			} else if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p != nil {
+				if drainError {
+					p.ConsecutiveFailures++
+					failCount = p.ConsecutiveFailures
+					if shouldNotifyDrainFailure(p.ConsecutiveFailures, p.LastNotifiedAt, now) {
+						p.LastNotifiedAt = now
+						shouldAlert = true
+					}
+				} else {
+					// Under-fill only — partial progress. Reset so the next
+					// hard error re-notifies as a fresh first failure.
+					p.ConsecutiveFailures = 0
+				}
 			}
-			mu.Unlock()
+		}
+		mu.Unlock()
+
+		if shouldAlert && ownerDM != nil {
+			ownerDM(formatDrainFailureAlert("hyperliquid", j.stratID, drainErrSym, drainErrSz, drainErrMsg, failCount))
 		}
 	}
 }

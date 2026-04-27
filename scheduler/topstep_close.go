@@ -207,7 +207,7 @@ func runPendingTopStepCircuitCloses(
 	closer TopStepLiveCloser,
 	totalBudget time.Duration,
 	mu *sync.RWMutex,
-	notifier operatorRequiredNotifier,
+	ownerDM func(string),
 ) {
 	if closer == nil || state == nil {
 		return
@@ -336,6 +336,9 @@ func runPendingTopStepCircuitCloses(
 		}
 
 		allOK := true
+		var failedSym string
+		var failedAbsOC int
+		var failedErr error
 		for _, c := range j.pending.Symbols {
 			if err := ctxOverall.Err(); err != nil {
 				allOK = false
@@ -370,40 +373,38 @@ func runPendingTopStepCircuitCloses(
 				// any other close failure land here — we log and latch. The
 				// next cycle re-enters this drain and retries; virtual state
 				// stays untouched (CheckRisk already force-closed locally).
-				errMsg := err.Error()
 				fmt.Printf("[CRITICAL] ts-circuit-close: strategy %s contract %s sz=%d failed: %v (will retry next cycle)\n",
 					j.stratID, c.Symbol, absOC, err)
 				allOK = false
-				now := time.Now().UTC()
-				mu.Lock()
-				if ss := state.Strategies[j.stratID]; ss != nil {
-					if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep); p != nil {
-						p.FailureCount++
-						if shouldNotifyDrainFailure(p.FailureCount, p.LastNotifiedAt, now) {
-							p.LastNotifiedAt = now
-							mu.Unlock()
-							if notifier != nil && notifier.HasBackends() {
-								msg := formatDrainFailureAlert("topstep", j.stratID, c.Symbol, float64(absOC), errMsg, p.FailureCount)
-								notifier.SendToAllChannels(msg)
-								notifier.SendOwnerDM(msg)
-							}
-							mu.Lock()
-						}
-					}
-				}
-				mu.Unlock()
+				failedSym = c.Symbol
+				failedAbsOC = absOC
+				failedErr = err
 				break
 			}
 			fmt.Printf("[INFO] ts-circuit-close: strategy %s contract %s submitted market_close sz=%d\n",
 				j.stratID, c.Symbol, absOC)
 		}
 
-		if allOK {
-			mu.Lock()
-			if ss := state.Strategies[j.stratID]; ss != nil {
+		var failCount int
+		var shouldAlert bool
+		now := time.Now().UTC()
+		mu.Lock()
+		if ss := state.Strategies[j.stratID]; ss != nil {
+			if allOK {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseTopStep)
+			} else if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep); p != nil {
+				p.ConsecutiveFailures++
+				failCount = p.ConsecutiveFailures
+				if shouldNotifyDrainFailure(p.ConsecutiveFailures, p.LastNotifiedAt, now) {
+					p.LastNotifiedAt = now
+					shouldAlert = true
+				}
 			}
-			mu.Unlock()
+		}
+		mu.Unlock()
+
+		if shouldAlert && ownerDM != nil {
+			ownerDM(formatDrainFailureAlert("topstep", j.stratID, failedSym, float64(failedAbsOC), failedErr.Error(), failCount))
 		}
 	}
 }

@@ -896,7 +896,7 @@ func main() {
 						defaultHyperliquidLiveCloser,
 						90*time.Second,
 						&mu,
-						notifier,
+						notifier.SendOwnerDM,
 					)
 				}
 				// #360: Live OKX per-strategy circuit breaker closes. Same shape
@@ -913,7 +913,7 @@ func main() {
 						defaultOKXLiveCloser,
 						90*time.Second,
 						&mu,
-						notifier,
+						notifier.SendOwnerDM,
 					)
 				}
 				// #362: Live TopStep per-strategy circuit breaker closes
@@ -932,7 +932,7 @@ func main() {
 						defaultTopStepLiveCloser,
 						90*time.Second,
 						&mu,
-						notifier,
+						notifier.SendOwnerDM,
 					)
 				}
 				// #361 phase 3: Live Robinhood crypto per-strategy circuit breaker
@@ -954,7 +954,6 @@ func main() {
 						notifier.SendOwnerDM,
 						150*time.Second,
 						&mu,
-						notifier,
 					)
 				}
 				// #363 phase 5: operator-gap per-strategy CB pending closes.
