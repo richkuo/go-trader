@@ -392,18 +392,24 @@ func runPendingTopStepCircuitCloses(
 		if ss := state.Strategies[j.stratID]; ss != nil {
 			if allOK {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseTopStep)
-			} else if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep); p != nil {
-				p.ConsecutiveFailures++
-				failCount = p.ConsecutiveFailures
-				if shouldNotifyDrainFailure(p.ConsecutiveFailures, p.LastNotifiedAt, now) {
-					p.LastNotifiedAt = now
-					shouldAlert = true
+			} else if failedErr != nil {
+				// Only count as a drain failure when a closer() actually errored.
+				// allOK can also be set false by a mid-loop ctxOverall expiry
+				// where failedErr stays nil — counting that would inflate the
+				// counter and dereferencing failedErr.Error() below would panic.
+				if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep); p != nil {
+					p.ConsecutiveFailures++
+					failCount = p.ConsecutiveFailures
+					if shouldNotifyDrainFailure(p.ConsecutiveFailures, p.LastNotifiedAt, now) {
+						p.LastNotifiedAt = now
+						shouldAlert = true
+					}
 				}
 			}
 		}
 		mu.Unlock()
 
-		if shouldAlert && ownerDM != nil {
+		if shouldAlert && ownerDM != nil && failedErr != nil {
 			ownerDM(formatDrainFailureAlert("topstep", j.stratID, failedSym, float64(failedAbsOC), failedErr.Error(), failCount))
 		}
 	}

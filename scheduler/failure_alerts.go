@@ -4,6 +4,15 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"unicode/utf8"
+)
+
+// Direction labels for live-exec failure throttle keys and alert messages.
+// Use these constants at every call site to avoid typos that would silently
+// fragment the per-(strategy, platform, symbol, direction) throttle key.
+const (
+	directionOpen  = "open"
+	directionClose = "close"
 )
 
 // shouldNotifyDrainFailure decides whether a circuit-breaker close drain
@@ -60,13 +69,19 @@ func liveExecKey(strategyID, platform, symbol, direction string) string {
 	return strategyID + "|" + platform + "|" + symbol + "|" + direction
 }
 
-// truncErrSig returns the first 120 characters of an error message to use as
-// an error signature for detecting "same error vs. new error".
+// truncErrSig returns the first ~120 bytes of an error message to use as an
+// error signature for detecting "same error vs. new error". Walks back to a
+// rune boundary so the signature never splits a multi-byte UTF-8 codepoint.
 func truncErrSig(errMsg string) string {
-	if len(errMsg) <= 120 {
+	const limit = 120
+	if len(errMsg) <= limit {
 		return errMsg
 	}
-	return errMsg[:120]
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(errMsg[cut]) {
+		cut--
+	}
+	return errMsg[:cut]
 }
 
 // Record increments the failure counter for the given key. Returns
@@ -126,7 +141,7 @@ func formatLiveExecFailureAlert(strategyID, platform, direction, symbol, errMsg 
 }
 
 // notifyLiveExecFailure fires a throttled Discord+DM alert when a live order
-// wrapper returns ok=false. direction is "open" or "close".
+// wrapper returns ok=false. direction must be directionOpen or directionClose.
 // Uses the package-level liveExecThrottle; nil-safe (returns immediately if
 // notifier has no backends).
 func notifyLiveExecFailure(notifier *MultiNotifier, sc StrategyConfig, direction, symbol, errMsg string) {
@@ -134,7 +149,7 @@ func notifyLiveExecFailure(notifier *MultiNotifier, sc StrategyConfig, direction
 		return
 	}
 	key := liveExecKey(sc.ID, sc.Platform, symbol, direction)
-	shouldNotify, count := liveExecThrottle.Record(key, errMsg, time.Now())
+	shouldNotify, count := liveExecThrottle.Record(key, errMsg, time.Now().UTC())
 	if !shouldNotify {
 		return
 	}

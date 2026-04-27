@@ -40,16 +40,18 @@ func TestShouldNotifyDrainFailure_HourlyEvenIfNotMod10(t *testing.T) {
 	}
 }
 
-func TestShouldNotifyDrainFailure_ZeroLastNotifiedAt_NeverSuppressed(t *testing.T) {
-	// zero LastNotifiedAt means no notification has ever fired; first failure
-	// path (count==1) already notifies, but even count==5 with zero LastNotifiedAt
-	// should notify because lastNotifiedAt.IsZero() implies first alert.
-	// shouldNotifyDrainFailure only checks !lastNotifiedAt.IsZero(), so count==5
-	// with zero time returns false (not mod 10, IsZero check fails). This is by
-	// design: FailureCount==1 is the only guaranteed path; the zero-time case only
-	// matters practically because count is always 1 when LastNotifiedAt is zero.
+func TestShouldNotifyDrainFailure_ZeroLastNotifiedAt_FirstNotifiesMidSuppressed(t *testing.T) {
+	// zero LastNotifiedAt means no notification has ever fired. count==1 must
+	// always notify (first-failure path). The hourly path explicitly skips
+	// IsZero so count==5 with zero time is suppressed — by design, since in
+	// practice count > 1 implies a previous notification already set the
+	// timestamp; a stale zero-time at count > 1 would mean some other path
+	// reset the count without notifying, so we keep the throttle quiet.
 	if !shouldNotifyDrainFailure(1, time.Time{}, time.Now()) {
 		t.Error("count==1 with zero LastNotifiedAt must notify")
+	}
+	if shouldNotifyDrainFailure(5, time.Time{}, time.Now()) {
+		t.Error("count==5 with zero LastNotifiedAt must be suppressed (not mod 10, IsZero blocks hourly)")
 	}
 }
 

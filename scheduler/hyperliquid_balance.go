@@ -1043,8 +1043,10 @@ func runPendingHyperliquidCircuitCloses(
 
 		// Post-loop: update ConsecutiveFailures counter and fire owner DM.
 		// drainError = true only on a hard closer() error; under-fills are
-		// partial progress and reset the counter so the next hard error re-fires
-		// the first-failure alert.
+		// partial progress that reset the counter to 0 — but ONLY when the
+		// cycle had no hard error at all. In a multi-symbol pending list where
+		// one leg under-fills and another hard-errors, drainError wins (we
+		// still increment) so the operator is alerted to the failed leg.
 		var failCount int
 		var shouldAlert bool
 		now := time.Now().UTC()

@@ -1953,9 +1953,9 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	// even when the open leg fails (#421). Caller treats ok=false as "do not
 	// apply state mutations" but inspects execResult.CancelStopLossSucceeded
 	// before discarding it.
-	direction := "open"
+	direction := directionOpen
 	if side == "sell" {
-		direction = "close"
+		direction = directionClose
 	}
 	if err != nil {
 		logger.Error("Live execute failed: %v", err)
@@ -2213,9 +2213,9 @@ func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cas
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
-	direction := "open"
+	direction := directionOpen
 	if side == "sell" {
-		direction = "close"
+		direction = directionClose
 	}
 	if err != nil {
 		logger.Error("Live execute failed: %v", err)
@@ -2369,9 +2369,9 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
-	direction := "open"
+	direction := directionOpen
 	if side == "sell" {
-		direction = "close"
+		direction = directionClose
 	}
 	if err != nil {
 		logger.Error("Live execute failed: %v", err)
@@ -2556,9 +2556,9 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
-	direction := "open"
+	direction := directionOpen
 	if side == "sell" {
-		direction = "close"
+		direction = directionClose
 	}
 	if err != nil {
 		logger.Error("Live execute failed: %v", err)

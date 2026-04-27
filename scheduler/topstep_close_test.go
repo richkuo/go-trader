@@ -775,3 +775,76 @@ func TestRunPendingTopStepCircuitCloses_RepeatedFailureThrottlesNotifier(t *test
 		t.Errorf("expected 0 DMs on failure #2 (suppressed), got %d", len(dmMsgs))
 	}
 }
+
+// Regression: when ctxOverall trips mid-symbol-loop, the inner per-symbol
+// ctx check sets allOK=false but failedErr stays nil. The post-loop block
+// must NOT increment ConsecutiveFailures and must NOT dereference failedErr
+// (that would panic). See PR #435 review.
+func TestRunPendingTopStepCircuitCloses_CtxExpiryMidLoopDoesNotCountAsFailure(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"ts-es": {
+				ID: "ts-es",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseTopStep: {
+							Symbols: []PendingCircuitCloseSymbol{
+								{Symbol: "ES", Size: 1},
+								{Symbol: "NQ", Size: 1},
+							},
+							ConsecutiveFailures: 4,
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "ts-es", Platform: "topstep", Type: "futures",
+			Args: []string{"ts-es", "ES", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var calls []string
+	closer := func(sym string) (*TopStepCloseResult, error) {
+		calls = append(calls, sym)
+		// Cancel the budget after the first symbol succeeds so the inner
+		// ctx check fires before the second symbol — exactly the
+		// nil-failedErr-with-allOK=false branch the bug reproduces.
+		cancel()
+		return &TopStepCloseResult{Close: &TopStepClose{Symbol: sym}}, nil
+	}
+	var dmMsgs []string
+	ownerDM := func(msg string) { dmMsgs = append(dmMsgs, msg) }
+
+	runPendingTopStepCircuitCloses(
+		ctx,
+		state,
+		cfg,
+		[]TopStepPosition{
+			{Coin: "ES", Size: 1},
+			{Coin: "NQ", Size: 1},
+		},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+		ownerDM,
+	)
+
+	if len(calls) != 1 {
+		t.Errorf("expected exactly 1 closer call before ctx expiry, got %d (%v)", len(calls), calls)
+	}
+	if len(dmMsgs) != 0 {
+		t.Errorf("expected 0 DMs on mid-loop ctx expiry (no real failure), got %d (%v)", len(dmMsgs), dmMsgs)
+	}
+	p := state.Strategies["ts-es"].RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep)
+	if p == nil {
+		t.Fatal("pending must be preserved on ctx expiry")
+	}
+	if p.ConsecutiveFailures != 4 {
+		t.Errorf("ConsecutiveFailures must not increment on ctx expiry: got %d, want 4", p.ConsecutiveFailures)
+	}
+}
