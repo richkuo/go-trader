@@ -656,18 +656,20 @@ func TestFormatCategorySummary_ClosedTradesColumn(t *testing.T) {
 		t.Errorf("expected #T column to follow Int column, got Int@%d #T@%d:\n%s", intIdx, tIdx, msg)
 	}
 
-	// Each strategy row should render its TotalTrades count right-justified in 5 chars.
-	if !strings.Contains(msg, "    7\n") {
+	// Each strategy row should render its TotalTrades count right-justified in 5 chars,
+	// followed by the W/L column (issue #434). With no winning/losing trades recorded
+	// the W/L column renders as "—".
+	if !strings.Contains(msg, "    7     —\n") {
 		t.Errorf("expected closed-trade count '7' for hl-rsi-btc, got:\n%s", msg)
 	}
-	if !strings.Contains(msg, "   12\n") {
+	if !strings.Contains(msg, "   12     —\n") {
 		t.Errorf("expected closed-trade count '12' for hl-sma-btc, got:\n%s", msg)
 	}
 	// Strategy with zero trades should still render '0'.
-	if !strings.Contains(msg, "    0\n") {
+	if !strings.Contains(msg, "    0     —\n") {
 		t.Errorf("expected closed-trade count '0' for hl-mom-btc, got:\n%s", msg)
 	}
-	// TOTAL row should sum to 19 (7+12+0).
+	// TOTAL row should sum to 19 (7+12+0). W/L on TOTAL is "—" with no wins/losses.
 	totalIdx := strings.Index(msg, "TOTAL")
 	if totalIdx < 0 {
 		t.Fatalf("expected TOTAL row, got:\n%s", msg)
@@ -676,8 +678,8 @@ func TestFormatCategorySummary_ClosedTradesColumn(t *testing.T) {
 	if newline := strings.Index(totalLine, "\n"); newline >= 0 {
 		totalLine = totalLine[:newline]
 	}
-	if !strings.HasSuffix(totalLine, "   19") {
-		t.Errorf("expected TOTAL row to end with closed-trade sum '19', got TOTAL line: %q", totalLine)
+	if !strings.HasSuffix(totalLine, "   19     —") {
+		t.Errorf("expected TOTAL row to end with closed-trade sum '19' followed by W/L '—', got TOTAL line: %q", totalLine)
 	}
 }
 
@@ -707,14 +709,14 @@ func TestFormatCategorySummary_ClosedTradesColumn_SharedWallet(t *testing.T) {
 	if walletIdx < 0 || tIdx < walletIdx {
 		t.Errorf("expected #T after Wallet%% in shared-wallet variant, got Wallet%%@%d #T@%d:\n%s", walletIdx, tIdx, msg)
 	}
-	// Per-strategy counts.
-	if !strings.Contains(msg, "    4\n") {
+	// Per-strategy counts; W/L column (issue #434) renders "—" with no wins/losses set.
+	if !strings.Contains(msg, "    4     —\n") {
 		t.Errorf("expected closed-trade count '4' for hl-rmc-eth, got:\n%s", msg)
 	}
-	if !strings.Contains(msg, "    9\n") {
+	if !strings.Contains(msg, "    9     —\n") {
 		t.Errorf("expected closed-trade count '9' for hl-tema-eth, got:\n%s", msg)
 	}
-	// TOTAL row should end with sum 13.
+	// TOTAL row should end with sum 13 followed by W/L "—".
 	totalIdx := strings.Index(msg, "TOTAL")
 	if totalIdx < 0 {
 		t.Fatalf("expected TOTAL row, got:\n%s", msg)
@@ -723,8 +725,88 @@ func TestFormatCategorySummary_ClosedTradesColumn_SharedWallet(t *testing.T) {
 	if newline := strings.Index(totalLine, "\n"); newline >= 0 {
 		totalLine = totalLine[:newline]
 	}
-	if !strings.HasSuffix(totalLine, "   13") {
-		t.Errorf("expected TOTAL row to end with closed-trade sum '13', got TOTAL line: %q", totalLine)
+	if !strings.HasSuffix(totalLine, "   13     —") {
+		t.Errorf("expected TOTAL row to end with closed-trade sum '13' followed by W/L '—', got TOTAL line: %q", totalLine)
+	}
+}
+
+func TestFmtWinLossRatio(t *testing.T) {
+	// Issue #434: format wins/losses pair as a W/L ratio for strategy summaries.
+	cases := []struct {
+		name     string
+		wins     int
+		losses   int
+		expected string
+	}{
+		{"no trades closed", 0, 0, "—"},
+		{"all wins, no losses", 3, 0, "∞"},
+		{"all losses, no wins", 0, 5, "0.00"},
+		{"even split", 4, 4, "1.00"},
+		{"more wins than losses", 7, 4, "1.75"},
+		{"more losses than wins", 1, 4, "0.25"},
+		{"large counts round to 2dp", 100, 33, "3.03"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := fmtWinLossRatio(tc.wins, tc.losses)
+			if got != tc.expected {
+				t.Errorf("fmtWinLossRatio(%d, %d) = %q, want %q", tc.wins, tc.losses, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestFormatCategorySummary_WinLossColumn(t *testing.T) {
+	// Issue #434: strategy table should show W/L ratio per strategy and on the TOTAL row.
+	strats := []StrategyConfig{
+		{ID: "hl-rsi-btc", Type: "perps", Args: []string{"rsi", "BTC", "1h"}, Capital: 1000},
+		{ID: "hl-sma-btc", Type: "perps", Args: []string{"sma", "BTC", "1h"}, Capital: 1000},
+		{ID: "hl-mom-btc", Type: "perps", Args: []string{"mom", "BTC", "1h"}, Capital: 1000},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-rsi-btc": {Cash: 1000, RiskState: RiskState{TotalTrades: 10, WinningTrades: 7, LosingTrades: 3}},
+			"hl-sma-btc": {Cash: 1000, RiskState: RiskState{TotalTrades: 5, WinningTrades: 5, LosingTrades: 0}},
+			"hl-mom-btc": {Cash: 1000, RiskState: RiskState{TotalTrades: 0}},
+		},
+	}
+	prices := map[string]float64{"BTC/USDT": 50000}
+
+	msgs := FormatCategorySummary(1, 0, 3, 0, 3000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0)
+	msg := strings.Join(msgs, "\n")
+
+	if !strings.Contains(msg, "W/L") {
+		t.Errorf("expected 'W/L' column header, got:\n%s", msg)
+	}
+	// W/L should follow #T in the header.
+	tIdx := strings.Index(msg, "#T")
+	wlIdx := strings.Index(msg, "W/L")
+	if tIdx < 0 || wlIdx < 0 || wlIdx < tIdx {
+		t.Errorf("expected W/L column to follow #T, got #T@%d W/L@%d:\n%s", tIdx, wlIdx, msg)
+	}
+
+	// Per-strategy W/L values.
+	if !strings.Contains(msg, "  2.33\n") {
+		t.Errorf("expected W/L '2.33' for hl-rsi-btc (7/3), got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "    ∞\n") {
+		t.Errorf("expected W/L '∞' for hl-sma-btc (5/0), got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "    —\n") {
+		t.Errorf("expected W/L '—' for hl-mom-btc (no trades), got:\n%s", msg)
+	}
+
+	// TOTAL row aggregates wins/losses across strategies: (7+5+0)/(3+0+0) = 4.00.
+	totalIdx := strings.Index(msg, "TOTAL")
+	if totalIdx < 0 {
+		t.Fatalf("expected TOTAL row, got:\n%s", msg)
+	}
+	totalLine := msg[totalIdx:]
+	if newline := strings.Index(totalLine, "\n"); newline >= 0 {
+		totalLine = totalLine[:newline]
+	}
+	if !strings.HasSuffix(totalLine, "  4.00") {
+		t.Errorf("expected TOTAL row to end with W/L '4.00' (12 wins / 3 losses), got TOTAL line: %q", totalLine)
 	}
 }
 
