@@ -91,6 +91,25 @@ func main() {
 				s.RiskState.MaxDrawdownPct = sc.MaxDrawdownPct
 			}
 			s.Platform = sc.Platform
+			// #418 RC3 one-shot self-heal: pre-#418 deployments where
+			// reconcile overwrote pos.Leverage with the on-chain margin
+			// tier (e.g. configured 2x but stored 20x) would persist the
+			// stale value indefinitely under the new `== 0` write-path
+			// guard. Risk math reads sc.Leverage now, so this only fixes
+			// metadata visible to analytics/dashboards/future readers, but
+			// stamping config onto state at startup keeps the two sources
+			// of truth aligned.
+			if sc.Platform == "hyperliquid" && sc.Type == "perps" && sc.Leverage > 0 {
+				for sym, pos := range s.Positions {
+					if pos == nil {
+						continue
+					}
+					if pos.Leverage != sc.Leverage {
+						fmt.Printf("  hl-heal: %s %s leverage %v → %v (config)\n", sc.ID, sym, pos.Leverage, sc.Leverage)
+						pos.Leverage = sc.Leverage
+					}
+				}
+			}
 		}
 	}
 
@@ -650,7 +669,7 @@ func main() {
 			// equity total so the portfolio kill switch can fire on a
 			// leveraged margin blow-up that would otherwise hide inside
 			// equity-only drawdown for all-perps accounts.
-			perpsLoss, perpsMargin := AggregatePerpsMarginInputs(state.Strategies, prices)
+			perpsLoss, perpsMargin := AggregatePerpsMarginInputs(state.Strategies, cfg.Strategies, prices)
 			mu.RUnlock()
 
 			mu.Lock()

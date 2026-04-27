@@ -265,8 +265,17 @@ func reconcileHyperliquidPositions(stratState *StrategyState, sym string, positi
 			statePos.Multiplier = 1
 			changed = true
 		}
-		if onChainPos.Leverage > 0 && statePos.Leverage != onChainPos.Leverage {
-			logger.Info("hl-sync: %s leverage %v → %v", sym, statePos.Leverage, onChainPos.Leverage)
+		// #418: only seed leverage from on-chain when the virtual position has
+		// none yet (Leverage==0 → legacy/uninitialised). The entry path sets
+		// Leverage from sc.Leverage (config); the exchange's account-wide
+		// margin tier can differ (e.g. HL allows up to 20x while the trader
+		// sized at 2x) and unconditionally overwriting it inflates the
+		// perpsMarginDrawdownInputs denominator and can re-fire the circuit
+		// breaker spuriously. Defense in depth — risk math also reads
+		// sc.Leverage now, so this is belt-and-suspenders against any future
+		// consumer that reads pos.Leverage directly.
+		if onChainPos.Leverage > 0 && statePos.Leverage == 0 {
+			logger.Info("hl-sync: %s leverage init → %v (from on-chain, legacy/zero-value position)", sym, onChainPos.Leverage)
 			statePos.Leverage = onChainPos.Leverage
 			changed = true
 		}
@@ -436,12 +445,14 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 				pos.Multiplier = 1
 				changed = true
 			}
-			if onChainPos != nil && onChainPos.Leverage > 0 && pos.Leverage != onChainPos.Leverage {
+			// #418: same write-path guard as reconcileHyperliquidPositions —
+			// only seed leverage from on-chain when virtual is zero-value.
+			if onChainPos != nil && onChainPos.Leverage > 0 && pos.Leverage == 0 {
 				logger, err := logMgr.GetStrategyLogger(id)
 				if err != nil {
 					fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", id, err)
 				} else {
-					logger.Info("hl-sync: %s leverage %v → %v (shared coin)", coin, pos.Leverage, onChainPos.Leverage)
+					logger.Info("hl-sync: %s leverage init → %v (shared coin, from on-chain)", coin, onChainPos.Leverage)
 				}
 				pos.Leverage = onChainPos.Leverage
 				changed = true
@@ -913,10 +924,12 @@ func runPendingHyperliquidCircuitCloses(
 				break
 			}
 			sz := c.Size
+			var onChainSigned float64
 			for _, p := range positions {
 				if p.Coin != c.Symbol {
 					continue
 				}
+				onChainSigned = p.Size
 				absOC := math.Abs(p.Size)
 				if absOC <= 1e-15 {
 					sz = 0
@@ -938,7 +951,63 @@ func runPendingHyperliquidCircuitCloses(
 				allOK = false
 				break
 			}
-			fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s submitted reduce-only close sz=%.6f\n", j.stratID, c.Symbol, sz)
+
+			// #418: extract actual fill metadata. Previously the drain logged
+			// the *requested* sz and cleared pending regardless of how much
+			// actually filled, so a partial fill (slippage cap, market depth,
+			// market_close slippage param) was indistinguishable from a full
+			// close in operator logs and the residual on-chain position was
+			// silently abandoned until the next cycle's reconcile (which for
+			// shared-wallet coins never overwrites virtual quantity).
+			var (
+				fillSz, fillPx, fillFee float64
+				alreadyFlat             bool
+			)
+			if result != nil && result.Close != nil {
+				alreadyFlat = result.Close.AlreadyFlat
+				if result.Close.Fill != nil {
+					fillSz = result.Close.Fill.TotalSz
+					fillPx = result.Close.Fill.AvgPx
+					fillFee = result.Close.Fill.Fee
+				}
+			}
+
+			// Apply whatever did fill against virtual state (#418 Fix 2). For
+			// shared-wallet coins reconcileHyperliquidPositions deliberately
+			// does NOT overwrite quantities (#258), so without this decrement
+			// the firing strategy's virtual position would stay at 100% while
+			// on-chain dropped to its weighted share — the inflated virtual
+			// notional then re-fires the CB next cycle.
+			if !alreadyFlat && fillSz > 1e-15 {
+				mu.Lock()
+				if ss := state.Strategies[j.stratID]; ss != nil {
+					applyHyperliquidCircuitCloseFill(ss, c.Symbol, fillSz, fillPx, fillFee, onChainSigned)
+				}
+				mu.Unlock()
+			}
+
+			// Detect partial fill: the closer reported a fill smaller than
+			// requested. 0.99 tolerance accounts for HL lot-size rounding
+			// (the SDK rounds to the asset's stepSz). On under-fill, leave
+			// pending intact so the next cycle retries the residual. Note
+			// the `fillSz > 0` clause is intentionally absent: a closer that
+			// returns success with no fill (nil/zero-TotalSz) is treated as
+			// under-fill so a permissive future adapter can't silently clear
+			// pending without flattening anything (#418 review observation 1).
+			underFill := !alreadyFlat && fillSz < sz*0.99
+			if underFill {
+				slCancelled := firstPositiveStopLossOID(cancelOIDs) > 0 && result != nil && result.CancelStopLossSucceeded
+				slNote := ""
+				if slCancelled {
+					slNote = " — stop-loss was cancelled, residual is unprotected until retry"
+				}
+				fmt.Printf("[CRITICAL] hl-circuit-close: strategy %s coin %s PARTIAL fill %.6f/%.6f — leaving pending for retry%s\n",
+					j.stratID, c.Symbol, fillSz, sz, slNote)
+				allOK = false
+			} else {
+				fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s closed sz=%.6f (filled %.6f)\n", j.stratID, c.Symbol, sz, fillSz)
+			}
+
 			// Clear the StopLossOID under Lock when the cancel went
 			// through, so a follow-up cycle doesn't try to cancel the
 			// already-cancelled trigger.
@@ -952,6 +1021,15 @@ func runPendingHyperliquidCircuitCloses(
 				}
 				mu.Unlock()
 			}
+
+			// Other symbols in this strategy's pending list are independent
+			// positions (e.g. ETH partial + BTC + SOL) — under-fill on one
+			// symbol must not defer the others. Use continue, not break, so
+			// each symbol gets its own attempt this cycle (#418 review
+			// observation 2).
+			if underFill {
+				continue
+			}
 		}
 
 		if allOK {
@@ -961,6 +1039,103 @@ func runPendingHyperliquidCircuitCloses(
 			}
 			mu.Unlock()
 		}
+	}
+}
+
+// applyHyperliquidCircuitCloseFill applies a reduce-only close fill against
+// the strategy's virtual position (#418 Fix 2). Decrements pos.Quantity by
+// the actual filled amount, books realized PnL net of the on-chain fee, and
+// records a Trade so the close fill lands in trade history just like a normal
+// signal-driven close. AvgCost is preserved (standard partial-close
+// semantics) — only Quantity is reduced.
+//
+// When the post-fill quantity drops to ~0 the position is fully closed and
+// removed from s.Positions via recordClosedPosition (consistent with the
+// signal-driven close path).
+//
+// When no virtual position exists (or has zero quantity) we still record a
+// defensive Trade so the on-chain close lives in audit history; PnL is
+// skipped because we have no AvgCost basis. onChainSigned is the signed
+// on-chain position size at submit time (positive = long, negative = short)
+// so the trade-history Side is inferred from what we actually closed rather
+// than hard-coded as "sell" — matters when reconciling a stranded short
+// (#418 review observation 4). Pass 0 if the on-chain side is unknown; the
+// trade then falls back to "sell".
+//
+// Caller must hold mu.Lock(). Reason is fixed to "circuit_breaker" for
+// clarity in trade history and closed-position rows.
+func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, fillPx, fillFee, onChainSigned float64) {
+	if s == nil || fillSz <= 0 || fillPx <= 0 {
+		return
+	}
+	now := time.Now().UTC()
+	pos, ok := s.Positions[symbol]
+	if !ok || pos == nil || pos.Quantity <= 0 {
+		// No virtual position to decrement — record defensive Trade with no
+		// PnL accounting (no AvgCost basis available). Closing a short is a
+		// buy; closing a long is a sell. Default to "sell" when the on-chain
+		// side is unknown (legacy callers, no positions snapshot).
+		closeSide := "sell"
+		if onChainSigned < 0 {
+			closeSide = "buy"
+		}
+		RecordTrade(s, Trade{
+			Timestamp:  now,
+			StrategyID: s.ID,
+			Symbol:     symbol,
+			Side:       closeSide,
+			Quantity:   fillSz,
+			Price:      fillPx,
+			Value:      fillSz * fillPx,
+			TradeType:  "perps",
+			Details:    fmt.Sprintf("Circuit breaker on-chain close (no virtual position), fill=%.6f fee=$%.4f", fillSz, fillFee),
+		})
+		return
+	}
+
+	qtyClosed := fillSz
+	if qtyClosed > pos.Quantity {
+		qtyClosed = pos.Quantity
+	}
+	side := pos.Side
+	avgCost := pos.AvgCost
+	closeSide := "sell"
+	if side == "short" {
+		closeSide = "buy"
+	}
+	var pnl float64
+	if side == "long" {
+		pnl = qtyClosed * (fillPx - avgCost)
+	} else {
+		pnl = qtyClosed * (avgCost - fillPx)
+	}
+	pnl -= fillFee
+	s.Cash += pnl
+
+	RecordTrade(s, Trade{
+		Timestamp:  now,
+		StrategyID: s.ID,
+		Symbol:     symbol,
+		Side:       closeSide,
+		Quantity:   qtyClosed,
+		Price:      fillPx,
+		Value:      qtyClosed * fillPx,
+		TradeType:  "perps",
+		Details:    fmt.Sprintf("Circuit breaker on-chain close, PnL: $%.2f (fee $%.4f)", pnl, fillFee),
+	})
+	RecordTradeResult(&s.RiskState, pnl)
+
+	remaining := pos.Quantity - qtyClosed
+	if remaining <= 1e-9 {
+		// Position fully closed — pos.Quantity is still the original value at
+		// this point (we never wrote qtyClosed back into it). Since
+		// remaining ≈ 0, the original ≈ qtyClosed, so recordClosedPosition's
+		// snapshot of pos.Quantity into ClosedPosition.Quantity captures the
+		// right amount. delete() runs after the snapshot.
+		recordClosedPosition(s, pos, fillPx, pnl, "circuit_breaker", now)
+		delete(s.Positions, symbol)
+	} else {
+		pos.Quantity = remaining
 	}
 }
 

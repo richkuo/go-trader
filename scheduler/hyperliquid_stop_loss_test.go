@@ -482,9 +482,12 @@ func TestRunPendingHyperliquidCircuitCloses_CancelsStopLossOID(t *testing.T) {
 	if seenCancelOID != 99887766 {
 		t.Errorf("closer received cancelStopLossOID=%d, want 99887766", seenCancelOID)
 	}
-	// And the StopLossOID was cleared in state since the cancel succeeded.
-	if got := state.Strategies["hl-a"].Positions["ETH"].StopLossOID; got != 0 {
-		t.Errorf("StopLossOID should be cleared after cancel succeeded, got %d", got)
+	// #418: a successful full-fill close now decrements virtual quantity to
+	// zero and removes the position via recordClosedPosition. The StopLossOID
+	// implicitly travels with the deleted position, so the original assertion
+	// (StopLossOID == 0) is replaced with a "position fully closed" check.
+	if _, ok := state.Strategies["hl-a"].Positions["ETH"]; ok {
+		t.Errorf("ETH position should be removed after full-fill CB close, but it's still present")
 	}
 }
 
