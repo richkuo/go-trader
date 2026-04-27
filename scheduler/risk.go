@@ -270,7 +270,7 @@ func detectSharedWalletPlatforms(strategies []StrategyConfig) []string {
 //     partial slice that would under-baseline PeakValue
 //
 // On success, PortfolioRisk.PeakValue is re-baselined to the verified total
-// balance (and CurrentDrawdownPct zeroed) so the very next CheckPortfolioRisk
+// balance (and drawdown fields zeroed) so the very next CheckPortfolioRisk
 // call cannot immediately re-latch the kill switch using a stale inflated
 // peak — the original root cause from #244.
 //
@@ -313,10 +313,30 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 	// (potentially double-counted) peak.
 	state.PortfolioRisk.PeakValue = totalBalance
 	state.PortfolioRisk.CurrentDrawdownPct = 0
+	state.PortfolioRisk.CurrentMarginDrawdownPct = 0
 	addKillSwitchEvent(&state.PortfolioRisk, "auto_reset", "",
 		0, totalBalance, totalBalance,
 		fmt.Sprintf("startup auto-clear: shared wallets %v reachable, total balance=$%.2f (peak re-baselined)",
 			sharedPlatforms, totalBalance))
+	return true
+}
+
+// AutoResetConfirmedFlatKillSwitch clears a portfolio kill-switch latch after
+// live close planning has confirmed all automated venues are flat. This is used
+// only when no DM-capable owner is configured; owner-backed deployments keep the
+// existing human-in-the-loop reset path.
+func AutoResetConfirmedFlatKillSwitch(prs *PortfolioRiskState, postClosePortfolioValue float64, details string) bool {
+	if prs == nil || !prs.KillSwitchActive {
+		return false
+	}
+
+	prs.KillSwitchActive = false
+	prs.KillSwitchAt = time.Time{}
+	prs.WarningSent = false
+	prs.PeakValue = postClosePortfolioValue
+	prs.CurrentDrawdownPct = 0
+	prs.CurrentMarginDrawdownPct = 0
+	addKillSwitchEvent(prs, "auto_reset", "", 0, postClosePortfolioValue, postClosePortfolioValue, details)
 	return true
 }
 

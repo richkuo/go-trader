@@ -802,6 +802,12 @@ func main() {
 						// portfolio kill path once it takes over flattening.
 					}
 				}
+				if !notifier.HasOwner() {
+					if AutoResetConfirmedFlatKillSwitch(&state.PortfolioRisk, totalPV,
+						"confirmed flat after portfolio kill-switch close; no DM owner configured, latch auto-cleared") {
+						fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset after confirmed flat close (no owner configured, peak re-baselined to $%.2f)\n", totalPV)
+					}
+				}
 				mu.Unlock()
 			}
 

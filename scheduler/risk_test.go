@@ -945,10 +945,11 @@ func latchedSharedWalletState() *AppState {
 	return &AppState{
 		Strategies: map[string]*StrategyState{},
 		PortfolioRisk: PortfolioRiskState{
-			PeakValue:          10000,
-			CurrentDrawdownPct: 50,
-			KillSwitchActive:   true,
-			KillSwitchAt:       time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+			PeakValue:                10000,
+			CurrentDrawdownPct:       50,
+			CurrentMarginDrawdownPct: 26.84,
+			KillSwitchActive:         true,
+			KillSwitchAt:             time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
 		},
 	}
 }
@@ -999,6 +1000,9 @@ func TestClearLatchedKillSwitchSharedWallet_Success(t *testing.T) {
 	}
 	if state.PortfolioRisk.CurrentDrawdownPct != 0 {
 		t.Errorf("expected CurrentDrawdownPct reset to 0; got %.2f", state.PortfolioRisk.CurrentDrawdownPct)
+	}
+	if state.PortfolioRisk.CurrentMarginDrawdownPct != 0 {
+		t.Errorf("expected CurrentMarginDrawdownPct reset to 0; got %.2f", state.PortfolioRisk.CurrentMarginDrawdownPct)
 	}
 	if len(state.PortfolioRisk.Events) != 1 {
 		t.Fatalf("expected 1 audit event; got %d", len(state.PortfolioRisk.Events))
@@ -1217,6 +1221,96 @@ func TestClearLatchedKillSwitchSharedWallet_MultiPlatformAnyFailPreservesLatch(t
 	}
 	if len(state.PortfolioRisk.Events) != 0 {
 		t.Errorf("expected no audit event on partial failure; got %d", len(state.PortfolioRisk.Events))
+	}
+}
+
+func TestAutoResetConfirmedFlatKillSwitch_Success(t *testing.T) {
+	latchedAt := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	prs := &PortfolioRiskState{
+		PeakValue:                1261.87,
+		CurrentDrawdownPct:       3.63,
+		CurrentMarginDrawdownPct: 26.84,
+		KillSwitchActive:         true,
+		KillSwitchAt:             latchedAt,
+		WarningSent:              true,
+	}
+
+	if ok := AutoResetConfirmedFlatKillSwitch(prs, 1216.07, "confirmed flat; no owner configured"); !ok {
+		t.Fatal("expected auto-reset to return true")
+	}
+	if prs.KillSwitchActive {
+		t.Error("expected KillSwitchActive=false after confirmed-flat auto-reset")
+	}
+	if !prs.KillSwitchAt.IsZero() {
+		t.Errorf("expected KillSwitchAt zeroed; got %v", prs.KillSwitchAt)
+	}
+	if prs.WarningSent {
+		t.Error("expected WarningSent=false after confirmed-flat auto-reset")
+	}
+	if prs.PeakValue != 1216.07 {
+		t.Errorf("expected PeakValue re-baselined to post-close value 1216.07; got %.2f", prs.PeakValue)
+	}
+	if prs.CurrentDrawdownPct != 0 {
+		t.Errorf("expected CurrentDrawdownPct=0; got %.2f", prs.CurrentDrawdownPct)
+	}
+	if prs.CurrentMarginDrawdownPct != 0 {
+		t.Errorf("expected CurrentMarginDrawdownPct=0; got %.2f", prs.CurrentMarginDrawdownPct)
+	}
+	if len(prs.Events) != 1 {
+		t.Fatalf("expected 1 audit event; got %d", len(prs.Events))
+	}
+	evt := prs.Events[0]
+	if evt.Type != "auto_reset" {
+		t.Errorf("expected event type auto_reset; got %q", evt.Type)
+	}
+	if evt.DrawdownPct != 0 {
+		t.Errorf("expected event drawdown 0; got %.2f", evt.DrawdownPct)
+	}
+	if evt.PortfolioValue != 1216.07 || evt.PeakValue != 1216.07 {
+		t.Errorf("expected event portfolio/peak re-baselined to 1216.07; got portfolio=%.2f peak=%.2f",
+			evt.PortfolioValue, evt.PeakValue)
+	}
+}
+
+func TestAutoResetConfirmedFlatKillSwitch_NoOpWhenInactive(t *testing.T) {
+	prs := &PortfolioRiskState{
+		PeakValue:                5000,
+		CurrentDrawdownPct:       4,
+		CurrentMarginDrawdownPct: 8,
+	}
+
+	if ok := AutoResetConfirmedFlatKillSwitch(prs, 4500, "no-op"); ok {
+		t.Fatal("expected inactive kill switch to be a no-op")
+	}
+	if prs.PeakValue != 5000 {
+		t.Errorf("expected PeakValue unchanged; got %.2f", prs.PeakValue)
+	}
+	if prs.CurrentDrawdownPct != 4 || prs.CurrentMarginDrawdownPct != 8 {
+		t.Errorf("expected drawdown fields unchanged; got equity=%.2f margin=%.2f",
+			prs.CurrentDrawdownPct, prs.CurrentMarginDrawdownPct)
+	}
+	if len(prs.Events) != 0 {
+		t.Errorf("expected no event on no-op; got %d", len(prs.Events))
+	}
+}
+
+func TestAutoResetConfirmedFlatKillSwitch_NoRelatchOnNextTick(t *testing.T) {
+	prs := &PortfolioRiskState{
+		PeakValue:          10000,
+		CurrentDrawdownPct: 30,
+		KillSwitchActive:   true,
+		KillSwitchAt:       time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC),
+	}
+
+	AutoResetConfirmedFlatKillSwitch(prs, 7000, "confirmed flat; no owner configured")
+
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	allowed, _, _, reason := CheckPortfolioRisk(prs, cfg, 7000, 0, 0, 0)
+	if !allowed {
+		t.Fatalf("expected next tick to resume trading after auto-reset; got reason=%s", reason)
+	}
+	if prs.KillSwitchActive {
+		t.Error("expected kill switch to remain inactive on next tick")
 	}
 }
 
