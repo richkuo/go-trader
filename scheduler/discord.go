@@ -423,6 +423,8 @@ func FormatCategorySummary(
 			trades:        len(ss.TradeHistory),
 			openPositions: openPos,
 			closedTrades:  ss.RiskState.TotalTrades,
+			winningTrades: ss.RiskState.WinningTrades,
+			losingTrades:  ss.RiskState.LosingTrades,
 			tradeHistory:  ss.TradeHistory,
 		})
 	}
@@ -622,6 +624,8 @@ type botInfo struct {
 	trades        int
 	openPositions int
 	closedTrades  int
+	winningTrades int
+	losingTrades  int
 	tradeHistory  []Trade
 }
 
@@ -759,15 +763,16 @@ func formatInterval(seconds int) string {
 // bots. When includeTotals is true the trailing TOTAL row is appended using the
 // supplied totals (which should be computed from the FULL bot list, not just
 // this chunk). totalClosed is the sum of closedTrades across the full bot list
-// and is rendered in the #T column of the TOTAL row. Used by writeCatTableChunks.
-func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, includeTotals bool, totalInit, totalValue, totalPnl, totalPnlPct float64, totalClosed int) {
+// and is rendered in the #T column of the TOTAL row. totalWins/totalLosses
+// drive the W/L column in the TOTAL row. Used by writeCatTableChunks.
+func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, includeTotals bool, totalInit, totalValue, totalPnl, totalPnlPct float64, totalClosed, totalWins, totalLosses int) {
 	if len(bots) == 0 {
 		return
 	}
 	sb.WriteString("\n```\n")
 	if showWalletPct {
-		const sep = "-------------------------------------------------------------------------------"
-		sb.WriteString(fmt.Sprintf("%-16s %9s %9s %7s %7s %8s %5s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Wallet%", "Tf", "Int", "#T"))
+		const sep = "------------------------------------------------------------------------------------"
+		sb.WriteString(fmt.Sprintf("%-16s %9s %9s %7s %7s %8s %5s %5s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Wallet%", "Tf", "Int", "#T", "W/L"))
 		sb.WriteString(sep + "\n")
 		for _, bot := range bots {
 			label := bot.id
@@ -782,7 +787,8 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 			if bot.walletPct > 0 {
 				wpStr = fmt.Sprintf("%.1f%%", bot.walletPct)
 			}
-			sb.WriteString(fmt.Sprintf("%-16s %9s %9s %7s %7s %8s %5s %5s %5d\n", label, initStr, valStr, pnlStr, pctStr, wpStr, bot.timeframe, bot.interval, bot.closedTrades))
+			wlStr := fmtWinLossRatio(bot.winningTrades, bot.losingTrades)
+			sb.WriteString(fmt.Sprintf("%-16s %9s %9s %7s %7s %8s %5s %5s %5d %5s\n", label, initStr, valStr, pnlStr, pctStr, wpStr, bot.timeframe, bot.interval, bot.closedTrades, wlStr))
 		}
 		if includeTotals {
 			sb.WriteString(sep + "\n")
@@ -790,11 +796,12 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 			totInitStr := fmtComma(totalInit)
 			totPnlStr := fmtPnl(totalPnl)
 			totPctStr := fmtPnlPct(totalPnlPct)
-			sb.WriteString(fmt.Sprintf("%-16s %9s %9s %7s %7s %8s %5s %5s %5d\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "100.0%", "", "", totalClosed))
+			totWlStr := fmtWinLossRatio(totalWins, totalLosses)
+			sb.WriteString(fmt.Sprintf("%-16s %9s %9s %7s %7s %8s %5s %5s %5d %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "100.0%", "", "", totalClosed, totWlStr))
 		}
 	} else {
-		const sep = "----------------------------------------------------------------------"
-		sb.WriteString(fmt.Sprintf("%-16s %9s %9s %7s %7s %5s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Tf", "Int", "#T"))
+		const sep = "-----------------------------------------------------------------------------"
+		sb.WriteString(fmt.Sprintf("%-16s %9s %9s %7s %7s %5s %5s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Tf", "Int", "#T", "W/L"))
 		sb.WriteString(sep + "\n")
 		for _, bot := range bots {
 			label := bot.id
@@ -805,7 +812,8 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 			initStr := fmtComma(bot.initialCap)
 			pnlStr := fmtPnl(bot.pnl)
 			pctStr := fmtPnlPct(bot.pnlPct)
-			sb.WriteString(fmt.Sprintf("%-16s %9s %9s %7s %7s %5s %5s %5d\n", label, initStr, valStr, pnlStr, pctStr, bot.timeframe, bot.interval, bot.closedTrades))
+			wlStr := fmtWinLossRatio(bot.winningTrades, bot.losingTrades)
+			sb.WriteString(fmt.Sprintf("%-16s %9s %9s %7s %7s %5s %5s %5d %5s\n", label, initStr, valStr, pnlStr, pctStr, bot.timeframe, bot.interval, bot.closedTrades, wlStr))
 		}
 		if includeTotals {
 			sb.WriteString(sep + "\n")
@@ -813,7 +821,8 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 			totInitStr := fmtComma(totalInit)
 			totPnlStr := fmtPnl(totalPnl)
 			totPctStr := fmtPnlPct(totalPnlPct)
-			sb.WriteString(fmt.Sprintf("%-16s %9s %9s %7s %7s %5s %5s %5d\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "", "", totalClosed))
+			totWlStr := fmtWinLossRatio(totalWins, totalLosses)
+			sb.WriteString(fmt.Sprintf("%-16s %9s %9s %7s %7s %5s %5s %5d %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "", "", totalClosed, totWlStr))
 		}
 	}
 	sb.WriteString("```\n")
@@ -828,10 +837,12 @@ func writeCatTableChunks(bots []botInfo, totalValue, totalPnl, totalPnlPct float
 		return nil
 	}
 	var totalInit float64
-	var totalClosed int
+	var totalClosed, totalWins, totalLosses int
 	for _, bot := range bots {
 		totalInit += bot.initialCap
 		totalClosed += bot.closedTrades
+		totalWins += bot.winningTrades
+		totalLosses += bot.losingTrades
 	}
 	var chunks []string
 	for start := 0; start < len(bots); start += catTableMaxRows {
@@ -841,10 +852,23 @@ func writeCatTableChunks(bots []botInfo, totalValue, totalPnl, totalPnlPct float
 		}
 		isLast := end == len(bots)
 		var sb strings.Builder
-		writeCatTablePartial(&sb, bots[start:end], showWalletPct, isLast, totalInit, totalValue, totalPnl, totalPnlPct, totalClosed)
+		writeCatTablePartial(&sb, bots[start:end], showWalletPct, isLast, totalInit, totalValue, totalPnl, totalPnlPct, totalClosed, totalWins, totalLosses)
 		chunks = append(chunks, sb.String())
 	}
 	return chunks
+}
+
+// fmtWinLossRatio formats a wins/losses pair as a Win-Loss ratio string for the
+// strategy summary table. Returns "—" when no trades have closed, "∞" when
+// every closed trade won (no losses to divide by), and "N.NN" otherwise.
+func fmtWinLossRatio(wins, losses int) string {
+	if wins == 0 && losses == 0 {
+		return "—"
+	}
+	if losses == 0 {
+		return "∞"
+	}
+	return fmt.Sprintf("%.2f", float64(wins)/float64(losses))
 }
 
 func fmtPnl(pnl float64) string {
