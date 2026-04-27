@@ -435,6 +435,7 @@ func TestRunPendingTopStepCircuitCloses_DrainsAndClearsPending(t *testing.T) {
 		closer,
 		30*time.Second,
 		&mu,
+		nil,
 	)
 	if len(calls) != 1 || calls[0] != "ES" {
 		t.Errorf("closer calls=%v want [ES]", calls)
@@ -480,6 +481,7 @@ func TestRunPendingTopStepCircuitCloses_RecoversStuckCB(t *testing.T) {
 		closer,
 		30*time.Second,
 		&mu,
+		nil,
 	)
 	if len(calls) != 1 || calls[0] != "ES" {
 		t.Errorf("closer calls=%v want [ES] (recovered pending should flatten full size)", calls)
@@ -524,6 +526,7 @@ func TestRunPendingTopStepCircuitCloses_CloseErrorLatchesPending(t *testing.T) {
 		closer,
 		30*time.Second,
 		&mu,
+		nil,
 	)
 	pending := state.Strategies["ts-es"].RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep)
 	if pending == nil {
@@ -573,6 +576,7 @@ func TestRunPendingTopStepCircuitCloses_AlreadyFlatSkipsCloserAndClears(t *testi
 		closer,
 		30*time.Second,
 		&mu,
+		nil,
 	)
 	if len(calls) != 0 {
 		t.Errorf("closer should not be called when position is already flat, got %v", calls)
@@ -618,6 +622,7 @@ func TestRunPendingTopStepCircuitCloses_StuckCBMultiPeerSkipped(t *testing.T) {
 		closer,
 		30*time.Second,
 		&mu,
+		nil,
 	)
 	if len(calls) != 0 {
 		t.Errorf("closer should not be called for multi-peer contract, got %v", calls)
@@ -667,6 +672,7 @@ func TestRunPendingTopStepCircuitCloses_FetcherErrorBails(t *testing.T) {
 		closer,
 		30*time.Second,
 		&mu,
+		nil,
 	)
 	if len(calls) != 0 {
 		t.Errorf("closer should not be called when fetcher errors, got %v", calls)
@@ -674,5 +680,106 @@ func TestRunPendingTopStepCircuitCloses_FetcherErrorBails(t *testing.T) {
 	// Pending must remain so the next cycle retries.
 	if state.Strategies["ts-es"].RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep) == nil {
 		t.Error("expected pending to remain latched when fetcher errors")
+	}
+}
+
+// captureTSNotifier implements operatorRequiredNotifier for tests.
+type captureTSNotifier struct {
+	channels []string
+	dms      []string
+}
+
+func (n *captureTSNotifier) HasBackends() bool          { return true }
+func (n *captureTSNotifier) SendToAllChannels(c string) { n.channels = append(n.channels, c) }
+func (n *captureTSNotifier) SendOwnerDM(c string)       { n.dms = append(n.dms, c) }
+
+func TestRunPendingTopStepCircuitCloses_FailureIncrementsCountAndNotifies(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"ts-es": {
+				ID: "ts-es",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseTopStep: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ES", Size: 1}},
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "ts-es", Platform: "topstep", Type: "futures",
+			Args: []string{"ts-es", "ES", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	closer := func(sym string) (*TopStepCloseResult, error) {
+		return nil, fmt.Errorf("topstep API 503")
+	}
+	notifier := &captureTSNotifier{}
+	runPendingTopStepCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		[]TopStepPosition{{Coin: "ES", Size: 1}},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+		notifier,
+	)
+	p := state.Strategies["ts-es"].RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep)
+	if p == nil {
+		t.Fatal("pending should be preserved on failure")
+	}
+	if p.FailureCount != 1 {
+		t.Errorf("FailureCount: got %d, want 1", p.FailureCount)
+	}
+	if len(notifier.dms) != 1 {
+		t.Errorf("expected 1 DM on first failure, got %d", len(notifier.dms))
+	}
+}
+
+func TestRunPendingTopStepCircuitCloses_RepeatedFailureThrottlesNotifier(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"ts-es": {
+				ID: "ts-es",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseTopStep: {
+							Symbols:        []PendingCircuitCloseSymbol{{Symbol: "ES", Size: 1}},
+							FailureCount:   1,
+							LastNotifiedAt: time.Now(),
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "ts-es", Platform: "topstep", Type: "futures",
+			Args: []string{"ts-es", "ES", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	closer := func(sym string) (*TopStepCloseResult, error) {
+		return nil, fmt.Errorf("topstep API 503")
+	}
+	notifier := &captureTSNotifier{}
+	runPendingTopStepCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		[]TopStepPosition{{Coin: "ES", Size: 1}},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+		notifier,
+	)
+	if len(notifier.dms) != 0 {
+		t.Errorf("expected 0 DMs on failure #2 (suppressed), got %d", len(notifier.dms))
 	}
 }

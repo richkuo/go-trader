@@ -2250,3 +2250,53 @@ func TestRiskState_PendingCircuitClose_MultiPlatformRoundTrip(t *testing.T) {
 		t.Error("okx entry lost in round-trip")
 	}
 }
+
+// TestRiskState_PendingCircuitClose_FailureCounterRoundTrip verifies that
+// FailureCount and LastNotifiedAt survive Marshal/Unmarshal so a stuck CB close
+// loop remembers how many attempts have fired across restarts and throttles
+// notifications correctly (#427).
+func TestRiskState_PendingCircuitClose_FailureCounterRoundTrip(t *testing.T) {
+	notifiedAt := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	src := &RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
+		PlatformPendingCloseHyperliquid: {
+			Symbols:        []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.25}},
+			FailureCount:   7,
+			LastNotifiedAt: notifiedAt,
+		},
+	}}
+	blob := src.MarshalPendingCircuitClosesJSON()
+	if blob == "" {
+		t.Fatal("expected non-empty JSON blob")
+	}
+	var dst RiskState
+	dst.UnmarshalPendingCircuitClosesJSON(blob)
+	got := dst.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+	if got == nil {
+		t.Fatal("entry lost in round-trip")
+	}
+	if got.FailureCount != 7 {
+		t.Errorf("FailureCount: got %d, want 7", got.FailureCount)
+	}
+	if !got.LastNotifiedAt.Equal(notifiedAt) {
+		t.Errorf("LastNotifiedAt: got %v, want %v", got.LastNotifiedAt, notifiedAt)
+	}
+}
+
+// TestRiskState_PendingCircuitClose_LegacyShapeDefaultsZeroFailureCount verifies
+// that pre-#427 DB rows (which have no failure_count field) load with
+// FailureCount=0 so the first new-code failure increments to 1 and notifies.
+func TestRiskState_PendingCircuitClose_LegacyShapeDefaultsZeroFailureCount(t *testing.T) {
+	var r RiskState
+	// Legacy DB row has no failure_count or last_notified_at fields.
+	r.UnmarshalPendingCircuitClosesJSON(`{"hyperliquid":{"symbols":[{"symbol":"ETH","size":0.25}]}}`)
+	got := r.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+	if got == nil {
+		t.Fatal("entry not loaded")
+	}
+	if got.FailureCount != 0 {
+		t.Errorf("legacy row must default FailureCount=0, got %d", got.FailureCount)
+	}
+	if !got.LastNotifiedAt.IsZero() {
+		t.Errorf("legacy row must default LastNotifiedAt=zero, got %v", got.LastNotifiedAt)
+	}
+}

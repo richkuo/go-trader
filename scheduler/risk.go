@@ -615,9 +615,17 @@ const (
 // #363). The drain emits a CRITICAL warning each cycle instead and leaves the
 // pending populated so /status, Discord, and Telegram all surface the gap
 // continuously until the operator clears it manually.
+//
+// FailureCount and LastNotifiedAt track consecutive close-attempt failures for
+// the throttled operator alert added in #427. The drain increments FailureCount
+// on each failure and only fires the Discord/DM alert on the first failure,
+// every 10th failure, or once per hour — whichever fires first. Cleared when
+// the pending close succeeds (the entire entry is removed).
 type PendingCircuitClose struct {
 	Symbols          []PendingCircuitCloseSymbol `json:"symbols"`
 	OperatorRequired bool                        `json:"operator_required,omitempty"`
+	FailureCount     int                         `json:"failure_count,omitempty"`
+	LastNotifiedAt   time.Time                   `json:"last_notified_at,omitempty"`
 }
 
 // PendingCircuitCloseSymbol is one position leg of a pending close. Symbol is

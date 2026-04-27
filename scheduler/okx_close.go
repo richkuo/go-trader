@@ -327,6 +327,7 @@ func runPendingOKXCircuitCloses(
 	closer OKXLiveCloser,
 	totalBudget time.Duration,
 	mu *sync.RWMutex,
+	notifier operatorRequiredNotifier,
 ) {
 	if !okxHasCreds || closer == nil || state == nil {
 		return
@@ -483,8 +484,27 @@ func runPendingOKXCircuitCloses(
 			partial := sz
 			_, err := closer(c.Symbol, &partial)
 			if err != nil {
+				errMsg := err.Error()
 				fmt.Printf("[CRITICAL] okx-circuit-close: strategy %s coin %s sz=%.6f failed: %v\n", j.stratID, c.Symbol, sz, err)
 				allOK = false
+				now := time.Now().UTC()
+				mu.Lock()
+				if ss := state.Strategies[j.stratID]; ss != nil {
+					if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseOKX); p != nil {
+						p.FailureCount++
+						if shouldNotifyDrainFailure(p.FailureCount, p.LastNotifiedAt, now) {
+							p.LastNotifiedAt = now
+							mu.Unlock()
+							if notifier != nil && notifier.HasBackends() {
+								msg := formatDrainFailureAlert("okx", j.stratID, c.Symbol, sz, errMsg, p.FailureCount)
+								notifier.SendToAllChannels(msg)
+								notifier.SendOwnerDM(msg)
+							}
+							mu.Lock()
+						}
+					}
+				}
+				mu.Unlock()
 				break
 			}
 			fmt.Printf("[INFO] okx-circuit-close: strategy %s coin %s submitted reduce-only close sz=%.6f\n", j.stratID, c.Symbol, sz)

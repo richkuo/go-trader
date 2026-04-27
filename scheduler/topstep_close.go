@@ -207,6 +207,7 @@ func runPendingTopStepCircuitCloses(
 	closer TopStepLiveCloser,
 	totalBudget time.Duration,
 	mu *sync.RWMutex,
+	notifier operatorRequiredNotifier,
 ) {
 	if closer == nil || state == nil {
 		return
@@ -369,9 +370,28 @@ func runPendingTopStepCircuitCloses(
 				// any other close failure land here — we log and latch. The
 				// next cycle re-enters this drain and retries; virtual state
 				// stays untouched (CheckRisk already force-closed locally).
+				errMsg := err.Error()
 				fmt.Printf("[CRITICAL] ts-circuit-close: strategy %s contract %s sz=%d failed: %v (will retry next cycle)\n",
 					j.stratID, c.Symbol, absOC, err)
 				allOK = false
+				now := time.Now().UTC()
+				mu.Lock()
+				if ss := state.Strategies[j.stratID]; ss != nil {
+					if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep); p != nil {
+						p.FailureCount++
+						if shouldNotifyDrainFailure(p.FailureCount, p.LastNotifiedAt, now) {
+							p.LastNotifiedAt = now
+							mu.Unlock()
+							if notifier != nil && notifier.HasBackends() {
+								msg := formatDrainFailureAlert("topstep", j.stratID, c.Symbol, float64(absOC), errMsg, p.FailureCount)
+								notifier.SendToAllChannels(msg)
+								notifier.SendOwnerDM(msg)
+							}
+							mu.Lock()
+						}
+					}
+				}
+				mu.Unlock()
 				break
 			}
 			fmt.Printf("[INFO] ts-circuit-close: strategy %s contract %s submitted market_close sz=%d\n",

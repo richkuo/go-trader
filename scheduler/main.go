@@ -896,6 +896,7 @@ func main() {
 						defaultHyperliquidLiveCloser,
 						90*time.Second,
 						&mu,
+						notifier,
 					)
 				}
 				// #360: Live OKX per-strategy circuit breaker closes. Same shape
@@ -912,6 +913,7 @@ func main() {
 						defaultOKXLiveCloser,
 						90*time.Second,
 						&mu,
+						notifier,
 					)
 				}
 				// #362: Live TopStep per-strategy circuit breaker closes
@@ -930,6 +932,7 @@ func main() {
 						defaultTopStepLiveCloser,
 						90*time.Second,
 						&mu,
+						notifier,
 					)
 				}
 				// #361 phase 3: Live Robinhood crypto per-strategy circuit breaker
@@ -951,6 +954,7 @@ func main() {
 						notifier.SendOwnerDM,
 						150*time.Second,
 						&mu,
+						notifier,
 					)
 				}
 				// #363 phase 5: operator-gap per-strategy CB pending closes.
@@ -1092,7 +1096,7 @@ func main() {
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, okxAvgCost, logger); ok2 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, okxAvgCost, notifier, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
@@ -1110,7 +1114,7 @@ func main() {
 								var execResult *RobinhoodExecuteResult
 								liveExecFailed := false
 								if robinhoodIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runRobinhoodExecuteOrder(sc, result, price, rhCash, rhPosQty, rhPosSide, logger); ok2 {
+									if er, ok2 := runRobinhoodExecuteOrder(sc, result, price, rhCash, rhPosQty, rhPosSide, notifier, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
@@ -1145,7 +1149,7 @@ func main() {
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, okxAvgCost, logger); ok2 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, okxAvgCost, notifier, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
@@ -1196,7 +1200,7 @@ func main() {
 							var execResult *TopStepExecuteResult
 							liveExecFailed := false
 							if topstepIsLive(sc.Args) && result.Signal != 0 {
-								if er, ok2 := runTopStepExecuteOrder(sc, result, price, tsCash, tsContracts, tsPosSide, logger); ok2 {
+								if er, ok2 := runTopStepExecuteOrder(sc, result, price, tsCash, tsContracts, tsPosSide, notifier, logger); ok2 {
 									execResult = er
 								} else {
 									liveExecFailed = true
@@ -1950,14 +1954,21 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	// even when the open leg fails (#421). Caller treats ok=false as "do not
 	// apply state mutations" but inspects execResult.CancelStopLossSucceeded
 	// before discarding it.
+	direction := "open"
+	if side == "sell" {
+		direction = "close"
+	}
 	if err != nil {
 		logger.Error("Live execute failed: %v", err)
+		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, err.Error())
 		return execResult, false
 	}
 	if execResult.Error != "" {
 		logger.Error("Live execute returned error: %s", execResult.Error)
+		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, execResult.Error)
 		return execResult, false
 	}
+	clearLiveExecThrottle(sc, direction, result.Symbol)
 	if execResult.CancelStopLossError != "" {
 		logger.Warn("SL cancel failed (non-fatal): %s", execResult.CancelStopLossError)
 	}
@@ -2160,7 +2171,7 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, logger *Strat
 // posSide=="short" (Quantity is always positive so posQty<=0 cannot
 // distinguish short from flat) but ExecuteFuturesSignal is a no-op in that
 // state — producing a silent state drift identical in shape to #298/#300.
-func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cash, posQty float64, posSide string, logger *StrategyLogger) (*TopStepExecuteResult, bool) {
+func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cash, posQty float64, posSide string, notifier *MultiNotifier, logger *StrategyLogger) (*TopStepExecuteResult, bool) {
 	if reason := FuturesOrderSkipReason(result.Signal, posSide); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
@@ -2203,14 +2214,21 @@ func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cas
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
+	direction := "open"
+	if side == "sell" {
+		direction = "close"
+	}
 	if err != nil {
 		logger.Error("Live execute failed: %v", err)
+		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, err.Error())
 		return nil, false
 	}
 	if execResult.Error != "" {
 		logger.Error("Live execute returned error: %s", execResult.Error)
+		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, execResult.Error)
 		return nil, false
 	}
+	clearLiveExecThrottle(sc, direction, result.Symbol)
 	return execResult, true
 }
 
@@ -2321,7 +2339,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, logger *Str
 // calling the Python executor: otherwise a no-op ExecuteSpotSignal (e.g.
 // already-long with signal=1) would not record the live fill — the same bug
 // class as #298. See #300.
-func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price, cash, posQty float64, posSide string, logger *StrategyLogger) (*RobinhoodExecuteResult, bool) {
+func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price, cash, posQty float64, posSide string, notifier *MultiNotifier, logger *StrategyLogger) (*RobinhoodExecuteResult, bool) {
 	if reason := SpotOrderSkipReason(result.Signal, posSide); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
@@ -2352,14 +2370,21 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
+	direction := "open"
+	if side == "sell" {
+		direction = "close"
+	}
 	if err != nil {
 		logger.Error("Live execute failed: %v", err)
+		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, err.Error())
 		return nil, false
 	}
 	if execResult.Error != "" {
 		logger.Error("Live execute returned error: %s", execResult.Error)
+		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, execResult.Error)
 		return nil, false
 	}
+	clearLiveExecThrottle(sc, direction, result.Symbol)
 	return execResult, true
 }
 
@@ -2475,7 +2500,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyL
 // ExecutePerpsSignal that must be mirrored to avoid the #298 bug class
 // (live fill placed but no Trade recorded because the in-memory execution
 // returned 0). See #300.
-func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, posSide string, avgCost float64, logger *StrategyLogger) (*OKXExecuteResult, bool) {
+func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, posSide string, avgCost float64, notifier *MultiNotifier, logger *StrategyLogger) (*OKXExecuteResult, bool) {
 	var skip string
 	if sc.Type == "perps" {
 		skip = PerpsOrderSkipReason(result.Signal, posSide, sc.AllowShorts)
@@ -2532,14 +2557,21 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
+	direction := "open"
+	if side == "sell" {
+		direction = "close"
+	}
 	if err != nil {
 		logger.Error("Live execute failed: %v", err)
+		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, err.Error())
 		return nil, false
 	}
 	if execResult.Error != "" {
 		logger.Error("Live execute returned error: %s", execResult.Error)
+		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, execResult.Error)
 		return nil, false
 	}
+	clearLiveExecThrottle(sc, direction, result.Symbol)
 	return execResult, true
 }
 

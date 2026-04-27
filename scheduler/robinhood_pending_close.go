@@ -53,6 +53,7 @@ func runPendingRobinhoodCircuitCloses(
 	sendOwnerDM RobinhoodPendingCloseOwnerDM,
 	totalBudget time.Duration,
 	mu *sync.RWMutex,
+	notifier operatorRequiredNotifier,
 ) {
 	if closer == nil || state == nil {
 		return
@@ -251,8 +252,27 @@ func runPendingRobinhoodCircuitCloses(
 
 			result, err := closer(c.Symbol)
 			if err != nil {
+				errMsg := err.Error()
 				fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s failed: %v\n", j.stratID, c.Symbol, err)
 				allOK = false
+				now := time.Now().UTC()
+				mu.Lock()
+				if ss := state.Strategies[j.stratID]; ss != nil {
+					if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood); p != nil {
+						p.FailureCount++
+						if shouldNotifyDrainFailure(p.FailureCount, p.LastNotifiedAt, now) {
+							p.LastNotifiedAt = now
+							mu.Unlock()
+							if notifier != nil && notifier.HasBackends() {
+								msg := formatDrainFailureAlert("robinhood", j.stratID, c.Symbol, c.Size, errMsg, p.FailureCount)
+								notifier.SendToAllChannels(msg)
+								notifier.SendOwnerDM(msg)
+							}
+							mu.Lock()
+						}
+					}
+				}
+				mu.Unlock()
 				break
 			}
 			if result != nil && result.Close != nil && result.Close.AlreadyFlat {

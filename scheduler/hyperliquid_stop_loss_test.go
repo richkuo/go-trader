@@ -477,6 +477,7 @@ func TestRunPendingHyperliquidCircuitCloses_CancelsStopLossOID(t *testing.T) {
 		context.Background(), state, cfg, "0xabc",
 		[]HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}, true,
 		nil, closer, 30*time.Second, &mu,
+		nil,
 	)
 
 	if seenCancelOID != 99887766 {

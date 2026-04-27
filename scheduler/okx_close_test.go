@@ -329,6 +329,7 @@ func TestRunPendingOKXCircuitCloses_RecoversStuckCB(t *testing.T) {
 		closer,
 		30*time.Second,
 		&mu,
+		nil,
 	)
 	if len(calls) != 1 || calls[0] != "ETH:0.4" {
 		t.Errorf("closer calls=%v want [ETH:0.4] (recovered pending should drain full abs size as sole owner)", calls)
@@ -374,6 +375,7 @@ func TestRunPendingOKXCircuitCloses_StuckCBNoOnChainPositionIsNoOp(t *testing.T)
 		closer,
 		30*time.Second,
 		&mu,
+		nil,
 	)
 	if len(calls) != 0 {
 		t.Errorf("expected no closer calls when no on-chain position, got %v", calls)
@@ -426,6 +428,7 @@ func TestRunPendingOKXCircuitCloses_ClearsOnSuccess(t *testing.T) {
 		closer,
 		30*time.Second,
 		&mu,
+		nil,
 	)
 	if state.Strategies["okx-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseOKX) != nil {
 		t.Error("expected pending cleared after successful close")
@@ -471,6 +474,7 @@ func TestRunPendingOKXCircuitCloses_PendingPreservedOnFailure(t *testing.T) {
 		closer,
 		30*time.Second,
 		&mu,
+		nil,
 	)
 	if state.Strategies["okx-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseOKX) == nil {
 		t.Error("expected pending preserved after closer failure (latch semantic)")
@@ -513,6 +517,7 @@ func TestRunPendingOKXCircuitCloses_StaleStrategyClearsPending(t *testing.T) {
 		closer,
 		30*time.Second,
 		&mu,
+		nil,
 	)
 	if len(calls) != 0 {
 		t.Errorf("closer must not be called for stale strategy, got %v", calls)
@@ -600,5 +605,169 @@ func TestParseOKXBalanceOutput_ErrorEnvelopeSurfacesAsErr(t *testing.T) {
 	_, _, err := parseOKXBalanceOutput(stdout, "", fmt.Errorf("exit 1"))
 	if err == nil {
 		t.Fatal("expected non-nil err for error envelope")
+	}
+}
+
+// captureOKXNotifier implements operatorRequiredNotifier for tests, recording
+// all messages sent to channels and DMs.
+type captureOKXNotifier struct {
+	channels []string
+	dms      []string
+}
+
+func (n *captureOKXNotifier) HasBackends() bool          { return true }
+func (n *captureOKXNotifier) SendToAllChannels(c string) { n.channels = append(n.channels, c) }
+func (n *captureOKXNotifier) SendOwnerDM(c string)       { n.dms = append(n.dms, c) }
+
+// TestRunPendingOKXCircuitCloses_FailureIncrementsCountAndNotifies verifies that
+// a single failed close attempt increments FailureCount to 1 and fires the
+// notifier exactly once (#427).
+func TestRunPendingOKXCircuitCloses_FailureIncrementsCountAndNotifies(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"okx-a": {
+				ID: "okx-a",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseOKX: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.1}},
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "okx-a", Platform: "okx", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	closer := func(sym string, partialSz *float64) (*OKXCloseResult, error) {
+		return nil, fmt.Errorf("okx 503")
+	}
+	notifier := &captureOKXNotifier{}
+	runPendingOKXCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		true,
+		[]OKXPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 1, Side: "long"}},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+		notifier,
+	)
+	p := state.Strategies["okx-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseOKX)
+	if p == nil {
+		t.Fatal("pending should be preserved on failure")
+	}
+	if p.FailureCount != 1 {
+		t.Errorf("FailureCount: got %d, want 1", p.FailureCount)
+	}
+	if len(notifier.dms) != 1 {
+		t.Errorf("expected 1 DM on first failure, got %d", len(notifier.dms))
+	}
+	if len(notifier.channels) != 1 {
+		t.Errorf("expected 1 channel message on first failure, got %d", len(notifier.channels))
+	}
+}
+
+// TestRunPendingOKXCircuitCloses_RepeatedFailureThrottlesNotifier verifies that
+// failures 2–9 do not fire the notifier (throttle suppresses repeats).
+func TestRunPendingOKXCircuitCloses_RepeatedFailureThrottlesNotifier(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"okx-a": {
+				ID: "okx-a",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseOKX: {
+							Symbols:      []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.1}},
+							FailureCount: 1, // first failure already recorded
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "okx-a", Platform: "okx", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	closer := func(sym string, partialSz *float64) (*OKXCloseResult, error) {
+		return nil, fmt.Errorf("okx 503")
+	}
+	notifier := &captureOKXNotifier{}
+	// Force LastNotifiedAt to just now so hourly gate doesn't fire.
+	state.Strategies["okx-a"].RiskState.PendingCircuitCloses[PlatformPendingCloseOKX].LastNotifiedAt = time.Now()
+
+	runPendingOKXCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		true,
+		[]OKXPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 1, Side: "long"}},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+		notifier,
+	)
+	if len(notifier.dms) != 0 {
+		t.Errorf("expected 0 DMs on failure #2 (suppressed), got %d", len(notifier.dms))
+	}
+}
+
+// TestRunPendingOKXCircuitCloses_TenthFailureNotifies verifies that failure #10
+// fires the notifier (every-10th cadence).
+func TestRunPendingOKXCircuitCloses_TenthFailureNotifies(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"okx-a": {
+				ID: "okx-a",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseOKX: {
+							Symbols:        []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.1}},
+							FailureCount:   9,
+							LastNotifiedAt: time.Now(),
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "okx-a", Platform: "okx", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	closer := func(sym string, partialSz *float64) (*OKXCloseResult, error) {
+		return nil, fmt.Errorf("okx 503")
+	}
+	notifier := &captureOKXNotifier{}
+	runPendingOKXCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		true,
+		[]OKXPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 1, Side: "long"}},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+		notifier,
+	)
+	p := state.Strategies["okx-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseOKX)
+	if p == nil || p.FailureCount != 10 {
+		t.Fatalf("expected FailureCount=10, got %v", p)
+	}
+	if len(notifier.dms) != 1 {
+		t.Errorf("expected 1 DM on failure #10 (every-10th cadence), got %d", len(notifier.dms))
 	}
 }
