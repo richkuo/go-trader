@@ -129,6 +129,9 @@ func TestPlanKillSwitchClose_HappyPath(t *testing.T) {
 	if !plan.OnChainConfirmedFlat {
 		t.Fatalf("expected ConfirmedFlat, got plan=%+v", plan)
 	}
+	if !plan.CanAutoResetWithoutOwner() {
+		t.Fatal("expected happy-path confirmed-flat plan to allow no-owner auto-reset")
+	}
 	if len(plan.CloseReport.ClosedCoins) != 1 || plan.CloseReport.ClosedCoins[0] != "ETH" {
 		t.Errorf("ClosedCoins = %v, want [ETH]", plan.CloseReport.ClosedCoins)
 	}
@@ -144,6 +147,10 @@ func TestPlanKillSwitchClose_HappyPath(t *testing.T) {
 	}
 	if !strings.Contains(plan.DiscordMessage, "Virtual state cleared") {
 		t.Errorf("expected 'Virtual state cleared' in message, got: %s", plan.DiscordMessage)
+	}
+	if got := formatKillSwitchAutoResetMessage(plan.DiscordMessage); !strings.Contains(got, "Kill switch auto-reset; trading will resume next cycle") ||
+		strings.Contains(got, "Manual reset required") {
+		t.Errorf("expected auto-reset message to replace manual-reset instruction, got: %s", got)
 	}
 }
 
@@ -472,6 +479,9 @@ func TestPlanKillSwitchClose_OKXSpotSurfacesGap(t *testing.T) {
 	if !plan.OKXSpotPresent {
 		t.Error("expected OKXSpotPresent=true")
 	}
+	if plan.CanAutoResetWithoutOwner() {
+		t.Error("OKX spot operator-required gap must suppress no-owner auto-reset")
+	}
 	if !strings.Contains(plan.DiscordMessage, "OKX spot") {
 		t.Errorf("expected spot gap note in message, got: %s", plan.DiscordMessage)
 	}
@@ -762,6 +772,9 @@ func TestPlanKillSwitchClose_RobinhoodOptionsSurfacesGap(t *testing.T) {
 	}
 	if !plan.RHOptionsPresent {
 		t.Error("expected RHOptionsPresent=true")
+	}
+	if plan.CanAutoResetWithoutOwner() {
+		t.Error("Robinhood options operator-required gap must suppress no-owner auto-reset")
 	}
 	if !strings.Contains(plan.DiscordMessage, "Robinhood options") {
 		t.Errorf("expected options gap note in message, got: %s", plan.DiscordMessage)

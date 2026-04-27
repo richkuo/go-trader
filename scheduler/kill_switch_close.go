@@ -178,6 +178,17 @@ type KillSwitchClosePlan struct {
 	LogLines []string
 }
 
+func (p KillSwitchClosePlan) CanAutoResetWithoutOwner() bool {
+	return p.OnChainConfirmedFlat && !p.OKXSpotPresent && !p.RHOptionsPresent
+}
+
+const killSwitchManualResetLine = "Virtual state cleared. Manual reset required."
+const killSwitchAutoResetLine = "Virtual state cleared. Kill switch auto-reset; trading will resume next cycle."
+
+func formatKillSwitchAutoResetMessage(msg string) string {
+	return strings.Replace(msg, killSwitchManualResetLine, killSwitchAutoResetLine, 1)
+}
+
 // HLStateFetcher re-fetches Hyperliquid on-chain positions for the kill-switch
 // opportunistic-fetch path. Exposed as a function type so tests can stub the
 // HTTP call. The default wraps fetchHyperliquidState.
@@ -496,7 +507,7 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 			parts = append(parts, gapNotes...)
 		}
 		summary := strings.Join(parts, "; ")
-		return fmt.Sprintf("%s\n%s\n%s. Virtual state cleared. Manual reset required.", header, portfolioReason, summary)
+		return fmt.Sprintf("%s\n%s\n%s. %s", header, portfolioReason, summary, killSwitchManualResetLine)
 	}
 
 	var segments []string

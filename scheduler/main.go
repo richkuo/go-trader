@@ -791,6 +791,7 @@ func main() {
 				}
 			}
 
+			killSwitchAutoReset := false
 			if killSwitchFired && plan.OnChainConfirmedFlat {
 				mu.Lock()
 				for _, sc := range cfg.Strategies {
@@ -803,16 +804,25 @@ func main() {
 					}
 				}
 				if !notifier.HasOwner() {
-					if AutoResetConfirmedFlatKillSwitch(&state.PortfolioRisk, totalPV,
-						"confirmed flat after portfolio kill-switch close; no DM owner configured, latch auto-cleared") {
-						fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset after confirmed flat close (no owner configured, peak re-baselined to $%.2f)\n", totalPV)
+					if plan.CanAutoResetWithoutOwner() {
+						killSwitchAutoReset = AutoResetConfirmedFlatKillSwitch(&state.PortfolioRisk, totalPV,
+							"confirmed flat after portfolio kill-switch close; no DM owner configured, latch auto-cleared")
+						if killSwitchAutoReset {
+							fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset after confirmed flat close (no owner configured, peak re-baselined to $%.2f)\n", totalPV)
+						}
+					} else {
+						fmt.Println("[CRITICAL] Portfolio kill switch auto-reset suppressed: operator-required close gaps remain")
 					}
 				}
 				mu.Unlock()
 			}
 
 			if killSwitchFired && notifier.HasBackends() && plan.DiscordMessage != "" {
-				notifier.SendToAllChannels(plan.DiscordMessage)
+				killSwitchMsg := plan.DiscordMessage
+				if killSwitchAutoReset {
+					killSwitchMsg = formatKillSwitchAutoResetMessage(killSwitchMsg)
+				}
+				notifier.SendToAllChannels(killSwitchMsg)
 			}
 
 			// Warning alert: drawdown approaching kill switch threshold.

@@ -1270,6 +1270,10 @@ func TestAutoResetConfirmedFlatKillSwitch_Success(t *testing.T) {
 		t.Errorf("expected event portfolio/peak re-baselined to 1216.07; got portfolio=%.2f peak=%.2f",
 			evt.PortfolioValue, evt.PeakValue)
 	}
+	if !strings.Contains(evt.Details, "previous equity drawdown=3.63%") ||
+		!strings.Contains(evt.Details, "previous margin drawdown=26.84%") {
+		t.Errorf("expected previous drawdowns in event details; got %q", evt.Details)
+	}
 }
 
 func TestAutoResetConfirmedFlatKillSwitch_NoOpWhenInactive(t *testing.T) {
@@ -1311,6 +1315,9 @@ func TestAutoResetConfirmedFlatKillSwitch_NoRelatchOnNextTick(t *testing.T) {
 	}
 	if prs.KillSwitchActive {
 		t.Error("expected kill switch to remain inactive on next tick")
+	}
+	if prs.PeakValue != 7000 {
+		t.Errorf("expected PeakValue to remain at re-baselined value 7000; got %.2f", prs.PeakValue)
 	}
 }
 
