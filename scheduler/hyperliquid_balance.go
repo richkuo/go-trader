@@ -924,10 +924,12 @@ func runPendingHyperliquidCircuitCloses(
 				break
 			}
 			sz := c.Size
+			var onChainSigned float64
 			for _, p := range positions {
 				if p.Coin != c.Symbol {
 					continue
 				}
+				onChainSigned = p.Size
 				absOC := math.Abs(p.Size)
 				if absOC <= 1e-15 {
 					sz = 0
@@ -979,7 +981,7 @@ func runPendingHyperliquidCircuitCloses(
 			if !alreadyFlat && fillSz > 1e-15 {
 				mu.Lock()
 				if ss := state.Strategies[j.stratID]; ss != nil {
-					applyHyperliquidCircuitCloseFill(ss, c.Symbol, fillSz, fillPx, fillFee)
+					applyHyperliquidCircuitCloseFill(ss, c.Symbol, fillSz, fillPx, fillFee, onChainSigned)
 				}
 				mu.Unlock()
 			}
@@ -987,8 +989,12 @@ func runPendingHyperliquidCircuitCloses(
 			// Detect partial fill: the closer reported a fill smaller than
 			// requested. 0.99 tolerance accounts for HL lot-size rounding
 			// (the SDK rounds to the asset's stepSz). On under-fill, leave
-			// pending intact so the next cycle retries the residual.
-			underFill := !alreadyFlat && fillSz > 0 && fillSz < sz*0.99
+			// pending intact so the next cycle retries the residual. Note
+			// the `fillSz > 0` clause is intentionally absent: a closer that
+			// returns success with no fill (nil/zero-TotalSz) is treated as
+			// under-fill so a permissive future adapter can't silently clear
+			// pending without flattening anything (#418 review observation 1).
+			underFill := !alreadyFlat && fillSz < sz*0.99
 			if underFill {
 				slCancelled := firstPositiveStopLossOID(cancelOIDs) > 0 && result != nil && result.CancelStopLossSucceeded
 				slNote := ""
@@ -1016,8 +1022,13 @@ func runPendingHyperliquidCircuitCloses(
 				mu.Unlock()
 			}
 
+			// Other symbols in this strategy's pending list are independent
+			// positions (e.g. ETH partial + BTC + SOL) — under-fill on one
+			// symbol must not defer the others. Use continue, not break, so
+			// each symbol gets its own attempt this cycle (#418 review
+			// observation 2).
 			if underFill {
-				break
+				continue
 			}
 		}
 
@@ -1044,11 +1055,16 @@ func runPendingHyperliquidCircuitCloses(
 //
 // When no virtual position exists (or has zero quantity) we still record a
 // defensive Trade so the on-chain close lives in audit history; PnL is
-// skipped because we have no AvgCost basis.
+// skipped because we have no AvgCost basis. onChainSigned is the signed
+// on-chain position size at submit time (positive = long, negative = short)
+// so the trade-history Side is inferred from what we actually closed rather
+// than hard-coded as "sell" — matters when reconciling a stranded short
+// (#418 review observation 4). Pass 0 if the on-chain side is unknown; the
+// trade then falls back to "sell".
 //
 // Caller must hold mu.Lock(). Reason is fixed to "circuit_breaker" for
 // clarity in trade history and closed-position rows.
-func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, fillPx, fillFee float64) {
+func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, fillPx, fillFee, onChainSigned float64) {
 	if s == nil || fillSz <= 0 || fillPx <= 0 {
 		return
 	}
@@ -1056,12 +1072,18 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 	pos, ok := s.Positions[symbol]
 	if !ok || pos == nil || pos.Quantity <= 0 {
 		// No virtual position to decrement — record defensive Trade with no
-		// PnL accounting (no AvgCost basis available).
+		// PnL accounting (no AvgCost basis available). Closing a short is a
+		// buy; closing a long is a sell. Default to "sell" when the on-chain
+		// side is unknown (legacy callers, no positions snapshot).
+		closeSide := "sell"
+		if onChainSigned < 0 {
+			closeSide = "buy"
+		}
 		RecordTrade(s, Trade{
 			Timestamp:  now,
 			StrategyID: s.ID,
 			Symbol:     symbol,
-			Side:       "sell",
+			Side:       closeSide,
 			Quantity:   fillSz,
 			Price:      fillPx,
 			Value:      fillSz * fillPx,
@@ -1105,8 +1127,11 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 
 	remaining := pos.Quantity - qtyClosed
 	if remaining <= 1e-9 {
-		// Position fully closed — recordClosedPosition reads pos.Quantity, so
-		// keep it at qtyClosed until the helper has snapshotted.
+		// Position fully closed — pos.Quantity is still the original value at
+		// this point (we never wrote qtyClosed back into it). Since
+		// remaining ≈ 0, the original ≈ qtyClosed, so recordClosedPosition's
+		// snapshot of pos.Quantity into ClosedPosition.Quantity captures the
+		// right amount. delete() runs after the snapshot.
 		recordClosedPosition(s, pos, fillPx, pnl, "circuit_breaker", now)
 		delete(s.Positions, symbol)
 	} else {

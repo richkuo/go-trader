@@ -1883,7 +1883,7 @@ func TestApplyHyperliquidCircuitCloseFill_PartialPreservesAvgCost(t *testing.T) 
 			"BTC": {Symbol: "BTC", Quantity: 1.0, AvgCost: 50000, Side: "long", Multiplier: 1, Leverage: 5},
 		},
 	}
-	applyHyperliquidCircuitCloseFill(s, "BTC", 0.3, 49000, 1.5)
+	applyHyperliquidCircuitCloseFill(s, "BTC", 0.3, 49000, 1.5, 1.0)
 
 	pos, ok := s.Positions["BTC"]
 	if !ok {
@@ -1899,5 +1899,200 @@ func TestApplyHyperliquidCircuitCloseFill_PartialPreservesAvgCost(t *testing.T) 
 	wantCash := 1000 + (-301.5)
 	if math.Abs(s.Cash-wantCash) > 1e-6 {
 		t.Errorf("Cash = %.4f; want %.4f", s.Cash, wantCash)
+	}
+}
+
+// #418 review observation 1: a closer that returns success with a nil/zero
+// fill (eventual consistency, future adapter tweak) must not silently clear
+// pending. Pre-fix the `fillSz > 0` clause inside `underFill` would make a
+// zero-fill fall into the success branch and clear pending — flattening
+// nothing on-chain. With the clause removed, zero-fill is treated as
+// under-fill: pending is preserved for retry.
+func TestRunPendingHyperliquidCircuitCloses_ZeroFillKeepsPending(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID:   "hl-a",
+				Type: "perps",
+				Cash: 1000,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 5},
+				},
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseHyperliquid: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 1.0}},
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Leverage: 5,
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		// Closer returns no error but also no Fill (or Fill with TotalSz=0).
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: nil},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(), state, cfg, "0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 1.0, EntryPrice: 3000}}, true,
+		nil, closer, 30*time.Second, &mu,
+	)
+
+	// Pending must NOT be cleared — nothing on-chain has actually been flattened.
+	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) == nil {
+		t.Error("pending must be preserved on zero-fill (#418 review observation 1)")
+	}
+	// Virtual position must NOT have decremented.
+	pos := state.Strategies["hl-a"].Positions["ETH"]
+	if pos == nil || math.Abs(pos.Quantity-1.0) > 1e-9 {
+		t.Errorf("Quantity should remain 1.0 on zero-fill, got %v", pos)
+	}
+	// No Trade recorded — nothing filled.
+	if len(state.Strategies["hl-a"].TradeHistory) != 0 {
+		t.Errorf("expected no trade on zero-fill, got %d", len(state.Strategies["hl-a"].TradeHistory))
+	}
+}
+
+// #418 review followup: a partial-fill on cycle 1 followed by a full-fill on
+// cycle 2 must (a) preserve AvgCost across both fills, (b) record one
+// ClosedPosition row whose Quantity reflects the residual closed on cycle 2
+// (not the original size), and (c) remove the position only after cycle 2.
+// Locks in the partial-then-full retry semantics that the new drain enables.
+func TestRunPendingHyperliquidCircuitCloses_PartialThenFullPreservesAvgCost(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID:   "hl-a",
+				Type: "perps",
+				Cash: 1000,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 5},
+				},
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseHyperliquid: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 1.0}},
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Leverage: 5,
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+
+	// Cycle 1: closer fills 0.4 of the requested 1.0 (partial).
+	cycle1 := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.4, AvgPx: 2950, Fee: 0.4}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(), state, cfg, "0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 1.0, EntryPrice: 3000}}, true,
+		nil, cycle1, 30*time.Second, &mu,
+	)
+
+	// After cycle 1: pending preserved, position decremented to 0.6, AvgCost untouched.
+	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) == nil {
+		t.Fatal("cycle 1: pending must be preserved after partial fill")
+	}
+	pos := state.Strategies["hl-a"].Positions["ETH"]
+	if pos == nil || math.Abs(pos.Quantity-0.6) > 1e-9 {
+		t.Fatalf("cycle 1: Quantity = %v; want 0.6", pos)
+	}
+	if pos.AvgCost != 3000 {
+		t.Errorf("cycle 1: AvgCost = %.2f; want 3000 (preserved on partial)", pos.AvgCost)
+	}
+
+	// Cycle 2: drain re-runs against the residual on-chain position. The drain
+	// caps `sz` to `min(c.Size, |on-chain|)`, so it'll request 0.6 (the cap from
+	// on-chain residual). The closer fills it all.
+	cycle2 := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		got := *partialSz
+		if math.Abs(got-0.6) > 1e-6 {
+			t.Errorf("cycle 2 closer expected sz=0.6 (residual cap), got %v", got)
+		}
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.6, AvgPx: 2900, Fee: 0.6}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(), state, cfg, "0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 0.6, EntryPrice: 3000}}, true,
+		nil, cycle2, 30*time.Second, &mu,
+	)
+
+	// Position fully closed; pending cleared.
+	if _, ok := state.Strategies["hl-a"].Positions["ETH"]; ok {
+		t.Error("cycle 2: position must be removed after full close")
+	}
+	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
+		t.Error("cycle 2: pending must be cleared after full close")
+	}
+	// Exactly one ClosedPosition row, whose Quantity is the residual (0.6),
+	// because that's the snapshot taken at the moment of the final delete.
+	closed := state.Strategies["hl-a"].ClosedPositions
+	if len(closed) != 1 {
+		t.Fatalf("expected 1 ClosedPosition, got %d", len(closed))
+	}
+	if math.Abs(closed[0].Quantity-0.6) > 1e-9 {
+		t.Errorf("ClosedPosition.Quantity = %v; want 0.6 (residual at final close, not original 1.0)", closed[0].Quantity)
+	}
+	if closed[0].CloseReason != "circuit_breaker" {
+		t.Errorf("ClosedPosition.CloseReason = %q; want circuit_breaker", closed[0].CloseReason)
+	}
+}
+
+// #418 review observation 4: when no virtual position exists (defensive
+// branch), the trade-history Side must reflect what was actually closed
+// on-chain — closing a short is a buy, closing a long is a sell. Pre-fix
+// this branch hard-coded "sell" regardless of on-chain side.
+func TestApplyHyperliquidCircuitCloseFill_NoPositionShortCloseRecordsBuy(t *testing.T) {
+	s := &StrategyState{
+		ID:        "hl-x",
+		Cash:      1000,
+		Positions: map[string]*Position{},
+	}
+	// On-chain shows a short (negative size); closer reports a buy fill.
+	applyHyperliquidCircuitCloseFill(s, "ETH", 0.5, 3000, 0.5, -0.5)
+
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("expected 1 defensive trade, got %d", len(s.TradeHistory))
+	}
+	if s.TradeHistory[0].Side != "buy" {
+		t.Errorf("Side = %q; want buy (closing a short, #418 review observation 4)", s.TradeHistory[0].Side)
+	}
+}
+
+func TestApplyHyperliquidCircuitCloseFill_NoPositionLongCloseRecordsSell(t *testing.T) {
+	s := &StrategyState{
+		ID:        "hl-x",
+		Cash:      1000,
+		Positions: map[string]*Position{},
+	}
+	// On-chain shows a long (positive size); closer reports a sell fill.
+	applyHyperliquidCircuitCloseFill(s, "ETH", 0.5, 3000, 0.5, 0.5)
+
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("expected 1 defensive trade, got %d", len(s.TradeHistory))
+	}
+	if s.TradeHistory[0].Side != "sell" {
+		t.Errorf("Side = %q; want sell (closing a long)", s.TradeHistory[0].Side)
 	}
 }
