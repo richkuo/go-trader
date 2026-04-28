@@ -179,6 +179,34 @@ func ValidateState(state *AppState) {
 	}
 }
 
+func migrateLegacyPerpsPositionMultipliers(state *AppState, cfg *Config) int {
+	if state == nil {
+		return 0
+	}
+	perpsIDs := make(map[string]bool)
+	if cfg != nil {
+		for _, sc := range cfg.Strategies {
+			if sc.Type == "perps" {
+				perpsIDs[sc.ID] = true
+			}
+		}
+	}
+	migrated := 0
+	for id, s := range state.Strategies {
+		if s == nil || (s.Type != "perps" && !perpsIDs[id]) {
+			continue
+		}
+		for _, pos := range s.Positions {
+			if pos == nil || pos.Multiplier > 0 {
+				continue
+			}
+			pos.Multiplier = 1
+			migrated++
+		}
+	}
+	return migrated
+}
+
 // ValidatePerpsAllowShortsConfig flags short positions that belong to a perps
 // strategy currently configured with AllowShorts=false (#336). The desync can
 // arise from state migration, paper→live handoff, operator edits of state.db,
@@ -272,6 +300,9 @@ func LoadStateWithDB(cfg *Config, sdb *StateDB) (*AppState, error) {
 		return nil, fmt.Errorf("sqlite load: %w", err)
 	}
 	if state != nil {
+		if migrated := migrateLegacyPerpsPositionMultipliers(state, cfg); migrated > 0 {
+			fmt.Printf("[state] Migrated %d legacy perps position multiplier(s) to 1\n", migrated)
+		}
 		fmt.Println("[state] Loaded from SQLite")
 		return state, nil
 	}

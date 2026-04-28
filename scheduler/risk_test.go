@@ -1558,6 +1558,43 @@ func TestCheckRisk_PerpsMarginDrawdown_FiresEarly(t *testing.T) {
 	}
 }
 
+func TestCheckRisk_PerpsDrawdownFiresBeforeAnyClosedTrades(t *testing.T) {
+	s := &StrategyState{
+		ID:   "hl-first-trade",
+		Type: "perps",
+		Cash: 500,
+		RiskState: RiskState{
+			PeakValue:      500,
+			MaxDrawdownPct: 10,
+			TotalTrades:    0,
+			DailyPnLDate:   todayUTC(),
+		},
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 100, Side: "long", Multiplier: 1, Leverage: 20},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+	prices := map[string]float64{"ETH": 80}
+	pv := PortfolioValue(s, prices)
+	sc := &StrategyConfig{ID: "hl-first-trade", Platform: "hyperliquid", Type: "perps", Leverage: 20}
+
+	allowed, reason := CheckRisk(sc, s, pv, prices, nil, nil)
+
+	if allowed {
+		t.Fatalf("expected first open position to trip drawdown circuit breaker; reason=%s", reason)
+	}
+	if !strings.HasPrefix(reason, RiskReasonMaxDrawdownExceeded) {
+		t.Fatalf("reason = %q, want %q prefix", reason, RiskReasonMaxDrawdownExceeded)
+	}
+	if !s.RiskState.CircuitBreaker {
+		t.Fatal("expected circuit breaker to be active")
+	}
+	if len(s.Positions) != 0 {
+		t.Errorf("expected positions force-closed; got %d", len(s.Positions))
+	}
+}
+
 // TestCheckRisk_LiveHLSharedCoin_SetsPendingPartialClose verifies #356: a live
 // HL strategy that shares a coin with another configured live HL strategy gets
 // a proportional pending on-chain close (capital_pct weights), not the full
