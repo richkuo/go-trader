@@ -17,7 +17,7 @@ jobs:
           go-version: '1.26'
 
       - name: Build
-        run: cd scheduler && go build .
+        run: cd scheduler && go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" .
 
       - name: Test
         run: cd scheduler && go test ./...
