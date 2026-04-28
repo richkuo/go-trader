@@ -773,8 +773,9 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 	}
 	sb.WriteString("\n```\n")
 	if showWalletPct {
-		sep := strings.Repeat("-", 83)
-		sb.WriteString(fmt.Sprintf("%-16s%9s %6s %6s %8s%5s %8s%5s %4s %4s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "DD", "Wallet%", "Tf", "Int", "#T", "W/L"))
+	header := fmt.Sprintf("%-16s%9s %6s %6s %8s%5s %8s%5s %4s %4s %5s", "Strategy", "Init", "Value", "PnL", "PnL%", "DD", "Wallet%", "Tf", "Int", "#T", "W/L")
+		sep := strings.Repeat("-", len(header))
+		sb.WriteString(header + "\n")
 		sb.WriteString(sep + "\n")
 		for _, bot := range bots {
 			label := bot.id
@@ -803,8 +804,9 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 			sb.WriteString(fmt.Sprintf("%-16s%9s %6s %6s %8s%5s %8s%5s %4s %4d %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "", "100.0%", "", "", totalClosed, totWlStr))
 		}
 	} else {
-		sep := strings.Repeat("-", 75)
-		sb.WriteString(fmt.Sprintf("%-16s%9s %6s %6s %8s%5s %5s %4s %4s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "DD", "Tf", "Int", "#T", "W/L"))
+	header := fmt.Sprintf("%-16s%9s %6s %6s %8s%5s %5s %4s %4s %5s", "Strategy", "Init", "Value", "PnL", "PnL%", "DD", "Tf", "Int", "#T", "W/L")
+		sep := strings.Repeat("-", len(header))
+		sb.WriteString(header + "\n")
 		sb.WriteString(sep + "\n")
 		for _, bot := range bots {
 			label := bot.id
