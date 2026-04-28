@@ -109,6 +109,26 @@ func (m *MultiNotifier) BackendCount() int {
 	return len(m.backends)
 }
 
+// ReloadConfig refreshes per-provider routing maps after a hot config reload.
+// Backend construction (tokens, gateway sessions, owner identity) is intentionally
+// restart-only; this updates only the channel settings that can be changed safely.
+func (m *MultiNotifier) ReloadConfig(cfg *Config) {
+	if m == nil || cfg == nil {
+		return
+	}
+	for i := range m.backends {
+		b := &m.backends[i]
+		if b.plainText {
+			b.channels = cfg.Telegram.Channels
+			b.dmChannels = cfg.Telegram.DMChannels
+			continue
+		}
+		b.channels = cfg.Discord.Channels
+		b.dmChannels = cfg.Discord.DMChannels
+		b.leaderboardChannel = cfg.Discord.LeaderboardChannel
+	}
+}
+
 // OwnerID returns the first configured owner ID across all backends.
 func (m *MultiNotifier) OwnerID() string {
 	for _, b := range m.backends {

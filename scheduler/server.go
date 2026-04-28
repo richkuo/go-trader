@@ -66,6 +66,16 @@ func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, stra
 	}
 }
 
+// UpdateStrategies refreshes config-derived status metadata after a hot reload.
+// The caller must coordinate with ss.mu so /status does not build responses from
+// a half-applied config update.
+func (ss *StatusServer) UpdateStrategies(strategies []StrategyConfig) {
+	if ss == nil {
+		return
+	}
+	ss.strategies = append([]StrategyConfig(nil), strategies...)
+}
+
 // logFuturesErrThrottled emits a [WARN] line for a fetch_futures_marks
 // failure on the /status path, skipping emission if we have already
 // logged within perpsErrLogInterval. Thread-safe — /status handlers

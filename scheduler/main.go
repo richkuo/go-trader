@@ -310,6 +310,20 @@ func main() {
 		os.Exit(0)
 	}
 
+	reloadCh := make(chan struct{}, 1)
+	hupCh := make(chan os.Signal, 1)
+	signal.Notify(hupCh, syscall.SIGHUP)
+	defer signal.Stop(hupCh)
+	go func() {
+		for range hupCh {
+			select {
+			case reloadCh <- struct{}{}:
+			default:
+				fmt.Println("[reload] SIGHUP received while reload is pending; coalescing")
+			}
+		}
+	}()
+
 	// Config migration: DM owner about new fields if config is behind current version.
 	if cfg.ConfigVersion < CurrentConfigVersion {
 		go runConfigMigrationDM(cfg, notifier, *configPath)
@@ -336,22 +350,49 @@ func main() {
 	// the existing `mu` lock guards `state`, not `lastRun`.
 	lastRun := make(map[string]time.Time)
 
-	// Determine tick interval: GCD of all strategy intervals, min 60s
-	tickSeconds := cfg.IntervalSeconds
-	for _, sc := range cfg.Strategies {
-		si := sc.IntervalSeconds
-		if si <= 0 {
-			si = cfg.IntervalSeconds
-		}
-		if si < tickSeconds {
-			tickSeconds = si
-		}
-	}
-	if tickSeconds < 60 {
-		tickSeconds = 60
-	}
+	// Determine tick interval from configured strategy intervals, min 60s.
+	tickSeconds := schedulerTickSeconds(cfg)
 	fmt.Printf("Tick interval: %ds (strategies have individual intervals)\n", tickSeconds)
 	drawdownWarnThresholdPct := configuredDrawdownWarnThresholdPct(cfg)
+
+	reloadConfig := func() {
+		fmt.Printf("[reload] SIGHUP received; reloading config from %s\n", *configPath)
+		nextCfg, err := LoadConfig(*configPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[reload] ERROR: reload failed; keeping previous config: %v\n", err)
+			return
+		}
+		mu.Lock()
+		changes, err := applyHotReloadConfig(cfg, nextCfg, state, notifier, server)
+		if err != nil {
+			mu.Unlock()
+			fmt.Fprintf(os.Stderr, "[reload] ERROR: reload rejected; keeping previous config: %v\n", err)
+			return
+		}
+		tickSeconds = schedulerTickSeconds(cfg)
+		drawdownWarnThresholdPct = configuredDrawdownWarnThresholdPct(cfg)
+		mu.Unlock()
+
+		if len(changes) == 0 {
+			fmt.Println("[reload] Config reload applied: no hot-reloadable changes")
+		} else {
+			fmt.Printf("[reload] Config reload applied (%d changes):\n", len(changes))
+			for _, change := range changes {
+				fmt.Printf("[reload]   %s\n", change)
+			}
+		}
+		fmt.Printf("[reload] Tick interval now %ds\n", tickSeconds)
+	}
+	processConfigReloads := func() {
+		for {
+			select {
+			case <-reloadCh:
+				reloadConfig()
+			default:
+				return
+			}
+		}
+	}
 
 	// Wall-clock tracker for cfg.AutoUpdate == "daily". Initialized to now so
 	// the first daily check fires after 24h (matching the previous
@@ -367,6 +408,8 @@ func main() {
 
 	// Main loop
 	for {
+		processConfigReloads()
+
 		cycleStart := time.Now()
 		mu.Lock()
 		state.CycleCount++
@@ -410,6 +453,11 @@ func main() {
 			timer := time.NewTimer(delay)
 			select {
 			case <-timer.C:
+				continue
+			case <-reloadCh:
+				timer.Stop()
+				reloadConfig()
+				processConfigReloads()
 				continue
 			case <-stopCh:
 				timer.Stop()
@@ -1478,6 +1526,10 @@ func main() {
 		select {
 		case <-timer.C:
 			// Next tick
+		case <-reloadCh:
+			timer.Stop()
+			reloadConfig()
+			processConfigReloads()
 		case <-stopCh:
 			timer.Stop()
 			fmt.Println("Shutdown complete.")
