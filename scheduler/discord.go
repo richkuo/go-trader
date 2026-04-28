@@ -298,7 +298,17 @@ func FormatCategorySummary(
 	}
 	verSuffix := ""
 	if Version != "" {
-		verSuffix = " (" + Version + ")"
+		verSuffix = " (" + Version + ""
+	}
+	pid := os.Getpid()
+	if pid != 0 {
+		if verSuffix != "" {
+			verSuffix += fmt.Sprintf(" pid:%d)", pid)
+		} else {
+			verSuffix = fmt.Sprintf(" (pid:%d)", pid)
+		}
+	} else if verSuffix != "" {
+		verSuffix += ")"
 	}
 	if totalTrades > 0 {
 		sb.WriteString(fmt.Sprintf("%s **%s TRADES%s**%s\n", icon, strings.ToUpper(title), assetSuffix, verSuffix))
