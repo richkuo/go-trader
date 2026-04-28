@@ -1825,53 +1825,26 @@ func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, m
 	copy(newTrades, stratState.TradeHistory[start:n])
 	mu.RUnlock()
 
-	for _, b := range notifier.backends {
-		dmKey := sc.Platform
-		if !isLive {
-			dmKey = sc.Platform + "-paper"
-		}
-		dmDest := ""
-		if b.dmChannels != nil {
-			dmDest = b.dmChannels[dmKey]
-		}
-
-		// Channel routing: presence of a channel ID means enabled, absence means disabled.
-		// Paper trades use "<platform>-paper" key with fallback to base platform key.
-		// Live trades use the base platform key.
-		ch := resolveTradeChannel(b.channels, sc.Platform, sc.Type, isLive)
-
-		// Also post live trades to a dedicated "<platform>-live" channel if configured.
-		var liveCh string
-		if isLive {
-			liveCh = resolveChannel(b.channels, sc.Platform+"-live", "")
-			if liveCh == ch {
-				liveCh = "" // avoid double-posting to the same channel
-			}
-		}
-
-		if dmDest == "" && ch == "" && liveCh == "" {
-			continue
-		}
-
+	for _, route := range notifier.tradeAlertRoutes(sc.Platform, sc.Type, isLive) {
 		for _, t := range newTrades {
 			var msg string
-			if b.plainText {
+			if route.plainText {
 				msg = FormatTradeDMPlain(sc, t, mode)
 			} else {
 				msg = FormatTradeDM(sc, t, mode)
 			}
-			if dmDest != "" {
-				if err := sendTradeDestination(b.notifier, dmDest, msg); err != nil {
+			if route.dmDest != "" {
+				if err := sendTradeDestination(route.notifier, route.dmDest, msg); err != nil {
 					fmt.Printf("[notify] DM trade alert failed: %v\n", err)
 				}
 			}
-			if ch != "" {
-				if err := b.notifier.SendMessage(ch, msg); err != nil {
+			if route.channel != "" {
+				if err := route.notifier.SendMessage(route.channel, msg); err != nil {
 					fmt.Printf("[notify] Channel trade alert failed: %v\n", err)
 				}
 			}
-			if liveCh != "" {
-				if err := b.notifier.SendMessage(liveCh, msg); err != nil {
+			if route.liveChan != "" {
+				if err := route.notifier.SendMessage(route.liveChan, msg); err != nil {
 					fmt.Printf("[notify] Live channel trade alert failed: %v\n", err)
 				}
 			}

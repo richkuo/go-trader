@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +29,7 @@ type notifierBackend struct {
 // MultiNotifier fans out calls to all configured notification providers.
 // It is aware of each provider's channel config and owner ID for proper routing.
 type MultiNotifier struct {
+	mu       sync.RWMutex
 	backends []notifierBackend
 }
 
@@ -36,10 +38,28 @@ func NewMultiNotifier(backends ...notifierBackend) *MultiNotifier {
 	var valid []notifierBackend
 	for _, b := range backends {
 		if b.notifier != nil {
+			b.channels = cloneStringMap(b.channels)
+			b.dmChannels = cloneStringMap(b.dmChannels)
 			valid = append(valid, b)
 		}
 	}
 	return &MultiNotifier{backends: valid}
+}
+
+func (m *MultiNotifier) snapshotBackends() []notifierBackend {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	out := make([]notifierBackend, len(m.backends))
+	for i, b := range m.backends {
+		b.channels = cloneStringMap(b.channels)
+		b.dmChannels = cloneStringMap(b.dmChannels)
+		out[i] = b
+	}
+	return out
 }
 
 // SendMessage sends content to backends that own the given channel/chat ID.
@@ -47,7 +67,7 @@ func NewMultiNotifier(backends ...notifierBackend) *MultiNotifier {
 // Returns the first error encountered; all per-backend errors are logged.
 func (m *MultiNotifier) SendMessage(channelID string, content string) error {
 	var firstErr error
-	for _, b := range m.backends {
+	for _, b := range m.snapshotBackends() {
 		if !backendOwnsChannel(b, channelID) {
 			continue
 		}
@@ -65,7 +85,7 @@ func (m *MultiNotifier) SendMessage(channelID string, content string) error {
 // Returns the first error encountered; all per-backend errors are logged.
 func (m *MultiNotifier) SendDM(userID, content string) error {
 	var firstErr error
-	for _, b := range m.backends {
+	for _, b := range m.snapshotBackends() {
 		if b.ownerID != userID {
 			continue
 		}
@@ -81,31 +101,42 @@ func (m *MultiNotifier) SendDM(userID, content string) error {
 
 // AskDM sends a question and waits for a reply. Uses the first backend with a matching owner.
 func (m *MultiNotifier) AskDM(userID, question string, timeout time.Duration) (string, error) {
-	for _, b := range m.backends {
+	backends := m.snapshotBackends()
+	for _, b := range backends {
 		if b.ownerID == userID {
 			return b.notifier.AskDM(userID, question, timeout)
 		}
 	}
-	if len(m.backends) > 0 {
-		return m.backends[0].notifier.AskDM(userID, question, timeout)
+	if len(backends) > 0 {
+		return backends[0].notifier.AskDM(userID, question, timeout)
 	}
 	return "", fmt.Errorf("no notification backends configured")
 }
 
 // Close shuts down all backends.
 func (m *MultiNotifier) Close() {
-	for _, b := range m.backends {
+	for _, b := range m.snapshotBackends() {
 		b.notifier.Close()
 	}
 }
 
 // HasBackends returns true if at least one backend is configured.
 func (m *MultiNotifier) HasBackends() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return len(m.backends) > 0
 }
 
 // BackendCount returns the number of active backends.
 func (m *MultiNotifier) BackendCount() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return len(m.backends)
 }
 
@@ -116,22 +147,24 @@ func (m *MultiNotifier) ReloadConfig(cfg *Config) {
 	if m == nil || cfg == nil {
 		return
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for i := range m.backends {
 		b := &m.backends[i]
 		if b.plainText {
-			b.channels = cfg.Telegram.Channels
-			b.dmChannels = cfg.Telegram.DMChannels
+			b.channels = cloneStringMap(cfg.Telegram.Channels)
+			b.dmChannels = cloneStringMap(cfg.Telegram.DMChannels)
 			continue
 		}
-		b.channels = cfg.Discord.Channels
-		b.dmChannels = cfg.Discord.DMChannels
+		b.channels = cloneStringMap(cfg.Discord.Channels)
+		b.dmChannels = cloneStringMap(cfg.Discord.DMChannels)
 		b.leaderboardChannel = cfg.Discord.LeaderboardChannel
 	}
 }
 
 // OwnerID returns the first configured owner ID across all backends.
 func (m *MultiNotifier) OwnerID() string {
-	for _, b := range m.backends {
+	for _, b := range m.snapshotBackends() {
 		if b.ownerID != "" {
 			return b.ownerID
 		}
@@ -157,7 +190,7 @@ func backendOwnsChannel(b notifierBackend, channelID string) bool {
 // SendToChannel sends content to all backends that have a channel configured
 // for the given platform and strategy type.
 func (m *MultiNotifier) SendToChannel(platform, stratType, content string) {
-	for _, b := range m.backends {
+	for _, b := range m.snapshotBackends() {
 		if ch := resolveChannel(b.channels, platform, stratType); ch != "" {
 			if err := b.notifier.SendMessage(ch, content); err != nil {
 				fmt.Printf("[WARN] Notifier send to channel failed: %v\n", err)
@@ -171,7 +204,7 @@ func (m *MultiNotifier) SendToChannel(platform, stratType, content string) {
 // leaderboardChannel is configured, the message is sent there once; otherwise
 // it broadcasts to all unique channels on that backend.
 func (m *MultiNotifier) PostLeaderboardBroadcast(content string) {
-	for _, b := range m.backends {
+	for _, b := range m.snapshotBackends() {
 		if b.leaderboardChannel != "" {
 			if err := b.notifier.SendMessage(b.leaderboardChannel, content); err != nil {
 				fmt.Printf("[WARN] Notifier send to leaderboard channel %s failed: %v\n", b.leaderboardChannel, err)
@@ -193,7 +226,7 @@ func (m *MultiNotifier) PostLeaderboardBroadcast(content string) {
 // SendToAllChannels sends content to all unique channels across all backends.
 // Used for broadcast messages (kill switch, correlation warnings).
 func (m *MultiNotifier) SendToAllChannels(content string) {
-	for _, b := range m.backends {
+	for _, b := range m.snapshotBackends() {
 		seen := make(map[string]bool)
 		for _, ch := range b.channels {
 			if ch != "" && !seen[ch] {
@@ -208,7 +241,7 @@ func (m *MultiNotifier) SendToAllChannels(content string) {
 
 // SendOwnerDM sends a DM to the owner on all backends that have an owner configured.
 func (m *MultiNotifier) SendOwnerDM(content string) {
-	for _, b := range m.backends {
+	for _, b := range m.snapshotBackends() {
 		if b.ownerID != "" {
 			if err := b.notifier.SendDM(b.ownerID, content); err != nil {
 				fmt.Printf("[WARN] Owner DM failed: %v\n", err)
@@ -220,7 +253,7 @@ func (m *MultiNotifier) SendOwnerDM(content string) {
 // AskOwnerDM sends a question to the owner and waits for a reply.
 // Uses the first backend that has an owner configured.
 func (m *MultiNotifier) AskOwnerDM(question string, timeout time.Duration) (string, error) {
-	for _, b := range m.backends {
+	for _, b := range m.snapshotBackends() {
 		if b.ownerID != "" {
 			return b.notifier.AskDM(b.ownerID, question, timeout)
 		}
@@ -230,7 +263,7 @@ func (m *MultiNotifier) AskOwnerDM(question string, timeout time.Duration) (stri
 
 // HasChannel returns true if any backend has a channel configured for the given platform/type.
 func (m *MultiNotifier) HasChannel(platform, stratType string) bool {
-	for _, b := range m.backends {
+	for _, b := range m.snapshotBackends() {
 		if resolveChannel(b.channels, platform, stratType) != "" {
 			return true
 		}
@@ -242,7 +275,7 @@ func (m *MultiNotifier) HasChannel(platform, stratType string) bool {
 // Uses the same lookup order as resolveChannel: platform first, then stratType.
 // Returns "" if no channel is configured on any backend.
 func (m *MultiNotifier) resolveChannelKey(platform, stratType string) string {
-	for _, b := range m.backends {
+	for _, b := range m.snapshotBackends() {
 		if _, ok := b.channels[platform]; ok {
 			return platform
 		}
@@ -256,12 +289,55 @@ func (m *MultiNotifier) resolveChannelKey(platform, stratType string) string {
 // AllChannelKeys returns all unique channel keys across all backends.
 func (m *MultiNotifier) AllChannelKeys() map[string]bool {
 	keys := make(map[string]bool)
-	for _, b := range m.backends {
+	for _, b := range m.snapshotBackends() {
 		for k := range b.channels {
 			keys[k] = true
 		}
 	}
 	return keys
+}
+
+type tradeAlertRoute struct {
+	notifier  Notifier
+	plainText bool
+	dmDest    string
+	channel   string
+	liveChan  string
+}
+
+func (m *MultiNotifier) tradeAlertRoutes(platform, stratType string, isLive bool) []tradeAlertRoute {
+	var routes []tradeAlertRoute
+	dmKey := platform
+	if !isLive {
+		dmKey = platform + "-paper"
+	}
+	for _, b := range m.snapshotBackends() {
+		dmDest := ""
+		if b.dmChannels != nil {
+			dmDest = b.dmChannels[dmKey]
+		}
+		ch := resolveTradeChannel(b.channels, platform, stratType, isLive)
+
+		var liveCh string
+		if isLive {
+			liveCh = resolveChannel(b.channels, platform+"-live", "")
+			if liveCh == ch {
+				liveCh = ""
+			}
+		}
+
+		if dmDest == "" && ch == "" && liveCh == "" {
+			continue
+		}
+		routes = append(routes, tradeAlertRoute{
+			notifier:  b.notifier,
+			plainText: b.plainText,
+			dmDest:    dmDest,
+			channel:   ch,
+			liveChan:  liveCh,
+		})
+	}
+	return routes
 }
 
 // sendTradeDestination delivers a trade alert to a user ID (DM) or channel ID.
