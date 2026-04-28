@@ -61,6 +61,12 @@ type LeaderboardSummaryConfig struct {
 	Frequency string `json:"frequency,omitempty"` // optional: Go duration like "6h"; empty = on-demand only
 }
 
+// TradingViewExportConfig controls optional symbol mappings for TradingView
+// portfolio CSV exports.
+type TradingViewExportConfig struct {
+	SymbolOverrides map[string]string `json:"symbol_overrides,omitempty"` // keys may be strategy:symbol, platform:symbol, or symbol
+}
+
 // ParsedFrequency returns the parsed duration of Frequency, or 0 if empty/invalid.
 // Validation catches invalid values at startup; callers can treat 0 as "disabled".
 func (lc LeaderboardSummaryConfig) ParsedFrequency() time.Duration {
@@ -103,6 +109,7 @@ type Config struct {
 	LeaderboardSummaries []LeaderboardSummaryConfig `json:"leaderboard_summaries,omitempty"` // #308 — configurable per-channel leaderboards
 	SummaryFrequency     map[string]string          `json:"summary_frequency,omitempty"`     // #30 — per-channel summary cadence; keys match Discord/Telegram channel keys (e.g. "spot", "options", "hyperliquid"). Values: Go duration ("30m", "2h"), alias ("hourly", "every"/"per_check"/"always"), or empty for legacy default (continuous: every cycle; spot: hourly)
 	RiskFreeRate         *float64                   `json:"risk_free_rate,omitempty"`        // #397 — annualized risk-free rate used in Sharpe-ratio calculations (e.g. 0.02 for 2%). Nil/missing falls back to DefaultAnnualRiskFreeRate; an explicit 0 is respected so backtest comparisons can pin to a 0% benchmark.
+	TradingViewExport    TradingViewExportConfig    `json:"tradingview_export,omitempty"`    // #3 — optional symbol overrides for TradingView portfolio CSV exports
 }
 
 // ParseSummaryFrequency converts a summary_frequency value to a duration.
@@ -720,6 +727,16 @@ func ValidateConfig(cfg *Config) error {
 		}
 		if _, err := ParseSummaryFrequency(v); err != nil {
 			errs = append(errs, fmt.Sprintf("summary_frequency[%q]: %v", k, err))
+		}
+	}
+
+	for k, v := range cfg.TradingViewExport.SymbolOverrides {
+		if strings.TrimSpace(k) == "" {
+			errs = append(errs, "tradingview_export.symbol_overrides: empty key")
+			continue
+		}
+		if !strings.Contains(strings.TrimSpace(v), ":") {
+			errs = append(errs, fmt.Sprintf("tradingview_export.symbol_overrides[%q]: value must be in EXCHANGE:TICKER format, got %q", k, v))
 		}
 	}
 

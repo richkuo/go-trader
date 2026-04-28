@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1111,6 +1112,59 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 		trades = []Trade{}
 	}
 	return trades, total, nil
+}
+
+// QueryTradingViewExportTrades returns all trades for the given strategies in
+// chronological order for deterministic CSV export.
+func (sdb *StateDB) QueryTradingViewExportTrades(strategyIDs []string) ([]Trade, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, fmt.Errorf("state db unavailable")
+	}
+	if len(strategyIDs) == 0 {
+		return nil, fmt.Errorf("at least one strategy id is required")
+	}
+	placeholders := make([]string, len(strategyIDs))
+	args := make([]interface{}, 0, len(strategyIDs))
+	for i, id := range strategyIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	query := fmt.Sprintf(`SELECT timestamp, strategy_id, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee
+		FROM trades
+		WHERE strategy_id IN (%s)
+		ORDER BY timestamp ASC, strategy_id ASC, symbol ASC, rowid ASC`, strings.Join(placeholders, ","))
+	rows, err := sdb.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query TradingView export trades: %w", err)
+	}
+	defer rows.Close()
+
+	var trades []Trade
+	for rows.Next() {
+		var t Trade
+		var tsStr string
+		if err := rows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee); err != nil {
+			return nil, fmt.Errorf("scan TradingView export trade: %w", err)
+		}
+		t.Timestamp = parseTime(tsStr)
+		trades = append(trades, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate TradingView export trades: %w", err)
+	}
+	if trades == nil {
+		trades = []Trade{}
+	}
+	sort.SliceStable(trades, func(i, j int) bool {
+		if !trades[i].Timestamp.Equal(trades[j].Timestamp) {
+			return trades[i].Timestamp.Before(trades[j].Timestamp)
+		}
+		if trades[i].StrategyID != trades[j].StrategyID {
+			return trades[i].StrategyID < trades[j].StrategyID
+		}
+		return trades[i].Symbol < trades[j].Symbol
+	})
+	return trades, nil
 }
 
 // formatTime converts a time.Time to RFC 3339 string, or "" for zero time.

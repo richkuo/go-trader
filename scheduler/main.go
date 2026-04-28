@@ -14,8 +14,13 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "init" {
-		os.Exit(runInit(os.Args[2:]))
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "init":
+			os.Exit(runInit(os.Args[2:]))
+		case "export":
+			os.Exit(runExport(os.Args[2:]))
+		}
 	}
 
 	configPath := flag.String("config", "scheduler/config.json", "Path to config file")
