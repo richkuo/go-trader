@@ -1863,3 +1863,171 @@ func TestMigrateSchema_PendingCircuitClosesColumn_FromLegacyDB(t *testing.T) {
 		t.Errorf("row data lost in rename; got %q", raw)
 	}
 }
+
+// TestParseDetailsPnL verifies the regex used to backfill realized_pnl from
+// pre-#455 trade Details strings. Covers each of the formatter variants emitted
+// by close-leg RecordTrade call sites at the time of #455.
+func TestParseDetailsPnL(t *testing.T) {
+	cases := []struct {
+		name    string
+		details string
+		want    float64
+		ok      bool
+	}{
+		{"close_long_perps", "Close long, PnL: $42.50 (fee $0.21)", 42.50, true},
+		{"close_short_spot", "Close short, PnL: $-1.23 (fee $0.10)", -1.23, true},
+		{"options_close", "Close BTC-call-50000-2026-05-01 PnL=$7.89", 7.89, true},
+		{"theta_harvest", "Theta harvest close ETH-put-3000-2026-05-15 PnL=$-4.20", -4.20, true},
+		{"circuit_breaker", "Circuit breaker close long, PnL: $0.00", 0.0, true},
+		{"wheel_callaway", "Wheel call-away: sold call expired ITM (spot=$50000.00), sold 0.1 BTC @ $51000 PnL=$100.00", 100.0, true},
+		{"open_long_no_pnl", "Open long 0.500000 @ $2000.00 (1.0x, fee $0.35)", 0, false},
+		{"buy_option_no_pnl", "Buy BTC call strike=50000 exp=2026-05-01 premium=$1.23 fee=$0.05", 0, false},
+		{"empty", "", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseDetailsPnL(tc.details)
+			if ok != tc.ok {
+				t.Fatalf("ok=%v, want %v (details=%q)", ok, tc.ok, tc.details)
+			}
+			if ok && got != tc.want {
+				t.Errorf("got %v, want %v (details=%q)", got, tc.want, tc.details)
+			}
+		})
+	}
+}
+
+// TestBackfillTradeCloseFlags exercises the one-time legacy backfill: rows
+// whose Details contain "PnL:" or "PnL=" should flip is_close=1 and have
+// realized_pnl populated. Open-leg rows must stay is_close=0.
+func TestBackfillTradeCloseFlags(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	const oldSchema = `
+CREATE TABLE app_state (id INTEGER PRIMARY KEY, cycle_count INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE strategies (id TEXT PRIMARY KEY, type TEXT NOT NULL DEFAULT '');
+CREATE TABLE trades (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_id TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    price REAL NOT NULL,
+    value REAL NOT NULL,
+    trade_type TEXT NOT NULL DEFAULT '',
+    details TEXT NOT NULL DEFAULT ''
+);`
+	if _, err := db.Exec(oldSchema); err != nil {
+		t.Fatalf("create old schema: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO strategies (id, type) VALUES ('s1', 'perps')`); err != nil {
+		t.Fatalf("seed strategy: %v", err)
+	}
+	rows := []struct{ side, details string }{
+		{"buy", "Open long 0.5 @ $2000.00 (1.0x, fee $0.35)"},
+		{"sell", "Close long, PnL: $42.50 (fee $0.21)"},
+		{"buy", "Open long 0.4 @ $2010.00 (1.0x, fee $0.30)"},
+		{"sell", "Close long, PnL: $-7.10 (fee $0.20)"},
+		{"close", "Theta harvest close opt-1 PnL=$3.14"},
+	}
+	for i, r := range rows {
+		ts := time.Now().UTC().Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano)
+		if _, err := db.Exec(`INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			"s1", ts, "BTC", r.side, 0.1, 2000.0, 200.0, "perps", r.details); err != nil {
+			t.Fatalf("seed trade %d: %v", i, err)
+		}
+	}
+	db.Close()
+
+	sdb, err := OpenStateDB(path)
+	if err != nil {
+		t.Fatalf("OpenStateDB (with migration): %v", err)
+	}
+	defer sdb.Close()
+
+	stats, err := sdb.LifetimeTradeStatsAll()
+	if err != nil {
+		t.Fatalf("LifetimeTradeStatsAll: %v", err)
+	}
+	got := stats["s1"]
+	if got.RoundTrips != 3 {
+		t.Errorf("RoundTrips = %d, want 3 (3 close legs of 5 rows)", got.RoundTrips)
+	}
+	if got.Wins != 2 {
+		t.Errorf("Wins = %d, want 2 (PnL >= 0: $42.50, $3.14)", got.Wins)
+	}
+	if got.Losses != 1 {
+		t.Errorf("Losses = %d, want 1 (PnL < 0: $-7.10)", got.Losses)
+	}
+}
+
+// TestLifetimeTradeStatsAll_FreshInsert verifies that new InsertTrade calls
+// land with is_close/realized_pnl set so LifetimeTradeStatsAll reports them
+// without depending on the legacy backfill.
+func TestLifetimeTradeStatsAll_FreshInsert(t *testing.T) {
+	sdb := openTestDB(t)
+	now := time.Now().UTC()
+	trades := []Trade{
+		{StrategyID: "s1", Timestamp: now, Symbol: "BTC", Side: "buy", Quantity: 0.1, Price: 50000, Value: 5000, TradeType: "perps", Details: "Open long"},
+		{StrategyID: "s1", Timestamp: now.Add(time.Second), Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 51000, Value: 5100, TradeType: "perps", Details: "Close long, PnL: $100.00", IsClose: true, RealizedPnL: 100},
+		{StrategyID: "s1", Timestamp: now.Add(2 * time.Second), Symbol: "BTC", Side: "buy", Quantity: 0.1, Price: 51000, Value: 5100, TradeType: "perps", Details: "Open long"},
+		{StrategyID: "s1", Timestamp: now.Add(3 * time.Second), Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 50500, Value: 5050, TradeType: "perps", Details: "Close long, PnL: $-50.00", IsClose: true, RealizedPnL: -50},
+		{StrategyID: "s2", Timestamp: now, Symbol: "ETH", Side: "buy", Quantity: 0.5, Price: 2000, Value: 1000, TradeType: "perps", Details: "Open long"},
+		{StrategyID: "s2", Timestamp: now.Add(time.Second), Symbol: "ETH", Side: "sell", Quantity: 0.5, Price: 2100, Value: 1050, TradeType: "perps", Details: "Close long, PnL: $50.00", IsClose: true, RealizedPnL: 50},
+	}
+	for _, tr := range trades {
+		if err := sdb.InsertTrade(tr.StrategyID, tr); err != nil {
+			t.Fatalf("InsertTrade: %v", err)
+		}
+	}
+
+	stats, err := sdb.LifetimeTradeStatsAll()
+	if err != nil {
+		t.Fatalf("LifetimeTradeStatsAll: %v", err)
+	}
+	if got := stats["s1"]; got.RoundTrips != 2 || got.Wins != 1 || got.Losses != 1 {
+		t.Errorf("s1 stats = %+v, want RoundTrips=2 Wins=1 Losses=1", got)
+	}
+	if got := stats["s2"]; got.RoundTrips != 1 || got.Wins != 1 || got.Losses != 0 {
+		t.Errorf("s2 stats = %+v, want RoundTrips=1 Wins=1 Losses=0", got)
+	}
+	if _, ok := stats["s3"]; ok {
+		t.Errorf("unexpected entry for s3 with no closes: %+v", stats["s3"])
+	}
+}
+
+// TestLifetimeTradeStats_SurvivesRiskStateReset is the core regression test
+// for #455: kill-switch / circuit-breaker resets of the in-memory RiskState
+// counters MUST NOT change the lifetime stats query. The query reads from
+// trades, which is append-only, so simulating a counter reset leaves the DB
+// result intact.
+func TestLifetimeTradeStats_SurvivesRiskStateReset(t *testing.T) {
+	sdb := openTestDB(t)
+	now := time.Now().UTC()
+	closes := []Trade{
+		{StrategyID: "s1", Timestamp: now, Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 51000, Value: 5100, TradeType: "perps", Details: "Close long, PnL: $100", IsClose: true, RealizedPnL: 100},
+		{StrategyID: "s1", Timestamp: now.Add(time.Second), Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 50500, Value: 5050, TradeType: "perps", Details: "Close long, PnL: $-25", IsClose: true, RealizedPnL: -25},
+	}
+	for _, tr := range closes {
+		if err := sdb.InsertTrade(tr.StrategyID, tr); err != nil {
+			t.Fatalf("InsertTrade: %v", err)
+		}
+	}
+
+	// Simulate a kill-switch reset of in-memory RiskState. The trades table
+	// is append-only, so the lifetime query is unaffected.
+	_ = RiskState{}
+
+	stats, err := sdb.LifetimeTradeStatsAll()
+	if err != nil {
+		t.Fatalf("LifetimeTradeStatsAll: %v", err)
+	}
+	got := stats["s1"]
+	if got.RoundTrips != 2 || got.Wins != 1 || got.Losses != 1 {
+		t.Errorf("post-reset stats = %+v, want RoundTrips=2 Wins=1 Losses=1", got)
+	}
+}

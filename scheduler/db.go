@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -148,12 +150,16 @@ CREATE TABLE IF NOT EXISTS trades (
     trade_type TEXT NOT NULL DEFAULT '',
     details TEXT NOT NULL DEFAULT '',
     exchange_order_id TEXT NOT NULL DEFAULT '',
-    exchange_fee REAL NOT NULL DEFAULT 0
+    exchange_fee REAL NOT NULL DEFAULT 0,
+    is_close INTEGER NOT NULL DEFAULT 0,
+    realized_pnl REAL NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy_id);
 CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp DESC);
+-- idx_trades_close (#455) is created in migrateSchema, not here, so legacy
+-- DBs add the is_close column before the index references it.
 
 CREATE TABLE IF NOT EXISTS portfolio_risk (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -240,6 +246,11 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE positions ADD COLUMN stop_loss_oid INTEGER NOT NULL DEFAULT 0",
 		// Per-trade HL stop-loss trigger price for later-fill reconciliation (#421).
 		"ALTER TABLE positions ADD COLUMN stop_loss_trigger_px REAL NOT NULL DEFAULT 0",
+		// Lifetime round-trip / win-loss tracking (#455). is_close marks closing
+		// legs; realized_pnl carries the per-trade realized PnL.
+		"ALTER TABLE trades ADD COLUMN is_close INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE trades ADD COLUMN realized_pnl REAL NOT NULL DEFAULT 0",
+		"CREATE INDEX IF NOT EXISTS idx_trades_close ON trades(strategy_id, is_close)",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -252,7 +263,106 @@ func (sdb *StateDB) migrateSchema() error {
 			return err
 		}
 	}
-	return sdb.migratePendingCircuitClosesColumn()
+	if err := sdb.migratePendingCircuitClosesColumn(); err != nil {
+		return err
+	}
+	return sdb.backfillTradeCloseFlags()
+}
+
+// backfillTradeCloseFlags is a one-time best-effort backfill (#455) for
+// pre-existing rows in the trades table that lack is_close/realized_pnl.
+// New rows always insert with explicit values, so this only runs against
+// rows where is_close=0 AND realized_pnl=0 — rows already populated by a
+// fresh insert won't be touched.
+//
+// The heuristic looks at the Details string (the only structured signal
+// available on legacy rows): close legs always include "PnL" (some sites
+// use "PnL: $X.XX", others "PnL=$X.XX"), and "expired ITM" identifies
+// option assignments / call-aways. We extract the realized PnL via the
+// shared regex and flip is_close=1 for matched rows. Best-effort: a row
+// whose Details was truncated or never carried a PnL substring stays at
+// is_close=0 (and undercounts by the same margin as the legacy in-memory
+// counters did pre-#455).
+func (sdb *StateDB) backfillTradeCloseFlags() error {
+	// Only flag rows that haven't been touched. Detect close trades by
+	// the "PnL" substring (covers "PnL: $X" and "PnL=$X" forms) — this
+	// matches every Details string emitted by a close-leg RecordTrade
+	// call site at the time of #455.
+	_, err := sdb.db.Exec(`UPDATE trades SET is_close = 1
+		WHERE is_close = 0 AND realized_pnl = 0 AND details LIKE '%PnL%'`)
+	if err != nil {
+		return fmt.Errorf("backfill is_close: %w", err)
+	}
+	// Parse the realized PnL out of the Details string. SQLite lacks
+	// regexp by default, so we walk the rows in Go. Only touch rows that
+	// were just flagged is_close=1 by the previous statement and still
+	// carry realized_pnl=0 (skip rows where future code already wrote a
+	// non-zero PnL — defensive against re-runs).
+	rows, err := sdb.db.Query(`SELECT rowid, details FROM trades
+		WHERE is_close = 1 AND realized_pnl = 0`)
+	if err != nil {
+		return fmt.Errorf("scan backfill candidates: %w", err)
+	}
+	type pnlRow struct {
+		id  int64
+		pnl float64
+	}
+	var updates []pnlRow
+	for rows.Next() {
+		var id int64
+		var details string
+		if err := rows.Scan(&id, &details); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan backfill row: %w", err)
+		}
+		if pnl, ok := parseDetailsPnL(details); ok {
+			updates = append(updates, pnlRow{id: id, pnl: pnl})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate backfill rows: %w", err)
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	tx, err := sdb.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin backfill tx: %w", err)
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare("UPDATE trades SET realized_pnl = ? WHERE rowid = ?")
+	if err != nil {
+		return fmt.Errorf("prepare backfill update: %w", err)
+	}
+	defer stmt.Close()
+	for _, u := range updates {
+		if _, err := stmt.Exec(u.pnl, u.id); err != nil {
+			return fmt.Errorf("backfill realized_pnl: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// pnlPattern matches the realized-PnL substring emitted by close-leg
+// RecordTrade Details strings: "PnL: $-1.23", "PnL=$4.56", "PnL: 7.89".
+// Both colon and equals are accepted; the dollar sign and sign are
+// optional. Whitespace between "PnL" and the value is tolerated.
+var pnlPattern = regexp.MustCompile(`PnL\s*[:=]\s*\$?(-?\d+(?:\.\d+)?)`)
+
+// parseDetailsPnL extracts the realized PnL value from a trade Details
+// string. Returns (0, false) when no PnL token is present. Used by the
+// #455 backfill to populate realized_pnl on legacy rows.
+func parseDetailsPnL(details string) (float64, bool) {
+	m := pnlPattern.FindStringSubmatch(details)
+	if len(m) < 2 {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 // migratePendingCircuitClosesColumn handles the #356/#359 pending-close column
@@ -326,12 +436,16 @@ func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
 	}
+	isClose := 0
+	if trade.IsClose {
+		isClose = 1
+	}
 	_, err := sdb.db.Exec(`INSERT INTO trades
-		(strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strategyID, formatTime(trade.Timestamp), trade.Symbol, trade.Side,
 		trade.Quantity, trade.Price, trade.Value, trade.TradeType, trade.Details,
-		trade.ExchangeOrderID, trade.ExchangeFee)
+		trade.ExchangeOrderID, trade.ExchangeFee, isClose, trade.RealizedPnL)
 	if err != nil {
 		return fmt.Errorf("insert trade for %s: %w", strategyID, err)
 	}
@@ -542,8 +656,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	//    failed, even if later-timestamped rows were persisted successfully
 	//    (fixes the MAX(timestamp) dedup gap that would silently drop
 	//    out-of-order retries).
-	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare trade insert: %w", err)
 	}
@@ -563,7 +677,11 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 				continue
 			}
 			t := s.TradeHistory[i]
-			if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee); err != nil {
+			isClose := 0
+			if t.IsClose {
+				isClose = 1
+			}
+			if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL); err != nil {
 				return fmt.Errorf("insert trade for %s: %w", s.ID, err)
 			}
 			flushed = append(flushed, trackedFlush{strat: s, index: i})
@@ -967,7 +1085,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 
 	// 5. Load most recent 1000 trades per strategy (full history stays in SQLite).
 	for id, s := range state.Strategies {
-		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee
+		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl
 			FROM trades WHERE strategy_id = ? ORDER BY timestamp ASC`, id)
 		if err != nil {
 			return nil, fmt.Errorf("load trades for %s: %w", id, err)
@@ -976,11 +1094,13 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		for tradeRows.Next() {
 			var t Trade
 			var tsStr string
-			if err := tradeRows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee); err != nil {
+			var isCloseInt int
+			if err := tradeRows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL); err != nil {
 				tradeRows.Close()
 				return nil, fmt.Errorf("scan trade: %w", err)
 			}
 			t.Timestamp = parseTime(tsStr)
+			t.IsClose = isCloseInt != 0
 			t.persisted = true // loaded from DB → already persisted; SaveState will skip.
 			allTrades = append(allTrades, t)
 		}
@@ -1046,6 +1166,58 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	return state, nil
 }
 
+// LifetimeTradeStats holds the per-strategy round-trip totals derived from
+// the trades table (#455). RoundTrips is the lifetime count of close legs
+// (1 trade = 1 round-trip per the issue spec); Wins and Losses partition
+// that count by realized PnL sign (PnL ≥ 0 → win, PnL < 0 → loss). Open
+// positions without a recorded close do not count.
+type LifetimeTradeStats struct {
+	RoundTrips int
+	Wins       int
+	Losses     int
+}
+
+// LifetimeTradeStatsAll returns lifetime round-trip stats for every strategy
+// that has at least one close trade in the trades table. Strategies with no
+// closes are absent from the result; callers should treat a missing key as
+// an all-zero struct. Used by FormatCategorySummary (#455) to render lifetime
+// #T / W/L columns that are immune to kill-switch / circuit-breaker resets
+// of the in-memory RiskState counters.
+func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, fmt.Errorf("state db unavailable")
+	}
+	rows, err := sdb.db.Query(`SELECT
+			strategy_id,
+			COUNT(*),
+			SUM(CASE WHEN realized_pnl >= 0 THEN 1 ELSE 0 END),
+			SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END)
+		FROM trades
+		WHERE is_close = 1
+		GROUP BY strategy_id`)
+	if err != nil {
+		return nil, fmt.Errorf("query lifetime trade stats: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]LifetimeTradeStats)
+	for rows.Next() {
+		var id string
+		var total, wins, losses sql.NullInt64
+		if err := rows.Scan(&id, &total, &wins, &losses); err != nil {
+			return nil, fmt.Errorf("scan lifetime trade stats: %w", err)
+		}
+		out[id] = LifetimeTradeStats{
+			RoundTrips: int(total.Int64),
+			Wins:       int(wins.Int64),
+			Losses:     int(losses.Int64),
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate lifetime trade stats: %w", err)
+	}
+	return out, nil
+}
+
 // QueryTradeHistory returns trades filtered by optional strategy/symbol/time bounds,
 // ordered by timestamp desc, with limit/offset pagination.
 func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until time.Time, limit, offset int) ([]Trade, int, error) {
@@ -1086,7 +1258,7 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 		limit = 500
 	}
 
-	query := fmt.Sprintf("SELECT timestamp, strategy_id, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee FROM trades %s ORDER BY timestamp DESC LIMIT ? OFFSET ?", whereClause)
+	query := fmt.Sprintf("SELECT timestamp, strategy_id, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl FROM trades %s ORDER BY timestamp DESC LIMIT ? OFFSET ?", whereClause)
 	queryArgs := append(args, limit, offset)
 	rows, err := sdb.db.Query(query, queryArgs...)
 	if err != nil {
@@ -1098,10 +1270,12 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 	for rows.Next() {
 		var t Trade
 		var tsStr string
-		if err := rows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee); err != nil {
+		var isCloseInt int
+		if err := rows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL); err != nil {
 			return nil, 0, fmt.Errorf("scan trade: %w", err)
 		}
 		t.Timestamp = parseTime(tsStr)
+		t.IsClose = isCloseInt != 0
 		trades = append(trades, t)
 	}
 	if err := rows.Err(); err != nil {

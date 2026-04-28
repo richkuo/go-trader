@@ -165,7 +165,7 @@ func TestFormatCategorySummary_WithAsset(t *testing.T) {
 	prices := map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}
 
 	// With asset — title should contain " — BTC" and only BTC price shown
-	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
 	msg := strings.Join(msgs, "\n")
 	if !strings.Contains(msg, "— BTC") {
 		t.Errorf("expected '— BTC' in title, got:\n%s", msg)
@@ -175,7 +175,7 @@ func TestFormatCategorySummary_WithAsset(t *testing.T) {
 	}
 
 	// Without asset — no suffix in title
-	msgs2 := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "", 600, 0)
+	msgs2 := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "", 600, 0, nil)
 	msg2 := strings.Join(msgs2, "\n")
 	if strings.Contains(msg2, "— ") {
 		t.Errorf("expected no asset suffix when asset='', got:\n%s", msg2)
@@ -201,20 +201,20 @@ func TestFormatCategorySummary_VersionSuffix(t *testing.T) {
 	defer func() { Version = orig }()
 
 	Version = "v9.9.9-test"
-	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
 	summary := strings.Join(msgs, "\n")
 	if !strings.Contains(summary, "("+Version+")") {
 		t.Errorf("expected version %q in summary title, got:\n%s", Version, summary)
 	}
 
-	msgs = FormatCategorySummary(1, 0, 1, 3, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0)
+	msgs = FormatCategorySummary(1, 0, 1, 3, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
 	trades := strings.Join(msgs, "\n")
 	if !strings.Contains(trades, "("+Version+")") {
 		t.Errorf("expected version %q in trades title, got:\n%s", Version, trades)
 	}
 
 	Version = ""
-	msgs = FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0)
+	msgs = FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
 	empty := strings.Join(msgs, "\n")
 	if strings.Contains(empty, "()") {
 		t.Errorf("empty Version should omit the suffix, got:\n%s", empty)
@@ -240,7 +240,7 @@ func TestFormatCategorySummary_CircuitBreakerActive(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 50000}
 
-	msgs := FormatCategorySummary(1, 0, 2, 0, 2000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 2, 0, 2000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
 	msg := strings.Join(msgs, "\n")
 
 	if !strings.Contains(msg, "Circuit breaker active") {
@@ -274,7 +274,7 @@ func TestFormatCategorySummary_StrategiesSortedByID(t *testing.T) {
 		},
 	}
 	prices := map[string]float64{"BTC/USDT": 50000}
-	msgs := FormatCategorySummary(1, 0, 1, 0, 2000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 1, 0, 2000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
 	msg := strings.Join(msgs, "\n")
 	idxAdx := strings.Index(msg, "hl-adx-btc")
 	idxZebra := strings.Index(msg, "hl-zebra-btc")
@@ -297,7 +297,7 @@ func TestFormatCategorySummary_NoCircuitBreaker(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 50000}
 
-	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
 	msg := strings.Join(msgs, "\n")
 
 	if strings.Contains(msg, "Circuit breaker") {
@@ -591,7 +591,7 @@ func TestFormatCategorySummary_TfIntColumn(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 50000}
 
-	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 3600, 0)
+	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 3600, 0, nil)
 	msg := strings.Join(msgs, "\n")
 
 	// Separate Tf and Int column headers should be present (at end of table).
@@ -616,7 +616,7 @@ func TestFormatCategorySummary_TfIntGlobalFallback(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 50000}
 
-	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "spot", "", 3600, 0)
+	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "spot", "", 3600, 0, nil)
 	msg := strings.Join(msgs, "\n")
 
 	// No timeframe for spot → "—"; global interval 3600s → "1h". Separate columns now.
@@ -640,7 +640,7 @@ func TestFormatCategorySummary_MaxDrawdownColumn(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 50000}
 
-	msgs := FormatCategorySummary(1, 0, 2, 0, 2000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 2, 0, 2000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
 	msg := strings.Join(msgs, "\n")
 
 	if !strings.Contains(msg, " DD ") {
@@ -672,7 +672,7 @@ func TestFormatCategorySummary_MaxDrawdownColumn_SharedWallet(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH/USDT": 3000}
 
-	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, nil)
 	msg := strings.Join(msgs, "\n")
 	lines := strings.Split(msg, "\n")
 	var headerLine, totalLine string
@@ -718,7 +718,7 @@ func TestFormatCategorySummary_ClosedTradesColumn(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 50000}
 
-	msgs := FormatCategorySummary(1, 0, 3, 0, 3000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 3, 0, 3000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
 	msg := strings.Join(msgs, "\n")
 
 	// Header should include #T column.
@@ -773,7 +773,7 @@ func TestFormatCategorySummary_ClosedTradesColumn_SharedWallet(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH/USDT": 3000}
 
-	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, nil)
 	msg := strings.Join(msgs, "\n")
 
 	if !strings.Contains(msg, "#T") {
@@ -846,7 +846,7 @@ func TestFormatCategorySummary_WinLossColumn(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 50000}
 
-	msgs := FormatCategorySummary(1, 0, 3, 0, 3000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 3, 0, 3000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
 	msg := strings.Join(msgs, "\n")
 
 	if !strings.Contains(msg, "W/L") {
@@ -900,7 +900,7 @@ func TestFormatCategorySummary_SharedWallet(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH/USDT": 3000}
 
-	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, nil)
 	msg := strings.Join(msgs, "\n")
 
 	// Should contain Wallet% column
@@ -956,7 +956,7 @@ func TestFormatCategorySummary_WalletPctFromConfig(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH/USDT": 3000}
 
-	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, nil)
 	msg := strings.Join(msgs, "\n")
 
 	if !strings.Contains(msg, "30.0%") {
@@ -981,7 +981,7 @@ func TestFormatCategorySummary_NoSharedWallet(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH/USDT": 3000}
 
-	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, nil)
 	msg := strings.Join(msgs, "\n")
 
 	if strings.Contains(msg, "Wallet%") {
@@ -1010,7 +1010,7 @@ func TestFormatCategorySummary_MessageSplitting(t *testing.T) {
 	state := &AppState{Strategies: strategies}
 	prices := map[string]float64{"BTC/USDT": 51000}
 
-	msgs := FormatCategorySummary(1, 0, 20, 0, 10000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 20, 0, 10000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
 
 	// Should produce multiple messages.
 	if len(msgs) < 2 {
@@ -1060,7 +1060,7 @@ func TestFormatCategorySummary_NoSplitWhenShort(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 51000}
 
-	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
 
 	if len(msgs) != 1 {
 		t.Errorf("expected single message for 1 position, got %d", len(msgs))
@@ -1214,7 +1214,7 @@ func TestFormatCategorySummary_HeaderPriceFormat(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH/USDT": 2240.5}
 
-	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0)
+	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, nil)
 	msg := strings.Join(msgs, "\n")
 	if !strings.Contains(msg, "ETH: $2,240.50") {
 		t.Errorf("expected header price 'ETH: $2,240.50', got:\n%s", msg)
@@ -1282,7 +1282,7 @@ func TestFormatCategorySummary_LargeTableChunked(t *testing.T) {
 	state := &AppState{Strategies: strategies}
 	prices := map[string]float64{"BTC/USDT": 51000}
 
-	msgs := FormatCategorySummary(1, 0, stratCount, 0, 14000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0)
+	msgs := FormatCategorySummary(1, 0, stratCount, 0, 14000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
 
 	if len(msgs) < 2 {
 		t.Fatalf("expected at least 2 messages for %d strategies, got %d", stratCount, len(msgs))
@@ -1456,5 +1456,77 @@ func TestSplitCategorySummary_MultiMessage(t *testing.T) {
 		if !strings.Contains(all, pl) {
 			t.Errorf("position %q missing from messages", pl)
 		}
+	}
+}
+
+// TestFormatCategorySummary_LifetimeStatsOverride verifies that
+// FormatCategorySummary prefers the lifetime stats map over the in-memory
+// RiskState counters (#455). Simulates a strategy whose RiskState was
+// reset by a kill switch (showing 2 trades) but whose trades-table
+// lifetime stats show 17 round-trips — the table must render the lifetime
+// figure.
+func TestFormatCategorySummary_LifetimeStatsOverride(t *testing.T) {
+	prices := map[string]float64{"ETH/USDT": 2000.0}
+	strats := []StrategyConfig{
+		{ID: "hl-rmc-eth-live", Type: "perps", Platform: "hyperliquid", Args: []string{"rmc", "ETH/USDT", "1h"}},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-rmc-eth-live": {
+				Cash: 1000,
+				// Post-kill-switch reset: in-memory counters are stale.
+				RiskState: RiskState{TotalTrades: 2, WinningTrades: 1, LosingTrades: 1},
+			},
+		},
+	}
+	lifetime := map[string]LifetimeTradeStats{
+		"hl-rmc-eth-live": {RoundTrips: 17, Wins: 10, Losses: 7},
+	}
+	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, lifetime)
+	if len(msgs) == 0 {
+		t.Fatal("expected at least one message")
+	}
+	msg := msgs[0]
+	// Lifetime #T should appear (17), not the stale RiskState count (2).
+	if !strings.Contains(msg, " 17 ") {
+		t.Errorf("expected lifetime #T=17 in summary, got:\n%s", msg)
+	}
+	// W/L renders as wins/losses ratio (10/7 ≈ 1.43). The stale 1/1
+	// fallback would have rendered "1.00", so its absence confirms the
+	// override took effect.
+	if !strings.Contains(msg, "1.43") {
+		t.Errorf("expected lifetime W/L ratio (10/7=1.43) in summary, got:\n%s", msg)
+	}
+}
+
+// TestFormatCategorySummary_LifetimeStatsFallback verifies the legacy
+// fallback: when lifetimeStats is nil OR has no entry for a strategy, the
+// summary uses RiskState counters so existing test fixtures keep working.
+func TestFormatCategorySummary_LifetimeStatsFallback(t *testing.T) {
+	prices := map[string]float64{"ETH/USDT": 2000.0}
+	strats := []StrategyConfig{
+		{ID: "hl-rmc-eth-live", Type: "perps", Platform: "hyperliquid", Args: []string{"rmc", "ETH/USDT", "1h"}},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-rmc-eth-live": {
+				Cash:      1000,
+				RiskState: RiskState{TotalTrades: 5, WinningTrades: 3, LosingTrades: 2},
+			},
+		},
+	}
+	// Nil map → fallback.
+	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, nil)
+	if !strings.Contains(msgs[0], " 5 ") {
+		t.Errorf("expected fallback #T=5 in summary, got:\n%s", msgs[0])
+	}
+	// W/L from RiskState wins=3 losses=2 → ratio 1.50.
+	if !strings.Contains(msgs[0], "1.50") {
+		t.Errorf("expected fallback W/L ratio (3/2=1.50) in summary, got:\n%s", msgs[0])
+	}
+	// Empty map (DB returned no rows for this strategy) → also fallback.
+	msgs2 := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, map[string]LifetimeTradeStats{})
+	if !strings.Contains(msgs2[0], " 5 ") {
+		t.Errorf("expected fallback #T=5 from empty map, got:\n%s", msgs2[0])
 	}
 }

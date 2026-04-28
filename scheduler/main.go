@@ -1356,6 +1356,19 @@ func main() {
 		closedByStrategy := LoadClosedPositionsByStrategy(stateDB, cfg)
 		rfr := RiskFreeRateOrDefault(cfg)
 
+		// Lifetime round-trip / W-L stats sourced from the trades table (#455).
+		// One DB round-trip per cycle; missing keys fall back to RiskState
+		// counters inside FormatCategorySummary. Errors are downgraded to a
+		// nil map so the summary still posts using the in-memory fallback.
+		var lifetimeStats map[string]LifetimeTradeStats
+		if stateDB != nil {
+			if ls, err := stateDB.LifetimeTradeStatsAll(); err != nil {
+				fmt.Printf("[summary] lifetime trade stats unavailable: %v\n", err)
+			} else {
+				lifetimeStats = ls
+			}
+		}
+
 		// Notification — one message per channel per asset, sent to all backends.
 		if notifier.HasBackends() {
 			mu.RLock()
@@ -1391,7 +1404,7 @@ func main() {
 					chDetails := channelTradeDetails[detailKey]
 					chValue := channelValue[chKey]
 					chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
-					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chValue, prices, chDetails, chStrats, state, chKey, "", cfg.IntervalSeconds, chSharpe)
+					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chValue, prices, chDetails, chStrats, state, chKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats)
 					for _, msg := range msgs {
 						notifier.SendToChannel(chKey, chKey, msg)
 					}
@@ -1408,7 +1421,7 @@ func main() {
 						}
 						assetTrades := len(assetDetails)
 						assetSharpe := aggregateSharpe(closedByStrategy, assetStrats, state, rfr)
-						msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetValue, prices, assetDetails, assetStrats, state, chKey, asset, cfg.IntervalSeconds, assetSharpe)
+						msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetValue, prices, assetDetails, assetStrats, state, chKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats)
 						for _, msg := range msgs {
 							notifier.SendToChannel(chKey, chKey, msg)
 						}
@@ -1607,10 +1620,18 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	// Format and send summary using the same asset-grouping logic as the main loop.
 	closedByStrategy := LoadClosedPositionsByStrategy(sdb, cfg)
 	rfr := RiskFreeRateOrDefault(cfg)
+	var lifetimeStats map[string]LifetimeTradeStats
+	if sdb != nil {
+		if ls, err := sdb.LifetimeTradeStatsAll(); err != nil {
+			fmt.Printf("[summary] lifetime trade stats unavailable: %v\n", err)
+		} else {
+			lifetimeStats = ls
+		}
+	}
 	assetGroups, assetKeys := groupByAsset(chStrats)
 	if len(assetKeys) <= 1 {
 		chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
-		msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, chValue, prices, nil, chStrats, state, channelKey, "", cfg.IntervalSeconds, chSharpe)
+		msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, chValue, prices, nil, chStrats, state, channelKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats)
 		for _, msg := range msgs {
 			notifier.SendToChannel(channelKey, channelKey, msg)
 			fmt.Println(msg)
@@ -1625,7 +1646,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 				}
 			}
 			assetSharpe := aggregateSharpe(closedByStrategy, assetStrats, state, rfr)
-			msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetValue, prices, nil, assetStrats, state, channelKey, asset, cfg.IntervalSeconds, assetSharpe)
+			msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetValue, prices, nil, assetStrats, state, channelKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats)
 			for _, msg := range msgs {
 				notifier.SendToChannel(channelKey, channelKey, msg)
 				fmt.Println(msg)

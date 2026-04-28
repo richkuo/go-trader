@@ -1124,6 +1124,13 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 			Value:      fillSz * fillPx,
 			TradeType:  "perps",
 			Details:    fmt.Sprintf("Circuit breaker on-chain close (no virtual position), fill=%.6f fee=$%.4f", fillSz, fillFee),
+			// No virtual position to derive PnL from. Still mark as a close
+			// leg so the lifetime round-trip count (#455) reflects that the
+			// exchange-side position was reduced, but leave RealizedPnL=0
+			// (no AvgCost basis available). Counts as a "win" by the
+			// pnl >= 0 partition — acceptable since this branch is a
+			// defensive fallback for already-flat virtual state.
+			IsClose: true,
 		})
 		return
 	}
@@ -1148,15 +1155,17 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 	s.Cash += pnl
 
 	RecordTrade(s, Trade{
-		Timestamp:  now,
-		StrategyID: s.ID,
-		Symbol:     symbol,
-		Side:       closeSide,
-		Quantity:   qtyClosed,
-		Price:      fillPx,
-		Value:      qtyClosed * fillPx,
-		TradeType:  "perps",
-		Details:    fmt.Sprintf("Circuit breaker on-chain close, PnL: $%.2f (fee $%.4f)", pnl, fillFee),
+		Timestamp:   now,
+		StrategyID:  s.ID,
+		Symbol:      symbol,
+		Side:        closeSide,
+		Quantity:    qtyClosed,
+		Price:       fillPx,
+		Value:       qtyClosed * fillPx,
+		TradeType:   "perps",
+		Details:     fmt.Sprintf("Circuit breaker on-chain close, PnL: $%.2f (fee $%.4f)", pnl, fillFee),
+		IsClose:     true,
+		RealizedPnL: pnl,
 	})
 	RecordTradeResult(&s.RiskState, pnl)
 
