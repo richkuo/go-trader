@@ -187,8 +187,6 @@
 - `backtest_options.py`: `.venv/bin/python3 backtest/backtest_options.py --underlying BTC --since YYYY-MM-DD --capital 10000`
 - `backtest_theta.py`: `.venv/bin/python3 backtest/backtest_theta.py --underlying BTC --since YYYY-MM-DD --capital 10000`
 
-## ISSUES.md
-- When marking an issue fixed: update the row (`NO` → `YES`) **and** the Summary table at the bottom (`Fixed` count +1, `Unfixed` count -1 for that category and Total)
 
 ## Testing
 - **New functionality must include tests** — Go changes need `_test.go` coverage; Python changes need `test_*.py` coverage. Bug fixes should include a regression test when feasible.
