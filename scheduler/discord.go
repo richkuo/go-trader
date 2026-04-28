@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -246,6 +247,9 @@ const catTableMaxRows = 15
 // channelStrategies is pre-filtered by the caller; channelKey is the display label.
 // asset, when non-empty, appends " — <ASSET>" to the title and filters the prices line.
 // globalIntervalSeconds is the config-level default interval used when a strategy has no per-strategy override.
+// lifetimeStats is keyed by strategy ID; missing keys fall back to the
+// in-memory RiskState counters (#455). When nil, all rows fall back —
+// preserves existing test call sites that pre-date this parameter.
 func FormatCategorySummary(
 	cycle int,
 	elapsed time.Duration,
@@ -260,6 +264,7 @@ func FormatCategorySummary(
 	asset string,
 	globalIntervalSeconds int,
 	categorySharpe float64,
+	lifetimeStats map[string]LifetimeTradeStats,
 ) []string {
 	var sb strings.Builder
 
@@ -409,6 +414,29 @@ func FormatCategorySummary(
 		if effectiveInterval <= 0 {
 			effectiveInterval = globalIntervalSeconds
 		}
+		// Lifetime round-trip stats from the trades table (#455). Survives
+		// kill-switch and circuit-breaker resets; counts each open+close
+		// pair as a single trade. Falls back to the in-memory RiskState
+		// counters when the DB hasn't reported a stat for this strategy
+		// (e.g. tests that don't wire a DB, or first-run before any
+		// trade has been recorded).
+		closedT := ss.RiskState.TotalTrades
+		winT := ss.RiskState.WinningTrades
+		lossT := ss.RiskState.LosingTrades
+		if lifetimeStats != nil {
+			if lt, ok := lifetimeStats[sc.ID]; ok {
+				closedT = lt.RoundTrips
+				winT = lt.Wins
+				lossT = lt.Losses
+			} else if ss.RiskState.TotalTrades > 0 {
+				// DB was queried (non-nil map) but this strategy has no close
+				// trades recorded — RiskState counters may be stale (e.g. from
+				// a run before #455 landed). Log once per summary cycle so the
+				// discrepancy is visible without spamming the operator.
+				fmt.Fprintf(os.Stderr, "[discord] WARN: strategy %s has RiskState.TotalTrades=%d but no lifetime trades in DB; using in-memory fallback\n",
+					sc.ID, ss.RiskState.TotalTrades)
+			}
+		}
 		tableBots = append(tableBots, botInfo{
 			id:             sc.ID,
 			strategy:       stratName,
@@ -423,9 +451,9 @@ func FormatCategorySummary(
 			walletPct:      walletPct,
 			trades:         len(ss.TradeHistory),
 			openPositions:  openPos,
-			closedTrades:   ss.RiskState.TotalTrades,
-			winningTrades:  ss.RiskState.WinningTrades,
-			losingTrades:   ss.RiskState.LosingTrades,
+			closedTrades:   closedT,
+			winningTrades:  winT,
+			losingTrades:   lossT,
 			tradeHistory:   ss.TradeHistory,
 		})
 	}

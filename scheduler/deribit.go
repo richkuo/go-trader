@@ -503,6 +503,8 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 			TradeType:  "assignment",
 			Details: fmt.Sprintf("Wheel call-away: sold call expired ITM (spot=$%.2f), sold %.4f %s @ $%.0f PnL=$%.2f",
 				r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, pnl),
+			IsClose:     true,
+			RealizedPnL: pnl,
 		})
 		logger.Info("CALL-AWAY: sold call %s-%.0f expired ITM (spot=$%.2f), sold %.4f %s @ $%.0f (proceeds=$%.2f, PnL=$%.2f)",
 			r.AssignUnderlying, r.AssignStrike, r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, proceeds, pnl)

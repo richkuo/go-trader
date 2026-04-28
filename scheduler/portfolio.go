@@ -138,15 +138,17 @@ func recordPerpsStopLossClose(s *StrategyState, symbol string, triggerPx float64
 		closeSide = "buy"
 	}
 	trade := Trade{
-		Timestamp:  now,
-		StrategyID: s.ID,
-		Symbol:     symbol,
-		Side:       closeSide,
-		Quantity:   qty,
-		Price:      triggerPx,
-		Value:      qty * triggerPx,
-		TradeType:  "perps",
-		Details:    fmt.Sprintf("Stop loss close, PnL: $%.2f (fee $%.2f)", pnl, fee),
+		Timestamp:   now,
+		StrategyID:  s.ID,
+		Symbol:      symbol,
+		Side:        closeSide,
+		Quantity:    qty,
+		Price:       triggerPx,
+		Value:       qty * triggerPx,
+		TradeType:   "perps",
+		Details:     fmt.Sprintf("Stop loss close, PnL: $%.2f (fee $%.2f)", pnl, fee),
+		IsClose:     true,
+		RealizedPnL: pnl,
 	}
 	RecordTrade(s, trade)
 	RecordTradeResult(&s.RiskState, pnl)
@@ -198,6 +200,15 @@ type Trade struct {
 	Details         string    `json:"details"`
 	ExchangeOrderID string    `json:"exchange_order_id,omitempty"` // exchange-provided order ID (e.g. Hyperliquid oid)
 	ExchangeFee     float64   `json:"exchange_fee,omitempty"`      // fee charged by exchange (if available)
+
+	// IsClose marks closing legs of a round-trip (close, stop-loss, circuit-breaker
+	// liquidation, theta harvest, wheel call-away). Used by lifetime-stats queries
+	// (#455) to count round-trips and W/L without resetting on kill switch /
+	// circuit breaker. Opens leave it false. RealizedPnL is the per-trade realized
+	// PnL on close legs (0 on opens). Both columns are append-only metadata: once
+	// inserted on a close, they identify the round-trip in the trades table.
+	IsClose     bool    `json:"is_close,omitempty"`
+	RealizedPnL float64 `json:"realized_pnl,omitempty"`
 
 	// persisted tracks whether this Trade has been written to SQLite — set by
 	// RecordTrade on successful InsertTrade and by LoadState for DB-loaded
@@ -511,6 +522,8 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 				Details:         fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
 				ExchangeOrderID: closeOID,
 				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
+				IsClose:         true,
+				RealizedPnL:     pnl,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
@@ -621,6 +634,8 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 				Details:         fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
 				ExchangeOrderID: closeOID,
 				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
+				IsClose:         true,
+				RealizedPnL:     pnl,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
@@ -751,6 +766,8 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 				TradeType:   "spot",
 				Details:     fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
 				ExchangeFee: exchangeFeeForTrade(fillFee, useFillFee),
+				IsClose:     true,
+				RealizedPnL: pnl,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
@@ -838,6 +855,8 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 				TradeType:   "spot",
 				Details:     fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
 				ExchangeFee: exchangeFeeForTrade(fillFee, useFillFee),
+				IsClose:     true,
+				RealizedPnL: pnl,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
@@ -901,6 +920,8 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				TradeType:   "futures",
 				Details:     fmt.Sprintf("Close short %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee),
 				ExchangeFee: exchangeFeeForTrade(fillFee, useFillFee),
+				IsClose:     true,
+				RealizedPnL: pnl,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
@@ -1000,6 +1021,8 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				TradeType:   "futures",
 				Details:     fmt.Sprintf("Close long %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee),
 				ExchangeFee: exchangeFeeForTrade(fillFee, useFillFee),
+				IsClose:     true,
+				RealizedPnL: pnl,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)

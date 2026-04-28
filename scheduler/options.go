@@ -239,15 +239,17 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 			}
 			now := time.Now().UTC()
 			trade := Trade{
-				Timestamp:  now,
-				StrategyID: s.ID,
-				Symbol:     pos.ID,
-				Side:       "close",
-				Quantity:   pos.Quantity,
-				Price:      action.PremiumUSD,
-				Value:      action.PremiumUSD,
-				TradeType:  "options",
-				Details:    fmt.Sprintf("Close %s PnL=$%.2f", pos.ID, pnl),
+				Timestamp:   now,
+				StrategyID:  s.ID,
+				Symbol:      pos.ID,
+				Side:        "close",
+				Quantity:    pos.Quantity,
+				Price:       action.PremiumUSD,
+				Value:       action.PremiumUSD,
+				TradeType:   "options",
+				Details:     fmt.Sprintf("Close %s PnL=$%.2f", pos.ID, pnl),
+				IsClose:     true,
+				RealizedPnL: pnl,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
@@ -439,15 +441,17 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 
 		now := time.Now().UTC()
 		trade := Trade{
-			Timestamp:  now,
-			StrategyID: s.ID,
-			Symbol:     pos.ID,
-			Side:       "close",
-			Quantity:   pos.Quantity,
-			Price:      buybackCost,
-			Value:      buybackCost,
-			TradeType:  "options",
-			Details:    fmt.Sprintf("Theta harvest close %s PnL=$%.2f", pos.ID, pnl),
+			Timestamp:   now,
+			StrategyID:  s.ID,
+			Symbol:      pos.ID,
+			Side:        "close",
+			Quantity:    pos.Quantity,
+			Price:       buybackCost,
+			Value:       buybackCost,
+			TradeType:   "options",
+			Details:     fmt.Sprintf("Theta harvest close %s PnL=$%.2f", pos.ID, pnl),
+			IsClose:     true,
+			RealizedPnL: pnl,
 		}
 		RecordTrade(s, trade)
 		RecordTradeResult(&s.RiskState, pnl)

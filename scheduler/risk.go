@@ -1098,15 +1098,17 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)
 		}
 		trade := Trade{
-			Timestamp:  now,
-			StrategyID: s.ID,
-			Symbol:     symbol,
-			Side:       "close",
-			Quantity:   pos.Quantity,
-			Price:      price,
-			Value:      value,
-			TradeType:  tradeType,
-			Details:    fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f", pos.Side, pnl),
+			Timestamp:   now,
+			StrategyID:  s.ID,
+			Symbol:      symbol,
+			Side:        "close",
+			Quantity:    pos.Quantity,
+			Price:       price,
+			Value:       value,
+			TradeType:   tradeType,
+			Details:     fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f", pos.Side, pnl),
+			IsClose:     true,
+			RealizedPnL: pnl,
 		}
 		RecordTrade(s, trade)
 		RecordTradeResult(&s.RiskState, pnl)
@@ -1130,15 +1132,17 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Action, id, closePrice, pnl)
 		}
 		trade := Trade{
-			Timestamp:  now,
-			StrategyID: s.ID,
-			Symbol:     id,
-			Side:       "close",
-			Quantity:   pos.Quantity,
-			Price:      closePrice,
-			Value:      closePrice,
-			TradeType:  "options",
-			Details:    fmt.Sprintf("Circuit breaker force-close, PnL: $%.2f", pnl),
+			Timestamp:   now,
+			StrategyID:  s.ID,
+			Symbol:      id,
+			Side:        "close",
+			Quantity:    pos.Quantity,
+			Price:       closePrice,
+			Value:       closePrice,
+			TradeType:   "options",
+			Details:     fmt.Sprintf("Circuit breaker force-close, PnL: $%.2f", pnl),
+			IsClose:     true,
+			RealizedPnL: pnl,
 		}
 		RecordTrade(s, trade)
 		RecordTradeResult(&s.RiskState, pnl)
