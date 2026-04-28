@@ -397,7 +397,7 @@ curl -s localhost:8099/health            # simple health check
 journalctl -u go-trader -n 50           # recent logs
 ```
 
-Discord strategy summaries include columns: `Init | Value | PnL | PnL% | DD | Wallet% | Tf | Int | #T | W/L` (compact widths; DD rendered as whole percent), a `Book Sharpe (realized, annualized)` footer line, and the go-trader version in the summary title. The `okx-options` and `robinhood-options` channel keys route OKX/Robinhood options summaries separately from their spot/perps channels.
+Discord strategy summaries include columns: `Init | Value | PnL | PnL% | DD | Wallet% | Tf | Int | #T | W/L` (compact widths; DD rendered as whole percent), a `Book Sharpe (realized, annualized)` footer line, and the go-trader version in the summary title. The `okx-options` and `robinhood-options` channel keys route OKX/Robinhood options summaries separately from their spot/perps channels. `#T` and `W/L` are derived from the lifetime trades table (round-trip closes), so they survive restarts and reconciliation paths that bypass in-memory counters (#460).
 
 ---
 
@@ -447,6 +447,8 @@ Circuit-breaker close trades are included; their direction is parsed from the tr
 | TopStep Futures | Per-contract (configurable) | ±0.05% |
 | Robinhood Crypto | No commission (spread embedded) | ±0.05% |
 | Robinhood Options | $0.03/contract (regulatory fee) | — |
+
+Live `--execute` fills on Hyperliquid, OKX, Robinhood, and TopStep record the **exchange-reported** fee (and per-leg fees on multi-leg fills) plus the exchange order ID, so backfills and TradingView exports match the venue ledger instead of the calculated estimate (#453, #461).
 
 ---
 
