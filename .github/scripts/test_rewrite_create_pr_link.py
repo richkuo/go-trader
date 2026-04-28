@@ -91,10 +91,23 @@ class RewriteCreatePRLinkTest(unittest.TestCase):
         # decode the whole output to count occurrences across both links.
         self.assertEqual(urllib.parse.unquote(out).count("LLM:"), 2)
 
-    def test_non_idempotent_without_shell_guard(self):
-        """Documents the idempotency caveat: running twice appends twice.
-        The shell guard in claude.yml (grep -q 'LLM:') is what
-        prevents this in production."""
+    def test_replaces_stale_llm_footer_in_prefilled_body(self):
+        """Simulates Claude having written a wrong effort into the PR body.
+        The rewriter must replace it, not append a second footer."""
+        stale_footer = "---\nLLM: Claude Opus 4.7 (1M) | medium"
+        pr_body = f"## Summary\n- did a thing\n\n{stale_footer}"
+        encoded = urllib.parse.quote(pr_body, safe="")
+        comment = f"[Create PR](https://github.com/owner/repo/compare/main...feat?quick_pull=1&body={encoded})"
+
+        out = run(comment)
+        new_body = extract_body_param(out)
+
+        self.assertTrue(new_body.endswith(FOOTER), msg=f"Body did not end with footer:\n{new_body}")
+        self.assertEqual(new_body.count("LLM:"), 1)
+        self.assertIn("## Summary", new_body)
+
+    def test_idempotent(self):
+        """Running twice produces the same result as running once."""
         pr_body = "## Summary"
         encoded = urllib.parse.quote(pr_body, safe="")
         comment = f"[x](https://github.com/owner/repo/compare/main...feat?quick_pull=1&body={encoded})"
@@ -102,8 +115,10 @@ class RewriteCreatePRLinkTest(unittest.TestCase):
         once = run(comment)
         twice = run(once)
 
-        self.assertEqual(urllib.parse.unquote(once).count("LLM:"), 1)
-        self.assertEqual(urllib.parse.unquote(twice).count("LLM:"), 2)
+        self.assertEqual(
+            extract_body_param(once),
+            extract_body_param(twice),
+        )
 
 
 if __name__ == "__main__":

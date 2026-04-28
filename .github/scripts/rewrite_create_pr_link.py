@@ -5,17 +5,16 @@ PR body ends with our model/effort footer instead of the default
 Reads the comment body from $BODY_IN and the footer text from $FOOTER_TEXT.
 Prints the rewritten comment body to stdout.
 
-Not idempotent on its own: if a Create-PR link's `body=` already ends with a
-`LLM: ...` footer (not the default Claude Code attribution), the
-else-branch in `rewrite` will append a second footer. The caller in
-.github/workflows/claude.yml guards against re-runs with a
-`grep -q "LLM:"` check before invoking this script.
+Idempotent: any existing LLM footer in the prefilled body= param is stripped
+before the authoritative footer is appended (via strip_llm_footer.strip_llm_footer).
 """
 
 import os
 import re
 import sys
 import urllib.parse
+
+from strip_llm_footer import strip_llm_footer
 
 body = os.environ["BODY_IN"]
 footer = os.environ["FOOTER_TEXT"]
@@ -32,6 +31,7 @@ def rewrite(match):
     new_qs = []
     for k, v in qs:
         if k == "body":
+            v = strip_llm_footer(v)
             if default_attr.search(v):
                 v = default_attr.sub("\n\n" + footer, v)
             else:
