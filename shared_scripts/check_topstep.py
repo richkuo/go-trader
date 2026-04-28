@@ -33,6 +33,45 @@ def _make_dataframe(candles):
     return df
 
 
+def _float_or_none(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_fee_value(value):
+    if isinstance(value, dict):
+        for key in ("cost", "amount", "fee", "fees", "commission", "total", "value"):
+            fee = _extract_fee_value(value.get(key))
+            if fee is not None:
+                return fee
+        return None
+    if isinstance(value, list):
+        total = 0.0
+        found = False
+        for item in value:
+            fee = _extract_fee_value(item)
+            if fee is not None:
+                total += fee
+                found = True
+        return total if found else None
+    return _float_or_none(value)
+
+
+def _extract_fee(response):
+    """Best-effort TopStep fill fee extraction; absent fees fall back in Go."""
+    if not isinstance(response, dict):
+        return None
+    for key in ("fee", "fees", "commission", "totalFee", "totalFees", "commissionAndFees"):
+        fee = _extract_fee_value(response.get(key))
+        if fee is not None:
+            return fee
+    return None
+
+
 def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False, strategy_params=None):
     """Run strategy signal check using TopStep market data."""
     try:
@@ -195,6 +234,9 @@ def run_execute(symbol, side, contracts, mode):
                 "avg_px": float(result.get("avgPrice", 0) or 0),
                 "total_contracts": int(result.get("filledQuantity", contracts) or contracts),
             }
+            fee = _extract_fee(result)
+            if fee is not None:
+                fill["fee"] = fee
         except Exception as e:
             print(f"[topstep] fill parse error: {e}", file=sys.stderr)
 
