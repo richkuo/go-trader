@@ -163,12 +163,15 @@ func TestPlanKillSwitchClose_CloseError(t *testing.T) {
 	}
 	positions := []HLPosition{{Coin: "ETH", Size: 0.5}}
 	closer, _ := stubHLLiveCloser(map[string]error{"ETH": fmt.Errorf("hl rate limited")})
-	fetcher, _ := stubHLStateFetcher(nil, nil)
+	fetcher, fetchCalls := stubHLStateFetcher(positions, nil)
 
 	plan := planKillSwitchClose(defaultHLInputs("0xaddr", true, positions, hlLive,
 		"portfolio drawdown 25.0% exceeds limit 20.0%",
 		time.Second, closer, fetcher))
 
+	if *fetchCalls != 1 {
+		t.Fatalf("fetcher should be called once to verify the close error, got %d", *fetchCalls)
+	}
 	if plan.OnChainConfirmedFlat {
 		t.Fatal("expected NOT ConfirmedFlat on close error — kill switch would clear virtual state while on-chain is still live")
 	}
@@ -183,6 +186,69 @@ func TestPlanKillSwitchClose_CloseError(t *testing.T) {
 	}
 	if !strings.Contains(plan.DiscordMessage, "hl rate limited") {
 		t.Errorf("error detail missing from message, got: %s", plan.DiscordMessage)
+	}
+}
+
+// Close error followed by a flat verification fetch: the close may have filled
+// on-chain before the subprocess returned an error. In that case the kill switch
+// may clear virtual state instead of staying latched forever (#452).
+func TestPlanKillSwitchClose_CloseErrorVerifiedFlat(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-ema-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: 0.5}}
+	closer, _ := stubHLLiveCloser(map[string]error{"ETH": fmt.Errorf("post-submit disconnect")})
+	fetcher, fetchCalls := stubHLStateFetcher(nil, nil)
+
+	plan := planKillSwitchClose(defaultHLInputs("0xaddr", true, positions, hlLive,
+		"portfolio drawdown 25.0% exceeds limit 20.0%",
+		time.Second, closer, fetcher))
+
+	if *fetchCalls != 1 {
+		t.Fatalf("fetcher should be called once to verify the close error, got %d", *fetchCalls)
+	}
+	if !plan.OnChainConfirmedFlat {
+		t.Fatalf("expected ConfirmedFlat after verification fetch proved ETH flat, got plan=%+v", plan)
+	}
+	if len(plan.CloseReport.Errors) != 0 {
+		t.Fatalf("expected verified-flat close error to be cleared, got %v", plan.CloseReport.Errors)
+	}
+	if len(plan.CloseReport.AlreadyFlat) != 1 || plan.CloseReport.AlreadyFlat[0] != "ETH" {
+		t.Errorf("AlreadyFlat = %v, want [ETH]", plan.CloseReport.AlreadyFlat)
+	}
+	if !strings.Contains(strings.Join(plan.LogLines, "\n"), "verified flat after close error: [ETH]") {
+		t.Errorf("expected verification log line, got %v", plan.LogLines)
+	}
+	if strings.Contains(plan.DiscordMessage, "LATCHED, RETRYING") {
+		t.Errorf("expected success-shaped message after verified-flat close error, got: %s", plan.DiscordMessage)
+	}
+}
+
+func TestPlanKillSwitchClose_CloseErrorVerificationFetchFailure(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-ema-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: 0.5}}
+	closer, _ := stubHLLiveCloser(map[string]error{"ETH": fmt.Errorf("post-submit disconnect")})
+	fetcher, fetchCalls := stubHLStateFetcher(nil, fmt.Errorf("hl 503"))
+
+	plan := planKillSwitchClose(defaultHLInputs("0xaddr", true, positions, hlLive,
+		"portfolio drawdown 25.0% exceeds limit 20.0%",
+		time.Second, closer, fetcher))
+
+	if *fetchCalls != 1 {
+		t.Fatalf("fetcher should be called once to verify the close error, got %d", *fetchCalls)
+	}
+	if plan.OnChainConfirmedFlat {
+		t.Fatal("expected NOT ConfirmedFlat when the verification fetch also fails")
+	}
+	if got, ok := plan.CloseReport.Errors["ETH"]; !ok || got == nil {
+		t.Errorf("expected ETH error to remain in report, got %v", plan.CloseReport.Errors)
+	}
+	if !strings.Contains(strings.Join(plan.LogLines, "\n"), "unable to verify HL state after close error: hl 503") {
+		t.Errorf("expected verification fetch error log line, got %v", plan.LogLines)
 	}
 }
 
@@ -321,7 +387,7 @@ func TestPlanKillSwitchClose_DeterministicErrorOrder(t *testing.T) {
 	var prev string
 	for i := 0; i < 10; i++ {
 		closer, _ := stubHLLiveCloser(errs)
-		fetcher, _ := stubHLStateFetcher(nil, nil)
+		fetcher, _ := stubHLStateFetcher(positions, nil)
 		plan := planKillSwitchClose(defaultHLInputs("0xaddr", true, positions, hlLive,
 			"reason", time.Second, closer, fetcher))
 		if prev != "" && plan.DiscordMessage != prev {

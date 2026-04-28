@@ -216,8 +216,8 @@ func TestWalletKeyFor_Robinhood_OptionsNoKey(t *testing.T) {
 // of #357: two live OKX perps strategies on the same API key are now grouped
 // as a shared wallet because fetch_okx_balance.py provides real-balance
 // lookup via defaultSharedWalletBalance. Before #360, OKX was deliberately
-// excluded to avoid freezing the portfolio peak via max-of-members fallback
-// in computeTotalPortfolioValue.
+// excluded to avoid freezing the portfolio peak via fallback every cycle in
+// computeTotalPortfolioValue.
 func TestDetectSharedWallets_OKXIncludedAfterFetcher(t *testing.T) {
 	t.Setenv("OKX_API_KEY", "okx-key-abc")
 
@@ -382,12 +382,11 @@ func TestComputeTotalPortfolioValue_SharedWalletUsesRealBalance(t *testing.T) {
 	}
 }
 
-// TestComputeTotalPortfolioValue_FallbackUsesMaxNotSum verifies that when the
-// real-balance fetch fails for a shared wallet, the function falls back to the
-// MAX of member strategies' PVs — NOT the sum. Summing members would
-// re-introduce the exact #243 double-count bug during transient fetch failures
-// and could permanently inflate PortfolioRisk.PeakValue.
-func TestComputeTotalPortfolioValue_FallbackUsesMaxNotSum(t *testing.T) {
+// TestComputeTotalPortfolioValue_FallbackSumsMemberPVs verifies issue #452:
+// when the real-balance fetch fails for a shared wallet, fallback must sum the
+// member strategy PVs. The real-balance path above still prevents #243
+// double-counting; fallback has no fetched wallet value to de-duplicate.
+func TestComputeTotalPortfolioValue_FallbackSumsMemberPVs(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
 	strategies := []StrategyConfig{
@@ -402,22 +401,21 @@ func TestComputeTotalPortfolioValue_FallbackUsesMaxNotSum(t *testing.T) {
 	}
 
 	// Empty walletBalances (simulates fetch failure) — should fall back to
-	// MAX(4000, 6000) = 6000, NOT 4000 + 6000 = 10000 (which would be the
-	// #243 double-count bug in disguise).
+	// 4000 + 6000 = 10000, not max(4000, 6000) = 6000.
 	got, usedFallback := computeTotalPortfolioValue(strategies, state, nil, nil, nil)
-	want := 6000.0
+	want := 10000.0
 	if got != want {
-		t.Errorf("expected fallback total=%v (max of members); got %v — sum of members would re-introduce #243", want, got)
+		t.Errorf("expected fallback total=%v (sum of members); got %v", want, got)
 	}
 	if !usedFallback {
 		t.Errorf("expected usedFallback=true on fetch failure so caller can freeze peak")
 	}
 }
 
-// TestComputeTotalPortfolioValue_FallbackPreventsPeakInflation is a tabletop
-// verification of the peak-protection contract: two members with PVs that
-// summed would exceed PeakValue must NOT produce a total above the max member.
-func TestComputeTotalPortfolioValue_FallbackPreventsPeakInflation(t *testing.T) {
+// TestComputeTotalPortfolioValue_FallbackKeepsPeakFreezeSignal verifies that
+// the #452 sum fallback still tells main.go not to ratchet PeakValue upward
+// during a balance-fetch failure.
+func TestComputeTotalPortfolioValue_FallbackKeepsPeakFreezeSignal(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
 	strategies := []StrategyConfig{
@@ -433,12 +431,8 @@ func TestComputeTotalPortfolioValue_FallbackPreventsPeakInflation(t *testing.T) 
 	}
 
 	got, usedFallback := computeTotalPortfolioValue(strategies, state, nil, nil, nil)
-	// Must NOT be 7000 (sum) — that's the #243 bug. Should be 3500 (max).
-	if got == 7000 {
-		t.Errorf("fallback total=%v matches sum-of-members — #243 double-count bug returned!", got)
-	}
-	if got != 3500 {
-		t.Errorf("expected fallback total=3500 (max of members); got %v", got)
+	if got != 7000 {
+		t.Errorf("expected fallback total=7000 (sum of members); got %v", got)
 	}
 	if !usedFallback {
 		t.Errorf("usedFallback must be true so main.go can freeze peak")
