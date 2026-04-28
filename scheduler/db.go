@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1155,15 +1154,6 @@ func (sdb *StateDB) QueryTradingViewExportTrades(strategyIDs []string) ([]Trade,
 	if trades == nil {
 		trades = []Trade{}
 	}
-	sort.SliceStable(trades, func(i, j int) bool {
-		if !trades[i].Timestamp.Equal(trades[j].Timestamp) {
-			return trades[i].Timestamp.Before(trades[j].Timestamp)
-		}
-		if trades[i].StrategyID != trades[j].StrategyID {
-			return trades[i].StrategyID < trades[j].StrategyID
-		}
-		return trades[i].Symbol < trades[j].Symbol
-	})
 	return trades, nil
 }
 

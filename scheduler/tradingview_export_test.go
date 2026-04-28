@@ -75,6 +75,119 @@ func TestTradingViewSymbolOverridesAndUnsupported(t *testing.T) {
 	}
 }
 
+func TestTradingViewSymbolOverridePriorityAndAliases(t *testing.T) {
+	trade := Trade{StrategyID: "rh-aapl", Symbol: "AAPL"}
+	overrides := map[string]string{
+		"AAPL":         "NASDAQ:AAPL",
+		"rh:AAPL":      "NYSE:AAPL",
+		"rh-aapl:AAPL": "AMEX:AAPL",
+	}
+	symbol, err := tradingViewSymbol(StrategyConfig{ID: "rh-aapl", Platform: "robinhood", Type: "spot"}, trade, overrides)
+	if err != nil {
+		t.Fatalf("tradingViewSymbol: %v", err)
+	}
+	if symbol != "AMEX:AAPL" {
+		t.Fatalf("symbol = %q, want strategy-specific override AMEX:AAPL", symbol)
+	}
+
+	delete(overrides, "rh-aapl:AAPL")
+	symbol, err = tradingViewSymbol(StrategyConfig{ID: "rh-aapl", Platform: "robinhood", Type: "spot"}, trade, overrides)
+	if err != nil {
+		t.Fatalf("tradingViewSymbol alias: %v", err)
+	}
+	if symbol != "NYSE:AAPL" {
+		t.Fatalf("symbol = %q, want rh alias override NYSE:AAPL", symbol)
+	}
+}
+
+func TestTradingViewPerpsSymbol(t *testing.T) {
+	symbol, err := tradingViewSymbol(
+		StrategyConfig{ID: "okx-btc-perp", Platform: "okx", Type: "perps"},
+		Trade{StrategyID: "okx-btc-perp", Symbol: "BTC-USDT-SWAP", TradeType: "perps"},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("tradingViewSymbol perps: %v", err)
+	}
+	if symbol != "OKX:BTCUSDT.P" {
+		t.Fatalf("symbol = %q, want OKX:BTCUSDT.P", symbol)
+	}
+}
+
+func TestTradingViewOptionCloseSide(t *testing.T) {
+	ts := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	sc := StrategyConfig{ID: "opt", Platform: "deribit", Type: "options"}
+	overrides := map[string]string{
+		"BTC-call-50000-2026-05-01":      "DERIBIT:BTC-1MAY26-50000-C",
+		"BTC-call-sell-50000-2026-05-01": "DERIBIT:BTC-1MAY26-50000-C",
+	}
+
+	longClose, err := tradingViewCSVRow(sc, Trade{
+		Timestamp: ts, StrategyID: "opt", Symbol: "BTC-call-50000-2026-05-01", Side: "close",
+		Quantity: 1, Price: 100, TradeType: "options",
+	}, overrides)
+	if err != nil {
+		t.Fatalf("long option close row: %v", err)
+	}
+	if longClose[1] != "sell" {
+		t.Fatalf("long option close side = %q, want sell", longClose[1])
+	}
+
+	shortClose, err := tradingViewCSVRow(sc, Trade{
+		Timestamp: ts, StrategyID: "opt", Symbol: "BTC-call-sell-50000-2026-05-01", Side: "close",
+		Quantity: 1, Price: 100, TradeType: "options",
+	}, overrides)
+	if err != nil {
+		t.Fatalf("short option close row: %v", err)
+	}
+	if shortClose[1] != "buy" {
+		t.Fatalf("short option close side = %q, want buy", shortClose[1])
+	}
+}
+
+func TestTradingViewCloseSideUnsupportedWithoutDirection(t *testing.T) {
+	_, err := tradingViewCSVRow(
+		StrategyConfig{ID: "spot", Platform: "okx", Type: "spot"},
+		Trade{Timestamp: time.Now().UTC(), StrategyID: "spot", Symbol: "BTC/USDT", Side: "close", Quantity: 1, Price: 60000, TradeType: "spot"},
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "persisted position direction") {
+		t.Fatalf("expected close-side direction error, got %v", err)
+	}
+}
+
+func TestTradingViewCSVRowPreservesNegativeCommission(t *testing.T) {
+	row, err := tradingViewCSVRow(
+		StrategyConfig{ID: "okx-btc", Platform: "okx", Type: "spot"},
+		Trade{Timestamp: time.Now().UTC(), StrategyID: "okx-btc", Symbol: "BTC/USDT", Side: "buy", Quantity: 1, Price: 60000, ExchangeFee: -0.25},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("tradingViewCSVRow: %v", err)
+	}
+	if row[5] != "-0.25" {
+		t.Fatalf("commission = %q, want -0.25", row[5])
+	}
+}
+
+func TestTradingViewExportAllAllowsZeroTradeStrategies(t *testing.T) {
+	strategies := []StrategyConfig{
+		{ID: "okx-btc", Platform: "okx", Type: "spot"},
+		{ID: "bus-eth", Platform: "binanceus", Type: "spot"},
+	}
+	trades := []Trade{
+		{Timestamp: time.Now().UTC(), StrategyID: "okx-btc", Symbol: "BTC/USDT", Side: "buy", Quantity: 1, Price: 60000},
+	}
+
+	rows, err := buildTradingViewCSVRows(strategies, trades, nil, false)
+	if err != nil {
+		t.Fatalf("buildTradingViewCSVRows all: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows len = %d, want 1", len(rows))
+	}
+}
+
 func TestQueryTradingViewExportTradesChronological(t *testing.T) {
 	db := openTestDB(t)
 	t1 := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)

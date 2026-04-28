@@ -14,6 +14,8 @@ import (
 
 var tradingViewCSVHeader = []string{"Symbol", "Side", "Qty", "Status", "Fill Price", "Commission", "Closing Time"}
 
+var tradingViewCryptoQuotes = []string{"USDT", "USDC", "USD", "BTC", "ETH"}
+
 type repeatedStringFlag []string
 
 func (f *repeatedStringFlag) String() string {
@@ -85,7 +87,7 @@ func runTradingViewExport(args []string) int {
 		fmt.Fprintf(os.Stderr, "TradingView export failed: %v\n", err)
 		return 1
 	}
-	fmt.Printf("Exported %d TradingView transaction rows to %s\n", n, *outputPath)
+	fmt.Fprintf(os.Stderr, "Exported %d TradingView transaction rows to %s\n", n, *outputPath)
 	return 0
 }
 
@@ -108,6 +110,11 @@ func exportTradingViewCSVFile(stateDB *StateDB, cfg *Config, opts tradingViewExp
 	rows, err := buildTradingViewCSVRows(strategies, trades, cfg.TradingViewExport.SymbolOverrides, !opts.All)
 	if err != nil {
 		return 0, err
+	}
+	if _, err := os.Stat(opts.OutputPath); err == nil {
+		fmt.Fprintf(os.Stderr, "[WARN] overwriting existing TradingView CSV: %s\n", opts.OutputPath)
+	} else if !os.IsNotExist(err) {
+		return 0, fmt.Errorf("check output CSV: %w", err)
 	}
 	f, err := os.Create(opts.OutputPath)
 	if err != nil {
@@ -206,9 +213,9 @@ func buildTradingViewCSVRows(strategies []StrategyConfig, trades []Trade, overri
 }
 
 func tradingViewCSVRow(sc StrategyConfig, trade Trade, overrides map[string]string) ([]string, error) {
-	side := strings.ToLower(strings.TrimSpace(trade.Side))
-	if side != "buy" && side != "sell" {
-		return nil, fmt.Errorf("strategy %s trade at %s has unsupported side %q", trade.StrategyID, formatTime(trade.Timestamp), trade.Side)
+	side, err := tradingViewSide(sc, trade)
+	if err != nil {
+		return nil, err
 	}
 	if trade.Quantity <= 0 {
 		return nil, fmt.Errorf("strategy %s trade at %s has non-positive quantity %g", trade.StrategyID, formatTime(trade.Timestamp), trade.Quantity)
@@ -221,9 +228,6 @@ func tradingViewCSVRow(sc StrategyConfig, trade Trade, overrides map[string]stri
 		return nil, err
 	}
 	commission := trade.ExchangeFee
-	if commission < 0 {
-		commission = -commission
-	}
 	return []string{
 		tvSymbol,
 		side,
@@ -233,6 +237,38 @@ func tradingViewCSVRow(sc StrategyConfig, trade Trade, overrides map[string]stri
 		formatTradingViewFloat(commission),
 		formatTradingViewTime(trade.Timestamp),
 	}, nil
+}
+
+func tradingViewSide(sc StrategyConfig, trade Trade) (string, error) {
+	side := strings.ToLower(strings.TrimSpace(trade.Side))
+	switch side {
+	case "buy", "sell":
+		return side, nil
+	case "close":
+		if strings.EqualFold(trade.TradeType, "options") || strings.EqualFold(sc.Type, "options") {
+			return tradingViewOptionCloseSide(trade)
+		}
+		return "", fmt.Errorf("strategy %s trade at %s has close side without persisted position direction; cannot map to TradingView buy/sell", trade.StrategyID, formatTime(trade.Timestamp))
+	default:
+		return "", fmt.Errorf("strategy %s trade at %s has unsupported side %q", trade.StrategyID, formatTime(trade.Timestamp), trade.Side)
+	}
+}
+
+func tradingViewOptionCloseSide(trade Trade) (string, error) {
+	parts := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(trade.Symbol)), func(r rune) bool {
+		return r == '-' || r == '_' || r == ' '
+	})
+	for _, part := range parts {
+		switch part {
+		case "sell", "short", "sold":
+			return "buy", nil
+		case "buy", "long", "bought":
+			return "sell", nil
+		}
+	}
+	// Legacy long-option position IDs do not include action; closing a bought
+	// option is a sell transaction in TradingView.
+	return "sell", nil
 }
 
 func writeTradingViewCSV(w io.Writer, rows [][]string) error {
@@ -324,6 +360,18 @@ func platformOverrideAliases(platform string) []string {
 		return []string{"hyperliquid", "hl"}
 	case "binanceus":
 		return []string{"binanceus", "bus"}
+	case "robinhood":
+		return []string{"robinhood", "rh"}
+	case "topstep":
+		return []string{"topstep", "ts"}
+	case "deribit":
+		return []string{"deribit"}
+	case "ibkr":
+		return []string{"ibkr"}
+	case "okx":
+		return []string{"okx"}
+	case "luno":
+		return []string{"luno"}
 	default:
 		if p == "" {
 			return nil
@@ -339,7 +387,7 @@ func normalizeTradingViewTicker(symbol string) string {
 }
 
 func isLikelyCryptoPair(ticker string) bool {
-	for _, quote := range []string{"USDT", "USD", "USDC", "BTC", "ETH"} {
+	for _, quote := range tradingViewCryptoQuotes {
 		if strings.HasSuffix(ticker, quote) && len(ticker) > len(quote) {
 			return true
 		}
@@ -351,6 +399,7 @@ func splitCryptoPair(symbol string) (string, string, bool) {
 	parts := strings.FieldsFunc(strings.ToUpper(strings.TrimSpace(symbol)), func(r rune) bool {
 		return r == '/' || r == '-' || r == '_' || r == ' '
 	})
+	// Filter instrument suffixes so BTC-USDT-SWAP becomes BTC/USDT.
 	filtered := parts[:0]
 	for _, part := range parts {
 		if part != "" && part != "SWAP" && part != "PERP" && part != "PERPS" {
@@ -361,7 +410,7 @@ func splitCryptoPair(symbol string) (string, string, bool) {
 		return filtered[0], filtered[1], true
 	}
 	ticker := normalizeTradingViewTicker(symbol)
-	for _, quote := range []string{"USDT", "USDC", "USD"} {
+	for _, quote := range tradingViewCryptoQuotes {
 		if strings.HasSuffix(ticker, quote) && len(ticker) > len(quote) {
 			return strings.TrimSuffix(ticker, quote), quote, true
 		}
