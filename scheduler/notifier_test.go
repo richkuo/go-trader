@@ -509,3 +509,81 @@ func TestMultiNotifier_SendMessage_UnknownChannel(t *testing.T) {
 		t.Errorf("expected 0 messages for unknown channel, got %d", len(mock.messages))
 	}
 }
+
+func TestMultiNotifier_ReloadConfigConcurrentRoutingReads(t *testing.T) {
+	mock := &mockNotifier{}
+	cfgA := &Config{
+		Discord: DiscordConfig{
+			Channels:           map[string]string{"spot": "spot-a", "hyperliquid": "hl-a", "hyperliquid-live": "hl-live-a"},
+			DMChannels:         map[string]string{"hyperliquid": "dm-a"},
+			LeaderboardChannel: "lb-a",
+		},
+	}
+	cfgB := &Config{
+		Discord: DiscordConfig{
+			Channels:           map[string]string{"spot": "spot-b", "hyperliquid": "hl-b", "hyperliquid-live": "hl-live-b"},
+			DMChannels:         map[string]string{"hyperliquid": "dm-b"},
+			LeaderboardChannel: "lb-b",
+		},
+	}
+	mn := NewMultiNotifier(notifierBackend{
+		notifier:           mock,
+		channels:           cfgA.Discord.Channels,
+		dmChannels:         cfgA.Discord.DMChannels,
+		leaderboardChannel: cfgA.Discord.LeaderboardChannel,
+		ownerID:            "owner-1",
+	})
+
+	sc := StrategyConfig{
+		ID:       "hl-btc",
+		Platform: "hyperliquid",
+		Type:     "perps",
+		Args:     []string{"--live"},
+	}
+	stratState := &StrategyState{
+		TradeHistory: []Trade{{
+			Timestamp:  time.Now(),
+			StrategyID: "hl-btc",
+			Symbol:     "BTC",
+			Side:       "buy",
+			Quantity:   1,
+			Price:      100,
+			Value:      100,
+			TradeType:  "perps",
+		}},
+	}
+
+	var stateMu sync.RWMutex
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 250; i++ {
+			if i%2 == 0 {
+				mn.ReloadConfig(cfgA)
+			} else {
+				mn.ReloadConfig(cfgB)
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 250; i++ {
+			_ = mn.SendMessage("hl-a", "direct")
+			mn.SendDM("owner-1", "dm")
+			mn.SendToChannel("hyperliquid", "perps", "platform")
+			mn.PostLeaderboardBroadcast("leaderboard")
+			mn.SendToAllChannels("broadcast")
+			mn.SendOwnerDM("owner")
+			_ = mn.HasChannel("hyperliquid", "perps")
+			_ = mn.resolveChannelKey("hyperliquid", "perps")
+			_ = mn.AllChannelKeys()
+			sendTradeAlerts(sc, stratState, 1, &stateMu, mn)
+		}
+	}()
+	close(start)
+	wg.Wait()
+}

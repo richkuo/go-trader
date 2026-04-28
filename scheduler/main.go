@@ -310,6 +310,20 @@ func main() {
 		os.Exit(0)
 	}
 
+	reloadCh := make(chan struct{}, 1)
+	hupCh := make(chan os.Signal, 1)
+	signal.Notify(hupCh, syscall.SIGHUP)
+	defer signal.Stop(hupCh)
+	go func() {
+		for range hupCh {
+			select {
+			case reloadCh <- struct{}{}:
+			default:
+				fmt.Println("[reload] SIGHUP received while reload is pending; coalescing")
+			}
+		}
+	}()
+
 	// Config migration: DM owner about new fields if config is behind current version.
 	if cfg.ConfigVersion < CurrentConfigVersion {
 		go runConfigMigrationDM(cfg, notifier, *configPath)
@@ -336,22 +350,49 @@ func main() {
 	// the existing `mu` lock guards `state`, not `lastRun`.
 	lastRun := make(map[string]time.Time)
 
-	// Determine tick interval: GCD of all strategy intervals, min 60s
-	tickSeconds := cfg.IntervalSeconds
-	for _, sc := range cfg.Strategies {
-		si := sc.IntervalSeconds
-		if si <= 0 {
-			si = cfg.IntervalSeconds
-		}
-		if si < tickSeconds {
-			tickSeconds = si
-		}
-	}
-	if tickSeconds < 60 {
-		tickSeconds = 60
-	}
+	// Determine tick interval from configured strategy intervals, min 60s.
+	tickSeconds := schedulerTickSeconds(cfg)
 	fmt.Printf("Tick interval: %ds (strategies have individual intervals)\n", tickSeconds)
 	drawdownWarnThresholdPct := configuredDrawdownWarnThresholdPct(cfg)
+
+	reloadConfig := func() {
+		fmt.Printf("[reload] SIGHUP received; reloading config from %s\n", *configPath)
+		nextCfg, err := LoadConfig(*configPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[reload] ERROR: reload failed; keeping previous config: %v\n", err)
+			return
+		}
+		mu.Lock()
+		changes, err := applyHotReloadConfig(cfg, nextCfg, state, notifier, server)
+		if err != nil {
+			mu.Unlock()
+			fmt.Fprintf(os.Stderr, "[reload] ERROR: reload rejected; keeping previous config: %v\n", err)
+			return
+		}
+		tickSeconds = schedulerTickSeconds(cfg)
+		drawdownWarnThresholdPct = configuredDrawdownWarnThresholdPct(cfg)
+		mu.Unlock()
+
+		if len(changes) == 0 {
+			fmt.Println("[reload] Config reload applied: no hot-reloadable changes")
+		} else {
+			fmt.Printf("[reload] Config reload applied (%d changes):\n", len(changes))
+			for _, change := range changes {
+				fmt.Printf("[reload]   %s\n", change)
+			}
+		}
+		fmt.Printf("[reload] Tick interval now %ds\n", tickSeconds)
+	}
+	processConfigReloads := func() {
+		for {
+			select {
+			case <-reloadCh:
+				reloadConfig()
+			default:
+				return
+			}
+		}
+	}
 
 	// Wall-clock tracker for cfg.AutoUpdate == "daily". Initialized to now so
 	// the first daily check fires after 24h (matching the previous
@@ -367,6 +408,8 @@ func main() {
 
 	// Main loop
 	for {
+		processConfigReloads()
+
 		cycleStart := time.Now()
 		mu.Lock()
 		state.CycleCount++
@@ -410,6 +453,11 @@ func main() {
 			timer := time.NewTimer(delay)
 			select {
 			case <-timer.C:
+				continue
+			case <-reloadCh:
+				timer.Stop()
+				reloadConfig()
+				processConfigReloads()
 				continue
 			case <-stopCh:
 				timer.Stop()
@@ -1478,6 +1526,10 @@ func main() {
 		select {
 		case <-timer.C:
 			// Next tick
+		case <-reloadCh:
+			timer.Stop()
+			reloadConfig()
+			processConfigReloads()
 		case <-stopCh:
 			timer.Stop()
 			fmt.Println("Shutdown complete.")
@@ -1773,53 +1825,26 @@ func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, m
 	copy(newTrades, stratState.TradeHistory[start:n])
 	mu.RUnlock()
 
-	for _, b := range notifier.backends {
-		dmKey := sc.Platform
-		if !isLive {
-			dmKey = sc.Platform + "-paper"
-		}
-		dmDest := ""
-		if b.dmChannels != nil {
-			dmDest = b.dmChannels[dmKey]
-		}
-
-		// Channel routing: presence of a channel ID means enabled, absence means disabled.
-		// Paper trades use "<platform>-paper" key with fallback to base platform key.
-		// Live trades use the base platform key.
-		ch := resolveTradeChannel(b.channels, sc.Platform, sc.Type, isLive)
-
-		// Also post live trades to a dedicated "<platform>-live" channel if configured.
-		var liveCh string
-		if isLive {
-			liveCh = resolveChannel(b.channels, sc.Platform+"-live", "")
-			if liveCh == ch {
-				liveCh = "" // avoid double-posting to the same channel
-			}
-		}
-
-		if dmDest == "" && ch == "" && liveCh == "" {
-			continue
-		}
-
+	for _, route := range notifier.tradeAlertRoutes(sc.Platform, sc.Type, isLive) {
 		for _, t := range newTrades {
 			var msg string
-			if b.plainText {
+			if route.plainText {
 				msg = FormatTradeDMPlain(sc, t, mode)
 			} else {
 				msg = FormatTradeDM(sc, t, mode)
 			}
-			if dmDest != "" {
-				if err := sendTradeDestination(b.notifier, dmDest, msg); err != nil {
+			if route.dmDest != "" {
+				if err := sendTradeDestination(route.notifier, route.dmDest, msg); err != nil {
 					fmt.Printf("[notify] DM trade alert failed: %v\n", err)
 				}
 			}
-			if ch != "" {
-				if err := b.notifier.SendMessage(ch, msg); err != nil {
+			if route.channel != "" {
+				if err := route.notifier.SendMessage(route.channel, msg); err != nil {
 					fmt.Printf("[notify] Channel trade alert failed: %v\n", err)
 				}
 			}
-			if liveCh != "" {
-				if err := b.notifier.SendMessage(liveCh, msg); err != nil {
+			if route.liveChan != "" {
+				if err := route.notifier.SendMessage(route.liveChan, msg); err != nil {
 					fmt.Printf("[notify] Live channel trade alert failed: %v\n", err)
 				}
 			}
