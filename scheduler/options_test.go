@@ -208,6 +208,73 @@ func TestExecuteOptionsSignalSell(t *testing.T) {
 	}
 }
 
+func TestExecuteOptionsSignalCloseRecordsDirectionalSide(t *testing.T) {
+	cases := []struct {
+		name       string
+		action     string
+		currentUSD float64
+		wantSide   string
+	}{
+		{name: "long option closes with sell", action: "buy", currentUSD: 2500, wantSide: "sell"},
+		{name: "short option closes with buy", action: "sell", currentUSD: -1500, wantSide: "buy"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pos := &OptionPosition{
+				ID:              "BTC-call-" + tc.action + "-55000-2026-05-01",
+				Underlying:      "BTC",
+				OptionType:      "call",
+				Strike:          55000,
+				Expiry:          "2026-05-01",
+				Action:          tc.action,
+				Quantity:        1,
+				EntryPremiumUSD: 2000,
+				CurrentValueUSD: tc.currentUSD,
+			}
+			s := &StrategyState{
+				ID:              "test",
+				Cash:            10000,
+				Platform:        "deribit",
+				Positions:       map[string]*Position{},
+				OptionPositions: map[string]*OptionPosition{pos.ID: pos},
+				TradeHistory:    []Trade{},
+			}
+			lm, _ := NewLogManager("")
+			logger, _ := lm.GetStrategyLogger("test")
+			defer logger.Close()
+
+			result := &OptionsResult{
+				Signal:     -1,
+				Underlying: "BTC",
+				SpotPrice:  60000,
+				Actions: []OptionsAction{{
+					Action:     "close",
+					OptionType: "call",
+					Strike:     55000,
+					PremiumUSD: 1500,
+				}},
+			}
+			trades, err := ExecuteOptionsSignal(s, result, logger)
+			if err != nil {
+				t.Fatalf("ExecuteOptionsSignal: %v", err)
+			}
+			if trades != 1 {
+				t.Fatalf("trades = %d, want 1", trades)
+			}
+			if len(s.TradeHistory) != 1 {
+				t.Fatalf("TradeHistory len = %d, want 1", len(s.TradeHistory))
+			}
+			if got := s.TradeHistory[0].Side; got != tc.wantSide {
+				t.Errorf("Trade.Side = %q, want %q", got, tc.wantSide)
+			}
+			if !s.TradeHistory[0].IsClose {
+				t.Error("Trade.IsClose = false, want true")
+			}
+		})
+	}
+}
+
 func TestCheckThetaHarvestDisabled(t *testing.T) {
 	s := &StrategyState{
 		OptionPositions: map[string]*OptionPosition{
@@ -273,6 +340,12 @@ func TestCheckThetaHarvestProfitTarget(t *testing.T) {
 	// Position should be removed
 	if _, ok := s.OptionPositions["pos1"]; ok {
 		t.Error("position should be removed after harvest")
+	}
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory len = %d, want 1", len(s.TradeHistory))
+	}
+	if got := s.TradeHistory[0].Side; got != "buy" {
+		t.Errorf("Trade.Side = %q, want buy for theta close of sold option", got)
 	}
 }
 

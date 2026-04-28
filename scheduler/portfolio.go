@@ -219,6 +219,20 @@ type Trade struct {
 	persisted bool
 }
 
+func closeTradeSide(positionSide string) string {
+	if positionSide == "short" {
+		return "buy"
+	}
+	return "sell"
+}
+
+func optionCloseTradeSide(action string) string {
+	if action == "sell" {
+		return "buy"
+	}
+	return "sell"
+}
+
 func executionFee(modeledFee, fillFee float64, useFillFee bool) float64 {
 	if useFillFee && fillFee > 0 {
 		return fillFee
