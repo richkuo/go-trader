@@ -35,6 +35,62 @@ def _make_dataframe(candles):
     return df
 
 
+def _float_or_none(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+_FEE_CONTAINER_KEYS = (
+    "fee",
+    "fees",
+    "commission",
+    "commission_paid",
+    "total_fee",
+    "totalFee",
+    "estimated_fee",
+    "regulatory_fee",
+)
+
+_FEE_VALUE_KEYS = ("cost", "amount", "total", "value")
+
+
+def _extract_fee_value(value, fee_context=False):
+    if isinstance(value, dict):
+        keys = _FEE_VALUE_KEYS if fee_context else _FEE_CONTAINER_KEYS
+        for key in keys:
+            fee = _extract_fee_value(value.get(key), fee_context=True)
+            if fee is not None:
+                return fee
+        return None
+    if isinstance(value, list):
+        total = 0.0
+        found = False
+        for item in value:
+            fee = _extract_fee_value(item, fee_context=fee_context)
+            if fee is not None:
+                total += fee
+                found = True
+        return total if found else None
+    if fee_context:
+        return _float_or_none(value)
+    return None
+
+
+def _extract_fee(response):
+    """Best-effort Robinhood order fee extraction; absent fees fall back in Go."""
+    if not isinstance(response, dict):
+        return None
+    for key in _FEE_CONTAINER_KEYS:
+        fee = _extract_fee_value(response.get(key), fee_context=True)
+        if fee is not None:
+            return fee
+    return _extract_fee_value(response.get("executions"))
+
+
 def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False, strategy_params=None):
     """Run strategy signal check using yfinance OHLCV data."""
     try:
@@ -178,6 +234,9 @@ def run_execute(symbol, side, amount_usd, quantity, mode):
                 filled_qty = float(result.get("cumulative_quantity", 0) or 0)
                 if avg_px > 0:
                     fill = {"avg_px": avg_px, "quantity": filled_qty}
+                    fee = _extract_fee(result)
+                    if fee is not None:
+                        fill["fee"] = fee
         except Exception:
             pass
 

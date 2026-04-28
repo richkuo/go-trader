@@ -540,6 +540,63 @@ func TestExecuteSpotSignalLiveFill(t *testing.T) {
 	}
 }
 
+func TestExecutionFeeSelection(t *testing.T) {
+	cases := []struct {
+		name       string
+		modeledFee float64
+		fillFee    float64
+		useFillFee bool
+		want       float64
+	}{
+		{"zero_fill_fee_falls_back", 0.35, 0, true, 0.35},
+		{"non_zero_fill_fee_uses_real", 0.35, 0.12, true, 0.12},
+		{"flip_open_leg_uses_modeled", 0.35, 0.12, false, 0.35},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := executionFee(tc.modeledFee, tc.fillFee, tc.useFillFee)
+			if got != tc.want {
+				t.Errorf("executionFee(%g, %g, %v) = %g, want %g",
+					tc.modeledFee, tc.fillFee, tc.useFillFee, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExecuteSpotSignalLiveFillUsesExchangeFee(t *testing.T) {
+	s := &StrategyState{
+		ID:              "rh-momentum-btc",
+		Cash:            1000,
+		Platform:        "robinhood",
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	fillQty := 0.015
+	fillPrice := 50000.0
+	fillFee := 0.17
+	trades, err := ExecuteSpotSignalWithFillFee(s, 1, "BTC", fillPrice, fillQty, fillFee, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trades != 1 {
+		t.Errorf("trades = %d, want 1", trades)
+	}
+	wantCash := 1000.0 - fillQty*fillPrice - fillFee
+	if math.Abs(s.Cash-wantCash) > 1e-9 {
+		t.Errorf("cash = %.9f, want %.9f (live fill fee)", s.Cash, wantCash)
+	}
+	if len(s.TradeHistory) != 1 || s.TradeHistory[0].ExchangeFee != fillFee {
+		t.Fatalf("ExchangeFee = %v, want %v", s.TradeHistory, fillFee)
+	}
+}
+
 // #254: ExecutePerpsSignal — margin-based accounting. Paper buy should NOT
 // deplete cash by the full notional (unlike spot). Only the fee leaves cash,
 // and the opened position is stamped with Multiplier=1 so PortfolioValue
@@ -592,6 +649,38 @@ func TestExecutePerpsSignalPaperBuyNoNotionalDeduction(t *testing.T) {
 	}
 	if s.Cash >= 1000 {
 		t.Errorf("cash = %v, should have some fee deducted", s.Cash)
+	}
+}
+
+func TestExecutePerpsSignalLiveOpenUsesExchangeFee(t *testing.T) {
+	s := &StrategyState{
+		ID:              "hl-test-eth",
+		Cash:            1000,
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	fillFee := 0.42
+	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.5, "oid-1", fillFee, false, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	wantCash := 1000.0 - fillFee
+	if math.Abs(s.Cash-wantCash) > 1e-9 {
+		t.Errorf("cash = %.9f, want %.9f (real fill fee)", s.Cash, wantCash)
+	}
+	if s.TradeHistory[0].ExchangeFee != fillFee {
+		t.Errorf("ExchangeFee = %g, want %g", s.TradeHistory[0].ExchangeFee, fillFee)
 	}
 }
 
@@ -901,6 +990,39 @@ func TestExecuteFuturesSignalLiveFill(t *testing.T) {
 	}
 }
 
+func TestExecuteFuturesSignalLiveFillUsesExchangeFee(t *testing.T) {
+	s := &StrategyState{
+		ID:              "ts-momentum-es",
+		Cash:            10000,
+		Platform:        "topstep",
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 500}
+	fillFee := 4.12
+	trades, err := ExecuteFuturesSignalWithFillFee(s, 1, "ES", 5000, spec, 2.5, 5, 2, fillFee, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	wantCash := 10000.0 - fillFee
+	if math.Abs(s.Cash-wantCash) > 1e-9 {
+		t.Errorf("cash = %.9f, want %.9f (real fill fee)", s.Cash, wantCash)
+	}
+	if s.TradeHistory[0].ExchangeFee != fillFee {
+		t.Errorf("ExchangeFee = %g, want %g", s.TradeHistory[0].ExchangeFee, fillFee)
+	}
+}
+
 // #328 — AllowShorts=true lets signal=-1 from flat open a short perp position.
 // Without AllowShorts the same call returns 0 trades (legacy close-long-only).
 func TestExecutePerpsSignalOpenShortFromFlat(t *testing.T) {
@@ -995,10 +1117,60 @@ func TestExecutePerpsSignalLegacyFlatNoShort(t *testing.T) {
 	}
 }
 
+func TestExecutePerpsSignalLegacyCloseShortThenOpenLongUsesOpenFillFee(t *testing.T) {
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	s := &StrategyState{
+		ID:       "hl-legacy-eth",
+		Cash:     1000,
+		Platform: "hyperliquid",
+		Type:     "perps",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2100, Side: "short", Multiplier: 1, Leverage: 1, OwnerStrategyID: "hl-legacy-eth"},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{},
+	}
+
+	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.3, "legacy-open-oid", 0.42, false, logger)
+	if err != nil {
+		t.Fatalf("ExecutePerpsSignal: %v", err)
+	}
+	if trades != 2 {
+		t.Fatalf("trades = %d, want 2 (legacy close short + open long)", trades)
+	}
+	if len(s.TradeHistory) != 2 {
+		t.Fatalf("TradeHistory len = %d, want 2", len(s.TradeHistory))
+	}
+
+	closeLeg, openLeg := s.TradeHistory[0], s.TradeHistory[1]
+	if closeLeg.ExchangeOrderID != "" || closeLeg.ExchangeFee != 0 {
+		t.Errorf("legacy close leg exchange metadata = oid %q fee %g, want empty modeled-fee leg",
+			closeLeg.ExchangeOrderID, closeLeg.ExchangeFee)
+	}
+	if openLeg.ExchangeOrderID != "legacy-open-oid" || openLeg.ExchangeFee != 0.42 {
+		t.Errorf("legacy open leg exchange metadata = oid %q fee %g, want oid legacy-open-oid fee 0.42",
+			openLeg.ExchangeOrderID, openLeg.ExchangeFee)
+	}
+	pos := s.Positions["ETH"]
+	if pos == nil || pos.Side != "long" || pos.Quantity != 0.3 {
+		t.Fatalf("position after legacy close/open = %+v, want long qty 0.3", pos)
+	}
+
+	modeledCloseFee := CalculatePlatformSpotFee("hyperliquid", 0.5*2000)
+	wantCash := 1000.0 + (0.5*(2100-2000) - modeledCloseFee) - 0.42
+	if math.Abs(s.Cash-wantCash) > 1e-9 {
+		t.Errorf("cash = %.9f, want %.9f (close modeled fee + open real fill fee)", s.Cash, wantCash)
+	}
+}
+
 // #328 — long + signal=-1 + AllowShorts closes the long AND opens a short.
 // Mirrors the existing signal=1+short close-and-flip branch. Produces exactly
-// two Trade rows; only the opening trade carries live exchange metadata so a
-// single fill's fee isn't double-counted (#289).
+// two Trade rows; the close leg carries the real fill fee while the open leg
+// uses modeled fee cash math so a single fill's fee isn't double-counted (#451).
 func TestExecutePerpsSignalFlipLongToShort(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
@@ -1038,12 +1210,19 @@ func TestExecutePerpsSignalFlipLongToShort(t *testing.T) {
 		t.Fatalf("TradeHistory len = %d, want 2", len(s.TradeHistory))
 	}
 	closeLeg, openLeg := s.TradeHistory[0], s.TradeHistory[1]
-	if closeLeg.ExchangeOrderID != "" || closeLeg.ExchangeFee != 0 {
-		t.Errorf("close leg carries exchange metadata (oid=%q fee=%g); must stay empty",
+	if closeLeg.ExchangeOrderID != "live-flip-oid" || closeLeg.ExchangeFee != 0.5 {
+		t.Errorf("close leg exchange metadata = oid %q fee %g, want oid live-flip-oid fee 0.5",
 			closeLeg.ExchangeOrderID, closeLeg.ExchangeFee)
 	}
-	if openLeg.ExchangeOrderID != "live-flip-oid" || openLeg.ExchangeFee != 0.5 {
-		t.Errorf("open leg missing exchange metadata: oid=%q fee=%g", openLeg.ExchangeOrderID, openLeg.ExchangeFee)
+	if openLeg.ExchangeOrderID != "" || openLeg.ExchangeFee != 0 {
+		t.Errorf("open leg exchange metadata = oid %q fee %g, want empty modeled-fee leg",
+			openLeg.ExchangeOrderID, openLeg.ExchangeFee)
+	}
+	// Close PnL: +$50 - $0.50 real fill fee. Open notional: 0.5 * $2000
+	// with Hyperliquid modeled taker fee 0.035% = $0.35.
+	wantCash := 1000.0 + 49.5 - 0.35
+	if math.Abs(s.Cash-wantCash) > 1e-9 {
+		t.Errorf("cash = %.9f, want %.9f (flip close real fee + open modeled fee)", s.Cash, wantCash)
 	}
 }
 

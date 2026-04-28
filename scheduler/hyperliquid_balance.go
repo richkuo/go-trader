@@ -527,7 +527,9 @@ type HyperliquidLiveCloseReport struct {
 	// pre-filters szi≠0, so this branch should not fire in production) AND the
 	// adapter-side already_flat envelope flag, which IS production-reachable
 	// when the eventual-consistency window between the Go-side fetch and the
-	// SDK submit lets a position close out from under us (#350).
+	// SDK submit lets a position close out from under us (#350), or when a
+	// post-close verification fetch proves a coin is flat after the close
+	// subprocess returned an error (#452).
 	AlreadyFlat []string
 	// Errors is non-nil so coin-keyed writes don't panic; len() works on nil maps too.
 	Errors map[string]error

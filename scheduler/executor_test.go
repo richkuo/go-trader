@@ -193,7 +193,7 @@ func TestTopStepExecuteResultJSON(t *testing.T) {
 			"action": "buy",
 			"symbol": "ES",
 			"contracts": 2,
-			"fill": {"avg_px": 5200.25, "total_contracts": 2}
+			"fill": {"avg_px": 5200.25, "total_contracts": 2, "fee": 4.12}
 		},
 		"platform": "topstep"
 	}`
@@ -207,6 +207,9 @@ func TestTopStepExecuteResultJSON(t *testing.T) {
 	}
 	if result.Execution.Fill.TotalContracts != 2 {
 		t.Errorf("TotalContracts = %d, want 2", result.Execution.Fill.TotalContracts)
+	}
+	if result.Execution.Fill.Fee != 4.12 {
+		t.Errorf("Fee = %g, want 4.12", result.Execution.Fill.Fee)
 	}
 }
 
@@ -235,7 +238,7 @@ func TestRobinhoodExecuteResultJSON(t *testing.T) {
 			"action": "buy",
 			"symbol": "BTC",
 			"amount_usd": 500,
-			"fill": {"avg_px": 60000.5, "quantity": 0.00833}
+			"fill": {"avg_px": 60000.5, "quantity": 0.00833, "fee": 0.07}
 		},
 		"platform": "robinhood"
 	}`
@@ -246,6 +249,9 @@ func TestRobinhoodExecuteResultJSON(t *testing.T) {
 	}
 	if result.Execution.AmountUSD != 500 {
 		t.Errorf("AmountUSD = %g, want 500", result.Execution.AmountUSD)
+	}
+	if result.Execution.Fill.Fee != 0.07 {
+		t.Errorf("Fee = %g, want 0.07", result.Execution.Fill.Fee)
 	}
 }
 
@@ -277,7 +283,7 @@ func TestOKXExecuteResultJSON(t *testing.T) {
 			"action": "sell",
 			"symbol": "BTC",
 			"size": 0.05,
-			"fill": {"avg_px": 55000, "total_sz": 0.05}
+			"fill": {"avg_px": 55000, "total_sz": 0.05, "fee": 1.25}
 		},
 		"platform": "okx"
 	}`
@@ -288,6 +294,9 @@ func TestOKXExecuteResultJSON(t *testing.T) {
 	}
 	if result.Execution.Size != 0.05 {
 		t.Errorf("Size = %g, want 0.05", result.Execution.Size)
+	}
+	if result.Execution.Fill.Fee != 1.25 {
+		t.Errorf("Fee = %g, want 1.25", result.Execution.Fill.Fee)
 	}
 }
 

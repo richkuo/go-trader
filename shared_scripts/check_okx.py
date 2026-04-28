@@ -44,6 +44,25 @@ def _make_dataframe(candles):
     return df
 
 
+def _float_or_none(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_fee(response):
+    """Extract ccxt unified order fee.cost when present."""
+    if not isinstance(response, dict):
+        return None
+    fee_info = response.get("fee")
+    if isinstance(fee_info, dict):
+        return _float_or_none(fee_info.get("cost"))
+    return _float_or_none(fee_info)
+
+
 def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False, inst_type="swap", strategy_params_override=None):
     """Run strategy signal check using OKX OHLCV data."""
     try:
@@ -209,6 +228,9 @@ def run_execute(symbol, side, size, mode, inst_type="swap"):
                 "avg_px": float(result.get("average", 0) or 0),
                 "total_sz": float(result.get("filled", 0) or 0),
             }
+            fee = _extract_fee(result)
+            if fee is not None:
+                fill["fee"] = fee
         except Exception:
             pass
 

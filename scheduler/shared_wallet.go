@@ -102,8 +102,8 @@ var platformsWithSharedWalletBalanceFetcher = map[string]bool{
 // return a live balance for the given platform. Platforms recognized by
 // walletKeyFor but without a fetcher are EXCLUDED from detectSharedWallets so
 // multi-strategy setups on those platforms don't cause computeTotalPortfolioValue
-// to freeze the portfolio peak on every cycle via the max-of-members fallback
-// (#357 phase 1a preserves HL-only portfolio-value behavior).
+// to enter fallback and freeze the portfolio peak on every cycle (#357 phase 1a
+// preserves HL-only portfolio-value behavior).
 //
 // As phase 2-4 land real balance fetchers for OKX / TopStep / Robinhood, add
 // their platform strings to platformsWithSharedWalletBalanceFetcher to enable
@@ -119,8 +119,8 @@ func hasSharedWalletBalanceFetcher(platform string) bool {
 //
 // Wallets on platforms without a registered balance fetcher (see
 // hasSharedWalletBalanceFetcher) are also excluded: without a real-balance
-// fetch, computeTotalPortfolioValue would fall back to max(member PV) every
-// cycle and freeze the peak (#357 phase 1a preserves HL-only behavior).
+// fetch, computeTotalPortfolioValue would use fallback every cycle and freeze
+// the peak (#357 phase 1a preserves HL-only behavior).
 // As phase 2-4 land balance fetchers for OKX / TS / RH, those platforms
 // become eligible for double-count protection automatically.
 func detectSharedWallets(strategies []StrategyConfig) map[SharedWalletKey][]string {
@@ -192,13 +192,12 @@ func fetchSharedWalletBalances(
 // balance per wallet.
 //
 // Fallback: when a shared-wallet balance is missing from walletBalances (e.g.
-// transient API failure), the function uses the MAX of member strategies'
-// PortfolioValue — NOT the sum. Summing members would re-introduce the exact
-// #243 double-count bug and can permanently inflate PortfolioRisk.PeakValue
-// (peak is sticky). Max is a lower-bound approximation that never exceeds a
-// single strategy's slice of the wallet. The returned usedFallback flag tells
-// the caller to skip peak ratcheting for that cycle so a network blip cannot
-// move the high-water mark.
+// transient API failure), the function sums member strategies' PortfolioValue.
+// The real-balance path still contributes the wallet once (#243); fallback has
+// no real wallet balance to de-duplicate, and each strategy carries its own
+// virtual cash/position slice. The returned usedFallback flag tells the caller
+// to skip peak ratcheting for that cycle so a network blip cannot move the
+// high-water mark.
 //
 // This function only reads state and does NOT perform network I/O — call
 // fetchSharedWalletBalances (or fetch clearinghouseState directly) first
@@ -238,7 +237,7 @@ func computeTotalPortfolioValue(
 	}
 
 	// One real-balance contribution per shared wallet. On fetch failure,
-	// use MAX of member strategies' PVs (never the sum — that's #243).
+	// sum member strategy PVs; usedFallback still freezes peak ratcheting.
 	usedFallback := false
 	for key, ids := range sharedWallets {
 		if bal, ok := walletBalances[key]; ok {
@@ -246,19 +245,17 @@ func computeTotalPortfolioValue(
 			continue
 		}
 		usedFallback = true
-		maxPV := 0.0
+		sumPV := 0.0
 		for _, id := range ids {
 			s, ok := state.Strategies[id]
 			if !ok {
 				continue
 			}
-			if pv := PortfolioValue(s, prices); pv > maxPV {
-				maxPV = pv
-			}
+			sumPV += PortfolioValue(s, prices)
 		}
-		fmt.Printf("[WARN] shared-wallet %s/%s: balance fetch missing, falling back to max(member PV)=$%.2f (peak will NOT be updated this cycle)\n",
-			key.Platform, key.Account, maxPV)
-		total += maxPV
+		fmt.Printf("[WARN] shared-wallet %s/%s: balance fetch missing, falling back to sum(member PV)=$%.2f (peak will NOT be updated this cycle)\n",
+			key.Platform, key.Account, sumPV)
+		total += sumPV
 	}
 
 	return total, usedFallback

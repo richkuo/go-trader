@@ -343,11 +343,11 @@ func TestRecordTrade_PersistFailureTriggersWarnHook(t *testing.T) {
 
 // TestExecutePerpsSignal_FlipDoesNotDoubleCountFee pins the policy that when
 // a buy signal encounters an existing short — producing a close-short +
-// open-long pair in memory — only the opening trade carries the exchange
+// open-long pair in memory — only one synthetic leg carries the exchange
 // fee. A single live fill represents one exchange fee; stamping it on both
 // synthetic legs would 2× it in analytics. Summed ExchangeFee across the
 // two persisted rows must equal the one real fee, and the OID must appear
-// on exactly one row (the opener — the trade that reflects the real fill).
+// on exactly one row.
 func TestExecutePerpsSignal_FlipDoesNotDoubleCountFee(t *testing.T) {
 	db := openTestDB(t)
 	prev := tradeRecorder
@@ -381,9 +381,9 @@ func TestExecutePerpsSignal_FlipDoesNotDoubleCountFee(t *testing.T) {
 	logger := newTestLogger(t)
 	s := state.Strategies["hl-flip"]
 
-	// Live buy @ $2000 qty=0.3 → closes the full 0.5 short + opens new 0.3
-	// long = 2 in-memory trades, 1 real exchange fill worth $0.42.
-	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.3, "99999", 0.42, false, logger)
+	// Live flip buy @ $2000 qty=0.8 → closes the full 0.5 short + opens new
+	// 0.3 long = 2 in-memory trades, 1 real exchange fill worth $0.42.
+	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.8, "99999", 0.42, true, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignal: %v", err)
 	}
@@ -402,11 +402,15 @@ func TestExecutePerpsSignal_FlipDoesNotDoubleCountFee(t *testing.T) {
 
 	var totalFee float64
 	oidHits := 0
+	var closeFee float64
 	var openerFee float64
 	for _, tr := range ss.TradeHistory {
 		totalFee += tr.ExchangeFee
 		if tr.ExchangeOrderID == "99999" {
 			oidHits++
+			closeFee = tr.ExchangeFee
+		}
+		if strings.Contains(tr.Details, "Open long") {
 			openerFee = tr.ExchangeFee
 		}
 	}
@@ -414,10 +418,13 @@ func TestExecutePerpsSignal_FlipDoesNotDoubleCountFee(t *testing.T) {
 		t.Errorf("sum(ExchangeFee) = %v, want 0.42 (fee double-counted across flip legs)", totalFee)
 	}
 	if oidHits != 1 {
-		t.Errorf("rows with OID=99999 = %d, want 1 (only the opener should carry the real fill's OID)", oidHits)
+		t.Errorf("rows with OID=99999 = %d, want 1", oidHits)
 	}
-	if openerFee != 0.42 {
-		t.Errorf("opener ExchangeFee = %v, want 0.42", openerFee)
+	if closeFee != 0.42 {
+		t.Errorf("close ExchangeFee = %v, want 0.42", closeFee)
+	}
+	if openerFee != 0 {
+		t.Errorf("opener ExchangeFee = %v, want 0 (open leg uses modeled cash fee)", openerFee)
 	}
 }
 

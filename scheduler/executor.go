@@ -384,6 +384,7 @@ type TopStepResult struct {
 type TopStepFill struct {
 	AvgPx          float64 `json:"avg_px"`
 	TotalContracts int     `json:"total_contracts"`
+	Fee            float64 `json:"fee,omitempty"`
 }
 
 // TopStepExecution is the execution block from check_topstep.py --execute output.
@@ -587,6 +588,7 @@ type RobinhoodResult struct {
 type RobinhoodFill struct {
 	AvgPx    float64 `json:"avg_px"`
 	Quantity float64 `json:"quantity"`
+	Fee      float64 `json:"fee,omitempty"`
 }
 
 // RobinhoodExecution is the execution block from check_robinhood.py --execute output.
@@ -673,6 +675,7 @@ type OKXResult struct {
 type OKXFill struct {
 	AvgPx   float64 `json:"avg_px"`
 	TotalSz float64 `json:"total_sz"`
+	Fee     float64 `json:"fee,omitempty"`
 }
 
 // OKXExecution is the execution block from check_okx.py --execute output.
