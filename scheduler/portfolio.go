@@ -763,7 +763,7 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			s.Cash += pos.Quantity*pos.AvgCost - totalCost
 			now := time.Now().UTC()
 			trade := Trade{
-			Timestamp:       now,
+				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
 				Side:            "buy",
@@ -854,7 +854,7 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			s.Cash += netProceeds
 			now := time.Now().UTC()
 			trade := Trade{
-			Timestamp:       now,
+				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
 				Side:            "sell",
@@ -920,7 +920,7 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			s.Cash += pnl
 			now := time.Now().UTC()
 			trade := Trade{
-			Timestamp:       now,
+				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
 				Side:            "buy",
@@ -1023,7 +1023,7 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			s.Cash += pnl
 			now := time.Now().UTC()
 			trade := Trade{
-			Timestamp:       now,
+				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
 				Side:            "sell",
