@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -151,6 +152,118 @@ func TestPlanKillSwitchClose_HappyPath(t *testing.T) {
 	if got := formatKillSwitchAutoResetMessage(plan.DiscordMessage); !strings.Contains(got, "Kill switch auto-reset; trading will resume next cycle") ||
 		strings.Contains(got, "Manual reset required") {
 		t.Errorf("expected auto-reset message to replace manual-reset instruction, got: %s", got)
+	}
+}
+
+func TestHyperliquidKillSwitchClose_UsesRealFillBeforeMark(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-btc", Platform: "hyperliquid", Type: "perps", Leverage: 5,
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "BTC", Size: 1.0, EntryPrice: 50000}}
+	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		return &HyperliquidCloseResult{
+			Close: &HyperliquidClose{
+				Symbol: symbol,
+				Fill:   &HyperliquidCloseFill{TotalSz: 1.0, AvgPx: 49000, Fee: 2.0},
+			},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	fetcher, _ := stubHLStateFetcher(nil, nil)
+	plan := planKillSwitchClose(defaultHLInputs("0xaddr", true, positions, hlLive,
+		"portfolio drawdown 25.0% exceeds limit 20.0%",
+		time.Second, closer, fetcher))
+	if !plan.OnChainConfirmedFlat {
+		t.Fatalf("expected confirmed-flat plan, got %+v", plan)
+	}
+
+	s := &StrategyState{
+		ID:       "hl-btc",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Cash:     1000,
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 1.0, AvgCost: 50000, Side: "long", Multiplier: 1, Leverage: 5},
+		},
+	}
+	forceCloseKillSwitchPositions(s, hlLive[0], map[string]float64{"BTC": 48000}, plan, hlLive, nil)
+
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("expected 1 trade, got %d", len(s.TradeHistory))
+	}
+	trade := s.TradeHistory[0]
+	if trade.Price != 49000 {
+		t.Fatalf("Trade.Price = %.2f; want closer fill AvgPx 49000, not mark 48000", trade.Price)
+	}
+	if trade.Quantity != 1.0 {
+		t.Errorf("Trade.Quantity = %.6f; want closer fill TotalSz 1.0", trade.Quantity)
+	}
+	if trade.ExchangeFee != 2.0 {
+		t.Errorf("Trade.ExchangeFee = %.4f; want closer fill Fee 2.0", trade.ExchangeFee)
+	}
+	if len(s.ClosedPositions) != 1 {
+		t.Fatalf("expected 1 closed position, got %d", len(s.ClosedPositions))
+	}
+	closed := s.ClosedPositions[0]
+	if closed.ClosePrice != 49000 {
+		t.Errorf("ClosedPosition.ClosePrice = %.2f; want fill AvgPx 49000", closed.ClosePrice)
+	}
+	wantPnL := -1002.0
+	if math.Abs(closed.RealizedPnL-wantPnL) > 1e-9 {
+		t.Errorf("ClosedPosition.RealizedPnL = %.4f; want %.4f", closed.RealizedPnL, wantPnL)
+	}
+	if math.Abs(s.Cash-(1000+wantPnL)) > 1e-9 {
+		t.Errorf("Cash = %.4f; want %.4f", s.Cash, 1000+wantPnL)
+	}
+}
+
+func TestHyperliquidKillSwitchClose_SharedCoinSplitsFillByWeights(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Leverage: 5, CapitalPct: 0.25,
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Leverage: 5, CapitalPct: 0.75,
+			Args: []string{"ema", "ETH", "1h", "--mode=live"}},
+	}
+	plan := KillSwitchClosePlan{
+		OnChainConfirmedFlat: true,
+		CloseReport: HyperliquidLiveCloseReport{
+			Fills: map[string]HyperliquidCloseFill{
+				"ETH": {TotalSz: 2.0, AvgPx: 3000, Fee: 4.0},
+			},
+		},
+	}
+	s := &StrategyState{
+		ID:       "hl-a",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Cash:     1000,
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3100, Side: "long", Multiplier: 1, Leverage: 5},
+		},
+	}
+
+	forceCloseKillSwitchPositions(s, hlLive[0], map[string]float64{"ETH": 2800}, plan, hlLive, nil)
+
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("expected 1 trade, got %d", len(s.TradeHistory))
+	}
+	trade := s.TradeHistory[0]
+	if math.Abs(trade.Quantity-0.5) > 1e-9 {
+		t.Errorf("Trade.Quantity = %.6f; want 0.5 weighted share of 2.0 fill", trade.Quantity)
+	}
+	if trade.Price != 3000 {
+		t.Errorf("Trade.Price = %.2f; want real fill AvgPx 3000", trade.Price)
+	}
+	if trade.ExchangeFee != 1.0 {
+		t.Errorf("Trade.ExchangeFee = %.4f; want weighted fill Fee 1.0", trade.ExchangeFee)
+	}
+	if len(s.ClosedPositions) != 1 {
+		t.Fatalf("expected 1 closed position, got %d", len(s.ClosedPositions))
+	}
+	wantPnL := -51.0 // 0.5 * (3000 - 3100) - weighted fee 1.0
+	if math.Abs(s.ClosedPositions[0].RealizedPnL-wantPnL) > 1e-9 {
+		t.Errorf("RealizedPnL = %.4f; want %.4f", s.ClosedPositions[0].RealizedPnL, wantPnL)
 	}
 }
 

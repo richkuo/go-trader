@@ -849,7 +849,7 @@ func main() {
 				mu.Lock()
 				for _, sc := range cfg.Strategies {
 					if s, ok := state.Strategies[sc.ID]; ok {
-						forceCloseAllPositions(s, prices, nil)
+						forceCloseKillSwitchPositions(s, sc, prices, plan, hlLiveAll, nil)
 						// Pending HL circuit close was already cleared above
 						// when portfolio kill fired (line ~611); nothing to do
 						// here. The per-strategy pending field is owned by the

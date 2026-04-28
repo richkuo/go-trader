@@ -522,6 +522,10 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 // so future readers see the predicate spelled out.
 type HyperliquidLiveCloseReport struct {
 	ClosedCoins []string
+	// Fills carries the real exchange fill for coins in ClosedCoins when the
+	// adapter returned one. Kill-switch state clearing uses this to book
+	// realized PnL from the close fill instead of the pre-close mark (#454).
+	Fills map[string]HyperliquidCloseFill
 	// AlreadyFlat is set from two sources: the pre-submit szi==0 short-circuit
 	// in forceCloseHyperliquidLive (defense-in-depth — FetchHyperliquidPositions
 	// pre-filters szi≠0, so this branch should not fire in production) AND the
@@ -586,7 +590,10 @@ func (r HyperliquidLiveCloseReport) SortedErrorCoins() []string {
 // doesn't leave orphan triggers consuming HL's 10/day account-wide cap
 // (#421). nil/empty disables the cancel; the closer is otherwise unchanged.
 func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLiveAll []StrategyConfig, closer HyperliquidLiveCloser, stopLossOIDsByCoin map[string][]int64) HyperliquidLiveCloseReport {
-	report := HyperliquidLiveCloseReport{Errors: make(map[string]error)}
+	report := HyperliquidLiveCloseReport{
+		Fills:  make(map[string]HyperliquidCloseFill),
+		Errors: make(map[string]error),
+	}
 
 	tradedCoins := make(map[string]bool)
 	for _, sc := range hlLiveAll {
@@ -632,6 +639,9 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 		if result != nil && result.Close != nil && result.Close.AlreadyFlat {
 			report.AlreadyFlat = append(report.AlreadyFlat, p.Coin)
 			continue
+		}
+		if result != nil && result.Close != nil && result.Close.Fill != nil {
+			report.Fills[p.Coin] = *result.Close.Fill
 		}
 		report.ClosedCoins = append(report.ClosedCoins, p.Coin)
 	}
@@ -736,6 +746,56 @@ func computeHyperliquidCircuitCloseQty(coin, strategyID string, hlPositions []HL
 		return 0, false
 	}
 	return q, true
+}
+
+func hyperliquidKillSwitchFillShare(sc StrategyConfig, coin string, fillSz, fillFee float64, hlLiveAll []StrategyConfig) (float64, float64) {
+	peers := hlLiveStrategiesForCoin(coin, hlLiveAll)
+	if len(peers) <= 1 {
+		return fillSz, fillFee
+	}
+	weights := hlStrategyCapitalWeights(peers)
+	sumW := 0.0
+	var wSelf float64
+	foundSelf := false
+	for i, p := range peers {
+		sumW += weights[i]
+		if p.ID == sc.ID {
+			wSelf = weights[i]
+			foundSelf = true
+		}
+	}
+	if !foundSelf || sumW <= 0 {
+		return fillSz, fillFee
+	}
+	ratio := wSelf / sumW
+	if ratio < 0 {
+		ratio = 0
+	} else if ratio > 1 {
+		ratio = 1
+	}
+	return fillSz * ratio, fillFee * ratio
+}
+
+// applyHyperliquidKillSwitchCloseFill applies one strategy's weighted share of
+// the portfolio kill-switch fill before generic virtual-state cleanup runs.
+func applyHyperliquidKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fills map[string]HyperliquidCloseFill, hlLiveAll []StrategyConfig) bool {
+	if s == nil || sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
+		return false
+	}
+	coin := hyperliquidSymbol(sc.Args)
+	if coin == "" {
+		return false
+	}
+	fill, ok := fills[coin]
+	if !ok || fill.TotalSz <= 1e-15 || fill.AvgPx <= 0 {
+		return false
+	}
+	fillSz, fillFee := hyperliquidKillSwitchFillShare(sc, coin, fill.TotalSz, fill.Fee, hlLiveAll)
+	if fillSz <= 1e-15 {
+		return false
+	}
+	applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0)
+	return true
 }
 
 func lookupStrategyConfig(strategies []StrategyConfig, id string) *StrategyConfig {
@@ -1117,15 +1177,16 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 			closeSide = "buy"
 		}
 		RecordTrade(s, Trade{
-			Timestamp:  now,
-			StrategyID: s.ID,
-			Symbol:     symbol,
-			Side:       closeSide,
-			Quantity:   fillSz,
-			Price:      fillPx,
-			Value:      fillSz * fillPx,
-			TradeType:  "perps",
-			Details:    fmt.Sprintf("Circuit breaker on-chain close (no virtual position), fill=%.6f fee=$%.4f", fillSz, fillFee),
+			Timestamp:   now,
+			StrategyID:  s.ID,
+			Symbol:      symbol,
+			Side:        closeSide,
+			Quantity:    fillSz,
+			Price:       fillPx,
+			Value:       fillSz * fillPx,
+			TradeType:   "perps",
+			Details:     fmt.Sprintf("Circuit breaker on-chain close (no virtual position), fill=%.6f fee=$%.4f", fillSz, fillFee),
+			ExchangeFee: exchangeFeeForTrade(fillFee, true),
 			// No virtual position to derive PnL from. Still mark as a close
 			// leg so the lifetime round-trip count (#455) reflects that the
 			// exchange-side position was reduced, but leave RealizedPnL=0
@@ -1166,6 +1227,7 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 		Value:       qtyClosed * fillPx,
 		TradeType:   "perps",
 		Details:     fmt.Sprintf("Circuit breaker on-chain close, PnL: $%.2f (fee $%.4f)", pnl, fillFee),
+		ExchangeFee: exchangeFeeForTrade(fillFee, true),
 		IsClose:     true,
 		RealizedPnL: pnl,
 	})
