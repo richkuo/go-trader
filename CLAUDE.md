@@ -50,6 +50,7 @@
 - Fees: `CalculatePlatformSpotFee(platform, value)` (HL 0.035%, RH 0%, BinanceUS 0.1%); `CalculatePlatformFuturesFee(sc, contracts)`.
 - Position ownership: `Position.OwnerStrategyID`; `syncHyperliquidAccountPositions` reconciles with owner only.
 - **State is SQLite-only** (`scheduler/state.db`, `cfg.DBFile`). Legacy JSON paths removed. Trades persist immediately via `RecordTrade` → `StateDB.InsertTrade`. `ClosedPositions` flushed atomically by `SaveState`. Leaderboard built on-demand (`BuildLeaderboardMessages`).
+- **TradingView export:** if the user says "export data to TradingView", first ask which strategy IDs to export or whether to export all strategies. Use `./go-trader export tradingview --strategy <id> --output <file>` for one or more selected strategies, or `./go-trader export tradingview --all --output <file>`. Exports are sourced from SQLite trades and may require `tradingview_export.symbol_overrides` for platforms/symbols without a safe built-in TradingView mapping.
 - **Map iteration:** ALWAYS `sort.Strings(keys)` before formatting any operator-facing or test-asserted output. Go map iteration is randomized.
 - `cfg.Discord.Channels` / `Telegram.Channels` / `DMChannels` are `map[string]string`; keys: `spot`, `options`, `<platform>`, `<platform>-paper`. `cfg.Discord.OwnerID` from `DISCORD_OWNER_ID` env var (priority over config).
 - `cfg.SummaryFrequency map[string]string`: Go duration / alias (`hourly`, `daily`, `every`/`per_check`/`always`) / empty (legacy). `ShouldPostSummary(..., hasTrades)` — `hasTrades=true` always forces a post.

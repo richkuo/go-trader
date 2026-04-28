@@ -18,6 +18,7 @@ Quick flow for a new server: tell OpenClaw `install https://github.com/richkuo/g
 - State is SQLite only: default `scheduler/state.db`.
 - Never store secrets in config files. Put Discord and exchange credentials in systemd environment variables.
 - Prefer `./go-trader init` for humans and `./go-trader init --json ... --output scheduler/config.json` for agents/scripts.
+- When a user asks to export data to TradingView, ask which strategy IDs to export or whether to export all strategies before running the export.
 
 ---
 
@@ -212,6 +213,28 @@ curl -s localhost:8099/history
 If Discord is enabled, wait for the first cycle and verify messages in configured channels.
 
 Report success to the user with mode, number of strategies, status URL, and log command.
+
+---
+
+## TradingView Export
+
+Export recorded SQLite trades to a TradingView portfolio transaction-import CSV:
+
+```bash
+./go-trader export tradingview --strategy hl-btc-momentum --output tradingview-hl-btc-momentum.csv
+./go-trader export tradingview --strategy hl-btc-momentum --strategy okx-eth-breakout --output tradingview-selected.csv
+./go-trader export tradingview --all --output tradingview-all.csv
+```
+
+The CSV contains TradingView's import header: `Symbol,Side,Qty,Status,Fill Price,Commission,Closing Time`. Built-in mappings cover known OKX and BinanceUS crypto pairs. Add `tradingview_export.symbol_overrides` when a platform/symbol cannot be safely mapped:
+
+```json
+"tradingview_export": {
+  "symbol_overrides": {
+    "hl:BTC": "BYBIT:BTCUSDT"
+  }
+}
+```
 
 ---
 
