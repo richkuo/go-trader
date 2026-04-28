@@ -1,892 +1,223 @@
 # Agent Setup Guide — go-trader
 
-**Repository:** `https://github.com/richkuo/go-trader.git`
+Repository: `https://github.com/richkuo/go-trader.git`
 
-This is a self-contained setup guide for AI agents. Give this file to any AI coding agent and it will handle the full installation — cloning the repo, installing dependencies, configuring Discord/strategies/risk, building, and starting the service.
+This is the concise skill entry point for agents setting up, configuring, operating, or extending go-trader. For broader project context and PR conventions for Codex/Gemini-style agents, see [AGENTS.md](AGENTS.md).
 
-**Quick flow for a new server:** tell OpenClaw `install https://github.com/richkuo/go-trader and init`.
-
-**For OpenClaw agents:** This is the skill entry point. Read it when a user says "set up go-trader", "install go trading bot", or "configure go-trader".
+Quick flow for a new server: tell OpenClaw `install https://github.com/richkuo/go-trader and init`.
 
 ---
 
-## Step 1: Prerequisites
+## Core Rules
 
-Check each prerequisite. Install anything missing (ask user before installing).
+- Work from the repo root for git commands.
+- Use `/opt/homebrew/bin/go` on macOS or `/usr/local/go/bin/go` on Linux if `go` is not on PATH.
+- Use `.venv/bin/python3` for Python scripts; in git worktrees, use the main repo `.venv`.
+- Install Python deps with `uv sync`.
+- Scheduler config is `scheduler/config.json`; start from `scheduler/config.example.json` when generating manually.
+- State is SQLite only: default `scheduler/state.db`.
+- Never store secrets in config files. Put Discord and exchange credentials in systemd environment variables.
+- Prefer `./go-trader init` for humans and `./go-trader init --json ... --output scheduler/config.json` for agents/scripts.
 
-### 1a. Python 3.12+
+---
+
+## Prerequisites
+
+Check and install missing tools with user approval:
+
 ```bash
 python3 --version
-```
-If missing or < 3.12, ask:
-> Python 3.12+ is required. Want me to install it?
-
-### 1b. uv (Python package manager)
-```bash
 uv --version 2>/dev/null || echo "NOT_INSTALLED"
-```
-If missing, install:
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-### 1c. Go runtime (1.26.2)
-```bash
 go version 2>/dev/null || /usr/local/go/bin/go version 2>/dev/null || /opt/homebrew/bin/go version 2>/dev/null || echo "NOT_INSTALLED"
-```
-If missing, ask:
-> Go 1.26.2 is required to build the scheduler. Want me to install it?
-
-Install with:
-```bash
-# Linux
-curl -sL https://go.dev/dl/go1.26.2.linux-amd64.tar.gz | tar -C /usr/local -xzf -
-# macOS (Homebrew)
-brew install go@1.26
-```
-Note: Go may not be in PATH. Use `/usr/local/go/bin/go` (Linux) or `/opt/homebrew/bin/go` (macOS) if `go` doesn't resolve.
-
-### 1d. Git
-```bash
 git --version
 ```
 
----
+Requirements:
 
-## Step 2: Clone Repository
+- Python 3.12+
+- `uv`
+- Go 1.26.2
+- Git
 
-Check if already installed:
+Install helpers:
+
 ```bash
-test -d go-trader/scheduler && echo "EXISTS" || echo "FRESH"
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Linux Go install
+curl -sL https://go.dev/dl/go1.26.2.linux-amd64.tar.gz | tar -C /usr/local -xzf -
+
+# macOS Go install
+brew install go@1.26
 ```
 
-**If EXISTS**, ask:
-> go-trader is already installed. Do you want to:
-> 1. Reconfigure (keep code, redo setup)
-> 2. Update (pull latest + rebuild)
-> 3. Fresh install (delete and start over)
+---
 
-**If FRESH**, clone from GitHub:
+## Install
+
 ```bash
 git clone https://github.com/richkuo/go-trader.git
 cd go-trader
-```
-
-**If the clone fails** (private repo or auth issue), ask:
-> I couldn't clone the repository. Do you have a GitHub token or SSH key configured?
-> You can also download it manually: https://github.com/richkuo/go-trader
-
----
-
-## Step 3: Install Python Dependencies
-
-```bash
-cd go-trader
 uv sync
 ```
-**Verify:** `.venv/bin/python3` should exist after this.
 
-No user input needed for this step.
+If the repo already exists, ask whether to reconfigure, update, or fresh install before changing it.
 
----
-
-## Step 3b: Quick Config via `go-trader init` (Recommended for Human Users)
-
-Before proceeding with Steps 4–7 (manual config), build the binary first so the wizard is available:
+Build the binary:
 
 ```bash
 VER=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
-cd scheduler && /usr/local/go/bin/go build -ldflags "-X main.Version=$VER" -o ../go-trader . && cd ..
+/opt/homebrew/bin/go -C scheduler build -ldflags "-X main.Version=$VER" -o ../go-trader .
+./go-trader --help
 ```
 
-Then run the interactive wizard:
+Use `/usr/local/go/bin/go` on Linux. The `Version` ldflag appears in Discord summary titles; without it the binary reports `dev`.
+
+---
+
+## Configure
+
+Recommended human flow:
 
 ```bash
 ./go-trader init
 ```
 
-The wizard walks through:
-1. **Assets** — BTC, ETH, SOL (multi-select)
-2. **Spot strategies** — momentum, mean reversion, pairs spread (BinanceUS)
-3. **Options strategies** — covered call, cash-secured put; Deribit and/or IBKR
-4. **Perps strategies** — full spot strategy suite on Hyperliquid (paper or live mode)
-5. **Futures strategies** — momentum, mean_reversion, rsi, macd, breakout, session_breakout on CME futures (TopStep, paper or live mode)
-6. **Capital & max drawdown** per strategy type
-7. **Risk settings** (live mode only) — per-strategy max drawdown %, portfolio kill-switch threshold %, and warn threshold %; these are prompted explicitly when any live platform is selected so the generated config is complete before first startup (#378)
-8. **Discord** — per-platform channel IDs (spot, options, hyperliquid if perps enabled, topstep if futures enabled, okx if OKX enabled)
-9. **Auto-update** — off / daily / heartbeat (default: off)
-
-A summary is shown before writing. If `scheduler/config.json` already exists, you'll be prompted to confirm overwrite.
-
-After `go-trader init` completes, **skip to Step 8** (Build & Install). Steps 4–7 are only needed for manual or agent-driven config generation.
-
-> **Note for agents:** For scripted/automated config generation, use `--json` instead of Steps 4–7:
-> ```bash
-> ./go-trader init --json '{"assets":["BTC","ETH"],"enableSpot":true,"spotStrategies":["momentum","rsi"],"spotCapital":1000,"spotDrawdown":60}' --output scheduler/config.json
-> ```
-> Steps 4–7 describe the manual procedure — use those only when you need fine-grained control (partial reconfiguration, custom strategy sets, etc.).
-
----
-
-## Step 4: Discord Configuration
-
-Ask:
-> Do you want Discord trade alerts? The bot will post summaries and trade notifications to Discord channels.
->
-> (yes / no)
-
-### If no:
-Set `discord.enabled = false` in config. Skip to Step 5.
-
-### If yes:
-
-#### 4a. Discord Bot Token
-Ask:
-> I need your Discord bot token. This is used to post trade alerts.
->
-> Where to find it: [Discord Developer Portal](https://discord.com/developers/applications) → your application → Bot → Token
->
-> **Security:** I'll store this as a systemd environment variable, not in config files.
->
-> Paste your bot token:
-
-Store the token for use in Step 8 (systemd service). Do NOT write it to config.json.
-
-#### 4b. Spot Alerts Channel
-Ask:
-> Which Discord channel should receive **spot trading** alerts?
->
-> This channel will get:
-> - Hourly summaries showing PnL for each spot strategy (BTC/ETH/SOL)
-> - Immediate notifications when a spot trade executes
->
-> I need the **channel ID** — right-click the channel → "Copy Channel ID"
-> (Enable Developer Mode in Discord Settings → Advanced if you don't see this option)
->
-> Spot channel ID:
-
-#### 4c. Options Alerts Channel
-Ask (only if options strategies will be enabled):
-> Which Discord channel should receive **options trading** alerts?
->
-> This channel will get:
-> - Per-check summaries split by exchange (Deribit + IBKR)
-> - Individual strategy PnL with recent trade history
-> - Immediate trade notifications
->
-> This can be the same channel as spot, or a different one.
->
-> Options channel ID (or press Enter to skip):
-
-#### 4d. Hyperliquid Alerts Channel
-Ask (only if perps/hyperliquid strategies will be enabled):
-> Which Discord channel should receive **Hyperliquid perps** alerts?
->
-> This channel will get:
-> - Hourly summaries of all Hyperliquid strategy PnL
-> - Immediate trade notifications
->
-> This can be the same channel as spot, or a different one.
->
-> Hyperliquid channel ID (or press Enter to skip):
-
-#### 4e. TopStep Alerts Channel
-Ask (only if futures/topstep strategies will be enabled):
-> Which Discord channel should receive **TopStep futures** alerts?
->
-> This channel will get:
-> - Hourly summaries of all TopStep strategy PnL
-> - Immediate trade notifications
->
-> This can be the same channel as spot, or a different one.
->
-> TopStep channel ID (or press Enter to skip):
-
-#### 4f. Discord Server (Guild) ID
-Ask:
-> What's the Discord server (guild) ID where these channels are?
->
-> Right-click the server icon → "Copy Server ID"
->
-> Server ID:
-
-Store this for OpenClaw allowlist configuration in Step 7.
-
-#### 4g. Owner ID for DM Upgrades
-Ask:
-> Would you like the bot to DM you directly when a new version is available, and offer to upgrade automatically?
->
-> If yes, I need your **Discord user ID**:
-> - Enable Developer Mode: Discord Settings → Advanced → Developer Mode
-> - Right-click your own username → "Copy User ID"
->
-> This enables:
-> - DM upgrade prompt — reply **yes** to auto-upgrade (git pull, rebuild, restart)
-> - Post-upgrade config migration — the bot DMs you about any new config fields
->
-> Owner Discord user ID (or press Enter to skip):
-
-If provided, store as `DISCORD_OWNER_ID` for the systemd service (Step 8c). Do NOT write it to config.json.
-
-> **Note:** Summary cadence is configurable via the top-level `summary_frequency` map in `config.json`. Keys match channel names (e.g. `"spot"`, `"hyperliquid"`). Values: `"hourly"`, `"daily"`, `"every"`/`"per_check"`, or Go durations like `"30m"`. Omit a key for the legacy default (options/perps/futures: every cycle; spot: hourly). Trades always force an immediate post.
-
----
-
-## Step 5: Trading Configuration
-
-#### 5a. Trading Mode
-Ask:
-> Do you want to run in paper trading mode (simulated) or live trading?
->
-> **Paper mode** (recommended): No real money. Simulates trades with virtual capital. Good for testing strategies before going live.
->
-> **Live mode**: Requires exchange API keys. Real trades with real money.
->
-> (paper / live, default: paper)
-
-**If live**, prompt for exchange API keys:
-> Binance API key:
-> Binance API secret:
-
-If futures/TopStep strategies are enabled:
-> TopStep API key:
-> TopStep API secret:
-> TopStep account ID:
-
-Store these for the systemd environment in Step 8.
-
-#### 5b. Per-Strategy Capital
-Ask:
-> How much starting capital per strategy (in USD)?
->
-> Default is $1,000 per strategy. With 30 strategies, that's $30,000 total paper capital.
->
-> You can change individual strategy amounts later in the config.
->
-> Capital per strategy: (default: 1000)
-
-#### 5c. Risk Tolerance — Max Drawdown
-Ask:
-> What's your maximum drawdown tolerance? When a strategy's losses exceed this percentage, a circuit breaker pauses trading for 24 hours. Spot/options/futures measure drawdown from peak portfolio value; perps measure it relative to deployed margin (capital at risk) so leveraged positions fire the breaker before margin is wiped.
->
-> - **Spot strategies** default: 60%
-> - **Options strategies** default: 40% (measured from peak value)
->
-> Do you want to customize these, or use the defaults?
->
-> 1. Use defaults (recommended)
-> 2. Set custom values
->
-> (1 or 2, default: 1)
-
-**If 2:**
-> Max drawdown for spot strategies (%, default: 60):
-> Max drawdown for options strategies (%, default: 20):
-
----
-
-## Step 6: Strategy Selection
-
-Ask:
-> go-trader comes with strategies across four groups:
->
-> **Spot (10 strategies)** — BTC, ETH, SOL on Binance
->   sma_crossover, ema_crossover, momentum, rsi, bollinger_bands, macd,
->   mean_reversion, volume_weighted, triple_ema, rsi_macd_combo, pairs_spread
->
-> **Deribit Options (8 strategies)** — BTC, ETH options
->   vol mean reversion, momentum, puts, calls, wheel, butterfly
->
-> **IBKR/CME Options (8 strategies)** — BTC, ETH options (CME Micro)
->   Same 6 strategies as Deribit, for head-to-head comparison
->
-> **Futures (5 strategies)** — CME contracts on TopStep
->   momentum, mean_reversion, rsi, macd, breakout
->
-> Do you want to:
-> 1. **Run all** (recommended for paper trading)
-> 2. **Choose by group** (enable/disable spot, Deribit, IBKR)
-> 3. **Pick individual strategies**
->
-> (1, 2, or 3, default: 1)
-
-### If 1 (all strategies):
-Use the full default strategy set. Skip to Step 6b.
-
-### If 2 (by group):
-Ask for each group:
-> Enable **spot strategies** (sma_crossover, ema_crossover, momentum, rsi, bollinger_bands, macd, mean_reversion, volume_weighted, triple_ema, rsi_macd_combo, pairs_spread on BTC/ETH/SOL)? (yes/no, default: yes)
-> Enable **Deribit options** (vol MR, momentum, puts, calls, wheel, butterfly on BTC/ETH)? (yes/no, default: yes)
-> Enable **IBKR/CME options** (same strategies as Deribit, CME Micro contracts)? (yes/no, default: yes)
-
-### If 3 (individual):
-Present each strategy and ask yes/no. Group them for readability:
-
-> **Spot Strategies** (1h checks):
->
-> | # | Strategy | Assets | Description | Enable? |
-> |---|----------|--------|-------------|---------|
-> | 1 | sma_crossover | BTC, ETH, SOL | Simple moving average crossover | (y/n) |
-> | 2 | ema_crossover | BTC, ETH, SOL | Exponential moving average crossover | (y/n) |
-> | 3 | momentum | BTC, ETH, SOL | Rate of change breakouts | (y/n) |
-> | 4 | rsi | BTC, ETH, SOL | Buy oversold, sell overbought | (y/n) |
-> | 5 | bollinger_bands | BTC, ETH, SOL | Mean reversion at band extremes | (y/n) |
-> | 6 | macd | BTC, ETH, SOL | MACD/signal line crossovers | (y/n) |
-> | 7 | mean_reversion | BTC, ETH, SOL | Statistical mean reversion | (y/n) |
-> | 8 | volume_weighted | BTC, ETH, SOL | Trend + volume confirmation | (y/n) |
-> | 9 | triple_ema | BTC, ETH, SOL | Triple EMA crossover | (y/n) |
-> | 10 | rsi_macd_combo | BTC, ETH, SOL | RSI and MACD confluence | (y/n) |
-> | 11 | pairs_spread | BTC/ETH, BTC/SOL, ETH/SOL | Spread z-score stat arb (1d) | (y/n) |
->
-> Which spot strategies do you want? (e.g., "1,3,11" or "all" or "none")
-
-Then repeat for options:
-> **Deribit Options** (20-minute checks, BTC + ETH each):
->
-> | # | Strategy | Description | Enable? |
-> |---|----------|-------------|---------|
-> | 1 | vol_mean_reversion | High IV → sell strangles, Low IV → buy straddles | (y/n) |
-> | 2 | momentum_options | ROC breakout → directional options | (y/n) |
-> | 3 | protective_puts | Buy 12% OTM puts, 45 DTE | (y/n) |
-> | 4 | covered_calls | Sell 12% OTM calls, 21 DTE | (y/n) |
-> | 5 | wheel | Sell 6% OTM puts, 37 DTE | (y/n) |
-> | 6 | butterfly | ±5% wing butterfly spread, 30 DTE | (y/n) |
->
-> Which Deribit strategies? (e.g., "1,3,6" or "all" or "none")
-
-> **IBKR/CME Options** — Same strategies as Deribit but using CME Micro contracts:
->
-> Run the same selection as Deribit, or choose differently?
-> 1. Same as Deribit
-> 2. Choose individually
-> 3. None
->
-> (1, 2, or 3)
-
-### 6b. Theta Harvesting (Options)
-Only ask if any options strategies were enabled:
-
-Ask:
-> **Theta harvesting** lets the bot close sold options early instead of holding to expiry:
-> - **Profit target**: Close when X% of premium captured (e.g., 60%)
-> - **Stop loss**: Close if loss exceeds X% of premium (e.g., 200% = 2× premium)
-> - **Min DTE**: Force-close when fewer than N days to expiry (avoid gamma risk)
->
-> Do you want to configure theta harvesting?
-> 1. **Enable with defaults** (60% profit, 200% stop, 3 days min DTE) — recommended
-> 2. **Custom values**
-> 3. **Disable** (options ride to expiry or circuit breaker)
->
-> (1, 2, or 3, default: 1)
-
-**If 2:**
-> Profit target (% of premium to capture before closing, default: 60):
-> Stop loss (% of premium loss before closing, default: 200):
-> Minimum DTE to force-close (days, default: 3):
-
----
-
-## Step 7: Write Configuration
-
-Using all gathered inputs, generate `scheduler/config.json`.
-
-### 7a. Build config.json
-
-Start from `scheduler/config.example.json` as a template. For each enabled strategy, add an entry with:
-- `id`: Use the naming convention `{strategy}-{asset}` for spot, `deribit-{strategy}-{asset}` or `ibkr-{strategy}-{asset}` for options
-- `type`: `"spot"` or `"options"`
-- `script`: `"shared_scripts/check_strategy.py"` (spot), `"shared_scripts/check_options.py"` (options — any platform), `"shared_scripts/check_topstep.py"` (futures)
-- `args`: Strategy-specific arguments (see config.example.json for format)
-- `capital`: User's chosen amount
-- `max_drawdown_pct`: User's chosen value (spot default: 60, options default: 40)
-- `interval_seconds`: 300 for spot, 1200 for options
-- `params`: Optional — custom strategy parameter overrides (e.g. `{"multiplier": 2.0, "atr_period": 10}`). Merged with strategy defaults at runtime.
-- `theta_harvest`: If enabled, include the config block
-
-Discord config:
-- `discord.enabled`: true/false based on Step 4
-- `discord.token`: Always `""` (token comes from env var)
-- `discord.channels`: Map of channel IDs for enabled platform types, e.g. `{"spot": "ID_FROM_4b", "options": "ID_FROM_4c", "hyperliquid": "ID_FROM_4d", "topstep": "ID_FROM_4e", "okx": "ID_FROM_4f", "luno": "ID_FROM_4g"}` — omit keys for platforms not in use
-- `summary_frequency`: Optional map controlling post cadence per channel. Keys match `discord.channels` keys. Values: `"hourly"`, `"daily"`, `"every"`/`"per_check"`, or Go durations like `"30m"`. Omit for legacy default (options/perps/futures every cycle; spot hourly). Example: `{"spot": "hourly", "options": "every", "hyperliquid": "every"}`. Trades always force an immediate post regardless of cadence.
-
-### 7b. OpenClaw Discord Allowlist (if applicable)
-
-If the agent is running inside OpenClaw and Discord was configured, add the channels to OpenClaw's guild allowlist so the bot can post:
+Recommended scripted flow:
 
 ```bash
-# Using OpenClaw gateway config.patch:
-# channels.discord.guilds.<GUILD_ID>.channels.<SPOT_CHANNEL>.requireMention = false
-# channels.discord.guilds.<GUILD_ID>.channels.<OPTIONS_CHANNEL>.requireMention = false
+./go-trader init --json '{"assets":["BTC","ETH"],"enableSpot":true,"spotStrategies":["momentum","rsi"],"spotCapital":1000,"spotDrawdown":60}' --output scheduler/config.json
 ```
 
-Or via CLI:
-```bash
-openclaw config set "channels.discord.guilds.<GUILD_ID>.channels.<SPOT_CHANNEL>.requireMention" false
-openclaw config set "channels.discord.guilds.<GUILD_ID>.channels.<OPTIONS_CHANNEL>.requireMention" false
-```
+The wizard covers assets, strategy groups, paper/live mode, per-strategy capital, live risk settings, Discord channels, and auto-update mode. It prompts before overwriting `scheduler/config.json`.
 
-### 7c. Confirm with User
+Manual config rules:
 
-Show the user a summary before proceeding:
-> Here's your configuration:
->
-> **Mode:** Paper trading
-> **Strategies:** {N} total ({spot_count} spot, {deribit_count} Deribit, {ibkr_count} IBKR)
-> **Capital:** ${amount} per strategy (${total} total)
-> **Risk:** {spot_drawdown}% max drawdown (spot), {options_drawdown}% (options)
-> **Theta harvesting:** {enabled/disabled} {details if enabled}
-> **Discord:** {enabled/disabled}
->   📈 Spot alerts → #{channel_name} (hourly + on trade)
->   🎯 Options alerts → #{channel_name} (per check)
->   ⚡ Hyperliquid alerts → #{channel_name} (hourly + on trade)  {if perps enabled}
->
-> Proceed? (yes / no)
+- Strategy entries need `id`, `type`, `script`, `args`, `capital`, `max_drawdown_pct`, and `interval_seconds`.
+- `StrategyConfig.Params` is a JSON object of parameter overrides; runtime params such as funding rates take priority.
+- `discord.channels` and `telegram.channels` are maps keyed by platform/type: `spot`, `options`, `hyperliquid`, `topstep`, `robinhood`, `okx`, `luno`, plus optional paper keys such as `okx-paper`.
+- `summary_frequency` is a map keyed like channels. Values: `hourly`, `daily`, `every`, `per_check`, `always`, or Go durations such as `30m`, `2h`.
+- Trades always force an immediate summary post regardless of cadence.
+- `discord.owner_id` can be set with `DISCORD_OWNER_ID`; this enables DM upgrade prompts and migration prompts.
 
-If no, ask which part they want to change and loop back to the relevant step.
+Live-mode risk defaults prompted by init:
+
+- Per-strategy spot drawdown: 5%
+- Per-strategy options drawdown: 10%
+- Portfolio kill-switch drawdown: 25%
+- Portfolio warn threshold: 60% of kill-switch; warnings repeat every cycle while in band
 
 ---
 
-## Step 8: Build & Install
+## Secrets
 
-### 8a. Build Go Binary
-```bash
-cd scheduler
-VER=$(git -C .. describe --tags --always --dirty 2>/dev/null || echo dev)
-/usr/local/go/bin/go build -ldflags "-X main.Version=$VER" -o ../go-trader .
-cd ..
-```
-If `go` is in PATH, just use `go build`. Check both. The `-ldflags` stamp
-surfaces the current revision in Discord summary titles (e.g. `(v1.2.3)`);
-without it the binary reports as `(dev)`.
+Set secrets in systemd overrides or exported environment variables before installation:
 
-**Verify:** `./go-trader --help` should print usage.
+| Variable | Description |
+| --- | --- |
+| `DISCORD_BOT_TOKEN` | Discord bot token |
+| `DISCORD_OWNER_ID` | Discord user ID for DM upgrades/migrations |
+| `STATUS_AUTH_TOKEN` | Optional bearer token for `/status` |
+| `BINANCE_API_KEY`, `BINANCE_API_SECRET` | Binance live trading |
+| `HYPERLIQUID_SECRET_KEY`, `HYPERLIQUID_ACCOUNT_ADDRESS` | Hyperliquid live perps |
+| `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRET`, `TOPSTEP_ACCOUNT_ID` | TopStep live futures |
+| `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` | Robinhood live crypto/options |
+| `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_PASSPHRASE`, `OKX_SANDBOX` | OKX live/demo |
+| `LUNO_API_KEY_ID`, `LUNO_API_KEY_SECRET` | Luno live |
+| `GO_TRADER_ALLOW_MISSING_STATE` | Set `1` only for genuine first-run live deployments with no DB |
 
-### 8b. Test Run
+---
+
+## Run And Install Service
+
+Smoke test:
+
 ```bash
 ./go-trader --config scheduler/config.json --once
 ```
-Check for errors. If Discord is configured, a summary should appear in the channels.
 
-### 8c. Install systemd Service
-
-Create or update the service file. Include the Discord token and any exchange API keys as environment variables:
-
-```ini
-[Unit]
-Description=Go Trading Scheduler
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory={PROJECT_DIR}
-ExecStart={PROJECT_DIR}/go-trader --config scheduler/config.json
-Environment="DISCORD_BOT_TOKEN={token}"
-Environment="DISCORD_OWNER_ID={owner_discord_user_id}"
-Restart=always
-RestartSec=10
-StandardOutput=append:{PROJECT_DIR}/logs/scheduler.log
-StandardError=append:{PROJECT_DIR}/logs/scheduler.log
-
-[Install]
-WantedBy=multi-user.target
-```
-
-If live trading, also add:
-```ini
-Environment="BINANCE_API_KEY={key}"
-Environment="BINANCE_API_SECRET={secret}"
-```
-
-If TopStep live trading:
-```ini
-Environment="TOPSTEP_API_KEY={key}"
-Environment="TOPSTEP_API_SECRET={secret}"
-Environment="TOPSTEP_ACCOUNT_ID={account_id}"
-```
+Install the systemd service with the bundled installer:
 
 ```bash
 mkdir -p logs
-sudo cp go-trader.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable go-trader
-sudo systemctl start go-trader
+export DISCORD_BOT_TOKEN="{token}"
+sudo bash scripts/install-service.sh
 ```
 
-### Step 8d: Auto-Update & DM Upgrades
+The installer copies the unit, runs `daemon-reload`, enables the service, starts it, and pre-creates `logs/` so `ProtectSystem=strict` does not block first-run logging.
 
-go-trader checks for updates via `git fetch` and notifies all active Discord channels. If `DISCORD_OWNER_ID` is set, it also **DMs the owner** offering to upgrade automatically.
+Templated multi-instance deployment:
 
-Configure during `go-trader init` (or set `auto_update` in `config.json`):
+```bash
+sudo bash scripts/install-service.sh systemd/go-trader@.service paper-testing
+```
+
+Install without starting:
+
+```bash
+NO_START=1 sudo bash scripts/install-service.sh
+```
+
+Common service commands:
+
+```bash
+sudo systemctl start go-trader
+sudo systemctl stop go-trader
+sudo systemctl restart go-trader
+sudo systemctl status go-trader
+journalctl -u go-trader -n 100 --no-pager
+```
+
+---
+
+## Auto-Update
+
+Configure `auto_update` as:
 
 | Mode | Behavior |
-|------|----------|
-| `off` | No automatic checking (default) |
-| `daily` | Checks once per day |
-| `heartbeat` | Checks every scheduler cycle |
+| --- | --- |
+| `off` | No automatic checking |
+| `daily` | Check once per day |
+| `heartbeat` | Check every scheduler cycle |
 
-**DM upgrade flow** (when `owner_id` is configured):
-1. Bot DMs: _"Update available: `abc123` → `def456` — upgrade automatically? (yes/no)"_
-2. Reply **yes** within 30 minutes → bot runs `git pull --ff-only`, rebuilds binary, saves state, and restarts
-3. Reply **no** or ignore → channels still got the notification; upgrade is skipped
+When an update is found, the bot notifies active Discord channels. If `DISCORD_OWNER_ID` is set, it DMs the owner asking whether to upgrade. Replying yes within 30 minutes runs `git pull --ff-only`, rebuilds the binary, saves state, and restarts.
 
-**Post-upgrade config migration:**
-On the first startup after an upgrade, if new config fields were introduced, the bot DMs you about each one (10-minute reply window). Defaults are applied silently if you don't respond or if no owner ID is set.
+Manual update:
 
-The scheduler will not re-notify for the same remote version until a newer one appears.
-
-**Manual update (always works regardless of setting):**
 ```bash
-cd /path/to/go-trader && git pull --ff-only
+git pull --ff-only
 VER=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
-cd scheduler && /usr/local/go/bin/go build -ldflags "-X main.Version=$VER" -o ../go-trader . && cd ..
+/opt/homebrew/bin/go -C scheduler build -ldflags "-X main.Version=$VER" -o ../go-trader .
 sudo systemctl restart go-trader
 ```
 
-**Verify the update check is working:**
+Verify update logs:
+
 ```bash
 journalctl -u go-trader -f | grep -i "\[update\]"
 ```
 
 ---
 
-## Step 9: Custom Platform Integration (Optional)
+## Status
 
-### 9a. Initial Prompt
-
-Ask:
-> Would you like to add a custom trading platform integration? This lets you connect go-trader to an exchange not included by default (spot, perps, or options).
->
-> (yes / no)
-
-If no, skip to Step 10.
-
-### 9b. Token Cost Warning
-
-Ask:
-> Building a custom platform integration may consume 50,000–100,000+ tokens depending on complexity (adapter code, Go wiring, config generation, and testing). This will be a multi-step implementation.
->
-> Proceed? (yes / no)
-
-If no, skip to Step 10.
-
-### 9c. Gather Platform Details
-
-Ask the following questions (can be asked all at once or one at a time):
-
-> **Platform name** (lowercase, no spaces — used for directory name and ID prefix, e.g. `kraken`, `okx`, `bybit`):
-
-> **Platform type** — what does this exchange support? (select all that apply)
-> 1. Spot trading
-> 2. Perpetual futures (perps)
-> 3. Options
->
-> (e.g. "1", "1,2", "all")
-
-> **API documentation** — paste the URL to the exchange's REST API docs, or type `ccxt` if this exchange is supported by the ccxt library (I'll fetch and read the docs):
-
-> **API credential environment variable names** — what env vars will hold the API keys? (e.g. `KRAKEN_API_KEY`, `KRAKEN_API_SECRET`). Type `none` if this is paper-only (no live trading):
-
-> **Fee structure:**
-> - Taker fee %: (e.g. `0.1` for 0.1%)
-> - Maker fee %: (e.g. `0.05`)
-> - Per-contract fee (options only, in USD, or `none`):
-
-> **Assets to trade** (e.g. `BTC, ETH` or `BTC/USDT, SOL/USDT`):
-
-> **Strategies to run** — which strategy types should this platform use?
-> - Spot: sma_crossover, ema_crossover, momentum, rsi, bollinger_bands, macd, mean_reversion, volume_weighted, triple_ema, rsi_macd_combo, pairs_spread
-> - Perps: (same as spot strategies, executed via check_hyperliquid.py pattern)
-> - Options: vol_mean_reversion, momentum_options, protective_puts, covered_calls, wheel, butterfly
->
-> List the strategies, or type `all` for the appropriate type:
-
-If API docs URL was provided (not `ccxt`), use WebFetch to read the docs before proceeding.
-If `ccxt` was specified, note that the adapter should use `ccxt.<ExchangeName>()` — no custom HTTP needed.
-
-### 9d. Implementation Checklist
-
-Build the integration in this order. Each item is required unless noted.
-
-#### Python Adapter
-
-Create `platforms/<name>/__init__.py` (empty file):
-```bash
-touch platforms/<name>/__init__.py
-```
-
-Create `platforms/<name>/adapter.py` with a class named `<Name>ExchangeAdapter` (must end in `ExchangeAdapter` for auto-discovery):
-
-- Inherit from `shared_tools/exchange_base.py` `ExchangeAdapterBase` protocol
-- Implement: `get_price(symbol)`, `get_orderbook(symbol)`, `place_order(...)`, `get_positions()`, `get_balance()`
-- For perps: also implement `get_funding_rate(symbol)`, `set_leverage(symbol, leverage)`
-- For options: also implement `get_options_chain(underlying)`, `get_option_quote(instrument_id)`
-- Reference adapters:
-  - Spot: `platforms/binanceus/adapter.py`
-  - Perps: `platforms/hyperliquid/adapter.py`
-  - Futures: `platforms/topstep/adapter.py`
-  - Options: `platforms/deribit/adapter.py`
-- If live trading: read credentials from env vars (never hardcode)
-- If paper-only: simulate fills at mid-price; positions are persisted by the scheduler to `scheduler/state.db`
-
-**If new entry script needed** (perps or non-standard execution flow), create `shared_scripts/check_<name>.py`:
-- Must output valid JSON to stdout even on error
-- Exit 1 on error (Go reads stdout regardless of exit code)
-- Follow the pattern in `shared_scripts/check_hyperliquid.py`
-
-#### Go: config.go — ID Prefix Mapping
-
-Add the new platform's ID prefix to the `LoadConfig` platform inference block:
-```go
-// In the switch/if-else that maps ID prefix → platform
-case strings.HasPrefix(id, "<name>-"):
-    sc.Platform = "<name>"
-```
-
-#### Go: fees.go — Fee Dispatch
-
-Add a case to `CalculatePlatformSpotFee`:
-```go
-case "<name>":
-    return value * 0.001 // replace with actual taker fee
-```
-
-If options, also add to `CalculateOptionFee` if it has per-platform dispatch.
-
-#### Go: executor.go — New Script Wiring (if new script)
-
-If a new `check_<name>.py` was created, add the invocation pattern to `executor.go` following the existing `RunHyperliquidExecute` pattern (or add a new `Run<Name>Execute` function).
-
-#### Go: main.go — New Strategy Type (only if adding a new type)
-
-Only modify `main.go` if a brand-new strategy type is needed (not "spot", "options", or "perps"). If reusing an existing type, no change needed.
-
-#### Go: discord.go — Channel Routing
-
-Channels are resolved dynamically via `resolveChannel(channels, platform, stratType)` — platform key takes priority over type key. No code change needed; just add the new platform's key to `discord.channels` in `config.json` (e.g. `"myplatform": "CHANNEL_ID"`).
-
-#### Config: config.example.json
-
-Add example strategy entries for the new platform:
-```json
-{"id": "<name>-momentum-btc", "type": "spot", "script": "shared_scripts/check_strategy.py",
- "args": ["momentum", "BTC/USDT", "1h"], "capital": 1000, "max_drawdown_pct": 60, "interval_seconds": 300}
-```
-Adjust `type`, `script`, and `args` for perps or options as appropriate.
-
-#### Config: Platform Risk Overrides (optional)
-
-State is persisted to SQLite (`cfg.DBFile`); there are no per-platform state files. Add a `platforms` entry only if you need a risk override:
-```json
-"platforms": {
-  "<name>": {"risk": {"max_drawdown_pct": 50}}
-}
-```
-
-#### Systemd: Environment Variables
-
-If live trading credentials are needed, add to the service file instructions:
-```ini
-Environment="<NAME>_API_KEY=..."
-Environment="<NAME>_API_SECRET=..."
-```
-Document in Step 10 (Verification) and in the Adjustable Settings → Environment Variables section.
-
-### 9e. Verification
-
-After implementation:
-
-1. Syntax-check the adapter:
-```bash
-python3 -m py_compile platforms/<name>/adapter.py
-```
-If a new entry script was created:
-```bash
-python3 -m py_compile shared_scripts/check_<name>.py
-```
-
-2. Build Go:
-```bash
-cd scheduler && /usr/local/go/bin/go build .
-```
-
-3. Smoke test:
-```bash
-./go-trader --config scheduler/config.json --once
-```
-Check that the new platform's strategies appear in the output without errors.
-
----
-
-## Step 10: Verification
-
-### 10a. Service Running
-```bash
-systemctl is-active go-trader
-```
-Expected: `active`
-
-### 10b. Status Endpoint
-```bash
-curl -s localhost:8099/status | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-print(f'Cycle: {d[\"cycle_count\"]}')
-print(f'Strategies: {len(d[\"strategies\"])}')
-for sym, price in d.get('prices', {}).items():
-    print(f'  {sym}: \${price:,.2f}')
-"
-```
-
-### 10c. Discord Check
-If Discord is enabled, wait for the first cycle to complete (~5 minutes) and verify messages appear in the configured channels.
-
-### 10d. Report to User
-
-> ✅ **go-trader is running!**
->
-> **Mode:** {paper/live}
-> **Strategies:** {N} active
-> **Status:** `curl localhost:8099/status`
-> **Logs:** `journalctl -u go-trader -f`
->
-> Spot/perps strategies check every 1h (summaries hourly).
-> Options strategies check every 4h (summaries per check).
-> Trades post immediately to Discord.
->
-> **Useful commands:**
-> - Stop: `sudo systemctl stop go-trader`
-> - Restart: `sudo systemctl restart go-trader`
-> - Status: `curl -s localhost:8099/status | python3 -m json.tool`
-> - Reset positions: `rm scheduler/state.db && sudo systemctl restart go-trader`
-
----
-
-## Backtesting
-
-Run historical simulations using scripts in `backtest/`. All require `.venv/bin/python3` since dependencies (ccxt, pandas, numpy) are installed in the venv.
-
-### Spot Strategy Backtest (`backtest/run_backtest.py`)
+Default status port is `8099`. Override with `--status-port <port>` or `status_port` in config. If the port is busy, the server tries the next ports for up to 5 attempts; check logs for `[server] Status endpoint at http://localhost:<port>/status`.
 
 ```bash
-# Single strategy run
-.venv/bin/python3 backtest/run_backtest.py \
-  --strategy <name> --symbol BTC/USDT --timeframe 1h --mode single
-
-# Compare two strategies
-.venv/bin/python3 backtest/run_backtest.py \
-  --strategy <name> --symbol BTC/USDT --timeframe 1h --mode compare
-
-# Multi-symbol sweep
-.venv/bin/python3 backtest/run_backtest.py \
-  --strategy <name> --timeframe 1h --mode multi
-
-# Parameter optimization
-.venv/bin/python3 backtest/run_backtest.py \
-  --strategy <name> --symbol BTC/USDT --timeframe 1h --mode optimize
-
-# Limit history (e.g. last 90 days)
-.venv/bin/python3 backtest/run_backtest.py \
-  --strategy <name> --symbol BTC/USDT --timeframe 1h --since 90
+curl -s localhost:8099/status | python3 -m json.tool
+curl -s localhost:8099/health
+curl -s localhost:8099/history
 ```
 
-Key flags: `--strategy`, `--symbol`, `--timeframe`, `--mode` (single/compare/multi/optimize), `--since` (days)
+If Discord is enabled, wait for the first cycle and verify messages in configured channels.
 
-### Options Backtest (`backtest/backtest_options.py`)
-
-Self-contained (only imports ccxt).
-
-```bash
-.venv/bin/python3 backtest/backtest_options.py \
-  --underlying BTC --since 90 --capital 10000
-
-# Verbose output
-.venv/bin/python3 backtest/backtest_options.py \
-  --underlying BTC --since 90 --capital 10000 --verbose
-```
-
-Key flags: `--underlying`, `--since` (days), `--capital`, `--verbose`
-
-### Theta Harvest Comparison (`backtest/backtest_theta.py`)
-
-Self-contained.
-
-```bash
-.venv/bin/python3 backtest/backtest_theta.py \
-  --underlying BTC --since 90 --capital 10000
-```
-
-Key flags: `--underlying`, `--since` (days), `--capital`
-
----
-
-## Reconfiguration
-
-These can be done after initial setup without re-running the full guide.
-
-### Regenerate Config from Scratch
-
-Run the interactive wizard to produce a fresh `config.json` (will prompt before overwriting):
-
-```bash
-./go-trader init
-```
-
-Or non-interactively (for agents or scripted setups):
-
-```bash
-./go-trader init --json '{"assets":["BTC"],"enableSpot":true,"spotStrategies":["momentum"],"spotCapital":1000,"spotDrawdown":60}' --output scheduler/config.json
-```
-
-Then restart: `sudo systemctl restart go-trader`
-
-### Change Discord Channels
-Edit `scheduler/config.json` → `discord.channels` (map keyed by platform/type), then restart:
-```bash
-sudo systemctl restart go-trader
-```
-If new channels, also add to OpenClaw allowlist.
-
-### Change Discord Token
-```bash
-sudo systemctl edit go-trader
-# Add: Environment="DISCORD_BOT_TOKEN=new_token_here"
-sudo systemctl restart go-trader
-```
-
-### Add/Remove Strategies
-Edit `scheduler/config.json` → `strategies` array, then restart. Removed strategies are auto-pruned from state. New strategies initialize with fresh capital.
-
-### Adjust Risk Settings
-Edit `max_drawdown_pct` per strategy in config.json, then restart.
-
-### Enable/Disable Theta Harvesting
-Add or remove the `theta_harvest` block from individual strategy entries in config.json, then restart.
-
-### Change Auto-Update Mode
-
-Edit `auto_update` in `scheduler/config.json` (`"off"`, `"daily"`, or `"heartbeat"`), then restart:
-```bash
-sudo systemctl restart go-trader
-```
-
-### Add Custom Platform Integration
-To add a new exchange (spot, perps, or options), follow the guided flow in Step 9. It will walk through gathering platform details, building the Python adapter, wiring Go changes, and updating config.
-
-### Switch Paper → Live
-Add exchange API keys to systemd environment:
-```bash
-sudo systemctl edit go-trader
-# [Service]
-# Environment="BINANCE_API_KEY=..."
-# Environment="BINANCE_API_SECRET=..."
-sudo systemctl restart go-trader
-```
+Report success to the user with mode, number of strategies, status URL, and log command.
 
 ---
 
 ## `/go-trader` Command
 
-When the user says `/go-trader`, "check bot status", "show strategy health", or "how are the bots doing", run this:
+When the user says `/go-trader`, "check bot status", "show strategy health", or "how are the bots doing", run:
 
 ```bash
 curl -s localhost:8099/status | python3 -c "
@@ -894,69 +225,304 @@ import json, sys
 d = json.load(sys.stdin)
 prices = d.get('prices', {})
 strats = d.get('strategies', {})
-
 print(f'=== GO-TRADER (Cycle {d[\"cycle_count\"]}) ===')
 for sym, p in sorted(prices.items()):
     print(f'  {sym}: \${p:,.2f}')
-
 total_val = sum(s['portfolio_value'] for s in strats.values())
 total_cap = sum(s['initial_capital'] for s in strats.values())
 total_pnl = total_val - total_cap
 pct = (total_pnl/total_cap)*100 if total_cap else 0
-print(f'\nPortfolio: \${total_cap:,.0f} → \${total_val:,.0f} ({total_pnl:+,.0f} / {pct:+.1f}%)')
+print(f'\nPortfolio: \${total_cap:,.0f} -> \${total_val:,.0f} ({total_pnl:+,.0f} / {pct:+.1f}%)')
 print(f'Strategies: {len(strats)}')
-
-# Circuit breakers
-cb_active = [(id,s) for id,s in strats.items()
-             if s['risk_state'].get('circuit_breaker_until','').startswith('20')]
+cb_active = [(id,s) for id,s in strats.items() if s['risk_state'].get('circuit_breaker_until','').startswith('20')]
 print(f'Circuit breakers active: {len(cb_active)}')
-
-# Rank by PnL
 ranked = sorted(strats.items(), key=lambda x: x[1]['pnl_pct'], reverse=True)
-print(f'\nTop 5:')
+print('\nTop 5:')
 for id, s in ranked[:5]:
     print(f'  {id}: {s[\"pnl_pct\"]:+.1f}% (\${s[\"pnl\"]:+,.0f}) | {s[\"trade_count\"]} trades')
-print(f'\nBottom 5:')
+print('\nBottom 5:')
 for id, s in ranked[-5:]:
     print(f'  {id}: {s[\"pnl_pct\"]:+.1f}% (\${s[\"pnl\"]:+,.0f}) | {s[\"trade_count\"]} trades')
-
-# Dead strategies
 dead = [id for id,s in strats.items() if s['trade_count'] == 0]
 if dead:
-    print(f'\nDead (0 trades): {len(dead)} — {dead}')
-
-# Circuit breaker details
+    print(f'\nDead (0 trades): {len(dead)} - {dead}')
 if cb_active:
-    print(f'\nCircuit breaker details:')
+    print('\nCircuit breaker details:')
     for id, s in cb_active:
         rs = s['risk_state']
         print(f'  {id}: dd={rs[\"current_drawdown_pct\"]:.1f}% / max={rs[\"max_drawdown_pct\"]:.0f}% | until {rs[\"circuit_breaker_until\"][:19]}')
 "
 ```
 
-Present the output to the user in a readable format. Highlight any circuit breakers, dead strategies, or notable PnL changes.
+Present output in readable prose. Highlight circuit breakers, dead strategies, large PnL changes, and missing status data.
 
 ---
 
-## Operator-Required Circuit Breakers (OKX spot / Robinhood options)
+## `/menu` Command
 
-Some live venues have no safe automated-close primitive. When a per-strategy circuit breaker fires on one of these, the scheduler cannot flatten on its own — it enqueues a pending close with `operator_required: true` and emits a CRITICAL warning on every cycle (stdout, Discord, Telegram) until the operator intervenes.
+When the user says `/menu`, "show menu", "what can I configure", "what's available", or "help me get started", output this overview:
 
-### Affected venues
+```text
+=== GO-TRADER MENU ===
 
-| Platform | Type | Why no auto-close | Pending-close key |
-| --- | --- | --- | --- |
-| OKX | spot | No reduce-only semantic on asset balances; net-close could wipe other holdings | `okx_spot` |
-| Robinhood | options | Leg-aware close semantics (sell-to-close vs buy-to-close, multi-leg spreads) are high-risk to automate | `robinhood_options` |
+1. TRADING PLATFORMS
+   Binance US spot; Deribit options; IBKR/CME options; Hyperliquid perps;
+   TopStep futures; Robinhood crypto/options; OKX spot/perps/options; Luno;
+   custom platforms via the integration checklist.
 
-These gaps are documented separately from the portfolio kill-switch equivalents in #345 (OKX spot) and #346 (Robinhood options); the per-strategy path (#363) reuses the same operator-intervention framing.
+2. AVAILABLE STRATEGIES
+   Spot: sma_crossover, ema_crossover, momentum, rsi, bollinger_bands, macd,
+     mean_reversion, volume_weighted, triple_ema, rsi_macd_combo, pairs_spread
+   Futures/perps: momentum, mean_reversion, rsi, macd, breakout,
+     session_breakout, triple_ema_bidir, delta_neutral_funding
+   Options: vol_mean_reversion, momentum_options, protective_puts,
+     covered_calls, wheel, butterfly
 
-### Detecting the condition
+3. ADJUSTABLE SETTINGS
+   Global: interval_seconds, db_file, auto_update, status_port,
+     max_drawdown_pct, portfolio_risk.warn_threshold_pct,
+     notional_cap_usd, risk_free_rate, correlation.*, summary_frequency
+   Per-strategy: capital, max_drawdown_pct, interval_seconds, htf_filter,
+     params, stop_loss_pct, allow_shorts, theta_harvest.*
+   Discord/Telegram: enabled, channels, dm_channels, owner_id
+   Environment: Discord token, status token, exchange credentials
 
-**Via `/status`:** look under `strategies.<id>.risk_state.pending_circuit_closes` for entries with `operator_required: true`. Ignore HL / OKX-perps / TopStep / Robinhood-crypto pending entries — those drain automatically.
+4. COMMANDS
+   /menu
+   /go-trader
+   ./go-trader init
+   ./go-trader init --json '{...}' --output scheduler/config.json
+   sudo systemctl start|stop|restart|status go-trader
+   journalctl -u go-trader -n 50 --no-pager
+   curl -s localhost:8099/status | python3 -m json.tool
+
+5. BACKTESTING
+   .venv/bin/python3 backtest/run_backtest.py --strategy <n> --symbol BTC/USDT --timeframe 1h --mode single|compare|multi|optimize
+   .venv/bin/python3 backtest/backtest_options.py --underlying BTC --since 90 --capital 10000
+   .venv/bin/python3 backtest/backtest_theta.py --underlying BTC --since 90 --capital 10000
+```
+
+---
+
+## Backtesting
+
+Use `.venv/bin/python3` for all backtests.
 
 ```bash
-curl -s localhost:8080/status | .venv/bin/python3 -c "
+.venv/bin/python3 backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode single
+.venv/bin/python3 backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode compare
+.venv/bin/python3 backtest/run_backtest.py --strategy momentum --timeframe 1h --mode multi
+.venv/bin/python3 backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode optimize
+.venv/bin/python3 backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --since 90
+
+.venv/bin/python3 backtest/backtest_options.py --underlying BTC --since 90 --capital 10000
+.venv/bin/python3 backtest/backtest_options.py --underlying BTC --since 90 --capital 10000 --verbose
+.venv/bin/python3 backtest/backtest_theta.py --underlying BTC --since 90 --capital 10000
+```
+
+---
+
+## Reconfiguration
+
+After edits to `scheduler/config.json`, restart:
+
+```bash
+sudo systemctl restart go-trader
+```
+
+Common changes:
+
+- Regenerate config: `./go-trader init`
+- Script config generation: `./go-trader init --json '{...}' --output scheduler/config.json`
+- Change channels: edit `discord.channels` / `telegram.channels`; update OpenClaw allowlist if needed
+- Change token: `sudo systemctl edit go-trader`, add environment override, restart
+- Add/remove strategies: edit the `strategies` array; removed strategies are pruned from state
+- Adjust risk: edit strategy `max_drawdown_pct`, portfolio `max_drawdown_pct`, or `portfolio_risk.warn_threshold_pct`
+- Enable theta harvesting: add `theta_harvest` block to options strategy entries
+- Switch paper to live: change script args from `--mode=paper` to `--mode=live`, add `--execute` where required, and configure exchange credentials
+
+Changing `capital` on an existing strategy does not reset cash/positions. To fully reset, remove `scheduler/state.db` or that strategy's DB rows and restart.
+
+---
+
+## Adjustable Settings
+
+Global config keys:
+
+| Setting | Key | Default |
+| --- | --- | --- |
+| Check interval | `interval_seconds` | 300 |
+| State DB path | `db_file` | `scheduler/state.db` |
+| Auto-update | `auto_update` | `off` |
+| Status port | `status_port` | 8099 |
+| Risk-free rate | `risk_free_rate` | 0.04 |
+| Portfolio drawdown kill switch | `max_drawdown_pct` | 25 |
+| Portfolio warn threshold | `portfolio_risk.warn_threshold_pct` | 60 |
+| Correlation tracking | `correlation.*` | disabled |
+| Summary cadence | `summary_frequency` | legacy defaults |
+
+Per-strategy keys:
+
+| Setting | Key | Notes |
+| --- | --- | --- |
+| Capital | `capital` | Starting capital reference |
+| Max drawdown | `max_drawdown_pct` | Strategy circuit breaker |
+| Interval | `interval_seconds` | 0 uses global; auto-accelerates in drawdown warn band |
+| HTF filter | `htf_filter` | Skips counter-trend signals |
+| Params | `params` | Strategy default overrides |
+| Allow shorts | `allow_shorts` | Required for bidirectional perps strategies |
+| Stop loss | `stop_loss_pct` | Hyperliquid perps only, 0 disabled, max 50 |
+| Theta harvest | `theta_harvest.*` | Options early-exit controls |
+
+Discord/Telegram keys:
+
+- `enabled`
+- `channels`: platform/type channel map
+- `dm_channels`: per-platform DM-style trade alerts
+- `owner_id`: prefer `DISCORD_OWNER_ID` env var for Discord
+
+Correlation tracking:
+
+- `correlation.enabled`
+- `correlation.max_concentration_pct`, default 60
+- `correlation.max_same_direction_pct`, default 75
+
+When enabled, correlation warnings go to all active channels and owner DM, and the snapshot appears in `/status`.
+
+---
+
+## Strategy Reference
+
+Use the registry as source of truth:
+
+```bash
+.venv/bin/python3 shared_strategies/spot/strategies.py --list-json
+.venv/bin/python3 shared_strategies/futures/strategies.py --list-json
+.venv/bin/python3 shared_strategies/options/strategies.py --list-json
+```
+
+Platform conventions:
+
+| Platform | ID prefix | Type/script |
+| --- | --- | --- |
+| BinanceUS spot | none | `spot`, `shared_scripts/check_strategy.py` |
+| Hyperliquid perps | `hl-` | `perps`, `shared_scripts/check_hyperliquid.py` |
+| TopStep futures | `ts-` | `futures`, `shared_scripts/check_topstep.py` |
+| Robinhood | `rh-` | `spot` via `check_robinhood.py`, options via `check_options.py --platform=robinhood` |
+| OKX | `okx-` | `check_okx.py` for spot/perps, `check_options.py --platform=okx` for options |
+| Deribit options | `deribit-` | `check_options.py --platform=deribit` |
+| IBKR options | `ibkr-` | `check_options.py --platform=ibkr` |
+| Luno | `luno-` | Luno adapter/scripts |
+
+Common entries:
+
+```json
+{"id":"momentum-btc","type":"spot","script":"shared_scripts/check_strategy.py","args":["momentum","BTC/USDT","1h"],"capital":1000,"max_drawdown_pct":60,"interval_seconds":300}
+{"id":"deribit-vol-btc","type":"options","script":"shared_scripts/check_options.py","args":["vol_mean_reversion","BTC","--platform=deribit"],"capital":1000,"max_drawdown_pct":40,"interval_seconds":1200}
+{"id":"ibkr-vol-btc","type":"options","script":"shared_scripts/check_options.py","args":["vol_mean_reversion","BTC","--platform=ibkr"],"capital":1000,"max_drawdown_pct":40,"interval_seconds":1200}
+{"id":"ts-momentum-es","type":"futures","platform":"topstep","script":"shared_scripts/check_topstep.py","args":["momentum","ES","1h","--mode=paper"],"capital":1000,"max_drawdown_pct":5,"interval_seconds":3600}
+{"id":"rh-sma-btc","type":"spot","platform":"robinhood","script":"shared_scripts/check_robinhood.py","args":["sma_crossover","BTC","1h","--mode=paper"],"capital":500,"max_drawdown_pct":5,"interval_seconds":3600}
+{"id":"rh-ccall-spy","type":"options","platform":"robinhood","script":"shared_scripts/check_options.py","args":["covered_calls","SPY","--platform=robinhood"],"capital":5000,"max_drawdown_pct":10,"interval_seconds":14400,"theta_harvest":{"enabled":true,"profit_target_pct":60,"stop_loss_pct":200,"min_dte_close":3}}
+{"id":"okx-sma-btc","type":"spot","platform":"okx","script":"shared_scripts/check_okx.py","args":["sma_crossover","BTC","1h","--mode=paper","--inst-type=spot"],"capital":1000,"max_drawdown_pct":5,"interval_seconds":3600}
+{"id":"okx-sma-btc-perp","type":"perps","platform":"okx","script":"shared_scripts/check_okx.py","args":["sma_crossover","BTC","1h","--mode=paper","--inst-type=swap"],"capital":1000,"max_drawdown_pct":5,"interval_seconds":3600}
+{"id":"okx-mom-btc","type":"options","platform":"okx","script":"shared_scripts/check_options.py","args":["momentum_options","BTC","--platform=okx"],"capital":5000,"max_drawdown_pct":10,"interval_seconds":14400,"theta_harvest":{"enabled":true,"profit_target_pct":60,"stop_loss_pct":200,"min_dte_close":3}}
+```
+
+Short-name conventions:
+
+- Options: `vol_mean_reversion -> vol`, `momentum_options -> momentum`, `protective_puts -> puts`, `covered_calls -> calls`, `wheel -> wheel`, `butterfly -> butterfly`
+- TopStep: `ts-{strategy}-{symbol}`
+- Robinhood: `rh-{strategy_short}-{asset_or_symbol}`
+- OKX: `okx-{strategy_short}-{asset}` for spot/options, `okx-{strategy_short}-{asset}-perp` for perps
+- `triple_ema_bidir` is futures/perps only and needs `"allow_shorts": true`
+- `session_breakout` is futures/perps only; short name `sbo`
+
+---
+
+## Add Or Change Strategies
+
+Single source of truth: `shared_strategies/registry.py`.
+
+Checklist for new spot/futures strategies:
+
+1. Add the implementation and `@register_strategy(...)` entry in `shared_strategies/registry.py`.
+2. Set `platforms=(...)` correctly; use variants for platform-specific defaults/descriptions.
+3. Append the name to `PLATFORM_ORDER`.
+4. Add short name and default strategy entries in `scheduler/init.go`.
+5. Add a param grid to `DEFAULT_PARAM_RANGES` in `backtest/optimizer.py`.
+6. Run registry and optimizer tests.
+
+Do not edit `shared_strategies/spot/strategies.py` or `shared_strategies/futures/strategies.py` to add strategies; they are thin shims.
+
+Before refactoring registry/shims, snapshot list output:
+
+```bash
+.venv/bin/python3 shared_strategies/spot/strategies.py --list-json > /tmp/spot.json
+.venv/bin/python3 shared_strategies/futures/strategies.py --list-json > /tmp/futures.json
+```
+
+After changes, diff the outputs unless intentionally changing discovery.
+
+---
+
+## Custom Platform Integration
+
+Gather:
+
+- Platform name and ID prefix
+- Supported products: spot, perps, futures, options
+- API docs URL or `ccxt`
+- Credential environment variable names
+- Fees
+- Assets and strategies
+- Paper/live requirements
+
+Implementation checklist:
+
+1. Add `platforms/<name>/__init__.py`.
+2. Add `platforms/<name>/adapter.py` with exactly one class ending in `ExchangeAdapter`.
+3. Implement public adapter methods; check scripts must not touch private attributes.
+4. Add `shared_scripts/check_<name>.py` only if existing entry scripts do not fit.
+5. Add ID prefix inference in `scheduler/config.go`.
+6. Add fee dispatch in `scheduler/fees.go`.
+7. Add executor wiring only if a new live execution path is required.
+8. Add config examples.
+9. Add init wizard / `generateConfig` support if users should select it.
+10. Add tests or pure helper tests for Go logic.
+
+Adapter references:
+
+- Spot: `platforms/binanceus/adapter.py`
+- Perps: `platforms/hyperliquid/adapter.py`
+- Futures: `platforms/topstep/adapter.py`
+- Options: `platforms/deribit/adapter.py`
+
+Verification:
+
+```bash
+.venv/bin/python3 -m py_compile platforms/<name>/adapter.py
+.venv/bin/python3 -m py_compile shared_scripts/check_<name>.py
+/opt/homebrew/bin/go -C scheduler build .
+./go-trader --config scheduler/config.json --once
+```
+
+---
+
+## Operator-Required Circuit Breakers
+
+Some live venues lack a safe automated close path for per-strategy circuit breakers:
+
+| Platform | Type | Pending key |
+| --- | --- | --- |
+| OKX | spot | `okx_spot` |
+| Robinhood | options | `robinhood_options` |
+
+When triggered, the scheduler enqueues `operator_required: true` and emits a CRITICAL warning every cycle until intervention.
+
+Detect via `/status`:
+
+```bash
+curl -s localhost:8099/status | .venv/bin/python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 for sid, s in d['strategies'].items():
@@ -968,356 +534,63 @@ for sid, s in d['strategies'].items():
 "
 ```
 
-**Via notifications:** Discord and Telegram receive a message titled `CIRCUIT BREAKER — OPERATOR INTERVENTION REQUIRED` listing each affected strategy, its legs, drawdown %, and CB-until timestamp.
+Response:
 
-**Via logs:** every cycle prints one `[CRITICAL] operator-required-close: strategy <id> platform <key> — <legs> (circuit breaker fired, venue lacks safe auto-close; operator must flatten manually)` line per entry.
-
-### Response
-
-1. Open the venue UI (OKX web / mobile, Robinhood app).
+1. Open the venue UI.
 2. Flatten the listed positions manually.
-3. Confirm via `/status` that the underlying positions are gone.
-4. Do NOT manually clear the pending — the scheduler clears it automatically on the next natural circuit-breaker reset (24h default for max-drawdown, 1h for 5-consecutive-losses). If you need to resume trading sooner, reset the portfolio kill switch via owner DM (which also clears per-strategy operator-required pendings) or restart the scheduler after flattening.
+3. Confirm positions are gone via `/status`.
+4. Let the scheduler clear the pending on the next natural circuit-breaker reset, or reset the portfolio kill switch via owner DM if trading must resume sooner.
 
-### Do not confuse with portfolio kill switch
+Do not confuse this with the portfolio kill switch. Portfolio kill switch is portfolio-level and runs automated close paths where available. Operator-required warnings are per-strategy and affect only the strategy that breached drawdown.
 
-The portfolio kill switch (`KILL_SWITCH` in state, `PORTFOLIO KILL SWITCH` message header) is a higher-severity event that fires on total-portfolio drawdown and runs the platform-specific automated close paths. Operator-required warnings are the PER-STRATEGY equivalent: only the strategy hitting its own `max_drawdown_pct` is paused, not the whole portfolio. If both fire the portfolio kill takes over and clears per-strategy operator-required pendings to avoid double-notifying.
+Kill-switch auto-reset: once the portfolio kill switch confirms all platforms are flat (`OnChainConfirmedFlat=true`), the next cycle clears virtual state and resumes trading. The bot posts `Virtual state cleared. Kill switch auto-reset; trading will resume next cycle.`
 
----
+Portfolio drawdown warnings repeat every cycle while drawdown remains in the warn band (`portfolio_risk.warn_threshold_pct`, default 60% of kill-switch). Silence by resolving the drawdown or changing the threshold.
 
-## `/menu` Command
+Drain/live-exec failure alerts: repeated `DRAIN FAILURE` or `EXEC FAILURE` alerts mean a CB drain or live order failed. Check:
 
-When the user says `/menu`, "show menu", "what can I configure", "what's available", or "help me get started", output the following overview directly (no bash command needed):
-
-```
-=== GO-TRADER MENU ===
-
-1. TRADING PLATFORMS
-   • Binance US  — spot trading: BTC, ETH, SOL
-   • Deribit     — options trading: BTC, ETH
-   • IBKR / CME  — options trading: BTC, ETH (CME Micro contracts, Black-Scholes pricing)
-   • Hyperliquid — perps trading: any HL-listed asset (paper + live)
-   • TopStep     — futures trading: ES, NQ, MES, MNQ, CL, GC (paper + live)
-   • Robinhood   — crypto trading: BTC, ETH, SOL, DOGE, etc. (paper via yfinance + live via robin_stocks)
-   • Robinhood   — stock options: SPY, QQQ, AAPL, etc. (paper via Black-Scholes + live via robin_stocks)
-   • Custom      — add your own exchange via Step 9 (guided setup)
-
-2. AVAILABLE STRATEGIES
-   Spot (10 strategies):
-     sma_crossover, ema_crossover, momentum, rsi, bollinger_bands, macd,
-     mean_reversion, volume_weighted, triple_ema, rsi_macd_combo, pairs_spread
-   Futures-only (TopStep/perps only):
-     session_breakout
-   Deribit Options (8):
-     vol_mean_reversion, momentum_options, protective_puts, covered_calls,
-     wheel, butterfly  — BTC + ETH each
-   IBKR Options (8):
-     same 6 strategies as Deribit — BTC + ETH each
-   Futures (6 strategies, TopStep/CME):
-     momentum, mean_reversion, rsi, macd, breakout, session_breakout
-   Robinhood Crypto (same 10 spot strategies):
-     sma_crossover, ema_crossover, momentum, rsi, bollinger_bands, macd,
-     mean_reversion, volume_weighted, triple_ema, rsi_macd_combo
-
-3. ADJUSTABLE SETTINGS  (edit scheduler/config.json, then: sudo systemctl restart go-trader)
-   Global:
-     interval_seconds   — default cycle interval (seconds)
-     db_file            — SQLite path for positions/trades/risk state
-     max_drawdown_pct   — portfolio-level circuit breaker (triggers live-close on HL/OKX/Robinhood/TopStep)
-     notional_cap_usd   — max total notional exposure
-     correlation.*      — per-asset directional exposure tracking (enabled, max_concentration_pct, max_same_direction_pct)
-     summary_frequency  — per-channel cadence map (hourly/daily/every/30m/2h); keys match discord.channels keys
-   Per-strategy:
-     capital           — starting capital (USD)
-     max_drawdown_pct  — strategy-level circuit breaker
-     interval_seconds  — per-strategy check frequency (0 = use global)
-     theta_harvest.*   — profit_target_pct, stop_loss_pct, min_dte_close
-   Discord:
-     enabled           — true/false
-     channels          — map: "spot", "options", "hyperliquid", "topstep", "robinhood", "okx", "luno"
-   Environment (sudo systemctl edit go-trader):
-     DISCORD_BOT_TOKEN, DISCORD_OWNER_ID, STATUS_AUTH_TOKEN
-     BINANCE_API_KEY, BINANCE_API_SECRET
-     HYPERLIQUID_SECRET_KEY, HYPERLIQUID_ACCOUNT_ADDRESS
-     TOPSTEP_API_KEY, TOPSTEP_API_SECRET, TOPSTEP_ACCOUNT_ID
-     ROBINHOOD_USERNAME, ROBINHOOD_PASSWORD, ROBINHOOD_TOTP_SECRET
-     OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE, OKX_SANDBOX
-     LUNO_API_KEY_ID, LUNO_API_KEY_SECRET
-
-4. COMMANDS
-   /menu       — this overview
-   /go-trader  — live status dashboard (cycle, prices, PnL, circuit breakers)
-   Setup:
-     ./go-trader init                    — interactive config wizard (regenerate config.json)
-     ./go-trader init --json '{...}'     — non-interactive config generation (agents/scripts)
-     Add custom platform                 — say "add a custom platform" (runs Step 9 guided flow)
-   System:
-     sudo systemctl start|stop|restart go-trader
-     sudo systemctl status go-trader
-     journalctl -u go-trader -n 50 --no-pager
-     curl -s localhost:8099/status | python3 -m json.tool
-
-5. BACKTESTING
-   Spot:
-     .venv/bin/python3 backtest/run_backtest.py \
-       --strategy <n> --symbol BTC/USDT --timeframe 1h \
-       --mode single|compare|multi|optimize
-   Options:
-     .venv/bin/python3 backtest/backtest_options.py --underlying BTC --since YYYY-MM-DD --capital 10000
-     .venv/bin/python3 backtest/backtest_theta.py   --underlying BTC --since YYYY-MM-DD --capital 10000
-
-For full details on any section, ask about it or see the relevant section in SKILL.md.
-```
-
----
-
-## Adjustable Settings Reference
-
-All settings live in `scheduler/config.json`. After any change, restart the service:
 ```bash
-sudo systemctl restart go-trader
+journalctl -u go-trader -n 100 | grep "liveExec\|drain"
 ```
-
-Config changes are synced to state on startup — no need to reset positions.
-
-### Global Settings
-
-| Setting | Key | Default | Description |
-|---------|-----|---------|-------------|
-| Check interval | `interval_seconds` | 300 (5 min) | Global default cycle interval in seconds |
-| State DB path | `db_file` | `scheduler/state.db` | SQLite DB — sole store for positions, trades, and risk state |
-| Auto-update | `auto_update` | `"off"` | Update check mode: `"off"`, `"daily"`, `"heartbeat"` |
-
-### Correlation Tracking
-
-| Setting | Key | Default | Description |
-|---------|-----|---------|-------------|
-| Enable correlation | `correlation.enabled` | false | Track per-asset directional exposure across strategies |
-| Max concentration | `correlation.max_concentration_pct` | 60 | Warn when one asset exceeds this % of portfolio gross exposure |
-| Max same direction | `correlation.max_same_direction_pct` | 75 | Warn when more than this % of strategies on an asset share a direction |
-
-When enabled, warnings are sent to all active Discord channels and DM'd to the owner. The correlation snapshot is also available via `/status`.
-
-### Per-Strategy Settings
-
-Each entry in the `strategies` array supports:
-
-| Setting | Key | Default | Description |
-|---------|-----|---------|-------------|
-| Capital | `capital` | 1000 | Starting capital in USD for this strategy |
-| Max drawdown | `max_drawdown_pct` | Spot: 60, Options: 40 | Circuit breaker triggers when drawdown from peak exceeds this %. Measured from the strategy's peak portfolio value, not initial capital. |
-| Check interval | `interval_seconds` | Uses global | How often this strategy checks for signals (seconds). 0 = use global default. Spot typically 300 (5 min), options 1200 (20 min). |
-| HTF filter | `htf_filter` | false | Enable higher-timeframe trend filter (filters counter-trend signals) |
-| Custom params | `params` | null | JSON object of strategy parameter overrides (e.g. `{"multiplier": 2.0, "atr_period": 10}`). Merged with strategy defaults; runtime params like funding rates take priority. |
-| Theta harvest | `theta_harvest.enabled` | false | Enable early exit on sold options |
-| Theta profit target | `theta_harvest.profit_target_pct` | 60 | Close sold option when this % of premium is captured |
-| Theta stop loss | `theta_harvest.stop_loss_pct` | 200 | Close sold option if loss exceeds this % of premium (200 = 2× premium) |
-| Theta min DTE | `theta_harvest.min_dte_close` | 3 | Force-close positions with fewer than N days to expiry |
-
-### Discord Settings
-
-| Setting | Key | Default | Description |
-|---------|-----|---------|-------------|
-| Enable Discord | `discord.enabled` | true | Turn Discord notifications on/off |
-| Channels | `discord.channels` | — | Map of channel IDs keyed by platform/type: `"spot"`, `"options"`, `"hyperliquid"`, `"topstep"`, `"robinhood"`, `"okx"`, `"luno"`, etc. |
-| Owner ID | `discord.owner_id` | — | Your Discord user ID — enables DM upgrade prompts and post-upgrade config migration. Use `DISCORD_OWNER_ID` env var (preferred). |
-
-### Environment Variables
-
-Set via systemd override (`sudo systemctl edit go-trader`):
-
-| Variable | Description |
-|----------|-------------|
-| `DISCORD_BOT_TOKEN` | Discord bot token (never store in config.json) |
-| `DISCORD_OWNER_ID` | Your Discord user ID for DM upgrades and config migration (optional) |
-| `STATUS_AUTH_TOKEN` | Optional: require Bearer token for /status endpoint |
-| `BINANCE_API_KEY` | Binance API key (live trading only) |
-| `BINANCE_API_SECRET` | Binance API secret (live trading only) |
-| `HYPERLIQUID_SECRET_KEY` | Hyperliquid signing key (perps live trading only) |
-| `HYPERLIQUID_ACCOUNT_ADDRESS` | Hyperliquid account address (shared-wallet tracking) |
-| `TOPSTEP_API_KEY` | TopStep API key (futures live trading only) |
-| `TOPSTEP_API_SECRET` | TopStep API secret (futures live trading only) |
-| `TOPSTEP_ACCOUNT_ID` | TopStep account ID (futures live trading only) |
-| `ROBINHOOD_USERNAME` | Robinhood account email (crypto/options live trading only) |
-| `ROBINHOOD_PASSWORD` | Robinhood account password (crypto/options live trading only) |
-| `ROBINHOOD_TOTP_SECRET` | TOTP secret for Robinhood MFA (base32 string from authenticator setup) |
-| `OKX_API_KEY` | OKX API key (live trading only) |
-| `OKX_API_SECRET` | OKX API secret (live trading only) |
-| `OKX_PASSPHRASE` | OKX API passphrase (live trading only) |
-| `OKX_SANDBOX` | Set to `1` to target OKX demo trading environment |
-| `LUNO_API_KEY_ID` | Luno API key ID (live trading only) |
-| `LUNO_API_KEY_SECRET` | Luno API secret (live trading only) |
-| `GO_TRADER_ALLOW_MISSING_STATE` | Set to `1` to silence the "state DB missing but live strategies configured" startup warning (#339). Only use for genuine first-run deployments. |
-
-### Example: Adjusting a Strategy
-
-To change deribit-vol-btc to $2,000 capital with 50% max drawdown and theta harvesting:
-
-```json
-{
-  "id": "deribit-vol-btc",
-  "type": "options",
-  "script": "shared_scripts/check_options.py",
-  "args": ["vol_mean_reversion", "BTC", "--platform=deribit"],
-  "capital": 2000,
-  "max_drawdown_pct": 50,
-  "interval_seconds": 1200,
-  "theta_harvest": {
-    "enabled": true,
-    "profit_target_pct": 60,
-    "stop_loss_pct": 200,
-    "min_dte_close": 3
-  }
-}
-```
-
-Then restart: `sudo systemctl restart go-trader`
-
-To run supertrend on ES futures with a tighter multiplier for faster signals:
-
-```json
-{
-  "id": "ts-st-es",
-  "type": "futures",
-  "platform": "topstep",
-  "script": "shared_scripts/check_topstep.py",
-  "args": ["supertrend", "ES", "5m", "--mode=paper"],
-  "capital": 5000,
-  "max_drawdown_pct": 10,
-  "interval_seconds": 300,
-  "params": {"multiplier": 2.0, "atr_period": 10}
-}
-```
-
-The `params` field overrides strategy defaults — here it uses a 2.0 multiplier (default 3.0) for faster trend-flip detection on 5-minute candles.
-
-**Note:** Changing `capital` on an existing strategy does NOT reset its positions or cash. It only changes the `initial_capital` reference for PnL calculations. To fully reset a strategy, delete the `scheduler/state.db` file (or that strategy's row in the `strategies` table) and restart.
 
 ---
 
-## Strategy Reference (for config generation)
+## Implementation Patterns
 
-### Spot Strategy Entries
+- `StrategyConfig.Platform` is inferred from ID prefix in `LoadConfig`; prefer `s.Platform` over ID-prefix checks.
+- Platform prefixes: `hl-`, `ibkr-`, `deribit-`, `ts-`, `rh-`, `okx-`, `luno-`; default is BinanceUS.
+- Scheduler subprocess scripts must print valid JSON to stdout even on error.
+- Python scripts exit 1 on error; Go still parses stdout.
+- Per-strategy loop uses fine-grained locks; audit lock balance in `scheduler/main.go` before changing lock flow.
+- Live helpers must check skip conditions before spawning Python, then skip state updates when execution fails.
+- Bidirectional perps must thread `AllowShorts` through signal execution and live order sizing.
+- Sort map keys before formatting operator-facing or test-asserted output.
+- Add notification behavior through `MultiNotifier`.
+- Native Go mark fetchers expose base URLs as vars for httptest stubs.
 
-Each spot strategy needs entries for each asset it supports:
+Useful audits:
 
-```json
-{"id": "momentum-btc", "type": "spot", "script": "shared_scripts/check_strategy.py", "args": ["momentum", "BTC/USDT", "1h"], "capital": 1000, "max_drawdown_pct": 60, "interval_seconds": 300}
-{"id": "momentum-eth", "type": "spot", "script": "shared_scripts/check_strategy.py", "args": ["momentum", "ETH/USDT", "1h"], "capital": 1000, "max_drawdown_pct": 60, "interval_seconds": 300}
-{"id": "momentum-sol", "type": "spot", "script": "shared_scripts/check_strategy.py", "args": ["momentum", "SOL/USDT", "1h"], "capital": 1000, "max_drawdown_pct": 60, "interval_seconds": 300}
+```bash
+grep -n "mu\.\(R\)\?Lock\(\)\|mu\.\(R\)\?Unlock\(\)" scheduler/main.go
+grep -n "liveExecFailed" scheduler/main.go
 ```
 
-**Strategies and their assets:**
-- `sma_crossover`, `ema_crossover`, `momentum`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `volume_weighted`, `triple_ema`, `rsi_macd_combo`: BTC, ETH, SOL
-- `pairs_spread`: Requires two assets — `args: ["pairs_spread", "BTC/USDT", "1d", "ETH/USDT"]`
-- `triple_ema_bidir`: futures/perps only (not registered for spot); bidirectional — set `"allow_shorts": true` on the strategy entry so the scheduler opens shorts from flat and flips on reversal.
-- `session_breakout`: futures/perps only; short name `sbo`; ID convention `ts-sbo-es` (TopStep), `hl-sbo-btc` (Hyperliquid perps). Default params: `session=asian`, `lookback=1`, `volume_threshold=1.5`.
+---
 
-**Pairs strategy IDs and args:**
-```json
-{"id": "pairs-btc-eth", "args": ["pairs_spread", "BTC/USDT", "1d", "ETH/USDT"], "interval_seconds": 86400}
-{"id": "pairs-btc-sol", "args": ["pairs_spread", "BTC/USDT", "1d", "SOL/USDT"], "interval_seconds": 86400}
-{"id": "pairs-eth-sol", "args": ["pairs_spread", "ETH/USDT", "1d", "SOL/USDT"], "interval_seconds": 86400}
+## Tests
+
+Preferred commands:
+
+```bash
+/opt/homebrew/bin/go -C scheduler test ./...
+.venv/bin/python3 -m pytest
+.venv/bin/python3 shared_strategies/test_registry_parity.py
 ```
 
-### Deribit Options Entries
+If Go cache needs an explicit writable path:
 
-Each Deribit strategy runs on BTC and ETH:
-
-```json
-{"id": "deribit-vol-btc", "type": "options", "script": "shared_scripts/check_options.py", "args": ["vol_mean_reversion", "BTC", "--platform=deribit"], "capital": 1000, "max_drawdown_pct": 40, "interval_seconds": 1200}
-{"id": "deribit-vol-eth", "type": "options", "script": "shared_scripts/check_options.py", "args": ["vol_mean_reversion", "ETH", "--platform=deribit"], "capital": 1000, "max_drawdown_pct": 40, "interval_seconds": 1200}
+```bash
+env GOCACHE=/tmp/go-build-cache /opt/homebrew/bin/go -C scheduler test ./...
 ```
 
-**Strategy arg names:** `vol_mean_reversion`, `momentum_options`, `protective_puts`, `covered_calls`, `wheel`, `butterfly`
-
-**ID convention:** `deribit-{strategy_short}-{asset}` where strategy_short is:
-- `vol_mean_reversion` → `vol`
-- `momentum_options` → `momentum`
-- `protective_puts` → `puts`
-- `covered_calls` → `calls`
-- `wheel` → `wheel`
-- `butterfly` → `butterfly`
-
-### IBKR/CME Options Entries
-
-Same as Deribit but with different script and ID prefix:
-
-```json
-{"id": "ibkr-vol-btc", "type": "options", "script": "shared_scripts/check_options.py", "args": ["vol_mean_reversion", "BTC", "--platform=ibkr"], "capital": 1000, "max_drawdown_pct": 40, "interval_seconds": 1200}
-```
-
-**ID convention:** `ibkr-{strategy_short}-{asset}` (same short names as Deribit)
-
-### TopStep Futures Entries
-
-Each TopStep strategy runs on CME futures symbols (ES, NQ, MES, MNQ, CL, GC):
-
-```json
-{"id": "ts-momentum-es", "type": "futures", "script": "shared_scripts/check_topstep.py", "args": ["momentum", "ES", "1h", "--mode=paper"], "capital": 1000, "max_drawdown_pct": 5, "interval_seconds": 3600}
-{"id": "ts-mean_reversion-es", "type": "futures", "script": "shared_scripts/check_topstep.py", "args": ["mean_reversion", "ES", "1h", "--mode=paper"], "capital": 1000, "max_drawdown_pct": 5, "interval_seconds": 3600}
-```
-
-**Strategy arg names:** `momentum`, `mean_reversion`, `rsi`, `macd`, `breakout`
-
-**ID convention:** `ts-{strategy}-{symbol}` (e.g. `ts-momentum-es`, `ts-rsi-nq`)
-
-For live trading, change `--mode=paper` to `--mode=live` and add `--execute` flag. Requires `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRET`, `TOPSTEP_ACCOUNT_ID` env vars.
-
-### Robinhood Crypto Entries
-
-Each Robinhood strategy runs the spot strategy suite on crypto assets (BTC, ETH, SOL, etc.):
-
-```json
-{"id": "rh-sma-btc", "type": "spot", "platform": "robinhood", "script": "shared_scripts/check_robinhood.py", "args": ["sma_crossover", "BTC", "1h", "--mode=paper"], "capital": 500, "max_drawdown_pct": 5, "interval_seconds": 3600}
-{"id": "rh-momentum-eth", "type": "spot", "platform": "robinhood", "script": "shared_scripts/check_robinhood.py", "args": ["momentum", "ETH", "1h", "--mode=paper"], "capital": 500, "max_drawdown_pct": 5, "interval_seconds": 3600}
-```
-
-**ID convention:** `rh-{strategy_short}-{asset}` (e.g. `rh-sma-btc`, `rh-rsi-eth`)
-
-Paper mode uses Yahoo Finance for OHLCV data (no credentials needed). For live trading, change `--mode=paper` to `--mode=live`. Requires `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` env vars.
-
-### Robinhood Stock Options Entries
-
-Each Robinhood options strategy runs on US equity symbols (SPY, QQQ, AAPL, etc.):
-
-```json
-{"id": "rh-ccall-spy", "type": "options", "platform": "robinhood", "script": "shared_scripts/check_options.py", "args": ["covered_calls", "SPY", "--platform=robinhood"], "capital": 5000, "max_drawdown_pct": 10, "interval_seconds": 14400, "theta_harvest": {"enabled": true, "profit_target_pct": 60, "stop_loss_pct": 200, "min_dte_close": 3}}
-{"id": "rh-pput-qqq", "type": "options", "platform": "robinhood", "script": "shared_scripts/check_options.py", "args": ["protective_puts", "QQQ", "--platform=robinhood"], "capital": 5000, "max_drawdown_pct": 10, "interval_seconds": 14400, "theta_harvest": {"enabled": true, "profit_target_pct": 60, "stop_loss_pct": 200, "min_dte_close": 3}}
-```
-
-**ID convention:** `rh-{strategy_short}-{symbol}` (e.g. `rh-ccall-spy`, `rh-vol-qqq`)
-
-Paper mode uses Black-Scholes pricing (no credentials needed). Live mode uses robin_stocks for real options chains and greeks. Requires `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` env vars.
-
-### OKX Spot Entries
-
-Each OKX spot strategy runs the shared spot strategy suite on crypto assets:
-
-```json
-{"id": "okx-sma-btc", "type": "spot", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": ["sma_crossover", "BTC", "1h", "--mode=paper", "--inst-type=spot"], "capital": 1000, "max_drawdown_pct": 5, "interval_seconds": 3600}
-{"id": "okx-momentum-eth", "type": "spot", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": ["momentum", "ETH", "1h", "--mode=paper", "--inst-type=spot"], "capital": 1000, "max_drawdown_pct": 5, "interval_seconds": 3600}
-```
-
-### OKX Perps Entries
-
-Each OKX perps strategy runs on USDT-margined perpetual swaps:
-
-```json
-{"id": "okx-sma-btc-perp", "type": "perps", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": ["sma_crossover", "BTC", "1h", "--mode=paper", "--inst-type=swap"], "capital": 1000, "max_drawdown_pct": 5, "interval_seconds": 3600}
-{"id": "okx-momentum-eth-perp", "type": "perps", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": ["momentum", "ETH", "1h", "--mode=paper", "--inst-type=swap"], "capital": 1000, "max_drawdown_pct": 5, "interval_seconds": 3600}
-```
-
-### OKX Options Entries
-
-OKX options use the unified `check_options.py` with `--platform=okx`:
-
-```json
-{"id": "okx-mom-btc", "type": "options", "platform": "okx", "script": "shared_scripts/check_options.py", "args": ["momentum_options", "BTC", "--platform=okx"], "capital": 5000, "max_drawdown_pct": 10, "interval_seconds": 14400, "theta_harvest": {"enabled": true, "profit_target_pct": 60, "stop_loss_pct": 200, "min_dte_close": 3}}
-```
-
-**ID convention:** `okx-{strategy_short}-{asset}` (spot), `okx-{strategy_short}-{asset}-perp` (perps)
-
-Paper mode uses public OKX API (no credentials). For live trading, change `--mode=paper` to `--mode=live`. Requires `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_PASSPHRASE` env vars. Set `OKX_SANDBOX=1` for the OKX demo trading environment.
-
-Discord channel keys: `"okx"` for spot/perps, `"okx-options"` for options.
+Go CI does not install `.venv`, so tests for subprocess-based live helpers should extract and test pure parsers or decision helpers rather than invoking Python.

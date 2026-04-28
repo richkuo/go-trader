@@ -34,6 +34,8 @@ Join the Discord: [https://discord.gg/46d7Fa2dXz](https://discord.gg/46d7Fa2dXz)
 
 The fastest way to get running. Give your AI agent the [Agent Setup Guide](SKILL.md) — it's fully self-contained with the repo URL, step-by-step instructions, and exact prompts. The agent will clone the repo, install dependencies, walk you through configuration (Discord channels, strategy selection, risk settings), build the binary, and start the service.
 
+For non-Claude agents (Codex, Gemini, etc.), see [AGENTS.md](AGENTS.md) for the equivalent project context and PR conventions.
+
 **Raw link for agents:** `https://raw.githubusercontent.com/richkuo/go-trader/main/SKILL.md`
 
 Using [OpenClaw](https://openclaw.ai)? Just say:
@@ -48,7 +50,7 @@ After building the binary, run the interactive config wizard — the easiest way
 ./go-trader init
 ```
 
-The wizard walks you through asset selection, strategy types (spot/options/perps), platform selection, capital and risk settings, and Discord configuration, then writes a ready-to-use `scheduler/config.json`.
+The wizard walks you through asset selection, strategy types (spot/options/perps), platform selection, capital and risk settings, and Discord configuration, then writes a ready-to-use `scheduler/config.json`. Defaults to a minimal BTC spot starter — say yes to everything for a full multi-platform setup. Risk settings (warn threshold, portfolio kill-switch) are only prompted when live trading is selected.
 
 For scripted/automated deployments (e.g. from OpenClaw or CI), use `--json` to generate a config non-interactively:
 
@@ -90,21 +92,11 @@ sudo bash scripts/install-service.sh
 curl -s localhost:8099/status | python3 -m json.tool
 ```
 
-`scripts/install-service.sh` copies the unit into `/etc/systemd/system/`, runs
-`daemon-reload`, and **enables** the unit so it auto-starts on boot. Always
-install services this way (or pass `systemctl enable --now`) — a service that
-is only `start`ed will silently stay down after the next reboot. It also
-pre-creates `<WorkingDirectory>/logs` with the unit's configured user/group, so
-`ProtectSystem=strict` still lets the scheduler create log files on first boot.
+`scripts/install-service.sh` copies the unit into `/etc/systemd/system/`, runs `daemon-reload`, enables the service for boot, starts it, and pre-creates the `logs/` directory with the right ownership.
 
 ### Running multiple instances (paper / live / testing)
 
-For ad hoc variants deployed alongside the main instance, use the templated
-unit at `systemd/go-trader@.service`. Each instance lives under
-`/opt/go-trader-<name>/` and is addressed as `go-trader@<name>.service`.
-
-Pre-populate the instance directory before installing the template (otherwise
-the unit will fail on `WorkingDirectory`):
+For ad hoc variants deployed alongside the main instance, use the templated unit at `systemd/go-trader@.service`. Each instance lives under `/opt/go-trader-<name>/` and is addressed as `go-trader@<name>.service`. Pre-populate the instance directory before installing the template:
 
 ```bash
 # 1. Create the instance directory and copy in the binary + config
@@ -118,8 +110,7 @@ sudo bash scripts/install-service.sh systemd/go-trader@.service paper-testing
 # → installs the template, enables + starts go-trader@paper-testing.service
 ```
 
-Or copy `go-trader.service` to a named variant (e.g. `go-trader-paper-testing.service`),
-edit paths, and install:
+Or copy `go-trader.service` to a named variant, edit paths, and install:
 
 ```bash
 sudo bash scripts/install-service.sh go-trader-paper-testing.service
@@ -133,29 +124,13 @@ Set `NO_START=1` to enable without starting immediately.
 
 ```
 Go scheduler (always running, ~8MB idle)
-  ↓ spot/perps: every 1h | options: every 4h
-    .venv/bin/python3 shared_scripts/check_strategy.py    → JSON signal (spot)
-    .venv/bin/python3 shared_scripts/check_options.py     → JSON signal (--platform=deribit|ibkr)
-    .venv/bin/python3 shared_scripts/check_hyperliquid.py → JSON signal (perps)
-    .venv/bin/python3 shared_scripts/check_topstep.py     → JSON signal (futures)
-    .venv/bin/python3 shared_scripts/check_robinhood.py  → JSON signal (crypto)
-    .venv/bin/python3 shared_scripts/check_okx.py         → JSON signal (spot/perps)
-    .venv/bin/python3 shared_scripts/check_price.py       → live prices
-  ↓ processes signals, executes paper trades, manages risk
-  ↓ marks options to market via Deribit REST API (live prices every cycle)
-  ↓ saves state → scheduler/state.db (SQLite, survives restarts)
-  ↓ HTTP status → localhost:8099/status
-  ↓ Discord → per-platform channels (spot, options, hyperliquid, topstep, robinhood, okx, luno)
+  ↓ every cycle, runs short-lived Python check scripts
+  ↓ receives JSON signals, executes paper/live trades, manages risk
+  ↓ saves state to scheduler/state.db and serves localhost:8099/status
+  ↓ posts Discord/Telegram summaries and alerts
 
-Platform adapters (Python):
-  platforms/binanceus/adapter.py   — spot (CCXT)
-  platforms/deribit/adapter.py     — options (live quotes, real expiries/strikes)
-  platforms/ibkr/adapter.py        — options (CME Micro, Black-Scholes pricing)
-  platforms/hyperliquid/adapter.py — perps (paper + live, SDK)
-  platforms/topstep/adapter.py     — futures (CME, paper via yfinance + live via TopStepX)
-  platforms/robinhood/adapter.py   — crypto (paper via yfinance + live via robin_stocks)
-  platforms/okx/adapter.py         — spot + perps + options (CCXT, paper + live)
-  platforms/luno/adapter.py        — spot (South African crypto exchange)
+Python adapters:
+  binanceus, deribit, ibkr, hyperliquid, topstep, robinhood, okx, luno
 ```
 
 Python gets the quant libraries (pandas, numpy, scipy, CCXT). Go gets memory efficiency. 50+ strategies cost ~220MB peak for ~30 seconds, then ~8MB idle.
@@ -164,38 +139,13 @@ Python gets the quant libraries (pandas, numpy, scipy, CCXT). Go gets memory eff
 
 ## Strategies
 
-### Spot (10 strategies, 1h interval, BTC/ETH/SOL)
+### Spot (1h interval, BTC/ETH/SOL)
 
-| Strategy | Description |
-|----------|-------------|
-| `sma_crossover` | Simple moving average crossover |
-| `ema_crossover` | Exponential moving average crossover |
-| `momentum` | Rate of change breakouts |
-| `rsi` | Buy oversold, sell overbought |
-| `bollinger_bands` | Mean reversion at band extremes |
-| `macd` | MACD/signal line crossovers |
-| `mean_reversion` | Statistical mean reversion |
-| `volume_weighted` | Trend + volume confirmation |
-| `triple_ema` | Triple EMA crossover |
-| `rsi_macd_combo` | RSI and MACD confluence |
-| `pairs_spread` | BTC/ETH, BTC/SOL, ETH/SOL spread z-score stat arb (1d) |
+Includes `sma_crossover`, `ema_crossover`, `momentum`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `volume_weighted`, `triple_ema`, `rsi_macd_combo`, and `pairs_spread`.
 
-### Futures-only (additional strategies, available on TopStep/perps)
+### Options (4h interval, BTC/ETH)
 
-| Strategy | Description |
-|----------|-------------|
-| `session_breakout` | Break of prior session (Asian/US open/US close) high/low with volume confirmation |
-
-### Options (4 strategies, 4h interval, BTC/ETH)
-
-Same 4 strategies on both Deribit and IBKR/CME for comparison:
-
-| Strategy | Description |
-|----------|-------------|
-| `vol_mean_reversion` | High IV → sell strangles, Low IV → buy straddles |
-| `momentum_options` | ROC breakout → buy directional options |
-| `protective_puts` | Buy 12% OTM puts, 45 DTE |
-| `covered_calls` | Sell 12% OTM calls, 21 DTE |
+Deribit and IBKR/CME run the same core set: `vol_mean_reversion`, `momentum_options`, `protective_puts`, and `covered_calls`.
 
 New options trades are scored against existing positions for strike distance, expiry spread, and Greek balancing. Max 4 positions per strategy, min score 0.3 to execute.
 
@@ -207,16 +157,9 @@ Most strategies are long-only; `triple_ema_bidir` is the first bidirectional str
 
 Live mode requires `HYPERLIQUID_SECRET_KEY` env var. Paper mode simulates trades without a key.
 
-### Futures (6 strategies, 1h interval, ES/NQ/MES/MNQ/CL/GC)
+### Futures (1h interval, ES/NQ/MES/MNQ/CL/GC)
 
-| Strategy | Description |
-|----------|-------------|
-| `momentum` | Rate of change breakouts |
-| `mean_reversion` | Statistical mean reversion |
-| `rsi` | Buy oversold, sell overbought |
-| `macd` | MACD/signal line crossovers |
-| `breakout` | Price breakout detection |
-| `session_breakout` | Break of prior session (Asian/US open/US close) high/low with volume confirmation |
+TopStep futures support `momentum`, `mean_reversion`, `rsi`, `macd`, `breakout`, and `session_breakout`.
 
 CME futures on TopStep. Live mode requires `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRET`, `TOPSTEP_ACCOUNT_ID` env vars. Paper mode uses Yahoo Finance for price data.
 
@@ -265,9 +208,12 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
   "db_file": "scheduler/state.db",
   "log_dir": "logs",
   "auto_update": "daily",
+  "status_port": 8099,
+  "risk_free_rate": 0.04,
   "portfolio_risk": {
     "max_drawdown_pct": 25,
-    "max_notional_usd": 0
+    "max_notional_usd": 0,
+    "warn_threshold_pct": 60
   },
   "discord": {
     "enabled": true,
@@ -288,6 +234,9 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
 |-------|-------------|---------|
 | `portfolio_risk.max_drawdown_pct` | Kill switch — halt all trading if portfolio drops this % from peak | 25 |
 | `portfolio_risk.max_notional_usd` | Hard cap on total notional exposure (0 = disabled) | 0 |
+| `portfolio_risk.warn_threshold_pct` | Emit a Discord/Telegram warning when drawdown reaches this % of `max_drawdown_pct` (repeats every cycle while in band) | 60 |
+| `risk_free_rate` | Annualized risk-free rate used in Sharpe-ratio calculations (e.g. `0.04` for 4%); `null`/omitted → default rate | 0.04 |
+| `status_port` | HTTP status server port; auto-falls-back up to 5 ports on collision. Override via `--status-port` CLI flag. | 8099 |
 
 ### Correlation Tracking
 
@@ -381,6 +330,7 @@ Control how often each channel posts a summary via the top-level `summary_freque
 | `interval_seconds` | Check interval (0 = use global) | 0 |
 | `htf_filter` | Enable higher-timeframe trend filter | false |
 | `params` | Custom strategy parameters (e.g. `{"multiplier": 2.0}`) | null |
+| `stop_loss_pct` | HL perps only — place a reduce-only stop-loss trigger this % from entry price (0 = disabled, max 50) | 0 |
 | `theta_harvest` | Early exit config for sold options | null |
 
 ### Custom Strategy Parameters
@@ -441,10 +391,12 @@ Closes sold options early based on profit target, stop loss, or approaching expi
 
 ```bash
 systemctl status go-trader              # service health
-curl -s localhost:8099/status            # live prices + P&L
+curl -s localhost:8099/status            # live prices + P&L (default port 8099; override with --status-port)
 curl -s localhost:8099/health            # simple health check
 journalctl -u go-trader -n 50           # recent logs
 ```
+
+Discord strategy summaries include columns: `Init | Value | PnL | PnL% | Max DD | Wallet% | Tf | Int | #T | W/L`, a `Book Sharpe (realized, annualized)` footer line, and the go-trader version in the summary title. The `okx-options` and `robinhood-options` channel keys route OKX/Robinhood options summaries separately from their spot/perps channels.
 
 ---
 
@@ -479,72 +431,16 @@ journalctl -u go-trader -n 50           # recent logs
 
 ```
 go-trader/
-├── scheduler/              # Go scheduler source + config
-│   ├── main.go             # Main loop, strategy orchestration
-│   ├── config.go           # Config parsing + validation
-│   ├── config_migration.go # Config version registry, MigrateConfig, DM-based migration
-│   ├── executor.go         # Python subprocess runner
-│   ├── db.go               # SQLite state persistence (modernc.org/sqlite); closed_positions history, immediate trade writes
-│   ├── state.go            # In-memory state loading wrapper
-│   ├── portfolio.go        # Spot position tracking
-│   ├── options.go          # Options positions, Greeks, theta harvest
-│   ├── balance.go          # Balance tracking and capital management
-│   ├── hyperliquid_balance.go # Hyperliquid account position sync
-│   ├── hyperliquid_marks.go   # Native Go HL /info allMids fetcher
-│   ├── okx_marks.go        # Native Go OKX perps tickers fetcher
-│   ├── shared_wallet.go    # Shared-wallet key (prevents double-counting HL capital)
-│   ├── risk.go             # Drawdown, circuit breakers
-│   ├── kill_switch_close.go   # Cross-platform live-close plan builder (HL/OKX/RH/TS)
-│   ├── okx_close.go           # OKX live-close adapter
-│   ├── robinhood_close.go     # Robinhood live-close adapter
-│   ├── topstep_close.go       # TopStep live-close adapter
-│   ├── state_presence.go   # Startup warning when live strategies run without state DB (#339)
-│   ├── deribit.go          # Deribit REST API for live pricing
-│   ├── discord.go          # Discord gateway (discordgo), SendMessage/SendDM/AskDM
-│   ├── notifier.go         # MultiNotifier (Discord + Telegram)
-│   ├── telegram.go         # Telegram backend
-│   ├── updater.go          # Update checker, DM upgrade flow, applyUpgrade/restartSelf
-│   ├── correlation.go      # Per-asset directional exposure tracking
-│   ├── leaderboard.go      # Pre-computed strategy leaderboard
-│   ├── server.go           # HTTP status endpoint
-│   ├── fees.go             # Trading fee calculations
-│   ├── pricer.go           # OptionPricer interface
-│   ├── ibkr_pricer.go      # IBKR Black-Scholes pricer
-│   ├── init.go             # go-trader init wizard
-│   ├── prompt.go           # Interactive prompt helpers
-│   ├── logger.go           # Logging
-│   └── config.example.json # Config template
-├── shared_scripts/         # Stateless Python entry-point scripts
-│   ├── check_strategy.py   # Spot checker (Binance US via CCXT)
-│   ├── check_options.py    # Options checker (--platform=deribit|ibkr|robinhood|okx)
-│   ├── check_hyperliquid.py # Hyperliquid perps checker
-│   ├── check_okx.py         # OKX spot/perps checker
-│   ├── check_topstep.py    # TopStep futures checker
-│   ├── check_robinhood.py  # Robinhood crypto checker
-│   ├── check_balance.py    # Live account reconciliation
-│   ├── check_price.py      # Multi-symbol price fetcher
-│   └── fetch_futures_marks.py # CME futures mark-price fetcher (TopStep)
-├── platforms/              # Platform-specific adapters
-│   ├── binanceus/          # BinanceUS spot adapter
-│   ├── deribit/            # Deribit options adapter
-│   ├── ibkr/               # IBKR/CME options adapter
-│   ├── hyperliquid/        # Hyperliquid perps adapter
-│   ├── topstep/            # TopStep futures adapter
-│   ├── robinhood/          # Robinhood crypto + stock options adapter
-│   ├── okx/                # OKX spot/perps/options adapter (CCXT)
-│   └── luno/               # Luno spot adapter
-├── shared_tools/           # Shared Python utilities (pricing, exchange_base, storage, htf_filter)
-├── shared_strategies/      # Shared strategy logic (spot/, options/, futures/)
-├── backtest/               # Backtesting tools
-├── archive/                # Retired/unused modules
-├── SKILL.md                # AI agent setup guide
-├── CLAUDE.md               # AI agent project context
-├── ISSUES.md               # Known issues tracker
-├── go-trader.service       # systemd unit file (single-instance canonical)
-├── systemd/                # Additional systemd assets
-│   └── go-trader@.service  # Templated unit for multi-instance deployments
-└── scripts/
-    └── install-service.sh  # Installs + daemon-reload + enable + start (survives reboot)
+├── scheduler/          # Go scheduler, config, state DB, HTTP status, risk, notifications
+├── shared_scripts/     # Python entry points called by the scheduler
+├── platforms/          # Exchange adapters
+├── shared_tools/       # Shared Python utilities
+├── shared_strategies/  # Strategy registry and strategy implementations
+├── backtest/           # Backtesting and optimization tools
+├── systemd/            # Template service units
+├── scripts/            # Install/service helper scripts
+├── SKILL.md            # AI agent setup guide
+└── AGENTS.md           # Agent project context
 ```
 
 ---
