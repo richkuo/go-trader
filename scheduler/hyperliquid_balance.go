@@ -700,6 +700,39 @@ func hlStrategyCapitalWeights(peers []StrategyConfig) []float64 {
 	return out
 }
 
+type hlVirtualQuantitySnapshot map[string]map[string]float64
+
+// snapshotHyperliquidVirtualQuantities captures the per-strategy virtual
+// quantities that exist before a portfolio kill-switch close mutates state.
+func snapshotHyperliquidVirtualQuantities(strategies map[string]*StrategyState, hlLiveAll []StrategyConfig) hlVirtualQuantitySnapshot {
+	if len(strategies) == 0 || len(hlLiveAll) == 0 {
+		return nil
+	}
+	out := make(hlVirtualQuantitySnapshot)
+	for _, sc := range hlLiveAll {
+		coin := hyperliquidSymbol(sc.Args)
+		if coin == "" {
+			continue
+		}
+		ss := strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		pos := ss.Positions[coin]
+		if pos == nil || pos.Quantity <= 0 {
+			continue
+		}
+		if out[coin] == nil {
+			out[coin] = make(map[string]float64)
+		}
+		out[coin][sc.ID] = pos.Quantity
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // computeHyperliquidCircuitCloseQty returns the unsigned coin quantity for a
 // reduce-only market_close when strategyID's per-strategy circuit breaker fires
 // (#356). For a coin traded by multiple live HL strategies on the same wallet,
@@ -748,30 +781,36 @@ func computeHyperliquidCircuitCloseQty(coin, strategyID string, hlPositions []HL
 	return q, true
 }
 
-func hyperliquidKillSwitchFillShare(sc StrategyConfig, coin string, fillSz, fillFee float64, hlLiveAll []StrategyConfig) (float64, float64) {
+func hyperliquidKillSwitchFillShare(sc StrategyConfig, coin string, fillSz, fillFee float64, hlLiveAll []StrategyConfig, virtualQty hlVirtualQuantitySnapshot) (float64, float64) {
 	peers := hlLiveStrategiesForCoin(coin, hlLiveAll)
 	if len(peers) <= 1 {
 		return fillSz, fillFee
 	}
-	weights := hlStrategyCapitalWeights(peers)
-	sumW := 0.0
-	var wSelf float64
+	qtyByStrategy := virtualQty[coin]
+	sumQty := 0.0
+	var selfQty float64
 	foundSelf := false
-	for i, p := range peers {
-		sumW += weights[i]
+	for _, p := range peers {
 		if p.ID == sc.ID {
-			wSelf = weights[i]
 			foundSelf = true
 		}
+		qty := qtyByStrategy[p.ID]
+		if qty <= 0 {
+			continue
+		}
+		sumQty += qty
+		if p.ID == sc.ID {
+			selfQty = qty
+		}
 	}
-	if !foundSelf || sumW <= 0 {
+	if !foundSelf || sumQty <= 0 || selfQty <= 0 {
 		// Fail closed: a misconfigured caller passing an `sc` that isn't among
 		// peers must not cause a single strategy to claim the entire portfolio
 		// fill. The generic fallback in forceCloseAllPositions will then close
 		// any residual virtual position at mark price.
 		return 0, 0
 	}
-	ratio := wSelf / sumW
+	ratio := selfQty / sumQty
 	if ratio < 0 {
 		ratio = 0
 	} else if ratio > 1 {
@@ -780,9 +819,10 @@ func hyperliquidKillSwitchFillShare(sc StrategyConfig, coin string, fillSz, fill
 	return fillSz * ratio, fillFee * ratio
 }
 
-// applyHyperliquidKillSwitchCloseFill applies one strategy's weighted share of
-// the portfolio kill-switch fill before generic virtual-state cleanup runs.
-func applyHyperliquidKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fills map[string]HyperliquidCloseFill, hlLiveAll []StrategyConfig) bool {
+// applyHyperliquidKillSwitchCloseFill applies one strategy's virtual-quantity
+// share of the portfolio kill-switch fill before generic virtual-state cleanup
+// runs.
+func applyHyperliquidKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fills map[string]HyperliquidCloseFill, hlLiveAll []StrategyConfig, virtualQty hlVirtualQuantitySnapshot) bool {
 	if s == nil || sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
 		return false
 	}
@@ -794,7 +834,7 @@ func applyHyperliquidKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fi
 	if !ok || fill.TotalSz <= 1e-15 || fill.AvgPx <= 0 {
 		return false
 	}
-	fillSz, fillFee := hyperliquidKillSwitchFillShare(sc, coin, fill.TotalSz, fill.Fee, hlLiveAll)
+	fillSz, fillFee := hyperliquidKillSwitchFillShare(sc, coin, fill.TotalSz, fill.Fee, hlLiveAll, virtualQty)
 	if fillSz <= 1e-15 {
 		return false
 	}
