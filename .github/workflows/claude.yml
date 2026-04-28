@@ -218,12 +218,12 @@ jobs:
             exit 0
           fi
 
-          if echo "$BODY" | grep -q "LLM:"; then
-            echo "Footer already present"
-            exit 0
-          fi
+          # Strip any stale LLM footer Claude may have written (it doesn't know
+          # the real --effort value, so it guesses). The workflow is authoritative.
+          BODY=$(printf '%s' "$BODY" | python3 .github/scripts/strip_llm_footer.py)
 
           TODAY=$(date -u +%Y%m%d)
+
           USAGE=$(npx --yes ccusage@latest session --json --since "$TODAY" --order desc 2>/tmp/ccusage-err || echo "[]")
           [ -s /tmp/ccusage-err ] && echo "ccusage stderr: $(cat /tmp/ccusage-err)"
           COST=$(printf '%s' "$USAGE" | jq -r 'if .sessions and (.sessions | length) > 0 then .sessions[0] | "Tokens: \(.inputTokens // 0) in / \(.outputTokens // 0) out | Cache: \(.cacheReadTokens // 0) read / \(.cacheCreationTokens // 0) written | Cost: $\(.totalCost // 0 | . * 100 | round / 100)" else "" end' 2>/dev/null || true)
