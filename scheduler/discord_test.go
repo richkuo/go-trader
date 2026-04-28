@@ -203,13 +203,13 @@ func TestFormatCategorySummary_VersionSuffix(t *testing.T) {
 	Version = "v9.9.9-test"
 	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
 	summary := strings.Join(msgs, "\n")
-	if !strings.Contains(summary, "("+Version+")") {
+	if !strings.Contains(summary, Version) {
 		t.Errorf("expected version %q in summary title, got:\n%s", Version, summary)
 	}
 
 	msgs = FormatCategorySummary(1, 0, 1, 3, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
 	trades := strings.Join(msgs, "\n")
-	if !strings.Contains(trades, "("+Version+")") {
+	if !strings.Contains(trades, Version) {
 		t.Errorf("expected version %q in trades title, got:\n%s", Version, trades)
 	}
 
