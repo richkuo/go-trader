@@ -237,6 +237,9 @@ def run_execute(symbol, side, amount_usd, quantity, mode):
                     fee = _extract_fee(result)
                     if fee is not None:
                         fill["fee"] = fee
+                    oid = result.get("id")
+                    if oid:
+                        fill["oid"] = str(oid)
         except Exception:
             pass
 

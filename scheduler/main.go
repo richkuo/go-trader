@@ -2303,10 +2303,12 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, result *TopStepRe
 	fillPrice := price
 	var fillContracts int
 	var fillFee float64
+	var fillOID string
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
 		fillPrice = execResult.Execution.Fill.AvgPx
 		fillContracts = execResult.Execution.Fill.TotalContracts
 		fillFee = execResult.Execution.Fill.Fee
+		fillOID = execResult.Execution.Fill.OID
 		logger.Info("Live fill at $%.2f contracts=%d (signal was $%.2f)", fillPrice, fillContracts, price)
 	}
 
@@ -2317,7 +2319,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, result *TopStepRe
 		maxContracts = sc.FuturesConfig.MaxContracts
 	}
 
-	trades, err := ExecuteFuturesSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, result.ContractSpec, feePerContract, maxContracts, fillContracts, fillFee, logger)
+	trades, err := ExecuteFuturesSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, result.ContractSpec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -2461,14 +2463,16 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, result *Robinho
 	fillPrice := price
 	var fillQty float64
 	var fillFee float64
+	var fillOID string
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
 		fillPrice = execResult.Execution.Fill.AvgPx
 		fillQty = execResult.Execution.Fill.Quantity
 		fillFee = execResult.Execution.Fill.Fee
+		fillOID = execResult.Execution.Fill.OID
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	trades, err := ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, logger)
+	trades, err := ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -2650,13 +2654,20 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, ex
 	fillPrice := price
 	var fillQty float64
 	var fillFee float64
+	var fillOID string
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
 		fillPrice = execResult.Execution.Fill.AvgPx
 		fillQty = execResult.Execution.Fill.TotalSz
 		fillFee = execResult.Execution.Fill.Fee
+		fillOID = execResult.Execution.Fill.OID
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
+	// Thread fillOID/fillFee into the signal handlers so each Trade is built
+	// with the OID and fee before RecordTrade persists it (#456). Stamping the
+	// fields onto s.TradeHistory after the fact would never reach SQLite — the
+	// eager INSERT has already happened and SaveState's timestamp dedup skips
+	// re-inserts for the same trade.
 	var trades int
 	var err error
 	if sc.Type == "perps" {
@@ -2664,9 +2675,9 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, ex
 		if leverage <= 0 {
 			leverage = 1
 		}
-		trades, err = ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, "", fillFee, sc.AllowShorts, logger)
+		trades, err = ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, fillOID, fillFee, sc.AllowShorts, logger)
 	} else {
-		trades, err = ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, logger)
+		trades, err = ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, logger)
 	}
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
