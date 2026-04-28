@@ -643,22 +643,22 @@ func TestFormatCategorySummary_MaxDrawdownColumn(t *testing.T) {
 	msgs := FormatCategorySummary(1, 0, 2, 0, 2000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0)
 	msg := strings.Join(msgs, "\n")
 
-	if !strings.Contains(msg, "Max DD") {
-		t.Errorf("expected Max DD column header, got:\n%s", msg)
+	if !strings.Contains(msg, " DD ") {
+		t.Errorf("expected DD column header, got:\n%s", msg)
 	}
 	pnlIdx := strings.Index(msg, "PnL%")
-	maxDDIdx := strings.Index(msg, "Max DD")
+	ddIdx := strings.Index(msg, " DD ")
 	tfIdx := strings.Index(msg, "Tf")
-	if pnlIdx < 0 || maxDDIdx < pnlIdx || tfIdx < maxDDIdx {
-		t.Errorf("expected Max DD column between PnL%% and Tf, got PnL%%@%d MaxDD@%d Tf@%d:\n%s", pnlIdx, maxDDIdx, tfIdx, msg)
+	if pnlIdx < 0 || ddIdx < pnlIdx || tfIdx < ddIdx {
+		t.Errorf("expected DD column between PnL%% and Tf, got PnL%%@%d DD@%d Tf@%d:\n%s", pnlIdx, ddIdx, tfIdx, msg)
 	}
-	if !strings.Contains(msg, "12.5%") || !strings.Contains(msg, "50.0%") {
-		t.Errorf("expected resolved max drawdown values 12.5%% and 50.0%%, got:\n%s", msg)
+	if !strings.Contains(msg, "12%") || !strings.Contains(msg, "50%") {
+		t.Errorf("expected resolved max drawdown values 12%% and 50%%, got:\n%s", msg)
 	}
 }
 
 func TestFormatCategorySummary_MaxDrawdownColumn_SharedWallet(t *testing.T) {
-	// Shared-wallet tables have a Wallet% column, so keep Max DD anchored before
+	// Shared-wallet tables have a Wallet% column, so keep DD anchored before
 	// it and keep the TOTAL wallet percentage from shifting.
 	strats := []StrategyConfig{
 		{ID: "hl-rmc-eth", Type: "perps", Platform: "hyperliquid", Capital: 500, CapitalPct: 0.5, Args: []string{"rmc", "ETH", "1h"}, MaxDrawdownPct: 25},
@@ -677,7 +677,7 @@ func TestFormatCategorySummary_MaxDrawdownColumn_SharedWallet(t *testing.T) {
 	lines := strings.Split(msg, "\n")
 	var headerLine, totalLine string
 	for _, line := range lines {
-		if strings.Contains(line, "Max DD") && strings.Contains(line, "Wallet%") {
+		if strings.Contains(line, " DD ") && strings.Contains(line, "Wallet%") {
 			headerLine = line
 		}
 		if strings.HasPrefix(line, "TOTAL") {
@@ -688,13 +688,13 @@ func TestFormatCategorySummary_MaxDrawdownColumn_SharedWallet(t *testing.T) {
 		t.Fatalf("expected shared-wallet header and TOTAL row, got:\n%s", msg)
 	}
 	pnlIdx := strings.Index(headerLine, "PnL%")
-	maxDDIdx := strings.Index(headerLine, "Max DD")
+	ddIdx := strings.Index(headerLine, " DD ")
 	walletIdx := strings.Index(headerLine, "Wallet%")
-	if pnlIdx < 0 || maxDDIdx < pnlIdx || walletIdx < maxDDIdx {
-		t.Errorf("expected Max DD column between PnL%% and Wallet%%, got PnL%%@%d MaxDD@%d Wallet%%@%d:\n%s", pnlIdx, maxDDIdx, walletIdx, msg)
+	if pnlIdx < 0 || ddIdx < pnlIdx || walletIdx < ddIdx {
+		t.Errorf("expected DD column between PnL%% and Wallet%%, got PnL%%@%d DD@%d Wallet%%@%d:\n%s", pnlIdx, ddIdx, walletIdx, msg)
 	}
-	if !strings.Contains(msg, "25.0%") || !strings.Contains(msg, "35.0%") {
-		t.Errorf("expected resolved max drawdown values 25.0%% and 35.0%%, got:\n%s", msg)
+	if !strings.Contains(msg, "25%") || !strings.Contains(msg, "35%") {
+		t.Errorf("expected resolved max drawdown values 25%% and 35%%, got:\n%s", msg)
 	}
 	if len(totalLine) <= walletIdx || !strings.Contains(totalLine[walletIdx:], "100.0%") {
 		t.Errorf("expected TOTAL row to keep 100.0%% under Wallet%% column, got header=%q total=%q", headerLine, totalLine)
