@@ -1117,6 +1117,56 @@ func TestExecutePerpsSignalLegacyFlatNoShort(t *testing.T) {
 	}
 }
 
+func TestExecutePerpsSignalLegacyCloseShortThenOpenLongUsesOpenFillFee(t *testing.T) {
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	s := &StrategyState{
+		ID:       "hl-legacy-eth",
+		Cash:     1000,
+		Platform: "hyperliquid",
+		Type:     "perps",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2100, Side: "short", Multiplier: 1, Leverage: 1, OwnerStrategyID: "hl-legacy-eth"},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{},
+	}
+
+	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.3, "legacy-open-oid", 0.42, false, logger)
+	if err != nil {
+		t.Fatalf("ExecutePerpsSignal: %v", err)
+	}
+	if trades != 2 {
+		t.Fatalf("trades = %d, want 2 (legacy close short + open long)", trades)
+	}
+	if len(s.TradeHistory) != 2 {
+		t.Fatalf("TradeHistory len = %d, want 2", len(s.TradeHistory))
+	}
+
+	closeLeg, openLeg := s.TradeHistory[0], s.TradeHistory[1]
+	if closeLeg.ExchangeOrderID != "" || closeLeg.ExchangeFee != 0 {
+		t.Errorf("legacy close leg exchange metadata = oid %q fee %g, want empty modeled-fee leg",
+			closeLeg.ExchangeOrderID, closeLeg.ExchangeFee)
+	}
+	if openLeg.ExchangeOrderID != "legacy-open-oid" || openLeg.ExchangeFee != 0.42 {
+		t.Errorf("legacy open leg exchange metadata = oid %q fee %g, want oid legacy-open-oid fee 0.42",
+			openLeg.ExchangeOrderID, openLeg.ExchangeFee)
+	}
+	pos := s.Positions["ETH"]
+	if pos == nil || pos.Side != "long" || pos.Quantity != 0.3 {
+		t.Fatalf("position after legacy close/open = %+v, want long qty 0.3", pos)
+	}
+
+	modeledCloseFee := CalculatePlatformSpotFee("hyperliquid", 0.5*2000)
+	wantCash := 1000.0 + (0.5*(2100-2000) - modeledCloseFee) - 0.42
+	if math.Abs(s.Cash-wantCash) > 1e-9 {
+		t.Errorf("cash = %.9f, want %.9f (close modeled fee + open real fill fee)", s.Cash, wantCash)
+	}
+}
+
 // #328 — long + signal=-1 + AllowShorts closes the long AND opens a short.
 // Mirrors the existing signal=1+short close-and-flip branch. Produces exactly
 // two Trade rows; the close leg carries the real fill fee while the open leg

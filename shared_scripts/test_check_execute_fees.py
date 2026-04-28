@@ -28,6 +28,21 @@ def test_robinhood_extracts_nested_execution_fee():
     assert abs(mod._extract_fee(response) - 0.05) < 1e-12
 
 
+def test_robinhood_ignores_execution_notional_without_fee_keys():
+    mod = _load_script("check_robinhood.py")
+    response = {
+        "average_price": "50000",
+        "cumulative_quantity": "0.015",
+        "executions": [{"total": "750.00", "value": "0.015", "amount": "0.015"}],
+    }
+    assert mod._extract_fee(response) is None
+
+
 def test_topstep_extracts_nested_fee_total():
     mod = _load_script("check_topstep.py")
     assert abs(mod._extract_fee({"totalFees": [{"amount": "1.50"}, {"amount": "2.62"}]}) - 4.12) < 1e-12
+
+
+def test_topstep_ignores_generic_nested_totals_without_fee_context():
+    mod = _load_script("check_topstep.py")
+    assert mod._extract_fee_value([{"total": "750.00", "value": "0.015"}]) is None

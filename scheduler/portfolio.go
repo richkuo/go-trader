@@ -466,9 +466,11 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 
 	// flipCloseQty lets the open leg subtract the close-leg qty from a live
 	// fill when the exchange executes a single net-flip order of
-	// (posQty + newSize). Only set when AllowShorts=true — legacy paths (e.g.
-	// a migrated short being closed by a long-only strategy) keep fillQty as
-	// the open-side-only qty to preserve #289's single-fee-per-fill invariant.
+	// (posQty + newSize). Only set when AllowShorts=true so #451 can charge
+	// the real fill fee to the close leg and modeled fee to the open leg on
+	// bidirectional flips. Legacy paths (e.g. a migrated short closed by a
+	// long-only strategy) keep fillQty as the open-side-only qty, so the open
+	// leg carries the single live fill fee.
 	var flipCloseQty float64
 
 	if signal == 1 { // Buy — go long (close short first if any)
