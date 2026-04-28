@@ -201,6 +201,34 @@ func defaultHLStateFetcher(addr string) ([]HLPosition, error) {
 	return pos, err
 }
 
+// clearVerifiedFlatHLErrors removes close errors for coins that a follow-up
+// clearinghouseState fetch proves are now flat. This handles the post-submit
+// failure window where the reduce-only close filled on-chain, but the Python
+// subprocess still returned an error before Go saw a confirmed result (#452).
+func clearVerifiedFlatHLErrors(report *HyperliquidLiveCloseReport, positions []HLPosition) []string {
+	if report == nil || len(report.Errors) == 0 {
+		return nil
+	}
+
+	open := make(map[string]bool)
+	for _, p := range positions {
+		if p.Size != 0 {
+			open[p.Coin] = true
+		}
+	}
+
+	var verified []string
+	for _, coin := range report.SortedErrorCoins() {
+		if open[coin] {
+			continue
+		}
+		delete(report.Errors, coin)
+		report.AlreadyFlat = append(report.AlreadyFlat, coin)
+		verified = append(verified, coin)
+	}
+	return verified
+}
+
 // planKillSwitchClose runs the kill-switch close logic without touching any
 // mutable state — no locks, no virtual state mutation, no Discord delivery.
 // The caller applies mutations based on the returned plan.
@@ -253,6 +281,18 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 		ctx, cancel := context.WithTimeout(context.Background(), in.platformCloseBudget(in.HLCloseTimeout))
 		plan.CloseReport = forceCloseHyperliquidLive(ctx, hlPositions, in.HLLiveAll, in.HLCloser, in.HLStopLossOIDs)
 		cancel()
+		if !plan.CloseReport.ConfirmedFlat() {
+			if in.HLAddr != "" && in.HLFetcher != nil {
+				postClosePositions, err := in.HLFetcher(in.HLAddr)
+				if err != nil {
+					plan.LogLines = append(plan.LogLines,
+						fmt.Sprintf("[CRITICAL] hl-close: unable to verify HL state after close error: %v", err))
+				} else if verified := clearVerifiedFlatHLErrors(&plan.CloseReport, postClosePositions); len(verified) > 0 {
+					plan.LogLines = append(plan.LogLines,
+						fmt.Sprintf("[INFO] hl-close: verified flat after close error: %v", verified))
+				}
+			}
+		}
 		if !plan.CloseReport.ConfirmedFlat() {
 			plan.OnChainConfirmedFlat = false
 		}
