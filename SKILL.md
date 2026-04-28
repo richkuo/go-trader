@@ -297,7 +297,7 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    Spot: sma_crossover, ema_crossover, momentum, rsi, bollinger_bands, macd,
      mean_reversion, volume_weighted, triple_ema, rsi_macd_combo, pairs_spread
    Futures/perps: momentum, mean_reversion, rsi, macd, breakout,
-     session_breakout, triple_ema_bidir, delta_neutral_funding
+     session_breakout, triple_ema_bd, delta_neutral_funding
    Options: vol_mean_reversion, momentum_options, protective_puts,
      covered_calls, wheel, butterfly
 
@@ -460,7 +460,7 @@ Short-name conventions:
 - TopStep: `ts-{strategy}-{symbol}`
 - Robinhood: `rh-{strategy_short}-{asset_or_symbol}`
 - OKX: `okx-{strategy_short}-{asset}` for spot/options, `okx-{strategy_short}-{asset}-perp` for perps
-- `triple_ema_bidir` is futures/perps only and needs `"allow_shorts": true`
+- `triple_ema_bd` is futures/perps only and needs `"allow_shorts": true`
 - `session_breakout` is futures/perps only; short name `sbo`
 
 ---

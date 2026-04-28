@@ -151,9 +151,9 @@ New options trades are scored against existing positions for strike distance, ex
 
 ### Perps (1h interval, any HL-listed asset)
 
-Full spot strategy suite on Hyperliquid perpetual futures. Strategies are auto-discovered at `go-trader init` time: `momentum`, `sma_crossover`, `ema_crossover`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `volume_weighted`, `triple_ema`, `rsi_macd_combo`, `triple_ema_bidir`, `session_breakout`.
+Full spot strategy suite on Hyperliquid perpetual futures. Strategies are auto-discovered at `go-trader init` time: `momentum`, `sma_crossover`, `ema_crossover`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `volume_weighted`, `triple_ema`, `rsi_macd_combo`, `triple_ema_bd`, `session_breakout`.
 
-Most strategies are long-only; `triple_ema_bidir` is the first bidirectional strategy (long on bullish EMA stack, short on bearish) and runs with `allow_shorts: true` so the scheduler opens shorts from flat and flips long↔short on reversals. New bidirectional strategies opt in per-strategy via the same flag — existing long-only strategies keep their semantics.
+Most strategies are long-only; `triple_ema_bd` is the first bidirectional strategy (long on bullish EMA stack, short on bearish) and runs with `allow_shorts: true` so the scheduler opens shorts from flat and flips long↔short on reversals. New bidirectional strategies opt in per-strategy via the same flag — existing long-only strategies keep their semantics.
 
 Live mode requires `HYPERLIQUID_SECRET_KEY` env var. Paper mode simulates trades without a key.
 

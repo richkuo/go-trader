@@ -44,7 +44,7 @@ var knownShortNames = map[string]string{
 	"mean_reversion":        "mr",
 	"volume_weighted":       "vw",
 	"triple_ema":            "tema",
-	"triple_ema_bidir":      "temab",
+	"triple_ema_bd":         "temab",
 	"rsi_macd_combo":        "rmc",
 	"vol_mean_reversion":    "vol",
 	"momentum_options":      "mom",
@@ -75,7 +75,7 @@ var knownShortNames = map[string]string{
 // set AllowShorts=true so ExecutePerpsSignal opens shorts from flat instead
 // of skipping the signal (#328).
 var bidirectionalPerpsStrategies = map[string]bool{
-	"triple_ema_bidir": true,
+	"triple_ema_bd":    true,
 	"session_breakout": true,
 }
 
@@ -133,7 +133,7 @@ var defaultOptionsStrategies = []stratDef{
 
 var defaultPerpsStrategies = []stratDef{
 	{ID: "momentum", ShortName: "momentum"},
-	{ID: "triple_ema_bidir", ShortName: "temab"},
+	{ID: "triple_ema_bd", ShortName: "temab"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
@@ -150,7 +150,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "rsi", ShortName: "rsi"},
 	{ID: "macd", ShortName: "macd"},
 	{ID: "breakout", ShortName: "bo"},
-	{ID: "triple_ema_bidir", ShortName: "temab"},
+	{ID: "triple_ema_bd", ShortName: "temab"},
 	{ID: "stoch_rsi", ShortName: "stochrsi"},
 	{ID: "ichimoku_cloud", ShortName: "ichi"},
 	{ID: "order_blocks", ShortName: "ob"},

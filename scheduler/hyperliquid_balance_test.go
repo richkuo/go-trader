@@ -1302,7 +1302,7 @@ func TestForceCloseHyperliquidLive_SharedCoinEmptyVirtual(t *testing.T) {
 func TestForceCloseHyperliquidLive_NetZeroSziAlreadyFlat(t *testing.T) {
 	hlLiveAll := []StrategyConfig{
 		{ID: "hl-bidir-eth-live", Platform: "hyperliquid", Type: "perps",
-			Args: []string{"triple_ema_bidir", "ETH", "1h", "--mode=live"}},
+			Args: []string{"triple_ema_bd", "ETH", "1h", "--mode=live"}},
 	}
 	positions := []HLPosition{
 		{Coin: "ETH", Size: 0, EntryPrice: 3000},
@@ -1335,7 +1335,7 @@ func TestForceCloseHyperliquidLive_NetZeroSziAlreadyFlat(t *testing.T) {
 func TestForceCloseHyperliquidLive_ShortPosition(t *testing.T) {
 	hlLiveAll := []StrategyConfig{
 		{ID: "hl-bidir-eth-live", Platform: "hyperliquid", Type: "perps",
-			Args: []string{"triple_ema_bidir", "ETH", "1h", "--mode=live"}, AllowShorts: true},
+			Args: []string{"triple_ema_bd", "ETH", "1h", "--mode=live"}, AllowShorts: true},
 	}
 	positions := []HLPosition{
 		{Coin: "ETH", Size: -1.234, EntryPrice: 3000},

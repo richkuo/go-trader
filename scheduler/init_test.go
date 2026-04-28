@@ -711,7 +711,7 @@ func TestDeriveShortName(t *testing.T) {
 		{"mean_reversion", "mr"},
 		{"volume_weighted", "vw"},
 		{"triple_ema", "tema"},
-		{"triple_ema_bidir", "temab"},
+		{"triple_ema_bd", "temab"},
 		{"rsi_macd_combo", "rmc"},
 		{"vol_mean_reversion", "vol"},
 		{"momentum_options", "mom"},
@@ -726,7 +726,7 @@ func TestDeriveShortName(t *testing.T) {
 	}
 }
 
-// #328 — triple_ema_bidir must generate AllowShorts=true in perps configs so
+// #328 — triple_ema_bd must generate AllowShorts=true in perps configs so
 // ExecutePerpsSignal opens shorts from flat. Long-only strategies must keep
 // AllowShorts=false so they can't silently flip into short positions.
 func TestGenerateConfig_PerpsAllowShortsWiring(t *testing.T) {
@@ -735,7 +735,7 @@ func TestGenerateConfig_PerpsAllowShortsWiring(t *testing.T) {
 	opts.EnablePerps = true
 	opts.Assets = []string{"ETH"}
 	opts.PerpsMode = "paper"
-	opts.PerpsStrategies = []string{"triple_ema_bidir", "triple_ema", "rsi_macd_combo", "session_breakout"}
+	opts.PerpsStrategies = []string{"triple_ema_bd", "triple_ema", "rsi_macd_combo", "session_breakout"}
 
 	cfg := generateConfig(opts)
 

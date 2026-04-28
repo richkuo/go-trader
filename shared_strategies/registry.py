@@ -300,12 +300,12 @@ def triple_ema_strategy(df: pd.DataFrame, short_period: int = 8, mid_period: int
 
 
 @register(
-    "triple_ema_bidir",
+    "triple_ema_bd",
     "Triple EMA Bidirectional \u2014 long on bullish stack, short on bearish stack",
     {"short_period": 8, "mid_period": 21, "long_period": 55},
     platforms=("futures",),
 )
-def triple_ema_bidir_strategy(df: pd.DataFrame, short_period: int = 8, mid_period: int = 21, long_period: int = 55) -> pd.DataFrame:
+def triple_ema_bd_strategy(df: pd.DataFrame, short_period: int = 8, mid_period: int = 21, long_period: int = 55) -> pd.DataFrame:
     result = df.copy()
     result["ema_short"] = ema(result["close"], short_period)
     result["ema_mid"] = ema(result["close"], mid_period)
@@ -935,7 +935,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
     ],
     "futures": [
         "sma_crossover", "ema_crossover", "bollinger_bands", "volume_weighted",
-        "triple_ema", "triple_ema_bidir", "rsi_macd_combo", "momentum",
+        "triple_ema", "triple_ema_bd", "rsi_macd_combo", "momentum",
         "mean_reversion", "rsi", "macd", "breakout", "stoch_rsi", "supertrend",
         "squeeze_momentum", "ichimoku_cloud", "atr_breakout", "amd_ifvg",
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "chart_pattern",

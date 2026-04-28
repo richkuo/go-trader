@@ -47,7 +47,7 @@ class TestFuturesRegistry:
         names = list_strategies()
         assert len(names) >= 22
         for expected in ["sma_crossover", "ema_crossover", "bollinger_bands",
-                         "volume_weighted", "triple_ema", "triple_ema_bidir",
+                         "volume_weighted", "triple_ema", "triple_ema_bd",
                          "rsi_macd_combo",
                          "momentum", "mean_reversion", "rsi", "macd", "breakout",
                          "stoch_rsi", "supertrend", "squeeze_momentum",
@@ -168,22 +168,22 @@ class TestTripleEMA:
 
 # ─── Triple EMA Bidirectional ─────────────
 
-class TestTripleEMABidir:
+class TestTripleEMABd:
     def test_uptrend_enters_long(self):
-        result = _run("triple_ema_bidir", make_trending_up(120))
+        result = _run("triple_ema_bd", make_trending_up(120))
         assert "ema_short" in result.columns
         _valid_signals(result)
         assert (result["position"] == 1).any()
         assert (result["signal"] == 1).any()
 
     def test_downtrend_enters_short(self):
-        result = _run("triple_ema_bidir", make_trending_down(120))
+        result = _run("triple_ema_bd", make_trending_down(120))
         _valid_signals(result)
         assert (result["position"] == -1).any(), "bearish stack must emit position=-1"
         assert (result["signal"] == -1).any(), "bearish stack must emit short-entry signal"
 
     def test_flat_no_signal(self):
-        result = _run("triple_ema_bidir", make_flat(80))
+        result = _run("triple_ema_bd", make_flat(80))
         assert (result["position"].dropna() == 0).all()
         assert (result["signal"].dropna() == 0).all()
 
@@ -194,7 +194,7 @@ class TestTripleEMABidir:
         closes = list(make_trending_up(80, start=100, step=1.0)) + list(
             make_trending_down(80, start=180, step=1.0)
         )
-        result = _run("triple_ema_bidir", closes)
+        result = _run("triple_ema_bd", closes)
         _valid_signals(result)
         assert result["signal"].min() >= -1
         assert result["signal"].max() <= 1
@@ -203,8 +203,8 @@ class TestTripleEMABidir:
         # Override periods — strategy must accept and use them (checked indirectly via
         # ema columns differing from defaults on same input).
         closes = make_trending_up(60)
-        default = _run("triple_ema_bidir", closes)
-        custom = _run("triple_ema_bidir", closes,
+        default = _run("triple_ema_bd", closes)
+        custom = _run("triple_ema_bd", closes,
                       params={"short_period": 3, "mid_period": 10, "long_period": 30})
         assert not default["ema_short"].equals(custom["ema_short"])
 
@@ -562,7 +562,7 @@ class TestAMDIFVG:
 class TestEdgeCases:
     @pytest.mark.parametrize("name", [
         "sma_crossover", "ema_crossover", "bollinger_bands",
-        "volume_weighted", "triple_ema", "triple_ema_bidir", "rsi_macd_combo",
+        "volume_weighted", "triple_ema", "triple_ema_bd", "rsi_macd_combo",
         "momentum", "mean_reversion", "rsi", "macd", "breakout",
         "stoch_rsi", "supertrend", "squeeze_momentum",
         "atr_breakout", "heikin_ashi_ema", "parabolic_sar",
@@ -576,7 +576,7 @@ class TestEdgeCases:
 
     @pytest.mark.parametrize("name", [
         "sma_crossover", "ema_crossover", "bollinger_bands",
-        "volume_weighted", "triple_ema", "triple_ema_bidir", "rsi_macd_combo",
+        "volume_weighted", "triple_ema", "triple_ema_bd", "rsi_macd_combo",
         "momentum", "mean_reversion", "rsi", "macd", "breakout",
         "stoch_rsi", "atr_breakout", "heikin_ashi_ema",
         "supertrend", "squeeze_momentum", "ichimoku_cloud",

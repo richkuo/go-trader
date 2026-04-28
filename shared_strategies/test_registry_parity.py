@@ -127,8 +127,8 @@ def test_shims_produce_independent_registries(spot_shim, futures_shim):
     assert "breakout" in futures_shim.STRATEGY_REGISTRY
     assert "delta_neutral_funding" not in spot_shim.STRATEGY_REGISTRY
     assert "delta_neutral_funding" in futures_shim.STRATEGY_REGISTRY
-    assert "triple_ema_bidir" not in spot_shim.STRATEGY_REGISTRY
-    assert "triple_ema_bidir" in futures_shim.STRATEGY_REGISTRY
+    assert "triple_ema_bd" not in spot_shim.STRATEGY_REGISTRY
+    assert "triple_ema_bd" in futures_shim.STRATEGY_REGISTRY
 
 
 def test_momentum_variant_overrides_threshold(spot_shim, futures_shim):
