@@ -1288,7 +1288,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		} else {
 			r.CurrentDrawdownPct = 0
 		}
-		if r.TotalTrades > 0 && r.CurrentDrawdownPct > r.MaxDrawdownPct {
+		if r.CurrentDrawdownPct > r.MaxDrawdownPct {
 			r.CircuitBreaker = true
 			r.CircuitBreakerUntil = now.Add(24 * time.Hour)
 			setHyperliquidCircuitBreakerPending(sc, s, assist)

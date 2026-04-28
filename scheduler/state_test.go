@@ -261,6 +261,62 @@ func TestLoadStateWithDB_EmptyDB(t *testing.T) {
 	}
 }
 
+func TestLoadStateWithDB_MigratesLegacyPerpsMultiplier(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+
+	db, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	original := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-eth": {
+				ID:             "hl-eth",
+				Type:           "perps",
+				Platform:       "hyperliquid",
+				Cash:           500,
+				InitialCapital: 500,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.25, AvgCost: 2200, Side: "long", Multiplier: 0},
+				},
+				OptionPositions: make(map[string]*OptionPosition),
+				TradeHistory:    []Trade{},
+			},
+			"spot-btc": {
+				ID:             "spot-btc",
+				Type:           "spot",
+				Platform:       "binanceus",
+				Cash:           500,
+				InitialCapital: 500,
+				Positions: map[string]*Position{
+					"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 50000, Side: "long", Multiplier: 0},
+				},
+				OptionPositions: make(map[string]*OptionPosition),
+				TradeHistory:    []Trade{},
+			},
+		},
+	}
+	if err := db.SaveState(original); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{DBFile: dbPath}
+	loaded, err := LoadStateWithDB(cfg, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := loaded.Strategies["hl-eth"].Positions["ETH"].Multiplier; got != 1 {
+		t.Errorf("perps multiplier = %g, want 1 after legacy migration", got)
+	}
+	if got := loaded.Strategies["spot-btc"].Positions["BTC/USDT"].Multiplier; got != 0 {
+		t.Errorf("spot multiplier = %g, want 0 (spot position must not migrate)", got)
+	}
+}
+
 func TestSaveStateWithDB(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
