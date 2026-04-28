@@ -137,6 +137,9 @@ func selectTradingViewExportStrategies(cfg *Config, opts tradingViewExportOption
 
 	byID := make(map[string]StrategyConfig, len(cfg.Strategies))
 	for _, sc := range cfg.Strategies {
+		if _, dup := byID[sc.ID]; dup {
+			return nil, fmt.Errorf("config has duplicate strategy id %q", sc.ID)
+		}
 		byID[sc.ID] = sc
 	}
 	if opts.All {
@@ -218,10 +221,10 @@ func tradingViewCSVRow(sc StrategyConfig, trade Trade, overrides map[string]stri
 		return nil, err
 	}
 	if trade.Quantity <= 0 {
-		return nil, fmt.Errorf("strategy %s trade at %s has non-positive quantity %g", trade.StrategyID, formatTime(trade.Timestamp), trade.Quantity)
+		return nil, fmt.Errorf("strategy %s trade %s at %s has non-positive quantity %g", trade.StrategyID, tradingViewTradeRef(trade), formatTime(trade.Timestamp), trade.Quantity)
 	}
 	if trade.Price <= 0 {
-		return nil, fmt.Errorf("strategy %s trade at %s has non-positive price %g", trade.StrategyID, formatTime(trade.Timestamp), trade.Price)
+		return nil, fmt.Errorf("strategy %s trade %s at %s has non-positive price %g", trade.StrategyID, tradingViewTradeRef(trade), formatTime(trade.Timestamp), trade.Price)
 	}
 	tvSymbol, err := tradingViewSymbol(sc, trade, overrides)
 	if err != nil {
@@ -248,10 +251,29 @@ func tradingViewSide(sc StrategyConfig, trade Trade) (string, error) {
 		if strings.EqualFold(trade.TradeType, "options") || strings.EqualFold(sc.Type, "options") {
 			return tradingViewOptionCloseSide(trade)
 		}
-		return "", fmt.Errorf("strategy %s trade at %s has close side without persisted position direction; cannot map to TradingView buy/sell", trade.StrategyID, formatTime(trade.Timestamp))
+		// Close trades from circuit-breaker / portfolio paths encode the
+		// position direction in Details ("Close long" / "Close short"); see
+		// risk.go and portfolio.go. Closing a long → sell, closing a short → buy.
+		details := strings.ToLower(trade.Details)
+		switch {
+		case strings.Contains(details, "close long"):
+			return "sell", nil
+		case strings.Contains(details, "close short"):
+			return "buy", nil
+		}
+		return "", fmt.Errorf("strategy %s trade %s at %s has close side without persisted position direction; cannot map to TradingView buy/sell", trade.StrategyID, tradingViewTradeRef(trade), formatTime(trade.Timestamp))
 	default:
-		return "", fmt.Errorf("strategy %s trade at %s has unsupported side %q", trade.StrategyID, formatTime(trade.Timestamp), trade.Side)
+		return "", fmt.Errorf("strategy %s trade %s at %s has unsupported side %q", trade.StrategyID, tradingViewTradeRef(trade), formatTime(trade.Timestamp), trade.Side)
 	}
+}
+
+// tradingViewTradeRef returns a short reference (exchange order id when set,
+// otherwise the symbol) to make export-error logs traceable.
+func tradingViewTradeRef(trade Trade) string {
+	if id := strings.TrimSpace(trade.ExchangeOrderID); id != "" {
+		return "order=" + id
+	}
+	return "symbol=" + strings.TrimSpace(trade.Symbol)
 }
 
 func tradingViewOptionCloseSide(trade Trade) (string, error) {

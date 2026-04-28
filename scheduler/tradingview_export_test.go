@@ -156,6 +156,52 @@ func TestTradingViewCloseSideUnsupportedWithoutDirection(t *testing.T) {
 	}
 }
 
+func TestTradingViewCloseSideFromDetailsDirection(t *testing.T) {
+	ts := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	closeLong, err := tradingViewCSVRow(
+		StrategyConfig{ID: "okx-btc", Platform: "okx", Type: "spot"},
+		Trade{
+			Timestamp: ts, StrategyID: "okx-btc", Symbol: "BTC/USDT", Side: "close",
+			Quantity: 1, Price: 60000, TradeType: "spot",
+			Details: "Circuit breaker close long, PnL: $-50.00",
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("close-long row: %v", err)
+	}
+	if closeLong[1] != "sell" {
+		t.Fatalf("close-long side = %q, want sell", closeLong[1])
+	}
+
+	closeShort, err := tradingViewCSVRow(
+		StrategyConfig{ID: "hl-btc", Platform: "hyperliquid", Type: "perps"},
+		Trade{
+			Timestamp: ts, StrategyID: "hl-btc", Symbol: "BTC", Side: "close",
+			Quantity: 1, Price: 60000, TradeType: "perps",
+			Details: "Circuit breaker close short, PnL: $-50.00",
+		},
+		map[string]string{"hl:BTC": "OKX:BTCUSDT.P"},
+	)
+	if err != nil {
+		t.Fatalf("close-short row: %v", err)
+	}
+	if closeShort[1] != "buy" {
+		t.Fatalf("close-short side = %q, want buy", closeShort[1])
+	}
+}
+
+func TestTradingViewExportRejectsDuplicateStrategyID(t *testing.T) {
+	cfg := &Config{Strategies: []StrategyConfig{
+		{ID: "okx-btc", Platform: "okx", Type: "spot"},
+		{ID: "okx-btc", Platform: "okx", Type: "spot"},
+	}}
+	_, err := selectTradingViewExportStrategies(cfg, tradingViewExportOptions{All: true, OutputPath: "/tmp/out.csv"})
+	if err == nil || !strings.Contains(err.Error(), "duplicate strategy id") {
+		t.Fatalf("expected duplicate strategy id error, got %v", err)
+	}
+}
+
 func TestTradingViewCSVRowPreservesNegativeCommission(t *testing.T) {
 	row, err := tradingViewCSVRow(
 		StrategyConfig{ID: "okx-btc", Platform: "okx", Type: "spot"},
