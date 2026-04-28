@@ -765,7 +765,11 @@ func hyperliquidKillSwitchFillShare(sc StrategyConfig, coin string, fillSz, fill
 		}
 	}
 	if !foundSelf || sumW <= 0 {
-		return fillSz, fillFee
+		// Fail closed: a misconfigured caller passing an `sc` that isn't among
+		// peers must not cause a single strategy to claim the entire portfolio
+		// fill. The generic fallback in forceCloseAllPositions will then close
+		// any residual virtual position at mark price.
+		return 0, 0
 	}
 	ratio := wSelf / sumW
 	if ratio < 0 {

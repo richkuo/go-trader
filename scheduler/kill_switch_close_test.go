@@ -187,7 +187,7 @@ func TestHyperliquidKillSwitchClose_UsesRealFillBeforeMark(t *testing.T) {
 			"BTC": {Symbol: "BTC", Quantity: 1.0, AvgCost: 50000, Side: "long", Multiplier: 1, Leverage: 5},
 		},
 	}
-	forceCloseKillSwitchPositions(s, hlLive[0], map[string]float64{"BTC": 48000}, plan, hlLive, nil)
+	forceCloseKillSwitchPositions(s, hlLive[0], map[string]float64{"BTC": 48000}, plan.CloseReport.Fills, hlLive, nil)
 
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("expected 1 trade, got %d", len(s.TradeHistory))
@@ -243,7 +243,7 @@ func TestHyperliquidKillSwitchClose_SharedCoinSplitsFillByWeights(t *testing.T) 
 		},
 	}
 
-	forceCloseKillSwitchPositions(s, hlLive[0], map[string]float64{"ETH": 2800}, plan, hlLive, nil)
+	forceCloseKillSwitchPositions(s, hlLive[0], map[string]float64{"ETH": 2800}, plan.CloseReport.Fills, hlLive, nil)
 
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("expected 1 trade, got %d", len(s.TradeHistory))
@@ -264,6 +264,53 @@ func TestHyperliquidKillSwitchClose_SharedCoinSplitsFillByWeights(t *testing.T) 
 	wantPnL := -51.0 // 0.5 * (3000 - 3100) - weighted fee 1.0
 	if math.Abs(s.ClosedPositions[0].RealizedPnL-wantPnL) > 1e-9 {
 		t.Errorf("RealizedPnL = %.4f; want %.4f", s.ClosedPositions[0].RealizedPnL, wantPnL)
+	}
+}
+
+// Closing both peers of a shared HL coin against the same kill-switch fill
+// must split the fill size and fee exactly, with no over- or under-counting.
+// Regression for capital-weighted fill split on shared coins.
+func TestHyperliquidKillSwitchClose_SharedCoinPeersSumToReport(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Leverage: 5, CapitalPct: 0.25,
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Leverage: 5, CapitalPct: 0.75,
+			Args: []string{"ema", "ETH", "1h", "--mode=live"}},
+	}
+	const totalSz, totalFee, avgPx = 2.0, 4.0, 3000.0
+	fills := map[string]HyperliquidCloseFill{
+		"ETH": {TotalSz: totalSz, AvgPx: avgPx, Fee: totalFee},
+	}
+	stateA := &StrategyState{
+		ID: "hl-a", Type: "perps", Platform: "hyperliquid", Cash: 1000,
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3100, Side: "long", Multiplier: 1, Leverage: 5},
+		},
+	}
+	stateB := &StrategyState{
+		ID: "hl-b", Type: "perps", Platform: "hyperliquid", Cash: 3000,
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1.5, AvgCost: 3100, Side: "long", Multiplier: 1, Leverage: 5},
+		},
+	}
+	prices := map[string]float64{"ETH": 2800}
+
+	forceCloseKillSwitchPositions(stateA, hlLive[0], prices, fills, hlLive, nil)
+	forceCloseKillSwitchPositions(stateB, hlLive[1], prices, fills, hlLive, nil)
+
+	if len(stateA.TradeHistory) != 1 || len(stateB.TradeHistory) != 1 {
+		t.Fatalf("expected 1 trade per peer, got %d / %d",
+			len(stateA.TradeHistory), len(stateB.TradeHistory))
+	}
+	tA, tB := stateA.TradeHistory[0], stateB.TradeHistory[0]
+	if math.Abs((tA.Quantity+tB.Quantity)-totalSz) > 1e-9 {
+		t.Errorf("peer fill quantities sum to %.6f; want %.6f", tA.Quantity+tB.Quantity, totalSz)
+	}
+	if math.Abs((tA.ExchangeFee+tB.ExchangeFee)-totalFee) > 1e-9 {
+		t.Errorf("peer fees sum to %.6f; want %.6f", tA.ExchangeFee+tB.ExchangeFee, totalFee)
+	}
+	if tA.Price != avgPx || tB.Price != avgPx {
+		t.Errorf("peer fill prices = %.2f / %.2f; want %.2f for both", tA.Price, tB.Price, avgPx)
 	}
 }
 

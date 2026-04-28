@@ -1063,13 +1063,15 @@ func rolloverDailyPnL(r *RiskState) {
 }
 
 // forceCloseKillSwitchPositions clears virtual positions after a confirmed
-// portfolio kill-switch close.
-func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices map[string]float64, plan KillSwitchClosePlan, hlLiveAll []StrategyConfig, logger *StrategyLogger) {
+// portfolio kill-switch close. `hlFills` carries the realized Hyperliquid
+// close fills (price/size/fee) so HL strategies record accurate Trade and
+// ClosedPosition rows; pass nil for non-HL or when no fill data is available.
+func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices map[string]float64, hlFills map[string]HyperliquidCloseFill, hlLiveAll []StrategyConfig, logger *StrategyLogger) {
 	// Live HL portfolio-kill closes can carry real exchange fills. Apply them
 	// first so Trade and ClosedPosition rows use realized fill price/fee; the
 	// generic pass below remains the cleanup path for non-HL strategies,
 	// missing-fill fallbacks, options, and any residual virtual positions.
-	applyHyperliquidKillSwitchCloseFill(s, sc, plan.CloseReport.Fills, hlLiveAll)
+	applyHyperliquidKillSwitchCloseFill(s, sc, hlFills, hlLiveAll)
 	forceCloseAllPositions(s, prices, logger)
 }
 
