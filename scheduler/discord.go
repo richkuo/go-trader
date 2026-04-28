@@ -773,13 +773,13 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 	}
 	sb.WriteString("\n```\n")
 	if showWalletPct {
-		sep := strings.Repeat("-", 84)
-		sb.WriteString(fmt.Sprintf("%-14s %9s %6s %6s %7s %6s %8s %5s %4s %4s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "DD", "Wallet%", "Tf", "Int", "#T", "W/L"))
+		sep := strings.Repeat("-", 83)
+		sb.WriteString(fmt.Sprintf("%-16s%9s %6s %6s %8s%5s %8s%5s %4s %4s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "DD", "Wallet%", "Tf", "Int", "#T", "W/L"))
 		sb.WriteString(sep + "\n")
 		for _, bot := range bots {
 			label := bot.id
-			if len(label) > 14 {
-				label = label[:14]
+			if len(label) > 16 {
+				label = label[:16]
 			}
 			valStr := fmtComma(bot.value)
 			initStr := fmtComma(bot.initialCap)
@@ -791,7 +791,7 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 				wpStr = fmt.Sprintf("%.1f%%", bot.walletPct)
 			}
 			wlStr := fmtWinLossRatio(bot.winningTrades, bot.losingTrades)
-			sb.WriteString(fmt.Sprintf("%-14s %9s %6s %6s %7s %6s %8s %5s %4s %4d %5s\n", label, initStr, valStr, pnlStr, pctStr, maxDDStr, wpStr, bot.timeframe, bot.interval, bot.closedTrades, wlStr))
+			sb.WriteString(fmt.Sprintf("%-16s%9s %6s %6s %8s%5s %8s%5s %4s %4d %5s\n", label, initStr, valStr, pnlStr, pctStr, maxDDStr, wpStr, bot.timeframe, bot.interval, bot.closedTrades, wlStr))
 		}
 		if includeTotals {
 			sb.WriteString(sep + "\n")
@@ -800,16 +800,16 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 			totPnlStr := fmtPnl(totalPnl)
 			totPctStr := fmtPnlPct(totalPnlPct)
 			totWlStr := fmtWinLossRatio(totalWins, totalLosses)
-			sb.WriteString(fmt.Sprintf("%-14s %9s %6s %6s %7s %6s %8s %5s %4s %4d %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "", "100.0%", "", "", totalClosed, totWlStr))
+			sb.WriteString(fmt.Sprintf("%-16s%9s %6s %6s %8s%5s %8s%5s %4s %4d %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "", "100.0%", "", "", totalClosed, totWlStr))
 		}
 	} else {
 		sep := strings.Repeat("-", 75)
-		sb.WriteString(fmt.Sprintf("%-14s %9s %6s %6s %7s %6s %5s %4s %4s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "DD", "Tf", "Int", "#T", "W/L"))
+		sb.WriteString(fmt.Sprintf("%-16s%9s %6s %6s %8s%5s %5s %4s %4s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "DD", "Tf", "Int", "#T", "W/L"))
 		sb.WriteString(sep + "\n")
 		for _, bot := range bots {
 			label := bot.id
-			if len(label) > 14 {
-				label = label[:14]
+			if len(label) > 16 {
+				label = label[:16]
 			}
 			valStr := fmtComma(bot.value)
 			initStr := fmtComma(bot.initialCap)
@@ -817,7 +817,7 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 			pctStr := fmtPnlPct(bot.pnlPct)
 			wlStr := fmtWinLossRatio(bot.winningTrades, bot.losingTrades)
 			maxDDStr := fmtDrawdownPct(bot.maxDrawdownPct)
-			sb.WriteString(fmt.Sprintf("%-14s %9s %6s %6s %7s %6s %5s %4s %4d %5s\n", label, initStr, valStr, pnlStr, pctStr, maxDDStr, bot.timeframe, bot.interval, bot.closedTrades, wlStr))
+			sb.WriteString(fmt.Sprintf("%-16s%9s %6s %6s %8s%5s %5s %4s %4d %5s\n", label, initStr, valStr, pnlStr, pctStr, maxDDStr, bot.timeframe, bot.interval, bot.closedTrades, wlStr))
 		}
 		if includeTotals {
 			sb.WriteString(sep + "\n")
@@ -826,7 +826,7 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 			totPnlStr := fmtPnl(totalPnl)
 			totPctStr := fmtPnlPct(totalPnlPct)
 			totWlStr := fmtWinLossRatio(totalWins, totalLosses)
-			sb.WriteString(fmt.Sprintf("%-14s %9s %6s %6s %7s %6s %5s %4s %4d %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "", "", "", totalClosed, totWlStr))
+			sb.WriteString(fmt.Sprintf("%-16s%9s %6s %6s %8s%5s %5s %4s %4d %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "", "", "", totalClosed, totWlStr))
 		}
 	}
 	sb.WriteString("```\n")
