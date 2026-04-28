@@ -1958,7 +1958,7 @@ CREATE TABLE trades (
 		t.Errorf("RoundTrips = %d, want 3 (3 close legs of 5 rows)", got.RoundTrips)
 	}
 	if got.Wins != 2 {
-		t.Errorf("Wins = %d, want 2 (PnL >= 0: $42.50, $3.14)", got.Wins)
+		t.Errorf("Wins = %d, want 2 (PnL > 0: $42.50, $3.14)", got.Wins)
 	}
 	if got.Losses != 1 {
 		t.Errorf("Losses = %d, want 1 (PnL < 0: $-7.10)", got.Losses)

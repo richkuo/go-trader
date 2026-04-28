@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -427,6 +428,13 @@ func FormatCategorySummary(
 				closedT = lt.RoundTrips
 				winT = lt.Wins
 				lossT = lt.Losses
+			} else if ss.RiskState.TotalTrades > 0 {
+				// DB was queried (non-nil map) but this strategy has no close
+				// trades recorded — RiskState counters may be stale (e.g. from
+				// a run before #455 landed). Log once per summary cycle so the
+				// discrepancy is visible without spamming the operator.
+				fmt.Fprintf(os.Stderr, "[discord] WARN: strategy %s has RiskState.TotalTrades=%d but no lifetime trades in DB; using in-memory fallback\n",
+					sc.ID, ss.RiskState.TotalTrades)
 			}
 		}
 		tableBots = append(tableBots, botInfo{

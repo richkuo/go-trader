@@ -283,6 +283,12 @@ func (sdb *StateDB) migrateSchema() error {
 // whose Details was truncated or never carried a PnL substring stays at
 // is_close=0 (and undercounts by the same margin as the legacy in-memory
 // counters did pre-#455).
+//
+// Known asymmetry: the HL on-chain "no virtual position" branch emitted
+// "Circuit breaker on-chain close (no virtual position), fill=… fee=$…"
+// in its Details — no PnL token. Pre-#455 rows from that branch therefore
+// stay is_close=0 here, while post-#455 rows from the same branch land
+// is_close=1, realized_pnl=0 (written directly by hyperliquid_balance.go).
 func (sdb *StateDB) backfillTradeCloseFlags() error {
 	// Only flag rows that haven't been touched. Detect close trades by
 	// the "PnL" substring (covers "PnL: $X" and "PnL=$X" forms) — this
@@ -294,12 +300,13 @@ func (sdb *StateDB) backfillTradeCloseFlags() error {
 		return fmt.Errorf("backfill is_close: %w", err)
 	}
 	// Parse the realized PnL out of the Details string. SQLite lacks
-	// regexp by default, so we walk the rows in Go. Only touch rows that
-	// were just flagged is_close=1 by the previous statement and still
-	// carry realized_pnl=0 (skip rows where future code already wrote a
-	// non-zero PnL — defensive against re-runs).
+	// regexp by default, so we walk the rows in Go. Restrict to rows that
+	// have both is_close=1 and a "PnL" token: realized_pnl=0 rows without
+	// a PnL substring (e.g. the HL-fallback "no virtual position" branch)
+	// can never match parseDetailsPnL and would be re-scanned every boot
+	// otherwise.
 	rows, err := sdb.db.Query(`SELECT rowid, details FROM trades
-		WHERE is_close = 1 AND realized_pnl = 0`)
+		WHERE is_close = 1 AND realized_pnl = 0 AND details LIKE '%PnL%'`)
 	if err != nil {
 		return fmt.Errorf("scan backfill candidates: %w", err)
 	}
@@ -1169,8 +1176,10 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 // LifetimeTradeStats holds the per-strategy round-trip totals derived from
 // the trades table (#455). RoundTrips is the lifetime count of close legs
 // (1 trade = 1 round-trip per the issue spec); Wins and Losses partition
-// that count by realized PnL sign (PnL ≥ 0 → win, PnL < 0 → loss). Open
-// positions without a recorded close do not count.
+// that count by strict realized PnL sign (PnL > 0 → win, PnL < 0 → loss).
+// Breakeven closes (PnL = 0) are excluded from both buckets so that the
+// on-chain "no virtual position" fallback (which records realized_pnl=0)
+// does not inflate W. Open positions without a recorded close do not count.
 type LifetimeTradeStats struct {
 	RoundTrips int
 	Wins       int
@@ -1190,7 +1199,7 @@ func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, erro
 	rows, err := sdb.db.Query(`SELECT
 			strategy_id,
 			COUNT(*),
-			SUM(CASE WHEN realized_pnl >= 0 THEN 1 ELSE 0 END),
+			SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END),
 			SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END)
 		FROM trades
 		WHERE is_close = 1
