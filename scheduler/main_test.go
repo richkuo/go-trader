@@ -869,3 +869,168 @@ func TestExecuteHyperliquidResult_PaperModeNoExchangeData(t *testing.T) {
 		t.Errorf("ExchangeFee should be 0 in paper mode, got %g", tr.ExchangeFee)
 	}
 }
+
+func TestExecuteOKXResult_PerpsStampsExchangeData(t *testing.T) {
+	s := &StrategyState{
+		ID:              "okx-perps-btc",
+		Type:            "perps",
+		Platform:        "okx",
+		Cash:            1000,
+		InitialCapital:  1000,
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{PeakValue: 1000},
+	}
+	sc := StrategyConfig{ID: "okx-perps-btc", Type: "perps", Platform: "okx", Leverage: 2}
+	result := &OKXResult{Signal: 1, Symbol: "BTC", Price: 50000}
+	execResult := &OKXExecuteResult{
+		Execution: &OKXExecution{
+			Action: "buy", Symbol: "BTC", Size: 0.02,
+			Fill: &OKXFill{AvgPx: 50000.5, TotalSz: 0.02, OID: "okx-perps-oid", Fee: 1.25},
+		},
+		Platform: "okx",
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	trades, _ := executeOKXResult(sc, s, result, execResult, "BUY", 50000, logger)
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	tr := s.TradeHistory[0]
+	if tr.ExchangeOrderID != "okx-perps-oid" {
+		t.Errorf("ExchangeOrderID = %q, want okx-perps-oid", tr.ExchangeOrderID)
+	}
+	if tr.ExchangeFee != 1.25 {
+		t.Errorf("ExchangeFee = %g, want 1.25", tr.ExchangeFee)
+	}
+}
+
+func TestExecuteOKXResult_SpotStampsExchangeData(t *testing.T) {
+	s := &StrategyState{
+		ID:              "okx-spot-btc",
+		Type:            "spot",
+		Platform:        "okx",
+		Cash:            1000,
+		InitialCapital:  1000,
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{PeakValue: 1000},
+	}
+	sc := StrategyConfig{ID: "okx-spot-btc", Type: "spot", Platform: "okx"}
+	result := &OKXResult{Signal: 1, Symbol: "BTC", Price: 50000}
+	execResult := &OKXExecuteResult{
+		Execution: &OKXExecution{
+			Action: "buy", Symbol: "BTC", Size: 0.01,
+			Fill: &OKXFill{AvgPx: 50000.5, TotalSz: 0.01, OID: "okx-spot-oid", Fee: 0.18},
+		},
+		Platform: "okx",
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	trades, _ := executeOKXResult(sc, s, result, execResult, "BUY", 50000, logger)
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	tr := s.TradeHistory[0]
+	if tr.ExchangeOrderID != "okx-spot-oid" {
+		t.Errorf("ExchangeOrderID = %q, want okx-spot-oid", tr.ExchangeOrderID)
+	}
+	if tr.ExchangeFee != 0.18 {
+		t.Errorf("ExchangeFee = %g, want 0.18", tr.ExchangeFee)
+	}
+}
+
+func TestExecuteRobinhoodResult_StampsExchangeData(t *testing.T) {
+	s := &StrategyState{
+		ID:              "rh-momentum-btc",
+		Type:            "spot",
+		Platform:        "robinhood",
+		Cash:            1000,
+		InitialCapital:  1000,
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{PeakValue: 1000},
+	}
+	sc := StrategyConfig{ID: "rh-momentum-btc", Type: "spot", Platform: "robinhood"}
+	result := &RobinhoodResult{Signal: 1, Symbol: "BTC", Price: 50000}
+	execResult := &RobinhoodExecuteResult{
+		Execution: &RobinhoodExecution{
+			Action: "buy", Symbol: "BTC", AmountUSD: 500,
+			Fill: &RobinhoodFill{AvgPx: 50000.5, Quantity: 0.01, OID: "rh-live-oid", Fee: 0.07},
+		},
+		Platform: "robinhood",
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	trades, _ := executeRobinhoodResult(sc, s, result, execResult, "BUY", 50000, logger)
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	tr := s.TradeHistory[0]
+	if tr.ExchangeOrderID != "rh-live-oid" {
+		t.Errorf("ExchangeOrderID = %q, want rh-live-oid", tr.ExchangeOrderID)
+	}
+	if tr.ExchangeFee != 0.07 {
+		t.Errorf("ExchangeFee = %g, want 0.07", tr.ExchangeFee)
+	}
+}
+
+func TestExecuteTopStepResult_StampsExchangeData(t *testing.T) {
+	s := &StrategyState{
+		ID:              "ts-momentum-es",
+		Type:            "futures",
+		Platform:        "topstep",
+		Cash:            10000,
+		InitialCapital:  10000,
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{PeakValue: 10000},
+	}
+	sc := StrategyConfig{
+		ID:       "ts-momentum-es",
+		Type:     "futures",
+		Platform: "topstep",
+		FuturesConfig: &FuturesConfig{
+			FeePerContract: 2.5,
+			MaxContracts:   5,
+		},
+	}
+	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 500}
+	result := &TopStepResult{Signal: 1, Symbol: "ES", Price: 5000, ContractSpec: spec}
+	execResult := &TopStepExecuteResult{
+		Execution: &TopStepExecution{
+			Action: "buy", Symbol: "ES", Contracts: 2,
+			Fill: &TopStepFill{AvgPx: 5000.25, TotalContracts: 2, OID: "ts-live-oid", Fee: 4.12},
+		},
+		Platform: "topstep",
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	trades, _ := executeTopStepResult(sc, s, result, execResult, "BUY", 5000, logger)
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	tr := s.TradeHistory[0]
+	if tr.ExchangeOrderID != "ts-live-oid" {
+		t.Errorf("ExchangeOrderID = %q, want ts-live-oid", tr.ExchangeOrderID)
+	}
+	if tr.ExchangeFee != 4.12 {
+		t.Errorf("ExchangeFee = %g, want 4.12", tr.ExchangeFee)
+	}
+}

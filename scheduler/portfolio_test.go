@@ -581,7 +581,7 @@ func TestExecuteSpotSignalLiveFillUsesExchangeFee(t *testing.T) {
 	fillQty := 0.015
 	fillPrice := 50000.0
 	fillFee := 0.17
-	trades, err := ExecuteSpotSignalWithFillFee(s, 1, "BTC", fillPrice, fillQty, fillFee, logger)
+	trades, err := ExecuteSpotSignalWithFillFee(s, 1, "BTC", fillPrice, fillQty, fillFee, "", logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,6 +595,58 @@ func TestExecuteSpotSignalLiveFillUsesExchangeFee(t *testing.T) {
 	if len(s.TradeHistory) != 1 || s.TradeHistory[0].ExchangeFee != fillFee {
 		t.Fatalf("ExchangeFee = %v, want %v", s.TradeHistory, fillFee)
 	}
+}
+
+func TestExecuteSpotSignalLiveFillUsesExchangeOrderID(t *testing.T) {
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	t.Run("open", func(t *testing.T) {
+		s := &StrategyState{
+			ID:              "rh-momentum-btc",
+			Cash:            1000,
+			Platform:        "robinhood",
+			Positions:       make(map[string]*Position),
+			OptionPositions: make(map[string]*OptionPosition),
+			TradeHistory:    []Trade{},
+			RiskState:       RiskState{},
+		}
+
+		trades, err := ExecuteSpotSignalWithFillFee(s, 1, "BTC", 50000, 0.015, 0.17, "rh-open-oid", logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if trades != 1 {
+			t.Fatalf("trades = %d, want 1", trades)
+		}
+		if got := s.TradeHistory[0].ExchangeOrderID; got != "rh-open-oid" {
+			t.Errorf("ExchangeOrderID = %q, want rh-open-oid", got)
+		}
+	})
+
+	t.Run("close", func(t *testing.T) {
+		s := &StrategyState{
+			ID:              "rh-momentum-btc",
+			Cash:            250,
+			Platform:        "robinhood",
+			Positions:       map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 0.015, AvgCost: 49000, Side: "long"}},
+			OptionPositions: make(map[string]*OptionPosition),
+			TradeHistory:    []Trade{},
+			RiskState:       RiskState{},
+		}
+
+		trades, err := ExecuteSpotSignalWithFillFee(s, -1, "BTC", 50000, 0.015, 0.17, "rh-close-oid", logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if trades != 1 {
+			t.Fatalf("trades = %d, want 1", trades)
+		}
+		if got := s.TradeHistory[0].ExchangeOrderID; got != "rh-close-oid" {
+			t.Errorf("ExchangeOrderID = %q, want rh-close-oid", got)
+		}
+	})
 }
 
 // #254: ExecutePerpsSignal — margin-based accounting. Paper buy should NOT
@@ -1007,7 +1059,7 @@ func TestExecuteFuturesSignalLiveFillUsesExchangeFee(t *testing.T) {
 
 	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 500}
 	fillFee := 4.12
-	trades, err := ExecuteFuturesSignalWithFillFee(s, 1, "ES", 5000, spec, 2.5, 5, 2, fillFee, logger)
+	trades, err := ExecuteFuturesSignalWithFillFee(s, 1, "ES", 5000, spec, 2.5, 5, 2, fillFee, "", logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1021,6 +1073,63 @@ func TestExecuteFuturesSignalLiveFillUsesExchangeFee(t *testing.T) {
 	if s.TradeHistory[0].ExchangeFee != fillFee {
 		t.Errorf("ExchangeFee = %g, want %g", s.TradeHistory[0].ExchangeFee, fillFee)
 	}
+}
+
+func TestExecuteFuturesSignalLiveFillUsesExchangeOrderID(t *testing.T) {
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 500}
+
+	t.Run("open", func(t *testing.T) {
+		s := &StrategyState{
+			ID:              "ts-momentum-es",
+			Cash:            10000,
+			Platform:        "topstep",
+			Positions:       make(map[string]*Position),
+			OptionPositions: make(map[string]*OptionPosition),
+			TradeHistory:    []Trade{},
+			RiskState:       RiskState{},
+		}
+
+		trades, err := ExecuteFuturesSignalWithFillFee(s, 1, "ES", 5000, spec, 2.5, 5, 2, 4.12, "ts-open-oid", logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if trades != 1 {
+			t.Fatalf("trades = %d, want 1", trades)
+		}
+		if got := s.TradeHistory[0].ExchangeOrderID; got != "ts-open-oid" {
+			t.Errorf("ExchangeOrderID = %q, want ts-open-oid", got)
+		}
+	})
+
+	t.Run("close", func(t *testing.T) {
+		s := &StrategyState{
+			ID:              "ts-momentum-es",
+			Cash:            10000,
+			Platform:        "topstep",
+			Positions:       map[string]*Position{"ES": {Symbol: "ES", Quantity: 2, AvgCost: 4990, Side: "long", Multiplier: 50}},
+			OptionPositions: make(map[string]*OptionPosition),
+			TradeHistory:    []Trade{},
+			RiskState:       RiskState{},
+		}
+
+		trades, err := ExecuteFuturesSignalWithFillFee(s, -1, "ES", 5000, spec, 2.5, 5, 2, 4.12, "ts-close-oid", logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if trades != 2 {
+			t.Fatalf("trades = %d, want 2", trades)
+		}
+		if got := s.TradeHistory[0].ExchangeOrderID; got != "ts-close-oid" {
+			t.Errorf("ExchangeOrderID = %q, want ts-close-oid", got)
+		}
+		if got := s.TradeHistory[1].ExchangeOrderID; got != "" {
+			t.Errorf("open leg ExchangeOrderID = %q, want empty modeled metadata leg", got)
+		}
+	})
 }
 
 // #328 — AllowShorts=true lets signal=-1 from flat open a short perp position.

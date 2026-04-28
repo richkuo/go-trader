@@ -233,6 +233,13 @@ func exchangeFeeForTrade(fillFee float64, useFillFee bool) float64 {
 	return 0
 }
 
+func exchangeOrderIDForTrade(fillOID string, useFillMetadata bool) string {
+	if useFillMetadata {
+		return fillOID
+	}
+	return ""
+}
+
 // PortfolioValue calculates total value of a strategy's portfolio.
 func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 	total := s.Cash
@@ -717,10 +724,10 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 // fillQty > 0 means a live fill: use price as-is (no slippage) and fillQty as position quantity for buys.
 // fillQty == 0 means paper mode: apply ApplySlippage and compute qty from state budget.
 func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float64, fillQty float64, logger *StrategyLogger) (int, error) {
-	return ExecuteSpotSignalWithFillFee(s, signal, symbol, price, fillQty, 0, logger)
+	return ExecuteSpotSignalWithFillFee(s, signal, symbol, price, fillQty, 0, "", logger)
 }
 
-func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, logger *StrategyLogger) (int, error) {
+func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, logger *StrategyLogger) (int, error) {
 	if signal == 0 {
 		return 0, nil
 	}
@@ -729,7 +736,7 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 	if s.Platform == "okx" && s.Type == "perps" {
 		feePlatform = "okx-perps"
 	}
-	fillFeeUsed := false
+	fillMetadataUsed := false
 
 	if signal == 1 { // Buy
 		// Check if already long
@@ -746,28 +753,29 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 				execPrice = ApplySlippage(price)
 			}
 			buyCost := pos.Quantity * execPrice
-			useFillFee := fillQty > 0 && !fillFeeUsed
-			fee := executionFee(CalculatePlatformSpotFee(feePlatform, buyCost), fillFee, useFillFee)
-			if useFillFee && fillFee > 0 {
-				fillFeeUsed = true
+			useFillMetadata := fillQty > 0 && !fillMetadataUsed
+			fee := executionFee(CalculatePlatformSpotFee(feePlatform, buyCost), fillFee, useFillMetadata)
+			if useFillMetadata {
+				fillMetadataUsed = true
 			}
 			totalCost := buyCost + fee
 			pnl := pos.Quantity*pos.AvgCost - totalCost
 			s.Cash += pos.Quantity*pos.AvgCost - totalCost
 			now := time.Now().UTC()
 			trade := Trade{
-				Timestamp:   now,
-				StrategyID:  s.ID,
-				Symbol:      symbol,
-				Side:        "buy",
-				Quantity:    pos.Quantity,
-				Price:       execPrice,
-				Value:       totalCost,
-				TradeType:   "spot",
-				Details:     fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
-				ExchangeFee: exchangeFeeForTrade(fillFee, useFillFee),
-				IsClose:     true,
-				RealizedPnL: pnl,
+			Timestamp:       now,
+				StrategyID:      s.ID,
+				Symbol:          symbol,
+				Side:            "buy",
+				Quantity:        pos.Quantity,
+				Price:           execPrice,
+				Value:           totalCost,
+				TradeType:       "spot",
+				Details:         fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
+				ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
+				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
+				IsClose:         true,
+				RealizedPnL:     pnl,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
@@ -794,10 +802,10 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			qty = budget / execPrice
 		}
 		tradeCost := qty * execPrice
-		useFillFee := fillQty > 0 && !fillFeeUsed
-		fee := executionFee(CalculatePlatformSpotFee(feePlatform, tradeCost), fillFee, useFillFee)
-		if useFillFee && fillFee > 0 {
-			fillFeeUsed = true
+		useFillMetadata := fillQty > 0 && !fillMetadataUsed
+		fee := executionFee(CalculatePlatformSpotFee(feePlatform, tradeCost), fillFee, useFillMetadata)
+		if useFillMetadata {
+			fillMetadataUsed = true
 		}
 		s.Cash -= tradeCost + fee
 		now := time.Now().UTC()
@@ -810,16 +818,17 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			OpenedAt:        now,
 		}
 		trade := Trade{
-			Timestamp:   now,
-			StrategyID:  s.ID,
-			Symbol:      symbol,
-			Side:        "buy",
-			Quantity:    qty,
-			Price:       execPrice,
-			Value:       tradeCost + fee,
-			TradeType:   "spot",
-			Details:     fmt.Sprintf("Open long %.6f @ $%.2f (fee $%.2f)", qty, execPrice, fee),
-			ExchangeFee: exchangeFeeForTrade(fillFee, useFillFee),
+			Timestamp:       now,
+			StrategyID:      s.ID,
+			Symbol:          symbol,
+			Side:            "buy",
+			Quantity:        qty,
+			Price:           execPrice,
+			Value:           tradeCost + fee,
+			TradeType:       "spot",
+			Details:         fmt.Sprintf("Open long %.6f @ $%.2f (fee $%.2f)", qty, execPrice, fee),
+			ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
+			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
 		}
 		RecordTrade(s, trade)
 		logger.Info("BUY %s: %.6f @ $%.2f (fee $%.2f, total $%.2f)", symbol, qty, execPrice, fee, tradeCost+fee)
@@ -835,28 +844,29 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 				execPrice = ApplySlippage(price)
 			}
 			saleValue := pos.Quantity * execPrice
-			useFillFee := fillQty > 0 && !fillFeeUsed
-			fee := executionFee(CalculatePlatformSpotFee(feePlatform, saleValue), fillFee, useFillFee)
-			if useFillFee && fillFee > 0 {
-				fillFeeUsed = true
+			useFillMetadata := fillQty > 0 && !fillMetadataUsed
+			fee := executionFee(CalculatePlatformSpotFee(feePlatform, saleValue), fillFee, useFillMetadata)
+			if useFillMetadata {
+				fillMetadataUsed = true
 			}
 			netProceeds := saleValue - fee
 			pnl := netProceeds - (pos.Quantity * pos.AvgCost)
 			s.Cash += netProceeds
 			now := time.Now().UTC()
 			trade := Trade{
-				Timestamp:   now,
-				StrategyID:  s.ID,
-				Symbol:      symbol,
-				Side:        "sell",
-				Quantity:    pos.Quantity,
-				Price:       execPrice,
-				Value:       netProceeds,
-				TradeType:   "spot",
-				Details:     fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
-				ExchangeFee: exchangeFeeForTrade(fillFee, useFillFee),
-				IsClose:     true,
-				RealizedPnL: pnl,
+			Timestamp:       now,
+				StrategyID:      s.ID,
+				Symbol:          symbol,
+				Side:            "sell",
+				Quantity:        pos.Quantity,
+				Price:           execPrice,
+				Value:           netProceeds,
+				TradeType:       "spot",
+				Details:         fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
+				ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
+				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
+				IsClose:         true,
+				RealizedPnL:     pnl,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
@@ -875,16 +885,16 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 // fillContracts > 0 means a live fill: use price as-is (no slippage) and fillContracts as contract count for opens.
 // fillContracts == 0 means paper mode: apply ApplySlippage and compute contracts from state budget.
 func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, logger *StrategyLogger) (int, error) {
-	return ExecuteFuturesSignalWithFillFee(s, signal, symbol, price, spec, feePerContract, maxContracts, fillContracts, 0, logger)
+	return ExecuteFuturesSignalWithFillFee(s, signal, symbol, price, spec, feePerContract, maxContracts, fillContracts, 0, "", logger)
 }
 
-func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, fillFee float64, logger *StrategyLogger) (int, error) {
+func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, fillFee float64, fillOID string, logger *StrategyLogger) (int, error) {
 	if signal == 0 {
 		return 0, nil
 	}
 	tradesExecuted := 0
 	multiplier := spec.Multiplier
-	fillFeeUsed := false
+	fillMetadataUsed := false
 
 	if signal == 1 { // Buy
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
@@ -901,27 +911,28 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			}
 			contracts := int(pos.Quantity)
 			pnl := float64(contracts) * multiplier * (pos.AvgCost - execPrice)
-			useFillFee := fillContracts > 0 && !fillFeeUsed
-			fee := executionFee(CalculateFuturesFee(contracts, feePerContract), fillFee, useFillFee)
-			if useFillFee && fillFee > 0 {
-				fillFeeUsed = true
+			useFillMetadata := fillContracts > 0 && !fillMetadataUsed
+			fee := executionFee(CalculateFuturesFee(contracts, feePerContract), fillFee, useFillMetadata)
+			if useFillMetadata {
+				fillMetadataUsed = true
 			}
 			pnl -= fee
 			s.Cash += pnl
 			now := time.Now().UTC()
 			trade := Trade{
-				Timestamp:   now,
-				StrategyID:  s.ID,
-				Symbol:      symbol,
-				Side:        "buy",
-				Quantity:    pos.Quantity,
-				Price:       execPrice,
-				Value:       float64(contracts) * multiplier * execPrice,
-				TradeType:   "futures",
-				Details:     fmt.Sprintf("Close short %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee),
-				ExchangeFee: exchangeFeeForTrade(fillFee, useFillFee),
-				IsClose:     true,
-				RealizedPnL: pnl,
+			Timestamp:       now,
+				StrategyID:      s.ID,
+				Symbol:          symbol,
+				Side:            "buy",
+				Quantity:        pos.Quantity,
+				Price:           execPrice,
+				Value:           float64(contracts) * multiplier * execPrice,
+				TradeType:       "futures",
+				Details:         fmt.Sprintf("Close short %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee),
+				ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
+				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
+				IsClose:         true,
+				RealizedPnL:     pnl,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
@@ -959,10 +970,10 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			logger.Info("Insufficient cash ($%.2f) for even 1 %s contract (margin=$%.2f)", s.Cash, symbol, marginPerContract)
 			return tradesExecuted, nil
 		}
-		useFillFee := fillContracts > 0 && !fillFeeUsed
-		fee := executionFee(CalculateFuturesFee(contracts, feePerContract), fillFee, useFillFee)
-		if useFillFee && fillFee > 0 {
-			fillFeeUsed = true
+		useFillMetadata := fillContracts > 0 && !fillMetadataUsed
+		fee := executionFee(CalculateFuturesFee(contracts, feePerContract), fillFee, useFillMetadata)
+		if useFillMetadata {
+			fillMetadataUsed = true
 		}
 		s.Cash -= fee // futures use margin, not full notional; deduct fee only
 		now := time.Now().UTC()
@@ -976,16 +987,17 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			OpenedAt:        now,
 		}
 		trade := Trade{
-			Timestamp:   now,
-			StrategyID:  s.ID,
-			Symbol:      symbol,
-			Side:        "buy",
-			Quantity:    float64(contracts),
-			Price:       execPrice,
-			Value:       float64(contracts) * marginPerContract,
-			TradeType:   "futures",
-			Details:     fmt.Sprintf("Open long %d contracts @ $%.2f (fee $%.2f)", contracts, execPrice, fee),
-			ExchangeFee: exchangeFeeForTrade(fillFee, useFillFee),
+			Timestamp:       now,
+			StrategyID:      s.ID,
+			Symbol:          symbol,
+			Side:            "buy",
+			Quantity:        float64(contracts),
+			Price:           execPrice,
+			Value:           float64(contracts) * marginPerContract,
+			TradeType:       "futures",
+			Details:         fmt.Sprintf("Open long %d contracts @ $%.2f (fee $%.2f)", contracts, execPrice, fee),
+			ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
+			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
 		}
 		RecordTrade(s, trade)
 		logger.Info("BUY %s: %d contracts @ $%.2f (fee $%.2f)", symbol, contracts, execPrice, fee)
@@ -1002,27 +1014,28 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			}
 			contracts := int(pos.Quantity)
 			pnl := float64(contracts) * multiplier * (execPrice - pos.AvgCost)
-			useFillFee := fillContracts > 0 && !fillFeeUsed
-			fee := executionFee(CalculateFuturesFee(contracts, feePerContract), fillFee, useFillFee)
-			if useFillFee && fillFee > 0 {
-				fillFeeUsed = true
+			useFillMetadata := fillContracts > 0 && !fillMetadataUsed
+			fee := executionFee(CalculateFuturesFee(contracts, feePerContract), fillFee, useFillMetadata)
+			if useFillMetadata {
+				fillMetadataUsed = true
 			}
 			pnl -= fee
 			s.Cash += pnl
 			now := time.Now().UTC()
 			trade := Trade{
-				Timestamp:   now,
-				StrategyID:  s.ID,
-				Symbol:      symbol,
-				Side:        "sell",
-				Quantity:    pos.Quantity,
-				Price:       execPrice,
-				Value:       float64(contracts) * multiplier * execPrice,
-				TradeType:   "futures",
-				Details:     fmt.Sprintf("Close long %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee),
-				ExchangeFee: exchangeFeeForTrade(fillFee, useFillFee),
-				IsClose:     true,
-				RealizedPnL: pnl,
+			Timestamp:       now,
+				StrategyID:      s.ID,
+				Symbol:          symbol,
+				Side:            "sell",
+				Quantity:        pos.Quantity,
+				Price:           execPrice,
+				Value:           float64(contracts) * multiplier * execPrice,
+				TradeType:       "futures",
+				Details:         fmt.Sprintf("Close long %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee),
+				ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
+				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
+				IsClose:         true,
+				RealizedPnL:     pnl,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
@@ -1061,10 +1074,10 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				logger.Info("Insufficient cash ($%.2f) for even 1 %s short contract (margin=$%.2f)", s.Cash, symbol, marginPerContract)
 				return tradesExecuted, nil
 			}
-			useFillFee := fillContracts > 0 && !fillFeeUsed
-			fee := executionFee(CalculateFuturesFee(contracts, feePerContract), fillFee, useFillFee)
-			if useFillFee && fillFee > 0 {
-				fillFeeUsed = true
+			useFillMetadata := fillContracts > 0 && !fillMetadataUsed
+			fee := executionFee(CalculateFuturesFee(contracts, feePerContract), fillFee, useFillMetadata)
+			if useFillMetadata {
+				fillMetadataUsed = true
 			}
 			s.Cash -= fee
 			now := time.Now().UTC()
@@ -1078,16 +1091,17 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				OpenedAt:        now,
 			}
 			trade := Trade{
-				Timestamp:   now,
-				StrategyID:  s.ID,
-				Symbol:      symbol,
-				Side:        "sell",
-				Quantity:    float64(contracts),
-				Price:       execPrice,
-				Value:       float64(contracts) * marginPerContract,
-				TradeType:   "futures",
-				Details:     fmt.Sprintf("Open short %d contracts @ $%.2f (fee $%.2f)", contracts, execPrice, fee),
-				ExchangeFee: exchangeFeeForTrade(fillFee, useFillFee),
+				Timestamp:       now,
+				StrategyID:      s.ID,
+				Symbol:          symbol,
+				Side:            "sell",
+				Quantity:        float64(contracts),
+				Price:           execPrice,
+				Value:           float64(contracts) * marginPerContract,
+				TradeType:       "futures",
+				Details:         fmt.Sprintf("Open short %d contracts @ $%.2f (fee $%.2f)", contracts, execPrice, fee),
+				ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
+				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
 			}
 			RecordTrade(s, trade)
 			logger.Info("SHORT %s: %d contracts @ $%.2f (fee $%.2f)", symbol, contracts, execPrice, fee)

@@ -384,6 +384,7 @@ type TopStepResult struct {
 type TopStepFill struct {
 	AvgPx          float64 `json:"avg_px"`
 	TotalContracts int     `json:"total_contracts"`
+	OID            string  `json:"oid,omitempty"`
 	Fee            float64 `json:"fee,omitempty"`
 }
 
@@ -588,6 +589,7 @@ type RobinhoodResult struct {
 type RobinhoodFill struct {
 	AvgPx    float64 `json:"avg_px"`
 	Quantity float64 `json:"quantity"`
+	OID      string  `json:"oid,omitempty"`
 	Fee      float64 `json:"fee,omitempty"`
 }
 
@@ -675,6 +677,7 @@ type OKXResult struct {
 type OKXFill struct {
 	AvgPx   float64 `json:"avg_px"`
 	TotalSz float64 `json:"total_sz"`
+	OID     string  `json:"oid,omitempty"`
 	Fee     float64 `json:"fee,omitempty"`
 }
 

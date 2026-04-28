@@ -244,6 +244,9 @@ def run_execute(symbol, side, contracts, mode):
             fee = _extract_fee(result)
             if fee is not None:
                 fill["fee"] = fee
+            oid = result.get("orderId") or result.get("id")
+            if oid is not None:
+                fill["oid"] = str(oid)
         except Exception as e:
             print(f"[topstep] fill parse error: {e}", file=sys.stderr)
 
