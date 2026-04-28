@@ -82,6 +82,12 @@
 - Before merging long-running PR: `git fetch origin main && git diff origin/main..HEAD -- <paths>` to catch silent reverts; rebase if unexpected deletions.
 - Replace default `🤖 Generated with [Claude Code]...` footer with metadata (model + effort), e.g. `LLM: Claude Sonnet 4.6 | high`. No `Co-Authored-By` trailer.
 
+### PR review format (`@claude review`)
+When invoked to review a PR, the top-level review comment MUST take exactly one of two shapes — no preamble, no closing remarks:
+1. **Approve:** a single line starting with `LGTM — ` followed by a one-sentence rationale (what was checked + why it's safe to merge).
+2. **Changes requested:** a numbered list (`1.`, `2.`, …) where each item is one sentence naming the concrete change, with `file:line` when applicable. Order by severity (blockers first). No "nice to haves" mixed in — if it's not blocking, leave it out or put it under a final `Optional:` line.
+Inline `pull_request_review_comment` threads are exempt from this format; this rule governs only the top-level review summary.
+
 ## Build & Deploy
 - Build: `cd scheduler && /opt/homebrew/bin/go build -o ../go-trader .` — always rebuild before smoke-testing.
 - Restart: `systemctl restart go-trader`. Service file changes: `systemctl daemon-reload && systemctl restart go-trader`.
