@@ -88,11 +88,9 @@ func TestApplyHotReloadConfigAppliesAllowedFields(t *testing.T) {
 			RiskState: RiskState{MaxDrawdownPct: 20},
 		},
 		"hl-eth": {
-			ID: "hl-eth", Cash: 450,
+			ID:        "hl-eth",
+			Cash:      450,
 			RiskState: RiskState{MaxDrawdownPct: 50},
-			Positions: map[string]*Position{
-				"ETH": {Symbol: "ETH", Quantity: 1, Side: "long", AvgCost: 3000, Leverage: 2},
-			},
 		},
 	}}
 	mock := &mockNotifier{}
@@ -140,10 +138,6 @@ func TestApplyHotReloadConfigAppliesAllowedFields(t *testing.T) {
 	if got := state.Strategies["spot-btc"].RiskState.MaxDrawdownPct; got != 15 {
 		t.Errorf("spot risk max drawdown = %g, want 15", got)
 	}
-	if got := state.Strategies["hl-eth"].Positions["ETH"].Leverage; got != 5 {
-		t.Errorf("position leverage = %g, want 5", got)
-	}
-
 	notifier.SendToChannel("binanceus", "spot", "hello")
 	if len(mock.messages) != 1 || mock.messages[0].channelID != "new-spot" {
 		t.Fatalf("discord channel not reloaded, messages=%#v", mock.messages)
@@ -195,6 +189,41 @@ func TestApplyHotReloadConfigRejectsNonReloadableStrategyField(t *testing.T) {
 	}
 	if cfg.Strategies[0].Capital != 100 {
 		t.Errorf("current config mutated after rejected reload: %+v", cfg.Strategies[0])
+	}
+}
+
+func TestApplyHotReloadConfigRejectsLeverageChangeWithOpenPerpsPosition(t *testing.T) {
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2,
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1200, MaxDrawdownPct: 12, Leverage: 5,
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {
+			ID: "hl-eth", Cash: 900,
+			RiskState: RiskState{MaxDrawdownPct: 10},
+			Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 1, Side: "long", AvgCost: 3000, Leverage: 2},
+			},
+		},
+	}}
+
+	_, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+	if err == nil {
+		t.Fatal("expected open perps leverage change to be rejected")
+	}
+	if !strings.Contains(err.Error(), "leverage changed with open positions") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Strategies[0].Capital != 1000 || cfg.Strategies[0].MaxDrawdownPct != 10 || cfg.Strategies[0].Leverage != 2 {
+		t.Fatalf("current config mutated after rejected reload: %+v", cfg.Strategies[0])
+	}
+	if state.Strategies["hl-eth"].Cash != 900 || state.Strategies["hl-eth"].RiskState.MaxDrawdownPct != 10 {
+		t.Fatalf("state mutated after rejected reload: %+v", state.Strategies["hl-eth"])
+	}
+	if state.Strategies["hl-eth"].Positions["ETH"].Leverage != 2 {
+		t.Fatalf("position leverage mutated after rejected reload: %+v", state.Strategies["hl-eth"].Positions["ETH"])
 	}
 }
 

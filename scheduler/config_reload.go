@@ -18,6 +18,9 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	if err := validateHotReloadCompatible(cfg, next); err != nil {
 		return nil, err
 	}
+	if err := validateHotReloadStateCompatible(cfg, next, state); err != nil {
+		return nil, err
+	}
 
 	var changes []string
 	addChange := func(format string, args ...interface{}) {
@@ -200,6 +203,26 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	return nil
 }
 
+func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error {
+	var errs []string
+	nextByID := strategyConfigByID(next.Strategies)
+	for _, sc := range cfg.Strategies {
+		ns, ok := nextByID[sc.ID]
+		if !ok {
+			continue
+		}
+		if sc.Type == "perps" && sc.Leverage != ns.Leverage && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] leverage changed with open positions (%.2fx -> %.2fx; flatten first or restart after close)",
+				sc.ID, sc.Leverage, ns.Leverage))
+		}
+	}
+	if len(errs) > 0 {
+		sort.Strings(errs)
+		return fmt.Errorf("config reload rejected:\n  %s", strings.Join(errs, "\n  "))
+	}
+	return nil
+}
+
 func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.MaxDrawdownPct = 0
 	sc.Capital = 0
@@ -236,6 +259,23 @@ func stateStrategy(state *AppState, id string) *StrategyState {
 		return nil
 	}
 	return state.Strategies[id]
+}
+
+func strategyHasOpenPositions(s *StrategyState) bool {
+	if s == nil {
+		return false
+	}
+	for _, pos := range s.Positions {
+		if pos != nil && pos.Quantity > 0 {
+			return true
+		}
+	}
+	for _, pos := range s.OptionPositions {
+		if pos != nil && pos.Quantity != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func portfolioRiskMaxDrawdown(pr *PortfolioRiskConfig) float64 {
