@@ -2663,6 +2663,11 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, ex
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
+	// Thread fillOID/fillFee into the signal handlers so each Trade is built
+	// with the OID and fee before RecordTrade persists it (#456). Stamping the
+	// fields onto s.TradeHistory after the fact would never reach SQLite — the
+	// eager INSERT has already happened and SaveState's timestamp dedup skips
+	// re-inserts for the same trade.
 	var trades int
 	var err error
 	if sc.Type == "perps" {

@@ -121,3 +121,48 @@ def test_topstep_execute_emits_exchange_order_id(monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
 
     assert payload["execution"]["fill"]["oid"] == "ts-order-789"
+
+
+def test_okx_execute_omits_empty_oid(monkeypatch, capsys):
+    mod = _load_script("check_okx.py")
+    adapter_mod = types.ModuleType("adapter")
+
+    class OKXExchangeAdapter:
+        def market_open(self, symbol, is_buy, size, inst_type="spot"):
+            return {
+                "id": "",
+                "average": "50000",
+                "filled": str(size),
+            }
+
+    adapter_mod.OKXExchangeAdapter = OKXExchangeAdapter
+    monkeypatch.setitem(sys.modules, "adapter", adapter_mod)
+
+    mod.run_execute("BTC", "buy", 0.01, "live", "swap")
+    payload = json.loads(capsys.readouterr().out)
+
+    assert "oid" not in payload["execution"]["fill"]
+
+
+def test_topstep_execute_falls_back_to_id_when_orderid_missing(monkeypatch, capsys):
+    mod = _load_script("check_topstep.py")
+    adapter_mod = types.ModuleType("adapter")
+
+    class TopStepExchangeAdapter:
+        def __init__(self, mode="paper"):
+            self.mode = mode
+
+        def market_open(self, symbol, is_buy, contracts):
+            return {
+                "id": "ts-fallback-1",
+                "avgPrice": "5000.25",
+                "filledQuantity": contracts,
+            }
+
+    adapter_mod.TopStepExchangeAdapter = TopStepExchangeAdapter
+    monkeypatch.setitem(sys.modules, "adapter", adapter_mod)
+
+    mod.run_execute("ES", "buy", 1, "live")
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["execution"]["fill"]["oid"] == "ts-fallback-1"

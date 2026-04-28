@@ -232,7 +232,7 @@ def run_execute(symbol, side, size, mode, inst_type="swap"):
             if fee is not None:
                 fill["fee"] = fee
             oid = result.get("id")
-            if oid is not None:
+            if oid:
                 fill["oid"] = str(oid)
         except Exception:
             pass
