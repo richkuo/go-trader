@@ -133,15 +133,11 @@ func recordPerpsStopLossClose(s *StrategyState, symbol string, triggerPx float64
 	pnl -= fee
 	s.Cash += pnl
 
-	closeSide := "sell"
-	if side == "short" {
-		closeSide = "buy"
-	}
 	trade := Trade{
 		Timestamp:   now,
 		StrategyID:  s.ID,
 		Symbol:      symbol,
-		Side:        closeSide,
+		Side:        closeTradeSide(side),
 		Quantity:    qty,
 		Price:       triggerPx,
 		Value:       qty * triggerPx,
@@ -219,6 +215,7 @@ type Trade struct {
 	persisted bool
 }
 
+// Defaulting to "sell" preserves legacy behavior for missing/unknown sides.
 func closeTradeSide(positionSide string) string {
 	if positionSide == "short" {
 		return "buy"

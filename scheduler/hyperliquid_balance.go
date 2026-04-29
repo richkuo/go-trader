@@ -1248,10 +1248,6 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 	}
 	side := pos.Side
 	avgCost := pos.AvgCost
-	closeSide := "sell"
-	if side == "short" {
-		closeSide = "buy"
-	}
 	var pnl float64
 	if side == "long" {
 		pnl = qtyClosed * (fillPx - avgCost)
@@ -1265,7 +1261,7 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 		Timestamp:   now,
 		StrategyID:  s.ID,
 		Symbol:      symbol,
-		Side:        closeSide,
+		Side:        closeTradeSide(side),
 		Quantity:    qtyClosed,
 		Price:       fillPx,
 		Value:       qtyClosed * fillPx,

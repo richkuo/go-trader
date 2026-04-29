@@ -434,6 +434,52 @@ func TestReconcileHyperliquidPositions_RestingStopLossFillBooksPnL(t *testing.T)
 	}
 }
 
+func TestReconcileHyperliquidPositions_RestingStopLossFillClosesShortWithBuy(t *testing.T) {
+	state := &StrategyState{
+		ID:       "hl-test-eth",
+		Platform: "hyperliquid",
+		Type:     "perps",
+		Cash:     1000,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol:            "ETH",
+				Quantity:          0.1,
+				AvgCost:           3200,
+				Side:              "short",
+				Multiplier:        1,
+				Leverage:          5,
+				OwnerStrategyID:   "hl-test-eth",
+				OpenedAt:          time.Now().UTC().Add(-time.Hour),
+				StopLossOID:       12345,
+				StopLossTriggerPx: 3296,
+			},
+		},
+	}
+	logger := silentStrategyLogger("hl-test-eth")
+	defer logger.Close()
+
+	changed := reconcileHyperliquidPositions(state, "ETH", nil, logger)
+	if !changed {
+		t.Fatalf("expected reconcile to report a state change")
+	}
+	if _, ok := state.Positions["ETH"]; ok {
+		t.Fatalf("position should be removed after tracked SL fill: %+v", state.Positions["ETH"])
+	}
+	if len(state.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory len=%d, want 1", len(state.TradeHistory))
+	}
+	trade := state.TradeHistory[0]
+	if trade.Side != "buy" {
+		t.Errorf("Trade.Side=%q, want buy for stopped short", trade.Side)
+	}
+	if !trade.IsClose {
+		t.Error("Trade.IsClose=false, want true")
+	}
+	if trade.RealizedPnL >= 0 {
+		t.Errorf("RealizedPnL=%v should be negative for stopped short", trade.RealizedPnL)
+	}
+}
+
 // #421 review point 1: per-strategy circuit-breaker drain must thread
 // pos.StopLossOID through to the closer so the resting trigger is
 // cancelled before the close fires. Otherwise it sits orphaned on HL's
