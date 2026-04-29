@@ -2010,16 +2010,31 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		prevPosQty = posQty
 	}
 
+	// #486: enforce margin mode + leverage on fresh opens only. HL rejects
+	// updateLeverage on an open position, so flip/add legs (posQty > 0)
+	// inherit whatever mode was set when the position first opened. The
+	// initial open always lands here with posQty == 0 because perpsLiveOrderSize
+	// would have returned ok=false otherwise on a flat→close attempt.
+	marginMode := ""
+	leverageForOpen := 0.0
+	if posQty == 0 && sc.Platform == "hyperliquid" && sc.Type == "perps" && sc.MarginMode != "" {
+		marginMode = sc.MarginMode
+		leverageForOpen = sc.Leverage
+		if leverageForOpen <= 0 {
+			leverageForOpen = 1
+		}
+	}
+
 	// Only log SL fields when at least one is set, to keep the common
 	// no-stop-loss case quiet.
-	if slPct > 0 || cancelOID > 0 || prevPosQty > 0 {
-		logger.Info("Placing live %s %s size=%.6f (sl_pct=%.2f cancel_oid=%d prev_pos_qty=%.6f)",
-			side, result.Symbol, size, slPct, cancelOID, prevPosQty)
+	if slPct > 0 || cancelOID > 0 || prevPosQty > 0 || marginMode != "" {
+		logger.Info("Placing live %s %s size=%.6f (sl_pct=%.2f cancel_oid=%d prev_pos_qty=%.6f margin_mode=%q leverage=%g)",
+			side, result.Symbol, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen)
 	} else {
 		logger.Info("Placing live %s %s size=%.6f", side, result.Symbol, size)
 	}
 
-	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty)
+	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}

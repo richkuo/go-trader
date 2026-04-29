@@ -67,6 +67,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].interval_seconds: %d -> %d", sc.ID, sc.IntervalSeconds, ns.IntervalSeconds)
 			sc.IntervalSeconds = ns.IntervalSeconds
 		}
+		// #486: Margin mode is hot-reloadable when flat. The state-compat
+		// check above blocks the change when positions are open; if we got
+		// here with new MarginMode != current, the strategy is flat and the
+		// next fresh open will pick up the new mode via update_leverage.
+		if sc.MarginMode != ns.MarginMode {
+			addChange("strategy[%s].margin_mode: %q -> %q", sc.ID, sc.MarginMode, ns.MarginMode)
+			sc.MarginMode = ns.MarginMode
+		}
 	}
 
 	if portfolioRiskMaxDrawdown(cfg.PortfolioRisk) != portfolioRiskMaxDrawdown(next.PortfolioRisk) {
@@ -215,6 +223,12 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 			errs = append(errs, fmt.Sprintf("strategy[%s] leverage changed with open positions (%.2fx -> %.2fx; flatten first or restart after close)",
 				sc.ID, sc.Leverage, ns.Leverage))
 		}
+		// #486: HL rejects margin-mode changes on an open position; treat
+		// the same way as Leverage. Stays hot-reloadable when flat.
+		if sc.Type == "perps" && sc.Platform == "hyperliquid" && sc.MarginMode != ns.MarginMode && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] margin_mode changed with open positions (%q -> %q; flatten first or restart after close)",
+				sc.ID, sc.MarginMode, ns.MarginMode))
+		}
 	}
 	if len(errs) > 0 {
 		sort.Strings(errs)
@@ -228,6 +242,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.Capital = 0
 	sc.Leverage = 0
 	sc.IntervalSeconds = 0
+	sc.MarginMode = "" // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
 	return sc
 }
 

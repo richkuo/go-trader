@@ -708,6 +708,100 @@ func TestLoadConfigLeverageRejectsOutOfRange(t *testing.T) {
 	}
 }
 
+// #486: HL perps strategies default to isolated margin mode.
+func TestLoadConfigHLPerpsDefaultsToIsolatedMargin(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.Strategies[0].MarginMode != "isolated" {
+		t.Errorf("MarginMode = %q, want %q (default)", cfg.Strategies[0].MarginMode, "isolated")
+	}
+}
+
+// #486: explicit cross margin mode is preserved.
+func TestLoadConfigHLPerpsExplicitCross(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"margin_mode": "cross"
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.Strategies[0].MarginMode != "cross" {
+		t.Errorf("MarginMode = %q, want %q", cfg.Strategies[0].MarginMode, "cross")
+	}
+}
+
+// #486: invalid margin_mode rejected.
+func TestLoadConfigMarginModeRejectsInvalidValue(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"margin_mode": "portfolio"
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for margin_mode=portfolio")
+	}
+	if !strings.Contains(err.Error(), "margin_mode must be") {
+		t.Errorf("error = %v, want 'margin_mode must be'", err)
+	}
+}
+
+// #486: margin_mode is HL-perps-only (rejected on spot).
+func TestLoadConfigMarginModeRejectsSpot(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "test-spot",
+			"type": "spot",
+			"script": "shared_scripts/check_strategy.py",
+			"args": ["sma_crossover", "BTC/USDT", "1h"],
+			"capital": 1000,
+			"margin_mode": "isolated"
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for margin_mode on spot")
+	}
+	if !strings.Contains(err.Error(), "margin_mode is only supported for HL perps") {
+		t.Errorf("error = %v, want 'margin_mode is only supported for HL perps'", err)
+	}
+}
+
 func TestValidateConfigDMChannelsInvalidKey(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{

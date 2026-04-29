@@ -235,6 +235,56 @@ func TestApplyHotReloadConfigRejectsLeverageChangeWithOpenPerpsPosition(t *testi
 	}
 }
 
+// #486: margin_mode is hot-reloadable when flat — same envelope as Leverage.
+func TestApplyHotReloadConfigRejectsMarginModeChangeWithOpenPerpsPosition(t *testing.T) {
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, MarginMode: "isolated",
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, MarginMode: "cross",
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {
+			ID: "hl-eth", Cash: 900,
+			RiskState: RiskState{MaxDrawdownPct: 10},
+			Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 1, Side: "long", AvgCost: 3000, Leverage: 2},
+			},
+		},
+	}}
+
+	_, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+	if err == nil {
+		t.Fatal("expected margin_mode change with open position to be rejected")
+	}
+	if !strings.Contains(err.Error(), "margin_mode changed with open positions") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Strategies[0].MarginMode != "isolated" {
+		t.Fatalf("current config mutated after rejected reload: %+v", cfg.Strategies[0])
+	}
+}
+
+// #486: margin_mode change is allowed when the strategy is flat.
+func TestApplyHotReloadConfigAllowsMarginModeChangeWhenFlat(t *testing.T) {
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, MarginMode: "isolated",
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, MarginMode: "cross",
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Cash: 1000, Positions: map[string]*Position{}},
+	}}
+
+	if _, err := applyHotReloadConfig(cfg, next, state, nil, nil); err != nil {
+		t.Fatalf("expected margin_mode change to succeed when flat, got: %v", err)
+	}
+	if cfg.Strategies[0].MarginMode != "cross" {
+		t.Fatalf("MarginMode = %q, want %q", cfg.Strategies[0].MarginMode, "cross")
+	}
+}
+
 func TestApplyHotReloadConfigPreservesRuntimeCapitalPctCapital(t *testing.T) {
 	cfg := minimalReloadConfig([]StrategyConfig{{
 		ID: "s1", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "BTC", "1h"}, Capital: 2500, CapitalPct: 0.5, MaxDrawdownPct: 10, Leverage: 2,

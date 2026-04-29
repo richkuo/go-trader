@@ -172,6 +172,30 @@ func TestGenerateConfig_PerpsLiveMode(t *testing.T) {
 	}
 }
 
+// #486: HL perps strategies default to isolated margin mode in generateConfig.
+func TestGenerateConfig_PerpsDefaultsToIsolatedMargin(t *testing.T) {
+	opts := baseOpts()
+	opts.EnableSpot = false
+	opts.EnablePerps = true
+	opts.PerpsStrategies = []string{"momentum"}
+
+	cfg := generateConfig(opts)
+
+	perpsCount := 0
+	for _, s := range cfg.Strategies {
+		if s.Type != "perps" {
+			continue
+		}
+		perpsCount++
+		if s.MarginMode != "isolated" {
+			t.Errorf("strategy %s: MarginMode = %q, want %q", s.ID, s.MarginMode, "isolated")
+		}
+	}
+	if perpsCount == 0 {
+		t.Fatal("expected at least one perps strategy")
+	}
+}
+
 func TestGenerateConfig_PerpsDefaultPaperMode(t *testing.T) {
 	opts := baseOpts()
 	opts.EnableSpot = false
