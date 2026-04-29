@@ -228,6 +228,8 @@ func TestIsHLOpenOrderCapRejection(t *testing.T) {
 		{"too many", "Too many open trigger orders", true},
 		{"rate limit", "trigger order rate limit exceeded", true},
 		{"max", "max trigger orders per day reached", true},
+		{"generic too many open orders", "Too many open orders", true},
+		{"generic open orders limit", "open orders limit exceeded", true},
 		{"unrelated", "insufficient margin", false},
 		{"empty", "", false},
 		{"trigger only", "trigger price out of range", false},

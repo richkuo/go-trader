@@ -21,8 +21,9 @@ full position close (portfolio kill switch and sole-owner circuit breakers).
 Optional ``--cancel-stop-loss-oid`` (repeatable) cancels resting trigger orders BEFORE
 the close fires. Used by per-strategy circuit breakers and the portfolio
 kill switch to free the trigger slot from `Position.StopLossOID` so the
-SL doesn't sit orphaned on HL's book consuming one of the 10/day account
-trigger-order slots (#421 review point 1). Cancel failures are non-fatal
+SL doesn't sit orphaned on HL's book consuming one of the account-wide
+1000 open-order cap slots (scales to 5000 with volume; #421 review point 1,
+#479). Cancel failures are non-fatal
 (SL may have already triggered on-chain) and is surfaced as
 ``cancel_stop_loss_error`` in the JSON envelope.
 

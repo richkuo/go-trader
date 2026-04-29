@@ -795,9 +795,9 @@ func main() {
 			if killSwitchFired {
 				// Snapshot per-coin StopLossOIDs so the kill-switch close
 				// path can cancel resting SLs before flattening, freeing
-				// HL's open-order cap (#421 review, #479
-				// point 1). Sole-source: every live HL strategy's Position
-				// for the coin it trades. Shared coins may have multiple
+				// HL's open-order cap (#421 review point 1, #479).
+				// Sole-source: every live HL strategy's Position for the
+				// coin it trades. Shared coins may have multiple
 				// per-strategy SL triggers, so preserve every OID.
 				hlSLOIDs := map[string][]int64{}
 				mu.RLock()
@@ -2073,16 +2073,21 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 }
 
 // isHLOpenOrderCapRejection detects HL's open-order-cap rejection strings so
-// the scheduler can escalate them above WARN. HL rejects new trigger/reduce-only
-// orders when the account has ≥1000 open orders (scales to 5000 with volume)
-// (#479). The exact error wording has historically been one of "Too many open
-// trigger orders" or "trigger order rate limit"; we match either substring
-// case-insensitively. Conservative rather than exhaustive — false negatives
-// (logged as WARN) are acceptable; we only escalate on confirmed cap-rejection
-// language to avoid CRITICAL noise on unrelated failures.
+// the scheduler can escalate them above WARN. HL rejects new orders (including
+// trigger/reduce-only) when the account has ≥1000 open orders (scales to 5000
+// with volume) (#479). Observed wordings include trigger-specific phrasings
+// like "Too many open trigger orders" / "trigger order rate limit" and the
+// generic "Too many open orders" form. We match any of these case-insensitively.
+// Conservative rather than exhaustive — false negatives (logged as WARN) are
+// acceptable; we only escalate on confirmed cap-rejection language to avoid
+// CRITICAL noise on unrelated failures.
 func isHLOpenOrderCapRejection(errStr string) bool {
 	lower := strings.ToLower(errStr)
-	return strings.Contains(lower, "trigger order") && (strings.Contains(lower, "too many") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "max"))
+	hasCapVerb := strings.Contains(lower, "too many") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "max") || strings.Contains(lower, "limit") || strings.Contains(lower, "exceed")
+	if !hasCapVerb {
+		return false
+	}
+	return strings.Contains(lower, "trigger order") || strings.Contains(lower, "open order") || strings.Contains(lower, "open orders")
 }
 
 // executeHyperliquidResult applies a hyperliquid result to state. Must be called under Lock.
