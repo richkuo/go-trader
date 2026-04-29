@@ -2,12 +2,14 @@ package main
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
 // Position represents a spot, futures, or perps position.
 type Position struct {
 	Symbol            string    `json:"symbol"`
+	TradePositionID   string    `json:"trade_position_id,omitempty"`
 	Quantity          float64   `json:"quantity"`
 	AvgCost           float64   `json:"avg_cost"`
 	Side              string    `json:"side"`                           // "long" or "short"
@@ -132,11 +134,13 @@ func recordPerpsStopLossClose(s *StrategyState, symbol string, triggerPx float64
 	fee := CalculatePlatformSpotFee(feePlatform, qty*triggerPx)
 	pnl -= fee
 	s.Cash += pnl
+	positionID := ensurePositionTradeID(s.ID, symbol, pos)
 
 	trade := Trade{
 		Timestamp:   now,
 		StrategyID:  s.ID,
 		Symbol:      symbol,
+		PositionID:  positionID,
 		Side:        closeTradeSide(side),
 		Quantity:    qty,
 		Price:       triggerPx,
@@ -194,6 +198,7 @@ type Trade struct {
 	Value           float64   `json:"value"`
 	TradeType       string    `json:"trade_type"` // "spot", "options", or "futures"
 	Details         string    `json:"details"`
+	PositionID      string    `json:"position_id"`
 	ExchangeOrderID string    `json:"exchange_order_id,omitempty"` // exchange-provided order ID (e.g. Hyperliquid oid)
 	ExchangeFee     float64   `json:"exchange_fee,omitempty"`      // fee charged by exchange (if available)
 
@@ -213,6 +218,36 @@ type Trade struct {
 	// on the next flush rather than silently dropped because T1 < latestTS.
 	// Not serialized — purely in-memory bookkeeping.
 	persisted bool
+}
+
+var tradePositionNonce uint64
+
+func newTradePositionID(strategyID, symbol string, openedAt time.Time) string {
+	if openedAt.IsZero() {
+		openedAt = time.Now().UTC()
+	}
+	nonce := atomic.AddUint64(&tradePositionNonce, 1)
+	return fmt.Sprintf("%s:%s:%d:%d", strategyID, symbol, openedAt.UnixNano(), nonce)
+}
+
+func ensurePositionTradeID(strategyID, symbol string, pos *Position) string {
+	if pos == nil {
+		return ""
+	}
+	if pos.TradePositionID == "" {
+		pos.TradePositionID = newTradePositionID(strategyID, symbol, pos.OpenedAt)
+	}
+	return pos.TradePositionID
+}
+
+func ensureOptionTradeID(strategyID string, pos *OptionPosition) string {
+	if pos == nil {
+		return ""
+	}
+	if pos.TradePositionID == "" {
+		pos.TradePositionID = newTradePositionID(strategyID, pos.ID, pos.OpenedAt)
+	}
+	return pos.TradePositionID
 }
 
 // Defaulting to "sell" preserves legacy behavior for missing/unknown sides.
@@ -524,6 +559,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			pnl -= fee
 			s.Cash += pnl
 			now := time.Now().UTC()
+			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			var closeOID string
 			if useFillFee {
 				closeOID = fillOID
@@ -532,6 +568,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
+				PositionID:      positionID,
 				Side:            "buy",
 				Quantity:        pos.Quantity,
 				Price:           execPrice,
@@ -580,6 +617,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 		fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), fillFee, useFillFee)
 		s.Cash -= fee // margin-based: only fee leaves cash, notional stays virtual
 		now := time.Now().UTC()
+		positionID := newTradePositionID(s.ID, symbol, now)
 		var openOID string
 		if useFillFee {
 			openOID = fillOID
@@ -593,11 +631,13 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			Leverage:        leverage,
 			OwnerStrategyID: s.ID,
 			OpenedAt:        now,
+			TradePositionID: positionID,
 		}
 		trade := Trade{
 			Timestamp:       now,
 			StrategyID:      s.ID,
 			Symbol:          symbol,
+			PositionID:      positionID,
 			Side:            "buy",
 			Quantity:        qty,
 			Price:           execPrice,
@@ -636,6 +676,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			pnl -= fee
 			s.Cash += pnl
 			now := time.Now().UTC()
+			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			var closeOID string
 			if useFillFee {
 				closeOID = fillOID
@@ -644,6 +685,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
+				PositionID:      positionID,
 				Side:            "sell",
 				Quantity:        pos.Quantity,
 				Price:           execPrice,
@@ -697,6 +739,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 		fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), fillFee, useFillFee)
 		s.Cash -= fee // margin-based: only fee leaves cash
 		now := time.Now().UTC()
+		positionID := newTradePositionID(s.ID, symbol, now)
 		var openOID string
 		if useFillFee {
 			openOID = fillOID
@@ -710,11 +753,13 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			Leverage:        leverage,
 			OwnerStrategyID: s.ID,
 			OpenedAt:        now,
+			TradePositionID: positionID,
 		}
 		trade := Trade{
 			Timestamp:       now,
 			StrategyID:      s.ID,
 			Symbol:          symbol,
+			PositionID:      positionID,
 			Side:            "sell",
 			Quantity:        qty,
 			Price:           execPrice,
@@ -773,10 +818,12 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			pnl := pos.Quantity*pos.AvgCost - totalCost
 			s.Cash += pos.Quantity*pos.AvgCost - totalCost
 			now := time.Now().UTC()
+			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			trade := Trade{
 				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
+				PositionID:      positionID,
 				Side:            "buy",
 				Quantity:        pos.Quantity,
 				Price:           execPrice,
@@ -820,8 +867,10 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 		}
 		s.Cash -= tradeCost + fee
 		now := time.Now().UTC()
+		positionID := newTradePositionID(s.ID, symbol, now)
 		s.Positions[symbol] = &Position{
 			Symbol:          symbol,
+			TradePositionID: positionID,
 			Quantity:        qty,
 			AvgCost:         execPrice,
 			Side:            "long",
@@ -832,6 +881,7 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			Timestamp:       now,
 			StrategyID:      s.ID,
 			Symbol:          symbol,
+			PositionID:      positionID,
 			Side:            "buy",
 			Quantity:        qty,
 			Price:           execPrice,
@@ -864,10 +914,12 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			pnl := netProceeds - (pos.Quantity * pos.AvgCost)
 			s.Cash += netProceeds
 			now := time.Now().UTC()
+			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			trade := Trade{
 				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
+				PositionID:      positionID,
 				Side:            "sell",
 				Quantity:        pos.Quantity,
 				Price:           execPrice,
@@ -930,10 +982,12 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			pnl -= fee
 			s.Cash += pnl
 			now := time.Now().UTC()
+			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			trade := Trade{
 				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
+				PositionID:      positionID,
 				Side:            "buy",
 				Quantity:        pos.Quantity,
 				Price:           execPrice,
@@ -988,8 +1042,10 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 		}
 		s.Cash -= fee // futures use margin, not full notional; deduct fee only
 		now := time.Now().UTC()
+		positionID := newTradePositionID(s.ID, symbol, now)
 		s.Positions[symbol] = &Position{
 			Symbol:          symbol,
+			TradePositionID: positionID,
 			Quantity:        float64(contracts),
 			AvgCost:         execPrice,
 			Side:            "long",
@@ -1001,6 +1057,7 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			Timestamp:       now,
 			StrategyID:      s.ID,
 			Symbol:          symbol,
+			PositionID:      positionID,
 			Side:            "buy",
 			Quantity:        float64(contracts),
 			Price:           execPrice,
@@ -1033,10 +1090,12 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			pnl -= fee
 			s.Cash += pnl
 			now := time.Now().UTC()
+			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			trade := Trade{
 				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
+				PositionID:      positionID,
 				Side:            "sell",
 				Quantity:        pos.Quantity,
 				Price:           execPrice,
@@ -1092,8 +1151,10 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			}
 			s.Cash -= fee
 			now := time.Now().UTC()
+			positionID := newTradePositionID(s.ID, symbol, now)
 			s.Positions[symbol] = &Position{
 				Symbol:          symbol,
+				TradePositionID: positionID,
 				Quantity:        float64(contracts),
 				AvgCost:         execPrice,
 				Side:            "short",
@@ -1105,6 +1166,7 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
+				PositionID:      positionID,
 				Side:            "sell",
 				Quantity:        float64(contracts),
 				Price:           execPrice,

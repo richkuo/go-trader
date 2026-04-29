@@ -9,6 +9,7 @@ import (
 // OptionPosition represents a tracked options position.
 type OptionPosition struct {
 	ID              string    `json:"id"`
+	TradePositionID string    `json:"trade_position_id,omitempty"`
 	Underlying      string    `json:"underlying"`
 	OptionType      string    `json:"option_type"` // "call" or "put"
 	Strike          float64   `json:"strike"`
@@ -125,9 +126,12 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 	posID := fmt.Sprintf("%s-%s-%s-%.0f-%s",
 		result.Underlying, action.OptionType, action.Action, action.Strike, action.Expiry)
 
+	now := time.Now().UTC()
+	positionID := newTradePositionID(s.ID, posID, now)
 	s.Cash -= totalCost
 	s.OptionPositions[posID] = &OptionPosition{
 		ID:              posID,
+		TradePositionID: positionID,
 		Underlying:      result.Underlying,
 		OptionType:      action.OptionType,
 		Strike:          action.Strike,
@@ -139,13 +143,14 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 		EntryPremiumUSD: cost,
 		CurrentValueUSD: cost, // initial value = cost
 		Greeks:          action.Greeks,
-		OpenedAt:        time.Now().UTC(),
+		OpenedAt:        now,
 	}
 
 	trade := Trade{
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  now,
 		StrategyID: s.ID,
 		Symbol:     fmt.Sprintf("%s-%s-%.0f-%s", result.Underlying, action.OptionType, action.Strike, action.Expiry),
+		PositionID: positionID,
 		Side:       "buy",
 		Quantity:   1.0,
 		Price:      cost,
@@ -188,9 +193,12 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 	posID := fmt.Sprintf("%s-%s-%s-%.0f-%s",
 		result.Underlying, action.OptionType, action.Action, action.Strike, action.Expiry)
 
+	now := time.Now().UTC()
+	positionID := newTradePositionID(s.ID, posID, now)
 	s.Cash += netPremium
 	s.OptionPositions[posID] = &OptionPosition{
 		ID:              posID,
+		TradePositionID: positionID,
 		Underlying:      result.Underlying,
 		OptionType:      action.OptionType,
 		Strike:          action.Strike,
@@ -202,13 +210,14 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 		EntryPremiumUSD: netPremium,  // net after fees
 		CurrentValueUSD: -netPremium, // liability
 		Greeks:          action.Greeks,
-		OpenedAt:        time.Now().UTC(),
+		OpenedAt:        now,
 	}
 
 	trade := Trade{
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  now,
 		StrategyID: s.ID,
 		Symbol:     fmt.Sprintf("%s-%s-%.0f-%s", result.Underlying, action.OptionType, action.Strike, action.Expiry),
+		PositionID: positionID,
 		Side:       "sell",
 		Quantity:   1.0,
 		Price:      premium,
@@ -238,10 +247,12 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 				closePriceUSD = action.PremiumUSD
 			}
 			now := time.Now().UTC()
+			positionID := ensureOptionTradeID(s.ID, pos)
 			trade := Trade{
 				Timestamp:   now,
 				StrategyID:  s.ID,
 				Symbol:      pos.ID,
+				PositionID:  positionID,
 				Side:        optionCloseTradeSide(pos.Action),
 				Quantity:    pos.Quantity,
 				Price:       action.PremiumUSD,
@@ -440,10 +451,12 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 		s.Cash -= buybackCost
 
 		now := time.Now().UTC()
+		positionID := ensureOptionTradeID(s.ID, pos)
 		trade := Trade{
 			Timestamp:   now,
 			StrategyID:  s.ID,
 			Symbol:      pos.ID,
+			PositionID:  positionID,
 			Side:        optionCloseTradeSide(pos.Action),
 			Quantity:    pos.Quantity,
 			Price:       buybackCost,

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,30 @@ import (
 func openTestDB(t *testing.T) *StateDB {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "state.db")
+	db, err := OpenStateDB(path)
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	resetInitialCapitalGuardDedup(t)
+	return db
+}
+
+func openNullablePositionIDDB(t *testing.T) *StateDB {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "state.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	nullableDDL := strings.ReplaceAll(schemaDDL, "position_id TEXT NOT NULL DEFAULT ''", "position_id TEXT")
+	if _, err := raw.Exec(nullableDDL); err != nil {
+		raw.Close()
+		t.Fatalf("create nullable-position-id schema: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
 	db, err := OpenStateDB(path)
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
@@ -802,6 +827,150 @@ func TestQueryTradeHistory_ExchangeFields(t *testing.T) {
 	}
 	if trades[0].ExchangeFee != 2.50 {
 		t.Errorf("ExchangeFee = %g, want 2.50", trades[0].ExchangeFee)
+	}
+}
+
+func TestSaveLoadState_PositionIDsRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Nanosecond)
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{
+			"s1": {
+				ID: "s1", Type: "options", Platform: "deribit",
+				Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", TradePositionID: "spot-position-1", Quantity: 0.1, AvgCost: 50000, Side: "long", OpenedAt: now},
+				},
+				OptionPositions: map[string]*OptionPosition{
+					"BTC-call-buy-65000-2026-12-31": {
+						ID: "BTC-call-buy-65000-2026-12-31", TradePositionID: "option-position-1",
+						Underlying: "BTC", OptionType: "call", Strike: 65000, Expiry: "2026-12-31",
+						DTE: 30, Action: "buy", Quantity: 1, EntryPremiumUSD: 300, CurrentValueUSD: 350,
+						OpenedAt: now,
+					},
+				},
+				TradeHistory: []Trade{},
+			},
+		},
+	}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if got := loaded.Strategies["s1"].Positions["BTC"].TradePositionID; got != "spot-position-1" {
+		t.Errorf("position TradePositionID = %q, want spot-position-1", got)
+	}
+	if got := loaded.Strategies["s1"].OptionPositions["BTC-call-buy-65000-2026-12-31"].TradePositionID; got != "option-position-1" {
+		t.Errorf("option TradePositionID = %q, want option-position-1", got)
+	}
+}
+
+func TestSaveStateFlushWritesTradePositionID(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Nanosecond)
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{
+			"s1": {
+				ID: "s1", Type: "spot", Platform: "binanceus",
+				Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+				TradeHistory: []Trade{{
+					Timestamp: now, StrategyID: "s1", Symbol: "BTC", PositionID: "position-save-fallback",
+					Side: "sell", Quantity: 1, Price: 110, Value: 110, TradeType: "spot",
+					Details: "Close long, PnL: $10", IsClose: true, RealizedPnL: 10,
+				}},
+			},
+		},
+	}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	var got string
+	if err := db.db.QueryRow("SELECT position_id FROM trades WHERE strategy_id = 's1'").Scan(&got); err != nil {
+		t.Fatalf("query position_id: %v", err)
+	}
+	if got != "position-save-fallback" {
+		t.Errorf("position_id = %q, want position-save-fallback", got)
+	}
+}
+
+func TestLoadState_TradePositionIDRoundTripAndLegacyNull(t *testing.T) {
+	db := openNullablePositionIDDB(t)
+	now := time.Now().UTC().Truncate(time.Nanosecond)
+	if _, err := db.db.Exec("INSERT INTO app_state (id, cycle_count) VALUES (1, 1)"); err != nil {
+		t.Fatalf("seed app_state: %v", err)
+	}
+	if _, err := db.db.Exec("INSERT INTO strategies (id, type, platform, cash, initial_capital) VALUES (?, ?, ?, ?, ?)", "s1", "perps", "hyperliquid", 1000.0, 1000.0); err != nil {
+		t.Fatalf("seed strategy: %v", err)
+	}
+	rows := []struct {
+		positionID any
+		ts         time.Time
+	}{
+		{"position-load-roundtrip", now},
+		{nil, now.Add(time.Second)},
+	}
+	for i, row := range rows {
+		if _, err := db.db.Exec(`INSERT INTO trades
+			(strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, is_close, realized_pnl)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			"s1", formatTime(row.ts), "BTC", row.positionID, "sell", 0.1, 50000.0, 5000.0, "perps", "Close long, PnL: $1", 1, float64(i+1),
+		); err != nil {
+			t.Fatalf("seed trade %d: %v", i, err)
+		}
+	}
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	trades := loaded.Strategies["s1"].TradeHistory
+	if len(trades) != 2 {
+		t.Fatalf("trade count = %d, want 2", len(trades))
+	}
+	if got := trades[0].PositionID; got != "position-load-roundtrip" {
+		t.Errorf("trade[0].PositionID = %q, want position-load-roundtrip", got)
+	}
+	if got := trades[1].PositionID; got != "" {
+		t.Errorf("legacy NULL PositionID = %q, want empty string", got)
+	}
+}
+
+func TestQueryTradeHistory_PositionIDRoundTripAndLegacyNull(t *testing.T) {
+	db := openNullablePositionIDDB(t)
+	now := time.Now().UTC().Truncate(time.Nanosecond)
+	rows := []struct {
+		positionID any
+		ts         time.Time
+	}{
+		{"position-query-roundtrip", now},
+		{nil, now.Add(time.Second)},
+	}
+	for i, row := range rows {
+		if _, err := db.db.Exec(`INSERT INTO trades
+			(strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, is_close, realized_pnl)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			"s1", formatTime(row.ts), "BTC", row.positionID, "sell", 0.1, 50000.0, 5000.0, "perps", "Close long, PnL: $1", 1, float64(i+1),
+		); err != nil {
+			t.Fatalf("seed trade %d: %v", i, err)
+		}
+	}
+	trades, total, err := db.QueryTradeHistory("s1", "", time.Time{}, time.Time{}, 50, 0)
+	if err != nil {
+		t.Fatalf("QueryTradeHistory: %v", err)
+	}
+	if total != 2 || len(trades) != 2 {
+		t.Fatalf("total=%d len=%d, want 2/2", total, len(trades))
+	}
+	if got := trades[0].PositionID; got != "" {
+		t.Errorf("newest legacy NULL PositionID = %q, want empty string", got)
+	}
+	if got := trades[1].PositionID; got != "position-query-roundtrip" {
+		t.Errorf("oldest PositionID = %q, want position-query-roundtrip", got)
 	}
 }
 
@@ -1997,6 +2166,182 @@ func TestLifetimeTradeStatsAll_FreshInsert(t *testing.T) {
 	}
 	if _, ok := stats["s3"]; ok {
 		t.Errorf("unexpected entry for s3 with no closes: %+v", stats["s3"])
+	}
+}
+
+func TestLifetimeTradeStatsAll_PartialClosesNetByPositionID(t *testing.T) {
+	sdb := openTestDB(t)
+	now := time.Now().UTC()
+	positionID := "s1-BTC-open-1"
+	trades := []Trade{
+		{StrategyID: "s1", Timestamp: now, Symbol: "BTC", PositionID: positionID, Side: "buy", Quantity: 0.5, Price: 50000, Value: 25000, TradeType: "perps", Details: "Open long"},
+		{StrategyID: "s1", Timestamp: now.Add(time.Second), Symbol: "BTC", PositionID: positionID, Side: "sell", Quantity: 0.25, Price: 50100, Value: 12525, TradeType: "perps", Details: "Close long, PnL: $10.00", IsClose: true, RealizedPnL: 10},
+		{StrategyID: "s1", Timestamp: now.Add(2 * time.Second), Symbol: "BTC", PositionID: positionID, Side: "sell", Quantity: 0.25, Price: 49900, Value: 12475, TradeType: "perps", Details: "Close long, PnL: $-3.00", IsClose: true, RealizedPnL: -3},
+	}
+	for _, tr := range trades {
+		if err := sdb.InsertTrade(tr.StrategyID, tr); err != nil {
+			t.Fatalf("InsertTrade: %v", err)
+		}
+	}
+
+	stats, err := sdb.LifetimeTradeStatsAll()
+	if err != nil {
+		t.Fatalf("LifetimeTradeStatsAll: %v", err)
+	}
+	if got := stats["s1"]; got.RoundTrips != 1 || got.Wins != 1 || got.Losses != 0 {
+		t.Errorf("stats = %+v, want RoundTrips=1 Wins=1 Losses=0", got)
+	}
+}
+
+func TestLifetimeTradeStatsAll_LegacyNullAndEmptyPositionIDStayPerLeg(t *testing.T) {
+	sdb := openNullablePositionIDDB(t)
+	now := time.Now().UTC()
+	rows := []struct {
+		positionID any
+		pnl        float64
+	}{
+		{nil, 10},
+		{"", -3},
+	}
+	for i, row := range rows {
+		if _, err := sdb.db.Exec(`INSERT INTO trades
+			(strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, is_close, realized_pnl)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			"s1", formatTime(now.Add(time.Duration(i)*time.Second)), "BTC", row.positionID, "sell", 0.25, 50000.0, 12500.0, "perps", "legacy close", 1, row.pnl,
+		); err != nil {
+			t.Fatalf("seed legacy trade %d: %v", i, err)
+		}
+	}
+
+	stats, err := sdb.LifetimeTradeStatsAll()
+	if err != nil {
+		t.Fatalf("LifetimeTradeStatsAll: %v", err)
+	}
+	if got := stats["s1"]; got.RoundTrips != 2 || got.Wins != 1 || got.Losses != 1 {
+		t.Errorf("legacy stats = %+v, want RoundTrips=2 Wins=1 Losses=1", got)
+	}
+}
+
+func TestLifetimeTradeStatsAll_PositionIDScopedByStrategy(t *testing.T) {
+	sdb := openTestDB(t)
+	now := time.Now().UTC()
+	for _, tr := range []Trade{
+		{StrategyID: "s1", Timestamp: now, Symbol: "BTC", PositionID: "shared-position", Side: "sell", Quantity: 1, Price: 101, Value: 101, TradeType: "spot", Details: "Close long, PnL: $1", IsClose: true, RealizedPnL: 1},
+		{StrategyID: "s2", Timestamp: now, Symbol: "BTC", PositionID: "shared-position", Side: "sell", Quantity: 1, Price: 99, Value: 99, TradeType: "spot", Details: "Close long, PnL: $-1", IsClose: true, RealizedPnL: -1},
+	} {
+		if err := sdb.InsertTrade(tr.StrategyID, tr); err != nil {
+			t.Fatalf("InsertTrade: %v", err)
+		}
+	}
+
+	stats, err := sdb.LifetimeTradeStatsAll()
+	if err != nil {
+		t.Fatalf("LifetimeTradeStatsAll: %v", err)
+	}
+	if got := stats["s1"]; got.RoundTrips != 1 || got.Wins != 1 || got.Losses != 0 {
+		t.Errorf("s1 stats = %+v, want RoundTrips=1 Wins=1 Losses=0", got)
+	}
+	if got := stats["s2"]; got.RoundTrips != 1 || got.Wins != 0 || got.Losses != 1 {
+		t.Errorf("s2 stats = %+v, want RoundTrips=1 Wins=0 Losses=1", got)
+	}
+}
+
+func TestLifetimeTradeStatsAll_BreakevenPositionNeitherWinNorLoss(t *testing.T) {
+	sdb := openTestDB(t)
+	now := time.Now().UTC()
+	for _, tr := range []Trade{
+		{StrategyID: "s1", Timestamp: now, Symbol: "BTC", PositionID: "p1", Side: "sell", Quantity: 0.25, Price: 50100, Value: 12525, TradeType: "perps", Details: "Close long, PnL: $10", IsClose: true, RealizedPnL: 10},
+		{StrategyID: "s1", Timestamp: now.Add(time.Second), Symbol: "BTC", PositionID: "p1", Side: "sell", Quantity: 0.25, Price: 49900, Value: 12475, TradeType: "perps", Details: "Close long, PnL: $-10", IsClose: true, RealizedPnL: -10},
+	} {
+		if err := sdb.InsertTrade(tr.StrategyID, tr); err != nil {
+			t.Fatalf("InsertTrade: %v", err)
+		}
+	}
+
+	stats, err := sdb.LifetimeTradeStatsAll()
+	if err != nil {
+		t.Fatalf("LifetimeTradeStatsAll: %v", err)
+	}
+	if got := stats["s1"]; got.RoundTrips != 1 || got.Wins != 0 || got.Losses != 0 {
+		t.Errorf("breakeven stats = %+v, want RoundTrips=1 Wins=0 Losses=0", got)
+	}
+}
+
+func TestLifetimeTradeStatsAll_OptionsSameContractReopenUsesDistinctPositionIDs(t *testing.T) {
+	sdb := openTestDB(t)
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("options")
+	defer logger.Close()
+
+	s := &StrategyState{
+		ID:              "options",
+		Type:            "options",
+		Platform:        "deribit",
+		Cash:            100000,
+		InitialCapital:  100000,
+		Positions:       map[string]*Position{},
+		OptionPositions: map[string]*OptionPosition{},
+		TradeHistory:    []Trade{},
+	}
+	openResult := &OptionsResult{
+		Signal:     1,
+		Underlying: "BTC",
+		SpotPrice:  60000,
+		Actions: []OptionsAction{{
+			Action:     "buy",
+			OptionType: "call",
+			Strike:     65000,
+			Expiry:     "2026-12-31",
+			DTE:        30,
+			PremiumUSD: 300,
+			Quantity:   1,
+		}},
+	}
+	closeResult := &OptionsResult{
+		Signal:     -1,
+		Underlying: "BTC",
+		SpotPrice:  60000,
+		Actions: []OptionsAction{{
+			Action:     "close",
+			OptionType: "call",
+			Strike:     65000,
+			PremiumUSD: 400,
+		}},
+	}
+	posKey := "BTC-call-buy-65000-2026-12-31"
+
+	if _, err := ExecuteOptionsSignal(s, openResult, logger); err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	firstID := s.OptionPositions[posKey].TradePositionID
+	s.OptionPositions[posKey].CurrentValueUSD = 400
+	if _, err := ExecuteOptionsSignal(s, closeResult, logger); err != nil {
+		t.Fatalf("first close: %v", err)
+	}
+	if _, err := ExecuteOptionsSignal(s, openResult, logger); err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+	secondID := s.OptionPositions[posKey].TradePositionID
+	if firstID == "" || secondID == "" {
+		t.Fatalf("option trade position IDs must be populated: first=%q second=%q", firstID, secondID)
+	}
+	if firstID == secondID {
+		t.Fatalf("reopened same option contract reused position_id %q", firstID)
+	}
+	s.OptionPositions[posKey].CurrentValueUSD = 350
+	if _, err := ExecuteOptionsSignal(s, closeResult, logger); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+
+	if err := sdb.SaveState(&AppState{Strategies: map[string]*StrategyState{s.ID: s}}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	stats, err := sdb.LifetimeTradeStatsAll()
+	if err != nil {
+		t.Fatalf("LifetimeTradeStatsAll: %v", err)
+	}
+	if got := stats[s.ID]; got.RoundTrips != 2 || got.Wins != 2 || got.Losses != 0 {
+		t.Errorf("option stats = %+v, want RoundTrips=2 Wins=2 Losses=0", got)
 	}
 }
 

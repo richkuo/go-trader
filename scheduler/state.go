@@ -41,6 +41,13 @@ func RecordTrade(s *StrategyState, trade Trade) {
 	if trade.StrategyID == "" {
 		trade.StrategyID = s.ID
 	}
+	if trade.PositionID == "" {
+		if pos := s.Positions[trade.Symbol]; pos != nil {
+			trade.PositionID = ensurePositionTradeID(s.ID, trade.Symbol, pos)
+		} else if opt := s.OptionPositions[trade.Symbol]; opt != nil {
+			trade.PositionID = ensureOptionTradeID(s.ID, opt)
+		}
+	}
 	s.TradeHistory = append(s.TradeHistory, trade)
 	if tradeRecorder == nil {
 		return

@@ -1234,9 +1234,8 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 			// No virtual position to derive PnL from. Still mark as a close
 			// leg so the lifetime round-trip count (#455) reflects that the
 			// exchange-side position was reduced, but leave RealizedPnL=0
-			// (no AvgCost basis available). Counts as a "win" by the
-			// pnl >= 0 partition — acceptable since this branch is a
-			// defensive fallback for already-flat virtual state.
+			// (no AvgCost basis available). With strict #471 W/L semantics,
+			// this breakeven close counts as neither win nor loss.
 			IsClose: true,
 		})
 		return
@@ -1256,11 +1255,13 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 	}
 	pnl -= fillFee
 	s.Cash += pnl
+	positionID := ensurePositionTradeID(s.ID, symbol, pos)
 
 	RecordTrade(s, Trade{
 		Timestamp:   now,
 		StrategyID:  s.ID,
 		Symbol:      symbol,
+		PositionID:  positionID,
 		Side:        closeTradeSide(side),
 		Quantity:    qtyClosed,
 		Price:       fillPx,
