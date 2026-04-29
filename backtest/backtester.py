@@ -309,8 +309,7 @@ class Backtester:
                     commission = cash * self.commission_pct
                     notional = cash - commission
                     shares = notional / effective_price
-                    proceeds = shares * effective_price
-                    cash += proceeds - commission
+                    cash = 2 * notional  # pay commission, receive short-sale proceeds
                     position = -shares
 
                     current_trade = Trade(idx, effective_price, "short")
