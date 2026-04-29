@@ -5,36 +5,21 @@ import (
 	"testing"
 )
 
-func TestEffectiveOpenCloseStrategies(t *testing.T) {
+func TestEffectiveOpenStrategy(t *testing.T) {
 	tests := []struct {
-		name      string
-		sc        StrategyConfig
-		wantOpen  string
-		wantClose []string
+		name     string
+		sc       StrategyConfig
+		wantOpen string
 	}{
 		{
-			name:      "legacy defaults to positional strategy",
-			sc:        StrategyConfig{Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
-			wantOpen:  "sma_crossover",
-			wantClose: []string{"sma_crossover"},
+			name:     "legacy defaults to positional strategy",
+			sc:       StrategyConfig{Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
+			wantOpen: "sma_crossover",
 		},
 		{
-			name:      "open override defaults implicit close to open strategy",
-			sc:        StrategyConfig{Args: []string{"sma_crossover", "BTC/USDT", "1h"}, OpenStrategy: "momentum"},
-			wantOpen:  "momentum",
-			wantClose: []string{"momentum"},
-		},
-		{
-			name:      "explicit close list wins",
-			sc:        StrategyConfig{Args: []string{"sma_crossover", "BTC/USDT", "1h"}, OpenStrategy: "momentum", CloseStrategies: []string{"rsi", "macd"}},
-			wantOpen:  "momentum",
-			wantClose: []string{"rsi", "macd"},
-		},
-		{
-			name:      "disable implicit close leaves no default close strategies",
-			sc:        StrategyConfig{Args: []string{"sma_crossover", "BTC/USDT", "1h"}, DisableImplicitClose: true},
-			wantOpen:  "sma_crossover",
-			wantClose: nil,
+			name:     "open override wins over positional",
+			sc:       StrategyConfig{Args: []string{"sma_crossover", "BTC/USDT", "1h"}, OpenStrategy: "momentum"},
+			wantOpen: "momentum",
 		},
 	}
 
@@ -42,9 +27,6 @@ func TestEffectiveOpenCloseStrategies(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := effectiveOpenStrategy(tt.sc); got != tt.wantOpen {
 				t.Fatalf("effectiveOpenStrategy() = %q, want %q", got, tt.wantOpen)
-			}
-			if got := effectiveCloseStrategies(tt.sc); !reflect.DeepEqual(got, tt.wantClose) {
-				t.Fatalf("effectiveCloseStrategies() = %#v, want %#v", got, tt.wantClose)
 			}
 		})
 	}

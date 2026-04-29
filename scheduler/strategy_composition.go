@@ -34,25 +34,6 @@ func effectiveOpenStrategy(sc StrategyConfig) string {
 	return strategyNameFromArgs(sc.Args)
 }
 
-func effectiveCloseStrategies(sc StrategyConfig) []string {
-	if len(sc.CloseStrategies) > 0 {
-		out := make([]string, 0, len(sc.CloseStrategies))
-		for _, name := range sc.CloseStrategies {
-			if trimmed := strings.TrimSpace(name); trimmed != "" {
-				out = append(out, trimmed)
-			}
-		}
-		return out
-	}
-	if sc.DisableImplicitClose {
-		return nil
-	}
-	if name := effectiveOpenStrategy(sc); name != "" {
-		return []string{name}
-	}
-	return nil
-}
-
 func validateStrategyConceptName(name string) error {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {

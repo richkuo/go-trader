@@ -1057,9 +1057,13 @@ func main() {
 					}
 
 					hlLiveStrategy := sc.Type == "perps" && sc.Platform == "hyperliquid" && hyperliquidIsLive(sc.Args)
+					// OKX serves both spot and perps in this snapshot block (see
+					// dispatch at the spot/perps cases below), so the live flag
+					// stays platform-only — adding sc.Type would regress one of
+					// the two paths.
 					okxLiveStrategy := sc.Platform == "okx" && okxIsLive(sc.Args)
-					rhLiveStrategy := sc.Platform == "robinhood" && robinhoodIsLive(sc.Args)
-					tsLiveStrategy := sc.Type == "futures" && topstepIsLive(sc.Args)
+					rhLiveStrategy := sc.Type == "spot" && sc.Platform == "robinhood" && robinhoodIsLive(sc.Args)
+					tsLiveStrategy := sc.Type == "futures" && sc.Platform == "topstep" && topstepIsLive(sc.Args)
 
 					// Phase 1: RLock — read inputs needed for subprocess
 					mu.RLock()
