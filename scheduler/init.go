@@ -304,6 +304,7 @@ type InitOptions struct {
 	PerpsCapital            float64
 	PerpsLeverage           float64 // perps leverage multiplier (default 1 = no leverage) (#254)
 	HLStopLossPct           float64 // HL perps only: per-trade stop-loss % from entry (0 = disabled) (#412)
+	HLStopLossMarginPct     float64 // HL perps only: per-trade stop-loss as % of deployed margin (0 = disabled); mutually exclusive with HLStopLossPct (#487)
 	SpotDrawdown            float64
 	OptionsDrawdown         float64
 	PerpsDrawdown           float64
@@ -490,17 +491,18 @@ func generateConfig(opts InitOptions) *Config {
 			for _, assetName := range opts.Assets {
 				id := fmt.Sprintf("hl-%s-%s", shortName, strings.ToLower(assetName))
 				cfg.Strategies = append(cfg.Strategies, StrategyConfig{
-					ID:              id,
-					Type:            "perps",
-					Platform:        "hyperliquid",
-					Script:          "shared_scripts/check_hyperliquid.py",
-					Args:            []string{stratID, assetName, "1h", fmt.Sprintf("--mode=%s", opts.PerpsMode)},
-					Capital:         opts.PerpsCapital,
-					MaxDrawdownPct:  opts.PerpsDrawdown,
-					IntervalSeconds: 3600,
-					Leverage:        perpsLeverage,
-					AllowShorts:     allowShorts,
-					StopLossPct:     opts.HLStopLossPct,
+					ID:                id,
+					Type:              "perps",
+					Platform:          "hyperliquid",
+					Script:            "shared_scripts/check_hyperliquid.py",
+					Args:              []string{stratID, assetName, "1h", fmt.Sprintf("--mode=%s", opts.PerpsMode)},
+					Capital:           opts.PerpsCapital,
+					MaxDrawdownPct:    opts.PerpsDrawdown,
+					IntervalSeconds:   3600,
+					Leverage:          perpsLeverage,
+					AllowShorts:       allowShorts,
+					StopLossPct:       opts.HLStopLossPct,
+					StopLossMarginPct: opts.HLStopLossMarginPct,
 				})
 			}
 		}
@@ -1081,8 +1083,9 @@ func runInit(args []string) int {
 	spotDrawdown := 5.0
 	optionsDrawdown := 10.0
 	perpsDrawdown := 5.0
-	perpsLeverage := 1.0 // #254 default: 1x (no leverage); user can edit config
-	hlStopLossPct := 0.0 // #412 default: disabled; prompted below when HL perps goes live
+	perpsLeverage := 1.0       // #254 default: 1x (no leverage); user can edit config
+	hlStopLossPct := 0.0       // #412 default: disabled; prompted below when HL perps goes live
+	hlStopLossMarginPct := 0.0 // #487 default: disabled; alternative leverage-aware framing
 	robinhoodCapital := 500.0
 	robinhoodDrawdown := 5.0
 	lunoCapital := 500.0
@@ -1128,12 +1131,26 @@ func runInit(args []string) int {
 		portfolioMaxDD = p.FloatRange("Portfolio kill-switch max drawdown %", 25, 0, 100)
 		portfolioWarnPct = p.FloatRange("Portfolio warn threshold % (of kill switch)", 60, 0, 100)
 
-		// #412: per-trade stop-loss is HL-only today and only makes sense when
-		// perps are running live. Default 0 disables it; HL caps trigger orders
-		// at 1000/account (scales to 5000 with volume) but we start disabled
-		// by default until the operator explicitly opts in (#479).
+		// #412 / #487: per-trade stop-loss is HL-only today and only makes sense
+		// when perps are running live. Default 0 disables it; HL caps trigger
+		// orders at 1000/account (scales to 5000 with volume) but we start
+		// disabled by default until the operator explicitly opts in (#479).
+		// Two equivalent framings:
+		//   - price %:  trigger when price moves X% against entry (#412)
+		//   - margin %: trigger when unrealized loss reaches X% of deployed
+		//               margin; auto-rescales when leverage changes (#487)
 		if enablePerps && perpsMode == "live" {
-			hlStopLossPct = p.FloatRange("HL perps per-trade stop-loss % from entry (0 = disabled)", 0, 0, 50)
+			slOptions := []string{
+				"Disabled",
+				"Price % from entry (e.g. 1.0 = trigger on 1% adverse move)",
+				"% of deployed margin (leverage-aware; e.g. 20 = trigger on 20% margin loss)",
+			}
+			switch p.Choice("HL perps per-trade stop-loss framing", slOptions, 0) {
+			case 1:
+				hlStopLossPct = p.FloatRange("HL perps per-trade stop-loss % from entry", 1, 0, 50)
+			case 2:
+				hlStopLossMarginPct = p.FloatRange("HL perps per-trade stop-loss % of deployed margin", 20, 0, 100)
+			}
 		}
 	}
 
@@ -1210,6 +1227,7 @@ func runInit(args []string) int {
 		PerpsCapital:              perpsCapital,
 		PerpsLeverage:             perpsLeverage,
 		HLStopLossPct:             hlStopLossPct,
+		HLStopLossMarginPct:       hlStopLossMarginPct,
 		SpotDrawdown:              spotDrawdown,
 		OptionsDrawdown:           optionsDrawdown,
 		PerpsDrawdown:             perpsDrawdown,

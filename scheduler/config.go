@@ -189,23 +189,39 @@ type FuturesConfig struct {
 
 // StrategyConfig describes a single strategy job.
 type StrategyConfig struct {
-	ID              string                 `json:"id"`
-	Type            string                 `json:"type"`     // "spot", "options", "perps", or "futures"
-	Platform        string                 `json:"platform"` // "deribit", "ibkr", "binanceus", "hyperliquid", "topstep"
-	Script          string                 `json:"script"`
-	Args            []string               `json:"args"`
-	Capital         float64                `json:"capital"`
-	CapitalPct      float64                `json:"capital_pct,omitempty"`     // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
-	InitialCapital  float64                `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
-	MaxDrawdownPct  float64                `json:"max_drawdown_pct"`
-	IntervalSeconds int                    `json:"interval_seconds,omitempty"` // per-strategy override (0 = use global)
-	HTFFilter       bool                   `json:"htf_filter,omitempty"`       // higher-timeframe trend filter
-	AllowShorts     bool                   `json:"allow_shorts,omitempty"`     // perps only: opt-in to bidirectional execution — signal=-1 from flat opens a short, long+(-1) closes-and-flips. Default false preserves close-long-only behavior for strategies like triple_ema that emit -1 only as a long-exit (#328)
-	Leverage        float64                `json:"leverage,omitempty"`         // perps leverage multiplier (default 1 = no leverage); used for notional sizing and margin-based valuation (#254)
-	StopLossPct     float64                `json:"stop_loss_pct,omitempty"`    // HL perps only: % from entry to place a reduce-only stop-loss trigger (0 = disabled) (#412)
-	Params          map[string]interface{} `json:"params,omitempty"`           // custom strategy parameters passed to Python
-	ThetaHarvest    *ThetaHarvestConfig    `json:"theta_harvest,omitempty"`
-	FuturesConfig   *FuturesConfig         `json:"futures,omitempty"`
+	ID                string                 `json:"id"`
+	Type              string                 `json:"type"`     // "spot", "options", "perps", or "futures"
+	Platform          string                 `json:"platform"` // "deribit", "ibkr", "binanceus", "hyperliquid", "topstep"
+	Script            string                 `json:"script"`
+	Args              []string               `json:"args"`
+	Capital           float64                `json:"capital"`
+	CapitalPct        float64                `json:"capital_pct,omitempty"`     // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
+	InitialCapital    float64                `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
+	MaxDrawdownPct    float64                `json:"max_drawdown_pct"`
+	IntervalSeconds   int                    `json:"interval_seconds,omitempty"`     // per-strategy override (0 = use global)
+	HTFFilter         bool                   `json:"htf_filter,omitempty"`           // higher-timeframe trend filter
+	AllowShorts       bool                   `json:"allow_shorts,omitempty"`         // perps only: opt-in to bidirectional execution — signal=-1 from flat opens a short, long+(-1) closes-and-flips. Default false preserves close-long-only behavior for strategies like triple_ema that emit -1 only as a long-exit (#328)
+	Leverage          float64                `json:"leverage,omitempty"`             // perps leverage multiplier (default 1 = no leverage); used for notional sizing and margin-based valuation (#254)
+	StopLossPct       float64                `json:"stop_loss_pct,omitempty"`        // HL perps only: % from entry to place a reduce-only stop-loss trigger (0 = disabled) (#412)
+	StopLossMarginPct float64                `json:"stop_loss_margin_pct,omitempty"` // HL perps only: % of deployed margin to lose before stop-loss trigger; mutually exclusive with stop_loss_pct; price % derived as StopLossMarginPct / Leverage at order time (#487)
+	Params            map[string]interface{} `json:"params,omitempty"`               // custom strategy parameters passed to Python
+	ThetaHarvest      *ThetaHarvestConfig    `json:"theta_harvest,omitempty"`
+	FuturesConfig     *FuturesConfig         `json:"futures,omitempty"`
+}
+
+// EffectiveStopLossPct returns the price % to use as the HL reduce-only stop-loss
+// trigger for a given strategy. Returns the explicit StopLossPct when set;
+// otherwise derives it from StopLossMarginPct / Leverage so margin-loss-based
+// triggers stay correct as leverage changes (#487). Returns 0 when neither is
+// configured or when leverage is missing/invalid for the margin-pct path.
+func EffectiveStopLossPct(sc StrategyConfig) float64 {
+	if sc.StopLossPct > 0 {
+		return sc.StopLossPct
+	}
+	if sc.StopLossMarginPct > 0 && sc.Leverage > 0 {
+		return sc.StopLossMarginPct / sc.Leverage
+	}
+	return 0
 }
 
 // EffectiveInitialCapital returns the fixed starting balance for PnL display.
@@ -607,6 +623,21 @@ func ValidateConfig(cfg *Config) error {
 			}
 			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
 				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			}
+		}
+
+		// #487: stop_loss_margin_pct expresses the trigger as a % of deployed
+		// margin (leverage-aware) and is converted to a price % at order time.
+		// Mutually exclusive with stop_loss_pct so the operator can't double up.
+		if sc.StopLossMarginPct != 0 {
+			if sc.StopLossPct != 0 {
+				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct and stop_loss_margin_pct are mutually exclusive — set only one", prefix))
+			}
+			if sc.StopLossMarginPct <= 0 || sc.StopLossMarginPct > 100 {
+				errs = append(errs, fmt.Sprintf("%s: stop_loss_margin_pct must be in (0, 100], got %g", prefix, sc.StopLossMarginPct))
+			}
+			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+				errs = append(errs, fmt.Sprintf("%s: stop_loss_margin_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 		}
 

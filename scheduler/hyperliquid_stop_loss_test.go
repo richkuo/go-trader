@@ -610,3 +610,117 @@ func TestForceCloseHyperliquidLive_CancelsAllSharedCoinStopLossOIDs(t *testing.T
 		t.Errorf("closer saw cancel OIDs=%v, want [1111 2222]", seen)
 	}
 }
+
+// #487: EffectiveStopLossPct returns the price % to send to the HL execute
+// helper. It must (a) honor an explicit StopLossPct, (b) derive price % from
+// StopLossMarginPct / Leverage when only the margin form is set, (c) prefer
+// StopLossPct when both are set (validation rejects this combo before runtime,
+// but the helper must stay deterministic), and (d) fail safe at 0 when the
+// margin path lacks a positive leverage divisor.
+func TestEffectiveStopLossPct(t *testing.T) {
+	cases := []struct {
+		name string
+		sc   StrategyConfig
+		want float64
+	}{
+		{"unset", StrategyConfig{Leverage: 5}, 0},
+		{"explicit pct", StrategyConfig{StopLossPct: 1.5, Leverage: 5}, 1.5},
+		{"margin pct at 20x", StrategyConfig{StopLossMarginPct: 20, Leverage: 20}, 1.0},
+		{"margin pct at 10x rescales", StrategyConfig{StopLossMarginPct: 20, Leverage: 10}, 2.0},
+		{"margin pct without leverage fails safe", StrategyConfig{StopLossMarginPct: 20}, 0},
+		{"explicit wins over margin", StrategyConfig{StopLossPct: 3, StopLossMarginPct: 20, Leverage: 10}, 3},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := EffectiveStopLossPct(c.sc)
+			if got != c.want {
+				t.Errorf("EffectiveStopLossPct(%+v) = %g, want %g", c.sc, got, c.want)
+			}
+		})
+	}
+}
+
+// #487: stop_loss_margin_pct is mutually exclusive with stop_loss_pct, must be
+// in (0, 100], and is HL-perps-only. ValidateConfig must reject every other
+// shape so a hand-edited config can't silently disable the SL feature.
+func TestValidateConfig_StopLossMarginPctBounds(t *testing.T) {
+	cases := []struct {
+		name      string
+		marginPct float64
+		pricePct  float64
+		platform  string
+		typ       string
+		wantError bool
+	}{
+		{"zero ok", 0, 0, "hyperliquid", "perps", false},
+		{"in range", 20, 0, "hyperliquid", "perps", false},
+		{"max boundary", 100, 0, "hyperliquid", "perps", false},
+		{"too high", 150, 0, "hyperliquid", "perps", true},
+		{"zero rejected (open lower bound)", 0, 0, "hyperliquid", "perps", false},
+		{"negative", -1, 0, "hyperliquid", "perps", true},
+		{"non-HL platform", 20, 0, "okx", "perps", true},
+		{"non-perps type", 20, 0, "hyperliquid", "spot", true},
+		{"mutually exclusive", 20, 1, "hyperliquid", "perps", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := &Config{
+				IntervalSeconds: 60,
+				Strategies: []StrategyConfig{
+					{
+						ID:                "test",
+						Type:              c.typ,
+						Platform:          c.platform,
+						Script:            "shared_scripts/check_hyperliquid.py",
+						Capital:           1000,
+						MaxDrawdownPct:    10,
+						Leverage:          10,
+						StopLossPct:       c.pricePct,
+						StopLossMarginPct: c.marginPct,
+					},
+				},
+				PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
+			}
+			err := ValidateConfig(cfg)
+			gotErr := err != nil && strings.Contains(err.Error(), "stop_loss")
+			if gotErr != c.wantError {
+				t.Errorf("got err=%v wantStopLossErr=%v (full err: %v)", gotErr, c.wantError, err)
+			}
+		})
+	}
+}
+
+// #487: zero StopLossMarginPct must be omitted from the JSON encoding so
+// existing configs don't grow a noisy field after a round-trip.
+func TestStrategyConfig_StopLossMarginPctJSON(t *testing.T) {
+	sc := StrategyConfig{
+		ID:                "hl-test",
+		Type:              "perps",
+		Platform:          "hyperliquid",
+		Leverage:          20,
+		StopLossMarginPct: 25,
+	}
+	b, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"stop_loss_margin_pct":25`) {
+		t.Errorf("expected stop_loss_margin_pct in JSON; got %s", b)
+	}
+	var round StrategyConfig
+	if err := json.Unmarshal(b, &round); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if round.StopLossMarginPct != 25 {
+		t.Errorf("round-trip StopLossMarginPct: got %v, want 25", round.StopLossMarginPct)
+	}
+
+	sc.StopLossMarginPct = 0
+	b2, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal zero: %v", err)
+	}
+	if strings.Contains(string(b2), "stop_loss_margin_pct") {
+		t.Errorf("zero StopLossMarginPct should be omitted; got %s", b2)
+	}
+}

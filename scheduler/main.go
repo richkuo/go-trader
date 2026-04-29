@@ -2002,8 +2002,11 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		cancelOID = existingStopLossOID
 	}
 	var slPct float64
-	if !pureClose && sc.StopLossPct > 0 && sc.Platform == "hyperliquid" {
-		slPct = sc.StopLossPct
+	if !pureClose && sc.Platform == "hyperliquid" {
+		// EffectiveStopLossPct returns the explicit price % or derives it from
+		// stop_loss_margin_pct / leverage (#487). Validation in config.go
+		// guarantees the two fields are mutually exclusive.
+		slPct = EffectiveStopLossPct(sc)
 	}
 	var prevPosQty float64
 	if flipping {
