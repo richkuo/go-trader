@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestFormatInstrument(t *testing.T) {
@@ -251,6 +252,58 @@ func TestApplyAssignmentCall(t *testing.T) {
 	}
 	if pos.Quantity != 0.1 {
 		t.Errorf("Quantity = %g, want 0.1 (0.2 - 0.1)", pos.Quantity)
+	}
+}
+
+func TestApplyAssignmentCallFullCloseUsesSingleTimestamp(t *testing.T) {
+	openedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	s := &StrategyState{
+		ID:   "test",
+		Cash: 5000,
+		Positions: map[string]*Position{
+			"BTC": {
+				Symbol:          "BTC",
+				TradePositionID: "btc-position-1",
+				Quantity:        0.1,
+				AvgCost:         45000,
+				Side:            "long",
+				OpenedAt:        openedAt,
+			},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	r := markResult{
+		Assigned:         true,
+		AssignUnderlying: "BTC",
+		AssignOptionType: "call",
+		AssignStrike:     55000,
+		AssignSpotPrice:  56000,
+		AssignQuantity:   0.1,
+	}
+
+	applyAssignment(s, r, logger)
+
+	if _, ok := s.Positions["BTC"]; ok {
+		t.Fatal("BTC position should be removed after full call-away")
+	}
+	if len(s.ClosedPositions) != 1 {
+		t.Fatalf("ClosedPositions len = %d, want 1", len(s.ClosedPositions))
+	}
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory len = %d, want 1", len(s.TradeHistory))
+	}
+	if !s.ClosedPositions[0].ClosedAt.Equal(s.TradeHistory[0].Timestamp) {
+		t.Fatalf("closed position timestamp %s != trade timestamp %s", s.ClosedPositions[0].ClosedAt, s.TradeHistory[0].Timestamp)
+	}
+	if got := s.TradeHistory[0].PositionID; got != "btc-position-1" {
+		t.Fatalf("trade PositionID = %q, want btc-position-1", got)
 	}
 }
 

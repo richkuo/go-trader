@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS strategies (
 CREATE TABLE IF NOT EXISTS positions (
     strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
     symbol TEXT NOT NULL,
+    position_id TEXT NOT NULL DEFAULT '',
     quantity REAL NOT NULL,
     avg_cost REAL NOT NULL,
     side TEXT NOT NULL,
@@ -121,6 +122,7 @@ CREATE INDEX IF NOT EXISTS idx_closed_opt_closed_at ON closed_option_positions(c
 CREATE TABLE IF NOT EXISTS option_positions (
     strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
     id TEXT NOT NULL,
+    position_id TEXT NOT NULL DEFAULT '',
     underlying TEXT NOT NULL,
     option_type TEXT NOT NULL,
     strike REAL NOT NULL,
@@ -144,6 +146,7 @@ CREATE TABLE IF NOT EXISTS trades (
     strategy_id TEXT NOT NULL,
     timestamp TEXT NOT NULL,
     symbol TEXT NOT NULL,
+    position_id TEXT NOT NULL DEFAULT '',
     side TEXT NOT NULL,
     quantity REAL NOT NULL,
     price REAL NOT NULL,
@@ -159,8 +162,9 @@ CREATE TABLE IF NOT EXISTS trades (
 CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy_id);
 CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp DESC);
--- idx_trades_close (#455) is created in migrateSchema, not here, so legacy
--- DBs add the is_close column before the index references it.
+-- idx_trades_close (#455) and idx_trades_strategy_position (#471) are created
+-- in migrateSchema, not here, so legacy DBs add columns before indexes
+-- reference them.
 
 CREATE TABLE IF NOT EXISTS portfolio_risk (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -254,6 +258,11 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE trades ADD COLUMN is_close INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE trades ADD COLUMN realized_pnl REAL NOT NULL DEFAULT 0",
 		"CREATE INDEX IF NOT EXISTS idx_trades_close ON trades(strategy_id, is_close)",
+		// Per-position trade grouping (#471).
+		"ALTER TABLE trades ADD COLUMN position_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE positions ADD COLUMN position_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE option_positions ADD COLUMN position_id TEXT NOT NULL DEFAULT ''",
+		"CREATE INDEX IF NOT EXISTS idx_trades_strategy_position ON trades(strategy_id, position_id)",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -451,9 +460,9 @@ func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
 		isClose = 1
 	}
 	_, err := sdb.db.Exec(`INSERT INTO trades
-		(strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		strategyID, formatTime(trade.Timestamp), trade.Symbol, trade.Side,
+			(strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		strategyID, formatTime(trade.Timestamp), trade.Symbol, trade.PositionID, trade.Side,
 		trade.Quantity, trade.Price, trade.Value, trade.TradeType, trade.Details,
 		trade.ExchangeOrderID, trade.ExchangeFee, isClose, trade.RealizedPnL)
 	if err != nil {
@@ -600,17 +609,17 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	defer stmtStrat.Close()
 
-	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, quantity, avg_cost, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, avg_cost, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare position insert: %w", err)
 	}
 	defer stmtPos.Close()
 
-	stmtOpt, err := tx.Prepare(`INSERT INTO option_positions (strategy_id, id, underlying, option_type, strike, expiry, dte,
+	stmtOpt, err := tx.Prepare(`INSERT INTO option_positions (strategy_id, id, position_id, underlying, option_type, strike, expiry, dte,
 		action, quantity, entry_premium, entry_premium_usd, current_value_usd,
 		delta, gamma, theta, vega, opened_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare option_position insert: %w", err)
 	}
@@ -651,14 +660,16 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 
 		for _, pos := range s.Positions {
-			if _, err := stmtPos.Exec(s.ID, pos.Symbol, pos.Quantity, pos.AvgCost, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx); err != nil {
+			positionID := ensurePositionTradeID(s.ID, pos.Symbol, pos)
+			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.AvgCost, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx); err != nil {
 				return fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
 			}
 		}
 
 		for key, opt := range s.OptionPositions {
+			positionID := ensureOptionTradeID(s.ID, opt)
 			if _, err := stmtOpt.Exec(
-				s.ID, key, opt.Underlying, opt.OptionType, opt.Strike, opt.Expiry, opt.DTE,
+				s.ID, key, positionID, opt.Underlying, opt.OptionType, opt.Strike, opt.Expiry, opt.DTE,
 				opt.Action, opt.Quantity, opt.EntryPremium, opt.EntryPremiumUSD, opt.CurrentValueUSD,
 				opt.Greeks.Delta, opt.Greeks.Gamma, opt.Greeks.Theta, opt.Greeks.Vega,
 				formatTime(opt.OpenedAt),
@@ -675,8 +686,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	//    failed, even if later-timestamped rows were persisted successfully
 	//    (fixes the MAX(timestamp) dedup gap that would silently drop
 	//    out-of-order retries).
-	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare trade insert: %w", err)
 	}
@@ -700,7 +711,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			if t.IsClose {
 				isClose = 1
 			}
-			if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL); err != nil {
+			if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL); err != nil {
 				return fmt.Errorf("insert trade for %s: %w", s.ID, err)
 			}
 			flushed = append(flushed, trackedFlush{strat: s, index: i})
@@ -1059,7 +1070,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	}
 
 	// 3. Load positions for each strategy.
-	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, quantity, avg_cost, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px FROM positions")
+	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, avg_cost, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px FROM positions")
 	if err != nil {
 		return nil, fmt.Errorf("load positions: %w", err)
 	}
@@ -1068,7 +1079,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		var stratID string
 		var pos Position
 		var openedAtStr string
-		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.Quantity, &pos.AvgCost, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx); err != nil {
+		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.AvgCost, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
 		pos.OpenedAt = parseTime(openedAtStr)
@@ -1081,7 +1092,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	}
 
 	// 4. Load option positions for each strategy.
-	optRows, err := sdb.db.Query(`SELECT strategy_id, id, underlying, option_type, strike, expiry, dte,
+	optRows, err := sdb.db.Query(`SELECT strategy_id, id, COALESCE(position_id, '') AS position_id, underlying, option_type, strike, expiry, dte,
 		action, quantity, entry_premium, entry_premium_usd, current_value_usd,
 		delta, gamma, theta, vega, opened_at FROM option_positions`)
 	if err != nil {
@@ -1093,7 +1104,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		var opt OptionPosition
 		var openedAtStr string
 		if err := optRows.Scan(
-			&stratID, &opt.ID, &opt.Underlying, &opt.OptionType, &opt.Strike, &opt.Expiry, &opt.DTE,
+			&stratID, &opt.ID, &opt.TradePositionID, &opt.Underlying, &opt.OptionType, &opt.Strike, &opt.Expiry, &opt.DTE,
 			&opt.Action, &opt.Quantity, &opt.EntryPremium, &opt.EntryPremiumUSD, &opt.CurrentValueUSD,
 			&opt.Greeks.Delta, &opt.Greeks.Gamma, &opt.Greeks.Theta, &opt.Greeks.Vega,
 			&openedAtStr,
@@ -1111,7 +1122,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 
 	// 5. Load most recent 1000 trades per strategy (full history stays in SQLite).
 	for id, s := range state.Strategies {
-		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl
+		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl
 			FROM trades WHERE strategy_id = ? ORDER BY timestamp ASC`, id)
 		if err != nil {
 			return nil, fmt.Errorf("load trades for %s: %w", id, err)
@@ -1121,7 +1132,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 			var t Trade
 			var tsStr string
 			var isCloseInt int
-			if err := tradeRows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL); err != nil {
+			if err := tradeRows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL); err != nil {
 				tradeRows.Close()
 				return nil, fmt.Errorf("scan trade: %w", err)
 			}
@@ -1193,12 +1204,12 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 }
 
 // LifetimeTradeStats holds the per-strategy round-trip totals derived from
-// the trades table (#455). RoundTrips is the lifetime count of close legs
-// (1 trade = 1 round-trip per the issue spec); Wins and Losses partition
-// that count by strict realized PnL sign (PnL > 0 → win, PnL < 0 → loss).
-// Breakeven closes (PnL = 0) are excluded from both buckets so that the
-// on-chain "no virtual position" fallback (which records realized_pnl=0)
-// does not inflate W. Open positions without a recorded close do not count.
+// the trades table (#455/#471). RoundTrips is the lifetime count of distinct
+// trade position IDs among close rows; legacy rows without a position ID fall
+// back to one synthetic group per row to preserve historical per-leg counts.
+// Wins and Losses partition round trips by strict net realized PnL sign
+// (PnL > 0 → win, PnL < 0 → loss). Breakeven positions are excluded from both
+// buckets. Open positions without a recorded close do not count.
 type LifetimeTradeStats struct {
 	RoundTrips int
 	Wins       int
@@ -1217,11 +1228,22 @@ func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, erro
 	}
 	rows, err := sdb.db.Query(`SELECT
 			strategy_id,
-			COUNT(*),
-			SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END),
-			SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END)
-		FROM trades
-		WHERE is_close = 1
+			COUNT(*) AS round_trips,
+			SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+			SUM(CASE WHEN net_pnl < 0 THEN 1 ELSE 0 END) AS losses
+		FROM (
+			SELECT
+				strategy_id,
+				CASE
+					WHEN position_id IS NULL OR position_id = ''
+					THEN 'legacy:' || rowid
+					ELSE position_id
+				END AS pkey,
+				SUM(realized_pnl) AS net_pnl
+			FROM trades
+			WHERE is_close = 1
+			GROUP BY strategy_id, pkey
+		)
 		GROUP BY strategy_id`)
 	if err != nil {
 		return nil, fmt.Errorf("query lifetime trade stats: %w", err)
@@ -1286,7 +1308,7 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 		limit = 500
 	}
 
-	query := fmt.Sprintf("SELECT timestamp, strategy_id, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl FROM trades %s ORDER BY timestamp DESC LIMIT ? OFFSET ?", whereClause)
+	query := fmt.Sprintf("SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl FROM trades %s ORDER BY timestamp DESC LIMIT ? OFFSET ?", whereClause)
 	queryArgs := append(args, limit, offset)
 	rows, err := sdb.db.Query(query, queryArgs...)
 	if err != nil {
@@ -1299,7 +1321,7 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 		var t Trade
 		var tsStr string
 		var isCloseInt int
-		if err := rows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL); err != nil {
+		if err := rows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL); err != nil {
 			return nil, 0, fmt.Errorf("scan trade: %w", err)
 		}
 		t.Timestamp = parseTime(tsStr)

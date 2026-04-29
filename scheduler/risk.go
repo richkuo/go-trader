@@ -1112,10 +1112,12 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 		if logger != nil {
 			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)
 		}
+		positionID := ensurePositionTradeID(s.ID, symbol, pos)
 		trade := Trade{
 			Timestamp:   now,
 			StrategyID:  s.ID,
 			Symbol:      symbol,
+			PositionID:  positionID,
 			Side:        closeTradeSide(pos.Side),
 			Quantity:    pos.Quantity,
 			Price:       price,
@@ -1146,10 +1148,12 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 		if logger != nil {
 			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Action, id, closePrice, pnl)
 		}
+		positionID := ensureOptionTradeID(s.ID, pos)
 		trade := Trade{
 			Timestamp:   now,
 			StrategyID:  s.ID,
 			Symbol:      id,
+			PositionID:  positionID,
 			Side:        optionCloseTradeSide(pos.Action),
 			Quantity:    pos.Quantity,
 			Price:       closePrice,

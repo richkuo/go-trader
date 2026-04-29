@@ -1,9 +1,45 @@
 package main
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 )
+
+func TestPositionJSONUsesPositionID(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+	}{
+		{
+			name:  "position",
+			value: Position{Symbol: "BTC", TradePositionID: "spot-position-1"},
+		},
+		{
+			name:  "option_position",
+			value: OptionPosition{ID: "opt-1", TradePositionID: "option-position-1"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.value)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if _, ok := payload["position_id"]; !ok {
+				t.Fatalf("position_id missing from %s JSON: %s", tc.name, raw)
+			}
+			if _, ok := payload["trade_position_id"]; ok {
+				t.Fatalf("trade_position_id should not be emitted in %s JSON: %s", tc.name, raw)
+			}
+		})
+	}
+}
 
 func TestPortfolioValueCashOnly(t *testing.T) {
 	s := &StrategyState{
