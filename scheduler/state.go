@@ -84,6 +84,8 @@ type AppState struct {
 	// leaderboard_summaries entry, keyed by LeaderboardSummaryConfig.Key().
 	// Used by the scheduler to avoid reposting within the configured frequency. (#308)
 	LastLeaderboardSummaries map[string]time.Time `json:"last_leaderboard_summaries,omitempty"`
+	// LastSummaryPost tracks the last regular summary post per notification channel key.
+	LastSummaryPost map[string]time.Time `json:"last_summary_post,omitempty"`
 }
 
 // StrategyState is the per-strategy persistent state.

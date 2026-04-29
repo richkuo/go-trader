@@ -926,6 +926,9 @@ func TestMigrateSchema_AddsExchangeColumns(t *testing.T) {
 	if loaded == nil {
 		t.Fatal("loaded state is nil")
 	}
+	if len(loaded.LastSummaryPost) != 0 {
+		t.Fatalf("migrated LastSummaryPost = %v, want empty", loaded.LastSummaryPost)
+	}
 	strat := loaded.Strategies["test"]
 	if strat == nil {
 		t.Fatal("missing strategy 'test'")
@@ -1358,6 +1361,44 @@ func TestSaveLoadState_LeaderboardSummaries(t *testing.T) {
 	}
 	for k, want := range state.LastLeaderboardSummaries {
 		got, ok := loaded.LastLeaderboardSummaries[k]
+		if !ok {
+			t.Errorf("key %q missing after reload", k)
+			continue
+		}
+		if !got.Equal(want) {
+			t.Errorf("key %q: got %v, want %v", k, got, want)
+		}
+	}
+}
+
+func TestSaveLoadState_LastSummaryPost(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+	sdb, err := OpenStateDB(path)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer sdb.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	state := NewAppState()
+	state.LastSummaryPost = map[string]time.Time{
+		"spot":        now.Add(-5 * time.Minute),
+		"hyperliquid": now.Add(-30 * time.Minute),
+	}
+	if err := sdb.SaveState(state); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	loaded, err := sdb.LoadState()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(loaded.LastSummaryPost) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(loaded.LastSummaryPost))
+	}
+	for k, want := range state.LastSummaryPost {
+		got, ok := loaded.LastSummaryPost[k]
 		if !ok {
 			t.Errorf("key %q missing after reload", k)
 			continue

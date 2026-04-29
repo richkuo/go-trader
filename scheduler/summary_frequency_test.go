@@ -47,93 +47,149 @@ func TestParseSummaryFrequency(t *testing.T) {
 }
 
 func TestShouldPostSummary_TradesForcePost(t *testing.T) {
-	// Trades always post, regardless of cadence setting or cycle position.
-	if !ShouldPostSummary("hourly", 5, 300, false, true) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	lastPost := now.Add(-10 * time.Second)
+
+	// Trades always post, regardless of cadence setting or elapsed time.
+	if !ShouldPostSummary("hourly", false, true, lastPost, now) {
 		t.Error("trades should force a post even mid-window")
 	}
-	if !ShouldPostSummary("daily", 2, 300, false, true) {
+	if !ShouldPostSummary("daily", false, true, lastPost, now) {
 		t.Error("trades should force a post even with daily cadence")
 	}
 }
 
-func TestShouldPostSummary_LegacyContinuousPostsEveryCycle(t *testing.T) {
-	// Empty freq + continuous (options/perps/futures) = every cycle.
-	for c := 1; c <= 5; c++ {
-		if !ShouldPostSummary("", c, 300, true, false) {
-			t.Errorf("continuous legacy default should post every cycle; cycle %d did not", c)
+func TestShouldPostSummary_TradeForcedPostResetsCadenceWindow(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	lastByChannel := map[string]time.Time{}
+	shouldPost := func(chKey string, at time.Time, hasTrades bool) bool {
+		if !ShouldPostSummary("5m", false, hasTrades, lastByChannel[chKey], at) {
+			return false
+		}
+		lastByChannel[chKey] = at
+		return true
+	}
+
+	if !shouldPost("spot", now, false) {
+		t.Fatal("first cadence check should post")
+	}
+	if shouldPost("spot", now.Add(10*time.Second), false) {
+		t.Fatal("non-trade post should be suppressed before the 5m cadence elapses")
+	}
+	if !shouldPost("spot", now.Add(10*time.Second), true) {
+		t.Fatal("trade should force a post before the cadence elapses")
+	}
+	if shouldPost("spot", now.Add(5*time.Minute), false) {
+		t.Fatal("trade-forced post should reset the cadence window")
+	}
+	if !shouldPost("spot", now.Add(5*time.Minute+10*time.Second), false) {
+		t.Fatal("cadence should elapse relative to the trade-forced post time")
+	}
+}
+
+func TestShouldPostSummary_LegacyContinuousPostsEveryRun(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	lastPost := now
+
+	// Empty freq + continuous (options/perps/futures) = every channel run.
+	for i := 0; i < 5; i++ {
+		if !ShouldPostSummary("", true, false, lastPost, now.Add(time.Duration(i)*time.Second)) {
+			t.Errorf("continuous legacy default should post every run; iteration %d did not", i)
 		}
 	}
 }
 
 func TestShouldPostSummary_LegacySpotPostsHourly(t *testing.T) {
-	// Empty freq + non-continuous + interval=300s (5m) → 12 cycles between posts.
-	// Cycles 1, 13, 25 post; 2..12 and 14..24 don't.
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
-		cycle int
-		want  bool
+		name     string
+		lastPost time.Time
+		now      time.Time
+		want     bool
 	}{
-		{1, true}, {2, false}, {6, false}, {12, false}, {13, true}, {24, false}, {25, true},
+		{"first post", time.Time{}, now, true},
+		{"before one hour", now, now.Add(time.Hour - time.Second), false},
+		{"at one hour", now, now.Add(time.Hour), true},
+		{"after one hour", now, now.Add(time.Hour + time.Second), true},
 	}
 	for _, tc := range cases {
-		got := ShouldPostSummary("", tc.cycle, 300, false, false)
-		if got != tc.want {
-			t.Errorf("spot legacy cycle %d: got %v, want %v", tc.cycle, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			got := ShouldPostSummary("", false, false, tc.lastPost, tc.now)
+			if got != tc.want {
+				t.Errorf("legacy spot cadence: got %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
 func TestShouldPostSummary_EveryAliasOverridesSpotDefault(t *testing.T) {
-	// User sets spot to "every" — should post every cycle.
-	for c := 1; c <= 10; c++ {
-		if !ShouldPostSummary("every", c, 300, false, false) {
-			t.Errorf(`freq="every" should post every cycle; cycle %d did not`, c)
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	lastPost := now
+
+	// User sets spot to "every" — should post every channel run.
+	for i := 0; i < 10; i++ {
+		if !ShouldPostSummary("every", false, false, lastPost, now.Add(time.Duration(i)*time.Second)) {
+			t.Errorf(`freq="every" should post every run; iteration %d did not`, i)
 		}
 	}
 }
 
-func TestShouldPostSummary_HourlyAliasThrottlesContinuous(t *testing.T) {
-	// User sets options (continuous) to "hourly" — should throttle to 1/hour.
-	// interval=300s → 12 cycles between posts.
-	if !ShouldPostSummary("hourly", 1, 300, true, false) {
-		t.Error("cycle 1 should post")
+func TestShouldPostSummary_HourlyAliasThrottlesContinuousByWallClock(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+
+	if !ShouldPostSummary("hourly", true, false, time.Time{}, now) {
+		t.Error("first run should post")
 	}
-	if ShouldPostSummary("hourly", 2, 300, true, false) {
-		t.Error("cycle 2 should be throttled")
+	if ShouldPostSummary("hourly", true, false, now, now.Add(time.Hour-time.Second)) {
+		t.Error("continuous channel should be throttled before one hour elapses")
 	}
-	if !ShouldPostSummary("hourly", 13, 300, true, false) {
-		t.Error("cycle 13 should post (12 cycles after cycle 1)")
+	if !ShouldPostSummary("hourly", true, false, now, now.Add(time.Hour)) {
+		t.Error("continuous channel should post once one hour elapses")
 	}
 }
 
-func TestShouldPostSummary_CustomDuration(t *testing.T) {
-	// 30m with 5m interval → every 6 cycles.
-	want := map[int]bool{1: true, 2: false, 6: false, 7: true, 12: false, 13: true}
-	for c, expect := range want {
-		got := ShouldPostSummary("30m", c, 300, false, false)
-		if got != expect {
-			t.Errorf("30m cadence cycle %d: got %v, want %v", c, got, expect)
+func TestShouldPostSummary_CustomDurationUsesWallClock(t *testing.T) {
+	start := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	lastPost := time.Time{}
+	check := func(at time.Time) bool {
+		if !ShouldPostSummary("30m", false, false, lastPost, at) {
+			return false
 		}
+		lastPost = at
+		return true
 	}
-}
 
-func TestShouldPostSummary_DurationShorterThanInterval(t *testing.T) {
-	// 1m cadence with 5m interval — clamp to every cycle.
-	for c := 1; c <= 5; c++ {
-		if !ShouldPostSummary("1m", c, 300, false, false) {
-			t.Errorf("sub-interval cadence should clamp to every cycle; cycle %d did not", c)
-		}
+	if !check(start) {
+		t.Fatal("first 30m cadence check should post")
+	}
+	if check(start.Add(30*time.Minute - time.Second)) {
+		t.Fatal("30m cadence should suppress before duration elapses")
+	}
+	if !check(start.Add(30 * time.Minute)) {
+		t.Fatal("30m cadence should post when duration elapses")
+	}
+	if check(start.Add(30 * time.Minute)) {
+		t.Fatal("30m cadence should suppress immediately after updating last post")
+	}
+	if !check(start.Add(60 * time.Minute)) {
+		t.Fatal("30m cadence should post again at 2x duration")
 	}
 }
 
 func TestShouldPostSummary_InvalidValueFallsBackToLegacy(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+
 	// Invalid freq should fall back to the legacy default rather than crashing.
-	// Continuous legacy = every cycle.
-	if !ShouldPostSummary("nonsense", 3, 300, true, false) {
-		t.Error("invalid freq + continuous should fall back to legacy every-cycle")
+	// Continuous legacy = every channel run.
+	if !ShouldPostSummary("nonsense", true, false, now, now.Add(time.Second)) {
+		t.Error("invalid freq + continuous should fall back to legacy every-run")
 	}
-	// Non-continuous legacy = hourly (12 cycles at 300s interval).
-	if ShouldPostSummary("nonsense", 2, 300, false, false) {
-		t.Error("invalid freq + spot should fall back to legacy hourly (cycle 2 suppressed)")
+	// Non-continuous legacy = hourly wall-clock cadence.
+	if ShouldPostSummary("nonsense", false, false, now, now.Add(time.Hour-time.Second)) {
+		t.Error("invalid freq + spot should fall back to legacy hourly cadence")
+	}
+	if !ShouldPostSummary("nonsense", false, false, now, now.Add(time.Hour)) {
+		t.Error("invalid freq + spot should post once the legacy hourly cadence elapses")
 	}
 }
 

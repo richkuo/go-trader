@@ -349,6 +349,9 @@ func main() {
 	// If you ever split writes across goroutines, add explicit locking —
 	// the existing `mu` lock guards `state`, not `lastRun`.
 	lastRun := make(map[string]time.Time)
+	// Same single-writer invariant as lastRun; copied into AppState only during
+	// the save phase so restart throttling survives without widening state locks.
+	lastSummaryPost := cloneTimeMap(state.LastSummaryPost)
 
 	// Determine tick interval from configured strategy intervals, min 60s.
 	tickSeconds := schedulerTickSeconds(cfg)
@@ -1373,6 +1376,7 @@ func main() {
 
 		// Notification — one message per channel per asset, sent to all backends.
 		if notifier.HasBackends() {
+			summaryNow := time.Now().UTC()
 			mu.RLock()
 			for chKey, chStrats := range channelStrats {
 				// Only post if at least one due strategy maps to this channel key.
@@ -1388,12 +1392,12 @@ func main() {
 				}
 				chTrades := channelTrades[chKey]
 				// Per-channel summary cadence (#30). Legacy default: continuous
-				// channel types (options/perps/futures) post every cycle; spot
+				// channel types (options/perps/futures) post every channel run; spot
 				// posts hourly. Override per channel via cfg.SummaryFrequency.
 				// Trades always force a post so operators see executions
 				// immediately regardless of cadence.
 				continuous := isOptionsType(chStrats) || isFuturesType(chStrats) || isPerpsType(chStrats)
-				if !ShouldPostSummary(cfg.SummaryFrequency[chKey], cycle, cfg.IntervalSeconds, continuous, chTrades > 0) {
+				if !ShouldPostSummary(cfg.SummaryFrequency[chKey], continuous, chTrades > 0, lastSummaryPost[chKey], summaryNow) {
 					continue
 				}
 				assetGroups, assetKeys := groupByAsset(chStrats)
@@ -1429,6 +1433,7 @@ func main() {
 						}
 					}
 				}
+				lastSummaryPost[chKey] = summaryNow
 			}
 			mu.RUnlock()
 		}
@@ -1436,6 +1441,7 @@ func main() {
 		// Save state after each cycle
 		mu.Lock()
 		state.LastCycle = time.Now().UTC()
+		state.LastSummaryPost = cloneTimeMap(lastSummaryPost)
 
 		// Periodic configurable leaderboard summaries (#308). Compute + update
 		// state.LastLeaderboardSummaries under Lock; post outside so Discord
@@ -2795,6 +2801,14 @@ func runLeaderboardSummariesAndExit(lcs []LeaderboardSummaryConfig, cfg *Config,
 	}
 	fmt.Printf("-summary=%s: posted %d leaderboard summaries, exiting.\n", lcs[0].Channel, posted)
 	os.Exit(0)
+}
+
+func cloneTimeMap(in map[string]time.Time) map[string]time.Time {
+	out := make(map[string]time.Time, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // pendingLeaderboardSummary carries a computed summary from under-lock

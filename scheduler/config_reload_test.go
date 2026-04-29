@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestApplyHotReloadConfigAppliesAllowedFields(t *testing.T) {
@@ -82,17 +83,21 @@ func TestApplyHotReloadConfigAppliesAllowedFields(t *testing.T) {
 		}},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 30, WarnThresholdPct: 70},
 	}
-	state := &AppState{Strategies: map[string]*StrategyState{
-		"spot-btc": {
-			ID: "spot-btc", Cash: 900,
-			RiskState: RiskState{MaxDrawdownPct: 20},
+	summaryLast := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	state := &AppState{
+		LastSummaryPost: map[string]time.Time{"spot": summaryLast},
+		Strategies: map[string]*StrategyState{
+			"spot-btc": {
+				ID: "spot-btc", Cash: 900,
+				RiskState: RiskState{MaxDrawdownPct: 20},
+			},
+			"hl-eth": {
+				ID:        "hl-eth",
+				Cash:      450,
+				RiskState: RiskState{MaxDrawdownPct: 50},
+			},
 		},
-		"hl-eth": {
-			ID:        "hl-eth",
-			Cash:      450,
-			RiskState: RiskState{MaxDrawdownPct: 50},
-		},
-	}}
+	}
 	mock := &mockNotifier{}
 	tgMock := &mockNotifier{}
 	notifier := NewMultiNotifier(
@@ -137,6 +142,9 @@ func TestApplyHotReloadConfigAppliesAllowedFields(t *testing.T) {
 	}
 	if got := state.Strategies["spot-btc"].RiskState.MaxDrawdownPct; got != 15 {
 		t.Errorf("spot risk max drawdown = %g, want 15", got)
+	}
+	if got := state.LastSummaryPost["spot"]; !got.Equal(summaryLast) {
+		t.Errorf("summary last post changed during reload: got %v, want %v", got, summaryLast)
 	}
 	notifier.SendToChannel("binanceus", "spot", "hello")
 	if len(mock.messages) != 1 || mock.messages[0].channelID != "new-spot" {

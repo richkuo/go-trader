@@ -107,13 +107,13 @@ type Config struct {
 	Correlation          *CorrelationConfig         `json:"correlation,omitempty"`
 	Platforms            map[string]*PlatformConfig `json:"platforms,omitempty"`
 	LeaderboardSummaries []LeaderboardSummaryConfig `json:"leaderboard_summaries,omitempty"` // #308 — configurable per-channel leaderboards
-	SummaryFrequency     map[string]string          `json:"summary_frequency,omitempty"`     // #30 — per-channel summary cadence; keys match Discord/Telegram channel keys (e.g. "spot", "options", "hyperliquid"). Values: Go duration ("30m", "2h"), alias ("hourly", "every"/"per_check"/"always"), or empty for legacy default (continuous: every cycle; spot: hourly)
+	SummaryFrequency     map[string]string          `json:"summary_frequency,omitempty"`     // #30 — per-channel summary cadence; keys match Discord/Telegram channel keys (e.g. "spot", "options", "hyperliquid"). Values: Go duration ("30m", "2h"), alias ("hourly", "every"/"per_check"/"always"), or empty for legacy default (continuous: every channel run; spot: hourly)
 	RiskFreeRate         *float64                   `json:"risk_free_rate,omitempty"`        // #397 — annualized risk-free rate used in Sharpe-ratio calculations (e.g. 0.02 for 2%). Nil/missing falls back to DefaultAnnualRiskFreeRate; an explicit 0 is respected so backtest comparisons can pin to a 0% benchmark.
 	TradingViewExport    TradingViewExportConfig    `json:"tradingview_export,omitempty"`    // #3 — optional symbol overrides for TradingView portfolio CSV exports
 }
 
 // ParseSummaryFrequency converts a summary_frequency value to a duration.
-// Returns -1 to mean "use legacy default", 0 to mean "every cycle", or a
+// Returns -1 to mean "use legacy default", 0 to mean "every channel run", or a
 // positive duration when caller should post every duration. An unrecognized
 // value returns a non-nil error.
 func ParseSummaryFrequency(s string) (time.Duration, error) {
@@ -139,32 +139,21 @@ func ParseSummaryFrequency(s string) (time.Duration, error) {
 	return d, nil
 }
 
-// ShouldPostSummary reports whether a channel summary should be posted on the
-// given cycle. hasTrades unconditionally forces a post (users want immediate
-// trade visibility). Otherwise the cadence is derived from freq:
-//   - freq empty → legacy default: continuous channels post every cycle;
-//     non-continuous channels post hourly.
-//   - freq "every"/"per_check"/"always" (or a duration shorter than the
-//     scheduler interval) → every cycle.
-//   - freq parseable as Go duration or alias → post every N cycles where
-//     N = max(1, duration/intervalSeconds).
+// ShouldPostSummary reports whether a channel summary should be posted at now.
+// hasTrades unconditionally forces a post (users want immediate trade
+// visibility). Otherwise the cadence is derived from freq:
+//   - freq empty or invalid → legacy default: continuous channels post every
+//     channel run; non-continuous channels post hourly.
+//   - freq "every"/"per_check"/"always" → every channel run.
+//   - freq parseable as Go duration or alias → post when that wall-clock
+//     duration has elapsed since lastPost.
 //
 // continuous is true for channel types (options/perps/futures) that legacy
-// posted every cycle.
-func ShouldPostSummary(freq string, cycle, intervalSeconds int, continuous, hasTrades bool) bool {
+// posted every channel run.
+func ShouldPostSummary(freq string, continuous, hasTrades bool, lastPost, now time.Time) bool {
 	if hasTrades {
 		return true
 	}
-	cyclesBetween := summaryCyclesBetween(freq, intervalSeconds, continuous)
-	if cycle < 1 {
-		cycle = 1
-	}
-	return (cycle-1)%cyclesBetween == 0
-}
-
-// summaryCyclesBetween returns N such that a summary posts every N cycles.
-// Always >= 1.
-func summaryCyclesBetween(freq string, intervalSeconds int, continuous bool) int {
 	dur, err := ParseSummaryFrequency(freq)
 	if err != nil {
 		dur = -1
@@ -172,28 +161,16 @@ func summaryCyclesBetween(freq string, intervalSeconds int, continuous bool) int
 	switch {
 	case dur < 0: // legacy default
 		if continuous {
-			return 1
+			return true
 		}
-		if intervalSeconds > 0 {
-			n := 3600 / intervalSeconds
-			if n < 1 {
-				n = 1
-			}
-			return n
-		}
-		return 12
+		dur = time.Hour
 	case dur == 0:
-		return 1
-	default:
-		if intervalSeconds <= 0 {
-			return 1
-		}
-		n := int(dur.Seconds()) / intervalSeconds
-		if n < 1 {
-			n = 1
-		}
-		return n
+		return true
 	}
+	if lastPost.IsZero() {
+		return true
+	}
+	return now.Sub(lastPost) >= dur
 }
 
 // ThetaHarvestConfig controls early exit on sold options.
