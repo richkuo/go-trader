@@ -12,7 +12,7 @@ type StrategyDecisionFields struct {
 	OpenStrategy    string   `json:"open_strategy,omitempty"`
 	CloseStrategies []string `json:"close_strategies,omitempty"`
 	OpenAction      string   `json:"open_action,omitempty"`
-	CloseFraction   float64  `json:"close_fraction,omitempty"`
+	CloseFraction   float64  `json:"close_fraction"`
 	CloseStrategy   string   `json:"close_strategy,omitempty"`
 }
 
@@ -67,33 +67,6 @@ func validateStrategyConceptName(name string) error {
 	return nil
 }
 
-func knownStrategyConceptName(name string) bool {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return false
-	}
-	additionalKnown := map[string]bool{
-		// Valid registry entries that are intentionally absent from the init
-		// fallback lists or short-name table.
-		"amd_ifvg":     true,
-		"pairs_spread": true,
-	}
-	if additionalKnown[name] {
-		return true
-	}
-	if _, ok := knownShortNames[name]; ok {
-		return true
-	}
-	for _, list := range [][]stratDef{defaultSpotStrategies, defaultPerpsStrategies, defaultFuturesStrategies} {
-		for _, def := range list {
-			if def.ID == name {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func appendOpenCloseArgs(args []string, sc StrategyConfig, positionSide string) []string {
 	if !usesOpenCloseConfig(sc) {
 		return args
@@ -102,7 +75,7 @@ func appendOpenCloseArgs(args []string, sc StrategyConfig, positionSide string) 
 	if name := strings.TrimSpace(sc.OpenStrategy); name != "" {
 		out = append(out, "--open-strategy", name)
 	}
-	if closeStrategies := effectiveCloseStrategies(sc); len(closeStrategies) > 0 {
+	if closeStrategies := explicitCloseStrategies(sc); len(closeStrategies) > 0 {
 		out = append(out, "--close-strategies", strings.Join(closeStrategies, ","))
 	}
 	if sc.DisableImplicitClose {
@@ -110,6 +83,19 @@ func appendOpenCloseArgs(args []string, sc StrategyConfig, positionSide string) 
 	}
 	if side := strings.TrimSpace(positionSide); side != "" {
 		out = append(out, "--position-side", side)
+	}
+	return out
+}
+
+func explicitCloseStrategies(sc StrategyConfig) []string {
+	if len(sc.CloseStrategies) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(sc.CloseStrategies))
+	for _, name := range sc.CloseStrategies {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			out = append(out, trimmed)
+		}
 	}
 	return out
 }
@@ -143,6 +129,8 @@ func composeOpenCloseSignal(openAction string, closeFraction float64, positionSi
 			return -1
 		case "short":
 			return 1
+		default:
+			return 0
 		}
 	}
 	if positionSide != "" {

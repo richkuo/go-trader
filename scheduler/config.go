@@ -493,15 +493,11 @@ func ValidateConfig(cfg *Config) error {
 		if sc.OpenStrategy != "" {
 			if err := validateStrategyConceptName(sc.OpenStrategy); err != nil {
 				errs = append(errs, fmt.Sprintf("%s: open_strategy %v", prefix, err))
-			} else if !knownStrategyConceptName(sc.OpenStrategy) {
-				errs = append(errs, fmt.Sprintf("%s: open_strategy %q is unknown", prefix, sc.OpenStrategy))
 			}
 		}
 		for j, name := range sc.CloseStrategies {
 			if err := validateStrategyConceptName(name); err != nil {
 				errs = append(errs, fmt.Sprintf("%s: close_strategies[%d] %v", prefix, j, err))
-			} else if !knownStrategyConceptName(name) {
-				errs = append(errs, fmt.Sprintf("%s: close_strategies[%d] %q is unknown", prefix, j, name))
 			}
 		}
 

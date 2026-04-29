@@ -478,7 +478,7 @@ func TestValidateConfigCloseStrategyName(t *testing.T) {
 	}
 }
 
-func TestValidateConfigUnknownOpenCloseStrategy(t *testing.T) {
+func TestValidateConfigOpenCloseDefersRegistryLookupToCheckScript(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{{
 			ID:              "test-spot",
@@ -493,12 +493,8 @@ func TestValidateConfigUnknownOpenCloseStrategy(t *testing.T) {
 		}},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	err := ValidateConfig(&cfg)
-	if err == nil {
-		t.Fatal("expected unknown open strategy validation error")
-	}
-	if !strings.Contains(err.Error(), "open_strategy") || !strings.Contains(err.Error(), "unknown") {
-		t.Fatalf("error %q should mention unknown open_strategy", err.Error())
+	if err := ValidateConfig(&cfg); err != nil {
+		t.Fatalf("syntactically valid strategy names should be accepted by config validation: %v", err)
 	}
 }
 

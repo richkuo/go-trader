@@ -108,6 +108,7 @@ def compose_signal(open_action: str, close_fraction: float, position_side: str) 
             return -1
         if position_side == "short":
             return 1
+        return 0
 
     if position_side:
         return 0

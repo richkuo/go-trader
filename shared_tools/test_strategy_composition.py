@@ -11,6 +11,7 @@ from strategy_composition import (
 def test_compose_signal_close_before_open():
     assert compose_signal("short", 1.0, "long") == -1
     assert compose_signal("long", 1.0, "short") == 1
+    assert compose_signal("long", 1.0, "") == 0
     assert compose_signal("short", 0.0, "long") == 0
 
 

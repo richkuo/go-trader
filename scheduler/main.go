@@ -1056,6 +1056,11 @@ func main() {
 						continue
 					}
 
+					hlLiveStrategy := sc.Type == "perps" && sc.Platform == "hyperliquid" && hyperliquidIsLive(sc.Args)
+					okxLiveStrategy := sc.Platform == "okx" && okxIsLive(sc.Args)
+					rhLiveStrategy := sc.Platform == "robinhood" && robinhoodIsLive(sc.Args)
+					tsLiveStrategy := sc.Type == "futures" && topstepIsLive(sc.Args)
+
 					// Phase 1: RLock — read inputs needed for subprocess
 					mu.RLock()
 					pv := PortfolioValue(stratState, prices)
@@ -1077,13 +1082,17 @@ func main() {
 					var hlAvgCost float64
 					var hlStopLossOID int64
 					if sc.Type == "perps" && sc.Platform == "hyperliquid" {
-						hlCash = stratState.Cash
+						if hlLiveStrategy {
+							hlCash = stratState.Cash
+						}
 						if sym := hyperliquidSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
-								hlPosQty = pos.Quantity
 								hlPosSide = pos.Side
-								hlAvgCost = pos.AvgCost
-								hlStopLossOID = pos.StopLossOID
+								if hlLiveStrategy {
+									hlPosQty = pos.Quantity
+									hlAvgCost = pos.AvgCost
+									hlStopLossOID = pos.StopLossOID
+								}
 							}
 						}
 					}
@@ -1092,12 +1101,16 @@ func main() {
 					var okxPosSide string
 					var okxAvgCost float64
 					if sc.Platform == "okx" {
-						okxCash = stratState.Cash
+						if okxLiveStrategy {
+							okxCash = stratState.Cash
+						}
 						if sym := okxSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
-								okxPosQty = pos.Quantity
 								okxPosSide = pos.Side
-								okxAvgCost = pos.AvgCost
+								if okxLiveStrategy {
+									okxPosQty = pos.Quantity
+									okxAvgCost = pos.AvgCost
+								}
 							}
 						}
 					}
@@ -1105,11 +1118,15 @@ func main() {
 					var rhPosQty float64
 					var rhPosSide string
 					if sc.Platform == "robinhood" {
-						rhCash = stratState.Cash
+						if rhLiveStrategy {
+							rhCash = stratState.Cash
+						}
 						if sym := robinhoodSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
-								rhPosQty = pos.Quantity
 								rhPosSide = pos.Side
+								if rhLiveStrategy {
+									rhPosQty = pos.Quantity
+								}
 							}
 						}
 					}
@@ -1117,11 +1134,15 @@ func main() {
 					var tsContracts float64
 					var tsPosSide string
 					if sc.Type == "futures" {
-						tsCash = stratState.Cash
+						if tsLiveStrategy {
+							tsCash = stratState.Cash
+						}
 						if sym := topstepSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
-								tsContracts = pos.Quantity
 								tsPosSide = pos.Side
+								if tsLiveStrategy {
+									tsContracts = pos.Quantity
+								}
 							}
 						}
 					}

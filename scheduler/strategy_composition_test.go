@@ -56,6 +56,19 @@ func TestAppendOpenCloseArgsOnlyWhenOptedIn(t *testing.T) {
 		t.Fatalf("legacy args mutated: %#v", got)
 	}
 
+	openOnly := StrategyConfig{
+		Args:         []string{"sma_crossover", "BTC/USDT", "1h"},
+		OpenStrategy: "momentum",
+	}
+	gotOpenOnly := appendOpenCloseArgs(openOnly.Args, openOnly, "")
+	wantOpenOnly := []string{
+		"sma_crossover", "BTC/USDT", "1h",
+		"--open-strategy", "momentum",
+	}
+	if !reflect.DeepEqual(gotOpenOnly, wantOpenOnly) {
+		t.Fatalf("appendOpenCloseArgs(open only) = %#v, want %#v", gotOpenOnly, wantOpenOnly)
+	}
+
 	sc := StrategyConfig{
 		Args:                 []string{"sma_crossover", "BTC/USDT", "1h"},
 		OpenStrategy:         "momentum",
@@ -94,6 +107,7 @@ func TestComposeOpenCloseSignal(t *testing.T) {
 		{"flat opens short", "short", 0, "", -1},
 		{"long close wins before open", "short", 1, "long", -1},
 		{"short close wins before open", "long", 1, "short", 1},
+		{"flat close suppresses open", "long", 1, "", 0},
 		{"long ignores opposite open without close", "short", 0, "long", 0},
 		{"short ignores same-side hold without close", "short", 0, "short", 0},
 	}

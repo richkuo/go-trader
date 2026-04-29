@@ -266,13 +266,20 @@ class Backtester:
                 close_fraction = float(row["_close_fraction"])
                 open_action = row["_open_action"]
 
-                if close_fraction > 0 and position > 0:
-                    qty_to_close = position * min(close_fraction, 1.0)
-                    effective_price = fill_price * (1 - self.slippage_pct)
-                    proceeds = qty_to_close * effective_price
-                    commission = proceeds * self.commission_pct
-                    cash += proceeds - commission
-                    position -= qty_to_close
+                if close_fraction > 0 and position != 0:
+                    qty_to_close = abs(position) * min(close_fraction, 1.0)
+                    if position > 0:
+                        effective_price = fill_price * (1 - self.slippage_pct)
+                        proceeds = qty_to_close * effective_price
+                        commission = proceeds * self.commission_pct
+                        cash += proceeds - commission
+                        position -= qty_to_close
+                    else:
+                        effective_price = fill_price * (1 + self.slippage_pct)
+                        cost = qty_to_close * effective_price
+                        commission = cost * self.commission_pct
+                        cash -= cost + commission
+                        position += qty_to_close
 
                     if current_trade:
                         closed = Trade(current_trade.entry_date, current_trade.entry_price, current_trade.side)
@@ -284,7 +291,7 @@ class Backtester:
                         if current_trade.shares <= 1e-12:
                             current_trade = None
 
-                    if position <= 1e-12:
+                    if abs(position) <= 1e-12:
                         position = 0.0
 
                 if open_action == "long" and position == 0:
@@ -296,6 +303,17 @@ class Backtester:
                     cash = 0.0
 
                     current_trade = Trade(idx, effective_price, "long")
+                    current_trade.shares = shares
+                elif open_action == "short" and position == 0:
+                    effective_price = fill_price * (1 - self.slippage_pct)
+                    commission = cash * self.commission_pct
+                    notional = cash - commission
+                    shares = notional / effective_price
+                    proceeds = shares * effective_price
+                    cash += proceeds - commission
+                    position = -shares
+
+                    current_trade = Trade(idx, effective_price, "short")
                     current_trade.shares = shares
                 continue
 
@@ -325,11 +343,17 @@ class Backtester:
                     current_trade = None
 
         # Close any open position at the end
-        if position > 0:
-            final_price = df["close"].iloc[-1] * (1 - self.slippage_pct)
-            proceeds = position * final_price
-            commission = proceeds * self.commission_pct
-            cash = proceeds - commission
+        if position != 0:
+            if position > 0:
+                final_price = df["close"].iloc[-1] * (1 - self.slippage_pct)
+                proceeds = position * final_price
+                commission = proceeds * self.commission_pct
+                cash += proceeds - commission
+            else:
+                final_price = df["close"].iloc[-1] * (1 + self.slippage_pct)
+                cost = abs(position) * final_price
+                commission = cost * self.commission_pct
+                cash -= cost + commission
             position = 0.0
 
             if current_trade:

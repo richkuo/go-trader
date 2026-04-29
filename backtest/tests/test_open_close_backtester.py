@@ -15,9 +15,12 @@ def test_backtester_open_close_columns_close_before_open():
     bt = Backtester(initial_capital=1000, commission_pct=0, slippage_pct=0)
     result = bt.run(df, save=False)
 
-    assert result["total_trades"] == 1
+    assert result["total_trades"] == 2
     assert result["trades"][0]["entry_date"] == str(idx[2])
     assert result["trades"][0]["exit_date"] == str(idx[3])
+    assert result["trades"][1]["side"] == "short"
+    assert result["trades"][1]["entry_date"] == str(idx[3])
+    assert result["trades"][1]["exit_date"] == str(idx[4])
     assert result["final_capital"] == 1090.91
 
 
@@ -37,3 +40,23 @@ def test_backtester_close_fraction_columns_use_max_wins():
     assert result["total_trades"] == 2
     assert result["trades"][0]["shares"] == 5.0
     assert result["trades"][1]["shares"] == 5.0
+    assert result["final_capital"] == 1000.0
+
+
+def test_backtester_open_action_short_round_trip():
+    idx = pd.date_range("2024-01-01", periods=4, freq="D")
+    df = pd.DataFrame({
+        "open": [100, 100, 100, 90],
+        "close": [100, 100, 90, 80],
+        "open_action": ["none", "short", "none", "none"],
+        "close_fraction": [0, 0, 0, 0],
+    }, index=idx)
+
+    bt = Backtester(initial_capital=1000, commission_pct=0, slippage_pct=0)
+    result = bt.run(df, save=False)
+
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["side"] == "short"
+    assert result["trades"][0]["entry_date"] == str(idx[2])
+    assert result["trades"][0]["exit_date"] == str(idx[3])
+    assert result["final_capital"] == 1200.0
