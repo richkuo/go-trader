@@ -287,11 +287,10 @@ class HyperliquidExchangeAdapter:
         fill price; a market-trigger uses a wide band off the trigger
         (default 5%) so slippage around the stop doesn't reject the fill.
 
-        HL enforces a 10 trigger-orders-per-day cap per account (resets 00:00
-        UTC). Cap exhaustion surfaces as an order-status error string (e.g.
-        "Too many open trigger orders") in the SDK response; the scheduler
-        detects it via isHLTriggerCapRejection and escalates to CRITICAL +
-        notifier — no proactive client-side counter is required.
+        HL's open-order limit is 1000 per account (scales to 5000 with volume).
+        When ≥1000 orders are open, new trigger / reduce-only orders are rejected.
+        The scheduler detects this via isHLOpenOrderCapRejection and escalates
+        to CRITICAL + notifier — no proactive client-side counter is required.
         """
         if not self._exchange:
             raise RuntimeError(

@@ -274,9 +274,9 @@ def _run_script_with_cancel(sdk_response, cancel_response, argv):
 
 
 class TestCancelStopLossOID:
-    """#421 review point 1: per-strategy CB / portfolio-kill close paths must
-    cancel the resting SL trigger before flattening so HL's 10/day account-wide
-    trigger-order cap doesn't fill up with orphans."""
+    """#421 review point 1, #479: per-strategy CB / portfolio-kill close paths
+    must cancel the resting SL trigger before flattening so HL's 1000 open-order
+    account-wide cap (scales to 5000 with volume) doesn't fill up with orphans."""
 
     def _filled_response(self, sym="ETH"):
         return {
