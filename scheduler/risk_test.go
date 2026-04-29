@@ -772,6 +772,51 @@ func TestCheckRisk_ConsecutiveLossesForceClose(t *testing.T) {
 	}
 }
 
+func TestForceCloseAllPositionsRecordsDirectionalTradeSides(t *testing.T) {
+	s := &StrategyState{
+		ID:   "test-strategy",
+		Cash: 10000,
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "long"},
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "short", Multiplier: 1, Leverage: 10},
+		},
+		OptionPositions: map[string]*OptionPosition{
+			"long-call": {
+				ID: "long-call", Action: "buy", Quantity: 1, EntryPremiumUSD: 1000, CurrentValueUSD: 1200,
+			},
+			"short-put": {
+				ID: "short-put", Action: "sell", Quantity: 1, EntryPremiumUSD: 1000, CurrentValueUSD: -700,
+			},
+		},
+		TradeHistory: []Trade{},
+		RiskState:    RiskState{},
+	}
+
+	forceCloseAllPositions(s, map[string]float64{"BTC": 51000, "ETH": 2800}, nil)
+
+	if len(s.TradeHistory) != 4 {
+		t.Fatalf("TradeHistory len = %d, want 4", len(s.TradeHistory))
+	}
+	gotSide := map[string]string{}
+	for _, tr := range s.TradeHistory {
+		if !tr.IsClose {
+			t.Errorf("Trade %s IsClose = false, want true", tr.Symbol)
+		}
+		gotSide[tr.Symbol] = tr.Side
+	}
+	wantSide := map[string]string{
+		"BTC":       "sell",
+		"ETH":       "buy",
+		"long-call": "sell",
+		"short-put": "buy",
+	}
+	for symbol, want := range wantSide {
+		if got := gotSide[symbol]; got != want {
+			t.Errorf("Trade.Side[%s] = %q, want %q", symbol, got, want)
+		}
+	}
+}
+
 // TestCheckPortfolioRisk_WarningFires verifies that drawdown at 80% of limit
 // triggers a warning on every call while the portfolio remains in the warning
 // band.
