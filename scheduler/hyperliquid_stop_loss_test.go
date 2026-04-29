@@ -219,7 +219,7 @@ func TestParseHyperliquidExecuteOutput_CancelSucceededOnFailure(t *testing.T) {
 	}
 }
 
-func TestIsHLTriggerCapRejection(t *testing.T) {
+func TestIsHLOpenOrderCapRejection(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
@@ -234,8 +234,8 @@ func TestIsHLTriggerCapRejection(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := isHLTriggerCapRejection(c.in); got != c.want {
-				t.Errorf("isHLTriggerCapRejection(%q)=%v, want %v", c.in, got, c.want)
+			if got := isHLOpenOrderCapRejection(c.in); got != c.want {
+				t.Errorf("isHLOpenOrderCapRejection(%q)=%v, want %v", c.in, got, c.want)
 			}
 		})
 	}
@@ -483,7 +483,7 @@ func TestReconcileHyperliquidPositions_RestingStopLossFillClosesShortWithBuy(t *
 // #421 review point 1: per-strategy circuit-breaker drain must thread
 // pos.StopLossOID through to the closer so the resting trigger is
 // cancelled before the close fires. Otherwise it sits orphaned on HL's
-// book consuming one of the 10/day account-wide trigger slots.
+// book consuming one of the 1000 account-wide open-order slots (#479).
 func TestRunPendingHyperliquidCircuitCloses_CancelsStopLossOID(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{

@@ -1130,7 +1130,8 @@ func runInit(args []string) int {
 
 		// #412: per-trade stop-loss is HL-only today and only makes sense when
 		// perps are running live. Default 0 disables it; HL caps trigger orders
-		// at 10/day/account so starting disabled avoids burning slots by accident.
+		// at 1000/account (scales to 5000 with volume) but we start disabled
+		// by default until the operator explicitly opts in (#479).
 		if enablePerps && perpsMode == "live" {
 			hlStopLossPct = p.FloatRange("HL perps per-trade stop-loss % from entry (0 = disabled)", 0, 0, 50)
 		}

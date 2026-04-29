@@ -294,7 +294,7 @@ type HyperliquidCloseResult struct {
 // partial close for that coin quantity (#356 shared-wallet circuit breakers).
 // When cancelStopLossOIDs is non-empty, the script first cancels those resting
 // trigger orders so per-strategy CB / kill-switch closes don't leave orphaned SLs
-// burning HL's 10/day account-wide trigger-order cap (#421).
+// burning HL's open-order cap (#421, #479).
 //
 // Contract (load-bearing for kill-switch correctness): a non-nil error is
 // returned for ANY failure path — non-zero subprocess exit, malformed JSON,

@@ -795,7 +795,7 @@ func main() {
 			if killSwitchFired {
 				// Snapshot per-coin StopLossOIDs so the kill-switch close
 				// path can cancel resting SLs before flattening, freeing
-				// HL's 10/day account-wide trigger-order cap (#421 review
+				// HL's open-order cap (#421 review, #479
 				// point 1). Sole-source: every live HL strategy's Position
 				// for the coin it trades. Shared coins may have multiple
 				// per-strategy SL triggers, so preserve every OID.
@@ -2047,17 +2047,17 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		logger.Warn("SL cancel failed (non-fatal): %s", execResult.CancelStopLossError)
 	}
 	if execResult.StopLossError != "" {
-		// Surface HL trigger-cap exhaustion as CRITICAL — the position is
-		// live without protection, and one noisy strategy can deplete the
-		// 10/day account-wide pool for everything else (#421 review #5).
+		// Surface HL open-order-cap rejection as CRITICAL — the position is
+		// live without protection. HL rejects new trigger orders when the
+		// account has ≥1000 open orders (scales to 5000 with volume) (#479).
 		// Also route to notifier so operators see the unprotected-position
 		// state in chat, not just in stderr logs (#421 review point 7,
 		// mirrors the per-strategy CB notifier precedent in #415).
-		if isHLTriggerCapRejection(execResult.StopLossError) {
-			logger.Error("CRITICAL: HL trigger-cap rejected SL placement for %s — position is unprotected: %s",
+		if isHLOpenOrderCapRejection(execResult.StopLossError) {
+			logger.Error("CRITICAL: HL open-order-cap rejected SL placement for %s — position is unprotected: %s",
 				result.Symbol, execResult.StopLossError)
 			if notifier != nil && notifier.HasBackends() {
-				msg := fmt.Sprintf("**HL TRIGGER-CAP EXHAUSTED** [%s] %s position is UNPROTECTED — SL placement rejected: %s",
+				msg := fmt.Sprintf("**HL OPEN-ORDER CAP HIT** [%s] %s position is UNPROTECTED — SL placement rejected: %s",
 					sc.ID, result.Symbol, execResult.StopLossError)
 				notifier.SendToAllChannels(msg)
 				notifier.SendOwnerDM(msg)
@@ -2072,14 +2072,15 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	return execResult, true
 }
 
-// isHLTriggerCapRejection detects HL's "10 trigger-orders-per-day" rejection
-// strings so the scheduler can escalate them above WARN. The exact wording
-// has historically been one of "Too many open trigger orders" or "trigger
-// order rate limit"; we match either substring case-insensitively. Conservative
-// rather than exhaustive — false negatives (logged as WARN) are acceptable;
-// we only escalate on confirmed cap-rejection language to avoid CRITICAL
-// noise on unrelated failures.
-func isHLTriggerCapRejection(errStr string) bool {
+// isHLOpenOrderCapRejection detects HL's open-order-cap rejection strings so
+// the scheduler can escalate them above WARN. HL rejects new trigger/reduce-only
+// orders when the account has ≥1000 open orders (scales to 5000 with volume)
+// (#479). The exact error wording has historically been one of "Too many open
+// trigger orders" or "trigger order rate limit"; we match either substring
+// case-insensitively. Conservative rather than exhaustive — false negatives
+// (logged as WARN) are acceptable; we only escalate on confirmed cap-rejection
+// language to avoid CRITICAL noise on unrelated failures.
+func isHLOpenOrderCapRejection(errStr string) bool {
 	lower := strings.ToLower(errStr)
 	return strings.Contains(lower, "trigger order") && (strings.Contains(lower, "too many") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "max"))
 }

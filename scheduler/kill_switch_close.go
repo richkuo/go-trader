@@ -35,7 +35,7 @@ type KillSwitchCloseInputs struct {
 	// HLStopLossOIDs maps coin → resting per-trade SL trigger OIDs so the
 	// kill-switch close path can cancel them before flattening. Without
 	// this, kill-switch wipes virtual state but the on-chain triggers sit
-	// resting and burn HL's 10/day account-wide cap (#421 review point 1).
+	// resting and burn HL's open-order cap (#421 review point 1, #479).
 	// nil/empty disables; coins with no resting SL are simply absent.
 	HLStopLossOIDs map[string][]int64
 

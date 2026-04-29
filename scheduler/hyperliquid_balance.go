@@ -587,7 +587,7 @@ func (r HyperliquidLiveCloseReport) SortedErrorCoins() []string {
 //
 // stopLossOIDsByCoin carries any resting per-trade SL trigger OIDs that
 // should be cancelled before the close fires, so kill-switch flattening
-// doesn't leave orphan triggers consuming HL's 10/day account-wide cap
+// doesn't leave orphan triggers consuming HL's open-order cap (#479)
 // (#421). nil/empty disables the cancel; the closer is otherwise unchanged.
 func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLiveAll []StrategyConfig, closer HyperliquidLiveCloser, stopLossOIDsByCoin map[string][]int64) HyperliquidLiveCloseReport {
 	report := HyperliquidLiveCloseReport{
@@ -970,7 +970,7 @@ func runPendingHyperliquidCircuitCloses(
 	// Phase 3: re-snapshot jobs (may now include recovered entries).
 	// Also snapshot per-symbol StopLossOID so the closer can cancel any
 	// resting SL trigger before flattening — leaving them orphaned would
-	// burn one of HL's 10/day account-wide trigger slots per CB fire and
+	// burn one of HL's open-order cap slots per CB fire and (#479)
 	// silently degrade the safety feature for every other strategy on the
 	// same wallet (#421 review point 1).
 	type job struct {
