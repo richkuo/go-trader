@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -1210,6 +1211,168 @@ func TestCollectPositions_ShortEntryPrice(t *testing.T) {
 	}
 	if !strings.Contains(lines[0], "SHORT") {
 		t.Errorf("expected 'SHORT' direction label, got: %s", lines[0])
+	}
+}
+
+// TestCollectPositions_StopLossLong verifies SL price + percent rendering for
+// a long position. SL below entry → negative percent.
+func TestCollectPositions_StopLossLong(t *testing.T) {
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", StopLossOID: 12345, StopLossTriggerPx: 61595},
+		},
+	}
+	prices := map[string]float64{"BTC/USDT": 63500}
+
+	lines := collectPositions("hl-btc-sma", ss, prices)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	// (61595 - 63500) / 63500 = -0.03 → -3.0%
+	if !strings.Contains(lines[0], "| SL: $61,595.00 (-3.0%)") {
+		t.Errorf("expected SL fragment 'SL: $61,595.00 (-3.0%%)', got: %s", lines[0])
+	}
+}
+
+// TestCollectPositions_StopLossShort verifies SL percent stays negative for a
+// short whose stop sits above entry (loss if hit).
+func TestCollectPositions_StopLossShort(t *testing.T) {
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "short", StopLossOID: 99, StopLossTriggerPx: 65405},
+		},
+	}
+	prices := map[string]float64{"BTC/USDT": 63500}
+
+	lines := collectPositions("hl-btc-sma", ss, prices)
+	// (65405 - 63500) / 63500 = +3.0%, then sign-flipped for short → -3.0%
+	if !strings.Contains(lines[0], "| SL: $65,405.00 (-3.0%)") {
+		t.Errorf("expected SL fragment 'SL: $65,405.00 (-3.0%%)' for short, got: %s", lines[0])
+	}
+}
+
+// TestCollectPositions_StopLossOmittedWhenInactive verifies that the SL
+// fragment is omitted when StopLossOID is 0 (no resting trigger order).
+func TestCollectPositions_StopLossOmittedWhenInactive(t *testing.T) {
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", StopLossOID: 0, StopLossTriggerPx: 61595},
+		},
+	}
+	lines := collectPositions("hl-btc-sma", ss, map[string]float64{"BTC/USDT": 63500})
+	if strings.Contains(lines[0], "SL:") {
+		t.Errorf("SL fragment should be omitted when StopLossOID=0, got: %s", lines[0])
+	}
+}
+
+// TestCollectPositions_LeverageMargin verifies leverage + margin rendering for
+// perps with Leverage > 1.
+func TestCollectPositions_LeverageMargin(t *testing.T) {
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", Leverage: 5},
+		},
+	}
+	lines := collectPositions("hl-btc-sma", ss, map[string]float64{"BTC/USDT": 63500})
+	// margin = 0.025 * 63500 / 5 = 317.5 → rounded to 318.
+	if !strings.Contains(lines[0], "| 5x ($318 margin)") {
+		t.Errorf("expected '5x ($318 margin)' fragment, got: %s", lines[0])
+	}
+}
+
+// TestCollectPositions_LeverageOmittedForSpot verifies that the leverage+margin
+// fragment is omitted when Leverage is 0 (spot) or 1 (1x perps — margin equals
+// notional, so the fragment is noise).
+func TestCollectPositions_LeverageOmittedForSpot(t *testing.T) {
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", Leverage: 0},
+			"ETH/USDT": {Symbol: "ETH/USDT", Quantity: 1, AvgCost: 2200, Side: "long", Leverage: 1},
+		},
+	}
+	lines := collectPositions("hl-spot", ss, map[string]float64{"BTC/USDT": 63500, "ETH/USDT": 2200})
+	for _, l := range lines {
+		if strings.Contains(l, "margin") {
+			t.Errorf("leverage+margin fragment should be omitted for spot/1x, got: %s", l)
+		}
+	}
+}
+
+// TestCollectPositions_AllFragments verifies SL and leverage+margin land
+// together on the same line in the documented order: PnL | SL | leverage |
+// date.
+func TestCollectPositions_AllFragments(t *testing.T) {
+	opened := time.Date(2026, 4, 28, 14, 32, 0, 0, time.UTC)
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {
+				Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long",
+				Leverage: 5, StopLossOID: 7, StopLossTriggerPx: 61595, OpenedAt: opened,
+			},
+		},
+	}
+	lines := collectPositions("hl-btc-sma", ss, map[string]float64{"BTC/USDT": 63500})
+	got := lines[0]
+	slIdx := strings.Index(got, "| SL:")
+	levIdx := strings.Index(got, "| 5x")
+	dateIdx := strings.Index(got, "[Apr 28")
+	if slIdx < 0 || levIdx < 0 || dateIdx < 0 {
+		t.Fatalf("expected SL, leverage, and date fragments all present, got: %s", got)
+	}
+	if !(slIdx < levIdx && levIdx < dateIdx) {
+		t.Errorf("expected SL → leverage → date ordering, got: %s", got)
+	}
+}
+
+// TestPercentFromEntry covers sign-flip behavior for shorts.
+func TestPercentFromEntry(t *testing.T) {
+	cases := []struct {
+		side   string
+		entry  float64
+		target float64
+		want   float64
+	}{
+		{"long", 100, 97, -3},
+		{"long", 100, 103, 3},
+		{"short", 100, 103, -3}, // SL above entry → loss for short
+		{"short", 100, 97, 3},   // TP below entry → gain for short
+		{"long", 0, 100, 0},     // guard: zero entry
+	}
+	for _, c := range cases {
+		got := percentFromEntry(c.side, c.entry, c.target)
+		if math.Abs(got-c.want) > 1e-9 {
+			t.Errorf("percentFromEntry(%s, %g, %g) = %g, want %g", c.side, c.entry, c.target, got, c.want)
+		}
+	}
+}
+
+// TestPositionMargin verifies notional/leverage math and the leverage<=0 guard.
+func TestPositionMargin(t *testing.T) {
+	if got := positionMargin(0.025, 63500, 5); math.Abs(got-317.5) > 1e-9 {
+		t.Errorf("positionMargin(0.025, 63500, 5) = %g, want 317.5", got)
+	}
+	if got := positionMargin(1, 100, 0); got != 0 {
+		t.Errorf("positionMargin with leverage=0 should be 0, got %g", got)
+	}
+}
+
+// TestSplitCategorySummary_LongPositionLines verifies splitCategorySummary still
+// splits cleanly when each position line carries the new SL + leverage
+// fragments (regression for the per-message length budget).
+func TestSplitCategorySummary_LongPositionLines(t *testing.T) {
+	header := "Cycle 1 | Mode: paper"
+	var posLines []string
+	for i := 0; i < 50; i++ {
+		posLines = append(posLines, fmt.Sprintf("hl-strat-%02d LONG BTC/USDT x0.025 @ $63,500.00 (+$45.20) | SL: $61,595.00 (-3.0%%) | 5x ($318 margin) [Apr 28 14:32]", i))
+	}
+	msgs := splitCategorySummary(header, len(posLines), posLines, nil, nil)
+	if len(msgs) == 0 {
+		t.Fatal("expected at least one message")
+	}
+	for i, m := range msgs {
+		if len(m) > 2000 {
+			t.Errorf("message %d exceeds 2000-char Discord limit (%d chars)", i, len(m))
+		}
 	}
 }
 

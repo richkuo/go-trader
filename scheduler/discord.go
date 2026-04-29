@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -925,6 +926,28 @@ func fmtDrawdownPct(pct float64) string {
 	return fmt.Sprintf("%.0f%%", pct)
 }
 
+// percentFromEntry returns the signed percent move from entry → target,
+// flipping the sign for shorts so that "loss if SL hits" stays negative and
+// "gain if TP hits" stays positive regardless of direction.
+func percentFromEntry(side string, entry, target float64) float64 {
+	if entry == 0 {
+		return 0
+	}
+	pct := (target - entry) / entry * 100
+	if strings.ToLower(side) == "short" {
+		pct = -pct
+	}
+	return pct
+}
+
+// positionMargin returns notional / leverage; 0 when leverage is non-positive.
+func positionMargin(qty, avgCost, leverage float64) float64 {
+	if leverage <= 0 {
+		return 0
+	}
+	return (qty * avgCost) / leverage
+}
+
 // collectPositions returns human-readable position lines for a strategy.
 func collectPositions(stratID string, ss *StrategyState, prices map[string]float64) []string {
 	var lines []string
@@ -947,7 +970,16 @@ func collectPositions(stratID string, ss *StrategyState, prices map[string]float
 		if !pos.OpenedAt.IsZero() {
 			dateStr = fmt.Sprintf(" [%s]", pos.OpenedAt.Format("Jan 02 15:04"))
 		}
-		lines = append(lines, fmt.Sprintf("%s %s %s x%g @ $%s (%s$%s)%s", stratID, strings.ToUpper(pos.Side), sym, pos.Quantity, fmtComma2(pos.AvgCost), sign, fmtComma2(absPnl), dateStr))
+		extras := ""
+		if pos.StopLossOID > 0 && pos.StopLossTriggerPx > 0 {
+			slPct := percentFromEntry(pos.Side, pos.AvgCost, pos.StopLossTriggerPx)
+			extras += fmt.Sprintf(" | SL: $%s (%s)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct))
+		}
+		if pos.Leverage > 1 {
+			margin := positionMargin(pos.Quantity, pos.AvgCost, pos.Leverage)
+			extras += fmt.Sprintf(" | %gx ($%s margin)", pos.Leverage, fmtComma(math.Round(margin)))
+		}
+		lines = append(lines, fmt.Sprintf("%s %s %s x%g @ $%s (%s$%s)%s%s", stratID, strings.ToUpper(pos.Side), sym, pos.Quantity, fmtComma2(pos.AvgCost), sign, fmtComma2(absPnl), extras, dateStr))
 	}
 	for key, opt := range ss.OptionPositions {
 		dateStr := ""
