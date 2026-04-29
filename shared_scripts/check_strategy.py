@@ -23,9 +23,23 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 
+def _arg_value(flag, default=None):
+    if flag not in sys.argv:
+        return default
+    idx = sys.argv.index(flag)
+    if idx + 1 >= len(sys.argv):
+        return default
+    return sys.argv[idx + 1]
+
+
 def main():
     # Parse optional flags from argv before positional args
     htf_filter_enabled = "--htf-filter" in sys.argv
+    open_strategy = _arg_value("--open-strategy")
+    close_strategies_raw = _arg_value("--close-strategies")
+    disable_implicit_close = "--disable-implicit-close" in sys.argv
+    position_side = (_arg_value("--position-side", "") or "").lower()
+    open_close_enabled = bool(open_strategy or close_strategies_raw or disable_implicit_close)
     strategy_params = None
     if "--params" in sys.argv:
         idx = sys.argv.index("--params")
@@ -38,7 +52,7 @@ def main():
         if skip_next:
             skip_next = False
             continue
-        if a == "--params":
+        if a in ("--params", "--open-strategy", "--close-strategies", "--position-side"):
             skip_next = True
             continue
         if a.startswith("--"):
@@ -60,12 +74,23 @@ def main():
     try:
         from strategies import apply_strategy, get_strategy
         from data_fetcher import fetch_ohlcv
+        from strategy_composition import (
+            evaluate_open_close,
+            finalize_decision,
+            normalize_signal,
+            parse_close_strategies,
+        )
 
-        # Verify strategy exists
-        get_strategy(strategy_name)
+        configured_names = [open_strategy or strategy_name]
+        configured_names.extend(parse_close_strategies(close_strategies_raw))
+        if not close_strategies_raw and open_close_enabled and not disable_implicit_close:
+            configured_names.append(open_strategy or strategy_name)
+        for name in configured_names:
+            get_strategy(name)
 
         # Warn when pairs_spread will degrade due to missing secondary symbol
-        if strategy_name == "pairs_spread" and not symbol_b:
+        needs_pair = "pairs_spread" in configured_names
+        if needs_pair and not symbol_b:
             print(
                 "Warning: pairs_spread requires a secondary symbol (symbol_b); "
                 "degrading to self-mean-reversion. Pass a 4th argument to enable "
@@ -78,7 +103,7 @@ def main():
         df = fetch_ohlcv(symbol=symbol, timeframe=timeframe, limit=200, store=False)
 
         # Fetch and merge secondary data for pairs strategies
-        if strategy_name == "pairs_spread" and symbol_b:
+        if needs_pair and symbol_b:
             print(f"Fetching secondary {symbol_b} {timeframe}...", file=sys.stderr)
             df_b = fetch_ohlcv(symbol=symbol_b, timeframe=timeframe, limit=200, store=False)
             if df_b.empty:
@@ -110,25 +135,34 @@ def main():
             }))
             return
 
-        # Run the strategy
-        result_df = apply_strategy(strategy_name, df, strategy_params)
+        decision = None
+        if open_close_enabled:
+            evaluation = evaluate_open_close(
+                apply_strategy,
+                get_strategy,
+                df,
+                strategy_name,
+                open_strategy,
+                parse_close_strategies(close_strategies_raw),
+                position_side,
+                disable_implicit_close,
+                strategy_params,
+            )
+            result_df = evaluation.open_result_df
+            signal = evaluation.open_signal
+        else:
+            # Run the strategy
+            result_df = apply_strategy(strategy_name, df, strategy_params)
+            signal = normalize_signal(result_df.iloc[-1].get("signal", 0))
 
         # Get the last row's signal
         last = result_df.iloc[-1]
-        signal = int(last.get("signal", 0))
-        # Clamp to -1, 0, 1
-        if signal > 0:
-            signal = 1
-        elif signal < 0:
-            signal = -1
-        else:
-            signal = 0
-
         price = float(last["close"])
 
         # Apply HTF trend filter if enabled (skip for funding-rate strategies — #103)
         htf_info = {}
-        if htf_filter_enabled and strategy_name != "delta_neutral_funding":
+        htf_strategy_name = open_strategy or strategy_name
+        if htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
             from htf_filter import htf_trend_filter, apply_htf_filter
 
             def _fetch_htf(sym, tf, limit):
@@ -139,6 +173,10 @@ def main():
             signal = apply_htf_filter(signal, htf_info.get("htf_trend", 0))
             if signal != original_signal:
                 print(f"HTF filter: {original_signal} → {signal} (HTF trend={htf_info.get('htf_trend')})", file=sys.stderr)
+
+        if open_close_enabled:
+            decision = finalize_decision(evaluation, position_side, signal)
+            signal = decision["signal"]
 
         # Collect relevant indicators
         indicators = {}
@@ -170,6 +208,8 @@ def main():
             "indicators": indicators,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
+        if decision:
+            output.update(decision)
         print(json.dumps(output))
 
     except Exception as e:

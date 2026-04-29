@@ -62,6 +62,43 @@ def fee_pct_for_platform(platform: str) -> float:
     return PLATFORM_FEE_PCT.get(platform, PLATFORM_FEE_PCT["binanceus"])
 
 
+def _open_action_from_signal(signal: int) -> str:
+    if signal > 0:
+        return "long"
+    if signal < 0:
+        return "short"
+    return "none"
+
+
+def _normalize_open_action(value) -> str:
+    action = str(value or "none").strip().lower()
+    if action not in {"long", "short", "none"}:
+        raise ValueError(
+            "open_action column must contain only 'long', 'short', or 'none' "
+            f"(got {value!r})"
+        )
+    return action
+
+
+def _close_fraction_columns(df: pd.DataFrame) -> list[str]:
+    return [
+        c for c in df.columns
+        if c == "close_fraction" or str(c).startswith("close_fraction:")
+    ]
+
+
+def _max_close_fraction_series(df: pd.DataFrame) -> pd.Series:
+    cols = _close_fraction_columns(df)
+    if not cols:
+        return pd.Series(0.0, index=df.index)
+    fractions = df[cols].fillna(0).astype(float)
+    bad = (fractions < 0) | (fractions > 1)
+    if bad.any().any():
+        values = sorted(set(fractions[bad].stack().tolist()))
+        raise ValueError(f"close_fraction values must be in [0, 1] — got {values}")
+    return fractions.max(axis=1)
+
+
 class Trade:
     """Represents a single round-trip trade."""
     def __init__(self, entry_date, entry_price, side="long"):
@@ -160,31 +197,42 @@ class Backtester:
 
         Returns dict with all performance metrics.
         """
-        if "signal" not in df.columns:
-            raise ValueError("DataFrame must have a 'signal' column")
+        uses_open_close = "open_action" in df.columns or bool(_close_fraction_columns(df))
+        if "signal" not in df.columns and not uses_open_close:
+            raise ValueError("DataFrame must have a 'signal' column or open_action/close_fraction columns")
 
         df = df.copy()
-        # Contract: signal ∈ {-1, 0, 1}. position.diff() emits ±1.0 floats and
-        # some strategies emit ints; coerce NaN → 0, reject non-integral floats
-        # (e.g. 1.5 from a fractional-sizing bug) before casting, and then
-        # reject any out-of-domain integer (e.g. +2 "double size") — all three
-        # surface as explicit errors rather than silent truncation.
-        # See issue #304 M1.
-        sig_raw = df["signal"].fillna(0).astype(float)
-        non_integral = sig_raw[sig_raw != sig_raw.round()]
-        if not non_integral.empty:
-            raise ValueError(
-                f"signal column must be in {{-1, 0, 1}} — got "
-                f"non-integral values {sorted(set(non_integral.unique().tolist()))}"
-            )
-        sig_int = sig_raw.astype(int)
-        bad = sig_int[~sig_int.isin([-1, 0, 1])]
-        if not bad.empty:
-            raise ValueError(
-                f"signal column must be in {{-1, 0, 1}} — got "
-                f"unexpected values {sorted(bad.unique().tolist())}"
-            )
-        df["signal"] = sig_int.shift(1).fillna(0).astype(int)
+        if "signal" in df.columns:
+            # Contract: signal ∈ {-1, 0, 1}. position.diff() emits ±1.0 floats
+            # and some strategies emit ints; coerce NaN → 0, reject non-integral
+            # floats before casting, and then reject any out-of-domain integer.
+            sig_raw = df["signal"].fillna(0).astype(float)
+            non_integral = sig_raw[sig_raw != sig_raw.round()]
+            if not non_integral.empty:
+                raise ValueError(
+                    f"signal column must be in {{-1, 0, 1}} — got "
+                    f"non-integral values {sorted(set(non_integral.unique().tolist()))}"
+                )
+            sig_int = sig_raw.astype(int)
+            bad = sig_int[~sig_int.isin([-1, 0, 1])]
+            if not bad.empty:
+                raise ValueError(
+                    f"signal column must be in {{-1, 0, 1}} — got "
+                    f"unexpected values {sorted(bad.unique().tolist())}"
+                )
+            signal_for_open = sig_int
+            df["signal"] = sig_int.shift(1).fillna(0).astype(int)
+        else:
+            signal_for_open = pd.Series(0, index=df.index)
+            df["signal"] = 0
+
+        if uses_open_close:
+            if "open_action" in df.columns:
+                open_actions = df["open_action"].map(_normalize_open_action)
+            else:
+                open_actions = signal_for_open.map(_open_action_from_signal)
+            df["_open_action"] = open_actions.shift(1).fillna("none")
+            df["_close_fraction"] = _max_close_fraction_series(df).shift(1).fillna(0.0)
 
         has_open = "open" in df.columns
 
@@ -213,6 +261,43 @@ class Backtester:
 
             equity = cash + position * mark_price
             equity_curve.append({"date": idx, "equity": equity})
+
+            if uses_open_close:
+                close_fraction = float(row["_close_fraction"])
+                open_action = row["_open_action"]
+
+                if close_fraction > 0 and position > 0:
+                    qty_to_close = position * min(close_fraction, 1.0)
+                    effective_price = fill_price * (1 - self.slippage_pct)
+                    proceeds = qty_to_close * effective_price
+                    commission = proceeds * self.commission_pct
+                    cash += proceeds - commission
+                    position -= qty_to_close
+
+                    if current_trade:
+                        closed = Trade(current_trade.entry_date, current_trade.entry_price, current_trade.side)
+                        closed.shares = qty_to_close
+                        closed.close(idx, effective_price)
+                        closed.pnl -= commission
+                        trades.append(closed)
+                        current_trade.shares -= qty_to_close
+                        if current_trade.shares <= 1e-12:
+                            current_trade = None
+
+                    if position <= 1e-12:
+                        position = 0.0
+
+                if open_action == "long" and position == 0:
+                    effective_price = fill_price * (1 + self.slippage_pct)
+                    commission = cash * self.commission_pct
+                    available = cash - commission
+                    shares = available / effective_price
+                    position = shares
+                    cash = 0.0
+
+                    current_trade = Trade(idx, effective_price, "long")
+                    current_trade.shares = shares
+                continue
 
             if signal == 1 and position == 0:
                 # BUY — go long with all available cash

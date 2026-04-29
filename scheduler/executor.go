@@ -18,6 +18,7 @@ const scriptTimeout = 30 * time.Second
 
 // SpotResult is the JSON output from check_strategy.py.
 type SpotResult struct {
+	StrategyDecisionFields
 	Strategy   string                 `json:"strategy"`
 	Symbol     string                 `json:"symbol"`
 	Timeframe  string                 `json:"timeframe"`
@@ -30,6 +31,7 @@ type SpotResult struct {
 
 // HyperliquidResult is the JSON output from check_hyperliquid.py (signal check mode).
 type HyperliquidResult struct {
+	StrategyDecisionFields
 	Strategy   string                 `json:"strategy"`
 	Symbol     string                 `json:"symbol"`
 	Timeframe  string                 `json:"timeframe"`
@@ -366,6 +368,7 @@ type ContractSpec struct {
 
 // TopStepResult is the JSON output from check_topstep.py (signal check mode).
 type TopStepResult struct {
+	StrategyDecisionFields
 	Strategy     string                 `json:"strategy"`
 	Symbol       string                 `json:"symbol"`
 	Timeframe    string                 `json:"timeframe"`
@@ -573,6 +576,7 @@ func parseTopStepPositionsOutput(stdout []byte, stderrStr string, runErr error) 
 
 // RobinhoodResult is the JSON output from check_robinhood.py (signal check mode).
 type RobinhoodResult struct {
+	StrategyDecisionFields
 	Strategy   string                 `json:"strategy"`
 	Symbol     string                 `json:"symbol"`
 	Timeframe  string                 `json:"timeframe"`
@@ -661,6 +665,7 @@ func RunRobinhoodExecute(script, symbol, side string, amountUSD, quantity float6
 
 // OKXResult is the JSON output from check_okx.py (signal check mode).
 type OKXResult struct {
+	StrategyDecisionFields
 	Strategy   string                 `json:"strategy"`
 	Symbol     string                 `json:"symbol"`
 	Timeframe  string                 `json:"timeframe"`

@@ -79,14 +79,28 @@ def _extract_fee(response):
     return None
 
 
-def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False, strategy_params=None):
+def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False,
+                     strategy_params=None, open_strategy=None,
+                     close_strategies=None, disable_implicit_close=False,
+                     position_side=""):
     """Run strategy signal check using TopStep market data."""
     try:
         from adapter import TopStepExchangeAdapter
         from strategies import apply_strategy, get_strategy
+        from strategy_composition import (
+            evaluate_open_close,
+            finalize_decision,
+            normalize_signal,
+            parse_close_strategies,
+        )
 
-        # Verify strategy exists early
-        get_strategy(strategy_name)
+        open_close_enabled = bool(open_strategy or close_strategies or disable_implicit_close)
+        configured_names = [open_strategy or strategy_name]
+        configured_names.extend(parse_close_strategies(close_strategies))
+        if not close_strategies and open_close_enabled and not disable_implicit_close:
+            configured_names.append(open_strategy or strategy_name)
+        for name in configured_names:
+            get_strategy(name)
 
         adapter = TopStepExchangeAdapter(mode=mode)
 
@@ -129,22 +143,32 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             sys.exit(1)
 
         df = _make_dataframe(candles)
-        result_df = apply_strategy(strategy_name, df, strategy_params)
+        decision = None
+        if open_close_enabled:
+            evaluation = evaluate_open_close(
+                apply_strategy,
+                get_strategy,
+                df,
+                strategy_name,
+                open_strategy,
+                parse_close_strategies(close_strategies),
+                position_side,
+                disable_implicit_close,
+                strategy_params,
+            )
+            result_df = evaluation.open_result_df
+            signal = evaluation.open_signal
+        else:
+            result_df = apply_strategy(strategy_name, df, strategy_params)
+            signal = normalize_signal(result_df.iloc[-1].get("signal", 0))
 
         last = result_df.iloc[-1]
-        signal = int(last.get("signal", 0))
-        if signal > 0:
-            signal = 1
-        elif signal < 0:
-            signal = -1
-        else:
-            signal = 0
-
         price = float(last["close"])
 
         # Apply HTF trend filter if enabled (skip for funding-rate strategies — #103)
         htf_info = {}
-        if htf_filter_enabled and strategy_name != "delta_neutral_funding":
+        htf_strategy_name = open_strategy or strategy_name
+        if htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
             from htf_filter import htf_trend_filter, apply_htf_filter
 
             def _fetch_htf(sym, tf, limit):
@@ -156,6 +180,10 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             signal = apply_htf_filter(signal, htf_info.get("htf_trend", 0))
             if signal != original_signal:
                 print(f"HTF filter: {original_signal} → {signal} (HTF trend={htf_info.get('htf_trend')})", file=sys.stderr)
+
+        if open_close_enabled:
+            decision = finalize_decision(evaluation, position_side, signal)
+            signal = decision["signal"]
 
         # Freshen price with live quote if available
         try:
@@ -188,7 +216,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 if isinstance(v, (int, float)):
                     indicators[k] = v
 
-        print(json.dumps({
+        output = {
             "strategy": strategy_name,
             "symbol": symbol,
             "timeframe": timeframe,
@@ -200,7 +228,10 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "mode": mode,
             "platform": "topstep",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-        }))
+        }
+        if decision:
+            output.update(decision)
+        print(json.dumps(output))
 
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
@@ -294,9 +325,18 @@ def main():
         parser.add_argument("--mode", default="paper")
         parser.add_argument("--htf-filter", action="store_true", default=False)
         parser.add_argument("--params", default=None)
+        parser.add_argument("--open-strategy", default=None)
+        parser.add_argument("--close-strategies", default=None)
+        parser.add_argument("--disable-implicit-close", action="store_true", default=False)
+        parser.add_argument("--position-side", default="")
         args = parser.parse_args()
         params_parsed = json.loads(args.params) if args.params else None
-        run_signal_check(args.strategy, args.symbol, args.timeframe, args.mode, args.htf_filter, params_parsed)
+        run_signal_check(
+            args.strategy, args.symbol, args.timeframe, args.mode,
+            args.htf_filter, params_parsed, args.open_strategy,
+            args.close_strategies, args.disable_implicit_close,
+            args.position_side,
+        )
 
 
 if __name__ == "__main__":

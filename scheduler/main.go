@@ -1063,12 +1063,20 @@ func main() {
 					if sc.Type == "options" {
 						posJSON = EncodeAllPositionsJSON(stratState.OptionPositions, stratState.Positions)
 					}
+					var spotPosSide string
+					if sc.Type == "spot" && sc.Platform != "okx" && sc.Platform != "robinhood" {
+						if sym := spotSymbol(sc.Args); sym != "" {
+							if pos, ok := stratState.Positions[sym]; ok {
+								spotPosSide = pos.Side
+							}
+						}
+					}
 					var hlCash float64
 					var hlPosQty float64
 					var hlPosSide string
 					var hlAvgCost float64
 					var hlStopLossOID int64
-					if sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
+					if sc.Type == "perps" && sc.Platform == "hyperliquid" {
 						hlCash = stratState.Cash
 						if sym := hyperliquidSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
@@ -1083,7 +1091,7 @@ func main() {
 					var okxPosQty float64
 					var okxPosSide string
 					var okxAvgCost float64
-					if sc.Platform == "okx" && okxIsLive(sc.Args) {
+					if sc.Platform == "okx" {
 						okxCash = stratState.Cash
 						if sym := okxSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
@@ -1096,7 +1104,7 @@ func main() {
 					var rhCash float64
 					var rhPosQty float64
 					var rhPosSide string
-					if sc.Platform == "robinhood" && robinhoodIsLive(sc.Args) {
+					if sc.Platform == "robinhood" {
 						rhCash = stratState.Cash
 						if sym := robinhoodSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
@@ -1108,7 +1116,7 @@ func main() {
 					var tsCash float64
 					var tsContracts float64
 					var tsPosSide string
-					if sc.Type == "futures" && topstepIsLive(sc.Args) {
+					if sc.Type == "futures" {
 						tsCash = stratState.Cash
 						if sym := topstepSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
@@ -1164,7 +1172,7 @@ func main() {
 					switch sc.Type {
 					case "spot":
 						if sc.Platform == "okx" {
-							if result, signalStr, price, ok := runOKXCheck(sc, prices, logger); ok {
+							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosSide, logger); ok {
 								prices[result.Symbol] = price
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
@@ -1182,7 +1190,7 @@ func main() {
 								}
 							}
 						} else if sc.Platform == "robinhood" {
-							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, logger); ok {
+							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, rhPosSide, logger); ok {
 								prices[result.Symbol] = price
 								var execResult *RobinhoodExecuteResult
 								liveExecFailed := false
@@ -1199,7 +1207,7 @@ func main() {
 									mu.Unlock()
 								}
 							}
-						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, logger); ok {
+						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, spotPosSide, logger); ok {
 							mu.Lock()
 							trades, detail = executeSpotResult(sc, stratState, result, signalStr, price, logger)
 							mu.Unlock()
@@ -1217,7 +1225,7 @@ func main() {
 						}
 					case "perps":
 						if sc.Platform == "okx" {
-							if result, signalStr, price, ok := runOKXCheck(sc, prices, logger); ok {
+							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosSide, logger); ok {
 								prices[result.Symbol] = price
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
@@ -1234,7 +1242,7 @@ func main() {
 									mu.Unlock()
 								}
 							}
-						} else if result, signalStr, price, ok := runHyperliquidCheck(sc, prices, logger); ok {
+						} else if result, signalStr, price, ok := runHyperliquidCheck(sc, prices, hlPosSide, logger); ok {
 							prices[result.Symbol] = price
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
@@ -1268,7 +1276,7 @@ func main() {
 							}
 						}
 					case "futures":
-						if result, signalStr, price, ok := runTopStepCheck(sc, prices, logger); ok {
+						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosSide, logger); ok {
 							prices[result.Symbol] = price
 							var execResult *TopStepExecuteResult
 							liveExecFailed := false
@@ -1666,10 +1674,19 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	os.Exit(0)
 }
 
+// spotSymbol extracts the spot symbol from strategy args (e.g. "BTC/USDT").
+func spotSymbol(args []string) string {
+	if len(args) >= 2 {
+		return args[1]
+	}
+	return ""
+}
+
 // runSpotCheck runs the spot check subprocess and returns the parsed result.
 // No state access. Returns (result, signalStr, price, ok); ok=false means skip execution.
-func runSpotCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*SpotResult, string, float64, bool) {
+func runSpotCheck(sc StrategyConfig, prices map[string]float64, posSide string, logger *StrategyLogger) (*SpotResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
+	args = appendOpenCloseArgs(args, sc, posSide)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
@@ -1894,8 +1911,9 @@ func hyperliquidSymbol(args []string) string {
 }
 
 // runHyperliquidCheck runs check_hyperliquid.py signal-check mode (Phase 3, no lock).
-func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
+func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, posSide string, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
+	args = appendOpenCloseArgs(args, sc, posSide)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
@@ -2180,8 +2198,9 @@ func topstepSymbol(args []string) string {
 }
 
 // runTopStepCheck runs check_topstep.py signal-check mode (Phase 3, no lock).
-func runTopStepCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*TopStepResult, string, float64, bool) {
+func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posSide string, logger *StrategyLogger) (*TopStepResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
+	args = appendOpenCloseArgs(args, sc, posSide)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
@@ -2358,8 +2377,9 @@ func robinhoodSymbol(args []string) string {
 }
 
 // runRobinhoodCheck runs check_robinhood.py signal-check mode (Phase 3, no lock).
-func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*RobinhoodResult, string, float64, bool) {
+func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posSide string, logger *StrategyLogger) (*RobinhoodResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
+	args = appendOpenCloseArgs(args, sc, posSide)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
@@ -2521,8 +2541,9 @@ func okxInstType(args []string) string {
 }
 
 // runOKXCheck runs check_okx.py signal-check mode (Phase 3, no lock).
-func runOKXCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
+func runOKXCheck(sc StrategyConfig, prices map[string]float64, posSide string, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
+	args = appendOpenCloseArgs(args, sc, posSide)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
