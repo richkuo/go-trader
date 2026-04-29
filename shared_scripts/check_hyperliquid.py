@@ -12,6 +12,9 @@ Execution mode (live only, called by Go as phase 2):
         [--cancel-stop-loss-oid=OID]  # optional: cancel this trigger OID before the order
         [--prev-pos-qty=0.5]          # optional: existing position qty being flipped, so the SL
                                       # is sized against the *new* net position (total_sz - prev) (#421)
+        [--margin-mode=isolated|cross] # optional: enforce margin mode via update_leverage before the
+        [--leverage=N]                #   order (only on a fresh open from flat — HL rejects mode
+                                      #   changes on an open position) (#486)
 """
 
 import sys
@@ -261,7 +264,7 @@ def _classify_sl_response(sdk_response: dict):
     return ("missing", None)
 
 
-def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0):
+def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0):
     """Place a live market order on Hyperliquid, optionally wrapping it with
     a stop-loss trigger (open) or cancelling a stale SL trigger (close).
 
@@ -288,6 +291,41 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
         adapter = HyperliquidExchangeAdapter()
 
         is_buy = side.lower() == "buy"
+
+        # Enforce margin mode + leverage before placing the order (#486).
+        # Fail closed: if HL rejects this we abort the order rather than
+        # silently opening into the wrong margin mode. The scheduler only
+        # passes margin_mode on a fresh open from flat, so HL won't reject
+        # because of an existing position.
+        if margin_mode:
+            if margin_mode not in ("isolated", "cross"):
+                print(json.dumps({
+                    "execution": None,
+                    "platform": "hyperliquid",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": f"invalid margin_mode {margin_mode!r}, expected 'isolated' or 'cross'",
+                }, cls=SafeEncoder))
+                sys.exit(1)
+            if leverage < 1:
+                print(json.dumps({
+                    "execution": None,
+                    "platform": "hyperliquid",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": f"--margin-mode requires --leverage >= 1, got {leverage}",
+                }, cls=SafeEncoder))
+                sys.exit(1)
+            try:
+                adapter.update_leverage(int(leverage), symbol, is_cross=(margin_mode == "cross"))
+                print(f"update_leverage({symbol}, {leverage}x, mode={margin_mode}) OK", file=sys.stderr)
+            except Exception as ue:
+                traceback.print_exc(file=sys.stderr)
+                print(json.dumps({
+                    "execution": None,
+                    "platform": "hyperliquid",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": f"update_leverage failed (margin_mode={margin_mode}, leverage={leverage}): {ue}",
+                }, cls=SafeEncoder))
+                sys.exit(1)
 
         # Cancel stale SL first: we want to free the trigger slot before
         # possibly spending another one on the new entry. A cancel failure is
@@ -430,10 +468,15 @@ def main():
                             help="cancel this trigger OID before placing the new order (#412)")
         parser.add_argument("--prev-pos-qty", type=float, default=0.0,
                             help="abs qty of existing position being flipped, so SL is sized against the new net position (#421)")
+        parser.add_argument("--margin-mode", default="",
+                            help="enforce 'isolated' or 'cross' margin via update_leverage before the order; only safe on a fresh open from flat (#486)")
+        parser.add_argument("--leverage", type=float, default=0.0,
+                            help="leverage to set alongside --margin-mode (HL update_leverage takes both in one call) (#486)")
         args = parser.parse_args()
         run_execute(args.symbol, args.side, args.size, args.mode,
                     stop_loss_pct=args.stop_loss_pct, cancel_oid=args.cancel_stop_loss_oid,
-                    prev_pos_qty=args.prev_pos_qty)
+                    prev_pos_qty=args.prev_pos_qty,
+                    margin_mode=args.margin_mode, leverage=args.leverage)
     else:
         # Signal check mode: <strategy> <symbol> <timeframe> [--mode=paper|live] [--htf-filter]
         import argparse

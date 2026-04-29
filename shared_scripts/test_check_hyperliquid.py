@@ -138,6 +138,93 @@ class TestFillExtraction:
         assert result["execution"]["fill"] == {}
 
 
+class TestMarginMode:
+    """#486: run_execute calls update_leverage with isolated/cross before placing
+    the market order. Failure of update_leverage must abort the order (fail closed)
+    so a bad config can't silently land in the wrong margin mode."""
+
+    def _run_execute_with_margin(self, margin_mode, leverage, update_leverage_side_effect=None):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        if update_leverage_side_effect is not None:
+            mock_adapter.update_leverage.side_effect = update_leverage_side_effect
+        mock_adapter.market_open.return_value = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [
+                {"filled": {"avgPx": "50000", "totalSz": "0.01"}}
+            ]}},
+        }
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                exit_code = 0
+                try:
+                    mod.run_execute("BTC", "buy", 0.01, "live",
+                                    margin_mode=margin_mode, leverage=leverage)
+                except SystemExit as e:
+                    exit_code = e.code
+        return json.loads(captured.getvalue()), mock_adapter, exit_code
+
+    def test_isolated_calls_update_leverage_with_is_cross_false(self):
+        result, adapter, exit_code = self._run_execute_with_margin("isolated", 5)
+        assert exit_code == 0
+        adapter.update_leverage.assert_called_once_with(5, "BTC", is_cross=False)
+        adapter.market_open.assert_called_once()
+        assert result["execution"]["action"] == "buy"
+
+    def test_cross_calls_update_leverage_with_is_cross_true(self):
+        result, adapter, exit_code = self._run_execute_with_margin("cross", 3)
+        assert exit_code == 0
+        adapter.update_leverage.assert_called_once_with(3, "BTC", is_cross=True)
+        adapter.market_open.assert_called_once()
+
+    def test_no_margin_mode_skips_update_leverage(self):
+        result, adapter, exit_code = self._run_execute_with_margin("", 0)
+        assert exit_code == 0
+        adapter.update_leverage.assert_not_called()
+        adapter.market_open.assert_called_once()
+
+    def test_invalid_margin_mode_fails_closed(self):
+        result, adapter, exit_code = self._run_execute_with_margin("portfolio", 5)
+        assert exit_code == 1
+        adapter.update_leverage.assert_not_called()
+        adapter.market_open.assert_not_called()
+        assert "invalid margin_mode" in result.get("error", "")
+
+    def test_zero_leverage_with_mode_fails_closed(self):
+        result, adapter, exit_code = self._run_execute_with_margin("isolated", 0)
+        assert exit_code == 1
+        adapter.update_leverage.assert_not_called()
+        adapter.market_open.assert_not_called()
+        assert "leverage" in result.get("error", "").lower()
+
+    def test_update_leverage_failure_aborts_order(self):
+        result, adapter, exit_code = self._run_execute_with_margin(
+            "isolated", 5,
+            update_leverage_side_effect=RuntimeError("HL rejected: position open"),
+        )
+        assert exit_code == 1
+        adapter.update_leverage.assert_called_once()
+        adapter.market_open.assert_not_called()
+        assert "update_leverage failed" in result.get("error", "")
+        assert "position open" in result.get("error", "")
+
+
 class TestClassifySLResponse:
     """Unit coverage for _classify_sl_response added in #421. The classifier
     is the load-bearing piece that distinguishes a resting SL from an instant

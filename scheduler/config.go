@@ -206,6 +206,7 @@ type StrategyConfig struct {
 	AllowShorts          bool                   `json:"allow_shorts,omitempty"`     // perps only: opt-in to bidirectional execution — signal=-1 from flat opens a short, long+(-1) closes-and-flips. Default false preserves close-long-only behavior for strategies like triple_ema that emit -1 only as a long-exit (#328)
 	Leverage             float64                `json:"leverage,omitempty"`         // perps leverage multiplier (default 1 = no leverage); used for notional sizing and margin-based valuation (#254)
 	StopLossPct          float64                `json:"stop_loss_pct,omitempty"`    // HL perps only: % from entry to place a reduce-only stop-loss trigger (0 = disabled) (#412)
+	MarginMode           string                 `json:"margin_mode,omitempty"`      // HL perps only: "isolated" (default) or "cross"; sent via update_leverage on fresh opens to enforce per-position liq isolation (#486)
 	Params               map[string]interface{} `json:"params,omitempty"`           // custom strategy parameters passed to Python
 	ThetaHarvest         *ThetaHarvestConfig    `json:"theta_harvest,omitempty"`
 	FuturesConfig        *FuturesConfig         `json:"futures,omitempty"`
@@ -347,6 +348,15 @@ func LoadConfig(path string) (*Config, error) {
 		// for notional sizing and setting Position.Multiplier.
 		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].Leverage <= 0 {
 			cfg.Strategies[i].Leverage = 1
+		}
+
+		// #486: Default margin mode for HL perps is "isolated". Cross is the
+		// HL account default for new accounts, but cross lets a single losing
+		// strategy drain margin from unrelated positions before per-strategy
+		// drawdown checks fire — isolated aligns on-chain margin with
+		// go-trader's per-strategy risk model.
+		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].Platform == "hyperliquid" && cfg.Strategies[i].MarginMode == "" {
+			cfg.Strategies[i].MarginMode = "isolated"
 		}
 
 		// #56: Default theta harvest for options strategies — sold options
@@ -610,6 +620,18 @@ func ValidateConfig(cfg *Config) error {
 			}
 			if sc.Leverage < 1 || sc.Leverage > 100 {
 				errs = append(errs, fmt.Sprintf("%s: leverage must be in [1, 100], got %g", prefix, sc.Leverage))
+			}
+		}
+
+		// #486: validate margin_mode (HL perps only). Empty is allowed
+		// (LoadConfig defaults it to "isolated" before this point); any
+		// non-default value must match the SDK's allowed set.
+		if sc.MarginMode != "" {
+			if sc.MarginMode != "isolated" && sc.MarginMode != "cross" {
+				errs = append(errs, fmt.Sprintf("%s: margin_mode must be \"isolated\" or \"cross\", got %q", prefix, sc.MarginMode))
+			}
+			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+				errs = append(errs, fmt.Sprintf("%s: margin_mode is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 		}
 
