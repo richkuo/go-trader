@@ -138,7 +138,6 @@ func makeTestState() *AppState {
 					PeakValue: 1050, MaxDrawdownPct: 10, CurrentDrawdownPct: 2.5,
 					DailyPnL: 50, DailyPnLDate: "2026-04-08",
 					ConsecutiveLosses: 0, CircuitBreaker: false,
-					TotalTrades: 15, WinningTrades: 10, LosingTrades: 5,
 				},
 			},
 			"spot-rsi-eth": {
@@ -252,7 +251,7 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 	}
 
 	// Risk state round-trip.
-	if hlStrat.RiskState.TotalTrades != 15 || hlStrat.RiskState.WinningTrades != 10 {
+	if hlStrat.RiskState.DailyPnL != 50 || hlStrat.RiskState.CurrentDrawdownPct != 2.5 {
 		t.Errorf("risk state mismatch: %+v", hlStrat.RiskState)
 	}
 
@@ -1004,10 +1003,7 @@ func TestMigrateSchema_AddsExchangeColumns(t *testing.T) {
 	    risk_daily_pnl_date TEXT NOT NULL DEFAULT '',
 	    risk_consecutive_losses INTEGER NOT NULL DEFAULT 0,
 	    risk_circuit_breaker INTEGER NOT NULL DEFAULT 0,
-	    risk_circuit_breaker_until TEXT NOT NULL DEFAULT '',
-	    risk_total_trades INTEGER NOT NULL DEFAULT 0,
-	    risk_winning_trades INTEGER NOT NULL DEFAULT 0,
-	    risk_losing_trades INTEGER NOT NULL DEFAULT 0
+	    risk_circuit_breaker_until TEXT NOT NULL DEFAULT ''
 	);
 	CREATE TABLE IF NOT EXISTS positions (
 	    strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
@@ -2017,8 +2013,7 @@ func TestMigrateSchema_PendingCircuitClosesColumn_FromLegacyDB(t *testing.T) {
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
 		risk_circuit_breaker, risk_circuit_breaker_until,
-		risk_pending_circuit_closes_json AS risk_pending_hl_close_json,
-		risk_total_trades, risk_winning_trades, risk_losing_trades
+		risk_pending_circuit_closes_json AS risk_pending_hl_close_json
 		FROM strategies`)
 	if err != nil {
 		t.Fatalf("build legacy table: %v", err)
@@ -2387,8 +2382,8 @@ func TestLifetimeTradeStatsAll_OptionsSameContractReopenUsesDistinctPositionIDs(
 }
 
 // TestLifetimeTradeStats_SurvivesRiskStateReset is the core regression test
-// for #455: kill-switch / circuit-breaker resets of the in-memory RiskState
-// counters MUST NOT change the lifetime stats query. The query reads from
+// for #455: kill-switch / circuit-breaker resets of RiskState MUST NOT
+// change the lifetime stats query. The query reads from
 // trades, which is append-only, so simulating a counter reset leaves the DB
 // result intact.
 func TestLifetimeTradeStats_SurvivesRiskStateReset(t *testing.T) {

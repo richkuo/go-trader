@@ -1362,9 +1362,9 @@ func main() {
 		rfr := RiskFreeRateOrDefault(cfg)
 
 		// Lifetime round-trip / W-L stats sourced from the trades table (#455).
-		// One DB round-trip per cycle; missing keys fall back to RiskState
-		// counters inside FormatCategorySummary. Errors are downgraded to a
-		// nil map so the summary still posts using the in-memory fallback.
+		// One DB round-trip per cycle; missing keys render as zero inside
+		// FormatCategorySummary. Errors are downgraded to a nil map so the
+		// summary still posts without in-memory lifetime counters (#472).
 		var lifetimeStats map[string]LifetimeTradeStats
 		if stateDB != nil {
 			if ls, err := stateDB.LifetimeTradeStatsAll(); err != nil {

@@ -575,9 +575,6 @@ type RiskState struct {
 	ConsecutiveLosses   int       `json:"consecutive_losses"`
 	CircuitBreaker      bool      `json:"circuit_breaker"`
 	CircuitBreakerUntil time.Time `json:"circuit_breaker_until"`
-	TotalTrades         int       `json:"total_trades"`
-	WinningTrades       int       `json:"winning_trades"`
-	LosingTrades        int       `json:"losing_trades"`
 	// PendingCircuitCloses holds venue-appropriate reduce-only / flatten close
 	// requests queued by per-strategy circuit breakers, keyed by platform string.
 	// The key MUST match StrategyConfig.Platform ("hyperliquid", "okx",
@@ -1341,16 +1338,14 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 	return true, ""
 }
 
-// RecordTradeResult updates risk state with trade outcome.
+// RecordTradeResult updates risk state with realized PnL for daily limits and
+// consecutive-loss circuit breakers. Lifetime trade stats come from SQLite.
 func RecordTradeResult(r *RiskState, pnl float64) {
 	rolloverDailyPnL(r)
-	r.TotalTrades++
 	r.DailyPnL += pnl
 	if pnl >= 0 {
-		r.WinningTrades++
 		r.ConsecutiveLosses = 0
 	} else {
-		r.LosingTrades++
 		r.ConsecutiveLosses++
 	}
 }

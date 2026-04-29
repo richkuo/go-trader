@@ -11,7 +11,6 @@ func TestEffectiveStrategyIntervalSeconds_DrawdownWarningUsesFastInterval(t *tes
 		RiskState: RiskState{
 			MaxDrawdownPct:     10,
 			CurrentDrawdownPct: 8.5,
-			TotalTrades:        1,
 		},
 	}
 
@@ -27,7 +26,6 @@ func TestEffectiveStrategyIntervalSeconds_DrawdownRecoveryReverts(t *testing.T) 
 		RiskState: RiskState{
 			MaxDrawdownPct:     10,
 			CurrentDrawdownPct: 7.5,
-			TotalTrades:        1,
 		},
 	}
 
@@ -44,10 +42,10 @@ func TestEffectiveStrategyIntervalSeconds_OnlyWarningStrategySpeedsUp(t *testing
 	}
 	states := map[string]*StrategyState{
 		"warning": {
-			RiskState: RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 8.1, TotalTrades: 1},
+			RiskState: RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 8.1},
 		},
 		"normal": {
-			RiskState: RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 2.0, TotalTrades: 1},
+			RiskState: RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 2.0},
 		},
 	}
 
@@ -65,7 +63,6 @@ func TestEffectiveStrategyIntervalSeconds_DoesNotSlowAlreadyFastStrategy(t *test
 		RiskState: RiskState{
 			MaxDrawdownPct:     10,
 			CurrentDrawdownPct: 8.5,
-			TotalTrades:        1,
 		},
 	}
 
@@ -81,7 +78,6 @@ func TestEffectiveStrategyIntervalSeconds_CircuitBreakerIsNotWarningMode(t *test
 		RiskState: RiskState{
 			MaxDrawdownPct:     10,
 			CurrentDrawdownPct: 12,
-			TotalTrades:        1,
 			CircuitBreaker:     true,
 		},
 	}
@@ -104,7 +100,6 @@ func TestEffectiveStrategyIntervalSeconds_OverMaxDrawdownStillFast(t *testing.T)
 		RiskState: RiskState{
 			MaxDrawdownPct:     10,
 			CurrentDrawdownPct: 12, // already over max; CB not yet set
-			TotalTrades:        1,
 		},
 	}
 
@@ -122,10 +117,10 @@ func TestNextStrategyCheckDelay_UsesWarningInterval(t *testing.T) {
 	}
 	states := map[string]*StrategyState{
 		"warning": {
-			RiskState: RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 8.5, TotalTrades: 1},
+			RiskState: RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 8.5},
 		},
 		"normal": {
-			RiskState: RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 1.0, TotalTrades: 1},
+			RiskState: RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 1.0},
 		},
 	}
 	lastRun := map[string]time.Time{

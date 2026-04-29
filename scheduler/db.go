@@ -55,10 +55,7 @@ CREATE TABLE IF NOT EXISTS strategies (
     -- risk_pending_circuit_closes_json. Keeping the legacy name in CREATE
     -- TABLE so fresh installs land on the same rename path as post-#356
     -- DBs — one code path, no schema fork (#359).
-    risk_pending_hl_close_json TEXT NOT NULL DEFAULT '',
-    risk_total_trades INTEGER NOT NULL DEFAULT 0,
-    risk_winning_trades INTEGER NOT NULL DEFAULT 0,
-    risk_losing_trades INTEGER NOT NULL DEFAULT 0
+    risk_pending_hl_close_json TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS positions (
@@ -601,9 +598,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	stmtStrat, err := tx.Prepare(`INSERT OR REPLACE INTO strategies (id, type, platform, cash, initial_capital,
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
-		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json,
-		risk_total_trades, risk_winning_trades, risk_losing_trades)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare strategy insert: %w", err)
 	}
@@ -654,7 +650,6 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			s.RiskState.DailyPnL, s.RiskState.DailyPnLDate, s.RiskState.ConsecutiveLosses,
 			cbInt, formatTime(s.RiskState.CircuitBreakerUntil),
 			s.RiskState.MarshalPendingCircuitClosesJSON(),
-			s.RiskState.TotalTrades, s.RiskState.WinningTrades, s.RiskState.LosingTrades,
 		); err != nil {
 			return fmt.Errorf("insert strategy %s: %w", s.ID, err)
 		}
@@ -1036,8 +1031,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	rows, err := sdb.db.Query(`SELECT id, type, platform, cash, initial_capital,
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
-		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json,
-		risk_total_trades, risk_winning_trades, risk_losing_trades
+		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json
 		FROM strategies`)
 	if err != nil {
 		return nil, fmt.Errorf("load strategies: %w", err)
@@ -1053,7 +1047,6 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 			&s.RiskState.PeakValue, &s.RiskState.MaxDrawdownPct, &s.RiskState.CurrentDrawdownPct,
 			&s.RiskState.DailyPnL, &s.RiskState.DailyPnLDate, &s.RiskState.ConsecutiveLosses,
 			&cbInt, &cbUntilStr, &pendingCircuitClosesJSON,
-			&s.RiskState.TotalTrades, &s.RiskState.WinningTrades, &s.RiskState.LosingTrades,
 		); err != nil {
 			return nil, fmt.Errorf("scan strategy: %w", err)
 		}

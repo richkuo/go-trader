@@ -429,8 +429,8 @@ func TestReconcileHyperliquidPositions_RestingStopLossFillBooksPnL(t *testing.T)
 	if len(state.TradeHistory) != 1 || state.TradeHistory[0].Side != "sell" {
 		t.Errorf("expected one synthetic sell trade, got %+v", state.TradeHistory)
 	}
-	if state.RiskState.TotalTrades != 1 || state.RiskState.LosingTrades != 1 {
-		t.Errorf("risk stats not updated for SL fill: %+v", state.RiskState)
+	if state.RiskState.ConsecutiveLosses != 1 {
+		t.Errorf("consecutive losses not updated for SL fill: %+v", state.RiskState)
 	}
 }
 

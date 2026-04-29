@@ -175,7 +175,7 @@ func TestCheckRisk_LiveOKXSpot_SetsOperatorRequiredPending(t *testing.T) {
 		ID: sc.ID, Type: "spot", Platform: "okx",
 		Cash: 0,
 		RiskState: RiskState{
-			PeakValue: 1000, MaxDrawdownPct: 10, TotalTrades: 1, DailyPnLDate: todayUTC(),
+			PeakValue: 1000, MaxDrawdownPct: 10, DailyPnLDate: todayUTC(),
 		},
 		Positions: map[string]*Position{
 			"BTC-USDT": {Symbol: "BTC-USDT", Quantity: 0.01, AvgCost: 80000, Side: "long"},

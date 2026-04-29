@@ -711,14 +711,19 @@ func TestFormatCategorySummary_ClosedTradesColumn(t *testing.T) {
 	}
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
-			"hl-rsi-btc": {Cash: 1000, RiskState: RiskState{TotalTrades: 7}},
-			"hl-sma-btc": {Cash: 1000, RiskState: RiskState{TotalTrades: 12}},
-			"hl-mom-btc": {Cash: 1000, RiskState: RiskState{TotalTrades: 0}},
+			"hl-rsi-btc": {Cash: 1000},
+			"hl-sma-btc": {Cash: 1000},
+			"hl-mom-btc": {Cash: 1000},
 		},
 	}
 	prices := map[string]float64{"BTC/USDT": 50000}
+	lifetime := map[string]LifetimeTradeStats{
+		"hl-rsi-btc": {RoundTrips: 7},
+		"hl-sma-btc": {RoundTrips: 12},
+		"hl-mom-btc": {RoundTrips: 0},
+	}
 
-	msgs := FormatCategorySummary(1, 0, 3, 0, 3000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
+	msgs := FormatCategorySummary(1, 0, 3, 0, 3000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, lifetime)
 	msg := strings.Join(msgs, "\n")
 
 	// Header should include #T column.
@@ -732,9 +737,8 @@ func TestFormatCategorySummary_ClosedTradesColumn(t *testing.T) {
 		t.Errorf("expected #T column to follow Int column, got Int@%d #T@%d:\n%s", intIdx, tIdx, msg)
 	}
 
-	// Each strategy row should render its TotalTrades count right-justified in 5 chars,
-	// followed by the W/L column (issue #434). With no winning/losing trades recorded
-	// the W/L column renders as "—".
+	// Each strategy row should render its DB-sourced round-trip count
+	// right-justified in 5 chars, followed by W/L (issue #434).
 	if !strings.Contains(msg, "    7     —\n") {
 		t.Errorf("expected closed-trade count '7' for hl-rsi-btc, got:\n%s", msg)
 	}
@@ -767,13 +771,17 @@ func TestFormatCategorySummary_ClosedTradesColumn_SharedWallet(t *testing.T) {
 	}
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
-			"hl-rmc-eth":  {Cash: 500, InitialCapital: 500, RiskState: RiskState{TotalTrades: 4}},
-			"hl-tema-eth": {Cash: 500, InitialCapital: 500, RiskState: RiskState{TotalTrades: 9}},
+			"hl-rmc-eth":  {Cash: 500, InitialCapital: 500},
+			"hl-tema-eth": {Cash: 500, InitialCapital: 500},
 		},
 	}
 	prices := map[string]float64{"ETH/USDT": 3000}
+	lifetime := map[string]LifetimeTradeStats{
+		"hl-rmc-eth":  {RoundTrips: 4},
+		"hl-tema-eth": {RoundTrips: 9},
+	}
 
-	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, nil)
+	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, lifetime)
 	msg := strings.Join(msgs, "\n")
 
 	if !strings.Contains(msg, "#T") {
@@ -839,14 +847,19 @@ func TestFormatCategorySummary_WinLossColumn(t *testing.T) {
 	}
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
-			"hl-rsi-btc": {Cash: 1000, RiskState: RiskState{TotalTrades: 10, WinningTrades: 7, LosingTrades: 3}},
-			"hl-sma-btc": {Cash: 1000, RiskState: RiskState{TotalTrades: 5, WinningTrades: 5, LosingTrades: 0}},
-			"hl-mom-btc": {Cash: 1000, RiskState: RiskState{TotalTrades: 0}},
+			"hl-rsi-btc": {Cash: 1000},
+			"hl-sma-btc": {Cash: 1000},
+			"hl-mom-btc": {Cash: 1000},
 		},
 	}
 	prices := map[string]float64{"BTC/USDT": 50000}
+	lifetime := map[string]LifetimeTradeStats{
+		"hl-rsi-btc": {RoundTrips: 10, Wins: 7, Losses: 3},
+		"hl-sma-btc": {RoundTrips: 5, Wins: 5, Losses: 0},
+		"hl-mom-btc": {RoundTrips: 0, Wins: 0, Losses: 0},
+	}
 
-	msgs := FormatCategorySummary(1, 0, 3, 0, 3000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
+	msgs := FormatCategorySummary(1, 0, 3, 0, 3000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, lifetime)
 	msg := strings.Join(msgs, "\n")
 
 	if !strings.Contains(msg, "W/L") {
@@ -1460,11 +1473,7 @@ func TestSplitCategorySummary_MultiMessage(t *testing.T) {
 }
 
 // TestFormatCategorySummary_LifetimeStatsOverride verifies that
-// FormatCategorySummary prefers the lifetime stats map over the in-memory
-// RiskState counters (#455). Simulates a strategy whose RiskState was
-// reset by a kill switch (showing 2 trades) but whose trades-table
-// lifetime stats show 17 round-trips — the table must render the lifetime
-// figure.
+// FormatCategorySummary renders lifetime stats from the trades table (#455).
 func TestFormatCategorySummary_LifetimeStatsOverride(t *testing.T) {
 	prices := map[string]float64{"ETH/USDT": 2000.0}
 	strats := []StrategyConfig{
@@ -1474,8 +1483,6 @@ func TestFormatCategorySummary_LifetimeStatsOverride(t *testing.T) {
 		Strategies: map[string]*StrategyState{
 			"hl-rmc-eth-live": {
 				Cash: 1000,
-				// Post-kill-switch reset: in-memory counters are stale.
-				RiskState: RiskState{TotalTrades: 2, WinningTrades: 1, LosingTrades: 1},
 			},
 		},
 	}
@@ -1487,22 +1494,19 @@ func TestFormatCategorySummary_LifetimeStatsOverride(t *testing.T) {
 		t.Fatal("expected at least one message")
 	}
 	msg := msgs[0]
-	// Lifetime #T should appear (17), not the stale RiskState count (2).
+	// Lifetime #T should appear (17).
 	if !strings.Contains(msg, " 17 ") {
 		t.Errorf("expected lifetime #T=17 in summary, got:\n%s", msg)
 	}
-	// W/L renders as wins/losses ratio (10/7 ≈ 1.43). The stale 1/1
-	// fallback would have rendered "1.00", so its absence confirms the
-	// override took effect.
+	// W/L renders as wins/losses ratio (10/7 ≈ 1.43).
 	if !strings.Contains(msg, "1.43") {
 		t.Errorf("expected lifetime W/L ratio (10/7=1.43) in summary, got:\n%s", msg)
 	}
 }
 
-// TestFormatCategorySummary_LifetimeStatsFallback verifies the legacy
-// fallback: when lifetimeStats is nil OR has no entry for a strategy, the
-// summary uses RiskState counters so existing test fixtures keep working.
-func TestFormatCategorySummary_LifetimeStatsFallback(t *testing.T) {
+// TestFormatCategorySummary_LifetimeStatsNoFallback verifies that missing DB
+// lifetime stats render as zero instead of using stale in-memory counters.
+func TestFormatCategorySummary_LifetimeStatsNoFallback(t *testing.T) {
 	prices := map[string]float64{"ETH/USDT": 2000.0}
 	strats := []StrategyConfig{
 		{ID: "hl-rmc-eth-live", Type: "perps", Platform: "hyperliquid", Args: []string{"rmc", "ETH/USDT", "1h"}},
@@ -1510,23 +1514,18 @@ func TestFormatCategorySummary_LifetimeStatsFallback(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
 			"hl-rmc-eth-live": {
-				Cash:      1000,
-				RiskState: RiskState{TotalTrades: 5, WinningTrades: 3, LosingTrades: 2},
+				Cash: 1000,
 			},
 		},
 	}
-	// Nil map → fallback.
+	// Nil map, such as a DB query failure, renders zero lifetime stats.
 	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, nil)
-	if !strings.Contains(msgs[0], " 5 ") {
-		t.Errorf("expected fallback #T=5 in summary, got:\n%s", msgs[0])
+	if !strings.Contains(msgs[0], " 0     —") {
+		t.Errorf("expected zero #T/W-L without lifetime stats, got:\n%s", msgs[0])
 	}
-	// W/L from RiskState wins=3 losses=2 → ratio 1.50.
-	if !strings.Contains(msgs[0], "1.50") {
-		t.Errorf("expected fallback W/L ratio (3/2=1.50) in summary, got:\n%s", msgs[0])
-	}
-	// Empty map (DB returned no rows for this strategy) → also fallback.
+	// Empty map (DB returned no rows for this strategy) also renders zero.
 	msgs2 := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, map[string]LifetimeTradeStats{})
-	if !strings.Contains(msgs2[0], " 5 ") {
-		t.Errorf("expected fallback #T=5 from empty map, got:\n%s", msgs2[0])
+	if !strings.Contains(msgs2[0], " 0     —") {
+		t.Errorf("expected zero #T/W-L from empty lifetime stats map, got:\n%s", msgs2[0])
 	}
 }

@@ -80,9 +80,6 @@ func TestRecordTradeResult_MidnightCrossing(t *testing.T) {
 	if r.DailyPnLDate != todayUTC() {
 		t.Errorf("expected DailyPnLDate=%s; got %s", todayUTC(), r.DailyPnLDate)
 	}
-	if r.TotalTrades != 1 {
-		t.Errorf("expected TotalTrades=1; got %d", r.TotalTrades)
-	}
 }
 
 // TestRecordTradeResult_SameDayAccumulation verifies that multiple trades on the
@@ -95,9 +92,6 @@ func TestRecordTradeResult_SameDayAccumulation(t *testing.T) {
 
 	if r.DailyPnL != 120.0 {
 		t.Errorf("expected DailyPnL=120 after two trades; got %.2f", r.DailyPnL)
-	}
-	if r.TotalTrades != 2 {
-		t.Errorf("expected TotalTrades=2; got %d", r.TotalTrades)
 	}
 }
 
@@ -131,7 +125,6 @@ func TestCheckRisk_ForceCloseOnDrawdown(t *testing.T) {
 		RiskState: RiskState{
 			PeakValue:      10000.0,
 			MaxDrawdownPct: 20.0,
-			TotalTrades:    1,
 			DailyPnLDate:   todayUTC(),
 		},
 		InitialCapital: 10000.0,
@@ -185,11 +178,6 @@ func TestCheckRisk_ForceCloseOnDrawdown(t *testing.T) {
 	// 3 trades recorded (1 spot + 2 options)
 	if len(s.TradeHistory) != 3 {
 		t.Errorf("expected 3 trades in history; got %d", len(s.TradeHistory))
-	}
-
-	// RiskState.TotalTrades incremented by 3 (was 1, now 4)
-	if s.RiskState.TotalTrades != 4 {
-		t.Errorf("expected TotalTrades=4; got %d", s.RiskState.TotalTrades)
 	}
 
 	// Cash: started $5000
@@ -738,7 +726,6 @@ func TestCheckRisk_ConsecutiveLossesForceClose(t *testing.T) {
 		RiskState: RiskState{
 			PeakValue:         10000.0,
 			MaxDrawdownPct:    50.0,
-			TotalTrades:       5,
 			ConsecutiveLosses: 5,
 			DailyPnLDate:      todayUTC(),
 		},
@@ -1563,7 +1550,6 @@ func TestCheckRisk_PerpsMarginDrawdown_FiresEarly(t *testing.T) {
 		RiskState: RiskState{
 			PeakValue:      589.0,
 			MaxDrawdownPct: 25.0,
-			TotalTrades:    1,
 			DailyPnLDate:   todayUTC(),
 		},
 		Positions: map[string]*Position{
@@ -1611,7 +1597,6 @@ func TestCheckRisk_PerpsDrawdownFiresBeforeAnyClosedTrades(t *testing.T) {
 		RiskState: RiskState{
 			PeakValue:      500,
 			MaxDrawdownPct: 10,
-			TotalTrades:    0,
 			DailyPnLDate:   todayUTC(),
 		},
 		Positions: map[string]*Position{
@@ -1669,7 +1654,6 @@ func TestCheckRisk_LiveHLSharedCoin_SetsPendingPartialClose(t *testing.T) {
 		RiskState: RiskState{
 			PeakValue:      589.0,
 			MaxDrawdownPct: 25.0,
-			TotalTrades:    1,
 			DailyPnLDate:   todayUTC(),
 		},
 		Positions: map[string]*Position{
@@ -1723,7 +1707,6 @@ func TestCheckRisk_LiveTopStepCB_SetsPendingFullFlatten(t *testing.T) {
 		RiskState: RiskState{
 			PeakValue:      5000.0,
 			MaxDrawdownPct: 25.0,
-			TotalTrades:    1,
 			DailyPnLDate:   todayUTC(),
 		},
 		Positions: map[string]*Position{
@@ -1783,7 +1766,6 @@ func TestCheckRisk_LiveTopStepCB_MultiPeerNoPending(t *testing.T) {
 		RiskState: RiskState{
 			PeakValue:      5000.0,
 			MaxDrawdownPct: 25.0,
-			TotalTrades:    1,
 			DailyPnLDate:   todayUTC(),
 		},
 		Positions: map[string]*Position{
@@ -1818,7 +1800,6 @@ func TestCheckRisk_PerpsMarginDrawdown_BelowThreshold(t *testing.T) {
 		RiskState: RiskState{
 			PeakValue:      589.0,
 			MaxDrawdownPct: 25.0,
-			TotalTrades:    1,
 			DailyPnLDate:   todayUTC(),
 		},
 		Positions: map[string]*Position{
@@ -1853,7 +1834,6 @@ func TestCheckRisk_PerpsPriorRealizedLossesDoNotInflateDrawdown(t *testing.T) {
 		RiskState: RiskState{
 			PeakValue:      1000.0,
 			MaxDrawdownPct: 25.0,
-			TotalTrades:    5,
 			DailyPnLDate:   todayUTC(),
 		},
 		Positions: map[string]*Position{
@@ -1890,7 +1870,6 @@ func TestCheckRisk_PerpsNoOpenPositions_FallsBackToPeak(t *testing.T) {
 		RiskState: RiskState{
 			PeakValue:      1000.0,
 			MaxDrawdownPct: 25.0,
-			TotalTrades:    3,
 			DailyPnLDate:   todayUTC(),
 		},
 		Positions:       map[string]*Position{},
@@ -1917,7 +1896,6 @@ func TestCheckRisk_SpotUnchanged(t *testing.T) {
 		RiskState: RiskState{
 			PeakValue:      1000.0,
 			MaxDrawdownPct: 25.0,
-			TotalTrades:    1,
 			DailyPnLDate:   todayUTC(),
 		},
 		Positions: map[string]*Position{

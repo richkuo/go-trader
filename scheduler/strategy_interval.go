@@ -42,7 +42,7 @@ func strategyDrawdownWarningActive(s *StrategyState, warnThresholdPct float64) b
 		return false
 	}
 	r := s.RiskState
-	if r.TotalTrades <= 0 || r.MaxDrawdownPct <= 0 || warnThresholdPct <= 0 {
+	if r.MaxDrawdownPct <= 0 || warnThresholdPct <= 0 {
 		return false
 	}
 	warnDrawdownPct := r.MaxDrawdownPct * warnThresholdPct / 100
