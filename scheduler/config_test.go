@@ -412,6 +412,92 @@ func TestValidateConfigValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateConfigOpenCloseFields(t *testing.T) {
+	cfg := Config{
+		Strategies: []StrategyConfig{{
+			ID:              "test-spot",
+			Type:            "spot",
+			Platform:        "binanceus",
+			Script:          "shared_scripts/check_strategy.py",
+			Args:            []string{"sma_crossover", "BTC/USDT", "1h"},
+			OpenStrategy:    "momentum",
+			CloseStrategies: []string{"rsi", "macd"},
+			Capital:         1000,
+			MaxDrawdownPct:  60,
+		}},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	if err := ValidateConfig(&cfg); err != nil {
+		t.Fatalf("expected valid open/close config, got: %v", err)
+	}
+}
+
+func TestValidateConfigOpenCloseRejectsOptions(t *testing.T) {
+	cfg := Config{
+		Strategies: []StrategyConfig{{
+			ID:              "test-options",
+			Type:            "options",
+			Platform:        "deribit",
+			Script:          "shared_scripts/check_options.py",
+			Args:            []string{"vol_mean_reversion", "BTC", "1h"},
+			CloseStrategies: []string{"rsi"},
+			Capital:         1000,
+			MaxDrawdownPct:  40,
+		}},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	err := ValidateConfig(&cfg)
+	if err == nil {
+		t.Fatal("expected options open/close validation error")
+	}
+	if !strings.Contains(err.Error(), "open_strategy/close_strategies") {
+		t.Fatalf("error %q should mention open/close fields", err.Error())
+	}
+}
+
+func TestValidateConfigCloseStrategyName(t *testing.T) {
+	cfg := Config{
+		Strategies: []StrategyConfig{{
+			ID:              "test-spot",
+			Type:            "spot",
+			Platform:        "binanceus",
+			Script:          "shared_scripts/check_strategy.py",
+			Args:            []string{"sma_crossover", "BTC/USDT", "1h"},
+			CloseStrategies: []string{"bad name"},
+			Capital:         1000,
+			MaxDrawdownPct:  60,
+		}},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	err := ValidateConfig(&cfg)
+	if err == nil {
+		t.Fatal("expected close strategy name validation error")
+	}
+	if !strings.Contains(err.Error(), "close_strategies[0]") {
+		t.Fatalf("error %q should mention close_strategies[0]", err.Error())
+	}
+}
+
+func TestValidateConfigOpenCloseDefersRegistryLookupToCheckScript(t *testing.T) {
+	cfg := Config{
+		Strategies: []StrategyConfig{{
+			ID:              "test-spot",
+			Type:            "spot",
+			Platform:        "binanceus",
+			Script:          "shared_scripts/check_strategy.py",
+			Args:            []string{"sma_crossover", "BTC/USDT", "1h"},
+			OpenStrategy:    "not_a_strategy",
+			CloseStrategies: []string{"rsi"},
+			Capital:         1000,
+			MaxDrawdownPct:  60,
+		}},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	if err := ValidateConfig(&cfg); err != nil {
+		t.Fatalf("syntactically valid strategy names should be accepted by config validation: %v", err)
+	}
+}
+
 func TestValidateConfigPortfolioRisk(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{{
