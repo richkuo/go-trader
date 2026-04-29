@@ -412,6 +412,92 @@ func TestValidateConfigValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateConfigOpenCloseFields(t *testing.T) {
+	cfg := Config{
+		Strategies: []StrategyConfig{{
+			ID:              "test-spot",
+			Type:            "spot",
+			Platform:        "binanceus",
+			Script:          "shared_scripts/check_strategy.py",
+			Args:            []string{"sma_crossover", "BTC/USDT", "1h"},
+			OpenStrategy:    "momentum",
+			CloseStrategies: []string{"rsi", "macd"},
+			Capital:         1000,
+			MaxDrawdownPct:  60,
+		}},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	if err := ValidateConfig(&cfg); err != nil {
+		t.Fatalf("expected valid open/close config, got: %v", err)
+	}
+}
+
+func TestValidateConfigOpenCloseRejectsOptions(t *testing.T) {
+	cfg := Config{
+		Strategies: []StrategyConfig{{
+			ID:              "test-options",
+			Type:            "options",
+			Platform:        "deribit",
+			Script:          "shared_scripts/check_options.py",
+			Args:            []string{"vol_mean_reversion", "BTC", "1h"},
+			CloseStrategies: []string{"rsi"},
+			Capital:         1000,
+			MaxDrawdownPct:  40,
+		}},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	err := ValidateConfig(&cfg)
+	if err == nil {
+		t.Fatal("expected options open/close validation error")
+	}
+	if !strings.Contains(err.Error(), "open_strategy/close_strategies") {
+		t.Fatalf("error %q should mention open/close fields", err.Error())
+	}
+}
+
+func TestValidateConfigCloseStrategyName(t *testing.T) {
+	cfg := Config{
+		Strategies: []StrategyConfig{{
+			ID:              "test-spot",
+			Type:            "spot",
+			Platform:        "binanceus",
+			Script:          "shared_scripts/check_strategy.py",
+			Args:            []string{"sma_crossover", "BTC/USDT", "1h"},
+			CloseStrategies: []string{"bad name"},
+			Capital:         1000,
+			MaxDrawdownPct:  60,
+		}},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	err := ValidateConfig(&cfg)
+	if err == nil {
+		t.Fatal("expected close strategy name validation error")
+	}
+	if !strings.Contains(err.Error(), "close_strategies[0]") {
+		t.Fatalf("error %q should mention close_strategies[0]", err.Error())
+	}
+}
+
+func TestValidateConfigOpenCloseDefersRegistryLookupToCheckScript(t *testing.T) {
+	cfg := Config{
+		Strategies: []StrategyConfig{{
+			ID:              "test-spot",
+			Type:            "spot",
+			Platform:        "binanceus",
+			Script:          "shared_scripts/check_strategy.py",
+			Args:            []string{"sma_crossover", "BTC/USDT", "1h"},
+			OpenStrategy:    "not_a_strategy",
+			CloseStrategies: []string{"rsi"},
+			Capital:         1000,
+			MaxDrawdownPct:  60,
+		}},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	if err := ValidateConfig(&cfg); err != nil {
+		t.Fatalf("syntactically valid strategy names should be accepted by config validation: %v", err)
+	}
+}
+
 func TestValidateConfigPortfolioRisk(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{{
@@ -705,6 +791,100 @@ func TestLoadConfigLeverageRejectsOutOfRange(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "leverage must be in") {
 		t.Errorf("error = %v, want 'leverage must be in'", err)
+	}
+}
+
+// #486: HL perps strategies default to isolated margin mode.
+func TestLoadConfigHLPerpsDefaultsToIsolatedMargin(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.Strategies[0].MarginMode != "isolated" {
+		t.Errorf("MarginMode = %q, want %q (default)", cfg.Strategies[0].MarginMode, "isolated")
+	}
+}
+
+// #486: explicit cross margin mode is preserved.
+func TestLoadConfigHLPerpsExplicitCross(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"margin_mode": "cross"
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.Strategies[0].MarginMode != "cross" {
+		t.Errorf("MarginMode = %q, want %q", cfg.Strategies[0].MarginMode, "cross")
+	}
+}
+
+// #486: invalid margin_mode rejected.
+func TestLoadConfigMarginModeRejectsInvalidValue(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"margin_mode": "portfolio"
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for margin_mode=portfolio")
+	}
+	if !strings.Contains(err.Error(), "margin_mode must be") {
+		t.Errorf("error = %v, want 'margin_mode must be'", err)
+	}
+}
+
+// #486: margin_mode is HL-perps-only (rejected on spot).
+func TestLoadConfigMarginModeRejectsSpot(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "test-spot",
+			"type": "spot",
+			"script": "shared_scripts/check_strategy.py",
+			"args": ["sma_crossover", "BTC/USDT", "1h"],
+			"capital": 1000,
+			"margin_mode": "isolated"
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for margin_mode on spot")
+	}
+	if !strings.Contains(err.Error(), "margin_mode is only supported for HL perps") {
+		t.Errorf("error = %v, want 'margin_mode is only supported for HL perps'", err)
 	}
 }
 

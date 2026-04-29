@@ -330,3 +330,18 @@ class HyperliquidExchangeAdapter:
                 "cancel_trigger_order requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
         return self._exchange.cancel(symbol, int(oid))
+
+    def update_leverage(self, leverage: int, symbol: str, is_cross: bool) -> dict:
+        """Set leverage and margin mode (cross/isolated) for ``symbol`` (#486).
+
+        HL's SDK takes both fields in one call, so callers always pass both.
+        Fails closed: HL rejects this when there is an open position on the
+        coin, so the scheduler must only invoke it when opening from flat.
+        """
+        if not self._exchange:
+            raise RuntimeError(
+                "update_leverage requires live mode (set HYPERLIQUID_SECRET_KEY)"
+            )
+        if leverage < 1:
+            raise ValueError(f"leverage must be >= 1, got {leverage}")
+        return self._exchange.update_leverage(int(leverage), symbol, bool(is_cross))

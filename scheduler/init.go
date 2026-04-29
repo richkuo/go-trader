@@ -503,6 +503,7 @@ func generateConfig(opts InitOptions) *Config {
 					AllowShorts:       allowShorts,
 					StopLossPct:       opts.HLStopLossPct,
 					StopLossMarginPct: opts.HLStopLossMarginPct,
+					MarginMode:        "isolated", // #486: hard-cap loss per position; cross would let one strategy drain another's margin
 				})
 			}
 		}

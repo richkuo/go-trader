@@ -18,6 +18,7 @@ const scriptTimeout = 30 * time.Second
 
 // SpotResult is the JSON output from check_strategy.py.
 type SpotResult struct {
+	StrategyDecisionFields
 	Strategy   string                 `json:"strategy"`
 	Symbol     string                 `json:"symbol"`
 	Timeframe  string                 `json:"timeframe"`
@@ -30,6 +31,7 @@ type SpotResult struct {
 
 // HyperliquidResult is the JSON output from check_hyperliquid.py (signal check mode).
 type HyperliquidResult struct {
+	StrategyDecisionFields
 	Strategy   string                 `json:"strategy"`
 	Symbol     string                 `json:"symbol"`
 	Timeframe  string                 `json:"timeframe"`
@@ -209,9 +211,12 @@ func RunHyperliquidCheck(script string, args []string) (*HyperliquidResult, stri
 // (used on signal-based closes so the stale SL doesn't race the close fill).
 // prevPosQty > 0 indicates a flip is in progress: total_sz from the fill is
 // closeQty + newQty, and the SL must be sized against (total_sz - prevPosQty)
-// or HL will reject the oversized reduce-only trigger (#421). These trailing
-// args are HL-specific: OKX/TopStep have their own execute helpers and signatures.
-func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64) (*HyperliquidExecuteResult, string, error) {
+// or HL will reject the oversized reduce-only trigger (#421).
+// marginMode ("isolated"|"cross") + leverage are forwarded to update_leverage
+// before the order, but only on a fresh open from flat — HL rejects margin-mode
+// changes on an open position (#486). Empty marginMode skips the call. These
+// trailing args are HL-specific: OKX/TopStep have their own execute helpers.
+func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64) (*HyperliquidExecuteResult, string, error) {
 	args := []string{
 		"--execute",
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -227,6 +232,12 @@ func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float6
 	}
 	if prevPosQty > 0 {
 		args = append(args, fmt.Sprintf("--prev-pos-qty=%g", prevPosQty))
+	}
+	if marginMode != "" {
+		args = append(args, fmt.Sprintf("--margin-mode=%s", marginMode))
+		if leverage > 0 {
+			args = append(args, fmt.Sprintf("--leverage=%g", leverage))
+		}
 	}
 	stdout, stderr, err := RunPythonScript(script, args)
 	return parseHyperliquidExecuteOutput(stdout, string(stderr), err)
@@ -366,6 +377,7 @@ type ContractSpec struct {
 
 // TopStepResult is the JSON output from check_topstep.py (signal check mode).
 type TopStepResult struct {
+	StrategyDecisionFields
 	Strategy     string                 `json:"strategy"`
 	Symbol       string                 `json:"symbol"`
 	Timeframe    string                 `json:"timeframe"`
@@ -573,6 +585,7 @@ func parseTopStepPositionsOutput(stdout []byte, stderrStr string, runErr error) 
 
 // RobinhoodResult is the JSON output from check_robinhood.py (signal check mode).
 type RobinhoodResult struct {
+	StrategyDecisionFields
 	Strategy   string                 `json:"strategy"`
 	Symbol     string                 `json:"symbol"`
 	Timeframe  string                 `json:"timeframe"`
@@ -661,6 +674,7 @@ func RunRobinhoodExecute(script, symbol, side string, amountUSD, quantity float6
 
 // OKXResult is the JSON output from check_okx.py (signal check mode).
 type OKXResult struct {
+	StrategyDecisionFields
 	Strategy   string                 `json:"strategy"`
 	Symbol     string                 `json:"symbol"`
 	Timeframe  string                 `json:"timeframe"`
