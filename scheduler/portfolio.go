@@ -9,7 +9,7 @@ import (
 // Position represents a spot, futures, or perps position.
 type Position struct {
 	Symbol            string    `json:"symbol"`
-	TradePositionID   string    `json:"trade_position_id,omitempty"`
+	TradePositionID   string    `json:"position_id,omitempty"`
 	Quantity          float64   `json:"quantity"`
 	AvgCost           float64   `json:"avg_cost"`
 	Side              string    `json:"side"`                           // "long" or "short"

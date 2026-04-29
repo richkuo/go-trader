@@ -9,7 +9,7 @@ import (
 // OptionPosition represents a tracked options position.
 type OptionPosition struct {
 	ID              string    `json:"id"`
-	TradePositionID string    `json:"trade_position_id,omitempty"`
+	TradePositionID string    `json:"position_id,omitempty"`
 	Underlying      string    `json:"underlying"`
 	OptionType      string    `json:"option_type"` // "call" or "put"
 	Strike          float64   `json:"strike"`

@@ -484,6 +484,7 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 
 	case "call":
 		// Sold call ITM (call-away): we must sell the underlying at strike.
+		now := time.Now().UTC()
 		proceeds := r.AssignStrike * r.AssignQuantity
 		s.Cash += proceeds
 		pnl := 0.0
@@ -493,7 +494,7 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 			pnl = (r.AssignStrike - existing.AvgCost) * r.AssignQuantity
 			newQty := existing.Quantity - r.AssignQuantity
 			if newQty <= 0 {
-				recordClosedPosition(s, existing, r.AssignStrike, pnl, "assignment", time.Now().UTC())
+				recordClosedPosition(s, existing, r.AssignStrike, pnl, "assignment", now)
 				delete(s.Positions, symbol)
 			} else {
 				existing.Quantity = newQty
@@ -501,7 +502,7 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 			RecordTradeResult(&s.RiskState, pnl)
 		}
 		RecordTrade(s, Trade{
-			Timestamp:  time.Now().UTC(),
+			Timestamp:  now,
 			StrategyID: s.ID,
 			Symbol:     symbol,
 			PositionID: positionID,
