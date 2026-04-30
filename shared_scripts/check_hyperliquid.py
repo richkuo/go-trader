@@ -85,7 +85,7 @@ def _position_ctx_from_args(args):
 
 def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False,
                      strategy_params_override=None, open_strategy=None,
-                     close_strategies=None, disable_implicit_close=False,
+                     close_strategies=None,
                      position_side="", position_ctx=None):
     """Run strategy signal check using Hyperliquid OHLCV data."""
     try:
@@ -98,10 +98,10 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             parse_close_strategies,
         )
 
-        open_close_enabled = bool(open_strategy or close_strategies or disable_implicit_close)
+        open_close_enabled = bool(open_strategy or close_strategies)
         configured_names = [open_strategy or strategy_name]
         configured_names.extend(parse_close_strategies(close_strategies))
-        if not close_strategies and open_close_enabled and not disable_implicit_close:
+        if not close_strategies and open_close_enabled:
             configured_names.append(open_strategy or strategy_name)
         for name in configured_names:
             get_strategy(name)
@@ -155,7 +155,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 open_strategy,
                 parse_close_strategies(close_strategies),
                 position_side,
-                disable_implicit_close,
                 strategy_params or None,
                 position_ctx,
             )
@@ -632,7 +631,6 @@ def main():
         parser.add_argument("--params", default=None)
         parser.add_argument("--open-strategy", default=None)
         parser.add_argument("--close-strategies", default=None)
-        parser.add_argument("--disable-implicit-close", action="store_true", default=False)
         parser.add_argument("--position-side", default="")
         parser.add_argument("--position-avg-cost", type=float, default=None)
         parser.add_argument("--position-qty", type=float, default=None)
@@ -644,7 +642,7 @@ def main():
         run_signal_check(
             args.strategy, args.symbol, args.timeframe, args.mode,
             args.htf_filter, params_override, args.open_strategy,
-            args.close_strategies, args.disable_implicit_close,
+            args.close_strategies,
             args.position_side, position_ctx,
         )
 

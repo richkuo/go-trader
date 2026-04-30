@@ -336,7 +336,6 @@ Cadence is wall-clock based and survives restarts: per-channel last-post timesta
 | `params` | Custom strategy parameters (e.g. `{"multiplier": 2.0}`) | null |
 | `open_strategy` | Override the entry strategy name (otherwise read from `args[0]`) | null |
 | `close_strategies` | Ordered list of exit evaluators; the one with the largest `close_fraction` wins (#483) | null |
-| `disable_implicit_close` | Suppress the legacy signal-reversal close when no `close_strategies` is configured | false |
 | `leverage` | Perps only — exchange leverage used for margin drawdown and HL `update_leverage` (#497). If `sizing_leverage` is omitted, this also controls order sizing for backwards compatibility. | 1 |
 | `sizing_leverage` | Perps only — position-sizing multiplier used for `cash * sizing_leverage * 0.95` order budgets (#497). Set lower than exchange `leverage` to run high exchange leverage without oversized orders. | `leverage` |
 | `stop_loss_pct` | HL perps only — reduce-only stop-loss trigger as a % of entry price. Omit to auto-derive from `max_drawdown_pct` (capped at 50%) when this strategy is the only HL perps strategy on its coin; same-coin peers must name one explicit positive owner (#484, #494). Explicit `0` opts out. | omitted (auto for sole owner) |

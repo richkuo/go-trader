@@ -52,17 +52,15 @@ func TestAppendOpenCloseArgsOnlyWhenOptedIn(t *testing.T) {
 	}
 
 	sc := StrategyConfig{
-		Args:                 []string{"sma_crossover", "BTC/USDT", "1h"},
-		OpenStrategy:         "momentum",
-		CloseStrategies:      []string{"rsi", "macd"},
-		DisableImplicitClose: true,
+		Args:            []string{"sma_crossover", "BTC/USDT", "1h"},
+		OpenStrategy:    "momentum",
+		CloseStrategies: []string{"rsi", "macd"},
 	}
 	got := appendOpenCloseArgs(sc.Args, sc, PositionCtx{Side: "long"})
 	want := []string{
 		"sma_crossover", "BTC/USDT", "1h",
 		"--open-strategy", "momentum",
 		"--close-strategies", "rsi,macd",
-		"--disable-implicit-close",
 		"--position-side", "long",
 	}
 	if !reflect.DeepEqual(got, want) {

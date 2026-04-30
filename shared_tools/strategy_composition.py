@@ -126,13 +126,10 @@ def effective_close_strategies(
     positional_strategy: str,
     open_strategy: Optional[str],
     close_strategies: Optional[Iterable[str]],
-    disable_implicit_close: bool,
 ) -> list[str]:
     explicit = parse_close_strategies(close_strategies)
     if explicit:
         return explicit
-    if disable_implicit_close:
-        return []
     return [(open_strategy or positional_strategy).strip()]
 
 
@@ -192,13 +189,12 @@ def evaluate_open_close(
     open_strategy: Optional[str],
     close_strategies: Optional[Iterable[str]],
     position_side: str,
-    disable_implicit_close: bool,
     params: Optional[dict] = None,
     position_ctx: Optional[dict] = None,
 ) -> OpenCloseEvaluation:
     open_name = (open_strategy or positional_strategy).strip()
     close_names = effective_close_strategies(
-        positional_strategy, open_name, close_strategies, disable_implicit_close
+        positional_strategy, open_name, close_strategies
     )
     cache: dict[tuple[str, str], pd.DataFrame] = {}
 

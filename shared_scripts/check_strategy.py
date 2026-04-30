@@ -67,10 +67,9 @@ def main():
     htf_filter_enabled = "--htf-filter" in sys.argv
     open_strategy = _arg_value("--open-strategy")
     close_strategies_raw = _arg_value("--close-strategies")
-    disable_implicit_close = "--disable-implicit-close" in sys.argv
     position_side = (_arg_value("--position-side", "") or "").lower()
     position_ctx = _position_ctx(position_side)
-    open_close_enabled = bool(open_strategy or close_strategies_raw or disable_implicit_close)
+    open_close_enabled = bool(open_strategy or close_strategies_raw)
     strategy_params = None
     if "--params" in sys.argv:
         idx = sys.argv.index("--params")
@@ -118,7 +117,7 @@ def main():
 
         configured_names = [open_strategy or strategy_name]
         configured_names.extend(parse_close_strategies(close_strategies_raw))
-        if not close_strategies_raw and open_close_enabled and not disable_implicit_close:
+        if not close_strategies_raw and open_close_enabled:
             configured_names.append(open_strategy or strategy_name)
         for name in configured_names:
             get_strategy(name)
@@ -180,7 +179,6 @@ def main():
                 open_strategy,
                 parse_close_strategies(close_strategies_raw),
                 position_side,
-                disable_implicit_close,
                 strategy_params,
                 position_ctx,
             )
