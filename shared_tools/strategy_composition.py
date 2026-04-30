@@ -9,6 +9,7 @@ separately, then compose them back to the existing signal contract.
 from __future__ import annotations
 
 import json
+import inspect
 from dataclasses import dataclass
 from typing import Callable, Iterable, Optional
 
@@ -17,6 +18,7 @@ import pandas as pd
 
 VALID_POSITION_SIDES = {"", "long", "short"}
 VALID_OPEN_ACTIONS = {"long", "short", "none"}
+POSITION_CONTEXT_PARAM_KEYS = {"side", "avg_cost", "current_quantity", "initial_quantity", "entry_atr"}
 
 
 @dataclass
@@ -161,6 +163,25 @@ def _merge_close_params(base: Optional[dict], position_ctx: Optional[dict]) -> O
     merged = dict(base or {})
     merged.update(position_ctx)
     return merged
+
+
+def strip_unsupported_position_context(fn, params: dict) -> dict:
+    if not params:
+        return params
+    sig = inspect.signature(fn)
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+        return params
+    accepted = {
+        name for name, p in sig.parameters.items()
+        if name != "df" and p.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+    }
+    return {
+        key: value for key, value in params.items()
+        if key in accepted or key not in POSITION_CONTEXT_PARAM_KEYS
+    }
 
 
 def evaluate_open_close(

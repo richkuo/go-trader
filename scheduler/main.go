@@ -1088,6 +1088,9 @@ func main() {
 						if hlLiveStrategy {
 							hlCash = stratState.Cash
 						}
+						// Live-order sizing/cancel snapshots below are intentionally
+						// consumed only inside live execution branches. Paper paths
+						// should continue using PositionCtx only for close evaluation.
 						if sym := hyperliquidSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
 								hlPosCtx = positionCtxFromPosition(pos)

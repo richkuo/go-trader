@@ -940,7 +940,12 @@ def _position_close_frame(df: pd.DataFrame, close_fraction: float, reason: str) 
     {"pct": 0.03},
 )
 def tp_at_pct_strategy(df: pd.DataFrame, pct: float = 0.03, **params) -> pd.DataFrame:
-    """Reference close evaluator for position-aware wiring tests (#496)."""
+    """Reference close evaluator for position-aware wiring tests (#496).
+
+    Entry ATR is available only when the entry strategy's result includes an
+    ``atr`` column; check scripts copy that last-row value into ``entry_atr``.
+    ATR-dependent close evaluators should return a no-op reason when it is 0.
+    """
     avg_cost = _position_float(params, "avg_cost")
     current_quantity = _position_float(params, "current_quantity")
     initial_quantity = _position_float(params, "initial_quantity")

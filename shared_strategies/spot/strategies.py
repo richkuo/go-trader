@@ -9,13 +9,18 @@ the surface (``STRATEGY_REGISTRY`` dict, ``apply_strategy``, ``list_strategies``
 """
 
 import importlib.util
-import inspect
 import json
 import os
 import sys
 from typing import Dict, List, Optional
 
 import pandas as pd
+
+_TOOLS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "shared_tools")
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+
+from strategy_composition import strip_unsupported_position_context
 
 
 def _load_registry_module():
@@ -36,7 +41,6 @@ def _load_registry_module():
 _registry = _load_registry_module()
 
 STRATEGY_REGISTRY: Dict[str, dict] = _registry.build_registry("spot")
-POSITION_CONTEXT_PARAM_KEYS = {"side", "avg_cost", "current_quantity", "initial_quantity", "entry_atr"}
 
 
 def get_strategy(name: str) -> dict:
@@ -53,27 +57,8 @@ def apply_strategy(name: str, df: pd.DataFrame, params: Optional[dict] = None) -
     """Apply a named strategy with optional parameter overrides."""
     strat = get_strategy(name)
     p = {**strat["default_params"], **(params or {})}
-    p = _strip_unsupported_position_context(strat["fn"], p)
+    p = strip_unsupported_position_context(strat["fn"], p)
     return strat["fn"](df, **p)
-
-
-def _strip_unsupported_position_context(fn, params: dict) -> dict:
-    if not params:
-        return params
-    sig = inspect.signature(fn)
-    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-        return params
-    accepted = {
-        name for name, p in sig.parameters.items()
-        if name != "df" and p.kind in (
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            inspect.Parameter.KEYWORD_ONLY,
-        )
-    }
-    return {
-        key: value for key, value in params.items()
-        if key in accepted or key not in POSITION_CONTEXT_PARAM_KEYS
-    }
 
 
 if __name__ == "__main__":
