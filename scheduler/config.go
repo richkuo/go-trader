@@ -206,8 +206,8 @@ type StrategyConfig struct {
 	HTFFilter            bool                   `json:"htf_filter,omitempty"`           // higher-timeframe trend filter
 	AllowShorts          bool                   `json:"allow_shorts,omitempty"`         // perps only: opt-in to bidirectional execution — signal=-1 from flat opens a short, long+(-1) closes-and-flips. Default false preserves close-long-only behavior for strategies like triple_ema that emit -1 only as a long-exit (#328)
 	Leverage             float64                `json:"leverage,omitempty"`             // perps leverage multiplier (default 1 = no leverage); used for notional sizing and margin-based valuation (#254)
-	StopLossPct          *float64               `json:"stop_loss_pct,omitempty"`        // HL perps only: % from entry to place a reduce-only stop-loss trigger. Pointer so omitted (nil) falls through to StopLossMarginPct then MaxDrawdownPct (#484); explicit 0 disables auto-SL (#412)
-	StopLossMarginPct    *float64               `json:"stop_loss_margin_pct,omitempty"` // HL perps only: % of deployed margin to lose before stop-loss trigger; mutually exclusive with stop_loss_pct; price % derived as StopLossMarginPct / Leverage at order time. Pointer so omitted falls through to MaxDrawdownPct; explicit 0 disables (#487, #484)
+	StopLossPct          *float64               `json:"stop_loss_pct,omitempty"`        // HL perps only: % from entry to place a reduce-only stop-loss trigger. Pointer so omitted (nil) falls through to StopLossMarginPct then MaxDrawdownPct for single-coin strategies (#484); LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables auto-SL (#412)
+	StopLossMarginPct    *float64               `json:"stop_loss_margin_pct,omitempty"` // HL perps only: % of deployed margin to lose before stop-loss trigger; mutually exclusive with stop_loss_pct; price % derived as StopLossMarginPct / Leverage at order time. Pointer so omitted falls through to MaxDrawdownPct for single-coin strategies; LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables (#487, #484)
 	MarginMode           string                 `json:"margin_mode,omitempty"`          // HL perps only: "isolated" (default) or "cross"; sent via update_leverage on fresh opens to enforce per-position liq isolation (#486)
 	Params               map[string]interface{} `json:"params,omitempty"`               // custom strategy parameters passed to Python
 	ThetaHarvest         *ThetaHarvestConfig    `json:"theta_harvest,omitempty"`
@@ -227,6 +227,10 @@ const MaxAutoStopLossPct = 50.0
 //  3. MaxDrawdownPct as a fallback so any HL perps strategy with a configured
 //     drawdown automatically gets exchange-side protection. Capped at
 //     MaxAutoStopLossPct.
+//
+// LoadConfig normalizes omitted stop_loss_* fields to explicit 0 for same-coin
+// HL peer strategies (#494), so the fallback is used at runtime only for
+// strategies that are sole owners of a coin or explicitly retain a positive SL.
 //
 // HL perps only — returns 0 for non-HL platforms or non-perps types so the
 // caller can skip the trigger placement unconditionally.
@@ -416,6 +420,7 @@ func LoadConfig(path string) (*Config, error) {
 			fmt.Printf("[INFO] %s: no theta_harvest config, applying defaults (profit=60%%, stop=200%%, dte=3)\n", cfg.Strategies[i].ID)
 		}
 	}
+	normalizeHyperliquidPeerStopLosses(cfg.Strategies)
 
 	// #42: Apply portfolio risk defaults if not configured.
 	if cfg.PortfolioRisk == nil {
@@ -441,6 +446,49 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// normalizeHyperliquidPeerStopLosses preserves the single-strategy auto-SL
+// fallback while avoiding accidental reduce-only trigger races for same-coin
+// peer strategies (#494). When multiple HL perps strategies share a coin,
+// omitted stop_loss_* fields are treated as an explicit opt-out; operators can
+// still select one owner with a positive stop_loss_pct or stop_loss_margin_pct.
+func normalizeHyperliquidPeerStopLosses(strategies []StrategyConfig) {
+	type peerRef struct {
+		ID    string
+		Index int
+	}
+	groups := make(map[string][]peerRef)
+	for i, sc := range strategies {
+		if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+			continue
+		}
+		coin := hyperliquidSymbol(sc.Args)
+		if coin == "" {
+			continue
+		}
+		groups[coin] = append(groups[coin], peerRef{ID: sc.ID, Index: i})
+	}
+
+	coins := make([]string, 0, len(groups))
+	for coin := range groups {
+		coins = append(coins, coin)
+	}
+	sort.Strings(coins)
+	for _, coin := range coins {
+		peers := groups[coin]
+		if len(peers) < 2 {
+			continue
+		}
+		sort.Slice(peers, func(i, j int) bool { return peers[i].ID < peers[j].ID })
+		for _, p := range peers {
+			sc := &strategies[p.Index]
+			if sc.StopLossPct == nil && sc.StopLossMarginPct == nil {
+				zero := 0.0
+				sc.StopLossPct = &zero
+			}
+		}
+	}
 }
 
 // hyperliquidPeerStrategyErrors returns validation messages for HL perps
@@ -470,7 +518,7 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 		Coin           string
 		MarginMode     string
 		Leverage       float64
-		EffectiveSLPct float64 // resolved via EffectiveStopLossPct: nil→auto from MaxDrawdownPct, 0→disabled, >0→explicit
+		EffectiveSLPct float64 // resolved after LoadConfig peer normalization: >0 means this strategy owns a trigger
 	}
 	groups := make(map[string][]peer)
 	for _, sc := range strategies {
@@ -783,8 +831,9 @@ func ValidateConfig(cfg *Config) error {
 		// A hand-edited config with stop_loss_pct=200 would otherwise silently
 		// place an SL at $0 (long) or 3× entry (short) — both never trigger,
 		// breaking the safety feature without any warning. Pointer-aware (#484):
-		// nil means the field was omitted (auto-SL falls through to margin/DD);
-		// explicit 0 means the operator opted out and is allowed.
+		// nil means the field was omitted (auto-SL falls through to margin/DD
+		// for single-coin strategies); explicit 0 means the operator opted out
+		// and is allowed. LoadConfig rewrites omitted same-coin peers to 0 (#494).
 		if sc.StopLossPct != nil {
 			pct := *sc.StopLossPct
 			if pct < 0 || pct > 50 {

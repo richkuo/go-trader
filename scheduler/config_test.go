@@ -817,6 +817,32 @@ func TestLoadConfigHLPerpsDefaultsToIsolatedMargin(t *testing.T) {
 	}
 }
 
+// #494: a single HL perps strategy on a coin still auto-derives its
+// exchange-side stop-loss from max_drawdown_pct when stop_loss_* is omitted.
+func TestLoadConfigHLPerpsSingleStrategyAutoDerivesStopLoss(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"max_drawdown_pct": 10,
+			"leverage": 5
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if got := EffectiveStopLossPct(cfg.Strategies[0]); got != 10 {
+		t.Errorf("EffectiveStopLossPct = %g, want 10", got)
+	}
+}
+
 // #486: explicit cross margin mode is preserved.
 func TestLoadConfigHLPerpsExplicitCross(t *testing.T) {
 	dir := t.TempDir()
@@ -893,9 +919,8 @@ func TestLoadConfigMarginModeRejectsSpot(t *testing.T) {
 // share a single on-chain position. Matching peers load successfully.
 func TestLoadConfigHLPerpsPeersOnSameCoinMatching(t *testing.T) {
 	dir := t.TempDir()
-	// #484: omitting stop_loss_pct now auto-derives from max_drawdown_pct, so
-	// peers that both omit it would each place a SL trigger — a conflict.
-	// Use stop_loss_pct:0 on the second peer to disable auto-SL for that leg.
+	// #494: omitted stop_loss_* on same-coin peers is normalized to opt-out so
+	// existing multi-strategy configs don't all become stop-loss owners.
 	cfgJSON := `{
 		"strategies": [
 			{
@@ -916,8 +941,7 @@ func TestLoadConfigHLPerpsPeersOnSameCoinMatching(t *testing.T) {
 				"args": ["donchian_breakout", "ETH", "4h", "--mode=paper"],
 				"capital": 500,
 				"leverage": 5,
-				"margin_mode": "isolated",
-				"stop_loss_pct": 0
+				"margin_mode": "isolated"
 			}
 		]
 	}`
@@ -928,6 +952,11 @@ func TestLoadConfigHLPerpsPeersOnSameCoinMatching(t *testing.T) {
 	}
 	if len(cfg.Strategies) != 2 {
 		t.Fatalf("expected 2 strategies, got %d", len(cfg.Strategies))
+	}
+	for _, sc := range cfg.Strategies {
+		if got := EffectiveStopLossPct(sc); got != 0 {
+			t.Errorf("%s EffectiveStopLossPct = %g, want 0 for omitted same-coin peer", sc.ID, got)
+		}
 	}
 }
 
@@ -1052,9 +1081,8 @@ func TestLoadConfigHLPerpsPeersConflictingStopLoss(t *testing.T) {
 // two or more peers configure SLs that would race on the shared position.
 func TestLoadConfigHLPerpsPeersSingleStopLossAllowed(t *testing.T) {
 	dir := t.TempDir()
-	// #484: the second peer must use stop_loss_pct:0 to opt out of auto-SL —
-	// omitting the field would auto-derive from max_drawdown_pct and create
-	// a second SL trigger that races with the first peer's trigger.
+	// #494: an omitted same-coin peer is normalized to opt-out, while the
+	// explicit positive stop_loss_pct remains the sole trigger owner.
 	cfgJSON := `{
 		"strategies": [
 			{
@@ -1076,14 +1104,24 @@ func TestLoadConfigHLPerpsPeersSingleStopLossAllowed(t *testing.T) {
 				"args": ["donchian_breakout", "ETH", "4h", "--mode=paper"],
 				"capital": 500,
 				"leverage": 5,
-				"margin_mode": "isolated",
-				"stop_loss_pct": 0
+				"margin_mode": "isolated"
 			}
 		]
 	}`
 	path := writeTestConfig(t, dir, cfgJSON)
-	if _, err := LoadConfig(path); err != nil {
+	cfg, err := LoadConfig(path)
+	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	got := map[string]float64{}
+	for _, sc := range cfg.Strategies {
+		got[sc.ID] = EffectiveStopLossPct(sc)
+	}
+	if got["hl-eth-trend"] != 3 {
+		t.Errorf("explicit owner EffectiveStopLossPct = %g, want 3", got["hl-eth-trend"])
+	}
+	if got["hl-eth-breakout"] != 0 {
+		t.Errorf("omitted peer EffectiveStopLossPct = %g, want 0", got["hl-eth-breakout"])
 	}
 }
 
@@ -1121,9 +1159,9 @@ func TestLoadConfigHLPerpsPeersDifferentCoinsIndependent(t *testing.T) {
 	}
 }
 
-// #491/#484: peers that both disable SL via explicit stop_loss_pct:0 must not
-// trip the conflict guard. Omitting the field auto-derives from MaxDrawdownPct
-// (#484), so disabling requires an explicit 0.
+// #491/#494: peers that disable SL via explicit stop_loss_pct:0 must not trip
+// the conflict guard. Explicit zero remains an opt-out even though omitted
+// same-coin peers are also normalized to opt-out.
 func TestLoadConfigHLPerpsPeersNoStopLossAllowed(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1163,7 +1201,6 @@ func TestLoadConfigHLPerpsPeersNoStopLossAllowed(t *testing.T) {
 // margin_mode:"" should match a peer with margin_mode:"isolated".
 func TestLoadConfigHLPerpsPeersDefaultedMarginModeMatches(t *testing.T) {
 	dir := t.TempDir()
-	// #484: disable auto-SL on one peer to avoid the SL-conflict error.
 	cfgJSON := `{
 		"strategies": [
 			{
@@ -1183,8 +1220,7 @@ func TestLoadConfigHLPerpsPeersDefaultedMarginModeMatches(t *testing.T) {
 				"args": ["donchian_breakout", "ETH", "4h", "--mode=paper"],
 				"capital": 500,
 				"leverage": 5,
-				"margin_mode": "isolated",
-				"stop_loss_pct": 0
+				"margin_mode": "isolated"
 			}
 		]
 	}`
@@ -1200,10 +1236,9 @@ func TestLoadConfigHLPerpsPeersDefaultedMarginModeMatches(t *testing.T) {
 	}
 }
 
-// #484: two peers that both omit stop_loss_pct both auto-derive from
-// max_drawdown_pct; each would place a reduce-only SL trigger on the shared
-// on-chain position, so the config is rejected.
-func TestLoadConfigHLPerpsPeersAutoSLConflict(t *testing.T) {
+// #494: two peers that both omit stop_loss_* on the same coin are normalized
+// to explicit opt-out so old multi-strategy configs keep loading after v9.
+func TestLoadConfigHLPerpsPeersOmittedStopLossDoesNotConflict(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
 		"strategies": [
@@ -1230,12 +1265,14 @@ func TestLoadConfigHLPerpsPeersAutoSLConflict(t *testing.T) {
 		]
 	}`
 	path := writeTestConfig(t, dir, cfgJSON)
-	_, err := LoadConfig(path)
-	if err == nil {
-		t.Fatal("expected conflict error for two peers both auto-deriving SL from max_drawdown_pct")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed for omitted same-coin stop_loss_* peers: %v", err)
 	}
-	if !strings.Contains(err.Error(), "conflicting stop_loss_pct") {
-		t.Errorf("error = %v, want 'conflicting stop_loss_pct'", err)
+	for _, sc := range cfg.Strategies {
+		if got := EffectiveStopLossPct(sc); got != 0 {
+			t.Errorf("%s EffectiveStopLossPct = %g, want 0", sc.ID, got)
+		}
 	}
 }
 

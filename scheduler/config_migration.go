@@ -76,16 +76,15 @@ const v8DeprecationNotice = "**Note:** `discord.spot_summary_freq` and `discord.
 // v9 introduced auto-derivation of HL perps per-trade stop-loss from
 // max_drawdown_pct (#484). The field types changed from float64 to *float64
 // so omitted (nil) is distinguishable from explicit 0. Behavior change for
-// existing configs: any HL perps strategy without an explicit `stop_loss_pct`
-// or `stop_loss_margin_pct` will now place an exchange-side reduce-only
-// trigger on every fresh open (capped at 50%). Operators who relied on the
-// pre-v9 "no SL when field is omitted" behavior must set `"stop_loss_pct": 0`
-// explicitly to opt out.
+// existing configs: a single HL perps strategy on a coin without an explicit
+// `stop_loss_pct` or `stop_loss_margin_pct` will now place an exchange-side
+// reduce-only trigger on every fresh open (capped at 50%). Same-coin peer
+// groups are normalized at LoadConfig time so omitted fields opt out unless
+// the operator chooses one explicit stop-loss owner (#494).
 const v9DeprecationNotice = "**Note:** HL perps strategies now auto-derive a per-trade stop-loss from `max_drawdown_pct` " +
-	"(capped at 50%) when neither `stop_loss_pct` nor `stop_loss_margin_pct` is set. This means existing configs " +
-	"with an omitted `stop_loss_pct` will start placing reduce-only trigger orders on-chain (counts against HL's " +
-	"1000/account trigger cap). To preserve the old \"no exchange-side stop\" behavior, set `\"stop_loss_pct\": 0` " +
-	"explicitly on the affected strategies. See issue #484."
+	"(capped at 50%) when neither `stop_loss_pct` nor `stop_loss_margin_pct` is set and the strategy is the only " +
+	"HL perps strategy for that coin. Same-coin peer groups keep omitted fields as an exchange-side stop opt-out; " +
+	"choose one explicit positive stop-loss owner if you want a shared-position trigger. See issues #484 and #494."
 
 const v7DeprecationNotice = "**Note:** `dm_paper_trades` and `dm_live_trades` have been replaced by a `dm_channels` map. " +
 	"Paper trades use `dm_channels[\"<platform>-paper\"]`; live trades use `dm_channels[\"<platform>\"]`. " +
