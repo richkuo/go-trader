@@ -89,7 +89,7 @@
 - In GitHub comments avoid `#N` for list items (auto-links to issues/PRs); use `1.` instead.
 - Fetch latest bot review: `gh api repos/richkuo/go-trader/issues/<N>/comments --jq '[.[] | select(.user.login=="codex[bot]" or .user.login=="claude[bot]")] | last | .body'` (top-level summary lives on issues endpoint, not pulls).
 - Before merging long-running PR: `git fetch origin main && git diff origin/main..HEAD -- <paths>` to catch silent reverts; rebase if unexpected deletions.
-- Replace default `🤖 Generated with [Claude Code]...` footer with metadata (model + effort), e.g. `LLM: Claude Sonnet 4.6 | high`. No `Co-Authored-By` trailer.
+- Replace default `🤖 Generated with [Claude Code]...` footer with metadata (model + effort), e.g. `LLM: Claude Sonnet 4.6 (1M) | high`. No `Co-Authored-By` trailer.
 
 ### PR review format (`@claude review`)
 When invoked to review a PR, the top-level review comment MUST take exactly one of two shapes — no preamble, no closing remarks:
