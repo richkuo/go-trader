@@ -24,12 +24,42 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 
 
 def _arg_value(flag, default=None):
+    prefix = flag + "="
+    for arg in sys.argv:
+        if arg.startswith(prefix):
+            return arg.split("=", 1)[1]
     if flag not in sys.argv:
         return default
     idx = sys.argv.index(flag)
     if idx + 1 >= len(sys.argv):
         return default
     return sys.argv[idx + 1]
+
+
+def _arg_float(flag):
+    raw = _arg_value(flag)
+    if raw in (None, ""):
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _position_ctx(position_side):
+    ctx = {}
+    if position_side:
+        ctx["side"] = position_side
+    for flag, key in (
+        ("--position-avg-cost", "avg_cost"),
+        ("--position-qty", "current_quantity"),
+        ("--position-initial-qty", "initial_quantity"),
+        ("--position-entry-atr", "entry_atr"),
+    ):
+        value = _arg_float(flag)
+        if value is not None:
+            ctx[key] = value
+    return ctx
 
 
 def main():
@@ -39,6 +69,7 @@ def main():
     close_strategies_raw = _arg_value("--close-strategies")
     disable_implicit_close = "--disable-implicit-close" in sys.argv
     position_side = (_arg_value("--position-side", "") or "").lower()
+    position_ctx = _position_ctx(position_side)
     open_close_enabled = bool(open_strategy or close_strategies_raw or disable_implicit_close)
     strategy_params = None
     if "--params" in sys.argv:
@@ -52,7 +83,11 @@ def main():
         if skip_next:
             skip_next = False
             continue
-        if a in ("--params", "--open-strategy", "--close-strategies", "--position-side"):
+        if a in (
+            "--params", "--open-strategy", "--close-strategies", "--position-side",
+            "--position-avg-cost", "--position-qty", "--position-initial-qty",
+            "--position-entry-atr",
+        ):
             skip_next = True
             continue
         if a.startswith("--"):
@@ -147,6 +182,7 @@ def main():
                 position_side,
                 disable_implicit_close,
                 strategy_params,
+                position_ctx,
             )
             result_df = evaluation.open_result_df
             signal = evaluation.open_signal

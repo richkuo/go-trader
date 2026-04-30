@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -14,6 +15,16 @@ type StrategyDecisionFields struct {
 	OpenAction      string   `json:"open_action,omitempty"`
 	CloseFraction   float64  `json:"close_fraction"`
 	CloseStrategy   string   `json:"close_strategy,omitempty"`
+}
+
+// PositionCtx is the optional state snapshot threaded into close evaluators
+// when a strategy opts into the open/close composition model (#496).
+type PositionCtx struct {
+	Side            string
+	AvgCost         float64
+	Quantity        float64
+	InitialQuantity float64
+	EntryATR        float64
 }
 
 func usesOpenCloseConfig(sc StrategyConfig) bool {
@@ -48,7 +59,7 @@ func validateStrategyConceptName(name string) error {
 	return nil
 }
 
-func appendOpenCloseArgs(args []string, sc StrategyConfig, positionSide string) []string {
+func appendOpenCloseArgs(args []string, sc StrategyConfig, pos PositionCtx) []string {
 	if !usesOpenCloseConfig(sc) {
 		return args
 	}
@@ -62,10 +73,41 @@ func appendOpenCloseArgs(args []string, sc StrategyConfig, positionSide string) 
 	if sc.DisableImplicitClose {
 		out = append(out, "--disable-implicit-close")
 	}
-	if side := strings.TrimSpace(positionSide); side != "" {
+	if side := strings.TrimSpace(pos.Side); side != "" {
 		out = append(out, "--position-side", side)
 	}
+	out = appendPositionFloatArg(out, "--position-avg-cost", pos.AvgCost)
+	out = appendPositionFloatArg(out, "--position-qty", pos.Quantity)
+	out = appendPositionFloatArg(out, "--position-initial-qty", pos.InitialQuantity)
+	out = appendPositionFloatArg(out, "--position-entry-atr", pos.EntryATR)
 	return out
+}
+
+func appendPositionFloatArg(args []string, flag string, value float64) []string {
+	if value == 0 {
+		return args
+	}
+	return append(args, flag+"="+strconv.FormatFloat(value, 'f', -1, 64))
+}
+
+func positionCtxForSymbol(s *StrategyState, symbol string) PositionCtx {
+	if s == nil || strings.TrimSpace(symbol) == "" {
+		return PositionCtx{}
+	}
+	return positionCtxFromPosition(s.Positions[symbol])
+}
+
+func positionCtxFromPosition(pos *Position) PositionCtx {
+	if pos == nil {
+		return PositionCtx{}
+	}
+	return PositionCtx{
+		Side:            pos.Side,
+		AvgCost:         pos.AvgCost,
+		Quantity:        pos.Quantity,
+		InitialQuantity: pos.InitialQuantity,
+		EntryATR:        pos.EntryATR,
+	}
 }
 
 func explicitCloseStrategies(sc StrategyConfig) []string {

@@ -11,7 +11,9 @@ type Position struct {
 	Symbol            string    `json:"symbol"`
 	TradePositionID   string    `json:"position_id,omitempty"`
 	Quantity          float64   `json:"quantity"`
+	InitialQuantity   float64   `json:"initial_quantity,omitempty"` // original open size; partial closes must not rewrite it (#496)
 	AvgCost           float64   `json:"avg_cost"`
+	EntryATR          float64   `json:"entry_atr,omitempty"`            // ATR value from the entry strategy's open candle when available (#496)
 	Side              string    `json:"side"`                           // "long" or "short"
 	Multiplier        float64   `json:"multiplier,omitempty"`           // contract multiplier (0 = spot, >0 = futures/perps PnL branch; canonical perps value is 1 — do NOT set to leverage)
 	Leverage          float64   `json:"leverage,omitempty"`             // perps leverage (informational; PnL is not scaled by leverage) (#254)
@@ -625,6 +627,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 		s.Positions[symbol] = &Position{
 			Symbol:          symbol,
 			Quantity:        qty,
+			InitialQuantity: qty,
 			AvgCost:         execPrice,
 			Side:            "long",
 			Multiplier:      1, // perps use 1:1 contract size; PnL-branch in PortfolioValue
@@ -747,6 +750,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 		s.Positions[symbol] = &Position{
 			Symbol:          symbol,
 			Quantity:        qty,
+			InitialQuantity: qty,
 			AvgCost:         execPrice,
 			Side:            "short",
 			Multiplier:      1,
@@ -872,6 +876,7 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			Symbol:          symbol,
 			TradePositionID: positionID,
 			Quantity:        qty,
+			InitialQuantity: qty,
 			AvgCost:         execPrice,
 			Side:            "long",
 			OwnerStrategyID: s.ID,
@@ -1047,6 +1052,7 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			Symbol:          symbol,
 			TradePositionID: positionID,
 			Quantity:        float64(contracts),
+			InitialQuantity: float64(contracts),
 			AvgCost:         execPrice,
 			Side:            "long",
 			Multiplier:      multiplier,
@@ -1156,6 +1162,7 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				Symbol:          symbol,
 				TradePositionID: positionID,
 				Quantity:        float64(contracts),
+				InitialQuantity: float64(contracts),
 				AvgCost:         execPrice,
 				Side:            "short",
 				Multiplier:      multiplier,
