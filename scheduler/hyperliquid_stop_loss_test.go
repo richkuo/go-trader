@@ -696,6 +696,11 @@ func TestValidateConfig_StopLossMarginPctBounds(t *testing.T) {
 		{"non-HL platform", 20, true, 0, false, 10, "okx", "perps", true},
 		{"non-perps type", 20, true, 0, false, 10, "hyperliquid", "spot", true},
 		{"mutually exclusive", 20, true, 1, true, 10, "hyperliquid", "perps", true},
+		// #484/#487: both fields explicit-zero is benign — both mean "disabled"
+		// and neither places a trigger at runtime, so the mutual-exclusion
+		// guard must not fire. Operators may end up here after migrating from
+		// the legacy float StopLossPct semantics.
+		{"both explicit zero is benign", 0, true, 0, true, 10, "hyperliquid", "perps", false},
 		// Derived price stop must mirror the #421 [0, 50] cap: at leverage=1
 		// a marginPct of 80 implies an 80% price stop, which would land the
 		// HL trigger at entry×0 (long) or entry×1.8 (short) and silently

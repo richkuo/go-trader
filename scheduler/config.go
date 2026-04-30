@@ -798,10 +798,13 @@ func ValidateConfig(cfg *Config) error {
 		// #487: stop_loss_margin_pct expresses the trigger as a % of deployed
 		// margin (leverage-aware) and is converted to a price % at order time.
 		// Mutually exclusive with stop_loss_pct so the operator can't double up.
-		// Pointer-aware (#484): same explicit-vs-omitted distinction.
+		// Pointer-aware (#484): same explicit-vs-omitted distinction. The
+		// mutual-exclusion check fires only when at least one field is
+		// non-zero; both = 0 is benign (both mean "disabled" — neither
+		// places a trigger at runtime, so there is nothing to conflict).
 		if sc.StopLossMarginPct != nil {
 			marginPct := *sc.StopLossMarginPct
-			if sc.StopLossPct != nil {
+			if sc.StopLossPct != nil && (*sc.StopLossPct > 0 || marginPct > 0) {
 				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct and stop_loss_margin_pct are mutually exclusive — set only one (note: stop_loss_pct=0 counts as \"set\" and explicitly disables the auto-SL; remove the field entirely to fall through to stop_loss_margin_pct)", prefix))
 			}
 			if marginPct < 0 || marginPct > 100 {
