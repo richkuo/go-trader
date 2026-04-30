@@ -10,7 +10,7 @@ import (
 
 // CurrentConfigVersion is the version embedded in newly generated configs.
 // When the binary starts and cfg.ConfigVersion < CurrentConfigVersion, migration runs.
-const CurrentConfigVersion = 8
+const CurrentConfigVersion = 9
 
 // ConfigField describes a config field introduced in a specific version.
 type ConfigField struct {
@@ -72,6 +72,20 @@ const v8DeprecationNotice = "**Note:** `discord.spot_summary_freq` and `discord.
 	"a top-level `summary_frequency` map keyed by channel (e.g. `\"spot\": \"hourly\"`, `\"options\": \"every\"`). " +
 	"Values may be `\"every\"`/`\"per_check\"`/`\"always\"` (every cycle), `\"hourly\"` (1h), `\"daily\"` (24h), or any Go duration like `\"30m\"`. " +
 	"Empty/missing falls back to legacy defaults (options/perps/futures every cycle, spot hourly). See issue #30."
+
+// v9 introduced auto-derivation of HL perps per-trade stop-loss from
+// max_drawdown_pct (#484). The field types changed from float64 to *float64
+// so omitted (nil) is distinguishable from explicit 0. Behavior change for
+// existing configs: any HL perps strategy without an explicit `stop_loss_pct`
+// or `stop_loss_margin_pct` will now place an exchange-side reduce-only
+// trigger on every fresh open (capped at 50%). Operators who relied on the
+// pre-v9 "no SL when field is omitted" behavior must set `"stop_loss_pct": 0`
+// explicitly to opt out.
+const v9DeprecationNotice = "**Note:** HL perps strategies now auto-derive a per-trade stop-loss from `max_drawdown_pct` " +
+	"(capped at 50%) when neither `stop_loss_pct` nor `stop_loss_margin_pct` is set. This means existing configs " +
+	"with an omitted `stop_loss_pct` will start placing reduce-only trigger orders on-chain (counts against HL's " +
+	"1000/account trigger cap). To preserve the old \"no exchange-side stop\" behavior, set `\"stop_loss_pct\": 0` " +
+	"explicitly on the affected strategies. See issue #484."
 
 const v7DeprecationNotice = "**Note:** `dm_paper_trades` and `dm_live_trades` have been replaced by a `dm_channels` map. " +
 	"Paper trades use `dm_channels[\"<platform>-paper\"]`; live trades use `dm_channels[\"<platform>\"]`. " +
@@ -310,6 +324,14 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 				fmt.Printf("[migration] %s\n", v8DeprecationNotice)
 			}
 		}
+		// v9: notify about HL perps auto-SL fallback to max_drawdown_pct (#484).
+		if cfg.ConfigVersion < 9 {
+			if notifier != nil && notifier.HasOwner() {
+				notifier.SendOwnerDM(v9DeprecationNotice)
+			} else {
+				fmt.Printf("[migration] %s\n", v9DeprecationNotice)
+			}
+		}
 		return
 	}
 
@@ -334,6 +356,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 		}
 		if cfg.ConfigVersion < 8 {
 			fmt.Printf("[migration] %s\n", v8DeprecationNotice)
+		}
+		if cfg.ConfigVersion < 9 {
+			fmt.Printf("[migration] %s\n", v9DeprecationNotice)
 		}
 		return
 	}
@@ -375,5 +400,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 	// v8: notify about summary_frequency migration (#30).
 	if cfg.ConfigVersion < 8 {
 		notifier.SendOwnerDM(v8DeprecationNotice)
+	}
+	// v9: notify about HL perps auto-SL fallback to max_drawdown_pct (#484).
+	if cfg.ConfigVersion < 9 {
+		notifier.SendOwnerDM(v9DeprecationNotice)
 	}
 }

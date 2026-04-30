@@ -802,7 +802,7 @@ func ValidateConfig(cfg *Config) error {
 		if sc.StopLossMarginPct != nil {
 			marginPct := *sc.StopLossMarginPct
 			if sc.StopLossPct != nil {
-				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct and stop_loss_margin_pct are mutually exclusive — set only one", prefix))
+				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct and stop_loss_margin_pct are mutually exclusive — set only one (note: stop_loss_pct=0 counts as \"set\" and explicitly disables the auto-SL; remove the field entirely to fall through to stop_loss_margin_pct)", prefix))
 			}
 			if marginPct < 0 || marginPct > 100 {
 				errs = append(errs, fmt.Sprintf("%s: stop_loss_margin_pct must be in [0, 100], got %g", prefix, marginPct))
