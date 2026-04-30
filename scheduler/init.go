@@ -45,6 +45,8 @@ var knownShortNames = map[string]string{
 	"volume_weighted":       "vw",
 	"triple_ema":            "tema",
 	"triple_ema_bidir":      "temab",
+	"tema_cross":            "temac",
+	"tema_cross_bd":         "temacb",
 	"rsi_macd_combo":        "rmc",
 	"vol_mean_reversion":    "vol",
 	"momentum_options":      "mom",
@@ -76,6 +78,7 @@ var knownShortNames = map[string]string{
 // of skipping the signal (#328).
 var bidirectionalPerpsStrategies = map[string]bool{
 	"triple_ema_bidir": true,
+	"tema_cross_bd":    true,
 	"session_breakout": true,
 }
 
@@ -122,6 +125,7 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
 	{ID: "adx_trend", ShortName: "adxt"},
 	{ID: "donchian_breakout", ShortName: "dbo"},
+	{ID: "tema_cross", ShortName: "temac"},
 }
 
 var defaultOptionsStrategies = []stratDef{
@@ -134,6 +138,7 @@ var defaultOptionsStrategies = []stratDef{
 var defaultPerpsStrategies = []stratDef{
 	{ID: "momentum", ShortName: "momentum"},
 	{ID: "triple_ema_bidir", ShortName: "temab"},
+	{ID: "tema_cross_bd", ShortName: "temacb"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
@@ -164,6 +169,8 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "adx_trend", ShortName: "adxt"},
 	{ID: "donchian_breakout", ShortName: "dbo"},
 	{ID: "session_breakout", ShortName: "sbo"},
+	{ID: "tema_cross", ShortName: "temac"},
+	{ID: "tema_cross_bd", ShortName: "temacb"},
 }
 
 // Supported CME futures symbols for the init wizard.
