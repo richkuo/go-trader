@@ -131,11 +131,6 @@ jobs:
               instruction = instruction.replace(/^@codex\b\s*/i, "");
             }
 
-            const closingMatch = instruction.match(
-              /\b(?:close|closes|fix|fixes|resolve|resolves)\s*#\s*(\d+)\b/i
-            );
-            core.setOutput("closing_issue_hint", closingMatch ? closingMatch[1] : "");
-
             let checkoutRepository = repoFullName;
             let checkoutRef = payload.repository?.default_branch || "main";
             let canPush = "false";
@@ -293,7 +288,6 @@ jobs:
         uses: actions/github-script@v7
         env:
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
-          CLOSING_ISSUE_HINT: ${{ steps.context.outputs.closing_issue_hint }}
           CODEX_FINAL_MESSAGE: ${{ steps.codex.outputs.final-message }}
           CODEX_MODEL: ${{ env.CODEX_MODEL }}
           CODEX_EFFORT: ${{ env.CODEX_EFFORT }}
@@ -302,12 +296,9 @@ jobs:
           script: |
             const prNumber = Number(process.env.PR_NUMBER);
             const closeRe = /\b(?:close|closes|fix|fixes|resolve|resolves)\s*#\s*(\d+)\b/i;
-            let closingHint = (process.env.CLOSING_ISSUE_HINT || "").trim();
-            if (!closingHint) {
-              const fm = process.env.CODEX_FINAL_MESSAGE || "";
-              const m = fm.match(closeRe);
-              if (m) closingHint = m[1];
-            }
+            const fm = process.env.CODEX_FINAL_MESSAGE || "";
+            const finalCloseMatch = fm.match(/(^|\n)\s*Closes\s+#\s*(\d+)\b/i);
+            const closingHint = finalCloseMatch ? finalCloseMatch[2] : "";
             const model = process.env.CODEX_MODEL || "";
             const effort = process.env.CODEX_EFFORT || "";
             const harness = (process.env.CODEX_HARNESS || "").trim();
