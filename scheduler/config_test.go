@@ -848,7 +848,10 @@ func TestLoadConfigSizingLeverageRejectsSpot(t *testing.T) {
 	}
 }
 
-func TestLoadConfigSizingLeverageRejectsOutOfRange(t *testing.T) {
+// #497: fractional sizing_leverage is valid — high exchange leverage with
+// conservative position size (e.g. leverage=20, sizing_leverage=0.5) is the
+// motivating use case for decoupling.
+func TestLoadConfigSizingLeverageAcceptsFractional(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
 		"strategies": [{
@@ -863,9 +866,33 @@ func TestLoadConfigSizingLeverageRejectsOutOfRange(t *testing.T) {
 		}]
 	}`
 	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig with sizing_leverage=0.5 failed: %v", err)
+	}
+	if got := cfg.Strategies[0].SizingLeverage; got != 0.5 {
+		t.Errorf("SizingLeverage = %g, want 0.5", got)
+	}
+}
+
+func TestLoadConfigSizingLeverageRejectsOutOfRange(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"leverage": 20,
+			"sizing_leverage": 200
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
 	_, err := LoadConfig(path)
 	if err == nil {
-		t.Fatal("expected validation error for sizing_leverage=0.5")
+		t.Fatal("expected validation error for sizing_leverage=200")
 	}
 	if !strings.Contains(err.Error(), "sizing_leverage must be in") {
 		t.Errorf("error = %v, want 'sizing_leverage must be in'", err)

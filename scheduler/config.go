@@ -541,6 +541,12 @@ func normalizeHyperliquidPeerStopLosses(strategies []StrategyConfig) {
 // validated here. A long-only and a short-allowed strategy on the same HL
 // coin would silently net/flip at the position level — directional
 // independence requires HL sub-accounts (out of scope for #491).
+//
+// Note: SizingLeverage is intentionally NOT required to match across peers
+// (#497). It only affects per-strategy order sizing — exchange margin and
+// liquidation are governed by the shared exchange Leverage, which IS
+// required to match. Two peers can size their entries differently without
+// any on-chain conflict.
 func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 	type peer struct {
 		ID             string
@@ -844,12 +850,17 @@ func ValidateConfig(cfg *Config) error {
 				errs = append(errs, fmt.Sprintf("%s: leverage must be in [1, 100], got %g", prefix, sc.Leverage))
 			}
 		}
+		// SizingLeverage decouples position sizing from exchange margin (#497).
+		// A legitimate use case is high exchange leverage with conservative
+		// position size (e.g. leverage=20, sizing_leverage=0.5), so the lower
+		// bound is a small positive value rather than 1. The math
+		// (cash * sizing_leverage * 0.95) tolerates fractional values fine.
 		if sc.SizingLeverage != 0 {
 			if sc.Type != "perps" {
 				errs = append(errs, fmt.Sprintf("%s: sizing_leverage is only supported for perps strategies (got type %q)", prefix, sc.Type))
 			}
-			if sc.SizingLeverage < 1 || sc.SizingLeverage > 100 {
-				errs = append(errs, fmt.Sprintf("%s: sizing_leverage must be in [1, 100], got %g", prefix, sc.SizingLeverage))
+			if sc.SizingLeverage < 0.01 || sc.SizingLeverage > 100 {
+				errs = append(errs, fmt.Sprintf("%s: sizing_leverage must be in [0.01, 100], got %g", prefix, sc.SizingLeverage))
 			}
 		}
 

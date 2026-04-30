@@ -2661,11 +2661,9 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 		return nil, false
 	}
 	isBuy := result.Signal == 1
-	// #254/#497: perps use sizing_leverage to size notional; spot is unaffected.
-	sizingLeverage := 1.0
-	if sc.Type == "perps" {
-		sizingLeverage = EffectiveSizingLeverage(sc)
-	}
+	// #254/#497: perps use sizing_leverage to size notional; EffectiveSizingLeverage
+	// returns 1 for spot, so no perps gate needed here.
+	sizingLeverage := EffectiveSizingLeverage(sc)
 	var size float64
 	if sc.Type == "perps" {
 		var ok bool
