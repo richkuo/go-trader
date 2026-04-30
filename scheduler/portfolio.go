@@ -157,6 +157,7 @@ func recordPerpsStopLossClose(s *StrategyState, symbol string, triggerPx float64
 	RecordTradeResult(&s.RiskState, pnl)
 	recordClosedPosition(s, pos, triggerPx, pnl, reason, now)
 	delete(s.Positions, symbol)
+	clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
 	if logger != nil {
 		logger.Warn("SL close reconciled @ $%.4f, PnL: $%.2f (fee $%.2f)", triggerPx, pnl, fee)
 	}
@@ -596,6 +597,7 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			RecordTradeResult(&s.RiskState, pnl)
 			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
+			clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
 			logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
 			tradesExecuted++
 		}
@@ -714,6 +716,7 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			RecordTradeResult(&s.RiskState, pnl)
 			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 			delete(s.Positions, symbol)
+			clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
 			logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, pos.Quantity, execPrice, fee, pnl)
 			tradesExecuted++
 		}

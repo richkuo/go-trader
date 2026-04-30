@@ -103,10 +103,10 @@ func notifyATRMultMissingEntryATROnce(sc StrategyConfig, symbol string, notifier
 		return
 	}
 	if logger != nil {
-		logger.Warn("trailing_stop_atr_mult set but Position.EntryATR is 0 for %s — entry strategy must emit an 'atr' indicator on the open candle. Position is running WITHOUT a reduce-only stop-loss.", symbol)
+		logger.Warn("trailing_stop_atr_mult set but Position.EntryATR is 0 for %s — entry strategy must emit an 'atr' indicator on the open candle, so no ATR-derived trigger has been armed for this strategy.", symbol)
 	}
 	if notifier != nil && notifier.HasBackends() {
-		msg := fmt.Sprintf("**HL TRAILING ATR-MULT MISSING ENTRY ATR** [%s] %s — strategy is configured with trailing_stop_atr_mult but the open candle did not produce an ATR indicator, so no on-chain trigger has been armed. Verify the entry strategy emits `atr`, or switch to a fixed `trailing_stop_pct`.",
+		msg := fmt.Sprintf("**HL TRAILING ATR-MULT MISSING ENTRY ATR** [%s] %s — strategy is configured with trailing_stop_atr_mult but the open candle did not produce an ATR indicator, so no ATR-derived trigger has been armed for this strategy. Verify the entry strategy emits `atr`, or switch to a fixed `trailing_stop_pct`. (If a peer strategy on the same coin owns the trigger, this strategy is still covered by the shared exchange-side stop.)",
 			sc.ID, symbol)
 		notifier.SendToAllChannels(msg)
 		notifier.SendOwnerDM(msg)
@@ -115,10 +115,40 @@ func notifyATRMultMissingEntryATROnce(sc StrategyConfig, symbol string, notifier
 
 // clearATRMultMissingEntryATRWarning drops the throttle key for a
 // (strategy, symbol) so the next missing-EntryATR observation re-warns.
-// Callers should invoke this on position close and on config reload that
-// disables ATR-mult.
+// Callers should invoke this on position close so a future re-open that
+// hits the same missing-ATR bug is not silently suppressed.
 func clearATRMultMissingEntryATRWarning(strategyID, symbol string) {
 	atrMultMissingEntryATRWarned.Delete(atrMultMissingEntryATRKey(strategyID, symbol))
+}
+
+// clearATRMultMissingEntryATRWarningOnHLPerpsClose is a no-op shortcut for
+// non-HL-perps state. Position-close call sites in shared code (e.g.
+// ExecutePerpsSignal close-long/short, forceCloseAllPositions) live on a
+// path that may run for spot or futures strategies as well; this helper
+// avoids spraying platform/type checks at every call site.
+func clearATRMultMissingEntryATRWarningOnHLPerpsClose(s *StrategyState, symbol string) {
+	if s == nil || s.Platform != "hyperliquid" || s.Type != "perps" {
+		return
+	}
+	clearATRMultMissingEntryATRWarning(s.ID, symbol)
+}
+
+// clearATRMultMissingEntryATRWarningsForStrategy drops every throttle key
+// belonging to strategyID. Used by hot-reload when the operator disables
+// trailing_stop_atr_mult — the throttle should not survive into the next
+// configuration regime, since the alert logic no longer applies.
+func clearATRMultMissingEntryATRWarningsForStrategy(strategyID string) {
+	prefix := strategyID + ":"
+	atrMultMissingEntryATRWarned.Range(func(k, _ any) bool {
+		key, ok := k.(string)
+		if !ok {
+			return true
+		}
+		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
+			atrMultMissingEntryATRWarned.Delete(k)
+		}
+		return true
+	})
 }
 
 func effectiveTrailingStopMinMovePct(sc StrategyConfig) float64 {

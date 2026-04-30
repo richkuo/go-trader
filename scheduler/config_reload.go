@@ -94,6 +94,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		if !floatPtrEqual(sc.TrailingStopATRMult, ns.TrailingStopATRMult) {
 			addChange("strategy[%s].trailing_stop_atr_mult: %s -> %s", sc.ID, formatFloatPtr(sc.TrailingStopATRMult), formatFloatPtr(ns.TrailingStopATRMult))
 			sc.TrailingStopATRMult = ns.TrailingStopATRMult
+			// #505 review: when ATR-mult is disabled (or zeroed) the
+			// missing-EntryATR throttle no longer applies — drop any
+			// outstanding keys for this strategy so the next regime
+			// (e.g. fixed trailing_stop_pct or no trailing stop at all)
+			// starts with a clean slate.
+			if ns.TrailingStopATRMult == nil || *ns.TrailingStopATRMult <= 0 {
+				clearATRMultMissingEntryATRWarningsForStrategy(sc.ID)
+			}
 		}
 		if !floatPtrEqual(sc.TrailingStopMinMovePct, ns.TrailingStopMinMovePct) {
 			addChange("strategy[%s].trailing_stop_min_move_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.TrailingStopMinMovePct), formatFloatPtrPct(ns.TrailingStopMinMovePct))

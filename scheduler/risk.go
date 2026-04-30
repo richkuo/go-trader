@@ -1128,6 +1128,7 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 		RecordTradeResult(&s.RiskState, pnl)
 		recordClosedPosition(s, pos, price, pnl, "circuit_breaker", now)
 		delete(s.Positions, symbol)
+		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
 	}
 
 	for id, pos := range s.OptionPositions {

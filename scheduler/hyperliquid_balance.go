@@ -1283,6 +1283,7 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 		// right amount. delete() runs after the snapshot.
 		recordClosedPosition(s, pos, fillPx, pnl, "circuit_breaker", now)
 		delete(s.Positions, symbol)
+		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
 	} else {
 		pos.Quantity = remaining
 	}

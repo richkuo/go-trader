@@ -1461,3 +1461,72 @@ func TestNotifyATRMultMissingEntryATROnce_ThrottlesPerStrategySymbol(t *testing.
 		t.Errorf("expected 3 broadcasts after clear+re-alert, got %d", got)
 	}
 }
+
+// #505 review follow-up: clearATRMultMissingEntryATRWarningOnHLPerpsClose
+// is the production-path shortcut wired into HL perps close sites
+// (recordPerpsStopLossClose, ExecutePerpsSignal close-long/short,
+// forceCloseAllPositions, hyperliquid_balance circuit-breaker close). It
+// must clear the throttle for HL perps and no-op for any other state, so
+// non-HL strategy closes don't accidentally drop a peer's throttle key.
+func TestClearATRMultMissingEntryATRWarningOnHLPerpsClose(t *testing.T) {
+	defer clearATRMultMissingEntryATRWarning("hl-test", "ETH")
+	defer clearATRMultMissingEntryATRWarning("spot-test", "ETH")
+
+	atrMultMissingEntryATRWarned.Store(atrMultMissingEntryATRKey("hl-test", "ETH"), struct{}{})
+	atrMultMissingEntryATRWarned.Store(atrMultMissingEntryATRKey("spot-test", "ETH"), struct{}{})
+
+	// Nil state must be safe.
+	clearATRMultMissingEntryATRWarningOnHLPerpsClose(nil, "ETH")
+	if _, ok := atrMultMissingEntryATRWarned.Load(atrMultMissingEntryATRKey("hl-test", "ETH")); !ok {
+		t.Fatalf("nil state should not have cleared HL key")
+	}
+
+	// Non-HL platform must not clear anything.
+	spotState := &StrategyState{ID: "spot-test", Platform: "binanceus", Type: "spot"}
+	clearATRMultMissingEntryATRWarningOnHLPerpsClose(spotState, "ETH")
+	if _, ok := atrMultMissingEntryATRWarned.Load(atrMultMissingEntryATRKey("spot-test", "ETH")); !ok {
+		t.Fatalf("non-HL close should not have cleared spot-test key")
+	}
+
+	// HL spot must not clear (the throttle only fires for HL perps).
+	hlSpot := &StrategyState{ID: "hl-test", Platform: "hyperliquid", Type: "spot"}
+	clearATRMultMissingEntryATRWarningOnHLPerpsClose(hlSpot, "ETH")
+	if _, ok := atrMultMissingEntryATRWarned.Load(atrMultMissingEntryATRKey("hl-test", "ETH")); !ok {
+		t.Fatalf("HL-spot close should not have cleared HL-perps key")
+	}
+
+	// HL perps clears the matching key.
+	hlPerps := &StrategyState{ID: "hl-test", Platform: "hyperliquid", Type: "perps"}
+	clearATRMultMissingEntryATRWarningOnHLPerpsClose(hlPerps, "ETH")
+	if _, ok := atrMultMissingEntryATRWarned.Load(atrMultMissingEntryATRKey("hl-test", "ETH")); ok {
+		t.Fatalf("HL perps close should have cleared the throttle key")
+	}
+}
+
+// #505 review follow-up: clearATRMultMissingEntryATRWarningsForStrategy is
+// invoked from the hot-reload disable path. It must drop every key for the
+// target strategy ID and leave other strategies' keys untouched (including
+// strategies whose IDs share a common prefix).
+func TestClearATRMultMissingEntryATRWarningsForStrategy(t *testing.T) {
+	keys := []struct{ strategyID, symbol string }{
+		{"hl-momo", "ETH"},
+		{"hl-momo", "BTC"},
+		{"hl-momo-fast", "ETH"}, // share prefix; must NOT be cleared
+		{"hl-other", "ETH"},
+	}
+	for _, k := range keys {
+		atrMultMissingEntryATRWarned.Store(atrMultMissingEntryATRKey(k.strategyID, k.symbol), struct{}{})
+		defer clearATRMultMissingEntryATRWarning(k.strategyID, k.symbol)
+	}
+
+	clearATRMultMissingEntryATRWarningsForStrategy("hl-momo")
+
+	for _, k := range keys {
+		_, ok := atrMultMissingEntryATRWarned.Load(atrMultMissingEntryATRKey(k.strategyID, k.symbol))
+		shouldRemain := k.strategyID != "hl-momo"
+		if ok != shouldRemain {
+			t.Errorf("after clearing hl-momo: key %s:%s present=%v want present=%v",
+				k.strategyID, k.symbol, ok, shouldRemain)
+		}
+	}
+}
