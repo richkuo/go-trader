@@ -1085,7 +1085,7 @@ func runInit(args []string) int {
 	optionsDrawdown := 10.0
 	perpsDrawdown := 5.0
 	perpsLeverage := 1.0       // #254 default: 1x (no leverage); user can edit config
-	hlStopLossPct := 0.0       // #412 default: disabled; prompted below when HL perps goes live
+	hlStopLossPct := 0.0       // #412 default: disabled; prompted below whenever HL perps is enabled (paper or live)
 	hlStopLossMarginPct := 0.0 // #487 default: disabled; alternative leverage-aware framing
 	robinhoodCapital := 500.0
 	robinhoodDrawdown := 5.0
@@ -1131,27 +1131,29 @@ func runInit(args []string) int {
 		// produce a file that fails validateConfig on the next startup.
 		portfolioMaxDD = p.FloatRange("Portfolio kill-switch max drawdown %", 25, 0, 100)
 		portfolioWarnPct = p.FloatRange("Portfolio warn threshold % (of kill switch)", 60, 0, 100)
+	}
 
-		// #412 / #487: per-trade stop-loss is HL-only today and only makes sense
-		// when perps are running live. Default 0 disables it; HL caps trigger
-		// orders at 1000/account (scales to 5000 with volume) but we start
-		// disabled by default until the operator explicitly opts in (#479).
-		// Two equivalent framings:
-		//   - price %:  trigger when price moves X% against entry (#412)
-		//   - margin %: trigger when unrealized loss reaches X% of deployed
-		//               margin; auto-rescales when leverage changes (#487)
-		if enablePerps && perpsMode == "live" {
-			slOptions := []string{
-				"Disabled",
-				"Price % from entry (e.g. 1.0 = trigger on 1% adverse move)",
-				"% of deployed margin (leverage-aware; e.g. 20 = trigger on 20% margin loss)",
-			}
-			switch p.Choice("HL perps per-trade stop-loss framing", slOptions, 0) {
-			case 1:
-				hlStopLossPct = p.FloatRange("HL perps per-trade stop-loss % from entry", 1, 0, 50)
-			case 2:
-				hlStopLossMarginPct = p.FloatRange("HL perps per-trade stop-loss % of deployed margin", 20, 0, 100)
-			}
+	// #412 / #487: per-trade stop-loss is HL-only today and is a no-op in paper
+	// mode (no on-chain trigger order is placed), but we still prompt for paper
+	// configs so operators iterating in paper and later flipping to live by
+	// editing config don't silently lose the SL — the field is already set.
+	// Default 0 disables it; HL caps trigger orders at 1000/account (scales to
+	// 5000 with volume) and we start disabled by default until the operator
+	// explicitly opts in (#479). Two equivalent framings:
+	//   - price %:  trigger when price moves X% against entry (#412)
+	//   - margin %: trigger when unrealized loss reaches X% of deployed
+	//               margin; auto-rescales when leverage changes (#487)
+	if enablePerps {
+		slOptions := []string{
+			"Disabled",
+			"Price % from entry (e.g. 1.0 = trigger on 1% adverse move)",
+			"% of deployed margin (leverage-aware; e.g. 20 = trigger on 20% margin loss)",
+		}
+		switch p.Choice("HL perps per-trade stop-loss framing", slOptions, 0) {
+		case 1:
+			hlStopLossPct = p.FloatRange("HL perps per-trade stop-loss % from entry", 1, 0, 50)
+		case 2:
+			hlStopLossMarginPct = p.FloatRange("HL perps per-trade stop-loss % of deployed margin", 20, 0, 100)
 		}
 	}
 
