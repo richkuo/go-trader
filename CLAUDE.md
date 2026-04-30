@@ -89,7 +89,9 @@
 - In GitHub comments avoid `#N` for list items (auto-links to issues/PRs); use `1.` instead.
 - Fetch latest bot review: `gh api repos/richkuo/go-trader/issues/<N>/comments --jq '[.[] | select(.user.login=="codex[bot]" or .user.login=="claude[bot]")] | last | .body'` (top-level summary lives on issues endpoint, not pulls).
 - Before merging long-running PR: `git fetch origin main && git diff origin/main..HEAD -- <paths>` to catch silent reverts; rebase if unexpected deletions.
-- Replace default `🤖 Generated with [Claude Code]...` footer with metadata (model + effort), e.g. `LLM: Claude Sonnet 4.6 (1M) | high`. No `Co-Authored-By` trailer.
+- Replace default `🤖 Generated with [Claude Code]...` footer with metadata (model + effort + harness), e.g. `LLM: Claude Sonnet 4.6 (1M) | high | Harness: anthropics/claude-code-action@v1`. No `Co-Authored-By` trailer.
+- **Claude Code** (`.github/workflows/claude.yml`): The workflow stamps `Harness: anthropics/claude-code-action@v1` (via job `CLAUDE_HARNESS`) on the patched `claude[bot]` comment footer after stripping any stale footer; optional `ccusage` token/cost metrics append last on the same line when session data exists.
+- **Codex** (`.github/workflows/Codex.yml`): Reply comments use `---` then `LLM: <CODEX_MODEL> \| <CODEX_EFFORT> \| Harness: <CODEX_HARNESS>` when harness is set. After Codex pushes to an in-repo PR branch, PR descriptions append the same footer at the tail only; an end-anchored regex strips a previously stamped trailing `---`/LLM: block before rewriting meta so mid-body markdown rules (`---`/LLM: lines elsewhere) stay intact, then may inject `Closes #<N>` only when Codex's final message explicitly includes that exact phrase and the PR body has no existing closing keyword. Tune job `CODEX_MODEL` / `CODEX_EFFORT` / `CODEX_HARNESS` when changing model, effort, sandbox, or the `openai/codex-action` pin.
 
 ### PR review format (`@claude review`)
 When invoked to review a PR, the top-level review comment MUST take exactly one of two shapes — no preamble, no closing remarks:
