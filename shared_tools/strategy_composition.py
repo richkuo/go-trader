@@ -133,6 +133,40 @@ def effective_close_strategies(
     return [(open_strategy or positional_strategy).strip()]
 
 
+def _safe_list_strategy_names(list_fn: Optional[Callable[[], Iterable[str]]]) -> list[str]:
+    if list_fn is None:
+        return []
+    try:
+        return list(list_fn())
+    except Exception:
+        return []
+
+
+def validate_close_strategy_names(
+    close_names: Iterable[str],
+    get_open_strategy: Callable[[str], object],
+    get_close_strategy: Callable[[str], object],
+    list_open_strategies: Optional[Callable[[], Iterable[str]]] = None,
+    list_close_strategies: Optional[Callable[[], Iterable[str]]] = None,
+) -> None:
+    """Validate explicit close names against close registry, then legacy open fallback."""
+    for name in close_names:
+        try:
+            get_close_strategy(name)
+            continue
+        except ValueError:
+            pass
+        try:
+            get_open_strategy(name)
+            continue
+        except ValueError as exc:
+            raise ValueError(
+                f"Unknown close strategy: {name}. "
+                f"Available close strategies: {_safe_list_strategy_names(list_close_strategies)}; "
+                f"fallback open strategies: {_safe_list_strategy_names(list_open_strategies)}"
+            ) from exc
+
+
 def _last_signal(result_df: pd.DataFrame) -> int:
     if result_df.empty:
         return 0

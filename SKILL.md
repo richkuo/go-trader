@@ -490,8 +490,8 @@ When enabled, correlation warnings go to all active channels and owner DM, and t
 Use the registry as source of truth:
 
 ```bash
-.venv/bin/python3 shared_strategies/spot/strategies.py --list-json
-.venv/bin/python3 shared_strategies/futures/strategies.py --list-json
+.venv/bin/python3 shared_strategies/open/spot/strategies.py --list-json
+.venv/bin/python3 shared_strategies/open/futures/strategies.py --list-json
 .venv/bin/python3 shared_strategies/options/strategies.py --list-json
 ```
 
@@ -536,24 +536,27 @@ Short-name conventions:
 
 ## Add Or Change Strategies
 
-Single source of truth: `shared_strategies/registry.py`.
+Open strategy source of truth: `shared_strategies/open/registry.py`.
+Close evaluator source of truth: `shared_strategies/close/registry.py`.
 
 Checklist for new spot/futures strategies:
 
-1. Add the implementation and `@register_strategy(...)` entry in `shared_strategies/registry.py`.
+1. Add the implementation and `@register(...)` entry in `shared_strategies/open/registry.py`.
 2. Set `platforms=(...)` correctly; use variants for platform-specific defaults/descriptions.
 3. Append the name to `PLATFORM_ORDER`.
 4. Add short name and default strategy entries in `scheduler/init.go`.
 5. Add a param grid to `DEFAULT_PARAM_RANGES` in `backtest/optimizer.py`.
 6. Run registry and optimizer tests.
 
-Do not edit `shared_strategies/spot/strategies.py` or `shared_strategies/futures/strategies.py` to add strategies; they are thin shims.
+For close evaluators, add an `evaluate(position, market, params)` implementation under `shared_strategies/close/` and register it in `shared_strategies/close/registry.py`.
+
+Do not edit `shared_strategies/open/spot/strategies.py` or `shared_strategies/open/futures/strategies.py` to add strategies; they are thin shims.
 
 Before refactoring registry/shims, snapshot list output:
 
 ```bash
-.venv/bin/python3 shared_strategies/spot/strategies.py --list-json > /tmp/spot.json
-.venv/bin/python3 shared_strategies/futures/strategies.py --list-json > /tmp/futures.json
+.venv/bin/python3 shared_strategies/open/spot/strategies.py --list-json > /tmp/spot.json
+.venv/bin/python3 shared_strategies/open/futures/strategies.py --list-json > /tmp/futures.json
 ```
 
 After changes, diff the outputs unless intentionally changing discovery.

@@ -107,19 +107,31 @@ def main():
     symbol_b = positional_args[3] if len(positional_args) >= 4 else None
 
     try:
-        from strategies import apply_strategy, get_strategy
-        from registry import evaluate as close_evaluate
+        from strategies import apply_strategy, get_strategy, list_strategies
+        from close_registry_loader import (
+            evaluate as close_evaluate,
+            get_strategy as get_close_strategy,
+            list_strategies as list_close_strategies,
+        )
         from data_fetcher import fetch_ohlcv
         from strategy_composition import (
             evaluate_open_close,
             finalize_decision,
             normalize_signal,
             parse_close_strategies,
+            validate_close_strategy_names,
         )
 
         configured_names = [open_strategy or strategy_name]
         for name in configured_names:
             get_strategy(name)
+        validate_close_strategy_names(
+            parse_close_strategies(close_strategies_raw),
+            get_strategy,
+            get_close_strategy,
+            list_strategies,
+            list_close_strategies,
+        )
 
         # Warn when pairs_spread will degrade due to missing secondary symbol
         needs_pair = "pairs_spread" in configured_names

@@ -8,6 +8,7 @@ from strategy_composition import (
     evaluate_open_close,
     finalize_decision,
     max_close_fraction,
+    validate_close_strategy_names,
 )
 
 
@@ -153,6 +154,36 @@ def test_evaluate_open_close_uses_close_registry_before_open_fallback():
     ]
     assert decision["close_strategy"] == "tiered_tp_pct"
     assert decision["signal"] == -1
+
+
+def test_validate_close_strategy_names_reports_both_registries():
+    def get_open_strategy(name):
+        if name == "legacy_open_close":
+            return {}
+        raise ValueError("open missing")
+
+    def get_close_strategy(name):
+        if name == "tp_at_pct":
+            return {}
+        raise ValueError("close missing")
+
+    validate_close_strategy_names(
+        ["tp_at_pct", "legacy_open_close"],
+        get_open_strategy,
+        get_close_strategy,
+        lambda: ["legacy_open_close"],
+        lambda: ["tp_at_pct"],
+    )
+
+    import pytest
+    with pytest.raises(ValueError, match="Available close strategies.*fallback open strategies"):
+        validate_close_strategy_names(
+            ["missing"],
+            get_open_strategy,
+            get_close_strategy,
+            lambda: ["legacy_open_close"],
+            lambda: ["tp_at_pct"],
+        )
 
 
 def test_evaluate_open_close_reruns_same_strategy_when_close_params_differ():
