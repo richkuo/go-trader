@@ -1277,10 +1277,10 @@ func main() {
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
 							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && effectiveTrailingStopPct(sc) > 0 {
-								newHighWater, slUpdate, _ := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, hlPosQty, hlAvgCost, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, notifier, logger)
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, hlPosQty, hlAvgCost, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, notifier, logger)
 								mu.Lock()
 								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
-									if newHighWater > 0 {
+									if newHighWater > 0 && updateConfirmed {
 										pos.StopLossHighWaterPx = newHighWater
 									}
 									if slUpdate != nil {
@@ -2260,6 +2260,8 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 	}
 	if trades > 0 && effectiveTrailingStopPct(sc) > 0 {
 		if pos, ok := s.Positions[result.Symbol]; ok {
+			// Partial closes may reset this hint, but StopLossTriggerPx is the
+			// durable ratchet. The helper never lowers a favorable trigger.
 			pos.StopLossHighWaterPx = fillPrice
 		}
 	}

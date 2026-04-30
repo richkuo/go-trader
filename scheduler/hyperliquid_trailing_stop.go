@@ -19,6 +19,13 @@ func effectiveTrailingStopPct(sc StrategyConfig) float64 {
 	return 0
 }
 
+func effectiveTrailingStopMinMovePct(sc StrategyConfig) float64 {
+	if sc.TrailingStopMinMovePct != nil && *sc.TrailingStopMinMovePct >= 0 {
+		return *sc.TrailingStopMinMovePct
+	}
+	return defaultTrailingStopMinMovePct
+}
+
 func computeTrailingStopUpdate(side string, mark, highWater, trailingPct, minMovePct, currentTrigger float64) (float64, float64, bool) {
 	if mark <= 0 || trailingPct <= 0 {
 		return highWater, 0, false
@@ -78,7 +85,7 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	if highWater <= 0 {
 		highWater = avgCost
 	}
-	newHighWater, newTrigger, replace := computeTrailingStopUpdate(side, mark, highWater, trailingPct, defaultTrailingStopMinMovePct, currentTrigger)
+	newHighWater, newTrigger, replace := computeTrailingStopUpdate(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger)
 	if !replace {
 		return newHighWater, nil, true
 	}
@@ -99,6 +106,12 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	}
 	if result.CancelStopLossError != "" {
 		logger.Warn("Trailing SL cancel failed (non-fatal): %s", result.CancelStopLossError)
+		if result.StopLossOID > 0 && currentOID > 0 && notifier != nil && notifier.HasBackends() {
+			msg := fmt.Sprintf("**HL TRAILING SL CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while new trigger OID %d was placed. Check Hyperliquid open triggers before they accumulate toward the account cap. Error: %s",
+				sc.ID, symbol, currentOID, result.StopLossOID, result.CancelStopLossError)
+			notifier.SendToAllChannels(msg)
+			notifier.SendOwnerDM(msg)
+		}
 	}
 	if result.StopLossError != "" {
 		if isHLOpenOrderCapRejection(result.StopLossError) {

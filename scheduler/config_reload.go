@@ -95,6 +95,10 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].trailing_stop_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.TrailingStopPct), formatFloatPtrPct(ns.TrailingStopPct))
 			sc.TrailingStopPct = ns.TrailingStopPct
 		}
+		if !floatPtrEqual(sc.TrailingStopMinMovePct, ns.TrailingStopMinMovePct) {
+			addChange("strategy[%s].trailing_stop_min_move_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.TrailingStopMinMovePct), formatFloatPtrPct(ns.TrailingStopMinMovePct))
+			sc.TrailingStopMinMovePct = ns.TrailingStopMinMovePct
+		}
 	}
 
 	if portfolioRiskMaxDrawdown(cfg.PortfolioRisk) != portfolioRiskMaxDrawdown(next.PortfolioRisk) {
@@ -280,8 +284,9 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.OpenStrategy = ""
 	sc.CloseStrategies = nil
 	sc.DisableImplicitClose = false
-	sc.MarginMode = ""       // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
-	sc.TrailingStopPct = nil // #501: hot-reloadable; state-compat allows pct changes but blocks mode switches while open
+	sc.MarginMode = ""              // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
+	sc.TrailingStopPct = nil        // #501: hot-reloadable; state-compat allows pct changes but blocks mode switches while open
+	sc.TrailingStopMinMovePct = nil // #501: hot-reloadable tuning knob for trailing trigger churn
 	return sc
 }
 

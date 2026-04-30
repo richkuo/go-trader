@@ -243,7 +243,8 @@ func TestRunHyperliquidTrailingStopUpdate_CancelThenPlaceArgs(t *testing.T) {
 	}
 
 	trail := 3.0
-	sc := StrategyConfig{ID: "hl-test", Platform: "hyperliquid", Type: "perps", Script: "shared_scripts/check_hyperliquid.py", TrailingStopPct: &trail}
+	minMove := 0.25
+	sc := StrategyConfig{ID: "hl-test", Platform: "hyperliquid", Type: "perps", Script: "shared_scripts/check_hyperliquid.py", TrailingStopPct: &trail, TrailingStopMinMovePct: &minMove}
 	logger := silentStrategyLogger("hl-test")
 	defer logger.Close()
 
@@ -260,6 +261,41 @@ func TestRunHyperliquidTrailingStopUpdate_CancelThenPlaceArgs(t *testing.T) {
 	if gotSymbol != "ETH" || gotSide != "long" || gotSize != 0.5 || gotTrigger != 106.7 || gotCancelOID != 111 {
 		t.Fatalf("updater args=(%s,%s,%v,%v,%d), want (ETH,long,0.5,106.7,111)",
 			gotSymbol, gotSide, gotSize, gotTrigger, gotCancelOID)
+	}
+}
+
+func TestRunHyperliquidTrailingStopUpdate_AlertsOnOrphanedOldOID(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return &HyperliquidStopLossUpdateResult{
+			StopLossOID:         222,
+			StopLossTriggerPx:   triggerPx,
+			CancelStopLossError: "order not found",
+		}, "", nil
+	}
+
+	trail := 3.0
+	sc := StrategyConfig{ID: "hl-test", Platform: "hyperliquid", Type: "perps", Script: "shared_scripts/check_hyperliquid.py", TrailingStopPct: &trail}
+	logger := silentStrategyLogger("hl-test")
+	defer logger.Close()
+	mock := &mockNotifier{}
+	notifier := NewMultiNotifier(notifierBackend{
+		notifier: mock,
+		channels: map[string]string{"hyperliquid": "chan"},
+		ownerID:  "owner",
+	})
+
+	_, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, 100, 110, 100, 97, 111, notifier, logger)
+	if !ok || result == nil || result.StopLossOID != 222 {
+		t.Fatalf("runHyperliquidTrailingStopUpdate = (%+v, %v), want placed replacement", result, ok)
+	}
+	if len(mock.messages) != 1 || !strings.Contains(mock.messages[0].content, "old trigger OID 111") || !strings.Contains(mock.messages[0].content, "new trigger OID 222") {
+		t.Fatalf("broadcast messages=%+v, want orphaned old/new OID alert", mock.messages)
+	}
+	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "order not found") {
+		t.Fatalf("DMs=%+v, want owner alert with cancel error", mock.dms)
 	}
 }
 
@@ -883,6 +919,52 @@ func TestValidateConfig_TrailingStopPctBoundsAndExclusion(t *testing.T) {
 			gotErr := err != nil && strings.Contains(err.Error(), "trailing_stop_pct")
 			if gotErr != c.wantError {
 				t.Errorf("got err=%v wantTrailingErr=%v (full err: %v)", gotErr, c.wantError, err)
+			}
+		})
+	}
+}
+
+func TestValidateConfig_TrailingStopMinMovePct(t *testing.T) {
+	cases := []struct {
+		name        string
+		minMove     float64
+		trailingPct float64
+		platform    string
+		typ         string
+		wantError   bool
+	}{
+		{"zero allowed", 0, 3, "hyperliquid", "perps", false},
+		{"in range", 0.25, 3, "hyperliquid", "perps", false},
+		{"max boundary", 100, 3, "hyperliquid", "perps", false},
+		{"negative", -0.1, 3, "hyperliquid", "perps", true},
+		{"too high", 101, 3, "hyperliquid", "perps", true},
+		{"requires trailing", 0.5, 0, "hyperliquid", "perps", true},
+		{"non-HL platform", 0.5, 3, "okx", "perps", true},
+		{"non-perps type", 0.5, 3, "hyperliquid", "spot", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			trailing := c.trailingPct
+			minMove := c.minMove
+			cfg := &Config{
+				IntervalSeconds: 60,
+				Strategies: []StrategyConfig{{
+					ID:                     "test",
+					Type:                   c.typ,
+					Platform:               c.platform,
+					Script:                 "shared_scripts/check_hyperliquid.py",
+					Capital:                1000,
+					MaxDrawdownPct:         10,
+					Leverage:               10,
+					TrailingStopPct:        &trailing,
+					TrailingStopMinMovePct: &minMove,
+				}},
+				PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
+			}
+			err := ValidateConfig(cfg)
+			gotErr := err != nil && strings.Contains(err.Error(), "trailing_stop_min_move_pct")
+			if gotErr != c.wantError {
+				t.Errorf("got err=%v wantMinMoveErr=%v (full err: %v)", gotErr, c.wantError, err)
 			}
 		})
 	}

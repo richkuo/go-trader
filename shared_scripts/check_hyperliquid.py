@@ -492,6 +492,8 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
 def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
     """Cancel the old resting SL trigger and place a replacement for an open
     position. ``side`` is the current position side, not the trigger order side.
+    Margin mode / leverage flags are intentionally absent: HL rejects changes
+    on an open position, and this mode only updates protection for an open leg.
     """
     if mode != "live":
         print(json.dumps({"error": "--update-stop-loss requires --mode=live"}, cls=SafeEncoder))

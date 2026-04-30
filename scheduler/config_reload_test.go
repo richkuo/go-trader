@@ -382,15 +382,17 @@ func TestApplyHotReloadConfigRejectsHLPeerMismatchOnReload(t *testing.T) {
 func TestApplyHotReloadConfigAllowsTrailingStopPctChangeWithOpenPosition(t *testing.T) {
 	oldTrail := 3.0
 	newTrail := 4.0
+	oldMinMove := 0.5
+	newMinMove := 0.25
 	cfg := minimalReloadConfig([]StrategyConfig{{
 		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
 		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
-		Leverage: 5, MarginMode: "isolated", TrailingStopPct: &oldTrail,
+		Leverage: 5, MarginMode: "isolated", TrailingStopPct: &oldTrail, TrailingStopMinMovePct: &oldMinMove,
 	}})
 	next := minimalReloadConfig([]StrategyConfig{{
 		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
 		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
-		Leverage: 5, MarginMode: "isolated", TrailingStopPct: &newTrail,
+		Leverage: 5, MarginMode: "isolated", TrailingStopPct: &newTrail, TrailingStopMinMovePct: &newMinMove,
 	}})
 	state := &AppState{Strategies: map[string]*StrategyState{
 		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{
@@ -405,8 +407,12 @@ func TestApplyHotReloadConfigAllowsTrailingStopPctChangeWithOpenPosition(t *test
 	if cfg.Strategies[0].TrailingStopPct == nil || *cfg.Strategies[0].TrailingStopPct != 4 {
 		t.Fatalf("TrailingStopPct=%v, want 4", cfg.Strategies[0].TrailingStopPct)
 	}
-	if !strings.Contains(strings.Join(changes, "\n"), "trailing_stop_pct") {
-		t.Fatalf("changes=%v, want trailing_stop_pct entry", changes)
+	if cfg.Strategies[0].TrailingStopMinMovePct == nil || *cfg.Strategies[0].TrailingStopMinMovePct != 0.25 {
+		t.Fatalf("TrailingStopMinMovePct=%v, want 0.25", cfg.Strategies[0].TrailingStopMinMovePct)
+	}
+	joined := strings.Join(changes, "\n")
+	if !strings.Contains(joined, "trailing_stop_pct") || !strings.Contains(joined, "trailing_stop_min_move_pct") {
+		t.Fatalf("changes=%v, want trailing_stop_pct and trailing_stop_min_move_pct entries", changes)
 	}
 }
 
