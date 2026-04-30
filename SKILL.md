@@ -686,7 +686,7 @@ Preferred commands:
 ```bash
 /opt/homebrew/bin/go -C scheduler test ./...
 .venv/bin/python3 -m pytest
-.venv/bin/python3 shared_strategies/test_registry_parity.py
+.venv/bin/python3 shared_strategies/open/test_registry_parity.py
 ```
 
 If Go cache needs an explicit writable path:

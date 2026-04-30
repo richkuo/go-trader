@@ -53,7 +53,6 @@ class SafeEncoder(json.JSONEncoder):
 # shared_strategies/open/futures/ for apply_strategy (Hyperliquid is a perps exchange), shared_tools/ for utilities.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'platforms', 'hyperliquid'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'futures'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'close'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 

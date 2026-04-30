@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 # shared_tools/ for utilities.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'platforms', 'robinhood'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'spot'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'close'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 

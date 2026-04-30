@@ -32,7 +32,6 @@ if _inst_type == "spot":
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'spot'))
 else:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'futures'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'close'))
 
 
 def _make_dataframe(candles):

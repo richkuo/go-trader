@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-
-def _float_from(mapping: dict, key: str) -> float:
-    try:
-        return float(mapping.get(key, 0) or 0)
-    except (TypeError, ValueError):
-        return 0.0
+from _helpers import float_from
 
 
 def evaluate(position: dict, market: dict, params: dict) -> dict:
-    avg_cost = _float_from(position, "avg_cost")
-    current_quantity = _float_from(position, "current_quantity")
+    avg_cost = float_from(position, "avg_cost")
+    current_quantity = float_from(position, "current_quantity")
     side = str(position.get("side", "") or "").strip().lower()
-    mark_price = _float_from(market, "mark_price")
+    mark_price = float_from(market, "mark_price")
 
     if mark_price <= 0:
         return {"close_fraction": 0.0, "reason": "noop:missing_mark_price"}
