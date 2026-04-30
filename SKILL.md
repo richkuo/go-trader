@@ -306,7 +306,8 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
      max_drawdown_pct, portfolio_risk.warn_threshold_pct,
      notional_cap_usd, risk_free_rate, correlation.*, summary_frequency
    Per-strategy: capital, max_drawdown_pct, interval_seconds, htf_filter,
-     params, stop_loss_pct, stop_loss_margin_pct, margin_mode, allow_shorts,
+     params, leverage, sizing_leverage, stop_loss_pct, stop_loss_margin_pct,
+     trailing_stop_pct, trailing_stop_min_move_pct, margin_mode, allow_shorts,
      open_strategy, close_strategies, disable_implicit_close, theta_harvest.*
    Discord/Telegram: enabled, channels, dm_channels, owner_id
    Environment: Discord token, status token, exchange credentials
@@ -355,7 +356,7 @@ sudo systemctl kill -s HUP go-trader   # hot reload (no state loss)
 sudo systemctl restart go-trader       # full restart
 ```
 
-Hot reload (`SIGHUP`) re-applies a safe subset: capital, drawdown, intervals, params, stop-loss, theta-harvest, portfolio risk knobs, summary cadence, correlation thresholds, auto-update mode, Discord/Telegram channel maps and tokens. It refuses if the strategy roster, script/args/type/platform, HTF filter, kill-switch identity, or DB path changed, and refuses per-strategy `leverage` or HL `margin_mode` changes while positions are open. It also re-runs the HL perps peer-on-same-coin check (`margin_mode`/`leverage` must agree, at most one peer with a non-zero stop-loss). Logs report the applied diff and any rejection reason; on rejection, fall back to a full restart. The status server reflects the new port immediately.
+Hot reload (`SIGHUP`) re-applies a safe subset: capital, drawdown, intervals, params, stop-loss (including trailing), sizing leverage, theta-harvest, portfolio risk knobs, summary cadence, correlation thresholds, auto-update mode, Discord/Telegram channel maps and tokens. It refuses if the strategy roster, script/args/type/platform, HTF filter, kill-switch identity, or DB path changed, and refuses per-strategy exchange `leverage` or HL `margin_mode` changes while positions are open. It also re-runs the HL perps peer-on-same-coin check (`margin_mode`/exchange `leverage` must agree; at most one peer with a non-zero stop owner across `stop_loss_pct` / `stop_loss_margin_pct` / `trailing_stop_pct`). Logs report the applied diff and any rejection reason; on rejection, fall back to a full restart. The status server reflects the new port immediately.
 
 Common changes:
 
@@ -400,6 +401,10 @@ Per-strategy keys:
 | Allow shorts | `allow_shorts` | Required for bidirectional perps strategies |
 | Stop loss (price %) | `stop_loss_pct` | Hyperliquid perps only. Omit to auto-derive from `max_drawdown_pct` (capped at 50) when sole strategy on the coin. Same-coin peers skip auto-derive and need one explicit positive owner (#494). Explicit `0` opts out. |
 | Stop loss (margin %) | `stop_loss_margin_pct` | Hyperliquid perps only, leverage-aware alternative to `stop_loss_pct`. Mutually exclusive unless both are explicit `0`. Same-coin peers default to opt-out (#494). |
+| Trailing stop (%) | `trailing_stop_pct` | Hyperliquid perps only — distance from high-water mark; mutually exclusive with `stop_loss_pct` / `stop_loss_margin_pct` (#501/#502). Capped at 50%. Explicit `0` disables. |
+| Trailing stop debounce | `trailing_stop_min_move_pct` | Minimum trigger move before cancel/replace. Defaults to 0.5%. |
+| Exchange leverage | `leverage` | Perps only — exchange margin/risk leverage and HL `update_leverage` (#497). 1× by default. |
+| Sizing leverage | `sizing_leverage` | Perps only — order-size multiplier (`cash * sizing_leverage * 0.95`). Defaults to `leverage`; set lower to run high exchange leverage with conservative position size (#497). |
 | Margin mode | `margin_mode` | Hyperliquid perps only, `isolated` (default) or `cross`. Applied from flat. |
 | Open strategy | `open_strategy` | Override entry strategy name (otherwise from `args[0]`) |
 | Close strategies | `close_strategies` | Ordered list of exit evaluators; max `close_fraction` wins |
@@ -468,7 +473,7 @@ Short-name conventions:
 - OKX: `okx-{strategy_short}-{asset}` for spot/options, `okx-{strategy_short}-{asset}-perp` for perps
 - `triple_ema_bidir` is futures/perps only and needs `"allow_shorts": true`
 - `session_breakout` is futures/perps only; short name `sbo`
-- Multiple HL perps strategies on the same coin share an on-chain position; peer strategies must agree on `margin_mode` and `leverage`, and at most one peer may carry a non-zero stop-loss (#491). `LoadConfig` normalizes omitted `stop_loss_*` fields on same-coin peers to explicit `0`, so the auto-SL fallback only fires for sole-owner strategies — set one explicit positive stop-loss owner if a shared-position trigger is desired (#494). Sub-account isolation is the only correct path for fully independent direction/leverage/margin per strategy.
+- Multiple HL perps strategies on the same coin share an on-chain position; peer strategies must agree on `margin_mode` and exchange `leverage` (`sizing_leverage` may differ per peer, #497), and at most one peer may carry a non-zero stop owner (`stop_loss_pct`, `stop_loss_margin_pct`, or `trailing_stop_pct`, #491/#501). `LoadConfig` normalizes omitted stop fields on same-coin peers to explicit `0`, so the auto-SL fallback only fires for sole-owner strategies — set one explicit positive owner if a shared-position trigger is desired (#494). Sub-account isolation is the only correct path for fully independent direction/leverage/margin per strategy.
 
 ---
 

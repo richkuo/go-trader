@@ -151,7 +151,7 @@ New options trades are scored against existing positions for strike distance, ex
 
 ### Perps (1h interval, any HL-listed asset)
 
-Full spot strategy suite on Hyperliquid perpetual futures. Strategies are auto-discovered at `go-trader init` time: `momentum`, `sma_crossover`, `ema_crossover`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `volume_weighted`, `triple_ema`, `rsi_macd_combo`, `triple_ema_bidir`, `session_breakout`.
+Full spot strategy suite on Hyperliquid perpetual futures. Strategies are auto-discovered at `go-trader init` time: `momentum`, `sma_crossover`, `ema_crossover`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `volume_weighted`, `triple_ema`, `tema_cross`, `rsi_macd_combo`, `triple_ema_bidir`, `session_breakout`.
 
 Most strategies are long-only; `triple_ema_bidir` is the first bidirectional strategy (long on bullish EMA stack, short on bearish) and runs with `allow_shorts: true` so the scheduler opens shorts from flat and flips long↔short on reversals. New bidirectional strategies opt in per-strategy via the same flag — existing long-only strategies keep their semantics.
 
@@ -161,7 +161,7 @@ Multiple HL perps strategies can share a coin on the same wallet (#491). They la
 
 ### Futures (1h interval, ES/NQ/MES/MNQ/CL/GC)
 
-TopStep futures support `momentum`, `mean_reversion`, `rsi`, `macd`, `breakout`, and `session_breakout`.
+TopStep futures support `momentum`, `mean_reversion`, `rsi`, `macd`, `breakout`, `session_breakout`, `tema_cross`, and `tema_cross_bd` (bidirectional triple-EMA crossover).
 
 CME futures on TopStep. Live mode requires `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRET`, `TOPSTEP_ACCOUNT_ID` env vars. Paper mode uses Yahoo Finance for price data.
 
@@ -341,6 +341,8 @@ Cadence is wall-clock based and survives restarts: per-channel last-post timesta
 | `sizing_leverage` | Perps only — position-sizing multiplier used for `cash * sizing_leverage * 0.95` order budgets (#497). Set lower than exchange `leverage` to run high exchange leverage without oversized orders. | `leverage` |
 | `stop_loss_pct` | HL perps only — reduce-only stop-loss trigger as a % of entry price. Omit to auto-derive from `max_drawdown_pct` (capped at 50%) when this strategy is the only HL perps strategy on its coin; same-coin peers must name one explicit positive owner (#484, #494). Explicit `0` opts out. | omitted (auto for sole owner) |
 | `stop_loss_margin_pct` | HL perps only — leverage-aware alternative to `stop_loss_pct`; price % is derived as `stop_loss_margin_pct / leverage` using exchange leverage, so the trigger tracks margin loss as leverage changes (#490/#497). Mutually exclusive with `stop_loss_pct` unless both are explicit `0`. Omit to auto-derive only when sole strategy on the coin; same-coin peers default to opt-out (#494). | omitted |
+| `trailing_stop_pct` | HL perps only — synthetic trailing stop distance (% from high-water mark since open). The scheduler cancels and replaces the reduce-only trigger only when the new level is favorable by at least `trailing_stop_min_move_pct` (#501/#502). Mutually exclusive with `stop_loss_pct` and `stop_loss_margin_pct`; same-coin peers default to opt-out and require one explicit owner. Capped at 50%; explicit `0` disables. | omitted |
+| `trailing_stop_min_move_pct` | HL trailing stop only — minimum trigger-price move (%) before issuing a cancel/replace. Reduces churn against HL's 1000-OID account cap. | 0.5 |
 | `margin_mode` | HL perps only — `"isolated"` or `"cross"`; applied via `update_leverage` from flat (#486) | `isolated` |
 | `allow_shorts` | Per-strategy opt-in for bidirectional perps (`triple_ema_bidir`, etc.) | false |
 | `theta_harvest` | Early exit config for sold options | null |
@@ -421,7 +423,7 @@ Open-position lines now show two extra fragments when applicable (#485): `SL: $<
 - **Notional cap** — optional hard limit on total notional exposure
 - **Correlation tracking** — per-asset directional exposure monitoring; warns when a single asset exceeds concentration threshold (default: 60%) or too many strategies share the same direction (default: 75%); opt-in via `correlation.enabled`
 - **Per-strategy circuit breakers** — pause trading when max drawdown exceeded (24h cooldown); spot/options/futures measure drawdown peak-relative, perps measure it relative to deployed margin so leveraged margin wipes fire the breaker in time (#292). When a per-strategy CB fires on HL perps, OKX perps, Robinhood crypto, or TopStep futures the scheduler enqueues and drains a reduce-only on-chain close (#356, #360, #361, #362); OKX spot and Robinhood options have no safe auto-close primitive and surface an `operator-required` warning on every cycle until the operator flattens manually (#363).
-- **Per-trade Hyperliquid stop-loss** — every single-strategy-per-coin HL perps strategy with `max_drawdown_pct` set automatically gets an exchange-side reduce-only trigger on each open (capped at 50%, #484). Override with `stop_loss_pct` (price-%) or `stop_loss_margin_pct` (margin-aware; price-% = `stop_loss_margin_pct / leverage`, where `leverage` is exchange leverage, #490/#497); set either to explicit `0` to opt out. Same-coin peer groups skip the auto-derive and require one explicit stop-loss owner (#494). HL caps open trigger orders at 1000 per account (#481).
+- **Per-trade Hyperliquid stop-loss** — every single-strategy-per-coin HL perps strategy with `max_drawdown_pct` set automatically gets an exchange-side reduce-only trigger on each open (capped at 50%, #484). Override with `stop_loss_pct` (price-%), `stop_loss_margin_pct` (margin-aware; price-% = `stop_loss_margin_pct / leverage`, where `leverage` is exchange leverage, #490/#497), or `trailing_stop_pct` (high-water trailing, #501/#502); set any to explicit `0` to opt out. The three are mutually exclusive when positive. Same-coin peer groups skip the auto-derive and require one explicit stop-loss owner (#494). HL caps open trigger orders at 1000 per account; trailing stops debounce cancel/replace via `trailing_stop_min_move_pct` (#481).
 - **HL margin mode** — defaults to `isolated` so a single losing strategy can't drain margin from unrelated positions (#486). Override per-strategy with `margin_mode: "cross"`. Applied via `update_leverage` from flat only; HL rejects mode/leverage changes on an open position.
 - **Consecutive loss tracking** — 5 losses in a row → 1h pause
 - **Spot**: max 95% capital per position
