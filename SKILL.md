@@ -249,7 +249,7 @@ Use the commit message and PR number to classify. When in doubt, treat as runtim
 
 | Category | Examples |
 | --- | --- |
-| Auto-migration | `config_version` bump, deprecated field removal, silent field copy (e.g. v10 `sizing_leverage` ← `leverage`) |
+| Auto-migration | `config_version` bump, deprecated field removal, silent field copy (e.g. v10 `sizing_leverage` ← `leverage`); silent field drop without version bump (e.g. `disable_implicit_close` removed in #508 — if set in config it no-ops; any strategy that had it `true` with no `close_strategies` now uses the open strategy as implicit close instead) |
 | Runtime default | HL stop-loss auto-derive (#493), HL margin mode default isolated (#486), peer normalization (#494) |
 | Opt-in field | trailing stop (#502), open/close composition (#483), `stop_loss_margin_pct` (#490) |
 | Open-position constraint | `margin_mode`, exchange `leverage`, kill-switch identity changes |

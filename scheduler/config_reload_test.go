@@ -200,7 +200,7 @@ func TestApplyHotReloadConfigRejectsNonReloadableStrategyField(t *testing.T) {
 	}
 }
 
-func TestApplyHotReloadConfigAllowsOpenCloseCompositionChanges(t *testing.T) {
+func TestApplyHotReloadConfigAllowsOpenCloseStrategyChanges(t *testing.T) {
 	cfg := minimalReloadConfig([]StrategyConfig{{
 		ID: "s1", Type: "spot", Platform: "binanceus", Script: "x.py",
 		Args: []string{"triple_ema", "BTC/USDT", "1h"}, Capital: 100, MaxDrawdownPct: 10,
