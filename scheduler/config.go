@@ -677,6 +677,17 @@ func ValidateConfig(cfg *Config) error {
 			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
 				errs = append(errs, fmt.Sprintf("%s: stop_loss_margin_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
+			// Mirror the #421 [0, 50] cap on the *derived* price stop so a
+			// hand-edited config like {StopLossMarginPct: 80, Leverage: 1}
+			// can't pass validation and silently land an HL trigger at
+			// entry×0 (long) or entry×1.8 (short).
+			lev := sc.Leverage
+			if lev < 1 {
+				lev = 1
+			}
+			if derived := sc.StopLossMarginPct / lev; derived > 50 {
+				errs = append(errs, fmt.Sprintf("%s: derived stop-loss price %% (stop_loss_margin_pct / leverage = %g) must be <= 50; lower stop_loss_margin_pct or raise leverage", prefix, derived))
+			}
 		}
 
 		// #36: ThetaHarvest fields must be non-negative when present.

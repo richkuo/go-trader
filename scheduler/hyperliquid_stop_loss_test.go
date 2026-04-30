@@ -648,19 +648,27 @@ func TestValidateConfig_StopLossMarginPctBounds(t *testing.T) {
 		name      string
 		marginPct float64
 		pricePct  float64
+		leverage  float64
 		platform  string
 		typ       string
 		wantError bool
 	}{
-		{"zero ok", 0, 0, "hyperliquid", "perps", false},
-		{"in range", 20, 0, "hyperliquid", "perps", false},
-		{"max boundary", 100, 0, "hyperliquid", "perps", false},
-		{"too high", 150, 0, "hyperliquid", "perps", true},
-		{"zero rejected (open lower bound)", 0, 0, "hyperliquid", "perps", false},
-		{"negative", -1, 0, "hyperliquid", "perps", true},
-		{"non-HL platform", 20, 0, "okx", "perps", true},
-		{"non-perps type", 20, 0, "hyperliquid", "spot", true},
-		{"mutually exclusive", 20, 1, "hyperliquid", "perps", true},
+		{"zero (disabled)", 0, 0, 10, "hyperliquid", "perps", false},
+		{"in range", 20, 0, 10, "hyperliquid", "perps", false},
+		{"max boundary at 10x leverage", 100, 0, 10, "hyperliquid", "perps", false},
+		{"too high", 150, 0, 10, "hyperliquid", "perps", true},
+		{"negative", -1, 0, 10, "hyperliquid", "perps", true},
+		{"non-HL platform", 20, 0, 10, "okx", "perps", true},
+		{"non-perps type", 20, 0, 10, "hyperliquid", "spot", true},
+		{"mutually exclusive", 20, 1, 10, "hyperliquid", "perps", true},
+		// Derived price stop must mirror the #421 [0, 50] cap: at leverage=1
+		// a marginPct of 80 implies an 80% price stop, which would land the
+		// HL trigger at entry×0 (long) or entry×1.8 (short) and silently
+		// never fire.
+		{"derived price stop exceeds 50% cap", 80, 0, 1, "hyperliquid", "perps", true},
+		// Edge of the derived cap: marginPct=50 at leverage=1 is exactly 50%
+		// and must be accepted (matches the inclusive #421 upper bound).
+		{"derived price stop at 50% cap", 50, 0, 1, "hyperliquid", "perps", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -674,7 +682,7 @@ func TestValidateConfig_StopLossMarginPctBounds(t *testing.T) {
 						Script:            "shared_scripts/check_hyperliquid.py",
 						Capital:           1000,
 						MaxDrawdownPct:    10,
-						Leverage:          10,
+						Leverage:          c.leverage,
 						StopLossPct:       c.pricePct,
 						StopLossMarginPct: c.marginPct,
 					},
