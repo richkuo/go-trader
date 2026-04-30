@@ -41,6 +41,85 @@ func TestPositionJSONUsesPositionID(t *testing.T) {
 	}
 }
 
+func TestExecuteSpotResultSetsInitialQuantityAndEntryATR(t *testing.T) {
+	prevRecorder := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prevRecorder })
+
+	state := &StrategyState{
+		ID:        "spot-test",
+		Type:      "spot",
+		Platform:  "binanceus",
+		Cash:      1000,
+		Positions: map[string]*Position{},
+	}
+	result := &SpotResult{
+		Symbol:     "BTC/USDT",
+		Signal:     1,
+		Indicators: map[string]interface{}{"atr": 123.45},
+	}
+	trades, _ := executeSpotResult(
+		StrategyConfig{ID: "spot-test"},
+		state,
+		result,
+		"BUY",
+		100,
+		silentStrategyLogger("spot-test"),
+	)
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	pos := state.Positions["BTC/USDT"]
+	if pos == nil {
+		t.Fatal("position was not opened")
+	}
+	if pos.InitialQuantity != pos.Quantity {
+		t.Fatalf("InitialQuantity = %g, want current open qty %g", pos.InitialQuantity, pos.Quantity)
+	}
+	if pos.EntryATR != 123.45 {
+		t.Fatalf("EntryATR = %g, want 123.45", pos.EntryATR)
+	}
+}
+
+func TestPartialClosePreservesInitialQuantityAndEntryATR(t *testing.T) {
+	prevRecorder := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prevRecorder })
+
+	state := &StrategyState{
+		ID:       "hl-test",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Cash:     1000,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol:          "ETH",
+				Quantity:        1,
+				InitialQuantity: 1,
+				AvgCost:         3000,
+				EntryATR:        150,
+				Side:            "long",
+				Multiplier:      1,
+			},
+		},
+	}
+
+	applyHyperliquidCircuitCloseFill(state, "ETH", 0.4, 3100, 1, 1)
+	pos := state.Positions["ETH"]
+	if pos == nil {
+		t.Fatal("position should remain after partial close")
+	}
+	if math.Abs(pos.Quantity-0.6) > 1e-9 {
+		t.Fatalf("Quantity = %g, want 0.6", pos.Quantity)
+	}
+	if pos.InitialQuantity != 1 {
+		t.Fatalf("InitialQuantity = %g, want 1", pos.InitialQuantity)
+	}
+	if pos.EntryATR != 150 {
+		t.Fatalf("EntryATR = %g, want 150", pos.EntryATR)
+	}
+}
+
 func TestPortfolioValueCashOnly(t *testing.T) {
 	s := &StrategyState{
 		Cash:            1000,

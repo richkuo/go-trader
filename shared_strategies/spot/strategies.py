@@ -16,6 +16,12 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
+_TOOLS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "shared_tools")
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+
+from strategy_composition import strip_unsupported_position_context
+
 
 def _load_registry_module():
     """Load ``shared_strategies/registry.py`` as an isolated module.
@@ -51,6 +57,7 @@ def apply_strategy(name: str, df: pd.DataFrame, params: Optional[dict] = None) -
     """Apply a named strategy with optional parameter overrides."""
     strat = get_strategy(name)
     p = {**strat["default_params"], **(params or {})}
+    p = strip_unsupported_position_context(strat["fn"], p)
     return strat["fn"](df, **p)
 
 

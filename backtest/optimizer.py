@@ -430,6 +430,9 @@ DEFAULT_PARAM_RANGES = {
         "entry_period": [10, 20, 30],
         "exit_period": [5, 10, 15],
     },
+    "tp_at_pct": {
+        "pct": [0.01, 0.03, 0.05],
+    },
     # Futures-only
     "breakout": {
         "lookback": [10, 20, 30],

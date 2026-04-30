@@ -67,6 +67,18 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].interval_seconds: %d -> %d", sc.ID, sc.IntervalSeconds, ns.IntervalSeconds)
 			sc.IntervalSeconds = ns.IntervalSeconds
 		}
+		if sc.OpenStrategy != ns.OpenStrategy {
+			addChange("strategy[%s].open_strategy: %q -> %q", sc.ID, sc.OpenStrategy, ns.OpenStrategy)
+			sc.OpenStrategy = ns.OpenStrategy
+		}
+		if !reflect.DeepEqual(sc.CloseStrategies, ns.CloseStrategies) {
+			addChange("strategy[%s].close_strategies: %v -> %v", sc.ID, sc.CloseStrategies, ns.CloseStrategies)
+			sc.CloseStrategies = append([]string{}, ns.CloseStrategies...)
+		}
+		if sc.DisableImplicitClose != ns.DisableImplicitClose {
+			addChange("strategy[%s].disable_implicit_close: %t -> %t", sc.ID, sc.DisableImplicitClose, ns.DisableImplicitClose)
+			sc.DisableImplicitClose = ns.DisableImplicitClose
+		}
 		// #486: Margin mode is hot-reloadable when flat. The state-compat
 		// check above blocks the change when positions are open; if we got
 		// here with new MarginMode != current, the strategy is flat and the
@@ -248,6 +260,9 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.Capital = 0
 	sc.Leverage = 0
 	sc.IntervalSeconds = 0
+	sc.OpenStrategy = ""
+	sc.CloseStrategies = nil
+	sc.DisableImplicitClose = false
 	sc.MarginMode = "" // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
 	return sc
 }
