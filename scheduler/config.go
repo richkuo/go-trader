@@ -250,10 +250,12 @@ const MaxAutoStopLossPct = 50.0
 
 // EffectiveStopLossPct returns the price % to use as the HL reduce-only stop-loss
 // trigger for a given strategy. Resolution order (#484):
-//  1. Explicit TrailingStopATRMult (nil → fall through; explicit 0 → disabled).
-//     Returns 0 because the price % can only be derived once a position carries
-//     EntryATR and AvgCost — initial trigger placement is deferred to the next
-//     trailing-stop cycle (#505).
+//  1. Explicit TrailingStopATRMult > 0 returns 0 because the price % can only
+//     be derived once a position carries EntryATR and AvgCost — initial
+//     trigger placement is deferred to the next trailing-stop cycle (#505).
+//     Explicit 0 falls through to the next priority instead of short-
+//     circuiting; a config like {trailing_stop_atr_mult: 0, stop_loss_pct: 2}
+//     is rare but well-defined and the explicit fixed stop should still arm.
 //  2. Explicit TrailingStopPct (nil → fall through; explicit 0 → disabled).
 //  3. Explicit StopLossPct (nil → fall through; explicit 0 → disabled).
 //  4. StopLossMarginPct / Leverage (nil → fall through; explicit 0 → disabled).
@@ -269,7 +271,7 @@ func EffectiveStopLossPct(sc StrategyConfig) float64 {
 	if sc.Platform != "hyperliquid" || sc.Type != "perps" {
 		return 0
 	}
-	if sc.TrailingStopATRMult != nil {
+	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
 		// ATR-derived trailing stop. The price % depends on per-position
 		// EntryATR and AvgCost which are not available at order placement
 		// time (the position record is created after the fill). The trailing

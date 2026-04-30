@@ -1278,8 +1278,16 @@ func main() {
 							prices[result.Symbol] = price
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
-							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && effectiveTrailingStopPct(sc, &Position{AvgCost: hlAvgCost, EntryATR: hlEntryATR}) > 0 {
-								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, hlPosQty, hlAvgCost, hlEntryATR, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, notifier, logger)
+							hlPosSnapshot := &Position{AvgCost: hlAvgCost, EntryATR: hlEntryATR}
+							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && atrMultMissingEntryATR(sc, hlPosSnapshot) {
+								// ATR-mult is configured but the position is missing EntryATR — the
+								// open candle did not produce an ATR indicator, so the trailing loop
+								// will keep no-opping until the position closes. Emit a one-shot
+								// operator alert; the position is running unprotected.
+								notifyATRMultMissingEntryATROnce(sc, result.Symbol, notifier, logger)
+							}
+							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && effectiveTrailingStopPct(sc, hlPosSnapshot) > 0 {
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, hlPosQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, notifier, logger)
 								mu.Lock()
 								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
 									if newHighWater > 0 && updateConfirmed {

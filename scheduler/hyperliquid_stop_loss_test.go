@@ -248,7 +248,7 @@ func TestRunHyperliquidTrailingStopUpdate_CancelThenPlaceArgs(t *testing.T) {
 	logger := silentStrategyLogger("hl-test")
 	defer logger.Close()
 
-	newHighWater, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, 100, 0, 110, 100, 97, 111, nil, logger)
+	newHighWater, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, &Position{AvgCost: 100}, 110, 100, 97, 111, nil, logger)
 	if !ok {
 		t.Fatalf("runHyperliquidTrailingStopUpdate returned ok=false")
 	}
@@ -287,7 +287,7 @@ func TestRunHyperliquidTrailingStopUpdate_AlertsOnOrphanedOldOID(t *testing.T) {
 		ownerID:  "owner",
 	})
 
-	_, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, 100, 0, 110, 100, 97, 111, notifier, logger)
+	_, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, &Position{AvgCost: 100}, 110, 100, 97, 111, notifier, logger)
 	if !ok || result == nil || result.StopLossOID != 222 {
 		t.Fatalf("runHyperliquidTrailingStopUpdate = (%+v, %v), want placed replacement", result, ok)
 	}
@@ -1322,5 +1322,142 @@ func TestStrategyConfig_TrailingStopATRMultJSON(t *testing.T) {
 	}
 	if !strings.Contains(string(b3), `"trailing_stop_atr_mult":0`) {
 		t.Errorf("explicit zero TrailingStopATRMult must round-trip; got %s", b3)
+	}
+}
+
+// #505 review: a volatile coin (e.g. mult=3 with ATR ≈ 30% of price) would
+// otherwise produce a derived 90% trailing distance and a long-side trigger
+// price <= 0 that HL silently rejects. effectiveTrailingStopPct must clamp the
+// derived percentage to MaxAutoStopLossPct (50) to mirror the cap on the other
+// auto-derive paths in EffectiveStopLossPct.
+func TestEffectiveTrailingStopPct_ATRMultCappedAtMaxAutoStopLossPct(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	sc := StrategyConfig{
+		Platform:            "hyperliquid",
+		Type:                "perps",
+		TrailingStopATRMult: pf(3),
+	}
+	pos := &Position{AvgCost: 100, EntryATR: 30} // raw derived = 3 * 30 / 100 * 100 = 90%
+	got := effectiveTrailingStopPct(sc, pos)
+	if got != MaxAutoStopLossPct {
+		t.Errorf("effectiveTrailingStopPct = %g, want %g (capped at MaxAutoStopLossPct)", got, MaxAutoStopLossPct)
+	}
+
+	// Just under the cap stays exactly the derived value.
+	sc.TrailingStopATRMult = pf(1.5)
+	pos = &Position{AvgCost: 100, EntryATR: 20} // raw derived = 30%
+	got = effectiveTrailingStopPct(sc, pos)
+	if d := got - 30.0; d > 1e-9 || d < -1e-9 {
+		t.Errorf("effectiveTrailingStopPct = %g, want 30 (under cap, no clamp)", got)
+	}
+}
+
+// #505 review: explicit-zero TrailingStopATRMult must fall through to the
+// next priority instead of short-circuiting EffectiveStopLossPct. A config
+// like {trailing_stop_atr_mult: 0, stop_loss_pct: 2} passes validation
+// (mutex check skips when ATR mult == 0) and the explicit fixed stop should
+// still arm the on-chain trigger.
+func TestEffectiveStopLossPct_ATRMultExplicitZeroFallsThrough(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	sc := StrategyConfig{
+		Platform:            "hyperliquid",
+		Type:                "perps",
+		Leverage:            5,
+		MaxDrawdownPct:      10,
+		TrailingStopATRMult: pf(0),
+		StopLossPct:         pf(2),
+	}
+	if got := EffectiveStopLossPct(sc); got != 2 {
+		t.Errorf("EffectiveStopLossPct with ATR mult=0 + stop_loss_pct=2 = %g, want 2 (fall through)", got)
+	}
+
+	// And with no other field set, mult=0 falls through to MaxDrawdownPct.
+	sc.StopLossPct = nil
+	sc.MaxDrawdownPct = 8
+	if got := EffectiveStopLossPct(sc); got != 8 {
+		t.Errorf("EffectiveStopLossPct with ATR mult=0 + MaxDrawdownPct=8 = %g, want 8 (fall through to DD)", got)
+	}
+}
+
+// #505 review: atrMultMissingEntryATR detects the silent foot-gun where an
+// ATR-mult-configured strategy opens a position but the entry candle did not
+// produce an ATR indicator, so EntryATR stays 0 and the trailing loop never
+// arms an on-chain trigger.
+func TestATRMultMissingEntryATR(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	hl := func(sc StrategyConfig) StrategyConfig {
+		sc.Platform = "hyperliquid"
+		sc.Type = "perps"
+		return sc
+	}
+	cases := []struct {
+		name string
+		sc   StrategyConfig
+		pos  *Position
+		want bool
+	}{
+		{"non-HL platform", StrategyConfig{Platform: "okx", Type: "perps", TrailingStopATRMult: pf(1.5)}, &Position{AvgCost: 100, EntryATR: 0}, false},
+		{"non-perps type", StrategyConfig{Platform: "hyperliquid", Type: "spot", TrailingStopATRMult: pf(1.5)}, &Position{AvgCost: 100, EntryATR: 0}, false},
+		{"ATR mult unset", hl(StrategyConfig{}), &Position{AvgCost: 100, EntryATR: 0}, false},
+		{"ATR mult explicit zero", hl(StrategyConfig{TrailingStopATRMult: pf(0)}), &Position{AvgCost: 100, EntryATR: 0}, false},
+		{"fixed pct wins", hl(StrategyConfig{TrailingStopPct: pf(3), TrailingStopATRMult: pf(1.5)}), &Position{AvgCost: 100, EntryATR: 0}, false},
+		{"nil position", hl(StrategyConfig{TrailingStopATRMult: pf(1.5)}), nil, false},
+		{"EntryATR stamped", hl(StrategyConfig{TrailingStopATRMult: pf(1.5)}), &Position{AvgCost: 100, EntryATR: 2}, false},
+		{"missing EntryATR", hl(StrategyConfig{TrailingStopATRMult: pf(1.5)}), &Position{AvgCost: 100, EntryATR: 0}, true},
+		{"missing AvgCost", hl(StrategyConfig{TrailingStopATRMult: pf(1.5)}), &Position{AvgCost: 0, EntryATR: 2}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := atrMultMissingEntryATR(c.sc, c.pos); got != c.want {
+				t.Errorf("atrMultMissingEntryATR = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// #505 review: notifyATRMultMissingEntryATROnce must emit exactly one
+// alert per (strategy, symbol). Repeated cycles must be suppressed so the
+// alert channel is not flooded; clearATRMultMissingEntryATRWarning resets
+// the throttle for re-opens.
+func TestNotifyATRMultMissingEntryATROnce_ThrottlesPerStrategySymbol(t *testing.T) {
+	mock := &mockNotifier{}
+	notifier := NewMultiNotifier(notifierBackend{
+		notifier: mock,
+		channels: map[string]string{"hyperliquid": "chan"},
+		ownerID:  "owner",
+	})
+	logger := silentStrategyLogger("hl-test")
+	defer logger.Close()
+	sc := StrategyConfig{ID: "hl-test", Platform: "hyperliquid", Type: "perps"}
+
+	// Reset between subtests so other tests don't leak warning state.
+	defer clearATRMultMissingEntryATRWarning(sc.ID, "ETH")
+	defer clearATRMultMissingEntryATRWarning(sc.ID, "BTC")
+
+	notifyATRMultMissingEntryATROnce(sc, "ETH", notifier, logger)
+	notifyATRMultMissingEntryATROnce(sc, "ETH", notifier, logger)
+	notifyATRMultMissingEntryATROnce(sc, "ETH", notifier, logger)
+
+	if got := len(mock.messages); got != 1 {
+		t.Errorf("expected 1 broadcast for ETH, got %d (%+v)", got, mock.messages)
+	}
+	if got := len(mock.dms); got != 1 {
+		t.Errorf("expected 1 owner DM for ETH, got %d (%+v)", got, mock.dms)
+	}
+	if len(mock.messages) > 0 && !strings.Contains(mock.messages[0].content, "MISSING ENTRY ATR") {
+		t.Errorf("alert content missing MISSING ENTRY ATR phrase: %q", mock.messages[0].content)
+	}
+
+	// A different symbol on the same strategy must alert independently.
+	notifyATRMultMissingEntryATROnce(sc, "BTC", notifier, logger)
+	if got := len(mock.messages); got != 2 {
+		t.Errorf("expected 2 broadcasts after BTC alert, got %d", got)
+	}
+
+	// Clearing the throttle re-arms the alert.
+	clearATRMultMissingEntryATRWarning(sc.ID, "ETH")
+	notifyATRMultMissingEntryATROnce(sc, "ETH", notifier, logger)
+	if got := len(mock.messages); got != 3 {
+		t.Errorf("expected 3 broadcasts after clear+re-alert, got %d", got)
 	}
 }
