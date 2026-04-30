@@ -225,6 +225,118 @@ class TestMarginMode:
         assert "position open" in result.get("error", "")
 
 
+class TestPeerLeverageSkip:
+    """#491: when a peer strategy has already opened the same coin, HL has
+    (margin_mode, leverage) pinned to the existing on-chain position. A fresh
+    update_leverage call would fail, so run_execute queries get_position_leverage
+    and skips the call when state already matches. LoadConfig validates that
+    peers agree on (margin_mode, leverage), so a match is the expected case
+    when peers share a coin."""
+
+    def _run_execute_with_existing_pos(self, margin_mode, leverage, current_state):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.get_position_leverage.return_value = current_state
+        mock_adapter.market_open.return_value = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [
+                {"filled": {"avgPx": "50000", "totalSz": "0.01"}}
+            ]}},
+        }
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                exit_code = 0
+                try:
+                    mod.run_execute("ETH", "buy", 0.5, "live",
+                                    margin_mode=margin_mode, leverage=leverage)
+                except SystemExit as e:
+                    exit_code = e.code
+        return json.loads(captured.getvalue()), mock_adapter, exit_code
+
+    def test_skips_update_leverage_when_state_matches(self):
+        result, adapter, exit_code = self._run_execute_with_existing_pos(
+            "isolated", 5, {"margin_mode": "isolated", "leverage": 5})
+        assert exit_code == 0
+        adapter.update_leverage.assert_not_called()
+        adapter.market_open.assert_called_once()
+        assert result["execution"]["action"] == "buy"
+
+    def test_calls_update_leverage_when_mode_mismatches(self):
+        result, adapter, exit_code = self._run_execute_with_existing_pos(
+            "isolated", 5, {"margin_mode": "cross", "leverage": 5})
+        adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
+
+    def test_calls_update_leverage_when_leverage_mismatches(self):
+        result, adapter, exit_code = self._run_execute_with_existing_pos(
+            "isolated", 5, {"margin_mode": "isolated", "leverage": 3})
+        adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
+
+    def test_calls_update_leverage_when_no_existing_position(self):
+        # get_position_leverage returns None when HL has no open position
+        # for the coin — then update_leverage is safe to call (HL only
+        # rejects mode changes on an OPEN position).
+        result, adapter, exit_code = self._run_execute_with_existing_pos(
+            "isolated", 5, None)
+        adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
+
+    def test_state_fetch_failure_falls_back_to_calling_update_leverage(self):
+        # If get_position_leverage raises, fall back to calling
+        # update_leverage so the existing fail-closed safety net catches a
+        # genuine mismatch — never silently skip without confirmation.
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.get_position_leverage.side_effect = RuntimeError("info endpoint timeout")
+        mock_adapter.market_open.return_value = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [
+                {"filled": {"avgPx": "50000", "totalSz": "0.01"}}
+            ]}},
+        }
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                exit_code = 0
+                try:
+                    mod.run_execute("ETH", "buy", 0.5, "live",
+                                    margin_mode="isolated", leverage=5)
+                except SystemExit as e:
+                    exit_code = e.code
+
+        assert exit_code == 0
+        mock_adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
+
+
 class TestClassifySLResponse:
     """Unit coverage for _classify_sl_response added in #421. The classifier
     is the load-bearing piece that distinguishes a resting SL from an instant

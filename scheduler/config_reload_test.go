@@ -315,6 +315,34 @@ func TestApplyHotReloadConfigPreservesRuntimeCapitalPctCapital(t *testing.T) {
 	}
 }
 
+// #491: hot-reload mirrors LoadConfig peer validation — a reload that would
+// introduce two HL perps strategies on the same coin with mismatched
+// margin_mode/leverage must be rejected.
+func TestApplyHotReloadConfigRejectsHLPeerMismatchOnReload(t *testing.T) {
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth-a", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 5, MarginMode: "isolated",
+	}, {
+		ID: "hl-eth-b", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"b", "ETH", "1h"}, Capital: 500, MaxDrawdownPct: 10, Leverage: 5, MarginMode: "isolated",
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth-a", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 5, MarginMode: "isolated",
+	}, {
+		ID: "hl-eth-b", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"b", "ETH", "1h"}, Capital: 500, MaxDrawdownPct: 10, Leverage: 10, MarginMode: "isolated",
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth-a": {ID: "hl-eth-a", Cash: 1000},
+		"hl-eth-b": {ID: "hl-eth-b", Cash: 500},
+	}}
+
+	_, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+	if err == nil {
+		t.Fatal("expected hot reload to reject peer leverage mismatch")
+	}
+	if !strings.Contains(err.Error(), "disagree on leverage") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func minimalReloadConfig(strategies []StrategyConfig) *Config {
 	return &Config{
 		IntervalSeconds: 600,

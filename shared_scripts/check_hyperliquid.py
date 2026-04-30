@@ -294,9 +294,12 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
 
         # Enforce margin mode + leverage before placing the order (#486).
         # Fail closed: if HL rejects this we abort the order rather than
-        # silently opening into the wrong margin mode. The scheduler only
-        # passes margin_mode on a fresh open from flat, so HL won't reject
-        # because of an existing position.
+        # silently opening into the wrong margin mode. When a peer strategy
+        # has already opened the same coin (#491), HL has the desired state
+        # pinned and would reject a fresh update_leverage call — so skip the
+        # call when get_position_leverage confirms the on-chain state already
+        # matches. LoadConfig validates that all peers share margin_mode and
+        # leverage, so a match here is the expected case.
         if margin_mode:
             if margin_mode not in ("isolated", "cross"):
                 print(json.dumps({
@@ -314,18 +317,30 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
                     "error": f"--margin-mode requires --leverage >= 1, got {leverage}",
                 }, cls=SafeEncoder))
                 sys.exit(1)
+            current = None
             try:
-                adapter.update_leverage(int(leverage), symbol, is_cross=(margin_mode == "cross"))
-                print(f"update_leverage({symbol}, {leverage}x, mode={margin_mode}) OK", file=sys.stderr)
-            except Exception as ue:
-                traceback.print_exc(file=sys.stderr)
-                print(json.dumps({
-                    "execution": None,
-                    "platform": "hyperliquid",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "error": f"update_leverage failed (margin_mode={margin_mode}, leverage={leverage}): {ue}",
-                }, cls=SafeEncoder))
-                sys.exit(1)
+                current = adapter.get_position_leverage(symbol)
+            except Exception as ce:
+                # Don't fail-closed on a state-fetch hiccup — the
+                # update_leverage call below will fail loudly if the on-chain
+                # state actually disagrees, preserving the original safety
+                # behavior. We still log so the cause is debuggable.
+                print(f"[WARN] get_position_leverage({symbol}) failed: {ce}; will call update_leverage", file=sys.stderr)
+            if current is not None and current.get("margin_mode") == margin_mode and current.get("leverage") == int(leverage):
+                print(f"update_leverage({symbol}, {leverage}x, mode={margin_mode}) SKIPPED (HL state already matches)", file=sys.stderr)
+            else:
+                try:
+                    adapter.update_leverage(int(leverage), symbol, is_cross=(margin_mode == "cross"))
+                    print(f"update_leverage({symbol}, {leverage}x, mode={margin_mode}) OK", file=sys.stderr)
+                except Exception as ue:
+                    traceback.print_exc(file=sys.stderr)
+                    print(json.dumps({
+                        "execution": None,
+                        "platform": "hyperliquid",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "error": f"update_leverage failed (margin_mode={margin_mode}, leverage={leverage}): {ue}",
+                    }, cls=SafeEncoder))
+                    sys.exit(1)
 
         # Cancel stale SL first: we want to free the trigger slot before
         # possibly spending another one on the new entry. A cancel failure is

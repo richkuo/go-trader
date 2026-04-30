@@ -336,7 +336,9 @@ class HyperliquidExchangeAdapter:
 
         HL's SDK takes both fields in one call, so callers always pass both.
         Fails closed: HL rejects this when there is an open position on the
-        coin, so the scheduler must only invoke it when opening from flat.
+        coin, so the scheduler must only invoke it when opening from flat —
+        or when ``get_position_leverage`` confirms the on-chain state already
+        matches the desired (mode, leverage) pair (#491).
         """
         if not self._exchange:
             raise RuntimeError(
@@ -345,3 +347,45 @@ class HyperliquidExchangeAdapter:
         if leverage < 1:
             raise ValueError(f"leverage must be >= 1, got {leverage}")
         return self._exchange.update_leverage(int(leverage), symbol, bool(is_cross))
+
+    def get_position_leverage(self, symbol: str) -> dict | None:
+        """Return ``{"margin_mode": "isolated"|"cross", "leverage": int}`` for the
+        on-chain position on ``symbol`` if one exists, else ``None`` (#491).
+
+        HL aggregates positions per coin per account, so two go-trader
+        strategies sharing a coin land on the same on-chain position. When
+        strategy A has already pinned (mode, leverage) on the coin, strategy
+        B can use this to detect the existing state and skip a redundant
+        ``update_leverage`` call — HL rejects mode/leverage changes while a
+        position is open, so the redundant call would fail-closed and abort
+        B's order. ``None`` means HL has no open position for ``symbol``;
+        ``update_leverage`` is then safe to call.
+        """
+        if not self._account_address:
+            return None
+        try:
+            user_state = self._info.user_state(self._account_address)
+        except Exception:
+            return None
+        for asset_pos in user_state.get("assetPositions", []):
+            pos = asset_pos.get("position", {}) or {}
+            if pos.get("coin") != symbol:
+                continue
+            try:
+                szi = float(pos.get("szi", 0) or 0)
+            except (TypeError, ValueError):
+                szi = 0.0
+            if szi == 0:
+                continue
+            lev = pos.get("leverage", {}) or {}
+            mode = lev.get("type")
+            if mode not in ("isolated", "cross"):
+                return None
+            try:
+                value = int(lev.get("value", 0) or 0)
+            except (TypeError, ValueError):
+                return None
+            if value < 1:
+                return None
+            return {"margin_mode": mode, "leverage": value}
+        return None

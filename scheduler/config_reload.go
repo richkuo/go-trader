@@ -204,6 +204,12 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 		}
 	}
 
+	// #491: re-run peer-strategy validation against the new config so that
+	// reloads can't introduce a peer-conflict that startup would have caught.
+	for _, msg := range hyperliquidPeerStrategyErrors(next.Strategies) {
+		errs = append(errs, msg)
+	}
+
 	if len(errs) > 0 {
 		sort.Strings(errs)
 		return fmt.Errorf("config reload rejected:\n  %s", strings.Join(errs, "\n  "))

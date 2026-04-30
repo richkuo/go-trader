@@ -888,6 +888,231 @@ func TestLoadConfigMarginModeRejectsSpot(t *testing.T) {
 	}
 }
 
+// #491: two HL perps strategies on the same coin must agree on margin_mode
+// and leverage — HL aggregates positions per coin per account, so peers
+// share a single on-chain position. Matching peers load successfully.
+func TestLoadConfigHLPerpsPeersOnSameCoinMatching(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [
+			{
+				"id": "hl-eth-trend",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+				"capital": 1000,
+				"leverage": 5,
+				"margin_mode": "isolated"
+			},
+			{
+				"id": "hl-eth-breakout",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["donchian_breakout", "ETH", "4h", "--mode=paper"],
+				"capital": 500,
+				"leverage": 5,
+				"margin_mode": "isolated"
+			}
+		]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if len(cfg.Strategies) != 2 {
+		t.Fatalf("expected 2 strategies, got %d", len(cfg.Strategies))
+	}
+}
+
+// #491: peers on the same coin with mismatched margin_mode are rejected.
+func TestLoadConfigHLPerpsPeersMismatchedMarginMode(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [
+			{
+				"id": "hl-eth-trend",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+				"capital": 1000,
+				"leverage": 5,
+				"margin_mode": "isolated"
+			},
+			{
+				"id": "hl-eth-breakout",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["donchian_breakout", "ETH", "4h", "--mode=paper"],
+				"capital": 500,
+				"leverage": 5,
+				"margin_mode": "cross"
+			}
+		]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for mismatched margin_mode on peers")
+	}
+	if !strings.Contains(err.Error(), "disagree on margin_mode") {
+		t.Errorf("error = %v, want 'disagree on margin_mode'", err)
+	}
+	if !strings.Contains(err.Error(), "ETH") {
+		t.Errorf("error = %v, want mention of coin ETH", err)
+	}
+}
+
+// #491: peers on the same coin with mismatched leverage are rejected.
+func TestLoadConfigHLPerpsPeersMismatchedLeverage(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [
+			{
+				"id": "hl-eth-trend",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+				"capital": 1000,
+				"leverage": 5,
+				"margin_mode": "isolated"
+			},
+			{
+				"id": "hl-eth-breakout",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["donchian_breakout", "ETH", "4h", "--mode=paper"],
+				"capital": 500,
+				"leverage": 10,
+				"margin_mode": "isolated"
+			}
+		]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for mismatched leverage on peers")
+	}
+	if !strings.Contains(err.Error(), "disagree on leverage") {
+		t.Errorf("error = %v, want 'disagree on leverage'", err)
+	}
+}
+
+// #491: only one peer may carry stop_loss_pct — reduce-only triggers from
+// both peers would race on the shared on-chain position.
+func TestLoadConfigHLPerpsPeersConflictingStopLoss(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [
+			{
+				"id": "hl-eth-trend",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+				"capital": 1000,
+				"leverage": 5,
+				"margin_mode": "isolated",
+				"stop_loss_pct": 3.0
+			},
+			{
+				"id": "hl-eth-breakout",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["donchian_breakout", "ETH", "4h", "--mode=paper"],
+				"capital": 500,
+				"leverage": 5,
+				"margin_mode": "isolated",
+				"stop_loss_pct": 5.0
+			}
+		]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for conflicting stop_loss_pct on peers")
+	}
+	if !strings.Contains(err.Error(), "conflicting stop_loss_pct") {
+		t.Errorf("error = %v, want 'conflicting stop_loss_pct'", err)
+	}
+}
+
+// #491: a single peer with stop_loss_pct is fine; the guard only fires when
+// two or more peers configure SLs that would race on the shared position.
+func TestLoadConfigHLPerpsPeersSingleStopLossAllowed(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [
+			{
+				"id": "hl-eth-trend",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+				"capital": 1000,
+				"leverage": 5,
+				"margin_mode": "isolated",
+				"stop_loss_pct": 3.0
+			},
+			{
+				"id": "hl-eth-breakout",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["donchian_breakout", "ETH", "4h", "--mode=paper"],
+				"capital": 500,
+				"leverage": 5,
+				"margin_mode": "isolated"
+			}
+		]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	if _, err := LoadConfig(path); err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+}
+
+// #491: peer-validation only applies within a single coin — strategies on
+// different coins don't constrain each other.
+func TestLoadConfigHLPerpsPeersDifferentCoinsIndependent(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [
+			{
+				"id": "hl-eth-trend",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+				"capital": 1000,
+				"leverage": 5,
+				"margin_mode": "isolated"
+			},
+			{
+				"id": "hl-btc-trend",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["sma_crossover", "BTC", "1h", "--mode=paper"],
+				"capital": 1000,
+				"leverage": 10,
+				"margin_mode": "cross"
+			}
+		]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	if _, err := LoadConfig(path); err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+}
+
 func TestValidateConfigDMChannelsInvalidKey(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
