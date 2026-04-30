@@ -89,7 +89,9 @@
 - In GitHub comments avoid `#N` for list items (auto-links to issues/PRs); use `1.` instead.
 - Fetch latest bot review: `gh api repos/richkuo/go-trader/issues/<N>/comments --jq '[.[] | select(.user.login=="codex[bot]" or .user.login=="claude[bot]")] | last | .body'` (top-level summary lives on issues endpoint, not pulls).
 - Before merging long-running PR: `git fetch origin main && git diff origin/main..HEAD -- <paths>` to catch silent reverts; rebase if unexpected deletions.
-- Replace default `🤖 Generated with [Claude Code]...` footer with metadata (model + effort), e.g. `LLM: Claude Sonnet 4.6 (1M) | high`. No `Co-Authored-By` trailer.
+- Replace default `🤖 Generated with [Claude Code]...` footer with metadata (model + effort + harness), e.g. `LLM: Claude Sonnet 4.6 (1M) | high | Harness: anthropics/claude-code-action@v1`. No `Co-Authored-By` trailer.
+- **Claude Code** (`.github/workflows/claude.yml`): The workflow stamps `Harness: anthropics/claude-code-action@v1` (via job `CLAUDE_HARNESS`) on the patched `claude[bot]` comment footer after stripping any stale footer; optional `ccusage` token/cost metrics append last on the same line when session data exists.
+- **Codex** (`.github/workflows/Codex.yml`): PR bodies and Codex replies should carry `LLM: <model> | <effort> | Harness: <descriptor>` (`CODEX_MODEL` / `CODEX_EFFORT` / `CODEX_HARNESS` in job `env` — update `CODEX_HARNESS` if you change sandbox or bump `openai/codex-action`). When Codex pushes to an in-repo PR branch, the workflow merges that footer into the PR description and inserts `Closes #<N>` when hinted and not already present in the PR body.
 
 ### PR review format (`@claude review`)
 When invoked to review a PR, the top-level review comment MUST take exactly one of two shapes — no preamble, no closing remarks:

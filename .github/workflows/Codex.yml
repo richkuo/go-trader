@@ -23,6 +23,10 @@ jobs:
         contains(github.event.issue.title || '', '@Codex')
       ))
     runs-on: ubuntu-latest
+    env:
+      CODEX_MODEL: gpt-5.5
+      CODEX_EFFORT: high
+      CODEX_HARNESS: openai/codex-action@v1; sandbox workspace-write
     permissions:
       contents: write
       pull-requests: write
@@ -127,6 +131,11 @@ jobs:
               instruction = instruction.replace(/^@codex\b\s*/i, "");
             }
 
+            const closingMatch = instruction.match(
+              /\b(?:close|closes|fix|fixes|resolve|resolves)\s*#\s*(\d+)\b/i
+            );
+            core.setOutput("closing_issue_hint", closingMatch ? closingMatch[1] : "");
+
             let checkoutRepository = repoFullName;
             let checkoutRef = payload.repository?.default_branch || "main";
             let canPush = "false";
@@ -221,8 +230,8 @@ jobs:
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           allow-bots: false
-          model: gpt-5.4
-          effort: high
+          model: ${{ env.CODEX_MODEL }}
+          effort: ${{ env.CODEX_EFFORT }}
           sandbox: workspace-write
           prompt: |
             You are responding to a GitHub invocation for the repository `${{ github.repository }}`.
@@ -241,6 +250,8 @@ jobs:
             If the human asked for a review, prioritize bugs, regressions, and missing tests. Put findings first.
             If the human asked for code changes and the checked out branch is writable, make the changes directly in the working tree, run focused verification, and summarize the result clearly.
             If this is a PR review or PR comment request, do not make code changes unless the request clearly asks for them.
+
+            When your work resolves a GitHub issue, include the exact phrase `Closes #<issue_number>` once in your reply (and use that issue number in prose) so automation can sync the PR description. If the PR already closes the issue, you do not need to repeat it.
 
             Human request:
             ${{ steps.context.outputs.instruction }}
@@ -277,6 +288,59 @@ jobs:
           git push origin "HEAD:$BRANCH"
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
+      - name: Update PR description with Codex metadata
+        if: steps.verify_invocation.outputs.invoked == 'true' && steps.codex.outcome == 'success' && steps.context.outputs.is_pr == 'true' && steps.context.outputs.pr_number != '' && steps.push.outputs.pushed == 'true'
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          CLOSING_ISSUE_HINT: ${{ steps.context.outputs.closing_issue_hint }}
+          CODEX_FINAL_MESSAGE: ${{ steps.codex.outputs.final-message }}
+          CODEX_MODEL: ${{ env.CODEX_MODEL }}
+          CODEX_EFFORT: ${{ env.CODEX_EFFORT }}
+          CODEX_HARNESS: ${{ env.CODEX_HARNESS }}
+        with:
+          script: |
+            const prNumber = Number(process.env.PR_NUMBER);
+            const closeRe = /\b(?:close|closes|fix|fixes|resolve|resolves)\s*#\s*(\d+)\b/i;
+            let closingHint = (process.env.CLOSING_ISSUE_HINT || "").trim();
+            if (!closingHint) {
+              const fm = process.env.CODEX_FINAL_MESSAGE || "";
+              const m = fm.match(closeRe);
+              if (m) closingHint = m[1];
+            }
+            const model = process.env.CODEX_MODEL || "";
+            const effort = process.env.CODEX_EFFORT || "";
+            const harness = (process.env.CODEX_HARNESS || "").trim();
+            const llmTail = harness
+              ? `${model} | ${effort} | Harness: ${harness}`
+              : `${model} | ${effort}`;
+            const meta = `---\nLLM: ${llmTail}`;
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+
+            let body = pr.body || "";
+            body = body.replace(/\n*---\nLLM:\s*[^\n]+\s*$/m, "").trimEnd();
+
+            const hasClosingKeyword = closeRe.test(body);
+            let newBody = body;
+            if (closingHint && !hasClosingKeyword) {
+              newBody = newBody ? `${newBody}\n\nCloses #${closingHint}` : `Closes #${closingHint}`;
+            }
+            newBody = newBody ? `${newBody}\n\n${meta}` : meta;
+
+            if (newBody !== (pr.body || "")) {
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                body: newBody,
+              });
+            }
+
       - name: Post Codex response
         if: steps.verify_invocation.outputs.invoked == 'true' && steps.codex.outcome == 'success' && steps.codex.outputs.final-message != ''
         uses: actions/github-script@v7
@@ -285,6 +349,9 @@ jobs:
           ISSUE_NUMBER: ${{ steps.context.outputs.issue_number }}
           PUSHED: ${{ steps.push.outputs.pushed || 'false' }}
           PUSH_BRANCH: ${{ steps.context.outputs.push_branch }}
+          CODEX_MODEL: ${{ env.CODEX_MODEL }}
+          CODEX_EFFORT: ${{ env.CODEX_EFFORT }}
+          CODEX_HARNESS: ${{ env.CODEX_HARNESS }}
         with:
           script: |
             let body = process.env.CODEX_FINAL_MESSAGE || "";
@@ -293,7 +360,11 @@ jobs:
               return;
             }
 
-            const footer = ["---", "LLM: GPT-5.4 | high"];
+            const h = (process.env.CODEX_HARNESS || "").trim();
+            const llmLine = h
+              ? `LLM: ${process.env.CODEX_MODEL || ""} | ${process.env.CODEX_EFFORT || ""} | Harness: ${h}`
+              : `LLM: ${process.env.CODEX_MODEL || ""} | ${process.env.CODEX_EFFORT || ""}`;
+            const footer = ["---", llmLine];
             if (process.env.PUSHED === "true" && process.env.PUSH_BRANCH) {
               footer.push(`Pushed changes to \`${process.env.PUSH_BRANCH}\`.`);
             }
