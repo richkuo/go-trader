@@ -398,8 +398,8 @@ Per-strategy keys:
 | HTF filter | `htf_filter` | Skips counter-trend signals |
 | Params | `params` | Strategy default overrides |
 | Allow shorts | `allow_shorts` | Required for bidirectional perps strategies |
-| Stop loss (price %) | `stop_loss_pct` | Hyperliquid perps only. Omit to auto-derive from `max_drawdown_pct` (capped at 50). Explicit `0` opts out. |
-| Stop loss (margin %) | `stop_loss_margin_pct` | Hyperliquid perps only, leverage-aware alternative to `stop_loss_pct`. Mutually exclusive unless both are explicit `0`. |
+| Stop loss (price %) | `stop_loss_pct` | Hyperliquid perps only. Omit to auto-derive from `max_drawdown_pct` (capped at 50) when sole strategy on the coin. Same-coin peers skip auto-derive and need one explicit positive owner (#494). Explicit `0` opts out. |
+| Stop loss (margin %) | `stop_loss_margin_pct` | Hyperliquid perps only, leverage-aware alternative to `stop_loss_pct`. Mutually exclusive unless both are explicit `0`. Same-coin peers default to opt-out (#494). |
 | Margin mode | `margin_mode` | Hyperliquid perps only, `isolated` (default) or `cross`. Applied from flat. |
 | Open strategy | `open_strategy` | Override entry strategy name (otherwise from `args[0]`) |
 | Close strategies | `close_strategies` | Ordered list of exit evaluators; max `close_fraction` wins |
@@ -468,7 +468,7 @@ Short-name conventions:
 - OKX: `okx-{strategy_short}-{asset}` for spot/options, `okx-{strategy_short}-{asset}-perp` for perps
 - `triple_ema_bidir` is futures/perps only and needs `"allow_shorts": true`
 - `session_breakout` is futures/perps only; short name `sbo`
-- Multiple HL perps strategies on the same coin share an on-chain position; peer strategies must agree on `margin_mode` and `leverage`, and at most one peer may carry a non-zero stop-loss (#491). Sub-account isolation is the only correct path for fully independent direction/leverage/margin per strategy.
+- Multiple HL perps strategies on the same coin share an on-chain position; peer strategies must agree on `margin_mode` and `leverage`, and at most one peer may carry a non-zero stop-loss (#491). `LoadConfig` normalizes omitted `stop_loss_*` fields on same-coin peers to explicit `0`, so the auto-SL fallback only fires for sole-owner strategies — set one explicit positive stop-loss owner if a shared-position trigger is desired (#494). Sub-account isolation is the only correct path for fully independent direction/leverage/margin per strategy.
 
 ---
 
