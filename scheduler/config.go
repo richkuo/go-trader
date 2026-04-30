@@ -209,6 +209,7 @@ type StrategyConfig struct {
 	StopLossPct            *float64               `json:"stop_loss_pct,omitempty"`              // HL perps only: % from entry to place a reduce-only stop-loss trigger. Pointer so omitted (nil) falls through to StopLossMarginPct then MaxDrawdownPct for single-coin strategies (#484); LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables auto-SL (#412)
 	StopLossMarginPct      *float64               `json:"stop_loss_margin_pct,omitempty"`       // HL perps only: % of deployed margin to lose before stop-loss trigger; mutually exclusive with stop_loss_pct; price % derived as StopLossMarginPct / Leverage at order time. Pointer so omitted falls through to MaxDrawdownPct for single-coin strategies; LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables (#487, #484)
 	TrailingStopPct        *float64               `json:"trailing_stop_pct,omitempty"`          // HL perps only: synthetic trailing SL distance from the best mark seen while open; mutually exclusive with stop_loss_pct and stop_loss_margin_pct (#501)
+	TrailingStopATRMult    *float64               `json:"trailing_stop_atr_mult,omitempty"`     // HL perps only: trailing SL distance derived from entry ATR at open (effective_pct = mult * entry_atr / avg_cost * 100); fixed for the life of the position; mutually exclusive with trailing_stop_pct, stop_loss_pct, stop_loss_margin_pct (#505)
 	TrailingStopMinMovePct *float64               `json:"trailing_stop_min_move_pct,omitempty"` // HL perps trailing SL only: minimum trigger-price move before cancel/replace; nil defaults to 0.5% (#501)
 	MarginMode             string                 `json:"margin_mode,omitempty"`                // HL perps only: "isolated" (default) or "cross"; sent via update_leverage on fresh opens to enforce per-position liq isolation (#486)
 	Params                 map[string]interface{} `json:"params,omitempty"`                     // custom strategy parameters passed to Python
@@ -249,20 +250,31 @@ const MaxAutoStopLossPct = 50.0
 
 // EffectiveStopLossPct returns the price % to use as the HL reduce-only stop-loss
 // trigger for a given strategy. Resolution order (#484):
-//  1. Explicit TrailingStopPct (nil → fall through; explicit 0 → disabled).
-//  2. Explicit StopLossPct (nil → fall through; explicit 0 → disabled).
-//  3. StopLossMarginPct / Leverage (nil → fall through; explicit 0 → disabled).
-//  4. MaxDrawdownPct as a fallback so a sole-owner HL perps strategy with a
+//  1. Explicit TrailingStopATRMult (nil → fall through; explicit 0 → disabled).
+//     Returns 0 because the price % can only be derived once a position carries
+//     EntryATR and AvgCost — initial trigger placement is deferred to the next
+//     trailing-stop cycle (#505).
+//  2. Explicit TrailingStopPct (nil → fall through; explicit 0 → disabled).
+//  3. Explicit StopLossPct (nil → fall through; explicit 0 → disabled).
+//  4. StopLossMarginPct / Leverage (nil → fall through; explicit 0 → disabled).
+//  5. MaxDrawdownPct as a fallback so a sole-owner HL perps strategy with a
 //     configured drawdown automatically gets exchange-side protection. Capped
 //     at MaxAutoStopLossPct. Only applies to single-strategy coins because
-//     LoadConfig normalizes omitted stop_loss_* / trailing_stop_pct fields to
-//     explicit 0 for
-//     same-coin HL peer strategies (#494).
+//     LoadConfig normalizes omitted stop_loss_* / trailing_stop_* fields to
+//     explicit 0 for same-coin HL peer strategies (#494).
 //
 // HL perps only — returns 0 for non-HL platforms or non-perps types so the
 // caller can skip the trigger placement unconditionally.
 func EffectiveStopLossPct(sc StrategyConfig) float64 {
 	if sc.Platform != "hyperliquid" || sc.Type != "perps" {
+		return 0
+	}
+	if sc.TrailingStopATRMult != nil {
+		// ATR-derived trailing stop. The price % depends on per-position
+		// EntryATR and AvgCost which are not available at order placement
+		// time (the position record is created after the fill). The trailing
+		// stop loop arms the initial trigger on the next cycle once
+		// stampEntryATRIfOpened has populated Position.EntryATR (#505).
 		return 0
 	}
 	if sc.TrailingStopPct != nil {
@@ -487,9 +499,9 @@ func LoadConfig(path string) (*Config, error) {
 // normalizeHyperliquidPeerStopLosses preserves the single-strategy auto-SL
 // fallback while avoiding accidental reduce-only trigger races for same-coin
 // peer strategies (#494). When multiple HL perps strategies share a coin,
-// omitted stop_loss_* / trailing_stop_pct fields are treated as an explicit
+// omitted stop_loss_* / trailing_stop_* fields are treated as an explicit
 // opt-out; operators can still select one owner with a positive stop_loss_pct,
-// stop_loss_margin_pct, or trailing_stop_pct.
+// stop_loss_margin_pct, trailing_stop_pct, or trailing_stop_atr_mult.
 func normalizeHyperliquidPeerStopLosses(strategies []StrategyConfig) {
 	type peerRef struct {
 		ID    string
@@ -520,7 +532,7 @@ func normalizeHyperliquidPeerStopLosses(strategies []StrategyConfig) {
 		sort.Slice(peers, func(i, j int) bool { return peers[i].ID < peers[j].ID })
 		for _, p := range peers {
 			sc := &strategies[p.Index]
-			if sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil {
+			if sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil {
 				zero := 0.0
 				sc.StopLossPct = &zero
 			}
@@ -528,11 +540,27 @@ func normalizeHyperliquidPeerStopLosses(strategies []StrategyConfig) {
 	}
 }
 
+// hasHyperliquidStopLossOwnership reports whether sc would place a reduce-only
+// HL trigger at any point in its lifecycle. It is the peer-conflict predicate
+// rather than the runtime price-% predicate: TrailingStopATRMult arms an
+// initial trigger only on the cycle after the position opens (EntryATR must be
+// stamped first), so EffectiveStopLossPct returns 0 at order-placement time.
+// Peer validation must still treat that strategy as the trigger owner.
+func hasHyperliquidStopLossOwnership(sc StrategyConfig) bool {
+	if EffectiveStopLossPct(sc) > 0 {
+		return true
+	}
+	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
+		return true
+	}
+	return false
+}
+
 // hyperliquidPeerStrategyErrors returns validation messages for HL perps
 // strategies that share a coin but disagree on MarginMode or exchange Leverage (#491),
-// or that have more than one stop-loss owner (EffectiveStopLossPct > 0 after
-// LoadConfig peer normalization, #494, including trailing stops from #501).
-// Returns an empty slice when no peer conflicts exist.
+// or that have more than one stop-loss owner (after LoadConfig peer
+// normalization, #494, including trailing stops from #501 and ATR-derived
+// trailing stops from #505). Returns an empty slice when no peer conflicts exist.
 //
 // HL aggregates positions per coin per account, so two go-trader strategies
 // on the same coin share an on-chain position, margin assignment, and
@@ -559,11 +587,11 @@ func normalizeHyperliquidPeerStopLosses(strategies []StrategyConfig) {
 // any on-chain conflict.
 func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 	type peer struct {
-		ID             string
-		Coin           string
-		MarginMode     string
-		Leverage       float64
-		EffectiveSLPct float64 // resolved after LoadConfig peer normalization: >0 means this strategy owns a trigger
+		ID         string
+		Coin       string
+		MarginMode string
+		Leverage   float64
+		OwnsSL     bool // resolved after LoadConfig peer normalization: true means this strategy owns a trigger
 	}
 	groups := make(map[string][]peer)
 	for _, sc := range strategies {
@@ -575,11 +603,11 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 			continue
 		}
 		groups[coin] = append(groups[coin], peer{
-			ID:             sc.ID,
-			Coin:           coin,
-			MarginMode:     sc.MarginMode,
-			Leverage:       sc.Leverage,
-			EffectiveSLPct: EffectiveStopLossPct(sc),
+			ID:         sc.ID,
+			Coin:       coin,
+			MarginMode: sc.MarginMode,
+			Leverage:   sc.Leverage,
+			OwnsSL:     hasHyperliquidStopLossOwnership(sc),
 		})
 	}
 	var errs []string
@@ -621,14 +649,14 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 		}
 		stopLossOwners := make([]string, 0)
 		for _, p := range peers {
-			if p.EffectiveSLPct > 0 {
+			if p.OwnsSL {
 				stopLossOwners = append(stopLossOwners, p.ID)
 			}
 		}
 		if len(stopLossOwners) > 1 {
 			sort.Strings(stopLossOwners)
 			errs = append(errs, fmt.Sprintf(
-				"hyperliquid peers on %s have conflicting stop_loss_pct/trailing_stop_pct (strategies %s): at most one peer may place a reduce-only SL trigger; the others' OIDs would race on the shared on-chain position",
+				"hyperliquid peers on %s have conflicting stop_loss_pct/trailing_stop_pct/trailing_stop_atr_mult (strategies %s): at most one peer may place a reduce-only SL trigger; the others' OIDs would race on the shared on-chain position",
 				coin, strings.Join(stopLossOwners, ", ")))
 		}
 	}
@@ -960,6 +988,35 @@ func ValidateConfig(cfg *Config) error {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_pct is mutually exclusive with stop_loss_pct and stop_loss_margin_pct", prefix))
 			}
 		}
+		// #505: ATR-derived trailing stops. The price % is resolved per-position
+		// at runtime from EntryATR / AvgCost, so validation only enforces shape:
+		// HL perps only, > 0, mutually exclusive with the fixed-distance stops.
+		if sc.TrailingStopATRMult != nil {
+			mult := *sc.TrailingStopATRMult
+			if mult < 0 {
+				errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_mult must be >= 0, got %g", prefix, mult))
+			}
+			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+				errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_mult is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			}
+			if mult > 0 {
+				fixedPct := 0.0
+				if sc.StopLossPct != nil {
+					fixedPct = *sc.StopLossPct
+				}
+				marginPct := 0.0
+				if sc.StopLossMarginPct != nil {
+					marginPct = *sc.StopLossMarginPct
+				}
+				trailingPct := 0.0
+				if sc.TrailingStopPct != nil {
+					trailingPct = *sc.TrailingStopPct
+				}
+				if fixedPct > 0 || marginPct > 0 || trailingPct > 0 {
+					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_mult is mutually exclusive with stop_loss_pct, stop_loss_margin_pct, and trailing_stop_pct", prefix))
+				}
+			}
+		}
 		if sc.TrailingStopMinMovePct != nil {
 			pct := *sc.TrailingStopMinMovePct
 			if pct < 0 || pct > 100 {
@@ -968,8 +1025,16 @@ func ValidateConfig(cfg *Config) error {
 			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
-			if effectiveTrailingStopPct(sc) <= 0 {
-				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct requires trailing_stop_pct > 0", prefix))
+			fixedTrailingPct := 0.0
+			if sc.TrailingStopPct != nil {
+				fixedTrailingPct = *sc.TrailingStopPct
+			}
+			atrMult := 0.0
+			if sc.TrailingStopATRMult != nil {
+				atrMult = *sc.TrailingStopATRMult
+			}
+			if fixedTrailingPct <= 0 && atrMult <= 0 {
+				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct requires trailing_stop_pct > 0 or trailing_stop_atr_mult > 0", prefix))
 			}
 		}
 

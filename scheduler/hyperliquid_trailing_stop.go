@@ -9,12 +9,33 @@ const defaultTrailingStopMinMovePct = 0.5
 
 var runHyperliquidUpdateStopLossFunc = RunHyperliquidUpdateStopLoss
 
-func effectiveTrailingStopPct(sc StrategyConfig) float64 {
-	if sc.Platform != "hyperliquid" || sc.Type != "perps" || sc.TrailingStopPct == nil {
+// effectiveTrailingStopPct returns the per-position trailing-stop distance as a
+// price-% (e.g. 3.0 == 3%). HL perps only.
+//
+// Resolution order:
+//   - explicit TrailingStopPct (fixed distance) wins; explicit 0 disables.
+//   - TrailingStopATRMult derives the distance from the position's EntryATR
+//     and AvgCost: pct = mult * entry_atr / avg_cost * 100. The percentage is
+//     fixed for the life of the position once derived because EntryATR is
+//     stamped on Position.OpenedAt and never re-read after that. Returns 0 if
+//     pos is nil or EntryATR / AvgCost is missing — the trailing loop will
+//     simply no-op until stampEntryATRIfOpened populates the position on the
+//     cycle after the open fills (#505).
+func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
+	if sc.Platform != "hyperliquid" || sc.Type != "perps" {
 		return 0
 	}
-	if *sc.TrailingStopPct > 0 {
-		return *sc.TrailingStopPct
+	if sc.TrailingStopPct != nil {
+		if *sc.TrailingStopPct > 0 {
+			return *sc.TrailingStopPct
+		}
+		return 0
+	}
+	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
+		if pos == nil || pos.EntryATR <= 0 || pos.AvgCost <= 0 {
+			return 0
+		}
+		return *sc.TrailingStopATRMult * pos.EntryATR / pos.AvgCost * 100.0
 	}
 	return 0
 }
@@ -77,8 +98,9 @@ func computeTrailingStopUpdate(side string, mark, highWater, trailingPct, minMov
 	return candidateHighWater, 0, false
 }
 
-func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qty, avgCost, mark, highWater, currentTrigger float64, currentOID int64, notifier *MultiNotifier, logger *StrategyLogger) (float64, *HyperliquidStopLossUpdateResult, bool) {
-	trailingPct := effectiveTrailingStopPct(sc)
+func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qty, avgCost, entryATR, mark, highWater, currentTrigger float64, currentOID int64, notifier *MultiNotifier, logger *StrategyLogger) (float64, *HyperliquidStopLossUpdateResult, bool) {
+	pos := &Position{AvgCost: avgCost, EntryATR: entryATR}
+	trailingPct := effectiveTrailingStopPct(sc, pos)
 	if trailingPct <= 0 || qty <= 0 || mark <= 0 {
 		return highWater, nil, true
 	}

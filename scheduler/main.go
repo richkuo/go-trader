@@ -1082,6 +1082,7 @@ func main() {
 					var hlPosQty float64
 					var hlPosSide string
 					var hlAvgCost float64
+					var hlEntryATR float64
 					var hlPosCtx PositionCtx
 					var hlStopLossOID int64
 					var hlStopLossTriggerPx float64
@@ -1099,6 +1100,7 @@ func main() {
 								hlPosSide = hlPosCtx.Side
 								hlPosQty = hlPosCtx.Quantity
 								hlAvgCost = hlPosCtx.AvgCost
+								hlEntryATR = pos.EntryATR
 								hlStopLossOID = pos.StopLossOID
 								hlStopLossTriggerPx = pos.StopLossTriggerPx
 								hlStopLossHighWaterPx = pos.StopLossHighWaterPx
@@ -1276,8 +1278,8 @@ func main() {
 							prices[result.Symbol] = price
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
-							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && effectiveTrailingStopPct(sc) > 0 {
-								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, hlPosQty, hlAvgCost, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, notifier, logger)
+							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && effectiveTrailingStopPct(sc, &Position{AvgCost: hlAvgCost, EntryATR: hlEntryATR}) > 0 {
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, hlPosQty, hlAvgCost, hlEntryATR, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, notifier, logger)
 								mu.Lock()
 								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
 									if newHighWater > 0 && updateConfirmed {
@@ -2258,8 +2260,8 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 	if trades > 0 && fillOID != "" {
 		logger.Info("Exchange order ID: %s", fillOID)
 	}
-	if trades > 0 && effectiveTrailingStopPct(sc) > 0 {
-		if pos, ok := s.Positions[result.Symbol]; ok {
+	if trades > 0 {
+		if pos, ok := s.Positions[result.Symbol]; ok && effectiveTrailingStopPct(sc, pos) > 0 {
 			// Partial closes may reset this hint, but StopLossTriggerPx is the
 			// durable ratchet. The helper never lowers a favorable trigger.
 			pos.StopLossHighWaterPx = fillPrice

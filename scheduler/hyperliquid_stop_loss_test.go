@@ -248,7 +248,7 @@ func TestRunHyperliquidTrailingStopUpdate_CancelThenPlaceArgs(t *testing.T) {
 	logger := silentStrategyLogger("hl-test")
 	defer logger.Close()
 
-	newHighWater, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, 100, 110, 100, 97, 111, nil, logger)
+	newHighWater, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, 100, 0, 110, 100, 97, 111, nil, logger)
 	if !ok {
 		t.Fatalf("runHyperliquidTrailingStopUpdate returned ok=false")
 	}
@@ -287,7 +287,7 @@ func TestRunHyperliquidTrailingStopUpdate_AlertsOnOrphanedOldOID(t *testing.T) {
 		ownerID:  "owner",
 	})
 
-	_, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, 100, 110, 100, 97, 111, notifier, logger)
+	_, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, 100, 0, 110, 100, 97, 111, notifier, logger)
 	if !ok || result == nil || result.StopLossOID != 222 {
 		t.Fatalf("runHyperliquidTrailingStopUpdate = (%+v, %v), want placed replacement", result, ok)
 	}
@@ -1060,5 +1060,267 @@ func TestStrategyConfig_StopLossMarginPctJSON(t *testing.T) {
 	}
 	if !strings.Contains(string(b3), `"stop_loss_margin_pct":0`) {
 		t.Errorf("explicit zero StopLossMarginPct must round-trip; got %s", b3)
+	}
+}
+
+// #505: TrailingStopATRMult derives the trailing distance from the entry ATR
+// and avg cost of the open position. Once derived the percentage is fixed for
+// the life of the position. effectiveTrailingStopPct must:
+//   - return 0 (no-op) when EntryATR or AvgCost is zero so the initial-trigger
+//     placement is deferred to the cycle after stampEntryATRIfOpened populates
+//     the position rather than crashing or arming with bogus distance,
+//   - return mult * entry_atr / avg_cost * 100 once both are set,
+//   - prefer an explicit fixed TrailingStopPct over the ATR multiplier when
+//     both are present (validation rejects this combo at config-load time but
+//     the helper must still resolve deterministically),
+//   - stay HL-perps-only.
+func TestEffectiveTrailingStopPct_ATRMult(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	hl := func(sc StrategyConfig) StrategyConfig {
+		sc.Platform = "hyperliquid"
+		sc.Type = "perps"
+		return sc
+	}
+	cases := []struct {
+		name string
+		sc   StrategyConfig
+		pos  *Position
+		want float64
+	}{
+		{"non-HL returns 0", StrategyConfig{Platform: "okx", Type: "perps", TrailingStopATRMult: pf(1)}, &Position{AvgCost: 100, EntryATR: 2}, 0},
+		{"non-perps returns 0", StrategyConfig{Platform: "hyperliquid", Type: "spot", TrailingStopATRMult: pf(1)}, &Position{AvgCost: 100, EntryATR: 2}, 0},
+		{"nil position returns 0", hl(StrategyConfig{TrailingStopATRMult: pf(1.5)}), nil, 0},
+		{"zero EntryATR returns 0", hl(StrategyConfig{TrailingStopATRMult: pf(1.5)}), &Position{AvgCost: 100, EntryATR: 0}, 0},
+		{"zero AvgCost returns 0", hl(StrategyConfig{TrailingStopATRMult: pf(1.5)}), &Position{AvgCost: 0, EntryATR: 2}, 0},
+		{"explicit zero mult disabled", hl(StrategyConfig{TrailingStopATRMult: pf(0)}), &Position{AvgCost: 100, EntryATR: 2}, 0},
+		{"derives 3% at mult=1.5 atr=2 cost=100", hl(StrategyConfig{TrailingStopATRMult: pf(1.5)}), &Position{AvgCost: 100, EntryATR: 2}, 3.0},
+		{"derives 5% at mult=2 atr=1 cost=40", hl(StrategyConfig{TrailingStopATRMult: pf(2)}), &Position{AvgCost: 40, EntryATR: 1}, 5.0},
+		{"fixed pct wins over ATR mult", hl(StrategyConfig{TrailingStopPct: pf(2.5), TrailingStopATRMult: pf(99)}), &Position{AvgCost: 100, EntryATR: 50}, 2.5},
+		{"fixed pct zero disables before ATR fallback", hl(StrategyConfig{TrailingStopPct: pf(0), TrailingStopATRMult: pf(1.5)}), &Position{AvgCost: 100, EntryATR: 2}, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := effectiveTrailingStopPct(c.sc, c.pos)
+			// Compare with a small epsilon to keep the table values readable.
+			if d := got - c.want; d > 1e-9 || d < -1e-9 {
+				t.Errorf("effectiveTrailingStopPct = %g, want %g", got, c.want)
+			}
+		})
+	}
+}
+
+// #505: ATR-derived trailing stops must not arm at order-placement time
+// because EntryATR is stamped on the Position only after the fill. Until
+// EntryATR exists, EffectiveStopLossPct must return 0 so the live execute
+// path skips the initial trigger and the trailing loop arms it on the next
+// cycle.
+func TestEffectiveStopLossPct_TrailingATRMultDefersInitialTrigger(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	mult := pf(1.5)
+	sc := StrategyConfig{
+		Platform:            "hyperliquid",
+		Type:                "perps",
+		Leverage:            10,
+		MaxDrawdownPct:      5, // would otherwise fall through to a 5% auto stop
+		TrailingStopATRMult: mult,
+	}
+	if got := EffectiveStopLossPct(sc); got != 0 {
+		t.Errorf("EffectiveStopLossPct with TrailingStopATRMult set = %g, want 0 (deferred to trailing loop)", got)
+	}
+}
+
+// #505: trailing_stop_atr_mult shape validation. Acceptance criteria:
+//   - HL perps only.
+//   - mutually exclusive with trailing_stop_pct, stop_loss_pct, and
+//     stop_loss_margin_pct (each conflict surfaces a trailing_stop_atr_mult
+//     error string).
+//   - negative values rejected; zero is a benign opt-out.
+func TestValidateConfig_TrailingStopATRMult(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name      string
+		sc        StrategyConfig
+		wantError bool
+	}{
+		{"in range", StrategyConfig{
+			ID: "hl-test", Type: "perps", Platform: "hyperliquid",
+			Script: "shared_scripts/check_hyperliquid.py", Capital: 1000, MaxDrawdownPct: 10, Leverage: 5,
+			TrailingStopATRMult: pf(1.5),
+		}, false},
+		{"explicit zero disables (benign)", StrategyConfig{
+			ID: "hl-test", Type: "perps", Platform: "hyperliquid",
+			Script: "shared_scripts/check_hyperliquid.py", Capital: 1000, MaxDrawdownPct: 10, Leverage: 5,
+			TrailingStopATRMult: pf(0),
+		}, false},
+		{"negative rejected", StrategyConfig{
+			ID: "hl-test", Type: "perps", Platform: "hyperliquid",
+			Script: "shared_scripts/check_hyperliquid.py", Capital: 1000, MaxDrawdownPct: 10, Leverage: 5,
+			TrailingStopATRMult: pf(-0.5),
+		}, true},
+		{"non-HL platform rejected", StrategyConfig{
+			ID: "ok-test", Type: "perps", Platform: "okx",
+			Script: "shared_scripts/check_okx.py", Capital: 1000, MaxDrawdownPct: 10, Leverage: 5,
+			TrailingStopATRMult: pf(1.5),
+		}, true},
+		{"non-perps type rejected", StrategyConfig{
+			ID: "hl-test", Type: "spot", Platform: "hyperliquid",
+			Script: "shared_scripts/check_hyperliquid.py", Capital: 1000, MaxDrawdownPct: 10,
+			TrailingStopATRMult: pf(1.5),
+		}, true},
+		{"mutually exclusive with trailing_stop_pct", StrategyConfig{
+			ID: "hl-test", Type: "perps", Platform: "hyperliquid",
+			Script: "shared_scripts/check_hyperliquid.py", Capital: 1000, MaxDrawdownPct: 10, Leverage: 5,
+			TrailingStopATRMult: pf(1.5), TrailingStopPct: pf(2),
+		}, true},
+		{"mutually exclusive with stop_loss_pct", StrategyConfig{
+			ID: "hl-test", Type: "perps", Platform: "hyperliquid",
+			Script: "shared_scripts/check_hyperliquid.py", Capital: 1000, MaxDrawdownPct: 10, Leverage: 5,
+			TrailingStopATRMult: pf(1.5), StopLossPct: pf(2),
+		}, true},
+		{"mutually exclusive with stop_loss_margin_pct", StrategyConfig{
+			ID: "hl-test", Type: "perps", Platform: "hyperliquid",
+			Script: "shared_scripts/check_hyperliquid.py", Capital: 1000, MaxDrawdownPct: 10, Leverage: 5,
+			TrailingStopATRMult: pf(1.5), StopLossMarginPct: pf(20),
+		}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := &Config{
+				IntervalSeconds: 60,
+				Strategies:      []StrategyConfig{c.sc},
+				PortfolioRisk:   &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
+			}
+			err := ValidateConfig(cfg)
+			gotErr := err != nil && strings.Contains(err.Error(), "trailing_stop_atr_mult")
+			if gotErr != c.wantError {
+				t.Errorf("got err=%v wantATRMultErr=%v (full err: %v)", gotErr, c.wantError, err)
+			}
+		})
+	}
+}
+
+// #505: peer ownership detection must treat trailing_stop_atr_mult as one of
+// the four "this strategy owns the on-chain trigger" signals so two HL peers
+// on the same coin can't both arm a trailing stop and race their cancel/replace
+// against the shared on-chain position.
+func TestValidateConfig_HLPeersATRTrailingConflict(t *testing.T) {
+	mult := 1.5
+	fixed := 2.0
+	cfg := &Config{
+		IntervalSeconds: 60,
+		Strategies: []StrategyConfig{
+			{
+				ID:                  "hl-eth-trend",
+				Type:                "perps",
+				Platform:            "hyperliquid",
+				Script:              "shared_scripts/check_hyperliquid.py",
+				Args:                []string{"trend", "ETH", "1h", "--mode=live"},
+				Capital:             1000,
+				MaxDrawdownPct:      10,
+				Leverage:            10,
+				MarginMode:          "isolated",
+				TrailingStopATRMult: &mult,
+			},
+			{
+				ID:             "hl-eth-breakout",
+				Type:           "perps",
+				Platform:       "hyperliquid",
+				Script:         "shared_scripts/check_hyperliquid.py",
+				Args:           []string{"breakout", "ETH", "1h", "--mode=live"},
+				Capital:        1000,
+				MaxDrawdownPct: 10,
+				Leverage:       10,
+				MarginMode:     "isolated",
+				StopLossPct:    &fixed,
+			},
+		},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
+	}
+	err := ValidateConfig(cfg)
+	if err == nil {
+		t.Fatal("expected peer stop-loss conflict")
+	}
+	if !strings.Contains(err.Error(), "trailing_stop_atr_mult") {
+		t.Fatalf("error=%v, want trailing_stop_atr_mult conflict", err)
+	}
+}
+
+// #505: peer normalization must coerce omitted trailing_stop_atr_mult on
+// same-coin HL peers to an explicit zero on stop_loss_pct (the same treatment
+// trailing_stop_pct already gets) so the MaxDrawdownPct auto-derive only fires
+// for sole-owner strategies.
+func TestNormalizeHyperliquidPeerStopLosses_TrailingATRMultOwner(t *testing.T) {
+	mult := 1.5
+	strategies := []StrategyConfig{
+		{
+			ID:                  "hl-eth-trend",
+			Type:                "perps",
+			Platform:            "hyperliquid",
+			Args:                []string{"trend", "ETH", "1h"},
+			Leverage:            5,
+			MaxDrawdownPct:      10,
+			TrailingStopATRMult: &mult,
+		},
+		{
+			ID:             "hl-eth-breakout",
+			Type:           "perps",
+			Platform:       "hyperliquid",
+			Args:           []string{"breakout", "ETH", "1h"},
+			Leverage:       5,
+			MaxDrawdownPct: 10,
+		},
+	}
+	normalizeHyperliquidPeerStopLosses(strategies)
+
+	if strategies[0].StopLossPct != nil {
+		t.Errorf("ATR-mult owner should not gain a normalized StopLossPct; got %v", strategies[0].StopLossPct)
+	}
+	if strategies[1].StopLossPct == nil {
+		t.Fatalf("non-owner peer should be normalized to explicit 0 StopLossPct, got nil")
+	}
+	if *strategies[1].StopLossPct != 0 {
+		t.Errorf("non-owner peer normalized StopLossPct = %g, want 0", *strategies[1].StopLossPct)
+	}
+	if got := EffectiveStopLossPct(strategies[1]); got != 0 {
+		t.Errorf("non-owner peer EffectiveStopLossPct = %g, want 0 (no MaxDrawdownPct fallback)", got)
+	}
+}
+
+// #505: trailing_stop_atr_mult round-trips through JSON only when explicit
+// (omitempty drops nil) and is a hot-reloadable field via formatFloatPtr.
+func TestStrategyConfig_TrailingStopATRMultJSON(t *testing.T) {
+	v := 1.5
+	sc := StrategyConfig{
+		ID:                  "hl-test",
+		Type:                "perps",
+		Platform:            "hyperliquid",
+		Leverage:            10,
+		TrailingStopATRMult: &v,
+	}
+	b, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"trailing_stop_atr_mult":1.5`) {
+		t.Errorf("expected trailing_stop_atr_mult in JSON; got %s", b)
+	}
+
+	sc.TrailingStopATRMult = nil
+	b2, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal nil: %v", err)
+	}
+	if strings.Contains(string(b2), "trailing_stop_atr_mult") {
+		t.Errorf("nil TrailingStopATRMult should be omitted; got %s", b2)
+	}
+
+	zero := 0.0
+	sc.TrailingStopATRMult = &zero
+	b3, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal zero: %v", err)
+	}
+	if !strings.Contains(string(b3), `"trailing_stop_atr_mult":0`) {
+		t.Errorf("explicit zero TrailingStopATRMult must round-trip; got %s", b3)
 	}
 }

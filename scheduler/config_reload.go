@@ -91,6 +91,10 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].trailing_stop_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.TrailingStopPct), formatFloatPtrPct(ns.TrailingStopPct))
 			sc.TrailingStopPct = ns.TrailingStopPct
 		}
+		if !floatPtrEqual(sc.TrailingStopATRMult, ns.TrailingStopATRMult) {
+			addChange("strategy[%s].trailing_stop_atr_mult: %s -> %s", sc.ID, formatFloatPtr(sc.TrailingStopATRMult), formatFloatPtr(ns.TrailingStopATRMult))
+			sc.TrailingStopATRMult = ns.TrailingStopATRMult
+		}
 		if !floatPtrEqual(sc.TrailingStopMinMovePct, ns.TrailingStopMinMovePct) {
 			addChange("strategy[%s].trailing_stop_min_move_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.TrailingStopMinMovePct), formatFloatPtrPct(ns.TrailingStopMinMovePct))
 			sc.TrailingStopMinMovePct = ns.TrailingStopMinMovePct
@@ -262,6 +266,16 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				errs = append(errs, fmt.Sprintf("strategy[%s] trailing_stop_pct mode changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
+			// #505: ATR-derived trailing stop pct is computed once per
+			// position from the entry ATR; toggling the mode mid-position
+			// would mix two distance regimes against the same on-chain
+			// trigger. Treat exactly like trailing_stop_pct.
+			oldATR := sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0
+			newATR := ns.TrailingStopATRMult != nil && *ns.TrailingStopATRMult > 0
+			if oldATR != newATR {
+				errs = append(errs, fmt.Sprintf("strategy[%s] trailing_stop_atr_mult mode changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
 		}
 	}
 	if len(errs) > 0 {
@@ -281,6 +295,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.CloseStrategies = nil
 	sc.MarginMode = ""              // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
 	sc.TrailingStopPct = nil        // #501: hot-reloadable; state-compat allows pct changes but blocks mode switches while open
+	sc.TrailingStopATRMult = nil    // #505: hot-reloadable; same state-compat treatment as TrailingStopPct
 	sc.TrailingStopMinMovePct = nil // #501: hot-reloadable tuning knob for trailing trigger churn
 	return sc
 }
@@ -297,6 +312,13 @@ func formatFloatPtrPct(p *float64) string {
 		return "<nil>"
 	}
 	return fmt.Sprintf("%.2f%%", *p)
+}
+
+func formatFloatPtr(p *float64) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%g", *p)
 }
 
 func strategyConfigByID(strategies []StrategyConfig) map[string]StrategyConfig {
