@@ -2006,12 +2006,9 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		return nil, false
 	}
 	isBuy := result.Signal == 1
-	// #254: perps use leverage to size notional; mirror OKX's guard so any
+	// #254/#497: perps use sizing_leverage to size notional; mirror OKX's guard so any
 	// future HL spot mode can't accidentally over-size.
-	sizingLeverage := 1.0
-	if sc.Type == "perps" && sc.Leverage > 0 {
-		sizingLeverage = sc.Leverage
-	}
+	sizingLeverage := EffectiveSizingLeverage(sc)
 	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, posSide, sc.AllowShorts)
 	if !ok {
 		logger.Info("%s for %s", reason, result.Symbol)
@@ -2067,7 +2064,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	leverageForOpen := 0.0
 	if posQty == 0 && sc.Platform == "hyperliquid" && sc.Type == "perps" && sc.MarginMode != "" {
 		marginMode = sc.MarginMode
-		leverageForOpen = sc.Leverage
+		leverageForOpen = EffectiveExchangeLeverage(sc)
 		if leverageForOpen <= 0 {
 			leverageForOpen = 1
 		}
@@ -2164,10 +2161,8 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	leverage := sc.Leverage
-	if leverage <= 0 {
-		leverage = 1
-	}
+	exchangeLeverage := EffectiveExchangeLeverage(sc)
+	sizingLeverage := EffectiveSizingLeverage(sc)
 
 	// Thread exchange metadata into ExecutePerpsSignal so each Trade is built
 	// with the OID and fee before RecordTrade persists it (#289). Stamping the
@@ -2184,7 +2179,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 		fillFee = fill.Fee
 	}
 
-	trades, err := ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, fillOID, fillFee, sc.AllowShorts, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, fillQty, fillOID, fillFee, sc.AllowShorts, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -2666,10 +2661,10 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 		return nil, false
 	}
 	isBuy := result.Signal == 1
-	// #254: perps use leverage to size notional; spot is unaffected.
+	// #254/#497: perps use sizing_leverage to size notional; spot is unaffected.
 	sizingLeverage := 1.0
-	if sc.Type == "perps" && sc.Leverage > 0 {
-		sizingLeverage = sc.Leverage
+	if sc.Type == "perps" {
+		sizingLeverage = EffectiveSizingLeverage(sc)
 	}
 	var size float64
 	if sc.Type == "perps" {
@@ -2751,11 +2746,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, ex
 	var trades int
 	var err error
 	if sc.Type == "perps" {
-		leverage := sc.Leverage
-		if leverage <= 0 {
-			leverage = 1
-		}
-		trades, err = ExecutePerpsSignal(s, result.Signal, result.Symbol, fillPrice, leverage, fillQty, fillOID, fillFee, sc.AllowShorts, logger)
+		trades, err = ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), fillQty, fillOID, fillFee, sc.AllowShorts, logger)
 	} else {
 		trades, err = ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, logger)
 	}

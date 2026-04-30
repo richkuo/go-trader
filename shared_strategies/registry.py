@@ -319,6 +319,50 @@ def triple_ema_bidir_strategy(df: pd.DataFrame, short_period: int = 8, mid_perio
 
 
 @register(
+    "tema_cross",
+    "Triple EMA Crossover — EMA fast/mid cross with long EMA trend filter",
+    {"short_period": 5, "mid_period": 13, "long_period": 34},
+)
+def tema_cross_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: int = 13, long_period: int = 34) -> pd.DataFrame:
+    result = df.copy()
+    result["ema_short"] = ema(result["close"], short_period)
+    result["ema_mid"] = ema(result["close"], mid_period)
+    result["ema_long"] = ema(result["close"], long_period)
+    uptrend = result["ema_mid"] > result["ema_long"]
+    bullish_cross = (result["ema_short"] > result["ema_mid"]) & (
+        result["ema_short"].shift(1) <= result["ema_mid"].shift(1)
+    )
+    result["position"] = np.where(uptrend & bullish_cross, 1, 0)
+    result["signal"] = result["position"].diff()
+    return result
+
+
+@register(
+    "tema_cross_bd",
+    "Triple EMA Crossover Bidirectional — long/short on cross with trend filter",
+    {"short_period": 5, "mid_period": 13, "long_period": 34},
+    platforms=("futures",),
+)
+def tema_cross_bd_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: int = 13, long_period: int = 34) -> pd.DataFrame:
+    result = df.copy()
+    result["ema_short"] = ema(result["close"], short_period)
+    result["ema_mid"] = ema(result["close"], mid_period)
+    result["ema_long"] = ema(result["close"], long_period)
+    uptrend = result["ema_mid"] > result["ema_long"]
+    downtrend = result["ema_mid"] < result["ema_long"]
+    bullish_cross = (result["ema_short"] > result["ema_mid"]) & (
+        result["ema_short"].shift(1) <= result["ema_mid"].shift(1)
+    )
+    bearish_cross = (result["ema_short"] < result["ema_mid"]) & (
+        result["ema_short"].shift(1) >= result["ema_mid"].shift(1)
+    )
+    result["position"] = np.where(uptrend & bullish_cross, 1,
+                                 np.where(downtrend & bearish_cross, -1, 0))
+    result["signal"] = result["position"].diff().clip(-1, 1)
+    return result
+
+
+@register(
     "rsi_macd_combo",
     "RSI+MACD Combo \u2014 dual confirmation for higher quality signals",
     {"rsi_period": 14, "rsi_oversold": 35, "rsi_overbought": 65,
@@ -931,11 +975,11 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "pairs_spread", "squeeze_momentum", "atr_breakout", "amd_ifvg",
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
-        "sweep_squeeze_combo", "adx_trend", "donchian_breakout",
+        "sweep_squeeze_combo", "adx_trend", "donchian_breakout", "tema_cross",
     ],
     "futures": [
         "sma_crossover", "ema_crossover", "bollinger_bands", "volume_weighted",
-        "triple_ema", "triple_ema_bidir", "rsi_macd_combo", "momentum",
+        "triple_ema", "triple_ema_bidir", "tema_cross", "tema_cross_bd", "rsi_macd_combo", "momentum",
         "mean_reversion", "rsi", "macd", "breakout", "stoch_rsi", "supertrend",
         "squeeze_momentum", "ichimoku_cloud", "atr_breakout", "amd_ifvg",
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "chart_pattern",

@@ -386,9 +386,9 @@ func addKillSwitchEvent(prs *PortfolioRiskState, eventType, source string, drawd
 // portfolio level for the kill switch (#296).
 //
 // Only strategies with Type == "perps" contribute. configs maps strategy ID
-// to StrategyConfig — used to source sc.Leverage so the margin denominator
-// matches the trader's configured leverage rather than the on-chain margin
-// tier (#418). Strategies whose config is missing or has Leverage <= 0 are
+// to StrategyConfig — used to source exchange sc.Leverage so the margin
+// denominator matches the actual exchange leverage rather than the
+// sizing_leverage order multiplier (#497). Strategies whose config is missing or has Leverage <= 0 are
 // skipped; they don't contribute to the perps margin signal and the kill
 // switch falls back to equity drawdown for them.
 //
@@ -1172,14 +1172,10 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 // deployed margin (notional / leverage). These are the numerator and
 // denominator of the perps-specific drawdown ratio introduced in #292.
 //
-// configLeverage is the strategy-config leverage (sc.Leverage) — NOT
-// pos.Leverage. This avoids #418 where reconcileHyperliquidPositions overwrites
-// statePos.Leverage with the on-chain margin tier (e.g. HL exchange-side max
-// leverage of 20) and inflates the drawdown denominator by 10x against the
-// trader's intended leverage (e.g. 2). Sizing paths (runHyperliquidExecuteOrder,
-// perpsLiveOrderSize) already use sc.Leverage; this aligns the risk-math
-// denominator with the same source of truth so on-chain leverage drift becomes
-// harmless metadata rather than a CB amplifier.
+// configLeverage is the strategy-config exchange leverage (sc.Leverage), not
+// sc.SizingLeverage and not pos.Leverage. This lets operators size small
+// positions with sizing_leverage while calculating margin drawdown against the
+// leverage actually configured at the exchange (#497).
 //
 // Positions are filtered by Multiplier > 0 (perps marker). The outer
 // s.Type == "perps" check at the call site is the primary guard. configLeverage

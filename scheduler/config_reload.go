@@ -63,6 +63,10 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 				}
 			}
 		}
+		if sc.SizingLeverage != ns.SizingLeverage {
+			addChange("strategy[%s].sizing_leverage: %.2fx -> %.2fx", sc.ID, sc.SizingLeverage, ns.SizingLeverage)
+			sc.SizingLeverage = ns.SizingLeverage
+		}
 		if sc.IntervalSeconds != ns.IntervalSeconds {
 			addChange("strategy[%s].interval_seconds: %d -> %d", sc.ID, sc.IntervalSeconds, ns.IntervalSeconds)
 			sc.IntervalSeconds = ns.IntervalSeconds
@@ -247,6 +251,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.MaxDrawdownPct = 0
 	sc.Capital = 0
 	sc.Leverage = 0
+	sc.SizingLeverage = 0
 	sc.IntervalSeconds = 0
 	sc.MarginMode = "" // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
 	return sc

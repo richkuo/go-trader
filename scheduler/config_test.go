@@ -745,6 +745,38 @@ func TestLoadConfigPerpsLeverageExplicit(t *testing.T) {
 	if cfg.Strategies[0].Leverage != 10 {
 		t.Errorf("Leverage = %g, want 10", cfg.Strategies[0].Leverage)
 	}
+	if cfg.Strategies[0].SizingLeverage != 10 {
+		t.Errorf("SizingLeverage = %g, want 10 (defaults to leverage)", cfg.Strategies[0].SizingLeverage)
+	}
+}
+
+// #497: sizing_leverage can differ from exchange leverage.
+func TestLoadConfigPerpsSizingLeverageExplicit(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"leverage": 20,
+			"sizing_leverage": 2
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if got := EffectiveExchangeLeverage(sc); got != 20 {
+		t.Errorf("EffectiveExchangeLeverage = %g, want 20", got)
+	}
+	if got := EffectiveSizingLeverage(sc); got != 2 {
+		t.Errorf("EffectiveSizingLeverage = %g, want 2", got)
+	}
 }
 
 // #254: Leverage must be rejected on non-perps types.
@@ -791,6 +823,52 @@ func TestLoadConfigLeverageRejectsOutOfRange(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "leverage must be in") {
 		t.Errorf("error = %v, want 'leverage must be in'", err)
+	}
+}
+
+func TestLoadConfigSizingLeverageRejectsSpot(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "test-spot",
+			"type": "spot",
+			"script": "shared_scripts/check_strategy.py",
+			"args": ["sma_crossover", "BTC/USDT", "1h"],
+			"capital": 1000,
+			"sizing_leverage": 2
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for sizing_leverage on spot strategy")
+	}
+	if !strings.Contains(err.Error(), "sizing_leverage is only supported for perps") {
+		t.Errorf("error = %v, want 'sizing_leverage is only supported for perps'", err)
+	}
+}
+
+func TestLoadConfigSizingLeverageRejectsOutOfRange(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"leverage": 20,
+			"sizing_leverage": 0.5
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for sizing_leverage=0.5")
+	}
+	if !strings.Contains(err.Error(), "sizing_leverage must be in") {
+		t.Errorf("error = %v, want 'sizing_leverage must be in'", err)
 	}
 }
 

@@ -205,13 +205,39 @@ type StrategyConfig struct {
 	IntervalSeconds      int                    `json:"interval_seconds,omitempty"`     // per-strategy override (0 = use global)
 	HTFFilter            bool                   `json:"htf_filter,omitempty"`           // higher-timeframe trend filter
 	AllowShorts          bool                   `json:"allow_shorts,omitempty"`         // perps only: opt-in to bidirectional execution — signal=-1 from flat opens a short, long+(-1) closes-and-flips. Default false preserves close-long-only behavior for strategies like triple_ema that emit -1 only as a long-exit (#328)
-	Leverage             float64                `json:"leverage,omitempty"`             // perps leverage multiplier (default 1 = no leverage); used for notional sizing and margin-based valuation (#254)
+	Leverage             float64                `json:"leverage,omitempty"`             // perps exchange leverage (default 1 = no leverage); used for exchange margin/risk and HL update_leverage (#254/#497)
+	SizingLeverage       float64                `json:"sizing_leverage,omitempty"`      // perps sizing multiplier; defaults to Leverage for backwards compatibility (#497)
 	StopLossPct          *float64               `json:"stop_loss_pct,omitempty"`        // HL perps only: % from entry to place a reduce-only stop-loss trigger. Pointer so omitted (nil) falls through to StopLossMarginPct then MaxDrawdownPct for single-coin strategies (#484); LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables auto-SL (#412)
 	StopLossMarginPct    *float64               `json:"stop_loss_margin_pct,omitempty"` // HL perps only: % of deployed margin to lose before stop-loss trigger; mutually exclusive with stop_loss_pct; price % derived as StopLossMarginPct / Leverage at order time. Pointer so omitted falls through to MaxDrawdownPct for single-coin strategies; LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables (#487, #484)
 	MarginMode           string                 `json:"margin_mode,omitempty"`          // HL perps only: "isolated" (default) or "cross"; sent via update_leverage on fresh opens to enforce per-position liq isolation (#486)
 	Params               map[string]interface{} `json:"params,omitempty"`               // custom strategy parameters passed to Python
 	ThetaHarvest         *ThetaHarvestConfig    `json:"theta_harvest,omitempty"`
 	FuturesConfig        *FuturesConfig         `json:"futures,omitempty"`
+}
+
+// EffectiveSizingLeverage returns the notional-sizing multiplier for perps.
+// Omitted sizing_leverage inherits leverage so legacy configs keep the exact
+// old position sizing while new configs can run higher exchange leverage for
+// margin/risk math without increasing order size (#497).
+func EffectiveSizingLeverage(sc StrategyConfig) float64 {
+	if sc.Type != "perps" {
+		return 1
+	}
+	if sc.SizingLeverage > 0 {
+		return sc.SizingLeverage
+	}
+	if sc.Leverage > 0 {
+		return sc.Leverage
+	}
+	return 1
+}
+
+// EffectiveExchangeLeverage returns the actual exchange leverage for perps.
+func EffectiveExchangeLeverage(sc StrategyConfig) float64 {
+	if sc.Type != "perps" || sc.Leverage <= 0 {
+		return 1
+	}
+	return sc.Leverage
 }
 
 // MaxAutoStopLossPct caps the auto-derived per-trade stop at 50% to mirror the
@@ -390,11 +416,14 @@ func LoadConfig(path string) (*Config, error) {
 			}
 		}
 
-		// #254: Default leverage for perps strategies is 1x (no leverage)
-		// when unset. Spot/options/futures ignore Leverage; only perps uses it
-		// for notional sizing and setting Position.Multiplier.
+		// #254/#497: Default exchange leverage for perps strategies is 1x
+		// (no leverage) when unset. sizing_leverage inherits leverage unless
+		// explicitly set so old configs keep their order sizing.
 		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].Leverage <= 0 {
 			cfg.Strategies[i].Leverage = 1
+		}
+		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].SizingLeverage == 0 {
+			cfg.Strategies[i].SizingLeverage = cfg.Strategies[i].Leverage
 		}
 
 		// #486: Default margin mode for HL perps is "isolated". Cross is the
@@ -490,7 +519,7 @@ func normalizeHyperliquidPeerStopLosses(strategies []StrategyConfig) {
 }
 
 // hyperliquidPeerStrategyErrors returns validation messages for HL perps
-// strategies that share a coin but disagree on MarginMode or Leverage (#491),
+// strategies that share a coin but disagree on MarginMode or exchange Leverage (#491),
 // or that have more than one stop-loss owner (EffectiveStopLossPct > 0 after
 // LoadConfig peer normalization, #494). Returns an empty slice when no peer
 // conflicts exist.
@@ -805,13 +834,22 @@ func ValidateConfig(cfg *Config) error {
 			fmt.Println(msg)
 		}
 
-		// #254: Leverage must be >= 1 when set. Only applicable to perps.
+		// #254/#497: Leverage is exchange leverage and must be >= 1 when set.
+		// Only applicable to perps.
 		if sc.Leverage != 0 {
 			if sc.Type != "perps" {
 				errs = append(errs, fmt.Sprintf("%s: leverage is only supported for perps strategies (got type %q)", prefix, sc.Type))
 			}
 			if sc.Leverage < 1 || sc.Leverage > 100 {
 				errs = append(errs, fmt.Sprintf("%s: leverage must be in [1, 100], got %g", prefix, sc.Leverage))
+			}
+		}
+		if sc.SizingLeverage != 0 {
+			if sc.Type != "perps" {
+				errs = append(errs, fmt.Sprintf("%s: sizing_leverage is only supported for perps strategies (got type %q)", prefix, sc.Type))
+			}
+			if sc.SizingLeverage < 1 || sc.SizingLeverage > 100 {
+				errs = append(errs, fmt.Sprintf("%s: sizing_leverage must be in [1, 100], got %g", prefix, sc.SizingLeverage))
 			}
 		}
 

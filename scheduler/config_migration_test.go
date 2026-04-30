@@ -580,3 +580,64 @@ func TestMigrateConfigV8PreservesFieldsAtCurrentVersion(t *testing.T) {
 		t.Error("discord.spot_summary_freq should NOT be removed when already at CurrentConfigVersion")
 	}
 }
+
+func TestMigrateConfigV10AddsSizingLeverage(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	original := map[string]interface{}{
+		"config_version": 9,
+		"strategies": []interface{}{
+			map[string]interface{}{
+				"id":       "hl-eth",
+				"type":     "perps",
+				"leverage": float64(2),
+			},
+			map[string]interface{}{
+				"id":              "okx-btc",
+				"type":            "perps",
+				"leverage":        float64(20),
+				"sizing_leverage": float64(3),
+			},
+			map[string]interface{}{
+				"id":       "spot-btc",
+				"type":     "spot",
+				"leverage": float64(2),
+			},
+		},
+	}
+	data, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MigrateConfig(path, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated map[string]interface{}
+	if err := json.Unmarshal(result, &updated); err != nil {
+		t.Fatal(err)
+	}
+	strategies := updated["strategies"].([]interface{})
+	hl := strategies[0].(map[string]interface{})
+	if got := hl["sizing_leverage"].(float64); got != 2 {
+		t.Errorf("hl sizing_leverage = %g, want 2", got)
+	}
+	okx := strategies[1].(map[string]interface{})
+	if got := okx["sizing_leverage"].(float64); got != 3 {
+		t.Errorf("okx sizing_leverage = %g, want existing 3", got)
+	}
+	spot := strategies[2].(map[string]interface{})
+	if _, ok := spot["sizing_leverage"]; ok {
+		t.Error("spot sizing_leverage should not be added")
+	}
+	if v := int(updated["config_version"].(float64)); v != CurrentConfigVersion {
+		t.Errorf("config_version = %d, want %d", v, CurrentConfigVersion)
+	}
+}

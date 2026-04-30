@@ -14,7 +14,7 @@ type Position struct {
 	AvgCost           float64   `json:"avg_cost"`
 	Side              string    `json:"side"`                           // "long" or "short"
 	Multiplier        float64   `json:"multiplier,omitempty"`           // contract multiplier (0 = spot, >0 = futures/perps PnL branch; canonical perps value is 1 — do NOT set to leverage)
-	Leverage          float64   `json:"leverage,omitempty"`             // perps leverage (informational; PnL is not scaled by leverage) (#254)
+	Leverage          float64   `json:"leverage,omitempty"`             // perps exchange leverage (informational; PnL is not scaled by leverage) (#254/#497)
 	OwnerStrategyID   string    `json:"owner_strategy_id,omitempty"`    // strategy that opened this position
 	OpenedAt          time.Time `json:"opened_at,omitempty"`            // when the position was opened
 	StopLossOID       int64     `json:"stop_loss_oid,omitempty"`        // HL perps: resting trigger-order OID for the per-trade stop-loss (0 = none) (#412)
@@ -492,13 +492,14 @@ func FuturesOrderSkipReason(signal int, posSide string) string {
 // futures model. The resulting Position is stamped with Multiplier=1 so
 // PortfolioValue takes the PnL branch (cash + qty*(price-entry)).
 //
-// leverage determines notional sizing in paper mode: quantity =
-// cash * leverage * 0.95 / price. With leverage=1 (default) the sizing
-// matches 1x spot notional, but without depleting cash.
+// sizingLeverage determines notional sizing in paper mode: quantity =
+// cash * sizingLeverage * 0.95 / price. exchangeLeverage is stored on
+// Position for exchange-margin reporting and risk math. The legacy wrapper
+// passes the same value for both so old behavior is unchanged (#497).
 //
 // fillQty > 0 means a live fill: use price and fillQty as-is (no slippage,
 // no notional recalc). fillQty == 0 means paper mode: compute qty from
-// leveraged budget with slippage applied.
+// sizing-leverage budget with slippage applied.
 //
 // fillOID/fillFee carry exchange metadata for live fills (empty/zero for
 // paper). One live fill = one exchange fee; if a bidirectional signal flips an
@@ -513,13 +514,21 @@ func FuturesOrderSkipReason(signal int, posSide string) string {
 // closes a long and never opens a short — the legacy long-only behavior
 // that strategies like triple_ema and rsi_macd_combo depend on.
 func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, fillOID string, fillFee float64, allowShorts bool, logger *StrategyLogger) (int, error) {
+	return ExecutePerpsSignalWithLeverage(s, signal, symbol, price, leverage, leverage, fillQty, fillOID, fillFee, allowShorts, logger)
+}
+
+func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage float64, fillQty float64, fillOID string, fillFee float64, allowShorts bool, logger *StrategyLogger) (int, error) {
 	if signal == 0 {
 		return 0, nil
 	}
-	if leverage <= 0 {
-		leverage = 1
+	if sizingLeverage <= 0 {
+		sizingLeverage = 1
+	}
+	if exchangeLeverage <= 0 {
+		exchangeLeverage = sizingLeverage
 	}
 	tradesExecuted := 0
+	leverageLabel := perpsLeverageLabel(exchangeLeverage, sizingLeverage)
 
 	// Fee dispatch: for Hyperliquid spot+perps and OKX perps the existing
 	// CalculatePlatformSpotFee table already encodes the correct taker fee.
@@ -608,8 +617,8 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			if execPrice <= 0 {
 				return tradesExecuted, nil
 			}
-			// Leveraged notional: cash * leverage * 0.95
-			budget := s.Cash * leverage * 0.95
+			// Leveraged notional: cash * sizing leverage * 0.95
+			budget := s.Cash * sizingLeverage * 0.95
 			qty = budget / execPrice
 		}
 		notional := qty * execPrice
@@ -628,7 +637,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			AvgCost:         execPrice,
 			Side:            "long",
 			Multiplier:      1, // perps use 1:1 contract size; PnL-branch in PortfolioValue
-			Leverage:        leverage,
+			Leverage:        exchangeLeverage,
 			OwnerStrategyID: s.ID,
 			OpenedAt:        now,
 			TradePositionID: positionID,
@@ -643,12 +652,12 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			Price:           execPrice,
 			Value:           notional,
 			TradeType:       "perps",
-			Details:         fmt.Sprintf("Open long %.6f @ $%.2f (%.1fx, fee $%.2f)", qty, execPrice, leverage, fee),
+			Details:         fmt.Sprintf("Open long %.6f @ $%.2f (%s, fee $%.2f)", qty, execPrice, leverageLabel, fee),
 			ExchangeOrderID: openOID,
 			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
 		}
 		RecordTrade(s, trade)
-		logger.Info("BUY %s: %.6f @ $%.2f (%.1fx, notional $%.2f, fee $%.2f)", symbol, qty, execPrice, leverage, notional, fee)
+		logger.Info("BUY %s: %.6f @ $%.2f (%s, notional $%.2f, fee $%.2f)", symbol, qty, execPrice, leverageLabel, notional, fee)
 		tradesExecuted++
 
 	} else if signal == -1 { // Sell
@@ -731,7 +740,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			if execPrice <= 0 {
 				return tradesExecuted, nil
 			}
-			budget := s.Cash * leverage * 0.95
+			budget := s.Cash * sizingLeverage * 0.95
 			qty = budget / execPrice
 		}
 		notional := qty * execPrice
@@ -750,7 +759,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			AvgCost:         execPrice,
 			Side:            "short",
 			Multiplier:      1,
-			Leverage:        leverage,
+			Leverage:        exchangeLeverage,
 			OwnerStrategyID: s.ID,
 			OpenedAt:        now,
 			TradePositionID: positionID,
@@ -765,15 +774,22 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			Price:           execPrice,
 			Value:           notional,
 			TradeType:       "perps",
-			Details:         fmt.Sprintf("Open short %.6f @ $%.2f (%.1fx, fee $%.2f)", qty, execPrice, leverage, fee),
+			Details:         fmt.Sprintf("Open short %.6f @ $%.2f (%s, fee $%.2f)", qty, execPrice, leverageLabel, fee),
 			ExchangeOrderID: openOID,
 			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
 		}
 		RecordTrade(s, trade)
-		logger.Info("SELL %s: %.6f @ $%.2f (%.1fx, notional $%.2f, fee $%.2f) [open short]", symbol, qty, execPrice, leverage, notional, fee)
+		logger.Info("SELL %s: %.6f @ $%.2f (%s, notional $%.2f, fee $%.2f) [open short]", symbol, qty, execPrice, leverageLabel, notional, fee)
 		tradesExecuted++
 	}
 	return tradesExecuted, nil
+}
+
+func perpsLeverageLabel(exchangeLeverage, sizingLeverage float64) string {
+	if exchangeLeverage == sizingLeverage {
+		return fmt.Sprintf("%.1fx", exchangeLeverage)
+	}
+	return fmt.Sprintf("%.1fx exchange, %.1fx sizing", exchangeLeverage, sizingLeverage)
 }
 
 // ExecuteSpotSignal processes a spot signal and executes paper or live trades.

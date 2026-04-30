@@ -1511,6 +1511,31 @@ func TestAggregatePerpsMarginInputs_UsesConfigLeverage(t *testing.T) {
 	}
 }
 
+// #497: sizing_leverage is an order-sizing knob only. Margin drawdown uses the
+// exchange leverage so a strategy can size at 2x while monitoring risk at 20x.
+func TestAggregatePerpsMarginInputs_UsesExchangeLeverageNotSizingLeverage(t *testing.T) {
+	strategies := map[string]*StrategyState{
+		"hl-eth": {
+			Type: "perps",
+			Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
+			},
+		},
+	}
+	configs := []StrategyConfig{
+		{ID: "hl-eth", Leverage: 20, SizingLeverage: 2},
+	}
+	prices := map[string]float64{"ETH": 2900}
+	loss, margin := AggregatePerpsMarginInputs(strategies, configs, prices)
+
+	if math.Abs(margin-145) > 1e-6 {
+		t.Errorf("margin = %.4f; want 145 (exchange leverage 20, not sizing_leverage 2)", margin)
+	}
+	if math.Abs(loss-100) > 1e-6 {
+		t.Errorf("loss = %.4f; want 100", loss)
+	}
+}
+
 // #418: a perps strategy whose config is missing from the configs slice (or
 // has Leverage=0) must contribute 0 to the aggregate so the kill switch
 // falls back to equity drawdown for it rather than dividing by a corrupted
