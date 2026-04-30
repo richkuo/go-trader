@@ -626,6 +626,35 @@ func TestFormatCategorySummary_TfIntGlobalFallback(t *testing.T) {
 	}
 }
 
+func TestFormatCategorySummary_StrategyLabelWidthAndTieredAliases(t *testing.T) {
+	strats := []StrategyConfig{
+		{ID: "hl-123456789012345", Type: "perps", Args: []string{"rsi", "BTC", "1h"}, Capital: 1000},
+		{ID: "hl-tiered-atr-btc", Type: "perps", Args: []string{"tiered_atr", "BTC", "1h"}, Capital: 1000},
+		{ID: "hl-tiered-pct-btc", Type: "perps", Args: []string{"tiered_pct", "BTC", "1h"}, Capital: 1000},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-123456789012345": {Cash: 1000},
+			"hl-tiered-atr-btc":  {Cash: 1000},
+			"hl-tiered-pct-btc":  {Cash: 1000},
+		},
+	}
+	prices := map[string]float64{"BTC/USDT": 50000}
+
+	msgs := FormatCategorySummary(1, 0, 3, 0, 3000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil)
+	msg := strings.Join(msgs, "\n")
+
+	if !strings.Contains(msg, "hl-123456789012345") {
+		t.Errorf("expected 18-char strategy label to render without truncation, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "hl-tatr-btc") || strings.Contains(msg, "tiered-atr") {
+		t.Errorf("expected tiered-atr summary label alias tatr, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "hl-tpct-btc") || strings.Contains(msg, "tiered-pct") {
+		t.Errorf("expected tiered-pct summary label alias tpct, got:\n%s", msg)
+	}
+}
+
 func TestFormatCategorySummary_MaxDrawdownColumn(t *testing.T) {
 	// Issue #436: summary tables surface the effective max_drawdown_pct already
 	// resolved onto StrategyConfig by LoadConfig (strategy → platform → type).
