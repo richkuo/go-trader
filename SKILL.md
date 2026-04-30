@@ -366,7 +366,7 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    Per-strategy: capital, max_drawdown_pct, interval_seconds, htf_filter,
      params, leverage, sizing_leverage, stop_loss_pct, stop_loss_margin_pct,
      trailing_stop_pct, trailing_stop_min_move_pct, margin_mode, allow_shorts,
-     open_strategy, close_strategies, disable_implicit_close, theta_harvest.*
+     open_strategy, close_strategies, theta_harvest.*
    Discord/Telegram: enabled, channels, dm_channels, owner_id
    Environment: Discord token, status token, exchange credentials
 
@@ -466,7 +466,6 @@ Per-strategy keys:
 | Margin mode | `margin_mode` | Hyperliquid perps only, `isolated` (default) or `cross`. Applied from flat. |
 | Open strategy | `open_strategy` | Override entry strategy name (otherwise from `args[0]`) |
 | Close strategies | `close_strategies` | Ordered list of exit evaluators; max `close_fraction` wins |
-| Disable implicit close | `disable_implicit_close` | Suppress legacy signal-reversal close when no `close_strategies` is set |
 | Theta harvest | `theta_harvest.*` | Options early-exit controls |
 
 Discord/Telegram keys:

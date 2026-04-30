@@ -79,10 +79,6 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].close_strategies: %v -> %v", sc.ID, sc.CloseStrategies, ns.CloseStrategies)
 			sc.CloseStrategies = append([]string{}, ns.CloseStrategies...)
 		}
-		if sc.DisableImplicitClose != ns.DisableImplicitClose {
-			addChange("strategy[%s].disable_implicit_close: %t -> %t", sc.ID, sc.DisableImplicitClose, ns.DisableImplicitClose)
-			sc.DisableImplicitClose = ns.DisableImplicitClose
-		}
 		// #486: Margin mode is hot-reloadable when flat. The state-compat
 		// check above blocks the change when positions are open; if we got
 		// here with new MarginMode != current, the strategy is flat and the
@@ -283,7 +279,6 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.IntervalSeconds = 0
 	sc.OpenStrategy = ""
 	sc.CloseStrategies = nil
-	sc.DisableImplicitClose = false
 	sc.MarginMode = ""              // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
 	sc.TrailingStopPct = nil        // #501: hot-reloadable; state-compat allows pct changes but blocks mode switches while open
 	sc.TrailingStopMinMovePct = nil // #501: hot-reloadable tuning knob for trailing trigger churn

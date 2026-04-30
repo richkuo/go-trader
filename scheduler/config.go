@@ -195,9 +195,8 @@ type StrategyConfig struct {
 	Platform               string                 `json:"platform"` // "deribit", "ibkr", "binanceus", "hyperliquid", "topstep"
 	Script                 string                 `json:"script"`
 	Args                   []string               `json:"args"`
-	OpenStrategy           string                 `json:"open_strategy,omitempty"`          // optional entry strategy override; defaults to Args[0] for backwards compatibility (#480)
-	CloseStrategies        []string               `json:"close_strategies,omitempty"`       // optional exit strategy list; max close_fraction wins (#480)
-	DisableImplicitClose   bool                   `json:"disable_implicit_close,omitempty"` // when true, legacy signal-reversal exits are disabled unless close_strategies are configured (#480)
+	OpenStrategy           string                 `json:"open_strategy,omitempty"`    // optional entry strategy override; defaults to Args[0] for backwards compatibility (#480)
+	CloseStrategies        []string               `json:"close_strategies,omitempty"` // optional exit strategy list; max close_fraction wins (#480)
 	Capital                float64                `json:"capital"`
 	CapitalPct             float64                `json:"capital_pct,omitempty"`     // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
 	InitialCapital         float64                `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)

@@ -28,7 +28,7 @@ type PositionCtx struct {
 }
 
 func usesOpenCloseConfig(sc StrategyConfig) bool {
-	return strings.TrimSpace(sc.OpenStrategy) != "" || len(sc.CloseStrategies) > 0 || sc.DisableImplicitClose
+	return strings.TrimSpace(sc.OpenStrategy) != "" || len(sc.CloseStrategies) > 0
 }
 
 func strategyNameFromArgs(args []string) string {
@@ -69,9 +69,6 @@ func appendOpenCloseArgs(args []string, sc StrategyConfig, pos PositionCtx) []st
 	}
 	if closeStrategies := explicitCloseStrategies(sc); len(closeStrategies) > 0 {
 		out = append(out, "--close-strategies", strings.Join(closeStrategies, ","))
-	}
-	if sc.DisableImplicitClose {
-		out = append(out, "--disable-implicit-close")
 	}
 	if side := strings.TrimSpace(pos.Side); side != "" {
 		out = append(out, "--position-side", side)

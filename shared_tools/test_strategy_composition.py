@@ -49,7 +49,6 @@ def test_evaluate_open_close_reuses_legacy_strategy_once():
         open_strategy=None,
         close_strategies=None,
         position_side="long",
-        disable_implicit_close=False,
     )
     decision = finalize_decision(evaluation, position_side="long")
 
@@ -59,34 +58,6 @@ def test_evaluate_open_close_reuses_legacy_strategy_once():
     assert decision["open_action"] == "short"
     assert decision["close_fraction"] == 1.0
     assert decision["signal"] == -1
-
-
-def test_disable_implicit_close_ignores_reversal_without_explicit_close():
-    df = pd.DataFrame({"close": [100, 101]})
-
-    def get_strategy(name):
-        assert name == "legacy"
-
-    def apply_strategy(name, data, params=None):
-        result = data.copy()
-        result["signal"] = [0, -1]
-        return result
-
-    evaluation = evaluate_open_close(
-        apply_strategy,
-        get_strategy,
-        df,
-        positional_strategy="legacy",
-        open_strategy=None,
-        close_strategies=None,
-        position_side="long",
-        disable_implicit_close=True,
-    )
-    decision = finalize_decision(evaluation, position_side="long")
-
-    assert decision["close_strategies"] == []
-    assert decision["close_fraction"] == 0.0
-    assert decision["signal"] == 0
 
 
 def test_evaluate_open_close_passes_position_ctx_to_close_only():
@@ -112,7 +83,6 @@ def test_evaluate_open_close_passes_position_ctx_to_close_only():
         open_strategy="open",
         close_strategies=["close"],
         position_side="long",
-        disable_implicit_close=False,
         params={"open_only": 1},
         position_ctx={
             "side": "long",
@@ -161,7 +131,6 @@ def test_evaluate_open_close_reruns_same_strategy_when_close_params_differ():
         open_strategy=None,
         close_strategies=None,
         position_side="long",
-        disable_implicit_close=False,
         params={"lookback": 5},
         position_ctx={"avg_cost": 100},
     )
