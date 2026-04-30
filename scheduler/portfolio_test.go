@@ -819,6 +819,44 @@ func TestExecutePerpsSignalPaperBuyNoNotionalDeduction(t *testing.T) {
 	}
 }
 
+func TestExecutePerpsSignalDecouplesSizingAndExchangeLeverage(t *testing.T) {
+	s := &StrategyState{
+		ID:              "hl-test-eth",
+		Cash:            1000,
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 2, 20, 0, "", 0, false, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	pos := s.Positions["ETH"]
+	if pos == nil {
+		t.Fatal("should have ETH position")
+	}
+	if pos.Leverage != 20 {
+		t.Errorf("position leverage = %g, want exchange leverage 20", pos.Leverage)
+	}
+	// Sizing should use 2x, not the 20x exchange leverage.
+	if pos.Quantity < 0.8 || pos.Quantity > 1.1 {
+		t.Errorf("quantity = %g, want ~0.95 from sizing_leverage=2", pos.Quantity)
+	}
+	if pos.Quantity > 5 {
+		t.Errorf("quantity = %g, appears to have used exchange leverage for sizing", pos.Quantity)
+	}
+}
+
 func TestExecutePerpsSignalLiveOpenUsesExchangeFee(t *testing.T) {
 	s := &StrategyState{
 		ID:              "hl-test-eth",

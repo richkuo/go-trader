@@ -10,7 +10,7 @@ import (
 
 // CurrentConfigVersion is the version embedded in newly generated configs.
 // When the binary starts and cfg.ConfigVersion < CurrentConfigVersion, migration runs.
-const CurrentConfigVersion = 9
+const CurrentConfigVersion = 10
 
 // ConfigField describes a config field introduced in a specific version.
 type ConfigField struct {
@@ -86,6 +86,10 @@ const v9DeprecationNotice = "**Note:** HL perps strategies now auto-derive a per
 	"HL perps strategy for that coin. Same-coin peer groups keep omitted fields as an exchange-side stop opt-out; " +
 	"choose one explicit positive stop-loss owner if you want a shared-position trigger. See issues #484 and #494."
 
+const v10DeprecationNotice = "**Note:** perps configs now distinguish `sizing_leverage` from exchange `leverage`. " +
+	"Migration copies existing perps `leverage` into `sizing_leverage` so old configs keep identical order sizing; " +
+	"`leverage` now represents the exchange leverage used for margin drawdown and HL `update_leverage`. See issue #497."
+
 const v7DeprecationNotice = "**Note:** `dm_paper_trades` and `dm_live_trades` have been replaced by a `dm_channels` map. " +
 	"Paper trades use `dm_channels[\"<platform>-paper\"]`; live trades use `dm_channels[\"<platform>\"]`. " +
 	"Absent keys disable DM-style trade alerts for that platform. Values may be a user ID (delivered as a DM) " +
@@ -150,6 +154,13 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 		for _, path := range v8DeprecatedFields {
 			removeNestedField(raw, path)
 		}
+	}
+
+	// v10: split position-sizing leverage from exchange leverage (#497). Copy
+	// existing perps leverage to sizing_leverage so legacy configs keep the
+	// exact same notional sizing after `leverage` becomes exchange/risk leverage.
+	if oldVer < 10 {
+		addV10SizingLeverage(raw)
 	}
 
 	raw["config_version"] = CurrentConfigVersion
@@ -238,6 +249,28 @@ func translateV7DMChannels(raw map[string]interface{}, cfg *Config) {
 	}
 	translateSection("discord", "owner_id")
 	translateSection("telegram", "owner_chat_id")
+}
+
+func addV10SizingLeverage(raw map[string]interface{}) {
+	strategies, ok := raw["strategies"].([]interface{})
+	if !ok {
+		return
+	}
+	for _, item := range strategies {
+		sc, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if _, exists := sc["sizing_leverage"]; exists {
+			continue
+		}
+		if stringFromJSON(sc["type"]) != "perps" {
+			continue
+		}
+		if lev, ok := sc["leverage"]; ok {
+			sc["sizing_leverage"] = lev
+		}
+	}
 }
 
 func collectUniquePlatforms(cfg *Config) []string {
@@ -331,6 +364,14 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 				fmt.Printf("[migration] %s\n", v9DeprecationNotice)
 			}
 		}
+		// v10: notify about sizing_leverage split (#497).
+		if cfg.ConfigVersion < 10 {
+			if notifier != nil && notifier.HasOwner() {
+				notifier.SendOwnerDM(v10DeprecationNotice)
+			} else {
+				fmt.Printf("[migration] %s\n", v10DeprecationNotice)
+			}
+		}
 		return
 	}
 
@@ -358,6 +399,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 		}
 		if cfg.ConfigVersion < 9 {
 			fmt.Printf("[migration] %s\n", v9DeprecationNotice)
+		}
+		if cfg.ConfigVersion < 10 {
+			fmt.Printf("[migration] %s\n", v10DeprecationNotice)
 		}
 		return
 	}
@@ -403,5 +447,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 	// v9: notify about HL perps auto-SL fallback to max_drawdown_pct (#484).
 	if cfg.ConfigVersion < 9 {
 		notifier.SendOwnerDM(v9DeprecationNotice)
+	}
+	// v10: notify about sizing_leverage split (#497).
+	if cfg.ConfigVersion < 10 {
+		notifier.SendOwnerDM(v10DeprecationNotice)
 	}
 }

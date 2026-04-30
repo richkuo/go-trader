@@ -309,7 +309,8 @@ type InitOptions struct {
 	SpotCapital             float64
 	OptionsCapital          float64
 	PerpsCapital            float64
-	PerpsLeverage           float64  // perps leverage multiplier (default 1 = no leverage) (#254)
+	PerpsLeverage           float64  // perps exchange leverage (default 1 = no leverage) (#254/#497)
+	PerpsSizingLeverage     float64  // perps sizing multiplier; defaults to PerpsLeverage (#497)
 	HLStopLossPct           *float64 // HL perps only: per-trade stop-loss % from entry. nil = auto-derive from MaxDrawdownPct (#484); explicit 0 = disabled; >0 = override (#412)
 	HLStopLossMarginPct     *float64 // HL perps only: per-trade stop-loss as % of deployed margin. nil = auto-derive; explicit 0 = disabled; mutually exclusive with HLStopLossPct (#487, #484)
 	HLTrailingStopPct       *float64 // HL perps only: synthetic trailing stop distance from high/low-water mark; mutually exclusive with fixed SL fields (#501)
@@ -489,6 +490,10 @@ func generateConfig(opts InitOptions) *Config {
 		if perpsLeverage <= 0 {
 			perpsLeverage = 1
 		}
+		perpsSizingLeverage := opts.PerpsSizingLeverage
+		if perpsSizingLeverage <= 0 {
+			perpsSizingLeverage = perpsLeverage
+		}
 		for _, stratID := range opts.PerpsStrategies {
 			shortName := deriveShortName(stratID)
 			// Strategies that emit bidirectional signals must opt in to
@@ -508,6 +513,7 @@ func generateConfig(opts InitOptions) *Config {
 					MaxDrawdownPct:    opts.PerpsDrawdown,
 					IntervalSeconds:   3600,
 					Leverage:          perpsLeverage,
+					SizingLeverage:    perpsSizingLeverage,
 					AllowShorts:       allowShorts,
 					StopLossPct:       opts.HLStopLossPct,       // *float64 — nil falls through to MaxDrawdownPct (#484)
 					StopLossMarginPct: opts.HLStopLossMarginPct, // *float64 — nil falls through (#484/#487)
@@ -614,6 +620,10 @@ func generateConfig(opts InitOptions) *Config {
 		if okxPerpsLeverage <= 0 {
 			okxPerpsLeverage = 1
 		}
+		okxPerpsSizingLeverage := opts.PerpsSizingLeverage
+		if okxPerpsSizingLeverage <= 0 {
+			okxPerpsSizingLeverage = okxPerpsLeverage
+		}
 		for _, stratID := range opts.OKXPerpsStrategies {
 			shortName := deriveShortName(stratID)
 			for _, assetName := range opts.Assets {
@@ -628,6 +638,7 @@ func generateConfig(opts InitOptions) *Config {
 					MaxDrawdownPct:  opts.OKXDrawdown,
 					IntervalSeconds: 3600,
 					Leverage:        okxPerpsLeverage,
+					SizingLeverage:  okxPerpsSizingLeverage,
 				})
 			}
 		}
@@ -717,9 +728,13 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 	if opts.EnablePerps && opts.PerpsMode == "" {
 		opts.PerpsMode = "paper"
 	}
-	// #254: perps leverage defaults to 1x if not specified.
+	// #254/#497: perps exchange leverage defaults to 1x if not specified;
+	// sizing leverage inherits it to preserve legacy order sizing.
 	if opts.EnablePerps && opts.PerpsLeverage <= 0 {
 		opts.PerpsLeverage = 1
+	}
+	if opts.EnablePerps && opts.PerpsSizingLeverage <= 0 {
+		opts.PerpsSizingLeverage = opts.PerpsLeverage
 	}
 
 	// Auto-populate PerpsStrategies from discovered list if not specified.
