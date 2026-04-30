@@ -1650,11 +1650,12 @@ func TestCheckRisk_PerpsDrawdownFiresBeforeAnyClosedTrades(t *testing.T) {
 	}
 }
 
-// TestCheckRisk_LiveHLSharedCoin_SetsPendingPartialClose verifies #356: a live
-// HL strategy that shares a coin with another configured live HL strategy gets
-// a proportional pending on-chain close (capital_pct weights), not the full
-// wallet szi.
-func TestCheckRisk_LiveHLSharedCoin_SetsPendingPartialClose(t *testing.T) {
+// TestCheckRisk_LiveHLSharedCoin_PausesWithoutClose verifies #512: a live HL
+// strategy that shares a coin with another configured live HL strategy only
+// latches its per-strategy circuit breaker. It must not enqueue an on-chain
+// close or delete virtual state, because Hyperliquid has one shared exchange
+// position per coin/wallet.
+func TestCheckRisk_LiveHLSharedCoin_PausesWithoutClose(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "hl-tema", Platform: "hyperliquid", Type: "perps",
 		CapitalPct: 0.5, Capital: 500, Leverage: 20,
@@ -1692,20 +1693,105 @@ func TestCheckRisk_LiveHLSharedCoin_SetsPendingPartialClose(t *testing.T) {
 
 	_, _ = CheckRisk(&sc, s, pv, prices, nil, assist)
 
-	p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
-	if p == nil {
-		t.Fatal("expected PendingCircuitCloses[hyperliquid] after CB fire")
+	if !s.RiskState.CircuitBreaker {
+		t.Fatal("expected circuit breaker to be active")
 	}
-	if len(p.Symbols) != 1 {
-		t.Fatalf("expected 1 pending symbol, got %d", len(p.Symbols))
+	if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p != nil {
+		t.Fatalf("expected no Hyperliquid pending close for shared coin; got %+v", p)
 	}
-	c0 := p.Symbols[0]
-	if c0.Symbol != "ETH" {
-		t.Errorf("symbol=%q want ETH", c0.Symbol)
+	if _, ok := s.Positions["ETH"]; !ok {
+		t.Fatal("expected shared-coin virtual position to remain open")
 	}
-	want := 0.517 * 0.5
-	if math.Abs(c0.Size-want) > 1e-6 {
-		t.Errorf("pending size=%.6f want %.6f (half of shared on-chain 0.517)", c0.Size, want)
+	if len(s.TradeHistory) != 0 {
+		t.Fatalf("expected no circuit-breaker close trade for shared coin; got %d", len(s.TradeHistory))
+	}
+}
+
+func TestCheckRisk_LiveHLSharedCoin_PausesWithoutCloseWhenHLFetchFailed(t *testing.T) {
+	sc := StrategyConfig{
+		ID: "hl-tema", Platform: "hyperliquid", Type: "perps",
+		CapitalPct: 0.5, Capital: 500, Leverage: 20,
+		Args: []string{"triple_ema", "ETH", "1h", "--mode=live"},
+	}
+	assist := &PlatformRiskAssist{
+		HLLiveAll: []StrategyConfig{
+			sc,
+			{ID: "hl-rmc", Platform: "hyperliquid", Type: "perps",
+				CapitalPct: 0.5, Capital: 500, Leverage: 20,
+				Args: []string{"rsi_macd", "ETH", "1h", "--mode=live"}},
+		},
+	}
+	s := &StrategyState{
+		ID:       sc.ID,
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Cash:     584.0,
+		RiskState: RiskState{
+			PeakValue:      589.0,
+			MaxDrawdownPct: 25.0,
+			DailyPnLDate:   todayUTC(),
+		},
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.236, AvgCost: 2357.0, Side: "long", Multiplier: 1, Leverage: 20},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+
+	allowed, _ := CheckRisk(&sc, s, PortfolioValue(s, map[string]float64{"ETH": 2307.5}), map[string]float64{"ETH": 2307.5}, nil, assist)
+
+	if allowed {
+		t.Fatal("expected risk block")
+	}
+	if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p != nil {
+		t.Fatalf("expected no pending close without HL position snapshot for shared coin; got %+v", p)
+	}
+	if _, ok := s.Positions["ETH"]; !ok {
+		t.Fatal("expected virtual position to remain open when HL fetch failed")
+	}
+}
+
+func TestCheckRisk_LiveHLSoleOwner_StillForceCloses(t *testing.T) {
+	sc := StrategyConfig{
+		ID: "hl-tema", Platform: "hyperliquid", Type: "perps",
+		Capital: 500, Leverage: 20,
+		Args: []string{"triple_ema", "ETH", "1h", "--mode=live"},
+	}
+	assist := &PlatformRiskAssist{
+		HLPositions: []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}},
+		HLLiveAll:   []StrategyConfig{sc},
+	}
+	s := &StrategyState{
+		ID:       sc.ID,
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Cash:     584.0,
+		RiskState: RiskState{
+			PeakValue:      589.0,
+			MaxDrawdownPct: 25.0,
+			DailyPnLDate:   todayUTC(),
+		},
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.236, AvgCost: 2357.0, Side: "long", Multiplier: 1, Leverage: 20},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+	prices := map[string]float64{"ETH": 2307.5}
+
+	allowed, _ := CheckRisk(&sc, s, PortfolioValue(s, prices), prices, nil, assist)
+
+	if allowed {
+		t.Fatal("expected risk block")
+	}
+	if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p == nil || len(p.Symbols) != 1 || p.Symbols[0].Symbol != "ETH" {
+		t.Fatalf("expected Hyperliquid pending close for sole owner; got %+v", p)
+	}
+	if _, ok := s.Positions["ETH"]; ok {
+		t.Fatal("expected sole-owner virtual position to be force-closed")
+	}
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("expected one circuit-breaker close trade; got %d", len(s.TradeHistory))
 	}
 }
 

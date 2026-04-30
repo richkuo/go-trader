@@ -883,6 +883,9 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if sym == "" {
 		return
 	}
+	if hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
+		return
+	}
 	if _, ok := s.Positions[sym]; !ok {
 		return
 	}
@@ -893,6 +896,21 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
 		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
 	})
+}
+
+func hyperliquidCircuitBreakerHasSharedCoin(sc *StrategyConfig, assist *PlatformRiskAssist) bool {
+	if sc == nil || assist == nil || sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
+		return false
+	}
+	sym := hyperliquidSymbol(sc.Args)
+	if sym == "" {
+		return false
+	}
+	return len(hlLiveStrategiesForCoin(sym, assist.HLLiveAll)) > 1
+}
+
+func shouldForceCloseAllPositionsOnCircuitBreaker(sc *StrategyConfig, assist *PlatformRiskAssist) bool {
+	return !hyperliquidCircuitBreakerHasSharedCoin(sc, assist)
 }
 
 // setOperatorRequiredCircuitBreakerPending enqueues an OperatorRequired=true
@@ -1313,7 +1331,9 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 			setRobinhoodCircuitBreakerPending(sc, s, assist)
 			setTopStepCircuitBreakerPending(sc, s, assist)
 			setOperatorRequiredCircuitBreakerPending(sc, s)
-			forceCloseAllPositions(s, prices, logger)
+			if shouldForceCloseAllPositionsOnCircuitBreaker(sc, assist) {
+				forceCloseAllPositions(s, prices, logger)
+			}
 			return false, fmt.Sprintf("%s (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
 				RiskReasonMaxDrawdownExceeded, r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
 		}
@@ -1328,7 +1348,9 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		setRobinhoodCircuitBreakerPending(sc, s, assist)
 		setTopStepCircuitBreakerPending(sc, s, assist)
 		setOperatorRequiredCircuitBreakerPending(sc, s)
-		forceCloseAllPositions(s, prices, logger)
+		if shouldForceCloseAllPositionsOnCircuitBreaker(sc, assist) {
+			forceCloseAllPositions(s, prices, logger)
+		}
 		return false, RiskReasonConsecutiveLosses
 	}
 

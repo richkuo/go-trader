@@ -1481,7 +1481,7 @@ func TestComputeHyperliquidCircuitCloseQty_SoleOwnerFullSzi(t *testing.T) {
 	}
 }
 
-func TestComputeHyperliquidCircuitCloseQty_Shared50_50(t *testing.T) {
+func TestComputeHyperliquidCircuitCloseQty_SharedCoinSkipped(t *testing.T) {
 	hlLive := []StrategyConfig{
 		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000,
 			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
@@ -1490,20 +1490,12 @@ func TestComputeHyperliquidCircuitCloseQty_Shared50_50(t *testing.T) {
 	}
 	pos := []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}}
 	q, ok := computeHyperliquidCircuitCloseQty("ETH", "hl-a", pos, hlLive)
-	if !ok {
-		t.Fatal("expected ok")
-	}
-	want := 0.517 * 0.5
-	if math.Abs(q-want) > 1e-9 {
-		t.Errorf("qty=%.6f want %.6f", q, want)
+	if ok || q != 0 {
+		t.Fatalf("shared Hyperliquid coin must not enqueue a per-strategy close; qty=%.6f ok=%v", q, ok)
 	}
 }
 
-// Mixed-units weight normalization (#356 review finding 3): when peers on a
-// shared coin declare weights in different fields (fractional CapitalPct vs
-// absolute Capital), their sum is nonsensical. Detect the mismatch and fall
-// back to equal weights so the firing strategy still gets a meaningful share.
-func TestComputeHyperliquidCircuitCloseQty_MixedUnitsFallsBackToEqualWeights(t *testing.T) {
+func TestComputeHyperliquidCircuitCloseQty_MixedUnitsSharedCoinSkipped(t *testing.T) {
 	hlLive := []StrategyConfig{
 		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5,
 			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
@@ -1512,14 +1504,8 @@ func TestComputeHyperliquidCircuitCloseQty_MixedUnitsFallsBackToEqualWeights(t *
 	}
 	pos := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}
 	q, ok := computeHyperliquidCircuitCloseQty("ETH", "hl-a", pos, hlLive)
-	if !ok {
-		t.Fatal("expected ok")
-	}
-	// With equal 1.0/1.0 fallback, hl-a gets half of |szi| = 0.25. Without the
-	// fallback, the old logic would compute 0.5/(0.5+1000) ≈ 0.00025 — a no-op.
-	want := 0.25
-	if math.Abs(q-want) > 1e-9 {
-		t.Errorf("qty=%.6f want %.6f (equal-weight fallback on mixed units)", q, want)
+	if ok || q != 0 {
+		t.Fatalf("shared Hyperliquid coin must not enqueue a per-strategy close; qty=%.6f ok=%v", q, ok)
 	}
 }
 
@@ -1681,6 +1667,60 @@ func TestRunPendingHyperliquidCircuitCloses_ClearsOnSuccess(t *testing.T) {
 	}
 }
 
+func TestRunPendingHyperliquidCircuitCloses_SharedCoinClearsPendingWithoutClose(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID: "hl-a",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseHyperliquid: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.1}},
+						},
+					},
+				},
+			},
+			"hl-b": {ID: "hl-b"},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"ema", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		calls = append(calls, sym)
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.1, AvgPx: 1}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+
+	runPendingHyperliquidCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		"0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 1}},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+		nil,
+	)
+
+	if len(calls) != 0 {
+		t.Fatalf("expected no closer calls for shared Hyperliquid coin; got %v", calls)
+	}
+	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
+		t.Fatal("expected stale shared-coin pending close to be cleared")
+	}
+}
+
 // #418 Fix 1: a closer that returns Fill.TotalSz < requested size must NOT
 // clear pending — the residual must remain queued for retry next cycle, and
 // virtual state must reflect only what actually filled.
@@ -1821,14 +1861,10 @@ func TestRunPendingHyperliquidCircuitCloses_FullFillDecrementsAndClears(t *testi
 	}
 }
 
-// #418 Fix 2 shared-coin variant: a weighted partial close (the firing
-// strategy's share of a shared on-chain position) must still decrement the
-// firing strategy's virtual quantity, because reconcileHyperliquidPositions
-// deliberately does NOT overwrite virtual quantities for shared coins (#258).
-// Without this decrement, the firing strategy's virtual position stays at
-// 100% while on-chain dropped to its weighted share — and on the next cycle
-// the inflated virtual notional re-fires the CB.
-func TestRunPendingHyperliquidCircuitCloses_SharedCoinDecrementsFiringStrategy(t *testing.T) {
+// #512: per-strategy CB on a shared Hyperliquid coin must not submit a close
+// or mutate virtual state. Hyperliquid has one exchange-side position per
+// coin/wallet; closing a "share" of it changes other strategies' exposure.
+func TestRunPendingHyperliquidCircuitCloses_SharedCoinLeavesVirtualPosition(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
 			"hl-tema": {
@@ -1843,7 +1879,6 @@ func TestRunPendingHyperliquidCircuitCloses_SharedCoinDecrementsFiringStrategy(t
 				RiskState: RiskState{
 					PendingCircuitCloses: map[string]*PendingCircuitClose{
 						PlatformPendingCloseHyperliquid: {
-							// Equal weights → close 0.5 of the shared 1.0 wallet.
 							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.5}},
 						},
 					},
@@ -1860,7 +1895,9 @@ func TestRunPendingHyperliquidCircuitCloses_SharedCoinDecrementsFiringStrategy(t
 			Args: []string{"rsi_macd", "ETH", "1h", "--mode=live"}},
 	}
 	var mu sync.RWMutex
+	var calls int
 	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		calls++
 		return &HyperliquidCloseResult{
 			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.5, AvgPx: 3000, Fee: 0.5}},
 			Platform: "hyperliquid",
@@ -1873,9 +1910,14 @@ func TestRunPendingHyperliquidCircuitCloses_SharedCoinDecrementsFiringStrategy(t
 		nil,
 	)
 
-	// Firing strategy's virtual position should be fully closed.
-	if _, ok := state.Strategies["hl-tema"].Positions["ETH"]; ok {
-		t.Error("firing strategy's ETH position must be removed after weighted close fill (#418)")
+	if calls != 0 {
+		t.Fatalf("expected no closer calls for shared Hyperliquid coin; got %d", calls)
+	}
+	if pos := state.Strategies["hl-tema"].Positions["ETH"]; pos == nil || pos.Quantity != 0.5 {
+		t.Fatalf("expected firing strategy virtual position to remain unchanged; got %+v", pos)
+	}
+	if p := state.Strategies["hl-tema"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p != nil {
+		t.Fatalf("expected shared-coin pending close cleared; got %+v", p)
 	}
 }
 

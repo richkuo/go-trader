@@ -1161,14 +1161,16 @@ func main() {
 
 					// Phase 2: Lock — CheckRisk (fast, no I/O)
 					var riskAssist *PlatformRiskAssist
-					needHL := hlStateFetched && len(hlLiveAll) > 0
+					needHL := len(hlLiveAll) > 0
 					needOKX := okxStateFetched && len(okxLivePerps) > 0
 					needTS := tsStateFetched && len(tsLiveAll) > 0
 					if needHL || needOKX || needTS {
 						riskAssist = &PlatformRiskAssist{}
 						if needHL {
-							riskAssist.HLPositions = hlPositions
 							riskAssist.HLLiveAll = hlLiveAll
+							if hlStateFetched {
+								riskAssist.HLPositions = hlPositions
+							}
 						}
 						if needOKX {
 							riskAssist.OKXPositions = okxPositions

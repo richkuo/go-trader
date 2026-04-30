@@ -660,47 +660,6 @@ func hlLiveStrategiesForCoin(coin string, hlLiveAll []StrategyConfig) []Strategy
 	return out
 }
 
-func hlStrategyCapitalWeight(sc StrategyConfig) float64 {
-	if sc.CapitalPct > 0 {
-		return sc.CapitalPct
-	}
-	if sc.Capital > 0 {
-		return sc.Capital
-	}
-	return 1.0
-}
-
-// hlStrategyCapitalWeights returns per-peer weights for proportional close
-// sizing on a shared coin. When peers mix units (one declares CapitalPct as a
-// fraction, another declares raw Capital in dollars), their sum is nonsensical
-// (e.g. 0.5 + 1000 ≈ 1000.5) and the CapitalPct-only peer's share collapses to
-// ~0, producing a no-op close. Detect the mismatch and fall back to equal
-// weights (1.0 each) so the firing strategy still gets a meaningful share.
-// When all peers use the same field, behavior matches hlStrategyCapitalWeight
-// (#356 review).
-func hlStrategyCapitalWeights(peers []StrategyConfig) []float64 {
-	hasPct := false
-	hasAbs := false
-	for _, p := range peers {
-		switch {
-		case p.CapitalPct > 0:
-			hasPct = true
-		case p.Capital > 0:
-			hasAbs = true
-		}
-	}
-	mixed := hasPct && hasAbs
-	out := make([]float64, len(peers))
-	for i, p := range peers {
-		if mixed {
-			out[i] = 1.0
-			continue
-		}
-		out[i] = hlStrategyCapitalWeight(p)
-	}
-	return out
-}
-
 type hlVirtualQuantitySnapshot map[string]map[string]float64
 
 // snapshotHyperliquidVirtualQuantities captures the per-strategy virtual
@@ -736,10 +695,11 @@ func snapshotHyperliquidVirtualQuantities(strategies map[string]*StrategyState, 
 
 // computeHyperliquidCircuitCloseQty returns the unsigned coin quantity for a
 // reduce-only market_close when strategyID's per-strategy circuit breaker fires
-// (#356). For a coin traded by multiple live HL strategies on the same wallet,
-// the close size is proportional to capital_pct (or capital) weights. For a
-// sole configured trader of that coin, the full on-chain absolute size is used.
-// ok is false when there is no non-zero on-chain position for the coin.
+// (#356). Shared-coin peers are deliberately skipped: Hyperliquid aggregates a
+// coin into one exchange-side position per wallet, so even a partial close can
+// disturb other strategies' live exposure (#512). For a sole configured trader
+// of that coin, the full on-chain absolute size is used. ok is false when there
+// is no non-zero on-chain position or the coin is shared by multiple live peers.
 func computeHyperliquidCircuitCloseQty(coin, strategyID string, hlPositions []HLPosition, hlLiveAll []StrategyConfig) (qty float64, ok bool) {
 	var onChain float64
 	found := false
@@ -755,31 +715,10 @@ func computeHyperliquidCircuitCloseQty(coin, strategyID string, hlPositions []HL
 	}
 	absSzi := math.Abs(onChain)
 	peers := hlLiveStrategiesForCoin(coin, hlLiveAll)
-	if len(peers) <= 1 {
-		return absSzi, true
-	}
-	weights := hlStrategyCapitalWeights(peers)
-	sumW := 0.0
-	var wFiring float64
-	foundFiring := false
-	for i, p := range peers {
-		sumW += weights[i]
-		if p.ID == strategyID {
-			wFiring = weights[i]
-			foundFiring = true
-		}
-	}
-	if !foundFiring || sumW <= 0 {
-		return absSzi, true
-	}
-	q := absSzi * (wFiring / sumW)
-	if q > absSzi {
-		q = absSzi
-	}
-	if q < 1e-12 {
+	if len(peers) > 1 {
 		return 0, false
 	}
-	return q, true
+	return absSzi, true
 }
 
 func hyperliquidKillSwitchFillShare(sc StrategyConfig, coin string, fillSz, fillFee float64, hlLiveAll []StrategyConfig, virtualQty hlVirtualQuantitySnapshot) (float64, float64) {
@@ -909,6 +848,10 @@ func runPendingHyperliquidCircuitCloses(
 		if ss == nil {
 			continue
 		}
+		sym := hyperliquidSymbol(sc.Args)
+		if sym == "" || len(hlLiveStrategiesForCoin(sym, hlLiveAll)) > 1 {
+			continue
+		}
 		if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) == nil && ss.RiskState.CircuitBreaker {
 			hasStuckCB = true
 			break
@@ -1017,6 +960,16 @@ func runPendingHyperliquidCircuitCloses(
 		}
 		sc := lookupStrategyConfig(strategies, j.stratID)
 		if sc == nil || sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
+			mu.Lock()
+			if ss := state.Strategies[j.stratID]; ss != nil {
+				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
+			}
+			mu.Unlock()
+			continue
+		}
+		if sym := hyperliquidSymbol(sc.Args); sym != "" && len(hlLiveStrategiesForCoin(sym, hlLiveAll)) > 1 {
+			fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s shares the wallet position with peers — clearing pending close and leaving exchange position untouched\n",
+				j.stratID, sym)
 			mu.Lock()
 			if ss := state.Strategies[j.stratID]; ss != nil {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)

@@ -209,7 +209,7 @@ func okxLiveStrategiesForCoin(coin string, okxLiveAll []StrategyConfig) []Strate
 }
 
 // okxStrategyCapitalWeight returns a single strategy's proportional weight for
-// shared-coin close sizing. Matches hlStrategyCapitalWeight.
+// OKX shared-coin close sizing.
 func okxStrategyCapitalWeight(sc StrategyConfig) float64 {
 	if sc.CapitalPct > 0 {
 		return sc.CapitalPct
@@ -221,11 +221,11 @@ func okxStrategyCapitalWeight(sc StrategyConfig) float64 {
 }
 
 // okxStrategyCapitalWeights returns per-peer weights for proportional close
-// sizing on a shared coin. Mixed-units guard matches hlStrategyCapitalWeights:
-// when peers declare CapitalPct (fractional) alongside raw Capital (dollars)
-// their sum is nonsensical and the CapitalPct-only peer's share collapses to
-// near-zero, producing a no-op close. Detect the mismatch and fall back to
-// equal weights so the firing strategy still gets a meaningful share.
+// sizing on a shared coin. When peers declare CapitalPct (fractional) alongside
+// raw Capital (dollars), their sum is nonsensical and the CapitalPct-only
+// peer's share collapses to near-zero, producing a no-op close. Detect the
+// mismatch and fall back to equal weights so the firing strategy still gets a
+// meaningful share.
 func okxStrategyCapitalWeights(peers []StrategyConfig) []float64 {
 	hasPct := false
 	hasAbs := false
@@ -255,7 +255,7 @@ func okxStrategyCapitalWeights(peers []StrategyConfig) []float64 {
 // same wallet, the close size is proportional to capital_pct (or capital)
 // weights. For a sole configured trader of that coin, the full on-chain
 // absolute size is used. ok is false when there is no non-zero on-chain
-// position for the coin. Mirrors computeHyperliquidCircuitCloseQty.
+// position for the coin.
 func computeOKXCircuitCloseQty(coin, strategyID string, okxPositions []OKXPosition, okxLiveAll []StrategyConfig) (qty float64, ok bool) {
 	var onChain float64
 	found := false
