@@ -893,6 +893,9 @@ func TestLoadConfigMarginModeRejectsSpot(t *testing.T) {
 // share a single on-chain position. Matching peers load successfully.
 func TestLoadConfigHLPerpsPeersOnSameCoinMatching(t *testing.T) {
 	dir := t.TempDir()
+	// #484: omitting stop_loss_pct now auto-derives from max_drawdown_pct, so
+	// peers that both omit it would each place a SL trigger — a conflict.
+	// Use stop_loss_pct:0 on the second peer to disable auto-SL for that leg.
 	cfgJSON := `{
 		"strategies": [
 			{
@@ -913,7 +916,8 @@ func TestLoadConfigHLPerpsPeersOnSameCoinMatching(t *testing.T) {
 				"args": ["donchian_breakout", "ETH", "4h", "--mode=paper"],
 				"capital": 500,
 				"leverage": 5,
-				"margin_mode": "isolated"
+				"margin_mode": "isolated",
+				"stop_loss_pct": 0
 			}
 		]
 	}`
@@ -1048,6 +1052,9 @@ func TestLoadConfigHLPerpsPeersConflictingStopLoss(t *testing.T) {
 // two or more peers configure SLs that would race on the shared position.
 func TestLoadConfigHLPerpsPeersSingleStopLossAllowed(t *testing.T) {
 	dir := t.TempDir()
+	// #484: the second peer must use stop_loss_pct:0 to opt out of auto-SL —
+	// omitting the field would auto-derive from max_drawdown_pct and create
+	// a second SL trigger that races with the first peer's trigger.
 	cfgJSON := `{
 		"strategies": [
 			{
@@ -1069,7 +1076,8 @@ func TestLoadConfigHLPerpsPeersSingleStopLossAllowed(t *testing.T) {
 				"args": ["donchian_breakout", "ETH", "4h", "--mode=paper"],
 				"capital": 500,
 				"leverage": 5,
-				"margin_mode": "isolated"
+				"margin_mode": "isolated",
+				"stop_loss_pct": 0
 			}
 		]
 	}`
@@ -1113,8 +1121,9 @@ func TestLoadConfigHLPerpsPeersDifferentCoinsIndependent(t *testing.T) {
 	}
 }
 
-// #491: zero-default stop_loss_pct on both peers must not trip the conflict
-// guard — the boundary between "no SL configured" and "SL conflict".
+// #491/#484: peers that both disable SL via explicit stop_loss_pct:0 must not
+// trip the conflict guard. Omitting the field auto-derives from MaxDrawdownPct
+// (#484), so disabling requires an explicit 0.
 func TestLoadConfigHLPerpsPeersNoStopLossAllowed(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1127,7 +1136,8 @@ func TestLoadConfigHLPerpsPeersNoStopLossAllowed(t *testing.T) {
 				"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
 				"capital": 1000,
 				"leverage": 5,
-				"margin_mode": "isolated"
+				"margin_mode": "isolated",
+				"stop_loss_pct": 0
 			},
 			{
 				"id": "hl-eth-breakout",
@@ -1137,13 +1147,14 @@ func TestLoadConfigHLPerpsPeersNoStopLossAllowed(t *testing.T) {
 				"args": ["donchian_breakout", "ETH", "4h", "--mode=paper"],
 				"capital": 500,
 				"leverage": 5,
-				"margin_mode": "isolated"
+				"margin_mode": "isolated",
+				"stop_loss_pct": 0
 			}
 		]
 	}`
 	path := writeTestConfig(t, dir, cfgJSON)
 	if _, err := LoadConfig(path); err != nil {
-		t.Fatalf("LoadConfig failed for two peers with no stop_loss_pct: %v", err)
+		t.Fatalf("LoadConfig failed for two peers with stop_loss_pct:0: %v", err)
 	}
 }
 
@@ -1152,6 +1163,7 @@ func TestLoadConfigHLPerpsPeersNoStopLossAllowed(t *testing.T) {
 // margin_mode:"" should match a peer with margin_mode:"isolated".
 func TestLoadConfigHLPerpsPeersDefaultedMarginModeMatches(t *testing.T) {
 	dir := t.TempDir()
+	// #484: disable auto-SL on one peer to avoid the SL-conflict error.
 	cfgJSON := `{
 		"strategies": [
 			{
@@ -1171,7 +1183,8 @@ func TestLoadConfigHLPerpsPeersDefaultedMarginModeMatches(t *testing.T) {
 				"args": ["donchian_breakout", "ETH", "4h", "--mode=paper"],
 				"capital": 500,
 				"leverage": 5,
-				"margin_mode": "isolated"
+				"margin_mode": "isolated",
+				"stop_loss_pct": 0
 			}
 		]
 	}`
@@ -1184,6 +1197,45 @@ func TestLoadConfigHLPerpsPeersDefaultedMarginModeMatches(t *testing.T) {
 		if sc.MarginMode != "isolated" {
 			t.Errorf("strategy %s margin_mode = %q, want %q", sc.ID, sc.MarginMode, "isolated")
 		}
+	}
+}
+
+// #484: two peers that both omit stop_loss_pct both auto-derive from
+// max_drawdown_pct; each would place a reduce-only SL trigger on the shared
+// on-chain position, so the config is rejected.
+func TestLoadConfigHLPerpsPeersAutoSLConflict(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [
+			{
+				"id": "hl-eth-trend",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+				"capital": 1000,
+				"leverage": 5,
+				"margin_mode": "isolated"
+			},
+			{
+				"id": "hl-eth-breakout",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["donchian_breakout", "ETH", "4h", "--mode=paper"],
+				"capital": 500,
+				"leverage": 5,
+				"margin_mode": "isolated"
+			}
+		]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected conflict error for two peers both auto-deriving SL from max_drawdown_pct")
+	}
+	if !strings.Contains(err.Error(), "conflicting stop_loss_pct") {
+		t.Errorf("error = %v, want 'conflicting stop_loss_pct'", err)
 	}
 }
 

@@ -466,11 +466,11 @@ func LoadConfig(path string) (*Config, error) {
 // independence requires HL sub-accounts (out of scope for #491).
 func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 	type peer struct {
-		ID          string
-		Coin        string
-		MarginMode  string
-		Leverage    float64
-		StopLossPct float64
+		ID             string
+		Coin           string
+		MarginMode     string
+		Leverage       float64
+		EffectiveSLPct float64 // resolved via EffectiveStopLossPct: nil→auto from MaxDrawdownPct, 0→disabled, >0→explicit
 	}
 	groups := make(map[string][]peer)
 	for _, sc := range strategies {
@@ -482,11 +482,11 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 			continue
 		}
 		groups[coin] = append(groups[coin], peer{
-			ID:          sc.ID,
-			Coin:        coin,
-			MarginMode:  sc.MarginMode,
-			Leverage:    sc.Leverage,
-			StopLossPct: sc.StopLossPct,
+			ID:             sc.ID,
+			Coin:           coin,
+			MarginMode:     sc.MarginMode,
+			Leverage:       sc.Leverage,
+			EffectiveSLPct: EffectiveStopLossPct(sc),
 		})
 	}
 	var errs []string
@@ -528,7 +528,7 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 		}
 		stopLossOwners := make([]string, 0)
 		for _, p := range peers {
-			if p.StopLossPct > 0 {
+			if p.EffectiveSLPct > 0 {
 				stopLossOwners = append(stopLossOwners, p.ID)
 			}
 		}
