@@ -323,7 +323,8 @@ jobs:
             });
 
             let body = pr.body || "";
-            body = body.replace(/\n*---\nLLM:\s*[^\n]+\s*$/m, "").trimEnd();
+            // No `m` flag: `$` must match end of string so mid-body ---/LLM: blocks aren't stripped.
+            body = body.replace(/\n*---\nLLM:\s*[^\n]+\s*$/, "").trimEnd();
 
             const hasClosingKeyword = closeRe.test(body);
             let newBody = body;
