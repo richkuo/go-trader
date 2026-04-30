@@ -379,6 +379,64 @@ func TestApplyHotReloadConfigRejectsHLPeerMismatchOnReload(t *testing.T) {
 	}
 }
 
+func TestApplyHotReloadConfigAllowsTrailingStopPctChangeWithOpenPosition(t *testing.T) {
+	oldTrail := 3.0
+	newTrail := 4.0
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated", TrailingStopPct: &oldTrail,
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated", TrailingStopPct: &newTrail,
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long"},
+		}},
+	}}
+
+	changes, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+	if err != nil {
+		t.Fatalf("applyHotReloadConfig: %v", err)
+	}
+	if cfg.Strategies[0].TrailingStopPct == nil || *cfg.Strategies[0].TrailingStopPct != 4 {
+		t.Fatalf("TrailingStopPct=%v, want 4", cfg.Strategies[0].TrailingStopPct)
+	}
+	if !strings.Contains(strings.Join(changes, "\n"), "trailing_stop_pct") {
+		t.Fatalf("changes=%v, want trailing_stop_pct entry", changes)
+	}
+}
+
+func TestApplyHotReloadConfigRejectsFixedToTrailingWithOpenPosition(t *testing.T) {
+	trail := 3.0
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated",
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated", TrailingStopPct: &trail,
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long"},
+		}},
+	}}
+
+	_, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+	if err == nil {
+		t.Fatal("expected hot reload to reject fixed-to-trailing mode switch")
+	}
+	if !strings.Contains(err.Error(), "trailing_stop_pct mode changed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func minimalReloadConfig(strategies []StrategyConfig) *Config {
 	return &Config{
 		IntervalSeconds: 600,

@@ -74,6 +74,21 @@ type HyperliquidExecuteResult struct {
 	StopLossFilledImmediately bool                  `json:"stop_loss_filled_immediately,omitempty"` // SL trigger filled at submit (price already through the level) — position is flat on-chain (#421)
 }
 
+// HyperliquidStopLossUpdateResult is the JSON output from check_hyperliquid.py
+// --update-stop-loss. It reuses the same cancel/place fields as execute mode
+// but has no market-order execution block (#501).
+type HyperliquidStopLossUpdateResult struct {
+	Platform                  string  `json:"platform"`
+	Timestamp                 string  `json:"timestamp"`
+	Error                     string  `json:"error,omitempty"`
+	StopLossOID               int64   `json:"stop_loss_oid,omitempty"`
+	StopLossTriggerPx         float64 `json:"stop_loss_trigger_px,omitempty"`
+	CancelStopLossError       string  `json:"cancel_stop_loss_error,omitempty"`
+	CancelStopLossSucceeded   bool    `json:"cancel_stop_loss_succeeded,omitempty"`
+	StopLossError             string  `json:"stop_loss_error,omitempty"`
+	StopLossFilledImmediately bool    `json:"stop_loss_filled_immediately,omitempty"`
+}
+
 // RunPythonScript executes a Python script and returns stdout/stderr.
 func RunPythonScript(script string, args []string) ([]byte, []byte, error) {
 	pythonSemaphore <- struct{}{}
@@ -241,6 +256,41 @@ func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float6
 	}
 	stdout, stderr, err := RunPythonScript(script, args)
 	return parseHyperliquidExecuteOutput(stdout, string(stderr), err)
+}
+
+// RunHyperliquidUpdateStopLoss cancels the existing resting SL trigger and
+// places a replacement trigger at triggerPx for an already-open HL perps
+// position (#501). side is the current position side ("long" or "short").
+func RunHyperliquidUpdateStopLoss(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+	args := []string{
+		"--update-stop-loss",
+		fmt.Sprintf("--symbol=%s", symbol),
+		fmt.Sprintf("--side=%s", side),
+		fmt.Sprintf("--size=%g", size),
+		fmt.Sprintf("--trigger-px=%g", triggerPx),
+		"--mode=live",
+	}
+	if cancelStopLossOID > 0 {
+		args = append(args, fmt.Sprintf("--cancel-stop-loss-oid=%d", cancelStopLossOID))
+	}
+	stdout, stderr, err := RunPythonScript(script, args)
+	return parseHyperliquidUpdateStopLossOutput(stdout, string(stderr), err)
+}
+
+func parseHyperliquidUpdateStopLossOutput(stdout []byte, stderrStr string, runErr error) (*HyperliquidStopLossUpdateResult, string, error) {
+	if runErr != nil {
+		var result HyperliquidStopLossUpdateResult
+		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
+			return &result, stderrStr, nil
+		}
+		return nil, stderrStr, fmt.Errorf("update stop-loss error: %w (stderr: %s)", runErr, stderrStr)
+	}
+
+	var result HyperliquidStopLossUpdateResult
+	if err := json.Unmarshal(stdout, &result); err != nil {
+		return nil, stderrStr, fmt.Errorf("parse output: %w (stdout: %s)", err, string(stdout))
+	}
+	return &result, stderrStr, nil
 }
 
 // parseHyperliquidExecuteOutput turns subprocess output into

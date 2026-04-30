@@ -15,6 +15,10 @@ Execution mode (live only, called by Go as phase 2):
         [--margin-mode=isolated|cross] # optional: enforce margin mode via update_leverage before the
         [--leverage=N]                #   order (only on a fresh open from flat — HL rejects mode
                                       #   changes on an open position) (#486)
+
+Trailing stop update mode (live only):
+    check_hyperliquid.py --update-stop-loss --symbol=BTC --side=long|short --size=0.01 \
+        --trigger-px=62000 --cancel-stop-loss-oid=OID [--mode=live]
 """
 
 import sys
@@ -485,8 +489,112 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
         sys.exit(1)
 
 
+def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
+    """Cancel the old resting SL trigger and place a replacement for an open
+    position. ``side`` is the current position side, not the trigger order side.
+    """
+    if mode != "live":
+        print(json.dumps({"error": "--update-stop-loss requires --mode=live"}, cls=SafeEncoder))
+        sys.exit(1)
+
+    cancel_err = ""
+    cancel_attempted = cancel_oid > 0
+    cancel_succeeded = False
+    sl_err = ""
+    sl_filled_immediately = False
+    resting_oid = 0
+
+    try:
+        from adapter import HyperliquidExchangeAdapter
+        adapter = HyperliquidExchangeAdapter()
+
+        side = side.lower()
+        if side not in ("long", "short"):
+            print(json.dumps({
+                "platform": "hyperliquid",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": f"invalid side {side!r}, expected 'long' or 'short'",
+            }, cls=SafeEncoder))
+            sys.exit(1)
+
+        if cancel_attempted:
+            try:
+                adapter.cancel_trigger_order(symbol, cancel_oid)
+                cancel_succeeded = True
+            except Exception as ce:
+                cancel_err = str(ce)
+                print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) failed: {ce}", file=sys.stderr)
+
+        sl_is_buy = side == "short"
+        trigger_px = adapter.round_perps_trigger_px(symbol, trigger_px)
+        try:
+            sl_resp = adapter.place_stop_loss(symbol, size, trigger_px, sl_is_buy)
+            kind, payload = _classify_sl_response(sl_resp)
+            if kind == "resting":
+                resting_oid = payload
+            elif kind == "filled":
+                sl_filled_immediately = True
+                print(f"[WARN] stop-loss filled immediately at submit (price already through {trigger_px})", file=sys.stderr)
+            elif kind == "error":
+                sl_err = f"place_stop_loss SDK error: {payload}"
+                print(f"[WARN] {sl_err}", file=sys.stderr)
+            else:
+                sl_err = f"place_stop_loss returned no usable status: {sl_resp}"
+                print(f"[WARN] {sl_err}", file=sys.stderr)
+        except Exception as se:
+            sl_err = str(se)
+            print(f"[WARN] place_stop_loss({symbol}, {size}, {trigger_px}) failed: {se}", file=sys.stderr)
+
+        out = {
+            "platform": "hyperliquid",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "stop_loss_trigger_px": trigger_px,
+        }
+        if resting_oid:
+            out["stop_loss_oid"] = resting_oid
+        if cancel_err:
+            out["cancel_stop_loss_error"] = cancel_err
+        if cancel_succeeded:
+            out["cancel_stop_loss_succeeded"] = True
+        if sl_err:
+            out["stop_loss_error"] = sl_err
+        if sl_filled_immediately:
+            out["stop_loss_filled_immediately"] = True
+        print(json.dumps(out, cls=SafeEncoder))
+
+    except SystemExit:
+        raise
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        err_payload = {
+            "platform": "hyperliquid",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": str(e),
+        }
+        if cancel_err:
+            err_payload["cancel_stop_loss_error"] = cancel_err
+        if cancel_succeeded:
+            err_payload["cancel_stop_loss_succeeded"] = True
+        print(json.dumps(err_payload, cls=SafeEncoder))
+        sys.exit(1)
+
+
 def main():
-    if "--execute" in sys.argv:
+    if "--update-stop-loss" in sys.argv:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--update-stop-loss", action="store_true")
+        parser.add_argument("--symbol", required=True)
+        parser.add_argument("--side", required=True, choices=["long", "short"])
+        parser.add_argument("--size", type=float, required=True)
+        parser.add_argument("--trigger-px", type=float, required=True)
+        parser.add_argument("--mode", default="live")
+        parser.add_argument("--cancel-stop-loss-oid", type=int, default=0,
+                            help="cancel this trigger OID before placing the replacement (#501)")
+        args = parser.parse_args()
+        run_update_stop_loss(args.symbol, args.side, args.size, args.trigger_px, args.mode,
+                             cancel_oid=args.cancel_stop_loss_oid)
+    elif "--execute" in sys.argv:
         # Execute mode: --execute --symbol=BTC --side=buy|sell --size=0.01 [--mode=live]
         import argparse
         parser = argparse.ArgumentParser()

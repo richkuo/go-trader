@@ -1084,6 +1084,8 @@ func main() {
 					var hlAvgCost float64
 					var hlPosCtx PositionCtx
 					var hlStopLossOID int64
+					var hlStopLossTriggerPx float64
+					var hlStopLossHighWaterPx float64
 					if sc.Type == "perps" && sc.Platform == "hyperliquid" {
 						if hlLiveStrategy {
 							hlCash = stratState.Cash
@@ -1098,6 +1100,8 @@ func main() {
 								hlPosQty = hlPosCtx.Quantity
 								hlAvgCost = hlPosCtx.AvgCost
 								hlStopLossOID = pos.StopLossOID
+								hlStopLossTriggerPx = pos.StopLossTriggerPx
+								hlStopLossHighWaterPx = pos.StopLossHighWaterPx
 							}
 						}
 					}
@@ -1272,6 +1276,32 @@ func main() {
 							prices[result.Symbol] = price
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
+							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && effectiveTrailingStopPct(sc) > 0 {
+								newHighWater, slUpdate, _ := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, hlPosQty, hlAvgCost, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, notifier, logger)
+								mu.Lock()
+								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
+									if newHighWater > 0 {
+										pos.StopLossHighWaterPx = newHighWater
+									}
+									if slUpdate != nil {
+										if slUpdate.StopLossFilledImmediately && slUpdate.StopLossTriggerPx > 0 {
+											if recordPerpsStopLossClose(stratState, result.Symbol, slUpdate.StopLossTriggerPx, "trailing_stop_loss_immediate", logger) {
+												trades++
+												detail = fmt.Sprintf("[%s] LIVE TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, slUpdate.StopLossTriggerPx)
+											}
+										} else if slUpdate.StopLossOID > 0 {
+											pos.StopLossOID = slUpdate.StopLossOID
+											pos.StopLossTriggerPx = slUpdate.StopLossTriggerPx
+											logger.Info("Trailing SL trigger updated oid=%d @ $%.4f", slUpdate.StopLossOID, slUpdate.StopLossTriggerPx)
+										} else if slUpdate.CancelStopLossSucceeded && hlStopLossOID > 0 && pos.StopLossOID == hlStopLossOID {
+											pos.StopLossOID = 0
+											pos.StopLossTriggerPx = 0
+											logger.Warn("Trailing SL old OID=%d was cancelled but replacement did not rest", hlStopLossOID)
+										}
+									}
+								}
+								mu.Unlock()
+							}
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
 								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, notifier, logger)
 								if ok2 {
@@ -2232,6 +2262,11 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators, trades)
 	if trades > 0 && fillOID != "" {
 		logger.Info("Exchange order ID: %s", fillOID)
+	}
+	if trades > 0 && effectiveTrailingStopPct(sc) > 0 {
+		if pos, ok := s.Positions[result.Symbol]; ok {
+			pos.StopLossHighWaterPx = fillPrice
+		}
 	}
 
 	// Stamp the SL trigger OID onto the freshly-opened Position so the next

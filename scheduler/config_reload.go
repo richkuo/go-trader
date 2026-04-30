@@ -87,6 +87,10 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].margin_mode: %q -> %q", sc.ID, sc.MarginMode, ns.MarginMode)
 			sc.MarginMode = ns.MarginMode
 		}
+		if !floatPtrEqual(sc.TrailingStopPct, ns.TrailingStopPct) {
+			addChange("strategy[%s].trailing_stop_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.TrailingStopPct), formatFloatPtrPct(ns.TrailingStopPct))
+			sc.TrailingStopPct = ns.TrailingStopPct
+		}
 	}
 
 	if portfolioRiskMaxDrawdown(cfg.PortfolioRisk) != portfolioRiskMaxDrawdown(next.PortfolioRisk) {
@@ -247,6 +251,14 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 			errs = append(errs, fmt.Sprintf("strategy[%s] margin_mode changed with open positions (%q -> %q; flatten first or restart after close)",
 				sc.ID, sc.MarginMode, ns.MarginMode))
 		}
+		if sc.Type == "perps" && sc.Platform == "hyperliquid" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			oldTrailing := sc.TrailingStopPct != nil && *sc.TrailingStopPct > 0
+			newTrailing := ns.TrailingStopPct != nil && *ns.TrailingStopPct > 0
+			if oldTrailing != newTrailing {
+				errs = append(errs, fmt.Sprintf("strategy[%s] trailing_stop_pct mode changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
+		}
 	}
 	if len(errs) > 0 {
 		sort.Strings(errs)
@@ -263,8 +275,23 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.OpenStrategy = ""
 	sc.CloseStrategies = nil
 	sc.DisableImplicitClose = false
-	sc.MarginMode = "" // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
+	sc.MarginMode = ""       // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
+	sc.TrailingStopPct = nil // #501: hot-reloadable; state-compat allows pct changes but blocks mode switches while open
 	return sc
+}
+
+func floatPtrEqual(a, b *float64) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func formatFloatPtrPct(p *float64) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%.2f%%", *p)
 }
 
 func strategyConfigByID(strategies []StrategyConfig) map[string]StrategyConfig {

@@ -154,7 +154,7 @@ func TestStrategyConfig_StopLossPctJSON(t *testing.T) {
 }
 
 func TestPosition_StopLossOIDJSON(t *testing.T) {
-	p := Position{Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", StopLossOID: 42, StopLossTriggerPx: 2900}
+	p := Position{Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", StopLossOID: 42, StopLossTriggerPx: 2900, StopLossHighWaterPx: 3100}
 	b, err := json.Marshal(p)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -169,6 +169,9 @@ func TestPosition_StopLossOIDJSON(t *testing.T) {
 	if round.StopLossTriggerPx != 2900 {
 		t.Errorf("round-trip StopLossTriggerPx: got %v", round.StopLossTriggerPx)
 	}
+	if round.StopLossHighWaterPx != 3100 {
+		t.Errorf("round-trip StopLossHighWaterPx: got %v", round.StopLossHighWaterPx)
+	}
 	// omitempty: zero should drop from JSON.
 	b2, _ := json.Marshal(Position{Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long"})
 	if containsKey(b2, "stop_loss_oid") {
@@ -176,6 +179,87 @@ func TestPosition_StopLossOIDJSON(t *testing.T) {
 	}
 	if containsKey(b2, "stop_loss_trigger_px") {
 		t.Errorf("zero StopLossTriggerPx should be omitted; got %s", b2)
+	}
+	if containsKey(b2, "stop_loss_high_water_px") {
+		t.Errorf("zero StopLossHighWaterPx should be omitted; got %s", b2)
+	}
+}
+
+func TestComputeTrailingStopUpdate(t *testing.T) {
+	cases := []struct {
+		name           string
+		side           string
+		mark           float64
+		highWater      float64
+		trailingPct    float64
+		minMovePct     float64
+		currentTrigger float64
+		wantHighWater  float64
+		wantTrigger    float64
+		wantReplace    bool
+	}{
+		{"long ratchets on favorable mark", "long", 110, 100, 3, 0.5, 97, 110, 106.7, true},
+		{"long high water updates without churn below threshold", "long", 100.4, 100, 3, 0.5, 97, 100.4, 0, false},
+		{"long never lowers trigger", "long", 99, 100, 3, 0.5, 97, 100, 0, false},
+		{"short ratchets down", "short", 90, 100, 3, 0.5, 103, 90, 92.7, true},
+		{"short never raises trigger", "short", 101, 100, 3, 0.5, 103, 100, 0, false},
+		{"missing current trigger places one", "long", 100, 100, 3, 0.5, 0, 100, 97, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotHighWater, gotTrigger, gotReplace := computeTrailingStopUpdate(c.side, c.mark, c.highWater, c.trailingPct, c.minMovePct, c.currentTrigger)
+			if gotHighWater != c.wantHighWater || floatDiff(gotTrigger, c.wantTrigger) > 1e-9 || gotReplace != c.wantReplace {
+				t.Fatalf("computeTrailingStopUpdate = (%v, %v, %v), want (%v, %v, %v)",
+					gotHighWater, gotTrigger, gotReplace, c.wantHighWater, c.wantTrigger, c.wantReplace)
+			}
+		})
+	}
+}
+
+func floatDiff(a, b float64) float64 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+
+func TestRunHyperliquidTrailingStopUpdate_CancelThenPlaceArgs(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	var gotSymbol, gotSide string
+	var gotSize, gotTrigger float64
+	var gotCancelOID int64
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		gotSymbol = symbol
+		gotSide = side
+		gotSize = size
+		gotTrigger = triggerPx
+		gotCancelOID = cancelStopLossOID
+		return &HyperliquidStopLossUpdateResult{
+			StopLossOID:       222,
+			StopLossTriggerPx: triggerPx,
+		}, "", nil
+	}
+
+	trail := 3.0
+	sc := StrategyConfig{ID: "hl-test", Platform: "hyperliquid", Type: "perps", Script: "shared_scripts/check_hyperliquid.py", TrailingStopPct: &trail}
+	logger := silentStrategyLogger("hl-test")
+	defer logger.Close()
+
+	newHighWater, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, 100, 110, 100, 97, 111, nil, logger)
+	if !ok {
+		t.Fatalf("runHyperliquidTrailingStopUpdate returned ok=false")
+	}
+	if newHighWater != 110 {
+		t.Fatalf("newHighWater=%v, want 110", newHighWater)
+	}
+	if result == nil || result.StopLossOID != 222 {
+		t.Fatalf("result=%+v, want OID 222", result)
+	}
+	if gotSymbol != "ETH" || gotSide != "long" || gotSize != 0.5 || gotTrigger != 106.7 || gotCancelOID != 111 {
+		t.Fatalf("updater args=(%s,%s,%v,%v,%d), want (ETH,long,0.5,106.7,111)",
+			gotSymbol, gotSide, gotSize, gotTrigger, gotCancelOID)
 	}
 }
 
@@ -650,12 +734,15 @@ func TestEffectiveStopLossPct(t *testing.T) {
 		{"non-perps returns 0", StrategyConfig{Platform: "hyperliquid", Type: "spot", StopLossPct: pf(1.5)}, 0},
 		{"unset and no drawdown", hlPerps(StrategyConfig{Leverage: 5}), 0},
 		{"explicit pct", hlPerps(StrategyConfig{StopLossPct: pf(1.5), Leverage: 5}), 1.5},
+		{"trailing pct wins", hlPerps(StrategyConfig{TrailingStopPct: pf(2.5), Leverage: 5}), 2.5},
+		{"trailing zero is disabled (no fallback)", hlPerps(StrategyConfig{TrailingStopPct: pf(0), MaxDrawdownPct: 5, Leverage: 5}), 0},
 		{"explicit zero is disabled (no fallback)", hlPerps(StrategyConfig{StopLossPct: pf(0), MaxDrawdownPct: 5, Leverage: 5}), 0},
 		{"margin pct at 20x", hlPerps(StrategyConfig{StopLossMarginPct: pf(20), Leverage: 20}), 1.0},
 		{"margin pct at 10x rescales", hlPerps(StrategyConfig{StopLossMarginPct: pf(20), Leverage: 10}), 2.0},
 		{"margin pct without leverage fails safe", hlPerps(StrategyConfig{StopLossMarginPct: pf(20)}), 0},
 		{"explicit-zero margin disables (no fallback)", hlPerps(StrategyConfig{StopLossMarginPct: pf(0), MaxDrawdownPct: 7, Leverage: 5}), 0},
 		{"explicit wins over margin", hlPerps(StrategyConfig{StopLossPct: pf(3), StopLossMarginPct: pf(20), Leverage: 10}), 3},
+		{"trailing wins over explicit before validation", hlPerps(StrategyConfig{TrailingStopPct: pf(4), StopLossPct: pf(3), Leverage: 10}), 4},
 		// #484 fallback path.
 		{"drawdown fallback when both nil", hlPerps(StrategyConfig{MaxDrawdownPct: 5, Leverage: 5}), 5},
 		{"drawdown fallback capped at 50", hlPerps(StrategyConfig{MaxDrawdownPct: 60, Leverage: 5}), 50},
@@ -740,6 +827,106 @@ func TestValidateConfig_StopLossMarginPctBounds(t *testing.T) {
 				t.Errorf("got err=%v wantStopLossErr=%v (full err: %v)", gotErr, c.wantError, err)
 			}
 		})
+	}
+}
+
+func TestValidateConfig_TrailingStopPctBoundsAndExclusion(t *testing.T) {
+	cases := []struct {
+		name      string
+		trailing  float64
+		setFixed  bool
+		fixed     float64
+		setMargin bool
+		margin    float64
+		platform  string
+		typ       string
+		wantError bool
+	}{
+		{"explicit zero disables", 0, false, 0, false, 0, "hyperliquid", "perps", false},
+		{"in range", 3, false, 0, false, 0, "hyperliquid", "perps", false},
+		{"max boundary", 50, false, 0, false, 0, "hyperliquid", "perps", false},
+		{"too high", 51, false, 0, false, 0, "hyperliquid", "perps", true},
+		{"negative", -1, false, 0, false, 0, "hyperliquid", "perps", true},
+		{"non-HL platform", 3, false, 0, false, 0, "okx", "perps", true},
+		{"non-perps type", 3, false, 0, false, 0, "hyperliquid", "spot", true},
+		{"mutually exclusive fixed", 3, true, 2, false, 0, "hyperliquid", "perps", true},
+		{"mutually exclusive margin", 3, false, 0, true, 20, "hyperliquid", "perps", true},
+		{"fixed zero benign", 3, true, 0, false, 0, "hyperliquid", "perps", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			trailing := c.trailing
+			sc := StrategyConfig{
+				ID:              "test",
+				Type:            c.typ,
+				Platform:        c.platform,
+				Script:          "shared_scripts/check_hyperliquid.py",
+				Capital:         1000,
+				MaxDrawdownPct:  10,
+				Leverage:        10,
+				TrailingStopPct: &trailing,
+			}
+			if c.setFixed {
+				fixed := c.fixed
+				sc.StopLossPct = &fixed
+			}
+			if c.setMargin {
+				margin := c.margin
+				sc.StopLossMarginPct = &margin
+			}
+			cfg := &Config{
+				IntervalSeconds: 60,
+				Strategies:      []StrategyConfig{sc},
+				PortfolioRisk:   &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
+			}
+			err := ValidateConfig(cfg)
+			gotErr := err != nil && strings.Contains(err.Error(), "trailing_stop_pct")
+			if gotErr != c.wantError {
+				t.Errorf("got err=%v wantTrailingErr=%v (full err: %v)", gotErr, c.wantError, err)
+			}
+		})
+	}
+}
+
+func TestValidateConfig_HLPeersTrailingAndFixedStopLossConflict(t *testing.T) {
+	trailing := 3.0
+	fixed := 2.0
+	cfg := &Config{
+		IntervalSeconds: 60,
+		Strategies: []StrategyConfig{
+			{
+				ID:              "hl-eth-trend",
+				Type:            "perps",
+				Platform:        "hyperliquid",
+				Script:          "shared_scripts/check_hyperliquid.py",
+				Args:            []string{"trend", "ETH", "1h", "--mode=live"},
+				Capital:         1000,
+				MaxDrawdownPct:  10,
+				Leverage:        10,
+				MarginMode:      "isolated",
+				TrailingStopPct: &trailing,
+			},
+			{
+				ID:             "hl-eth-breakout",
+				Type:           "perps",
+				Platform:       "hyperliquid",
+				Script:         "shared_scripts/check_hyperliquid.py",
+				Args:           []string{"breakout", "ETH", "1h", "--mode=live"},
+				Capital:        1000,
+				MaxDrawdownPct: 10,
+				Leverage:       10,
+				MarginMode:     "isolated",
+				StopLossPct:    &fixed,
+			},
+		},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
+	}
+	err := ValidateConfig(cfg)
+	if err == nil {
+		t.Fatal("expected peer stop-loss conflict")
+	}
+	if !strings.Contains(err.Error(), "trailing_stop_pct") {
+		t.Fatalf("error=%v, want trailing_stop_pct conflict", err)
 	}
 }
 

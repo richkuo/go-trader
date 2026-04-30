@@ -312,6 +312,7 @@ type InitOptions struct {
 	PerpsLeverage           float64  // perps leverage multiplier (default 1 = no leverage) (#254)
 	HLStopLossPct           *float64 // HL perps only: per-trade stop-loss % from entry. nil = auto-derive from MaxDrawdownPct (#484); explicit 0 = disabled; >0 = override (#412)
 	HLStopLossMarginPct     *float64 // HL perps only: per-trade stop-loss as % of deployed margin. nil = auto-derive; explicit 0 = disabled; mutually exclusive with HLStopLossPct (#487, #484)
+	HLTrailingStopPct       *float64 // HL perps only: synthetic trailing stop distance from high/low-water mark; mutually exclusive with fixed SL fields (#501)
 	SpotDrawdown            float64
 	OptionsDrawdown         float64
 	PerpsDrawdown           float64
@@ -510,6 +511,7 @@ func generateConfig(opts InitOptions) *Config {
 					AllowShorts:       allowShorts,
 					StopLossPct:       opts.HLStopLossPct,       // *float64 — nil falls through to MaxDrawdownPct (#484)
 					StopLossMarginPct: opts.HLStopLossMarginPct, // *float64 — nil falls through (#484/#487)
+					TrailingStopPct:   opts.HLTrailingStopPct,   // *float64 — synthetic high/low-water trailing stop (#501)
 					MarginMode:        "isolated",               // #486: hard-cap loss per position; cross would let one strategy drain another's margin
 				})
 			}
@@ -1094,6 +1096,7 @@ func runInit(args []string) int {
 	perpsLeverage := 1.0             // #254 default: 1x (no leverage); user can edit config
 	var hlStopLossPct *float64       // #484 default: nil → auto-derive from MaxDrawdownPct; set via wizard for an explicit override or opt-out
 	var hlStopLossMarginPct *float64 // #487/#484 same semantics — nil = auto, explicit 0 = disabled, >0 = leverage-aware override
+	var hlTrailingStopPct *float64   // #501 synthetic trailing SL; nil means use the fixed/auto path
 	robinhoodCapital := 500.0
 	robinhoodDrawdown := 5.0
 	lunoCapital := 500.0
@@ -1149,11 +1152,15 @@ func runInit(args []string) int {
 	//   - price %:  trigger when price moves X% against entry (#412)
 	//   - margin %: trigger when unrealized loss reaches X% of deployed
 	//               margin; auto-rescales when leverage changes (#487)
+	//   - trailing %: move the trigger behind the best mark seen while open;
+	//                 e.g. a 3% trail on a long entered at 100 starts at 97
+	//                 and ratchets to 106.70 after mark reaches 110 (#501)
 	if enablePerps {
 		slOptions := []string{
 			"Auto (derive from per-strategy max_drawdown_pct)",
 			"Price % from entry (e.g. 1.0 = trigger on 1% adverse move)",
 			"% of deployed margin (leverage-aware; e.g. 20 = trigger on 20% margin loss)",
+			"Trailing % from best mark (e.g. long entry 100, mark 110, 3% trail -> SL 106.70)",
 			"Explicitly disabled (no exchange-side stop-loss)",
 		}
 		switch p.Choice("HL perps per-trade stop-loss framing", slOptions, 0) {
@@ -1164,6 +1171,9 @@ func runInit(args []string) int {
 			v := p.FloatRange("HL perps per-trade stop-loss % of deployed margin", 20, 0, 100)
 			hlStopLossMarginPct = &v
 		case 3:
+			v := p.FloatRange("HL perps trailing stop distance % from best mark", 3, 0, 50)
+			hlTrailingStopPct = &v
+		case 4:
 			zero := 0.0
 			hlStopLossPct = &zero
 		}
@@ -1243,6 +1253,7 @@ func runInit(args []string) int {
 		PerpsLeverage:             perpsLeverage,
 		HLStopLossPct:             hlStopLossPct,
 		HLStopLossMarginPct:       hlStopLossMarginPct,
+		HLTrailingStopPct:         hlTrailingStopPct,
 		SpotDrawdown:              spotDrawdown,
 		OptionsDrawdown:           optionsDrawdown,
 		PerpsDrawdown:             perpsDrawdown,

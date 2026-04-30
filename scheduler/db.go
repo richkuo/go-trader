@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS positions (
     opened_at TEXT NOT NULL DEFAULT '',
     stop_loss_oid INTEGER NOT NULL DEFAULT 0,
     stop_loss_trigger_px REAL NOT NULL DEFAULT 0,
+    stop_loss_high_water_px REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (strategy_id, symbol)
 );
 
@@ -252,6 +253,8 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE positions ADD COLUMN stop_loss_oid INTEGER NOT NULL DEFAULT 0",
 		// Per-trade HL stop-loss trigger price for later-fill reconciliation (#421).
 		"ALTER TABLE positions ADD COLUMN stop_loss_trigger_px REAL NOT NULL DEFAULT 0",
+		// Trailing SL high/low-water mark while the position is open (#501).
+		"ALTER TABLE positions ADD COLUMN stop_loss_high_water_px REAL NOT NULL DEFAULT 0",
 		// Lifetime round-trip / win-loss tracking (#455). is_close marks closing
 		// legs; realized_pnl carries the per-trade realized PnL.
 		"ALTER TABLE trades ADD COLUMN is_close INTEGER NOT NULL DEFAULT 0",
@@ -610,8 +613,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	defer stmtStrat.Close()
 
-	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare position insert: %w", err)
 	}
@@ -661,7 +664,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 
 		for _, pos := range s.Positions {
 			positionID := ensurePositionTradeID(s.ID, pos.Symbol, pos)
-			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx); err != nil {
+			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx); err != nil {
 				return fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
 			}
 		}
@@ -1068,7 +1071,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	}
 
 	// 3. Load positions for each strategy.
-	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px FROM positions")
+	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px FROM positions")
 	if err != nil {
 		return nil, fmt.Errorf("load positions: %w", err)
 	}
@@ -1077,7 +1080,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		var stratID string
 		var pos Position
 		var openedAtStr string
-		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx); err != nil {
+		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
 		pos.OpenedAt = parseTime(openedAtStr)

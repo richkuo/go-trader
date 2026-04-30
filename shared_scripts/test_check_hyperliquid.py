@@ -412,3 +412,55 @@ class TestClassifySLResponse:
         })
         assert kind == "missing"
         assert payload is None
+
+
+class TestUpdateStopLoss:
+    """#501: trailing stops reuse cancel_trigger_order + place_stop_loss without
+    submitting a market order."""
+
+    def _run_update(self, side="long", place_response=None, cancel_side_effect=None):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.round_perps_trigger_px.side_effect = lambda _symbol, px: round(px, 2)
+        if cancel_side_effect is not None:
+            mock_adapter.cancel_trigger_order.side_effect = cancel_side_effect
+        mock_adapter.place_stop_loss.return_value = place_response or {
+            "response": {"type": "order", "data": {"statuses": [
+                {"resting": {"oid": 22222}}
+            ]}}
+        }
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                mod.run_update_stop_loss("ETH", side, 0.5, 3104.123, "live", cancel_oid=11111)
+        return json.loads(captured.getvalue()), mock_adapter
+
+    def test_cancel_then_place_long_stop(self):
+        out, adapter = self._run_update(side="long")
+        adapter.cancel_trigger_order.assert_called_once_with("ETH", 11111)
+        adapter.place_stop_loss.assert_called_once_with("ETH", 0.5, 3104.12, False)
+        method_names = [call[0] for call in adapter.method_calls]
+        assert method_names.index("cancel_trigger_order") < method_names.index("place_stop_loss")
+        assert out["cancel_stop_loss_succeeded"] is True
+        assert out["stop_loss_oid"] == 22222
+        assert out["stop_loss_trigger_px"] == 3104.12
+
+    def test_short_stop_places_buy_trigger(self):
+        out, adapter = self._run_update(side="short")
+        adapter.place_stop_loss.assert_called_once_with("ETH", 0.5, 3104.12, True)
+        assert out["stop_loss_oid"] == 22222
