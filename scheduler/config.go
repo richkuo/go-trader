@@ -415,6 +415,11 @@ func LoadConfig(path string) (*Config, error) {
 // Sub-account isolation is the only correct path for full per-strategy
 // independence (different direction, leverage, margin); it is intentionally
 // out of scope here and tracked separately.
+//
+// Note: AllowShorts mismatches across peers on the same coin are NOT
+// validated here. A long-only and a short-allowed strategy on the same HL
+// coin would silently net/flip at the position level — directional
+// independence requires HL sub-accounts (out of scope for #491).
 func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 	type peer struct {
 		ID          string
@@ -451,25 +456,29 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 		if len(peers) < 2 {
 			continue
 		}
+		// Sort peers by ID so `base` (the comparison reference) is deterministic;
+		// any mismatch still triggers regardless of base, but a stable base lets
+		// future "report which peer is the outlier" extensions stay reproducible.
+		sort.Slice(peers, func(i, j int) bool { return peers[i].ID < peers[j].ID })
 		ids := make([]string, len(peers))
 		for i, p := range peers {
 			ids[i] = p.ID
 		}
-		sort.Strings(ids)
+		idList := strings.Join(ids, ", ")
 		base := peers[0]
 		for _, p := range peers[1:] {
 			if p.MarginMode != base.MarginMode {
 				errs = append(errs, fmt.Sprintf(
-					"hyperliquid peers on %s disagree on margin_mode (strategies %v): HL aggregates per coin per account, all peers must share margin_mode",
-					coin, ids))
+					"hyperliquid peers on %s disagree on margin_mode (strategies %s): HL aggregates per coin per account, all peers must share margin_mode",
+					coin, idList))
 				break
 			}
 		}
 		for _, p := range peers[1:] {
 			if p.Leverage != base.Leverage {
 				errs = append(errs, fmt.Sprintf(
-					"hyperliquid peers on %s disagree on leverage (strategies %v): HL aggregates per coin per account, all peers must share leverage",
-					coin, ids))
+					"hyperliquid peers on %s disagree on leverage (strategies %s): HL aggregates per coin per account, all peers must share leverage",
+					coin, idList))
 				break
 			}
 		}
@@ -482,8 +491,8 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 		if len(stopLossOwners) > 1 {
 			sort.Strings(stopLossOwners)
 			errs = append(errs, fmt.Sprintf(
-				"hyperliquid peers on %s have conflicting stop_loss_pct (strategies %v): at most one peer may place a reduce-only SL trigger; the others' OIDs would race on the shared on-chain position",
-				coin, stopLossOwners))
+				"hyperliquid peers on %s have conflicting stop_loss_pct (strategies %s): at most one peer may place a reduce-only SL trigger; the others' OIDs would race on the shared on-chain position",
+				coin, strings.Join(stopLossOwners, ", ")))
 		}
 	}
 	return errs

@@ -365,7 +365,15 @@ class HyperliquidExchangeAdapter:
             return None
         try:
             user_state = self._info.user_state(self._account_address)
-        except Exception:
+        except Exception as exc:
+            # Don't swallow silently: a transient `info` failure is
+            # indistinguishable from "no position" to the caller, which would
+            # then call update_leverage and HL would reject it. Surface the
+            # cause to stderr so operators can see *why* the fallback ran.
+            print(
+                f"[WARN] HL get_position_leverage({symbol}) user_state failed: {exc}",
+                file=sys.stderr,
+            )
             return None
         for asset_pos in user_state.get("assetPositions", []):
             pos = asset_pos.get("position", {}) or {}

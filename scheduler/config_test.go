@@ -1113,6 +1113,80 @@ func TestLoadConfigHLPerpsPeersDifferentCoinsIndependent(t *testing.T) {
 	}
 }
 
+// #491: zero-default stop_loss_pct on both peers must not trip the conflict
+// guard — the boundary between "no SL configured" and "SL conflict".
+func TestLoadConfigHLPerpsPeersNoStopLossAllowed(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [
+			{
+				"id": "hl-eth-trend",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+				"capital": 1000,
+				"leverage": 5,
+				"margin_mode": "isolated"
+			},
+			{
+				"id": "hl-eth-breakout",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["donchian_breakout", "ETH", "4h", "--mode=paper"],
+				"capital": 500,
+				"leverage": 5,
+				"margin_mode": "isolated"
+			}
+		]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	if _, err := LoadConfig(path); err != nil {
+		t.Fatalf("LoadConfig failed for two peers with no stop_loss_pct: %v", err)
+	}
+}
+
+// #491: margin_mode defaulting (empty -> "isolated") happens at LoadConfig
+// time, so peer comparison must see normalized values. A peer with
+// margin_mode:"" should match a peer with margin_mode:"isolated".
+func TestLoadConfigHLPerpsPeersDefaultedMarginModeMatches(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [
+			{
+				"id": "hl-eth-trend",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+				"capital": 1000,
+				"leverage": 5
+			},
+			{
+				"id": "hl-eth-breakout",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["donchian_breakout", "ETH", "4h", "--mode=paper"],
+				"capital": 500,
+				"leverage": 5,
+				"margin_mode": "isolated"
+			}
+		]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed for defaulted vs explicit margin_mode peers: %v", err)
+	}
+	for _, sc := range cfg.Strategies {
+		if sc.MarginMode != "isolated" {
+			t.Errorf("strategy %s margin_mode = %q, want %q", sc.ID, sc.MarginMode, "isolated")
+		}
+	}
+}
+
 func TestValidateConfigDMChannelsInvalidKey(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
