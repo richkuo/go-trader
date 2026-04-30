@@ -224,13 +224,11 @@ const MaxAutoStopLossPct = 50.0
 // trigger for a given strategy. Resolution order (#484):
 //  1. Explicit StopLossPct (nil → fall through; explicit 0 → disabled).
 //  2. StopLossMarginPct / Leverage (nil → fall through; explicit 0 → disabled).
-//  3. MaxDrawdownPct as a fallback so any HL perps strategy with a configured
-//     drawdown automatically gets exchange-side protection. Capped at
-//     MaxAutoStopLossPct.
-//
-// LoadConfig normalizes omitted stop_loss_* fields to explicit 0 for same-coin
-// HL peer strategies (#494), so the fallback is used at runtime only for
-// strategies that are sole owners of a coin or explicitly retain a positive SL.
+//  3. MaxDrawdownPct as a fallback so a sole-owner HL perps strategy with a
+//     configured drawdown automatically gets exchange-side protection. Capped
+//     at MaxAutoStopLossPct. Only applies to single-strategy coins because
+//     LoadConfig normalizes omitted stop_loss_* fields to explicit 0 for
+//     same-coin HL peer strategies (#494).
 //
 // HL perps only — returns 0 for non-HL platforms or non-perps types so the
 // caller can skip the trigger placement unconditionally.
@@ -492,8 +490,10 @@ func normalizeHyperliquidPeerStopLosses(strategies []StrategyConfig) {
 }
 
 // hyperliquidPeerStrategyErrors returns validation messages for HL perps
-// strategies that share a coin but disagree on MarginMode, Leverage, or
-// StopLossPct (#491). Returns an empty slice when no peer conflicts exist.
+// strategies that share a coin but disagree on MarginMode or Leverage (#491),
+// or that have more than one stop-loss owner (EffectiveStopLossPct > 0 after
+// LoadConfig peer normalization, #494). Returns an empty slice when no peer
+// conflicts exist.
 //
 // HL aggregates positions per coin per account, so two go-trader strategies
 // on the same coin share an on-chain position, margin assignment, and
