@@ -332,8 +332,16 @@ def tema_cross_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: int
     bullish_cross = (result["ema_short"] > result["ema_mid"]) & (
         result["ema_short"].shift(1) <= result["ema_mid"].shift(1)
     )
-    result["position"] = np.where(uptrend & bullish_cross, 1, 0)
-    result["signal"] = result["position"].diff()
+    bearish_cross = (result["ema_short"] < result["ema_mid"]) & (
+        result["ema_short"].shift(1) >= result["ema_mid"].shift(1)
+    )
+    # Position persists between cross events: enter long on bullish cross while uptrend,
+    # exit on the next bearish cross. Forward-fill carries the state across silent bars.
+    raw = pd.Series(np.nan, index=result.index)
+    raw[uptrend & bullish_cross] = 1
+    raw[bearish_cross] = 0
+    result["position"] = raw.ffill().fillna(0).astype(int)
+    result["signal"] = result["position"].diff().fillna(0).astype(int)
     return result
 
 
@@ -356,9 +364,16 @@ def tema_cross_bd_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: 
     bearish_cross = (result["ema_short"] < result["ema_mid"]) & (
         result["ema_short"].shift(1) >= result["ema_mid"].shift(1)
     )
-    result["position"] = np.where(uptrend & bullish_cross, 1,
-                                 np.where(downtrend & bearish_cross, -1, 0))
-    result["signal"] = result["position"].diff().clip(-1, 1)
+    # Position persists between cross events; opposite-direction cross with confirming
+    # trend flips the position, otherwise it flattens on the unconfirmed cross.
+    raw = pd.Series(np.nan, index=result.index)
+    raw[uptrend & bullish_cross] = 1
+    raw[downtrend & bearish_cross] = -1
+    raw[(~uptrend) & bullish_cross] = 0
+    raw[(~downtrend) & bearish_cross] = 0
+    result["position"] = raw.ffill().fillna(0).astype(int)
+    # A direct long→short flip yields diff == -2; clamp so downstream sees {-1, 0, 1}.
+    result["signal"] = result["position"].diff().fillna(0).clip(-1, 1).astype(int)
     return result
 
 

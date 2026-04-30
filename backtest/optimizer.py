@@ -333,6 +333,16 @@ DEFAULT_PARAM_RANGES = {
         "mid_period": [15, 21, 30],
         "long_period": [40, 55, 80],
     },
+    "tema_cross": {
+        "short_period": [3, 5, 8],
+        "mid_period": [10, 13, 18],
+        "long_period": [25, 34, 50],
+    },
+    "tema_cross_bd": {
+        "short_period": [3, 5, 8],
+        "mid_period": [10, 13, 18],
+        "long_period": [25, 34, 50],
+    },
     "rsi_macd_combo": {
         "rsi_period": [10, 14],
         "rsi_oversold": [30, 35, 40],
