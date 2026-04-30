@@ -1,10 +1,11 @@
-"""Spot strategy shim \u2014 platform-filtered view of shared_strategies.registry.
+"""Futures strategy shim \u2014 platform-filtered view of shared_strategies.registry.
 
-All strategy implementations live in ``shared_strategies/registry.py``; this
-file exposes the subset tagged ``platforms=("spot", ...)`` with any spot-specific
-``variants`` applied. ``check_strategy.py`` and the spot backtester path import
-from this module via sys.path insertion (``from strategies import ...``), so
-the surface (``STRATEGY_REGISTRY`` dict, ``apply_strategy``, ``list_strategies``,
+All strategy implementations live in ``shared_strategies/open/registry.py``; this
+file exposes the subset tagged ``platforms=("futures", ...)`` with any
+futures-specific ``variants`` applied. ``check_hyperliquid.py``,
+``check_topstep.py``, ``check_robinhood.py``, and ``check_okx.py`` (swap mode)
+import from this module via sys.path insertion (``from strategies import ...``),
+so the surface (``STRATEGY_REGISTRY``, ``apply_strategy``, ``list_strategies``,
 ``get_strategy``) must stay stable.
 """
 
@@ -16,7 +17,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-_TOOLS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "shared_tools")
+_TOOLS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "shared_tools")
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
@@ -24,15 +25,10 @@ from strategy_composition import strip_unsupported_position_context
 
 
 def _load_registry_module():
-    """Load ``shared_strategies/registry.py`` as an isolated module.
-
-    We use ``spec_from_file_location`` instead of a package import so this
-    shim works whether callers put ``shared_strategies/spot/`` or the repo
-    root on sys.path \u2014 and so spot and futures shims each get a fresh
-    registry instance (the ``test_both_registries_coexist`` contract).
-    """
+    """Load ``shared_strategies/open/registry.py`` as an isolated module \u2014 see
+    spot/strategies.py for rationale (independent modules per shim)."""
     registry_path = os.path.join(os.path.dirname(__file__), "..", "registry.py")
-    spec = importlib.util.spec_from_file_location("_strategy_registry_spot", registry_path)
+    spec = importlib.util.spec_from_file_location("_strategy_registry_futures", registry_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -40,7 +36,7 @@ def _load_registry_module():
 
 _registry = _load_registry_module()
 
-STRATEGY_REGISTRY: Dict[str, dict] = _registry.build_registry("spot")
+STRATEGY_REGISTRY: Dict[str, dict] = _registry.build_registry("futures")
 
 
 def get_strategy(name: str) -> dict:
@@ -54,7 +50,6 @@ def list_strategies() -> List[str]:
 
 
 def apply_strategy(name: str, df: pd.DataFrame, params: Optional[dict] = None) -> pd.DataFrame:
-    """Apply a named strategy with optional parameter overrides."""
     strat = get_strategy(name)
     p = {**strat["default_params"], **(params or {})}
     p = strip_unsupported_position_context(strat["fn"], p)

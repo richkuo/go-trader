@@ -433,6 +433,20 @@ DEFAULT_PARAM_RANGES = {
     "tp_at_pct": {
         "pct": [0.01, 0.03, 0.05],
     },
+    "tiered_tp_pct": {
+        "tiers": [
+            [{"profit_pct": 0.02, "close_fraction": 0.5}, {"profit_pct": 0.04, "close_fraction": 1.0}],
+            [{"profit_pct": 0.03, "close_fraction": 0.5}, {"profit_pct": 0.06, "close_fraction": 1.0}],
+            [{"profit_pct": 0.05, "close_fraction": 0.5}, {"profit_pct": 0.1, "close_fraction": 1.0}],
+        ],
+    },
+    "tiered_tp_atr": {
+        "tiers": [
+            [{"atr_multiple": 1.0, "close_fraction": 0.5}, {"atr_multiple": 2.0, "close_fraction": 1.0}],
+            [{"atr_multiple": 1.5, "close_fraction": 0.5}, {"atr_multiple": 3.0, "close_fraction": 1.0}],
+            [{"atr_multiple": 2.0, "close_fraction": 0.5}, {"atr_multiple": 4.0, "close_fraction": 1.0}],
+        ],
+    },
     # Futures-only
     "breakout": {
         "lookback": [10, 20, 30],

@@ -162,6 +162,19 @@ def _merge_close_params(base: Optional[dict], position_ctx: Optional[dict]) -> O
     return merged
 
 
+def _default_market_ctx(df: pd.DataFrame) -> dict:
+    if df.empty or "close" not in df.columns:
+        return {}
+    try:
+        return {"mark_price": float(df["close"].iloc[-1])}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _is_unknown_close_strategy_error(exc: ValueError) -> bool:
+    return str(exc).startswith("Unknown close strategy:")
+
+
 def strip_unsupported_position_context(fn, params: dict) -> dict:
     if not params:
         return params
@@ -191,6 +204,8 @@ def evaluate_open_close(
     position_side: str,
     params: Optional[dict] = None,
     position_ctx: Optional[dict] = None,
+    close_evaluate: Optional[Callable[[str, dict, dict, Optional[dict]], dict]] = None,
+    market_ctx: Optional[dict] = None,
 ) -> OpenCloseEvaluation:
     open_name = (open_strategy or positional_strategy).strip()
     close_names = effective_close_strategies(
@@ -210,11 +225,23 @@ def evaluate_open_close(
     open_result = run(open_name, params)
     open_signal = _last_signal(open_result)
     close_evals: list[CloseEvaluation] = []
+    market = market_ctx if market_ctx is not None else _default_market_ctx(df)
     for name in close_names:
         # Until per-close params blocks exist, only the implicit-self close
         # shares the open strategy's params. Distinct close strategies run with
         # their own defaults so open-only params do not break another function.
         base_close_params = params if name == open_name else None
+        if close_evaluate is not None:
+            try:
+                result = close_evaluate(name, position_ctx or {}, market, base_close_params)
+                close_evals.append(CloseEvaluation(
+                    strategy=name,
+                    close_fraction=result.get("close_fraction", 0.0),
+                ))
+                continue
+            except ValueError as exc:
+                if not _is_unknown_close_strategy_error(exc):
+                    raise
         close_params = _merge_close_params(base_close_params, position_ctx)
         result = run(name, close_params)
         signal = _last_signal(result)

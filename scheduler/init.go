@@ -222,7 +222,7 @@ func discoverStrategies() {
 	optionsStrategies = defaultOptionsStrategies
 	perpsStrategies = defaultPerpsStrategies
 
-	if discovered := discoverPythonStrategies("shared_strategies/spot/strategies.py"); len(discovered) > 0 {
+	if discovered := discoverPythonStrategies("shared_strategies/open/spot/strategies.py"); len(discovered) > 0 {
 		var filtered []stratDef
 		for _, s := range discovered {
 			if s.ID != "pairs_spread" {
@@ -237,11 +237,11 @@ func discoverStrategies() {
 		optionsStrategies = discovered
 	}
 	futuresStrategies = defaultFuturesStrategies
-	if discovered := discoverPythonStrategies("shared_strategies/futures/strategies.py"); len(discovered) > 0 {
+	if discovered := discoverPythonStrategies("shared_strategies/open/futures/strategies.py"); len(discovered) > 0 {
 		futuresStrategies = discovered
 		// Perps uses the same strategy registry as futures (#221).
 		// check_hyperliquid.py and check_okx.py (swap mode) import from
-		// shared_strategies/futures/, so perps must match that registry.
+		// shared_strategies/open/futures/, so perps must match that registry.
 		perpsStrategies = discovered
 	}
 }

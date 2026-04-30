@@ -1,4 +1,4 @@
-"""Parity tests for ``shared_strategies/registry.py``.
+"""Parity tests for ``shared_strategies/open/registry.py``.
 
 These guard the invariants that make the unified registry safe:
 
@@ -120,6 +120,8 @@ def test_futures_shim_applies_every_registered_strategy(futures_shim, conftest_h
 
 def test_shims_produce_independent_registries(spot_shim, futures_shim):
     assert spot_shim.STRATEGY_REGISTRY is not futures_shim.STRATEGY_REGISTRY
+    assert "tp_at_pct" not in spot_shim.STRATEGY_REGISTRY
+    assert "tp_at_pct" not in futures_shim.STRATEGY_REGISTRY
     # Spot-only vs futures-only
     assert "pairs_spread" in spot_shim.STRATEGY_REGISTRY
     assert "pairs_spread" not in futures_shim.STRATEGY_REGISTRY

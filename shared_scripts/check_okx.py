@@ -29,9 +29,10 @@ for _arg in sys.argv:
         _inst_type = _arg.split("=", 1)[1]
         break
 if _inst_type == "spot":
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'spot'))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'spot'))
 else:
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'futures'))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'futures'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'close'))
 
 
 def _make_dataframe(candles):
@@ -88,6 +89,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
     try:
         from adapter import OKXExchangeAdapter
         from strategies import apply_strategy, get_strategy
+        from registry import evaluate as close_evaluate
         from strategy_composition import (
             evaluate_open_close,
             finalize_decision,
@@ -97,9 +99,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
 
         open_close_enabled = bool(open_strategy or close_strategies)
         configured_names = [open_strategy or strategy_name]
-        configured_names.extend(parse_close_strategies(close_strategies))
-        if not close_strategies and open_close_enabled:
-            configured_names.append(open_strategy or strategy_name)
         for name in configured_names:
             get_strategy(name)
 
@@ -147,6 +146,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             strategy_params = merged
         decision = None
         if open_close_enabled:
+            market_ctx = {"mark_price": float(df["close"].iloc[-1])}
             evaluation = evaluate_open_close(
                 apply_strategy,
                 get_strategy,
@@ -157,6 +157,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 position_side,
                 strategy_params or None,
                 position_ctx,
+                close_evaluate=close_evaluate,
+                market_ctx=market_ctx,
             )
             result_df = evaluation.open_result_df
             signal = evaluation.open_signal

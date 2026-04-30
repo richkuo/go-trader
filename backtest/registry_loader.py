@@ -1,7 +1,7 @@
 """Load the spot/ or futures/ strategy registry by platform name.
 
-Both ``shared_strategies/spot/strategies.py`` and
-``shared_strategies/futures/strategies.py`` expose a module-level
+Both ``shared_strategies/open/spot/strategies.py`` and
+``shared_strategies/open/futures/strategies.py`` expose a module-level
 ``STRATEGY_REGISTRY`` dict and ``apply_strategy`` / ``list_strategies``
 helpers. We load each via ``importlib.util`` under a unique module name so
 the two registries can coexist in the same process without clobbering each
@@ -13,9 +13,10 @@ import sys
 from types import ModuleType
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-_SPOT_DIR = os.path.join(_ROOT, "shared_strategies", "spot")
-_FUTURES_DIR = os.path.join(_ROOT, "shared_strategies", "futures")
-_SHARED_DIR = os.path.join(_ROOT, "shared_strategies")
+_OPEN_DIR = os.path.join(_ROOT, "shared_strategies", "open")
+_SPOT_DIR = os.path.join(_OPEN_DIR, "spot")
+_FUTURES_DIR = os.path.join(_OPEN_DIR, "futures")
+_SHARED_DIR = _OPEN_DIR
 _TOOLS_DIR = os.path.join(_ROOT, "shared_tools")
 
 _PLATFORM_DIRS = {"spot": _SPOT_DIR, "futures": _FUTURES_DIR}

@@ -109,6 +109,52 @@ def test_evaluate_open_close_passes_position_ctx_to_close_only():
     assert decision["signal"] == -1
 
 
+def test_evaluate_open_close_uses_close_registry_before_open_fallback():
+    calls = []
+    df = pd.DataFrame({"close": [100, 106]})
+
+    def get_strategy(name):
+        assert name == "open"
+
+    def apply_strategy(name, data, params=None):
+        calls.append(("open", name, dict(params or {})))
+        result = data.copy()
+        result["signal"] = [0, 0]
+        return result
+
+    def close_evaluate(name, position, market, params=None):
+        calls.append(("close", name, dict(position), dict(market), dict(params or {})))
+        return {"close_fraction": 1.0, "reason": "close:hit"}
+
+    evaluation = evaluate_open_close(
+        apply_strategy,
+        get_strategy,
+        df,
+        positional_strategy="legacy",
+        open_strategy="open",
+        close_strategies=["tiered_tp_pct"],
+        position_side="long",
+        params={"lookback": 5},
+        position_ctx={"side": "long", "avg_cost": 100, "current_quantity": 1.0},
+        close_evaluate=close_evaluate,
+        market_ctx={"mark_price": 106},
+    )
+    decision = finalize_decision(evaluation, position_side="long")
+
+    assert calls == [
+        ("open", "open", {"lookback": 5}),
+        (
+            "close",
+            "tiered_tp_pct",
+            {"side": "long", "avg_cost": 100, "current_quantity": 1.0},
+            {"mark_price": 106},
+            {},
+        ),
+    ]
+    assert decision["close_strategy"] == "tiered_tp_pct"
+    assert decision["signal"] == -1
+
+
 def test_evaluate_open_close_reruns_same_strategy_when_close_params_differ():
     calls = []
     df = pd.DataFrame({"close": [100, 106]})
@@ -140,34 +186,40 @@ def test_evaluate_open_close_reruns_same_strategy_when_close_params_differ():
 
 
 def test_tp_at_pct_position_aware_close_handles_missing_and_hit():
-    strategy_path = Path(__file__).resolve().parents[1] / "shared_strategies" / "spot" / "strategies.py"
-    spec = importlib.util.spec_from_file_location("_spot_strategies_for_tp_test", strategy_path)
+    strategy_path = Path(__file__).resolve().parents[1] / "shared_strategies" / "close" / "registry.py"
+    spec = importlib.util.spec_from_file_location("_close_registry_for_tp_test", strategy_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
-    df = pd.DataFrame({"close": [100, 106]})
-    missing = mod.apply_strategy("tp_at_pct", df)
-    assert missing.iloc[-1]["close_fraction"] == 0.0
-    assert missing.iloc[-1]["reason"] == "noop:missing_position"
+    missing = mod.evaluate("tp_at_pct", {}, {"mark_price": 106}, {})
+    assert missing["close_fraction"] == 0.0
+    assert missing["reason"] == "noop:missing_position"
 
-    legacy = mod.apply_strategy(
+    strategy_path = Path(__file__).resolve().parents[1] / "shared_strategies" / "open" / "spot" / "strategies.py"
+    spec = importlib.util.spec_from_file_location("_spot_strategies_for_tp_test", strategy_path)
+    open_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(open_mod)
+    df = pd.DataFrame({"close": [100, 106]})
+    legacy = open_mod.apply_strategy(
         "sma_crossover",
         df,
         {"side": "long", "avg_cost": 100, "current_quantity": 0.5},
     )
     assert "signal" in legacy.columns
 
-    hit = mod.apply_strategy(
+    hit = mod.evaluate(
         "tp_at_pct",
-        df,
         {
-            "pct": 0.05,
             "side": "long",
             "avg_cost": 100,
             "current_quantity": 0.5,
             "initial_quantity": 1.0,
             "entry_atr": 12.5,
         },
+        {"mark_price": 106},
+        {
+            "pct": 0.05,
+        },
     )
-    assert hit.iloc[-1]["close_fraction"] == 1.0
-    assert hit.iloc[-1]["reason"] == "tp_at_pct:hit"
+    assert hit["close_fraction"] == 1.0
+    assert hit["reason"] == "tp_at_pct:hit"
