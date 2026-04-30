@@ -306,7 +306,8 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
      max_drawdown_pct, portfolio_risk.warn_threshold_pct,
      notional_cap_usd, risk_free_rate, correlation.*, summary_frequency
    Per-strategy: capital, max_drawdown_pct, interval_seconds, htf_filter,
-     params, stop_loss_pct, allow_shorts, theta_harvest.*
+     params, stop_loss_pct, stop_loss_margin_pct, margin_mode, allow_shorts,
+     open_strategy, close_strategies, disable_implicit_close, theta_harvest.*
    Discord/Telegram: enabled, channels, dm_channels, owner_id
    Environment: Discord token, status token, exchange credentials
 
@@ -354,7 +355,7 @@ sudo systemctl kill -s HUP go-trader   # hot reload (no state loss)
 sudo systemctl restart go-trader       # full restart
 ```
 
-Hot reload (`SIGHUP`) re-applies a safe subset: capital, drawdown, intervals, params, stop-loss, theta-harvest, portfolio risk knobs, summary cadence, correlation thresholds, auto-update mode, Discord/Telegram channel maps and tokens. It refuses if the strategy roster, script/args/type/platform, HTF filter, kill-switch identity, or DB path changed, and refuses per-strategy `leverage` changes while positions are open. Logs report the applied diff and any rejection reason; on rejection, fall back to a full restart. The status server reflects the new port immediately.
+Hot reload (`SIGHUP`) re-applies a safe subset: capital, drawdown, intervals, params, stop-loss, theta-harvest, portfolio risk knobs, summary cadence, correlation thresholds, auto-update mode, Discord/Telegram channel maps and tokens. It refuses if the strategy roster, script/args/type/platform, HTF filter, kill-switch identity, or DB path changed, and refuses per-strategy `leverage` or HL `margin_mode` changes while positions are open. It also re-runs the HL perps peer-on-same-coin check (`margin_mode`/`leverage` must agree, at most one peer with a non-zero stop-loss). Logs report the applied diff and any rejection reason; on rejection, fall back to a full restart. The status server reflects the new port immediately.
 
 Common changes:
 
@@ -397,7 +398,12 @@ Per-strategy keys:
 | HTF filter | `htf_filter` | Skips counter-trend signals |
 | Params | `params` | Strategy default overrides |
 | Allow shorts | `allow_shorts` | Required for bidirectional perps strategies |
-| Stop loss | `stop_loss_pct` | Hyperliquid perps only, 0 disabled, max 50 |
+| Stop loss (price %) | `stop_loss_pct` | Hyperliquid perps only. Omit to auto-derive from `max_drawdown_pct` (capped at 50). Explicit `0` opts out. |
+| Stop loss (margin %) | `stop_loss_margin_pct` | Hyperliquid perps only, leverage-aware alternative to `stop_loss_pct`. Mutually exclusive unless both are explicit `0`. |
+| Margin mode | `margin_mode` | Hyperliquid perps only, `isolated` (default) or `cross`. Applied from flat. |
+| Open strategy | `open_strategy` | Override entry strategy name (otherwise from `args[0]`) |
+| Close strategies | `close_strategies` | Ordered list of exit evaluators; max `close_fraction` wins |
+| Disable implicit close | `disable_implicit_close` | Suppress legacy signal-reversal close when no `close_strategies` is set |
 | Theta harvest | `theta_harvest.*` | Options early-exit controls |
 
 Discord/Telegram keys:
@@ -462,6 +468,7 @@ Short-name conventions:
 - OKX: `okx-{strategy_short}-{asset}` for spot/options, `okx-{strategy_short}-{asset}-perp` for perps
 - `triple_ema_bidir` is futures/perps only and needs `"allow_shorts": true`
 - `session_breakout` is futures/perps only; short name `sbo`
+- Multiple HL perps strategies on the same coin share an on-chain position; peer strategies must agree on `margin_mode` and `leverage`, and at most one peer may carry a non-zero stop-loss (#491). Sub-account isolation is the only correct path for fully independent direction/leverage/margin per strategy.
 
 ---
 
