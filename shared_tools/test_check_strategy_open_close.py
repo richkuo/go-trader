@@ -8,7 +8,12 @@ import pandas as pd
 
 
 def _load_check_strategy():
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_strategy.py")
+    script_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..",
+        "shared_scripts",
+        "check_strategy.py",
+    )
     spec = importlib.util.spec_from_file_location("check_strategy_open_close_test", script_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

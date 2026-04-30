@@ -101,6 +101,6 @@ register(
 
 register(
     "tp_at_pct",
-    "Position-aware test close; closes when mark reaches a profit percentage from avg cost",
+    "Position-aware percentage take-profit close",
     {"pct": 0.03},
 )(tp_at_pct_evaluate)
