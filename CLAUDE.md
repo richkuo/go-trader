@@ -102,6 +102,7 @@ Inline `pull_request_review_comment` threads are exempt from this format; this r
 - Restart: `systemctl restart go-trader`. Service file changes: `systemctl daemon-reload && systemctl restart go-trader`.
 - Config-only changes (no rebuild needed): `kill -HUP $(pgrep go-trader)` — `config_reload.go` re-reads `cfg.ConfigPath` without dropping state or sessions.
 - Python script changes: take effect next scheduler cycle (no rebuild).
+- **Post-update agent protocol:** after `git pull` / auto-update / when the operator says "I just updated", follow `SKILL.md` → "Post-Update Agent Protocol" — diff `<running-version>..HEAD`, classify each commit (auto-migration / runtime-default / opt-in / open-position-constrained / no-op), read `config.json` + open positions from `state.db`, and prompt per item using the template before applying. The binary's `runConfigMigrationDM` only covers `configFieldRegistry` (≤ v3); everything newer (v6/v7/v8/v10 deprecations, trailing stop #502, margin_mode default #486, peer normalization #494, open/close composition #483) must be surfaced by the agent.
 
 ## Backtest
 - `.venv/bin/python3 backtest/run_backtest.py --strategy <n> --symbol BTC/USDT --timeframe 1h --mode single`

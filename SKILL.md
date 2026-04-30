@@ -200,6 +200,64 @@ journalctl -u go-trader -f | grep -i "\[update\]"
 
 ---
 
+## Post-Update Agent Protocol
+
+When an agent is invoked after the operator updates go-trader (manual `git pull`, auto-update restart, or the operator says "I just updated" / "what changed"), the agent must walk the operator through anything the new commits can affect on their existing config, strategies, and open positions — and prompt before applying any opt-in.
+
+The binary's built-in `runConfigMigrationDM` only handles fields registered in `configFieldRegistry` (currently up through v3). Newer config-version bumps and opt-in features land silently unless an agent surfaces them. This section closes that gap.
+
+### Trigger
+
+Run this protocol when ANY of the following is true:
+- The operator says "I updated", "I just pulled", "what's new", or asks about migration.
+- `git log -1 --format=%cI` is newer than the running binary's version (`./go-trader --version` or `curl -s localhost:8099/health` → `version`).
+- `git status` shows the working tree is clean and `git rev-list --count <running-version>..HEAD` > 0.
+
+### Steps
+
+1. **Identify the diff.** `git log --oneline <running-version>..HEAD -- scheduler/ shared_scripts/ shared_strategies/ platforms/`. If the running version is unknown, ask the operator which tag/SHA was last deployed, or fall back to the last 30 commits.
+2. **Classify each commit** into one of:
+   - **Auto-migration** — `CurrentConfigVersion` bumped; `MigrateConfig` rewrites the JSON on next start. Summarize the change; no prompt.
+   - **Runtime default change** — behavior shifts on existing strategies without a config edit (e.g., HL stop-loss auto-derive, margin mode default). Prompt: confirm, or set explicit opt-out per strategy.
+   - **New opt-in field** — feature is dormant until the operator adds a field (e.g., `trailing_stop_pct`, `open_strategy`, `close_strategies`). Prompt per affected strategy.
+   - **Open-position constraint** — change requires flat positions to apply (e.g., `margin_mode`, exchange `leverage`). List affected strategies; warn the operator and skip until flat.
+   - **Internal/no-op** — refactors, tests, docs. Mention briefly, no prompt.
+3. **Read current state.** Load `scheduler/config.json` and query `scheduler/state.db` for open positions per strategy:
+   ```sql
+   SELECT strategy_id, symbol, quantity, side FROM positions WHERE quantity > 0;
+   SELECT strategy_id, symbol, contracts, action FROM option_positions WHERE contracts > 0;
+   ```
+4. **Prompt per item.** For each runtime-default and opt-in change, list the affected strategies and ask the operator to choose. Default to no change if they decline. For runtime defaults, also offer to write the explicit opt-out value so the new default never silently kicks in later.
+5. **Apply via SIGHUP-safe edits.** When changes are SIGHUP-compatible (see SKILL.md "Hot reload"), edit `scheduler/config.json` and run `kill -HUP $(pgrep go-trader)`. For changes that are NOT hot-reloadable (strategy roster, kill-switch identity, leverage/margin_mode with positions open, DB path) tell the operator a full restart is required and confirm before proceeding.
+6. **Verify.** After SIGHUP, tail the log for `[reload]` lines and confirm the diff was accepted; on rejection, show the rejection reason and offer a full restart.
+
+### Required prompt template
+
+For each item, the agent must ask in this shape:
+
+> Change: `<short description>` (PR #<N>)
+> Affects: `<strategy IDs>` (and any open positions: `<symbol qty side>`)
+> Default if you do nothing: `<what happens silently>`
+> Options: 1) accept the new default, 2) opt out by setting `<field> = <value>`, 3) opt in to the new feature with `<field> = <value>` (requires flat? Y/N).
+> Your choice?
+
+Never apply runtime-default changes silently when the operator hasn't been shown the affected strategies. "Auto" means automatic JSON rewrite, not automatic behavior change.
+
+### Reference: known categories
+
+Use the commit message and PR number to classify. When in doubt, treat as runtime default and prompt.
+
+| Category | Examples |
+| --- | --- |
+| Auto-migration | `config_version` bump, deprecated field removal, silent field copy (e.g. v10 `sizing_leverage` ← `leverage`) |
+| Runtime default | HL stop-loss auto-derive (#493), HL margin mode default isolated (#486), peer normalization (#494) |
+| Opt-in field | trailing stop (#502), open/close composition (#483), `stop_loss_margin_pct` (#490) |
+| Open-position constraint | `margin_mode`, exchange `leverage`, kill-switch identity changes |
+
+When this list looks stale relative to recent commits, regenerate it from `git log --oneline -50` before prompting.
+
+---
+
 ## Status
 
 Default status port is `8099`. Override with `--status-port <port>` or `status_port` in config. If the port is busy, the server tries the next ports for up to 5 attempts; check logs for `[server] Status endpoint at http://localhost:<port>/status`.
