@@ -200,6 +200,42 @@ func TestApplyHotReloadConfigRejectsNonReloadableStrategyField(t *testing.T) {
 	}
 }
 
+func TestApplyHotReloadConfigAllowsOpenCloseCompositionChanges(t *testing.T) {
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "s1", Type: "spot", Platform: "binanceus", Script: "x.py",
+		Args: []string{"triple_ema", "BTC/USDT", "1h"}, Capital: 100, MaxDrawdownPct: 10,
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "s1", Type: "spot", Platform: "binanceus", Script: "x.py",
+		Args: []string{"triple_ema", "BTC/USDT", "1h"}, Capital: 100, MaxDrawdownPct: 10,
+		OpenStrategy: "triple_ema", CloseStrategies: []string{"tp_at_pct"}, DisableImplicitClose: true,
+	}})
+
+	changes, err := applyHotReloadConfig(cfg, next, NewAppState(), nil, nil)
+	if err != nil {
+		t.Fatalf("applyHotReloadConfig returned error: %v", err)
+	}
+	joined := strings.Join(changes, "\n")
+	for _, want := range []string{
+		"strategy[s1].open_strategy:",
+		"strategy[s1].close_strategies:",
+		"strategy[s1].disable_implicit_close:",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("changes missing %q:\n%s", want, joined)
+		}
+	}
+	if cfg.Strategies[0].OpenStrategy != "triple_ema" {
+		t.Fatalf("OpenStrategy = %q, want triple_ema", cfg.Strategies[0].OpenStrategy)
+	}
+	if len(cfg.Strategies[0].CloseStrategies) != 1 || cfg.Strategies[0].CloseStrategies[0] != "tp_at_pct" {
+		t.Fatalf("CloseStrategies = %#v, want [tp_at_pct]", cfg.Strategies[0].CloseStrategies)
+	}
+	if !cfg.Strategies[0].DisableImplicitClose {
+		t.Fatal("DisableImplicitClose = false, want true")
+	}
+}
+
 func TestApplyHotReloadConfigRejectsLeverageChangeWithOpenPerpsPosition(t *testing.T) {
 	cfg := minimalReloadConfig([]StrategyConfig{{
 		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2,

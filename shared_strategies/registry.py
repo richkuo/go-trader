@@ -332,8 +332,16 @@ def tema_cross_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: int
     bullish_cross = (result["ema_short"] > result["ema_mid"]) & (
         result["ema_short"].shift(1) <= result["ema_mid"].shift(1)
     )
-    result["position"] = np.where(uptrend & bullish_cross, 1, 0)
-    result["signal"] = result["position"].diff()
+    bearish_cross = (result["ema_short"] < result["ema_mid"]) & (
+        result["ema_short"].shift(1) >= result["ema_mid"].shift(1)
+    )
+    # Position persists between cross events: enter long on bullish cross while uptrend,
+    # exit on the next bearish cross. Forward-fill carries the state across silent bars.
+    raw = pd.Series(np.nan, index=result.index)
+    raw[uptrend & bullish_cross] = 1
+    raw[bearish_cross] = 0
+    result["position"] = raw.ffill().fillna(0).astype(int)
+    result["signal"] = result["position"].diff().fillna(0).astype(int)
     return result
 
 
@@ -356,9 +364,16 @@ def tema_cross_bd_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: 
     bearish_cross = (result["ema_short"] < result["ema_mid"]) & (
         result["ema_short"].shift(1) >= result["ema_mid"].shift(1)
     )
-    result["position"] = np.where(uptrend & bullish_cross, 1,
-                                 np.where(downtrend & bearish_cross, -1, 0))
-    result["signal"] = result["position"].diff().clip(-1, 1)
+    # Position persists between cross events; opposite-direction cross with confirming
+    # trend flips the position, otherwise it flattens on the unconfirmed cross.
+    raw = pd.Series(np.nan, index=result.index)
+    raw[uptrend & bullish_cross] = 1
+    raw[downtrend & bearish_cross] = -1
+    raw[(~uptrend) & bullish_cross] = 0
+    raw[(~downtrend) & bearish_cross] = 0
+    result["position"] = raw.ffill().fillna(0).astype(int)
+    # A direct long→short flip yields diff == -2; clamp so downstream sees {-1, 0, 1}.
+    result["signal"] = result["position"].diff().fillna(0).clip(-1, 1).astype(int)
     return result
 
 
@@ -961,6 +976,66 @@ def session_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return session_breakout_core(df, **params)
 
 
+def _position_float(params: dict, key: str) -> float:
+    try:
+        return float(params.get(key, 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _position_close_frame(df: pd.DataFrame, close_fraction: float, reason: str) -> pd.DataFrame:
+    result = df.tail(1).copy()
+    if result.empty:
+        result = pd.DataFrame({"close": [0.0]})
+    result["signal"] = 0
+    result["close_fraction"] = close_fraction
+    result["reason"] = reason
+    return result
+
+
+@register(
+    "tp_at_pct",
+    "Position-aware test close — close when mark reaches a profit percentage from avg cost",
+    {"pct": 0.03},
+)
+def tp_at_pct_strategy(df: pd.DataFrame, pct: float = 0.03, **params) -> pd.DataFrame:
+    """Reference close evaluator for position-aware wiring tests (#496).
+
+    Entry ATR is available only when the entry strategy's result includes an
+    ``atr`` column; check scripts copy that last-row value into ``entry_atr``.
+    ATR-dependent close evaluators should return a no-op reason when it is 0.
+    """
+    avg_cost = _position_float(params, "avg_cost")
+    current_quantity = _position_float(params, "current_quantity")
+    initial_quantity = _position_float(params, "initial_quantity")
+    entry_atr = _position_float(params, "entry_atr")
+    side = str(params.get("side", "") or "").strip().lower()
+    _ = (initial_quantity, entry_atr)  # Read for the canonical wrapper shape; unused by this simple TP.
+
+    if df.empty or "close" not in df.columns:
+        return _position_close_frame(df, 0.0, "noop:missing_mark_price")
+    if avg_cost <= 0 or current_quantity <= 0 or side not in ("long", "short"):
+        return _position_close_frame(df, 0.0, "noop:missing_position")
+    try:
+        mark_price = float(df["close"].iloc[-1])
+    except (TypeError, ValueError):
+        return _position_close_frame(df, 0.0, "noop:missing_mark_price")
+    if mark_price <= 0:
+        return _position_close_frame(df, 0.0, "noop:missing_mark_price")
+
+    try:
+        threshold = max(float(pct), 0.0)
+    except (TypeError, ValueError):
+        threshold = 0.0
+    if side == "long":
+        pnl_pct = (mark_price - avg_cost) / avg_cost
+    else:
+        pnl_pct = (avg_cost - mark_price) / avg_cost
+    if pnl_pct >= threshold:
+        return _position_close_frame(df, 1.0, "tp_at_pct:hit")
+    return _position_close_frame(df, 0.0, "noop:not_hit")
+
+
 # ─────────────────────────────────────────────
 # Per-platform display order.
 # These lists MUST match the legacy registration order in each shim so
@@ -976,6 +1051,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "donchian_breakout", "tema_cross",
+        "tp_at_pct",
     ],
     "futures": [
         "sma_crossover", "ema_crossover", "bollinger_bands", "volume_weighted",
@@ -985,6 +1061,6 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "delta_neutral_funding",
-        "donchian_breakout", "session_breakout",
+        "donchian_breakout", "session_breakout", "tp_at_pct",
     ],
 }

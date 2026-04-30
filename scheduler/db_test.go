@@ -1070,6 +1070,10 @@ func TestMigrateSchema_AddsExchangeColumns(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO strategies (id, type) VALUES ('test', 'perps')`); err != nil {
 		t.Fatalf("insert strategy: %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO positions (strategy_id, symbol, quantity, avg_cost, side, multiplier, owner_strategy_id)
+		VALUES ('test', 'BTC', 0.5, 40000, 'long', 1, 'test')`); err != nil {
+		t.Fatalf("insert old position: %v", err)
+	}
 	if _, err := db.Exec(`INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details)
 		VALUES ('test', '2026-01-01T00:00:00Z', 'BTC', 'buy', 0.1, 50000, 5000, 'perps', 'old trade')`); err != nil {
 		t.Fatalf("insert old trade: %v", err)
@@ -1100,6 +1104,16 @@ func TestMigrateSchema_AddsExchangeColumns(t *testing.T) {
 	}
 	if len(strat.TradeHistory) != 1 {
 		t.Fatalf("trade count = %d, want 1", len(strat.TradeHistory))
+	}
+	pos := strat.Positions["BTC"]
+	if pos == nil {
+		t.Fatal("migrated position missing")
+	}
+	if pos.InitialQuantity != 0 {
+		t.Errorf("migrated position InitialQuantity = %g, want 0", pos.InitialQuantity)
+	}
+	if pos.EntryATR != 0 {
+		t.Errorf("migrated position EntryATR = %g, want 0", pos.EntryATR)
 	}
 	tr := strat.TradeHistory[0]
 	if tr.ExchangeOrderID != "" {

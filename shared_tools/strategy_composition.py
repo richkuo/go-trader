@@ -8,6 +8,8 @@ separately, then compose them back to the existing signal contract.
 
 from __future__ import annotations
 
+import json
+import inspect
 from dataclasses import dataclass
 from typing import Callable, Iterable, Optional
 
@@ -16,6 +18,7 @@ import pandas as pd
 
 VALID_POSITION_SIDES = {"", "long", "short"}
 VALID_OPEN_ACTIONS = {"long", "short", "none"}
+POSITION_CONTEXT_PARAM_KEYS = {"side", "avg_cost", "current_quantity", "initial_quantity", "entry_atr"}
 
 
 @dataclass
@@ -145,6 +148,42 @@ def _last_close_fraction(result_df: pd.DataFrame, signal: int, position_side: st
     return legacy_close_fraction_from_signal(signal, position_side)
 
 
+def _cache_key_params(params: Optional[dict]) -> str:
+    if params is None:
+        return ""
+    try:
+        return json.dumps(params, sort_keys=True, default=str)
+    except TypeError:
+        return repr(sorted((str(k), repr(v)) for k, v in params.items()))
+
+
+def _merge_close_params(base: Optional[dict], position_ctx: Optional[dict]) -> Optional[dict]:
+    if not position_ctx:
+        return base
+    merged = dict(base or {})
+    merged.update(position_ctx)
+    return merged
+
+
+def strip_unsupported_position_context(fn, params: dict) -> dict:
+    if not params:
+        return params
+    sig = inspect.signature(fn)
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+        return params
+    accepted = {
+        name for name, p in sig.parameters.items()
+        if name != "df" and p.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+    }
+    return {
+        key: value for key, value in params.items()
+        if key in accepted or key not in POSITION_CONTEXT_PARAM_KEYS
+    }
+
+
 def evaluate_open_close(
     apply_strategy: Callable[[str, pd.DataFrame, Optional[dict]], pd.DataFrame],
     get_strategy: Callable[[str], object],
@@ -155,17 +194,18 @@ def evaluate_open_close(
     position_side: str,
     disable_implicit_close: bool,
     params: Optional[dict] = None,
+    position_ctx: Optional[dict] = None,
 ) -> OpenCloseEvaluation:
     open_name = (open_strategy or positional_strategy).strip()
     close_names = effective_close_strategies(
         positional_strategy, open_name, close_strategies, disable_implicit_close
     )
-    cache: dict[tuple[str, bool], pd.DataFrame] = {}
+    cache: dict[tuple[str, str], pd.DataFrame] = {}
 
     def run(name: str, run_params: Optional[dict]) -> pd.DataFrame:
         if not name:
             raise ValueError("strategy name must not be empty")
-        key = (name, run_params is not None)
+        key = (name, _cache_key_params(run_params))
         if key not in cache:
             get_strategy(name)
             cache[key] = apply_strategy(name, df, run_params)
@@ -178,7 +218,8 @@ def evaluate_open_close(
         # Until per-close params blocks exist, only the implicit-self close
         # shares the open strategy's params. Distinct close strategies run with
         # their own defaults so open-only params do not break another function.
-        close_params = params if name == open_name else None
+        base_close_params = params if name == open_name else None
+        close_params = _merge_close_params(base_close_params, position_ctx)
         result = run(name, close_params)
         signal = _last_signal(result)
         close_evals.append(CloseEvaluation(

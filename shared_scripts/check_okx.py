@@ -44,6 +44,23 @@ def _make_dataframe(candles):
     return df
 
 
+def _position_ctx_from_args(args):
+    ctx = {}
+    side = (args.position_side or "").lower()
+    if side:
+        ctx["side"] = side
+    for attr, key in (
+        ("position_avg_cost", "avg_cost"),
+        ("position_qty", "current_quantity"),
+        ("position_initial_qty", "initial_quantity"),
+        ("position_entry_atr", "entry_atr"),
+    ):
+        value = getattr(args, attr, None)
+        if value is not None:
+            ctx[key] = value
+    return ctx
+
+
 def _float_or_none(value):
     if value is None:
         return None
@@ -66,7 +83,7 @@ def _extract_fee(response):
 def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False,
                      inst_type="swap", strategy_params_override=None,
                      open_strategy=None, close_strategies=None,
-                     disable_implicit_close=False, position_side=""):
+                     disable_implicit_close=False, position_side="", position_ctx=None):
     """Run strategy signal check using OKX OHLCV data."""
     try:
         from adapter import OKXExchangeAdapter
@@ -140,6 +157,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 position_side,
                 disable_implicit_close,
                 strategy_params or None,
+                position_ctx,
             )
             result_df = evaluation.open_result_df
             signal = evaluation.open_signal
@@ -318,13 +336,18 @@ def main():
         parser.add_argument("--close-strategies", default=None)
         parser.add_argument("--disable-implicit-close", action="store_true", default=False)
         parser.add_argument("--position-side", default="")
+        parser.add_argument("--position-avg-cost", type=float, default=None)
+        parser.add_argument("--position-qty", type=float, default=None)
+        parser.add_argument("--position-initial-qty", type=float, default=None)
+        parser.add_argument("--position-entry-atr", type=float, default=None)
         args = parser.parse_args()
         params_override = json.loads(args.params) if args.params else None
+        position_ctx = _position_ctx_from_args(args)
         run_signal_check(
             args.strategy, args.symbol, args.timeframe, args.mode,
             args.htf_filter, args.inst_type, params_override,
             args.open_strategy, args.close_strategies,
-            args.disable_implicit_close, args.position_side,
+            args.disable_implicit_close, args.position_side, position_ctx,
         )
 
 
