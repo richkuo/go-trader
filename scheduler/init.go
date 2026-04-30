@@ -302,9 +302,9 @@ type InitOptions struct {
 	SpotCapital             float64
 	OptionsCapital          float64
 	PerpsCapital            float64
-	PerpsLeverage           float64 // perps leverage multiplier (default 1 = no leverage) (#254)
-	HLStopLossPct           float64 // HL perps only: per-trade stop-loss % from entry (0 = disabled) (#412)
-	HLStopLossMarginPct     float64 // HL perps only: per-trade stop-loss as % of deployed margin (0 = disabled); mutually exclusive with HLStopLossPct (#487)
+	PerpsLeverage           float64  // perps leverage multiplier (default 1 = no leverage) (#254)
+	HLStopLossPct           *float64 // HL perps only: per-trade stop-loss % from entry. nil = auto-derive from MaxDrawdownPct (#484); explicit 0 = disabled; >0 = override (#412)
+	HLStopLossMarginPct     *float64 // HL perps only: per-trade stop-loss as % of deployed margin. nil = auto-derive; explicit 0 = disabled; mutually exclusive with HLStopLossPct (#487, #484)
 	SpotDrawdown            float64
 	OptionsDrawdown         float64
 	PerpsDrawdown           float64
@@ -501,9 +501,9 @@ func generateConfig(opts InitOptions) *Config {
 					IntervalSeconds:   3600,
 					Leverage:          perpsLeverage,
 					AllowShorts:       allowShorts,
-					StopLossPct:       opts.HLStopLossPct,
-					StopLossMarginPct: opts.HLStopLossMarginPct,
-					MarginMode:        "isolated", // #486: hard-cap loss per position; cross would let one strategy drain another's margin
+					StopLossPct:       opts.HLStopLossPct,       // *float64 — nil falls through to MaxDrawdownPct (#484)
+					StopLossMarginPct: opts.HLStopLossMarginPct, // *float64 — nil falls through (#484/#487)
+					MarginMode:        "isolated",               // #486: hard-cap loss per position; cross would let one strategy drain another's margin
 				})
 			}
 		}
@@ -1084,9 +1084,9 @@ func runInit(args []string) int {
 	spotDrawdown := 5.0
 	optionsDrawdown := 10.0
 	perpsDrawdown := 5.0
-	perpsLeverage := 1.0       // #254 default: 1x (no leverage); user can edit config
-	hlStopLossPct := 0.0       // #412 default: disabled; prompted below whenever HL perps is enabled (paper or live)
-	hlStopLossMarginPct := 0.0 // #487 default: disabled; alternative leverage-aware framing
+	perpsLeverage := 1.0             // #254 default: 1x (no leverage); user can edit config
+	var hlStopLossPct *float64       // #484 default: nil → auto-derive from MaxDrawdownPct; set via wizard for an explicit override or opt-out
+	var hlStopLossMarginPct *float64 // #487/#484 same semantics — nil = auto, explicit 0 = disabled, >0 = leverage-aware override
 	robinhoodCapital := 500.0
 	robinhoodDrawdown := 5.0
 	lunoCapital := 500.0
@@ -1133,27 +1133,32 @@ func runInit(args []string) int {
 		portfolioWarnPct = p.FloatRange("Portfolio warn threshold % (of kill switch)", 60, 0, 100)
 	}
 
-	// #412 / #487: per-trade stop-loss is HL-only today and is a no-op in paper
-	// mode (no on-chain trigger order is placed), but we still prompt for paper
-	// configs so operators iterating in paper and later flipping to live by
-	// editing config don't silently lose the SL — the field is already set.
-	// Default 0 disables it; HL caps trigger orders at 1000/account (scales to
-	// 5000 with volume) and we start disabled by default until the operator
-	// explicitly opts in (#479). Two equivalent framings:
+	// #484: HL perps per-trade SL is auto-derived from each strategy's
+	// max_drawdown_pct by default (capped at 50%), so a strategy with
+	// max_drawdown_pct=5 opens every position with a 5% reduce-only trigger
+	// without any extra knob. Operators can still override with an explicit
+	// price % or leverage-aware margin %. The "Disabled" option exists for
+	// strategies that intentionally want no exchange-side stop.
 	//   - price %:  trigger when price moves X% against entry (#412)
 	//   - margin %: trigger when unrealized loss reaches X% of deployed
 	//               margin; auto-rescales when leverage changes (#487)
 	if enablePerps {
 		slOptions := []string{
-			"Disabled",
+			"Auto (derive from per-strategy max_drawdown_pct)",
 			"Price % from entry (e.g. 1.0 = trigger on 1% adverse move)",
 			"% of deployed margin (leverage-aware; e.g. 20 = trigger on 20% margin loss)",
+			"Explicitly disabled (no exchange-side stop-loss)",
 		}
 		switch p.Choice("HL perps per-trade stop-loss framing", slOptions, 0) {
 		case 1:
-			hlStopLossPct = p.FloatRange("HL perps per-trade stop-loss % from entry", 1, 0, 50)
+			v := p.FloatRange("HL perps per-trade stop-loss % from entry", 1, 0, 50)
+			hlStopLossPct = &v
 		case 2:
-			hlStopLossMarginPct = p.FloatRange("HL perps per-trade stop-loss % of deployed margin", 20, 0, 100)
+			v := p.FloatRange("HL perps per-trade stop-loss % of deployed margin", 20, 0, 100)
+			hlStopLossMarginPct = &v
+		case 3:
+			zero := 0.0
+			hlStopLossPct = &zero
 		}
 	}
 

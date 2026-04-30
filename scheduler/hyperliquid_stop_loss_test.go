@@ -113,11 +113,12 @@ func TestParseHyperliquidExecuteOutput_ErrorJSONPreserved(t *testing.T) {
 }
 
 func TestStrategyConfig_StopLossPctJSON(t *testing.T) {
+	v := 3.5
 	sc := StrategyConfig{
 		ID:          "hl-donch-btc",
 		Platform:    "hyperliquid",
 		Type:        "perps",
-		StopLossPct: 3.5,
+		StopLossPct: &v,
 	}
 	b, err := json.Marshal(sc)
 	if err != nil {
@@ -127,13 +128,28 @@ func TestStrategyConfig_StopLossPctJSON(t *testing.T) {
 	if err := json.Unmarshal(b, &round); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if round.StopLossPct != 3.5 {
+	if round.StopLossPct == nil || *round.StopLossPct != 3.5 {
 		t.Errorf("round-trip StopLossPct: got %v, want 3.5", round.StopLossPct)
 	}
-	// omitempty check: default-value config must not emit the field.
+	// omitempty check: nil pointer must not emit the field.
 	b2, _ := json.Marshal(StrategyConfig{ID: "x", Platform: "hyperliquid", Type: "perps"})
 	if containsKey(b2, "stop_loss_pct") {
-		t.Errorf("zero StopLossPct should be omitted; got %s", b2)
+		t.Errorf("nil StopLossPct should be omitted; got %s", b2)
+	}
+	// #484: pointer-vs-omitted distinction — explicit 0 must round-trip and
+	// re-emit, since it carries the operator's "disabled" semantic.
+	zero := 0.0
+	scZero := StrategyConfig{ID: "x", Platform: "hyperliquid", Type: "perps", StopLossPct: &zero}
+	b3, _ := json.Marshal(scZero)
+	if !containsKey(b3, "stop_loss_pct") {
+		t.Errorf("explicit zero StopLossPct must be preserved in JSON; got %s", b3)
+	}
+	var roundZero StrategyConfig
+	if err := json.Unmarshal(b3, &roundZero); err != nil {
+		t.Fatalf("unmarshal zero: %v", err)
+	}
+	if roundZero.StopLossPct == nil || *roundZero.StopLossPct != 0 {
+		t.Errorf("round-trip explicit-zero StopLossPct: got %v, want 0 (non-nil)", roundZero.StopLossPct)
 	}
 }
 
@@ -246,7 +262,8 @@ func TestIsHLOpenOrderCapRejection(t *testing.T) {
 func TestValidateConfig_StopLossPctBounds(t *testing.T) {
 	// Issue 421 (review point 4): hand-edited configs with out-of-range
 	// stop_loss_pct must fail validation rather than silently break the
-	// safety feature.
+	// safety feature. Pointer-aware (#484): explicit 0 is the operator
+	// opt-out, valid; nil = field omitted (auto-derive path).
 	cases := []struct {
 		name      string
 		pct       float64
@@ -254,7 +271,7 @@ func TestValidateConfig_StopLossPctBounds(t *testing.T) {
 		typ       string
 		wantError bool
 	}{
-		{"zero ok", 0, "hyperliquid", "perps", false},
+		{"explicit zero ok (disabled)", 0, "hyperliquid", "perps", false},
 		{"in range", 5, "hyperliquid", "perps", false},
 		{"max boundary", 50, "hyperliquid", "perps", false},
 		{"too high", 200, "hyperliquid", "perps", true},
@@ -264,6 +281,7 @@ func TestValidateConfig_StopLossPctBounds(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			pct := c.pct
 			cfg := &Config{
 				IntervalSeconds: 60,
 				Strategies: []StrategyConfig{
@@ -274,7 +292,7 @@ func TestValidateConfig_StopLossPctBounds(t *testing.T) {
 						Script:         "shared_scripts/check_hyperliquid.py",
 						Capital:        1000,
 						MaxDrawdownPct: 10,
-						StopLossPct:    c.pct,
+						StopLossPct:    &pct,
 					},
 				},
 				PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
@@ -611,24 +629,39 @@ func TestForceCloseHyperliquidLive_CancelsAllSharedCoinStopLossOIDs(t *testing.T
 	}
 }
 
-// #487: EffectiveStopLossPct returns the price % to send to the HL execute
-// helper. It must (a) honor an explicit StopLossPct, (b) derive price % from
-// StopLossMarginPct / Leverage when only the margin form is set, (c) prefer
-// StopLossPct when both are set (validation rejects this combo before runtime,
-// but the helper must stay deterministic), and (d) fail safe at 0 when the
-// margin path lacks a positive leverage divisor.
+// #487/#484: EffectiveStopLossPct returns the price % to send to the HL execute
+// helper. Resolution order: explicit StopLossPct → StopLossMarginPct/Leverage →
+// MaxDrawdownPct fallback (capped at MaxAutoStopLossPct). Each pointer field
+// distinguishes nil (omitted, fall through) from explicit 0 (disabled).
+// Non-HL/non-perps strategies always return 0.
 func TestEffectiveStopLossPct(t *testing.T) {
+	hlPerps := func(sc StrategyConfig) StrategyConfig {
+		sc.Platform = "hyperliquid"
+		sc.Type = "perps"
+		return sc
+	}
+	pf := func(v float64) *float64 { return &v }
 	cases := []struct {
 		name string
 		sc   StrategyConfig
 		want float64
 	}{
-		{"unset", StrategyConfig{Leverage: 5}, 0},
-		{"explicit pct", StrategyConfig{StopLossPct: 1.5, Leverage: 5}, 1.5},
-		{"margin pct at 20x", StrategyConfig{StopLossMarginPct: 20, Leverage: 20}, 1.0},
-		{"margin pct at 10x rescales", StrategyConfig{StopLossMarginPct: 20, Leverage: 10}, 2.0},
-		{"margin pct without leverage fails safe", StrategyConfig{StopLossMarginPct: 20}, 0},
-		{"explicit wins over margin", StrategyConfig{StopLossPct: 3, StopLossMarginPct: 20, Leverage: 10}, 3},
+		{"non-HL returns 0", StrategyConfig{Platform: "okx", Type: "perps", StopLossPct: pf(1.5)}, 0},
+		{"non-perps returns 0", StrategyConfig{Platform: "hyperliquid", Type: "spot", StopLossPct: pf(1.5)}, 0},
+		{"unset and no drawdown", hlPerps(StrategyConfig{Leverage: 5}), 0},
+		{"explicit pct", hlPerps(StrategyConfig{StopLossPct: pf(1.5), Leverage: 5}), 1.5},
+		{"explicit zero is disabled (no fallback)", hlPerps(StrategyConfig{StopLossPct: pf(0), MaxDrawdownPct: 5, Leverage: 5}), 0},
+		{"margin pct at 20x", hlPerps(StrategyConfig{StopLossMarginPct: pf(20), Leverage: 20}), 1.0},
+		{"margin pct at 10x rescales", hlPerps(StrategyConfig{StopLossMarginPct: pf(20), Leverage: 10}), 2.0},
+		{"margin pct without leverage fails safe", hlPerps(StrategyConfig{StopLossMarginPct: pf(20)}), 0},
+		{"explicit-zero margin disables (no fallback)", hlPerps(StrategyConfig{StopLossMarginPct: pf(0), MaxDrawdownPct: 7, Leverage: 5}), 0},
+		{"explicit wins over margin", hlPerps(StrategyConfig{StopLossPct: pf(3), StopLossMarginPct: pf(20), Leverage: 10}), 3},
+		// #484 fallback path.
+		{"drawdown fallback when both nil", hlPerps(StrategyConfig{MaxDrawdownPct: 5, Leverage: 5}), 5},
+		{"drawdown fallback capped at 50", hlPerps(StrategyConfig{MaxDrawdownPct: 60, Leverage: 5}), 50},
+		{"drawdown fallback at cap boundary", hlPerps(StrategyConfig{MaxDrawdownPct: 50, Leverage: 5}), 50},
+		{"drawdown fallback ignored when explicit set", hlPerps(StrategyConfig{StopLossPct: pf(2), MaxDrawdownPct: 10}), 2},
+		{"margin fallthrough beats drawdown", hlPerps(StrategyConfig{StopLossMarginPct: pf(20), MaxDrawdownPct: 5, Leverage: 20}), 1.0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -647,47 +680,54 @@ func TestValidateConfig_StopLossMarginPctBounds(t *testing.T) {
 	cases := []struct {
 		name      string
 		marginPct float64
+		setMargin bool
 		pricePct  float64
+		setPrice  bool
 		leverage  float64
 		platform  string
 		typ       string
 		wantError bool
 	}{
-		{"zero (disabled)", 0, 0, 10, "hyperliquid", "perps", false},
-		{"in range", 20, 0, 10, "hyperliquid", "perps", false},
-		{"max boundary at 10x leverage", 100, 0, 10, "hyperliquid", "perps", false},
-		{"too high", 150, 0, 10, "hyperliquid", "perps", true},
-		{"negative", -1, 0, 10, "hyperliquid", "perps", true},
-		{"non-HL platform", 20, 0, 10, "okx", "perps", true},
-		{"non-perps type", 20, 0, 10, "hyperliquid", "spot", true},
-		{"mutually exclusive", 20, 1, 10, "hyperliquid", "perps", true},
+		{"explicit zero disables", 0, true, 0, false, 10, "hyperliquid", "perps", false},
+		{"in range", 20, true, 0, false, 10, "hyperliquid", "perps", false},
+		{"max boundary at 10x leverage", 100, true, 0, false, 10, "hyperliquid", "perps", false},
+		{"too high", 150, true, 0, false, 10, "hyperliquid", "perps", true},
+		{"negative", -1, true, 0, false, 10, "hyperliquid", "perps", true},
+		{"non-HL platform", 20, true, 0, false, 10, "okx", "perps", true},
+		{"non-perps type", 20, true, 0, false, 10, "hyperliquid", "spot", true},
+		{"mutually exclusive", 20, true, 1, true, 10, "hyperliquid", "perps", true},
 		// Derived price stop must mirror the #421 [0, 50] cap: at leverage=1
 		// a marginPct of 80 implies an 80% price stop, which would land the
 		// HL trigger at entry×0 (long) or entry×1.8 (short) and silently
 		// never fire.
-		{"derived price stop exceeds 50% cap", 80, 0, 1, "hyperliquid", "perps", true},
+		{"derived price stop exceeds 50% cap", 80, true, 0, false, 1, "hyperliquid", "perps", true},
 		// Edge of the derived cap: marginPct=50 at leverage=1 is exactly 50%
 		// and must be accepted (matches the inclusive #421 upper bound).
-		{"derived price stop at 50% cap", 50, 0, 1, "hyperliquid", "perps", false},
+		{"derived price stop at 50% cap", 50, true, 0, false, 1, "hyperliquid", "perps", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			sc := StrategyConfig{
+				ID:             "test",
+				Type:           c.typ,
+				Platform:       c.platform,
+				Script:         "shared_scripts/check_hyperliquid.py",
+				Capital:        1000,
+				MaxDrawdownPct: 10,
+				Leverage:       c.leverage,
+			}
+			if c.setMargin {
+				m := c.marginPct
+				sc.StopLossMarginPct = &m
+			}
+			if c.setPrice {
+				p := c.pricePct
+				sc.StopLossPct = &p
+			}
 			cfg := &Config{
 				IntervalSeconds: 60,
-				Strategies: []StrategyConfig{
-					{
-						ID:                "test",
-						Type:              c.typ,
-						Platform:          c.platform,
-						Script:            "shared_scripts/check_hyperliquid.py",
-						Capital:           1000,
-						MaxDrawdownPct:    10,
-						Leverage:          c.leverage,
-						StopLossPct:       c.pricePct,
-						StopLossMarginPct: c.marginPct,
-					},
-				},
-				PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
+				Strategies:      []StrategyConfig{sc},
+				PortfolioRisk:   &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
 			}
 			err := ValidateConfig(cfg)
 			gotErr := err != nil && strings.Contains(err.Error(), "stop_loss")
@@ -701,12 +741,13 @@ func TestValidateConfig_StopLossMarginPctBounds(t *testing.T) {
 // #487: zero StopLossMarginPct must be omitted from the JSON encoding so
 // existing configs don't grow a noisy field after a round-trip.
 func TestStrategyConfig_StopLossMarginPctJSON(t *testing.T) {
+	v := 25.0
 	sc := StrategyConfig{
 		ID:                "hl-test",
 		Type:              "perps",
 		Platform:          "hyperliquid",
 		Leverage:          20,
-		StopLossMarginPct: 25,
+		StopLossMarginPct: &v,
 	}
 	b, err := json.Marshal(sc)
 	if err != nil {
@@ -719,16 +760,31 @@ func TestStrategyConfig_StopLossMarginPctJSON(t *testing.T) {
 	if err := json.Unmarshal(b, &round); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if round.StopLossMarginPct != 25 {
+	if round.StopLossMarginPct == nil || *round.StopLossMarginPct != 25 {
 		t.Errorf("round-trip StopLossMarginPct: got %v, want 25", round.StopLossMarginPct)
 	}
 
-	sc.StopLossMarginPct = 0
+	// nil pointer (omitted) must not emit the field — operator hasn't opted
+	// in or out, auto-derive path applies.
+	sc.StopLossMarginPct = nil
 	b2, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal nil: %v", err)
+	}
+	if strings.Contains(string(b2), "stop_loss_margin_pct") {
+		t.Errorf("nil StopLossMarginPct should be omitted; got %s", b2)
+	}
+
+	// #484: explicit zero is the "operator opt-out" semantic and must be
+	// preserved in JSON so a config round-trip doesn't silently re-enable
+	// the auto-SL fallback.
+	zero := 0.0
+	sc.StopLossMarginPct = &zero
+	b3, err := json.Marshal(sc)
 	if err != nil {
 		t.Fatalf("marshal zero: %v", err)
 	}
-	if strings.Contains(string(b2), "stop_loss_margin_pct") {
-		t.Errorf("zero StopLossMarginPct should be omitted; got %s", b2)
+	if !strings.Contains(string(b3), `"stop_loss_margin_pct":0`) {
+		t.Errorf("explicit zero StopLossMarginPct must round-trip; got %s", b3)
 	}
 }
