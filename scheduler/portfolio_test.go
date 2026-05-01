@@ -56,7 +56,7 @@ func TestExecuteSpotResultSetsInitialQuantityAndEntryATR(t *testing.T) {
 	result := &SpotResult{
 		Symbol:     "BTC/USDT",
 		Signal:     1,
-		Indicators: map[string]interface{}{"atr": 123.45},
+		Indicators: map[string]interface{}{"atr": 3.5}, // ~3.5% of entry price; passes plausibility guard
 	}
 	trades, _ := executeSpotResult(
 		StrategyConfig{ID: "spot-test"},
@@ -76,8 +76,8 @@ func TestExecuteSpotResultSetsInitialQuantityAndEntryATR(t *testing.T) {
 	if pos.InitialQuantity != pos.Quantity {
 		t.Fatalf("InitialQuantity = %g, want current open qty %g", pos.InitialQuantity, pos.Quantity)
 	}
-	if pos.EntryATR != 123.45 {
-		t.Fatalf("EntryATR = %g, want 123.45", pos.EntryATR)
+	if pos.EntryATR != 3.5 {
+		t.Fatalf("EntryATR = %g, want 3.5", pos.EntryATR)
 	}
 }
 

@@ -1530,3 +1530,85 @@ func TestClearATRMultMissingEntryATRWarningsForStrategy(t *testing.T) {
 		}
 	}
 }
+
+// #522: tieredTPATRMissingEntryATR detects open positions with EntryATR == 0
+// when tiered_tp_atr is in close_strategies (platform-agnostic).
+func TestTieredTPATRMissingEntryATR(t *testing.T) {
+	withCS := func(cs ...string) StrategyConfig {
+		return StrategyConfig{Platform: "hyperliquid", Type: "perps", CloseStrategies: cs}
+	}
+	cases := []struct {
+		name string
+		sc   StrategyConfig
+		pos  *Position
+		want bool
+	}{
+		{"no close strategies", withCS(), &Position{AvgCost: 100, EntryATR: 0}, false},
+		{"different close strategy", withCS("tp_at_pct"), &Position{AvgCost: 100, EntryATR: 0}, false},
+		{"tiered_tp_atr present, EntryATR missing", withCS("tiered_tp_atr"), &Position{AvgCost: 100, EntryATR: 0}, true},
+		{"tiered_tp_atr present, EntryATR stamped", withCS("tiered_tp_atr"), &Position{AvgCost: 100, EntryATR: 5}, false},
+		{"tiered_tp_atr present, no open position (AvgCost==0)", withCS("tiered_tp_atr"), &Position{AvgCost: 0, EntryATR: 0}, false},
+		{"tiered_tp_atr among multiple strategies", withCS("tp_at_pct", "tiered_tp_atr"), &Position{AvgCost: 100, EntryATR: 0}, true},
+		{"nil position", withCS("tiered_tp_atr"), nil, false},
+		{"works on non-HL platform", StrategyConfig{Platform: "binanceus", Type: "spot", CloseStrategies: []string{"tiered_tp_atr"}}, &Position{AvgCost: 100, EntryATR: 0}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := tieredTPATRMissingEntryATR(c.sc, c.pos); got != c.want {
+				t.Errorf("tieredTPATRMissingEntryATR = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// #522: notifyTieredTPATRMissingEntryATROnce throttles alerts per (strategy,
+// symbol) and shares the throttle map with the ATR-mult path so a single
+// strategy that triggers both variants only emits one alert.
+func TestNotifyTieredTPATRMissingEntryATROnce_ThrottlesAndShares(t *testing.T) {
+	mock := &mockNotifier{}
+	notifier := NewMultiNotifier(notifierBackend{
+		notifier: mock,
+		channels: map[string]string{"hyperliquid": "chan"},
+		ownerID:  "owner",
+	})
+	logger := silentStrategyLogger("hl-tiered-test")
+	defer logger.Close()
+	sc := StrategyConfig{ID: "hl-tiered-test", Platform: "hyperliquid", Type: "perps",
+		CloseStrategies: []string{"tiered_tp_atr"}}
+
+	defer clearATRMultMissingEntryATRWarning(sc.ID, "ETH")
+	defer clearATRMultMissingEntryATRWarning(sc.ID, "BTC")
+
+	notifyTieredTPATRMissingEntryATROnce(sc, "ETH", notifier, logger)
+	notifyTieredTPATRMissingEntryATROnce(sc, "ETH", notifier, logger)
+	notifyTieredTPATRMissingEntryATROnce(sc, "ETH", notifier, logger)
+
+	if got := len(mock.messages); got != 1 {
+		t.Errorf("expected 1 broadcast for ETH, got %d", got)
+	}
+	if got := len(mock.dms); got != 1 {
+		t.Errorf("expected 1 owner DM for ETH, got %d", got)
+	}
+	if len(mock.messages) > 0 && !strings.Contains(mock.messages[0].content, "tiered_tp_atr") {
+		t.Errorf("alert content missing tiered_tp_atr: %q", mock.messages[0].content)
+	}
+
+	// A different symbol alerts independently.
+	notifyTieredTPATRMissingEntryATROnce(sc, "BTC", notifier, logger)
+	if got := len(mock.messages); got != 2 {
+		t.Errorf("expected 2 broadcasts after BTC alert, got %d", got)
+	}
+
+	// ATR-mult notifier on the same (strategy, symbol) is suppressed because the
+	// throttle map key is shared — one alert per (strategy, symbol) regardless of
+	// which variant fires first.
+	clearATRMultMissingEntryATRWarning(sc.ID, "ETH")
+	notifyATRMultMissingEntryATROnce(sc, "ETH", notifier, logger)
+	if got := len(mock.messages); got != 3 {
+		t.Errorf("expected 3 broadcasts after atr-mult alert, got %d", got)
+	}
+	notifyTieredTPATRMissingEntryATROnce(sc, "ETH", notifier, logger)
+	if got := len(mock.messages); got != 3 {
+		t.Errorf("tiered alert after atr-mult should be suppressed (shared throttle), got %d", got)
+	}
+}

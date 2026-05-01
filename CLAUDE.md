@@ -100,7 +100,7 @@ When invoked to review a PR, the top-level review comment MUST take exactly one 
 Inline `pull_request_review_comment` threads are exempt from this format; this rule governs only the top-level review summary.
 
 ## Build & Deploy
-- Build: `cd scheduler && go build -o ../go-trader .` — always rebuild before smoke-testing.
+- Build: `go build -o go-trader .` — always rebuild before smoke-testing (`cd scheduler` fails in bash tool; run commands directly from current context).
 - Restart: `systemctl restart go-trader`. Service file changes: `systemctl daemon-reload && systemctl restart go-trader`.
 - Config-only changes (no rebuild needed): `kill -HUP $(pgrep go-trader)` — `config_reload.go` re-reads `cfg.ConfigPath` without dropping state or sessions.
 - Python script changes: take effect next scheduler cycle (no rebuild).
@@ -114,8 +114,8 @@ Inline `pull_request_review_comment` threads are exempt from this format; this r
 ## Testing
 - **New functionality must include tests.** Go: `_test.go`. Python: `test_*.py`. Bug fixes: regression test when feasible.
 - `python3 -m py_compile <file>` from repo root for syntax check.
-- `cd scheduler && go build .` (compile) / `go test ./...` (unit tests; must run from `scheduler/` — repo root has no go.mod).
-- `cd scheduler && gofmt -w <file>.go` after editing.
+- `go build .` (compile) / `go test ./...` (unit tests — `cd scheduler` fails in bash tool; run commands directly).
+- `gofmt -w <file>.go` after editing (no `cd` needed).
 - Multi-line Go edits with tabs: Edit tool may fail; use heredoc form: `python3 << 'PYEOF'` / `content=open(f).read()` / `open(f,'w').write(content.replace(old,new,1))` / `PYEOF`.
 - Strategy listing: `cd shared_strategies/open/spot && ../../../.venv/bin/python3 strategies.py --list-json` (worktrees: absolute path to main repo's venv). Futures listing lives at `shared_strategies/open/futures/strategies.py --list-json`.
 - Smoke tests:
@@ -123,8 +123,10 @@ Inline `pull_request_review_comment` threads are exempt from this format; this r
   - Interactive init: `printf "answer1\nanswer2\n" | ./go-trader init`
   - JSON init: `./go-trader init --json '{"assets":["BTC"],"enableSpot":true,"spotStrategies":["sma_crossover"],"spotCapital":1000,"spotDrawdown":10}' --output /tmp/test.json`
   - Status port override: `./go-trader --once --status-port 9100` — verify `[server] Status endpoint at http://localhost:<port>/status`.
-- Pytest: `uv run pytest shared_strategies/ -v`; `shared_tools/`; `platforms/`; `backtest/` (run when modifying strategies). `shared_scripts/test_*.py` is NOT in default `testpaths` — invoke explicitly.
+- Pytest: `.venv/bin/python3 -m pytest shared_strategies/ -v`; also `shared_tools/`, `platforms/`, `backtest/` (run when modifying strategies). `uv run pytest <relative-path>` may fail if bash CWD differs from repo root — use `.venv/bin/python3 -m pytest` instead. `shared_scripts/test_*.py` is NOT in default `testpaths` — invoke explicitly.
+- `stampEntryATRIfOpened` rejects ATR > 50% of AvgCost (plausibility guard); Go tests using `atr` indicators must use values < 50% of the entry price in the test.
 - Strategy tests must assert actual signal values (`assert (result["signal"] == 1).any()`), not just column existence. Smoke tests iterating registered strategies need a `DatetimeIndex` (`amd_ifvg` reads `index.hour`, `vwap_reversion` buckets by `index.date`).
 - Python test imports: use `importlib.util.spec_from_file_location` (avoids two `strategies.py` collisions).
 - Go tests: always check `json.Unmarshal` errors — silent discard masks struct tag/type regressions.
 - Pure helpers (`perpsLiveOrderSize`, `*OrderSkipReason`, `effectiveStrategyIntervalSeconds`, `parseXxxCloseOutput`, Sharpe math in `sharpe_test.go`) are testable without subprocesses — use this pattern for any subprocess-spawning live helper.
+- **ATR for close evaluators:** `tiered_tp_atr` and `trailing_stop_atr_mult` depend on `Position.EntryATR` stamped from `indicators["atr"]`. All check scripts inject a default ATR(14) via `ensure_atr_indicator(result_df)` from `shared_tools/atr.py` before the indicator loop — new check scripts must do the same.

@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'spot'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
+from atr import ensure_atr_indicator
+
 
 def _arg_value(flag, default=None):
     prefix = flag + "="
@@ -226,6 +228,7 @@ def main():
             signal = decision["signal"]
 
         # Collect relevant indicators
+        ensure_atr_indicator(result_df)
         indicators = {}
         indicator_cols = [c for c in result_df.columns
                          if c not in ("open", "high", "low", "close", "close_b", "volume",

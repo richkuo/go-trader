@@ -151,6 +151,47 @@ func clearATRMultMissingEntryATRWarningsForStrategy(strategyID string) {
 	})
 }
 
+// tieredTPATRMissingEntryATR reports whether sc is configured with tiered_tp_atr
+// as a close strategy but the open position has no EntryATR stamped yet. Unlike
+// the ATR-mult trailing check this is platform-agnostic: tiered_tp_atr runs on
+// any platform that supports composed close strategies.
+func tieredTPATRMissingEntryATR(sc StrategyConfig, pos *Position) bool {
+	hasTieredTP := false
+	for _, cs := range sc.CloseStrategies {
+		if cs == "tiered_tp_atr" {
+			hasTieredTP = true
+			break
+		}
+	}
+	if !hasTieredTP {
+		return false
+	}
+	if pos == nil {
+		return false
+	}
+	return pos.EntryATR <= 0 && pos.AvgCost > 0
+}
+
+// notifyTieredTPATRMissingEntryATROnce emits a WARN log + notifier alert the
+// first time a tiered_tp_atr close strategy is observed on a position that
+// has no EntryATR. Uses the same throttle map as the ATR-mult trailing alert
+// so a single key per (strategy, symbol) suppresses both variants.
+func notifyTieredTPATRMissingEntryATROnce(sc StrategyConfig, symbol string, notifier *MultiNotifier, logger *StrategyLogger) {
+	key := atrMultMissingEntryATRKey(sc.ID, symbol)
+	if _, loaded := atrMultMissingEntryATRWarned.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	if logger != nil {
+		logger.Warn("tiered_tp_atr configured but Position.EntryATR is 0 for %s — the open strategy must emit an 'atr' indicator on the open candle; take-profit tiers will noop until EntryATR is stamped.", symbol)
+	}
+	if notifier != nil && notifier.HasBackends() {
+		msg := fmt.Sprintf("**MISSING ENTRY ATR** [%s] %s — close strategy `tiered_tp_atr` is configured but the open candle did not produce an ATR indicator, so take-profit tiers are disabled until EntryATR is stamped. Ensure the entry strategy emits `atr` in its indicator output.",
+			sc.ID, symbol)
+		notifier.SendToAllChannels(msg)
+		notifier.SendOwnerDM(msg)
+	}
+}
+
 func effectiveTrailingStopMinMovePct(sc StrategyConfig) float64 {
 	if sc.TrailingStopMinMovePct != nil && *sc.TrailingStopMinMovePct >= 0 {
 		return *sc.TrailingStopMinMovePct
