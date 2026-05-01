@@ -251,8 +251,8 @@ Use the commit message and PR number to classify. When in doubt, treat as runtim
 | --- | --- |
 | Auto-migration | `config_version` bump, deprecated field removal, silent field copy (e.g. v10 `sizing_leverage` ← `leverage`); silent field drop without version bump (e.g. `disable_implicit_close` removed in #508 — if set in config it no-ops; any strategy that had it `true` with no `close_strategies` now uses the open strategy as implicit close instead) |
 | Runtime default | HL stop-loss auto-derive (#493), HL margin mode default isolated (#486), peer normalization across all four HL stop/trailing omission fields (#494/#507); HL perps shared-coin CB drain (#515): pending clears **without** on-chain HL close when peers share the coin — operators who expected CB to flatten the whole HL leg must be told explicitly |
-| Opt-in field | `%` trailing stop (#502), ATR-derived trailing via `trailing_stop_atr_mult` (#507 — entry path must populate `Position.EntryATR`; initial trigger deferred one cycle); open/close composition (#483), `stop_loss_margin_pct` (#490) |
-| Internal / no ops impact | Discord summary strategy column truncation/aliases (#514); Python registry split into `open/registry.py` + `close/registry.py` (#511) — same checklist, different paths already documented elsewhere |
+| Opt-in field | `%` trailing stop (#502), ATR-derived trailing via `trailing_stop_atr_mult` (#507 — entry path must populate `Position.EntryATR`; initial trigger deferred one cycle); open/close composition (#483), `stop_loss_margin_pct` (#490), `margin_per_trade_usd` (#520 — margin-based sizing, purely additive) |
+| Internal / no ops impact | Discord summary strategy column truncation/aliases (#514); Python registry split into `open/registry.py` + `close/registry.py` (#511) — same checklist, different paths already documented elsewhere; `close_fraction` honored in execution (#521 — previously partial-close tiers silently closed 100%; existing `close_strategies` configs now behave as specified) |
 | Open-position constraint | `margin_mode`, exchange `leverage`, kill-switch identity changes; HL `trailing_stop_atr_mult` nil↔positive mode toggle mirrors `%` trailing (#507 hot-reload compat) |
 
 When this list looks stale relative to recent commits, regenerate it from `git log --oneline -50` before prompting.
@@ -365,7 +365,7 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
      max_drawdown_pct, portfolio_risk.warn_threshold_pct,
      notional_cap_usd, risk_free_rate, correlation.*, summary_frequency
    Per-strategy: capital, max_drawdown_pct, interval_seconds, htf_filter,
-     params, leverage, sizing_leverage, stop_loss_pct, stop_loss_margin_pct,
+     params, leverage, sizing_leverage, margin_per_trade_usd, stop_loss_pct, stop_loss_margin_pct,
      trailing_stop_pct, trailing_stop_atr_mult, trailing_stop_min_move_pct,
      margin_mode, allow_shorts, open_strategy, close_strategies, theta_harvest.*
    Discord/Telegram: enabled, channels, dm_channels, owner_id
@@ -464,7 +464,8 @@ Per-strategy keys:
 | Trailing stop (ATR × mult) | `trailing_stop_atr_mult` | Hyperliquid perps only — trailing distance derived from entry ATR stamped on the position at open (~`mult * entry_atr / avg_cost * 100`%, capped); fixed distance for life of trade; mutually exclusive with the other HL stop/trailing owners when positive (#507). Implicit trigger arms the cycle after open once ATR exists. |
 | Trailing stop debounce | `trailing_stop_min_move_pct` | Minimum trigger-price move before cancel/replace (`%`/ATR-mult trailing). Defaults to 0.5%. |
 | Exchange leverage | `leverage` | Perps only — exchange margin/risk leverage and HL `update_leverage` (#497). 1× by default. |
-| Sizing leverage | `sizing_leverage` | Perps only — order-size multiplier (`cash * sizing_leverage * 0.95`). Defaults to `leverage`; set lower to run high exchange leverage with conservative position size (#497). |
+| Sizing leverage | `sizing_leverage` | Perps only — notional order-size multiplier (`cash * sizing_leverage`). Defaults to `leverage`; set lower to run high exchange leverage with conservative position size (#497). |
+| Margin per trade | `margin_per_trade_usd` | Perps only (opt-in) — margin-based sizing: `notional = min(margin_per_trade_usd, cash) × leverage`. Overrides `sizing_leverage` when set; must be positive. Hot-reload aware (#520). |
 | Margin mode | `margin_mode` | Hyperliquid perps only, `isolated` (default) or `cross`. Applied from flat. |
 | Open strategy | `open_strategy` | Override entry strategy name (otherwise from `args[0]`) |
 | Close strategies | `close_strategies` | Ordered list of exit evaluators; max `close_fraction` wins |
