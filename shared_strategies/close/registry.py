@@ -12,6 +12,7 @@ if _THIS_DIR not in sys.path:
 
 from tiered_tp_atr import DEFAULT_TIERS as DEFAULT_ATR_TIERS
 from tiered_tp_atr import evaluate as tiered_tp_atr_evaluate
+from tiered_tp_atr_live import evaluate as tiered_tp_atr_live_evaluate
 from tiered_tp_pct import DEFAULT_TIERS as DEFAULT_PCT_TIERS
 from tiered_tp_pct import evaluate as tiered_tp_pct_evaluate
 from tp_at_pct import evaluate as tp_at_pct_evaluate
@@ -98,6 +99,12 @@ register(
     "Tiered take-profit by ATR multiples from average cost",
     {"tiers": list(DEFAULT_ATR_TIERS)},
 )(tiered_tp_atr_evaluate)
+
+register(
+    "tiered_tp_atr_live",
+    "Tiered take-profit by ATR multiples using live ATR per tick (atr_source: live|entry)",
+    {"tiers": list(DEFAULT_ATR_TIERS), "atr_source": "live"},
+)(tiered_tp_atr_live_evaluate)
 
 register(
     "tp_at_pct",
