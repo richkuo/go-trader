@@ -205,7 +205,8 @@ type StrategyConfig struct {
 	HTFFilter              bool                   `json:"htf_filter,omitempty"`                 // higher-timeframe trend filter
 	AllowShorts            bool                   `json:"allow_shorts,omitempty"`               // perps only: opt-in to bidirectional execution — signal=-1 from flat opens a short, long+(-1) closes-and-flips. Default false preserves close-long-only behavior for strategies like triple_ema that emit -1 only as a long-exit (#328)
 	Leverage               float64                `json:"leverage,omitempty"`                   // perps exchange leverage (default 1 = no leverage); used for exchange margin/risk and HL update_leverage (#254/#497)
-	SizingLeverage         float64                `json:"sizing_leverage,omitempty"`            // perps sizing multiplier; defaults to Leverage for backwards compatibility (#497)
+	SizingLeverage         float64                `json:"sizing_leverage,omitempty"`            // perps notional multiplier; defaults to Leverage for backwards compatibility (#497). Notional formula: notional = cash * sizing_leverage; size = notional / price. For margin-based sizing, prefer MarginPerTradeUSD (#518).
+	MarginPerTradeUSD      *float64               `json:"margin_per_trade_usd,omitempty"`       // perps only: USD margin to deploy per open. When set (positive), overrides SizingLeverage: notional = min(MarginPerTradeUSD, cash) * exchange_leverage; size = notional / price. Lets operators size in margin-space directly so high exchange_leverage doesn't decouple intent from outcome (#518).
 	StopLossPct            *float64               `json:"stop_loss_pct,omitempty"`              // HL perps only: % from entry to place a reduce-only stop-loss trigger. Pointer so omitted (nil) falls through to StopLossMarginPct then MaxDrawdownPct for single-coin strategies (#484); LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables auto-SL (#412)
 	StopLossMarginPct      *float64               `json:"stop_loss_margin_pct,omitempty"`       // HL perps only: % of deployed margin to lose before stop-loss trigger; mutually exclusive with stop_loss_pct; price % derived as StopLossMarginPct / Leverage at order time. Pointer so omitted falls through to MaxDrawdownPct for single-coin strategies; LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables (#487, #484)
 	TrailingStopPct        *float64               `json:"trailing_stop_pct,omitempty"`          // HL perps only: synthetic trailing SL distance from the best mark seen while open; mutually exclusive with stop_loss_pct and stop_loss_margin_pct (#501)
@@ -240,6 +241,59 @@ func EffectiveExchangeLeverage(sc StrategyConfig) float64 {
 		return 1
 	}
 	return sc.Leverage
+}
+
+// EffectiveMarginPerTradeUSD returns the configured margin-per-trade in USD,
+// or 0 when unset / non-positive. When positive, callers should size from
+// margin-space (margin × exchange_leverage = notional) instead of the legacy
+// sizing_leverage × cash notional formula. Perps-only — returns 0 for any
+// other strategy type because validation rejects the field elsewhere (#518).
+func EffectiveMarginPerTradeUSD(sc StrategyConfig) float64 {
+	if sc.Type != "perps" || sc.MarginPerTradeUSD == nil {
+		return 0
+	}
+	if *sc.MarginPerTradeUSD <= 0 {
+		return 0
+	}
+	return *sc.MarginPerTradeUSD
+}
+
+// PerpsOpenNotional is the primitive sizing helper: returns the USD notional
+// to open a perps position given primitive inputs. When marginPerTradeUSD is
+// positive, the formula is margin-based: min(marginPerTradeUSD, cash) ×
+// exchangeLeverage — matching the operator's mental model of "deploy $X as
+// margin per trade" regardless of how high exchange_leverage is set (#518).
+// Otherwise the legacy notional formula applies: cash × sizingLeverage. The
+// hardcoded 0.95 safety buffer was removed in #518 — operators wanting headroom
+// should set a smaller sizing_leverage (or margin_per_trade_usd) explicitly.
+//
+// Returns 0 when cash <= 0; callers must still guard for non-positive notional
+// (e.g. flip path with realized loss) before placing an order.
+func PerpsOpenNotional(cash, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64) float64 {
+	if cash <= 0 {
+		return 0
+	}
+	if marginPerTradeUSD > 0 {
+		margin := marginPerTradeUSD
+		if margin > cash {
+			margin = cash
+		}
+		if exchangeLeverage <= 0 {
+			exchangeLeverage = 1
+		}
+		return margin * exchangeLeverage
+	}
+	if sizingLeverage <= 0 {
+		sizingLeverage = 1
+	}
+	return cash * sizingLeverage
+}
+
+// ComputePerpsOpenNotional is the StrategyConfig-aware wrapper around
+// PerpsOpenNotional, resolving the three sizing inputs from the strategy
+// config. See PerpsOpenNotional for the formula.
+func ComputePerpsOpenNotional(sc StrategyConfig, cash float64) float64 {
+	return PerpsOpenNotional(cash, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc))
 }
 
 // MaxAutoStopLossPct caps the auto-derived per-trade stop at 50% to mirror the
@@ -894,13 +948,27 @@ func ValidateConfig(cfg *Config) error {
 		// A legitimate use case is high exchange leverage with conservative
 		// position size (e.g. leverage=20, sizing_leverage=0.5), so the lower
 		// bound is a small positive value rather than 1. The math
-		// (cash * sizing_leverage * 0.95) tolerates fractional values fine.
+		// (cash * sizing_leverage) tolerates fractional values fine.
 		if sc.SizingLeverage != 0 {
 			if sc.Type != "perps" {
 				errs = append(errs, fmt.Sprintf("%s: sizing_leverage is only supported for perps strategies (got type %q)", prefix, sc.Type))
 			}
 			if sc.SizingLeverage < 0.01 || sc.SizingLeverage > 100 {
 				errs = append(errs, fmt.Sprintf("%s: sizing_leverage must be in [0.01, 100], got %g", prefix, sc.SizingLeverage))
+			}
+		}
+
+		// MarginPerTradeUSD lets operators express open size in margin-space
+		// (#518). Mutually compatible with sizing_leverage at the schema level —
+		// when set, MarginPerTradeUSD wins inside ComputePerpsOpenNotional —
+		// but we still require a positive value because nil/0 means "use the
+		// legacy formula" and a negative value is meaningless.
+		if sc.MarginPerTradeUSD != nil {
+			if sc.Type != "perps" {
+				errs = append(errs, fmt.Sprintf("%s: margin_per_trade_usd is only supported for perps strategies (got type %q)", prefix, sc.Type))
+			}
+			if *sc.MarginPerTradeUSD <= 0 {
+				errs = append(errs, fmt.Sprintf("%s: margin_per_trade_usd must be positive, got %g", prefix, *sc.MarginPerTradeUSD))
 			}
 		}
 

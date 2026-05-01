@@ -118,7 +118,7 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 	fee := CalculateOptionFee(s.Platform, cost, 1.0)
 
 	totalCost := cost + fee
-	if totalCost > s.Cash*0.95 {
+	if totalCost > s.Cash {
 		logger.Info("Insufficient cash ($%.2f) for option buy ($%.2f + $%.2f fee)", s.Cash, cost, fee)
 		return 0, nil
 	}

@@ -2088,10 +2088,13 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		return nil, false
 	}
 	isBuy := result.Signal == 1
-	// #254/#497: perps use sizing_leverage to size notional; mirror OKX's guard so any
-	// future HL spot mode can't accidentally over-size.
+	// #254/#497/#518: perps sizing — sizing_leverage scales cash → notional in
+	// the legacy formula; margin_per_trade_usd (when set) overrides to a
+	// margin-space formula so high exchange leverage doesn't shrink intent.
 	sizingLeverage := EffectiveSizingLeverage(sc)
-	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, posSide, sc.AllowShorts)
+	exchangeLeverage := EffectiveExchangeLeverage(sc)
+	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
+	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, sc.AllowShorts)
 	if !ok {
 		logger.Info("%s for %s", reason, result.Symbol)
 		return nil, false
@@ -2245,6 +2248,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 
 	exchangeLeverage := EffectiveExchangeLeverage(sc)
 	sizingLeverage := EffectiveSizingLeverage(sc)
+	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
 
 	// Thread exchange metadata into ExecutePerpsSignal so each Trade is built
 	// with the OID and fee before RecordTrade persists it (#289). Stamping the
@@ -2261,7 +2265,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 		fillFee = fill.Fee
 	}
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, fillQty, fillOID, fillFee, sc.AllowShorts, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, sc.AllowShorts, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -2408,7 +2412,8 @@ func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cas
 	isBuy := result.Signal == 1
 	var contracts int
 	if isBuy {
-		budget := cash * 0.95
+		// #518: removed hardcoded 0.95 buffer; max_contracts caps headroom.
+		budget := cash
 		margin := result.ContractSpec.Margin
 		if margin <= 0 {
 			margin = price * result.ContractSpec.Multiplier // fallback
@@ -2585,7 +2590,8 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 	side := "buy"
 
 	if isBuy {
-		amountUSD = cash * 0.95
+		// #518: removed hardcoded 0.95 buffer for spot live buy.
+		amountUSD = cash
 		if amountUSD < 1 || price <= 0 {
 			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
 			return nil, false
@@ -2753,14 +2759,18 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 		return nil, false
 	}
 	isBuy := result.Signal == 1
-	// #254/#497: perps use sizing_leverage to size notional; EffectiveSizingLeverage
-	// returns 1 for spot, so no perps gate needed here.
+	// #254/#497/#518: perps sizing uses PerpsOpenNotional (sizing_leverage or
+	// margin_per_trade_usd). EffectiveSizingLeverage returns 1 for spot, so
+	// the spot branch below remains a simple cash buy. #518 removed the
+	// hardcoded 0.95 safety buffer.
 	sizingLeverage := EffectiveSizingLeverage(sc)
+	exchangeLeverage := EffectiveExchangeLeverage(sc)
+	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
 	var size float64
 	if sc.Type == "perps" {
 		var ok bool
 		var reason string
-		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, posSide, sc.AllowShorts)
+		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, sc.AllowShorts)
 		if !ok {
 			logger.Info("%s for %s", reason, result.Symbol)
 			return nil, false
@@ -2770,7 +2780,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 		// does not apply to spot — SpotOrderSkipReason already blocked any
 		// signal=-1 without a long above.
 		if isBuy {
-			budget := cash * sizingLeverage * 0.95
+			budget := cash
 			if budget < 1 || price <= 0 {
 				logger.Info("Insufficient cash ($%.2f) for live buy %s", cash, result.Symbol)
 				return nil, false
@@ -2836,7 +2846,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, ex
 	var trades int
 	var err error
 	if sc.Type == "perps" {
-		trades, err = ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), fillQty, fillOID, fillFee, sc.AllowShorts, logger)
+		trades, err = ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc), fillQty, fillOID, fillFee, sc.AllowShorts, logger)
 	} else {
 		trades, err = ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, logger)
 	}

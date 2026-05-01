@@ -67,6 +67,10 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].sizing_leverage: %.2fx -> %.2fx", sc.ID, sc.SizingLeverage, ns.SizingLeverage)
 			sc.SizingLeverage = ns.SizingLeverage
 		}
+		if !floatPtrEqual(sc.MarginPerTradeUSD, ns.MarginPerTradeUSD) {
+			addChange("strategy[%s].margin_per_trade_usd: %s -> %s", sc.ID, formatFloatPtrUSD(sc.MarginPerTradeUSD), formatFloatPtrUSD(ns.MarginPerTradeUSD))
+			sc.MarginPerTradeUSD = ns.MarginPerTradeUSD
+		}
 		if sc.IntervalSeconds != ns.IntervalSeconds {
 			addChange("strategy[%s].interval_seconds: %d -> %d", sc.ID, sc.IntervalSeconds, ns.IntervalSeconds)
 			sc.IntervalSeconds = ns.IntervalSeconds
@@ -298,6 +302,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.Capital = 0
 	sc.Leverage = 0
 	sc.SizingLeverage = 0
+	sc.MarginPerTradeUSD = nil // #518: hot-reloadable; nil/positive switching is purely additive
 	sc.IntervalSeconds = 0
 	sc.OpenStrategy = ""
 	sc.CloseStrategies = nil
@@ -327,6 +332,13 @@ func formatFloatPtr(p *float64) string {
 		return "<nil>"
 	}
 	return fmt.Sprintf("%g", *p)
+}
+
+func formatFloatPtrUSD(p *float64) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("$%.2f", *p)
 }
 
 func strategyConfigByID(strategies []StrategyConfig) map[string]StrategyConfig {

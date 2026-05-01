@@ -329,10 +329,10 @@ func TestExecuteSpotSignalBuy(t *testing.T) {
 		t.Error("quantity should be positive")
 	}
 
-	// Verify exact post-trade cash: budget = 1000 * 0.95 = 950,
-	// tradeCost = qty * execPrice = budget = 950 (cancels out),
-	// fee = 950 * 0.001 = 0.95, cash = 1000 - 950 - 0.95 = 49.05
-	expectedCash := 1000.0 - 1000.0*0.95 - CalculatePlatformSpotFee("binanceus", 1000.0*0.95)
+	// Verify exact post-trade cash: budget = 1000 (full deploy, #518),
+	// tradeCost = qty * execPrice = budget = 1000 (cancels out),
+	// fee = 1000 * 0.001 = 1.00, cash = 1000 - 1000 - 1.00 = -1.00
+	expectedCash := 1000.0 - 1000.0 - CalculatePlatformSpotFee("binanceus", 1000.0)
 	if math.Abs(s.Cash-expectedCash) > 0.01 {
 		t.Errorf("cash = %.4f, want %.4f (initial - budget - fee)", s.Cash, expectedCash)
 	}
@@ -804,10 +804,10 @@ func TestExecutePerpsSignalPaperBuyNoNotionalDeduction(t *testing.T) {
 	if pos.Leverage != 5 {
 		t.Errorf("leverage = %v, want 5", pos.Leverage)
 	}
-	// With leverage=5, budget = 1000 * 5 * 0.95 = 4750 notional
-	// qty ≈ 4750 / 2000 = 2.375 (modulo slippage on execPrice)
-	if pos.Quantity < 2.0 || pos.Quantity > 2.8 {
-		t.Errorf("quantity = %v, want ~2.375 (5x leverage)", pos.Quantity)
+	// With leverage=5 and #518 (no 0.95 buffer), budget = 1000 * 5 = 5000 notional
+	// qty ≈ 5000 / 2000 = 2.5 (modulo slippage on execPrice)
+	if pos.Quantity < 2.2 || pos.Quantity > 2.8 {
+		t.Errorf("quantity = %v, want ~2.5 (5x leverage)", pos.Quantity)
 	}
 	// Cash must be untouched except for fee. fee ≈ notional * 0.00035
 	// (hyperliquid fee), so cash should remain > 990.
@@ -834,7 +834,7 @@ func TestExecutePerpsSignalDecouplesSizingAndExchangeLeverage(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 2, 20, 0, "", 0, false, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 2, 20, 0, 0, "", 0, false, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -848,9 +848,10 @@ func TestExecutePerpsSignalDecouplesSizingAndExchangeLeverage(t *testing.T) {
 	if pos.Leverage != 20 {
 		t.Errorf("position leverage = %g, want exchange leverage 20", pos.Leverage)
 	}
-	// Sizing should use 2x, not the 20x exchange leverage.
-	if pos.Quantity < 0.8 || pos.Quantity > 1.1 {
-		t.Errorf("quantity = %g, want ~0.95 from sizing_leverage=2", pos.Quantity)
+	// Sizing should use 2x, not the 20x exchange leverage. With #518 the
+	// 0.95 buffer is removed, so qty ≈ 1000 * 2 / 2000 = 1.0 (modulo slippage).
+	if pos.Quantity < 0.85 || pos.Quantity > 1.15 {
+		t.Errorf("quantity = %g, want ~1.0 from sizing_leverage=2", pos.Quantity)
 	}
 	if pos.Quantity > 5 {
 		t.Errorf("quantity = %g, appears to have used exchange leverage for sizing", pos.Quantity)
@@ -1529,8 +1530,8 @@ func TestExecutePerpsSignalAlreadyShortIsInertNoOp(t *testing.T) {
 // virtual close+open lands against an exchange fill that only closed,
 // leaving virtual state ahead of the exchange (same class of desync as #298).
 func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
-	// cash=1000, leverage=1, price=2000, avgCost=2000 (no PnL on close) →
-	// newSize = 1000*0.95/2000 = 0.475
+	// cash=1000, sizing_leverage=1, price=2000, avgCost=2000 (no PnL on close) →
+	// after #518 (no 0.95 buffer): newSize = 1000/2000 = 0.5
 	cases := []struct {
 		name       string
 		signal     int
@@ -1542,20 +1543,20 @@ func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
 		wantOK     bool
 	}{
 		// Fresh opens — avgCost is 0 (no position)
-		{"long_from_flat", 1, 0, 0, "", false, 0.475, true},
-		{"short_from_flat_allowed", -1, 0, 0, "", true, 0.475, true},
+		{"long_from_flat", 1, 0, 0, "", false, 0.5, true},
+		{"short_from_flat_allowed", -1, 0, 0, "", true, 0.5, true},
 		// Close-only (legacy)
 		{"close_long_legacy", -1, 0.3, 2000, "long", false, 0.3, true},
 		// Flat-PnL flips: avgCost == price so effectiveCash == cash.
-		{"flip_long_to_short_flat_pnl", -1, 0.5, 2000, "long", true, 0.975, true}, // 0.5 + 0.475
-		{"flip_short_to_long_flat_pnl", 1, 0.5, 2000, "short", true, 0.975, true}, // 0.5 + 0.475
+		{"flip_long_to_short_flat_pnl", -1, 0.5, 2000, "long", true, 1.0, true}, // 0.5 + 0.5
+		{"flip_short_to_long_flat_pnl", 1, 0.5, 2000, "short", true, 1.0, true}, // 0.5 + 0.5
 		// Legacy buy against migrated short is NOT a flip (AllowShorts=false):
 		// sizing stays at newSize — the legacy behavior pre-dating #328.
-		{"buy_vs_short_legacy_not_flip", 1, 0.5, 2000, "short", false, 0.475, true},
+		{"buy_vs_short_legacy_not_flip", 1, 0.5, 2000, "short", false, 0.5, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			size, ok, reason := perpsLiveOrderSize(tc.signal, 2000, 1000, tc.posQty, tc.avgCost, 1.0, tc.posSide, tc.allowShort)
+			size, ok, reason := perpsLiveOrderSize(tc.signal, 2000, 1000, tc.posQty, tc.avgCost, 1.0, 1.0, 0, tc.posSide, tc.allowShort)
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v (reason=%q), want %v", ok, reason, tc.wantOK)
 			}
@@ -1571,7 +1572,7 @@ func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
 // (the old close-only behavior that silently broke bidirectional execution).
 func TestPerpsLiveOrderSize_FlipLongToShortExceedsCloseOnly(t *testing.T) {
 	posQty := 0.5
-	size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, posQty, 2000, 1.0, "long", true)
+	size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, posQty, 2000, 1.0, 1.0, 0, "long", true)
 	if !ok {
 		t.Fatal("expected ok")
 	}
@@ -1586,20 +1587,21 @@ func TestPerpsLiveOrderSize_FlipLongToShortExceedsCloseOnly(t *testing.T) {
 // the exchange will fill, yielding a partial-fill / rejection and the same
 // class of virtual-vs-exchange desync as #298.
 func TestPerpsLiveOrderSize_FlipSizesAgainstPostCloseMargin(t *testing.T) {
-	// long 0.5 ETH @ 2000, price drops to 1900, 5x leverage, cash=1000.
+	// long 0.5 ETH @ 2000, price drops to 1900, 5x sizing leverage, cash=1000.
 	// Close leg realizes: 0.5 * (1900 - 2000) = -50 → post-close cash = 950.
-	// New-side budget: 950 * 5 * 0.95 / 1900 = 2.375 → flip size = 0.5 + 2.375 = 2.875.
-	// Pre-close sizing (bug) would yield: 1000 * 5 * 0.95 / 1900 = 2.5 → 3.0, over-sized.
-	size, ok, reason := perpsLiveOrderSize(-1, 1900, 1000, 0.5, 2000, 5.0, "long", true)
+	// After #518 (no 0.95 buffer): new-side budget = 950 * 5 / 1900 = 2.5 →
+	// flip size = 0.5 + 2.5 = 3.0. Pre-close sizing (bug) would yield:
+	// 1000 * 5 / 1900 = 2.6316 → 3.1316, over-sized.
+	size, ok, reason := perpsLiveOrderSize(-1, 1900, 1000, 0.5, 2000, 5.0, 5.0, 0, "long", true)
 	if !ok {
 		t.Fatalf("expected ok, got reason=%q", reason)
 	}
-	wantSize := 0.5 + (1000-50)*5*0.95/1900
+	wantSize := 0.5 + float64(1000-50)*5/1900
 	if diff := size - wantSize; diff > 1e-9 || diff < -1e-9 {
 		t.Errorf("size = %g, want %g (post-close margin sizing)", size, wantSize)
 	}
 	// Regression guard: must be strictly LESS than the buggy pre-close sizing.
-	preCloseSize := 0.5 + 1000*5*0.95/1900
+	preCloseSize := 0.5 + float64(1000)*5/1900
 	if size >= preCloseSize {
 		t.Errorf("size = %g must be < pre-close-sized %g to avoid over-sizing on a losing flip", size, preCloseSize)
 	}
@@ -1613,8 +1615,8 @@ func TestPerpsLiveOrderSize_FlipSizesAgainstPostCloseMargin(t *testing.T) {
 func TestPerpsLiveOrderSize_CatastrophicFlipDegradesToCloseOnly(t *testing.T) {
 	// long 1.0 ETH @ 2000, price crashes to 500, 1x leverage, cash=100.
 	// closePnL = 1.0 * (500 - 2000) = -1500 → effectiveCash = 100 - 1500 = -1400.
-	// Budget would be -1400 * 1 * 0.95 = -1330 (< 1) → fallback to close-only.
-	size, ok, reason := perpsLiveOrderSize(-1, 500, 100, 1.0, 2000, 1.0, "long", true)
+	// PerpsOpenNotional returns 0 for non-positive cash → fallback to close-only.
+	size, ok, reason := perpsLiveOrderSize(-1, 500, 100, 1.0, 2000, 1.0, 1.0, 0, "long", true)
 	if !ok {
 		t.Fatalf("expected ok (should degrade to close-only, not abort); reason=%q", reason)
 	}
@@ -1629,17 +1631,102 @@ func TestPerpsLiveOrderSize_CatastrophicFlipDegradesToCloseOnly(t *testing.T) {
 func TestPerpsLiveOrderSize_FlipProfitableFlipUsesRealizedGain(t *testing.T) {
 	// short 0.5 ETH @ 2000, price drops to 1900 (profit on short), 5x leverage.
 	// Close leg realizes: 0.5 * (2000 - 1900) = +50 → post-close cash = 1050.
-	// New-side budget: 1050 * 5 * 0.95 / 1900 = 2.625 → flip size = 0.5 + 2.625 = 3.125.
-	size, ok, _ := perpsLiveOrderSize(1, 1900, 1000, 0.5, 2000, 5.0, "short", true)
+	// After #518 (no 0.95 buffer): new-side budget = 1050 * 5 / 1900 = 2.7632 →
+	// flip size = 0.5 + 2.7632 = 3.2632.
+	size, ok, _ := perpsLiveOrderSize(1, 1900, 1000, 0.5, 2000, 5.0, 5.0, 0, "short", true)
 	if !ok {
 		t.Fatal("expected ok")
 	}
-	wantSize := 0.5 + (1000+50)*5*0.95/1900
+	wantSize := 0.5 + float64(1000+50)*5/1900
 	if diff := size - wantSize; diff > 1e-9 || diff < -1e-9 {
 		t.Errorf("size = %g, want %g (post-close margin sizing, profit added)", size, wantSize)
 	}
-	preCloseSize := 0.5 + 1000*5*0.95/1900
+	preCloseSize := 0.5 + float64(1000)*5/1900
 	if size <= preCloseSize {
 		t.Errorf("profitable flip size = %g must exceed pre-close-sized %g", size, preCloseSize)
+	}
+}
+
+// #518 — PerpsOpenNotional: margin-based sizing kicks in when
+// marginPerTradeUSD is positive and overrides the legacy sizing_leverage
+// formula. The pain point in the issue (sizing_leverage=0.1 + leverage=20
+// yielding a tiny notional) is fixed by setting margin_per_trade_usd: the
+// operator gets the intended position size regardless of exchange leverage.
+func TestPerpsOpenNotional(t *testing.T) {
+	cases := []struct {
+		name              string
+		cash              float64
+		sizingLeverage    float64
+		exchangeLev       float64
+		marginPerTradeUSD float64
+		want              float64
+	}{
+		// Legacy formula: cash × sizing_leverage. Mirrors the pre-#518 sizing
+		// minus the 0.95 buffer.
+		{"legacy_1x", 1000, 1, 1, 0, 1000},
+		{"legacy_5x", 1000, 5, 5, 0, 5000},
+		// Issue #518 pain case: low sizing_leverage + high exchange leverage
+		// produces a tiny notional under the legacy formula. Operator wants
+		// margin-space sizing instead.
+		{"issue_518_legacy_pain", 560, 0.1, 20, 0, 56},
+		// Same case with margin_per_trade_usd set: notional = $56 margin × 20x = $1120.
+		{"issue_518_fixed", 560, 0.1, 20, 56, 1120},
+		// margin_per_trade_usd > cash clamps to cash (can't post more margin
+		// than you have).
+		{"margin_clamps_to_cash", 100, 1, 5, 200, 500},
+		// margin_per_trade_usd ignores sizing_leverage entirely.
+		{"margin_overrides_sizing_leverage", 1000, 0.5, 10, 100, 1000},
+		// Non-positive cash returns 0 — caller must guard.
+		{"negative_cash_returns_zero", -100, 1, 1, 0, 0},
+		{"zero_cash_returns_zero", 0, 5, 5, 50, 0},
+		// Zero exchange leverage falls back to 1× under margin-based sizing.
+		{"margin_zero_exchange_leverage_fallback", 1000, 1, 0, 100, 100},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := PerpsOpenNotional(tc.cash, tc.sizingLeverage, tc.exchangeLev, tc.marginPerTradeUSD)
+			if got != tc.want {
+				t.Errorf("PerpsOpenNotional(cash=%g, sl=%g, el=%g, m=%g) = %g, want %g",
+					tc.cash, tc.sizingLeverage, tc.exchangeLev, tc.marginPerTradeUSD, got, tc.want)
+			}
+		})
+	}
+}
+
+// #518 — ExecutePerpsSignalWithLeverage: paper opens with margin_per_trade_usd
+// set should produce the margin-space notional, not the legacy sizing_leverage
+// notional. This exercises the fix end-to-end inside the executor.
+func TestExecutePerpsSignalMarginPerTradeUSDOverridesSizingLeverage(t *testing.T) {
+	s := &StrategyState{
+		ID:              "hl-test-eth",
+		Cash:            560,
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	// Mirrors issue #518: sizing_leverage=0.1, exchange leverage=20, price=2257.
+	// Without margin_per_trade_usd: notional = 560 * 0.1 = 56 → qty ≈ 0.025 ETH.
+	// With margin_per_trade_usd=56: notional = 56 * 20 = 1120 → qty ≈ 0.50 ETH.
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2257, 0.1, 20, 56, 0, "", 0, false, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	pos := s.Positions["ETH"]
+	if pos == nil {
+		t.Fatal("should have ETH position")
+	}
+	// Allow a small slippage margin around 0.50 ETH.
+	if pos.Quantity < 0.45 || pos.Quantity > 0.55 {
+		t.Errorf("quantity = %g, want ~0.50 (margin_per_trade_usd=$56 × 20x leverage at $2257)", pos.Quantity)
 	}
 }

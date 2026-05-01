@@ -899,6 +899,101 @@ func TestLoadConfigSizingLeverageRejectsOutOfRange(t *testing.T) {
 	}
 }
 
+// #518: margin_per_trade_usd lets operators size opens in margin-space
+// (notional = margin × exchange_leverage) instead of the legacy notional
+// formula (cash × sizing_leverage). Loaded as a pointer so omitted (nil) is
+// distinguishable from explicit 0.
+func TestLoadConfigMarginPerTradeUSDAccepted(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"leverage": 20,
+			"margin_per_trade_usd": 56
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig with margin_per_trade_usd=56 failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if sc.MarginPerTradeUSD == nil || *sc.MarginPerTradeUSD != 56 {
+		t.Errorf("MarginPerTradeUSD = %v, want pointer to 56", sc.MarginPerTradeUSD)
+	}
+	if got := EffectiveMarginPerTradeUSD(sc); got != 56 {
+		t.Errorf("EffectiveMarginPerTradeUSD = %g, want 56", got)
+	}
+	// The full sizing wrapper should reflect the margin formula.
+	if got := ComputePerpsOpenNotional(sc, 1000); got != 1120 {
+		t.Errorf("ComputePerpsOpenNotional(cash=1000) = %g, want 1120 (56 × 20)", got)
+	}
+}
+
+func TestLoadConfigMarginPerTradeUSDRejectsSpot(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "test-spot",
+			"type": "spot",
+			"script": "shared_scripts/check_strategy.py",
+			"args": ["sma_crossover", "BTC/USDT", "1h"],
+			"capital": 1000,
+			"margin_per_trade_usd": 100
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for margin_per_trade_usd on spot strategy")
+	}
+	if !strings.Contains(err.Error(), "margin_per_trade_usd is only supported for perps") {
+		t.Errorf("error = %v, want 'margin_per_trade_usd is only supported for perps'", err)
+	}
+}
+
+func TestLoadConfigMarginPerTradeUSDRejectsNonPositive(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"leverage": 20,
+			"margin_per_trade_usd": 0
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for margin_per_trade_usd=0")
+	}
+	if !strings.Contains(err.Error(), "margin_per_trade_usd must be positive") {
+		t.Errorf("error = %v, want 'margin_per_trade_usd must be positive'", err)
+	}
+}
+
+// #518: an omitted margin_per_trade_usd leaves the legacy sizing_leverage
+// formula in effect — the field is purely additive opt-in.
+func TestEffectiveMarginPerTradeUSDOmittedReturnsZero(t *testing.T) {
+	sc := StrategyConfig{Type: "perps", Leverage: 20, SizingLeverage: 1}
+	if got := EffectiveMarginPerTradeUSD(sc); got != 0 {
+		t.Errorf("EffectiveMarginPerTradeUSD(omitted) = %g, want 0", got)
+	}
+	// And ComputePerpsOpenNotional should still use the legacy formula.
+	if got := ComputePerpsOpenNotional(sc, 1000); got != 1000 {
+		t.Errorf("ComputePerpsOpenNotional with omitted margin_per_trade_usd = %g, want 1000 (cash × sizing_leverage)", got)
+	}
+}
+
 // #486: HL perps strategies default to isolated margin mode.
 func TestLoadConfigHLPerpsDefaultsToIsolatedMargin(t *testing.T) {
 	dir := t.TempDir()
