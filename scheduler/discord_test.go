@@ -1122,7 +1122,7 @@ func TestCollectPositions_WithTimestamp(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 51000}
 
-	lines := collectPositions("hl-rsi-btc", ss, prices)
+	lines := collectPositions(StrategyConfig{ID: "hl-rsi-btc"}, ss, prices)
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(lines))
 	}
@@ -1143,7 +1143,7 @@ func TestCollectPositions_WithoutTimestamp(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 51000}
 
-	lines := collectPositions("hl-rsi-btc", ss, prices)
+	lines := collectPositions(StrategyConfig{ID: "hl-rsi-btc"}, ss, prices)
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(lines))
 	}
@@ -1161,7 +1161,7 @@ func TestCollectPositions_OptionTimestamp(t *testing.T) {
 	}
 	prices := map[string]float64{}
 
-	lines := collectPositions("deribit-wheel-btc", ss, prices)
+	lines := collectPositions(StrategyConfig{ID: "deribit-wheel-btc"}, ss, prices)
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(lines))
 	}
@@ -1179,7 +1179,7 @@ func TestCollectPositions_OptionValueFormat(t *testing.T) {
 			"BTC-call-50000": {ID: "BTC-call-50000", CurrentValueUSD: 12345.67},
 		},
 	}
-	lines := collectPositions("deribit-wheel-btc", ss, nil)
+	lines := collectPositions(StrategyConfig{ID: "deribit-wheel-btc"}, ss, nil)
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(lines))
 	}
@@ -1199,7 +1199,7 @@ func TestCollectPositions_EntryPrice(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH/USDT": 2214.88}
 
-	lines := collectPositions("hl-rsi-eth", ss, prices)
+	lines := collectPositions(StrategyConfig{ID: "hl-rsi-eth"}, ss, prices)
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(lines))
 	}
@@ -1226,7 +1226,7 @@ func TestCollectPositions_ShortEntryPrice(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 51000}
 
-	lines := collectPositions("hl-rsi-btc", ss, prices)
+	lines := collectPositions(StrategyConfig{ID: "hl-rsi-btc"}, ss, prices)
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(lines))
 	}
@@ -1253,7 +1253,7 @@ func TestCollectPositions_StopLossLong(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 63500}
 
-	lines := collectPositions("hl-btc-sma", ss, prices)
+	lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, prices)
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(lines))
 	}
@@ -1273,24 +1273,38 @@ func TestCollectPositions_StopLossShort(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 63500}
 
-	lines := collectPositions("hl-btc-sma", ss, prices)
+	lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, prices)
 	// (65405 - 63500) / 63500 = +3.0%, then sign-flipped for short → -3.0%
 	if !strings.Contains(lines[0], "| SL: $65,405.00 (-3.0%)") {
 		t.Errorf("expected SL fragment 'SL: $65,405.00 (-3.0%%)' for short, got: %s", lines[0])
 	}
 }
 
-// TestCollectPositions_StopLossOmittedWhenInactive verifies that the SL
-// fragment is omitted when StopLossOID is 0 (no resting trigger order).
-func TestCollectPositions_StopLossOmittedWhenInactive(t *testing.T) {
+// TestCollectPositions_StopLossTriggerPxWithoutOID verifies #528: SL price is
+// shown whenever StopLossTriggerPx is known, even without a resting HL OID.
+func TestCollectPositions_StopLossTriggerPxWithoutOID(t *testing.T) {
 	ss := &StrategyState{
 		Positions: map[string]*Position{
 			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", StopLossOID: 0, StopLossTriggerPx: 61595},
 		},
 	}
-	lines := collectPositions("hl-btc-sma", ss, map[string]float64{"BTC/USDT": 63500})
+	lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, map[string]float64{"BTC/USDT": 63500})
+	if !strings.Contains(lines[0], "| SL: $61,595.00 (-3.0%)") {
+		t.Errorf("expected SL from trigger price when OID=0, got: %s", lines[0])
+	}
+}
+
+// TestCollectPositions_StopLossOmittedWhenNoTriggerPx verifies the SL fragment
+// is omitted when StopLossTriggerPx is unset (0).
+func TestCollectPositions_StopLossOmittedWhenNoTriggerPx(t *testing.T) {
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", StopLossOID: 12345, StopLossTriggerPx: 0},
+		},
+	}
+	lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, map[string]float64{"BTC/USDT": 63500})
 	if strings.Contains(lines[0], "SL:") {
-		t.Errorf("SL fragment should be omitted when StopLossOID=0, got: %s", lines[0])
+		t.Errorf("SL fragment should be omitted when StopLossTriggerPx=0, got: %s", lines[0])
 	}
 }
 
@@ -1302,7 +1316,7 @@ func TestCollectPositions_LeverageMargin(t *testing.T) {
 			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", Leverage: 5},
 		},
 	}
-	lines := collectPositions("hl-btc-sma", ss, map[string]float64{"BTC/USDT": 63500})
+	lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, map[string]float64{"BTC/USDT": 63500})
 	// margin = 0.025 * 63500 / 5 = 317.5 → rounded to 318.
 	if !strings.Contains(lines[0], "| 5x ($318 margin)") {
 		t.Errorf("expected '5x ($318 margin)' fragment, got: %s", lines[0])
@@ -1319,7 +1333,7 @@ func TestCollectPositions_LeverageOmittedForSpot(t *testing.T) {
 			"ETH/USDT": {Symbol: "ETH/USDT", Quantity: 1, AvgCost: 2200, Side: "long", Leverage: 1},
 		},
 	}
-	lines := collectPositions("hl-spot", ss, map[string]float64{"BTC/USDT": 63500, "ETH/USDT": 2200})
+	lines := collectPositions(StrategyConfig{ID: "hl-spot"}, ss, map[string]float64{"BTC/USDT": 63500, "ETH/USDT": 2200})
 	for _, l := range lines {
 		if strings.Contains(l, "margin") {
 			t.Errorf("leverage+margin fragment should be omitted for spot/1x, got: %s", l)
@@ -1340,7 +1354,7 @@ func TestCollectPositions_AllFragments(t *testing.T) {
 			},
 		},
 	}
-	lines := collectPositions("hl-btc-sma", ss, map[string]float64{"BTC/USDT": 63500})
+	lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, map[string]float64{"BTC/USDT": 63500})
 	got := lines[0]
 	slIdx := strings.Index(got, "| SL:")
 	levIdx := strings.Index(got, "| 5x")
@@ -1350,6 +1364,96 @@ func TestCollectPositions_AllFragments(t *testing.T) {
 	}
 	if !(slIdx < levIdx && levIdx < dateIdx) {
 		t.Errorf("expected SL → leverage → date ordering, got: %s", got)
+	}
+}
+
+// TestCollectPositions_TieredTPATR_Long verifies #528 TP1/TP2 hints from entry
+// ATR when close_strategies includes tiered_tp_atr.
+func TestCollectPositions_TieredTPATR_Long(t *testing.T) {
+	sc := StrategyConfig{
+		ID:              "hl-tatr-btc",
+		CloseStrategies: []string{"tiered_tp_atr"},
+	}
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", EntryATR: 1000},
+		},
+	}
+	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], "| TP1: $64,500.00 (+1.6%) | TP2: $65,500.00 (+3.1%)") {
+		t.Errorf("expected tiered TP fragments for long, got: %s", lines[0])
+	}
+}
+
+func TestCollectPositions_TieredTPATR_Short(t *testing.T) {
+	sc := StrategyConfig{
+		ID:              "hl-tatr-btc",
+		CloseStrategies: []string{"tiered_tp_atr"},
+	}
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "short", EntryATR: 1000},
+		},
+	}
+	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
+	if !strings.Contains(lines[0], "| TP1: $62,500.00 (+1.6%) | TP2: $61,500.00 (+3.1%)") {
+		t.Errorf("expected tiered TP fragments for short, got: %s", lines[0])
+	}
+}
+
+func TestCollectPositions_TieredTPATR_OmittedWithoutCloseStrategy(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-rsi-btc", CloseStrategies: []string{"tiered_tp_pct"}}
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", EntryATR: 1000},
+		},
+	}
+	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
+	if strings.Contains(lines[0], "TP1:") {
+		t.Errorf("TP hints should be omitted without tiered_tp_atr close, got: %s", lines[0])
+	}
+}
+
+func TestCollectPositions_TieredTPATR_OmittedWhenEntryATRZero(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-tatr-btc", CloseStrategies: []string{"tiered_tp_atr"}}
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", EntryATR: 0},
+		},
+	}
+	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
+	if strings.Contains(lines[0], "TP1:") {
+		t.Errorf("TP hints should be omitted when EntryATR=0, got: %s", lines[0])
+	}
+}
+
+// TestCollectPositions_AllFragments_WithTieredTP verifies SL → TP1 → TP2 →
+// leverage → date ordering when tiered_tp_atr is configured (#528).
+func TestCollectPositions_AllFragments_WithTieredTP(t *testing.T) {
+	opened := time.Date(2026, 4, 28, 14, 32, 0, 0, time.UTC)
+	sc := StrategyConfig{ID: "hl-tatr-btc", CloseStrategies: []string{"tiered_tp_atr"}}
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {
+				Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", EntryATR: 1000,
+				Leverage: 5, StopLossTriggerPx: 61595, OpenedAt: opened,
+			},
+		},
+	}
+	got := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})[0]
+	slIdx := strings.Index(got, "| SL:")
+	tp1Idx := strings.Index(got, "| TP1:")
+	tp2Idx := strings.Index(got, "| TP2:")
+	levIdx := strings.Index(got, "| 5x")
+	dateIdx := strings.Index(got, "[Apr 28")
+	if slIdx < 0 || tp1Idx < 0 || tp2Idx < 0 || levIdx < 0 || dateIdx < 0 {
+		t.Fatalf("expected SL, TP1, TP2, leverage, and date fragments, got: %s", got)
+	}
+	if !(slIdx < tp1Idx && tp1Idx < tp2Idx && tp2Idx < levIdx && levIdx < dateIdx) {
+		t.Errorf("expected SL → TP1 → TP2 → leverage → date ordering, got: %s", got)
 	}
 }
 

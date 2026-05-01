@@ -509,7 +509,7 @@ func FormatCategorySummary(
 			if ss == nil {
 				continue
 			}
-			posLines = append(posLines, collectPositions(sc.ID, ss, prices)...)
+			posLines = append(posLines, collectPositions(sc, ss, prices)...)
 		}
 	}
 
@@ -961,8 +961,20 @@ func positionMargin(qty, avgCost, leverage float64) float64 {
 	return (qty * avgCost) / leverage
 }
 
+// strategyUsesTieredTPATRClose reports whether the strategy's configured close
+// evaluators include tiered_tp_atr (entry-ATR multiples from avg_cost). Used
+// for position-summary TP1/TP2 price hints (#528).
+func strategyUsesTieredTPATRClose(sc StrategyConfig) bool {
+	for _, name := range sc.CloseStrategies {
+		if strings.EqualFold(strings.TrimSpace(name), "tiered_tp_atr") {
+			return true
+		}
+	}
+	return false
+}
+
 // collectPositions returns human-readable position lines for a strategy.
-func collectPositions(stratID string, ss *StrategyState, prices map[string]float64) []string {
+func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]float64) []string {
 	var lines []string
 	for sym, pos := range ss.Positions {
 		currentPrice := prices[sym]
@@ -984,22 +996,43 @@ func collectPositions(stratID string, ss *StrategyState, prices map[string]float
 			dateStr = fmt.Sprintf(" [%s]", pos.OpenedAt.Format("Jan 02 15:04"))
 		}
 		extras := ""
-		if pos.StopLossOID > 0 && pos.StopLossTriggerPx > 0 {
+		if pos.StopLossTriggerPx > 0 {
 			slPct := percentFromEntry(pos.Side, pos.AvgCost, pos.StopLossTriggerPx)
 			extras += fmt.Sprintf(" | SL: $%s (%s)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct))
+		}
+		if strategyUsesTieredTPATRClose(sc) && pos.EntryATR > 0 && pos.AvgCost > 0 {
+			sideLower := strings.ToLower(pos.Side)
+			var tp1, tp2 float64
+			var haveTP bool
+			switch sideLower {
+			case "short":
+				tp1 = pos.AvgCost - pos.EntryATR
+				tp2 = pos.AvgCost - 2*pos.EntryATR
+				haveTP = true
+			case "long":
+				tp1 = pos.AvgCost + pos.EntryATR
+				tp2 = pos.AvgCost + 2*pos.EntryATR
+				haveTP = true
+			}
+			if haveTP {
+				tp1Pct := percentFromEntry(pos.Side, pos.AvgCost, tp1)
+				tp2Pct := percentFromEntry(pos.Side, pos.AvgCost, tp2)
+				extras += fmt.Sprintf(" | TP1: $%s (%s) | TP2: $%s (%s)",
+					fmtComma2(tp1), fmtPnlPct(tp1Pct), fmtComma2(tp2), fmtPnlPct(tp2Pct))
+			}
 		}
 		if pos.Leverage > 1 {
 			margin := positionMargin(pos.Quantity, pos.AvgCost, pos.Leverage)
 			extras += fmt.Sprintf(" | %gx ($%s margin)", pos.Leverage, fmtComma(math.Round(margin)))
 		}
-		lines = append(lines, fmt.Sprintf("%s %s %s x%g @ $%s (%s$%s)%s%s", stratID, strings.ToUpper(pos.Side), sym, pos.Quantity, fmtComma2(pos.AvgCost), sign, fmtComma2(absPnl), extras, dateStr))
+		lines = append(lines, fmt.Sprintf("%s %s %s x%g @ $%s (%s$%s)%s%s", sc.ID, strings.ToUpper(pos.Side), sym, pos.Quantity, fmtComma2(pos.AvgCost), sign, fmtComma2(absPnl), extras, dateStr))
 	}
 	for key, opt := range ss.OptionPositions {
 		dateStr := ""
 		if !opt.OpenedAt.IsZero() {
 			dateStr = fmt.Sprintf(" [%s]", opt.OpenedAt.Format("Jan 02 15:04"))
 		}
-		lines = append(lines, fmt.Sprintf("%s OPT %s ($%s)%s", stratID, key, fmtComma2(opt.CurrentValueUSD), dateStr))
+		lines = append(lines, fmt.Sprintf("%s OPT %s ($%s)%s", sc.ID, key, fmtComma2(opt.CurrentValueUSD), dateStr))
 	}
 	return lines
 }
