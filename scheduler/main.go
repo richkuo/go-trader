@@ -1811,7 +1811,7 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 
 // executeSpotResult applies a spot signal to state. Must be called under Lock.
 func executeSpotResult(sc StrategyConfig, s *StrategyState, result *SpotResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
-	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, price, 0, logger)
+	trades, err := ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, price, 0, 0, "", result.CloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -2094,7 +2094,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	sizingLeverage := EffectiveSizingLeverage(sc)
 	exchangeLeverage := EffectiveExchangeLeverage(sc)
 	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
-	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, sc.AllowShorts)
+	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, sc.AllowShorts, result.CloseFraction)
 	if !ok {
 		logger.Info("%s for %s", reason, result.Symbol)
 		return nil, false
@@ -2115,6 +2115,13 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	//   - on a flip, pass prev_pos_qty so the SL is sized against the new
 	//     net position (#421) — total_sz alone is closeQty+newQty.
 	pureClose := result.Signal == -1 && posSide == "long" && !sc.AllowShorts
+	// Partial close (#519): a fractional close from the open/close registry
+	// must NOT cancel the resting stop-loss — the SL is reduce-only and will
+	// continue to protect the residual position; cancelling without
+	// re-placing would leave the remainder unprotected. Skip both the cancel
+	// and the new-SL placement on partial close. The trailing-stop loop
+	// resizes the SL on its own cadence (#502).
+	partialClose := result.CloseFraction > 0 && result.CloseFraction < 1
 	// flipping predicate must mirror perpsLiveOrderSize exactly — both branches
 	// require sc.AllowShorts. A long-only strategy that inherited a short
 	// position (e.g. AllowShorts toggled true→false between restarts) would
@@ -2123,11 +2130,11 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	// the SL silently undersized (#421 review point 6).
 	flipping := sc.AllowShorts && posQty > 0 && ((result.Signal == 1 && posSide == "short") || (result.Signal == -1 && posSide == "long"))
 	var cancelOID int64
-	if existingStopLossOID > 0 && posQty > 0 {
+	if existingStopLossOID > 0 && posQty > 0 && !partialClose {
 		cancelOID = existingStopLossOID
 	}
 	var slPct float64
-	if !pureClose {
+	if !pureClose && !partialClose {
 		// EffectiveStopLossPct self-guards on platform/type and returns the
 		// explicit price %, derives it from stop_loss_margin_pct / leverage
 		// (#487), or falls back to max_drawdown_pct capped at 50% (#484).
@@ -2265,7 +2272,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 		fillFee = fill.Fee
 	}
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, sc.AllowShorts, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, sc.AllowShorts, result.CloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -2436,6 +2443,19 @@ func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cas
 			return nil, false
 		}
 		contracts = int(posQty)
+		if result.CloseFraction > 0 && result.CloseFraction < 1 {
+			// #519: partial close from the open/close registry, rounded
+			// DOWN to whole contracts so the residual position stays at
+			// least one contract.
+			partial := int(float64(contracts) * result.CloseFraction)
+			if partial < 1 {
+				logger.Info("Partial-close fraction %.4f rounds to 0 contracts for %s; skipping live order", result.CloseFraction, result.Symbol)
+				return nil, false
+			}
+			if partial < contracts {
+				contracts = partial
+			}
+		}
 	}
 
 	side := "buy"
@@ -2487,7 +2507,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, result *TopStepRe
 		maxContracts = sc.FuturesConfig.MaxContracts
 	}
 
-	trades, err := ExecuteFuturesSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, result.ContractSpec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, logger)
+	trades, err := ExecuteFuturesSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, result.ContractSpec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, result.CloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -2603,6 +2623,12 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 			return nil, false
 		}
 		quantity = posQty
+		if result.CloseFraction > 0 && result.CloseFraction < 1 {
+			// #519: partial close from the open/close registry sizes the
+			// live order to the fraction so the exchange and virtual state
+			// agree on the close leg.
+			quantity = posQty * result.CloseFraction
+		}
 	}
 
 	logger.Info("Placing live %s %s amount_usd=%.2f qty=%.6f", side, result.Symbol, amountUSD, quantity)
@@ -2643,7 +2669,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, result *Robinho
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	trades, err := ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, logger)
+	trades, err := ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -2770,7 +2796,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 	if sc.Type == "perps" {
 		var ok bool
 		var reason string
-		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, sc.AllowShorts)
+		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, sc.AllowShorts, result.CloseFraction)
 		if !ok {
 			logger.Info("%s for %s", reason, result.Symbol)
 			return nil, false
@@ -2792,6 +2818,10 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 				return nil, false
 			}
 			size = posQty
+			if result.CloseFraction > 0 && result.CloseFraction < 1 {
+				// #519: partial close on OKX spot from the open/close registry.
+				size = posQty * result.CloseFraction
+			}
 		}
 	}
 
@@ -2846,9 +2876,9 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, ex
 	var trades int
 	var err error
 	if sc.Type == "perps" {
-		trades, err = ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc), fillQty, fillOID, fillFee, sc.AllowShorts, logger)
+		trades, err = ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc), fillQty, fillOID, fillFee, sc.AllowShorts, result.CloseFraction, logger)
 	} else {
-		trades, err = ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, logger)
+		trades, err = ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, logger)
 	}
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
