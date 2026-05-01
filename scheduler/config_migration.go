@@ -87,8 +87,8 @@ const v9DeprecationNotice = "**Note:** HL perps strategies now auto-derive a per
 	"choose one explicit positive stop-loss owner if you want a shared-position trigger. See issues #484 and #494."
 
 const v10DeprecationNotice = "**Note:** perps configs now distinguish `sizing_leverage` from exchange `leverage`. " +
-	"Migration copies existing perps `leverage` into `sizing_leverage` so old configs keep identical order sizing; " +
-	"`leverage` now represents the exchange leverage used for margin drawdown and HL `update_leverage`. See issue #497."
+	"`sizing_leverage` is a margin allocation multiplier and `leverage` is exchange leverage used for notional, " +
+	"margin drawdown, and HL `update_leverage`. See issues #497 and #518."
 
 const v7DeprecationNotice = "**Note:** `dm_paper_trades` and `dm_live_trades` have been replaced by a `dm_channels` map. " +
 	"Paper trades use `dm_channels[\"<platform>-paper\"]`; live trades use `dm_channels[\"<platform>\"]`. " +
@@ -156,9 +156,9 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 		}
 	}
 
-	// v10: split position-sizing leverage from exchange leverage (#497). Copy
-	// existing perps leverage to sizing_leverage so legacy configs keep the
-	// exact same notional sizing after `leverage` becomes exchange/risk leverage.
+	// v10: split position-sizing leverage from exchange leverage (#497/#518).
+	// Default sizing_leverage to one cash unit of margin; exchange leverage is
+	// applied separately to derive notional.
 	if oldVer < 10 {
 		addV10SizingLeverage(raw)
 	}
@@ -267,8 +267,8 @@ func addV10SizingLeverage(raw map[string]interface{}) {
 		if stringFromJSON(sc["type"]) != "perps" {
 			continue
 		}
-		if lev, ok := sc["leverage"]; ok {
-			sc["sizing_leverage"] = lev
+		if _, ok := sc["leverage"]; ok {
+			sc["sizing_leverage"] = float64(1)
 		}
 	}
 }

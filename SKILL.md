@@ -249,7 +249,7 @@ Use the commit message and PR number to classify. When in doubt, treat as runtim
 
 | Category | Examples |
 | --- | --- |
-| Auto-migration | `config_version` bump, deprecated field removal, silent field copy (e.g. v10 `sizing_leverage` ← `leverage`); silent field drop without version bump (e.g. `disable_implicit_close` removed in #508 — if set in config it no-ops; any strategy that had it `true` with no `close_strategies` now uses the open strategy as implicit close instead) |
+| Auto-migration | `config_version` bump, deprecated field removal, silent default fill (e.g. v10 `sizing_leverage` defaults to `1` margin unit); silent field drop without version bump (e.g. `disable_implicit_close` removed in #508 — if set in config it no-ops; any strategy that had it `true` with no `close_strategies` now uses the open strategy as implicit close instead) |
 | Runtime default | HL stop-loss auto-derive (#493), HL margin mode default isolated (#486), peer normalization across all four HL stop/trailing omission fields (#494/#507); HL perps shared-coin CB drain (#515): pending clears **without** on-chain HL close when peers share the coin — operators who expected CB to flatten the whole HL leg must be told explicitly |
 | Opt-in field | `%` trailing stop (#502), ATR-derived trailing via `trailing_stop_atr_mult` (#507 — entry path must populate `Position.EntryATR`; initial trigger deferred one cycle); open/close composition (#483), `stop_loss_margin_pct` (#490) |
 | Internal / no ops impact | Discord summary strategy column truncation/aliases (#514); Python registry split into `open/registry.py` + `close/registry.py` (#511) — same checklist, different paths already documented elsewhere |
@@ -464,7 +464,7 @@ Per-strategy keys:
 | Trailing stop (ATR × mult) | `trailing_stop_atr_mult` | Hyperliquid perps only — trailing distance derived from entry ATR stamped on the position at open (~`mult * entry_atr / avg_cost * 100`%, capped); fixed distance for life of trade; mutually exclusive with the other HL stop/trailing owners when positive (#507). Implicit trigger arms the cycle after open once ATR exists. |
 | Trailing stop debounce | `trailing_stop_min_move_pct` | Minimum trigger-price move before cancel/replace (`%`/ATR-mult trailing). Defaults to 0.5%. |
 | Exchange leverage | `leverage` | Perps only — exchange margin/risk leverage and HL `update_leverage` (#497). 1× by default. |
-| Sizing leverage | `sizing_leverage` | Perps only — order-size multiplier (`cash * sizing_leverage * 0.95`). Defaults to `leverage`; set lower to run high exchange leverage with conservative position size (#497). |
+| Sizing leverage | `sizing_leverage` | Perps only — margin allocation multiplier. Notional is `cash * sizing_leverage * leverage`; `0.1` means 10% of cash as margin before exchange leverage is applied (#497/#518). Defaults to `1`. |
 | Margin mode | `margin_mode` | Hyperliquid perps only, `isolated` (default) or `cross`. Applied from flat. |
 | Open strategy | `open_strategy` | Override entry strategy name (otherwise from `args[0]`) |
 | Close strategies | `close_strategies` | Ordered list of exit evaluators; max `close_fraction` wins |

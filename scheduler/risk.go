@@ -388,9 +388,10 @@ func addKillSwitchEvent(prs *PortfolioRiskState, eventType, source string, drawd
 // Only strategies with Type == "perps" contribute. configs maps strategy ID
 // to StrategyConfig — used to source exchange sc.Leverage so the margin
 // denominator matches the actual exchange leverage rather than the
-// sizing_leverage order multiplier (#497). Strategies whose config is missing or has Leverage <= 0 are
-// skipped; they don't contribute to the perps margin signal and the kill
-// switch falls back to equity drawdown for them.
+// sizing_leverage margin allocation multiplier (#497/#518). Strategies whose
+// config is missing or has Leverage <= 0 are skipped; they don't contribute to
+// the perps margin signal and the kill switch falls back to equity drawdown for
+// them.
 //
 // Returns (0, 0) when no perps margin is deployed — the caller treats a zero
 // margin as "no perps signal this cycle" and falls back to pure equity
@@ -1192,9 +1193,9 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 // denominator of the perps-specific drawdown ratio introduced in #292.
 //
 // configLeverage is the strategy-config exchange leverage (sc.Leverage), not
-// sc.SizingLeverage and not pos.Leverage. This lets operators size small
-// positions with sizing_leverage while calculating margin drawdown against the
-// leverage actually configured at the exchange (#497).
+// sc.SizingLeverage and not pos.Leverage. This lets operators choose margin
+// allocation with sizing_leverage while calculating margin drawdown against
+// the leverage actually configured at the exchange (#497/#518).
 //
 // Positions are filtered by Multiplier > 0 (perps marker). The outer
 // s.Type == "perps" check at the call site is the primary guard. configLeverage

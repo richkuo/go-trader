@@ -310,7 +310,7 @@ type InitOptions struct {
 	OptionsCapital          float64
 	PerpsCapital            float64
 	PerpsLeverage           float64  // perps exchange leverage (default 1 = no leverage) (#254/#497)
-	PerpsSizingLeverage     float64  // perps sizing multiplier; defaults to PerpsLeverage (#497)
+	PerpsSizingLeverage     float64  // perps margin allocation multiplier; defaults to 1 (#497/#518)
 	HLStopLossPct           *float64 // HL perps only: per-trade stop-loss % from entry. nil = auto-derive from MaxDrawdownPct (#484); explicit 0 = disabled; >0 = override (#412)
 	HLStopLossMarginPct     *float64 // HL perps only: per-trade stop-loss as % of deployed margin. nil = auto-derive; explicit 0 = disabled; mutually exclusive with HLStopLossPct (#487, #484)
 	HLTrailingStopPct       *float64 // HL perps only: synthetic trailing stop distance from high/low-water mark; mutually exclusive with fixed SL fields (#501)
@@ -492,7 +492,7 @@ func generateConfig(opts InitOptions) *Config {
 		}
 		perpsSizingLeverage := opts.PerpsSizingLeverage
 		if perpsSizingLeverage <= 0 {
-			perpsSizingLeverage = perpsLeverage
+			perpsSizingLeverage = 1
 		}
 		for _, stratID := range opts.PerpsStrategies {
 			shortName := deriveShortName(stratID)
@@ -622,7 +622,7 @@ func generateConfig(opts InitOptions) *Config {
 		}
 		okxPerpsSizingLeverage := opts.PerpsSizingLeverage
 		if okxPerpsSizingLeverage <= 0 {
-			okxPerpsSizingLeverage = okxPerpsLeverage
+			okxPerpsSizingLeverage = 1
 		}
 		for _, stratID := range opts.OKXPerpsStrategies {
 			shortName := deriveShortName(stratID)
@@ -728,13 +728,13 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 	if opts.EnablePerps && opts.PerpsMode == "" {
 		opts.PerpsMode = "paper"
 	}
-	// #254/#497: perps exchange leverage defaults to 1x if not specified;
-	// sizing leverage inherits it to preserve legacy order sizing.
+	// #254/#497/#518: perps exchange leverage defaults to 1x if not specified;
+	// sizing leverage defaults to one cash unit of margin.
 	if opts.EnablePerps && opts.PerpsLeverage <= 0 {
 		opts.PerpsLeverage = 1
 	}
 	if opts.EnablePerps && opts.PerpsSizingLeverage <= 0 {
-		opts.PerpsSizingLeverage = opts.PerpsLeverage
+		opts.PerpsSizingLeverage = 1
 	}
 
 	// Auto-populate PerpsStrategies from discovered list if not specified.

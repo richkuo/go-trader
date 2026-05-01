@@ -626,8 +626,8 @@ func TestMigrateConfigV10AddsSizingLeverage(t *testing.T) {
 	}
 	strategies := updated["strategies"].([]interface{})
 	hl := strategies[0].(map[string]interface{})
-	if got := hl["sizing_leverage"].(float64); got != 2 {
-		t.Errorf("hl sizing_leverage = %g, want 2", got)
+	if got := hl["sizing_leverage"].(float64); got != 1 {
+		t.Errorf("hl sizing_leverage = %g, want 1", got)
 	}
 	okx := strategies[1].(map[string]interface{})
 	if got := okx["sizing_leverage"].(float64); got != 3 {

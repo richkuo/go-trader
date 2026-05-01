@@ -1511,8 +1511,9 @@ func TestAggregatePerpsMarginInputs_UsesConfigLeverage(t *testing.T) {
 	}
 }
 
-// #497: sizing_leverage is an order-sizing knob only. Margin drawdown uses the
-// exchange leverage so a strategy can size at 2x while monitoring risk at 20x.
+// #497/#518: sizing_leverage is a margin allocation knob only. Margin drawdown
+// uses exchange leverage so a strategy can allocate at 2x while monitoring
+// risk at 20x.
 func TestAggregatePerpsMarginInputs_UsesExchangeLeverageNotSizingLeverage(t *testing.T) {
 	strategies := map[string]*StrategyState{
 		"hl-eth": {

@@ -361,13 +361,13 @@ func PerpsOrderSkipReason(signal int, posSide string, allowShorts bool) string {
 // four cases:
 //
 //   - Fresh open (posQty <= 0):
-//   - signal=1           → size = cash*lev*0.95/price (long from flat)
-//   - signal=-1 + AllowShorts → size = cash*lev*0.95/price (short from flat)
+//   - signal=1           → size = cash*sizingLev*exchangeLev/price (long from flat)
+//   - signal=-1 + AllowShorts → size = cash*sizingLev*exchangeLev/price (short from flat)
 //   - Close-only (legacy, !AllowShorts):
 //   - signal=-1 + long   → size = posQty
 //   - Flip (AllowShorts + opposite-side position):
-//   - signal=1 + short   → size = posQty + (cash+expectedClosePnL)*lev*0.95/price
-//   - signal=-1 + long   → size = posQty + (cash+expectedClosePnL)*lev*0.95/price
+//   - signal=1 + short   → size = posQty + (cash+expectedClosePnL)*sizingLev*exchangeLev/price
+//   - signal=-1 + long   → size = posQty + (cash+expectedClosePnL)*sizingLev*exchangeLev/price
 //
 // The flip branch is what this helper exists for: without `posQty + newSize`
 // a bidirectional scheduler tells ExecutePerpsSignal to virtually close+open
@@ -384,7 +384,7 @@ func PerpsOrderSkipReason(signal int, posSide string, allowShorts bool) string {
 // (reported as insufficient cash rather than silently undersizing).
 //
 // Returns (size, ok); when ok is false `reason` is a log-ready string.
-func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage float64, posSide string, allowShorts bool) (size float64, ok bool, reason string) {
+func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage float64, posSide string, allowShorts bool) (size float64, ok bool, reason string) {
 	isBuy := signal == 1
 	flipping := allowShorts && posQty > 0 && ((isBuy && posSide == "short") || (!isBuy && posSide == "long"))
 	// Fresh open: buy always fresh-sizes (legacy buy-vs-migrated-short kept
@@ -407,7 +407,7 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage
 			}
 			effectiveCash = cash + closePnL
 		}
-		budget := effectiveCash * sizingLeverage * 0.95
+		budget := perpsNotionalBudget(effectiveCash, sizingLeverage, exchangeLeverage)
 		if budget < 1 || price <= 0 {
 			// Flip + catastrophic drawdown (realized loss wipes out post-close
 			// margin): the new side can't be sized, but the close leg still
@@ -434,6 +434,16 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage
 		return 0, false, "no position to close"
 	}
 	return posQty, true, ""
+}
+
+func perpsNotionalBudget(cash, sizingLeverage, exchangeLeverage float64) float64 {
+	if sizingLeverage <= 0 {
+		sizingLeverage = 1
+	}
+	if exchangeLeverage <= 0 {
+		exchangeLeverage = 1
+	}
+	return cash * sizingLeverage * exchangeLeverage
 }
 
 // SpotOrderSkipReason mirrors PerpsOrderSkipReason for spot. ExecuteSpotSignal's
@@ -496,10 +506,9 @@ func FuturesOrderSkipReason(signal int, posSide string) string {
 // futures model. The resulting Position is stamped with Multiplier=1 so
 // PortfolioValue takes the PnL branch (cash + qty*(price-entry)).
 //
-// sizingLeverage determines notional sizing in paper mode: quantity =
-// cash * sizingLeverage * 0.95 / price. exchangeLeverage is stored on
-// Position for exchange-margin reporting and risk math. The legacy wrapper
-// passes the same value for both so old behavior is unchanged (#497).
+// sizingLeverage determines the margin budget in paper mode: quantity =
+// cash * sizingLeverage * exchangeLeverage / price. exchangeLeverage is
+// stored on Position for exchange-margin reporting and risk math (#497/#518).
 //
 // fillQty > 0 means a live fill: use price and fillQty as-is (no slippage,
 // no notional recalc). fillQty == 0 means paper mode: compute qty from
@@ -518,7 +527,7 @@ func FuturesOrderSkipReason(signal int, posSide string) string {
 // closes a long and never opens a short — the legacy long-only behavior
 // that strategies like triple_ema and rsi_macd_combo depend on.
 func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, fillOID string, fillFee float64, allowShorts bool, logger *StrategyLogger) (int, error) {
-	return ExecutePerpsSignalWithLeverage(s, signal, symbol, price, leverage, leverage, fillQty, fillOID, fillFee, allowShorts, logger)
+	return ExecutePerpsSignalWithLeverage(s, signal, symbol, price, 1, leverage, fillQty, fillOID, fillFee, allowShorts, logger)
 }
 
 func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage float64, fillQty float64, fillOID string, fillFee float64, allowShorts bool, logger *StrategyLogger) (int, error) {
@@ -529,7 +538,7 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		sizingLeverage = 1
 	}
 	if exchangeLeverage <= 0 {
-		exchangeLeverage = sizingLeverage
+		exchangeLeverage = 1
 	}
 	tradesExecuted := 0
 	leverageLabel := perpsLeverageLabel(exchangeLeverage, sizingLeverage)
@@ -622,8 +631,8 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			if execPrice <= 0 {
 				return tradesExecuted, nil
 			}
-			// Leveraged notional: cash * sizing leverage * 0.95
-			budget := s.Cash * sizingLeverage * 0.95
+			// Leveraged notional: margin budget * exchange leverage.
+			budget := perpsNotionalBudget(s.Cash, sizingLeverage, exchangeLeverage)
 			qty = budget / execPrice
 		}
 		notional := qty * execPrice
@@ -747,7 +756,7 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			if execPrice <= 0 {
 				return tradesExecuted, nil
 			}
-			budget := s.Cash * sizingLeverage * 0.95
+			budget := perpsNotionalBudget(s.Cash, sizingLeverage, exchangeLeverage)
 			qty = budget / execPrice
 		}
 		notional := qty * execPrice

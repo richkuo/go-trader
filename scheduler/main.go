@@ -2088,10 +2088,12 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		return nil, false
 	}
 	isBuy := result.Signal == 1
-	// #254/#497: perps use sizing_leverage to size notional; mirror OKX's guard so any
-	// future HL spot mode can't accidentally over-size.
+	// #254/#497/#518: perps use sizing_leverage to size margin, then exchange
+	// leverage to derive notional; mirror OKX's guard so any future HL spot
+	// mode can't accidentally over-size.
 	sizingLeverage := EffectiveSizingLeverage(sc)
-	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, posSide, sc.AllowShorts)
+	exchangeLeverage := EffectiveExchangeLeverage(sc)
+	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, posSide, sc.AllowShorts)
 	if !ok {
 		logger.Info("%s for %s", reason, result.Symbol)
 		return nil, false
@@ -2753,14 +2755,16 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 		return nil, false
 	}
 	isBuy := result.Signal == 1
-	// #254/#497: perps use sizing_leverage to size notional; EffectiveSizingLeverage
-	// returns 1 for spot, so no perps gate needed here.
+	// #254/#497/#518: perps use sizing_leverage to size margin, then exchange
+	// leverage to derive notional; EffectiveSizingLeverage returns 1 for spot,
+	// so no perps gate needed here.
 	sizingLeverage := EffectiveSizingLeverage(sc)
+	exchangeLeverage := EffectiveExchangeLeverage(sc)
 	var size float64
 	if sc.Type == "perps" {
 		var ok bool
 		var reason string
-		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, posSide, sc.AllowShorts)
+		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, posSide, sc.AllowShorts)
 		if !ok {
 			logger.Info("%s for %s", reason, result.Symbol)
 			return nil, false

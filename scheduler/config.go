@@ -205,7 +205,7 @@ type StrategyConfig struct {
 	HTFFilter              bool                   `json:"htf_filter,omitempty"`                 // higher-timeframe trend filter
 	AllowShorts            bool                   `json:"allow_shorts,omitempty"`               // perps only: opt-in to bidirectional execution — signal=-1 from flat opens a short, long+(-1) closes-and-flips. Default false preserves close-long-only behavior for strategies like triple_ema that emit -1 only as a long-exit (#328)
 	Leverage               float64                `json:"leverage,omitempty"`                   // perps exchange leverage (default 1 = no leverage); used for exchange margin/risk and HL update_leverage (#254/#497)
-	SizingLeverage         float64                `json:"sizing_leverage,omitempty"`            // perps sizing multiplier; defaults to Leverage for backwards compatibility (#497)
+	SizingLeverage         float64                `json:"sizing_leverage,omitempty"`            // perps margin allocation multiplier; notional = cash * sizing_leverage * leverage (#497/#518)
 	StopLossPct            *float64               `json:"stop_loss_pct,omitempty"`              // HL perps only: % from entry to place a reduce-only stop-loss trigger. Pointer so omitted (nil) falls through to StopLossMarginPct then MaxDrawdownPct for single-coin strategies (#484); LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables auto-SL (#412)
 	StopLossMarginPct      *float64               `json:"stop_loss_margin_pct,omitempty"`       // HL perps only: % of deployed margin to lose before stop-loss trigger; mutually exclusive with stop_loss_pct; price % derived as StopLossMarginPct / Leverage at order time. Pointer so omitted falls through to MaxDrawdownPct for single-coin strategies; LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables (#487, #484)
 	TrailingStopPct        *float64               `json:"trailing_stop_pct,omitempty"`          // HL perps only: synthetic trailing SL distance from the best mark seen while open; mutually exclusive with stop_loss_pct and stop_loss_margin_pct (#501)
@@ -217,19 +217,15 @@ type StrategyConfig struct {
 	FuturesConfig          *FuturesConfig         `json:"futures,omitempty"`
 }
 
-// EffectiveSizingLeverage returns the notional-sizing multiplier for perps.
-// Omitted sizing_leverage inherits leverage so legacy configs keep the exact
-// old position sizing while new configs can run higher exchange leverage for
-// margin/risk math without increasing order size (#497).
+// EffectiveSizingLeverage returns the margin allocation multiplier for perps.
+// Omitted sizing_leverage means "use one cash unit of margin"; exchange
+// leverage is applied separately when deriving order notional (#497/#518).
 func EffectiveSizingLeverage(sc StrategyConfig) float64 {
 	if sc.Type != "perps" {
 		return 1
 	}
 	if sc.SizingLeverage > 0 {
 		return sc.SizingLeverage
-	}
-	if sc.Leverage > 0 {
-		return sc.Leverage
 	}
 	return 1
 }
@@ -439,14 +435,14 @@ func LoadConfig(path string) (*Config, error) {
 			}
 		}
 
-		// #254/#497: Default exchange leverage for perps strategies is 1x
-		// (no leverage) when unset. sizing_leverage inherits leverage unless
-		// explicitly set so old configs keep their order sizing.
+		// #254/#497/#518: Default exchange leverage for perps strategies is 1x
+		// (no leverage) when unset. sizing_leverage defaults to one cash unit
+		// of margin; exchange leverage is applied separately to notional.
 		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].Leverage <= 0 {
 			cfg.Strategies[i].Leverage = 1
 		}
 		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].SizingLeverage == 0 {
-			cfg.Strategies[i].SizingLeverage = cfg.Strategies[i].Leverage
+			cfg.Strategies[i].SizingLeverage = 1
 		}
 
 		// #486: Default margin mode for HL perps is "isolated". Cross is the
@@ -890,11 +886,11 @@ func ValidateConfig(cfg *Config) error {
 				errs = append(errs, fmt.Sprintf("%s: leverage must be in [1, 100], got %g", prefix, sc.Leverage))
 			}
 		}
-		// SizingLeverage decouples position sizing from exchange margin (#497).
+		// SizingLeverage controls the margin budget per trade (#497/#518).
 		// A legitimate use case is high exchange leverage with conservative
-		// position size (e.g. leverage=20, sizing_leverage=0.5), so the lower
-		// bound is a small positive value rather than 1. The math
-		// (cash * sizing_leverage * 0.95) tolerates fractional values fine.
+		// margin allocation (e.g. leverage=20, sizing_leverage=0.1), so the
+		// lower bound is a small positive value rather than 1. Notional is
+		// cash * sizing_leverage * leverage.
 		if sc.SizingLeverage != 0 {
 			if sc.Type != "perps" {
 				errs = append(errs, fmt.Sprintf("%s: sizing_leverage is only supported for perps strategies (got type %q)", prefix, sc.Type))

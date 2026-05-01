@@ -745,8 +745,8 @@ func TestLoadConfigPerpsLeverageExplicit(t *testing.T) {
 	if cfg.Strategies[0].Leverage != 10 {
 		t.Errorf("Leverage = %g, want 10", cfg.Strategies[0].Leverage)
 	}
-	if cfg.Strategies[0].SizingLeverage != 10 {
-		t.Errorf("SizingLeverage = %g, want 10 (defaults to leverage)", cfg.Strategies[0].SizingLeverage)
+	if cfg.Strategies[0].SizingLeverage != 1 {
+		t.Errorf("SizingLeverage = %g, want 1 (default margin allocation)", cfg.Strategies[0].SizingLeverage)
 	}
 }
 
@@ -848,9 +848,9 @@ func TestLoadConfigSizingLeverageRejectsSpot(t *testing.T) {
 	}
 }
 
-// #497: fractional sizing_leverage is valid — high exchange leverage with
-// conservative position size (e.g. leverage=20, sizing_leverage=0.5) is the
-// motivating use case for decoupling.
+// #497/#518: fractional sizing_leverage is valid — high exchange leverage with
+// conservative margin allocation (e.g. leverage=20, sizing_leverage=0.1) is a
+// key use case for decoupling.
 func TestLoadConfigSizingLeverageAcceptsFractional(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
