@@ -16,6 +16,7 @@ import pandas as pd
 # dynamically per-registry via registry_loader.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
+from atr import ensure_atr_indicator
 from data_fetcher import load_cached_data
 from htf_filter import get_default_htf, apply_htf_filter  # noqa: E402
 from registry_loader import load_registry
@@ -120,6 +121,13 @@ def run_single_backtest(
     print(f"  Data: {len(df)} candles from {df.index[0]} to {df.index[-1]}")
 
     df_signals = reg.apply_strategy(strategy_name, df, strat_params)
+
+    # Mirror the runtime check-script contract: inject ATR(14) when the
+    # open strategy doesn't emit `atr`, so close evaluators that require
+    # `entry_atr` (tiered_tp_atr) and `market.atr` (tiered_tp_atr_live)
+    # see consistent volatility input. Idempotent when `atr` already exists.
+    if close_strategies:
+        df_signals = ensure_atr_indicator(df_signals)
 
     if htf_filter:
         df_signals = _apply_htf_filter_to_df(df_signals, symbol, timeframe)
