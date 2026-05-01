@@ -389,7 +389,16 @@ func PerpsOrderSkipReason(signal int, posSide string, allowShorts bool) string {
 // removed in #518.
 //
 // Returns (size, ok); when ok is false `reason` is a log-ready string.
-func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, posSide string, allowShorts bool) (size float64, ok bool, reason string) {
+//
+// closeFraction (#519) scales the close-only return when 0 < frac < 1: a
+// partial-close decision from the open/close registry (e.g. tiered_tp_atr
+// tier 1) is composed into signal=-1 (long) / signal=+1 (short) by
+// shared_tools/strategy_composition.compose_signal — the fraction is the only
+// signal that fewer than all of posQty should be reduced. The flip branch is
+// unreachable when closeFraction > 0 because compose_signal does not emit a
+// flip alongside a close (open_action is dropped while a position is open),
+// so closeFraction is intentionally ignored on the open/flip path.
+func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, posSide string, allowShorts bool, closeFraction float64) (size float64, ok bool, reason string) {
 	isBuy := signal == 1
 	flipping := allowShorts && posQty > 0 && ((isBuy && posSide == "short") || (!isBuy && posSide == "long"))
 	// Fresh open: buy always fresh-sizes (legacy buy-vs-migrated-short kept
@@ -434,9 +443,17 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage
 		}
 		return newSize, true, ""
 	}
-	// close-only: signal=-1 + long + !allowShorts
+	// close-only: signal=-1 + long + !allowShorts (or signal=+1 + short
+	// composed from a close strategy on a long-only-flipped runtime)
 	if posQty <= 0 {
 		return 0, false, "no position to close"
+	}
+	if closeFraction > 0 && closeFraction < 1 {
+		// Partial close (#519): tiered_tp_* / fractional close strategies
+		// emit close_fraction relative to current_quantity. Size the live
+		// order to match so the exchange and virtual state agree on the
+		// close leg before Execute*Signal records it.
+		return posQty * closeFraction, true, ""
 	}
 	return posQty, true, ""
 }
@@ -527,10 +544,20 @@ func FuturesOrderSkipReason(signal int, posSide string) string {
 // closes a long and never opens a short — the legacy long-only behavior
 // that strategies like triple_ema and rsi_macd_combo depend on.
 func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, fillOID string, fillFee float64, allowShorts bool, logger *StrategyLogger) (int, error) {
-	return ExecutePerpsSignalWithLeverage(s, signal, symbol, price, leverage, leverage, 0, fillQty, fillOID, fillFee, allowShorts, logger)
+	return ExecutePerpsSignalWithLeverage(s, signal, symbol, price, leverage, leverage, 0, fillQty, fillOID, fillFee, allowShorts, 0, logger)
 }
 
-func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, allowShorts bool, logger *StrategyLogger) (int, error) {
+// ExecutePerpsSignalWithLeverage processes a perps signal.
+//
+// closeFraction (#519) selects partial-close accounting: when 0 < frac < 1
+// AND the signal is a close-action emitted by the open/close registry
+// (compose_signal returns -1 on long / +1 on short), the close leg reduces
+// pos.Quantity by frac (paper) or fillQty (live) without deleting the
+// position, and the bidirectional open-leg path is skipped (compose_signal
+// never composes close+open in the same cycle). closeFraction == 0 preserves
+// the legacy full-close behavior used by direct strategy signals,
+// kill-switch, stop-loss, and forceCloseAllPositions paths.
+func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, allowShorts bool, closeFraction float64, logger *StrategyLogger) (int, error) {
 	if signal == 0 {
 		return 0, nil
 	}
@@ -542,6 +569,11 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 	}
 	tradesExecuted := 0
 	leverageLabel := perpsLeverageLabel(exchangeLeverage, sizingLeverage)
+	// #519: partial close suppresses the bidirectional open-leg path —
+	// compose_signal never composes a close+open in the same cycle, so any
+	// fractional close emitted by the open/close registry is close-only.
+	partialClose := closeFraction > 0 && closeFraction < 1
+	closeOnlyAction := closeFraction > 0 // any close decision skips open-leg
 
 	// Fee dispatch: for Hyperliquid spot+perps and OKX perps the existing
 	// CalculatePlatformSpotFee table already encodes the correct taker fee.
@@ -566,8 +598,16 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		}
 		// Close short if exists — realize PnL only (no notional swing).
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" {
+			closeQty := pos.Quantity
+			if partialClose {
+				if fillQty > 0 {
+					closeQty = fillQty
+				} else {
+					closeQty = pos.Quantity * closeFraction
+				}
+			}
 			if allowShorts {
-				flipCloseQty = pos.Quantity
+				flipCloseQty = closeQty
 			}
 			var execPrice float64
 			if fillQty > 0 {
@@ -575,9 +615,9 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			} else {
 				execPrice = ApplySlippage(price)
 			}
-			pnl := pos.Quantity * (pos.AvgCost - execPrice)
-			useFillFee := flipCloseQty > 0
-			fee := executionFee(CalculatePlatformSpotFee(feePlatform, pos.Quantity*execPrice), fillFee, useFillFee)
+			pnl := closeQty * (pos.AvgCost - execPrice)
+			useFillFee := flipCloseQty > 0 || closeOnlyAction
+			fee := executionFee(CalculatePlatformSpotFee(feePlatform, closeQty*execPrice), fillFee, useFillFee)
 			pnl -= fee
 			s.Cash += pnl
 			now := time.Now().UTC()
@@ -586,17 +626,21 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			if useFillFee {
 				closeOID = fillOID
 			}
+			details := fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee)
+			if partialClose {
+				details = fmt.Sprintf("Partial-close short %.6f, PnL: $%.2f (fee $%.2f)", closeQty, pnl, fee)
+			}
 			trade := Trade{
 				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
 				PositionID:      positionID,
 				Side:            "buy",
-				Quantity:        pos.Quantity,
+				Quantity:        closeQty,
 				Price:           execPrice,
-				Value:           pos.Quantity * execPrice,
+				Value:           closeQty * execPrice,
 				TradeType:       "perps",
-				Details:         fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
+				Details:         details,
 				ExchangeOrderID: closeOID,
 				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
 				IsClose:         true,
@@ -604,11 +648,23 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
-			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
-			delete(s.Positions, symbol)
-			clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
-			logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
+			if partialClose {
+				pos.Quantity -= closeQty
+				logger.Info("Partial-close short %s: %.6f (remaining %.6f) @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, execPrice, fee, pnl)
+			} else {
+				recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
+				delete(s.Positions, symbol)
+				clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
+				logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
+			}
 			tradesExecuted++
+		}
+		// Close-action from the open/close registry (#519): the registry
+		// never composes close+open in the same cycle, so any close decision
+		// (partial OR full) skips the open-leg path. Legacy direct-signal
+		// flips (closeFraction == 0) keep falling through.
+		if closeOnlyAction {
+			return tradesExecuted, nil
 		}
 		// Open long
 		if s.Cash < 1 {
@@ -688,8 +744,16 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		}
 		// Close long if exists — realize PnL.
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
+			closeQty := pos.Quantity
+			if partialClose {
+				if fillQty > 0 {
+					closeQty = fillQty
+				} else {
+					closeQty = pos.Quantity * closeFraction
+				}
+			}
 			if allowShorts {
-				flipCloseQty = pos.Quantity
+				flipCloseQty = closeQty
 			}
 			var execPrice float64
 			if fillQty > 0 {
@@ -697,9 +761,9 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			} else {
 				execPrice = ApplySlippage(price)
 			}
-			pnl := pos.Quantity * (execPrice - pos.AvgCost)
-			useFillFee := flipCloseQty > 0 || !allowShorts
-			fee := executionFee(CalculatePlatformSpotFee(feePlatform, pos.Quantity*execPrice), fillFee, useFillFee)
+			pnl := closeQty * (execPrice - pos.AvgCost)
+			useFillFee := flipCloseQty > 0 || !allowShorts || closeOnlyAction
+			fee := executionFee(CalculatePlatformSpotFee(feePlatform, closeQty*execPrice), fillFee, useFillFee)
 			pnl -= fee
 			s.Cash += pnl
 			now := time.Now().UTC()
@@ -708,17 +772,21 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			if useFillFee {
 				closeOID = fillOID
 			}
+			details := fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee)
+			if partialClose {
+				details = fmt.Sprintf("Partial-close long %.6f, PnL: $%.2f (fee $%.2f)", closeQty, pnl, fee)
+			}
 			trade := Trade{
 				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
 				PositionID:      positionID,
 				Side:            "sell",
-				Quantity:        pos.Quantity,
+				Quantity:        closeQty,
 				Price:           execPrice,
-				Value:           pos.Quantity * execPrice,
+				Value:           closeQty * execPrice,
 				TradeType:       "perps",
-				Details:         fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
+				Details:         details,
 				ExchangeOrderID: closeOID,
 				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
 				IsClose:         true,
@@ -726,11 +794,21 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
-			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
-			delete(s.Positions, symbol)
-			clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
-			logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, pos.Quantity, execPrice, fee, pnl)
+			if partialClose {
+				pos.Quantity -= closeQty
+				logger.Info("Partial-close long %s: %.6f (remaining %.6f) @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, execPrice, fee, pnl)
+			} else {
+				recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
+				delete(s.Positions, symbol)
+				clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
+				logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, execPrice, fee, pnl)
+			}
 			tradesExecuted++
+		}
+		// Close-action from the open/close registry (#519): see comment on
+		// the symmetric branch in the signal==1 block above.
+		if closeOnlyAction {
+			return tradesExecuted, nil
 		}
 		// Legacy long-only path: whether we closed a long or had nothing to
 		// close, AllowShorts=false never opens a short. Log only when we did
@@ -816,10 +894,15 @@ func perpsLeverageLabel(exchangeLeverage, sizingLeverage float64) string {
 // fillQty > 0 means a live fill: use price as-is (no slippage) and fillQty as position quantity for buys.
 // fillQty == 0 means paper mode: apply ApplySlippage and compute qty from state budget.
 func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float64, fillQty float64, logger *StrategyLogger) (int, error) {
-	return ExecuteSpotSignalWithFillFee(s, signal, symbol, price, fillQty, 0, "", logger)
+	return ExecuteSpotSignalWithFillFee(s, signal, symbol, price, fillQty, 0, "", 0, logger)
 }
 
-func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, logger *StrategyLogger) (int, error) {
+// ExecuteSpotSignalWithFillFee processes a spot signal with optional live
+// fill metadata. closeFraction (#519) is the partial-close fraction emitted by
+// the open/close registry: when 0 < frac < 1 on a close-side signal the close
+// leg reduces pos.Quantity (paper) or uses fillQty (live) without deleting
+// the position. closeFraction == 0 preserves the legacy full-close semantics.
+func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger) (int, error) {
 	if signal == 0 {
 		return 0, nil
 	}
@@ -829,6 +912,7 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 		feePlatform = "okx-perps"
 	}
 	fillMetadataUsed := false
+	partialClose := closeFraction > 0 && closeFraction < 1
 
 	if signal == 1 { // Buy
 		// Check if already long
@@ -838,34 +922,46 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 		}
 		// Close short if exists
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" {
+			closeQty := pos.Quantity
+			if partialClose {
+				if fillQty > 0 {
+					closeQty = fillQty
+				} else {
+					closeQty = pos.Quantity * closeFraction
+				}
+			}
 			var execPrice float64
 			if fillQty > 0 {
 				execPrice = price
 			} else {
 				execPrice = ApplySlippage(price)
 			}
-			buyCost := pos.Quantity * execPrice
+			buyCost := closeQty * execPrice
 			useFillMetadata := fillQty > 0 && !fillMetadataUsed
 			fee := executionFee(CalculatePlatformSpotFee(feePlatform, buyCost), fillFee, useFillMetadata)
 			if useFillMetadata {
 				fillMetadataUsed = true
 			}
 			totalCost := buyCost + fee
-			pnl := pos.Quantity*pos.AvgCost - totalCost
-			s.Cash += pos.Quantity*pos.AvgCost - totalCost
+			pnl := closeQty*pos.AvgCost - totalCost
+			s.Cash += closeQty*pos.AvgCost - totalCost
 			now := time.Now().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
+			details := fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee)
+			if partialClose {
+				details = fmt.Sprintf("Partial-close short %.6f, PnL: $%.2f (fee $%.2f)", closeQty, pnl, fee)
+			}
 			trade := Trade{
 				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
 				PositionID:      positionID,
 				Side:            "buy",
-				Quantity:        pos.Quantity,
+				Quantity:        closeQty,
 				Price:           execPrice,
 				Value:           totalCost,
 				TradeType:       "spot",
-				Details:         fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
+				Details:         details,
 				ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
 				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
 				IsClose:         true,
@@ -873,10 +969,21 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
-			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
-			delete(s.Positions, symbol)
-			logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
+			if partialClose {
+				pos.Quantity -= closeQty
+				logger.Info("Partial-close short %s: %.6f (remaining %.6f) @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, execPrice, fee, pnl)
+			} else {
+				recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
+				delete(s.Positions, symbol)
+				logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
+			}
 			tradesExecuted++
+		}
+		// Spot has no flip semantics: a partial close on a short does not
+		// open a long in the same cycle. Stop here when this signal is a
+		// close-action emitted by the open/close registry (#519).
+		if closeFraction > 0 {
+			return tradesExecuted, nil
 		}
 		// Open long — deploy full cash (paper) or exact fill qty (live). The
 		// hardcoded 0.95 safety buffer was removed in #518; spot has no
@@ -938,34 +1045,46 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 	} else if signal == -1 { // Sell
 		// Close long if exists
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
+			closeQty := pos.Quantity
+			if partialClose {
+				if fillQty > 0 {
+					closeQty = fillQty
+				} else {
+					closeQty = pos.Quantity * closeFraction
+				}
+			}
 			var execPrice float64
 			if fillQty > 0 {
 				execPrice = price
 			} else {
 				execPrice = ApplySlippage(price)
 			}
-			saleValue := pos.Quantity * execPrice
+			saleValue := closeQty * execPrice
 			useFillMetadata := fillQty > 0 && !fillMetadataUsed
 			fee := executionFee(CalculatePlatformSpotFee(feePlatform, saleValue), fillFee, useFillMetadata)
 			if useFillMetadata {
 				fillMetadataUsed = true
 			}
 			netProceeds := saleValue - fee
-			pnl := netProceeds - (pos.Quantity * pos.AvgCost)
+			pnl := netProceeds - (closeQty * pos.AvgCost)
 			s.Cash += netProceeds
 			now := time.Now().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
+			details := fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee)
+			if partialClose {
+				details = fmt.Sprintf("Partial-close long %.6f, PnL: $%.2f (fee $%.2f)", closeQty, pnl, fee)
+			}
 			trade := Trade{
 				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
 				PositionID:      positionID,
 				Side:            "sell",
-				Quantity:        pos.Quantity,
+				Quantity:        closeQty,
 				Price:           execPrice,
 				Value:           netProceeds,
 				TradeType:       "spot",
-				Details:         fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
+				Details:         details,
 				ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
 				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
 				IsClose:         true,
@@ -973,9 +1092,14 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
-			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
-			delete(s.Positions, symbol)
-			logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, pos.Quantity, execPrice, fee, pnl)
+			if partialClose {
+				pos.Quantity -= closeQty
+				logger.Info("Partial-close long %s: %.6f (remaining %.6f) @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, execPrice, fee, pnl)
+			} else {
+				recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
+				delete(s.Positions, symbol)
+				logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, execPrice, fee, pnl)
+			}
 			tradesExecuted++
 		} else {
 			logger.Info("No long position in %s to sell, skipping", symbol)
@@ -988,16 +1112,23 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 // fillContracts > 0 means a live fill: use price as-is (no slippage) and fillContracts as contract count for opens.
 // fillContracts == 0 means paper mode: apply ApplySlippage and compute contracts from state budget.
 func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, logger *StrategyLogger) (int, error) {
-	return ExecuteFuturesSignalWithFillFee(s, signal, symbol, price, spec, feePerContract, maxContracts, fillContracts, 0, "", logger)
+	return ExecuteFuturesSignalWithFillFee(s, signal, symbol, price, spec, feePerContract, maxContracts, fillContracts, 0, "", 0, logger)
 }
 
-func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, fillFee float64, fillOID string, logger *StrategyLogger) (int, error) {
+// ExecuteFuturesSignalWithFillFee processes a futures signal with optional
+// live fill metadata. closeFraction (#519) is the partial-close fraction
+// emitted by the open/close registry; whole-contract sizing rounds the close
+// leg DOWN to ensure the residual position has at least one contract
+// remaining (a tier returning a fraction smaller than 1 contract is a no-op
+// rather than a full close).
+func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger) (int, error) {
 	if signal == 0 {
 		return 0, nil
 	}
 	tradesExecuted := 0
 	multiplier := spec.Multiplier
 	fillMetadataUsed := false
+	partialClose := closeFraction > 0 && closeFraction < 1
 
 	if signal == 1 { // Buy
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
@@ -1006,13 +1137,30 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 		}
 		// Close short if exists
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" {
+			contracts := int(pos.Quantity)
+			if partialClose {
+				if fillContracts > 0 {
+					contracts = fillContracts
+				} else {
+					contracts = int(float64(int(pos.Quantity)) * closeFraction)
+				}
+				if contracts < 1 {
+					logger.Info("Partial-close fraction %.4f rounds to 0 contracts for %s; skipping", closeFraction, symbol)
+					return tradesExecuted, nil
+				}
+				if contracts >= int(pos.Quantity) {
+					// Round-up edge case (e.g. fraction=0.99 of 1 contract):
+					// degrade to a full close rather than over-closing.
+					partialClose = false
+					contracts = int(pos.Quantity)
+				}
+			}
 			var execPrice float64
 			if fillContracts > 0 {
 				execPrice = price
 			} else {
 				execPrice = ApplySlippage(price)
 			}
-			contracts := int(pos.Quantity)
 			pnl := float64(contracts) * multiplier * (pos.AvgCost - execPrice)
 			useFillMetadata := fillContracts > 0 && !fillMetadataUsed
 			fee := executionFee(CalculateFuturesFee(contracts, feePerContract), fillFee, useFillMetadata)
@@ -1023,17 +1171,21 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			s.Cash += pnl
 			now := time.Now().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
+			details := fmt.Sprintf("Close short %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee)
+			if partialClose {
+				details = fmt.Sprintf("Partial-close short %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee)
+			}
 			trade := Trade{
 				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
 				PositionID:      positionID,
 				Side:            "buy",
-				Quantity:        pos.Quantity,
+				Quantity:        float64(contracts),
 				Price:           execPrice,
 				Value:           float64(contracts) * multiplier * execPrice,
 				TradeType:       "futures",
-				Details:         fmt.Sprintf("Close short %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee),
+				Details:         details,
 				ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
 				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
 				IsClose:         true,
@@ -1041,10 +1193,20 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
-			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
-			delete(s.Positions, symbol)
-			logger.Info("Closed short %s %d contracts @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, contracts, execPrice, fee, pnl)
+			if partialClose {
+				pos.Quantity -= float64(contracts)
+				logger.Info("Partial-close short %s %d contracts (remaining %d) @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, contracts, int(pos.Quantity), execPrice, fee, pnl)
+			} else {
+				recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
+				delete(s.Positions, symbol)
+				logger.Info("Closed short %s %d contracts @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, contracts, execPrice, fee, pnl)
+			}
 			tradesExecuted++
+		}
+		// Close-action from the open/close registry (#519): a partial-close
+		// signal does not flip into a fresh long.
+		if closeFraction > 0 {
+			return tradesExecuted, nil
 		}
 		// Open long — whole contracts only. The 0.95 buffer was removed in
 		// #518; futures size in whole contracts so the 5% buffer often had no
@@ -1117,13 +1279,28 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 	} else if signal == -1 { // Sell
 		// Close long if exists
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
+			contracts := int(pos.Quantity)
+			if partialClose {
+				if fillContracts > 0 {
+					contracts = fillContracts
+				} else {
+					contracts = int(float64(int(pos.Quantity)) * closeFraction)
+				}
+				if contracts < 1 {
+					logger.Info("Partial-close fraction %.4f rounds to 0 contracts for %s; skipping", closeFraction, symbol)
+					return tradesExecuted, nil
+				}
+				if contracts >= int(pos.Quantity) {
+					partialClose = false
+					contracts = int(pos.Quantity)
+				}
+			}
 			var execPrice float64
 			if fillContracts > 0 {
 				execPrice = price
 			} else {
 				execPrice = ApplySlippage(price)
 			}
-			contracts := int(pos.Quantity)
 			pnl := float64(contracts) * multiplier * (execPrice - pos.AvgCost)
 			useFillMetadata := fillContracts > 0 && !fillMetadataUsed
 			fee := executionFee(CalculateFuturesFee(contracts, feePerContract), fillFee, useFillMetadata)
@@ -1134,17 +1311,21 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			s.Cash += pnl
 			now := time.Now().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
+			details := fmt.Sprintf("Close long %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee)
+			if partialClose {
+				details = fmt.Sprintf("Partial-close long %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee)
+			}
 			trade := Trade{
 				Timestamp:       now,
 				StrategyID:      s.ID,
 				Symbol:          symbol,
 				PositionID:      positionID,
 				Side:            "sell",
-				Quantity:        pos.Quantity,
+				Quantity:        float64(contracts),
 				Price:           execPrice,
 				Value:           float64(contracts) * multiplier * execPrice,
 				TradeType:       "futures",
-				Details:         fmt.Sprintf("Close long %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee),
+				Details:         details,
 				ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
 				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
 				IsClose:         true,
@@ -1152,10 +1333,20 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
-			recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
-			delete(s.Positions, symbol)
-			logger.Info("SELL %s: %d contracts @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, contracts, execPrice, fee, pnl)
+			if partialClose {
+				pos.Quantity -= float64(contracts)
+				logger.Info("Partial-close long %s %d contracts (remaining %d) @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, contracts, int(pos.Quantity), execPrice, fee, pnl)
+			} else {
+				recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
+				delete(s.Positions, symbol)
+				logger.Info("SELL %s: %d contracts @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, contracts, execPrice, fee, pnl)
+			}
 			tradesExecuted++
+		}
+		// Close-action from the open/close registry (#519): partial close
+		// does not flip into a fresh short.
+		if closeFraction > 0 {
+			return tradesExecuted, nil
 		}
 		// Open short if no long was closed or after closing long
 		if _, exists := s.Positions[symbol]; !exists {
