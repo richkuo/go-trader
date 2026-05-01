@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'platforms', 'okx'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
-from atr import latest_atr
+from atr import ensure_atr_indicator, latest_atr
 
 # Use futures registry for perps (swap), spot registry for spot.
 # Default is swap, matching argparse defaults below.
@@ -219,6 +219,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         except Exception:
             pass
 
+        ensure_atr_indicator(result_df)
         indicators = {}
         skip_cols = {
             "open", "high", "low", "close", "volume",
