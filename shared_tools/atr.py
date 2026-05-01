@@ -37,3 +37,23 @@ def ensure_atr_indicator(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     if "atr" not in df.columns:
         df["atr"] = standard_atr(df, period)
     return df
+
+
+def latest_atr(df: pd.DataFrame, period: int = 14) -> float:
+    """Return the most recent finite, positive ATR value, or 0.0 if none.
+
+    Used by check scripts to populate `market_ctx["atr"]` so live close
+    evaluators (e.g. tiered_tp_atr_live) see current volatility instead of
+    falling back to the entry-time ATR snapshot.
+    """
+    series = standard_atr(df, period)
+    if series.empty:
+        return 0.0
+    value = series.iloc[-1]
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not (value > 0) or value != value:  # rejects NaN, 0, negative
+        return 0.0
+    return value

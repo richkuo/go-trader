@@ -15,6 +15,7 @@ _atr_mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(_atr_mod)
 standard_atr = _atr_mod.standard_atr
 ensure_atr_indicator = _atr_mod.ensure_atr_indicator
+latest_atr = _atr_mod.latest_atr
 
 
 def _make_ohlcv(n: int = 30, seed: int = 42) -> pd.DataFrame:
@@ -88,3 +89,33 @@ def test_ensure_atr_indicator_idempotent():
     first = df["atr"].copy()
     ensure_atr_indicator(df)
     pd.testing.assert_series_equal(df["atr"], first)
+
+
+def test_latest_atr_returns_last_finite_value():
+    df = _make_ohlcv(30)
+    expected = standard_atr(df, period=14).iloc[-1]
+    assert math.isclose(latest_atr(df), float(expected), rel_tol=1e-12)
+
+
+def test_latest_atr_zero_when_warmup_incomplete():
+    # Only 5 rows, period=14 → all NaN, no positive value to return.
+    df = _make_ohlcv(5)
+    assert latest_atr(df, period=14) == 0.0
+
+
+def test_latest_atr_zero_for_empty_series():
+    df = pd.DataFrame({"open": [], "high": [], "low": [], "close": [], "volume": []})
+    assert latest_atr(df) == 0.0
+
+
+def test_latest_atr_strict_positive():
+    # Construct a flat-bar dataframe where TR == 0 → ATR == 0 → latest_atr returns 0.
+    n = 30
+    df = pd.DataFrame({
+        "open": [100.0] * n,
+        "high": [100.0] * n,
+        "low": [100.0] * n,
+        "close": [100.0] * n,
+        "volume": [1.0] * n,
+    })
+    assert latest_atr(df) == 0.0

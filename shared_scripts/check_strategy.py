@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'spot'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
-from atr import ensure_atr_indicator
+from atr import ensure_atr_indicator, latest_atr
 
 
 def _arg_value(flag, default=None):
@@ -184,6 +184,9 @@ def main():
         decision = None
         if open_close_enabled:
             market_ctx = {"mark_price": float(df["close"].iloc[-1])}
+            atr_now = latest_atr(df)
+            if atr_now > 0:
+                market_ctx["atr"] = atr_now
             evaluation = evaluate_open_close(
                 apply_strategy,
                 get_strategy,

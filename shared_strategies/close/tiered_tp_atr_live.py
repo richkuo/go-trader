@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from _helpers import clamp_fraction, current_close_fraction, float_from
-from tiered_tp_atr import DEFAULT_TIERS, _tiers
+from _helpers import current_close_fraction, float_from
+from tiered_tp_atr import _tiers
 
 
 def _resolve_atr(market: dict, position: dict, atr_source: str) -> tuple[float, str]:
@@ -55,6 +55,6 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
     if close_fraction <= 0:
         return {"close_fraction": 0.0, "reason": "noop:already_taken"}
     return {
-        "close_fraction": clamp_fraction(close_fraction),
+        "close_fraction": close_fraction,
         "reason": f"tiered_tp_atr_live:{atr_label}:{multiple:g}",
     }
