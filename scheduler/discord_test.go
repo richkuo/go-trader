@@ -393,6 +393,29 @@ func TestFormatTradeDM_CloseTrade(t *testing.T) {
 	}
 }
 
+// Issue #530: partial closes use lowercase "close" (e.g. "Partial-close long …").
+func TestFormatTradeDM_PartialClose(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-sma-eth", Platform: "hyperliquid", Type: "perps"}
+	trade := Trade{
+		Symbol:   "ETH",
+		Side:     "sell",
+		Quantity: 0.1,
+		Price:    2800,
+		Value:    280,
+		Details:  "Partial-close long ETH, PnL: $12.34 (fee $0.05)",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if !strings.Contains(msg, "TRADE CLOSED") {
+		t.Errorf("expected 'TRADE CLOSED' for partial close, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "PnL: $12.34") {
+		t.Errorf("expected PnL line for partial close, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "LONG") {
+		t.Errorf("expected LONG position side, got:\n%s", msg)
+	}
+}
+
 func TestFormatTradeDM_CloseShort(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-bidir-eth", Platform: "hyperliquid", Type: "perps"}
 	trade := Trade{
@@ -1639,6 +1662,26 @@ func TestFormatTradeDMPlain_CloseTrade(t *testing.T) {
 	// Plain format: no Discord bold markdown (**).
 	if strings.Contains(msg, "**") {
 		t.Errorf("plain format should not contain Discord markdown '**', got:\n%s", msg)
+	}
+}
+
+// Issue #530: telegram plain DM must treat partial-close like full close.
+func TestFormatTradeDMPlain_PartialClose(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-sma-eth", Platform: "hyperliquid", Type: "perps"}
+	trade := Trade{
+		Symbol:   "ETH",
+		Side:     "sell",
+		Quantity: 0.1,
+		Price:    2800,
+		Value:    280,
+		Details:  "Partial-close long ETH, PnL: $12.34 (fee $0.05)",
+	}
+	msg := FormatTradeDMPlain(sc, trade, "live")
+	if !strings.Contains(msg, "TRADE CLOSED") {
+		t.Errorf("expected 'TRADE CLOSED' for partial close, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "PnL: $12.34") {
+		t.Errorf("expected PnL line for partial close, got:\n%s", msg)
 	}
 }
 

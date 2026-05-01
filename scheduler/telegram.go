@@ -236,7 +236,7 @@ func (t *TelegramNotifier) Close() {
 
 // FormatTradeDMPlain formats a Trade into a plain-text DM (no Discord markdown).
 func FormatTradeDMPlain(sc StrategyConfig, trade Trade, mode string) string {
-	isClose := strings.Contains(trade.Details, "Close")
+	isClose := isTradeCloseDetails(trade.Details)
 
 	icon := "🟢"
 	header := "TRADE EXECUTED"
