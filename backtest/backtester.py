@@ -216,8 +216,11 @@ class Backtester:
         open (no look-ahead bias). Falls back to close when an ``open`` column
         is not present.
 
-        starting_long: optional dict with keys ``entry_price`` (float, USD)
-            and ``entry_date`` (index value, defaults to df.index[0]).
+        starting_long: optional dict with keys ``entry_price`` (float, USD),
+            ``entry_date`` (index value, defaults to df.index[0]), and
+            optional ``entry_atr`` (float, used to stamp the seeded
+            position's EntryATR so ATR-based close evaluators like
+            ``tiered_tp_atr`` work across walk-forward fold boundaries).
             When provided, the run begins already-long: the full
             ``initial_capital`` is treated as committed at ``entry_price``
             (minus one commission for the implicit buy). Use for carrying
@@ -307,6 +310,17 @@ class Backtester:
             current_trade.shares = position
             avg_cost = effective_entry
             initial_quantity = position
+            # Optional ATR for the seeded position so walk-forward folds with
+            # ATR-based close evaluators (tiered_tp_atr) don't silently no-op
+            # for the seeded position's lifetime. Same plausibility guard as
+            # _stamp_entry_atr (rejects non-positive and >50% of entry price).
+            seed_atr = starting_long.get("entry_atr", 0.0)
+            try:
+                seed_atr = float(seed_atr or 0.0)
+            except (TypeError, ValueError):
+                seed_atr = 0.0
+            if seed_atr > 0 and seed_atr <= 0.5 * effective_entry:
+                entry_atr_value = seed_atr
 
         for i, (idx, row) in enumerate(df.iterrows()):
             fill_price = row["open"] if has_open else row["close"]
@@ -513,6 +527,9 @@ class Backtester:
             fraction = float(result.get("close_fraction", 0.0) or 0.0)
             if fraction > best:
                 best = fraction
+                if best >= 1.0:
+                    # Full close already wins — remaining evaluators can't change the outcome.
+                    return 1.0
         return min(max(best, 0.0), 1.0)
 
     def _calculate_metrics(self, equity_df: pd.DataFrame, trades: list,
