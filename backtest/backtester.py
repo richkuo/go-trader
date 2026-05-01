@@ -17,6 +17,20 @@ import pandas as pd
 
 from storage import store_backtest_result
 
+# Close-registry import is deferred until needed so backtests with no
+# close_strategies don't pay the import cost. Uses ``close_registry_loader``
+# to avoid the bare ``import registry`` collision with the open registry's
+# module of the same name.
+_close_registry = None
+
+
+def _load_close_registry():
+    global _close_registry
+    if _close_registry is None:
+        from close_registry_loader import evaluate as _evaluate, list_strategies as _list
+        _close_registry = (_evaluate, _list)
+    return _close_registry
+
 
 # Equity-curve points per year per timeframe — used to derive the Sharpe
 # annualization factor. Crypto trades 24/7, so a 1d run has ~365 points/yr,
@@ -145,7 +159,9 @@ class Backtester:
     def __init__(self, initial_capital: float = 1000.0,
                  commission_pct: Optional[float] = None,
                  slippage_pct: float = 0.0005,
-                 platform: str = "binanceus"):
+                 platform: str = "binanceus",
+                 close_strategies: Optional[list[str]] = None,
+                 close_params: Optional[dict[str, dict]] = None):
         """
         Args:
             initial_capital: Starting portfolio value.
@@ -157,6 +173,16 @@ class Backtester:
             platform: Exchange fee model — one of ``PLATFORM_FEE_PCT`` keys.
                 Unknown platforms fall back to BinanceUS (0.1%) with no
                 warning, matching the Go dispatch default.
+            close_strategies: Ordered list of close-evaluator names from
+                ``shared_strategies/close/registry.py``. When provided, each
+                evaluator runs at the end of every bar against the simulated
+                open position; the max ``close_fraction`` across evaluators
+                is applied at the next bar's open. Combined with any
+                column-based ``close_fraction`` on the input DataFrame using
+                max-wins (mirrors the live composition contract).
+            close_params: Per-evaluator params dict (keyed by strategy name).
+                Merged over the registry's ``default_params`` for that
+                strategy. Unknown keys are forwarded as-is to the evaluator.
         """
         self.initial_capital = initial_capital
         self.platform = platform
@@ -165,6 +191,17 @@ class Backtester:
             else fee_pct_for_platform(platform)
         )
         self.slippage_pct = slippage_pct
+        self.close_strategies = list(close_strategies or [])
+        self.close_params = dict(close_params or {})
+        if self.close_strategies:
+            _evaluate, list_strategies = _load_close_registry()
+            available = set(list_strategies())
+            for name in self.close_strategies:
+                if name not in available:
+                    raise ValueError(
+                        f"Unknown close strategy: {name}. "
+                        f"Available: {sorted(available)}"
+                    )
 
     def run(self, df: pd.DataFrame, strategy_name: str = "Unknown",
             symbol: str = "BTC/USDT", timeframe: str = "1d",
@@ -197,7 +234,11 @@ class Backtester:
 
         Returns dict with all performance metrics.
         """
-        uses_open_close = "open_action" in df.columns or bool(_close_fraction_columns(df))
+        uses_open_close = (
+            "open_action" in df.columns
+            or bool(_close_fraction_columns(df))
+            or bool(self.close_strategies)
+        )
         if "signal" not in df.columns and not uses_open_close:
             raise ValueError("DataFrame must have a 'signal' column or open_action/close_fraction columns")
 
@@ -242,6 +283,17 @@ class Backtester:
         current_trade = None
         equity_curve = []
 
+        # Position context for close-strategy evaluators. Stamped at open,
+        # cleared at full close. ``initial_quantity`` is preserved across
+        # partial closes so tiered evaluators can compute incremental
+        # ``close_fraction`` correctly (mirrors live ``Position.InitialQuantity``).
+        avg_cost = 0.0
+        initial_quantity = 0.0
+        entry_atr_value = 0.0
+        pending_close_fraction = 0.0
+
+        atr_series = df["atr"] if "atr" in df.columns else None
+
         if starting_long:
             effective_entry = starting_long["entry_price"]
             entry_commission = self.initial_capital * self.commission_pct
@@ -253,6 +305,8 @@ class Backtester:
                 effective_entry, "long",
             )
             current_trade.shares = position
+            avg_cost = effective_entry
+            initial_quantity = position
 
         for i, (idx, row) in enumerate(df.iterrows()):
             fill_price = row["open"] if has_open else row["close"]
@@ -263,8 +317,10 @@ class Backtester:
             equity_curve.append({"date": idx, "equity": equity})
 
             if uses_open_close:
-                close_fraction = float(row["_close_fraction"])
-                open_action = row["_open_action"]
+                col_close_fraction = float(row.get("_close_fraction", 0.0))
+                close_fraction = max(col_close_fraction, pending_close_fraction)
+                pending_close_fraction = 0.0
+                open_action = row.get("_open_action", "none")
 
                 if close_fraction > 0 and position != 0:
                     qty_to_close = abs(position) * min(close_fraction, 1.0)
@@ -293,6 +349,9 @@ class Backtester:
 
                     if abs(position) <= 1e-12:
                         position = 0.0
+                        avg_cost = 0.0
+                        initial_quantity = 0.0
+                        entry_atr_value = 0.0
 
                 if open_action == "long" and position == 0:
                     effective_price = fill_price * (1 + self.slippage_pct)
@@ -304,6 +363,9 @@ class Backtester:
 
                     current_trade = Trade(idx, effective_price, "long")
                     current_trade.shares = shares
+                    avg_cost = effective_price
+                    initial_quantity = shares
+                    entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
                 elif open_action == "short" and position == 0:
                     effective_price = fill_price * (1 - self.slippage_pct)
                     commission = cash * self.commission_pct
@@ -314,6 +376,19 @@ class Backtester:
 
                     current_trade = Trade(idx, effective_price, "short")
                     current_trade.shares = shares
+                    avg_cost = effective_price
+                    initial_quantity = shares
+                    entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
+
+                # End-of-bar: evaluate close strategies against the now-current
+                # position using this bar's close as the mark. The result is
+                # applied at the NEXT bar's open (mirrors live: eval at end of
+                # bar, fill at next open).
+                if self.close_strategies and position != 0 and avg_cost > 0:
+                    pending_close_fraction = self._evaluate_close_strategies(
+                        position, avg_cost, initial_quantity, entry_atr_value,
+                        mark_price, atr_series, idx,
+                    )
                 continue
 
             if signal == 1 and position == 0:
@@ -380,6 +455,65 @@ class Backtester:
             store_backtest_result(metrics)
 
         return metrics
+
+    def _stamp_entry_atr(self, atr_series: Optional[pd.Series], idx,
+                         entry_price: float) -> float:
+        """Return the ATR at ``idx`` for stamping ``Position.EntryATR``.
+
+        Mirrors ``stampEntryATRIfOpened`` in scheduler/main.go: rejects NaN
+        and any value greater than 50% of the entry price as a plausibility
+        guard. Returns 0.0 when no usable ATR is available — close evaluators
+        that require ATR (``tiered_tp_atr``) then fall through with a no-op
+        until a position with a valid ATR is opened.
+        """
+        if atr_series is None or entry_price <= 0:
+            return 0.0
+        try:
+            value = float(atr_series.loc[idx])
+        except (KeyError, TypeError, ValueError):
+            return 0.0
+        if not (value > 0):  # rejects NaN, 0, negative
+            return 0.0
+        if value > 0.5 * entry_price:
+            return 0.0
+        return value
+
+    def _evaluate_close_strategies(self, position: float, avg_cost: float,
+                                   initial_quantity: float,
+                                   entry_atr_value: float,
+                                   mark_price: float,
+                                   atr_series: Optional[pd.Series],
+                                   idx) -> float:
+        """Run every configured close evaluator against the simulated position
+        and return the max ``close_fraction``. Same max-wins resolution as the
+        live composition flow in shared_tools/strategy_composition.py.
+        """
+        evaluate, _list_strategies = _load_close_registry()
+        side = "long" if position > 0 else "short"
+        position_dict = {
+            "side": side,
+            "avg_cost": float(avg_cost),
+            "current_quantity": float(abs(position)),
+            "initial_quantity": float(initial_quantity or abs(position)),
+            "entry_atr": float(entry_atr_value),
+        }
+        market_dict = {"mark_price": float(mark_price)}
+        if atr_series is not None:
+            try:
+                live_atr = float(atr_series.loc[idx])
+            except (KeyError, TypeError, ValueError):
+                live_atr = 0.0
+            if live_atr > 0:
+                market_dict["atr"] = live_atr
+
+        best = 0.0
+        for name in self.close_strategies:
+            params = self.close_params.get(name)
+            result = evaluate(name, position_dict, market_dict, params)
+            fraction = float(result.get("close_fraction", 0.0) or 0.0)
+            if fraction > best:
+                best = fraction
+        return min(max(best, 0.0), 1.0)
 
     def _calculate_metrics(self, equity_df: pd.DataFrame, trades: list,
                            df: pd.DataFrame, timeframe: str = "1d") -> dict:

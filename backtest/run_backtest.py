@@ -84,6 +84,8 @@ def run_single_backtest(
     registry: str = "spot",
     platform: str = "binanceus",
     htf_filter: bool = False,
+    close_strategies: Optional[List[str]] = None,
+    close_params: Optional[dict] = None,
 ) -> Optional[dict]:
     """Run a single backtest and print results.
 
@@ -91,6 +93,10 @@ def run_single_backtest(
     ``platform`` selects the exchange fee model (``"binanceus"``,
     ``"hyperliquid"``, ``"robinhood"``, ``"luno"``, ``"okx"``,
     ``"okx-perps"``), matching ``scheduler/fees.go:CalculatePlatformSpotFee``.
+    ``close_strategies`` is an optional list of close-evaluator names from
+    the close registry (#511); each runs per-bar against the simulated
+    position. Backtest granularity is bar-level so live intra-bar trigger
+    races (e.g. HL stop-loss OIDs) are not simulated.
     """
     reg = load_registry(registry)
     strat = reg.STRATEGY_REGISTRY.get(strategy_name)
@@ -103,6 +109,8 @@ def run_single_backtest(
     print(f"\n▶ Strategy: {strat['description']}")
     print(f"  Params: {strat_params}")
     print(f"  Symbol: {symbol} | Timeframe: {timeframe} | Since: {since}")
+    if close_strategies:
+        print(f"  Close strategies: {close_strategies}")
 
     df = load_cached_data(symbol, timeframe, start_date=since)
     if df.empty:
@@ -117,7 +125,11 @@ def run_single_backtest(
         df_signals = _apply_htf_filter_to_df(df_signals, symbol, timeframe)
         print(f"  HTF filter: applied (HTF={get_default_htf(timeframe)})")
 
-    bt = Backtester(initial_capital=capital, platform=platform)
+    bt = Backtester(
+        initial_capital=capital, platform=platform,
+        close_strategies=close_strategies,
+        close_params=close_params,
+    )
     results = bt.run(
         df_signals,
         strategy_name=strategy_name,
@@ -139,6 +151,8 @@ def run_all_strategies(
     registry: str = "spot",
     platform: str = "binanceus",
     htf_filter: bool = False,
+    close_strategies: Optional[List[str]] = None,
+    close_params: Optional[dict] = None,
 ) -> list:
     """Run multiple strategies on one asset and compare."""
     reg = load_registry(registry)
@@ -153,6 +167,7 @@ def run_all_strategies(
         result = run_single_backtest(
             name, symbol, timeframe, since, capital,
             registry=registry, platform=platform, htf_filter=htf_filter,
+            close_strategies=close_strategies, close_params=close_params,
         )
         if result:
             all_results.append(result)
@@ -172,6 +187,8 @@ def run_multi_asset(
     registry: str = "spot",
     platform: str = "binanceus",
     htf_filter: bool = False,
+    close_strategies: Optional[List[str]] = None,
+    close_params: Optional[dict] = None,
 ) -> dict:
     """Run strategies across multiple assets."""
     reg = load_registry(registry)
@@ -194,6 +211,7 @@ def run_multi_asset(
             result = run_single_backtest(
                 strat_name, symbol, timeframe, since, capital,
                 registry=registry, platform=platform, htf_filter=htf_filter,
+                close_strategies=close_strategies, close_params=close_params,
             )
             if result:
                 results_by_asset[symbol].append(result)
@@ -282,11 +300,28 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Apply HTF trend filter (matches live "
                              "shared_tools/htf_filter.py); 50-EMA on the "
                              "default HTF for the chosen timeframe.")
+    parser.add_argument("--close-strategy", action="append", dest="close_strategies",
+                        default=None, metavar="NAME",
+                        help="Close-evaluator name from shared_strategies/close/registry.py "
+                             "(repeat for multiple). Each runs per-bar against the "
+                             "simulated position; max close_fraction wins.")
+    parser.add_argument("--close-params", default=None,
+                        help="Per-evaluator params as JSON string, keyed by "
+                             "evaluator name, e.g. "
+                             "'{\"tp_at_pct\":{\"pct\":0.03}}'.")
     return parser
 
 
 def main():
     args = _build_parser().parse_args()
+
+    close_params = None
+    if args.close_params:
+        import json as _json
+        close_params = _json.loads(args.close_params)
+        if not isinstance(close_params, dict):
+            print("--close-params must be a JSON object keyed by evaluator name")
+            sys.exit(1)
 
     reg = load_registry(args.registry)
 
@@ -297,14 +332,18 @@ def main():
         run_single_backtest(args.strategy, args.symbol, args.timeframe,
                             args.since, args.capital,
                             registry=args.registry, platform=args.platform,
-                            htf_filter=args.htf_filter)
+                            htf_filter=args.htf_filter,
+                            close_strategies=args.close_strategies,
+                            close_params=close_params)
 
     elif args.mode == "compare":
         strategies = None if args.strategy == "all" else [args.strategy]
         run_all_strategies(args.symbol, args.timeframe, args.since, args.capital,
                            strategies,
                            registry=args.registry, platform=args.platform,
-                           htf_filter=args.htf_filter)
+                           htf_filter=args.htf_filter,
+                           close_strategies=args.close_strategies,
+                           close_params=close_params)
 
     elif args.mode == "multi":
         strategies = None if args.strategy == "all" else [args.strategy]
@@ -312,7 +351,9 @@ def main():
         run_multi_asset(strategies, symbols, args.timeframe, args.since,
                         args.capital,
                         registry=args.registry, platform=args.platform,
-                        htf_filter=args.htf_filter)
+                        htf_filter=args.htf_filter,
+                        close_strategies=args.close_strategies,
+                        close_params=close_params)
 
     elif args.mode == "optimize":
         if args.strategy == "all":
