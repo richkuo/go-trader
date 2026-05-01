@@ -1288,6 +1288,9 @@ func main() {
 								// operator alert; the position is running unprotected.
 								notifyATRMultMissingEntryATROnce(sc, result.Symbol, notifier, logger)
 							}
+							if result.Signal == 0 && hlPosQty > 0 && tieredTPATRMissingEntryATR(sc, hlPosSnapshot) {
+								notifyTieredTPATRMissingEntryATROnce(sc, result.Symbol, notifier, logger)
+							}
 							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && effectiveTrailingStopPct(sc, hlPosSnapshot) > 0 {
 								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, hlPosQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, notifier, logger)
 								mu.Lock()
@@ -1833,9 +1836,16 @@ func stampEntryATRIfOpened(s *StrategyState, symbol string, indicators map[strin
 	if !ok || atr <= 0 {
 		return
 	}
-	if pos, exists := s.Positions[symbol]; exists && pos != nil && pos.EntryATR == 0 {
-		pos.EntryATR = atr
+	pos, exists := s.Positions[symbol]
+	if !exists || pos == nil || pos.EntryATR != 0 {
+		return
 	}
+	// Plausibility: reject NaN and ATR > 50% of entry price when we have a cost
+	// baseline (almost certainly a unit mismatch or error in the strategy dataframe).
+	if atr != atr || (pos.AvgCost > 0 && atr > pos.AvgCost*0.5) {
+		return
+	}
+	pos.EntryATR = atr
 }
 
 func indicatorFloat(indicators map[string]interface{}, key string) (float64, bool) {
