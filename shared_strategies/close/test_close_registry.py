@@ -157,3 +157,55 @@ def test_tiered_tp_atr_live_short_side(registry):
     )
     # profit_distance = 4, atr=2 -> 2.0 atr_profit -> hits both tiers, full close.
     assert result == {"close_fraction": 1.0, "reason": "tiered_tp_atr_live:live:2"}
+
+
+def test_market_atr_wiring_end_to_end(registry):
+    """End-to-end: latest_atr(df) → market_ctx["atr"] → tiered_tp_atr_live evaluator.
+
+    This mirrors the wiring in shared_scripts/check_*.py: the check script computes
+    ATR from OHLCV via latest_atr(df) and stuffs the value into market_ctx["atr"]
+    before calling evaluate_open_close. The evaluator must see the live value
+    (reason starts with `live:`) rather than falling back to entry_atr.
+    """
+    import sys
+    from pathlib import Path
+
+    import pandas as pd
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared_tools"))
+    from atr import latest_atr  # type: ignore
+
+    # Build a 30-bar OHLCV frame with a stable ~$3 ATR.
+    n = 30
+    df = pd.DataFrame({
+        "open": [100.0] * n,
+        "high": [101.5] * n,
+        "low": [98.5] * n,
+        "close": [100.0] * n,
+        "volume": [1.0] * n,
+    })
+    atr_value = latest_atr(df)
+    assert atr_value > 0, "latest_atr must produce a positive value for live wiring"
+
+    market_ctx = {"mark_price": float(df["close"].iloc[-1])}
+    if atr_value > 0:
+        market_ctx["atr"] = atr_value
+
+    # Mark moves $4 above avg_cost; with live ATR=$3 that's 1.33 ATR profit
+    # → hits 1.0x tier (50%). Reason must reflect `live` source, not `entry_fallback`.
+    market_ctx["mark_price"] = 104  # mark moved up after market_ctx was built
+    result = registry.evaluate(
+        "tiered_tp_atr_live",
+        {
+            "side": "long",
+            "avg_cost": 100,
+            "current_quantity": 1,
+            "initial_quantity": 1,
+            "entry_atr": 99,  # garbage entry value to detect fallback
+        },
+        market_ctx,
+        {},
+    )
+    assert result["reason"].startswith("tiered_tp_atr_live:live:"), (
+        f"market_ctx['atr'] not flowing through to evaluator: reason={result['reason']!r}"
+    )

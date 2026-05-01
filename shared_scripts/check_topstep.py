@@ -22,6 +22,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'platforms', 't
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'futures'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
+from atr import latest_atr
+
 
 def _make_dataframe(candles):
     """Convert raw OHLCV list to pandas DataFrame compatible with strategy functions."""
@@ -173,6 +175,9 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         decision = None
         if open_close_enabled:
             market_ctx = {"mark_price": float(df["close"].iloc[-1])}
+            atr_now = latest_atr(df)
+            if atr_now > 0:
+                market_ctx["atr"] = atr_now
             evaluation = evaluate_open_close(
                 apply_strategy,
                 get_strategy,
