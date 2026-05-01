@@ -37,6 +37,7 @@
 - **New platform:** (1) `platforms/<name>/adapter.py` + `__init__.py`, (2) `shared_scripts/check_<name>.py`, (3) `executor.go`, (4) `config.go` (prefix + validation), (5) `fees.go`, (6) `main.go` (dispatch), (7) `init.go` (wizard + generateConfig), (8) `pyproject.toml`.
 - **New options-on-existing-platform:** extend adapter with `get_vol_metrics`, `get_real_expiry`, `get_real_strike`, `get_premium_and_greeks`; add to `check_options.py` + `CalculateOptionFee` + init `OptionPlatforms`.
 - Adapters loaded via `importlib`; class detected by `endswith("ExchangeAdapter")` (one per file). Check scripts must use only public adapter methods.
+- **Close registry import:** never `import registry` directly to reach `shared_strategies/close/registry.py` — name collides with the open registry. Use `from close_registry_loader import evaluate, list_strategies, build_close_registry` (in `shared_tools/`); it loads via `importlib.util.spec_from_file_location` and caches.
 - Subprocess contract: scripts always emit JSON to stdout (even on error); exit 1 on error; Go parses regardless of exit code.
 - **State locking:** `mu sync.RWMutex` guards `state`. Per-strategy loop has 6 phases: RLock(read inputs) → Lock(CheckRisk) → no lock(subprocess) → Lock(execute signal) → RLock/no lock/Lock(marks) → RLock(status). Audit: `grep -n "mu\.\(R\)\?Lock\(\)\|mu\.\(R\)\?Unlock\(\)" scheduler/main.go`.
 - Platform dispatch: use `s.Platform == "ibkr"`, never ID prefix. ID → platform map: `hl-` HL, `ibkr-` IBKR, `deribit-` Deribit, `ts-` TopStep, `rh-` Robinhood, `okx-` OKX, `luno-` Luno, else BinanceUS.
@@ -111,6 +112,7 @@ Inline `pull_request_review_comment` threads are exempt from this format; this r
 - `.venv/bin/python3 backtest/run_backtest.py --strategy <n> --symbol BTC/USDT --timeframe 1h --mode single`
 - `.venv/bin/python3 backtest/backtest_options.py --underlying BTC --since YYYY-MM-DD --capital 10000`
 - `.venv/bin/python3 backtest/backtest_theta.py --underlying BTC --since YYYY-MM-DD --capital 10000`
+- Close-strategy registry runs in backtests (#535): `Backtester(close_strategies=[...], close_params={...})` or `--close-strategy NAME --close-params '{"name":{...}}'`. Per-bar eval against the simulated position; max `close_fraction` applied at next bar's open and combined with column-based `close_fraction` via max-wins. Entry context (`avg_cost`/`initial_quantity`/`entry_atr`) stamped at open with the same 50%-of-AvgCost ATR guard as `stampEntryATRIfOpened`. Bar-level granularity — live intra-bar trigger races (HL stop-loss OIDs) are not simulated.
 
 ## Testing
 - **New functionality must include tests.** Go: `_test.go`. Python: `test_*.py`. Bug fixes: regression test when feasible.
@@ -125,6 +127,7 @@ Inline `pull_request_review_comment` threads are exempt from this format; this r
   - JSON init: `./go-trader init --json '{"assets":["BTC"],"enableSpot":true,"spotStrategies":["sma_crossover"],"spotCapital":1000,"spotDrawdown":10}' --output /tmp/test.json`
   - Status port override: `./go-trader --once --status-port 9100` — verify `[server] Status endpoint at http://localhost:<port>/status`.
 - Pytest: `.venv/bin/python3 -m pytest shared_strategies/ -v`; also `shared_tools/`, `platforms/`, `backtest/` (run when modifying strategies). `uv run pytest <relative-path>` may fail if bash CWD differs from repo root — use `.venv/bin/python3 -m pytest` instead. `shared_scripts/test_*.py` is NOT in default `testpaths` — invoke explicitly.
+- When adding tests that touch sys.path or registries, run the FULL suite (`.venv/bin/python3 -m pytest backtest/tests/ shared_tools/ shared_strategies/`) — isolated single-file runs can mask import-order conflicts (e.g. open vs. close `registry.py` collision).
 - `stampEntryATRIfOpened` rejects ATR > 50% of AvgCost (plausibility guard); Go tests using `atr` indicators must use values < 50% of the entry price in the test.
 - Strategy tests must assert actual signal values (`assert (result["signal"] == 1).any()`), not just column existence. Smoke tests iterating registered strategies need a `DatetimeIndex` (`amd_ifvg` reads `index.hour`, `vwap_reversion` buckets by `index.date`).
 - Python test imports: use `importlib.util.spec_from_file_location` (avoids two `strategies.py` collisions).
