@@ -1404,6 +1404,28 @@ func TestCollectPositions_TieredTPATR_Short(t *testing.T) {
 	}
 }
 
+// TestCollectPositions_TieredTPATRLive_Long verifies TP1/TP2 hints also appear
+// for tiered_tp_atr_live (same default tiers as tiered_tp_atr; PR #529 review).
+func TestCollectPositions_TieredTPATRLive_Long(t *testing.T) {
+	sc := StrategyConfig{
+		ID:              "hl-tatr-live-btc",
+		CloseStrategies: []string{"tiered_tp_atr_live"},
+	}
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", EntryATR: 1000},
+		},
+	}
+	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	want := "| TP1: $64,500.00 (+1.6%) | TP2: $65,500.00 (+3.1%)"
+	if !strings.Contains(lines[0], want) {
+		t.Errorf("expected tiered TP fragments for tiered_tp_atr_live long, got: %s", lines[0])
+	}
+}
+
 func TestCollectPositions_TieredTPATR_OmittedWithoutCloseStrategy(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-rsi-btc", CloseStrategies: []string{"tiered_tp_pct"}}
 	ss := &StrategyState{

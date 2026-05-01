@@ -54,6 +54,6 @@ def latest_atr(df: pd.DataFrame, period: int = 14) -> float:
         value = float(value)
     except (TypeError, ValueError):
         return 0.0
-    if not (value > 0) or value != value:  # rejects NaN, 0, negative
+    if not (value > 0):  # rejects NaN, 0, negative (NaN > 0 is False)
         return 0.0
     return value

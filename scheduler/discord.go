@@ -962,11 +962,14 @@ func positionMargin(qty, avgCost, leverage float64) float64 {
 }
 
 // strategyUsesTieredTPATRClose reports whether the strategy's configured close
-// evaluators include tiered_tp_atr (entry-ATR multiples from avg_cost). Used
-// for position-summary TP1/TP2 price hints (#528).
+// evaluators include tiered_tp_atr or tiered_tp_atr_live. Both use the same
+// default 1×/2× tier multiples; hints are always priced from entry ATR × multiple
+// from avg_cost (see PR #529 review — live mode may use a different ATR ruler
+// at evaluation time, but the summary still shows the entry-ATR reference levels).
 func strategyUsesTieredTPATRClose(sc StrategyConfig) bool {
 	for _, name := range sc.CloseStrategies {
-		if strings.EqualFold(strings.TrimSpace(name), "tiered_tp_atr") {
+		n := strings.ToLower(strings.TrimSpace(name))
+		if n == "tiered_tp_atr" || n == "tiered_tp_atr_live" {
 			return true
 		}
 	}
