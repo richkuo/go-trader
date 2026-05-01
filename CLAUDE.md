@@ -1,7 +1,7 @@
 # go-trader Project Context
 
 ## Environment
-- Go 1.26.2 — `brew install go@1.26`. Not in PATH; use `/opt/homebrew/bin/go` directly.
+- Go 1.26.2 — install via your platform's package manager (e.g. `brew install go@1.26` on macOS). If `go` is not in PATH, use the full binary path (e.g. `/opt/homebrew/bin/go` on Apple Silicon).
 - Python venv at `.venv/bin/python3` (used by executor.go at runtime); deps via `uv` (`pyproject.toml` / `uv.lock`).
 - In git worktrees, `.venv` is NOT copied — use the main repo's venv: `<main-repo>/.venv/bin/python3`.
 
@@ -100,7 +100,7 @@ When invoked to review a PR, the top-level review comment MUST take exactly one 
 Inline `pull_request_review_comment` threads are exempt from this format; this rule governs only the top-level review summary.
 
 ## Build & Deploy
-- Build: `cd scheduler && /opt/homebrew/bin/go build -o ../go-trader .` — always rebuild before smoke-testing.
+- Build: `cd scheduler && go build -o ../go-trader .` — always rebuild before smoke-testing.
 - Restart: `systemctl restart go-trader`. Service file changes: `systemctl daemon-reload && systemctl restart go-trader`.
 - Config-only changes (no rebuild needed): `kill -HUP $(pgrep go-trader)` — `config_reload.go` re-reads `cfg.ConfigPath` without dropping state or sessions.
 - Python script changes: take effect next scheduler cycle (no rebuild).
@@ -114,8 +114,8 @@ Inline `pull_request_review_comment` threads are exempt from this format; this r
 ## Testing
 - **New functionality must include tests.** Go: `_test.go`. Python: `test_*.py`. Bug fixes: regression test when feasible.
 - `python3 -m py_compile <file>` from repo root for syntax check.
-- `cd scheduler && /opt/homebrew/bin/go build .` (compile) / `/opt/homebrew/bin/go test ./...` (unit tests; must run from `scheduler/` — repo root has no go.mod).
-- `cd scheduler && /opt/homebrew/bin/gofmt -w <file>.go` after editing.
+- `cd scheduler && go build .` (compile) / `go test ./...` (unit tests; must run from `scheduler/` — repo root has no go.mod).
+- `cd scheduler && gofmt -w <file>.go` after editing.
 - Multi-line Go edits with tabs: Edit tool may fail; use heredoc form: `python3 << 'PYEOF'` / `content=open(f).read()` / `open(f,'w').write(content.replace(old,new,1))` / `PYEOF`.
 - Strategy listing: `cd shared_strategies/open/spot && ../../../.venv/bin/python3 strategies.py --list-json` (worktrees: absolute path to main repo's venv). Futures listing lives at `shared_strategies/open/futures/strategies.py --list-json`.
 - Smoke tests:
