@@ -1612,3 +1612,201 @@ func TestNotifyTieredTPATRMissingEntryATROnce_ThrottlesAndShares(t *testing.T) {
 		t.Errorf("tiered alert after atr-mult should be suppressed (shared throttle), got %d", got)
 	}
 }
+
+// #532: trailingStopBreached reports whether the current mark has crossed the
+// unfavorable side of the existing trigger. Live mode delegates this to the
+// exchange, so the helper only matters for the paper-mode loop.
+func TestTrailingStopBreached(t *testing.T) {
+	cases := []struct {
+		name           string
+		side           string
+		mark           float64
+		currentTrigger float64
+		want           bool
+	}{
+		{"long mark above trigger no breach", "long", 105, 97, false},
+		{"long mark equals trigger triggers fill", "long", 97, 97, true},
+		{"long mark below trigger breached", "long", 90, 97, true},
+		{"short mark below trigger no breach", "short", 95, 103, false},
+		{"short mark equals trigger triggers fill", "short", 103, 103, true},
+		{"short mark above trigger breached", "short", 110, 103, true},
+		{"zero trigger never breaches (not yet armed)", "long", 80, 0, false},
+		{"zero mark never breaches", "long", 0, 97, false},
+		{"unknown side never breaches", "neutral", 50, 100, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := trailingStopBreached(c.side, c.mark, c.currentTrigger); got != c.want {
+				t.Errorf("trailingStopBreached(%s, %v, %v) = %v, want %v",
+					c.side, c.mark, c.currentTrigger, got, c.want)
+			}
+		})
+	}
+}
+
+// #532: runHyperliquidTrailingStopPaper composes effectiveTrailingStopPct,
+// trailingStopBreached, and computeTrailingStopUpdate into a single per-cycle
+// decision for paper mode. We exercise (a) the breach path that fires a
+// synthetic close, (b) the trigger-replacement path that ratchets, (c) the
+// no-op path that only advances the high-water mark, (d) the bootstrap path
+// where the first cycle establishes a trigger from AvgCost, and (e) the
+// guard paths that skip when trailing is unconfigured or mark is zero.
+func TestRunHyperliquidTrailingStopPaper(t *testing.T) {
+	pct := func(v float64) *float64 { return &v }
+	scWithTrailing := StrategyConfig{
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		TrailingStopPct: pct(3.0),
+	}
+	scNoTrailing := StrategyConfig{Platform: "hyperliquid", Type: "perps"}
+	scNonHL := StrategyConfig{Platform: "okx", Type: "perps", TrailingStopPct: pct(3.0)}
+
+	type want struct {
+		newHighWater float64
+		newTrigger   float64
+		breach       bool
+		breachPx     float64
+	}
+	cases := []struct {
+		name           string
+		sc             StrategyConfig
+		side           string
+		pos            *Position
+		mark           float64
+		highWater      float64
+		currentTrigger float64
+		want           want
+	}{
+		{
+			name:           "long breach closes at trigger",
+			sc:             scWithTrailing,
+			side:           "long",
+			pos:            &Position{AvgCost: 100},
+			mark:           96,
+			highWater:      110,
+			currentTrigger: 106.7,
+			want:           want{newHighWater: 110, newTrigger: 0, breach: true, breachPx: 106.7},
+		},
+		{
+			name:           "short breach closes at trigger",
+			sc:             scWithTrailing,
+			side:           "short",
+			pos:            &Position{AvgCost: 100},
+			mark:           104,
+			highWater:      90,
+			currentTrigger: 92.7,
+			want:           want{newHighWater: 90, newTrigger: 0, breach: true, breachPx: 92.7},
+		},
+		{
+			name:           "long ratchets favorable trigger",
+			sc:             scWithTrailing,
+			side:           "long",
+			pos:            &Position{AvgCost: 100},
+			mark:           110,
+			highWater:      100,
+			currentTrigger: 97,
+			want:           want{newHighWater: 110, newTrigger: 106.7, breach: false, breachPx: 0},
+		},
+		{
+			name:           "long no-op below min-move debounce",
+			sc:             scWithTrailing,
+			side:           "long",
+			pos:            &Position{AvgCost: 100},
+			mark:           100.4,
+			highWater:      100,
+			currentTrigger: 97,
+			want:           want{newHighWater: 100.4, newTrigger: 0, breach: false, breachPx: 0},
+		},
+		{
+			name:           "first cycle bootstraps trigger from AvgCost",
+			sc:             scWithTrailing,
+			side:           "long",
+			pos:            &Position{AvgCost: 100},
+			mark:           100,
+			highWater:      0,
+			currentTrigger: 0,
+			want:           want{newHighWater: 100, newTrigger: 97, breach: false, breachPx: 0},
+		},
+		{
+			name:           "no trailing config is no-op",
+			sc:             scNoTrailing,
+			side:           "long",
+			pos:            &Position{AvgCost: 100},
+			mark:           50,
+			highWater:      100,
+			currentTrigger: 97,
+			want:           want{newHighWater: 100, newTrigger: 0, breach: false, breachPx: 0},
+		},
+		{
+			name:           "non-HL platform returns no-op",
+			sc:             scNonHL,
+			side:           "long",
+			pos:            &Position{AvgCost: 100},
+			mark:           50,
+			highWater:      100,
+			currentTrigger: 97,
+			want:           want{newHighWater: 100, newTrigger: 0, breach: false, breachPx: 0},
+		},
+		{
+			name:           "zero mark is no-op",
+			sc:             scWithTrailing,
+			side:           "long",
+			pos:            &Position{AvgCost: 100},
+			mark:           0,
+			highWater:      100,
+			currentTrigger: 97,
+			want:           want{newHighWater: 100, newTrigger: 0, breach: false, breachPx: 0},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotHW, gotTrig, gotBreach, gotPx := runHyperliquidTrailingStopPaper(c.sc, c.side, c.pos, c.mark, c.highWater, c.currentTrigger)
+			if floatDiff(gotHW, c.want.newHighWater) > 1e-9 ||
+				floatDiff(gotTrig, c.want.newTrigger) > 1e-9 ||
+				gotBreach != c.want.breach ||
+				floatDiff(gotPx, c.want.breachPx) > 1e-9 {
+				t.Fatalf("runHyperliquidTrailingStopPaper = (hw=%v trig=%v breach=%v px=%v), want (hw=%v trig=%v breach=%v px=%v)",
+					gotHW, gotTrig, gotBreach, gotPx,
+					c.want.newHighWater, c.want.newTrigger, c.want.breach, c.want.breachPx)
+			}
+		})
+	}
+}
+
+// #532: paper-mode trailing stop close must operate only on the strategy's
+// own virtual position. Two strategies on the same symbol with independent
+// StrategyState maps must remain isolated when one breaches.
+func TestRunHyperliquidTrailingStopPaper_StrategyIsolated(t *testing.T) {
+	sA := &StrategyState{
+		ID:       "hl-a",
+		Platform: "hyperliquid",
+		Type:     "perps",
+		Cash:     1000,
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 100, Side: "long"},
+		},
+	}
+	sB := &StrategyState{
+		ID:       "hl-b",
+		Platform: "hyperliquid",
+		Type:     "perps",
+		Cash:     1000,
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.3, AvgCost: 99, Side: "long"},
+		},
+	}
+
+	closed := recordPerpsStopLossClose(sA, "BTC", 97, "trailing_stop_loss_paper", silentStrategyLogger("hl-a"))
+	if !closed {
+		t.Fatalf("recordPerpsStopLossClose should have closed strategy A's position")
+	}
+	if _, ok := sA.Positions["BTC"]; ok {
+		t.Errorf("strategy A's BTC position should have been removed")
+	}
+	if _, ok := sB.Positions["BTC"]; !ok {
+		t.Errorf("strategy B's BTC position should be untouched by A's trailing-stop close")
+	}
+	if sB.Positions["BTC"].Quantity != 0.3 {
+		t.Errorf("strategy B's BTC quantity should remain 0.3, got %v", sB.Positions["BTC"].Quantity)
+	}
+}

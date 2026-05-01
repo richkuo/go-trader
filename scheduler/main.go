@@ -1281,15 +1281,43 @@ func main() {
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
 							hlPosSnapshot := &Position{AvgCost: hlAvgCost, EntryATR: hlEntryATR}
-							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && atrMultMissingEntryATR(sc, hlPosSnapshot) {
+							if result.Signal == 0 && hlPosQty > 0 && atrMultMissingEntryATR(sc, hlPosSnapshot) {
 								// ATR-mult is configured but the position is missing EntryATR — the
 								// open candle did not produce an ATR indicator, so the trailing loop
 								// will keep no-opping until the position closes. Emit a one-shot
-								// operator alert; the position is running unprotected.
+								// operator alert; the position is running unprotected. Fires for
+								// both live and paper since paper now runs the same trailing loop
+								// (#532).
 								notifyATRMultMissingEntryATROnce(sc, result.Symbol, notifier, logger)
 							}
 							if result.Signal == 0 && hlPosQty > 0 && tieredTPATRMissingEntryATR(sc, hlPosSnapshot) {
 								notifyTieredTPATRMissingEntryATROnce(sc, result.Symbol, notifier, logger)
+							}
+							if !hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && effectiveTrailingStopPct(sc, hlPosSnapshot) > 0 {
+								// Paper-mode trailing stop (#532): no exchange trigger order; the
+								// scheduler advances the high-water mark each cycle and books a
+								// synthetic close when mark crosses the trigger. Each strategy's
+								// virtual position is isolated in stratState.Positions, so peers
+								// on the same coin are unaffected by this strategy's breach.
+								newHighWater, newTrigger, breach, breachPx := runHyperliquidTrailingStopPaper(sc, hlPosSide, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx)
+								mu.Lock()
+								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
+									if breach {
+										if recordPerpsStopLossClose(stratState, result.Symbol, breachPx, "trailing_stop_loss_paper", logger) {
+											trades++
+											detail = fmt.Sprintf("[%s] PAPER TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, breachPx)
+										}
+									} else {
+										if newHighWater > 0 {
+											pos.StopLossHighWaterPx = newHighWater
+										}
+										if newTrigger > 0 {
+											pos.StopLossTriggerPx = newTrigger
+											logger.Info("Paper trailing SL trigger updated @ $%.4f (high_water=$%.4f)", newTrigger, newHighWater)
+										}
+									}
+								}
+								mu.Unlock()
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && effectiveTrailingStopPct(sc, hlPosSnapshot) > 0 {
 								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, hlPosQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, notifier, logger)
