@@ -250,6 +250,74 @@ func computeTrailingStopUpdate(side string, mark, highWater, trailingPct, minMov
 	return candidateHighWater, 0, false
 }
 
+// trailingStopBreached reports whether mark has crossed the unfavorable side
+// of currentTrigger for a position with the given side. Returns false when
+// currentTrigger <= 0 (no trigger armed yet — initial cycles set one up
+// before any breach can occur) or mark <= 0. Side must be "long" or "short".
+//
+// Used by the paper-mode trailing-stop loop to evaluate breaches in scheduler
+// state (live mode delegates breach evaluation to the exchange trigger order).
+func trailingStopBreached(side string, mark, currentTrigger float64) bool {
+	if mark <= 0 || currentTrigger <= 0 {
+		return false
+	}
+	switch side {
+	case "long":
+		return mark <= currentTrigger
+	case "short":
+		return mark >= currentTrigger
+	}
+	return false
+}
+
+// runHyperliquidTrailingStopPaper computes the per-cycle trailing-stop
+// decision for a paper-mode HL perps position. Mirrors the live path's
+// semantics (effectiveTrailingStopPct distance, side-aware high-water,
+// min-move debounce on trigger replacement) but evaluates breaches in
+// scheduler state instead of resting an order on Hyperliquid.
+//
+// Decision order:
+//   - If the existing trigger has been breached by the current mark, signal
+//     a synthetic close at the trigger price. The mark/trigger spread within
+//     a single cycle is treated as exchange-trigger semantics (fill at the
+//     trigger price) so paper PnL matches live behavior on a normal fill.
+//   - Otherwise, advance the high-water mark and (when the favorable move
+//     clears the min-move debounce) emit a new trigger price for the caller
+//     to persist on Position.StopLossTriggerPx.
+//
+// Returns:
+//
+//	newHighWater — the (possibly advanced) high-water mark to persist.
+//	newTrigger   — non-zero only when the trigger should be replaced.
+//	breach       — true when the caller should record a synthetic close.
+//	breachPx     — trigger price at which the synthetic close should be booked.
+//
+// Multi-strategy / partial-close note: each strategy's StrategyState.Positions
+// is isolated in scheduler state, so a single strategy's breach closes only
+// that strategy's virtual quantity. Peer strategies on the same coin retain
+// their independent virtual exposure and run their own trailing loops.
+func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Position, mark, highWater, currentTrigger float64) (newHighWater, newTrigger float64, breach bool, breachPx float64) {
+	trailingPct := effectiveTrailingStopPct(sc, pos)
+	if trailingPct <= 0 || mark <= 0 {
+		return highWater, 0, false, 0
+	}
+	if trailingStopBreached(side, mark, currentTrigger) {
+		return highWater, 0, true, currentTrigger
+	}
+	avgCost := 0.0
+	if pos != nil {
+		avgCost = pos.AvgCost
+	}
+	if highWater <= 0 {
+		highWater = avgCost
+	}
+	nhw, nt, replace := computeTrailingStopUpdate(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger)
+	if replace {
+		return nhw, nt, false, 0
+	}
+	return nhw, 0, false, 0
+}
+
 // runHyperliquidTrailingStopUpdate evaluates the per-cycle trailing-stop
 // update for an HL perps position. pos is the caller's snapshot of the
 // position fields needed for trailing math (AvgCost, EntryATR — held
