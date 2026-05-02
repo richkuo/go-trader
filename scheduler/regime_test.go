@@ -134,6 +134,51 @@ func TestRegimeAllowsEntry_EmptyCurrentAllowsWhenListNonEmpty(t *testing.T) {
 	}
 }
 
+// ─── regimeBlocksOpen — close legs always pass through ──────────────────────
+
+func TestRegimeBlocksOpen_BlocksOpenWhenNoPosition(t *testing.T) {
+	allowed := []string{"trending_up"}
+	if !regimeBlocksOpen(allowed, "ranging", 0) {
+		t.Error("regime mismatch with posQty=0 should block the open")
+	}
+}
+
+func TestRegimeBlocksOpen_AllowsOpenWhenRegimeMatches(t *testing.T) {
+	allowed := []string{"trending_up"}
+	if regimeBlocksOpen(allowed, "trending_up", 0) {
+		t.Error("matching regime should not block")
+	}
+}
+
+func TestRegimeBlocksOpen_NeverBlocksWhenPositionExists(t *testing.T) {
+	// Regression for review point 1 (#546): close legs must pass through the
+	// regime gate even when the current regime is not in the allowed list.
+	// Otherwise a long-then-ranging scenario would silently skip the close
+	// signal, contradicting "existing positions are always managed by close
+	// paths regardless".
+	allowed := []string{"trending_up"}
+	if regimeBlocksOpen(allowed, "ranging", 1.0) {
+		t.Error("close leg (posQty>0) must never be blocked by regime gate")
+	}
+	if regimeBlocksOpen(allowed, "trending_down", 0.5) {
+		t.Error("close leg (posQty>0) must never be blocked even on opposite regime")
+	}
+	if regimeBlocksOpen(allowed, "", 1.0) {
+		// Empty current regime is also "allow"; combined with posQty>0 this is
+		// doubly safe but we still assert it.
+		t.Error("close leg (posQty>0) must never be blocked when regime is empty")
+	}
+}
+
+func TestRegimeBlocksOpen_EmptyAllowedNeverBlocks(t *testing.T) {
+	if regimeBlocksOpen(nil, "ranging", 0) {
+		t.Error("nil allowed list (no gate configured) must never block")
+	}
+	if regimeBlocksOpen([]string{}, "ranging", 0) {
+		t.Error("empty allowed list (no gate configured) must never block")
+	}
+}
+
 // ─── StrategyDecisionFields includes Regime ───────────────────────────────────
 
 func TestStrategyDecisionFields_RegimeRoundTrip(t *testing.T) {
