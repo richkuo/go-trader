@@ -23,6 +23,18 @@ from storage import store_backtest_result
 # module of the same name.
 _close_registry = None
 
+# Regime helper imported lazily so backtests without regime_enabled=True
+# don't pay the import cost.
+_ensure_regime_fn = None
+
+
+def _load_regime():
+    global _ensure_regime_fn
+    if _ensure_regime_fn is None:
+        from regime import ensure_regime_columns as _ensure_regime_columns
+        _ensure_regime_fn = _ensure_regime_columns
+    return _ensure_regime_fn
+
 
 def _load_close_registry():
     global _close_registry
@@ -161,7 +173,11 @@ class Backtester:
                  slippage_pct: float = 0.0005,
                  platform: str = "binanceus",
                  close_strategies: Optional[list[str]] = None,
-                 close_params: Optional[dict[str, dict]] = None):
+                 close_params: Optional[dict[str, dict]] = None,
+                 regime_enabled: bool = False,
+                 regime_period: int = 14,
+                 regime_adx_threshold: float = 20.0,
+                 allowed_regimes: Optional[list[str]] = None):
         """
         Args:
             initial_capital: Starting portfolio value.
@@ -193,6 +209,10 @@ class Backtester:
         self.slippage_pct = slippage_pct
         self.close_strategies = list(close_strategies or [])
         self.close_params = dict(close_params or {})
+        self.regime_enabled = regime_enabled
+        self.regime_period = regime_period
+        self.regime_adx_threshold = regime_adx_threshold
+        self.allowed_regimes = list(allowed_regimes or [])
         if self.close_strategies:
             _evaluate, list_strategies = _load_close_registry()
             available = set(list_strategies())
@@ -278,6 +298,13 @@ class Backtester:
             df["_open_action"] = open_actions.shift(1).fillna("none")
             df["_close_fraction"] = _max_close_fraction_series(df).shift(1).fillna(0.0)
 
+        # Regime: inject vectorized labels before the per-bar loop so each bar
+        # can gate new entries. Mirrors the live path: latest_regime(df) on the
+        # same OHLCV window → identical label by construction (same algorithm).
+        if self.regime_enabled and "regime" not in df.columns:
+            ensure_regime = _load_regime()
+            ensure_regime(df, period=self.regime_period, adx_threshold=self.regime_adx_threshold)
+
         has_open = "open" in df.columns
 
         cash = self.initial_capital
@@ -330,6 +357,17 @@ class Backtester:
             equity = cash + position * mark_price
             equity_curve.append({"date": idx, "equity": equity})
 
+            # Regime gate: block new entries when the bar's regime isn't in the
+            # allowed set. Existing positions are always managed by close paths.
+            # ``compute_regime`` initializes every row to ``"ranging"`` (warmup
+            # bars included), so bar_regime is always a non-empty label here.
+            bar_regime = str(row.get("regime", "")) if self.regime_enabled else ""
+            regime_blocked = (
+                self.regime_enabled
+                and bool(self.allowed_regimes)
+                and bar_regime not in self.allowed_regimes
+            )
+
             if uses_open_close:
                 col_close_fraction = float(row.get("_close_fraction", 0.0))
                 close_fraction = max(col_close_fraction, pending_close_fraction)
@@ -367,7 +405,7 @@ class Backtester:
                         initial_quantity = 0.0
                         entry_atr_value = 0.0
 
-                if open_action == "long" and position == 0:
+                if open_action == "long" and position == 0 and not regime_blocked:
                     effective_price = fill_price * (1 + self.slippage_pct)
                     commission = cash * self.commission_pct
                     available = cash - commission
@@ -380,7 +418,7 @@ class Backtester:
                     avg_cost = effective_price
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
-                elif open_action == "short" and position == 0:
+                elif open_action == "short" and position == 0 and not regime_blocked:
                     effective_price = fill_price * (1 - self.slippage_pct)
                     commission = cash * self.commission_pct
                     notional = cash - commission
@@ -405,7 +443,7 @@ class Backtester:
                     )
                 continue
 
-            if signal == 1 and position == 0:
+            if signal == 1 and position == 0 and not regime_blocked:
                 # BUY — go long with all available cash
                 effective_price = fill_price * (1 + self.slippage_pct)
                 commission = cash * self.commission_pct
