@@ -479,6 +479,7 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 			TradeType:  "assignment",
 			Details: fmt.Sprintf("Wheel assignment: sold put expired ITM (spot=$%.2f), bought %.4f %s @ $%.0f",
 				r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike),
+			Regime: s.Regime,
 		})
 		logger.Info("ASSIGNMENT: sold put %s-%.0f expired ITM (spot=$%.2f), bought %.4f %s @ $%.0f (cash debit=$%.2f)",
 			r.AssignUnderlying, r.AssignStrike, r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, cost)
@@ -516,6 +517,7 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 				r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, pnl),
 			IsClose:     true,
 			RealizedPnL: pnl,
+			Regime:      s.Regime,
 		})
 		logger.Info("CALL-AWAY: sold call %s-%.0f expired ITM (spot=$%.2f), sold %.4f %s @ $%.0f (proceeds=$%.2f, PnL=$%.2f)",
 			r.AssignUnderlying, r.AssignStrike, r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, proceeds, pnl)

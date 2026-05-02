@@ -1191,6 +1191,7 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 			// (no AvgCost basis available). With strict #471 W/L semantics,
 			// this breakeven close counts as neither win nor loss.
 			IsClose: true,
+			Regime:  s.Regime,
 		})
 		return
 	}
@@ -1225,6 +1226,7 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 		ExchangeFee: exchangeFeeForTrade(fillFee, true),
 		IsClose:     true,
 		RealizedPnL: pnl,
+		Regime:      s.Regime,
 	})
 	RecordTradeResult(&s.RiskState, pnl)
 

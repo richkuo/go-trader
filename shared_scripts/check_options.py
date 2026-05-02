@@ -417,6 +417,7 @@ def main():
             "spot_price": 0,
             "actions": [],
             "iv_rank": 0,
+            "regime": None,
             "platform": platform,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "skip_reason": f"Max positions reached ({len(existing_positions)}/{MAX_POSITIONS_PER_STRATEGY})"
@@ -431,6 +432,7 @@ def main():
             "spot_price": 0,
             "actions": [],
             "iv_rank": 0,
+            "regime": None,
             "platform": platform,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": f"Unknown strategy: {strategy_name}. Available: {list(STRATEGY_MAP.keys())}"
@@ -449,6 +451,7 @@ def main():
                 "spot_price": 0,
                 "actions": [],
                 "iv_rank": 0,
+                "regime": None,
                 "platform": platform,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "error": "Could not fetch spot price"
@@ -485,6 +488,7 @@ def main():
             "spot_price": round(spot_price, 2),
             "actions": scored_actions,
             "iv_rank": round(iv_rank, 1),
+            "regime": None,
             "platform": platform,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -505,6 +509,7 @@ def main():
             "spot_price": 0,
             "actions": [],
             "iv_rank": 0,
+            "regime": None,
             "platform": platform,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": str(e)

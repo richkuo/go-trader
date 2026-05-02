@@ -19,87 +19,33 @@ Usage in check scripts (after data fetch and before apply_strategy):
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
-from atr import standard_atr
+try:
+    from .atr import standard_atr
+except ImportError:  # pragma: no cover - exercised by check-script style imports
+    from atr import standard_atr
+
+try:
+    from shared_strategies.open.adx_trend import _compute_adx_components
+except ImportError:  # pragma: no cover - supports direct shared_tools/regime.py imports
+    import importlib.util
+    from pathlib import Path
+
+    _ADX_TREND_PATH = (
+        Path(__file__).resolve().parents[1] / "shared_strategies" / "open" / "adx_trend.py"
+    )
+    _ADX_SPEC = importlib.util.spec_from_file_location("_regime_adx_trend", _ADX_TREND_PATH)
+    if _ADX_SPEC is None or _ADX_SPEC.loader is None:
+        raise
+    _ADX_MODULE = importlib.util.module_from_spec(_ADX_SPEC)
+    _ADX_SPEC.loader.exec_module(_ADX_MODULE)
+    _compute_adx_components = _ADX_MODULE._compute_adx_components
 
 _VALID_LABELS = frozenset({"trending_up", "trending_down", "ranging"})
+_REGIME_COLUMNS = ("regime", "regime_score", "adx", "plus_di", "minus_di")
 _DEFAULT_METRICS: dict = {"adx": 0.0, "plus_di": 0.0, "minus_di": 0.0, "atr_pct": 0.0}
 _DEFAULT_RESULT: dict = {"regime": "ranging", "score": 0.0, "metrics": _DEFAULT_METRICS}
-
-
-def _adx_components(
-    high: np.ndarray,
-    low: np.ndarray,
-    close: np.ndarray,
-    period: int,
-) -> dict:
-    """Wilder's ADX, +DI, and -DI on numpy arrays.
-
-    Identical algorithm to adx_trend._compute_adx_components; both implement
-    the same Wilder smoothing so live and backtest regimes are consistent.
-    Returns dict with "plus_di", "minus_di", "adx", "adx_start" arrays/int.
-    Bars before adx_start are zero.
-    """
-    n = len(high)
-    tr = np.zeros(n)
-    plus_dm = np.zeros(n)
-    minus_dm = np.zeros(n)
-
-    for i in range(1, n):
-        h_l = high[i] - low[i]
-        h_pc = abs(high[i] - close[i - 1])
-        l_pc = abs(low[i] - close[i - 1])
-        tr[i] = max(h_l, h_pc, l_pc)
-
-        up_move = high[i] - high[i - 1]
-        down_move = low[i - 1] - low[i]
-
-        plus_dm[i] = up_move if (up_move > down_move and up_move > 0) else 0.0
-        minus_dm[i] = down_move if (down_move > up_move and down_move > 0) else 0.0
-
-    smooth_tr = np.zeros(n)
-    smooth_plus_dm = np.zeros(n)
-    smooth_minus_dm = np.zeros(n)
-
-    if n > period:
-        smooth_tr[period] = np.sum(tr[1 : period + 1])
-        smooth_plus_dm[period] = np.sum(plus_dm[1 : period + 1])
-        smooth_minus_dm[period] = np.sum(minus_dm[1 : period + 1])
-
-        for i in range(period + 1, n):
-            smooth_tr[i] = smooth_tr[i - 1] - smooth_tr[i - 1] / period + tr[i]
-            smooth_plus_dm[i] = smooth_plus_dm[i - 1] - smooth_plus_dm[i - 1] / period + plus_dm[i]
-            smooth_minus_dm[i] = smooth_minus_dm[i - 1] - smooth_minus_dm[i - 1] / period + minus_dm[i]
-
-    plus_di = np.zeros(n)
-    minus_di = np.zeros(n)
-    for i in range(period, n):
-        if smooth_tr[i] != 0:
-            plus_di[i] = 100.0 * smooth_plus_dm[i] / smooth_tr[i]
-            minus_di[i] = 100.0 * smooth_minus_dm[i] / smooth_tr[i]
-
-    dx = np.zeros(n)
-    for i in range(period, n):
-        di_sum = plus_di[i] + minus_di[i]
-        if di_sum != 0:
-            dx[i] = 100.0 * abs(plus_di[i] - minus_di[i]) / di_sum
-
-    adx = np.zeros(n)
-    adx_start = period * 2
-    if adx_start >= n:
-        return {"plus_di": plus_di, "minus_di": minus_di, "adx": adx, "adx_start": adx_start}
-
-    adx_start = period * 2 - 1
-    if adx_start >= n:
-        return {"plus_di": plus_di, "minus_di": minus_di, "adx": adx, "adx_start": adx_start}
-
-    adx[adx_start] = np.mean(dx[period : adx_start + 1])
-    for i in range(adx_start + 1, n):
-        adx[i] = (adx[i - 1] * (period - 1) + dx[i]) / period
-
-    return {"plus_di": plus_di, "minus_di": minus_di, "adx": adx, "adx_start": adx_start}
 
 
 def compute_regime(
@@ -136,7 +82,10 @@ def compute_regime(
     if n == 0:
         return result
 
-    components = _adx_components(
+    if n <= period:
+        return result
+
+    components = _compute_adx_components(
         result["high"].values,
         result["low"].values,
         result["close"].values,
@@ -158,10 +107,12 @@ def compute_regime(
 
         if adx_val < adx_threshold:
             label = "ranging"
-        elif plus_di[i] >= minus_di[i]:
+        elif plus_di[i] > minus_di[i]:
             label = "trending_up"
-        else:
+        elif minus_di[i] > plus_di[i]:
             label = "trending_down"
+        else:
+            label = "ranging"
         result.iat[i, result.columns.get_loc("regime")] = label
 
     return result
@@ -227,10 +178,10 @@ def ensure_regime_columns(
 
     Returns the same DataFrame object (mutations are in-place).
     """
-    if "regime" in df.columns:
+    if all(col in df.columns for col in _REGIME_COLUMNS):
         return df
 
     reg_df = compute_regime(df, period=period, adx_threshold=adx_threshold)
-    for col in ("regime", "regime_score", "adx", "plus_di", "minus_di"):
+    for col in _REGIME_COLUMNS:
         df[col] = reg_df[col].values
     return df

@@ -549,15 +549,19 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Correlation = &CorrelationConfig{Enabled: false, MaxConcentrationPct: 60, MaxSameDirectionPct: 75}
 	}
 
-	// Regime detection defaults.
+	// Regime detection defaults. Defaults are only injected when Enabled=true so
+	// that an explicit zero in a disabled block (e.g. {"period": 0}) round-trips
+	// instead of being silently rewritten to 14.
 	if cfg.Regime == nil {
-		cfg.Regime = &RegimeConfig{Enabled: false, Period: 14, ADXThreshold: 20.0}
+		cfg.Regime = &RegimeConfig{Enabled: false}
 	}
-	if cfg.Regime.Period == 0 {
-		cfg.Regime.Period = 14
-	}
-	if cfg.Regime.ADXThreshold == 0 {
-		cfg.Regime.ADXThreshold = 20.0
+	if cfg.Regime.Enabled {
+		if cfg.Regime.Period == 0 {
+			cfg.Regime.Period = 14
+		}
+		if cfg.Regime.ADXThreshold == 0 {
+			cfg.Regime.ADXThreshold = 20.0
+		}
 	}
 
 	if cfg.Correlation.MaxConcentrationPct == 0 {
@@ -853,6 +857,9 @@ func ValidateConfig(cfg *Config) error {
 			}
 		}
 
+		// Canonical regime label set lives in shared_tools/regime.py
+		// (_VALID_LABELS). Keep the two in sync — this validator and the Python
+		// detector must agree, or strategies will be silently misclassified.
 		validRegimeLabels := map[string]bool{"trending_up": true, "trending_down": true, "ranging": true}
 		for j, label := range sc.AllowedRegimes {
 			if !validRegimeLabels[label] {
