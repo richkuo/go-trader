@@ -50,24 +50,6 @@ def _load_adapter(platform: str):
 
 # ── shared helpers ────────────────────────────────────────────────────────────
 
-def _fetch_ohlcv_closes(underlying, timeframe, limit, min_len, adapter=None):
-    """Fetch OHLCV closing prices. Uses adapter if available, else BinanceUS."""
-    # Try adapter's get_ohlcv_closes if available (e.g., Robinhood stocks)
-    if adapter is not None:
-        ohlcv_closes_fn = getattr(adapter, 'get_ohlcv_closes', None)
-        if ohlcv_closes_fn is not None:
-            return ohlcv_closes_fn(underlying, timeframe, limit, min_len)
-    try:
-        import ccxt
-        exchange = ccxt.binanceus({"enableRateLimit": True})
-        ohlcv = exchange.fetch_ohlcv(f"{underlying}/USDT", timeframe, limit=limit)
-        if not ohlcv or len(ohlcv) < min_len:
-            return None
-        return [c[4] for c in ohlcv]
-    except Exception:
-        return None
-
-
 def _fetch_ohlcv_df(underlying, timeframe, limit, min_len, adapter=None):
     """Fetch OHLCV rows as a pandas DataFrame for regime detection.
 
@@ -222,9 +204,10 @@ def score_new_trade(proposed_action, existing_positions, spot_price):
 def evaluate_momentum_options(underlying, spot_price, vol_annual, iv_rank,
                                existing_positions, spot_positions, adapter):
     try:
-        closes = _fetch_ohlcv_closes(underlying, "4h", 100, 30, adapter=adapter)
-        if closes is None:
+        df = _fetch_ohlcv_df(underlying, "4h", 100, 30, adapter=adapter)
+        if df is None:
             return 0, [], iv_rank
+        closes = df["close"].tolist()
 
         roc_period = 14
         threshold = 5.0
