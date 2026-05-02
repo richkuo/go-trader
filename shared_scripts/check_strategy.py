@@ -208,6 +208,7 @@ def main():
             signal = normalize_signal(result_df.iloc[-1].get("signal", 0))
 
         # Get the last row's signal
+        ensure_atr_indicator(result_df)
         last = result_df.iloc[-1]
         price = float(last["close"])
 
@@ -231,8 +232,6 @@ def main():
             signal = decision["signal"]
 
         # Collect relevant indicators
-        ensure_atr_indicator(result_df)
-        last = result_df.iloc[-1]
         indicators = {}
         indicator_cols = [c for c in result_df.columns
                          if c not in ("open", "high", "low", "close", "close_b", "volume",

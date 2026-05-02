@@ -189,6 +189,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             result_df = apply_strategy(strategy_name, df, strategy_params)
             signal = normalize_signal(result_df.iloc[-1].get("signal", 0))
 
+        ensure_atr_indicator(result_df)
         last = result_df.iloc[-1]
         price = float(last["close"])
 
@@ -220,8 +221,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         except Exception:
             pass
 
-        ensure_atr_indicator(result_df)
-        last = result_df.iloc[-1]
         indicators = {}
         skip_cols = {
             "open", "high", "low", "close", "volume",
