@@ -87,6 +87,10 @@ def run_single_backtest(
     htf_filter: bool = False,
     close_strategies: Optional[List[str]] = None,
     close_params: Optional[dict] = None,
+    regime_enabled: bool = False,
+    regime_period: int = 14,
+    regime_adx_threshold: float = 20.0,
+    allowed_regimes: Optional[List[str]] = None,
 ) -> Optional[dict]:
     """Run a single backtest and print results.
 
@@ -137,6 +141,10 @@ def run_single_backtest(
         initial_capital=capital, platform=platform,
         close_strategies=close_strategies,
         close_params=close_params,
+        regime_enabled=regime_enabled,
+        regime_period=regime_period,
+        regime_adx_threshold=regime_adx_threshold,
+        allowed_regimes=allowed_regimes,
     )
     results = bt.run(
         df_signals,
@@ -317,6 +325,18 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Per-evaluator params as JSON string, keyed by "
                              "evaluator name, e.g. "
                              "'{\"tp_at_pct\":{\"pct\":0.03}}'.")
+    parser.add_argument("--regime-enabled", action="store_true", default=False,
+                        help="Enable market regime detection. Injects vectorized regime "
+                             "column from shared_tools/regime.py before the per-bar loop, "
+                             "matching the live check-script contract (#482).")
+    parser.add_argument("--regime-period", type=int, default=14,
+                        help="ADX lookback period for regime detection (default: 14).")
+    parser.add_argument("--regime-adx-threshold", type=float, default=20.0,
+                        help="ADX threshold below which market is 'ranging' (default: 20.0).")
+    parser.add_argument("--allowed-regimes", action="append", dest="allowed_regimes",
+                        default=None, metavar="LABEL",
+                        help="Regime label to allow entries for (repeat for multiple). "
+                             "Empty = allow all. Valid: trending_up, trending_down, ranging.")
     return parser
 
 
@@ -342,7 +362,11 @@ def main():
                             registry=args.registry, platform=args.platform,
                             htf_filter=args.htf_filter,
                             close_strategies=args.close_strategies,
-                            close_params=close_params)
+                            close_params=close_params,
+                            regime_enabled=args.regime_enabled,
+                            regime_period=args.regime_period,
+                            regime_adx_threshold=args.regime_adx_threshold,
+                            allowed_regimes=args.allowed_regimes)
 
     elif args.mode == "compare":
         strategies = None if args.strategy == "all" else [args.strategy]
