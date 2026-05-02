@@ -1,6 +1,8 @@
 """Tests for shared_tools/regime.py."""
 
 import math
+import inspect
+import importlib
 import pathlib
 import sys
 
@@ -169,6 +171,38 @@ def test_compute_regime_empty_df_no_crash():
         assert col in result.columns
 
 
+def test_regime_module_importable_as_package():
+    """shared_tools.regime should support package imports as well as check-script imports."""
+    mod = importlib.import_module("shared_tools.regime")
+    df = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    assert mod.latest_regime(df)["regime"] == "ranging"
+
+
+def test_compute_regime_reuses_extracted_adx_core():
+    """Regime detection should call the ADX helper extracted from adx_trend.py."""
+    source_file = pathlib.Path(inspect.getfile(_regime_mod._compute_adx_components))
+
+    assert source_file.name == "adx_trend.py"
+    assert source_file.parent.name == "open"
+
+
+def test_compute_regime_tied_di_labels_ranging(monkeypatch):
+    """A DI tie has no directional winner, even if prior ADX remains elevated."""
+    df = _make_uptrend(n=40)
+    n = len(df)
+    components = {
+        "plus_di": np.full(n, 20.0),
+        "minus_di": np.full(n, 20.0),
+        "adx": np.full(n, 50.0),
+        "adx_start": 0,
+    }
+    monkeypatch.setattr(_regime_mod, "_compute_adx_components", lambda *_args: components)
+
+    result = compute_regime(df, period=14, adx_threshold=20.0)
+
+    assert result["regime"].iloc[-1] == "ranging"
+
+
 # ─── latest_regime tests ──────────────────────────────────────────────────────
 
 
@@ -239,6 +273,17 @@ def test_ensure_regime_columns_noop_when_present():
     sentinel = df["regime"].copy()
     ensure_regime_columns(df)
     pd.testing.assert_series_equal(df["regime"], sentinel)
+
+
+def test_ensure_regime_columns_fills_partial_existing_columns():
+    """A pre-existing regime label should not block missing metric columns."""
+    df = _make_uptrend()
+    df["regime"] = "external"
+    out = ensure_regime_columns(df, period=14, adx_threshold=20.0)
+    assert out is df
+    for col in ("regime", "regime_score", "adx", "plus_di", "minus_di"):
+        assert col in df.columns
+    assert df["regime"].iloc[-1] == "trending_up"
 
 
 def test_ensure_regime_columns_idempotent():
