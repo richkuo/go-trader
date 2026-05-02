@@ -53,6 +53,7 @@ type OptionsResult struct {
 	SpotPrice  float64         `json:"spot_price"`
 	Actions    []OptionsAction `json:"actions"`
 	IVRank     float64         `json:"iv_rank"`
+	Regime     string          `json:"regime,omitempty"`
 	Timestamp  string          `json:"timestamp"`
 	Error      string          `json:"error,omitempty"`
 }

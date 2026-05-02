@@ -1268,6 +1268,7 @@ func main() {
 					case "options":
 						if result, signalStr, ok := runOptionsCheck(sc, posJSON, logger); ok {
 							mu.Lock()
+							stratState.Regime = result.Regime
 							var harvestDetails []string
 							trades, detail, harvestDetails = executeOptionsResult(sc, stratState, result, signalStr, logger)
 							mu.Unlock()

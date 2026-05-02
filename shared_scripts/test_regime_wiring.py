@@ -1,11 +1,11 @@
 """Tests for regime injection contract in check scripts.
 
-Verifies the regime injection pattern used by all 5 standard check scripts:
+Verifies the regime injection pattern used by all 6 standard check scripts:
   - latest_regime() is importable via shared_tools sys.path
   - regime payload is JSON-serializable (no NaN/Inf; SafeEncoder compat)
   - strip_unsupported_position_context drops "regime" for non-aware strategies
   - regime payload can safely be merged into strategy_params (even when None)
-  - check_options.py emits regime: null (tested via source inspection)
+  - check_options.py computes a regime label from underlying OHLCV (#544)
 """
 
 import json
@@ -145,13 +145,74 @@ def test_strip_unsupported_keeps_regime_for_aware_function():
     assert stripped["rsi_period"] == 14
 
 
-# ─── check_options.py emits regime: null ─────────────────────────────────────
+# ─── check_options.py regime computation (#544) ───────────────────────────────
 
 
-def test_check_options_source_emits_regime_null():
-    """check_options.py must emit 'regime': None (null in JSON) in its output paths."""
+def _load_check_options_module():
+    """Import shared_scripts/check_options.py as a module without executing main()."""
     src_path = pathlib.Path(__file__).parent / "check_options.py"
-    source = src_path.read_text()
-    assert '"regime"' in source or "'regime'" in source, (
-        "check_options.py does not emit a 'regime' field — add \"'regime': None\" to all output dicts"
-    )
+    spec = importlib.util.spec_from_file_location("_check_options_under_test", src_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_check_options_regime_label_from_uptrend_df():
+    """_regime_label_from_df returns a valid label for a sufficient uptrend df."""
+    module = _load_check_options_module()
+    df = _make_uptrend_df(100)
+    label = module._regime_label_from_df(df)
+    assert label in ("trending_up", "trending_down", "ranging")
+
+
+def test_check_options_regime_label_from_short_df_is_none():
+    """_regime_label_from_df returns None when the df has fewer than min bars (warmup)."""
+    module = _load_check_options_module()
+    df = _make_uptrend_df(10)
+    assert module._regime_label_from_df(df) is None
+
+
+def test_check_options_regime_label_from_none_df_is_none():
+    """_regime_label_from_df tolerates a None df (fetch failure path)."""
+    module = _load_check_options_module()
+    assert module._regime_label_from_df(None) is None
+
+
+def test_check_options_fetch_ohlcv_df_uses_adapter_when_available():
+    """_fetch_ohlcv_df prefers adapter.get_ohlcv when present and returns a DataFrame."""
+    module = _load_check_options_module()
+
+    class StubAdapter:
+        def __init__(self, rows):
+            self._rows = rows
+            self.calls = []
+
+        def get_ohlcv(self, symbol, timeframe, limit):
+            self.calls.append((symbol, timeframe, limit))
+            return self._rows
+
+    rows = [
+        [i * 1000, 100.0 + i, 101.0 + i, 99.0 + i, 100.5 + i, 1000.0]
+        for i in range(50)
+    ]
+    adapter = StubAdapter(rows)
+    df = module._fetch_ohlcv_df("BTC", "4h", 100, 30, adapter=adapter)
+    assert df is not None
+    assert len(df) == 50
+    assert {"high", "low", "close"}.issubset(df.columns)
+    assert adapter.calls == [("BTC", "4h", 100)]
+
+
+def test_check_options_fetch_ohlcv_df_short_returns_none():
+    """_fetch_ohlcv_df returns None when adapter rows are below min_len (no fallback to ccxt)."""
+    module = _load_check_options_module()
+
+    class StubAdapter:
+        def get_ohlcv(self, symbol, timeframe, limit):
+            return [[i * 1000, 100.0, 101.0, 99.0, 100.5, 1000.0] for i in range(5)]
+
+    # Adapter returned 5 bars; min_len is 30 → expect None (without ccxt fallback,
+    # since adapter explicitly returned data — empty/None would fall back).
+    # Current behavior: short non-empty rows do NOT trigger fallback; they short-circuit to None.
+    df = module._fetch_ohlcv_df("BTC", "4h", 100, 30, adapter=StubAdapter())
+    assert df is None

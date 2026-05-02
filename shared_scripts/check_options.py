@@ -18,9 +18,15 @@ from datetime import datetime, timezone
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_THIS_DIR)
 sys.path.insert(0, _REPO_ROOT)
+sys.path.insert(0, os.path.join(_REPO_ROOT, "shared_tools"))
+
+from regime import latest_regime
 
 MAX_POSITIONS_PER_STRATEGY = 4
 MIN_SCORE_THRESHOLD = 0.3
+REGIME_TIMEFRAME = "4h"
+REGIME_LIMIT = 100
+REGIME_MIN_BARS = 30
 
 
 # ── adapter loader ───────────────────────────────────────────────────────────
@@ -59,6 +65,52 @@ def _fetch_ohlcv_closes(underlying, timeframe, limit, min_len, adapter=None):
             return None
         return [c[4] for c in ohlcv]
     except Exception:
+        return None
+
+
+def _fetch_ohlcv_df(underlying, timeframe, limit, min_len, adapter=None):
+    """Fetch OHLCV rows as a pandas DataFrame for regime detection.
+
+    Uses adapter.get_ohlcv when available (Robinhood stocks, OKX), otherwise
+    falls back to BinanceUS ccxt. Returns None when the upstream fetch fails or
+    produces fewer than min_len bars (regime requires ~2*ADX_period for warmup).
+    """
+    rows = None
+    if adapter is not None:
+        ohlcv_fn = getattr(adapter, "get_ohlcv", None)
+        if ohlcv_fn is not None:
+            try:
+                rows = ohlcv_fn(underlying, timeframe, limit)
+            except Exception as e:
+                print(f"adapter.get_ohlcv failed: {e}", file=sys.stderr)
+                rows = None
+    if not rows:
+        try:
+            import ccxt
+            exchange = ccxt.binanceus({"enableRateLimit": True})
+            rows = exchange.fetch_ohlcv(f"{underlying}/USDT", timeframe, limit=limit)
+        except Exception as e:
+            print(f"BinanceUS OHLCV fetch failed: {e}", file=sys.stderr)
+            return None
+    if not rows or len(rows) < min_len:
+        return None
+    try:
+        import pandas as pd
+        df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        return df
+    except Exception as e:
+        print(f"OHLCV DataFrame construction failed: {e}", file=sys.stderr)
+        return None
+
+
+def _regime_label_from_df(df):
+    """Return the regime string label, or None if df is None / too short / errors."""
+    if df is None or len(df) < REGIME_MIN_BARS:
+        return None
+    try:
+        return latest_regime(df)["regime"]
+    except Exception as e:
+        print(f"Regime detection failed: {e}", file=sys.stderr)
         return None
 
 
@@ -460,6 +512,10 @@ def main():
 
         vol_annual, iv_rank = adapter.get_vol_metrics(underlying)
 
+        regime_df = _fetch_ohlcv_df(underlying, REGIME_TIMEFRAME, REGIME_LIMIT,
+                                    REGIME_MIN_BARS, adapter=adapter)
+        regime_label = _regime_label_from_df(regime_df)
+
         evaluate_fn = STRATEGY_MAP[strategy_name]
         signal, actions, iv_rank = evaluate_fn(
             underlying, spot_price, vol_annual, iv_rank,
@@ -488,7 +544,7 @@ def main():
             "spot_price": round(spot_price, 2),
             "actions": scored_actions,
             "iv_rank": round(iv_rank, 1),
-            "regime": None,
+            "regime": regime_label,
             "platform": platform,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
