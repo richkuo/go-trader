@@ -221,6 +221,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             pass
 
         ensure_atr_indicator(result_df)
+        last = result_df.iloc[-1]
         indicators = {}
         skip_cols = {
             "open", "high", "low", "close", "volume",
