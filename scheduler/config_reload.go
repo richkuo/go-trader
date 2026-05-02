@@ -83,6 +83,10 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].close_strategies: %v -> %v", sc.ID, sc.CloseStrategies, ns.CloseStrategies)
 			sc.CloseStrategies = append([]string{}, ns.CloseStrategies...)
 		}
+		if !reflect.DeepEqual(sc.AllowedRegimes, ns.AllowedRegimes) {
+			addChange("strategy[%s].allowed_regimes: %v -> %v", sc.ID, sc.AllowedRegimes, ns.AllowedRegimes)
+			sc.AllowedRegimes = append([]string{}, ns.AllowedRegimes...)
+		}
 		// #486: Margin mode is hot-reloadable when flat. The state-compat
 		// check above blocks the change when positions are open; if we got
 		// here with new MarginMode != current, the strategy is flat and the
@@ -190,6 +194,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	}
 	if !reflect.DeepEqual(cfg.Correlation, next.Correlation) {
 		errs = append(errs, "correlation changed (restart required)")
+	}
+	if !reflect.DeepEqual(cfg.Regime, next.Regime) {
+		errs = append(errs, "regime changed (restart required)")
 	}
 	if !reflect.DeepEqual(cfg.LeaderboardSummaries, next.LeaderboardSummaries) {
 		errs = append(errs, "leaderboard_summaries changed (restart required)")
@@ -306,6 +313,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.IntervalSeconds = 0
 	sc.OpenStrategy = ""
 	sc.CloseStrategies = nil
+	sc.AllowedRegimes = nil
 	sc.MarginMode = ""              // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
 	sc.TrailingStopPct = nil        // #501: hot-reloadable; state-compat allows pct changes but blocks mode switches while open
 	sc.TrailingStopATRMult = nil    // #505: hot-reloadable; same state-compat treatment as TrailingStopPct

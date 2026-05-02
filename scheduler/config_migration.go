@@ -10,7 +10,7 @@ import (
 
 // CurrentConfigVersion is the version embedded in newly generated configs.
 // When the binary starts and cfg.ConfigVersion < CurrentConfigVersion, migration runs.
-const CurrentConfigVersion = 10
+const CurrentConfigVersion = 11
 
 // ConfigField describes a config field introduced in a specific version.
 type ConfigField struct {

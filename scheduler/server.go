@@ -299,6 +299,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PnL             float64                    `json:"pnl"`
 		PnLPct          float64                    `json:"pnl_pct"`
 		RiskState       RiskState                  `json:"risk_state"`
+		Regime          string                     `json:"regime,omitempty"`
 	}
 
 	type StatusResp struct {
@@ -356,6 +357,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			PnL:             pnl,
 			PnLPct:          pnlPct,
 			RiskState:       s.RiskState,
+			Regime:          s.Regime,
 		}
 	}
 

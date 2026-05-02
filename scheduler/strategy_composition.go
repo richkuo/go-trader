@@ -15,6 +15,7 @@ type StrategyDecisionFields struct {
 	OpenAction      string   `json:"open_action,omitempty"`
 	CloseFraction   float64  `json:"close_fraction"`
 	CloseStrategy   string   `json:"close_strategy,omitempty"`
+	Regime          string   `json:"regime,omitempty"`
 }
 
 // PositionCtx is the optional state snapshot threaded into close evaluators

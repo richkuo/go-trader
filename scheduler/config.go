@@ -43,6 +43,14 @@ type PlatformConfig struct {
 	Risk *PortfolioRiskConfig `json:"risk,omitempty"` // overrides portfolio-level defaults
 }
 
+// RegimeConfig controls the market regime detector run once per (symbol, timeframe) cycle.
+// Default disabled; strategies opt in via AllowedRegimes or by reading params["regime"].
+type RegimeConfig struct {
+	Enabled      bool    `json:"enabled"`
+	Period       int     `json:"period"`        // ADX lookback (Wilder's smoothing); default 14
+	ADXThreshold float64 `json:"adx_threshold"` // ADX below this is "ranging"; default 20.0
+}
+
 // CorrelationConfig controls portfolio-level directional exposure tracking.
 type CorrelationConfig struct {
 	Enabled             bool    `json:"enabled"`
@@ -106,6 +114,7 @@ type Config struct {
 	Strategies           []StrategyConfig           `json:"strategies"`
 	PortfolioRisk        *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
 	Correlation          *CorrelationConfig         `json:"correlation,omitempty"`
+	Regime               *RegimeConfig              `json:"regime,omitempty"`
 	Platforms            map[string]*PlatformConfig `json:"platforms,omitempty"`
 	LeaderboardSummaries []LeaderboardSummaryConfig `json:"leaderboard_summaries,omitempty"` // #308 — configurable per-channel leaderboards
 	SummaryFrequency     map[string]string          `json:"summary_frequency,omitempty"`     // #30 — per-channel summary cadence; keys match Discord/Telegram channel keys (e.g. "spot", "options", "hyperliquid"). Values: Go duration ("30m", "2h"), alias ("hourly", "every"/"per_check"/"always"), or empty for legacy default (continuous: every channel run; spot: hourly)
@@ -197,6 +206,7 @@ type StrategyConfig struct {
 	Args                   []string               `json:"args"`
 	OpenStrategy           string                 `json:"open_strategy,omitempty"`    // optional entry strategy override; defaults to Args[0] for backwards compatibility (#480)
 	CloseStrategies        []string               `json:"close_strategies,omitempty"` // optional exit strategy list; max close_fraction wins (#480)
+	AllowedRegimes         []string               `json:"allowed_regimes,omitempty"`  // gate entries: skip signal when current regime not in this list; empty = allow all (#482)
 	Capital                float64                `json:"capital"`
 	CapitalPct             float64                `json:"capital_pct,omitempty"`     // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
 	InitialCapital         float64                `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
@@ -539,6 +549,17 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Correlation = &CorrelationConfig{Enabled: false, MaxConcentrationPct: 60, MaxSameDirectionPct: 75}
 	}
 
+	// Regime detection defaults.
+	if cfg.Regime == nil {
+		cfg.Regime = &RegimeConfig{Enabled: false, Period: 14, ADXThreshold: 20.0}
+	}
+	if cfg.Regime.Period == 0 {
+		cfg.Regime.Period = 14
+	}
+	if cfg.Regime.ADXThreshold == 0 {
+		cfg.Regime.ADXThreshold = 20.0
+	}
+
 	if cfg.Correlation.MaxConcentrationPct == 0 {
 		cfg.Correlation.MaxConcentrationPct = 60
 	}
@@ -829,6 +850,13 @@ func ValidateConfig(cfg *Config) error {
 		for j, name := range sc.CloseStrategies {
 			if err := validateStrategyConceptName(name); err != nil {
 				errs = append(errs, fmt.Sprintf("%s: close_strategies[%d] %v", prefix, j, err))
+			}
+		}
+
+		validRegimeLabels := map[string]bool{"trending_up": true, "trending_down": true, "ranging": true}
+		for j, label := range sc.AllowedRegimes {
+			if !validRegimeLabels[label] {
+				errs = append(errs, fmt.Sprintf("%s: allowed_regimes[%d] unknown label %q (valid: trending_up, trending_down, ranging)", prefix, j, label))
 			}
 		}
 
@@ -1190,6 +1218,16 @@ func ValidateConfig(cfg *Config) error {
 		}
 		if cfg.Correlation.MaxSameDirectionPct <= 0 || cfg.Correlation.MaxSameDirectionPct > 100 {
 			errs = append(errs, fmt.Sprintf("correlation.max_same_direction_pct must be in (0, 100], got %g", cfg.Correlation.MaxSameDirectionPct))
+		}
+	}
+
+	// Validate regime config.
+	if cfg.Regime != nil && cfg.Regime.Enabled {
+		if cfg.Regime.Period <= 0 {
+			errs = append(errs, fmt.Sprintf("regime.period must be > 0, got %d", cfg.Regime.Period))
+		}
+		if cfg.Regime.ADXThreshold <= 0 || cfg.Regime.ADXThreshold > 100 {
+			errs = append(errs, fmt.Sprintf("regime.adx_threshold must be in (0, 100], got %g", cfg.Regime.ADXThreshold))
 		}
 	}
 
