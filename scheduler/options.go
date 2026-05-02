@@ -158,6 +158,7 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 		TradeType:  "options",
 		Details:    fmt.Sprintf("Buy %s %s strike=%.0f exp=%s premium=$%.2f fee=$%.2f", result.Underlying, action.OptionType, action.Strike, action.Expiry, cost, fee),
 	}
+	trade.Regime = s.Regime
 	RecordTrade(s, trade)
 	logger.Info("BUY OPTION %s %s strike=%.0f exp=%s | $%.2f (fee $%.2f)", result.Underlying, action.OptionType, action.Strike, action.Expiry, cost, fee)
 
@@ -225,6 +226,7 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 		TradeType:  "options",
 		Details:    fmt.Sprintf("Sell %s %s strike=%.0f exp=%s premium=$%.2f fee=$%.2f", result.Underlying, action.OptionType, action.Strike, action.Expiry, premium, fee),
 	}
+	trade.Regime = s.Regime
 	RecordTrade(s, trade)
 	logger.Info("SELL OPTION %s %s strike=%.0f exp=%s | +$%.2f (fee $%.2f)", result.Underlying, action.OptionType, action.Strike, action.Expiry, premium, fee)
 
@@ -262,6 +264,7 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 				IsClose:     true,
 				RealizedPnL: pnl,
 			}
+			trade.Regime = s.Regime
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			recordClosedOptionPosition(s, pos, closePriceUSD, pnl, "signal", now)
@@ -466,6 +469,7 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 			IsClose:     true,
 			RealizedPnL: pnl,
 		}
+		trade.Regime = s.Regime
 		RecordTrade(s, trade)
 		RecordTradeResult(&s.RiskState, pnl)
 		recordClosedOptionPosition(s, pos, buybackCost, pnl, "theta_harvest", now)

@@ -153,6 +153,7 @@ func recordPerpsStopLossClose(s *StrategyState, symbol string, triggerPx float64
 		IsClose:     true,
 		RealizedPnL: pnl,
 	}
+	trade.Regime = s.Regime
 	RecordTrade(s, trade)
 	RecordTradeResult(&s.RiskState, pnl)
 	recordClosedPosition(s, pos, triggerPx, pnl, reason, now)
@@ -214,6 +215,7 @@ type Trade struct {
 	// inserted on a close, they identify the round-trip in the trades table.
 	IsClose     bool    `json:"is_close,omitempty"`
 	RealizedPnL float64 `json:"realized_pnl,omitempty"`
+	Regime      string  `json:"regime,omitempty"` // market regime label at time of trade (#482)
 
 	// persisted tracks whether this Trade has been written to SQLite — set by
 	// RecordTrade on successful InsertTrade and by LoadState for DB-loaded
@@ -646,6 +648,7 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 				IsClose:         true,
 				RealizedPnL:     pnl,
 			}
+			trade.Regime = s.Regime
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -730,6 +733,7 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			ExchangeOrderID: openOID,
 			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
 		}
+		trade.Regime = s.Regime
 		RecordTrade(s, trade)
 		logger.Info("BUY %s: %.6f @ $%.2f (%s, notional $%.2f, fee $%.2f)", symbol, qty, execPrice, leverageLabel, notional, fee)
 		tradesExecuted++
@@ -792,6 +796,7 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 				IsClose:         true,
 				RealizedPnL:     pnl,
 			}
+			trade.Regime = s.Regime
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -876,6 +881,7 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			ExchangeOrderID: openOID,
 			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
 		}
+		trade.Regime = s.Regime
 		RecordTrade(s, trade)
 		logger.Info("SELL %s: %.6f @ $%.2f (%s, notional $%.2f, fee $%.2f) [open short]", symbol, qty, execPrice, leverageLabel, notional, fee)
 		tradesExecuted++
@@ -967,6 +973,7 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 				IsClose:         true,
 				RealizedPnL:     pnl,
 			}
+			trade.Regime = s.Regime
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -1038,6 +1045,7 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
 			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
 		}
+		trade.Regime = s.Regime
 		RecordTrade(s, trade)
 		logger.Info("BUY %s: %.6f @ $%.2f (fee $%.2f, total $%.2f)", symbol, qty, execPrice, fee, tradeCost+fee)
 		tradesExecuted++
@@ -1090,6 +1098,7 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 				IsClose:         true,
 				RealizedPnL:     pnl,
 			}
+			trade.Regime = s.Regime
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -1191,6 +1200,7 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				IsClose:         true,
 				RealizedPnL:     pnl,
 			}
+			trade.Regime = s.Regime
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -1272,6 +1282,7 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
 			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
 		}
+		trade.Regime = s.Regime
 		RecordTrade(s, trade)
 		logger.Info("BUY %s: %d contracts @ $%.2f (fee $%.2f)", symbol, contracts, execPrice, fee)
 		tradesExecuted++
@@ -1331,6 +1342,7 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				IsClose:         true,
 				RealizedPnL:     pnl,
 			}
+			trade.Regime = s.Regime
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -1411,6 +1423,7 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
 				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
 			}
+			trade.Regime = s.Regime
 			RecordTrade(s, trade)
 			logger.Info("SHORT %s: %d contracts @ $%.2f (fee $%.2f)", symbol, contracts, execPrice, fee)
 			tradesExecuted++

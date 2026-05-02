@@ -262,6 +262,9 @@ func FormatTradeDMPlain(sc StrategyConfig, trade Trade, mode string) string {
 			valueLine += fmt.Sprintf(" | PnL: $%s", pnl)
 		}
 	}
+	if trade.Regime != "" {
+		valueLine += fmt.Sprintf(" | Regime: %s", trade.Regime)
+	}
 	valueLine += fmt.Sprintf(" | Mode: %s", mode)
 	sb.WriteString(valueLine)
 

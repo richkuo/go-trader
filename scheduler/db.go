@@ -268,6 +268,8 @@ func (sdb *StateDB) migrateSchema() error {
 		// Position-aware close evaluator context (#496).
 		"ALTER TABLE positions ADD COLUMN initial_quantity REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN entry_atr REAL NOT NULL DEFAULT 0",
+		// Market regime label at trade time (#482).
+		"ALTER TABLE trades ADD COLUMN regime TEXT NOT NULL DEFAULT ''",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -465,11 +467,11 @@ func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
 		isClose = 1
 	}
 	_, err := sdb.db.Exec(`INSERT INTO trades
-			(strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strategyID, formatTime(trade.Timestamp), trade.Symbol, trade.PositionID, trade.Side,
 		trade.Quantity, trade.Price, trade.Value, trade.TradeType, trade.Details,
-		trade.ExchangeOrderID, trade.ExchangeFee, isClose, trade.RealizedPnL)
+		trade.ExchangeOrderID, trade.ExchangeFee, isClose, trade.RealizedPnL, trade.Regime)
 	if err != nil {
 		return fmt.Errorf("insert trade for %s: %w", strategyID, err)
 	}
