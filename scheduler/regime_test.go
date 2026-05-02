@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -219,6 +223,71 @@ func TestCurrentConfigVersion_IsEleven(t *testing.T) {
 	}
 }
 
+// ─── ValidateConfig — AllowedRegimes on options strategies ───────────────────
+
+func TestValidateConfig_AllowedRegimes_RejectsOnOptions(t *testing.T) {
+	cfg := minimalOptionsConfig()
+	cfg.Strategies[0].AllowedRegimes = []string{"trending_up"}
+	if err := ValidateConfig(&cfg); err == nil {
+		t.Fatal("allowed_regimes on options strategy should fail validation (gate not wired)")
+	}
+}
+
+func TestValidateConfig_AllowedRegimes_AcceptsEmptyOnOptions(t *testing.T) {
+	cfg := minimalOptionsConfig()
+	cfg.Strategies[0].AllowedRegimes = nil
+	if err := ValidateConfig(&cfg); err != nil {
+		t.Fatalf("nil allowed_regimes on options strategy should be valid, got: %v", err)
+	}
+}
+
+func TestValidateConfig_AllowedRegimes_AcceptsOnSpotWithRegimeEnabled(t *testing.T) {
+	cfg := minimalSpotConfig()
+	cfg.Regime = &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20.0}
+	cfg.Strategies[0].AllowedRegimes = []string{"trending_up"}
+	if err := ValidateConfig(&cfg); err != nil {
+		t.Fatalf("allowed_regimes on spot with regime enabled should pass, got: %v", err)
+	}
+}
+
+// captureStdout redirects os.Stdout for the duration of fn and returns what was printed.
+func captureStdout(fn func()) string {
+	orig := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	fn()
+	w.Close()
+	os.Stdout = orig
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	return buf.String()
+}
+
+func TestValidateConfig_AllowedRegimes_WarnsWhenRegimeDisabled(t *testing.T) {
+	cfg := minimalSpotConfig()
+	cfg.Regime = nil // disabled
+	cfg.Strategies[0].AllowedRegimes = []string{"trending_up"}
+	var out string
+	out = captureStdout(func() {
+		_ = ValidateConfig(&cfg)
+	})
+	if !strings.Contains(out, "[WARN]") || !strings.Contains(out, "regime.enabled=false") {
+		t.Fatalf("expected [WARN] about regime.enabled=false, got: %q", out)
+	}
+}
+
+func TestValidateConfig_AllowedRegimes_NoWarnWhenRegimeEnabled(t *testing.T) {
+	cfg := minimalSpotConfig()
+	cfg.Regime = &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20.0}
+	cfg.Strategies[0].AllowedRegimes = []string{"trending_up"}
+	out := captureStdout(func() {
+		_ = ValidateConfig(&cfg)
+	})
+	if strings.Contains(out, "regime.enabled=false") {
+		t.Fatalf("unexpected [WARN] about regime.enabled=false when regime is enabled, got: %q", out)
+	}
+}
+
 // ─── hot-reload: AllowedRegimes is soft, Regime is restart-required ───────────
 
 func TestHotReload_AllowedRegimesChangeIsAccepted(t *testing.T) {
@@ -252,6 +321,23 @@ func minimalSpotConfig() Config {
 				Platform:       "binanceus",
 				Script:         "shared_scripts/check_strategy.py",
 				Args:           []string{"sma_crossover", "BTC/USDT", "1h"},
+				Capital:        1000,
+				MaxDrawdownPct: 10,
+			},
+		},
+	}
+}
+
+func minimalOptionsConfig() Config {
+	return Config{
+		IntervalSeconds: 60,
+		Strategies: []StrategyConfig{
+			{
+				ID:             "test-options-1",
+				Type:           "options",
+				Platform:       "deribit",
+				Script:         "shared_scripts/check_options.py",
+				Args:           []string{"sell_covered_call", "BTC", "--platform=deribit"},
 				Capital:        1000,
 				MaxDrawdownPct: 10,
 			},
