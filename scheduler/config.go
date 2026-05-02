@@ -866,6 +866,12 @@ func ValidateConfig(cfg *Config) error {
 				errs = append(errs, fmt.Sprintf("%s: allowed_regimes[%d] unknown label %q (valid: trending_up, trending_down, ranging)", prefix, j, label))
 			}
 		}
+		// The regime gate is not wired at the options dispatch site (#553), so
+		// allowed_regimes is a silent no-op for options strategies. Reject it
+		// here until the gate is properly implemented for the multi-position model.
+		if sc.Type == "options" && len(sc.AllowedRegimes) > 0 {
+			errs = append(errs, fmt.Sprintf("%s: allowed_regimes is not enforced for type=options (gate not wired at options dispatch; see issue #553)", prefix))
+		}
 
 		// Live-mode futures require TopStep API credentials.
 		if sc.Type == "futures" {
@@ -1235,6 +1241,17 @@ func ValidateConfig(cfg *Config) error {
 		}
 		if cfg.Regime.ADXThreshold <= 0 || cfg.Regime.ADXThreshold > 100 {
 			errs = append(errs, fmt.Sprintf("regime.adx_threshold must be in (0, 100], got %g", cfg.Regime.ADXThreshold))
+		}
+	}
+
+	// Warn when allowed_regimes is configured but regime.enabled=false — the
+	// gate reads result.Regime from the check script output, which requires
+	// regime detection to be running. Without it the gate is a no-op.
+	if cfg.Regime == nil || !cfg.Regime.Enabled {
+		for _, sc := range cfg.Strategies {
+			if len(sc.AllowedRegimes) > 0 {
+				fmt.Printf("[WARN] %s: allowed_regimes is set but regime.enabled=false — gate is a no-op until regime detection is enabled\n", sc.ID)
+			}
 		}
 	}
 
