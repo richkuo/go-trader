@@ -101,6 +101,10 @@ def walk_forward_optimize(
     registry: str = "spot",
     platform: str = "binanceus",
     verbose: bool = True,
+    regime_enabled: bool = False,
+    regime_period: int = 14,
+    regime_adx_threshold: float = 20.0,
+    allowed_regimes: Optional[List[str]] = None,
 ) -> dict:
     """
     Walk-forward optimization.
@@ -140,7 +144,12 @@ def walk_forward_optimize(
         print(f"  Warmup bars per fold: {warmup}")
         print(f"  Optimizing: {optimize_metric}")
 
-    bt = Backtester(initial_capital=initial_capital, platform=platform)
+    bt = Backtester(
+        initial_capital=initial_capital, platform=platform,
+        regime_enabled=regime_enabled, regime_period=regime_period,
+        regime_adx_threshold=regime_adx_threshold,
+        allowed_regimes=allowed_regimes,
+    )
     window_results = []
 
     for fold in range(n_splits):

@@ -23,17 +23,17 @@ from storage import store_backtest_result
 # module of the same name.
 _close_registry = None
 
-# Regime module imported lazily so backtests without regime_enabled=True
+# Regime helper imported lazily so backtests without regime_enabled=True
 # don't pay the import cost.
-_regime_mod = None
+_ensure_regime_fn = None
 
 
 def _load_regime():
-    global _regime_mod
-    if _regime_mod is None:
+    global _ensure_regime_fn
+    if _ensure_regime_fn is None:
         from regime import ensure_regime_columns as _ensure_regime_columns
-        _regime_mod = _ensure_regime_columns
-    return _regime_mod
+        _ensure_regime_fn = _ensure_regime_columns
+    return _ensure_regime_fn
 
 
 def _load_close_registry():
@@ -359,11 +359,12 @@ class Backtester:
 
             # Regime gate: block new entries when the bar's regime isn't in the
             # allowed set. Existing positions are always managed by close paths.
+            # ``compute_regime`` initializes every row to ``"ranging"`` (warmup
+            # bars included), so bar_regime is always a non-empty label here.
             bar_regime = str(row.get("regime", "")) if self.regime_enabled else ""
             regime_blocked = (
                 self.regime_enabled
                 and bool(self.allowed_regimes)
-                and bar_regime != ""
                 and bar_regime not in self.allowed_regimes
             )
 

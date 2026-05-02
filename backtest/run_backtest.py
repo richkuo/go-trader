@@ -169,6 +169,10 @@ def run_all_strategies(
     htf_filter: bool = False,
     close_strategies: Optional[List[str]] = None,
     close_params: Optional[dict] = None,
+    regime_enabled: bool = False,
+    regime_period: int = 14,
+    regime_adx_threshold: float = 20.0,
+    allowed_regimes: Optional[List[str]] = None,
 ) -> list:
     """Run multiple strategies on one asset and compare."""
     reg = load_registry(registry)
@@ -184,6 +188,9 @@ def run_all_strategies(
             name, symbol, timeframe, since, capital,
             registry=registry, platform=platform, htf_filter=htf_filter,
             close_strategies=close_strategies, close_params=close_params,
+            regime_enabled=regime_enabled, regime_period=regime_period,
+            regime_adx_threshold=regime_adx_threshold,
+            allowed_regimes=allowed_regimes,
         )
         if result:
             all_results.append(result)
@@ -205,6 +212,10 @@ def run_multi_asset(
     htf_filter: bool = False,
     close_strategies: Optional[List[str]] = None,
     close_params: Optional[dict] = None,
+    regime_enabled: bool = False,
+    regime_period: int = 14,
+    regime_adx_threshold: float = 20.0,
+    allowed_regimes: Optional[List[str]] = None,
 ) -> dict:
     """Run strategies across multiple assets."""
     reg = load_registry(registry)
@@ -228,6 +239,9 @@ def run_multi_asset(
                 strat_name, symbol, timeframe, since, capital,
                 registry=registry, platform=platform, htf_filter=htf_filter,
                 close_strategies=close_strategies, close_params=close_params,
+                regime_enabled=regime_enabled, regime_period=regime_period,
+                regime_adx_threshold=regime_adx_threshold,
+                allowed_regimes=allowed_regimes,
             )
             if result:
                 results_by_asset[symbol].append(result)
@@ -245,6 +259,10 @@ def run_walk_forward(
     capital: float = 1000.0,
     registry: str = "spot",
     platform: str = "binanceus",
+    regime_enabled: bool = False,
+    regime_period: int = 14,
+    regime_adx_threshold: float = 20.0,
+    allowed_regimes: Optional[List[str]] = None,
 ) -> Optional[dict]:
     """Run walk-forward optimization for a strategy."""
     reg = load_registry(registry)
@@ -280,6 +298,10 @@ def run_walk_forward(
         registry=registry,
         platform=platform,
         verbose=True,
+        regime_enabled=regime_enabled,
+        regime_period=regime_period,
+        regime_adx_threshold=regime_adx_threshold,
+        allowed_regimes=allowed_regimes,
     )
 
     print(format_walk_forward_report(result))
@@ -334,7 +356,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--regime-adx-threshold", type=float, default=20.0,
                         help="ADX threshold below which market is 'ranging' (default: 20.0).")
     parser.add_argument("--allowed-regimes", action="append", dest="allowed_regimes",
-                        default=None, metavar="LABEL",
+                        default=None, choices=["trending_up", "trending_down", "ranging"],
+                        metavar="LABEL",
                         help="Regime label to allow entries for (repeat for multiple). "
                              "Empty = allow all. Valid: trending_up, trending_down, ranging.")
     return parser
@@ -375,7 +398,11 @@ def main():
                            registry=args.registry, platform=args.platform,
                            htf_filter=args.htf_filter,
                            close_strategies=args.close_strategies,
-                           close_params=close_params)
+                           close_params=close_params,
+                           regime_enabled=args.regime_enabled,
+                           regime_period=args.regime_period,
+                           regime_adx_threshold=args.regime_adx_threshold,
+                           allowed_regimes=args.allowed_regimes)
 
     elif args.mode == "multi":
         strategies = None if args.strategy == "all" else [args.strategy]
@@ -385,18 +412,30 @@ def main():
                         registry=args.registry, platform=args.platform,
                         htf_filter=args.htf_filter,
                         close_strategies=args.close_strategies,
-                        close_params=close_params)
+                        close_params=close_params,
+                        regime_enabled=args.regime_enabled,
+                        regime_period=args.regime_period,
+                        regime_adx_threshold=args.regime_adx_threshold,
+                        allowed_regimes=args.allowed_regimes)
 
     elif args.mode == "optimize":
         if args.strategy == "all":
             for strat in reg.list_strategies():
                 run_walk_forward(strat, args.symbol, args.timeframe,
                                  args.since, args.splits, args.capital,
-                                 registry=args.registry, platform=args.platform)
+                                 registry=args.registry, platform=args.platform,
+                                 regime_enabled=args.regime_enabled,
+                                 regime_period=args.regime_period,
+                                 regime_adx_threshold=args.regime_adx_threshold,
+                                 allowed_regimes=args.allowed_regimes)
         else:
             run_walk_forward(args.strategy, args.symbol, args.timeframe,
                              args.since, args.splits, args.capital,
-                             registry=args.registry, platform=args.platform)
+                             registry=args.registry, platform=args.platform,
+                             regime_enabled=args.regime_enabled,
+                             regime_period=args.regime_period,
+                             regime_adx_threshold=args.regime_adx_threshold,
+                             allowed_regimes=args.allowed_regimes)
 
 
 if __name__ == "__main__":
