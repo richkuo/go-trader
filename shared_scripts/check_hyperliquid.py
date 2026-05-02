@@ -56,6 +56,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
+from regime import latest_regime
 
 
 def _make_dataframe(candles):
@@ -154,6 +155,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             sys.exit(1)
 
         df = _make_dataframe(candles)
+        regime_payload = latest_regime(df)
+        strategy_params["regime"] = regime_payload
         if strategy_params_override:
             merged = {**strategy_params_override, **strategy_params}
             strategy_params = merged
@@ -244,6 +247,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "signal": signal,
             "price": round(price, 2),
             "indicators": indicators,
+            "regime": regime_payload["regime"],
             "mode": mode,
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -261,6 +265,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "signal": 0,
             "price": 0,
             "indicators": {},
+            "regime": None,
             "mode": mode,
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),

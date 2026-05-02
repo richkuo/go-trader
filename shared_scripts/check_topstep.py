@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
+from regime import latest_regime
 
 
 def _make_dataframe(candles):
@@ -172,6 +173,9 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             sys.exit(1)
 
         df = _make_dataframe(candles)
+        regime_payload = latest_regime(df)
+        strategy_params = (strategy_params or {})
+        strategy_params["regime"] = regime_payload
         decision = None
         if open_close_enabled:
             market_ctx = {"mark_price": float(df["close"].iloc[-1])}
@@ -261,6 +265,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "contract_spec": adapter.get_contract_spec(symbol),
             "market_open": market_open,
             "indicators": indicators,
+            "regime": regime_payload["regime"],
             "mode": mode,
             "platform": "topstep",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -280,6 +285,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "contract_spec": {},
             "market_open": False,
             "indicators": {},
+            "regime": None,
             "mode": mode,
             "platform": "topstep",
             "timestamp": datetime.now(timezone.utc).isoformat(),

@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
+from regime import latest_regime
 
 
 def _arg_value(flag, default=None):
@@ -176,10 +177,15 @@ def main():
                 "signal": 0,
                 "price": 0,
                 "indicators": {},
+                "regime": None,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "error": f"Insufficient data: {len(df)} candles"
             }))
             return
+
+        regime_payload = latest_regime(df)
+        strategy_params = (strategy_params or {})
+        strategy_params["regime"] = regime_payload
 
         decision = None
         if open_close_enabled:
@@ -259,6 +265,7 @@ def main():
             "signal": signal,
             "price": round(price, 2),
             "indicators": indicators,
+            "regime": regime_payload["regime"],
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         if decision:
@@ -274,6 +281,7 @@ def main():
             "signal": 0,
             "price": 0,
             "indicators": {},
+            "regime": None,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": str(e)
         }))
