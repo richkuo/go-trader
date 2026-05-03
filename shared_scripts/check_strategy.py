@@ -68,6 +68,9 @@ def _position_ctx(position_side):
 def main():
     # Parse optional flags from argv before positional args
     htf_filter_enabled = "--htf-filter" in sys.argv
+    regime_enabled = "--regime-enabled" in sys.argv
+    regime_period = int(_arg_value("--regime-period") or 14)
+    regime_adx_threshold = float(_arg_value("--regime-adx-threshold") or 20.0)
     open_strategy = _arg_value("--open-strategy")
     close_strategies_raw = _arg_value("--close-strategies")
     position_side = (_arg_value("--position-side", "") or "").lower()
@@ -88,7 +91,7 @@ def main():
         if a in (
             "--params", "--open-strategy", "--close-strategies", "--position-side",
             "--position-avg-cost", "--position-qty", "--position-initial-qty",
-            "--position-entry-atr",
+            "--position-entry-atr", "--regime-period", "--regime-adx-threshold",
         ):
             skip_next = True
             continue
@@ -183,7 +186,10 @@ def main():
             }))
             return
 
-        regime_payload = latest_regime(df)
+        if regime_enabled:
+            regime_payload = latest_regime(df, period=regime_period, adx_threshold=regime_adx_threshold)
+        else:
+            regime_payload = {"regime": "", "score": 0.0, "metrics": {}}
         strategy_params = (strategy_params or {})
         strategy_params["regime"] = regime_payload
 

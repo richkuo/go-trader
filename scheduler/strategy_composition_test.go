@@ -150,6 +150,52 @@ func TestPositionCtxForSymbol(t *testing.T) {
 	}
 }
 
+func TestAppendRegimeArgs(t *testing.T) {
+	base := []string{"sma_crossover", "BTC/USDT", "1h"}
+
+	t.Run("nil regime returns args unchanged", func(t *testing.T) {
+		got := appendRegimeArgs(base, nil)
+		if !reflect.DeepEqual(got, base) {
+			t.Fatalf("appendRegimeArgs(nil) = %#v, want %#v", got, base)
+		}
+	})
+
+	t.Run("disabled regime returns args unchanged", func(t *testing.T) {
+		got := appendRegimeArgs(base, &RegimeConfig{Enabled: false})
+		if !reflect.DeepEqual(got, base) {
+			t.Fatalf("appendRegimeArgs(disabled) = %#v, want %#v", got, base)
+		}
+	})
+
+	t.Run("enabled regime appends all three flags", func(t *testing.T) {
+		regime := &RegimeConfig{Enabled: true, Period: 28, ADXThreshold: 25.5}
+		got := appendRegimeArgs(base, regime)
+		want := []string{
+			"sma_crossover", "BTC/USDT", "1h",
+			"--regime-enabled",
+			"--regime-period", "28",
+			"--regime-adx-threshold", "25.5",
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("appendRegimeArgs(enabled) = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("enabled with defaults appends correct values", func(t *testing.T) {
+		regime := &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20.0}
+		got := appendRegimeArgs(base, regime)
+		want := []string{
+			"sma_crossover", "BTC/USDT", "1h",
+			"--regime-enabled",
+			"--regime-period", "14",
+			"--regime-adx-threshold", "20",
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("appendRegimeArgs(defaults) = %#v, want %#v", got, want)
+		}
+	})
+}
+
 func TestMaxCloseFraction(t *testing.T) {
 	got := maxCloseFraction([]float64{0.25, 0.8, 1.2, -1})
 	if got != 1 {

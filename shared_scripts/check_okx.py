@@ -86,7 +86,8 @@ def _extract_fee(response):
 def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False,
                      inst_type="swap", strategy_params_override=None,
                      open_strategy=None, close_strategies=None,
-                     position_side="", position_ctx=None):
+                     position_side="", position_ctx=None,
+                     regime_enabled=False, regime_period=14, regime_adx_threshold=20.0):
     """Run strategy signal check using OKX OHLCV data."""
     try:
         from adapter import OKXExchangeAdapter
@@ -155,7 +156,10 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             sys.exit(1)
 
         df = _make_dataframe(candles)
-        regime_payload = latest_regime(df)
+        if regime_enabled:
+            regime_payload = latest_regime(df, period=regime_period, adx_threshold=regime_adx_threshold)
+        else:
+            regime_payload = {"regime": "", "score": 0.0, "metrics": {}}
         strategy_params["regime"] = regime_payload
         if strategy_params_override:
             merged = {**strategy_params_override, **strategy_params}
@@ -353,6 +357,9 @@ def main():
         parser.add_argument("timeframe")
         parser.add_argument("--mode", default="paper")
         parser.add_argument("--htf-filter", action="store_true", default=False)
+        parser.add_argument("--regime-enabled", action="store_true", default=False)
+        parser.add_argument("--regime-period", type=int, default=14)
+        parser.add_argument("--regime-adx-threshold", type=float, default=20.0)
         parser.add_argument("--inst-type", default="swap", choices=["spot", "swap"])
         parser.add_argument("--params", default=None)
         parser.add_argument("--open-strategy", default=None)
@@ -370,6 +377,9 @@ def main():
             args.htf_filter, args.inst_type, params_override,
             args.open_strategy, args.close_strategies,
             args.position_side, position_ctx,
+            regime_enabled=args.regime_enabled,
+            regime_period=args.regime_period,
+            regime_adx_threshold=args.regime_adx_threshold,
         )
 
 

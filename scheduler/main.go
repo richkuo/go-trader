@@ -1206,7 +1206,7 @@ func main() {
 					switch sc.Type {
 					case "spot":
 						if sc.Platform == "okx" {
-							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, logger); ok {
+							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, logger); ok {
 								prices[result.Symbol] = price
 								if regimeBlocksOpen(sc.AllowedRegimes, result.Regime, okxPosQty) {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", result.Regime)
@@ -1231,7 +1231,7 @@ func main() {
 								}
 							}
 						} else if sc.Platform == "robinhood" {
-							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, rhPosCtx, logger); ok {
+							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, rhPosCtx, cfg.Regime, logger); ok {
 								prices[result.Symbol] = price
 								if regimeBlocksOpen(sc.AllowedRegimes, result.Regime, rhPosQty) {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", result.Regime)
@@ -1255,7 +1255,7 @@ func main() {
 									mu.Unlock()
 								}
 							}
-						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, spotPosCtx, logger); ok {
+						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, spotPosCtx, cfg.Regime, logger); ok {
 							if regimeBlocksOpen(sc.AllowedRegimes, result.Regime, spotPosCtx.Quantity) {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", result.Regime)
 								result.Signal = 0
@@ -1279,7 +1279,7 @@ func main() {
 						}
 					case "perps":
 						if sc.Platform == "okx" {
-							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, logger); ok {
+							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, logger); ok {
 								prices[result.Symbol] = price
 								if regimeBlocksOpen(sc.AllowedRegimes, result.Regime, okxPosQty) {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", result.Regime)
@@ -1303,7 +1303,7 @@ func main() {
 									mu.Unlock()
 								}
 							}
-						} else if result, signalStr, price, ok := runHyperliquidCheck(sc, prices, hlPosCtx, logger); ok {
+						} else if result, signalStr, price, ok := runHyperliquidCheck(sc, prices, hlPosCtx, cfg.Regime, logger); ok {
 							prices[result.Symbol] = price
 							if regimeBlocksOpen(sc.AllowedRegimes, result.Regime, hlPosQty) {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", result.Regime)
@@ -1409,7 +1409,7 @@ func main() {
 							}
 						}
 					case "futures":
-						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, logger); ok {
+						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, cfg.Regime, logger); ok {
 							prices[result.Symbol] = price
 							if regimeBlocksOpen(sc.AllowedRegimes, result.Regime, tsContracts) {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", result.Regime)
@@ -1824,12 +1824,13 @@ func spotSymbol(args []string) string {
 
 // runSpotCheck runs the spot check subprocess and returns the parsed result.
 // No state access. Returns (result, signalStr, price, ok); ok=false means skip execution.
-func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, logger *StrategyLogger) (*SpotResult, string, float64, bool) {
+func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, logger *StrategyLogger) (*SpotResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
+	args = appendRegimeArgs(args, regime)
 	if len(sc.Params) > 0 {
 		paramsJSON, err := json.Marshal(sc.Params)
 		if err == nil {
@@ -2097,12 +2098,13 @@ func hyperliquidSymbol(args []string) string {
 }
 
 // runHyperliquidCheck runs check_hyperliquid.py signal-check mode (Phase 3, no lock).
-func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
+func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
+	args = appendRegimeArgs(args, regime)
 	if len(sc.Params) > 0 {
 		paramsJSON, err := json.Marshal(sc.Params)
 		if err == nil {
@@ -2424,12 +2426,13 @@ func topstepSymbol(args []string) string {
 }
 
 // runTopStepCheck runs check_topstep.py signal-check mode (Phase 3, no lock).
-func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, logger *StrategyLogger) (*TopStepResult, string, float64, bool) {
+func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, logger *StrategyLogger) (*TopStepResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
+	args = appendRegimeArgs(args, regime)
 	if len(sc.Params) > 0 {
 		paramsJSON, err := json.Marshal(sc.Params)
 		if err == nil {
@@ -2618,12 +2621,13 @@ func robinhoodSymbol(args []string) string {
 }
 
 // runRobinhoodCheck runs check_robinhood.py signal-check mode (Phase 3, no lock).
-func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, logger *StrategyLogger) (*RobinhoodResult, string, float64, bool) {
+func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, logger *StrategyLogger) (*RobinhoodResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
+	args = appendRegimeArgs(args, regime)
 	if len(sc.Params) > 0 {
 		paramsJSON, err := json.Marshal(sc.Params)
 		if err == nil {
@@ -2790,12 +2794,13 @@ func okxInstType(args []string) string {
 }
 
 // runOKXCheck runs check_okx.py signal-check mode (Phase 3, no lock).
-func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
+func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
+	args = appendRegimeArgs(args, regime)
 	if len(sc.Params) > 0 {
 		paramsJSON, err := json.Marshal(sc.Params)
 		if err == nil {

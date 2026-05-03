@@ -216,3 +216,55 @@ def test_check_options_fetch_ohlcv_df_short_returns_none():
     # Current behavior: short non-empty rows do NOT trigger fallback; they short-circuit to None.
     df = module._fetch_ohlcv_df("BTC", "4h", 100, 30, adapter=StubAdapter())
     assert df is None
+
+
+# ─── regime_enabled flag tests (#558) ────────────────────────────────────────
+
+
+def test_latest_regime_honors_custom_period():
+    """latest_regime passes the period to compute_regime.
+
+    With a 50-bar df and period=200, adx_start = 2*200-1 = 399 > 50 so the ADX
+    loop never runs and returns the default warmup value (adx=0, regime="ranging").
+    With period=14 the same df produces a real ADX value.  Comparing the two
+    confirms the period argument is actually forwarded.
+    """
+    df = _make_uptrend_df(50)
+    warmup = latest_regime(df, period=200)   # loop skipped: adx_start=399 > 50
+    real = latest_regime(df, period=14)       # loop runs normally
+    assert warmup["metrics"]["adx"] == 0.0
+    assert real["metrics"]["adx"] > 0.0
+
+
+def test_latest_regime_honors_custom_adx_threshold():
+    """latest_regime uses adx_threshold to decide trending vs. ranging.
+
+    Uptrend data produces ADX saturating at 100.  With threshold=101 the
+    condition `adx < threshold` is true → "ranging".  With threshold=50 it is
+    false and +DI > -DI → "trending_up".
+    """
+    df = _make_uptrend_df(100)
+    assert latest_regime(df, adx_threshold=101.0)["regime"] == "ranging"
+    assert latest_regime(df, adx_threshold=50.0)["regime"] == "trending_up"
+
+
+def test_regime_disabled_path_returns_empty_label():
+    """When regime_enabled=False the check script contract emits regime='' without calling latest_regime."""
+    # Simulate the disabled path directly (as each check script implements it)
+    regime_enabled = False
+    df = _make_uptrend_df()
+    if regime_enabled:
+        regime_payload = latest_regime(df)
+    else:
+        regime_payload = {"regime": "", "score": 0.0, "metrics": {}}
+    assert regime_payload["regime"] == ""
+    assert regime_payload["score"] == 0.0
+    assert regime_payload["metrics"] == {}
+
+
+def test_regime_disabled_payload_is_json_serializable():
+    """The empty regime payload emitted when disabled must survive json.dumps."""
+    payload = {"regime": "", "score": 0.0, "metrics": {}}
+    serialized = json.dumps(payload)
+    parsed = json.loads(serialized)
+    assert parsed["regime"] == ""

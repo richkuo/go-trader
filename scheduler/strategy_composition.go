@@ -88,6 +88,16 @@ func appendPositionFloatArg(args []string, flag string, value float64) []string 
 	return append(args, flag+"="+strconv.FormatFloat(value, 'f', -1, 64))
 }
 
+func appendRegimeArgs(args []string, regime *RegimeConfig) []string {
+	if regime == nil || !regime.Enabled {
+		return args
+	}
+	out := append(args, "--regime-enabled")
+	out = append(out, "--regime-period", strconv.Itoa(regime.Period))
+	out = append(out, "--regime-adx-threshold", strconv.FormatFloat(regime.ADXThreshold, 'f', -1, 64))
+	return out
+}
+
 func positionCtxForSymbol(s *StrategyState, symbol string) PositionCtx {
 	if s == nil || strings.TrimSpace(symbol) == "" {
 		return PositionCtx{}
