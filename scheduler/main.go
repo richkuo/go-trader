@@ -1410,7 +1410,7 @@ func main() {
 									slResult, ok2 := hyperliquidArmFixedATRStopLossLive(sc, result.Symbol, hlPosSide, hlPosQty, triggerPx, notifier, logger)
 									if ok2 && slResult != nil {
 										mu.Lock()
-										if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
+										if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide && pos.StopLossOID == 0 {
 											if slResult.StopLossFilledImmediately && slResult.StopLossTriggerPx > 0 {
 												if recordPerpsStopLossClose(stratState, result.Symbol, slResult.StopLossTriggerPx, "stop_loss_atr_immediate", logger) {
 													trades++

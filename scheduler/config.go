@@ -569,6 +569,7 @@ func LoadConfig(path string) (*Config, error) {
 		if sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && sc.StopLossATRMult == nil {
 			defaultMult := DefaultStopLossATRMult
 			sc.StopLossATRMult = &defaultMult
+			fmt.Printf("[INFO] %s: applied default stop_loss_atr_mult=%.1f (no stop fields set; set stop_loss_atr_mult=0 to opt out)\n", sc.ID, DefaultStopLossATRMult)
 		}
 	}
 

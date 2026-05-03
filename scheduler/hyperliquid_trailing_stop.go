@@ -62,9 +62,10 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 // open strategy did not emit an "atr" indicator), so the position cannot run
 // indefinitely without exchange-side protection (#505 review).
 //
-// Returns false when an explicit TrailingStopPct > 0 takes precedence over the
-// ATR multiplier — in that case the fixed-pct path arms the trigger and ATR
-// is irrelevant.
+// Returns false when an explicit TrailingStopPct > 0 is set alongside
+// TrailingStopATRMult — in that case the fixed-pct trailing path arms the
+// trigger and the ATR mult is ignored (validation enforces exclusivity, so
+// this branch is unreachable for StopLossATRMult strategies).
 //
 // Includes the fixed-distance StopLossATRMult variant (#562): same EntryATR
 // dependency, same alerting story.
@@ -194,12 +195,14 @@ func hyperliquidArmFixedATRStopLossLive(sc StrategyConfig, symbol, side string, 
 		if logger != nil {
 			logger.Error("Fixed ATR SL arm failed: %v", err)
 		}
+		notifyLiveExecFailure(notifier, sc, "fixed-atr-sl-arm", symbol, err.Error())
 		return result, false
 	}
 	if result.Error != "" {
 		if logger != nil {
 			logger.Error("Fixed ATR SL arm returned error: %s", result.Error)
 		}
+		notifyLiveExecFailure(notifier, sc, "fixed-atr-sl-arm", symbol, result.Error)
 		return result, false
 	}
 	if result.StopLossError != "" {

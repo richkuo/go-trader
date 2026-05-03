@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -2264,6 +2265,71 @@ func TestStrategyConfig_StopLossATRMultJSON(t *testing.T) {
 // #562: atrMultMissingEntryATR fires when StopLossATRMult is configured but
 // the open candle didn't produce an ATR — same alert behavior as
 // TrailingStopATRMult.
+func TestHyperliquidArmFixedATRStopLossLive_PlacesWithCorrectArgs(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	var gotSymbol, gotSide string
+	var gotSize, gotTrigger float64
+	var gotCancelOID int64
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		gotSymbol = symbol
+		gotSide = side
+		gotSize = size
+		gotTrigger = triggerPx
+		gotCancelOID = cancelStopLossOID
+		return &HyperliquidStopLossUpdateResult{
+			StopLossOID:       42,
+			StopLossTriggerPx: triggerPx,
+		}, "", nil
+	}
+
+	mult := 1.5
+	sc := StrategyConfig{ID: "hl-fixed-atr", Platform: "hyperliquid", Type: "perps", Script: "shared_scripts/check_hyperliquid.py", StopLossATRMult: &mult}
+	logger := silentStrategyLogger("hl-fixed-atr")
+	defer logger.Close()
+
+	result, ok := hyperliquidArmFixedATRStopLossLive(sc, "BTC", "long", 0.1, 95000.0, nil, logger)
+	if !ok {
+		t.Fatalf("hyperliquidArmFixedATRStopLossLive returned ok=false")
+	}
+	if result == nil || result.StopLossOID != 42 {
+		t.Fatalf("result=%+v, want OID 42", result)
+	}
+	if gotSymbol != "BTC" || gotSide != "long" || gotSize != 0.1 || gotTrigger != 95000.0 || gotCancelOID != 0 {
+		t.Fatalf("arm args=(%s,%s,%v,%v,%d), want (BTC,long,0.1,95000.0,0)",
+			gotSymbol, gotSide, gotSize, gotTrigger, gotCancelOID)
+	}
+}
+
+func TestHyperliquidArmFixedATRStopLossLive_NotifiesOnError(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return nil, "", fmt.Errorf("connection refused")
+	}
+
+	mult := 1.0
+	sc := StrategyConfig{ID: "hl-fixed-err", Platform: "hyperliquid", Type: "perps", Script: "shared_scripts/check_hyperliquid.py", StopLossATRMult: &mult}
+	logger := silentStrategyLogger("hl-fixed-err")
+	defer logger.Close()
+	mock := &mockNotifier{}
+	notifier := NewMultiNotifier(notifierBackend{
+		notifier: mock,
+		channels: map[string]string{"hyperliquid": "ch1"},
+		ownerID:  "owner",
+	})
+
+	_, ok := hyperliquidArmFixedATRStopLossLive(sc, "ETH", "long", 0.5, 3000.0, notifier, logger)
+	if ok {
+		t.Fatal("expected ok=false on arm error")
+	}
+	if len(mock.messages) == 0 {
+		t.Fatal("expected a notification on arm error, got none")
+	}
+}
+
 func TestATRMultMissingEntryATR_FixedATRMult(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	sc := StrategyConfig{
