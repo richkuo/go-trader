@@ -1003,6 +1003,9 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 			slPct := percentFromEntry(pos.Side, pos.AvgCost, pos.StopLossTriggerPx)
 			extras += fmt.Sprintf(" | SL: $%s (%s)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct))
 		}
+		if pos.EntryATR > 0 {
+			extras += fmt.Sprintf(" | ATR: $%s", fmtComma2(pos.EntryATR))
+		}
 		if strategyUsesTieredTPATRClose(sc) && pos.EntryATR > 0 && pos.AvgCost > 0 {
 			sideLower := strings.ToLower(pos.Side)
 			var tp1, tp2 float64
@@ -1028,7 +1031,7 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 			margin := positionMargin(pos.Quantity, pos.AvgCost, pos.Leverage)
 			extras += fmt.Sprintf(" | %gx ($%s margin)", pos.Leverage, fmtComma(math.Round(margin)))
 		}
-		lines = append(lines, fmt.Sprintf("%s %s %s x%g @ $%s (%s$%s)%s%s", sc.ID, strings.ToUpper(pos.Side), sym, pos.Quantity, fmtComma2(pos.AvgCost), sign, fmtComma2(absPnl), extras, dateStr))
+		lines = append(lines, fmt.Sprintf("%s %s %s x%.3f @ $%s (%s$%s)%s%s", sc.ID, strings.ToUpper(pos.Side), sym, pos.Quantity, fmtComma2(pos.AvgCost), sign, fmtComma2(absPnl), extras, dateStr))
 	}
 	for key, opt := range ss.OptionPositions {
 		dateStr := ""
@@ -1064,21 +1067,41 @@ func FormatTradeDM(sc StrategyConfig, trade Trade, mode string) string {
 	typeLabel := sc.Type
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s **%s**\n", icon, header))
+	sb.WriteString(fmt.Sprintf("%s **%s - %s**\n", icon, header, strings.ToUpper(mode)))
 	sb.WriteString(fmt.Sprintf("Strategy: %s (%s %s)\n", sc.ID, platformLabel, typeLabel))
-	sb.WriteString(fmt.Sprintf("%s — %s %.6g @ $%s\n", trade.Symbol, tradeDirectionLabel(trade), trade.Quantity, fmtComma(trade.Price)))
+	sb.WriteString(fmt.Sprintf("%s — %s %.3f @ $%s | Value: $%s", trade.Symbol, tradeDirectionLabel(trade), trade.Quantity, fmtComma(trade.Price), fmtComma(trade.Value)))
 
-	valueLine := fmt.Sprintf("Value: $%s", fmtComma(trade.Value))
+	var extras []string
 	if isClose {
 		if pnl, ok := extractPnL(trade.Details); ok {
-			valueLine += fmt.Sprintf(" | PnL: $%s", pnl)
+			extras = append(extras, fmt.Sprintf("PnL: $%s", pnl))
 		}
 	}
 	if trade.Regime != "" {
-		valueLine += fmt.Sprintf(" | Regime: %s", trade.Regime)
+		extras = append(extras, "Regime: "+trade.Regime)
 	}
-	valueLine += fmt.Sprintf(" | Mode: %s", mode)
-	sb.WriteString(valueLine)
+	if trade.EntryATR > 0 && strategyUsesTieredTPATRClose(sc) {
+		extras = append(extras, fmt.Sprintf("ATR: $%s", fmtComma2(trade.EntryATR)))
+		direction := strings.ToLower(tradeDirectionLabel(trade))
+		var tp1, tp2 float64
+		if direction == "short" {
+			tp1 = trade.Price - trade.EntryATR
+			tp2 = trade.Price - 2*trade.EntryATR
+		} else {
+			tp1 = trade.Price + trade.EntryATR
+			tp2 = trade.Price + 2*trade.EntryATR
+		}
+		extras = append(extras, fmt.Sprintf("TP1: $%s", fmtComma2(tp1)))
+		extras = append(extras, fmt.Sprintf("TP2: $%s", fmtComma2(tp2)))
+	}
+	if trade.StopLossTriggerPx > 0 {
+		direction := strings.ToLower(tradeDirectionLabel(trade))
+		slPct := percentFromEntry(direction, trade.Price, trade.StopLossTriggerPx)
+		extras = append(extras, fmt.Sprintf("SL: $%s (%s)", fmtComma2(trade.StopLossTriggerPx), fmtPnlPct(slPct)))
+	}
+	if len(extras) > 0 {
+		sb.WriteString("\n" + strings.Join(extras, " | "))
+	}
 
 	return sb.String()
 }
