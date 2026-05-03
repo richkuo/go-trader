@@ -141,9 +141,12 @@ func formatLiveExecFailureAlert(strategyID, platform, direction, symbol, errMsg 
 }
 
 // notifyLiveExecFailure fires a throttled Discord+DM alert when a live order
-// wrapper returns ok=false. direction must be directionOpen or directionClose.
-// Uses the package-level liveExecThrottle; nil-safe (returns immediately if
-// notifier has no backends).
+// wrapper returns ok=false. direction is a short action label used as the
+// throttle-key fragment and operator-facing message prefix (e.g. directionOpen,
+// directionClose, "fixed-atr-sl-arm"). The directionOpen/directionClose
+// constants cover the common open/close paths; callers may pass any short
+// label for non-standard actions. Uses the package-level liveExecThrottle;
+// nil-safe (returns immediately if notifier has no backends).
 func notifyLiveExecFailure(notifier *MultiNotifier, sc StrategyConfig, direction, symbol, errMsg string) {
 	if notifier == nil || !notifier.HasBackends() {
 		return

@@ -2262,9 +2262,6 @@ func TestStrategyConfig_StopLossATRMultJSON(t *testing.T) {
 	}
 }
 
-// #562: atrMultMissingEntryATR fires when StopLossATRMult is configured but
-// the open candle didn't produce an ATR — same alert behavior as
-// TrailingStopATRMult.
 func TestHyperliquidArmFixedATRStopLossLive_PlacesWithCorrectArgs(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -2330,6 +2327,9 @@ func TestHyperliquidArmFixedATRStopLossLive_NotifiesOnError(t *testing.T) {
 	}
 }
 
+// #562: atrMultMissingEntryATR fires when StopLossATRMult is configured but
+// the open candle didn't produce an ATR — same alert behavior as
+// TrailingStopATRMult.
 func TestATRMultMissingEntryATR_FixedATRMult(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	sc := StrategyConfig{
