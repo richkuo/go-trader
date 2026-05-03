@@ -1129,19 +1129,21 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 		}
 		positionID := ensurePositionTradeID(s.ID, symbol, pos)
 		trade := Trade{
-			Timestamp:   now,
-			StrategyID:  s.ID,
-			Symbol:      symbol,
-			PositionID:  positionID,
-			Side:        closeTradeSide(pos.Side),
-			Quantity:    pos.Quantity,
-			Price:       price,
-			Value:       value,
-			TradeType:   tradeType,
-			Details:     fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f", pos.Side, pnl),
-			IsClose:     true,
-			RealizedPnL: pnl,
-			Regime:      s.Regime,
+			Timestamp:         now,
+			StrategyID:        s.ID,
+			Symbol:            symbol,
+			PositionID:        positionID,
+			Side:              closeTradeSide(pos.Side),
+			Quantity:          pos.Quantity,
+			Price:             price,
+			Value:             value,
+			TradeType:         tradeType,
+			Details:           fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f", pos.Side, pnl),
+			IsClose:           true,
+			RealizedPnL:       pnl,
+			Regime:            s.Regime,
+			EntryATR:          pos.EntryATR,
+			StopLossTriggerPx: pos.StopLossTriggerPx,
 		}
 		RecordTrade(s, trade)
 		RecordTradeResult(&s.RiskState, pnl)

@@ -61,6 +61,7 @@ func TestExecuteSpotResultSetsInitialQuantityAndEntryATR(t *testing.T) {
 	trades, _ := executeSpotResult(
 		StrategyConfig{ID: "spot-test"},
 		state,
+		nil,
 		result,
 		"BUY",
 		100,

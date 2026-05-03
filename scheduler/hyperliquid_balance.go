@@ -1213,20 +1213,22 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 	positionID := ensurePositionTradeID(s.ID, symbol, pos)
 
 	RecordTrade(s, Trade{
-		Timestamp:   now,
-		StrategyID:  s.ID,
-		Symbol:      symbol,
-		PositionID:  positionID,
-		Side:        closeTradeSide(side),
-		Quantity:    qtyClosed,
-		Price:       fillPx,
-		Value:       qtyClosed * fillPx,
-		TradeType:   "perps",
-		Details:     fmt.Sprintf("Circuit breaker on-chain close, PnL: $%.2f (fee $%.4f)", pnl, fillFee),
-		ExchangeFee: exchangeFeeForTrade(fillFee, true),
-		IsClose:     true,
-		RealizedPnL: pnl,
-		Regime:      s.Regime,
+		Timestamp:         now,
+		StrategyID:        s.ID,
+		Symbol:            symbol,
+		PositionID:        positionID,
+		Side:              closeTradeSide(side),
+		Quantity:          qtyClosed,
+		Price:             fillPx,
+		Value:             qtyClosed * fillPx,
+		TradeType:         "perps",
+		Details:           fmt.Sprintf("Circuit breaker on-chain close, PnL: $%.2f (fee $%.4f)", pnl, fillFee),
+		ExchangeFee:       exchangeFeeForTrade(fillFee, true),
+		IsClose:           true,
+		RealizedPnL:       pnl,
+		Regime:            s.Regime,
+		EntryATR:          pos.EntryATR,
+		StopLossTriggerPx: pos.StopLossTriggerPx,
 	})
 	RecordTradeResult(&s.RiskState, pnl)
 

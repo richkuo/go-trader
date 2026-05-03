@@ -1226,7 +1226,7 @@ func main() {
 								}
 								if !liveExecFailed {
 									mu.Lock()
-									trades, detail = executeOKXResult(sc, stratState, result, execResult, signalStr, price, logger)
+									trades, detail = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, logger)
 									mu.Unlock()
 								}
 							}
@@ -1251,7 +1251,7 @@ func main() {
 								}
 								if !liveExecFailed {
 									mu.Lock()
-									trades, detail = executeRobinhoodResult(sc, stratState, result, execResult, signalStr, price, logger)
+									trades, detail = executeRobinhoodResult(sc, stratState, stateDB, result, execResult, signalStr, price, logger)
 									mu.Unlock()
 								}
 							}
@@ -1262,7 +1262,7 @@ func main() {
 							}
 							mu.Lock()
 							stratState.Regime = result.Regime
-							trades, detail = executeSpotResult(sc, stratState, result, signalStr, price, logger)
+							trades, detail = executeSpotResult(sc, stratState, stateDB, result, signalStr, price, logger)
 							mu.Unlock()
 						}
 					case "options":
@@ -1299,7 +1299,7 @@ func main() {
 								}
 								if !liveExecFailed {
 									mu.Lock()
-									trades, detail = executeOKXResult(sc, stratState, result, execResult, signalStr, price, logger)
+									trades, detail = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, logger)
 									mu.Unlock()
 								}
 							}
@@ -1404,7 +1404,7 @@ func main() {
 							}
 							if !liveExecFailed {
 								mu.Lock()
-								trades, detail = executeHyperliquidResult(sc, stratState, result, execResult, signalStr, price, logger)
+								trades, detail = executeHyperliquidResult(sc, stratState, stateDB, result, execResult, signalStr, price, logger)
 								mu.Unlock()
 							}
 						}
@@ -1429,7 +1429,7 @@ func main() {
 							}
 							if !liveExecFailed {
 								mu.Lock()
-								trades, detail = executeTopStepResult(sc, stratState, result, execResult, signalStr, price, logger)
+								trades, detail = executeTopStepResult(sc, stratState, stateDB, result, execResult, signalStr, price, logger)
 								mu.Unlock()
 							}
 						}
@@ -1883,13 +1883,16 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 }
 
 // executeSpotResult applies a spot signal to state. Must be called under Lock.
-func executeSpotResult(sc StrategyConfig, s *StrategyState, result *SpotResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
+func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *SpotResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
 	trades, err := ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, price, 0, 0, "", result.CloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
 	}
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators, trades)
+	if pos, ok := s.Positions[result.Symbol]; ok {
+		stampOpenTradeFromPosition(s, db, result.Symbol, pos)
+	}
 
 	detail := ""
 	if trades > 0 {
@@ -2325,7 +2328,7 @@ func isHLOpenOrderCapRejection(errStr string) bool {
 
 // executeHyperliquidResult applies a hyperliquid result to state. Must be called under Lock.
 // execResult is non-nil for successful live orders; nil for paper mode.
-func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
+func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
 	fillPrice := price
 	var fillQty float64
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
@@ -2359,6 +2362,9 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 		return 0, ""
 	}
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators, trades)
+	if pos, ok := s.Positions[result.Symbol]; ok {
+		stampOpenTradeFromPosition(s, db, result.Symbol, pos)
+	}
 	if trades > 0 && fillOID != "" {
 		logger.Info("Exchange order ID: %s", fillOID)
 	}
@@ -2381,6 +2387,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 				pos.StopLossOID = slOID
 				pos.StopLossTriggerPx = execResult.Execution.Fill.StopLossTriggerPx
 				logger.Info("SL trigger placed oid=%d @ $%.4f", slOID, execResult.Execution.Fill.StopLossTriggerPx)
+				stampOpenTradeFromPosition(s, db, result.Symbol, pos)
 			}
 		}
 	}
@@ -2569,7 +2576,7 @@ func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cas
 }
 
 // executeTopStepResult applies a TopStep futures result to state. Must be called under Lock.
-func executeTopStepResult(sc StrategyConfig, s *StrategyState, result *TopStepResult, execResult *TopStepExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
+func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *TopStepResult, execResult *TopStepExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
 	fillPrice := price
 	var fillContracts int
 	var fillFee float64
@@ -2595,6 +2602,9 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, result *TopStepRe
 		return 0, ""
 	}
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators, trades)
+	if pos, ok := s.Positions[result.Symbol]; ok {
+		stampOpenTradeFromPosition(s, db, result.Symbol, pos)
+	}
 
 	detail := ""
 	if trades > 0 {
@@ -2739,7 +2749,7 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 }
 
 // executeRobinhoodResult applies a Robinhood result to state. Must be called under Lock.
-func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, result *RobinhoodResult, execResult *RobinhoodExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
+func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *RobinhoodResult, execResult *RobinhoodExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
 	fillPrice := price
 	var fillQty float64
 	var fillFee float64
@@ -2758,6 +2768,9 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, result *Robinho
 		return 0, ""
 	}
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators, trades)
+	if pos, ok := s.Positions[result.Symbol]; ok {
+		stampOpenTradeFromPosition(s, db, result.Symbol, pos)
+	}
 
 	detail := ""
 	if trades > 0 {
@@ -2939,7 +2952,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 }
 
 // executeOKXResult applies an OKX result to state. Must be called under Lock.
-func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
+func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
 	fillPrice := price
 	var fillQty float64
 	var fillFee float64
@@ -2969,6 +2982,9 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, ex
 		return 0, ""
 	}
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators, trades)
+	if pos, ok := s.Positions[result.Symbol]; ok {
+		stampOpenTradeFromPosition(s, db, result.Symbol, pos)
+	}
 
 	detail := ""
 	if trades > 0 {

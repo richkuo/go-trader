@@ -154,6 +154,8 @@ func recordPerpsStopLossClose(s *StrategyState, symbol string, triggerPx float64
 		RealizedPnL: pnl,
 	}
 	trade.Regime = s.Regime
+	trade.EntryATR = pos.EntryATR
+	trade.StopLossTriggerPx = pos.StopLossTriggerPx
 	RecordTrade(s, trade)
 	RecordTradeResult(&s.RiskState, pnl)
 	recordClosedPosition(s, pos, triggerPx, pnl, reason, now)
@@ -652,6 +654,8 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 				RealizedPnL:     pnl,
 			}
 			trade.Regime = s.Regime
+			trade.EntryATR = pos.EntryATR
+			trade.StopLossTriggerPx = pos.StopLossTriggerPx
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -800,6 +804,8 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 				RealizedPnL:     pnl,
 			}
 			trade.Regime = s.Regime
+			trade.EntryATR = pos.EntryATR
+			trade.StopLossTriggerPx = pos.StopLossTriggerPx
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -977,6 +983,8 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 				RealizedPnL:     pnl,
 			}
 			trade.Regime = s.Regime
+			trade.EntryATR = pos.EntryATR
+			trade.StopLossTriggerPx = pos.StopLossTriggerPx
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -1102,6 +1110,8 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 				RealizedPnL:     pnl,
 			}
 			trade.Regime = s.Regime
+			trade.EntryATR = pos.EntryATR
+			trade.StopLossTriggerPx = pos.StopLossTriggerPx
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -1204,6 +1214,8 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				RealizedPnL:     pnl,
 			}
 			trade.Regime = s.Regime
+			trade.EntryATR = pos.EntryATR
+			trade.StopLossTriggerPx = pos.StopLossTriggerPx
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -1346,6 +1358,8 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				RealizedPnL:     pnl,
 			}
 			trade.Regime = s.Regime
+			trade.EntryATR = pos.EntryATR
+			trade.StopLossTriggerPx = pos.StopLossTriggerPx
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -1433,4 +1447,37 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 		}
 	}
 	return tradesExecuted, nil
+}
+
+// stampOpenTradeFromPosition backfills EntryATR and StopLossTriggerPx onto the
+// most recent open Trade for symbol after those values are stamped onto the
+// Position post-RecordTrade. Only updates fields that are currently zero so
+// subsequent calls are idempotent. Updates both the in-memory slice and the
+// SQLite row when db is non-nil.
+func stampOpenTradeFromPosition(s *StrategyState, db *StateDB, symbol string, pos *Position) {
+	if pos == nil {
+		return
+	}
+	for i := len(s.TradeHistory) - 1; i >= 0; i-- {
+		t := &s.TradeHistory[i]
+		if t.Symbol != symbol {
+			continue
+		}
+		if t.IsClose {
+			return // hit a close first — no open to backfill
+		}
+		changed := false
+		if pos.EntryATR > 0 && t.EntryATR == 0 {
+			t.EntryATR = pos.EntryATR
+			changed = true
+		}
+		if pos.StopLossTriggerPx > 0 && t.StopLossTriggerPx == 0 {
+			t.StopLossTriggerPx = pos.StopLossTriggerPx
+			changed = true
+		}
+		if changed && db != nil {
+			_ = db.UpdateTradeStampedFields(s.ID, t.Timestamp, t.EntryATR, t.StopLossTriggerPx)
+		}
+		return
+	}
 }
