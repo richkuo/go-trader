@@ -1017,8 +1017,13 @@ func TestLoadConfigHLPerpsDefaultsToIsolatedMargin(t *testing.T) {
 	}
 }
 
-// #494: a single HL perps strategy on a coin still auto-derives its
-// exchange-side stop-loss from max_drawdown_pct when stop_loss_* is omitted.
+// #494/#562: a single HL perps strategy on a coin gets a default
+// stop_loss_atr_mult=1.0 when no stop_loss_* / trailing_stop_* fields are
+// configured. EffectiveStopLossPct returns 0 at order-placement time because
+// the price-% can only be derived from the per-position EntryATR/AvgCost; the
+// arming step runs on the cycle after open. Setting an explicit stop_loss_pct
+// or stop_loss_margin_pct still falls through to the original auto-derive
+// path (max_drawdown_pct fallback) when those are also omitted.
 func TestLoadConfigHLPerpsSingleStrategyAutoDerivesStopLoss(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1038,8 +1043,15 @@ func TestLoadConfigHLPerpsSingleStrategyAutoDerivesStopLoss(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	if got := EffectiveStopLossPct(cfg.Strategies[0]); got != 10 {
-		t.Errorf("EffectiveStopLossPct = %g, want 10", got)
+	sc := cfg.Strategies[0]
+	if sc.StopLossATRMult == nil {
+		t.Fatal("StopLossATRMult = nil, want default 1.0 applied")
+	}
+	if got := *sc.StopLossATRMult; got != DefaultStopLossATRMult {
+		t.Errorf("StopLossATRMult = %g, want %g (default)", got, DefaultStopLossATRMult)
+	}
+	if got := EffectiveStopLossPct(sc); got != 0 {
+		t.Errorf("EffectiveStopLossPct = %g, want 0 (deferred until EntryATR is stamped)", got)
 	}
 }
 

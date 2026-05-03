@@ -111,6 +111,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 				clearATRMultMissingEntryATRWarningsForStrategy(sc.ID)
 			}
 		}
+		if !floatPtrEqual(sc.StopLossATRMult, ns.StopLossATRMult) {
+			addChange("strategy[%s].stop_loss_atr_mult: %s -> %s", sc.ID, formatFloatPtr(sc.StopLossATRMult), formatFloatPtr(ns.StopLossATRMult))
+			sc.StopLossATRMult = ns.StopLossATRMult
+			// #562: same throttle key as trailing_stop_atr_mult — clear when disabled.
+			if ns.StopLossATRMult == nil || *ns.StopLossATRMult <= 0 {
+				clearATRMultMissingEntryATRWarningsForStrategy(sc.ID)
+			}
+		}
 		if !floatPtrEqual(sc.TrailingStopMinMovePct, ns.TrailingStopMinMovePct) {
 			addChange("strategy[%s].trailing_stop_min_move_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.TrailingStopMinMovePct), formatFloatPtrPct(ns.TrailingStopMinMovePct))
 			sc.TrailingStopMinMovePct = ns.TrailingStopMinMovePct
@@ -295,6 +303,17 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				errs = append(errs, fmt.Sprintf("strategy[%s] trailing_stop_atr_mult mode changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
+			// #562: Fixed ATR-derived stop loss is armed once at open from the
+			// entry ATR; toggling on/off mid-position would either leave the
+			// resting trigger orphaned or arm a second trigger that races. Block
+			// the mode switch while open. Numeric changes (positive→positive)
+			// take effect on the next fresh open since the trigger is fixed.
+			oldFixedATR := sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0
+			newFixedATR := ns.StopLossATRMult != nil && *ns.StopLossATRMult > 0
+			if oldFixedATR != newFixedATR {
+				errs = append(errs, fmt.Sprintf("strategy[%s] stop_loss_atr_mult mode changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
 		}
 	}
 	if len(errs) > 0 {
@@ -317,6 +336,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.MarginMode = ""              // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
 	sc.TrailingStopPct = nil        // #501: hot-reloadable; state-compat allows pct changes but blocks mode switches while open
 	sc.TrailingStopATRMult = nil    // #505: hot-reloadable; same state-compat treatment as TrailingStopPct
+	sc.StopLossATRMult = nil        // #562: hot-reloadable; mode toggle blocked while open
 	sc.TrailingStopMinMovePct = nil // #501: hot-reloadable tuning knob for trailing trigger churn
 	return sc
 }

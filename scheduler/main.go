@@ -1379,6 +1379,53 @@ func main() {
 								}
 								mu.Unlock()
 							}
+							// #562: Fixed ATR-derived stop-loss arming. EffectiveStopLossPct
+							// returns 0 at order-placement time when StopLossATRMult > 0, so
+							// the open leg lands without a trigger. On the cycle after open
+							// (Signal == 0, position exists, EntryATR stamped, no OID/trigger
+							// yet) we arm a one-shot fixed trigger at AvgCost ± mult*EntryATR.
+							// Subsequent cycles short-circuit because the position carries an
+							// OID (live) or TriggerPx (paper) — the trigger is fixed for the
+							// life of the position and never re-armed.
+							if !hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
+								newTrigger, breach, breachPx := runHyperliquidFixedATRStopLossPaper(sc, hlPosSide, hlPosSnapshot, price, hlStopLossTriggerPx)
+								mu.Lock()
+								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
+									if breach {
+										if recordPerpsStopLossClose(stratState, result.Symbol, breachPx, "stop_loss_atr_paper", logger) {
+											trades++
+											detail = fmt.Sprintf("[%s] PAPER FIXED ATR SL %s @ $%.2f", sc.ID, result.Symbol, breachPx)
+										}
+									} else if newTrigger > 0 && pos.StopLossTriggerPx == 0 {
+										pos.StopLossTriggerPx = newTrigger
+										logger.Info("Paper fixed ATR SL armed @ $%.4f (%.2f%% from entry $%.4f)",
+											newTrigger, effectiveFixedStopLossATRPct(sc, hlPosSnapshot), pos.AvgCost)
+									}
+								}
+								mu.Unlock()
+							}
+							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 && hlStopLossOID == 0 {
+								triggerPx := fixedStopLossATRTriggerPx(sc, hlPosSide, hlPosSnapshot)
+								if triggerPx > 0 {
+									slResult, ok2 := hyperliquidArmFixedATRStopLossLive(sc, result.Symbol, hlPosSide, hlPosQty, triggerPx, notifier, logger)
+									if ok2 && slResult != nil {
+										mu.Lock()
+										if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
+											if slResult.StopLossFilledImmediately && slResult.StopLossTriggerPx > 0 {
+												if recordPerpsStopLossClose(stratState, result.Symbol, slResult.StopLossTriggerPx, "stop_loss_atr_immediate", logger) {
+													trades++
+													detail = fmt.Sprintf("[%s] LIVE FIXED ATR SL %s @ $%.2f", sc.ID, result.Symbol, slResult.StopLossTriggerPx)
+												}
+											} else if slResult.StopLossOID > 0 {
+												pos.StopLossOID = slResult.StopLossOID
+												pos.StopLossTriggerPx = slResult.StopLossTriggerPx
+												logger.Info("Fixed ATR SL armed oid=%d @ $%.4f", slResult.StopLossOID, slResult.StopLossTriggerPx)
+											}
+										}
+										mu.Unlock()
+									}
+								}
+							}
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
 								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, notifier, logger)
 								if ok2 {

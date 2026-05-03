@@ -1810,3 +1810,473 @@ func TestRunHyperliquidTrailingStopPaper_StrategyIsolated(t *testing.T) {
 		t.Errorf("strategy B's BTC quantity should remain 0.3, got %v", sB.Positions["BTC"].Quantity)
 	}
 }
+
+// #562: StopLossATRMult > 0 must defer the initial trigger placement just like
+// TrailingStopATRMult — EntryATR/AvgCost are not yet on the position at order-
+// placement time. Arming runs on the cycle after open.
+func TestEffectiveStopLossPct_FixedATRMultDefersInitialTrigger(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	sc := StrategyConfig{
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		Leverage:        10,
+		MaxDrawdownPct:  5, // would otherwise fall through to a 5% auto stop
+		StopLossATRMult: pf(1.5),
+	}
+	if got := EffectiveStopLossPct(sc); got != 0 {
+		t.Errorf("EffectiveStopLossPct with StopLossATRMult set = %g, want 0 (deferred)", got)
+	}
+}
+
+// #562: explicit 0 StopLossATRMult must fall through to the next priority so
+// that a config like {stop_loss_atr_mult: 0, stop_loss_pct: 2} arms the
+// explicit fixed stop. Mirrors the TrailingStopATRMult fallthrough rule.
+func TestEffectiveStopLossPct_FixedATRMultExplicitZeroFallsThrough(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	sc := StrategyConfig{
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		Leverage:        10,
+		StopLossATRMult: pf(0),
+		StopLossPct:     pf(2),
+	}
+	if got := EffectiveStopLossPct(sc); got != 2 {
+		t.Errorf("EffectiveStopLossPct with explicit-zero StopLossATRMult and stop_loss_pct=2 = %g, want 2", got)
+	}
+}
+
+// #562: effectiveFixedStopLossATRPct derives mult * EntryATR / AvgCost * 100,
+// returns 0 when EntryATR/AvgCost is missing, and caps the result at
+// MaxAutoStopLossPct so an outsized ATR (e.g. mult=3 on an ATR ≈ 30% of price)
+// can't produce a long-side trigger price <= 0.
+func TestEffectiveFixedStopLossATRPct(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name string
+		sc   StrategyConfig
+		pos  *Position
+		want float64
+	}{
+		{"derived from EntryATR/AvgCost", StrategyConfig{
+			Platform: "hyperliquid", Type: "perps", StopLossATRMult: pf(1.5),
+		}, &Position{AvgCost: 2000, EntryATR: 40}, 1.5 * 40 / 2000 * 100},
+		{"unset returns 0", StrategyConfig{
+			Platform: "hyperliquid", Type: "perps",
+		}, &Position{AvgCost: 2000, EntryATR: 40}, 0},
+		{"explicit zero returns 0", StrategyConfig{
+			Platform: "hyperliquid", Type: "perps", StopLossATRMult: pf(0),
+		}, &Position{AvgCost: 2000, EntryATR: 40}, 0},
+		{"missing EntryATR returns 0", StrategyConfig{
+			Platform: "hyperliquid", Type: "perps", StopLossATRMult: pf(1.5),
+		}, &Position{AvgCost: 2000, EntryATR: 0}, 0},
+		{"nil position returns 0", StrategyConfig{
+			Platform: "hyperliquid", Type: "perps", StopLossATRMult: pf(1.5),
+		}, nil, 0},
+		{"non-HL platform returns 0", StrategyConfig{
+			Platform: "okx", Type: "perps", StopLossATRMult: pf(1.5),
+		}, &Position{AvgCost: 2000, EntryATR: 40}, 0},
+		{"capped at MaxAutoStopLossPct", StrategyConfig{
+			Platform: "hyperliquid", Type: "perps", StopLossATRMult: pf(3),
+		}, &Position{AvgCost: 100, EntryATR: 30}, MaxAutoStopLossPct},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := effectiveFixedStopLossATRPct(c.sc, c.pos); got != c.want {
+				t.Errorf("effectiveFixedStopLossATRPct = %g, want %g", got, c.want)
+			}
+		})
+	}
+}
+
+// #562: fixedStopLossATRTriggerPx returns AvgCost ± mult*EntryATR for long/short.
+func TestFixedStopLossATRTriggerPx(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	sc := StrategyConfig{
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		StopLossATRMult: pf(1.5),
+	}
+	pos := &Position{AvgCost: 2000, EntryATR: 40}
+	wantPct := 1.5 * 40 / 2000 * 100 // 3%
+
+	if got := fixedStopLossATRTriggerPx(sc, "long", pos); got != 2000*(1-wantPct/100) {
+		t.Errorf("long trigger = %g, want %g", got, 2000*(1-wantPct/100))
+	}
+	if got := fixedStopLossATRTriggerPx(sc, "short", pos); got != 2000*(1+wantPct/100) {
+		t.Errorf("short trigger = %g, want %g", got, 2000*(1+wantPct/100))
+	}
+	if got := fixedStopLossATRTriggerPx(sc, "unknown", pos); got != 0 {
+		t.Errorf("unknown side trigger = %g, want 0", got)
+	}
+}
+
+// #562: validation rules for stop_loss_atr_mult — HL perps only, mutually
+// exclusive with the four other stop fields.
+func TestValidateConfig_StopLossATRMult(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name      string
+		sc        StrategyConfig
+		wantError bool
+	}{
+		{"in range", StrategyConfig{
+			ID: "hl-test", Type: "perps", Platform: "hyperliquid",
+			Script: "shared_scripts/check_hyperliquid.py", Capital: 1000, MaxDrawdownPct: 10, Leverage: 5,
+			StopLossATRMult: pf(1.5),
+		}, false},
+		{"explicit zero disables (benign)", StrategyConfig{
+			ID: "hl-test", Type: "perps", Platform: "hyperliquid",
+			Script: "shared_scripts/check_hyperliquid.py", Capital: 1000, MaxDrawdownPct: 10, Leverage: 5,
+			StopLossATRMult: pf(0),
+		}, false},
+		{"negative rejected", StrategyConfig{
+			ID: "hl-test", Type: "perps", Platform: "hyperliquid",
+			Script: "shared_scripts/check_hyperliquid.py", Capital: 1000, MaxDrawdownPct: 10, Leverage: 5,
+			StopLossATRMult: pf(-0.5),
+		}, true},
+		{"non-HL platform rejected", StrategyConfig{
+			ID: "ok-test", Type: "perps", Platform: "okx",
+			Script: "shared_scripts/check_okx.py", Capital: 1000, MaxDrawdownPct: 10, Leverage: 5,
+			StopLossATRMult: pf(1.5),
+		}, true},
+		{"non-perps type rejected", StrategyConfig{
+			ID: "hl-test", Type: "spot", Platform: "hyperliquid",
+			Script: "shared_scripts/check_hyperliquid.py", Capital: 1000, MaxDrawdownPct: 10,
+			StopLossATRMult: pf(1.5),
+		}, true},
+		{"mutually exclusive with stop_loss_pct", StrategyConfig{
+			ID: "hl-test", Type: "perps", Platform: "hyperliquid",
+			Script: "shared_scripts/check_hyperliquid.py", Capital: 1000, MaxDrawdownPct: 10, Leverage: 5,
+			StopLossATRMult: pf(1.5), StopLossPct: pf(2),
+		}, true},
+		{"mutually exclusive with stop_loss_margin_pct", StrategyConfig{
+			ID: "hl-test", Type: "perps", Platform: "hyperliquid",
+			Script: "shared_scripts/check_hyperliquid.py", Capital: 1000, MaxDrawdownPct: 10, Leverage: 5,
+			StopLossATRMult: pf(1.5), StopLossMarginPct: pf(20),
+		}, true},
+		{"mutually exclusive with trailing_stop_pct", StrategyConfig{
+			ID: "hl-test", Type: "perps", Platform: "hyperliquid",
+			Script: "shared_scripts/check_hyperliquid.py", Capital: 1000, MaxDrawdownPct: 10, Leverage: 5,
+			StopLossATRMult: pf(1.5), TrailingStopPct: pf(2),
+		}, true},
+		{"mutually exclusive with trailing_stop_atr_mult", StrategyConfig{
+			ID: "hl-test", Type: "perps", Platform: "hyperliquid",
+			Script: "shared_scripts/check_hyperliquid.py", Capital: 1000, MaxDrawdownPct: 10, Leverage: 5,
+			StopLossATRMult: pf(1.5), TrailingStopATRMult: pf(2),
+		}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := &Config{Strategies: []StrategyConfig{c.sc}}
+			err := ValidateConfig(cfg)
+			if c.wantError && err == nil {
+				t.Errorf("expected validation error, got nil")
+			}
+			if !c.wantError && err != nil {
+				t.Errorf("expected no error, got: %v", err)
+			}
+			if c.wantError && err != nil && !strings.Contains(err.Error(), "stop_loss_atr_mult") {
+				t.Errorf("error did not mention stop_loss_atr_mult: %v", err)
+			}
+		})
+	}
+}
+
+// #562: peer normalization treats StopLossATRMult ownership the same as the
+// other stop-loss owners — peers without any stop field set get StopLossPct=0
+// so the MaxDrawdownPct auto-derive is suppressed for them.
+func TestNormalizeHyperliquidPeerStopLosses_FixedATRMultOwner(t *testing.T) {
+	mult := 1.5
+	strategies := []StrategyConfig{
+		{
+			ID:              "hl-eth-trend",
+			Type:            "perps",
+			Platform:        "hyperliquid",
+			Args:            []string{"trend", "ETH", "1h"},
+			Leverage:        5,
+			MaxDrawdownPct:  10,
+			StopLossATRMult: &mult,
+		},
+		{
+			ID:             "hl-eth-breakout",
+			Type:           "perps",
+			Platform:       "hyperliquid",
+			Args:           []string{"breakout", "ETH", "1h"},
+			Leverage:       5,
+			MaxDrawdownPct: 10,
+		},
+	}
+	normalizeHyperliquidPeerStopLosses(strategies)
+
+	if strategies[0].StopLossPct != nil {
+		t.Errorf("fixed ATR-mult owner should not gain a normalized StopLossPct; got %v", strategies[0].StopLossPct)
+	}
+	if strategies[1].StopLossPct == nil {
+		t.Fatalf("non-owner peer should be normalized to explicit 0 StopLossPct, got nil")
+	}
+	if *strategies[1].StopLossPct != 0 {
+		t.Errorf("non-owner peer normalized StopLossPct = %g, want 0", *strategies[1].StopLossPct)
+	}
+}
+
+// #562: hyperliquidPeerStrategyErrors flags two peers on the same coin both
+// owning a fixed ATR-mult stop loss — at most one peer may place a trigger.
+func TestHyperliquidPeerStrategyErrors_FixedATRMultConflict(t *testing.T) {
+	a := 1.5
+	b := 2.0
+	strategies := []StrategyConfig{
+		{
+			ID: "hl-eth-a", Type: "perps", Platform: "hyperliquid",
+			Args: []string{"trend", "ETH", "1h"}, Leverage: 5,
+			StopLossATRMult: &a,
+		},
+		{
+			ID: "hl-eth-b", Type: "perps", Platform: "hyperliquid",
+			Args: []string{"breakout", "ETH", "1h"}, Leverage: 5,
+			StopLossATRMult: &b,
+		},
+	}
+	errs := hyperliquidPeerStrategyErrors(strategies)
+	if len(errs) == 0 {
+		t.Fatal("expected peer stop-loss conflict error")
+	}
+	joined := strings.Join(errs, " | ")
+	if !strings.Contains(joined, "conflicting") {
+		t.Errorf("expected conflict message, got: %v", errs)
+	}
+}
+
+// #562: LoadConfig defaults sole-owner HL perps strategies with no explicit
+// stop fields to stop_loss_atr_mult=1.0. Peers don't get the default — peer
+// normalization sets StopLossPct=0 first.
+func TestLoadConfig_DefaultsStopLossATRMultForSoleOwner(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-sole",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"max_drawdown_pct": 10,
+			"leverage": 5
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if sc.StopLossATRMult == nil {
+		t.Fatal("expected default StopLossATRMult applied, got nil")
+	}
+	if *sc.StopLossATRMult != DefaultStopLossATRMult {
+		t.Errorf("default StopLossATRMult = %g, want %g", *sc.StopLossATRMult, DefaultStopLossATRMult)
+	}
+}
+
+// #562: sole-owner with an explicit stop_loss_pct does NOT get the default
+// stop_loss_atr_mult — explicit config wins.
+func TestLoadConfig_NoDefaultStopLossATRMultWhenExplicitFieldSet(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-explicit",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"max_drawdown_pct": 10,
+			"leverage": 5,
+			"stop_loss_pct": 3
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.Strategies[0].StopLossATRMult != nil {
+		t.Errorf("StopLossATRMult should remain nil when stop_loss_pct is explicit, got %v", cfg.Strategies[0].StopLossATRMult)
+	}
+}
+
+// #562: peer strategies on the same coin do NOT receive the default — peer
+// normalization runs first and sets StopLossPct=0, which makes them ineligible.
+func TestLoadConfig_NoDefaultStopLossATRMultForPeers(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [
+			{
+				"id": "hl-eth-trend",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["trend", "ETH", "1h"],
+				"capital": 1000,
+				"leverage": 5,
+				"stop_loss_atr_mult": 1.5
+			},
+			{
+				"id": "hl-eth-breakout",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["breakout", "ETH", "1h"],
+				"capital": 1000,
+				"leverage": 5
+			}
+		]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	for _, sc := range cfg.Strategies {
+		if sc.ID == "hl-eth-breakout" {
+			if sc.StopLossATRMult != nil {
+				t.Errorf("peer should not receive default StopLossATRMult; got %v", sc.StopLossATRMult)
+			}
+			if sc.StopLossPct == nil || *sc.StopLossPct != 0 {
+				t.Errorf("peer StopLossPct should be normalized to 0; got %v", sc.StopLossPct)
+			}
+		}
+	}
+}
+
+// #562: paper-mode arming returns the trigger on the first cycle (currentTrigger=0)
+// and breach=true once mark crosses the trigger on a subsequent cycle.
+func TestRunHyperliquidFixedATRStopLossPaper(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	sc := StrategyConfig{
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		StopLossATRMult: pf(1.5),
+	}
+	pos := &Position{AvgCost: 2000, EntryATR: 40}
+	// expected: pct = 1.5 * 40 / 2000 * 100 = 3%; long trigger = 2000 * 0.97 = 1940
+	wantTrigger := 1940.0
+
+	// Cycle 1: not yet armed — return trigger px, no breach.
+	newTrigger, breach, breachPx := runHyperliquidFixedATRStopLossPaper(sc, "long", pos, 2010, 0)
+	if breach {
+		t.Errorf("cycle1 breach=true, want false")
+	}
+	if newTrigger != wantTrigger {
+		t.Errorf("cycle1 newTrigger = %g, want %g", newTrigger, wantTrigger)
+	}
+	if breachPx != 0 {
+		t.Errorf("cycle1 breachPx = %g, want 0", breachPx)
+	}
+
+	// Cycle 2 above trigger: trigger already armed; no new trigger; no breach.
+	newTrigger, breach, _ = runHyperliquidFixedATRStopLossPaper(sc, "long", pos, 2050, wantTrigger)
+	if breach {
+		t.Errorf("cycle2 breach=true, want false (mark above trigger)")
+	}
+	if newTrigger != 0 {
+		t.Errorf("cycle2 newTrigger = %g, want 0 (already armed)", newTrigger)
+	}
+
+	// Cycle 3 mark crosses trigger: breach.
+	newTrigger, breach, breachPx = runHyperliquidFixedATRStopLossPaper(sc, "long", pos, 1939, wantTrigger)
+	if !breach {
+		t.Error("cycle3 breach=false, want true")
+	}
+	if newTrigger != 0 {
+		t.Errorf("cycle3 newTrigger = %g, want 0", newTrigger)
+	}
+	if breachPx != wantTrigger {
+		t.Errorf("cycle3 breachPx = %g, want %g", breachPx, wantTrigger)
+	}
+
+	// short side — mark above trigger triggers breach.
+	shortTrigger := 2060.0 // 2000 * 1.03
+	newTrigger, breach, _ = runHyperliquidFixedATRStopLossPaper(sc, "short", pos, 1990, 0)
+	if breach {
+		t.Errorf("short cycle1 breach=true, want false")
+	}
+	if newTrigger != shortTrigger {
+		t.Errorf("short cycle1 newTrigger = %g, want %g", newTrigger, shortTrigger)
+	}
+	newTrigger, breach, breachPx = runHyperliquidFixedATRStopLossPaper(sc, "short", pos, 2061, shortTrigger)
+	if !breach {
+		t.Error("short cycle3 breach=false, want true")
+	}
+	if breachPx != shortTrigger {
+		t.Errorf("short cycle3 breachPx = %g, want %g", breachPx, shortTrigger)
+	}
+}
+
+// #562: when StopLossATRMult is unset the paper helper short-circuits.
+func TestRunHyperliquidFixedATRStopLossPaper_Unset(t *testing.T) {
+	sc := StrategyConfig{Platform: "hyperliquid", Type: "perps"}
+	pos := &Position{AvgCost: 2000, EntryATR: 40}
+	newTrigger, breach, breachPx := runHyperliquidFixedATRStopLossPaper(sc, "long", pos, 2010, 0)
+	if newTrigger != 0 || breach || breachPx != 0 {
+		t.Errorf("unset short-circuit: trigger=%g breach=%v breachPx=%g, want 0,false,0", newTrigger, breach, breachPx)
+	}
+}
+
+// #562: stop_loss_atr_mult round-trips through JSON only when explicit
+// (omitempty drops nil) and is rendered via formatFloatPtr in hot-reload diffs.
+func TestStrategyConfig_StopLossATRMultJSON(t *testing.T) {
+	v := 1.5
+	sc := StrategyConfig{
+		ID:              "hl-test",
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		Leverage:        10,
+		StopLossATRMult: &v,
+	}
+	b, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"stop_loss_atr_mult":1.5`) {
+		t.Errorf("expected stop_loss_atr_mult in JSON; got %s", b)
+	}
+
+	sc.StopLossATRMult = nil
+	b2, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal nil: %v", err)
+	}
+	if strings.Contains(string(b2), "stop_loss_atr_mult") {
+		t.Errorf("nil StopLossATRMult should be omitted; got %s", b2)
+	}
+
+	zero := 0.0
+	sc.StopLossATRMult = &zero
+	b3, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal zero: %v", err)
+	}
+	if !strings.Contains(string(b3), `"stop_loss_atr_mult":0`) {
+		t.Errorf("explicit zero StopLossATRMult must round-trip; got %s", b3)
+	}
+}
+
+// #562: atrMultMissingEntryATR fires when StopLossATRMult is configured but
+// the open candle didn't produce an ATR — same alert behavior as
+// TrailingStopATRMult.
+func TestATRMultMissingEntryATR_FixedATRMult(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	sc := StrategyConfig{
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		StopLossATRMult: pf(1.5),
+	}
+	posMissing := &Position{AvgCost: 2000, EntryATR: 0}
+	if !atrMultMissingEntryATR(sc, posMissing) {
+		t.Error("expected atrMultMissingEntryATR=true for fixed StopLossATRMult with missing EntryATR")
+	}
+	posOK := &Position{AvgCost: 2000, EntryATR: 40}
+	if atrMultMissingEntryATR(sc, posOK) {
+		t.Error("expected atrMultMissingEntryATR=false when EntryATR is stamped")
+	}
+}

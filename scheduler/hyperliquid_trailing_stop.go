@@ -65,11 +65,16 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 // Returns false when an explicit TrailingStopPct > 0 takes precedence over the
 // ATR multiplier — in that case the fixed-pct path arms the trigger and ATR
 // is irrelevant.
+//
+// Includes the fixed-distance StopLossATRMult variant (#562): same EntryATR
+// dependency, same alerting story.
 func atrMultMissingEntryATR(sc StrategyConfig, pos *Position) bool {
 	if sc.Platform != "hyperliquid" || sc.Type != "perps" {
 		return false
 	}
-	if sc.TrailingStopATRMult == nil || *sc.TrailingStopATRMult <= 0 {
+	wantsTrailing := sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0
+	wantsFixed := sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0
+	if !wantsTrailing && !wantsFixed {
 		return false
 	}
 	if sc.TrailingStopPct != nil && *sc.TrailingStopPct > 0 {
@@ -79,6 +84,144 @@ func atrMultMissingEntryATR(sc StrategyConfig, pos *Position) bool {
 		return false
 	}
 	return pos.EntryATR <= 0 || pos.AvgCost <= 0
+}
+
+// effectiveFixedStopLossATRPct returns the per-position fixed (non-trailing)
+// stop loss distance as a price-% derived from StopLossATRMult * EntryATR /
+// AvgCost. HL perps only.
+//
+// Returns 0 when sc is non-HL-perps, StopLossATRMult is nil/<=0, or the
+// position is missing EntryATR / AvgCost — the arming step will simply
+// no-op until stampEntryATRIfOpened populates the position on the cycle
+// after the open fills. The derived price-% is capped at MaxAutoStopLossPct
+// to mirror trailing_stop_atr_mult so an extreme volatility window can't
+// produce a long-side trigger price <= 0.
+//
+// Once a position is armed (StopLossTriggerPx > 0), callers should not
+// re-derive a new trigger from this helper — the trigger is fixed for the
+// life of the position. See hyperliquidArmFixedATRStopLossLive /
+// runHyperliquidFixedATRStopLossPaper for the one-shot arming gate.
+func effectiveFixedStopLossATRPct(sc StrategyConfig, pos *Position) float64 {
+	if sc.Platform != "hyperliquid" || sc.Type != "perps" {
+		return 0
+	}
+	if sc.StopLossATRMult == nil || *sc.StopLossATRMult <= 0 {
+		return 0
+	}
+	if pos == nil || pos.EntryATR <= 0 || pos.AvgCost <= 0 {
+		return 0
+	}
+	pct := *sc.StopLossATRMult * pos.EntryATR / pos.AvgCost * 100.0
+	if pct > MaxAutoStopLossPct {
+		pct = MaxAutoStopLossPct
+	}
+	return pct
+}
+
+// fixedStopLossATRTriggerPx returns the fixed trigger price for a position
+// using StopLossATRMult. Long: AvgCost - mult*EntryATR; short: AvgCost +
+// mult*EntryATR (clamped via the MaxAutoStopLossPct distance cap).
+// Returns 0 if not armable.
+func fixedStopLossATRTriggerPx(sc StrategyConfig, side string, pos *Position) float64 {
+	pct := effectiveFixedStopLossATRPct(sc, pos)
+	if pct <= 0 || pos == nil || pos.AvgCost <= 0 {
+		return 0
+	}
+	switch side {
+	case "long":
+		return pos.AvgCost * (1.0 - pct/100.0)
+	case "short":
+		return pos.AvgCost * (1.0 + pct/100.0)
+	}
+	return 0
+}
+
+// runHyperliquidFixedATRStopLossPaper arms a fixed (non-trailing) ATR-derived
+// stop loss for a paper-mode HL perps position. Mirrors the live arming
+// semantics (one-shot placement on the cycle after open) but evaluates breach
+// in scheduler state instead of resting an order on Hyperliquid.
+//
+// Returns:
+//
+//	newTrigger — non-zero when the trigger should be set on the position
+//	             (only on the initial arming cycle; subsequent calls return 0).
+//	breach     — true when mark has crossed the existing trigger and the
+//	             caller should record a synthetic close.
+//	breachPx   — trigger price at which the synthetic close should book.
+//
+// Multi-strategy / partial-close note: each strategy's StrategyState.Positions
+// is isolated, so a single strategy's breach closes only that strategy's
+// virtual quantity. Peer strategies on the same coin retain their independent
+// virtual exposure.
+func runHyperliquidFixedATRStopLossPaper(sc StrategyConfig, side string, pos *Position, mark, currentTrigger float64) (newTrigger float64, breach bool, breachPx float64) {
+	if sc.StopLossATRMult == nil || *sc.StopLossATRMult <= 0 {
+		return 0, false, 0
+	}
+	if mark <= 0 {
+		return 0, false, 0
+	}
+	if currentTrigger > 0 {
+		if trailingStopBreached(side, mark, currentTrigger) {
+			return 0, true, currentTrigger
+		}
+		return 0, false, 0
+	}
+	tp := fixedStopLossATRTriggerPx(sc, side, pos)
+	if tp <= 0 {
+		return 0, false, 0
+	}
+	return tp, false, 0
+}
+
+// hyperliquidArmFixedATRStopLossLive places a fixed (non-trailing) reduce-only
+// stop-loss trigger on Hyperliquid for the given position. One-shot: callers
+// must skip when pos.StopLossOID > 0 (already armed) or the position is
+// missing EntryATR. Returns the StopLossUpdateResult and ok=true on success
+// (including when the trigger fills immediately at submit). ok=false signals
+// the caller should NOT mutate state.
+func hyperliquidArmFixedATRStopLossLive(sc StrategyConfig, symbol, side string, qty float64, triggerPx float64, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidStopLossUpdateResult, bool) {
+	if triggerPx <= 0 || qty <= 0 {
+		return nil, true
+	}
+	if logger != nil {
+		logger.Info("Arming fixed ATR SL for %s: side=%s qty=%.6f trigger=$%.4f", symbol, side, qty, triggerPx)
+	}
+	result, stderr, err := runHyperliquidUpdateStopLossFunc(sc.Script, symbol, side, qty, triggerPx, 0)
+	if stderr != "" && logger != nil {
+		logger.Info("arm fixed SL stderr: %s", stderr)
+	}
+	if err != nil {
+		if logger != nil {
+			logger.Error("Fixed ATR SL arm failed: %v", err)
+		}
+		return result, false
+	}
+	if result.Error != "" {
+		if logger != nil {
+			logger.Error("Fixed ATR SL arm returned error: %s", result.Error)
+		}
+		return result, false
+	}
+	if result.StopLossError != "" {
+		if isHLOpenOrderCapRejection(result.StopLossError) {
+			if logger != nil {
+				logger.Error("CRITICAL: HL open-order-cap rejected fixed ATR SL arm for %s - position is unprotected: %s",
+					symbol, result.StopLossError)
+			}
+			if notifier != nil && notifier.HasBackends() {
+				msg := fmt.Sprintf("**HL OPEN-ORDER CAP HIT** [%s] %s fixed ATR SL arm rejected: %s",
+					sc.ID, symbol, result.StopLossError)
+				notifier.SendToAllChannels(msg)
+				notifier.SendOwnerDM(msg)
+			}
+		} else if logger != nil {
+			logger.Warn("Fixed ATR SL arm placement failed (non-fatal): %s", result.StopLossError)
+		}
+	}
+	if result.StopLossFilledImmediately && logger != nil {
+		logger.Warn("Fixed ATR SL trigger filled at submit for %s — position is flat on-chain", symbol)
+	}
+	return result, true
 }
 
 // atrMultMissingEntryATRWarned throttles missing-EntryATR alerts to one per
