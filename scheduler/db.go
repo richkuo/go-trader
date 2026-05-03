@@ -705,8 +705,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	//    failed, even if later-timestamped rows were persisted successfully
 	//    (fixes the MAX(timestamp) dedup gap that would silently drop
 	//    out-of-order retries).
-	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_trigger_px)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare trade insert: %w", err)
 	}
@@ -730,7 +730,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			if t.IsClose {
 				isClose = 1
 			}
-			if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL); err != nil {
+			if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL, t.Regime, t.EntryATR, t.StopLossTriggerPx); err != nil {
 				return fmt.Errorf("insert trade for %s: %w", s.ID, err)
 			}
 			flushed = append(flushed, trackedFlush{strat: s, index: i})
