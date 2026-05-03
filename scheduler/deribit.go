@@ -491,9 +491,12 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 		s.Cash += proceeds
 		pnl := 0.0
 		var positionID string
+		var posEntryATR, posStopLossTriggerPx float64
 		if existing, ok := s.Positions[symbol]; ok && existing.Side == "long" {
 			positionID = ensurePositionTradeID(s.ID, symbol, existing)
 			pnl = (r.AssignStrike - existing.AvgCost) * r.AssignQuantity
+			posEntryATR = existing.EntryATR
+			posStopLossTriggerPx = existing.StopLossTriggerPx
 			newQty := existing.Quantity - r.AssignQuantity
 			if newQty <= 0 {
 				recordClosedPosition(s, existing, r.AssignStrike, pnl, "assignment", now)
@@ -515,9 +518,11 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 			TradeType:  "assignment",
 			Details: fmt.Sprintf("Wheel call-away: sold call expired ITM (spot=$%.2f), sold %.4f %s @ $%.0f PnL=$%.2f",
 				r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, pnl),
-			IsClose:     true,
-			RealizedPnL: pnl,
-			Regime:      s.Regime,
+			IsClose:           true,
+			RealizedPnL:       pnl,
+			Regime:            s.Regime,
+			EntryATR:          posEntryATR,
+			StopLossTriggerPx: posStopLossTriggerPx,
 		})
 		logger.Info("CALL-AWAY: sold call %s-%.0f expired ITM (spot=$%.2f), sold %.4f %s @ $%.0f (proceeds=$%.2f, PnL=$%.2f)",
 			r.AssignUnderlying, r.AssignStrike, r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, proceeds, pnl)

@@ -354,8 +354,8 @@ func TestFormatTradeDM_OpenTrade(t *testing.T) {
 	if !strings.Contains(msg, "LONG") {
 		t.Errorf("expected LONG, got:\n%s", msg)
 	}
-	if !strings.Contains(msg, "Mode: paper") {
-		t.Errorf("expected 'Mode: paper', got:\n%s", msg)
+	if !strings.Contains(msg, "TRADE EXECUTED - PAPER") {
+		t.Errorf("expected 'TRADE EXECUTED - PAPER' in header, got:\n%s", msg)
 	}
 	if strings.Contains(msg, "PnL") {
 		t.Errorf("open trade should not contain PnL, got:\n%s", msg)
@@ -388,8 +388,8 @@ func TestFormatTradeDM_CloseTrade(t *testing.T) {
 	if !strings.Contains(msg, "PnL: $34.35") {
 		t.Errorf("expected PnL in close trade, got:\n%s", msg)
 	}
-	if !strings.Contains(msg, "Mode: live") {
-		t.Errorf("expected 'Mode: live', got:\n%s", msg)
+	if !strings.Contains(msg, "TRADE CLOSED - LIVE") {
+		t.Errorf("expected 'TRADE CLOSED - LIVE' in header, got:\n%s", msg)
 	}
 }
 
@@ -1406,6 +1406,9 @@ func TestCollectPositions_TieredTPATR_Long(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(lines))
 	}
+	if !strings.Contains(lines[0], "| ATR: $1,000.00") {
+		t.Errorf("expected ATR fragment, got: %s", lines[0])
+	}
 	if !strings.Contains(lines[0], "| TP1: $64,500.00 (+1.6%) | TP2: $65,500.00 (+3.1%)") {
 		t.Errorf("expected tiered TP fragments for long, got: %s", lines[0])
 	}
@@ -1422,6 +1425,9 @@ func TestCollectPositions_TieredTPATR_Short(t *testing.T) {
 		},
 	}
 	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
+	if !strings.Contains(lines[0], "| ATR: $1,000.00") {
+		t.Errorf("expected ATR fragment, got: %s", lines[0])
+	}
 	if !strings.Contains(lines[0], "| TP1: $62,500.00 (+1.6%) | TP2: $61,500.00 (+3.1%)") {
 		t.Errorf("expected tiered TP fragments for short, got: %s", lines[0])
 	}
@@ -1442,6 +1448,9 @@ func TestCollectPositions_TieredTPATRLive_Long(t *testing.T) {
 	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], "| ATR: $1,000.00") {
+		t.Errorf("expected ATR fragment, got: %s", lines[0])
 	}
 	want := "| TP1: $64,500.00 (+1.6%) | TP2: $65,500.00 (+3.1%)"
 	if !strings.Contains(lines[0], want) {
@@ -1490,15 +1499,16 @@ func TestCollectPositions_AllFragments_WithTieredTP(t *testing.T) {
 	}
 	got := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})[0]
 	slIdx := strings.Index(got, "| SL:")
+	atrIdx := strings.Index(got, "| ATR:")
 	tp1Idx := strings.Index(got, "| TP1:")
 	tp2Idx := strings.Index(got, "| TP2:")
 	levIdx := strings.Index(got, "| 5x")
 	dateIdx := strings.Index(got, "[Apr 28")
-	if slIdx < 0 || tp1Idx < 0 || tp2Idx < 0 || levIdx < 0 || dateIdx < 0 {
-		t.Fatalf("expected SL, TP1, TP2, leverage, and date fragments, got: %s", got)
+	if slIdx < 0 || atrIdx < 0 || tp1Idx < 0 || tp2Idx < 0 || levIdx < 0 || dateIdx < 0 {
+		t.Fatalf("expected SL, ATR, TP1, TP2, leverage, and date fragments, got: %s", got)
 	}
-	if !(slIdx < tp1Idx && tp1Idx < tp2Idx && tp2Idx < levIdx && levIdx < dateIdx) {
-		t.Errorf("expected SL → TP1 → TP2 → leverage → date ordering, got: %s", got)
+	if !(slIdx < atrIdx && atrIdx < tp1Idx && tp1Idx < tp2Idx && tp2Idx < levIdx && levIdx < dateIdx) {
+		t.Errorf("expected SL → ATR → TP1 → TP2 → leverage → date ordering, got: %s", got)
 	}
 }
 
@@ -1745,8 +1755,8 @@ func TestFormatTradeDMPlain_OpenTrade(t *testing.T) {
 	if !strings.Contains(msg, "LONG") {
 		t.Errorf("expected LONG, got:\n%s", msg)
 	}
-	if !strings.Contains(msg, "Mode: paper") {
-		t.Errorf("expected 'Mode: paper', got:\n%s", msg)
+	if !strings.Contains(msg, "TRADE EXECUTED - PAPER") {
+		t.Errorf("expected 'TRADE EXECUTED - PAPER' in header, got:\n%s", msg)
 	}
 	if strings.Contains(msg, "PnL") {
 		t.Errorf("open trade should not contain PnL, got:\n%s", msg)
@@ -1782,8 +1792,8 @@ func TestFormatTradeDMPlain_CloseTrade(t *testing.T) {
 	if !strings.Contains(msg, "PnL: $34.35") {
 		t.Errorf("expected PnL in close trade, got:\n%s", msg)
 	}
-	if !strings.Contains(msg, "Mode: live") {
-		t.Errorf("expected 'Mode: live', got:\n%s", msg)
+	if !strings.Contains(msg, "TRADE CLOSED - LIVE") {
+		t.Errorf("expected 'TRADE CLOSED - LIVE' in header, got:\n%s", msg)
 	}
 	// Plain format: no Discord bold markdown (**).
 	if strings.Contains(msg, "**") {
@@ -1888,5 +1898,135 @@ func TestFormatCategorySummary_LifetimeStatsNoFallback(t *testing.T) {
 	msgs2 := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, map[string]LifetimeTradeStats{})
 	if !strings.Contains(msgs2[0], " 0     —") {
 		t.Errorf("expected zero #T/W-L from empty lifetime stats map, got:\n%s", msgs2[0])
+	}
+}
+
+// TestFormatTradeDM_OpenWithATRAndTP verifies that when a strategy uses
+// tiered_tp_atr close and the trade has EntryATR set, the DM includes ATR,
+// TP1, and TP2 on the extras line (#561).
+func TestFormatTradeDM_OpenWithATRAndTP(t *testing.T) {
+	sc := StrategyConfig{
+		ID:              "hl-tatr-btc",
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		CloseStrategies: []string{"tiered_tp_atr"},
+	}
+	trade := Trade{
+		Symbol:   "BTC",
+		Side:     "buy",
+		Quantity: 0.01,
+		Price:    63500.0,
+		Value:    635.0,
+		EntryATR: 1000.0,
+		Details:  "Open long 0.010000 @ $63500.00 (fee $0.22)",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if !strings.Contains(msg, "ATR: $1,000.00") {
+		t.Errorf("expected 'ATR: $1,000.00' in DM, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "TP1: $64,500.00") {
+		t.Errorf("expected 'TP1: $64,500.00' in DM, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "TP2: $65,500.00") {
+		t.Errorf("expected 'TP2: $65,500.00' in DM, got:\n%s", msg)
+	}
+}
+
+// TestFormatTradeDM_OpenWithSL verifies that a trade with StopLossTriggerPx
+// set shows the SL price and a negative percent on an open trade (#561).
+func TestFormatTradeDM_OpenWithSL(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-sma-btc", Platform: "hyperliquid", Type: "perps"}
+	trade := Trade{
+		Symbol:            "BTC",
+		Side:              "buy",
+		Quantity:          0.01,
+		Price:             63500.0,
+		Value:             635.0,
+		StopLossTriggerPx: 62000.0,
+		Details:           "Open long 0.010000 @ $63500.00 (fee $0.22)",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if !strings.Contains(msg, "SL: $62,000.00") {
+		t.Errorf("expected 'SL: $62,000.00' in DM, got:\n%s", msg)
+	}
+	// SL is below entry for a long — should be a negative percent.
+	if !strings.Contains(msg, "(-") {
+		t.Errorf("expected negative SL percent for long trade, got:\n%s", msg)
+	}
+}
+
+// TestFormatTradeDM_CloseNoATR verifies that ATR/TP hints are NOT injected on
+// close legs even when EntryATR is set and the strategy uses tiered_tp_atr (#561).
+func TestFormatTradeDM_CloseNoATR(t *testing.T) {
+	sc := StrategyConfig{
+		ID:              "hl-tatr-btc",
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		CloseStrategies: []string{"tiered_tp_atr"},
+	}
+	trade := Trade{
+		Symbol:   "BTC",
+		Side:     "sell",
+		Quantity: 0.01,
+		Price:    64500.0,
+		Value:    645.0,
+		EntryATR: 1000.0,
+		IsClose:  true,
+		Details:  "Close long, PnL: $10.00 (fee $0.23)",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if strings.Contains(msg, "ATR:") {
+		t.Errorf("close trade should not include ATR hint, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "TP1:") {
+		t.Errorf("close trade should not include TP1 hint, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "TP2:") {
+		t.Errorf("close trade should not include TP2 hint, got:\n%s", msg)
+	}
+}
+
+// TestStampOpenTradeFromPosition verifies the backfill helper for EntryATR and
+// StopLossTriggerPx on the most-recent open trade for a symbol (#561).
+func TestStampOpenTradeFromPosition(t *testing.T) {
+	// (a) updates the most recent open trade for symbol.
+	s := &StrategyState{ID: "s1", TradeHistory: []Trade{
+		{Symbol: "ETH", IsClose: false, EntryATR: 0, StopLossTriggerPx: 0, Timestamp: time.Now().UTC()},
+	}}
+	pos := &Position{EntryATR: 500.0, StopLossTriggerPx: 61000.0}
+	stampOpenTradeFromPosition(s, nil, "ETH", pos)
+	if s.TradeHistory[0].EntryATR != 500.0 {
+		t.Error("EntryATR not stamped")
+	}
+	if s.TradeHistory[0].StopLossTriggerPx != 61000.0 {
+		t.Error("StopLossTriggerPx not stamped")
+	}
+
+	// (b) idempotent: won't overwrite non-zero values.
+	stampOpenTradeFromPosition(s, nil, "ETH", &Position{EntryATR: 999.0, StopLossTriggerPx: 99.0})
+	if s.TradeHistory[0].EntryATR != 500.0 {
+		t.Error("EntryATR overwritten on second call")
+	}
+	if s.TradeHistory[0].StopLossTriggerPx != 61000.0 {
+		t.Error("StopLossTriggerPx overwritten on second call")
+	}
+
+	// (c) skips when most recent matching trade is a close.
+	s2 := &StrategyState{ID: "s2", TradeHistory: []Trade{
+		{Symbol: "ETH", IsClose: false},
+		{Symbol: "ETH", IsClose: true}, // most recent is a close
+	}}
+	stampOpenTradeFromPosition(s2, nil, "ETH", &Position{EntryATR: 500.0})
+	if s2.TradeHistory[0].EntryATR != 0 {
+		t.Error("should not backfill when most recent trade for symbol is a close")
+	}
+
+	// (d) nil pos returns immediately.
+	s3 := &StrategyState{ID: "s3", TradeHistory: []Trade{
+		{Symbol: "ETH", IsClose: false},
+	}}
+	stampOpenTradeFromPosition(s3, nil, "ETH", nil)
+	if s3.TradeHistory[0].EntryATR != 0 {
+		t.Error("nil pos should be a no-op")
 	}
 }

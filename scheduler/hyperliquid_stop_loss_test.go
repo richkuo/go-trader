@@ -469,7 +469,7 @@ func TestExecuteHyperliquidResult_StopLossFilledImmediately_ReconcilesState(t *t
 
 	logger := silentStrategyLogger("hl-test-eth")
 	defer logger.Close()
-	trades, _ := executeHyperliquidResult(sc, state, result, execResult, "BUY", 3200, logger)
+	trades, _ := executeHyperliquidResult(sc, state, nil, result, execResult, "BUY", 3200, logger)
 
 	// Open + synthetic close = 2 trades.
 	if trades != 2 {
@@ -510,7 +510,7 @@ func TestExecuteHyperliquidResult_StopLossFilledImmediately_NoTriggerPxIsNoOp(t 
 	}
 	logger := silentStrategyLogger("hl")
 	defer logger.Close()
-	trades, _ := executeHyperliquidResult(sc, state, result, execResult, "BUY", 3200, logger)
+	trades, _ := executeHyperliquidResult(sc, state, nil, result, execResult, "BUY", 3200, logger)
 	if trades != 1 {
 		t.Errorf("trades=%d, want 1 (only open recorded; reconcile skipped)", trades)
 	}

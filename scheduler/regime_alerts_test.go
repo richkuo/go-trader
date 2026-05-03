@@ -53,13 +53,19 @@ func TestFormatTradeDM_RegimeBeforeMode(t *testing.T) {
 		Regime:   "ranging",
 	}
 	msg := FormatTradeDM(sc, trade, "paper")
-	regimeIdx := strings.Index(msg, "Regime:")
-	modeIdx := strings.Index(msg, "Mode:")
-	if regimeIdx == -1 || modeIdx == -1 {
-		t.Fatalf("missing Regime or Mode in DM: %s", msg)
+	// Mode is now embedded in the header line ("TRADE EXECUTED - PAPER"), not
+	// a separate "Mode:" field. Verify Regime appears in the message and that
+	// the header line (containing the mode) precedes the extras line.
+	if !strings.Contains(msg, "Regime: ranging") {
+		t.Fatalf("missing Regime in DM: %s", msg)
 	}
-	if regimeIdx >= modeIdx {
-		t.Errorf("Regime should appear before Mode; got:\n%s", msg)
+	headerIdx := strings.Index(msg, "TRADE EXECUTED - PAPER")
+	regimeIdx := strings.Index(msg, "Regime:")
+	if headerIdx == -1 {
+		t.Fatalf("missing mode in DM header: %s", msg)
+	}
+	if regimeIdx <= headerIdx {
+		t.Errorf("Regime should appear after the header line; got:\n%s", msg)
 	}
 }
 
