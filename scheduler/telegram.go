@@ -254,7 +254,7 @@ func FormatTradeDMPlain(sc StrategyConfig, trade Trade, mode string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("%s %s - %s\n", icon, header, strings.ToUpper(mode)))
 	sb.WriteString(fmt.Sprintf("Strategy: %s (%s %s)\n", sc.ID, platformLabel, typeLabel))
-	sb.WriteString(fmt.Sprintf("%s — %s %.3f @ $%s | Value: $%s", trade.Symbol, tradeDirectionLabel(trade), trade.Quantity, fmtComma(trade.Price), fmtComma(trade.Value)))
+	sb.WriteString(fmt.Sprintf("%s — %s %.3f @ $%s | Value: $%s\n", trade.Symbol, tradeDirectionLabel(trade), trade.Quantity, fmtComma(trade.Price), fmtComma(trade.Value)))
 
 	var extras []string
 	if isClose {
@@ -265,7 +265,7 @@ func FormatTradeDMPlain(sc StrategyConfig, trade Trade, mode string) string {
 	if trade.Regime != "" {
 		extras = append(extras, "Regime: "+trade.Regime)
 	}
-	if trade.EntryATR > 0 && strategyUsesTieredTPATRClose(sc) {
+	if !isClose && trade.EntryATR > 0 && strategyUsesTieredTPATRClose(sc) {
 		extras = append(extras, fmt.Sprintf("ATR: $%s", fmtComma2(trade.EntryATR)))
 		direction := strings.ToLower(tradeDirectionLabel(trade))
 		var tp1, tp2 float64
@@ -285,7 +285,7 @@ func FormatTradeDMPlain(sc StrategyConfig, trade Trade, mode string) string {
 		extras = append(extras, fmt.Sprintf("SL: $%s (%s)", fmtComma2(trade.StopLossTriggerPx), fmtPnlPct(slPct)))
 	}
 	if len(extras) > 0 {
-		sb.WriteString("\n" + strings.Join(extras, " | "))
+		sb.WriteString(strings.Join(extras, " | "))
 	}
 
 	return sb.String()
