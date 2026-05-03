@@ -217,6 +217,9 @@ type Trade struct {
 	RealizedPnL float64 `json:"realized_pnl,omitempty"`
 	Regime      string  `json:"regime,omitempty"` // market regime label at time of trade (#482)
 
+	EntryATR          float64 `json:"entry_atr,omitempty"`
+	StopLossTriggerPx float64 `json:"stop_loss_trigger_px,omitempty"`
+
 	// persisted tracks whether this Trade has been written to SQLite — set by
 	// RecordTrade on successful InsertTrade and by LoadState for DB-loaded
 	// rows. SaveState uses this flag instead of a MAX(timestamp) check so an
