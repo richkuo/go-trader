@@ -149,7 +149,7 @@ func runManualOpen(args []string) int {
 		// --record-only does not auto-arm the SL trigger (the operator placed
 		// the fill on the UI, so they're responsible for its protection).
 		// Warn if the operator passed SL-related flags that won't take effect.
-		if (*slATRMult > 0 || *slPct > 0 || (sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0)) {
+		if *slATRMult > 0 || *slPct > 0 || (sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0) {
 			fmt.Fprintln(os.Stderr, "warning: --record-only does not arm a stop-loss trigger automatically — place the SL manually on the HL UI")
 		}
 	} else {
