@@ -249,11 +249,11 @@ Use the commit message and PR number to classify. When in doubt, treat as runtim
 
 | Category | Examples |
 | --- | --- |
-| Auto-migration | `config_version` bump, deprecated field removal, silent field copy (e.g. v10 `sizing_leverage` ← `leverage`); v11 no-op bump (#546 — defaults preserve legacy behavior, no JSON rewrite needed); silent field drop without version bump (e.g. `disable_implicit_close` removed in #508 — if set in config it no-ops; any strategy that had it `true` with no `close_strategies` now uses the open strategy as implicit close instead) |
-| Runtime default | HL stop-loss auto-derive (#493), HL margin mode default isolated (#486), peer normalization across all four HL stop/trailing omission fields (#494/#507); HL perps shared-coin CB drain (#515): pending clears **without** on-chain HL close when peers share the coin — operators who expected CB to flatten the whole HL leg must be told explicitly; ATR(14) auto-injected into all check-script indicator payloads + new MISSING ENTRY ATR notifier when `tiered_tp_atr` is configured but the open candle didn't produce ATR (#525); HL perps paper mode now evaluates `trailing_stop_pct` / `trailing_stop_atr_mult` and books synthetic closes when mark crosses the trigger — paper strategies with trailing configured will start firing closes that were previously silently ignored (#532); **`stop_loss_atr_mult=1.0` default for sole-owner HL perps strategies with all five stop fields omitted (#562)** — next fresh open arms a 1×ATR exchange-side trigger where previously the fallback was `min(max_drawdown_pct, 50)` (typically much wider); set `stop_loss_atr_mult: 0` to opt out and restore the old fallback |
-| Opt-in field | `%` trailing stop (#502), ATR-derived trailing via `trailing_stop_atr_mult` (#507 — entry path must populate `Position.EntryATR`; initial trigger deferred one cycle); open/close composition (#483), `stop_loss_margin_pct` (#490), `margin_per_trade_usd` (#520 — margin-based sizing, purely additive); `tiered_tp_atr_live` close evaluator (#527 — live ATR recomputed per tick from `market_ctx["atr"]`, `atr_source` param `"live"` default / `"entry"`, falls back to entry ATR on warm-up); regime detection `regime.enabled` + per-strategy `allowed_regimes` (#541/#546/#558 — all opt-in, default behavior unchanged; requires `regime.enabled=true` in global config before any per-strategy gate fires; `Trade.Regime` column added to `trades` table on first start after update) |
-| Internal / no ops impact | Discord summary strategy column truncation/aliases (#514); Python registry split into `open/registry.py` + `close/registry.py` (#511) — same checklist, different paths already documented elsewhere; `close_fraction` honored in execution (#521 — previously partial-close tiers silently closed 100%; existing `close_strategies` configs now behave as specified); Discord position lines now show SL whenever `stop_loss_trigger_px` is set (no longer requires `stop_loss_oid`) and append TP1/TP2 hints (1× / 2× entry ATR from avg cost) for `tiered_tp_atr` / `tiered_tp_atr_live` (#528/#529); partial-close trade DMs now classify as `TRADE CLOSED` via case-insensitive substring (#530/#531); backtester now exercises the close registry via `--close-strategy` / `--close-params` with bar-level granularity (#535 — does not simulate live intra-bar trigger races) |
-| Open-position constraint | `margin_mode`, exchange `leverage`, kill-switch identity changes; HL `trailing_stop_atr_mult` nil↔positive mode toggle mirrors `%` trailing (#507 hot-reload compat) |
+| Auto-migration | `config_version` bump, deprecated field removal, silent field copy (e.g. v10 `sizing_leverage` ← `leverage`); v11 no-op bump (#546); `disable_implicit_close` removed in #508 — strategies with `true` and no `close_strategies` now use implicit open-strategy close |
+| Runtime default | HL stop-loss auto-derive from `max_drawdown_pct` (#493); margin mode default `isolated` (#486); peer normalization of omitted stop/trailing fields (#494/#507); shared-coin CB drain clears pending **without** on-chain close when peers share the coin (#515) — operator must flatten manually; ATR(14) auto-injected + MISSING ENTRY ATR notifier for `tiered_tp_atr` (#525); paper trailing now books synthetic closes — previously silently ignored (#532); **`stop_loss_atr_mult=1.0` default for sole-owner HL perps with all 5 stop fields omitted (#562)** — set `0` to opt out |
+| Opt-in field | `trailing_stop_pct` (#502); `trailing_stop_atr_mult` (#507 — initial trigger deferred one cycle); open/close composition (#483); `stop_loss_margin_pct` (#490); `margin_per_trade_usd` (#520); `tiered_tp_atr_live` (#527 — `atr_source` param, falls back to entry ATR on warm-up); regime detection `regime.enabled` + `allowed_regimes` (#541/#546/#558 — `Trade.Regime` column added to trades on first start) |
+| Internal / no ops impact | Discord column truncation/aliases (#514); registry split into open+close (#511); `close_fraction` now honored — existing `close_strategies` configs partially close as specified (#521); Discord SL/TP1/TP2/ATR position lines (#528/#529/#561); partial-close DMs as `TRADE CLOSED` (#530/#531); backtester close registry with `--close-strategy`/`--close-params` (#535) |
+| Open-position constraint | `margin_mode`, exchange `leverage`, kill-switch identity changes; HL `trailing_stop_atr_mult` / `stop_loss_atr_mult` nil↔positive toggle blocked while open |
 
 When this list looks stale relative to recent commits, regenerate it from `git log --oneline -50` before prompting.
 
@@ -468,11 +468,11 @@ Per-strategy keys:
 | HTF filter | `htf_filter` | Skips counter-trend signals |
 | Params | `params` | Strategy default overrides |
 | Allow shorts | `allow_shorts` | Required for bidirectional perps strategies |
-| Stop loss (price %) | `stop_loss_pct` | Hyperliquid perps only. Omit to auto-derive from `max_drawdown_pct` (capped at 50) when sole strategy on the coin. Same-coin peers skip auto-derive and need one explicit positive owner across SL/margin/trailing/`stop_loss_atr_mult` (#494/#507/#562). Explicit `0` opts out. |
-| Stop loss (margin %) | `stop_loss_margin_pct` | Hyperliquid perps only, leverage-aware alternative to `stop_loss_pct`. Mutually exclusive unless both are explicit `0`. Same-coin peers default to opt-out (#494/#507). |
-| Fixed ATR stop loss | `stop_loss_atr_mult` | Hyperliquid perps only — trigger fixed at `avg_cost ± mult * entry_atr`; armed once on the cycle after open and never updated. Mutually exclusive with the other four HL stop/trailing owners. Sole-owner HL perps strategies with all five omitted default to `1.0`; set `0` to opt out and restore the `max_drawdown_pct` fallback (#562). |
-| Trailing stop (%) | `trailing_stop_pct` | Hyperliquid perps only — distance from high-water mark; mutually exclusive with the other HL stop/trailing owners (`stop_loss_pct`, `stop_loss_margin_pct`, `stop_loss_atr_mult`, `trailing_stop_atr_mult`) when positive (#501/#502/#507). Applies in both live and paper (#532). Capped at 50%. Explicit `0` disables. |
-| Trailing stop (ATR × mult) | `trailing_stop_atr_mult` | Hyperliquid perps only — trailing distance derived from entry ATR stamped on the position at open (~`mult * entry_atr / avg_cost * 100`%, capped); fixed distance for life of trade; mutually exclusive with the other HL stop/trailing owners when positive (#507). Applies in both live and paper (#532). Implicit trigger arms the cycle after open once ATR exists. |
+| Stop loss (price %) | `stop_loss_pct` | HL perps only. Sole-owner auto-derives from `max_drawdown_pct` (capped at 50) when omitted; same-coin peers need one explicit positive owner. `0` opts out. |
+| Stop loss (margin %) | `stop_loss_margin_pct` | HL perps only — leverage-aware alternative; mutually exclusive with the other four stop/trailing owners. `0` opts out. |
+| Fixed ATR stop loss | `stop_loss_atr_mult` | HL perps only — trigger `avg_cost ± mult × entry_atr`, armed once after open, never updated. Sole-owner default `1.0` when all five omitted (#562); `0` restores `max_drawdown_pct` fallback. |
+| Trailing stop (%) | `trailing_stop_pct` | HL perps only — distance from high-water mark; mutually exclusive with the other four stop/trailing owners when positive. Live and paper (#532). Capped at 50%; `0` disables. |
+| Trailing stop (ATR × mult) | `trailing_stop_atr_mult` | HL perps only — trailing distance `mult × entry_atr / avg_cost` (frozen at open); mutually exclusive with the other four when positive. Live and paper (#532). Arms cycle after open once ATR exists. |
 | Trailing stop debounce | `trailing_stop_min_move_pct` | Minimum trigger-price move before cancel/replace (`%`/ATR-mult trailing). Defaults to 0.5%. |
 | Exchange leverage | `leverage` | Perps only — exchange margin/risk leverage and HL `update_leverage` (#497). 1× by default. |
 | Sizing leverage | `sizing_leverage` | Perps only — notional order-size multiplier (`cash * sizing_leverage`). Defaults to `leverage`; set lower to run high exchange leverage with conservative position size (#497). |
@@ -553,7 +553,7 @@ Short-name conventions:
 - OKX: `okx-{strategy_short}-{asset}` for spot/options, `okx-{strategy_short}-{asset}-perp` for perps
 - `triple_ema_bidir` is futures/perps only and needs `"allow_shorts": true`
 - `session_breakout` is futures/perps only; short name `sbo`
-- Multiple HL perps strategies on the same coin share an on-chain position; peer strategies must agree on `margin_mode` and exchange `leverage` (`sizing_leverage` may differ per peer, #497), and at most one peer may own HL protection (`stop_loss_pct`, `stop_loss_margin_pct`, `trailing_stop_pct`, `trailing_stop_atr_mult`, or `stop_loss_atr_mult`, #491/#501/#507/#562). `LoadConfig` normalizes omitted fields on same-coin peers to explicit `0`, so the auto-SL fallback only fires for sole-owner strategies — configure one explicit positive owner if a shared-position trigger is desired (#494/#507/#562). **Per-strategy circuit breaker (#515):** if two or more live HL strategies trade the same coin on a shared wallet, CB drain skips the HL on-chain close and clears pending only — the exchange leg stays open until another path flattens it. Sub-account isolation is the only correct path for fully independent direction/leverage/margin per strategy.
+- Multiple HL perps strategies on the same coin share an on-chain position; peers must agree on `margin_mode` and exchange `leverage` (`sizing_leverage` may differ); at most one peer may own HL protection across `stop_loss_pct`, `stop_loss_margin_pct`, `trailing_stop_pct`, `trailing_stop_atr_mult`, `stop_loss_atr_mult` (#491/#501/#507/#562). Omitted stop fields coerced to `0` by `LoadConfig` (#494). **Per-strategy CB (#515):** CB drain skips on-chain close when peers share the coin — exchange leg stays open until another path flattens it. Sub-account isolation is the only path for full per-strategy independence.
 
 ---
 
@@ -666,7 +666,7 @@ Do not confuse this with the portfolio kill switch. Portfolio kill switch is por
 
 Kill-switch auto-reset: once the portfolio kill switch confirms all platforms are flat (`OnChainConfirmedFlat=true`), the next cycle clears virtual state and resumes trading. The bot posts `Virtual state cleared. Kill switch auto-reset; trading will resume next cycle.`
 
-When multiple HL strategies trade the same coin on a shared wallet, the on-chain close fill is split across strategies by their **virtual quantity at snapshot time** (taken under RLock before the close mutates state), not by capital weight (#469). Trade and ClosedPosition rows therefore reflect each strategy's actual share of the fill, and a misconfigured caller whose strategy isn't among the peers receives `0, 0` rather than the entire portfolio fill. **Per-strategy CB on shared HL coins (#515)** does not submit that close slice at all — reconcile virtual vs on-chain sizing manually after intervention if the operator expected CB to flatten.
+When multiple HL strategies share a coin, kill-switch fills are split by **virtual quantity at snapshot time** (not capital weight, #469). Per-strategy CB on shared HL coins (#515) does not submit a close at all — reconcile manually if CB was expected to flatten.
 
 Portfolio drawdown warnings repeat every cycle while drawdown remains in the warn band (`portfolio_risk.warn_threshold_pct`, default 60% of kill-switch). Silence by resolving the drawdown or changing the threshold.
 
@@ -680,19 +680,11 @@ journalctl -u go-trader -n 100 | grep "liveExec\|drain"
 
 ## Implementation Patterns
 
-- `StrategyConfig.Platform` is inferred from ID prefix in `LoadConfig`; prefer `s.Platform` over ID-prefix checks.
-- Platform prefixes: `hl-`, `ibkr-`, `deribit-`, `ts-`, `rh-`, `okx-`, `luno-`; default is BinanceUS.
-- Scheduler subprocess scripts must print valid JSON to stdout even on error.
-- Python scripts exit 1 on error; Go still parses stdout.
-- Per-strategy loop uses fine-grained locks; audit lock balance in `scheduler/main.go` before changing lock flow.
-- Live helpers must check skip conditions before spawning Python, then skip state updates when execution fails.
-- Bidirectional perps must thread `AllowShorts` through signal execution and live order sizing.
-- Sort map keys before formatting operator-facing or test-asserted output.
-- Add notification behavior through `MultiNotifier`.
-- Native Go mark fetchers expose base URLs as vars for httptest stubs.
-- Lifetime trade stats (`#T` / `W/L`) come exclusively from the SQLite `trades` table, grouped per `(strategy_id, position_id)` so partial closes collapse into one round trip (#471, #472). New trade-recording paths must populate `Trade.PositionID` (or rely on `RecordTrade`'s lookup against `s.Positions` / `s.OptionPositions`).
-- Summary cadence is wall-clock and per-channel; if you add a new code path that posts summaries, thread `lastSummaryPost map[string]time.Time` and pass it to `ShouldPostSummary(freq, continuous, hasTrades, lastPost, now)`.
-- Discord category summaries (`FormatCategorySummary`) shorten strategy IDs for the printed table (`summaryStrategyLabel` — fixed width + a few substring aliases); keep row labels deterministic when asserting on summary text (#514).
+See CLAUDE.md "Key Patterns" for full coding constraints. Additional notes:
+
+- New trade-recording paths must populate `Trade.PositionID` (or rely on `RecordTrade`'s lookup against `s.Positions`/`s.OptionPositions`) so partial closes collapse into one round trip.
+- New summary-posting code paths must thread `lastSummaryPost map[string]time.Time` and call `ShouldPostSummary(freq, continuous, hasTrades, lastPost, now)`.
+- `FormatCategorySummary` row labels use `summaryStrategyLabel` (fixed width + alias substitution); assert exact text in tests.
 
 Useful audits:
 
