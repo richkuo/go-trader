@@ -191,6 +191,24 @@ CREATE TABLE IF NOT EXISTS correlation_snapshot (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     snapshot_json TEXT NOT NULL DEFAULT '{}'
 );
+
+CREATE TABLE IF NOT EXISTS pending_manual_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    fill_price REAL NOT NULL,
+    fill_fee REAL NOT NULL DEFAULT 0,
+    exchange_order_id TEXT NOT NULL DEFAULT '',
+    stop_loss_oid INTEGER NOT NULL DEFAULT 0,
+    stop_loss_trigger_px REAL NOT NULL DEFAULT 0,
+    entry_atr REAL NOT NULL DEFAULT 0,
+    realized_pnl REAL NOT NULL DEFAULT 0,
+    is_full_close INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
 `
 
 // StateDB wraps a SQLite database for persistent state storage.
@@ -272,6 +290,10 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE trades ADD COLUMN regime TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE trades ADD COLUMN entry_atr REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE trades ADD COLUMN stop_loss_trigger_px REAL NOT NULL DEFAULT 0",
+		// Manual trade flag (#569).
+		"ALTER TABLE trades ADD COLUMN manual INTEGER NOT NULL DEFAULT 0",
+		// Operator-intent full-close flag for manual close actions (#569 review).
+		"ALTER TABLE pending_manual_actions ADD COLUMN is_full_close INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -468,13 +490,17 @@ func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
 	if trade.IsClose {
 		isClose = 1
 	}
+	isManual := 0
+	if trade.Manual {
+		isManual = 1
+	}
 	_, err := sdb.db.Exec(`INSERT INTO trades
-			(strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_trigger_px)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_trigger_px, manual)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strategyID, formatTime(trade.Timestamp), trade.Symbol, trade.PositionID, trade.Side,
 		trade.Quantity, trade.Price, trade.Value, trade.TradeType, trade.Details,
 		trade.ExchangeOrderID, trade.ExchangeFee, isClose, trade.RealizedPnL, trade.Regime,
-		trade.EntryATR, trade.StopLossTriggerPx)
+		trade.EntryATR, trade.StopLossTriggerPx, isManual)
 	if err != nil {
 		return fmt.Errorf("insert trade for %s: %w", strategyID, err)
 	}
@@ -705,8 +731,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	//    failed, even if later-timestamped rows were persisted successfully
 	//    (fixes the MAX(timestamp) dedup gap that would silently drop
 	//    out-of-order retries).
-	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_trigger_px)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_trigger_px, manual)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare trade insert: %w", err)
 	}
@@ -730,7 +756,11 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			if t.IsClose {
 				isClose = 1
 			}
-			if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL, t.Regime, t.EntryATR, t.StopLossTriggerPx); err != nil {
+			isManual := 0
+			if t.Manual {
+				isManual = 1
+			}
+			if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL, t.Regime, t.EntryATR, t.StopLossTriggerPx, isManual); err != nil {
 				return fmt.Errorf("insert trade for %s: %w", s.ID, err)
 			}
 			flushed = append(flushed, trackedFlush{strat: s, index: i})
@@ -1139,7 +1169,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 
 	// 5. Load most recent 1000 trades per strategy (full history stays in SQLite).
 	for id, s := range state.Strategies {
-		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px
+		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(manual, 0) AS manual
 			FROM trades WHERE strategy_id = ? ORDER BY timestamp ASC`, id)
 		if err != nil {
 			return nil, fmt.Errorf("load trades for %s: %w", id, err)
@@ -1148,13 +1178,14 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		for tradeRows.Next() {
 			var t Trade
 			var tsStr string
-			var isCloseInt int
-			if err := tradeRows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossTriggerPx); err != nil {
+			var isCloseInt, isManualInt int
+			if err := tradeRows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossTriggerPx, &isManualInt); err != nil {
 				tradeRows.Close()
 				return nil, fmt.Errorf("scan trade: %w", err)
 			}
 			t.Timestamp = parseTime(tsStr)
 			t.IsClose = isCloseInt != 0
+			t.Manual = isManualInt != 0
 			t.persisted = true // loaded from DB → already persisted; SaveState will skip.
 			allTrades = append(allTrades, t)
 		}
@@ -1396,6 +1427,80 @@ func (sdb *StateDB) QueryTradingViewExportTrades(strategyIDs []string) ([]Trade,
 		trades = []Trade{}
 	}
 	return trades, nil
+}
+
+// PendingManualAction is a row from the pending_manual_actions queue table
+// written by the manual-open / manual-close CLI and drained by the scheduler
+// at the top of each cycle (#569).
+type PendingManualAction struct {
+	ID                int64
+	StrategyID        string
+	Action            string // "open" | "close"
+	Symbol            string
+	Side              string
+	Quantity          float64
+	FillPrice         float64
+	FillFee           float64
+	ExchangeOrderID   string
+	StopLossOID       int64
+	StopLossTriggerPx float64
+	EntryATR          float64
+	RealizedPnL       float64
+	IsFullClose       bool // close-only: operator/scheduler intent flag (avoids tolerance heuristics on the drain side)
+	CreatedAt         time.Time
+}
+
+// InsertPendingManualAction enqueues a manual-open or manual-close action for
+// the scheduler to drain on its next cycle.
+func (sdb *StateDB) InsertPendingManualAction(a PendingManualAction) error {
+	if sdb == nil || sdb.db == nil {
+		return fmt.Errorf("state db unavailable")
+	}
+	isFullClose := 0
+	if a.IsFullClose {
+		isFullClose = 1
+	}
+	_, err := sdb.db.Exec(`INSERT INTO pending_manual_actions
+		(strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, is_full_close, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.StrategyID, a.Action, a.Symbol, a.Side, a.Quantity, a.FillPrice, a.FillFee,
+		a.ExchangeOrderID, a.StopLossOID, a.StopLossTriggerPx, a.EntryATR, a.RealizedPnL,
+		isFullClose, formatTime(a.CreatedAt))
+	return err
+}
+
+// LoadPendingManualActions returns all queued actions ordered by id (oldest first).
+func (sdb *StateDB) LoadPendingManualActions() ([]PendingManualAction, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, nil
+	}
+	rows, err := sdb.db.Query(`SELECT id, strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, COALESCE(is_full_close, 0) AS is_full_close, created_at FROM pending_manual_actions ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("load pending manual actions: %w", err)
+	}
+	defer rows.Close()
+	var actions []PendingManualAction
+	for rows.Next() {
+		var a PendingManualAction
+		var createdStr string
+		var isFullCloseInt int
+		if err := rows.Scan(&a.ID, &a.StrategyID, &a.Action, &a.Symbol, &a.Side, &a.Quantity, &a.FillPrice, &a.FillFee, &a.ExchangeOrderID, &a.StopLossOID, &a.StopLossTriggerPx, &a.EntryATR, &a.RealizedPnL, &isFullCloseInt, &createdStr); err != nil {
+			return nil, fmt.Errorf("scan pending manual action: %w", err)
+		}
+		a.IsFullClose = isFullCloseInt != 0
+		a.CreatedAt = parseTime(createdStr)
+		actions = append(actions, a)
+	}
+	return actions, rows.Err()
+}
+
+// DeletePendingManualActionsThrough deletes all rows with id <= maxID.
+func (sdb *StateDB) DeletePendingManualActionsThrough(maxID int64) error {
+	if sdb == nil || sdb.db == nil {
+		return nil
+	}
+	_, err := sdb.db.Exec("DELETE FROM pending_manual_actions WHERE id <= ?", maxID)
+	return err
 }
 
 // formatTime converts a time.Time to RFC 3339 string, or "" for zero time.

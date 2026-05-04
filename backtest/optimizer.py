@@ -473,6 +473,7 @@ DEFAULT_PARAM_RANGES = {
         "exit_threshold": [0.0, 0.00002, 0.00005],
         "drift_threshold": [1.5, 2.0, 2.5],
     },
+    "hold": {},  # no parameters — always signal=0; used by type=manual close-eval loop (#569)
 }
 
 

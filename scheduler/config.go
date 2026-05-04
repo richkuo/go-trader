@@ -200,8 +200,10 @@ type FuturesConfig struct {
 // StrategyConfig describes a single strategy job.
 type StrategyConfig struct {
 	ID                     string                 `json:"id"`
-	Type                   string                 `json:"type"`     // "spot", "options", "perps", or "futures"
-	Platform               string                 `json:"platform"` // "deribit", "ibkr", "binanceus", "hyperliquid", "topstep"
+	Type                   string                 `json:"type"`                // "spot", "options", "perps", "futures", or "manual"
+	Platform               string                 `json:"platform"`            // "deribit", "ibkr", "binanceus", "hyperliquid", "topstep"
+	Symbol                 string                 `json:"symbol,omitempty"`    // manual strategies: trading symbol (e.g. "ETH")
+	Timeframe              string                 `json:"timeframe,omitempty"` // manual strategies: OHLCV timeframe (e.g. "1h")
 	Script                 string                 `json:"script"`
 	Args                   []string               `json:"args"`
 	OpenStrategy           string                 `json:"open_strategy,omitempty"`    // optional entry strategy override; defaults to Args[0] for backwards compatibility (#480)
@@ -573,6 +575,44 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
+	// #569: Apply defaults for type=manual HL strategies: auto-set script/args,
+	// default close_strategies, default stop_loss_atr_mult, default TP tiers.
+	for i := range cfg.Strategies {
+		sc := &cfg.Strategies[i]
+		if sc.Type != "manual" || sc.Platform != "hyperliquid" {
+			continue
+		}
+		if sc.Script == "" {
+			sc.Script = "shared_scripts/check_hyperliquid.py"
+		}
+		if len(sc.Args) == 0 && sc.Symbol != "" && sc.Timeframe != "" {
+			mode := "live"
+			sc.Args = []string{"hold", sc.Symbol, sc.Timeframe, "--mode=" + mode}
+		}
+		if sc.Leverage > 0 && sc.SizingLeverage == 0 {
+			sc.SizingLeverage = sc.Leverage
+		}
+		if sc.MarginMode == "" {
+			sc.MarginMode = "isolated"
+		}
+		if len(sc.CloseStrategies) == 0 {
+			sc.CloseStrategies = []string{"tiered_tp_atr_live"}
+		}
+		if sc.StopLossATRMult == nil {
+			defaultMult := DefaultStopLossATRMult
+			sc.StopLossATRMult = &defaultMult
+		}
+		if sc.Params == nil {
+			sc.Params = map[string]interface{}{}
+		}
+		if _, hasTP := sc.Params["tiers"]; !hasTP {
+			sc.Params["tiers"] = []interface{}{
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+				map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+			}
+		}
+	}
+
 	// #42: Apply portfolio risk defaults if not configured.
 	if cfg.PortfolioRisk == nil {
 		cfg.PortfolioRisk = &PortfolioRiskConfig{MaxDrawdownPct: 25}
@@ -864,24 +904,26 @@ func ValidateConfig(cfg *Config) error {
 			prefix = fmt.Sprintf("strategy[%s]", sc.ID)
 		}
 
-		// #34: Script path validation.
-		if sc.Script == "" {
-			errs = append(errs, fmt.Sprintf("%s: script is empty", prefix))
-		} else {
-			if filepath.IsAbs(sc.Script) {
-				errs = append(errs, fmt.Sprintf("%s: script must be a relative path, got %q", prefix, sc.Script))
-			}
-			if !strings.HasSuffix(sc.Script, ".py") {
-				errs = append(errs, fmt.Sprintf("%s: script must end with .py, got %q", prefix, sc.Script))
-			}
-			if strings.HasPrefix(filepath.Clean(sc.Script), "..") {
-				errs = append(errs, fmt.Sprintf("%s: script path escapes working directory: %q", prefix, sc.Script))
+		// #34: Script path validation (manual strategies auto-set their script in LoadConfig).
+		if sc.Type != "manual" {
+			if sc.Script == "" {
+				errs = append(errs, fmt.Sprintf("%s: script is empty", prefix))
+			} else {
+				if filepath.IsAbs(sc.Script) {
+					errs = append(errs, fmt.Sprintf("%s: script must be a relative path, got %q", prefix, sc.Script))
+				}
+				if !strings.HasSuffix(sc.Script, ".py") {
+					errs = append(errs, fmt.Sprintf("%s: script must end with .py, got %q", prefix, sc.Script))
+				}
+				if strings.HasPrefix(filepath.Clean(sc.Script), "..") {
+					errs = append(errs, fmt.Sprintf("%s: script path escapes working directory: %q", prefix, sc.Script))
+				}
 			}
 		}
 
-		// #36: Type must be "spot", "options", "perps", or "futures".
-		if sc.Type != "spot" && sc.Type != "options" && sc.Type != "perps" && sc.Type != "futures" {
-			errs = append(errs, fmt.Sprintf("%s: type must be \"spot\", \"options\", \"perps\", or \"futures\", got %q", prefix, sc.Type))
+		// #36: Type must be "spot", "options", "perps", "futures", or "manual" (#569).
+		if sc.Type != "spot" && sc.Type != "options" && sc.Type != "perps" && sc.Type != "futures" && sc.Type != "manual" {
+			errs = append(errs, fmt.Sprintf("%s: type must be \"spot\", \"options\", \"perps\", \"futures\", or \"manual\", got %q", prefix, sc.Type))
 		}
 		if usesOpenCloseConfig(sc) && sc.Type == "options" {
 			errs = append(errs, fmt.Sprintf("%s: open_strategy/close_strategies are supported for spot, perps, and futures strategies only", prefix))
@@ -911,6 +953,34 @@ func ValidateConfig(cfg *Config) error {
 		// here until the gate is properly implemented for the multi-position model.
 		if sc.Type == "options" && len(sc.AllowedRegimes) > 0 {
 			errs = append(errs, fmt.Sprintf("%s: allowed_regimes is not enforced for type=options (gate not wired at options dispatch; see issue #553)", prefix))
+		}
+
+		// #569: manual strategies require symbol + timeframe + leverage.
+		if sc.Type == "manual" {
+			if sc.Platform != "hyperliquid" {
+				errs = append(errs, fmt.Sprintf("%s: type=manual is only supported for platform=hyperliquid", prefix))
+			}
+			if strings.TrimSpace(sc.Symbol) == "" {
+				errs = append(errs, fmt.Sprintf("%s: type=manual requires symbol (e.g. \"ETH\")", prefix))
+			}
+			if strings.TrimSpace(sc.Timeframe) == "" {
+				errs = append(errs, fmt.Sprintf("%s: type=manual requires timeframe (e.g. \"1h\")", prefix))
+			}
+			if sc.Leverage <= 0 {
+				errs = append(errs, fmt.Sprintf("%s: type=manual requires leverage > 0", prefix))
+			}
+			// Fix #6: manual strategies cannot share a coin with a live perps strategy —
+			// the scheduler's close-eval loop snapshots pos under RLock without owning
+			// the full mutex, creating a TOCTOU window if a perps peer mutates the same position.
+			if sc.Symbol != "" {
+				for _, other := range cfg.Strategies {
+					if other.ID != sc.ID && other.Type == "perps" && other.Platform == "hyperliquid" {
+						if otherSym := hyperliquidSymbol(other.Args); strings.EqualFold(otherSym, sc.Symbol) {
+							errs = append(errs, fmt.Sprintf("%s: type=manual on %s conflicts with perps strategy %s on the same coin — use sub-account isolation", prefix, sc.Symbol, other.ID))
+						}
+					}
+				}
+			}
 		}
 
 		// Live-mode futures require TopStep API credentials.
@@ -1016,9 +1086,9 @@ func ValidateConfig(cfg *Config) error {
 		}
 
 		// #254/#497: Leverage is exchange leverage and must be >= 1 when set.
-		// Only applicable to perps.
+		// Only applicable to perps and manual (#569: manual uses leverage for sizing).
 		if sc.Leverage != 0 {
-			if sc.Type != "perps" {
+			if sc.Type != "perps" && sc.Type != "manual" {
 				errs = append(errs, fmt.Sprintf("%s: leverage is only supported for perps strategies (got type %q)", prefix, sc.Type))
 			}
 			if sc.Leverage < 1 || sc.Leverage > 100 {
@@ -1031,7 +1101,7 @@ func ValidateConfig(cfg *Config) error {
 		// bound is a small positive value rather than 1. The math
 		// (cash * sizing_leverage) tolerates fractional values fine.
 		if sc.SizingLeverage != 0 {
-			if sc.Type != "perps" {
+			if sc.Type != "perps" && sc.Type != "manual" {
 				errs = append(errs, fmt.Sprintf("%s: sizing_leverage is only supported for perps strategies (got type %q)", prefix, sc.Type))
 			}
 			if sc.SizingLeverage < 0.01 || sc.SizingLeverage > 100 {
@@ -1060,7 +1130,7 @@ func ValidateConfig(cfg *Config) error {
 			if sc.MarginMode != "isolated" && sc.MarginMode != "cross" {
 				errs = append(errs, fmt.Sprintf("%s: margin_mode must be \"isolated\" or \"cross\", got %q", prefix, sc.MarginMode))
 			}
-			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+			if (sc.Type != "perps" && sc.Type != "manual") || sc.Platform != "hyperliquid" {
 				errs = append(errs, fmt.Sprintf("%s: margin_mode is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 		}
@@ -1177,7 +1247,7 @@ func ValidateConfig(cfg *Config) error {
 			if mult < 0 {
 				errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_mult must be >= 0, got %g", prefix, mult))
 			}
-			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+			if (sc.Type != "perps" && sc.Type != "manual") || sc.Platform != "hyperliquid" {
 				errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_mult is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 			if mult > 0 {
