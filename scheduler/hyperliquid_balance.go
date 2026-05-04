@@ -467,6 +467,99 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		}
 		delta := virtualQty - onChainQty
 
+		// Detect and reconcile unambiguous shared-coin closes (#565).
+		//
+		// Detector 1 — full external close: on-chain is flat but virtual is not.
+		// Covers stop-loss sweep of the aggregate position, manual close on HL UI,
+		// and kill-switch closes that finish between scheduler cycles.
+		//
+		// Detector 2 — SL owner partial close: exactly one peer holds a resting
+		// trigger (StopLossOID) and the on-chain residual matches the signed sum of
+		// all non-owner peers' virtual qty. HL trigger orders are sized to the
+		// owner's qty at arm time, so when the trigger fires the non-owner peers'
+		// portion remains on-chain untouched.
+		//
+		// All other qty mismatches (ambiguous gaps that #258/#515 protect) fall
+		// through to the gap-recording block unchanged.
+		if math.Abs(onChainQty) < 1e-6 && math.Abs(virtualQty) > 1e-6 {
+			// Detector 1: everything gone on-chain — close all peers.
+			for _, id := range stratIDs {
+				ss := state.Strategies[id]
+				if ss == nil {
+					continue
+				}
+				pos := ss.Positions[coin]
+				if pos == nil {
+					continue
+				}
+				logger, logErr := logMgr.GetStrategyLogger(id)
+				if logErr != nil {
+					fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", id, logErr)
+				}
+				if pos.StopLossOID > 0 && pos.StopLossTriggerPx > 0 {
+					if recordPerpsStopLossClose(ss, coin, pos.StopLossTriggerPx, "hl_sync_stop_loss", logger) {
+						changed = true
+					}
+				} else {
+					recordClosedPosition(ss, pos, 0, 0, "hl_sync_external", now)
+					delete(ss.Positions, coin)
+					clearATRMultMissingEntryATRWarningOnHLPerpsClose(ss, coin)
+					if logger != nil {
+						logger.Info("hl-sync: %s position (%.6f %s) no longer on-chain, removing (external close)", coin, pos.Quantity, pos.Side)
+					}
+					changed = true
+				}
+			}
+			virtualQty = 0.0
+			delta = 0.0
+		} else if math.Abs(delta) > 1e-6 {
+			// Detector 2: partial drop — find the sole SL owner and check whether
+			// the on-chain residual matches the expected post-fire remainder.
+			var slOwnerID string
+			var slOwnerPos *Position
+			for _, id := range stratIDs {
+				ss := state.Strategies[id]
+				if ss == nil {
+					continue
+				}
+				pos := ss.Positions[coin]
+				if pos == nil {
+					continue
+				}
+				if pos.StopLossOID > 0 && pos.StopLossTriggerPx > 0 {
+					if slOwnerID != "" {
+						// Multiple SL owners — ambiguous, skip both detectors.
+						slOwnerID, slOwnerPos = "", nil
+						break
+					}
+					slOwnerID, slOwnerPos = id, pos
+				}
+			}
+			if slOwnerID != "" && slOwnerPos != nil {
+				// Expected residual = signed virtual qty minus the owner's signed qty.
+				expectedResidual := virtualQty
+				if slOwnerPos.Side == "long" {
+					expectedResidual -= slOwnerPos.Quantity
+				} else {
+					expectedResidual += slOwnerPos.Quantity
+				}
+				if math.Abs(onChainQty-expectedResidual) < 1e-6 {
+					ownerSS := state.Strategies[slOwnerID]
+					if ownerSS != nil {
+						logger, logErr := logMgr.GetStrategyLogger(slOwnerID)
+						if logErr != nil {
+							fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", slOwnerID, logErr)
+						}
+						if recordPerpsStopLossClose(ownerSS, coin, slOwnerPos.StopLossTriggerPx, "hl_sync_stop_loss", logger) {
+							changed = true
+							virtualQty = expectedResidual
+							delta = virtualQty - onChainQty
+						}
+					}
+				}
+			}
+		}
+
 		state.ReconciliationGaps[coin] = &ReconciliationGap{
 			Coin:       coin,
 			OnChainQty: onChainQty,
