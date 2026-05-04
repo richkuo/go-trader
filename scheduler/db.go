@@ -206,6 +206,7 @@ CREATE TABLE IF NOT EXISTS pending_manual_actions (
     stop_loss_trigger_px REAL NOT NULL DEFAULT 0,
     entry_atr REAL NOT NULL DEFAULT 0,
     realized_pnl REAL NOT NULL DEFAULT 0,
+    is_full_close INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 `
@@ -291,6 +292,8 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE trades ADD COLUMN stop_loss_trigger_px REAL NOT NULL DEFAULT 0",
 		// Manual trade flag (#569).
 		"ALTER TABLE trades ADD COLUMN manual INTEGER NOT NULL DEFAULT 0",
+		// Operator-intent full-close flag for manual close actions (#569 review).
+		"ALTER TABLE pending_manual_actions ADD COLUMN is_full_close INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -1443,6 +1446,7 @@ type PendingManualAction struct {
 	StopLossTriggerPx float64
 	EntryATR          float64
 	RealizedPnL       float64
+	IsFullClose       bool // close-only: operator/scheduler intent flag (avoids tolerance heuristics on the drain side)
 	CreatedAt         time.Time
 }
 
@@ -1452,12 +1456,16 @@ func (sdb *StateDB) InsertPendingManualAction(a PendingManualAction) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
 	}
+	isFullClose := 0
+	if a.IsFullClose {
+		isFullClose = 1
+	}
 	_, err := sdb.db.Exec(`INSERT INTO pending_manual_actions
-		(strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, is_full_close, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.StrategyID, a.Action, a.Symbol, a.Side, a.Quantity, a.FillPrice, a.FillFee,
 		a.ExchangeOrderID, a.StopLossOID, a.StopLossTriggerPx, a.EntryATR, a.RealizedPnL,
-		formatTime(a.CreatedAt))
+		isFullClose, formatTime(a.CreatedAt))
 	return err
 }
 
@@ -1466,7 +1474,7 @@ func (sdb *StateDB) LoadPendingManualActions() ([]PendingManualAction, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, nil
 	}
-	rows, err := sdb.db.Query(`SELECT id, strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, created_at FROM pending_manual_actions ORDER BY id`)
+	rows, err := sdb.db.Query(`SELECT id, strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, COALESCE(is_full_close, 0) AS is_full_close, created_at FROM pending_manual_actions ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("load pending manual actions: %w", err)
 	}
@@ -1475,9 +1483,11 @@ func (sdb *StateDB) LoadPendingManualActions() ([]PendingManualAction, error) {
 	for rows.Next() {
 		var a PendingManualAction
 		var createdStr string
-		if err := rows.Scan(&a.ID, &a.StrategyID, &a.Action, &a.Symbol, &a.Side, &a.Quantity, &a.FillPrice, &a.FillFee, &a.ExchangeOrderID, &a.StopLossOID, &a.StopLossTriggerPx, &a.EntryATR, &a.RealizedPnL, &createdStr); err != nil {
+		var isFullCloseInt int
+		if err := rows.Scan(&a.ID, &a.StrategyID, &a.Action, &a.Symbol, &a.Side, &a.Quantity, &a.FillPrice, &a.FillFee, &a.ExchangeOrderID, &a.StopLossOID, &a.StopLossTriggerPx, &a.EntryATR, &a.RealizedPnL, &isFullCloseInt, &createdStr); err != nil {
 			return nil, fmt.Errorf("scan pending manual action: %w", err)
 		}
+		a.IsFullClose = isFullCloseInt != 0
 		a.CreatedAt = parseTime(createdStr)
 		actions = append(actions, a)
 	}

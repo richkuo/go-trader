@@ -196,6 +196,7 @@ func TestApplyManualActionClose(t *testing.T) {
 		FillPrice:   2100,
 		FillFee:     0.7,
 		RealizedPnL: 49.3, // 0.5*(2100-2000) - 0.7
+		IsFullClose: true,
 		CreatedAt:   now,
 	}
 	if err := applyManualAction(state, scByID, a); err != nil {
@@ -278,6 +279,71 @@ func TestApplyManualActionPartialClose(t *testing.T) {
 	if fmt.Sprintf("%.4f", pos.Quantity) != "0.6000" {
 		t.Errorf("pos.Quantity after partial close = %g, want 0.6", pos.Quantity)
 	}
+}
+
+// TestApplyManualAction99PercentPartialNotCollapsedToFull verifies that a
+// deliberate ~99% partial close is NOT collapsed into a full close (the prior
+// 0.99 relative tolerance would silently delete the residual dust).
+func TestApplyManualAction99PercentPartialNotCollapsedToFull(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-manual-eth-live": {
+				ID:       "hl-manual-eth-live",
+				Platform: "hyperliquid",
+				Type:     "manual",
+				Positions: map[string]*Position{
+					"ETH": {
+						Symbol:          "ETH",
+						Quantity:        0.5,
+						InitialQuantity: 0.5,
+						AvgCost:         2000,
+						Side:            "long",
+						Multiplier:      1,
+						OwnerStrategyID: "hl-manual-eth-live",
+					},
+				},
+				Cash: 9000,
+			},
+		},
+	}
+	scByID := map[string]StrategyConfig{
+		"hl-manual-eth-live": {ID: "hl-manual-eth-live", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Leverage: 10},
+	}
+
+	origRecorder := tradeRecorder
+	tradeRecorder = func(_ string, _ Trade) error { return nil }
+	defer func() { tradeRecorder = origRecorder }()
+
+	a := PendingManualAction{
+		StrategyID:  "hl-manual-eth-live",
+		Action:      "close",
+		Symbol:      "ETH",
+		Side:        "sell",
+		Quantity:    0.495, // 99% of 0.5 — exactly at the prior tolerance boundary
+		FillPrice:   2100,
+		RealizedPnL: 49.0,
+		IsFullClose: false, // explicit partial-close intent
+		CreatedAt:   time.Now().UTC(),
+	}
+	if err := applyManualAction(state, scByID, a); err != nil {
+		t.Fatalf("99%% partial close: %v", err)
+	}
+
+	pos := state.Strategies["hl-manual-eth-live"].Positions["ETH"]
+	if pos == nil {
+		t.Fatal("99%% partial close should leave the position open with dust qty (regression: 0.99 tolerance was collapsing this to full)")
+	}
+	expectedQty := 0.5 - 0.495
+	if abs(pos.Quantity-expectedQty) > 1e-9 {
+		t.Errorf("residual qty = %g, want %g", pos.Quantity, expectedQty)
+	}
+}
+
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 // TestDrainPendingManualActions verifies the queue drain applies actions and cleans up.

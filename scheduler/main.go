@@ -1504,9 +1504,10 @@ func main() {
 									closeSide = "buy"
 								}
 								// Fix #2: only cancel the SL on a full close; leave it resting on partial.
-								isFullClose := closeQty >= pos.Quantity*0.99
+								// Intent is full-close iff the close-eval returned closeFraction >= 1.
+								intentFullClose := closeFraction >= 1.0
 								cancelOID := int64(0)
-								if isFullClose {
+								if intentFullClose {
 									cancelOID = pos.StopLossOID
 								}
 								execResult, execStderr, execErr := RunHyperliquidExecute(
@@ -1547,6 +1548,7 @@ func main() {
 										FillFee:         fill.Fee,
 										ExchangeOrderID: oid,
 										RealizedPnL:     realizedPnL,
+										IsFullClose:     intentFullClose,
 										CreatedAt:       time.Now().UTC(),
 									}
 									if err := stateDB.InsertPendingManualAction(action); err != nil {

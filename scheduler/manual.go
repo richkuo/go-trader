@@ -146,6 +146,12 @@ func runManualOpen(args []string) int {
 			fmt.Fprintf(os.Stderr, "error: --atr %.4f exceeds 50%% of fill price %.4f (plausibility guard)\n", entryATR, resolvedFillPrice)
 			return 1
 		}
+		// --record-only does not auto-arm the SL trigger (the operator placed
+		// the fill on the UI, so they're responsible for its protection).
+		// Warn if the operator passed SL-related flags that won't take effect.
+		if (*slATRMult > 0 || *slPct > 0 || (sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0)) {
+			fmt.Fprintln(os.Stderr, "warning: --record-only does not arm a stop-loss trigger automatically — place the SL manually on the HL UI")
+		}
 	} else {
 		execResult, execStderr, execErr := RunHyperliquidExecute(
 			script, sc.Symbol, openSide,
@@ -292,13 +298,22 @@ func runManualClose(args []string) int {
 		return 1
 	}
 
+	// Operator intent: --qty omitted (or equal to the full position) is a full
+	// close; any smaller value is a partial close. We track this explicitly
+	// rather than inferring from the eventual fill quantity, since lot-size
+	// rounding can otherwise collapse a deliberate ~99% partial into a full.
 	closeQty := pos.Quantity
+	intentFullClose := true
 	if *qty > 0 {
 		if *qty > pos.Quantity {
 			fmt.Fprintf(os.Stderr, "error: --qty %.6f exceeds open position %.6f\n", *qty, pos.Quantity)
 			return 1
 		}
 		closeQty = *qty
+		// Within 0.0001 (typical HL lot size) is treated as full close.
+		if pos.Quantity-*qty > 0.0001 {
+			intentFullClose = false
+		}
 	}
 
 	closeSide := "sell"
@@ -313,9 +328,8 @@ func runManualClose(args []string) int {
 	}
 
 	// Fix #2: only cancel the SL on a full close; leave it resting on partial close.
-	isFullClose := closeQty >= pos.Quantity*0.99
 	cancelOID := int64(0)
-	if isFullClose {
+	if intentFullClose {
 		cancelOID = pos.StopLossOID
 	}
 
@@ -369,6 +383,7 @@ func runManualClose(args []string) int {
 		FillFee:         fillFee,
 		ExchangeOrderID: exchangeOID,
 		RealizedPnL:     realizedPnL,
+		IsFullClose:     intentFullClose,
 		CreatedAt:       time.Now().UTC(),
 	}
 	if err := stateDB.InsertPendingManualAction(action); err != nil {
@@ -489,8 +504,10 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 		if !exists || pos == nil {
 			return fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
 		}
-		// Fix #5: use 0.99 relative tolerance matching HL lot-size rounding semantics.
-		closedFull := a.Quantity >= pos.Quantity*0.99
+		// Use the explicit IsFullClose intent flag rather than a tolerance
+		// heuristic, so a deliberate 99% partial close isn't silently
+		// collapsed into a full close.
+		closedFull := a.IsFullClose
 		side := closeTradeSide(pos.Side)
 
 		trade := Trade{
