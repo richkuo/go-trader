@@ -587,3 +587,64 @@ func TestMultiNotifier_ReloadConfigConcurrentRoutingReads(t *testing.T) {
 	close(start)
 	wg.Wait()
 }
+
+func TestResolveTradeAlertChannel_OverrideHit(t *testing.T) {
+	override := map[string]string{"hyperliquid": "override-ch"}
+	channels := map[string]string{"hyperliquid": "summary-ch"}
+	got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", true)
+	if got != "override-ch" {
+		t.Errorf("expected override-ch, got %q", got)
+	}
+}
+
+func TestResolveTradeAlertChannel_OverrideMiss_FallsThrough(t *testing.T) {
+	override := map[string]string{"deribit": "override-ch"}
+	channels := map[string]string{"hyperliquid": "summary-ch"}
+	got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", true)
+	if got != "summary-ch" {
+		t.Errorf("expected fallback summary-ch, got %q", got)
+	}
+}
+
+func TestResolveTradeAlertChannel_PaperLiveOverlay(t *testing.T) {
+	override := map[string]string{
+		"hyperliquid-paper": "paper-override",
+		"hyperliquid-live":  "live-override",
+		"hyperliquid":       "base-override",
+	}
+	channels := map[string]string{"hyperliquid": "summary-ch"}
+
+	if got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", false); got != "paper-override" {
+		t.Errorf("paper: expected paper-override, got %q", got)
+	}
+	if got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", true); got != "live-override" {
+		t.Errorf("live: expected live-override, got %q", got)
+	}
+}
+
+func TestTradeAlertRoutes_OverrideDoesNotAffectSummaries(t *testing.T) {
+	mn := NewMultiNotifier(notifierBackend{
+		notifier:           &mockNotifier{},
+		channels:           map[string]string{"hyperliquid": "summary-ch"},
+		tradeAlertChannels: map[string]string{"hyperliquid": "trade-ch"},
+	})
+
+	// Summary path uses resolveChannelKey — must still see "summary-ch".
+	key := mn.resolveChannelKey("hyperliquid", "perps")
+	if key != "hyperliquid" {
+		t.Errorf("summary key: expected hyperliquid, got %q", key)
+	}
+	summaryChID := mn.snapshotBackends()[0].channels["hyperliquid"]
+	if summaryChID != "summary-ch" {
+		t.Errorf("summary channel: expected summary-ch, got %q", summaryChID)
+	}
+
+	// Trade alert path uses tradeAlertRoutes — must use the override.
+	routes := mn.tradeAlertRoutes("hyperliquid", "perps", true)
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(routes))
+	}
+	if routes[0].channel != "trade-ch" {
+		t.Errorf("trade route: expected trade-ch, got %q", routes[0].channel)
+	}
+}

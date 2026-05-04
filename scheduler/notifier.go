@@ -20,6 +20,7 @@ type Notifier interface {
 type notifierBackend struct {
 	notifier           Notifier
 	channels           map[string]string // channel map from config (keyed by platform/type; "<platform>-paper" for paper-specific)
+	tradeAlertChannels map[string]string // optional override: route trade alerts to different channels than summaries
 	ownerID            string
 	leaderboardChannel string            // dedicated leaderboard channel ID (optional); when set, leaderboard posts route here
 	dmChannels         map[string]string // per-platform DM-style trade alerts (#248)
@@ -39,6 +40,7 @@ func NewMultiNotifier(backends ...notifierBackend) *MultiNotifier {
 	for _, b := range backends {
 		if b.notifier != nil {
 			b.channels = cloneStringMap(b.channels)
+			b.tradeAlertChannels = cloneStringMap(b.tradeAlertChannels)
 			b.dmChannels = cloneStringMap(b.dmChannels)
 			valid = append(valid, b)
 		}
@@ -56,6 +58,7 @@ func (m *MultiNotifier) snapshotBackends() []notifierBackend {
 	out := make([]notifierBackend, len(m.backends))
 	for i, b := range m.backends {
 		b.channels = cloneStringMap(b.channels)
+		b.tradeAlertChannels = cloneStringMap(b.tradeAlertChannels)
 		b.dmChannels = cloneStringMap(b.dmChannels)
 		out[i] = b
 	}
@@ -153,10 +156,12 @@ func (m *MultiNotifier) ReloadConfig(cfg *Config) {
 		b := &m.backends[i]
 		if b.plainText {
 			b.channels = cloneStringMap(cfg.Telegram.Channels)
+			b.tradeAlertChannels = cloneStringMap(cfg.Telegram.TradeAlertChannels)
 			b.dmChannels = cloneStringMap(cfg.Telegram.DMChannels)
 			continue
 		}
 		b.channels = cloneStringMap(cfg.Discord.Channels)
+		b.tradeAlertChannels = cloneStringMap(cfg.Discord.TradeAlertChannels)
 		b.dmChannels = cloneStringMap(cfg.Discord.DMChannels)
 		b.leaderboardChannel = cfg.Discord.LeaderboardChannel
 	}
@@ -316,7 +321,7 @@ func (m *MultiNotifier) tradeAlertRoutes(platform, stratType string, isLive bool
 		if b.dmChannels != nil {
 			dmDest = b.dmChannels[dmKey]
 		}
-		ch := resolveTradeChannel(b.channels, platform, stratType, isLive)
+		ch := resolveTradeAlertChannel(b.tradeAlertChannels, b.channels, platform, stratType, isLive)
 
 		var liveCh string
 		if isLive {

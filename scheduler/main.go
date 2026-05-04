@@ -207,6 +207,7 @@ func main() {
 			backends = append(backends, notifierBackend{
 				notifier:           discord,
 				channels:           cfg.Discord.Channels,
+				tradeAlertChannels: cfg.Discord.TradeAlertChannels,
 				ownerID:            cfg.Discord.OwnerID,
 				leaderboardChannel: cfg.Discord.LeaderboardChannel,
 				dmChannels:         cfg.Discord.DMChannels,
@@ -226,11 +227,12 @@ func main() {
 			}
 			fmt.Println(")")
 			backends = append(backends, notifierBackend{
-				notifier:   tg,
-				channels:   cfg.Telegram.Channels,
-				ownerID:    cfg.Telegram.OwnerChatID,
-				dmChannels: cfg.Telegram.DMChannels,
-				plainText:  true,
+				notifier:           tg,
+				channels:           cfg.Telegram.Channels,
+				tradeAlertChannels: cfg.Telegram.TradeAlertChannels,
+				ownerID:            cfg.Telegram.OwnerChatID,
+				dmChannels:         cfg.Telegram.DMChannels,
+				plainText:          true,
 			})
 			defer tg.Close()
 		}

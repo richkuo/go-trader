@@ -141,6 +141,9 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	if !reflect.DeepEqual(cfg.Discord.DMChannels, next.Discord.DMChannels) {
 		addChange("discord.dm_channels: %s -> %s", formatStringMap(cfg.Discord.DMChannels), formatStringMap(next.Discord.DMChannels))
 	}
+	if !reflect.DeepEqual(cfg.Discord.TradeAlertChannels, next.Discord.TradeAlertChannels) {
+		addChange("discord.trade_alert_channels: %s -> %s", formatStringMap(cfg.Discord.TradeAlertChannels), formatStringMap(next.Discord.TradeAlertChannels))
+	}
 	if cfg.Discord.LeaderboardTopN != next.Discord.LeaderboardTopN {
 		addChange("discord.leaderboard_top_n: %d -> %d", cfg.Discord.LeaderboardTopN, next.Discord.LeaderboardTopN)
 	}
@@ -149,6 +152,7 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	}
 	cfg.Discord.Channels = cloneStringMap(next.Discord.Channels)
 	cfg.Discord.DMChannels = cloneStringMap(next.Discord.DMChannels)
+	cfg.Discord.TradeAlertChannels = cloneStringMap(next.Discord.TradeAlertChannels)
 	cfg.Discord.LeaderboardTopN = next.Discord.LeaderboardTopN
 	cfg.Discord.LeaderboardChannel = next.Discord.LeaderboardChannel
 
@@ -158,8 +162,12 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	if !reflect.DeepEqual(cfg.Telegram.DMChannels, next.Telegram.DMChannels) {
 		addChange("telegram.dm_channels: %s -> %s", formatStringMap(cfg.Telegram.DMChannels), formatStringMap(next.Telegram.DMChannels))
 	}
+	if !reflect.DeepEqual(cfg.Telegram.TradeAlertChannels, next.Telegram.TradeAlertChannels) {
+		addChange("telegram.trade_alert_channels: %s -> %s", formatStringMap(cfg.Telegram.TradeAlertChannels), formatStringMap(next.Telegram.TradeAlertChannels))
+	}
 	cfg.Telegram.Channels = cloneStringMap(next.Telegram.Channels)
 	cfg.Telegram.DMChannels = cloneStringMap(next.Telegram.DMChannels)
+	cfg.Telegram.TradeAlertChannels = cloneStringMap(next.Telegram.TradeAlertChannels)
 
 	if !reflect.DeepEqual(cfg.SummaryFrequency, next.SummaryFrequency) {
 		addChange("summary_frequency: %s -> %s", formatStringMap(cfg.SummaryFrequency), formatStringMap(next.SummaryFrequency))

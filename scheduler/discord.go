@@ -173,6 +173,30 @@ func resolveTradeChannel(channels map[string]string, platform, stratType string,
 	return resolveChannel(channels, platform, stratType)
 }
 
+// resolveTradeAlertChannel resolves the channel ID for a trade alert, consulting an optional
+// override map before falling back to the standard Channels map. Override priority:
+// "<platform>-paper" (paper) / "<platform>-live" (live) → platform → stratType → Channels fallback.
+func resolveTradeAlertChannel(override, channels map[string]string, platform, stratType string, isLive bool) string {
+	if len(override) > 0 {
+		if !isLive {
+			if ch, ok := override[platform+"-paper"]; ok && ch != "" {
+				return ch
+			}
+		} else {
+			if ch, ok := override[platform+"-live"]; ok && ch != "" {
+				return ch
+			}
+		}
+		if ch, ok := override[platform]; ok && ch != "" {
+			return ch
+		}
+		if ch, ok := override[stratType]; ok && ch != "" {
+			return ch
+		}
+	}
+	return resolveTradeChannel(channels, platform, stratType, isLive)
+}
+
 // channelKeyFromID returns the map key for a given channel ID (reverse lookup for display labels).
 func channelKeyFromID(channels map[string]string, chID string) string {
 	for k, v := range channels {

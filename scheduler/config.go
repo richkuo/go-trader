@@ -15,20 +15,22 @@ import (
 type DiscordConfig struct {
 	Enabled            bool              `json:"enabled"`
 	Token              string            `json:"token"`
-	OwnerID            string            `json:"owner_id,omitempty"`            // Discord user ID for DM features (upgrade prompts, config migration)
-	DMChannels         map[string]string `json:"dm_channels,omitempty"`         // per-platform DM-style trade alerts: "<platform>" (live), "<platform>-paper" (paper); value = user ID or channel ID
-	Channels           map[string]string `json:"channels"`                      // keyed by platform or type; "<platform>-paper" for paper-specific channels
-	LeaderboardTopN    int               `json:"leaderboard_top_n,omitempty"`   // number of entries shown in leaderboard messages (default 5)
-	LeaderboardChannel string            `json:"leaderboard_channel,omitempty"` // dedicated Discord channel ID for leaderboard posts; when set, all leaderboards route here instead of being broadcast across platform channels
+	OwnerID            string            `json:"owner_id,omitempty"`             // Discord user ID for DM features (upgrade prompts, config migration)
+	DMChannels         map[string]string `json:"dm_channels,omitempty"`          // per-platform DM-style trade alerts: "<platform>" (live), "<platform>-paper" (paper); value = user ID or channel ID
+	Channels           map[string]string `json:"channels"`                       // keyed by platform or type; "<platform>-paper" for paper-specific channels
+	TradeAlertChannels map[string]string `json:"trade_alert_channels,omitempty"` // optional override: route trade alerts to different channels than summaries; same key scheme as Channels; falls back to Channels on miss
+	LeaderboardTopN    int               `json:"leaderboard_top_n,omitempty"`    // number of entries shown in leaderboard messages (default 5)
+	LeaderboardChannel string            `json:"leaderboard_channel,omitempty"`  // dedicated Discord channel ID for leaderboard posts; when set, all leaderboards route here instead of being broadcast across platform channels
 }
 
 // TelegramConfig holds Telegram notification settings.
 type TelegramConfig struct {
-	Enabled     bool              `json:"enabled"`
-	BotToken    string            `json:"bot_token"`
-	OwnerChatID string            `json:"owner_chat_id,omitempty"` // Owner's Telegram chat ID for DMs/upgrade prompts
-	DMChannels  map[string]string `json:"dm_channels,omitempty"`   // per-platform trade alerts: "<platform>" (live), "<platform>-paper" (paper); value = chat ID
-	Channels    map[string]string `json:"channels"`                // keyed by platform or type; "<platform>-paper" for paper-specific channels
+	Enabled            bool              `json:"enabled"`
+	BotToken           string            `json:"bot_token"`
+	OwnerChatID        string            `json:"owner_chat_id,omitempty"`        // Owner's Telegram chat ID for DMs/upgrade prompts
+	DMChannels         map[string]string `json:"dm_channels,omitempty"`          // per-platform trade alerts: "<platform>" (live), "<platform>-paper" (paper); value = chat ID
+	Channels           map[string]string `json:"channels"`                       // keyed by platform or type; "<platform>-paper" for paper-specific channels
+	TradeAlertChannels map[string]string `json:"trade_alert_channels,omitempty"` // optional override: route trade alerts to different channels than summaries; same key scheme as Channels; falls back to Channels on miss
 }
 
 // PortfolioRiskConfig controls aggregate portfolio-level risk (#42).
