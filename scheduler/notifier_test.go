@@ -587,3 +587,123 @@ func TestMultiNotifier_ReloadConfigConcurrentRoutingReads(t *testing.T) {
 	close(start)
 	wg.Wait()
 }
+
+func TestResolveTradeAlertChannel_OverrideHit(t *testing.T) {
+	override := map[string]string{"hyperliquid": "override-ch"}
+	channels := map[string]string{"hyperliquid": "summary-ch"}
+	got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", true)
+	if got != "override-ch" {
+		t.Errorf("expected override-ch, got %q", got)
+	}
+}
+
+func TestResolveTradeAlertChannel_OverrideMiss_FallsThrough(t *testing.T) {
+	override := map[string]string{"deribit": "override-ch"}
+	channels := map[string]string{"hyperliquid": "summary-ch"}
+	got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", true)
+	if got != "summary-ch" {
+		t.Errorf("expected fallback summary-ch, got %q", got)
+	}
+}
+
+func TestResolveTradeAlertChannel_PaperLiveOverlay(t *testing.T) {
+	override := map[string]string{
+		"hyperliquid-paper": "paper-override",
+		"hyperliquid-live":  "live-override",
+		"hyperliquid":       "base-override",
+	}
+	channels := map[string]string{"hyperliquid": "summary-ch"}
+
+	if got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", false); got != "paper-override" {
+		t.Errorf("paper: expected paper-override, got %q", got)
+	}
+	if got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", true); got != "live-override" {
+		t.Errorf("live: expected live-override, got %q", got)
+	}
+}
+
+func TestTradeAlertRoutes_OverrideDoesNotAffectSummaries(t *testing.T) {
+	mn := NewMultiNotifier(notifierBackend{
+		notifier:           &mockNotifier{},
+		channels:           map[string]string{"hyperliquid": "summary-ch"},
+		tradeAlertChannels: map[string]string{"hyperliquid": "trade-ch"},
+	})
+
+	// Summary path uses resolveChannelKey — must still see "summary-ch".
+	key := mn.resolveChannelKey("hyperliquid", "perps")
+	if key != "hyperliquid" {
+		t.Errorf("summary key: expected hyperliquid, got %q", key)
+	}
+	summaryChID := mn.snapshotBackends()[0].channels["hyperliquid"]
+	if summaryChID != "summary-ch" {
+		t.Errorf("summary channel: expected summary-ch, got %q", summaryChID)
+	}
+
+	// Trade alert path uses tradeAlertRoutes — must use the override.
+	routes := mn.tradeAlertRoutes("hyperliquid", "perps", true)
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(routes))
+	}
+	if routes[0].channel != "trade-ch" {
+		t.Errorf("trade route: expected trade-ch, got %q", routes[0].channel)
+	}
+	// No channels["hyperliquid-live"] set, so liveCh must be empty.
+	if routes[0].liveChan != "" {
+		t.Errorf("liveChan: expected empty, got %q", routes[0].liveChan)
+	}
+}
+
+func TestTradeAlertRoutes_LiveChanConsultsOverride(t *testing.T) {
+	// override["hyperliquid-live"] is set: liveCh resolves from override, dedupes against primary.
+	mn := NewMultiNotifier(notifierBackend{
+		notifier: &mockNotifier{},
+		channels: map[string]string{
+			"hyperliquid":      "summary-ch",
+			"hyperliquid-live": "legacy-live-ch",
+		},
+		tradeAlertChannels: map[string]string{
+			"hyperliquid":      "trade-ch",
+			"hyperliquid-live": "trade-live-ch",
+		},
+	})
+	routes := mn.tradeAlertRoutes("hyperliquid", "perps", true)
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(routes))
+	}
+	r := routes[0]
+	// Primary ch: override["hyperliquid-live"] wins (isLive → live key checked first).
+	if r.channel != "trade-live-ch" {
+		t.Errorf("channel: expected trade-live-ch, got %q", r.channel)
+	}
+	// liveCh resolves to the same trade-live-ch → deduped to "".
+	if r.liveChan != "" {
+		t.Errorf("liveChan: expected empty (deduped), got %q", r.liveChan)
+	}
+}
+
+func TestTradeAlertRoutes_LiveChanFallbackWhenNoLiveOverride(t *testing.T) {
+	// override has platform key but no live-specific key: liveCh falls back to channels["<platform>-live"].
+	mn := NewMultiNotifier(notifierBackend{
+		notifier: &mockNotifier{},
+		channels: map[string]string{
+			"hyperliquid":      "summary-ch",
+			"hyperliquid-live": "legacy-live-ch",
+		},
+		tradeAlertChannels: map[string]string{
+			"hyperliquid": "trade-ch",
+		},
+	})
+	routes := mn.tradeAlertRoutes("hyperliquid", "perps", true)
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(routes))
+	}
+	r := routes[0]
+	// Primary ch: override["hyperliquid"] wins (no live key in override).
+	if r.channel != "trade-ch" {
+		t.Errorf("channel: expected trade-ch, got %q", r.channel)
+	}
+	// liveCh: override has no "hyperliquid-live" key → falls back to channels["hyperliquid-live"].
+	if r.liveChan != "legacy-live-ch" {
+		t.Errorf("liveChan: expected legacy-live-ch, got %q", r.liveChan)
+	}
+}
