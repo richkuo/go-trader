@@ -2579,3 +2579,82 @@ func TestRunPendingHyperliquidCircuitCloses_TenthFailureNotifies(t *testing.T) {
 		t.Errorf("expected 1 DM on failure #10 (every-10th cadence), got %d", len(dmMsgs))
 	}
 }
+
+// TestReconcileManualPositionExternalClose verifies that a type=manual HL strategy
+// whose on-chain position is flat gets its virtual position removed with
+// close_reason="hl_sync_external". Regression for #576.
+func TestReconcileManualPositionExternalClose(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"manual-eth": {
+				ID: "manual-eth", Cash: 100,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "long",
+						Multiplier: 1, Leverage: 5, OwnerStrategyID: "manual-eth"},
+				},
+			},
+		},
+	}
+	sc := StrategyConfig{
+		ID: "manual-eth", Platform: "hyperliquid", Type: "manual",
+		Symbol: "ETH", Timeframe: "1h", Leverage: 5,
+		Args: []string{"hold", "ETH", "1h", "--mode=live"},
+	}
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+
+	// Pass nil positions (on-chain flat).
+	reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil)
+
+	ss := state.Strategies["manual-eth"]
+	if _, ok := ss.Positions["ETH"]; ok {
+		t.Error("ETH position should have been removed after external close")
+	}
+	if len(ss.ClosedPositions) != 1 {
+		t.Fatalf("ClosedPositions = %d, want 1", len(ss.ClosedPositions))
+	}
+	if ss.ClosedPositions[0].CloseReason != "hl_sync_external" {
+		t.Errorf("CloseReason = %q, want hl_sync_external", ss.ClosedPositions[0].CloseReason)
+	}
+}
+
+// TestReconcileManualPositionSLFired verifies that a type=manual strategy with a
+// resting stop-loss OID uses the hl_sync_stop_loss close path when on-chain goes
+// flat. Regression for #576.
+func TestReconcileManualPositionSLFired(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"manual-eth": {
+				ID: "manual-eth", Cash: 100,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "long",
+						Multiplier: 1, Leverage: 5, OwnerStrategyID: "manual-eth",
+						StopLossOID: 77, StopLossTriggerPx: 1800},
+				},
+			},
+		},
+	}
+	sc := StrategyConfig{
+		ID: "manual-eth", Platform: "hyperliquid", Type: "manual",
+		Symbol: "ETH", Timeframe: "1h", Leverage: 5,
+		Args: []string{"hold", "ETH", "1h", "--mode=live"},
+	}
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+
+	reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil)
+
+	ss := state.Strategies["manual-eth"]
+	if _, ok := ss.Positions["ETH"]; ok {
+		t.Error("ETH position should have been removed after SL fire")
+	}
+	if len(ss.ClosedPositions) != 1 {
+		t.Fatalf("ClosedPositions = %d, want 1", len(ss.ClosedPositions))
+	}
+	if ss.ClosedPositions[0].CloseReason != "stop_loss" {
+		t.Errorf("CloseReason = %q, want stop_loss", ss.ClosedPositions[0].CloseReason)
+	}
+	if ss.ClosedPositions[0].ClosePrice != 1800 {
+		t.Errorf("ClosePrice = %g, want 1800", ss.ClosedPositions[0].ClosePrice)
+	}
+}

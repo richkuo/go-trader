@@ -1085,3 +1085,27 @@ func TestExecuteTopStepResult_StampsExchangeData(t *testing.T) {
 		t.Errorf("ExchangeFee = %g, want 4.12", tr.ExchangeFee)
 	}
 }
+
+func TestIsHLLiveReconcilable(t *testing.T) {
+	liveArgs := []string{"hold", "ETH", "1h", "--mode=live"}
+	paperArgs := []string{"hold", "ETH", "1h", "--mode=paper"}
+	cases := []struct {
+		name string
+		sc   StrategyConfig
+		want bool
+	}{
+		{"perps live", StrategyConfig{Platform: "hyperliquid", Type: "perps", Args: liveArgs}, true},
+		{"manual live", StrategyConfig{Platform: "hyperliquid", Type: "manual", Args: liveArgs}, true},
+		{"perps paper", StrategyConfig{Platform: "hyperliquid", Type: "perps", Args: paperArgs}, false},
+		{"manual paper", StrategyConfig{Platform: "hyperliquid", Type: "manual", Args: paperArgs}, false},
+		{"spot live", StrategyConfig{Platform: "hyperliquid", Type: "spot", Args: liveArgs}, false},
+		{"non-hl perps", StrategyConfig{Platform: "okx", Type: "perps", Args: liveArgs}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isHLLiveReconcilable(tc.sc); got != tc.want {
+				t.Errorf("isHLLiveReconcilable = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

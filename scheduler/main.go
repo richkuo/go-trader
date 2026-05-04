@@ -608,6 +608,22 @@ func main() {
 					hlLiveDue = append(hlLiveDue, sc)
 				}
 			}
+			// Reconcile lists extend hlLive* to include type=manual: manual
+			// positions are real on-chain HL positions that can be closed
+			// externally and must be reconciled. Other hlLiveAll consumers
+			// (kill-switch, trailing-stop, risk math) remain perps-only (#576).
+			var hlReconcileAll []StrategyConfig
+			for _, sc := range cfg.Strategies {
+				if isHLLiveReconcilable(sc) {
+					hlReconcileAll = append(hlReconcileAll, sc)
+				}
+			}
+			var hlReconcileDue []StrategyConfig
+			for _, sc := range dueStrategies {
+				if isHLLiveReconcilable(sc) {
+					hlReconcileDue = append(hlReconcileDue, sc)
+				}
+			}
 
 			// #345: Partition live OKX strategies for the kill-switch close
 			// path. Perps and spot are separated because only perps support
@@ -1052,8 +1068,8 @@ func main() {
 				// Reuses the clearinghouseState already fetched above for the
 				// shared-wallet risk check (#243 review feedback) so we don't
 				// pay two HL API round-trips per cycle.
-				if len(hlLiveDue) > 0 && hlStateFetched {
-					reconcileHyperliquidAccountPositions(hlLiveDue, hlLiveAll, state, &mu, logMgr, hlPositions)
+				if len(hlReconcileDue) > 0 && hlStateFetched {
+					reconcileHyperliquidAccountPositions(hlReconcileDue, hlReconcileAll, state, &mu, logMgr, hlPositions)
 				}
 
 				for _, sc := range dueStrategies {
@@ -2229,6 +2245,17 @@ func hyperliquidSymbol(args []string) string {
 		return args[1]
 	}
 	return ""
+}
+
+// isHLLiveReconcilable reports whether sc should participate in on-chain
+// reconciliation. Both type=perps and type=manual are live HL positions that
+// can be closed externally; the reconciler is type-agnostic so both are safe.
+// Other consumers of hlLiveAll (kill-switch, trailing-stop arming, risk math)
+// intentionally stay perps-only.
+func isHLLiveReconcilable(sc StrategyConfig) bool {
+	return sc.Platform == "hyperliquid" &&
+		(sc.Type == "perps" || sc.Type == "manual") &&
+		hyperliquidIsLive(sc.Args)
 }
 
 // runHyperliquidCheck runs check_hyperliquid.py signal-check mode (Phase 3, no lock).
