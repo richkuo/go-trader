@@ -1004,27 +1004,27 @@ func TestStampEntryATRIfOpened(t *testing.T) {
 		s       *StrategyState
 		symbol  string
 		inds    map[string]interface{}
-		trades  int
 		wantATR float64
 	}{
-		{"stamps valid atr on open", newState(50000, 0), "BTC", indicators(500), 1, 500},
-		{"no-op when trades == 0", newState(50000, 0), "BTC", indicators(500), 0, 0},
-		{"no-op when atr already set", newState(50000, 300), "BTC", indicators(500), 1, 300},
-		{"rejects zero atr", newState(50000, 0), "BTC", indicators(0), 1, 0},
-		{"rejects negative atr", newState(50000, 0), "BTC", indicators(-1), 1, 0},
-		{"rejects NaN atr", newState(50000, 0), "BTC", indicators(math.NaN()), 1, 0},
-		{"rejects +Inf atr", newState(50000, 0), "BTC", indicators(math.Inf(1)), 1, 0},
-		{"rejects atr > 50% avgCost", newState(50000, 0), "BTC", indicators(25001), 1, 0},
-		{"accepts atr == 50% avgCost boundary", newState(50000, 0), "BTC", indicators(25000), 1, 25000},
-		{"no upper-bound check when avgCost == 0", newState(0, 0), "BTC", indicators(999), 1, 999},
-		{"no-op for missing symbol", newState(50000, 0), "ETH", indicators(500), 1, 0},
-		{"no-op for nil state", nil, "BTC", indicators(500), 1, 0},
-		{"no-op for nil indicators", newState(50000, 0), "BTC", nil, 1, 0},
+		{"stamps valid atr on open", newState(50000, 0), "BTC", indicators(500), 500},
+		{"backfills when no new trade this cycle", newState(50000, 0), "BTC", indicators(500), 500},
+		{"no-op when atr already set", newState(50000, 300), "BTC", indicators(500), 300},
+		{"no-op when atr already set and no new trade", newState(50000, 300), "BTC", indicators(500), 300},
+		{"rejects zero atr", newState(50000, 0), "BTC", indicators(0), 0},
+		{"rejects negative atr", newState(50000, 0), "BTC", indicators(-1), 0},
+		{"rejects NaN atr", newState(50000, 0), "BTC", indicators(math.NaN()), 0},
+		{"rejects +Inf atr", newState(50000, 0), "BTC", indicators(math.Inf(1)), 0},
+		{"rejects atr > 50% avgCost", newState(50000, 0), "BTC", indicators(25001), 0},
+		{"accepts atr == 50% avgCost boundary", newState(50000, 0), "BTC", indicators(25000), 25000},
+		{"no upper-bound check when avgCost == 0", newState(0, 0), "BTC", indicators(999), 999},
+		{"no-op for missing symbol", newState(50000, 0), "ETH", indicators(500), 0},
+		{"no-op for nil state", nil, "BTC", indicators(500), 0},
+		{"no-op for nil indicators", newState(50000, 0), "BTC", nil, 0},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			stampEntryATRIfOpened(tc.s, tc.symbol, tc.inds, tc.trades)
+			stampEntryATRIfOpened(tc.s, tc.symbol, tc.inds)
 			if tc.s == nil {
 				return
 			}
