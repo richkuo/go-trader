@@ -1936,7 +1936,7 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
 	}
-	stampEntryATRIfOpened(s, result.Symbol, result.Indicators, trades)
+	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		stampOpenTradeFromPosition(s, db, result.Symbol, pos)
 	}
@@ -1948,8 +1948,8 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 	return trades, detail
 }
 
-func stampEntryATRIfOpened(s *StrategyState, symbol string, indicators map[string]interface{}, trades int) {
-	if trades <= 0 || s == nil {
+func stampEntryATRIfOpened(s *StrategyState, symbol string, indicators map[string]interface{}) {
+	if s == nil {
 		return
 	}
 	atr, ok := indicatorFloat(indicators, "atr")
@@ -2408,7 +2408,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, db *StateDB, 
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
 	}
-	stampEntryATRIfOpened(s, result.Symbol, result.Indicators, trades)
+	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		stampOpenTradeFromPosition(s, db, result.Symbol, pos)
 	}
@@ -2648,7 +2648,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
 	}
-	stampEntryATRIfOpened(s, result.Symbol, result.Indicators, trades)
+	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		stampOpenTradeFromPosition(s, db, result.Symbol, pos)
 	}
@@ -2814,7 +2814,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
 	}
-	stampEntryATRIfOpened(s, result.Symbol, result.Indicators, trades)
+	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		stampOpenTradeFromPosition(s, db, result.Symbol, pos)
 	}
@@ -3028,7 +3028,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
 	}
-	stampEntryATRIfOpened(s, result.Symbol, result.Indicators, trades)
+	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		stampOpenTradeFromPosition(s, db, result.Symbol, pos)
 	}
