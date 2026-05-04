@@ -969,6 +969,18 @@ func ValidateConfig(cfg *Config) error {
 			if sc.Leverage <= 0 {
 				errs = append(errs, fmt.Sprintf("%s: type=manual requires leverage > 0", prefix))
 			}
+			// Fix #6: manual strategies cannot share a coin with a live perps strategy —
+			// the scheduler's close-eval loop snapshots pos under RLock without owning
+			// the full mutex, creating a TOCTOU window if a perps peer mutates the same position.
+			if sc.Symbol != "" {
+				for _, other := range cfg.Strategies {
+					if other.ID != sc.ID && other.Type == "perps" && other.Platform == "hyperliquid" {
+						if otherSym := hyperliquidSymbol(other.Args); strings.EqualFold(otherSym, sc.Symbol) {
+							errs = append(errs, fmt.Sprintf("%s: type=manual on %s conflicts with perps strategy %s on the same coin — use sub-account isolation", prefix, sc.Symbol, other.ID))
+						}
+					}
+				}
+			}
 		}
 
 		// Live-mode futures require TopStep API credentials.

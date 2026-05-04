@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -22,7 +21,8 @@ func runManualOpen(args []string) int {
 	atr := fs.Float64("atr", 0, "ATR value to stamp on the position (required for ATR-based stops when not auto-fetched)")
 	slATRMult := fs.Float64("stop-loss-atr-mult", 0, "Override stop_loss_atr_mult for this position (0 = use strategy default)")
 	slPct := fs.Float64("stop-loss-pct", 0, "Override stop_loss_pct for this position (0 = use strategy default)")
-	recordOnly := fs.Bool("record-only", false, "Register an existing fill; skip placing a new on-chain order")
+	fillPrice := fs.Float64("fill-price", 0, "Fill price for --record-only (required when --record-only is set)")
+	recordOnly := fs.Bool("record-only", false, "Register an existing fill without placing a new on-chain order")
 	dryRun := fs.Bool("dry-run", false, "Print planned action without placing order or mutating state")
 
 	if err := fs.Parse(args); err != nil {
@@ -69,6 +69,17 @@ func runManualOpen(args []string) int {
 		return 2
 	}
 
+	if *recordOnly {
+		if *size <= 0 {
+			fmt.Fprintln(os.Stderr, "error: --record-only requires --size (coin qty of the fill you placed)")
+			return 2
+		}
+		if *fillPrice <= 0 {
+			fmt.Fprintln(os.Stderr, "error: --record-only requires --fill-price (the price at which your fill executed)")
+			return 2
+		}
+	}
+
 	stateDB, err := OpenStateDB(cfg.DBFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
@@ -76,98 +87,109 @@ func runManualOpen(args []string) int {
 	}
 	defer stateDB.Close()
 
-	// Resolve order size (coin qty). For --notional / --margin we need the
-	// current price, which comes back from the execute result itself (or a
-	// price-check subprocess). For simplicity: resolve after the fill.
-	// The Python executor returns the actual fill price, so we compute qty
-	// from the fill if notional/margin was specified.
+	// Fix #4: guard against placing into a kill-switched or CB-pending account.
+	if !*dryRun {
+		state, loadErr := LoadStateWithDB(cfg, stateDB)
+		if loadErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not load state for safety check: %v\n", loadErr)
+		} else {
+			if state.PortfolioRisk.KillSwitchActive {
+				fmt.Fprintln(os.Stderr, "error: portfolio kill switch is active — manual-open blocked (use manual-close to flatten)")
+				return 1
+			}
+			if ss := state.Strategies[strategyID]; ss != nil {
+				if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
+					fmt.Fprintln(os.Stderr, "error: strategy has a pending circuit-breaker close — manual-open blocked")
+					return 1
+				}
+			}
+		}
+	}
+
+	// ATR plausibility guard: mirror stampEntryATRIfOpened's 50%-of-AvgCost check.
+	// We don't have fillPrice yet for live orders so defer to post-fill; for
+	// --record-only we can check immediately.
+	entryATR := *atr
+	if *recordOnly && entryATR > 0 && *fillPrice > 0 && entryATR > 0.5**fillPrice {
+		fmt.Fprintf(os.Stderr, "error: --atr %.4f exceeds 50%% of fill price %.4f (plausibility guard)\n", entryATR, *fillPrice)
+		return 1
+	}
+
 	openSide := "buy"
 	if *side == "short" {
 		openSide = "sell"
 	}
 
-	// Determine effective stop-loss pct for the execute call.
-	// Priority: CLI flags > strategy config.
 	effectiveSLPct := 0.0
 	if *slPct > 0 {
 		effectiveSLPct = *slPct
-	} else if *slATRMult > 0 && *atr > 0 {
-		// Convert ATR-based stop to a placeholder pct — the actual trigger
-		// placement happens after fill via RunHyperliquidUpdateStopLoss.
-		// Pass 0 to execute so no in-script trigger is placed; we arm it below.
-		effectiveSLPct = 0
 	}
 
-	// Use strategy's script (auto-set by LoadConfig).
 	script := sc.Script
 
-	var fillPrice, fillQty, fillFee float64
+	var resolvedFillPrice, fillQty, fillFee float64
 	var exchangeOID string
 
 	if *dryRun {
-		// In dry-run mode, resolve a display-only qty from size inputs (use 0 price for notional/margin).
 		displayQty := resolveManualSize(*size, *notional, *margin, 0, sc.Leverage)
-		sideStr := *side
 		fmt.Printf("[dry-run] manual-open %s: %s %.6f %s (script=%s, sl_pct=%.2f)\n",
-			strategyID, sideStr, displayQty, sc.Symbol, script, effectiveSLPct)
+			strategyID, *side, displayQty, sc.Symbol, script, effectiveSLPct)
 		return 0
 	}
 
 	if *recordOnly {
-		// Operator already placed the fill. Require explicit fill price and size.
-		if *size <= 0 {
-			fmt.Fprintln(os.Stderr, "error: --record-only requires --size (coin qty of the fill you placed)")
-			return 2
-		}
+		// Operator already placed the fill on the exchange UI.
 		fillQty = *size
-		// No fill price available without the exchange response — operator
-		// must supply it. For now, fail fast and ask them to use the normal path.
-		fmt.Fprintln(os.Stderr, "error: --record-only requires --fill-price (the price at which your fill executed)")
-		fmt.Fprintln(os.Stderr, "       (add --fill-price <price> to record an existing fill)")
-		return 2
+		resolvedFillPrice = *fillPrice
+		// ATR post-fill plausibility (same guard as above, unified path)
+		if entryATR > 0 && entryATR > 0.5*resolvedFillPrice {
+			fmt.Fprintf(os.Stderr, "error: --atr %.4f exceeds 50%% of fill price %.4f (plausibility guard)\n", entryATR, resolvedFillPrice)
+			return 1
+		}
+	} else {
+		execResult, execStderr, execErr := RunHyperliquidExecute(
+			script, sc.Symbol, openSide,
+			resolveManualSize(*size, *notional, *margin, 0, sc.Leverage),
+			effectiveSLPct, 0, 0, sc.MarginMode, sc.Leverage,
+		)
+		if execStderr != "" {
+			fmt.Fprintf(os.Stderr, "HL execute stderr: %s\n", execStderr)
+		}
+		if execErr != nil {
+			fmt.Fprintf(os.Stderr, "error placing order: %v\n", execErr)
+			return 1
+		}
+		if execResult.Error != "" {
+			fmt.Fprintf(os.Stderr, "error from HL: %s\n", execResult.Error)
+			return 1
+		}
+
+		fill := execResult.Execution
+		if fill == nil || fill.Fill == nil {
+			fmt.Fprintln(os.Stderr, "error: no fill returned from execute")
+			return 1
+		}
+		resolvedFillPrice = fill.Fill.AvgPx
+		fillQty = fill.Fill.TotalSz
+		fillFee = fill.Fill.Fee
+		if fill.Fill.OID != 0 {
+			exchangeOID = fmt.Sprintf("%d", fill.Fill.OID)
+		}
+		if fillQty <= 0 {
+			fillQty = resolveManualSize(*size, *notional, *margin, resolvedFillPrice, sc.Leverage)
+		}
+
+		// Post-fill ATR plausibility guard.
+		if entryATR > 0 && resolvedFillPrice > 0 && entryATR > 0.5*resolvedFillPrice {
+			fmt.Fprintf(os.Stderr, "warning: --atr %.4f exceeds 50%% of fill price %.4f — EntryATR will not be stamped\n", entryATR, resolvedFillPrice)
+			entryATR = 0
+		}
 	}
 
-	// Place the on-chain order via the existing RunHyperliquidExecute path.
-	execResult, stderr, execErr := RunHyperliquidExecute(
-		script, sc.Symbol, openSide,
-		resolveManualSize(*size, *notional, *margin, 0, sc.Leverage),
-		effectiveSLPct, 0, 0, sc.MarginMode, sc.Leverage,
-	)
-	if stderr != "" {
-		fmt.Fprintf(os.Stderr, "HL execute stderr: %s\n", stderr)
-	}
-	if execErr != nil {
-		fmt.Fprintf(os.Stderr, "error placing order: %v\n", execErr)
-		return 1
-	}
-	if execResult.Error != "" {
-		fmt.Fprintf(os.Stderr, "error from HL: %s\n", execResult.Error)
-		return 1
-	}
+	fmt.Printf("Filled: %s %.6f %s @ $%.4f (fee=$%.4f)\n", *side, fillQty, sc.Symbol, resolvedFillPrice, fillFee)
 
-	fill := execResult.Execution
-	if fill == nil || fill.Fill == nil {
-		fmt.Fprintln(os.Stderr, "error: no fill returned from execute")
-		return 1
-	}
-	fillPrice = fill.Fill.AvgPx
-	fillQty = fill.Fill.TotalSz
-	fillFee = fill.Fill.Fee
-	if fill.Fill.OID != 0 {
-		exchangeOID = fmt.Sprintf("%d", fill.Fill.OID)
-	}
-
-	// Resolve actual qty for notional/margin inputs now that we have fillPrice.
-	if fillQty <= 0 {
-		fillQty = resolveManualSize(*size, *notional, *margin, fillPrice, sc.Leverage)
-	}
-
-	fmt.Printf("Filled: %s %.6f %s @ $%.4f (fee=$%.4f)\n", *side, fillQty, sc.Symbol, fillPrice, fillFee)
-
-	// Resolve ATR: use --atr flag if provided.
-	entryATR := *atr
-
-	// Arm ATR-based stop-loss if configured and no pct-based SL was passed to execute.
+	// Arm ATR-based stop-loss after fill (separate from the execute call so we
+	// control trigger placement independently of the pct-based SL path).
 	var stopLossOID int64
 	var stopLossTriggerPx float64
 
@@ -176,11 +198,11 @@ func runManualOpen(args []string) int {
 		effectiveATRMult = *sc.StopLossATRMult
 	}
 
-	if effectiveATRMult > 0 && entryATR > 0 {
+	if effectiveATRMult > 0 && entryATR > 0 && !*recordOnly {
 		if *side == "long" {
-			stopLossTriggerPx = fillPrice - effectiveATRMult*entryATR
+			stopLossTriggerPx = resolvedFillPrice - effectiveATRMult*entryATR
 		} else {
-			stopLossTriggerPx = fillPrice + effectiveATRMult*entryATR
+			stopLossTriggerPx = resolvedFillPrice + effectiveATRMult*entryATR
 		}
 		if stopLossTriggerPx > 0 {
 			slResult, slStderr, slErr := RunHyperliquidUpdateStopLoss(script, sc.Symbol, *side, fillQty, stopLossTriggerPx, 0)
@@ -207,7 +229,7 @@ func runManualOpen(args []string) int {
 		Symbol:            sc.Symbol,
 		Side:              *side,
 		Quantity:          fillQty,
-		FillPrice:         fillPrice,
+		FillPrice:         resolvedFillPrice,
 		FillFee:           fillFee,
 		ExchangeOrderID:   exchangeOID,
 		StopLossOID:       stopLossOID,
@@ -258,7 +280,6 @@ func runManualClose(args []string) int {
 	}
 	defer stateDB.Close()
 
-	// Load current position from SQLite for display / size resolution.
 	state, err := LoadStateWithDB(cfg, stateDB)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load state: %v\n", err)
@@ -291,9 +312,16 @@ func runManualClose(args []string) int {
 		return 0
 	}
 
+	// Fix #2: only cancel the SL on a full close; leave it resting on partial close.
+	isFullClose := closeQty >= pos.Quantity*0.99
+	cancelOID := int64(0)
+	if isFullClose {
+		cancelOID = pos.StopLossOID
+	}
+
 	execResult, stderr, execErr := RunHyperliquidExecute(
 		sc.Script, sc.Symbol, closeSide, closeQty,
-		0, pos.StopLossOID, 0, "", 0,
+		0, cancelOID, 0, "", 0,
 	)
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "HL close stderr: %s\n", stderr)
@@ -313,24 +341,23 @@ func runManualClose(args []string) int {
 		return 1
 	}
 
-	fillPrice := fill.Fill.AvgPx
+	fillAvgPx := fill.Fill.AvgPx
 	fillFee := fill.Fill.Fee
 	var exchangeOID string
 	if fill.Fill.OID != 0 {
 		exchangeOID = fmt.Sprintf("%d", fill.Fill.OID)
 	}
 
-	// Compute realized PnL.
 	var realizedPnL float64
 	if pos.Side == "long" {
-		realizedPnL = closeQty * (fillPrice - pos.AvgCost)
+		realizedPnL = closeQty * (fillAvgPx - pos.AvgCost)
 	} else {
-		realizedPnL = closeQty * (pos.AvgCost - fillPrice)
+		realizedPnL = closeQty * (pos.AvgCost - fillAvgPx)
 	}
 	realizedPnL -= fillFee
 
 	fmt.Printf("Closed: %.6f %s @ $%.4f | PnL=$%.2f (fee=$%.4f)\n",
-		closeQty, sc.Symbol, fillPrice, realizedPnL, fillFee)
+		closeQty, sc.Symbol, fillAvgPx, realizedPnL, fillFee)
 
 	action := PendingManualAction{
 		StrategyID:      strategyID,
@@ -338,7 +365,7 @@ func runManualClose(args []string) int {
 		Symbol:          sc.Symbol,
 		Side:            closeSide,
 		Quantity:        closeQty,
-		FillPrice:       fillPrice,
+		FillPrice:       fillAvgPx,
 		FillFee:         fillFee,
 		ExchangeOrderID: exchangeOID,
 		RealizedPnL:     realizedPnL,
@@ -369,7 +396,6 @@ func drainPendingManualActions(state *AppState, cfg *Config, stateDB *StateDB) {
 		return
 	}
 
-	// Build a quick lookup from strategy ID to StrategyConfig.
 	scByID := make(map[string]StrategyConfig, len(cfg.Strategies))
 	for _, sc := range cfg.Strategies {
 		scByID[sc.ID] = sc
@@ -453,7 +479,8 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			Manual:            true,
 		}
 		RecordTrade(ss, trade)
-		ss.Cash -= a.Quantity * a.FillPrice
+		// Fix #1: perps open deducts only the fee; notional stays virtual.
+		ss.Cash -= a.FillFee
 		fmt.Printf("[manual] applied open: %s %s %.6f %s @ $%.4f\n",
 			a.StrategyID, a.Side, a.Quantity, a.Symbol, a.FillPrice)
 
@@ -462,7 +489,8 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 		if !exists || pos == nil {
 			return fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
 		}
-		closedFull := a.Quantity >= pos.Quantity-1e-9
+		// Fix #5: use 0.99 relative tolerance matching HL lot-size rounding semantics.
+		closedFull := a.Quantity >= pos.Quantity*0.99
 		side := closeTradeSide(pos.Side)
 
 		trade := Trade{
@@ -483,7 +511,8 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			Manual:          true,
 		}
 		RecordTrade(ss, trade)
-		ss.Cash += a.RealizedPnL + a.Quantity*pos.AvgCost
+		// Fix #1: perps close credits only the realized PnL; notional was never debited.
+		ss.Cash += a.RealizedPnL
 
 		if closedFull {
 			recordClosedPosition(ss, pos, a.FillPrice, a.RealizedPnL, "manual_close", now)
@@ -571,17 +600,4 @@ func runManualCloseEval(sc StrategyConfig, ss *StrategyState, cfg *Config, logge
 		return 0, 0, false
 	}
 	return result.CloseFraction, price, true
-}
-
-// manualCloseParamsJSON returns a JSON-encoded params blob for use in --close-params.
-// Returns empty string on error.
-func manualCloseParamsJSON(sc StrategyConfig) string {
-	if len(sc.Params) == 0 {
-		return ""
-	}
-	b, err := json.Marshal(sc.Params)
-	if err != nil {
-		return ""
-	}
-	return string(b)
 }

@@ -1503,9 +1503,15 @@ func main() {
 								if pos.Side == "short" {
 									closeSide = "buy"
 								}
+								// Fix #2: only cancel the SL on a full close; leave it resting on partial.
+								isFullClose := closeQty >= pos.Quantity*0.99
+								cancelOID := int64(0)
+								if isFullClose {
+									cancelOID = pos.StopLossOID
+								}
 								execResult, execStderr, execErr := RunHyperliquidExecute(
 									sc.Script, sc.Symbol, closeSide, closeQty,
-									0, pos.StopLossOID, 0, "", 0,
+									0, cancelOID, 0, "", 0,
 								)
 								if execStderr != "" {
 									logger.Info("HL manual close stderr: %s", execStderr)
