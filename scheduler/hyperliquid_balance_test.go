@@ -670,11 +670,14 @@ func TestAccountSyncSharedCoinSkipsReconciliation(t *testing.T) {
 	}
 }
 
-// TestAccountSyncSharedCoinNotRemovedWhenOnChainGone verifies the phantom
-// circuit breaker fix (#258): when one strategy sells the shared position,
-// the other strategy's virtual position is NOT removed by sync.
-func TestAccountSyncSharedCoinNotRemovedWhenOnChainGone(t *testing.T) {
-	// On-chain ETH position is gone (sold by rmc).
+// TestAccountSyncSharedCoinClosedWhenOnChainGone verifies #565: when one
+// strategy's virtual position is already cleared (rmc sold via
+// ExecutePerpsSignal) and on-chain is fully flat, the remaining peer's stale
+// virtual position (tema) is reconciled away via hl_sync_external. This
+// supersedes the old #258 behavior that left virtual positions intact — that
+// protection is still in place for non-zero on-chain gaps (ambiguous cases).
+func TestAccountSyncSharedCoinClosedWhenOnChainGone(t *testing.T) {
+	// On-chain ETH position is gone (rmc sold its portion, aggregate is flat).
 	ts := setupHLTestServer(1336, []HLPosition{})
 	defer ts.Close()
 
@@ -708,28 +711,30 @@ func TestAccountSyncSharedCoinNotRemovedWhenOnChainGone(t *testing.T) {
 
 	syncHyperliquidAccountPositions(strategies, state, &mu, logMgr)
 
-	// tema's position should NOT be removed (phantom circuit breaker fix).
+	// tema's stale virtual position must be closed by Detector 1 (#565).
 	temaPos := state.Strategies["hl-tema-eth-live"].Positions["ETH"]
-	if temaPos == nil {
-		t.Fatal("hl-tema-eth-live should still have ETH position (shared coin — not removed by sync)")
+	if temaPos != nil {
+		t.Errorf("hl-tema-eth-live ETH position should be nil after external close reconcile, got %+v", temaPos)
 	}
-	if temaPos.Quantity != 0.212 {
-		t.Errorf("tema ETH quantity = %g, want 0.212", temaPos.Quantity)
+	if len(state.Strategies["hl-tema-eth-live"].ClosedPositions) != 1 {
+		t.Errorf("tema ClosedPositions = %d, want 1", len(state.Strategies["hl-tema-eth-live"].ClosedPositions))
+	} else if state.Strategies["hl-tema-eth-live"].ClosedPositions[0].CloseReason != "hl_sync_external" {
+		t.Errorf("CloseReason = %q, want hl_sync_external", state.Strategies["hl-tema-eth-live"].ClosedPositions[0].CloseReason)
 	}
 
-	// Reconciliation gap should show the drift.
+	// Gap should show zero delta after reconciliation.
 	gap := state.ReconciliationGaps["ETH"]
 	if gap == nil {
-		t.Fatal("expected reconciliation gap for ETH")
+		t.Fatal("expected reconciliation gap entry for ETH")
 	}
 	if gap.OnChainQty != 0 {
 		t.Errorf("gap OnChainQty = %g, want 0", gap.OnChainQty)
 	}
-	if gap.VirtualQty != 0.212 {
-		t.Errorf("gap VirtualQty = %g, want 0.212", gap.VirtualQty)
+	if math.Abs(gap.VirtualQty) > 1e-6 {
+		t.Errorf("gap VirtualQty = %g, want ~0 after close", gap.VirtualQty)
 	}
-	if len(gap.Strategies) != 2 {
-		t.Errorf("gap Strategies = %v, want 2 entries", gap.Strategies)
+	if math.Abs(gap.DeltaQty) > 1e-6 {
+		t.Errorf("gap DeltaQty = %g, want ~0 after close", gap.DeltaQty)
 	}
 	if gap.UpdatedAt.IsZero() {
 		t.Error("gap UpdatedAt should be set")
@@ -1133,6 +1138,282 @@ func TestReconcileSharedCoinBothShort(t *testing.T) {
 	}
 	if math.Abs(gap.DeltaQty) > 0.000001 {
 		t.Errorf("gap DeltaQty = %g, want ~0", gap.DeltaQty)
+	}
+}
+
+// --- #565: shared-coin close reconciliation tests ---
+
+// TestReconcileSharedCoin_OwnerStopLossFired_ClosesOwnerOnly verifies that
+// when a shared-coin SL owner's trigger fires (on-chain qty drops to the
+// non-owner peers' residual), only the owner's virtual position is closed.
+func TestReconcileSharedCoin_OwnerStopLossFired_ClosesOwnerOnly(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: 1000, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
+						StopLossOID: 42, StopLossTriggerPx: 2900},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: 500, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+
+	allStrategies := []StrategyConfig{
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	// Owner fired — on-chain residual is only the peer's 0.5 long.
+	positions := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000, Leverage: 10}}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions)
+
+	// Owner position must be closed and recorded.
+	if state.Strategies["hl-owner-eth"].Positions["ETH"] != nil {
+		t.Error("owner ETH position should be nil after SL reconciliation")
+	}
+	if len(state.Strategies["hl-owner-eth"].ClosedPositions) != 1 {
+		t.Errorf("owner ClosedPositions = %d, want 1", len(state.Strategies["hl-owner-eth"].ClosedPositions))
+	} else {
+		cp := state.Strategies["hl-owner-eth"].ClosedPositions[0]
+		if cp.CloseReason != "hl_sync_stop_loss" {
+			t.Errorf("CloseReason = %q, want hl_sync_stop_loss", cp.CloseReason)
+		}
+		if math.Abs(cp.ClosePrice-2900) > 0.01 {
+			t.Errorf("ClosePrice = %g, want 2900", cp.ClosePrice)
+		}
+	}
+
+	// Peer position must be untouched.
+	peerPos := state.Strategies["hl-peer-eth"].Positions["ETH"]
+	if peerPos == nil || math.Abs(peerPos.Quantity-0.5) > 1e-6 {
+		t.Errorf("peer ETH = %+v, want 0.5 long (unchanged)", peerPos)
+	}
+
+	// Gap should now show ~zero delta.
+	gap := state.ReconciliationGaps["ETH"]
+	if gap == nil {
+		t.Fatal("expected gap entry for ETH")
+	}
+	if math.Abs(gap.DeltaQty) > 1e-6 {
+		t.Errorf("gap DeltaQty = %g after SL reconcile, want ~0", gap.DeltaQty)
+	}
+}
+
+// TestReconcileSharedCoin_OwnerStopLossFired_Short verifies the short-side mirror.
+func TestReconcileSharedCoin_OwnerStopLossFired_Short(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: 1000, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.8, AvgCost: 3000, Side: "short",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
+						StopLossOID: 99, StopLossTriggerPx: 3100},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: 500, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.3, AvgCost: 3000, Side: "short",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+
+	allStrategies := []StrategyConfig{
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	// Short positions: on-chain residual after owner's stop = -0.3 (peer only).
+	positions := []HLPosition{{Coin: "ETH", Size: -0.3, EntryPrice: 3000, Leverage: 10}}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions)
+
+	if state.Strategies["hl-owner-eth"].Positions["ETH"] != nil {
+		t.Error("owner short ETH position should be nil after SL reconciliation")
+	}
+	peerPos := state.Strategies["hl-peer-eth"].Positions["ETH"]
+	if peerPos == nil || math.Abs(peerPos.Quantity-0.3) > 1e-6 || peerPos.Side != "short" {
+		t.Errorf("peer ETH = %+v, want 0.3 short (unchanged)", peerPos)
+	}
+}
+
+// TestReconcileSharedCoin_AllPositionsClosedExternally verifies that when
+// on-chain is fully flat, all peers are closed: SL owner via hl_sync_stop_loss,
+// others via hl_sync_external with close price 0.
+func TestReconcileSharedCoin_AllPositionsClosedExternally(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: 1000, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
+						StopLossOID: 7, StopLossTriggerPx: 2800},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: 500, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+
+	allStrategies := []StrategyConfig{
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	// On-chain: fully flat (aggregate stop sweep / manual close).
+	positions := []HLPosition{}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions)
+
+	if state.Strategies["hl-owner-eth"].Positions["ETH"] != nil {
+		t.Error("owner ETH position should be nil")
+	}
+	if len(state.Strategies["hl-owner-eth"].ClosedPositions) != 1 {
+		t.Errorf("owner ClosedPositions = %d, want 1", len(state.Strategies["hl-owner-eth"].ClosedPositions))
+	} else if state.Strategies["hl-owner-eth"].ClosedPositions[0].CloseReason != "hl_sync_stop_loss" {
+		t.Errorf("owner CloseReason = %q, want hl_sync_stop_loss", state.Strategies["hl-owner-eth"].ClosedPositions[0].CloseReason)
+	}
+
+	if state.Strategies["hl-peer-eth"].Positions["ETH"] != nil {
+		t.Error("peer ETH position should be nil")
+	}
+	if len(state.Strategies["hl-peer-eth"].ClosedPositions) != 1 {
+		t.Errorf("peer ClosedPositions = %d, want 1", len(state.Strategies["hl-peer-eth"].ClosedPositions))
+	} else if state.Strategies["hl-peer-eth"].ClosedPositions[0].CloseReason != "hl_sync_external" {
+		t.Errorf("peer CloseReason = %q, want hl_sync_external", state.Strategies["hl-peer-eth"].ClosedPositions[0].CloseReason)
+	}
+}
+
+// TestReconcileSharedCoin_GapWithoutSLOwner_LeavesPositionsAlone is the
+// regression guard for #258: when no peer holds a stop-loss OID and the gap
+// is non-zero (ambiguous on-chain mismatch), positions must not be touched.
+func TestReconcileSharedCoin_GapWithoutSLOwner_LeavesPositionsAlone(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a-eth": {
+				ID: "hl-a-eth", Cash: 1000, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.6, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-a-eth"},
+				},
+			},
+			"hl-b-eth": {
+				ID: "hl-b-eth", Cash: 500, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.4, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-b-eth"},
+				},
+			},
+		},
+	}
+
+	allStrategies := []StrategyConfig{
+		{ID: "hl-a-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-b-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	// On-chain qty differs but neither peer has a stop OID — ambiguous gap.
+	positions := []HLPosition{{Coin: "ETH", Size: 0.7, EntryPrice: 3000, Leverage: 10}}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions)
+
+	// Both positions must be untouched.
+	posA := state.Strategies["hl-a-eth"].Positions["ETH"]
+	if posA == nil || math.Abs(posA.Quantity-0.6) > 1e-6 {
+		t.Errorf("hl-a-eth ETH = %+v, want 0.6 (unchanged)", posA)
+	}
+	posB := state.Strategies["hl-b-eth"].Positions["ETH"]
+	if posB == nil || math.Abs(posB.Quantity-0.4) > 1e-6 {
+		t.Errorf("hl-b-eth ETH = %+v, want 0.4 (unchanged)", posB)
+	}
+
+	// Gap should still be recorded with the correct delta.
+	gap := state.ReconciliationGaps["ETH"]
+	if gap == nil {
+		t.Fatal("expected gap entry for ETH")
+	}
+	if math.Abs(gap.DeltaQty-0.3) > 1e-6 {
+		t.Errorf("gap DeltaQty = %g, want 0.3", gap.DeltaQty)
+	}
+}
+
+// TestReconcileSharedCoin_ResidualMismatch_LeavesPositionsAlone verifies that
+// when a SL owner exists but the on-chain qty does not match the expected
+// post-fire residual (e.g. the peer also partially closed), no position is
+// auto-closed — the ambiguous gap is left for operator review.
+func TestReconcileSharedCoin_ResidualMismatch_LeavesPositionsAlone(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: 1000, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
+						StopLossOID: 55, StopLossTriggerPx: 2900},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: 500, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+
+	allStrategies := []StrategyConfig{
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	// On-chain = 0.2, but expected residual after owner's stop = 0.5 (peer).
+	// The mismatch (0.2 ≠ 0.5) means something else changed — leave it alone.
+	positions := []HLPosition{{Coin: "ETH", Size: 0.2, EntryPrice: 3000, Leverage: 10}}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions)
+
+	// Both positions must be untouched.
+	ownerPos := state.Strategies["hl-owner-eth"].Positions["ETH"]
+	if ownerPos == nil || math.Abs(ownerPos.Quantity-1.0) > 1e-6 {
+		t.Errorf("owner ETH = %+v, want 1.0 (unchanged)", ownerPos)
+	}
+	peerPos := state.Strategies["hl-peer-eth"].Positions["ETH"]
+	if peerPos == nil || math.Abs(peerPos.Quantity-0.5) > 1e-6 {
+		t.Errorf("peer ETH = %+v, want 0.5 (unchanged)", peerPos)
+	}
+
+	gap := state.ReconciliationGaps["ETH"]
+	if gap == nil {
+		t.Fatal("expected gap entry for ETH")
+	}
+	// delta = (1.0 + 0.5) - 0.2 = 1.3
+	if math.Abs(gap.DeltaQty-1.3) > 1e-6 {
+		t.Errorf("gap DeltaQty = %g, want 1.3", gap.DeltaQty)
 	}
 }
 
