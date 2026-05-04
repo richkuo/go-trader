@@ -1009,7 +1009,6 @@ func TestStampEntryATRIfOpened(t *testing.T) {
 		{"stamps valid atr on open", newState(50000, 0), "BTC", indicators(500), 500},
 		{"backfills when no new trade this cycle", newState(50000, 0), "BTC", indicators(500), 500},
 		{"no-op when atr already set", newState(50000, 300), "BTC", indicators(500), 300},
-		{"no-op when atr already set and no new trade", newState(50000, 300), "BTC", indicators(500), 300},
 		{"rejects zero atr", newState(50000, 0), "BTC", indicators(0), 0},
 		{"rejects negative atr", newState(50000, 0), "BTC", indicators(-1), 0},
 		{"rejects NaN atr", newState(50000, 0), "BTC", indicators(math.NaN()), 0},
