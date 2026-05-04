@@ -247,7 +247,7 @@ func discoverStrategies() {
 }
 
 func hasAnyEnabledStrategyType(opts InitOptions) bool {
-	return opts.EnableSpot || opts.EnableOptions || opts.EnablePerps || opts.EnableFutures || opts.EnableRobinhood || opts.EnableLuno || opts.EnableOKX
+	return opts.EnableSpot || opts.EnableOptions || opts.EnablePerps || opts.EnableFutures || opts.EnableRobinhood || opts.EnableLuno || opts.EnableOKX || opts.EnableManual
 }
 
 // applyMinimalStarterDefaults turns the empty/default init path into one safe,
@@ -355,6 +355,13 @@ type InitOptions struct {
 	TelegramOwnerChatID       string            // Telegram chat ID for owner DMs
 	TelegramChannelMap        map[string]string // keyed by platform/type ("spot", "hyperliquid", etc.)
 	AutoUpdate                string            // "off", "daily", "heartbeat" (default: "off")
+	// #569: Manual trading tracking strategy.
+	EnableManual    bool
+	ManualSymbol    string
+	ManualTimeframe string
+	ManualCapital   float64
+	ManualDrawdown  float64
+	ManualLeverage  float64
 }
 
 // generateConfig builds a Config from InitOptions. Pure function, no I/O.
@@ -642,6 +649,33 @@ func generateConfig(opts InitOptions) *Config {
 				})
 			}
 		}
+	}
+
+	// #569: Manual trading tracking strategy.
+	if opts.EnableManual && opts.ManualSymbol != "" {
+		tf := opts.ManualTimeframe
+		if tf == "" {
+			tf = "1h"
+		}
+		lev := opts.ManualLeverage
+		if lev <= 0 {
+			lev = 1
+		}
+		dd := opts.ManualDrawdown
+		if dd <= 0 {
+			dd = 20
+		}
+		id := fmt.Sprintf("hl-manual-%s-live", strings.ToLower(opts.ManualSymbol))
+		cfg.Strategies = append(cfg.Strategies, StrategyConfig{
+			ID:             id,
+			Type:           "manual",
+			Platform:       "hyperliquid",
+			Symbol:         opts.ManualSymbol,
+			Timeframe:      tf,
+			Capital:        opts.ManualCapital,
+			MaxDrawdownPct: dd,
+			Leverage:       lev,
+		})
 	}
 
 	// Apply HTF filter to all non-options strategies if enabled.
@@ -1194,6 +1228,22 @@ func runInit(args []string) int {
 		}
 	}
 
+	// #569: Manual trading tracking strategy.
+	enableManual := false
+	manualSymbol := ""
+	manualTimeframe := "1h"
+	manualCapital := 1000.0
+	manualDrawdown := 20.0
+	manualLeverage := 10.0
+	if p.YesNo("Do you plan to do any manual trading on Hyperliquid?", false) {
+		enableManual = true
+		manualSymbol = strings.TrimSpace(p.String("Symbol for manual trades (e.g. ETH)", "ETH"))
+		manualTimeframe = strings.TrimSpace(p.String("Timeframe for TP evaluation", "1h"))
+		manualCapital = p.FloatRange("Capital budget (USD)", 1000, 1, 1e9)
+		manualLeverage = p.FloatRange("Leverage", 10, 1, 100)
+		manualDrawdown = p.FloatRange("Max drawdown %", 20, 1, 100)
+	}
+
 	// Notifications default to disabled.
 	discordEnabled := false
 	channelMap := make(map[string]string)
@@ -1296,6 +1346,12 @@ func runInit(args []string) int {
 		OKXCapital:                okxCapital,
 		OKXDrawdown:               okxDrawdown,
 		HTFFilter:                 htfFilter,
+		EnableManual:              enableManual,
+		ManualSymbol:              manualSymbol,
+		ManualTimeframe:           manualTimeframe,
+		ManualCapital:             manualCapital,
+		ManualDrawdown:            manualDrawdown,
+		ManualLeverage:            manualLeverage,
 		PortfolioMaxDrawdownPct:   portfolioMaxDD,
 		PortfolioWarnThresholdPct: portfolioWarnPct,
 		DiscordEnabled:            discordEnabled,

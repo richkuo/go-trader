@@ -20,6 +20,10 @@ func main() {
 			os.Exit(runInit(os.Args[2:]))
 		case "export":
 			os.Exit(runExport(os.Args[2:]))
+		case "manual-open":
+			os.Exit(runManualOpen(os.Args[2:]))
+		case "manual-close":
+			os.Exit(runManualClose(os.Args[2:]))
 		}
 	}
 
@@ -421,6 +425,12 @@ func main() {
 		totalTrades := 0
 		channelTrades := make(map[string]int)
 		channelTradeDetails := make(map[string][]string)
+
+		// #569: Drain pending manual-open / manual-close actions before the
+		// dueStrategies loop so newly-materialised positions are visible this cycle.
+		mu.Lock()
+		drainPendingManualActions(state, cfg, stateDB)
+		mu.Unlock()
 
 		// #87: Resolve capital_pct → capital for strategies with dynamic sizing.
 		// Must run on cfg.Strategies (not dueStrategies) so resolved capital persists
@@ -1478,6 +1488,70 @@ func main() {
 								mu.Lock()
 								trades, detail = executeTopStepResult(sc, stratState, stateDB, result, execResult, signalStr, price, logger)
 								mu.Unlock()
+							}
+						}
+					case "manual":
+						// #569: manual strategies have no open signal; only run
+						// close evaluators when a position is open.
+						if closeFraction, _, ok := runManualCloseEval(sc, stratState, cfg, logger); ok && closeFraction > 0 {
+							mu.RLock()
+							pos := stratState.Positions[sc.Symbol]
+							mu.RUnlock()
+							if pos != nil {
+								closeQty := pos.Quantity * closeFraction
+								closeSide := "sell"
+								if pos.Side == "short" {
+									closeSide = "buy"
+								}
+								execResult, execStderr, execErr := RunHyperliquidExecute(
+									sc.Script, sc.Symbol, closeSide, closeQty,
+									0, pos.StopLossOID, 0, "", 0,
+								)
+								if execStderr != "" {
+									logger.Info("HL manual close stderr: %s", execStderr)
+								}
+								if execErr != nil {
+									logger.Error("manual close execute failed: %v", execErr)
+									break
+								}
+								if execResult.Error != "" {
+									logger.Error("manual close HL error: %s", execResult.Error)
+									break
+								}
+								if execResult.Execution != nil && execResult.Execution.Fill != nil {
+									fill := execResult.Execution.Fill
+									var oid string
+									if fill.OID != 0 {
+										oid = fmt.Sprintf("%d", fill.OID)
+									}
+									var realizedPnL float64
+									if pos.Side == "long" {
+										realizedPnL = closeQty * (fill.AvgPx - pos.AvgCost)
+									} else {
+										realizedPnL = closeQty * (pos.AvgCost - fill.AvgPx)
+									}
+									realizedPnL -= fill.Fee
+									action := PendingManualAction{
+										StrategyID:      sc.ID,
+										Action:          "close",
+										Symbol:          sc.Symbol,
+										Side:            closeSide,
+										Quantity:        closeQty,
+										FillPrice:       fill.AvgPx,
+										FillFee:         fill.Fee,
+										ExchangeOrderID: oid,
+										RealizedPnL:     realizedPnL,
+										CreatedAt:       time.Now().UTC(),
+									}
+									if err := stateDB.InsertPendingManualAction(action); err != nil {
+										logger.Error("failed to queue manual close action: %v", err)
+									} else {
+										prices[sc.Symbol] = fill.AvgPx
+										trades = 1
+										detail = fmt.Sprintf("manual close %.4f %s @ $%.2f | PnL=$%.2f", closeQty, sc.Symbol, fill.AvgPx, realizedPnL)
+										logger.Info("Queued manual close: %s", detail)
+									}
+								}
 							}
 						}
 					default:

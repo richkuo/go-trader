@@ -221,6 +221,7 @@ type Trade struct {
 
 	EntryATR          float64 `json:"entry_atr,omitempty"`
 	StopLossTriggerPx float64 `json:"stop_loss_trigger_px,omitempty"`
+	Manual            bool    `json:"manual,omitempty"` // set when position was opened via manual-open CLI (#569)
 
 	// persisted tracks whether this Trade has been written to SQLite — set by
 	// RecordTrade on successful InsertTrade and by LoadState for DB-loaded

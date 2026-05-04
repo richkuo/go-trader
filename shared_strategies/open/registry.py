@@ -977,6 +977,18 @@ def session_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return session_breakout_core(df, **params)
 
 
+@register(
+    "hold",
+    "Hold — always returns signal=0; used internally by type=manual strategies for the close-evaluator loop (#569)",
+    {},
+    platforms=("spot", "futures"),
+)
+def hold_strategy(df: pd.DataFrame) -> pd.DataFrame:
+    result = df.copy()
+    result["signal"] = 0
+    return result
+
+
 # ─────────────────────────────────────────────
 # Per-platform display order.
 # These lists MUST match the legacy registration order in each shim so
@@ -992,6 +1004,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "donchian_breakout", "tema_cross",
+        "hold",
     ],
     "futures": [
         "sma_crossover", "ema_crossover", "bollinger_bands", "volume_weighted",
@@ -1001,6 +1014,6 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "delta_neutral_funding",
-        "donchian_breakout", "session_breakout",
+        "donchian_breakout", "session_breakout", "hold",
     ],
 }
