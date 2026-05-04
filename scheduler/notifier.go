@@ -325,7 +325,11 @@ func (m *MultiNotifier) tradeAlertRoutes(platform, stratType string, isLive bool
 
 		var liveCh string
 		if isLive {
-			liveCh = resolveTradeAlertChannel(b.tradeAlertChannels, b.channels, platform+"-live", "", true)
+			// Direct lookup: the "-live" suffix is already the full key so no isLive re-suffix needed.
+			liveCh = b.tradeAlertChannels[platform+"-live"]
+			if liveCh == "" {
+				liveCh = b.channels[platform+"-live"]
+			}
 			if liveCh == ch {
 				liveCh = ""
 			}

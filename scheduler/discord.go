@@ -176,6 +176,8 @@ func resolveTradeChannel(channels map[string]string, platform, stratType string,
 // resolveTradeAlertChannel resolves the channel ID for a trade alert, consulting an optional
 // override map before falling back to the standard Channels map. Override priority:
 // "<platform>-paper" (paper) / "<platform>-live" (live) → platform → stratType → Channels fallback.
+// Note: a stratType key (e.g. "perps") reroutes that type across all platforms — use a platform
+// key for per-platform control.
 func resolveTradeAlertChannel(override, channels map[string]string, platform, stratType string, isLive bool) string {
 	if len(override) > 0 {
 		if !isLive {
