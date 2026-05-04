@@ -2557,6 +2557,22 @@ func TestRiskState_PendingCircuitClose_ConsecutiveFailureserRoundTrip(t *testing
 // TestRiskState_PendingCircuitClose_LegacyShapeDefaultsZeroConsecutiveFailures verifies
 // that pre-#427 DB rows (which have no failure_count field) load with
 // ConsecutiveFailures=0 so the first new-code failure increments to 1 and notifies.
+func TestCheckRisk_ManualStrategyAlwaysAllowed(t *testing.T) {
+	sc := &StrategyConfig{ID: "hl-manual-eth-live", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Leverage: 10}
+	s := &StrategyState{Type: "manual", RiskState: RiskState{PeakValue: 100, MaxDrawdownPct: 60}}
+	// pv=5 vs peak=100 would be 95% drawdown — far over 60% — for a normal strategy.
+	allowed, reason := CheckRisk(sc, s, 5.0, nil, nil, nil)
+	if !allowed {
+		t.Errorf("manual strategy should always pass CheckRisk, got reason=%q", reason)
+	}
+	if reason != "" {
+		t.Errorf("expected empty reason, got %q", reason)
+	}
+	if s.RiskState.CircuitBreaker {
+		t.Error("CheckRisk must not set CircuitBreaker for manual strategy")
+	}
+}
+
 func TestRiskState_PendingCircuitClose_LegacyShapeDefaultsZeroConsecutiveFailures(t *testing.T) {
 	var r RiskState
 	// Legacy DB row has no failure_count or last_notified_at fields.

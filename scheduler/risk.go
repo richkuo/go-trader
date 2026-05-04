@@ -1265,6 +1265,11 @@ const (
 // (HL clearinghouse positions today; OKX/TS/RH in later phases) so live
 // strategies can enqueue on-chain closes on circuit breaker (#356 / #359).
 func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, prices map[string]float64, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string) {
+	// #574: manual strategies are operator-controlled and start with capital=0
+	// funded ad-hoc, so peak-relative drawdown is meaningless.
+	if sc != nil && sc.Type == "manual" {
+		return true, ""
+	}
 	r := &s.RiskState
 	now := time.Now().UTC()
 
