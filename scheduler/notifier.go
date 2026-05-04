@@ -325,7 +325,7 @@ func (m *MultiNotifier) tradeAlertRoutes(platform, stratType string, isLive bool
 
 		var liveCh string
 		if isLive {
-			liveCh = resolveChannel(b.channels, platform+"-live", "")
+			liveCh = resolveTradeAlertChannel(b.tradeAlertChannels, b.channels, platform+"-live", "", true)
 			if liveCh == ch {
 				liveCh = ""
 			}
