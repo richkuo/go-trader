@@ -989,7 +989,7 @@ func TestReconcileDueSubsetOfAllDetectsSharedCoins(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	reconcileHyperliquidAccountPositions(dueStrategies, allStrategies, state, &mu, logMgr, positions)
+	reconcileHyperliquidAccountPositions(dueStrategies, allStrategies, state, &mu, logMgr, positions, nil)
 
 	// Even though only rmc is due, allStrategies reveals ETH is shared by 3
 	// strategies, so rmc's position must NOT be reconciled to on-chain.
@@ -1058,7 +1058,7 @@ func TestReconcileSharedCoinShortAndMixedPositions(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions)
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil)
 
 	// Positions should be unchanged.
 	longPos := state.Strategies["hl-long-eth"].Positions["ETH"]
@@ -1121,7 +1121,7 @@ func TestReconcileSharedCoinBothShort(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions)
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil)
 
 	gap := state.ReconciliationGaps["ETH"]
 	if gap == nil {
@@ -1176,7 +1176,7 @@ func TestReconcileSharedCoin_OwnerStopLossFired_ClosesOwnerOnly(t *testing.T) {
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions)
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil)
 
 	// Owner position must be closed and recorded.
 	if state.Strategies["hl-owner-eth"].Positions["ETH"] != nil {
@@ -1241,7 +1241,7 @@ func TestReconcileSharedCoin_OwnerStopLossFired_Short(t *testing.T) {
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions)
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil)
 
 	if state.Strategies["hl-owner-eth"].Positions["ETH"] != nil {
 		t.Error("owner short ETH position should be nil after SL reconciliation")
@@ -1285,7 +1285,7 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally(t *testing.T) {
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions)
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil)
 
 	if state.Strategies["hl-owner-eth"].Positions["ETH"] != nil {
 		t.Error("owner ETH position should be nil")
@@ -1303,6 +1303,127 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally(t *testing.T) {
 		t.Errorf("peer ClosedPositions = %d, want 1", len(state.Strategies["hl-peer-eth"].ClosedPositions))
 	} else if state.Strategies["hl-peer-eth"].ClosedPositions[0].CloseReason != "hl_sync_external" {
 		t.Errorf("peer CloseReason = %q, want hl_sync_external", state.Strategies["hl-peer-eth"].ClosedPositions[0].CloseReason)
+	}
+}
+
+// TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash is the
+// #584 regression: when a non-SL-owner peer's position disappears on-chain and
+// a mark price is supplied, s.Cash must be credited with the mark-based PnL so
+// PortfolioValue matches the real HL account balance.
+func TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash(t *testing.T) {
+	const peerStartCash = 500.0
+	const peerQty = 0.5
+	const peerAvgCost = 3000.0
+	const mark = 3200.0
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: 1000, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
+						StopLossOID: 7, StopLossTriggerPx: 2800},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: peerStartCash, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: peerQty, AvgCost: peerAvgCost, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+
+	allStrategies := []StrategyConfig{
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{}
+	prices := map[string]float64{"ETH": mark}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices)
+
+	peer := state.Strategies["hl-peer-eth"]
+	if peer.Positions["ETH"] != nil {
+		t.Error("peer ETH position should be nil after external close")
+	}
+	if len(peer.ClosedPositions) != 1 {
+		t.Fatalf("peer ClosedPositions = %d, want 1", len(peer.ClosedPositions))
+	}
+	cp := peer.ClosedPositions[0]
+	if cp.CloseReason != "hl_sync_external" {
+		t.Errorf("CloseReason = %q, want hl_sync_external", cp.CloseReason)
+	}
+	if cp.ClosePrice != mark {
+		t.Errorf("ClosePrice = %v, want %v", cp.ClosePrice, mark)
+	}
+	// Expected: gross PnL = qty*(mark-avgCost) = 0.5*200 = 100, fee = qty*mark*HyperliquidTakerFeePct = 0.5*3200*0.00035 = 0.56.
+	wantFee := peerQty * mark * HyperliquidTakerFeePct
+	wantPnL := peerQty*(mark-peerAvgCost) - wantFee
+	wantCash := peerStartCash + wantPnL
+	if math.Abs(cp.RealizedPnL-wantPnL) > 1e-6 {
+		t.Errorf("RealizedPnL = %v, want %v", cp.RealizedPnL, wantPnL)
+	}
+	if math.Abs(peer.Cash-wantCash) > 1e-6 {
+		t.Errorf("peer Cash = %v, want %v (started %v + PnL %v)", peer.Cash, wantCash, peerStartCash, wantPnL)
+	}
+	// Owner still goes through the SL path and also has its cash credited.
+	owner := state.Strategies["hl-owner-eth"]
+	if owner.Positions["ETH"] != nil {
+		t.Error("owner ETH position should be nil")
+	}
+	if len(owner.ClosedPositions) != 1 || owner.ClosedPositions[0].CloseReason != "hl_sync_stop_loss" {
+		t.Errorf("owner ClosedPositions wrong: %+v", owner.ClosedPositions)
+	}
+}
+
+// TestReconcileSharedCoin_AllPositionsClosedExternally_NoMarkPrice_FallsBack
+// verifies the legacy zero-PnL path still applies when the caller supplies no
+// mark price for the coin (e.g. the syncHyperliquidAccountPositions entry).
+func TestReconcileSharedCoin_AllPositionsClosedExternally_NoMarkPrice_FallsBack(t *testing.T) {
+	const peerStartCash = 500.0
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: peerStartCash, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+			"hl-other-eth": {
+				ID: "hl-other-eth", Cash: 1000, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-other-eth"},
+				},
+			},
+		},
+	}
+	allStrategies := []StrategyConfig{
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-other-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	// nil prices map → legacy zero-PnL path.
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil)
+
+	peer := state.Strategies["hl-peer-eth"]
+	if peer.Positions["ETH"] != nil {
+		t.Error("peer ETH position should be nil")
+	}
+	if len(peer.ClosedPositions) != 1 || peer.ClosedPositions[0].RealizedPnL != 0 {
+		t.Errorf("expected zero-PnL fallback, got %+v", peer.ClosedPositions)
+	}
+	if peer.Cash != peerStartCash {
+		t.Errorf("peer Cash = %v, want unchanged %v (no mark price → no credit)", peer.Cash, peerStartCash)
 	}
 }
 
@@ -1338,7 +1459,7 @@ func TestReconcileSharedCoin_GapWithoutSLOwner_LeavesPositionsAlone(t *testing.T
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions)
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil)
 
 	// Both positions must be untouched.
 	posA := state.Strategies["hl-a-eth"].Positions["ETH"]
@@ -1395,7 +1516,7 @@ func TestReconcileSharedCoin_ResidualMismatch_LeavesPositionsAlone(t *testing.T)
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions)
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil)
 
 	// Both positions must be untouched.
 	ownerPos := state.Strategies["hl-owner-eth"].Positions["ETH"]
@@ -2604,7 +2725,7 @@ func TestReconcileManualPositionExternalClose(t *testing.T) {
 	var mu sync.RWMutex
 
 	// Pass nil positions (on-chain flat).
-	reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil)
+	reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil)
 
 	ss := state.Strategies["manual-eth"]
 	if _, ok := ss.Positions["ETH"]; ok {
@@ -2642,7 +2763,7 @@ func TestReconcileManualPositionSLFired(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil)
+	reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil)
 
 	ss := state.Strategies["manual-eth"]
 	if _, ok := ss.Positions["ETH"]; ok {

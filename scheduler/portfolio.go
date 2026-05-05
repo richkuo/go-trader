@@ -167,6 +167,69 @@ func recordPerpsStopLossClose(s *StrategyState, symbol string, triggerPx float64
 	return true
 }
 
+// recordPerpsExternalClose books a perps close detected by reconciliation
+// when the position has disappeared on-chain without a tracked trigger fill
+// (manual UI close, kill-switch close from a peer, etc.). The caller supplies
+// a close price (typically the current mark) so realized PnL is approximated
+// and credited to s.Cash — matching how recordPerpsStopLossClose handles the
+// SL-owner case. Returns false if the price is non-positive or the position
+// is missing, so callers can fall back to a zero-PnL recordClosedPosition (#584).
+func recordPerpsExternalClose(s *StrategyState, symbol string, closePx float64, reason string, logger *StrategyLogger) bool {
+	if closePx <= 0 {
+		return false
+	}
+	pos, ok := s.Positions[symbol]
+	if !ok || pos == nil {
+		return false
+	}
+
+	now := time.Now().UTC()
+	qty := pos.Quantity
+	avgCost := pos.AvgCost
+	side := pos.Side
+	var pnl float64
+	if side == "long" {
+		pnl = qty * (closePx - avgCost)
+	} else {
+		pnl = qty * (avgCost - closePx)
+	}
+	feePlatform := s.Platform
+	if s.Platform == "okx" && s.Type == "perps" {
+		feePlatform = "okx-perps"
+	}
+	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
+	pnl -= fee
+	s.Cash += pnl
+	positionID := ensurePositionTradeID(s.ID, symbol, pos)
+
+	trade := Trade{
+		Timestamp:   now,
+		StrategyID:  s.ID,
+		Symbol:      symbol,
+		PositionID:  positionID,
+		Side:        closeTradeSide(side),
+		Quantity:    qty,
+		Price:       closePx,
+		Value:       qty * closePx,
+		TradeType:   "perps",
+		Details:     fmt.Sprintf("External close @ mark, PnL: $%.2f (fee $%.2f)", pnl, fee),
+		IsClose:     true,
+		RealizedPnL: pnl,
+	}
+	trade.Regime = s.Regime
+	trade.EntryATR = pos.EntryATR
+	trade.StopLossTriggerPx = pos.StopLossTriggerPx
+	RecordTrade(s, trade)
+	RecordTradeResult(&s.RiskState, pnl)
+	recordClosedPosition(s, pos, closePx, pnl, reason, now)
+	delete(s.Positions, symbol)
+	clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
+	if logger != nil {
+		logger.Warn("External close reconciled @ $%.4f, PnL: $%.2f (fee $%.2f)", closePx, pnl, fee)
+	}
+	return true
+}
+
 // recordClosedOptionPosition appends a ClosedOptionPosition entry to the
 // strategy's buffer. Same durability boundary as recordClosedPosition —
 // in-memory until SaveState commits.

@@ -329,8 +329,10 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 		return false
 	}
 
-	// Self-contained entry: due and all are the same list.
-	return reconcileHyperliquidAccountPositions(hlStrategies, hlStrategies, state, mu, logMgr, positions)
+	// Self-contained entry: due and all are the same list. Prices are
+	// unavailable in this path (caller did not pre-fetch); external-close
+	// PnL falls back to zero (legacy behavior pre-#584).
+	return reconcileHyperliquidAccountPositions(hlStrategies, hlStrategies, state, mu, logMgr, positions, nil)
 }
 
 // reconcileHyperliquidAccountPositions reconciles pre-fetched on-chain positions
@@ -343,8 +345,13 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 // allStrategies includes every live HL strategy in the config — needed to detect
 // shared coins (#258) even when only some strategies are due.
 //
+// prices supplies the current mark for each coin (keyed by HL coin symbol such
+// as "BTC"). When an external close is detected for a non-SL-owner peer, the
+// mark is used as the approximate close price so realized PnL can be credited
+// to s.Cash (#584). Pass nil to fall back to the legacy zero-PnL recording.
+//
 // Must be called WITHOUT holding any lock; acquires Lock internally.
-func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, positions []HLPosition) bool {
+func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, positions []HLPosition, prices map[string]float64) bool {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -500,12 +507,20 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 					if recordPerpsStopLossClose(ss, coin, pos.StopLossTriggerPx, "hl_sync_stop_loss", logger) {
 						changed = true
 					}
+				} else if mark, ok := prices[coin]; ok && mark > 0 && recordPerpsExternalClose(ss, coin, mark, "hl_sync_external", logger) {
+					// #584: credit s.Cash with mark-based PnL so the per-strategy
+					// PortfolioValue (and the summary TOTAL) match the real HL
+					// account after an external close.
+					changed = true
 				} else {
+					// No mark price available — fall back to recording the
+					// close with zero PnL. s.Cash will be stale until the
+					// strategy reopens; tracked for follow-up if it matters.
 					recordClosedPosition(ss, pos, 0, 0, "hl_sync_external", now)
 					delete(ss.Positions, coin)
 					clearATRMultMissingEntryATRWarningOnHLPerpsClose(ss, coin)
 					if logger != nil {
-						logger.Info("hl-sync: %s position (%.6f %s) no longer on-chain, removing (external close)", coin, pos.Quantity, pos.Side)
+						logger.Info("hl-sync: %s position (%.6f %s) no longer on-chain, removing (external close, no mark price)", coin, pos.Quantity, pos.Side)
 					}
 					changed = true
 				}
