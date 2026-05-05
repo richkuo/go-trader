@@ -156,7 +156,7 @@ func runManualOpen(args []string) int {
 		execResult, execStderr, execErr := RunHyperliquidExecute(
 			script, sc.Symbol, openSide,
 			resolveManualSize(*size, *notional, *margin, 0, sc.Leverage),
-			effectiveSLPct, 0, 0, sc.MarginMode, sc.Leverage,
+			effectiveSLPct, 0, 0, sc.MarginMode, sc.Leverage, false,
 		)
 		if execStderr != "" {
 			fmt.Fprintf(os.Stderr, "HL execute stderr: %s\n", execStderr)
@@ -335,7 +335,7 @@ func runManualClose(args []string) int {
 
 	execResult, stderr, execErr := RunHyperliquidExecute(
 		sc.Script, sc.Symbol, closeSide, closeQty,
-		0, cancelOID, 0, "", 0,
+		0, cancelOID, 0, "", 0, intentFullClose,
 	)
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "HL close stderr: %s\n", stderr)

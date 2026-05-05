@@ -231,13 +231,25 @@ func RunHyperliquidCheck(script string, args []string) (*HyperliquidResult, stri
 // before the order, but only on a fresh open from flat — HL rejects margin-mode
 // changes on an open position (#486). Empty marginMode skips the call. These
 // trailing args are HL-specific: OKX/TopStep have their own execute helpers.
-func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64) (*HyperliquidExecuteResult, string, error) {
+// buildHyperliquidExecuteArgs builds the argv passed to check_hyperliquid.py
+// --execute. Extracted so the argv contract can be asserted in tests without
+// spawning a subprocess (#592 review #4).
+//
+// closeFullPosition=true emits --close-full-position and OMITS --size, so the
+// Python script calls adapter.market_close(sz=None) — closing the entire
+// on-chain residual without a sized order, eliminating rounding dust on final
+// TP tiers (#592).
+func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool) []string {
 	args := []string{
 		"--execute",
 		fmt.Sprintf("--symbol=%s", symbol),
 		fmt.Sprintf("--side=%s", side),
-		fmt.Sprintf("--size=%g", size),
 		"--mode=live",
+	}
+	if closeFullPosition {
+		args = append(args, "--close-full-position")
+	} else {
+		args = append(args, fmt.Sprintf("--size=%g", size))
 	}
 	if stopLossPct > 0 {
 		args = append(args, fmt.Sprintf("--stop-loss-pct=%g", stopLossPct))
@@ -254,6 +266,13 @@ func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float6
 			args = append(args, fmt.Sprintf("--leverage=%g", leverage))
 		}
 	}
+	return args
+}
+
+// RunHyperliquidExecute runs check_hyperliquid.py in execute mode (live orders).
+// See buildHyperliquidExecuteArgs for argv-contract details.
+func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool) (*HyperliquidExecuteResult, string, error) {
+	args := buildHyperliquidExecuteArgs(symbol, side, size, stopLossPct, cancelStopLossOID, prevPosQty, marginMode, leverage, closeFullPosition)
 	stdout, stderr, err := RunPythonScript(script, args)
 	return parseHyperliquidExecuteOutput(stdout, string(stderr), err)
 }

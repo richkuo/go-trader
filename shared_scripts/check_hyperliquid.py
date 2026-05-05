@@ -314,9 +314,13 @@ def _classify_sl_response(sdk_response: dict):
     return ("missing", None)
 
 
-def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0):
+def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0, close_full_position=False):
     """Place a live market order on Hyperliquid, optionally wrapping it with
     a stop-loss trigger (open) or cancelling a stale SL trigger (close).
+
+    When ``close_full_position`` is True the call uses ``adapter.market_close(sz=None)``
+    instead of ``market_open``, which closes the entire on-chain residual without
+    a sized order. This eliminates dust on final tiered-TP legs (#592).
 
     ``prev_pos_qty`` is the absolute quantity of any existing position being
     flipped through (e.g. long→short). On a flip, total_sz from the fill is
@@ -410,7 +414,12 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
         # 10s buffer absorbs local-vs-indexer clock skew.
         fills_since_ms = int(time.time() * 1000) - 10_000
 
-        result = adapter.market_open(symbol, is_buy, size)
+        if close_full_position:
+            # Final-tier TP close (#592): close the entire on-chain residual
+            # without specifying a size so rounding drift never leaves dust.
+            result = adapter.market_close(symbol, sz=None)
+        else:
+            result = adapter.market_open(symbol, is_buy, size)
 
         # Extract fill info from SDK response structure:
         # {"status": "ok", "response": {"type": "order", "data": {"statuses": [...]}}}
@@ -649,12 +658,16 @@ def main():
                              cancel_oid=args.cancel_stop_loss_oid)
     elif "--execute" in sys.argv:
         # Execute mode: --execute --symbol=BTC --side=buy|sell --size=0.01 [--mode=live]
+        # Or for final-tier TP closes: --execute --symbol=ETH --side=sell --close-full-position
         import argparse
         parser = argparse.ArgumentParser()
         parser.add_argument("--execute", action="store_true")
         parser.add_argument("--symbol", required=True)
         parser.add_argument("--side", required=True, choices=["buy", "sell"])
-        parser.add_argument("--size", type=float, required=True)
+        # --size is required unless --close-full-position is set (#592)
+        parser.add_argument("--size", type=float, default=0.0)
+        parser.add_argument("--close-full-position", action="store_true", default=False,
+                            help="close entire on-chain residual via market_close(sz=None); mutually exclusive with --size (#592)")
         parser.add_argument("--mode", default="live")
         parser.add_argument("--stop-loss-pct", type=float, default=0.0,
                             help="place a reduce-only SL trigger this pct away from fill (#412)")
@@ -667,10 +680,14 @@ def main():
         parser.add_argument("--leverage", type=float, default=0.0,
                             help="leverage to set alongside --margin-mode (HL update_leverage takes both in one call) (#486)")
         args = parser.parse_args()
+        if not args.close_full_position and args.size <= 0:
+            print(json.dumps({"error": "--size must be > 0 unless --close-full-position is set"}))
+            sys.exit(1)
         run_execute(args.symbol, args.side, args.size, args.mode,
                     stop_loss_pct=args.stop_loss_pct, cancel_oid=args.cancel_stop_loss_oid,
                     prev_pos_qty=args.prev_pos_qty,
-                    margin_mode=args.margin_mode, leverage=args.leverage)
+                    margin_mode=args.margin_mode, leverage=args.leverage,
+                    close_full_position=args.close_full_position)
     else:
         # Signal check mode: <strategy> <symbol> <timeframe> [--mode=paper|live] [--htf-filter]
         import argparse
