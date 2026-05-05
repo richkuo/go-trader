@@ -369,6 +369,28 @@ func TestComputeCorrelation_OptionsCoarseDelta(t *testing.T) {
 	}
 }
 
+func TestFindSpotPrice(t *testing.T) {
+	cases := []struct {
+		name   string
+		asset  string
+		prices map[string]float64
+		want   float64
+	}{
+		{"slash-USDT form", "BTC", map[string]float64{"BTC/USDT": 50000}, 50000},
+		{"bare key", "BTC", map[string]float64{"BTC": 50000}, 50000},
+		{"fallback loop non-USDT", "BTC", map[string]float64{"BTC/USD": 48000}, 48000},
+		{"miss returns zero", "ETH", map[string]float64{"BTC/USDT": 50000}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := findSpotPrice(tc.asset, tc.prices)
+			if got != tc.want {
+				t.Errorf("findSpotPrice(%q) = %f, want %f", tc.asset, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestComputeCorrelation_NilConfig(t *testing.T) {
 	strategies := map[string]*StrategyState{
 		"sma-btc": {

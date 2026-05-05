@@ -1128,3 +1128,472 @@ func TestRunInitFromJSON_DefaultCapitalAndNotifications(t *testing.T) {
 		t.Errorf("expected AutoUpdate empty by default, got %q", cfg.AutoUpdate)
 	}
 }
+
+func TestGenerateConfig_OptionsRobinhood(t *testing.T) {
+	opts := baseOpts()
+	opts.EnableSpot = false
+	opts.EnableOptions = true
+	opts.OptionPlatforms = []string{"robinhood"}
+	opts.OptStrategies = []string{"vol_mean_reversion"}
+	// RobinhoodOptionsSymbols left empty — should default to [SPY, QQQ]
+
+	cfg := generateConfig(opts)
+
+	if len(cfg.Strategies) != 2 {
+		t.Fatalf("expected 2 robinhood options strategies, got %d", len(cfg.Strategies))
+	}
+	for _, s := range cfg.Strategies {
+		if s.Platform != "robinhood" {
+			t.Errorf("expected platform robinhood, got %s for %s", s.Platform, s.ID)
+		}
+		if !strings.HasPrefix(s.ID, "rh-") {
+			t.Errorf("expected rh- prefix, got %s", s.ID)
+		}
+		if s.Type != "options" {
+			t.Errorf("expected options type, got %s for %s", s.Type, s.ID)
+		}
+	}
+	ids := map[string]bool{}
+	for _, s := range cfg.Strategies {
+		ids[s.ID] = true
+	}
+	if !ids["rh-vol-spy"] {
+		t.Error("expected rh-vol-spy strategy")
+	}
+	if !ids["rh-vol-qqq"] {
+		t.Error("expected rh-vol-qqq strategy")
+	}
+}
+
+func TestGenerateConfig_OptionsExcludesSOL(t *testing.T) {
+	opts := baseOpts()
+	opts.Assets = []string{"BTC", "SOL", "ETH"}
+	opts.EnableSpot = false
+	opts.EnableOptions = true
+	opts.OptionPlatforms = []string{"deribit"}
+	opts.OptStrategies = []string{"vol_mean_reversion"}
+
+	cfg := generateConfig(opts)
+
+	// SOL must be excluded; BTC and ETH included → 2 strategies
+	if len(cfg.Strategies) != 2 {
+		t.Fatalf("expected 2 options strategies (no SOL), got %d", len(cfg.Strategies))
+	}
+	for _, s := range cfg.Strategies {
+		if strings.Contains(strings.ToLower(s.ID), "sol") {
+			t.Errorf("SOL should be excluded from options, found %s", s.ID)
+		}
+	}
+}
+
+func TestGenerateConfig_PerpsSizingLeverageDefault(t *testing.T) {
+	opts := baseOpts()
+	opts.EnableSpot = false
+	opts.EnablePerps = true
+	opts.Assets = []string{"BTC"}
+	opts.PerpsMode = "paper"
+	opts.PerpsStrategies = []string{"momentum"}
+	opts.PerpsLeverage = 5
+	opts.PerpsSizingLeverage = 0 // omitted → should inherit PerpsLeverage
+
+	cfg := generateConfig(opts)
+
+	if len(cfg.Strategies) != 1 {
+		t.Fatalf("expected 1 strategy, got %d", len(cfg.Strategies))
+	}
+	s := cfg.Strategies[0]
+	if s.Leverage != 5 {
+		t.Errorf("expected Leverage=5, got %g", s.Leverage)
+	}
+	if s.SizingLeverage != 5 {
+		t.Errorf("expected SizingLeverage=5 (inherited from PerpsLeverage), got %g", s.SizingLeverage)
+	}
+}
+
+func TestGenerateConfig_EnableLuno(t *testing.T) {
+	opts := baseOpts()
+	opts.EnableSpot = false
+	opts.EnableLuno = true
+	opts.Assets = []string{"BTC"}
+	opts.LunoStrategies = []string{"momentum"}
+	opts.LunoCapital = 500
+	opts.LunoDrawdown = 5
+
+	cfg := generateConfig(opts)
+
+	if len(cfg.Strategies) != 1 {
+		t.Fatalf("expected 1 luno strategy, got %d", len(cfg.Strategies))
+	}
+	s := cfg.Strategies[0]
+	if s.ID != "luno-momentum-btc" {
+		t.Errorf("expected luno-momentum-btc, got %s", s.ID)
+	}
+	if s.Platform != "luno" {
+		t.Errorf("expected platform luno, got %s", s.Platform)
+	}
+	if s.Script != "shared_scripts/check_strategy.py" {
+		t.Errorf("expected check_strategy.py, got %s", s.Script)
+	}
+	if s.Capital != 500 {
+		t.Errorf("expected capital=500, got %g", s.Capital)
+	}
+}
+
+func TestGenerateConfig_EnableRobinhood(t *testing.T) {
+	opts := baseOpts()
+	opts.EnableSpot = false
+	opts.EnableRobinhood = true
+	opts.Assets = []string{"BTC"}
+	opts.RobinhoodStrategies = []string{"momentum"}
+	opts.RobinhoodMode = "paper"
+	opts.RobinhoodCapital = 500
+	opts.RobinhoodDrawdown = 5
+
+	cfg := generateConfig(opts)
+
+	if len(cfg.Strategies) != 1 {
+		t.Fatalf("expected 1 robinhood strategy, got %d", len(cfg.Strategies))
+	}
+	s := cfg.Strategies[0]
+	if s.ID != "rh-momentum-btc" {
+		t.Errorf("expected rh-momentum-btc, got %s", s.ID)
+	}
+	if s.Platform != "robinhood" {
+		t.Errorf("expected platform robinhood, got %s", s.Platform)
+	}
+	if s.Script != "shared_scripts/check_robinhood.py" {
+		t.Errorf("expected check_robinhood.py, got %s", s.Script)
+	}
+}
+
+func TestGenerateConfig_EnableOKXSpot(t *testing.T) {
+	opts := baseOpts()
+	opts.EnableSpot = false
+	opts.EnableOKX = true
+	opts.Assets = []string{"BTC"}
+	opts.OKXSpotStrategies = []string{"momentum"}
+	opts.OKXMode = "paper"
+	opts.OKXCapital = 1000
+	opts.OKXDrawdown = 5
+
+	cfg := generateConfig(opts)
+
+	spotCount := 0
+	for _, s := range cfg.Strategies {
+		if s.Type == "spot" && s.Platform == "okx" {
+			spotCount++
+			if s.ID != "okx-momentum-btc" {
+				t.Errorf("expected okx-momentum-btc, got %s", s.ID)
+			}
+			if s.Script != "shared_scripts/check_okx.py" {
+				t.Errorf("expected check_okx.py, got %s", s.Script)
+			}
+			found := false
+			for _, arg := range s.Args {
+				if arg == "--inst-type=spot" {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("expected --inst-type=spot in args, got %v", s.Args)
+			}
+		}
+	}
+	if spotCount != 1 {
+		t.Errorf("expected 1 OKX spot strategy, got %d", spotCount)
+	}
+}
+
+func TestGenerateConfig_EnableOKXPerps(t *testing.T) {
+	opts := baseOpts()
+	opts.EnableSpot = false
+	opts.EnableOKX = true
+	opts.Assets = []string{"BTC"}
+	opts.OKXPerpsStrategies = []string{"momentum"}
+	opts.OKXMode = "paper"
+	opts.OKXCapital = 1000
+	opts.OKXDrawdown = 5
+	opts.PerpsLeverage = 3
+
+	cfg := generateConfig(opts)
+
+	perpsCount := 0
+	for _, s := range cfg.Strategies {
+		if s.Type == "perps" && s.Platform == "okx" {
+			perpsCount++
+			if s.ID != "okx-momentum-btc-perp" {
+				t.Errorf("expected okx-momentum-btc-perp, got %s", s.ID)
+			}
+			found := false
+			for _, arg := range s.Args {
+				if arg == "--inst-type=swap" {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("expected --inst-type=swap in args, got %v", s.Args)
+			}
+			if s.Leverage != 3 {
+				t.Errorf("expected Leverage=3, got %g", s.Leverage)
+			}
+		}
+	}
+	if perpsCount != 1 {
+		t.Errorf("expected 1 OKX perps strategy, got %d", perpsCount)
+	}
+}
+
+func TestGenerateConfig_EnableManualDefaults(t *testing.T) {
+	opts := baseOpts()
+	opts.EnableSpot = false
+	opts.EnableManual = true
+	opts.ManualSymbol = "BTC"
+	opts.ManualCapital = 2000
+	// ManualTimeframe, ManualLeverage, ManualDrawdown left at zero → use defaults
+
+	cfg := generateConfig(opts)
+
+	if len(cfg.Strategies) != 1 {
+		t.Fatalf("expected 1 manual strategy, got %d", len(cfg.Strategies))
+	}
+	s := cfg.Strategies[0]
+	if s.ID != "hl-manual-btc-live" {
+		t.Errorf("expected hl-manual-btc-live, got %s", s.ID)
+	}
+	if s.Type != "manual" {
+		t.Errorf("expected type manual, got %s", s.Type)
+	}
+	if s.Timeframe != "1h" {
+		t.Errorf("expected default Timeframe=1h, got %q", s.Timeframe)
+	}
+	if s.Leverage != 1 {
+		t.Errorf("expected default Leverage=1, got %g", s.Leverage)
+	}
+	if s.MaxDrawdownPct != 20 {
+		t.Errorf("expected default MaxDrawdownPct=20, got %g", s.MaxDrawdownPct)
+	}
+	if s.Capital != 2000 {
+		t.Errorf("expected Capital=2000, got %g", s.Capital)
+	}
+}
+
+func TestGenerateConfig_PortfolioRiskZeroUsesDefaults(t *testing.T) {
+	opts := baseOpts()
+	// PortfolioMaxDrawdownPct and PortfolioWarnThresholdPct both zero → use defaults
+
+	cfg := generateConfig(opts)
+
+	if cfg.PortfolioRisk == nil {
+		t.Fatal("expected PortfolioRisk to be set")
+	}
+	if cfg.PortfolioRisk.MaxDrawdownPct != 25 {
+		t.Errorf("expected MaxDrawdownPct=25 default, got %g", cfg.PortfolioRisk.MaxDrawdownPct)
+	}
+	if cfg.PortfolioRisk.WarnThresholdPct != 60 {
+		t.Errorf("expected WarnThresholdPct=60 default, got %g", cfg.PortfolioRisk.WarnThresholdPct)
+	}
+}
+
+func TestGenerateConfig_HTFFilterSkipsOptionsAndDNF(t *testing.T) {
+	opts := baseOpts()
+	opts.EnableSpot = true
+	opts.SpotStrategies = []string{"momentum"}
+	opts.EnableOptions = true
+	opts.OptionPlatforms = []string{"deribit"}
+	opts.OptStrategies = []string{"vol_mean_reversion"}
+	opts.EnablePerps = true
+	opts.PerpsMode = "paper"
+	opts.PerpsStrategies = []string{"delta_neutral_funding", "triple_ema"}
+	opts.Assets = []string{"BTC"}
+	opts.HTFFilter = true
+
+	cfg := generateConfig(opts)
+
+	for _, s := range cfg.Strategies {
+		switch {
+		case s.Type == "options":
+			if s.HTFFilter {
+				t.Errorf("options strategy %s should not have HTFFilter set", s.ID)
+			}
+		case len(s.Args) > 0 && s.Args[0] == "delta_neutral_funding":
+			if s.HTFFilter {
+				t.Errorf("delta_neutral_funding strategy %s should not have HTFFilter set", s.ID)
+			}
+		default:
+			if !s.HTFFilter {
+				t.Errorf("non-options/non-DNF strategy %s should have HTFFilter=true", s.ID)
+			}
+		}
+	}
+}
+
+func TestRunInitFromJSON_FuturesAutoPopulate(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "config.json")
+	// Only enable futures; omit strategies/symbols/capital/drawdown — all should be auto-populated.
+	jsonStr := `{"assets":["BTC"],"enableFutures":true}`
+	code := runInitFromJSON(jsonStr, out)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("expected output file: %v", err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	futuresCount := 0
+	for _, s := range cfg.Strategies {
+		if s.Type != "futures" {
+			continue
+		}
+		futuresCount++
+		if s.Capital == 0 {
+			t.Errorf("expected non-zero capital on futures strategy %s", s.ID)
+		}
+		if s.MaxDrawdownPct == 0 {
+			t.Errorf("expected non-zero drawdown on futures strategy %s", s.ID)
+		}
+		foundMode := false
+		for _, arg := range s.Args {
+			if arg == "--mode=paper" {
+				foundMode = true
+			}
+		}
+		if !foundMode {
+			t.Errorf("expected --mode=paper in args for %s, got %v", s.ID, s.Args)
+		}
+	}
+	if futuresCount == 0 {
+		t.Error("expected at least one futures strategy from auto-populate")
+	}
+}
+
+func TestRunInitFromJSON_RobinhoodAutoPopulate(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "config.json")
+	jsonStr := `{"assets":["BTC"],"enableRobinhood":true}`
+	code := runInitFromJSON(jsonStr, out)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	data, _ := os.ReadFile(out)
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	rhCount := 0
+	for _, s := range cfg.Strategies {
+		if s.Platform == "robinhood" {
+			rhCount++
+		}
+	}
+	if rhCount == 0 {
+		t.Error("expected robinhood strategies from auto-populate")
+	}
+}
+
+func TestRunInitFromJSON_LunoAutoPopulate(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "config.json")
+	jsonStr := `{"assets":["BTC"],"enableLuno":true}`
+	code := runInitFromJSON(jsonStr, out)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	data, _ := os.ReadFile(out)
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	lunoCount := 0
+	for _, s := range cfg.Strategies {
+		if s.Platform == "luno" {
+			lunoCount++
+		}
+	}
+	if lunoCount == 0 {
+		t.Error("expected luno strategies from auto-populate")
+	}
+}
+
+func TestRunInitFromJSON_OKXAutoPopulate(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "config.json")
+	jsonStr := `{"assets":["BTC"],"enableOKX":true}`
+	code := runInitFromJSON(jsonStr, out)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	data, _ := os.ReadFile(out)
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	okxCount := 0
+	for _, s := range cfg.Strategies {
+		if s.Platform == "okx" {
+			okxCount++
+		}
+	}
+	if okxCount == 0 {
+		t.Error("expected OKX strategies from auto-populate")
+	}
+}
+
+func TestRunInitFromJSON_DeprecatedChannelMigration(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "config.json")
+	jsonStr := `{"assets":["BTC"],"enableSpot":true,"spotStrategies":["momentum"],"spotCapital":1000,"spotDrawdown":5,"SpotChannelID":"ch-spot","OptionsChannelID":"ch-opts"}`
+	code := runInitFromJSON(jsonStr, out)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	data, _ := os.ReadFile(out)
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if cfg.Discord.Channels == nil {
+		t.Fatal("expected Discord.Channels to be set from deprecated fields")
+	}
+	if cfg.Discord.Channels["spot"] != "ch-spot" {
+		t.Errorf("expected Discord.Channels[spot]=ch-spot, got %q", cfg.Discord.Channels["spot"])
+	}
+	if cfg.Discord.Channels["options"] != "ch-opts" {
+		t.Errorf("expected Discord.Channels[options]=ch-opts, got %q", cfg.Discord.Channels["options"])
+	}
+}
+
+func TestRunInitFromJSON_PerpsSizingLeverageInherits(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "config.json")
+	// PerpsLeverage=5, no PerpsSizingLeverage → should inherit 5
+	jsonStr := `{"assets":["BTC"],"enablePerps":true,"perpsLeverage":5,"perpsStrategies":["momentum"],"perpsCapital":1000,"perpsDrawdown":5}`
+	code := runInitFromJSON(jsonStr, out)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	data, _ := os.ReadFile(out)
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	for _, s := range cfg.Strategies {
+		if s.Type != "perps" {
+			continue
+		}
+		if s.Leverage != 5 {
+			t.Errorf("expected Leverage=5 for %s, got %g", s.ID, s.Leverage)
+		}
+		if s.SizingLeverage != 5 {
+			t.Errorf("expected SizingLeverage=5 (inherited) for %s, got %g", s.ID, s.SizingLeverage)
+		}
+	}
+}
+
+func TestRunInitFromJSON_WriteError(t *testing.T) {
+	// Pass a directory as output path → os.WriteFile should fail → exit 1
+	dir := t.TempDir()
+	jsonStr := `{"assets":["BTC"],"enableSpot":true,"spotStrategies":["momentum"],"spotCapital":1000,"spotDrawdown":5}`
+	code := runInitFromJSON(jsonStr, dir)
+	if code != 1 {
+		t.Errorf("expected exit code 1 when writing to a directory, got %d", code)
+	}
+}

@@ -449,3 +449,103 @@ func minimalReloadConfig(strategies []StrategyConfig) *Config {
 		PortfolioRisk:   &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
 	}
 }
+
+func TestValidateHotReloadCompatible(t *testing.T) {
+	baseStrategy := StrategyConfig{
+		ID:             "spot-btc",
+		Type:           "spot",
+		Platform:       "binanceus",
+		Script:         "shared_scripts/check_strategy.py",
+		Args:           []string{"momentum", "BTC/USDT", "1h"},
+		Capital:        1000,
+		MaxDrawdownPct: 10,
+	}
+
+	rfr := 0.04
+	cases := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{"db_file changed", func(c *Config) { c.DBFile = "other.db" }, "db_file"},
+		{"log_dir changed", func(c *Config) { c.LogDir = "newlogs" }, "log_dir"},
+		{"status_port changed", func(c *Config) { c.StatusPort = 9090 }, "status_port"},
+		{"status_token changed", func(c *Config) { c.StatusToken = "tok" }, "status token"},
+		{"auto_update changed", func(c *Config) { c.AutoUpdate = "daily" }, "auto_update"},
+		{"leaderboard_post_time changed", func(c *Config) { c.LeaderboardPostTime = "09:00" }, "leaderboard_post_time"},
+		{"correlation changed", func(c *Config) {
+			c.Correlation = &CorrelationConfig{Enabled: true}
+		}, "correlation"},
+		{"regime changed", func(c *Config) {
+			c.Regime = &RegimeConfig{Enabled: true}
+		}, "regime"},
+		{"leaderboard_summaries changed", func(c *Config) {
+			c.LeaderboardSummaries = []LeaderboardSummaryConfig{{Platform: "hyperliquid", Channel: "123"}}
+		}, "leaderboard_summaries"},
+		{"risk_free_rate changed", func(c *Config) { c.RiskFreeRate = &rfr }, "risk_free_rate"},
+		{"tradingview_export changed", func(c *Config) {
+			c.TradingViewExport = TradingViewExportConfig{SymbolOverrides: map[string]string{"BTC": "BTCUSD"}}
+		}, "tradingview_export"},
+		{"portfolio_risk max_notional changed", func(c *Config) {
+			c.PortfolioRisk = &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60, MaxNotionalUSD: 10000}
+		}, "max_notional"},
+		{"discord.enabled changed", func(c *Config) { c.Discord.Enabled = true }, "discord.enabled"},
+		{"discord.token changed", func(c *Config) { c.Discord.Token = "tok" }, "discord.token"},
+		{"discord.owner_id changed", func(c *Config) { c.Discord.OwnerID = "999" }, "discord.owner_id"},
+		{"telegram.enabled changed", func(c *Config) { c.Telegram.Enabled = true }, "telegram.enabled"},
+		{"telegram.bot_token changed", func(c *Config) { c.Telegram.BotToken = "tok" }, "telegram.bot_token"},
+		{"telegram.owner_chat_id changed", func(c *Config) { c.Telegram.OwnerChatID = "999" }, "telegram.owner_chat_id"},
+		{"strategy set diverges", func(c *Config) { c.Strategies = nil }, "strategy set changed"},
+		{"strategy shape changed", func(c *Config) {
+			c.Strategies = []StrategyConfig{{
+				ID:             "spot-btc",
+				Type:           "spot",
+				Platform:       "binanceus",
+				Script:         "shared_scripts/check_strategy.py",
+				Args:           []string{"ema_crossover", "BTC/USDT", "1h"}, // changed strategy name
+				Capital:        1000,
+				MaxDrawdownPct: 10,
+			}}
+		}, "non-hot-reloadable"},
+		{"hl peer conflict in next", func(c *Config) {
+			slPct := 5.0
+			c.Strategies = []StrategyConfig{
+				{
+					ID: "hl-a-btc", Type: "perps", Platform: "hyperliquid",
+					Script:  "shared_scripts/check_hyperliquid.py",
+					Args:    []string{"momentum", "BTC", "1h", "--mode=live"},
+					Capital: 1000, MaxDrawdownPct: 10,
+					Leverage: 3, MarginMode: "isolated", StopLossPct: &slPct,
+				},
+				{
+					ID: "hl-b-btc", Type: "perps", Platform: "hyperliquid",
+					Script:  "shared_scripts/check_hyperliquid.py",
+					Args:    []string{"triple_ema", "BTC", "1h", "--mode=live"},
+					Capital: 1000, MaxDrawdownPct: 10,
+					Leverage: 5, MarginMode: "isolated", // mismatched leverage
+				},
+			}
+		}, "leverage"},
+		{"identical configs returns nil", func(*Config) {}, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := minimalReloadConfig([]StrategyConfig{baseStrategy})
+			next := minimalReloadConfig([]StrategyConfig{baseStrategy})
+			tc.mutate(next)
+			err := validateHotReloadCompatible(cfg, next)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Errorf("expected nil error, got: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tc.wantErr)
+				} else if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("expected error containing %q, got: %v", tc.wantErr, err)
+				}
+			}
+		})
+	}
+}
