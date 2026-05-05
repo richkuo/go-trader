@@ -105,6 +105,70 @@ func TestLookupHyperliquidFillByCoinSize_MatchesByCoinAndSize(t *testing.T) {
 	}
 }
 
+func TestLookupHyperliquidFillByCoinSize_PicksNewestGroupNotSumOfWindow(t *testing.T) {
+	// Regression for #596: two unrelated same-size BTC closes within the
+	// 24h window must not be summed. The fallback should anchor on the
+	// newest matching fill and aggregate only that OID's group.
+	withFastFillRetries(t)
+	srv := newHLUserFillsServer(t, []map[string]any{
+		{"coin": "BTC", "oid": 100, "fee": "0.40", "closedPnl": "75.00", "sz": "0.1", "time": 1_000_000_000},
+		{"coin": "BTC", "oid": 200, "fee": "0.50", "closedPnl": "90.00", "sz": "0.1", "time": 2_000_000_000},
+	})
+	defer srv.Close()
+	origURL := hlMainnetURL
+	hlMainnetURL = srv.URL
+	defer func() { hlMainnetURL = origURL }()
+
+	got, ok := lookupHyperliquidFillByCoinSize("0xtest", "BTC", 0.1, 1e-4, 0)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got.Count != 1 {
+		t.Errorf("Count = %d, want 1 (only newest OID's group)", got.Count)
+	}
+	if got.OID != 200 {
+		t.Errorf("OID = %d, want 200 (newest fill)", got.OID)
+	}
+	if got.Fee < 0.499 || got.Fee > 0.501 {
+		t.Errorf("Fee = %g, want ~0.50 (newest only, not 0.40+0.50)", got.Fee)
+	}
+	if got.ClosedPnL < 89.99 || got.ClosedPnL > 90.01 {
+		t.Errorf("ClosedPnL = %g, want ~90.00 (newest only)", got.ClosedPnL)
+	}
+}
+
+func TestLookupHyperliquidFillByCoinSize_AggregatesPartialFillsByAnchorOID(t *testing.T) {
+	// When the newest matching fill has partial siblings sharing its OID,
+	// fee/closedPnl should aggregate across the whole group.
+	withFastFillRetries(t)
+	srv := newHLUserFillsServer(t, []map[string]any{
+		{"coin": "BTC", "oid": 555, "fee": "0.20", "closedPnl": "30.00", "sz": "0.04", "time": 1_500_000_000}, // partial of OID 555
+		{"coin": "BTC", "oid": 555, "fee": "0.30", "closedPnl": "40.00", "sz": "0.10", "time": 2_000_000_000}, // anchor
+		{"coin": "BTC", "oid": 999, "fee": "0.99", "closedPnl": "99.00", "sz": "0.10", "time": 1_000_000_000}, // older same-size, different OID — must be ignored
+	})
+	defer srv.Close()
+	origURL := hlMainnetURL
+	hlMainnetURL = srv.URL
+	defer func() { hlMainnetURL = origURL }()
+
+	got, ok := lookupHyperliquidFillByCoinSize("0xtest", "BTC", 0.10, 1e-4, 0)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got.OID != 555 {
+		t.Errorf("OID = %d, want 555 (newest matching anchor)", got.OID)
+	}
+	if got.Count != 2 {
+		t.Errorf("Count = %d, want 2 (both fills sharing OID 555)", got.Count)
+	}
+	if got.Fee < 0.499 || got.Fee > 0.501 {
+		t.Errorf("Fee = %g, want ~0.50 (0.20+0.30, not including OID 999)", got.Fee)
+	}
+	if got.ClosedPnL < 69.99 || got.ClosedPnL > 70.01 {
+		t.Errorf("ClosedPnL = %g, want ~70.00 (30+40, not including OID 999)", got.ClosedPnL)
+	}
+}
+
 func TestLookupHyperliquidReconcileFillFee_OIDFirstFallsBackToCoinSize(t *testing.T) {
 	withFastFillRetries(t)
 	// First call (OID lookup) returns no match; second call (coin+size) returns hit.

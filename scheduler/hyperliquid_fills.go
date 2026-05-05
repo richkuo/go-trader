@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -117,16 +118,13 @@ func lookupHyperliquidFillByOID(accountAddress string, oid int64, startTimeMs in
 // lookupHyperliquidFillByCoinSize is the fallback for closes detected without
 // a tracked OID — typically external UI closes for shared-coin peers, where
 // only the SL owner has an OID stamped on its Position. Matches by coin and
-// absolute size within `tolerance` (coin units), summing fee + closedPnl
-// across all matching fills in the window. Newest-first scanning so the
-// first match is the most recent fill that reduced exposure.
+// absolute size within `tolerance` (coin units).
 //
-// The match is intentionally permissive — coin + size + window is sufficient
-// to disambiguate the SL-trigger / trailing-stop / manual UI close cases
-// we care about. If two strategies sized identically on the same coin closed
-// in the same window with no OIDs, fees may be double-counted; the issue
-// (#588) accepts this tradeoff in exchange for closing the much larger
-// virtual-vs-on-chain drift caused by always using the modeled fee.
+// To avoid conflating multiple unrelated closes within the lookup window
+// (#596), fills are sorted newest-first; the first matching record's OID
+// anchors the result, and fee/closedPnl are aggregated across only that OID
+// (one logical close group, including any partial fills). When the anchor
+// has no OID, only that single record is returned.
 func lookupHyperliquidFillByCoinSize(accountAddress, coin string, absSize, tolerance float64, startTimeMs int64) (HLFillLookup, bool) {
 	if accountAddress == "" || coin == "" || absSize <= 0 {
 		return HLFillLookup{}, false
@@ -134,8 +132,13 @@ func lookupHyperliquidFillByCoinSize(accountAddress, coin string, absSize, toler
 	for attempt := 0; attempt < hlFillLookupRetries; attempt++ {
 		fills, err := fetchHyperliquidUserFillsByTime(accountAddress, startTimeMs)
 		if err == nil {
-			out := HLFillLookup{}
-			for _, f := range fills {
+			sorted := make([]hlFillRecord, len(fills))
+			copy(sorted, fills)
+			sort.SliceStable(sorted, func(i, j int) bool {
+				return sorted[i].Time > sorted[j].Time
+			})
+			anchorIdx := -1
+			for i, f := range sorted {
 				if f.Coin != coin {
 					continue
 				}
@@ -143,12 +146,31 @@ func lookupHyperliquidFillByCoinSize(accountAddress, coin string, absSize, toler
 				if math.Abs(math.Abs(sz)-absSize) > tolerance {
 					continue
 				}
-				out.Fee += parseHLFloat(f.Fee)
-				out.ClosedPnL += parseHLFloat(f.ClosedPnl)
-				out.Count++
+				anchorIdx = i
+				break
 			}
-			if out.Count > 0 {
-				return out, true
+			if anchorIdx >= 0 {
+				anchor := sorted[anchorIdx]
+				anchorOID, oidErr := anchor.OID.Int64()
+				if oidErr != nil || anchorOID <= 0 {
+					return HLFillLookup{
+						Fee:       parseHLFloat(anchor.Fee),
+						ClosedPnL: parseHLFloat(anchor.ClosedPnl),
+						Count:     1,
+					}, true
+				}
+				out := HLFillLookup{OID: anchorOID}
+				for _, f := range fills {
+					if !fillOIDMatches(f, anchorOID) {
+						continue
+					}
+					out.Fee += parseHLFloat(f.Fee)
+					out.ClosedPnL += parseHLFloat(f.ClosedPnl)
+					out.Count++
+				}
+				if out.Count > 0 {
+					return out, true
+				}
 			}
 		}
 		if attempt < hlFillLookupRetries-1 {
