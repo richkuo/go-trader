@@ -510,7 +510,12 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 				} else if mark, ok := prices[coin]; ok && mark > 0 && recordPerpsExternalClose(ss, coin, mark, "hl_sync_external", logger) {
 					// #584: credit s.Cash with mark-based PnL so the per-strategy
 					// PortfolioValue (and the summary TOTAL) match the real HL
-					// account after an external close.
+					// account after an external close. The mark is fetched at
+					// cycle start, so cp.RealizedPnL is an *approximation* — it
+					// will drift from the true on-chain fill price (which can be
+					// minutes earlier). Do not treat the resulting Trade /
+					// ClosedPosition rows as authoritative for tax or reporting;
+					// they exist to keep cash bookkeeping in sync.
 					changed = true
 				} else {
 					// No mark price available — fall back to recording the

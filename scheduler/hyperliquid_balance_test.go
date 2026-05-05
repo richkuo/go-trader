@@ -1371,6 +1371,30 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash(t *tes
 	if math.Abs(peer.Cash-wantCash) > 1e-6 {
 		t.Errorf("peer Cash = %v, want %v (started %v + PnL %v)", peer.Cash, wantCash, peerStartCash, wantPnL)
 	}
+	// SQLite-backed leaderboard #T / W/L reads from trades, not closed positions —
+	// assert the close Trade row mirrors the ClosedPosition.
+	var closeTrades []Trade
+	for _, tr := range peer.TradeHistory {
+		if tr.IsClose {
+			closeTrades = append(closeTrades, tr)
+		}
+	}
+	if len(closeTrades) != 1 {
+		t.Fatalf("peer close trades = %d, want 1 (history=%+v)", len(closeTrades), peer.TradeHistory)
+	}
+	ct := closeTrades[0]
+	if math.Abs(ct.RealizedPnL-wantPnL) > 1e-6 {
+		t.Errorf("trade RealizedPnL = %v, want %v", ct.RealizedPnL, wantPnL)
+	}
+	if ct.Price != mark {
+		t.Errorf("trade Price = %v, want %v", ct.Price, mark)
+	}
+	if ct.Side != "sell" {
+		t.Errorf("trade Side = %q, want %q (long close)", ct.Side, "sell")
+	}
+	if ct.TradeType != "perps" {
+		t.Errorf("trade TradeType = %q, want perps", ct.TradeType)
+	}
 	// Owner still goes through the SL path and also has its cash credited.
 	owner := state.Strategies["hl-owner-eth"]
 	if owner.Positions["ETH"] != nil {
