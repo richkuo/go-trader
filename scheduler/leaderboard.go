@@ -11,14 +11,19 @@ import (
 
 // LeaderboardEntry holds computed PnL data for one strategy.
 type LeaderboardEntry struct {
-	ID      string  `json:"id"`
-	Type    string  `json:"type"`
-	Value   float64 `json:"value"`
-	Capital float64 `json:"capital"`
-	PnL     float64 `json:"pnl"`
-	PnLPct  float64 `json:"pnl_pct"`
-	Trades  int     `json:"trades"`
-	Sharpe  float64 `json:"sharpe"` // #397 — annualized Sharpe; 0 = undefined/no data. Kept in the serialized form (no omitempty) so consumers can distinguish "present but zero" from "omitted".
+	ID         string  `json:"id"`
+	Type       string  `json:"type"`
+	Value      float64 `json:"value"`
+	Capital    float64 `json:"capital"`
+	PnL        float64 `json:"pnl"`
+	PnLPct     float64 `json:"pnl_pct"`
+	Trades     int     `json:"trades"`
+	Sharpe     float64 `json:"sharpe"`      // #397 — annualized Sharpe; 0 = undefined/no data. Kept in the serialized form (no omitempty) so consumers can distinguish "present but zero" from "omitted".
+	Timeframe  string  `json:"timeframe"`   // #580 — candle timeframe (Args[2]) or "—".
+	Interval   string  `json:"interval"`    // #580 — formatted check interval (e.g. "1h").
+	RoundTrips int     `json:"round_trips"` // #580 — closed round-trip count from trades table (immune to RiskState resets).
+	Wins       int     `json:"wins"`        // #580 — round trips with net realized PnL > 0.
+	Losses     int     `json:"losses"`      // #580 — round trips with net realized PnL < 0.
 }
 
 // leaderboardTopN returns the configured top-N count, defaulting to 5 when unset.
@@ -33,8 +38,10 @@ func leaderboardTopN(cfg *Config) int {
 // messages from the current state. Returned map keys are "top" and "bottom";
 // the actual entry count is controlled by Discord.LeaderboardTopN. Returns nil
 // if no strategies have state. Issue #313 moved this to an on-demand compute
-// (previously written to leaderboard.json every cycle).
-func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64) map[string]string {
+// (previously written to leaderboard.json every cycle). lifetimeStats (#580)
+// is keyed by strategy ID; missing keys render zero round trips because
+// SQLite trades are authoritative — pass nil when unavailable.
+func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats) map[string]string {
 	var allEntries []LeaderboardEntry
 
 	for _, sc := range cfg.Strategies {
@@ -50,16 +57,7 @@ func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]fl
 			pnlPct = (pnl / initCap) * 100
 		}
 
-		allEntries = append(allEntries, LeaderboardEntry{
-			ID:      sc.ID,
-			Type:    sc.Type,
-			Value:   pv,
-			Capital: initCap,
-			PnL:     pnl,
-			PnLPct:  pnlPct,
-			Trades:  len(ss.TradeHistory),
-			Sharpe:  sharpeByStrategy[sc.ID],
-		})
+		allEntries = append(allEntries, newLeaderboardEntry(sc, ss, pv, initCap, pnl, pnlPct, sharpeByStrategy, lifetimeStats, cfg.IntervalSeconds))
 	}
 
 	if len(allEntries) == 0 {
@@ -70,6 +68,32 @@ func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]fl
 	return map[string]string{
 		"top":    formatAllTimeMessage("🏆", "Top All-Time Performers", allEntries, true, topN),
 		"bottom": formatAllTimeMessage("💀", "Bottom All-Time Performers", allEntries, false, topN),
+	}
+}
+
+// newLeaderboardEntry assembles a LeaderboardEntry, pulling timeframe/interval
+// from the strategy config and round-trip / W-L counts from the lifetime stats
+// map (#580). Missing lifetimeStats entry → zero round trips.
+func newLeaderboardEntry(sc StrategyConfig, ss *StrategyState, pv, initCap, pnl, pnlPct float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats, globalIntervalSeconds int) LeaderboardEntry {
+	effectiveInterval := sc.IntervalSeconds
+	if effectiveInterval <= 0 {
+		effectiveInterval = globalIntervalSeconds
+	}
+	lt := lifetimeStats[sc.ID]
+	return LeaderboardEntry{
+		ID:         sc.ID,
+		Type:       sc.Type,
+		Value:      pv,
+		Capital:    initCap,
+		PnL:        pnl,
+		PnLPct:     pnlPct,
+		Trades:     len(ss.TradeHistory),
+		Sharpe:     sharpeByStrategy[sc.ID],
+		Timeframe:  extractTimeframe(sc),
+		Interval:   formatInterval(effectiveInterval),
+		RoundTrips: lt.RoundTrips,
+		Wins:       lt.Wins,
+		Losses:     lt.Losses,
 	}
 }
 
@@ -90,12 +114,14 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 
 	// Totals across ALL strategies in this category.
 	var totalValue, totalCapital float64
-	totalTrades := 0
+	totalRoundTrips, totalWins, totalLosses := 0, 0, 0
 	winning, losing, flat := 0, 0, 0
 	for _, e := range entries {
 		totalValue += e.Value
 		totalCapital += e.Capital
-		totalTrades += e.Trades
+		totalRoundTrips += e.RoundTrips
+		totalWins += e.Wins
+		totalLosses += e.Losses
 		if e.PnLPct > 0 {
 			winning++
 		} else if e.PnLPct < 0 {
@@ -116,45 +142,62 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 		top = top[:topN]
 	}
 
-	const sep = "--------------------------------------------------------------------------------"
-	sb.WriteString("\n```\n")
+	// Tf/Int/#T/W/L columns added in #580 to match FormatCategorySummary's
+	// per-channel A→Z table. Sharpe stays at the end as the leaderboard's
+	// distinguishing column.
+	var (
+		header   string
+		rowFmt   string
+		labelMax int
+	)
 	if showType {
-		sb.WriteString(fmt.Sprintf("%-22s %-6s %10s %10s %7s %8s %7s\n", "Strategy", "Type", "Value", "PnL", "PnL%", "Trades", "Sharpe"))
+		header = fmt.Sprintf("%-18s %-6s %10s %10s %7s %4s %4s %4s %5s %7s",
+			"Strategy", "Type", "Value", "PnL", "PnL%", "Tf", "Int", "#T", "W/L", "Sharpe")
+		rowFmt = "%-18s %-6s %10s %10s %7s %4s %4s %4d %5s %7s\n"
+		labelMax = 18
 	} else {
-		sb.WriteString(fmt.Sprintf("%-26s %10s %10s %7s %8s %7s\n", "Strategy", "Value", "PnL", "PnL%", "Trades", "Sharpe"))
+		header = fmt.Sprintf("%-22s %10s %10s %7s %4s %4s %4s %5s %7s",
+			"Strategy", "Value", "PnL", "PnL%", "Tf", "Int", "#T", "W/L", "Sharpe")
+		rowFmt = "%-22s %10s %10s %7s %4s %4s %4d %5s %7s\n"
+		labelMax = 22
 	}
+	sep := strings.Repeat("-", len(header))
+	sb.WriteString("\n```\n")
+	sb.WriteString(header + "\n")
 	sb.WriteString(sep + "\n")
 
 	for _, e := range top {
 		label := e.ID
+		if len(label) > labelMax {
+			label = label[:labelMax]
+		}
 		valStr := "$" + fmtComma(e.Value)
 		pnlStr := fmtSignedDollar(e.PnL)
 		pctStr := fmtSignedPct(e.PnLPct)
-		tradesStr := fmt.Sprintf("%d", e.Trades)
+		tfStr := leaderboardTfStr(e.Timeframe)
+		intStr := leaderboardIntStr(e.Interval)
+		wlStr := fmtWinLossRatio(e.Wins, e.Losses)
 		sharpeStr := fmtSharpe(e.Sharpe)
 		if showType {
-			if len(label) > 22 {
-				label = label[:22]
-			}
-			sb.WriteString(fmt.Sprintf("%-22s %-6s %10s %10s %7s %8s %7s\n", label, e.Type, valStr, pnlStr, pctStr, tradesStr, sharpeStr))
+			sb.WriteString(fmt.Sprintf(rowFmt, label, e.Type, valStr, pnlStr, pctStr, tfStr, intStr, e.RoundTrips, wlStr, sharpeStr))
 		} else {
-			if len(label) > 26 {
-				label = label[:26]
-			}
-			sb.WriteString(fmt.Sprintf("%-26s %10s %10s %7s %8s %7s\n", label, valStr, pnlStr, pctStr, tradesStr, sharpeStr))
+			sb.WriteString(fmt.Sprintf(rowFmt, label, valStr, pnlStr, pctStr, tfStr, intStr, e.RoundTrips, wlStr, sharpeStr))
 		}
 	}
 	sb.WriteString(sep + "\n")
 
 	totalLabel := fmt.Sprintf("TOTAL (%d strategies)", len(entries))
+	if len(totalLabel) > labelMax {
+		totalLabel = totalLabel[:labelMax]
+	}
 	totValStr := "$" + fmtComma(totalValue)
 	totPnlStr := fmtSignedDollar(totalPnl)
 	totPctStr := fmtSignedPct(totalPnlPct)
-	totTradesStr := fmt.Sprintf("%d", totalTrades)
+	totWlStr := fmtWinLossRatio(totalWins, totalLosses)
 	if showType {
-		sb.WriteString(fmt.Sprintf("%-22s %-6s %10s %10s %7s %8s %7s\n", totalLabel, "", totValStr, totPnlStr, totPctStr, totTradesStr, ""))
+		sb.WriteString(fmt.Sprintf(rowFmt, totalLabel, "", totValStr, totPnlStr, totPctStr, "", "", totalRoundTrips, totWlStr, ""))
 	} else {
-		sb.WriteString(fmt.Sprintf("%-26s %10s %10s %7s %8s %7s\n", totalLabel, totValStr, totPnlStr, totPctStr, totTradesStr, ""))
+		sb.WriteString(fmt.Sprintf(rowFmt, totalLabel, totValStr, totPnlStr, totPctStr, "", "", totalRoundTrips, totWlStr, ""))
 	}
 	sb.WriteString("```\n")
 	sb.WriteString(fmt.Sprintf("🟢 %d winning · 🔴 %d losing · ⚪ %d flat\n", winning, losing, flat))
@@ -192,8 +235,8 @@ func formatAllTimeMessage(icon, title string, entries []LeaderboardEntry, isTop 
 // pre-computed leaderboard.json (which was rewritten every cycle) to computing
 // fresh data at post time — the data is only used by the daily cron post and
 // the --leaderboard flag, so there is no benefit to pre-computation.
-func PostLeaderboard(cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, notifier *MultiNotifier) error {
-	return postLeaderboardMessages(BuildLeaderboardMessages(cfg, state, prices, sharpeByStrategy), notifier)
+func PostLeaderboard(cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats, notifier *MultiNotifier) error {
+	return postLeaderboardMessages(BuildLeaderboardMessages(cfg, state, prices, sharpeByStrategy, lifetimeStats), notifier)
 }
 
 // postLeaderboardMessages posts pre-built leaderboard messages. Separated from
@@ -259,8 +302,8 @@ func platformIcon(platform string) string {
 // LeaderboardSummaryConfig entry: strategies filtered by platform (and
 // optionally ticker) sorted by PnL% descending, truncated to TopN. Returns ""
 // if no strategies match — caller should skip posting in that case.
-// Issue #308.
-func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64) string {
+// Issue #308. lifetimeStats may be nil; missing keys render zero round trips.
+func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats) string {
 	topN := lc.TopN
 	if topN <= 0 {
 		topN = 5
@@ -286,16 +329,7 @@ func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *Ap
 		if initCap > 0 {
 			pnlPct = (pnl / initCap) * 100
 		}
-		entries = append(entries, LeaderboardEntry{
-			ID:      sc.ID,
-			Type:    sc.Type,
-			Value:   pv,
-			Capital: initCap,
-			PnL:     pnl,
-			PnLPct:  pnlPct,
-			Trades:  len(ss.TradeHistory),
-			Sharpe:  sharpeByStrategy[sc.ID],
-		})
+		entries = append(entries, newLeaderboardEntry(sc, ss, pv, initCap, pnl, pnlPct, sharpeByStrategy, lifetimeStats, cfg.IntervalSeconds))
 	}
 
 	if len(entries) == 0 {
@@ -316,6 +350,29 @@ func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *Ap
 		title = fmt.Sprintf("%s %s Top %d", platformTitle, tickerFilter, n)
 	}
 	return formatLeaderboardMessage(platformIcon(lc.Platform), title, entries[:n], false, n)
+}
+
+// leaderboardTfStr trims long timeframe strings to fit the 4-char Tf column.
+// Empty / missing values render as "—" to match FormatCategorySummary.
+func leaderboardTfStr(tf string) string {
+	if tf == "" {
+		return "—"
+	}
+	if len(tf) > 4 {
+		return tf[:4]
+	}
+	return tf
+}
+
+// leaderboardIntStr applies the same width guard for the Int column.
+func leaderboardIntStr(s string) string {
+	if s == "" {
+		return "—"
+	}
+	if len(s) > 4 {
+		return s[:4]
+	}
+	return s
 }
 
 // fmtSignedDollar formats a dollar value with +/- prefix.
