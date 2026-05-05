@@ -585,45 +585,92 @@ func TestParseOKXPositionsOutput_MalformedJSON(t *testing.T) {
 	}
 }
 
-// ── RunHyperliquidExecute arg-building (#592) ────────────────────────────
-// These tests verify the argv contract between Go and the Python script
+// ── buildHyperliquidExecuteArgs (#592) ─────────────────────────────────────
+// These tests assert the argv contract between Go and check_hyperliquid.py
 // without invoking the subprocess (no .venv required).
 
-// parseHyperliquidExecuteOutput is already tested elsewhere; these focus on
-// the flag-building logic inside RunHyperliquidExecute by inspecting the
-// parsed result from known good JSON, which indirectly proves the right flags
-// would be passed.
+func argsContains(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
 
-// closeFullPosition=true path: the execute result JSON shape must be identical
-// to the sized-close path so executeHyperliquidResult can consume it unchanged.
-func TestHyperliquidExecuteResult_CloseFullPositionShape(t *testing.T) {
-	// Python emits the same execution.fill shape whether it used market_open
-	// or market_close(sz=None) — the JSON consumer (Go) doesn't care which
-	// code path was used, only that fill fields are present.
-	stdout := []byte(`{
-		"execution": {
-			"action": "sell",
-			"symbol": "ETH",
-			"size": 0,
-			"fill": {"avg_px": 3000.5, "total_sz": 0.211, "oid": 999, "fee": 0.25}
-		},
-		"platform": "hyperliquid",
-		"timestamp": "2026-05-05T00:00:00Z"
-	}`)
-	result, _, err := parseHyperliquidExecuteOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err, got %v", err)
+func argsHasPrefix(args []string, prefix string) bool {
+	for _, a := range args {
+		if len(a) >= len(prefix) && a[:len(prefix)] == prefix {
+			return true
+		}
 	}
-	if result == nil || result.Execution == nil || result.Execution.Fill == nil {
-		t.Fatal("Execution.Fill must be populated")
+	return false
+}
+
+// closeFullPosition=true must emit --close-full-position and OMIT --size, so
+// the Python script calls adapter.market_close(sz=None) instead of
+// market_open(size). This is the load-bearing #592 contract.
+func TestBuildHyperliquidExecuteArgs_CloseFullPosition(t *testing.T) {
+	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, true)
+
+	if !argsContains(args, "--close-full-position") {
+		t.Errorf("expected --close-full-position flag in argv, got %v", args)
 	}
-	if result.Execution.Fill.TotalSz != 0.211 {
-		t.Errorf("TotalSz = %g, want 0.211 (full residual closed by market_close)", result.Execution.Fill.TotalSz)
+	if argsHasPrefix(args, "--size=") {
+		t.Errorf("--size must be omitted when closeFullPosition=true, got %v", args)
 	}
-	if result.Execution.Fill.OID != 999 {
-		t.Errorf("OID = %d, want 999", result.Execution.Fill.OID)
+	if !argsContains(args, "--symbol=ETH") {
+		t.Errorf("expected --symbol=ETH, got %v", args)
 	}
-	if result.Execution.Fill.Fee != 0.25 {
-		t.Errorf("Fee = %g, want 0.25", result.Execution.Fill.Fee)
+	if !argsContains(args, "--side=sell") {
+		t.Errorf("expected --side=sell, got %v", args)
 	}
+}
+
+// Sized close (closeFullPosition=false) must emit --size=N and OMIT
+// --close-full-position. This is the path used for shared-coin peers and for
+// partial closes.
+func TestBuildHyperliquidExecuteArgs_SizedClose(t *testing.T) {
+	args := buildHyperliquidExecuteArgs("ETH", "sell", 0.42, 0, 0, 0, "", 0, false)
+
+	if argsContains(args, "--close-full-position") {
+		t.Errorf("--close-full-position must be omitted when closeFullPosition=false, got %v", args)
+	}
+	if !argsHasPrefix(args, "--size=") {
+		t.Errorf("expected --size=N flag in argv, got %v", args)
+	}
+	if !argsContains(args, "--size=0.42") {
+		t.Errorf("expected --size=0.42 in argv, got %v", args)
+	}
+}
+
+// Optional flags should be conditionally present.
+func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
+	t.Run("no optional flags", func(t *testing.T) {
+		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "", 0, false)
+		for _, prefix := range []string{"--stop-loss-pct=", "--cancel-stop-loss-oid=", "--prev-pos-qty=", "--margin-mode=", "--leverage="} {
+			if argsHasPrefix(args, prefix) {
+				t.Errorf("expected %s to be omitted, got %v", prefix, args)
+			}
+		}
+	})
+	t.Run("all optional flags", func(t *testing.T) {
+		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 2.5, 12345, 0.0005, "isolated", 5, false)
+		for _, want := range []string{"--stop-loss-pct=2.5", "--cancel-stop-loss-oid=12345", "--prev-pos-qty=0.0005", "--margin-mode=isolated", "--leverage=5"} {
+			if !argsContains(args, want) {
+				t.Errorf("expected %q in argv, got %v", want, args)
+			}
+		}
+	})
+	t.Run("margin mode without leverage", func(t *testing.T) {
+		// leverage=0 with non-empty margin_mode: --leverage must not appear (would
+		// confuse the Python validator) but --margin-mode is still emitted.
+		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "cross", 0, false)
+		if !argsContains(args, "--margin-mode=cross") {
+			t.Errorf("expected --margin-mode=cross, got %v", args)
+		}
+		if argsHasPrefix(args, "--leverage=") {
+			t.Errorf("--leverage must be omitted when leverage=0, got %v", args)
+		}
+	})
 }

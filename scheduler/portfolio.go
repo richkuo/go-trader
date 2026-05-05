@@ -2,48 +2,9 @@ package main
 
 import (
 	"fmt"
-	"math"
 	"sync/atomic"
 	"time"
 )
-
-// hlSzDecimalsMap maps HL perps coin names to their sz_decimals (size tick precision).
-// Source: HL meta API. Unmapped coins fall back to 3 (ETH-class precision).
-var hlSzDecimalsMap = map[string]int{
-	"BTC":   5,
-	"ETH":   3,
-	"SOL":   2,
-	"BNB":   2,
-	"AVAX":  2,
-	"MATIC": 0,
-	"DOGE":  0,
-	"ARB":   1,
-	"OP":    1,
-	"LINK":  1,
-	"ATOM":  1,
-	"UNI":   1,
-	"LTC":   2,
-	"BCH":   3,
-	"DOT":   1,
-	"ADA":   0,
-	"XRP":   0,
-}
-
-// hyperliquidSzDecimals returns the sz_decimals for a HL perps coin (3 if unknown).
-func hyperliquidSzDecimals(symbol string) int {
-	if d, ok := hlSzDecimalsMap[symbol]; ok {
-		return d
-	}
-	return 3
-}
-
-// hlFloorToSzDecimals floors size down to the given decimal places.
-// Used for partial TP closes so the Go-side virtual decrement matches what HL
-// receives, regardless of banker's-rounding behaviour in the Python adapter (#592).
-func hlFloorToSzDecimals(size float64, decimals int) float64 {
-	factor := math.Pow10(decimals)
-	return math.Floor(size*factor) / factor
-}
 
 // Position represents a spot, futures, or perps position.
 type Position struct {

@@ -1456,7 +1456,7 @@ func main() {
 								}
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
-								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, notifier, logger)
+								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlLiveAll, notifier, logger)
 								if ok2 {
 									execResult = er
 								} else {
@@ -2300,6 +2300,26 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, posCtx Po
 	return result, signalStr, price, true
 }
 
+// shouldCloseFullPosition decides whether a HL perps close leg should call
+// adapter.market_close(sz=None) (close entire on-chain residual, no dust) vs.
+// a sized market_open in the opposite direction.
+//
+// Sole-peer guard: market_close(sz=None) flattens the entire wallet position,
+// not just this strategy's virtual share. When two HL perps strategies share
+// a coin (#491/#494), a final-tier TP on strategy A would otherwise zero
+// peer B's exposure too. Fall back to the sized close path in that case —
+// virtual tracking on-chain via fillQty makes that path dust-tolerant within
+// a single strategy's lifecycle (#592 review #1).
+//
+// Returns true only when close_fraction == 1.0 (final tier) AND the strategy
+// is the sole HL perps live strategy on this coin.
+func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []StrategyConfig) bool {
+	if closeFraction != 1.0 {
+		return false
+	}
+	return len(hlLiveStrategiesForCoin(symbol, hlLiveAll)) <= 1
+}
+
 // runHyperliquidExecuteOrder places a live market order (Phase 3, no lock).
 // Returns (execResult, ok); ok=false means order failed or was skipped, so
 // caller must not apply state updates.
@@ -2311,7 +2331,7 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, posCtx Po
 // Trade record, leaving state silently behind actual exchange holdings. See
 // issue #298 — 0.716 ETH of live fills were lost this way because the
 // "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
-func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, existingStopLossOID int64, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, existingStopLossOID int64, hlLiveAll []StrategyConfig, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	if reason := PerpsOrderSkipReason(result.Signal, posSide, sc.AllowShorts); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
@@ -2400,20 +2420,11 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		logger.Info("Placing live %s %s size=%.6f", side, result.Symbol, size)
 	}
 
-	// Final-tier close (#592): close_fraction==1.0 from the close registry means
-	// "close everything remaining." Use market_close(sz=None) so HL flattens
-	// the on-chain residual without a sized order, eliminating rounding dust.
-	// pureClose (direct signal=-1 close) uses the existing sized path — posQty
-	// is clean from the open fill, so no dust there.
-	closeFullPosition := result.CloseFraction == 1.0
+	closeFullPosition := shouldCloseFullPosition(result.CloseFraction, result.Symbol, hlLiveAll)
 	if closeFullPosition {
 		logger.Info("Final-tier full close %s (close_fraction=1.0) — using market_close(sz=None)", result.Symbol)
-	} else if partialClose {
-		// Floor size to HL sz_decimals so Go virtual decrement matches what HL
-		// actually receives, avoiding compounding rounding drift across tiers (#592).
-		szDec := hyperliquidSzDecimals(result.Symbol)
-		size = hlFloorToSzDecimals(size, szDec)
-		logger.Info("Partial close %s: floored to %.8g (sz_decimals=%d)", result.Symbol, size, szDec)
+	} else if result.CloseFraction == 1.0 {
+		logger.Info("Final-tier close %s shares coin with HL perps peers — using sized close to preserve peer exposure", result.Symbol)
 	}
 	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen, closeFullPosition)
 	if stderr != "" {

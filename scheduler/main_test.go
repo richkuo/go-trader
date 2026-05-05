@@ -1086,6 +1086,52 @@ func TestExecuteTopStepResult_StampsExchangeData(t *testing.T) {
 	}
 }
 
+// TestShouldCloseFullPosition verifies the sole-peer guard for the #592
+// market_close(sz=None) optimisation: only fire on the final tier
+// (closeFraction=1.0) AND only when no other HL perps live strategy shares
+// the coin (otherwise we'd flatten the peer's exposure too).
+func TestShouldCloseFullPosition(t *testing.T) {
+	liveArgs := []string{"hold", "ETH", "1h", "--mode=live"}
+	btcLiveArgs := []string{"hold", "BTC", "1h", "--mode=live"}
+
+	soloPeer := []StrategyConfig{
+		{ID: "hl-eth-1", Platform: "hyperliquid", Type: "perps", Args: liveArgs},
+	}
+	twoPeersSameCoin := []StrategyConfig{
+		{ID: "hl-eth-1", Platform: "hyperliquid", Type: "perps", Args: liveArgs},
+		{ID: "hl-eth-2", Platform: "hyperliquid", Type: "perps", Args: liveArgs},
+	}
+	differentCoinPeer := []StrategyConfig{
+		{ID: "hl-eth-1", Platform: "hyperliquid", Type: "perps", Args: liveArgs},
+		{ID: "hl-btc-1", Platform: "hyperliquid", Type: "perps", Args: btcLiveArgs},
+	}
+
+	cases := []struct {
+		name          string
+		closeFraction float64
+		symbol        string
+		hlLiveAll     []StrategyConfig
+		want          bool
+	}{
+		{"final tier, solo on coin → true", 1.0, "ETH", soloPeer, true},
+		{"final tier, two peers on same coin → false (preserve peer)", 1.0, "ETH", twoPeersSameCoin, false},
+		{"final tier, peer on different coin → true", 1.0, "ETH", differentCoinPeer, true},
+		{"partial close → false regardless of peers", 0.5, "ETH", soloPeer, false},
+		{"partial close, shared coin → false", 0.5, "ETH", twoPeersSameCoin, false},
+		{"empty hlLiveAll, full close → true", 1.0, "ETH", nil, true},
+		{"close fraction zero → false", 0, "ETH", soloPeer, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shouldCloseFullPosition(tc.closeFraction, tc.symbol, tc.hlLiveAll)
+			if got != tc.want {
+				t.Errorf("shouldCloseFullPosition(%g, %q, %d peers) = %v, want %v",
+					tc.closeFraction, tc.symbol, len(tc.hlLiveAll), got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsHLLiveReconcilable(t *testing.T) {
 	liveArgs := []string{"hold", "ETH", "1h", "--mode=live"}
 	paperArgs := []string{"hold", "ETH", "1h", "--mode=paper"}
