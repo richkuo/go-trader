@@ -36,42 +36,17 @@ on every error path so a malformed-JSON crash still surfaces as failure.
 
 import argparse
 import json
-import math
 import os
 import sys
 import time
 import traceback
-from collections.abc import Mapping
 from datetime import datetime, timezone
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "platforms", "hyperliquid"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
 
-
-def _finite_number(value):
-    if isinstance(value, bool):
-        return None
-    if not isinstance(value, (int, float, str)):
-        return None
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    return numeric if math.isfinite(numeric) else None
-
-
-def _apply_user_fills_lookup(fill, lookup):
-    if not isinstance(lookup, Mapping):
-        return False
-    fee = _finite_number(lookup.get("fee"))
-    if fee is None:
-        return False
-    fill["fee"] = fee
-    if "closed_pnl" in lookup:
-        closed_pnl = _finite_number(lookup.get("closed_pnl"))
-        if closed_pnl is not None:
-            fill["closed_pnl"] = closed_pnl
-    return True
+from hl_user_fills import apply_user_fills_lookup
 
 
 def main():
@@ -208,7 +183,7 @@ def main():
             lookup = adapter.lookup_fill_fee_by_oid(fill["oid"], fills_since_ms)
             if not lookup:
                 print(f"[WARN] userFills lookup returned no fills for oid={fill['oid']}", file=sys.stderr)
-            elif not _apply_user_fills_lookup(fill, lookup):
+            elif not apply_user_fills_lookup(fill, lookup):
                 print(f"[WARN] userFills lookup returned malformed fill data for oid={fill['oid']}", file=sys.stderr)
         except Exception as fe:
             print(f"[WARN] userFills lookup failed for oid={fill['oid']}: {fe}", file=sys.stderr)
