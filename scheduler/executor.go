@@ -231,13 +231,22 @@ func RunHyperliquidCheck(script string, args []string) (*HyperliquidResult, stri
 // before the order, but only on a fresh open from flat — HL rejects margin-mode
 // changes on an open position (#486). Empty marginMode skips the call. These
 // trailing args are HL-specific: OKX/TopStep have their own execute helpers.
-func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64) (*HyperliquidExecuteResult, string, error) {
+// RunHyperliquidExecute runs check_hyperliquid.py in execute mode (live orders).
+// closeFullPosition=true emits --close-full-position so Python calls
+// adapter.market_close(sz=None) instead of market_open; this closes the entire
+// on-chain residual without a sized order, eliminating rounding dust on final
+// TP tiers (#592). When closeFullPosition is true the --size arg is omitted.
+func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool) (*HyperliquidExecuteResult, string, error) {
 	args := []string{
 		"--execute",
 		fmt.Sprintf("--symbol=%s", symbol),
 		fmt.Sprintf("--side=%s", side),
-		fmt.Sprintf("--size=%g", size),
 		"--mode=live",
+	}
+	if closeFullPosition {
+		args = append(args, "--close-full-position")
+	} else {
+		args = append(args, fmt.Sprintf("--size=%g", size))
 	}
 	if stopLossPct > 0 {
 		args = append(args, fmt.Sprintf("--stop-loss-pct=%g", stopLossPct))

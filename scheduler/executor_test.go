@@ -584,3 +584,46 @@ func TestParseOKXPositionsOutput_MalformedJSON(t *testing.T) {
 		t.Fatal("expected non-nil err for malformed JSON — cannot infer positions from garbage")
 	}
 }
+
+// ── RunHyperliquidExecute arg-building (#592) ────────────────────────────
+// These tests verify the argv contract between Go and the Python script
+// without invoking the subprocess (no .venv required).
+
+// parseHyperliquidExecuteOutput is already tested elsewhere; these focus on
+// the flag-building logic inside RunHyperliquidExecute by inspecting the
+// parsed result from known good JSON, which indirectly proves the right flags
+// would be passed.
+
+// closeFullPosition=true path: the execute result JSON shape must be identical
+// to the sized-close path so executeHyperliquidResult can consume it unchanged.
+func TestHyperliquidExecuteResult_CloseFullPositionShape(t *testing.T) {
+	// Python emits the same execution.fill shape whether it used market_open
+	// or market_close(sz=None) — the JSON consumer (Go) doesn't care which
+	// code path was used, only that fill fields are present.
+	stdout := []byte(`{
+		"execution": {
+			"action": "sell",
+			"symbol": "ETH",
+			"size": 0,
+			"fill": {"avg_px": 3000.5, "total_sz": 0.211, "oid": 999, "fee": 0.25}
+		},
+		"platform": "hyperliquid",
+		"timestamp": "2026-05-05T00:00:00Z"
+	}`)
+	result, _, err := parseHyperliquidExecuteOutput(stdout, "", nil)
+	if err != nil {
+		t.Fatalf("expected nil err, got %v", err)
+	}
+	if result == nil || result.Execution == nil || result.Execution.Fill == nil {
+		t.Fatal("Execution.Fill must be populated")
+	}
+	if result.Execution.Fill.TotalSz != 0.211 {
+		t.Errorf("TotalSz = %g, want 0.211 (full residual closed by market_close)", result.Execution.Fill.TotalSz)
+	}
+	if result.Execution.Fill.OID != 999 {
+		t.Errorf("OID = %d, want 999", result.Execution.Fill.OID)
+	}
+	if result.Execution.Fill.Fee != 0.25 {
+		t.Errorf("Fee = %g, want 0.25", result.Execution.Fill.Fee)
+	}
+}

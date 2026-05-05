@@ -1531,7 +1531,7 @@ func main() {
 								}
 								execResult, execStderr, execErr := RunHyperliquidExecute(
 									sc.Script, sc.Symbol, closeSide, closeQty,
-									0, cancelOID, 0, "", 0,
+									0, cancelOID, 0, "", 0, intentFullClose,
 								)
 								if execStderr != "" {
 									logger.Info("HL manual close stderr: %s", execStderr)
@@ -2400,7 +2400,22 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		logger.Info("Placing live %s %s size=%.6f", side, result.Symbol, size)
 	}
 
-	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen)
+	// Final-tier close (#592): close_fraction==1.0 from the close registry means
+	// "close everything remaining." Use market_close(sz=None) so HL flattens
+	// the on-chain residual without a sized order, eliminating rounding dust.
+	// pureClose (direct signal=-1 close) uses the existing sized path — posQty
+	// is clean from the open fill, so no dust there.
+	closeFullPosition := result.CloseFraction == 1.0
+	if closeFullPosition {
+		logger.Info("Final-tier full close %s (close_fraction=1.0) — using market_close(sz=None)", result.Symbol)
+	} else if partialClose {
+		// Floor size to HL sz_decimals so Go virtual decrement matches what HL
+		// actually receives, avoiding compounding rounding drift across tiers (#592).
+		szDec := hyperliquidSzDecimals(result.Symbol)
+		size = hlFloorToSzDecimals(size, szDec)
+		logger.Info("Partial close %s: floored to %.8g (sz_decimals=%d)", result.Symbol, size, szDec)
+	}
+	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen, closeFullPosition)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
