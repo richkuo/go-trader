@@ -129,10 +129,6 @@ func planBackfillForStrategy(
 		return sortedTrades[i].Timestamp.Before(sortedTrades[j].Timestamp)
 	})
 
-	// Map rowid → resolved (newFee, newPnL) so the closed-position recompute
-	// pass below can read the corrected values.
-	corrected := make(map[int64]TradeBackfillRow, len(sortedTrades))
-
 	// Pre-correction replay: walk the trades using the values *currently*
 	// stored on disk (modeled fee fallback when exchange_fee=0 — that's what
 	// was actually deducted at execution time). If the result diverges from
@@ -247,18 +243,6 @@ func planBackfillForStrategy(
 			cash -= effectiveFee
 		}
 
-		// Stash corrected values for the closed-position aggregate pass.
-		corrected[t.RowID] = TradeBackfillRow{
-			RowID:           t.RowID,
-			Timestamp:       t.Timestamp,
-			Symbol:          t.Symbol,
-			PositionID:      t.PositionID,
-			Value:           t.Value,
-			IsClose:         t.IsClose,
-			ExchangeOrderID: t.ExchangeOrderID,
-			ExchangeFee:     newFee,
-			RealizedPnL:     newPnL,
-		}
 	}
 
 	plan.NewCash = cash
@@ -320,12 +304,21 @@ func planClosedPositionRecomputes(
 		if pid == "" {
 			// Tolerance match: nearest close-leg trade on same symbol within
 			// 5s, but require BOTH (a) directional ordering — the trade leg
-			// must land at or after the closed_positions row (close legs are
-			// always written before/with the SaveState that emits the
-			// closed_positions row, never before it) — AND (b) uniqueness:
-			// no other candidate within the same window. This rules out
-			// rapid back-to-back partial-then-final closes on the same symbol
-			// silently mapping to the wrong position_id.
+			// must land at or after the closed_positions row — AND (b)
+			// uniqueness: no other candidate within the same window. This
+			// rules out rapid back-to-back partial-then-final closes on the
+			// same symbol silently mapping to the wrong position_id.
+			//
+			// Timestamp invariant (post-#471): both trades.timestamp and
+			// closed_positions.closed_at are written from pos.ClosedAt in the
+			// same SaveState pass, so they are the same value and the exact-ns
+			// path above handles all modern rows without reaching here.
+			// Legacy rows (pre-#471) may violate the ordering assumption
+			// because trades.timestamp was the HL exchange fill time (a few
+			// ms–s before the scheduler runs SaveState) while closed_at is the
+			// scheduler processing time — meaning leg.Ts could be slightly
+			// before cp.ClosedAt, causing this guard to produce no match
+			// rather than a wrong match. That is the safe failure mode.
 			var candidate string
 			candidates := 0
 			for _, leg := range closeLegs {
