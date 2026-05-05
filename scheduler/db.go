@@ -1503,6 +1503,162 @@ func (sdb *StateDB) DeletePendingManualActionsThrough(maxID int64) error {
 	return err
 }
 
+// EarliestTradeTimestamp returns the oldest trade timestamp across the given
+// strategy IDs, or zero time when none exist. Used by `go-trader backfill
+// hl-fees` to set the lower bound on the userFills query.
+func (sdb *StateDB) EarliestTradeTimestamp(strategyIDs []string) (time.Time, error) {
+	if sdb == nil || sdb.db == nil {
+		return time.Time{}, fmt.Errorf("state db unavailable")
+	}
+	if len(strategyIDs) == 0 {
+		return time.Time{}, nil
+	}
+	placeholders := make([]string, len(strategyIDs))
+	args := make([]interface{}, len(strategyIDs))
+	for i, id := range strategyIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(
+		"SELECT MIN(timestamp) FROM trades WHERE strategy_id IN (%s) AND timestamp != ''",
+		strings.Join(placeholders, ","),
+	)
+	var ts sql.NullString
+	if err := sdb.db.QueryRow(query, args...).Scan(&ts); err != nil {
+		return time.Time{}, fmt.Errorf("earliest trade timestamp: %w", err)
+	}
+	if !ts.Valid || ts.String == "" {
+		return time.Time{}, nil
+	}
+	return parseTime(ts.String), nil
+}
+
+// ListTradesForBackfill returns the trade rows for one strategy that the
+// backfill planner needs (rowid + the columns it reads/rewrites). Ordered by
+// timestamp ascending so the cash replay runs in the same order as the live
+// fills did.
+func (sdb *StateDB) ListTradesForBackfill(strategyID string) ([]TradeBackfillRow, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, fmt.Errorf("state db unavailable")
+	}
+	rows, err := sdb.db.Query(`
+		SELECT rowid, timestamp, symbol, COALESCE(position_id, '') AS position_id,
+		       value, is_close, exchange_order_id, exchange_fee, realized_pnl
+		FROM trades
+		WHERE strategy_id = ?
+		ORDER BY timestamp ASC, rowid ASC`, strategyID)
+	if err != nil {
+		return nil, fmt.Errorf("list trades for backfill: %w", err)
+	}
+	defer rows.Close()
+	var out []TradeBackfillRow
+	for rows.Next() {
+		var t TradeBackfillRow
+		var tsStr string
+		var isCloseInt int
+		if err := rows.Scan(&t.RowID, &tsStr, &t.Symbol, &t.PositionID, &t.Value, &isCloseInt,
+			&t.ExchangeOrderID, &t.ExchangeFee, &t.RealizedPnL); err != nil {
+			return nil, fmt.Errorf("scan trade: %w", err)
+		}
+		t.Timestamp = parseTime(tsStr)
+		t.IsClose = isCloseInt != 0
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// ClosedPositionRow captures the closed_positions columns the backfill needs
+// to match its rows back to a position_id (which closed_positions itself does
+// not store yet — only trades does, since #471).
+type ClosedPositionRow struct {
+	ID          int64
+	Symbol      string
+	ClosedAt    time.Time
+	RealizedPnL float64
+}
+
+// LoadClosedPositionRows returns the closed_positions rows for one strategy
+// in close-time order. The backfill matches each row to a close-leg trade row
+// (same symbol + matching timestamp) to recover the position_id grouping
+// since closed_positions has no position_id column of its own.
+func (sdb *StateDB) LoadClosedPositionRows(strategyID string) ([]ClosedPositionRow, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, fmt.Errorf("state db unavailable")
+	}
+	rows, err := sdb.db.Query(`
+		SELECT id, symbol, closed_at, realized_pnl
+		FROM closed_positions
+		WHERE strategy_id = ?
+		ORDER BY closed_at ASC, id ASC`, strategyID)
+	if err != nil {
+		return nil, fmt.Errorf("load closed_positions: %w", err)
+	}
+	defer rows.Close()
+	var out []ClosedPositionRow
+	for rows.Next() {
+		var r ClosedPositionRow
+		var tsStr string
+		if err := rows.Scan(&r.ID, &r.Symbol, &tsStr, &r.RealizedPnL); err != nil {
+			return nil, fmt.Errorf("scan closed_positions row: %w", err)
+		}
+		r.ClosedAt = parseTime(tsStr)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ApplyBackfillPlan writes the planner's changes to disk inside one
+// transaction: trade row updates, closed_positions PnL recompute, and the
+// strategies.cash baseline. Caller is responsible for ensuring no scheduler
+// is concurrently issuing SaveState — SQLite serializes writers so the
+// transaction itself is safe, but a SaveState fired right after a successful
+// commit will overwrite the recomputed cash with whatever value its
+// in-memory AppState held.
+func (sdb *StateDB) ApplyBackfillPlan(plan BackfillPlan) error {
+	if sdb == nil || sdb.db == nil {
+		return fmt.Errorf("state db unavailable")
+	}
+	tx, err := sdb.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	tradeStmt, err := tx.Prepare(
+		"UPDATE trades SET exchange_fee = ?, realized_pnl = ? WHERE rowid = ?",
+	)
+	if err != nil {
+		return fmt.Errorf("prepare trade update: %w", err)
+	}
+	defer tradeStmt.Close()
+	for _, c := range plan.TradeChanges {
+		if _, err := tradeStmt.Exec(c.NewFee, c.NewRealizedPnL, c.RowID); err != nil {
+			return fmt.Errorf("update trade rowid=%d: %w", c.RowID, err)
+		}
+	}
+
+	// closed_positions are pinned by rowid (planner resolved each one back
+	// to a position_id via close-leg trade timestamps).
+	cpStmt, err := tx.Prepare(
+		"UPDATE closed_positions SET realized_pnl = ? WHERE id = ? AND strategy_id = ?",
+	)
+	if err != nil {
+		return fmt.Errorf("prepare closed_positions update: %w", err)
+	}
+	defer cpStmt.Close()
+	for _, cp := range plan.ClosedPositions {
+		if _, err := cpStmt.Exec(cp.NewPnL, cp.RowID, plan.StrategyID); err != nil {
+			return fmt.Errorf("update closed_positions id=%d: %w", cp.RowID, err)
+		}
+	}
+
+	if _, err := tx.Exec("UPDATE strategies SET cash = ? WHERE id = ?", plan.NewCash, plan.StrategyID); err != nil {
+		return fmt.Errorf("update strategy cash: %w", err)
+	}
+
+	return tx.Commit()
+}
+
 // formatTime converts a time.Time to RFC 3339 string, or "" for zero time.
 func formatTime(t time.Time) string {
 	if t.IsZero() {

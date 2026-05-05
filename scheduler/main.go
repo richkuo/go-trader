@@ -24,6 +24,8 @@ func main() {
 			os.Exit(runManualOpen(os.Args[2:]))
 		case "manual-close":
 			os.Exit(runManualClose(os.Args[2:]))
+		case "backfill":
+			os.Exit(runBackfill(os.Args[2:]))
 		}
 	}
 
