@@ -185,7 +185,13 @@ def main():
             cursor_ms = next_cursor
         else:
             # HL returned a full page all at the same ms — push past it to
-            # avoid an infinite loop.
+            # avoid an infinite loop. Trade-off: any leg landing on
+            # next_cursor + 0 (same ms as the cursor we just exhausted) that
+            # was NOT in this page is dropped, in exchange for guaranteed
+            # forward progress. In practice HL caps pages at ~2000 rows and
+            # same-ms full pages essentially never occur for a single
+            # account, so the data-loss risk is vanishingly small relative
+            # to the cost of looping forever on a stuck cursor.
             cursor_ms = next_cursor + 1
             seen_first_ts_at_cursor = set()
 

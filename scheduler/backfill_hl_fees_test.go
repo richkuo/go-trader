@@ -295,15 +295,16 @@ func TestApplyBackfillPlanRoundTrip(t *testing.T) {
 	}
 
 	plan := planBackfillForStrategy("hl-eth-live", trades, fillMap, 1000.0, 999.65)
+	changeByRowID := make(map[int64]TradeChange, len(plan.TradeChanges))
+	for _, c := range plan.TradeChanges {
+		changeByRowID[c.RowID] = c
+	}
 	correctedTrades := make([]TradeBackfillRow, 0, len(trades))
 	for _, tr := range trades {
 		row := tr
-		for _, c := range plan.TradeChanges {
-			if c.RowID == tr.RowID {
-				row.ExchangeFee = c.NewFee
-				row.RealizedPnL = c.NewRealizedPnL
-				break
-			}
+		if c, ok := changeByRowID[tr.RowID]; ok {
+			row.ExchangeFee = c.NewFee
+			row.RealizedPnL = c.NewRealizedPnL
 		}
 		correctedTrades = append(correctedTrades, row)
 	}
@@ -379,5 +380,108 @@ func TestPlanClosedPositionRecomputesAggregatesPartialCloses(t *testing.T) {
 	}
 	if !approxEq(out[0].NewPnL, 9.6) {
 		t.Fatalf("NewPnL=%v want 9.6 (sum of partial closes)", out[0].NewPnL)
+	}
+}
+
+// TestPlanBackfillAlreadyRealFeeCount: post-#587 rows with non-zero
+// exchange_fee bump AlreadyRealFeeCount so the report's skip breakdown adds up.
+func TestPlanBackfillAlreadyRealFeeCount(t *testing.T) {
+	trades := []TradeBackfillRow{
+		{RowID: 1, Timestamp: ts(100), Symbol: "ETH", Value: 1000,
+			IsClose: false, ExchangeOrderID: "111", ExchangeFee: 0.32},
+		{RowID: 2, Timestamp: ts(200), Symbol: "ETH", Value: 1000,
+			IsClose: false, ExchangeOrderID: "222", ExchangeFee: 0.40},
+	}
+	fillMap := map[string]HLFillSummary{
+		"111": {Fee: 0.30},
+		"222": {Fee: 0.45},
+	}
+	plan := planBackfillForStrategy("hl-eth", trades, fillMap, 1000.0, 999.28)
+	if plan.AlreadyRealFeeCount != 2 {
+		t.Fatalf("AlreadyRealFeeCount=%d want 2", plan.AlreadyRealFeeCount)
+	}
+	if got := plan.MissingOIDCount + plan.UnmatchedOIDCount + plan.AlreadyRealFeeCount; got != len(plan.Skipped) {
+		t.Fatalf("skip breakdown does not add up: missing=%d + unmatched=%d + already=%d != len(Skipped)=%d",
+			plan.MissingOIDCount, plan.UnmatchedOIDCount, plan.AlreadyRealFeeCount, len(plan.Skipped))
+	}
+}
+
+// TestPlanBackfillCashBaselineDivergent flags a strategy whose stored
+// strategies.cash diverges from the pre-correction replay (modeled-fee
+// fallback) by more than $1 — typically a SIGHUP capital top-up that didn't
+// emit a trade row. Forward-replay-from-initial-capital cannot reproduce that
+// mutation, so --apply must require --reset-cash to acknowledge the loss.
+func TestPlanBackfillCashBaselineDivergent(t *testing.T) {
+	trades := []TradeBackfillRow{
+		{RowID: 1, Timestamp: ts(100), Symbol: "ETH", Value: 1000,
+			IsClose: false, ExchangeOrderID: "111", ExchangeFee: 0},
+	}
+	// Stored cash is 1500 — way above what initial_capital(1000) - modeledFee
+	// (~0.35) would predict. Operator must have raised capital mid-run.
+	plan := planBackfillForStrategy("hl-eth", trades, map[string]HLFillSummary{}, 1000.0, 1500.0)
+	if !plan.CashBaselineDivergent {
+		t.Fatalf("expected CashBaselineDivergent=true (replayed=%v vs old=%v)",
+			plan.ReplayedCash, plan.OldCash)
+	}
+	expectedReplay := 1000.0 - 1000*HyperliquidTakerFeePct
+	if !approxEq(plan.ReplayedCash, expectedReplay) {
+		t.Fatalf("ReplayedCash=%v want %v", plan.ReplayedCash, expectedReplay)
+	}
+}
+
+// TestPlanBackfillCashBaselineWithinTolerance: a row whose stored cash is
+// within $1 of the pre-correction replay should NOT trip the divergence flag
+// (e.g. tiny fee-rounding skew should not gate --apply).
+func TestPlanBackfillCashBaselineWithinTolerance(t *testing.T) {
+	trades := []TradeBackfillRow{
+		{RowID: 1, Timestamp: ts(100), Symbol: "ETH", Value: 1000,
+			IsClose: false, ExchangeOrderID: "111", ExchangeFee: 0},
+	}
+	// Cash sits within $1 of (1000 - modeled_fee).
+	plan := planBackfillForStrategy("hl-eth", trades, map[string]HLFillSummary{}, 1000.0, 999.65)
+	if plan.CashBaselineDivergent {
+		t.Fatalf("did not expect divergence (replayed=%v old=%v)",
+			plan.ReplayedCash, plan.OldCash)
+	}
+}
+
+// TestPlanClosedPositionRecomputesRejectsAmbiguousFallback: when the exact-ns
+// match misses and two close legs sit within the 5s tolerance window on the
+// same symbol, the row stays unmatched rather than picking the nearest leg —
+// a partial-then-final close back-to-back must not silently land on the wrong
+// position_id.
+func TestPlanClosedPositionRecomputesRejectsAmbiguousFallback(t *testing.T) {
+	corrected := []TradeBackfillRow{
+		{RowID: 1, Timestamp: ts(101), Symbol: "ETH", PositionID: "pA",
+			IsClose: true, RealizedPnL: 5.0},
+		{RowID: 2, Timestamp: ts(103), Symbol: "ETH", PositionID: "pB",
+			IsClose: true, RealizedPnL: 7.0},
+	}
+	// closed_positions row at ts(100): exact match misses; both close legs
+	// fall within the 5s window. Old code would pick pA; tightened code
+	// refuses to guess.
+	closedRows := []ClosedPositionRow{
+		{ID: 11, Symbol: "ETH", ClosedAt: ts(100), RealizedPnL: 4.9},
+	}
+	out := planClosedPositionRecomputes(corrected, closedRows)
+	if len(out) != 0 {
+		t.Fatalf("expected 0 recomputes (ambiguous match), got %d (%+v)", len(out), out)
+	}
+}
+
+// TestPlanClosedPositionRecomputesRejectsBackwardFallback: when the only
+// candidate leg lands BEFORE the closed_positions row, refuse to match —
+// close legs are written before/with their closed_positions row, never after.
+func TestPlanClosedPositionRecomputesRejectsBackwardFallback(t *testing.T) {
+	corrected := []TradeBackfillRow{
+		{RowID: 1, Timestamp: ts(95), Symbol: "ETH", PositionID: "pA",
+			IsClose: true, RealizedPnL: 5.0},
+	}
+	closedRows := []ClosedPositionRow{
+		{ID: 11, Symbol: "ETH", ClosedAt: ts(100), RealizedPnL: 4.9},
+	}
+	out := planClosedPositionRecomputes(corrected, closedRows)
+	if len(out) != 0 {
+		t.Fatalf("expected 0 recomputes (backward leg), got %d (%+v)", len(out), out)
 	}
 }

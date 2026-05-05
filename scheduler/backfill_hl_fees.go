@@ -82,17 +82,20 @@ type ClosedPositionRecompute struct {
 
 // BackfillPlan is the full set of changes for one strategy.
 type BackfillPlan struct {
-	StrategyID        string
-	TradeChanges      []TradeChange
-	Skipped           []SkippedTrade
-	ClosedPositions   []ClosedPositionRecompute
-	OldCash           float64
-	NewCash           float64
-	TotalFeeDeltaUSD  float64 // sum of (oldFee - newFee) across rows; positive = strategy "got back" fees
-	TotalPnLDeltaUSD  float64 // sum of (newPnL - oldPnL) across close legs
-	MatchedTradeCount int
-	UnmatchedOIDCount int
-	MissingOIDCount   int
+	StrategyID            string
+	TradeChanges          []TradeChange
+	Skipped               []SkippedTrade
+	ClosedPositions       []ClosedPositionRecompute
+	OldCash               float64
+	NewCash               float64
+	TotalFeeDeltaUSD      float64 // sum of (oldFee - newFee) across rows; positive = strategy "got back" fees
+	TotalPnLDeltaUSD      float64 // sum of (newPnL - oldPnL) across close legs
+	MatchedTradeCount     int
+	UnmatchedOIDCount     int
+	MissingOIDCount       int
+	AlreadyRealFeeCount   int     // post-#587 rows skipped because exchange_fee was already non-zero
+	ReplayedCash          float64 // pre-correction cash replay (initial_capital + old fees + old pnl) — diverges from OldCash when SIGHUP capital top-ups landed
+	CashBaselineDivergent bool    // ReplayedCash differs from OldCash by more than $1 → likely SIGHUP capital top-up; --apply must be gated
 }
 
 // planBackfillForStrategy is the pure planner used by the backfill command.
@@ -130,6 +133,32 @@ func planBackfillForStrategy(
 	// pass below can read the corrected values.
 	corrected := make(map[int64]TradeBackfillRow, len(sortedTrades))
 
+	// Pre-correction replay: walk the trades using the values *currently*
+	// stored on disk (modeled fee fallback when exchange_fee=0 — that's what
+	// was actually deducted at execution time). If the result diverges from
+	// `oldCash` by more than $1, the strategy almost certainly had its
+	// `capital` raised mid-run via SIGHUP (config_reload.go applies
+	// `Cash += new - old` directly with no trade row), so a forward replay
+	// from initial_capital would silently roll cash back to a wrong baseline
+	// on --apply. Surface it as a divergence flag so the report and
+	// runBackfillHLFees can refuse --apply unless the operator opts in.
+	preReplayCash := initialCapital
+	for _, t := range sortedTrades {
+		preFee := t.ExchangeFee
+		if preFee == 0 {
+			preFee = math.Abs(t.Value) * HyperliquidTakerFeePct
+		}
+		if t.IsClose {
+			preReplayCash += t.RealizedPnL
+		} else {
+			preReplayCash -= preFee
+		}
+	}
+	plan.ReplayedCash = preReplayCash
+	if math.Abs(preReplayCash-oldCash) > 1.0 {
+		plan.CashBaselineDivergent = true
+	}
+
 	cash := initialCapital
 	for _, t := range sortedTrades {
 		newFee := t.ExchangeFee
@@ -166,6 +195,7 @@ func planBackfillForStrategy(
 				if t.ExchangeFee != 0 {
 					// Already-real-fee guard: never overwrite a non-zero
 					// stored fee (post-#587 rows). Keep the stored values.
+					plan.AlreadyRealFeeCount++
 					plan.Skipped = append(plan.Skipped, SkippedTrade{
 						RowID:     t.RowID,
 						Timestamp: t.Timestamp,
@@ -288,23 +318,34 @@ func planClosedPositionRecomputes(
 	for _, cp := range closedRows {
 		pid := exact[tradeKey{Symbol: cp.Symbol, UnixNs: cp.ClosedAt.UnixNano()}]
 		if pid == "" {
-			// Tolerance match: closest close-leg trade on same symbol within 5s.
-			best := time.Duration(0)
+			// Tolerance match: nearest close-leg trade on same symbol within
+			// 5s, but require BOTH (a) directional ordering — the trade leg
+			// must land at or after the closed_positions row (close legs are
+			// always written before/with the SaveState that emits the
+			// closed_positions row, never before it) — AND (b) uniqueness:
+			// no other candidate within the same window. This rules out
+			// rapid back-to-back partial-then-final closes on the same symbol
+			// silently mapping to the wrong position_id.
+			var candidate string
+			candidates := 0
 			for _, leg := range closeLegs {
 				if leg.Symbol != cp.Symbol {
 					continue
 				}
-				d := leg.Ts.Sub(cp.ClosedAt)
-				if d < 0 {
-					d = -d
-				}
-				if d > 5*time.Second {
+				if leg.Ts.Before(cp.ClosedAt) {
 					continue
 				}
-				if pid == "" || d < best {
-					pid = leg.PID
-					best = d
+				if leg.Ts.Sub(cp.ClosedAt) > 5*time.Second {
+					continue
 				}
+				candidate = leg.PID
+				candidates++
+				if candidates > 1 {
+					break
+				}
+			}
+			if candidates == 1 {
+				pid = candidate
 			}
 		}
 		if pid == "" {
@@ -352,18 +393,28 @@ func runBackfill(args []string) int {
 // HL strategies whose rows pre-date #587 — when modeled fees were written
 // directly because HL's order-placement response did not surface the real fee.
 //
-// Default mode is dry-run. Pass --apply to commit. The scheduler should be
-// stopped before running with --apply (this command opens its own write
-// transaction; SQLite serializes writers but a concurrent SaveState could
-// overwrite the recomputed cash on its next cycle if left running).
+// Default mode is dry-run. Pass --apply to commit. --apply refuses to run
+// when another go-trader process is alive (a concurrent SaveState would
+// overwrite the recomputed cash on its next cycle), and refuses per-strategy
+// when the pre-correction cash replay diverges from the stored cash by more
+// than $1 (likely a SIGHUP capital top-up via config_reload.go that a
+// forward-from-initial-capital replay cannot reproduce). Pass --reset-cash to
+// override the divergence guard.
 func runBackfillHLFees(args []string) int {
 	fs := flag.NewFlagSet("backfill hl-fees", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
 	strategyID := fs.String("strategy", "", "Strategy ID to backfill (mutually exclusive with --all)")
 	all := fs.Bool("all", false, "Backfill all live HL perps strategies")
 	apply := fs.Bool("apply", false, "Commit changes (default: dry-run)")
+	resetCash := fs.Bool("reset-cash", false, "Allow --apply to overwrite strategies.cash even when the pre-correction replay diverges from the stored value (e.g. after a SIGHUP capital top-up)")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if *apply {
+		if err := refuseIfSchedulerRunning(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
 	}
 	if (*strategyID == "" && !*all) || (*strategyID != "" && *all) {
 		fmt.Fprintln(os.Stderr, "error: exactly one of --strategy <id> or --all is required")
@@ -398,6 +449,10 @@ func runBackfillHLFees(args []string) int {
 					fmt.Fprintf(os.Stderr, "error: strategy %q platform=%q (expected hyperliquid)\n", *strategyID, sc.Platform)
 					return 1
 				}
+				if sc.Type == "perps" && !hyperliquidIsLive(sc.Args) {
+					fmt.Fprintf(os.Stderr, "error: strategy %q is paper-mode (no real OIDs to match against userFills)\n", *strategyID)
+					return 1
+				}
 				targets = []StrategyConfig{sc}
 				found = true
 				break
@@ -413,6 +468,14 @@ func runBackfillHLFees(args []string) int {
 				continue
 			}
 			if sc.Type != "perps" && sc.Type != "manual" {
+				continue
+			}
+			// Paper-mode HL perps trades have synthetic OIDs that won't match
+			// any userFills row; skip them with a one-line note rather than
+			// burying the operator in noisy `missing_oid` skip lines.
+			// `manual` strategies are always live (no paper mode).
+			if sc.Type == "perps" && !hyperliquidIsLive(sc.Args) {
+				fmt.Printf("[%s] skipped: paper-mode (no real OIDs)\n", sc.ID)
 				continue
 			}
 			targets = append(targets, sc)
@@ -487,15 +550,16 @@ func runBackfillHLFees(args []string) int {
 
 		plan := planBackfillForStrategy(sc.ID, trades, fillResult.ByOID, initialCapital, oldCash)
 
+		changeByRowID := make(map[int64]TradeChange, len(plan.TradeChanges))
+		for _, c := range plan.TradeChanges {
+			changeByRowID[c.RowID] = c
+		}
 		correctedTrades := make([]TradeBackfillRow, 0, len(trades))
 		for _, t := range trades {
 			row := t
-			for _, c := range plan.TradeChanges {
-				if c.RowID == t.RowID {
-					row.ExchangeFee = c.NewFee
-					row.RealizedPnL = c.NewRealizedPnL
-					break
-				}
+			if c, ok := changeByRowID[t.RowID]; ok {
+				row.ExchangeFee = c.NewFee
+				row.RealizedPnL = c.NewRealizedPnL
 			}
 			correctedTrades = append(correctedTrades, row)
 		}
@@ -504,6 +568,12 @@ func runBackfillHLFees(args []string) int {
 		printBackfillReport(plan)
 
 		if *apply {
+			if plan.CashBaselineDivergent && !*resetCash {
+				fmt.Fprintf(os.Stderr, "[%s] APPLY refused: cash baseline diverges from pre-correction replay by $%+.4f. Re-run with --reset-cash to acknowledge that the recomputed cash will not preserve mid-run capital top-ups.\n",
+					sc.ID, plan.OldCash-plan.ReplayedCash)
+				exitCode = 1
+				continue
+			}
 			if err := stateDB.ApplyBackfillPlan(plan); err != nil {
 				fmt.Fprintf(os.Stderr, "[%s] APPLY failed: %v\n", sc.ID, err)
 				exitCode = 1
@@ -532,13 +602,59 @@ func strategyIDsOf(strategies []StrategyConfig) []string {
 func printBackfillReport(plan BackfillPlan) {
 	fmt.Printf("\n--- %s ---\n", plan.StrategyID)
 	fmt.Printf("  rows updated:        %d\n", len(plan.TradeChanges))
-	fmt.Printf("  rows skipped:        %d (missing_oid=%d, unmatched=%d)\n",
-		len(plan.Skipped), plan.MissingOIDCount, plan.UnmatchedOIDCount)
+	fmt.Printf("  rows skipped:        %d (missing_oid=%d, unmatched=%d, already_real=%d)\n",
+		len(plan.Skipped), plan.MissingOIDCount, plan.UnmatchedOIDCount, plan.AlreadyRealFeeCount)
 	fmt.Printf("  fee delta (sum):     $%+.4f (positive = fees were over-modeled)\n", plan.TotalFeeDeltaUSD)
 	fmt.Printf("  pnl delta (sum):     $%+.4f\n", plan.TotalPnLDeltaUSD)
 	fmt.Printf("  cash:                $%.4f → $%.4f (Δ %+.4f)\n",
 		plan.OldCash, plan.NewCash, plan.NewCash-plan.OldCash)
 	fmt.Printf("  closed_positions:    %d aggregate rows to update\n", len(plan.ClosedPositions))
+	if plan.CashBaselineDivergent {
+		fmt.Printf("  WARNING: cash baseline diverges from pre-correction replay by $%+.4f\n",
+			plan.OldCash-plan.ReplayedCash)
+		fmt.Printf("           (replayed=$%.4f vs stored=$%.4f). Likely SIGHUP capital top-up\n",
+			plan.ReplayedCash, plan.OldCash)
+		fmt.Printf("           — SIGHUP applies Cash += new - old with no trade row, which a\n")
+		fmt.Printf("           forward replay cannot reproduce. --apply requires --reset-cash.\n")
+	}
+}
+
+// refuseIfSchedulerRunning aborts when another `go-trader` process is alive.
+//
+// The backfill rewrites `strategies.cash` directly. SQLite's WAL journal lets
+// the running scheduler keep its own write connection open in parallel, so the
+// next SaveState in that scheduler will overwrite the recomputed cash with
+// whatever value its in-memory `AppState` holds — silently undoing the
+// backfill. Detect a peer process via `pgrep` and refuse with an actionable
+// error before the operator commits.
+func refuseIfSchedulerRunning() error {
+	out, err := exec.Command("pgrep", "-x", "go-trader").Output()
+	if err != nil {
+		// pgrep exits 1 when no match — that's the success path here. Any
+		// other error means pgrep itself failed (missing binary, etc.); skip
+		// the check rather than blocking apply on operator tooling.
+		return nil
+	}
+	self := os.Getpid()
+	var others []int
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var pid int
+		if _, perr := fmt.Sscanf(line, "%d", &pid); perr != nil {
+			continue
+		}
+		if pid == self {
+			continue
+		}
+		others = append(others, pid)
+	}
+	if len(others) == 0 {
+		return nil
+	}
+	return fmt.Errorf("another go-trader process is running (pid %v); stop it before running --apply (concurrent SaveState would overwrite the recomputed strategies.cash)", others)
 }
 
 // runFetchHLUserFills spawns shared_scripts/fetch_hl_user_fills.py with a
