@@ -1,8 +1,9 @@
 {
-  "config_version": 8,
+  "config_version": 12,
   "interval_seconds": 300,
   "db_file": "scheduler/state.db",
   "status_port": 8099,
+  "default_stop_loss_atr_mult": 1.0,
   "portfolio_risk": {
     "max_drawdown_pct": 25,
     "max_notional_usd": 0

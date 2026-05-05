@@ -10,7 +10,7 @@ import (
 
 // CurrentConfigVersion is the version embedded in newly generated configs.
 // When the binary starts and cfg.ConfigVersion < CurrentConfigVersion, migration runs.
-const CurrentConfigVersion = 11
+const CurrentConfigVersion = 12
 
 // ConfigField describes a config field introduced in a specific version.
 type ConfigField struct {
@@ -161,6 +161,15 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 	// exact same notional sizing after `leverage` becomes exchange/risk leverage.
 	if oldVer < 10 {
 		addV10SizingLeverage(raw)
+	}
+
+	// v12: expose the hardcoded HL default ATR stop multiplier as a top-level
+	// config knob (#605). Existing behavior remains 1.0 unless the operator
+	// edits default_stop_loss_atr_mult.
+	if oldVer < 12 {
+		if _, ok := raw["default_stop_loss_atr_mult"]; !ok {
+			raw["default_stop_loss_atr_mult"] = DefaultStopLossATRMult
+		}
 	}
 
 	raw["config_version"] = CurrentConfigVersion

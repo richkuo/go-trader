@@ -46,6 +46,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if loaded.AutoUpdate != "off" {
 		t.Errorf("AutoUpdate = %q, want %q", loaded.AutoUpdate, "off")
 	}
+	if loaded.DefaultStopLossATRMult == nil || *loaded.DefaultStopLossATRMult != DefaultStopLossATRMult {
+		t.Errorf("DefaultStopLossATRMult = %v, want %g", loaded.DefaultStopLossATRMult, DefaultStopLossATRMult)
+	}
 }
 
 func TestLoadConfigPlatformInference(t *testing.T) {
@@ -1017,8 +1020,8 @@ func TestLoadConfigHLPerpsDefaultsToIsolatedMargin(t *testing.T) {
 	}
 }
 
-// #494/#562: a single HL perps strategy on a coin gets a default
-// stop_loss_atr_mult=1.0 when no stop_loss_* / trailing_stop_* fields are
+// #494/#562/#605: a single HL perps strategy on a coin gets the top-level
+// default_stop_loss_atr_mult when no stop_loss_* / trailing_stop_* fields are
 // configured. EffectiveStopLossPct returns 0 at order-placement time because
 // the price-% can only be derived from the per-position EntryATR/AvgCost; the
 // arming step runs on the cycle after open. Setting an explicit stop_loss_pct

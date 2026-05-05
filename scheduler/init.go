@@ -374,11 +374,13 @@ func generateConfig(opts InitOptions) *Config {
 	if portfolioWarn <= 0 {
 		portfolioWarn = 60
 	}
+	defaultStopLossATRMult := DefaultStopLossATRMult
 	cfg := &Config{
-		ConfigVersion:   CurrentConfigVersion,
-		IntervalSeconds: 3600,
-		LogDir:          "logs",
-		DBFile:          "scheduler/state.db",
+		ConfigVersion:          CurrentConfigVersion,
+		IntervalSeconds:        3600,
+		LogDir:                 "logs",
+		DBFile:                 "scheduler/state.db",
+		DefaultStopLossATRMult: &defaultStopLossATRMult,
 		PortfolioRisk: &PortfolioRiskConfig{
 			MaxDrawdownPct:   portfolioMaxDD,
 			MaxNotionalUSD:   0,

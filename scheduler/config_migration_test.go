@@ -106,6 +106,9 @@ func TestMigrateConfigBasic(t *testing.T) {
 	if updated["interval_seconds"].(float64) != 300 {
 		t.Error("interval_seconds should be preserved")
 	}
+	if updated["default_stop_loss_atr_mult"].(float64) != DefaultStopLossATRMult {
+		t.Errorf("default_stop_loss_atr_mult = %v, want %g", updated["default_stop_loss_atr_mult"], DefaultStopLossATRMult)
+	}
 }
 
 func TestMigrateConfigCreatesNestedPaths(t *testing.T) {

@@ -1271,7 +1271,7 @@ func TestNormalizeHyperliquidPeerStopLosses_TrailingATRMultOwner(t *testing.T) {
 			MaxDrawdownPct: 10,
 		},
 	}
-	normalizeHyperliquidPeerStopLosses(strategies)
+	normalizeHyperliquidPeerStopLosses(strategies, DefaultStopLossATRMult)
 
 	if strategies[0].StopLossPct != nil {
 		t.Errorf("ATR-mult owner should not gain a normalized StopLossPct; got %v", strategies[0].StopLossPct)
@@ -2007,7 +2007,7 @@ func TestNormalizeHyperliquidPeerStopLosses_FixedATRMultOwner(t *testing.T) {
 			MaxDrawdownPct: 10,
 		},
 	}
-	normalizeHyperliquidPeerStopLosses(strategies)
+	normalizeHyperliquidPeerStopLosses(strategies, DefaultStopLossATRMult)
 
 	if strategies[0].StopLossPct != nil {
 		t.Errorf("fixed ATR-mult owner should not gain a normalized StopLossPct; got %v", strategies[0].StopLossPct)
@@ -2047,9 +2047,8 @@ func TestHyperliquidPeerStrategyErrors_FixedATRMultConflict(t *testing.T) {
 	}
 }
 
-// #562: LoadConfig defaults sole-owner HL perps strategies with no explicit
-// stop fields to stop_loss_atr_mult=1.0. Peers don't get the default — peer
-// normalization sets StopLossPct=0 first.
+// #562/#605: LoadConfig defaults sole-owner HL perps strategies with no
+// explicit stop fields to the top-level default_stop_loss_atr_mult.
 func TestLoadConfig_DefaultsStopLossATRMultForSoleOwner(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -2075,6 +2074,35 @@ func TestLoadConfig_DefaultsStopLossATRMultForSoleOwner(t *testing.T) {
 	}
 	if *sc.StopLossATRMult != DefaultStopLossATRMult {
 		t.Errorf("default StopLossATRMult = %g, want %g", *sc.StopLossATRMult, DefaultStopLossATRMult)
+	}
+}
+
+func TestLoadConfig_UsesConfiguredDefaultStopLossATRMult(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"default_stop_loss_atr_mult": 1.5,
+		"strategies": [{
+			"id": "hl-sole",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"max_drawdown_pct": 10,
+			"leverage": 5
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.DefaultStopLossATRMult == nil || *cfg.DefaultStopLossATRMult != 1.5 {
+		t.Fatalf("DefaultStopLossATRMult = %v, want 1.5", cfg.DefaultStopLossATRMult)
+	}
+	sc := cfg.Strategies[0]
+	if sc.StopLossATRMult == nil || *sc.StopLossATRMult != 1.5 {
+		t.Fatalf("strategy StopLossATRMult = %v, want 1.5", sc.StopLossATRMult)
 	}
 }
 
@@ -2105,9 +2133,9 @@ func TestLoadConfig_NoDefaultStopLossATRMultWhenExplicitFieldSet(t *testing.T) {
 	}
 }
 
-// #562: peer strategies on the same coin do NOT receive the default — peer
-// normalization runs first and sets StopLossPct=0, which makes them ineligible.
-func TestLoadConfig_NoDefaultStopLossATRMultForPeers(t *testing.T) {
+// #562/#605: peer strategies on the same coin keep a single owner. When one
+// peer explicitly owns stop_loss_atr_mult, omitted peers are normalized to 0.
+func TestLoadConfig_NoDefaultStopLossATRMultForPeersWithExplicitOwner(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
 		"strategies": [
@@ -2146,6 +2174,53 @@ func TestLoadConfig_NoDefaultStopLossATRMultForPeers(t *testing.T) {
 				t.Errorf("peer StopLossPct should be normalized to 0; got %v", sc.StopLossPct)
 			}
 		}
+	}
+}
+
+func TestLoadConfig_DefaultStopLossATRMultForFirstPeerWhenNoOwner(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"default_stop_loss_atr_mult": 1.5,
+		"strategies": [
+			{
+				"id": "hl-eth-ztrend",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["ztrend", "ETH", "1h"],
+				"capital": 1000,
+				"leverage": 5
+			},
+			{
+				"id": "hl-eth-breakout",
+				"type": "perps",
+				"platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["breakout", "ETH", "1h"],
+				"capital": 1000,
+				"leverage": 5
+			}
+		]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	byID := make(map[string]StrategyConfig)
+	for _, sc := range cfg.Strategies {
+		byID[sc.ID] = sc
+	}
+	first := byID["hl-eth-ztrend"]
+	if first.StopLossATRMult == nil || *first.StopLossATRMult != 1.5 {
+		t.Fatalf("first peer StopLossATRMult = %v, want 1.5", first.StopLossATRMult)
+	}
+	second := byID["hl-eth-breakout"]
+	if second.StopLossPct == nil || *second.StopLossPct != 0 {
+		t.Fatalf("second peer StopLossPct = %v, want explicit 0", second.StopLossPct)
+	}
+	if second.StopLossATRMult != nil {
+		t.Fatalf("second peer StopLossATRMult = %v, want nil", second.StopLossATRMult)
 	}
 }
 
