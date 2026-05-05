@@ -33,6 +33,24 @@ type HLUserFillsResult struct {
 	Error          string                   `json:"error"`
 }
 
+// backfillHLUserFillsLookback widens the userFills query before the first DB
+// trade timestamp. Trade rows are recorded after the Python order call returns,
+// while HL's fill timestamp is earlier, so an exact lower bound can miss the
+// first order in a targeted backfill (#597).
+const backfillHLUserFillsLookback = 10 * time.Minute
+
+func backfillUserFillsStartTime(earliestTrade time.Time) time.Time {
+	if earliestTrade.IsZero() {
+		return time.Time{}
+	}
+	queryStart := earliestTrade.Add(-backfillHLUserFillsLookback)
+	minStart := time.UnixMilli(1).UTC()
+	if queryStart.Before(minStart) {
+		return minStart
+	}
+	return queryStart
+}
+
 // TradeBackfillRow is the subset of a `trades` row needed by planBackfillForStrategy.
 // Pulled into its own type so the planner is pure (no DB dep).
 type TradeBackfillRow struct {
@@ -480,8 +498,9 @@ func runBackfillHLFees(args []string) int {
 		return 1
 	}
 
-	// Fetch userFills once across all targets (same wallet). Use the earliest
-	// trade timestamp across all targets as the lower bound.
+	// Fetch userFills once across all targets (same wallet). Start slightly
+	// before the earliest trade timestamp because DB rows are stamped after
+	// the order returns, while HL userFills are stamped at exchange fill time.
 	earliest, err := stateDB.EarliestTradeTimestamp(strategyIDsOf(targets))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to read earliest trade timestamp: %v\n", err)
@@ -492,8 +511,12 @@ func runBackfillHLFees(args []string) int {
 		return 0
 	}
 
-	fmt.Printf("Fetching HL userFills since %s...\n", earliest.UTC().Format(time.RFC3339))
-	fillResult, err := runFetchHLUserFills(earliest)
+	queryStart := backfillUserFillsStartTime(earliest)
+	fmt.Printf("Fetching HL userFills since %s (earliest trade %s, lookback %s)...\n",
+		queryStart.UTC().Format(time.RFC3339),
+		earliest.UTC().Format(time.RFC3339),
+		backfillHLUserFillsLookback)
+	fillResult, err := runFetchHLUserFills(queryStart)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to fetch HL userFills: %v\n", err)
 		return 1

@@ -15,6 +15,26 @@ func approxEq(a, b float64) bool {
 	return math.Abs(a-b) < 1e-6
 }
 
+func TestBackfillUserFillsStartTimeSubtractsLookback(t *testing.T) {
+	earliest := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
+	got := backfillUserFillsStartTime(earliest)
+	want := earliest.Add(-backfillHLUserFillsLookback)
+	if !got.Equal(want) {
+		t.Fatalf("backfillUserFillsStartTime() = %s, want %s", got, want)
+	}
+	if !got.Before(earliest) {
+		t.Fatalf("query start should predate earliest trade: got %s earliest %s", got, earliest)
+	}
+}
+
+func TestBackfillUserFillsStartTimeClampsNearUnixEpoch(t *testing.T) {
+	got := backfillUserFillsStartTime(time.Unix(1, 0).UTC())
+	want := time.UnixMilli(1).UTC()
+	if !got.Equal(want) {
+		t.Fatalf("backfillUserFillsStartTime() = %s, want %s", got, want)
+	}
+}
+
 // TestPlanBackfillRewritesFeeAndPnLOnCloseLeg verifies the core correction
 // math: a close leg with a real fee that differs from the modeled fee gets
 // realized_pnl adjusted by (modeledFee - realFee), and the row's exchange_fee
