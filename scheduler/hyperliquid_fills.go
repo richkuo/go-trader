@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -247,4 +248,146 @@ func defaultLookupHyperliquidReconcileFillFee(accountAddress, coin string, oid i
 		}
 	}
 	return HLFillLookup{}, false
+}
+
+// hlReconcileFillResolver returns the userFills lookup result for a (coin,
+// oid, expectedQty) tuple. The reconciler resolves fees via this indirection
+// so the locked apply phase can read pre-fetched results without making any
+// HTTP calls under mu.Lock(). See buildCachedHyperliquidReconcileFillResolver.
+type hlReconcileFillResolver func(coin string, oid int64, expectedQty float64) (HLFillLookup, bool)
+
+// noFillFeeResolver is the resolver used when fee lookups are disabled (no
+// account address) or when no candidate close events were detected. Always
+// returns ok=false so callers fall back to the modeled fee path.
+var noFillFeeResolver hlReconcileFillResolver = func(string, int64, float64) (HLFillLookup, bool) {
+	return HLFillLookup{}, false
+}
+
+// directHyperliquidReconcileFillResolver wraps lookupHyperliquidReconcileFillFee
+// for paths that can safely block on HTTP I/O — primarily tests that stub the
+// underlying function. Production reconcile paths must use
+// buildCachedHyperliquidReconcileFillResolver to keep network calls outside
+// mu.Lock().
+func directHyperliquidReconcileFillResolver(accountAddress string) hlReconcileFillResolver {
+	if accountAddress == "" {
+		return noFillFeeResolver
+	}
+	return func(coin string, oid int64, expectedQty float64) (HLFillLookup, bool) {
+		return lookupHyperliquidReconcileFillFee(accountAddress, coin, oid, expectedQty)
+	}
+}
+
+// hyperliquidReconcileFeeCacheKey identifies one userFills lookup. Quantity is
+// rounded to 1e-8 so float identity comparisons across the snapshot/apply
+// boundary survive — HL sz_decimals tops out at 8 so the round is lossless
+// for legitimate fills.
+type hyperliquidReconcileFeeCacheKey struct {
+	coin string
+	oid  int64
+	qty  int64 // qty * 1e8, rounded
+}
+
+func makeHLReconcileFeeCacheKey(coin string, oid int64, qty float64) hyperliquidReconcileFeeCacheKey {
+	return hyperliquidReconcileFeeCacheKey{
+		coin: coin,
+		oid:  oid,
+		qty:  int64(math.Round(qty * 1e8)),
+	}
+}
+
+// buildCachedHyperliquidReconcileFillResolver runs a brief RLock pass to
+// identify which (coin, oid, qty) lookups the reconciler is likely to need,
+// performs all userFills queries OUTSIDE the lock (each can take up to ~1.5s
+// under indexer-lag retry), then returns a pure map-reading resolver that the
+// locked apply phase calls. Cache misses fall back to noFillFeeResolver
+// behavior — never to a network call — so the lock-held region is bounded.
+//
+// The candidate-detection pass is permissive: false positives just mean an
+// extra HTTP query per cycle, false negatives mean a close books with the
+// modeled fee. Detector logic is duplicated approximately, not exactly, so
+// the apply phase remains the source of truth for whether a close fires.
+func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, positions []HLPosition) hlReconcileFillResolver {
+	if accountAddress == "" {
+		return noFillFeeResolver
+	}
+
+	type candidate struct {
+		coin string
+		oid  int64
+		qty  float64
+	}
+
+	onChainByCoin := make(map[string]float64, len(positions))
+	for _, p := range positions {
+		onChainByCoin[p.Coin] = p.Size
+	}
+
+	seen := make(map[hyperliquidReconcileFeeCacheKey]bool)
+	var candidates []candidate
+	addCandidate := func(coin string, oid int64, qty float64) {
+		if coin == "" || qty <= 0 {
+			return
+		}
+		key := makeHLReconcileFeeCacheKey(coin, oid, qty)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		candidates = append(candidates, candidate{coin: coin, oid: oid, qty: qty})
+	}
+
+	mu.RLock()
+	for _, sc := range allStrategies {
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		sym := hyperliquidSymbol(sc.Args)
+		if sym == "" {
+			continue
+		}
+		pos := ss.Positions[sym]
+		if pos == nil || pos.Quantity <= 0 {
+			continue
+		}
+		onChainSize, present := onChainByCoin[sym]
+		// Trigger lookup when on-chain is absent OR signed-qty differs from
+		// virtual qty. Sign mismatch is intentional: it covers both Detector 1
+		// (full external close, on-chain ≈ 0) and Detector 2 (partial close
+		// where on-chain residual ≠ virtual).
+		mismatched := !present || math.Abs(math.Abs(onChainSize)-pos.Quantity) > 1e-9
+		if !mismatched {
+			continue
+		}
+		if pos.StopLossOID > 0 && pos.StopLossTriggerPx > 0 {
+			addCandidate(sym, pos.StopLossOID, pos.Quantity)
+		}
+		// Always include the (coin, 0, qty) form so peers without a tracked
+		// OID — Detector 1 mark-based path and Detector 2 non-owner — hit a
+		// cached entry. The resolver drops to coin+size internally.
+		addCandidate(sym, 0, pos.Quantity)
+	}
+	mu.RUnlock()
+
+	if len(candidates) == 0 {
+		return noFillFeeResolver
+	}
+
+	type cacheEntry struct {
+		lookup HLFillLookup
+		ok     bool
+	}
+	cache := make(map[hyperliquidReconcileFeeCacheKey]cacheEntry, len(candidates))
+	for _, c := range candidates {
+		lookup, ok := lookupHyperliquidReconcileFillFee(accountAddress, c.coin, c.oid, c.qty)
+		cache[makeHLReconcileFeeCacheKey(c.coin, c.oid, c.qty)] = cacheEntry{lookup: lookup, ok: ok}
+	}
+
+	return func(coin string, oid int64, expectedQty float64) (HLFillLookup, bool) {
+		entry, hit := cache[makeHLReconcileFeeCacheKey(coin, oid, expectedQty)]
+		if !hit {
+			return HLFillLookup{}, false
+		}
+		return entry.lookup, entry.ok
+	}
 }

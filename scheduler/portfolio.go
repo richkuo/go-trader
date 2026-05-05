@@ -121,11 +121,15 @@ func bookPerpsClose(s *StrategyState, symbol string, closePx float64, reason, de
 }
 
 // bookPerpsCloseWithFillFee extends bookPerpsClose with on-chain fill metadata.
-// When useFillFee is true and fillFee > 0, the supplied fee replaces the
-// modeled fee in PnL math AND populates Trade.ExchangeFee — closing the
-// virtual-vs-on-chain drift identified in #585 / #588. exchangeOrderID is
-// stamped on Trade.ExchangeOrderID when non-empty (typically the OID that
-// triggered the on-chain close, e.g. Position.StopLossOID).
+// When useFillFee is true the supplied fillFee is treated as authoritative —
+// it replaces the modeled fee in PnL math AND populates Trade.ExchangeFee
+// regardless of sign (zero / negative maker rebate fills are kept verbatim
+// rather than silently falling back to the modeled taker fee). useFillFee
+// must only be set when an actual userFills row was matched, so this is the
+// "lookup performed and produced data" sentinel — see #588 review point 2.
+// exchangeOrderID is stamped on Trade.ExchangeOrderID when non-empty
+// (typically the OID that triggered the on-chain close, e.g.
+// Position.StopLossOID).
 func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason, detailsPrefix, logPrefix string, logger *StrategyLogger) bool {
 	if closePx <= 0 {
 		return false
@@ -149,8 +153,18 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	if s.Platform == "okx" && s.Type == "perps" {
 		feePlatform = "okx-perps"
 	}
-	modeledFee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
-	fee := executionFee(modeledFee, fillFee, useFillFee)
+	// Reconciler-side fee selection: trust the userFills lookup result when
+	// useFillFee is true, even if the fee is zero or negative (maker rebate).
+	// Only fall back to the modeled fee when no row matched. Diverges from
+	// executionFee() which gates on `> 0` for spot/futures paper paths where
+	// useFillFee=true with fillFee=0 simply means "paper close, no exchange
+	// fee" and the modeled fee is the right model.
+	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
+	exchangeFeeStamp := 0.0
+	if useFillFee {
+		fee = fillFee
+		exchangeFeeStamp = fillFee
+	}
 	pnl -= fee
 	s.Cash += pnl
 	positionID := ensurePositionTradeID(s.ID, symbol, pos)
@@ -169,7 +183,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 		IsClose:         true,
 		RealizedPnL:     pnl,
 		ExchangeOrderID: exchangeOrderIDForTrade(exchangeOrderID, useFillFee),
-		ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
+		ExchangeFee:     exchangeFeeStamp,
 	}
 	trade.Regime = s.Regime
 	trade.EntryATR = pos.EntryATR
