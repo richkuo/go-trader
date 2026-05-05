@@ -549,3 +549,235 @@ func TestValidateHotReloadCompatible(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatFloatPtr(t *testing.T) {
+	v1 := float64(3.14)
+	v2 := float64(0)
+	cases := []struct {
+		name string
+		in   *float64
+		want string
+	}{
+		{"nil", nil, "<nil>"},
+		{"positive", &v1, "3.14"},
+		{"zero", &v2, "0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatFloatPtr(tc.in)
+			if got != tc.want {
+				t.Errorf("formatFloatPtr(%v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatFloatPtrUSD(t *testing.T) {
+	v1 := float64(12.5)
+	v2 := float64(0)
+	cases := []struct {
+		name string
+		in   *float64
+		want string
+	}{
+		{"nil", nil, "<nil>"},
+		{"positive", &v1, "$12.50"},
+		{"zero", &v2, "$0.00"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatFloatPtrUSD(tc.in)
+			if got != tc.want {
+				t.Errorf("formatFloatPtrUSD(%v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatFloatPtrPct(t *testing.T) {
+	v1 := float64(12.5)
+	v2 := float64(0)
+	cases := []struct {
+		name string
+		in   *float64
+		want string
+	}{
+		{"nil", nil, "<nil>"},
+		{"positive", &v1, "12.50%"},
+		{"zero", &v2, "0.00%"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatFloatPtrPct(tc.in)
+			if got != tc.want {
+				t.Errorf("formatFloatPtrPct(%v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStateStrategy(t *testing.T) {
+	ss := &StrategyState{}
+	state := &AppState{Strategies: map[string]*StrategyState{"s1": ss}}
+
+	t.Run("nil state", func(t *testing.T) {
+		if stateStrategy(nil, "s1") != nil {
+			t.Error("expected nil for nil state")
+		}
+	})
+	t.Run("nil strategies map", func(t *testing.T) {
+		if stateStrategy(&AppState{}, "s1") != nil {
+			t.Error("expected nil for nil Strategies")
+		}
+	})
+	t.Run("missing key", func(t *testing.T) {
+		if stateStrategy(state, "missing") != nil {
+			t.Error("expected nil for missing key")
+		}
+	})
+	t.Run("present key", func(t *testing.T) {
+		if got := stateStrategy(state, "s1"); got != ss {
+			t.Errorf("expected strategy state, got %v", got)
+		}
+	})
+}
+
+func TestStrategyHasOpenPositions(t *testing.T) {
+	t.Run("nil", func(t *testing.T) {
+		if strategyHasOpenPositions(nil) {
+			t.Error("expected false for nil")
+		}
+	})
+	t.Run("empty maps", func(t *testing.T) {
+		s := &StrategyState{
+			Positions:       map[string]*Position{},
+			OptionPositions: map[string]*OptionPosition{},
+		}
+		if strategyHasOpenPositions(s) {
+			t.Error("expected false for empty maps")
+		}
+	})
+	t.Run("position with zero qty", func(t *testing.T) {
+		s := &StrategyState{
+			Positions: map[string]*Position{"BTC": {Quantity: 0}},
+		}
+		if strategyHasOpenPositions(s) {
+			t.Error("expected false for zero quantity")
+		}
+	})
+	t.Run("position with positive qty", func(t *testing.T) {
+		s := &StrategyState{
+			Positions: map[string]*Position{"BTC": {Quantity: 1.0}},
+		}
+		if !strategyHasOpenPositions(s) {
+			t.Error("expected true for positive quantity")
+		}
+	})
+	t.Run("nil position entry skipped", func(t *testing.T) {
+		s := &StrategyState{
+			Positions: map[string]*Position{"BTC": nil},
+		}
+		if strategyHasOpenPositions(s) {
+			t.Error("expected false for nil position entry")
+		}
+	})
+	t.Run("option position with nonzero qty", func(t *testing.T) {
+		s := &StrategyState{
+			OptionPositions: map[string]*OptionPosition{"BTC-C": {Quantity: -2}},
+		}
+		if !strategyHasOpenPositions(s) {
+			t.Error("expected true for nonzero option quantity")
+		}
+	})
+	t.Run("option position with zero qty", func(t *testing.T) {
+		s := &StrategyState{
+			OptionPositions: map[string]*OptionPosition{"BTC-C": {Quantity: 0}},
+		}
+		if strategyHasOpenPositions(s) {
+			t.Error("expected false for zero option quantity")
+		}
+	})
+}
+
+func TestPortfolioRiskMaxDrawdown(t *testing.T) {
+	cases := []struct {
+		name string
+		in   *PortfolioRiskConfig
+		want float64
+	}{
+		{"nil", nil, 0},
+		{"populated", &PortfolioRiskConfig{MaxDrawdownPct: 15.5}, 15.5},
+		{"zero value", &PortfolioRiskConfig{}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := portfolioRiskMaxDrawdown(tc.in)
+			if got != tc.want {
+				t.Errorf("portfolioRiskMaxDrawdown(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPortfolioRiskWarnThreshold(t *testing.T) {
+	cases := []struct {
+		name string
+		in   *PortfolioRiskConfig
+		want float64
+	}{
+		{"nil", nil, 0},
+		{"populated", &PortfolioRiskConfig{WarnThresholdPct: 60.0}, 60.0},
+		{"zero value", &PortfolioRiskConfig{}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := portfolioRiskWarnThreshold(tc.in)
+			if got != tc.want {
+				t.Errorf("portfolioRiskWarnThreshold(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClonePortfolioRiskConfig(t *testing.T) {
+	t.Run("nil returns nil", func(t *testing.T) {
+		if clonePortfolioRiskConfig(nil) != nil {
+			t.Error("expected nil")
+		}
+	})
+	t.Run("populated returns independent copy", func(t *testing.T) {
+		orig := &PortfolioRiskConfig{MaxDrawdownPct: 20, WarnThresholdPct: 60}
+		got := clonePortfolioRiskConfig(orig)
+		if got == orig {
+			t.Error("expected a distinct pointer")
+		}
+		if got.MaxDrawdownPct != 20 || got.WarnThresholdPct != 60 {
+			t.Errorf("clone values wrong: %+v", got)
+		}
+		got.MaxDrawdownPct = 99
+		if orig.MaxDrawdownPct != 20 {
+			t.Error("mutating clone affected original")
+		}
+	})
+}
+
+func TestFormatStringMap(t *testing.T) {
+	cases := []struct {
+		name string
+		in   map[string]string
+		want string
+	}{
+		{"nil", nil, "{}"},
+		{"empty", map[string]string{}, "{}"},
+		{"single", map[string]string{"a": "1"}, `{"a":"1"}`},
+		{"multi sorted", map[string]string{"b": "2", "a": "1"}, `{"a":"1","b":"2"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatStringMap(tc.in)
+			if got != tc.want {
+				t.Errorf("formatStringMap(%v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

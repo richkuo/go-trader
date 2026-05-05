@@ -641,3 +641,102 @@ func TestMigrateConfigV10AddsSizingLeverage(t *testing.T) {
 		t.Errorf("config_version = %d, want %d", v, CurrentConfigVersion)
 	}
 }
+
+func TestJSONBoolish(t *testing.T) {
+	cases := []struct {
+		name string
+		in   interface{}
+		want bool
+	}{
+		{"bool true", true, true},
+		{"bool false", false, false},
+		{"string true", "true", true},
+		{"string True", "True", true},
+		{"string TRUE", "TRUE", true},
+		{"string 1", "1", true},
+		{"string false", "false", false},
+		{"string 0", "0", false},
+		{"string empty", "", false},
+		{"string whitespace true", "  true  ", true},
+		{"float64 nonzero", float64(1.5), true},
+		{"float64 negative", float64(-1), true},
+		{"float64 zero", float64(0), false},
+		{"nil", nil, false},
+		{"int", int(1), false},
+		{"slice", []interface{}{}, false},
+		{"map", map[string]interface{}{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := jsonBoolish(tc.in)
+			if got != tc.want {
+				t.Errorf("jsonBoolish(%#v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStringFromJSON(t *testing.T) {
+	cases := []struct {
+		name string
+		in   interface{}
+		want string
+	}{
+		{"nil", nil, ""},
+		{"string trimmed", "  hello  ", "hello"},
+		{"string empty", "", ""},
+		{"int", int(123), "123"},
+		{"float64", float64(1.5), "1.5"},
+		{"bool true", true, "true"},
+		{"bool false", false, "false"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stringFromJSON(tc.in)
+			if got != tc.want {
+				t.Errorf("stringFromJSON(%#v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCloneOrNewJSONMap(t *testing.T) {
+	t.Run("nil returns empty non-nil map", func(t *testing.T) {
+		got := cloneOrNewJSONMap(nil)
+		if got == nil {
+			t.Error("expected non-nil map, got nil")
+		}
+		if len(got) != 0 {
+			t.Errorf("expected empty map, got %v", got)
+		}
+	})
+	t.Run("non-map string returns empty non-nil map", func(t *testing.T) {
+		got := cloneOrNewJSONMap("hello")
+		if got == nil || len(got) != 0 {
+			t.Errorf("expected empty non-nil map, got %v", got)
+		}
+	})
+	t.Run("non-map int returns empty non-nil map", func(t *testing.T) {
+		got := cloneOrNewJSONMap(42)
+		if got == nil || len(got) != 0 {
+			t.Errorf("expected empty non-nil map, got %v", got)
+		}
+	})
+	t.Run("populated map is shallow copy", func(t *testing.T) {
+		orig := map[string]interface{}{"a": "alpha", "b": float64(2)}
+		got := cloneOrNewJSONMap(orig)
+		if got["a"] != "alpha" || got["b"] != float64(2) {
+			t.Errorf("clone missing expected values: %v", got)
+		}
+		// Mutating clone must not affect original.
+		got["a"] = "changed"
+		if orig["a"] != "alpha" {
+			t.Error("mutating clone affected original")
+		}
+		// Adding a new key to clone must not affect original.
+		got["c"] = "new"
+		if _, ok := orig["c"]; ok {
+			t.Error("new key in clone leaked to original")
+		}
+	})
+}
