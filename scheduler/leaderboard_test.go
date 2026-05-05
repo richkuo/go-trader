@@ -166,10 +166,10 @@ func TestBuildLeaderboardMessages_TfIntColumns(t *testing.T) {
 	}
 }
 
-// TestBuildLeaderboardMessages_RoundTripsAndWinLoss verifies that #T and W/L
+// TestBuildLeaderboardMessages_PositionsOpenedAndWinLoss verifies that #T and W/L
 // columns reflect the supplied lifetimeStats map (not in-memory TradeHistory).
 // Regression for #580.
-func TestBuildLeaderboardMessages_RoundTripsAndWinLoss(t *testing.T) {
+func TestBuildLeaderboardMessages_PositionsOpenedAndWinLoss(t *testing.T) {
 	cfg := &Config{
 		Strategies: []StrategyConfig{
 			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
@@ -181,7 +181,7 @@ func TestBuildLeaderboardMessages_RoundTripsAndWinLoss(t *testing.T) {
 	state.Strategies["sma-btc"] = ss
 
 	lifetime := map[string]LifetimeTradeStats{
-		"sma-btc": {RoundTrips: 7, Wins: 5, Losses: 2},
+		"sma-btc": {PositionsOpened: 7, Wins: 5, Losses: 2},
 	}
 	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000}, nil, lifetime)
 	topMsg := messages["top"]
@@ -609,10 +609,10 @@ func TestBuildLeaderboardSummary_DefaultTopN(t *testing.T) {
 	}
 }
 
-// TestBuildLeaderboardSummary_RoundTripsAndWinLoss covers the per-platform path
+// TestBuildLeaderboardSummary_PositionsOpenedAndWinLoss covers the per-platform path
 // (BuildLeaderboardSummary) for the #T / W/L columns introduced in #580 — the
-// top/bottom path is covered by TestBuildLeaderboardMessages_RoundTripsAndWinLoss.
-func TestBuildLeaderboardSummary_RoundTripsAndWinLoss(t *testing.T) {
+// top/bottom path is covered by TestBuildLeaderboardMessages_PositionsOpenedAndWinLoss.
+func TestBuildLeaderboardSummary_PositionsOpenedAndWinLoss(t *testing.T) {
 	cfg := &Config{
 		Strategies: []StrategyConfig{
 			{ID: "hl-sma-btc", Type: "perps", Capital: 1000, Platform: "hyperliquid", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
@@ -623,7 +623,7 @@ func TestBuildLeaderboardSummary_RoundTripsAndWinLoss(t *testing.T) {
 	state.Strategies["hl-sma-btc"].Cash = 1100
 
 	lifetime := map[string]LifetimeTradeStats{
-		"hl-sma-btc": {RoundTrips: 4, Wins: 3, Losses: 1},
+		"hl-sma-btc": {PositionsOpened: 4, Wins: 3, Losses: 1},
 	}
 	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", TopN: 5, Channel: "c1"}
 	msg := BuildLeaderboardSummary(lc, cfg, state, map[string]float64{"BTC/USDT": 50000}, nil, lifetime)

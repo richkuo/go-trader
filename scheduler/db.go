@@ -1251,32 +1251,59 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	return state, nil
 }
 
-// LifetimeTradeStats holds the per-strategy round-trip totals derived from
-// the trades table (#455/#471). RoundTrips is the lifetime count of distinct
-// trade position IDs among close rows; legacy rows without a position ID fall
-// back to one synthetic group per row to preserve historical per-leg counts.
-// Wins and Losses partition round trips by strict net realized PnL sign
-// (PnL > 0 → win, PnL < 0 → loss). Breakeven positions are excluded from both
-// buckets. Open positions without a recorded close do not count.
+// LifetimeTradeStats holds the per-strategy lifetime totals derived from
+// the trades table (#455/#471/#607). PositionsOpened is the lifetime count
+// of open legs (is_close=0 rows) — the #T column in summaries / leaderboard
+// shows positions entered, not closed round trips, so partial-close legs
+// don't inflate the count and still-open positions are included. Wins and
+// Losses are derived from closed round trips grouped by position_id and
+// partitioned by strict net realized PnL sign (PnL > 0 → win, PnL < 0 →
+// loss); breakeven round trips are excluded from both buckets. Legacy close
+// rows without a position_id fall back to one synthetic group per row.
 type LifetimeTradeStats struct {
-	RoundTrips int
-	Wins       int
-	Losses     int
+	PositionsOpened int
+	Wins            int
+	Losses          int
 }
 
-// LifetimeTradeStatsAll returns lifetime round-trip stats for every strategy
-// that has at least one close trade in the trades table. Strategies with no
-// closes are absent from the result; callers should treat a missing key as
-// an all-zero struct. Used by FormatCategorySummary (#455) to render lifetime
-// #T / W/L columns that are immune to kill-switch / circuit-breaker resets
-// of the in-memory RiskState counters.
+// LifetimeTradeStatsAll returns lifetime stats for every strategy that has
+// any trade row in the trades table. Strategies with no trades are absent
+// from the result; callers should treat a missing key as an all-zero
+// struct. PositionsOpened counts is_close=0 rows; Wins/Losses come from
+// closed-round-trip aggregation. Used by FormatCategorySummary (#455) and
+// the leaderboard (#580) to render lifetime #T / W/L columns that are
+// immune to kill-switch / circuit-breaker resets of the in-memory RiskState
+// counters.
 func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
 	}
-	rows, err := sdb.db.Query(`SELECT
+	out := make(map[string]LifetimeTradeStats)
+
+	openRows, err := sdb.db.Query(`SELECT strategy_id, COUNT(*)
+		FROM trades
+		WHERE is_close = 0
+		GROUP BY strategy_id`)
+	if err != nil {
+		return nil, fmt.Errorf("query lifetime open counts: %w", err)
+	}
+	defer openRows.Close()
+	for openRows.Next() {
+		var id string
+		var opens sql.NullInt64
+		if err := openRows.Scan(&id, &opens); err != nil {
+			return nil, fmt.Errorf("scan lifetime open counts: %w", err)
+		}
+		entry := out[id]
+		entry.PositionsOpened = int(opens.Int64)
+		out[id] = entry
+	}
+	if err := openRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate lifetime open counts: %w", err)
+	}
+
+	closeRows, err := sdb.db.Query(`SELECT
 			strategy_id,
-			COUNT(*) AS round_trips,
 			SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) AS wins,
 			SUM(CASE WHEN net_pnl < 0 THEN 1 ELSE 0 END) AS losses
 		FROM (
@@ -1296,21 +1323,19 @@ func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, erro
 	if err != nil {
 		return nil, fmt.Errorf("query lifetime trade stats: %w", err)
 	}
-	defer rows.Close()
-	out := make(map[string]LifetimeTradeStats)
-	for rows.Next() {
+	defer closeRows.Close()
+	for closeRows.Next() {
 		var id string
-		var total, wins, losses sql.NullInt64
-		if err := rows.Scan(&id, &total, &wins, &losses); err != nil {
+		var wins, losses sql.NullInt64
+		if err := closeRows.Scan(&id, &wins, &losses); err != nil {
 			return nil, fmt.Errorf("scan lifetime trade stats: %w", err)
 		}
-		out[id] = LifetimeTradeStats{
-			RoundTrips: int(total.Int64),
-			Wins:       int(wins.Int64),
-			Losses:     int(losses.Int64),
-		}
+		entry := out[id]
+		entry.Wins = int(wins.Int64)
+		entry.Losses = int(losses.Int64)
+		out[id] = entry
 	}
-	if err := rows.Err(); err != nil {
+	if err := closeRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate lifetime trade stats: %w", err)
 	}
 	return out, nil

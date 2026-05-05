@@ -11,19 +11,19 @@ import (
 
 // LeaderboardEntry holds computed PnL data for one strategy.
 type LeaderboardEntry struct {
-	ID         string  `json:"id"`
-	Type       string  `json:"type"`
-	Value      float64 `json:"value"`
-	Capital    float64 `json:"capital"`
-	PnL        float64 `json:"pnl"`
-	PnLPct     float64 `json:"pnl_pct"`
-	Trades     int     `json:"trades"`
-	Sharpe     float64 `json:"sharpe"`      // #397 — annualized Sharpe; 0 = undefined/no data. Kept in the serialized form (no omitempty) so consumers can distinguish "present but zero" from "omitted".
-	Timeframe  string  `json:"timeframe"`   // #580 — candle timeframe (Args[2]) or "—".
-	Interval   string  `json:"interval"`    // #580 — formatted check interval (e.g. "1h").
-	RoundTrips int     `json:"round_trips"` // #580 — closed round-trip count from trades table (immune to RiskState resets).
-	Wins       int     `json:"wins"`        // #580 — round trips with net realized PnL > 0.
-	Losses     int     `json:"losses"`      // #580 — round trips with net realized PnL < 0.
+	ID              string  `json:"id"`
+	Type            string  `json:"type"`
+	Value           float64 `json:"value"`
+	Capital         float64 `json:"capital"`
+	PnL             float64 `json:"pnl"`
+	PnLPct          float64 `json:"pnl_pct"`
+	Trades          int     `json:"trades"`
+	Sharpe          float64 `json:"sharpe"`           // #397 — annualized Sharpe; 0 = undefined/no data. Kept in the serialized form (no omitempty) so consumers can distinguish "present but zero" from "omitted".
+	Timeframe       string  `json:"timeframe"`        // #580 — candle timeframe (Args[2]) or "—".
+	Interval        string  `json:"interval"`         // #580 — formatted check interval (e.g. "1h").
+	PositionsOpened int     `json:"positions_opened"` // #607 — lifetime open-leg count (is_close=0 rows) from trades table; survives RiskState resets. Replaces the round-trip count for the #T column.
+	Wins            int     `json:"wins"`             // #580 — closed round trips with net realized PnL > 0.
+	Losses          int     `json:"losses"`           // #580 — closed round trips with net realized PnL < 0.
 }
 
 // leaderboardTopN returns the configured top-N count, defaulting to 5 when unset.
@@ -72,8 +72,8 @@ func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]fl
 }
 
 // newLeaderboardEntry assembles a LeaderboardEntry, pulling timeframe/interval
-// from the strategy config and round-trip / W-L counts from the lifetime stats
-// map (#580). Missing lifetimeStats entry → zero round trips.
+// from the strategy config and lifetime open-leg / W-L counts from the
+// lifetime stats map (#580/#607). Missing lifetimeStats entry → zero counts.
 func newLeaderboardEntry(sc StrategyConfig, ss *StrategyState, pv, initCap, pnl, pnlPct float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats, globalIntervalSeconds int) LeaderboardEntry {
 	effectiveInterval := sc.IntervalSeconds
 	if effectiveInterval <= 0 {
@@ -81,19 +81,19 @@ func newLeaderboardEntry(sc StrategyConfig, ss *StrategyState, pv, initCap, pnl,
 	}
 	lt := lifetimeStats[sc.ID]
 	return LeaderboardEntry{
-		ID:         sc.ID,
-		Type:       sc.Type,
-		Value:      pv,
-		Capital:    initCap,
-		PnL:        pnl,
-		PnLPct:     pnlPct,
-		Trades:     len(ss.TradeHistory),
-		Sharpe:     sharpeByStrategy[sc.ID],
-		Timeframe:  extractTimeframe(sc),
-		Interval:   formatInterval(effectiveInterval),
-		RoundTrips: lt.RoundTrips,
-		Wins:       lt.Wins,
-		Losses:     lt.Losses,
+		ID:              sc.ID,
+		Type:            sc.Type,
+		Value:           pv,
+		Capital:         initCap,
+		PnL:             pnl,
+		PnLPct:          pnlPct,
+		Trades:          len(ss.TradeHistory),
+		Sharpe:          sharpeByStrategy[sc.ID],
+		Timeframe:       extractTimeframe(sc),
+		Interval:        formatInterval(effectiveInterval),
+		PositionsOpened: lt.PositionsOpened,
+		Wins:            lt.Wins,
+		Losses:          lt.Losses,
 	}
 }
 
@@ -114,12 +114,12 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 
 	// Totals across ALL strategies in this category.
 	var totalValue, totalCapital float64
-	totalRoundTrips, totalWins, totalLosses := 0, 0, 0
+	totalPositionsOpened, totalWins, totalLosses := 0, 0, 0
 	winning, losing, flat := 0, 0, 0
 	for _, e := range entries {
 		totalValue += e.Value
 		totalCapital += e.Capital
-		totalRoundTrips += e.RoundTrips
+		totalPositionsOpened += e.PositionsOpened
 		totalWins += e.Wins
 		totalLosses += e.Losses
 		if e.PnLPct > 0 {
@@ -182,9 +182,9 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 		wlStr := fmtWinLossRatio(e.Wins, e.Losses)
 		sharpeStr := fmtSharpe(e.Sharpe)
 		if showType {
-			sb.WriteString(fmt.Sprintf(rowFmt, label, e.Type, valStr, pnlStr, pctStr, tfStr, intStr, e.RoundTrips, wlStr, sharpeStr))
+			sb.WriteString(fmt.Sprintf(rowFmt, label, e.Type, valStr, pnlStr, pctStr, tfStr, intStr, e.PositionsOpened, wlStr, sharpeStr))
 		} else {
-			sb.WriteString(fmt.Sprintf(rowFmt, label, valStr, pnlStr, pctStr, tfStr, intStr, e.RoundTrips, wlStr, sharpeStr))
+			sb.WriteString(fmt.Sprintf(rowFmt, label, valStr, pnlStr, pctStr, tfStr, intStr, e.PositionsOpened, wlStr, sharpeStr))
 		}
 	}
 	sb.WriteString(sep + "\n")
@@ -198,9 +198,9 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 	totPctStr := fmtSignedPct(totalPnlPct)
 	totWlStr := fmtWinLossRatio(totalWins, totalLosses)
 	if showType {
-		sb.WriteString(fmt.Sprintf(rowFmt, totalLabel, "", totValStr, totPnlStr, totPctStr, "", "", totalRoundTrips, totWlStr, ""))
+		sb.WriteString(fmt.Sprintf(rowFmt, totalLabel, "", totValStr, totPnlStr, totPctStr, "", "", totalPositionsOpened, totWlStr, ""))
 	} else {
-		sb.WriteString(fmt.Sprintf(rowFmt, totalLabel, totValStr, totPnlStr, totPctStr, "", "", totalRoundTrips, totWlStr, ""))
+		sb.WriteString(fmt.Sprintf(rowFmt, totalLabel, totValStr, totPnlStr, totPctStr, "", "", totalPositionsOpened, totWlStr, ""))
 	}
 	sb.WriteString("```\n")
 	sb.WriteString(fmt.Sprintf("🟢 %d winning · 🔴 %d losing · ⚪ %d flat\n", winning, losing, flat))

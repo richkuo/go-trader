@@ -2173,8 +2173,8 @@ CREATE TABLE trades (
 		t.Fatalf("LifetimeTradeStatsAll: %v", err)
 	}
 	got := stats["s1"]
-	if got.RoundTrips != 3 {
-		t.Errorf("RoundTrips = %d, want 3 (3 close legs of 5 rows)", got.RoundTrips)
+	if got.PositionsOpened != 2 {
+		t.Errorf("PositionsOpened = %d, want 2 (2 open legs of 5 rows)", got.PositionsOpened)
 	}
 	if got.Wins != 2 {
 		t.Errorf("Wins = %d, want 2 (PnL > 0: $42.50, $3.14)", got.Wins)
@@ -2208,14 +2208,14 @@ func TestLifetimeTradeStatsAll_FreshInsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LifetimeTradeStatsAll: %v", err)
 	}
-	if got := stats["s1"]; got.RoundTrips != 2 || got.Wins != 1 || got.Losses != 1 {
-		t.Errorf("s1 stats = %+v, want RoundTrips=2 Wins=1 Losses=1", got)
+	if got := stats["s1"]; got.PositionsOpened != 2 || got.Wins != 1 || got.Losses != 1 {
+		t.Errorf("s1 stats = %+v, want PositionsOpened=2 Wins=1 Losses=1", got)
 	}
-	if got := stats["s2"]; got.RoundTrips != 1 || got.Wins != 1 || got.Losses != 0 {
-		t.Errorf("s2 stats = %+v, want RoundTrips=1 Wins=1 Losses=0", got)
+	if got := stats["s2"]; got.PositionsOpened != 1 || got.Wins != 1 || got.Losses != 0 {
+		t.Errorf("s2 stats = %+v, want PositionsOpened=1 Wins=1 Losses=0", got)
 	}
 	if _, ok := stats["s3"]; ok {
-		t.Errorf("unexpected entry for s3 with no closes: %+v", stats["s3"])
+		t.Errorf("unexpected entry for s3 with no trades: %+v", stats["s3"])
 	}
 }
 
@@ -2238,8 +2238,8 @@ func TestLifetimeTradeStatsAll_PartialClosesNetByPositionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LifetimeTradeStatsAll: %v", err)
 	}
-	if got := stats["s1"]; got.RoundTrips != 1 || got.Wins != 1 || got.Losses != 0 {
-		t.Errorf("stats = %+v, want RoundTrips=1 Wins=1 Losses=0", got)
+	if got := stats["s1"]; got.PositionsOpened != 1 || got.Wins != 1 || got.Losses != 0 {
+		t.Errorf("stats = %+v, want PositionsOpened=1 Wins=1 Losses=0", got)
 	}
 }
 
@@ -2267,8 +2267,8 @@ func TestLifetimeTradeStatsAll_LegacyNullAndEmptyPositionIDStayPerLeg(t *testing
 	if err != nil {
 		t.Fatalf("LifetimeTradeStatsAll: %v", err)
 	}
-	if got := stats["s1"]; got.RoundTrips != 2 || got.Wins != 1 || got.Losses != 1 {
-		t.Errorf("legacy stats = %+v, want RoundTrips=2 Wins=1 Losses=1", got)
+	if got := stats["s1"]; got.PositionsOpened != 0 || got.Wins != 1 || got.Losses != 1 {
+		t.Errorf("legacy stats = %+v, want PositionsOpened=0 Wins=1 Losses=1 (only close legs seeded)", got)
 	}
 }
 
@@ -2288,11 +2288,11 @@ func TestLifetimeTradeStatsAll_PositionIDScopedByStrategy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LifetimeTradeStatsAll: %v", err)
 	}
-	if got := stats["s1"]; got.RoundTrips != 1 || got.Wins != 1 || got.Losses != 0 {
-		t.Errorf("s1 stats = %+v, want RoundTrips=1 Wins=1 Losses=0", got)
+	if got := stats["s1"]; got.PositionsOpened != 0 || got.Wins != 1 || got.Losses != 0 {
+		t.Errorf("s1 stats = %+v, want PositionsOpened=0 Wins=1 Losses=0 (only close legs seeded)", got)
 	}
-	if got := stats["s2"]; got.RoundTrips != 1 || got.Wins != 0 || got.Losses != 1 {
-		t.Errorf("s2 stats = %+v, want RoundTrips=1 Wins=0 Losses=1", got)
+	if got := stats["s2"]; got.PositionsOpened != 0 || got.Wins != 0 || got.Losses != 1 {
+		t.Errorf("s2 stats = %+v, want PositionsOpened=0 Wins=0 Losses=1 (only close legs seeded)", got)
 	}
 }
 
@@ -2312,8 +2312,8 @@ func TestLifetimeTradeStatsAll_BreakevenPositionNeitherWinNorLoss(t *testing.T) 
 	if err != nil {
 		t.Fatalf("LifetimeTradeStatsAll: %v", err)
 	}
-	if got := stats["s1"]; got.RoundTrips != 1 || got.Wins != 0 || got.Losses != 0 {
-		t.Errorf("breakeven stats = %+v, want RoundTrips=1 Wins=0 Losses=0", got)
+	if got := stats["s1"]; got.PositionsOpened != 0 || got.Wins != 0 || got.Losses != 0 {
+		t.Errorf("breakeven stats = %+v, want PositionsOpened=0 Wins=0 Losses=0 (only close legs seeded)", got)
 	}
 }
 
@@ -2390,8 +2390,8 @@ func TestLifetimeTradeStatsAll_OptionsSameContractReopenUsesDistinctPositionIDs(
 	if err != nil {
 		t.Fatalf("LifetimeTradeStatsAll: %v", err)
 	}
-	if got := stats[s.ID]; got.RoundTrips != 2 || got.Wins != 2 || got.Losses != 0 {
-		t.Errorf("option stats = %+v, want RoundTrips=2 Wins=2 Losses=0", got)
+	if got := stats[s.ID]; got.PositionsOpened != 2 || got.Wins != 2 || got.Losses != 0 {
+		t.Errorf("option stats = %+v, want PositionsOpened=2 Wins=2 Losses=0", got)
 	}
 }
 
@@ -2422,7 +2422,7 @@ func TestLifetimeTradeStats_SurvivesRiskStateReset(t *testing.T) {
 		t.Fatalf("LifetimeTradeStatsAll: %v", err)
 	}
 	got := stats["s1"]
-	if got.RoundTrips != 2 || got.Wins != 1 || got.Losses != 1 {
-		t.Errorf("post-reset stats = %+v, want RoundTrips=2 Wins=1 Losses=1", got)
+	if got.PositionsOpened != 0 || got.Wins != 1 || got.Losses != 1 {
+		t.Errorf("post-reset stats = %+v, want PositionsOpened=0 Wins=1 Losses=1 (only close legs seeded)", got)
 	}
 }
