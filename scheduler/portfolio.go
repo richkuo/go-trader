@@ -170,6 +170,15 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	pnl -= fee
 	s.Cash += pnl
 	positionID := ensurePositionTradeID(s.ID, symbol, pos)
+	// Note (#604 review #3): pos.TP1OID/TP2OID are dropped on the floor here
+	// when the reconciler detects an external close. HL auto-cancels
+	// reduce-only orders once the underlying position is flat (a TP fill
+	// would otherwise create a new opposite-side position, violating the
+	// reduce-only flag), so the orphan OIDs are cleared exchange-side. The
+	// executable close paths (full-close via runHyperliquidExecuteOrder,
+	// kill-switch flatten, per-strategy circuit drain) DO explicitly cancel
+	// TP OIDs by piggy-backing on the existing --cancel-stop-loss-oid argv
+	// so we don't depend on auto-cancel timing for paths under our control.
 
 	trade := Trade{
 		Timestamp:       now,

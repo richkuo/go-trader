@@ -319,6 +319,37 @@ def _oid_is_open(open_oids: set[int] | None, oid: int) -> bool:
     return oid > 0 and open_oids is not None and int(oid) in open_oids
 
 
+def _oid_filled_externally(adapter, oid: int, since_ms: int) -> dict:
+    """Check whether ``oid`` has filled on-chain by querying userFills.
+
+    Returns a dict with at minimum ``{"filled": bool}``. When filled, also
+    includes ``size`` (summed across partial fills) and the ``fee`` /
+    ``closed_pnl`` fields surfaced by ``lookup_fill_fee_by_oid``. Failure to
+    query is non-fatal: the caller treats {"filled": False} as "we don't
+    know" and proceeds with re-placement only when we have positive evidence
+    the order was cancelled (open-orders fetch succeeded and OID absent).
+
+    Used by run_sync_protection to avoid the over-close hazard where a TP
+    OID that has actually filled (shrinking the on-chain position) is
+    re-placed at the same price sized against stale virtual qty (#604 review #1).
+    """
+    if oid <= 0:
+        return {"filled": False}
+    try:
+        lookup = adapter.lookup_fill_fee_by_oid(int(oid), since_ms)
+    except Exception as e:
+        print(f"[WARN] userFills lookup({oid}) failed: {e}", file=sys.stderr)
+        return {"filled": False, "error": str(e)}
+    if not lookup:
+        return {"filled": False}
+    return {
+        "filled": True,
+        "fee": float(lookup.get("fee", 0) or 0),
+        "closed_pnl": float(lookup.get("closed_pnl", 0) or 0),
+        "count": int(lookup.get("count", 0) or 0),
+    }
+
+
 def run_sync_protection(
     symbol,
     side,
@@ -363,6 +394,34 @@ def run_sync_protection(
 
         close_is_buy = side == "short"
 
+        # Wide window for the userFills "did this OID fill?" lookup. We don't
+        # know how long the prior OID was outstanding, so look back 7 days —
+        # any fill older than that is irrelevant (the OID would have been
+        # rotated long since). Bounding at 7d keeps the indexer scan cheap
+        # but still catches fills that occurred during a multi-day outage.
+        fill_check_since_ms = int(time.time() * 1000) - 7 * 24 * 3600 * 1000
+
+        def _resolve_missing_oid(prev_oid: int):
+            """Decide what to do with a previously-recorded OID that is no
+            longer in open_orders. Returns one of:
+                ("place",   None)  — OID never existed or was cancelled; place new
+                ("filled",  fill)  — OID actually filled on-chain; do NOT re-place
+                ("unknown", None)  — open_orders fetch failed; defer
+            (#604 review #1)
+            """
+            if prev_oid <= 0:
+                return ("place", None)
+            if open_oids is None:
+                # We couldn't fetch open_orders — don't re-place a TP/SL
+                # without knowing whether the prior one is still resting.
+                # Re-placement here is what would over-close: better to
+                # surface the failure and try again next cycle.
+                return ("unknown", None)
+            fill = _oid_filled_externally(adapter, prev_oid, fill_check_since_ms)
+            if fill.get("filled"):
+                return ("filled", fill)
+            return ("place", None)
+
         if stop_loss_atr_mult > 0:
             if side == "long":
                 sl_px = avg_cost - stop_loss_atr_mult * entry_atr
@@ -372,20 +431,27 @@ def run_sync_protection(
             out["stop_loss_trigger_px"] = sl_px
             if _oid_is_open(open_oids, stop_loss_oid):
                 out["stop_loss_oid"] = int(stop_loss_oid)
-            elif stop_loss_oid <= 0 or open_oids is not None:
-                try:
-                    resp = adapter.place_stop_loss(symbol, size, sl_px, close_is_buy)
-                    kind, payload = _classify_sl_response(resp)
-                    if kind == "resting":
-                        out["stop_loss_oid"] = payload
-                    elif kind == "filled":
-                        out["stop_loss_filled_immediately"] = True
-                    elif kind == "error":
-                        out["stop_loss_error"] = f"place_stop_loss SDK error: {payload}"
-                    else:
-                        out["stop_loss_error"] = f"place_stop_loss returned no usable status: {resp}"
-                except Exception as se:
-                    out["stop_loss_error"] = str(se)
+            else:
+                action, fill = _resolve_missing_oid(stop_loss_oid)
+                if action == "filled":
+                    out["stop_loss_filled_externally"] = True
+                    out["stop_loss_fill"] = fill
+                    print(f"[WARN] stop-loss OID={stop_loss_oid} already filled on-chain; not re-placing — reconciler will book the close", file=sys.stderr)
+                elif action == "place":
+                    try:
+                        resp = adapter.place_stop_loss(symbol, size, sl_px, close_is_buy)
+                        kind, payload = _classify_sl_response(resp)
+                        if kind == "resting":
+                            out["stop_loss_oid"] = payload
+                        elif kind == "filled":
+                            out["stop_loss_filled_immediately"] = True
+                        elif kind == "error":
+                            out["stop_loss_error"] = f"place_stop_loss SDK error: {payload}"
+                        else:
+                            out["stop_loss_error"] = f"place_stop_loss returned no usable status: {resp}"
+                    except Exception as se:
+                        out["stop_loss_error"] = str(se)
+                # action=="unknown" → leave SL OID untouched, retry next cycle
 
         if tp1_atr_mult > 0 and tp1_fraction > 0 and tp2_atr_mult > 0:
             if side == "long":
@@ -400,37 +466,49 @@ def run_sync_protection(
             out["tp2_px"] = adapter.round_perps_trigger_px(symbol, tp2_px)
             if _oid_is_open(open_oids, tp1_oid):
                 out["tp1_oid"] = int(tp1_oid)
-            elif tp1_oid <= 0 or open_oids is not None:
-                try:
-                    resp = adapter.place_take_profit_limit(symbol, tp1_size, tp1_px, close_is_buy)
-                    kind, payload = _classify_sl_response(resp)
-                    if kind == "resting":
-                        out["tp1_oid"] = payload
-                    elif kind == "filled":
-                        out["tp1_filled_immediately"] = True
-                    elif kind == "error":
-                        out["tp1_error"] = f"place_take_profit_limit SDK error: {payload}"
-                    else:
-                        out["tp1_error"] = f"place_take_profit_limit returned no usable status: {resp}"
-                except Exception as te:
-                    out["tp1_error"] = str(te)
+            else:
+                action, fill = _resolve_missing_oid(tp1_oid)
+                if action == "filled":
+                    out["tp1_filled_externally"] = True
+                    out["tp1_fill"] = fill
+                    print(f"[WARN] TP1 OID={tp1_oid} already filled on-chain; not re-placing — reconciler will book the close", file=sys.stderr)
+                elif action == "place":
+                    try:
+                        resp = adapter.place_take_profit_limit(symbol, tp1_size, tp1_px, close_is_buy)
+                        kind, payload = _classify_sl_response(resp)
+                        if kind == "resting":
+                            out["tp1_oid"] = payload
+                        elif kind == "filled":
+                            out["tp1_filled_immediately"] = True
+                        elif kind == "error":
+                            out["tp1_error"] = f"place_take_profit_limit SDK error: {payload}"
+                        else:
+                            out["tp1_error"] = f"place_take_profit_limit returned no usable status: {resp}"
+                    except Exception as te:
+                        out["tp1_error"] = str(te)
             if tp2_size > 0:
                 if _oid_is_open(open_oids, tp2_oid):
                     out["tp2_oid"] = int(tp2_oid)
-                elif tp2_oid <= 0 or open_oids is not None:
-                    try:
-                        resp = adapter.place_take_profit_limit(symbol, tp2_size, tp2_px, close_is_buy)
-                        kind, payload = _classify_sl_response(resp)
-                        if kind == "resting":
-                            out["tp2_oid"] = payload
-                        elif kind == "filled":
-                            out["tp2_filled_immediately"] = True
-                        elif kind == "error":
-                            out["tp2_error"] = f"place_take_profit_limit SDK error: {payload}"
-                        else:
-                            out["tp2_error"] = f"place_take_profit_limit returned no usable status: {resp}"
-                    except Exception as te:
-                        out["tp2_error"] = str(te)
+                else:
+                    action, fill = _resolve_missing_oid(tp2_oid)
+                    if action == "filled":
+                        out["tp2_filled_externally"] = True
+                        out["tp2_fill"] = fill
+                        print(f"[WARN] TP2 OID={tp2_oid} already filled on-chain; not re-placing — reconciler will book the close", file=sys.stderr)
+                    elif action == "place":
+                        try:
+                            resp = adapter.place_take_profit_limit(symbol, tp2_size, tp2_px, close_is_buy)
+                            kind, payload = _classify_sl_response(resp)
+                            if kind == "resting":
+                                out["tp2_oid"] = payload
+                            elif kind == "filled":
+                                out["tp2_filled_immediately"] = True
+                            elif kind == "error":
+                                out["tp2_error"] = f"place_take_profit_limit SDK error: {payload}"
+                            else:
+                                out["tp2_error"] = f"place_take_profit_limit returned no usable status: {resp}"
+                        except Exception as te:
+                            out["tp2_error"] = str(te)
 
         print(json.dumps(out, cls=SafeEncoder))
     except Exception as e:

@@ -92,20 +92,27 @@ type HyperliquidStopLossUpdateResult struct {
 // HyperliquidProtectionSyncResult is emitted by check_hyperliquid.py
 // --sync-protection. It keeps per-strategy reduce-only SL/TP order OIDs in
 // Position so restart recovery can verify or re-place missing protection (#601).
+//
+// `*_filled_externally` flags signal that the recorded OID had already filled
+// on-chain when sync ran (reconciler will book the close); the Go side must
+// clear the OID without re-placing to avoid the over-close hazard from #604.
 type HyperliquidProtectionSyncResult struct {
-	Platform            string  `json:"platform"`
-	Timestamp           string  `json:"timestamp"`
-	Error               string  `json:"error,omitempty"`
-	StopLossOID         int64   `json:"stop_loss_oid,omitempty"`
-	StopLossTriggerPx   float64 `json:"stop_loss_trigger_px,omitempty"`
-	TP1OID              int64   `json:"tp1_oid,omitempty"`
-	TP2OID              int64   `json:"tp2_oid,omitempty"`
-	TP1Px               float64 `json:"tp1_px,omitempty"`
-	TP2Px               float64 `json:"tp2_px,omitempty"`
-	StopLossError       string  `json:"stop_loss_error,omitempty"`
-	TP1Error            string  `json:"tp1_error,omitempty"`
-	TP2Error            string  `json:"tp2_error,omitempty"`
-	OpenOrderCheckError string  `json:"open_order_check_error,omitempty"`
+	Platform                 string  `json:"platform"`
+	Timestamp                string  `json:"timestamp"`
+	Error                    string  `json:"error,omitempty"`
+	StopLossOID              int64   `json:"stop_loss_oid,omitempty"`
+	StopLossTriggerPx        float64 `json:"stop_loss_trigger_px,omitempty"`
+	TP1OID                   int64   `json:"tp1_oid,omitempty"`
+	TP2OID                   int64   `json:"tp2_oid,omitempty"`
+	TP1Px                    float64 `json:"tp1_px,omitempty"`
+	TP2Px                    float64 `json:"tp2_px,omitempty"`
+	StopLossError            string  `json:"stop_loss_error,omitempty"`
+	TP1Error                 string  `json:"tp1_error,omitempty"`
+	TP2Error                 string  `json:"tp2_error,omitempty"`
+	OpenOrderCheckError      string  `json:"open_order_check_error,omitempty"`
+	StopLossFilledExternally bool    `json:"stop_loss_filled_externally,omitempty"`
+	TP1FilledExternally      bool    `json:"tp1_filled_externally,omitempty"`
+	TP2FilledExternally      bool    `json:"tp2_filled_externally,omitempty"`
 }
 
 // RunPythonScript executes a Python script and returns stdout/stderr.

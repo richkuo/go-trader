@@ -427,13 +427,17 @@ class HyperliquidExchangeAdapter:
         )
 
     def open_order_oids(self, symbol: str | None = None) -> set[int]:
-        """Return currently open order OIDs, optionally filtered by coin (#601)."""
+        """Return currently open order OIDs, optionally filtered by coin (#601).
+
+        Raises whatever the underlying SDK raises — callers in
+        check_hyperliquid.py treat a raise as "open-orders fetch failed,
+        defer placement decisions" so wrapping it in try/except here would
+        silently coerce uncertainty into "no open orders" and produce the
+        over-place hazard we're trying to avoid.
+        """
         if not self._account_address:
             return set()
-        try:
-            orders = self._info.open_orders(self._account_address)
-        except Exception:
-            raise
+        orders = self._info.open_orders(self._account_address)
         out: set[int] = set()
         for order in orders or []:
             if not isinstance(order, dict):
@@ -445,13 +449,27 @@ class HyperliquidExchangeAdapter:
                 out.add(oid)
         return out
 
-    def cancel_trigger_order(self, symbol: str, oid: int) -> dict:
-        """Cancel a resting trigger order by OID (#412)."""
+    def cancel_order_by_oid(self, symbol: str, oid: int) -> dict:
+        """Cancel any resting order (trigger or limit) by OID.
+
+        HL's cancel endpoint is order-type-agnostic — it accepts the OID and
+        figures out the underlying order kind from the book. Trigger orders
+        (stop-loss, take-profit-trigger) and limit orders (reduce-only TP
+        limits placed via place_take_profit_limit) are both cancellable
+        through this single primitive (#604 review #4).
+        """
         if not self._exchange:
             raise RuntimeError(
-                "cancel_trigger_order requires live mode (set HYPERLIQUID_SECRET_KEY)"
+                "cancel_order_by_oid requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
         return self._exchange.cancel(symbol, int(oid))
+
+    # Backwards-compatible alias. The original name implied only trigger
+    # orders were supported; in practice HL's cancel works for any order
+    # type. New code should call cancel_order_by_oid; existing callers can
+    # keep using cancel_trigger_order without a rename churn.
+    def cancel_trigger_order(self, symbol: str, oid: int) -> dict:
+        return self.cancel_order_by_oid(symbol, oid)
 
     def update_leverage(self, leverage: int, symbol: str, is_cross: bool) -> dict:
         """Set leverage and margin mode (cross/isolated) for ``symbol`` (#486).

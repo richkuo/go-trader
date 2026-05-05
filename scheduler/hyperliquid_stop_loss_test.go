@@ -2001,6 +2001,63 @@ func TestNormalizeHyperliquidPeerStopLosses_FixedATRMultOwner(t *testing.T) {
 	}
 }
 
+// #604 review #5: trailing stops still race on the shared on-chain position
+// because each cycle's cancel/replace is non-atomic. Two trailing peers must
+// be rejected even though fixed-distance peers are allowed.
+func TestHyperliquidPeerStrategyErrors_TrailingStopConflict(t *testing.T) {
+	a := 0.05 // 5% trailing
+	b := 0.03
+	strategies := []StrategyConfig{
+		{
+			ID: "hl-eth-trail-a", Type: "perps", Platform: "hyperliquid",
+			Args: []string{"trend", "ETH", "1h"}, Leverage: 5,
+			TrailingStopPct: &a,
+		},
+		{
+			ID: "hl-eth-trail-b", Type: "perps", Platform: "hyperliquid",
+			Args: []string{"breakout", "ETH", "1h"}, Leverage: 5,
+			TrailingStopPct: &b,
+		},
+	}
+	errs := hyperliquidPeerStrategyErrors(strategies)
+	if len(errs) == 0 {
+		t.Fatal("expected trailing-stop peer conflict error, got none")
+	}
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "trailing-stop owners") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error mentioning trailing-stop owners, got: %v", errs)
+	}
+}
+
+// #604 review #5: ATR-mult trailing stops have the same race as percentage
+// trailing — both call hyperliquidArmFixedATRStopLossLive's cancel/replace.
+func TestHyperliquidPeerStrategyErrors_TrailingATRConflict(t *testing.T) {
+	a := 1.0
+	b := 1.5
+	strategies := []StrategyConfig{
+		{
+			ID: "hl-btc-a", Type: "perps", Platform: "hyperliquid",
+			Args: []string{"trend", "BTC", "1h"}, Leverage: 3,
+			TrailingStopATRMult: &a,
+		},
+		{
+			ID: "hl-btc-b", Type: "perps", Platform: "hyperliquid",
+			Args: []string{"breakout", "BTC", "1h"}, Leverage: 3,
+			TrailingStopATRMult: &b,
+		},
+	}
+	errs := hyperliquidPeerStrategyErrors(strategies)
+	if len(errs) == 0 {
+		t.Fatal("expected trailing-ATR peer conflict error, got none")
+	}
+}
+
 // #601: hyperliquidPeerStrategyErrors allows multiple same-coin peers with
 // fixed ATR stops because each order is sized to that strategy's virtual qty.
 func TestHyperliquidPeerStrategyErrors_FixedATRMultAllowed(t *testing.T) {

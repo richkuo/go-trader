@@ -2294,7 +2294,12 @@ func isHLLiveReconcilable(sc StrategyConfig) bool {
 // runHyperliquidCheck runs check_hyperliquid.py signal-check mode (Phase 3, no lock).
 func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
-	args = appendOpenCloseArgs(args, sc, posCtx)
+	// Suppress in-process close evaluators that overlap on-chain reduce-only
+	// protection — running both races on the shared on-chain position
+	// (#604 review #2). Filter only changes the argv passed to Python; the
+	// stored config is untouched.
+	scForCheck := strategyConfigWithOnChainProtectionFilter(sc)
+	args = appendOpenCloseArgs(args, scForCheck, posCtx)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}

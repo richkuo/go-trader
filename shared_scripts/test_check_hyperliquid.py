@@ -635,3 +635,181 @@ class TestCloseFullPosition:
         })
         # market_close called with sz=None — HL determines the size, not the caller
         adapter.market_close.assert_called_once_with("ETH", sz=None)
+
+
+class TestSyncProtection:
+    """#601 / #604 review #1: run_sync_protection branches for OID present /
+    gone-but-cancelled / gone-but-filled. The over-close hazard arises when a
+    TP OID dropped from open_orders because it actually filled (not because
+    it was cancelled), and the script blindly re-places at the same price
+    sized off the stale virtual qty."""
+
+    def _run_sync(
+        self,
+        *,
+        size=1.0,
+        avg_cost=2000.0,
+        entry_atr=20.0,
+        side="long",
+        sl_oid=0,
+        tp1_oid=0,
+        tp2_oid=0,
+        open_oids=None,
+        fill_lookup_by_oid=None,
+        place_responses=None,
+    ):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.open_order_oids.return_value = (
+            set() if open_oids is None else set(open_oids)
+        )
+        mock_adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 4)
+
+        fills = fill_lookup_by_oid or {}
+
+        def lookup_side_effect(oid, *args, **kwargs):
+            return fills.get(int(oid), {})
+
+        mock_adapter.lookup_fill_fee_by_oid.side_effect = lookup_side_effect
+
+        responses = place_responses or {}
+
+        def stop_loss_side_effect(*args, **kwargs):
+            return responses.get("sl", {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 9000}}]}}})
+
+        def tp_side_effect(symbol, sz, px, is_buy):
+            # Return distinct OIDs for TP1 vs TP2 by detecting which call this
+            # is via a counter on the side_effect itself.
+            count = mock_adapter.place_take_profit_limit.call_count
+            key = "tp1" if count == 1 else "tp2"
+            return responses.get(key, {
+                "status": "ok",
+                "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 9100 + count}}]}}
+            })
+
+        mock_adapter.place_stop_loss.side_effect = stop_loss_side_effect
+        mock_adapter.place_take_profit_limit.side_effect = tp_side_effect
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                mod.run_sync_protection(
+                    "ETH",
+                    side,
+                    size,
+                    avg_cost,
+                    entry_atr,
+                    "live",
+                    stop_loss_atr_mult=1.0,
+                    tp1_atr_mult=1.0,
+                    tp1_fraction=0.5,
+                    tp2_atr_mult=2.0,
+                    stop_loss_oid=sl_oid,
+                    tp1_oid=tp1_oid,
+                    tp2_oid=tp2_oid,
+                )
+        return json.loads(captured.getvalue()), mock_adapter
+
+    def test_existing_oid_still_open_returns_same_oid(self):
+        """OID still in open_orders → echo it back, do NOT call place_take_profit_limit."""
+        out, adapter = self._run_sync(
+            tp1_oid=200,
+            tp2_oid=300,
+            sl_oid=100,
+            open_oids={100, 200, 300},
+        )
+        assert out["tp1_oid"] == 200
+        assert out["tp2_oid"] == 300
+        assert out["stop_loss_oid"] == 100
+        adapter.place_take_profit_limit.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+        adapter.lookup_fill_fee_by_oid.assert_not_called()
+
+    def test_missing_oid_with_no_fill_places_replacement(self):
+        """OID gone from open_orders AND not in userFills → cancelled, place new."""
+        out, adapter = self._run_sync(
+            tp1_oid=200,
+            tp2_oid=300,
+            open_oids=set(),  # empty — TP OIDs gone
+            fill_lookup_by_oid={},  # no fills for any OID
+        )
+        # New OIDs surfaced
+        assert "tp1_oid" in out
+        assert "tp2_oid" in out
+        # userFills was consulted to make sure the OID hadn't filled
+        assert adapter.lookup_fill_fee_by_oid.called
+        # New TPs placed
+        assert adapter.place_take_profit_limit.call_count == 2
+        # Filled-externally flag NOT set
+        assert not out.get("tp1_filled_externally")
+        assert not out.get("tp2_filled_externally")
+
+    def test_missing_oid_with_fill_marks_externally_filled(self):
+        """OID gone AND userFills shows a fill → filled externally; do NOT re-place. (#604 review #1)"""
+        out, adapter = self._run_sync(
+            tp1_oid=200,
+            tp2_oid=300,
+            open_oids=set(),
+            fill_lookup_by_oid={
+                200: {"fee": 0.05, "closed_pnl": 25.0, "count": 1},
+                # TP2 still missing (cancelled, not filled)
+            },
+        )
+        assert out.get("tp1_filled_externally") is True
+        assert "tp1_fill" in out
+        assert out["tp1_fill"]["fee"] == 0.05
+        # TP2 should be placed since no fill found
+        assert not out.get("tp2_filled_externally")
+        # Only ONE place_take_profit_limit call (for TP2), because TP1 was filled.
+        assert adapter.place_take_profit_limit.call_count == 1
+
+    def test_open_orders_fetch_failure_defers_replacement(self):
+        """open_order_oids() raise → leave existing OIDs alone, do not re-place
+        (would double-up the protection). The script returns the failure
+        marker so the Go side knows to retry next cycle."""
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.open_order_oids.side_effect = RuntimeError("indexer down")
+        mock_adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 4)
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                mod.run_sync_protection(
+                    "ETH", "long", 1.0, 2000.0, 20.0, "live",
+                    stop_loss_atr_mult=1.0, tp1_atr_mult=1.0, tp1_fraction=0.5, tp2_atr_mult=2.0,
+                    stop_loss_oid=100, tp1_oid=200, tp2_oid=300,
+                )
+        out = json.loads(captured.getvalue())
+        assert out["open_order_check_error"] == "indexer down"
+        # No re-placements issued — existing OIDs are left alone.
+        mock_adapter.place_take_profit_limit.assert_not_called()
+        mock_adapter.place_stop_loss.assert_not_called()
