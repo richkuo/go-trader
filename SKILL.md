@@ -250,7 +250,7 @@ Use the commit message and PR number to classify. When in doubt, treat as runtim
 | Category | Examples |
 | --- | --- |
 | Auto-migration | `config_version` bump, deprecated field removal, silent field copy (e.g. v10 `sizing_leverage` ← `leverage`); v11 no-op bump (#546); `disable_implicit_close` removed in #508 — strategies with `true` and no `close_strategies` now use implicit open-strategy close |
-| Runtime default | HL stop-loss auto-derive from `max_drawdown_pct` (#493); margin mode default `isolated` (#486); peer normalization of omitted stop/trailing fields (#494/#507); shared-coin CB drain clears pending **without** on-chain close when peers share the coin (#515) — operator must flatten manually; ATR(14) auto-injected + MISSING ENTRY ATR notifier for `tiered_tp_atr` (#525); paper trailing now books synthetic closes — previously silently ignored (#532); **`stop_loss_atr_mult=1.0` default for sole-owner HL perps with all 5 stop fields omitted (#562)** — set `0` to opt out; **EntryATR backfill (#568)** — positions that were open before `Position.EntryATR` started being stamped (or that were opened via exchange UI) now receive a stamped ATR on the next scheduler cycle, which silently arms any `tiered_tp_atr` / `trailing_stop_atr_mult` / `stop_loss_atr_mult` close evaluator that was previously inert; **HL shared-coin reconcile (#565)** — `reconcileHyperliquidAccountPositions` now closes virtual peers when (a) on-chain qty ≈ 0 (full flat) or (b) the sole SL owner's residual matches non-owner peers' qty (owner's trigger fired). Ambiguous gaps still fall through to gap-only recording; **`type=manual` reconcile (#576)** — manual strategies now included in HL on-chain reconciliation (`isHLLiveReconcilable`); positions closed via HL UI, SL trigger, or TP fill are cleared from scheduler state automatically (previously retained as ghost positions); **`type=manual` skips `CheckRisk` (#574)** — manual strategies are exempt from circuit-breaker DD math (capital=0, funded ad-hoc) |
+| Runtime default | HL stop-loss auto-derive from `max_drawdown_pct` (#493); margin mode default `isolated` (#486); peer normalization of omitted stop/trailing fields (#494/#507); shared-coin CB drain clears pending **without** on-chain close when peers share the coin (#515) — operator must flatten manually; ATR(14) auto-injected + MISSING ENTRY ATR notifier for `tiered_tp_atr` (#525); paper trailing now books synthetic closes — previously silently ignored (#532); **`stop_loss_atr_mult=1.0` default for sole-owner HL perps with all 5 stop fields omitted (#562)** — set `0` to opt out; **EntryATR backfill (#568)** — positions that were open before `Position.EntryATR` started being stamped (or that were opened via exchange UI) now receive a stamped ATR on the next scheduler cycle, which silently arms any `tiered_tp_atr` / `trailing_stop_atr_mult` / `stop_loss_atr_mult` close evaluator that was previously inert; **HL shared-coin reconcile (#565)** — `reconcileHyperliquidAccountPositions` now closes virtual peers when (a) on-chain qty ≈ 0 (full flat) or (b) the sole SL owner's residual matches non-owner peers' qty (owner's trigger fired). Ambiguous gaps still fall through to gap-only recording; **`type=manual` reconcile (#576)** — manual strategies now included in HL on-chain reconciliation (`isHLLiveReconcilable`); positions closed via HL UI, SL trigger, or TP fill are cleared from scheduler state automatically (previously retained as ghost positions); **`type=manual` skips `CheckRisk` (#574)** — manual strategies are exempt from circuit-breaker DD math (capital=0, funded ad-hoc); **HL real exchange fee (#585–#590)** — HL scheduler-placed and reconciler-booked trades now query the `userFills` endpoint for real fee instead of using the modeled 0.035% estimate; virtual cash tracks on-chain accountValue more accurately over time; trades written before this landed have `exchange_fee=0` — run `go-trader backfill hl-fees --all --apply` to correct them (#591); **HL peer cash on external close (#584)** — non-SL-owner peers closed by Detector 1 now get mark-based realized PnL credited to `strategies.cash` (previously credited $0, causing portfolio total to lag until reopen); **tiered-TP final-tier dust fix (#592/#593)** — sole-peer final-tier closes now use `market_close(sz=None)` to flatten the full on-chain residual; shared-coin peers still use sized close to avoid accidentally zeroing peer exposure |
 | Opt-in field | `trailing_stop_pct` (#502); `trailing_stop_atr_mult` (#507 — initial trigger deferred one cycle); open/close composition (#483); `stop_loss_margin_pct` (#490); `margin_per_trade_usd` (#520); `tiered_tp_atr_live` (#527 — `atr_source` param, falls back to entry ATR on warm-up); regime detection `regime.enabled` + `allowed_regimes` (#541/#546/#558 — `Trade.Regime` column added to trades on first start); **`type: "manual"` strategy + `manual-open` / `manual-close` CLI (#569)** — operator-driven HL perps with auto-defaults SL@1×ATR + `tiered_tp_atr_live` TP1@2× / TP2@3×; cannot share a symbol with a live HL perps strategy (validation error). Init wizard adds a "manual trading on HL?" step; **`discord.trade_alert_channels` / `telegram.trade_alert_channels` (#572/#573)** — optional map to route trade-fill alerts to a separate channel; omit to keep current behavior (summaries and trade alerts go to same `channels` entry) |
 | Internal / no ops impact | Discord column truncation/aliases (#514); registry split into open+close (#511); `close_fraction` now honored — existing `close_strategies` configs partially close as specified (#521); Discord SL/TP1/TP2/ATR position lines (#528/#529/#561); partial-close DMs as `TRADE CLOSED` (#530/#531); backtester close registry with `--close-strategy`/`--close-params` (#535) |
 | Open-position constraint | `margin_mode`, exchange `leverage`, kill-switch identity changes; HL `trailing_stop_atr_mult` / `stop_loss_atr_mult` nil↔positive toggle blocked while open |
@@ -379,6 +379,7 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    ./go-trader init --json '{...}' --output scheduler/config.json
    ./go-trader manual-open <strategy-id> --side long|short (--size N | --notional N | --margin N)
    ./go-trader manual-close <strategy-id> [--qty N]
+   ./go-trader backfill hl-fees [--strategy <id>|--all] [--apply] [--reset-cash]
    sudo systemctl start|stop|restart|status go-trader
    journalctl -u go-trader -n 50 --no-pager
    curl -s localhost:8099/status | python3 -m json.tool
@@ -428,6 +429,34 @@ Notes:
 - A 99% partial close is **not** silently collapsed into a full close — the queue carries an explicit `is_full_close` intent flag derived from the operator's `--qty`.
 - Positions closed externally (HL UI close, SL trigger, TP fill) are detected by the on-chain reconciler and cleared from scheduler state automatically (#576) — no ghost positions.
 - `type=manual` strategies are exempt from circuit-breaker drawdown checks (#574) — risk is managed via `manual-open`/`manual-close` directly.
+
+---
+
+## Backfill HL Fees
+
+HL `exchange_fee` was recorded as $0 for trades placed before real-fee lookup landed (#587). Run the backfill tool to correct historical records:
+
+```bash
+# Dry run — shows what would change without writing anything
+./go-trader backfill hl-fees --all
+
+# Target one strategy
+./go-trader backfill hl-fees --strategy hl-btc-momentum
+
+# Apply corrections (requires the daemon to be stopped first)
+sudo systemctl stop go-trader
+./go-trader backfill hl-fees --all --apply
+sudo systemctl start go-trader
+```
+
+Notes:
+
+- `--apply` refuses to run when another `go-trader` process is alive (concurrent `SaveState` would overwrite recomputed cash).
+- Close-leg `realized_pnl` is adjusted by `(modeled_fee − real_fee)` to reflect actual on-chain P/L.
+- `strategies.cash` is replayed from `initial_capital` using the corrected fee/PnL stream.
+- Cash replay divergence > $1 (likely from a SIGHUP capital top-up) is flagged as a WARNING and blocks `--apply` unless `--reset-cash` is also passed.
+- Paper-mode HL strategies are skipped (no real OIDs). Manual strategies are included.
+- Skip reasons (`missing_oid`, `no_fill_match`, `already_real_fee`) are reported per row.
 
 ---
 
