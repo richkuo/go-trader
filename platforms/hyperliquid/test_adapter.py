@@ -414,6 +414,28 @@ class TestStopLossPlacement:
         adapter.cancel_trigger_order("BTC", "12345")
         ex.cancel.assert_called_once_with("BTC", 12345)
 
+    def test_place_take_profit_limit_uses_reduce_only_limit(self):
+        adapter, ex, _ = self._live_adapter(sz_decimals={"ETH": 4})
+        ex.order.return_value = {"status": "ok"}
+        adapter.place_take_profit_limit("ETH", 0.123456, 3100.0, is_buy=False)
+        sym, is_buy, sz, limit_px, order_type = ex.order.call_args.args
+        assert sym == "ETH"
+        assert is_buy is False
+        assert sz == 0.1234
+        assert limit_px == 3100.0
+        assert order_type == {"limit": {"tif": "Gtc"}}
+        assert ex.order.call_args.kwargs == {"reduce_only": True}
+
+    def test_open_order_oids_filters_by_symbol(self):
+        adapter, _, _ = self._live_adapter()
+        adapter._account_address = "0xabc"
+        adapter._info.open_orders.return_value = [
+            {"coin": "ETH", "oid": 111},
+            {"coin": "BTC", "oid": 222},
+            {"coin": "ETH", "oid": "333"},
+        ]
+        assert adapter.open_order_oids("ETH") == {111, 333}
+
 
 # ─── userFills Lookup (#585) ──────────────────────────
 

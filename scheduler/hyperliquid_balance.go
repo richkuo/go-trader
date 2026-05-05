@@ -1096,8 +1096,10 @@ func runPendingHyperliquidCircuitCloses(
 		}
 		slOIDs := make(map[string][]int64, len(p.Symbols))
 		for _, c := range p.Symbols {
-			if pos, ok := ss.Positions[c.Symbol]; ok && pos != nil && pos.StopLossOID > 0 {
-				slOIDs[c.Symbol] = []int64{pos.StopLossOID}
+			if pos, ok := ss.Positions[c.Symbol]; ok && pos != nil {
+				slOIDs[c.Symbol] = appendUniquePositiveStopLossOID(slOIDs[c.Symbol], pos.StopLossOID)
+				slOIDs[c.Symbol] = appendUniquePositiveStopLossOID(slOIDs[c.Symbol], pos.TP1OID)
+				slOIDs[c.Symbol] = appendUniquePositiveStopLossOID(slOIDs[c.Symbol], pos.TP2OID)
 			}
 		}
 		jobs = append(jobs, job{id, *p, slOIDs})
@@ -1239,15 +1241,24 @@ func runPendingHyperliquidCircuitCloses(
 				fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s closed sz=%.6f (filled %.6f)\n", j.stratID, c.Symbol, sz, fillSz)
 			}
 
-			// Clear the StopLossOID under Lock when the cancel went
+			// Clear protection OIDs under Lock when the cancel went
 			// through, so a follow-up cycle doesn't try to cancel the
-			// already-cancelled trigger.
-			cancelOID := firstPositiveStopLossOID(cancelOIDs)
-			if cancelOID > 0 && result != nil && result.CancelStopLossSucceeded {
+			// already-cancelled orders.
+			if len(cancelOIDs) > 0 && result != nil && result.CancelStopLossSucceeded {
 				mu.Lock()
 				if ss := state.Strategies[j.stratID]; ss != nil {
-					if pos, ok := ss.Positions[c.Symbol]; ok && pos != nil && pos.StopLossOID == cancelOID {
-						pos.StopLossOID = 0
+					if pos, ok := ss.Positions[c.Symbol]; ok && pos != nil {
+						for _, cancelOID := range cancelOIDs {
+							if cancelOID > 0 && pos.StopLossOID == cancelOID {
+								pos.StopLossOID = 0
+							}
+							if cancelOID > 0 && pos.TP1OID == cancelOID {
+								pos.TP1OID = 0
+							}
+							if cancelOID > 0 && pos.TP2OID == cancelOID {
+								pos.TP2OID = 0
+							}
+						}
 					}
 				}
 				mu.Unlock()

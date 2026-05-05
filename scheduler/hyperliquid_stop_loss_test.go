@@ -971,7 +971,7 @@ func TestValidateConfig_TrailingStopMinMovePct(t *testing.T) {
 	}
 }
 
-func TestValidateConfig_HLPeersTrailingAndFixedStopLossConflict(t *testing.T) {
+func TestValidateConfig_HLPeersTrailingAndFixedStopLossAllowed(t *testing.T) {
 	trailing := 3.0
 	fixed := 2.0
 	cfg := &Config{
@@ -982,7 +982,7 @@ func TestValidateConfig_HLPeersTrailingAndFixedStopLossConflict(t *testing.T) {
 				Type:            "perps",
 				Platform:        "hyperliquid",
 				Script:          "shared_scripts/check_hyperliquid.py",
-				Args:            []string{"trend", "ETH", "1h", "--mode=live"},
+				Args:            []string{"trend", "ETH", "1h", "--mode=paper"},
 				Capital:         1000,
 				MaxDrawdownPct:  10,
 				Leverage:        10,
@@ -994,7 +994,7 @@ func TestValidateConfig_HLPeersTrailingAndFixedStopLossConflict(t *testing.T) {
 				Type:           "perps",
 				Platform:       "hyperliquid",
 				Script:         "shared_scripts/check_hyperliquid.py",
-				Args:           []string{"breakout", "ETH", "1h", "--mode=live"},
+				Args:           []string{"breakout", "ETH", "1h", "--mode=paper"},
 				Capital:        1000,
 				MaxDrawdownPct: 10,
 				Leverage:       10,
@@ -1005,11 +1005,8 @@ func TestValidateConfig_HLPeersTrailingAndFixedStopLossConflict(t *testing.T) {
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
 	}
 	err := ValidateConfig(cfg)
-	if err == nil {
-		t.Fatal("expected peer stop-loss conflict")
-	}
-	if !strings.Contains(err.Error(), "trailing_stop_pct") {
-		t.Fatalf("error=%v, want trailing_stop_pct conflict", err)
+	if err != nil {
+		t.Fatalf("ValidateConfig failed: %v", err)
 	}
 }
 
@@ -1200,11 +1197,9 @@ func TestValidateConfig_TrailingStopATRMult(t *testing.T) {
 	}
 }
 
-// #505: peer ownership detection must treat trailing_stop_atr_mult as one of
-// the four "this strategy owns the on-chain trigger" signals so two HL peers
-// on the same coin can't both arm a trailing stop and race their cancel/replace
-// against the shared on-chain position.
-func TestValidateConfig_HLPeersATRTrailingConflict(t *testing.T) {
+// #601: peer stop ownership is allowed because protection orders are sized per
+// strategy.
+func TestValidateConfig_HLPeersATRTrailingAllowed(t *testing.T) {
 	mult := 1.5
 	fixed := 2.0
 	cfg := &Config{
@@ -1215,7 +1210,7 @@ func TestValidateConfig_HLPeersATRTrailingConflict(t *testing.T) {
 				Type:                "perps",
 				Platform:            "hyperliquid",
 				Script:              "shared_scripts/check_hyperliquid.py",
-				Args:                []string{"trend", "ETH", "1h", "--mode=live"},
+				Args:                []string{"trend", "ETH", "1h", "--mode=paper"},
 				Capital:             1000,
 				MaxDrawdownPct:      10,
 				Leverage:            10,
@@ -1227,7 +1222,7 @@ func TestValidateConfig_HLPeersATRTrailingConflict(t *testing.T) {
 				Type:           "perps",
 				Platform:       "hyperliquid",
 				Script:         "shared_scripts/check_hyperliquid.py",
-				Args:           []string{"breakout", "ETH", "1h", "--mode=live"},
+				Args:           []string{"breakout", "ETH", "1h", "--mode=paper"},
 				Capital:        1000,
 				MaxDrawdownPct: 10,
 				Leverage:       10,
@@ -1238,19 +1233,14 @@ func TestValidateConfig_HLPeersATRTrailingConflict(t *testing.T) {
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
 	}
 	err := ValidateConfig(cfg)
-	if err == nil {
-		t.Fatal("expected peer stop-loss conflict")
-	}
-	if !strings.Contains(err.Error(), "trailing_stop_atr_mult") {
-		t.Fatalf("error=%v, want trailing_stop_atr_mult conflict", err)
+	if err != nil {
+		t.Fatalf("ValidateConfig failed: %v", err)
 	}
 }
 
-// #505: peer normalization must coerce omitted trailing_stop_atr_mult on
-// same-coin HL peers to an explicit zero on stop_loss_pct (the same treatment
-// trailing_stop_pct already gets) so the MaxDrawdownPct auto-derive only fires
-// for sole-owner strategies.
-func TestNormalizeHyperliquidPeerStopLosses_TrailingATRMultOwner(t *testing.T) {
+// #601: peer normalization is now a no-op; shared-coin peers keep normal
+// stop-loss defaulting because protection orders are sized per strategy.
+func TestNormalizeHyperliquidPeerStopLosses_TrailingATRMultOwnerNoop(t *testing.T) {
 	mult := 1.5
 	strategies := []StrategyConfig{
 		{
@@ -1276,14 +1266,8 @@ func TestNormalizeHyperliquidPeerStopLosses_TrailingATRMultOwner(t *testing.T) {
 	if strategies[0].StopLossPct != nil {
 		t.Errorf("ATR-mult owner should not gain a normalized StopLossPct; got %v", strategies[0].StopLossPct)
 	}
-	if strategies[1].StopLossPct == nil {
-		t.Fatalf("non-owner peer should be normalized to explicit 0 StopLossPct, got nil")
-	}
-	if *strategies[1].StopLossPct != 0 {
-		t.Errorf("non-owner peer normalized StopLossPct = %g, want 0", *strategies[1].StopLossPct)
-	}
-	if got := EffectiveStopLossPct(strategies[1]); got != 0 {
-		t.Errorf("non-owner peer EffectiveStopLossPct = %g, want 0 (no MaxDrawdownPct fallback)", got)
+	if strategies[1].StopLossPct != nil {
+		t.Fatalf("peer StopLossPct = %v, want nil", strategies[1].StopLossPct)
 	}
 }
 
@@ -2012,17 +1996,14 @@ func TestNormalizeHyperliquidPeerStopLosses_FixedATRMultOwner(t *testing.T) {
 	if strategies[0].StopLossPct != nil {
 		t.Errorf("fixed ATR-mult owner should not gain a normalized StopLossPct; got %v", strategies[0].StopLossPct)
 	}
-	if strategies[1].StopLossPct == nil {
-		t.Fatalf("non-owner peer should be normalized to explicit 0 StopLossPct, got nil")
-	}
-	if *strategies[1].StopLossPct != 0 {
-		t.Errorf("non-owner peer normalized StopLossPct = %g, want 0", *strategies[1].StopLossPct)
+	if strategies[1].StopLossPct != nil {
+		t.Fatalf("peer StopLossPct = %v, want nil", strategies[1].StopLossPct)
 	}
 }
 
-// #562: hyperliquidPeerStrategyErrors flags two peers on the same coin both
-// owning a fixed ATR-mult stop loss — at most one peer may place a trigger.
-func TestHyperliquidPeerStrategyErrors_FixedATRMultConflict(t *testing.T) {
+// #601: hyperliquidPeerStrategyErrors allows multiple same-coin peers with
+// fixed ATR stops because each order is sized to that strategy's virtual qty.
+func TestHyperliquidPeerStrategyErrors_FixedATRMultAllowed(t *testing.T) {
 	a := 1.5
 	b := 2.0
 	strategies := []StrategyConfig{
@@ -2038,18 +2019,13 @@ func TestHyperliquidPeerStrategyErrors_FixedATRMultConflict(t *testing.T) {
 		},
 	}
 	errs := hyperliquidPeerStrategyErrors(strategies)
-	if len(errs) == 0 {
-		t.Fatal("expected peer stop-loss conflict error")
-	}
-	joined := strings.Join(errs, " | ")
-	if !strings.Contains(joined, "conflicting") {
-		t.Errorf("expected conflict message, got: %v", errs)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected peer errors: %v", errs)
 	}
 }
 
-// #562: LoadConfig defaults sole-owner HL perps strategies with no explicit
-// stop fields to stop_loss_atr_mult=1.0. Peers don't get the default — peer
-// normalization sets StopLossPct=0 first.
+// #562/#601: LoadConfig defaults HL perps strategies with no explicit stop
+// fields to stop_loss_atr_mult=1.0, including shared-coin peers.
 func TestLoadConfig_DefaultsStopLossATRMultForSoleOwner(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -2105,9 +2081,9 @@ func TestLoadConfig_NoDefaultStopLossATRMultWhenExplicitFieldSet(t *testing.T) {
 	}
 }
 
-// #562: peer strategies on the same coin do NOT receive the default — peer
-// normalization runs first and sets StopLossPct=0, which makes them ineligible.
-func TestLoadConfig_NoDefaultStopLossATRMultForPeers(t *testing.T) {
+// #601: peer strategies on the same coin receive the default ATR stop because
+// exchange-side orders are sized per strategy.
+func TestLoadConfig_DefaultStopLossATRMultForPeers(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
 		"strategies": [
@@ -2139,11 +2115,11 @@ func TestLoadConfig_NoDefaultStopLossATRMultForPeers(t *testing.T) {
 	}
 	for _, sc := range cfg.Strategies {
 		if sc.ID == "hl-eth-breakout" {
-			if sc.StopLossATRMult != nil {
-				t.Errorf("peer should not receive default StopLossATRMult; got %v", sc.StopLossATRMult)
+			if sc.StopLossATRMult == nil || *sc.StopLossATRMult != DefaultStopLossATRMult {
+				t.Errorf("peer StopLossATRMult = %v, want default %.1f", sc.StopLossATRMult, DefaultStopLossATRMult)
 			}
-			if sc.StopLossPct == nil || *sc.StopLossPct != 0 {
-				t.Errorf("peer StopLossPct should be normalized to 0; got %v", sc.StopLossPct)
+			if sc.StopLossPct != nil {
+				t.Errorf("peer StopLossPct = %v, want nil", sc.StopLossPct)
 			}
 		}
 	}
