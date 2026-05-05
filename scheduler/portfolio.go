@@ -33,8 +33,9 @@ type Position struct {
 // by duration should treat zero as a sentinel, not a real value.
 //
 // ClosePrice note: for the synthetic "hl_sync_external" reason — positions
-// that disappeared from the exchange between reconcile cycles — both
-// ClosePrice and RealizedPnL are 0 (the real fill price is unknown). Downstream
+// that disappeared from the exchange between reconcile cycles — ClosePrice and
+// RealizedPnL are 0 when no mark price was available at reconcile time, and
+// approximate (mark-based, not the actual fill price) otherwise. Downstream
 // analytics that compute avg close price or slippage should filter
 // `close_reason != 'hl_sync_external'`.
 //
