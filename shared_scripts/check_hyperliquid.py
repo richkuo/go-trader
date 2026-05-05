@@ -25,6 +25,7 @@ import sys
 import os
 import json
 import math
+import time
 import traceback
 from datetime import datetime, timezone
 
@@ -404,6 +405,11 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
                 cancel_err = str(ce)
                 print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) failed: {ce}", file=sys.stderr)
 
+        # Bound the userFills lookup window to "shortly before submit" so the
+        # post-fill query (#585) doesn't have to scan unrelated history.
+        # 10s buffer absorbs local-vs-indexer clock skew.
+        fills_since_ms = int(time.time() * 1000) - 10_000
+
         result = adapter.market_open(symbol, is_buy, size)
 
         # Extract fill info from SDK response structure:
@@ -421,12 +427,30 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
                 oid = filled.get("oid")
                 if oid is not None:
                     fill["oid"] = int(oid)
-                # Extract fee if present in response
+                # Extract fee if present in response (HL placeOrder response
+                # currently omits this — keep the read for forward compat).
                 fee = filled.get("fee")
                 if fee is not None:
                     fill["fee"] = float(fee)
         except Exception:
             pass
+
+        # The HL placeOrder response does not include `fee`; the real fee is
+        # only available via the userFills indexer endpoint (#585). Query it
+        # by OID so partial fills across multiple price levels aggregate
+        # correctly. Failures here fall back to the modeled fee on the Go
+        # side — non-fatal.
+        if fill.get("oid"):
+            try:
+                lookup = adapter.lookup_fill_fee_by_oid(fill["oid"], fills_since_ms)
+                if lookup:
+                    fill["fee"] = lookup.get("fee", 0.0)
+                    if "closed_pnl" in lookup:
+                        fill["closed_pnl"] = lookup["closed_pnl"]
+                else:
+                    print(f"[WARN] userFills lookup returned no fills for oid={fill['oid']}", file=sys.stderr)
+            except Exception as fe:
+                print(f"[WARN] userFills lookup failed for oid={fill['oid']}: {fe}", file=sys.stderr)
 
         # Place the stop-loss trigger on successful opens only. We only try to
         # place an SL when the main order actually filled; a zero-size fill

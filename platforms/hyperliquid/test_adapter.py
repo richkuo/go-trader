@@ -413,3 +413,85 @@ class TestStopLossPlacement:
         ex.cancel.return_value = {"status": "ok"}
         adapter.cancel_trigger_order("BTC", "12345")
         ex.cancel.assert_called_once_with("BTC", 12345)
+
+
+# ─── userFills Lookup (#585) ──────────────────────────
+
+class TestLookupFillFeeByOID:
+    def _make_adapter(self):
+        mock_info = MagicMock()
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._account_address = "0xABC123"
+        return adapter, mock_info
+
+    def test_returns_empty_when_no_address(self):
+        mock_info = MagicMock()
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._account_address = ""
+        assert adapter.lookup_fill_fee_by_oid(123, since_ms=0) == {}
+        mock_info.user_fills_by_time.assert_not_called()
+
+    def test_aggregates_fee_and_pnl_across_partial_fills(self):
+        adapter, mock_info = self._make_adapter()
+        mock_info.user_fills_by_time.return_value = [
+            {"oid": 100, "fee": "0.50", "closedPnl": "1.25"},
+            {"oid": 100, "fee": "0.30", "closedPnl": "0.75"},
+            {"oid": 999, "fee": "5.00", "closedPnl": "10.00"},  # different OID — ignored
+        ]
+        result = adapter.lookup_fill_fee_by_oid(100, since_ms=1000)
+        assert result["fee"] == pytest.approx(0.80)
+        assert result["closed_pnl"] == pytest.approx(2.00)
+        assert result["count"] == 2
+
+    def test_handles_string_oid_in_response(self):
+        adapter, mock_info = self._make_adapter()
+        mock_info.user_fills_by_time.return_value = [
+            {"oid": "100", "fee": "0.42", "closedPnl": "0"},
+        ]
+        result = adapter.lookup_fill_fee_by_oid(100, since_ms=1000)
+        assert result["fee"] == pytest.approx(0.42)
+        assert result["count"] == 1
+
+    def test_retries_until_indexer_catches_up(self, monkeypatch):
+        adapter, mock_info = self._make_adapter()
+        # First two attempts: fill not yet indexed. Third: appears.
+        mock_info.user_fills_by_time.side_effect = [
+            [],
+            [{"oid": 999, "fee": "1", "closedPnl": "0"}],  # different OID
+            [{"oid": 100, "fee": "0.65", "closedPnl": "0"}],
+        ]
+        sleeps = []
+        monkeypatch.setattr("time.sleep", lambda s: sleeps.append(s))
+        result = adapter.lookup_fill_fee_by_oid(100, since_ms=1000, max_retries=4, retry_delay_s=0.1)
+        assert result["fee"] == pytest.approx(0.65)
+        assert mock_info.user_fills_by_time.call_count == 3
+        assert sleeps == [0.1, 0.1]  # slept between attempts 1→2 and 2→3, not after the success
+
+    def test_returns_empty_after_max_retries_exhausted(self, monkeypatch):
+        adapter, mock_info = self._make_adapter()
+        mock_info.user_fills_by_time.return_value = []
+        monkeypatch.setattr("time.sleep", lambda s: None)
+        result = adapter.lookup_fill_fee_by_oid(100, since_ms=1000, max_retries=3, retry_delay_s=0.0)
+        assert result == {}
+        assert mock_info.user_fills_by_time.call_count == 3
+
+    def test_swallows_sdk_exceptions_and_retries(self, monkeypatch):
+        adapter, mock_info = self._make_adapter()
+        mock_info.user_fills_by_time.side_effect = [
+            Exception("network blip"),
+            [{"oid": 100, "fee": "0.10", "closedPnl": "0"}],
+        ]
+        monkeypatch.setattr("time.sleep", lambda s: None)
+        result = adapter.lookup_fill_fee_by_oid(100, since_ms=1000, max_retries=4, retry_delay_s=0.0)
+        assert result["fee"] == pytest.approx(0.10)
+
+    def test_treats_non_list_response_as_no_match(self, monkeypatch):
+        adapter, mock_info = self._make_adapter()
+        mock_info.user_fills_by_time.return_value = {"unexpected": "shape"}
+        monkeypatch.setattr("time.sleep", lambda s: None)
+        result = adapter.lookup_fill_fee_by_oid(100, since_ms=1000, max_retries=2, retry_delay_s=0.0)
+        assert result == {}

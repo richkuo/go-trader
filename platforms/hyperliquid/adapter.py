@@ -32,6 +32,24 @@ except ImportError:
     _SDK_AVAILABLE = False
 
 
+def _safe_float(v) -> float:
+    if v is None:
+        return 0.0
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _safe_int(v) -> int:
+    if v is None:
+        return 0
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _round_perps_px(px: float, sz_decimals: int) -> float:
     """Round a perps price to HL's tick rules.
 
@@ -260,6 +278,56 @@ class HyperliquidExchangeAdapter:
             if sz <= 0:
                 raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
         return self._exchange.market_close(symbol, sz)
+
+    def lookup_fill_fee_by_oid(
+        self,
+        oid: int,
+        since_ms: int,
+        max_retries: int = 4,
+        retry_delay_s: float = 0.5,
+    ) -> dict:
+        """Look up the actual exchange fee for a filled order via the userFills API.
+
+        HL's order placement response (`market_open` / `market_close`) does not
+        include the `fee` field — the modeled fee in the trade record drifts
+        from the on-chain balance over many trades (#585). This helper queries
+        the indexer-backed `userFills` endpoint to retrieve the real fee.
+
+        Returns a dict with summed `fee` and `closed_pnl` across all fills
+        sharing the OID (a single market order can fragment into multiple
+        partial fills at different price levels). Empty dict when no fills
+        match within the retry budget.
+
+        Indexer lag: fills can take several hundred ms to surface after the
+        order is placed. We retry up to `max_retries` times with
+        `retry_delay_s` between attempts. Total worst-case delay is
+        ~max_retries * retry_delay_s.
+        """
+        if not self._account_address:
+            return {}
+        attempt = 0
+        while attempt < max_retries:
+            try:
+                fills = self._info.user_fills_by_time(self._account_address, since_ms)
+            except Exception:
+                fills = None
+            if isinstance(fills, list):
+                matched = [f for f in fills if isinstance(f, dict) and _safe_int(f.get("oid")) == int(oid)]
+                if matched:
+                    fee_total = 0.0
+                    pnl_total = 0.0
+                    for f in matched:
+                        fee_total += _safe_float(f.get("fee"))
+                        pnl_total += _safe_float(f.get("closedPnl"))
+                    return {
+                        "fee": fee_total,
+                        "closed_pnl": pnl_total,
+                        "count": len(matched),
+                    }
+            attempt += 1
+            if attempt < max_retries:
+                time.sleep(retry_delay_s)
+        return {}
 
     def round_perps_trigger_px(self, symbol: str, px: float) -> float:
         """Public wrapper around HL's per-asset price-tick rounding.
