@@ -23,7 +23,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-def _run_script(sdk_response_or_exc, argv):
+_UNSET = object()
+
+
+def _run_script(sdk_response_or_exc, argv, lookup_result=_UNSET):
     """Helper: invoke close_hyperliquid_position.main() with a mocked adapter.
 
     sdk_response_or_exc may be either a dict (returned by adapter.market_close)
@@ -46,6 +49,8 @@ def _run_script(sdk_response_or_exc, argv):
         mock_adapter.market_close.side_effect = sdk_response_or_exc
     else:
         mock_adapter.market_close.return_value = sdk_response_or_exc
+    if lookup_result is not _UNSET:
+        mock_adapter.lookup_fill_fee_by_oid.return_value = lookup_result
 
     captured = StringIO()
     exit_code = {"value": 0}
@@ -138,6 +143,59 @@ class TestSuccessFill:
         assert fill["total_sz"] == 0.01
         assert "oid" not in fill
         assert "fee" not in fill
+
+    def test_filled_uses_numeric_lookup_result(self):
+        sdk_response = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [
+                {"filled": {"avgPx": "3000.5", "totalSz": "0.517", "oid": 9999999}}
+            ]}},
+        }
+        out, code = _run_script(
+            sdk_response,
+            ["--symbol=ETH", "--mode=live"],
+            lookup_result={"fee": "0.91", "closed_pnl": "7.5"},
+        )
+        assert code == 0
+        fill = out["close"]["fill"]
+        assert fill["fee"] == 0.91
+        assert fill["closed_pnl"] == 7.5
+
+    def test_filled_ignores_truthy_non_mapping_lookup_result(self):
+        sdk_response = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [
+                {"filled": {"avgPx": "3000.5", "totalSz": "0.517", "oid": 9999999}}
+            ]}},
+        }
+        out, code = _run_script(
+            sdk_response,
+            ["--symbol=ETH", "--mode=live"],
+            lookup_result=MagicMock(),
+        )
+        assert code == 0
+        fill = out["close"]["fill"]
+        assert fill["oid"] == 9999999
+        assert "fee" not in fill
+        assert "closed_pnl" not in fill
+
+    def test_filled_ignores_malformed_lookup_values(self):
+        sdk_response = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [
+                {"filled": {"avgPx": "3000.5", "totalSz": "0.517", "oid": 9999999}}
+            ]}},
+        }
+        out, code = _run_script(
+            sdk_response,
+            ["--symbol=ETH", "--mode=live"],
+            lookup_result={"fee": MagicMock(), "closed_pnl": MagicMock()},
+        )
+        assert code == 0
+        fill = out["close"]["fill"]
+        assert fill["oid"] == 9999999
+        assert "fee" not in fill
+        assert "closed_pnl" not in fill
 
 
 class TestAlreadyFlat:

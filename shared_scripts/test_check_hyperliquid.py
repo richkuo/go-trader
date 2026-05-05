@@ -10,6 +10,9 @@ from io import StringIO
 import pytest
 
 
+_UNSET = object()
+
+
 def _load_check_module():
     """Load check_hyperliquid.py as a module."""
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_hyperliquid.py")
@@ -22,7 +25,7 @@ def _load_check_module():
 class TestFillExtraction:
     """Test that run_execute extracts oid and fee from Hyperliquid SDK responses."""
 
-    def _run_execute_with_mock_response(self, sdk_response):
+    def _run_execute_with_mock_response(self, sdk_response, lookup_result=_UNSET):
         """Helper: mock the adapter and capture JSON output from run_execute."""
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
@@ -31,6 +34,8 @@ class TestFillExtraction:
         mock_adapter = MagicMock()
         mock_adapter_cls.return_value = mock_adapter
         mock_adapter.market_open.return_value = sdk_response
+        if lookup_result is not _UNSET:
+            mock_adapter.lookup_fill_fee_by_oid.return_value = lookup_result
 
         captured = StringIO()
         with patch.dict(sys.modules, {}):
@@ -102,6 +107,86 @@ class TestFillExtraction:
         fill = result["execution"]["fill"]
         assert fill["oid"] == 9876543210
         assert "fee" not in fill
+
+    def test_fill_uses_numeric_lookup_result(self):
+        """userFills lookup fee + closed PnL should be copied only as numbers."""
+        sdk_response = {
+            "status": "ok",
+            "response": {
+                "type": "order",
+                "data": {
+                    "statuses": [
+                        {
+                            "filled": {
+                                "avgPx": "2100.0",
+                                "totalSz": "0.5",
+                                "oid": 9876543210,
+                            }
+                        }
+                    ]
+                },
+            },
+        }
+        result = self._run_execute_with_mock_response(
+            sdk_response,
+            lookup_result={"fee": "0.42", "closed_pnl": "3.14"},
+        )
+        fill = result["execution"]["fill"]
+        assert fill["fee"] == 0.42
+        assert fill["closed_pnl"] == 3.14
+
+    def test_fill_ignores_truthy_non_mapping_lookup_result(self):
+        """A bare MagicMock lookup result must not leak into JSON output."""
+        sdk_response = {
+            "status": "ok",
+            "response": {
+                "type": "order",
+                "data": {
+                    "statuses": [
+                        {
+                            "filled": {
+                                "avgPx": "2100.0",
+                                "totalSz": "0.5",
+                                "oid": 9876543210,
+                            }
+                        }
+                    ]
+                },
+            },
+        }
+        result = self._run_execute_with_mock_response(sdk_response, lookup_result=MagicMock())
+        fill = result["execution"]["fill"]
+        assert fill["oid"] == 9876543210
+        assert "fee" not in fill
+        assert "closed_pnl" not in fill
+
+    def test_fill_ignores_malformed_lookup_values(self):
+        """Truthy dicts with non-numeric payloads are ignored."""
+        sdk_response = {
+            "status": "ok",
+            "response": {
+                "type": "order",
+                "data": {
+                    "statuses": [
+                        {
+                            "filled": {
+                                "avgPx": "2100.0",
+                                "totalSz": "0.5",
+                                "oid": 9876543210,
+                            }
+                        }
+                    ]
+                },
+            },
+        }
+        result = self._run_execute_with_mock_response(
+            sdk_response,
+            lookup_result={"fee": MagicMock(), "closed_pnl": MagicMock()},
+        )
+        fill = result["execution"]["fill"]
+        assert fill["oid"] == 9876543210
+        assert "fee" not in fill
+        assert "closed_pnl" not in fill
 
     def test_fill_without_oid(self):
         """SDK response has no oid — backwards compatible with old responses."""
