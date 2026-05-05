@@ -974,12 +974,29 @@ func ValidateConfig(cfg *Config) error {
 			// Fix #6: manual strategies cannot share a coin with a live perps strategy —
 			// the scheduler's close-eval loop snapshots pos under RLock without owning
 			// the full mutex, creating a TOCTOU window if a perps peer mutates the same position.
+			//
+			// #595: also reject two manual strategies on the same coin. Manual full-close
+			// paths pass closeFullPosition=true unconditionally, which calls
+			// adapter.market_close(sz=None) and flattens the entire wallet position. The
+			// perps path's shouldCloseFullPosition sole-peer guard does not run for manual
+			// closes, so without this check a full close on one manual strategy would
+			// silently flatten a peer manual strategy's on-chain exposure.
 			if sc.Symbol != "" {
 				for _, other := range cfg.Strategies {
-					if other.ID != sc.ID && other.Type == "perps" && other.Platform == "hyperliquid" {
-						if otherSym := hyperliquidSymbol(other.Args); strings.EqualFold(otherSym, sc.Symbol) {
-							errs = append(errs, fmt.Sprintf("%s: type=manual on %s conflicts with perps strategy %s on the same coin — use sub-account isolation", prefix, sc.Symbol, other.ID))
-						}
+					if other.ID == sc.ID || other.Platform != "hyperliquid" {
+						continue
+					}
+					var otherSym string
+					switch other.Type {
+					case "perps":
+						otherSym = hyperliquidSymbol(other.Args)
+					case "manual":
+						otherSym = other.Symbol
+					default:
+						continue
+					}
+					if strings.EqualFold(otherSym, sc.Symbol) {
+						errs = append(errs, fmt.Sprintf("%s: type=manual on %s conflicts with %s strategy %s on the same coin — use sub-account isolation", prefix, sc.Symbol, other.Type, other.ID))
 					}
 				}
 			}
