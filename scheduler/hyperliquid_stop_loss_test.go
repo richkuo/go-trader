@@ -544,7 +544,7 @@ func TestReconcileHyperliquidPositions_RestingStopLossFillBooksPnL(t *testing.T)
 	logger := silentStrategyLogger("hl-test-eth")
 	defer logger.Close()
 
-	changed := reconcileHyperliquidPositions(state, "ETH", nil, logger)
+	changed := reconcileHyperliquidPositions(state, "ETH", nil, "", logger)
 	if !changed {
 		t.Fatalf("expected reconcile to report a state change")
 	}
@@ -599,7 +599,7 @@ func TestReconcileHyperliquidPositions_RestingStopLossFillClosesShortWithBuy(t *
 	logger := silentStrategyLogger("hl-test-eth")
 	defer logger.Close()
 
-	changed := reconcileHyperliquidPositions(state, "ETH", nil, logger)
+	changed := reconcileHyperliquidPositions(state, "ETH", nil, "", logger)
 	if !changed {
 		t.Fatalf("expected reconcile to report a state change")
 	}

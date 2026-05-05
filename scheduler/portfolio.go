@@ -117,6 +117,16 @@ func recordClosedPosition(s *StrategyState, pos *Position, closePrice, realizedP
 // Returns false (no mutation) when closePx <= 0 or the position is missing,
 // so callers can choose a fallback path.
 func bookPerpsClose(s *StrategyState, symbol string, closePx float64, reason, detailsPrefix, logPrefix string, logger *StrategyLogger) bool {
+	return bookPerpsCloseWithFillFee(s, symbol, closePx, 0, false, "", reason, detailsPrefix, logPrefix, logger)
+}
+
+// bookPerpsCloseWithFillFee extends bookPerpsClose with on-chain fill metadata.
+// When useFillFee is true and fillFee > 0, the supplied fee replaces the
+// modeled fee in PnL math AND populates Trade.ExchangeFee — closing the
+// virtual-vs-on-chain drift identified in #585 / #588. exchangeOrderID is
+// stamped on Trade.ExchangeOrderID when non-empty (typically the OID that
+// triggered the on-chain close, e.g. Position.StopLossOID).
+func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason, detailsPrefix, logPrefix string, logger *StrategyLogger) bool {
 	if closePx <= 0 {
 		return false
 	}
@@ -139,24 +149,27 @@ func bookPerpsClose(s *StrategyState, symbol string, closePx float64, reason, de
 	if s.Platform == "okx" && s.Type == "perps" {
 		feePlatform = "okx-perps"
 	}
-	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
+	modeledFee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
+	fee := executionFee(modeledFee, fillFee, useFillFee)
 	pnl -= fee
 	s.Cash += pnl
 	positionID := ensurePositionTradeID(s.ID, symbol, pos)
 
 	trade := Trade{
-		Timestamp:   now,
-		StrategyID:  s.ID,
-		Symbol:      symbol,
-		PositionID:  positionID,
-		Side:        closeTradeSide(side),
-		Quantity:    qty,
-		Price:       closePx,
-		Value:       qty * closePx,
-		TradeType:   "perps",
-		Details:     fmt.Sprintf("%s, PnL: $%.2f (fee $%.2f)", detailsPrefix, pnl, fee),
-		IsClose:     true,
-		RealizedPnL: pnl,
+		Timestamp:       now,
+		StrategyID:      s.ID,
+		Symbol:          symbol,
+		PositionID:      positionID,
+		Side:            closeTradeSide(side),
+		Quantity:        qty,
+		Price:           closePx,
+		Value:           qty * closePx,
+		TradeType:       "perps",
+		Details:         fmt.Sprintf("%s, PnL: $%.2f (fee $%.2f)", detailsPrefix, pnl, fee),
+		IsClose:         true,
+		RealizedPnL:     pnl,
+		ExchangeOrderID: exchangeOrderIDForTrade(exchangeOrderID, useFillFee),
+		ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
 	}
 	trade.Regime = s.Regime
 	trade.EntryATR = pos.EntryATR
@@ -179,6 +192,15 @@ func recordPerpsStopLossClose(s *StrategyState, symbol string, triggerPx float64
 	return bookPerpsClose(s, symbol, triggerPx, reason, "Stop loss close", "SL close reconciled", logger)
 }
 
+// recordPerpsStopLossCloseWithFillFee is the reconciler entry point — same
+// behavior as recordPerpsStopLossClose but threads the userFills-resolved
+// exchange fee + OID into the close Trade so virtual cash matches the
+// on-chain accountValue (#588). When useFillFee=false (or fillFee<=0) the
+// modeled fee is used; failed indexer lookups fall back to the legacy path.
+func recordPerpsStopLossCloseWithFillFee(s *StrategyState, symbol string, triggerPx, fillFee float64, useFillFee bool, exchangeOrderID, reason string, logger *StrategyLogger) bool {
+	return bookPerpsCloseWithFillFee(s, symbol, triggerPx, fillFee, useFillFee, exchangeOrderID, reason, "Stop loss close", "SL close reconciled", logger)
+}
+
 // recordPerpsExternalClose books a perps close detected by reconciliation
 // when the position has disappeared on-chain without a tracked trigger fill
 // (manual UI close, kill-switch close from a peer, etc.). The caller supplies
@@ -188,6 +210,15 @@ func recordPerpsStopLossClose(s *StrategyState, symbol string, triggerPx float64
 // is missing, so callers can fall back to a zero-PnL recordClosedPosition (#584).
 func recordPerpsExternalClose(s *StrategyState, symbol string, closePx float64, reason string, logger *StrategyLogger) bool {
 	return bookPerpsClose(s, symbol, closePx, reason, "External close @ mark", "External close reconciled", logger)
+}
+
+// recordPerpsExternalCloseWithFillFee is the reconciler entry point — same
+// as recordPerpsExternalClose but threads the userFills-resolved fee and
+// (optional) exchange OID. The OID is rarely available for external closes
+// since the close happened off-scheduler, but the coin+size match path
+// can still recover the fee.
+func recordPerpsExternalCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason string, logger *StrategyLogger) bool {
+	return bookPerpsCloseWithFillFee(s, symbol, closePx, fillFee, useFillFee, exchangeOrderID, reason, "External close @ mark", "External close reconciled", logger)
 }
 
 // recordClosedOptionPosition appends a ClosedOptionPosition entry to the
