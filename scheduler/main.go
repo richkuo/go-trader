@@ -309,7 +309,7 @@ func main() {
 		}
 		prices := fetchPricesForSummary(cfg)
 		sharpeByStrategy := ComputeSharpeByStrategy(LoadClosedPositionsByStrategy(stateDB, cfg), cfg, state)
-		lifetimeStats := loadLifetimeStatsBestEffort(stateDB)
+		lifetimeStats := loadLifetimeStatsBestEffort(stateDB, "[leaderboard]")
 		if err := PostLeaderboard(cfg, state, prices, sharpeByStrategy, lifetimeStats, notifier); err != nil {
 			fmt.Fprintf(os.Stderr, "Leaderboard post failed: %v\n", err)
 			os.Exit(1)
@@ -1661,14 +1661,7 @@ func main() {
 		// One DB round-trip per cycle; missing keys render as zero inside
 		// FormatCategorySummary. Errors are downgraded to a nil map so the
 		// summary still posts without in-memory lifetime counters (#472).
-		var lifetimeStats map[string]LifetimeTradeStats
-		if stateDB != nil {
-			if ls, err := stateDB.LifetimeTradeStatsAll(); err != nil {
-				fmt.Printf("[summary] lifetime trade stats unavailable: %v\n", err)
-			} else {
-				lifetimeStats = ls
-			}
-		}
+		lifetimeStats := loadLifetimeStatsBestEffort(stateDB, "[summary]")
 
 		// Notification — one message per channel per asset, sent to all backends.
 		if notifier.HasBackends() {
@@ -1924,14 +1917,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	// Format and send summary using the same asset-grouping logic as the main loop.
 	closedByStrategy := LoadClosedPositionsByStrategy(sdb, cfg)
 	rfr := RiskFreeRateOrDefault(cfg)
-	var lifetimeStats map[string]LifetimeTradeStats
-	if sdb != nil {
-		if ls, err := sdb.LifetimeTradeStatsAll(); err != nil {
-			fmt.Printf("[summary] lifetime trade stats unavailable: %v\n", err)
-		} else {
-			lifetimeStats = ls
-		}
-	}
+	lifetimeStats := loadLifetimeStatsBestEffort(sdb, "[summary]")
 	assetGroups, assetKeys := groupByAsset(chStrats)
 	if len(assetKeys) <= 1 {
 		chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
@@ -3235,7 +3221,7 @@ func fetchPricesForSummary(cfg *Config) map[string]float64 {
 func runLeaderboardSummariesAndExit(lcs []LeaderboardSummaryConfig, cfg *Config, state *AppState, sdb *StateDB, notifier *MultiNotifier) {
 	prices := fetchPricesForSummary(cfg)
 	sharpeByStrategy := ComputeSharpeByStrategy(LoadClosedPositionsByStrategy(sdb, cfg), cfg, state)
-	lifetimeStats := loadLifetimeStatsBestEffort(sdb)
+	lifetimeStats := loadLifetimeStatsBestEffort(sdb, "[leaderboard]")
 	posted := 0
 	for _, lc := range lcs {
 		msg := BuildLeaderboardSummary(lc, cfg, state, prices, sharpeByStrategy, lifetimeStats)
@@ -3260,15 +3246,16 @@ func runLeaderboardSummariesAndExit(lcs []LeaderboardSummaryConfig, cfg *Config,
 // loadLifetimeStatsBestEffort fetches per-strategy lifetime round-trip stats
 // from the trades table, downgrading errors to a nil map (the same fallback
 // FormatCategorySummary uses) so leaderboard #T / W/L columns render zero
-// instead of failing the post. Used by the on-demand leaderboard / summary
-// exit paths that don't have a pre-cached map. (#580)
-func loadLifetimeStatsBestEffort(sdb *StateDB) map[string]LifetimeTradeStats {
+// instead of failing the post. logPrefix tags the warning when the DB read
+// fails ("[summary]" for the per-cycle paths, "[leaderboard]" for the
+// on-demand paths). (#580)
+func loadLifetimeStatsBestEffort(sdb *StateDB, logPrefix string) map[string]LifetimeTradeStats {
 	if sdb == nil {
 		return nil
 	}
 	stats, err := sdb.LifetimeTradeStatsAll()
 	if err != nil {
-		fmt.Printf("[leaderboard] lifetime trade stats unavailable: %v\n", err)
+		fmt.Printf("%s lifetime trade stats unavailable: %v\n", logPrefix, err)
 		return nil
 	}
 	return stats

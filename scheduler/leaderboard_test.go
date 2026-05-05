@@ -134,6 +134,10 @@ func TestBuildLeaderboardMessages_SharpeColumn(t *testing.T) {
 // TestBuildLeaderboardMessages_TfIntColumns verifies that Tf (Args[2]) and Int
 // (per-strategy or global IntervalSeconds) are extracted into LeaderboardEntry
 // and surfaced in the rendered message. Regression for #580.
+//
+// Asserts on the full Tf+Int cell pair (right-aligned in a %4s %4s row) rather
+// than each value as a free substring — `"4h"` would otherwise match elsewhere
+// in the rendered table.
 func TestBuildLeaderboardMessages_TfIntColumns(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 3600,
@@ -150,10 +154,15 @@ func TestBuildLeaderboardMessages_TfIntColumns(t *testing.T) {
 	}
 	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}, nil, nil)
 	topMsg := messages["top"]
-	for _, want := range []string{"30m", "10m", "4h", "1h"} {
-		if !containsStr(topMsg, want) {
-			t.Errorf("top message should contain %q (Tf or Int), got:\n%s", want, topMsg)
-		}
+	// Per-strategy interval (sma-btc): Tf="30m", Int="10m" → " 30m  10m".
+	smaCell := fmt.Sprintf("%4s %4s", "30m", "10m")
+	if !containsStr(topMsg, smaCell) {
+		t.Errorf("top message should contain Tf+Int cell %q for sma-btc, got:\n%s", smaCell, topMsg)
+	}
+	// Global fallback (rsi-eth): Tf="4h", Int="1h" → "  4h   1h".
+	rsiCell := fmt.Sprintf("%4s %4s", "4h", "1h")
+	if !containsStr(topMsg, rsiCell) {
+		t.Errorf("top message should contain Tf+Int cell %q for rsi-eth, got:\n%s", rsiCell, topMsg)
 	}
 }
 
@@ -176,12 +185,12 @@ func TestBuildLeaderboardMessages_RoundTripsAndWinLoss(t *testing.T) {
 	}
 	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000}, nil, lifetime)
 	topMsg := messages["top"]
-	// 5 wins / 2 losses = 2.50
-	if !containsStr(topMsg, "2.50") {
-		t.Errorf("top message should render W/L 2.50, got:\n%s", topMsg)
-	}
-	if !containsStr(topMsg, " 7 ") {
-		t.Errorf("top message should render round-trip count 7 in #T column, got:\n%s", topMsg)
+	// Assert on the full #T+W/L cell pair (`"%4d %5s"`) so a future width
+	// change to either column fails loudly instead of silently passing on the
+	// happy substring " 7 ". 5 wins / 2 losses → fmtWinLossRatio="2.50".
+	wantCell := fmt.Sprintf("%4d %5s", 7, fmtWinLossRatio(5, 2))
+	if !containsStr(topMsg, wantCell) {
+		t.Errorf("top message should render #T+W/L cell %q, got:\n%s", wantCell, topMsg)
 	}
 }
 
@@ -597,6 +606,33 @@ func TestBuildLeaderboardSummary_DefaultTopN(t *testing.T) {
 	msg := BuildLeaderboardSummary(lc, cfg, state, nil, nil, nil)
 	if !containsStr(msg, "Hyperliquid Top 5") {
 		t.Errorf("Expected default TopN=5 in title, got:\n%s", msg)
+	}
+}
+
+// TestBuildLeaderboardSummary_RoundTripsAndWinLoss covers the per-platform path
+// (BuildLeaderboardSummary) for the #T / W/L columns introduced in #580 — the
+// top/bottom path is covered by TestBuildLeaderboardMessages_RoundTripsAndWinLoss.
+func TestBuildLeaderboardSummary_RoundTripsAndWinLoss(t *testing.T) {
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			{ID: "hl-sma-btc", Type: "perps", Capital: 1000, Platform: "hyperliquid", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
+		},
+	}
+	state := NewAppState()
+	state.Strategies["hl-sma-btc"] = NewStrategyState(cfg.Strategies[0])
+	state.Strategies["hl-sma-btc"].Cash = 1100
+
+	lifetime := map[string]LifetimeTradeStats{
+		"hl-sma-btc": {RoundTrips: 4, Wins: 3, Losses: 1},
+	}
+	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", TopN: 5, Channel: "c1"}
+	msg := BuildLeaderboardSummary(lc, cfg, state, map[string]float64{"BTC/USDT": 50000}, nil, lifetime)
+	if msg == "" {
+		t.Fatal("BuildLeaderboardSummary returned empty message")
+	}
+	wantCell := fmt.Sprintf("%4d %5s", 4, fmtWinLossRatio(3, 1))
+	if !containsStr(msg, wantCell) {
+		t.Errorf("summary should render #T+W/L cell %q for hl-sma-btc, got:\n%s", wantCell, msg)
 	}
 }
 

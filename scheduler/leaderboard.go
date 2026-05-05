@@ -156,10 +156,13 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 		rowFmt = "%-18s %-6s %10s %10s %7s %4s %4s %4d %5s %7s\n"
 		labelMax = 18
 	} else {
-		header = fmt.Sprintf("%-22s %10s %10s %7s %4s %4s %4s %5s %7s",
+		// Non-showType keeps the wider 26-char Strategy column from origin/main
+		// so IDs like "hl-btc-tiered-atr-paper" (23 chars) render in full. The
+		// showType branch shrinks to 18 to match catTableStrategyWidth.
+		header = fmt.Sprintf("%-26s %10s %10s %7s %4s %4s %4s %5s %7s",
 			"Strategy", "Value", "PnL", "PnL%", "Tf", "Int", "#T", "W/L", "Sharpe")
-		rowFmt = "%-22s %10s %10s %7s %4s %4s %4d %5s %7s\n"
-		labelMax = 22
+		rowFmt = "%-26s %10s %10s %7s %4s %4s %4d %5s %7s\n"
+		labelMax = 26
 	}
 	sep := strings.Repeat("-", len(header))
 	sb.WriteString("\n```\n")
@@ -174,8 +177,8 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 		valStr := "$" + fmtComma(e.Value)
 		pnlStr := fmtSignedDollar(e.PnL)
 		pctStr := fmtSignedPct(e.PnLPct)
-		tfStr := leaderboardTfStr(e.Timeframe)
-		intStr := leaderboardIntStr(e.Interval)
+		tfStr := truncateRunes(e.Timeframe, 4)
+		intStr := truncateRunes(e.Interval, 4)
 		wlStr := fmtWinLossRatio(e.Wins, e.Losses)
 		sharpeStr := fmtSharpe(e.Sharpe)
 		if showType {
@@ -352,27 +355,16 @@ func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *Ap
 	return formatLeaderboardMessage(platformIcon(lc.Platform), title, entries[:n], false, n)
 }
 
-// leaderboardTfStr trims long timeframe strings to fit the 4-char Tf column.
-// Empty / missing values render as "—" to match FormatCategorySummary.
-func leaderboardTfStr(tf string) string {
-	if tf == "" {
-		return "—"
+// truncateRunes returns s clipped to at most max runes. Rune-aware so multi-byte
+// glyphs (e.g. "—") aren't sliced into invalid UTF-8. Used for the Tf/Int
+// column width guard. Callers that pass `extractTimeframe` / `formatInterval`
+// values can rely on those helpers to produce non-empty output.
+func truncateRunes(s string, max int) string {
+	if utf8.RuneCountInString(s) <= max {
+		return s
 	}
-	if len(tf) > 4 {
-		return tf[:4]
-	}
-	return tf
-}
-
-// leaderboardIntStr applies the same width guard for the Int column.
-func leaderboardIntStr(s string) string {
-	if s == "" {
-		return "—"
-	}
-	if len(s) > 4 {
-		return s[:4]
-	}
-	return s
+	runes := []rune(s)
+	return string(runes[:max])
 }
 
 // fmtSignedDollar formats a dollar value with +/- prefix.
