@@ -1405,6 +1405,168 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash(t *tes
 	}
 }
 
+func TestReconcileSharedCoin_TPPartialFill_DecrementsOwnerAndBooksPnL(t *testing.T) {
+	const ownerStartCash = 1000.0
+	const ownerQty = 0.5
+	const peerQty = 0.5
+	const avgCost = 3000.0
+	const mark = 3200.0
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: ownerStartCash, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: ownerQty, InitialQuantity: ownerQty, AvgCost: avgCost, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
+						EntryATR: 100, StopLossOID: 77, StopLossTriggerPx: 2900,
+						TPOIDs: []int64{0, 222}},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: 500, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: peerQty, InitialQuantity: peerQty, AvgCost: avgCost, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+
+	allStrategies := []StrategyConfig{
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", CloseStrategies: []string{"tiered_tp_atr_live"}, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: 0.75, EntryPrice: avgCost, Leverage: 10}}
+	prices := map[string]float64{"ETH": mark}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "")
+
+	owner := state.Strategies["hl-owner-eth"]
+	ownerPos := owner.Positions["ETH"]
+	if ownerPos == nil {
+		t.Fatal("owner ETH position should remain after TP1 partial fill")
+	}
+	if math.Abs(ownerPos.Quantity-0.25) > 1e-9 {
+		t.Errorf("owner quantity = %g, want 0.25", ownerPos.Quantity)
+	}
+	if ownerPos.InitialQuantity != ownerQty {
+		t.Errorf("InitialQuantity = %g, want %g", ownerPos.InitialQuantity, ownerQty)
+	}
+	if ownerPos.AvgCost != avgCost {
+		t.Errorf("AvgCost = %g, want %g", ownerPos.AvgCost, avgCost)
+	}
+	if ownerPos.StopLossOID != 77 {
+		t.Errorf("StopLossOID = %d, want preserved 77", ownerPos.StopLossOID)
+	}
+
+	wantFee := 0.25 * mark * HyperliquidTakerFeePct
+	wantPnL := 0.25*(mark-avgCost) - wantFee
+	if math.Abs(owner.Cash-(ownerStartCash+wantPnL)) > 1e-6 {
+		t.Errorf("owner Cash = %v, want %v", owner.Cash, ownerStartCash+wantPnL)
+	}
+	if len(owner.TradeHistory) != 1 {
+		t.Fatalf("owner close trades = %d, want 1", len(owner.TradeHistory))
+	}
+	tr := owner.TradeHistory[0]
+	if !tr.IsClose || tr.Side != "sell" || math.Abs(tr.Quantity-0.25) > 1e-9 || tr.Price != mark {
+		t.Errorf("close trade = %+v, want sell close 0.25 @ %v", tr, mark)
+	}
+	if math.Abs(tr.RealizedPnL-wantPnL) > 1e-6 {
+		t.Errorf("trade RealizedPnL = %v, want %v", tr.RealizedPnL, wantPnL)
+	}
+	if tr.EntryATR != 100 || tr.StopLossTriggerPx != 2900 {
+		t.Errorf("trade context EntryATR/SL = %v/%v, want 100/2900", tr.EntryATR, tr.StopLossTriggerPx)
+	}
+	if len(owner.ClosedPositions) != 0 {
+		t.Errorf("ClosedPositions = %d, want 0 for partial close", len(owner.ClosedPositions))
+	}
+
+	peerPos := state.Strategies["hl-peer-eth"].Positions["ETH"]
+	if peerPos == nil || math.Abs(peerPos.Quantity-peerQty) > 1e-9 {
+		t.Errorf("peer ETH = %+v, want unchanged %.2f", peerPos, peerQty)
+	}
+	gap := state.ReconciliationGaps["ETH"]
+	if gap == nil {
+		t.Fatal("expected gap entry for ETH")
+	}
+	if math.Abs(gap.VirtualQty-0.75) > 1e-9 || math.Abs(gap.OnChainQty-0.75) > 1e-9 || math.Abs(gap.DeltaQty) > 1e-9 {
+		t.Errorf("gap = %+v, want virtual/on-chain 0.75 with zero delta", gap)
+	}
+}
+
+func TestReconcileSharedCoin_TPPartialFill_Short(t *testing.T) {
+	const ownerStartCash = 1000.0
+	const ownerQty = 0.5
+	const peerQty = 0.5
+	const avgCost = 3000.0
+	const mark = 2800.0
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: ownerStartCash, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: ownerQty, InitialQuantity: ownerQty, AvgCost: avgCost, Side: "short",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
+						TPOIDs: []int64{0, 222}},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: 500, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: peerQty, InitialQuantity: peerQty, AvgCost: avgCost, Side: "short",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+
+	allStrategies := []StrategyConfig{
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", CloseStrategies: []string{"tiered_tp_atr_live"}, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: -0.75, EntryPrice: avgCost, Leverage: 10}}
+	prices := map[string]float64{"ETH": mark}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "")
+
+	owner := state.Strategies["hl-owner-eth"]
+	ownerPos := owner.Positions["ETH"]
+	if ownerPos == nil {
+		t.Fatal("owner ETH short should remain after TP partial fill")
+	}
+	if math.Abs(ownerPos.Quantity-0.25) > 1e-9 {
+		t.Errorf("owner short quantity = %g, want 0.25", ownerPos.Quantity)
+	}
+	wantFee := 0.25 * mark * HyperliquidTakerFeePct
+	wantPnL := 0.25*(avgCost-mark) - wantFee
+	if math.Abs(owner.Cash-(ownerStartCash+wantPnL)) > 1e-6 {
+		t.Errorf("owner Cash = %v, want %v", owner.Cash, ownerStartCash+wantPnL)
+	}
+	if len(owner.TradeHistory) != 1 {
+		t.Fatalf("owner close trades = %d, want 1", len(owner.TradeHistory))
+	}
+	tr := owner.TradeHistory[0]
+	if !tr.IsClose || tr.Side != "buy" || math.Abs(tr.Quantity-0.25) > 1e-9 || tr.Price != mark {
+		t.Errorf("close trade = %+v, want buy close 0.25 @ %v", tr, mark)
+	}
+	if math.Abs(tr.RealizedPnL-wantPnL) > 1e-6 {
+		t.Errorf("trade RealizedPnL = %v, want %v", tr.RealizedPnL, wantPnL)
+	}
+	gap := state.ReconciliationGaps["ETH"]
+	if gap == nil {
+		t.Fatal("expected gap entry for ETH")
+	}
+	if math.Abs(gap.VirtualQty-(-0.75)) > 1e-9 || math.Abs(gap.OnChainQty-(-0.75)) > 1e-9 || math.Abs(gap.DeltaQty) > 1e-9 {
+		t.Errorf("gap = %+v, want virtual/on-chain -0.75 with zero delta", gap)
+	}
+}
+
 // TestReconcileSharedCoin_AllPositionsClosedExternally_NoMarkPrice_FallsBack
 // verifies the legacy zero-PnL path still applies when the caller supplies no
 // mark price for the coin (e.g. the syncHyperliquidAccountPositions entry).

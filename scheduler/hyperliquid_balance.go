@@ -400,6 +400,10 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		}
 		coinStrategies[sym] = append(coinStrategies[sym], sc.ID)
 	}
+	strategyByID := make(map[string]StrategyConfig, len(allStrategies))
+	for _, sc := range allStrategies {
+		strategyByID[sc.ID] = sc
+	}
 	sharedCoins := make(map[string]bool)
 	for coin, ids := range coinStrategies {
 		if len(ids) > 1 {
@@ -515,6 +519,12 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		// owner's qty at arm time, so when the trigger fires the non-owner peers'
 		// portion remains on-chain untouched.
 		//
+		// Detector 3 — TP partial fill: on-chain qty is a same-direction nonzero
+		// subset of virtual qty, and exactly one same-side strategy has a cleared
+		// on-chain TP tier. Book the virtual/on-chain delta as an external partial
+		// close for that strategy, then shrink its virtual qty so the next
+		// protection-sync cycle sizes SL/TP orders from the true residual (#609).
+		//
 		// All other qty mismatches (ambiguous gaps that #258/#515 protect) fall
 		// through to the gap-recording block unchanged.
 		if math.Abs(onChainQty) < 1e-6 && math.Abs(virtualQty) > 1e-6 {
@@ -627,6 +637,55 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 					}
 				}
 			}
+			if math.Abs(delta) > 1e-6 {
+				if closeSide, closeQty, ok := hyperliquidSharedPartialCloseDrift(virtualQty, onChainQty); ok {
+					var candidateID string
+					var candidateSS *StrategyState
+					var candidatePos *Position
+					for _, id := range stratIDs {
+						ss := state.Strategies[id]
+						if ss == nil {
+							continue
+						}
+						pos := ss.Positions[coin]
+						if pos == nil || pos.Side != closeSide {
+							continue
+						}
+						sc, ok := strategyByID[id]
+						if !ok || !hyperliquidHasClearedTPTier(sc, pos, closeQty) {
+							continue
+						}
+						if candidateID != "" {
+							// Multiple TP owners changed in the same window; leave the
+							// aggregate gap visible rather than guessing the allocation.
+							candidateID, candidateSS, candidatePos = "", nil, nil
+							break
+						}
+						candidateID, candidateSS, candidatePos = id, ss, pos
+					}
+					if candidateID != "" && candidateSS != nil && candidatePos != nil && closeQty <= candidatePos.Quantity+1e-6 {
+						if mark, ok := prices[coin]; ok && mark > 0 {
+							logger, logErr := logMgr.GetStrategyLogger(candidateID)
+							if logErr != nil {
+								fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", candidateID, logErr)
+							}
+							lookup, useFillFee := resolveFee(coin, 0, closeQty)
+							logHyperliquidReconcileFillLookup(logger, coin, 0, closeQty, lookup, useFillFee)
+							if recordPerpsExternalPartialCloseWithFillFee(candidateSS, coin, closeQty, mark, lookup.Fee, useFillFee, "", "hl_sync_external_partial", logger) {
+								changed = true
+								if closeSide == "long" {
+									virtualQty -= closeQty
+								} else {
+									virtualQty += closeQty
+								}
+								delta = virtualQty - onChainQty
+							}
+						} else {
+							fmt.Printf("[WARN] hl-sync: shared coin %s TP partial drift detected for %s but no mark price is available; leaving virtual qty unchanged\n", coin, candidateID)
+						}
+					}
+				}
+			}
 		}
 
 		state.ReconciliationGaps[coin] = &ReconciliationGap{
@@ -669,6 +728,48 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 	}
 
 	return changed
+}
+
+func hyperliquidSharedPartialCloseDrift(virtualQty, onChainQty float64) (string, float64, bool) {
+	const tol = 1e-6
+	if virtualQty > tol && onChainQty > tol && onChainQty < virtualQty-tol {
+		return "long", virtualQty - onChainQty, true
+	}
+	if virtualQty < -tol && onChainQty < -tol && onChainQty > virtualQty+tol {
+		return "short", onChainQty - virtualQty, true
+	}
+	return "", 0, false
+}
+
+func hyperliquidHasClearedTPTier(sc StrategyConfig, pos *Position, closeQty float64) bool {
+	if pos == nil || len(pos.TPOIDs) == 0 {
+		return false
+	}
+	tiers := hyperliquidProtectionTiers(sc)
+	if len(tiers) == 0 {
+		return false
+	}
+	tpOIDs := tpOIDsForTierCount(pos.TPOIDs, len(tiers))
+	hasCleared := false
+	hasActive := false
+	for _, oid := range tpOIDs {
+		if oid > 0 {
+			hasActive = true
+		} else {
+			hasCleared = true
+		}
+	}
+	if !hasCleared {
+		return false
+	}
+	if hasActive {
+		return true
+	}
+	// All TP tiers gone usually means the final tier filled. Treat that as
+	// attributable only when the observed drift can fully close this strategy;
+	// otherwise an all-zero, never-placed TP list would make ambiguous gaps look
+	// actionable.
+	return math.Abs(pos.Quantity-closeQty) <= 1e-6
 }
 
 // HyperliquidLiveCloseReport summarizes a forceCloseHyperliquidLive run.

@@ -209,6 +209,85 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	return true
 }
 
+// bookPerpsPartialCloseWithFillFee records a reconciler-observed perps partial
+// close, credits realized PnL on the closed slice, and leaves the remaining
+// virtual position open with its original AvgCost/InitialQuantity.
+func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason, detailsPrefix, logPrefix string, logger *StrategyLogger) bool {
+	if closeQty <= 0 || closePx <= 0 {
+		return false
+	}
+	pos, ok := s.Positions[symbol]
+	if !ok || pos == nil || pos.Quantity <= 0 {
+		return false
+	}
+
+	now := time.Now().UTC()
+	qty := closeQty
+	if qty > pos.Quantity {
+		qty = pos.Quantity
+	}
+	avgCost := pos.AvgCost
+	side := pos.Side
+	var pnl float64
+	if side == "long" {
+		pnl = qty * (closePx - avgCost)
+	} else {
+		pnl = qty * (avgCost - closePx)
+	}
+	feePlatform := s.Platform
+	if s.Platform == "okx" && s.Type == "perps" {
+		feePlatform = "okx-perps"
+	}
+	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
+	exchangeFeeStamp := 0.0
+	if useFillFee {
+		fee = fillFee
+		exchangeFeeStamp = fillFee
+	}
+	pnl -= fee
+	s.Cash += pnl
+	positionID := ensurePositionTradeID(s.ID, symbol, pos)
+
+	trade := Trade{
+		Timestamp:       now,
+		StrategyID:      s.ID,
+		Symbol:          symbol,
+		PositionID:      positionID,
+		Side:            closeTradeSide(side),
+		Quantity:        qty,
+		Price:           closePx,
+		Value:           qty * closePx,
+		TradeType:       "perps",
+		Details:         fmt.Sprintf("%s %.6f, PnL: $%.2f (fee $%.2f)", detailsPrefix, qty, pnl, fee),
+		IsClose:         true,
+		RealizedPnL:     pnl,
+		ExchangeOrderID: exchangeOrderIDForTrade(exchangeOrderID, useFillFee),
+		ExchangeFee:     exchangeFeeStamp,
+	}
+	trade.Regime = s.Regime
+	trade.EntryATR = pos.EntryATR
+	trade.StopLossTriggerPx = pos.StopLossTriggerPx
+	RecordTrade(s, trade)
+	RecordTradeResult(&s.RiskState, pnl)
+
+	remaining := pos.Quantity - qty
+	if remaining <= 1e-9 {
+		recordClosedPosition(s, pos, closePx, pnl, reason, now)
+		delete(s.Positions, symbol)
+		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
+	} else {
+		pos.Quantity = remaining
+	}
+	if logger != nil {
+		remainingForLog := remaining
+		if remainingForLog < 0 {
+			remainingForLog = 0
+		}
+		logger.Warn("%s %.6f @ $%.4f, remaining %.6f, PnL: $%.2f (fee $%.2f)", logPrefix, qty, closePx, remainingForLog, pnl, fee)
+	}
+	return true
+}
+
 // recordPerpsStopLossClose books a tracked perps stop-loss fill and removes the
 // virtual position. Used both when HL reports an immediate trigger fill at
 // submit time and when a previously-resting trigger has fired between cycles.
@@ -243,6 +322,10 @@ func recordPerpsExternalClose(s *StrategyState, symbol string, closePx float64, 
 // can still recover the fee.
 func recordPerpsExternalCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason string, logger *StrategyLogger) bool {
 	return bookPerpsCloseWithFillFee(s, symbol, closePx, fillFee, useFillFee, exchangeOrderID, reason, "External close @ mark", "External close reconciled", logger)
+}
+
+func recordPerpsExternalPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason string, logger *StrategyLogger) bool {
+	return bookPerpsPartialCloseWithFillFee(s, symbol, closeQty, closePx, fillFee, useFillFee, exchangeOrderID, reason, "External partial close @ mark", "External partial close reconciled", logger)
 }
 
 // recordClosedOptionPosition appends a ClosedOptionPosition entry to the
