@@ -618,6 +618,13 @@ func countSizingFlags(size, notional, margin float64) int {
 	return n
 }
 
+// manualPositionOwnedByStrategy gates manual close paths on owner identity to
+// prevent one manual strategy from flattening a peer's wallet exposure on a
+// shared coin (#620). An empty OwnerStrategyID is treated as owned for
+// backward-compat with positions opened before #569 stamped owners and with
+// reconciler-discovered positions that have no recorded owner; tightening that
+// further would silently strand pre-existing positions and break reconciler
+// adoption. New manual paths must always stamp OwnerStrategyID.
 func manualPositionOwnedByStrategy(pos *Position, strategyID string) bool {
 	return pos == nil || pos.OwnerStrategyID == "" || pos.OwnerStrategyID == strategyID
 }

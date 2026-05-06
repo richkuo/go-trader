@@ -918,23 +918,32 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 }
 
 func hlLiveStrategiesForCoin(coin string, hlLiveAll []StrategyConfig) []StrategyConfig {
+	target := strings.ToUpper(strings.TrimSpace(coin))
 	var out []StrategyConfig
 	for _, sc := range hlLiveAll {
-		if hyperliquidConfiguredCoin(sc) == coin {
+		if hyperliquidConfiguredCoin(sc) == target {
 			out = append(out, sc)
 		}
 	}
 	return out
 }
 
+// hyperliquidConfiguredCoin returns the coin ticker a HL strategy targets,
+// normalized to upper-case + trimmed so peer detection survives operator
+// typos like `symbol: "eth"` against `args: [..., "ETH", ...]`. HL coin
+// tickers are uppercase by convention and the Python adapter rejects unknown
+// casings on its own, so normalizing here only affects Go-side peer matching.
 func hyperliquidConfiguredCoin(sc StrategyConfig) string {
 	if sc.Platform != "hyperliquid" {
 		return ""
 	}
-	if sc.Type == "manual" && strings.TrimSpace(sc.Symbol) != "" {
-		return sc.Symbol
+	var raw string
+	if sc.Type == "manual" {
+		raw = sc.Symbol
+	} else {
+		raw = hyperliquidSymbol(sc.Args)
 	}
-	return hyperliquidSymbol(sc.Args)
+	return strings.ToUpper(strings.TrimSpace(raw))
 }
 
 type hlVirtualQuantitySnapshot map[string]map[string]float64

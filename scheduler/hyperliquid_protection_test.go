@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -372,6 +373,119 @@ func TestHyperliquidProtectionTiersPreservesDuplicateMultipleOrder(t *testing.T)
 	}
 	if got := hyperliquidProtectionTiers(sc); !reflect.DeepEqual(got, want) {
 		t.Errorf("tiers = %+v, want stable duplicate-multiple order %+v", got, want)
+	}
+}
+
+// withStubbedSyncHyperliquidProtection swaps in a fake protection sync for the
+// duration of the test, restoring the original on cleanup.
+func withStubbedSyncHyperliquidProtection(
+	t *testing.T,
+	stub func(sc StrategyConfig, plan hlProtectionPlan, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidProtectionSyncResult, bool),
+) {
+	t.Helper()
+	orig := syncHyperliquidProtection
+	syncHyperliquidProtection = stub
+	t.Cleanup(func() { syncHyperliquidProtection = orig })
+}
+
+func TestRunHyperliquidProtectionSyncManualAppliesOIDs(t *testing.T) {
+	mult := 1.5
+	sc := StrategyConfig{
+		ID:              "hl-manual-eth",
+		Type:            "manual",
+		Platform:        "hyperliquid",
+		CloseStrategies: []string{"tiered_tp_atr_live"},
+		StopLossATRMult: &mult,
+	}
+	state := &StrategyState{
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.4, AvgCost: 3000, EntryATR: 100, Side: "long"},
+		},
+	}
+	calls := 0
+	withStubbedSyncHyperliquidProtection(t, func(_ StrategyConfig, _ hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger) (*HyperliquidProtectionSyncResult, bool) {
+		calls++
+		return &HyperliquidProtectionSyncResult{
+			StopLossOID: 999,
+			TPOIDs:      []int64{111, 222},
+		}, true
+	})
+
+	var mu sync.RWMutex
+	if !runHyperliquidProtectionSync(sc, state, "ETH", &mu, nil, nil, "test") {
+		t.Fatal("expected runHyperliquidProtectionSync to apply")
+	}
+	if calls != 1 {
+		t.Errorf("syncHyperliquidProtection calls = %d, want 1", calls)
+	}
+	pos := state.Positions["ETH"]
+	if pos.StopLossOID != 999 {
+		t.Errorf("StopLossOID = %d, want 999", pos.StopLossOID)
+	}
+	if !reflect.DeepEqual(pos.TPOIDs, []int64{111, 222}) {
+		t.Errorf("TPOIDs = %v, want [111 222]", pos.TPOIDs)
+	}
+}
+
+// TestRunHyperliquidProtectionSyncSkipsWhenNoPlan verifies the early exit when
+// buildHyperliquidProtectionPlan returns ok=false (e.g. position EntryATR=0).
+// The subprocess MUST NOT run.
+func TestRunHyperliquidProtectionSyncSkipsWhenNoPlan(t *testing.T) {
+	sc := StrategyConfig{
+		ID: "hl-manual-eth", Type: "manual", Platform: "hyperliquid",
+	}
+	state := &StrategyState{
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.4, AvgCost: 3000, EntryATR: 0, Side: "long"},
+		},
+	}
+	called := false
+	withStubbedSyncHyperliquidProtection(t, func(_ StrategyConfig, _ hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger) (*HyperliquidProtectionSyncResult, bool) {
+		called = true
+		return nil, false
+	})
+
+	var mu sync.RWMutex
+	if runHyperliquidProtectionSync(sc, state, "ETH", &mu, nil, nil, "test") {
+		t.Fatal("expected runHyperliquidProtectionSync to skip when no plan")
+	}
+	if called {
+		t.Fatal("syncHyperliquidProtection must not be called when build returns ok=false")
+	}
+}
+
+// TestRunHyperliquidProtectionSyncSkipsApplyAfterExternalClose verifies the
+// post-subprocess re-validation: if the position was flattened or flipped
+// while the subprocess was in flight, the OID apply MUST be skipped (otherwise
+// we'd write protection OIDs onto state that no longer matches the on-chain
+// position).
+func TestRunHyperliquidProtectionSyncSkipsApplyAfterExternalClose(t *testing.T) {
+	mult := 1.5
+	sc := StrategyConfig{
+		ID:              "hl-manual-eth",
+		Type:            "manual",
+		Platform:        "hyperliquid",
+		CloseStrategies: []string{"tiered_tp_atr_live"},
+		StopLossATRMult: &mult,
+	}
+	state := &StrategyState{
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.4, AvgCost: 3000, EntryATR: 100, Side: "long"},
+		},
+	}
+	withStubbedSyncHyperliquidProtection(t, func(_ StrategyConfig, _ hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger) (*HyperliquidProtectionSyncResult, bool) {
+		// Simulate an external close racing the subprocess.
+		state.Positions["ETH"].Quantity = 0
+		return &HyperliquidProtectionSyncResult{StopLossOID: 999, TPOIDs: []int64{111}}, true
+	})
+
+	var mu sync.RWMutex
+	if runHyperliquidProtectionSync(sc, state, "ETH", &mu, nil, nil, "test") {
+		t.Fatal("expected apply to be skipped after position closed externally")
+	}
+	pos := state.Positions["ETH"]
+	if pos.StopLossOID != 0 || len(pos.TPOIDs) != 0 {
+		t.Errorf("OIDs leaked into closed position: sl=%d tp=%v", pos.StopLossOID, pos.TPOIDs)
 	}
 }
 

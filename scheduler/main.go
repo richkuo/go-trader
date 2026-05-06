@@ -1463,23 +1463,7 @@ func main() {
 								}
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 {
-								var plan hlProtectionPlan
-								var syncOK bool
-								mu.RLock()
-								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 {
-									plan, syncOK = buildHyperliquidProtectionPlan(sc, pos)
-								}
-								mu.RUnlock()
-								if syncOK {
-									if protection, ok2 := syncHyperliquidProtection(sc, plan, notifier, logger); ok2 && protection != nil {
-										mu.Lock()
-										if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == plan.Side {
-											applyHyperliquidProtectionSync(pos, protection)
-											logger.Info("HL protection synced (sl_oid=%d tp_oids=%v)", pos.StopLossOID, pos.TPOIDs)
-										}
-										mu.Unlock()
-									}
-								}
+								runHyperliquidProtectionSync(sc, stratState, result.Symbol, &mu, notifier, logger, "HL protection synced")
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
 								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlReconcileAll, notifier, logger)
@@ -1509,23 +1493,7 @@ func main() {
 								trades, detail = executeHyperliquidResult(sc, stratState, stateDB, result, execResult, signalStr, price, logger)
 								mu.Unlock()
 								if execResult != nil && trades > 0 {
-									var plan hlProtectionPlan
-									var syncOK bool
-									mu.RLock()
-									if pos, ok3 := stratState.Positions[result.Symbol]; ok3 {
-										plan, syncOK = buildHyperliquidProtectionPlan(sc, pos)
-									}
-									mu.RUnlock()
-									if syncOK {
-										if protection, ok2 := syncHyperliquidProtection(sc, plan, notifier, logger); ok2 && protection != nil {
-											mu.Lock()
-											if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == plan.Side {
-												applyHyperliquidProtectionSync(pos, protection)
-												logger.Info("HL protection synced after trade (sl_oid=%d tp_oids=%v)", pos.StopLossOID, pos.TPOIDs)
-											}
-											mu.Unlock()
-										}
-									}
+									runHyperliquidProtectionSync(sc, stratState, result.Symbol, &mu, notifier, logger, "HL protection synced after trade")
 								}
 							}
 						}
@@ -1565,23 +1533,7 @@ func main() {
 							break
 						}
 						if pos != nil && hyperliquidIsLive(sc.Args) {
-							var plan hlProtectionPlan
-							var syncOK bool
-							mu.RLock()
-							if current, ok3 := stratState.Positions[sc.Symbol]; ok3 {
-								plan, syncOK = buildHyperliquidProtectionPlan(sc, current)
-							}
-							mu.RUnlock()
-							if syncOK {
-								if protection, ok2 := syncHyperliquidProtection(sc, plan, notifier, logger); ok2 && protection != nil {
-									mu.Lock()
-									if current, ok3 := stratState.Positions[sc.Symbol]; ok3 && current.Quantity > 0 && current.Side == plan.Side {
-										applyHyperliquidProtectionSync(current, protection)
-										logger.Info("HL manual protection synced (sl_oid=%d tp_oids=%v)", current.StopLossOID, current.TPOIDs)
-									}
-									mu.Unlock()
-								}
-							}
+							runHyperliquidProtectionSync(sc, stratState, sc.Symbol, &mu, notifier, logger, "HL manual protection synced")
 						}
 						if closeFraction, _, ok := runManualCloseEval(sc, stratState, cfg, logger); ok && closeFraction > 0 {
 							mu.RLock()
@@ -1604,11 +1556,10 @@ func main() {
 								if intentFullClose {
 									cancelOID = pos.StopLossOID
 								}
-								closeIntentFraction := closeFraction
+								closeFullPosition := false
 								if intentFullClose {
-									closeIntentFraction = 1.0
+									closeFullPosition = shouldCloseFullPosition(1.0, sc.Symbol, hlReconcileAll)
 								}
-								closeFullPosition := shouldCloseFullPosition(closeIntentFraction, sc.Symbol, hlReconcileAll)
 								if closeFullPosition {
 									logger.Info("Manual full close %s (close_fraction=1.0) — using market_close(sz=None)", sc.Symbol)
 								} else if intentFullClose {
