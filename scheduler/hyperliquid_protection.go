@@ -213,23 +213,7 @@ var syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, n
 		notifyHLProtectionFailure(notifier, sc, plan.Symbol, result.Error)
 		return result, false
 	}
-	var warnings []string
-	if result.StopLossError != "" {
-		warnings = append(warnings, "SL: "+result.StopLossError)
-	}
-	for idx, errMsg := range result.TPErrors {
-		if errMsg != "" {
-			warnings = append(warnings, fmt.Sprintf("TP%d: %s", idx+1, errMsg))
-		}
-	}
-	if len(result.TPErrors) == 0 {
-		if result.TP1Error != "" {
-			warnings = append(warnings, "TP1: "+result.TP1Error)
-		}
-		if result.TP2Error != "" {
-			warnings = append(warnings, "TP2: "+result.TP2Error)
-		}
-	}
+	warnings := formatProtectionSyncWarnings(result)
 	if len(warnings) > 0 {
 		msg := fmt.Sprintf("%s %s protection partially failed: %v", sc.ID, plan.Symbol, warnings)
 		if logger != nil {

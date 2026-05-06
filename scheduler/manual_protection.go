@@ -9,6 +9,30 @@ import (
 // runHLSyncProtectionFn is a package var so tests can stub without spawning Python.
 var runHLSyncProtectionFn = RunHyperliquidSyncProtection
 
+// formatProtectionSyncWarnings extracts per-field error strings from a
+// HyperliquidProtectionSyncResult into a flat slice. Prefers the tiered
+// TPErrors slice; falls back to legacy TP1Error/TP2Error scalar fields.
+func formatProtectionSyncWarnings(result *HyperliquidProtectionSyncResult) []string {
+	var warns []string
+	if result.StopLossError != "" {
+		warns = append(warns, "SL: "+result.StopLossError)
+	}
+	for i, e := range result.TPErrors {
+		if e != "" {
+			warns = append(warns, fmt.Sprintf("TP%d: %s", i+1, e))
+		}
+	}
+	if len(result.TPErrors) == 0 {
+		if result.TP1Error != "" {
+			warns = append(warns, "TP1: "+result.TP1Error)
+		}
+		if result.TP2Error != "" {
+			warns = append(warns, "TP2: "+result.TP2Error)
+		}
+	}
+	return warns
+}
+
 // computeFallbackATR returns a leverage-aware ATR fallback of 0.1*fillPrice/leverage,
 // representing a price move that risks 10% of deployed margin at 1× ATR. Returns
 // ok=false when leverage or fillPrice are not positive (caller must warn naked).
@@ -51,25 +75,7 @@ func placeManualProtectionInline(
 		return nil, result.Error, nil
 	}
 
-	var warns []string
-	if result.StopLossError != "" {
-		warns = append(warns, "SL: "+result.StopLossError)
-	}
-	for i, e := range result.TPErrors {
-		if e != "" {
-			warns = append(warns, fmt.Sprintf("TP%d: %s", i+1, e))
-		}
-	}
-	if len(result.TPErrors) == 0 {
-		if result.TP1Error != "" {
-			warns = append(warns, "TP1: "+result.TP1Error)
-		}
-		if result.TP2Error != "" {
-			warns = append(warns, "TP2: "+result.TP2Error)
-		}
-	}
-
-	return result.TPOIDs, strings.Join(warns, "; "), nil
+	return result.TPOIDs, strings.Join(formatProtectionSyncWarnings(result), "; "), nil
 }
 
 // warnNotifier writes msg to stderr and, when the notifier has backends, also
