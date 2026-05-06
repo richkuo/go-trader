@@ -111,7 +111,7 @@ Top-level review comment MUST take exactly one of two shapes — no preamble, no
 Inline `pull_request_review_comment` threads are exempt — this rule governs only the top-level review summary.
 
 ## Build & Deploy
-- Build: `go build -o go-trader .` — always rebuild before smoke-testing (`cd scheduler` fails in bash tool; run from current context).
+- Build: `go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" -o go-trader .` — always rebuild before smoke-testing (`cd scheduler` fails in bash tool; run from current context). Without `-ldflags`, `Version` defaults to `dev` and the Discord summary header shows `(dev)`.
 - Restart: `systemctl restart go-trader`. Service file changes: `systemctl daemon-reload && systemctl restart go-trader`.
 - Config-only changes: `kill -HUP $(pgrep go-trader)` — `config_reload.go` re-reads `cfg.ConfigPath` without dropping state/sessions.
 - Python script changes: take effect next scheduler cycle (no rebuild).
@@ -127,7 +127,7 @@ Inline `pull_request_review_comment` threads are exempt — this rule governs on
 ## Testing
 - **New functionality must include tests.** Go: `_test.go`. Python: `test_*.py`. Bug fixes: regression test when feasible.
 - `python3 -m py_compile <file>` from repo root.
-- `go build .` / `go test ./...` (run from current context, not `cd scheduler`).
+- `go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" .` / `go test ./...` (run from current context, not `cd scheduler`).
 - `gofmt -w <file>.go` after editing.
 - Multi-line Go edits with tabs may fail Edit tool; use heredoc: `python3 << 'PYEOF'` / `content=open(f).read()` / `open(f,'w').write(content.replace(old,new,1))` / `PYEOF`.
 - Strategy listing: `cd shared_strategies/open/spot && ../../../.venv/bin/python3 strategies.py --list-json` (worktrees: absolute path to main repo's venv). Futures: `shared_strategies/open/futures/strategies.py --list-json`.
