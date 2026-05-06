@@ -224,6 +224,11 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	now := time.Now().UTC()
 	qty := closeQty
 	if qty > pos.Quantity {
+		if logger != nil {
+			logger.Warn("Partial close qty %.6f exceeds virtual position qty %.6f for %s; clamping to position qty", qty, pos.Quantity, symbol)
+		} else {
+			fmt.Printf("[WARN] partial close qty %.6f exceeds virtual position qty %.6f for %s; clamping to position qty\n", qty, pos.Quantity, symbol)
+		}
 		qty = pos.Quantity
 	}
 	avgCost := pos.AvgCost
@@ -238,9 +243,8 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	if s.Platform == "okx" && s.Type == "perps" {
 		feePlatform = "okx-perps"
 	}
-	// TP fills are resting reduce-only limits and often maker-priced, but when
-	// userFills lookup misses we keep the reconciler's existing conservative
-	// taker-fee fallback so virtual cash is not overstated.
+	// TP fills are typically maker-priced; use the taker rate as a conservative
+	// fallback when userFills misses so virtual cash is not overstated.
 	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
 	exchangeFeeStamp := 0.0
 	if useFillFee {
