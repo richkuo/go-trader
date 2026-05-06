@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -278,6 +279,55 @@ func TestApplyManualActionPartialClose(t *testing.T) {
 	}
 	if fmt.Sprintf("%.4f", pos.Quantity) != "0.6000" {
 		t.Errorf("pos.Quantity after partial close = %g, want 0.6", pos.Quantity)
+	}
+}
+
+func TestApplyManualActionCloseRejectsOwnerMismatch(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-manual-eth-live": {
+				ID:       "hl-manual-eth-live",
+				Platform: "hyperliquid",
+				Type:     "manual",
+				Positions: map[string]*Position{
+					"ETH": {
+						Symbol:          "ETH",
+						Quantity:        1,
+						AvgCost:         2000,
+						Side:            "long",
+						OwnerStrategyID: "hl-other-eth-live",
+					},
+				},
+				Cash: 10000,
+			},
+		},
+	}
+	scByID := map[string]StrategyConfig{
+		"hl-manual-eth-live": {ID: "hl-manual-eth-live", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Leverage: 10},
+	}
+
+	origRecorder := tradeRecorder
+	tradeRecorder = func(_ string, _ Trade) error {
+		t.Fatal("tradeRecorder should not be called for owner mismatch")
+		return nil
+	}
+	defer func() { tradeRecorder = origRecorder }()
+
+	err := applyManualAction(state, scByID, PendingManualAction{
+		StrategyID:  "hl-manual-eth-live",
+		Action:      "close",
+		Symbol:      "ETH",
+		Quantity:    1,
+		FillPrice:   2100,
+		RealizedPnL: 100,
+		IsFullClose: true,
+		CreatedAt:   time.Now().UTC(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "owned by") {
+		t.Fatalf("expected owner mismatch error, got: %v", err)
+	}
+	if pos := state.Strategies["hl-manual-eth-live"].Positions["ETH"]; pos == nil || pos.Quantity != 1 {
+		t.Fatalf("position should remain untouched, got %#v", pos)
 	}
 }
 

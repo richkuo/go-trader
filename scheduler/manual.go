@@ -297,6 +297,10 @@ func runManualClose(args []string) int {
 		fmt.Fprintf(os.Stderr, "error: no open position found for %s/%s\n", strategyID, sc.Symbol)
 		return 1
 	}
+	if !manualPositionOwnedByStrategy(pos, strategyID) {
+		fmt.Fprintf(os.Stderr, "error: position %s/%s is owned by %q, not %q\n", strategyID, sc.Symbol, pos.OwnerStrategyID, strategyID)
+		return 1
+	}
 
 	// Operator intent: --qty omitted (or equal to the full position) is a full
 	// close; any smaller value is a partial close. We track this explicitly
@@ -332,10 +336,19 @@ func runManualClose(args []string) int {
 	if intentFullClose {
 		cancelOID = pos.StopLossOID
 	}
+	closeFullPosition := shouldCloseFullPosition(
+		manualCloseIntentFraction(intentFullClose, closeQty, pos.Quantity),
+		sc.Symbol,
+		hyperliquidCloseScopeStrategies(cfg.Strategies),
+	)
+	var extraCancelOIDs []int64
+	if intentFullClose {
+		extraCancelOIDs = cloneInt64s(pos.TPOIDs)
+	}
 
 	execResult, stderr, execErr := RunHyperliquidExecute(
 		sc.Script, sc.Symbol, closeSide, closeQty,
-		0, cancelOID, 0, "", 0, intentFullClose,
+		0, cancelOID, 0, "", 0, closeFullPosition, extraCancelOIDs...,
 	)
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "HL close stderr: %s\n", stderr)
@@ -504,6 +517,9 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 		if !exists || pos == nil {
 			return fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
 		}
+		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
+			return fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
+		}
 		// Use the explicit IsFullClose intent flag rather than a tolerance
 		// heuristic, so a deliberate 99% partial close isn't silently
 		// collapsed into a full close.
@@ -592,6 +608,30 @@ func countSizingFlags(size, notional, margin float64) int {
 		n++
 	}
 	return n
+}
+
+func manualPositionOwnedByStrategy(pos *Position, strategyID string) bool {
+	return pos == nil || pos.OwnerStrategyID == "" || pos.OwnerStrategyID == strategyID
+}
+
+func manualCloseIntentFraction(intentFullClose bool, closeQty, posQty float64) float64 {
+	if intentFullClose {
+		return 1.0
+	}
+	if posQty <= 0 {
+		return 0
+	}
+	return closeQty / posQty
+}
+
+func hyperliquidCloseScopeStrategies(strategies []StrategyConfig) []StrategyConfig {
+	out := make([]StrategyConfig, 0, len(strategies))
+	for _, sc := range strategies {
+		if isHLLiveReconcilable(sc) {
+			out = append(out, sc)
+		}
+	}
+	return out
 }
 
 // openTradeSide converts a position side ("long"/"short") to the trade buy/sell side for an open.

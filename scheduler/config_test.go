@@ -1851,44 +1851,39 @@ func TestOrdinal(t *testing.T) {
 	}
 }
 
-// TestValidateConfigManualSymbolConflict covers issue #595: two manual
-// strategies on the same coin must be rejected. Manual full-close paths pass
-// closeFullPosition=true unconditionally, so without this guard a full close
-// on one manual strategy would flatten a peer manual strategy's on-chain
-// exposure via adapter.market_close(sz=None).
-func TestValidateConfigManualSymbolConflict(t *testing.T) {
+// TestValidateConfigManualSymbolSharingAllowed covers issue #619: manual
+// strategies may share a coin with manual or automated perps peers because
+// close paths now use the same sized-close sole-peer guard as perps.
+func TestValidateConfigManualSymbolSharingAllowed(t *testing.T) {
 	cases := []struct {
-		name    string
-		other   StrategyConfig
-		wantErr bool
+		name  string
+		other StrategyConfig
 	}{
 		{
-			name: "manual conflicts with manual on same coin",
+			name: "manual shares with manual on same coin",
 			other: StrategyConfig{
 				ID:             "hl-manual-eth-2",
 				Type:           "manual",
 				Platform:       "hyperliquid",
 				Symbol:         "ETH",
 				Timeframe:      "1h",
-				Leverage:       5,
+				Leverage:       10,
 				Capital:        1000,
 				MaxDrawdownPct: 60,
 			},
-			wantErr: true,
 		},
 		{
-			name: "manual conflicts with perps on same coin",
+			name: "manual shares with perps on same coin",
 			other: StrategyConfig{
 				ID:             "hl-perps-eth-live",
 				Type:           "perps",
 				Platform:       "hyperliquid",
 				Script:         "shared_scripts/check_hyperliquid.py",
-				Args:           []string{"sma_crossover", "ETH", "1h", "--mode=live"},
+				Args:           []string{"sma_crossover", "ETH", "1h", "--mode=paper"},
 				Capital:        1000,
-				Leverage:       5,
+				Leverage:       10,
 				MaxDrawdownPct: 60,
 			},
-			wantErr: true,
 		},
 		{
 			name: "manual on different coin is allowed",
@@ -1902,7 +1897,6 @@ func TestValidateConfigManualSymbolConflict(t *testing.T) {
 				Capital:        1000,
 				MaxDrawdownPct: 60,
 			},
-			wantErr: false,
 		},
 	}
 
@@ -1925,13 +1919,41 @@ func TestValidateConfigManualSymbolConflict(t *testing.T) {
 				PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 			}
 			err := ValidateConfig(&cfg)
-			if tc.wantErr {
-				if err == nil || !strings.Contains(err.Error(), "conflicts with") {
-					t.Fatalf("expected conflict error, got: %v", err)
-				}
-			} else if err != nil {
+			if err != nil {
 				t.Fatalf("expected no error, got: %v", err)
 			}
 		})
+	}
+}
+
+func TestValidateConfigManualPerpsPeerLeverageMismatchRejected(t *testing.T) {
+	cfg := Config{
+		Strategies: []StrategyConfig{
+			{
+				ID:             "hl-manual-eth",
+				Type:           "manual",
+				Platform:       "hyperliquid",
+				Symbol:         "ETH",
+				Timeframe:      "1h",
+				Leverage:       10,
+				Capital:        1000,
+				MaxDrawdownPct: 60,
+			},
+			{
+				ID:             "hl-perps-eth-live",
+				Type:           "perps",
+				Platform:       "hyperliquid",
+				Script:         "shared_scripts/check_hyperliquid.py",
+				Args:           []string{"sma_crossover", "ETH", "1h", "--mode=paper"},
+				Capital:        1000,
+				Leverage:       5,
+				MaxDrawdownPct: 60,
+			},
+		},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	err := ValidateConfig(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "disagree on leverage") {
+		t.Fatalf("expected leverage peer error, got: %v", err)
 	}
 }

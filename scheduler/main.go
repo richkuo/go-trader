@@ -1482,7 +1482,7 @@ func main() {
 								}
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
-								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlLiveAll, notifier, logger)
+								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlReconcileAll, notifier, logger)
 								if ok2 {
 									execResult = er
 								} else {
@@ -1557,11 +1557,41 @@ func main() {
 					case "manual":
 						// #569: manual strategies have no open signal; only run
 						// close evaluators when a position is open.
+						mu.RLock()
+						pos := stratState.Positions[sc.Symbol]
+						mu.RUnlock()
+						if pos != nil && !manualPositionOwnedByStrategy(pos, sc.ID) {
+							logger.Error("manual position owner mismatch for %s/%s: owner_strategy_id=%q", sc.ID, sc.Symbol, pos.OwnerStrategyID)
+							break
+						}
+						if pos != nil && hyperliquidIsLive(sc.Args) {
+							var plan hlProtectionPlan
+							var syncOK bool
+							mu.RLock()
+							if current, ok3 := stratState.Positions[sc.Symbol]; ok3 {
+								plan, syncOK = buildHyperliquidProtectionPlan(sc, current)
+							}
+							mu.RUnlock()
+							if syncOK {
+								if protection, ok2 := syncHyperliquidProtection(sc, plan, notifier, logger); ok2 && protection != nil {
+									mu.Lock()
+									if current, ok3 := stratState.Positions[sc.Symbol]; ok3 && current.Quantity > 0 && current.Side == plan.Side {
+										applyHyperliquidProtectionSync(current, protection)
+										logger.Info("HL manual protection synced (sl_oid=%d tp_oids=%v)", current.StopLossOID, current.TPOIDs)
+									}
+									mu.Unlock()
+								}
+							}
+						}
 						if closeFraction, _, ok := runManualCloseEval(sc, stratState, cfg, logger); ok && closeFraction > 0 {
 							mu.RLock()
-							pos := stratState.Positions[sc.Symbol]
+							pos = stratState.Positions[sc.Symbol]
 							mu.RUnlock()
 							if pos != nil {
+								if !manualPositionOwnedByStrategy(pos, sc.ID) {
+									logger.Error("manual close skipped for %s/%s: owner_strategy_id=%q", sc.ID, sc.Symbol, pos.OwnerStrategyID)
+									break
+								}
 								closeQty := pos.Quantity * closeFraction
 								closeSide := "sell"
 								if pos.Side == "short" {
@@ -1574,9 +1604,23 @@ func main() {
 								if intentFullClose {
 									cancelOID = pos.StopLossOID
 								}
+								closeIntentFraction := closeFraction
+								if intentFullClose {
+									closeIntentFraction = 1.0
+								}
+								closeFullPosition := shouldCloseFullPosition(closeIntentFraction, sc.Symbol, hlReconcileAll)
+								if closeFullPosition {
+									logger.Info("Manual full close %s (close_fraction=1.0) — using market_close(sz=None)", sc.Symbol)
+								} else if intentFullClose {
+									logger.Info("Manual full close %s shares coin with HL peers — using sized close to preserve peer exposure", sc.Symbol)
+								}
+								var extraCancelOIDs []int64
+								if intentFullClose {
+									extraCancelOIDs = cloneInt64s(pos.TPOIDs)
+								}
 								execResult, execStderr, execErr := RunHyperliquidExecute(
 									sc.Script, sc.Symbol, closeSide, closeQty,
-									0, cancelOID, 0, "", 0, intentFullClose,
+									0, cancelOID, 0, "", 0, closeFullPosition, extraCancelOIDs...,
 								)
 								if execStderr != "" {
 									logger.Info("HL manual close stderr: %s", execStderr)
@@ -2350,19 +2394,21 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, posCtx Po
 	return result, signalStr, price, true
 }
 
-// shouldCloseFullPosition decides whether a HL perps close leg should call
+// shouldCloseFullPosition decides whether a HL close leg should call
 // adapter.market_close(sz=None) (close entire on-chain residual, no dust) vs.
 // a sized market_open in the opposite direction.
 //
 // Sole-peer guard: market_close(sz=None) flattens the entire wallet position,
-// not just this strategy's virtual share. When two HL perps strategies share
-// a coin (#491/#494), a final-tier TP on strategy A would otherwise zero
-// peer B's exposure too. Fall back to the sized close path in that case —
-// virtual tracking on-chain via fillQty makes that path dust-tolerant within
-// a single strategy's lifecycle (#592 review #1).
+// not just this strategy's virtual share. When multiple configured live HL
+// strategies share a coin (#491/#494/#619), a final-tier TP/manual close on
+// strategy A would otherwise zero peer B's exposure too. Fall back to the
+// sized close path in that case — virtual tracking on-chain via fillQty makes
+// that path dust-tolerant within a single strategy's lifecycle (#592 review #1).
 //
 // Returns true only when close_fraction == 1.0 (final tier) AND the strategy
-// is the sole HL perps live strategy on this coin.
+// is the sole configured live HL strategy on this coin. Callers decide which
+// live strategy set is relevant; perps/manual close paths pass a list that
+// includes both types so manual and automated peers are isolated.
 func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []StrategyConfig) bool {
 	if closeFraction != 1.0 {
 		return false

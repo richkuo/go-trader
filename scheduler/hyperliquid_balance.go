@@ -11,6 +11,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -919,11 +920,21 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 func hlLiveStrategiesForCoin(coin string, hlLiveAll []StrategyConfig) []StrategyConfig {
 	var out []StrategyConfig
 	for _, sc := range hlLiveAll {
-		if hyperliquidSymbol(sc.Args) == coin {
+		if strings.EqualFold(hyperliquidConfiguredCoin(sc), coin) {
 			out = append(out, sc)
 		}
 	}
 	return out
+}
+
+func hyperliquidConfiguredCoin(sc StrategyConfig) string {
+	if sc.Platform != "hyperliquid" {
+		return ""
+	}
+	if sc.Type == "manual" && strings.TrimSpace(sc.Symbol) != "" {
+		return sc.Symbol
+	}
+	return hyperliquidSymbol(sc.Args)
 }
 
 type hlVirtualQuantitySnapshot map[string]map[string]float64

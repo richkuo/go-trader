@@ -714,8 +714,8 @@ func hasHyperliquidTrailingStopOwnership(sc StrategyConfig) bool {
 	return false
 }
 
-// hyperliquidPeerStrategyErrors returns validation messages for HL perps
-// strategies that share a coin but disagree on MarginMode or exchange Leverage (#491).
+// hyperliquidPeerStrategyErrors returns validation messages for HL wallet
+// strategies that share a coin but disagree on MarginMode or exchange Leverage (#491/#619).
 // Returns an empty slice when no peer conflicts exist.
 //
 // HL aggregates positions per coin per account, so two go-trader strategies
@@ -728,6 +728,11 @@ func hasHyperliquidTrailingStopOwnership(sc StrategyConfig) bool {
 // Sub-account isolation is the only correct path for full per-strategy
 // independence (different direction, leverage, margin); it is intentionally
 // out of scope here and tracked separately.
+//
+// Manual strategies participate in the same peer set as automated perps: HL
+// still aggregates them into one on-chain position per coin, so they must
+// agree on exchange leverage and margin mode even though their virtual state
+// and close sizing are isolated.
 //
 // Note: AllowShorts mismatches across peers on the same coin are NOT
 // validated here. A long-only and a short-allowed strategy on the same HL
@@ -749,10 +754,10 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 	}
 	groups := make(map[string][]peer)
 	for _, sc := range strategies {
-		if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+		if (sc.Type != "perps" && sc.Type != "manual") || sc.Platform != "hyperliquid" {
 			continue
 		}
-		coin := hyperliquidSymbol(sc.Args)
+		coin := hyperliquidConfiguredCoin(sc)
 		if coin == "" {
 			continue
 		}
@@ -967,35 +972,6 @@ func ValidateConfig(cfg *Config) error {
 			}
 			if sc.Leverage <= 0 {
 				errs = append(errs, fmt.Sprintf("%s: type=manual requires leverage > 0", prefix))
-			}
-			// Fix #6: manual strategies cannot share a coin with a live perps strategy —
-			// the scheduler's close-eval loop snapshots pos under RLock without owning
-			// the full mutex, creating a TOCTOU window if a perps peer mutates the same position.
-			//
-			// #595: also reject two manual strategies on the same coin. Manual full-close
-			// paths pass closeFullPosition=true unconditionally, which calls
-			// adapter.market_close(sz=None) and flattens the entire wallet position. The
-			// perps path's shouldCloseFullPosition sole-peer guard does not run for manual
-			// closes, so without this check a full close on one manual strategy would
-			// silently flatten a peer manual strategy's on-chain exposure.
-			if sc.Symbol != "" {
-				for _, other := range cfg.Strategies {
-					if other.ID == sc.ID || other.Platform != "hyperliquid" {
-						continue
-					}
-					var otherSym string
-					switch other.Type {
-					case "perps":
-						otherSym = hyperliquidSymbol(other.Args)
-					case "manual":
-						otherSym = other.Symbol
-					default:
-						continue
-					}
-					if strings.EqualFold(otherSym, sc.Symbol) {
-						errs = append(errs, fmt.Sprintf("%s: type=manual on %s conflicts with %s strategy %s on the same coin — use sub-account isolation", prefix, sc.Symbol, other.Type, other.ID))
-					}
-				}
 			}
 		}
 

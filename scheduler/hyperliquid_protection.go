@@ -19,7 +19,7 @@ type hlProtectionPlan struct {
 }
 
 func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtectionPlan, bool) {
-	if sc.Type != "perps" || sc.Platform != "hyperliquid" || pos == nil {
+	if (sc.Type != "perps" && sc.Type != "manual") || sc.Platform != "hyperliquid" || pos == nil {
 		return hlProtectionPlan{}, false
 	}
 	if pos.Symbol == "" || pos.Quantity <= 0 || pos.AvgCost <= 0 || pos.EntryATR <= 0 {
@@ -284,14 +284,14 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 }
 
 // hyperliquidPlacesOnChainTPs reports whether sc is configured to place
-// per-strategy on-chain reduce-only TP orders for HL perps. When true the
+// per-strategy on-chain reduce-only TP orders for HL perps/manual. When true the
 // in-process tiered close evaluator MUST be suppressed — the on-chain limits
 // are the source of truth for tiered exits, and running both produces a race
 // where the limit fills on-chain (shrinking position) and then the close
 // evaluator emits another close_fraction sized off the stale virtual qty
 // (#604 review #2).
 func hyperliquidPlacesOnChainTPs(sc StrategyConfig) bool {
-	if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+	if (sc.Type != "perps" && sc.Type != "manual") || sc.Platform != "hyperliquid" {
 		return false
 	}
 	return len(hyperliquidProtectionTiers(sc)) > 0

@@ -1086,10 +1086,10 @@ func TestExecuteTopStepResult_StampsExchangeData(t *testing.T) {
 	}
 }
 
-// TestShouldCloseFullPosition verifies the sole-peer guard for the #592
+// TestShouldCloseFullPosition verifies the sole-peer guard for the #592/#619
 // market_close(sz=None) optimisation: only fire on the final tier
-// (closeFraction=1.0) AND only when no other HL perps live strategy shares
-// the coin (otherwise we'd flatten the peer's exposure too).
+// (closeFraction=1.0) AND only when no other HL live strategy shares the coin
+// (otherwise we'd flatten the peer's exposure too).
 func TestShouldCloseFullPosition(t *testing.T) {
 	liveArgs := []string{"hold", "ETH", "1h", "--mode=live"}
 	btcLiveArgs := []string{"hold", "BTC", "1h", "--mode=live"}
@@ -1105,6 +1105,13 @@ func TestShouldCloseFullPosition(t *testing.T) {
 		{ID: "hl-eth-1", Platform: "hyperliquid", Type: "perps", Args: liveArgs},
 		{ID: "hl-btc-1", Platform: "hyperliquid", Type: "perps", Args: btcLiveArgs},
 	}
+	perpsAndManualSameCoin := []StrategyConfig{
+		{ID: "hl-eth-1", Platform: "hyperliquid", Type: "perps", Args: liveArgs},
+		{ID: "hl-manual-eth", Platform: "hyperliquid", Type: "manual", Symbol: "ETH", Args: liveArgs},
+	}
+	soloManual := []StrategyConfig{
+		{ID: "hl-manual-eth", Platform: "hyperliquid", Type: "manual", Symbol: "ETH", Args: liveArgs},
+	}
 
 	cases := []struct {
 		name          string
@@ -1115,7 +1122,9 @@ func TestShouldCloseFullPosition(t *testing.T) {
 	}{
 		{"final tier, solo on coin → true", 1.0, "ETH", soloPeer, true},
 		{"final tier, two peers on same coin → false (preserve peer)", 1.0, "ETH", twoPeersSameCoin, false},
+		{"final tier, manual and perps same coin → false (preserve peer)", 1.0, "ETH", perpsAndManualSameCoin, false},
 		{"final tier, peer on different coin → true", 1.0, "ETH", differentCoinPeer, true},
+		{"final tier, solo manual → true", 1.0, "ETH", soloManual, true},
 		{"partial close → false regardless of peers", 0.5, "ETH", soloPeer, false},
 		{"partial close, shared coin → false", 0.5, "ETH", twoPeersSameCoin, false},
 		{"empty hlLiveAll, full close → true", 1.0, "ETH", nil, true},

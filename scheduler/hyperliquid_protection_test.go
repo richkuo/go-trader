@@ -38,6 +38,36 @@ func TestBuildHyperliquidProtectionPlanUsesDefaultTieredATR(t *testing.T) {
 	}
 }
 
+func TestBuildHyperliquidProtectionPlanManualStrategy(t *testing.T) {
+	mult := 1.5
+	sc := StrategyConfig{
+		ID:              "hl-manual-eth",
+		Type:            "manual",
+		Platform:        "hyperliquid",
+		CloseStrategies: []string{"tiered_tp_atr_live"},
+		StopLossATRMult: &mult,
+	}
+	pos := &Position{
+		Symbol:      "ETH",
+		Quantity:    0.4,
+		AvgCost:     3000,
+		EntryATR:    100,
+		Side:        "long",
+		StopLossOID: 123,
+		TPOIDs:      []int64{456, 789},
+	}
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	if !ok {
+		t.Fatal("buildHyperliquidProtectionPlan returned ok=false for manual strategy")
+	}
+	if plan.Symbol != "ETH" || plan.Size != 0.4 || plan.StopLossATRMult != 1.5 {
+		t.Errorf("manual plan = %+v", plan)
+	}
+	if !reflect.DeepEqual(plan.TPOIDs, []int64{456, 789}) {
+		t.Errorf("manual TP OIDs = %v, want [456 789]", plan.TPOIDs)
+	}
+}
+
 // TestApplyHyperliquidProtectionSyncPreservesExistingOIDs verifies the
 // "OID still resting" branch of run_sync_protection: when the result echoes
 // the existing OID back (via open_orders verification), pos.TPOIDs
@@ -108,6 +138,16 @@ func TestFilterCloseStrategiesForHLOnChainProtection(t *testing.T) {
 			name: "tiered_tp_atr_live filtered when TP plan emitted",
 			sc: StrategyConfig{
 				Type:            "perps",
+				Platform:        "hyperliquid",
+				StopLossATRMult: &mult,
+				CloseStrategies: []string{"tiered_tp_atr_live", "tp_at_pct"},
+			},
+			expected: []string{"tp_at_pct"},
+		},
+		{
+			name: "manual tiered_tp_atr_live filtered when TP plan emitted",
+			sc: StrategyConfig{
+				Type:            "manual",
 				Platform:        "hyperliquid",
 				StopLossATRMult: &mult,
 				CloseStrategies: []string{"tiered_tp_atr_live", "tp_at_pct"},
