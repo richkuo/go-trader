@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestBuildHyperliquidProtectionPlanUsesDefaultTieredATR(t *testing.T) {
@@ -412,7 +413,7 @@ func TestRunHyperliquidProtectionSyncManualAppliesOIDs(t *testing.T) {
 	})
 
 	var mu sync.RWMutex
-	if !runHyperliquidProtectionSync(sc, state, "ETH", &mu, nil, nil, "test") {
+	if !runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test") {
 		t.Fatal("expected runHyperliquidProtectionSync to apply")
 	}
 	if calls != 1 {
@@ -446,7 +447,7 @@ func TestRunHyperliquidProtectionSyncSkipsWhenNoPlan(t *testing.T) {
 	})
 
 	var mu sync.RWMutex
-	if runHyperliquidProtectionSync(sc, state, "ETH", &mu, nil, nil, "test") {
+	if runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test") {
 		t.Fatal("expected runHyperliquidProtectionSync to skip when no plan")
 	}
 	if called {
@@ -480,12 +481,71 @@ func TestRunHyperliquidProtectionSyncSkipsApplyAfterExternalClose(t *testing.T) 
 	})
 
 	var mu sync.RWMutex
-	if runHyperliquidProtectionSync(sc, state, "ETH", &mu, nil, nil, "test") {
+	if runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test") {
 		t.Fatal("expected apply to be skipped after position closed externally")
 	}
 	pos := state.Positions["ETH"]
 	if pos.StopLossOID != 0 || len(pos.TPOIDs) != 0 {
 		t.Errorf("OIDs leaked into closed position: sl=%d tp=%v", pos.StopLossOID, pos.TPOIDs)
+	}
+}
+
+// TestRunHyperliquidProtectionSyncStampsTradeInDB regresses #625: when
+// protection sync places the SL post-open, the SQLite trade row's
+// stop_loss_trigger_px must be backfilled (not just the in-memory TradeHistory).
+func TestRunHyperliquidProtectionSyncStampsTradeInDB(t *testing.T) {
+	mult := 1.5
+	sc := StrategyConfig{
+		ID:              "hl-eth",
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		CloseStrategies: []string{"tiered_tp_atr_live"},
+		StopLossATRMult: &mult,
+	}
+	ts := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	state := &StrategyState{
+		ID: sc.ID,
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.4, AvgCost: 3000, EntryATR: 100, Side: "long"},
+		},
+		TradeHistory: []Trade{
+			{Symbol: "ETH", IsClose: false, Timestamp: ts},
+		},
+	}
+	db, err := OpenStateDB(":memory:")
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	defer db.Close()
+	if err := db.InsertTrade(state.ID, state.TradeHistory[0]); err != nil {
+		t.Fatalf("InsertTrade: %v", err)
+	}
+
+	withStubbedSyncHyperliquidProtection(t, func(_ StrategyConfig, _ hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger) (*HyperliquidProtectionSyncResult, bool) {
+		return &HyperliquidProtectionSyncResult{
+			StopLossOID:       999,
+			StopLossTriggerPx: 2850.0,
+			TPOIDs:            []int64{111, 222},
+		}, true
+	})
+
+	var mu sync.RWMutex
+	if !runHyperliquidProtectionSync(sc, state, db, "ETH", &mu, nil, nil, "test") {
+		t.Fatal("expected runHyperliquidProtectionSync to apply")
+	}
+
+	if got := state.TradeHistory[0].StopLossTriggerPx; got != 2850.0 {
+		t.Errorf("in-memory StopLossTriggerPx = %v, want 2850", got)
+	}
+	var stopLossTriggerPx float64
+	if err := db.db.QueryRow(
+		`SELECT stop_loss_trigger_px FROM trades WHERE strategy_id = ? AND timestamp = ?`,
+		state.ID, formatTime(ts),
+	).Scan(&stopLossTriggerPx); err != nil {
+		t.Fatalf("query stamped trade: %v", err)
+	}
+	if stopLossTriggerPx != 2850.0 {
+		t.Errorf("persisted stop_loss_trigger_px = %v, want 2850", stopLossTriggerPx)
 	}
 }
 

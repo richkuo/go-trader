@@ -302,6 +302,7 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 func runHyperliquidProtectionSync(
 	sc StrategyConfig,
 	stratState *StrategyState,
+	db *StateDB,
 	symbol string,
 	mu *sync.RWMutex,
 	notifier *MultiNotifier,
@@ -336,7 +337,7 @@ func runHyperliquidProtectionSync(
 	// by the protection sync (#625). Without this, execute-path SL=0 leaves the
 	// trade's StopLossTriggerPx unset even though the sync correctly populated
 	// pos.StopLossTriggerPx — the alert then shows no SL price.
-	stampOpenTradeFromPosition(stratState, nil, symbol, pos)
+	stampOpenTradeFromPosition(stratState, db, symbol, pos)
 	if logger != nil {
 		logger.Info("%s (sl_oid=%d tp_oids=%v)", logTag, pos.StopLossOID, pos.TPOIDs)
 	}
