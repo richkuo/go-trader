@@ -251,6 +251,8 @@ func runManualOpen(args []string) int {
 
 	// Place TP[n] reduce-only orders inline immediately after the fill so the
 	// position is fully protected before the next scheduler cycle.
+	// Note: if the strategy has no tiered close AND no ATR-based SL configured,
+	// no warning fires here — that is intentional (no ATR protection requested).
 	var tpOIDs []int64
 	if !*recordOnly && strategyUsesTieredTPATRClose(sc) && entryATR > 0 {
 		oids, warn, err := placeManualProtectionInline(sc, *side, fillQty, resolvedFillPrice, entryATR, effectiveATRMult, stopLossOID)

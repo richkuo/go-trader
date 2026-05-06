@@ -194,53 +194,8 @@ func main() {
 	}()
 
 	// Initialize notification backends (Discord and/or Telegram).
-	var backends []notifierBackend
-
-	if cfg.Discord.Enabled && cfg.Discord.Token != "" {
-		discord, err := NewDiscordNotifier(cfg.Discord.Token, cfg.Discord.OwnerID)
-		if err != nil {
-			fmt.Printf("[WARN] Discord init failed: %v — continuing without Discord\n", err)
-		} else {
-			fmt.Printf("Discord gateway connected (%d channels", len(cfg.Discord.Channels))
-			if cfg.Discord.OwnerID != "" {
-				fmt.Printf(", DM owner enabled")
-			}
-			fmt.Println(")")
-			backends = append(backends, notifierBackend{
-				notifier:           discord,
-				channels:           cfg.Discord.Channels,
-				tradeAlertChannels: cfg.Discord.TradeAlertChannels,
-				ownerID:            cfg.Discord.OwnerID,
-				leaderboardChannel: cfg.Discord.LeaderboardChannel,
-				dmChannels:         cfg.Discord.DMChannels,
-			})
-			defer discord.Close()
-		}
-	}
-
-	if cfg.Telegram.Enabled && cfg.Telegram.BotToken != "" {
-		tg, err := NewTelegramNotifier(cfg.Telegram.BotToken, cfg.Telegram.OwnerChatID)
-		if err != nil {
-			fmt.Printf("[WARN] Telegram init failed: %v — continuing without Telegram\n", err)
-		} else {
-			fmt.Printf("Telegram bot connected (%d channels", len(cfg.Telegram.Channels))
-			if cfg.Telegram.OwnerChatID != "" {
-				fmt.Printf(", DM owner enabled")
-			}
-			fmt.Println(")")
-			backends = append(backends, notifierBackend{
-				notifier:           tg,
-				channels:           cfg.Telegram.Channels,
-				tradeAlertChannels: cfg.Telegram.TradeAlertChannels,
-				ownerID:            cfg.Telegram.OwnerChatID,
-				dmChannels:         cfg.Telegram.DMChannels,
-				plainText:          true,
-			})
-			defer tg.Close()
-		}
-	}
-
-	notifier := NewMultiNotifier(backends...)
+	notifier, cleanupNotifier := buildNotifierFromConfig(cfg)
+	defer cleanupNotifier()
 	fmt.Printf("Notification backends: %d active\n", notifier.BackendCount())
 
 	// Route trade-persist warnings (#289) to owner DM so operators see

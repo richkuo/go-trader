@@ -3,8 +3,9 @@ package main
 import "fmt"
 
 // buildNotifierFromConfig constructs a MultiNotifier from the Discord and Telegram
-// sections of cfg, mirroring the backend assembly in main(). The returned cleanup
-// function must be deferred by the caller to close gateway connections.
+// sections of cfg. It prints the same connection messages as the daemon startup path
+// so callers (main and CLI subcommands alike) see consistent output. The returned
+// cleanup function must be deferred by the caller to close gateway connections.
 func buildNotifierFromConfig(cfg *Config) (*MultiNotifier, func()) {
 	var backends []notifierBackend
 	var closers []func()
@@ -14,6 +15,11 @@ func buildNotifierFromConfig(cfg *Config) (*MultiNotifier, func()) {
 		if err != nil {
 			fmt.Printf("[WARN] Discord init failed: %v — continuing without Discord\n", err)
 		} else {
+			fmt.Printf("Discord gateway connected (%d channels", len(cfg.Discord.Channels))
+			if cfg.Discord.OwnerID != "" {
+				fmt.Printf(", DM owner enabled")
+			}
+			fmt.Println(")")
 			backends = append(backends, notifierBackend{
 				notifier:           discord,
 				channels:           cfg.Discord.Channels,
@@ -31,6 +37,11 @@ func buildNotifierFromConfig(cfg *Config) (*MultiNotifier, func()) {
 		if err != nil {
 			fmt.Printf("[WARN] Telegram init failed: %v — continuing without Telegram\n", err)
 		} else {
+			fmt.Printf("Telegram bot connected (%d channels", len(cfg.Telegram.Channels))
+			if cfg.Telegram.OwnerChatID != "" {
+				fmt.Printf(", DM owner enabled")
+			}
+			fmt.Println(")")
 			backends = append(backends, notifierBackend{
 				notifier:           tg,
 				channels:           cfg.Telegram.Channels,
