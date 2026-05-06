@@ -3031,6 +3031,147 @@ func TestReconcileManualPositionExternalClose(t *testing.T) {
 	}
 }
 
+// --- #621: hyperliquidHasClearedTPTier unit tests ---
+
+func tieredTPATRSC() StrategyConfig {
+	return StrategyConfig{
+		ID:              "hl-tp",
+		CloseStrategies: []string{"tiered_tp_atr"},
+		Params: map[string]interface{}{
+			"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+				map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+			},
+		},
+	}
+}
+
+func TestHyperliquidHasClearedTPTier_NoTPOIDs(t *testing.T) {
+	sc := tieredTPATRSC()
+	pos := &Position{Quantity: 0.422, TPOIDs: nil}
+	if hyperliquidHasClearedTPTier(sc, pos, 0.211) {
+		t.Error("expected false when pos.TPOIDs is nil")
+	}
+	pos.TPOIDs = []int64{}
+	if hyperliquidHasClearedTPTier(sc, pos, 0.211) {
+		t.Error("expected false when pos.TPOIDs is empty")
+	}
+}
+
+func TestHyperliquidHasClearedTPTier_AllActive(t *testing.T) {
+	sc := tieredTPATRSC()
+	pos := &Position{Quantity: 0.422, TPOIDs: []int64{111, 222}}
+	if hyperliquidHasClearedTPTier(sc, pos, 0.211) {
+		t.Error("expected false when all TP OIDs are active (non-zero)")
+	}
+}
+
+func TestHyperliquidHasClearedTPTier_OneClearedOneActive(t *testing.T) {
+	sc := tieredTPATRSC()
+	pos := &Position{Quantity: 0.422, TPOIDs: []int64{0, 222}} // tier 1 cleared, tier 2 active
+	if !hyperliquidHasClearedTPTier(sc, pos, 0.211) {
+		t.Error("expected true when one tier is cleared and one is still active")
+	}
+}
+
+func TestHyperliquidHasClearedTPTier_AllZeroFullClose(t *testing.T) {
+	sc := tieredTPATRSC()
+	// All zero OIDs — treated as final-tier fill only if closeQty == pos.Quantity.
+	pos := &Position{Quantity: 0.422, TPOIDs: []int64{0, 0}}
+	if hyperliquidHasClearedTPTier(sc, pos, 0.211) {
+		t.Error("expected false when all OIDs zero but closeQty != pos.Quantity (ambiguous gap)")
+	}
+	if !hyperliquidHasClearedTPTier(sc, pos, 0.422) {
+		t.Error("expected true when all OIDs zero and closeQty == pos.Quantity (sole-peer final close)")
+	}
+}
+
+// --- #621: SL close bookkeeping uses actual fill qty from userFills ---
+
+// TestReconcilePositionSLClose_UsesFilledQtyFromLookup verifies that when the
+// userFills resolver returns a FilledQty smaller than pos.Quantity (e.g. the
+// SL was placed at on-chain qty after a manual TP reduced the position), the
+// close trade records the actual fill qty rather than the stale virtual qty.
+func TestReconcilePositionSLClose_UsesFilledQtyFromLookup(t *testing.T) {
+	const (
+		virtualQty  = 0.422
+		filledQty   = 0.211
+		slTriggerPx = 1800.0
+		avgCost     = 2000.0
+	)
+	ss := &StrategyState{
+		ID:   "hl-eth",
+		Cash: 100,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol: "ETH", Quantity: virtualQty, AvgCost: avgCost, Side: "long",
+				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-eth",
+				StopLossOID: 42, StopLossTriggerPx: slTriggerPx,
+			},
+		},
+	}
+	// Resolver returns filledQty < virtualQty (SL was capped at on-chain size).
+	resolver := hlReconcileFillResolver(func(_ string, _ int64, _ float64) (HLFillLookup, bool) {
+		return HLFillLookup{Fee: 0.08, FilledQty: filledQty, Count: 1}, true
+	})
+	logger := newTestLogger(t)
+
+	// On-chain is flat → reconcileHyperliquidPositionsWithResolver closes position.
+	changed := reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger)
+	if !changed {
+		t.Fatal("expected changed=true")
+	}
+	if _, open := ss.Positions["ETH"]; open {
+		t.Fatal("ETH position should be closed after SL reconciliation")
+	}
+	if len(ss.ClosedPositions) != 1 {
+		t.Fatalf("ClosedPositions = %d, want 1", len(ss.ClosedPositions))
+	}
+	cp := ss.ClosedPositions[0]
+	if cp.Quantity < filledQty-1e-9 || cp.Quantity > filledQty+1e-9 {
+		t.Errorf("ClosedPosition.Quantity = %g, want %g (actual fill qty, not virtual)", cp.Quantity, filledQty)
+	}
+	// PnL must use filledQty: (1800 - 2000) * 0.211 - 0.08 = -42.28
+	wantPnL := filledQty*(slTriggerPx-avgCost) - 0.08
+	if len(ss.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory = %d, want 1", len(ss.TradeHistory))
+	}
+	if ss.TradeHistory[0].RealizedPnL < wantPnL-0.01 || ss.TradeHistory[0].RealizedPnL > wantPnL+0.01 {
+		t.Errorf("RealizedPnL = %g, want %g (based on actual fill qty)", ss.TradeHistory[0].RealizedPnL, wantPnL)
+	}
+}
+
+// TestReconcilePositionSLClose_FallsBackToVirtualQtyOnMiss verifies that when
+// FilledQty is 0 (lookup miss), the virtual quantity is used unchanged.
+func TestReconcilePositionSLClose_FallsBackToVirtualQtyOnMiss(t *testing.T) {
+	const virtualQty = 0.422
+	ss := &StrategyState{
+		ID:   "hl-eth",
+		Cash: 100,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol: "ETH", Quantity: virtualQty, AvgCost: 2000, Side: "long",
+				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-eth",
+				StopLossOID: 42, StopLossTriggerPx: 1800,
+			},
+		},
+	}
+	// Lookup succeeds but FilledQty is 0 (should fall back to pos.Quantity).
+	resolver := hlReconcileFillResolver(func(_ string, _ int64, _ float64) (HLFillLookup, bool) {
+		return HLFillLookup{Fee: 0.15, FilledQty: 0, Count: 1}, true
+	})
+	logger := newTestLogger(t)
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger)
+
+	if len(ss.ClosedPositions) != 1 {
+		t.Fatalf("ClosedPositions = %d, want 1", len(ss.ClosedPositions))
+	}
+	cp := ss.ClosedPositions[0]
+	if cp.Quantity < virtualQty-1e-9 || cp.Quantity > virtualQty+1e-9 {
+		t.Errorf("ClosedPosition.Quantity = %g, want %g (fallback to virtual qty when FilledQty=0)", cp.Quantity, virtualQty)
+	}
+}
+
 // TestReconcileManualPositionSLFired verifies that a type=manual strategy with a
 // resting stop-loss OID uses the hl_sync_stop_loss close path when on-chain goes
 // flat. Regression for #576.

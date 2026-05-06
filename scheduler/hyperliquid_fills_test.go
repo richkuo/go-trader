@@ -325,3 +325,74 @@ func TestReconcileFillLookupSinceMs_BoundsTo24h(t *testing.T) {
 		t.Errorf("got %d, want %d", got, want)
 	}
 }
+
+// #621: FilledQty must be accumulated across all OID-matching fill records.
+func TestLookupHyperliquidFillByOID_AccumulatesFilledQty(t *testing.T) {
+	withFastFillRetries(t)
+	srv := newHLUserFillsServer(t, []map[string]any{
+		{"coin": "ETH", "oid": 55555, "fee": "0.10", "closedPnl": "5.00", "sz": "0.211"},
+		{"coin": "ETH", "oid": 55555, "fee": "0.05", "closedPnl": "2.50", "sz": "0.100"},
+		{"coin": "ETH", "oid": 99999, "fee": "1.00", "closedPnl": "50.00", "sz": "0.422"}, // unrelated
+	})
+	defer srv.Close()
+	origURL := hlMainnetURL
+	hlMainnetURL = srv.URL
+	defer func() { hlMainnetURL = origURL }()
+
+	got, ok := lookupHyperliquidFillByOID("0xtest", 55555, 0)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got.Count != 2 {
+		t.Errorf("Count = %d, want 2", got.Count)
+	}
+	wantQty := 0.311
+	if got.FilledQty < wantQty-1e-9 || got.FilledQty > wantQty+1e-9 {
+		t.Errorf("FilledQty = %g, want %g", got.FilledQty, wantQty)
+	}
+}
+
+// #621: FilledQty must be set in the coin+size fallback (no-OID anchor case).
+func TestLookupHyperliquidFillByCoinSize_SetsFilledQtyNoOIDCase(t *testing.T) {
+	withFastFillRetries(t)
+	srv := newHLUserFillsServer(t, []map[string]any{
+		{"coin": "ETH", "oid": nil, "fee": "0.08", "closedPnl": "4.00", "sz": "0.211", "time": 1000},
+	})
+	defer srv.Close()
+	origURL := hlMainnetURL
+	hlMainnetURL = srv.URL
+	defer func() { hlMainnetURL = origURL }()
+
+	got, ok := lookupHyperliquidFillByCoinSize("0xtest", "ETH", 0.211, 1e-4, 0)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got.FilledQty < 0.211-1e-9 || got.FilledQty > 0.211+1e-9 {
+		t.Errorf("FilledQty = %g, want 0.211", got.FilledQty)
+	}
+}
+
+// #621: FilledQty must be accumulated across OID-aggregation fills in the
+// coin+size fallback when the anchor has a valid OID.
+func TestLookupHyperliquidFillByCoinSize_AccumulatesFilledQtyWithOID(t *testing.T) {
+	withFastFillRetries(t)
+	srv := newHLUserFillsServer(t, []map[string]any{
+		{"coin": "ETH", "oid": 77777, "fee": "0.05", "closedPnl": "2.00", "sz": "0.100", "time": 2000},
+		{"coin": "ETH", "oid": 77777, "fee": "0.06", "closedPnl": "3.00", "sz": "0.111", "time": 1900},
+		{"coin": "ETH", "oid": 88888, "fee": "0.50", "closedPnl": "10.00", "sz": "0.422", "time": 1000},
+	})
+	defer srv.Close()
+	origURL := hlMainnetURL
+	hlMainnetURL = srv.URL
+	defer func() { hlMainnetURL = origURL }()
+
+	// 0.100 is the sz of the newest fill that matches; anchor OID is 77777.
+	got, ok := lookupHyperliquidFillByCoinSize("0xtest", "ETH", 0.100, 1e-4, 0)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	wantQty := 0.211
+	if got.FilledQty < wantQty-1e-9 || got.FilledQty > wantQty+1e-9 {
+		t.Errorf("FilledQty = %g, want %g (sum across OID group)", got.FilledQty, wantQty)
+	}
+}

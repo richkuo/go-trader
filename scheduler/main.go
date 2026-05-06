@@ -1078,6 +1078,20 @@ func main() {
 					reconcileHyperliquidAccountPositions(hlReconcileDue, hlReconcileAll, state, &mu, logMgr, hlPositions, prices, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"))
 				}
 
+				// #621: Build a coin→|on-chain qty| map from the pre-fetched positions
+				// so SL placement can cap its size when virtual qty > on-chain qty
+				// (e.g. after a manual TP reduced the position without the bot's knowledge).
+				hlOnChainAbsQty := make(map[string]float64, len(hlPositions))
+				for _, p := range hlPositions {
+					sz := p.Size
+					if sz < 0 {
+						sz = -sz
+					}
+					if sz > 1e-9 {
+						hlOnChainAbsQty[p.Coin] = sz
+					}
+				}
+
 				for _, sc := range dueStrategies {
 					stratState := state.Strategies[sc.ID]
 					if stratState == nil {
@@ -1390,7 +1404,11 @@ func main() {
 								mu.Unlock()
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && effectiveTrailingStopPct(sc, hlPosSnapshot) > 0 {
-								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, hlPosQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, notifier, logger)
+								slEffectiveQty, capped := hlSLEffectiveQty(result.Symbol, hlPosQty, hlOnChainAbsQty)
+								if capped {
+									logger.Warn("trailing SL arm: virtual qty %.6f > on-chain %.6f for %s; capping SL size to on-chain qty (#621)", hlPosQty, slEffectiveQty, result.Symbol)
+								}
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, notifier, logger)
 								mu.Lock()
 								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
 									if newHighWater > 0 && updateConfirmed {
@@ -1443,7 +1461,11 @@ func main() {
 							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 && hlStopLossOID == 0 {
 								triggerPx := fixedStopLossATRTriggerPx(sc, hlPosSide, hlPosSnapshot)
 								if triggerPx > 0 {
-									slResult, ok2 := hyperliquidArmFixedATRStopLossLive(sc, result.Symbol, hlPosSide, hlPosQty, triggerPx, notifier, logger)
+									slEffectiveQty, capped := hlSLEffectiveQty(result.Symbol, hlPosQty, hlOnChainAbsQty)
+									if capped {
+										logger.Warn("fixed ATR SL arm: virtual qty %.6f > on-chain %.6f for %s; capping SL size to on-chain qty (#621)", hlPosQty, slEffectiveQty, result.Symbol)
+									}
+									slResult, ok2 := hyperliquidArmFixedATRStopLossLive(sc, result.Symbol, hlPosSide, slEffectiveQty, triggerPx, notifier, logger)
 									if ok2 && slResult != nil {
 										mu.Lock()
 										if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide && pos.StopLossOID == 0 {

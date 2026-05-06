@@ -20,6 +20,7 @@ import (
 type HLFillLookup struct {
 	Fee       float64
 	ClosedPnL float64
+	FilledQty float64 // sum of sz across matched fill records; 0 when lookup missed
 	Count     int
 	OID       int64
 }
@@ -102,6 +103,7 @@ func lookupHyperliquidFillByOID(accountAddress string, oid int64, startTimeMs in
 				}
 				out.Fee += parseHLFloat(f.Fee)
 				out.ClosedPnL += parseHLFloat(f.ClosedPnl)
+				out.FilledQty += parseHLFloat(f.Sz)
 				out.Count++
 			}
 			if out.Count > 0 {
@@ -156,6 +158,7 @@ func lookupHyperliquidFillByCoinSize(accountAddress, coin string, absSize, toler
 					return HLFillLookup{
 						Fee:       parseHLFloat(anchor.Fee),
 						ClosedPnL: parseHLFloat(anchor.ClosedPnl),
+						FilledQty: parseHLFloat(anchor.Sz),
 						Count:     1,
 					}, true
 				}
@@ -166,6 +169,7 @@ func lookupHyperliquidFillByCoinSize(accountAddress, coin string, absSize, toler
 					}
 					out.Fee += parseHLFloat(f.Fee)
 					out.ClosedPnL += parseHLFloat(f.ClosedPnl)
+					out.FilledQty += parseHLFloat(f.Sz)
 					out.Count++
 				}
 				if out.Count > 0 {

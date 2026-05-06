@@ -10,6 +10,18 @@ const defaultTrailingStopMinMovePct = 0.5
 
 var runHyperliquidUpdateStopLossFunc = RunHyperliquidUpdateStopLoss
 
+// hlSLEffectiveQty returns the quantity to use for stop-loss placement.
+// When the on-chain position is smaller than the virtual position (e.g.
+// after a manual TP reduced the position without the bot's knowledge),
+// the on-chain qty is used to avoid placing an oversized reduce-only order
+// that HL would reject (#621). Returns (virtualQty, false) when no cap applies.
+func hlSLEffectiveQty(symbol string, virtualQty float64, onChainQtyMap map[string]float64) (float64, bool) {
+	if onChainQty, ok := onChainQtyMap[symbol]; ok && onChainQty > 1e-9 && onChainQty < virtualQty-1e-9 {
+		return onChainQty, true
+	}
+	return virtualQty, false
+}
+
 // effectiveTrailingStopPct returns the per-position trailing-stop distance as a
 // price-% (e.g. 3.0 == 3%). HL perps only.
 //

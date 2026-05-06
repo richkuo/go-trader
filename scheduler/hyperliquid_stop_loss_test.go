@@ -2465,6 +2465,62 @@ func TestHyperliquidArmFixedATRStopLossLive_NotifiesOnError(t *testing.T) {
 	}
 }
 
+// --- #621: hlSLEffectiveQty caps SL size at on-chain qty ---
+
+func TestHLSLEffectiveQty_NoCapWhenOnChainGeVirtual(t *testing.T) {
+	onChain := map[string]float64{"ETH": 0.422}
+	got, capped := hlSLEffectiveQty("ETH", 0.422, onChain)
+	if capped {
+		t.Error("capped=true, want false when on-chain == virtual")
+	}
+	if got != 0.422 {
+		t.Errorf("qty = %g, want 0.422", got)
+	}
+
+	onChain2 := map[string]float64{"ETH": 0.500}
+	got2, capped2 := hlSLEffectiveQty("ETH", 0.422, onChain2)
+	if capped2 {
+		t.Error("capped=true, want false when on-chain > virtual")
+	}
+	if got2 != 0.422 {
+		t.Errorf("qty = %g, want 0.422", got2)
+	}
+}
+
+func TestHLSLEffectiveQty_CapsWhenOnChainLtVirtual(t *testing.T) {
+	onChain := map[string]float64{"ETH": 0.211}
+	got, capped := hlSLEffectiveQty("ETH", 0.422, onChain)
+	if !capped {
+		t.Error("capped=false, want true when on-chain < virtual")
+	}
+	if got < 0.211-1e-9 || got > 0.211+1e-9 {
+		t.Errorf("qty = %g, want 0.211 (on-chain qty)", got)
+	}
+}
+
+func TestHLSLEffectiveQty_NoCapWhenSymbolNotInMap(t *testing.T) {
+	onChain := map[string]float64{"BTC": 0.01}
+	got, capped := hlSLEffectiveQty("ETH", 0.422, onChain)
+	if capped {
+		t.Error("capped=true, want false when symbol not in on-chain map")
+	}
+	if got != 0.422 {
+		t.Errorf("qty = %g, want 0.422", got)
+	}
+}
+
+func TestHLSLEffectiveQty_NoCapWhenOnChainZero(t *testing.T) {
+	// On-chain zero means Detector 1 territory; don't cap to zero.
+	onChain := map[string]float64{"ETH": 0}
+	got, capped := hlSLEffectiveQty("ETH", 0.422, onChain)
+	if capped {
+		t.Error("capped=true, want false when on-chain qty is zero")
+	}
+	if got != 0.422 {
+		t.Errorf("qty = %g, want 0.422", got)
+	}
+}
+
 // #562: atrMultMissingEntryATR fires when StopLossATRMult is configured but
 // the open candle didn't produce an ATR — same alert behavior as
 // TrailingStopATRMult.

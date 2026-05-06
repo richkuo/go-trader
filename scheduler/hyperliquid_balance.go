@@ -302,6 +302,13 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 			lookup, useFillFee := resolveFee(sym, statePos.StopLossOID, statePos.Quantity)
 			oidStr := strconv.FormatInt(statePos.StopLossOID, 10)
 			logHyperliquidReconcileFillLookup(logger, sym, statePos.StopLossOID, statePos.Quantity, lookup, useFillFee)
+			// #621: When userFills returned a real fill qty smaller than the virtual
+			// position (e.g. SL was placed at the on-chain size after a manual TP
+			// reduced the position), use the actual fill qty so PnL/cash are correct.
+			if useFillFee && lookup.FilledQty > 1e-9 && lookup.FilledQty < statePos.Quantity-1e-9 {
+				logger.Info("hl-sync: %s SL close qty adjusted %.6f → %.6f (actual fill from userFills)", sym, statePos.Quantity, lookup.FilledQty)
+				statePos.Quantity = lookup.FilledQty
+			}
 			if recordPerpsStopLossCloseWithFillFee(stratState, sym, statePos.StopLossTriggerPx, lookup.Fee, useFillFee, oidStr, "stop_loss", logger) {
 				return true
 			}
@@ -556,6 +563,12 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 					lookup, useFillFee := resolveFee(coin, pos.StopLossOID, pos.Quantity)
 					oidStr := strconv.FormatInt(pos.StopLossOID, 10)
 					logHyperliquidReconcileFillLookup(logger, coin, pos.StopLossOID, pos.Quantity, lookup, useFillFee)
+					if useFillFee && lookup.FilledQty > 1e-9 && lookup.FilledQty < pos.Quantity-1e-9 {
+						if logger != nil {
+							logger.Info("hl-sync: %s SL close qty adjusted %.6f → %.6f (actual fill from userFills)", coin, pos.Quantity, lookup.FilledQty)
+						}
+						pos.Quantity = lookup.FilledQty
+					}
 					if recordPerpsStopLossCloseWithFillFee(ss, coin, pos.StopLossTriggerPx, lookup.Fee, useFillFee, oidStr, "hl_sync_stop_loss", logger) {
 						changed = true
 					}
@@ -629,6 +642,12 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 						lookup, useFillFee := resolveFee(coin, slOwnerPos.StopLossOID, slOwnerPos.Quantity)
 						oidStr := strconv.FormatInt(slOwnerPos.StopLossOID, 10)
 						logHyperliquidReconcileFillLookup(logger, coin, slOwnerPos.StopLossOID, slOwnerPos.Quantity, lookup, useFillFee)
+						if useFillFee && lookup.FilledQty > 1e-9 && lookup.FilledQty < slOwnerPos.Quantity-1e-9 {
+							if logger != nil {
+								logger.Info("hl-sync: %s SL close qty adjusted %.6f → %.6f (actual fill from userFills)", coin, slOwnerPos.Quantity, lookup.FilledQty)
+							}
+							slOwnerPos.Quantity = lookup.FilledQty
+						}
 						if recordPerpsStopLossCloseWithFillFee(ownerSS, coin, slOwnerPos.StopLossTriggerPx, lookup.Fee, useFillFee, oidStr, "hl_sync_stop_loss", logger) {
 							changed = true
 							virtualQty = expectedResidual
