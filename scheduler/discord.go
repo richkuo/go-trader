@@ -1028,7 +1028,12 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 		extras := ""
 		if pos.StopLossTriggerPx > 0 {
 			slPct := percentFromEntry(pos.Side, pos.AvgCost, pos.StopLossTriggerPx)
-			extras += fmt.Sprintf(" | SL: $%s (%s)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct))
+			if pos.EntryATR > 0 {
+				atrMult := math.Abs(pos.AvgCost-pos.StopLossTriggerPx) / pos.EntryATR
+				extras += fmt.Sprintf(" | SL: $%s (%s) (%.2gx)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct), atrMult)
+			} else {
+				extras += fmt.Sprintf(" | SL: $%s (%s)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct))
+			}
 		}
 		if pos.EntryATR > 0 {
 			extras += fmt.Sprintf(" | ATR: $%s", fmtComma2(pos.EntryATR))

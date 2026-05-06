@@ -1331,6 +1331,56 @@ func TestCollectPositions_StopLossOmittedWhenNoTriggerPx(t *testing.T) {
 	}
 }
 
+// TestCollectPositions_StopLossATRMultiplier verifies the SL line shows the
+// effective ATR multiplier when both EntryATR and StopLossTriggerPx are set.
+func TestCollectPositions_StopLossATRMultiplier(t *testing.T) {
+	cases := []struct {
+		name    string
+		side    string
+		avg     float64
+		sl      float64
+		atr     float64
+		wantSub string
+	}{
+		// long: diff = 1000, mult = 1.0 → "1x" via %.2g
+		{name: "long_1x", side: "long", avg: 10000, sl: 9000, atr: 1000, wantSub: "| SL: $9,000.00 (-10.0%) (1x)"},
+		// long: diff = 300, mult = 1.5 → "1.5x"
+		{name: "long_1.5x", side: "long", avg: 10000, sl: 9700, atr: 200, wantSub: "| SL: $9,700.00 (-3.0%) (1.5x)"},
+		// short: diff = 1000, mult = 1.0 → "1x"
+		{name: "short_1x", side: "short", avg: 10000, sl: 11000, atr: 1000, wantSub: "| SL: $11,000.00 (-10.0%) (1x)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := &StrategyState{
+				Positions: map[string]*Position{
+					"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: tc.avg, Side: tc.side, StopLossTriggerPx: tc.sl, EntryATR: tc.atr},
+				},
+			}
+			lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, map[string]float64{"BTC/USDT": tc.avg})
+			if !strings.Contains(lines[0], tc.wantSub) {
+				t.Errorf("expected SL fragment %q, got: %s", tc.wantSub, lines[0])
+			}
+		})
+	}
+}
+
+// TestCollectPositions_StopLossNoATRMultiplierWhenEntryATRZero verifies the
+// SL line omits the multiplier suffix when EntryATR is unset.
+func TestCollectPositions_StopLossNoATRMultiplierWhenEntryATRZero(t *testing.T) {
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 10000, Side: "long", StopLossTriggerPx: 9500, EntryATR: 0},
+		},
+	}
+	lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, map[string]float64{"BTC/USDT": 10000})
+	if !strings.Contains(lines[0], "| SL: $9,500.00 (-5.0%)") {
+		t.Errorf("expected SL fragment without multiplier, got: %s", lines[0])
+	}
+	if strings.Contains(lines[0], "x)") {
+		t.Errorf("expected no multiplier suffix when EntryATR=0, got: %s", lines[0])
+	}
+}
+
 // TestCollectPositions_LeverageMargin verifies leverage + margin rendering for
 // perps with Leverage > 1.
 func TestCollectPositions_LeverageMargin(t *testing.T) {
