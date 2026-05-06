@@ -32,7 +32,7 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		cfg.IntervalSeconds = next.IntervalSeconds
 	}
 	if !floatPtrEqual(cfg.DefaultStopLossATRMult, next.DefaultStopLossATRMult) {
-		addChange("default_stop_loss_atr_mult: %s -> %s", formatFloatPtr(cfg.DefaultStopLossATRMult), formatFloatPtr(next.DefaultStopLossATRMult))
+		addChange("default_stop_loss_atr_mult: %s -> %s (applies to strategies opened after restart; existing StopLossATRMult on currently-loaded strategies is unchanged)", formatFloatPtr(cfg.DefaultStopLossATRMult), formatFloatPtr(next.DefaultStopLossATRMult))
 		cfg.DefaultStopLossATRMult = next.DefaultStopLossATRMult
 	}
 

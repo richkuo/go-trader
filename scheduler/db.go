@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS positions (
     stop_loss_oid INTEGER NOT NULL DEFAULT 0,
     stop_loss_trigger_px REAL NOT NULL DEFAULT 0,
     stop_loss_high_water_px REAL NOT NULL DEFAULT 0,
+    tp1_oid INTEGER NOT NULL DEFAULT 0,
+    tp2_oid INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (strategy_id, symbol)
 );
 
@@ -294,6 +296,9 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE trades ADD COLUMN manual INTEGER NOT NULL DEFAULT 0",
 		// Operator-intent full-close flag for manual close actions (#569 review).
 		"ALTER TABLE pending_manual_actions ADD COLUMN is_full_close INTEGER NOT NULL DEFAULT 0",
+		// Per-strategy HL reduce-only take-profit OIDs (#601).
+		"ALTER TABLE positions ADD COLUMN tp1_oid INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE positions ADD COLUMN tp2_oid INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -655,8 +660,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	defer stmtStrat.Close()
 
-	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare position insert: %w", err)
 	}
@@ -706,7 +711,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 
 		for _, pos := range s.Positions {
 			positionID := ensurePositionTradeID(s.ID, pos.Symbol, pos)
-			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx); err != nil {
+			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, pos.TP1OID, pos.TP2OID); err != nil {
 				return fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
 			}
 		}
@@ -1117,7 +1122,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	}
 
 	// 3. Load positions for each strategy.
-	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px FROM positions")
+	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, COALESCE(tp1_oid, 0) AS tp1_oid, COALESCE(tp2_oid, 0) AS tp2_oid FROM positions")
 	if err != nil {
 		return nil, fmt.Errorf("load positions: %w", err)
 	}
@@ -1126,7 +1131,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		var stratID string
 		var pos Position
 		var openedAtStr string
-		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx); err != nil {
+		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx, &pos.TP1OID, &pos.TP2OID); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
 		pos.OpenedAt = parseTime(openedAtStr)
@@ -1251,32 +1256,59 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	return state, nil
 }
 
-// LifetimeTradeStats holds the per-strategy round-trip totals derived from
-// the trades table (#455/#471). RoundTrips is the lifetime count of distinct
-// trade position IDs among close rows; legacy rows without a position ID fall
-// back to one synthetic group per row to preserve historical per-leg counts.
-// Wins and Losses partition round trips by strict net realized PnL sign
-// (PnL > 0 → win, PnL < 0 → loss). Breakeven positions are excluded from both
-// buckets. Open positions without a recorded close do not count.
+// LifetimeTradeStats holds the per-strategy lifetime totals derived from
+// the trades table (#455/#471/#607). PositionsOpened is the lifetime count
+// of open legs (is_close=0 rows) — the #T column in summaries / leaderboard
+// shows positions entered, not closed round trips, so partial-close legs
+// don't inflate the count and still-open positions are included. Wins and
+// Losses are derived from closed round trips grouped by position_id and
+// partitioned by strict net realized PnL sign (PnL > 0 → win, PnL < 0 →
+// loss); breakeven round trips are excluded from both buckets. Legacy close
+// rows without a position_id fall back to one synthetic group per row.
 type LifetimeTradeStats struct {
-	RoundTrips int
-	Wins       int
-	Losses     int
+	PositionsOpened int
+	Wins            int
+	Losses          int
 }
 
-// LifetimeTradeStatsAll returns lifetime round-trip stats for every strategy
-// that has at least one close trade in the trades table. Strategies with no
-// closes are absent from the result; callers should treat a missing key as
-// an all-zero struct. Used by FormatCategorySummary (#455) to render lifetime
-// #T / W/L columns that are immune to kill-switch / circuit-breaker resets
-// of the in-memory RiskState counters.
+// LifetimeTradeStatsAll returns lifetime stats for every strategy that has
+// any trade row in the trades table. Strategies with no trades are absent
+// from the result; callers should treat a missing key as an all-zero
+// struct. PositionsOpened counts is_close=0 rows; Wins/Losses come from
+// closed-round-trip aggregation. Used by FormatCategorySummary (#455) and
+// the leaderboard (#580) to render lifetime #T / W/L columns that are
+// immune to kill-switch / circuit-breaker resets of the in-memory RiskState
+// counters.
 func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
 	}
-	rows, err := sdb.db.Query(`SELECT
+	out := make(map[string]LifetimeTradeStats)
+
+	openRows, err := sdb.db.Query(`SELECT strategy_id, COUNT(*)
+		FROM trades
+		WHERE is_close = 0
+		GROUP BY strategy_id`)
+	if err != nil {
+		return nil, fmt.Errorf("query lifetime open counts: %w", err)
+	}
+	defer openRows.Close()
+	for openRows.Next() {
+		var id string
+		var opens sql.NullInt64
+		if err := openRows.Scan(&id, &opens); err != nil {
+			return nil, fmt.Errorf("scan lifetime open counts: %w", err)
+		}
+		entry := out[id]
+		entry.PositionsOpened = int(opens.Int64)
+		out[id] = entry
+	}
+	if err := openRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate lifetime open counts: %w", err)
+	}
+
+	closeRows, err := sdb.db.Query(`SELECT
 			strategy_id,
-			COUNT(*) AS round_trips,
 			SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) AS wins,
 			SUM(CASE WHEN net_pnl < 0 THEN 1 ELSE 0 END) AS losses
 		FROM (
@@ -1296,21 +1328,19 @@ func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, erro
 	if err != nil {
 		return nil, fmt.Errorf("query lifetime trade stats: %w", err)
 	}
-	defer rows.Close()
-	out := make(map[string]LifetimeTradeStats)
-	for rows.Next() {
+	defer closeRows.Close()
+	for closeRows.Next() {
 		var id string
-		var total, wins, losses sql.NullInt64
-		if err := rows.Scan(&id, &total, &wins, &losses); err != nil {
+		var wins, losses sql.NullInt64
+		if err := closeRows.Scan(&id, &wins, &losses); err != nil {
 			return nil, fmt.Errorf("scan lifetime trade stats: %w", err)
 		}
-		out[id] = LifetimeTradeStats{
-			RoundTrips: int(total.Int64),
-			Wins:       int(wins.Int64),
-			Losses:     int(losses.Int64),
-		}
+		entry := out[id]
+		entry.Wins = int(wins.Int64)
+		entry.Losses = int(losses.Int64)
+		out[id] = entry
 	}
-	if err := rows.Err(); err != nil {
+	if err := closeRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate lifetime trade stats: %w", err)
 	}
 	return out, nil

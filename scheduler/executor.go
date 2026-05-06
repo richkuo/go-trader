@@ -89,6 +89,32 @@ type HyperliquidStopLossUpdateResult struct {
 	StopLossFilledImmediately bool    `json:"stop_loss_filled_immediately,omitempty"`
 }
 
+// HyperliquidProtectionSyncResult is emitted by check_hyperliquid.py
+// --sync-protection. It keeps per-strategy reduce-only SL/TP order OIDs in
+// Position so restart recovery can verify or re-place missing protection (#601).
+//
+// `*_filled_externally` flags signal that the recorded OID had already filled
+// on-chain when sync ran (reconciler will book the close); the Go side must
+// clear the OID without re-placing to avoid the over-close hazard from #604.
+type HyperliquidProtectionSyncResult struct {
+	Platform                 string  `json:"platform"`
+	Timestamp                string  `json:"timestamp"`
+	Error                    string  `json:"error,omitempty"`
+	StopLossOID              int64   `json:"stop_loss_oid,omitempty"`
+	StopLossTriggerPx        float64 `json:"stop_loss_trigger_px,omitempty"`
+	TP1OID                   int64   `json:"tp1_oid,omitempty"`
+	TP2OID                   int64   `json:"tp2_oid,omitempty"`
+	TP1Px                    float64 `json:"tp1_px,omitempty"`
+	TP2Px                    float64 `json:"tp2_px,omitempty"`
+	StopLossError            string  `json:"stop_loss_error,omitempty"`
+	TP1Error                 string  `json:"tp1_error,omitempty"`
+	TP2Error                 string  `json:"tp2_error,omitempty"`
+	OpenOrderCheckError      string  `json:"open_order_check_error,omitempty"`
+	StopLossFilledExternally bool    `json:"stop_loss_filled_externally,omitempty"`
+	TP1FilledExternally      bool    `json:"tp1_filled_externally,omitempty"`
+	TP2FilledExternally      bool    `json:"tp2_filled_externally,omitempty"`
+}
+
 // RunPythonScript executes a Python script and returns stdout/stderr.
 func RunPythonScript(script string, args []string) ([]byte, []byte, error) {
 	pythonSemaphore <- struct{}{}
@@ -239,7 +265,7 @@ func RunHyperliquidCheck(script string, args []string) (*HyperliquidResult, stri
 // Python script calls adapter.market_close(sz=None) — closing the entire
 // on-chain residual without a sized order, eliminating rounding dust on final
 // TP tiers (#592).
-func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool) []string {
+func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, extraCancelOIDs ...int64) []string {
 	args := []string{
 		"--execute",
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -257,6 +283,11 @@ func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64,
 	if cancelStopLossOID > 0 {
 		args = append(args, fmt.Sprintf("--cancel-stop-loss-oid=%d", cancelStopLossOID))
 	}
+	for _, oid := range extraCancelOIDs {
+		if oid > 0 && oid != cancelStopLossOID {
+			args = append(args, fmt.Sprintf("--cancel-stop-loss-oid=%d", oid))
+		}
+	}
 	if prevPosQty > 0 {
 		args = append(args, fmt.Sprintf("--prev-pos-qty=%g", prevPosQty))
 	}
@@ -271,8 +302,8 @@ func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64,
 
 // RunHyperliquidExecute runs check_hyperliquid.py in execute mode (live orders).
 // See buildHyperliquidExecuteArgs for argv-contract details.
-func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool) (*HyperliquidExecuteResult, string, error) {
-	args := buildHyperliquidExecuteArgs(symbol, side, size, stopLossPct, cancelStopLossOID, prevPosQty, marginMode, leverage, closeFullPosition)
+func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	args := buildHyperliquidExecuteArgs(symbol, side, size, stopLossPct, cancelStopLossOID, prevPosQty, marginMode, leverage, closeFullPosition, extraCancelOIDs...)
 	stdout, stderr, err := RunPythonScript(script, args)
 	return parseHyperliquidExecuteOutput(stdout, string(stderr), err)
 }
@@ -294,6 +325,44 @@ func RunHyperliquidUpdateStopLoss(script, symbol, side string, size, triggerPx f
 	}
 	stdout, stderr, err := RunPythonScript(script, args)
 	return parseHyperliquidUpdateStopLossOutput(stdout, string(stderr), err)
+}
+
+func RunHyperliquidSyncProtection(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult, tp1Mult, tp1Fraction, tp2Mult float64, stopLossOID, tp1OID, tp2OID int64) (*HyperliquidProtectionSyncResult, string, error) {
+	args := []string{
+		"--sync-protection",
+		fmt.Sprintf("--symbol=%s", symbol),
+		fmt.Sprintf("--side=%s", side),
+		fmt.Sprintf("--size=%g", size),
+		fmt.Sprintf("--avg-cost=%g", avgCost),
+		fmt.Sprintf("--entry-atr=%g", entryATR),
+		fmt.Sprintf("--stop-loss-atr-mult=%g", stopLossATRMult),
+		fmt.Sprintf("--tp1-atr-mult=%g", tp1Mult),
+		fmt.Sprintf("--tp1-fraction=%g", tp1Fraction),
+		fmt.Sprintf("--tp2-atr-mult=%g", tp2Mult),
+		"--mode=live",
+	}
+	if stopLossOID > 0 {
+		args = append(args, fmt.Sprintf("--stop-loss-oid=%d", stopLossOID))
+	}
+	if tp1OID > 0 {
+		args = append(args, fmt.Sprintf("--tp1-oid=%d", tp1OID))
+	}
+	if tp2OID > 0 {
+		args = append(args, fmt.Sprintf("--tp2-oid=%d", tp2OID))
+	}
+	stdout, stderr, err := RunPythonScript(script, args)
+	stderrStr := string(stderr)
+	var result HyperliquidProtectionSyncResult
+	if jsonErr := json.Unmarshal(stdout, &result); jsonErr != nil {
+		if err != nil {
+			return nil, stderrStr, fmt.Errorf("script error: %w (stderr: %s; stdout: %s)", err, stderrStr, string(stdout))
+		}
+		return nil, stderrStr, fmt.Errorf("parse output: %w (stdout: %s)", jsonErr, string(stdout))
+	}
+	if err != nil && result.Error == "" {
+		return &result, stderrStr, fmt.Errorf("script error: %w (stderr: %s)", err, stderrStr)
+	}
+	return &result, stderrStr, nil
 }
 
 func parseHyperliquidUpdateStopLossOutput(stdout []byte, stderrStr string, runErr error) (*HyperliquidStopLossUpdateResult, string, error) {

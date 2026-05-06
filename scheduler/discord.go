@@ -458,12 +458,13 @@ func FormatCategorySummary(
 		if effectiveInterval <= 0 {
 			effectiveInterval = globalIntervalSeconds
 		}
-		// Lifetime round-trip stats from the trades table (#455/#471). Survives
-		// kill-switch and circuit-breaker resets; counts grouped close legs as
-		// one position-level round trip. Missing DB rows render as zero.
+		// Lifetime trade stats from the trades table (#455/#471/#607). Survives
+		// kill-switch and circuit-breaker resets. #T renders the lifetime
+		// open-leg count (positions entered, not closed round trips); W/L is
+		// still derived from closed round trips. Missing DB rows render zero.
 		closedT, winT, lossT := 0, 0, 0
 		if lt, ok := lifetimeStats[sc.ID]; ok {
-			closedT = lt.RoundTrips
+			closedT = lt.PositionsOpened
 			winT = lt.Wins
 			lossT = lt.Losses
 		}

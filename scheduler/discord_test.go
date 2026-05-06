@@ -771,9 +771,9 @@ func TestFormatCategorySummary_ClosedTradesColumn(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 50000}
 	lifetime := map[string]LifetimeTradeStats{
-		"hl-rsi-btc": {RoundTrips: 7},
-		"hl-sma-btc": {RoundTrips: 12},
-		"hl-mom-btc": {RoundTrips: 0},
+		"hl-rsi-btc": {PositionsOpened: 7},
+		"hl-sma-btc": {PositionsOpened: 12},
+		"hl-mom-btc": {PositionsOpened: 0},
 	}
 
 	msgs := FormatCategorySummary(1, 0, 3, 0, 3000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, lifetime)
@@ -830,8 +830,8 @@ func TestFormatCategorySummary_ClosedTradesColumn_SharedWallet(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH/USDT": 3000}
 	lifetime := map[string]LifetimeTradeStats{
-		"hl-rmc-eth":  {RoundTrips: 4},
-		"hl-tema-eth": {RoundTrips: 9},
+		"hl-rmc-eth":  {PositionsOpened: 4},
+		"hl-tema-eth": {PositionsOpened: 9},
 	}
 
 	msgs := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, lifetime)
@@ -907,9 +907,9 @@ func TestFormatCategorySummary_WinLossColumn(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 50000}
 	lifetime := map[string]LifetimeTradeStats{
-		"hl-rsi-btc": {RoundTrips: 10, Wins: 7, Losses: 3},
-		"hl-sma-btc": {RoundTrips: 5, Wins: 5, Losses: 0},
-		"hl-mom-btc": {RoundTrips: 0, Wins: 0, Losses: 0},
+		"hl-rsi-btc": {PositionsOpened: 10, Wins: 7, Losses: 3},
+		"hl-sma-btc": {PositionsOpened: 5, Wins: 5, Losses: 0},
+		"hl-mom-btc": {PositionsOpened: 0, Wins: 0, Losses: 0},
 	}
 
 	msgs := FormatCategorySummary(1, 0, 3, 0, 3000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, lifetime)
@@ -1858,7 +1858,7 @@ func TestFormatCategorySummary_LifetimeStatsOverride(t *testing.T) {
 		},
 	}
 	lifetime := map[string]LifetimeTradeStats{
-		"hl-rmc-eth-live": {RoundTrips: 17, Wins: 10, Losses: 7},
+		"hl-rmc-eth-live": {PositionsOpened: 17, Wins: 10, Losses: 7},
 	}
 	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, lifetime)
 	if len(msgs) == 0 {

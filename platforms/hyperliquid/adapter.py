@@ -13,6 +13,7 @@ Environment variables:
 import math
 import os
 import sys
+from decimal import Decimal, ROUND_DOWN
 import time
 
 MAINNET_URL = "https://api.hyperliquid.xyz"
@@ -71,6 +72,14 @@ def _round_perps_px(px: float, sz_decimals: int) -> float:
     sig_decimals = max(0, 5 - 1 - int(log))
     decimals = min(px_decimals, sig_decimals)
     return round(px, decimals)
+
+
+def _floor_size(sz: float, sz_decimals: int) -> float:
+    """Floor order size to HL asset precision so reduce-only TPs never oversize."""
+    if sz <= 0:
+        return sz
+    quant = Decimal("1").scaleb(-max(sz_decimals, 0))
+    return float(Decimal(str(sz)).quantize(quant, rounding=ROUND_DOWN))
 
 
 class HyperliquidExchangeAdapter:
@@ -391,13 +400,76 @@ class HyperliquidExchangeAdapter:
             symbol, is_buy, sz, limit_px, order_type, reduce_only=True
         )
 
-    def cancel_trigger_order(self, symbol: str, oid: int) -> dict:
-        """Cancel a resting trigger order by OID (#412)."""
+    def place_take_profit_limit(
+        self,
+        symbol: str,
+        sz: float,
+        limit_px: float,
+        is_buy: bool,
+    ) -> dict:
+        """Place a reduce-only take-profit limit order (#601)."""
         if not self._exchange:
             raise RuntimeError(
-                "cancel_trigger_order requires live mode (set HYPERLIQUID_SECRET_KEY)"
+                "place_take_profit_limit requires live mode (set HYPERLIQUID_SECRET_KEY)"
+            )
+        if symbol not in self._info.asset_to_sz_decimals:
+            print(f"[WARN] sz_decimals not found for {symbol}, defaulting to 3", file=sys.stderr)
+        sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3)
+        sz = _floor_size(sz, sz_decimals)
+        if sz <= 0:
+            raise ValueError(f"Size floored to zero for {symbol} (sz_decimals={sz_decimals})")
+        if limit_px <= 0:
+            raise ValueError(f"limit_px must be > 0, got {limit_px}")
+        limit_px = _round_perps_px(limit_px, sz_decimals)
+        order_type = {"limit": {"tif": "Gtc"}}
+        return self._exchange.order(
+            symbol, is_buy, sz, limit_px, order_type, reduce_only=True
+        )
+
+    def open_order_oids(self, symbol: str | None = None) -> set[int]:
+        """Return currently open order OIDs, optionally filtered by coin (#601).
+
+        Raises whatever the underlying SDK raises — callers in
+        check_hyperliquid.py treat a raise as "open-orders fetch failed,
+        defer placement decisions" so wrapping it in try/except here would
+        silently coerce uncertainty into "no open orders" and produce the
+        over-place hazard we're trying to avoid.
+        """
+        if not self._account_address:
+            return set()
+        orders = self._info.open_orders(self._account_address)
+        out: set[int] = set()
+        for order in orders or []:
+            if not isinstance(order, dict):
+                continue
+            if symbol and order.get("coin") != symbol:
+                continue
+            oid = _safe_int(order.get("oid"))
+            if oid:
+                out.add(oid)
+        return out
+
+    def cancel_order_by_oid(self, symbol: str, oid: int) -> dict:
+        """Cancel any resting order (trigger or limit) by OID.
+
+        HL's cancel endpoint is order-type-agnostic — it accepts the OID and
+        figures out the underlying order kind from the book. Trigger orders
+        (stop-loss, take-profit-trigger) and limit orders (reduce-only TP
+        limits placed via place_take_profit_limit) are both cancellable
+        through this single primitive (#604 review #4).
+        """
+        if not self._exchange:
+            raise RuntimeError(
+                "cancel_order_by_oid requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
         return self._exchange.cancel(symbol, int(oid))
+
+    # Backwards-compatible alias. The original name implied only trigger
+    # orders were supported; in practice HL's cancel works for any order
+    # type. New code should call cancel_order_by_oid; existing callers can
+    # keep using cancel_trigger_order without a rename churn.
+    def cancel_trigger_order(self, symbol: str, oid: int) -> dict:
+        return self.cancel_order_by_oid(symbol, oid)
 
     def update_leverage(self, leverage: int, symbol: str, is_cross: bool) -> dict:
         """Set leverage and margin mode (cross/isolated) for ``symbol`` (#486).

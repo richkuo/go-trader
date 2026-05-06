@@ -1252,9 +1252,9 @@ func TestLoadConfigHLPerpsPeersMismatchedLeverage(t *testing.T) {
 	}
 }
 
-// #491: only one peer may carry stop_loss_pct — reduce-only triggers from
-// both peers would race on the shared on-chain position.
-func TestLoadConfigHLPerpsPeersConflictingStopLoss(t *testing.T) {
+// #601: multiple shared-coin peers may carry stop_loss_pct because protection
+// orders are now sized per strategy.
+func TestLoadConfigHLPerpsPeersMultipleStopLossAllowed(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
 		"strategies": [
@@ -1284,11 +1284,8 @@ func TestLoadConfigHLPerpsPeersConflictingStopLoss(t *testing.T) {
 	}`
 	path := writeTestConfig(t, dir, cfgJSON)
 	_, err := LoadConfig(path)
-	if err == nil {
-		t.Fatal("expected validation error for conflicting stop_loss_pct on peers")
-	}
-	if !strings.Contains(err.Error(), "conflicting stop_loss_pct") {
-		t.Errorf("error = %v, want 'conflicting stop_loss_pct'", err)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
 	}
 }
 
