@@ -512,6 +512,18 @@ def run_sync_protection(
             tp_filled_externally = [False] * len(tiers)
             tp_fills = [None] * len(tiers)
             tp_filled_immediately = [False] * len(tiers)
+            # Normalize to lot precision before computing tier sizes.  Go's
+            # float64 arithmetic (pos.Quantity -= closeQty) can drift just below
+            # a lot boundary (e.g. 0.011 - 0.010 = 0.000999...) even though the
+            # true virtual qty is exactly one lot.  round() matches what
+            # place_stop_loss already does for SL size.
+            size = adapter.round_size(symbol, size)
+            if size <= 0:
+                print(
+                    f"[INFO] TP protection skipped for {symbol}: virtual qty "
+                    f"rounds to zero at lot precision — peer TPs cover the on-chain position",
+                    file=sys.stderr,
+                )
             prev_fraction = 0.0
             placed_size_total = 0.0
 

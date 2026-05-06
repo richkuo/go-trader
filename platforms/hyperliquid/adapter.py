@@ -431,6 +431,17 @@ class HyperliquidExchangeAdapter:
         sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3) if self._info else 3
         return _floor_size(sz, sz_decimals)
 
+    def round_size(self, symbol: str, sz: float) -> float:
+        """Round sz to the asset's lot precision (nearest, not floor).
+
+        Use this to normalize a virtual qty that may have drifted just below a
+        lot boundary due to float64 subtraction in Go (e.g. 0.011 - 0.010 =
+        0.0009999...).  place_stop_loss already uses round(); this makes TP
+        tier sizing consistent.
+        """
+        sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3) if self._info else 3
+        return round(sz, sz_decimals)
+
     def open_order_oids(self, symbol: str | None = None) -> set[int]:
         """Return currently open order OIDs, optionally filtered by coin (#601).
 
