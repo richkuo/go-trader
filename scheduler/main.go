@@ -1487,7 +1487,7 @@ func main() {
 								}
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 {
-								runHyperliquidProtectionSync(sc, stratState, result.Symbol, &mu, notifier, logger, "HL protection synced")
+								runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced")
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
 								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlReconcileAll, notifier, logger)
@@ -1517,7 +1517,7 @@ func main() {
 								trades, detail = executeHyperliquidResult(sc, stratState, stateDB, result, execResult, signalStr, price, logger)
 								mu.Unlock()
 								if execResult != nil && trades > 0 {
-									runHyperliquidProtectionSync(sc, stratState, result.Symbol, &mu, notifier, logger, "HL protection synced after trade")
+									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade")
 								}
 							}
 						}
@@ -1557,7 +1557,7 @@ func main() {
 							break
 						}
 						if pos != nil && hyperliquidIsLive(sc.Args) {
-							runHyperliquidProtectionSync(sc, stratState, sc.Symbol, &mu, notifier, logger, "HL manual protection synced")
+							runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced")
 						}
 						if closeFraction, _, ok := runManualCloseEval(sc, stratState, cfg, logger); ok && closeFraction > 0 {
 							mu.RLock()
