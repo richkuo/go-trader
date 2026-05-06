@@ -1534,7 +1534,7 @@ func TestCollectPositions_TieredTPATR_OmittedWhenEntryATRZero(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_AllFragments_WithTieredTP verifies SL → TP1 → TP2 →
+// TestCollectPositions_AllFragments_WithTieredTP verifies ATR → SL → TP1 → TP2 →
 // leverage → date ordering when tiered_tp_atr is configured (#528).
 func TestCollectPositions_AllFragments_WithTieredTP(t *testing.T) {
 	opened := time.Date(2026, 4, 28, 14, 32, 0, 0, time.UTC)
@@ -1557,8 +1557,8 @@ func TestCollectPositions_AllFragments_WithTieredTP(t *testing.T) {
 	if slIdx < 0 || atrIdx < 0 || tp1Idx < 0 || tp2Idx < 0 || levIdx < 0 || dateIdx < 0 {
 		t.Fatalf("expected SL, ATR, TP1, TP2, leverage, and date fragments, got: %s", got)
 	}
-	if !(slIdx < atrIdx && atrIdx < tp1Idx && tp1Idx < tp2Idx && tp2Idx < levIdx && levIdx < dateIdx) {
-		t.Errorf("expected SL → ATR → TP1 → TP2 → leverage → date ordering, got: %s", got)
+	if !(atrIdx < slIdx && slIdx < tp1Idx && tp1Idx < tp2Idx && tp2Idx < levIdx && levIdx < dateIdx) {
+		t.Errorf("expected ATR → SL → TP1 → TP2 → leverage → date ordering, got: %s", got)
 	}
 }
 

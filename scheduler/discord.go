@@ -1026,6 +1026,9 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 			dateStr = fmt.Sprintf(" [%s]", pos.OpenedAt.Format("Jan 02 15:04"))
 		}
 		extras := ""
+		if pos.EntryATR > 0 {
+			extras += fmt.Sprintf(" | ATR: $%s", fmtComma2(pos.EntryATR))
+		}
 		if pos.StopLossTriggerPx > 0 {
 			slPct := percentFromEntry(pos.Side, pos.AvgCost, pos.StopLossTriggerPx)
 			if pos.EntryATR > 0 {
@@ -1034,9 +1037,6 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 			} else {
 				extras += fmt.Sprintf(" | SL: $%s (%s)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct))
 			}
-		}
-		if pos.EntryATR > 0 {
-			extras += fmt.Sprintf(" | ATR: $%s", fmtComma2(pos.EntryATR))
 		}
 		if strategyUsesTieredTPATRClose(sc) && pos.EntryATR > 0 && pos.AvgCost > 0 {
 			sideLower := strings.ToLower(pos.Side)
