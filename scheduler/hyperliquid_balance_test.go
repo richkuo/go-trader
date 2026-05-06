@@ -1567,6 +1567,58 @@ func TestReconcileSharedCoin_TPPartialFill_Short(t *testing.T) {
 	}
 }
 
+func TestReconcileSharedCoin_TPPartialFill_PaddedNeverPlacedTierDoesNotAttribute(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: 1000, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
+						EntryATR: 100, TPOIDs: []int64{111}},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: 500, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+
+	allStrategies := []StrategyConfig{
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", CloseStrategies: []string{"tiered_tp_atr_live"}, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: 0.75, EntryPrice: 3000, Leverage: 10}}
+	prices := map[string]float64{"ETH": 3200}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "")
+
+	owner := state.Strategies["hl-owner-eth"]
+	ownerPos := owner.Positions["ETH"]
+	if ownerPos == nil {
+		t.Fatal("owner ETH position should remain")
+	}
+	if math.Abs(ownerPos.Quantity-0.5) > 1e-9 {
+		t.Errorf("owner quantity = %g, want unchanged 0.5", ownerPos.Quantity)
+	}
+	if len(owner.TradeHistory) != 0 {
+		t.Fatalf("owner close trades = %d, want 0 because missing tier slot was never placed", len(owner.TradeHistory))
+	}
+	gap := state.ReconciliationGaps["ETH"]
+	if gap == nil {
+		t.Fatal("expected gap entry for ETH")
+	}
+	if math.Abs(gap.VirtualQty-1.0) > 1e-9 || math.Abs(gap.OnChainQty-0.75) > 1e-9 || math.Abs(gap.DeltaQty-0.25) > 1e-9 {
+		t.Errorf("gap = %+v, want unresolved virtual=1.0 on-chain=0.75 delta=0.25", gap)
+	}
+}
+
 // TestReconcileSharedCoin_AllPositionsClosedExternally_NoMarkPrice_FallsBack
 // verifies the legacy zero-PnL path still applies when the caller supplies no
 // mark price for the coin (e.g. the syncHyperliquidAccountPositions entry).

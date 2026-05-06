@@ -749,6 +749,9 @@ func hyperliquidHasClearedTPTier(sc StrategyConfig, pos *Position, closeQty floa
 	if len(tiers) == 0 {
 		return false
 	}
+	if len(pos.TPOIDs) < len(tiers) {
+		return false
+	}
 	tpOIDs := tpOIDsForTierCount(pos.TPOIDs, len(tiers))
 	hasCleared := false
 	hasActive := false

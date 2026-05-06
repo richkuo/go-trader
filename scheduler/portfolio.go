@@ -238,6 +238,9 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	if s.Platform == "okx" && s.Type == "perps" {
 		feePlatform = "okx-perps"
 	}
+	// TP fills are resting reduce-only limits and often maker-priced, but when
+	// userFills lookup misses we keep the reconciler's existing conservative
+	// taker-fee fallback so virtual cash is not overstated.
 	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
 	exchangeFeeStamp := 0.0
 	if useFillFee {
