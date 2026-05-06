@@ -194,15 +194,37 @@ func runManualOpen(args []string) int {
 
 	fmt.Printf("Filled: %s %.6f %s @ $%.4f (fee=$%.4f)\n", *side, fillQty, sc.Symbol, resolvedFillPrice, fillFee)
 
-	// Arm ATR-based stop-loss after fill (separate from the execute call so we
-	// control trigger placement independently of the pct-based SL path).
-	var stopLossOID int64
-	var stopLossTriggerPx float64
+	// Build notifier for warning paths (no-op when Discord/Telegram not configured).
+	notifier, closeNotifier := buildNotifierFromConfig(cfg)
+	defer closeNotifier()
 
 	effectiveATRMult := *slATRMult
 	if effectiveATRMult == 0 && sc.StopLossATRMult != nil {
 		effectiveATRMult = *sc.StopLossATRMult
 	}
+
+	// When --atr is omitted, compute a leverage-aware fallback so SL and TPs still
+	// post. Fallback = 0.1*fillPrice/leverage → risks 10% of margin at 1× ATR.
+	if !*recordOnly && entryATR == 0 {
+		needsATRProtection := effectiveATRMult > 0 || strategyUsesTieredTPATRClose(sc)
+		if needsATRProtection {
+			if fb, ok := computeFallbackATR(resolvedFillPrice, sc.Leverage); ok {
+				entryATR = fb
+				warnNotifier(notifier, fmt.Sprintf(
+					"[manual-open] %s %s: --atr omitted; using fallback ATR=%.6f (0.1*%.4f/%.2f lev) — pass --atr explicitly for accuracy",
+					strategyID, sc.Symbol, fb, resolvedFillPrice, sc.Leverage))
+			} else {
+				warnNotifier(notifier, fmt.Sprintf(
+					"[manual-open] %s %s: --atr omitted and leverage<=0 — cannot compute fallback; position is NAKED (no ATR-based SL/TP)",
+					strategyID, sc.Symbol))
+			}
+		}
+	}
+
+	// Arm ATR-based stop-loss after fill (separate from the execute call so we
+	// control trigger placement independently of the pct-based SL path).
+	var stopLossOID int64
+	var stopLossTriggerPx float64
 
 	if effectiveATRMult > 0 && entryATR > 0 && !*recordOnly {
 		if *side == "long" {
@@ -225,8 +247,22 @@ func runManualOpen(args []string) int {
 				fmt.Printf("Stop-loss armed at $%.4f (OID=%d)\n", stopLossTriggerPx, stopLossOID)
 			}
 		}
-	} else if effectiveATRMult > 0 && entryATR == 0 {
-		fmt.Fprintln(os.Stderr, "warning: stop_loss_atr_mult is set but --atr was not provided; SL not armed")
+	}
+
+	// Place TP[n] reduce-only orders inline immediately after the fill so the
+	// position is fully protected before the next scheduler cycle.
+	var tpOIDs []int64
+	if !*recordOnly && strategyUsesTieredTPATRClose(sc) && entryATR > 0 {
+		oids, warn, err := placeManualProtectionInline(sc, *side, fillQty, resolvedFillPrice, entryATR, effectiveATRMult, stopLossOID)
+		if err != nil || warn != "" {
+			warnNotifier(notifier, fmt.Sprintf(
+				"[manual-open] %s %s: TP placement issue (position open with SL only): err=%v warn=%s",
+				strategyID, sc.Symbol, err, warn))
+		}
+		tpOIDs = oids
+		if len(oids) > 0 {
+			fmt.Printf("Take-profits armed: OIDs=%v\n", oids)
+		}
 	}
 
 	action := PendingManualAction{
@@ -241,6 +277,7 @@ func runManualOpen(args []string) int {
 		StopLossOID:       stopLossOID,
 		StopLossTriggerPx: stopLossTriggerPx,
 		EntryATR:          entryATR,
+		TPOIDs:            tpOIDs,
 		CreatedAt:         time.Now().UTC(),
 	}
 	if err := stateDB.InsertPendingManualAction(action); err != nil {
@@ -493,6 +530,7 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			OpenedAt:          now,
 			StopLossOID:       a.StopLossOID,
 			StopLossTriggerPx: a.StopLossTriggerPx,
+			TPOIDs:            a.TPOIDs,
 		}
 		pos.TradePositionID = newTradePositionID(a.StrategyID, a.Symbol, now)
 		ss.Positions[a.Symbol] = pos

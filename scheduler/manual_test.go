@@ -474,3 +474,95 @@ func TestManualPositionOwnedByStrategy(t *testing.T) {
 		})
 	}
 }
+
+// TestPendingManualActionTPOIDsRoundtrip verifies that TPOIDs survive an
+// InsertPendingManualAction → LoadPendingManualActions round-trip (#632).
+func TestPendingManualActionTPOIDsRoundtrip(t *testing.T) {
+	db, err := OpenStateDB(":memory:")
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	defer db.Close()
+
+	want := []int64{111, 222, 333}
+	if err := db.InsertPendingManualAction(PendingManualAction{
+		StrategyID: "hl-manual-eth-live", Action: "open", Symbol: "ETH", Side: "long",
+		Quantity: 0.8, FillPrice: 2500, FillFee: 0.35, EntryATR: 12.5,
+		TPOIDs:    want,
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	actions, err := db.LoadPendingManualActions()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	got := actions[0].TPOIDs
+	if len(got) != len(want) {
+		t.Fatalf("TPOIDs len=%d want %d (got=%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("TPOIDs[%d]=%d want %d", i, got[i], want[i])
+		}
+	}
+}
+
+// TestApplyManualAction_OpenSetsTPOIDs verifies that applyManualAction stamps
+// TPOIDs onto the materialised position (#632).
+func TestApplyManualAction_OpenSetsTPOIDs(t *testing.T) {
+	db, err := OpenStateDB(":memory:")
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	defer db.Close()
+
+	stratID := "hl-manual-eth-live"
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			stratID: {
+				ID:        stratID,
+				Type:      "manual",
+				Platform:  "hyperliquid",
+				Positions: map[string]*Position{},
+				Cash:      1000,
+			},
+		},
+	}
+	cfg := &Config{
+		Strategies: []StrategyConfig{{
+			ID: stratID, Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Leverage: 20,
+		}},
+	}
+
+	origRecorder := tradeRecorder
+	tradeRecorder = func(_ string, _ Trade) error { return nil }
+	defer func() { tradeRecorder = origRecorder }()
+
+	wantOIDs := []int64{2001, 2002}
+	_ = db.InsertPendingManualAction(PendingManualAction{
+		StrategyID: stratID, Action: "open", Symbol: "ETH", Side: "long",
+		Quantity: 0.8, FillPrice: 2500, FillFee: 0.875, EntryATR: 12.5,
+		TPOIDs:    wantOIDs,
+		CreatedAt: time.Now().UTC(),
+	})
+
+	drainPendingManualActions(state, cfg, db)
+
+	pos := state.Strategies[stratID].Positions["ETH"]
+	if pos == nil {
+		t.Fatal("expected position after drain")
+	}
+	if len(pos.TPOIDs) != len(wantOIDs) {
+		t.Fatalf("pos.TPOIDs len=%d want %d (got=%v)", len(pos.TPOIDs), len(wantOIDs), pos.TPOIDs)
+	}
+	for i, oid := range wantOIDs {
+		if pos.TPOIDs[i] != oid {
+			t.Errorf("pos.TPOIDs[%d]=%d want %d", i, pos.TPOIDs[i], oid)
+		}
+	}
+}

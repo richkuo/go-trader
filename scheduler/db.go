@@ -210,6 +210,7 @@ CREATE TABLE IF NOT EXISTS pending_manual_actions (
     entry_atr REAL NOT NULL DEFAULT 0,
     realized_pnl REAL NOT NULL DEFAULT 0,
     is_full_close INTEGER NOT NULL DEFAULT 0,
+    tp_oids_json TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 `
@@ -302,6 +303,8 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE positions ADD COLUMN tp2_oid INTEGER NOT NULL DEFAULT 0",
 		// Variable-length per-strategy HL reduce-only take-profit OIDs (#612).
 		"ALTER TABLE positions ADD COLUMN tp_oids_json TEXT NOT NULL DEFAULT ''",
+		// Inline TP OIDs for manual-open actions so the scheduler drain sets pos.TPOIDs (#632).
+		"ALTER TABLE pending_manual_actions ADD COLUMN tp_oids_json TEXT NOT NULL DEFAULT ''",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -1521,7 +1524,8 @@ type PendingManualAction struct {
 	StopLossTriggerPx float64
 	EntryATR          float64
 	RealizedPnL       float64
-	IsFullClose       bool // close-only: operator/scheduler intent flag (avoids tolerance heuristics on the drain side)
+	IsFullClose       bool    // close-only: operator/scheduler intent flag (avoids tolerance heuristics on the drain side)
+	TPOIDs            []int64 // open-only: TP OIDs placed inline at manual-open time (#632)
 	CreatedAt         time.Time
 }
 
@@ -1536,11 +1540,11 @@ func (sdb *StateDB) InsertPendingManualAction(a PendingManualAction) error {
 		isFullClose = 1
 	}
 	_, err := sdb.db.Exec(`INSERT INTO pending_manual_actions
-		(strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, is_full_close, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, is_full_close, tp_oids_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.StrategyID, a.Action, a.Symbol, a.Side, a.Quantity, a.FillPrice, a.FillFee,
 		a.ExchangeOrderID, a.StopLossOID, a.StopLossTriggerPx, a.EntryATR, a.RealizedPnL,
-		isFullClose, formatTime(a.CreatedAt))
+		isFullClose, marshalTPOIDsJSON(a.TPOIDs), formatTime(a.CreatedAt))
 	return err
 }
 
@@ -1549,7 +1553,7 @@ func (sdb *StateDB) LoadPendingManualActions() ([]PendingManualAction, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, nil
 	}
-	rows, err := sdb.db.Query(`SELECT id, strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, COALESCE(is_full_close, 0) AS is_full_close, created_at FROM pending_manual_actions ORDER BY id`)
+	rows, err := sdb.db.Query(`SELECT id, strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, COALESCE(is_full_close, 0) AS is_full_close, COALESCE(tp_oids_json, '') AS tp_oids_json, created_at FROM pending_manual_actions ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("load pending manual actions: %w", err)
 	}
@@ -1559,10 +1563,12 @@ func (sdb *StateDB) LoadPendingManualActions() ([]PendingManualAction, error) {
 		var a PendingManualAction
 		var createdStr string
 		var isFullCloseInt int
-		if err := rows.Scan(&a.ID, &a.StrategyID, &a.Action, &a.Symbol, &a.Side, &a.Quantity, &a.FillPrice, &a.FillFee, &a.ExchangeOrderID, &a.StopLossOID, &a.StopLossTriggerPx, &a.EntryATR, &a.RealizedPnL, &isFullCloseInt, &createdStr); err != nil {
+		var tpOIDsJSON string
+		if err := rows.Scan(&a.ID, &a.StrategyID, &a.Action, &a.Symbol, &a.Side, &a.Quantity, &a.FillPrice, &a.FillFee, &a.ExchangeOrderID, &a.StopLossOID, &a.StopLossTriggerPx, &a.EntryATR, &a.RealizedPnL, &isFullCloseInt, &tpOIDsJSON, &createdStr); err != nil {
 			return nil, fmt.Errorf("scan pending manual action: %w", err)
 		}
 		a.IsFullClose = isFullCloseInt != 0
+		a.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
 		a.CreatedAt = parseTime(createdStr)
 		actions = append(actions, a)
 	}
