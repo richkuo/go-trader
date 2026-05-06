@@ -2029,4 +2029,30 @@ func TestStampOpenTradeFromPosition(t *testing.T) {
 	if s3.TradeHistory[0].EntryATR != 0 {
 		t.Error("nil pos should be a no-op")
 	}
+
+	// (e) updates the persisted SQLite row for the already-inserted open trade.
+	db, err := OpenStateDB(":memory:")
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	defer db.Close()
+	ts := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	s4 := &StrategyState{ID: "s4", TradeHistory: []Trade{
+		{Symbol: "ETH", IsClose: false, EntryATR: 0, StopLossTriggerPx: 0, Timestamp: ts},
+	}}
+	if err := db.InsertTrade(s4.ID, s4.TradeHistory[0]); err != nil {
+		t.Fatalf("InsertTrade: %v", err)
+	}
+	stampOpenTradeFromPosition(s4, db, "ETH", &Position{EntryATR: 250.0, StopLossTriggerPx: 2950.0})
+
+	var entryATR, stopLossTriggerPx float64
+	if err := db.db.QueryRow(
+		`SELECT entry_atr, stop_loss_trigger_px FROM trades WHERE strategy_id = ? AND timestamp = ?`,
+		s4.ID, formatTime(ts),
+	).Scan(&entryATR, &stopLossTriggerPx); err != nil {
+		t.Fatalf("query stamped trade: %v", err)
+	}
+	if entryATR != 250.0 || stopLossTriggerPx != 2950.0 {
+		t.Fatalf("persisted EntryATR/StopLossTriggerPx = %v/%v, want 250/2950", entryATR, stopLossTriggerPx)
+	}
 }

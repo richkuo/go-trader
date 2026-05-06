@@ -1434,6 +1434,7 @@ func main() {
 										}
 									} else if newTrigger > 0 && pos.StopLossTriggerPx == 0 {
 										pos.StopLossTriggerPx = newTrigger
+										stampOpenTradeFromPosition(stratState, stateDB, result.Symbol, pos)
 										logger.Info("Paper fixed ATR SL armed @ $%.4f (%.2f%% from entry $%.4f)",
 											newTrigger, effectiveFixedStopLossATRPct(sc, hlPosSnapshot), pos.AvgCost)
 									}
@@ -1455,6 +1456,7 @@ func main() {
 											} else if slResult.StopLossOID > 0 {
 												pos.StopLossOID = slResult.StopLossOID
 												pos.StopLossTriggerPx = slResult.StopLossTriggerPx
+												stampOpenTradeFromPosition(stratState, stateDB, result.Symbol, pos)
 												logger.Info("Fixed ATR SL armed oid=%d @ $%.4f", slResult.StopLossOID, slResult.StopLossTriggerPx)
 											}
 										}
