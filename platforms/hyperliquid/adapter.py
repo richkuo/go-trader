@@ -427,7 +427,9 @@ class HyperliquidExchangeAdapter:
         )
 
     def floor_size(self, symbol: str, sz: float) -> float:
-        """Return sz floored to the asset's lot precision — mirrors place_take_profit_limit."""
+        """Exposes the same lot-precision flooring `place_take_profit_limit`
+        applies internally, so callers can pre-compute the on-chain size each
+        tier will occupy and absorb the remainder into a final tier."""
         sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3) if self._info else 3
         return _floor_size(sz, sz_decimals)
 

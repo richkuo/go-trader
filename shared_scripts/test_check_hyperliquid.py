@@ -3,6 +3,7 @@
 import sys
 import os
 import json
+import math
 import importlib.util
 from unittest.mock import MagicMock, patch
 from io import StringIO
@@ -670,6 +671,10 @@ class TestSyncProtection:
             set() if open_oids is None else set(open_oids)
         )
         mock_adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 4)
+        # ETH on HL has sz_decimals=3.  Match the real adapter's behavior so
+        # the new round-then-floor tier sizing logic exercises real lot math.
+        mock_adapter.round_size.side_effect = lambda _sym, sz: round(sz, 3)
+        mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000) / 1000
 
         fills = fill_lookup_by_oid or {}
 
@@ -868,6 +873,8 @@ class TestSyncProtection:
         mock_adapter_cls.return_value = mock_adapter
         mock_adapter.open_order_oids.side_effect = RuntimeError("indexer down")
         mock_adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 4)
+        mock_adapter.round_size.side_effect = lambda _sym, sz: round(sz, 3)
+        mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000) / 1000
 
         captured = StringIO()
         import builtins
@@ -892,3 +899,143 @@ class TestSyncProtection:
         # No re-placements issued — existing OIDs are left alone.
         mock_adapter.place_take_profit_limit.assert_not_called()
         mock_adapter.place_stop_loss.assert_not_called()
+
+    def test_floor_residual_absorbed_by_final_tier(self):
+        """#628 issue 1: at sz_decimals=3 a 0.003 ETH virtual qty with 50/50
+        tiers must place 0.001 + 0.002, NOT 0.001 + 0.001 (which would strand
+        0.001 ETH uncovered for the life of the position)."""
+        out, adapter = self._run_sync(
+            size=0.003,
+            tp_tiers=[
+                {"atr_multiple": 1.0, "close_fraction": 0.5},
+                {"atr_multiple": 2.0, "close_fraction": 1.0},
+            ],
+            tp_oids=[0, 0],
+            open_oids=set(),
+        )
+        assert out["tp_oids"]
+        sizes = [call.args[1] for call in adapter.place_take_profit_limit.call_args_list]
+        assert sizes == pytest.approx([0.001, 0.002])
+        assert sum(sizes) == pytest.approx(0.003)
+
+    def test_float_drift_below_lot_boundary_normalizes(self):
+        """#628 issue 2: Go's `pos.Quantity -= closeQty` can produce values
+        like 0.011 - 0.010 = 0.0009999999999999992.  round_size must lift
+        this back to 0.001 so the tier loop places a real reduce-only
+        order rather than failing with `Size floored to zero`."""
+        drifted = 0.011 - 0.010  # 0.0009999999999999992
+        assert drifted < 0.001  # confirm we're testing the drift case
+        out, adapter = self._run_sync(
+            size=drifted,
+            tp_tiers=[
+                {"atr_multiple": 1.0, "close_fraction": 0.5},
+                {"atr_multiple": 2.0, "close_fraction": 1.0},
+            ],
+            tp_oids=[0, 0],
+            open_oids=set(),
+        )
+        # At 0.001 lot with sz_decimals=3, tier 1 floors to 0 (skipped) and
+        # tier 2 absorbs the full 0.001 remainder.
+        assert out["tp_oids"]
+        sizes = [call.args[1] for call in adapter.place_take_profit_limit.call_args_list]
+        assert sum(sizes) == pytest.approx(0.001)
+
+    def test_size_rounds_to_zero_skips_tier_block(self):
+        """When the virtual qty rounds below one lot, no TPs should be placed
+        and the output must not carry stale tp_oids/tp_pxs (#628 review #4)."""
+        out, adapter = self._run_sync(
+            size=0.0004,  # rounds to 0 at sz_decimals=3
+            tp_tiers=[
+                {"atr_multiple": 1.0, "close_fraction": 0.5},
+                {"atr_multiple": 2.0, "close_fraction": 1.0},
+            ],
+            tp_oids=[0, 0],
+            open_oids=set(),
+        )
+        adapter.place_take_profit_limit.assert_not_called()
+        assert "tp_oids" not in out
+        assert "tp_pxs" not in out
+
+    def test_three_tier_non_uniform_flooring_zero_residual(self):
+        """Multi-tier non-uniform fractions where each tier's `size*fraction`
+        truncates differently — final tier must still cover the lot-aligned
+        remainder so `sum(tier_sizes) == floor(size)`."""
+        out, adapter = self._run_sync(
+            size=0.007,
+            tp_tiers=[
+                {"atr_multiple": 1.0, "close_fraction": 0.3},
+                {"atr_multiple": 2.0, "close_fraction": 0.6},
+                {"atr_multiple": 3.0, "close_fraction": 1.0},
+            ],
+            tp_oids=[0, 0, 0],
+            open_oids=set(),
+        )
+        assert out["tp_oids"]
+        sizes = [call.args[1] for call in adapter.place_take_profit_limit.call_args_list]
+        # 0.007 * 0.3 = 0.0021 → floor 0.002; 0.007 * 0.3 = 0.0021 → floor 0.002;
+        # final = 0.007 - (0.002 + 0.002) = 0.003.  No residual stranded.
+        assert sum(sizes) == pytest.approx(0.007)
+
+
+class TestComputeTPTierSizes:
+    """#628 review #3: pure helper for per-tier reduce-only sizing.  Exercises
+    the same flooring math as run_sync_protection without needing the full
+    sync-protection plumbing or adapter mocks."""
+
+    @staticmethod
+    def _floor3(sz):
+        """sz_decimals=3 (matches ETH on Hyperliquid)."""
+        return math.floor(sz * 1000) / 1000
+
+    def _load(self):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_zero_size_returns_zero_sizes(self):
+        mod = self._load()
+        sizes = mod.compute_tp_tier_sizes(0.0, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
+        assert sizes == [0.0, 0.0]
+
+    def test_negative_size_returns_zero_sizes(self):
+        mod = self._load()
+        sizes = mod.compute_tp_tier_sizes(-0.5, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
+        assert sizes == [0.0, 0.0]
+
+    def test_empty_tiers_returns_empty(self):
+        mod = self._load()
+        assert mod.compute_tp_tier_sizes(1.0, [], self._floor3) == []
+
+    def test_two_tier_5050_split_zero_residual(self):
+        """0.003 / [0.5, 1.0] / sz_decimals=3 → [0.001, 0.002], NOT [0.001, 0.001]."""
+        mod = self._load()
+        sizes = mod.compute_tp_tier_sizes(0.003, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
+        assert sizes == pytest.approx([0.001, 0.002])
+        assert sum(sizes) == pytest.approx(0.003)
+
+    def test_final_tier_absorbs_subdivided_floor_loss(self):
+        """3 tiers, fractions that don't divide evenly into size."""
+        mod = self._load()
+        # 0.007 / [0.3, 0.6, 1.0]: floors are [0.002, 0.002, remainder=0.003]
+        sizes = mod.compute_tp_tier_sizes(
+            0.007, [(1.0, 0.3), (2.0, 0.6), (3.0, 1.0)], self._floor3
+        )
+        assert sizes == pytest.approx([0.002, 0.002, 0.003])
+        assert sum(sizes) == pytest.approx(0.007)
+
+    def test_lot_aligned_size_preserves_exact_split(self):
+        """Lot-aligned size with even fraction → no residual to absorb."""
+        mod = self._load()
+        sizes = mod.compute_tp_tier_sizes(10.0, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
+        assert sizes == pytest.approx([5.0, 5.0])
+
+    def test_final_tier_below_one_uses_floored_remainder(self):
+        """When the helper is fed a normalized [(_, 0.5), (_, 0.7)] (final
+        coerced to 1.0 by _normalize_tp_tiers, but the helper itself accepts
+        any cumulative shape), the final tier still gets the floored remainder."""
+        mod = self._load()
+        # Use 1.0 final like the real normalizer produces.
+        sizes = mod.compute_tp_tier_sizes(0.5, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
+        assert sum(sizes) == pytest.approx(0.5)
+        assert sizes[0] == pytest.approx(0.25)
+        assert sizes[1] == pytest.approx(0.25)
