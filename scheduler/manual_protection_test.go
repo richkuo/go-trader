@@ -175,3 +175,22 @@ func TestAttemptManualOpenCleanup_FiltersZeroOIDs(t *testing.T) {
 		t.Errorf("cancelOIDs should filter zeros; got %v want [67891]", gotCancelOIDs)
 	}
 }
+
+// TestAttemptManualOpenCleanup_NilResultNoError: a broken stub returning
+// (nil, "", nil) must not report false success — guarded by the nil check.
+func TestAttemptManualOpenCleanup_NilResultNoError(t *testing.T) {
+	orig := manualOpenCleanupCloseFn
+	defer func() { manualOpenCleanupCloseFn = orig }()
+
+	manualOpenCleanupCloseFn = func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, string, error) {
+		return nil, "", nil
+	}
+
+	cleanedUp, msg := attemptManualOpenCleanup("ETH", 0.8, 12345, nil)
+	if cleanedUp {
+		t.Fatalf("expected cleanedUp=false for nil result, got msg=%q", msg)
+	}
+	if !strings.Contains(msg, "nil") {
+		t.Errorf("msg should mention nil result; got %q", msg)
+	}
+}

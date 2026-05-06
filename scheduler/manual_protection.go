@@ -112,10 +112,10 @@ func attemptManualOpenCleanup(symbol string, fillQty float64, stopLossOID int64,
 	if err != nil {
 		return false, fmt.Sprintf("close failed: %v", err)
 	}
-	if result != nil && result.Error != "" {
-		return false, fmt.Sprintf("close error: %s", result.Error)
+	if result == nil {
+		return false, "cleanup close returned nil result"
 	}
-	if result != nil && result.CancelStopLossError != "" {
+	if result.CancelStopLossError != "" {
 		return true, fmt.Sprintf("position closed but trigger cancel reported: %s", result.CancelStopLossError)
 	}
 	return true, "position flattened and orphan triggers cancelled"
