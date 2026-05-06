@@ -1957,3 +1957,81 @@ func TestValidateConfigManualPerpsPeerLeverageMismatchRejected(t *testing.T) {
 		t.Fatalf("expected leverage peer error, got: %v", err)
 	}
 }
+
+// TestValidateConfigManualPerpsPeerMarginModeMismatchRejected covers the
+// type-set widening in hyperliquidPeerStrategyErrors (#619/#620): manual peers
+// must share margin_mode with co-resident perps peers because HL aggregates
+// per coin per account.
+func TestValidateConfigManualPerpsPeerMarginModeMismatchRejected(t *testing.T) {
+	cfg := Config{
+		Strategies: []StrategyConfig{
+			{
+				ID:             "hl-manual-eth",
+				Type:           "manual",
+				Platform:       "hyperliquid",
+				Symbol:         "ETH",
+				Timeframe:      "1h",
+				Leverage:       5,
+				MarginMode:     "isolated",
+				Capital:        1000,
+				MaxDrawdownPct: 60,
+			},
+			{
+				ID:             "hl-perps-eth-live",
+				Type:           "perps",
+				Platform:       "hyperliquid",
+				Script:         "shared_scripts/check_hyperliquid.py",
+				Args:           []string{"sma_crossover", "ETH", "1h", "--mode=paper"},
+				Capital:        1000,
+				Leverage:       5,
+				MarginMode:     "cross",
+				MaxDrawdownPct: 60,
+			},
+		},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	err := ValidateConfig(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "disagree on margin_mode") {
+		t.Fatalf("expected margin_mode peer error, got: %v", err)
+	}
+}
+
+// TestValidateConfigManualPerpsMultipleTrailingStopOwnersRejected verifies the
+// trailing-stop owner guard now spans manual+perps peers (#619/#620): only one
+// peer per coin may own a trailing stop because the cancel/replace cycle races
+// on the shared on-chain position.
+func TestValidateConfigManualPerpsMultipleTrailingStopOwnersRejected(t *testing.T) {
+	manualTrailing := 1.5
+	perpsTrailingPct := 0.02
+	cfg := Config{
+		Strategies: []StrategyConfig{
+			{
+				ID:                  "hl-manual-eth",
+				Type:                "manual",
+				Platform:            "hyperliquid",
+				Symbol:              "ETH",
+				Timeframe:           "1h",
+				Leverage:            5,
+				Capital:             1000,
+				MaxDrawdownPct:      60,
+				TrailingStopATRMult: &manualTrailing,
+			},
+			{
+				ID:              "hl-perps-eth-live",
+				Type:            "perps",
+				Platform:        "hyperliquid",
+				Script:          "shared_scripts/check_hyperliquid.py",
+				Args:            []string{"sma_crossover", "ETH", "1h", "--mode=paper"},
+				Capital:         1000,
+				Leverage:        5,
+				MaxDrawdownPct:  60,
+				TrailingStopPct: &perpsTrailingPct,
+			},
+		},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	err := ValidateConfig(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "multiple trailing-stop owners") {
+		t.Fatalf("expected trailing-stop peer error, got: %v", err)
+	}
+}

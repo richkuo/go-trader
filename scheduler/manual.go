@@ -361,6 +361,14 @@ func runManualClose(args []string) int {
 		fmt.Fprintf(os.Stderr, "error from HL: %s\n", execResult.Error)
 		return 1
 	}
+	// Cancel failures are non-fatal but leave reduce-only OIDs resting
+	// on-chain after the strategy is virtually flat — surface them so the
+	// operator can verify TP/SL state on HL.
+	if execResult.CancelStopLossError != "" {
+		fmt.Fprintf(os.Stderr,
+			"warning: manual close cancel failed (non-fatal) for %s/%s: %s (sl_oid=%d tp_oids=%v) — verify HL on-chain triggers\n",
+			strategyID, sc.Symbol, execResult.CancelStopLossError, cancelOID, extraCancelOIDs)
+	}
 
 	fill := execResult.Execution
 	if fill == nil || fill.Fill == nil {
