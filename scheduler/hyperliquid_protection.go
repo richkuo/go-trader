@@ -116,7 +116,7 @@ func parseHLProtectionTiers(raw interface{}) []hlProtectionTier {
 		}
 		tiers = append(tiers, hlProtectionTier{Multiple: multiple, Fraction: fraction})
 	}
-	sort.Slice(tiers, func(i, j int) bool { return tiers[i].Multiple < tiers[j].Multiple })
+	sort.SliceStable(tiers, func(i, j int) bool { return tiers[i].Multiple < tiers[j].Multiple })
 	return tiers
 }
 
@@ -258,7 +258,9 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 	// Clear stale TP OIDs after applying the latest echoed/placed OID list.
 	// The reconciler will book externally-filled closes; here we only stop
 	// pointing at dead OIDs that would otherwise be re-placed against stale
-	// virtual quantity (#604 review #1).
+	// virtual quantity (#604 review #1). Python already zeros the echoed
+	// tiered list; this keeps the Go state defensive for legacy or partial
+	// script responses.
 	if len(result.TPFilledExternally) > 0 {
 		if len(pos.TPOIDs) < len(result.TPFilledExternally) {
 			pos.TPOIDs = tpOIDsForTierCount(pos.TPOIDs, len(result.TPFilledExternally))

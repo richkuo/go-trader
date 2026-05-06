@@ -312,6 +312,29 @@ func TestHyperliquidProtectionTiersRejectsNonIncreasingAfterSort(t *testing.T) {
 	}
 }
 
+func TestHyperliquidProtectionTiersPreservesDuplicateMultipleOrder(t *testing.T) {
+	sc := StrategyConfig{
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		CloseStrategies: []string{"tiered_tp_atr_live"},
+		Params: map[string]interface{}{
+			"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.4},
+				map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.6},
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.9},
+			},
+		},
+	}
+	want := []hlProtectionTier{
+		{Multiple: 1, Fraction: 0.4},
+		{Multiple: 1, Fraction: 0.6},
+		{Multiple: 2, Fraction: 1},
+	}
+	if got := hyperliquidProtectionTiers(sc); !reflect.DeepEqual(got, want) {
+		t.Errorf("tiers = %+v, want stable duplicate-multiple order %+v", got, want)
+	}
+}
+
 func TestHyperliquidProtectionTiersRejectsSingleTier(t *testing.T) {
 	sc := StrategyConfig{
 		Type:            "perps",
