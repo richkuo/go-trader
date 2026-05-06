@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -82,4 +83,95 @@ func TestPlaceManualProtectionInline_TPErrorsSurface(t *testing.T) {
 func TestWarnNotifier_NilNotifier(t *testing.T) {
 	// Should not panic when notifier is nil.
 	warnNotifier(nil, "test warning")
+}
+
+// TestAttemptManualOpenCleanup_Success covers the happy path: queue insert
+// failed, cleanup close succeeded, SL+TPs cancelled in one shot.
+func TestAttemptManualOpenCleanup_Success(t *testing.T) {
+	orig := manualOpenCleanupCloseFn
+	defer func() { manualOpenCleanupCloseFn = orig }()
+
+	var gotSymbol string
+	var gotSize *float64
+	var gotCancelOIDs []int64
+	manualOpenCleanupCloseFn = func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, string, error) {
+		gotSymbol = symbol
+		gotSize = partialSz
+		gotCancelOIDs = cancelOIDs
+		return &HyperliquidCloseResult{}, "", nil
+	}
+
+	cleanedUp, msg := attemptManualOpenCleanup("ETH", 0.8, 12345, []int64{67890, 67891})
+	if !cleanedUp {
+		t.Fatalf("expected cleanedUp=true, got msg=%q", msg)
+	}
+	if gotSymbol != "ETH" {
+		t.Errorf("symbol: got %q want ETH", gotSymbol)
+	}
+	if gotSize == nil || *gotSize != 0.8 {
+		t.Errorf("partialSz: got %v want 0.8", gotSize)
+	}
+	if len(gotCancelOIDs) != 3 || gotCancelOIDs[0] != 12345 || gotCancelOIDs[1] != 67890 || gotCancelOIDs[2] != 67891 {
+		t.Errorf("cancelOIDs: got %v want [12345 67890 67891]", gotCancelOIDs)
+	}
+}
+
+// TestAttemptManualOpenCleanup_CloseFails covers the worst-case path where the
+// recovery close itself fails — operator must be alerted that intervention is
+// required because both fill ownership and cleanup failed.
+func TestAttemptManualOpenCleanup_CloseFails(t *testing.T) {
+	orig := manualOpenCleanupCloseFn
+	defer func() { manualOpenCleanupCloseFn = orig }()
+
+	manualOpenCleanupCloseFn = func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, string, error) {
+		return nil, "stderr noise", fmt.Errorf("rpc timeout")
+	}
+
+	cleanedUp, msg := attemptManualOpenCleanup("ETH", 0.8, 12345, []int64{67890})
+	if cleanedUp {
+		t.Fatalf("expected cleanedUp=false, got msg=%q", msg)
+	}
+	if !strings.Contains(msg, "rpc timeout") {
+		t.Errorf("msg should mention close failure cause; got %q", msg)
+	}
+}
+
+// TestAttemptManualOpenCleanup_CancelStopLossError: position closed but the
+// inline trigger cancel reported an error — partial success: position is
+// flat (good) but some triggers may persist (operator should verify).
+func TestAttemptManualOpenCleanup_CancelStopLossError(t *testing.T) {
+	orig := manualOpenCleanupCloseFn
+	defer func() { manualOpenCleanupCloseFn = orig }()
+
+	manualOpenCleanupCloseFn = func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, string, error) {
+		return &HyperliquidCloseResult{CancelStopLossError: "trigger 12345 not found"}, "", nil
+	}
+
+	cleanedUp, msg := attemptManualOpenCleanup("ETH", 0.8, 12345, nil)
+	if !cleanedUp {
+		t.Fatalf("expected cleanedUp=true (position closed), got msg=%q", msg)
+	}
+	if !strings.Contains(msg, "trigger 12345 not found") {
+		t.Errorf("msg should surface cancel error; got %q", msg)
+	}
+}
+
+// TestAttemptManualOpenCleanup_FiltersZeroOIDs: zero/unset OIDs must not be
+// passed to the cancel list — close_hyperliquid_position.py would otherwise
+// reject the request.
+func TestAttemptManualOpenCleanup_FiltersZeroOIDs(t *testing.T) {
+	orig := manualOpenCleanupCloseFn
+	defer func() { manualOpenCleanupCloseFn = orig }()
+
+	var gotCancelOIDs []int64
+	manualOpenCleanupCloseFn = func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, string, error) {
+		gotCancelOIDs = cancelOIDs
+		return &HyperliquidCloseResult{}, "", nil
+	}
+
+	// SL OID = 0 (not placed) and one TP OID = 0 (placement failed for one tier).
+	attemptManualOpenCleanup("ETH", 0.8, 0, []int64{0, 67891})
+	if len(gotCancelOIDs) != 1 || gotCancelOIDs[0] != 67891 {
+		t.Errorf("cancelOIDs should filter zeros; got %v want [67891]", gotCancelOIDs)
+	}
 }

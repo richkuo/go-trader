@@ -78,6 +78,49 @@ func placeManualProtectionInline(
 	return result.TPOIDs, strings.Join(formatProtectionSyncWarnings(result), "; "), nil
 }
 
+// manualOpenCleanupCloseFn is the close path used by attemptManualOpenCleanup.
+// Exposed as a package var so tests can stub without spawning Python (#634).
+var manualOpenCleanupCloseFn = func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, string, error) {
+	return RunHyperliquidClose(hyperliquidLiveCloseScript, symbol, partialSz, cancelOIDs)
+}
+
+// attemptManualOpenCleanup tries to flatten a position that was just opened by
+// manual-open and cancel its protective triggers, after a fatal error
+// (typically pending-action queue insert failure) prevented the scheduler from
+// adopting the position. Without this, the next reconcile cycle would see an
+// unowned on-chain position with orphaned reduce-only SL/TP orders (#634).
+//
+// Sized to fillQty (not the full on-chain position) so a peer manual/perps
+// position on the same coin is preserved. Returns (cleanedUp, msg) where msg
+// is suitable for inclusion in an operator notification.
+func attemptManualOpenCleanup(symbol string, fillQty float64, stopLossOID int64, tpOIDs []int64) (bool, string) {
+	cancelOIDs := make([]int64, 0, 1+len(tpOIDs))
+	if stopLossOID > 0 {
+		cancelOIDs = append(cancelOIDs, stopLossOID)
+	}
+	for _, oid := range tpOIDs {
+		if oid > 0 {
+			cancelOIDs = append(cancelOIDs, oid)
+		}
+	}
+
+	sz := fillQty
+	result, stderr, err := manualOpenCleanupCloseFn(symbol, &sz, cancelOIDs)
+	if stderr != "" {
+		fmt.Fprintf(os.Stderr, "[manual-open cleanup] close stderr: %s\n", stderr)
+	}
+	if err != nil {
+		return false, fmt.Sprintf("close failed: %v", err)
+	}
+	if result != nil && result.Error != "" {
+		return false, fmt.Sprintf("close error: %s", result.Error)
+	}
+	if result != nil && result.CancelStopLossError != "" {
+		return true, fmt.Sprintf("position closed but trigger cancel reported: %s", result.CancelStopLossError)
+	}
+	return true, "position flattened and orphan triggers cancelled"
+}
+
 // warnNotifier writes msg to stderr and, when the notifier has backends, also
 // broadcasts to all channels and fires an owner DM.
 func warnNotifier(notifier *MultiNotifier, msg string) {

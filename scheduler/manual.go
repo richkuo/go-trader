@@ -283,7 +283,26 @@ func runManualOpen(args []string) int {
 		CreatedAt:         time.Now().UTC(),
 	}
 	if err := stateDB.InsertPendingManualAction(action); err != nil {
-		fmt.Fprintf(os.Stderr, "error queuing action: %v\n", err)
+		// On-chain fill (and SL/TPs) succeeded but the queue insert failed —
+		// the scheduler will never adopt this position, so reconcile would see
+		// an unowned on-chain position with orphaned reduce-only triggers.
+		// Skip cleanup in --record-only because the operator's pre-existing
+		// fill is theirs to manage; we never placed those on-chain orders.
+		if *recordOnly {
+			fmt.Fprintf(os.Stderr, "error queuing action: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "CRITICAL: queue insert failed (%v); on-chain position is open but the scheduler cannot adopt it. Attempting cleanup...\n", err)
+		cleanedUp, cleanupMsg := attemptManualOpenCleanup(sc.Symbol, fillQty, stopLossOID, tpOIDs)
+		if cleanedUp {
+			warnNotifier(notifier, fmt.Sprintf(
+				"[manual-open] %s %s: queue insert failed (%v); position auto-flattened: %s",
+				strategyID, sc.Symbol, err, cleanupMsg))
+		} else {
+			warnNotifier(notifier, fmt.Sprintf(
+				"[manual-open] %s %s: queue insert failed (%v) AND auto-flatten failed: %s — MANUAL INTERVENTION REQUIRED on HL UI (side=%s qty=%.6f sl_oid=%d tp_oids=%v)",
+				strategyID, sc.Symbol, err, cleanupMsg, *side, fillQty, stopLossOID, tpOIDs))
+		}
 		return 1
 	}
 
