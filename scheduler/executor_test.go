@@ -644,6 +644,33 @@ func TestBuildHyperliquidExecuteArgs_SizedClose(t *testing.T) {
 	}
 }
 
+// Full close with extraCancelOIDs must forward all TP OIDs as
+// --cancel-stop-loss-oid flags (mirrors the posQty>0 && !partialClose gate in
+// main.go that cancels TP1/TP2 on a full or flip close).
+func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsFullClose(t *testing.T) {
+	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, true, 111, 222)
+
+	for _, want := range []string{"--cancel-stop-loss-oid=111", "--cancel-stop-loss-oid=222"} {
+		if !argsContains(args, want) {
+			t.Errorf("expected %q in argv on full close, got %v", want, args)
+		}
+	}
+}
+
+// Partial close: extraCancelOIDs is omitted at the call site (mirrors the
+// partialClose=true gate in main.go), so TP OIDs must NOT appear in argv.
+func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsPartialClose(t *testing.T) {
+	// No extraCancelOIDs passed — matches what runHyperliquidExecuteOrder does on
+	// a partial close.
+	args := buildHyperliquidExecuteArgs("ETH", "sell", 0.5, 0, 0, 0, "", 0, false)
+
+	for _, notWant := range []string{"--cancel-stop-loss-oid=111", "--cancel-stop-loss-oid=222"} {
+		if argsContains(args, notWant) {
+			t.Errorf("expected %q to be absent on partial close, got %v", notWant, args)
+		}
+	}
+}
+
 // Optional flags should be conditionally present.
 func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
 	t.Run("no optional flags", func(t *testing.T) {
