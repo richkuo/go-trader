@@ -1098,12 +1098,18 @@ func runPendingHyperliquidCircuitCloses(
 		return
 	}
 
-	// Build the live HL perps roster from strategies — needed for both the
-	// stuck-CB recovery path and the shared-coin weight computation.
+	// Build the live HL perps roster from strategies — needed for actual
+	// circuit-breaker close work. Build a wider perps+manual peer scope for
+	// shared-coin safety checks so a perps CB never closes a manual peer's
+	// wallet exposure (#620).
 	var hlLiveAll []StrategyConfig
+	var hlCircuitPeerAll []StrategyConfig
 	for _, sc := range strategies {
 		if sc.Platform == "hyperliquid" && sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
 			hlLiveAll = append(hlLiveAll, sc)
+		}
+		if isHLLiveReconcilable(sc) {
+			hlCircuitPeerAll = append(hlCircuitPeerAll, sc)
 		}
 	}
 
@@ -1125,8 +1131,8 @@ func runPendingHyperliquidCircuitCloses(
 		if ss == nil {
 			continue
 		}
-		sym := hyperliquidSymbol(sc.Args)
-		if sym == "" || len(hlLiveStrategiesForCoin(sym, hlLiveAll)) > 1 {
+		sym := hyperliquidConfiguredCoin(sc)
+		if sym == "" || len(hlLiveStrategiesForCoin(sym, hlCircuitPeerAll)) > 1 {
 			continue
 		}
 		if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) == nil && ss.RiskState.CircuitBreaker {
@@ -1175,7 +1181,7 @@ func runPendingHyperliquidCircuitCloses(
 			if sym == "" {
 				continue
 			}
-			qty, ok := computeHyperliquidCircuitCloseQty(sym, sc.ID, positions, hlLiveAll)
+			qty, ok := computeHyperliquidCircuitCloseQty(sym, sc.ID, positions, hlCircuitPeerAll)
 			if !ok || qty <= 0 {
 				continue
 			}
@@ -1247,7 +1253,7 @@ func runPendingHyperliquidCircuitCloses(
 			mu.Unlock()
 			continue
 		}
-		if sym := hyperliquidSymbol(sc.Args); sym != "" && len(hlLiveStrategiesForCoin(sym, hlLiveAll)) > 1 {
+		if sym := hyperliquidConfiguredCoin(*sc); sym != "" && len(hlLiveStrategiesForCoin(sym, hlCircuitPeerAll)) > 1 {
 			fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s shares the wallet position with peers — clearing pending close and leaving exchange position untouched\n",
 				j.stratID, sym)
 			mu.Lock()

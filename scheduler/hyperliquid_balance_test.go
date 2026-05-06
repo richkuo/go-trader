@@ -2189,6 +2189,20 @@ func TestComputeHyperliquidCircuitCloseQty_SharedCoinSkipped(t *testing.T) {
 	}
 }
 
+func TestComputeHyperliquidCircuitCloseQty_ManualPeerSharedCoinSkipped(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-manual-eth", Platform: "hyperliquid", Type: "manual", Symbol: "ETH",
+			Args: []string{"hold", "ETH", "1h", "--mode=live"}},
+	}
+	pos := []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}}
+	q, ok := computeHyperliquidCircuitCloseQty("ETH", "hl-a", pos, hlLive)
+	if ok || q != 0 {
+		t.Fatalf("manual peer on shared Hyperliquid coin must not enqueue a per-strategy close; qty=%.6f ok=%v", q, ok)
+	}
+}
+
 func TestComputeHyperliquidCircuitCloseQty_MixedUnitsSharedCoinSkipped(t *testing.T) {
 	hlLive := []StrategyConfig{
 		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5,
@@ -2412,6 +2426,60 @@ func TestRunPendingHyperliquidCircuitCloses_SharedCoinClearsPendingWithoutClose(
 	}
 	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
 		t.Fatal("expected stale shared-coin pending close to be cleared")
+	}
+}
+
+func TestRunPendingHyperliquidCircuitCloses_ManualPeerClearsPendingWithoutClose(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID: "hl-a",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseHyperliquid: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.1}},
+						},
+					},
+				},
+			},
+			"hl-manual-eth": {ID: "hl-manual-eth"},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-manual-eth", Platform: "hyperliquid", Type: "manual", Symbol: "ETH",
+			Args: []string{"hold", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		calls = append(calls, sym)
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.1, AvgPx: 1}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+
+	runPendingHyperliquidCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		"0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 1}},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+		nil,
+	)
+
+	if len(calls) != 0 {
+		t.Fatalf("expected no closer calls when perps CB has a manual peer; got %v", calls)
+	}
+	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
+		t.Fatal("expected stale manual-peer pending close to be cleared")
 	}
 }
 
