@@ -513,12 +513,22 @@ def run_sync_protection(
             tp_fills = [None] * len(tiers)
             tp_filled_immediately = [False] * len(tiers)
             prev_fraction = 0.0
+            placed_size_total = 0.0
 
             for idx, (atr_mult, cumulative_fraction) in enumerate(tiers):
                 raw_px = avg_cost + atr_mult * entry_atr if side == "long" else avg_cost - atr_mult * entry_atr
                 rounded_px = adapter.round_perps_trigger_px(symbol, raw_px)
                 tp_pxs.append(rounded_px)
-                tier_size = size * max(cumulative_fraction - prev_fraction, 0.0)
+                is_final_tier = idx == len(tiers) - 1
+                if is_final_tier:
+                    # Use exact remainder so per-tier flooring doesn't leave a
+                    # residual position uncovered after all TPs fill.
+                    tier_size = max(size - placed_size_total, 0.0)
+                else:
+                    tier_size = size * max(cumulative_fraction - prev_fraction, 0.0)
+                    # Accumulate the floored amount so the final tier gets the
+                    # exact residual, not the fractional one.
+                    placed_size_total += adapter.floor_size(symbol, tier_size)
                 prev_fraction = cumulative_fraction
                 prev_oid = int(existing_tp_oids[idx]) if idx < len(existing_tp_oids) else 0
 
