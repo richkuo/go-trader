@@ -340,14 +340,13 @@ const DefaultStopLossATRMult = 1.0
 //  3. Explicit TrailingStopPct (nil → fall through; explicit 0 → disabled).
 //  4. Explicit StopLossPct (nil → fall through; explicit 0 → disabled).
 //  5. StopLossMarginPct / Leverage (nil → fall through; explicit 0 → disabled).
-//  6. MaxDrawdownPct as a fallback so a sole-owner HL perps strategy with a
-//     configured drawdown automatically gets exchange-side protection. Capped
-//     at MaxAutoStopLossPct. Only applies to single-strategy coins because
-//     LoadConfig normalizes non-owner omitted stop_loss_* / trailing_stop_*
-//     fields to explicit 0 for same-coin HL peer strategies (#494/#605).
-//     LoadConfig also defaults all-five-omitted HL perps strategies to
-//     Config.DefaultStopLossATRMult (#562/#605), so this fallback is rarely
-//     reached in practice.
+//  6. MaxDrawdownPct as a fallback for any HL perps strategy where all five
+//     stop fields are nil. Capped at MaxAutoStopLossPct. Rarely reached in
+//     practice because LoadConfig defaults all-five-omitted strategies
+//     (including shared-coin peers since #601) to Config.DefaultStopLossATRMult
+//     (#562/#605); only strategies that opt out via default_stop_loss_atr_mult=0
+//     (or an explicit per-strategy stop_loss_atr_mult=0 with no other stop
+//     field set) can reach this fallback.
 //
 // HL perps only — returns 0 for non-HL platforms or non-perps types so the
 // caller can skip the trigger placement unconditionally.
