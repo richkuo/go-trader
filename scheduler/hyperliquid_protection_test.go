@@ -165,6 +165,27 @@ func TestFilterCloseStrategiesForHLOnChainProtection(t *testing.T) {
 	}
 }
 
+// TestCloseStrategiesSuppressedMatchesTieredTPATRClose enforces that
+// closeStrategiesSuppressedByOnChainProtection and strategyUsesTieredTPATRClose
+// stay in sync. If a new ATR-tiered close evaluator is added to the suppression
+// set without updating strategyUsesTieredTPATRClose (or vice versa), this test
+// fails immediately.
+func TestCloseStrategiesSuppressedMatchesTieredTPATRClose(t *testing.T) {
+	// Every name in the suppression set must be recognized by strategyUsesTieredTPATRClose.
+	for name := range closeStrategiesSuppressedByOnChainProtection {
+		sc := StrategyConfig{CloseStrategies: []string{name}}
+		if !strategyUsesTieredTPATRClose(sc) {
+			t.Errorf("strategyUsesTieredTPATRClose returned false for %q, which is in closeStrategiesSuppressedByOnChainProtection — add it to strategyUsesTieredTPATRClose", name)
+		}
+	}
+
+	// A config with only non-suppressed close strategies must return false.
+	sc := StrategyConfig{CloseStrategies: []string{"tp_at_pct", "tiered_tp_pct"}}
+	if strategyUsesTieredTPATRClose(sc) {
+		t.Error("strategyUsesTieredTPATRClose returned true for non-suppressed close strategies")
+	}
+}
+
 func TestFloatFromAnyCheckedRejectsStrings(t *testing.T) {
 	if _, err := floatFromAnyChecked("1.5"); err == nil {
 		t.Error("expected error for string input, got nil")
