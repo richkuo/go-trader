@@ -52,7 +52,9 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 // hyperliquidProtectionTiers returns the cumulative ATR take-profit tiers used
 // to place per-strategy reduce-only limit orders. Fractions are cumulative,
 // matching the tiered_tp_atr close evaluator: 0.5/0.8/1.0 becomes order sizes
-// of 50%, 30%, and 20% of the current virtual quantity (#612).
+// of 50%, 30%, and 20% of the current virtual quantity (#612). The final tier
+// is coerced to 1.0 so older two-tier configs that ended below 100% keep the
+// prior "everything remaining" TP2 behavior from #604.
 func hyperliquidProtectionTiers(sc StrategyConfig) []hlProtectionTier {
 	if !strategyUsesTieredTPATRClose(sc) {
 		return nil
@@ -64,6 +66,9 @@ func hyperliquidProtectionTiers(sc StrategyConfig) []hlProtectionTier {
 			{Multiple: 2, Fraction: 1},
 		}
 	}
+	if len(tiers) < 2 {
+		return nil
+	}
 	prevFraction := 0.0
 	for _, tier := range tiers {
 		if tier.Multiple <= 0 || tier.Fraction <= prevFraction {
@@ -71,6 +76,7 @@ func hyperliquidProtectionTiers(sc StrategyConfig) []hlProtectionTier {
 		}
 		prevFraction = tier.Fraction
 	}
+	tiers[len(tiers)-1].Fraction = 1
 	return tiers
 }
 
@@ -235,13 +241,24 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 	if pos == nil || result == nil {
 		return
 	}
-	// Clear stale OIDs first when the Python side detected the prior order
-	// already filled on-chain. The reconciler will book the close in the
-	// next pass; here we just stop pointing at a dead OID that would be
-	// re-placed against stale virtual qty (#604 review #1).
 	if result.StopLossFilledExternally {
 		pos.StopLossOID = 0
 	}
+	if result.StopLossOID > 0 {
+		pos.StopLossOID = result.StopLossOID
+	}
+	if result.StopLossTriggerPx > 0 {
+		pos.StopLossTriggerPx = result.StopLossTriggerPx
+	}
+	if result.TPOIDs != nil {
+		pos.TPOIDs = cloneInt64s(result.TPOIDs)
+	} else if result.TP1OID > 0 || result.TP2OID > 0 {
+		pos.TPOIDs = []int64{result.TP1OID, result.TP2OID}
+	}
+	// Clear stale TP OIDs after applying the latest echoed/placed OID list.
+	// The reconciler will book externally-filled closes; here we only stop
+	// pointing at dead OIDs that would otherwise be re-placed against stale
+	// virtual quantity (#604 review #1).
 	if len(result.TPFilledExternally) > 0 {
 		if len(pos.TPOIDs) < len(result.TPFilledExternally) {
 			pos.TPOIDs = tpOIDsForTierCount(pos.TPOIDs, len(result.TPFilledExternally))
@@ -261,17 +278,6 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 		if result.TP2FilledExternally {
 			pos.TPOIDs[1] = 0
 		}
-	}
-	if result.StopLossOID > 0 {
-		pos.StopLossOID = result.StopLossOID
-	}
-	if result.StopLossTriggerPx > 0 {
-		pos.StopLossTriggerPx = result.StopLossTriggerPx
-	}
-	if result.TPOIDs != nil {
-		pos.TPOIDs = cloneInt64s(result.TPOIDs)
-	} else if result.TP1OID > 0 || result.TP2OID > 0 {
-		pos.TPOIDs = []int64{result.TP1OID, result.TP2OID}
 	}
 }
 

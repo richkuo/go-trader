@@ -276,3 +276,54 @@ func TestBuildHyperliquidProtectionPlanThreeTiers(t *testing.T) {
 		t.Errorf("TP OIDs = %v, want [101 202 303]", plan.TPOIDs)
 	}
 }
+
+func TestHyperliquidProtectionTiersCoercesFinalTierToFullCoverage(t *testing.T) {
+	sc := StrategyConfig{
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		CloseStrategies: []string{"tiered_tp_atr_live"},
+		Params: map[string]interface{}{
+			"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.5},
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.7},
+			},
+		},
+	}
+	want := []hlProtectionTier{{Multiple: 1, Fraction: 0.5}, {Multiple: 2, Fraction: 1}}
+	if got := hyperliquidProtectionTiers(sc); !reflect.DeepEqual(got, want) {
+		t.Errorf("tiers = %+v, want %+v", got, want)
+	}
+}
+
+func TestHyperliquidProtectionTiersRejectsNonIncreasingAfterSort(t *testing.T) {
+	sc := StrategyConfig{
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		CloseStrategies: []string{"tiered_tp_atr_live"},
+		Params: map[string]interface{}{
+			"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.5},
+				map[string]interface{}{"atr_multiple": 0.5, "close_fraction": 0.7},
+			},
+		},
+	}
+	if got := hyperliquidProtectionTiers(sc); len(got) != 0 {
+		t.Errorf("tiers = %+v, want nil/empty for non-increasing sorted fractions", got)
+	}
+}
+
+func TestHyperliquidProtectionTiersRejectsSingleTier(t *testing.T) {
+	sc := StrategyConfig{
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		CloseStrategies: []string{"tiered_tp_atr_live"},
+		Params: map[string]interface{}{
+			"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 1.0},
+			},
+		},
+	}
+	if got := hyperliquidProtectionTiers(sc); len(got) != 0 {
+		t.Errorf("tiers = %+v, want nil/empty for single-tier config", got)
+	}
+}

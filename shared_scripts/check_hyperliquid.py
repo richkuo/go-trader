@@ -351,7 +351,7 @@ def _oid_filled_externally(adapter, oid: int, since_ms: int) -> dict:
 
 
 def _normalize_tp_tiers(tp_tiers=None, tp1_atr_mult=0.0, tp1_fraction=0.0, tp2_atr_mult=0.0):
-    """Return sorted cumulative TP tiers as (atr_multiple, close_fraction)."""
+    """Return canonical cumulative TP tiers as (atr_multiple, close_fraction)."""
     raw_tiers = tp_tiers
     if raw_tiers is None:
         raw_tiers = []
@@ -379,14 +379,18 @@ def _normalize_tp_tiers(tp_tiers=None, tp1_atr_mult=0.0, tp1_fraction=0.0, tp2_a
             tiers.append((multiple, fraction))
     tiers.sort(key=lambda item: item[0])
 
-    normalized = []
     prev_fraction = 0.0
-    for multiple, fraction in tiers:
+    for _multiple, fraction in tiers:
         if fraction <= prev_fraction:
-            continue
-        normalized.append((multiple, fraction))
+            return []
         prev_fraction = fraction
-    return normalized
+    if len(tiers) < 2:
+        return []
+
+    # Match Go: the last on-chain TP order always covers everything remaining,
+    # preserving the old TP2 behavior for two-tier configs ending below 100%.
+    tiers[-1] = (tiers[-1][0], 1.0)
+    return tiers
 
 
 def run_sync_protection(

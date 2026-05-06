@@ -799,6 +799,46 @@ class TestSyncProtection:
         assert sizes == pytest.approx([5.0, 3.0, 2.0])
         assert adapter.place_take_profit_limit.call_count == 3
 
+    def test_final_tier_fraction_is_coerced_to_remaining_size(self):
+        """Two-tier configs ending below 1.0 keep the old TP2 remaining-size behavior."""
+        out, adapter = self._run_sync(
+            size=10.0,
+            tp_tiers=[
+                {"atr_multiple": 1.0, "close_fraction": 0.5},
+                {"atr_multiple": 2.0, "close_fraction": 0.7},
+            ],
+            tp_oids=[0, 0],
+            open_oids=set(),
+        )
+        assert out["tp_oids"]
+        sizes = [call.args[1] for call in adapter.place_take_profit_limit.call_args_list]
+        assert sizes == pytest.approx([5.0, 5.0])
+
+    def test_non_increasing_sorted_tiers_are_rejected(self):
+        """Go and Python both reject configs whose fractions decrease after ATR sort."""
+        out, adapter = self._run_sync(
+            tp_tiers=[
+                {"atr_multiple": 1.0, "close_fraction": 0.5},
+                {"atr_multiple": 0.5, "close_fraction": 0.7},
+            ],
+            tp_oids=[0, 0],
+            open_oids=set(),
+        )
+        assert "tp_oids" not in out
+        adapter.place_take_profit_limit.assert_not_called()
+
+    def test_single_tier_config_is_rejected(self):
+        """On-chain tiered protection still requires at least two TP tiers."""
+        out, adapter = self._run_sync(
+            tp_tiers=[
+                {"atr_multiple": 1.0, "close_fraction": 1.0},
+            ],
+            tp_oids=[0],
+            open_oids=set(),
+        )
+        assert "tp_oids" not in out
+        adapter.place_take_profit_limit.assert_not_called()
+
     def test_three_tiers_detects_middle_oid_filled_externally(self):
         """#612: filled-externally detection is indexed, not hardcoded to TP1/TP2."""
         out, adapter = self._run_sync(

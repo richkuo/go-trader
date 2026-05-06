@@ -321,6 +321,8 @@ func (sdb *StateDB) migrateSchema() error {
 }
 
 func firstTwoTPOIDs(oids []int64) (int64, int64) {
+	// TODO(#612): drop legacy tp1_oid/tp2_oid writes after one release once
+	// all deployed binaries read tp_oids_json.
 	var first, second int64
 	if len(oids) > 0 {
 		first = oids[0]
