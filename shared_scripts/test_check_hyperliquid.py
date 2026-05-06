@@ -654,6 +654,8 @@ class TestSyncProtection:
         sl_oid=0,
         tp1_oid=0,
         tp2_oid=0,
+        tp_tiers=None,
+        tp_oids=None,
         open_oids=None,
         fill_lookup_by_oid=None,
         place_responses=None,
@@ -721,6 +723,8 @@ class TestSyncProtection:
                     stop_loss_oid=sl_oid,
                     tp1_oid=tp1_oid,
                     tp2_oid=tp2_oid,
+                    tp_tiers=tp_tiers,
+                    tp_oids=tp_oids,
                 )
         return json.loads(captured.getvalue()), mock_adapter
 
@@ -776,6 +780,41 @@ class TestSyncProtection:
         assert not out.get("tp2_filled_externally")
         # Only ONE place_take_profit_limit call (for TP2), because TP1 was filled.
         assert adapter.place_take_profit_limit.call_count == 1
+
+    def test_three_tiers_places_incremental_sizes(self):
+        """#612: N-tier protection sizes each order from cumulative fractions."""
+        out, adapter = self._run_sync(
+            size=10.0,
+            tp_tiers=[
+                {"atr_multiple": 1.0, "close_fraction": 0.5},
+                {"atr_multiple": 2.0, "close_fraction": 0.8},
+                {"atr_multiple": 3.0, "close_fraction": 1.0},
+            ],
+            tp_oids=[0, 0, 0],
+            open_oids=set(),
+        )
+        assert len(out["tp_oids"]) == 3
+        assert out["tp_pxs"] == [2020.0, 2040.0, 2060.0]
+        sizes = [call.args[1] for call in adapter.place_take_profit_limit.call_args_list]
+        assert sizes == pytest.approx([5.0, 3.0, 2.0])
+        assert adapter.place_take_profit_limit.call_count == 3
+
+    def test_three_tiers_detects_middle_oid_filled_externally(self):
+        """#612: filled-externally detection is indexed, not hardcoded to TP1/TP2."""
+        out, adapter = self._run_sync(
+            tp_tiers=[
+                {"atr_multiple": 1.0, "close_fraction": 0.5},
+                {"atr_multiple": 2.0, "close_fraction": 0.8},
+                {"atr_multiple": 3.0, "close_fraction": 1.0},
+            ],
+            tp_oids=[100, 200, 300],
+            open_oids={100, 300},
+            fill_lookup_by_oid={200: {"fee": 0.01, "closed_pnl": 7.0, "count": 1}},
+        )
+        assert out["tp_oids"] == [100, 0, 300]
+        assert out["tp_filled_externally"] == [False, True, False]
+        assert out["tp_fills"][1]["closed_pnl"] == 7.0
+        adapter.place_take_profit_limit.assert_not_called()
 
     def test_open_orders_fetch_failure_defers_replacement(self):
         """open_order_oids() raise → leave existing OIDs alone, do not re-place

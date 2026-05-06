@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -19,8 +20,7 @@ func TestBuildHyperliquidProtectionPlanUsesDefaultTieredATR(t *testing.T) {
 		AvgCost:  3000,
 		EntryATR: 50,
 		Side:     "long",
-		TP1OID:   101,
-		TP2OID:   202,
+		TPOIDs:   []int64{101, 202},
 	}
 	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
 	if !ok {
@@ -29,36 +29,34 @@ func TestBuildHyperliquidProtectionPlanUsesDefaultTieredATR(t *testing.T) {
 	if plan.StopLossATRMult != 1 {
 		t.Errorf("StopLossATRMult = %g, want 1", plan.StopLossATRMult)
 	}
-	if plan.TP1Mult != 1 || plan.TP1Fraction != 0.5 || plan.TP2Mult != 2 {
-		t.Errorf("tiers = (%g, %g, %g), want (1, 0.5, 2)", plan.TP1Mult, plan.TP1Fraction, plan.TP2Mult)
+	wantTiers := []hlProtectionTier{{Multiple: 1, Fraction: 0.5}, {Multiple: 2, Fraction: 1}}
+	if !reflect.DeepEqual(plan.Tiers, wantTiers) {
+		t.Errorf("tiers = %+v, want %+v", plan.Tiers, wantTiers)
 	}
-	if plan.TP1OID != 101 || plan.TP2OID != 202 {
-		t.Errorf("TP OIDs = (%d, %d), want (101, 202)", plan.TP1OID, plan.TP2OID)
+	if !reflect.DeepEqual(plan.TPOIDs, []int64{101, 202}) {
+		t.Errorf("TP OIDs = %v, want [101 202]", plan.TPOIDs)
 	}
 }
 
 // TestApplyHyperliquidProtectionSyncPreservesExistingOIDs verifies the
 // "OID still resting" branch of run_sync_protection: when the result echoes
-// the existing OID back (via open_orders verification), pos.TP1OID/TP2OID
+// the existing OID back (via open_orders verification), pos.TPOIDs
 // must remain set. A bug where the apply path overwrote with 0 would lose
 // the OID and trigger a duplicate-place on the next cycle.
 func TestApplyHyperliquidProtectionSyncPreservesExistingOIDs(t *testing.T) {
 	pos := &Position{
 		Symbol:      "ETH",
 		StopLossOID: 100,
-		TP1OID:      200,
-		TP2OID:      300,
+		TPOIDs:      []int64{200, 300},
 	}
 	result := &HyperliquidProtectionSyncResult{
 		StopLossOID:       100,
 		StopLossTriggerPx: 2900,
-		TP1OID:            200,
-		TP2OID:            300,
+		TPOIDs:            []int64{200, 300},
 	}
 	applyHyperliquidProtectionSync(pos, result)
-	if pos.StopLossOID != 100 || pos.TP1OID != 200 || pos.TP2OID != 300 {
-		t.Errorf("OIDs mutated: SL=%d TP1=%d TP2=%d, want 100/200/300",
-			pos.StopLossOID, pos.TP1OID, pos.TP2OID)
+	if pos.StopLossOID != 100 || !reflect.DeepEqual(pos.TPOIDs, []int64{200, 300}) {
+		t.Errorf("OIDs mutated: SL=%d TPs=%v, want 100/[200 300]", pos.StopLossOID, pos.TPOIDs)
 	}
 	if pos.StopLossTriggerPx != 2900 {
 		t.Errorf("StopLossTriggerPx = %g, want 2900", pos.StopLossTriggerPx)
@@ -67,39 +65,35 @@ func TestApplyHyperliquidProtectionSyncPreservesExistingOIDs(t *testing.T) {
 
 // TestApplyHyperliquidProtectionSyncRetainsOnZeroFields covers the case
 // where the Python side couldn't fetch open_orders (so it omits OID fields
-// from the result) — pos.TP1OID/TP2OID must NOT be cleared, otherwise the
+// from the result) — pos.TPOIDs must NOT be cleared, otherwise the
 // next cycle would re-place against an OID that's still resting.
 func TestApplyHyperliquidProtectionSyncRetainsOnZeroFields(t *testing.T) {
-	pos := &Position{Symbol: "ETH", StopLossOID: 11, TP1OID: 22, TP2OID: 33}
+	pos := &Position{Symbol: "ETH", StopLossOID: 11, TPOIDs: []int64{22, 33}}
 	applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
 		OpenOrderCheckError: "indexer down",
 	})
-	if pos.StopLossOID != 11 || pos.TP1OID != 22 || pos.TP2OID != 33 {
-		t.Errorf("zero-field result mutated OIDs: SL=%d TP1=%d TP2=%d, want 11/22/33",
-			pos.StopLossOID, pos.TP1OID, pos.TP2OID)
+	if pos.StopLossOID != 11 || !reflect.DeepEqual(pos.TPOIDs, []int64{22, 33}) {
+		t.Errorf("zero-field result mutated OIDs: SL=%d TPs=%v, want 11/[22 33]", pos.StopLossOID, pos.TPOIDs)
 	}
 }
 
 // TestApplyHyperliquidProtectionSyncClearsFilledExternally is the over-close
 // guard: when the Python side detected the OID actually filled on-chain
-// (via userFills), the apply path must clear pos.TP1OID so the next cycle
+// (via userFills), the apply path must clear the filled TP OID so the next cycle
 // does not re-place against stale virtual qty (#604 review #1).
 func TestApplyHyperliquidProtectionSyncClearsFilledExternally(t *testing.T) {
-	pos := &Position{Symbol: "ETH", StopLossOID: 11, TP1OID: 22, TP2OID: 33}
+	pos := &Position{Symbol: "ETH", StopLossOID: 11, TPOIDs: []int64{22, 33}}
 	applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
 		StopLossFilledExternally: true,
-		TP1FilledExternally:      true,
+		TPFilledExternally:       []bool{true, false},
 		// TP2 still resting in this scenario.
-		TP2OID: 33,
+		TPOIDs: []int64{0, 33},
 	})
 	if pos.StopLossOID != 0 {
 		t.Errorf("StopLossOID = %d, want 0 (cleared because filled externally)", pos.StopLossOID)
 	}
-	if pos.TP1OID != 0 {
-		t.Errorf("TP1OID = %d, want 0 (cleared because filled externally)", pos.TP1OID)
-	}
-	if pos.TP2OID != 33 {
-		t.Errorf("TP2OID = %d, want 33 (still resting)", pos.TP2OID)
+	if !reflect.DeepEqual(pos.TPOIDs, []int64{0, 33}) {
+		t.Errorf("TPOIDs = %v, want [0 33] (TP1 cleared because filled externally)", pos.TPOIDs)
 	}
 }
 
@@ -237,7 +231,48 @@ func TestBuildHyperliquidProtectionPlanCustomTiers(t *testing.T) {
 	if !ok {
 		t.Fatal("buildHyperliquidProtectionPlan returned ok=false")
 	}
-	if plan.TP1Mult != 2 || plan.TP1Fraction != 0.4 || plan.TP2Mult != 3 {
-		t.Errorf("custom tiers = (%g, %g, %g), want (2, 0.4, 3)", plan.TP1Mult, plan.TP1Fraction, plan.TP2Mult)
+	wantTiers := []hlProtectionTier{{Multiple: 2, Fraction: 0.4}, {Multiple: 3, Fraction: 1}}
+	if !reflect.DeepEqual(plan.Tiers, wantTiers) {
+		t.Errorf("custom tiers = %+v, want %+v", plan.Tiers, wantTiers)
+	}
+}
+
+func TestBuildHyperliquidProtectionPlanThreeTiers(t *testing.T) {
+	mult := 1.0
+	sc := StrategyConfig{
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		StopLossATRMult: &mult,
+		CloseStrategies: []string{"tiered_tp_atr_live"},
+		Params: map[string]interface{}{
+			"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.5},
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.8},
+				map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+			},
+		},
+	}
+	pos := &Position{
+		Symbol:   "ETH",
+		Quantity: 1,
+		AvgCost:  2500,
+		EntryATR: 25,
+		Side:     "long",
+		TPOIDs:   []int64{101, 202, 303},
+	}
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	if !ok {
+		t.Fatal("buildHyperliquidProtectionPlan returned ok=false")
+	}
+	wantTiers := []hlProtectionTier{
+		{Multiple: 1, Fraction: 0.5},
+		{Multiple: 2, Fraction: 0.8},
+		{Multiple: 3, Fraction: 1},
+	}
+	if !reflect.DeepEqual(plan.Tiers, wantTiers) {
+		t.Errorf("tiers = %+v, want %+v", plan.Tiers, wantTiers)
+	}
+	if !reflect.DeepEqual(plan.TPOIDs, []int64{101, 202, 303}) {
+		t.Errorf("TP OIDs = %v, want [101 202 303]", plan.TPOIDs)
 	}
 }

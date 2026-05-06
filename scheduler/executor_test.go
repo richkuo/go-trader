@@ -646,11 +646,11 @@ func TestBuildHyperliquidExecuteArgs_SizedClose(t *testing.T) {
 
 // Full close with extraCancelOIDs must forward all TP OIDs as
 // --cancel-stop-loss-oid flags (mirrors the posQty>0 && !partialClose gate in
-// main.go that cancels TP1/TP2 on a full or flip close).
+// main.go that cancels every tier TP OID on a full or flip close).
 func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsFullClose(t *testing.T) {
-	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, true, 111, 222)
+	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, true, 111, 222, 333)
 
-	for _, want := range []string{"--cancel-stop-loss-oid=111", "--cancel-stop-loss-oid=222"} {
+	for _, want := range []string{"--cancel-stop-loss-oid=111", "--cancel-stop-loss-oid=222", "--cancel-stop-loss-oid=333"} {
 		if !argsContains(args, want) {
 			t.Errorf("expected %q in argv on full close, got %v", want, args)
 		}

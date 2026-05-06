@@ -350,6 +350,45 @@ def _oid_filled_externally(adapter, oid: int, since_ms: int) -> dict:
     }
 
 
+def _normalize_tp_tiers(tp_tiers=None, tp1_atr_mult=0.0, tp1_fraction=0.0, tp2_atr_mult=0.0):
+    """Return sorted cumulative TP tiers as (atr_multiple, close_fraction)."""
+    raw_tiers = tp_tiers
+    if raw_tiers is None:
+        raw_tiers = []
+        if tp1_atr_mult > 0 and tp1_fraction > 0:
+            raw_tiers.append({"atr_multiple": tp1_atr_mult, "close_fraction": tp1_fraction})
+        if tp2_atr_mult > 0:
+            raw_tiers.append({"atr_multiple": tp2_atr_mult, "close_fraction": 1.0})
+
+    tiers = []
+    for tier in raw_tiers or []:
+        if isinstance(tier, dict):
+            multiple = tier.get("atr_multiple", tier.get("multiple", tier.get("Multiple")))
+            fraction = tier.get("close_fraction", tier.get("fraction", tier.get("Fraction")))
+        else:
+            try:
+                multiple, fraction = tier
+            except (TypeError, ValueError):
+                continue
+        try:
+            multiple = float(multiple)
+            fraction = min(max(float(fraction), 0.0), 1.0)
+        except (TypeError, ValueError):
+            continue
+        if multiple > 0 and fraction > 0:
+            tiers.append((multiple, fraction))
+    tiers.sort(key=lambda item: item[0])
+
+    normalized = []
+    prev_fraction = 0.0
+    for multiple, fraction in tiers:
+        if fraction <= prev_fraction:
+            continue
+        normalized.append((multiple, fraction))
+        prev_fraction = fraction
+    return normalized
+
+
 def run_sync_protection(
     symbol,
     side,
@@ -364,6 +403,8 @@ def run_sync_protection(
     stop_loss_oid=0,
     tp1_oid=0,
     tp2_oid=0,
+    tp_tiers=None,
+    tp_oids=None,
 ):
     """Verify/re-place per-strategy reduce-only SL/TP orders (#601)."""
     if mode != "live":
@@ -453,62 +494,88 @@ def run_sync_protection(
                         out["stop_loss_error"] = str(se)
                 # action=="unknown" → leave SL OID untouched, retry next cycle
 
-        if tp1_atr_mult > 0 and tp1_fraction > 0 and tp2_atr_mult > 0:
-            if side == "long":
-                tp1_px = avg_cost + tp1_atr_mult * entry_atr
-                tp2_px = avg_cost + tp2_atr_mult * entry_atr
-            else:
-                tp1_px = avg_cost - tp1_atr_mult * entry_atr
-                tp2_px = avg_cost - tp2_atr_mult * entry_atr
-            tp1_size = size * min(max(tp1_fraction, 0.0), 1.0)
-            tp2_size = max(size - tp1_size, 0.0)
-            out["tp1_px"] = adapter.round_perps_trigger_px(symbol, tp1_px)
-            out["tp2_px"] = adapter.round_perps_trigger_px(symbol, tp2_px)
-            if _oid_is_open(open_oids, tp1_oid):
-                out["tp1_oid"] = int(tp1_oid)
-            else:
-                action, fill = _resolve_missing_oid(tp1_oid)
+        tiers = _normalize_tp_tiers(tp_tiers, tp1_atr_mult, tp1_fraction, tp2_atr_mult)
+        if tiers:
+            existing_tp_oids = list(tp_oids or [])
+            if not existing_tp_oids and (tp1_oid > 0 or tp2_oid > 0):
+                existing_tp_oids = [tp1_oid, tp2_oid]
+            if len(existing_tp_oids) < len(tiers):
+                existing_tp_oids.extend([0] * (len(tiers) - len(existing_tp_oids)))
+
+            tp_oids_out = list(existing_tp_oids[:len(tiers)])
+            tp_pxs = []
+            tp_errors = [""] * len(tiers)
+            tp_filled_externally = [False] * len(tiers)
+            tp_fills = [None] * len(tiers)
+            tp_filled_immediately = [False] * len(tiers)
+            prev_fraction = 0.0
+
+            for idx, (atr_mult, cumulative_fraction) in enumerate(tiers):
+                raw_px = avg_cost + atr_mult * entry_atr if side == "long" else avg_cost - atr_mult * entry_atr
+                rounded_px = adapter.round_perps_trigger_px(symbol, raw_px)
+                tp_pxs.append(rounded_px)
+                tier_size = size * max(cumulative_fraction - prev_fraction, 0.0)
+                prev_fraction = cumulative_fraction
+                prev_oid = int(existing_tp_oids[idx]) if idx < len(existing_tp_oids) else 0
+
+                if tier_size <= 0:
+                    continue
+                if _oid_is_open(open_oids, prev_oid):
+                    tp_oids_out[idx] = prev_oid
+                    continue
+
+                action, fill = _resolve_missing_oid(prev_oid)
                 if action == "filled":
-                    out["tp1_filled_externally"] = True
-                    out["tp1_fill"] = fill
-                    print(f"[WARN] TP1 OID={tp1_oid} already filled on-chain; not re-placing — reconciler will book the close", file=sys.stderr)
+                    tp_oids_out[idx] = 0
+                    tp_filled_externally[idx] = True
+                    tp_fills[idx] = fill
+                    print(f"[WARN] TP{idx + 1} OID={prev_oid} already filled on-chain; not re-placing — reconciler will book the close", file=sys.stderr)
                 elif action == "place":
                     try:
-                        resp = adapter.place_take_profit_limit(symbol, tp1_size, tp1_px, close_is_buy)
+                        resp = adapter.place_take_profit_limit(symbol, tier_size, rounded_px, close_is_buy)
                         kind, payload = _classify_sl_response(resp)
                         if kind == "resting":
-                            out["tp1_oid"] = payload
+                            tp_oids_out[idx] = payload
                         elif kind == "filled":
-                            out["tp1_filled_immediately"] = True
+                            tp_filled_immediately[idx] = True
                         elif kind == "error":
-                            out["tp1_error"] = f"place_take_profit_limit SDK error: {payload}"
+                            tp_errors[idx] = f"place_take_profit_limit SDK error: {payload}"
                         else:
-                            out["tp1_error"] = f"place_take_profit_limit returned no usable status: {resp}"
+                            tp_errors[idx] = f"place_take_profit_limit returned no usable status: {resp}"
                     except Exception as te:
-                        out["tp1_error"] = str(te)
-            if tp2_size > 0:
-                if _oid_is_open(open_oids, tp2_oid):
-                    out["tp2_oid"] = int(tp2_oid)
-                else:
-                    action, fill = _resolve_missing_oid(tp2_oid)
-                    if action == "filled":
-                        out["tp2_filled_externally"] = True
-                        out["tp2_fill"] = fill
-                        print(f"[WARN] TP2 OID={tp2_oid} already filled on-chain; not re-placing — reconciler will book the close", file=sys.stderr)
-                    elif action == "place":
-                        try:
-                            resp = adapter.place_take_profit_limit(symbol, tp2_size, tp2_px, close_is_buy)
-                            kind, payload = _classify_sl_response(resp)
-                            if kind == "resting":
-                                out["tp2_oid"] = payload
-                            elif kind == "filled":
-                                out["tp2_filled_immediately"] = True
-                            elif kind == "error":
-                                out["tp2_error"] = f"place_take_profit_limit SDK error: {payload}"
-                            else:
-                                out["tp2_error"] = f"place_take_profit_limit returned no usable status: {resp}"
-                        except Exception as te:
-                            out["tp2_error"] = str(te)
+                        tp_errors[idx] = str(te)
+                # action=="unknown" → echo previous OID, retry next cycle
+
+            out["tp_oids"] = tp_oids_out
+            out["tp_pxs"] = tp_pxs
+            if any(tp_errors):
+                out["tp_errors"] = tp_errors
+            if any(tp_filled_externally):
+                out["tp_filled_externally"] = tp_filled_externally
+                out["tp_fills"] = tp_fills
+            if any(tp_filled_immediately):
+                out["tp_filled_immediately"] = tp_filled_immediately
+
+            # Legacy fields stay populated for older callers/tests during the
+            # migration from fixed TP1/TP2 fields to the N-tier slice (#612).
+            if len(tp_oids_out) > 0 and tp_oids_out[0] > 0:
+                out["tp1_oid"] = tp_oids_out[0]
+            if len(tp_oids_out) > 1 and tp_oids_out[1] > 0:
+                out["tp2_oid"] = tp_oids_out[1]
+            if len(tp_pxs) > 0:
+                out["tp1_px"] = tp_pxs[0]
+            if len(tp_pxs) > 1:
+                out["tp2_px"] = tp_pxs[1]
+            if len(tp_errors) > 0 and tp_errors[0]:
+                out["tp1_error"] = tp_errors[0]
+            if len(tp_errors) > 1 and tp_errors[1]:
+                out["tp2_error"] = tp_errors[1]
+            if len(tp_filled_externally) > 0 and tp_filled_externally[0]:
+                out["tp1_filled_externally"] = True
+                out["tp1_fill"] = tp_fills[0]
+            if len(tp_filled_externally) > 1 and tp_filled_externally[1]:
+                out["tp2_filled_externally"] = True
+                out["tp2_fill"] = tp_fills[1]
 
         print(json.dumps(out, cls=SafeEncoder))
     except Exception as e:
@@ -865,11 +932,15 @@ def main():
         parser.add_argument("--tp1-atr-mult", type=float, default=0.0)
         parser.add_argument("--tp1-fraction", type=float, default=0.0)
         parser.add_argument("--tp2-atr-mult", type=float, default=0.0)
+        parser.add_argument("--tp-tiers-json", default="")
         parser.add_argument("--stop-loss-oid", type=int, default=0)
         parser.add_argument("--tp1-oid", type=int, default=0)
         parser.add_argument("--tp2-oid", type=int, default=0)
+        parser.add_argument("--tp-oids-json", default="")
         parser.add_argument("--mode", default="live")
         args = parser.parse_args()
+        tp_tiers = json.loads(args.tp_tiers_json) if args.tp_tiers_json else None
+        tp_oids = json.loads(args.tp_oids_json) if args.tp_oids_json else None
         run_sync_protection(
             args.symbol,
             args.side,
@@ -884,6 +955,8 @@ def main():
             stop_loss_oid=args.stop_loss_oid,
             tp1_oid=args.tp1_oid,
             tp2_oid=args.tp2_oid,
+            tp_tiers=tp_tiers,
+            tp_oids=tp_oids,
         )
     elif "--update-stop-loss" in sys.argv:
         import argparse

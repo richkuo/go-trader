@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS positions (
     stop_loss_high_water_px REAL NOT NULL DEFAULT 0,
     tp1_oid INTEGER NOT NULL DEFAULT 0,
     tp2_oid INTEGER NOT NULL DEFAULT 0,
+    tp_oids_json TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (strategy_id, symbol)
 );
 
@@ -299,6 +300,8 @@ func (sdb *StateDB) migrateSchema() error {
 		// Per-strategy HL reduce-only take-profit OIDs (#601).
 		"ALTER TABLE positions ADD COLUMN tp1_oid INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN tp2_oid INTEGER NOT NULL DEFAULT 0",
+		// Variable-length per-strategy HL reduce-only take-profit OIDs (#612).
+		"ALTER TABLE positions ADD COLUMN tp_oids_json TEXT NOT NULL DEFAULT ''",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -315,6 +318,42 @@ func (sdb *StateDB) migrateSchema() error {
 		return err
 	}
 	return sdb.backfillTradeCloseFlags()
+}
+
+func firstTwoTPOIDs(oids []int64) (int64, int64) {
+	var first, second int64
+	if len(oids) > 0 {
+		first = oids[0]
+	}
+	if len(oids) > 1 {
+		second = oids[1]
+	}
+	return first, second
+}
+
+func marshalTPOIDsJSON(oids []int64) string {
+	if len(oids) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(oids)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func parseTPOIDsJSON(raw string, legacyTP1, legacyTP2 int64) []int64 {
+	if strings.TrimSpace(raw) != "" {
+		var oids []int64
+		if err := json.Unmarshal([]byte(raw), &oids); err == nil {
+			return oids
+		}
+	}
+	var oids []int64
+	if legacyTP1 > 0 || legacyTP2 > 0 {
+		oids = []int64{legacyTP1, legacyTP2}
+	}
+	return oids
 }
 
 // backfillTradeCloseFlags is a one-time best-effort backfill (#455) for
@@ -660,8 +699,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	defer stmtStrat.Close()
 
-	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare position insert: %w", err)
 	}
@@ -711,7 +750,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 
 		for _, pos := range s.Positions {
 			positionID := ensurePositionTradeID(s.ID, pos.Symbol, pos)
-			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, pos.TP1OID, pos.TP2OID); err != nil {
+			tp1OID, tp2OID := firstTwoTPOIDs(pos.TPOIDs)
+			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs)); err != nil {
 				return fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
 			}
 		}
@@ -1122,7 +1162,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	}
 
 	// 3. Load positions for each strategy.
-	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, COALESCE(tp1_oid, 0) AS tp1_oid, COALESCE(tp2_oid, 0) AS tp2_oid FROM positions")
+	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, COALESCE(tp1_oid, 0) AS tp1_oid, COALESCE(tp2_oid, 0) AS tp2_oid, COALESCE(tp_oids_json, '') AS tp_oids_json FROM positions")
 	if err != nil {
 		return nil, fmt.Errorf("load positions: %w", err)
 	}
@@ -1131,10 +1171,13 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		var stratID string
 		var pos Position
 		var openedAtStr string
-		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx, &pos.TP1OID, &pos.TP2OID); err != nil {
+		var tp1OID, tp2OID int64
+		var tpOIDsJSON string
+		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx, &tp1OID, &tp2OID, &tpOIDsJSON); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
 		pos.OpenedAt = parseTime(openedAtStr)
+		pos.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, tp1OID, tp2OID)
 		if s, ok := state.Strategies[stratID]; ok {
 			s.Positions[pos.Symbol] = &pos
 		}

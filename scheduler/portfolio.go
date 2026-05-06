@@ -22,8 +22,7 @@ type Position struct {
 	StopLossOID         int64     `json:"stop_loss_oid,omitempty"`           // HL perps: resting trigger-order OID for the per-trade stop-loss (0 = none) (#412)
 	StopLossTriggerPx   float64   `json:"stop_loss_trigger_px,omitempty"`    // HL perps: trigger price for the resting stop-loss (0 = unknown) (#421)
 	StopLossHighWaterPx float64   `json:"stop_loss_high_water_px,omitempty"` // HL perps trailing SL: best mark seen while position open (high for long, low for short) (#501)
-	TP1OID              int64     `json:"tp1_oid,omitempty"`                 // HL perps: resting reduce-only TP1 limit OID for per-strategy protection (#601)
-	TP2OID              int64     `json:"tp2_oid,omitempty"`                 // HL perps: resting reduce-only TP2 limit OID for per-strategy protection (#601)
+	TPOIDs              []int64   `json:"tp_oids,omitempty"`                 // HL perps: resting reduce-only TP limit OIDs, one per configured tier (#601/#612)
 }
 
 // ClosedPosition is a historical record of a position after it closed (#288).
@@ -170,7 +169,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	pnl -= fee
 	s.Cash += pnl
 	positionID := ensurePositionTradeID(s.ID, symbol, pos)
-	// Note (#604 review #3): pos.TP1OID/TP2OID are dropped on the floor here
+	// Note (#604 review #3/#612): pos.TPOIDs are dropped on the floor here
 	// when the reconciler detects an external close. HL auto-cancels
 	// reduce-only orders once the underlying position is flat (a TP fill
 	// would otherwise create a new opposite-side position, violating the

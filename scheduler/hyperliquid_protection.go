@@ -13,12 +13,9 @@ type hlProtectionPlan struct {
 	AvgCost         float64
 	EntryATR        float64
 	StopLossATRMult float64
-	TP1Mult         float64
-	TP1Fraction     float64
-	TP2Mult         float64
 	StopLossOID     int64
-	TP1OID          int64
-	TP2OID          int64
+	Tiers           []hlProtectionTier
+	TPOIDs          []int64
 }
 
 func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtectionPlan, bool) {
@@ -35,8 +32,8 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		slMult = *sc.StopLossATRMult
 	}
-	tp1Mult, tp1Fraction, tp2Mult := hyperliquidProtectionTiers(sc)
-	if slMult <= 0 && (tp1Mult <= 0 || tp1Fraction <= 0 || tp2Mult <= 0) {
+	tiers := hyperliquidProtectionTiers(sc)
+	if slMult <= 0 && len(tiers) == 0 {
 		return hlProtectionPlan{}, false
 	}
 	return hlProtectionPlan{
@@ -46,32 +43,19 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 		AvgCost:         pos.AvgCost,
 		EntryATR:        pos.EntryATR,
 		StopLossATRMult: slMult,
-		TP1Mult:         tp1Mult,
-		TP1Fraction:     tp1Fraction,
-		TP2Mult:         tp2Mult,
 		StopLossOID:     pos.StopLossOID,
-		TP1OID:          pos.TP1OID,
-		TP2OID:          pos.TP2OID,
+		Tiers:           tiers,
+		TPOIDs:          tpOIDsForTierCount(pos.TPOIDs, len(tiers)),
 	}, true
 }
 
-// hyperliquidProtectionTiers returns (tp1AtrMultiple, tp1Fraction, tp2AtrMultiple).
-//
-// Note: tier 2's close_fraction is INTENTIONALLY ignored — the on-chain TP2
-// limit is sized as `size * (1 - tp1Fraction)` so that TP1 + TP2 always equal
-// the strategy's full virtual quantity. The validation `tp2.Fraction <=
-// tp1.Fraction` exists only to enforce a sane ordering of the operator's
-// configured tiers; it does not flow into sizing. This mirrors the
-// `tiered_tp_atr` close-evaluator's "everything remaining" semantics for the
-// last tier and avoids leaving a residual sliver of position open after TP2.
-//
-// If you want a non-1.0 final tier (e.g. 50%/30%/20% across three tiers),
-// extend hlProtectionPlan to carry a slice of tiers and rework the Python
-// run_sync_protection placement loop accordingly. The current implementation
-// is fixed at exactly two tiers (#604 review optional 3).
-func hyperliquidProtectionTiers(sc StrategyConfig) (float64, float64, float64) {
+// hyperliquidProtectionTiers returns the cumulative ATR take-profit tiers used
+// to place per-strategy reduce-only limit orders. Fractions are cumulative,
+// matching the tiered_tp_atr close evaluator: 0.5/0.8/1.0 becomes order sizes
+// of 50%, 30%, and 20% of the current virtual quantity (#612).
+func hyperliquidProtectionTiers(sc StrategyConfig) []hlProtectionTier {
 	if !strategyUsesTieredTPATRClose(sc) {
-		return 0, 0, 0
+		return nil
 	}
 	tiers := parseHLProtectionTiers(sc.Params["tiers"])
 	if len(tiers) == 0 {
@@ -80,15 +64,14 @@ func hyperliquidProtectionTiers(sc StrategyConfig) (float64, float64, float64) {
 			{Multiple: 2, Fraction: 1},
 		}
 	}
-	if len(tiers) < 2 {
-		return 0, 0, 0
+	prevFraction := 0.0
+	for _, tier := range tiers {
+		if tier.Multiple <= 0 || tier.Fraction <= prevFraction {
+			return nil
+		}
+		prevFraction = tier.Fraction
 	}
-	tp1 := tiers[0]
-	tp2 := tiers[1]
-	if tp1.Multiple <= 0 || tp1.Fraction <= 0 || tp2.Multiple <= 0 || tp2.Fraction <= tp1.Fraction {
-		return 0, 0, 0
-	}
-	return tp1.Multiple, tp1.Fraction, tp2.Multiple
+	return tiers
 }
 
 type hlProtectionTier struct {
@@ -129,6 +112,24 @@ func parseHLProtectionTiers(raw interface{}) []hlProtectionTier {
 	}
 	sort.Slice(tiers, func(i, j int) bool { return tiers[i].Multiple < tiers[j].Multiple })
 	return tiers
+}
+
+func tpOIDsForTierCount(oids []int64, tierCount int) []int64 {
+	if tierCount <= 0 {
+		return nil
+	}
+	out := make([]int64, tierCount)
+	copy(out, oids)
+	return out
+}
+
+func cloneInt64s(vals []int64) []int64 {
+	if len(vals) == 0 {
+		return nil
+	}
+	out := make([]int64, len(vals))
+	copy(out, vals)
+	return out
 }
 
 func firstPresent(m map[string]interface{}, keys ...string) interface{} {
@@ -181,8 +182,7 @@ type jsonNumber interface {
 func syncHyperliquidProtection(sc StrategyConfig, plan hlProtectionPlan, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidProtectionSyncResult, bool) {
 	result, stderr, err := RunHyperliquidSyncProtection(
 		sc.Script, plan.Symbol, plan.Side, plan.Size, plan.AvgCost, plan.EntryATR,
-		plan.StopLossATRMult, plan.TP1Mult, plan.TP1Fraction, plan.TP2Mult,
-		plan.StopLossOID, plan.TP1OID, plan.TP2OID,
+		plan.StopLossATRMult, plan.Tiers, plan.StopLossOID, plan.TPOIDs,
 	)
 	if stderr != "" && logger != nil {
 		logger.Info("protection sync stderr: %s", stderr)
@@ -208,11 +208,18 @@ func syncHyperliquidProtection(sc StrategyConfig, plan hlProtectionPlan, notifie
 	if result.StopLossError != "" {
 		warnings = append(warnings, "SL: "+result.StopLossError)
 	}
-	if result.TP1Error != "" {
-		warnings = append(warnings, "TP1: "+result.TP1Error)
+	for idx, errMsg := range result.TPErrors {
+		if errMsg != "" {
+			warnings = append(warnings, fmt.Sprintf("TP%d: %s", idx+1, errMsg))
+		}
 	}
-	if result.TP2Error != "" {
-		warnings = append(warnings, "TP2: "+result.TP2Error)
+	if len(result.TPErrors) == 0 {
+		if result.TP1Error != "" {
+			warnings = append(warnings, "TP1: "+result.TP1Error)
+		}
+		if result.TP2Error != "" {
+			warnings = append(warnings, "TP2: "+result.TP2Error)
+		}
 	}
 	if len(warnings) > 0 {
 		msg := fmt.Sprintf("%s %s protection partially failed: %v", sc.ID, plan.Symbol, warnings)
@@ -235,11 +242,25 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 	if result.StopLossFilledExternally {
 		pos.StopLossOID = 0
 	}
-	if result.TP1FilledExternally {
-		pos.TP1OID = 0
-	}
-	if result.TP2FilledExternally {
-		pos.TP2OID = 0
+	if len(result.TPFilledExternally) > 0 {
+		if len(pos.TPOIDs) < len(result.TPFilledExternally) {
+			pos.TPOIDs = tpOIDsForTierCount(pos.TPOIDs, len(result.TPFilledExternally))
+		}
+		for idx, filled := range result.TPFilledExternally {
+			if filled {
+				pos.TPOIDs[idx] = 0
+			}
+		}
+	} else if result.TP1FilledExternally || result.TP2FilledExternally {
+		if len(pos.TPOIDs) < 2 {
+			pos.TPOIDs = tpOIDsForTierCount(pos.TPOIDs, 2)
+		}
+		if result.TP1FilledExternally {
+			pos.TPOIDs[0] = 0
+		}
+		if result.TP2FilledExternally {
+			pos.TPOIDs[1] = 0
+		}
 	}
 	if result.StopLossOID > 0 {
 		pos.StopLossOID = result.StopLossOID
@@ -247,11 +268,10 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 	if result.StopLossTriggerPx > 0 {
 		pos.StopLossTriggerPx = result.StopLossTriggerPx
 	}
-	if result.TP1OID > 0 {
-		pos.TP1OID = result.TP1OID
-	}
-	if result.TP2OID > 0 {
-		pos.TP2OID = result.TP2OID
+	if result.TPOIDs != nil {
+		pos.TPOIDs = cloneInt64s(result.TPOIDs)
+	} else if result.TP1OID > 0 || result.TP2OID > 0 {
+		pos.TPOIDs = []int64{result.TP1OID, result.TP2OID}
 	}
 }
 
@@ -266,8 +286,7 @@ func hyperliquidPlacesOnChainTPs(sc StrategyConfig) bool {
 	if sc.Type != "perps" || sc.Platform != "hyperliquid" {
 		return false
 	}
-	tp1Mult, tp1Fraction, tp2Mult := hyperliquidProtectionTiers(sc)
-	return tp1Mult > 0 && tp1Fraction > 0 && tp2Mult > 0
+	return len(hyperliquidProtectionTiers(sc)) > 0
 }
 
 // closeStrategiesSuppressedByOnChainProtection is the set of close evaluator

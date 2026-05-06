@@ -1098,8 +1098,9 @@ func runPendingHyperliquidCircuitCloses(
 		for _, c := range p.Symbols {
 			if pos, ok := ss.Positions[c.Symbol]; ok && pos != nil {
 				slOIDs[c.Symbol] = appendUniquePositiveStopLossOID(slOIDs[c.Symbol], pos.StopLossOID)
-				slOIDs[c.Symbol] = appendUniquePositiveStopLossOID(slOIDs[c.Symbol], pos.TP1OID)
-				slOIDs[c.Symbol] = appendUniquePositiveStopLossOID(slOIDs[c.Symbol], pos.TP2OID)
+				for _, tpOID := range pos.TPOIDs {
+					slOIDs[c.Symbol] = appendUniquePositiveStopLossOID(slOIDs[c.Symbol], tpOID)
+				}
 			}
 		}
 		jobs = append(jobs, job{id, *p, slOIDs})
@@ -1252,11 +1253,10 @@ func runPendingHyperliquidCircuitCloses(
 							if cancelOID > 0 && pos.StopLossOID == cancelOID {
 								pos.StopLossOID = 0
 							}
-							if cancelOID > 0 && pos.TP1OID == cancelOID {
-								pos.TP1OID = 0
-							}
-							if cancelOID > 0 && pos.TP2OID == cancelOID {
-								pos.TP2OID = 0
+							for idx, tpOID := range pos.TPOIDs {
+								if cancelOID > 0 && tpOID == cancelOID {
+									pos.TPOIDs[idx] = 0
+								}
 							}
 						}
 					}

@@ -97,22 +97,26 @@ type HyperliquidStopLossUpdateResult struct {
 // on-chain when sync ran (reconciler will book the close); the Go side must
 // clear the OID without re-placing to avoid the over-close hazard from #604.
 type HyperliquidProtectionSyncResult struct {
-	Platform                 string  `json:"platform"`
-	Timestamp                string  `json:"timestamp"`
-	Error                    string  `json:"error,omitempty"`
-	StopLossOID              int64   `json:"stop_loss_oid,omitempty"`
-	StopLossTriggerPx        float64 `json:"stop_loss_trigger_px,omitempty"`
-	TP1OID                   int64   `json:"tp1_oid,omitempty"`
-	TP2OID                   int64   `json:"tp2_oid,omitempty"`
-	TP1Px                    float64 `json:"tp1_px,omitempty"`
-	TP2Px                    float64 `json:"tp2_px,omitempty"`
-	StopLossError            string  `json:"stop_loss_error,omitempty"`
-	TP1Error                 string  `json:"tp1_error,omitempty"`
-	TP2Error                 string  `json:"tp2_error,omitempty"`
-	OpenOrderCheckError      string  `json:"open_order_check_error,omitempty"`
-	StopLossFilledExternally bool    `json:"stop_loss_filled_externally,omitempty"`
-	TP1FilledExternally      bool    `json:"tp1_filled_externally,omitempty"`
-	TP2FilledExternally      bool    `json:"tp2_filled_externally,omitempty"`
+	Platform                 string    `json:"platform"`
+	Timestamp                string    `json:"timestamp"`
+	Error                    string    `json:"error,omitempty"`
+	StopLossOID              int64     `json:"stop_loss_oid,omitempty"`
+	StopLossTriggerPx        float64   `json:"stop_loss_trigger_px,omitempty"`
+	TPOIDs                   []int64   `json:"tp_oids,omitempty"`
+	TPPxs                    []float64 `json:"tp_pxs,omitempty"`
+	TPErrors                 []string  `json:"tp_errors,omitempty"`
+	TPFilledExternally       []bool    `json:"tp_filled_externally,omitempty"`
+	TP1OID                   int64     `json:"tp1_oid,omitempty"`
+	TP2OID                   int64     `json:"tp2_oid,omitempty"`
+	TP1Px                    float64   `json:"tp1_px,omitempty"`
+	TP2Px                    float64   `json:"tp2_px,omitempty"`
+	StopLossError            string    `json:"stop_loss_error,omitempty"`
+	TP1Error                 string    `json:"tp1_error,omitempty"`
+	TP2Error                 string    `json:"tp2_error,omitempty"`
+	OpenOrderCheckError      string    `json:"open_order_check_error,omitempty"`
+	StopLossFilledExternally bool      `json:"stop_loss_filled_externally,omitempty"`
+	TP1FilledExternally      bool      `json:"tp1_filled_externally,omitempty"`
+	TP2FilledExternally      bool      `json:"tp2_filled_externally,omitempty"`
 }
 
 // RunPythonScript executes a Python script and returns stdout/stderr.
@@ -327,7 +331,7 @@ func RunHyperliquidUpdateStopLoss(script, symbol, side string, size, triggerPx f
 	return parseHyperliquidUpdateStopLossOutput(stdout, string(stderr), err)
 }
 
-func RunHyperliquidSyncProtection(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult, tp1Mult, tp1Fraction, tp2Mult float64, stopLossOID, tp1OID, tp2OID int64) (*HyperliquidProtectionSyncResult, string, error) {
+func RunHyperliquidSyncProtection(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64) (*HyperliquidProtectionSyncResult, string, error) {
 	args := []string{
 		"--sync-protection",
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -336,19 +340,27 @@ func RunHyperliquidSyncProtection(script, symbol, side string, size, avgCost, en
 		fmt.Sprintf("--avg-cost=%g", avgCost),
 		fmt.Sprintf("--entry-atr=%g", entryATR),
 		fmt.Sprintf("--stop-loss-atr-mult=%g", stopLossATRMult),
-		fmt.Sprintf("--tp1-atr-mult=%g", tp1Mult),
-		fmt.Sprintf("--tp1-fraction=%g", tp1Fraction),
-		fmt.Sprintf("--tp2-atr-mult=%g", tp2Mult),
 		"--mode=live",
+	}
+	if len(tiers) > 0 {
+		tierArgs := make([]map[string]float64, 0, len(tiers))
+		for _, tier := range tiers {
+			tierArgs = append(tierArgs, map[string]float64{
+				"atr_multiple":   tier.Multiple,
+				"close_fraction": tier.Fraction,
+			})
+		}
+		if b, err := json.Marshal(tierArgs); err == nil {
+			args = append(args, fmt.Sprintf("--tp-tiers-json=%s", string(b)))
+		}
 	}
 	if stopLossOID > 0 {
 		args = append(args, fmt.Sprintf("--stop-loss-oid=%d", stopLossOID))
 	}
-	if tp1OID > 0 {
-		args = append(args, fmt.Sprintf("--tp1-oid=%d", tp1OID))
-	}
-	if tp2OID > 0 {
-		args = append(args, fmt.Sprintf("--tp2-oid=%d", tp2OID))
+	if len(tpOIDs) > 0 {
+		if b, err := json.Marshal(tpOIDs); err == nil {
+			args = append(args, fmt.Sprintf("--tp-oids-json=%s", string(b)))
+		}
 	}
 	stdout, stderr, err := RunPythonScript(script, args)
 	stderrStr := string(stderr)

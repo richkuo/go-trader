@@ -840,8 +840,9 @@ func main() {
 					if ss, ok := state.Strategies[sc.ID]; ok && ss != nil {
 						if pos, pok := ss.Positions[sym]; pok && pos != nil {
 							hlSLOIDs[sym] = appendUniquePositiveStopLossOID(hlSLOIDs[sym], pos.StopLossOID)
-							hlSLOIDs[sym] = appendUniquePositiveStopLossOID(hlSLOIDs[sym], pos.TP1OID)
-							hlSLOIDs[sym] = appendUniquePositiveStopLossOID(hlSLOIDs[sym], pos.TP2OID)
+							for _, tpOID := range pos.TPOIDs {
+								hlSLOIDs[sym] = appendUniquePositiveStopLossOID(hlSLOIDs[sym], tpOID)
+							}
 						}
 					}
 				}
@@ -1118,8 +1119,7 @@ func main() {
 					var hlEntryATR float64
 					var hlPosCtx PositionCtx
 					var hlStopLossOID int64
-					var hlTP1OID int64
-					var hlTP2OID int64
+					var hlTPOIDs []int64
 					var hlStopLossTriggerPx float64
 					var hlStopLossHighWaterPx float64
 					if sc.Type == "perps" && sc.Platform == "hyperliquid" {
@@ -1137,8 +1137,7 @@ func main() {
 								hlAvgCost = hlPosCtx.AvgCost
 								hlEntryATR = pos.EntryATR
 								hlStopLossOID = pos.StopLossOID
-								hlTP1OID = pos.TP1OID
-								hlTP2OID = pos.TP2OID
+								hlTPOIDs = cloneInt64s(pos.TPOIDs)
 								hlStopLossTriggerPx = pos.StopLossTriggerPx
 								hlStopLossHighWaterPx = pos.StopLossHighWaterPx
 							}
@@ -1476,14 +1475,14 @@ func main() {
 										mu.Lock()
 										if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == plan.Side {
 											applyHyperliquidProtectionSync(pos, protection)
-											logger.Info("HL protection synced (sl_oid=%d tp1_oid=%d tp2_oid=%d)", pos.StopLossOID, pos.TP1OID, pos.TP2OID)
+											logger.Info("HL protection synced (sl_oid=%d tp_oids=%v)", pos.StopLossOID, pos.TPOIDs)
 										}
 										mu.Unlock()
 									}
 								}
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
-								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTP1OID, hlTP2OID, hlLiveAll, notifier, logger)
+								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlLiveAll, notifier, logger)
 								if ok2 {
 									execResult = er
 								} else {
@@ -1522,7 +1521,7 @@ func main() {
 											mu.Lock()
 											if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == plan.Side {
 												applyHyperliquidProtectionSync(pos, protection)
-												logger.Info("HL protection synced after trade (sl_oid=%d tp1_oid=%d tp2_oid=%d)", pos.StopLossOID, pos.TP1OID, pos.TP2OID)
+												logger.Info("HL protection synced after trade (sl_oid=%d tp_oids=%v)", pos.StopLossOID, pos.TPOIDs)
 											}
 											mu.Unlock()
 										}
@@ -2382,7 +2381,7 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 // Trade record, leaving state silently behind actual exchange holdings. See
 // issue #298 — 0.716 ETH of live fills were lost this way because the
 // "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
-func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, existingStopLossOID, existingTP1OID, existingTP2OID int64, hlLiveAll []StrategyConfig, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	if reason := PerpsOrderSkipReason(result.Signal, posSide, sc.AllowShorts); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
@@ -2435,7 +2434,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	}
 	var extraCancelOIDs []int64
 	if posQty > 0 && !partialClose {
-		extraCancelOIDs = append(extraCancelOIDs, existingTP1OID, existingTP2OID)
+		extraCancelOIDs = append(extraCancelOIDs, existingTPOIDs...)
 	}
 	var slPct float64
 	if !pureClose && !partialClose {
