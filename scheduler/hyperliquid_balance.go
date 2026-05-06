@@ -1186,7 +1186,7 @@ func runPendingHyperliquidCircuitCloses(
 			if !ss.RiskState.CircuitBreaker {
 				continue
 			}
-			sym := hyperliquidSymbol(sc.Args)
+			sym := hyperliquidConfiguredCoin(sc)
 			if sym == "" {
 				continue
 			}
