@@ -172,8 +172,8 @@ class Backtester:
                  commission_pct: Optional[float] = None,
                  slippage_pct: float = 0.0005,
                  platform: str = "binanceus",
-                 close_strategies: Optional[list[str]] = None,
-                 close_params: Optional[dict[str, dict]] = None,
+                 open_strategy: Optional[dict] = None,
+                 close_strategies: Optional[list[dict]] = None,
                  regime_enabled: bool = False,
                  regime_period: int = 14,
                  regime_adx_threshold: float = 20.0,
@@ -189,16 +189,20 @@ class Backtester:
             platform: Exchange fee model — one of ``PLATFORM_FEE_PCT`` keys.
                 Unknown platforms fall back to BinanceUS (0.1%) with no
                 warning, matching the Go dispatch default.
-            close_strategies: Ordered list of close-evaluator names from
-                ``shared_strategies/close/registry.py``. When provided, each
-                evaluator runs at the end of every bar against the simulated
-                open position; the max ``close_fraction`` across evaluators
-                is applied at the next bar's open. Combined with any
-                column-based ``close_fraction`` on the input DataFrame using
-                max-wins (mirrors the live composition contract).
-            close_params: Per-evaluator params dict (keyed by strategy name).
-                Merged over the registry's ``default_params`` for that
-                strategy. Unknown keys are forwarded as-is to the evaluator.
+            open_strategy: Optional ``{"name": str, "params": dict}`` ref
+                describing the open evaluator that produced the signal column
+                on the DataFrame passed to ``run()``. The caller is responsible
+                for actually applying the open strategy; this ref is recorded
+                on the result for reporting parity with the live config (#641).
+            close_strategies: Ordered list of close-evaluator refs, each
+                ``{"name": str, "params": dict}``. The named evaluator must be
+                registered in ``shared_strategies/close/registry.py``; per-ref
+                ``params`` are merged over the registry's ``default_params`` at
+                evaluation time. Each ref runs per-bar against the simulated
+                position; the max ``close_fraction`` across refs wins (max-wins
+                vs any column-based ``close_fraction`` mirrors the live
+                composition contract). Replaces the pre-#641 parallel
+                ``close_strategies: list[str]`` + ``close_params: dict`` pair.
         """
         self.initial_capital = initial_capital
         self.platform = platform
@@ -207,8 +211,26 @@ class Backtester:
             else fee_pct_for_platform(platform)
         )
         self.slippage_pct = slippage_pct
-        self.close_strategies = list(close_strategies or [])
-        self.close_params = dict(close_params or {})
+        self.open_strategy = dict(open_strategy or {})
+        # Normalize close refs into the form the eval loop wants. Each ref must
+        # have a non-empty `name`; missing/empty `params` becomes an empty dict.
+        self._close_refs: list[dict] = []
+        for ref in close_strategies or []:
+            if not isinstance(ref, dict):
+                raise ValueError(
+                    f"close_strategies entries must be dicts of shape "
+                    f"{{'name': str, 'params': dict}}, got {type(ref).__name__}"
+                )
+            name = (ref.get("name") or "").strip()
+            if not name:
+                raise ValueError(f"close_strategies ref missing 'name': {ref}")
+            self._close_refs.append({
+                "name": name,
+                "params": dict(ref.get("params") or {}),
+            })
+        # Derived views for the per-bar evaluation loop.
+        self.close_strategies = [r["name"] for r in self._close_refs]
+        self.close_params = {r["name"]: r["params"] for r in self._close_refs}
         self.regime_enabled = regime_enabled
         self.regime_period = regime_period
         self.regime_adx_threshold = regime_adx_threshold
@@ -491,15 +513,25 @@ class Backtester:
 
         # Calculate metrics
         metrics = self._calculate_metrics(equity_df, trades, df, timeframe)
+        # Resolve the open strategy ref for reporting. Caller can supply it
+        # in __init__ (preferred — matches the live config shape from #640) or
+        # via run()'s strategy_name + params (legacy path).
+        open_ref = dict(self.open_strategy) if self.open_strategy else {}
+        if not open_ref.get("name") and strategy_name:
+            open_ref["name"] = strategy_name
+        if "params" not in open_ref and params:
+            open_ref["params"] = dict(params)
         metrics.update({
-            "strategy_name": strategy_name,
+            "strategy_name": open_ref.get("name") or strategy_name,
             "symbol": symbol,
             "timeframe": timeframe,
             "start_date": str(df.index[0]),
             "end_date": str(df.index[-1]),
             "initial_capital": self.initial_capital,
             "final_capital": round(final_equity, 2),
-            "params": params or {},
+            "params": open_ref.get("params") or params or {},
+            "open_strategy": open_ref,
+            "close_strategies": [dict(r) for r in self._close_refs],
             "trades": [t.to_dict() for t in trades],
         })
 

@@ -32,8 +32,7 @@ def test_tp_at_pct_closes_full_position_when_threshold_hit():
     )
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=["tp_at_pct"],
-        close_params={"tp_at_pct": {"pct": 0.03}},
+        close_strategies=[{"name": "tp_at_pct", "params": {"pct": 0.03}}],
     )
     result = bt.run(df, save=False)
 
@@ -51,8 +50,7 @@ def test_tp_at_pct_does_not_fire_when_threshold_not_hit():
     )
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=["tp_at_pct"],
-        close_params={"tp_at_pct": {"pct": 0.03}},
+        close_strategies=[{"name": "tp_at_pct", "params": {"pct": 0.03}}],
     )
     result = bt.run(df, save=False)
     # Position closes at the end of run at the final close ($101).
@@ -72,11 +70,12 @@ def test_tiered_tp_atr_partial_then_full_close():
     )
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=["tiered_tp_atr"],
-        close_params={"tiered_tp_atr": {"tiers": [
+        close_strategies=[
+            {"name": "tiered_tp_atr", "params": {"tiers": [
             {"atr_multiple": 1.0, "close_fraction": 0.5},
             {"atr_multiple": 2.0, "close_fraction": 1.0},
         ]}},
+        ],
     )
     result = bt.run(df, save=False)
 
@@ -100,14 +99,15 @@ def test_tiered_tp_atr_live_uses_live_atr_from_market():
     )
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=["tiered_tp_atr_live"],
-        close_params={"tiered_tp_atr_live": {
+        close_strategies=[
+            {"name": "tiered_tp_atr_live", "params": {
             "atr_source": "live",
             "tiers": [
                 {"atr_multiple": 1.0, "close_fraction": 0.5},
                 {"atr_multiple": 2.0, "close_fraction": 1.0},
             ],
         }},
+        ],
     )
     result = bt.run(df, save=False)
 
@@ -126,13 +126,12 @@ def test_max_close_fraction_wins_between_two_evaluators():
     )
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=["tp_at_pct", "tiered_tp_pct"],
-        close_params={
-            "tp_at_pct": {"pct": 0.02},
-            "tiered_tp_pct": {"tiers": [
+        close_strategies=[
+            {"name": "tp_at_pct", "params": {"pct": 0.02}},
+            {"name": "tiered_tp_pct", "params": {"tiers": [
                 {"profit_pct": 0.05, "close_fraction": 1.0},
-            ]},
-        },
+            ]}},
+        ],
     )
     result = bt.run(df, save=False)
 
@@ -171,8 +170,7 @@ def test_close_strategy_short_position_long_take_profit():
     }, index=idx)
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=["tp_at_pct"],
-        close_params={"tp_at_pct": {"pct": 0.03}},
+        close_strategies=[{"name": "tp_at_pct", "params": {"pct": 0.03}}],
     )
     result = bt.run(df, save=False)
 
@@ -199,11 +197,12 @@ def test_starting_long_seed_with_entry_atr_lets_tiered_tp_atr_fire():
     }, index=idx)
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=["tiered_tp_atr"],
-        close_params={"tiered_tp_atr": {"tiers": [
+        close_strategies=[
+            {"name": "tiered_tp_atr", "params": {"tiers": [
             {"atr_multiple": 1.0, "close_fraction": 0.5},
             {"atr_multiple": 2.0, "close_fraction": 1.0},
         ]}},
+        ],
     )
     result = bt.run(
         df, save=False,
@@ -233,7 +232,7 @@ def test_starting_long_seed_without_entry_atr_atr_evaluator_noops():
     }, index=idx)
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        close_strategies=["tiered_tp_atr"],
+        close_strategies=[{"name": "tiered_tp_atr"}],
     )
     result = bt.run(
         df, save=False,
@@ -248,7 +247,7 @@ def test_close_strategy_unknown_name_raises():
     try:
         Backtester(
             initial_capital=1000, commission_pct=0, slippage_pct=0,
-            close_strategies=["does_not_exist"],
+            close_strategies=[{"name": "does_not_exist"}],
         )
     except ValueError as exc:
         assert "does_not_exist" in str(exc)

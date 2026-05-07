@@ -75,6 +75,57 @@ DEFAULT_SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
 DEFAULT_TIMEFRAMES = ["4h", "1d"]
 
 
+def load_strategy_config(config_path: str, strategy_id: str) -> dict:
+    """Load a single strategy's refs from a live go-trader config (#641).
+
+    Reads the v13+ config at ``config_path``, finds the strategy with
+    ``id == strategy_id``, and returns kwargs ready to splat into
+    ``Backtester(**kwargs)`` plus the open name needed for the upstream
+    ``apply_strategy`` call. Lets operators backtest the exact live
+    config without translating shapes.
+
+    Returns ``{"open_strategy": {...}, "close_strategies": [...]}``.
+
+    Raises ValueError when the config is pre-v13 (legacy flat shape) or
+    the strategy ID is not found — the caller should run the live
+    binary's migration first.
+    """
+    import json as _json
+    with open(config_path) as fh:
+        cfg = _json.load(fh)
+    version = int(cfg.get("config_version", 0) or 0)
+    if version < 13:
+        raise ValueError(
+            f"{config_path}: config_version={version} predates the co-located "
+            f"strategy ref shape (#640). Run go-trader once against this file "
+            f"to migrate it, then retry."
+        )
+    for sc in cfg.get("strategies", []) or []:
+        if sc.get("id") != strategy_id:
+            continue
+        open_ref = sc.get("open_strategy") or {}
+        if not isinstance(open_ref, dict) or not open_ref.get("name"):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} has no open_strategy.name; "
+                f"the migrated config should always populate it."
+            )
+        close_refs = []
+        for ref in sc.get("close_strategies", []) or []:
+            if isinstance(ref, dict) and ref.get("name"):
+                close_refs.append({"name": ref["name"], "params": dict(ref.get("params") or {})})
+        return {
+            "open_strategy": {
+                "name": open_ref["name"],
+                "params": dict(open_ref.get("params") or {}),
+            },
+            "close_strategies": close_refs,
+        }
+    raise ValueError(
+        f"{config_path}: no strategy with id={strategy_id!r}. "
+        f"Available: {[s.get('id') for s in cfg.get('strategies', []) or []]}"
+    )
+
+
 def run_single_backtest(
     strategy_name: str = "sma_crossover",
     symbol: str = "BTC/USDT",
@@ -85,8 +136,7 @@ def run_single_backtest(
     registry: str = "spot",
     platform: str = "binanceus",
     htf_filter: bool = False,
-    close_strategies: Optional[List[str]] = None,
-    close_params: Optional[dict] = None,
+    close_strategies: Optional[List[dict]] = None,
     regime_enabled: bool = False,
     regime_period: int = 14,
     regime_adx_threshold: float = 20.0,
@@ -98,10 +148,11 @@ def run_single_backtest(
     ``platform`` selects the exchange fee model (``"binanceus"``,
     ``"hyperliquid"``, ``"robinhood"``, ``"luno"``, ``"okx"``,
     ``"okx-perps"``), matching ``scheduler/fees.go:CalculatePlatformSpotFee``.
-    ``close_strategies`` is an optional list of close-evaluator names from
-    the close registry (#511); each runs per-bar against the simulated
-    position. Backtest granularity is bar-level so live intra-bar trigger
-    races (e.g. HL stop-loss OIDs) are not simulated.
+    ``close_strategies`` is an optional list of co-located close-evaluator
+    refs (``[{"name": str, "params": dict}, ...]``) from the close registry
+    (#511, #641); each runs per-bar against the simulated position. Backtest
+    granularity is bar-level so live intra-bar trigger races (e.g. HL
+    stop-loss OIDs) are not simulated.
     """
     reg = load_registry(registry)
     strat = reg.STRATEGY_REGISTRY.get(strategy_name)
@@ -115,7 +166,7 @@ def run_single_backtest(
     print(f"  Params: {strat_params}")
     print(f"  Symbol: {symbol} | Timeframe: {timeframe} | Since: {since}")
     if close_strategies:
-        print(f"  Close strategies: {close_strategies}")
+        print(f"  Close strategies: {[r.get('name') for r in close_strategies]}")
 
     df = load_cached_data(symbol, timeframe, start_date=since)
     if df.empty:
@@ -139,8 +190,8 @@ def run_single_backtest(
 
     bt = Backtester(
         initial_capital=capital, platform=platform,
+        open_strategy={"name": strategy_name, "params": dict(strat_params or {})},
         close_strategies=close_strategies,
-        close_params=close_params,
         regime_enabled=regime_enabled,
         regime_period=regime_period,
         regime_adx_threshold=regime_adx_threshold,
@@ -167,8 +218,7 @@ def run_all_strategies(
     registry: str = "spot",
     platform: str = "binanceus",
     htf_filter: bool = False,
-    close_strategies: Optional[List[str]] = None,
-    close_params: Optional[dict] = None,
+    close_strategies: Optional[List[dict]] = None,
     regime_enabled: bool = False,
     regime_period: int = 14,
     regime_adx_threshold: float = 20.0,
@@ -187,7 +237,7 @@ def run_all_strategies(
         result = run_single_backtest(
             name, symbol, timeframe, since, capital,
             registry=registry, platform=platform, htf_filter=htf_filter,
-            close_strategies=close_strategies, close_params=close_params,
+            close_strategies=close_strategies,
             regime_enabled=regime_enabled, regime_period=regime_period,
             regime_adx_threshold=regime_adx_threshold,
             allowed_regimes=allowed_regimes,
@@ -210,8 +260,7 @@ def run_multi_asset(
     registry: str = "spot",
     platform: str = "binanceus",
     htf_filter: bool = False,
-    close_strategies: Optional[List[str]] = None,
-    close_params: Optional[dict] = None,
+    close_strategies: Optional[List[dict]] = None,
     regime_enabled: bool = False,
     regime_period: int = 14,
     regime_adx_threshold: float = 20.0,
@@ -238,7 +287,7 @@ def run_multi_asset(
             result = run_single_backtest(
                 strat_name, symbol, timeframe, since, capital,
                 registry=registry, platform=platform, htf_filter=htf_filter,
-                close_strategies=close_strategies, close_params=close_params,
+                close_strategies=close_strategies,
                 regime_enabled=regime_enabled, regime_period=regime_period,
                 regime_adx_threshold=regime_adx_threshold,
                 allowed_regimes=allowed_regimes,
@@ -339,14 +388,17 @@ def _build_parser() -> argparse.ArgumentParser:
                              "shared_tools/htf_filter.py); 50-EMA on the "
                              "default HTF for the chosen timeframe.")
     parser.add_argument("--close-strategy", action="append", dest="close_strategies",
-                        default=None, metavar="NAME",
-                        help="Close-evaluator name from shared_strategies/close/registry.py "
-                             "(repeat for multiple). Each runs per-bar against the "
-                             "simulated position; max close_fraction wins.")
-    parser.add_argument("--close-params", default=None,
-                        help="Per-evaluator params as JSON string, keyed by "
-                             "evaluator name, e.g. "
-                             "'{\"tp_at_pct\":{\"pct\":0.03}}'.")
+                        default=None, metavar="REF",
+                        help="Close-evaluator ref. Two accepted shapes (#641):\n"
+                             "  - bare name: --close-strategy tp_at_pct\n"
+                             "  - JSON ref:  --close-strategy '{\"name\":\"tp_at_pct\",\"params\":{\"pct\":0.03}}'\n"
+                             "Repeat for multiple. Each runs per-bar against the simulated position; "
+                             "max close_fraction wins. Replaces the pre-#641 --close-strategy NAME + "
+                             "--close-params JSON pair.")
+    parser.add_argument("--config", default=None,
+                        help="Path to a live go-trader config.json. Loads a single strategy by "
+                             "--strategy ID and uses its open_strategy/close_strategies refs verbatim "
+                             "for the backtest. Lets you backtest a live config without reshaping (#641).")
     parser.add_argument("--regime-enabled", action="store_true", default=False,
                         help="Enable market regime detection. Injects vectorized regime "
                              "column from shared_tools/regime.py before the per-bar loop, "
@@ -363,16 +415,48 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_close_strategy_arg(raw: str) -> dict:
+    """Parse a --close-strategy CLI value into a {name, params} ref (#641).
+
+    Accepts two shapes for ergonomics:
+      - bare name (no leading '{'): wraps as {"name": <raw>, "params": {}}
+      - JSON object: parsed as-is, requires "name" key, normalized "params"
+    """
+    import json as _json
+    s = raw.strip()
+    if not s.startswith(("{", "[")):
+        return {"name": s, "params": {}}
+    try:
+        ref = _json.loads(s)
+    except _json.JSONDecodeError as exc:
+        raise SystemExit(f"--close-strategy not valid JSON: {exc}\nGot: {raw}")
+    if not isinstance(ref, dict):
+        raise SystemExit(f"--close-strategy JSON must be an object, got {type(ref).__name__}")
+    name = (ref.get("name") or "").strip()
+    if not name:
+        raise SystemExit(f"--close-strategy ref missing 'name': {raw}")
+    return {"name": name, "params": dict(ref.get("params") or {})}
+
+
 def main():
     args = _build_parser().parse_args()
 
-    close_params = None
-    if args.close_params:
-        import json as _json
-        close_params = _json.loads(args.close_params)
-        if not isinstance(close_params, dict):
-            print("--close-params must be a JSON object keyed by evaluator name")
+    close_refs = None
+    if args.close_strategies:
+        close_refs = [_parse_close_strategy_arg(v) for v in args.close_strategies]
+
+    # #641: --config loads a live strategy by ID and uses its refs directly.
+    if args.config:
+        live_kwargs = load_strategy_config(args.config, args.strategy)
+        # Live config refs take precedence; --close-strategy on top is rejected
+        # to avoid silent overrides.
+        if close_refs:
+            print("--close-strategy is not allowed alongside --config (refs come from the live config)")
             sys.exit(1)
+        close_refs = live_kwargs["close_strategies"]
+        # Open strategy name + params come from the live config too. We override
+        # args.strategy and any --strategy-params downstream.
+        args.strategy = live_kwargs["open_strategy"]["name"]
 
     reg = load_registry(args.registry)
 
@@ -384,8 +468,7 @@ def main():
                             args.since, args.capital,
                             registry=args.registry, platform=args.platform,
                             htf_filter=args.htf_filter,
-                            close_strategies=args.close_strategies,
-                            close_params=close_params,
+                            close_strategies=close_refs,
                             regime_enabled=args.regime_enabled,
                             regime_period=args.regime_period,
                             regime_adx_threshold=args.regime_adx_threshold,
@@ -397,8 +480,7 @@ def main():
                            strategies,
                            registry=args.registry, platform=args.platform,
                            htf_filter=args.htf_filter,
-                           close_strategies=args.close_strategies,
-                           close_params=close_params,
+                           close_strategies=close_refs,
                            regime_enabled=args.regime_enabled,
                            regime_period=args.regime_period,
                            regime_adx_threshold=args.regime_adx_threshold,
@@ -411,8 +493,7 @@ def main():
                         args.capital,
                         registry=args.registry, platform=args.platform,
                         htf_filter=args.htf_filter,
-                        close_strategies=args.close_strategies,
-                        close_params=close_params,
+                        close_strategies=close_refs,
                         regime_enabled=args.regime_enabled,
                         regime_period=args.regime_period,
                         regime_adx_threshold=args.regime_adx_threshold,
