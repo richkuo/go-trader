@@ -66,6 +66,9 @@ def _position_ctx(position_side):
 
 
 def main():
+    # #645: startup compatibility probe — exit 0 without running the strategy.
+    if "--probe-only" in sys.argv:
+        sys.exit(0)
     # Parse optional flags from argv before positional args
     htf_filter_enabled = "--htf-filter" in sys.argv
     regime_enabled = "--regime-enabled" in sys.argv

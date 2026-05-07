@@ -406,6 +406,9 @@ STRATEGY_MAP = {
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    # #645: startup compatibility probe — exit 0 without running the strategy.
+    if "--probe-only" in sys.argv:
+        sys.exit(0)
     # Parse args: strip --platform= before positional parsing
     args = sys.argv[1:]
     platform = "deribit"

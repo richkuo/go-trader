@@ -383,7 +383,11 @@ def main():
         parser.add_argument("--position-qty", type=float, default=None)
         parser.add_argument("--position-initial-qty", type=float, default=None)
         parser.add_argument("--position-entry-atr", type=float, default=None)
+        parser.add_argument("--probe-only", action="store_true",
+            help="Startup compatibility probe (#645): validate argv shape and exit 0.")
         args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
         from strategy_composition import parse_strategy_refs_arg
         refs = parse_strategy_refs_arg(args.strategy_refs)
         open_strategy_name = refs["open_name"] if refs else args.open_strategy

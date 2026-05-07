@@ -293,6 +293,20 @@ func main() {
 		go runConfigMigrationDM(cfg, notifier, *configPath)
 	}
 
+	// #645: Verify each configured check script accepts the binary's argv
+	// shape before entering the trading loop. An asymmetric deploy (binary
+	// from one commit, Python scripts from an older one) caused 18h of
+	// silent argparse crashes after #642 — fail fast instead so the
+	// operator is paged immediately and systemd's restart loop makes the
+	// breakage visible in `systemctl status`.
+	if err := probeCheckScripts(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "[startup] check-script compatibility probe failed: %v\n", err)
+		if notifier != nil && notifier.HasOwner() {
+			notifier.SendOwnerDM(fmt.Sprintf("**Startup probe failed** — check-script CLI mismatch:\n```\n%v\n```\nLikely cause: binary and Python scripts deployed from different commits. Refusing to start.", err))
+		}
+		os.Exit(1)
+	}
+
 	// Track the last remote hash we notified about to avoid re-notifying on every cycle.
 	var lastNotifiedHash string
 
