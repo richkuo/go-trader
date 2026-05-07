@@ -1991,13 +1991,10 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 		args = append(args, "--htf-filter")
 	}
 	args = appendRegimeArgs(args, regime)
-	if len(sc.Params) > 0 {
-		paramsJSON, err := json.Marshal(sc.Params)
-		if err == nil {
-			args = append(args, "--params", string(paramsJSON))
-		} else {
-			logger.Warn("Failed to marshal strategy params: %v", err)
-		}
+	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
+		logger.Warn("Failed to marshal strategy refs: %v", err)
+	} else if len(refsArgs) > 0 {
+		args = append(args, refsArgs...)
 	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
 
@@ -2284,13 +2281,10 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, posCtx Po
 		args = append(args, "--htf-filter")
 	}
 	args = appendRegimeArgs(args, regime)
-	if len(sc.Params) > 0 {
-		paramsJSON, err := json.Marshal(sc.Params)
-		if err == nil {
-			args = append(args, "--params", string(paramsJSON))
-		} else {
-			logger.Warn("Failed to marshal strategy params: %v", err)
-		}
+	if refsArgs, err := buildStrategyRefsArg(scForCheck); err != nil {
+		logger.Warn("Failed to marshal strategy refs: %v", err)
+	} else if len(refsArgs) > 0 {
+		args = append(args, refsArgs...)
 	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
 
@@ -2648,13 +2642,10 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 		args = append(args, "--htf-filter")
 	}
 	args = appendRegimeArgs(args, regime)
-	if len(sc.Params) > 0 {
-		paramsJSON, err := json.Marshal(sc.Params)
-		if err == nil {
-			args = append(args, "--params", string(paramsJSON))
-		} else {
-			logger.Warn("Failed to marshal strategy params: %v", err)
-		}
+	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
+		logger.Warn("Failed to marshal strategy refs: %v", err)
+	} else if len(refsArgs) > 0 {
+		args = append(args, refsArgs...)
 	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
 
@@ -2846,13 +2837,10 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 		args = append(args, "--htf-filter")
 	}
 	args = appendRegimeArgs(args, regime)
-	if len(sc.Params) > 0 {
-		paramsJSON, err := json.Marshal(sc.Params)
-		if err == nil {
-			args = append(args, "--params", string(paramsJSON))
-		} else {
-			logger.Warn("Failed to marshal strategy params: %v", err)
-		}
+	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
+		logger.Warn("Failed to marshal strategy refs: %v", err)
+	} else if len(refsArgs) > 0 {
+		args = append(args, refsArgs...)
 	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
 
@@ -3022,13 +3010,10 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 		args = append(args, "--htf-filter")
 	}
 	args = appendRegimeArgs(args, regime)
-	if len(sc.Params) > 0 {
-		paramsJSON, err := json.Marshal(sc.Params)
-		if err == nil {
-			args = append(args, "--params", string(paramsJSON))
-		} else {
-			logger.Warn("Failed to marshal strategy params: %v", err)
-		}
+	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
+		logger.Warn("Failed to marshal strategy refs: %v", err)
+	} else if len(refsArgs) > 0 {
+		args = append(args, refsArgs...)
 	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
 

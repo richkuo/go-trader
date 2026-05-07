@@ -217,9 +217,9 @@ func TestStrategyDecisionFields_RegimeOmitEmpty(t *testing.T) {
 
 // ─── Config version bump ──────────────────────────────────────────────────────
 
-func TestCurrentConfigVersion_IsTwelve(t *testing.T) {
-	if CurrentConfigVersion != 12 {
-		t.Errorf("expected CurrentConfigVersion=12, got %d", CurrentConfigVersion)
+func TestCurrentConfigVersion_IsThirteen(t *testing.T) {
+	if CurrentConfigVersion != 13 {
+		t.Errorf("expected CurrentConfigVersion=13, got %d", CurrentConfigVersion)
 	}
 }
 

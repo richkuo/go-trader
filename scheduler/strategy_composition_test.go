@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -18,7 +20,7 @@ func TestEffectiveOpenStrategy(t *testing.T) {
 		},
 		{
 			name:     "open override wins over positional",
-			sc:       StrategyConfig{Args: []string{"sma_crossover", "BTC/USDT", "1h"}, OpenStrategy: "momentum"},
+			sc:       StrategyConfig{Args: []string{"sma_crossover", "BTC/USDT", "1h"}, OpenStrategy: StrategyRef{Name: "momentum"}},
 			wantOpen: "momentum",
 		},
 	}
@@ -33,34 +35,23 @@ func TestEffectiveOpenStrategy(t *testing.T) {
 }
 
 func TestAppendOpenCloseArgsOnlyWhenOptedIn(t *testing.T) {
+	// Legacy strategies (no open/close opt-in) get no extra args.
 	legacy := StrategyConfig{Args: []string{"sma_crossover", "BTC/USDT", "1h"}}
 	if got := appendOpenCloseArgs(legacy.Args, legacy, PositionCtx{Side: "long"}); !reflect.DeepEqual(got, legacy.Args) {
 		t.Fatalf("legacy args mutated: %#v", got)
 	}
 
-	openOnly := StrategyConfig{
-		Args:         []string{"sma_crossover", "BTC/USDT", "1h"},
-		OpenStrategy: "momentum",
-	}
-	gotOpenOnly := appendOpenCloseArgs(openOnly.Args, openOnly, PositionCtx{})
-	wantOpenOnly := []string{
-		"sma_crossover", "BTC/USDT", "1h",
-		"--open-strategy", "momentum",
-	}
-	if !reflect.DeepEqual(gotOpenOnly, wantOpenOnly) {
-		t.Fatalf("appendOpenCloseArgs(open only) = %#v, want %#v", gotOpenOnly, wantOpenOnly)
-	}
-
+	// #640: open/close names + per-ref params are sent via --strategy-refs JSON
+	// (see buildStrategyRefsArg), not as separate --open-strategy / --close-strategies
+	// flags. appendOpenCloseArgs only adds position-context flags when they're set.
 	sc := StrategyConfig{
 		Args:            []string{"sma_crossover", "BTC/USDT", "1h"},
-		OpenStrategy:    "momentum",
-		CloseStrategies: []string{"rsi", "macd"},
+		OpenStrategy:    StrategyRef{Name: "momentum"},
+		CloseStrategies: []StrategyRef{{Name: "rsi"}, {Name: "macd"}},
 	}
 	got := appendOpenCloseArgs(sc.Args, sc, PositionCtx{Side: "long"})
 	want := []string{
 		"sma_crossover", "BTC/USDT", "1h",
-		"--open-strategy", "momentum",
-		"--close-strategies", "rsi,macd",
 		"--position-side", "long",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -68,10 +59,77 @@ func TestAppendOpenCloseArgsOnlyWhenOptedIn(t *testing.T) {
 	}
 }
 
+func TestBuildStrategyRefsArg(t *testing.T) {
+	// Legacy: no opt-in → no flag emitted.
+	legacy := StrategyConfig{Args: []string{"sma_crossover", "BTC/USDT", "1h"}}
+	got, err := buildStrategyRefsArg(legacy)
+	if err != nil {
+		t.Fatalf("legacy: unexpected err: %v", err)
+	}
+	if got != nil {
+		// effectiveOpenStrategy falls back to args[0]; we still emit the open ref.
+		// Verify the JSON shape carries only the open name with no params and no closes.
+		if len(got) != 2 || got[0] != "--strategy-refs" {
+			t.Fatalf("legacy: got %#v, want a single --strategy-refs flag", got)
+		}
+		if !strings.Contains(got[1], `"open":{"name":"sma_crossover"}`) {
+			t.Fatalf("legacy: payload missing open ref: %s", got[1])
+		}
+	}
+
+	sc := StrategyConfig{
+		Args:         []string{"sma_crossover", "BTC/USDT", "1h"},
+		OpenStrategy: StrategyRef{Name: "momentum", Params: map[string]interface{}{"rsi_period": 14}},
+		CloseStrategies: []StrategyRef{
+			{Name: "tiered_tp_atr", Params: map[string]interface{}{"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+			}}},
+			{Name: "tp_at_pct"},
+		},
+	}
+	got, err = buildStrategyRefsArg(sc)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(got) != 2 || got[0] != "--strategy-refs" {
+		t.Fatalf("got %#v, want --strategy-refs JSON", got)
+	}
+	// Round-trip the JSON to validate structure.
+	var payload struct {
+		Open   StrategyRef   `json:"open"`
+		Closes []StrategyRef `json:"closes"`
+	}
+	if err := json.Unmarshal([]byte(got[1]), &payload); err != nil {
+		t.Fatalf("payload unmarshal: %v\n%s", err, got[1])
+	}
+	if payload.Open.Name != "momentum" {
+		t.Errorf("open.name = %q, want momentum", payload.Open.Name)
+	}
+	if got, want := payload.Open.Params["rsi_period"], 14.0; got != want {
+		t.Errorf("open.params[rsi_period] = %v, want %v", got, want)
+	}
+	if len(payload.Closes) != 2 {
+		t.Fatalf("closes length = %d, want 2", len(payload.Closes))
+	}
+	if payload.Closes[0].Name != "tiered_tp_atr" {
+		t.Errorf("closes[0].name = %q, want tiered_tp_atr", payload.Closes[0].Name)
+	}
+	tiers, ok := payload.Closes[0].Params["tiers"].([]interface{})
+	if !ok || len(tiers) != 1 {
+		t.Errorf("closes[0].params[tiers] = %v, want length 1", payload.Closes[0].Params["tiers"])
+	}
+	if payload.Closes[1].Name != "tp_at_pct" {
+		t.Errorf("closes[1].name = %q, want tp_at_pct", payload.Closes[1].Name)
+	}
+	if len(payload.Closes[1].Params) != 0 {
+		t.Errorf("closes[1].params = %v, want empty", payload.Closes[1].Params)
+	}
+}
+
 func TestAppendOpenCloseArgsPositionCtx(t *testing.T) {
 	sc := StrategyConfig{
 		Args:            []string{"triple_ema", "ETH", "1h"},
-		CloseStrategies: []string{"tp_at_pct"},
+		CloseStrategies: []StrategyRef{{Name: "tp_at_pct"}},
 	}
 	tests := []struct {
 		name string
@@ -81,7 +139,7 @@ func TestAppendOpenCloseArgsPositionCtx(t *testing.T) {
 		{
 			name: "flat omits position context",
 			pos:  PositionCtx{},
-			want: []string{"triple_ema", "ETH", "1h", "--close-strategies", "tp_at_pct"},
+			want: []string{"triple_ema", "ETH", "1h"},
 		},
 		{
 			name: "partial position includes current and initial qty",
@@ -93,7 +151,6 @@ func TestAppendOpenCloseArgsPositionCtx(t *testing.T) {
 			},
 			want: []string{
 				"triple_ema", "ETH", "1h",
-				"--close-strategies", "tp_at_pct",
 				"--position-side", "long",
 				"--position-avg-cost=3000",
 				"--position-qty=0.25",
@@ -111,7 +168,6 @@ func TestAppendOpenCloseArgsPositionCtx(t *testing.T) {
 			},
 			want: []string{
 				"triple_ema", "ETH", "1h",
-				"--close-strategies", "tp_at_pct",
 				"--position-side", "short",
 				"--position-avg-cost=51000.5",
 				"--position-qty=0.4",

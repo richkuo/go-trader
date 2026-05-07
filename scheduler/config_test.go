@@ -423,8 +423,8 @@ func TestValidateConfigOpenCloseFields(t *testing.T) {
 			Platform:        "binanceus",
 			Script:          "shared_scripts/check_strategy.py",
 			Args:            []string{"sma_crossover", "BTC/USDT", "1h"},
-			OpenStrategy:    "momentum",
-			CloseStrategies: []string{"rsi", "macd"},
+			OpenStrategy: StrategyRef{Name: "momentum"},
+			CloseStrategies: []StrategyRef{{Name: "rsi"}, {Name: "macd"}},
 			Capital:         1000,
 			MaxDrawdownPct:  60,
 		}},
@@ -443,7 +443,7 @@ func TestValidateConfigOpenCloseRejectsOptions(t *testing.T) {
 			Platform:        "deribit",
 			Script:          "shared_scripts/check_options.py",
 			Args:            []string{"vol_mean_reversion", "BTC", "1h"},
-			CloseStrategies: []string{"rsi"},
+			CloseStrategies: []StrategyRef{{Name: "rsi"}},
 			Capital:         1000,
 			MaxDrawdownPct:  40,
 		}},
@@ -453,8 +453,8 @@ func TestValidateConfigOpenCloseRejectsOptions(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected options open/close validation error")
 	}
-	if !strings.Contains(err.Error(), "open_strategy/close_strategies") {
-		t.Fatalf("error %q should mention open/close fields", err.Error())
+	if !strings.Contains(err.Error(), "close_strategies") {
+		t.Fatalf("error %q should mention close_strategies field", err.Error())
 	}
 }
 
@@ -466,7 +466,7 @@ func TestValidateConfigCloseStrategyName(t *testing.T) {
 			Platform:        "binanceus",
 			Script:          "shared_scripts/check_strategy.py",
 			Args:            []string{"sma_crossover", "BTC/USDT", "1h"},
-			CloseStrategies: []string{"bad name"},
+			CloseStrategies: []StrategyRef{{Name: "bad name"}},
 			Capital:         1000,
 			MaxDrawdownPct:  60,
 		}},
@@ -489,8 +489,8 @@ func TestValidateConfigOpenCloseDefersRegistryLookupToCheckScript(t *testing.T) 
 			Platform:        "binanceus",
 			Script:          "shared_scripts/check_strategy.py",
 			Args:            []string{"sma_crossover", "BTC/USDT", "1h"},
-			OpenStrategy:    "not_a_strategy",
-			CloseStrategies: []string{"rsi"},
+			OpenStrategy: StrategyRef{Name: "not_a_strategy"},
+			CloseStrategies: []StrategyRef{{Name: "rsi"}},
 			Capital:         1000,
 			MaxDrawdownPct:  60,
 		}},

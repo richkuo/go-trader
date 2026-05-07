@@ -315,8 +315,8 @@ func clearATRMultMissingEntryATRWarningsForStrategy(strategyID string) {
 // any platform that supports composed close strategies.
 func tieredTPATRMissingEntryATR(sc StrategyConfig, pos *Position) bool {
 	hasTieredTP := false
-	for _, cs := range sc.CloseStrategies {
-		if cs == "tiered_tp_atr" {
+	for _, ref := range sc.CloseStrategies {
+		if ref.Name == "tiered_tp_atr" {
 			hasTieredTP = true
 			break
 		}

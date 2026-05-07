@@ -743,3 +743,118 @@ func TestCloneOrNewJSONMap(t *testing.T) {
 		}
 	})
 }
+
+// TestMigrateV13StrategyShape covers the v12→v13 schema migration: legacy flat
+// open_strategy/close_strategies/params get rewritten to co-located refs, with
+// close-owned legacy keys (registered in closeStrategyOwnedKeys) routed to the
+// matching close ref. This is #640's structural migration.
+func TestMigrateV13StrategyShape(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	// v12 config: tema_cross_bd open + tiered_tp_atr close, with legacy `tiers`
+	// in flat params (the bug that motivated #640).
+	original := map[string]interface{}{
+		"config_version": 12,
+		"strategies": []interface{}{
+			map[string]interface{}{
+				"id":               "hl-temacb-btc",
+				"type":             "perps",
+				"platform":         "hyperliquid",
+				"args":             []interface{}{"tema_cross_bd", "BTC", "1h", "--mode=paper"},
+				"open_strategy":    "tema_cross_bd",
+				"close_strategies": []interface{}{"tiered_tp_atr"},
+				"params": map[string]interface{}{
+					"tiers": []interface{}{
+						map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+						map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+					},
+					"short_period": 5.0,
+				},
+			},
+			map[string]interface{}{
+				// Legacy: open_strategy empty → migration falls back to args[0].
+				"id":       "hl-rsi-eth",
+				"type":     "perps",
+				"platform": "hyperliquid",
+				"args":     []interface{}{"rsi", "ETH", "1h", "--mode=paper"},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MigrateConfig(path, nil, nil); err != nil {
+		t.Fatalf("MigrateConfig: %v", err)
+	}
+
+	migrated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(migrated, &got); err != nil {
+		t.Fatal(err)
+	}
+
+	if int(got["config_version"].(float64)) != CurrentConfigVersion {
+		t.Errorf("config_version = %v, want %d", got["config_version"], CurrentConfigVersion)
+	}
+
+	strategies := got["strategies"].([]interface{})
+	if len(strategies) != 2 {
+		t.Fatalf("strategies len = %d, want 2", len(strategies))
+	}
+
+	// Strategy 0: tiered_tp_atr — `tiers` should have moved to the close ref.
+	s0 := strategies[0].(map[string]interface{})
+	if _, hasParams := s0["params"]; hasParams {
+		t.Error("strategy[0] still has flat `params` after migration")
+	}
+	open0, ok := s0["open_strategy"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("strategy[0].open_strategy = %v, want object", s0["open_strategy"])
+	}
+	if open0["name"] != "tema_cross_bd" {
+		t.Errorf("strategy[0].open_strategy.name = %v, want tema_cross_bd", open0["name"])
+	}
+	openParams, _ := open0["params"].(map[string]interface{})
+	if openParams == nil || openParams["short_period"] != 5.0 {
+		t.Errorf("strategy[0].open_strategy.params = %v, want {short_period:5}", openParams)
+	}
+	if _, leakedTiers := openParams["tiers"]; leakedTiers {
+		t.Error("strategy[0].open_strategy.params still contains tiers (should have moved to close ref)")
+	}
+
+	closes0 := s0["close_strategies"].([]interface{})
+	if len(closes0) != 1 {
+		t.Fatalf("strategy[0].close_strategies len = %d, want 1", len(closes0))
+	}
+	close0 := closes0[0].(map[string]interface{})
+	if close0["name"] != "tiered_tp_atr" {
+		t.Errorf("strategy[0].close_strategies[0].name = %v, want tiered_tp_atr", close0["name"])
+	}
+	closeParams, ok := close0["params"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("strategy[0].close_strategies[0].params missing — tiers should have moved here")
+	}
+	tiers, ok := closeParams["tiers"].([]interface{})
+	if !ok || len(tiers) != 2 {
+		t.Errorf("close ref params.tiers = %v, want 2-element slice", closeParams["tiers"])
+	}
+
+	// Strategy 1: empty open_strategy → migration falls back to args[0]=rsi.
+	s1 := strategies[1].(map[string]interface{})
+	open1 := s1["open_strategy"].(map[string]interface{})
+	if open1["name"] != "rsi" {
+		t.Errorf("strategy[1].open_strategy.name = %v, want rsi (from args[0])", open1["name"])
+	}
+	if _, hasParams := open1["params"]; hasParams {
+		t.Error("strategy[1] should not have open params (legacy had no params)")
+	}
+}

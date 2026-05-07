@@ -208,7 +208,7 @@ func TestApplyHotReloadConfigAllowsOpenCloseStrategyChanges(t *testing.T) {
 	next := minimalReloadConfig([]StrategyConfig{{
 		ID: "s1", Type: "spot", Platform: "binanceus", Script: "x.py",
 		Args: []string{"triple_ema", "BTC/USDT", "1h"}, Capital: 100, MaxDrawdownPct: 10,
-		OpenStrategy: "triple_ema", CloseStrategies: []string{"tp_at_pct"},
+		OpenStrategy: StrategyRef{Name: "triple_ema"}, CloseStrategies: []StrategyRef{{Name: "tp_at_pct"}},
 	}})
 
 	changes, err := applyHotReloadConfig(cfg, next, NewAppState(), nil, nil)
@@ -224,10 +224,10 @@ func TestApplyHotReloadConfigAllowsOpenCloseStrategyChanges(t *testing.T) {
 			t.Fatalf("changes missing %q:\n%s", want, joined)
 		}
 	}
-	if cfg.Strategies[0].OpenStrategy != "triple_ema" {
-		t.Fatalf("OpenStrategy = %q, want triple_ema", cfg.Strategies[0].OpenStrategy)
+	if cfg.Strategies[0].OpenStrategy.Name != "triple_ema" {
+		t.Fatalf("OpenStrategy.Name = %q, want triple_ema", cfg.Strategies[0].OpenStrategy.Name)
 	}
-	if len(cfg.Strategies[0].CloseStrategies) != 1 || cfg.Strategies[0].CloseStrategies[0] != "tp_at_pct" {
+	if len(cfg.Strategies[0].CloseStrategies) != 1 || cfg.Strategies[0].CloseStrategies[0].Name != "tp_at_pct" {
 		t.Fatalf("CloseStrategies = %#v, want [tp_at_pct]", cfg.Strategies[0].CloseStrategies)
 	}
 }

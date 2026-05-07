@@ -75,12 +75,24 @@ def main():
     close_strategies_raw = _arg_value("--close-strategies")
     position_side = (_arg_value("--position-side", "") or "").lower()
     position_ctx = _position_ctx(position_side)
-    open_close_enabled = bool(open_strategy or close_strategies_raw)
     strategy_params = None
     if "--params" in sys.argv:
         idx = sys.argv.index("--params")
         if idx + 1 < len(sys.argv):
             strategy_params = json.loads(sys.argv[idx + 1])
+    # #640: --strategy-refs JSON supersedes --params/--open-strategy/--close-strategies.
+    close_params_by_name = None
+    strategy_refs_raw = _arg_value("--strategy-refs")
+    if strategy_refs_raw:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
+        from strategy_composition import parse_strategy_refs_arg
+        refs = parse_strategy_refs_arg(strategy_refs_raw)
+        if refs:
+            open_strategy = refs["open_name"]
+            close_strategies_raw = refs["close_csv"]
+            strategy_params = refs["open_params"]
+            close_params_by_name = refs["close_params_by_name"]
+    open_close_enabled = bool(open_strategy or close_strategies_raw)
     # Filter out --flag and --params <value> (skip the arg after --params)
     filtered = []
     skip_next = False
@@ -89,9 +101,10 @@ def main():
             skip_next = False
             continue
         if a in (
-            "--params", "--open-strategy", "--close-strategies", "--position-side",
-            "--position-avg-cost", "--position-qty", "--position-initial-qty",
-            "--position-entry-atr", "--regime-period", "--regime-adx-threshold",
+            "--params", "--open-strategy", "--close-strategies", "--strategy-refs",
+            "--position-side", "--position-avg-cost", "--position-qty",
+            "--position-initial-qty", "--position-entry-atr",
+            "--regime-period", "--regime-adx-threshold",
         ):
             skip_next = True
             continue
@@ -211,6 +224,7 @@ def main():
                 position_ctx,
                 close_evaluate=close_evaluate,
                 market_ctx=market_ctx,
+                close_params_by_name=close_params_by_name,
             )
             result_df = evaluation.open_result_df
             signal = evaluation.open_signal

@@ -60,7 +60,21 @@ func hyperliquidProtectionTiers(sc StrategyConfig) []hlProtectionTier {
 	if !strategyUsesTieredTPATRClose(sc) {
 		return nil
 	}
-	tiers := parseHLProtectionTiers(sc.Params["tiers"])
+	// #640: Tiers live on the matching close ref's params, not on the strategy's
+	// flat Params (which no longer exists). Find the first tiered_tp_atr* close
+	// ref and read its tiers; fall through to the canonical default if absent.
+	var raw interface{}
+	for _, ref := range sc.CloseStrategies {
+		n := strings.ToLower(strings.TrimSpace(ref.Name))
+		if n != "tiered_tp_atr" && n != "tiered_tp_atr_live" {
+			continue
+		}
+		if v, ok := ref.Params["tiers"]; ok {
+			raw = v
+			break
+		}
+	}
+	tiers := parseHLProtectionTiers(raw)
 	if len(tiers) == 0 {
 		tiers = []hlProtectionTier{
 			{Multiple: 1, Fraction: 0.5},
@@ -354,20 +368,20 @@ var closeStrategiesSuppressedByOnChainProtection = map[string]struct{}{
 // with names that overlap on-chain reduce-only TPs removed. Other close
 // strategies (tp_at_pct, tiered_tp_pct, …) pass through unchanged so an
 // operator can layer a percent-based stop alongside the ATR-tiered TP limits.
-func filterCloseStrategiesForHLOnChainProtection(sc StrategyConfig) []string {
+func filterCloseStrategiesForHLOnChainProtection(sc StrategyConfig) []StrategyRef {
 	if !hyperliquidPlacesOnChainTPs(sc) {
 		return sc.CloseStrategies
 	}
 	if len(sc.CloseStrategies) == 0 {
 		return sc.CloseStrategies
 	}
-	out := make([]string, 0, len(sc.CloseStrategies))
-	for _, name := range sc.CloseStrategies {
-		trimmed := strings.TrimSpace(name)
+	out := make([]StrategyRef, 0, len(sc.CloseStrategies))
+	for _, ref := range sc.CloseStrategies {
+		trimmed := strings.TrimSpace(ref.Name)
 		if _, suppress := closeStrategiesSuppressedByOnChainProtection[trimmed]; suppress {
 			continue
 		}
-		out = append(out, name)
+		out = append(out, ref)
 	}
 	return out
 }

@@ -79,13 +79,13 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].interval_seconds: %d -> %d", sc.ID, sc.IntervalSeconds, ns.IntervalSeconds)
 			sc.IntervalSeconds = ns.IntervalSeconds
 		}
-		if sc.OpenStrategy != ns.OpenStrategy {
-			addChange("strategy[%s].open_strategy: %q -> %q", sc.ID, sc.OpenStrategy, ns.OpenStrategy)
+		if !reflect.DeepEqual(sc.OpenStrategy, ns.OpenStrategy) {
+			addChange("strategy[%s].open_strategy: %s -> %s", sc.ID, formatStrategyRef(sc.OpenStrategy), formatStrategyRef(ns.OpenStrategy))
 			sc.OpenStrategy = ns.OpenStrategy
 		}
 		if !reflect.DeepEqual(sc.CloseStrategies, ns.CloseStrategies) {
-			addChange("strategy[%s].close_strategies: %v -> %v", sc.ID, sc.CloseStrategies, ns.CloseStrategies)
-			sc.CloseStrategies = append([]string{}, ns.CloseStrategies...)
+			addChange("strategy[%s].close_strategies: %s -> %s", sc.ID, formatStrategyRefList(sc.CloseStrategies), formatStrategyRefList(ns.CloseStrategies))
+			sc.CloseStrategies = append([]StrategyRef{}, ns.CloseStrategies...)
 		}
 		if !reflect.DeepEqual(sc.AllowedRegimes, ns.AllowedRegimes) {
 			addChange("strategy[%s].allowed_regimes: %v -> %v", sc.ID, sc.AllowedRegimes, ns.AllowedRegimes)
@@ -342,7 +342,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.SizingLeverage = 0
 	sc.MarginPerTradeUSD = nil // #518: hot-reloadable; nil/positive switching is purely additive
 	sc.IntervalSeconds = 0
-	sc.OpenStrategy = ""
+	sc.OpenStrategy = StrategyRef{}
 	sc.CloseStrategies = nil
 	sc.AllowedRegimes = nil
 	sc.MarginMode = ""              // #486: hot-reloadable when flat (state-compat check enforces flat-only change)

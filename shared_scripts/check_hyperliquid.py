@@ -92,7 +92,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      strategy_params_override=None, open_strategy=None,
                      close_strategies=None,
                      position_side="", position_ctx=None,
-                     regime_enabled=False, regime_period=14, regime_adx_threshold=20.0):
+                     regime_enabled=False, regime_period=14, regime_adx_threshold=20.0,
+                     close_params_by_name=None):
     """Run strategy signal check using Hyperliquid OHLCV data."""
     try:
         from adapter import HyperliquidExchangeAdapter
@@ -184,6 +185,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 position_ctx,
                 close_evaluate=close_evaluate,
                 market_ctx=market_ctx,
+                close_params_by_name=close_params_by_name,
             )
             result_df = evaluation.open_result_df
             signal = evaluation.open_signal
@@ -1071,22 +1073,31 @@ def main():
         parser.add_argument("--params", default=None)
         parser.add_argument("--open-strategy", default=None)
         parser.add_argument("--close-strategies", default=None)
+        parser.add_argument("--strategy-refs", default=None,
+                            help="#640: JSON {'open':{name,params},'closes':[{name,params}...]}; "
+                                 "supersedes --params/--open-strategy/--close-strategies when set")
         parser.add_argument("--position-side", default="")
         parser.add_argument("--position-avg-cost", type=float, default=None)
         parser.add_argument("--position-qty", type=float, default=None)
         parser.add_argument("--position-initial-qty", type=float, default=None)
         parser.add_argument("--position-entry-atr", type=float, default=None)
         args = parser.parse_args()
-        params_override = json.loads(args.params) if args.params else None
+        from strategy_composition import parse_strategy_refs_arg
+        refs = parse_strategy_refs_arg(args.strategy_refs)
+        open_strategy_name = refs["open_name"] if refs else args.open_strategy
+        close_strategies_arg = refs["close_csv"] if refs else args.close_strategies
+        params_override = refs["open_params"] if refs else (json.loads(args.params) if args.params else None)
+        close_params_by_name = refs["close_params_by_name"] if refs else None
         position_ctx = _position_ctx_from_args(args)
         run_signal_check(
             args.strategy, args.symbol, args.timeframe, args.mode,
-            args.htf_filter, params_override, args.open_strategy,
-            args.close_strategies,
+            args.htf_filter, params_override, open_strategy_name,
+            close_strategies_arg,
             args.position_side, position_ctx,
             regime_enabled=args.regime_enabled,
             regime_period=args.regime_period,
             regime_adx_threshold=args.regime_adx_threshold,
+            close_params_by_name=close_params_by_name,
         )
 
 

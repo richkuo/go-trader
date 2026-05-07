@@ -10,7 +10,7 @@ import (
 
 // CurrentConfigVersion is the version embedded in newly generated configs.
 // When the binary starts and cfg.ConfigVersion < CurrentConfigVersion, migration runs.
-const CurrentConfigVersion = 12
+const CurrentConfigVersion = 13
 
 // ConfigField describes a config field introduced in a specific version.
 type ConfigField struct {
@@ -170,6 +170,18 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 		if _, ok := raw["default_stop_loss_atr_mult"]; !ok {
 			raw["default_stop_loss_atr_mult"] = DefaultStopLossATRMult
 		}
+	}
+
+	// v13: co-locate strategy name + params via StrategyRef (#640). Three
+	// type-changes happen in one pass on each strategy entry:
+	//   - open_strategy: string  → {name, params}
+	//   - close_strategies: []string → [{name, params}, ...]
+	//   - params: flat map → split between open ref params and per-close ref params
+	// Legacy keys claimed by a close registry's default_params (see
+	// closeStrategyOwnedKeys) move into that close ref; everything else stays
+	// on the open ref. Any remaining empty `params` field is removed.
+	if oldVer < 13 {
+		migrateV13StrategyShape(raw)
 	}
 
 	raw["config_version"] = CurrentConfigVersion
@@ -460,5 +472,100 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 	// v10: notify about sizing_leverage split (#497).
 	if cfg.ConfigVersion < 10 {
 		notifier.SendOwnerDM(v10DeprecationNotice)
+	}
+}
+
+// needsV13SchemaMigration reports whether the on-disk config still uses the
+// pre-v13 flat shape (string open_strategy / []string close_strategies / flat
+// params). LoadConfig calls this with the raw bytes BEFORE Unmarshal — once
+// the schema is rewritten, the standard unmarshal handles the new shape.
+func needsV13SchemaMigration(data []byte) bool {
+	var meta struct {
+		ConfigVersion int `json:"config_version"`
+	}
+	if err := json.Unmarshal(data, &meta); err == nil && meta.ConfigVersion >= 13 {
+		return false
+	}
+	return true
+}
+
+// closeStrategyOwnedKeys lists the legacy `params` keys that the v13 migration
+// should move under the matching close ref's params. Source of truth is the
+// Python close registry's `default_params` for each evaluator
+// (shared_strategies/close/registry.py). When adding a new close evaluator
+// with its own params, mirror its registry default_params keys here so legacy
+// configs migrate cleanly. Anything not listed stays on the open ref.
+var closeStrategyOwnedKeys = map[string]map[string]struct{}{
+	"tiered_tp_atr":      {"tiers": {}},
+	"tiered_tp_atr_live": {"tiers": {}, "atr_source": {}},
+	"tiered_tp_pct":      {"tiers": {}},
+}
+
+// migrateV13StrategyShape rewrites each strategy in-place from the legacy flat
+// shape (open_strategy: string, close_strategies: []string, params: map) to
+// the co-located ref shape (open_strategy: {name, params}, close_strategies:
+// [{name, params}], no top-level params). See #640 for the design.
+func migrateV13StrategyShape(raw map[string]interface{}) {
+	strategies, ok := raw["strategies"].([]interface{})
+	if !ok {
+		return
+	}
+	for _, item := range strategies {
+		sc, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Snapshot legacy fields before we overwrite them.
+		legacyOpen := stringFromJSON(sc["open_strategy"])
+		legacyClosesRaw, _ := sc["close_strategies"].([]interface{})
+		legacyParams := cloneOrNewJSONMap(sc["params"])
+
+		// Resolve open name: prefer legacy open_strategy, else fall back to
+		// args[0] so configs that relied on the positional script arg keep
+		// working post-migration.
+		openName := legacyOpen
+		if openName == "" {
+			if argsList, ok := sc["args"].([]interface{}); ok && len(argsList) > 0 {
+				openName = stringFromJSON(argsList[0])
+			}
+		}
+
+		// Build close refs while moving owned legacy params keys into each ref.
+		closeRefs := make([]interface{}, 0, len(legacyClosesRaw))
+		for _, entry := range legacyClosesRaw {
+			name := stringFromJSON(entry)
+			if name == "" {
+				continue
+			}
+			ref := map[string]interface{}{"name": name}
+			if owned, ok := closeStrategyOwnedKeys[name]; ok {
+				params := map[string]interface{}{}
+				for key := range owned {
+					if val, present := legacyParams[key]; present {
+						params[key] = val
+						delete(legacyParams, key)
+					}
+				}
+				if len(params) > 0 {
+					ref["params"] = params
+				}
+			}
+			closeRefs = append(closeRefs, ref)
+		}
+
+		// Whatever legacy params remain belong to the open ref.
+		openRef := map[string]interface{}{"name": openName}
+		if len(legacyParams) > 0 {
+			openRef["params"] = legacyParams
+		}
+
+		sc["open_strategy"] = openRef
+		if len(closeRefs) > 0 {
+			sc["close_strategies"] = closeRefs
+		} else {
+			delete(sc, "close_strategies")
+		}
+		delete(sc, "params")
 	}
 }

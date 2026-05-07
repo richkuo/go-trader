@@ -1519,8 +1519,12 @@ func TestClearATRMultMissingEntryATRWarningsForStrategy(t *testing.T) {
 // #522: tieredTPATRMissingEntryATR detects open positions with EntryATR == 0
 // when tiered_tp_atr is in close_strategies (platform-agnostic).
 func TestTieredTPATRMissingEntryATR(t *testing.T) {
-	withCS := func(cs ...string) StrategyConfig {
-		return StrategyConfig{Platform: "hyperliquid", Type: "perps", CloseStrategies: cs}
+	withCS := func(names ...string) StrategyConfig {
+		refs := make([]StrategyRef, 0, len(names))
+		for _, n := range names {
+			refs = append(refs, StrategyRef{Name: n})
+		}
+		return StrategyConfig{Platform: "hyperliquid", Type: "perps", CloseStrategies: refs}
 	}
 	cases := []struct {
 		name string
@@ -1535,7 +1539,7 @@ func TestTieredTPATRMissingEntryATR(t *testing.T) {
 		{"tiered_tp_atr present, no open position (AvgCost==0)", withCS("tiered_tp_atr"), &Position{AvgCost: 0, EntryATR: 0}, false},
 		{"tiered_tp_atr among multiple strategies", withCS("tp_at_pct", "tiered_tp_atr"), &Position{AvgCost: 100, EntryATR: 0}, true},
 		{"nil position", withCS("tiered_tp_atr"), nil, false},
-		{"works on non-HL platform", StrategyConfig{Platform: "binanceus", Type: "spot", CloseStrategies: []string{"tiered_tp_atr"}}, &Position{AvgCost: 100, EntryATR: 0}, true},
+		{"works on non-HL platform", StrategyConfig{Platform: "binanceus", Type: "spot", CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}}}, &Position{AvgCost: 100, EntryATR: 0}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1559,7 +1563,7 @@ func TestNotifyTieredTPATRMissingEntryATROnce_ThrottlesAndShares(t *testing.T) {
 	logger := silentStrategyLogger("hl-tiered-test")
 	defer logger.Close()
 	sc := StrategyConfig{ID: "hl-tiered-test", Platform: "hyperliquid", Type: "perps",
-		CloseStrategies: []string{"tiered_tp_atr"}}
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}}}
 
 	defer clearATRMultMissingEntryATRWarning(sc.ID, "ETH")
 	defer clearATRMultMissingEntryATRWarning(sc.ID, "BTC")

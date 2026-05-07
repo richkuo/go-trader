@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -29,7 +31,7 @@ type PositionCtx struct {
 }
 
 func usesOpenCloseConfig(sc StrategyConfig) bool {
-	return strings.TrimSpace(sc.OpenStrategy) != "" || len(sc.CloseStrategies) > 0
+	return strings.TrimSpace(sc.OpenStrategy.Name) != "" || len(sc.CloseStrategies) > 0
 }
 
 func strategyNameFromArgs(args []string) string {
@@ -40,7 +42,7 @@ func strategyNameFromArgs(args []string) string {
 }
 
 func effectiveOpenStrategy(sc StrategyConfig) string {
-	if name := strings.TrimSpace(sc.OpenStrategy); name != "" {
+	if name := strings.TrimSpace(sc.OpenStrategy.Name); name != "" {
 		return name
 	}
 	return strategyNameFromArgs(sc.Args)
@@ -60,17 +62,13 @@ func validateStrategyConceptName(name string) error {
 	return nil
 }
 
+// appendOpenCloseArgs adds position-context flags. Strategy refs (open/close
+// names + per-ref params) are sent separately via buildStrategyRefsArg (#640).
 func appendOpenCloseArgs(args []string, sc StrategyConfig, pos PositionCtx) []string {
 	if !usesOpenCloseConfig(sc) {
 		return args
 	}
 	out := append([]string{}, args...)
-	if name := strings.TrimSpace(sc.OpenStrategy); name != "" {
-		out = append(out, "--open-strategy", name)
-	}
-	if closeStrategies := explicitCloseStrategies(sc); len(closeStrategies) > 0 {
-		out = append(out, "--close-strategies", strings.Join(closeStrategies, ","))
-	}
 	if side := strings.TrimSpace(pos.Side); side != "" {
 		out = append(out, "--position-side", side)
 	}
@@ -79,6 +77,29 @@ func appendOpenCloseArgs(args []string, sc StrategyConfig, pos PositionCtx) []st
 	out = appendPositionFloatArg(out, "--position-initial-qty", pos.InitialQuantity)
 	out = appendPositionFloatArg(out, "--position-entry-atr", pos.EntryATR)
 	return out
+}
+
+// buildStrategyRefsArg emits the --strategy-refs JSON carrying the open ref
+// and close refs (each name + params) to the Python check script (#640). Open
+// name falls back to args[0] when sc.OpenStrategy.Name is empty so legacy
+// configs that rely on the positional strategy arg keep working post-migration.
+func buildStrategyRefsArg(sc StrategyConfig) ([]string, error) {
+	openName := effectiveOpenStrategy(sc)
+	if openName == "" && len(sc.CloseStrategies) == 0 {
+		return nil, nil
+	}
+	payload := map[string]interface{}{}
+	if openName != "" {
+		payload["open"] = StrategyRef{Name: openName, Params: sc.OpenStrategy.Params}
+	}
+	if len(sc.CloseStrategies) > 0 {
+		payload["closes"] = sc.CloseStrategies
+	}
+	blob, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return []string{"--strategy-refs", string(blob)}, nil
 }
 
 func appendPositionFloatArg(args []string, flag string, value float64) []string {
@@ -118,13 +139,47 @@ func positionCtxFromPosition(pos *Position) PositionCtx {
 	}
 }
 
+// formatStrategyRef renders a ref for human-readable change logs (#640). When
+// no params are set, prints just the quoted name; otherwise appends a
+// stable-key summary so reload diffs show param-only changes.
+func formatStrategyRef(ref StrategyRef) string {
+	if len(ref.Params) == 0 {
+		return strconv.Quote(ref.Name)
+	}
+	return strconv.Quote(ref.Name) + formatParamsSummary(ref.Params)
+}
+
+func formatStrategyRefList(refs []StrategyRef) string {
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, formatStrategyRef(r))
+	}
+	return "[" + strings.Join(out, ", ") + "]"
+}
+
+func formatParamsSummary(params map[string]interface{}) string {
+	if len(params) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", k, params[k]))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
 func explicitCloseStrategies(sc StrategyConfig) []string {
 	if len(sc.CloseStrategies) == 0 {
 		return nil
 	}
 	out := make([]string, 0, len(sc.CloseStrategies))
-	for _, name := range sc.CloseStrategies {
-		if trimmed := strings.TrimSpace(name); trimmed != "" {
+	for _, ref := range sc.CloseStrategies {
+		if trimmed := strings.TrimSpace(ref.Name); trimmed != "" {
 			out = append(out, trimmed)
 		}
 	}

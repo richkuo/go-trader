@@ -36,6 +36,45 @@ class OpenCloseEvaluation:
     close_evaluations: list[CloseEvaluation]
 
 
+def parse_strategy_refs_arg(raw: Optional[str]) -> Optional[dict]:
+    """#640: Parse --strategy-refs JSON into a dict shaped for run_signal_check.
+
+    Returns None when raw is None/empty so the caller can fall through to
+    legacy --params/--open-strategy/--close-strategies flags. The returned
+    dict has keys:
+      - open_name: str|None
+      - open_params: dict|None
+      - close_csv: str (comma-joined names; matches the legacy --close-strategies)
+      - close_params_by_name: dict[str, dict] keyed by close strategy name
+    """
+    if not raw:
+        return None
+    import json
+    payload = json.loads(raw)
+    open_block = payload.get("open") or {}
+    closes_block = payload.get("closes") or []
+    open_name = open_block.get("name") or None
+    open_params = open_block.get("params") or None
+    close_names: list[str] = []
+    close_params_by_name: dict[str, dict] = {}
+    for ref in closes_block:
+        if not isinstance(ref, dict):
+            continue
+        name = (ref.get("name") or "").strip()
+        if not name:
+            continue
+        close_names.append(name)
+        ref_params = ref.get("params")
+        if ref_params:
+            close_params_by_name[name] = ref_params
+    return {
+        "open_name": open_name,
+        "open_params": open_params,
+        "close_csv": ",".join(close_names) if close_names else None,
+        "close_params_by_name": close_params_by_name or None,
+    }
+
+
 def parse_close_strategies(raw: Optional[str | Iterable[str]]) -> list[str]:
     if raw is None:
         return []
@@ -240,6 +279,7 @@ def evaluate_open_close(
     position_ctx: Optional[dict] = None,
     close_evaluate: Optional[Callable[[str, dict, dict, Optional[dict]], dict]] = None,
     market_ctx: Optional[dict] = None,
+    close_params_by_name: Optional[dict[str, dict]] = None,
 ) -> OpenCloseEvaluation:
     open_name = (open_strategy or positional_strategy).strip()
     close_names = effective_close_strategies(
@@ -261,10 +301,17 @@ def evaluate_open_close(
     close_evals: list[CloseEvaluation] = []
     market = market_ctx if market_ctx is not None else _default_market_ctx(df)
     for name in close_names:
-        # Until per-close params blocks exist, only the implicit-self close
-        # shares the open strategy's params. Distinct close strategies run with
-        # their own defaults so open-only params do not break another function.
-        base_close_params = params if name == open_name else None
+        # #640: per-close params arrive via close_params_by_name (carried on the
+        # matching StrategyRef on the Go side). Implicit-self close still
+        # inherits the open strategy's params unless the operator explicitly
+        # set per-ref params for that name. Other close strategies default to
+        # their registry defaults — never to the open strategy's params.
+        if close_params_by_name and name in close_params_by_name:
+            base_close_params = close_params_by_name[name]
+        elif name == open_name:
+            base_close_params = params
+        else:
+            base_close_params = None
         if close_evaluate is not None:
             try:
                 result = close_evaluate(name, position_ctx or {}, market, base_close_params)

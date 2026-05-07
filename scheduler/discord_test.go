@@ -1445,7 +1445,7 @@ func TestCollectPositions_AllFragments(t *testing.T) {
 func TestCollectPositions_TieredTPATR_Long(t *testing.T) {
 	sc := StrategyConfig{
 		ID:              "hl-tatr-btc",
-		CloseStrategies: []string{"tiered_tp_atr"},
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}},
 	}
 	ss := &StrategyState{
 		Positions: map[string]*Position{
@@ -1467,7 +1467,7 @@ func TestCollectPositions_TieredTPATR_Long(t *testing.T) {
 func TestCollectPositions_TieredTPATR_Short(t *testing.T) {
 	sc := StrategyConfig{
 		ID:              "hl-tatr-btc",
-		CloseStrategies: []string{"tiered_tp_atr"},
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}},
 	}
 	ss := &StrategyState{
 		Positions: map[string]*Position{
@@ -1488,7 +1488,7 @@ func TestCollectPositions_TieredTPATR_Short(t *testing.T) {
 func TestCollectPositions_TieredTPATRLive_Long(t *testing.T) {
 	sc := StrategyConfig{
 		ID:              "hl-tatr-live-btc",
-		CloseStrategies: []string{"tiered_tp_atr_live"},
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr_live"}},
 	}
 	ss := &StrategyState{
 		Positions: map[string]*Position{
@@ -1509,7 +1509,7 @@ func TestCollectPositions_TieredTPATRLive_Long(t *testing.T) {
 }
 
 func TestCollectPositions_TieredTPATR_OmittedWithoutCloseStrategy(t *testing.T) {
-	sc := StrategyConfig{ID: "hl-rsi-btc", CloseStrategies: []string{"tiered_tp_pct"}}
+	sc := StrategyConfig{ID: "hl-rsi-btc", CloseStrategies: []StrategyRef{{Name: "tiered_tp_pct"}}}
 	ss := &StrategyState{
 		Positions: map[string]*Position{
 			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", EntryATR: 1000},
@@ -1522,7 +1522,7 @@ func TestCollectPositions_TieredTPATR_OmittedWithoutCloseStrategy(t *testing.T) 
 }
 
 func TestCollectPositions_TieredTPATR_OmittedWhenEntryATRZero(t *testing.T) {
-	sc := StrategyConfig{ID: "hl-tatr-btc", CloseStrategies: []string{"tiered_tp_atr"}}
+	sc := StrategyConfig{ID: "hl-tatr-btc", CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}}}
 	ss := &StrategyState{
 		Positions: map[string]*Position{
 			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", EntryATR: 0},
@@ -1538,7 +1538,7 @@ func TestCollectPositions_TieredTPATR_OmittedWhenEntryATRZero(t *testing.T) {
 // leverage → date ordering when tiered_tp_atr is configured (#528).
 func TestCollectPositions_AllFragments_WithTieredTP(t *testing.T) {
 	opened := time.Date(2026, 4, 28, 14, 32, 0, 0, time.UTC)
-	sc := StrategyConfig{ID: "hl-tatr-btc", CloseStrategies: []string{"tiered_tp_atr"}}
+	sc := StrategyConfig{ID: "hl-tatr-btc", CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}}}
 	ss := &StrategyState{
 		Positions: map[string]*Position{
 			"BTC/USDT": {
@@ -1959,7 +1959,7 @@ func TestFormatTradeDM_OpenWithATRAndTP(t *testing.T) {
 		ID:              "hl-tatr-btc",
 		Platform:        "hyperliquid",
 		Type:            "perps",
-		CloseStrategies: []string{"tiered_tp_atr"},
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}},
 	}
 	trade := Trade{
 		Symbol:   "BTC",
@@ -2012,7 +2012,7 @@ func TestFormatTradeDM_CloseNoATR(t *testing.T) {
 		ID:              "hl-tatr-btc",
 		Platform:        "hyperliquid",
 		Type:            "perps",
-		CloseStrategies: []string{"tiered_tp_atr"},
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}},
 	}
 	trade := Trade{
 		Symbol:   "BTC",

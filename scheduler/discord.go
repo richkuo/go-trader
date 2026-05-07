@@ -994,8 +994,8 @@ func positionMargin(qty, avgCost, leverage float64) float64 {
 // from avg_cost (see PR #529 review — live mode may use a different ATR ruler
 // at evaluation time, but the summary still shows the entry-ATR reference levels).
 func strategyUsesTieredTPATRClose(sc StrategyConfig) bool {
-	for _, name := range sc.CloseStrategies {
-		n := strings.ToLower(strings.TrimSpace(name))
+	for _, ref := range sc.CloseStrategies {
+		n := strings.ToLower(strings.TrimSpace(ref.Name))
 		if n == "tiered_tp_atr" || n == "tiered_tp_atr_live" {
 			return true
 		}
