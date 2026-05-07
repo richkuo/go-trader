@@ -445,8 +445,15 @@ def main():
     if args.close_strategies:
         close_refs = [_parse_close_strategy_arg(v) for v in args.close_strategies]
 
-    # #641: --config loads a live strategy by ID and uses its refs directly.
+    # #641: --config loads a single strategy by ID and uses its refs directly.
+    open_params: Optional[dict] = None
     if args.config:
+        # --config loads exactly one strategy; non-single modes would silently
+        # ignore the loaded refs for every strategy except the one matching
+        # --strategy. Reject upfront instead of producing misleading reports.
+        if args.mode != "single":
+            print("--config is only valid with --mode single (loads one strategy by --strategy <id>)")
+            sys.exit(1)
         live_kwargs = load_strategy_config(args.config, args.strategy)
         # Live config refs take precedence; --close-strategy on top is rejected
         # to avoid silent overrides.
@@ -454,9 +461,12 @@ def main():
             print("--close-strategy is not allowed alongside --config (refs come from the live config)")
             sys.exit(1)
         close_refs = live_kwargs["close_strategies"]
-        # Open strategy name + params come from the live config too. We override
-        # args.strategy and any --strategy-params downstream.
+        # Open strategy name + params come from the live config. Threading
+        # params through to run_single_backtest is required — without it,
+        # run_single_backtest falls back to the registry default_params and
+        # silently ignores per-strategy params from the live config (#643 review #1).
         args.strategy = live_kwargs["open_strategy"]["name"]
+        open_params = dict(live_kwargs["open_strategy"]["params"]) or None
 
     reg = load_registry(args.registry)
 
@@ -466,6 +476,7 @@ def main():
             sys.exit(1)
         run_single_backtest(args.strategy, args.symbol, args.timeframe,
                             args.since, args.capital,
+                            params=open_params,
                             registry=args.registry, platform=args.platform,
                             htf_filter=args.htf_filter,
                             close_strategies=close_refs,

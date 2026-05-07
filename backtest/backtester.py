@@ -228,7 +228,13 @@ class Backtester:
                 "name": name,
                 "params": dict(ref.get("params") or {}),
             })
-        # Derived views for the per-bar evaluation loop.
+        # Derived views for the per-bar evaluation loop. The list preserves
+        # caller-provided order; the params map is keyed by name. If a caller
+        # passes the same name twice with different params, the map keeps only
+        # the last write — both list iterations would then see the second
+        # ref's params. This is fine under max-wins resolution but a footgun
+        # if a future change ever reads param state per-iteration; reject
+        # duplicates here if behavior depends on per-occurrence params.
         self.close_strategies = [r["name"] for r in self._close_refs]
         self.close_params = {r["name"]: r["params"] for r in self._close_refs}
         self.regime_enabled = regime_enabled

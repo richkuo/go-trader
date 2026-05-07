@@ -197,3 +197,77 @@ def test_load_strategy_config_then_backtester_parity(tmp_path):
     assert bt_from_config.open_strategy == bt_inline.open_strategy
     assert bt_from_config.close_strategies == bt_inline.close_strategies
     assert bt_from_config.close_params == bt_inline.close_params
+
+
+# ─── End-to-end: --config threads live open params (#643 review #1) ──────────
+
+
+def test_config_flag_threads_live_open_params_to_result(tmp_path, monkeypatch):
+    """Drive main() with --config and verify the live config's open_strategy.params
+    reach the Backtester result, instead of being silently overridden by the
+    registry's default_params. Regression for #643 review #1.
+    """
+    # Real strategy that has overridable defaults: triple_ema (default short=8).
+    config_path = _write_config(tmp_path, version=13, strategies=[
+        {
+            "id": "hl-triple-btc",
+            "type": "perps",
+            "open_strategy": {
+                "name": "triple_ema",
+                # Non-default value: registry default short_period is 8.
+                "params": {"short_period": 3, "mid_period": 13, "long_period": 34},
+            },
+            "close_strategies": [],
+        },
+    ])
+
+    captured = {}
+    real_run_single = run_backtest.run_single_backtest
+
+    def spy_run_single(*args, **kwargs):
+        captured["params"] = kwargs.get("params")
+        captured["close_refs"] = kwargs.get("close_strategies")
+        captured["strategy_name"] = kwargs.get("strategy_name") or (args[0] if args else None)
+        # Don't actually run the backtest — just record what main() forwarded.
+        return None
+
+    monkeypatch.setattr(run_backtest, "run_single_backtest", spy_run_single)
+    monkeypatch.setattr("sys.argv", [
+        "run_backtest.py",
+        "--mode", "single",
+        "--config", config_path,
+        "--strategy", "hl-triple-btc",
+    ])
+
+    run_backtest.main()
+
+    assert captured["strategy_name"] == "triple_ema", (
+        f"main() did not rewrite --strategy to the live open ref name; "
+        f"got {captured.get('strategy_name')!r}"
+    )
+    assert captured["params"] == {"short_period": 3, "mid_period": 13, "long_period": 34}, (
+        f"main() did not thread live open_strategy.params; got {captured.get('params')!r}. "
+        f"Without this, run_single_backtest falls back to triple_ema's registry default "
+        f"short_period=8 and silently ignores the live config."
+    )
+    # Restore (defensive — monkeypatch handles it but explicit reads better).
+    assert real_run_single is not None  # silence unused
+
+
+def test_config_flag_rejects_non_single_modes(tmp_path):
+    """--config loads exactly one strategy; rejecting compare/multi/optimize
+    upfront prevents misleading reports where only the matched strategy gets
+    the live close refs and the rest run with no close strategies (#643 review #4)."""
+    config_path = _write_config(tmp_path, version=13, strategies=[
+        {"id": "x", "open_strategy": {"name": "triple_ema"}, "close_strategies": []},
+    ])
+    import sys as _sys
+    for bad_mode in ("compare", "multi", "optimize"):
+        old_argv = _sys.argv
+        _sys.argv = ["run_backtest.py", "--mode", bad_mode,
+                     "--config", config_path, "--strategy", "x"]
+        try:
+            with pytest.raises(SystemExit):
+                run_backtest.main()
+        finally:
+            _sys.argv = old_argv
