@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -868,17 +870,20 @@ func TestMigrateV13StrategyShape(t *testing.T) {
 // the registry's default_params per strategy as JSON; CI runs this via the
 // repo's .venv. Skipped if no Python interpreter is available.
 func TestCloseStrategyOwnedKeysMirrorsPythonRegistry(t *testing.T) {
-	pythons := []string{
-		"../.venv/bin/python3",
-		"python3",
+	repoRoot, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Resolve the venv interpreter against repoRoot so cmd.Dir doesn't
+	// re-root the relative path. PATH lookup is the fallback.
+	candidates := []string{
+		filepath.Join(repoRoot, ".venv", "bin", "python3"),
+	}
+	if pathPython, err := exec.LookPath("python3"); err == nil {
+		candidates = append(candidates, pathPython)
 	}
 	var py string
-	for _, p := range pythons {
-		if _, err := exec.LookPath(p); err == nil {
-			py = p
-			break
-		}
-		// .venv/bin/python3 is a relative path; LookPath rejects it. Try direct stat.
+	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
 			py = p
 			break
@@ -886,11 +891,6 @@ func TestCloseStrategyOwnedKeysMirrorsPythonRegistry(t *testing.T) {
 	}
 	if py == "" {
 		t.Skip("no python3 available; skipping registry sync check")
-	}
-
-	repoRoot, err := filepath.Abs("..")
-	if err != nil {
-		t.Fatal(err)
 	}
 	script := `
 import sys, json, os
@@ -905,9 +905,19 @@ print(json.dumps(out))
 `
 	cmd := exec.Command(py, "-c", script)
 	cmd.Dir = repoRoot
-	output, err := cmd.Output()
+	// CombinedOutput so a Python crash (real bug — e.g. broken close registry
+	// import) surfaces in the failure message instead of being swallowed.
+	// We've already verified an interpreter exists; from here on, any
+	// execution failure is a real defect, not "Python missing" (#642 re-review).
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Skipf("could not introspect Python registry (likely missing deps): %v", err)
+		t.Fatalf("python close registry script failed (%v):\n%s", err, output)
+	}
+	// CombinedOutput merges stdout+stderr. The script writes only the JSON
+	// blob to stdout, but a Python warning to stderr would prepend non-JSON.
+	// Locate the JSON object by trimming to the first '{'.
+	if idx := bytes.IndexByte(output, '{'); idx > 0 {
+		output = output[idx:]
 	}
 	var registry map[string][]string
 	if err := json.Unmarshal(output, &registry); err != nil {
@@ -989,5 +999,128 @@ func TestStrictStringFromJSON(t *testing.T) {
 	}
 	if got := strictStringFromJSON("  real  "); got != "real" {
 		t.Errorf("strictStringFromJSON(string) = %q, want real (trimmed)", got)
+	}
+}
+
+// TestLoadConfigMigratesV12EndToEnd is the smoke equivalent of running
+// `./go-trader --once` against a real v12 config (PR #642 re-review item #5).
+// It writes a v12 config containing both a tiered_tp_atr close ref AND extra
+// non-tiered keys in flat `params`, then exercises the full pipeline:
+//
+//	raw v12 JSON → schema migration → file rewritten → LoadConfig parse →
+//	defaults + validation → in-memory StrategyConfig with split refs.
+//
+// Failure modes this catches:
+//   - migration silently routes tiers to the open ref (the original #640 bug)
+//   - migration loses extra non-tiered open params
+//   - on-disk file isn't actually rewritten (LoadConfig would error)
+//   - validation rejects the migrated shape
+//   - close ref doesn't carry its tiers through to where buildHyperliquidProtectionPlan reads them
+func TestLoadConfigMigratesV12EndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	v12 := map[string]interface{}{
+		"config_version":             12,
+		"interval_seconds":           3600,
+		"log_dir":                    "logs",
+		"db_file":                    filepath.Join(dir, "state.db"),
+		"default_stop_loss_atr_mult": 1.0,
+		"portfolio_risk":             map[string]interface{}{"max_drawdown_pct": 25, "warn_threshold_pct": 60},
+		"strategies": []interface{}{
+			map[string]interface{}{
+				"id":               "hl-temacb-btc",
+				"type":             "perps",
+				"platform":         "hyperliquid",
+				"script":           "shared_scripts/check_hyperliquid.py",
+				"args":             []interface{}{"tema_cross_bd", "BTC", "1h", "--mode=paper"},
+				"open_strategy":    "tema_cross_bd",
+				"close_strategies": []interface{}{"tiered_tp_atr"},
+				"capital":          1000.0,
+				"max_drawdown_pct": 25.0,
+				"leverage":         1.0,
+				"allow_shorts":     true,
+				"params": map[string]interface{}{
+					// Owned by tiered_tp_atr → must move to the close ref.
+					"tiers": []interface{}{
+						map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+						map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+					},
+					// Open-strategy-only → must stay on open ref.
+					"short_period": 5.0,
+					"mid_period":   13.0,
+				},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(v12, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if err := ValidateConfig(cfg); err != nil {
+		t.Fatalf("ValidateConfig: %v", err)
+	}
+
+	if got := cfg.ConfigVersion; got != CurrentConfigVersion {
+		t.Errorf("ConfigVersion = %d, want %d", got, CurrentConfigVersion)
+	}
+	if len(cfg.Strategies) != 1 {
+		t.Fatalf("len(strategies) = %d, want 1", len(cfg.Strategies))
+	}
+	sc := cfg.Strategies[0]
+
+	if sc.OpenStrategy.Name != "tema_cross_bd" {
+		t.Errorf("OpenStrategy.Name = %q, want tema_cross_bd", sc.OpenStrategy.Name)
+	}
+	// Open params: short_period + mid_period only; tiers must NOT be here.
+	if got := sc.OpenStrategy.Params["short_period"]; got != 5.0 {
+		t.Errorf("OpenStrategy.Params[short_period] = %v, want 5", got)
+	}
+	if got := sc.OpenStrategy.Params["mid_period"]; got != 13.0 {
+		t.Errorf("OpenStrategy.Params[mid_period] = %v, want 13", got)
+	}
+	if _, leaked := sc.OpenStrategy.Params["tiers"]; leaked {
+		t.Error("OpenStrategy.Params still contains tiers — the original #640 bug")
+	}
+	// Close ref: tiers landed here.
+	if len(sc.CloseStrategies) != 1 {
+		t.Fatalf("len(CloseStrategies) = %d, want 1", len(sc.CloseStrategies))
+	}
+	close0 := sc.CloseStrategies[0]
+	if close0.Name != "tiered_tp_atr" {
+		t.Errorf("CloseStrategies[0].Name = %q, want tiered_tp_atr", close0.Name)
+	}
+	tiers, ok := close0.Params["tiers"].([]interface{})
+	if !ok || len(tiers) != 2 {
+		t.Fatalf("CloseStrategies[0].Params[tiers] = %v, want 2-element slice", close0.Params["tiers"])
+	}
+
+	// End-to-end check: tiers reach buildHyperliquidProtectionPlan via the
+	// close ref's params, exactly the path that was broken pre-#640.
+	pos := &Position{Symbol: "BTC", Quantity: 1, AvgCost: 50000, EntryATR: 500, Side: "long"}
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	if !ok {
+		t.Fatal("buildHyperliquidProtectionPlan returned ok=false")
+	}
+	wantTiers := []hlProtectionTier{{Multiple: 2, Fraction: 0.5}, {Multiple: 3, Fraction: 1}}
+	if !reflect.DeepEqual(plan.Tiers, wantTiers) {
+		t.Errorf("plan.Tiers = %+v, want %+v (custom tiers from migrated config)", plan.Tiers, wantTiers)
+	}
+
+	// Re-loading the now-v13 file must not retrigger migration.
+	cfg2, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig (re-read): %v", err)
+	}
+	if !reflect.DeepEqual(cfg.Strategies[0].OpenStrategy, cfg2.Strategies[0].OpenStrategy) {
+		t.Error("re-load produced different OpenStrategy — migration is not idempotent")
 	}
 }
