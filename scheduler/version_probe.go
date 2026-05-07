@@ -21,9 +21,13 @@ import (
 // When the binary's check-script CLI gains a new required flag, append it
 // here so a stale on-disk script fails the probe instead of crashing
 // during a real cycle.
+// The --strategy-refs payload mirrors buildStrategyRefsArg: top-level keys
+// are "open" and "closes" (plural) and "closes" carries at least one ref
+// so a stale parser that drops or rejects the close-ref shape fails the
+// probe instead of silently treating closes as empty.
 var probeArgv = []string{
 	"probe", "BTC", "1h",
-	"--strategy-refs", `{"open":{"name":"probe","params":{}},"close":[]}`,
+	"--strategy-refs", `{"open":{"name":"probe","params":{}},"closes":[{"name":"probe_close","params":{}}]}`,
 	"--probe-only",
 }
 
