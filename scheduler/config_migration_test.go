@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -856,5 +857,137 @@ func TestMigrateV13StrategyShape(t *testing.T) {
 	}
 	if _, hasParams := open1["params"]; hasParams {
 		t.Error("strategy[1] should not have open params (legacy had no params)")
+	}
+}
+
+// TestCloseStrategyOwnedKeysMirrorsPythonRegistry asserts every Python close
+// strategy's default_params keys are listed in closeStrategyOwnedKeys, so
+// adding a new close evaluator in shared_strategies/close/registry.py without
+// also updating the Go-side migration map cannot silently route legacy params
+// to the open ref. The test shells out to a small Python script that prints
+// the registry's default_params per strategy as JSON; CI runs this via the
+// repo's .venv. Skipped if no Python interpreter is available.
+func TestCloseStrategyOwnedKeysMirrorsPythonRegistry(t *testing.T) {
+	pythons := []string{
+		"../.venv/bin/python3",
+		"python3",
+	}
+	var py string
+	for _, p := range pythons {
+		if _, err := exec.LookPath(p); err == nil {
+			py = p
+			break
+		}
+		// .venv/bin/python3 is a relative path; LookPath rejects it. Try direct stat.
+		if _, err := os.Stat(p); err == nil {
+			py = p
+			break
+		}
+	}
+	if py == "" {
+		t.Skip("no python3 available; skipping registry sync check")
+	}
+
+	repoRoot, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `
+import sys, json, os
+sys.path.insert(0, os.path.join("shared_tools"))
+sys.path.insert(0, os.path.join("shared_strategies", "close"))
+import importlib.util
+spec = importlib.util.spec_from_file_location("close_registry", os.path.join("shared_strategies", "close", "registry.py"))
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+out = {name: list(entry["default_params"].keys()) for name, entry in mod.STRATEGIES.items()}
+print(json.dumps(out))
+`
+	cmd := exec.Command(py, "-c", script)
+	cmd.Dir = repoRoot
+	output, err := cmd.Output()
+	if err != nil {
+		t.Skipf("could not introspect Python registry (likely missing deps): %v", err)
+	}
+	var registry map[string][]string
+	if err := json.Unmarshal(output, &registry); err != nil {
+		t.Fatalf("parse python registry output: %v\n%s", err, output)
+	}
+	for name, keys := range registry {
+		owned, ok := closeStrategyOwnedKeys[name]
+		if !ok {
+			t.Errorf("close strategy %q has default_params %v in Python registry but is missing from closeStrategyOwnedKeys — legacy migrations would route those params to the open ref", name, keys)
+			continue
+		}
+		for _, k := range keys {
+			if _, present := owned[k]; !present {
+				t.Errorf("close strategy %q has default_param %q in Python registry but it's missing from closeStrategyOwnedKeys[%q]", name, k, name)
+			}
+		}
+	}
+}
+
+// TestMigrateV13ManualStrategyDefaultsHold covers #640 review #2: type=manual
+// strategies in v12 typically have empty `args`, so the migration must not
+// leave open_strategy.name = "". Default to "hold" (matches LoadConfig's
+// runtime auto-fill for type=manual).
+func TestMigrateV13ManualStrategyDefaultsHold(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	original := map[string]interface{}{
+		"config_version": 12,
+		"strategies": []interface{}{
+			map[string]interface{}{
+				"id":        "hl-manual-eth",
+				"type":      "manual",
+				"platform":  "hyperliquid",
+				"symbol":    "ETH",
+				"timeframe": "1h",
+			},
+		},
+	}
+	data, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateConfig(path, nil, nil); err != nil {
+		t.Fatalf("MigrateConfig: %v", err)
+	}
+	migrated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(migrated, &got); err != nil {
+		t.Fatal(err)
+	}
+	strategies := got["strategies"].([]interface{})
+	open0 := strategies[0].(map[string]interface{})["open_strategy"].(map[string]interface{})
+	if open0["name"] != "hold" {
+		t.Errorf("manual strategy open_strategy.name = %v, want hold", open0["name"])
+	}
+}
+
+// TestStrictStringFromJSON is the fail-safe path for a hand-edited config
+// where someone wrote an object/array shape without bumping config_version.
+// Returning "" lets the v13 migration's args[0] fallback take over instead
+// of writing a corrupted "map[name:foo]" name (#640 review #3).
+// stringFromJSON keeps its lenient fmt.Sprint behavior for v6/v7 callers.
+func TestStrictStringFromJSON(t *testing.T) {
+	if got := strictStringFromJSON(map[string]interface{}{"name": "foo"}); got != "" {
+		t.Errorf("strictStringFromJSON(map) = %q, want empty (fail-safe)", got)
+	}
+	if got := strictStringFromJSON([]interface{}{"a", "b"}); got != "" {
+		t.Errorf("strictStringFromJSON([]) = %q, want empty", got)
+	}
+	if got := strictStringFromJSON(42.0); got != "" {
+		t.Errorf("strictStringFromJSON(float) = %q, want empty", got)
+	}
+	if got := strictStringFromJSON("  real  "); got != "real" {
+		t.Errorf("strictStringFromJSON(string) = %q, want real (trimmed)", got)
 	}
 }

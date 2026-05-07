@@ -319,8 +319,8 @@ func TestBuildHyperliquidProtectionPlanThreeTiers(t *testing.T) {
 
 func TestHyperliquidProtectionTiersCoercesFinalTierToFullCoverage(t *testing.T) {
 	sc := StrategyConfig{
-		Type:            "perps",
-		Platform:        "hyperliquid",
+		Type:     "perps",
+		Platform: "hyperliquid",
 		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr_live", Params: map[string]interface{}{
 			"tiers": []interface{}{
 				map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.5},
@@ -336,8 +336,8 @@ func TestHyperliquidProtectionTiersCoercesFinalTierToFullCoverage(t *testing.T) 
 
 func TestHyperliquidProtectionTiersRejectsNonIncreasingAfterSort(t *testing.T) {
 	sc := StrategyConfig{
-		Type:            "perps",
-		Platform:        "hyperliquid",
+		Type:     "perps",
+		Platform: "hyperliquid",
 		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr_live", Params: map[string]interface{}{
 			"tiers": []interface{}{
 				map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.5},
@@ -352,8 +352,8 @@ func TestHyperliquidProtectionTiersRejectsNonIncreasingAfterSort(t *testing.T) {
 
 func TestHyperliquidProtectionTiersPreservesDuplicateMultipleOrder(t *testing.T) {
 	sc := StrategyConfig{
-		Type:            "perps",
-		Platform:        "hyperliquid",
+		Type:     "perps",
+		Platform: "hyperliquid",
 		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr_live", Params: map[string]interface{}{
 			"tiers": []interface{}{
 				map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.4},
@@ -546,8 +546,8 @@ func TestRunHyperliquidProtectionSyncStampsTradeInDB(t *testing.T) {
 
 func TestHyperliquidProtectionTiersRejectsSingleTier(t *testing.T) {
 	sc := StrategyConfig{
-		Type:            "perps",
-		Platform:        "hyperliquid",
+		Type:     "perps",
+		Platform: "hyperliquid",
 		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr_live", Params: map[string]interface{}{
 			"tiers": []interface{}{
 				map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 1.0},

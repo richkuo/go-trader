@@ -3103,7 +3103,7 @@ func TestReconcileManualPositionExternalClose(t *testing.T) {
 
 func tieredTPATRSC() StrategyConfig {
 	return StrategyConfig{
-		ID:              "hl-tp",
+		ID: "hl-tp",
 		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr", Params: map[string]interface{}{
 			"tiers": []interface{}{
 				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},

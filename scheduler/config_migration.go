@@ -331,6 +331,19 @@ func stringFromJSON(v interface{}) string {
 	return strings.TrimSpace(fmt.Sprint(v))
 }
 
+// strictStringFromJSON refuses to coerce non-string JSON values. The v13
+// migration uses this for fields where a non-string would be a hand-edit
+// mistake (e.g. open_strategy already shaped as the post-v13 object); falling
+// back to "" lets downstream args[0]/type=manual recovery paths take over
+// instead of writing a corrupted "map[name:foo]" name (#640 review #3).
+func strictStringFromJSON(v interface{}) string {
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
 // cloneOrNewJSONMap returns a shallow copy of v if it is a JSON object (map[string]interface{}),
 // or a fresh empty map otherwise. Values remain interface{} — this is not a string-keyed string map.
 func cloneOrNewJSONMap(v interface{}) map[string]interface{} {
@@ -499,6 +512,7 @@ var closeStrategyOwnedKeys = map[string]map[string]struct{}{
 	"tiered_tp_atr":      {"tiers": {}},
 	"tiered_tp_atr_live": {"tiers": {}, "atr_source": {}},
 	"tiered_tp_pct":      {"tiers": {}},
+	"tp_at_pct":          {"pct": {}},
 }
 
 // migrateV13StrategyShape rewrites each strategy in-place from the legacy flat
@@ -516,25 +530,35 @@ func migrateV13StrategyShape(raw map[string]interface{}) {
 			continue
 		}
 
-		// Snapshot legacy fields before we overwrite them.
-		legacyOpen := stringFromJSON(sc["open_strategy"])
+		// Snapshot legacy fields before we overwrite them. Use strict string
+		// coercion so a hand-edited object (e.g. someone shaped the file post-v13
+		// without bumping config_version) doesn't get fmt.Sprint'd into a
+		// corrupted "map[...]" name (#640 review #3).
+		legacyOpen := strictStringFromJSON(sc["open_strategy"])
 		legacyClosesRaw, _ := sc["close_strategies"].([]interface{})
 		legacyParams := cloneOrNewJSONMap(sc["params"])
 
 		// Resolve open name: prefer legacy open_strategy, else fall back to
 		// args[0] so configs that relied on the positional script arg keep
-		// working post-migration.
+		// working post-migration. type=manual strategies in v12 typically have
+		// empty `args` (LoadConfig auto-fills args[0]="hold" *after* unmarshal,
+		// but migration runs *before* unmarshal). Default the open name to
+		// "hold" for type=manual so the persisted v13 shape isn't an empty
+		// name that relies on runtime fallback (#640 review #2).
 		openName := legacyOpen
 		if openName == "" {
 			if argsList, ok := sc["args"].([]interface{}); ok && len(argsList) > 0 {
-				openName = stringFromJSON(argsList[0])
+				openName = strictStringFromJSON(argsList[0])
 			}
+		}
+		if openName == "" && strictStringFromJSON(sc["type"]) == "manual" {
+			openName = "hold"
 		}
 
 		// Build close refs while moving owned legacy params keys into each ref.
 		closeRefs := make([]interface{}, 0, len(legacyClosesRaw))
 		for _, entry := range legacyClosesRaw {
-			name := stringFromJSON(entry)
+			name := strictStringFromJSON(entry)
 			if name == "" {
 				continue
 			}
