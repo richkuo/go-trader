@@ -1039,7 +1039,15 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 			}
 		}
 		if tps := tieredTPATRPrices(sc, pos.Side, pos.AvgCost, pos.EntryATR); len(tps) > 0 {
+			// A zero TPOID alone is ambiguous (tiers also hold zero before the
+			// first protection-sync places them); require an observed shrink
+			// vs. InitialQuantity to mark a tier as filled (#662).
+			partiallyClosed := pos.InitialQuantity > 0 && pos.Quantity+1e-9 < pos.InitialQuantity
 			for i, tp := range tps {
+				if partiallyClosed && i < len(pos.TPOIDs) && pos.TPOIDs[i] == 0 {
+					extras += fmt.Sprintf(" | TP%d: $%s ✓", i+1, fmtComma2(tp))
+					continue
+				}
 				pct := percentFromEntry(pos.Side, pos.AvgCost, tp)
 				extras += fmt.Sprintf(" | TP%d: $%s (%s)", i+1, fmtComma2(tp), fmtPnlPct(pct))
 			}

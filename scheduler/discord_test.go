@@ -1534,6 +1534,67 @@ func TestCollectPositions_TieredTPATR_OmittedWhenEntryATRZero(t *testing.T) {
 	}
 }
 
+// TestCollectPositions_TieredTPATR_FilledTierMarked verifies #662: once a TP
+// tier has filled (TPOID zeroed AND position quantity dropped below
+// InitialQuantity), the summary marks that tier with ✓ instead of rendering it
+// as still pending. Pending tiers retain the price-and-percent format.
+func TestCollectPositions_TieredTPATR_FilledTierMarked(t *testing.T) {
+	sc := StrategyConfig{
+		ID:              "hl-tatr-btc",
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}},
+	}
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {
+				Symbol:          "BTC/USDT",
+				Quantity:        0.0125,
+				InitialQuantity: 0.025,
+				AvgCost:         63500,
+				Side:            "long",
+				EntryATR:        1000,
+				TPOIDs:          []int64{0, 99999},
+			},
+		},
+	}
+	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
+	if !strings.Contains(lines[0], "| TP1: $64,500.00 ✓") {
+		t.Errorf("expected TP1 marked filled, got: %s", lines[0])
+	}
+	if !strings.Contains(lines[0], "| TP2: $65,500.00 (+3.1%)") {
+		t.Errorf("expected TP2 still pending, got: %s", lines[0])
+	}
+}
+
+// TestCollectPositions_TieredTPATR_NoFillBeforeProtectionSync verifies #662
+// edge case: TPOIDs all-zero before the first protection-sync places tiers
+// must NOT be rendered as filled (no shrink vs InitialQuantity).
+func TestCollectPositions_TieredTPATR_NoFillBeforeProtectionSync(t *testing.T) {
+	sc := StrategyConfig{
+		ID:              "hl-tatr-btc",
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}},
+	}
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {
+				Symbol:          "BTC/USDT",
+				Quantity:        0.025,
+				InitialQuantity: 0.025,
+				AvgCost:         63500,
+				Side:            "long",
+				EntryATR:        1000,
+				TPOIDs:          []int64{0, 0},
+			},
+		},
+	}
+	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
+	if strings.Contains(lines[0], "✓") {
+		t.Errorf("filled marker leaked before any TP fill, got: %s", lines[0])
+	}
+	if !strings.Contains(lines[0], "| TP1: $64,500.00 (+1.6%) | TP2: $65,500.00 (+3.1%)") {
+		t.Errorf("expected both tiers pending, got: %s", lines[0])
+	}
+}
+
 // TestCollectPositions_AllFragments_WithTieredTP verifies ATR → SL → TP1 → TP2 →
 // leverage → date ordering when tiered_tp_atr is configured (#528).
 func TestCollectPositions_AllFragments_WithTieredTP(t *testing.T) {
