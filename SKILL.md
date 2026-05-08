@@ -253,7 +253,7 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
 **Internal / no ops impact**
 - Discord column truncation/aliases (#514); registry split into open+close (#511)
 - `close_fraction` honored — existing `close_strategies` configs partial-close as specified (#521)
-- Discord SL/TP1/TP2/ATR position lines (#528/#529/#561); partial-close DMs as `TRADE CLOSED` (#530/#531)
+- Discord SL/TP[1..n]/ATR position lines (#528/#529/#561); partial-close DMs as `TRADE CLOSED` (#530/#531). TP labels and prices in position extras + Discord/Telegram trade DMs now read from configured `tiers` instead of hardcoded 1×/2× — operators with custom `tiered_tp_atr*` tiers (e.g. 2×/3× or 3+ tiers) see the actual rendered TPs match their on-chain orders (#660)
 - Backtester close registry with `--close-strategy`/`--close-params` (#535)
 - HL adapter `cancel_trigger_order` → `cancel_order_by_oid` with backward-compat alias (#604)
 - `shared_tools/hl_user_fills.py` consolidates fee-lookup helpers shared by `check_hyperliquid.py` and `close_hyperliquid_position.py` (#603/#598)
