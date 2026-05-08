@@ -2418,8 +2418,8 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	//     (close path must free the trigger slot; flip path too, since the
 	//     new side gets a fresh SL below).
 	//   - place a new SL after the open leg unless the action is a pure close
-	//     (signal=-1 on a long without AllowShorts → no new position to
-	//     protect). Skip for non-HL platforms or when pct<=0.
+	//     (no new position will follow — see pureClose predicate below).
+	//     Skip for non-HL platforms or when pct<=0.
 	//   - on a flip, pass prev_pos_qty so the SL is sized against the new
 	//     net position (#421) — total_sz alone is closeQty+newQty.
 	// pureClose: the signal will close an existing position with no new open

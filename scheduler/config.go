@@ -291,14 +291,15 @@ const (
 	DirectionBoth  = "both"
 )
 
-// EffectiveDirection returns the canonical direction for a perps strategy:
-// "long" (signal=1 opens, signal=-1 closes long), "short" (signal=-1 opens,
-// signal=1 closes short), or "both" (bidirectional). Empty Direction falls
-// back to AllowShorts (legacy pre-v14): false→"long", true→"both". Non-perps
-// strategies always return "long" — direction is meaningful only for perps,
+// EffectiveDirection returns the canonical direction for a perps or manual
+// strategy: "long" (signal=1 opens, signal=-1 closes long), "short" (signal=-1
+// opens, signal=1 closes short), or "both" (bidirectional). Empty Direction
+// falls back to AllowShorts (legacy pre-v14): false→"long", true→"both".
+// Non-perps/manual strategies always return "long" — direction is meaningful
+// only for perps and manual (which trades HL perps via the manual-open CLI),
 // and validation rejects Direction on other types. (#656)
 func EffectiveDirection(sc StrategyConfig) string {
-	if sc.Type != "perps" {
+	if sc.Type != "perps" && sc.Type != "manual" {
 		return DirectionLong
 	}
 	switch sc.Direction {

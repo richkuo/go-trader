@@ -1471,7 +1471,7 @@ func TestExecutePerpsSignal_DirectionShort_BuyClosesShort(t *testing.T) {
 
 	s := &StrategyState{
 		ID:       "hl-bear-eth",
-		Cash:    1000,
+		Cash:     1000,
 		Platform: "hyperliquid",
 		Type:     "perps",
 		Positions: map[string]*Position{
@@ -1508,7 +1508,7 @@ func TestExecutePerpsSignal_DirectionShort_OrphanLongNotAutoClosed(t *testing.T)
 
 	s := &StrategyState{
 		ID:       "hl-bear-eth",
-		Cash:    1000,
+		Cash:     1000,
 		Platform: "hyperliquid",
 		Type:     "perps",
 		Positions: map[string]*Position{
@@ -1545,7 +1545,7 @@ func TestExecutePerpsSignal_DirectionShort_AlreadyShortDedupes(t *testing.T) {
 
 	s := &StrategyState{
 		ID:       "hl-bear-eth",
-		Cash:    1000,
+		Cash:     1000,
 		Platform: "hyperliquid",
 		Type:     "perps",
 		Positions: map[string]*Position{
@@ -1572,11 +1572,11 @@ func TestExecutePerpsSignal_DirectionShort_AlreadyShortDedupes(t *testing.T) {
 // cross-product of {Direction set, AllowShorts legacy} for non-perps and perps.
 func TestEffectiveDirection_PrecedenceAndFallback(t *testing.T) {
 	cases := []struct {
-		name       string
-		sc         StrategyConfig
-		wantDir    string
-		wantLong   bool
-		wantShort  bool
+		name      string
+		sc        StrategyConfig
+		wantDir   string
+		wantLong  bool
+		wantShort bool
 	}{
 		{"perps_explicit_long", StrategyConfig{Type: "perps", Direction: DirectionLong}, DirectionLong, true, false},
 		{"perps_explicit_short", StrategyConfig{Type: "perps", Direction: DirectionShort}, DirectionShort, false, true},
@@ -1585,6 +1585,12 @@ func TestEffectiveDirection_PrecedenceAndFallback(t *testing.T) {
 		{"perps_legacy_allowshorts_false", StrategyConfig{Type: "perps", AllowShorts: false}, DirectionLong, true, false},
 		{"perps_unknown_falls_back", StrategyConfig{Type: "perps", Direction: "weird", AllowShorts: true}, DirectionBoth, true, true},
 		{"non_perps_always_long", StrategyConfig{Type: "spot", Direction: DirectionShort}, DirectionLong, true, false},
+		// #656 review: manual strategies trade HL perps via manual-open and
+		// must honor Direction/AllowShorts the same way perps do.
+		{"manual_explicit_short", StrategyConfig{Type: "manual", Direction: DirectionShort}, DirectionShort, false, true},
+		{"manual_explicit_both", StrategyConfig{Type: "manual", Direction: DirectionBoth}, DirectionBoth, true, true},
+		{"manual_legacy_allowshorts_true", StrategyConfig{Type: "manual", AllowShorts: true}, DirectionBoth, true, true},
+		{"manual_legacy_allowshorts_false", StrategyConfig{Type: "manual"}, DirectionLong, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

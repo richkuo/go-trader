@@ -573,9 +573,12 @@ func migrateV14Direction(raw map[string]interface{}) {
 		if !hadLegacy {
 			continue
 		}
-		// Skip non-perps types (allow_shorts was meaningless there; nothing
-		// to translate).
-		if stringFromJSON(sc["type"]) != "perps" {
+		// Skip types that never honored allow_shorts. Both perps and manual
+		// run on HL perps and consult Direction/EffectiveDirection, so both
+		// must translate; everything else is meaningless and dropped above.
+		switch stringFromJSON(sc["type"]) {
+		case "perps", "manual":
+		default:
 			continue
 		}
 		// If direction is already set explicitly, preserve it.

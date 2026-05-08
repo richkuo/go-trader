@@ -1129,9 +1129,9 @@ func TestLoadConfigMigratesV12EndToEnd(t *testing.T) {
 // boolean values must map correctly, and the legacy key must be removed.
 func TestMigrateV14Direction(t *testing.T) {
 	cases := []struct {
-		name      string
-		strategy  map[string]interface{}
-		wantDir   string
+		name           string
+		strategy       map[string]interface{}
+		wantDir        string
 		wantLegacyKept bool // legacy key preserved (e.g. non-perps shouldn't get a direction)
 	}{
 		{
@@ -1165,6 +1165,26 @@ func TestMigrateV14Direction(t *testing.T) {
 				"allow_shorts": true,
 			},
 			wantDir: "",
+		},
+		// #656 review: type=manual trades HL perps and previously gated
+		// manual-open --side via allow_shorts. The migration must translate
+		// manual the same as perps, otherwise existing manual configs with
+		// allow_shorts:true silently regress to long-only post-v14.
+		{
+			name: "manual_allow_shorts_true_to_both",
+			strategy: map[string]interface{}{
+				"id": "hl-manual-eth", "type": "manual", "platform": "hyperliquid",
+				"allow_shorts": true,
+			},
+			wantDir: "both",
+		},
+		{
+			name: "manual_allow_shorts_false_to_long",
+			strategy: map[string]interface{}{
+				"id": "hl-manual-btc", "type": "manual", "platform": "hyperliquid",
+				"allow_shorts": false,
+			},
+			wantDir: "long",
 		},
 	}
 	for _, tc := range cases {
