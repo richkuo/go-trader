@@ -63,6 +63,8 @@ VER=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 The `Version` ldflag appears in Discord summary titles; without it the binary reports `dev`.
 
+> Rebuilding the binary alone is unsafe after #642. The Go binary and Python check scripts share an argv contract (`--strategy-refs`, `--probe-only`, etc.); a build without `git pull` + `uv sync` from the same SHA can produce an asymmetric deploy. Use `bash scripts/update.sh` for any update past the initial install — it does pull + sync + build atomically.
+
 ---
 
 ## Configure
@@ -147,16 +149,15 @@ journalctl -u go-trader -n 100 --no-pager
 
 ## Auto-Update
 
-`auto_update`: `off` | `daily` | `heartbeat`. When an update is found, the bot notifies active Discord channels. With `DISCORD_OWNER_ID` set, it DMs the owner; replying yes within 30 minutes runs `git pull --ff-only`, rebuilds, saves state, restarts.
+`auto_update`: `off` | `daily` | `heartbeat`. When an update is found, the bot notifies active Discord channels. With `DISCORD_OWNER_ID` set, it DMs the owner; replying yes within 30 minutes runs `scripts/update.sh` (atomic git pull + uv sync + go build), saves state, and restarts.
 
 Manual update:
 
 ```bash
-git pull --ff-only
-VER=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
-/opt/homebrew/bin/go -C scheduler build -ldflags "-X main.Version=$VER" -o ../go-trader .
-sudo systemctl restart go-trader
+cd /path/to/go-trader && bash scripts/update.sh --restart
 ```
+
+`scripts/update.sh` is the single source of truth for `git pull --ff-only` + `uv sync` + `go build` (all three steps gated under `set -euo pipefail`). External deploy automation (Ansible, image bake, etc.) should call this script rather than reproducing the steps inline — that's how asymmetric deploys land.
 
 Verify: `journalctl -u go-trader -f | grep -i "\[update\]"`.
 
