@@ -358,7 +358,9 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 	// Self-contained entry: due and all are the same list. Prices are
 	// unavailable in this path (caller did not pre-fetch); external-close
 	// PnL falls back to zero (legacy behavior pre-#584).
-	return reconcileHyperliquidAccountPositions(hlStrategies, hlStrategies, state, mu, logMgr, positions, nil, accountAddr)
+	// This entry point is used by --once and tests; alerts are suppressed
+	// since no notifier is plumbed through here.
+	return reconcileHyperliquidAccountPositions(hlStrategies, hlStrategies, state, mu, logMgr, positions, nil, accountAddr, nil, false)
 }
 
 // reconcileHyperliquidAccountPositions reconciles pre-fetched on-chain positions
@@ -381,8 +383,13 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 // string to skip the lookup — closes still book correctly using the
 // modeled fee.
 //
+// notifier and notifyTPSLFills control owner DMs emitted on TP/SL fill
+// detection (#661). Pass a nil notifier to suppress alerts; pass false for
+// notifyTPSLFills when the operator has explicitly opted out via
+// `notify_tp_sl_fills: false`.
+//
 // Must be called WITHOUT holding any lock; acquires Lock internally.
-func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, positions []HLPosition, prices map[string]float64, accountAddress string) bool {
+func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, positions []HLPosition, prices map[string]float64, accountAddress string, notifier *MultiNotifier, notifyTPSLFills bool) bool {
 	// Resolve userFills BEFORE taking mu.Lock(): each lookup can sleep up
 	// to ~1.5s on indexer-lag retries, and holding the write lock blocks
 	// every reader of state (/status, /health, per-strategy phase RLocks).
@@ -570,8 +577,23 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 						}
 						pos.Quantity = lookup.FilledQty
 					}
+					alertSide := pos.Side
+					alertQty := pos.Quantity
+					alertTriggerPx := pos.StopLossTriggerPx
 					if recordPerpsStopLossCloseWithFillFee(ss, coin, pos.StopLossTriggerPx, lookup.Fee, useFillFee, oidStr, "hl_sync_stop_loss", logger) {
 						changed = true
+						notifyProtectionFill(notifier, notifyTPSLFills, ProtectionFillAlert{
+							StrategyID:   id,
+							Symbol:       coin,
+							Side:         alertSide,
+							FillType:     "SL",
+							IsPartial:    false,
+							FillPrice:    alertTriggerPx,
+							CloseQty:     alertQty,
+							RemainingQty: 0,
+							RealizedPnL:  lastBookedTradePnL(ss),
+							HasPnL:       true,
+						})
 					}
 				} else if mark, ok := prices[coin]; ok && mark > 0 {
 					// #584: credit s.Cash with mark-based PnL so the per-strategy
@@ -649,10 +671,25 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 							}
 							slOwnerPos.Quantity = lookup.FilledQty
 						}
+						alertSide := slOwnerPos.Side
+						alertQty := slOwnerPos.Quantity
+						alertTriggerPx := slOwnerPos.StopLossTriggerPx
 						if recordPerpsStopLossCloseWithFillFee(ownerSS, coin, slOwnerPos.StopLossTriggerPx, lookup.Fee, useFillFee, oidStr, "hl_sync_stop_loss", logger) {
 							changed = true
 							virtualQty = expectedResidual
 							delta = virtualQty - onChainQty
+							notifyProtectionFill(notifier, notifyTPSLFills, ProtectionFillAlert{
+								StrategyID:   slOwnerID,
+								Symbol:       coin,
+								Side:         alertSide,
+								FillType:     "SL",
+								IsPartial:    false,
+								FillPrice:    alertTriggerPx,
+								CloseQty:     alertQty,
+								RemainingQty: 0,
+								RealizedPnL:  lastBookedTradePnL(ownerSS),
+								HasPnL:       true,
+							})
 						}
 					}
 				}
@@ -662,6 +699,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 					var candidateID string
 					var candidateSS *StrategyState
 					var candidatePos *Position
+					var candidateTierIdx int
 					for _, id := range stratIDs {
 						ss := state.Strategies[id]
 						if ss == nil {
@@ -672,7 +710,11 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 							continue
 						}
 						sc, ok := strategyByID[id]
-						if !ok || !hyperliquidHasClearedTPTier(sc, pos, closeQty) {
+						if !ok {
+							continue
+						}
+						tierIdx, hasCleared := hyperliquidClearedTPTier(sc, pos, closeQty)
+						if !hasCleared {
 							continue
 						}
 						if candidateID != "" {
@@ -681,7 +723,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 							candidateID, candidateSS, candidatePos = "", nil, nil
 							break
 						}
-						candidateID, candidateSS, candidatePos = id, ss, pos
+						candidateID, candidateSS, candidatePos, candidateTierIdx = id, ss, pos, tierIdx
 					}
 					if candidateID != "" && candidateSS != nil && candidatePos != nil && closeQty <= candidatePos.Quantity+1e-6 {
 						if mark, ok := prices[coin]; ok && mark > 0 {
@@ -699,6 +741,26 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 									virtualQty += closeQty
 								}
 								delta = virtualQty - onChainQty
+								// candidatePos.Quantity is decremented in-place by
+								// the partial-close booker (or the position is
+								// deleted when fully drained); read it back for
+								// the DM remaining-qty line.
+								remaining := 0.0
+								if posAfter := candidateSS.Positions[coin]; posAfter != nil {
+									remaining = posAfter.Quantity
+								}
+								notifyProtectionFill(notifier, notifyTPSLFills, ProtectionFillAlert{
+									StrategyID:   candidateID,
+									Symbol:       coin,
+									Side:         closeSide,
+									FillType:     tpTierLabel(candidateTierIdx),
+									IsPartial:    true,
+									FillPrice:    mark,
+									CloseQty:     closeQty,
+									RemainingQty: remaining,
+									RealizedPnL:  lastBookedTradePnL(candidateSS),
+									HasPnL:       true,
+								})
 							}
 						} else {
 							fmt.Printf("[WARN] hl-sync: shared coin %s TP partial drift detected for %s but no mark price is available; leaving virtual qty unchanged\n", coin, candidateID)
@@ -761,38 +823,57 @@ func hyperliquidSharedPartialCloseDrift(virtualQty, onChainQty float64) (string,
 	return "", 0, false
 }
 
-func hyperliquidHasClearedTPTier(sc StrategyConfig, pos *Position, closeQty float64) bool {
+// hyperliquidClearedTPTier reports whether sc/pos shows a cleared TP tier
+// attributable to closeQty, and which tier index (0-based) cleared. Used by
+// reconciler Detector 3 to attribute partial closes and by the TP-fill DM
+// alert to label the tier (#661).
+//
+// Returns (clearedIdx, true) when at least one TP OID is zero AND either:
+//   - some other tier is still active (the cleared one is the freshest fill), or
+//   - all tiers are zero AND closeQty matches pos.Quantity (sole-peer final close,
+//     attributed to the last tier).
+func hyperliquidClearedTPTier(sc StrategyConfig, pos *Position, closeQty float64) (int, bool) {
 	if pos == nil || len(pos.TPOIDs) == 0 {
-		return false
+		return 0, false
 	}
 	tiers := hyperliquidProtectionTiers(sc)
 	if len(tiers) == 0 {
-		return false
+		return 0, false
 	}
 	if len(pos.TPOIDs) < len(tiers) {
-		return false
+		return 0, false
 	}
 	tpOIDs := tpOIDsForTierCount(pos.TPOIDs, len(tiers))
-	hasCleared := false
+	clearedIdx := -1
 	hasActive := false
-	for _, oid := range tpOIDs {
+	for i, oid := range tpOIDs {
 		if oid > 0 {
 			hasActive = true
-		} else {
-			hasCleared = true
+		} else if clearedIdx < 0 {
+			clearedIdx = i
 		}
 	}
-	if !hasCleared {
-		return false
+	if clearedIdx < 0 {
+		return 0, false
 	}
 	if hasActive {
-		return true
+		return clearedIdx, true
 	}
 	// All TP tiers gone usually means the final tier filled. Treat that as
 	// attributable only when the observed drift can fully close this strategy;
 	// otherwise an all-zero, never-placed TP list would make ambiguous gaps look
 	// actionable.
-	return math.Abs(pos.Quantity-closeQty) <= 1e-6
+	if math.Abs(pos.Quantity-closeQty) <= 1e-6 {
+		return len(tpOIDs) - 1, true
+	}
+	return 0, false
+}
+
+// hyperliquidHasClearedTPTier is the bool-returning shim retained for callers
+// that don't need the tier index.
+func hyperliquidHasClearedTPTier(sc StrategyConfig, pos *Position, closeQty float64) bool {
+	_, ok := hyperliquidClearedTPTier(sc, pos, closeQty)
+	return ok
 }
 
 // HyperliquidLiveCloseReport summarizes a forceCloseHyperliquidLive run.

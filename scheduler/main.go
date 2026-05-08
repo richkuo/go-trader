@@ -1061,7 +1061,7 @@ func main() {
 				// shared-wallet risk check (#243 review feedback) so we don't
 				// pay two HL API round-trips per cycle.
 				if len(hlReconcileDue) > 0 && hlStateFetched {
-					reconcileHyperliquidAccountPositions(hlReconcileDue, hlReconcileAll, state, &mu, logMgr, hlPositions, prices, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"))
+					reconcileHyperliquidAccountPositions(hlReconcileDue, hlReconcileAll, state, &mu, logMgr, hlPositions, prices, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"), notifier, cfg.NotifyTPSLFillsEnabled())
 				}
 
 				// #621: Build a coin→|on-chain qty| map from the pre-fetched positions
