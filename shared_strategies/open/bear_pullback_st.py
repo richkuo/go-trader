@@ -10,8 +10,7 @@ Rules
 5. Trigger: current close has lost EMA(short) (cross-down) OR closed below the
    prior bar's low — and the current close confirms by sitting below EMA(short).
 
-Emits ``signal = -1`` on the trigger bar; otherwise 0. Long-only platforms
-(spot) can register this strategy but it will never enter long.
+Emits ``signal = -1`` on the trigger bar; otherwise 0.
 """
 
 import numpy as np
@@ -31,6 +30,7 @@ def bear_pullback_st_core(
     rsi_lower: float = 55.0,
     rsi_upper: float = 65.0,
     pullback_window: int = 5,
+    pullback_touch_buffer_pct: float = 0.001,
 ) -> pd.DataFrame:
     """Generate short signals on failed rallies inside a bearish trend.
 
@@ -43,6 +43,9 @@ def bear_pullback_st_core(
     rsi_lower / rsi_upper : RSI band the rally must rebound into during the
         pullback window (default 55–65 — overbought relative to a bear trend)
     pullback_window : bars to look back for the rally touch + RSI rebound
+    pullback_touch_buffer_pct : fraction by which the bar's high must *exceed*
+        EMA(short)/EMA(mid) to count as a rally touch — separates real rallies
+        into resistance from noisy wicks tagging the EMA
 
     Returns
     -------
@@ -89,8 +92,14 @@ def bear_pullback_st_core(
     bearish_regime = result["ema_mid"] < result["ema_long"]
     strong_trend = result["adx"] > adx_threshold
 
-    # Rally into resistance: high pierced EMA(short) or EMA(mid) on a prior bar.
-    pullback_touch = (high >= result["ema_short"]) | (high >= result["ema_mid"])
+    # Rally into resistance: high must *exceed* EMA(short) or EMA(mid) by a
+    # buffer — guards against noisy wicks merely tagging the EMA in a downtrend.
+    touch_mult = 1.0 + pullback_touch_buffer_pct
+    pullback_touch = (high > result["ema_short"] * touch_mult) | (
+        high > result["ema_mid"] * touch_mult
+    )
+    # .shift(1) so the rally must have happened on a *prior* bar — we never let
+    # the trigger bar itself satisfy the touch/RSI condition.
     pullback_recent = (
         pullback_touch.shift(1).rolling(window=pullback_window).max().fillna(0).astype(bool)
     )

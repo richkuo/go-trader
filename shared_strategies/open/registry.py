@@ -972,7 +972,7 @@ def donchian_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "ema_short": 20, "ema_mid": 50, "ema_long": 200,
         "adx_period": 14, "adx_threshold": 20.0,
         "rsi_period": 14, "rsi_lower": 55.0, "rsi_upper": 65.0,
-        "pullback_window": 5,
+        "pullback_window": 5, "pullback_touch_buffer_pct": 0.001,
     },
     platforms=("futures",),
 )
