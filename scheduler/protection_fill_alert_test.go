@@ -23,7 +23,7 @@ func TestFormatProtectionFillAlert_FullSL(t *testing.T) {
 		"ETH LONG",
 		"@ $1800.5000",
 		"Remaining: 0.000000 ETH",
-		"PnL=$-42.10",
+		"PnL=-$42.10",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in alert body:\n%s", want, out)
@@ -79,17 +79,45 @@ func TestFormatProtectionFillAlert_UnknownPrice(t *testing.T) {
 	}
 }
 
-func TestNotifyProtectionFill_NilNotifierIsNoop(t *testing.T) {
-	// Should not panic.
+type countingDMSender struct {
+	count int
+	last  string
+}
+
+func (c *countingDMSender) SendOwnerDM(s string) {
+	c.count++
+	c.last = s
+}
+
+func TestNotifyProtectionFill_NilSenderIsNoop(t *testing.T) {
+	// Untyped nil interface — must not panic.
 	notifyProtectionFill(nil, true, ProtectionFillAlert{StrategyID: "x"})
+	// Typed nil *MultiNotifier wrapped in non-nil interface — must not panic.
+	var mn *MultiNotifier
+	notifyProtectionFill(mn, true, ProtectionFillAlert{StrategyID: "x"})
 }
 
 func TestNotifyProtectionFill_DisabledFlagSuppresses(t *testing.T) {
-	mn := &MultiNotifier{}
-	// With enabled=false the notifier must not be invoked. We can't observe
-	// SendOwnerDM's no-op directly, but the bare MultiNotifier has no backends
-	// so any path through is harmless — assert only that the call doesn't panic.
-	notifyProtectionFill(mn, false, ProtectionFillAlert{StrategyID: "x"})
+	c := &countingDMSender{}
+	notifyProtectionFill(c, false, ProtectionFillAlert{
+		StrategyID: "x", Symbol: "BTC", Side: "long", FillType: "SL", FillPrice: 100, CloseQty: 0.1,
+	})
+	if c.count != 0 {
+		t.Errorf("disabled flag must suppress; got %d invocations", c.count)
+	}
+}
+
+func TestNotifyProtectionFill_EnabledEmits(t *testing.T) {
+	c := &countingDMSender{}
+	notifyProtectionFill(c, true, ProtectionFillAlert{
+		StrategyID: "hl-x", Symbol: "BTC", Side: "long", FillType: "SL", FillPrice: 100, CloseQty: 0.1,
+	})
+	if c.count != 1 {
+		t.Fatalf("enabled must emit once; got %d", c.count)
+	}
+	if !strings.Contains(c.last, "SL filled — hl-x") {
+		t.Errorf("body missing headline: %s", c.last)
+	}
 }
 
 func TestTPTierLabel(t *testing.T) {

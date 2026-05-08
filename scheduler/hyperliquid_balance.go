@@ -396,6 +396,18 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 	// The resolver itself is a pure map read inside the locked region.
 	resolveFee := buildCachedHyperliquidReconcileFillResolver(accountAddress, allStrategies, state, mu, positions)
 
+	// pendingAlerts is populated under mu.Lock() at the three protection-fill
+	// detection sites and drained AFTER mu.Unlock() so SendOwnerDM's blocking
+	// HTTP calls don't extend the critical section. Defer ordering: the flush
+	// closure is registered first, so it fires LAST — after defer mu.Unlock()
+	// has already released the lock (defer runs LIFO).
+	var pendingAlerts []ProtectionFillAlert
+	defer func() {
+		for _, a := range pendingAlerts {
+			notifyProtectionFill(notifier, notifyTPSLFills, a)
+		}
+	}()
+
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -582,7 +594,10 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 					alertTriggerPx := pos.StopLossTriggerPx
 					if recordPerpsStopLossCloseWithFillFee(ss, coin, pos.StopLossTriggerPx, lookup.Fee, useFillFee, oidStr, "hl_sync_stop_loss", logger) {
 						changed = true
-						notifyProtectionFill(notifier, notifyTPSLFills, ProtectionFillAlert{
+						// lastBookedTradePnL relies on the just-completed
+						// RecordTrade inside the booker; do not insert another
+						// RecordTrade between here and the booker call.
+						pendingAlerts = append(pendingAlerts, ProtectionFillAlert{
 							StrategyID:   id,
 							Symbol:       coin,
 							Side:         alertSide,
@@ -678,7 +693,10 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 							changed = true
 							virtualQty = expectedResidual
 							delta = virtualQty - onChainQty
-							notifyProtectionFill(notifier, notifyTPSLFills, ProtectionFillAlert{
+							// lastBookedTradePnL relies on the just-completed
+							// RecordTrade inside the booker; do not insert another
+							// RecordTrade between here and the booker call.
+							pendingAlerts = append(pendingAlerts, ProtectionFillAlert{
 								StrategyID:   slOwnerID,
 								Symbol:       coin,
 								Side:         alertSide,
@@ -749,7 +767,10 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 								if posAfter := candidateSS.Positions[coin]; posAfter != nil {
 									remaining = posAfter.Quantity
 								}
-								notifyProtectionFill(notifier, notifyTPSLFills, ProtectionFillAlert{
+								// lastBookedTradePnL relies on the just-completed
+								// RecordTrade inside the booker; do not insert another
+								// RecordTrade between here and the booker call.
+								pendingAlerts = append(pendingAlerts, ProtectionFillAlert{
 									StrategyID:   candidateID,
 									Symbol:       coin,
 									Side:         closeSide,
@@ -832,6 +853,12 @@ func hyperliquidSharedPartialCloseDrift(virtualQty, onChainQty float64) (string,
 //   - some other tier is still active (the cleared one is the freshest fill), or
 //   - all tiers are zero AND closeQty matches pos.Quantity (sole-peer final close,
 //     attributed to the last tier).
+//
+// Caveat: when multiple tiers have already cleared but none is yet booked,
+// this returns the FIRST cleared index. Detector 3 is expected to fire once
+// per fill (each cycle's drift detection books exactly one tier), so the
+// "earliest cleared" answer matches the unbooked fill in practice. If a future
+// caller batches multiple un-booked fills, revisit this assumption.
 func hyperliquidClearedTPTier(sc StrategyConfig, pos *Position, closeQty float64) (int, bool) {
 	if pos == nil || len(pos.TPOIDs) == 0 {
 		return 0, false

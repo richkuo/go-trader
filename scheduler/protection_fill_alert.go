@@ -37,18 +37,45 @@ func formatProtectionFillAlert(a ProtectionFillAlert) string {
 	}
 	remaining := fmt.Sprintf("Remaining: %.6f %s", a.RemainingQty, a.Symbol)
 	if a.HasPnL {
-		return fmt.Sprintf("%s\n%s\n%s | PnL=$%.2f", headline, priceLine, remaining, a.RealizedPnL)
+		return fmt.Sprintf("%s\n%s\n%s | PnL=%s", headline, priceLine, remaining, formatSignedUSD(a.RealizedPnL))
 	}
 	return fmt.Sprintf("%s\n%s\n%s", headline, priceLine, remaining)
 }
 
+// formatSignedUSD formats a USD amount with the sign before the currency symbol
+// so negative values read as "-$42.10" instead of "$-42.10".
+func formatSignedUSD(v float64) string {
+	if v < 0 {
+		return fmt.Sprintf("-$%.2f", -v)
+	}
+	return fmt.Sprintf("$%.2f", v)
+}
+
+// ownerDMSender is the minimal interface notifyProtectionFill needs from a
+// notifier. *MultiNotifier satisfies it; tests can stub with a counting fake
+// to assert the disabled-flag actually suppresses emission.
+type ownerDMSender interface {
+	SendOwnerDM(content string)
+}
+
 // notifyProtectionFill emits an owner DM for a protection-order fill detected
-// by the reconciler. No-ops when notifier is nil or the feature is disabled.
-func notifyProtectionFill(notifier *MultiNotifier, enabled bool, alert ProtectionFillAlert) {
-	if notifier == nil || !enabled {
+// by the reconciler. No-ops when sender is a nil interface, when the underlying
+// pointer is nil, or when the feature is disabled.
+func notifyProtectionFill(sender ownerDMSender, enabled bool, alert ProtectionFillAlert) {
+	if !enabled || sender == nil || isNilSender(sender) {
 		return
 	}
-	notifier.SendOwnerDM(formatProtectionFillAlert(alert))
+	sender.SendOwnerDM(formatProtectionFillAlert(alert))
+}
+
+// isNilSender reports whether a non-nil interface value carries a nil
+// underlying pointer (e.g. (*MultiNotifier)(nil)). Without this check the
+// interface compares != nil even though invoking SendOwnerDM would panic.
+func isNilSender(s ownerDMSender) bool {
+	if mn, ok := s.(*MultiNotifier); ok {
+		return mn == nil
+	}
+	return false
 }
 
 // tpTierLabel formats a 0-based tier index as "TP1", "TP2", … for DM display.
@@ -60,6 +87,11 @@ func tpTierLabel(tierIdx int) string {
 // trade on s, or 0 when TradeHistory is empty. Used by the reconciler hook
 // sites to surface the per-fill PnL in the DM alert without changing the
 // signature of the bookPerps* helpers.
+//
+// IMPORTANT: this assumes the booker just appended via RecordTrade and no
+// other RecordTrade has run between the booker and this read. Each call site
+// MUST live immediately after a successful record* call, with no intervening
+// trade-recording in between — otherwise the DM will silently mis-report PnL.
 func lastBookedTradePnL(s *StrategyState) float64 {
 	if s == nil || len(s.TradeHistory) == 0 {
 		return 0
