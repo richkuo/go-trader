@@ -750,10 +750,10 @@ func TestDeriveShortName(t *testing.T) {
 	}
 }
 
-// #328 — triple_ema_bidir must generate AllowShorts=true in perps configs so
-// ExecutePerpsSignal opens shorts from flat. Long-only strategies must keep
-// AllowShorts=false so they can't silently flip into short positions.
-func TestGenerateConfig_PerpsAllowShortsWiring(t *testing.T) {
+// #328/#656 — triple_ema_bidir must generate Direction="both" in perps
+// configs so ExecutePerpsSignal opens shorts from flat. Long-only strategies
+// must keep Direction="long" so they can't silently flip into short positions.
+func TestGenerateConfig_PerpsDirectionWiring(t *testing.T) {
 	opts := baseOpts()
 	opts.EnableSpot = false
 	opts.EnablePerps = true
@@ -771,14 +771,14 @@ func TestGenerateConfig_PerpsAllowShortsWiring(t *testing.T) {
 
 	cfg := generateConfig(opts)
 
-	want := map[string]bool{
-		"hl-temab-eth": true,  // bidirectional — must allow shorts
-		"hl-tema-eth":  false, // long-only — must NOT allow shorts
-		"hl-rmc-eth":   false, // long-only — must NOT allow shorts
-		"hl-sbo-eth":   true,  // bidirectional — must allow shorts (#371)
-		"hl-dbo-eth":   true,  // bidirectional — emits short on lower-channel breakdown (#649)
-		"hl-cpat-eth":  true,  // bidirectional — emits short on bearish patterns (#649)
-		"hl-liqsw-eth": true,  // bidirectional — emits short on stop-hunt wicks (#649)
+	want := map[string]string{
+		"hl-temab-eth": DirectionBoth, // bidirectional — must allow shorts
+		"hl-tema-eth":  DirectionLong, // long-only — must NOT allow shorts
+		"hl-rmc-eth":   DirectionLong, // long-only — must NOT allow shorts
+		"hl-sbo-eth":   DirectionBoth, // bidirectional — must allow shorts (#371)
+		"hl-dbo-eth":   DirectionBoth, // bidirectional — emits short on lower-channel breakdown (#649)
+		"hl-cpat-eth":  DirectionBoth, // bidirectional — emits short on bearish patterns (#649)
+		"hl-liqsw-eth": DirectionBoth, // bidirectional — emits short on stop-hunt wicks (#649)
 	}
 	seen := map[string]bool{}
 	for _, s := range cfg.Strategies {
@@ -787,8 +787,12 @@ func TestGenerateConfig_PerpsAllowShortsWiring(t *testing.T) {
 			continue
 		}
 		seen[s.ID] = true
-		if s.AllowShorts != expected {
-			t.Errorf("%s AllowShorts = %v, want %v", s.ID, s.AllowShorts, expected)
+		if s.Direction != expected {
+			t.Errorf("%s Direction = %q, want %q", s.ID, s.Direction, expected)
+		}
+		// Defensive: never emit the legacy AllowShorts boolean from generateConfig.
+		if s.AllowShorts {
+			t.Errorf("%s AllowShorts = true, want false (deprecated; use Direction)", s.ID)
 		}
 	}
 	for id := range want {

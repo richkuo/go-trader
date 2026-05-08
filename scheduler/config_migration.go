@@ -10,7 +10,7 @@ import (
 
 // CurrentConfigVersion is the version embedded in newly generated configs.
 // When the binary starts and cfg.ConfigVersion < CurrentConfigVersion, migration runs.
-const CurrentConfigVersion = 13
+const CurrentConfigVersion = 14
 
 // ConfigField describes a config field introduced in a specific version.
 type ConfigField struct {
@@ -89,6 +89,14 @@ const v9DeprecationNotice = "**Note:** HL perps strategies now auto-derive a per
 const v10DeprecationNotice = "**Note:** perps configs now distinguish `sizing_leverage` from exchange `leverage`. " +
 	"Migration copies existing perps `leverage` into `sizing_leverage` so old configs keep identical order sizing; " +
 	"`leverage` now represents the exchange leverage used for margin drawdown and HL `update_leverage`. See issue #497."
+
+// v14 replaces the legacy `allow_shorts: bool` field with `direction: "long"|"short"|"both"`,
+// unlocking dedicated short-only strategies (#656). Migration translates
+// allow_shorts=false→"long", allow_shorts=true→"both", deletes the old key.
+const v14DeprecationNotice = "**Note:** perps configs now use `direction: \"long\"|\"short\"|\"both\"` instead of `allow_shorts`. " +
+	"Migration converts `allow_shorts: false` → `direction: \"long\"` and `allow_shorts: true` → `direction: \"both\"`. " +
+	"The new `\"short\"` value lets you run a bidirectional strategy as a dedicated short-only instrument " +
+	"(useful with `allowed_regimes: [\"trending_down\"]`). See issue #656."
 
 const v7DeprecationNotice = "**Note:** `dm_paper_trades` and `dm_live_trades` have been replaced by a `dm_channels` map. " +
 	"Paper trades use `dm_channels[\"<platform>-paper\"]`; live trades use `dm_channels[\"<platform>\"]`. " +
@@ -182,6 +190,13 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 	// on the open ref. Any remaining empty `params` field is removed.
 	if oldVer < 13 {
 		migrateV13StrategyShape(raw)
+	}
+
+	// v14: convert legacy allow_shorts (bool) to direction (string enum)
+	// per #656. Each perps strategy gets `direction: "long"` or
+	// `direction: "both"` based on the old boolean; the field is removed.
+	if oldVer < 14 {
+		migrateV14Direction(raw)
 	}
 
 	raw["config_version"] = CurrentConfigVersion
@@ -406,6 +421,14 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 				fmt.Printf("[migration] %s\n", v10DeprecationNotice)
 			}
 		}
+		// v14: notify about allow_shorts → direction migration (#656).
+		if cfg.ConfigVersion < 14 {
+			if notifier != nil && notifier.HasOwner() {
+				notifier.SendOwnerDM(v14DeprecationNotice)
+			} else {
+				fmt.Printf("[migration] %s\n", v14DeprecationNotice)
+			}
+		}
 		return
 	}
 
@@ -436,6 +459,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 		}
 		if cfg.ConfigVersion < 10 {
 			fmt.Printf("[migration] %s\n", v10DeprecationNotice)
+		}
+		if cfg.ConfigVersion < 14 {
+			fmt.Printf("[migration] %s\n", v14DeprecationNotice)
 		}
 		return
 	}
@@ -486,6 +512,10 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 	if cfg.ConfigVersion < 10 {
 		notifier.SendOwnerDM(v10DeprecationNotice)
 	}
+	// v14: notify about allow_shorts → direction migration (#656).
+	if cfg.ConfigVersion < 14 {
+		notifier.SendOwnerDM(v14DeprecationNotice)
+	}
 }
 
 // needsV13SchemaMigration reports whether the on-disk config still uses the
@@ -513,6 +543,51 @@ var closeStrategyOwnedKeys = map[string]map[string]struct{}{
 	"tiered_tp_atr_live": {"tiers": {}, "atr_source": {}},
 	"tiered_tp_pct":      {"tiers": {}},
 	"tp_at_pct":          {"pct": {}},
+}
+
+// migrateV14Direction translates the legacy boolean `allow_shorts` field on
+// each strategy into the new `direction` enum (#656). Only perps strategies
+// receive the new field; non-perps strategies have `allow_shorts` deleted
+// silently if present (it was always meaningless for non-perps types).
+//
+// Behavior preservation:
+//   - allow_shorts: false → direction: "long"
+//   - allow_shorts: true  → direction: "both"
+//
+// If the strategy already has a `direction` field (because the operator
+// pre-emptively set it before upgrading), we preserve it and just delete
+// the legacy key.
+func migrateV14Direction(raw map[string]interface{}) {
+	strategies, ok := raw["strategies"].([]interface{})
+	if !ok {
+		return
+	}
+	for _, item := range strategies {
+		sc, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		legacyAllow, hadLegacy := sc["allow_shorts"]
+		// Always drop the legacy key — it has no v14 semantics.
+		delete(sc, "allow_shorts")
+		if !hadLegacy {
+			continue
+		}
+		// Skip non-perps types (allow_shorts was meaningless there; nothing
+		// to translate).
+		if stringFromJSON(sc["type"]) != "perps" {
+			continue
+		}
+		// If direction is already set explicitly, preserve it.
+		if existing := strictStringFromJSON(sc["direction"]); existing != "" {
+			continue
+		}
+		if jsonBoolish(legacyAllow) {
+			sc["direction"] = "both"
+		} else {
+			sc["direction"] = "long"
+		}
+	}
 }
 
 // migrateV13StrategyShape rewrites each strategy in-place from the legacy flat

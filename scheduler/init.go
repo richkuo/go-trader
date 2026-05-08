@@ -516,7 +516,15 @@ func generateConfig(opts InitOptions) *Config {
 			// short-opening execution, otherwise ExecutePerpsSignal drops
 			// their signal=-1 from flat and the strategy becomes effectively
 			// long-only at the executor layer (#328 review feedback).
-			allowShorts := isBidirectionalPerpsStrategy(stratID)
+			// #656: direction enum replaces allow_shorts. Bidirectional
+			// strategies default to "both"; long-only signal strategies get
+			// "long". The wizard does not auto-generate "short" — operators
+			// who want a dedicated short-only instrument edit direction
+			// post-init (typically alongside allowed_regimes=["trending_down"]).
+			direction := DirectionLong
+			if isBidirectionalPerpsStrategy(stratID) {
+				direction = DirectionBoth
+			}
 			for _, assetName := range opts.Assets {
 				id := fmt.Sprintf("hl-%s-%s", shortName, strings.ToLower(assetName))
 				cfg.Strategies = append(cfg.Strategies, StrategyConfig{
@@ -530,7 +538,7 @@ func generateConfig(opts InitOptions) *Config {
 					IntervalSeconds:   3600,
 					Leverage:          perpsLeverage,
 					SizingLeverage:    perpsSizingLeverage,
-					AllowShorts:       allowShorts,
+					Direction:         direction,
 					StopLossPct:       opts.HLStopLossPct,       // *float64 — nil falls through to MaxDrawdownPct (#484)
 					StopLossMarginPct: opts.HLStopLossMarginPct, // *float64 — nil falls through (#484/#487)
 					TrailingStopPct:   opts.HLTrailingStopPct,   // *float64 — synthetic high/low-water trailing stop (#501)

@@ -54,8 +54,15 @@ func runManualOpen(args []string) int {
 		fmt.Fprintf(os.Stderr, "error: --side must be \"long\" or \"short\", got %q\n", *side)
 		return 2
 	}
-	if !sc.AllowShorts && *side == "short" {
-		fmt.Fprintf(os.Stderr, "error: strategy %q does not allow shorts (set allow_shorts: true in config)\n", strategyID)
+	// #656: direction enum gates manual-open sides. direction="long" rejects
+	// --side short (legacy allow_shorts=false behavior); direction="short"
+	// rejects --side long; direction="both" allows either.
+	if *side == "short" && !PerpsAllowsShort(sc) {
+		fmt.Fprintf(os.Stderr, "error: strategy %q direction=%q does not allow shorts (set direction to %q or %q)\n", strategyID, EffectiveDirection(sc), DirectionShort, DirectionBoth)
+		return 1
+	}
+	if *side == "long" && !PerpsAllowsLong(sc) {
+		fmt.Fprintf(os.Stderr, "error: strategy %q direction=%q does not allow longs (set direction to %q or %q)\n", strategyID, EffectiveDirection(sc), DirectionLong, DirectionBoth)
 		return 1
 	}
 

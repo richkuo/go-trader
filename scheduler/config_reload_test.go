@@ -450,6 +450,58 @@ func minimalReloadConfig(strategies []StrategyConfig) *Config {
 	}
 }
 
+// #656 — direction change while a position is open must be rejected. Toggling
+// from "long" → "short" mid-position would either orphan the existing long or
+// flip it on the next signal; both desync virtual state from the exchange.
+func TestApplyHotReloadConfigRejectsDirectionChangeWithOpenPerpsPosition(t *testing.T) {
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, Direction: DirectionLong,
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, Direction: DirectionShort,
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {
+			ID: "hl-eth", Cash: 900,
+			RiskState: RiskState{MaxDrawdownPct: 10},
+			Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 1, Side: "long", AvgCost: 3000, Leverage: 2},
+			},
+		},
+	}}
+
+	_, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+	if err == nil {
+		t.Fatal("expected direction change with open position to be rejected")
+	}
+	if !strings.Contains(err.Error(), "direction changed with open positions") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Strategies[0].Direction != DirectionLong {
+		t.Fatalf("current config mutated after rejected reload: %+v", cfg.Strategies[0])
+	}
+}
+
+// #656 — direction change is allowed when the strategy is flat.
+func TestApplyHotReloadConfigAllowsDirectionChangeWhenFlat(t *testing.T) {
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, Direction: DirectionLong,
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, Direction: DirectionShort,
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Cash: 1000, Positions: map[string]*Position{}},
+	}}
+
+	if _, err := applyHotReloadConfig(cfg, next, state, nil, nil); err != nil {
+		t.Fatalf("expected direction change to be allowed when flat, got: %v", err)
+	}
+	if cfg.Strategies[0].Direction != DirectionShort {
+		t.Errorf("Direction = %q, want %q after applied reload", cfg.Strategies[0].Direction, DirectionShort)
+	}
+}
+
 func TestValidateHotReloadCompatible(t *testing.T) {
 	baseStrategy := StrategyConfig{
 		ID:             "spot-btc",

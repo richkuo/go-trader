@@ -217,23 +217,33 @@ func migrateLegacyPerpsPositionMultipliers(state *AppState, cfg *Config) int {
 	return migrated
 }
 
-// ValidatePerpsAllowShortsConfig flags short positions that belong to a perps
-// strategy currently configured with AllowShorts=false (#336). The desync can
-// arise from state migration, paper→live handoff, operator edits of state.db,
-// or a config toggle from true→false without first closing the short. When the
-// strategy next emits a buy signal, the executor's fresh-open sizing will
-// collide with the pre-existing short and leave virtual state out of sync with
-// the exchange. We warn-and-continue (matching ValidateState's precedent)
-// rather than force-closing — marks may be unavailable at startup and silent
-// auto-close of an operator-seeded position is worse than a loud warning.
+// ValidatePerpsDirectionConfig flags positions whose side conflicts with the
+// strategy's configured direction (#336/#656). Two gap classes:
+//
+//  1. direction="long" with a short position (legacy AllowShorts=false). The
+//     desync can arise from state migration, paper→live handoff, operator
+//     state.db edits, or a "both"→"long" config toggle without first closing.
+//  2. direction="short" with a long position (#656 short-only mode). The
+//     symmetric gap arises from a "long"→"short" config toggle without
+//     closing, or operator edits.
+//
+// In either case the strategy's next signal-driven order will desync virtual
+// state from the exchange. We warn-and-continue (matching ValidateState's
+// precedent) rather than force-closing — marks may be unavailable at startup
+// and silent auto-close of an operator-seeded position is worse than a loud
+// warning.
 //
 // Returns human-readable warnings so the caller can both log them and forward
 // to the operator via DM once the notifier is ready.
-func ValidatePerpsAllowShortsConfig(state *AppState, cfg *Config) []string {
+func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 	var warnings []string
 	for i := range cfg.Strategies {
 		sc := &cfg.Strategies[i]
-		if sc.Type != "perps" || sc.AllowShorts {
+		if sc.Type != "perps" {
+			continue
+		}
+		direction := EffectiveDirection(*sc)
+		if direction == DirectionBoth {
 			continue
 		}
 		s, ok := state.Strategies[sc.ID]
@@ -241,10 +251,21 @@ func ValidatePerpsAllowShortsConfig(state *AppState, cfg *Config) []string {
 			continue
 		}
 		for sym, pos := range s.Positions {
-			if pos.Side != "short" {
+			var conflictSide string
+			switch direction {
+			case DirectionLong:
+				if pos.Side == "short" {
+					conflictSide = "short"
+				}
+			case DirectionShort:
+				if pos.Side == "long" {
+					conflictSide = "long"
+				}
+			}
+			if conflictSide == "" {
 				continue
 			}
-			msg := fmt.Sprintf("perps state-vs-config gap: strategy %s has short %s qty=%g (AllowShorts=false). Position was likely seeded by migration, paper→live handoff, or a prior AllowShorts=true config. Close manually before the next buy signal — the executor's fresh-open sizing will otherwise desync virtual state from the exchange.", sc.ID, sym, pos.Quantity)
+			msg := fmt.Sprintf("perps state-vs-config gap: strategy %s has %s %s qty=%g (direction=%q). Position was likely seeded by migration, paper→live handoff, or a prior conflicting direction. Close manually before the next signal — the executor's fresh-open sizing will otherwise desync virtual state from the exchange.", sc.ID, conflictSide, sym, pos.Quantity, direction)
 			fmt.Printf("[WARN] %s\n", msg)
 			warnings = append(warnings, msg)
 		}

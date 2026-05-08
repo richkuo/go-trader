@@ -127,6 +127,16 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].trailing_stop_min_move_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.TrailingStopMinMovePct), formatFloatPtrPct(ns.TrailingStopMinMovePct))
 			sc.TrailingStopMinMovePct = ns.TrailingStopMinMovePct
 		}
+		// #656: direction (long|short|both) is hot-reloadable when flat. The
+		// state-compat check above blocks the change when positions are open;
+		// if we got here with a different direction, the strategy is flat and
+		// the next signal observes the new gate. Compare via EffectiveDirection
+		// so legacy AllowShorts toggles map cleanly.
+		if EffectiveDirection(*sc) != EffectiveDirection(ns) {
+			addChange("strategy[%s].direction: %q -> %q", sc.ID, EffectiveDirection(*sc), EffectiveDirection(ns))
+			sc.Direction = ns.Direction
+			sc.AllowShorts = ns.AllowShorts
+		}
 	}
 
 	if portfolioRiskMaxDrawdown(cfg.PortfolioRisk) != portfolioRiskMaxDrawdown(next.PortfolioRisk) {
@@ -292,6 +302,15 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 			errs = append(errs, fmt.Sprintf("strategy[%s] leverage changed with open positions (%.2fx -> %.2fx; flatten first or restart after close)",
 				sc.ID, sc.Leverage, ns.Leverage))
 		}
+		// #656: direction change with open positions risks orphaning the
+		// existing side or flipping it on the next signal. Block until flat;
+		// numeric changes when flat take effect on the next cycle. Compares
+		// EffectiveDirection so legacy AllowShorts toggles map to "long"/"both"
+		// and behave identically.
+		if sc.Type == "perps" && EffectiveDirection(sc) != EffectiveDirection(ns) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] direction changed with open positions (%q -> %q; flatten first or restart after close)",
+				sc.ID, EffectiveDirection(sc), EffectiveDirection(ns)))
+		}
 		// #486: HL rejects margin-mode changes on an open position; treat
 		// the same way as Leverage. Stays hot-reloadable when flat.
 		if sc.Type == "perps" && sc.Platform == "hyperliquid" && sc.MarginMode != ns.MarginMode && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
@@ -350,6 +369,8 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.TrailingStopATRMult = nil    // #505: hot-reloadable; same state-compat treatment as TrailingStopPct
 	sc.StopLossATRMult = nil        // #562: hot-reloadable; mode toggle blocked while open
 	sc.TrailingStopMinMovePct = nil // #501: hot-reloadable tuning knob for trailing trigger churn
+	sc.Direction = ""               // #656: hot-reloadable when flat; state-compat blocks change while open
+	sc.AllowShorts = false          // #656: legacy field — direction change is what gates hot reload
 	return sc
 }
 

@@ -1124,3 +1124,142 @@ func TestLoadConfigMigratesV12EndToEnd(t *testing.T) {
 		t.Error("re-load produced different OpenStrategy — migration is not idempotent")
 	}
 }
+
+// #656 — v14 migration converts allow_shorts:bool → direction:string. Both
+// boolean values must map correctly, and the legacy key must be removed.
+func TestMigrateV14Direction(t *testing.T) {
+	cases := []struct {
+		name      string
+		strategy  map[string]interface{}
+		wantDir   string
+		wantLegacyKept bool // legacy key preserved (e.g. non-perps shouldn't get a direction)
+	}{
+		{
+			name: "perps_allow_shorts_true_to_both",
+			strategy: map[string]interface{}{
+				"id": "hl-temab-eth", "type": "perps", "platform": "hyperliquid",
+				"allow_shorts": true,
+			},
+			wantDir: "both",
+		},
+		{
+			name: "perps_allow_shorts_false_to_long",
+			strategy: map[string]interface{}{
+				"id": "hl-tema-eth", "type": "perps", "platform": "hyperliquid",
+				"allow_shorts": false,
+			},
+			wantDir: "long",
+		},
+		{
+			name: "perps_already_has_direction_preserves",
+			strategy: map[string]interface{}{
+				"id": "hl-bear-eth", "type": "perps", "platform": "hyperliquid",
+				"allow_shorts": false, "direction": "short",
+			},
+			wantDir: "short", // direction wins, allow_shorts dropped
+		},
+		{
+			name: "non_perps_drops_legacy_key_no_direction",
+			strategy: map[string]interface{}{
+				"id": "bn-sma-btc", "type": "spot", "platform": "binanceus",
+				"allow_shorts": true,
+			},
+			wantDir: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := map[string]interface{}{
+				"strategies": []interface{}{tc.strategy},
+			}
+			migrateV14Direction(raw)
+
+			strategies := raw["strategies"].([]interface{})
+			sc := strategies[0].(map[string]interface{})
+			if _, leaked := sc["allow_shorts"]; leaked {
+				t.Errorf("allow_shorts must be deleted post-migration, got %+v", sc)
+			}
+			gotDir, _ := sc["direction"].(string)
+			if gotDir != tc.wantDir {
+				t.Errorf("direction = %q, want %q (full strategy: %+v)", gotDir, tc.wantDir, sc)
+			}
+		})
+	}
+}
+
+// #656 — full LoadConfig migration path: a v12 config with allow_shorts:true
+// must end up with Direction="both" and no AllowShorts in the parsed struct
+// (since the JSON key is gone). Mirror of the v13 schema-shape migration test.
+func TestLoadConfig_V14_TranslatesAllowShortsToDirection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "v12.json")
+
+	v12 := map[string]interface{}{
+		"config_version": 12,
+		"strategies": []interface{}{
+			map[string]interface{}{
+				"id":               "hl-temab-eth",
+				"type":             "perps",
+				"platform":         "hyperliquid",
+				"script":           "shared_scripts/check_hyperliquid.py",
+				"args":             []interface{}{"triple_ema_bidir", "ETH", "1h", "--mode=paper"},
+				"open_strategy":    "triple_ema_bidir",
+				"capital":          1000.0,
+				"max_drawdown_pct": 25.0,
+				"leverage":         1.0,
+				"allow_shorts":     true,
+			},
+			map[string]interface{}{
+				"id":               "hl-tema-btc",
+				"type":             "perps",
+				"platform":         "hyperliquid",
+				"script":           "shared_scripts/check_hyperliquid.py",
+				"args":             []interface{}{"triple_ema", "BTC", "1h", "--mode=paper"},
+				"open_strategy":    "triple_ema",
+				"capital":          1000.0,
+				"max_drawdown_pct": 25.0,
+				"leverage":         1.0,
+				"allow_shorts":     false,
+			},
+		},
+	}
+	data, err := json.MarshalIndent(v12, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.ConfigVersion != CurrentConfigVersion {
+		t.Errorf("ConfigVersion = %d, want %d", cfg.ConfigVersion, CurrentConfigVersion)
+	}
+	byID := map[string]StrategyConfig{}
+	for _, sc := range cfg.Strategies {
+		byID[sc.ID] = sc
+	}
+	if got := byID["hl-temab-eth"].Direction; got != "both" {
+		t.Errorf("hl-temab-eth Direction = %q, want %q (allow_shorts=true)", got, "both")
+	}
+	if got := byID["hl-tema-btc"].Direction; got != "long" {
+		t.Errorf("hl-tema-btc Direction = %q, want %q (allow_shorts=false)", got, "long")
+	}
+	// Legacy field must be gone (zero value).
+	if byID["hl-temab-eth"].AllowShorts {
+		t.Error("hl-temab-eth AllowShorts should be false post-migration (key removed from JSON)")
+	}
+	if byID["hl-tema-btc"].AllowShorts {
+		t.Error("hl-tema-btc AllowShorts should be false post-migration")
+	}
+	// EffectiveDirection should agree.
+	if got := EffectiveDirection(byID["hl-temab-eth"]); got != DirectionBoth {
+		t.Errorf("EffectiveDirection(temab) = %q, want %q", got, DirectionBoth)
+	}
+	if got := EffectiveDirection(byID["hl-tema-btc"]); got != DirectionLong {
+		t.Errorf("EffectiveDirection(tema) = %q, want %q", got, DirectionLong)
+	}
+}

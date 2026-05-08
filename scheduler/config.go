@@ -228,7 +228,8 @@ type StrategyConfig struct {
 	MaxDrawdownPct         float64             `json:"max_drawdown_pct"`
 	IntervalSeconds        int                 `json:"interval_seconds,omitempty"`           // per-strategy override (0 = use global)
 	HTFFilter              bool                `json:"htf_filter,omitempty"`                 // higher-timeframe trend filter
-	AllowShorts            bool                `json:"allow_shorts,omitempty"`               // perps only: opt-in to bidirectional execution — signal=-1 from flat opens a short, long+(-1) closes-and-flips. Default false preserves close-long-only behavior for strategies like triple_ema that emit -1 only as a long-exit (#328)
+	AllowShorts            bool                `json:"allow_shorts,omitempty"`               // DEPRECATED — use Direction. Perps only; legacy boolean retained on the struct so pre-v14 JSON unmarshals cleanly. Read via EffectiveDirection / PerpsAllowsShort / PerpsAllowsLong, never directly. Migrated to Direction in v14 (#656).
+	Direction              string              `json:"direction,omitempty"`                  // perps only: "long" (default; signal=1 opens, signal=-1 closes long), "short" (signal=-1 opens, signal=1 closes short), "both" (bidirectional). Empty falls back to AllowShorts (legacy). v14 migration converts allow_shorts→direction. (#656)
 	Leverage               float64             `json:"leverage,omitempty"`                   // perps exchange leverage (default 1 = no leverage); used for exchange margin/risk and HL update_leverage (#254/#497)
 	SizingLeverage         float64             `json:"sizing_leverage,omitempty"`            // perps notional multiplier; defaults to Leverage for backwards compatibility (#497). Notional formula: notional = cash * sizing_leverage; size = notional / price. For margin-based sizing, prefer MarginPerTradeUSD (#518).
 	MarginPerTradeUSD      *float64            `json:"margin_per_trade_usd,omitempty"`       // perps only: USD margin to deploy per open. When set (positive), overrides SizingLeverage: notional = min(MarginPerTradeUSD, cash) * exchange_leverage; size = notional / price. Lets operators size in margin-space directly so high exchange_leverage doesn't decouple intent from outcome (#518).
@@ -281,6 +282,56 @@ func EffectiveMarginPerTradeUSD(sc StrategyConfig) float64 {
 		return 0
 	}
 	return *sc.MarginPerTradeUSD
+}
+
+// Direction enum constants for StrategyConfig.Direction (#656).
+const (
+	DirectionLong  = "long"
+	DirectionShort = "short"
+	DirectionBoth  = "both"
+)
+
+// EffectiveDirection returns the canonical direction for a perps strategy:
+// "long" (signal=1 opens, signal=-1 closes long), "short" (signal=-1 opens,
+// signal=1 closes short), or "both" (bidirectional). Empty Direction falls
+// back to AllowShorts (legacy pre-v14): false→"long", true→"both". Non-perps
+// strategies always return "long" — direction is meaningful only for perps,
+// and validation rejects Direction on other types. (#656)
+func EffectiveDirection(sc StrategyConfig) string {
+	if sc.Type != "perps" {
+		return DirectionLong
+	}
+	switch sc.Direction {
+	case DirectionLong, DirectionShort, DirectionBoth:
+		return sc.Direction
+	}
+	if sc.AllowShorts {
+		return DirectionBoth
+	}
+	return DirectionLong
+}
+
+// PerpsAllowsLong reports whether the strategy may open long positions —
+// i.e. EffectiveDirection is "long" or "both". (#656)
+func PerpsAllowsLong(sc StrategyConfig) bool {
+	d := EffectiveDirection(sc)
+	return d == DirectionLong || d == DirectionBoth
+}
+
+// PerpsAllowsShort reports whether the strategy may open short positions —
+// i.e. EffectiveDirection is "short" or "both". (#656)
+func PerpsAllowsShort(sc StrategyConfig) bool {
+	d := EffectiveDirection(sc)
+	return d == DirectionShort || d == DirectionBoth
+}
+
+// directionFromAllowShorts is the legacy bool→direction mapping used by
+// migration and by call sites that still pass the bool. (#656)
+func directionFromAllowShorts(allowShorts bool) string {
+	if allowShorts {
+		return DirectionBoth
+	}
+	return DirectionLong
 }
 
 // PerpsOpenNotional is the primitive sizing helper: returns the USD notional
@@ -1148,6 +1199,28 @@ func ValidateConfig(cfg *Config) error {
 			}
 			if *sc.MarginPerTradeUSD <= 0 {
 				errs = append(errs, fmt.Sprintf("%s: margin_per_trade_usd must be positive, got %g", prefix, *sc.MarginPerTradeUSD))
+			}
+		}
+
+		// #656: validate direction (perps only). Empty is allowed and falls
+		// back to AllowShorts via EffectiveDirection (legacy pre-v14 configs).
+		if sc.Direction != "" {
+			switch sc.Direction {
+			case DirectionLong, DirectionShort, DirectionBoth:
+			default:
+				errs = append(errs, fmt.Sprintf("%s: direction must be %q, %q, or %q, got %q", prefix, DirectionLong, DirectionShort, DirectionBoth, sc.Direction))
+			}
+			if sc.Type != "perps" && sc.Type != "manual" {
+				errs = append(errs, fmt.Sprintf("%s: direction is only supported for perps/manual strategies (got type %q)", prefix, sc.Type))
+			}
+			// Hand-edit detection: direction="long" alongside an explicit
+			// allow_shorts=true is contradictory (Direction wins; the
+			// AllowShorts=true is dead). Catch it so the operator can clean up.
+			// The opposite case (direction set, AllowShorts=false zero value)
+			// is indistinguishable from "AllowShorts not set in JSON" so we
+			// can't reliably warn about it.
+			if sc.AllowShorts && sc.Direction == DirectionLong {
+				errs = append(errs, fmt.Sprintf("%s: direction=%q conflicts with legacy allow_shorts=true (remove allow_shorts; v14 migration normally handles this)", prefix, sc.Direction))
 			}
 		}
 

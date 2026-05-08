@@ -151,11 +151,13 @@ func main() {
 		}
 	}
 
-	// #336: Detect perps shorts held under AllowShorts=false strategies. The
-	// executor can't reconcile this on its own — a fresh-open buy against an
-	// existing short nets on the exchange but flips virtually. Collect here,
-	// forward to owner DM once the notifier is wired below.
-	allowShortsWarnings := ValidatePerpsAllowShortsConfig(state, cfg)
+	// #336/#656: Detect perps positions whose side conflicts with the
+	// configured direction (e.g. a short under direction="long", or a long
+	// under direction="short"). The executor can't reconcile this on its
+	// own — a fresh-open signal against the conflicting position nets on
+	// the exchange but flips virtually. Collect here, forward to owner DM
+	// once the notifier is wired below.
+	directionConfigWarnings := ValidatePerpsDirectionConfig(state, cfg)
 
 	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
 	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
@@ -242,10 +244,10 @@ func main() {
 		}
 	}
 
-	// #336: Forward startup AllowShorts warnings to the owner so the desync is
-	// surfaced even when the operator isn't tailing stderr.
-	if len(allowShortsWarnings) > 0 && notifier.HasOwner() {
-		for _, msg := range allowShortsWarnings {
+	// #336/#656: Forward startup direction-vs-position warnings to the owner
+	// so the desync is surfaced even when the operator isn't tailing stderr.
+	if len(directionConfigWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range directionConfigWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
@@ -2388,7 +2390,8 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 // issue #298 — 0.716 ETH of live fills were lost this way because the
 // "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
 func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
-	if reason := PerpsOrderSkipReason(result.Signal, posSide, sc.AllowShorts); reason != "" {
+	directionEnum := EffectiveDirection(sc)
+	if reason := PerpsOrderSkipReason(result.Signal, posSide, directionEnum); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
 	}
@@ -2399,7 +2402,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	sizingLeverage := EffectiveSizingLeverage(sc)
 	exchangeLeverage := EffectiveExchangeLeverage(sc)
 	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
-	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, sc.AllowShorts, result.CloseFraction)
+	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, directionEnum, result.CloseFraction)
 	if !ok {
 		logger.Info("%s for %s", reason, result.Symbol)
 		return nil, false
@@ -2419,7 +2422,19 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	//     protect). Skip for non-HL platforms or when pct<=0.
 	//   - on a flip, pass prev_pos_qty so the SL is sized against the new
 	//     net position (#421) — total_sz alone is closeQty+newQty.
-	pureClose := result.Signal == -1 && posSide == "long" && !sc.AllowShorts
+	// pureClose: the signal will close an existing position with no new open
+	// to follow. Holds for direction="long" + signal=-1 + long (close-only),
+	// direction="short" + signal=1 + short (close-only), and direction="both"
+	// only when there's nothing to flip into (never true here — flips always
+	// open a new side). Direction="short" + signal=-1 with orphan long is
+	// blocked by PerpsOrderSkipReason so it never reaches this code (#656).
+	pureClose := false
+	if result.Signal == -1 && posSide == "long" && !PerpsAllowsShort(sc) {
+		pureClose = true
+	}
+	if result.Signal == 1 && posSide == "short" && !PerpsAllowsLong(sc) {
+		pureClose = true
+	}
 	// Partial close (#519): a fractional close from the open/close registry
 	// must NOT cancel the resting stop-loss — the SL is reduce-only and will
 	// continue to protect the residual position; cancelling without
@@ -2427,13 +2442,13 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	// and the new-SL placement on partial close. The trailing-stop loop
 	// resizes the SL on its own cadence (#502).
 	partialClose := result.CloseFraction > 0 && result.CloseFraction < 1
-	// flipping predicate must mirror perpsLiveOrderSize exactly — both branches
-	// require sc.AllowShorts. A long-only strategy that inherited a short
-	// position (e.g. AllowShorts toggled true→false between restarts) would
-	// otherwise see prevPosQty=posQty here while perpsLiveOrderSize sized it
-	// as a fresh open without that offset, leaving net_new_sz negative and
-	// the SL silently undersized (#421 review point 6).
-	flipping := sc.AllowShorts && posQty > 0 && ((result.Signal == 1 && posSide == "short") || (result.Signal == -1 && posSide == "long"))
+	// flipping predicate must mirror perpsLiveOrderSize exactly — flips are
+	// only emitted under direction="both" (both directions allowed AND there's
+	// an opposite-side position to flip away from). A long-only strategy that
+	// inherited a short position would otherwise see prevPosQty=posQty here
+	// while perpsLiveOrderSize sized it as a fresh open without that offset,
+	// leaving net_new_sz negative and the SL silently undersized (#421 review).
+	flipping := EffectiveDirection(sc) == DirectionBoth && posQty > 0 && ((result.Signal == 1 && posSide == "short") || (result.Signal == -1 && posSide == "long"))
 	var cancelOID int64
 	if existingStopLossOID > 0 && posQty > 0 && !partialClose {
 		cancelOID = existingStopLossOID
@@ -2587,7 +2602,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, db *StateDB, 
 		fillFee = fill.Fee
 	}
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, sc.AllowShorts, result.CloseFraction, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -3095,7 +3110,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, posSide string, avgCost float64, notifier *MultiNotifier, logger *StrategyLogger) (*OKXExecuteResult, bool) {
 	var skip string
 	if sc.Type == "perps" {
-		skip = PerpsOrderSkipReason(result.Signal, posSide, sc.AllowShorts)
+		skip = PerpsOrderSkipReason(result.Signal, posSide, EffectiveDirection(sc))
 	} else {
 		skip = SpotOrderSkipReason(result.Signal, posSide)
 	}
@@ -3115,7 +3130,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 	if sc.Type == "perps" {
 		var ok bool
 		var reason string
-		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, sc.AllowShorts, result.CloseFraction)
+		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, EffectiveDirection(sc), result.CloseFraction)
 		if !ok {
 			logger.Info("%s for %s", reason, result.Symbol)
 			return nil, false
@@ -3195,7 +3210,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	var trades int
 	var err error
 	if sc.Type == "perps" {
-		trades, err = ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc), fillQty, fillOID, fillFee, sc.AllowShorts, result.CloseFraction, logger)
+		trades, err = ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc), fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
 	} else {
 		trades, err = ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, logger)
 	}

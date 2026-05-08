@@ -366,7 +366,7 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    Per-strategy: capital, max_drawdown_pct, interval_seconds, htf_filter,
      params, leverage, sizing_leverage, margin_per_trade_usd, stop_loss_pct,
      stop_loss_margin_pct, trailing_stop_pct, trailing_stop_atr_mult,
-     trailing_stop_min_move_pct, margin_mode, allow_shorts, open_strategy,
+     trailing_stop_min_move_pct, margin_mode, direction, open_strategy,
      close_strategies, allowed_regimes, theta_harvest.*
    Discord/Telegram: enabled, channels, trade_alert_channels, dm_channels, owner_id
    Environment: Discord token, status token, exchange credentials
@@ -547,7 +547,7 @@ Per-strategy:
 | HTF filter | `htf_filter` | Skips counter-trend signals |
 | Open strategy params | `open_strategy.params` | Per-open overrides; no longer a flat top-level `params` map (#640). Migrated from legacy on first start |
 | Close strategy params | `close_strategies[i].params` | Per-close evaluator overrides (e.g. `tiered_tp_atr.tiers`); each ref carries its own params so they don't leak into the open strategy |
-| Allow shorts | `allow_shorts` | Required for bidirectional perps |
+| Direction | `direction` | Perps gate: `"long"` (default), `"short"` (#656 — open shorts only), or `"both"` (bidirectional). Replaces legacy `allow_shorts`; v14 migration converts `false→"long"`, `true→"both"`. SIGHUP-aware when flat. |
 | Stop loss (price %) | `stop_loss_pct` | HL perps. Sole-owner auto-derives from `max_drawdown_pct` (cap 50) when omitted; same-coin peers need one explicit positive owner. `0` opts out. |
 | Stop loss (margin %) | `stop_loss_margin_pct` | HL perps — leverage-aware; mutually exclusive with the other four owners. `0` opts out. |
 | Fixed ATR stop | `stop_loss_atr_mult` | HL perps — trigger `avg_cost ± mult × entry_atr`, armed once after open. Top-level `default_stop_loss_atr_mult` defaults to `1.0` and applies to every HL perps with all five stop fields omitted (incl. shared-coin peers since #601) (#562/#601/#605); per-strategy `0` or top-level `0` restores `max_drawdown_pct` fallback. |
@@ -630,7 +630,7 @@ Short-name conventions:
 - TopStep: `ts-{strategy}-{symbol}`
 - Robinhood: `rh-{strategy_short}-{asset_or_symbol}`
 - OKX: `okx-{strategy_short}-{asset}` for spot/options, `okx-{strategy_short}-{asset}-perp` for perps
-- `triple_ema_bidir` is futures/perps only and needs `"allow_shorts": true`
+- `triple_ema_bidir` is futures/perps only and needs `"direction": "both"` (formerly `"allow_shorts": true`; v14 migrates automatically). Use `"direction": "short"` to run any bidirectional strategy as a dedicated bear-only instrument (#656).
 - `session_breakout` is futures/perps only; short name `sbo`
 - Multiple HL perps strategies on the same coin share an on-chain position; peers must agree on `margin_mode` and exchange `leverage` (`sizing_leverage` may differ). Since #601 each peer places its own per-strategy sized reduce-only protection, so multiple peers can own fixed ATR / margin / trailing stops simultaneously. `LoadConfig` defaults all-five-omitted peers to `default_stop_loss_atr_mult` (#562/#601/#605); set per-strategy `stop_loss_atr_mult: 0` (one) or top-level `default_stop_loss_atr_mult: 0` (fleet-wide) to opt out. **Per-strategy CB (#515):** drain skips on-chain close when peers share the coin — exchange leg stays open until another path flattens. Sub-account isolation is the only path for full per-strategy independence.
 

@@ -112,18 +112,18 @@ func TestValidateState(t *testing.T) {
 	}
 }
 
-// TestValidatePerpsAllowShortsConfig exercises the #336 startup check: a short
-// position seeded into SQLite (via migration, paper→live handoff, or operator
-// edit) under a perps strategy whose config has AllowShorts=false must be
-// flagged so the operator sees it before the executor's flip path quietly
-// desyncs virtual state from the exchange on the next buy signal.
-func TestValidatePerpsAllowShortsConfig(t *testing.T) {
+// TestValidatePerpsDirectionConfig exercises the #336/#656 startup check:
+// positions seeded into SQLite (via migration, paper→live handoff, or operator
+// edit) whose side conflicts with the configured direction must be flagged so
+// the operator sees the gap before the executor's flip path quietly desyncs
+// virtual state from the exchange on the next signal.
+func TestValidatePerpsDirectionConfig(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["hl-triple-ema-eth"] = &StrategyState{
 		ID:   "hl-triple-ema-eth",
 		Type: "perps",
 		Positions: map[string]*Position{
-			// The gap case: short under AllowShorts=false.
+			// Gap A: short under direction="long" (legacy AllowShorts=false).
 			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "short", Multiplier: 1, Leverage: 1},
 		},
 	}
@@ -131,46 +131,55 @@ func TestValidatePerpsAllowShortsConfig(t *testing.T) {
 		ID:   "hl-bidir-btc",
 		Type: "perps",
 		Positions: map[string]*Position{
-			// Allowed short: AllowShorts=true in config below, must not warn.
+			// Allowed: direction="both" tolerates either side.
 			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 60000, Side: "short", Multiplier: 1, Leverage: 1},
+		},
+	}
+	state.Strategies["hl-bear-sol"] = &StrategyState{
+		ID:   "hl-bear-sol",
+		Type: "perps",
+		Positions: map[string]*Position{
+			// Gap B (#656): long under direction="short".
+			"SOL": {Symbol: "SOL", Quantity: 1.0, AvgCost: 200, Side: "long", Multiplier: 1, Leverage: 1},
 		},
 	}
 	state.Strategies["bn-sma-btc"] = &StrategyState{
 		ID:   "bn-sma-btc",
 		Type: "spot",
 		Positions: map[string]*Position{
-			// Non-perps: AllowShorts is meaningless, must not warn.
+			// Non-perps: direction is irrelevant, must not warn.
 			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 60000, Side: "long"},
 		},
 	}
 
 	cfg := &Config{
 		Strategies: []StrategyConfig{
-			{ID: "hl-triple-ema-eth", Type: "perps", Platform: "hyperliquid", AllowShorts: false},
-			{ID: "hl-bidir-btc", Type: "perps", Platform: "hyperliquid", AllowShorts: true},
-			{ID: "bn-sma-btc", Type: "spot", Platform: "binanceus", AllowShorts: false},
+			{ID: "hl-triple-ema-eth", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong},
+			{ID: "hl-bidir-btc", Type: "perps", Platform: "hyperliquid", Direction: DirectionBoth},
+			{ID: "hl-bear-sol", Type: "perps", Platform: "hyperliquid", Direction: DirectionShort},
+			{ID: "bn-sma-btc", Type: "spot", Platform: "binanceus"},
 		},
 	}
 
-	warnings := ValidatePerpsAllowShortsConfig(state, cfg)
-	if len(warnings) != 1 {
-		t.Fatalf("want 1 warning, got %d: %v", len(warnings), warnings)
+	warnings := ValidatePerpsDirectionConfig(state, cfg)
+	if len(warnings) != 2 {
+		t.Fatalf("want 2 warnings (long-direction short pos + short-direction long pos), got %d: %v", len(warnings), warnings)
 	}
-	w := warnings[0]
-	if !strings.Contains(w, "hl-triple-ema-eth") {
-		t.Errorf("warning should name the offending strategy, got: %s", w)
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, "hl-triple-ema-eth") {
+		t.Errorf("warnings should name the long-direction strategy, got: %s", joined)
 	}
-	if !strings.Contains(w, "ETH") {
-		t.Errorf("warning should name the symbol, got: %s", w)
+	if !strings.Contains(joined, "hl-bear-sol") {
+		t.Errorf("warnings should name the short-direction strategy, got: %s", joined)
 	}
-	if !strings.Contains(w, "AllowShorts=false") {
-		t.Errorf("warning should cite the config gap, got: %s", w)
+	if !strings.Contains(joined, "direction=") {
+		t.Errorf("warnings should cite direction in the gap message, got: %s", joined)
 	}
 }
 
-// TestValidatePerpsAllowShortsConfig_NoShorts confirms the validator is silent
-// when all perps positions match their strategy's AllowShorts setting.
-func TestValidatePerpsAllowShortsConfig_NoShorts(t *testing.T) {
+// TestValidatePerpsDirectionConfig_NoConflicts confirms the validator is
+// silent when all perps positions match their strategy's direction.
+func TestValidatePerpsDirectionConfig_NoConflicts(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["hl-triple-ema-eth"] = &StrategyState{
 		ID:   "hl-triple-ema-eth",
@@ -179,20 +188,28 @@ func TestValidatePerpsAllowShortsConfig_NoShorts(t *testing.T) {
 			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 1},
 		},
 	}
-	cfg := &Config{
-		Strategies: []StrategyConfig{
-			{ID: "hl-triple-ema-eth", Type: "perps", Platform: "hyperliquid", AllowShorts: false},
+	state.Strategies["hl-bear-sol"] = &StrategyState{
+		ID:   "hl-bear-sol",
+		Type: "perps",
+		Positions: map[string]*Position{
+			"SOL": {Symbol: "SOL", Quantity: 1.0, AvgCost: 200, Side: "short", Multiplier: 1, Leverage: 1},
 		},
 	}
-	if warnings := ValidatePerpsAllowShortsConfig(state, cfg); len(warnings) != 0 {
-		t.Errorf("want no warnings for a long-only state, got: %v", warnings)
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			{ID: "hl-triple-ema-eth", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong},
+			{ID: "hl-bear-sol", Type: "perps", Platform: "hyperliquid", Direction: DirectionShort},
+		},
+	}
+	if warnings := ValidatePerpsDirectionConfig(state, cfg); len(warnings) != 0 {
+		t.Errorf("want no warnings when sides match direction, got: %v", warnings)
 	}
 }
 
-// TestValidatePerpsAllowShortsConfig_OrphanState verifies we don't crash when
+// TestValidatePerpsDirectionConfig_OrphanState verifies we don't crash when
 // state has a strategy that's been removed from config (pruning happens
 // separately in main.go but validators must tolerate the intermediate state).
-func TestValidatePerpsAllowShortsConfig_OrphanState(t *testing.T) {
+func TestValidatePerpsDirectionConfig_OrphanState(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["gone"] = &StrategyState{
 		ID:   "gone",
@@ -202,8 +219,32 @@ func TestValidatePerpsAllowShortsConfig_OrphanState(t *testing.T) {
 		},
 	}
 	cfg := &Config{Strategies: []StrategyConfig{}}
-	if warnings := ValidatePerpsAllowShortsConfig(state, cfg); len(warnings) != 0 {
+	if warnings := ValidatePerpsDirectionConfig(state, cfg); len(warnings) != 0 {
 		t.Errorf("orphan state should not produce warnings, got: %v", warnings)
+	}
+}
+
+// TestValidatePerpsDirectionConfig_LegacyAllowShortsFallthrough verifies that
+// configs that have not been v14-migrated yet (Direction empty, AllowShorts
+// set) are still validated correctly via EffectiveDirection.
+func TestValidatePerpsDirectionConfig_LegacyAllowShortsFallthrough(t *testing.T) {
+	state := NewAppState()
+	state.Strategies["hl-legacy-eth"] = &StrategyState{
+		ID:   "hl-legacy-eth",
+		Type: "perps",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "short", Multiplier: 1, Leverage: 1},
+		},
+	}
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			// Pre-v14 shape: Direction empty, AllowShorts=false → EffectiveDirection="long".
+			{ID: "hl-legacy-eth", Type: "perps", Platform: "hyperliquid", AllowShorts: false},
+		},
+	}
+	warnings := ValidatePerpsDirectionConfig(state, cfg)
+	if len(warnings) != 1 {
+		t.Fatalf("legacy AllowShorts=false should map to direction=long and flag the short, got %d warnings: %v", len(warnings), warnings)
 	}
 }
 

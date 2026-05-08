@@ -503,47 +503,85 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 // virtual state permanently behind actual exchange positions (#298).
 //
 // posSide is "" when no position exists; "long" or "short" otherwise.
-// allowShorts toggles the branches that ExecutePerpsSignal exposes when
-// bidirectional execution is enabled (#328):
-//   - allowShorts=false (legacy): signal=-1 with no long is a skip (close-long-only).
-//   - allowShorts=true: signal=-1 with no position opens a short; signal=-1
-//     while already short is a skip (mirrors "already long, skipping buy").
+// direction is the StrategyConfig.Direction enum (#656):
+//   - "long" (legacy): signal=-1 with no long is a skip (close-long-only); signal=1 only opens longs.
+//   - "short": signal=1 with no short is a skip (close-short-only); signal=-1 only opens shorts.
+//   - "both": bidirectional — signal=-1 with no position opens a short; signal=-1
+//     while already short is a skip (mirrors "already long, skipping buy"); signal=1
+//     opens long from flat or flips a short.
+//
+// Empty/unknown direction is treated as "long" for safety (matches the legacy
+// allow_shorts=false default).
 //
 // The `s.Cash < 1` branch inside the open paths is NOT mirrored here because
 // cash after a flip-close leg cannot be derived from (signal, posSide) alone —
 // live callers guard cash upstream before placing the order (see
 // runHyperliquidExecuteOrder). If a new side-based no-op branch is added to
 // ExecutePerpsSignal, add it here too.
-func PerpsOrderSkipReason(signal int, posSide string, allowShorts bool) string {
-	switch signal {
-	case 1:
-		if posSide == "long" {
-			return "already long, skipping buy"
+func PerpsOrderSkipReason(signal int, posSide, direction string) string {
+	switch direction {
+	case DirectionLong, "":
+		switch signal {
+		case 1:
+			if posSide == "long" {
+				return "already long, skipping buy"
+			}
+		case -1:
+			if posSide != "long" {
+				return "no long position to sell, skipping"
+			}
 		}
-	case -1:
-		if allowShorts {
+	case DirectionShort:
+		switch signal {
+		case 1:
+			if posSide != "short" {
+				return "no short position to buy-cover, skipping"
+			}
+		case -1:
 			if posSide == "short" {
 				return "already short, skipping sell"
 			}
-		} else if posSide != "long" {
-			return "no long position to sell, skipping"
+			// #656: orphan long under direction="short" must NOT place an
+			// open-short order. ExecutePerpsSignal would skip-and-warn, so
+			// skipping the live order here mirrors that and avoids the #298
+			// "live fill lands but no Trade recorded" gap.
+			if posSide == "long" {
+				return "orphan long under direction=\"short\", skipping (state-config gap)"
+			}
+		}
+	case DirectionBoth:
+		switch signal {
+		case 1:
+			if posSide == "long" {
+				return "already long, skipping buy"
+			}
+		case -1:
+			if posSide == "short" {
+				return "already short, skipping sell"
+			}
 		}
 	}
 	return ""
 }
 
 // perpsLiveOrderSize returns the market-order size to place for a live perps
-// execution. PerpsOrderSkipReason must already have passed (no skip). The
-// four cases:
+// execution. PerpsOrderSkipReason must already have passed (no skip).
 //
-//   - Fresh open (posQty <= 0):
-//   - signal=1           → size = PerpsOpenNotional(...)/price (long from flat)
-//   - signal=-1 + AllowShorts → size = PerpsOpenNotional(...)/price (short from flat)
-//   - Close-only (legacy, !AllowShorts):
-//   - signal=-1 + long   → size = posQty
-//   - Flip (AllowShorts + opposite-side position):
-//   - signal=1 + short   → size = posQty + PerpsOpenNotional(cash+closePnL,...)/price
-//   - signal=-1 + long   → size = posQty + PerpsOpenNotional(cash+closePnL,...)/price
+// direction is the StrategyConfig.Direction enum (#656). The four cases per
+// direction value:
+//
+//   - direction="long" (legacy long-only):
+//   - signal=1 + flat   → size = PerpsOpenNotional(...)/price (open long)
+//   - signal=1 + short  → size = posQty + new (legacy migrated short flip)
+//   - signal=-1 + long  → size = posQty (close-only)
+//   - direction="short" (#656 short-only):
+//   - signal=-1 + flat  → size = PerpsOpenNotional(...)/price (open short)
+//   - signal=1 + short  → size = posQty (close-only)
+//   - direction="both" (bidirectional):
+//   - signal=1 + flat   → fresh long
+//   - signal=-1 + flat  → fresh short
+//   - signal=1 + short  → flip = posQty + new
+//   - signal=-1 + long  → flip = posQty + new
 //
 // The flip branch is what this helper exists for: without `posQty + newSize`
 // a bidirectional scheduler tells ExecutePerpsSignal to virtually close+open
@@ -574,14 +612,26 @@ func PerpsOrderSkipReason(signal int, posSide string, allowShorts bool) string {
 // unreachable when closeFraction > 0 because compose_signal does not emit a
 // flip alongside a close (open_action is dropped while a position is open),
 // so closeFraction is intentionally ignored on the open/flip path.
-func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, posSide string, allowShorts bool, closeFraction float64) (size float64, ok bool, reason string) {
+func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, posSide, direction string, closeFraction float64) (size float64, ok bool, reason string) {
 	isBuy := signal == 1
-	flipping := allowShorts && posQty > 0 && ((isBuy && posSide == "short") || (!isBuy && posSide == "long"))
-	// Fresh open: buy always fresh-sizes (legacy buy-vs-migrated-short kept
-	// the pre-#330 fresh-open sizing for that edge case), or AllowShorts
-	// short-from-flat. Sell + !AllowShorts + no long is unreachable —
-	// PerpsOrderSkipReason handled it.
-	openingFresh := isBuy || (!isBuy && allowShorts && posQty <= 0)
+	allowsLong := direction == DirectionLong || direction == DirectionBoth || direction == ""
+	allowsShort := direction == DirectionShort || direction == DirectionBoth
+	// Flip only happens under bidirectional ("both"); a directional gate
+	// ("long"/"short") never flips because the opposite-direction signal is
+	// either a close-only (long-only sell on long, short-only buy on short)
+	// or has already been rejected by PerpsOrderSkipReason.
+	flipping := direction == DirectionBoth && posQty > 0 && ((isBuy && posSide == "short") || (!isBuy && posSide == "long"))
+	// Fresh open: a buy from flat under any direction that allows longs, or
+	// a sell from flat under any direction that allows shorts. Buy + short
+	// position under "long"-direction is the legacy-migrated-short edge case
+	// (pre-#330) that fresh-sizes without offset; #656 keeps that intact.
+	openingFresh := false
+	if isBuy && allowsLong && (posQty <= 0 || (posSide == "short" && direction == DirectionLong)) {
+		openingFresh = true
+	}
+	if !isBuy && allowsShort && posQty <= 0 {
+		openingFresh = true
+	}
 
 	if openingFresh || flipping {
 		effectiveCash := cash
@@ -719,8 +769,12 @@ func FuturesOrderSkipReason(signal int, posSide string) string {
 // which already closes-and-flips). When false (default), signal=-1 only
 // closes a long and never opens a short — the legacy long-only behavior
 // that strategies like triple_ema and rsi_macd_combo depend on.
+//
+// allowShorts maps to the direction enum (#656): false → "long",
+// true → "both". To get short-only semantics (#656), call
+// ExecutePerpsSignalWithDirection directly with direction="short".
 func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, fillOID string, fillFee float64, allowShorts bool, logger *StrategyLogger) (int, error) {
-	return ExecutePerpsSignalWithLeverage(s, signal, symbol, price, leverage, leverage, 0, fillQty, fillOID, fillFee, allowShorts, 0, logger)
+	return ExecutePerpsSignalWithLeverage(s, signal, symbol, price, leverage, leverage, 0, fillQty, fillOID, fillFee, directionFromAllowShorts(allowShorts), 0, logger)
 }
 
 // ExecutePerpsSignalWithLeverage processes a perps signal.
@@ -733,7 +787,20 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 // never composes close+open in the same cycle). closeFraction == 0 preserves
 // the legacy full-close behavior used by direct strategy signals,
 // kill-switch, stop-loss, and forceCloseAllPositions paths.
-func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, allowShorts bool, closeFraction float64, logger *StrategyLogger) (int, error) {
+//
+// direction (#656) gates the open-side branches:
+//   - "long": signal=1 opens long; signal=-1 closes long; never opens short.
+//   - "short": signal=-1 opens short; signal=1 closes short; never opens long.
+//   - "both": fully bidirectional (legacy AllowShorts=true).
+//
+// Empty direction is treated as "long" for safety.
+func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger) (int, error) {
+	if direction == "" {
+		direction = DirectionLong
+	}
+	allowsLong := direction == DirectionLong || direction == DirectionBoth
+	allowsShort := direction == DirectionShort || direction == DirectionBoth
+	bidirectional := direction == DirectionBoth // flip semantics retained only for "both"
 	if signal == 0 {
 		return 0, nil
 	}
@@ -782,7 +849,11 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 					closeQty = pos.Quantity * closeFraction
 				}
 			}
-			if allowShorts {
+			// Flip semantics only under direction="both"; "short"-direction
+			// closes the short terminally (no open-long follows), and the
+			// legacy "long"-direction migrated-short close also has no flip
+			// counterpart that needs offsetting (open-long fresh-sizes from cash).
+			if bidirectional {
 				flipCloseQty = closeQty
 			}
 			var execPrice float64
@@ -792,7 +863,11 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 				execPrice = ApplySlippage(price)
 			}
 			pnl := closeQty * (pos.AvgCost - execPrice)
-			useFillFee := flipCloseQty > 0 || closeOnlyAction
+			// Terminal close: no open-long leg follows when this is a registry
+			// close-only action (#519) or when direction forbids long opens (#656).
+			// Either way the close leg owns the single live fill fee.
+			terminalClose := closeOnlyAction || !allowsLong
+			useFillFee := flipCloseQty > 0 || terminalClose
 			fee := executionFee(CalculatePlatformSpotFee(feePlatform, closeQty*execPrice), fillFee, useFillFee)
 			pnl -= fee
 			s.Cash += pnl
@@ -843,6 +918,15 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		// (partial OR full) skips the open-leg path. Legacy direct-signal
 		// flips (closeFraction == 0) keep falling through.
 		if closeOnlyAction {
+			return tradesExecuted, nil
+		}
+		// #656: direction="short" closes shorts on signal=1 but never opens
+		// a long. PerpsOrderSkipReason already drops signal=1 from flat under
+		// "short", so this path is reached only after a close-short above.
+		if !allowsLong {
+			if tradesExecuted == 0 {
+				logger.Info("No short position in %s to buy-cover, skipping (direction=%q)", symbol, direction)
+			}
 			return tradesExecuted, nil
 		}
 		// Open long
@@ -915,15 +999,28 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		tradesExecuted++
 
 	} else if signal == -1 { // Sell
-		// Dedupe: already short and allowShorts means nothing new to do —
-		// symmetric mirror of the "Already long ... skipping buy" branch at
-		// portfolio.go:408 in the signal==1 block above.
-		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" && allowShorts {
+		// Dedupe: already short under any direction that allows shorts —
+		// symmetric mirror of the "Already long ... skipping buy" branch
+		// in the signal==1 block above. Covers direction="short" (#656)
+		// and direction="both" (#328); under direction="long" (legacy),
+		// allowsShort=false so the migrated-short edge case falls through
+		// and is handled by the close-long branch (no match) + the
+		// "no long to sell" return at the bottom.
+		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" && allowsShort {
 			logger.Info("Already short %s (qty=%.6f), skipping sell", symbol, pos.Quantity)
 			return 0, nil
 		}
 		// Close long if exists — realize PnL.
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
+			// #656: direction="short" with an orphan long is a state-config
+			// gap (ValidatePerpsDirectionConfig surfaces it at startup). Don't
+			// auto-close here — silent flatten of an operator-seeded position
+			// is worse than leaving it visible. The orphan stays put; signal=1
+			// would also skip via PerpsOrderSkipReason.
+			if !allowsLong {
+				logger.Warn("Orphan long %s under direction=%q (qty=%.6f); leaving in place — close manually if intentional", symbol, direction, pos.Quantity)
+				return tradesExecuted, nil
+			}
 			closeQty := pos.Quantity
 			if partialClose {
 				if fillQty > 0 {
@@ -932,7 +1029,7 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 					closeQty = pos.Quantity * closeFraction
 				}
 			}
-			if allowShorts {
+			if bidirectional {
 				flipCloseQty = closeQty
 			}
 			var execPrice float64
@@ -942,7 +1039,10 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 				execPrice = ApplySlippage(price)
 			}
 			pnl := closeQty * (execPrice - pos.AvgCost)
-			useFillFee := flipCloseQty > 0 || !allowShorts || closeOnlyAction
+			// Terminal close: no open-short leg follows when this is a registry
+			// close-only action (#519) or when direction forbids short opens (#656).
+			terminalClose := closeOnlyAction || !allowsShort
+			useFillFee := flipCloseQty > 0 || terminalClose
 			fee := executionFee(CalculatePlatformSpotFee(feePlatform, closeQty*execPrice), fillFee, useFillFee)
 			pnl -= fee
 			s.Cash += pnl
@@ -993,16 +1093,16 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		if closeOnlyAction {
 			return tradesExecuted, nil
 		}
-		// Legacy long-only path: whether we closed a long or had nothing to
-		// close, AllowShorts=false never opens a short. Log only when we did
-		// nothing (close-path already logged).
-		if !allowShorts {
+		// Long-only path: whether we closed a long or had nothing to close,
+		// direction="long" never opens a short. Log only when we did nothing
+		// (close-path already logged). #656: also gates direction="" defaulting.
+		if !allowsShort {
 			if tradesExecuted == 0 {
 				logger.Info("No long position in %s to sell, skipping", symbol)
 			}
 			return tradesExecuted, nil
 		}
-		// Open short (AllowShorts=true).
+		// Open short (direction="short" or "both").
 		if s.Cash < 1 {
 			logger.Info("Insufficient cash ($%.2f) to open short %s perp", s.Cash, symbol)
 			return tradesExecuted, nil
