@@ -445,6 +445,13 @@ DEFAULT_PARAM_RANGES = {
         "adx_threshold": [18, 20, 25],
         "pullback_window": [3, 5, 8],
     },
+    "vwap_rejection_st": {
+        "ema_short": [13, 20, 26],
+        "ema_mid": [34, 50, 80],
+        "rsi_max_reclaim": [45.0, 50.0, 55.0],
+        "rally_window": [3, 5, 8],
+        "rally_touch_buffer_pct": [0.0005, 0.001, 0.002],
+    },
     "tp_at_pct": {
         "pct": [0.01, 0.03, 0.05],
     },

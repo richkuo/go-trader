@@ -71,6 +71,7 @@ var knownShortNames = map[string]string{
 	"donchian_breakout":     "dbo",
 	"session_breakout":      "sbo",
 	"bear_pullback_st":      "bps",
+	"vwap_rejection_st":     "vrs",
 }
 
 // bidirectionalPerpsStrategies lists strategy IDs that emit signal=-1 as a
@@ -85,6 +86,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"chart_pattern":     true, // emits short on bearish patterns (double top, H&S, bear flag) (#649)
 	"liquidity_sweeps":  true, // emits short on stop-hunt wicks above swing highs (#649)
 	"bear_pullback_st":  true, // dedicated short-only strategy for bear-market rally rejections (#651)
+	"vwap_rejection_st": true, // dedicated short-only strategy for VWAP/EMA rally rejections in bearish regime (#652)
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {

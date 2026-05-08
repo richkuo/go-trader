@@ -43,6 +43,7 @@ from adx_trend import adx_trend_core
 from bear_pullback_st import bear_pullback_st_core
 from donchian_breakout import donchian_breakout_core
 from session_breakout import session_breakout_core
+from vwap_rejection_st import vwap_rejection_st_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -994,6 +995,20 @@ def session_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "vwap_rejection_st",
+    "VWAP Rejection Short — short weak rallies into session VWAP / EMA20 / EMA50 with RSI sub-50 + bearish EMA50<EMA200 regime",
+    {
+        "ema_short": 20, "ema_mid": 50, "ema_long": 200,
+        "rsi_period": 14, "rsi_max_reclaim": 50.0,
+        "rally_window": 5, "rally_touch_buffer_pct": 0.001,
+    },
+    platforms=("futures",),
+)
+def vwap_rejection_st_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return vwap_rejection_st_core(df, **params)
+
+
+@register(
     "hold",
     "Hold — always returns signal=0; used internally by type=manual strategies for the close-evaluator loop (#569)",
     {},
@@ -1030,6 +1045,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "delta_neutral_funding",
-        "donchian_breakout", "session_breakout", "bear_pullback_st", "hold",
+        "donchian_breakout", "session_breakout", "bear_pullback_st",
+        "vwap_rejection_st", "hold",
     ],
 }
