@@ -146,3 +146,29 @@ def test_signal_values_valid():
     df = _bear_setup_with_rally_and_rejection()
     result = vwap_rejection_st_core(df)
     assert set(result["signal"].unique()).issubset({-1, 0, 1})
+
+
+def test_trigger_closes_below_every_rally_magnet():
+    """Every fired short must close back below VWAP AND EMA(short) AND EMA(mid).
+
+    Regression for PR #657 review: the rally check ORs three levels (VWAP,
+    EMA20, EMA50) but the original trigger only ANDed two (VWAP, EMA20).
+    A rally piercing only EMA(mid) could therefore fire a short whose
+    trigger bar close was still above EMA(mid) — the level that was
+    pierced never actually got rejected. Post-fix the trigger set mirrors
+    the rally set; this property test pins the invariant.
+    """
+    df = _bear_setup_with_rally_and_rejection()
+    result = vwap_rejection_st_core(df)
+    fired = result[result["signal"] == -1]
+    assert len(fired) > 0, "Setup should produce at least one short signal"
+    for ts, row in fired.iterrows():
+        assert row["close"] < row["vwap"], (
+            f"{ts}: close {row['close']} not below VWAP {row['vwap']}"
+        )
+        assert row["close"] < row["ema_short"], (
+            f"{ts}: close {row['close']} not below EMA(short) {row['ema_short']}"
+        )
+        assert row["close"] < row["ema_mid"], (
+            f"{ts}: close {row['close']} not below EMA(mid) {row['ema_mid']}"
+        )

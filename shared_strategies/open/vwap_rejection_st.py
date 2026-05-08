@@ -10,8 +10,12 @@ Rules
    resistance from a noisy wick tagging the level.
 3. RSI cannot reclaim 50: the trigger bar's RSI must sit at or below
    ``rsi_max_reclaim`` (default 50) — bearish momentum still in control.
-4. Trigger: a rejection candle — close < open AND close back below the rally's
-   reference (VWAP and EMA(short)) — confirms loss of reclaim.
+4. Trigger: a rejection candle — close < open AND close back below *every*
+   rally-magnet level (VWAP, EMA(short), and EMA(mid)) — confirms loss of
+   reclaim. The trigger set must mirror the rally set so a rally that
+   pierced only EMA(mid) (e.g. early-session bear-flag where VWAP/EMA20
+   already sit lower) cannot fire a short whose "rejection" never
+   actually closed back below the level that was pierced.
 
 Emits ``signal = -1`` on the trigger bar; otherwise 0.
 
@@ -113,7 +117,11 @@ def vwap_rejection_st_core(
     bearish_regime = result["ema_mid"] < result["ema_long"]
 
     # Rally into resistance: high must *exceed* VWAP / EMA(short) / EMA(mid) by
-    # the buffer. Wicks that only tag the level don't count.
+    # the buffer. Wicks that only tag the level don't count. The buffer is
+    # applied asymmetrically — overshoot side only — by design: we want a
+    # decisive pierce on the way up, but the rejection close below a level
+    # is meaningful even without buffer (a clean close-through is its own
+    # confirmation).
     touch_mult = 1.0 + rally_touch_buffer_pct
     rally_touch = (
         (high > result["vwap"] * touch_mult)
@@ -130,12 +138,14 @@ def vwap_rejection_st_core(
     rsi_capped = result["rsi"] <= rsi_max_reclaim
 
     # Rejection candle: red bar (close < open) sitting back below VWAP AND
-    # EMA(short). Both must be lost — a candle below VWAP that's still above
-    # EMA(short) is ambiguous.
+    # EMA(short) AND EMA(mid). All three rally magnets must be lost — the
+    # trigger set mirrors the rally set so whichever level was pierced gets
+    # rejected. A close below VWAP but still above EMA(mid) is ambiguous.
     red_bar = close < open_
     below_vwap = close < result["vwap"]
     below_ema_short = close < result["ema_short"]
-    trigger = red_bar & below_vwap & below_ema_short
+    below_ema_mid = close < result["ema_mid"]
+    trigger = red_bar & below_vwap & below_ema_short & below_ema_mid
 
     short_mask = bearish_regime & rally_recent & rsi_capped & trigger
     result.loc[short_mask, "signal"] = -1
