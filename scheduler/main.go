@@ -129,10 +129,25 @@ func main() {
 	for _, sc := range cfg.Strategies {
 		configIDs[sc.ID] = true
 	}
+	pruned := false
 	for id := range state.Strategies {
 		if !configIDs[id] {
 			delete(state.Strategies, id)
 			fmt.Printf("  Pruned stale strategy: %s\n", id)
+			pruned = true
+		}
+	}
+
+	// #650: After prune, rebaseline portfolio peak from surviving strategies'
+	// per-strategy peaks. Without this, the stale portfolio peak (sized for the
+	// pre-prune strategy set) can immediately latch the kill switch on the
+	// first risk-check cycle once current value drops to the surviving subset.
+	if pruned && state.PortfolioRisk.PeakValue > 0 {
+		oldPeak := state.PortfolioRisk.PeakValue
+		newPeak := rebaselinePortfolioPeakAfterPrune(state, cfg)
+		if newPeak != oldPeak {
+			state.PortfolioRisk.PeakValue = newPeak
+			fmt.Printf("  Portfolio peak rebaselined after prune: $%.0f -> $%.0f\n", oldPeak, newPeak)
 		}
 	}
 

@@ -657,3 +657,101 @@ func TestComputeInitialPortfolioPeak_NoSharedWalletsSumsCapital(t *testing.T) {
 		t.Errorf("expected peak=%v; got %v", want, got)
 	}
 }
+
+// --- rebaselinePortfolioPeakAfterPrune (#650) ---
+
+// TestRebaselinePortfolioPeakAfterPrune_SumsRemainingPerStrategyPeaks verifies
+// that the rebaselined peak sums RiskState.PeakValue from surviving strategies,
+// dropping the contribution of the pruned one.
+func TestRebaselinePortfolioPeakAfterPrune_SumsRemainingPerStrategyPeaks(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
+
+	cfg := &Config{Strategies: []StrategyConfig{
+		{ID: "spot-btc", Platform: "binanceus", Type: "spot", Capital: 5000},
+	}}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"spot-btc": {ID: "spot-btc", RiskState: RiskState{PeakValue: 7000}},
+	}}
+
+	got := rebaselinePortfolioPeakAfterPrune(state, cfg)
+	want := 7000.0
+	if got != want {
+		t.Errorf("expected rebaselined peak=%v; got %v", want, got)
+	}
+}
+
+// TestRebaselinePortfolioPeakAfterPrune_FloorAtCapitalSum verifies that when a
+// surviving strategy has zero per-strategy peak (cold-start) the result floors
+// at computeInitialPortfolioPeak so we never under-baseline.
+func TestRebaselinePortfolioPeakAfterPrune_FloorAtCapitalSum(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
+
+	cfg := &Config{Strategies: []StrategyConfig{
+		{ID: "spot-btc", Platform: "binanceus", Type: "spot", Capital: 5000},
+		{ID: "spot-eth", Platform: "binanceus", Type: "spot", Capital: 3000},
+	}}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		// One surviving strategy with no per-strategy peak yet.
+		"spot-btc": {ID: "spot-btc"},
+		"spot-eth": {ID: "spot-eth"},
+	}}
+
+	got := rebaselinePortfolioPeakAfterPrune(state, cfg)
+	want := 8000.0 // floor: 5000 + 3000
+	if got != want {
+		t.Errorf("expected floored peak=%v; got %v", want, got)
+	}
+}
+
+// TestRebaselinePortfolioPeakAfterPrune_FallbackToCapitalWhenPeakMissing verifies
+// that strategies missing per-strategy peak fall back to their configured
+// capital (mixed with surviving strategies that do have peaks).
+func TestRebaselinePortfolioPeakAfterPrune_FallbackToCapitalWhenPeakMissing(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
+
+	cfg := &Config{Strategies: []StrategyConfig{
+		{ID: "spot-btc", Platform: "binanceus", Type: "spot", Capital: 5000},
+		{ID: "spot-eth", Platform: "binanceus", Type: "spot", Capital: 3000},
+	}}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"spot-btc": {ID: "spot-btc", RiskState: RiskState{PeakValue: 6000}},
+		"spot-eth": {ID: "spot-eth"}, // no peak yet → use capital
+	}}
+
+	got := rebaselinePortfolioPeakAfterPrune(state, cfg)
+	want := 9000.0 // 6000 (peak) + 3000 (capital fallback)
+	if got != want {
+		t.Errorf("expected mixed peak=%v; got %v", want, got)
+	}
+}
+
+// TestRebaselinePortfolioPeakAfterPrune_PreventsImmediateKillSwitch is the
+// regression test for #650: pre-fix, a stale peak from a pruned multi-strategy
+// run latched the kill switch on the first cycle. With the fix, the rebaseline
+// reflects only surviving strategies so CheckPortfolioRisk does not fire.
+func TestRebaselinePortfolioPeakAfterPrune_PreventsImmediateKillSwitch(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
+
+	// Surviving config: one strategy that itself peaked at $9034 and is still
+	// sitting at $9034 (no drawdown on what's left).
+	cfg := &Config{Strategies: []StrategyConfig{
+		{ID: "spot-btc", Platform: "binanceus", Type: "spot", Capital: 5000},
+	}}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"spot-btc": {ID: "spot-btc", RiskState: RiskState{PeakValue: 9034.24}},
+		},
+		PortfolioRisk: PortfolioRiskState{PeakValue: 15148.90}, // pre-prune peak
+	}
+
+	state.PortfolioRisk.PeakValue = rebaselinePortfolioPeakAfterPrune(state, cfg)
+
+	prsCfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	allowed, _, _, reason := CheckPortfolioRisk(&state.PortfolioRisk, prsCfg, 9034.24, 0, 0, 0)
+	if !allowed {
+		t.Errorf("expected kill switch NOT to fire after rebaseline; got reason=%q", reason)
+	}
+	if state.PortfolioRisk.KillSwitchActive {
+		t.Errorf("expected kill switch inactive after rebaseline; got active")
+	}
+}

@@ -329,3 +329,46 @@ func computeInitialPortfolioPeak(strategies []StrategyConfig, fetcher WalletBala
 	}
 	return total
 }
+
+// rebaselinePortfolioPeakAfterPrune recomputes PortfolioRisk.PeakValue from the
+// per-strategy peaks of remaining strategies after one or more strategies are
+// pruned from config. Without this, the stale portfolio peak (which reflects
+// the pre-prune strategy set) can immediately latch the kill switch on the
+// first risk-check cycle since current portfolio value drops to the sum of
+// only the surviving strategies. See issue #650.
+//
+// For each surviving strategy, prefers RiskState.PeakValue (the per-strategy
+// high-water mark recorded by CheckRisk). Falls back to that strategy's
+// configured Capital when no per-strategy peak has been recorded yet
+// (cold-start or migrated state).
+//
+// The result is floored at computeInitialPortfolioPeak(remaining) so the
+// rebaseline never drops below the sum-of-capitals baseline that a fresh
+// install would use — protects against under-baseline when most surviving
+// strategies are themselves cold-started.
+func rebaselinePortfolioPeakAfterPrune(state *AppState, cfg *Config) float64 {
+	byID := make(map[string]StrategyConfig, len(cfg.Strategies))
+	for _, sc := range cfg.Strategies {
+		byID[sc.ID] = sc
+	}
+
+	sum := 0.0
+	for id, ss := range state.Strategies {
+		if ss == nil {
+			continue
+		}
+		if ss.RiskState.PeakValue > 0 {
+			sum += ss.RiskState.PeakValue
+			continue
+		}
+		if sc, ok := byID[id]; ok {
+			sum += sc.Capital
+		}
+	}
+
+	floor := computeInitialPortfolioPeak(cfg.Strategies, nil)
+	if sum < floor {
+		sum = floor
+	}
+	return sum
+}
