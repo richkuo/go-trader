@@ -59,6 +59,23 @@ func TestFormatUpdateMessageNoCommitLog(t *testing.T) {
 	}
 }
 
+func TestTailForDM(t *testing.T) {
+	if got := tailForDM("hello", 100); got != "hello" {
+		t.Errorf("short input should pass through: %q", got)
+	}
+	if got := tailForDM("  hello  \n", 100); got != "hello" {
+		t.Errorf("should trim space: %q", got)
+	}
+	long := strings.Repeat("x", 2000)
+	got := tailForDM(long, 1500)
+	if !strings.HasPrefix(got, "...truncated...\n") {
+		t.Errorf("oversized input should be marked truncated: %q", got[:30])
+	}
+	if len(got) > 1500+len("...truncated...\n") {
+		t.Errorf("trimmed output too long: %d", len(got))
+	}
+}
+
 func TestFormatUpdateMessageTruncatesLongLog(t *testing.T) {
 	lines := make([]string, 15)
 	for i := range lines {

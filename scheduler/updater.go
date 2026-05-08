@@ -89,15 +89,18 @@ func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *str
 func applyUpgrade(notifier *MultiNotifier, mu *sync.RWMutex, state *AppState, cfg *Config, stateDB *StateDB) {
 	notifier.SendOwnerDM("Starting upgrade...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	// 5min covers a cold uv sync + go build on a slow VPS; killing mid-build
+	// leaves the worktree at the new SHA but no rebuilt binary, which the
+	// startup probe then catches on next start.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", "scripts/update.sh")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		notifier.SendOwnerDM(fmt.Sprintf("**update.sh failed**:\n```\n%s\n```\n%v", strings.TrimSpace(string(out)), err))
+		notifier.SendOwnerDM(fmt.Sprintf("**update.sh failed**:\n```\n%s\n```\n%v", tailForDM(string(out), 1500), err))
 		return
 	}
-	notifier.SendOwnerDM(fmt.Sprintf("update.sh OK:\n```\n%s\n```\nSaving state and restarting...", strings.TrimSpace(string(out))))
+	notifier.SendOwnerDM(fmt.Sprintf("update.sh OK:\n```\n%s\n```\nSaving state and restarting...", tailForDM(string(out), 1500)))
 
 	// Step 3: save state safely
 	mu.Lock()
@@ -113,6 +116,17 @@ func applyUpgrade(notifier *MultiNotifier, mu *sync.RWMutex, state *AppState, cf
 	if err := restartSelf(); err != nil {
 		fmt.Printf("[upgrade] Restart failed: %v\n", err)
 	}
+}
+
+// tailForDM trims s to the last max bytes (with a leading "...truncated..."
+// marker) so update output stays inside Discord's 2000-char DM limit. uv sync
+// can be chatty on first install; without trimming the DM gets rejected.
+func tailForDM(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	return "...truncated...\n" + s[len(s)-max:]
 }
 
 // restartSelf attempts to restart the process via systemctl, then falls back to syscall.Exec.

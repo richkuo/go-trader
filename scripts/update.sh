@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Atomic update: git pull → uv sync → go build, optional systemctl restart.
 # Use --restart (or RESTART=1) to restart the service after a successful build.
-# Called by both operators (from the auto-update DM) and scheduler/updater.go.
+# Called by both operators (from the auto-update DM, runs as login user with sudo)
+# and scheduler/updater.go's applyUpgrade (runs as the service user; restart there
+# happens via restartSelf without sudo). The two contexts intentionally use
+# different privilege paths.
 
 set -euo pipefail
 
@@ -22,6 +25,11 @@ for arg in "$@"; do
 done
 if [[ "${RESTART:-0}" == "1" ]]; then
     restart=1
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "[update] uv not on PATH — install uv first (see CLAUDE.md → Setup)" >&2
+    exit 1
 fi
 
 repo_root=$(git rev-parse --show-toplevel)
