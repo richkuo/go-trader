@@ -40,6 +40,7 @@ from liquidity_sweeps import liquidity_sweep_core
 from range_scalper import range_scalper_core
 from sweep_squeeze_combo import sweep_squeeze_combo_core
 from adx_trend import adx_trend_core
+from bear_pullback_st import bear_pullback_st_core
 from donchian_breakout import donchian_breakout_core
 from session_breakout import session_breakout_core
 
@@ -965,6 +966,21 @@ def donchian_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "bear_pullback_st",
+    "Bear Pullback Short — short bear-market rallies into EMA20/50 resistance with RSI rebound + ADX trend filter",
+    {
+        "ema_short": 20, "ema_mid": 50, "ema_long": 200,
+        "adx_period": 14, "adx_threshold": 20.0,
+        "rsi_period": 14, "rsi_lower": 55.0, "rsi_upper": 65.0,
+        "pullback_window": 5,
+    },
+    platforms=("futures",),
+)
+def bear_pullback_st_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return bear_pullback_st_core(df, **params)
+
+
+@register(
     "session_breakout",
     "Session Breakout — break of prior session (Asian/US open/US close) high/low with volume confirmation",
     {
@@ -1014,6 +1030,6 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "delta_neutral_funding",
-        "donchian_breakout", "session_breakout", "hold",
+        "donchian_breakout", "session_breakout", "bear_pullback_st", "hold",
     ],
 }

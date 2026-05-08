@@ -439,6 +439,12 @@ DEFAULT_PARAM_RANGES = {
         "entry_period": [10, 20, 30],
         "exit_period": [5, 10, 15],
     },
+    "bear_pullback_st": {
+        "ema_short": [13, 20, 26],
+        "ema_mid": [34, 50, 80],
+        "adx_threshold": [18, 20, 25],
+        "pullback_window": [3, 5, 8],
+    },
     "tp_at_pct": {
         "pct": [0.01, 0.03, 0.05],
     },
