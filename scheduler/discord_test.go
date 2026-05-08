@@ -1851,6 +1851,37 @@ func TestFormatTradeDMPlain_CloseTrade(t *testing.T) {
 	}
 }
 
+// TestFormatTradeDMPlain_OpenWithCustomTiers mirrors the Discord test for #659:
+// telegram plain DM must read tier multiples from config, not hardcode 1×/2×.
+func TestFormatTradeDMPlain_OpenWithCustomTiers(t *testing.T) {
+	sc := StrategyConfig{
+		ID:       "hl-tema-eth-live",
+		Platform: "hyperliquid",
+		Type:     "perps",
+		CloseStrategies: []StrategyRef{{
+			Name: "tiered_tp_atr_live",
+			Params: map[string]interface{}{
+				"tiers": []interface{}{
+					map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+					map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+				},
+			},
+		}},
+	}
+	trade := Trade{
+		Symbol: "ETH", Side: "buy", Quantity: 0.1, Price: 2316.90, Value: 231.69,
+		EntryATR: 12.01,
+		Details:  "Open long 0.100000 @ $2316.90",
+	}
+	msg := FormatTradeDMPlain(sc, trade, "live")
+	if !strings.Contains(msg, "TP1: $2,340.92") {
+		t.Errorf("expected TP1=2,340.92 (2× ATR) in plain DM, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "TP2: $2,352.93") {
+		t.Errorf("expected TP2=2,352.93 (3× ATR) in plain DM, got:\n%s", msg)
+	}
+}
+
 // Issue #530: telegram plain DM must treat partial-close like full close.
 func TestFormatTradeDMPlain_PartialClose(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-sma-eth", Platform: "hyperliquid", Type: "perps"}
@@ -1979,6 +2010,106 @@ func TestFormatTradeDM_OpenWithATRAndTP(t *testing.T) {
 	}
 	if !strings.Contains(msg, "TP2: $65,500.00") {
 		t.Errorf("expected 'TP2: $65,500.00' in DM, got:\n%s", msg)
+	}
+}
+
+// TestFormatTradeDM_OpenWithCustomTiers verifies that the trade DM reads tier
+// multiples from sc.CloseStrategies[].Params["tiers"] rather than hardcoded
+// 1×/2× (#659). Reproduces the original issue where 2×/3× config showed 1×/2×.
+func TestFormatTradeDM_OpenWithCustomTiers(t *testing.T) {
+	sc := StrategyConfig{
+		ID:       "hl-tema-eth-live",
+		Platform: "hyperliquid",
+		Type:     "perps",
+		CloseStrategies: []StrategyRef{{
+			Name: "tiered_tp_atr_live",
+			Params: map[string]interface{}{
+				"tiers": []interface{}{
+					map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+					map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+				},
+			},
+		}},
+	}
+	trade := Trade{
+		Symbol:   "ETH",
+		Side:     "buy",
+		Quantity: 0.1,
+		Price:    2316.90,
+		Value:    231.69,
+		EntryATR: 12.01,
+		Details:  "Open long 0.100000 @ $2316.90",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	// 2316.90 + 2*12.01 = 2340.92, 2316.90 + 3*12.01 = 2352.93
+	if !strings.Contains(msg, "TP1: $2,340.92") {
+		t.Errorf("expected 'TP1: $2,340.92' (2× ATR) in DM, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "TP2: $2,352.93") {
+		t.Errorf("expected 'TP2: $2,352.93' (3× ATR) in DM, got:\n%s", msg)
+	}
+}
+
+// TestFormatTradeDM_OpenWithThreeTiers verifies the DM renders TP1/TP2/TP3
+// when three tiers are configured (#659 — N-tier display).
+func TestFormatTradeDM_OpenWithThreeTiers(t *testing.T) {
+	sc := StrategyConfig{
+		ID:       "hl-tatr-btc",
+		Platform: "hyperliquid",
+		Type:     "perps",
+		CloseStrategies: []StrategyRef{{
+			Name: "tiered_tp_atr",
+			Params: map[string]interface{}{
+				"tiers": []interface{}{
+					map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.3},
+					map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.6},
+					map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+				},
+			},
+		}},
+	}
+	trade := Trade{
+		Symbol: "BTC", Side: "buy", Quantity: 0.01, Price: 63500.0, Value: 635.0,
+		EntryATR: 1000.0,
+		Details:  "Open long 0.010000 @ $63500.00",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	for _, want := range []string{"TP1: $64,500.00", "TP2: $65,500.00", "TP3: $66,500.00"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("expected %q in DM, got:\n%s", want, msg)
+		}
+	}
+}
+
+// TestCollectPositions_TieredTPATR_CustomTiers verifies position-extras read
+// tier multiples from config (#659).
+func TestCollectPositions_TieredTPATR_CustomTiers(t *testing.T) {
+	sc := StrategyConfig{
+		ID: "hl-tema-eth-live",
+		CloseStrategies: []StrategyRef{{
+			Name: "tiered_tp_atr_live",
+			Params: map[string]interface{}{
+				"tiers": []interface{}{
+					map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+					map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+				},
+			},
+		}},
+	}
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"ETH/USDT": {Symbol: "ETH/USDT", Quantity: 0.1, AvgCost: 2316.90, Side: "long", EntryATR: 12.01},
+		},
+	}
+	lines := collectPositions(sc, ss, map[string]float64{"ETH/USDT": 2316.90})
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], "TP1: $2,340.92") {
+		t.Errorf("expected TP1=2,340.92 (2× ATR) in line, got: %s", lines[0])
+	}
+	if !strings.Contains(lines[0], "TP2: $2,352.93") {
+		t.Errorf("expected TP2=2,352.93 (3× ATR) in line, got: %s", lines[0])
 	}
 }
 

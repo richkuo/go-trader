@@ -100,6 +100,36 @@ type hlProtectionTier struct {
 	Fraction float64
 }
 
+// tieredTPATRPrices returns the take-profit prices for each configured tier
+// given a position's entry price, side ("long"/"short"), and EntryATR. Display
+// helper for Discord/Telegram alerts so the rendered TPs can never diverge
+// from the on-chain reduce-only orders placed via hyperliquidProtectionTiers
+// (#659). Returns nil when the strategy doesn't use tiered_tp_atr* or any
+// required input is missing.
+func tieredTPATRPrices(sc StrategyConfig, side string, entryPrice, entryATR float64) []float64 {
+	if entryATR <= 0 || entryPrice <= 0 {
+		return nil
+	}
+	tiers := hyperliquidProtectionTiers(sc)
+	if len(tiers) == 0 {
+		return nil
+	}
+	sideLower := strings.ToLower(strings.TrimSpace(side))
+	prices := make([]float64, len(tiers))
+	for i, t := range tiers {
+		offset := t.Multiple * entryATR
+		switch sideLower {
+		case "short":
+			prices[i] = entryPrice - offset
+		case "long":
+			prices[i] = entryPrice + offset
+		default:
+			return nil
+		}
+	}
+	return prices
+}
+
 func parseHLProtectionTiers(raw interface{}) []hlProtectionTier {
 	items, ok := raw.([]interface{})
 	if !ok {

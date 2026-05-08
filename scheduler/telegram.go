@@ -265,19 +265,14 @@ func FormatTradeDMPlain(sc StrategyConfig, trade Trade, mode string) string {
 	if trade.Regime != "" {
 		extras = append(extras, "Regime: "+trade.Regime)
 	}
-	if !isClose && trade.EntryATR > 0 && strategyUsesTieredTPATRClose(sc) {
-		extras = append(extras, fmt.Sprintf("ATR: $%s", fmtComma2(trade.EntryATR)))
+	if !isClose && trade.EntryATR > 0 {
 		direction := strings.ToLower(tradeDirectionLabel(trade))
-		var tp1, tp2 float64
-		if direction == "short" {
-			tp1 = trade.Price - trade.EntryATR
-			tp2 = trade.Price - 2*trade.EntryATR
-		} else {
-			tp1 = trade.Price + trade.EntryATR
-			tp2 = trade.Price + 2*trade.EntryATR
+		if tps := tieredTPATRPrices(sc, direction, trade.Price, trade.EntryATR); len(tps) > 0 {
+			extras = append(extras, fmt.Sprintf("ATR: $%s", fmtComma2(trade.EntryATR)))
+			for i, tp := range tps {
+				extras = append(extras, fmt.Sprintf("TP%d: $%s", i+1, fmtComma2(tp)))
+			}
 		}
-		extras = append(extras, fmt.Sprintf("TP1: $%s", fmtComma2(tp1)))
-		extras = append(extras, fmt.Sprintf("TP2: $%s", fmtComma2(tp2)))
 	}
 	if trade.StopLossTriggerPx > 0 {
 		direction := strings.ToLower(tradeDirectionLabel(trade))

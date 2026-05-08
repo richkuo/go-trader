@@ -1038,25 +1038,10 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 				extras += fmt.Sprintf(" | SL: $%s (%s)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct))
 			}
 		}
-		if strategyUsesTieredTPATRClose(sc) && pos.EntryATR > 0 && pos.AvgCost > 0 {
-			sideLower := strings.ToLower(pos.Side)
-			var tp1, tp2 float64
-			var haveTP bool
-			switch sideLower {
-			case "short":
-				tp1 = pos.AvgCost - pos.EntryATR
-				tp2 = pos.AvgCost - 2*pos.EntryATR
-				haveTP = true
-			case "long":
-				tp1 = pos.AvgCost + pos.EntryATR
-				tp2 = pos.AvgCost + 2*pos.EntryATR
-				haveTP = true
-			}
-			if haveTP {
-				tp1Pct := percentFromEntry(pos.Side, pos.AvgCost, tp1)
-				tp2Pct := percentFromEntry(pos.Side, pos.AvgCost, tp2)
-				extras += fmt.Sprintf(" | TP1: $%s (%s) | TP2: $%s (%s)",
-					fmtComma2(tp1), fmtPnlPct(tp1Pct), fmtComma2(tp2), fmtPnlPct(tp2Pct))
+		if tps := tieredTPATRPrices(sc, pos.Side, pos.AvgCost, pos.EntryATR); len(tps) > 0 {
+			for i, tp := range tps {
+				pct := percentFromEntry(pos.Side, pos.AvgCost, tp)
+				extras += fmt.Sprintf(" | TP%d: $%s (%s)", i+1, fmtComma2(tp), fmtPnlPct(pct))
 			}
 		}
 		if pos.Leverage > 1 {
@@ -1112,19 +1097,14 @@ func FormatTradeDM(sc StrategyConfig, trade Trade, mode string) string {
 	if trade.Regime != "" {
 		extras = append(extras, "Regime: "+trade.Regime)
 	}
-	if !isClose && trade.EntryATR > 0 && strategyUsesTieredTPATRClose(sc) {
-		extras = append(extras, fmt.Sprintf("ATR: $%s", fmtComma2(trade.EntryATR)))
+	if !isClose && trade.EntryATR > 0 {
 		direction := strings.ToLower(tradeDirectionLabel(trade))
-		var tp1, tp2 float64
-		if direction == "short" {
-			tp1 = trade.Price - trade.EntryATR
-			tp2 = trade.Price - 2*trade.EntryATR
-		} else {
-			tp1 = trade.Price + trade.EntryATR
-			tp2 = trade.Price + 2*trade.EntryATR
+		if tps := tieredTPATRPrices(sc, direction, trade.Price, trade.EntryATR); len(tps) > 0 {
+			extras = append(extras, fmt.Sprintf("ATR: $%s", fmtComma2(trade.EntryATR)))
+			for i, tp := range tps {
+				extras = append(extras, fmt.Sprintf("TP%d: $%s", i+1, fmtComma2(tp)))
+			}
 		}
-		extras = append(extras, fmt.Sprintf("TP1: $%s", fmtComma2(tp1)))
-		extras = append(extras, fmt.Sprintf("TP2: $%s", fmtComma2(tp2)))
 	}
 	if trade.StopLossTriggerPx > 0 {
 		direction := strings.ToLower(tradeDirectionLabel(trade))
