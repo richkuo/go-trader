@@ -759,7 +759,15 @@ func TestGenerateConfig_PerpsAllowShortsWiring(t *testing.T) {
 	opts.EnablePerps = true
 	opts.Assets = []string{"ETH"}
 	opts.PerpsMode = "paper"
-	opts.PerpsStrategies = []string{"triple_ema_bidir", "triple_ema", "rsi_macd_combo", "session_breakout"}
+	opts.PerpsStrategies = []string{
+		"triple_ema_bidir",
+		"triple_ema",
+		"rsi_macd_combo",
+		"session_breakout",
+		"donchian_breakout",
+		"chart_pattern",
+		"liquidity_sweeps",
+	}
 
 	cfg := generateConfig(opts)
 
@@ -768,6 +776,9 @@ func TestGenerateConfig_PerpsAllowShortsWiring(t *testing.T) {
 		"hl-tema-eth":  false, // long-only — must NOT allow shorts
 		"hl-rmc-eth":   false, // long-only — must NOT allow shorts
 		"hl-sbo-eth":   true,  // bidirectional — must allow shorts (#371)
+		"hl-dbo-eth":   true,  // bidirectional — emits short on lower-channel breakdown (#649)
+		"hl-cpat-eth":  true,  // bidirectional — emits short on bearish patterns (#649)
+		"hl-liqsw-eth": true,  // bidirectional — emits short on stop-hunt wicks (#649)
 	}
 	seen := map[string]bool{}
 	for _, s := range cfg.Strategies {

@@ -77,9 +77,12 @@ var knownShortNames = map[string]string{
 // set AllowShorts=true so ExecutePerpsSignal opens shorts from flat instead
 // of skipping the signal (#328).
 var bidirectionalPerpsStrategies = map[string]bool{
-	"triple_ema_bidir": true,
-	"tema_cross_bd":    true,
-	"session_breakout": true,
+	"triple_ema_bidir":  true,
+	"tema_cross_bd":     true,
+	"session_breakout":  true,
+	"donchian_breakout": true, // emits short on lower-channel breakdown (#649)
+	"chart_pattern":     true, // emits short on bearish patterns (double top, H&S, bear flag) (#649)
+	"liquidity_sweeps":  true, // emits short on stop-hunt wicks above swing highs (#649)
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {
