@@ -836,7 +836,14 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 
 	if signal == 1 { // Buy — go long (close short first if any)
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
-			logger.Info("Already long %s (qty=%.6f), skipping buy", symbol, pos.Quantity)
+			// #656 review: surface the state-config gap on signal=1 with an
+			// orphan long under direction="short" — symmetric with the
+			// orphan-long warning in the signal=-1 branch below.
+			if !allowsLong {
+				logger.Warn("Orphan long %s under direction=%q (qty=%.6f); skipping buy — close manually if intentional", symbol, direction, pos.Quantity)
+			} else {
+				logger.Info("Already long %s (qty=%.6f), skipping buy", symbol, pos.Quantity)
+			}
 			return 0, nil
 		}
 		// Close short if exists — realize PnL only (no notional swing).

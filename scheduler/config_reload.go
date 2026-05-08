@@ -306,8 +306,10 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 		// existing side or flipping it on the next signal. Block until flat;
 		// numeric changes when flat take effect on the next cycle. Compares
 		// EffectiveDirection so legacy AllowShorts toggles map to "long"/"both"
-		// and behave identically.
-		if sc.Type == "perps" && EffectiveDirection(sc) != EffectiveDirection(ns) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+		// and behave identically. Manual strategies use the same Direction
+		// gate to authorize manual-open --side, so they get the same flatten-
+		// first guard for symmetry.
+		if (sc.Type == "perps" || sc.Type == "manual") && EffectiveDirection(sc) != EffectiveDirection(ns) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] direction changed with open positions (%q -> %q; flatten first or restart after close)",
 				sc.ID, EffectiveDirection(sc), EffectiveDirection(ns)))
 		}

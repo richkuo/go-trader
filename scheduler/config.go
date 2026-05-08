@@ -819,10 +819,10 @@ func hasHyperliquidTrailingStopOwnership(sc StrategyConfig) bool {
 // agree on exchange leverage and margin mode even though their virtual state
 // and close sizing are isolated.
 //
-// Note: AllowShorts mismatches across peers on the same coin are NOT
-// validated here. A long-only and a short-allowed strategy on the same HL
-// coin would silently net/flip at the position level — directional
-// independence requires HL sub-accounts (out of scope for #491).
+// Note: Direction (#656) mismatches across peers on the same coin are NOT
+// validated here. A direction="long" and a direction="short"/"both" peer on
+// the same HL coin would silently net/flip at the position level —
+// directional independence requires HL sub-accounts (out of scope for #491).
 //
 // Note: SizingLeverage is intentionally NOT required to match across peers
 // (#497). It only affects per-strategy order sizing — exchange margin and
