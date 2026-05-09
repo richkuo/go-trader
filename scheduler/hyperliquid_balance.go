@@ -1041,7 +1041,7 @@ func hyperliquidClearedTPTier(sc StrategyConfig, pos *Position, closeQty float64
 	if pos == nil || len(pos.TPOIDs) == 0 {
 		return 0, false
 	}
-	tiers := hyperliquidProtectionTiers(sc)
+	tiers := strategyTPTiers(sc)
 	if len(tiers) == 0 {
 		return 0, false
 	}
@@ -1837,6 +1837,8 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 		Regime:            s.Regime,
 		EntryATR:          pos.EntryATR,
 		StopLossTriggerPx: pos.StopLossTriggerPx,
+		StopLossATRMult:   pos.StopLossATRMult,
+		TPTiersJSON:       pos.TPTiersJSON,
 	})
 	RecordTradeResult(&s.RiskState, pnl)
 

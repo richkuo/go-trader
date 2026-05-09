@@ -33,7 +33,7 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		slMult = *sc.StopLossATRMult
 	}
-	tiers := hyperliquidProtectionTiers(sc)
+	tiers := strategyTPTiers(sc)
 	if slMult <= 0 && len(tiers) == 0 {
 		return hlProtectionPlan{}, false
 	}
@@ -50,13 +50,13 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 	}, true
 }
 
-// hyperliquidProtectionTiers returns the cumulative ATR take-profit tiers used
+// strategyTPTiers returns the cumulative ATR take-profit tiers used
 // to place per-strategy reduce-only limit orders. Fractions are cumulative,
 // matching the tiered_tp_atr close evaluator: 0.5/0.8/1.0 becomes order sizes
 // of 50%, 30%, and 20% of the current virtual quantity (#612). The final tier
 // is coerced to 1.0 so older two-tier configs that ended below 100% keep the
 // prior "everything remaining" TP2 behavior from #604.
-func hyperliquidProtectionTiers(sc StrategyConfig) []hlProtectionTier {
+func strategyTPTiers(sc StrategyConfig) []hlProtectionTier {
 	if !strategyUsesTieredTPATRClose(sc) {
 		return nil
 	}
@@ -103,16 +103,16 @@ type hlProtectionTier struct {
 // tieredTPATRPrices returns the take-profit prices for each configured tier
 // given a position's entry price, side ("long"/"short"), and EntryATR. Display
 // helper for Discord/Telegram alerts so the rendered TPs can never diverge
-// from the on-chain reduce-only orders placed via hyperliquidProtectionTiers
+// from the on-chain reduce-only orders placed via strategyTPTiers
 // (#659). Returns nil when the strategy doesn't use tiered_tp_atr* or any
 // required input is missing.
 func tieredTPATRPrices(sc StrategyConfig, side string, entryPrice, entryATR float64) []float64 {
-	return tieredTPATRPricesFromTiers(hyperliquidProtectionTiers(sc), side, entryPrice, entryATR)
+	return tieredTPATRPricesFromTiers(strategyTPTiers(sc), side, entryPrice, entryATR)
 }
 
 // tieredTPATRPricesFromTiers is the price-only computation when the caller
 // already has tiers in hand — lets trade-alert extras call
-// hyperliquidProtectionTiers once and zip prices with multiples (#665 review).
+// strategyTPTiers once and zip prices with multiples (#665 review).
 func tieredTPATRPricesFromTiers(tiers []hlProtectionTier, side string, entryPrice, entryATR float64) []float64 {
 	if len(tiers) == 0 || entryATR <= 0 || entryPrice <= 0 {
 		return nil
@@ -367,8 +367,10 @@ func runHyperliquidProtectionSync(
 	// Re-stamp TradeHistory so the trade alert picks up SL/TP prices placed
 	// by the protection sync (#625). Without this, execute-path SL=0 leaves the
 	// trade's StopLossTriggerPx unset even though the sync correctly populated
-	// pos.StopLossTriggerPx — the alert then shows no SL price.
-	stampOpenTradeFromPosition(stratState, db, symbol, pos)
+	// pos.StopLossTriggerPx — the alert then shows no SL price. Also stamp the
+	// SL ATR mult + TP tier snapshot so trades opened pre-arming get the
+	// fill-time config recorded in SQLite (#669).
+	stampOpenTradeWithProtectionSnapshot(stratState, db, sc, symbol, pos)
 	if logger != nil {
 		logger.Info("%s (sl_oid=%d tp_oids=%v)", logTag, pos.StopLossOID, pos.TPOIDs)
 	}
@@ -386,7 +388,7 @@ func hyperliquidPlacesOnChainTPs(sc StrategyConfig) bool {
 	if (sc.Type != "perps" && sc.Type != "manual") || sc.Platform != "hyperliquid" {
 		return false
 	}
-	return len(hyperliquidProtectionTiers(sc)) > 0
+	return len(strategyTPTiers(sc)) > 0
 }
 
 // closeStrategiesSuppressedByOnChainProtection is the set of close evaluator

@@ -1144,6 +1144,8 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			Regime:            s.Regime,
 			EntryATR:          pos.EntryATR,
 			StopLossTriggerPx: pos.StopLossTriggerPx,
+			StopLossATRMult:   pos.StopLossATRMult,
+			TPTiersJSON:       pos.TPTiersJSON,
 		}
 		RecordTrade(s, trade)
 		RecordTradeResult(&s.RiskState, pnl)
