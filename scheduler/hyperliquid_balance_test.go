@@ -3388,6 +3388,60 @@ func TestReconcilePosition_SLFillStillTakesSLPath(t *testing.T) {
 	}
 }
 
+// TestReconcilePosition_PartialTPFillResidualZeroPnL covers the under-shoot
+// case: TP1 fills cleanly, TP2 OID returns no fill (indexer race or only one
+// tier configured). The booked TP1 portion credits real PnL; the residual is
+// closed at zero PnL via hl_sync_external. Locks in current behavior — see
+// PR #675 review for the trade-off vs. mark/SL-trigger pricing.
+func TestReconcilePosition_PartialTPFillResidualZeroPnL(t *testing.T) {
+	const (
+		entryPx  = 2000.0
+		tp1Px    = 2050.0
+		qtyTotal = 0.4
+		qtyTier1 = 0.2
+		feeTP1   = 0.05
+	)
+	ss := &StrategyState{
+		ID: "hl-eth", Cash: 1000,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol: "ETH", Quantity: qtyTotal, InitialQuantity: qtyTotal,
+				AvgCost: entryPx, Side: "long",
+				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-eth",
+				StopLossOID: 999, StopLossTriggerPx: 1900,
+				TPOIDs: []int64{111, 222},
+			},
+		},
+	}
+	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
+		if oid == 111 {
+			return HLFillLookup{Fee: feeTP1, FilledQty: qtyTier1, Px: tp1Px, Count: 1, OID: 111}, true
+		}
+		return HLFillLookup{}, false
+	})
+	logger := newTestLogger(t)
+	startCash := ss.Cash
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger)
+
+	if _, open := ss.Positions["ETH"]; open {
+		t.Fatal("ETH should be removed even when TP fills under-shoot")
+	}
+	if len(ss.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory = %d, want 1 (TP1 only — TP2 had no fill)", len(ss.TradeHistory))
+	}
+	if len(ss.ClosedPositions) != 1 || ss.ClosedPositions[0].CloseReason != "hl_sync_external" {
+		t.Fatalf("expected residual ClosedPosition with reason=hl_sync_external, got %+v", ss.ClosedPositions)
+	}
+	if ss.ClosedPositions[0].Quantity < qtyTier1-1e-9 || ss.ClosedPositions[0].Quantity > qtyTier1+1e-9 {
+		t.Errorf("residual ClosedPosition.Quantity = %g, want %g", ss.ClosedPositions[0].Quantity, qtyTier1)
+	}
+	wantPnL := qtyTier1*(tp1Px-entryPx) - feeTP1
+	gotPnL := ss.Cash - startCash
+	if math.Abs(gotPnL-wantPnL) > 0.01 {
+		t.Errorf("cash delta = %g, want %g (TP1 only — residual contributes 0)", gotPnL, wantPnL)
+	}
+}
+
 // TestReconcilePosition_NoFillsFallsBackToZeroPnL verifies that when neither
 // SL nor TP OIDs return fills (e.g. manual UI close, indexer outage), the
 // legacy zero-PnL hl_sync_external path is preserved.
