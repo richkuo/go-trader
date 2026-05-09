@@ -299,6 +299,13 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 		// Position in state but not on-chain — closed externally.
 		logger.Info("hl-sync: %s position (%.6f %s) no longer on-chain, removing",
 			sym, statePos.Quantity, statePos.Side)
+		// #673: When the position has TP OIDs and the SL OID has no fills,
+		// the position was flattened by TPs (HL auto-cancels the resting
+		// reduce-only SL once flat). Book each TP fill at its actual price
+		// rather than mis-attributing to the SL trigger price.
+		if hlAttemptCloseFromTPFills(stratState, sym, statePos, resolveFee, logger) {
+			return true
+		}
 		if statePos.StopLossOID > 0 && statePos.StopLossTriggerPx > 0 {
 			lookup, useFillFee := resolveFee(sym, statePos.StopLossOID, statePos.Quantity)
 			oidStr := strconv.FormatInt(statePos.StopLossOID, 10)
@@ -901,6 +908,75 @@ func hyperliquidClearedTPTier(sc StrategyConfig, pos *Position, closeQty float64
 func hyperliquidHasClearedTPTier(sc StrategyConfig, pos *Position, closeQty float64) bool {
 	_, ok := hyperliquidClearedTPTier(sc, pos, closeQty)
 	return ok
+}
+
+// hlAttemptCloseFromTPFills books a flat-on-chain perps position from
+// userFills-confirmed TP OID fills, returning true on success. Fixes #673:
+// when TPs flatten the position, HL auto-cancels the resting reduce-only SL
+// — without this check, the reconciler books the close at the SL trigger
+// price, producing a fictitious loss.
+//
+// Triggers when (a) pos has at least one TP OID, (b) the SL OID has NO
+// userFills entries (so SL didn't fire), and (c) at least one TP OID does.
+// Each filled TP OID is booked as a partial close at its actual VWAP fill
+// price + fee. Any residual after all TP fills is finalized at zero PnL —
+// that catches the rare "userFills indexer missed an SL partial" race.
+//
+// Returns false (no mutation) when no TP attribution is possible; the caller
+// then falls through to the legacy SL-trigger-price path.
+func hlAttemptCloseFromTPFills(s *StrategyState, sym string, pos *Position, resolveFee hlReconcileFillResolver, logger *StrategyLogger) bool {
+	if s == nil || pos == nil || len(pos.TPOIDs) == 0 || resolveFee == nil {
+		return false
+	}
+	// If the SL OID has fills, leave attribution to the existing SL path —
+	// it knows how to handle the #621 "SL fired on the post-TP residual"
+	// case and we don't want to double-book by also crediting TPs here.
+	if pos.StopLossOID > 0 {
+		if _, slFilled := resolveFee(sym, pos.StopLossOID, pos.Quantity); slFilled {
+			return false
+		}
+	}
+	type tpFill struct {
+		oid     int64
+		tierIdx int
+		lookup  HLFillLookup
+	}
+	var fills []tpFill
+	for i, oid := range pos.TPOIDs {
+		if oid <= 0 {
+			continue
+		}
+		lookup, ok := resolveFee(sym, oid, pos.Quantity)
+		if !ok || lookup.FilledQty <= 0 || lookup.Px <= 0 {
+			continue
+		}
+		fills = append(fills, tpFill{oid: oid, tierIdx: i, lookup: lookup})
+	}
+	if len(fills) == 0 {
+		return false
+	}
+	for _, f := range fills {
+		oidStr := strconv.FormatInt(f.oid, 10)
+		logHyperliquidReconcileFillLookup(logger, sym, f.oid, f.lookup.FilledQty, f.lookup, true)
+		reason := fmt.Sprintf("hl_sync_tp%d_fill", f.tierIdx+1)
+		detailsPrefix := fmt.Sprintf("TP%d fill close", f.tierIdx+1)
+		logPrefix := fmt.Sprintf("TP%d fill reconciled", f.tierIdx+1)
+		if !bookPerpsPartialCloseWithFillFee(s, sym, f.lookup.FilledQty, f.lookup.Px, f.lookup.Fee, true, oidStr, reason, detailsPrefix, logPrefix, logger) {
+			break
+		}
+	}
+	// Finalize any residual at zero PnL. Hits when cumulative TP fills under-
+	// shoot pos.Quantity — typically an SL fill the indexer hasn't surfaced
+	// yet. Better to clear virtual state than to leave a phantom position.
+	if residual := s.Positions[sym]; residual != nil {
+		if logger != nil {
+			logger.Warn("hl-sync: %s residual %.6f after TP fill attribution; finalizing at zero PnL", sym, residual.Quantity)
+		}
+		recordClosedPosition(s, residual, 0, 0, "hl_sync_external", time.Now().UTC())
+		delete(s.Positions, sym)
+	}
+	clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, sym)
+	return true
 }
 
 // HyperliquidLiveCloseReport summarizes a forceCloseHyperliquidLive run.

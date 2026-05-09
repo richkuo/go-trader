@@ -16,11 +16,14 @@ import (
 // HLFillLookup carries the aggregated fee + closed PnL across the on-chain
 // fills that match a single logical close. A "logical close" can fragment
 // into multiple userFills entries (different price levels, partial fills),
-// so callers always receive the sum.
+// so callers always receive the sum. Px is the size-weighted average fill
+// price across matched records (#673), used by the TP-fill attribution path
+// to book closes at the actual fill price rather than a virtual trigger.
 type HLFillLookup struct {
 	Fee       float64
 	ClosedPnL float64
 	FilledQty float64 // sum of sz across matched fill records; 0 when lookup missed
+	Px        float64 // size-weighted avg fill price; 0 when no fills matched
 	Count     int
 	OID       int64
 }
@@ -30,6 +33,7 @@ type HLFillLookup struct {
 type hlFillRecord struct {
 	Coin      string      `json:"coin"`
 	Sz        string      `json:"sz"`
+	Px        string      `json:"px"`
 	OID       json.Number `json:"oid"`
 	Fee       string      `json:"fee"`
 	ClosedPnl string      `json:"closedPnl"`
@@ -97,16 +101,23 @@ func lookupHyperliquidFillByOID(accountAddress string, oid int64, startTimeMs in
 		fills, err := fetchHyperliquidUserFillsByTime(accountAddress, startTimeMs)
 		if err == nil {
 			out := HLFillLookup{OID: oid}
+			pxNumerator := 0.0
 			for _, f := range fills {
 				if !fillOIDMatches(f, oid) {
 					continue
 				}
+				sz := parseHLFloat(f.Sz)
+				px := parseHLFloat(f.Px)
 				out.Fee += parseHLFloat(f.Fee)
 				out.ClosedPnL += parseHLFloat(f.ClosedPnl)
-				out.FilledQty += parseHLFloat(f.Sz)
+				out.FilledQty += sz
+				pxNumerator += sz * px
 				out.Count++
 			}
 			if out.Count > 0 {
+				if out.FilledQty > 0 {
+					out.Px = pxNumerator / out.FilledQty
+				}
 				return out, true
 			}
 		}
@@ -159,20 +170,28 @@ func lookupHyperliquidFillByCoinSize(accountAddress, coin string, absSize, toler
 						Fee:       parseHLFloat(anchor.Fee),
 						ClosedPnL: parseHLFloat(anchor.ClosedPnl),
 						FilledQty: parseHLFloat(anchor.Sz),
+						Px:        parseHLFloat(anchor.Px),
 						Count:     1,
 					}, true
 				}
 				out := HLFillLookup{OID: anchorOID}
+				pxNumerator := 0.0
 				for _, f := range fills {
 					if !fillOIDMatches(f, anchorOID) {
 						continue
 					}
+					sz := parseHLFloat(f.Sz)
+					px := parseHLFloat(f.Px)
 					out.Fee += parseHLFloat(f.Fee)
 					out.ClosedPnL += parseHLFloat(f.ClosedPnl)
-					out.FilledQty += parseHLFloat(f.Sz)
+					out.FilledQty += sz
+					pxNumerator += sz * px
 					out.Count++
 				}
 				if out.Count > 0 {
+					if out.FilledQty > 0 {
+						out.Px = pxNumerator / out.FilledQty
+					}
 					return out, true
 				}
 			}
@@ -387,6 +406,15 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		}
 		if pos.StopLossOID > 0 && pos.StopLossTriggerPx > 0 {
 			addCandidate(sym, pos.StopLossOID, pos.Quantity)
+		}
+		// #673: Pre-fetch each TP OID lookup so the apply phase can distinguish
+		// SL-fired vs TP-fired closes when the position goes flat. Without
+		// these, hlAttemptCloseFromTPFills always misses the cache and the
+		// reconciler falls through to the SL-trigger-price path.
+		for _, tpOID := range pos.TPOIDs {
+			if tpOID > 0 {
+				addCandidate(sym, tpOID, pos.Quantity)
+			}
 		}
 		// Always include the (coin, 0, qty) form so peers without a tracked
 		// OID — Detector 1 mark-based path and Detector 2 non-owner — hit a
