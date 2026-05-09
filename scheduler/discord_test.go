@@ -1342,10 +1342,13 @@ func TestCollectPositions_StopLossATRMultiplier(t *testing.T) {
 		atr     float64
 		wantSub string
 	}{
-		// long: diff = 1000, mult = 1.0 → "1x" via %.2g
+		// long: diff = 1000, mult = 1.0 → "1x" via %g
 		{name: "long_1x", side: "long", avg: 10000, sl: 9000, atr: 1000, wantSub: "| SL: $9,000.00 (-10.0%) (1x)"},
 		// long: diff = 300, mult = 1.5 → "1.5x"
 		{name: "long_1.5x", side: "long", avg: 10000, sl: 9700, atr: 200, wantSub: "| SL: $9,700.00 (-3.0%) (1.5x)"},
+		// long: diff = 250, mult = 1.25 → "1.25x". %.2g would mangle to "1.3x"
+		// (#665 review): %g preserves the configured value.
+		{name: "long_1.25x", side: "long", avg: 10000, sl: 9750, atr: 200, wantSub: "| SL: $9,750.00 (-2.5%) (1.25x)"},
 		// short: diff = 1000, mult = 1.0 → "1x"
 		{name: "short_1x", side: "short", avg: 10000, sl: 11000, atr: 1000, wantSub: "| SL: $11,000.00 (-10.0%) (1x)"},
 	}
@@ -2194,6 +2197,214 @@ func TestFormatTradeDM_OpenWithSL(t *testing.T) {
 	// SL is below entry for a long — should be a negative percent.
 	if !strings.Contains(msg, "(-") {
 		t.Errorf("expected negative SL percent for long trade, got:\n%s", msg)
+	}
+}
+
+// TestFormatTradeDM_IncludesOID verifies that when a live-fill Trade has a
+// non-empty ExchangeOrderID it is rendered on the symbol/value line as
+// `| OID: <id>` (#665).
+func TestFormatTradeDM_IncludesOID(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-eth-perps", Platform: "hyperliquid", Type: "perps"}
+	trade := Trade{
+		Symbol:          "ETH",
+		Side:            "buy",
+		Quantity:        0.432,
+		Price:           2306.00,
+		Value:           996.0,
+		ExchangeOrderID: "418206313303",
+		Details:         "Open long 0.432 @ $2306.00",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if !strings.Contains(msg, "| Value: $996 | OID: 418206313303") {
+		t.Errorf("expected OID appended to symbol/value line, got:\n%s", msg)
+	}
+}
+
+// TestFormatTradeDM_PaperOmitsOID verifies that paper trades (empty
+// ExchangeOrderID) render no `| OID: …` segment so paper output is unchanged
+// from pre-#665 (#665 implementation note).
+func TestFormatTradeDM_PaperOmitsOID(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-eth-perps", Platform: "hyperliquid", Type: "perps"}
+	trade := Trade{
+		Symbol:   "ETH",
+		Side:     "buy",
+		Quantity: 0.432,
+		Price:    2306.00,
+		Value:    996.0,
+		Details:  "Open long 0.432 @ $2306.00",
+	}
+	msg := FormatTradeDM(sc, trade, "paper")
+	if strings.Contains(msg, "OID:") {
+		t.Errorf("paper trade should not render OID segment, got:\n%s", msg)
+	}
+}
+
+// TestFormatTradeDM_SLATRMultiplier verifies that when EntryATR is known the
+// SL line gains a `(<n>x)` ATR multiplier suffix (#665).
+func TestFormatTradeDM_SLATRMultiplier(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-sma-btc", Platform: "hyperliquid", Type: "perps"}
+	trade := Trade{
+		Symbol:            "BTC",
+		Side:              "buy",
+		Quantity:          0.01,
+		Price:             63500.0,
+		Value:             635.0,
+		EntryATR:          1500.0, // SL is 1× ATR below entry: 63500 - 1500 = 62000
+		StopLossTriggerPx: 62000.0,
+		Details:           "Open long 0.010000 @ $63500.00",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	// %.2g drops trailing zeros so 1.0 renders as "1".
+	if !strings.Contains(msg, "SL: $62,000.00 (-2.4%) (1x)") {
+		t.Errorf("expected SL line with ATR multiplier, got:\n%s", msg)
+	}
+}
+
+// TestFormatTradeDM_SLNoATRMultiplier verifies that when EntryATR is unknown
+// the SL line keeps the legacy format with no `(<n>x)` suffix instead of
+// rendering `(infx)` / `(0x)` (#665 implementation note).
+func TestFormatTradeDM_SLNoATRMultiplier(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-sma-btc", Platform: "hyperliquid", Type: "perps"}
+	trade := Trade{
+		Symbol:            "BTC",
+		Side:              "buy",
+		Quantity:          0.01,
+		Price:             63500.0,
+		Value:             635.0,
+		StopLossTriggerPx: 62000.0,
+		Details:           "Open long 0.010000 @ $63500.00",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if !strings.Contains(msg, "SL: $62,000.00 (-2.4%)") {
+		t.Errorf("expected legacy SL line, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "(0x)") || strings.Contains(msg, "(infx)") {
+		t.Errorf("SL line must not render bogus mult when EntryATR is missing, got:\n%s", msg)
+	}
+}
+
+// TestFormatTradeDM_TPATRMultipliers verifies that each TP tier renders its
+// own ATR multiplier (#665). Default tiers are 1×/2×.
+func TestFormatTradeDM_TPATRMultipliers(t *testing.T) {
+	sc := StrategyConfig{
+		ID:              "hl-tatr-btc",
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}},
+	}
+	trade := Trade{
+		Symbol:   "BTC",
+		Side:     "buy",
+		Quantity: 0.01,
+		Price:    63500.0,
+		Value:    635.0,
+		EntryATR: 1000.0,
+		Details:  "Open long 0.010000 @ $63500.00",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if !strings.Contains(msg, "TP1: $64,500.00 (1x)") {
+		t.Errorf("expected TP1 with 1× multiplier, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "TP2: $65,500.00 (2x)") {
+		t.Errorf("expected TP2 with 2× multiplier, got:\n%s", msg)
+	}
+}
+
+// TestFormatTradeDM_TPATRMultipliersFractional verifies %g preserves
+// fractional tier multiples without rounding artifacts (#665 review). %.2g
+// would render 1.25→1.3 and 12.5→12.
+func TestFormatTradeDM_TPATRMultipliersFractional(t *testing.T) {
+	sc := StrategyConfig{
+		ID:       "hl-tatr-btc",
+		Platform: "hyperliquid",
+		Type:     "perps",
+		CloseStrategies: []StrategyRef{{
+			Name: "tiered_tp_atr",
+			Params: map[string]interface{}{
+				"tiers": []interface{}{
+					map[string]interface{}{"atr_multiple": 1.25, "close_fraction": 0.5},
+					map[string]interface{}{"atr_multiple": 2.5, "close_fraction": 1.0},
+				},
+			},
+		}},
+	}
+	trade := Trade{
+		Symbol: "BTC", Side: "buy", Quantity: 0.01, Price: 63500.0, Value: 635.0,
+		EntryATR: 1000.0,
+		Details:  "Open long 0.010000 @ $63500.00",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if !strings.Contains(msg, "TP1: $64,750.00 (1.25x)") {
+		t.Errorf("expected TP1 with fractional 1.25× preserved, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "TP2: $66,000.00 (2.5x)") {
+		t.Errorf("expected TP2 with fractional 2.5× preserved, got:\n%s", msg)
+	}
+}
+
+// TestFormatTradeDM_ExtrasOrder verifies the new ordering: ATR → SL → TP1 → TP2
+// (#665). SL was previously appended after the TP tiers.
+func TestFormatTradeDM_ExtrasOrder(t *testing.T) {
+	sc := StrategyConfig{
+		ID:              "hl-tatr-btc",
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}},
+	}
+	trade := Trade{
+		Symbol:            "BTC",
+		Side:              "buy",
+		Quantity:          0.01,
+		Price:             63500.0,
+		Value:             635.0,
+		EntryATR:          1000.0,
+		StopLossTriggerPx: 62500.0,
+		Details:           "Open long 0.010000 @ $63500.00",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	atrIdx := strings.Index(msg, "ATR:")
+	slIdx := strings.Index(msg, "SL:")
+	tp1Idx := strings.Index(msg, "TP1:")
+	tp2Idx := strings.Index(msg, "TP2:")
+	if atrIdx < 0 || slIdx < 0 || tp1Idx < 0 || tp2Idx < 0 {
+		t.Fatalf("missing one of ATR/SL/TP1/TP2, got:\n%s", msg)
+	}
+	if !(atrIdx < slIdx && slIdx < tp1Idx && tp1Idx < tp2Idx) {
+		t.Errorf("expected ATR < SL < TP1 < TP2 ordering, got idx ATR=%d SL=%d TP1=%d TP2=%d:\n%s",
+			atrIdx, slIdx, tp1Idx, tp2Idx, msg)
+	}
+}
+
+// TestFormatTradeDMPlain_IncludesOID is the Telegram parity test for #665 —
+// OID, SL ordering, and ATR mults must apply to both Discord and Telegram
+// since they share `tradeAlertExtras`.
+func TestFormatTradeDMPlain_IncludesOID(t *testing.T) {
+	sc := StrategyConfig{
+		ID:              "hl-tatr-eth",
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}},
+	}
+	trade := Trade{
+		Symbol:            "ETH",
+		Side:              "buy",
+		Quantity:          0.5,
+		Price:             2300.0,
+		Value:             1150.0,
+		EntryATR:          15.0,
+		StopLossTriggerPx: 2285.0,
+		ExchangeOrderID:   "987654321",
+		Details:           "Open long 0.5 @ $2300.00",
+	}
+	msg := FormatTradeDMPlain(sc, trade, "live")
+	if !strings.Contains(msg, "| OID: 987654321") {
+		t.Errorf("expected OID on Telegram DM, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "SL: $2,285.00 (-0.7%) (1x)") {
+		t.Errorf("expected SL with mult on Telegram DM, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "TP1: $2,315.00 (1x)") {
+		t.Errorf("expected TP1 with mult on Telegram DM, got:\n%s", msg)
 	}
 }
 

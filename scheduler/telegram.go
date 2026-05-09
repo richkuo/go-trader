@@ -254,32 +254,13 @@ func FormatTradeDMPlain(sc StrategyConfig, trade Trade, mode string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("%s %s - %s\n", icon, header, strings.ToUpper(mode)))
 	sb.WriteString(fmt.Sprintf("Strategy: %s (%s %s)\n", sc.ID, platformLabel, typeLabel))
-	sb.WriteString(fmt.Sprintf("%s — %s %.3f @ $%s | Value: $%s\n", trade.Symbol, tradeDirectionLabel(trade), trade.Quantity, fmtComma(trade.Price), fmtComma(trade.Value)))
+	sb.WriteString(fmt.Sprintf("%s — %s %.3f @ $%s | Value: $%s", trade.Symbol, tradeDirectionLabel(trade), trade.Quantity, fmtComma(trade.Price), fmtComma(trade.Value)))
+	if oid := strings.TrimSpace(trade.ExchangeOrderID); oid != "" {
+		sb.WriteString(fmt.Sprintf(" | OID: %s", oid))
+	}
+	sb.WriteString("\n")
 
-	var extras []string
-	if isClose {
-		if pnl, ok := extractPnL(trade.Details); ok {
-			extras = append(extras, fmt.Sprintf("PnL: $%s", pnl))
-		}
-	}
-	if trade.Regime != "" {
-		extras = append(extras, "Regime: "+trade.Regime)
-	}
-	if !isClose && trade.EntryATR > 0 {
-		direction := strings.ToLower(tradeDirectionLabel(trade))
-		if tps := tieredTPATRPrices(sc, direction, trade.Price, trade.EntryATR); len(tps) > 0 {
-			extras = append(extras, fmt.Sprintf("ATR: $%s", fmtComma2(trade.EntryATR)))
-			for i, tp := range tps {
-				extras = append(extras, fmt.Sprintf("TP%d: $%s", i+1, fmtComma2(tp)))
-			}
-		}
-	}
-	if trade.StopLossTriggerPx > 0 {
-		direction := strings.ToLower(tradeDirectionLabel(trade))
-		slPct := percentFromEntry(direction, trade.Price, trade.StopLossTriggerPx)
-		extras = append(extras, fmt.Sprintf("SL: $%s (%s)", fmtComma2(trade.StopLossTriggerPx), fmtPnlPct(slPct)))
-	}
-	if len(extras) > 0 {
+	if extras := tradeAlertExtras(sc, trade, isClose); len(extras) > 0 {
 		sb.WriteString(strings.Join(extras, " | "))
 	}
 
