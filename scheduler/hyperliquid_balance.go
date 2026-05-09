@@ -240,6 +240,160 @@ func reconcileHyperliquidPositions(stratState *StrategyState, sym string, positi
 	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, directHyperliquidReconcileFillResolver(accountAddress), logger)
 }
 
+// reconcileHyperliquidPositionsForStrategy is the production entry point with
+// strategy-config awareness. It first attempts to attribute partial / full
+// closes to a cleared TP tier (sole-owner mirror of shared-coin Detector 3 —
+// ambiguity is moot here because exactly one strategy owns sym), books the
+// close at the configured TP price (or the userFills px when available), and
+// only falls through to the legacy quantity-resync / SL-fallback path when no
+// TP attribution is found.
+//
+// Without this hook, partial TP fills on a sole-owner perps strategy are
+// silently absorbed by the legacy reconciler — qty resync hides the close,
+// no Trade row is written, s.Cash drifts from the on-chain account value, and
+// the operator never sees a DM. Full closes attributable to the final TP tier
+// were also booked at the SL trigger price (when SLOID was still set) instead
+// of the TP price (#670).
+//
+// pendingAlerts (when non-nil) collects ProtectionFillAlert entries for owner
+// DM emission after mu.Unlock — same pattern shared-coin detectors use so HTTP
+// notifier calls don't extend the locked critical section.
+func reconcileHyperliquidPositionsForStrategy(
+	sc StrategyConfig,
+	stratState *StrategyState,
+	sym string,
+	positions []HLPosition,
+	resolveFee hlReconcileFillResolver,
+	logger *StrategyLogger,
+	pendingAlerts *[]ProtectionFillAlert,
+) bool {
+	if stratState == nil || sym == "" {
+		return false
+	}
+
+	if booked := tryBookSoleOwnerTPFill(sc, stratState, sym, positions, resolveFee, logger, pendingAlerts); booked {
+		// pos.Quantity has been shrunk (partial) or the position removed (full)
+		// by the booker; the legacy reconciler's qty/side/avgCost resync will
+		// no-op because virtual now matches on-chain. Continue through it for
+		// idempotent housekeeping (multiplier migration, leverage seed).
+		reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger)
+		return true
+	}
+
+	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger)
+}
+
+// tryBookSoleOwnerTPFill is the sole-owner TP attribution helper. Returns true
+// when a TP-tier fill was detected and booked via
+// recordPerpsExternalPartialCloseWithFillFee — covers both the partial-drop
+// case (on-chain qty < virtual qty, same direction) and the full-close case
+// (on-chain flat, final tier cleared). When no TP attribution applies, returns
+// false so the caller falls through to the legacy reconciler.
+func tryBookSoleOwnerTPFill(
+	sc StrategyConfig,
+	stratState *StrategyState,
+	sym string,
+	positions []HLPosition,
+	resolveFee hlReconcileFillResolver,
+	logger *StrategyLogger,
+	pendingAlerts *[]ProtectionFillAlert,
+) bool {
+	statePos := stratState.Positions[sym]
+	if statePos == nil || statePos.Quantity <= 0 {
+		return false
+	}
+	if statePos.AvgCost <= 0 || statePos.EntryATR <= 0 {
+		// TP price computation needs AvgCost + EntryATR; without them we
+		// can't attribute. Fall back to the legacy reconciler.
+		return false
+	}
+
+	var onChainPos *HLPosition
+	for i := range positions {
+		if positions[i].Coin == sym {
+			onChainPos = &positions[i]
+			break
+		}
+	}
+
+	var closeQty float64
+	if onChainPos == nil {
+		closeQty = statePos.Quantity
+	} else {
+		onChainAbs := math.Abs(onChainPos.Size)
+		sameDirection := (onChainPos.Size > 0 && statePos.Side == "long") ||
+			(onChainPos.Size < 0 && statePos.Side == "short")
+		if !sameDirection {
+			return false
+		}
+		if onChainAbs+1e-6 >= statePos.Quantity {
+			return false
+		}
+		closeQty = statePos.Quantity - onChainAbs
+	}
+	if closeQty <= 1e-9 {
+		return false
+	}
+
+	tierIdx, hasCleared := hyperliquidClearedTPTier(sc, statePos, closeQty)
+	if !hasCleared {
+		return false
+	}
+
+	tpPrices := tieredTPATRPrices(sc, statePos.Side, statePos.AvgCost, statePos.EntryATR)
+	tpPrice := 0.0
+	if tierIdx >= 0 && tierIdx < len(tpPrices) {
+		tpPrice = tpPrices[tierIdx]
+	}
+
+	lookup, useFillFee := resolveFee(sym, 0, closeQty)
+	logHyperliquidReconcileFillLookup(logger, sym, 0, closeQty, lookup, useFillFee)
+
+	closePx := tpPrice
+	if useFillFee && lookup.Px > 0 {
+		closePx = lookup.Px
+	}
+	if closePx <= 0 {
+		return false
+	}
+
+	exchangeOrderID := ""
+	if useFillFee && lookup.OID > 0 {
+		exchangeOrderID = strconv.FormatInt(lookup.OID, 10)
+	}
+
+	alertSide := statePos.Side
+	if !recordPerpsExternalPartialCloseWithFillFee(
+		stratState, sym, closeQty, closePx, lookup.Fee, useFillFee,
+		exchangeOrderID, "hl_sync_external_partial", logger,
+	) {
+		return false
+	}
+
+	remaining := 0.0
+	if posAfter := stratState.Positions[sym]; posAfter != nil {
+		remaining = posAfter.Quantity
+	}
+	if pendingAlerts != nil {
+		// lastBookedTradePnL relies on the just-completed RecordTrade inside
+		// the booker; do not insert another RecordTrade between here and the
+		// booker call.
+		*pendingAlerts = append(*pendingAlerts, ProtectionFillAlert{
+			StrategyID:   sc.ID,
+			Symbol:       sym,
+			Side:         alertSide,
+			FillType:     tpTierLabel(tierIdx),
+			IsPartial:    remaining > 1e-9,
+			FillPrice:    closePx,
+			CloseQty:     closeQty,
+			RemainingQty: remaining,
+			RealizedPnL:  lastBookedTradePnL(stratState),
+			HasPnL:       true,
+		})
+	}
+	return true
+}
+
 // reconcileHyperliquidPositionsWithResolver is the resolver-aware variant. The
 // resolver is expected to do pure in-memory cache reads when called under
 // mu.Lock() (see buildCachedHyperliquidReconcileFillResolver) — never make
@@ -456,7 +610,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 			fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", sc.ID, err)
 			continue
 		}
-		if reconcileHyperliquidPositionsWithResolver(ss, sym, positions, resolveFee, logger) {
+		if reconcileHyperliquidPositionsForStrategy(sc, ss, sym, positions, resolveFee, logger, &pendingAlerts) {
 			changed = true
 		}
 	}

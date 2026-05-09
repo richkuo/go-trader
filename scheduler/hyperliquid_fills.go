@@ -17,10 +17,17 @@ import (
 // fills that match a single logical close. A "logical close" can fragment
 // into multiple userFills entries (different price levels, partial fills),
 // so callers always receive the sum.
+//
+// Px is the size-weighted average fill price across matched records — i.e.
+// sum(sz*px) / sum(sz). 0 when the lookup missed or every record reported
+// zero size. Reconciler close paths prefer Px over the configured TP/mark
+// price when available so the booked Trade row reflects what actually
+// happened on-chain (#670).
 type HLFillLookup struct {
 	Fee       float64
 	ClosedPnL float64
 	FilledQty float64 // sum of sz across matched fill records; 0 when lookup missed
+	Px        float64 // size-weighted avg fill price across matched records; 0 when missed
 	Count     int
 	OID       int64
 }
@@ -30,6 +37,7 @@ type HLFillLookup struct {
 type hlFillRecord struct {
 	Coin      string      `json:"coin"`
 	Sz        string      `json:"sz"`
+	Px        string      `json:"px"`
 	OID       json.Number `json:"oid"`
 	Fee       string      `json:"fee"`
 	ClosedPnl string      `json:"closedPnl"`
@@ -97,16 +105,22 @@ func lookupHyperliquidFillByOID(accountAddress string, oid int64, startTimeMs in
 		fills, err := fetchHyperliquidUserFillsByTime(accountAddress, startTimeMs)
 		if err == nil {
 			out := HLFillLookup{OID: oid}
+			pxNumerator := 0.0
 			for _, f := range fills {
 				if !fillOIDMatches(f, oid) {
 					continue
 				}
+				sz := parseHLFloat(f.Sz)
 				out.Fee += parseHLFloat(f.Fee)
 				out.ClosedPnL += parseHLFloat(f.ClosedPnl)
-				out.FilledQty += parseHLFloat(f.Sz)
+				out.FilledQty += sz
+				pxNumerator += sz * parseHLFloat(f.Px)
 				out.Count++
 			}
 			if out.Count > 0 {
+				if out.FilledQty > 0 {
+					out.Px = pxNumerator / out.FilledQty
+				}
 				return out, true
 			}
 		}
@@ -159,20 +173,27 @@ func lookupHyperliquidFillByCoinSize(accountAddress, coin string, absSize, toler
 						Fee:       parseHLFloat(anchor.Fee),
 						ClosedPnL: parseHLFloat(anchor.ClosedPnl),
 						FilledQty: parseHLFloat(anchor.Sz),
+						Px:        parseHLFloat(anchor.Px),
 						Count:     1,
 					}, true
 				}
 				out := HLFillLookup{OID: anchorOID}
+				pxNumerator := 0.0
 				for _, f := range fills {
 					if !fillOIDMatches(f, anchorOID) {
 						continue
 					}
+					sz := parseHLFloat(f.Sz)
 					out.Fee += parseHLFloat(f.Fee)
 					out.ClosedPnL += parseHLFloat(f.ClosedPnl)
-					out.FilledQty += parseHLFloat(f.Sz)
+					out.FilledQty += sz
+					pxNumerator += sz * parseHLFloat(f.Px)
 					out.Count++
 				}
 				if out.Count > 0 {
+					if out.FilledQty > 0 {
+						out.Px = pxNumerator / out.FilledQty
+					}
 					return out, true
 				}
 			}
@@ -392,6 +413,21 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		// OID — Detector 1 mark-based path and Detector 2 non-owner — hit a
 		// cached entry. The resolver drops to coin+size internally.
 		addCandidate(sym, 0, pos.Quantity)
+		// Sole-owner TP partial fills look up the drop qty (virtual - on-chain)
+		// rather than the full virtual qty (#670). Add a candidate when the
+		// on-chain residual is a same-direction strict subset of virtual so the
+		// coin+size fallback can match the partial fill record.
+		if present && onChainSize != 0 {
+			signedVirtual := pos.Quantity
+			if pos.Side == "short" {
+				signedVirtual = -pos.Quantity
+			}
+			sameDirection := (signedVirtual > 0 && onChainSize > 0) || (signedVirtual < 0 && onChainSize < 0)
+			onChainAbs := math.Abs(onChainSize)
+			if sameDirection && onChainAbs+1e-9 < pos.Quantity {
+				addCandidate(sym, 0, pos.Quantity-onChainAbs)
+			}
+		}
 	}
 	mu.RUnlock()
 
