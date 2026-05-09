@@ -107,11 +107,14 @@ type hlProtectionTier struct {
 // (#659). Returns nil when the strategy doesn't use tiered_tp_atr* or any
 // required input is missing.
 func tieredTPATRPrices(sc StrategyConfig, side string, entryPrice, entryATR float64) []float64 {
-	if entryATR <= 0 || entryPrice <= 0 {
-		return nil
-	}
-	tiers := hyperliquidProtectionTiers(sc)
-	if len(tiers) == 0 {
+	return tieredTPATRPricesFromTiers(hyperliquidProtectionTiers(sc), side, entryPrice, entryATR)
+}
+
+// tieredTPATRPricesFromTiers is the price-only computation when the caller
+// already has tiers in hand — lets trade-alert extras call
+// hyperliquidProtectionTiers once and zip prices with multiples (#665 review).
+func tieredTPATRPricesFromTiers(tiers []hlProtectionTier, side string, entryPrice, entryATR float64) []float64 {
+	if len(tiers) == 0 || entryATR <= 0 || entryPrice <= 0 {
 		return nil
 	}
 	sideLower := strings.ToLower(strings.TrimSpace(side))

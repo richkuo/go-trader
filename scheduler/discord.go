@@ -1033,7 +1033,7 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 			slPct := percentFromEntry(pos.Side, pos.AvgCost, pos.StopLossTriggerPx)
 			if pos.EntryATR > 0 {
 				atrMult := math.Abs(pos.AvgCost-pos.StopLossTriggerPx) / pos.EntryATR
-				extras += fmt.Sprintf(" | SL: $%s (%s) (%.2gx)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct), atrMult)
+				extras += fmt.Sprintf(" | SL: $%s (%s) (%gx)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct), atrMult)
 			} else {
 				extras += fmt.Sprintf(" | SL: $%s (%s)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct))
 			}
@@ -1123,12 +1123,12 @@ func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 		extras = append(extras, "Regime: "+trade.Regime)
 	}
 	direction := strings.ToLower(tradeDirectionLabel(trade))
-	var tps []float64
 	var tiers []hlProtectionTier
+	var tps []float64
 	if !isClose && trade.EntryATR > 0 {
-		tps = tieredTPATRPrices(sc, direction, trade.Price, trade.EntryATR)
+		tiers = hyperliquidProtectionTiers(sc)
+		tps = tieredTPATRPricesFromTiers(tiers, direction, trade.Price, trade.EntryATR)
 		if len(tps) > 0 {
-			tiers = hyperliquidProtectionTiers(sc)
 			extras = append(extras, fmt.Sprintf("ATR: $%s", fmtComma2(trade.EntryATR)))
 		}
 	}
@@ -1136,17 +1136,13 @@ func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 		slPct := percentFromEntry(direction, trade.Price, trade.StopLossTriggerPx)
 		if trade.EntryATR > 0 {
 			atrMult := math.Abs(trade.Price-trade.StopLossTriggerPx) / trade.EntryATR
-			extras = append(extras, fmt.Sprintf("SL: $%s (%s) (%.2gx)", fmtComma2(trade.StopLossTriggerPx), fmtPnlPct(slPct), atrMult))
+			extras = append(extras, fmt.Sprintf("SL: $%s (%s) (%gx)", fmtComma2(trade.StopLossTriggerPx), fmtPnlPct(slPct), atrMult))
 		} else {
 			extras = append(extras, fmt.Sprintf("SL: $%s (%s)", fmtComma2(trade.StopLossTriggerPx), fmtPnlPct(slPct)))
 		}
 	}
 	for i, tp := range tps {
-		if i < len(tiers) {
-			extras = append(extras, fmt.Sprintf("TP%d: $%s (%.2gx)", i+1, fmtComma2(tp), tiers[i].Multiple))
-		} else {
-			extras = append(extras, fmt.Sprintf("TP%d: $%s", i+1, fmtComma2(tp)))
-		}
+		extras = append(extras, fmt.Sprintf("TP%d: $%s (%gx)", i+1, fmtComma2(tp), tiers[i].Multiple))
 	}
 	return extras
 }

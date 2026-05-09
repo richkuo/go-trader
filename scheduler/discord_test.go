@@ -1342,10 +1342,13 @@ func TestCollectPositions_StopLossATRMultiplier(t *testing.T) {
 		atr     float64
 		wantSub string
 	}{
-		// long: diff = 1000, mult = 1.0 → "1x" via %.2g
+		// long: diff = 1000, mult = 1.0 → "1x" via %g
 		{name: "long_1x", side: "long", avg: 10000, sl: 9000, atr: 1000, wantSub: "| SL: $9,000.00 (-10.0%) (1x)"},
 		// long: diff = 300, mult = 1.5 → "1.5x"
 		{name: "long_1.5x", side: "long", avg: 10000, sl: 9700, atr: 200, wantSub: "| SL: $9,700.00 (-3.0%) (1.5x)"},
+		// long: diff = 250, mult = 1.25 → "1.25x". %.2g would mangle to "1.3x"
+		// (#665 review): %g preserves the configured value.
+		{name: "long_1.25x", side: "long", avg: 10000, sl: 9750, atr: 200, wantSub: "| SL: $9,750.00 (-2.5%) (1.25x)"},
 		// short: diff = 1000, mult = 1.0 → "1x"
 		{name: "short_1x", side: "short", avg: 10000, sl: 11000, atr: 1000, wantSub: "| SL: $11,000.00 (-10.0%) (1x)"},
 	}
@@ -2304,6 +2307,38 @@ func TestFormatTradeDM_TPATRMultipliers(t *testing.T) {
 	}
 	if !strings.Contains(msg, "TP2: $65,500.00 (2x)") {
 		t.Errorf("expected TP2 with 2× multiplier, got:\n%s", msg)
+	}
+}
+
+// TestFormatTradeDM_TPATRMultipliersFractional verifies %g preserves
+// fractional tier multiples without rounding artifacts (#665 review). %.2g
+// would render 1.25→1.3 and 12.5→12.
+func TestFormatTradeDM_TPATRMultipliersFractional(t *testing.T) {
+	sc := StrategyConfig{
+		ID:       "hl-tatr-btc",
+		Platform: "hyperliquid",
+		Type:     "perps",
+		CloseStrategies: []StrategyRef{{
+			Name: "tiered_tp_atr",
+			Params: map[string]interface{}{
+				"tiers": []interface{}{
+					map[string]interface{}{"atr_multiple": 1.25, "close_fraction": 0.5},
+					map[string]interface{}{"atr_multiple": 2.5, "close_fraction": 1.0},
+				},
+			},
+		}},
+	}
+	trade := Trade{
+		Symbol: "BTC", Side: "buy", Quantity: 0.01, Price: 63500.0, Value: 635.0,
+		EntryATR: 1000.0,
+		Details:  "Open long 0.010000 @ $63500.00",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if !strings.Contains(msg, "TP1: $64,750.00 (1.25x)") {
+		t.Errorf("expected TP1 with fractional 1.25× preserved, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "TP2: $66,000.00 (2.5x)") {
+		t.Errorf("expected TP2 with fractional 2.5× preserved, got:\n%s", msg)
 	}
 }
 
