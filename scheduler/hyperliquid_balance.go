@@ -287,16 +287,28 @@ func reconcileHyperliquidPositionsForStrategy(
 // when a TP-tier fill was detected and booked via
 // recordPerpsExternalPartialCloseWithFillFee — covers both the partial-drop
 // case (on-chain qty < virtual qty, same direction) and the full-close case
-// (on-chain flat, final tier cleared). When no TP attribution applies, returns
-// false so the caller falls through to the legacy reconciler.
+// (on-chain flat, ALL TP tiers cleared). When no TP attribution applies,
+// returns false so the caller falls through to the legacy reconciler.
 //
-// Cycle-ordering dependency: pos.TPOIDs[i] is zeroed by
-// applyHyperliquidProtectionSync when userFills reports the tier filled
-// externally. Protection sync runs in the per-strategy phase, AFTER the
-// pre-phase reconcile that calls this helper. Attribution therefore lands one
-// cycle behind the fill: cycle N protection-sync zeros TPOIDs[i]; cycle N+1
-// reconcile sees the cleared tier + drift and books here. Tests in
-// hyperliquid_sole_owner_tp_test.go pre-seed the post-protection-sync state.
+// Two attribution paths handle the cycle-ordering interaction with
+// applyHyperliquidProtectionSync (which runs in the per-strategy phase, AFTER
+// this pre-phase reconcile):
+//
+//  1. Cleared-tier path — pos.TPOIDs[i]==0, set by applyHyperliquidProtectionSync
+//     after Python observes the userFills entry for that OID. Reliable signal
+//     but lags the fill by one cycle.
+//  2. Cycle-ordering recovery path — pos.TPOIDs[i] still positive but the
+//     userFills resolver returns a matched fill whose OID equals one of the
+//     configured TPOIDs. Closes the (protection-sync, next-reconcile) window
+//     where legacy resync would otherwise wipe the drift signal before
+//     protection-sync zeros the TPOID. Restricted to the partial path:
+//     full-close attribution still requires all-tiers-cleared per finding #1.
+//
+// Precision: the recovery path's OID match against pos.TPOIDs is exact, so SL
+// fills (lookup.OID == pos.StopLossOID) and operator/CB closes (different OID)
+// don't mis-attribute. The booker shrinks pos.Quantity to match on-chain so a
+// later same-cycle protection-sync sees the fill, zeros TPOIDs[i] normally,
+// and the next cycle's reconcile finds no drift — no double-booking.
 func tryBookSoleOwnerTPFill(
 	sc StrategyConfig,
 	stratState *StrategyState,
@@ -359,9 +371,40 @@ func tryBookSoleOwnerTPFill(
 		return false
 	}
 
+	lookup, useFillFee := resolveFee(sym, 0, closeQty)
+	logHyperliquidReconcileFillLookup(logger, sym, 0, closeQty, lookup, useFillFee)
+
 	tierIdx, hasCleared := hyperliquidClearedTPTier(sc, statePos, closeQty)
 	if !hasCleared {
-		return false
+		// Cycle-ordering recovery (#672): protection-sync hasn't yet zeroed
+		// pos.TPOIDs[i] for the freshly-filled tier. Cross-check the userFills
+		// lookup — if the matched fill's OID equals one of the configured
+		// TPOIDs, we know which tier fired without waiting for protection-sync.
+		// Restricted to the partial path: full-close attribution still requires
+		// all-tiers-cleared per finding #1.
+		if onChainPos == nil || !useFillFee || lookup.OID <= 0 {
+			return false
+		}
+		tiers := strategyTPTiers(sc)
+		if len(tiers) == 0 {
+			return false
+		}
+		tpOIDs := tpOIDsForTierCount(statePos.TPOIDs, len(tiers))
+		matched := -1
+		for i, oid := range tpOIDs {
+			if oid > 0 && oid == lookup.OID {
+				matched = i
+				break
+			}
+		}
+		if matched < 0 {
+			return false
+		}
+		tierIdx = matched
+		// Leave pos.TPOIDs[matched] positive — protection-sync's Python
+		// pipeline re-detects the fill via userFills and zeros it through
+		// applyHyperliquidProtectionSync later this cycle (idempotent), which
+		// also feeds the plan-builder's "skip already-filled tiers" logic.
 	}
 
 	tpPrices := tieredTPATRPrices(sc, statePos.Side, statePos.AvgCost, statePos.EntryATR)
@@ -369,9 +412,6 @@ func tryBookSoleOwnerTPFill(
 	if tierIdx >= 0 && tierIdx < len(tpPrices) {
 		tpPrice = tpPrices[tierIdx]
 	}
-
-	lookup, useFillFee := resolveFee(sym, 0, closeQty)
-	logHyperliquidReconcileFillLookup(logger, sym, 0, closeQty, lookup, useFillFee)
 
 	closePx := tpPrice
 	if useFillFee && lookup.Px > 0 {
