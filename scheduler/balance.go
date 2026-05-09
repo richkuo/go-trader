@@ -22,6 +22,9 @@ func FetchPlatformBalance(platform string) (float64, error) {
 			return 0, fmt.Errorf("HYPERLIQUID_ACCOUNT_ADDRESS env var not set")
 		}
 		return fetchHyperliquidBalance(addr)
+	case "phemex":
+		// Phemex uses check_balance.py via ccxt
+		return fetchPythonBalance(platform)
 	default:
 		return fetchPythonBalance(platform)
 	}

@@ -369,6 +369,12 @@ type InitOptions struct {
 	ManualCapital   float64
 	ManualDrawdown  float64
 	ManualLeverage  float64
+	// Phemex perps support
+	EnablePhemex         bool
+	PhemenxMode          string   // "paper" or "live"
+	PhemenxPerpsStrategies []string // selected perps strategy IDs for Phemex
+	PhemenxCapital       float64
+	PhemenxDrawdown      float64
 }
 
 // generateConfig builds a Config from InitOptions. Pure function, no I/O.
@@ -663,6 +669,40 @@ func generateConfig(opts InitOptions) *Config {
 					IntervalSeconds: 3600,
 					Leverage:        okxPerpsLeverage,
 					SizingLeverage:  okxPerpsSizingLeverage,
+				})
+			}
+		}
+	}
+
+	// Phemex perps strategies
+	if opts.EnablePhemex {
+		phemexMode := opts.PhemenxMode
+		if phemexMode == "" {
+			phemexMode = "paper"
+		}
+		phemexPerpsLeverage := opts.PerpsLeverage
+		if phemexPerpsLeverage <= 0 {
+			phemexPerpsLeverage = 1
+		}
+		phemexPerpsSizingLeverage := opts.PerpsSizingLeverage
+		if phemexPerpsSizingLeverage <= 0 {
+			phemexPerpsSizingLeverage = phemexPerpsLeverage
+		}
+		for _, stratID := range opts.PhemenxPerpsStrategies {
+			shortName := deriveShortName(stratID)
+			for _, assetName := range opts.Assets {
+				id := fmt.Sprintf("phemex-%s-%s-perp", shortName, strings.ToLower(assetName))
+				cfg.Strategies = append(cfg.Strategies, StrategyConfig{
+					ID:              id,
+					Type:            "perps",
+					Platform:        "phemex",
+					Script:          "shared_scripts/check_phemex.py",
+					Args:            []string{stratID, assetName, "1h", fmt.Sprintf("--mode=%s", phemexMode)},
+					Capital:         opts.PhemenxCapital,
+					MaxDrawdownPct:  opts.PhemenxDrawdown,
+					IntervalSeconds: 3600,
+					Leverage:        phemexPerpsLeverage,
+					SizingLeverage:  phemexPerpsSizingLeverage,
 				})
 			}
 		}
