@@ -335,7 +335,7 @@ func tryBookSoleOwnerTPFill(
 		// price on the trade record AND wrong TP{n} label on the DM alert.
 		// Defer those cases to the legacy SL-owner branch in
 		// reconcileHyperliquidPositionsWithResolver.
-		tiers := hyperliquidProtectionTiers(sc)
+		tiers := strategyTPTiers(sc)
 		tpOIDs := tpOIDsForTierCount(statePos.TPOIDs, len(tiers))
 		for _, oid := range tpOIDs {
 			if oid > 0 {
