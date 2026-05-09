@@ -3279,3 +3279,195 @@ func TestReconcileManualPositionSLFired(t *testing.T) {
 		t.Errorf("ClosePrice = %g, want 1800", ss.ClosedPositions[0].ClosePrice)
 	}
 }
+
+// --- #673: TP-fired close attributed to TP fills, not SL trigger ---
+
+// TestReconcilePosition_TPFillsAttributedNotSL is the regression test for #673:
+// when both TPs fire and HL auto-cancels the resting SL, the reconciler must
+// book the close at the actual TP fill prices, not at the (stale) SL trigger
+// price. Pre-fix this scenario produced a fictitious loss because the close
+// was mis-attributed to the SL.
+func TestReconcilePosition_TPFillsAttributedNotSL(t *testing.T) {
+	const (
+		entryPx     = 2315.70
+		tp1Px       = 2325.19
+		tp2Px       = 2329.93
+		slTriggerPx = 2308.60
+		qtyTotal    = 0.432
+		qtyTier     = 0.216
+		feeTP1      = 0.10
+		feeTP2      = 0.11
+	)
+	ss := &StrategyState{
+		ID:   "hl-tema-eth-live",
+		Cash: 1000,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol: "ETH", Quantity: qtyTotal, InitialQuantity: qtyTotal,
+				AvgCost: entryPx, Side: "long",
+				Multiplier: 1, Leverage: 20, OwnerStrategyID: "hl-tema-eth-live",
+				StopLossOID: 999, StopLossTriggerPx: slTriggerPx,
+				TPOIDs: []int64{111, 222},
+			},
+		},
+	}
+	// Resolver: SL OID returns no fill (SL was auto-cancelled by HL once flat).
+	// Both TP OIDs return their actual VWAP fill price + fee.
+	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
+		switch oid {
+		case 111:
+			return HLFillLookup{Fee: feeTP1, FilledQty: qtyTier, Px: tp1Px, Count: 1, OID: 111}, true
+		case 222:
+			return HLFillLookup{Fee: feeTP2, FilledQty: qtyTier, Px: tp2Px, Count: 1, OID: 222}, true
+		default:
+			return HLFillLookup{}, false
+		}
+	})
+	logger := newTestLogger(t)
+
+	startCash := ss.Cash
+	changed := reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger)
+	if !changed {
+		t.Fatal("expected changed=true")
+	}
+	if _, open := ss.Positions["ETH"]; open {
+		t.Fatal("ETH position should be removed after TP-fill attribution")
+	}
+	if len(ss.TradeHistory) != 2 {
+		t.Fatalf("TradeHistory = %d, want 2 (one per TP tier)", len(ss.TradeHistory))
+	}
+	for i, trade := range ss.TradeHistory {
+		if !trade.IsClose {
+			t.Errorf("trade[%d].IsClose = false, want true", i)
+		}
+		if trade.RealizedPnL <= 0 {
+			t.Errorf("trade[%d].RealizedPnL = %g, want positive (TP profit)", i, trade.RealizedPnL)
+		}
+	}
+	wantPnL := qtyTier*(tp1Px-entryPx) - feeTP1 + qtyTier*(tp2Px-entryPx) - feeTP2
+	gotPnL := ss.Cash - startCash
+	if math.Abs(gotPnL-wantPnL) > 0.01 {
+		t.Errorf("cash delta = %g, want %g (sum of TP fill PnLs minus fees)", gotPnL, wantPnL)
+	}
+	if gotPnL <= 0 {
+		t.Errorf("cash delta = %g, want positive — pre-fix this booked at SL trigger and was negative", gotPnL)
+	}
+}
+
+// TestReconcilePosition_SLFillStillTakesSLPath verifies that when the SL OID
+// DID fire (userFills returns a hit), the existing SL-trigger-price path is
+// still used and the new TP attribution does not interfere.
+func TestReconcilePosition_SLFillStillTakesSLPath(t *testing.T) {
+	const slTriggerPx = 1800.0
+	ss := &StrategyState{
+		ID: "hl-eth", Cash: 100,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol: "ETH", Quantity: 0.4, AvgCost: 2000, Side: "long",
+				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-eth",
+				StopLossOID: 42, StopLossTriggerPx: slTriggerPx,
+				TPOIDs: []int64{111, 222},
+			},
+		},
+	}
+	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
+		// SL fired; TPs auto-cancelled.
+		if oid == 42 {
+			return HLFillLookup{Fee: 0.05, FilledQty: 0.4, Px: slTriggerPx, Count: 1, OID: 42}, true
+		}
+		return HLFillLookup{}, false
+	})
+	logger := newTestLogger(t)
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger)
+
+	if len(ss.ClosedPositions) != 1 || ss.ClosedPositions[0].CloseReason != "stop_loss" {
+		t.Fatalf("expected one ClosedPosition with reason=stop_loss, got %+v", ss.ClosedPositions)
+	}
+	if ss.ClosedPositions[0].ClosePrice != slTriggerPx {
+		t.Errorf("ClosePrice = %g, want %g (SL trigger)", ss.ClosedPositions[0].ClosePrice, slTriggerPx)
+	}
+}
+
+// TestReconcilePosition_PartialTPFillResidualZeroPnL covers the under-shoot
+// case: TP1 fills cleanly, TP2 OID returns no fill (indexer race or only one
+// tier configured). The booked TP1 portion credits real PnL; the residual is
+// closed at zero PnL via hl_sync_external. Locks in current behavior — see
+// PR #675 review for the trade-off vs. mark/SL-trigger pricing.
+func TestReconcilePosition_PartialTPFillResidualZeroPnL(t *testing.T) {
+	const (
+		entryPx  = 2000.0
+		tp1Px    = 2050.0
+		qtyTotal = 0.4
+		qtyTier1 = 0.2
+		feeTP1   = 0.05
+	)
+	ss := &StrategyState{
+		ID: "hl-eth", Cash: 1000,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol: "ETH", Quantity: qtyTotal, InitialQuantity: qtyTotal,
+				AvgCost: entryPx, Side: "long",
+				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-eth",
+				StopLossOID: 999, StopLossTriggerPx: 1900,
+				TPOIDs: []int64{111, 222},
+			},
+		},
+	}
+	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
+		if oid == 111 {
+			return HLFillLookup{Fee: feeTP1, FilledQty: qtyTier1, Px: tp1Px, Count: 1, OID: 111}, true
+		}
+		return HLFillLookup{}, false
+	})
+	logger := newTestLogger(t)
+	startCash := ss.Cash
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger)
+
+	if _, open := ss.Positions["ETH"]; open {
+		t.Fatal("ETH should be removed even when TP fills under-shoot")
+	}
+	if len(ss.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory = %d, want 1 (TP1 only — TP2 had no fill)", len(ss.TradeHistory))
+	}
+	if len(ss.ClosedPositions) != 1 || ss.ClosedPositions[0].CloseReason != "hl_sync_external" {
+		t.Fatalf("expected residual ClosedPosition with reason=hl_sync_external, got %+v", ss.ClosedPositions)
+	}
+	if ss.ClosedPositions[0].Quantity < qtyTier1-1e-9 || ss.ClosedPositions[0].Quantity > qtyTier1+1e-9 {
+		t.Errorf("residual ClosedPosition.Quantity = %g, want %g", ss.ClosedPositions[0].Quantity, qtyTier1)
+	}
+	wantPnL := qtyTier1*(tp1Px-entryPx) - feeTP1
+	gotPnL := ss.Cash - startCash
+	if math.Abs(gotPnL-wantPnL) > 0.01 {
+		t.Errorf("cash delta = %g, want %g (TP1 only — residual contributes 0)", gotPnL, wantPnL)
+	}
+}
+
+// TestReconcilePosition_NoFillsFallsBackToZeroPnL verifies that when neither
+// SL nor TP OIDs return fills (e.g. manual UI close, indexer outage), the
+// legacy zero-PnL hl_sync_external path is preserved.
+func TestReconcilePosition_NoFillsFallsBackToZeroPnL(t *testing.T) {
+	ss := &StrategyState{
+		ID: "hl-eth", Cash: 100,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol: "ETH", Quantity: 0.4, AvgCost: 2000, Side: "long",
+				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-eth",
+				TPOIDs: []int64{111, 222},
+			},
+		},
+	}
+	resolver := noFillFeeResolver
+	logger := newTestLogger(t)
+	startCash := ss.Cash
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger)
+
+	if _, open := ss.Positions["ETH"]; open {
+		t.Fatal("ETH should be removed even when no fills found")
+	}
+	if len(ss.ClosedPositions) != 1 || ss.ClosedPositions[0].CloseReason != "hl_sync_external" {
+		t.Fatalf("expected ClosedPosition with reason=hl_sync_external, got %+v", ss.ClosedPositions)
+	}
+	if ss.Cash != startCash {
+		t.Errorf("cash = %g, want unchanged (%g) on zero-PnL fallback", ss.Cash, startCash)
+	}
+}

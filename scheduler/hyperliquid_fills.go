@@ -22,7 +22,7 @@ import (
 // sum(sz*px) / sum(sz). 0 when the lookup missed or every record reported
 // zero size. Reconciler close paths prefer Px over the configured TP/mark
 // price when available so the booked Trade row reflects what actually
-// happened on-chain (#670).
+// happened on-chain (#670, #673).
 type HLFillLookup struct {
 	Fee       float64
 	ClosedPnL float64
@@ -408,6 +408,15 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		}
 		if pos.StopLossOID > 0 && pos.StopLossTriggerPx > 0 {
 			addCandidate(sym, pos.StopLossOID, pos.Quantity)
+		}
+		// #673: Pre-fetch each TP OID lookup so the apply phase can distinguish
+		// SL-fired vs TP-fired closes when the position goes flat. Without
+		// these, hlAttemptCloseFromTPFills always misses the cache and the
+		// reconciler falls through to the SL-trigger-price path.
+		for _, tpOID := range pos.TPOIDs {
+			if tpOID > 0 {
+				addCandidate(sym, tpOID, pos.Quantity)
+			}
 		}
 		// Always include the (coin, 0, qty) form so peers without a tracked
 		// OID — Detector 1 mark-based path and Detector 2 non-owner — hit a
