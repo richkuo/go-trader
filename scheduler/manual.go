@@ -561,10 +561,6 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			TPOIDs:            a.TPOIDs,
 		}
 		pos.TradePositionID = newTradePositionID(a.StrategyID, a.Symbol, now)
-		// Stamp SL ATR mult + TP tier snapshot at fill time so the analytics
-		// row in `trades` reflects the config that armed the order, not whatever
-		// the operator edits later (#669).
-		stampPositionProtectionSnapshot(pos, sc)
 		ss.Positions[a.Symbol] = pos
 
 		trade := Trade{
@@ -581,12 +577,12 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			ExchangeOrderID:   a.ExchangeOrderID,
 			ExchangeFee:       a.FillFee,
 			EntryATR:          a.EntryATR,
+			StopLossOID:       a.StopLossOID,
 			StopLossTriggerPx: a.StopLossTriggerPx,
-			StopLossATRMult:   pos.StopLossATRMult,
-			TPTiersJSON:       pos.TPTiersJSON,
+			TPOIDs:            cloneInt64s(a.TPOIDs),
 			Manual:            true,
 		}
-		RecordTrade(ss, trade)
+		recordPositionOpen(ss, sc, &trade, pos)
 		// Fix #1: perps open deducts only the fee; notional stays virtual.
 		ss.Cash -= a.FillFee
 		fmt.Printf("[manual] applied open: %s %s %.6f %s @ $%.4f\n",

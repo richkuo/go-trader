@@ -1500,10 +1500,16 @@ func main() {
 							}
 							if !liveExecFailed {
 								mu.Lock()
-								trades, detail = executeHyperliquidResult(sc, stratState, stateDB, result, execResult, signalStr, price, logger)
+								var openTrade *Trade
+								trades, detail, openTrade = executeHyperliquidResultDeferredOpen(sc, stratState, stateDB, result, execResult, signalStr, price, logger)
 								mu.Unlock()
 								if execResult != nil && trades > 0 {
 									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade")
+									mu.Lock()
+									if pos, ok := stratState.Positions[result.Symbol]; ok {
+										recordPositionOpen(stratState, sc, openTrade, pos)
+									}
+									mu.Unlock()
 								}
 							}
 						}
@@ -2072,14 +2078,15 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 
 // executeSpotResult applies a spot signal to state. Must be called under Lock.
 func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *SpotResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
-	trades, err := ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, price, 0, 0, "", result.CloseFraction, logger)
+	exec, err := ExecuteSpotSignalWithFillFeeDeferredOpen(s, result.Signal, result.Symbol, price, 0, 0, "", result.CloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
 	}
+	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	if pos, ok := s.Positions[result.Symbol]; ok {
-		stampOpenTradeWithProtectionSnapshot(s, db, sc, result.Symbol, pos)
+		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
 
 	detail := ""
@@ -2572,9 +2579,21 @@ func isHLOpenOrderCapRejection(errStr string) bool {
 	return strings.Contains(lower, "trigger order") || strings.Contains(lower, "open order") || strings.Contains(lower, "open orders")
 }
 
-// executeHyperliquidResult applies a hyperliquid result to state. Must be called under Lock.
-// execResult is non-nil for successful live orders; nil for paper mode.
 func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
+	trades, detail, openTrade := executeHyperliquidResultDeferredOpen(sc, s, db, result, execResult, signalStr, price, logger)
+	if openTrade != nil {
+		if pos, ok := s.Positions[result.Symbol]; ok {
+			recordPositionOpen(s, sc, openTrade, pos)
+		}
+	}
+	return trades, detail
+}
+
+// executeHyperliquidResultDeferredOpen applies a hyperliquid result to state.
+// Must be called under Lock. execResult is non-nil for successful live orders;
+// nil for paper mode. Live open trades are returned so the caller can run
+// same-cycle protection sync before the single INSERT.
+func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, db *StateDB, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string, *Trade) {
 	fillPrice := price
 	var fillQty float64
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
@@ -2602,14 +2621,16 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, db *StateDB, 
 		fillFee = fill.Fee
 	}
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
+	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
-		return 0, ""
+		return 0, "", nil
 	}
+	trades := exec.TradesExecuted
+	openTrade := exec.OpenTrade
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	if pos, ok := s.Positions[result.Symbol]; ok {
-		stampOpenTradeWithProtectionSnapshot(s, db, sc, result.Symbol, pos)
+		stampPositionProtectionSnapshot(pos, sc)
 	}
 	if trades > 0 && fillOID != "" {
 		logger.Info("Exchange order ID: %s", fillOID)
@@ -2633,7 +2654,6 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, db *StateDB, 
 				pos.StopLossOID = slOID
 				pos.StopLossTriggerPx = execResult.Execution.Fill.StopLossTriggerPx
 				logger.Info("SL trigger placed oid=%d @ $%.4f", slOID, execResult.Execution.Fill.StopLossTriggerPx)
-				stampOpenTradeWithProtectionSnapshot(s, db, sc, result.Symbol, pos)
 			}
 		}
 	}
@@ -2648,6 +2668,10 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, db *StateDB, 
 	// the realized loss is booked correctly.
 	if trades > 0 && execResult != nil && execResult.StopLossFilledImmediately &&
 		execResult.Execution != nil && execResult.Execution.Fill != nil {
+		if pos, ok := s.Positions[result.Symbol]; ok {
+			recordPositionOpen(s, sc, openTrade, pos)
+			openTrade = nil
+		}
 		triggerPx := execResult.Execution.Fill.StopLossTriggerPx
 		if recordPerpsStopLossClose(s, result.Symbol, triggerPx, "stop_loss_immediate", logger) {
 			trades++
@@ -2662,7 +2686,14 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, db *StateDB, 
 		}
 		detail = fmt.Sprintf("[%s] %s%s %s @ $%.2f", sc.ID, prefix, signalStr, result.Symbol, fillPrice)
 	}
-	return trades, detail
+	if execResult == nil {
+		if pos, ok := s.Positions[result.Symbol]; ok {
+			recordPositionOpen(s, sc, openTrade, pos)
+			openTrade = nil
+		}
+	}
+	_ = db
+	return trades, detail, openTrade
 }
 
 // topstepIsLive reports whether --mode=live appears in strategy args.
@@ -2839,14 +2870,15 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 		maxContracts = sc.FuturesConfig.MaxContracts
 	}
 
-	trades, err := ExecuteFuturesSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, result.ContractSpec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, result.CloseFraction, logger)
+	exec, err := ExecuteFuturesSignalWithFillFeeDeferredOpen(s, result.Signal, result.Symbol, fillPrice, result.ContractSpec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, result.CloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
 	}
+	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	if pos, ok := s.Positions[result.Symbol]; ok {
-		stampOpenTradeWithProtectionSnapshot(s, db, sc, result.Symbol, pos)
+		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
 
 	detail := ""
@@ -3002,14 +3034,15 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	trades, err := ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, logger)
+	exec, err := ExecuteSpotSignalWithFillFeeDeferredOpen(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
 	}
+	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	if pos, ok := s.Positions[result.Symbol]; ok {
-		stampOpenTradeWithProtectionSnapshot(s, db, sc, result.Symbol, pos)
+		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
 
 	detail := ""
@@ -3207,20 +3240,21 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	// fields onto s.TradeHistory after the fact would never reach SQLite — the
 	// eager INSERT has already happened and SaveState's timestamp dedup skips
 	// re-inserts for the same trade.
-	var trades int
+	var exec SignalExecutionResult
 	var err error
 	if sc.Type == "perps" {
-		trades, err = ExecutePerpsSignalWithLeverage(s, result.Signal, result.Symbol, fillPrice, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc), fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
+		exec, err = ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc), fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
 	} else {
-		trades, err = ExecuteSpotSignalWithFillFee(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, logger)
+		exec, err = ExecuteSpotSignalWithFillFeeDeferredOpen(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, logger)
 	}
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
 	}
+	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	if pos, ok := s.Positions[result.Symbol]; ok {
-		stampOpenTradeWithProtectionSnapshot(s, db, sc, result.Symbol, pos)
+		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
 
 	detail := ""

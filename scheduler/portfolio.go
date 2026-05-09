@@ -394,7 +394,9 @@ type Trade struct {
 	Regime      string  `json:"regime,omitempty"` // market regime label at time of trade (#482)
 
 	EntryATR          float64 `json:"entry_atr,omitempty"`
+	StopLossOID       int64   `json:"stop_loss_oid,omitempty"`
 	StopLossTriggerPx float64 `json:"stop_loss_trigger_px,omitempty"`
+	TPOIDs            []int64 `json:"tp_oids,omitempty"`
 	Manual            bool    `json:"manual,omitempty"` // set when position was opened via manual-open CLI (#569)
 
 	// SL arming method + TP tier snapshot at fill time (#669). StopLossATRMult
@@ -415,6 +417,11 @@ type Trade struct {
 	// on the next flush rather than silently dropped because T1 < latestTS.
 	// Not serialized — purely in-memory bookkeeping.
 	persisted bool
+}
+
+type SignalExecutionResult struct {
+	TradesExecuted int
+	OpenTrade      *Trade
 }
 
 var tradePositionNonce uint64
@@ -812,6 +819,22 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 //
 // Empty direction is treated as "long" for safety.
 func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger) (int, error) {
+	return executePerpsSignalWithLeverage(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, logger, func(trade Trade) {
+		RecordTrade(s, trade)
+	})
+}
+
+func ExecutePerpsSignalWithLeverageDeferredOpen(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger) (SignalExecutionResult, error) {
+	var result SignalExecutionResult
+	trades, err := executePerpsSignalWithLeverage(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, logger, func(trade Trade) {
+		t := trade
+		result.OpenTrade = &t
+	})
+	result.TradesExecuted = trades
+	return result, err
+}
+
+func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger, recordOpen func(Trade)) (int, error) {
 	if direction == "" {
 		direction = DirectionLong
 	}
@@ -1020,7 +1043,7 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
 		}
 		trade.Regime = s.Regime
-		RecordTrade(s, trade)
+		recordOpen(trade)
 		logger.Info("BUY %s: %.6f @ $%.2f (%s, notional $%.2f, fee $%.2f)", symbol, qty, execPrice, leverageLabel, notional, fee)
 		tradesExecuted++
 
@@ -1188,7 +1211,7 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
 		}
 		trade.Regime = s.Regime
-		RecordTrade(s, trade)
+		recordOpen(trade)
 		logger.Info("SELL %s: %.6f @ $%.2f (%s, notional $%.2f, fee $%.2f) [open short]", symbol, qty, execPrice, leverageLabel, notional, fee)
 		tradesExecuted++
 	}
@@ -1215,6 +1238,22 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 // leg reduces pos.Quantity (paper) or uses fillQty (live) without deleting
 // the position. closeFraction == 0 preserves the legacy full-close semantics.
 func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger) (int, error) {
+	return executeSpotSignalWithFillFee(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, logger, func(trade Trade) {
+		RecordTrade(s, trade)
+	})
+}
+
+func ExecuteSpotSignalWithFillFeeDeferredOpen(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger) (SignalExecutionResult, error) {
+	var result SignalExecutionResult
+	trades, err := executeSpotSignalWithFillFee(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, logger, func(trade Trade) {
+		t := trade
+		result.OpenTrade = &t
+	})
+	result.TradesExecuted = trades
+	return result, err
+}
+
+func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger, recordOpen func(Trade)) (int, error) {
 	if signal == 0 {
 		return 0, nil
 	}
@@ -1356,7 +1395,7 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
 		}
 		trade.Regime = s.Regime
-		RecordTrade(s, trade)
+		recordOpen(trade)
 		logger.Info("BUY %s: %.6f @ $%.2f (fee $%.2f, total $%.2f)", symbol, qty, execPrice, fee, tradeCost+fee)
 		tradesExecuted++
 
@@ -1445,6 +1484,22 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 // remaining (a tier returning a fraction smaller than 1 contract is a no-op
 // rather than a full close).
 func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger) (int, error) {
+	return executeFuturesSignalWithFillFee(s, signal, symbol, price, spec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, closeFraction, logger, func(trade Trade) {
+		RecordTrade(s, trade)
+	})
+}
+
+func ExecuteFuturesSignalWithFillFeeDeferredOpen(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger) (SignalExecutionResult, error) {
+	var result SignalExecutionResult
+	trades, err := executeFuturesSignalWithFillFee(s, signal, symbol, price, spec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, closeFraction, logger, func(trade Trade) {
+		t := trade
+		result.OpenTrade = &t
+	})
+	result.TradesExecuted = trades
+	return result, err
+}
+
+func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger, recordOpen func(Trade)) (int, error) {
 	if signal == 0 {
 		return 0, nil
 	}
@@ -1601,7 +1656,7 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
 		}
 		trade.Regime = s.Regime
-		RecordTrade(s, trade)
+		recordOpen(trade)
 		logger.Info("BUY %s: %d contracts @ $%.2f (fee $%.2f)", symbol, contracts, execPrice, fee)
 		tradesExecuted++
 
@@ -1746,7 +1801,7 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
 			}
 			trade.Regime = s.Regime
-			RecordTrade(s, trade)
+			recordOpen(trade)
 			logger.Info("SHORT %s: %d contracts @ $%.2f (fee $%.2f)", symbol, contracts, execPrice, fee)
 			tradesExecuted++
 		}
@@ -1754,12 +1809,11 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 	return tradesExecuted, nil
 }
 
-// stampOpenTradeFromPosition backfills EntryATR, StopLossTriggerPx,
-// StopLossATRMult, and TPTiersJSON onto the most recent open Trade for symbol
-// after those values are stamped onto the Position post-RecordTrade. Only
-// updates fields that are currently zero / nil / empty so subsequent calls are
-// idempotent. Updates both the in-memory slice and the SQLite row when db is
-// non-nil.
+// stampOpenTradeFromPosition backfills open-trade protection snapshot fields
+// onto the most recent open Trade for symbol after those values are stamped
+// onto the Position post-RecordTrade. The normal same-cycle open path records
+// these fields in one INSERT via recordPositionOpen; this helper remains for
+// fallback protection arming after the open row already exists.
 func stampOpenTradeFromPosition(s *StrategyState, db *StateDB, symbol string, pos *Position) {
 	if pos == nil {
 		return
@@ -1777,8 +1831,16 @@ func stampOpenTradeFromPosition(s *StrategyState, db *StateDB, symbol string, po
 			t.EntryATR = pos.EntryATR
 			changed = true
 		}
+		if pos.StopLossOID > 0 && t.StopLossOID == 0 {
+			t.StopLossOID = pos.StopLossOID
+			changed = true
+		}
 		if pos.StopLossTriggerPx > 0 && t.StopLossTriggerPx == 0 {
 			t.StopLossTriggerPx = pos.StopLossTriggerPx
+			changed = true
+		}
+		if len(pos.TPOIDs) > 0 && len(t.TPOIDs) == 0 {
+			t.TPOIDs = cloneInt64s(pos.TPOIDs)
 			changed = true
 		}
 		if pos.StopLossATRMult != nil && t.StopLossATRMult == nil {
@@ -1791,7 +1853,7 @@ func stampOpenTradeFromPosition(s *StrategyState, db *StateDB, symbol string, po
 			changed = true
 		}
 		if changed && db != nil {
-			_ = db.UpdateTradeStampedFields(s.ID, t.Timestamp, t.EntryATR, t.StopLossTriggerPx, t.StopLossATRMult, t.TPTiersJSON)
+			_ = db.UpdateTradeStampedFields(s.ID, t.Timestamp, t.EntryATR, t.StopLossOID, t.StopLossTriggerPx, t.TPOIDs, t.StopLossATRMult, t.TPTiersJSON)
 		}
 		return
 	}

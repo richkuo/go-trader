@@ -65,6 +65,32 @@ func stampPositionProtectionSnapshot(pos *Position, sc StrategyConfig) {
 	}
 }
 
+func copyPositionOpenSnapshotToTrade(trade *Trade, pos *Position) {
+	if trade == nil || pos == nil {
+		return
+	}
+	trade.EntryATR = pos.EntryATR
+	trade.StopLossOID = pos.StopLossOID
+	trade.StopLossTriggerPx = pos.StopLossTriggerPx
+	trade.TPOIDs = cloneInt64s(pos.TPOIDs)
+	if pos.StopLossATRMult != nil {
+		v := *pos.StopLossATRMult
+		trade.StopLossATRMult = &v
+	} else {
+		trade.StopLossATRMult = nil
+	}
+	trade.TPTiersJSON = pos.TPTiersJSON
+}
+
+func recordPositionOpen(s *StrategyState, sc StrategyConfig, trade *Trade, pos *Position) {
+	if s == nil || trade == nil {
+		return
+	}
+	stampPositionProtectionSnapshot(pos, sc)
+	copyPositionOpenSnapshotToTrade(trade, pos)
+	RecordTrade(s, *trade)
+}
+
 // stampOpenTradeWithProtectionSnapshot is the trade-open helper that combines
 // the protection-config snapshot (sc-derived) with the position-derived backfill
 // onto the most recent open Trade for symbol. Idempotent on both layers — call
