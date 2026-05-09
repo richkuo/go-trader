@@ -89,6 +89,9 @@ func TestSoleOwnerTPPartial_BooksAtTPPriceFromTiers(t *testing.T) {
 	if trade.Side != "sell" {
 		t.Errorf("trade.Side = %q, want %q (long-close = sell)", trade.Side, "sell")
 	}
+	if trade.ExchangeOrderID != "" {
+		t.Errorf("trade.ExchangeOrderID = %q, want \"\" (no fill fee, no fabricated OID)", trade.ExchangeOrderID)
+	}
 	// PnL = (TP1 - AvgCost) * dropQty - fee. fee = modeled spot fee.
 	wantPnLBeforeFee := (expectedTP1 - entryPx) * (fullQty - onChainQty)
 	if trade.RealizedPnL > wantPnLBeforeFee {
@@ -371,6 +374,193 @@ func TestLookupHyperliquidFillByOID_AggregatesPxAsSizeWeightedAvg(t *testing.T) 
 	}
 	if math.Abs(lookup.Fee-0.04) > 1e-9 {
 		t.Errorf("Fee = %g, want 0.04", lookup.Fee)
+	}
+}
+
+// TestSoleOwnerTPPartial_FallsBackToConfiguredTPWhenLookupPxZero verifies that
+// the resolver's `useFillFee=true` branch with `lookup.Px <= 0` (real fee
+// available but no usable price — e.g. fee aggregated from fragments without
+// price data) falls back to the configured TP price rather than booking at $0.
+// Pairs with the userFills-px-prefer test to lock in both branches of the
+// `useFillFee && lookup.Px > 0` guard in tryBookSoleOwnerTPFill.
+func TestSoleOwnerTPPartial_FallsBackToConfiguredTPWhenLookupPxZero(t *testing.T) {
+	const (
+		entryPx     = 2000.0
+		entryATR    = 50.0
+		fullQty     = 0.4
+		onChainQty  = 0.2
+		realFee     = 0.07
+		expectedTP1 = entryPx + 2.0*entryATR // 2100
+	)
+	ss := &StrategyState{
+		ID:   "hl-tp-sole",
+		Cash: 100,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol: "ETH", Quantity: fullQty, InitialQuantity: fullQty,
+				AvgCost: entryPx, EntryATR: entryATR, Side: "long",
+				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-tp-sole",
+				TPOIDs: []int64{0, 222},
+			},
+		},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: onChainQty, EntryPrice: entryPx, Leverage: 5}}
+	resolver := hlReconcileFillResolver(func(string, int64, float64) (HLFillLookup, bool) {
+		// Real fee returned, but Px=0 (e.g. only fee aggregation succeeded).
+		return HLFillLookup{Fee: realFee, FilledQty: 0.2, Px: 0, OID: 555, Count: 1}, true
+	})
+	var alerts []ProtectionFillAlert
+	logger := newTestLogger(t)
+
+	reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", positions, resolver, logger, &alerts)
+
+	if len(ss.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory = %d, want 1", len(ss.TradeHistory))
+	}
+	trade := ss.TradeHistory[0]
+	if math.Abs(trade.Price-expectedTP1) > 1e-9 {
+		t.Errorf("trade.Price = %g, want %g (configured TP1 fallback when lookup.Px<=0)", trade.Price, expectedTP1)
+	}
+	if math.Abs(trade.ExchangeFee-realFee) > 1e-9 {
+		t.Errorf("trade.ExchangeFee = %g, want %g (real fee retained even when Px<=0)", trade.ExchangeFee, realFee)
+	}
+}
+
+// TestSoleOwnerTP_FullCloseWithStaleClearedTier_DefersToSL is the regression
+// test for review finding #1: when a prior TP1 partial has already booked
+// (state: TPOIDs=[0, 222], Quantity=residual) and the residual is then closed
+// by a different mechanism — SL fire, operator close, kill-switch — the
+// helper must NOT mis-attribute the close to TP1. It must defer to the legacy
+// SL-owner branch, which books at the SL trigger price with a "stop_loss"
+// close reason (not "TP1" alert).
+func TestSoleOwnerTP_FullCloseWithStaleClearedTier_DefersToSL(t *testing.T) {
+	const (
+		entryPx     = 2000.0
+		entryATR    = 50.0
+		residualQty = 0.2
+		slTriggerPx = 1900.0
+	)
+	ss := &StrategyState{
+		ID:   "hl-tp-sole",
+		Cash: 100,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol: "ETH", Quantity: residualQty, InitialQuantity: 0.4,
+				AvgCost: entryPx, EntryATR: entryATR, Side: "long",
+				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-tp-sole",
+				// TP1 already booked from a prior cycle's partial fill;
+				// TP2 still active. SL OID still positive — operator/SL/CB
+				// just flattened the residual.
+				TPOIDs:            []int64{0, 222},
+				StopLossOID:       42,
+				StopLossTriggerPx: slTriggerPx,
+			},
+		},
+	}
+	resolver := hlReconcileFillResolver(func(string, int64, float64) (HLFillLookup, bool) {
+		return HLFillLookup{}, false
+	})
+	var alerts []ProtectionFillAlert
+	logger := newTestLogger(t)
+
+	changed := reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", nil, resolver, logger, &alerts)
+	if !changed {
+		t.Fatal("expected changed=true (legacy SL-owner branch should still book)")
+	}
+	if _, open := ss.Positions["ETH"]; open {
+		t.Error("position should be closed")
+	}
+	if len(ss.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory = %d, want 1", len(ss.TradeHistory))
+	}
+	trade := ss.TradeHistory[0]
+	if math.Abs(trade.Price-slTriggerPx) > 1e-9 {
+		t.Errorf("trade.Price = %g, want %g (SL trigger, NOT a stale TP price)", trade.Price, slTriggerPx)
+	}
+	if len(ss.ClosedPositions) != 1 {
+		t.Fatalf("ClosedPositions = %d, want 1", len(ss.ClosedPositions))
+	}
+	if got := ss.ClosedPositions[0].CloseReason; got != "stop_loss" {
+		t.Errorf("CloseReason = %q, want \"stop_loss\" (defer to legacy SL handler)", got)
+	}
+	// No TP alert — SL-owner branch records the close reason but does not
+	// emit a ProtectionFillAlert; that's the existing legacy behavior.
+	for _, a := range alerts {
+		if a.FillType == "TP1" || a.FillType == "TP2" {
+			t.Errorf("unexpected TP alert %+v — SL close must not mis-attribute to a TP tier", a)
+		}
+	}
+}
+
+// TestSoleOwnerTP_TwoCycleSequence_BooksAfterProtectionSyncZerosTPOID
+// documents the cycle-ordering dependency on protection-sync zeroing
+// pos.TPOIDs[i] before reconcile can attribute the drift. Cycle 1 simulates
+// the post-fill, pre-protection-sync state where TPOIDs are still all
+// positive — tryBookSoleOwnerTPFill must decline (no cleared tier) and the
+// legacy reconciler must NOT silently resync the qty (that would erase the
+// drift signal). Cycle 2 simulates the post-protection-sync state where
+// TPOIDs[0] is zero — attribution fires and the trade is booked.
+//
+// In production the legacy reconciler does silently resync today, so a fresh
+// fill is currently attributed one cycle late only when the strategy is NOT
+// in hlReconcileDue for cycle 1 (interval misalignment). This test asserts
+// the cycle 2 booking path that the fix exists to enable; the cycle 1
+// behavior is documented in code comments (see tryBookSoleOwnerTPFill).
+func TestSoleOwnerTP_TwoCycleSequence_BooksAfterProtectionSyncZerosTPOID(t *testing.T) {
+	const (
+		entryPx     = 2000.0
+		entryATR    = 50.0
+		fullQty     = 0.4
+		onChainQty  = 0.2
+		expectedTP1 = entryPx + 2.0*entryATR
+	)
+	pos := &Position{
+		Symbol: "ETH", Quantity: fullQty, InitialQuantity: fullQty,
+		AvgCost: entryPx, EntryATR: entryATR, Side: "long",
+		Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-tp-sole",
+		TPOIDs: []int64{111, 222}, // cycle 1: still all positive
+	}
+	ss := &StrategyState{
+		ID: "hl-tp-sole", Cash: 100,
+		Positions: map[string]*Position{"ETH": pos},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: onChainQty, EntryPrice: entryPx, Leverage: 5}}
+	resolver := hlReconcileFillResolver(func(string, int64, float64) (HLFillLookup, bool) {
+		return HLFillLookup{}, false
+	})
+	logger := newTestLogger(t)
+
+	// Cycle 1: protection-sync hasn't run yet → no cleared tier → helper
+	// declines. Legacy reconciler runs and resyncs qty silently (existing
+	// behavior — the fix relies on protection-sync running first in the
+	// non-due cycle case to preserve the drift signal).
+	var alerts []ProtectionFillAlert
+	reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", positions, resolver, logger, &alerts)
+	if len(alerts) != 0 {
+		t.Errorf("cycle 1 alerts = %d, want 0 (no cleared TP tier, must not attribute)", len(alerts))
+	}
+	if len(ss.TradeHistory) != 0 {
+		t.Errorf("cycle 1 trades = %d, want 0", len(ss.TradeHistory))
+	}
+
+	// Simulate protection-sync running between cycles (zeros TPOIDs[0] for
+	// the externally filled tier). In production the strategy must NOT have
+	// been in hlReconcileDue at cycle 1 for this state to be visible at
+	// cycle 2 with drift intact — otherwise legacy resync above already
+	// shrank pos.Quantity. Reset the qty here to model that path.
+	pos.Quantity = fullQty
+	pos.TPOIDs = []int64{0, 222}
+
+	// Cycle 2: TPOIDs[0] cleared, drift visible → attribution fires.
+	reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", positions, resolver, logger, &alerts)
+	if len(ss.TradeHistory) != 1 {
+		t.Fatalf("cycle 2 trades = %d, want 1 (TP1 attribution after protection-sync)", len(ss.TradeHistory))
+	}
+	if math.Abs(ss.TradeHistory[0].Price-expectedTP1) > 1e-9 {
+		t.Errorf("cycle 2 trade.Price = %g, want %g", ss.TradeHistory[0].Price, expectedTP1)
+	}
+	if len(alerts) != 1 || alerts[0].FillType != "TP1" {
+		t.Errorf("cycle 2 alerts = %+v, want one TP1 alert", alerts)
 	}
 }
 

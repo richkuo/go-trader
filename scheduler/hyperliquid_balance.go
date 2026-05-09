@@ -289,6 +289,14 @@ func reconcileHyperliquidPositionsForStrategy(
 // case (on-chain qty < virtual qty, same direction) and the full-close case
 // (on-chain flat, final tier cleared). When no TP attribution applies, returns
 // false so the caller falls through to the legacy reconciler.
+//
+// Cycle-ordering dependency: pos.TPOIDs[i] is zeroed by
+// applyHyperliquidProtectionSync when userFills reports the tier filled
+// externally. Protection sync runs in the per-strategy phase, AFTER the
+// pre-phase reconcile that calls this helper. Attribution therefore lands one
+// cycle behind the fill: cycle N protection-sync zeros TPOIDs[i]; cycle N+1
+// reconcile sees the cleared tier + drift and books here. Tests in
+// hyperliquid_sole_owner_tp_test.go pre-seed the post-protection-sync state.
 func tryBookSoleOwnerTPFill(
 	sc StrategyConfig,
 	stratState *StrategyState,
@@ -318,6 +326,22 @@ func tryBookSoleOwnerTPFill(
 
 	var closeQty float64
 	if onChainPos == nil {
+		// Full-close path: only attribute to a TP tier when ALL configured TP
+		// OIDs are zero (i.e. final tier flatten — the "all tiers gone"
+		// branch of hyperliquidClearedTPTier). If any tier is still active, a
+		// later SL fire / operator close / kill-switch on the residual after a
+		// prior partial TP fill (state TPOIDs=[0, 222], Quantity=residual)
+		// would otherwise be mis-attributed to the already-booked tier — wrong
+		// price on the trade record AND wrong TP{n} label on the DM alert.
+		// Defer those cases to the legacy SL-owner branch in
+		// reconcileHyperliquidPositionsWithResolver.
+		tiers := hyperliquidProtectionTiers(sc)
+		tpOIDs := tpOIDsForTierCount(statePos.TPOIDs, len(tiers))
+		for _, oid := range tpOIDs {
+			if oid > 0 {
+				return false
+			}
+		}
 		closeQty = statePos.Quantity
 	} else {
 		onChainAbs := math.Abs(onChainPos.Size)
@@ -326,7 +350,7 @@ func tryBookSoleOwnerTPFill(
 		if !sameDirection {
 			return false
 		}
-		if onChainAbs+1e-6 >= statePos.Quantity {
+		if onChainAbs+1e-9 >= statePos.Quantity {
 			return false
 		}
 		closeQty = statePos.Quantity - onChainAbs
