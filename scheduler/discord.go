@@ -1094,8 +1094,25 @@ func FormatTradeDM(sc StrategyConfig, trade Trade, mode string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("%s **%s - %s**\n", icon, header, strings.ToUpper(mode)))
 	sb.WriteString(fmt.Sprintf("Strategy: %s (%s %s)\n", sc.ID, platformLabel, typeLabel))
-	sb.WriteString(fmt.Sprintf("%s — %s %.3f @ $%s | Value: $%s\n", trade.Symbol, tradeDirectionLabel(trade), trade.Quantity, fmtComma(trade.Price), fmtComma(trade.Value)))
+	sb.WriteString(fmt.Sprintf("%s — %s %.3f @ $%s | Value: $%s", trade.Symbol, tradeDirectionLabel(trade), trade.Quantity, fmtComma(trade.Price), fmtComma(trade.Value)))
+	if oid := strings.TrimSpace(trade.ExchangeOrderID); oid != "" {
+		sb.WriteString(fmt.Sprintf(" | OID: %s", oid))
+	}
+	sb.WriteString("\n")
 
+	if extras := tradeAlertExtras(sc, trade, isClose); len(extras) > 0 {
+		sb.WriteString(strings.Join(extras, " | "))
+	}
+
+	return sb.String()
+}
+
+// tradeAlertExtras builds the extras line for trade-alert DMs (#665).
+// Order: PnL (close only) → Regime → ATR → SL → TP[1..n]. SL and each TP gain
+// an ATR multiplier suffix `(<n>x)` when EntryATR is known. Shared between
+// FormatTradeDM (Discord) and FormatTradeDMPlain (Telegram) so the two
+// channels can never drift on extras formatting.
+func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 	var extras []string
 	if isClose {
 		if pnl, ok := extractPnL(trade.Details); ok {
@@ -1105,25 +1122,33 @@ func FormatTradeDM(sc StrategyConfig, trade Trade, mode string) string {
 	if trade.Regime != "" {
 		extras = append(extras, "Regime: "+trade.Regime)
 	}
+	direction := strings.ToLower(tradeDirectionLabel(trade))
+	var tps []float64
+	var tiers []hlProtectionTier
 	if !isClose && trade.EntryATR > 0 {
-		direction := strings.ToLower(tradeDirectionLabel(trade))
-		if tps := tieredTPATRPrices(sc, direction, trade.Price, trade.EntryATR); len(tps) > 0 {
+		tps = tieredTPATRPrices(sc, direction, trade.Price, trade.EntryATR)
+		if len(tps) > 0 {
+			tiers = hyperliquidProtectionTiers(sc)
 			extras = append(extras, fmt.Sprintf("ATR: $%s", fmtComma2(trade.EntryATR)))
-			for i, tp := range tps {
-				extras = append(extras, fmt.Sprintf("TP%d: $%s", i+1, fmtComma2(tp)))
-			}
 		}
 	}
 	if trade.StopLossTriggerPx > 0 {
-		direction := strings.ToLower(tradeDirectionLabel(trade))
 		slPct := percentFromEntry(direction, trade.Price, trade.StopLossTriggerPx)
-		extras = append(extras, fmt.Sprintf("SL: $%s (%s)", fmtComma2(trade.StopLossTriggerPx), fmtPnlPct(slPct)))
+		if trade.EntryATR > 0 {
+			atrMult := math.Abs(trade.Price-trade.StopLossTriggerPx) / trade.EntryATR
+			extras = append(extras, fmt.Sprintf("SL: $%s (%s) (%.2gx)", fmtComma2(trade.StopLossTriggerPx), fmtPnlPct(slPct), atrMult))
+		} else {
+			extras = append(extras, fmt.Sprintf("SL: $%s (%s)", fmtComma2(trade.StopLossTriggerPx), fmtPnlPct(slPct)))
+		}
 	}
-	if len(extras) > 0 {
-		sb.WriteString(strings.Join(extras, " | "))
+	for i, tp := range tps {
+		if i < len(tiers) {
+			extras = append(extras, fmt.Sprintf("TP%d: $%s (%.2gx)", i+1, fmtComma2(tp), tiers[i].Multiple))
+		} else {
+			extras = append(extras, fmt.Sprintf("TP%d: $%s", i+1, fmtComma2(tp)))
+		}
 	}
-
-	return sb.String()
+	return extras
 }
 
 // tradeSideToDirection converts buy/sell trade sides to LONG/SHORT direction labels.
