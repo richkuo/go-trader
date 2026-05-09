@@ -246,3 +246,54 @@ jobs:
           gh api "repos/$REPO/issues/comments/$COMMENT_ID" \
             --method PATCH \
             --field body="$NEW_BODY"
+
+      - name: Note workflow cancellation/failure on Claude comment
+        if: always() && steps.verify_invocation.outputs.invoked == 'true' && (cancelled() || failure())
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODEL_ID: ${{ steps.resolve_model.outputs.model_id }}
+          EFFORT: ${{ steps.resolve_model.outputs.effort }}
+          CLAUDE_HARNESS: ${{ env.CLAUDE_HARNESS }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          IS_CANCELLED: ${{ cancelled() }}
+        run: |
+          case "$MODEL_ID" in
+            "claude-opus-4-7[1m]")   MODEL_NAME="Claude Opus 4.7 (1M)" ;;
+            "claude-sonnet-4-6[1m]") MODEL_NAME="Claude Sonnet 4.6 (1M)" ;;
+            claude-haiku-4-5)        MODEL_NAME="Claude Haiku 4.5" ;;
+            "")                      MODEL_NAME="(model not resolved)" ;;
+            *)                       MODEL_NAME="$MODEL_ID" ;;
+          esac
+
+          if [ "$IS_CANCELLED" = "true" ]; then
+            STATUS_NOTE="**Workflow cancelled before completion.** See [run log]($RUN_URL)."
+          else
+            STATUS_NOTE="**Workflow failed before completion.** See [run log]($RUN_URL)."
+          fi
+
+          COMMENT=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
+            --jq '[.[] | select(.user.login == "claude[bot]")] | sort_by(.updated_at) | last')
+
+          COMMENT_ID=$(echo "$COMMENT" | jq -r '.id')
+          BODY=$(echo "$COMMENT" | jq -r '.body')
+
+          if [ -z "$COMMENT_ID" ] || [ "$COMMENT_ID" = "null" ]; then
+            echo "No claude[bot] comment found — nothing to update."
+            exit 0
+          fi
+
+          # Strip any stale LLM footer Claude may have written so we don't stack footers.
+          BODY=$(printf '%s' "$BODY" | python3 .github/scripts/strip_llm_footer.py)
+
+          # Drop a previously appended status note (idempotent on retries / repeated failures).
+          BODY=$(printf '%s' "$BODY" | perl -0777 -pe 's/\n*\*\*Workflow (cancelled|failed) before completion\.\*\*[^\n]*\n?//g')
+
+          FOOTER="---"$'\n'"LLM: ${MODEL_NAME} | ${EFFORT:-unknown} | Harness: ${CLAUDE_HARNESS}"
+
+          NEW_BODY="${BODY}"$'\n\n'"${STATUS_NOTE}"$'\n\n'"${FOOTER}"
+
+          gh api "repos/$REPO/issues/comments/$COMMENT_ID" \
+            --method PATCH \
+            --field body="$NEW_BODY"
