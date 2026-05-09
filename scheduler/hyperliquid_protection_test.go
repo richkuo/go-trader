@@ -329,7 +329,7 @@ func TestHyperliquidProtectionTiersCoercesFinalTierToFullCoverage(t *testing.T) 
 		}}},
 	}
 	want := []hlProtectionTier{{Multiple: 1, Fraction: 0.5}, {Multiple: 2, Fraction: 1}}
-	if got := hyperliquidProtectionTiers(sc); !reflect.DeepEqual(got, want) {
+	if got := strategyTPTiers(sc); !reflect.DeepEqual(got, want) {
 		t.Errorf("tiers = %+v, want %+v", got, want)
 	}
 }
@@ -345,7 +345,7 @@ func TestHyperliquidProtectionTiersRejectsNonIncreasingAfterSort(t *testing.T) {
 			},
 		}}},
 	}
-	if got := hyperliquidProtectionTiers(sc); len(got) != 0 {
+	if got := strategyTPTiers(sc); len(got) != 0 {
 		t.Errorf("tiers = %+v, want nil/empty for non-increasing sorted fractions", got)
 	}
 }
@@ -367,7 +367,7 @@ func TestHyperliquidProtectionTiersPreservesDuplicateMultipleOrder(t *testing.T)
 		{Multiple: 1, Fraction: 0.6},
 		{Multiple: 2, Fraction: 1},
 	}
-	if got := hyperliquidProtectionTiers(sc); !reflect.DeepEqual(got, want) {
+	if got := strategyTPTiers(sc); !reflect.DeepEqual(got, want) {
 		t.Errorf("tiers = %+v, want stable duplicate-multiple order %+v", got, want)
 	}
 }
@@ -554,7 +554,7 @@ func TestHyperliquidProtectionTiersRejectsSingleTier(t *testing.T) {
 			},
 		}}},
 	}
-	if got := hyperliquidProtectionTiers(sc); len(got) != 0 {
+	if got := strategyTPTiers(sc); len(got) != 0 {
 		t.Errorf("tiers = %+v, want nil/empty for single-tier config", got)
 	}
 }

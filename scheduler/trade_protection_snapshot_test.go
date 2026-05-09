@@ -205,3 +205,73 @@ func TestInsertTradePreservesNullStopLossATRMult(t *testing.T) {
 		t.Fatalf("ATR row: got (%v, %q), want (1.25, %q)", got, tiers, atrArmed.TPTiersJSON)
 	}
 }
+
+// TestApplyHyperliquidCircuitCloseFill_StampsProtectionSnapshot verifies that
+// the kill-switch on-chain close path copies StopLossATRMult and TPTiersJSON
+// from the position onto the Trade — without this the round-trip analytics
+// promise from #669 breaks for kill-switch closes (PR #671 review).
+func TestApplyHyperliquidCircuitCloseFill_StampsProtectionSnapshot(t *testing.T) {
+	mult := 1.5
+	tiersJSON := `[{"atr_multiple":1,"close_fraction":0.5},{"atr_multiple":2,"close_fraction":1}]`
+	s := &StrategyState{
+		ID:   "hl-snapshot",
+		Cash: 1000,
+		Positions: map[string]*Position{
+			"BTC": {
+				Symbol: "BTC", Quantity: 1.0, AvgCost: 50000, Side: "long",
+				Multiplier: 1, Leverage: 5,
+				StopLossATRMult: &mult,
+				TPTiersJSON:     tiersJSON,
+			},
+		},
+	}
+	applyHyperliquidCircuitCloseFill(s, "BTC", 0.3, 49000, 1.5, 1.0)
+
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory len = %d, want 1", len(s.TradeHistory))
+	}
+	tr := s.TradeHistory[0]
+	if tr.StopLossATRMult == nil || *tr.StopLossATRMult != mult {
+		t.Errorf("Trade.StopLossATRMult = %v, want *%v", tr.StopLossATRMult, mult)
+	}
+	if tr.TPTiersJSON != tiersJSON {
+		t.Errorf("Trade.TPTiersJSON = %q, want %q", tr.TPTiersJSON, tiersJSON)
+	}
+}
+
+// TestForceCloseAllPositions_StampsProtectionSnapshot verifies the same
+// round-trip on the circuit-breaker force-close path (risk.go).
+func TestForceCloseAllPositions_StampsProtectionSnapshot(t *testing.T) {
+	mult := 2.0
+	tiersJSON := `[{"atr_multiple":1,"close_fraction":0.5},{"atr_multiple":2,"close_fraction":1}]`
+	s := &StrategyState{
+		ID:   "perps-snapshot",
+		Cash: 10000,
+		Positions: map[string]*Position{
+			"BTC": {
+				Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "long",
+				Multiplier: 1, Leverage: 5,
+				StopLossATRMult: &mult,
+				TPTiersJSON:     tiersJSON,
+			},
+		},
+		TradeHistory: []Trade{},
+		RiskState:    RiskState{},
+	}
+
+	forceCloseAllPositions(s, map[string]float64{"BTC": 51000}, nil)
+
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory len = %d, want 1", len(s.TradeHistory))
+	}
+	tr := s.TradeHistory[0]
+	if !tr.IsClose {
+		t.Errorf("Trade.IsClose = false, want true")
+	}
+	if tr.StopLossATRMult == nil || *tr.StopLossATRMult != mult {
+		t.Errorf("Trade.StopLossATRMult = %v, want *%v", tr.StopLossATRMult, mult)
+	}
+	if tr.TPTiersJSON != tiersJSON {
+		t.Errorf("Trade.TPTiersJSON = %q, want %q", tr.TPTiersJSON, tiersJSON)
+	}
+}

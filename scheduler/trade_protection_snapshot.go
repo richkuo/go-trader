@@ -27,7 +27,7 @@ func tradeOpenStopLossATRMult(sc StrategyConfig) *float64 {
 // tiered_tp_atr* (#669). Storing the snapshot at fill time means subsequent
 // tier-config edits don't lose the historical record needed for analytics.
 func tradeOpenTPTiersJSON(sc StrategyConfig) string {
-	tiers := hyperliquidProtectionTiers(sc)
+	tiers := strategyTPTiers(sc)
 	if len(tiers) == 0 {
 		return ""
 	}
@@ -41,7 +41,7 @@ func tradeOpenTPTiersJSON(sc StrategyConfig) string {
 	}
 	b, err := json.Marshal(out)
 	if err != nil {
-		// Tier values are floats produced by hyperliquidProtectionTiers; this
+		// Tier values are floats produced by strategyTPTiers; this
 		// path is unreachable in practice but log so a regression is visible.
 		fmt.Printf("[WARN] %s: marshal tp_tiers_json failed: %v\n", sc.ID, err)
 		return ""

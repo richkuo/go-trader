@@ -1126,7 +1126,7 @@ func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 	var tiers []hlProtectionTier
 	var tps []float64
 	if !isClose && trade.EntryATR > 0 {
-		tiers = hyperliquidProtectionTiers(sc)
+		tiers = strategyTPTiers(sc)
 		tps = tieredTPATRPricesFromTiers(tiers, direction, trade.Price, trade.EntryATR)
 		if len(tps) > 0 {
 			extras = append(extras, fmt.Sprintf("ATR: $%s", fmtComma2(trade.EntryATR)))

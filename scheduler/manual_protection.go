@@ -53,7 +53,7 @@ func placeManualProtectionInline(
 	fillQty, fillPrice, entryATR, effectiveSLATRMult float64,
 	stopLossOID int64,
 ) ([]int64, string, error) {
-	tiers := hyperliquidProtectionTiers(sc)
+	tiers := strategyTPTiers(sc)
 	if len(tiers) == 0 {
 		return nil, "", nil
 	}
