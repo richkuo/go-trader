@@ -23,6 +23,8 @@ type Position struct {
 	StopLossTriggerPx   float64   `json:"stop_loss_trigger_px,omitempty"`    // HL perps: trigger price for the resting stop-loss (0 = unknown) (#421)
 	StopLossHighWaterPx float64   `json:"stop_loss_high_water_px,omitempty"` // HL perps trailing SL: best mark seen while position open (high for long, low for short) (#501)
 	TPOIDs              []int64   `json:"tp_oids,omitempty"`                 // HL perps: resting reduce-only TP limit OIDs, one per configured tier (#601/#612)
+	StopLossATRMult     *float64  `json:"stop_loss_atr_mult,omitempty"`      // HL perps: ATR multiplier resolved at fill time when SL was ATR-armed; nil = armed via pct/margin/trailing/none (#669)
+	TPTiersJSON         string    `json:"tp_tiers_json,omitempty"`           // HL perps: JSON snapshot of [{atr_multiple,close_fraction},...] resolved at fill time; "" = strategy doesn't use tiered_tp_atr* (#669)
 }
 
 // ClosedPosition is a historical record of a position after it closed (#288).
@@ -198,6 +200,8 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	trade.Regime = s.Regime
 	trade.EntryATR = pos.EntryATR
 	trade.StopLossTriggerPx = pos.StopLossTriggerPx
+	trade.StopLossATRMult = pos.StopLossATRMult
+	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
 	RecordTradeResult(&s.RiskState, pnl)
 	recordClosedPosition(s, pos, closePx, pnl, reason, now)
@@ -274,6 +278,8 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	trade.Regime = s.Regime
 	trade.EntryATR = pos.EntryATR
 	trade.StopLossTriggerPx = pos.StopLossTriggerPx
+	trade.StopLossATRMult = pos.StopLossATRMult
+	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
 	RecordTradeResult(&s.RiskState, pnl)
 
@@ -390,6 +396,17 @@ type Trade struct {
 	EntryATR          float64 `json:"entry_atr,omitempty"`
 	StopLossTriggerPx float64 `json:"stop_loss_trigger_px,omitempty"`
 	Manual            bool    `json:"manual,omitempty"` // set when position was opened via manual-open CLI (#569)
+
+	// SL arming method + TP tier snapshot at fill time (#669). StopLossATRMult
+	// is non-nil iff SL was ATR-armed (sc.StopLossATRMult>0 OR
+	// sc.TrailingStopATRMult>0); the value is the configured multiplier
+	// resolved at open. nil = armed via pct/margin/trailing-pct or no SL.
+	// Nullness alone gates the SL display suffix correctly. TPTiersJSON is the
+	// full tier snapshot ([{atr_multiple,close_fraction},...]) resolved at
+	// open so historical tier-config changes don't erase the record. Empty =
+	// strategy doesn't use tiered_tp_atr*.
+	StopLossATRMult *float64 `json:"stop_loss_atr_mult,omitempty"`
+	TPTiersJSON     string   `json:"tp_tiers_json,omitempty"`
 
 	// persisted tracks whether this Trade has been written to SQLite — set by
 	// RecordTrade on successful InsertTrade and by LoadState for DB-loaded
@@ -907,6 +924,8 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			trade.Regime = s.Regime
 			trade.EntryATR = pos.EntryATR
 			trade.StopLossTriggerPx = pos.StopLossTriggerPx
+			trade.StopLossATRMult = pos.StopLossATRMult
+			trade.TPTiersJSON = pos.TPTiersJSON
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -1082,6 +1101,8 @@ func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			trade.Regime = s.Regime
 			trade.EntryATR = pos.EntryATR
 			trade.StopLossTriggerPx = pos.StopLossTriggerPx
+			trade.StopLossATRMult = pos.StopLossATRMult
+			trade.TPTiersJSON = pos.TPTiersJSON
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -1261,6 +1282,8 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			trade.Regime = s.Regime
 			trade.EntryATR = pos.EntryATR
 			trade.StopLossTriggerPx = pos.StopLossTriggerPx
+			trade.StopLossATRMult = pos.StopLossATRMult
+			trade.TPTiersJSON = pos.TPTiersJSON
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -1388,6 +1411,8 @@ func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			trade.Regime = s.Regime
 			trade.EntryATR = pos.EntryATR
 			trade.StopLossTriggerPx = pos.StopLossTriggerPx
+			trade.StopLossATRMult = pos.StopLossATRMult
+			trade.TPTiersJSON = pos.TPTiersJSON
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -1492,6 +1517,8 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			trade.Regime = s.Regime
 			trade.EntryATR = pos.EntryATR
 			trade.StopLossTriggerPx = pos.StopLossTriggerPx
+			trade.StopLossATRMult = pos.StopLossATRMult
+			trade.TPTiersJSON = pos.TPTiersJSON
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -1636,6 +1663,8 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			trade.Regime = s.Regime
 			trade.EntryATR = pos.EntryATR
 			trade.StopLossTriggerPx = pos.StopLossTriggerPx
+			trade.StopLossATRMult = pos.StopLossATRMult
+			trade.TPTiersJSON = pos.TPTiersJSON
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
@@ -1725,11 +1754,12 @@ func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 	return tradesExecuted, nil
 }
 
-// stampOpenTradeFromPosition backfills EntryATR and StopLossTriggerPx onto the
-// most recent open Trade for symbol after those values are stamped onto the
-// Position post-RecordTrade. Only updates fields that are currently zero so
-// subsequent calls are idempotent. Updates both the in-memory slice and the
-// SQLite row when db is non-nil.
+// stampOpenTradeFromPosition backfills EntryATR, StopLossTriggerPx,
+// StopLossATRMult, and TPTiersJSON onto the most recent open Trade for symbol
+// after those values are stamped onto the Position post-RecordTrade. Only
+// updates fields that are currently zero / nil / empty so subsequent calls are
+// idempotent. Updates both the in-memory slice and the SQLite row when db is
+// non-nil.
 func stampOpenTradeFromPosition(s *StrategyState, db *StateDB, symbol string, pos *Position) {
 	if pos == nil {
 		return
@@ -1751,8 +1781,17 @@ func stampOpenTradeFromPosition(s *StrategyState, db *StateDB, symbol string, po
 			t.StopLossTriggerPx = pos.StopLossTriggerPx
 			changed = true
 		}
+		if pos.StopLossATRMult != nil && t.StopLossATRMult == nil {
+			v := *pos.StopLossATRMult
+			t.StopLossATRMult = &v
+			changed = true
+		}
+		if pos.TPTiersJSON != "" && t.TPTiersJSON == "" {
+			t.TPTiersJSON = pos.TPTiersJSON
+			changed = true
+		}
 		if changed && db != nil {
-			_ = db.UpdateTradeStampedFields(s.ID, t.Timestamp, t.EntryATR, t.StopLossTriggerPx)
+			_ = db.UpdateTradeStampedFields(s.ID, t.Timestamp, t.EntryATR, t.StopLossTriggerPx, t.StopLossATRMult, t.TPTiersJSON)
 		}
 		return
 	}

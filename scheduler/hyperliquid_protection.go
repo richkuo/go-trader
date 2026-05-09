@@ -367,8 +367,10 @@ func runHyperliquidProtectionSync(
 	// Re-stamp TradeHistory so the trade alert picks up SL/TP prices placed
 	// by the protection sync (#625). Without this, execute-path SL=0 leaves the
 	// trade's StopLossTriggerPx unset even though the sync correctly populated
-	// pos.StopLossTriggerPx — the alert then shows no SL price.
-	stampOpenTradeFromPosition(stratState, db, symbol, pos)
+	// pos.StopLossTriggerPx — the alert then shows no SL price. Also stamp the
+	// SL ATR mult + TP tier snapshot so trades opened pre-arming get the
+	// fill-time config recorded in SQLite (#669).
+	stampOpenTradeWithProtectionSnapshot(stratState, db, sc, symbol, pos)
 	if logger != nil {
 		logger.Info("%s (sl_oid=%d tp_oids=%v)", logTag, pos.StopLossOID, pos.TPOIDs)
 	}

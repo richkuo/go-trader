@@ -1438,7 +1438,7 @@ func main() {
 										}
 									} else if newTrigger > 0 && pos.StopLossTriggerPx == 0 {
 										pos.StopLossTriggerPx = newTrigger
-										stampOpenTradeFromPosition(stratState, stateDB, result.Symbol, pos)
+										stampOpenTradeWithProtectionSnapshot(stratState, stateDB, sc, result.Symbol, pos)
 										logger.Info("Paper fixed ATR SL armed @ $%.4f (%.2f%% from entry $%.4f)",
 											newTrigger, effectiveFixedStopLossATRPct(sc, hlPosSnapshot), pos.AvgCost)
 									}
@@ -1464,7 +1464,7 @@ func main() {
 											} else if slResult.StopLossOID > 0 {
 												pos.StopLossOID = slResult.StopLossOID
 												pos.StopLossTriggerPx = slResult.StopLossTriggerPx
-												stampOpenTradeFromPosition(stratState, stateDB, result.Symbol, pos)
+												stampOpenTradeWithProtectionSnapshot(stratState, stateDB, sc, result.Symbol, pos)
 												logger.Info("Fixed ATR SL armed oid=%d @ $%.4f", slResult.StopLossOID, slResult.StopLossTriggerPx)
 											}
 										}
@@ -2079,7 +2079,7 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 	}
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	if pos, ok := s.Positions[result.Symbol]; ok {
-		stampOpenTradeFromPosition(s, db, result.Symbol, pos)
+		stampOpenTradeWithProtectionSnapshot(s, db, sc, result.Symbol, pos)
 	}
 
 	detail := ""
@@ -2609,7 +2609,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, db *StateDB, 
 	}
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	if pos, ok := s.Positions[result.Symbol]; ok {
-		stampOpenTradeFromPosition(s, db, result.Symbol, pos)
+		stampOpenTradeWithProtectionSnapshot(s, db, sc, result.Symbol, pos)
 	}
 	if trades > 0 && fillOID != "" {
 		logger.Info("Exchange order ID: %s", fillOID)
@@ -2633,7 +2633,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, db *StateDB, 
 				pos.StopLossOID = slOID
 				pos.StopLossTriggerPx = execResult.Execution.Fill.StopLossTriggerPx
 				logger.Info("SL trigger placed oid=%d @ $%.4f", slOID, execResult.Execution.Fill.StopLossTriggerPx)
-				stampOpenTradeFromPosition(s, db, result.Symbol, pos)
+				stampOpenTradeWithProtectionSnapshot(s, db, sc, result.Symbol, pos)
 			}
 		}
 	}
@@ -2846,7 +2846,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 	}
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	if pos, ok := s.Positions[result.Symbol]; ok {
-		stampOpenTradeFromPosition(s, db, result.Symbol, pos)
+		stampOpenTradeWithProtectionSnapshot(s, db, sc, result.Symbol, pos)
 	}
 
 	detail := ""
@@ -3009,7 +3009,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 	}
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	if pos, ok := s.Positions[result.Symbol]; ok {
-		stampOpenTradeFromPosition(s, db, result.Symbol, pos)
+		stampOpenTradeWithProtectionSnapshot(s, db, sc, result.Symbol, pos)
 	}
 
 	detail := ""
@@ -3220,7 +3220,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	}
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	if pos, ok := s.Positions[result.Symbol]; ok {
-		stampOpenTradeFromPosition(s, db, result.Symbol, pos)
+		stampOpenTradeWithProtectionSnapshot(s, db, sc, result.Symbol, pos)
 	}
 
 	detail := ""

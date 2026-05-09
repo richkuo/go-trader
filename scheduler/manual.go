@@ -561,6 +561,10 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			TPOIDs:            a.TPOIDs,
 		}
 		pos.TradePositionID = newTradePositionID(a.StrategyID, a.Symbol, now)
+		// Stamp SL ATR mult + TP tier snapshot at fill time so the analytics
+		// row in `trades` reflects the config that armed the order, not whatever
+		// the operator edits later (#669).
+		stampPositionProtectionSnapshot(pos, sc)
 		ss.Positions[a.Symbol] = pos
 
 		trade := Trade{
@@ -578,6 +582,8 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			ExchangeFee:       a.FillFee,
 			EntryATR:          a.EntryATR,
 			StopLossTriggerPx: a.StopLossTriggerPx,
+			StopLossATRMult:   pos.StopLossATRMult,
+			TPTiersJSON:       pos.TPTiersJSON,
 			Manual:            true,
 		}
 		RecordTrade(ss, trade)
