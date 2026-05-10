@@ -10,6 +10,13 @@
 - Copy `scheduler/config.example.json` → `scheduler/config.json`, fill API keys
 - New server: `install https://github.com/richkuo/go-trader and init`
 
+## Decision Priorities
+- **Pick the best technical solution.** Don't down-scope to avoid test churn, large diffs, or long implementation time. Those are not constraints on design quality.
+- **Tests are not a limiting factor for design.** If the right implementation breaks existing tests, that is acceptable — update or rewrite the tests after the feature is complete. Do not contort a design to keep tests passing.
+- **Code volume is not a constraint.** Don't shrink scope to minimize lines changed. If 2000 lines is the right answer, write 2000 lines.
+- **Time-to-implement is not a constraint.** Don't pick a faster-but-worse approach to "save time." Pick the correct approach.
+- These rules govern *quality of the chosen solution*, not *scope of the task*. They do **not** override the existing anti-over-engineering guidance ("don't add features/abstractions beyond what the task requires"), the branch + PR workflow, the "verify issue claims against code" rule, or destructive-action safety rules.
+
 ## Repo Structure
 - `scheduler/` — Go scheduler (single `package main`). Key files:
   - `executor.go` / `shutdown.go` — Python subprocess runner; `pythonSemaphore=4`, `scriptTimeout=30s`, SIGKILLs on timeout. Two SIGTERM-aware wrappers: `runPythonReadOnly` (cancelled immediately) vs `runPythonSideEffect` (registers on `sideEffectWG`; drain waits for in-flight on-chain mutations). New side-effecting wrapper → use `runPythonSideEffect`, never `runPython`. `shutdown.go` two-phase drain: signal goroutine `beginDrain` (atomic flag + cancel read-only ctx); main defers `runDrain` (waits `shutdownDrainCap=15s` then SIGKILL); state-save/notifier-flush/DB-close runs after via deferred LIFO. CLI/test paths skip `initShutdownContexts` → `context.Background()` defaults.
