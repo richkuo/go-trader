@@ -263,7 +263,7 @@ For hand-placed positions (or TradingView alerts) tracked by the scheduler for P
 ./go-trader manual-close hl-manual-btc [--qty 0.025]
 ```
 
-Sizing flags are mutually exclusive (`--size` / `--notional` / `--margin`); when all three are omitted (and not `--record-only`), `--margin 50` is auto-applied. `--side` defaults to `long`. Omitting `--atr` auto-fetches ATR(14) from Hyperliquid OHLCV for the strategy's symbol+timeframe; a leverage-aware fallback (`0.1 * fill_price / leverage`) is used only if the fetch fails. SL + N-tier TPs are placed inline so the position is never naked; on queue-insert failure the scheduler auto-flattens and cancels the protective orders. `type=manual` strategies with no stop fields default to `stop_loss_atr_mult = 1.5×`.
+Sizing flags are mutually exclusive (`--size` / `--notional` / `--margin`); when all three are omitted (and not `--record-only`), `--margin 50` is auto-applied. `--side` defaults to `long`. Omitting `--atr` auto-fetches ATR(14) from Hyperliquid OHLCV for the strategy's symbol+timeframe; a leverage-aware fallback (`0.1 * fill_price / leverage`) is used only if the fetch fails. SL + N-tier TPs are placed inline so the position is never naked; on queue-insert failure the scheduler auto-flattens and cancels the protective orders. `type=manual` strategies with no stop fields default to `stop_loss_atr_mult = 1.5×`. All four defaults (margin, SL multiplier, side, TP tiers) are overridable via an optional top-level `manual_defaults` config block (hot-reloadable via SIGHUP).
 
 ---
 
