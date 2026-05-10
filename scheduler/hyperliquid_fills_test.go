@@ -205,8 +205,9 @@ func TestReconcileHyperliquidPositions_ExternalCloseUsesFillFee(t *testing.T) {
 	origLookup := lookupHyperliquidReconcileFillFee
 	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
 	lookupHyperliquidReconcileFillFee = func(addr, coin string, oid int64, qty float64) (HLFillLookup, bool) {
+		// #685: include FilledQty so the SL-confirmed gate accepts the fill.
 		if oid == 4242 && coin == "BTC" {
-			return HLFillLookup{Fee: 1.23, ClosedPnL: 0, Count: 1, OID: oid}, true
+			return HLFillLookup{Fee: 1.23, ClosedPnL: 0, FilledQty: 0.1, Px: 58000, Count: 1, OID: oid}, true
 		}
 		return HLFillLookup{}, false
 	}

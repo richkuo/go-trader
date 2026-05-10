@@ -544,7 +544,13 @@ func TestReconcileHyperliquidPositions_RestingStopLossFillBooksPnL(t *testing.T)
 	logger := silentStrategyLogger("hl-test-eth")
 	defer logger.Close()
 
-	changed := reconcileHyperliquidPositions(state, "ETH", nil, "", logger)
+	// #685: SL-confirmed resolver. Without a userFills hit on the SL OID, the
+	// gated fallback now routes to hl_sync_external; production paths always
+	// supply a resolver, so tests do the same.
+	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
+		return HLFillLookup{Fee: 0.05, FilledQty: 0.1, Px: 3104, Count: 1, OID: oid}, true
+	})
+	changed := reconcileHyperliquidPositionsWithResolver(state, "ETH", nil, resolver, logger)
 	if !changed {
 		t.Fatalf("expected reconcile to report a state change")
 	}
@@ -599,7 +605,11 @@ func TestReconcileHyperliquidPositions_RestingStopLossFillClosesShortWithBuy(t *
 	logger := silentStrategyLogger("hl-test-eth")
 	defer logger.Close()
 
-	changed := reconcileHyperliquidPositions(state, "ETH", nil, "", logger)
+	// #685: SL-confirmed resolver — see RestingStopLossFillBooksPnL.
+	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
+		return HLFillLookup{Fee: 0.05, FilledQty: 0.1, Px: 3296, Count: 1, OID: oid}, true
+	})
+	changed := reconcileHyperliquidPositionsWithResolver(state, "ETH", nil, resolver, logger)
 	if !changed {
 		t.Fatalf("expected reconcile to report a state change")
 	}

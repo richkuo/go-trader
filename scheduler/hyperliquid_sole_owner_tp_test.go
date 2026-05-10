@@ -457,7 +457,13 @@ func TestSoleOwnerTP_FullCloseWithStaleClearedTier_DefersToSL(t *testing.T) {
 			},
 		},
 	}
-	resolver := hlReconcileFillResolver(func(string, int64, float64) (HLFillLookup, bool) {
+	// #685: SL OID lookup must confirm the SL actually filled for the legacy
+	// SL-owner branch to fire; otherwise the new gate routes to hl_sync_external.
+	// Model an SL fill at trigger px so the original "defer to SL" intent holds.
+	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
+		if oid == 42 {
+			return HLFillLookup{Fee: 0.05, FilledQty: residualQty, Px: slTriggerPx, Count: 1, OID: 42}, true
+		}
 		return HLFillLookup{}, false
 	})
 	var alerts []ProtectionFillAlert
@@ -735,9 +741,13 @@ func TestSoleOwnerTP_CycleOrderingRecovery_NotAppliedToFullClose(t *testing.T) {
 			},
 		},
 	}
-	resolver := hlReconcileFillResolver(func(string, int64, float64) (HLFillLookup, bool) {
-		// Stale fill record matching tier 1 OID is irrelevant — full close
-		// path must defer regardless.
+	// #685: provide an SL fill so the legacy SL-owner branch books at trigger
+	// price; a stale TP-tier fill record is still returned for other OIDs to
+	// verify the recovery path doesn't fire on a full close.
+	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
+		if oid == 42 {
+			return HLFillLookup{Fee: 0.05, FilledQty: residualQty, Px: slTriggerPx, Count: 1, OID: 42}, true
+		}
 		return HLFillLookup{Fee: 0.04, FilledQty: residualQty, Px: 2150, OID: 222, Count: 1}, true
 	})
 	var alerts []ProtectionFillAlert

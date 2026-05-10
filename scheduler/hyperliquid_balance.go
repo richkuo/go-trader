@@ -528,15 +528,25 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 			lookup, useFillFee := resolveFee(sym, statePos.StopLossOID, statePos.Quantity)
 			oidStr := strconv.FormatInt(statePos.StopLossOID, 10)
 			logHyperliquidReconcileFillLookup(logger, sym, statePos.StopLossOID, statePos.Quantity, lookup, useFillFee)
-			// #621: When userFills returned a real fill qty smaller than the virtual
-			// position (e.g. SL was placed at the on-chain size after a manual TP
-			// reduced the position), use the actual fill qty so PnL/cash are correct.
-			if useFillFee && lookup.FilledQty > 1e-9 && lookup.FilledQty < statePos.Quantity-1e-9 {
-				logger.Info("hl-sync: %s SL close qty adjusted %.6f → %.6f (actual fill from userFills)", sym, statePos.Quantity, lookup.FilledQty)
-				statePos.Quantity = lookup.FilledQty
-			}
-			if recordPerpsStopLossCloseWithFillFee(stratState, sym, statePos.StopLossTriggerPx, lookup.Fee, useFillFee, oidStr, "stop_loss", logger) {
-				return true
+			// #685: Only book as SL when userFills confirms the SL OID actually
+			// filled. Without this gate, a TP-fired close whose TPOIDs have all
+			// been zeroed by a prior applyHyperliquidProtectionSync cycle (so
+			// hlAttemptCloseFromTPFills above returns false) lands here and gets
+			// mis-attributed to the cancelled SL at its trigger price. Match must
+			// be by exact OID; the coin+size fallback can spuriously hit a TP
+			// fill of the same size.
+			slConfirmed := useFillFee && lookup.OID == statePos.StopLossOID && lookup.FilledQty > 1e-9
+			if slConfirmed {
+				// #621: When userFills returned a real fill qty smaller than the virtual
+				// position (e.g. SL was placed at the on-chain size after a manual TP
+				// reduced the position), use the actual fill qty so PnL/cash are correct.
+				if lookup.FilledQty < statePos.Quantity-1e-9 {
+					logger.Info("hl-sync: %s SL close qty adjusted %.6f → %.6f (actual fill from userFills)", sym, statePos.Quantity, lookup.FilledQty)
+					statePos.Quantity = lookup.FilledQty
+				}
+				if recordPerpsStopLossCloseWithFillFee(stratState, sym, statePos.StopLossTriggerPx, lookup.Fee, useFillFee, oidStr, "stop_loss", logger) {
+					return true
+				}
 			}
 		}
 		// Close price is unknown — the fill happened off-scheduler between

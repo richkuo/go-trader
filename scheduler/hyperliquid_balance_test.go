@@ -3178,8 +3178,9 @@ func TestReconcilePositionSLClose_UsesFilledQtyFromLookup(t *testing.T) {
 		},
 	}
 	// Resolver returns filledQty < virtualQty (SL was capped at on-chain size).
-	resolver := hlReconcileFillResolver(func(_ string, _ int64, _ float64) (HLFillLookup, bool) {
-		return HLFillLookup{Fee: 0.08, FilledQty: filledQty, Count: 1}, true
+	// OID echo matches StopLossOID so the #685 SL-confirmed gate accepts it.
+	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
+		return HLFillLookup{Fee: 0.08, FilledQty: filledQty, Count: 1, OID: oid}, true
 	})
 	logger := newTestLogger(t)
 
@@ -3208,9 +3209,11 @@ func TestReconcilePositionSLClose_UsesFilledQtyFromLookup(t *testing.T) {
 	}
 }
 
-// TestReconcilePositionSLClose_FallsBackToVirtualQtyOnMiss verifies that when
-// FilledQty is 0 (lookup miss), the virtual quantity is used unchanged.
-func TestReconcilePositionSLClose_FallsBackToVirtualQtyOnMiss(t *testing.T) {
+// TestReconcilePositionSLClose_NoFillFallsThroughToExternal verifies the #685
+// gate: when the resolver responds but reports no SL fill (FilledQty=0), the
+// reconciler does NOT book the close at the SL trigger price — the SL was
+// cancelled, not filled. Falls through to hl_sync_external at zero PnL.
+func TestReconcilePositionSLClose_NoFillFallsThroughToExternal(t *testing.T) {
 	const virtualQty = 0.422
 	ss := &StrategyState{
 		ID:   "hl-eth",
@@ -3223,19 +3226,28 @@ func TestReconcilePositionSLClose_FallsBackToVirtualQtyOnMiss(t *testing.T) {
 			},
 		},
 	}
-	// Lookup succeeds but FilledQty is 0 (should fall back to pos.Quantity).
+	// Lookup succeeds (useFillFee=true) but FilledQty=0 — userFills shows the
+	// SL OID never filled. Pre-#685 this booked as SL at trigger px; post-fix
+	// it falls through to hl_sync_external.
 	resolver := hlReconcileFillResolver(func(_ string, _ int64, _ float64) (HLFillLookup, bool) {
 		return HLFillLookup{Fee: 0.15, FilledQty: 0, Count: 1}, true
 	})
 	logger := newTestLogger(t)
+	startCash := ss.Cash
 	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger)
 
 	if len(ss.ClosedPositions) != 1 {
 		t.Fatalf("ClosedPositions = %d, want 1", len(ss.ClosedPositions))
 	}
 	cp := ss.ClosedPositions[0]
-	if cp.Quantity < virtualQty-1e-9 || cp.Quantity > virtualQty+1e-9 {
-		t.Errorf("ClosedPosition.Quantity = %g, want %g (fallback to virtual qty when FilledQty=0)", cp.Quantity, virtualQty)
+	if cp.CloseReason != "hl_sync_external" {
+		t.Errorf("CloseReason = %q, want hl_sync_external (SL not confirmed filled)", cp.CloseReason)
+	}
+	if cp.ClosePrice != 0 {
+		t.Errorf("ClosePrice = %g, want 0 (off-scheduler close, price unknown)", cp.ClosePrice)
+	}
+	if ss.Cash != startCash {
+		t.Errorf("cash = %g, want unchanged (%g) on zero-PnL fallback", ss.Cash, startCash)
 	}
 }
 
@@ -3263,7 +3275,19 @@ func TestReconcileManualPositionSLFired(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil, "", nil, false)
+	// #685: stub the HL userFills lookup to confirm the SL OID actually filled.
+	// Without confirmation, the new gate routes to hl_sync_external; production
+	// supplies an account address + real indexer, so tests do the same.
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, _ string, oid int64, _ float64) (HLFillLookup, bool) {
+		if oid == 77 {
+			return HLFillLookup{Fee: 0.05, FilledQty: 0.5, Px: 1800, Count: 1, OID: 77}, true
+		}
+		return HLFillLookup{}, false
+	}
+
+	reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil, "0xtest", nil, false)
 
 	ss := state.Strategies["manual-eth"]
 	if _, ok := ss.Positions["ETH"]; ok {
@@ -3469,5 +3493,56 @@ func TestReconcilePosition_NoFillsFallsBackToZeroPnL(t *testing.T) {
 	}
 	if ss.Cash != startCash {
 		t.Errorf("cash = %g, want unchanged (%g) on zero-PnL fallback", ss.Cash, startCash)
+	}
+}
+
+// --- #685: TP-fired close with all TPOIDs zeroed must not mis-book as SL ---
+
+// TestReconcilePosition_AllTPOIDsZeroedSLNotFilled is the regression for #685:
+// when applyHyperliquidProtectionSync zeroes every pos.TPOIDs[i] across
+// successive cycles, hlAttemptCloseFromTPFills returns false (nothing left to
+// look up). Pre-fix, the legacy SL fallback then booked the close at the
+// (stale) SL trigger price even though userFills shows the SL never filled —
+// producing a fictitious loss on what was actually a TP-fired win. The new
+// SL-confirmed gate falls through to hl_sync_external when the SL OID has no
+// real fill.
+func TestReconcilePosition_AllTPOIDsZeroedSLNotFilled(t *testing.T) {
+	const slTriggerPx = 1800.0
+	ss := &StrategyState{
+		ID: "hl-eth", Cash: 100,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol: "ETH", Quantity: 0.215, AvgCost: 2329.8, Side: "long",
+				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-eth",
+				StopLossOID: 999, StopLossTriggerPx: slTriggerPx,
+				// Both tiers zeroed by prior protection-sync cycles.
+				TPOIDs: []int64{0, 0},
+			},
+		},
+	}
+	// Resolver: SL OID lookup returns no fill (it was auto-cancelled when the
+	// final TP flattened the position). TP OIDs are 0 so no lookup runs.
+	resolver := hlReconcileFillResolver(func(_ string, _ int64, _ float64) (HLFillLookup, bool) {
+		return HLFillLookup{}, false
+	})
+	logger := newTestLogger(t)
+	startCash := ss.Cash
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger)
+
+	if _, open := ss.Positions["ETH"]; open {
+		t.Fatal("ETH position should be removed after reconcile")
+	}
+	if len(ss.ClosedPositions) != 1 {
+		t.Fatalf("ClosedPositions = %d, want 1", len(ss.ClosedPositions))
+	}
+	cp := ss.ClosedPositions[0]
+	if cp.CloseReason != "hl_sync_external" {
+		t.Errorf("CloseReason = %q, want hl_sync_external (SL not confirmed filled)", cp.CloseReason)
+	}
+	if cp.ClosePrice == slTriggerPx {
+		t.Errorf("ClosePrice = %g matches stale SL trigger — #685 regression", cp.ClosePrice)
+	}
+	if ss.Cash != startCash {
+		t.Errorf("cash = %g, want unchanged (%g) — fictitious SL PnL must not credit/debit", ss.Cash, startCash)
 	}
 }
