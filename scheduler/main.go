@@ -1501,14 +1501,16 @@ func main() {
 							if !liveExecFailed {
 								mu.Lock()
 								var openTrade *Trade
-								trades, detail, openTrade = executeHyperliquidResultDeferredOpen(sc, stratState, stateDB, result, execResult, signalStr, price, logger)
+								trades, detail, openTrade = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, logger)
 								mu.Unlock()
 								if execResult != nil && trades > 0 {
 									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade")
 									mu.Lock()
-									if pos, ok := stratState.Positions[result.Symbol]; ok {
-										recordPositionOpen(stratState, sc, openTrade, pos)
+									var pos *Position
+									if p, ok := stratState.Positions[result.Symbol]; ok {
+										pos = p
 									}
+									recordPositionOpen(stratState, sc, openTrade, pos)
 									mu.Unlock()
 								}
 							}
@@ -2579,12 +2581,14 @@ func isHLOpenOrderCapRejection(errStr string) bool {
 	return strings.Contains(lower, "trigger order") || strings.Contains(lower, "open order") || strings.Contains(lower, "open orders")
 }
 
-func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
-	trades, detail, openTrade := executeHyperliquidResultDeferredOpen(sc, s, db, result, execResult, signalStr, price, logger)
+func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
+	trades, detail, openTrade := executeHyperliquidResultDeferredOpen(sc, s, result, execResult, signalStr, price, logger)
 	if openTrade != nil {
-		if pos, ok := s.Positions[result.Symbol]; ok {
-			recordPositionOpen(s, sc, openTrade, pos)
+		var pos *Position
+		if p, ok := s.Positions[result.Symbol]; ok {
+			pos = p
 		}
+		recordPositionOpen(s, sc, openTrade, pos)
 	}
 	return trades, detail
 }
@@ -2593,7 +2597,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, db *StateDB, 
 // Must be called under Lock. execResult is non-nil for successful live orders;
 // nil for paper mode. Live open trades are returned so the caller can run
 // same-cycle protection sync before the single INSERT.
-func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, db *StateDB, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string, *Trade) {
+func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string, *Trade) {
 	fillPrice := price
 	var fillQty float64
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
@@ -2668,8 +2672,13 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, d
 	// the realized loss is booked correctly.
 	if trades > 0 && execResult != nil && execResult.StopLossFilledImmediately &&
 		execResult.Execution != nil && execResult.Execution.Fill != nil {
-		if pos, ok := s.Positions[result.Symbol]; ok {
-			recordPositionOpen(s, sc, openTrade, pos)
+		var pos *Position
+		if p, ok := s.Positions[result.Symbol]; ok {
+			pos = p
+		}
+		// The immediate-close leg records next; nil openTrade prevents the
+		// wrapper/caller from inserting the open a second time.
+		if recordPositionOpen(s, sc, openTrade, pos) {
 			openTrade = nil
 		}
 		triggerPx := execResult.Execution.Fill.StopLossTriggerPx
@@ -2687,12 +2696,16 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, d
 		detail = fmt.Sprintf("[%s] %s%s %s @ $%.2f", sc.ID, prefix, signalStr, result.Symbol, fillPrice)
 	}
 	if execResult == nil {
-		if pos, ok := s.Positions[result.Symbol]; ok {
-			recordPositionOpen(s, sc, openTrade, pos)
+		var pos *Position
+		if p, ok := s.Positions[result.Symbol]; ok {
+			pos = p
+		}
+		// Paper mode has no post-unlock protection sync; record now and nil the
+		// deferred trade so the legacy wrapper cannot double-insert it.
+		if recordPositionOpen(s, sc, openTrade, pos) {
 			openTrade = nil
 		}
 	}
-	_ = db
 	return trades, detail, openTrade
 }
 

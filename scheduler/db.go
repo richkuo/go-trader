@@ -162,10 +162,10 @@ CREATE TABLE IF NOT EXISTS trades (
     exchange_fee REAL NOT NULL DEFAULT 0,
     is_close INTEGER NOT NULL DEFAULT 0,
     realized_pnl REAL NOT NULL DEFAULT 0,
-    stop_loss_oid INTEGER NOT NULL DEFAULT 0,
-    tp_oids_json TEXT NOT NULL DEFAULT '',
     stop_loss_atr_mult REAL,
-    tp_tiers_json TEXT NOT NULL DEFAULT ''
+    tp_tiers_json TEXT NOT NULL DEFAULT '',
+    stop_loss_oid INTEGER NOT NULL DEFAULT 0,
+    tp_oids_json TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy_id);
@@ -311,9 +311,6 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE positions ADD COLUMN tp_oids_json TEXT NOT NULL DEFAULT ''",
 		// Inline TP OIDs for manual-open actions so the scheduler drain sets pos.TPOIDs (#632).
 		"ALTER TABLE pending_manual_actions ADD COLUMN tp_oids_json TEXT NOT NULL DEFAULT ''",
-		// Immutable trade-row snapshot of protection OIDs known at open time (#674).
-		"ALTER TABLE trades ADD COLUMN stop_loss_oid INTEGER NOT NULL DEFAULT 0",
-		"ALTER TABLE trades ADD COLUMN tp_oids_json TEXT NOT NULL DEFAULT ''",
 		// SL arming method + TP tier snapshot at fill time (#669). stop_loss_atr_mult
 		// stays nullable: NULL = legacy/unknown or non-ATR arming (pct/margin/trailing-pct);
 		// non-NULL = ATR-armed at the recorded multiplier. tp_tiers_json carries the
@@ -324,6 +321,9 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE trades ADD COLUMN tp_tiers_json TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE positions ADD COLUMN stop_loss_atr_mult REAL",
 		"ALTER TABLE positions ADD COLUMN tp_tiers_json TEXT NOT NULL DEFAULT ''",
+		// Immutable trade-row snapshot of protection OIDs known at open time (#674).
+		"ALTER TABLE trades ADD COLUMN stop_loss_oid INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE trades ADD COLUMN tp_oids_json TEXT NOT NULL DEFAULT ''",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {

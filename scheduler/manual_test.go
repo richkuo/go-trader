@@ -68,27 +68,33 @@ func TestApplyManualActionOpen(t *testing.T) {
 			},
 		},
 	}
+	slMult := 1.5
 	scByID := map[string]StrategyConfig{
 		"hl-manual-eth-live": {
-			ID:       "hl-manual-eth-live",
-			Type:     "manual",
-			Platform: "hyperliquid",
-			Symbol:   "ETH",
-			Leverage: 10,
+			ID:              "hl-manual-eth-live",
+			Type:            "manual",
+			Platform:        "hyperliquid",
+			Symbol:          "ETH",
+			Leverage:        10,
+			StopLossATRMult: &slMult,
 		},
 	}
+	tpOIDs := []int64{2001, 2002}
 	now := time.Now().UTC()
 	a := PendingManualAction{
-		ID:         1,
-		StrategyID: "hl-manual-eth-live",
-		Action:     "open",
-		Symbol:     "ETH",
-		Side:       "long",
-		Quantity:   0.5,
-		FillPrice:  2000,
-		FillFee:    0.7,
-		EntryATR:   50,
-		CreatedAt:  now,
+		ID:                1,
+		StrategyID:        "hl-manual-eth-live",
+		Action:            "open",
+		Symbol:            "ETH",
+		Side:              "long",
+		Quantity:          0.5,
+		FillPrice:         2000,
+		FillFee:           0.7,
+		EntryATR:          50,
+		StopLossOID:       1001,
+		StopLossTriggerPx: 1900,
+		TPOIDs:            tpOIDs,
+		CreatedAt:         now,
 	}
 
 	var recorded []Trade
@@ -139,6 +145,18 @@ func TestApplyManualActionOpen(t *testing.T) {
 	}
 	if tr.EntryATR != 50 {
 		t.Errorf("trade.EntryATR = %g, want 50", tr.EntryATR)
+	}
+	if tr.StopLossOID != 1001 {
+		t.Errorf("trade.StopLossOID = %d, want 1001", tr.StopLossOID)
+	}
+	if tr.StopLossTriggerPx != 1900 {
+		t.Errorf("trade.StopLossTriggerPx = %g, want 1900", tr.StopLossTriggerPx)
+	}
+	if len(tr.TPOIDs) != len(tpOIDs) || tr.TPOIDs[0] != tpOIDs[0] || tr.TPOIDs[1] != tpOIDs[1] {
+		t.Errorf("trade.TPOIDs = %v, want %v", tr.TPOIDs, tpOIDs)
+	}
+	if tr.StopLossATRMult == nil || *tr.StopLossATRMult != slMult {
+		t.Errorf("trade.StopLossATRMult = %v, want %.1f", tr.StopLossATRMult, slMult)
 	}
 }
 

@@ -82,13 +82,14 @@ func copyPositionOpenSnapshotToTrade(trade *Trade, pos *Position) {
 	trade.TPTiersJSON = pos.TPTiersJSON
 }
 
-func recordPositionOpen(s *StrategyState, sc StrategyConfig, trade *Trade, pos *Position) {
+func recordPositionOpen(s *StrategyState, sc StrategyConfig, trade *Trade, pos *Position) bool {
 	if s == nil || trade == nil {
-		return
+		return false
 	}
 	stampPositionProtectionSnapshot(pos, sc)
 	copyPositionOpenSnapshotToTrade(trade, pos)
 	RecordTrade(s, *trade)
+	return true
 }
 
 // stampOpenTradeWithProtectionSnapshot is the trade-open helper that combines

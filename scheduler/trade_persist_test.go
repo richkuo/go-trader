@@ -300,6 +300,104 @@ func TestDeferredOpenRecordsProtectionOIDSnapshotOnce(t *testing.T) {
 	}
 }
 
+func TestDeferredOpenWrappersDoNotInsertBeforeRecordPositionOpen(t *testing.T) {
+	db := openTestDB(t)
+	prev := tradeRecorder
+	tradeRecorder = db.InsertTrade
+	t.Cleanup(func() { tradeRecorder = prev })
+	logger := newTestLogger(t)
+
+	t.Run("spot", func(t *testing.T) {
+		s := &StrategyState{
+			ID:              "spot1",
+			Platform:        "binanceus",
+			Type:            "spot",
+			Cash:            1000,
+			InitialCapital:  1000,
+			Positions:       map[string]*Position{},
+			OptionPositions: map[string]*OptionPosition{},
+			TradeHistory:    []Trade{},
+		}
+		exec, err := ExecuteSpotSignalWithFillFeeDeferredOpen(s, 1, "BTC", 50000, 0.01, 0.25, "spot-oid", 0, logger)
+		if err != nil {
+			t.Fatalf("ExecuteSpotSignalWithFillFeeDeferredOpen: %v", err)
+		}
+		if exec.TradesExecuted != 1 || exec.OpenTrade == nil {
+			t.Fatalf("exec = %+v, want one deferred open trade", exec)
+		}
+		assertTradeCount(t, db, "spot1", 0)
+		recordPositionOpen(s, StrategyConfig{ID: "spot1", Type: "spot", Platform: "binanceus"}, exec.OpenTrade, s.Positions["BTC"])
+		assertTradeCount(t, db, "spot1", 1)
+	})
+
+	t.Run("futures", func(t *testing.T) {
+		s := &StrategyState{
+			ID:              "ts-es",
+			Platform:        "topstep",
+			Type:            "futures",
+			Cash:            10000,
+			InitialCapital:  10000,
+			Positions:       map[string]*Position{},
+			OptionPositions: map[string]*OptionPosition{},
+			TradeHistory:    []Trade{},
+		}
+		spec := ContractSpec{Multiplier: 50, Margin: 500}
+		exec, err := ExecuteFuturesSignalWithFillFeeDeferredOpen(s, 1, "ES", 5000, spec, 2.5, 5, 1, 1.25, "fut-oid", 0, logger)
+		if err != nil {
+			t.Fatalf("ExecuteFuturesSignalWithFillFeeDeferredOpen: %v", err)
+		}
+		if exec.TradesExecuted != 1 || exec.OpenTrade == nil {
+			t.Fatalf("exec = %+v, want one deferred open trade", exec)
+		}
+		assertTradeCount(t, db, "ts-es", 0)
+		recordPositionOpen(s, StrategyConfig{ID: "ts-es", Type: "futures", Platform: "topstep"}, exec.OpenTrade, s.Positions["ES"])
+		assertTradeCount(t, db, "ts-es", 1)
+	})
+}
+
+func TestRecordPositionOpenFallsBackWhenPositionMissing(t *testing.T) {
+	db := openTestDB(t)
+	prev := tradeRecorder
+	tradeRecorder = db.InsertTrade
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	s := &StrategyState{
+		ID:              "hl-live",
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		Cash:            1000,
+		InitialCapital:  1000,
+		Positions:       map[string]*Position{},
+		OptionPositions: map[string]*OptionPosition{},
+		TradeHistory:    []Trade{},
+	}
+	logger := newTestLogger(t)
+	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, 1, "ETH", 2000, 1, 1, 0, 0.5, "12345", 0.42, DirectionLong, 0, logger)
+	if err != nil {
+		t.Fatalf("ExecutePerpsSignalWithLeverageDeferredOpen: %v", err)
+	}
+	delete(s.Positions, "ETH")
+
+	if !recordPositionOpen(s, StrategyConfig{ID: "hl-live", Platform: "hyperliquid", Type: "perps"}, exec.OpenTrade, nil) {
+		t.Fatal("recordPositionOpen returned false, want fallback insert")
+	}
+	assertTradeCount(t, db, "hl-live", 1)
+	if len(s.TradeHistory) != 1 || s.TradeHistory[0].ExchangeOrderID != "12345" {
+		t.Fatalf("fallback trade = %+v, want bare deferred trade recorded", s.TradeHistory)
+	}
+}
+
+func assertTradeCount(t *testing.T, db *StateDB, strategyID string, want int) {
+	t.Helper()
+	var count int
+	if err := db.db.QueryRow("SELECT COUNT(*) FROM trades WHERE strategy_id = ?", strategyID).Scan(&count); err != nil {
+		t.Fatalf("count trades for %s: %v", strategyID, err)
+	}
+	if count != want {
+		t.Fatalf("trade rows for %s = %d, want %d", strategyID, count, want)
+	}
+}
+
 // TestRecordTrade_OutOfOrderFailureRecoveredBySaveState verifies the dedup
 // fix for the #289 carry-over: when an earlier-timestamped RecordTrade fails
 // eager-insert but a later-timestamped one succeeds, the pre-fix MAX(timestamp)
