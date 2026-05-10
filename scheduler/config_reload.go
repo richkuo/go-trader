@@ -35,6 +35,16 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("default_stop_loss_atr_mult: %s -> %s (applies to strategies opened after restart; existing StopLossATRMult on currently-loaded strategies is unchanged)", formatFloatPtr(cfg.DefaultStopLossATRMult), formatFloatPtr(next.DefaultStopLossATRMult))
 		cfg.DefaultStopLossATRMult = next.DefaultStopLossATRMult
 	}
+	// #696: manual_defaults flows through hot-reload so SIGHUP edits to
+	// margin_usd / side propagate to subsequent manual-open invocations and
+	// stop_loss_atr_mult / tp_tiers shape new type=manual strategy opens. The
+	// CLI loads fresh each invocation so it would already pick up changes from
+	// disk; the in-process cfg keeps parity for any code that reads via
+	// cfg.ManualDefaults / cfg.resolveManual* helpers.
+	if !reflect.DeepEqual(cfg.ManualDefaults, next.ManualDefaults) {
+		addChange("manual_defaults: %s -> %s", formatManualDefaults(cfg.ManualDefaults), formatManualDefaults(next.ManualDefaults))
+		cfg.ManualDefaults = cloneManualDefaults(next.ManualDefaults)
+	}
 
 	nextByID := strategyConfigByID(next.Strategies)
 	for i := range cfg.Strategies {
@@ -478,6 +488,48 @@ func clonePortfolioRiskConfig(pr *PortfolioRiskConfig) *PortfolioRiskConfig {
 	}
 	cp := *pr
 	return &cp
+}
+
+func cloneManualDefaults(md *ManualDefaultsConfig) *ManualDefaultsConfig {
+	if md == nil {
+		return nil
+	}
+	cp := *md
+	if md.MarginUSD != nil {
+		v := *md.MarginUSD
+		cp.MarginUSD = &v
+	}
+	if md.StopLossATRMult != nil {
+		v := *md.StopLossATRMult
+		cp.StopLossATRMult = &v
+	}
+	if len(md.TPTiers) > 0 {
+		cp.TPTiers = append([]ManualTPTier(nil), md.TPTiers...)
+	}
+	return &cp
+}
+
+func formatManualDefaults(md *ManualDefaultsConfig) string {
+	if md == nil {
+		return "(unset)"
+	}
+	parts := []string{}
+	if md.MarginUSD != nil {
+		parts = append(parts, fmt.Sprintf("margin_usd=%g", *md.MarginUSD))
+	}
+	if md.StopLossATRMult != nil {
+		parts = append(parts, fmt.Sprintf("stop_loss_atr_mult=%g", *md.StopLossATRMult))
+	}
+	if md.Side != "" {
+		parts = append(parts, fmt.Sprintf("side=%q", md.Side))
+	}
+	if len(md.TPTiers) > 0 {
+		parts = append(parts, fmt.Sprintf("tp_tiers=%d", len(md.TPTiers)))
+	}
+	if len(parts) == 0 {
+		return "{}"
+	}
+	return "{" + strings.Join(parts, ", ") + "}"
 }
 
 func cloneStringMap(m map[string]string) map[string]string {

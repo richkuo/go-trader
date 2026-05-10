@@ -130,15 +130,15 @@ type Config struct {
 // ManualDefaultsConfig holds operator-tunable defaults for the manual-open CLI
 // and type=manual strategy auto-config. All fields are optional; missing values
 // fall back to the hardcoded constants (defaultManualMarginUSD,
-// defaultManualStopLossATRMult, "long", and the inline 1×/2× tier literal).
-// The fleet-wide default_stop_loss_atr_mult=0 opt-out still wins over
-// StopLossATRMult: setting it to 0 disables the auto-default globally,
-// including for manual strategies (#696).
+// defaultManualStopLossATRMult, "long", and the inline [{2×, 0.5}, {3×, 1.0}]
+// tier literal). The fleet-wide default_stop_loss_atr_mult=0 opt-out still
+// wins over StopLossATRMult: setting it to 0 disables the auto-default
+// globally, including for manual strategies (#696).
 type ManualDefaultsConfig struct {
 	MarginUSD       *float64       `json:"margin_usd,omitempty"`         // implicit --margin (USD) when manual-open is invoked without --size/--notional/--margin (live mode only; --record-only still requires --size). Nil → 50.0.
-	StopLossATRMult *float64       `json:"stop_loss_atr_mult,omitempty"` // implicit stop_loss_atr_mult applied to type=manual strategies that omit all five HL stop fields. Nil → 1.5.
-	Side            string         `json:"side,omitempty"`               // implicit --side ("long" or "short") for manual-open. Empty → "long".
-	TPTiers         []ManualTPTier `json:"tp_tiers,omitempty"`           // implicit `tiers` params for tiered_tp_atr / tiered_tp_atr_live close strategies on type=manual. Empty → [{2.0, 0.5}, {3.0, 1.0}].
+	StopLossATRMult *float64       `json:"stop_loss_atr_mult,omitempty"` // implicit stop_loss_atr_mult applied to type=manual strategies that omit all five HL stop fields. Nil → 1.5; explicit 0 opts manual strategies out without affecting non-manual perps.
+	Side            string         `json:"side,omitempty"`               // implicit --side for manual-open. Lowercase "long" or "short". Empty → "long".
+	TPTiers         []ManualTPTier `json:"tp_tiers,omitempty"`           // implicit `tiers` params for tiered_tp_atr / tiered_tp_atr_live close strategies on type=manual. Nil/omitted → [{2.0, 0.5}, {3.0, 1.0}]; empty array is rejected so operators can't accidentally fall back to defaults by zeroing the list.
 }
 
 // ManualTPTier is one entry of ManualDefaultsConfig.TPTiers. Matches the JSON
@@ -608,7 +608,14 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, fmt.Errorf("manual_defaults.stop_loss_atr_mult must be >= 0, got %g", *md.StopLossATRMult)
 		}
 		if md.Side != "" && md.Side != "long" && md.Side != "short" {
-			return nil, fmt.Errorf("manual_defaults.side must be \"long\" or \"short\", got %q", md.Side)
+			return nil, fmt.Errorf("manual_defaults.side must be lowercase \"long\" or \"short\", got %q", md.Side)
+		}
+		// Reject empty tp_tiers array: omitting the field falls back to the
+		// hardcoded default, but writing `"tp_tiers": []` looks intentional
+		// (operator trying to disable tiered TPs) and would silently revert
+		// to the default — surface the misuse loudly instead.
+		if md.TPTiers != nil && len(md.TPTiers) == 0 {
+			return nil, fmt.Errorf("manual_defaults.tp_tiers must have at least one tier (omit the field to use defaults)")
 		}
 		for i, t := range md.TPTiers {
 			if t.ATRMultiple <= 0 {

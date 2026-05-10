@@ -833,3 +833,79 @@ func TestFormatStringMap(t *testing.T) {
 		})
 	}
 }
+
+// #696: manual_defaults flows through hot-reload so SIGHUP edits to
+// margin_usd / stop_loss_atr_mult / side / tp_tiers propagate without restart.
+func TestApplyHotReloadConfigPropagatesManualDefaults(t *testing.T) {
+	oldMargin := 50.0
+	newMargin := 125.0
+	newSL := 2.0
+	cfg := minimalReloadConfig(nil)
+	cfg.ManualDefaults = &ManualDefaultsConfig{MarginUSD: &oldMargin, Side: "long"}
+	next := minimalReloadConfig(nil)
+	next.ManualDefaults = &ManualDefaultsConfig{
+		MarginUSD:       &newMargin,
+		StopLossATRMult: &newSL,
+		Side:            "short",
+		TPTiers: []ManualTPTier{
+			{ATRMultiple: 1.5, CloseFraction: 0.4},
+			{ATRMultiple: 2.5, CloseFraction: 1.0},
+		},
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{}}
+
+	changes, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+	if err != nil {
+		t.Fatalf("applyHotReloadConfig: %v", err)
+	}
+	if !strings.Contains(strings.Join(changes, "\n"), "manual_defaults") {
+		t.Fatalf("changes missing manual_defaults entry: %v", changes)
+	}
+	if cfg.ManualDefaults == nil {
+		t.Fatal("cfg.ManualDefaults nil after reload")
+	}
+	if got := cfg.resolveManualMarginUSD(); got != 125.0 {
+		t.Errorf("resolveManualMarginUSD = %g, want 125.0", got)
+	}
+	if got := cfg.resolveManualSide(); got != "short" {
+		t.Errorf("resolveManualSide = %q, want %q", got, "short")
+	}
+	if got := cfg.resolveManualStopLossATRMult(); got != 2.0 {
+		t.Errorf("resolveManualStopLossATRMult = %g, want 2.0", got)
+	}
+	if got := len(cfg.resolveManualTPTiers()); got != 2 {
+		t.Errorf("resolveManualTPTiers length = %d, want 2", got)
+	}
+	// Mutating the next block after reload must not affect cfg (clone, not alias).
+	*next.ManualDefaults.MarginUSD = 999
+	if got := cfg.resolveManualMarginUSD(); got != 125.0 {
+		t.Errorf("cfg margin aliased to next: got %g after next-mutation, want 125.0", got)
+	}
+}
+
+// #696: empty tp_tiers array is rejected by validation; LoadConfig surfaces
+// the misuse instead of silently falling back to defaults.
+func TestLoadConfigManualDefaultsRejectsEmptyTPTiersArray(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"manual_defaults": {"tp_tiers": []},
+		"strategies": [{
+			"id": "hl-manual-eth-live",
+			"type": "manual",
+			"platform": "hyperliquid",
+			"symbol": "ETH",
+			"timeframe": "1h",
+			"capital": 1000,
+			"leverage": 20,
+			"max_drawdown_pct": 20
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("LoadConfig accepted empty manual_defaults.tp_tiers array")
+	}
+	if !strings.Contains(err.Error(), "tp_tiers") {
+		t.Errorf("error %q does not mention tp_tiers", err)
+	}
+}
