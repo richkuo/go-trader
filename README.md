@@ -34,7 +34,7 @@ Join the Discord: [https://discord.gg/46d7Fa2dXz](https://discord.gg/46d7Fa2dXz)
 
 The fastest way to get running. Give your AI agent the [Agent Setup Guide](SKILL.md) — it's fully self-contained with the repo URL, step-by-step instructions, and exact prompts. The agent will clone the repo, install dependencies, walk you through configuration (Discord channels, strategy selection, risk settings), build the binary, and start the service.
 
-For non-Claude agents (Codex, Gemini, etc.), see [AGENTS.md](AGENTS.md) for the equivalent project context and PR conventions.
+For non-Claude agents (Gemini, etc.), see [AGENTS.md](AGENTS.md) for the equivalent project context and PR conventions.
 
 **Raw link for agents:** `https://raw.githubusercontent.com/richkuo/go-trader/main/SKILL.md`
 

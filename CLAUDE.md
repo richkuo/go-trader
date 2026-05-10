@@ -38,7 +38,7 @@
 - `shared_tools/` — `pricing.py`, `exchange_base.py`, `data_fetcher.py`, `storage.py`, `htf_filter.py`, `atr.py`, `regime.py` (3-state ADX+DI labels via `_compute_adx_components`, shared with `open/adx_trend.py`), `hl_user_fills.py` (`apply_user_fills_lookup` shared by `check_hyperliquid.py` and `close_hyperliquid_position.py`).
 - `shared_strategies/` — open source of truth: `open/registry.py` (`@register_strategy`, `build_registry(platform)`, `PLATFORM_ORDER`). Cross-platform open modules under `open/`; `open/spot/strategies.py` and `open/futures/strategies.py` are thin shims — **do not edit shims**. Options: `options/strategies.py`. Close evaluators: `close/registry.py`.
 - `backtest/` — `backtester.py`, `optimizer.py`, `reporter.py`, `registry_loader.py`, `run_backtest.py`, `backtest_options.py`, `backtest_theta.py`, `tests/`.
-- `SKILL.md`, `AGENTS.md` — agent guides; `scripts/install-service.sh` — systemd installer; `.github/workflows/` — CI, release, Codex/Claude bots.
+- `SKILL.md`, `AGENTS.md` — agent guides; `scripts/install-service.sh` — systemd installer; `.github/workflows/` — CI, release, Claude bot.
 
 ## Key Patterns
 - Run git from repo root. Prefer `go -C scheduler build .` over `cd scheduler && ...` to avoid cwd drift.
@@ -100,9 +100,9 @@
 
 ## Pull Requests
 - Reference related issue with `Closes #<N>` in body. In GitHub comments avoid `#N` for list items (auto-links); use `1.` instead.
-- Fetch latest bot review: `gh api repos/richkuo/go-trader/issues/<N>/comments --jq '[.[] | select(.user.login=="codex[bot]" or .user.login=="claude[bot]")] | last | .body'` (top-level summary lives on issues endpoint, not pulls).
+- Fetch latest bot review: `gh api repos/richkuo/go-trader/issues/<N>/comments --jq '[.[] | select(.user.login=="claude[bot]")] | last | .body'` (top-level summary lives on issues endpoint, not pulls).
 - Before merging long-running PR: `git fetch origin main && git diff origin/main..HEAD -- <paths>` to catch silent reverts.
-- Replace default Claude Code footer with `LLM: <model> | <effort> | Harness: <action>`. No `Co-Authored-By`. Claude Code workflow stamps `Harness:` via job `CLAUDE_HARNESS`; Codex workflow uses `CODEX_{MODEL,EFFORT,HARNESS}` and may inject `Closes #<N>` post-push.
+- Replace default Claude Code footer with `LLM: <model> | <effort> | Harness: <action>`. No `Co-Authored-By`. Claude Code workflow stamps `Harness:` via job `CLAUDE_HARNESS`.
 
 ### PR review format (`@claude review`)
 Top-level review comment is one of two shapes — no preamble, no closing:
