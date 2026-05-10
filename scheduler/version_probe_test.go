@@ -127,6 +127,43 @@ func TestProbeIgnoresEmptyScripts(t *testing.T) {
 	}
 }
 
+// TestProbeRunsFetchATRForHL verifies the second --fetch-atr probe (#689) is
+// dispatched only for check_hyperliquid.py. Stubs probeOneCheckScriptFn to
+// record argv shapes per script without requiring a real .venv.
+func TestProbeRunsFetchATRForHL(t *testing.T) {
+	orig := probeOneCheckScriptFn
+	defer func() { probeOneCheckScriptFn = orig }()
+	calls := map[string][]string{}
+	probeOneCheckScriptFn = func(script string, argv []string) error {
+		mode := "signal"
+		for _, a := range argv {
+			if a == "--fetch-atr" {
+				mode = "fetch-atr"
+				break
+			}
+		}
+		calls[script] = append(calls[script], mode)
+		return nil
+	}
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			{Script: "shared_scripts/check_hyperliquid.py"},
+			{Script: "shared_scripts/check_strategy.py"},
+		},
+	}
+	if err := probeCheckScripts(cfg); err != nil {
+		t.Fatalf("probe failed: %v", err)
+	}
+	hl := calls["shared_scripts/check_hyperliquid.py"]
+	if len(hl) != 2 || hl[0] != "signal" || hl[1] != "fetch-atr" {
+		t.Errorf("HL should be probed signal+fetch-atr, got %v", hl)
+	}
+	spot := calls["shared_scripts/check_strategy.py"]
+	if len(spot) != 1 || spot[0] != "signal" {
+		t.Errorf("non-HL should be probed signal-only, got %v", spot)
+	}
+}
+
 func TestFormatProbeFailureFallsBackThroughChannels(t *testing.T) {
 	// stderr present -> uses stderr
 	err := formatProbeFailure("check.py", os.ErrInvalid, " stderr-msg\n", "stdout-msg")

@@ -19,6 +19,9 @@ Execution mode (live only, called by Go as phase 2):
 Trailing stop update mode (live only):
     check_hyperliquid.py --update-stop-loss --symbol=BTC --side=long|short --size=0.01 \
         --trigger-px=62000 --cancel-stop-loss-oid=OID [--mode=live]
+
+Fetch ATR mode (read-only, used by manual-open when --atr is omitted):
+    check_hyperliquid.py --fetch-atr --symbol=BTC --timeframe=1h [--period=14]
 """
 
 import sys
@@ -1001,6 +1004,7 @@ def run_fetch_atr(symbol: str, timeframe: str, period: int):
             return
         print(json.dumps({"atr": atr, "candles": len(candles)}, cls=SafeEncoder))
     except Exception as e:
+        traceback.print_exc(file=sys.stderr)
         print(json.dumps({"error": f"{type(e).__name__}: {e}"}, cls=SafeEncoder))
 
 

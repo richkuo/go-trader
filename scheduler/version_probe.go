@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -31,6 +32,13 @@ var probeArgv = []string{
 	"--probe-only",
 }
 
+// fetchATRProbeArgv probes check_hyperliquid.py's --fetch-atr mode (#689) so a
+// stale Python missing run_fetch_atr fails startup loudly instead of degrading
+// silently to computeFallbackATR on every manual-open.
+var fetchATRProbeArgv = []string{
+	"--fetch-atr", "--symbol=BTC", "--timeframe=1h", "--period=14", "--probe-only",
+}
+
 const probeTimeout = 15 * time.Second
 
 // probeCheckScripts invokes each unique check script configured in cfg
@@ -43,14 +51,23 @@ const probeTimeout = 15 * time.Second
 // where unknown flags cause the same exit-2 the May 7 outage exhibited.
 // probeOneCheckScriptFn is the per-script probe invoker — package var so
 // tests can stub it without standing up a real .venv (Go CI doesn't have
-// one — see CLAUDE.md → Testing).
+// one — see CLAUDE.md → Testing). The argv parameter lets a single script
+// be probed against multiple argv shapes (e.g. signal-check + --fetch-atr).
 var probeOneCheckScriptFn = probeOneCheckScript
 
 func probeCheckScripts(cfg *Config) error {
 	scripts := uniqueCheckScripts(cfg)
 	for _, script := range scripts {
-		if err := probeOneCheckScriptFn(script); err != nil {
+		if err := probeOneCheckScriptFn(script, probeArgv); err != nil {
 			return err
+		}
+		// HL exposes --fetch-atr (#689) for manual-open ATR auto-fetch; probe
+		// it so an old Python without run_fetch_atr fails the probe rather
+		// than silently degrading every manual-open to computeFallbackATR.
+		if filepath.Base(script) == "check_hyperliquid.py" {
+			if err := probeOneCheckScriptFn(script, fetchATRProbeArgv); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -72,11 +89,11 @@ func uniqueCheckScripts(cfg *Config) []string {
 	return out
 }
 
-func probeOneCheckScript(script string) error {
+func probeOneCheckScript(script string, argv []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 
-	cmdArgs := append([]string{script}, probeArgv...)
+	cmdArgs := append([]string{script}, argv...)
 	cmd := exec.CommandContext(ctx, ".venv/bin/python3", cmdArgs...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -40,6 +41,14 @@ func TestParseHyperliquidFetchATROutput_RunError(t *testing.T) {
 	_, _, err := parseHyperliquidFetchATROutput(nil, "missing python", errors.New("exit 127"))
 	if err == nil {
 		t.Fatal("expected error on runErr")
+	}
+	// fetchManualEntryATR weaves stderr into the message; the parser must
+	// surface stderr in its returned error so that contract is satisfiable.
+	if !strings.Contains(err.Error(), "missing python") {
+		t.Errorf("error should include stderr; got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "exit 127") {
+		t.Errorf("error should include underlying runErr; got %q", err.Error())
 	}
 }
 

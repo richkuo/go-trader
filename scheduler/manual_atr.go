@@ -50,9 +50,12 @@ var runHyperliquidFetchATRFn = RunHyperliquidFetchATR
 
 // fetchManualEntryATR resolves the ATR for a manual-open by calling the
 // HL --fetch-atr path with the strategy's configured symbol+timeframe. Returns
-// (atr, ok). ok=false signals callers should fall back (typically to
+// (atr, errMsg, ok). ok=false signals callers should fall back (typically to
 // computeFallbackATR). Period is fixed at 14 to match ensure_atr_indicator's
 // default — same baseline strategy opens see via stampEntryATRIfOpened.
+// Strategies that override ATR period via params will see drift between fetched
+// and stamped ATR; if that becomes a problem, plumb a per-strategy ATR period
+// from sc.OpenStrategy.Params here.
 func fetchManualEntryATR(sc StrategyConfig) (float64, string, bool) {
 	if sc.Script == "" || sc.Symbol == "" || sc.Timeframe == "" {
 		return 0, "missing script/symbol/timeframe on strategy config", false
@@ -71,7 +74,7 @@ func fetchManualEntryATR(sc StrategyConfig) (float64, string, bool) {
 	if result.Error != "" {
 		return 0, result.Error, false
 	}
-	if !(result.ATR > 0) {
+	if result.ATR <= 0 {
 		return 0, "fetch-atr returned non-positive ATR", false
 	}
 	return result.ATR, "", true

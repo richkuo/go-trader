@@ -45,9 +45,20 @@ func TestRunProbeNoStrategies(t *testing.T) {
 func TestRunProbeHappyPath(t *testing.T) {
 	orig := probeOneCheckScriptFn
 	defer func() { probeOneCheckScriptFn = orig }()
-	var probed []string
-	probeOneCheckScriptFn = func(script string) error {
-		probed = append(probed, script)
+	type probeCall struct {
+		script string
+		mode   string // "signal" or "fetch-atr"
+	}
+	var probed []probeCall
+	probeOneCheckScriptFn = func(script string, argv []string) error {
+		mode := "signal"
+		for _, a := range argv {
+			if a == "--fetch-atr" {
+				mode = "fetch-atr"
+				break
+			}
+		}
+		probed = append(probed, probeCall{script, mode})
 		return nil
 	}
 
@@ -91,7 +102,23 @@ func TestRunProbeHappyPath(t *testing.T) {
 	if rc != 0 {
 		t.Fatalf("happy-path probe should return 0, got %d", rc)
 	}
-	if len(probed) != 2 {
-		t.Fatalf("expected 2 unique scripts probed, got %d: %v", len(probed), probed)
+	// Expect 3 invocations: HL signal-check, HL --fetch-atr (#689), spot signal-check.
+	if len(probed) != 3 {
+		t.Fatalf("expected 3 probe invocations, got %d: %v", len(probed), probed)
+	}
+	var hlSignal, hlFetchATR, spotSignal int
+	for _, p := range probed {
+		switch {
+		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "signal":
+			hlSignal++
+		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "fetch-atr":
+			hlFetchATR++
+		case p.script == "shared_scripts/check_strategy.py" && p.mode == "signal":
+			spotSignal++
+		}
+	}
+	if hlSignal != 1 || hlFetchATR != 1 || spotSignal != 1 {
+		t.Fatalf("expected 1 of each (hl-signal, hl-fetch-atr, spot-signal); got %d/%d/%d (probed=%v)",
+			hlSignal, hlFetchATR, spotSignal, probed)
 	}
 }
