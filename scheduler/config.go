@@ -703,8 +703,11 @@ func LoadConfig(path string) (*Config, error) {
 		// #691: type=manual gets its own SL default (1.5× ATR) so non-manual
 		// perps strategies stay on the fleet-wide default_stop_loss_atr_mult
 		// (typically 1.0×). Skip if any explicit stop field is set so peers
-		// and operator overrides still win.
-		if sc.StopLossATRMult == nil && sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil {
+		// and operator overrides still win. Honor the fleet-wide
+		// default_stop_loss_atr_mult=0 opt-out: when the operator disables
+		// the auto-default globally, manual strategies opt out too (the
+		// INFO message at config.go:675 advertises =0 as the global switch).
+		if defaultStopLossATRMult > 0 && sc.StopLossATRMult == nil && sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil {
 			defaultMult := defaultManualStopLossATRMult
 			sc.StopLossATRMult = &defaultMult
 		}

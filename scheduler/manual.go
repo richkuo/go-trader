@@ -56,9 +56,6 @@ func runManualOpen(args []string) int {
 	}
 
 	*side = strings.ToLower(strings.TrimSpace(*side))
-	if *side == "" {
-		*side = "long"
-	}
 	if *side != "long" && *side != "short" {
 		fmt.Fprintf(os.Stderr, "error: --side must be \"long\" or \"short\", got %q\n", *side)
 		return 2
