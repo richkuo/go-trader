@@ -1381,8 +1381,8 @@ func TestGenerateConfig_EnableManualDefaults(t *testing.T) {
 	if s.Timeframe != "1h" {
 		t.Errorf("expected default Timeframe=1h, got %q", s.Timeframe)
 	}
-	if s.Leverage != 1 {
-		t.Errorf("expected default Leverage=1, got %g", s.Leverage)
+	if s.Leverage != 20 {
+		t.Errorf("expected default Leverage=20, got %g", s.Leverage)
 	}
 	if s.MaxDrawdownPct != 20 {
 		t.Errorf("expected default MaxDrawdownPct=20, got %g", s.MaxDrawdownPct)

@@ -700,8 +700,12 @@ func LoadConfig(path string) (*Config, error) {
 		if len(sc.CloseStrategies) == 0 {
 			sc.CloseStrategies = []StrategyRef{{Name: "tiered_tp_atr_live"}}
 		}
-		if sc.StopLossATRMult == nil {
-			defaultMult := defaultStopLossATRMult
+		// #691: type=manual gets its own SL default (1.5× ATR) so non-manual
+		// perps strategies stay on the fleet-wide default_stop_loss_atr_mult
+		// (typically 1.0×). Skip if any explicit stop field is set so peers
+		// and operator overrides still win.
+		if sc.StopLossATRMult == nil && sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil {
+			defaultMult := defaultManualStopLossATRMult
 			sc.StopLossATRMult = &defaultMult
 		}
 		// Default TP tiers for manual strategies onto the matching close ref.
