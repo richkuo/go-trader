@@ -23,13 +23,22 @@ import (
 // zero size. Reconciler close paths prefer Px over the configured TP/mark
 // price when available so the booked Trade row reflects what actually
 // happened on-chain (#670, #673).
+//
+// ClosedPnLGross is Hyperliquid's reported `closedPnl` summed across the
+// matched fills. It is **gross of fees** — the exchange UI shows net PnL
+// after subtracting the trading fee. DO NOT plug this value into
+// Trade.RealizedPnL or any cash-bookkeeping path; doing so overstates
+// realized PnL by exactly the fee amount (#698). Realized PnL is always
+// computed locally from AvgCost/FillPx/Qty minus the real Fee (see
+// bookPerpsPartialCloseWithFillFee in portfolio.go). This field exists
+// for logging and operator-side reconciliation only.
 type HLFillLookup struct {
-	Fee       float64
-	ClosedPnL float64
-	FilledQty float64 // sum of sz across matched fill records; 0 when lookup missed
-	Px        float64 // size-weighted avg fill price across matched records; 0 when missed
-	Count     int
-	OID       int64
+	Fee            float64
+	ClosedPnLGross float64
+	FilledQty      float64 // sum of sz across matched fill records; 0 when lookup missed
+	Px             float64 // size-weighted avg fill price across matched records; 0 when missed
+	Count          int
+	OID            int64
 }
 
 // hlFillRecord is the trimmed userFills payload we care about. The HL indexer
@@ -97,6 +106,9 @@ var (
 // summing fee + closedPnl across partial fills. Retries with backoff to
 // absorb HL indexer lag. Returns ok=false when no fill matches within the
 // retry budget — callers fall back to the modeled fee.
+//
+// Note: aggregated closedPnl is stored in HLFillLookup.ClosedPnLGross — it
+// is gross of fees and must not be used for realized-PnL bookkeeping (#698).
 func lookupHyperliquidFillByOID(accountAddress string, oid int64, startTimeMs int64) (HLFillLookup, bool) {
 	if oid <= 0 || accountAddress == "" {
 		return HLFillLookup{}, false
@@ -112,7 +124,7 @@ func lookupHyperliquidFillByOID(accountAddress string, oid int64, startTimeMs in
 				}
 				sz := parseHLFloat(f.Sz)
 				out.Fee += parseHLFloat(f.Fee)
-				out.ClosedPnL += parseHLFloat(f.ClosedPnl)
+				out.ClosedPnLGross += parseHLFloat(f.ClosedPnl)
 				out.FilledQty += sz
 				pxNumerator += sz * parseHLFloat(f.Px)
 				out.Count++
@@ -141,6 +153,9 @@ func lookupHyperliquidFillByOID(accountAddress string, oid int64, startTimeMs in
 // anchors the result, and fee/closedPnl are aggregated across only that OID
 // (one logical close group, including any partial fills). When the anchor
 // has no OID, only that single record is returned.
+//
+// Note: aggregated closedPnl is stored in HLFillLookup.ClosedPnLGross — it
+// is gross of fees and must not be used for realized-PnL bookkeeping (#698).
 func lookupHyperliquidFillByCoinSize(accountAddress, coin string, absSize, tolerance float64, startTimeMs int64) (HLFillLookup, bool) {
 	if accountAddress == "" || coin == "" || absSize <= 0 {
 		return HLFillLookup{}, false
@@ -170,11 +185,11 @@ func lookupHyperliquidFillByCoinSize(accountAddress, coin string, absSize, toler
 				anchorOID, oidErr := anchor.OID.Int64()
 				if oidErr != nil || anchorOID <= 0 {
 					return HLFillLookup{
-						Fee:       parseHLFloat(anchor.Fee),
-						ClosedPnL: parseHLFloat(anchor.ClosedPnl),
-						FilledQty: parseHLFloat(anchor.Sz),
-						Px:        parseHLFloat(anchor.Px),
-						Count:     1,
+						Fee:            parseHLFloat(anchor.Fee),
+						ClosedPnLGross: parseHLFloat(anchor.ClosedPnl),
+						FilledQty:      parseHLFloat(anchor.Sz),
+						Px:             parseHLFloat(anchor.Px),
+						Count:          1,
 					}, true
 				}
 				out := HLFillLookup{OID: anchorOID}
@@ -185,7 +200,7 @@ func lookupHyperliquidFillByCoinSize(accountAddress, coin string, absSize, toler
 					}
 					sz := parseHLFloat(f.Sz)
 					out.Fee += parseHLFloat(f.Fee)
-					out.ClosedPnL += parseHLFloat(f.ClosedPnl)
+					out.ClosedPnLGross += parseHLFloat(f.ClosedPnl)
 					out.FilledQty += sz
 					pxNumerator += sz * parseHLFloat(f.Px)
 					out.Count++
@@ -271,7 +286,7 @@ func logHyperliquidReconcileFillLookup(logger *StrategyLogger, coin string, oid 
 		return
 	}
 	if useFillFee && lookup.Count > 0 {
-		logger.Info("hl-sync: %s userFills hit oid=%d qty=%.6f → fee=$%.4f closedPnl=$%.2f (%d fills)", coin, oid, expectedQty, lookup.Fee, lookup.ClosedPnL, lookup.Count)
+		logger.Info("hl-sync: %s userFills hit oid=%d qty=%.6f → fee=$%.4f closedPnl_gross=$%.2f (%d fills)", coin, oid, expectedQty, lookup.Fee, lookup.ClosedPnLGross, lookup.Count)
 		return
 	}
 	if oid > 0 || expectedQty > 0 {

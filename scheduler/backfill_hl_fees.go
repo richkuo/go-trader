@@ -18,10 +18,15 @@ import (
 // HLFillSummary is a per-OID aggregate from fetch_hl_user_fills.py.
 // A single market order can fragment into multiple partial fills sharing the
 // same OID; the script sums fee + closedPnl across legs before emitting.
+//
+// ClosedPnLGross is Hyperliquid's `closedPnl` summed across legs. It is
+// gross of fees — do not use it for realized-PnL bookkeeping (#698). The
+// backfill recomputes realized PnL locally from the stored pre-fee PnL
+// and the real exchange fee (see planTradeRewrites in this file).
 type HLFillSummary struct {
-	Fee       float64 `json:"fee"`
-	ClosedPnL float64 `json:"closed_pnl"`
-	Count     int     `json:"count"`
+	Fee            float64 `json:"fee"`
+	ClosedPnLGross float64 `json:"closed_pnl"`
+	Count          int     `json:"count"`
 }
 
 // HLUserFillsResult is the stdout envelope from fetch_hl_user_fills.py.

@@ -54,8 +54,8 @@ func TestLookupHyperliquidFillByOID_AggregatesPartialFills(t *testing.T) {
 	if got.Fee < 0.799 || got.Fee > 0.801 {
 		t.Errorf("Fee = %g, want ~0.80", got.Fee)
 	}
-	if got.ClosedPnL < 149.99 || got.ClosedPnL > 150.01 {
-		t.Errorf("ClosedPnL = %g, want ~150.00", got.ClosedPnL)
+	if got.ClosedPnLGross < 149.99 || got.ClosedPnLGross > 150.01 {
+		t.Errorf("ClosedPnLGross = %g, want ~150.00", got.ClosedPnLGross)
 	}
 }
 
@@ -132,8 +132,8 @@ func TestLookupHyperliquidFillByCoinSize_PicksNewestGroupNotSumOfWindow(t *testi
 	if got.Fee < 0.499 || got.Fee > 0.501 {
 		t.Errorf("Fee = %g, want ~0.50 (newest only, not 0.40+0.50)", got.Fee)
 	}
-	if got.ClosedPnL < 89.99 || got.ClosedPnL > 90.01 {
-		t.Errorf("ClosedPnL = %g, want ~90.00 (newest only)", got.ClosedPnL)
+	if got.ClosedPnLGross < 89.99 || got.ClosedPnLGross > 90.01 {
+		t.Errorf("ClosedPnLGross = %g, want ~90.00 (newest only)", got.ClosedPnLGross)
 	}
 }
 
@@ -164,8 +164,8 @@ func TestLookupHyperliquidFillByCoinSize_AggregatesPartialFillsByAnchorOID(t *te
 	if got.Fee < 0.499 || got.Fee > 0.501 {
 		t.Errorf("Fee = %g, want ~0.50 (0.20+0.30, not including OID 999)", got.Fee)
 	}
-	if got.ClosedPnL < 69.99 || got.ClosedPnL > 70.01 {
-		t.Errorf("ClosedPnL = %g, want ~70.00 (30+40, not including OID 999)", got.ClosedPnL)
+	if got.ClosedPnLGross < 69.99 || got.ClosedPnLGross > 70.01 {
+		t.Errorf("ClosedPnLGross = %g, want ~70.00 (30+40, not including OID 999)", got.ClosedPnLGross)
 	}
 }
 
@@ -207,7 +207,7 @@ func TestReconcileHyperliquidPositions_ExternalCloseUsesFillFee(t *testing.T) {
 	lookupHyperliquidReconcileFillFee = func(addr, coin string, oid int64, qty float64) (HLFillLookup, bool) {
 		// #685: include FilledQty so the SL-confirmed gate accepts the fill.
 		if oid == 4242 && coin == "BTC" {
-			return HLFillLookup{Fee: 1.23, ClosedPnL: 0, FilledQty: 0.1, Px: 58000, Count: 1, OID: oid}, true
+			return HLFillLookup{Fee: 1.23, ClosedPnLGross: 0, FilledQty: 0.1, Px: 58000, Count: 1, OID: oid}, true
 		}
 		return HLFillLookup{}, false
 	}

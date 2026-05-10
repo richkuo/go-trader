@@ -56,8 +56,8 @@ func TestPlanBackfillRewritesFeeAndPnLOnCloseLeg(t *testing.T) {
 	realOpenFee := 0.40  // higher than modeled
 	realCloseFee := 0.30 // lower than modeled
 	fillMap := map[string]HLFillSummary{
-		"111": {Fee: realOpenFee, ClosedPnL: 0, Count: 1},
-		"222": {Fee: realCloseFee, ClosedPnL: 9.7, Count: 1},
+		"111": {Fee: realOpenFee, ClosedPnLGross: 0, Count: 1},
+		"222": {Fee: realCloseFee, ClosedPnLGross: 9.7, Count: 1},
 	}
 
 	plan := planBackfillForStrategy("hl-eth", trades, fillMap, 1000.0, 1000.0)
