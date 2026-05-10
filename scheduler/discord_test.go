@@ -1332,31 +1332,32 @@ func TestCollectPositions_StopLossOmittedWhenNoTriggerPx(t *testing.T) {
 }
 
 // TestCollectPositions_StopLossATRMultiplier verifies the SL line shows the
-// effective ATR multiplier when both EntryATR and StopLossTriggerPx are set.
+// stamped ATR multiplier from pos.StopLossATRMult (the config value resolved
+// at trade-open), not a back-computed value derived from the rounded on-chain
+// trigger price (#687).
 func TestCollectPositions_StopLossATRMultiplier(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
 	cases := []struct {
 		name    string
 		side    string
 		avg     float64
 		sl      float64
 		atr     float64
+		mult    *float64
 		wantSub string
 	}{
-		// long: diff = 1000, mult = 1.0 → "1x" via %g
-		{name: "long_1x", side: "long", avg: 10000, sl: 9000, atr: 1000, wantSub: "| SL: $9,000.00 (-10.0%) (1x)"},
-		// long: diff = 300, mult = 1.5 → "1.5x"
-		{name: "long_1.5x", side: "long", avg: 10000, sl: 9700, atr: 200, wantSub: "| SL: $9,700.00 (-3.0%) (1.5x)"},
-		// long: diff = 250, mult = 1.25 → "1.25x". %.2g would mangle to "1.3x"
-		// (#665 review): %g preserves the configured value.
-		{name: "long_1.25x", side: "long", avg: 10000, sl: 9750, atr: 200, wantSub: "| SL: $9,750.00 (-2.5%) (1.25x)"},
-		// short: diff = 1000, mult = 1.0 → "1x"
-		{name: "short_1x", side: "short", avg: 10000, sl: 11000, atr: 1000, wantSub: "| SL: $11,000.00 (-10.0%) (1x)"},
+		{name: "long_1x", side: "long", avg: 10000, sl: 9000, atr: 1000, mult: pf(1.0), wantSub: "| SL: $9,000.00 (-10.0%) (1x)"},
+		{name: "long_1.5x", side: "long", avg: 10000, sl: 9700, atr: 200, mult: pf(1.5), wantSub: "| SL: $9,700.00 (-3.0%) (1.5x)"},
+		// #687: rounded trigger px would back-compute to ~1.489x; stamped 1.5 wins.
+		{name: "long_1.5x_rounded_trigger", side: "long", avg: 2335.10, sl: 2323.30, atr: 7.92, mult: pf(1.5), wantSub: "| SL: $2,323.30 (-0.5%) (1.5x)"},
+		{name: "long_1.25x", side: "long", avg: 10000, sl: 9750, atr: 200, mult: pf(1.25), wantSub: "| SL: $9,750.00 (-2.5%) (1.25x)"},
+		{name: "short_1x", side: "short", avg: 10000, sl: 11000, atr: 1000, mult: pf(1.0), wantSub: "| SL: $11,000.00 (-10.0%) (1x)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ss := &StrategyState{
 				Positions: map[string]*Position{
-					"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: tc.avg, Side: tc.side, StopLossTriggerPx: tc.sl, EntryATR: tc.atr},
+					"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: tc.avg, Side: tc.side, StopLossTriggerPx: tc.sl, EntryATR: tc.atr, StopLossATRMult: tc.mult},
 				},
 			}
 			lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, map[string]float64{"BTC/USDT": tc.avg})
@@ -1367,12 +1368,14 @@ func TestCollectPositions_StopLossATRMultiplier(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_StopLossNoATRMultiplierWhenEntryATRZero verifies the
-// SL line omits the multiplier suffix when EntryATR is unset.
-func TestCollectPositions_StopLossNoATRMultiplierWhenEntryATRZero(t *testing.T) {
+// TestCollectPositions_StopLossNoATRMultiplierWhenMultNil verifies the SL line
+// omits the (Nx) suffix when StopLossATRMult is nil — i.e. SL was armed via
+// stop_loss_pct / stop_loss_margin_pct / trailing_stop_pct rather than ATR
+// (#687). Pre-#669 positions opened before snapshot stamping also fall here.
+func TestCollectPositions_StopLossNoATRMultiplierWhenMultNil(t *testing.T) {
 	ss := &StrategyState{
 		Positions: map[string]*Position{
-			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 10000, Side: "long", StopLossTriggerPx: 9500, EntryATR: 0},
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 10000, Side: "long", StopLossTriggerPx: 9500, EntryATR: 250, StopLossATRMult: nil},
 		},
 	}
 	lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, map[string]float64{"BTC/USDT": 10000})
@@ -1380,7 +1383,7 @@ func TestCollectPositions_StopLossNoATRMultiplierWhenEntryATRZero(t *testing.T) 
 		t.Errorf("expected SL fragment without multiplier, got: %s", lines[0])
 	}
 	if strings.Contains(lines[0], "x)") {
-		t.Errorf("expected no multiplier suffix when EntryATR=0, got: %s", lines[0])
+		t.Errorf("expected no multiplier suffix when StopLossATRMult=nil, got: %s", lines[0])
 	}
 }
 
@@ -2239,9 +2242,11 @@ func TestFormatTradeDM_PaperOmitsOID(t *testing.T) {
 	}
 }
 
-// TestFormatTradeDM_SLATRMultiplier verifies that when EntryATR is known the
-// SL line gains a `(<n>x)` ATR multiplier suffix (#665).
+// TestFormatTradeDM_SLATRMultiplier verifies the SL line renders the stamped
+// trade.StopLossATRMult instead of a back-computed value derived from the
+// rounded on-chain trigger price (#687). Pre-#687 this used (avg-sl)/atr.
 func TestFormatTradeDM_SLATRMultiplier(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
 	sc := StrategyConfig{ID: "hl-sma-btc", Platform: "hyperliquid", Type: "perps"}
 	trade := Trade{
 		Symbol:            "BTC",
@@ -2249,20 +2254,49 @@ func TestFormatTradeDM_SLATRMultiplier(t *testing.T) {
 		Quantity:          0.01,
 		Price:             63500.0,
 		Value:             635.0,
-		EntryATR:          1500.0, // SL is 1× ATR below entry: 63500 - 1500 = 62000
+		EntryATR:          1500.0,
 		StopLossTriggerPx: 62000.0,
+		StopLossATRMult:   pf(1.0),
 		Details:           "Open long 0.010000 @ $63500.00",
 	}
 	msg := FormatTradeDM(sc, trade, "live")
-	// %.2g drops trailing zeros so 1.0 renders as "1".
 	if !strings.Contains(msg, "SL: $62,000.00 (-2.4%) (1x)") {
-		t.Errorf("expected SL line with ATR multiplier, got:\n%s", msg)
+		t.Errorf("expected SL line with stamped ATR multiplier, got:\n%s", msg)
 	}
 }
 
-// TestFormatTradeDM_SLNoATRMultiplier verifies that when EntryATR is unknown
-// the SL line keeps the legacy format with no `(<n>x)` suffix instead of
-// rendering `(infx)` / `(0x)` (#665 implementation note).
+// TestFormatTradeDM_SLATRMultiplierFromConfigNotBackComputed is the regression
+// guard for #687: the rendered multiplier matches the stamped config value
+// (1.5x) even when (avg-sl)/atr back-computes to a slightly different number
+// because the on-chain trigger price was rounded by the exchange.
+func TestFormatTradeDM_SLATRMultiplierFromConfigNotBackComputed(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	sc := StrategyConfig{ID: "hl-eth-perps", Platform: "hyperliquid", Type: "perps"}
+	trade := Trade{
+		Symbol:            "ETH",
+		Side:              "buy",
+		Quantity:          0.4,
+		Price:             2335.10,
+		Value:             934.0,
+		EntryATR:          7.92,
+		StopLossTriggerPx: 2323.30,
+		StopLossATRMult:   pf(1.5),
+		Details:           "Open long 0.4 @ $2335.10",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if !strings.Contains(msg, "(1.5x)") {
+		t.Errorf("expected stamped (1.5x), got:\n%s", msg)
+	}
+	// Back-computed (2335.10-2323.30)/7.92 = 1.489…x — must not appear.
+	if strings.Contains(msg, "1.489") {
+		t.Errorf("back-computed multiplier leaked into output:\n%s", msg)
+	}
+}
+
+// TestFormatTradeDM_SLNoATRMultiplier verifies the SL line drops the `(Nx)`
+// suffix when trade.StopLossATRMult is nil (pct/margin/trailing-pct arming, or
+// pre-#669 positions without the snapshot) — rendering a fallback would lie
+// about how SL was armed (#687).
 func TestFormatTradeDM_SLNoATRMultiplier(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-sma-btc", Platform: "hyperliquid", Type: "perps"}
 	trade := Trade{
@@ -2271,15 +2305,17 @@ func TestFormatTradeDM_SLNoATRMultiplier(t *testing.T) {
 		Quantity:          0.01,
 		Price:             63500.0,
 		Value:             635.0,
+		EntryATR:          1500.0,
 		StopLossTriggerPx: 62000.0,
+		StopLossATRMult:   nil,
 		Details:           "Open long 0.010000 @ $63500.00",
 	}
 	msg := FormatTradeDM(sc, trade, "live")
 	if !strings.Contains(msg, "SL: $62,000.00 (-2.4%)") {
 		t.Errorf("expected legacy SL line, got:\n%s", msg)
 	}
-	if strings.Contains(msg, "(0x)") || strings.Contains(msg, "(infx)") {
-		t.Errorf("SL line must not render bogus mult when EntryATR is missing, got:\n%s", msg)
+	if strings.Contains(msg, "(0x)") || strings.Contains(msg, "(infx)") || strings.Contains(msg, "(1x)") {
+		t.Errorf("SL line must not render mult when StopLossATRMult is nil, got:\n%s", msg)
 	}
 }
 
@@ -2379,6 +2415,7 @@ func TestFormatTradeDM_ExtrasOrder(t *testing.T) {
 // OID, SL ordering, and ATR mults must apply to both Discord and Telegram
 // since they share `tradeAlertExtras`.
 func TestFormatTradeDMPlain_IncludesOID(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
 	sc := StrategyConfig{
 		ID:              "hl-tatr-eth",
 		Platform:        "hyperliquid",
@@ -2393,6 +2430,7 @@ func TestFormatTradeDMPlain_IncludesOID(t *testing.T) {
 		Value:             1150.0,
 		EntryATR:          15.0,
 		StopLossTriggerPx: 2285.0,
+		StopLossATRMult:   pf(1.0),
 		ExchangeOrderID:   "987654321",
 		Details:           "Open long 0.5 @ $2300.00",
 	}

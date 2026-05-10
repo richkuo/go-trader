@@ -1031,9 +1031,8 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 		}
 		if pos.StopLossTriggerPx > 0 {
 			slPct := percentFromEntry(pos.Side, pos.AvgCost, pos.StopLossTriggerPx)
-			if pos.EntryATR > 0 {
-				atrMult := math.Abs(pos.AvgCost-pos.StopLossTriggerPx) / pos.EntryATR
-				extras += fmt.Sprintf(" | SL: $%s (%s) (%gx)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct), atrMult)
+			if pos.StopLossATRMult != nil {
+				extras += fmt.Sprintf(" | SL: $%s (%s) (%gx)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct), *pos.StopLossATRMult)
 			} else {
 				extras += fmt.Sprintf(" | SL: $%s (%s)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct))
 			}
@@ -1134,9 +1133,8 @@ func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 	}
 	if trade.StopLossTriggerPx > 0 {
 		slPct := percentFromEntry(direction, trade.Price, trade.StopLossTriggerPx)
-		if trade.EntryATR > 0 {
-			atrMult := math.Abs(trade.Price-trade.StopLossTriggerPx) / trade.EntryATR
-			extras = append(extras, fmt.Sprintf("SL: $%s (%s) (%gx)", fmtComma2(trade.StopLossTriggerPx), fmtPnlPct(slPct), atrMult))
+		if trade.StopLossATRMult != nil {
+			extras = append(extras, fmt.Sprintf("SL: $%s (%s) (%gx)", fmtComma2(trade.StopLossTriggerPx), fmtPnlPct(slPct), *trade.StopLossATRMult))
 		} else {
 			extras = append(extras, fmt.Sprintf("SL: $%s (%s)", fmtComma2(trade.StopLossTriggerPx), fmtPnlPct(slPct)))
 		}
