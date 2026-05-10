@@ -41,10 +41,15 @@ const probeTimeout = 15 * time.Second
 // on --probe-only without parsing, so they always pass — the probe's
 // signal value is highest for argparse-strict scripts (HL/TopStep/RH/OKX),
 // where unknown flags cause the same exit-2 the May 7 outage exhibited.
+// probeOneCheckScriptFn is the per-script probe invoker — package var so
+// tests can stub it without standing up a real .venv (Go CI doesn't have
+// one — see CLAUDE.md → Testing).
+var probeOneCheckScriptFn = probeOneCheckScript
+
 func probeCheckScripts(cfg *Config) error {
 	scripts := uniqueCheckScripts(cfg)
 	for _, script := range scripts {
-		if err := probeOneCheckScript(script); err != nil {
+		if err := probeOneCheckScriptFn(script); err != nil {
 			return err
 		}
 	}
