@@ -196,6 +196,15 @@ func (ss *StatusServer) Start(port int) {
 func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
+	// 503 once SIGTERM has fired so any future load-balancer-style probe
+	// stops sending traffic immediately. Returns before the staleness check
+	// since the daemon is intentionally winding down.
+	if isDraining() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"status":"draining"}`))
+		return
+	}
+
 	ss.mu.RLock()
 	lastCycle := ss.state.LastCycle
 	ss.mu.RUnlock()

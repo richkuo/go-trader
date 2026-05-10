@@ -119,17 +119,25 @@ type HyperliquidProtectionSyncResult struct {
 	TP2FilledExternally      bool      `json:"tp2_filled_externally,omitempty"`
 }
 
-// RunPythonScript executes a Python script and returns stdout/stderr.
-func RunPythonScript(script string, args []string) ([]byte, []byte, error) {
+// runPython is the shared subprocess spawner. parentCtx is one of
+// shutdownReadOnlyCtx (read-only scripts, cancelled at SIGTERM) or
+// shutdownSideEffectCtx (live order placement / state mutation, allowed to
+// finish under the drain cap). Both default to context.Background() when the
+// daemon entry point hasn't called initShutdownContexts (one-off CLI commands
+// and tests).
+func runPython(parentCtx context.Context, script string, args []string, stdinData []byte) ([]byte, []byte, error) {
 	pythonSemaphore <- struct{}{}
 	defer func() { <-pythonSemaphore }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
+	ctx, cancel := context.WithTimeout(parentCtx, scriptTimeout)
 	defer cancel()
 
 	cmdArgs := append([]string{script}, args...)
 	cmd := exec.CommandContext(ctx, ".venv/bin/python3", cmdArgs...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if stdinData != nil {
+		cmd.Stdin = bytes.NewReader(stdinData)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -143,6 +151,40 @@ func RunPythonScript(script string, args []string) ([]byte, []byte, error) {
 		return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("script timed out after %s", scriptTimeout)
 	}
 	return stdout.Bytes(), stderr.Bytes(), err
+}
+
+// runPythonReadOnly is for scripts with no on-chain or local-state side
+// effects (check_*.py signal evaluation, fetch_*_marks.py, fetch_*_positions
+// for snapshot reads, --list-json, check_balance.py, check_price.py).
+// Cancelled immediately on SIGTERM so the daemon can shut down without
+// waiting on idle work.
+func runPythonReadOnly(script string, args []string) ([]byte, []byte, error) {
+	return runPython(shutdownReadOnlyCtx, script, args, nil)
+}
+
+// runPythonReadOnlyWithStdin mirrors runPythonReadOnly for scripts that
+// receive their input over stdin (currently RunOptionsCheckWithStdin).
+func runPythonReadOnlyWithStdin(script string, args []string, stdinData []byte) ([]byte, []byte, error) {
+	return runPython(shutdownReadOnlyCtx, script, args, stdinData)
+}
+
+// runPythonSideEffect is for scripts that place live orders, mutate local
+// state via on-chain operations, or send external messages (--execute,
+// close_*.py, --sync-protection, trigger updates). Registers with
+// sideEffectWG so SIGTERM waits up to shutdownDrainCap before forcing a
+// kill, preserving local/on-chain consistency.
+func runPythonSideEffect(script string, args []string) ([]byte, []byte, error) {
+	sideEffectWG.Add(1)
+	defer sideEffectWG.Done()
+	return runPython(shutdownSideEffectCtx, script, args, nil)
+}
+
+// RunPythonScript is the public entry for callers outside executor.go
+// (balance.go, init.go); both call sites are read-only. New side-effecting
+// callers should use runPythonSideEffect via a typed wrapper instead of
+// reaching for this function.
+func RunPythonScript(script string, args []string) ([]byte, []byte, error) {
+	return runPythonReadOnly(script, args)
 }
 
 // RunSpotCheck runs check_strategy.py and parses the result.
@@ -165,31 +207,10 @@ func RunSpotCheck(script string, args []string) (*SpotResult, string, error) {
 	return &result, stderrStr, nil
 }
 
-// RunPythonScriptWithStdin executes a Python script, piping stdinData to its stdin.
+// RunPythonScriptWithStdin is the public stdin-piped entry, currently used
+// only via RunOptionsCheckWithStdin (read-only).
 func RunPythonScriptWithStdin(script string, args []string, stdinData []byte) ([]byte, []byte, error) {
-	pythonSemaphore <- struct{}{}
-	defer func() { <-pythonSemaphore }()
-
-	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
-	defer cancel()
-
-	cmdArgs := append([]string{script}, args...)
-	cmd := exec.CommandContext(ctx, ".venv/bin/python3", cmdArgs...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Stdin = bytes.NewReader(stdinData)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if ctx.Err() == context.DeadlineExceeded {
-		if cmd.Process != nil {
-			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("script timed out after %s", scriptTimeout)
-	}
-	return stdout.Bytes(), stderr.Bytes(), err
+	return runPythonReadOnlyWithStdin(script, args, stdinData)
 }
 
 // RunOptionsCheckWithStdin runs check_options.py, passing positionsJSON via stdin.
@@ -308,7 +329,7 @@ func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64,
 // See buildHyperliquidExecuteArgs for argv-contract details.
 func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 	args := buildHyperliquidExecuteArgs(symbol, side, size, stopLossPct, cancelStopLossOID, prevPosQty, marginMode, leverage, closeFullPosition, extraCancelOIDs...)
-	stdout, stderr, err := RunPythonScript(script, args)
+	stdout, stderr, err := runPythonSideEffect(script, args)
 	return parseHyperliquidExecuteOutput(stdout, string(stderr), err)
 }
 
@@ -327,7 +348,7 @@ func RunHyperliquidUpdateStopLoss(script, symbol, side string, size, triggerPx f
 	if cancelStopLossOID > 0 {
 		args = append(args, fmt.Sprintf("--cancel-stop-loss-oid=%d", cancelStopLossOID))
 	}
-	stdout, stderr, err := RunPythonScript(script, args)
+	stdout, stderr, err := runPythonSideEffect(script, args)
 	return parseHyperliquidUpdateStopLossOutput(stdout, string(stderr), err)
 }
 
@@ -362,7 +383,7 @@ func RunHyperliquidSyncProtection(script, symbol, side string, size, avgCost, en
 			args = append(args, fmt.Sprintf("--tp-oids-json=%s", string(b)))
 		}
 	}
-	stdout, stderr, err := RunPythonScript(script, args)
+	stdout, stderr, err := runPythonSideEffect(script, args)
 	stderrStr := string(stderr)
 	var result HyperliquidProtectionSyncResult
 	if jsonErr := json.Unmarshal(stdout, &result); jsonErr != nil {
@@ -477,7 +498,7 @@ func RunHyperliquidClose(script, symbol string, partialSz *float64, cancelStopLo
 			args = append(args, fmt.Sprintf("--cancel-stop-loss-oid=%d", oid))
 		}
 	}
-	stdout, stderr, runErr := RunPythonScript(script, args)
+	stdout, stderr, runErr := runPythonSideEffect(script, args)
 	return parseHyperliquidCloseOutput(stdout, string(stderr), runErr)
 }
 
@@ -594,7 +615,7 @@ func RunTopStepExecute(script, symbol, side string, contracts int) (*TopStepExec
 		fmt.Sprintf("--contracts=%d", contracts),
 		"--mode=live",
 	}
-	stdout, stderr, err := RunPythonScript(script, args)
+	stdout, stderr, err := runPythonSideEffect(script, args)
 	stderrStr := string(stderr)
 	if err != nil {
 		var result TopStepExecuteResult
@@ -646,7 +667,7 @@ func RunTopStepClose(script, symbol string) (*TopStepCloseResult, string, error)
 		fmt.Sprintf("--symbol=%s", symbol),
 		"--mode=live",
 	}
-	stdout, stderr, runErr := RunPythonScript(script, args)
+	stdout, stderr, runErr := runPythonSideEffect(script, args)
 	return parseTopStepCloseOutput(stdout, string(stderr), runErr)
 }
 
@@ -805,7 +826,7 @@ func RunRobinhoodExecute(script, symbol, side string, amountUSD, quantity float6
 	} else {
 		args = append(args, fmt.Sprintf("--quantity=%g", quantity))
 	}
-	stdout, stderr, err := RunPythonScript(script, args)
+	stdout, stderr, err := runPythonSideEffect(script, args)
 	stderrStr := string(stderr)
 	if err != nil {
 		var result RobinhoodExecuteResult
@@ -890,7 +911,7 @@ func RunOKXExecute(script, symbol, side string, size float64, instType string) (
 		"--mode=live",
 		fmt.Sprintf("--inst-type=%s", instType),
 	}
-	stdout, stderr, err := RunPythonScript(script, args)
+	stdout, stderr, err := runPythonSideEffect(script, args)
 	stderrStr := string(stderr)
 	if err != nil {
 		var result OKXExecuteResult
@@ -958,7 +979,7 @@ func RunOKXClose(script, symbol string, partialSz *float64) (*OKXCloseResult, st
 	if partialSz != nil {
 		args = append(args, fmt.Sprintf("--sz=%s", strconv.FormatFloat(*partialSz, 'f', -1, 64)))
 	}
-	stdout, stderr, runErr := RunPythonScript(script, args)
+	stdout, stderr, runErr := runPythonSideEffect(script, args)
 	return parseOKXCloseOutput(stdout, string(stderr), runErr)
 }
 
@@ -1137,7 +1158,7 @@ func RunRobinhoodClose(script, symbol string) (*RobinhoodCloseResult, string, er
 		fmt.Sprintf("--symbol=%s", symbol),
 		"--mode=live",
 	}
-	stdout, stderr, runErr := RunPythonScript(script, args)
+	stdout, stderr, runErr := runPythonSideEffect(script, args)
 	return parseRobinhoodCloseOutput(stdout, string(stderr), runErr)
 }
 

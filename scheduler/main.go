@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -192,21 +191,26 @@ func main() {
 	server := NewStatusServer(state, &mu, cfg.StatusToken, cfg.Strategies, stateDB)
 	server.Start(statusPort)
 
-	// Graceful shutdown
+	// Graceful shutdown — two-phase drain (see scheduler/shutdown.go).
+	//
+	// Phase 1 (signal goroutine below): set draining flag, cancel
+	// shutdownReadOnlyCtx, close stopCh. Do not save state, take locks, or
+	// call I/O — a panic in this goroutine would leave the daemon wedged.
+	//
+	// Phase 2 + 3 run on the main goroutine: the trading loop returns when
+	// it sees stopCh closed, then the deferred shutdown sequence further
+	// down (registered AFTER buildNotifierFromConfig so it runs BEFORE
+	// cleanupNotifier in LIFO order) waits for in-flight side-effecting
+	// subprocesses and persists state before the notifier flushes.
+	initShutdownContexts()
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	stopCh := make(chan struct{})
 	go func() {
 		sig := <-sigCh
-		fmt.Printf("\nReceived %s, saving state and shutting down...\n", sig)
-		mu.Lock()
-		if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to save state: %v\n", err)
-		} else {
-			fmt.Println("State saved successfully.")
-		}
-		mu.Unlock()
+		fmt.Printf("\nReceived %s, draining...\n", sig)
+		beginDrain()
 		close(stopCh)
 	}()
 
@@ -214,6 +218,34 @@ func main() {
 	notifier, cleanupNotifier := buildNotifierFromConfig(cfg)
 	defer cleanupNotifier()
 	fmt.Printf("Notification backends: %d active\n", notifier.BackendCount())
+
+	// Phase 2 + 3 of graceful shutdown — registered AFTER cleanupNotifier so
+	// LIFO ordering puts this defer BEFORE notifier flush. Sequence on
+	// natural return from the trading loop:
+	//
+	//   1. runDrain() — wait up to shutdownDrainCap for in-flight
+	//      side-effecting subprocesses (--execute, close_*.py,
+	//      sync-protection); cap fires → SIGKILL backstop.
+	//   2. SaveStateWithDB — final state persist.
+	//   3. cleanupNotifier (registered above, runs after this defer
+	//      returns) — Discord/Telegram HTTP flush so any "[shutdown]" DM
+	//      lands. stateDB.Close (line 63) and logMgr.Close (line 185) run
+	//      after.
+	//
+	// os.Exit code paths (--once with exit, --summary, --leaderboard, probe
+	// failure) bypass this defer; those paths are short-lived and don't
+	// leave side-effecting subprocesses in flight.
+	defer func() {
+		runDrain()
+		mu.Lock()
+		if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
+			fmt.Fprintf(os.Stderr, "[shutdown] Failed to save state: %v\n", err)
+		} else {
+			fmt.Println("[shutdown] State saved.")
+		}
+		mu.Unlock()
+		fmt.Println("[shutdown] Complete.")
+	}()
 
 	// Route trade-persist warnings (#289) to owner DM so operators see
 	// immediate trade-DB failures instead of only stderr. Safe to wire after
@@ -406,6 +438,16 @@ func main() {
 
 	// Main loop
 	for {
+		// Refuse new cycles once SIGTERM/SIGINT has fired. The signal handler
+		// closes stopCh; the inter-cycle wait at the bottom of this loop
+		// returns on stopCh, so under normal pacing we never reach here while
+		// draining. This early-out covers the race where SIGTERM arrives
+		// between the inter-cycle wait returning and the next iteration top.
+		if isDraining() {
+			fmt.Println("[shutdown] draining, exiting trading loop.")
+			return
+		}
+
 		processConfigReloads()
 
 		cycleStart := time.Now()
@@ -465,7 +507,7 @@ func main() {
 				continue
 			case <-stopCh:
 				timer.Stop()
-				fmt.Println("Shutdown complete.")
+				fmt.Println("[shutdown] exiting trading loop.")
 				return
 			}
 		}
@@ -980,7 +1022,7 @@ func main() {
 				// sync sees updated on-chain sizes.
 				if len(hlLiveAll) > 0 {
 					runPendingHyperliquidCircuitCloses(
-						context.Background(),
+						shutdownSideEffectCtx,
 						state,
 						cfg.Strategies,
 						hlAddr,
@@ -997,7 +1039,7 @@ func main() {
 				// as the HL drain — the pending map is keyed per platform.
 				if len(okxLivePerps) > 0 && okxHasCreds {
 					runPendingOKXCircuitCloses(
-						context.Background(),
+						shutdownSideEffectCtx,
 						state,
 						cfg.Strategies,
 						okxHasCreds,
@@ -1017,7 +1059,7 @@ func main() {
 				// latched; the drain retries on the next cycle.
 				if len(tsLiveAll) > 0 {
 					runPendingTopStepCircuitCloses(
-						context.Background(),
+						shutdownSideEffectCtx,
 						state,
 						cfg.Strategies,
 						tsPositions,
@@ -1038,7 +1080,7 @@ func main() {
 				// TOTP login round-trip entirely.
 				if len(rhLiveCrypto) > 0 {
 					runPendingRobinhoodCircuitCloses(
-						context.Background(),
+						shutdownSideEffectCtx,
 						state,
 						cfg.Strategies,
 						nil,
@@ -1907,7 +1949,7 @@ func main() {
 			processConfigReloads()
 		case <-stopCh:
 			timer.Stop()
-			fmt.Println("Shutdown complete.")
+			fmt.Println("[shutdown] exiting trading loop.")
 			return
 		}
 	}

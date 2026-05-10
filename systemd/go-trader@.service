@@ -12,6 +12,11 @@ WorkingDirectory=/opt/go-trader-%i
 ExecStart=/opt/go-trader-%i/go-trader --config /opt/go-trader-%i/scheduler/config.json
 Restart=always
 RestartSec=10
+# Drain budget: shutdown.go caps in-flight side-effecting subprocesses at 15s
+# (shutdownDrainCap), then the deferred state save + notifier flush + DB
+# close run. 20s gives the binary the full drain plus a 5s buffer before
+# systemd's SIGKILL backstop fires (#681).
+TimeoutStopSec=20
 StandardOutput=journal
 StandardError=journal
 
