@@ -247,6 +247,10 @@ jobs:
             --method PATCH \
             --field body="$NEW_BODY"
 
+      - name: Mark cancellation for downstream status note
+        if: always() && cancelled()
+        run: echo "IS_CANCELLED=true" >> "$GITHUB_ENV"
+
       - name: Note workflow cancellation/failure on Claude comment
         if: always() && steps.verify_invocation.outputs.invoked == 'true' && (cancelled() || failure())
         env:
@@ -257,7 +261,6 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          IS_CANCELLED: ${{ cancelled() }}
         run: |
           case "$MODEL_ID" in
             "claude-opus-4-7[1m]")   MODEL_NAME="Claude Opus 4.7 (1M)" ;;
