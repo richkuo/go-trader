@@ -8,13 +8,23 @@ import (
 	"time"
 )
 
+// defaultManualMarginUSD is the implicit --margin value used by manual-open
+// when the operator omits all sizing flags (#691). --record-only still requires
+// an explicit --size since the operator placed the on-chain order themselves.
+const defaultManualMarginUSD = 50.0
+
+// defaultManualStopLossATRMult is the implicit stop_loss_atr_mult applied to
+// HL type=manual strategies that omit all stop fields (#691). Kept separate
+// from DefaultStopLossATRMult (1.0) so non-manual perps keep their own default.
+const defaultManualStopLossATRMult = 1.5
+
 // runManualOpen implements `go-trader manual-open <strategy-id>`.
 // It places an on-chain HL order (or records an existing fill with --record-only),
 // then enqueues the fill in pending_manual_actions for the scheduler to drain.
 func runManualOpen(args []string) int {
 	fs := flag.NewFlagSet("manual-open", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
-	side := fs.String("side", "", "Position side: long or short")
+	side := fs.String("side", "long", "Position side: long or short")
 	size := fs.Float64("size", 0, "Size in base units (coin qty)")
 	notional := fs.Float64("notional", 0, "Size as USD notional (size = notional / price)")
 	margin := fs.Float64("margin", 0, "Size as USD margin (size = margin * leverage / price)")
@@ -29,7 +39,7 @@ func runManualOpen(args []string) int {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "Usage: go-trader manual-open <strategy-id> --side long|short (--size N | --notional N | --margin N) [flags]")
+		fmt.Fprintln(os.Stderr, "Usage: go-trader manual-open <strategy-id> [--side long|short] [--size N | --notional N | --margin N] [flags]")
 		return 2
 	}
 	strategyID := fs.Arg(0)
@@ -45,10 +55,6 @@ func runManualOpen(args []string) int {
 		return 1
 	}
 
-	if strings.TrimSpace(*side) == "" {
-		fmt.Fprintln(os.Stderr, "error: --side is required (long or short)")
-		return 2
-	}
 	*side = strings.ToLower(strings.TrimSpace(*side))
 	if *side != "long" && *side != "short" {
 		fmt.Fprintf(os.Stderr, "error: --side must be \"long\" or \"short\", got %q\n", *side)
@@ -67,6 +73,11 @@ func runManualOpen(args []string) int {
 	}
 
 	sizingInputs := countSizingFlags(*size, *notional, *margin)
+	if sizingInputs == 0 && !*recordOnly {
+		*margin = defaultManualMarginUSD
+		sizingInputs = 1
+		fmt.Fprintf(os.Stderr, "[manual-open] no sizing flag provided; defaulting to --margin %g\n", defaultManualMarginUSD)
+	}
 	if sizingInputs == 0 {
 		fmt.Fprintln(os.Stderr, "error: one of --size, --notional, or --margin is required")
 		return 2

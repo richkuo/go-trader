@@ -584,3 +584,22 @@ func TestApplyManualAction_OpenSetsTPOIDs(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultManualMarginUSD pins the implicit --margin value used when
+// manual-open is invoked without a sizing flag (#691). Bumping this default
+// changes operator-visible behavior — update intentionally and in step with
+// CLAUDE.md.
+func TestDefaultManualMarginUSD(t *testing.T) {
+	if defaultManualMarginUSD != 50.0 {
+		t.Errorf("defaultManualMarginUSD = %g, want 50.0", defaultManualMarginUSD)
+	}
+}
+
+// TestDefaultManualStopLossATRMult pins the implicit stop_loss_atr_mult for
+// HL type=manual strategies (#691). Distinct from DefaultStopLossATRMult (1.0)
+// so non-manual perps strategies keep their tighter default.
+func TestDefaultManualStopLossATRMult(t *testing.T) {
+	if defaultManualStopLossATRMult != 1.5 {
+		t.Errorf("defaultManualStopLossATRMult = %g, want 1.5", defaultManualStopLossATRMult)
+	}
+}

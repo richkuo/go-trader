@@ -1058,6 +1058,97 @@ func TestLoadConfigHLPerpsSingleStrategyAutoDerivesStopLoss(t *testing.T) {
 	}
 }
 
+// #691: type=manual HL strategies default to stop_loss_atr_mult=1.5 (wider
+// than the 1.0× HL perps default) when no stop fields are configured.
+func TestLoadConfigManualDefaultsStopLossATRMultTo1Point5(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-manual-eth-live",
+			"type": "manual",
+			"platform": "hyperliquid",
+			"symbol": "ETH",
+			"timeframe": "1h",
+			"capital": 1000,
+			"leverage": 20,
+			"max_drawdown_pct": 20
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if sc.StopLossATRMult == nil {
+		t.Fatal("StopLossATRMult = nil, want 1.5 default applied")
+	}
+	if got := *sc.StopLossATRMult; got != defaultManualStopLossATRMult {
+		t.Errorf("StopLossATRMult = %g, want %g", got, defaultManualStopLossATRMult)
+	}
+}
+
+// #691 / PR #692 review: default_stop_loss_atr_mult=0 opts manual strategies
+// out of the auto-default just like non-manual HL perps. Without this gate,
+// the operator-facing INFO message advertising =0 as the global switch would
+// be a half-truth for type=manual.
+func TestLoadConfigManualOptsOutWhenGlobalDefaultIsZero(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"default_stop_loss_atr_mult": 0,
+		"strategies": [{
+			"id": "hl-manual-eth-live",
+			"type": "manual",
+			"platform": "hyperliquid",
+			"symbol": "ETH",
+			"timeframe": "1h",
+			"capital": 1000,
+			"leverage": 20,
+			"max_drawdown_pct": 20
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if sc.StopLossATRMult != nil {
+		t.Errorf("StopLossATRMult = %v, want nil (default_stop_loss_atr_mult=0 is the global opt-out)", *sc.StopLossATRMult)
+	}
+}
+
+// #691: explicit stop_loss_atr_mult on a manual strategy is preserved
+// verbatim — the 1.5× default must not overwrite operator intent.
+func TestLoadConfigManualExplicitATRMultPreserved(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-manual-eth-live",
+			"type": "manual",
+			"platform": "hyperliquid",
+			"symbol": "ETH",
+			"timeframe": "1h",
+			"capital": 1000,
+			"leverage": 20,
+			"max_drawdown_pct": 20,
+			"stop_loss_atr_mult": 2.5
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if sc.StopLossATRMult == nil {
+		t.Fatal("StopLossATRMult = nil, want explicit 2.5 preserved")
+	}
+	if got := *sc.StopLossATRMult; got != 2.5 {
+		t.Errorf("StopLossATRMult = %g, want 2.5 (explicit value)", got)
+	}
+}
+
 // #486: explicit cross margin mode is preserved.
 func TestLoadConfigHLPerpsExplicitCross(t *testing.T) {
 	dir := t.TempDir()
