@@ -972,7 +972,53 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
         sys.exit(1)
 
 
+def run_fetch_atr(symbol: str, timeframe: str, period: int):
+    """Fetch OHLCV from Hyperliquid and emit latest ATR as JSON.
+
+    Used by manual-open when --atr is omitted so manual positions get the
+    same ATR baseline strategy opens compute via ensure_atr_indicator (#689).
+    Emits {"atr": <float>, "candles": <int>} on success; {"error": "..."} on
+    failure (still exits 0 so Go can parse the JSON and decide whether to
+    fall back to computeFallbackATR).
+    """
+    try:
+        from adapter import HyperliquidExchangeAdapter
+        adapter = HyperliquidExchangeAdapter()
+        candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=200)
+        if not candles or len(candles) < period + 1:
+            print(json.dumps({
+                "error": f"insufficient candles: got {len(candles) if candles else 0}, need {period + 1}",
+                "candles": len(candles) if candles else 0,
+            }, cls=SafeEncoder))
+            return
+        df = _make_dataframe(candles)
+        atr = latest_atr(df, period=period)
+        if not (atr > 0):
+            print(json.dumps({
+                "error": "latest ATR is not positive",
+                "candles": len(candles),
+            }, cls=SafeEncoder))
+            return
+        print(json.dumps({"atr": atr, "candles": len(candles)}, cls=SafeEncoder))
+    except Exception as e:
+        print(json.dumps({"error": f"{type(e).__name__}: {e}"}, cls=SafeEncoder))
+
+
 def main():
+    if "--fetch-atr" in sys.argv:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--fetch-atr", action="store_true")
+        parser.add_argument("--symbol", required=True)
+        parser.add_argument("--timeframe", required=True)
+        parser.add_argument("--period", type=int, default=14)
+        parser.add_argument("--probe-only", action="store_true",
+            help="Startup compatibility probe: validate argv shape and exit 0.")
+        args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
+        run_fetch_atr(args.symbol, args.timeframe, args.period)
+        return
     if "--sync-protection" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()
