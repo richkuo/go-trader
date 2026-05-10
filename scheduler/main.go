@@ -26,6 +26,11 @@ func main() {
 			os.Exit(runManualClose(os.Args[2:]))
 		case "backfill":
 			os.Exit(runBackfill(os.Args[2:]))
+		case "probe":
+			os.Exit(runProbe(os.Args[2:]))
+		case "version", "--version", "-version":
+			fmt.Println(Version)
+			os.Exit(0)
 		}
 	}
 

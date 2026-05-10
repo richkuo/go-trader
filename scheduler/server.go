@@ -200,13 +200,19 @@ func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	lastCycle := ss.state.LastCycle
 	ss.mu.RUnlock()
 
-	// Stale if main loop hasn't completed a cycle in the last 30 minutes
-	if !lastCycle.IsZero() && time.Since(lastCycle) > 30*time.Minute {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(`{"status":"unhealthy","reason":"main loop stale"}`))
-		return
+	// `version` is the build-stamped Version (#682) so scripts/update.sh can
+	// confirm the post-restart process matches the just-built binary before
+	// declaring the update successful (and rolling back otherwise).
+	resp := map[string]string{
+		"status":  "ok",
+		"version": Version,
 	}
-	w.Write([]byte(`{"status":"ok"}`))
+	if !lastCycle.IsZero() && time.Since(lastCycle) > 30*time.Minute {
+		resp["status"] = "unhealthy"
+		resp["reason"] = "main loop stale"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {

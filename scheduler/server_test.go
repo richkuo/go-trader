@@ -29,6 +29,11 @@ func TestHandleHealth(t *testing.T) {
 	if resp["status"] != "ok" {
 		t.Errorf("status = %q, want %q", resp["status"], "ok")
 	}
+	// #682: /health must report the build version so update.sh can verify
+	// the post-restart process matches the just-built binary.
+	if resp["version"] != Version {
+		t.Errorf("version = %q, want %q", resp["version"], Version)
+	}
 }
 
 func TestHandleHealthStale(t *testing.T) {
@@ -44,6 +49,14 @@ func TestHandleHealthStale(t *testing.T) {
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+	// Even when stale, the version field should be present so a rolling
+	// update can still distinguish old from new during the brief window
+	// between restart and the first completed cycle.
+	var resp map[string]string
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["version"] != Version {
+		t.Errorf("version = %q, want %q", resp["version"], Version)
 	}
 }
 
