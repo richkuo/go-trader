@@ -3546,3 +3546,50 @@ func TestReconcilePosition_AllTPOIDsZeroedSLNotFilled(t *testing.T) {
 		t.Errorf("cash = %g, want unchanged (%g) — fictitious SL PnL must not credit/debit", ss.Cash, startCash)
 	}
 }
+
+// TestAttemptCloseFromTPFills_CoinSizeSLFallbackDoesNotStarveTP guards the
+// review-followup tightening on the SL-filled gate inside
+// hlAttemptCloseFromTPFills: before the fix, a coin+size fallback hit on a TP
+// fill of the same size made slFilled=true (the resolver returned ok=true with
+// lookup.OID pointing at the TP, not the SL OID) and TP attribution was
+// skipped. With the OID-equality check, the SL gate rejects the non-SL match
+// and TP attribution proceeds normally.
+func TestAttemptCloseFromTPFills_CoinSizeSLFallbackDoesNotStarveTP(t *testing.T) {
+	const (
+		entryPx = 2000.0
+		tpPx    = 2100.0
+		qty     = 0.2
+	)
+	ss := &StrategyState{
+		ID: "hl-eth", Cash: 1000,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol: "ETH", Quantity: qty, InitialQuantity: qty,
+				AvgCost: entryPx, Side: "long",
+				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-eth",
+				StopLossOID: 42, StopLossTriggerPx: 1900,
+				TPOIDs: []int64{111},
+			},
+		},
+	}
+	// Resolver behavior: any (coin, oid, qty) returns a hit whose OID is the
+	// TP OID 111 — modeling the coin+size fallback hitting a TP fill record
+	// of the same size when probed for the SL OID.
+	resolver := hlReconcileFillResolver(func(_ string, _ int64, _ float64) (HLFillLookup, bool) {
+		return HLFillLookup{Fee: 0.04, FilledQty: qty, Px: tpPx, Count: 1, OID: 111}, true
+	})
+	logger := newTestLogger(t)
+
+	if !hlAttemptCloseFromTPFills(ss, "ETH", ss.Positions["ETH"], resolver, logger) {
+		t.Fatal("expected TP attribution to proceed (SL gate must reject non-OID-match)")
+	}
+	if _, open := ss.Positions["ETH"]; open {
+		t.Error("ETH position should be removed after TP attribution")
+	}
+	if len(ss.TradeHistory) != 1 || !ss.TradeHistory[0].IsClose {
+		t.Fatalf("expected one close trade, got %+v", ss.TradeHistory)
+	}
+	if math.Abs(ss.TradeHistory[0].Price-tpPx) > 1e-9 {
+		t.Errorf("Trade.Price = %g, want %g (TP fill price)", ss.TradeHistory[0].Price, tpPx)
+	}
+}

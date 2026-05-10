@@ -547,6 +547,11 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 				if recordPerpsStopLossCloseWithFillFee(stratState, sym, statePos.StopLossTriggerPx, lookup.Fee, useFillFee, oidStr, "stop_loss", logger) {
 					return true
 				}
+			} else if useFillFee {
+				// #685 log clarity: the lookup hit (logged above) matched
+				// something other than this SL OID (e.g. a coin+size fallback
+				// onto a TP fill), so this close is NOT being booked as SL.
+				logger.Info("hl-sync: %s SL OID %s unfilled — routing to hl_sync_external (matched oid=%d qty=%.6f)", sym, oidStr, lookup.OID, lookup.FilledQty)
 			}
 		}
 		// Close price is unknown — the fill happened off-scheduler between
@@ -1159,8 +1164,11 @@ func hlAttemptCloseFromTPFills(s *StrategyState, sym string, pos *Position, reso
 	// If the SL OID has fills, leave attribution to the existing SL path —
 	// it knows how to handle the #621 "SL fired on the post-TP residual"
 	// case and we don't want to double-book by also crediting TPs here.
+	// #685: require OID equality so a coin+size fallback hit on a TP fill of
+	// the same size (lookup.OID != StopLossOID) doesn't masquerade as an SL
+	// fill and starve TP attribution.
 	if pos.StopLossOID > 0 {
-		if _, slFilled := resolveFee(sym, pos.StopLossOID, pos.Quantity); slFilled {
+		if lookup, slFilled := resolveFee(sym, pos.StopLossOID, pos.Quantity); slFilled && lookup.OID == pos.StopLossOID && lookup.FilledQty > 1e-9 {
 			return false
 		}
 	}
