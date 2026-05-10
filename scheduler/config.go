@@ -123,7 +123,81 @@ type Config struct {
 	RiskFreeRate           *float64                   `json:"risk_free_rate,omitempty"`             // #397 — annualized risk-free rate used in Sharpe-ratio calculations (e.g. 0.02 for 2%). Nil/missing falls back to DefaultAnnualRiskFreeRate; an explicit 0 is respected so backtest comparisons can pin to a 0% benchmark.
 	DefaultStopLossATRMult *float64                   `json:"default_stop_loss_atr_mult,omitempty"` // #605 — top-level default applied to HL perps/manual strategies that omit all stop_loss_* / trailing_stop_* fields. Nil/missing falls back to 1.0; explicit values let operators tune the ATR stop without recompiling.
 	NotifyTPSLFills        *bool                      `json:"notify_tp_sl_fills,omitempty"`         // #661 — owner DM when HL on-chain TP/SL fills are detected by the reconciler. Nil/missing → enabled; explicit false disables.
+	ManualDefaults         *ManualDefaultsConfig      `json:"manual_defaults,omitempty"`            // #696 — operator-tunable defaults for `manual-open` CLI and `type=manual` strategy auto-config. Each field optional; absent values fall back to the hardcoded defaults.
 	TradingViewExport      TradingViewExportConfig    `json:"tradingview_export,omitempty"`         // #3 — optional symbol overrides for TradingView portfolio CSV exports
+}
+
+// ManualDefaultsConfig holds operator-tunable defaults for the manual-open CLI
+// and type=manual strategy auto-config. All fields are optional; missing values
+// fall back to the hardcoded constants (defaultManualMarginUSD,
+// defaultManualStopLossATRMult, "long", and the inline 1×/2× tier literal).
+// The fleet-wide default_stop_loss_atr_mult=0 opt-out still wins over
+// StopLossATRMult: setting it to 0 disables the auto-default globally,
+// including for manual strategies (#696).
+type ManualDefaultsConfig struct {
+	MarginUSD       *float64       `json:"margin_usd,omitempty"`         // implicit --margin (USD) when manual-open is invoked without --size/--notional/--margin (live mode only; --record-only still requires --size). Nil → 50.0.
+	StopLossATRMult *float64       `json:"stop_loss_atr_mult,omitempty"` // implicit stop_loss_atr_mult applied to type=manual strategies that omit all five HL stop fields. Nil → 1.5.
+	Side            string         `json:"side,omitempty"`               // implicit --side ("long" or "short") for manual-open. Empty → "long".
+	TPTiers         []ManualTPTier `json:"tp_tiers,omitempty"`           // implicit `tiers` params for tiered_tp_atr / tiered_tp_atr_live close strategies on type=manual. Empty → [{2.0, 0.5}, {3.0, 1.0}].
+}
+
+// ManualTPTier is one entry of ManualDefaultsConfig.TPTiers. Matches the JSON
+// shape consumed by the tiered_tp_atr* close evaluators ({atr_multiple,
+// close_fraction}); the final tier's close_fraction is always coerced to 1.0
+// by the evaluator regardless of the configured value.
+type ManualTPTier struct {
+	ATRMultiple   float64 `json:"atr_multiple"`
+	CloseFraction float64 `json:"close_fraction"`
+}
+
+// resolveManualMarginUSD returns the implicit margin used when manual-open is
+// invoked without any sizing flag. Operator config wins; hardcoded constant is
+// the fallback.
+func (c *Config) resolveManualMarginUSD() float64 {
+	if c != nil && c.ManualDefaults != nil && c.ManualDefaults.MarginUSD != nil {
+		return *c.ManualDefaults.MarginUSD
+	}
+	return defaultManualMarginUSD
+}
+
+// resolveManualSide returns the implicit --side for manual-open. Operator
+// config wins; "long" is the fallback.
+func (c *Config) resolveManualSide() string {
+	if c != nil && c.ManualDefaults != nil && c.ManualDefaults.Side != "" {
+		return c.ManualDefaults.Side
+	}
+	return "long"
+}
+
+// resolveManualStopLossATRMult returns the implicit stop_loss_atr_mult for
+// type=manual strategies that omit all five HL stop fields. Operator config
+// wins; the 1.5× hardcoded fallback is preserved when absent.
+func (c *Config) resolveManualStopLossATRMult() float64 {
+	if c != nil && c.ManualDefaults != nil && c.ManualDefaults.StopLossATRMult != nil {
+		return *c.ManualDefaults.StopLossATRMult
+	}
+	return defaultManualStopLossATRMult
+}
+
+// resolveManualTPTiers returns the implicit `tiers` params for
+// tiered_tp_atr* close strategies on type=manual. Operator config wins; the
+// inline [{2×, 0.5}, {3×, 1.0}] literal is preserved when absent. Returns a
+// fresh slice so callers can stamp it onto Params without aliasing.
+func (c *Config) resolveManualTPTiers() []interface{} {
+	if c != nil && c.ManualDefaults != nil && len(c.ManualDefaults.TPTiers) > 0 {
+		tiers := make([]interface{}, len(c.ManualDefaults.TPTiers))
+		for i, t := range c.ManualDefaults.TPTiers {
+			tiers[i] = map[string]interface{}{
+				"atr_multiple":   t.ATRMultiple,
+				"close_fraction": t.CloseFraction,
+			}
+		}
+		return tiers
+	}
+	return []interface{}{
+		map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+		map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+	}
 }
 
 // NotifyTPSLFillsEnabled reports whether reconciler-detected TP/SL fills should
@@ -525,6 +599,27 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("default_stop_loss_atr_mult must be >= 0, got %g", *cfg.DefaultStopLossATRMult)
 	}
 
+	if cfg.ManualDefaults != nil {
+		md := cfg.ManualDefaults
+		if md.MarginUSD != nil && *md.MarginUSD <= 0 {
+			return nil, fmt.Errorf("manual_defaults.margin_usd must be > 0, got %g", *md.MarginUSD)
+		}
+		if md.StopLossATRMult != nil && *md.StopLossATRMult < 0 {
+			return nil, fmt.Errorf("manual_defaults.stop_loss_atr_mult must be >= 0, got %g", *md.StopLossATRMult)
+		}
+		if md.Side != "" && md.Side != "long" && md.Side != "short" {
+			return nil, fmt.Errorf("manual_defaults.side must be \"long\" or \"short\", got %q", md.Side)
+		}
+		for i, t := range md.TPTiers {
+			if t.ATRMultiple <= 0 {
+				return nil, fmt.Errorf("manual_defaults.tp_tiers[%d].atr_multiple must be > 0, got %g", i, t.ATRMultiple)
+			}
+			if t.CloseFraction <= 0 || t.CloseFraction > 1 {
+				return nil, fmt.Errorf("manual_defaults.tp_tiers[%d].close_fraction must be in (0, 1], got %g", i, t.CloseFraction)
+			}
+		}
+	}
+
 	// Bounds-check status_port. Reject privileged ports (<1024 needs root)
 	// and values that would push the auto-fallback sweep past the TCP port
 	// ceiling. Zero/missing falls through to resolveStatusPort's default.
@@ -700,7 +795,8 @@ func LoadConfig(path string) (*Config, error) {
 		if len(sc.CloseStrategies) == 0 {
 			sc.CloseStrategies = []StrategyRef{{Name: "tiered_tp_atr_live"}}
 		}
-		// #691: type=manual gets its own SL default (1.5× ATR) so non-manual
+		// #691/#696: type=manual gets its own SL default (1.5× ATR by default,
+		// overridable via manual_defaults.stop_loss_atr_mult) so non-manual
 		// perps strategies stay on the fleet-wide default_stop_loss_atr_mult
 		// (typically 1.0×). Skip if any explicit stop field is set so peers
 		// and operator overrides still win. Honor the fleet-wide
@@ -708,12 +804,15 @@ func LoadConfig(path string) (*Config, error) {
 		// the auto-default globally, manual strategies opt out too (the
 		// INFO message at config.go:675 advertises =0 as the global switch).
 		if defaultStopLossATRMult > 0 && sc.StopLossATRMult == nil && sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil {
-			defaultMult := defaultManualStopLossATRMult
-			sc.StopLossATRMult = &defaultMult
+			defaultMult := cfg.resolveManualStopLossATRMult()
+			if defaultMult > 0 {
+				sc.StopLossATRMult = &defaultMult
+			}
 		}
-		// Default TP tiers for manual strategies onto the matching close ref.
-		// Only the tiered_tp_atr* close evaluators consume `tiers`; if the
-		// operator overrode CloseStrategies to something else, leave it alone.
+		// #696: Default TP tiers for manual strategies onto the matching close
+		// ref, overridable via manual_defaults.tp_tiers. Only the tiered_tp_atr*
+		// close evaluators consume `tiers`; if the operator overrode
+		// CloseStrategies to something else, leave it alone.
 		for j := range sc.CloseStrategies {
 			cs := &sc.CloseStrategies[j]
 			if cs.Name != "tiered_tp_atr" && cs.Name != "tiered_tp_atr_live" {
@@ -723,10 +822,7 @@ func LoadConfig(path string) (*Config, error) {
 				cs.Params = map[string]interface{}{}
 			}
 			if _, hasTP := cs.Params["tiers"]; !hasTP {
-				cs.Params["tiers"] = []interface{}{
-					map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
-					map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
-				}
+				cs.Params["tiers"] = cfg.resolveManualTPTiers()
 			}
 		}
 	}

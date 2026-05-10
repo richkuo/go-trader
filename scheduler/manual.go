@@ -24,7 +24,7 @@ const defaultManualStopLossATRMult = 1.5
 func runManualOpen(args []string) int {
 	fs := flag.NewFlagSet("manual-open", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
-	side := fs.String("side", "long", "Position side: long or short")
+	side := fs.String("side", "", "Position side: long or short (default: \"long\", override via manual_defaults.side in config)")
 	size := fs.Float64("size", 0, "Size in base units (coin qty)")
 	notional := fs.Float64("notional", 0, "Size as USD notional (size = notional / price)")
 	margin := fs.Float64("margin", 0, "Size as USD margin (size = margin * leverage / price)")
@@ -55,7 +55,12 @@ func runManualOpen(args []string) int {
 		return 1
 	}
 
+	// #696: resolve --side default after config load so manual_defaults.side
+	// can override the "long" fallback when the operator omits the flag.
 	*side = strings.ToLower(strings.TrimSpace(*side))
+	if *side == "" {
+		*side = cfg.resolveManualSide()
+	}
 	if *side != "long" && *side != "short" {
 		fmt.Fprintf(os.Stderr, "error: --side must be \"long\" or \"short\", got %q\n", *side)
 		return 2
@@ -74,9 +79,9 @@ func runManualOpen(args []string) int {
 
 	sizingInputs := countSizingFlags(*size, *notional, *margin)
 	if sizingInputs == 0 && !*recordOnly {
-		*margin = defaultManualMarginUSD
+		*margin = cfg.resolveManualMarginUSD()
 		sizingInputs = 1
-		fmt.Fprintf(os.Stderr, "[manual-open] no sizing flag provided; defaulting to --margin %g\n", defaultManualMarginUSD)
+		fmt.Fprintf(os.Stderr, "[manual-open] no sizing flag provided; defaulting to --margin %g\n", *margin)
 	}
 	if sizingInputs == 0 {
 		fmt.Fprintln(os.Stderr, "error: one of --size, --notional, or --margin is required")

@@ -1149,6 +1149,299 @@ func TestLoadConfigManualExplicitATRMultPreserved(t *testing.T) {
 	}
 }
 
+// #696: manual_defaults.stop_loss_atr_mult overrides the hardcoded 1.5× fallback.
+func TestLoadConfigManualDefaultsStopLossATRMultOverride(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"manual_defaults": {"stop_loss_atr_mult": 2.25},
+		"strategies": [{
+			"id": "hl-manual-eth-live",
+			"type": "manual",
+			"platform": "hyperliquid",
+			"symbol": "ETH",
+			"timeframe": "1h",
+			"capital": 1000,
+			"leverage": 20,
+			"max_drawdown_pct": 20
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if sc.StopLossATRMult == nil {
+		t.Fatal("StopLossATRMult = nil, want 2.25 from manual_defaults")
+	}
+	if got := *sc.StopLossATRMult; got != 2.25 {
+		t.Errorf("StopLossATRMult = %g, want 2.25 (manual_defaults override)", got)
+	}
+}
+
+// #696: manual_defaults.stop_loss_atr_mult=0 opts manual strategies out of the
+// auto-default just like the fleet-wide default_stop_loss_atr_mult=0. Lets
+// operators disable the manual SL default without affecting non-manual perps.
+func TestLoadConfigManualDefaultsStopLossATRMultZeroOptsOut(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"manual_defaults": {"stop_loss_atr_mult": 0},
+		"strategies": [{
+			"id": "hl-manual-eth-live",
+			"type": "manual",
+			"platform": "hyperliquid",
+			"symbol": "ETH",
+			"timeframe": "1h",
+			"capital": 1000,
+			"leverage": 20,
+			"max_drawdown_pct": 20
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if sc.StopLossATRMult != nil {
+		t.Errorf("StopLossATRMult = %v, want nil (manual_defaults.stop_loss_atr_mult=0 opts manual strategies out)", *sc.StopLossATRMult)
+	}
+}
+
+// #696: manual_defaults.tp_tiers overrides the hardcoded 1×/2× tier literal
+// for tiered_tp_atr* close strategies.
+func TestLoadConfigManualDefaultsTPTiersOverride(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"manual_defaults": {
+			"tp_tiers": [
+				{"atr_multiple": 1.5, "close_fraction": 0.4},
+				{"atr_multiple": 2.5, "close_fraction": 1.0}
+			]
+		},
+		"strategies": [{
+			"id": "hl-manual-eth-live",
+			"type": "manual",
+			"platform": "hyperliquid",
+			"symbol": "ETH",
+			"timeframe": "1h",
+			"capital": 1000,
+			"leverage": 20,
+			"max_drawdown_pct": 20
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if len(sc.CloseStrategies) != 1 || sc.CloseStrategies[0].Name != "tiered_tp_atr_live" {
+		t.Fatalf("CloseStrategies = %+v, want single tiered_tp_atr_live entry", sc.CloseStrategies)
+	}
+	tiersAny, ok := sc.CloseStrategies[0].Params["tiers"]
+	if !ok {
+		t.Fatal("close strategy params missing tiers")
+	}
+	tiers, ok := tiersAny.([]interface{})
+	if !ok {
+		t.Fatalf("tiers = %T, want []interface{}", tiersAny)
+	}
+	if len(tiers) != 2 {
+		t.Fatalf("tiers length = %d, want 2", len(tiers))
+	}
+	want := []struct{ atrMult, frac float64 }{{1.5, 0.4}, {2.5, 1.0}}
+	for i, t0 := range tiers {
+		m, ok := t0.(map[string]interface{})
+		if !ok {
+			t.Fatalf("tier[%d] = %T, want map[string]interface{}", i, t0)
+		}
+		if got := m["atr_multiple"].(float64); got != want[i].atrMult {
+			t.Errorf("tier[%d].atr_multiple = %g, want %g", i, got, want[i].atrMult)
+		}
+		if got := m["close_fraction"].(float64); got != want[i].frac {
+			t.Errorf("tier[%d].close_fraction = %g, want %g", i, got, want[i].frac)
+		}
+	}
+}
+
+// #696: explicit `tiers` on a close-strategy ref wins over manual_defaults.tp_tiers
+// so per-strategy operator intent is preserved.
+func TestLoadConfigManualDefaultsTPTiersDoesNotOverrideExplicit(t *testing.T) {
+	dir := t.TempDir()
+	// config_version: 14 skips the v13 migration so the object-shaped
+	// close_strategies entry isn't dropped.
+	cfgJSON := `{
+		"config_version": 14,
+		"manual_defaults": {
+			"tp_tiers": [{"atr_multiple": 1.5, "close_fraction": 1.0}]
+		},
+		"strategies": [{
+			"id": "hl-manual-eth-live",
+			"type": "manual",
+			"platform": "hyperliquid",
+			"symbol": "ETH",
+			"timeframe": "1h",
+			"capital": 1000,
+			"leverage": 20,
+			"max_drawdown_pct": 20,
+			"close_strategies": [{
+				"name": "tiered_tp_atr_live",
+				"params": {"tiers": [{"atr_multiple": 5.0, "close_fraction": 1.0}]}
+			}]
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	tiers := cfg.Strategies[0].CloseStrategies[0].Params["tiers"].([]interface{})
+	if len(tiers) != 1 {
+		t.Fatalf("tiers length = %d, want 1 (explicit override)", len(tiers))
+	}
+	got := tiers[0].(map[string]interface{})["atr_multiple"].(float64)
+	if got != 5.0 {
+		t.Errorf("tier[0].atr_multiple = %g, want 5.0 (explicit, not manual_defaults)", got)
+	}
+}
+
+// #696: absent manual_defaults block preserves the hardcoded 1.5× SL and
+// 1×/2× tier defaults exactly as before — guards against accidental
+// behavior change for operators who don't opt into the new config block.
+func TestLoadConfigManualDefaultsAbsentPreservesHardcodedDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-manual-eth-live",
+			"type": "manual",
+			"platform": "hyperliquid",
+			"symbol": "ETH",
+			"timeframe": "1h",
+			"capital": 1000,
+			"leverage": 20,
+			"max_drawdown_pct": 20
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if sc.StopLossATRMult == nil || *sc.StopLossATRMult != defaultManualStopLossATRMult {
+		t.Errorf("StopLossATRMult = %v, want %g (hardcoded fallback)", sc.StopLossATRMult, defaultManualStopLossATRMult)
+	}
+	tiers := sc.CloseStrategies[0].Params["tiers"].([]interface{})
+	if len(tiers) != 2 {
+		t.Fatalf("tiers length = %d, want 2 (hardcoded fallback)", len(tiers))
+	}
+	t0 := tiers[0].(map[string]interface{})
+	t1 := tiers[1].(map[string]interface{})
+	if t0["atr_multiple"].(float64) != 2.0 || t0["close_fraction"].(float64) != 0.5 {
+		t.Errorf("tier[0] = %+v, want {2.0, 0.5}", t0)
+	}
+	if t1["atr_multiple"].(float64) != 3.0 || t1["close_fraction"].(float64) != 1.0 {
+		t.Errorf("tier[1] = %+v, want {3.0, 1.0}", t1)
+	}
+}
+
+// #696: manual_defaults validation rejects invalid values.
+func TestLoadConfigManualDefaultsValidation(t *testing.T) {
+	cases := []struct {
+		name      string
+		block     string
+		wantError string
+	}{
+		{"margin negative", `"margin_usd": -1`, "manual_defaults.margin_usd"},
+		{"margin zero", `"margin_usd": 0`, "manual_defaults.margin_usd"},
+		{"slmult negative", `"stop_loss_atr_mult": -0.5`, "manual_defaults.stop_loss_atr_mult"},
+		{"side invalid", `"side": "neutral"`, "manual_defaults.side"},
+		{"tier atr zero", `"tp_tiers": [{"atr_multiple": 0, "close_fraction": 1.0}]`, "atr_multiple"},
+		{"tier frac zero", `"tp_tiers": [{"atr_multiple": 1.0, "close_fraction": 0}]`, "close_fraction"},
+		{"tier frac over 1", `"tp_tiers": [{"atr_multiple": 1.0, "close_fraction": 1.5}]`, "close_fraction"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgJSON := `{
+				"manual_defaults": {` + tc.block + `},
+				"strategies": [{
+					"id": "hl-manual-eth-live",
+					"type": "manual",
+					"platform": "hyperliquid",
+					"symbol": "ETH",
+					"timeframe": "1h",
+					"capital": 1000,
+					"leverage": 20,
+					"max_drawdown_pct": 20
+				}]
+			}`
+			path := writeTestConfig(t, dir, cfgJSON)
+			_, err := LoadConfig(path)
+			if err == nil {
+				t.Fatalf("LoadConfig accepted invalid manual_defaults block: %s", tc.block)
+			}
+			if !strings.Contains(err.Error(), tc.wantError) {
+				t.Errorf("error %q does not mention %q", err, tc.wantError)
+			}
+		})
+	}
+}
+
+// #696: resolveManual* helpers fall back to hardcoded defaults when block absent.
+func TestConfigResolveManualHelpersFallback(t *testing.T) {
+	var cfg Config
+	if got := cfg.resolveManualMarginUSD(); got != defaultManualMarginUSD {
+		t.Errorf("resolveManualMarginUSD = %g, want %g", got, defaultManualMarginUSD)
+	}
+	if got := cfg.resolveManualSide(); got != "long" {
+		t.Errorf("resolveManualSide = %q, want %q", got, "long")
+	}
+	if got := cfg.resolveManualStopLossATRMult(); got != defaultManualStopLossATRMult {
+		t.Errorf("resolveManualStopLossATRMult = %g, want %g", got, defaultManualStopLossATRMult)
+	}
+	tiers := cfg.resolveManualTPTiers()
+	if len(tiers) != 2 {
+		t.Fatalf("resolveManualTPTiers length = %d, want 2", len(tiers))
+	}
+}
+
+// #696: resolveManual* helpers honor populated ManualDefaults block.
+func TestConfigResolveManualHelpersFromConfig(t *testing.T) {
+	margin := 125.0
+	slMult := 2.0
+	cfg := Config{
+		ManualDefaults: &ManualDefaultsConfig{
+			MarginUSD:       &margin,
+			StopLossATRMult: &slMult,
+			Side:            "short",
+			TPTiers: []ManualTPTier{
+				{ATRMultiple: 1.0, CloseFraction: 0.3},
+				{ATRMultiple: 2.0, CloseFraction: 0.7},
+				{ATRMultiple: 4.0, CloseFraction: 1.0},
+			},
+		},
+	}
+	if got := cfg.resolveManualMarginUSD(); got != 125.0 {
+		t.Errorf("resolveManualMarginUSD = %g, want 125.0", got)
+	}
+	if got := cfg.resolveManualSide(); got != "short" {
+		t.Errorf("resolveManualSide = %q, want %q", got, "short")
+	}
+	if got := cfg.resolveManualStopLossATRMult(); got != 2.0 {
+		t.Errorf("resolveManualStopLossATRMult = %g, want 2.0", got)
+	}
+	tiers := cfg.resolveManualTPTiers()
+	if len(tiers) != 3 {
+		t.Fatalf("resolveManualTPTiers length = %d, want 3", len(tiers))
+	}
+	mid := tiers[1].(map[string]interface{})
+	if mid["atr_multiple"].(float64) != 2.0 || mid["close_fraction"].(float64) != 0.7 {
+		t.Errorf("tier[1] = %+v, want {2.0, 0.7}", mid)
+	}
+}
+
 // #486: explicit cross margin mode is preserved.
 func TestLoadConfigHLPerpsExplicitCross(t *testing.T) {
 	dir := t.TempDir()
