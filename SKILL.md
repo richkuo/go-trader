@@ -19,6 +19,7 @@ Quick flow for a new server: tell OpenClaw `install https://github.com/richkuo/g
 - Never store secrets in config files — put Discord/exchange credentials in systemd environment variables.
 - Prefer `./go-trader init` for humans, `./go-trader init --json ... --output scheduler/config.json` for agents/scripts.
 - TradingView export: ask which strategy IDs (or all) before running.
+- **CRITICAL: ALWAYS use `scripts/update.sh` to update go-trader. NEVER manually run git pull + go build.** `update.sh` is the single source of truth for `git pull --ff-only` + `uv sync` + `go build` atomically. Manual steps cause asymmetric deploys (#642).
 
 ---
 
