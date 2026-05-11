@@ -76,12 +76,30 @@ fail() {
 # Phase 1: pre-flight — every check that should abort BEFORE any mutation.
 begin_phase preflight
 
+if ! command -v uv >/dev/null 2>&1; then
+    fail "uv not on PATH — install uv first (see CLAUDE.md → Setup)"
+fi
+
+go_bin=""
+if command -v go >/dev/null 2>&1; then
+    go_bin=$(command -v go)
+elif [[ -x /opt/homebrew/bin/go ]]; then
+    go_bin=/opt/homebrew/bin/go
+else
+    fail "go not on PATH and /opt/homebrew/bin/go missing"
+fi
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
 # scheduler/config.json is gitignored, so a bare source clone never has one.
 # Without it, `go-trader.new probe` later loads no strategies and fails with
 # "read config: open scheduler/config.json: no such file or directory" — but
 # only after git pull + uv sync + build have already mutated the tree (#702).
 # Refuse early so the operator runs update.sh from the deployment directory
 # instead of improvising rsync-based syncs that can clobber deployment state.
+# Check runs AFTER `cd "$repo_root"` so a subdirectory invocation (e.g. from
+# `scheduler/`) doesn't report a misleading "missing config" message.
 if [[ ! -f scheduler/config.json ]]; then
     cat >&2 <<EOF
 [update] scheduler/config.json not found in $(pwd).
@@ -98,22 +116,6 @@ source repo and run scripts/update.sh from each deployment instance.
 EOF
     fail "scheduler/config.json missing — refusing to mutate tree from a non-deployment directory"
 fi
-
-if ! command -v uv >/dev/null 2>&1; then
-    fail "uv not on PATH — install uv first (see CLAUDE.md → Setup)"
-fi
-
-go_bin=""
-if command -v go >/dev/null 2>&1; then
-    go_bin=$(command -v go)
-elif [[ -x /opt/homebrew/bin/go ]]; then
-    go_bin=/opt/homebrew/bin/go
-else
-    fail "go not on PATH and /opt/homebrew/bin/go missing"
-fi
-
-repo_root=$(git rev-parse --show-toplevel)
-cd "$repo_root"
 
 # Build-input paths — anything touched here would actually affect the binary
 # or its Python contract. Modifications outside this list (e.g. CLAUDE.md,
