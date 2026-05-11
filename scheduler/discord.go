@@ -1107,13 +1107,16 @@ func FormatTradeDM(sc StrategyConfig, trade Trade, mode string) string {
 }
 
 // tradeAlertExtras builds the extras line for trade-alert DMs (#665).
-// Order: PnL (close only) → Regime → ATR → SL → TP[1..n]. SL and each TP gain
-// an ATR multiplier suffix `(<n>x)` when EntryATR is known. Shared between
-// FormatTradeDM (Discord) and FormatTradeDMPlain (Telegram) so the two
-// channels can never drift on extras formatting.
+// Order: Source (close only) → PnL (close only) → Regime → ATR → SL → TP[1..n].
+// SL and each TP gain an ATR multiplier suffix `(<n>x)` when EntryATR is known.
+// Shared between FormatTradeDM (Discord) and FormatTradeDMPlain (Telegram) so
+// the two channels can never drift on extras formatting.
 func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 	var extras []string
 	if isClose {
+		if src := tradeAlertCloseSource(trade.Details); src != "" {
+			extras = append(extras, "Source: "+src)
+		}
 		if pnl, ok := extractPnL(trade.Details); ok {
 			extras = append(extras, fmt.Sprintf("PnL: $%s", pnl))
 		}
@@ -1175,6 +1178,38 @@ func tradeDirectionLabel(trade Trade) string {
 		return "SHORT"
 	}
 	return tradeSideToDirection(trade.Side)
+}
+
+// tradeAlertCloseSource classifies a close-trade Details string into a human
+// label that names the *trigger* — exchange-side reduce-only SL, exchange-side
+// TP tier N, signal-driven close-strategy exit, external (peer / manual UI),
+// or circuit breaker. Surfaced as `Source: <label>` on the close DM so an
+// operator reading `🔴 TRADE CLOSED` knows whether it was the exchange
+// firing a resting trigger or the close evaluator firing on a signal — the
+// exact distinction that drove the #704 misdiagnosis on `hl-rmc-eth-live`.
+// Empty return means we can't confidently classify; caller skips the line.
+func tradeAlertCloseSource(details string) string {
+	d := strings.ToLower(details)
+	switch {
+	case strings.Contains(d, "stop loss close"):
+		return "exchange SL"
+	case strings.HasPrefix(d, "tp") && strings.Contains(d, "fill close"):
+		// "TP1 fill close" / "TP2 fill close" — preserve original casing.
+		end := strings.Index(d, " ")
+		if end > 0 {
+			return "exchange " + strings.ToUpper(details[:end])
+		}
+		return "exchange TP"
+	case strings.Contains(d, "circuit breaker"):
+		return "circuit breaker"
+	case strings.Contains(d, "external partial close"):
+		return "external (peer / manual UI, partial)"
+	case strings.Contains(d, "external close"):
+		return "external (peer / manual UI)"
+	case strings.HasPrefix(d, "close long") || strings.HasPrefix(d, "close short"):
+		return "close-strategy exit"
+	}
+	return ""
 }
 
 // extractPnL parses the PnL value from a trade Details string.

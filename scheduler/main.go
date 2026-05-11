@@ -23,6 +23,7 @@ var knownSubcommands = []string{
 	"manual-close",
 	"backfill",
 	"probe",
+	"inspect",
 	"version",
 }
 
@@ -61,6 +62,8 @@ func main() {
 			os.Exit(runBackfill(os.Args[2:]))
 		case "probe":
 			os.Exit(runProbe(os.Args[2:]))
+		case "inspect":
+			os.Exit(runInspect(os.Args[2:]))
 		case "version", "--version", "-version":
 			fmt.Println(Version)
 			os.Exit(0)
@@ -86,6 +89,15 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("Loaded config: %d strategies, interval=%ds\n", len(cfg.Strategies), cfg.IntervalSeconds)
+
+	// #704: emit a one-line resolved summary per strategy so operators can
+	// audit close/SL/TP wiring without grepping the JSON. Best-effort — a
+	// failed re-read just means we can't mark explicit-vs-default but the
+	// summary still shows the resolved source.
+	explicitKeys, _ := loadStrategyExplicitKeys(*configPath)
+	for _, sc := range cfg.Strategies {
+		fmt.Println(formatStrategySummaryLine(sc, explicitKeys[sc.ID]))
+	}
 
 	// #339: Detect a missing state DB on a live deployment *before* OpenStateDB
 	// creates it — a wiped directory (vs. an in-place `git pull`) would otherwise

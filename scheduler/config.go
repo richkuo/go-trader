@@ -579,6 +579,12 @@ func LoadConfig(path string) (*Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	// #704: flag unknown per-strategy fields (typos like `take_profit_atr_mult`)
+	// before applying defaults; json.Unmarshal silently drops them and would
+	// otherwise produce a struct indistinguishable from "no protection configured".
+	if unknownErrs := validateStrategyJSONKeys(data); len(unknownErrs) > 0 {
+		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(unknownErrs, "\n  "))
+	}
 	if cfg.IntervalSeconds <= 0 {
 		cfg.IntervalSeconds = 600
 	}
