@@ -25,6 +25,14 @@ type Position struct {
 	TPOIDs              []int64   `json:"tp_oids,omitempty"`                 // HL perps: resting reduce-only TP limit OIDs, one per configured tier (#601/#612)
 	StopLossATRMult     *float64  `json:"stop_loss_atr_mult,omitempty"`      // HL perps: ATR multiplier resolved at fill time when SL was ATR-armed; nil = armed via pct/margin/trailing/none (#669)
 	TPTiersJSON         string    `json:"tp_tiers_json,omitempty"`           // HL perps: JSON snapshot of [{atr_multiple,close_fraction},...] resolved at fill time; "" = strategy doesn't use tiered_tp_atr* (#669)
+	// SLAdjustedTiersProcessed counts how many leading tiers have already had
+	// their sl_after rule applied: 0 = none, N = tiers [0..N-1] processed.
+	// Idempotency watermark so restarts don't re-fire the same bump (#708).
+	SLAdjustedTiersProcessed int `json:"sl_adjusted_tiers_processed,omitempty"`
+	// PostTPTrailingATRMult is set when an sl_after `trail_from_here` rule
+	// fires; it tells the trailing-stop walker to take over for the remainder
+	// of the position at this ATR distance. nil = no post-TP trailing (#708).
+	PostTPTrailingATRMult *float64 `json:"post_tp_trailing_atr_mult,omitempty"`
 }
 
 // ClosedPosition is a historical record of a position after it closed (#288).

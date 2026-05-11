@@ -48,6 +48,21 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 	if sc.Platform != "hyperliquid" || sc.Type != "perps" {
 		return 0
 	}
+	// #708: Post-TP trailing transition — `sl_after: trail_from_here` stamps
+	// pos.PostTPTrailingATRMult when a TP tier fires. From that point the
+	// trailing walker takes over with the stamped distance, even though the
+	// strategy itself doesn't have sc.TrailingStop* configured (the validator
+	// blocks combining sl_after with strategy-level trailing).
+	if pos != nil && pos.PostTPTrailingATRMult != nil && *pos.PostTPTrailingATRMult > 0 {
+		if pos.EntryATR <= 0 || pos.AvgCost <= 0 {
+			return 0
+		}
+		pct := *pos.PostTPTrailingATRMult * pos.EntryATR / pos.AvgCost * 100.0
+		if pct > MaxAutoStopLossPct {
+			pct = MaxAutoStopLossPct
+		}
+		return pct
+	}
 	if sc.TrailingStopPct != nil {
 		if *sc.TrailingStopPct > 0 {
 			return *sc.TrailingStopPct

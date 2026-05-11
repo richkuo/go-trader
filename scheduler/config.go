@@ -1501,6 +1501,11 @@ func ValidateConfig(cfg *Config) error {
 				}
 			}
 		}
+		// #708: sl_after rules on tiered TPs (post-fill SL adjustment).
+		for _, msg := range validatePostTPStopLossRules(sc) {
+			errs = append(errs, fmt.Sprintf("%s: %s", prefix, msg))
+		}
+
 		if sc.TrailingStopMinMovePct != nil {
 			pct := *sc.TrailingStopMinMovePct
 			if pct < 0 || pct > 100 {
