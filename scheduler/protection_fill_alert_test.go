@@ -69,6 +69,56 @@ func TestFormatProtectionFillAlert_NoPnL(t *testing.T) {
 	}
 }
 
+func TestFormatProtectionFillAlert_WithOID(t *testing.T) {
+	out := formatProtectionFillAlert(ProtectionFillAlert{
+		StrategyID:      "manual-eth",
+		Symbol:          "ETH",
+		Side:            "long",
+		FillType:        "SL",
+		IsPartial:       false,
+		FillPrice:       2301.0,
+		CloseQty:        0.429,
+		RemainingQty:    0,
+		RealizedPnL:     -12.31,
+		HasPnL:          true,
+		ExchangeOrderID: "420267328218",
+	})
+	if !strings.Contains(out, "SL filled (oid=420267328218) — manual-eth") {
+		t.Errorf("missing headline with OID:\n%s", out)
+	}
+}
+
+func TestFormatProtectionFillAlert_WithOIDPartial(t *testing.T) {
+	out := formatProtectionFillAlert(ProtectionFillAlert{
+		StrategyID:      "hl-bear-btc-live",
+		Symbol:          "BTC",
+		Side:            "short",
+		FillType:        "TP1",
+		IsPartial:       true,
+		FillPrice:       65000.0,
+		CloseQty:        0.005,
+		RemainingQty:    0.005,
+		HasPnL:          false,
+		ExchangeOrderID: "999000111",
+	})
+	if !strings.Contains(out, "TP1 filled (oid=999000111) — hl-bear-btc-live (partial)") {
+		t.Errorf("partial headline with OID missing/misordered:\n%s", out)
+	}
+}
+
+func TestFormatProtectionFillAlert_EmptyOIDOmitsParens(t *testing.T) {
+	out := formatProtectionFillAlert(ProtectionFillAlert{
+		StrategyID: "hl-x", Symbol: "BTC", Side: "long", FillType: "SL",
+		FillPrice: 50000, CloseQty: 0.1, HasPnL: false,
+	})
+	if strings.Contains(out, "(oid=") {
+		t.Errorf("empty ExchangeOrderID must not render oid=():\n%s", out)
+	}
+	if !strings.Contains(out, "SL filled — hl-x") {
+		t.Errorf("expected plain headline when OID is empty:\n%s", out)
+	}
+}
+
 func TestFormatProtectionFillAlert_UnknownPrice(t *testing.T) {
 	out := formatProtectionFillAlert(ProtectionFillAlert{
 		StrategyID: "hl-x", Symbol: "BTC", Side: "long", FillType: "SL",

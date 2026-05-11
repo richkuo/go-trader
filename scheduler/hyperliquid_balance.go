@@ -443,16 +443,17 @@ func tryBookSoleOwnerTPFill(
 		// the booker; do not insert another RecordTrade between here and the
 		// booker call.
 		*pendingAlerts = append(*pendingAlerts, ProtectionFillAlert{
-			StrategyID:   sc.ID,
-			Symbol:       sym,
-			Side:         alertSide,
-			FillType:     tpTierLabel(tierIdx),
-			IsPartial:    remaining > 1e-9,
-			FillPrice:    closePx,
-			CloseQty:     closeQty,
-			RemainingQty: remaining,
-			RealizedPnL:  lastBookedTradePnL(stratState),
-			HasPnL:       true,
+			StrategyID:      sc.ID,
+			Symbol:          sym,
+			Side:            alertSide,
+			FillType:        tpTierLabel(tierIdx),
+			IsPartial:       remaining > 1e-9,
+			FillPrice:       closePx,
+			CloseQty:        closeQty,
+			RemainingQty:    remaining,
+			RealizedPnL:     lastBookedTradePnL(stratState),
+			HasPnL:          true,
+			ExchangeOrderID: exchangeOrderID,
 		})
 	}
 	return true
@@ -838,16 +839,17 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 						// RecordTrade inside the booker; do not insert another
 						// RecordTrade between here and the booker call.
 						pendingAlerts = append(pendingAlerts, ProtectionFillAlert{
-							StrategyID:   id,
-							Symbol:       coin,
-							Side:         alertSide,
-							FillType:     "SL",
-							IsPartial:    false,
-							FillPrice:    alertTriggerPx,
-							CloseQty:     alertQty,
-							RemainingQty: 0,
-							RealizedPnL:  lastBookedTradePnL(ss),
-							HasPnL:       true,
+							StrategyID:      id,
+							Symbol:          coin,
+							Side:            alertSide,
+							FillType:        "SL",
+							IsPartial:       false,
+							FillPrice:       alertTriggerPx,
+							CloseQty:        alertQty,
+							RemainingQty:    0,
+							RealizedPnL:     lastBookedTradePnL(ss),
+							HasPnL:          true,
+							ExchangeOrderID: oidStr,
 						})
 					}
 				} else if mark, ok := prices[coin]; ok && mark > 0 {
@@ -937,16 +939,17 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 							// RecordTrade inside the booker; do not insert another
 							// RecordTrade between here and the booker call.
 							pendingAlerts = append(pendingAlerts, ProtectionFillAlert{
-								StrategyID:   slOwnerID,
-								Symbol:       coin,
-								Side:         alertSide,
-								FillType:     "SL",
-								IsPartial:    false,
-								FillPrice:    alertTriggerPx,
-								CloseQty:     alertQty,
-								RemainingQty: 0,
-								RealizedPnL:  lastBookedTradePnL(ownerSS),
-								HasPnL:       true,
+								StrategyID:      slOwnerID,
+								Symbol:          coin,
+								Side:            alertSide,
+								FillType:        "SL",
+								IsPartial:       false,
+								FillPrice:       alertTriggerPx,
+								CloseQty:        alertQty,
+								RemainingQty:    0,
+								RealizedPnL:     lastBookedTradePnL(ownerSS),
+								HasPnL:          true,
+								ExchangeOrderID: oidStr,
 							})
 						}
 					}
@@ -991,7 +994,11 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 							}
 							lookup, useFillFee := resolveFee(coin, 0, closeQty)
 							logHyperliquidReconcileFillLookup(logger, coin, 0, closeQty, lookup, useFillFee)
-							if recordPerpsExternalPartialCloseWithFillFee(candidateSS, coin, closeQty, mark, lookup.Fee, useFillFee, "", "hl_sync_external_partial", logger) {
+							detector3OID := ""
+							if useFillFee && lookup.OID > 0 {
+								detector3OID = strconv.FormatInt(lookup.OID, 10)
+							}
+							if recordPerpsExternalPartialCloseWithFillFee(candidateSS, coin, closeQty, mark, lookup.Fee, useFillFee, detector3OID, "hl_sync_external_partial", logger) {
 								changed = true
 								if closeSide == "long" {
 									virtualQty -= closeQty
@@ -1011,16 +1018,17 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 								// RecordTrade inside the booker; do not insert another
 								// RecordTrade between here and the booker call.
 								pendingAlerts = append(pendingAlerts, ProtectionFillAlert{
-									StrategyID:   candidateID,
-									Symbol:       coin,
-									Side:         closeSide,
-									FillType:     tpTierLabel(candidateTierIdx),
-									IsPartial:    true,
-									FillPrice:    mark,
-									CloseQty:     closeQty,
-									RemainingQty: remaining,
-									RealizedPnL:  lastBookedTradePnL(candidateSS),
-									HasPnL:       true,
+									StrategyID:      candidateID,
+									Symbol:          coin,
+									Side:            closeSide,
+									FillType:        tpTierLabel(candidateTierIdx),
+									IsPartial:       true,
+									FillPrice:       mark,
+									CloseQty:        closeQty,
+									RemainingQty:    remaining,
+									RealizedPnL:     lastBookedTradePnL(candidateSS),
+									HasPnL:          true,
+									ExchangeOrderID: detector3OID,
 								})
 							}
 						} else {
