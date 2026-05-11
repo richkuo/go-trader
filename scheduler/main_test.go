@@ -1164,3 +1164,65 @@ func TestIsHLLiveReconcilable(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateDaemonInvocation(t *testing.T) {
+	cases := []struct {
+		name      string
+		extra     []string
+		wantErr   bool
+		wantMatch string
+	}{
+		{name: "no extras", extra: nil, wantErr: false},
+		{name: "empty slice", extra: []string{}, wantErr: false},
+		{
+			name:      "misplaced manual-open after global flag",
+			extra:     []string{"manual-open", "manual-eth", "--side", "long", "--margin", "50"},
+			wantErr:   true,
+			wantMatch: `subcommand "manual-open" must appear before any global flags`,
+		},
+		{
+			name:      "misplaced backfill",
+			extra:     []string{"backfill", "hl-fees", "--all"},
+			wantErr:   true,
+			wantMatch: `subcommand "backfill"`,
+		},
+		{
+			name:      "misplaced version",
+			extra:     []string{"version"},
+			wantErr:   true,
+			wantMatch: `subcommand "version"`,
+		},
+		{
+			name:      "unknown stray positional",
+			extra:     []string{"foobar"},
+			wantErr:   true,
+			wantMatch: "unexpected positional arguments",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateDaemonInvocation(tc.extra)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			if tc.wantMatch != "" && !strings.Contains(err.Error(), tc.wantMatch) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantMatch)
+			}
+		})
+	}
+}
+
+func TestKnownSubcommandsMatchDispatch(t *testing.T) {
+	expected := []string{"init", "export", "manual-open", "manual-close", "backfill", "probe", "version"}
+	if len(knownSubcommands) != len(expected) {
+		t.Fatalf("knownSubcommands length = %d, want %d (update validateDaemonInvocation when adding/removing a subcommand in main())", len(knownSubcommands), len(expected))
+	}
+	for i, want := range expected {
+		if knownSubcommands[i] != want {
+			t.Errorf("knownSubcommands[%d] = %q, want %q", i, knownSubcommands[i], want)
+		}
+	}
+}

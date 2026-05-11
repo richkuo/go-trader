@@ -12,6 +12,40 @@ import (
 	"time"
 )
 
+// knownSubcommands lists the leading-position subcommand tokens dispatched in
+// main() before flag.Parse(). Kept in sync with that switch so
+// validateDaemonInvocation can detect a misplaced one and produce a useful
+// error instead of silently starting the daemon (#700).
+var knownSubcommands = []string{
+	"init",
+	"export",
+	"manual-open",
+	"manual-close",
+	"backfill",
+	"probe",
+	"version",
+}
+
+// validateDaemonInvocation rejects stray positional args that survived
+// flag.Parse() on the daemon path. The most common cause is a misplaced
+// subcommand, e.g. `./go-trader -config foo manual-open ...`, where
+// `-config foo` is consumed as a global flag and the remaining args are
+// silently dropped — without this guard the daemon would boot a second
+// scheduler instead of running the requested subcommand (#700).
+func validateDaemonInvocation(extra []string) error {
+	if len(extra) == 0 {
+		return nil
+	}
+	for _, a := range extra {
+		for _, sub := range knownSubcommands {
+			if a == sub {
+				return fmt.Errorf("subcommand %q must appear before any global flags (got: %v)", sub, extra)
+			}
+		}
+	}
+	return fmt.Errorf("unexpected positional arguments after flags: %v", extra)
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -39,6 +73,11 @@ func main() {
 	leaderboard := flag.Bool("leaderboard", false, "Post pre-computed daily leaderboard and exit")
 	statusPortFlag := flag.Int("status-port", 0, fmt.Sprintf("HTTP status server port (overrides config, default: %d)", DefaultStatusPort))
 	flag.Parse()
+
+	if err := validateDaemonInvocation(flag.Args()); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	// Load config
 	cfg, err := LoadConfig(*configPath)
