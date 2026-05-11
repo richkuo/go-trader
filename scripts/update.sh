@@ -92,6 +92,31 @@ fi
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
 
+# scheduler/config.json is gitignored, so a bare source clone never has one.
+# Without it, `go-trader.new probe` later loads no strategies and fails with
+# "read config: open scheduler/config.json: no such file or directory" — but
+# only after git pull + uv sync + build have already mutated the tree (#702).
+# Refuse early so the operator runs update.sh from the deployment directory
+# instead of improvising rsync-based syncs that can clobber deployment state.
+# Check runs AFTER `cd "$repo_root"` so a subdirectory invocation (e.g. from
+# `scheduler/`) doesn't report a misleading "missing config" message.
+if [[ ! -f scheduler/config.json ]]; then
+    cat >&2 <<EOF
+[update] scheduler/config.json not found in $(pwd).
+
+update.sh must run from a deployment directory (where scheduler/config.json
+exists). scheduler/config.json is gitignored, so a bare source clone has none
+and the probe phase would later fail without it.
+
+If this IS your deployment directory, copy scheduler/config.example.json to
+scheduler/config.json and fill in API keys (see CLAUDE.md → Setup).
+
+If you are syncing source to multiple deployment instances, build in the
+source repo and run scripts/update.sh from each deployment instance.
+EOF
+    fail "scheduler/config.json missing — refusing to mutate tree from a non-deployment directory"
+fi
+
 # Build-input paths — anything touched here would actually affect the binary
 # or its Python contract. Modifications outside this list (e.g. CLAUDE.md,
 # scratch notes) are tolerated so an operator with unrelated local edits
