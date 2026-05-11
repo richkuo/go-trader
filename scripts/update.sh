@@ -76,6 +76,29 @@ fail() {
 # Phase 1: pre-flight — every check that should abort BEFORE any mutation.
 begin_phase preflight
 
+# scheduler/config.json is gitignored, so a bare source clone never has one.
+# Without it, `go-trader.new probe` later loads no strategies and fails with
+# "read config: open scheduler/config.json: no such file or directory" — but
+# only after git pull + uv sync + build have already mutated the tree (#702).
+# Refuse early so the operator runs update.sh from the deployment directory
+# instead of improvising rsync-based syncs that can clobber deployment state.
+if [[ ! -f scheduler/config.json ]]; then
+    cat >&2 <<EOF
+[update] scheduler/config.json not found in $(pwd).
+
+update.sh must run from a deployment directory (where scheduler/config.json
+exists). scheduler/config.json is gitignored, so a bare source clone has none
+and the probe phase would later fail without it.
+
+If this IS your deployment directory, copy scheduler/config.example.json to
+scheduler/config.json and fill in API keys (see CLAUDE.md → Setup).
+
+If you are syncing source to multiple deployment instances, build in the
+source repo and run scripts/update.sh from each deployment instance.
+EOF
+    fail "scheduler/config.json missing — refusing to mutate tree from a non-deployment directory"
+fi
+
 if ! command -v uv >/dev/null 2>&1; then
     fail "uv not on PATH — install uv first (see CLAUDE.md → Setup)"
 fi
