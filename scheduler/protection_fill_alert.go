@@ -6,22 +6,27 @@ import "fmt"
 // Emission sites build this struct from in-scope state and pass it to
 // notifyProtectionFill, which formats and DMs the owner.
 type ProtectionFillAlert struct {
-	StrategyID   string
-	Symbol       string
-	Side         string  // "long" or "short" — the position side, not the trade direction
-	FillType     string  // "TP1", "TP2", …, or "SL"
-	IsPartial    bool    // partial close (TP tier or partial SL) vs. full close
-	FillPrice    float64 // actual fill price; 0 if unknown
-	CloseQty     float64 // qty closed by this fill
-	RemainingQty float64 // remaining position qty after this fill
-	RealizedPnL  float64 // 0 when not computable
-	HasPnL       bool    // distinguishes "PnL=0" from "PnL unknown"
+	StrategyID      string
+	Symbol          string
+	Side            string  // "long" or "short" — the position side, not the trade direction
+	FillType        string  // "TP1", "TP2", …, or "SL"
+	IsPartial       bool    // partial close (TP tier or partial SL) vs. full close
+	FillPrice       float64 // actual fill price; 0 if unknown
+	CloseQty        float64 // qty closed by this fill
+	RemainingQty    float64 // remaining position qty after this fill
+	RealizedPnL     float64 // 0 when not computable
+	HasPnL          bool    // distinguishes "PnL=0" from "PnL unknown"
+	ExchangeOrderID string  // HL order OID (placed-order or fill OID) — appears in headline when non-empty, drives userFills reconciliation
 }
 
 // formatProtectionFillAlert produces the DM body for a TP/SL fill notification.
 // Pure function so it's testable without spinning a notifier.
 func formatProtectionFillAlert(a ProtectionFillAlert) string {
-	headline := fmt.Sprintf("%s filled — %s", a.FillType, a.StrategyID)
+	headline := fmt.Sprintf("%s filled", a.FillType)
+	if a.ExchangeOrderID != "" {
+		headline += fmt.Sprintf(" (oid=%s)", a.ExchangeOrderID)
+	}
+	headline += fmt.Sprintf(" — %s", a.StrategyID)
 	if a.IsPartial {
 		headline += " (partial)"
 	}
