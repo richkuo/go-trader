@@ -789,7 +789,13 @@ func LoadConfig(path string) (*Config, error) {
 			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
 				continue
 			}
-			if sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && sc.StopLossATRMult == nil && (sc.StopLossATRRegime == nil || sc.StopLossATRRegime.IsZero()) && (sc.TrailingStopATRRegime == nil || sc.TrailingStopATRRegime.IsZero()) {
+			// LoadConfig runs BEFORE ResolveSurface populates the typed
+			// UseDefaults/TrendRegime fields, so the raw-aware IsConfigured()
+			// is the correct predicate here — IsZero() would return true on a
+			// freshly-unmarshaled regime block and cause the scalar default to
+			// be applied on top, triggering a spurious mutex error in
+			// validateRegimeATRConfig (review #735.1).
+			if sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && sc.StopLossATRMult == nil && !sc.StopLossATRRegime.IsConfigured() && !sc.TrailingStopATRRegime.IsConfigured() {
 				defaultMult := defaultStopLossATRMult
 				sc.StopLossATRMult = &defaultMult
 				fmt.Printf("[INFO] %s: applied default stop_loss_atr_mult=%g (no stop fields set; set stop_loss_atr_mult=0 or default_stop_loss_atr_mult=0 to opt out)\n", sc.ID, defaultStopLossATRMult)
@@ -828,7 +834,9 @@ func LoadConfig(path string) (*Config, error) {
 		// default_stop_loss_atr_mult=0 opt-out: when the operator disables
 		// the auto-default globally, manual strategies opt out too (the
 		// INFO message at config.go:675 advertises =0 as the global switch).
-		if defaultStopLossATRMult > 0 && sc.StopLossATRMult == nil && sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && (sc.StopLossATRRegime == nil || sc.StopLossATRRegime.IsZero()) && (sc.TrailingStopATRRegime == nil || sc.TrailingStopATRRegime.IsZero()) {
+		// Same raw-aware predicate as the perps default loop above —
+		// IsConfigured covers the pre-ResolveSurface phase (review #735.1).
+		if defaultStopLossATRMult > 0 && sc.StopLossATRMult == nil && sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && !sc.StopLossATRRegime.IsConfigured() && !sc.TrailingStopATRRegime.IsConfigured() {
 			defaultMult := cfg.resolveManualStopLossATRMult()
 			if defaultMult > 0 {
 				sc.StopLossATRMult = &defaultMult

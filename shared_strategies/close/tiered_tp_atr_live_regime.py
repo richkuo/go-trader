@@ -42,8 +42,10 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
     # Live regime preferred; fall back to the frozen position regime so a
     # regime-classifier outage doesn't disarm the evaluator mid-position.
     regime = str(market.get("regime", "") or "").strip()
+    regime_source = "live"
     if not regime:
         regime = str(position.get("regime", "") or "").strip()
+        regime_source = "frozen" if regime else ""
 
     if mark_price <= 0:
         return {"close_fraction": 0.0, "reason": "noop:missing_mark_price"}
@@ -72,5 +74,8 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
         return {"close_fraction": 0.0, "reason": "noop:already_taken"}
     return {
         "close_fraction": close_fraction,
-        "reason": f"tiered_tp_atr_live_regime:{atr_label}:{regime}:{multiple:g}",
+        # Reason carries both ATR source (live/entry/entry_fallback) and
+        # regime source (live/frozen) so an operator tracing a fire knows
+        # which classifier path produced the tier (review #735.7).
+        "reason": f"tiered_tp_atr_live_regime:atr={atr_label}:regime={regime_source}:{regime}:{multiple:g}",
     }

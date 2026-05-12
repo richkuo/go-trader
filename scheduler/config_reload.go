@@ -357,6 +357,31 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				errs = append(errs, fmt.Sprintf("strategy[%s] stop_loss_atr_mult mode changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
+			// #733: regime-aware SL / trailing fields. Scalar↔regime mode
+			// flips are blocked because the resting on-chain trigger was
+			// sized for one distance regime and would race against a
+			// re-derived target under the new shape. Shape-level changes
+			// (use_defaults ↔ explicit, mutating per-regime ATR values) are
+			// blocked for the same reason — the existing trigger is armed
+			// against the resolved-at-open value.
+			oldFixedRegime := sc.StopLossATRRegime.IsConfigured()
+			newFixedRegime := ns.StopLossATRRegime.IsConfigured()
+			if oldFixedRegime != newFixedRegime {
+				errs = append(errs, fmt.Sprintf("strategy[%s] stop_loss_atr_regime mode changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			} else if oldFixedRegime && !sc.StopLossATRRegime.EqualForReload(ns.StopLossATRRegime) {
+				errs = append(errs, fmt.Sprintf("strategy[%s] stop_loss_atr_regime shape changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
+			oldTrailingRegime := sc.TrailingStopATRRegime.IsConfigured()
+			newTrailingRegime := ns.TrailingStopATRRegime.IsConfigured()
+			if oldTrailingRegime != newTrailingRegime {
+				errs = append(errs, fmt.Sprintf("strategy[%s] trailing_stop_atr_regime mode changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			} else if oldTrailingRegime && !sc.TrailingStopATRRegime.EqualForReload(ns.TrailingStopATRRegime) {
+				errs = append(errs, fmt.Sprintf("strategy[%s] trailing_stop_atr_regime shape changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
 		}
 		// #716 item 1: sl_after rules are armed at the next cleared TP tier; a
 		// mid-position add/remove/mode change would engage the post-TP machinery
@@ -394,6 +419,8 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.TrailingStopPct = nil        // #501: hot-reloadable; state-compat allows pct changes but blocks mode switches while open
 	sc.TrailingStopATRMult = nil    // #505: hot-reloadable; same state-compat treatment as TrailingStopPct
 	sc.StopLossATRMult = nil        // #562: hot-reloadable; mode toggle blocked while open
+	sc.StopLossATRRegime = nil      // #733: hot-reloadable; state-compat blocks scalar↔regime + shape changes while open
+	sc.TrailingStopATRRegime = nil  // #733: hot-reloadable; state-compat blocks scalar↔regime + shape changes while open
 	sc.TrailingStopMinMovePct = nil // #501: hot-reloadable tuning knob for trailing trigger churn
 	sc.Direction = ""               // #656: hot-reloadable when flat; state-compat blocks change while open
 	sc.AllowShorts = false          // #656: legacy field — direction change is what gates hot reload

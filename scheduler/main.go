@@ -2201,11 +2201,13 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 }
 
 // stampPositionRegimeIfOpened stamps regime on the position the first time
-// we observe one after open (#733). Mirrors stampEntryATRIfOpened: the
-// scheduler doesn't run the check script on the same cycle as the open
-// fill, so the regime stamped here is the one current on the *next* cycle —
-// a small lag that's acceptable for "regime at open" semantics given the
-// strategy-interval cadence and the slow-moving nature of ADX classifications.
+// we observe one with a non-empty label (#733). Called immediately after
+// each Execute*Signal* path on the cycle that drove the open, so for
+// non-deferred opens (spot/topstep/robinhood/okx) the regime is stamped
+// before recordPositionOpen and the trade snapshot sees it. For deferred
+// opens (hyperliquid live), runHyperliquidProtectionSync runs between the
+// execute and recordPositionOpen — the regime is still stamped on the
+// open cycle.
 // Idempotent: pos.Regime is only overwritten when empty so regime-aware
 // multipliers stay frozen for the life of the position.
 func stampPositionRegimeIfOpened(s *StrategyState, symbol, regime string) {

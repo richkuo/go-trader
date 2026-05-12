@@ -163,9 +163,32 @@ func (b *RegimeATRBlock) EqualForReload(other *RegimeATRBlock) bool {
 }
 
 // IsZero reports whether the block was omitted from config entirely
-// (distinct from an explicit use_defaults expansion).
+// (distinct from an explicit use_defaults expansion). Designed for runtime
+// callers that have already gone through ResolveSurface (which populates
+// UseDefaults/TrendRegime from raw). Callers that may run BEFORE
+// ResolveSurface (e.g. LoadConfig's defaults loop, which runs before
+// ValidateConfig) MUST use IsConfigured instead — IsZero returns true on
+// a freshly-unmarshaled block that has captured raw JSON but not yet been
+// resolved, which would mis-apply scalar auto-defaults on top of an
+// operator's explicit regime config.
 func (b RegimeATRBlock) IsZero() bool {
 	return !b.UseDefaults && len(b.TrendRegime) == 0
+}
+
+// IsConfigured reports whether the operator explicitly supplied a value
+// for this block in config — either through use_defaults or an explicit
+// trend_regime map. Safe to call BEFORE ResolveSurface runs: relies on
+// the raw shape captured at unmarshal time. Use this when deciding
+// whether scalar auto-defaults should be applied, since `IsZero()`
+// returns true on an unresolved-but-raw-populated block (review #735.1).
+func (b *RegimeATRBlock) IsConfigured() bool {
+	if b == nil {
+		return false
+	}
+	if b.UseDefaults || len(b.TrendRegime) > 0 {
+		return true
+	}
+	return len(b.raw) > 0
 }
 
 // Resolve returns the per-label entry for the given regime. The caller is

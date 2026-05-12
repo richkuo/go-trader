@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -265,6 +267,138 @@ func TestValidateRegimeATRConfig_RequiresRegimeEnabled(t *testing.T) {
 	}
 	if !enabledErr {
 		t.Fatalf("expected regime.enabled requirement error, got: %v", errs)
+	}
+}
+
+// TestLoadConfig_RegimeBlockSkipsDefaultStopLossATRMult is the regression
+// test for review #735.1 — a config that opts into stop_loss_atr_regime
+// must NOT also receive the scalar auto-default StopLossATRMult, because
+// validateRegimeATRConfig would then fire a false mutex error. The fix
+// gates the default loop on IsConfigured() (which is raw-aware) instead
+// of IsZero() (which only knows the resolved fields).
+func TestLoadConfig_RegimeBlockSkipsDefaultStopLossATRMult(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	dbPath := filepath.Join(dir, "state.db")
+	cfgBody := `{
+		"db_file": "` + strings.ReplaceAll(dbPath, "\\", "\\\\") + `",
+		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
+		"strategies": [{
+			"id": "hl-test",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["donchian_breakout", "BTC", "1h", "--mode=paper"],
+			"capital": 1000,
+			"max_drawdown_pct": 25,
+			"leverage": 1,
+			"stop_loss_atr_regime": {"use_defaults": true}
+		}]
+	}`
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig must accept a regime-only SL config, got: %v", err)
+	}
+	if len(cfg.Strategies) != 1 {
+		t.Fatalf("want 1 strategy, got %d", len(cfg.Strategies))
+	}
+	sc := cfg.Strategies[0]
+	if sc.StopLossATRMult != nil {
+		t.Fatalf("scalar stop_loss_atr_mult must remain nil when stop_loss_atr_regime is configured, got %v", *sc.StopLossATRMult)
+	}
+	if sc.StopLossATRRegime == nil || sc.StopLossATRRegime.IsZero() {
+		t.Fatalf("stop_loss_atr_regime must be populated post-ResolveSurface")
+	}
+	if !sc.StopLossATRRegime.UseDefaults {
+		t.Fatalf("UseDefaults flag must be true after expansion")
+	}
+}
+
+// TestValidateHotReloadStateCompatible_BlocksRegimeShapeChangeWhileOpen
+// covers review #735.4 — flipping scalar↔regime, or mutating the regime
+// shape itself, must be rejected when a position is open so the resting
+// on-chain trigger isn't orphaned under a new distance regime.
+func TestValidateHotReloadStateCompatible_BlocksRegimeShapeChangeWhileOpen(t *testing.T) {
+	mkOld := func() StrategyConfig {
+		return StrategyConfig{
+			ID:       "hl-test",
+			Type:     "perps",
+			Platform: "hyperliquid",
+			StopLossATRRegime: &RegimeATRBlock{
+				UseDefaults: true,
+				TrendRegime: cloneRegimeMap(regimeATRDefaults.StopLoss),
+				raw:         map[string]interface{}{"use_defaults": true},
+			},
+		}
+	}
+	openState := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-test": {
+				ID: "hl-test",
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 60000, Side: "long"},
+				},
+			},
+		},
+	}
+	flatState := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-test": {ID: "hl-test", Positions: map[string]*Position{}},
+		},
+	}
+	mkCfg := func(sc StrategyConfig) *Config {
+		return &Config{Strategies: []StrategyConfig{sc}}
+	}
+	// Scalar↔regime mode flip with open position: REJECTED.
+	old := mkOld()
+	mult := 2.0
+	ns := old
+	ns.StopLossATRRegime = nil
+	ns.StopLossATRMult = &mult
+	err := validateHotReloadStateCompatible(mkCfg(old), mkCfg(ns), openState)
+	if err == nil || !strings.Contains(err.Error(), "stop_loss_atr_regime mode changed") {
+		t.Fatalf("expected mode-change rejection with open position, got: %v", err)
+	}
+	// Same flip while flat: ACCEPTED.
+	if err := validateHotReloadStateCompatible(mkCfg(old), mkCfg(ns), flatState); err != nil {
+		t.Fatalf("flat-position hot reload should be accepted, got: %v", err)
+	}
+	// Shape change (use_defaults → explicit values) with open position: REJECTED.
+	ns2 := mkOld()
+	ns2.StopLossATRRegime = &RegimeATRBlock{
+		TrendRegime: map[string]RegimeATREntry{
+			"trending_up":   {ATR: 3.0},
+			"trending_down": {ATR: 3.0},
+			"ranging":       {ATR: 2.0},
+		},
+		raw: map[string]interface{}{},
+	}
+	err = validateHotReloadStateCompatible(mkCfg(old), mkCfg(ns2), openState)
+	if err == nil || !strings.Contains(err.Error(), "stop_loss_atr_regime shape changed") {
+		t.Fatalf("expected shape-change rejection with open position, got: %v", err)
+	}
+}
+
+func TestRegimeATRBlock_IsConfigured(t *testing.T) {
+	// IsConfigured is the raw-aware predicate used by LoadConfig's defaults
+	// loop before ResolveSurface runs (review #735.1).
+	var nilBlock *RegimeATRBlock
+	if nilBlock.IsConfigured() {
+		t.Fatalf("nil block should not be configured")
+	}
+	raw := []byte(`{"use_defaults": true}`)
+	var b RegimeATRBlock
+	if err := json.Unmarshal(raw, &b); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !b.IsConfigured() {
+		t.Fatalf("post-unmarshal block with raw data must be configured even before ResolveSurface")
+	}
+	if !b.IsZero() {
+		t.Fatalf("post-unmarshal block must still report IsZero (resolved fields empty)")
 	}
 }
 

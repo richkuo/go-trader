@@ -539,10 +539,14 @@ func needsV13SchemaMigration(data []byte) bool {
 // with its own params, mirror its registry default_params keys here so legacy
 // configs migrate cleanly. Anything not listed stays on the open ref.
 var closeStrategyOwnedKeys = map[string]map[string]struct{}{
-	"tiered_tp_atr":             {"tiers": {}},
-	"tiered_tp_atr_live":        {"tiers": {}, "atr_source": {}},
-	"tiered_tp_atr_regime":      {},
-	"tiered_tp_atr_live_regime": {"atr_source": {}},
+	"tiered_tp_atr":      {"tiers": {}},
+	"tiered_tp_atr_live": {"tiers": {}, "atr_source": {}},
+	// Regime variants are post-v13 — they have no legacy migration story —
+	// but list every operator-facing key here for symmetry so future
+	// unknown-key suggestion hints can index off this table without missing
+	// the regime evaluator params (review #735.5).
+	"tiered_tp_atr_regime":      {"tiers": {}, "use_defaults": {}, "sl_after": {}},
+	"tiered_tp_atr_live_regime": {"tiers": {}, "use_defaults": {}, "atr_source": {}, "sl_after": {}},
 	"tiered_tp_pct":             {"tiers": {}},
 	"tp_at_pct":                 {"pct": {}},
 }
