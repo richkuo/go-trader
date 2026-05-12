@@ -810,8 +810,7 @@ def test_backtester_sl_after_no_same_bar_fire_after_bump_long():
     events into one bar would over-trigger.
 
     Setup (long, ATR=10, entry @ $100):
-      Bar 0 (01-01): open long @ $100, close $100
-      Bar 1 (01-02): close $100, no tier
+      Bar 1 (01-02): open long @ $100, close $100
       Bar 2 (01-03): close $110 → TP1 tier detected (queues 50% close for bar 3)
       Bar 3 (01-04): open $110 → TP1 partial fills, SL bumps to $100 (breakeven),
                      close $99 → WITHOUT the fix, SL hit check fires same bar
