@@ -129,6 +129,55 @@ func TestApplyHyperliquidProtectionSyncClearsFilledExternally(t *testing.T) {
 	}
 }
 
+// #716 item 2 — applyHyperliquidProtectionSync must record TPArmedTiers[i]=true
+// whenever Python returns a positive OID for tier i, so a future cycle that
+// observes OID=0 there can distinguish "filled" from "never armed". A filled
+// tier (TPFilledExternally=true) is also armed by definition.
+func TestApplyHyperliquidProtectionSyncStampsTPArmedTiers(t *testing.T) {
+	t.Run("positive OIDs stamp armed", func(t *testing.T) {
+		pos := &Position{Symbol: "ETH"}
+		applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
+			TPOIDs: []int64{111, 222},
+		})
+		if !reflect.DeepEqual(pos.TPArmedTiers, []bool{true, true}) {
+			t.Errorf("TPArmedTiers = %v, want [true true]", pos.TPArmedTiers)
+		}
+	})
+
+	t.Run("zero OID does not stamp armed", func(t *testing.T) {
+		pos := &Position{Symbol: "ETH"}
+		applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
+			TPOIDs: []int64{0, 222},
+		})
+		if !reflect.DeepEqual(pos.TPArmedTiers, []bool{false, true}) {
+			t.Errorf("TPArmedTiers = %v, want [false true]", pos.TPArmedTiers)
+		}
+	})
+
+	t.Run("armed survives later fill that zeros OID", func(t *testing.T) {
+		pos := &Position{Symbol: "ETH", TPArmedTiers: []bool{true, true}}
+		applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
+			TPOIDs:             []int64{0, 222},
+			TPFilledExternally: []bool{true, false},
+		})
+		if !reflect.DeepEqual(pos.TPArmedTiers, []bool{true, true}) {
+			t.Errorf("TPArmedTiers = %v, want [true true] (filled-externally implies armed)", pos.TPArmedTiers)
+		}
+	})
+
+	t.Run("legacy TP1FilledExternally/TP2FilledExternally extends armed slice", func(t *testing.T) {
+		pos := &Position{Symbol: "ETH"}
+		applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
+			TP1OID:                33,
+			TP2OID:                44,
+			TP1FilledExternally:   true,
+		})
+		if len(pos.TPArmedTiers) != 2 || !pos.TPArmedTiers[0] || !pos.TPArmedTiers[1] {
+			t.Errorf("TPArmedTiers = %v, want [true true]", pos.TPArmedTiers)
+		}
+	})
+}
+
 func TestFilterCloseStrategiesForHLOnChainProtection(t *testing.T) {
 	mult := 1.0
 	cases := []struct {

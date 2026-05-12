@@ -23,6 +23,13 @@ type Position struct {
 	StopLossTriggerPx   float64   `json:"stop_loss_trigger_px,omitempty"`    // HL perps: trigger price for the resting stop-loss (0 = unknown) (#421)
 	StopLossHighWaterPx float64   `json:"stop_loss_high_water_px,omitempty"` // HL perps trailing SL: best mark seen while position open (high for long, low for short) (#501)
 	TPOIDs              []int64   `json:"tp_oids,omitempty"`                 // HL perps: resting reduce-only TP limit OIDs, one per configured tier (#601/#612)
+	// TPArmedTiers[i] = true once tier i has been observed with a positive OID
+	// (i.e. successfully placed by runHyperliquidProtectionSync at least once).
+	// findHighestClearedTier requires this so a tier whose first placement
+	// failed transiently — leaving OID=0 with the tier never armed — is NOT
+	// mistaken for a fired TP when a non-TP partial close (close-evaluator)
+	// shrinks the position. See #716 item 2.
+	TPArmedTiers []bool `json:"tp_armed_tiers,omitempty"`
 	StopLossATRMult     *float64  `json:"stop_loss_atr_mult,omitempty"`      // HL perps: ATR multiplier resolved at fill time when SL was ATR-armed; nil = armed via pct/margin/trailing/none (#669)
 	TPTiersJSON         string    `json:"tp_tiers_json,omitempty"`           // HL perps: JSON snapshot of [{atr_multiple,close_fraction},...] resolved at fill time; "" = strategy doesn't use tiered_tp_atr* (#669)
 	// SLAdjustedTiersProcessed counts how many leading tiers have already had
