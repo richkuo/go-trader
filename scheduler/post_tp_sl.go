@@ -524,7 +524,7 @@ func runPostTPStopLossAdjustment(
 	// the trailing-stop walker (main.go:1491) and fixed-ATR arm (main.go:1549).
 	slEffectiveQty, capped := hlSLEffectiveQty(symbol, qty, hlOnChainAbsQty)
 	if capped && logger != nil {
-		logger.Warn("post-TP SL replace: virtual qty %.6f > on-chain %.6f for %s; capping SL size to on-chain qty (#714)", qty, slEffectiveQty, symbol)
+		logger.Warn("post-TP SL replace: virtual qty %.6f > on-chain %.6f for %s; capping SL size to on-chain qty (#621)", qty, slEffectiveQty, symbol)
 	}
 
 	// Phase 2: no-lock subprocess — cancel+replace SL OID. RunHyperliquidUpdateStopLoss
