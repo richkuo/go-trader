@@ -78,15 +78,17 @@ func computePostTPStopLossTrigger(
 		if px <= 0 {
 			return 0, "", false
 		}
-		return px, fmt.Sprintf("trail %.2f×ATR", rule.TrailATRMult), true
+		return px, fmt.Sprintf("trail %g×ATR", rule.TrailATRMult), true
 	}
 	return 0, "", false
 }
 
+// formatATROffsetMode preserves the operator's original kind in the audit
+// trail: an explicit {atr_mult: 0} renders "atr+0" rather than collapsing to
+// "breakeven", so DM/log readers can reconcile against config without
+// guessing which form was written. The "breakeven" string is reserved for the
+// explicit Kind=="breakeven" rule.
 func formatATROffsetMode(m float64) string {
-	if m == 0 {
-		return "breakeven"
-	}
 	sign := "+"
 	if m < 0 {
 		sign = "-"
@@ -310,33 +312,55 @@ func parseStrategyTPSLAfterRules(sc StrategyConfig) (rules tierSLAfterRules, err
 //     or TrailingStopPct > 0) — trailing walks the SL continuously and
 //     sl_after would race the walker
 //   - reject when the strategy has no fixed SL to cancel+replace
+//   - reject sl_after keys placed under non-tiered_tp_atr* close refs — the
+//     runtime only honors them on tiered TP refs, so an operator who writes
+//     sl_after under e.g. tp_at_pct would silently get no SL bumps. Better to
+//     fail loud at load than to swallow the intent.
 func validatePostTPStopLossRules(sc StrategyConfig) []string {
 	rules, errs := parseStrategyTPSLAfterRules(sc)
-	if !rules.HasAny() && len(errs) == 0 {
-		return nil
-	}
 	out := append([]string(nil), errs...)
-	if rules.HasAny() {
-		if (sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0) ||
-			(sc.TrailingStopPct != nil && *sc.TrailingStopPct > 0) {
-			out = append(out, "sl_after cannot be combined with trailing_stop_atr_mult or trailing_stop_pct — trailing already walks the SL continuously")
+	for _, ref := range sc.CloseStrategies {
+		n := strings.ToLower(strings.TrimSpace(ref.Name))
+		if n == "tiered_tp_atr" || n == "tiered_tp_atr_live" {
+			continue
 		}
-		hasFixedSL := (sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0) ||
-			(sc.StopLossPct != nil && *sc.StopLossPct > 0) ||
-			(sc.StopLossMarginPct != nil && *sc.StopLossMarginPct > 0)
-		if !hasFixedSL {
-			out = append(out, "sl_after requires a fixed stop-loss to adjust (set stop_loss_atr_mult, stop_loss_pct, or stop_loss_margin_pct)")
+		if _, ok := ref.Params["sl_after"]; ok {
+			out = append(out, fmt.Sprintf("sl_after is only honored on tiered_tp_atr / tiered_tp_atr_live close refs; found on %q", ref.Name))
 		}
-		// trail_from_here drives the trailing-stop walker, which currently only
-		// runs for perps strategies. Reject it on manual strategies in v1.
-		if sc.Type == "manual" {
-			if rules.Default.Kind == "trail_from_here" {
-				out = append(out, "sl_after: trail_from_here is not supported on manual strategies (perps only in v1) — use breakeven or atr_mult instead")
-			}
-			for i, r := range rules.PerTier {
-				if r.Kind == "trail_from_here" {
-					out = append(out, fmt.Sprintf("sl_after (tier[%d]): trail_from_here is not supported on manual strategies (perps only in v1) — use breakeven or atr_mult instead", i))
+		if tiersRaw, ok := ref.Params["tiers"]; ok {
+			if items, ok := tiersRaw.([]interface{}); ok {
+				for i, item := range items {
+					if m, ok := item.(map[string]interface{}); ok {
+						if _, ok := m["sl_after"]; ok {
+							out = append(out, fmt.Sprintf("sl_after on tier[%d] of %q has no effect; only honored on tiered_tp_atr* close refs", i, ref.Name))
+						}
+					}
 				}
+			}
+		}
+	}
+	if !rules.HasAny() {
+		return out
+	}
+	if (sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0) ||
+		(sc.TrailingStopPct != nil && *sc.TrailingStopPct > 0) {
+		out = append(out, "sl_after cannot be combined with trailing_stop_atr_mult or trailing_stop_pct — trailing already walks the SL continuously")
+	}
+	hasFixedSL := (sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0) ||
+		(sc.StopLossPct != nil && *sc.StopLossPct > 0) ||
+		(sc.StopLossMarginPct != nil && *sc.StopLossMarginPct > 0)
+	if !hasFixedSL {
+		out = append(out, "sl_after requires a fixed stop-loss to adjust (set stop_loss_atr_mult, stop_loss_pct, or stop_loss_margin_pct)")
+	}
+	// trail_from_here drives the trailing-stop walker, which currently only
+	// runs for perps strategies. Reject it on manual strategies in v1.
+	if sc.Type == "manual" {
+		if rules.Default.Kind == "trail_from_here" {
+			out = append(out, "sl_after: trail_from_here is not supported on manual strategies (perps only in v1) — use breakeven or atr_mult instead")
+		}
+		for i, r := range rules.PerTier {
+			if r.Kind == "trail_from_here" {
+				out = append(out, fmt.Sprintf("sl_after (tier[%d]): trail_from_here is not supported on manual strategies (perps only in v1) — use breakeven or atr_mult instead", i))
 			}
 		}
 	}
@@ -446,7 +470,12 @@ func runPostTPStopLossAdjustment(
 		return false
 	}
 	// Gate on a partial close having occurred — a fresh position with all
-	// tiers at OID=0 simply hasn't been armed yet.
+	// tiers at OID=0 simply hasn't been armed yet, and the watermark would
+	// race the protection-sync's initial OID placement. The epsilon is for
+	// float-roundoff; the gate is "any partial close occurred" (TP OR
+	// close-eval), not "any TP fired" specifically — close-evals on the same
+	// position can also satisfy it, which is fine because findHighestClearedTier
+	// further narrows to tiers whose OID is actually 0.
 	if pos.Quantity >= pos.InitialQuantity-1e-9 {
 		mu.RUnlock()
 		return false
@@ -475,18 +504,25 @@ func runPostTPStopLossAdjustment(
 		return false
 	}
 
+	// Defer when SL isn't armed yet — short-circuits before compute so we
+	// don't burn cycles on a trail_from_here rule whose trigger we'd then
+	// throw away.
+	if currentOID == 0 {
+		return false
+	}
 	triggerPx, mode, computeOK := computePostTPStopLossTrigger(rule, side, avgCost, entryATR, mark)
 	if !computeOK {
 		// trail_from_here without a mark (or other malformed input) — defer.
 		// We do NOT advance the watermark; next cycle (with a price) retries.
 		return false
 	}
-	if currentOID == 0 {
-		// Nothing to cancel/replace yet — defer until SL is armed.
-		return false
-	}
 
-	// Phase 2: no-lock subprocess — cancel+replace SL OID.
+	// Phase 2: no-lock subprocess — cancel+replace SL OID. RunHyperliquidUpdateStopLoss
+	// is the trailing-stop primitive but it just cancels an existing OID and
+	// places a fresh reduce-only trigger, which is what every sl_after mode
+	// needs (breakeven / atr_offset / trail_from_here all). Intentionally
+	// reused for sc.Type=="manual" too — the validator blocks trail_from_here
+	// there, so manual paths only cancel+replace a fixed SL OID.
 	if logger != nil {
 		logger.Info("post-TP SL adjustment for %s: tier %d cleared, mode=%s new_trigger=$%.4f (cancel oid=%d)",
 			symbol, clearedIdx, mode, triggerPx, currentOID)

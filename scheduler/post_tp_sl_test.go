@@ -91,7 +91,10 @@ func TestComputePostTPStopLossTrigger_ATROffsetMode(t *testing.T) {
 		mult float64
 		want string
 	}{
-		{0, "breakeven"},
+		// {atr_mult: 0} preserves "atr+0" so logs/DMs reflect the operator's
+		// explicit kind; Kind=="breakeven" still renders as "breakeven" via
+		// the trigger helper's own branch.
+		{0, "atr+0"},
 		{0.25, "atr+0.25"},
 		{-0.5, "atr-0.5"},
 		{1, "atr+1"},
@@ -829,6 +832,59 @@ func TestFindHighestClearedTier(t *testing.T) {
 				t.Fatalf("idx=%d, want %d", gotIdx, tc.wantIdx)
 			}
 		})
+	}
+}
+
+func TestValidatePostTPStopLossRules_RejectsSLAfterOnNonTieredCloseRef(t *testing.T) {
+	atrSL := 1.0
+	sc := StrategyConfig{
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		StopLossATRMult: &atrSL,
+		CloseStrategies: []StrategyRef{{
+			Name: "tp_at_pct",
+			Params: map[string]interface{}{
+				"pct":      0.05,
+				"sl_after": "breakeven", // not honored — should be flagged
+			},
+		}},
+	}
+	errs := validatePostTPStopLossRules(sc)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "only honored on tiered_tp_atr") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected rejection of sl_after on non-tiered close ref, got %v", errs)
+	}
+}
+
+func TestValidatePostTPStopLossRules_RejectsSLAfterOnNonTieredTier(t *testing.T) {
+	atrSL := 1.0
+	sc := StrategyConfig{
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		StopLossATRMult: &atrSL,
+		CloseStrategies: []StrategyRef{{
+			Name: "tiered_tp_pct", // not the ATR variant
+			Params: map[string]interface{}{
+				"tiers": []interface{}{
+					map[string]interface{}{"pct": 0.05, "close_fraction": 0.5, "sl_after": "breakeven"},
+				},
+			},
+		}},
+	}
+	errs := validatePostTPStopLossRules(sc)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "no effect") && strings.Contains(e, "tiered_tp_pct") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected rejection of per-tier sl_after under non-tiered ref, got %v", errs)
 	}
 }
 
