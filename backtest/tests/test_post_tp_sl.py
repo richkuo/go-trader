@@ -857,6 +857,52 @@ def test_backtester_sl_after_no_same_bar_fire_after_bump_long():
     assert sl_closes[0]["exit_date"] == "2024-01-06 00:00:00", sl_closes[0]
 
 
+def test_backtester_sl_after_no_same_bar_fire_after_bump_short():
+    """Short-side mirror of the #715 regression. The gate is side-agnostic;
+    this locks in the symmetry against future refactors.
+
+    Setup (short, ATR=10, entry @ $100):
+      Bar 1 (01-02): open short @ $100
+      Bar 2 (01-03): close $90  → TP1 detected (price dropped 1×ATR)
+      Bar 3 (01-04): open $90   → TP1 partial fills, SL bumps to $100,
+                                  close $101 → WITHOUT the fix, SL fires
+                                  same bar (short: mark ≥ trigger)
+      Bar 4 (01-05): close $101 → SL hit check fires, queues full close
+      Bar 5 (01-06): open $101  → full close fills here
+    """
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 90, 101, 101],
+        closes=[100, 100, 90, 101, 101, 101],
+        atrs=[10, 10, 10, 10, 10, 10],
+        open_actions=["short"] + ["none"] * 5,
+    )
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        platform="hyperliquid", strategy_type="perps",
+        stop_loss_atr_mult=1.0,
+        close_strategies=[{
+            "name": "tiered_tp_atr",
+            "params": {
+                "sl_after": "breakeven",
+                "tiers": [
+                    {"atr_multiple": 1.0, "close_fraction": 0.5},
+                    {"atr_multiple": 2.0, "close_fraction": 1.0},
+                ],
+            },
+        }],
+    )
+    result = bt.run(df, save=False)
+    sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
+    assert ("short", 90.0) in sides_prices, sides_prices
+    assert ("short", 101.0) in sides_prices, sides_prices
+    sl_closes = [t for t in result["trades"] if t["exit_price"] == 101.0]
+    assert len(sl_closes) == 1, sl_closes
+    # Without the fix, the same-bar fire on bar 3 would queue the close at
+    # bar 4 open (exit_date 2024-01-05). With the fix, the next bar's hit
+    # check fires and the close fills on bar 5 open (2024-01-06).
+    assert sl_closes[0]["exit_date"] == "2024-01-06 00:00:00", sl_closes[0]
+
+
 def test_backtester_sl_after_flag_clears_for_next_bar_long():
     """Companion to #715: the suppression flag must reset on the bar AFTER
     the bump. If the bump bar's close is above the new trigger (no same-bar

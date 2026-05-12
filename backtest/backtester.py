@@ -497,13 +497,17 @@ class Backtester:
             signal = row["signal"]
 
             # Per-bar reset: when _maybe_apply_sl_after bumps the SL trigger on
-            # this bar, the end-of-bar SL hit check must skip — live places the
-            # new SL OID mid-cycle after the TP fill, and the backtester's
-            # bar-level granularity collapses that delay to zero. Without the
-            # gate, a bar that bumps SL to (say) breakeven and then closes
-            # below breakeven would fire SL on the same bar; live would not,
-            # because the bump and the close happen at different intra-bar
-            # moments. See #715.
+            # this bar, the end-of-bar block (both the trail-walker HWM update
+            # and the SL hit check) must skip — live places the new SL OID
+            # mid-cycle after the TP fill, and the backtester's bar-level
+            # granularity collapses that delay to zero. Without the gate, a
+            # bar that bumps SL to (say) breakeven and then closes below
+            # breakeven would fire SL on the same bar; live would not, because
+            # the bump and the close happen at different intra-bar moments.
+            # Skipping the walker on the bump bar is also correct: live
+            # wouldn't walk the HWM until the next cycle either, and the
+            # trail_from_here path inside _maybe_apply_sl_after already seeds
+            # the HWM at the partial-close fill price. See #715.
             sl_after_just_applied = False
 
             equity = cash + position * mark_price
