@@ -306,10 +306,13 @@ bash scripts/update.sh                  # update without restart
 systemctl status go-trader              # service health
 curl -s localhost:8099/status            # live prices + P&L (default port 8099; override with --status-port)
 curl -s localhost:8099/health            # simple health check
+open http://localhost:8099/dashboard     # local dashboard with strategy charts and trade markers
 journalctl -u go-trader -n 50           # recent logs
 ./go-trader inspect <strategy-id>        # effective post-migration config (resolved SL/TP + provenance)
 ./go-trader inspect --all --json         # all strategies, machine-readable
 ```
+
+The dashboard is served by the same local/LAN status server and does not add browser-side authentication. Keep it bound behind your existing network controls; for remote access, put it behind an authenticated reverse proxy or VPN rather than exposing `8099` directly.
 
 `inspect` is read-only and safe to run against a live deployment — it loads `scheduler/config.json`, applies migrations and defaults, and prints which `stop_loss_*` field won, the resolved tier list on the configured TP close ref, and explicit-vs-default markers from the raw JSON. Use it to diagnose why a strategy isn't behaving like the JSON suggests, or to verify a config edit before SIGHUP.
 

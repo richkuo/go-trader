@@ -22,6 +22,8 @@ type StatusServer struct {
 	okxPerpsCoins  []string         // OKX perps coins that need venue-native marks (#263)
 	strategies     []StrategyConfig // strategy configs for initial capital lookup
 	stateDB        *StateDB         // SQLite DB for /history queries (may be nil)
+	candleFetcher  UICandleFetcher
+	candleCache    *UICandleCache
 
 	// Throttled logging for repeated mark-fetch failures on the /status
 	// rail. /status can be polled frequently (oncall dashboard, monitoring),
@@ -63,6 +65,8 @@ func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, stra
 		okxPerpsCoins:  okxCoins,
 		strategies:     strategies,
 		stateDB:        stateDB,
+		candleFetcher:  FetchUICandles,
+		candleCache:    NewUICandleCache(30 * time.Second),
 	}
 }
 
@@ -173,6 +177,10 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/status", ss.handleStatus)
 	mux.HandleFunc("/health", ss.handleHealth)
 	mux.HandleFunc("/history", ss.handleHistory)
+	mux.HandleFunc("/dashboard", ss.handleDashboard)
+	mux.HandleFunc("/dashboard/", ss.handleDashboard)
+	mux.HandleFunc("/api/strategies", ss.handleAPIStrategies)
+	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
 
 	listener, boundPort, err := bindWithFallback(port, statusPortMaxAttempts)
 	if err != nil {
@@ -186,6 +194,7 @@ func (ss *StatusServer) Start(port int) {
 		fmt.Printf("[server] NOTICE: requested port %d was in use, bound to %d instead\n", port, boundPort)
 	}
 	fmt.Printf("[server] Status endpoint at http://localhost:%d/status\n", boundPort)
+	fmt.Printf("[server] Dashboard at http://localhost:%d/dashboard\n", boundPort)
 	go func() {
 		if err := http.Serve(listener, mux); err != nil {
 			fmt.Printf("[server] HTTP server error: %v\n", err)

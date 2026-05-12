@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>go-trader dashboard</title>
+    <link rel="stylesheet" href="/dashboard/styles.css">
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">gt</div>
+          <div>
+            <h1>go-trader</h1>
+            <p id="strategy-count">Loading</p>
+          </div>
+        </div>
+        <label class="search-wrap">
+          <span>Search</span>
+          <input id="strategy-search" type="search" autocomplete="off" placeholder="Strategy or symbol">
+        </label>
+        <nav id="strategy-list" class="strategy-list" aria-label="Strategies"></nav>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <h2 id="active-title">Dashboard</h2>
+            <p id="active-subtitle">Select a strategy</p>
+          </div>
+          <div class="toolbar">
+            <button id="refresh-button" class="icon-button" title="Refresh" aria-label="Refresh">
+              <span aria-hidden="true">R</span>
+            </button>
+            <select id="refresh-interval" aria-label="Refresh interval">
+              <option value="5000">5s</option>
+              <option value="15000">15s</option>
+              <option value="30000">30s</option>
+              <option value="0">Off</option>
+            </select>
+          </div>
+        </header>
+
+        <section class="content">
+          <div class="chart-panel">
+            <div id="chart"></div>
+            <div id="empty-chart" class="empty-state">No candles yet</div>
+          </div>
+          <aside class="status-panel">
+            <div class="status-header">
+              <span id="status-dot" class="status-dot"></span>
+              <span id="status-label">Waiting</span>
+            </div>
+            <dl id="status-grid" class="status-grid"></dl>
+            <div class="positions">
+              <h3>Positions</h3>
+              <div id="positions-list"></div>
+            </div>
+          </aside>
+        </section>
+      </main>
+    </div>
+    <script src="/dashboard/lightweight-charts.standalone.production.js"></script>
+    <script src="/dashboard/app.js"></script>
+  </body>
+</html>

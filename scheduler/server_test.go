@@ -322,3 +322,129 @@ func TestHandleHistory_QueryParams(t *testing.T) {
 		t.Errorf("limit = %d, want 1", resp.Limit)
 	}
 }
+
+func TestHandleAPIStrategies(t *testing.T) {
+	state := NewAppState()
+	var mu sync.RWMutex
+	strategies := []StrategyConfig{
+		{ID: "okx-eth", Platform: "okx", Type: "perps", Args: []string{"ema", "ETH", "4h"}, Direction: DirectionBoth},
+		{ID: "spot-btc", Platform: "binanceus", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}},
+	}
+	ss := NewStatusServer(state, &mu, "", strategies, nil)
+
+	req := httptest.NewRequest("GET", "/api/strategies", nil)
+	w := httptest.NewRecorder()
+	ss.handleAPIStrategies(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var resp struct {
+		Strategies []UIStrategy `json:"strategies"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Strategies) != 2 {
+		t.Fatalf("strategies len = %d, want 2", len(resp.Strategies))
+	}
+	if resp.Strategies[0].ID != "spot-btc" || resp.Strategies[0].Symbol != "BTC/USDT" || resp.Strategies[0].Timeframe != "1h" {
+		t.Errorf("first strategy = %+v, want spot-btc BTC/USDT 1h", resp.Strategies[0])
+	}
+	if resp.Strategies[1].Direction != DirectionBoth {
+		t.Errorf("direction = %q, want %q", resp.Strategies[1].Direction, DirectionBoth)
+	}
+}
+
+func TestHandleAPIStrategyCandles_UsesFetcherAndCache(t *testing.T) {
+	state := NewAppState()
+	var mu sync.RWMutex
+	ss := NewStatusServer(state, &mu, "", []StrategyConfig{
+		{ID: "spot-btc", Platform: "binanceus", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}},
+	}, nil)
+	calls := 0
+	ss.candleFetcher = func(req UICandleRequest) ([]UICandle, string, error) {
+		calls++
+		return []UICandle{{Time: 100, Open: 1, High: 2, Low: 1, Close: 2}}, "test", nil
+	}
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest("GET", "/api/strategies/spot-btc/candles?limit=10", nil)
+		w := httptest.NewRecorder()
+		ss.handleAPIStrategy(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, want %d", i+1, w.Code, http.StatusOK)
+		}
+		var resp struct {
+			Source  string     `json:"source"`
+			Candles []UICandle `json:"candles"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(resp.Candles) != 1 {
+			t.Fatalf("candles len = %d, want 1", len(resp.Candles))
+		}
+	}
+	if calls != 1 {
+		t.Errorf("fetcher calls = %d, want 1 due to cache", calls)
+	}
+}
+
+func TestHandleAPIStrategyTradesMarkers(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	if err := db.InsertTrade("spot-btc", Trade{
+		Timestamp: now, Symbol: "BTC/USDT", Side: "buy", Quantity: 1, Price: 100,
+	}); err != nil {
+		t.Fatalf("InsertTrade open: %v", err)
+	}
+	if err := db.InsertTrade("spot-btc", Trade{
+		Timestamp: now.Add(time.Hour), Symbol: "BTC/USDT", Side: "sell", Quantity: 1, Price: 110, IsClose: true, RealizedPnL: 10,
+	}); err != nil {
+		t.Fatalf("InsertTrade close: %v", err)
+	}
+
+	state := NewAppState()
+	var mu sync.RWMutex
+	ss := NewStatusServer(state, &mu, "", []StrategyConfig{
+		{ID: "spot-btc", Platform: "binanceus", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}},
+	}, db)
+
+	req := httptest.NewRequest("GET", "/api/strategies/spot-btc/trades", nil)
+	w := httptest.NewRecorder()
+	ss.handleAPIStrategy(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var resp struct {
+		Markers []UITradeMarker `json:"markers"`
+		Total   int             `json:"total"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Total != 2 || len(resp.Markers) != 2 {
+		t.Fatalf("total/markers = %d/%d, want 2/2", resp.Total, len(resp.Markers))
+	}
+	if resp.Markers[0].Text != "BUY" || resp.Markers[1].Text != "CLOSE" {
+		t.Errorf("marker texts = %q/%q, want BUY/CLOSE", resp.Markers[0].Text, resp.Markers[1].Text)
+	}
+}
+
+func TestHandleAPIReturnsDraining(t *testing.T) {
+	shutdownDraining.Store(false)
+	beginDrain()
+	defer shutdownDraining.Store(false)
+
+	state := NewAppState()
+	var mu sync.RWMutex
+	ss := NewStatusServer(state, &mu, "", nil, nil)
+
+	req := httptest.NewRequest("GET", "/api/strategies", nil)
+	w := httptest.NewRecorder()
+	ss.handleAPIStrategies(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+}
