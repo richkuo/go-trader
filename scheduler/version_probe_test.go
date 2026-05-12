@@ -51,6 +51,11 @@ exec /usr/bin/env python3 "$@"
 	if err := os.WriteFile(pyShim, []byte(shim), 0o755); err != nil {
 		t.Fatalf("write shim: %v", err)
 	}
+	fetchDir := filepath.Join(tmp, "shared_scripts")
+	if err := os.MkdirAll(fetchDir, 0o755); err != nil {
+		t.Fatalf("mkdir shared_scripts: %v", err)
+	}
+	writeProbeStub(t, fetchDir, "fetch_candles.py", true)
 
 	prevCwd, _ := os.Getwd()
 	if err := os.Chdir(tmp); err != nil {
@@ -161,6 +166,10 @@ func TestProbeRunsFetchATRForHL(t *testing.T) {
 	spot := calls["shared_scripts/check_strategy.py"]
 	if len(spot) != 1 || spot[0] != "signal" {
 		t.Errorf("non-HL should be probed signal-only, got %v", spot)
+	}
+	candles := calls["shared_scripts/fetch_candles.py"]
+	if len(candles) != 1 || candles[0] != "signal" {
+		t.Errorf("dashboard candle helper should be probed once, got %v", candles)
 	}
 }
 

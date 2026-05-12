@@ -91,7 +91,7 @@ def _fetch(args):
     from data_fetcher import fetch_ohlcv
 
     symbol = args.symbol
-    if "/" not in symbol and args.type in ("perps", "manual", "options"):
+    if "/" not in symbol and args.type in ("perps", "manual"):
         symbol = f"{symbol}/USDT"
     exchange_id = args.platform if args.platform else "binanceus"
     if exchange_id in ("manual", "hyperliquid"):

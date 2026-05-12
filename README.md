@@ -312,7 +312,7 @@ journalctl -u go-trader -n 50           # recent logs
 ./go-trader inspect --all --json         # all strategies, machine-readable
 ```
 
-The dashboard is served by the same local/LAN status server and does not add browser-side authentication. Keep it bound behind your existing network controls; for remote access, put it behind an authenticated reverse proxy or VPN rather than exposing `8099` directly.
+The dashboard is served by the same local/LAN status server. If `status_token` is configured, the page prompts for that token and stores it in browser local storage for API calls. Keep the server bound behind your existing network controls; for remote access, put it behind an authenticated reverse proxy or VPN rather than exposing `8099` directly.
 
 `inspect` is read-only and safe to run against a live deployment — it loads `scheduler/config.json`, applies migrations and defaults, and prints which `stop_loss_*` field won, the resolved tier list on the configured TP close ref, and explicit-vs-default markers from the raw JSON. Use it to diagnose why a strategy isn't behaving like the JSON suggests, or to verify a config edit before SIGHUP.
 

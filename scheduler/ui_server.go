@@ -24,7 +24,7 @@ type UIStrategy struct {
 	Strategy  string `json:"strategy"`
 	Symbol    string `json:"symbol"`
 	Timeframe string `json:"timeframe"`
-	Direction string `json:"direction"`
+	Direction string `json:"direction,omitempty"`
 }
 
 type UIStrategyStatus struct {
@@ -33,7 +33,7 @@ type UIStrategyStatus struct {
 	Platform        string                     `json:"platform"`
 	Symbol          string                     `json:"symbol"`
 	Timeframe       string                     `json:"timeframe"`
-	Direction       string                     `json:"direction"`
+	Direction       string                     `json:"direction,omitempty"`
 	Cash            float64                    `json:"cash"`
 	InitialCapital  float64                    `json:"initial_capital"`
 	PortfolioValue  float64                    `json:"portfolio_value"`
@@ -199,7 +199,7 @@ func uiStrategyFromConfig(sc StrategyConfig) UIStrategy {
 		Strategy:  strategyDisplayName(sc),
 		Symbol:    strategyDisplaySymbol(sc),
 		Timeframe: strategyDisplayTimeframe(sc),
-		Direction: EffectiveDirection(sc),
+		Direction: strategyDisplayDirection(sc),
 	}
 }
 
@@ -231,6 +231,13 @@ func strategyDisplayTimeframe(sc StrategyConfig) string {
 		return sc.Args[2]
 	}
 	return ""
+}
+
+func strategyDisplayDirection(sc StrategyConfig) string {
+	if sc.Type != "perps" && sc.Type != "manual" {
+		return ""
+	}
+	return EffectiveDirection(sc)
 }
 
 func (ss *StatusServer) strategyConfig(id string) (StrategyConfig, bool) {
@@ -355,8 +362,8 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 	lifetime := LifetimeTradeStats{}
 	sharpe := 0.0
 	if ss.stateDB != nil {
-		if all, err := ss.stateDB.LifetimeTradeStatsAll(); err == nil {
-			lifetime = all[id]
+		if stats, err := ss.stateDB.LifetimeTradeStatsForStrategy(id); err == nil {
+			lifetime = stats
 		}
 		if closed, _, err := ss.stateDB.QueryClosedPositions(id, "", time.Time{}, time.Time{}, sharpeLookbackLimit, 0); err == nil {
 			sharpe = ComputeSharpeRatio(closed, initCap, DefaultAnnualRiskFreeRate)
@@ -373,7 +380,7 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 		Platform:        sc.Platform,
 		Symbol:          strategyDisplaySymbol(sc),
 		Timeframe:       strategyDisplayTimeframe(sc),
-		Direction:       EffectiveDirection(sc),
+		Direction:       strategyDisplayDirection(sc),
 		Cash:            snapshot.Cash,
 		InitialCapital:  initCap,
 		PortfolioValue:  pv,
@@ -480,12 +487,11 @@ func tradeCandles(trades []Trade, timeframe string) []UICandle {
 		c, ok := byBucket[bucket]
 		if !ok {
 			byBucket[bucket] = &UICandle{
-				Time:   bucket,
-				Open:   tr.Price,
-				High:   tr.Price,
-				Low:    tr.Price,
-				Close:  tr.Price,
-				Volume: tr.Quantity,
+				Time:  bucket,
+				Open:  tr.Price,
+				High:  tr.Price,
+				Low:   tr.Price,
+				Close: tr.Price,
 			}
 			keys = append(keys, bucket)
 			continue
@@ -493,7 +499,6 @@ func tradeCandles(trades []Trade, timeframe string) []UICandle {
 		c.High = math.Max(c.High, tr.Price)
 		c.Low = math.Min(c.Low, tr.Price)
 		c.Close = tr.Price
-		c.Volume += tr.Quantity
 	}
 	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
 	out := make([]UICandle, 0, len(keys))

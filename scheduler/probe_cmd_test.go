@@ -102,11 +102,12 @@ func TestRunProbeHappyPath(t *testing.T) {
 	if rc != 0 {
 		t.Fatalf("happy-path probe should return 0, got %d", rc)
 	}
-	// Expect 3 invocations: HL signal-check, HL --fetch-atr (#689), spot signal-check.
-	if len(probed) != 3 {
-		t.Fatalf("expected 3 probe invocations, got %d: %v", len(probed), probed)
+	// Expect 4 invocations: HL signal-check, HL --fetch-atr (#689), spot
+	// signal-check, and the dashboard candle helper.
+	if len(probed) != 4 {
+		t.Fatalf("expected 4 probe invocations, got %d: %v", len(probed), probed)
 	}
-	var hlSignal, hlFetchATR, spotSignal int
+	var hlSignal, hlFetchATR, spotSignal, candleHelper int
 	for _, p := range probed {
 		switch {
 		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "signal":
@@ -115,10 +116,12 @@ func TestRunProbeHappyPath(t *testing.T) {
 			hlFetchATR++
 		case p.script == "shared_scripts/check_strategy.py" && p.mode == "signal":
 			spotSignal++
+		case p.script == "shared_scripts/fetch_candles.py" && p.mode == "signal":
+			candleHelper++
 		}
 	}
-	if hlSignal != 1 || hlFetchATR != 1 || spotSignal != 1 {
-		t.Fatalf("expected 1 of each (hl-signal, hl-fetch-atr, spot-signal); got %d/%d/%d (probed=%v)",
-			hlSignal, hlFetchATR, spotSignal, probed)
+	if hlSignal != 1 || hlFetchATR != 1 || spotSignal != 1 || candleHelper != 1 {
+		t.Fatalf("expected 1 of each (hl-signal, hl-fetch-atr, spot-signal, candle-helper); got %d/%d/%d/%d (probed=%v)",
+			hlSignal, hlFetchATR, spotSignal, candleHelper, probed)
 	}
 }

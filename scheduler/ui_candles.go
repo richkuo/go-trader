@@ -34,9 +34,10 @@ type UICandleResponse struct {
 type UICandleFetcher func(UICandleRequest) ([]UICandle, string, error)
 
 type UICandleCache struct {
-	mu      sync.Mutex
-	ttl     time.Duration
-	entries map[string]cachedUICandleEntry
+	mu         sync.Mutex
+	ttl        time.Duration
+	maxEntries int
+	entries    map[string]cachedUICandleEntry
 }
 
 type cachedUICandleEntry struct {
@@ -46,8 +47,9 @@ type cachedUICandleEntry struct {
 
 func NewUICandleCache(ttl time.Duration) *UICandleCache {
 	return &UICandleCache{
-		ttl:     ttl,
-		entries: make(map[string]cachedUICandleEntry),
+		ttl:        ttl,
+		maxEntries: 256,
+		entries:    make(map[string]cachedUICandleEntry),
 	}
 }
 
@@ -74,10 +76,12 @@ func (c *UICandleCache) Set(key string, resp UICandleResponse) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.pruneLocked(time.Now())
 	c.entries[key] = cachedUICandleEntry{
 		resp:      resp,
 		expiresAt: time.Now().Add(c.ttl),
 	}
+	c.enforceLimitLocked()
 }
 
 func (r UICandleRequest) CacheKey() string {
@@ -147,4 +151,33 @@ func strategyMode(sc StrategyConfig) string {
 		}
 	}
 	return ""
+}
+
+func (c *UICandleCache) pruneLocked(now time.Time) {
+	for key, entry := range c.entries {
+		if now.After(entry.expiresAt) {
+			delete(c.entries, key)
+		}
+	}
+}
+
+func (c *UICandleCache) enforceLimitLocked() {
+	if c.maxEntries <= 0 || len(c.entries) <= c.maxEntries {
+		return
+	}
+	type entryAge struct {
+		key       string
+		expiresAt time.Time
+	}
+	entries := make([]entryAge, 0, len(c.entries))
+	for key, entry := range c.entries {
+		entries = append(entries, entryAge{key: key, expiresAt: entry.expiresAt})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].expiresAt.Before(entries[j].expiresAt)
+	})
+	for len(c.entries) > c.maxEntries && len(entries) > 0 {
+		delete(c.entries, entries[0].key)
+		entries = entries[1:]
+	}
 }

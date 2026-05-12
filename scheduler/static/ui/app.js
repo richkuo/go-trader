@@ -19,6 +19,8 @@
     interval: document.getElementById("refresh-interval"),
     statusDot: document.getElementById("status-dot"),
     statusLabel: document.getElementById("status-label"),
+    authPanel: document.getElementById("auth-panel"),
+    authToken: document.getElementById("auth-token"),
     statusGrid: document.getElementById("status-grid"),
     positions: document.getElementById("positions-list"),
   };
@@ -32,7 +34,9 @@
     const res = await fetch(url, { headers: authHeaders() });
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(text || res.statusText);
+      const err = new Error(text || res.statusText);
+      err.status = res.status;
+      throw err;
     }
     return res.json();
   }
@@ -167,7 +171,7 @@
       ["Regime", status.regime || "-"],
       ["Drawdown", fmtPct(status.risk_state && status.risk_state.current_drawdown_pct)],
       ["Leverage", fmtNumber(status.leverage)],
-      ["Trades", String(status.lifetime_stats ? status.lifetime_stats.PositionsOpened || status.lifetime_stats.positions_opened || 0 : 0)],
+      ["Trades", String(status.lifetime_stats ? status.lifetime_stats.positions_opened || 0 : 0)],
       ["W/L", winLoss(status)],
       ["Win Rate", status.win_rate ? fmtPct(status.win_rate) : "-"],
       ["Sharpe", status.sharpe ? fmtNumber(status.sharpe) : "-"],
@@ -180,8 +184,8 @@
 
   function winLoss(status) {
     const stats = status.lifetime_stats || {};
-    const wins = stats.Wins || stats.wins || 0;
-    const losses = stats.Losses || stats.losses || 0;
+    const wins = stats.wins || 0;
+    const losses = stats.losses || 0;
     return wins || losses ? wins + "/" + losses : "-";
   }
 
@@ -209,6 +213,10 @@
     try {
       await Promise.all([refreshChart(), refreshStatus()]);
     } catch (err) {
+      if (err.status === 401) {
+        showAuthPrompt();
+        return;
+      }
       els.statusDot.className = "status-dot error";
       els.statusLabel.textContent = "Error";
       els.statusGrid.innerHTML = "<dt>Message</dt><dd>" + escapeHTML(err.message) + "</dd>";
@@ -261,9 +269,33 @@
   els.search.addEventListener("input", renderStrategies);
   els.refresh.addEventListener("click", refreshAll);
   els.interval.addEventListener("change", scheduleRefresh);
+  els.authPanel.addEventListener("submit", function (event) {
+    event.preventDefault();
+    const token = els.authToken.value.trim();
+    if (token) {
+      window.localStorage.setItem("goTraderStatusToken", token);
+    } else {
+      window.localStorage.removeItem("goTraderStatusToken");
+    }
+    els.authPanel.hidden = true;
+    boot();
+  });
   boot().catch(function (err) {
+    if (err.status === 401) {
+      showAuthPrompt();
+      return;
+    }
     els.statusDot.className = "status-dot error";
     els.statusLabel.textContent = "Error";
     els.statusGrid.innerHTML = "<dt>Message</dt><dd>" + escapeHTML(err.message) + "</dd>";
   });
+
+  function showAuthPrompt() {
+    els.statusDot.className = "status-dot error";
+    els.statusLabel.textContent = "Token required";
+    els.authToken.value = window.localStorage.getItem("goTraderStatusToken") || "";
+    els.authPanel.hidden = false;
+    els.statusGrid.innerHTML = "<dt>API</dt><dd>Unauthorized</dd>";
+    els.authToken.focus();
+  }
 })();

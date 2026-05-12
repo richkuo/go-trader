@@ -1428,9 +1428,9 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 // loss); breakeven round trips are excluded from both buckets. Legacy close
 // rows without a position_id fall back to one synthetic group per row.
 type LifetimeTradeStats struct {
-	PositionsOpened int
-	Wins            int
-	Losses          int
+	PositionsOpened int `json:"positions_opened"`
+	Wins            int `json:"wins"`
+	Losses          int `json:"losses"`
 }
 
 // LifetimeTradeStatsAll returns lifetime stats for every strategy that has
@@ -1505,6 +1505,48 @@ func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, erro
 	if err := closeRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate lifetime trade stats: %w", err)
 	}
+	return out, nil
+}
+
+// LifetimeTradeStatsForStrategy returns lifetime stats for one strategy. This
+// keeps dashboard status polling from scanning and grouping the full trades
+// table on every request.
+func (sdb *StateDB) LifetimeTradeStatsForStrategy(strategyID string) (LifetimeTradeStats, error) {
+	if sdb == nil || sdb.db == nil {
+		return LifetimeTradeStats{}, fmt.Errorf("state db unavailable")
+	}
+	if strategyID == "" {
+		return LifetimeTradeStats{}, fmt.Errorf("strategy id required")
+	}
+	var out LifetimeTradeStats
+	var opens sql.NullInt64
+	if err := sdb.db.QueryRow(`SELECT COUNT(*)
+		FROM trades
+		WHERE strategy_id = ? AND is_close = 0`, strategyID).Scan(&opens); err != nil {
+		return LifetimeTradeStats{}, fmt.Errorf("query lifetime open count for %s: %w", strategyID, err)
+	}
+	out.PositionsOpened = int(opens.Int64)
+
+	var wins, losses sql.NullInt64
+	if err := sdb.db.QueryRow(`SELECT
+			SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+			SUM(CASE WHEN net_pnl < 0 THEN 1 ELSE 0 END) AS losses
+		FROM (
+			SELECT
+				CASE
+					WHEN position_id IS NULL OR position_id = ''
+					THEN 'legacy:' || rowid
+					ELSE position_id
+				END AS pkey,
+				SUM(realized_pnl) AS net_pnl
+			FROM trades
+			WHERE strategy_id = ? AND is_close = 1
+			GROUP BY pkey
+		)`, strategyID).Scan(&wins, &losses); err != nil {
+		return LifetimeTradeStats{}, fmt.Errorf("query lifetime trade stats for %s: %w", strategyID, err)
+	}
+	out.Wins = int(wins.Int64)
+	out.Losses = int(losses.Int64)
 	return out, nil
 }
 

@@ -281,6 +281,46 @@ h3 {
   background: var(--red);
 }
 
+.auth-panel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #e2c17d;
+  background: #fff8e8;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 14px;
+}
+
+.auth-panel[hidden] {
+  display: none;
+}
+
+.auth-panel label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.auth-panel input {
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 9px 10px;
+  color: var(--text);
+  background: #ffffff;
+}
+
+.auth-panel button {
+  justify-self: end;
+  border: 1px solid #245a43;
+  border-radius: 6px;
+  background: #245a43;
+  color: #ffffff;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
 .status-grid {
   display: grid;
   grid-template-columns: minmax(110px, 1fr) minmax(0, 1fr);

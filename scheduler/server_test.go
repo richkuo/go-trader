@@ -351,6 +351,9 @@ func TestHandleAPIStrategies(t *testing.T) {
 	if resp.Strategies[0].ID != "spot-btc" || resp.Strategies[0].Symbol != "BTC/USDT" || resp.Strategies[0].Timeframe != "1h" {
 		t.Errorf("first strategy = %+v, want spot-btc BTC/USDT 1h", resp.Strategies[0])
 	}
+	if resp.Strategies[0].Direction != "" {
+		t.Errorf("spot direction = %q, want empty", resp.Strategies[0].Direction)
+	}
 	if resp.Strategies[1].Direction != DirectionBoth {
 		t.Errorf("direction = %q, want %q", resp.Strategies[1].Direction, DirectionBoth)
 	}

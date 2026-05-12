@@ -71,11 +71,13 @@ func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, stra
 }
 
 // UpdateStrategies refreshes config-derived status metadata after a hot reload.
-// The caller must coordinate with ss.mu so /status does not build responses from
-// a half-applied config update.
 func (ss *StatusServer) UpdateStrategies(strategies []StrategyConfig) {
 	if ss == nil {
 		return
+	}
+	if ss.mu != nil {
+		ss.mu.Lock()
+		defer ss.mu.Unlock()
 	}
 	ss.strategies = append([]StrategyConfig(nil), strategies...)
 }
@@ -195,6 +197,9 @@ func (ss *StatusServer) Start(port int) {
 	}
 	fmt.Printf("[server] Status endpoint at http://localhost:%d/status\n", boundPort)
 	fmt.Printf("[server] Dashboard at http://localhost:%d/dashboard\n", boundPort)
+	if ss.statusToken != "" {
+		fmt.Printf("[server] Dashboard API requires the configured status token\n")
+	}
 	go func() {
 		if err := http.Serve(listener, mux); err != nil {
 			fmt.Printf("[server] HTTP server error: %v\n", err)

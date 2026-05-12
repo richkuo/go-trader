@@ -39,6 +39,13 @@ var fetchATRProbeArgv = []string{
 	"--fetch-atr", "--symbol=BTC", "--timeframe=1h", "--period=14", "--probe-only",
 }
 
+// fetchCandlesProbeArgv probes the dashboard's on-demand OHLCV helper. The
+// helper is not a configured strategy script, so it needs its own argv shape to
+// catch stale Python deploys before the dashboard starts returning 500s.
+var fetchCandlesProbeArgv = []string{
+	"--platform=binanceus", "--type=spot", "--symbol=BTC/USDT", "--timeframe=1h", "--limit=1", "--probe-only",
+}
+
 const probeTimeout = 15 * time.Second
 
 // probeCheckScripts invokes each unique check script configured in cfg
@@ -68,6 +75,11 @@ func probeCheckScripts(cfg *Config) error {
 			if err := probeOneCheckScriptFn(script, fetchATRProbeArgv); err != nil {
 				return err
 			}
+		}
+	}
+	if len(scripts) > 0 {
+		if err := probeOneCheckScriptFn("shared_scripts/fetch_candles.py", fetchCandlesProbeArgv); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -2217,6 +2217,16 @@ func TestLifetimeTradeStatsAll_FreshInsert(t *testing.T) {
 	if _, ok := stats["s3"]; ok {
 		t.Errorf("unexpected entry for s3 with no trades: %+v", stats["s3"])
 	}
+	if got, err := sdb.LifetimeTradeStatsForStrategy("s1"); err != nil {
+		t.Fatalf("LifetimeTradeStatsForStrategy: %v", err)
+	} else if got.PositionsOpened != 2 || got.Wins != 1 || got.Losses != 1 {
+		t.Errorf("single-strategy stats = %+v, want PositionsOpened=2 Wins=1 Losses=1", got)
+	}
+	if got, err := sdb.LifetimeTradeStatsForStrategy("s3"); err != nil {
+		t.Fatalf("LifetimeTradeStatsForStrategy empty: %v", err)
+	} else if got.PositionsOpened != 0 || got.Wins != 0 || got.Losses != 0 {
+		t.Errorf("single-strategy empty stats = %+v, want zero", got)
+	}
 }
 
 func TestLifetimeTradeStatsAll_PartialClosesNetByPositionID(t *testing.T) {
