@@ -174,9 +174,9 @@ func parseStrategyAPIPath(p string) (id, resource string, ok bool) {
 }
 
 func (ss *StatusServer) uiStrategies() []UIStrategy {
-	ss.mu.RLock()
+	ss.strategiesMu.RLock()
 	configs := append([]StrategyConfig(nil), ss.strategies...)
-	ss.mu.RUnlock()
+	ss.strategiesMu.RUnlock()
 
 	out := make([]UIStrategy, 0, len(configs))
 	for _, sc := range configs {
@@ -241,8 +241,8 @@ func strategyDisplayDirection(sc StrategyConfig) string {
 }
 
 func (ss *StatusServer) strategyConfig(id string) (StrategyConfig, bool) {
-	ss.mu.RLock()
-	defer ss.mu.RUnlock()
+	ss.strategiesMu.RLock()
+	defer ss.strategiesMu.RUnlock()
 	for _, sc := range ss.strategies {
 		if sc.ID == id {
 			return sc, true

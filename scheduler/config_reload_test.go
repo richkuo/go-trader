@@ -2,6 +2,7 @@ package main
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -104,9 +105,30 @@ func TestApplyHotReloadConfigAppliesAllowedFields(t *testing.T) {
 		notifierBackend{notifier: mock, channels: cfg.Discord.Channels, dmChannels: cfg.Discord.DMChannels, leaderboardChannel: cfg.Discord.LeaderboardChannel},
 		notifierBackend{notifier: tgMock, channels: cfg.Telegram.Channels, dmChannels: cfg.Telegram.DMChannels, plainText: true},
 	)
-	server := NewStatusServer(state, nil, "", cfg.Strategies, nil)
+	var mu sync.RWMutex
+	server := NewStatusServer(state, &mu, "", cfg.Strategies, nil)
 
-	changes, err := applyHotReloadConfig(cfg, next, state, notifier, server)
+	// SIGHUP path holds mu.Lock() across applyHotReloadConfig (see
+	// reloadConfig in main.go). Mirror that here so this test also covers
+	// the deadlock risk fixed by giving StatusServer.strategies its own mu.
+	type reloadResult struct {
+		changes []string
+		err     error
+	}
+	resultCh := make(chan reloadResult, 1)
+	go func() {
+		mu.Lock()
+		defer mu.Unlock()
+		c, e := applyHotReloadConfig(cfg, next, state, notifier, server)
+		resultCh <- reloadResult{changes: c, err: e}
+	}()
+	var res reloadResult
+	select {
+	case res = <-resultCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("applyHotReloadConfig deadlocked while caller held mu.Lock()")
+	}
+	changes, err := res.changes, res.err
 	if err != nil {
 		t.Fatalf("applyHotReloadConfig returned error: %v", err)
 	}

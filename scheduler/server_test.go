@@ -451,3 +451,38 @@ func TestHandleAPIReturnsDraining(t *testing.T) {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
 	}
 }
+
+// Regression: SIGHUP holds the global state mu.Lock() across the reload (see
+// reloadConfig in main.go), and applyHotReloadConfig calls
+// server.UpdateStrategies while still holding it. A previous version of
+// UpdateStrategies took the same non-reentrant mutex and deadlocked the
+// daemon on every reload. Exercise the path with a real *sync.RWMutex held
+// by the caller — a deadlocked implementation hangs here until the timeout.
+func TestUpdateStrategiesDoesNotDeadlockUnderStateLock(t *testing.T) {
+	state := NewAppState()
+	var mu sync.RWMutex
+	ss := NewStatusServer(state, &mu, "", nil, nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ss.UpdateStrategies([]StrategyConfig{
+			{ID: "alpha", Platform: "binanceus"},
+			{ID: "beta", Platform: "hyperliquid"},
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("UpdateStrategies blocked while caller holds state mu.Lock() — SIGHUP deadlock regression")
+	}
+
+	got := ss.uiStrategies()
+	if len(got) != 2 {
+		t.Fatalf("uiStrategies len = %d, want 2 (%+v)", len(got), got)
+	}
+}
