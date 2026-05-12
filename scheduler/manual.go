@@ -39,7 +39,7 @@ func runManualOpen(args []string) int {
 	// documented `manual-open <strategy-id> --flag value` form fails to parse
 	// the trailing flags. Reorder to put the positional last so both
 	// orderings work.
-	args = reorderArgsForPositional(args, manualOpenBoolFlags)
+	args = reorderArgsForPositional(args, collectBoolFlagNames(fs))
 
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -162,11 +162,13 @@ func runManualOpen(args []string) int {
 	// (market orders fill at ~mid). --size and --record-only paths skip the
 	// fetch since size is explicit.
 	var resolvedOrderSize, sizingMark float64
+	var sizingFailed bool
 	if !*recordOnly {
 		qty, mark, err := resolveManualOpenOrderSize(sc, *size, *notional, *margin, fetchHyperliquidMids)
 		if err != nil {
 			if *dryRun {
 				fmt.Fprintf(os.Stderr, "warning: dry-run sizing best-effort failed: %v\n", err)
+				sizingFailed = true
 			} else {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 				return 1
@@ -180,8 +182,12 @@ func runManualOpen(args []string) int {
 	var exchangeOID string
 
 	if *dryRun {
-		fmt.Printf("[dry-run] manual-open %s: %s %.6f %s (script=%s, sl_pct=%.2f, mark=$%.4f)\n",
-			strategyID, *side, resolvedOrderSize, sc.Symbol, script, effectiveSLPct, sizingMark)
+		prefix := "[dry-run]"
+		if sizingFailed {
+			prefix = "[dry-run] [sizing failed]"
+		}
+		fmt.Printf("%s manual-open %s: %s %.6f %s (script=%s, sl_pct=%.2f, mark=$%.4f)\n",
+			prefix, strategyID, *side, resolvedOrderSize, sc.Symbol, script, effectiveSLPct, sizingMark)
 		return 0
 	}
 
@@ -382,7 +388,7 @@ func runManualClose(args []string) int {
 	qty := fs.Float64("qty", 0, "Quantity to close in base units (0 = full position)")
 	dryRun := fs.Bool("dry-run", false, "Print planned action without placing order or mutating state")
 
-	args = reorderArgsForPositional(args, manualCloseBoolFlags)
+	args = reorderArgsForPositional(args, collectBoolFlagNames(fs))
 
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -714,11 +720,20 @@ func findManualStrategy(cfg *Config, id string) (StrategyConfig, bool) {
 	return StrategyConfig{}, false
 }
 
-// manualOpenBoolFlags / manualCloseBoolFlags list flags that do NOT consume
-// the following arg as a value — needed by reorderArgsForPositional so it
-// doesn't mistake the strategy-id positional for a flag value.
-var manualOpenBoolFlags = map[string]bool{"record-only": true, "dry-run": true}
-var manualCloseBoolFlags = map[string]bool{"dry-run": true}
+// collectBoolFlagNames returns the names of bool flags registered on fs.
+// reorderArgsForPositional uses this to avoid consuming the strategy-id
+// positional as the value of a preceding bool flag. Derived from the FlagSet
+// (rather than a hardcoded map) so new bool flags self-register.
+func collectBoolFlagNames(fs *flag.FlagSet) map[string]bool {
+	out := map[string]bool{}
+	fs.VisitAll(func(f *flag.Flag) {
+		type boolFlag interface{ IsBoolFlag() bool }
+		if bf, ok := f.Value.(boolFlag); ok && bf.IsBoolFlag() {
+			out[f.Name] = true
+		}
+	})
+	return out
+}
 
 // reorderArgsForPositional moves positional (non-flag) arguments to the end
 // so Go's stdlib flag.Parse — which stops at the first non-flag — can still

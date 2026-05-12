@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"reflect"
 	"strings"
@@ -606,11 +607,29 @@ func TestDefaultManualStopLossATRMult(t *testing.T) {
 	}
 }
 
+// TestCollectBoolFlagNames verifies the helper returns only bool-typed flags.
+// reorderArgsForPositional relies on this distinction to avoid consuming the
+// positional arg as a value-flag's value.
+func TestCollectBoolFlagNames(t *testing.T) {
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	fs.Bool("flag-a", false, "")
+	fs.Bool("flag-b", false, "")
+	fs.String("flag-c", "", "")
+	fs.Float64("flag-d", 0, "")
+	got := collectBoolFlagNames(fs)
+	want := map[string]bool{"flag-a": true, "flag-b": true}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("collectBoolFlagNames = %v, want %v", got, want)
+	}
+}
+
 // TestReorderArgsForPositional verifies that flags placed after the positional
 // strategy-id are still parsed correctly — the bug from #711 where
 // `manual-open manual-eth --side long --margin 50` failed because stdlib
 // flag.Parse stops at the first non-flag arg.
 func TestReorderArgsForPositional(t *testing.T) {
+	openBoolFlags := map[string]bool{"record-only": true, "dry-run": true}
+	closeBoolFlags := map[string]bool{"dry-run": true}
 	cases := []struct {
 		name      string
 		in        []string
@@ -620,49 +639,49 @@ func TestReorderArgsForPositional(t *testing.T) {
 		{
 			name:      "documented order: positional first",
 			in:        []string{"manual-eth", "--side", "long", "--margin", "50"},
-			boolFlags: manualOpenBoolFlags,
+			boolFlags: openBoolFlags,
 			want:      []string{"--side", "long", "--margin", "50", "manual-eth"},
 		},
 		{
 			name:      "workaround order: positional last",
 			in:        []string{"--side", "long", "--margin", "50", "manual-eth"},
-			boolFlags: manualOpenBoolFlags,
+			boolFlags: openBoolFlags,
 			want:      []string{"--side", "long", "--margin", "50", "manual-eth"},
 		},
 		{
 			name:      "positional in the middle",
 			in:        []string{"--side", "long", "manual-eth", "--margin", "50"},
-			boolFlags: manualOpenBoolFlags,
+			boolFlags: openBoolFlags,
 			want:      []string{"--side", "long", "--margin", "50", "manual-eth"},
 		},
 		{
 			name:      "bool flag does not swallow positional",
 			in:        []string{"manual-eth", "--dry-run", "--side", "long"},
-			boolFlags: manualOpenBoolFlags,
+			boolFlags: openBoolFlags,
 			want:      []string{"--dry-run", "--side", "long", "manual-eth"},
 		},
 		{
 			name:      "--record-only treated as bool",
 			in:        []string{"manual-eth", "--record-only", "--size", "0.5", "--fill-price", "2000"},
-			boolFlags: manualOpenBoolFlags,
+			boolFlags: openBoolFlags,
 			want:      []string{"--record-only", "--size", "0.5", "--fill-price", "2000", "manual-eth"},
 		},
 		{
 			name:      "--flag=value form preserved",
 			in:        []string{"--side=long", "manual-eth", "--margin=50"},
-			boolFlags: manualOpenBoolFlags,
+			boolFlags: openBoolFlags,
 			want:      []string{"--side=long", "--margin=50", "manual-eth"},
 		},
 		{
 			name:      "double-dash terminator",
 			in:        []string{"--side", "long", "--", "manual-eth"},
-			boolFlags: manualOpenBoolFlags,
+			boolFlags: openBoolFlags,
 			want:      []string{"--side", "long", "manual-eth"},
 		},
 		{
 			name:      "manual-close style with --qty",
 			in:        []string{"manual-eth", "--qty", "0.1", "--dry-run"},
-			boolFlags: manualCloseBoolFlags,
+			boolFlags: closeBoolFlags,
 			want:      []string{"--qty", "0.1", "--dry-run", "manual-eth"},
 		},
 	}
