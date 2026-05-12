@@ -11,6 +11,11 @@ func TestTradeAlertCloseSourceClassification(t *testing.T) {
 		want    string
 	}{
 		{"Stop loss close ETH, PnL: $-22.45 (fee $1.10)", "exchange SL"},
+		// #716 item 4: paper / trailing variants classify distinctly so an
+		// operator doesn't see a paper-mode trailing SL labeled "exchange SL".
+		{"Paper trailing SL close ETH, PnL: $-22.45 (fee $1.10)", "paper trailing SL"},
+		{"Trailing SL close ETH, PnL: $-22.45 (fee $1.10)", "trailing SL"},
+		{"Paper SL close ETH, PnL: $-22.45 (fee $1.10)", "paper SL"},
 		{"TP1 fill close, PnL: $34.35 (fee $1.23)", "exchange TP1"},
 		{"TP2 fill close, PnL: $50.00 (fee $1.50)", "exchange TP2"},
 		{"Circuit breaker on-chain close (no virtual position), fill=0.5 fee=$0.20", "circuit breaker"},

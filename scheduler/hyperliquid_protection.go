@@ -289,6 +289,24 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 	} else if result.TP1OID > 0 || result.TP2OID > 0 {
 		pos.TPOIDs = []int64{result.TP1OID, result.TP2OID}
 	}
+	// #716 item 2: mark tiers as armed once Python reports a positive OID for
+	// them. Done BEFORE the stale-OID clearing below so a tier that fills in
+	// the same cycle it was first armed is recorded as armed —
+	// findHighestClearedTier requires armed=true before treating OID=0 as
+	// "cleared." This distinguishes a tier that filled (armed → 0) from a
+	// tier whose first placement failed transiently (never armed, still 0).
+	if len(pos.TPOIDs) > 0 {
+		if len(pos.TPArmedTiers) < len(pos.TPOIDs) {
+			extended := make([]bool, len(pos.TPOIDs))
+			copy(extended, pos.TPArmedTiers)
+			pos.TPArmedTiers = extended
+		}
+		for i, oid := range pos.TPOIDs {
+			if oid > 0 {
+				pos.TPArmedTiers[i] = true
+			}
+		}
+	}
 	// Clear stale TP OIDs after applying the latest echoed/placed OID list.
 	// The reconciler will book externally-filled closes; here we only stop
 	// pointing at dead OIDs that would otherwise be re-placed against stale
@@ -299,20 +317,34 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 		if len(pos.TPOIDs) < len(result.TPFilledExternally) {
 			pos.TPOIDs = tpOIDsForTierCount(pos.TPOIDs, len(result.TPFilledExternally))
 		}
+		if len(pos.TPArmedTiers) < len(result.TPFilledExternally) {
+			extended := make([]bool, len(result.TPFilledExternally))
+			copy(extended, pos.TPArmedTiers)
+			pos.TPArmedTiers = extended
+		}
 		for idx, filled := range result.TPFilledExternally {
 			if filled {
 				pos.TPOIDs[idx] = 0
+				// A filled tier is by definition one that was armed.
+				pos.TPArmedTiers[idx] = true
 			}
 		}
 	} else if result.TP1FilledExternally || result.TP2FilledExternally {
 		if len(pos.TPOIDs) < 2 {
 			pos.TPOIDs = tpOIDsForTierCount(pos.TPOIDs, 2)
 		}
+		if len(pos.TPArmedTiers) < 2 {
+			extended := make([]bool, 2)
+			copy(extended, pos.TPArmedTiers)
+			pos.TPArmedTiers = extended
+		}
 		if result.TP1FilledExternally {
 			pos.TPOIDs[0] = 0
+			pos.TPArmedTiers[0] = true
 		}
 		if result.TP2FilledExternally {
 			pos.TPOIDs[1] = 0
+			pos.TPArmedTiers[1] = true
 		}
 	}
 }
