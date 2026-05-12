@@ -450,6 +450,7 @@ func runPostTPStopLossAdjustment(
 	mu *sync.RWMutex,
 	notifier *MultiNotifier,
 	logger *StrategyLogger,
+	hlOnChainAbsQty map[string]float64,
 ) bool {
 	if sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") {
 		return false
@@ -517,6 +518,15 @@ func runPostTPStopLossAdjustment(
 		return false
 	}
 
+	// #714: cap SL size at on-chain qty. After a TP tier fills, on-chain qty is
+	// below virtual qty until the reconciler / protection-sync books the fill;
+	// without the cap HL rejects the reduce-only replace as oversized. Mirrors
+	// the trailing-stop walker (main.go:1491) and fixed-ATR arm (main.go:1549).
+	slEffectiveQty, capped := hlSLEffectiveQty(symbol, qty, hlOnChainAbsQty)
+	if capped && logger != nil {
+		logger.Warn("post-TP SL replace: virtual qty %.6f > on-chain %.6f for %s; capping SL size to on-chain qty (#714)", qty, slEffectiveQty, symbol)
+	}
+
 	// Phase 2: no-lock subprocess — cancel+replace SL OID. RunHyperliquidUpdateStopLoss
 	// is the trailing-stop primitive but it just cancels an existing OID and
 	// places a fresh reduce-only trigger, which is what every sl_after mode
@@ -527,7 +537,7 @@ func runPostTPStopLossAdjustment(
 		logger.Info("post-TP SL adjustment for %s: tier %d cleared, mode=%s new_trigger=$%.4f (cancel oid=%d)",
 			symbol, clearedIdx, mode, triggerPx, currentOID)
 	}
-	result, stderr, err := runHyperliquidUpdateStopLossFunc(sc.Script, symbol, side, qty, triggerPx, currentOID)
+	result, stderr, err := runHyperliquidUpdateStopLossFunc(sc.Script, symbol, side, slEffectiveQty, triggerPx, currentOID)
 	if stderr != "" && logger != nil {
 		logger.Info("post-TP SL stderr: %s", stderr)
 	}

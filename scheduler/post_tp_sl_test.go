@@ -617,7 +617,7 @@ func TestRunPostTPStopLossAdjustment_BreakevenAfterTP1(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil) {
+	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
 
@@ -660,8 +660,8 @@ func TestRunPostTPStopLossAdjustment_Idempotent(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil)
-	runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil)
+	runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil)
+	runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil)
 	if calls != 1 {
 		t.Fatalf("expected exactly 1 subprocess call, got %d", calls)
 	}
@@ -691,7 +691,7 @@ func TestRunPostTPStopLossAdjustment_TrailFromHereTransition(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil) {
+	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
 	// trail_from_here at mark=110, ATR=5, mult=1.0 → trigger = 110 - 5 = 105
@@ -732,7 +732,7 @@ func TestRunPostTPStopLossAdjustment_TrailDefersWithoutMark(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if runPostTPStopLossAdjustment(sc, state, "ETH", 0, nil, &mu, nil, nil) {
+	if runPostTPStopLossAdjustment(sc, state, "ETH", 0, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to defer without mark")
 	}
 	if calls != 0 {
@@ -765,7 +765,7 @@ func TestRunPostTPStopLossAdjustment_NoRulesShortCircuits(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil) {
+	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to return false when no rules configured")
 	}
 	if calls != 0 {
@@ -796,11 +796,81 @@ func TestRunPostTPStopLossAdjustment_DefersWhenSLNotArmed(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil) {
+	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected defer when SL OID is 0")
 	}
 	if calls != 0 {
 		t.Errorf("subprocess should not be called; got %d", calls)
+	}
+}
+
+// #714: SL replace must cap at on-chain qty when virtual > on-chain (e.g. a
+// manual TP shrank on-chain before the reconciler caught up). Mirrors the
+// trailing/fixed-ATR SL placement sites that already use hlSLEffectiveQty.
+func TestRunPostTPStopLossAdjustment_CapsAtOnChainQty(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	var gotQty float64
+	runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		gotQty = size
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
+	}
+
+	sc := postTPSLTestStrategy("breakeven", []interface{}{
+		map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
+		map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
+	})
+	pos := &Position{
+		Symbol: "ETH", Quantity: 1.0, InitialQuantity: 2.0,
+		AvgCost: 100, EntryATR: 5, Side: "long",
+		StopLossOID: 111, StopLossTriggerPx: 95,
+		TPOIDs:                   []int64{0, 222},
+		SLAdjustedTiersProcessed: 0,
+	}
+	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
+	var mu sync.RWMutex
+
+	onChain := map[string]float64{"ETH": 0.7}
+	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, onChain) {
+		t.Fatal("expected runPostTPStopLossAdjustment to apply")
+	}
+	if gotQty != 0.7 {
+		t.Fatalf("subprocess size=%v, want 0.7 (capped at on-chain)", gotQty)
+	}
+}
+
+// Confirms the no-cap path: when on-chain >= virtual (or map is nil/missing),
+// the subprocess receives the virtual qty unchanged.
+func TestRunPostTPStopLossAdjustment_NoCapWhenOnChainGEVirtual(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	var gotQty float64
+	runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		gotQty = size
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
+	}
+
+	sc := postTPSLTestStrategy("breakeven", []interface{}{
+		map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
+		map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
+	})
+	pos := &Position{
+		Symbol: "ETH", Quantity: 1.0, InitialQuantity: 2.0,
+		AvgCost: 100, EntryATR: 5, Side: "long",
+		StopLossOID: 111, StopLossTriggerPx: 95,
+		TPOIDs:                   []int64{0, 222},
+		SLAdjustedTiersProcessed: 0,
+	}
+	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
+	var mu sync.RWMutex
+
+	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, map[string]float64{"ETH": 1.0}) {
+		t.Fatal("expected runPostTPStopLossAdjustment to apply")
+	}
+	if gotQty != 1.0 {
+		t.Fatalf("subprocess size=%v, want 1.0 (uncapped)", gotQty)
 	}
 }
 
