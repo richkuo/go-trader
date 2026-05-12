@@ -32,6 +32,7 @@ type Position struct {
 	TPArmedTiers    []bool   `json:"tp_armed_tiers,omitempty"`
 	StopLossATRMult *float64 `json:"stop_loss_atr_mult,omitempty"` // HL perps: ATR multiplier resolved at fill time when SL was ATR-armed; nil = armed via pct/margin/trailing/none (#669)
 	TPTiersJSON     string   `json:"tp_tiers_json,omitempty"`      // HL perps: JSON snapshot of [{atr_multiple,close_fraction},...] resolved at fill time; "" = strategy doesn't use tiered_tp_atr* (#669)
+	Regime          string   `json:"regime,omitempty"`             // regime label stamped at position open via stampPositionRegimeIfOpened. Drives regime-aware tier/SL multipliers for the life of the position (#733). Distinct from StrategyState.Regime which tracks the most recent classifier output.
 	// SLAdjustedTiersProcessed counts how many leading tiers have already had
 	// their sl_after rule applied: 0 = none, N = tiers [0..N-1] processed.
 	// Idempotency watermark so restarts don't re-fire the same bump (#708).

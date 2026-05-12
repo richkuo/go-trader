@@ -539,10 +539,12 @@ func needsV13SchemaMigration(data []byte) bool {
 // with its own params, mirror its registry default_params keys here so legacy
 // configs migrate cleanly. Anything not listed stays on the open ref.
 var closeStrategyOwnedKeys = map[string]map[string]struct{}{
-	"tiered_tp_atr":      {"tiers": {}},
-	"tiered_tp_atr_live": {"tiers": {}, "atr_source": {}},
-	"tiered_tp_pct":      {"tiers": {}},
-	"tp_at_pct":          {"pct": {}},
+	"tiered_tp_atr":             {"tiers": {}},
+	"tiered_tp_atr_live":        {"tiers": {}, "atr_source": {}},
+	"tiered_tp_atr_regime":      {},
+	"tiered_tp_atr_live_regime": {"atr_source": {}},
+	"tiered_tp_pct":             {"tiers": {}},
+	"tp_at_pct":                 {"pct": {}},
 }
 
 // migrateV14Direction translates the legacy boolean `allow_shorts` field on

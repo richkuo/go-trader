@@ -323,6 +323,8 @@ type StrategyConfig struct {
 	TrailingStopPct        *float64            `json:"trailing_stop_pct,omitempty"`          // HL perps only: synthetic trailing SL distance from the best mark seen while open; mutually exclusive with stop_loss_pct and stop_loss_margin_pct (#501)
 	TrailingStopATRMult    *float64            `json:"trailing_stop_atr_mult,omitempty"`     // HL perps only: trailing SL distance derived from entry ATR at open (effective_pct = mult * entry_atr / avg_cost * 100); fixed for the life of the position; mutually exclusive with trailing_stop_pct, stop_loss_pct, stop_loss_margin_pct (#505)
 	StopLossATRMult        *float64            `json:"stop_loss_atr_mult,omitempty"`         // HL perps only: fixed (non-trailing) SL distance derived from entry ATR at open (trigger_px = avg_cost ± mult * entry_atr); armed once on the cycle after open and never updated; mutually exclusive with stop_loss_pct, stop_loss_margin_pct, trailing_stop_pct, trailing_stop_atr_mult. When all five stop fields are omitted on a sole-owner HL perps strategy, LoadConfig defaults this to 1.0 so every position has volatility-adjusted exchange-side protection (#562)
+	StopLossATRRegime      *RegimeATRBlock     `json:"stop_loss_atr_regime,omitempty"`       // HL perps only: regime-aware sibling of stop_loss_atr_mult — resolves the ATR multiplier from pos.Regime stamped at open. Mutually exclusive with the four scalar siblings AND stop_loss_atr_mult. Requires regime detection enabled at the top-level cfg.Regime. (#733)
+	TrailingStopATRRegime  *RegimeATRBlock     `json:"trailing_stop_atr_regime,omitempty"`   // HL perps only: regime-aware sibling of trailing_stop_atr_mult — trailing distance frozen at open via pos.Regime. Mutually exclusive with the scalar siblings. Requires regime detection. (#733)
 	TrailingStopMinMovePct *float64            `json:"trailing_stop_min_move_pct,omitempty"` // HL perps trailing SL only: minimum trigger-price move before cancel/replace; nil defaults to 0.5% (#501)
 	MarginMode             string              `json:"margin_mode,omitempty"`                // HL perps only: "isolated" (default) or "cross"; sent via update_leverage on fresh opens to enforce per-position liq isolation (#486)
 	ThetaHarvest           *ThetaHarvestConfig `json:"theta_harvest,omitempty"`
@@ -512,6 +514,16 @@ func EffectiveStopLossPct(sc StrategyConfig) float64 {
 		// Fixed (non-trailing) ATR-derived stop loss. Same deferral as
 		// TrailingStopATRMult — the trigger is armed on the cycle after
 		// open by hyperliquidArmFixedATRStopLoss once EntryATR is stamped (#562).
+		return 0
+	}
+	if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
+		// #733: regime-aware fixed SL. Same deferral as the scalar ATR
+		// variants — initial trigger placement is deferred to the next
+		// cycle once both Position.EntryATR AND Position.Regime are stamped.
+		return 0
+	}
+	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
+		// #733: regime-aware trailing distance. Same deferral story.
 		return 0
 	}
 	if sc.TrailingStopPct != nil {
@@ -777,7 +789,7 @@ func LoadConfig(path string) (*Config, error) {
 			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
 				continue
 			}
-			if sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && sc.StopLossATRMult == nil {
+			if sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && sc.StopLossATRMult == nil && (sc.StopLossATRRegime == nil || sc.StopLossATRRegime.IsZero()) && (sc.TrailingStopATRRegime == nil || sc.TrailingStopATRRegime.IsZero()) {
 				defaultMult := defaultStopLossATRMult
 				sc.StopLossATRMult = &defaultMult
 				fmt.Printf("[INFO] %s: applied default stop_loss_atr_mult=%g (no stop fields set; set stop_loss_atr_mult=0 or default_stop_loss_atr_mult=0 to opt out)\n", sc.ID, defaultStopLossATRMult)
@@ -816,7 +828,7 @@ func LoadConfig(path string) (*Config, error) {
 		// default_stop_loss_atr_mult=0 opt-out: when the operator disables
 		// the auto-default globally, manual strategies opt out too (the
 		// INFO message at config.go:675 advertises =0 as the global switch).
-		if defaultStopLossATRMult > 0 && sc.StopLossATRMult == nil && sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil {
+		if defaultStopLossATRMult > 0 && sc.StopLossATRMult == nil && sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && (sc.StopLossATRRegime == nil || sc.StopLossATRRegime.IsZero()) && (sc.TrailingStopATRRegime == nil || sc.TrailingStopATRRegime.IsZero()) {
 			defaultMult := cfg.resolveManualStopLossATRMult()
 			if defaultMult > 0 {
 				sc.StopLossATRMult = &defaultMult
@@ -828,7 +840,13 @@ func LoadConfig(path string) (*Config, error) {
 		// CloseStrategies to something else, leave it alone.
 		for j := range sc.CloseStrategies {
 			cs := &sc.CloseStrategies[j]
-			if cs.Name != "tiered_tp_atr" && cs.Name != "tiered_tp_atr_live" {
+			if !isTieredTPATRCloseName(cs.Name) {
+				continue
+			}
+			if cs.Name == "tiered_tp_atr_regime" || cs.Name == "tiered_tp_atr_live_regime" {
+				// Regime-aware variants resolve their own tier list from the
+				// trend_regime block / use_defaults shortcut — manual_defaults
+				// tier seeding doesn't apply.
 				continue
 			}
 			if cs.Params == nil {
@@ -904,6 +922,12 @@ func hasHyperliquidStopLossOwnership(sc StrategyConfig) bool {
 	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		return true
 	}
+	if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
+		return true
+	}
+	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
+		return true
+	}
 	return false
 }
 
@@ -921,6 +945,9 @@ func hasHyperliquidTrailingStopOwnership(sc StrategyConfig) bool {
 		return true
 	}
 	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
+		return true
+	}
+	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
 		return true
 	}
 	return false
@@ -1664,6 +1691,12 @@ func ValidateConfig(cfg *Config) error {
 			errs = append(errs, fmt.Sprintf("tradingview_export.symbol_overrides[%q]: value must be in EXCHANGE:TICKER format, got %q", k, v))
 		}
 	}
+
+	// #733: regime-aware ATR multiplier validation. Runs the surface-aware
+	// parsing pass on each strategy's StopLossATRRegime / TrailingStopATRRegime
+	// and on every tiered_tp_atr_regime / tiered_tp_atr_live_regime close ref.
+	// Also enforces mutex with scalar siblings + regime-enabled requirement.
+	errs = append(errs, validateRegimeATRConfig(cfg)...)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))

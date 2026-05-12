@@ -21,7 +21,14 @@ def test_build_close_registry_filters_valid_platforms(registry):
     assert tuple(registry.VALID_PLATFORMS) == ("spot", "futures", "options")
     for platform in registry.VALID_PLATFORMS:
         built = registry.build_close_registry(platform)
-        assert set(built) == {"tiered_tp_pct", "tiered_tp_atr", "tiered_tp_atr_live", "tp_at_pct"}
+        assert set(built) == {
+            "tiered_tp_pct",
+            "tiered_tp_atr",
+            "tiered_tp_atr_live",
+            "tiered_tp_atr_regime",
+            "tiered_tp_atr_live_regime",
+            "tp_at_pct",
+        }
 
 
 def test_build_close_registry_rejects_unknown_platform(registry):

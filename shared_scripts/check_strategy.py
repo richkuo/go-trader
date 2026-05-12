@@ -62,6 +62,9 @@ def _position_ctx(position_side):
         value = _arg_float(flag)
         if value is not None:
             ctx[key] = value
+    regime = (_arg_value("--position-regime", "") or "").strip()
+    if regime:
+        ctx["regime"] = regime
     return ctx
 
 
@@ -107,6 +110,7 @@ def main():
             "--params", "--open-strategy", "--close-strategies", "--strategy-refs",
             "--position-side", "--position-avg-cost", "--position-qty",
             "--position-initial-qty", "--position-entry-atr",
+            "--position-regime",
             "--regime-period", "--regime-adx-threshold",
         ):
             skip_next = True
@@ -215,6 +219,10 @@ def main():
             atr_now = latest_atr(df)
             if atr_now > 0:
                 market_ctx["atr"] = atr_now
+            # #733: live regime label for tiered_tp_atr_live_regime evaluator.
+            live_regime = (regime_payload or {}).get("regime") or ""
+            if live_regime:
+                market_ctx["regime"] = live_regime
             evaluation = evaluate_open_close(
                 apply_strategy,
                 get_strategy,

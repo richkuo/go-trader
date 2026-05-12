@@ -2188,6 +2188,7 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 	}
 	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
+	stampPositionRegimeIfOpened(s, result.Symbol, result.Regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
@@ -2197,6 +2198,25 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 		detail = fmt.Sprintf("[%s] %s %s @ $%.2f", sc.ID, signalStr, result.Symbol, price)
 	}
 	return trades, detail
+}
+
+// stampPositionRegimeIfOpened stamps regime on the position the first time
+// we observe one after open (#733). Mirrors stampEntryATRIfOpened: the
+// scheduler doesn't run the check script on the same cycle as the open
+// fill, so the regime stamped here is the one current on the *next* cycle —
+// a small lag that's acceptable for "regime at open" semantics given the
+// strategy-interval cadence and the slow-moving nature of ADX classifications.
+// Idempotent: pos.Regime is only overwritten when empty so regime-aware
+// multipliers stay frozen for the life of the position.
+func stampPositionRegimeIfOpened(s *StrategyState, symbol, regime string) {
+	if s == nil || regime == "" {
+		return
+	}
+	pos, exists := s.Positions[symbol]
+	if !exists || pos == nil || pos.Regime != "" {
+		return
+	}
+	pos.Regime = regime
 }
 
 func stampEntryATRIfOpened(s *StrategyState, symbol string, indicators map[string]interface{}) {
@@ -2734,6 +2754,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	trades := exec.TradesExecuted
 	openTrade := exec.OpenTrade
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
+	stampPositionRegimeIfOpened(s, result.Symbol, result.Regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		stampPositionProtectionSnapshot(pos, sc)
 	}
@@ -2991,6 +3012,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 	}
 	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
+	stampPositionRegimeIfOpened(s, result.Symbol, result.Regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
@@ -3155,6 +3177,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 	}
 	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
+	stampPositionRegimeIfOpened(s, result.Symbol, result.Regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
@@ -3367,6 +3390,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	}
 	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
+	stampPositionRegimeIfOpened(s, result.Symbol, result.Regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}

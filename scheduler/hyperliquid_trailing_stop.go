@@ -79,6 +79,26 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 		}
 		return pct
 	}
+	// #733: regime-aware trailing distance. Resolved once at first cycle
+	// after open against pos.Regime, then frozen for the life of the position
+	// (callers re-derive each cycle from the same pos.Regime so it stays
+	// invariant — the only way it would change is if a hot-reload pointed
+	// the regime block at a different shape, which validateHotReloadStateCompatible
+	// blocks while open).
+	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
+		if pos == nil || pos.EntryATR <= 0 || pos.AvgCost <= 0 || pos.Regime == "" {
+			return 0
+		}
+		mult, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, pos.Regime)
+		if !ok {
+			return 0
+		}
+		pct := mult * pos.EntryATR / pos.AvgCost * 100.0
+		if pct > MaxAutoStopLossPct {
+			pct = MaxAutoStopLossPct
+		}
+		return pct
+	}
 	return 0
 }
 
@@ -102,7 +122,10 @@ func atrMultMissingEntryATR(sc StrategyConfig, pos *Position) bool {
 	}
 	wantsTrailing := sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0
 	wantsFixed := sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0
-	if !wantsTrailing && !wantsFixed {
+	// #733: regime-aware SL/trailing have the same EntryATR dependency.
+	wantsRegimeFixed := sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero()
+	wantsRegimeTrailing := sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero()
+	if !wantsTrailing && !wantsFixed && !wantsRegimeFixed && !wantsRegimeTrailing {
 		return false
 	}
 	if sc.TrailingStopPct != nil && *sc.TrailingStopPct > 0 {
@@ -133,13 +156,30 @@ func effectiveFixedStopLossATRPct(sc StrategyConfig, pos *Position) float64 {
 	if sc.Platform != "hyperliquid" || sc.Type != "perps" {
 		return 0
 	}
-	if sc.StopLossATRMult == nil || *sc.StopLossATRMult <= 0 {
+	mult := 0.0
+	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
+		mult = *sc.StopLossATRMult
+	} else if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
+		// #733: regime-resolved fixed SL distance. pos.Regime is stamped on
+		// the first cycle after open; until then this returns 0 and arming
+		// is deferred to the next cycle (same deferral semantics as the
+		// scalar variant waiting on EntryATR).
+		if pos == nil || pos.Regime == "" {
+			return 0
+		}
+		v, ok := resolveRegimeATR(*sc.StopLossATRRegime, pos.Regime)
+		if !ok {
+			return 0
+		}
+		mult = v
+	}
+	if mult <= 0 {
 		return 0
 	}
 	if pos == nil || pos.EntryATR <= 0 || pos.AvgCost <= 0 {
 		return 0
 	}
-	pct := *sc.StopLossATRMult * pos.EntryATR / pos.AvgCost * 100.0
+	pct := mult * pos.EntryATR / pos.AvgCost * 100.0
 	if pct > MaxAutoStopLossPct {
 		pct = MaxAutoStopLossPct
 	}
@@ -331,7 +371,7 @@ func clearATRMultMissingEntryATRWarningsForStrategy(strategyID string) {
 func tieredTPATRMissingEntryATR(sc StrategyConfig, pos *Position) bool {
 	hasTieredTP := false
 	for _, ref := range sc.CloseStrategies {
-		if ref.Name == "tiered_tp_atr" {
+		if isTieredTPATRCloseName(ref.Name) {
 			hasTieredTP = true
 			break
 		}

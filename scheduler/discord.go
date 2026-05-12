@@ -991,8 +991,7 @@ func positionMargin(qty, avgCost, leverage float64) float64 {
 // at evaluation time, but the summary still shows the entry-ATR reference levels).
 func strategyUsesTieredTPATRClose(sc StrategyConfig) bool {
 	for _, ref := range sc.CloseStrategies {
-		n := strings.ToLower(strings.TrimSpace(ref.Name))
-		if n == "tiered_tp_atr" || n == "tiered_tp_atr_live" {
+		if isTieredTPATRCloseName(ref.Name) {
 			return true
 		}
 	}

@@ -10,7 +10,15 @@ import (
 // StopLossMarginPct, TrailingStopPct) or no SL at all (#669). Nullness alone
 // gates the SL display suffix correctly — a back-computed mult on a pct-armed
 // SL position is now distinguishable from a true ATR-armed mult.
+//
+// Regime-aware variants (#733) return a regime-resolved multiplier when a
+// position regime is supplied; without one, they return nil because the
+// final multiplier depends on the position's stamped regime label.
 func tradeOpenStopLossATRMult(sc StrategyConfig) *float64 {
+	return tradeOpenStopLossATRMultForRegime(sc, "")
+}
+
+func tradeOpenStopLossATRMultForRegime(sc StrategyConfig, regime string) *float64 {
 	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		v := *sc.StopLossATRMult
 		return &v
@@ -18,6 +26,16 @@ func tradeOpenStopLossATRMult(sc StrategyConfig) *float64 {
 	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
 		v := *sc.TrailingStopATRMult
 		return &v
+	}
+	if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() && regime != "" {
+		if v, ok := resolveRegimeATR(*sc.StopLossATRRegime, regime); ok {
+			return &v
+		}
+	}
+	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() && regime != "" {
+		if v, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, regime); ok {
+			return &v
+		}
 	}
 	return nil
 }
@@ -27,7 +45,16 @@ func tradeOpenStopLossATRMult(sc StrategyConfig) *float64 {
 // tiered_tp_atr* (#669). Storing the snapshot at fill time means subsequent
 // tier-config edits don't lose the historical record needed for analytics.
 func tradeOpenTPTiersJSON(sc StrategyConfig) string {
-	tiers := strategyTPTiers(sc)
+	return tradeOpenTPTiersJSONForRegime(sc, "")
+}
+
+// tradeOpenTPTiersJSONForRegime is the regime-aware variant — resolves
+// regime-tier multipliers via the position's stamped regime label.
+// Empty regime → scalar tiered_tp_atr* still snapshots fine; regime-aware
+// variants return "" until pos.Regime is populated and we re-stamp on the
+// next protection-sync cycle (#733).
+func tradeOpenTPTiersJSONForRegime(sc StrategyConfig, regime string) string {
+	tiers := strategyTPTiersForRegime(sc, regime)
 	if len(tiers) == 0 {
 		return ""
 	}
@@ -58,10 +85,15 @@ func stampPositionProtectionSnapshot(pos *Position, sc StrategyConfig) {
 		return
 	}
 	if pos.StopLossATRMult == nil {
-		pos.StopLossATRMult = tradeOpenStopLossATRMult(sc)
+		pos.StopLossATRMult = tradeOpenStopLossATRMultForRegime(sc, pos.Regime)
 	}
 	if pos.TPTiersJSON == "" {
-		pos.TPTiersJSON = tradeOpenTPTiersJSON(sc)
+		// strategyTPTiersForRegime resolves regime-aware tier multipliers from
+		// the position's stamped regime. Empty regime → falls back to the
+		// raw scalar tiers when present (legacy tiered_tp_atr); regime-aware
+		// strategies without a stamped regime yet write an empty snapshot
+		// here and will be re-stamped on the next protection-sync cycle.
+		pos.TPTiersJSON = tradeOpenTPTiersJSONForRegime(sc, pos.Regime)
 	}
 }
 

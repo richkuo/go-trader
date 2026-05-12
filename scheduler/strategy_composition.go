@@ -22,12 +22,16 @@ type StrategyDecisionFields struct {
 
 // PositionCtx is the optional state snapshot threaded into close evaluators
 // when a strategy opts into the open/close composition model (#496).
+// Regime carries pos.Regime (the regime stamped on the underlying Position
+// at open) so regime-aware close evaluators (tiered_tp_atr_regime, #733)
+// can resolve tier multipliers without re-running the classifier.
 type PositionCtx struct {
 	Side            string
 	AvgCost         float64
 	Quantity        float64
 	InitialQuantity float64
 	EntryATR        float64
+	Regime          string
 }
 
 func usesOpenCloseConfig(sc StrategyConfig) bool {
@@ -76,6 +80,9 @@ func appendOpenCloseArgs(args []string, sc StrategyConfig, pos PositionCtx) []st
 	out = appendPositionFloatArg(out, "--position-qty", pos.Quantity)
 	out = appendPositionFloatArg(out, "--position-initial-qty", pos.InitialQuantity)
 	out = appendPositionFloatArg(out, "--position-entry-atr", pos.EntryATR)
+	if r := strings.TrimSpace(pos.Regime); r != "" {
+		out = append(out, "--position-regime", r)
+	}
 	return out
 }
 
@@ -136,6 +143,7 @@ func positionCtxFromPosition(pos *Position) PositionCtx {
 		Quantity:        pos.Quantity,
 		InitialQuantity: pos.InitialQuantity,
 		EntryATR:        pos.EntryATR,
+		Regime:          pos.Regime,
 	}
 }
 

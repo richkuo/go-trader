@@ -29,11 +29,23 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 	if pos.Side != "long" && pos.Side != "short" {
 		return hlProtectionPlan{}, false
 	}
+	// SL ATR multiplier: legacy scalar `stop_loss_atr_mult` wins when present;
+	// otherwise the regime-aware sibling resolves via pos.Regime. Validation
+	// ensures only one is set (#733).
 	slMult := 0.0
 	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		slMult = *sc.StopLossATRMult
+	} else if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
+		if v, ok := resolveRegimeATR(*sc.StopLossATRRegime, pos.Regime); ok {
+			slMult = v
+		}
 	}
-	tiers := strategyTPTiers(sc)
+	// Regime-aware tier multipliers freeze at first protection-sync after open
+	// (when pos.Regime is stamped). Empty pos.Regime → returns nil from
+	// strategyTPTiersForRegime, so the plan emits SL only this cycle and
+	// re-emits TPs next cycle once stampPositionRegimeIfOpened populates the
+	// regime label.
+	tiers := strategyTPTiersForRegime(sc, pos.Regime)
 	if slMult <= 0 && len(tiers) == 0 {
 		return hlProtectionPlan{}, false
 	}
@@ -50,30 +62,60 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 	}, true
 }
 
-// strategyTPTiers returns the cumulative ATR take-profit tiers used
-// to place per-strategy reduce-only limit orders. Fractions are cumulative,
-// matching the tiered_tp_atr close evaluator: 0.5/0.8/1.0 becomes order sizes
-// of 50%, 30%, and 20% of the current virtual quantity (#612). The final tier
-// is coerced to 1.0 so older two-tier configs that ended below 100% keep the
-// prior "everything remaining" TP2 behavior from #604.
+// strategyTPTiers returns the cumulative ATR take-profit tiers for the
+// given strategy. Backwards-compatible shim that calls
+// strategyTPTiersForRegime with an empty regime — fine for legacy
+// scalar tiered_tp_atr* configs, but regime-aware evaluators return nil
+// without a stamped pos.Regime.
+//
+// Callers that have a position in hand (e.g. buildHyperliquidProtectionPlan)
+// should call strategyTPTiersForRegime directly so tiered_tp_atr_regime
+// resolves with the position's stamped regime label (#733).
 func strategyTPTiers(sc StrategyConfig) []hlProtectionTier {
+	return strategyTPTiersForRegime(sc, "")
+}
+
+// strategyTPTiersForRegime returns the tiers resolved against a specific
+// regime label. For scalar tiered_tp_atr* configs the regime is ignored.
+// For regime-aware variants, an empty regime returns nil — the protection
+// loop will simply emit only the SL this cycle and re-emit TPs next cycle
+// once stampPositionRegimeIfOpened populates pos.Regime.
+func strategyTPTiersForRegime(sc StrategyConfig, regime string) []hlProtectionTier {
 	if !strategyUsesTieredTPATRClose(sc) {
 		return nil
 	}
-	// #640: Tiers live on the matching close ref's params, not on the strategy's
-	// flat Params (which no longer exists). Find the first tiered_tp_atr* close
-	// ref and read its tiers; fall through to the canonical default if absent.
 	var raw interface{}
+	regimeAware := false
 	for _, ref := range sc.CloseStrategies {
 		n := strings.ToLower(strings.TrimSpace(ref.Name))
-		if n != "tiered_tp_atr" && n != "tiered_tp_atr_live" {
+		if !isTieredTPATRCloseName(n) {
 			continue
+		}
+		if n == "tiered_tp_atr_regime" || n == "tiered_tp_atr_live_regime" {
+			regimeAware = true
 		}
 		if v, ok := ref.Params["tiers"]; ok {
 			raw = v
 			break
 		}
+		if regimeAware {
+			// regime-aware variant with no explicit tiers → fall back to
+			// the default regime block list if use_defaults is set.
+			if useDefaults, ok := ref.Params["use_defaults"].(bool); ok && useDefaults {
+				return defaultRegimeTPTiersForRegime(regime)
+			}
+			break
+		}
 	}
+	if regimeAware {
+		// Resolve regime-aware tier specs against the runtime regime label.
+		tiers := resolveRegimeTPTiers(raw, regime)
+		if len(tiers) < 2 {
+			return nil
+		}
+		return finalizeProtectionTiers(tiers)
+	}
+	// Legacy scalar tiered_tp_atr*.
 	tiers := parseHLProtectionTiers(raw)
 	if len(tiers) == 0 {
 		tiers = []hlProtectionTier{
@@ -84,6 +126,13 @@ func strategyTPTiers(sc StrategyConfig) []hlProtectionTier {
 	if len(tiers) < 2 {
 		return nil
 	}
+	return finalizeProtectionTiers(tiers)
+}
+
+// finalizeProtectionTiers enforces the cumulative-fraction invariant and
+// coerces the final tier to 1.0 so older two-tier configs preserve the
+// "everything remaining" behavior from #604.
+func finalizeProtectionTiers(tiers []hlProtectionTier) []hlProtectionTier {
 	prevFraction := 0.0
 	for _, tier := range tiers {
 		if tier.Multiple <= 0 || tier.Fraction <= prevFraction {
@@ -426,9 +475,30 @@ func hyperliquidPlacesOnChainTPs(sc StrategyConfig) bool {
 // closeStrategiesSuppressedByOnChainProtection is the set of close evaluator
 // names that are functionally replaced by on-chain reduce-only TP orders.
 // Adding a new ATR-tiered close evaluator? It probably belongs here too.
+//
+// Regime-aware variants (#733) are included — the frozen variant
+// (`tiered_tp_atr_regime`) has its multipliers resolved at first protection
+// sync and placed on-chain identically to scalar `tiered_tp_atr`. The live
+// variant is virtual-only by spec — it's also suppressed here so an operator
+// who configures both the live variant and on-chain reduce-only TPs doesn't
+// end up with a race; instead they get a clean signal that on-chain
+// protection trumps the in-process evaluator.
 var closeStrategiesSuppressedByOnChainProtection = map[string]struct{}{
-	"tiered_tp_atr":      {},
-	"tiered_tp_atr_live": {},
+	"tiered_tp_atr":             {},
+	"tiered_tp_atr_live":        {},
+	"tiered_tp_atr_regime":      {},
+	"tiered_tp_atr_live_regime": {},
+}
+
+// isTieredTPATRCloseName returns true when name is any of the four
+// tiered-TP-ATR close evaluators (scalar/regime × frozen/live).
+func isTieredTPATRCloseName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "tiered_tp_atr", "tiered_tp_atr_live",
+		"tiered_tp_atr_regime", "tiered_tp_atr_live_regime":
+		return true
+	}
+	return false
 }
 
 // filterCloseStrategiesForHLOnChainProtection returns the close-strategy list

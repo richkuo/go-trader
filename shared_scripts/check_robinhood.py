@@ -52,6 +52,9 @@ def _position_ctx_from_args(args):
         value = getattr(args, attr, None)
         if value is not None:
             ctx[key] = value
+    regime = (getattr(args, "position_regime", "") or "").strip()
+    if regime:
+        ctx["regime"] = regime
     return ctx
 
 
@@ -178,6 +181,10 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             atr_now = latest_atr(df)
             if atr_now > 0:
                 market_ctx["atr"] = atr_now
+            # #733: live regime label for tiered_tp_atr_live_regime evaluator.
+            live_regime = (regime_payload or {}).get("regime") or ""
+            if live_regime:
+                market_ctx["regime"] = live_regime
             evaluation = evaluate_open_close(
                 apply_strategy,
                 get_strategy,
@@ -380,6 +387,7 @@ def main():
         parser.add_argument("--position-qty", type=float, default=None)
         parser.add_argument("--position-initial-qty", type=float, default=None)
         parser.add_argument("--position-entry-atr", type=float, default=None)
+        parser.add_argument("--position-regime", default="")
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#645): validate argv shape and exit 0.")
         args = parser.parse_args()
