@@ -1087,25 +1087,44 @@ func TestFormatCategorySummary_MessageSplitting(t *testing.T) {
 		t.Errorf("expected multiple messages for 20 positions, got %d (total chars: %d)", len(msgs), totalLen)
 	}
 
-	// First message should contain "... and N more".
-	if !strings.Contains(msgs[0], "... and") {
-		t.Errorf("first message should contain '... and N more' indicator, got:\n%s", msgs[0])
+	// Per #728: msg 1 carries the header + counts but NO position bullets,
+	// no truncation indicator. All bullets land in msg 2+.
+	if strings.Contains(msgs[0], "  • ") {
+		t.Errorf("first message should not contain position bullets, got:\n%s", msgs[0])
+	}
+	if strings.Contains(msgs[0], "... and") {
+		t.Errorf("first message should not contain '... and N more' indicator under #728 layout, got:\n%s", msgs[0])
+	}
+	if !strings.Contains(msgs[0], "Positions: 20 open") {
+		t.Errorf("first message should still contain 'Positions: 20 open' summary line, got:\n%s", msgs[0])
 	}
 
-	// First message should not exceed the split threshold.
-	if len(msgs[0]) > discordCharLimit {
-		t.Errorf("first message exceeds %d chars: %d", discordCharLimit, len(msgs[0]))
+	// No message should exceed the Discord limit.
+	for i, m := range msgs {
+		if len(m) > discordCharLimit {
+			t.Errorf("msg[%d] exceeds %d chars: %d", i, discordCharLimit, len(m))
+		}
 	}
 
-	// Second message should contain continuation header.
-	if !strings.Contains(msgs[1], "cont'd") {
-		t.Errorf("second message should contain continuation header, got:\n%s", msgs[1])
+	// Positions block lives in msg 2+; first such message uses "Positions:" header.
+	posStart := -1
+	for i := 1; i < len(msgs); i++ {
+		if strings.HasPrefix(msgs[i], "Positions:\n") {
+			posStart = i
+			break
+		}
+	}
+	if posStart == -1 {
+		t.Fatalf("expected a 'Positions:' message after msg 0, got:\n%s", strings.Join(msgs, "\n---\n"))
 	}
 
-	// All position lines should appear across all messages.
-	allMsgs := strings.Join(msgs, "\n")
-	if !strings.Contains(allMsgs, "Positions: 20 open") {
-		t.Errorf("expected 'Positions: 20 open' header, got:\n%s", allMsgs)
+	// Every position line must appear in the positions block (no truncation).
+	posBlock := strings.Join(msgs[posStart:], "\n")
+	for i := 0; i < 20; i++ {
+		want := fmt.Sprintf("hl-strat%02d-btc", i)
+		if !strings.Contains(posBlock, want) {
+			t.Errorf("position for %s missing from positions block:\n%s", want, posBlock)
+		}
 	}
 }
 
@@ -1832,22 +1851,73 @@ func TestFormatCategorySummary_LargeTableChunked(t *testing.T) {
 
 func TestSplitCategorySummary_ContinuationTablesInserted(t *testing.T) {
 	// Continuation tables should be spliced in immediately after the first message.
+	// Per #728: when continuation tables exist, positions also get their own
+	// message after the table chunks (never interleaved with msg 1).
 	header := "Header line\n"
 	posLines := []string{"pos1", "pos2"}
 	conts := []string{"```\nchunk2\n```\n", "```\nchunk3\n```\n"}
 
 	msgs := splitCategorySummary(header, 2, posLines, nil, conts)
-	if len(msgs) != 3 {
-		t.Fatalf("expected 3 messages (1 main + 2 continuation tables), got %d", len(msgs))
+	if len(msgs) != 4 {
+		t.Fatalf("expected 4 messages (header + 2 table conts + positions), got %d:\n%s", len(msgs), strings.Join(msgs, "\n---\n"))
 	}
 	if !strings.Contains(msgs[0], "Header line") {
 		t.Errorf("msg[0] should contain header, got: %s", msgs[0])
+	}
+	if strings.Contains(msgs[0], "  • ") {
+		t.Errorf("msg[0] should not contain position bullets, got: %s", msgs[0])
 	}
 	if msgs[1] != conts[0] {
 		t.Errorf("msg[1] should be first continuation table, got: %s", msgs[1])
 	}
 	if msgs[2] != conts[1] {
 		t.Errorf("msg[2] should be second continuation table, got: %s", msgs[2])
+	}
+	if !strings.HasPrefix(msgs[3], "Positions:\n") {
+		t.Errorf("msg[3] should be positions block, got: %s", msgs[3])
+	}
+	if !strings.Contains(msgs[3], "pos1") || !strings.Contains(msgs[3], "pos2") {
+		t.Errorf("msg[3] should contain all positions, got: %s", msgs[3])
+	}
+}
+
+// TestSplitCategorySummary_PositionsAlwaysInSeparateMessage_Issue728 is the
+// canonical regression for #728. When the summary needs to split, every
+// position bullet must live in msg 2+; msg 1 carries the header, the
+// "Positions: N open" count, trades, and nothing else position-related.
+func TestSplitCategorySummary_PositionsAlwaysInSeparateMessage_Issue728(t *testing.T) {
+	// Big enough header that positions cannot fit alongside it (threshold 1980).
+	header := strings.Repeat("h", 1900) + "\n"
+	posLines := []string{"alpha", "beta", "gamma"}
+	tradeLines := []string{"  • TRADE EXECUTED LONG BTC"}
+
+	msgs := splitCategorySummary(header, len(posLines), posLines, tradeLines, nil)
+	if len(msgs) < 2 {
+		t.Fatalf("expected split, got %d msgs", len(msgs))
+	}
+
+	// msg[0]: header + "Positions: N open" + trades, no bullets, no truncation marker.
+	if !strings.Contains(msgs[0], "Positions: 3 open") {
+		t.Errorf("msg[0] should contain position count line, got tail:\n%s", msgs[0][len(msgs[0])-200:])
+	}
+	if !strings.Contains(msgs[0], "**Trades:**") {
+		t.Errorf("msg[0] should contain trades section, got tail:\n%s", msgs[0][len(msgs[0])-200:])
+	}
+	if strings.Contains(msgs[0], "  • alpha") || strings.Contains(msgs[0], "  • beta") || strings.Contains(msgs[0], "  • gamma") {
+		t.Errorf("msg[0] should NOT contain any position bullet under #728 layout, got tail:\n%s", msgs[0][len(msgs[0])-200:])
+	}
+	if strings.Contains(msgs[0], "... and") {
+		t.Errorf("msg[0] should NOT contain '... and N more' truncation marker, got tail:\n%s", msgs[0][len(msgs[0])-200:])
+	}
+
+	// msg[1]: positions block, all bullets present, "Positions:" header.
+	if !strings.HasPrefix(msgs[1], "Positions:\n") {
+		t.Errorf("msg[1] should begin with 'Positions:' header, got:\n%s", msgs[1])
+	}
+	for _, want := range []string{"alpha", "beta", "gamma"} {
+		if !strings.Contains(msgs[1], want) {
+			t.Errorf("msg[1] should contain position %q, got:\n%s", want, msgs[1])
+		}
 	}
 }
 
@@ -1978,16 +2048,24 @@ func TestSplitCategorySummary_MultiMessage(t *testing.T) {
 	if len(msgs) < 2 {
 		t.Fatalf("expected multiple messages with large header, got %d", len(msgs))
 	}
-	// First message should have "... and N more"
-	if !strings.Contains(msgs[0], "... and") {
-		t.Errorf("expected '... and N more' in first message, got:\n%s", msgs[0][:100])
+	// Per #728: msg 1 has the header + count line, no position bullets,
+	// no "... and N more" truncation.
+	if strings.Contains(msgs[0], "  • ") {
+		t.Errorf("first message should not contain position bullets, got tail:\n%s", msgs[0][len(msgs[0])-200:])
 	}
-	// All positions should appear across messages
-	all := strings.Join(msgs, "\n")
+	if strings.Contains(msgs[0], "... and") {
+		t.Errorf("first message should not contain '... and N more' under #728 layout, got tail:\n%s", msgs[0][len(msgs[0])-200:])
+	}
+	// All positions should appear in the positions block (msg 2+).
+	posBlock := strings.Join(msgs[1:], "\n")
 	for _, pl := range posLines {
-		if !strings.Contains(all, pl) {
-			t.Errorf("position %q missing from messages", pl)
+		if !strings.Contains(posBlock, pl) {
+			t.Errorf("position %q missing from positions block:\n%s", pl, posBlock)
 		}
+	}
+	// Positions block starts with "Positions:" header.
+	if !strings.HasPrefix(msgs[1], "Positions:\n") {
+		t.Errorf("msg[1] should start with 'Positions:' header, got:\n%s", msgs[1])
 	}
 }
 

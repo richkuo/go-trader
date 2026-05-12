@@ -550,123 +550,107 @@ func FormatCategorySummary(
 }
 
 // splitCategorySummary assembles the header, position lines, and trade lines into
-// one or more Discord messages, splitting at logical boundaries to stay under the
-// 2000-char Discord limit. continuationTables are extra strategy-table chunks
-// (already formatted as their own code blocks) that get inserted right after the
-// first message so the rest of the table is the very next thing the user sees.
+// one or more Discord messages, staying under the 2000-char Discord limit.
+//
+// Layout rules (issue #728):
+//   - If everything fits in a single message AND there are no continuation
+//     table chunks, return a single message.
+//   - Otherwise msg 1 carries the header (incl. the leaderboard table top
+//     chunk), the "Positions: N open" line, and the trades section. Any
+//     continuation table chunks follow. The full position bullets list lives
+//     in its own message(s) after that — never interleaved with the header
+//     and never truncated with "... and N more".
+//
+// continuationTables are extra strategy-table chunks already formatted as their
+// own code blocks (from writeCatTableChunks) that splice in between msg 1 and
+// the positions block so readers see the rest of the leaderboard first.
 func splitCategorySummary(header string, totalOpenPos int, posLines []string, tradeLines []string, continuationTables []string) []string {
-	msgs := splitCategorySummaryCore(header, totalOpenPos, posLines, tradeLines)
-	if len(continuationTables) == 0 {
-		return msgs
+	headerOnly := buildSummaryHeader(header, totalOpenPos)
+	tradeSuffix := buildTradeSuffix(tradeLines)
+
+	if totalOpenPos == 0 || len(posLines) == 0 {
+		msg := headerOnly + tradeSuffix
+		if len(continuationTables) == 0 {
+			return []string{msg}
+		}
+		out := make([]string, 0, 1+len(continuationTables))
+		out = append(out, msg)
+		out = append(out, continuationTables...)
+		return out
 	}
-	// Insert continuation table chunks immediately after the first message so
-	// readers see the rest of the strategy table before any position overflow.
-	out := make([]string, 0, len(msgs)+len(continuationTables))
-	out = append(out, msgs[0])
+
+	// Single-message fit is only viable when the leaderboard itself didn't
+	// already split. Otherwise the summary is multi-message anyway, and
+	// positions belong on their own block per #728.
+	if len(continuationTables) == 0 {
+		var single strings.Builder
+		single.WriteString(headerOnly)
+		for _, line := range posLines {
+			single.WriteString(fmt.Sprintf("  • %s\n", line))
+		}
+		single.WriteString(tradeSuffix)
+		if single.Len() <= discordSplitThreshold {
+			return []string{single.String()}
+		}
+	}
+
+	msg1 := headerOnly + tradeSuffix
+	posMsgs := buildPositionMessages(posLines)
+
+	out := make([]string, 0, 1+len(continuationTables)+len(posMsgs))
+	out = append(out, msg1)
 	out = append(out, continuationTables...)
-	out = append(out, msgs[1:]...)
+	out = append(out, posMsgs...)
 	return out
 }
 
-// splitCategorySummaryCore builds the message list without considering
-// strategy-table continuation chunks. Callers wanting continuation handling
-// should call splitCategorySummary instead.
-func splitCategorySummaryCore(header string, totalOpenPos int, posLines []string, tradeLines []string) []string {
+func buildSummaryHeader(header string, totalOpenPos int) string {
 	var sb strings.Builder
 	sb.WriteString(header)
-
-	// Position header
 	if totalOpenPos == 0 {
 		sb.WriteString("Positions: no open positions\n")
 	} else {
 		sb.WriteString(fmt.Sprintf("Positions: %d open\n", totalOpenPos))
 	}
+	return sb.String()
+}
 
-	// Trade details section
-	var tradeSuffix string
-	if len(tradeLines) > 0 {
-		var tsb strings.Builder
-		tsb.WriteString("\n**Trades:**\n")
-		for _, tl := range tradeLines {
-			tsb.WriteString(tl + "\n")
-		}
-		tradeSuffix = tsb.String()
+func buildTradeSuffix(tradeLines []string) string {
+	if len(tradeLines) == 0 {
+		return ""
 	}
+	var sb strings.Builder
+	sb.WriteString("\n**Trades:**\n")
+	for _, tl := range tradeLines {
+		sb.WriteString(tl + "\n")
+	}
+	return sb.String()
+}
 
-	// If no positions, just append trades and return.
-	if totalOpenPos == 0 || len(posLines) == 0 {
-		sb.WriteString(tradeSuffix)
-		return []string{sb.String()}
+// buildPositionMessages renders posLines as one or more Discord messages, each
+// under discordSplitThreshold. The first message is headed "Positions:"; any
+// spill-over messages are headed "Positions (cont'd):". Every line in posLines
+// appears in the returned slice — no truncation, no "... and N more".
+func buildPositionMessages(posLines []string) []string {
+	if len(posLines) == 0 {
+		return nil
 	}
-
-	// Try fitting everything in one message.
-	fullMsg := sb.String()
-	for _, line := range posLines {
-		fullMsg += fmt.Sprintf("  • %s\n", line)
-	}
-	fullMsg += tradeSuffix
-	if len(fullMsg) <= discordSplitThreshold {
-		return []string{fullMsg}
-	}
-
-	// Need to split: add positions until we approach the limit.
-	firstMsg := sb.String() // header + "Positions: N open\n"
-	included := 0
-	for _, line := range posLines {
-		candidate := fmt.Sprintf("  • %s\n", line)
-		// Reserve room for the "... and N more" indicator.
-		remaining := len(posLines) - included - 1
-		moreIndicator := ""
-		if remaining > 0 {
-			moreIndicator = fmt.Sprintf("  ... and %d more\n", remaining)
-		}
-		if len(firstMsg)+len(candidate)+len(moreIndicator) > discordSplitThreshold {
-			break
-		}
-		firstMsg += candidate
-		included++
-	}
-
-	if included < len(posLines) {
-		firstMsg += fmt.Sprintf("  ... and %d more\n", len(posLines)-included)
-	}
-
-	// If all positions fit (edge case where trades push us over), include trades in second message.
-	if included >= len(posLines) {
-		// Trades caused the overflow. Put all positions in first message, trades in second.
-		firstMsg = sb.String()
-		for _, line := range posLines {
-			firstMsg += fmt.Sprintf("  • %s\n", line)
-		}
-		if len(tradeSuffix) > 0 {
-			return []string{firstMsg, tradeSuffix}
-		}
-		return []string{firstMsg}
-	}
-
-	// Build continuation message(s) with remaining positions + trades.
 	var msgs []string
-	msgs = append(msgs, firstMsg)
-
-	contMsg := fmt.Sprintf("Positions (cont'd %d/%d):\n", included+1, len(posLines))
-	for _, line := range posLines[included:] {
-		candidate := fmt.Sprintf("  • %s\n", line)
-		if len(contMsg)+len(candidate) > discordSplitThreshold {
-			msgs = append(msgs, contMsg)
-			contMsg = fmt.Sprintf("Positions (cont'd):\n")
+	cur := "Positions:\n"
+	curHasContent := false
+	for _, line := range posLines {
+		bullet := fmt.Sprintf("  • %s\n", line)
+		if curHasContent && len(cur)+len(bullet) > discordSplitThreshold {
+			msgs = append(msgs, cur)
+			cur = "Positions (cont'd):\n"
+			curHasContent = false
 		}
-		contMsg += candidate
+		cur += bullet
+		curHasContent = true
 	}
-	if len(contMsg)+len(tradeSuffix) > discordSplitThreshold {
-		msgs = append(msgs, contMsg)
-		if tradeSuffix != "" {
-			msgs = append(msgs, tradeSuffix)
-		}
-	} else {
-		contMsg += tradeSuffix
-		msgs = append(msgs, contMsg)
+	if curHasContent {
+		msgs = append(msgs, cur)
 	}
-
 	return msgs
 }
 
