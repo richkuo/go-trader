@@ -1881,6 +1881,53 @@ func TestSplitCategorySummary_ContinuationTablesInserted(t *testing.T) {
 	}
 }
 
+// TestSplitCategorySummary_PeelTradesWhenMsg1Overflows covers the
+// belt-and-suspenders guard: when the header is already near the threshold and
+// the trades section would push msg 1 over the 2000-char Discord hard limit,
+// trades are peeled into their own message between msg 1 and the positions
+// block. (Bot review on #729 flagged this as a widened edge case post-refactor.)
+func TestSplitCategorySummary_PeelTradesWhenMsg1Overflows(t *testing.T) {
+	// Header sits just under the 1980 split threshold but well under 2000 alone.
+	header := strings.Repeat("h", 1950) + "\n"
+	posLines := []string{"alpha", "beta"}
+	// Big enough trades block that header+trades exceeds discordSplitThreshold.
+	var tradeLines []string
+	for i := 0; i < 5; i++ {
+		tradeLines = append(tradeLines, fmt.Sprintf("  • TRADE %d EXECUTED LONG BTC/USDT x0.025 @ $63,500.00", i))
+	}
+
+	msgs := splitCategorySummary(header, len(posLines), posLines, tradeLines, nil)
+	if len(msgs) < 3 {
+		t.Fatalf("expected at least 3 messages (header / trades / positions), got %d:\n%s", len(msgs), strings.Join(msgs, "\n---\n"))
+	}
+	for i, m := range msgs {
+		if len(m) > discordCharLimit {
+			t.Errorf("msg[%d] exceeds Discord hard limit %d: %d", i, discordCharLimit, len(m))
+		}
+	}
+	// msg[0]: header + count, no trades, no bullets.
+	if strings.Contains(msgs[0], "**Trades:**") {
+		t.Errorf("msg[0] should NOT contain trades section when peeled, got tail:\n%s", msgs[0][len(msgs[0])-200:])
+	}
+	if strings.Contains(msgs[0], "  • ") {
+		t.Errorf("msg[0] should NOT contain bullets, got tail:\n%s", msgs[0][len(msgs[0])-200:])
+	}
+	// msg[1]: trades only.
+	if !strings.Contains(msgs[1], "**Trades:**") {
+		t.Errorf("msg[1] should be the trades section, got:\n%s", msgs[1])
+	}
+	// Last msg: positions block with all bullets.
+	last := msgs[len(msgs)-1]
+	if !strings.HasPrefix(last, "Positions:\n") {
+		t.Errorf("final message should be positions block, got:\n%s", last)
+	}
+	for _, want := range posLines {
+		if !strings.Contains(last, want) {
+			t.Errorf("final message missing position %q:\n%s", want, last)
+		}
+	}
+}
+
 // TestSplitCategorySummary_PositionsAlwaysInSeparateMessage_Issue728 is the
 // canonical regression for #728. When the summary needs to split, every
 // position bullet must live in msg 2+; msg 1 carries the header, the

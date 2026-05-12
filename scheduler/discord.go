@@ -594,11 +594,23 @@ func splitCategorySummary(header string, totalOpenPos int, posLines []string, tr
 		}
 	}
 
-	msg1 := headerOnly + tradeSuffix
 	posMsgs := buildPositionMessages(posLines)
 
-	out := make([]string, 0, 1+len(continuationTables)+len(posMsgs))
-	out = append(out, msg1)
+	// Belt-and-suspenders: if the leaderboard top chunk plus trades would push
+	// msg 1 over Discord's 2000-char limit, peel trades into their own message
+	// between msg 1 and the continuation tables. Header alone is already capped
+	// by writeCatTableChunks, so this only fires for unusually verbose trades.
+	leadMsgs := []string{headerOnly}
+	if tradeSuffix != "" {
+		if len(headerOnly)+len(tradeSuffix) > discordSplitThreshold {
+			leadMsgs = append(leadMsgs, tradeSuffix)
+		} else {
+			leadMsgs[0] = headerOnly + tradeSuffix
+		}
+	}
+
+	out := make([]string, 0, len(leadMsgs)+len(continuationTables)+len(posMsgs))
+	out = append(out, leadMsgs...)
 	out = append(out, continuationTables...)
 	out = append(out, posMsgs...)
 	return out
