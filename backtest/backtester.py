@@ -496,6 +496,16 @@ class Backtester:
             mark_price = row["close"]
             signal = row["signal"]
 
+            # Per-bar reset: when _maybe_apply_sl_after bumps the SL trigger on
+            # this bar, the end-of-bar SL hit check must skip — live places the
+            # new SL OID mid-cycle after the TP fill, and the backtester's
+            # bar-level granularity collapses that delay to zero. Without the
+            # gate, a bar that bumps SL to (say) breakeven and then closes
+            # below breakeven would fire SL on the same bar; live would not,
+            # because the bump and the close happen at different intra-bar
+            # moments. See #715.
+            sl_after_just_applied = False
+
             equity = cash + position * mark_price
             equity_curve.append({"date": idx, "equity": equity})
 
@@ -552,14 +562,19 @@ class Backtester:
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = 0.0
+                        sl_after_just_applied = False
                     elif sl_after_active and self._tp_tier_thresholds:
                         # After applying a partial close at this bar's open,
                         # detect which tier(s) just cleared and apply the
-                        # highest cleared tier's sl_after rule. We check this
-                        # BEFORE end-of-bar evaluation so the new SL is in
-                        # effect when the trail walker / hit check run on the
-                        # same bar's close.
+                        # highest cleared tier's sl_after rule. The end-of-bar
+                        # SL hit check is suppressed on bars where the trigger
+                        # actually moved (see sl_after_just_applied init at
+                        # loop top and the gate at the SL hit check below) —
+                        # this models the live delay between TP fill and the
+                        # new SL OID landing on-chain. See #715.
                         side_now = "long" if position > 0 else "short"
+                        prev_trigger = sl_trigger_px
+                        prev_post_tp_trail = post_tp_trail_mult
                         sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, \
                             sl_high_water_px = self._maybe_apply_sl_after(
                                 side=side_now,
@@ -574,6 +589,15 @@ class Backtester:
                                 post_tp_trail_mult=post_tp_trail_mult,
                                 sl_high_water_px=sl_high_water_px,
                             )
+                        # Only set the suppression flag when an actual bump
+                        # occurred — empty-rule tier advances (watermark
+                        # increments without trigger change) leave the SL
+                        # untouched, so the hit check should still run.
+                        if (
+                            sl_trigger_px != prev_trigger
+                            or post_tp_trail_mult != prev_post_tp_trail
+                        ):
+                            sl_after_just_applied = True
 
                 if open_action == "long" and position == 0 and not regime_blocked:
                     effective_price = fill_price * (1 + self.slippage_pct)
@@ -632,7 +656,12 @@ class Backtester:
                 # been hit by this bar's close. A hit produces
                 # pending_close_fraction=1.0 which fills at the next bar's
                 # open — same alignment as the rest of the close pipeline.
-                if sl_after_active and position != 0 and avg_cost > 0:
+                if (
+                    sl_after_active
+                    and not sl_after_just_applied
+                    and position != 0
+                    and avg_cost > 0
+                ):
                     side_now = "long" if position > 0 else "short"
                     if (
                         post_tp_trail_mult is not None
