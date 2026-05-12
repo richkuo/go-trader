@@ -252,8 +252,6 @@ def strip_unsupported_position_context(fn, params: dict) -> dict:
     if not params:
         return params
     sig = inspect.signature(fn)
-    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-        return params
     accepted = {
         name for name, p in sig.parameters.items()
         if name != "df" and p.kind in (
@@ -261,6 +259,11 @@ def strip_unsupported_position_context(fn, params: dict) -> dict:
             inspect.Parameter.KEYWORD_ONLY,
         )
     }
+    # Framework-injected position-context kwargs (regime, side, avg_cost, ...) must be
+    # opt-in via explicit signature. The earlier VAR_KEYWORD short-circuit silently
+    # forwarded them through `def *_strategy(df, **params)` wrappers into thin cores
+    # that crash on unknown kwargs (#720). Regular strategy params still pass through
+    # untouched — only POSITION_CONTEXT_PARAM_KEYS are stripped when undeclared.
     return {
         key: value for key, value in params.items()
         if key in accepted or key not in POSITION_CONTEXT_PARAM_KEYS

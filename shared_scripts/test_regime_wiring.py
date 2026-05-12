@@ -145,6 +145,59 @@ def test_strip_unsupported_keeps_regime_for_aware_function():
     assert stripped["rsi_period"] == 14
 
 
+def test_strip_unsupported_drops_regime_for_var_keyword_wrapper():
+    """Regression for #720.
+
+    Real registered strategies wrap thin cores as ``def *_strategy(df, **params):
+    return *_core(df, **params)``. The wrapper has VAR_KEYWORD, but the core does
+    not accept ``regime`` — passing it through crashes with TypeError. The strip
+    helper must still drop position-context kwargs in this shape; only regular
+    strategy params should survive.
+    """
+    from strategy_composition import strip_unsupported_position_context
+
+    def dummy_strategy_wrapper(df, **params):  # mirrors registered wrappers
+        return df
+
+    df = _make_uptrend_df()
+    params = {
+        "adx_period": 14,
+        "adx_threshold": 25,
+        "regime": latest_regime(df),
+        "side": "long",
+        "avg_cost": 100.0,
+    }
+    stripped = strip_unsupported_position_context(dummy_strategy_wrapper, params)
+    assert "regime" not in stripped
+    assert "side" not in stripped
+    assert "avg_cost" not in stripped
+    assert stripped["adx_period"] == 14
+    assert stripped["adx_threshold"] == 25
+
+
+def test_apply_strategy_does_not_crash_on_regime_injection():
+    """End-to-end: invoke a real registered strategy whose core lacks **kwargs
+    with the framework-injected ``regime`` payload. Must not raise.
+    """
+    import importlib.util
+
+    futures_path = (
+        pathlib.Path(__file__).parent.parent
+        / "shared_strategies" / "open" / "futures" / "strategies.py"
+    )
+    spec = importlib.util.spec_from_file_location("_futures_shim_720", futures_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    df = _make_uptrend_df(n=200)
+    params = {"regime": latest_regime(df)}
+    for name in ("adx_trend", "sweep_squeeze_combo", "amd_ifvg", "range_scalper"):
+        if name not in mod.STRATEGY_REGISTRY:
+            continue  # platform filter excludes it; skip
+        result = mod.apply_strategy(name, df, params)
+        assert "signal" in result.columns, f"{name} returned no signal column"
+
+
 # ─── check_options.py regime computation (#544) ───────────────────────────────
 
 
