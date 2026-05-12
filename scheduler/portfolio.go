@@ -316,11 +316,28 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	return true
 }
 
+// stopLossCloseDetailsPrefix picks the Trade.Details prefix based on the
+// internal SL-close reason so the trade-alert classifier can tell paper
+// stops, trailing stops, and exchange-fired stops apart (#716 item 4).
+// Reasons not listed default to "Stop loss close" — the canonical exchange-
+// SL prefix used by the reconciler and the immediate-fill paths.
+func stopLossCloseDetailsPrefix(reason string) string {
+	switch reason {
+	case "trailing_stop_loss_paper":
+		return "Paper trailing SL close"
+	case "trailing_stop_loss_immediate":
+		return "Trailing SL close"
+	case "stop_loss_atr_paper":
+		return "Paper SL close"
+	}
+	return "Stop loss close"
+}
+
 // recordPerpsStopLossClose books a tracked perps stop-loss fill and removes the
 // virtual position. Used both when HL reports an immediate trigger fill at
 // submit time and when a previously-resting trigger has fired between cycles.
 func recordPerpsStopLossClose(s *StrategyState, symbol string, triggerPx float64, reason string, logger *StrategyLogger) bool {
-	return bookPerpsClose(s, symbol, triggerPx, reason, "Stop loss close", "SL close reconciled", logger)
+	return bookPerpsClose(s, symbol, triggerPx, reason, stopLossCloseDetailsPrefix(reason), "SL close reconciled", logger)
 }
 
 // recordPerpsStopLossCloseWithFillFee is the reconciler entry point — same
@@ -329,7 +346,7 @@ func recordPerpsStopLossClose(s *StrategyState, symbol string, triggerPx float64
 // on-chain accountValue (#588). When useFillFee=false (or fillFee<=0) the
 // modeled fee is used; failed indexer lookups fall back to the legacy path.
 func recordPerpsStopLossCloseWithFillFee(s *StrategyState, symbol string, triggerPx, fillFee float64, useFillFee bool, exchangeOrderID, reason string, logger *StrategyLogger) bool {
-	return bookPerpsCloseWithFillFee(s, symbol, triggerPx, fillFee, useFillFee, exchangeOrderID, reason, "Stop loss close", "SL close reconciled", logger)
+	return bookPerpsCloseWithFillFee(s, symbol, triggerPx, fillFee, useFillFee, exchangeOrderID, reason, stopLossCloseDetailsPrefix(reason), "SL close reconciled", logger)
 }
 
 // recordPerpsExternalClose books a perps close detected by reconciliation
