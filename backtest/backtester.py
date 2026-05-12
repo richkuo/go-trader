@@ -1,6 +1,45 @@
 """
 Backtesting engine — simulates strategy execution on historical data.
 Calculates comprehensive performance metrics.
+
+Look-ahead contract (#730)
+--------------------------
+The engine simulates the live trading cycle, which runs at end-of-bar:
+  1. Strategy reads OHLCV through bar N's close.
+  2. Strategy emits signal, regime label, indicators (all using bar-N-closed data).
+  3. Scheduler places order. Order fills at start of bar N+1's open.
+
+To preserve that ordering in vectorized form, ``run()`` shifts every column
+that represents a *decision input* forward by one bar before the per-bar
+loop reads it, so row N+1 carries the decision values computed from bar N's
+closed data:
+  • ``signal``        — shift(1) at :421 → fills at row N+1's open at :495
+  • ``_open_action``  — shift(1) at :431 (open/close-split mode)
+  • ``_close_fraction`` (column-based) — shift(1) at :432
+  • ``regime``        — shift(1) post-injection (#730) so entries gate on
+                        bar N's regime, not bar N+1's.
+
+Close evaluators run end-of-bar at :660-664 against bar N's mark and bar N's
+ATR. Their result becomes ``pending_close_fraction``, applied at row N+1's
+open — same alignment as the rest of the close pipeline. The current-bar ATR
+access at :815-821 is intentional and matches live: close evaluators see the
+ATR at decision time, not a frozen entry-time snapshot.
+
+Indicator semantics
+-------------------
+Indicator columns supplied by the caller (``atr``, ``regime``, ``adx``, etc.)
+represent bar N's value computed from data through bar N's close. The engine
+treats them as closed-bar quantities. Caller strategy scripts MUST NOT emit
+forward-peeking signals (e.g. ``signal = (close.shift(-1) > close)``); the
+shift(1) at :421 is the only look-ahead guard on the signal path and is
+defeated by upstream peeking. ``backtest/tests/test_backtester_lookahead.py``
+regression-tests the shift's effectiveness.
+
+SL/TP intra-bar races
+---------------------
+Bar-level granularity — when an SL hit and a TP fill could both occur within
+the same bar, the engine resolves them at bar close, not by intra-bar OHLC
+walking. Documented under ``Backtest`` in CLAUDE.md.
 """
 
 import sys
@@ -438,6 +477,21 @@ class Backtester:
             ensure_regime = _load_regime()
             ensure_regime(df, period=self.regime_period, adx_threshold=self.regime_adx_threshold)
 
+        # Shift regime to match the signal shift at :421. In live, the regime
+        # label is computed from bar N's closed data at the same moment as
+        # the signal; both gate the order that fills at bar N+1's open. Here
+        # the signal is already shifted forward by one row, so the regime
+        # consumed at row N+1 must be bar N's regime — not the regime that
+        # would only be knowable after bar N+1 closes. Without this shift,
+        # the entry gate at :520 reads a future bar's regime relative to the
+        # decision time, which is look-ahead bias (#730).
+        #
+        # Empty/missing regime (e.g. row 0 after shift) → empty string, which
+        # fails the ``in allowed_regimes`` check and blocks the entry. That
+        # matches live behavior: no regime data, no entry.
+        if self.regime_enabled and "regime" in df.columns:
+            df["regime"] = df["regime"].shift(1).fillna("")
+
         has_open = "open" in df.columns
 
         cash = self.initial_capital
@@ -513,10 +567,13 @@ class Backtester:
             equity = cash + position * mark_price
             equity_curve.append({"date": idx, "equity": equity})
 
-            # Regime gate: block new entries when the bar's regime isn't in the
-            # allowed set. Existing positions are always managed by close paths.
-            # ``compute_regime`` initializes every row to ``"ranging"`` (warmup
-            # bars included), so bar_regime is always a non-empty label here.
+            # Regime gate: block new entries when the prior bar's regime
+            # isn't in the allowed set. Existing positions are always managed
+            # by close paths. ``compute_regime`` initializes every row to
+            # ``"ranging"`` (warmup bars included). After the post-injection
+            # shift (#730) row 0 is empty — that empty label fails the
+            # ``in allowed_regimes`` check and blocks the bar-0 entry, which
+            # is correct (no prior-bar data, no decision).
             bar_regime = str(row.get("regime", "")) if self.regime_enabled else ""
             regime_blocked = (
                 self.regime_enabled
@@ -813,6 +870,15 @@ class Backtester:
         }
         market_dict = {"mark_price": float(mark_price)}
         if atr_series is not None:
+            # Current-bar ATR access is intentional and matches live (#730):
+            # close evaluators run end-of-bar with this bar's closed mark and
+            # this bar's closed ATR; the resulting close_fraction becomes
+            # pending_close_fraction and applies at the NEXT bar's open. This
+            # is the live ``tiered_tp_atr_live`` contract — see CLAUDE.md
+            # "ATR for close evaluators". Entries, by contrast, gate on the
+            # PRIOR bar's regime/signal via the shifts at :421/:431/:452 —
+            # different timing for different decision points, both matching
+            # live.
             try:
                 live_atr = float(atr_series.loc[idx])
             except (KeyError, TypeError, ValueError):
