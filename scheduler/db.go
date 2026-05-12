@@ -395,10 +395,11 @@ func parseTPOIDsJSON(raw string, legacyTP1, legacyTP2 int64) []int64 {
 }
 
 // marshalTPArmedTiersJSON / parseTPArmedTiersJSON persist Position.TPArmedTiers
-// (#716 item 2). Empty array marshals to "" so legacy DB rows (column added
-// with DEFAULT '') round-trip cleanly. parseTPArmedTiersJSON returns nil for
-// empty/malformed input — callers treat nil as "legacy row, assume armed-for-
-// any-OID-currently-positive" via backfillTPArmedTiers below.
+// (#716 item 2). An empty slice marshals to the empty string so legacy DB
+// rows (column added with an empty default) round-trip cleanly.
+// parseTPArmedTiersJSON returns nil for empty or malformed input; callers
+// treat nil as a legacy row and rely on backfillTPArmedTiers below to
+// assume any tier with a positive OID was armed.
 func marshalTPArmedTiersJSON(armed []bool) string {
 	if len(armed) == 0 {
 		return ""

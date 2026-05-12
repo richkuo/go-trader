@@ -168,9 +168,9 @@ func TestApplyHyperliquidProtectionSyncStampsTPArmedTiers(t *testing.T) {
 	t.Run("legacy TP1FilledExternally/TP2FilledExternally extends armed slice", func(t *testing.T) {
 		pos := &Position{Symbol: "ETH"}
 		applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
-			TP1OID:                33,
-			TP2OID:                44,
-			TP1FilledExternally:   true,
+			TP1OID:              33,
+			TP2OID:              44,
+			TP1FilledExternally: true,
 		})
 		if len(pos.TPArmedTiers) != 2 || !pos.TPArmedTiers[0] || !pos.TPArmedTiers[1] {
 			t.Errorf("TPArmedTiers = %v, want [true true]", pos.TPArmedTiers)

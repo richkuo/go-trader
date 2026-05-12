@@ -29,9 +29,9 @@ type Position struct {
 	// failed transiently — leaving OID=0 with the tier never armed — is NOT
 	// mistaken for a fired TP when a non-TP partial close (close-evaluator)
 	// shrinks the position. See #716 item 2.
-	TPArmedTiers []bool `json:"tp_armed_tiers,omitempty"`
-	StopLossATRMult     *float64  `json:"stop_loss_atr_mult,omitempty"`      // HL perps: ATR multiplier resolved at fill time when SL was ATR-armed; nil = armed via pct/margin/trailing/none (#669)
-	TPTiersJSON         string    `json:"tp_tiers_json,omitempty"`           // HL perps: JSON snapshot of [{atr_multiple,close_fraction},...] resolved at fill time; "" = strategy doesn't use tiered_tp_atr* (#669)
+	TPArmedTiers    []bool   `json:"tp_armed_tiers,omitempty"`
+	StopLossATRMult *float64 `json:"stop_loss_atr_mult,omitempty"` // HL perps: ATR multiplier resolved at fill time when SL was ATR-armed; nil = armed via pct/margin/trailing/none (#669)
+	TPTiersJSON     string   `json:"tp_tiers_json,omitempty"`      // HL perps: JSON snapshot of [{atr_multiple,close_fraction},...] resolved at fill time; "" = strategy doesn't use tiered_tp_atr* (#669)
 	// SLAdjustedTiersProcessed counts how many leading tiers have already had
 	// their sl_after rule applied: 0 = none, N = tiers [0..N-1] processed.
 	// Idempotency watermark so restarts don't re-fire the same bump (#708).
