@@ -397,6 +397,112 @@ class TestDatetimeIndex:
 
 # ─── Orchestrator ────────────────────────────
 
+# ─── Look-ahead regression (#732) ───────────────
+
+class TestLookaheadRegression:
+    """Each pattern detector receives swing series that are only complete
+    ``lookback`` bars after their swing position. The breakout bar must come
+    at least one bar after the trailing swing's confirmation window closes —
+    i.e. ``bar_index >= trailing_swing_bar + lookback + 1`` — otherwise the
+    detector is consuming a swing classification derived from data not yet
+    observable at signal time.
+    """
+
+    def test_double_top_breakout_after_confirmation_window(self):
+        lookback = 3
+        prices = (
+            list(np.linspace(80, 100, 20)) +
+            list(np.linspace(100, 90, 15)) +
+            list(np.linspace(90, 99, 15)) +
+            list(np.linspace(99, 85, 20)) +
+            [85] * 30
+        )
+        df = make_ohlcv(prices)
+        sh, sl = find_swing_points(df["high"], df["low"], lookback=lookback)
+        matches = detect_double_top(
+            df["high"], df["low"], df["close"], sh, sl,
+            tolerance=0.03, lookback=lookback,
+        )
+        assert len(matches) >= 1
+        # Find the second peak's bar (h2_bar) and assert breakout is far
+        # enough out.
+        sh_positions = sorted(np.where(sh.notna())[0])
+        for m in matches:
+            # Identify h2_bar — the second of the two consecutive swing highs
+            # whose breakout produced this match. We don't reconstruct the
+            # exact pair, but assert that bar_index is at least lookback+1
+            # AFTER some swing high less than bar_index.
+            prior_swings = [s for s in sh_positions if s < m.bar_index]
+            assert prior_swings, "match should follow at least one swing high"
+            latest_prior = max(prior_swings)
+            assert m.bar_index >= latest_prior + lookback + 1, (
+                f"double_top breakout at {m.bar_index} too close to trailing "
+                f"swing at {latest_prior} (lookback={lookback}); allowed only "
+                f"from {latest_prior + lookback + 1} onward"
+            )
+
+    def test_head_and_shoulders_breakout_after_confirmation_window(self):
+        lookback = 3
+        prices = (
+            list(np.linspace(80, 95, 15)) +
+            list(np.linspace(95, 85, 10)) +
+            list(np.linspace(85, 105, 15)) +
+            list(np.linspace(105, 85, 10)) +
+            list(np.linspace(85, 96, 15)) +
+            list(np.linspace(96, 80, 20)) +
+            [80] * 15
+        )
+        df = make_ohlcv(prices)
+        sh, sl = find_swing_points(df["high"], df["low"], lookback=lookback)
+        matches = detect_head_and_shoulders(
+            df["high"], df["low"], df["close"], sh, sl,
+            tolerance=0.05, lookback=lookback,
+        )
+        assert len(matches) >= 1
+        sh_positions = sorted(np.where(sh.notna())[0])
+        for m in matches:
+            prior_swings = [s for s in sh_positions if s < m.bar_index]
+            assert prior_swings
+            latest_prior = max(prior_swings)
+            assert m.bar_index >= latest_prior + lookback + 1, (
+                f"H&S breakout at {m.bar_index} too close to trailing "
+                f"swing at {latest_prior} (lookback={lookback}); allowed only "
+                f"from {latest_prior + lookback + 1} onward"
+            )
+
+    def test_signal_independent_of_future_bars(self):
+        """For each bar K where the orchestrator emits a non-zero signal,
+        the same signal must arise from running the orchestrator on the
+        prefix df[:K+1]. The fix enforces that pattern breakouts only land at
+        bars where the trailing swing is fully past its centered-window
+        confirmation; that window is always contained in [0, K]."""
+        prices = (
+            list(np.linspace(80, 100, 20)) +
+            list(np.linspace(100, 90, 15)) +
+            list(np.linspace(90, 99, 15)) +
+            list(np.linspace(99, 85, 20)) +
+            [85] * 30
+        )
+        vol = [100] * len(prices)
+        for i in range(50, 70):
+            vol[i] = 200
+        df = make_ohlcv(prices, volume=vol)
+        full = chart_pattern_core(df, pivot_lookback=3, tolerance=0.03, vol_multiplier=1.0)
+
+        signal_bars = list(np.where(full["signal"].values != 0)[0])
+        # Test setup should actually produce at least one signal.
+        assert len(signal_bars) >= 1
+        for k in signal_bars:
+            partial_df = df.iloc[: k + 1]
+            partial = chart_pattern_core(
+                partial_df, pivot_lookback=3, tolerance=0.03, vol_multiplier=1.0
+            )
+            assert partial["signal"].iloc[k] == full["signal"].iloc[k], (
+                f"signal at bar {k} flipped under truncation: "
+                f"full={full['signal'].iloc[k]} truncated={partial['signal'].iloc[k]}"
+            )
+
+
 class TestChartPatternCore:
     def test_returns_signal_column(self):
         prices = list(np.linspace(90, 110, 50)) + list(np.linspace(110, 90, 50))

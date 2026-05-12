@@ -114,75 +114,90 @@ def amd_ifvg_core(
         result.loc[london_mask, "sweep_dir"] = bias
         sweep_idx = swept_below_idx if bias == -1 else swept_above_idx
 
-        # --- Phase 3: IFVG Detection — 3-candle imbalance gap ---
-        # Scan candles from the sweep onward for fair value gaps
+        # --- Phase 3+4: IFVG Detection + Entry, processed bar-by-bar ---
+        # An IFVG forms across 3 consecutive candles; it is only observable at
+        # its completion bar (c2). For each candidate entry bar K, we select
+        # the IFVG nearest to bar K's close using ONLY IFVGs that have already
+        # completed at bars strictly before K — no day-final-close peek.
         post_sweep_mask = day_mask & (result.index >= sweep_idx)
         post_sweep = result.loc[post_sweep_mask]
 
         if len(post_sweep) < 3:
             continue
 
-        best_ifvg = None
-        best_ifvg_idx = None
-        latest_close = post_sweep["close"].iloc[-1]
-
         ps_indices = post_sweep.index.tolist()
+
+        # Pre-compute every IFVG candidate, indexed by its completion position
+        # in ps_indices. Candidate is (gap_low, gap_high, completion_position).
+        ifvg_candidates = []
         for i in range(2, len(ps_indices)):
             c0 = post_sweep.loc[ps_indices[i - 2]]  # candle before displacement
-            c2 = post_sweep.loc[ps_indices[i]]       # candle after displacement
+            c2 = post_sweep.loc[ps_indices[i]]      # candle after displacement
 
             if bias == -1:
-                # Bullish IFVG: gap up (c0 high < c2 low)
-                if c0["high"] < c2["low"]:
-                    gap_low = c0["high"]
-                    gap_high = c2["low"]
-                    gap_size = gap_high - gap_low
-                    mid_price = (gap_high + gap_low) / 2
-                    if mid_price > 0 and (gap_size / mid_price * 100) >= min_ifvg_pct:
-                        dist = abs(latest_close - (gap_high + gap_low) / 2)
-                        if best_ifvg is None or dist < best_ifvg[2]:
-                            best_ifvg = (gap_low, gap_high, dist)
-                            best_ifvg_idx = ps_indices[i]
+                if c0["high"] >= c2["low"]:
+                    continue
+                gap_low, gap_high = c0["high"], c2["low"]
             else:
-                # Bearish IFVG: gap down (c0 low > c2 high)
-                if c0["low"] > c2["high"]:
-                    gap_high = c0["low"]
-                    gap_low = c2["high"]
-                    gap_size = gap_high - gap_low
-                    mid_price = (gap_high + gap_low) / 2
-                    if mid_price > 0 and (gap_size / mid_price * 100) >= min_ifvg_pct:
-                        dist = abs(latest_close - (gap_high + gap_low) / 2)
-                        if best_ifvg is None or dist < best_ifvg[2]:
-                            best_ifvg = (gap_low, gap_high, dist)
-                            best_ifvg_idx = ps_indices[i]
+                if c0["low"] <= c2["high"]:
+                    continue
+                gap_low, gap_high = c2["high"], c0["low"]
 
-        if best_ifvg is None:
+            gap_size = gap_high - gap_low
+            mid_price = (gap_high + gap_low) / 2
+            if mid_price <= 0:
+                continue
+            if (gap_size / mid_price * 100) < min_ifvg_pct:
+                continue
+            ifvg_candidates.append((gap_low, gap_high, i))
+
+        if not ifvg_candidates:
             continue
 
-        ifvg_low, ifvg_high = best_ifvg[0], best_ifvg[1]
-        result.loc[day_mask, "ifvg_high"] = ifvg_high
-        result.loc[day_mask, "ifvg_low"] = ifvg_low
-
-        # --- Phase 4: Entry — Retracement into IFVG ---
-        # Look for price entering the IFVG zone after it forms
-        entry_mask = day_mask & (result.index > best_ifvg_idx)
-        entry_candles = result.loc[entry_mask]
-
         signal_fired = False
-        for idx in entry_candles.index:
-            if signal_fired:
-                break
-            row = entry_candles.loc[idx]
+        chosen_ifvg = None
+        chosen_entry_idx = None
+
+        # Walk entry bars in time order. At each bar K, only IFVGs completed
+        # strictly before K are visible; pick the one whose midpoint is closest
+        # to THIS bar's close.
+        for k in range(1, len(ps_indices)):
+            available = [c for c in ifvg_candidates if c[2] < k]
+            if not available:
+                continue
+
+            bar_idx = ps_indices[k]
+            bar_close = result.loc[bar_idx, "close"]
+            bar_low = result.loc[bar_idx, "low"]
+            bar_high = result.loc[bar_idx, "high"]
+
+            best = min(
+                available,
+                key=lambda c: abs(bar_close - (c[0] + c[1]) / 2),
+            )
+            ifvg_low, ifvg_high = best[0], best[1]
 
             if bias == -1:
                 # Bullish entry: price dips into bullish IFVG
-                if row["low"] <= ifvg_high and row["close"] >= ifvg_low:
-                    result.loc[idx, "signal"] = 1
+                if bar_low <= ifvg_high and bar_close >= ifvg_low:
+                    result.loc[bar_idx, "signal"] = 1
                     signal_fired = True
             else:
                 # Bearish entry: price rallies into bearish IFVG
-                if row["high"] >= ifvg_low and row["close"] <= ifvg_high:
-                    result.loc[idx, "signal"] = -1
+                if bar_high >= ifvg_low and bar_close <= ifvg_high:
+                    result.loc[bar_idx, "signal"] = -1
                     signal_fired = True
+
+            if signal_fired:
+                chosen_ifvg = (ifvg_low, ifvg_high)
+                chosen_entry_idx = bar_idx
+                break
+
+        # Stamp viz columns only from the entry bar onward so historical bars
+        # never carry an IFVG level chosen with future data.
+        if chosen_ifvg is not None and chosen_entry_idx is not None:
+            viz_mask = day_mask & (result.index >= chosen_entry_idx)
+            result.loc[viz_mask, "ifvg_low"] = chosen_ifvg[0]
+            result.loc[viz_mask, "ifvg_high"] = chosen_ifvg[1]
 
     return result

@@ -84,12 +84,16 @@ def liquidity_sweep_core(
                     result.iloc[i, result.columns.get_loc("signal")] = 1
                     recent_swing_low = np.nan  # consumed
 
-        # Update liquidity pools from confirmed swing points
-        # Only use swing points from candles before the current one to avoid lookahead
-        if i > 0:
-            if not np.isnan(swing_highs.iloc[i - 1]):
-                recent_swing_high = swing_highs.iloc[i - 1]
-            if not np.isnan(swing_lows.iloc[i - 1]):
-                recent_swing_low = swing_lows.iloc[i - 1]
+        # Update liquidity pools from confirmed swing points.
+        # A swing at position p uses a centered window [p-lookback, p+lookback]
+        # — it can only be confirmed after bar p+lookback has closed. So at the
+        # current bar i, the freshest swing safely consumable is at position
+        # i - lookback - 1. Reading any later position would peek forward.
+        confirm_pos = i - swing_lookback - 1
+        if confirm_pos >= 0:
+            if not np.isnan(swing_highs.iloc[confirm_pos]):
+                recent_swing_high = swing_highs.iloc[confirm_pos]
+            if not np.isnan(swing_lows.iloc[confirm_pos]):
+                recent_swing_low = swing_lows.iloc[confirm_pos]
 
     return result

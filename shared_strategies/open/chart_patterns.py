@@ -97,8 +97,16 @@ def detect_double_top(
     highs: pd.Series, lows: pd.Series, close: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
     tolerance: float = 0.03,
+    lookback: int = 5,
 ) -> list:
-    """Two consecutive swing highs within tolerance; break below intervening low."""
+    """Two consecutive swing highs within tolerance; break below intervening low.
+
+    The breakout bar must come at least ``lookback + 1`` bars after the second
+    peak — a swing high at bar k is confirmed using a centered
+    [k-lookback, k+lookback] window and is not observable until bar k+lookback
+    has closed. Starting the search at h2_bar+1 would consume a swing the
+    market hasn't confirmed yet (look-ahead).
+    """
     matches = []
     sh_idx = _get_swing_indices(swing_highs)
     sl_idx = _get_swing_indices(swing_lows)
@@ -120,8 +128,9 @@ def detect_double_top(
         neckline_bar = min(between_lows, key=lambda s: swing_lows.iloc[s])
         neckline = swing_lows.iloc[neckline_bar]
 
-        # Find breakout: first close below neckline after second peak
-        for j in range(h2_bar + 1, len(close)):
+        # Find breakout: first close below neckline after second peak's
+        # confirmation bar (h2_bar + lookback).
+        for j in range(h2_bar + lookback + 1, len(close)):
             if close.iloc[j] < neckline:
                 matches.append(PatternMatch(
                     pattern="double_top", signal=-1,
@@ -136,8 +145,13 @@ def detect_double_bottom(
     highs: pd.Series, lows: pd.Series, close: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
     tolerance: float = 0.03,
+    lookback: int = 5,
 ) -> list:
-    """Two consecutive swing lows within tolerance; break above intervening high."""
+    """Two consecutive swing lows within tolerance; break above intervening high.
+
+    Breakout bar must come at least ``lookback + 1`` bars after the second
+    trough's confirmation window (see ``detect_double_top``).
+    """
     matches = []
     sl_idx = _get_swing_indices(swing_lows)
     sh_idx = _get_swing_indices(swing_highs)
@@ -157,7 +171,7 @@ def detect_double_bottom(
         neckline_bar = max(between_highs, key=lambda s: swing_highs.iloc[s])
         neckline = swing_highs.iloc[neckline_bar]
 
-        for j in range(l2_bar + 1, len(close)):
+        for j in range(l2_bar + lookback + 1, len(close)):
             if close.iloc[j] > neckline:
                 matches.append(PatternMatch(
                     pattern="double_bottom", signal=1,
@@ -172,6 +186,7 @@ def detect_triple_top(
     highs: pd.Series, lows: pd.Series, close: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
     tolerance: float = 0.03,
+    lookback: int = 5,
 ) -> list:
     """Three consecutive swing highs within tolerance; break below lowest intervening low."""
     matches = []
@@ -195,7 +210,7 @@ def detect_triple_top(
             continue
         neckline = min(swing_lows.iloc[s] for s in between_lows)
 
-        for j in range(h3_bar + 1, len(close)):
+        for j in range(h3_bar + lookback + 1, len(close)):
             if close.iloc[j] < neckline:
                 matches.append(PatternMatch(
                     pattern="triple_top", signal=-1,
@@ -210,6 +225,7 @@ def detect_triple_bottom(
     highs: pd.Series, lows: pd.Series, close: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
     tolerance: float = 0.03,
+    lookback: int = 5,
 ) -> list:
     """Three consecutive swing lows within tolerance; break above highest intervening high."""
     matches = []
@@ -233,7 +249,7 @@ def detect_triple_bottom(
             continue
         neckline = max(swing_highs.iloc[s] for s in between_highs)
 
-        for j in range(l3_bar + 1, len(close)):
+        for j in range(l3_bar + lookback + 1, len(close)):
             if close.iloc[j] > neckline:
                 matches.append(PatternMatch(
                     pattern="triple_bottom", signal=1,
@@ -248,6 +264,7 @@ def detect_head_and_shoulders(
     highs: pd.Series, lows: pd.Series, close: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
     tolerance: float = 0.03,
+    lookback: int = 5,
 ) -> list:
     """Three swing highs where middle is highest and shoulders are within tolerance."""
     matches = []
@@ -275,7 +292,7 @@ def detect_head_and_shoulders(
             continue
         neckline = np.mean([swing_lows.iloc[s] for s in between_lows])
 
-        for j in range(rs_bar + 1, len(close)):
+        for j in range(rs_bar + lookback + 1, len(close)):
             if close.iloc[j] < neckline:
                 matches.append(PatternMatch(
                     pattern="head_shoulders", signal=-1,
@@ -290,6 +307,7 @@ def detect_inverse_head_and_shoulders(
     highs: pd.Series, lows: pd.Series, close: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
     tolerance: float = 0.03,
+    lookback: int = 5,
 ) -> list:
     """Three swing lows where middle is lowest and shoulders are within tolerance."""
     matches = []
@@ -314,7 +332,7 @@ def detect_inverse_head_and_shoulders(
             continue
         neckline = np.mean([swing_highs.iloc[s] for s in between_highs])
 
-        for j in range(rs_bar + 1, len(close)):
+        for j in range(rs_bar + lookback + 1, len(close)):
             if close.iloc[j] > neckline:
                 matches.append(PatternMatch(
                     pattern="inv_head_shoulders", signal=1,
@@ -338,6 +356,7 @@ def _detect_flag(
     flag_min_bars: int = 5,
     flag_max_bars: int = 30,
     pole_atr_mult: float = 2.0,
+    lookback: int = 5,
 ) -> list:
     """
     Detect flag pattern in the given direction.
@@ -399,8 +418,11 @@ def _detect_flag(
             if (flag_high_level - flag_low_level) > 0.5 * pole_move:
                 continue
 
-            # Breakout: close above the flag high
-            for j in range(peak_bar + flag_min_bars, min(flag_end + 1, n)):
+            # Breakout: close above the flag high. The peak swing is only
+            # confirmable after peak_bar + lookback closes, so enforce the
+            # later of (flag_min_bars, lookback + 1).
+            breakout_start = peak_bar + max(flag_min_bars, lookback + 1)
+            for j in range(breakout_start, min(flag_end + 1, n)):
                 if close.iloc[j] > flag_high_level:
                     matches.append(PatternMatch(
                         pattern="bull_flag", signal=1,
@@ -439,7 +461,8 @@ def _detect_flag(
             if (flag_high_level - flag_low_level) > 0.5 * pole_move:
                 continue
 
-            for j in range(trough_bar + flag_min_bars, min(flag_end + 1, n)):
+            breakout_start = trough_bar + max(flag_min_bars, lookback + 1)
+            for j in range(breakout_start, min(flag_end + 1, n)):
                 if close.iloc[j] < flag_low_level:
                     matches.append(PatternMatch(
                         pattern="bear_flag", signal=-1,
@@ -454,16 +477,18 @@ def detect_bull_flag(
     highs: pd.Series, lows: pd.Series, close: pd.Series, volume: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
     tolerance: float = 0.03,
+    lookback: int = 5,
 ) -> list:
-    return _detect_flag(highs, lows, close, volume, swing_highs, swing_lows, direction=1)
+    return _detect_flag(highs, lows, close, volume, swing_highs, swing_lows, direction=1, lookback=lookback)
 
 
 def detect_bear_flag(
     highs: pd.Series, lows: pd.Series, close: pd.Series, volume: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
     tolerance: float = 0.03,
+    lookback: int = 5,
 ) -> list:
-    return _detect_flag(highs, lows, close, volume, swing_highs, swing_lows, direction=-1)
+    return _detect_flag(highs, lows, close, volume, swing_highs, swing_lows, direction=-1, lookback=lookback)
 
 
 # ─────────────────────────────────────────────
@@ -490,6 +515,7 @@ def _detect_triangle(
     pattern_type: str,  # "ascending", "descending", "symmetrical"
     tolerance: float = 0.03,
     min_points: int = 4,
+    lookback: int = 5,
 ) -> list:
     """
     Detect triangle patterns using linear regression on swing points.
@@ -532,7 +558,12 @@ def _detect_triangle(
 
         flat_threshold = 0.0001  # slope per bar, normalized
 
+        # The latest swing in the triangle is only confirmed lookback bars
+        # after it occurs, so the earliest legitimate breakout bar is
+        # triangle_end + lookback + 1.
         triangle_end = max(recent_sh[-1], recent_sl[-1])
+        breakout_start = triangle_end + lookback + 1
+        breakout_end = min(triangle_end + 20, len(close))
 
         if pattern_type == "ascending":
             if abs(norm_r_slope) > flat_threshold:
@@ -541,7 +572,7 @@ def _detect_triangle(
                 continue
             # Breakout above resistance
             resistance_level = np.mean(sh_values)
-            for j in range(triangle_end + 1, min(triangle_end + 20, len(close))):
+            for j in range(breakout_start, breakout_end):
                 if close.iloc[j] > resistance_level:
                     matches.append(PatternMatch(
                         pattern="ascending_triangle", signal=1,
@@ -555,7 +586,7 @@ def _detect_triangle(
             if norm_r_slope >= -flat_threshold:
                 continue
             support_level = np.mean(sl_values)
-            for j in range(triangle_end + 1, min(triangle_end + 20, len(close))):
+            for j in range(breakout_start, breakout_end):
                 if close.iloc[j] < support_level:
                     matches.append(PatternMatch(
                         pattern="descending_triangle", signal=-1,
@@ -568,7 +599,7 @@ def _detect_triangle(
                 continue
             # Lines must be converging
             mid_level = avg_price
-            for j in range(triangle_end + 1, min(triangle_end + 20, len(close))):
+            for j in range(breakout_start, breakout_end):
                 upper = np.mean(sh_values) + resistance_slope * (j - np.mean(recent_sh))
                 lower = np.mean(sl_values) + support_slope * (j - np.mean(recent_sl))
                 if close.iloc[j] > upper:
@@ -591,24 +622,27 @@ def detect_ascending_triangle(
     highs: pd.Series, lows: pd.Series, close: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
     tolerance: float = 0.03,
+    lookback: int = 5,
 ) -> list:
-    return _detect_triangle(highs, lows, close, swing_highs, swing_lows, "ascending", tolerance)
+    return _detect_triangle(highs, lows, close, swing_highs, swing_lows, "ascending", tolerance, lookback=lookback)
 
 
 def detect_descending_triangle(
     highs: pd.Series, lows: pd.Series, close: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
     tolerance: float = 0.03,
+    lookback: int = 5,
 ) -> list:
-    return _detect_triangle(highs, lows, close, swing_highs, swing_lows, "descending", tolerance)
+    return _detect_triangle(highs, lows, close, swing_highs, swing_lows, "descending", tolerance, lookback=lookback)
 
 
 def detect_symmetrical_triangle(
     highs: pd.Series, lows: pd.Series, close: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
     tolerance: float = 0.03,
+    lookback: int = 5,
 ) -> list:
-    return _detect_triangle(highs, lows, close, swing_highs, swing_lows, "symmetrical", tolerance)
+    return _detect_triangle(highs, lows, close, swing_highs, swing_lows, "symmetrical", tolerance, lookback=lookback)
 
 
 # ─────────────────────────────────────────────
@@ -619,6 +653,7 @@ def detect_cup_and_handle(
     highs: pd.Series, lows: pd.Series, close: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
     tolerance: float = 0.03,
+    lookback: int = 5,
 ) -> list:
     """
     Cup & Handle: U-shaped bottom with left/right rims at similar height,
@@ -667,9 +702,10 @@ def detect_cup_and_handle(
             if (rim_avg - handle_low) > 0.5 * cup_depth:
                 continue
 
-            # Breakout above rim
+            # Breakout above rim — right rim swing only confirmable
+            # ``lookback`` bars after right_rim_bar.
             breakout_level = max(left_rim, right_rim)
-            for k in range(right_rim_bar + 2, min(handle_end + 10, len(close))):
+            for k in range(right_rim_bar + lookback + 1, min(handle_end + 10, len(close))):
                 if close.iloc[k] > breakout_level:
                     matches.append(PatternMatch(
                         pattern="cup_and_handle", signal=1,
@@ -736,11 +772,13 @@ def chart_pattern_core(
             matches = detector(
                 result["high"], result["low"], result["close"], result["volume"],
                 swing_highs, swing_lows, tolerance,
+                lookback=pivot_lookback,
             )
         else:
             matches = detector(
                 result["high"], result["low"], result["close"],
                 swing_highs, swing_lows, tolerance,
+                lookback=pivot_lookback,
             )
         all_matches.extend(matches)
 
