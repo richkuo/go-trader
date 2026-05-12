@@ -627,3 +627,177 @@ def test_backtester_no_sl_after_unchanged_behavior():
     sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
     assert ("long", 110.0) in sides_prices
     assert ("long", 90.0) in sides_prices
+
+
+def test_backtester_multi_tier_cleared_same_bar_highest_wins():
+    """Price jumps past tier 0 directly to tier 1 in a single bar. The
+    highest cleared tier's rule must win — proves find_highest_cleared_tier
+    is wired through and a lower tier's rule doesn't shadow the higher
+    tier's intent."""
+    # 3 tiers at 1×/2×/3× ATR (cumulative close_fractions 0.3/0.6/1.0).
+    # Tier 0 rule = breakeven ($100); tier 1 rule = atr_offset +1.0×ATR
+    # ($110); tier 2 rule = atr_offset +2.0×ATR ($120). Bar 2 close jumps
+    # straight to $120 = 2×ATR → tier 0 AND tier 1 both clear in the same
+    # bar; final tier untouched (close_ratio=0.6 < 1.0).
+    #
+    # If tier 1's rule wins (correct): SL=$110. Bar 4 close=$105 < $110 →
+    # SL fires at bar 5 open=$105.
+    # If tier 0 incorrectly won: SL=$100, $105 wouldn't trigger.
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 120, 110, 105],
+        closes=[100, 100, 120, 120, 105, 105],
+        atrs=[10, 10, 10, 10, 10, 10],
+    )
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        platform="hyperliquid", strategy_type="perps",
+        stop_loss_atr_mult=2.0,
+        close_strategies=[{
+            "name": "tiered_tp_atr",
+            "params": {
+                "tiers": [
+                    {"atr_multiple": 1.0, "close_fraction": 0.3,
+                     "sl_after": "breakeven"},
+                    {"atr_multiple": 2.0, "close_fraction": 0.6,
+                     "sl_after": {"atr_mult": 1.0}},
+                    {"atr_multiple": 3.0, "close_fraction": 1.0,
+                     "sl_after": {"atr_mult": 2.0}},
+                ],
+            },
+        }],
+    )
+    result = bt.run(df, save=False)
+    sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
+    # Cumulative TP fill at $120 (the cumulative-target close evaluator may
+    # emit two separate fills at the same bar's open price; that's fine —
+    # just assert the SL trigger fired post-bump).
+    assert ("long", 120.0) in sides_prices, sides_prices
+    # SL fires at $105 (only possible if tier 1's rule won — tier 0's
+    # $100 breakeven wouldn't have triggered on a $105 close).
+    assert ("long", 105.0) in sides_prices, sides_prices
+
+
+def test_backtester_sl_after_idempotent_across_bars():
+    """A tier's sl_after rule must apply exactly once. Direct unit-level
+    check on _maybe_apply_sl_after: calling it twice with the same simulated
+    state after a tier cleared must produce a no-op the second time (the
+    watermark short-circuits re-evaluation), mirroring the live
+    SLAdjustedTiersProcessed guard."""
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        platform="hyperliquid", strategy_type="perps",
+        stop_loss_atr_mult=1.0,
+        close_strategies=[{
+            "name": "tiered_tp_atr",
+            "params": {
+                "sl_after": {"atr_mult": 0.5},
+                "tiers": [
+                    {"atr_multiple": 1.0, "close_fraction": 0.5},
+                    {"atr_multiple": 2.0, "close_fraction": 1.0},
+                ],
+            },
+        }],
+    )
+    # Simulate state right after TP1 fires: 50% of initial qty closed.
+    kwargs = dict(
+        side="long",
+        avg_cost=100.0,
+        entry_atr=10.0,
+        position_qty=0.5,
+        initial_qty=1.0,
+        mark_price=110.0,
+        fill_price=110.0,
+        sl_trigger_px=90.0,  # initial SL @ avg - 1×ATR
+        sl_tiers_processed=0,
+        post_tp_trail_mult=None,
+        sl_high_water_px=0.0,
+    )
+    trig1, processed1, trail1, hwm1 = bt._maybe_apply_sl_after(**kwargs)
+    # First call applies tier 0's rule: SL bumps to $100 + 0.5×$10 = $105,
+    # watermark advances past tier 0.
+    assert trig1 == 105.0
+    assert processed1 == 1
+    assert trail1 is None
+
+    # Second call with the now-current state (same closed_ratio, watermark
+    # already past tier 0) must be a no-op — no further bump, watermark
+    # stays put.
+    kwargs2 = dict(kwargs)
+    kwargs2.update(
+        sl_trigger_px=trig1,
+        sl_tiers_processed=processed1,
+        post_tp_trail_mult=trail1,
+        sl_high_water_px=hwm1,
+    )
+    trig2, processed2, trail2, hwm2 = bt._maybe_apply_sl_after(**kwargs2)
+    assert trig2 == trig1
+    assert processed2 == processed1
+    assert trail2 == trail1
+    assert hwm2 == hwm1
+
+
+def test_backtester_validation_rejects_margin_pct_only():
+    """stop_loss_margin_pct cannot be the sole fixed SL in backtests —
+    the backtester does not model leverage, so the pre-TP SL would never
+    fire and post-TP bumps would silently diverge from live. Reject loudly."""
+    with pytest.raises(ValueError, match="stop_loss_margin_pct"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            platform="hyperliquid", strategy_type="perps",
+            stop_loss_margin_pct=0.5,
+            close_strategies=[{
+                "name": "tiered_tp_atr",
+                "params": {
+                    "sl_after": "breakeven",
+                    "tiers": [
+                        {"atr_multiple": 1.0, "close_fraction": 0.5},
+                        {"atr_multiple": 2.0, "close_fraction": 1.0},
+                    ],
+                },
+            }],
+        )
+
+
+def test_backtester_sl_after_defers_when_sl_unarmed():
+    """Mirrors live `currentOID == 0` short-circuit: when the fixed SL
+    couldn't be seeded (e.g., ATR-mult SL but entry ATR=0 at open),
+    breakeven must defer instead of installing a fresh trigger — otherwise
+    the backtester would diverge from live by arming an SL where live
+    would not."""
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        platform="hyperliquid", strategy_type="perps",
+        stop_loss_atr_mult=1.0,
+        close_strategies=[{
+            "name": "tiered_tp_atr",
+            "params": {
+                "sl_after": "breakeven",
+                "tiers": [
+                    {"atr_multiple": 1.0, "close_fraction": 0.5},
+                    {"atr_multiple": 2.0, "close_fraction": 1.0},
+                ],
+            },
+        }],
+    )
+    # Simulate state right after a TP partial fired but SL was never armed
+    # (sl_trigger_px = 0). breakeven would naturally install SL=$100, but
+    # the gate must defer.
+    trig, processed, trail, hwm = bt._maybe_apply_sl_after(
+        side="long",
+        avg_cost=100.0,
+        entry_atr=10.0,
+        position_qty=0.5,
+        initial_qty=1.0,
+        mark_price=110.0,
+        fill_price=110.0,
+        sl_trigger_px=0.0,  # unarmed
+        sl_tiers_processed=0,
+        post_tp_trail_mult=None,
+        sl_high_water_px=0.0,
+    )
+    # Defer: trigger unchanged, watermark NOT advanced (so a later bar
+    # could retry if conditions improve — same as live).
+    assert trig == 0.0
+    assert processed == 0
+    assert trail is None
+    assert hwm == 0.0

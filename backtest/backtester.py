@@ -291,28 +291,31 @@ class Backtester:
         # Parse sl_after rules and the corresponding tier close-fraction
         # thresholds once at init. When no sl_after is configured this is a
         # no-op and the per-bar SL machinery in run() short-circuits.
-        sl_mod = _load_post_tp_sl()
-        self._sl_after_rules, _sl_parse_errs = sl_mod.parse_strategy_tp_sl_after_rules(
+        self._sl_mod = _load_post_tp_sl()
+        self._sl_after_rules, _sl_parse_errs = self._sl_mod.parse_strategy_tp_sl_after_rules(
             self._close_refs
         )
-        self._tp_tier_thresholds = sl_mod.parse_tp_tier_close_fractions(self._close_refs)
+        self._tp_tier_thresholds = self._sl_mod.parse_tp_tier_close_fractions(self._close_refs)
         # Validation parity with the live config — reject the same bad combos
         # at backtest-load time so users can't silently get a no-op. Run
         # whenever ANY close ref carries an `sl_after` key (or the tiered
         # parser reported errors), so misplaced keys on non-tiered refs are
         # also surfaced — matching the live validator's "fail loud at load"
         # behavior in scheduler/post_tp_sl.go.
-        any_sl_after_key = any(
-            "sl_after" in (ref.get("params") or {})
-            or any(
-                isinstance(t, dict) and "sl_after" in t
-                for t in ((ref.get("params") or {}).get("tiers") or [])
-                if isinstance((ref.get("params") or {}).get("tiers"), list)
-            )
-            for ref in self._close_refs
-        )
+        any_sl_after_key = False
+        for ref in self._close_refs:
+            params = ref.get("params") or {}
+            if "sl_after" in params:
+                any_sl_after_key = True
+                break
+            tiers_raw = params.get("tiers")
+            if isinstance(tiers_raw, list) and any(
+                isinstance(t, dict) and "sl_after" in t for t in tiers_raw
+            ):
+                any_sl_after_key = True
+                break
         if self._sl_after_rules.has_any() or _sl_parse_errs or any_sl_after_key:
-            errs = sl_mod.validate_post_tp_stop_loss_rules(
+            errs = self._sl_mod.validate_post_tp_stop_loss_rules(
                 self._close_refs,
                 stop_loss_atr_mult=self.stop_loss_atr_mult,
                 stop_loss_pct=self.stop_loss_pct,
@@ -325,6 +328,33 @@ class Backtester:
                 raise ValueError(
                     "Invalid sl_after configuration: " + "; ".join(errs)
                 )
+            # The backtester does not carry leverage context, so the
+            # margin-pct branch of EffectiveStopLossPct can't be modeled here
+            # (_initial_sl_trigger returns 0 for margin-pct-only configs).
+            # The live validator accepts margin_pct as satisfying the
+            # "fixed SL" precondition, so we reject loudly here rather than
+            # silently produce a backtest where the pre-bump SL never fires.
+            if self._sl_after_rules.has_any():
+                has_atr_sl = (
+                    self.stop_loss_atr_mult is not None
+                    and self.stop_loss_atr_mult > 0
+                )
+                has_pct_sl = (
+                    self.stop_loss_pct is not None and self.stop_loss_pct > 0
+                )
+                has_margin_sl = (
+                    self.stop_loss_margin_pct is not None
+                    and self.stop_loss_margin_pct > 0
+                )
+                if has_margin_sl and not (has_atr_sl or has_pct_sl):
+                    raise ValueError(
+                        "Invalid sl_after configuration: "
+                        "stop_loss_margin_pct cannot be the sole fixed SL "
+                        "in backtests — the backtester does not model "
+                        "leverage, so the pre-TP SL would never fire and "
+                        "the post-TP bump would diverge from live. Use "
+                        "stop_loss_atr_mult or stop_loss_pct."
+                    )
 
     def run(self, df: pd.DataFrame, strategy_name: str = "Unknown",
             symbol: str = "BTC/USDT", timeframe: str = "1d",
@@ -862,8 +892,7 @@ class Backtester:
         closed_ratio = 1.0 - (position_qty / initial_qty)
         if closed_ratio <= 0:
             return sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, sl_high_water_px
-        sl_mod = _load_post_tp_sl()
-        highest = sl_mod.find_highest_cleared_tier(
+        highest = self._sl_mod.find_highest_cleared_tier(
             self._tp_tier_thresholds, closed_ratio, sl_tiers_processed,
         )
         if highest < 0:
@@ -871,11 +900,21 @@ class Backtester:
         rule = self._sl_after_rules.for_tier(highest)
         if rule.is_empty():
             return sl_trigger_px, highest + 1, post_tp_trail_mult, sl_high_water_px
+        # Defer when no fixed SL is currently armed — mirrors the live
+        # `currentOID == 0` short-circuit in scheduler/post_tp_sl.go (~L510).
+        # In the backtester an unarmed SL means _initial_sl_trigger couldn't
+        # seed one (e.g., ATR-mult SL with entry_atr=0 at open). Without this
+        # gate, `breakeven` would still install a fresh trigger where live
+        # would defer; ATR-dependent rules already short-circuit below via
+        # compute_ok=False, so this is breakeven-specific in practice. Do
+        # NOT advance the watermark — same as the live behavior.
+        if sl_trigger_px <= 0:
+            return sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, sl_high_water_px
         # Seed mark for trail_from_here at fill_price — that's the price the
         # partial close just filled at, matching the live "trigger seeded at
         # mark when SL is updated post-fill" intent.
         seed_mark = fill_price if fill_price > 0 else mark_price
-        new_trigger, _mode, ok = sl_mod.compute_post_tp_stop_loss_trigger(
+        new_trigger, _mode, ok = self._sl_mod.compute_post_tp_stop_loss_trigger(
             rule, side, avg_cost, entry_atr, seed_mark,
         )
         if not ok:
