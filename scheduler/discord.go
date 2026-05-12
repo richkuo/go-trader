@@ -1191,6 +1191,17 @@ func tradeDirectionLabel(trade Trade) string {
 func tradeAlertCloseSource(details string) string {
 	d := strings.ToLower(details)
 	switch {
+	// #716 item 4: paper / trailing SL closes get distinct labels so an
+	// operator reading the close DM doesn't see a paper-mode trailing SL
+	// labeled "exchange SL". The paper-trailing case must be checked
+	// before plain "trailing SL close" because the latter is a substring
+	// of the former.
+	case strings.Contains(d, "paper trailing sl close"):
+		return "paper trailing SL"
+	case strings.Contains(d, "trailing sl close"):
+		return "trailing SL"
+	case strings.Contains(d, "paper sl close"):
+		return "paper SL"
 	case strings.Contains(d, "stop loss close"):
 		return "exchange SL"
 	case strings.HasPrefix(d, "tp") && strings.Contains(d, "fill close"):

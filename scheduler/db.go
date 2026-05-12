@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS positions (
     tp1_oid INTEGER NOT NULL DEFAULT 0,
     tp2_oid INTEGER NOT NULL DEFAULT 0,
     tp_oids_json TEXT NOT NULL DEFAULT '',
+    tp_armed_tiers_json TEXT NOT NULL DEFAULT '',
     stop_loss_atr_mult REAL,
     tp_tiers_json TEXT NOT NULL DEFAULT '',
     sl_adjusted_tiers_processed INTEGER NOT NULL DEFAULT 0,
@@ -332,6 +333,11 @@ func (sdb *StateDB) migrateSchema() error {
 		// needs a backfill for legacy rows.
 		"ALTER TABLE positions ADD COLUMN sl_adjusted_tiers_processed INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN post_tp_trailing_atr_mult REAL",
+		// Per-tier "was ever armed" tracking so a tier whose first placement
+		// failed (OID=0, never armed) can be distinguished from a tier that
+		// filled (OID=0 after Python zeros it). Empty string = legacy row;
+		// findHighestClearedTier degrades to legacy behavior for those (#716).
+		"ALTER TABLE positions ADD COLUMN tp_armed_tiers_json TEXT NOT NULL DEFAULT ''",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -386,6 +392,54 @@ func parseTPOIDsJSON(raw string, legacyTP1, legacyTP2 int64) []int64 {
 		oids = []int64{legacyTP1, legacyTP2}
 	}
 	return oids
+}
+
+// marshalTPArmedTiersJSON / parseTPArmedTiersJSON persist Position.TPArmedTiers
+// (#716 item 2). An empty slice marshals to the empty string so legacy DB
+// rows (column added with an empty default) round-trip cleanly.
+// parseTPArmedTiersJSON returns nil for empty or malformed input; callers
+// treat nil as a legacy row and rely on backfillTPArmedTiers below to
+// assume any tier with a positive OID was armed.
+func marshalTPArmedTiersJSON(armed []bool) string {
+	if len(armed) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(armed)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func parseTPArmedTiersJSON(raw string) []bool {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var armed []bool
+	if err := json.Unmarshal([]byte(raw), &armed); err != nil {
+		return nil
+	}
+	return armed
+}
+
+// backfillTPArmedTiers infers the armed state of legacy positions loaded from
+// rows persisted before tp_armed_tiers_json existed. A pre-#716 row carries
+// pos.TPArmedTiers == nil; we assume any tier with a positive OID at load time
+// was successfully armed at some point. Tiers with OID=0 on a legacy row are
+// left unarmed — conservative: better to skip a real fill than to fire on a
+// never-armed tier.
+func backfillTPArmedTiers(pos *Position) {
+	if pos == nil || pos.TPArmedTiers != nil {
+		return
+	}
+	if len(pos.TPOIDs) == 0 {
+		return
+	}
+	armed := make([]bool, len(pos.TPOIDs))
+	for i, oid := range pos.TPOIDs {
+		armed[i] = oid > 0
+	}
+	pos.TPArmedTiers = armed
 }
 
 // backfillTradeCloseFlags is a one-time best-effort backfill (#455) for
@@ -744,8 +798,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	defer stmtStrat.Close()
 
-	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, tp_armed_tiers_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare position insert: %w", err)
 	}
@@ -796,7 +850,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		for _, pos := range s.Positions {
 			positionID := ensurePositionTradeID(s.ID, pos.Symbol, pos)
 			tp1OID, tp2OID := firstTwoTPOIDs(pos.TPOIDs)
-			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult)); err != nil {
+			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult)); err != nil {
 				return fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
 			}
 		}
@@ -1207,7 +1261,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	}
 
 	// 3. Load positions for each strategy.
-	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, COALESCE(tp1_oid, 0) AS tp1_oid, COALESCE(tp2_oid, 0) AS tp2_oid, COALESCE(tp_oids_json, '') AS tp_oids_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(sl_adjusted_tiers_processed, 0) AS sl_adjusted_tiers_processed, post_tp_trailing_atr_mult FROM positions")
+	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, COALESCE(tp1_oid, 0) AS tp1_oid, COALESCE(tp2_oid, 0) AS tp2_oid, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(tp_armed_tiers_json, '') AS tp_armed_tiers_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(sl_adjusted_tiers_processed, 0) AS sl_adjusted_tiers_processed, post_tp_trailing_atr_mult FROM positions")
 	if err != nil {
 		return nil, fmt.Errorf("load positions: %w", err)
 	}
@@ -1218,13 +1272,16 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		var openedAtStr string
 		var tp1OID, tp2OID int64
 		var tpOIDsJSON string
+		var tpArmedTiersJSON string
 		var slATRMult sql.NullFloat64
 		var postTPTrailingMult sql.NullFloat64
-		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx, &tp1OID, &tp2OID, &tpOIDsJSON, &slATRMult, &pos.TPTiersJSON, &pos.SLAdjustedTiersProcessed, &postTPTrailingMult); err != nil {
+		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx, &tp1OID, &tp2OID, &tpOIDsJSON, &tpArmedTiersJSON, &slATRMult, &pos.TPTiersJSON, &pos.SLAdjustedTiersProcessed, &postTPTrailingMult); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
 		pos.OpenedAt = parseTime(openedAtStr)
 		pos.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, tp1OID, tp2OID)
+		pos.TPArmedTiers = parseTPArmedTiersJSON(tpArmedTiersJSON)
+		backfillTPArmedTiers(&pos)
 		if slATRMult.Valid {
 			v := slATRMult.Float64
 			pos.StopLossATRMult = &v

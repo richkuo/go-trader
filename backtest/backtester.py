@@ -616,7 +616,16 @@ class Backtester:
                     avg_cost = effective_price
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
-                    if sl_after_active:
+                    # #716 item 3: seed the SL trigger only when sl_after has
+                    # usable tier thresholds. Without thresholds, the post-TP
+                    # adjustment machinery never fires (`_maybe_apply_sl_after`
+                    # is gated on `self._tp_tier_thresholds`), so a seeded-
+                    # then-never-adjusted trigger would represent a phantom
+                    # fixed SL the rest of the engine doesn't actually
+                    # simulate. Mirrors the live shape, where the fixed SL is
+                    # placed by `runHyperliquidProtectionSync` independently
+                    # of `sl_after` configuration.
+                    if sl_after_active and self._tp_tier_thresholds:
                         sl_trigger_px = self._initial_sl_trigger(
                             "long", avg_cost, entry_atr_value,
                         )
@@ -636,7 +645,7 @@ class Backtester:
                     avg_cost = effective_price
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
-                    if sl_after_active:
+                    if sl_after_active and self._tp_tier_thresholds:
                         sl_trigger_px = self._initial_sl_trigger(
                             "short", avg_cost, entry_atr_value,
                         )

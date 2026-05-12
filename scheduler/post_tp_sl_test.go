@@ -586,6 +586,54 @@ func TestValidatePostTPStopLossRules_RejectsTrailFromHereOnManual(t *testing.T) 
 	}
 }
 
+// #716 item 2 regression: a non-TP partial close (e.g. close-evaluator firing
+// signal=-1 to half the position) on a position whose tier 0 was never armed
+// (transient placement failure left OID=0 with armed[0]=false) must NOT
+// trigger the sl_after rule for tier 0. Pre-#716, findHighestClearedTier
+// looked only at OID==0 and would return idx=0 here, firing breakeven against
+// a tier that never existed.
+func TestRunPostTPStopLossAdjustment_SkipsNeverArmedTier(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	calls := 0
+	runHyperliquidUpdateStopLossFunc = func(string, string, string, float64, float64, int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		calls++
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: 100}, "", nil
+	}
+
+	sc := postTPSLTestStrategy("breakeven", []interface{}{
+		map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
+		map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
+	})
+	pos := &Position{
+		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 1.0,
+		AvgCost: 100, EntryATR: 5, Side: "long",
+		StopLossOID: 111, StopLossTriggerPx: 95,
+		// Tier 0 placement failed transiently — OID=0 with armed[0]=false.
+		// Tier 1 is resting with OID=222. A non-TP partial close has shrunk
+		// Quantity to 0.5 (half InitialQuantity).
+		TPOIDs:                   []int64{0, 222},
+		TPArmedTiers:             []bool{false, true},
+		SLAdjustedTiersProcessed: 0,
+	}
+	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
+	var mu sync.RWMutex
+
+	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
+		t.Fatal("expected runPostTPStopLossAdjustment to skip never-armed tier")
+	}
+	if calls != 0 {
+		t.Errorf("subprocess should not be called for never-armed tier; got %d calls", calls)
+	}
+	if pos.StopLossOID != 111 {
+		t.Errorf("StopLossOID=%d, want 111 (unchanged)", pos.StopLossOID)
+	}
+	if pos.SLAdjustedTiersProcessed != 0 {
+		t.Errorf("SLAdjustedTiersProcessed=%d, want 0 (no advance)", pos.SLAdjustedTiersProcessed)
+	}
+}
+
 func TestRunPostTPStopLossAdjustment_BreakevenAfterTP1(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -612,12 +660,13 @@ func TestRunPostTPStopLossAdjustment_BreakevenAfterTP1(t *testing.T) {
 		StopLossOID:              111,
 		StopLossTriggerPx:        95,
 		TPOIDs:                   []int64{0, 222}, // tier 0 filled
+		TPArmedTiers:             []bool{true, true},
 		SLAdjustedTiersProcessed: 0,
 	}
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil) {
+	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
 
@@ -655,13 +704,14 @@ func TestRunPostTPStopLossAdjustment_Idempotent(t *testing.T) {
 		AvgCost: 100, EntryATR: 5, Side: "long",
 		StopLossOID: 111, StopLossTriggerPx: 95,
 		TPOIDs:                   []int64{0, 222},
+		TPArmedTiers:             []bool{true, true},
 		SLAdjustedTiersProcessed: 0,
 	}
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil)
-	runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil)
+	runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil)
+	runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil)
 	if calls != 1 {
 		t.Fatalf("expected exactly 1 subprocess call, got %d", calls)
 	}
@@ -686,12 +736,13 @@ func TestRunPostTPStopLossAdjustment_TrailFromHereTransition(t *testing.T) {
 		AvgCost: 100, EntryATR: 5, Side: "long",
 		StopLossOID: 111, StopLossTriggerPx: 95,
 		TPOIDs:                   []int64{0, 222},
+		TPArmedTiers:             []bool{true, true},
 		SLAdjustedTiersProcessed: 0,
 	}
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil) {
+	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
 	// trail_from_here at mark=110, ATR=5, mult=1.0 → trigger = 110 - 5 = 105
@@ -727,12 +778,13 @@ func TestRunPostTPStopLossAdjustment_TrailDefersWithoutMark(t *testing.T) {
 		AvgCost: 100, EntryATR: 5, Side: "long",
 		StopLossOID: 111, StopLossTriggerPx: 95,
 		TPOIDs:                   []int64{0, 222},
+		TPArmedTiers:             []bool{true, true},
 		SLAdjustedTiersProcessed: 0,
 	}
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if runPostTPStopLossAdjustment(sc, state, "ETH", 0, nil, &mu, nil, nil) {
+	if runPostTPStopLossAdjustment(sc, state, "ETH", 0, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to defer without mark")
 	}
 	if calls != 0 {
@@ -760,12 +812,12 @@ func TestRunPostTPStopLossAdjustment_NoRulesShortCircuits(t *testing.T) {
 	pos := &Position{
 		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 1.0,
 		AvgCost: 100, EntryATR: 5, Side: "long",
-		StopLossOID: 111, TPOIDs: []int64{0, 222},
+		StopLossOID: 111, TPOIDs: []int64{0, 222}, TPArmedTiers: []bool{true, true},
 	}
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil) {
+	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to return false when no rules configured")
 	}
 	if calls != 0 {
@@ -790,13 +842,14 @@ func TestRunPostTPStopLossAdjustment_DefersWhenSLNotArmed(t *testing.T) {
 	pos := &Position{
 		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 1.0,
 		AvgCost: 100, EntryATR: 5, Side: "long",
-		StopLossOID: 0, // not yet armed
-		TPOIDs:      []int64{0, 222},
+		StopLossOID:  0, // not yet armed
+		TPOIDs:       []int64{0, 222},
+		TPArmedTiers: []bool{true, true},
 	}
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil) {
+	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected defer when SL OID is 0")
 	}
 	if calls != 0 {
@@ -804,7 +857,89 @@ func TestRunPostTPStopLossAdjustment_DefersWhenSLNotArmed(t *testing.T) {
 	}
 }
 
+// #714: SL replace must cap at on-chain qty when virtual > on-chain (e.g. a
+// manual TP shrank on-chain before the reconciler caught up). Mirrors the
+// trailing/fixed-ATR SL placement sites that already use hlSLEffectiveQty.
+func TestRunPostTPStopLossAdjustment_CapsAtOnChainQty(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	var gotQty float64
+	runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		gotQty = size
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
+	}
+
+	sc := postTPSLTestStrategy("breakeven", []interface{}{
+		map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
+		map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
+	})
+	pos := &Position{
+		Symbol: "ETH", Quantity: 1.0, InitialQuantity: 2.0,
+		AvgCost: 100, EntryATR: 5, Side: "long",
+		StopLossOID: 111, StopLossTriggerPx: 95,
+		TPOIDs:                   []int64{0, 222},
+		TPArmedTiers:             []bool{true, true},
+		SLAdjustedTiersProcessed: 0,
+	}
+	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
+	var mu sync.RWMutex
+
+	onChain := map[string]float64{"ETH": 0.7}
+	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, onChain) {
+		t.Fatal("expected runPostTPStopLossAdjustment to apply")
+	}
+	if gotQty != 0.7 {
+		t.Fatalf("subprocess size=%v, want 0.7 (capped at on-chain)", gotQty)
+	}
+}
+
+// Confirms the no-cap path: when on-chain >= virtual (or map is nil/missing),
+// the subprocess receives the virtual qty unchanged.
+func TestRunPostTPStopLossAdjustment_NoCapWhenOnChainGEVirtual(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	var gotQty float64
+	runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		gotQty = size
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
+	}
+
+	sc := postTPSLTestStrategy("breakeven", []interface{}{
+		map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
+		map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
+	})
+	pos := &Position{
+		Symbol: "ETH", Quantity: 1.0, InitialQuantity: 2.0,
+		AvgCost: 100, EntryATR: 5, Side: "long",
+		StopLossOID: 111, StopLossTriggerPx: 95,
+		TPOIDs:                   []int64{0, 222},
+		TPArmedTiers:             []bool{true, true},
+		SLAdjustedTiersProcessed: 0,
+	}
+	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
+	var mu sync.RWMutex
+
+	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, map[string]float64{"ETH": 1.0}) {
+		t.Fatal("expected runPostTPStopLossAdjustment to apply")
+	}
+	if gotQty != 1.0 {
+		t.Fatalf("subprocess size=%v, want 1.0 (uncapped)", gotQty)
+	}
+}
+
 func TestFindHighestClearedTier(t *testing.T) {
+	// All cases here assume tiers were armed at some point (`armed` matches
+	// `oids` shape, all true). The "never armed" variant is exercised
+	// separately in TestFindHighestClearedTier_NeverArmedSkipped (#716 item 2).
+	mkArmed := func(oids []int64) []bool {
+		out := make([]bool, len(oids))
+		for i := range out {
+			out[i] = true
+		}
+		return out
+	}
 	cases := []struct {
 		name      string
 		oids      []int64
@@ -824,7 +959,65 @@ func TestFindHighestClearedTier(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotIdx, gotClear := findHighestClearedTier(tc.oids, tc.from)
+			gotIdx, gotClear := findHighestClearedTier(tc.oids, mkArmed(tc.oids), tc.from)
+			if gotClear != tc.wantClear {
+				t.Fatalf("cleared=%v, want %v", gotClear, tc.wantClear)
+			}
+			if tc.wantClear && gotIdx != tc.wantIdx {
+				t.Fatalf("idx=%d, want %d", gotIdx, tc.wantIdx)
+			}
+		})
+	}
+}
+
+// #716 item 2 — a tier that was never armed (OID=0 with armed[i]=false) must
+// not count as cleared, even if a partial close occurred from some other path.
+func TestFindHighestClearedTier_NeverArmedSkipped(t *testing.T) {
+	cases := []struct {
+		name      string
+		oids      []int64
+		armed     []bool
+		wantIdx   int
+		wantClear bool
+	}{
+		{
+			name:  "never armed tier 0, armed tier 1 still resting",
+			oids:  []int64{0, 222},
+			armed: []bool{false, true},
+			// Neither qualifies: tier 0 never armed, tier 1 still has a positive OID.
+			wantClear: false,
+		},
+		{
+			name:      "tier 0 filled (was armed), tier 1 still resting",
+			oids:      []int64{0, 222},
+			armed:     []bool{true, true},
+			wantIdx:   0,
+			wantClear: true,
+		},
+		{
+			name:      "tier 0 never armed, tier 1 filled",
+			oids:      []int64{0, 0},
+			armed:     []bool{false, true},
+			wantIdx:   1,
+			wantClear: true,
+		},
+		{
+			name:      "armed slice shorter than oids (legacy/transitional)",
+			oids:      []int64{0, 0, 0},
+			armed:     []bool{true, true},
+			wantIdx:   1,
+			wantClear: true,
+		},
+		{
+			name:      "armed slice nil (legacy row before backfill)",
+			oids:      []int64{0, 0},
+			armed:     nil,
+			wantClear: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotIdx, gotClear := findHighestClearedTier(tc.oids, tc.armed, 0)
 			if gotClear != tc.wantClear {
 				t.Fatalf("cleared=%v, want %v", gotClear, tc.wantClear)
 			}

@@ -23,8 +23,15 @@ type Position struct {
 	StopLossTriggerPx   float64   `json:"stop_loss_trigger_px,omitempty"`    // HL perps: trigger price for the resting stop-loss (0 = unknown) (#421)
 	StopLossHighWaterPx float64   `json:"stop_loss_high_water_px,omitempty"` // HL perps trailing SL: best mark seen while position open (high for long, low for short) (#501)
 	TPOIDs              []int64   `json:"tp_oids,omitempty"`                 // HL perps: resting reduce-only TP limit OIDs, one per configured tier (#601/#612)
-	StopLossATRMult     *float64  `json:"stop_loss_atr_mult,omitempty"`      // HL perps: ATR multiplier resolved at fill time when SL was ATR-armed; nil = armed via pct/margin/trailing/none (#669)
-	TPTiersJSON         string    `json:"tp_tiers_json,omitempty"`           // HL perps: JSON snapshot of [{atr_multiple,close_fraction},...] resolved at fill time; "" = strategy doesn't use tiered_tp_atr* (#669)
+	// TPArmedTiers[i] = true once tier i has been observed with a positive OID
+	// (i.e. successfully placed by runHyperliquidProtectionSync at least once).
+	// findHighestClearedTier requires this so a tier whose first placement
+	// failed transiently — leaving OID=0 with the tier never armed — is NOT
+	// mistaken for a fired TP when a non-TP partial close (close-evaluator)
+	// shrinks the position. See #716 item 2.
+	TPArmedTiers    []bool   `json:"tp_armed_tiers,omitempty"`
+	StopLossATRMult *float64 `json:"stop_loss_atr_mult,omitempty"` // HL perps: ATR multiplier resolved at fill time when SL was ATR-armed; nil = armed via pct/margin/trailing/none (#669)
+	TPTiersJSON     string   `json:"tp_tiers_json,omitempty"`      // HL perps: JSON snapshot of [{atr_multiple,close_fraction},...] resolved at fill time; "" = strategy doesn't use tiered_tp_atr* (#669)
 	// SLAdjustedTiersProcessed counts how many leading tiers have already had
 	// their sl_after rule applied: 0 = none, N = tiers [0..N-1] processed.
 	// Idempotency watermark so restarts don't re-fire the same bump (#708).
@@ -309,11 +316,28 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	return true
 }
 
+// stopLossCloseDetailsPrefix picks the Trade.Details prefix based on the
+// internal SL-close reason so the trade-alert classifier can tell paper
+// stops, trailing stops, and exchange-fired stops apart (#716 item 4).
+// Reasons not listed default to "Stop loss close" — the canonical exchange-
+// SL prefix used by the reconciler and the immediate-fill paths.
+func stopLossCloseDetailsPrefix(reason string) string {
+	switch reason {
+	case "trailing_stop_loss_paper":
+		return "Paper trailing SL close"
+	case "trailing_stop_loss_immediate":
+		return "Trailing SL close"
+	case "stop_loss_atr_paper":
+		return "Paper SL close"
+	}
+	return "Stop loss close"
+}
+
 // recordPerpsStopLossClose books a tracked perps stop-loss fill and removes the
 // virtual position. Used both when HL reports an immediate trigger fill at
 // submit time and when a previously-resting trigger has fired between cycles.
 func recordPerpsStopLossClose(s *StrategyState, symbol string, triggerPx float64, reason string, logger *StrategyLogger) bool {
-	return bookPerpsClose(s, symbol, triggerPx, reason, "Stop loss close", "SL close reconciled", logger)
+	return bookPerpsClose(s, symbol, triggerPx, reason, stopLossCloseDetailsPrefix(reason), "SL close reconciled", logger)
 }
 
 // recordPerpsStopLossCloseWithFillFee is the reconciler entry point — same
@@ -322,7 +346,7 @@ func recordPerpsStopLossClose(s *StrategyState, symbol string, triggerPx float64
 // on-chain accountValue (#588). When useFillFee=false (or fillFee<=0) the
 // modeled fee is used; failed indexer lookups fall back to the legacy path.
 func recordPerpsStopLossCloseWithFillFee(s *StrategyState, symbol string, triggerPx, fillFee float64, useFillFee bool, exchangeOrderID, reason string, logger *StrategyLogger) bool {
-	return bookPerpsCloseWithFillFee(s, symbol, triggerPx, fillFee, useFillFee, exchangeOrderID, reason, "Stop loss close", "SL close reconciled", logger)
+	return bookPerpsCloseWithFillFee(s, symbol, triggerPx, fillFee, useFillFee, exchangeOrderID, reason, stopLossCloseDetailsPrefix(reason), "SL close reconciled", logger)
 }
 
 // recordPerpsExternalClose books a perps close detected by reconciliation

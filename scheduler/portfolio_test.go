@@ -2337,3 +2337,25 @@ func TestExecuteFuturesSignal_PartialCloseFractionTooSmallNoOps(t *testing.T) {
 		t.Errorf("position must remain at 2 contracts, got %v", got)
 	}
 }
+
+// #716 item 4 — stopLossCloseDetailsPrefix maps internal reason codes to
+// Trade.Details prefixes so the trade-alert classifier
+// (tradeAlertCloseSource) can label each SL flavor distinctly. Without
+// this mapping, paper-mode trailing closes would render as "exchange SL".
+func TestStopLossCloseDetailsPrefix(t *testing.T) {
+	cases := map[string]string{
+		"trailing_stop_loss_paper":     "Paper trailing SL close",
+		"trailing_stop_loss_immediate": "Trailing SL close",
+		"stop_loss_atr_paper":          "Paper SL close",
+		"stop_loss_atr_immediate":      "Stop loss close", // exchange-fired immediately on placement
+		"stop_loss_immediate":          "Stop loss close",
+		"stop_loss":                    "Stop loss close",
+		"hl_sync_stop_loss":            "Stop loss close",
+		"unknown_future_reason":        "Stop loss close",
+	}
+	for reason, want := range cases {
+		if got := stopLossCloseDetailsPrefix(reason); got != want {
+			t.Errorf("reason=%q → %q, want %q", reason, got, want)
+		}
+	}
+}

@@ -233,6 +233,34 @@ func (r tierSLAfterRules) HasAny() bool {
 	return false
 }
 
+// EqualForReload reports whether two rule sets are equivalent for SIGHUP
+// hot-reload gating: same strategy-level default AND same per-tier rule at
+// every index. Trailing empty PerTier entries are ignored so that
+// `[breakeven, {}]` and `[breakeven]` compare equal — the second slot is a
+// no-op in both shapes. See #716 item 1.
+func (r tierSLAfterRules) EqualForReload(other tierSLAfterRules) bool {
+	if r.Default != other.Default {
+		return false
+	}
+	maxLen := len(r.PerTier)
+	if len(other.PerTier) > maxLen {
+		maxLen = len(other.PerTier)
+	}
+	for i := 0; i < maxLen; i++ {
+		var a, b SLAfterRule
+		if i < len(r.PerTier) {
+			a = r.PerTier[i]
+		}
+		if i < len(other.PerTier) {
+			b = other.PerTier[i]
+		}
+		if a != b {
+			return false
+		}
+	}
+	return true
+}
+
 // parseStrategyTPSLAfterRules walks a strategy's tiered_tp_atr / tiered_tp_atr_live
 // close ref and extracts the strategy-level default and per-tier sl_after rules.
 // errs is non-nil when individual fields are malformed; callers may surface
@@ -410,18 +438,35 @@ func notifySLAdjustment(sender ownerDMSender, enabled bool, alert SLAdjustmentAl
 	sender.SendOwnerDM(formatSLAdjustmentAlert(alert))
 }
 
-// findHighestClearedTier returns the index of the highest-numbered tier in
-// tpOIDs that has been cleared (OID==0) at or above fromIdx. found=false when
-// no cleared tier exists in that range.
-func findHighestClearedTier(tpOIDs []int64, fromIdx int) (int, bool) {
+// findHighestClearedTier returns the index of the highest-numbered tier at or
+// above fromIdx that has been cleared. A tier is "cleared" iff it was
+// previously armed (tpArmedTiers[i] == true) AND its OID is now 0. The
+// armed requirement (#716 item 2) distinguishes a tier whose first placement
+// failed transiently (never armed, OID=0) from a tier that actually filled
+// (armed=true, then Python zeroed the OID on tp_filled_externally signal).
+// Without it, a non-TP partial close (e.g. close-evaluator) on a position with
+// one or more never-armed tiers would falsely advance the sl_after watermark
+// to that tier index.
+//
+// Legacy positions (pre-#716, no persisted armed state): backfillTPArmedTiers
+// at load time sets armed[i] = (oid[i] > 0), so an in-flight pre-upgrade
+// position never sees a tier go from OID=0 → cleared without first having
+// been armed in a later cycle.
+//
+// found=false when no qualifying cleared tier exists in [fromIdx, len).
+func findHighestClearedTier(tpOIDs []int64, tpArmedTiers []bool, fromIdx int) (int, bool) {
 	if fromIdx < 0 {
 		fromIdx = 0
 	}
 	highest := -1
 	for i := fromIdx; i < len(tpOIDs); i++ {
-		if tpOIDs[i] == 0 {
-			highest = i
+		if tpOIDs[i] != 0 {
+			continue
 		}
+		if i >= len(tpArmedTiers) || !tpArmedTiers[i] {
+			continue
+		}
+		highest = i
 	}
 	if highest >= 0 {
 		return highest, true
@@ -450,6 +495,7 @@ func runPostTPStopLossAdjustment(
 	mu *sync.RWMutex,
 	notifier *MultiNotifier,
 	logger *StrategyLogger,
+	hlOnChainAbsQty map[string]float64,
 ) bool {
 	if sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") {
 		return false
@@ -480,7 +526,7 @@ func runPostTPStopLossAdjustment(
 		mu.RUnlock()
 		return false
 	}
-	clearedIdx, clearedOK := findHighestClearedTier(pos.TPOIDs, pos.SLAdjustedTiersProcessed)
+	clearedIdx, clearedOK := findHighestClearedTier(pos.TPOIDs, pos.TPArmedTiers, pos.SLAdjustedTiersProcessed)
 	if !clearedOK {
 		mu.RUnlock()
 		return false
@@ -517,6 +563,15 @@ func runPostTPStopLossAdjustment(
 		return false
 	}
 
+	// #714: cap SL size at on-chain qty. After a TP tier fills, on-chain qty is
+	// below virtual qty until the reconciler / protection-sync books the fill;
+	// without the cap HL rejects the reduce-only replace as oversized. Mirrors
+	// the trailing-stop walker (main.go:1491) and fixed-ATR arm (main.go:1549).
+	slEffectiveQty, capped := hlSLEffectiveQty(symbol, qty, hlOnChainAbsQty)
+	if capped && logger != nil {
+		logger.Warn("post-TP SL replace: virtual qty %.6f > on-chain %.6f for %s; capping SL size to on-chain qty (#621)", qty, slEffectiveQty, symbol)
+	}
+
 	// Phase 2: no-lock subprocess — cancel+replace SL OID. RunHyperliquidUpdateStopLoss
 	// is the trailing-stop primitive but it just cancels an existing OID and
 	// places a fresh reduce-only trigger, which is what every sl_after mode
@@ -527,7 +582,7 @@ func runPostTPStopLossAdjustment(
 		logger.Info("post-TP SL adjustment for %s: tier %d cleared, mode=%s new_trigger=$%.4f (cancel oid=%d)",
 			symbol, clearedIdx, mode, triggerPx, currentOID)
 	}
-	result, stderr, err := runHyperliquidUpdateStopLossFunc(sc.Script, symbol, side, qty, triggerPx, currentOID)
+	result, stderr, err := runHyperliquidUpdateStopLossFunc(sc.Script, symbol, side, slEffectiveQty, triggerPx, currentOID)
 	if stderr != "" && logger != nil {
 		logger.Info("post-TP SL stderr: %s", stderr)
 	}

@@ -358,6 +358,20 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID))
 			}
 		}
+		// #716 item 1: sl_after rules are armed at the next cleared TP tier; a
+		// mid-position add/remove/mode change would engage the post-TP machinery
+		// (and, for trail_from_here, the trailing walker) without the validation
+		// the open respected. Numeric mult changes are also gated because they
+		// alter the trigger target a future tier-fill will install — operators
+		// must flatten to opt into the new rule set.
+		if (sc.Type == "perps" || sc.Type == "manual") && sc.Platform == "hyperliquid" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			oldRules, _ := parseStrategyTPSLAfterRules(sc)
+			newRules, _ := parseStrategyTPSLAfterRules(ns)
+			if !oldRules.EqualForReload(newRules) {
+				errs = append(errs, fmt.Sprintf("strategy[%s] sl_after rules changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
+		}
 	}
 	if len(errs) > 0 {
 		sort.Strings(errs)
