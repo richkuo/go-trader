@@ -233,6 +233,34 @@ func (r tierSLAfterRules) HasAny() bool {
 	return false
 }
 
+// EqualForReload reports whether two rule sets are equivalent for SIGHUP
+// hot-reload gating: same strategy-level default AND same per-tier rule at
+// every index. Trailing empty PerTier entries are ignored so that
+// `[breakeven, {}]` and `[breakeven]` compare equal — the second slot is a
+// no-op in both shapes. See #716 item 1.
+func (r tierSLAfterRules) EqualForReload(other tierSLAfterRules) bool {
+	if r.Default != other.Default {
+		return false
+	}
+	maxLen := len(r.PerTier)
+	if len(other.PerTier) > maxLen {
+		maxLen = len(other.PerTier)
+	}
+	for i := 0; i < maxLen; i++ {
+		var a, b SLAfterRule
+		if i < len(r.PerTier) {
+			a = r.PerTier[i]
+		}
+		if i < len(other.PerTier) {
+			b = other.PerTier[i]
+		}
+		if a != b {
+			return false
+		}
+	}
+	return true
+}
+
 // parseStrategyTPSLAfterRules walks a strategy's tiered_tp_atr / tiered_tp_atr_live
 // close ref and extracts the strategy-level default and per-tier sl_after rules.
 // errs is non-nil when individual fields are malformed; callers may surface

@@ -482,6 +482,151 @@ func TestApplyHotReloadConfigRejectsDirectionChangeWithOpenPerpsPosition(t *test
 	}
 }
 
+// #716 item 1 — adding an sl_after rule while a position is open must be
+// rejected. Without this guard, the new rule would engage on the next cleared
+// tier (post-TP machinery + trailing walker for trail_from_here) without the
+// validation the open respected.
+func TestApplyHotReloadConfigRejectsSLAfterAddWithOpenPosition(t *testing.T) {
+	tieredOpen := []StrategyRef{{
+		Name: "tiered_tp_atr",
+		Params: map[string]interface{}{
+			"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+				map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+			},
+		},
+	}}
+	tieredWithSLAfter := []StrategyRef{{
+		Name: "tiered_tp_atr",
+		Params: map[string]interface{}{
+			"sl_after": "breakeven",
+			"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+				map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+			},
+		},
+	}}
+	slMult := 1.5
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated", StopLossATRMult: &slMult,
+		CloseStrategies: tieredOpen,
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated", StopLossATRMult: &slMult,
+		CloseStrategies: tieredWithSLAfter,
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long"},
+		}},
+	}}
+
+	_, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+	if err == nil {
+		t.Fatal("expected hot reload to reject sl_after addition with open position")
+	}
+	if !strings.Contains(err.Error(), "sl_after rules changed with open positions") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// #716 item 1 — sl_after rule changes are allowed when the strategy is flat.
+func TestApplyHotReloadConfigAllowsSLAfterAddWhenFlat(t *testing.T) {
+	tieredOpen := []StrategyRef{{
+		Name: "tiered_tp_atr",
+		Params: map[string]interface{}{
+			"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
+			},
+		},
+	}}
+	tieredWithSLAfter := []StrategyRef{{
+		Name: "tiered_tp_atr",
+		Params: map[string]interface{}{
+			"sl_after": "breakeven",
+			"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
+			},
+		},
+	}}
+	slMult := 1.5
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated", StopLossATRMult: &slMult,
+		CloseStrategies: tieredOpen,
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated", StopLossATRMult: &slMult,
+		CloseStrategies: tieredWithSLAfter,
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Cash: 1000, Positions: map[string]*Position{}},
+	}}
+
+	if _, err := applyHotReloadConfig(cfg, next, state, nil, nil); err != nil {
+		t.Fatalf("expected sl_after change to be allowed when flat, got: %v", err)
+	}
+}
+
+// #716 item 1 — switching from breakeven to trail_from_here mid-position is
+// the highest-risk transition (engages trailing walker without open validation).
+func TestApplyHotReloadConfigRejectsSLAfterModeChangeWithOpenPosition(t *testing.T) {
+	tierWithBreakeven := []StrategyRef{{
+		Name: "tiered_tp_atr",
+		Params: map[string]interface{}{
+			"sl_after": "breakeven",
+			"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
+			},
+		},
+	}}
+	tierWithTrail := []StrategyRef{{
+		Name: "tiered_tp_atr",
+		Params: map[string]interface{}{
+			"sl_after": map[string]interface{}{
+				"kind":            "trail_from_here",
+				"trail_from_here": map[string]interface{}{"atr_mult": 1.0},
+			},
+			"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
+			},
+		},
+	}}
+	slMult := 1.5
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated", StopLossATRMult: &slMult,
+		CloseStrategies: tierWithBreakeven,
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated", StopLossATRMult: &slMult,
+		CloseStrategies: tierWithTrail,
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long"},
+		}},
+	}}
+
+	_, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+	if err == nil {
+		t.Fatal("expected hot reload to reject sl_after mode switch")
+	}
+	if !strings.Contains(err.Error(), "sl_after rules changed with open positions") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // #656 — direction change is allowed when the strategy is flat.
 func TestApplyHotReloadConfigAllowsDirectionChangeWhenFlat(t *testing.T) {
 	cfg := minimalReloadConfig([]StrategyConfig{{
