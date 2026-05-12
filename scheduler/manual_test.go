@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -602,4 +604,175 @@ func TestDefaultManualStopLossATRMult(t *testing.T) {
 	if defaultManualStopLossATRMult != 1.5 {
 		t.Errorf("defaultManualStopLossATRMult = %g, want 1.5", defaultManualStopLossATRMult)
 	}
+}
+
+// TestReorderArgsForPositional verifies that flags placed after the positional
+// strategy-id are still parsed correctly — the bug from #711 where
+// `manual-open manual-eth --side long --margin 50` failed because stdlib
+// flag.Parse stops at the first non-flag arg.
+func TestReorderArgsForPositional(t *testing.T) {
+	cases := []struct {
+		name      string
+		in        []string
+		boolFlags map[string]bool
+		want      []string
+	}{
+		{
+			name:      "documented order: positional first",
+			in:        []string{"manual-eth", "--side", "long", "--margin", "50"},
+			boolFlags: manualOpenBoolFlags,
+			want:      []string{"--side", "long", "--margin", "50", "manual-eth"},
+		},
+		{
+			name:      "workaround order: positional last",
+			in:        []string{"--side", "long", "--margin", "50", "manual-eth"},
+			boolFlags: manualOpenBoolFlags,
+			want:      []string{"--side", "long", "--margin", "50", "manual-eth"},
+		},
+		{
+			name:      "positional in the middle",
+			in:        []string{"--side", "long", "manual-eth", "--margin", "50"},
+			boolFlags: manualOpenBoolFlags,
+			want:      []string{"--side", "long", "--margin", "50", "manual-eth"},
+		},
+		{
+			name:      "bool flag does not swallow positional",
+			in:        []string{"manual-eth", "--dry-run", "--side", "long"},
+			boolFlags: manualOpenBoolFlags,
+			want:      []string{"--dry-run", "--side", "long", "manual-eth"},
+		},
+		{
+			name:      "--record-only treated as bool",
+			in:        []string{"manual-eth", "--record-only", "--size", "0.5", "--fill-price", "2000"},
+			boolFlags: manualOpenBoolFlags,
+			want:      []string{"--record-only", "--size", "0.5", "--fill-price", "2000", "manual-eth"},
+		},
+		{
+			name:      "--flag=value form preserved",
+			in:        []string{"--side=long", "manual-eth", "--margin=50"},
+			boolFlags: manualOpenBoolFlags,
+			want:      []string{"--side=long", "--margin=50", "manual-eth"},
+		},
+		{
+			name:      "double-dash terminator",
+			in:        []string{"--side", "long", "--", "manual-eth"},
+			boolFlags: manualOpenBoolFlags,
+			want:      []string{"--side", "long", "manual-eth"},
+		},
+		{
+			name:      "manual-close style with --qty",
+			in:        []string{"manual-eth", "--qty", "0.1", "--dry-run"},
+			boolFlags: manualCloseBoolFlags,
+			want:      []string{"--qty", "0.1", "--dry-run", "manual-eth"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := reorderArgsForPositional(c.in, c.boolFlags)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("reorderArgsForPositional(%v) = %v, want %v", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// TestResolveManualOpenOrderSize covers the post-#711 sizing path that fetches
+// the HL mark price before resolving --margin/--notional to a coin qty.
+func TestResolveManualOpenOrderSize(t *testing.T) {
+	sc := StrategyConfig{
+		ID:       "hl-manual-eth-live",
+		Platform: "hyperliquid",
+		Type:     "manual",
+		Symbol:   "ETH",
+		Leverage: 10,
+	}
+
+	t.Run("--size bypasses fetch", func(t *testing.T) {
+		called := false
+		fetch := func(coins []string) (map[string]float64, error) {
+			called = true
+			return nil, errors.New("should not be called")
+		}
+		qty, mark, err := resolveManualOpenOrderSize(sc, 0.5, 0, 0, fetch)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if qty != 0.5 || mark != 0 || called {
+			t.Errorf("got qty=%g mark=%g called=%v; want qty=0.5 mark=0 called=false", qty, mark, called)
+		}
+	})
+
+	t.Run("--margin resolves with fetched mark", func(t *testing.T) {
+		fetch := func(coins []string) (map[string]float64, error) {
+			return map[string]float64{"ETH": 2000}, nil
+		}
+		qty, mark, err := resolveManualOpenOrderSize(sc, 0, 0, 50, fetch)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// 50 margin * 10 leverage / 2000 price = 0.25 ETH
+		if fmt.Sprintf("%.6f", qty) != "0.250000" || mark != 2000 {
+			t.Errorf("got qty=%g mark=%g; want qty=0.25 mark=2000", qty, mark)
+		}
+	})
+
+	t.Run("--notional resolves with fetched mark", func(t *testing.T) {
+		fetch := func(coins []string) (map[string]float64, error) {
+			return map[string]float64{"ETH": 2000}, nil
+		}
+		qty, mark, err := resolveManualOpenOrderSize(sc, 0, 1000, 0, fetch)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if fmt.Sprintf("%.6f", qty) != "0.500000" || mark != 2000 {
+			t.Errorf("got qty=%g mark=%g; want qty=0.5 mark=2000", qty, mark)
+		}
+	})
+
+	t.Run("fetch error surfaces", func(t *testing.T) {
+		fetch := func(coins []string) (map[string]float64, error) {
+			return nil, errors.New("network down")
+		}
+		qty, _, err := resolveManualOpenOrderSize(sc, 0, 0, 50, fetch)
+		if err == nil || qty != 0 {
+			t.Errorf("got qty=%g err=%v; want non-nil err", qty, err)
+		}
+		if !strings.Contains(err.Error(), "network down") {
+			t.Errorf("expected wrapped fetch error, got: %v", err)
+		}
+	})
+
+	t.Run("missing coin in mark map errors", func(t *testing.T) {
+		fetch := func(coins []string) (map[string]float64, error) {
+			return map[string]float64{}, nil
+		}
+		_, _, err := resolveManualOpenOrderSize(sc, 0, 0, 50, fetch)
+		if err == nil || !strings.Contains(err.Error(), "missing or non-positive") {
+			t.Errorf("expected missing-mark error, got: %v", err)
+		}
+	})
+
+	t.Run("zero qty errors (e.g. leverage=0 with --margin)", func(t *testing.T) {
+		scNoLev := sc
+		scNoLev.Leverage = 0
+		fetch := func(coins []string) (map[string]float64, error) {
+			return map[string]float64{"ETH": 2000}, nil
+		}
+		_, _, err := resolveManualOpenOrderSize(scNoLev, 0, 0, 50, fetch)
+		if err == nil || !strings.Contains(err.Error(), "resolved size is zero") {
+			t.Errorf("expected zero-size error, got: %v", err)
+		}
+	})
+
+	t.Run("non-hl strategy errors", func(t *testing.T) {
+		scOKX := sc
+		scOKX.Platform = "okx"
+		fetch := func(coins []string) (map[string]float64, error) {
+			return map[string]float64{"ETH": 2000}, nil
+		}
+		_, _, err := resolveManualOpenOrderSize(scOKX, 0, 0, 50, fetch)
+		if err == nil || !strings.Contains(err.Error(), "cannot determine HL coin") {
+			t.Errorf("expected coin-resolution error, got: %v", err)
+		}
+	})
 }

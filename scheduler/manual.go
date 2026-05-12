@@ -35,6 +35,12 @@ func runManualOpen(args []string) int {
 	recordOnly := fs.Bool("record-only", false, "Register an existing fill without placing a new on-chain order")
 	dryRun := fs.Bool("dry-run", false, "Print planned action without placing order or mutating state")
 
+	// #711: stdlib flag.Parse stops at the first positional arg, so the
+	// documented `manual-open <strategy-id> --flag value` form fails to parse
+	// the trailing flags. Reorder to put the positional last so both
+	// orderings work.
+	args = reorderArgsForPositional(args, manualOpenBoolFlags)
+
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -150,13 +156,32 @@ func runManualOpen(args []string) int {
 
 	script := sc.Script
 
+	// #711: --margin/--notional need a price to resolve to coin qty; passing
+	// price=0 to resolveManualSize returns 0 and HL rejects the order with
+	// "--size must be > 0". Fetch the current HL mid as the price reference
+	// (market orders fill at ~mid). --size and --record-only paths skip the
+	// fetch since size is explicit.
+	var resolvedOrderSize, sizingMark float64
+	if !*recordOnly {
+		qty, mark, err := resolveManualOpenOrderSize(sc, *size, *notional, *margin, fetchHyperliquidMids)
+		if err != nil {
+			if *dryRun {
+				fmt.Fprintf(os.Stderr, "warning: dry-run sizing best-effort failed: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				return 1
+			}
+		}
+		resolvedOrderSize = qty
+		sizingMark = mark
+	}
+
 	var resolvedFillPrice, fillQty, fillFee float64
 	var exchangeOID string
 
 	if *dryRun {
-		displayQty := resolveManualSize(*size, *notional, *margin, 0, sc.Leverage)
-		fmt.Printf("[dry-run] manual-open %s: %s %.6f %s (script=%s, sl_pct=%.2f)\n",
-			strategyID, *side, displayQty, sc.Symbol, script, effectiveSLPct)
+		fmt.Printf("[dry-run] manual-open %s: %s %.6f %s (script=%s, sl_pct=%.2f, mark=$%.4f)\n",
+			strategyID, *side, resolvedOrderSize, sc.Symbol, script, effectiveSLPct, sizingMark)
 		return 0
 	}
 
@@ -178,7 +203,7 @@ func runManualOpen(args []string) int {
 	} else {
 		execResult, execStderr, execErr := RunHyperliquidExecute(
 			script, sc.Symbol, openSide,
-			resolveManualSize(*size, *notional, *margin, 0, sc.Leverage),
+			resolvedOrderSize,
 			effectiveSLPct, 0, 0, sc.MarginMode, sc.Leverage, false,
 		)
 		if execStderr != "" {
@@ -356,6 +381,8 @@ func runManualClose(args []string) int {
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
 	qty := fs.Float64("qty", 0, "Quantity to close in base units (0 = full position)")
 	dryRun := fs.Bool("dry-run", false, "Print planned action without placing order or mutating state")
+
+	args = reorderArgsForPositional(args, manualCloseBoolFlags)
 
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -685,6 +712,83 @@ func findManualStrategy(cfg *Config, id string) (StrategyConfig, bool) {
 	}
 	fmt.Fprintf(os.Stderr, "error: strategy %q not found in config\n", id)
 	return StrategyConfig{}, false
+}
+
+// manualOpenBoolFlags / manualCloseBoolFlags list flags that do NOT consume
+// the following arg as a value — needed by reorderArgsForPositional so it
+// doesn't mistake the strategy-id positional for a flag value.
+var manualOpenBoolFlags = map[string]bool{"record-only": true, "dry-run": true}
+var manualCloseBoolFlags = map[string]bool{"dry-run": true}
+
+// reorderArgsForPositional moves positional (non-flag) arguments to the end
+// so Go's stdlib flag.Parse — which stops at the first non-flag — can still
+// parse flags placed after a positional. This makes both invocation styles
+// work for `manual-open` / `manual-close` (#711):
+//
+//	manual-open <strategy-id> --flag value
+//	manual-open --flag value <strategy-id>
+//
+// boolFlags lists flags that take no value (so we don't consume the next arg
+// as their value when it is actually the positional).
+func reorderArgsForPositional(args []string, boolFlags map[string]bool) []string {
+	var flagArgs, positional []string
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		if a == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		if len(a) > 1 && strings.HasPrefix(a, "-") {
+			flagArgs = append(flagArgs, a)
+			if strings.Contains(a, "=") {
+				i++
+				continue
+			}
+			name := strings.TrimLeft(a, "-")
+			if !boolFlags[name] && i+1 < len(args) {
+				flagArgs = append(flagArgs, args[i+1])
+				i += 2
+				continue
+			}
+			i++
+			continue
+		}
+		positional = append(positional, a)
+		i++
+	}
+	return append(flagArgs, positional...)
+}
+
+// manualMarkFetcher matches fetchHyperliquidMids for dependency injection in
+// tests of resolveManualOpenOrderSize.
+type manualMarkFetcher func(coins []string) (map[string]float64, error)
+
+// resolveManualOpenOrderSize converts --size/--margin/--notional inputs into a
+// concrete coin qty for the HL execute call. --size is explicit; --margin and
+// --notional need a price reference (HL mid) to compute the qty. Returns
+// (qty, mark, err); on --size path mark is 0. (#711)
+func resolveManualOpenOrderSize(sc StrategyConfig, size, notional, margin float64, fetch manualMarkFetcher) (float64, float64, error) {
+	if size > 0 {
+		return size, 0, nil
+	}
+	coin := hyperliquidConfiguredCoin(sc)
+	if coin == "" {
+		return 0, 0, fmt.Errorf("cannot determine HL coin for strategy %q (symbol=%q)", sc.ID, sc.Symbol)
+	}
+	marks, err := fetch([]string{coin})
+	if err != nil {
+		return 0, 0, fmt.Errorf("fetch HL mark for %s: %w", coin, err)
+	}
+	mark := marks[coin]
+	if mark <= 0 {
+		return 0, 0, fmt.Errorf("HL mark for %s missing or non-positive — cannot resolve --margin/--notional sizing", coin)
+	}
+	qty := resolveManualSize(size, notional, margin, mark, sc.Leverage)
+	if qty <= 0 {
+		return 0, mark, fmt.Errorf("resolved size is zero (size=%g notional=%g margin=%g mark=%g leverage=%g) — check --margin/--notional and strategy leverage", size, notional, margin, mark, sc.Leverage)
+	}
+	return qty, mark, nil
 }
 
 // resolveManualSize converts the sizing inputs to a coin qty.
