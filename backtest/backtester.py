@@ -8,7 +8,7 @@ import os
 import json
 import math
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
@@ -27,6 +27,12 @@ _close_registry = None
 # don't pay the import cost.
 _ensure_regime_fn = None
 
+# Post-TP SL helpers (#709). Loaded via spec_from_file_location to avoid the
+# same registry-name collision that close_registry_loader works around — this
+# module lives in shared_strategies/close/ but isn't a registered strategy,
+# so we import it directly without going through the registry.
+_post_tp_sl_module = None
+
 
 def _load_regime():
     global _ensure_regime_fn
@@ -34,6 +40,25 @@ def _load_regime():
         from regime import ensure_regime_columns as _ensure_regime_columns
         _ensure_regime_fn = _ensure_regime_columns
     return _ensure_regime_fn
+
+
+def _load_post_tp_sl():
+    global _post_tp_sl_module
+    if _post_tp_sl_module is not None:
+        return _post_tp_sl_module
+    import importlib.util
+    name = "_go_trader_post_tp_sl"
+    path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "shared_strategies", "close", "post_tp_sl.py",
+    ))
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    # Register in sys.modules BEFORE exec_module so @dataclass(frozen=True)
+    # can resolve cls.__module__ via sys.modules during _is_type lookups.
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    _post_tp_sl_module = mod
+    return mod
 
 
 def _load_close_registry():
@@ -177,7 +202,13 @@ class Backtester:
                  regime_enabled: bool = False,
                  regime_period: int = 14,
                  regime_adx_threshold: float = 20.0,
-                 allowed_regimes: Optional[list[str]] = None):
+                 allowed_regimes: Optional[list[str]] = None,
+                 stop_loss_atr_mult: Optional[float] = None,
+                 stop_loss_pct: Optional[float] = None,
+                 stop_loss_margin_pct: Optional[float] = None,
+                 trailing_stop_atr_mult: Optional[float] = None,
+                 trailing_stop_pct: Optional[float] = None,
+                 strategy_type: str = "perps"):
         """
         Args:
             initial_capital: Starting portfolio value.
@@ -241,6 +272,12 @@ class Backtester:
         self.regime_period = regime_period
         self.regime_adx_threshold = regime_adx_threshold
         self.allowed_regimes = list(allowed_regimes or [])
+        self.stop_loss_atr_mult = stop_loss_atr_mult
+        self.stop_loss_pct = stop_loss_pct
+        self.stop_loss_margin_pct = stop_loss_margin_pct
+        self.trailing_stop_atr_mult = trailing_stop_atr_mult
+        self.trailing_stop_pct = trailing_stop_pct
+        self.strategy_type = strategy_type
         if self.close_strategies:
             _evaluate, list_strategies = _load_close_registry()
             available = set(list_strategies())
@@ -250,6 +287,44 @@ class Backtester:
                         f"Unknown close strategy: {name}. "
                         f"Available: {sorted(available)}"
                     )
+
+        # Parse sl_after rules and the corresponding tier close-fraction
+        # thresholds once at init. When no sl_after is configured this is a
+        # no-op and the per-bar SL machinery in run() short-circuits.
+        sl_mod = _load_post_tp_sl()
+        self._sl_after_rules, _sl_parse_errs = sl_mod.parse_strategy_tp_sl_after_rules(
+            self._close_refs
+        )
+        self._tp_tier_thresholds = sl_mod.parse_tp_tier_close_fractions(self._close_refs)
+        # Validation parity with the live config — reject the same bad combos
+        # at backtest-load time so users can't silently get a no-op. Run
+        # whenever ANY close ref carries an `sl_after` key (or the tiered
+        # parser reported errors), so misplaced keys on non-tiered refs are
+        # also surfaced — matching the live validator's "fail loud at load"
+        # behavior in scheduler/post_tp_sl.go.
+        any_sl_after_key = any(
+            "sl_after" in (ref.get("params") or {})
+            or any(
+                isinstance(t, dict) and "sl_after" in t
+                for t in ((ref.get("params") or {}).get("tiers") or [])
+                if isinstance((ref.get("params") or {}).get("tiers"), list)
+            )
+            for ref in self._close_refs
+        )
+        if self._sl_after_rules.has_any() or _sl_parse_errs or any_sl_after_key:
+            errs = sl_mod.validate_post_tp_stop_loss_rules(
+                self._close_refs,
+                stop_loss_atr_mult=self.stop_loss_atr_mult,
+                stop_loss_pct=self.stop_loss_pct,
+                stop_loss_margin_pct=self.stop_loss_margin_pct,
+                trailing_stop_atr_mult=self.trailing_stop_atr_mult,
+                trailing_stop_pct=self.trailing_stop_pct,
+                strategy_type=self.strategy_type,
+            )
+            if errs:
+                raise ValueError(
+                    "Invalid sl_after configuration: " + "; ".join(errs)
+                )
 
     def run(self, df: pd.DataFrame, strategy_name: str = "Unknown",
             symbol: str = "BTC/USDT", timeframe: str = "1d",
@@ -350,6 +425,15 @@ class Backtester:
         entry_atr_value = 0.0
         pending_close_fraction = 0.0
 
+        # Post-TP SL adjustment state (#709). Only meaningful when sl_after is
+        # configured; otherwise the per-bar machinery short-circuits and these
+        # values are never consulted.
+        sl_trigger_px = 0.0
+        sl_tiers_processed = 0
+        post_tp_trail_mult: Optional[float] = None
+        sl_high_water_px = 0.0
+        sl_after_active = self._sl_after_rules.has_any()
+
         atr_series = df["atr"] if "atr" in df.columns else None
 
         if starting_long:
@@ -432,6 +516,34 @@ class Backtester:
                         avg_cost = 0.0
                         initial_quantity = 0.0
                         entry_atr_value = 0.0
+                        # Reset post-TP SL state on full close so the next
+                        # open starts clean.
+                        sl_trigger_px = 0.0
+                        sl_tiers_processed = 0
+                        post_tp_trail_mult = None
+                        sl_high_water_px = 0.0
+                    elif sl_after_active and self._tp_tier_thresholds:
+                        # After applying a partial close at this bar's open,
+                        # detect which tier(s) just cleared and apply the
+                        # highest cleared tier's sl_after rule. We check this
+                        # BEFORE end-of-bar evaluation so the new SL is in
+                        # effect when the trail walker / hit check run on the
+                        # same bar's close.
+                        side_now = "long" if position > 0 else "short"
+                        sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, \
+                            sl_high_water_px = self._maybe_apply_sl_after(
+                                side=side_now,
+                                avg_cost=avg_cost,
+                                entry_atr=entry_atr_value,
+                                position_qty=abs(position),
+                                initial_qty=initial_quantity,
+                                mark_price=mark_price,
+                                fill_price=fill_price,
+                                sl_trigger_px=sl_trigger_px,
+                                sl_tiers_processed=sl_tiers_processed,
+                                post_tp_trail_mult=post_tp_trail_mult,
+                                sl_high_water_px=sl_high_water_px,
+                            )
 
                 if open_action == "long" and position == 0 and not regime_blocked:
                     effective_price = fill_price * (1 + self.slippage_pct)
@@ -446,6 +558,13 @@ class Backtester:
                     avg_cost = effective_price
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
+                    if sl_after_active:
+                        sl_trigger_px = self._initial_sl_trigger(
+                            "long", avg_cost, entry_atr_value,
+                        )
+                        sl_tiers_processed = 0
+                        post_tp_trail_mult = None
+                        sl_high_water_px = 0.0
                 elif open_action == "short" and position == 0 and not regime_blocked:
                     effective_price = fill_price * (1 - self.slippage_pct)
                     commission = cash * self.commission_pct
@@ -459,6 +578,13 @@ class Backtester:
                     avg_cost = effective_price
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
+                    if sl_after_active:
+                        sl_trigger_px = self._initial_sl_trigger(
+                            "short", avg_cost, entry_atr_value,
+                        )
+                        sl_tiers_processed = 0
+                        post_tp_trail_mult = None
+                        sl_high_water_px = 0.0
 
                 # End-of-bar: evaluate close strategies against the now-current
                 # position using this bar's close as the mark. The result is
@@ -469,6 +595,32 @@ class Backtester:
                         position, avg_cost, initial_quantity, entry_atr_value,
                         mark_price, atr_series, idx,
                     )
+
+                # End-of-bar: walk the trailing-stop high-water mark (only
+                # active after a TP tier transitioned the position to
+                # trail_from_here mode) and check whether the SL trigger has
+                # been hit by this bar's close. A hit produces
+                # pending_close_fraction=1.0 which fills at the next bar's
+                # open — same alignment as the rest of the close pipeline.
+                if sl_after_active and position != 0 and avg_cost > 0:
+                    side_now = "long" if position > 0 else "short"
+                    if (
+                        post_tp_trail_mult is not None
+                        and post_tp_trail_mult > 0
+                        and entry_atr_value > 0
+                    ):
+                        sl_trigger_px, sl_high_water_px = self._walk_trail(
+                            side=side_now,
+                            mark_price=mark_price,
+                            entry_atr=entry_atr_value,
+                            trail_mult=post_tp_trail_mult,
+                            sl_trigger_px=sl_trigger_px,
+                            sl_high_water_px=sl_high_water_px,
+                        )
+                    if sl_trigger_px > 0 and self._sl_hit(
+                        side_now, mark_price, sl_trigger_px,
+                    ):
+                        pending_close_fraction = 1.0
                 continue
 
             if signal == 1 and position == 0 and not regime_blocked:
@@ -607,6 +759,135 @@ class Backtester:
                     # Full close already wins — remaining evaluators can't change the outcome.
                     return 1.0
         return min(max(best, 0.0), 1.0)
+
+    def _initial_sl_trigger(self, side: str, avg_cost: float,
+                            entry_atr: float) -> float:
+        """Seed the simulated SL trigger at open from the strategy's fixed SL
+        config (#709). Returns 0.0 when no usable fixed SL is configured —
+        the post-TP machinery still tracks tier fills and will start
+        adjusting once a TP fires; the gate at the run loop just won't fire
+        a pre-TP SL hit because the trigger is 0.
+
+        Mirrors the live priority order: ATR-based SL > pct-based SL. The
+        margin-pct branch is intentionally not modeled here (requires
+        leverage context the backtester doesn't carry).
+        """
+        if avg_cost <= 0 or side not in ("long", "short"):
+            return 0.0
+        if (
+            self.stop_loss_atr_mult is not None
+            and self.stop_loss_atr_mult > 0
+            and entry_atr > 0
+        ):
+            distance = self.stop_loss_atr_mult * entry_atr
+            return avg_cost - distance if side == "long" else avg_cost + distance
+        if self.stop_loss_pct is not None and self.stop_loss_pct > 0:
+            return (
+                avg_cost * (1 - self.stop_loss_pct)
+                if side == "long"
+                else avg_cost * (1 + self.stop_loss_pct)
+            )
+        return 0.0
+
+    @staticmethod
+    def _sl_hit(side: str, mark_price: float, trigger_px: float) -> bool:
+        """Bar-level SL hit detection. For a long, fires when ``mark_price <=
+        trigger_px``; for a short, fires when ``mark_price >= trigger_px``.
+        Intra-bar trigger races (high/low piercing without close confirming)
+        are not simulated — same caveat as elsewhere in the bar-level engine.
+        """
+        if trigger_px <= 0 or mark_price <= 0:
+            return False
+        if side == "long":
+            return mark_price <= trigger_px
+        if side == "short":
+            return mark_price >= trigger_px
+        return False
+
+    @staticmethod
+    def _walk_trail(side: str, mark_price: float, entry_atr: float,
+                    trail_mult: float, sl_trigger_px: float,
+                    sl_high_water_px: float) -> Tuple[float, float]:
+        """Walk the trailing-stop high-water mark and tighten the SL trigger.
+        Used after a ``trail_from_here`` transition. Mirrors the live walker
+        in scheduler/hyperliquid_trailing_stop.go: trigger only moves
+        favorably (long → up, short → down), never loosens. Returns
+        ``(new_trigger_px, new_hwm)``.
+        """
+        if mark_price <= 0 or entry_atr <= 0 or trail_mult <= 0:
+            return sl_trigger_px, sl_high_water_px
+        new_trigger = sl_trigger_px
+        new_hwm = sl_high_water_px
+        if side == "long":
+            if mark_price > new_hwm:
+                new_hwm = mark_price
+            candidate = new_hwm - trail_mult * entry_atr
+            if candidate > new_trigger:
+                new_trigger = candidate
+        elif side == "short":
+            if new_hwm <= 0 or mark_price < new_hwm:
+                new_hwm = mark_price
+            candidate = new_hwm + trail_mult * entry_atr
+            if new_trigger <= 0 or candidate < new_trigger:
+                new_trigger = candidate
+        return new_trigger, new_hwm
+
+    def _maybe_apply_sl_after(
+        self, *, side: str, avg_cost: float, entry_atr: float,
+        position_qty: float, initial_qty: float, mark_price: float,
+        fill_price: float, sl_trigger_px: float, sl_tiers_processed: int,
+        post_tp_trail_mult: Optional[float], sl_high_water_px: float,
+    ) -> Tuple[float, int, Optional[float], float]:
+        """After a partial close has just been applied, find the highest
+        cleared TP tier and (if its rule is non-empty) update the simulated
+        SL trigger via ``compute_post_tp_stop_loss_trigger``.
+
+        Mirrors the live ``runPostTPStopLossAdjustment`` semantics:
+          - "highest cleared tier wins" on multi-tier same-bar fills
+          - empty rule for a tier still advances the watermark so we don't
+            re-evaluate it next bar
+          - ``trail_from_here`` is applied even without a pre-existing SL
+            (the live equivalent requires SL OID; the backtester has no
+            OIDs so we just install the new trigger and seed the HWM)
+          - sl_after only fires for sole-cleared rules with usable inputs
+            (compute_ok=True); otherwise it defers to a future bar
+
+        For ``trail_from_here`` the trigger is seeded at the current
+        ``fill_price`` (the price the partial close just filled at) — this
+        mirrors the live "fill at next bar's open and seed walker there"
+        behavior more faithfully than seeding at the bar's close.
+        """
+        if initial_qty <= 0 or position_qty <= 0:
+            return sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, sl_high_water_px
+        closed_ratio = 1.0 - (position_qty / initial_qty)
+        if closed_ratio <= 0:
+            return sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, sl_high_water_px
+        sl_mod = _load_post_tp_sl()
+        highest = sl_mod.find_highest_cleared_tier(
+            self._tp_tier_thresholds, closed_ratio, sl_tiers_processed,
+        )
+        if highest < 0:
+            return sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, sl_high_water_px
+        rule = self._sl_after_rules.for_tier(highest)
+        if rule.is_empty():
+            return sl_trigger_px, highest + 1, post_tp_trail_mult, sl_high_water_px
+        # Seed mark for trail_from_here at fill_price — that's the price the
+        # partial close just filled at, matching the live "trigger seeded at
+        # mark when SL is updated post-fill" intent.
+        seed_mark = fill_price if fill_price > 0 else mark_price
+        new_trigger, _mode, ok = sl_mod.compute_post_tp_stop_loss_trigger(
+            rule, side, avg_cost, entry_atr, seed_mark,
+        )
+        if not ok:
+            # Defer without advancing the watermark — next bar (with usable
+            # inputs) retries.
+            return sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, sl_high_water_px
+        new_post_tp_trail = post_tp_trail_mult
+        new_hwm = sl_high_water_px
+        if rule.kind == "trail_from_here":
+            new_post_tp_trail = rule.trail_atr_mult
+            new_hwm = seed_mark
+        return new_trigger, highest + 1, new_post_tp_trail, new_hwm
 
     def _calculate_metrics(self, equity_df: pd.DataFrame, trades: list,
                            df: pd.DataFrame, timeframe: str = "1d") -> dict:
