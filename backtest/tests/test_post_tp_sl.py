@@ -810,8 +810,7 @@ def test_backtester_sl_after_no_same_bar_fire_after_bump_long():
     events into one bar would over-trigger.
 
     Setup (long, ATR=10, entry @ $100):
-      Bar 0 (01-01): open long @ $100, close $100
-      Bar 1 (01-02): close $100, no tier
+      Bar 1 (01-02): open long @ $100, close $100
       Bar 2 (01-03): close $110 → TP1 tier detected (queues 50% close for bar 3)
       Bar 3 (01-04): open $110 → TP1 partial fills, SL bumps to $100 (breakeven),
                      close $99 → WITHOUT the fix, SL hit check fires same bar
@@ -947,3 +946,47 @@ def test_backtester_sl_after_flag_clears_for_next_bar_long():
     # SL queued at bar 4 close, fills at bar 5 open — confirming the flag
     # cleared after bar 3 (the bump bar).
     assert sl_closes[0]["exit_date"] == "2024-01-06 00:00:00", sl_closes[0]
+
+
+def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds():
+    """#716 item 3 regression: a degenerate sl_after config where
+    `parse_tp_tier_close_fractions` returns [] (e.g., all tiers have
+    close_fraction=0, which the parser drops) must NOT seed a phantom
+    fixed-SL trigger at open. Without tier thresholds the post-TP
+    adjustment machinery never fires; a seeded-then-never-adjusted SL
+    would represent a fixed-SL behavior the rest of the engine doesn't
+    actually simulate.
+
+    Construct a strategy with tiers whose close_fractions are all zero
+    so the parser drops them, then verify the SL never installs.
+    """
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 80, 80],
+        closes=[100, 100, 80, 80, 80],
+        atrs=[10, 10, 10, 10, 10],
+    )
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        platform="hyperliquid", strategy_type="perps",
+        stop_loss_atr_mult=1.0,
+        close_strategies=[{
+            "name": "tiered_tp_atr",
+            "params": {
+                "sl_after": "breakeven",
+                # All zero close_fractions are dropped by the parser →
+                # _tp_tier_thresholds == [].
+                "tiers": [
+                    {"atr_multiple": 1.0, "close_fraction": 0.0},
+                    {"atr_multiple": 2.0, "close_fraction": 0.0},
+                ],
+            },
+        }],
+    )
+    # Pre-condition: parser returned no usable thresholds.
+    assert bt._tp_tier_thresholds == []
+    result = bt.run(df, save=False)
+    # No SL fire — price dropped to $80 (well below the would-be SL at $90)
+    # but the gate must skip the seed entirely. Only the end-of-run forced
+    # close should appear.
+    sl_fires = [t for t in result["trades"] if t.get("exit_price") in (90.0, 89.0, 91.0)]
+    assert not sl_fires, f"phantom SL fired at {[t['exit_price'] for t in sl_fires]}"
