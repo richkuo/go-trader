@@ -620,7 +620,7 @@ func TestRunPostTPStopLossAdjustment_SkipsNeverArmedTier(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil) {
+	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to skip never-armed tier")
 	}
 	if calls != 0 {
@@ -879,6 +879,7 @@ func TestRunPostTPStopLossAdjustment_CapsAtOnChainQty(t *testing.T) {
 		AvgCost: 100, EntryATR: 5, Side: "long",
 		StopLossOID: 111, StopLossTriggerPx: 95,
 		TPOIDs:                   []int64{0, 222},
+		TPArmedTiers:             []bool{true, true},
 		SLAdjustedTiersProcessed: 0,
 	}
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
@@ -914,6 +915,7 @@ func TestRunPostTPStopLossAdjustment_NoCapWhenOnChainGEVirtual(t *testing.T) {
 		AvgCost: 100, EntryATR: 5, Side: "long",
 		StopLossOID: 111, StopLossTriggerPx: 95,
 		TPOIDs:                   []int64{0, 222},
+		TPArmedTiers:             []bool{true, true},
 		SLAdjustedTiersProcessed: 0,
 	}
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
