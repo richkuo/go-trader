@@ -307,7 +307,11 @@ systemctl status go-trader              # service health
 curl -s localhost:8099/status            # live prices + P&L (default port 8099; override with --status-port)
 curl -s localhost:8099/health            # simple health check
 journalctl -u go-trader -n 50           # recent logs
+./go-trader inspect <strategy-id>        # effective post-migration config (resolved SL/TP + provenance)
+./go-trader inspect --all --json         # all strategies, machine-readable
 ```
+
+`inspect` is read-only and safe to run against a live deployment — it loads `scheduler/config.json`, applies migrations and defaults, and prints which `stop_loss_*` field won, the resolved tier list on the configured TP close ref, and explicit-vs-default markers from the raw JSON. Use it to diagnose why a strategy isn't behaving like the JSON suggests, or to verify a config edit before SIGHUP.
 
 Discord strategy summaries show columns `Init | Value | PnL | PnL% | DD | Wallet% | Tf | Int | #T | W/L` plus a `Book Sharpe (realized, annualized)` footer and the go-trader version + PID in the title. `okx-options` and `robinhood-options` channel keys route options summaries separately from spot/perps. `#T`/`W/L` come from the SQLite trades table; partial closes collapse into one round trip per position.
 
