@@ -704,6 +704,45 @@ func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
 	})
 }
 
+func TestBuildHyperliquidSyncProtectionArgv_TPArmedTiersJSON(t *testing.T) {
+	tiers := []hlProtectionTier{{Multiple: 1, Fraction: 0.5}, {Multiple: 2, Fraction: 1}}
+	argv := buildHyperliquidSyncProtectionArgv("ETH", "long", 0.22, 3000, 100, 1.5, tiers, 999, []int64{0, 300}, []bool{true, true})
+	var armedArg string
+	for _, a := range argv {
+		if strings.HasPrefix(a, "--tp-armed-tiers-json=") {
+			armedArg = a
+			break
+		}
+	}
+	if armedArg == "" {
+		t.Fatal("missing --tp-armed-tiers-json flag (wire contract with check_hyperliquid.py)")
+	}
+	const prefix = "--tp-armed-tiers-json="
+	if got := strings.TrimPrefix(armedArg, prefix); got != `[true,true]` {
+		t.Errorf("armed tiers JSON = %q, want [true,true]", got)
+	}
+	// Shorter slice pads false (#749 / hyperliquid_protection.go).
+	argv = buildHyperliquidSyncProtectionArgv("ETH", "long", 0.22, 3000, 100, 1.5, tiers, 0, nil, []bool{true})
+	for _, a := range argv {
+		if strings.HasPrefix(a, "--tp-armed-tiers-json=") {
+			if got := strings.TrimPrefix(a, prefix); got != `[true,false]` {
+				t.Errorf("padded armed tiers JSON = %q, want [true,false]", got)
+			}
+			return
+		}
+	}
+	t.Fatal("missing --tp-armed-tiers-json after padding test")
+}
+
+func TestBuildHyperliquidSyncProtectionArgv_NoTiersOmitsArmedJSON(t *testing.T) {
+	argv := buildHyperliquidSyncProtectionArgv("ETH", "long", 0.22, 3000, 100, 1.5, nil, 0, nil, nil)
+	for _, a := range argv {
+		if strings.HasPrefix(a, "--tp-armed-tiers-json=") {
+			t.Fatalf("unexpected %q when tiers empty", a)
+		}
+	}
+}
+
 func TestPythonScriptTimeoutError_As(t *testing.T) {
 	var err error = &pythonScriptTimeoutError{d: 5 * time.Minute}
 	var toe *pythonScriptTimeoutError
