@@ -609,6 +609,34 @@ func TestHyperliquidProtectionTiersRejectsSingleTier(t *testing.T) {
 	}
 }
 
+func TestHyperliquidPlacesOnChainTPs_RegimeAwareWithoutStampedRegime(t *testing.T) {
+	sc := StrategyConfig{
+		Type:     "perps",
+		Platform: "hyperliquid",
+		CloseStrategies: []StrategyRef{{
+			Name:   "tiered_tp_atr_regime",
+			Params: map[string]interface{}{"use_defaults": true},
+		}},
+	}
+	if len(strategyTPTiers(sc)) != 0 {
+		t.Fatalf("strategyTPTiers(sc) should be nil before regime is stamped, got %#v", strategyTPTiers(sc))
+	}
+	if !hyperliquidPlacesOnChainTPs(sc) {
+		t.Fatal("hyperliquidPlacesOnChainTPs must be true for regime tiered TP so HL on-chain suppression/filter gates apply (#750)")
+	}
+}
+
+func TestHyperliquidPlacesOnChainTPs_ScalarTiered(t *testing.T) {
+	sc := StrategyConfig{
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}},
+	}
+	if !hyperliquidPlacesOnChainTPs(sc) {
+		t.Fatal("expected true for scalar tiered_tp_atr")
+	}
+}
+
 func TestTieredTPATRPricesForRegimeUsesFleetDefaults(t *testing.T) {
 	sc := StrategyConfig{
 		Platform: "hyperliquid",

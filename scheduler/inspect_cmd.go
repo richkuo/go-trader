@@ -221,6 +221,7 @@ type tpResolution struct {
 	OK          bool
 	CloseIndex  int
 	CloseName   string
+	RegimeTP    bool // tiered_tp_atr_regime or tiered_tp_atr_live_regime
 	Tiers       []hlProtectionTier
 	TiersFrom   string // "explicit on close ref" | "default (from registry)"
 	DetailLines []string
@@ -244,6 +245,7 @@ func resolveTP(sc StrategyConfig, explicit map[string]bool) tpResolution {
 		}
 		switch n {
 		case "tiered_tp_atr_regime", "tiered_tp_atr_live_regime":
+			res.RegimeTP = true
 			res.DetailLines = formatInspectRegimeTPDetailLines(ref.Name, ref, hasTiers, useDefaults, explicit["close_strategies"])
 			if tiers := strategyTPTiersForRegime(sc, canonicalTrendRegimeLabels[0]); len(tiers) > 0 {
 				res.Tiers = tiers
@@ -449,9 +451,7 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 			for _, line := range tp.DetailLines {
 				fmt.Fprintf(&b, "    %s\n", line)
 			}
-			n := strings.ToLower(strings.TrimSpace(tp.CloseName))
-			regimeTPName := n == "tiered_tp_atr_regime" || n == "tiered_tp_atr_live_regime"
-			if regimeTPName && len(tp.Tiers) > 0 {
+			if tp.RegimeTP && len(tp.Tiers) > 0 {
 				fmt.Fprintf(&b, "    tiers (example: %s=%s): %s — %s\n", regimeClassifierKey, canonicalTrendRegimeLabels[0], formatTiers(tp.Tiers), tp.TiersFrom)
 			} else {
 				fmt.Fprintf(&b, "    tiers:             %s — %s\n", formatTiers(tp.Tiers), tp.TiersFrom)
@@ -570,17 +570,11 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 			tpMap["tiers"] = tiers
 			tpMap["tiers_source"] = tp.TiersFrom
 			tpMap["tier_count"] = tp.TierCount
-			if tp.TierCount <= 0 && len(tp.Tiers) > 0 {
-				tpMap["tier_count"] = len(tp.Tiers)
-			}
 			if len(tp.DetailLines) > 0 {
 				tpMap["detail"] = tp.DetailLines
 			}
-			closeNameLower := strings.ToLower(strings.TrimSpace(tp.CloseName))
-			if closeNameLower == "tiered_tp_atr_regime" || closeNameLower == "tiered_tp_atr_live_regime" {
-				if len(tp.Tiers) > 0 {
-					tpMap["example_classifier_label"] = canonicalTrendRegimeLabels[0]
-				}
+			if tp.RegimeTP && len(tp.Tiers) > 0 {
+				tpMap["example_classifier_label"] = canonicalTrendRegimeLabels[0]
 			}
 		}
 		out["take_profit"] = tpMap

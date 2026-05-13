@@ -1052,10 +1052,9 @@ func positionMargin(qty, avgCost, leverage float64) float64 {
 }
 
 // strategyUsesTieredTPATRClose reports whether the strategy's configured close
-// evaluators include tiered_tp_atr or tiered_tp_atr_live. Both use the same
-// default 1×/2× tier multiples; hints are always priced from entry ATR × multiple
-// from avg_cost (see PR #529 review — live mode may use a different ATR ruler
-// at evaluation time, but the summary still shows the entry-ATR reference levels).
+// evaluators include any tiered_tp_atr* variant (scalar or regime, frozen or live).
+// Used for inspect-style questions and the on-chain-TP placement gate in
+// hyperliquidPlacesOnChainTPs.
 func strategyUsesTieredTPATRClose(sc StrategyConfig) bool {
 	for _, ref := range sc.CloseStrategies {
 		if isTieredTPATRCloseName(ref.Name) {

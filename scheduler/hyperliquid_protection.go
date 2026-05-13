@@ -476,7 +476,11 @@ func hyperliquidPlacesOnChainTPs(sc StrategyConfig) bool {
 	if (sc.Type != "perps" && sc.Type != "manual") || sc.Platform != "hyperliquid" {
 		return false
 	}
-	return len(strategyTPTiers(sc)) > 0
+	// Use strategyUsesTieredTPATRClose — not strategyTPTiers(sc) — because the
+	// latter passes an empty regime and returns nil for tiered_tp_atr_regime
+	// configs until pos.Regime is stamped, which left this gate false forever
+	// and skipped suppressing Python close evaluators (#750 / Sonnet review).
+	return strategyUsesTieredTPATRClose(sc)
 }
 
 // closeStrategiesSuppressedByOnChainProtection is the set of close evaluator
