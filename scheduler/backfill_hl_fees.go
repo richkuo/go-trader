@@ -682,7 +682,7 @@ func refuseIfSchedulerRunning() error {
 const hlUserFillsFetchTimeout = 5 * time.Minute
 
 // runFetchHLUserFills spawns shared_scripts/fetch_hl_user_fills.py with
-// hlUserFillsFetchTimeout via the shared Python runner (semaphore + uv argv).
+// hlUserFillsFetchTimeout via the shared Python runner (semaphore + .venv).
 func runFetchHLUserFills(since time.Time) (*HLUserFillsResult, error) {
 	script := "shared_scripts/fetch_hl_user_fills.py"
 	args := []string{

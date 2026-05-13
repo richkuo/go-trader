@@ -20,11 +20,6 @@ TimeoutStopSec=20
 StandardOutput=journal
 StandardError=journal
 
-# Python (uv): default systemd PATH often omits ~/.local/bin. UV_CACHE_DIR
-# under scheduler/ stays inside ReadWritePaths (#739). Override via instance .env.
-Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:%h/.local/bin"
-Environment=UV_CACHE_DIR=/opt/go-trader-%i/scheduler/.uv-cache
-
 # Prefer loading secrets from an instance-specific env file rather than embedding
 # them in the unit file or config.json:
 #   echo "DISCORD_BOT_TOKEN=Bot your-token-here" > /opt/go-trader-%i/.env

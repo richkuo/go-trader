@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"syscall"
 	"time"
@@ -140,8 +141,8 @@ func runPython(parentCtx context.Context, script string, args []string, stdinDat
 }
 
 // runPythonWithTimeout mirrors runPython but uses an explicit deadline (e.g.
-// long-running fetch scripts). Semaphore, Setpgid, stdin, and SIGKILL-on-
-// deadline behavior match runPython.
+// long-running fetch scripts like fetch_hl_user_fills.py). Semaphore, Setpgid,
+// stdin, and SIGKILL-on-deadline behavior match runPython.
 func runPythonWithTimeout(parentCtx context.Context, script string, args []string, stdinData []byte, timeout time.Duration) ([]byte, []byte, error) {
 	pythonSemaphore <- struct{}{}
 	defer func() { <-pythonSemaphore }()
@@ -149,10 +150,8 @@ func runPythonWithTimeout(parentCtx context.Context, script string, args []strin
 	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 
-	cmd, err := newPythonCommand(ctx, script, args...)
-	if err != nil {
-		return nil, nil, err
-	}
+	cmdArgs := append([]string{script}, args...)
+	cmd := exec.CommandContext(ctx, ".venv/bin/python3", cmdArgs...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if stdinData != nil {
 		cmd.Stdin = bytes.NewReader(stdinData)
@@ -162,7 +161,7 @@ func runPythonWithTimeout(parentCtx context.Context, script string, args []strin
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err = cmd.Run()
+	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
 		if cmd.Process != nil {
 			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -450,7 +449,7 @@ func parseHyperliquidUpdateStopLossOutput(stdout []byte, stderrStr string, runEr
 
 // parseHyperliquidExecuteOutput turns subprocess output into
 // (*HyperliquidExecuteResult, stderr, error). Extracted from RunHyperliquidExecute
-// so Go CI can test the parsing contract without spawning Python
+// so Go CI (no .venv) can test the parsing contract without spawning Python
 // — same pattern as parseHyperliquidCloseOutput (#341).
 func parseHyperliquidExecuteOutput(stdout []byte, stderrStr string, runErr error) (*HyperliquidExecuteResult, string, error) {
 	if runErr != nil {
@@ -708,7 +707,7 @@ func RunTopStepClose(script, symbol string) (*TopStepCloseResult, string, error)
 // parseTopStepCloseOutput turns raw subprocess output into
 // (*TopStepCloseResult, stderr, error) following the RunTopStepClose
 // contract. Extracted so decision logic can be tested without spawning
-// Python — same pattern as parseHyperliquidCloseOutput /
+// .venv/bin/python3 — same pattern as parseHyperliquidCloseOutput /
 // parseOKXCloseOutput / parseRobinhoodCloseOutput (#341/#342/#345/#346).
 func parseTopStepCloseOutput(stdout []byte, stderrStr string, runErr error) (*TopStepCloseResult, string, error) {
 	var result TopStepCloseResult

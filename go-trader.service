@@ -15,13 +15,6 @@ RestartSec=10
 StandardOutput=journal
 StandardError=journal
 
-# Python (uv): default systemd PATH often omits ~/.local/bin (common uv install
-# location). UV_CACHE_DIR must live under ReadWritePaths (#739 / ProtectSystem).
-# Defaults here; EnvironmentFile= below allows /opt/go-trader/.env to override
-# PATH, UV_CACHE_DIR, or set GO_TRADER_UV to an absolute uv binary path.
-Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:%h/.local/bin"
-Environment=UV_CACHE_DIR=/opt/go-trader/scheduler/.uv-cache
-
 # Prefer loading the Discord token from an env file rather than embedding
 # it in the unit file or config.json:
 #   echo "DISCORD_BOT_TOKEN=Bot your-token-here" > /opt/go-trader/.env
