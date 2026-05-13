@@ -275,6 +275,16 @@ func parseSLAfterRule(raw interface{}) (SLAfterRule, error) {
 	}
 }
 
+// scalarMultKeysAtROffset lists the scalar-form keys that conflict with a
+// regime block on the atr_offset variant. Used by parseSLAfterATROffset to
+// reject mixed-shape configs (incl. misplaced trail_atr_mult).
+var scalarMultKeysAtROffset = []string{"atr_mult", "atr_offset", "trail_atr_mult"}
+
+// scalarMultKeysTrailFromHere lists the scalar-form keys that conflict with
+// a regime block on the trail_from_here variant. atr_offset would be a
+// misplaced key here too.
+var scalarMultKeysTrailFromHere = []string{"atr_mult", "trail_atr_mult", "atr_offset"}
+
 // parseSLAfterATROffset parses the atr_offset variant — either scalar
 // (atr_mult / atr_offset) or regime (trend_regime / use_defaults). ctxLabel
 // is prefixed onto regime sub-errors so per-label problems are attributable.
@@ -282,8 +292,8 @@ func parseSLAfterATROffset(m map[string]interface{}, ctxLabel string) (SLAfterRu
 	_, hasTrend := m[regimeClassifierKey]
 	_, hasUseDefaults := m["use_defaults"]
 	if hasTrend || hasUseDefaults {
-		if _, ok := firstNonNil(m, "atr_mult", "atr_offset"); ok {
-			return SLAfterRule{}, fmt.Errorf("%s: cannot combine scalar atr_mult with trend_regime/use_defaults — pick one shape", ctxLabel)
+		if _, ok := firstNonNil(m, scalarMultKeysAtROffset...); ok {
+			return SLAfterRule{}, fmt.Errorf("%s: cannot combine scalar atr_mult/atr_offset/trail_atr_mult with trend_regime/use_defaults — pick one shape", ctxLabel)
 		}
 		regimeRaw := map[string]interface{}{}
 		if hasTrend {
@@ -296,13 +306,15 @@ func parseSLAfterATROffset(m map[string]interface{}, ctxLabel string) (SLAfterRu
 		if len(subErrs) > 0 {
 			return SLAfterRule{}, errors.New(strings.Join(subErrs, "; "))
 		}
-		return SLAfterRule{Kind: "atr_offset", ATRRegime: &block}, nil
+		rule := SLAfterRule{Kind: "atr_offset", ATRRegime: &block}
+		return rule, validateSLAfterRule(rule)
 	}
 	mult, err := floatFromAnyChecked(firstPresent(m, "atr_mult", "atr_offset"))
 	if err != nil {
 		return SLAfterRule{}, fmt.Errorf("%s: %w", ctxLabel, err)
 	}
-	return SLAfterRule{Kind: "atr_offset", ATRMult: mult}, nil
+	rule := SLAfterRule{Kind: "atr_offset", ATRMult: mult}
+	return rule, validateSLAfterRule(rule)
 }
 
 // parseSLAfterTrailFromHere parses the trail_from_here variant — either
@@ -313,8 +325,8 @@ func parseSLAfterTrailFromHere(m map[string]interface{}, ctxLabel string) (SLAft
 	_, hasTrend := m[regimeClassifierKey]
 	_, hasUseDefaults := m["use_defaults"]
 	if hasTrend || hasUseDefaults {
-		if _, ok := firstNonNil(m, "atr_mult", "trail_atr_mult"); ok {
-			return SLAfterRule{}, fmt.Errorf("%s: cannot combine scalar atr_mult with trend_regime/use_defaults — pick one shape", ctxLabel)
+		if _, ok := firstNonNil(m, scalarMultKeysTrailFromHere...); ok {
+			return SLAfterRule{}, fmt.Errorf("%s: cannot combine scalar atr_mult/trail_atr_mult/atr_offset with trend_regime/use_defaults — pick one shape", ctxLabel)
 		}
 		regimeRaw := map[string]interface{}{}
 		if hasTrend {

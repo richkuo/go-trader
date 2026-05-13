@@ -1264,6 +1264,36 @@ func TestParseSLAfterRule_RegimeErrors(t *testing.T) {
 			wantInErr: "pick one shape",
 		},
 		{
+			// Misplaced trail_atr_mult in an atr_offset regime config: the
+			// pre-review parser silently dropped it. Now it surfaces.
+			name: "atr_offset_regime_with_stray_trail_atr_mult",
+			raw: map[string]interface{}{
+				"kind": "atr_offset",
+				"trend_regime": map[string]interface{}{
+					"trending_up":   map[string]interface{}{"atr": 0.25},
+					"trending_down": map[string]interface{}{"atr": 0.25},
+					"ranging":       map[string]interface{}{"atr": 0.0},
+				},
+				"trail_atr_mult": 99.0,
+			},
+			wantInErr: "pick one shape",
+		},
+		{
+			// Misplaced atr_offset key inside a trail_from_here regime block.
+			name: "trail_regime_with_stray_atr_offset",
+			raw: map[string]interface{}{
+				"trail_from_here": map[string]interface{}{
+					"trend_regime": map[string]interface{}{
+						"trending_up":   map[string]interface{}{"atr": 1.0},
+						"trending_down": map[string]interface{}{"atr": 1.0},
+						"ranging":       map[string]interface{}{"atr": 0.5},
+					},
+					"atr_offset": -3.0,
+				},
+			},
+			wantInErr: "pick one shape",
+		},
+		{
 			name: "trail_use_defaults_unsupported",
 			raw: map[string]interface{}{
 				"trail_from_here": map[string]interface{}{

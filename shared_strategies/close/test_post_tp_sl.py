@@ -159,6 +159,41 @@ def test_regime_rejects_scalar_and_regime_mix():
     assert "pick one shape" in str(exc.value)
 
 
+def test_atr_offset_regime_rejects_stray_trail_atr_mult():
+    # Misplaced trail_atr_mult on an atr_offset regime config — pre-review
+    # the parser silently dropped it.
+    with pytest.raises(ValueError) as exc:
+        parse_sl_after_rule(
+            {
+                "kind": "atr_offset",
+                "trend_regime": {
+                    "trending_up": {"atr": 0.25},
+                    "trending_down": {"atr": 0.25},
+                    "ranging": {"atr": 0.0},
+                },
+                "trail_atr_mult": 99.0,
+            }
+        )
+    assert "pick one shape" in str(exc.value)
+
+
+def test_trail_regime_rejects_stray_atr_offset():
+    with pytest.raises(ValueError) as exc:
+        parse_sl_after_rule(
+            {
+                "trail_from_here": {
+                    "trend_regime": {
+                        "trending_up": {"atr": 1.0},
+                        "trending_down": {"atr": 1.0},
+                        "ranging": {"atr": 0.5},
+                    },
+                    "atr_offset": -3.0,
+                }
+            }
+        )
+    assert "pick one shape" in str(exc.value)
+
+
 # --- Equality / resolve helpers --------------------------------------------
 
 

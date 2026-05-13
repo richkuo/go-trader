@@ -175,6 +175,14 @@ def parse_sl_after_rule(raw: Any) -> SLAfterRule:
     )
 
 
+# Scalar-form keys that conflict with a regime block on the atr_offset
+# variant. trail_atr_mult here is a misplaced field, surfaced loudly.
+_SCALAR_MULT_KEYS_ATR_OFFSET = ("atr_mult", "atr_offset", "trail_atr_mult")
+# Scalar-form keys that conflict with a regime block on the trail_from_here
+# variant. atr_offset here is a misplaced field.
+_SCALAR_MULT_KEYS_TRAIL = ("atr_mult", "trail_atr_mult", "atr_offset")
+
+
 def _parse_sl_after_atr_offset(m: dict, ctx_label: str) -> SLAfterRule:
     """Parse the atr_offset variant — scalar (atr_mult/atr_offset) or regime
     (trend_regime/use_defaults). Multi-label regime errors join with '; '
@@ -182,9 +190,10 @@ def _parse_sl_after_atr_offset(m: dict, ctx_label: str) -> SLAfterRule:
     has_trend = REGIME_CLASSIFIER_KEY in m
     has_use_defaults = "use_defaults" in m
     if has_trend or has_use_defaults:
-        if _first_non_nil(m, "atr_mult", "atr_offset"):
+        if _first_non_nil(m, *_SCALAR_MULT_KEYS_ATR_OFFSET):
             raise ValueError(
-                f"{ctx_label}: cannot combine scalar atr_mult with "
+                f"{ctx_label}: cannot combine scalar "
+                "atr_mult/atr_offset/trail_atr_mult with "
                 "trend_regime/use_defaults — pick one shape"
             )
         regime_raw: dict = {}
@@ -195,12 +204,16 @@ def _parse_sl_after_atr_offset(m: dict, ctx_label: str) -> SLAfterRule:
         block, errs = parse_regime_atr_block(regime_raw, ctx_label, SURFACE_SL_AFTER)
         if errs:
             raise ValueError("; ".join(errs))
-        return SLAfterRule(kind="atr_offset", atr_regime=block)
+        rule = SLAfterRule(kind="atr_offset", atr_regime=block)
+        validate_sl_after_rule(rule)
+        return rule
     mult = _float_or_raise(
         _first_present(m, "atr_mult", "atr_offset"),
         ctx_label,
     )
-    return SLAfterRule(kind="atr_offset", atr_mult=mult)
+    rule = SLAfterRule(kind="atr_offset", atr_mult=mult)
+    validate_sl_after_rule(rule)
+    return rule
 
 
 def _parse_sl_after_trail_from_here(m: dict, ctx_label: str) -> SLAfterRule:
@@ -210,9 +223,10 @@ def _parse_sl_after_trail_from_here(m: dict, ctx_label: str) -> SLAfterRule:
     has_trend = REGIME_CLASSIFIER_KEY in m
     has_use_defaults = "use_defaults" in m
     if has_trend or has_use_defaults:
-        if _first_non_nil(m, "atr_mult", "trail_atr_mult"):
+        if _first_non_nil(m, *_SCALAR_MULT_KEYS_TRAIL):
             raise ValueError(
-                f"{ctx_label}: cannot combine scalar atr_mult with "
+                f"{ctx_label}: cannot combine scalar "
+                "atr_mult/trail_atr_mult/atr_offset with "
                 "trend_regime/use_defaults — pick one shape"
             )
         regime_raw: dict = {}
