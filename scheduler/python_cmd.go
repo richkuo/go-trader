@@ -7,6 +7,9 @@ import (
 	"os/exec"
 )
 
+// uvBinaryEnv names an optional absolute path to the uv executable. Use when
+// uv is not on systemd's default PATH (e.g. install under a custom prefix); set
+// in /opt/go-trader/.env or a systemd drop-in.
 const uvBinaryEnv = "GO_TRADER_UV"
 
 // newPythonCommand builds the canonical Python subprocess invocation.

@@ -13,6 +13,7 @@ Quick flow for a new server: tell OpenClaw `install https://github.com/richkuo/g
 - Run git from repo root.
 - Use `/opt/homebrew/bin/go` (macOS) or `/usr/local/go/bin/go` (Linux) if `go` is not on PATH.
 - Use `uv run --no-sync python`; worktrees do not need a copied virtualenv.
+- **Production:** bundled systemd units set `PATH` and `UV_CACHE_DIR` for `uv run` under `ProtectSystem=strict`. Override in deployment `.env` or set `GO_TRADER_UV` to an absolute `uv` path if needed (#739).
 - Install Python deps with `uv sync`.
 - Scheduler config: `scheduler/config.json` (start from `scheduler/config.example.json` when generating manually).
 - State is SQLite only: default `scheduler/state.db`.

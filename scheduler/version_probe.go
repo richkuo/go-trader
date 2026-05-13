@@ -106,7 +106,7 @@ func probeOneCheckScript(script string, argv []string) error {
 
 	cmd, err := newPythonCommand(ctx, script, argv...)
 	if err != nil {
-		return fmt.Errorf("%s: %w", script, err)
+		return fmt.Errorf("uv runtime unavailable (script %s): %w", script, err)
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 

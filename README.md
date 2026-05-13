@@ -49,6 +49,8 @@ cd scheduler && go build -ldflags "-X main.Version=$VER" -o ../go-trader . && cd
 ./go-trader init                                    # or --json '{...}', or copy config.example.json
 ./go-trader --config scheduler/config.json --once   # smoke-test one cycle
 
+On Linux systemd installs, `go-trader.service` sets `PATH` and `UV_CACHE_DIR`; use `/opt/go-trader/.env` to set `GO_TRADER_UV` if `uv` is outside the default PATH (#739).
+
 export DISCORD_BOT_TOKEN="your-token"
 sudo bash scripts/install-service.sh                # systemd install + enable + start
 curl -s localhost:8099/status | python3 -m json.tool

@@ -95,6 +95,20 @@ if [[ -n "$LOG_DIR" ]]; then
   fi
 fi
 
+# uv cache for `uv run` (systemd unit sets UV_CACHE_DIR here; #739)
+if [[ -n "$WORKING_DIR" ]]; then
+  UV_CACHE_DIR="${WORKING_DIR}/scheduler/.uv-cache"
+  echo "Ensuring uv cache directory exists: $UV_CACHE_DIR"
+  install -d -m 0755 "$UV_CACHE_DIR"
+  if [[ -n "$SERVICE_USER" ]]; then
+    OWNER="$SERVICE_USER"
+    if [[ -n "$SERVICE_GROUP" ]]; then
+      OWNER="${SERVICE_USER}:${SERVICE_GROUP}"
+    fi
+    chown "$OWNER" "$UV_CACHE_DIR"
+  fi
+fi
+
 echo "Reloading systemd"
 systemctl daemon-reload
 
