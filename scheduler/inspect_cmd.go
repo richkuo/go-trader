@@ -339,6 +339,8 @@ func formatInspectRegimeTPDetailLines(closeName string, ref StrategyRef, hasTier
 		}
 		return summarizeInspectRegimeTPSpecs(closeName, specs, tag)
 	}
+	// LoadConfig + validateRegimeATRConfig already rejected malformed tier JSON;
+	// re-parse here is defense-in-depth for inspect-only paths, not a hot path.
 	specs, errs := parseRegimeTPTiers(ref.Params["tiers"], closeName+".params")
 	if len(errs) > 0 || len(specs) == 0 {
 		return []string{fmt.Sprintf("%s: regime tiers: parse error — fix config (%v)", closeName, errs)}
@@ -435,7 +437,7 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 		fmt.Fprintf(&b, "    source:            %s%s\n", sl.Source, explicitTag(sl.Explicit))
 		fmt.Fprintf(&b, "    value:             %s\n", sl.Value)
 		for _, line := range sl.Detail {
-			fmt.Fprintf(&b, "                      %s\n", line)
+			fmt.Fprintf(&b, "%s%s\n", inspectHLDetailIndent, line)
 		}
 
 		tp := resolveTP(sc, explicit)
@@ -449,12 +451,8 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 			}
 			n := strings.ToLower(strings.TrimSpace(tp.CloseName))
 			regimeTPName := n == "tiered_tp_atr_regime" || n == "tiered_tp_atr_live_regime"
-			if len(tp.Tiers) > 0 {
-				if regimeTPName {
-					fmt.Fprintf(&b, "    tiers (example: %s=%s): %s — %s\n", regimeClassifierKey, canonicalTrendRegimeLabels[0], formatTiers(tp.Tiers), tp.TiersFrom)
-				} else {
-					fmt.Fprintf(&b, "    tiers:             %s — %s\n", formatTiers(tp.Tiers), tp.TiersFrom)
-				}
+			if regimeTPName && len(tp.Tiers) > 0 {
+				fmt.Fprintf(&b, "    tiers (example: %s=%s): %s — %s\n", regimeClassifierKey, canonicalTrendRegimeLabels[0], formatTiers(tp.Tiers), tp.TiersFrom)
 			} else {
 				fmt.Fprintf(&b, "    tiers:             %s — %s\n", formatTiers(tp.Tiers), tp.TiersFrom)
 			}
@@ -598,6 +596,10 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 }
 
 // --- formatting helpers ---
+
+// inspectHLDetailIndent aligns stop_loss continuation lines with the payload
+// column of "    source:" / "    value:" (23 runes). See PR #750 review.
+const inspectHLDetailIndent = "                       "
 
 func markIfDefault(explicit map[string]bool, key string) string {
 	if explicit[key] {
