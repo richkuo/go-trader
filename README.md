@@ -314,7 +314,29 @@ journalctl -u go-trader -n 50           # recent logs
 ./go-trader inspect --all --json         # all strategies, machine-readable
 ```
 
-The dashboard is served by the same local/LAN status server. If `status_token` is configured, the page prompts for that token and stores it in browser local storage for API calls. Keep the server bound behind your existing network controls; for remote access, put it behind an authenticated reverse proxy or VPN rather than exposing `8099` directly.
+The dashboard is served by the same loopback-only status server as `/status` and `/health` (Go binds `localhost:<port>` — use `http://127.0.0.1:<port>/dashboard` or `http://localhost:<port>/dashboard`). If `status_token` is configured, the page prompts for that token and stores it in browser local storage for API calls. Prefer leaving each instance on loopback and reaching it through your VPN or reverse proxy; do not widen the bind to `0.0.0.0` just for remote viewing.
+
+### Remote dashboard (Tailscale Serve)
+
+On a host with [Tailscale](https://tailscale.com/), [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) can publish HTTPS on the tailnet while go-trader stays on loopback. That avoids exposing the status port on a public interface and keeps go-trader’s dashboard separate from the **OpenClaw** web UI (different process, ports, and URL paths — do not assume they are the same dashboard).
+
+Example: one HTTPS port per go-trader instance (adjust ports to match each deployment’s `status_port`):
+
+| Instance / role (example) | Typical `status_port` |
+|----------------------------|------------------------|
+| live | 8099 |
+| paper-testing | 8100 |
+| paper-hl-btc | 8101 |
+| paper-hl-eth | 8102 |
+| paper-hl-bnb | 8103 |
+| paper-hl-sol | 8104 |
+
+```bash
+tailscale serve --bg --https=8443 http://127.0.0.1:8099
+tailscale serve --bg --https=8444 http://127.0.0.1:8100
+```
+
+Then open `https://<node>.tailnet.ts.net:8443/dashboard` (and `:8444/dashboard`, etc.) from another machine on the tailnet. Use Serve’s access controls as needed; `status_token` still applies to API calls from the dashboard page.
 
 `inspect` is read-only and safe to run against a live deployment — it loads `scheduler/config.json`, applies migrations and defaults, and prints which `stop_loss_*` field won, the resolved tier list on the configured TP close ref, and explicit-vs-default markers from the raw JSON. Use it to diagnose why a strategy isn't behaving like the JSON suggests, or to verify a config edit before SIGHUP.
 
