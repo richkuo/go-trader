@@ -517,6 +517,9 @@ class Backtester:
                 any_sl_after_key = True
                 break
         self._any_sl_after_key = any_sl_after_key
+        # For regime-tiered closes, ``parse_strategy_tp_sl_after_rules(..., regime=None)``
+        # leaves ``per_tier`` empty at load time; ``stamp_open_from_label`` in
+        # ``run()`` reparses with the stamped regime before any tier fires.
         self._sl_after_pipeline_enabled = (
             self._sl_after_rules_static.has_any() or any_sl_after_key
         )
@@ -1154,9 +1157,13 @@ class Backtester:
             "entry_atr": float(entry_atr_value),
             "regime": str(position_regime or ""),
         }
-        market_dict = {"mark_price": float(mark_price)}
-        if market_regime:
-            market_dict["regime"] = str(market_regime)
+        # Always pass ``regime`` (possibly empty) so live-regime evaluators see
+        # the same key shape as live check scripts — empty/NaN bars no-op with
+        # an explicit label instead of a missing dict key (#747 review).
+        market_dict = {
+            "mark_price": float(mark_price),
+            "regime": str(market_regime or ""),
+        }
         if atr_series is not None:
             # Current-bar ATR access is intentional and matches live (#730):
             # close evaluators run end-of-bar with this bar's closed mark and

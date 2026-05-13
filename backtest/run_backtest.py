@@ -504,6 +504,8 @@ def main():
         )
         live_stop_kwargs = {k: live_kwargs[k] for k in stop_keys if k in live_kwargs}
 
+    reg = load_registry(args.registry)
+
     if args.mode == "single":
         if args.strategy == "all":
             print("Specify a strategy for single mode: --strategy <name>")
