@@ -6,8 +6,6 @@
 - Git worktrees work without a copied virtualenv; run `uv sync` once per checkout and ensure `uv` is on PATH.
 - Optional: set `GO_TRADER_UV` to an absolute path when `uv` is not discoverable via `PATH` (e.g. custom install); read in `scheduler/python_cmd.go`.
 - **systemd:** `go-trader.service` and `systemd/go-trader@.service` set `PATH` (includes `%h/.local/bin`) and `UV_CACHE_DIR` under `scheduler/` so `uv run` works under `ProtectSystem=strict`. `/opt/go-trader/.env` (or per-instance `.env`) may override `PATH`, `UV_CACHE_DIR`, or set `GO_TRADER_UV`.
-- Optional: set `GO_TRADER_UV` to an absolute path when `uv` is not discoverable via `PATH` (e.g. custom install); read in `scheduler/python_cmd.go`.
-- **systemd:** `go-trader.service` and `systemd/go-trader@.service` set `PATH` (includes `%h/.local/bin`) and `UV_CACHE_DIR` under `scheduler/` so `uv run` works under `ProtectSystem=strict`. `/opt/go-trader/.env` (or per-instance `.env`) may override `PATH`, `UV_CACHE_DIR`, or set `GO_TRADER_UV`.
 
 ## Setup
 - `uv sync` — install Python deps
@@ -131,7 +129,6 @@ Inline review threads are exempt.
 - Restart: `systemctl restart go-trader` (service-file changes: `daemon-reload` first). Config-only: `kill -HUP $(pgrep go-trader)`. Python changes pick up next cycle.
 - **Startup compatibility probe:** binary invokes each unique check script with `--probe-only`; non-zero → log + owner DM + `os.Exit(1)`. Startup failure post-update → ensure `git pull` updated `shared_scripts/` and rebuild.
 - **Post-update protocol:** after `git pull` / auto-update, follow `SKILL.md` → "Post-Update Agent Protocol". Diff `<running>..HEAD`, classify via SKILL.md Reference table, prompt per item. `runConfigMigrationDM` only covers `configFieldRegistry` (≤ v3) — later runtime-default/opt-in items surfaced manually.
-- **Post-deploy smoke (#739):** after a release that changes the Python launcher, run `./go-trader --config scheduler/config.json --once` (or your deploy path) once to confirm startup probe and slow scripts still finish within timeouts.
 - **Post-deploy smoke (#739):** after a release that changes the Python launcher, run `./go-trader --config scheduler/config.json --once` (or your deploy path) once to confirm startup probe and slow scripts still finish within timeouts.
 
 ## Backtest
