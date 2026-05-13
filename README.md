@@ -174,6 +174,8 @@ Optional ADX+DI 3-state gate (`trending_up` / `trending_down` / `ranging`) compu
 
 `regime.period` defaults to 14, `regime.adx_threshold` to 20 (below this → `ranging`).
 
+**Regime-aware ATR multipliers (HL perps).** With `regime.enabled: true`, four close-strategy / stop-loss surfaces can resolve their ATR multiplier per regime label instead of using a fixed scalar: `stop_loss_atr_regime`, `trailing_stop_atr_regime` (strategy-level), and `tiered_tp_atr_regime` / `tiered_tp_atr_live_regime` (close-strategy refs). Operators opt in by swapping the scalar field for the `*_regime` sibling. `{"use_defaults": true}` expands to a baseline table (trending: tighter SL / wider TP; ranging: opposite); explicit form is `{"trend_regime": {"trending_up": {"atr": 2.0}, "trending_down": {"atr": 2.0}, "ranging": {"atr": 1.5}}}` (all three labels required). The regime is frozen at open via `pos.Regime` for stop and `_regime` TP refs; `tiered_tp_atr_live_regime` re-resolves each tick.
+
 ### Correlation Tracking
 
 Opt-in via `correlation.enabled: true`. Warns when a single asset exceeds `max_concentration_pct` (default 60) of portfolio gross exposure or `max_same_direction_pct` (default 75) of strategies on an asset share a direction. Warnings go to active Discord channels and the owner DM; snapshot also available at `/status`.
