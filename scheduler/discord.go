@@ -276,6 +276,61 @@ var summaryStrategyLabelAliases = map[string]string{
 	"tiered-pct": "tpct",
 }
 
+// regimeDisplayEnabled reports whether top-level regime detection is on.
+func regimeDisplayEnabled(rc *RegimeConfig) bool {
+	return rc != nil && rc.Enabled
+}
+
+// buildRegimeByBaseAsset maps base asset (e.g. "ETH") to the latest regime label
+// from the first matching strategy in strategies with non-empty state.Regime.
+// All strategies on the same (symbol, timeframe) share one label; callers use
+// this for summary price lines so the regime is not duplicated per strategy (#741).
+func buildRegimeByBaseAsset(strategies []StrategyConfig, state *AppState, regime *RegimeConfig) map[string]string {
+	if !regimeDisplayEnabled(regime) || state == nil {
+		return nil
+	}
+	out := make(map[string]string)
+	for _, sc := range strategies {
+		ss := state.Strategies[sc.ID]
+		if ss == nil || ss.Regime == "" {
+			continue
+		}
+		base := extractAsset(sc)
+		if base == "" {
+			continue
+		}
+		if _, ok := out[base]; !ok {
+			out[base] = ss.Regime
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// priceForAsset resolves a spot-style or perps price map entry for a base asset
+// ticker such as "ETH" or "BTC". Returns the price, display short symbol, and ok.
+func priceForAsset(prices map[string]float64, asset string) (float64, string, bool) {
+	asset = strings.ToUpper(strings.TrimSpace(asset))
+	if asset == "" || len(prices) == 0 {
+		return 0, "", false
+	}
+	if p, ok := prices[asset+"/USDT"]; ok {
+		return p, asset, true
+	}
+	if p, ok := prices[asset]; ok {
+		return p, asset, true
+	}
+	for k, p := range prices {
+		base := strings.TrimSuffix(strings.ToUpper(k), "/USDT")
+		if base == asset {
+			return p, asset, true
+		}
+	}
+	return 0, "", false
+}
+
 // FormatCategorySummary creates Discord messages for a set of strategies sharing a channel.
 // Returns a slice of messages; when the content exceeds Discord's 2000-char limit,
 // the position list is split across multiple messages.
@@ -284,6 +339,8 @@ var summaryStrategyLabelAliases = map[string]string{
 // globalIntervalSeconds is the config-level default interval used when a strategy has no per-strategy override.
 // lifetimeStats is keyed by strategy ID; missing keys render zero closed
 // round-trips because SQLite trades are authoritative (#472).
+// regime is the top-level cfg.regime pointer; when enabled and state has labels,
+// each symbol's price segment gains " | <regime>" (#741).
 func FormatCategorySummary(
 	cycle int,
 	elapsed time.Duration,
@@ -299,6 +356,7 @@ func FormatCategorySummary(
 	globalIntervalSeconds int,
 	categorySharpe float64,
 	lifetimeStats map[string]LifetimeTradeStats,
+	regime *RegimeConfig,
 ) []string {
 	var sb strings.Builder
 
@@ -391,19 +449,28 @@ func FormatCategorySummary(
 			syms = append(syms, s)
 		}
 		sort.Strings(syms)
+		regimeByBase := buildRegimeByBaseAsset(strategies, state, regime)
 		parts := make([]string, 0, len(syms))
 		for _, sym := range syms {
 			short := strings.TrimSuffix(sym, "/USDT")
 			priceStr := fmtComma2(displayPrices[sym])
+			var part string
 			if isFutures {
 				if fullName, ok := futuresFullNames[strings.ToUpper(short)]; ok {
-					parts = append(parts, fmt.Sprintf("%s (%s): $%s", short, fullName, priceStr))
+					part = fmt.Sprintf("%s (%s): $%s", short, fullName, priceStr)
 				} else {
-					parts = append(parts, fmt.Sprintf("%s: $%s", short, priceStr))
+					part = fmt.Sprintf("%s: $%s", short, priceStr)
 				}
 			} else {
-				parts = append(parts, fmt.Sprintf("%s: $%s", short, priceStr))
+				part = fmt.Sprintf("%s: $%s", short, priceStr)
 			}
+			if regimeByBase != nil {
+				base := strings.ToUpper(short)
+				if rl := regimeByBase[base]; rl != "" {
+					part += " | " + rl
+				}
+			}
+			parts = append(parts, part)
 		}
 		sb.WriteString(strings.Join(parts, " | "))
 		sb.WriteString("\n")

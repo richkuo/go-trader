@@ -13,6 +13,7 @@ import (
 type LeaderboardEntry struct {
 	ID              string  `json:"id"`
 	Type            string  `json:"type"`
+	Asset           string  `json:"asset,omitempty"` // base symbol for header prices (#741)
 	Value           float64 `json:"value"`
 	Capital         float64 `json:"capital"`
 	PnL             float64 `json:"pnl"`
@@ -66,8 +67,8 @@ func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]fl
 
 	topN := leaderboardTopN(cfg)
 	return map[string]string{
-		"top":    formatAllTimeMessage("🏆", "Top All-Time Performers", allEntries, true, topN),
-		"bottom": formatAllTimeMessage("💀", "Bottom All-Time Performers", allEntries, false, topN),
+		"top":    formatAllTimeMessage("🏆", "Top All-Time Performers", allEntries, true, topN, prices, cfg.Regime, state, cfg),
+		"bottom": formatAllTimeMessage("💀", "Bottom All-Time Performers", allEntries, false, topN, prices, cfg.Regime, state, cfg),
 	}
 }
 
@@ -83,6 +84,7 @@ func newLeaderboardEntry(sc StrategyConfig, ss *StrategyState, pv, initCap, pnl,
 	return LeaderboardEntry{
 		ID:              sc.ID,
 		Type:            sc.Type,
+		Asset:           extractAsset(sc),
 		Value:           pv,
 		Capital:         initCap,
 		PnL:             pnl,
@@ -97,10 +99,84 @@ func newLeaderboardEntry(sc StrategyConfig, ss *StrategyState, pv, initCap, pnl,
 	}
 }
 
+// leaderboardAssetUsesFuturesName reports whether any entry for asset uses
+// type=futures so the header price line can show full contract names (#741).
+func leaderboardAssetUsesFuturesName(entries []LeaderboardEntry, asset string) bool {
+	for _, e := range entries {
+		if e.Asset != asset {
+			continue
+		}
+		if e.Type == "futures" {
+			return true
+		}
+	}
+	return false
+}
+
+// writeLeaderboardHeaderPrices emits an inline "SYM: $price [| regime]" line after
+// the daily banner when prices are available (#741).
+func writeLeaderboardHeaderPrices(sb *strings.Builder, entries []LeaderboardEntry, prices map[string]float64, regime *RegimeConfig, state *AppState, cfg *Config) {
+	if len(prices) == 0 || len(entries) == 0 {
+		return
+	}
+	seen := make(map[string]struct{})
+	var assets []string
+	for _, e := range entries {
+		a := strings.TrimSpace(e.Asset)
+		if a == "" {
+			continue
+		}
+		if _, ok := seen[a]; ok {
+			continue
+		}
+		seen[a] = struct{}{}
+		assets = append(assets, a)
+	}
+	if len(assets) == 0 {
+		return
+	}
+	sort.SliceStable(assets, func(i, j int) bool {
+		return assetSortKey(assets[i]) < assetSortKey(assets[j])
+	})
+	var regimeByBase map[string]string
+	if cfg != nil && state != nil {
+		regimeByBase = buildRegimeByBaseAsset(cfg.Strategies, state, regime)
+	}
+	parts := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		price, short, ok := priceForAsset(prices, asset)
+		if !ok {
+			continue
+		}
+		priceStr := fmtComma2(price)
+		var part string
+		if leaderboardAssetUsesFuturesName(entries, asset) {
+			if fullName, ok := futuresFullNames[strings.ToUpper(short)]; ok {
+				part = fmt.Sprintf("%s (%s): $%s", short, fullName, priceStr)
+			} else {
+				part = fmt.Sprintf("%s: $%s", short, priceStr)
+			}
+		} else {
+			part = fmt.Sprintf("%s: $%s", short, priceStr)
+		}
+		if regimeByBase != nil {
+			if rl := regimeByBase[strings.ToUpper(asset)]; rl != "" {
+				part += " | " + rl
+			}
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		return
+	}
+	sb.WriteString(strings.Join(parts, " | "))
+	sb.WriteString("\n")
+}
+
 // formatLeaderboardMessage formats a leaderboard message for a sorted slice of entries.
 // Used by formatAllTimeMessage (top/bottom) and BuildLeaderboardSummary (per-platform summaries).
 // Callers are responsible for passing a positive topN (see leaderboardTopN).
-func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, showType bool, topN int) string {
+func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, showType bool, topN int, prices map[string]float64, regime *RegimeConfig, state *AppState, cfg *Config) string {
 	// Sort by PnL% descending.
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].PnLPct > entries[j].PnLPct
@@ -111,6 +187,7 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("%s **%s**\n", icon, title))
 	sb.WriteString(fmt.Sprintf("Daily Report | %s\n", dateStr))
+	writeLeaderboardHeaderPrices(&sb, entries, prices, regime, state, cfg)
 
 	// Totals across ALL strategies in this category.
 	var totalValue, totalCapital float64
@@ -210,7 +287,7 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 
 // formatAllTimeMessage formats the top/bottom all-time leaderboard.
 // isTop controls sort direction; topN controls how many entries to show.
-func formatAllTimeMessage(icon, title string, entries []LeaderboardEntry, isTop bool, topN int) string {
+func formatAllTimeMessage(icon, title string, entries []LeaderboardEntry, isTop bool, topN int, prices map[string]float64, regime *RegimeConfig, state *AppState, cfg *Config) string {
 	// Sort: top = descending PnL%, bottom = ascending PnL%.
 	sorted := make([]LeaderboardEntry, len(entries))
 	copy(sorted, entries)
@@ -230,7 +307,7 @@ func formatAllTimeMessage(icon, title string, entries []LeaderboardEntry, isTop 
 	}
 	top := sorted[:n]
 
-	return formatLeaderboardMessage(icon, title, top, true, n)
+	return formatLeaderboardMessage(icon, title, top, true, n, prices, regime, state, cfg)
 }
 
 // PostLeaderboard computes the leaderboard on-demand and posts all messages to
@@ -352,7 +429,7 @@ func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *Ap
 	if tickerFilter != "" {
 		title = fmt.Sprintf("%s %s Top %d", platformTitle, tickerFilter, n)
 	}
-	return formatLeaderboardMessage(platformIcon(lc.Platform), title, entries[:n], false, n)
+	return formatLeaderboardMessage(platformIcon(lc.Platform), title, entries[:n], false, n, prices, cfg.Regime, state, cfg)
 }
 
 // truncateRunes returns s clipped to at most max runes. Rune-aware so multi-byte

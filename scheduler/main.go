@@ -1865,7 +1865,7 @@ func main() {
 					chDetails := channelTradeDetails[detailKey]
 					chValue := channelValue[chKey]
 					chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
-					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chValue, prices, chDetails, chStrats, state, chKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats)
+					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chValue, prices, chDetails, chStrats, state, chKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats, cfg.Regime)
 					for _, msg := range msgs {
 						notifier.SendToChannel(chKey, chKey, msg)
 					}
@@ -1882,7 +1882,7 @@ func main() {
 						}
 						assetTrades := len(assetDetails)
 						assetSharpe := aggregateSharpe(closedByStrategy, assetStrats, state, rfr)
-						msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetValue, prices, assetDetails, assetStrats, state, chKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats)
+						msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetValue, prices, assetDetails, assetStrats, state, chKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats, cfg.Regime)
 						for _, msg := range msgs {
 							notifier.SendToChannel(chKey, chKey, msg)
 						}
@@ -2087,7 +2087,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	assetGroups, assetKeys := groupByAsset(chStrats)
 	if len(assetKeys) <= 1 {
 		chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
-		msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, chValue, prices, nil, chStrats, state, channelKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats)
+		msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, chValue, prices, nil, chStrats, state, channelKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats, cfg.Regime)
 		for _, msg := range msgs {
 			notifier.SendToChannel(channelKey, channelKey, msg)
 			fmt.Println(msg)
@@ -2102,7 +2102,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 				}
 			}
 			assetSharpe := aggregateSharpe(closedByStrategy, assetStrats, state, rfr)
-			msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetValue, prices, nil, assetStrats, state, channelKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats)
+			msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetValue, prices, nil, assetStrats, state, channelKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats, cfg.Regime)
 			for _, msg := range msgs {
 				notifier.SendToChannel(channelKey, channelKey, msg)
 				fmt.Println(msg)

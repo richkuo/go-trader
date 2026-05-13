@@ -544,6 +544,30 @@ func TestBuildLeaderboardSummary_PlatformOnly(t *testing.T) {
 	}
 }
 
+func TestBuildLeaderboardSummary_RegimePriceLine741(t *testing.T) {
+	cfg := &Config{
+		Regime: &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20},
+		Strategies: []StrategyConfig{
+			{ID: "hl-sma-btc", Type: "perps", Capital: 1000, Platform: "hyperliquid", Args: []string{"sma_crossover", "ETH/USDT", "1h"}},
+		},
+	}
+	state := NewAppState()
+	ss := NewStrategyState(cfg.Strategies[0])
+	ss.Cash = 1100
+	ss.Regime = "ranging"
+	state.Strategies["hl-sma-btc"] = ss
+
+	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", TopN: 5, Channel: "chan-1"}
+	prices := map[string]float64{"ETH/USDT": 3000}
+	msg := BuildLeaderboardSummary(lc, cfg, state, prices, nil, nil)
+	if msg == "" {
+		t.Fatal("Expected non-empty message")
+	}
+	if !containsStr(msg, "ETH: $3,000.00 | ranging") {
+		t.Errorf("expected header price line with regime, got:\n%s", msg)
+	}
+}
+
 func TestBuildLeaderboardSummary_TickerFilter(t *testing.T) {
 	cfg := &Config{
 		Strategies: []StrategyConfig{
