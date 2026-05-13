@@ -228,6 +228,69 @@ func TestSoleOwnerTPFinal_FullCloseAtTPPrice_NotSL(t *testing.T) {
 	}
 }
 
+// TestSoleOwnerTPFullClose_TPOIDsLag_EmitsProtectionDM covers #754: when the
+// account is already flat but pos.TPOIDs still shows a positive tier-1 OID
+// (protection-sync has not zeroed it yet), tryBookSoleOwnerTPFill returns
+// false and hlAttemptCloseFromTPFills books the TP fill — that path must still
+// enqueue a ProtectionFillAlert for the owner DM.
+func TestSoleOwnerTPFullClose_TPOIDsLag_EmitsProtectionDM(t *testing.T) {
+	const (
+		entryPx     = 2000.0
+		entryATR    = 50.0
+		fullQty     = 0.2
+		expectedTP2 = entryPx + 3.0*entryATR
+	)
+	ss := &StrategyState{
+		ID:   "hl-tp-sole",
+		Cash: 100,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol: "ETH", Quantity: fullQty, InitialQuantity: fullQty,
+				AvgCost: entryPx, EntryATR: entryATR, Side: "long",
+				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-tp-sole",
+				TPOIDs:            []int64{0, 222},
+				StopLossOID:       42,
+				StopLossTriggerPx: 1900,
+			},
+		},
+	}
+	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
+		switch oid {
+		case 222:
+			return HLFillLookup{Fee: 0.05, FilledQty: fullQty, Px: expectedTP2, OID: 222, Count: 1}, true
+		case 42:
+			return HLFillLookup{}, false
+		default:
+			return HLFillLookup{}, false
+		}
+	})
+	var alerts []ProtectionFillAlert
+	logger := newTestLogger(t)
+
+	changed := reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", nil, resolver, logger, &alerts)
+	if !changed {
+		t.Fatal("expected changed=true")
+	}
+	if _, open := ss.Positions["ETH"]; open {
+		t.Fatal("position should be closed after TP fill attribution")
+	}
+	if len(alerts) != 1 {
+		t.Fatalf("pendingAlerts = %d, want 1", len(alerts))
+	}
+	if alerts[0].FillType != "TP2" {
+		t.Errorf("FillType = %q, want TP2", alerts[0].FillType)
+	}
+	if alerts[0].IsPartial {
+		t.Error("IsPartial = true, want false (full close)")
+	}
+	if len(ss.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory = %d, want 1", len(ss.TradeHistory))
+	}
+	if math.Abs(ss.TradeHistory[0].Price-expectedTP2) > 1e-9 {
+		t.Errorf("trade.Price = %g, want %g", ss.TradeHistory[0].Price, expectedTP2)
+	}
+}
+
 // TestSoleOwnerTPFinal_PartialCloseShort verifies the short-side mirror of the
 // partial path — drop sign math + TP price formula.
 func TestSoleOwnerTPFinal_PartialCloseShort(t *testing.T) {

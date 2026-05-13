@@ -237,7 +237,7 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 // cached resolver outside the lock and call
 // reconcileHyperliquidPositionsWithResolver.
 func reconcileHyperliquidPositions(stratState *StrategyState, sym string, positions []HLPosition, accountAddress string, logger *StrategyLogger) bool {
-	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, directHyperliquidReconcileFillResolver(accountAddress), logger)
+	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, directHyperliquidReconcileFillResolver(accountAddress), logger, nil)
 }
 
 // reconcileHyperliquidPositionsForStrategy is the production entry point with
@@ -276,11 +276,11 @@ func reconcileHyperliquidPositionsForStrategy(
 		// by the booker; the legacy reconciler's qty/side/avgCost resync will
 		// no-op because virtual now matches on-chain. Continue through it for
 		// idempotent housekeeping (multiplier migration, leverage seed).
-		reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger)
+		reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts)
 		return true
 	}
 
-	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger)
+	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts)
 }
 
 // tryBookSoleOwnerTPFill is the sole-owner TP attribution helper. Returns true
@@ -463,7 +463,7 @@ func tryBookSoleOwnerTPFill(
 // resolver is expected to do pure in-memory cache reads when called under
 // mu.Lock() (see buildCachedHyperliquidReconcileFillResolver) — never make
 // HTTP calls.
-func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym string, positions []HLPosition, resolveFee hlReconcileFillResolver, logger *StrategyLogger) bool {
+func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym string, positions []HLPosition, resolveFee hlReconcileFillResolver, logger *StrategyLogger, pendingAlerts *[]ProtectionFillAlert) bool {
 	changed := false
 
 	// Find the on-chain position for this strategy's symbol.
@@ -522,7 +522,7 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 		// the position was flattened by TPs (HL auto-cancels the resting
 		// reduce-only SL once flat). Book each TP fill at its actual price
 		// rather than mis-attributing to the SL trigger price.
-		if hlAttemptCloseFromTPFills(stratState, sym, statePos, resolveFee, logger) {
+		if hlAttemptCloseFromTPFills(stratState, sym, statePos, resolveFee, logger, pendingAlerts) {
 			return true
 		}
 		if statePos.StopLossOID > 0 && statePos.StopLossTriggerPx > 0 {
@@ -1165,10 +1165,11 @@ func hyperliquidHasClearedTPTier(sc StrategyConfig, pos *Position, closeQty floa
 //
 // Returns false (no mutation) when no TP attribution is possible; the caller
 // then falls through to the legacy SL-trigger-price path.
-func hlAttemptCloseFromTPFills(s *StrategyState, sym string, pos *Position, resolveFee hlReconcileFillResolver, logger *StrategyLogger) bool {
+func hlAttemptCloseFromTPFills(s *StrategyState, sym string, pos *Position, resolveFee hlReconcileFillResolver, logger *StrategyLogger, pendingAlerts *[]ProtectionFillAlert) bool {
 	if s == nil || pos == nil || len(pos.TPOIDs) == 0 || resolveFee == nil {
 		return false
 	}
+	alertSide := pos.Side
 	// If the SL OID has fills, leave attribution to the existing SL path —
 	// it knows how to handle the #621 "SL fired on the post-TP residual"
 	// case and we don't want to double-book by also crediting TPs here.
@@ -1207,6 +1208,25 @@ func hlAttemptCloseFromTPFills(s *StrategyState, sym string, pos *Position, reso
 		logPrefix := fmt.Sprintf("TP%d fill reconciled", f.tierIdx+1)
 		if !bookPerpsPartialCloseWithFillFee(s, sym, f.lookup.FilledQty, f.lookup.Px, f.lookup.Fee, true, oidStr, reason, detailsPrefix, logPrefix, logger) {
 			break
+		}
+		if pendingAlerts != nil {
+			remaining := 0.0
+			if posAfter := s.Positions[sym]; posAfter != nil {
+				remaining = posAfter.Quantity
+			}
+			*pendingAlerts = append(*pendingAlerts, ProtectionFillAlert{
+				StrategyID:      s.ID,
+				Symbol:          sym,
+				Side:            alertSide,
+				FillType:        tpTierLabel(f.tierIdx),
+				IsPartial:       remaining > 1e-9,
+				FillPrice:       f.lookup.Px,
+				CloseQty:        f.lookup.FilledQty,
+				RemainingQty:    remaining,
+				RealizedPnL:     lastBookedTradePnL(s),
+				HasPnL:          true,
+				ExchangeOrderID: oidStr,
+			})
 		}
 	}
 	// Finalize any residual at zero PnL. Hits when cumulative TP fills under-
