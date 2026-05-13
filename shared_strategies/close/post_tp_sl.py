@@ -19,12 +19,20 @@ from shared_strategies.close.regime_atr import (
     REGIME_CLASSIFIER_KEY,
     SURFACE_SL_AFTER,
     SURFACE_SL_AFTER_TRAIL,
+    SURFACE_STOP_LOSS,
     RegimeATRBlock,
     parse_regime_atr_block,
+    parse_regime_tp_tiers,
+    resolve_regime_tier,
 )
 
 
-_TIERED_TP_NAMES = ("tiered_tp_atr", "tiered_tp_atr_live")
+_TIERED_TP_NAMES = (
+    "tiered_tp_atr",
+    "tiered_tp_atr_live",
+    "tiered_tp_atr_regime",
+    "tiered_tp_atr_live_regime",
+)
 
 
 @dataclass(frozen=True)
@@ -358,6 +366,7 @@ def _strategy_uses_tiered_tp_atr_close(close_refs: Iterable[dict]) -> bool:
 
 def parse_strategy_tp_sl_after_rules(
     close_refs: Iterable[dict],
+    regime: Optional[str] = None,
 ) -> Tuple[TierSLAfterRules, List[str]]:
     """Walk the strategy's close refs and extract the strategy-level default
     and per-tier sl_after rules from the first ``tiered_tp_atr*`` entry.
@@ -365,6 +374,12 @@ def parse_strategy_tp_sl_after_rules(
     Returns ``(rules, errs)``. Errors describe individual malformed fields;
     the parser still returns whatever it could so the caller can surface the
     problems at config-load time without losing the rest of the config.
+
+    When the first tiered ref is ``tiered_tp_atr_regime`` /
+    ``tiered_tp_atr_live_regime``, per-tier ``sl_after`` alignment uses the
+    tier's ATR multiple **resolved for the given regime label** (same order as
+    ``parse_tp_tier_close_fractions``). Pass ``regime=None`` at static load
+    time to skip per-tier extraction (defaults still parse).
     """
     rules = TierSLAfterRules()
     errs: List[str] = []
@@ -372,10 +387,12 @@ def parse_strategy_tp_sl_after_rules(
         return rules, errs
     default_raw: Any = None
     tiers_raw: Any = None
+    tiered_name = ""
     for ref in close_refs:
         name = (ref.get("name") or "").strip().lower()
         if name not in _TIERED_TP_NAMES:
             continue
+        tiered_name = name
         params = ref.get("params") or {}
         if "sl_after" in params:
             default_raw = params["sl_after"]
@@ -389,6 +406,49 @@ def parse_strategy_tp_sl_after_rules(
             rules.default = r
         except ValueError as e:
             errs.append(f"sl_after (strategy-level): {e}")
+    if tiered_name in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime"):
+        reg = (regime or "").strip()
+        if not reg:
+            return rules, errs
+        ref_params: dict = {}
+        for ref in close_refs:
+            if (ref.get("name") or "").strip().lower() == tiered_name:
+                ref_params = dict(ref.get("params") or {})
+                break
+        use_defaults = bool(ref_params.get("use_defaults"))
+        specs, terr = parse_regime_tp_tiers(
+            tiers_raw, f"{tiered_name}.tiers", use_defaults,
+        )
+        errs.extend(terr)
+        if terr:
+            return rules, errs
+        pairs: List[Tuple[float, SLAfterRule]] = []
+        items_list = tiers_raw if isinstance(tiers_raw, list) else []
+        for idx, spec in enumerate(specs):
+            pair = resolve_regime_tier(spec, reg)
+            if pair is None:
+                errs.append(
+                    f"{tiered_name}.tiers[{idx}]: regime {reg!r} resolved to no "
+                    "atr/close_fraction for sl_after tier alignment"
+                )
+                continue
+            mult, _ = pair
+            item: dict = {}
+            if idx < len(items_list) and isinstance(items_list[idx], dict):
+                item = items_list[idx]
+            rule = SLAfterRule()
+            if item.get("sl_after") is not None:
+                try:
+                    parsed = parse_sl_after_rule(item["sl_after"])
+                    validate_sl_after_rule(parsed)
+                    rule = parsed
+                except ValueError as e:
+                    errs.append(f"sl_after (tier[{idx}]): {e}")
+            pairs.append((mult, rule))
+        pairs.sort(key=lambda p: p[0])
+        rules.per_tier = [p[1] for p in pairs]
+        return rules, errs
+
     if not isinstance(tiers_raw, list):
         return rules, errs
     pairs: List[Tuple[float, SLAfterRule]] = []
@@ -424,6 +484,7 @@ def validate_post_tp_stop_loss_rules(
     stop_loss_margin_pct: Optional[float] = None,
     trailing_stop_atr_mult: Optional[float] = None,
     trailing_stop_pct: Optional[float] = None,
+    stop_loss_atr_regime: Optional[Any] = None,
     strategy_type: str = "perps",
 ) -> List[str]:
     """Mirror ``validatePostTPStopLossRules`` in scheduler/post_tp_sl.go.
@@ -446,8 +507,8 @@ def validate_post_tp_stop_loss_rules(
         params = ref.get("params") or {}
         if "sl_after" in params:
             out.append(
-                f"sl_after is only honored on tiered_tp_atr / "
-                f"tiered_tp_atr_live close refs; found on {ref.get('name')!r}"
+                f"sl_after is only honored on tiered_tp_atr* close refs; "
+                f"found on {ref.get('name')!r}"
             )
         tiers_raw = params.get("tiers")
         if isinstance(tiers_raw, list):
@@ -466,15 +527,27 @@ def validate_post_tp_stop_loss_rules(
             "sl_after cannot be combined with trailing_stop_atr_mult or "
             "trailing_stop_pct — trailing already walks the SL continuously"
         )
+    blk_sl_regime, sl_regime_errs = parse_regime_atr_block(
+        stop_loss_atr_regime, "stop_loss_atr_regime", SURFACE_STOP_LOSS,
+    )
+    if stop_loss_atr_regime is not None and sl_regime_errs:
+        out.extend(sl_regime_errs)
+    has_regime_sl = (
+        stop_loss_atr_regime is not None
+        and not blk_sl_regime.is_zero()
+        and not sl_regime_errs
+    )
     has_fixed_sl = (
         (stop_loss_atr_mult is not None and stop_loss_atr_mult > 0)
         or (stop_loss_pct is not None and stop_loss_pct > 0)
         or (stop_loss_margin_pct is not None and stop_loss_margin_pct > 0)
+        or has_regime_sl
     )
     if not has_fixed_sl:
         out.append(
             "sl_after requires a fixed stop-loss to adjust (set "
-            "stop_loss_atr_mult, stop_loss_pct, or stop_loss_margin_pct)"
+            "stop_loss_atr_mult, stop_loss_atr_regime, stop_loss_pct, "
+            "or stop_loss_margin_pct)"
         )
     if (strategy_type or "").strip().lower() == "manual":
         if rules.default.kind == "trail_from_here":
@@ -493,24 +566,60 @@ def validate_post_tp_stop_loss_rules(
     return out
 
 
-def parse_tp_tier_close_fractions(close_refs: Iterable[dict]) -> List[float]:
+def parse_tp_tier_close_fractions(
+    close_refs: Iterable[dict],
+    regime: Optional[str] = None,
+) -> List[float]:
     """Return cumulative ``close_fraction`` values for the strategy's
     ``tiered_tp_atr*`` close ref (sorted by ascending ``atr_multiple``).
 
-    Used by the backtester (#709) to detect which tier just fired by
+    Used by the backtester (#709, #737) to detect which tier just fired by
     comparing the post-bar ``closed_qty / initial_qty`` ratio against the
     cumulative thresholds. Returns an empty list when no tiered ATR ref is
     configured. Final-tier close_fraction is coerced to 1.0 to match the
     live ``strategyTPTiers`` behavior.
+
+    For ``tiered_tp_atr_regime`` / ``tiered_tp_atr_live_regime``, pass the
+    stamped position regime label so per-regime ATR multiples resolve to the
+    same tier ordering used by the close evaluators. With ``regime=None`` or
+    an empty label, regime-aware refs return ``[]`` (caller re-parses at
+    open with a concrete label).
     """
     for ref in close_refs:
         name = (ref.get("name") or "").strip().lower()
         if name not in _TIERED_TP_NAMES:
             continue
-        tiers_raw = (ref.get("params") or {}).get("tiers")
+        params = ref.get("params") or {}
+        if name in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime"):
+            reg = (regime or "").strip()
+            if not reg:
+                return []
+            use_defaults = bool(params.get("use_defaults"))
+            tiers_raw = params.get("tiers")
+            specs, terr = parse_regime_tp_tiers(
+                tiers_raw, f"{name}.tiers", use_defaults,
+            )
+            if terr:
+                return []
+            pairs: List[Tuple[float, float]] = []
+            for spec in specs:
+                pair = resolve_regime_tier(spec, reg)
+                if pair is None:
+                    return []
+                mult, frac = pair
+                pairs.append((mult, max(min(frac, 1.0), 0.0)))
+            if not pairs:
+                return []
+            pairs.sort(key=lambda p: p[0])
+            out = [p[1] for p in pairs]
+            if out:
+                out[-1] = 1.0
+            return out
+
+        tiers_raw = params.get("tiers")
         if not isinstance(tiers_raw, list):
             return []
-        pairs: List[Tuple[float, float]] = []
+        pairs = []
         for item in tiers_raw:
             if not isinstance(item, dict):
                 continue

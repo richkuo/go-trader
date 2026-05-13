@@ -1041,7 +1041,7 @@ def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds():
         }],
     )
     # Pre-condition: parser returned no usable thresholds.
-    assert bt._tp_tier_thresholds == []
+    assert bt._tp_tier_thresholds_static == []
     result = bt.run(df, save=False)
     # No SL fire — price dropped to $80 (well below the would-be SL at $90)
     # but the gate must skip the seed entirely. Only the end-of-run forced

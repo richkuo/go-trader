@@ -49,7 +49,7 @@ import os
 import json
 import math
 from datetime import datetime
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
@@ -110,6 +110,19 @@ def _load_close_registry():
     return _close_registry
 
 
+_CLOSE_STRATEGIES_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "shared_strategies", "close")
+)
+
+
+def _ensure_close_strategies_path() -> None:
+    """``regime_atr`` lives under ``shared_strategies/close``; add it to
+    ``sys.path`` so the backtester can import the same module the close
+    evaluators use without depending on PYTHONPATH."""
+    if _CLOSE_STRATEGIES_DIR not in sys.path:
+        sys.path.insert(0, _CLOSE_STRATEGIES_DIR)
+
+
 # Equity-curve points per year per timeframe — used to derive the Sharpe
 # annualization factor. Crypto trades 24/7, so a 1d run has ~365 points/yr,
 # a 4h run has ~365*6, etc. Hardcoding sqrt(365) overstated Sharpe by
@@ -160,6 +173,14 @@ def _open_action_from_signal(signal: int) -> str:
     if signal < 0:
         return "short"
     return "none"
+
+
+def _close_refs_use_regime_tiered_tp(refs: list[dict]) -> bool:
+    for ref in refs:
+        n = (ref.get("name") or "").strip().lower()
+        if n in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime"):
+            return True
+    return False
 
 
 def _normalize_open_action(value) -> str:
@@ -249,6 +270,8 @@ class Backtester:
                  stop_loss_margin_pct: Optional[float] = None,
                  trailing_stop_atr_mult: Optional[float] = None,
                  trailing_stop_pct: Optional[float] = None,
+                 stop_loss_atr_regime: Optional[dict] = None,
+                 trailing_stop_atr_regime: Optional[dict] = None,
                  strategy_type: str = "perps"):
         """
         Args:
@@ -319,7 +342,135 @@ class Backtester:
         self.trailing_stop_atr_mult = trailing_stop_atr_mult
         self.trailing_stop_pct = trailing_stop_pct
         self.strategy_type = strategy_type
-        if self.close_strategies:
+        self.stop_loss_atr_regime = (
+            dict(stop_loss_atr_regime) if stop_loss_atr_regime else None
+        )
+        self.trailing_stop_atr_regime = (
+            dict(trailing_stop_atr_regime) if trailing_stop_atr_regime else None
+        )
+        self._stop_loss_regime_block = None
+        self._trailing_stop_regime_block = None
+        self._uses_regime_tiered_close = _close_refs_use_regime_tiered_tp(
+            self._close_refs,
+        )
+        _needs_regime_atr = (
+            self.stop_loss_atr_regime is not None
+            or self.trailing_stop_atr_regime is not None
+            or self._uses_regime_tiered_close
+        )
+        if _needs_regime_atr:
+            _ensure_close_strategies_path()
+            from regime_atr import (  # type: ignore
+                SURFACE_STOP_LOSS,
+                SURFACE_TRAILING,
+                parse_regime_atr_block,
+                resolve_regime_atr,
+            )
+
+            regime_errs: list[str] = []
+            if self.stop_loss_atr_regime is not None:
+                blk, errs = parse_regime_atr_block(
+                    self.stop_loss_atr_regime,
+                    "stop_loss_atr_regime",
+                    SURFACE_STOP_LOSS,
+                )
+                regime_errs.extend(errs)
+                self._stop_loss_regime_block = blk
+            if self.trailing_stop_atr_regime is not None:
+                blk, errs = parse_regime_atr_block(
+                    self.trailing_stop_atr_regime,
+                    "trailing_stop_atr_regime",
+                    SURFACE_TRAILING,
+                )
+                regime_errs.extend(errs)
+                self._trailing_stop_regime_block = blk
+            if regime_errs:
+                raise ValueError(
+                    "Invalid regime ATR stop configuration: " + "; ".join(regime_errs)
+                )
+
+            def _active_regime_sl(blk) -> bool:
+                return blk is not None and not blk.is_zero()
+
+            if _active_regime_sl(self._stop_loss_regime_block):
+                if (
+                    self.stop_loss_atr_mult is not None
+                    and self.stop_loss_atr_mult > 0
+                ):
+                    raise ValueError(
+                        "stop_loss_atr_regime is mutually exclusive with "
+                        "stop_loss_atr_mult"
+                    )
+                if self.stop_loss_pct is not None and self.stop_loss_pct > 0:
+                    raise ValueError(
+                        "stop_loss_atr_regime is mutually exclusive with "
+                        "stop_loss_pct"
+                    )
+                if (
+                    self.stop_loss_margin_pct is not None
+                    and self.stop_loss_margin_pct > 0
+                ):
+                    raise ValueError(
+                        "stop_loss_atr_regime is mutually exclusive with "
+                        "stop_loss_margin_pct"
+                    )
+                if self.trailing_stop_pct is not None and self.trailing_stop_pct > 0:
+                    raise ValueError(
+                        "stop_loss_atr_regime is mutually exclusive with "
+                        "trailing_stop_pct"
+                    )
+                if (
+                    self.trailing_stop_atr_mult is not None
+                    and self.trailing_stop_atr_mult > 0
+                ):
+                    raise ValueError(
+                        "stop_loss_atr_regime is mutually exclusive with "
+                        "trailing_stop_atr_mult"
+                    )
+                if _active_regime_sl(self._trailing_stop_regime_block):
+                    raise ValueError(
+                        "stop_loss_atr_regime is mutually exclusive with "
+                        "trailing_stop_atr_regime"
+                    )
+
+            if _active_regime_sl(self._trailing_stop_regime_block):
+                if (
+                    self.trailing_stop_atr_mult is not None
+                    and self.trailing_stop_atr_mult > 0
+                ):
+                    raise ValueError(
+                        "trailing_stop_atr_regime is mutually exclusive with "
+                        "trailing_stop_atr_mult"
+                    )
+                if self.trailing_stop_pct is not None and self.trailing_stop_pct > 0:
+                    raise ValueError(
+                        "trailing_stop_atr_regime is mutually exclusive with "
+                        "trailing_stop_pct"
+                    )
+                if self.stop_loss_pct is not None and self.stop_loss_pct > 0:
+                    raise ValueError(
+                        "trailing_stop_atr_regime is mutually exclusive with "
+                        "stop_loss_pct"
+                    )
+                if (
+                    self.stop_loss_margin_pct is not None
+                    and self.stop_loss_margin_pct > 0
+                ):
+                    raise ValueError(
+                        "trailing_stop_atr_regime is mutually exclusive with "
+                        "stop_loss_margin_pct"
+                    )
+                if (
+                    self.stop_loss_atr_mult is not None
+                    and self.stop_loss_atr_mult > 0
+                ):
+                    raise ValueError(
+                        "trailing_stop_atr_regime is mutually exclusive with "
+                        "stop_loss_atr_mult"
+                    )
+            self._resolve_regime_atr = resolve_regime_atr
+        else:
+            self._resolve_regime_atr = None  # type: ignore[assignment]
             _evaluate, list_strategies = _load_close_registry()
             available = set(list_strategies())
             for name in self.close_strategies:
@@ -333,10 +484,20 @@ class Backtester:
         # thresholds once at init. When no sl_after is configured this is a
         # no-op and the per-bar SL machinery in run() short-circuits.
         self._sl_mod = _load_post_tp_sl()
-        self._sl_after_rules, _sl_parse_errs = self._sl_mod.parse_strategy_tp_sl_after_rules(
-            self._close_refs
+        self._sl_after_rules_static, _sl_parse_errs = (
+            self._sl_mod.parse_strategy_tp_sl_after_rules(self._close_refs)
         )
-        self._tp_tier_thresholds = self._sl_mod.parse_tp_tier_close_fractions(self._close_refs)
+        self._tp_tier_thresholds_static = self._sl_mod.parse_tp_tier_close_fractions(
+            self._close_refs,
+        )
+        # Per-run mutable views (``run()`` re-seeds at each open). Unit tests
+        # that call ``_maybe_apply_sl_after`` directly expect these attrs to
+        # exist without going through ``run()``.
+        self._active_sl_after_rules = self._sl_after_rules_static
+        self._run_tp_tier_thresholds = list(self._tp_tier_thresholds_static)
+        self._run_stop_loss_atr_mult: Optional[float] = None
+        self._run_trailing_stop_atr_mult: Optional[float] = None
+        self._run_position_regime = ""
         # Validation parity with the live config — reject the same bad combos
         # at backtest-load time so users can't silently get a no-op. Run
         # whenever ANY close ref carries an `sl_after` key (or the tiered
@@ -355,7 +516,15 @@ class Backtester:
             ):
                 any_sl_after_key = True
                 break
-        if self._sl_after_rules.has_any() or _sl_parse_errs or any_sl_after_key:
+        self._any_sl_after_key = any_sl_after_key
+        self._sl_after_pipeline_enabled = (
+            self._sl_after_rules_static.has_any() or any_sl_after_key
+        )
+        if (
+            self._sl_after_rules_static.has_any()
+            or _sl_parse_errs
+            or any_sl_after_key
+        ):
             errs = self._sl_mod.validate_post_tp_stop_loss_rules(
                 self._close_refs,
                 stop_loss_atr_mult=self.stop_loss_atr_mult,
@@ -363,6 +532,7 @@ class Backtester:
                 stop_loss_margin_pct=self.stop_loss_margin_pct,
                 trailing_stop_atr_mult=self.trailing_stop_atr_mult,
                 trailing_stop_pct=self.trailing_stop_pct,
+                stop_loss_atr_regime=self.stop_loss_atr_regime,
                 strategy_type=self.strategy_type,
             )
             if errs:
@@ -375,7 +545,7 @@ class Backtester:
             # The live validator accepts margin_pct as satisfying the
             # "fixed SL" precondition, so we reject loudly here rather than
             # silently produce a backtest where the pre-bump SL never fires.
-            if self._sl_after_rules.has_any():
+            if self._sl_after_rules_static.has_any():
                 # #736 explicitly defers regime-aware sl_after backtester
                 # parity to the parallel parity issue. Parsing the shape works
                 # (so live configs round-trip), but the per-bar engine here
@@ -384,9 +554,9 @@ class Backtester:
                 # every bar. Fail loud at load instead of producing results
                 # that look right but ignore the per-regime values.
                 regime_rules = []
-                if self._sl_after_rules.default.has_regime():
+                if self._sl_after_rules_static.default.has_regime():
                     regime_rules.append("strategy-level default")
-                for idx, r in enumerate(self._sl_after_rules.per_tier):
+                for idx, r in enumerate(self._sl_after_rules_static.per_tier):
                     if r.has_regime():
                         regime_rules.append(f"tier[{idx}]")
                 if regime_rules:
@@ -399,8 +569,14 @@ class Backtester:
                         "form for backtesting."
                     )
                 has_atr_sl = (
-                    self.stop_loss_atr_mult is not None
-                    and self.stop_loss_atr_mult > 0
+                    (
+                        self.stop_loss_atr_mult is not None
+                        and self.stop_loss_atr_mult > 0
+                    )
+                    or (
+                        self._stop_loss_regime_block is not None
+                        and not self._stop_loss_regime_block.is_zero()
+                    )
                 )
                 has_pct_sl = (
                     self.stop_loss_pct is not None and self.stop_loss_pct > 0
@@ -501,6 +677,12 @@ class Backtester:
             ensure_regime = _load_regime()
             ensure_regime(df, period=self.regime_period, adx_threshold=self.regime_adx_threshold)
 
+        # Snapshot the bar-close regime label before any shift so close
+        # evaluators that re-resolve per bar (``tiered_tp_atr_live_regime``)
+        # read the same ``ensure_regime_columns`` output as live (#737).
+        if "regime" in df.columns:
+            df["_regime_bar_close"] = df["regime"].copy()
+
         # Shift regime to match the signal shift in the signal-normalization
         # block above. In live, the regime label is computed from bar N's
         # closed data at the same moment as the signal; both gate the order
@@ -520,6 +702,14 @@ class Backtester:
             df["regime"] = df["regime"].shift(1).fillna("")
 
         has_open = "open" in df.columns
+
+        def _entry_stamp(row) -> str:
+            if self.regime_enabled:
+                return str(row.get("regime", "") or "").strip()
+            return str(row.get("_regime_bar_close", "") or "").strip()
+
+        def _bar_close_regime(row) -> str:
+            return str(row.get("_regime_bar_close", "") or "").strip()
 
         cash = self.initial_capital
         position = 0.0  # shares held
@@ -543,9 +733,59 @@ class Backtester:
         sl_tiers_processed = 0
         post_tp_trail_mult: Optional[float] = None
         sl_high_water_px = 0.0
-        sl_after_active = self._sl_after_rules.has_any()
+        self._active_sl_after_rules = self._sl_after_rules_static
+        self._run_tp_tier_thresholds = list(self._tp_tier_thresholds_static)
+        self._run_stop_loss_atr_mult: Optional[float] = None
+        self._run_trailing_stop_atr_mult: Optional[float] = None
+        self._run_position_regime = ""
+        sl_after_active = self._sl_after_pipeline_enabled
 
         atr_series = df["atr"] if "atr" in df.columns else None
+
+        def stamp_open_from_label(stamp: str) -> None:
+            lab = (stamp or "").strip()
+            self._run_position_regime = lab
+            if self._uses_regime_tiered_close:
+                rules_rt, _ = self._sl_mod.parse_strategy_tp_sl_after_rules(
+                    self._close_refs, regime=lab,
+                )
+                self._active_sl_after_rules = rules_rt
+                self._run_tp_tier_thresholds = self._sl_mod.parse_tp_tier_close_fractions(
+                    self._close_refs, regime=lab,
+                )
+            else:
+                self._active_sl_after_rules = self._sl_after_rules_static
+                self._run_tp_tier_thresholds = list(self._tp_tier_thresholds_static)
+
+            self._run_stop_loss_atr_mult = None
+            self._run_trailing_stop_atr_mult = None
+            if self._resolve_regime_atr is not None and lab:
+                if (
+                    self._stop_loss_regime_block is not None
+                    and not self._stop_loss_regime_block.is_zero()
+                ):
+                    self._run_stop_loss_atr_mult = self._resolve_regime_atr(
+                        self._stop_loss_regime_block, lab,
+                    )
+                if (
+                    self._trailing_stop_regime_block is not None
+                    and not self._trailing_stop_regime_block.is_zero()
+                ):
+                    self._run_trailing_stop_atr_mult = self._resolve_regime_atr(
+                        self._trailing_stop_regime_block, lab,
+                    )
+            if self._run_stop_loss_atr_mult is None:
+                if (
+                    self.stop_loss_atr_mult is not None
+                    and self.stop_loss_atr_mult > 0
+                ):
+                    self._run_stop_loss_atr_mult = self.stop_loss_atr_mult
+            if self._run_trailing_stop_atr_mult is None:
+                if (
+                    self.trailing_stop_atr_mult is not None
+                    and self.trailing_stop_atr_mult > 0
+                ):
+                    self._run_trailing_stop_atr_mult = self.trailing_stop_atr_mult
 
         if starting_long:
             effective_entry = starting_long["entry_price"]
@@ -571,6 +811,10 @@ class Backtester:
                 seed_atr = 0.0
             if seed_atr > 0 and seed_atr <= 0.5 * effective_entry:
                 entry_atr_value = seed_atr
+            stamp = str(starting_long.get("entry_regime", "") or "").strip()
+            if not stamp:
+                stamp = _entry_stamp(df.iloc[0])
+            stamp_open_from_label(stamp)
 
         for i, (idx, row) in enumerate(df.iterrows()):
             fill_price = row["open"] if has_open else row["close"]
@@ -651,7 +895,14 @@ class Backtester:
                         post_tp_trail_mult = None
                         sl_high_water_px = 0.0
                         sl_after_just_applied = False
-                    elif sl_after_active and self._tp_tier_thresholds:
+                        self._active_sl_after_rules = self._sl_after_rules_static
+                        self._run_tp_tier_thresholds = list(
+                            self._tp_tier_thresholds_static,
+                        )
+                        self._run_stop_loss_atr_mult = None
+                        self._run_trailing_stop_atr_mult = None
+                        self._run_position_regime = ""
+                    elif sl_after_active and self._run_tp_tier_thresholds:
                         # After applying a partial close at this bar's open,
                         # detect which tier(s) just cleared and apply the
                         # highest cleared tier's sl_after rule. The end-of-bar
@@ -700,16 +951,17 @@ class Backtester:
                     avg_cost = effective_price
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
+                    stamp_open_from_label(_entry_stamp(row))
                     # #716 item 3: seed the SL trigger only when sl_after has
                     # usable tier thresholds. Without thresholds, the post-TP
                     # adjustment machinery never fires (`_maybe_apply_sl_after`
-                    # is gated on `self._tp_tier_thresholds`), so a seeded-
+                    # is gated on `self._run_tp_tier_thresholds`), so a seeded-
                     # then-never-adjusted trigger would represent a phantom
                     # fixed SL the rest of the engine doesn't actually
                     # simulate. Mirrors the live shape, where the fixed SL is
                     # placed by `runHyperliquidProtectionSync` independently
                     # of `sl_after` configuration.
-                    if sl_after_active and self._tp_tier_thresholds:
+                    if sl_after_active and self._run_tp_tier_thresholds:
                         sl_trigger_px = self._initial_sl_trigger(
                             "long", avg_cost, entry_atr_value,
                         )
@@ -729,7 +981,8 @@ class Backtester:
                     avg_cost = effective_price
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
-                    if sl_after_active and self._tp_tier_thresholds:
+                    stamp_open_from_label(_entry_stamp(row))
+                    if sl_after_active and self._run_tp_tier_thresholds:
                         sl_trigger_px = self._initial_sl_trigger(
                             "short", avg_cost, entry_atr_value,
                         )
@@ -745,6 +998,8 @@ class Backtester:
                     pending_close_fraction = self._evaluate_close_strategies(
                         position, avg_cost, initial_quantity, entry_atr_value,
                         mark_price, atr_series, idx,
+                        position_regime=self._run_position_regime,
+                        market_regime=_bar_close_regime(row),
                     )
 
                 # End-of-bar: walk the trailing-stop high-water mark (only
@@ -881,7 +1136,10 @@ class Backtester:
                                    entry_atr_value: float,
                                    mark_price: float,
                                    atr_series: Optional[pd.Series],
-                                   idx) -> float:
+                                   idx,
+                                   *,
+                                   position_regime: str = "",
+                                   market_regime: str = "") -> float:
         """Run every configured close evaluator against the simulated position
         and return the max ``close_fraction``. Same max-wins resolution as the
         live composition flow in shared_tools/strategy_composition.py.
@@ -894,8 +1152,11 @@ class Backtester:
             "current_quantity": float(abs(position)),
             "initial_quantity": float(initial_quantity or abs(position)),
             "entry_atr": float(entry_atr_value),
+            "regime": str(position_regime or ""),
         }
         market_dict = {"mark_price": float(mark_price)}
+        if market_regime:
+            market_dict["regime"] = str(market_regime)
         if atr_series is not None:
             # Current-bar ATR access is intentional and matches live (#730):
             # close evaluators run end-of-bar with this bar's closed mark and
@@ -941,11 +1202,11 @@ class Backtester:
         if avg_cost <= 0 or side not in ("long", "short"):
             return 0.0
         if (
-            self.stop_loss_atr_mult is not None
-            and self.stop_loss_atr_mult > 0
+            self._run_stop_loss_atr_mult is not None
+            and self._run_stop_loss_atr_mult > 0
             and entry_atr > 0
         ):
-            distance = self.stop_loss_atr_mult * entry_atr
+            distance = self._run_stop_loss_atr_mult * entry_atr
             return avg_cost - distance if side == "long" else avg_cost + distance
         if self.stop_loss_pct is not None and self.stop_loss_pct > 0:
             return (
@@ -1029,11 +1290,11 @@ class Backtester:
         if closed_ratio <= 0:
             return sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, sl_high_water_px
         highest = self._sl_mod.find_highest_cleared_tier(
-            self._tp_tier_thresholds, closed_ratio, sl_tiers_processed,
+            self._run_tp_tier_thresholds, closed_ratio, sl_tiers_processed,
         )
         if highest < 0:
             return sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, sl_high_water_px
-        rule = self._sl_after_rules.for_tier(highest)
+        rule = self._active_sl_after_rules.for_tier(highest)
         if rule.is_empty():
             return sl_trigger_px, highest + 1, post_tp_trail_mult, sl_high_water_px
         # Defer when no fixed SL is currently armed — mirrors the live

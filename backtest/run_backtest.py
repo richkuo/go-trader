@@ -119,6 +119,14 @@ def load_strategy_config(config_path: str, strategy_id: str) -> dict:
                 "params": dict(open_ref.get("params") or {}),
             },
             "close_strategies": close_refs,
+            "stop_loss_atr_mult": sc.get("stop_loss_atr_mult"),
+            "stop_loss_pct": sc.get("stop_loss_pct"),
+            "stop_loss_margin_pct": sc.get("stop_loss_margin_pct"),
+            "trailing_stop_atr_mult": sc.get("trailing_stop_atr_mult"),
+            "trailing_stop_pct": sc.get("trailing_stop_pct"),
+            "stop_loss_atr_regime": sc.get("stop_loss_atr_regime"),
+            "trailing_stop_atr_regime": sc.get("trailing_stop_atr_regime"),
+            "strategy_type": str(sc.get("type") or "perps"),
         }
     raise ValueError(
         f"{config_path}: no strategy with id={strategy_id!r}. "
@@ -141,6 +149,14 @@ def run_single_backtest(
     regime_period: int = 14,
     regime_adx_threshold: float = 20.0,
     allowed_regimes: Optional[List[str]] = None,
+    stop_loss_atr_mult: Optional[float] = None,
+    stop_loss_pct: Optional[float] = None,
+    stop_loss_margin_pct: Optional[float] = None,
+    trailing_stop_atr_mult: Optional[float] = None,
+    trailing_stop_pct: Optional[float] = None,
+    stop_loss_atr_regime: Optional[dict] = None,
+    trailing_stop_atr_regime: Optional[dict] = None,
+    strategy_type: str = "perps",
 ) -> Optional[dict]:
     """Run a single backtest and print results.
 
@@ -196,6 +212,14 @@ def run_single_backtest(
         regime_period=regime_period,
         regime_adx_threshold=regime_adx_threshold,
         allowed_regimes=allowed_regimes,
+        stop_loss_atr_mult=stop_loss_atr_mult,
+        stop_loss_pct=stop_loss_pct,
+        stop_loss_margin_pct=stop_loss_margin_pct,
+        trailing_stop_atr_mult=trailing_stop_atr_mult,
+        trailing_stop_pct=trailing_stop_pct,
+        stop_loss_atr_regime=stop_loss_atr_regime,
+        trailing_stop_atr_regime=trailing_stop_atr_regime,
+        strategy_type=strategy_type,
     )
     results = bt.run(
         df_signals,
@@ -447,6 +471,7 @@ def main():
 
     # #641: --config loads a single strategy by ID and uses its refs directly.
     open_params: Optional[dict] = None
+    live_stop_kwargs: dict = {}
     if args.config:
         # --config loads exactly one strategy; non-single modes would silently
         # ignore the loaded refs for every strategy except the one matching
@@ -467,8 +492,17 @@ def main():
         # silently ignores per-strategy params from the live config (#643 review #1).
         args.strategy = live_kwargs["open_strategy"]["name"]
         open_params = dict(live_kwargs["open_strategy"]["params"]) or None
-
-    reg = load_registry(args.registry)
+        stop_keys = (
+            "stop_loss_atr_mult",
+            "stop_loss_pct",
+            "stop_loss_margin_pct",
+            "trailing_stop_atr_mult",
+            "trailing_stop_pct",
+            "stop_loss_atr_regime",
+            "trailing_stop_atr_regime",
+            "strategy_type",
+        )
+        live_stop_kwargs = {k: live_kwargs[k] for k in stop_keys if k in live_kwargs}
 
     if args.mode == "single":
         if args.strategy == "all":
@@ -483,7 +517,8 @@ def main():
                             regime_enabled=args.regime_enabled,
                             regime_period=args.regime_period,
                             regime_adx_threshold=args.regime_adx_threshold,
-                            allowed_regimes=args.allowed_regimes)
+                            allowed_regimes=args.allowed_regimes,
+                            **live_stop_kwargs)
 
     elif args.mode == "compare":
         strategies = None if args.strategy == "all" else [args.strategy]
