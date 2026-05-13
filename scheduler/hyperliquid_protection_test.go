@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"reflect"
 	"sync"
 	"testing"
@@ -605,5 +606,29 @@ func TestHyperliquidProtectionTiersRejectsSingleTier(t *testing.T) {
 	}
 	if got := strategyTPTiers(sc); len(got) != 0 {
 		t.Errorf("tiers = %+v, want nil/empty for single-tier config", got)
+	}
+}
+
+func TestTieredTPATRPricesForRegimeUsesFleetDefaults(t *testing.T) {
+	sc := StrategyConfig{
+		Platform: "hyperliquid",
+		Type:     "perps",
+		CloseStrategies: []StrategyRef{{
+			Name:   "tiered_tp_atr_regime",
+			Params: map[string]interface{}{"use_defaults": true},
+		}},
+	}
+	got := tieredTPATRPricesForRegime(sc, "long", 100, 10, "trending_up")
+	want := []float64{120, 140} // 2× and 4× ATR @ trending_up fleet baseline
+	if len(got) != len(want) {
+		t.Fatalf("len(prices)=%d, want %d; got=%v", len(got), len(want), got)
+	}
+	for i := range want {
+		if math.Abs(got[i]-want[i]) > 1e-9 {
+			t.Errorf("prices[%d]=%g, want %g (full %v)", i, got[i], want[i], got)
+		}
+	}
+	if empty := tieredTPATRPricesForRegime(sc, "long", 100, 10, ""); len(empty) != 0 {
+		t.Errorf("empty regime should yield no TP prices, got %v", empty)
 	}
 }

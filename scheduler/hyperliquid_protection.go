@@ -159,6 +159,13 @@ func tieredTPATRPrices(sc StrategyConfig, side string, entryPrice, entryATR floa
 	return tieredTPATRPricesFromTiers(strategyTPTiers(sc), side, entryPrice, entryATR)
 }
 
+// tieredTPATRPricesForRegime is tieredTPATRPrices with an explicit stamped regime
+// label so tiered_tp_atr_regime / tiered_tp_atr_live_regime resolve like
+// buildHyperliquidProtectionPlan (#738).
+func tieredTPATRPricesForRegime(sc StrategyConfig, side string, entryPrice, entryATR float64, regime string) []float64 {
+	return tieredTPATRPricesFromTiers(strategyTPTiersForRegime(sc, regime), side, entryPrice, entryATR)
+}
+
 // tieredTPATRPricesFromTiers is the price-only computation when the caller
 // already has tiers in hand — lets trade-alert extras call
 // strategyTPTiers once and zip prices with multiples (#665 review).

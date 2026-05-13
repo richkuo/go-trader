@@ -711,3 +711,14 @@ func defaultRegimeTPTiersForRegime(regime string) []hlProtectionTier {
 	}
 	return finalizeProtectionTiers(out)
 }
+
+// InspectRegimeTPFleetDefaultBlocks returns deep copies of the fleet baseline
+// tier blocks used when a tiered_tp_atr{_live}_regime close ref sets
+// use_defaults:true. For go-trader inspect provenance (#738).
+func InspectRegimeTPFleetDefaultBlocks() []RegimeATRBlock {
+	out := make([]RegimeATRBlock, len(regimeATRDefaults.TPTiers))
+	for i, b := range regimeATRDefaults.TPTiers {
+		out[i] = RegimeATRBlock{UseDefaults: true, TrendRegime: cloneRegimeMap(b.TrendRegime)}
+	}
+	return out
+}

@@ -1099,7 +1099,7 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 				extras += fmt.Sprintf(" | SL: $%s (%s)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct))
 			}
 		}
-		if tps := tieredTPATRPrices(sc, pos.Side, pos.AvgCost, pos.EntryATR); len(tps) > 0 {
+		if tps := tieredTPATRPricesForRegime(sc, pos.Side, pos.AvgCost, pos.EntryATR, pos.Regime); len(tps) > 0 {
 			// A zero TPOID alone is ambiguous (tiers also hold zero before the
 			// first protection-sync places them); require an observed shrink
 			// vs. InitialQuantity to mark a tier as filled (#662).
@@ -1190,7 +1190,7 @@ func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 	var tiers []hlProtectionTier
 	var tps []float64
 	if !isClose && trade.EntryATR > 0 {
-		tiers = strategyTPTiers(sc)
+		tiers = strategyTPTiersForRegime(sc, trade.Regime)
 		tps = tieredTPATRPricesFromTiers(tiers, direction, trade.Price, trade.EntryATR)
 		if len(tps) > 0 {
 			extras = append(extras, fmt.Sprintf("ATR: $%s", fmtComma2(trade.EntryATR)))

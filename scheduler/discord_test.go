@@ -1620,6 +1620,34 @@ func TestCollectPositions_TieredTPATR_NoFillBeforeProtectionSync(t *testing.T) {
 	}
 }
 
+// TestCollectPositions_TieredTPATRRegime_StampedRegime verifies #738: once
+// pos.Regime is stamped, tiered_tp_atr_regime resolves TP display prices.
+func TestCollectPositions_TieredTPATRRegime_StampedRegime(t *testing.T) {
+	sc := StrategyConfig{
+		ID: "hl-reg-btc",
+		CloseStrategies: []StrategyRef{{
+			Name:   "tiered_tp_atr_regime",
+			Params: map[string]interface{}{"use_defaults": true},
+		}},
+	}
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {
+				Symbol:   "BTC/USDT",
+				Quantity: 0.025,
+				AvgCost:  63500,
+				Side:     "long",
+				EntryATR: 1000,
+				Regime:   "trending_up",
+			},
+		},
+	}
+	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
+	if !strings.Contains(lines[0], "| TP1: $65,500.00") || !strings.Contains(lines[0], "| TP2: $67,500.00") {
+		t.Errorf("expected regime-resolved TP prices, got: %s", lines[0])
+	}
+}
+
 // TestCollectPositions_AllFragments_WithTieredTP verifies ATR → SL → TP1 → TP2 →
 // leverage → date ordering when tiered_tp_atr is configured (#528).
 func TestCollectPositions_AllFragments_WithTieredTP(t *testing.T) {
@@ -2541,6 +2569,34 @@ func TestFormatTradeDM_TPATRMultipliersFractional(t *testing.T) {
 	}
 	if !strings.Contains(msg, "TP2: $66,000.00 (2.5x)") {
 		t.Errorf("expected TP2 with fractional 2.5× preserved, got:\n%s", msg)
+	}
+}
+
+// TestFormatTradeDM_TieredTPATRRegime verifies #738: trade-alert extras resolve TP
+// tier multiples from trade.Regime for regime-aware close evaluators.
+func TestFormatTradeDM_TieredTPATRRegime(t *testing.T) {
+	sc := StrategyConfig{
+		ID:       "hl-reg-btc",
+		Platform: "hyperliquid",
+		Type:     "perps",
+		CloseStrategies: []StrategyRef{{
+			Name:   "tiered_tp_atr_regime",
+			Params: map[string]interface{}{"use_defaults": true},
+		}},
+	}
+	trade := Trade{
+		Symbol:   "BTC",
+		Side:     "buy",
+		Quantity: 0.01,
+		Price:    63500.0,
+		Value:    635.0,
+		EntryATR: 1000.0,
+		Regime:   "trending_up",
+		Details:  "Open long 0.010000 @ $63500.00",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if !strings.Contains(msg, "TP1: $65,500.00") || !strings.Contains(msg, "TP2: $67,500.00") {
+		t.Errorf("expected regime-resolved TP lines in DM, got:\n%s", msg)
 	}
 }
 

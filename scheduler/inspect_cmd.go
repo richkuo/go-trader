@@ -115,16 +115,17 @@ func loadStrategyExplicitKeys(path string) (map[string]map[string]bool, error) {
 	return out, nil
 }
 
-// stopLossResolution summarizes which of the five mutually-exclusive HL stop
-// fields owns the effective trigger, the resolved price % (or "deferred" for
-// ATR-based stops), and whether the owner was set explicitly. Mirrors the
-// resolution logic in EffectiveStopLossPct so display can never lie about
-// which field is winning on a hot-reload boundary.
+// stopLossResolution summarizes which mutually-exclusive HL stop field owns
+// the effective trigger, the resolved price % (or "deferred" for ATR-based
+// stops), and whether the owner was set explicitly. Mirrors
+// EffectiveStopLossPct so display can never lie about which field is winning
+// on a hot-reload boundary.
 type stopLossResolution struct {
 	Source   string  // field name, e.g. "stop_loss_atr_mult"; "max_drawdown_pct"; "none"
 	Value    string  // human-readable value ("1.5× ATR (deferred)", "2.0% from entry", "—")
 	Explicit bool    // operator set the winning field explicitly
 	PriceTag float64 // computed price % when known (post-arming for ATR stops); 0 for deferred
+	Detail   []string
 }
 
 func resolveStopLoss(sc StrategyConfig, explicit map[string]bool) stopLossResolution {
@@ -143,6 +144,22 @@ func resolveStopLoss(sc StrategyConfig, explicit map[string]bool) stopLossResolu
 			Source:   "stop_loss_atr_mult",
 			Value:    fmt.Sprintf("%g× ATR (fixed, deferred until EntryATR stamped)", *sc.StopLossATRMult),
 			Explicit: explicit["stop_loss_atr_mult"],
+		}
+	}
+	if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
+		return stopLossResolution{
+			Source:   "stop_loss_atr_regime",
+			Value:    fmt.Sprintf("regime-aware fixed ATR (deferred until EntryATR + %s stamped)", regimeClassifierKey),
+			Explicit: explicit["stop_loss_atr_regime"],
+			Detail:   formatRegimeATRInspectDetail("stop_loss_atr_regime", *sc.StopLossATRRegime, explicit["stop_loss_atr_regime"]),
+		}
+	}
+	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
+		return stopLossResolution{
+			Source:   "trailing_stop_atr_regime",
+			Value:    fmt.Sprintf("regime-aware trailing ATR (deferred until EntryATR + %s stamped)", regimeClassifierKey),
+			Explicit: explicit["trailing_stop_atr_regime"],
+			Detail:   formatRegimeATRInspectDetail("trailing_stop_atr_regime", *sc.TrailingStopATRRegime, explicit["trailing_stop_atr_regime"]),
 		}
 	}
 	if sc.TrailingStopPct != nil {
@@ -198,36 +215,174 @@ func resolveStopLoss(sc StrategyConfig, explicit map[string]bool) stopLossResolu
 }
 
 // tpResolution summarizes which close ref owns the take-profit logic and its
-// resolved tier shape. Returns ok=false when no TP close evaluator is wired
-// (i.e. close strategy isn't tiered_tp_atr or tiered_tp_atr_live).
+// resolved tier shape. Returns ok=false when no tiered_tp_atr* close evaluator
+// is wired.
 type tpResolution struct {
-	OK         bool
-	CloseIndex int
-	CloseName  string
-	Tiers      []hlProtectionTier
-	TiersFrom  string // "explicit on close ref" | "default (from registry)"
+	OK          bool
+	CloseIndex  int
+	CloseName   string
+	Tiers       []hlProtectionTier
+	TiersFrom   string // "explicit on close ref" | "default (from registry)"
+	DetailLines []string
+	TierCount   int
 }
 
 func resolveTP(sc StrategyConfig, explicit map[string]bool) tpResolution {
 	res := tpResolution{}
 	for i, ref := range sc.CloseStrategies {
 		n := strings.ToLower(strings.TrimSpace(ref.Name))
-		if n != "tiered_tp_atr" && n != "tiered_tp_atr_live" {
+		if !isTieredTPATRCloseName(n) {
 			continue
 		}
 		res.OK = true
 		res.CloseIndex = i
 		res.CloseName = ref.Name
 		_, hasTiers := ref.Params["tiers"]
-		res.Tiers = strategyTPTiers(sc)
-		if hasTiers {
-			res.TiersFrom = "explicit on close ref"
-		} else {
-			res.TiersFrom = "default (canonical [1×@50%, 2×@100%])"
+		useDefaults := false
+		if ud, ok := ref.Params["use_defaults"].(bool); ok && ud {
+			useDefaults = true
+		}
+		switch n {
+		case "tiered_tp_atr_regime", "tiered_tp_atr_live_regime":
+			res.DetailLines = formatInspectRegimeTPDetailLines(ref.Name, ref, hasTiers, useDefaults, explicit["close_strategies"])
+			if tiers := strategyTPTiersForRegime(sc, canonicalTrendRegimeLabels[0]); len(tiers) > 0 {
+				res.Tiers = tiers
+			}
+			res.TierCount = inferRegimeTPTierCount(ref, hasTiers, useDefaults)
+			switch {
+			case hasTiers:
+				res.TiersFrom = "explicit tier list on close ref"
+			case useDefaults:
+				res.TiersFrom = "fleet baseline (use_defaults)"
+			default:
+				res.TiersFrom = "incomplete (needs tiers or use_defaults:true)"
+			}
+		default:
+			res.Tiers = strategyTPTiers(sc)
+			res.TierCount = len(res.Tiers)
+			if hasTiers {
+				res.TiersFrom = "explicit on close ref"
+			} else {
+				res.TiersFrom = "default (canonical [1×@50%, 2×@100%])"
+			}
 		}
 		return res
 	}
 	return res
+}
+
+func inferRegimeTPTierCount(ref StrategyRef, hasTiers, useDefaults bool) int {
+	if hasTiers {
+		if raw, ok := ref.Params["tiers"]; ok {
+			if items, ok := raw.([]interface{}); ok {
+				return len(items)
+			}
+		}
+	}
+	if useDefaults {
+		return len(InspectRegimeTPFleetDefaultBlocks())
+	}
+	return 0
+}
+
+func formatRegimeATRInspectDetail(field string, block RegimeATRBlock, operatorExplicit bool) []string {
+	tag := explicitTag(operatorExplicit)
+	if block.UseDefaults {
+		return []string{fmt.Sprintf(
+			"%s: %s (from use_defaults baseline, classifier=%s)%s",
+			field, summarizeRegimeATRBlockATRs(block.TrendRegime), regimeClassifierKey, tag,
+		)}
+	}
+	labels := sortedTrendRegimeLabels(block.TrendRegime)
+	out := make([]string, 0, len(labels))
+	for _, label := range labels {
+		e := block.TrendRegime[label]
+		out = append(out, fmt.Sprintf(
+			"%s: %g×ATR (from %s.%s.%s.atr)%s",
+			field, e.ATR, field, regimeClassifierKey, label, tag,
+		))
+	}
+	return out
+}
+
+func summarizeRegimeATRBlockATRs(m map[string]RegimeATREntry) string {
+	labels := sortedTrendRegimeLabels(m)
+	parts := make([]string, 0, len(labels))
+	for _, label := range labels {
+		parts = append(parts, fmt.Sprintf("%s=%g×", label, m[label].ATR))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func sortedTrendRegimeLabels(m map[string]RegimeATREntry) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func formatInspectRegimeTPDetailLines(closeName string, ref StrategyRef, hasTiers, useDefaults, closeExplicit bool) []string {
+	tag := explicitTag(closeExplicit)
+	if !hasTiers {
+		if !useDefaults {
+			return []string{fmt.Sprintf(
+				"%s: incomplete regime TP config (needs tiers or use_defaults:true)%s",
+				closeName, tag,
+			)}
+		}
+		blocks := InspectRegimeTPFleetDefaultBlocks()
+		specs := make([]regimeTierSpec, len(blocks))
+		for i, b := range blocks {
+			specs[i] = regimeTierSpec{Block: b}
+		}
+		return summarizeInspectRegimeTPSpecs(closeName, specs, tag)
+	}
+	specs, errs := parseRegimeTPTiers(ref.Params["tiers"], closeName+".params")
+	if len(errs) > 0 || len(specs) == 0 {
+		return []string{fmt.Sprintf("%s: regime tiers: parse error — fix config (%v)", closeName, errs)}
+	}
+	return summarizeInspectRegimeTPSpecs(closeName, specs, tag)
+}
+
+func summarizeInspectRegimeTPSpecs(closeName string, specs []regimeTierSpec, closeExplicitTag string) []string {
+	out := make([]string, 0, len(specs))
+	for idx, spec := range specs {
+		prov := inspectRegimeTPTierProvenance(spec.Block, closeExplicitTag)
+		out = append(out, fmt.Sprintf("%s tier[%d]: %s%s", closeName, idx, summarizeRegimeTierSpecInspect(spec), prov))
+	}
+	return out
+}
+
+func summarizeRegimeTierSpecInspect(spec regimeTierSpec) string {
+	labels := sortedTrendRegimeLabels(spec.Block.TrendRegime)
+	parts := make([]string, 0, len(labels))
+	for _, label := range labels {
+		e, ok := spec.Block.TrendRegime[label]
+		if !ok {
+			continue
+		}
+		frac := 0.0
+		switch {
+		case spec.HasTierCloseFraction:
+			frac = spec.TierCloseFraction
+		case e.HasCloseFrac:
+			frac = e.CloseFraction
+		}
+		if frac <= 0 {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%g×@%g%%", label, e.ATR, frac*100))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func inspectRegimeTPTierProvenance(block RegimeATRBlock, closeExplicitTag string) string {
+	if block.UseDefaults {
+		return fmt.Sprintf(" (from use_defaults baseline, classifier=%s)%s", regimeClassifierKey, closeExplicitTag)
+	}
+	return fmt.Sprintf(" (explicit %s per label)%s", regimeClassifierKey, closeExplicitTag)
 }
 
 // formatStrategyInspection renders the multi-line human-facing inspect output
@@ -279,14 +434,30 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 		fmt.Fprintf(&b, "  stop_loss:\n")
 		fmt.Fprintf(&b, "    source:            %s%s\n", sl.Source, explicitTag(sl.Explicit))
 		fmt.Fprintf(&b, "    value:             %s\n", sl.Value)
+		for _, line := range sl.Detail {
+			fmt.Fprintf(&b, "                      %s\n", line)
+		}
 
 		tp := resolveTP(sc, explicit)
 		fmt.Fprintf(&b, "  take_profit:\n")
 		if !tp.OK {
-			fmt.Fprintf(&b, "    source:            none (no tiered_tp_atr / tiered_tp_atr_live in close_strategies)\n")
+			fmt.Fprintf(&b, "    source:            none (no tiered_tp_atr* in close_strategies)\n")
 		} else {
 			fmt.Fprintf(&b, "    source:            close_strategies[%d] %s\n", tp.CloseIndex, tp.CloseName)
-			fmt.Fprintf(&b, "    tiers:             %s — %s\n", formatTiers(tp.Tiers), tp.TiersFrom)
+			for _, line := range tp.DetailLines {
+				fmt.Fprintf(&b, "    %s\n", line)
+			}
+			n := strings.ToLower(strings.TrimSpace(tp.CloseName))
+			regimeTPName := n == "tiered_tp_atr_regime" || n == "tiered_tp_atr_live_regime"
+			if len(tp.Tiers) > 0 {
+				if regimeTPName {
+					fmt.Fprintf(&b, "    tiers (example: %s=%s): %s — %s\n", regimeClassifierKey, canonicalTrendRegimeLabels[0], formatTiers(tp.Tiers), tp.TiersFrom)
+				} else {
+					fmt.Fprintf(&b, "    tiers:             %s — %s\n", formatTiers(tp.Tiers), tp.TiersFrom)
+				}
+			} else {
+				fmt.Fprintf(&b, "    tiers:             %s — %s\n", formatTiers(tp.Tiers), tp.TiersFrom)
+			}
 		}
 	}
 
@@ -332,7 +503,11 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool) stri
 		parts = append(parts, fmt.Sprintf("sl=%s%s", sl.Source, explicitTag(sl.Explicit)))
 		tp := resolveTP(sc, explicit)
 		if tp.OK {
-			parts = append(parts, fmt.Sprintf("tp=%s[%d-tier]", tp.CloseName, len(tp.Tiers)))
+			n := tp.TierCount
+			if n <= 0 {
+				n = len(tp.Tiers)
+			}
+			parts = append(parts, fmt.Sprintf("tp=%s[%d-tier]", tp.CloseName, n))
 		} else {
 			parts = append(parts, "tp=none")
 		}
@@ -376,11 +551,15 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 	}
 	if sc.Platform == "hyperliquid" && (sc.Type == "perps" || sc.Type == "manual") {
 		sl := resolveStopLoss(sc, explicit)
-		out["stop_loss"] = map[string]interface{}{
+		slMap := map[string]interface{}{
 			"source":   sl.Source,
 			"value":    sl.Value,
 			"explicit": sl.Explicit,
 		}
+		if len(sl.Detail) > 0 {
+			slMap["detail"] = sl.Detail
+		}
+		out["stop_loss"] = slMap
 		tp := resolveTP(sc, explicit)
 		tpMap := map[string]interface{}{"configured": tp.OK}
 		if tp.OK {
@@ -392,6 +571,19 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 			tpMap["close_name"] = tp.CloseName
 			tpMap["tiers"] = tiers
 			tpMap["tiers_source"] = tp.TiersFrom
+			tpMap["tier_count"] = tp.TierCount
+			if tp.TierCount <= 0 && len(tp.Tiers) > 0 {
+				tpMap["tier_count"] = len(tp.Tiers)
+			}
+			if len(tp.DetailLines) > 0 {
+				tpMap["detail"] = tp.DetailLines
+			}
+			closeNameLower := strings.ToLower(strings.TrimSpace(tp.CloseName))
+			if closeNameLower == "tiered_tp_atr_regime" || closeNameLower == "tiered_tp_atr_live_regime" {
+				if len(tp.Tiers) > 0 {
+					tpMap["example_classifier_label"] = canonicalTrendRegimeLabels[0]
+				}
+			}
 		}
 		out["take_profit"] = tpMap
 	}

@@ -320,3 +320,71 @@ func TestBuildStrategyInspectionJSONStableShape(t *testing.T) {
 		t.Errorf("take_profit.configured = %v", tp["configured"])
 	}
 }
+
+func TestResolveStopLossRegimeFixedInspectDetail(t *testing.T) {
+	sc := StrategyConfig{
+		Type:     "perps",
+		Platform: "hyperliquid",
+		StopLossATRRegime: &RegimeATRBlock{
+			UseDefaults: true,
+			TrendRegime: map[string]RegimeATREntry{
+				"trending_up":   {ATR: 2.0},
+				"trending_down": {ATR: 2.0},
+				"ranging":       {ATR: 1.5},
+			},
+		},
+	}
+	res := resolveStopLoss(sc, map[string]bool{"stop_loss_atr_regime": true})
+	if res.Source != "stop_loss_atr_regime" {
+		t.Fatalf("source=%q", res.Source)
+	}
+	if len(res.Detail) != 1 || !strings.Contains(res.Detail[0], "use_defaults baseline") {
+		t.Fatalf("unexpected detail: %v", res.Detail)
+	}
+	if !strings.Contains(res.Detail[0], "trend_regime") {
+		t.Errorf("classifier missing: %q", res.Detail[0])
+	}
+}
+
+func TestFormatStrategyInspectionRegimeTPUseDefaults(t *testing.T) {
+	mult := 1.0
+	sc := StrategyConfig{
+		ID:              "hl-reg-tp",
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		Script:          "shared_scripts/check_hyperliquid.py",
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr_regime", Params: map[string]interface{}{"use_defaults": true}}},
+		Leverage:        3,
+		StopLossATRMult: &mult,
+		MaxDrawdownPct:  50,
+	}
+	explicit := map[string]bool{
+		"id": true, "type": true, "platform": true, "script": true,
+		"close_strategies": true, "leverage": true, "max_drawdown_pct": true,
+	}
+	out := formatStrategyInspection(sc, explicit, &Config{IntervalSeconds: 60})
+	if !strings.Contains(out, "tiered_tp_atr_regime tier[0]:") {
+		t.Errorf("missing tier[0] provenance line:\n%s", out)
+	}
+	if !strings.Contains(out, "use_defaults baseline") {
+		t.Errorf("missing use_defaults provenance:\n%s", out)
+	}
+	if !strings.Contains(out, "tiers (example: trend_regime=trending_up):") {
+		t.Errorf("missing example tier line:\n%s", out)
+	}
+}
+
+func TestFormatStrategySummaryLineRegimeTPTierCount(t *testing.T) {
+	mult := 1.0
+	sc := StrategyConfig{
+		ID:              "hl-reg-tp",
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr_regime", Params: map[string]interface{}{"use_defaults": true}}},
+		StopLossATRMult: &mult,
+	}
+	line := formatStrategySummaryLine(sc, nil)
+	if !strings.Contains(line, "tp=tiered_tp_atr_regime[2-tier]") {
+		t.Errorf("expected 2-tier regime TP summary, got: %s", line)
+	}
+}

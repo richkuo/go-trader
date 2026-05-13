@@ -347,7 +347,7 @@ func tryBookSoleOwnerTPFill(
 		// price on the trade record AND wrong TP{n} label on the DM alert.
 		// Defer those cases to the legacy SL-owner branch in
 		// reconcileHyperliquidPositionsWithResolver.
-		tiers := strategyTPTiers(sc)
+		tiers := strategyTPTiersForRegime(sc, statePos.Regime)
 		tpOIDs := tpOIDsForTierCount(statePos.TPOIDs, len(tiers))
 		for _, oid := range tpOIDs {
 			if oid > 0 {
@@ -385,7 +385,7 @@ func tryBookSoleOwnerTPFill(
 		if onChainPos == nil || !useFillFee || lookup.OID <= 0 {
 			return false
 		}
-		tiers := strategyTPTiers(sc)
+		tiers := strategyTPTiersForRegime(sc, statePos.Regime)
 		if len(tiers) == 0 {
 			return false
 		}
@@ -407,7 +407,7 @@ func tryBookSoleOwnerTPFill(
 		// also feeds the plan-builder's "skip already-filled tiers" logic.
 	}
 
-	tpPrices := tieredTPATRPrices(sc, statePos.Side, statePos.AvgCost, statePos.EntryATR)
+	tpPrices := tieredTPATRPricesForRegime(sc, statePos.Side, statePos.AvgCost, statePos.EntryATR, statePos.Regime)
 	tpPrice := 0.0
 	if tierIdx >= 0 && tierIdx < len(tpPrices) {
 		tpPrice = tpPrices[tierIdx]
@@ -1111,7 +1111,7 @@ func hyperliquidClearedTPTier(sc StrategyConfig, pos *Position, closeQty float64
 	if pos == nil || len(pos.TPOIDs) == 0 {
 		return 0, false
 	}
-	tiers := strategyTPTiers(sc)
+	tiers := strategyTPTiersForRegime(sc, pos.Regime)
 	if len(tiers) == 0 {
 		return 0, false
 	}
