@@ -10,6 +10,16 @@ import (
 	"time"
 )
 
+// pythonScriptTimeoutError is returned when a Python subprocess hits its
+// deadline (runPython / runPythonWithTimeout). Callers can use errors.As.
+type pythonScriptTimeoutError struct {
+	d time.Duration
+}
+
+func (e *pythonScriptTimeoutError) Error() string {
+	return fmt.Sprintf("script timed out after %s", e.d)
+}
+
 // pythonSemaphore limits concurrent Python subprocess executions.
 var pythonSemaphore = make(chan struct{}, 4)
 
@@ -125,10 +135,17 @@ type HyperliquidProtectionSyncResult struct {
 // daemon entry point hasn't called initShutdownContexts (one-off CLI commands
 // and tests).
 func runPython(parentCtx context.Context, script string, args []string, stdinData []byte) ([]byte, []byte, error) {
+	return runPythonWithTimeout(parentCtx, script, args, stdinData, scriptTimeout)
+}
+
+// runPythonWithTimeout mirrors runPython but uses an explicit deadline (e.g.
+// long-running fetch scripts). Semaphore, Setpgid, stdin, and SIGKILL-on-
+// deadline behavior match runPython.
+func runPythonWithTimeout(parentCtx context.Context, script string, args []string, stdinData []byte, timeout time.Duration) ([]byte, []byte, error) {
 	pythonSemaphore <- struct{}{}
 	defer func() { <-pythonSemaphore }()
 
-	ctx, cancel := context.WithTimeout(parentCtx, scriptTimeout)
+	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 
 	cmd, err := newPythonCommand(ctx, script, args...)
@@ -149,7 +166,7 @@ func runPython(parentCtx context.Context, script string, args []string, stdinDat
 		if cmd.Process != nil {
 			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
-		return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("script timed out after %s", scriptTimeout)
+		return stdout.Bytes(), stderr.Bytes(), &pythonScriptTimeoutError{d: timeout}
 	}
 	return stdout.Bytes(), stderr.Bytes(), err
 }

@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // These tests verify JSON deserialization of executor result structs, not subprocess
@@ -700,4 +702,18 @@ func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
 			t.Errorf("--leverage must be omitted when leverage=0, got %v", args)
 		}
 	})
+}
+
+func TestPythonScriptTimeoutError_As(t *testing.T) {
+	var err error = &pythonScriptTimeoutError{d: 5 * time.Minute}
+	var toe *pythonScriptTimeoutError
+	if !errors.As(err, &toe) {
+		t.Fatal("errors.As failed")
+	}
+	if toe.d != 5*time.Minute {
+		t.Errorf("duration = %v, want 5m", toe.d)
+	}
+	if !strings.HasPrefix(toe.Error(), "script timed out after ") {
+		t.Errorf("Error() = %q", toe.Error())
+	}
 }

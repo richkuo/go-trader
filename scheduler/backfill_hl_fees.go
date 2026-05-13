@@ -1,9 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"math"
@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -678,44 +677,36 @@ func refuseIfSchedulerRunning() error {
 	return fmt.Errorf("another go-trader process is running (pid %v); stop it before running --apply (concurrent SaveState would overwrite the recomputed strategies.cash)", others)
 }
 
-// runFetchHLUserFills spawns shared_scripts/fetch_hl_user_fills.py with a
-// generous timeout (paging through years of history can exceed the standard
-// 30s scriptTimeout used by the per-cycle check scripts).
+// hlUserFillsFetchTimeout bounds fetch_hl_user_fills.py — paging through years
+// of history can exceed the standard scriptTimeout used by per-cycle scripts.
+const hlUserFillsFetchTimeout = 5 * time.Minute
+
+// runFetchHLUserFills spawns shared_scripts/fetch_hl_user_fills.py with
+// hlUserFillsFetchTimeout via the shared Python runner (semaphore + uv argv).
 func runFetchHLUserFills(since time.Time) (*HLUserFillsResult, error) {
 	script := "shared_scripts/fetch_hl_user_fills.py"
 	args := []string{
 		fmt.Sprintf("--since-ms=%d", since.UnixMilli()),
 	}
 
-	pythonSemaphore <- struct{}{}
-	defer func() { <-pythonSemaphore }()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	cmd, err := newPythonCommand(ctx, script, args...)
-	if err != nil {
-		return nil, err
-	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	runErr := cmd.Run()
-	if ctx.Err() == context.DeadlineExceeded {
-		if cmd.Process != nil {
-			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	stdout, stderr, runErr := runPythonWithTimeout(context.Background(), script, args, nil, hlUserFillsFetchTimeout)
+	if runErr != nil {
+		var toe *pythonScriptTimeoutError
+		if errors.As(runErr, &toe) {
+			return nil, runErr
 		}
-		return nil, fmt.Errorf("script timed out after 5m")
+		if stdout == nil {
+			return nil, runErr
+		}
 	}
-	stderrStr := strings.TrimSpace(stderr.String())
+
+	stderrStr := strings.TrimSpace(string(stderr))
 	if stderrStr != "" {
 		fmt.Fprintln(os.Stderr, stderrStr)
 	}
 	var result HLUserFillsResult
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		return nil, fmt.Errorf("parse output: %w (stdout: %s)", err, stdout.String())
+	if err := json.Unmarshal(stdout, &result); err != nil {
+		return nil, fmt.Errorf("parse output: %w (stdout: %s)", err, string(stdout))
 	}
 	if runErr != nil && result.Error == "" {
 		return &result, fmt.Errorf("script error: %w", runErr)
