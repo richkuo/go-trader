@@ -312,7 +312,9 @@ curl -s localhost:8099/history
 open http://localhost:8099/dashboard   # embedded strategy charts + trade markers (#734)
 ```
 
-Dashboard JSON endpoints (`/api/strategies[/<id>/(candles|trades|status)]`) are HTTP-cached 30s. If `status_token` is configured, the dashboard page prompts for it and stores it in browser local storage. Don't expose `:8099` publicly — gate behind reverse proxy or VPN.
+Dashboard JSON endpoints (`/api/strategies[/<id>/(candles|trades|status)]`) are HTTP-cached 30s. If `status_token` is configured, the dashboard page prompts for it and stores it in browser local storage. Don't expose the status port publicly — gate behind reverse proxy or VPN.
+
+**Remote access via Tailscale Serve (#744):** The status HTTP server listens on loopback only (`localhost:<port>` — same as `http://127.0.0.1:<port>`). Do not rebind go-trader to `0.0.0.0` for remote dashboard use; keep each instance on loopback and front it with [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) (or another authenticated proxy on the machine). Example for two instances: `tailscale serve --bg --https=8443 http://127.0.0.1:8099` and `tailscale serve --bg --https=8444 http://127.0.0.1:8100` → browse `https://<node>.tailnet.ts.net:8443/dashboard` and `:8444/dashboard`. Common multi-instance port map (tune to each `status_port` in config): live `8099`, paper-testing `8100`, paper-hl-btc `8101`, paper-hl-eth `8102`, paper-hl-bnb `8103`, paper-hl-sol `8104`. **OpenClaw** (or any other agent stack) may expose its own dashboard on different ports/routes — that UI is not go-trader’s `/dashboard`.
 
 If Discord enabled, wait for the first cycle and verify messages in configured channels. Report success with mode, # strategies, status URL, log command.
 
