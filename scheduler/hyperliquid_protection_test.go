@@ -593,6 +593,45 @@ func TestRunHyperliquidProtectionSyncStampsTradeInDB(t *testing.T) {
 	}
 }
 
+func TestBuildHyperliquidProtectionPlanPadsTPArmedTiers(t *testing.T) {
+	mult := 1.5
+	sc := StrategyConfig{
+		ID:              "hl-eth",
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		StopLossATRMult: &mult,
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr_live"}},
+	}
+	pos := &Position{
+		Symbol:       "ETH",
+		Quantity:     0.22,
+		AvgCost:      3000,
+		EntryATR:     100,
+		Side:         "long",
+		TPOIDs:       []int64{0, 300},
+		TPArmedTiers: []bool{true, true},
+	}
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	if !ok {
+		t.Fatal("expected plan ok=true")
+	}
+	if want := []bool{true, true}; !reflect.DeepEqual(plan.TPArmedTiers, want) {
+		t.Errorf("TPArmedTiers = %v, want %v", plan.TPArmedTiers, want)
+	}
+	if want := []int64{0, 300}; !reflect.DeepEqual(plan.TPOIDs, want) {
+		t.Errorf("TPOIDs = %v, want %v", plan.TPOIDs, want)
+	}
+	// Shorter TPArmedTiers slice pads with false (#749 / #716 contract).
+	pos.TPArmedTiers = []bool{true}
+	plan, ok = buildHyperliquidProtectionPlan(sc, pos)
+	if !ok {
+		t.Fatal("expected plan ok=true (padded armed tiers)")
+	}
+	if want := []bool{true, false}; !reflect.DeepEqual(plan.TPArmedTiers, want) {
+		t.Errorf("padded TPArmedTiers = %v, want %v", plan.TPArmedTiers, want)
+	}
+}
+
 func TestHyperliquidProtectionTiersRejectsSingleTier(t *testing.T) {
 	sc := StrategyConfig{
 		Type:     "perps",

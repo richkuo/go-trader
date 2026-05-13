@@ -60,7 +60,7 @@ func placeManualProtectionInline(
 
 	result, stderr, err := runHLSyncProtectionFn(
 		sc.Script, sc.Symbol, side, fillQty, fillPrice, entryATR,
-		effectiveSLATRMult, tiers, stopLossOID, nil,
+		effectiveSLATRMult, tiers, stopLossOID, nil, nil,
 	)
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "[manual-open] sync-protection stderr: %s\n", stderr)

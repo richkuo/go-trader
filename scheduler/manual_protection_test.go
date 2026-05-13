@@ -54,7 +54,7 @@ func TestPlaceManualProtectionInline_TPErrorsSurface(t *testing.T) {
 	orig := runHLSyncProtectionFn
 	defer func() { runHLSyncProtectionFn = orig }()
 
-	runHLSyncProtectionFn = func(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64) (*HyperliquidProtectionSyncResult, string, error) {
+	runHLSyncProtectionFn = func(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, _ []bool) (*HyperliquidProtectionSyncResult, string, error) {
 		return &HyperliquidProtectionSyncResult{
 			TPOIDs:   []int64{1001, 1002},
 			TPErrors: []string{"TP1: rejected", ""},

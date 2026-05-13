@@ -17,6 +17,11 @@ type hlProtectionPlan struct {
 	StopLossOID     int64
 	Tiers           []hlProtectionTier
 	TPOIDs          []int64
+	// TPArmedTiers mirrors Position.TPArmedTiers padded to len(Tiers): tier i
+	// was successfully placed at least once. When TPOIDs[i]==0 and
+	// TPArmedTiers[i]==true, the tier is treated as consumed (filled) and must
+	// not be re-placed from a zero OID — see #716 / #749.
+	TPArmedTiers []bool
 }
 
 func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtectionPlan, bool) {
@@ -49,6 +54,7 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 	if slMult <= 0 && len(tiers) == 0 {
 		return hlProtectionPlan{}, false
 	}
+	tierCount := len(tiers)
 	return hlProtectionPlan{
 		Symbol:          pos.Symbol,
 		Side:            pos.Side,
@@ -58,7 +64,8 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 		StopLossATRMult: slMult,
 		StopLossOID:     pos.StopLossOID,
 		Tiers:           tiers,
-		TPOIDs:          tpOIDsForTierCount(pos.TPOIDs, len(tiers)),
+		TPOIDs:          tpOIDsForTierCount(pos.TPOIDs, tierCount),
+		TPArmedTiers:    tpArmedTiersForTierCount(pos.TPArmedTiers, tierCount),
 	}, true
 }
 
@@ -226,6 +233,15 @@ func tpOIDsForTierCount(oids []int64, tierCount int) []int64 {
 	return out
 }
 
+func tpArmedTiersForTierCount(armed []bool, tierCount int) []bool {
+	if tierCount <= 0 {
+		return nil
+	}
+	out := make([]bool, tierCount)
+	copy(out, armed)
+	return out
+}
+
 func cloneInt64s(vals []int64) []int64 {
 	if len(vals) == 0 {
 		return nil
@@ -287,7 +303,7 @@ type jsonNumber interface {
 var syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidProtectionSyncResult, bool) {
 	result, stderr, err := RunHyperliquidSyncProtection(
 		sc.Script, plan.Symbol, plan.Side, plan.Size, plan.AvgCost, plan.EntryATR,
-		plan.StopLossATRMult, plan.Tiers, plan.StopLossOID, plan.TPOIDs,
+		plan.StopLossATRMult, plan.Tiers, plan.StopLossOID, plan.TPOIDs, plan.TPArmedTiers,
 	)
 	if stderr != "" && logger != nil {
 		logger.Info("protection sync stderr: %s", stderr)

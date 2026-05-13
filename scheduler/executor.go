@@ -370,7 +370,7 @@ func RunHyperliquidUpdateStopLoss(script, symbol, side string, size, triggerPx f
 	return parseHyperliquidUpdateStopLossOutput(stdout, string(stderr), err)
 }
 
-func RunHyperliquidSyncProtection(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64) (*HyperliquidProtectionSyncResult, string, error) {
+func RunHyperliquidSyncProtection(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, tpArmedTiers []bool) (*HyperliquidProtectionSyncResult, string, error) {
 	args := []string{
 		"--sync-protection",
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -399,6 +399,12 @@ func RunHyperliquidSyncProtection(script, symbol, side string, size, avgCost, en
 	if len(tpOIDs) > 0 {
 		if b, err := json.Marshal(tpOIDs); err == nil {
 			args = append(args, fmt.Sprintf("--tp-oids-json=%s", string(b)))
+		}
+	}
+	if len(tiers) > 0 {
+		armed := tpArmedTiersForTierCount(tpArmedTiers, len(tiers))
+		if b, err := json.Marshal(armed); err == nil {
+			args = append(args, fmt.Sprintf("--tp-armed-tiers-json=%s", string(b)))
 		}
 	}
 	stdout, stderr, err := runPythonSideEffect(script, args)

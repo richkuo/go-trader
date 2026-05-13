@@ -657,6 +657,7 @@ class TestSyncProtection:
         tp2_oid=0,
         tp_tiers=None,
         tp_oids=None,
+        tp_armed_tiers=None,
         open_oids=None,
         fill_lookup_by_oid=None,
         place_responses=None,
@@ -730,6 +731,7 @@ class TestSyncProtection:
                     tp2_oid=tp2_oid,
                     tp_tiers=tp_tiers,
                     tp_oids=tp_oids,
+                    tp_armed_tiers=tp_armed_tiers,
                 )
         return json.loads(captured.getvalue()), mock_adapter
 
@@ -785,6 +787,21 @@ class TestSyncProtection:
         assert not out.get("tp2_filled_externally")
         # Only ONE place_take_profit_limit call (for TP2), because TP1 was filled.
         assert adapter.place_take_profit_limit.call_count == 1
+
+    def test_zero_oid_armed_true_does_not_re_place_consumed_tp1(self):
+        """#749: after TP1 fills, Go passes TPArmedTiers with tier0=true and OID 0.
+        A later sync must not treat OID 0 as 'never placed' and recreate TP1."""
+        out, adapter = self._run_sync(
+            size=0.22,
+            tp_oids=[0, 300],
+            tp_armed_tiers=[True, True],
+            open_oids={300, 9000},
+            sl_oid=9000,
+        )
+        assert out["tp_oids"] == [0, 300]
+        assert out["tp2_oid"] == 300
+        assert "tp1_oid" not in out
+        adapter.place_take_profit_limit.assert_not_called()
 
     def test_three_tiers_places_incremental_sizes(self):
         """#612: N-tier protection sizes each order from cumulative fractions."""

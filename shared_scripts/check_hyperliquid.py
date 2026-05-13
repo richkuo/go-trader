@@ -456,6 +456,7 @@ def run_sync_protection(
     tp2_oid=0,
     tp_tiers=None,
     tp_oids=None,
+    tp_armed_tiers=None,
 ):
     """Verify/re-place per-strategy reduce-only SL/TP orders (#601)."""
     if mode != "live":
@@ -572,6 +573,11 @@ def run_sync_protection(
                 tp_filled_externally = [False] * len(tiers)
                 tp_fills = [None] * len(tiers)
                 tp_filled_immediately = [False] * len(tiers)
+                armed = [bool(x) for x in (tp_armed_tiers or [])]
+                if len(armed) < len(tiers):
+                    armed.extend([False] * (len(tiers) - len(armed)))
+                else:
+                    armed = armed[: len(tiers)]
                 tier_sizes = compute_tp_tier_sizes(
                     size, tiers, lambda sz: adapter.floor_size(symbol, sz)
                 )
@@ -583,11 +589,21 @@ def run_sync_protection(
                     rounded_px = adapter.round_perps_trigger_px(symbol, raw_px)
                     tp_pxs.append(rounded_px)
                     prev_oid = int(existing_tp_oids[idx]) if idx < len(existing_tp_oids) else 0
+                    tier_armed = armed[idx] if idx < len(armed) else False
 
                     if tier_size <= 0:
                         continue
                     if _oid_is_open(open_oids, prev_oid):
                         tp_oids_out[idx] = prev_oid
+                        continue
+
+                    # #749: OID 0 means "no resting order" both before first placement
+                    # and after a tier filled (Go zeros the slot; TPArmedTiers marks
+                    # the tier as armed). Only the latter must skip re-placement —
+                    # otherwise cumulative fractions are re-applied to the reduced
+                    # size and tier 1 comes back as a "new TP1".
+                    if prev_oid <= 0 and tier_armed:
+                        tp_oids_out[idx] = 0
                         continue
 
                     action, fill = _resolve_missing_oid(prev_oid)
@@ -1050,10 +1066,14 @@ def main():
         parser.add_argument("--tp1-oid", type=int, default=0)
         parser.add_argument("--tp2-oid", type=int, default=0)
         parser.add_argument("--tp-oids-json", default="")
+        parser.add_argument("--tp-armed-tiers-json", default="")
         parser.add_argument("--mode", default="live")
         args = parser.parse_args()
         tp_tiers = json.loads(args.tp_tiers_json) if args.tp_tiers_json else None
         tp_oids = json.loads(args.tp_oids_json) if args.tp_oids_json else None
+        tp_armed_tiers = (
+            json.loads(args.tp_armed_tiers_json) if args.tp_armed_tiers_json else None
+        )
         run_sync_protection(
             args.symbol,
             args.side,
@@ -1070,6 +1090,7 @@ def main():
             tp2_oid=args.tp2_oid,
             tp_tiers=tp_tiers,
             tp_oids=tp_oids,
+            tp_armed_tiers=tp_armed_tiers,
         )
     elif "--update-stop-loss" in sys.argv:
         import argparse
