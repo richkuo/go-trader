@@ -276,10 +276,10 @@ if [[ "$restart" != "1" ]]; then
 fi
 
 # Determine the /health port: explicit STATUS_PORT env > config.status_port > 8099.
-# Use the freshly synced .venv to parse JSON so we don't depend on jq.
+# Use the freshly synced uv environment to parse JSON so we don't depend on jq.
 status_port="${STATUS_PORT:-}"
-if [[ -z "$status_port" && -f scheduler/config.json && -x .venv/bin/python3 ]]; then
-    status_port=$(.venv/bin/python3 -c '
+if [[ -z "$status_port" && -f scheduler/config.json ]]; then
+    status_port=$(uv run --no-sync python -c '
 import json, sys
 try:
     cfg = json.load(open("scheduler/config.json"))

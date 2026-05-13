@@ -693,7 +693,10 @@ func runFetchHLUserFills(since time.Time) (*HLUserFillsResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, ".venv/bin/python3", append([]string{script}, args...)...)
+	cmd, err := newPythonCommand(ctx, script, args...)
+	if err != nil {
+		return nil, err
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	var stdout, stderr bytes.Buffer

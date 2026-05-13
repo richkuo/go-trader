@@ -12,7 +12,7 @@ Quick flow for a new server: tell OpenClaw `install https://github.com/richkuo/g
 
 - Run git from repo root.
 - Use `/opt/homebrew/bin/go` (macOS) or `/usr/local/go/bin/go` (Linux) if `go` is not on PATH.
-- Use `.venv/bin/python3`; in worktrees, use the main repo's `.venv`.
+- Use `uv run --no-sync python`; worktrees do not need a copied virtualenv.
 - Install Python deps with `uv sync`.
 - Scheduler config: `scheduler/config.json` (start from `scheduler/config.example.json` when generating manually).
 - State is SQLite only: default `scheduler/state.db`.
@@ -428,9 +428,9 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    curl -s localhost:8099/status | python3 -m json.tool
 
 5. BACKTESTING
-   .venv/bin/python3 backtest/run_backtest.py --strategy <n> --symbol BTC/USDT --timeframe 1h --mode single|compare|multi|optimize
-   .venv/bin/python3 backtest/backtest_options.py --underlying BTC --since 90 --capital 10000
-   .venv/bin/python3 backtest/backtest_theta.py --underlying BTC --since 90 --capital 10000
+   uv run --no-sync python backtest/run_backtest.py --strategy <n> --symbol BTC/USDT --timeframe 1h --mode single|compare|multi|optimize
+   uv run --no-sync python backtest/backtest_options.py --underlying BTC --since 90 --capital 10000
+   uv run --no-sync python backtest/backtest_theta.py --underlying BTC --since 90 --capital 10000
 ```
 
 ---
@@ -511,33 +511,33 @@ Notes:
 
 ## Backtesting
 
-Use `.venv/bin/python3` for all backtests.
+Use `uv run --no-sync python` for all backtests.
 
 ```bash
-.venv/bin/python3 backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode single
-.venv/bin/python3 backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode compare
-.venv/bin/python3 backtest/run_backtest.py --strategy momentum --timeframe 1h --mode multi
-.venv/bin/python3 backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode optimize
-.venv/bin/python3 backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --since 90
+uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode single
+uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode compare
+uv run --no-sync python backtest/run_backtest.py --strategy momentum --timeframe 1h --mode multi
+uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode optimize
+uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --since 90
 
 # Close-strategy registry (#535/#641) — repeatable; max close_fraction wins.
 # --close-strategy accepts both bare names and JSON refs ({"name","params"}).
 # --close-params is removed — fold params into the JSON ref.
-.venv/bin/python3 backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h \
+uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h \
   --close-strategy tp_at_pct \
   --close-strategy '{"name":"tiered_tp_atr","params":{"tiers":[{"atr_multiple":1,"close_fraction":0.5},{"atr_multiple":2,"close_fraction":1.0}]}}'
 
 # Backtest a live strategy verbatim (single mode only) — pulls the strategy's
 # open + close refs from the live config (#643). Pre-v13 configs are rejected.
-.venv/bin/python3 backtest/run_backtest.py --config scheduler/config.json --strategy hl-btc-momentum \
+uv run --no-sync python backtest/run_backtest.py --config scheduler/config.json --strategy hl-btc-momentum \
   --symbol BTC/USDT --timeframe 1h --mode single
 
 # Regime gate (#549) — blocks entries outside allowed regimes; closes always execute
-.venv/bin/python3 backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h \
+uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h \
   --regime-enabled --regime-period 14 --regime-adx-threshold 20 --allowed-regimes trending_up trending_down
 
-.venv/bin/python3 backtest/backtest_options.py --underlying BTC --since 90 --capital 10000
-.venv/bin/python3 backtest/backtest_theta.py --underlying BTC --since 90 --capital 10000
+uv run --no-sync python backtest/backtest_options.py --underlying BTC --since 90 --capital 10000
+uv run --no-sync python backtest/backtest_theta.py --underlying BTC --since 90 --capital 10000
 ```
 
 ---
@@ -644,9 +644,9 @@ Regime detection (global opt-in):
 Source of truth:
 
 ```bash
-.venv/bin/python3 shared_strategies/open/spot/strategies.py --list-json
-.venv/bin/python3 shared_strategies/open/futures/strategies.py --list-json
-.venv/bin/python3 shared_strategies/options/strategies.py --list-json
+uv run --no-sync python shared_strategies/open/spot/strategies.py --list-json
+uv run --no-sync python shared_strategies/open/futures/strategies.py --list-json
+uv run --no-sync python shared_strategies/options/strategies.py --list-json
 ```
 
 Platform conventions:
@@ -711,8 +711,8 @@ Do not edit `shared_strategies/open/{spot,futures}/strategies.py` to add strateg
 Before refactoring registry/shims:
 
 ```bash
-.venv/bin/python3 shared_strategies/open/spot/strategies.py --list-json > /tmp/spot.json
-.venv/bin/python3 shared_strategies/open/futures/strategies.py --list-json > /tmp/futures.json
+uv run --no-sync python shared_strategies/open/spot/strategies.py --list-json > /tmp/spot.json
+uv run --no-sync python shared_strategies/open/futures/strategies.py --list-json > /tmp/futures.json
 ```
 
 Diff afterwards unless intentionally changing discovery.
@@ -739,8 +739,8 @@ Implementation:
 Adapter references: spot — `binanceus`; perps — `hyperliquid`; futures — `topstep`; options — `deribit`.
 
 ```bash
-.venv/bin/python3 -m py_compile platforms/<name>/adapter.py
-.venv/bin/python3 -m py_compile shared_scripts/check_<name>.py
+uv run --no-sync python -m py_compile platforms/<name>/adapter.py
+uv run --no-sync python -m py_compile shared_scripts/check_<name>.py
 /opt/homebrew/bin/go -C scheduler build .
 ./go-trader --config scheduler/config.json --once
 ```
@@ -761,7 +761,7 @@ Triggered → scheduler enqueues `operator_required: true` and emits a CRITICAL 
 Detect:
 
 ```bash
-curl -s localhost:8099/status | .venv/bin/python3 -c "
+curl -s localhost:8099/status | uv run --no-sync python -c "
 import json, sys
 d = json.load(sys.stdin)
 for sid, s in d['strategies'].items():
@@ -817,8 +817,8 @@ grep -n "liveExecFailed" scheduler/main.go
 
 ```bash
 /opt/homebrew/bin/go -C scheduler test ./...
-.venv/bin/python3 -m pytest
-.venv/bin/python3 shared_strategies/open/test_registry_parity.py
+uv run --no-sync python -m pytest
+uv run --no-sync python shared_strategies/open/test_registry_parity.py
 ```
 
 If Go cache needs an explicit writable path:
@@ -827,4 +827,4 @@ If Go cache needs an explicit writable path:
 env GOCACHE=/tmp/go-build-cache /opt/homebrew/bin/go -C scheduler test ./...
 ```
 
-Go CI does not install `.venv`, so tests for subprocess-based live helpers should extract pure parsers/decision helpers rather than invoking Python.
+Go CI should not depend on a Python runtime, so tests for subprocess-based live helpers should extract pure parsers/decision helpers rather than invoking Python.

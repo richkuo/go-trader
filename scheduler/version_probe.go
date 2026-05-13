@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -57,9 +56,9 @@ const probeTimeout = 15 * time.Second
 // signal value is highest for argparse-strict scripts (HL/TopStep/RH/OKX),
 // where unknown flags cause the same exit-2 the May 7 outage exhibited.
 // probeOneCheckScriptFn is the per-script probe invoker — package var so
-// tests can stub it without standing up a real .venv (Go CI doesn't have
-// one — see CLAUDE.md → Testing). The argv parameter lets a single script
-// be probed against multiple argv shapes (e.g. signal-check + --fetch-atr).
+// tests can stub it without standing up a real Python environment. The argv
+// parameter lets a single script be probed against multiple argv shapes
+// (e.g. signal-check + --fetch-atr).
 var probeOneCheckScriptFn = probeOneCheckScript
 
 func probeCheckScripts(cfg *Config) error {
@@ -105,15 +104,17 @@ func probeOneCheckScript(script string, argv []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 
-	cmdArgs := append([]string{script}, argv...)
-	cmd := exec.CommandContext(ctx, ".venv/bin/python3", cmdArgs...)
+	cmd, err := newPythonCommand(ctx, script, argv...)
+	if err != nil {
+		return fmt.Errorf("%s: %w", script, err)
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
 		if cmd.Process != nil {
 			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)

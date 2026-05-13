@@ -2,8 +2,8 @@
 
 ## Environment
 - Go 1.26.2 (`brew install go@1.26` on macOS); use full binary path if not on PATH (e.g. `/opt/homebrew/bin/go`).
-- Python venv at `.venv/bin/python3` (executor.go runtime); deps via `uv` (`pyproject.toml` / `uv.lock`).
-- Git worktrees: `.venv` not copied — use `<main-repo>/.venv/bin/python3`.
+- Python runs through `uv run --no-sync python`; deps via `uv` (`pyproject.toml` / `uv.lock`).
+- Git worktrees work without a copied virtualenv; run `uv sync` once per checkout and ensure `uv` is on PATH.
 
 ## Setup
 - `uv sync` — install Python deps
@@ -90,7 +90,7 @@
 - **Strategy registries:** open source of truth `shared_strategies/open/registry.py`; spot/futures shims build via `build_registry()`. Close: `shared_strategies/close/registry.py` with `evaluate(position,market,params)`. New open strategy: (1) `open/registry.py` + `PLATFORM_ORDER`, (2) `knownShortNames` + defaults in `init.go`, (3) `DEFAULT_PARAM_RANGES` in `backtest/optimizer.py`. Use `variants={"futures":{...}}`. Before refactoring registry: snapshot `--list-json` and `diff` after — Go `discoverStrategies` depends on byte-identical output.
 - Strategy DSL gotchas: `apply_strategy(name,df,params)` merges config params UNDER runtime (runtime wins); `check_strategy.py` uses manual `sys.argv`, others argparse; `HTFFilter` not applied to options or `delta_neutral_funding`; `delta_neutral_funding` perps-only; perps vs futures `Position` both have `Multiplier>0`, only perps have `Leverage>0`.
 - Per-strategy DD: spot/options/futures peak-relative; perps `unrealized_loss/deployed_margin` when open. Margin uses exchange `Leverage`, not `SizingLeverage`. `RecordTradeResult` only updates `DailyPnL`/`ConsecutiveLosses`; lifetime counts come from SQLite.
-- **Test pattern:** extract pure helpers from subprocess wrappers — Go CI lacks `.venv/bin/python3`, so tests calling `RunPythonScript`/`RunHyperliquid{Execute,Close}` fail CI.
+- **Test pattern:** extract pure helpers from subprocess wrappers — Go CI should not depend on spawning Python for live helper tests.
 - Per-strategy CB pending close: `RiskState.PendingCircuitCloses map[string]*PendingCircuitClose` keyed by `PlatformPendingClose{Hyperliquid,OKX,Robinhood,TopStep,OKXSpot,RobinhoodOptions}`. Use `set/clear/getPendingCircuitClose`. RH enqueue runs only from drain's stuck-CB recovery. **HL CB drain:** when `hlLiveStrategiesForCoin(sym)` reports >1 live strategy on same coin/wallet, drain clears pending without on-chain close.
 - **Operator-required CBs** (`OKXSpot`, `RobinhoodOptions`): `OperatorRequired=true`; `drainOperatorRequiredPendingCloses` emits one CRITICAL log + notifier per cycle until CB resets.
 - **Kill switch:** `planKillSwitchClose(KillSwitchCloseInputs)` returns pure `KillSwitchClosePlan` with `OnChainConfirmedFlat`. New platform = add fields + close/fetcher pair, not signature change. OKX-spot / RH-options warn but don't block confirmed-flat. Per-platform timeouts. Auto-reset on confirmed-flat clears virtual state, resumes next cycle.
@@ -129,9 +129,9 @@ Inline review threads are exempt.
 - **Post-update protocol:** after `git pull` / auto-update, follow `SKILL.md` → "Post-Update Agent Protocol". Diff `<running>..HEAD`, classify via SKILL.md Reference table, prompt per item. `runConfigMigrationDM` only covers `configFieldRegistry` (≤ v3) — later runtime-default/opt-in items surfaced manually.
 
 ## Backtest
-- `.venv/bin/python3 backtest/run_backtest.py --strategy <n> --symbol BTC/USDT --timeframe 1h --mode single`
-- `.venv/bin/python3 backtest/backtest_options.py --underlying BTC --since YYYY-MM-DD --capital 10000`
-- `.venv/bin/python3 backtest/backtest_theta.py --underlying BTC --since YYYY-MM-DD --capital 10000`
+- `uv run --no-sync python backtest/run_backtest.py --strategy <n> --symbol BTC/USDT --timeframe 1h --mode single`
+- `uv run --no-sync python backtest/backtest_options.py --underlying BTC --since YYYY-MM-DD --capital 10000`
+- `uv run --no-sync python backtest/backtest_theta.py --underlying BTC --since YYYY-MM-DD --capital 10000`
 - Close registry: `Backtester(open_strategy={"name":..., "params":{...}}, close_strategies=[{...}])` — co-located refs mirror live `StrategyConfig`; `--close-strategy` repeatable, accepts bare names or JSON refs. `--config <path> --strategy <id>` loads a v13+ live strategy verbatim (single mode only). Per-bar eval; max `close_fraction` at next bar's open, max-wins vs column-based. Entry context (`avg_cost`/`initial_quantity`/`entry_atr`) stamped at open with the 50%-of-AvgCost ATR guard. Bar-level granularity — intra-bar trigger races not simulated.
 - Regime: `Backtester(regime_enabled=True, regime_period=14, regime_adx_threshold=20, allowed_regimes=[...])` or matching `--regime-*` flags. Vectorized `ensure_regime_columns()` runs once before per-bar loop; entries blocked when `bar_regime ∉ allowed_regimes`; closes always execute. Options backtests don't support regime yet.
 - `sl_after` parity (#709): see Key Patterns "Post-TP SL adjustment" bullet for backtester args + behavior + same-bar suppression flag.
@@ -140,13 +140,13 @@ Inline review threads are exempt.
 
 ## Testing
 - **New functionality must include tests.** Go: `_test.go`. Python: `test_*.py`. Bug fixes: regression test when feasible.
-- `python3 -m py_compile <file>` from repo root.
+- `uv run --no-sync python -m py_compile <file>` from repo root.
 - `go build -ldflags "-X main.Version=$(git describe --tags --always --dirty=-mod)" .` / `go test ./...` (from repo root, not `cd scheduler`).
 - `gofmt -w <file>.go` post-edit.
 - Multi-line Go edits with tabs may fail Edit tool; use Python heredoc with `read()`+`replace(old,new,1)`+`write()`.
-- Strategy listing: `shared_strategies/open/{spot,futures}/strategies.py --list-json` (absolute venv path in worktrees).
+- Strategy listing: `uv run --no-sync python shared_strategies/open/{spot,futures}/strategies.py --list-json`.
 - Smoke: `./go-trader --once`; interactive init `printf "...\n" | ./go-trader init`; JSON init `./go-trader init --json '{...}' --output /tmp/test.json`; alt port `--status-port 9100`.
-- Pytest: `.venv/bin/python3 -m pytest shared_strategies/ shared_tools/ platforms/ backtest/`. `uv run pytest` may fail on CWD drift. `shared_scripts/test_*.py` is NOT in `testpaths` — invoke explicitly.
+- Pytest: `uv run --no-sync python -m pytest shared_strategies/ shared_tools/ platforms/ backtest/`. `shared_scripts/test_*.py` is NOT in `testpaths` — invoke explicitly.
 - When tests touch sys.path/registries, run the FULL suite — isolated runs mask import-order conflicts (open vs close `registry.py`).
 - `stampEntryATRIfOpened` rejects ATR > 50% of AvgCost; Go tests using `atr` indicators must use values < 50% of entry price.
 - Strategy tests must assert actual signal values (`assert (result["signal"] == 1).any()`), not just column existence. Smoke tests iterating registered strategies need `DatetimeIndex` (`amd_ifvg` reads `index.hour`, `vwap_reversion` buckets by `index.date`).

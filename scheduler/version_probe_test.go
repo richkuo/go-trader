@@ -34,23 +34,29 @@ sys.exit(2)
 }
 
 // runProbeWithCwd runs probeCheckScripts from a tmp cwd containing a
-// fake .venv/bin/python3 shim that just execs whichever script it's
-// handed. Returns the probe's error.
+// fake uv shim that accepts `uv run --no-sync python ...` and execs
+// whichever script it's handed. Returns the probe's error.
 func runProbeWithCwd(t *testing.T, cfg *Config) error {
 	t.Helper()
 	tmp := t.TempDir()
-	venvBin := filepath.Join(tmp, ".venv", "bin")
-	if err := os.MkdirAll(venvBin, 0o755); err != nil {
-		t.Fatalf("mkdir venv: %v", err)
+	binDir := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
 	}
-	// Shim: forward argv unchanged to the real python3 found on PATH.
+	// Shim: validate the production argv prefix, then forward to python3.
 	shim := `#!/usr/bin/env bash
+if [[ "$1" != "run" || "$2" != "--no-sync" || "$3" != "python" ]]; then
+  echo "unexpected uv argv: $*" >&2
+  exit 64
+fi
+shift 3
 exec /usr/bin/env python3 "$@"
 `
-	pyShim := filepath.Join(venvBin, "python3")
-	if err := os.WriteFile(pyShim, []byte(shim), 0o755); err != nil {
+	uvShim := filepath.Join(binDir, "uv")
+	if err := os.WriteFile(uvShim, []byte(shim), 0o755); err != nil {
 		t.Fatalf("write shim: %v", err)
 	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	fetchDir := filepath.Join(tmp, "shared_scripts")
 	if err := os.MkdirAll(fetchDir, 0o755); err != nil {
 		t.Fatalf("mkdir shared_scripts: %v", err)
@@ -65,8 +71,7 @@ exec /usr/bin/env python3 "$@"
 
 	// Script paths in cfg are already absolute (from writeProbeStub) and
 	// stay valid regardless of cwd; the chdir above only matters so the
-	// relative ".venv/bin/python3" path inside probeOneCheckScript hits
-	// the shim we just dropped in tmp/.venv/bin/.
+	// helper resolves the tmp/bin/uv shim and runs probes from the project root.
 	return probeCheckScripts(cfg)
 }
 
@@ -134,7 +139,7 @@ func TestProbeIgnoresEmptyScripts(t *testing.T) {
 
 // TestProbeRunsFetchATRForHL verifies the second --fetch-atr probe (#689) is
 // dispatched only for check_hyperliquid.py. Stubs probeOneCheckScriptFn to
-// record argv shapes per script without requiring a real .venv.
+// record argv shapes per script without requiring a real Python runtime.
 func TestProbeRunsFetchATRForHL(t *testing.T) {
 	orig := probeOneCheckScriptFn
 	defer func() { probeOneCheckScriptFn = orig }()

@@ -41,7 +41,7 @@ func TestRunProbeNoStrategies(t *testing.T) {
 // TestRunProbeHappyPath: a config with two strategies sharing one script and
 // one with a distinct script produces exactly two probe invocations (one per
 // unique script) and runProbe returns 0. Stubs probeOneCheckScriptFn because
-// Go CI doesn't have .venv/bin/python3 (see CLAUDE.md → Testing).
+// Go CI should not depend on a real Python runtime for this command-level test.
 func TestRunProbeHappyPath(t *testing.T) {
 	orig := probeOneCheckScriptFn
 	defer func() { probeOneCheckScriptFn = orig }()

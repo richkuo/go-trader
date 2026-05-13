@@ -867,30 +867,12 @@ func TestMigrateV13StrategyShape(t *testing.T) {
 // adding a new close evaluator in shared_strategies/close/registry.py without
 // also updating the Go-side migration map cannot silently route legacy params
 // to the open ref. The test shells out to a small Python script that prints
-// the registry's default_params per strategy as JSON; CI runs this via the
-// repo's .venv. Skipped if no Python interpreter is available.
+// the registry's default_params per strategy as JSON. It prefers the locked
+// uv environment, with plain python3 as a fallback for local test runs.
 func TestCloseStrategyOwnedKeysMirrorsPythonRegistry(t *testing.T) {
 	repoRoot, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
-	}
-	// Resolve the venv interpreter against repoRoot so cmd.Dir doesn't
-	// re-root the relative path. PATH lookup is the fallback.
-	candidates := []string{
-		filepath.Join(repoRoot, ".venv", "bin", "python3"),
-	}
-	if pathPython, err := exec.LookPath("python3"); err == nil {
-		candidates = append(candidates, pathPython)
-	}
-	var py string
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			py = p
-			break
-		}
-	}
-	if py == "" {
-		t.Skip("no python3 available; skipping registry sync check")
 	}
 	script := `
 import sys, json, os
@@ -903,16 +885,40 @@ spec.loader.exec_module(mod)
 out = {name: list(entry["default_params"].keys()) for name, entry in mod.STRATEGIES.items()}
 print(json.dumps(out))
 `
-	cmd := exec.Command(py, "-c", script)
-	cmd.Dir = repoRoot
-	// CombinedOutput so a Python crash (real bug — e.g. broken close registry
-	// import) surfaces in the failure message instead of being swallowed.
-	// We've already verified an interpreter exists; from here on, any
-	// execution failure is a real defect, not "Python missing" (#642 re-review).
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("python close registry script failed (%v):\n%s", err, output)
+	run := func(name string, args ...string) ([]byte, error) {
+		cmd := exec.Command(name, args...)
+		cmd.Dir = repoRoot
+		return cmd.CombinedOutput()
 	}
+
+	var output []byte
+	var uvOutput []byte
+	var uvErr error
+	ran := false
+	if uvPath, err := exec.LookPath("uv"); err == nil {
+		output, uvErr = run(uvPath, "run", "--no-sync", "python", "-c", script)
+		if uvErr == nil {
+			ran = true
+		} else {
+			uvOutput = output
+		}
+	}
+	if !ran {
+		if pyPath, err := exec.LookPath("python3"); err == nil {
+			output, err = run(pyPath, "-c", script)
+			if err != nil {
+				if uvErr != nil {
+					t.Fatalf("uv close registry script failed (%v):\n%s\npython3 fallback failed (%v):\n%s", uvErr, uvOutput, err, output)
+				}
+				t.Fatalf("python close registry script failed (%v):\n%s", err, output)
+			}
+		} else if uvErr != nil {
+			t.Fatalf("uv close registry script failed (%v):\n%s\nno python3 fallback available", uvErr, uvOutput)
+		} else {
+			t.Skip("no python3 available; skipping registry sync check")
+		}
+	}
+
 	// CombinedOutput merges stdout+stderr. The script writes only the JSON
 	// blob to stdout, but a Python warning to stderr would prepend non-JSON.
 	// Locate the JSON object by trimming to the first '{'.

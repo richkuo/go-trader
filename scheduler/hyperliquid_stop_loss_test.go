@@ -20,7 +20,7 @@ func silentStrategyLogger(id string) *StrategyLogger {
 }
 
 // Tests for the stop-loss plumbing added in #412. We exercise the pure
-// output parser (which Go CI can run without .venv/bin/python3) plus
+// output parser (which Go CI can run without spawning Python) plus
 // StrategyConfig/Position serialization round-trips so struct-tag
 // regressions on the new fields surface here.
 
