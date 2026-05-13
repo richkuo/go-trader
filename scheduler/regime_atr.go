@@ -48,11 +48,12 @@ const regimeClassifierKey = "trend_regime"
 type regimeATRSurface int
 
 const (
-	regimeSurfaceStopLoss       regimeATRSurface = iota // stop_loss_atr_regime: ATR only
-	regimeSurfaceTrailing                               // trailing_stop_atr_regime: ATR only
-	regimeSurfaceTPTierATROnly                          // tier with tier-level scalar close_fraction: ATR only inside per-regime
-	regimeSurfaceTPTierWithFrac                         // tier with per-regime close_fraction: ATR + close_fraction
-	regimeSurfaceSLAfter                                // sl_after.{atr,trail_from_here.atr}: ATR only
+	regimeSurfaceStopLoss       regimeATRSurface = iota // stop_loss_atr_regime: ATR only, strictly positive
+	regimeSurfaceTrailing                               // trailing_stop_atr_regime: ATR only, strictly positive
+	regimeSurfaceTPTierATROnly                          // tier with tier-level scalar close_fraction: ATR only, strictly positive
+	regimeSurfaceTPTierWithFrac                         // tier with per-regime close_fraction: ATR + close_fraction, strictly positive
+	regimeSurfaceSLAfter                                // sl_after.atr (atr_offset variant): ATR only, signed allowed (0 and negatives legal — matches the scalar sl_after atr_offset semantics where signed mults move the SL behind/ahead of entry)
+	regimeSurfaceSLAfterTrail                           // sl_after.trail_from_here.atr: ATR only, strictly positive (trail distance is a magnitude)
 )
 
 // RegimeATREntry is one resolution slot inside the trend_regime map.
@@ -394,7 +395,10 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 			errs = append(errs, fmt.Sprintf("%s.%s.%s.atr: %v", ctxLabel, regimeClassifierKey, label, err))
 			continue
 		}
-		if atr <= 0 {
+		// sl_after atr_offset accepts signed atr (zero = breakeven, negative
+		// = SL behind entry). Every other surface requires a strictly
+		// positive magnitude. See #736.
+		if surface != regimeSurfaceSLAfter && atr <= 0 {
 			errs = append(errs, fmt.Sprintf("%s.%s.%s.atr: must be > 0, got %g", ctxLabel, regimeClassifierKey, label, atr))
 			continue
 		}

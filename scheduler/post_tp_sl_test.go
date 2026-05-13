@@ -1101,3 +1101,336 @@ func TestValidatePostTPStopLossRules_NoOpWhenAbsent(t *testing.T) {
 		t.Fatalf("expected no errors when sl_after is absent, got %v", errs)
 	}
 }
+
+// --- #736: sl_after trend_regime parsing -----------------------------------
+
+// slAfterRegimeRaw is a helper that builds the implicit atr_offset trend_regime
+// shape from a (label → atr) map. Used by the regime parser tests below.
+func slAfterRegimeRaw(entries map[string]float64) map[string]interface{} {
+	tr := map[string]interface{}{}
+	for label, atr := range entries {
+		tr[label] = map[string]interface{}{"atr": atr}
+	}
+	return map[string]interface{}{"trend_regime": tr}
+}
+
+func TestParseSLAfterRule_RegimeATROffset(t *testing.T) {
+	raw := slAfterRegimeRaw(map[string]float64{
+		"trending_up":   0.0,
+		"trending_down": 0.0,
+		"ranging":       -0.5,
+	})
+	got, err := parseSLAfterRule(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Kind != "atr_offset" {
+		t.Fatalf("kind = %q, want atr_offset", got.Kind)
+	}
+	if got.ATRRegime == nil {
+		t.Fatalf("ATRRegime should be populated")
+	}
+	if got.ATRMult != 0 || got.TrailATRMult != 0 {
+		t.Fatalf("scalar fields should be zero, got %+v", got)
+	}
+	// Signed atr values must round-trip — the regime surface is the one
+	// place where 0 and negative atrs are legal.
+	for label, want := range map[string]float64{
+		"trending_up":   0.0,
+		"trending_down": 0.0,
+		"ranging":       -0.5,
+	} {
+		entry, ok := got.ATRRegime.Resolve(label)
+		if !ok {
+			t.Fatalf("missing entry for %q", label)
+		}
+		if entry.ATR != want {
+			t.Fatalf("%s atr = %g, want %g", label, entry.ATR, want)
+		}
+	}
+}
+
+func TestParseSLAfterRule_RegimeTrailFromHere(t *testing.T) {
+	raw := map[string]interface{}{
+		"trail_from_here": map[string]interface{}{
+			"trend_regime": map[string]interface{}{
+				"trending_up":   map[string]interface{}{"atr": 1.0},
+				"trending_down": map[string]interface{}{"atr": 1.0},
+				"ranging":       map[string]interface{}{"atr": 0.5},
+			},
+		},
+	}
+	got, err := parseSLAfterRule(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Kind != "trail_from_here" {
+		t.Fatalf("kind = %q, want trail_from_here", got.Kind)
+	}
+	if got.TrailATRRegime == nil {
+		t.Fatalf("TrailATRRegime should be populated")
+	}
+	if got.TrailATRMult != 0 {
+		t.Fatalf("scalar trail_atr_mult should be zero, got %g", got.TrailATRMult)
+	}
+}
+
+func TestParseSLAfterRule_RegimeExplicitKindAtROffset(t *testing.T) {
+	raw := map[string]interface{}{
+		"kind": "atr_offset",
+		"trend_regime": map[string]interface{}{
+			"trending_up":   map[string]interface{}{"atr": 0.25},
+			"trending_down": map[string]interface{}{"atr": 0.25},
+			"ranging":       map[string]interface{}{"atr": 0.0},
+		},
+	}
+	got, err := parseSLAfterRule(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Kind != "atr_offset" || got.ATRRegime == nil {
+		t.Fatalf("got %+v, want atr_offset with regime block", got)
+	}
+}
+
+func TestParseSLAfterRule_RegimeRejectsTrailNonPositive(t *testing.T) {
+	cases := map[string]float64{
+		"trail_zero":     0.0,
+		"trail_negative": -1.0,
+	}
+	for name, atr := range cases {
+		t.Run(name, func(t *testing.T) {
+			raw := map[string]interface{}{
+				"trail_from_here": map[string]interface{}{
+					"trend_regime": map[string]interface{}{
+						"trending_up":   map[string]interface{}{"atr": 1.0},
+						"trending_down": map[string]interface{}{"atr": 1.0},
+						"ranging":       map[string]interface{}{"atr": atr},
+					},
+				},
+			}
+			if _, err := parseSLAfterRule(raw); err == nil {
+				t.Fatalf("expected error for trail_from_here ranging atr=%g", atr)
+			}
+		})
+	}
+}
+
+func TestParseSLAfterRule_RegimeErrors(t *testing.T) {
+	cases := []struct {
+		name      string
+		raw       interface{}
+		wantInErr string
+	}{
+		{
+			name: "bare_label_keys",
+			raw: map[string]interface{}{
+				"trending_up": map[string]interface{}{"atr": 0.25},
+			},
+			wantInErr: "trend_regime",
+		},
+		{
+			name: "missing_label",
+			raw: map[string]interface{}{
+				"trend_regime": map[string]interface{}{
+					"trending_up": map[string]interface{}{"atr": 0.25},
+					"ranging":     map[string]interface{}{"atr": 0.0},
+				},
+			},
+			wantInErr: "missing required regime labels",
+		},
+		{
+			name: "use_defaults_and_explicit",
+			raw: map[string]interface{}{
+				"use_defaults": true,
+				"trend_regime": map[string]interface{}{
+					"trending_up":   map[string]interface{}{"atr": 0.25},
+					"trending_down": map[string]interface{}{"atr": 0.25},
+					"ranging":       map[string]interface{}{"atr": 0.0},
+				},
+			},
+			wantInErr: "use_defaults",
+		},
+		{
+			name: "scalar_and_regime_mix",
+			raw: map[string]interface{}{
+				"atr_mult": 0.25,
+				"trend_regime": map[string]interface{}{
+					"trending_up":   map[string]interface{}{"atr": 0.25},
+					"trending_down": map[string]interface{}{"atr": 0.25},
+					"ranging":       map[string]interface{}{"atr": 0.0},
+				},
+			},
+			wantInErr: "pick one shape",
+		},
+		{
+			name: "trail_use_defaults_unsupported",
+			raw: map[string]interface{}{
+				"trail_from_here": map[string]interface{}{
+					"use_defaults": true,
+				},
+			},
+			wantInErr: "use_defaults",
+		},
+		{
+			name: "atr_offset_use_defaults_unsupported",
+			raw: map[string]interface{}{
+				"use_defaults": true,
+			},
+			wantInErr: "use_defaults",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseSLAfterRule(tc.raw)
+			if err == nil {
+				t.Fatalf("expected error containing %q", tc.wantInErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantInErr) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantInErr)
+			}
+		})
+	}
+}
+
+func TestSLAfterRule_EqualRegime(t *testing.T) {
+	makeRule := func(atr float64) SLAfterRule {
+		got, err := parseSLAfterRule(slAfterRegimeRaw(map[string]float64{
+			"trending_up":   atr,
+			"trending_down": atr,
+			"ranging":       atr,
+		}))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		return got
+	}
+	a := makeRule(0.5)
+	b := makeRule(0.5)
+	if !a.Equal(b) {
+		t.Fatalf("identically-shaped regime rules should be Equal")
+	}
+	c := makeRule(0.25)
+	if a.Equal(c) {
+		t.Fatalf("rules with different atr values should not be Equal")
+	}
+	// Scalar vs regime: different shapes.
+	scalar := SLAfterRule{Kind: "atr_offset", ATRMult: 0.5}
+	if a.Equal(scalar) {
+		t.Fatalf("scalar atr_offset must not Equal regime atr_offset")
+	}
+}
+
+func TestParseStrategyTPSLAfterRules_RegimeRoundTrip(t *testing.T) {
+	sc := StrategyConfig{
+		Type:     "perps",
+		Platform: "hyperliquid",
+		CloseStrategies: []StrategyRef{{
+			Name: "tiered_tp_atr_live",
+			Params: map[string]interface{}{
+				"sl_after": slAfterRegimeRaw(map[string]float64{
+					"trending_up":   0.0,
+					"trending_down": 0.0,
+					"ranging":       -0.5,
+				}),
+				"tiers": []interface{}{
+					map[string]interface{}{
+						"atr_multiple":   2,
+						"close_fraction": 0.5,
+						"sl_after": map[string]interface{}{
+							"trail_from_here": map[string]interface{}{
+								"trend_regime": map[string]interface{}{
+									"trending_up":   map[string]interface{}{"atr": 1.0},
+									"trending_down": map[string]interface{}{"atr": 1.0},
+									"ranging":       map[string]interface{}{"atr": 0.5},
+								},
+							},
+						},
+					},
+					map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
+				},
+			},
+		}},
+	}
+	rules, errs := parseStrategyTPSLAfterRules(sc)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errs: %v", errs)
+	}
+	if rules.Default.Kind != "atr_offset" || rules.Default.ATRRegime == nil {
+		t.Fatalf("default = %+v, want atr_offset regime", rules.Default)
+	}
+	if len(rules.PerTier) != 2 {
+		t.Fatalf("per-tier len = %d, want 2", len(rules.PerTier))
+	}
+	if rules.PerTier[0].Kind != "trail_from_here" || rules.PerTier[0].TrailATRRegime == nil {
+		t.Fatalf("tier 0 = %+v, want trail_from_here regime", rules.PerTier[0])
+	}
+}
+
+func TestSLAfterRule_ResolveForRegime(t *testing.T) {
+	rule, err := parseSLAfterRule(slAfterRegimeRaw(map[string]float64{
+		"trending_up":   0.0,
+		"trending_down": 0.0,
+		"ranging":       -0.5,
+	}))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	resolved, ok := rule.resolveForRegime("ranging")
+	if !ok {
+		t.Fatalf("expected ok=true for ranging")
+	}
+	if resolved.Kind != "atr_offset" || resolved.ATRMult != -0.5 {
+		t.Fatalf("ranging resolution = %+v, want atr_offset/-0.5", resolved)
+	}
+	if resolved.ATRRegime != nil {
+		t.Fatalf("resolved rule must drop the regime block")
+	}
+	if _, ok := rule.resolveForRegime("unknown"); ok {
+		t.Fatalf("missing label should yield ok=false")
+	}
+	if _, ok := rule.resolveForRegime(""); ok {
+		t.Fatalf("empty regime should yield ok=false")
+	}
+}
+
+// validatePostTPStopLossRules already rejects trail_from_here on type=manual
+// by checking rule.Kind (lines ~385-394 in scheduler/post_tp_sl.go). The
+// regime variant carries the same Kind, so the gate fires for both shapes
+// — this test makes that contract explicit (#736 acceptance criterion).
+func TestValidatePostTPStopLossRules_RejectsTrailRegimeOnManual(t *testing.T) {
+	atrSL := 1.5
+	sc := StrategyConfig{
+		Type:            "manual",
+		Platform:        "hyperliquid",
+		StopLossATRMult: &atrSL,
+		CloseStrategies: []StrategyRef{{
+			Name: "tiered_tp_atr_live",
+			Params: map[string]interface{}{
+				"sl_after": map[string]interface{}{
+					"trail_from_here": map[string]interface{}{
+						"trend_regime": map[string]interface{}{
+							"trending_up":   map[string]interface{}{"atr": 1.0},
+							"trending_down": map[string]interface{}{"atr": 1.0},
+							"ranging":       map[string]interface{}{"atr": 0.5},
+						},
+					},
+				},
+				"tiers": []interface{}{
+					map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
+					map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
+				},
+			},
+		}},
+	}
+	errs := validatePostTPStopLossRules(sc)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "trail_from_here is not supported on manual") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected manual rejection, got %v", errs)
+	}
+}
