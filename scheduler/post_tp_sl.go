@@ -10,22 +10,86 @@ import (
 
 // SLAfterRule describes how to adjust the stop-loss trigger after a tiered TP
 // fills. Configured per-tier (with optional strategy-level default) on
-// tiered_tp_atr / tiered_tp_atr_live close evaluators. See #708.
+// tiered_tp_atr / tiered_tp_atr_live close evaluators. See #708, #736.
 type SLAfterRule struct {
 	// Kind is "" (no rule, default behavior preserved), "breakeven",
 	// "atr_offset", or "trail_from_here".
 	Kind string
 	// ATRMult is the signed multiplier for "atr_offset"; positive values move
 	// the SL toward profit (long: above AvgCost, short: below). Zero is
-	// equivalent to "breakeven" but legal.
+	// equivalent to "breakeven" but legal. Ignored when ATRRegime is set.
 	ATRMult float64
 	// TrailATRMult is the trail distance in ATR units for "trail_from_here".
-	// Must be > 0.
+	// Must be > 0. Ignored when TrailATRRegime is set.
 	TrailATRMult float64
+	// ATRRegime, when non-nil, supplies the atr_offset multiplier per regime
+	// (resolved from pos.Regime at fire time). Set instead of ATRMult; signed
+	// values are legal here too. Kind must be "atr_offset". #736.
+	ATRRegime *RegimeATRBlock
+	// TrailATRRegime, when non-nil, supplies the trail_from_here distance per
+	// regime. Set instead of TrailATRMult; values must be strictly positive
+	// (validated at config-load via the regimeSurfaceSLAfterTrail surface).
+	// Kind must be "trail_from_here". #736.
+	TrailATRRegime *RegimeATRBlock
 }
 
 // IsEmpty reports whether the rule is a no-op.
 func (r SLAfterRule) IsEmpty() bool { return r.Kind == "" }
+
+// HasRegime reports whether the rule's active multiplier comes from a regime
+// block (vs the scalar ATRMult / TrailATRMult fields).
+func (r SLAfterRule) HasRegime() bool {
+	return r.ATRRegime != nil || r.TrailATRRegime != nil
+}
+
+// resolveForRegime collapses a regime-aware rule into the scalar form for the
+// given regime label by reading the per-label entry. Returns (resolved, true)
+// when the resolution succeeds; (zero, false) when the rule is regime-aware
+// but the label is missing or yields an invalid entry — caller should defer
+// (next cycle, with a stamped pos.Regime, retries). Scalar rules pass through
+// unchanged.
+func (r SLAfterRule) resolveForRegime(regime string) (SLAfterRule, bool) {
+	switch r.Kind {
+	case "atr_offset":
+		if r.ATRRegime == nil {
+			return r, true
+		}
+		entry, ok := r.ATRRegime.Resolve(regime)
+		if !ok {
+			return SLAfterRule{}, false
+		}
+		return SLAfterRule{Kind: "atr_offset", ATRMult: entry.ATR}, true
+	case "trail_from_here":
+		if r.TrailATRRegime == nil {
+			return r, true
+		}
+		entry, ok := r.TrailATRRegime.Resolve(regime)
+		if !ok || entry.ATR <= 0 {
+			return SLAfterRule{}, false
+		}
+		return SLAfterRule{Kind: "trail_from_here", TrailATRMult: entry.ATR}, true
+	default:
+		return r, true
+	}
+}
+
+// Equal reports whether two rules are equivalent, including any regime block
+// shape. Replaces direct struct == (which doesn't work once the rule carries
+// pointer fields). Used by tierSLAfterRules.EqualForReload for SIGHUP gating
+// — scalar↔regime and use_defaults↔explicit shape changes both surface as
+// !Equal so an open position blocks the reload.
+func (r SLAfterRule) Equal(other SLAfterRule) bool {
+	if r.Kind != other.Kind || r.ATRMult != other.ATRMult || r.TrailATRMult != other.TrailATRMult {
+		return false
+	}
+	if !r.ATRRegime.EqualForReload(other.ATRRegime) {
+		return false
+	}
+	if !r.TrailATRRegime.EqualForReload(other.TrailATRRegime) {
+		return false
+	}
+	return true
+}
 
 // computePostTPStopLossTrigger returns the proposed new SL trigger price after
 // a TP tier fires. ok=false signals insufficient inputs (rule kind requires
@@ -101,10 +165,28 @@ func formatATROffsetMode(m float64) string {
 // rule. Use from config parsing.
 func validateSLAfterRule(rule SLAfterRule) error {
 	switch rule.Kind {
-	case "", "breakeven", "atr_offset":
+	case "":
+		return nil
+	case "breakeven":
+		if rule.ATRRegime != nil || rule.TrailATRRegime != nil {
+			return errors.New("sl_after breakeven does not accept a trend_regime block")
+		}
+		return nil
+	case "atr_offset":
+		if rule.TrailATRRegime != nil {
+			return errors.New("sl_after atr_offset accepts trend_regime under atr, not trail_from_here.atr")
+		}
+		// Scalar atr_mult of zero is legal (== breakeven). Regime variant
+		// validates per-label atr at parse time via regimeSurfaceSLAfter.
 		return nil
 	case "trail_from_here":
-		if rule.TrailATRMult <= 0 {
+		if rule.ATRRegime != nil {
+			return errors.New("sl_after trail_from_here accepts trend_regime under trail_from_here.atr, not at the top level")
+		}
+		// Scalar form requires explicit > 0; regime form is validated at
+		// parse time (regimeSurfaceSLAfterTrail enforces strictly positive
+		// per-label atr).
+		if rule.TrailATRRegime == nil && rule.TrailATRMult <= 0 {
 			return errors.New("sl_after trail_from_here requires atr_mult > 0")
 		}
 		return nil
@@ -117,12 +199,20 @@ func validateSLAfterRule(rule SLAfterRule) error {
 // inside a tier object) into a typed SLAfterRule. Accepted shapes:
 //
 //	"breakeven"                                          string shorthand
-//	{"atr_mult": 0.25}                                    → atr_offset
-//	{"trail_from_here": {"atr_mult": 1.0}}                → trail_from_here
+//	{"atr_mult": 0.25}                                    → atr_offset scalar
+//	{"trend_regime": {<labels>}}                          → atr_offset regime (#736)
+//	{"trail_from_here": {"atr_mult": 1.0}}                → trail_from_here scalar
+//	{"trail_from_here": {"trend_regime": {<labels>}}}     → trail_from_here regime (#736)
 //	{"kind": "atr_offset", "atr_mult": 0.25}              → explicit kind
+//	{"kind": "atr_offset", "trend_regime": {<labels>}}    → explicit kind, regime
 //	{"kind": "trail_from_here", "atr_mult": 1.0}          → explicit kind
+//	{"kind": "trail_from_here", "trend_regime": {<labels>}} → explicit kind, regime
 //
 // nil input returns an empty rule with no error (field omitted).
+//
+// Regime-aware shapes resolve via parseRegimeATRBlock; multiple per-label
+// errors are concatenated into a single returned error (with "; " between
+// entries) so callers that surface a single error per field stay compatible.
 func parseSLAfterRule(raw interface{}) (SLAfterRule, error) {
 	if raw == nil {
 		return SLAfterRule{}, nil
@@ -150,18 +240,9 @@ func parseSLAfterRule(raw interface{}) (SLAfterRule, error) {
 			case "breakeven":
 				return SLAfterRule{Kind: "breakeven"}, nil
 			case "atr_offset":
-				mult, err := floatFromAnyChecked(firstPresent(v, "atr_mult", "atr_offset"))
-				if err != nil {
-					return SLAfterRule{}, fmt.Errorf("sl_after kind=atr_offset: %w", err)
-				}
-				return SLAfterRule{Kind: "atr_offset", ATRMult: mult}, nil
+				return parseSLAfterATROffset(v, "sl_after kind=atr_offset")
 			case "trail_from_here":
-				mult, err := floatFromAnyChecked(firstPresent(v, "atr_mult", "trail_atr_mult"))
-				if err != nil {
-					return SLAfterRule{}, fmt.Errorf("sl_after kind=trail_from_here: %w", err)
-				}
-				rule := SLAfterRule{Kind: "trail_from_here", TrailATRMult: mult}
-				return rule, validateSLAfterRule(rule)
+				return parseSLAfterTrailFromHere(v, "sl_after kind=trail_from_here")
 			default:
 				return SLAfterRule{}, fmt.Errorf("sl_after kind %q is not recognized", kind)
 			}
@@ -172,25 +253,101 @@ func parseSLAfterRule(raw interface{}) (SLAfterRule, error) {
 			if !isMap {
 				return SLAfterRule{}, fmt.Errorf("sl_after.trail_from_here must be an object, got %T", trailRaw)
 			}
-			mult, err := floatFromAnyChecked(firstPresent(trailMap, "atr_mult", "trail_atr_mult"))
-			if err != nil {
-				return SLAfterRule{}, fmt.Errorf("sl_after.trail_from_here: %w", err)
-			}
-			rule := SLAfterRule{Kind: "trail_from_here", TrailATRMult: mult}
-			return rule, validateSLAfterRule(rule)
+			return parseSLAfterTrailFromHere(trailMap, "sl_after.trail_from_here")
 		}
-		// Implicit discrimination: atr_mult at top level → atr_offset.
+		// Implicit discrimination: trend_regime at top level → atr_offset regime.
+		if _, ok := v[regimeClassifierKey]; ok {
+			return parseSLAfterATROffset(v, "sl_after")
+		}
+		// Implicit discrimination: atr_mult at top level → atr_offset scalar.
 		if _, ok := firstNonNil(v, "atr_mult", "atr_offset"); ok {
-			mult, err := floatFromAnyChecked(firstPresent(v, "atr_mult", "atr_offset"))
-			if err != nil {
-				return SLAfterRule{}, fmt.Errorf("sl_after atr_mult: %w", err)
-			}
-			return SLAfterRule{Kind: "atr_offset", ATRMult: mult}, nil
+			return parseSLAfterATROffset(v, "sl_after atr_mult")
 		}
-		return SLAfterRule{}, fmt.Errorf("sl_after object must contain \"kind\", \"atr_mult\", or \"trail_from_here\"")
+		// `use_defaults: true` at the top level is ambiguous between
+		// atr_offset and trail_from_here — the operator has to nest it
+		// under a kind to disambiguate. #736.
+		if _, ok := v["use_defaults"]; ok {
+			return SLAfterRule{}, fmt.Errorf("sl_after: use_defaults requires a kind — wrap under \"trail_from_here\" or set \"kind\" explicitly (atr_offset/trail_from_here)")
+		}
+		return SLAfterRule{}, fmt.Errorf("sl_after object must contain \"kind\", \"atr_mult\", \"trail_from_here\", or \"trend_regime\"")
 	default:
 		return SLAfterRule{}, fmt.Errorf("sl_after must be a string or object, got %T", raw)
 	}
+}
+
+// scalarMultKeysAtROffset lists the scalar-form keys that conflict with a
+// regime block on the atr_offset variant. Used by parseSLAfterATROffset to
+// reject mixed-shape configs (incl. misplaced trail_atr_mult).
+var scalarMultKeysAtROffset = []string{"atr_mult", "atr_offset", "trail_atr_mult"}
+
+// scalarMultKeysTrailFromHere lists the scalar-form keys that conflict with
+// a regime block on the trail_from_here variant. atr_offset would be a
+// misplaced key here too.
+var scalarMultKeysTrailFromHere = []string{"atr_mult", "trail_atr_mult", "atr_offset"}
+
+// parseSLAfterATROffset parses the atr_offset variant — either scalar
+// (atr_mult / atr_offset) or regime (trend_regime / use_defaults). ctxLabel
+// is prefixed onto regime sub-errors so per-label problems are attributable.
+func parseSLAfterATROffset(m map[string]interface{}, ctxLabel string) (SLAfterRule, error) {
+	_, hasTrend := m[regimeClassifierKey]
+	_, hasUseDefaults := m["use_defaults"]
+	if hasTrend || hasUseDefaults {
+		if _, ok := firstNonNil(m, scalarMultKeysAtROffset...); ok {
+			return SLAfterRule{}, fmt.Errorf("%s: cannot combine scalar atr_mult/atr_offset/trail_atr_mult with trend_regime/use_defaults — pick one shape", ctxLabel)
+		}
+		regimeRaw := map[string]interface{}{}
+		if hasTrend {
+			regimeRaw[regimeClassifierKey] = m[regimeClassifierKey]
+		}
+		if hasUseDefaults {
+			regimeRaw["use_defaults"] = m["use_defaults"]
+		}
+		block, subErrs := parseRegimeATRBlock(regimeRaw, ctxLabel, regimeSurfaceSLAfter)
+		if len(subErrs) > 0 {
+			return SLAfterRule{}, errors.New(strings.Join(subErrs, "; "))
+		}
+		rule := SLAfterRule{Kind: "atr_offset", ATRRegime: &block}
+		return rule, validateSLAfterRule(rule)
+	}
+	mult, err := floatFromAnyChecked(firstPresent(m, "atr_mult", "atr_offset"))
+	if err != nil {
+		return SLAfterRule{}, fmt.Errorf("%s: %w", ctxLabel, err)
+	}
+	rule := SLAfterRule{Kind: "atr_offset", ATRMult: mult}
+	return rule, validateSLAfterRule(rule)
+}
+
+// parseSLAfterTrailFromHere parses the trail_from_here variant — either
+// scalar (atr_mult / trail_atr_mult) or regime (trend_regime / use_defaults).
+// The regime form uses regimeSurfaceSLAfterTrail so per-label atr must be
+// strictly positive (trail distance is a magnitude).
+func parseSLAfterTrailFromHere(m map[string]interface{}, ctxLabel string) (SLAfterRule, error) {
+	_, hasTrend := m[regimeClassifierKey]
+	_, hasUseDefaults := m["use_defaults"]
+	if hasTrend || hasUseDefaults {
+		if _, ok := firstNonNil(m, scalarMultKeysTrailFromHere...); ok {
+			return SLAfterRule{}, fmt.Errorf("%s: cannot combine scalar atr_mult/trail_atr_mult/atr_offset with trend_regime/use_defaults — pick one shape", ctxLabel)
+		}
+		regimeRaw := map[string]interface{}{}
+		if hasTrend {
+			regimeRaw[regimeClassifierKey] = m[regimeClassifierKey]
+		}
+		if hasUseDefaults {
+			regimeRaw["use_defaults"] = m["use_defaults"]
+		}
+		block, subErrs := parseRegimeATRBlock(regimeRaw, ctxLabel, regimeSurfaceSLAfterTrail)
+		if len(subErrs) > 0 {
+			return SLAfterRule{}, errors.New(strings.Join(subErrs, "; "))
+		}
+		rule := SLAfterRule{Kind: "trail_from_here", TrailATRRegime: &block}
+		return rule, validateSLAfterRule(rule)
+	}
+	mult, err := floatFromAnyChecked(firstPresent(m, "atr_mult", "trail_atr_mult"))
+	if err != nil {
+		return SLAfterRule{}, fmt.Errorf("%s: %w", ctxLabel, err)
+	}
+	rule := SLAfterRule{Kind: "trail_from_here", TrailATRMult: mult}
+	return rule, validateSLAfterRule(rule)
 }
 
 func firstNonNil(m map[string]interface{}, keys ...string) (interface{}, bool) {
@@ -238,8 +395,11 @@ func (r tierSLAfterRules) HasAny() bool {
 // every index. Trailing empty PerTier entries are ignored so that
 // `[breakeven, {}]` and `[breakeven]` compare equal — the second slot is a
 // no-op in both shapes. See #716 item 1.
+//
+// Uses SLAfterRule.Equal so scalar↔regime and use_defaults↔explicit shape
+// changes inside any rule surface as a config-load mismatch (#736).
 func (r tierSLAfterRules) EqualForReload(other tierSLAfterRules) bool {
-	if r.Default != other.Default {
+	if !r.Default.Equal(other.Default) {
 		return false
 	}
 	maxLen := len(r.PerTier)
@@ -254,7 +414,7 @@ func (r tierSLAfterRules) EqualForReload(other tierSLAfterRules) bool {
 		if i < len(other.PerTier) {
 			b = other.PerTier[i]
 		}
-		if a != b {
+		if !a.Equal(b) {
 			return false
 		}
 	}
@@ -531,17 +691,18 @@ func runPostTPStopLossAdjustment(
 		mu.RUnlock()
 		return false
 	}
-	rule := rules.ForTier(clearedIdx)
+	rawRule := rules.ForTier(clearedIdx)
 	side := pos.Side
 	avgCost := pos.AvgCost
 	entryATR := pos.EntryATR
 	qty := pos.Quantity
 	currentOID := pos.StopLossOID
+	posRegime := pos.Regime
 	mu.RUnlock()
 
 	// If the matched tier has no rule, advance the watermark so we stop
 	// re-evaluating it each cycle. No subprocess work.
-	if rule.IsEmpty() {
+	if rawRule.IsEmpty() {
 		mu.Lock()
 		if p, ok := stratState.Positions[symbol]; ok && p != nil && p.SLAdjustedTiersProcessed <= clearedIdx {
 			p.SLAdjustedTiersProcessed = clearedIdx + 1
@@ -556,6 +717,20 @@ func runPostTPStopLossAdjustment(
 	if currentOID == 0 {
 		return false
 	}
+
+	// Regime-aware rules collapse to the scalar form at fire time via the
+	// position's stamped regime. A missing/unstamped regime defers (no
+	// watermark advance) so the next cycle retries once stampPositionRegimeIfOpened
+	// runs. #736.
+	rule, resolved := rawRule.resolveForRegime(posRegime)
+	if !resolved {
+		if logger != nil {
+			logger.Info("post-TP SL adjustment for %s deferred: tier %d rule is regime-aware but pos.Regime=%q yields no entry",
+				symbol, clearedIdx, posRegime)
+		}
+		return false
+	}
+
 	triggerPx, mode, computeOK := computePostTPStopLossTrigger(rule, side, avgCost, entryATR, mark)
 	if !computeOK {
 		// trail_from_here without a mark (or other malformed input) — defer.

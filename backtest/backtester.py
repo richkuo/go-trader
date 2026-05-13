@@ -376,6 +376,28 @@ class Backtester:
             # "fixed SL" precondition, so we reject loudly here rather than
             # silently produce a backtest where the pre-bump SL never fires.
             if self._sl_after_rules.has_any():
+                # #736 explicitly defers regime-aware sl_after backtester
+                # parity to the parallel parity issue. Parsing the shape works
+                # (so live configs round-trip), but the per-bar engine here
+                # would silently fall back to zero scalars — atr_offset regime
+                # collapses to breakeven and trail_from_here regime defers
+                # every bar. Fail loud at load instead of producing results
+                # that look right but ignore the per-regime values.
+                regime_rules = []
+                if self._sl_after_rules.default.has_regime():
+                    regime_rules.append("strategy-level default")
+                for idx, r in enumerate(self._sl_after_rules.per_tier):
+                    if r.has_regime():
+                        regime_rules.append(f"tier[{idx}]")
+                if regime_rules:
+                    raise ValueError(
+                        "Invalid sl_after configuration: regime-aware "
+                        "trend_regime block is HL-live-only in this release "
+                        "(backtester parity deferred — see #736). Found on: "
+                        + ", ".join(regime_rules)
+                        + ". Use the scalar atr_mult / trail_from_here.atr_mult "
+                        "form for backtesting."
+                    )
                 has_atr_sl = (
                     self.stop_loss_atr_mult is not None
                     and self.stop_loss_atr_mult > 0

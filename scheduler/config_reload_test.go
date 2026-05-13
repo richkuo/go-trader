@@ -649,6 +649,157 @@ func TestApplyHotReloadConfigRejectsSLAfterModeChangeWithOpenPosition(t *testing
 	}
 }
 
+// #736 — switching sl_after from scalar atr_offset to a regime-aware shape
+// with a position open is a higher-risk transition than tweaking the scalar
+// value: the post-TP machinery would arm against a re-derived target the
+// open never saw. Verifies the existing tierSLAfterRules.EqualForReload site
+// picks up the new SLAfterRule.Equal contract (which compares regime blocks
+// via RegimeATRBlock.EqualForReload).
+func TestApplyHotReloadConfigRejectsSLAfterScalarToRegimeWithOpenPosition(t *testing.T) {
+	tierScalar := []StrategyRef{{
+		Name: "tiered_tp_atr",
+		Params: map[string]interface{}{
+			"sl_after": map[string]interface{}{"atr_mult": 0.25},
+			"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
+			},
+		},
+	}}
+	tierRegime := []StrategyRef{{
+		Name: "tiered_tp_atr",
+		Params: map[string]interface{}{
+			"sl_after": map[string]interface{}{
+				"trend_regime": map[string]interface{}{
+					"trending_up":   map[string]interface{}{"atr": 0.25},
+					"trending_down": map[string]interface{}{"atr": 0.25},
+					"ranging":       map[string]interface{}{"atr": 0.0},
+				},
+			},
+			"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
+			},
+		},
+	}}
+	slMult := 1.5
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated", StopLossATRMult: &slMult,
+		CloseStrategies: tierScalar,
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated", StopLossATRMult: &slMult,
+		CloseStrategies: tierRegime,
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long"},
+		}},
+	}}
+
+	_, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+	if err == nil {
+		t.Fatal("expected hot reload to reject sl_after scalar→regime shape change with open position")
+	}
+	if !strings.Contains(err.Error(), "sl_after rules changed with open positions") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// #736 — switching the regime block's per-label atr value (same shape, different
+// numbers) is also a shape change for hot-reload purposes — the resting SL was
+// armed against the old value at open.
+func TestApplyHotReloadConfigRejectsSLAfterRegimeValueChangeWithOpenPosition(t *testing.T) {
+	makeRef := func(ranging float64) []StrategyRef {
+		return []StrategyRef{{
+			Name: "tiered_tp_atr",
+			Params: map[string]interface{}{
+				"sl_after": map[string]interface{}{
+					"trend_regime": map[string]interface{}{
+						"trending_up":   map[string]interface{}{"atr": 0.25},
+						"trending_down": map[string]interface{}{"atr": 0.25},
+						"ranging":       map[string]interface{}{"atr": ranging},
+					},
+				},
+				"tiers": []interface{}{
+					map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
+				},
+			},
+		}}
+	}
+	slMult := 1.5
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated", StopLossATRMult: &slMult,
+		CloseStrategies: makeRef(0.0),
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated", StopLossATRMult: &slMult,
+		CloseStrategies: makeRef(-0.5),
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long"},
+		}},
+	}}
+
+	_, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+	if err == nil {
+		t.Fatal("expected hot reload to reject sl_after regime value change with open position")
+	}
+	if !strings.Contains(err.Error(), "sl_after rules changed with open positions") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// #736 — identical regime configs across reload should pass (no shape change).
+// Guards against false-positive blocks once SLAfterRule.Equal handles regime
+// blocks via RegimeATRBlock.EqualForReload.
+func TestApplyHotReloadConfigAllowsSLAfterRegimeIdentical(t *testing.T) {
+	tierRegime := []StrategyRef{{
+		Name: "tiered_tp_atr",
+		Params: map[string]interface{}{
+			"sl_after": map[string]interface{}{
+				"trend_regime": map[string]interface{}{
+					"trending_up":   map[string]interface{}{"atr": 0.25},
+					"trending_down": map[string]interface{}{"atr": 0.25},
+					"ranging":       map[string]interface{}{"atr": 0.0},
+				},
+			},
+			"tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
+			},
+		},
+	}}
+	slMult := 1.5
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated", StopLossATRMult: &slMult,
+		CloseStrategies: tierRegime,
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Leverage: 5, MarginMode: "isolated", StopLossATRMult: &slMult,
+		CloseStrategies: tierRegime,
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long"},
+		}},
+	}}
+
+	if _, err := applyHotReloadConfig(cfg, next, state, nil, nil); err != nil {
+		t.Fatalf("identical sl_after regime configs should reload cleanly with open position, got: %v", err)
+	}
+}
+
 // #656 — direction change is allowed when the strategy is flat.
 func TestApplyHotReloadConfigAllowsDirectionChangeWhenFlat(t *testing.T) {
 	cfg := minimalReloadConfig([]StrategyConfig{{

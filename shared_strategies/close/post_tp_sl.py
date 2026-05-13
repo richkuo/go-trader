@@ -10,20 +10,62 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, List, Optional, Tuple
 
+# Absolute import (not relative) so this module loads cleanly under
+# importlib.util.spec_from_file_location — the backtester tests use that
+# loader to sidestep the open/close registry.py name collision, and
+# relative imports require a parent-package context that the loader
+# doesn't set up.
+from shared_strategies.close.regime_atr import (
+    REGIME_CLASSIFIER_KEY,
+    SURFACE_SL_AFTER,
+    SURFACE_SL_AFTER_TRAIL,
+    RegimeATRBlock,
+    parse_regime_atr_block,
+)
+
 
 _TIERED_TP_NAMES = ("tiered_tp_atr", "tiered_tp_atr_live")
 
 
 @dataclass(frozen=True)
 class SLAfterRule:
-    """Typed sl_after rule. ``kind=""`` means the empty / no-op rule."""
+    """Typed sl_after rule. ``kind=""`` means the empty / no-op rule.
+
+    ``atr_regime`` / ``trail_atr_regime`` are set instead of the scalar
+    multiplier when the operator wrote a ``trend_regime`` block (#736);
+    the backtester resolves them per regime at fire time (live behavior
+    lives in scheduler/post_tp_sl.go).
+    """
 
     kind: str = ""
     atr_mult: float = 0.0  # signed; +N moves toward profit (long: above avg)
     trail_atr_mult: float = 0.0  # > 0 for trail_from_here
+    atr_regime: Optional[RegimeATRBlock] = None
+    trail_atr_regime: Optional[RegimeATRBlock] = None
 
     def is_empty(self) -> bool:
         return self.kind == ""
+
+    def has_regime(self) -> bool:
+        return self.atr_regime is not None or self.trail_atr_regime is not None
+
+    def resolve_for_regime(self, regime: str) -> Optional["SLAfterRule"]:
+        """Collapse a regime-aware rule to its scalar form for the given
+        regime label. Returns None when the rule is regime-aware but the
+        label is missing (caller should defer). Scalar rules pass through
+        unchanged. Mirrors Go's SLAfterRule.resolveForRegime.
+        """
+        if self.kind == "atr_offset" and self.atr_regime is not None:
+            entry = self.atr_regime.resolve(regime)
+            if entry is None:
+                return None
+            return SLAfterRule(kind="atr_offset", atr_mult=entry.atr)
+        if self.kind == "trail_from_here" and self.trail_atr_regime is not None:
+            entry = self.trail_atr_regime.resolve(regime)
+            if entry is None or entry.atr <= 0:
+                return None
+            return SLAfterRule(kind="trail_from_here", trail_atr_mult=entry.atr)
+        return self
 
 
 @dataclass
@@ -73,12 +115,16 @@ def parse_sl_after_rule(raw: Any) -> SLAfterRule:
 
     Mirrors ``parseSLAfterRule`` in scheduler/post_tp_sl.go. Accepts:
 
-      * ``None`` / ``""``                          → empty rule
-      * ``"breakeven"``                            → breakeven
-      * ``{"atr_mult": 0.25}``                     → atr_offset
-      * ``{"trail_from_here": {"atr_mult": 1.0}}`` → trail_from_here
+      * ``None`` / ``""``                                  → empty rule
+      * ``"breakeven"``                                    → breakeven
+      * ``{"atr_mult": 0.25}``                             → atr_offset scalar
+      * ``{"trend_regime": {<labels>}}``                   → atr_offset regime (#736)
+      * ``{"trail_from_here": {"atr_mult": 1.0}}``         → trail_from_here scalar
+      * ``{"trail_from_here": {"trend_regime": {...}}}``   → trail_from_here regime (#736)
       * ``{"kind": "atr_offset", "atr_mult": ...}``
+      * ``{"kind": "atr_offset", "trend_regime": {...}}``  → atr_offset regime, explicit kind
       * ``{"kind": "trail_from_here", "atr_mult": ...}``
+      * ``{"kind": "trail_from_here", "trend_regime": {...}}``
 
     Raises ``ValueError`` on malformed shapes.
     """
@@ -104,19 +150,9 @@ def parse_sl_after_rule(raw: Any) -> SLAfterRule:
             if kind == "breakeven":
                 return SLAfterRule(kind="breakeven")
             if kind == "atr_offset":
-                mult = _float_or_raise(
-                    _first_present(raw, "atr_mult", "atr_offset"),
-                    "sl_after kind=atr_offset",
-                )
-                return SLAfterRule(kind="atr_offset", atr_mult=mult)
+                return _parse_sl_after_atr_offset(raw, "sl_after kind=atr_offset")
             if kind == "trail_from_here":
-                mult = _float_or_raise(
-                    _first_present(raw, "atr_mult", "trail_atr_mult"),
-                    "sl_after kind=trail_from_here",
-                )
-                rule = SLAfterRule(kind="trail_from_here", trail_atr_mult=mult)
-                validate_sl_after_rule(rule)
-                return rule
+                return _parse_sl_after_trail_from_here(raw, "sl_after kind=trail_from_here")
             raise ValueError(f"sl_after kind {kind!r} is not recognized")
         if "trail_from_here" in raw:
             trail_raw = raw["trail_from_here"]
@@ -125,34 +161,119 @@ def parse_sl_after_rule(raw: Any) -> SLAfterRule:
                     f"sl_after.trail_from_here must be an object, got "
                     f"{type(trail_raw).__name__}"
                 )
-            mult = _float_or_raise(
-                _first_present(trail_raw, "atr_mult", "trail_atr_mult"),
-                "sl_after.trail_from_here",
-            )
-            rule = SLAfterRule(kind="trail_from_here", trail_atr_mult=mult)
-            validate_sl_after_rule(rule)
-            return rule
+            return _parse_sl_after_trail_from_here(trail_raw, "sl_after.trail_from_here")
+        if REGIME_CLASSIFIER_KEY in raw:
+            return _parse_sl_after_atr_offset(raw, "sl_after")
         if _first_non_nil(raw, "atr_mult", "atr_offset"):
-            mult = _float_or_raise(
-                _first_present(raw, "atr_mult", "atr_offset"),
-                "sl_after atr_mult",
-            )
-            return SLAfterRule(kind="atr_offset", atr_mult=mult)
+            return _parse_sl_after_atr_offset(raw, "sl_after atr_mult")
         raise ValueError(
-            'sl_after object must contain "kind", "atr_mult", or "trail_from_here"'
+            'sl_after object must contain "kind", "atr_mult", "trail_from_here", '
+            'or "trend_regime"'
         )
     raise ValueError(
         f"sl_after must be a string or object, got {type(raw).__name__}"
     )
 
 
+# Scalar-form keys that conflict with a regime block on the atr_offset
+# variant. trail_atr_mult here is a misplaced field, surfaced loudly.
+_SCALAR_MULT_KEYS_ATR_OFFSET = ("atr_mult", "atr_offset", "trail_atr_mult")
+# Scalar-form keys that conflict with a regime block on the trail_from_here
+# variant. atr_offset here is a misplaced field.
+_SCALAR_MULT_KEYS_TRAIL = ("atr_mult", "trail_atr_mult", "atr_offset")
+
+
+def _parse_sl_after_atr_offset(m: dict, ctx_label: str) -> SLAfterRule:
+    """Parse the atr_offset variant — scalar (atr_mult/atr_offset) or regime
+    (trend_regime/use_defaults). Multi-label regime errors join with '; '
+    so callers that surface a single error per field stay compatible."""
+    has_trend = REGIME_CLASSIFIER_KEY in m
+    has_use_defaults = "use_defaults" in m
+    if has_trend or has_use_defaults:
+        if _first_non_nil(m, *_SCALAR_MULT_KEYS_ATR_OFFSET):
+            raise ValueError(
+                f"{ctx_label}: cannot combine scalar "
+                "atr_mult/atr_offset/trail_atr_mult with "
+                "trend_regime/use_defaults — pick one shape"
+            )
+        regime_raw: dict = {}
+        if has_trend:
+            regime_raw[REGIME_CLASSIFIER_KEY] = m[REGIME_CLASSIFIER_KEY]
+        if has_use_defaults:
+            regime_raw["use_defaults"] = m["use_defaults"]
+        block, errs = parse_regime_atr_block(regime_raw, ctx_label, SURFACE_SL_AFTER)
+        if errs:
+            raise ValueError("; ".join(errs))
+        rule = SLAfterRule(kind="atr_offset", atr_regime=block)
+        validate_sl_after_rule(rule)
+        return rule
+    mult = _float_or_raise(
+        _first_present(m, "atr_mult", "atr_offset"),
+        ctx_label,
+    )
+    rule = SLAfterRule(kind="atr_offset", atr_mult=mult)
+    validate_sl_after_rule(rule)
+    return rule
+
+
+def _parse_sl_after_trail_from_here(m: dict, ctx_label: str) -> SLAfterRule:
+    """Parse the trail_from_here variant — scalar (atr_mult/trail_atr_mult)
+    or regime (trend_regime/use_defaults). Regime form uses
+    SURFACE_SL_AFTER_TRAIL so per-label atr must be strictly positive."""
+    has_trend = REGIME_CLASSIFIER_KEY in m
+    has_use_defaults = "use_defaults" in m
+    if has_trend or has_use_defaults:
+        if _first_non_nil(m, *_SCALAR_MULT_KEYS_TRAIL):
+            raise ValueError(
+                f"{ctx_label}: cannot combine scalar "
+                "atr_mult/trail_atr_mult/atr_offset with "
+                "trend_regime/use_defaults — pick one shape"
+            )
+        regime_raw: dict = {}
+        if has_trend:
+            regime_raw[REGIME_CLASSIFIER_KEY] = m[REGIME_CLASSIFIER_KEY]
+        if has_use_defaults:
+            regime_raw["use_defaults"] = m["use_defaults"]
+        block, errs = parse_regime_atr_block(
+            regime_raw, ctx_label, SURFACE_SL_AFTER_TRAIL
+        )
+        if errs:
+            raise ValueError("; ".join(errs))
+        rule = SLAfterRule(kind="trail_from_here", trail_atr_regime=block)
+        validate_sl_after_rule(rule)
+        return rule
+    mult = _float_or_raise(
+        _first_present(m, "atr_mult", "trail_atr_mult"),
+        ctx_label,
+    )
+    rule = SLAfterRule(kind="trail_from_here", trail_atr_mult=mult)
+    validate_sl_after_rule(rule)
+    return rule
+
+
 def validate_sl_after_rule(rule: SLAfterRule) -> None:
     """Sanity-check a parsed rule. Raises ``ValueError`` on bad shapes; the
     empty rule passes silently."""
-    if rule.kind in ("", "breakeven", "atr_offset"):
+    if rule.kind == "":
+        return
+    if rule.kind == "breakeven":
+        if rule.atr_regime is not None or rule.trail_atr_regime is not None:
+            raise ValueError("sl_after breakeven does not accept a trend_regime block")
+        return
+    if rule.kind == "atr_offset":
+        if rule.trail_atr_regime is not None:
+            raise ValueError(
+                "sl_after atr_offset accepts trend_regime under atr, not "
+                "trail_from_here.atr"
+            )
         return
     if rule.kind == "trail_from_here":
-        if rule.trail_atr_mult <= 0:
+        if rule.atr_regime is not None:
+            raise ValueError(
+                "sl_after trail_from_here accepts trend_regime under "
+                "trail_from_here.atr, not at the top level"
+            )
+        if rule.trail_atr_regime is None and rule.trail_atr_mult <= 0:
             raise ValueError("sl_after trail_from_here requires atr_mult > 0")
         return
     raise ValueError(

@@ -601,6 +601,64 @@ def test_backtester_validation_rejects_sl_after_on_non_tiered_ref():
         )
 
 
+# #736 — regime-aware sl_after parses cleanly (live HL uses it) but the
+# backtester defers per-regime resolution to a follow-up parity issue. Verify
+# the loader fails loud rather than silently producing scalar=0 results.
+def test_backtester_validation_rejects_regime_sl_after_strategy_default():
+    with pytest.raises(ValueError, match="HL-live-only"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            platform="hyperliquid", strategy_type="perps",
+            stop_loss_atr_mult=1.0,
+            close_strategies=[{
+                "name": "tiered_tp_atr",
+                "params": {
+                    "sl_after": {
+                        "trend_regime": {
+                            "trending_up": {"atr": 0.25},
+                            "trending_down": {"atr": 0.25},
+                            "ranging": {"atr": 0.0},
+                        },
+                    },
+                    "tiers": [
+                        {"atr_multiple": 1.0, "close_fraction": 0.5},
+                        {"atr_multiple": 2.0, "close_fraction": 1.0},
+                    ],
+                },
+            }],
+        )
+
+
+def test_backtester_validation_rejects_regime_sl_after_per_tier():
+    with pytest.raises(ValueError, match="HL-live-only"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            platform="hyperliquid", strategy_type="perps",
+            stop_loss_atr_mult=1.0,
+            close_strategies=[{
+                "name": "tiered_tp_atr",
+                "params": {
+                    "tiers": [
+                        {
+                            "atr_multiple": 1.0,
+                            "close_fraction": 0.5,
+                            "sl_after": {
+                                "trail_from_here": {
+                                    "trend_regime": {
+                                        "trending_up": {"atr": 1.0},
+                                        "trending_down": {"atr": 1.0},
+                                        "ranging": {"atr": 0.5},
+                                    },
+                                },
+                            },
+                        },
+                        {"atr_multiple": 2.0, "close_fraction": 1.0},
+                    ],
+                },
+            }],
+        )
+
+
 def test_backtester_no_sl_after_unchanged_behavior():
     """Sanity check: a strategy with tiered_tp_atr but no sl_after still
     behaves as before — no extra SL hits, partial close at tier price."""

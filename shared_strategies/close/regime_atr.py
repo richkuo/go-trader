@@ -26,7 +26,8 @@ SURFACE_STOP_LOSS = "stop_loss"
 SURFACE_TRAILING = "trailing"
 SURFACE_TP_TIER_ATR_ONLY = "tp_tier_atr_only"
 SURFACE_TP_TIER_WITH_FRAC = "tp_tier_with_frac"
-SURFACE_SL_AFTER = "sl_after"
+SURFACE_SL_AFTER = "sl_after"  # atr_offset variant — signed atr legal (#736)
+SURFACE_SL_AFTER_TRAIL = "sl_after_trail"  # trail_from_here variant — strictly positive atr (#736)
 
 
 @dataclass(frozen=True)
@@ -221,7 +222,10 @@ def parse_regime_atr_block(
                 f"got {atr_raw!r}"
             )
             continue
-        if atr <= 0:
+        # sl_after atr_offset accepts signed atr (zero = breakeven, negative
+        # = SL behind entry). Every other surface requires strictly positive.
+        # See #736.
+        if surface != SURFACE_SL_AFTER and atr <= 0:
             errs.append(
                 f"{ctx_label}.{REGIME_CLASSIFIER_KEY}.{label}.atr: must be > 0, "
                 f"got {atr}"
