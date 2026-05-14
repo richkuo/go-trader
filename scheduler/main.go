@@ -1164,6 +1164,8 @@ func main() {
 					if len(fillHints) > 0 {
 						if b, err := json.Marshal(fillHints); err == nil {
 							hlReconcileFillHintsJSON = b
+						} else {
+							fmt.Fprintf(os.Stderr, "[WARN] hl-sync: json.Marshal(fillHints): %v\n", err)
 						}
 					}
 				}

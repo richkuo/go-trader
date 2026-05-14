@@ -491,7 +491,10 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		key := makeHLReconcileFeeCacheKey(c.coin, c.oid, c.qty)
 		ent := cache[key]
 		if _, exists := hintsByOID[c.oid]; exists {
-			continue // first prefetch wins — duplicate keys should be rare
+			// First candidate wins: duplicate (coin, oid, qty) keys are deduped
+			// above, and for oid>0 all qty variants share the same OID-keyed
+			// lookup result from defaultLookupHyperliquidReconcileFillFee.
+			continue
 		}
 		filled := ent.ok && ent.lookup.Count > 0
 		hintsByOID[c.oid] = HyperliquidProtectionFillHint{

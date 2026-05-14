@@ -899,6 +899,49 @@ class TestSyncProtection:
         assert out["tp_fills"][1]["closed_pnl"] == 1.5
         adapter.lookup_fill_fee_by_oid.assert_not_called()
 
+    def test_reconcile_fill_hints_filled_false_still_queries_userfills(self):
+        """#761 review: filled=false hints must not suppress Python's indexer retry."""
+        hints = json.dumps([{"oid": 9101, "filled": False}])
+        out, adapter = self._run_sync(
+            tp1_oid=9100,
+            tp2_oid=9101,
+            sl_oid=0,
+            open_oids={9100},
+            fill_lookup_by_oid={9101: {"fee": 0.03, "closed_pnl": 2.0, "count": 1}},
+            reconcile_fill_hints_json=hints,
+        )
+        assert out["tp_filled_externally"][1] is True
+        assert out["tp_fills"][1]["fee"] == 0.03
+        adapter.lookup_fill_fee_by_oid.assert_called()
+
+    def test_reconcile_fill_hints_malformed_json_queries_userfills(self):
+        """#761 review: invalid JSON disables hints; userFills path still works."""
+        out, adapter = self._run_sync(
+            tp1_oid=9100,
+            tp2_oid=9101,
+            sl_oid=0,
+            open_oids={9100},
+            fill_lookup_by_oid={9101: {"fee": 0.04, "closed_pnl": 3.0, "count": 1}},
+            reconcile_fill_hints_json="{not-json",
+        )
+        assert out["tp_filled_externally"][1] is True
+        adapter.lookup_fill_fee_by_oid.assert_called()
+
+    def test_reconcile_fill_hints_extra_oid_does_not_skip_other_oid_lookup(self):
+        """#761 review: hints for an unrelated OID do not bypass lookup for missing TP."""
+        hints = json.dumps([{"oid": 1, "filled": True, "fee": 0.0, "count": 0}])
+        out, adapter = self._run_sync(
+            tp1_oid=9100,
+            tp2_oid=9101,
+            sl_oid=0,
+            open_oids={9100},
+            fill_lookup_by_oid={9101: {"fee": 0.05, "closed_pnl": 4.0, "count": 1}},
+            reconcile_fill_hints_json=hints,
+        )
+        assert out["tp_filled_externally"][1] is True
+        called_oids = [c.args[0] for c in adapter.lookup_fill_fee_by_oid.call_args_list]
+        assert 9101 in called_oids
+
     def test_open_orders_fetch_failure_defers_replacement(self):
         """open_order_oids() raise → leave existing OIDs alone, do not re-place
         (would double-up the protection). The script returns the failure

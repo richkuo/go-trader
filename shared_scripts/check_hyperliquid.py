@@ -337,8 +337,10 @@ def _oid_filled_externally(adapter, oid: int, since_ms: int, fill_hints=None) ->
     """Check whether ``oid`` has filled on-chain by querying userFills.
 
     When ``fill_hints`` is provided (oid → hint dict from the Go reconciler's
-    same-cycle prefetch, #759), a matching entry short-circuits the
-    ``lookup_fill_fee_by_oid`` call so Python does not re-hit the HL indexer.
+    same-cycle prefetch, #759), only a **confirmed fill** (``filled: true``)
+    short-circuits ``lookup_fill_fee_by_oid``. A ``filled: false`` hint does
+    not — Go's prefetch can miss on transient indexer errors, so Python keeps
+    an independent userFills attempt with its own retry budget.
 
     Returns a dict with at minimum ``{"filled": bool}``. When filled, also
     includes ``size`` (summed across partial fills) and the ``fee`` /
@@ -355,15 +357,13 @@ def _oid_filled_externally(adapter, oid: int, since_ms: int, fill_hints=None) ->
         return {"filled": False}
     if fill_hints is not None:
         hint = fill_hints.get(int(oid))
-        if hint is not None:
-            if hint.get("filled"):
-                return {
-                    "filled": True,
-                    "fee": float(hint.get("fee", 0) or 0),
-                    "closed_pnl": float(hint.get("closed_pnl", 0) or 0),
-                    "count": int(hint.get("count", 0) or 0),
-                }
-            return {"filled": False}
+        if hint is not None and hint.get("filled"):
+            return {
+                "filled": True,
+                "fee": float(hint.get("fee", 0) or 0),
+                "closed_pnl": float(hint.get("closed_pnl", 0) or 0),
+                "count": int(hint.get("count", 0) or 0),
+            }
     try:
         lookup = adapter.lookup_fill_fee_by_oid(int(oid), since_ms)
     except Exception as e:
