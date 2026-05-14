@@ -1098,18 +1098,24 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 				extras += fmt.Sprintf(" | SL: $%s (%s)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct))
 			}
 		}
-		if tps := tieredTPATRPricesForRegime(sc, pos.Side, pos.AvgCost, pos.EntryATR, pos.Regime); len(tps) > 0 {
+		tiers := strategyTPTiersForRegime(sc, pos.Regime)
+		tps := tieredTPATRPricesFromTiers(tiers, pos.Side, pos.AvgCost, pos.EntryATR)
+		if len(tps) > 0 {
 			// A zero TPOID alone is ambiguous (tiers also hold zero before the
 			// first protection-sync places them); require an observed shrink
 			// vs. InitialQuantity to mark a tier as filled (#662).
 			partiallyClosed := pos.InitialQuantity > 0 && pos.Quantity+1e-9 < pos.InitialQuantity
 			for i, tp := range tps {
+				multSuffix := ""
+				if i < len(tiers) {
+					multSuffix = fmt.Sprintf(" (%gx)", tiers[i].Multiple)
+				}
 				if partiallyClosed && i < len(pos.TPOIDs) && pos.TPOIDs[i] == 0 {
-					extras += fmt.Sprintf(" | TP%d: $%s ✓", i+1, fmtComma2(tp))
+					extras += fmt.Sprintf(" | TP%d: $%s%s ✓", i+1, fmtComma2(tp), multSuffix)
 					continue
 				}
 				pct := percentFromEntry(pos.Side, pos.AvgCost, tp)
-				extras += fmt.Sprintf(" | TP%d: $%s (%s)", i+1, fmtComma2(tp), fmtPnlPct(pct))
+				extras += fmt.Sprintf(" | TP%d: $%s (%s)%s", i+1, fmtComma2(tp), fmtPnlPct(pct), multSuffix)
 			}
 		}
 		if pos.Leverage > 1 {

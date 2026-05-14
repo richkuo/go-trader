@@ -1484,7 +1484,7 @@ func TestCollectPositions_TieredTPATR_Long(t *testing.T) {
 	if !strings.Contains(lines[0], "| ATR: $1,000.00") {
 		t.Errorf("expected ATR fragment, got: %s", lines[0])
 	}
-	if !strings.Contains(lines[0], "| TP1: $64,500.00 (+1.6%) | TP2: $65,500.00 (+3.1%)") {
+	if !strings.Contains(lines[0], "| TP1: $64,500.00 (+1.6%) (1x) | TP2: $65,500.00 (+3.1%) (2x)") {
 		t.Errorf("expected tiered TP fragments for long, got: %s", lines[0])
 	}
 }
@@ -1503,7 +1503,7 @@ func TestCollectPositions_TieredTPATR_Short(t *testing.T) {
 	if !strings.Contains(lines[0], "| ATR: $1,000.00") {
 		t.Errorf("expected ATR fragment, got: %s", lines[0])
 	}
-	if !strings.Contains(lines[0], "| TP1: $62,500.00 (+1.6%) | TP2: $61,500.00 (+3.1%)") {
+	if !strings.Contains(lines[0], "| TP1: $62,500.00 (+1.6%) (1x) | TP2: $61,500.00 (+3.1%) (2x)") {
 		t.Errorf("expected tiered TP fragments for short, got: %s", lines[0])
 	}
 }
@@ -1527,7 +1527,7 @@ func TestCollectPositions_TieredTPATRLive_Long(t *testing.T) {
 	if !strings.Contains(lines[0], "| ATR: $1,000.00") {
 		t.Errorf("expected ATR fragment, got: %s", lines[0])
 	}
-	want := "| TP1: $64,500.00 (+1.6%) | TP2: $65,500.00 (+3.1%)"
+	want := "| TP1: $64,500.00 (+1.6%) (1x) | TP2: $65,500.00 (+3.1%) (2x)"
 	if !strings.Contains(lines[0], want) {
 		t.Errorf("expected tiered TP fragments for tiered_tp_atr_live long, got: %s", lines[0])
 	}
@@ -1582,10 +1582,10 @@ func TestCollectPositions_TieredTPATR_FilledTierMarked(t *testing.T) {
 		},
 	}
 	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
-	if !strings.Contains(lines[0], "| TP1: $64,500.00 ✓") {
+	if !strings.Contains(lines[0], "| TP1: $64,500.00 (1x) ✓") {
 		t.Errorf("expected TP1 marked filled, got: %s", lines[0])
 	}
-	if !strings.Contains(lines[0], "| TP2: $65,500.00 (+3.1%)") {
+	if !strings.Contains(lines[0], "| TP2: $65,500.00 (+3.1%) (2x)") {
 		t.Errorf("expected TP2 still pending, got: %s", lines[0])
 	}
 }
@@ -1615,7 +1615,7 @@ func TestCollectPositions_TieredTPATR_NoFillBeforeProtectionSync(t *testing.T) {
 	if strings.Contains(lines[0], "✓") {
 		t.Errorf("filled marker leaked before any TP fill, got: %s", lines[0])
 	}
-	if !strings.Contains(lines[0], "| TP1: $64,500.00 (+1.6%) | TP2: $65,500.00 (+3.1%)") {
+	if !strings.Contains(lines[0], "| TP1: $64,500.00 (+1.6%) (1x) | TP2: $65,500.00 (+3.1%) (2x)") {
 		t.Errorf("expected both tiers pending, got: %s", lines[0])
 	}
 }
@@ -2366,11 +2366,11 @@ func TestCollectPositions_TieredTPATR_CustomTiers(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(lines))
 	}
-	if !strings.Contains(lines[0], "TP1: $2,340.92") {
-		t.Errorf("expected TP1=2,340.92 (2× ATR) in line, got: %s", lines[0])
+	if !strings.Contains(lines[0], "TP1: $2,340.92 (+1.0%) (2x)") {
+		t.Errorf("expected TP1=2,340.92 (2× ATR) with mult suffix in line, got: %s", lines[0])
 	}
-	if !strings.Contains(lines[0], "TP2: $2,352.93") {
-		t.Errorf("expected TP2=2,352.93 (3× ATR) in line, got: %s", lines[0])
+	if !strings.Contains(lines[0], "TP2: $2,352.93 (+1.6%) (3x)") {
+		t.Errorf("expected TP2=2,352.93 (3× ATR) with mult suffix in line, got: %s", lines[0])
 	}
 }
 
