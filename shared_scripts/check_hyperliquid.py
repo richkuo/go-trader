@@ -333,8 +333,14 @@ def _oid_is_open(open_oids: set[int] | None, oid: int) -> bool:
     return oid > 0 and open_oids is not None and int(oid) in open_oids
 
 
-def _oid_filled_externally(adapter, oid: int, since_ms: int) -> dict:
+def _oid_filled_externally(adapter, oid: int, since_ms: int, fill_hints=None) -> dict:
     """Check whether ``oid`` has filled on-chain by querying userFills.
+
+    When ``fill_hints`` is provided (oid → hint dict from the Go reconciler's
+    same-cycle prefetch, #759), only a **confirmed fill** (``filled: true``)
+    short-circuits ``lookup_fill_fee_by_oid``. A ``filled: false`` hint does
+    not — Go's prefetch can miss on transient indexer errors, so Python keeps
+    an independent userFills attempt with its own retry budget.
 
     Returns a dict with at minimum ``{"filled": bool}``. When filled, also
     includes ``size`` (summed across partial fills) and the ``fee`` /
@@ -349,6 +355,15 @@ def _oid_filled_externally(adapter, oid: int, since_ms: int) -> dict:
     """
     if oid <= 0:
         return {"filled": False}
+    if fill_hints is not None:
+        hint = fill_hints.get(int(oid))
+        if hint is not None and hint.get("filled"):
+            return {
+                "filled": True,
+                "fee": float(hint.get("fee", 0) or 0),
+                "closed_pnl": float(hint.get("closed_pnl", 0) or 0),
+                "count": int(hint.get("count", 0) or 0),
+            }
     try:
         lookup = adapter.lookup_fill_fee_by_oid(int(oid), since_ms)
     except Exception as e:
@@ -457,6 +472,7 @@ def run_sync_protection(
     tp_tiers=None,
     tp_oids=None,
     tp_armed_tiers=None,
+    reconcile_fill_hints_json="",
 ):
     """Verify/re-place per-strategy reduce-only SL/TP orders (#601)."""
     if mode != "live":
@@ -477,6 +493,18 @@ def run_sync_protection(
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
+
+        fill_hints = None
+        if reconcile_fill_hints_json:
+            try:
+                parsed = json.loads(reconcile_fill_hints_json)
+                if isinstance(parsed, list):
+                    fill_hints = {}
+                    for item in parsed:
+                        if isinstance(item, dict) and "oid" in item:
+                            fill_hints[int(item["oid"])] = item
+            except json.JSONDecodeError as je:
+                print(f"[WARN] reconcile_fill_hints_json: {je}", file=sys.stderr)
 
         open_oids = None
         try:
@@ -510,7 +538,7 @@ def run_sync_protection(
                 # Re-placement here is what would over-close: better to
                 # surface the failure and try again next cycle.
                 return ("unknown", None)
-            fill = _oid_filled_externally(adapter, prev_oid, fill_check_since_ms)
+            fill = _oid_filled_externally(adapter, prev_oid, fill_check_since_ms, fill_hints)
             if fill.get("filled"):
                 return ("filled", fill)
             return ("place", None)
@@ -1067,6 +1095,11 @@ def main():
         parser.add_argument("--tp2-oid", type=int, default=0)
         parser.add_argument("--tp-oids-json", default="")
         parser.add_argument("--tp-armed-tiers-json", default="")
+        parser.add_argument(
+            "--reconcile-fill-hints-json",
+            default="",
+            help="Optional JSON array from Go reconciler prefetch (#759); skips duplicate userFills per OID.",
+        )
         parser.add_argument("--mode", default="live")
         args = parser.parse_args()
         tp_tiers = json.loads(args.tp_tiers_json) if args.tp_tiers_json else None
@@ -1091,6 +1124,7 @@ def main():
             tp_tiers=tp_tiers,
             tp_oids=tp_oids,
             tp_armed_tiers=tp_armed_tiers,
+            reconcile_fill_hints_json=args.reconcile_fill_hints_json or "",
         )
     elif "--update-stop-loss" in sys.argv:
         import argparse

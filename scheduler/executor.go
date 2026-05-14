@@ -372,7 +372,7 @@ func RunHyperliquidUpdateStopLoss(script, symbol, side string, size, triggerPx f
 
 // buildHyperliquidSyncProtectionArgv builds argv for check_hyperliquid.py
 // --sync-protection (used by RunHyperliquidSyncProtection and tests).
-func buildHyperliquidSyncProtectionArgv(symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, tpArmedTiers []bool) []string {
+func buildHyperliquidSyncProtectionArgv(symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, tpArmedTiers []bool, reconcileFillHintsJSON []byte) []string {
 	args := []string{
 		"--sync-protection",
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -411,11 +411,14 @@ func buildHyperliquidSyncProtectionArgv(symbol, side string, size, avgCost, entr
 			fmt.Fprintf(os.Stderr, "[WARN] json.Marshal(tp armed tiers) failed: %v — sync-protection omitting --tp-armed-tiers-json\n", err)
 		}
 	}
+	if len(reconcileFillHintsJSON) > 0 {
+		args = append(args, fmt.Sprintf("--reconcile-fill-hints-json=%s", string(reconcileFillHintsJSON)))
+	}
 	return args
 }
 
-func RunHyperliquidSyncProtection(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, tpArmedTiers []bool) (*HyperliquidProtectionSyncResult, string, error) {
-	args := buildHyperliquidSyncProtectionArgv(symbol, side, size, avgCost, entryATR, stopLossATRMult, tiers, stopLossOID, tpOIDs, tpArmedTiers)
+func RunHyperliquidSyncProtection(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, tpArmedTiers []bool, reconcileFillHintsJSON []byte) (*HyperliquidProtectionSyncResult, string, error) {
+	args := buildHyperliquidSyncProtectionArgv(symbol, side, size, avgCost, entryATR, stopLossATRMult, tiers, stopLossOID, tpOIDs, tpArmedTiers, reconcileFillHintsJSON)
 	stdout, stderr, err := runPythonSideEffect(script, args)
 	stderrStr := string(stderr)
 	var result HyperliquidProtectionSyncResult

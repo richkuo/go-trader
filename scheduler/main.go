@@ -1158,8 +1158,16 @@ func main() {
 				// Reuses the clearinghouseState already fetched above for the
 				// shared-wallet risk check (#243 review feedback) so we don't
 				// pay two HL API round-trips per cycle.
+				var hlReconcileFillHintsJSON []byte
 				if len(hlReconcileDue) > 0 && hlStateFetched {
-					reconcileHyperliquidAccountPositions(hlReconcileDue, hlReconcileAll, state, &mu, logMgr, hlPositions, prices, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"), notifier, cfg.NotifyTPSLFillsEnabled())
+					_, fillHints := reconcileHyperliquidAccountPositions(hlReconcileDue, hlReconcileAll, state, &mu, logMgr, hlPositions, prices, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"), notifier, cfg.NotifyTPSLFillsEnabled())
+					if len(fillHints) > 0 {
+						if b, err := json.Marshal(fillHints); err == nil {
+							hlReconcileFillHintsJSON = b
+						} else {
+							fmt.Fprintf(os.Stderr, "[WARN] hl-sync: json.Marshal(fillHints): %v\n", err)
+						}
+					}
 				}
 
 				// #621: Build a coin→|on-chain qty| map from the pre-fetched positions
@@ -1571,7 +1579,7 @@ func main() {
 								}
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 {
-								runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced")
+								runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON)
 								runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
@@ -1603,7 +1611,7 @@ func main() {
 								trades, detail, openTrade = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, logger)
 								mu.Unlock()
 								if execResult != nil && trades > 0 {
-									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade")
+									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON)
 									runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 									mu.Lock()
 									var pos *Position
@@ -1651,7 +1659,7 @@ func main() {
 							break
 						}
 						if pos != nil && hyperliquidIsLive(sc.Args) {
-							runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced")
+							runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON)
 							runPostTPStopLossAdjustment(sc, stratState, sc.Symbol, prices[sc.Symbol], cfg, &mu, notifier, logger, hlOnChainAbsQty)
 						}
 						if closeFraction, _, ok := runManualCloseEval(sc, stratState, cfg, logger); ok && closeFraction > 0 {

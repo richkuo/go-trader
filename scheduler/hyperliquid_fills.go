@@ -318,6 +318,18 @@ func defaultLookupHyperliquidReconcileFillFee(accountAddress, coin string, oid i
 // HTTP calls under mu.Lock(). See buildCachedHyperliquidReconcileFillResolver.
 type hlReconcileFillResolver func(coin string, oid int64, expectedQty float64) (HLFillLookup, bool)
 
+// HyperliquidProtectionFillHint is a reconciler-prefetched userFills snapshot
+// for one resting trigger OID. Passed to Python --sync-protection so it can
+// skip a duplicate userFills round-trip when the data was already resolved this
+// cycle (#759).
+type HyperliquidProtectionFillHint struct {
+	OID       int64   `json:"oid"`
+	Filled    bool    `json:"filled"`
+	Fee       float64 `json:"fee,omitempty"`
+	ClosedPnl float64 `json:"closed_pnl,omitempty"`
+	Count     int     `json:"count,omitempty"`
+}
+
 // noFillFeeResolver is the resolver used when fee lookups are disabled (no
 // account address) or when no candidate close events were detected. Always
 // returns ok=false so callers fall back to the modeled fee path.
@@ -361,16 +373,18 @@ func makeHLReconcileFeeCacheKey(coin string, oid int64, qty float64) hyperliquid
 // identify which (coin, oid, qty) lookups the reconciler is likely to need,
 // performs all userFills queries OUTSIDE the lock (each can take up to ~1.5s
 // under indexer-lag retry), then returns a pure map-reading resolver that the
-// locked apply phase calls. Cache misses fall back to noFillFeeResolver
-// behavior — never to a network call — so the lock-held region is bounded.
+// locked apply phase calls, plus per-OID fill hints for Python --sync-protection
+// to avoid duplicate indexer calls in the same scheduler cycle (#759). Cache
+// misses fall back to noFillFeeResolver behavior — never to a network call —
+// so the lock-held region is bounded.
 //
 // The candidate-detection pass is permissive: false positives just mean an
 // extra HTTP query per cycle, false negatives mean a close books with the
 // modeled fee. Detector logic is duplicated approximately, not exactly, so
 // the apply phase remains the source of truth for whether a close fires.
-func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, positions []HLPosition) hlReconcileFillResolver {
+func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, positions []HLPosition) (hlReconcileFillResolver, []HyperliquidProtectionFillHint) {
 	if accountAddress == "" {
-		return noFillFeeResolver
+		return noFillFeeResolver, nil
 	}
 
 	type candidate struct {
@@ -456,7 +470,7 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 	mu.RUnlock()
 
 	if len(candidates) == 0 {
-		return noFillFeeResolver
+		return noFillFeeResolver, nil
 	}
 
 	type cacheEntry struct {
@@ -469,11 +483,44 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		cache[makeHLReconcileFeeCacheKey(c.coin, c.oid, c.qty)] = cacheEntry{lookup: lookup, ok: ok}
 	}
 
-	return func(coin string, oid int64, expectedQty float64) (HLFillLookup, bool) {
+	hintsByOID := make(map[int64]HyperliquidProtectionFillHint, len(candidates))
+	for _, c := range candidates {
+		if c.oid <= 0 {
+			continue
+		}
+		key := makeHLReconcileFeeCacheKey(c.coin, c.oid, c.qty)
+		ent := cache[key]
+		if _, exists := hintsByOID[c.oid]; exists {
+			// First candidate wins: duplicate (coin, oid, qty) keys are deduped
+			// above, and for oid>0 all qty variants share the same OID-keyed
+			// lookup result from defaultLookupHyperliquidReconcileFillFee.
+			continue
+		}
+		filled := ent.ok && ent.lookup.Count > 0
+		hintsByOID[c.oid] = HyperliquidProtectionFillHint{
+			OID:       c.oid,
+			Filled:    filled,
+			Fee:       ent.lookup.Fee,
+			ClosedPnl: ent.lookup.ClosedPnLGross,
+			Count:     ent.lookup.Count,
+		}
+	}
+	var hintOIDs []int64
+	for oid := range hintsByOID {
+		hintOIDs = append(hintOIDs, oid)
+	}
+	sort.Slice(hintOIDs, func(i, j int) bool { return hintOIDs[i] < hintOIDs[j] })
+	fillHints := make([]HyperliquidProtectionFillHint, 0, len(hintOIDs))
+	for _, oid := range hintOIDs {
+		fillHints = append(fillHints, hintsByOID[oid])
+	}
+
+	resolver := func(coin string, oid int64, expectedQty float64) (HLFillLookup, bool) {
 		entry, hit := cache[makeHLReconcileFeeCacheKey(coin, oid, expectedQty)]
 		if !hit {
 			return HLFillLookup{}, false
 		}
 		return entry.lookup, entry.ok
 	}
+	return resolver, fillHints
 }

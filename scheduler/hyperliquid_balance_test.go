@@ -989,7 +989,7 @@ func TestReconcileDueSubsetOfAllDetectsSharedCoins(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	reconcileHyperliquidAccountPositions(dueStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(dueStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
 
 	// Even though only rmc is due, allStrategies reveals ETH is shared by 3
 	// strategies, so rmc's position must NOT be reconciled to on-chain.
@@ -1058,7 +1058,7 @@ func TestReconcileSharedCoinShortAndMixedPositions(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
 
 	// Positions should be unchanged.
 	longPos := state.Strategies["hl-long-eth"].Positions["ETH"]
@@ -1121,7 +1121,7 @@ func TestReconcileSharedCoinBothShort(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
 
 	gap := state.ReconciliationGaps["ETH"]
 	if gap == nil {
@@ -1185,7 +1185,7 @@ func TestReconcileSharedCoin_OwnerStopLossFired_ClosesOwnerOnly(t *testing.T) {
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "0xtest", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "0xtest", nil, false)
 
 	// Owner position must be closed and recorded.
 	if state.Strategies["hl-owner-eth"].Positions["ETH"] != nil {
@@ -1259,7 +1259,7 @@ func TestReconcileSharedCoin_OwnerStopLossFired_Short(t *testing.T) {
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "0xtest", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "0xtest", nil, false)
 
 	if state.Strategies["hl-owner-eth"].Positions["ETH"] != nil {
 		t.Error("owner short ETH position should be nil after SL reconciliation")
@@ -1314,7 +1314,7 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally(t *testing.T) {
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "0xtest", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "0xtest", nil, false)
 
 	if state.Strategies["hl-owner-eth"].Positions["ETH"] != nil {
 		t.Error("owner ETH position should be nil")
@@ -1387,7 +1387,7 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash(t *tes
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "0xtest", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "0xtest", nil, false)
 
 	peer := state.Strategies["hl-peer-eth"]
 	if peer.Positions["ETH"] != nil {
@@ -1489,7 +1489,7 @@ func TestReconcileSharedCoin_Detector1_WrongOIDInUserfillsBooksExternal(t *testi
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 	prices := map[string]float64{"BTC": mark}
-	reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, nil, prices, "0xtest", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, nil, prices, "0xtest", nil, false)
 
 	owner := state.Strategies["hl-owner-btc"]
 	if len(owner.ClosedPositions) != 1 {
@@ -1547,7 +1547,7 @@ func TestReconcileSharedCoin_Detector2_WrongOIDInUserfillsBooksExternal(t *testi
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, positions, prices, "0xtest", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, positions, prices, "0xtest", nil, false)
 
 	owner := state.Strategies["hl-owner-eth"]
 	if len(owner.ClosedPositions) != 1 {
@@ -1604,7 +1604,7 @@ func TestReconcileSharedCoin_TPPartialFill_DecrementsOwnerAndBooksPnL(t *testing
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "", nil, false)
 
 	owner := state.Strategies["hl-owner-eth"]
 	ownerPos := owner.Positions["ETH"]
@@ -1695,7 +1695,7 @@ func TestReconcileSharedCoin_TPPartialFill_Short(t *testing.T) {
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "", nil, false)
 
 	owner := state.Strategies["hl-owner-eth"]
 	ownerPos := owner.Positions["ETH"]
@@ -1759,7 +1759,7 @@ func TestReconcileSharedCoin_TPPartialFill_PaddedNeverPlacedTierDoesNotAttribute
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "", nil, false)
 
 	owner := state.Strategies["hl-owner-eth"]
 	ownerPos := owner.Positions["ETH"]
@@ -1812,7 +1812,7 @@ func TestReconcileSharedCoin_TPPartialFill_MultipleCandidatesDoesNotAttribute(t 
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "", nil, false)
 
 	for id, ss := range state.Strategies {
 		pos := ss.Positions["ETH"]
@@ -1867,7 +1867,7 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_NoMarkPrice_FallsBack(
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 	// nil prices map → legacy zero-PnL path.
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
 
 	peer := state.Strategies["hl-peer-eth"]
 	if peer.Positions["ETH"] != nil {
@@ -1913,7 +1913,7 @@ func TestReconcileSharedCoin_GapWithoutSLOwner_LeavesPositionsAlone(t *testing.T
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
 
 	// Both positions must be untouched.
 	posA := state.Strategies["hl-a-eth"].Positions["ETH"]
@@ -1970,7 +1970,7 @@ func TestReconcileSharedCoin_ResidualMismatch_LeavesPositionsAlone(t *testing.T)
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
 
 	// Both positions must be untouched.
 	ownerPos := state.Strategies["hl-owner-eth"].Positions["ETH"]
@@ -3247,7 +3247,7 @@ func TestReconcileManualPositionExternalClose(t *testing.T) {
 	var mu sync.RWMutex
 
 	// Pass nil positions (on-chain flat).
-	reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil, "", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil, "", nil, false)
 
 	ss := state.Strategies["manual-eth"]
 	if _, ok := ss.Positions["ETH"]; ok {
@@ -3449,7 +3449,7 @@ func TestReconcileManualPositionSLFired(t *testing.T) {
 		return HLFillLookup{}, false
 	}
 
-	reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil, "0xtest", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil, "0xtest", nil, false)
 
 	ss := state.Strategies["manual-eth"]
 	if _, ok := ss.Positions["ETH"]; ok {

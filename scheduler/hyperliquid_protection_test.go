@@ -426,7 +426,7 @@ func TestHyperliquidProtectionTiersPreservesDuplicateMultipleOrder(t *testing.T)
 // duration of the test, restoring the original on cleanup.
 func withStubbedSyncHyperliquidProtection(
 	t *testing.T,
-	stub func(sc StrategyConfig, plan hlProtectionPlan, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidProtectionSyncResult, bool),
+	stub func(sc StrategyConfig, plan hlProtectionPlan, notifier *MultiNotifier, logger *StrategyLogger, reconcileFillHintsJSON []byte) (*HyperliquidProtectionSyncResult, bool),
 ) {
 	t.Helper()
 	orig := syncHyperliquidProtection
@@ -449,7 +449,7 @@ func TestRunHyperliquidProtectionSyncManualAppliesOIDs(t *testing.T) {
 		},
 	}
 	calls := 0
-	withStubbedSyncHyperliquidProtection(t, func(_ StrategyConfig, _ hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger) (*HyperliquidProtectionSyncResult, bool) {
+	withStubbedSyncHyperliquidProtection(t, func(_ StrategyConfig, _ hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger, _ []byte) (*HyperliquidProtectionSyncResult, bool) {
 		calls++
 		return &HyperliquidProtectionSyncResult{
 			StopLossOID: 999,
@@ -458,7 +458,7 @@ func TestRunHyperliquidProtectionSyncManualAppliesOIDs(t *testing.T) {
 	})
 
 	var mu sync.RWMutex
-	if !runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test") {
+	if !runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil) {
 		t.Fatal("expected runHyperliquidProtectionSync to apply")
 	}
 	if calls != 1 {
@@ -486,13 +486,13 @@ func TestRunHyperliquidProtectionSyncSkipsWhenNoPlan(t *testing.T) {
 		},
 	}
 	called := false
-	withStubbedSyncHyperliquidProtection(t, func(_ StrategyConfig, _ hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger) (*HyperliquidProtectionSyncResult, bool) {
+	withStubbedSyncHyperliquidProtection(t, func(_ StrategyConfig, _ hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger, _ []byte) (*HyperliquidProtectionSyncResult, bool) {
 		called = true
 		return nil, false
 	})
 
 	var mu sync.RWMutex
-	if runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test") {
+	if runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil) {
 		t.Fatal("expected runHyperliquidProtectionSync to skip when no plan")
 	}
 	if called {
@@ -519,14 +519,14 @@ func TestRunHyperliquidProtectionSyncSkipsApplyAfterExternalClose(t *testing.T) 
 			"ETH": {Symbol: "ETH", Quantity: 0.4, AvgCost: 3000, EntryATR: 100, Side: "long"},
 		},
 	}
-	withStubbedSyncHyperliquidProtection(t, func(_ StrategyConfig, _ hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger) (*HyperliquidProtectionSyncResult, bool) {
+	withStubbedSyncHyperliquidProtection(t, func(_ StrategyConfig, _ hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger, _ []byte) (*HyperliquidProtectionSyncResult, bool) {
 		// Simulate an external close racing the subprocess.
 		state.Positions["ETH"].Quantity = 0
 		return &HyperliquidProtectionSyncResult{StopLossOID: 999, TPOIDs: []int64{111}}, true
 	})
 
 	var mu sync.RWMutex
-	if runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test") {
+	if runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil) {
 		t.Fatal("expected apply to be skipped after position closed externally")
 	}
 	pos := state.Positions["ETH"]
@@ -566,7 +566,7 @@ func TestRunHyperliquidProtectionSyncStampsTradeInDB(t *testing.T) {
 		t.Fatalf("InsertTrade: %v", err)
 	}
 
-	withStubbedSyncHyperliquidProtection(t, func(_ StrategyConfig, _ hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger) (*HyperliquidProtectionSyncResult, bool) {
+	withStubbedSyncHyperliquidProtection(t, func(_ StrategyConfig, _ hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger, _ []byte) (*HyperliquidProtectionSyncResult, bool) {
 		return &HyperliquidProtectionSyncResult{
 			StopLossOID:       999,
 			StopLossTriggerPx: 2850.0,
@@ -575,7 +575,7 @@ func TestRunHyperliquidProtectionSyncStampsTradeInDB(t *testing.T) {
 	})
 
 	var mu sync.RWMutex
-	if !runHyperliquidProtectionSync(sc, state, db, "ETH", &mu, nil, nil, "test") {
+	if !runHyperliquidProtectionSync(sc, state, db, "ETH", &mu, nil, nil, "test", nil) {
 		t.Fatal("expected runHyperliquidProtectionSync to apply")
 	}
 

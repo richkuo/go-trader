@@ -661,6 +661,7 @@ class TestSyncProtection:
         open_oids=None,
         fill_lookup_by_oid=None,
         place_responses=None,
+        reconcile_fill_hints_json=None,
     ):
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
@@ -732,6 +733,7 @@ class TestSyncProtection:
                     tp_tiers=tp_tiers,
                     tp_oids=tp_oids,
                     tp_armed_tiers=tp_armed_tiers,
+                    reconcile_fill_hints_json=reconcile_fill_hints_json or "",
                 )
         return json.loads(captured.getvalue()), mock_adapter
 
@@ -878,6 +880,68 @@ class TestSyncProtection:
         assert out["tp_fills"][1]["closed_pnl"] == 7.0
         adapter.place_take_profit_limit.assert_not_called()
 
+    def test_reconcile_fill_hints_skips_lookup_fill_fee_by_oid(self):
+        """#759: same-cycle Go prefetch JSON avoids duplicate userFills for that OID."""
+        hints = json.dumps(
+            [{"oid": 9101, "filled": True, "fee": 0.02, "closed_pnl": 1.5, "count": 2}]
+        )
+        out, adapter = self._run_sync(
+            tp1_oid=9100,
+            tp2_oid=9101,
+            sl_oid=0,
+            open_oids={9100},
+            fill_lookup_by_oid={},
+            reconcile_fill_hints_json=hints,
+        )
+        assert out["tp_oids"][1] == 0
+        assert out["tp_filled_externally"][1] is True
+        assert out["tp_fills"][1]["fee"] == 0.02
+        assert out["tp_fills"][1]["closed_pnl"] == 1.5
+        adapter.lookup_fill_fee_by_oid.assert_not_called()
+
+    def test_reconcile_fill_hints_filled_false_still_queries_userfills(self):
+        """#761 review: filled=false hints must not suppress Python's indexer retry."""
+        hints = json.dumps([{"oid": 9101, "filled": False}])
+        out, adapter = self._run_sync(
+            tp1_oid=9100,
+            tp2_oid=9101,
+            sl_oid=0,
+            open_oids={9100},
+            fill_lookup_by_oid={9101: {"fee": 0.03, "closed_pnl": 2.0, "count": 1}},
+            reconcile_fill_hints_json=hints,
+        )
+        assert out["tp_filled_externally"][1] is True
+        assert out["tp_fills"][1]["fee"] == 0.03
+        adapter.lookup_fill_fee_by_oid.assert_called()
+
+    def test_reconcile_fill_hints_malformed_json_queries_userfills(self):
+        """#761 review: invalid JSON disables hints; userFills path still works."""
+        out, adapter = self._run_sync(
+            tp1_oid=9100,
+            tp2_oid=9101,
+            sl_oid=0,
+            open_oids={9100},
+            fill_lookup_by_oid={9101: {"fee": 0.04, "closed_pnl": 3.0, "count": 1}},
+            reconcile_fill_hints_json="{not-json",
+        )
+        assert out["tp_filled_externally"][1] is True
+        adapter.lookup_fill_fee_by_oid.assert_called()
+
+    def test_reconcile_fill_hints_extra_oid_does_not_skip_other_oid_lookup(self):
+        """#761 review: hints for an unrelated OID do not bypass lookup for missing TP."""
+        hints = json.dumps([{"oid": 1, "filled": True, "fee": 0.0, "count": 0}])
+        out, adapter = self._run_sync(
+            tp1_oid=9100,
+            tp2_oid=9101,
+            sl_oid=0,
+            open_oids={9100},
+            fill_lookup_by_oid={9101: {"fee": 0.05, "closed_pnl": 4.0, "count": 1}},
+            reconcile_fill_hints_json=hints,
+        )
+        assert out["tp_filled_externally"][1] is True
+        called_oids = [c.args[0] for c in adapter.lookup_fill_fee_by_oid.call_args_list]
+        assert 9101 in called_oids
+
     def test_open_orders_fetch_failure_defers_replacement(self):
         """open_order_oids() raise → leave existing OIDs alone, do not re-place
         (would double-up the protection). The script returns the failure
@@ -910,6 +974,7 @@ class TestSyncProtection:
                     "ETH", "long", 1.0, 2000.0, 20.0, "live",
                     stop_loss_atr_mult=1.0, tp1_atr_mult=1.0, tp1_fraction=0.5, tp2_atr_mult=2.0,
                     stop_loss_oid=100, tp1_oid=200, tp2_oid=300,
+                    reconcile_fill_hints_json="",
                 )
         out = json.loads(captured.getvalue())
         assert out["open_order_check_error"] == "indexer down"
