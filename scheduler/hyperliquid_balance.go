@@ -1248,7 +1248,7 @@ func hlAttemptCloseFromTPFills(s *StrategyState, sym string, pos *Position, reso
 	// the same size (lookup.OID != StopLossOID) doesn't masquerade as an SL
 	// fill and starve TP attribution.
 	if pos.StopLossOID > 0 {
-		if lookup, slFilled := resolveFee(sym, pos.StopLossOID, pos.Quantity); slFilled && lookup.OID == pos.StopLossOID && lookup.FilledQty > 1e-9 {
+		if lookup, slFilled := resolveFee(sym, pos.StopLossOID, pos.Quantity); hlReconcileSLFillConfirmed(lookup, slFilled, pos.StopLossOID) {
 			return false
 		}
 	}
