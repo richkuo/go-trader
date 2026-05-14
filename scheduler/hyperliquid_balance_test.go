@@ -1174,9 +1174,18 @@ func TestReconcileSharedCoin_OwnerStopLossFired_ClosesOwnerOnly(t *testing.T) {
 	// Owner fired — on-chain residual is only the peer's 0.5 long.
 	positions := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000, Leverage: 10}}
 
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, _ string, oid int64, _ float64) (HLFillLookup, bool) {
+		if oid == 42 {
+			return HLFillLookup{Fee: 0.05, FilledQty: 1.0, Px: 2900, Count: 1, OID: 42}, true
+		}
+		return HLFillLookup{}, false
+	}
+
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "0xtest", nil, false)
 
 	// Owner position must be closed and recorded.
 	if state.Strategies["hl-owner-eth"].Positions["ETH"] != nil {
@@ -1239,9 +1248,18 @@ func TestReconcileSharedCoin_OwnerStopLossFired_Short(t *testing.T) {
 	// Short positions: on-chain residual after owner's stop = -0.3 (peer only).
 	positions := []HLPosition{{Coin: "ETH", Size: -0.3, EntryPrice: 3000, Leverage: 10}}
 
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, _ string, oid int64, _ float64) (HLFillLookup, bool) {
+		if oid == 99 {
+			return HLFillLookup{Fee: 0.04, FilledQty: 0.8, Px: 3100, Count: 1, OID: 99}, true
+		}
+		return HLFillLookup{}, false
+	}
+
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "0xtest", nil, false)
 
 	if state.Strategies["hl-owner-eth"].Positions["ETH"] != nil {
 		t.Error("owner short ETH position should be nil after SL reconciliation")
@@ -1253,8 +1271,9 @@ func TestReconcileSharedCoin_OwnerStopLossFired_Short(t *testing.T) {
 }
 
 // TestReconcileSharedCoin_AllPositionsClosedExternally verifies that when
-// on-chain is fully flat, all peers are closed: SL owner via hl_sync_stop_loss,
-// others via hl_sync_external with close price 0.
+// on-chain is fully flat, all peers are closed: SL owner via hl_sync_stop_loss
+// when userFills confirms the SL OID (#756), others via hl_sync_external with
+// close price 0 when no mark is supplied.
 func TestReconcileSharedCoin_AllPositionsClosedExternally(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -1283,9 +1302,19 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally(t *testing.T) {
 	// On-chain: fully flat (aggregate stop sweep / manual close).
 	positions := []HLPosition{}
 
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, _ string, oid int64, qty float64) (HLFillLookup, bool) {
+		if oid == 7 {
+			return HLFillLookup{Fee: 0.02, FilledQty: 1.0, Px: 2800, Count: 1, OID: 7}, true
+		}
+		_ = qty
+		return HLFillLookup{}, false
+	}
+
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "0xtest", nil, false)
 
 	if state.Strategies["hl-owner-eth"].Positions["ETH"] != nil {
 		t.Error("owner ETH position should be nil")
@@ -1342,10 +1371,23 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash(t *tes
 	}
 	positions := []HLPosition{}
 	prices := map[string]float64{"ETH": mark}
+	wantPeerFee := peerQty * mark * HyperliquidTakerFeePct
+
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, coin string, oid int64, qty float64) (HLFillLookup, bool) {
+		if oid == 7 && coin == "ETH" {
+			return HLFillLookup{Fee: 0.02, FilledQty: 1.0, Px: 2800, Count: 1, OID: 7}, true
+		}
+		if oid == 0 && coin == "ETH" && math.Abs(qty-peerQty) < 1e-9 {
+			return HLFillLookup{Fee: wantPeerFee, Count: 1}, true
+		}
+		return HLFillLookup{}, false
+	}
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "", nil, false)
+	reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "0xtest", nil, false)
 
 	peer := state.Strategies["hl-peer-eth"]
 	if peer.Positions["ETH"] != nil {
@@ -1402,6 +1444,62 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash(t *tes
 	}
 	if len(owner.ClosedPositions) != 1 || owner.ClosedPositions[0].CloseReason != "hl_sync_stop_loss" {
 		t.Errorf("owner ClosedPositions wrong: %+v", owner.ClosedPositions)
+	}
+}
+
+// TestReconcileSharedCoin_Detector1_WrongOIDInUserfillsBooksExternal is a #756
+// regression: userFills hit for the SL lookup query but with a non-matching OID
+// must not book hl_sync_stop_loss — fall back to mark-based hl_sync_external.
+func TestReconcileSharedCoin_Detector1_WrongOIDInUserfillsBooksExternal(t *testing.T) {
+	const mark = 61000.0
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-btc": {
+				ID: "hl-owner-btc", Cash: 10000, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 0.2, AvgCost: 60000, Side: "long",
+						Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-owner-btc",
+						StopLossOID: 5005, StopLossTriggerPx: 58000},
+				},
+			},
+			"hl-peer-btc": {
+				ID: "hl-peer-btc", Cash: 10000, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 60500, Side: "long",
+						Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-peer-btc"},
+				},
+			},
+		},
+	}
+	scs := []StrategyConfig{
+		{ID: "hl-owner-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"hold", "BTC", "1h", "--mode=live"}, Leverage: 5},
+		{ID: "hl-peer-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"hold", "BTC", "1h", "--mode=live"}, Leverage: 5},
+	}
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, coin string, oid int64, qty float64) (HLFillLookup, bool) {
+		if oid == 5005 {
+			return HLFillLookup{Fee: 1.0, FilledQty: 0.2, Count: 1, OID: 9999}, true
+		}
+		if oid == 0 && coin == "BTC" && math.Abs(qty-0.1) < 1e-9 {
+			return HLFillLookup{Fee: 0.05, Count: 1}, true
+		}
+		return HLFillLookup{}, false
+	}
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	prices := map[string]float64{"BTC": mark}
+	reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, nil, prices, "0xtest", nil, false)
+
+	owner := state.Strategies["hl-owner-btc"]
+	if len(owner.ClosedPositions) != 1 {
+		t.Fatalf("owner ClosedPositions = %d, want 1", len(owner.ClosedPositions))
+	}
+	if owner.ClosedPositions[0].CloseReason != "hl_sync_external" {
+		t.Errorf("owner CloseReason = %q, want hl_sync_external (wrong userFills OID)", owner.ClosedPositions[0].CloseReason)
+	}
+	if owner.ClosedPositions[0].ClosePrice != mark {
+		t.Errorf("owner ClosePrice = %v, want mark %v", owner.ClosedPositions[0].ClosePrice, mark)
 	}
 }
 

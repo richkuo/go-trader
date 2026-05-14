@@ -24,6 +24,13 @@ type HLPosition struct {
 	Leverage   float64 // on-chain leverage value (#254)
 }
 
+// hlReconcileSLFillConfirmed mirrors the #685 sole-owner vanish gate for
+// shared-coin Detectors 1 and 2: attribute hl_sync_stop_loss only when
+// userFills confirms this exact SL OID filled with positive size (#756).
+func hlReconcileSLFillConfirmed(lookup HLFillLookup, useFillFee bool, stopLossOID int64) bool {
+	return useFillFee && lookup.OID == stopLossOID && lookup.FilledQty > 1e-9
+}
+
 var hlMainnetURL = "https://api.hyperliquid.xyz"
 
 // hyperliquidLiveCloseScript is the path to the Python close helper. Exposed as
@@ -803,10 +810,11 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 			// quantity, while each non-owner peer here queries with its own
 			// per-strategy pos.Quantity. The hlReconcileFillSizeTolerance
 			// (1e-4) won't accept that mismatch, so peers fall back to the
-			// modeled fee. The OID-keyed lookup still works for the SL owner.
-			// Per-peer fee accuracy is only achievable when each peer's qty
-			// happens to equal the aggregate close size (e.g. a sole-peer
-			// close, or a closer that happened to size at one peer's qty).
+			// modeled fee. SL attribution additionally requires an OID-keyed
+			// userFills hit matching Position.StopLossOID (#756); otherwise the
+			// peer is closed as hl_sync_external (mark or zero PnL). Per-peer fee
+			// accuracy on external closes is only achievable when each peer's qty
+			// happens to equal the aggregate close size.
 			for _, id := range stratIDs {
 				ss := state.Strategies[id]
 				if ss == nil {
@@ -824,33 +832,57 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 					lookup, useFillFee := resolveFee(coin, pos.StopLossOID, pos.Quantity)
 					oidStr := strconv.FormatInt(pos.StopLossOID, 10)
 					logHyperliquidReconcileFillLookup(logger, coin, pos.StopLossOID, pos.Quantity, lookup, useFillFee)
-					if useFillFee && lookup.FilledQty > 1e-9 && lookup.FilledQty < pos.Quantity-1e-9 {
-						if logger != nil {
-							logger.Info("hl-sync: %s SL close qty adjusted %.6f → %.6f (actual fill from userFills)", coin, pos.Quantity, lookup.FilledQty)
+					slConfirmed := hlReconcileSLFillConfirmed(lookup, useFillFee, pos.StopLossOID)
+					if slConfirmed {
+						if lookup.FilledQty < pos.Quantity-1e-9 {
+							if logger != nil {
+								logger.Info("hl-sync: %s SL close qty adjusted %.6f → %.6f (actual fill from userFills)", coin, pos.Quantity, lookup.FilledQty)
+							}
+							pos.Quantity = lookup.FilledQty
 						}
-						pos.Quantity = lookup.FilledQty
-					}
-					alertSide := pos.Side
-					alertQty := pos.Quantity
-					alertTriggerPx := pos.StopLossTriggerPx
-					if recordPerpsStopLossCloseWithFillFee(ss, coin, pos.StopLossTriggerPx, lookup.Fee, useFillFee, oidStr, "hl_sync_stop_loss", logger) {
-						changed = true
-						// lastBookedTradePnL relies on the just-completed
-						// RecordTrade inside the booker; do not insert another
-						// RecordTrade between here and the booker call.
-						pendingAlerts = append(pendingAlerts, ProtectionFillAlert{
-							StrategyID:      id,
-							Symbol:          coin,
-							Side:            alertSide,
-							FillType:        "SL",
-							IsPartial:       false,
-							FillPrice:       alertTriggerPx,
-							CloseQty:        alertQty,
-							RemainingQty:    0,
-							RealizedPnL:     lastBookedTradePnL(ss),
-							HasPnL:          true,
-							ExchangeOrderID: oidStr,
-						})
+						alertSide := pos.Side
+						alertQty := pos.Quantity
+						alertTriggerPx := pos.StopLossTriggerPx
+						if recordPerpsStopLossCloseWithFillFee(ss, coin, pos.StopLossTriggerPx, lookup.Fee, useFillFee, oidStr, "hl_sync_stop_loss", logger) {
+							changed = true
+							// lastBookedTradePnL relies on the just-completed
+							// RecordTrade inside the booker; do not insert another
+							// RecordTrade between here and the booker call.
+							pendingAlerts = append(pendingAlerts, ProtectionFillAlert{
+								StrategyID:      id,
+								Symbol:          coin,
+								Side:            alertSide,
+								FillType:        "SL",
+								IsPartial:       false,
+								FillPrice:       alertTriggerPx,
+								CloseQty:        alertQty,
+								RemainingQty:    0,
+								RealizedPnL:     lastBookedTradePnL(ss),
+								HasPnL:          true,
+								ExchangeOrderID: oidStr,
+							})
+						}
+					} else {
+						if useFillFee && logger != nil {
+							logger.Info("hl-sync: %s Detector 1 SL OID %s unfilled — routing external (matched oid=%d qty=%.6f)", coin, oidStr, lookup.OID, lookup.FilledQty)
+						} else if logger != nil {
+							logger.Info("hl-sync: %s Detector 1 SL OID %s unfilled — routing external (userFills miss)", coin, oidStr)
+						}
+						if mark, ok := prices[coin]; ok && mark > 0 {
+							lookupExt, useFillFeeExt := resolveFee(coin, 0, pos.Quantity)
+							logHyperliquidReconcileFillLookup(logger, coin, 0, pos.Quantity, lookupExt, useFillFeeExt)
+							if recordPerpsExternalCloseWithFillFee(ss, coin, mark, lookupExt.Fee, useFillFeeExt, "", "hl_sync_external", logger) {
+								changed = true
+							}
+						} else {
+							recordClosedPosition(ss, pos, 0, 0, "hl_sync_external", now)
+							delete(ss.Positions, coin)
+							clearATRMultMissingEntryATRWarningOnHLPerpsClose(ss, coin)
+							if logger != nil {
+								logger.Info("hl-sync: %s position (%.6f %s) no longer on-chain, removing (Detector 1 external close, no mark price)", coin, pos.Quantity, pos.Side)
+							}
+							changed = true
+						}
 					}
 				} else if mark, ok := prices[coin]; ok && mark > 0 {
 					// #584: credit s.Cash with mark-based PnL so the per-strategy
@@ -922,35 +954,63 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 						lookup, useFillFee := resolveFee(coin, slOwnerPos.StopLossOID, slOwnerPos.Quantity)
 						oidStr := strconv.FormatInt(slOwnerPos.StopLossOID, 10)
 						logHyperliquidReconcileFillLookup(logger, coin, slOwnerPos.StopLossOID, slOwnerPos.Quantity, lookup, useFillFee)
-						if useFillFee && lookup.FilledQty > 1e-9 && lookup.FilledQty < slOwnerPos.Quantity-1e-9 {
-							if logger != nil {
-								logger.Info("hl-sync: %s SL close qty adjusted %.6f → %.6f (actual fill from userFills)", coin, slOwnerPos.Quantity, lookup.FilledQty)
+						slConfirmed := hlReconcileSLFillConfirmed(lookup, useFillFee, slOwnerPos.StopLossOID)
+						if slConfirmed {
+							if lookup.FilledQty < slOwnerPos.Quantity-1e-9 {
+								if logger != nil {
+									logger.Info("hl-sync: %s SL close qty adjusted %.6f → %.6f (actual fill from userFills)", coin, slOwnerPos.Quantity, lookup.FilledQty)
+								}
+								slOwnerPos.Quantity = lookup.FilledQty
 							}
-							slOwnerPos.Quantity = lookup.FilledQty
-						}
-						alertSide := slOwnerPos.Side
-						alertQty := slOwnerPos.Quantity
-						alertTriggerPx := slOwnerPos.StopLossTriggerPx
-						if recordPerpsStopLossCloseWithFillFee(ownerSS, coin, slOwnerPos.StopLossTriggerPx, lookup.Fee, useFillFee, oidStr, "hl_sync_stop_loss", logger) {
-							changed = true
-							virtualQty = expectedResidual
-							delta = virtualQty - onChainQty
-							// lastBookedTradePnL relies on the just-completed
-							// RecordTrade inside the booker; do not insert another
-							// RecordTrade between here and the booker call.
-							pendingAlerts = append(pendingAlerts, ProtectionFillAlert{
-								StrategyID:      slOwnerID,
-								Symbol:          coin,
-								Side:            alertSide,
-								FillType:        "SL",
-								IsPartial:       false,
-								FillPrice:       alertTriggerPx,
-								CloseQty:        alertQty,
-								RemainingQty:    0,
-								RealizedPnL:     lastBookedTradePnL(ownerSS),
-								HasPnL:          true,
-								ExchangeOrderID: oidStr,
-							})
+							alertSide := slOwnerPos.Side
+							alertQty := slOwnerPos.Quantity
+							alertTriggerPx := slOwnerPos.StopLossTriggerPx
+							if recordPerpsStopLossCloseWithFillFee(ownerSS, coin, slOwnerPos.StopLossTriggerPx, lookup.Fee, useFillFee, oidStr, "hl_sync_stop_loss", logger) {
+								changed = true
+								virtualQty = expectedResidual
+								delta = virtualQty - onChainQty
+								// lastBookedTradePnL relies on the just-completed
+								// RecordTrade inside the booker; do not insert another
+								// RecordTrade between here and the booker call.
+								pendingAlerts = append(pendingAlerts, ProtectionFillAlert{
+									StrategyID:      slOwnerID,
+									Symbol:          coin,
+									Side:            alertSide,
+									FillType:        "SL",
+									IsPartial:       false,
+									FillPrice:       alertTriggerPx,
+									CloseQty:        alertQty,
+									RemainingQty:    0,
+									RealizedPnL:     lastBookedTradePnL(ownerSS),
+									HasPnL:          true,
+									ExchangeOrderID: oidStr,
+								})
+							}
+						} else {
+							if useFillFee && logger != nil {
+								logger.Info("hl-sync: %s Detector 2 SL OID %s unfilled — routing external (matched oid=%d qty=%.6f)", coin, oidStr, lookup.OID, lookup.FilledQty)
+							} else if logger != nil {
+								logger.Info("hl-sync: %s Detector 2 SL OID %s unfilled — routing external (userFills miss)", coin, oidStr)
+							}
+							if mark, ok := prices[coin]; ok && mark > 0 {
+								lookupExt, useFillFeeExt := resolveFee(coin, 0, slOwnerPos.Quantity)
+								logHyperliquidReconcileFillLookup(logger, coin, 0, slOwnerPos.Quantity, lookupExt, useFillFeeExt)
+								if recordPerpsExternalCloseWithFillFee(ownerSS, coin, mark, lookupExt.Fee, useFillFeeExt, "", "hl_sync_external", logger) {
+									changed = true
+									virtualQty = expectedResidual
+									delta = virtualQty - onChainQty
+								}
+							} else {
+								recordClosedPosition(ownerSS, slOwnerPos, 0, 0, "hl_sync_external", now)
+								delete(ownerSS.Positions, coin)
+								clearATRMultMissingEntryATRWarningOnHLPerpsClose(ownerSS, coin)
+								if logger != nil {
+									logger.Info("hl-sync: %s position (%.6f %s) no longer on-chain, removing (Detector 2 external close, no mark price)", coin, slOwnerPos.Quantity, slOwnerPos.Side)
+								}
+								changed = true
+								virtualQty = expectedResidual
+								delta = virtualQty - onChainQty
+							}
 						}
 					}
 				}

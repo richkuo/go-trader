@@ -253,7 +253,8 @@ func TestReconcileHyperliquidAccountPositions_DetectorOneUsesFillFee(t *testing.
 	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
 	lookupHyperliquidReconcileFillFee = func(addr, coin string, oid int64, qty float64) (HLFillLookup, bool) {
 		if oid == 5005 {
-			return HLFillLookup{Fee: 2.50, Count: 1, OID: oid}, true
+			// #756: FilledQty + OID echo required for shared-coin SL attribution.
+			return HLFillLookup{Fee: 2.50, Count: 1, OID: oid, FilledQty: 0.2}, true
 		}
 		if oid == 0 && coin == "BTC" && qty > 0 {
 			return HLFillLookup{Fee: 0.75, Count: 1}, true
