@@ -295,8 +295,7 @@ func reconcileHyperliquidPositionsForStrategy(
 // path (#758). Without this, pos.TPOIDs[i] stays positive until Python
 // protection-sync runs, and hlAttemptCloseFromTPFills on a later vanish
 // snapshot can book the same TP OID again.
-func stampSoleOwnerRecoveryTierConsumed(s *StrategyState, sym string, tierIdx int) {
-	pos := s.Positions[sym]
+func stampSoleOwnerRecoveryTierConsumed(pos *Position, tierIdx int) {
 	if pos == nil || tierIdx < 0 {
 		return
 	}
@@ -466,12 +465,13 @@ func tryBookSoleOwnerTPFill(
 	) {
 		return false
 	}
-	if soleOwnerRecoveryBook {
-		stampSoleOwnerRecoveryTierConsumed(stratState, sym, tierIdx)
+	posAfter := stratState.Positions[sym]
+	if soleOwnerRecoveryBook && posAfter != nil {
+		stampSoleOwnerRecoveryTierConsumed(posAfter, tierIdx)
 	}
 
 	remaining := 0.0
-	if posAfter := stratState.Positions[sym]; posAfter != nil {
+	if posAfter != nil {
 		remaining = posAfter.Quantity
 	}
 	if pendingAlerts != nil {
