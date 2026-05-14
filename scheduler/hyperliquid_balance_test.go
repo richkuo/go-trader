@@ -1538,12 +1538,10 @@ func TestReconcileSharedCoin_Detector2_WrongOIDInUserfillsBooksExternal(t *testi
 
 	origLookup := lookupHyperliquidReconcileFillFee
 	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
-	lookupHyperliquidReconcileFillFee = func(_, coin string, oid int64, qty float64) (HLFillLookup, bool) {
+	lookupHyperliquidReconcileFillFee = func(_, _ string, oid int64, _ float64) (HLFillLookup, bool) {
 		if oid == 4242 {
 			return HLFillLookup{Fee: 0.1, FilledQty: 1.0, Count: 1, OID: 9999}, true
 		}
-		_ = coin
-		_ = qty
 		return HLFillLookup{}, false
 	}
 
@@ -3513,10 +3511,17 @@ func TestReconcilePosition_TPFillsAttributedNotSL(t *testing.T) {
 	})
 	logger := newTestLogger(t)
 
+	var alerts []ProtectionFillAlert
 	startCash := ss.Cash
-	changed := reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil)
+	changed := reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, &alerts)
 	if !changed {
 		t.Fatal("expected changed=true")
+	}
+	if len(alerts) != 2 {
+		t.Fatalf("pendingAlerts = %d, want 2 (TP1+TP2 fill DMs)", len(alerts))
+	}
+	if alerts[0].FillType != "TP1" || alerts[1].FillType != "TP2" {
+		t.Errorf("FillType = %q, %q, want TP1, TP2", alerts[0].FillType, alerts[1].FillType)
 	}
 	if _, open := ss.Positions["ETH"]; open {
 		t.Fatal("ETH position should be removed after TP-fill attribution")
@@ -3744,7 +3749,8 @@ func TestAttemptCloseFromTPFills_CoinSizeSLFallbackDoesNotStarveTP(t *testing.T)
 	})
 	logger := newTestLogger(t)
 
-	if !hlAttemptCloseFromTPFills(ss, "ETH", ss.Positions["ETH"], resolver, logger, nil) {
+	var tpAlerts []ProtectionFillAlert
+	if !hlAttemptCloseFromTPFills(ss, "ETH", ss.Positions["ETH"], resolver, logger, &tpAlerts) {
 		t.Fatal("expected TP attribution to proceed (SL gate must reject non-OID-match)")
 	}
 	if _, open := ss.Positions["ETH"]; open {
@@ -3755,5 +3761,8 @@ func TestAttemptCloseFromTPFills_CoinSizeSLFallbackDoesNotStarveTP(t *testing.T)
 	}
 	if math.Abs(ss.TradeHistory[0].Price-tpPx) > 1e-9 {
 		t.Errorf("Trade.Price = %g, want %g (TP fill price)", ss.TradeHistory[0].Price, tpPx)
+	}
+	if len(tpAlerts) != 1 || tpAlerts[0].FillType != "TP1" {
+		t.Errorf("tpAlerts = %+v, want one TP1 protection alert", tpAlerts)
 	}
 }

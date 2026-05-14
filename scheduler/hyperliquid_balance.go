@@ -470,6 +470,10 @@ func tryBookSoleOwnerTPFill(
 // resolver is expected to do pure in-memory cache reads when called under
 // mu.Lock() (see buildCachedHyperliquidReconcileFillResolver) — never make
 // HTTP calls.
+//
+// When pendingAlerts is non-nil, hlAttemptCloseFromTPFills appends TP fill
+// alerts here (same contract as tryBookSoleOwnerTPFill) for owner DM flush
+// after mu.Unlock (#757 re-review).
 func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym string, positions []HLPosition, resolveFee hlReconcileFillResolver, logger *StrategyLogger, pendingAlerts *[]ProtectionFillAlert) bool {
 	changed := false
 
@@ -1229,11 +1233,14 @@ func hyperliquidHasClearedTPTier(sc StrategyConfig, pos *Position, closeQty floa
 //
 // Returns false (no mutation) when no TP attribution is possible; the caller
 // then falls through to the legacy SL-trigger-price path.
+//
+// When pendingAlerts is non-nil, each successful TP partial book appends a
+// ProtectionFillAlert (same ordering contract as tryBookSoleOwnerTPFill) so
+// sole-owner cycle-ordering races still emit owner TP fill DMs (#757).
 func hlAttemptCloseFromTPFills(s *StrategyState, sym string, pos *Position, resolveFee hlReconcileFillResolver, logger *StrategyLogger, pendingAlerts *[]ProtectionFillAlert) bool {
 	if s == nil || pos == nil || len(pos.TPOIDs) == 0 || resolveFee == nil {
 		return false
 	}
-	alertSide := pos.Side
 	// If the SL OID has fills, leave attribution to the existing SL path —
 	// it knows how to handle the #621 "SL fired on the post-TP residual"
 	// case and we don't want to double-book by also crediting TPs here.
@@ -1265,6 +1272,11 @@ func hlAttemptCloseFromTPFills(s *StrategyState, sym string, pos *Position, reso
 		return false
 	}
 	for _, f := range fills {
+		curBefore := s.Positions[sym]
+		if curBefore == nil {
+			break
+		}
+		alertSide := curBefore.Side
 		oidStr := strconv.FormatInt(f.oid, 10)
 		logHyperliquidReconcileFillLookup(logger, sym, f.oid, f.lookup.FilledQty, f.lookup, true)
 		reason := fmt.Sprintf("hl_sync_tp%d_fill", f.tierIdx+1)
