@@ -725,11 +725,70 @@ func TestSoleOwnerTP_CycleOrderingRecovery_BooksWhenUserFillsOIDMatchesTPOID(t *
 	if pos == nil {
 		t.Fatal("expected position to remain after partial close")
 	}
-	// TPOIDs are NOT zeroed inline — protection-sync zeros them later this
-	// cycle via applyHyperliquidProtectionSync (idempotent). Asserting the
-	// invariant locks in the contract with the protection-sync plan-builder.
-	if pos.TPOIDs[0] != tp1OID || pos.TPOIDs[1] != 222 {
-		t.Errorf("TPOIDs = %v, want [%d 222] (recovery path must not zero TPOIDs inline)", pos.TPOIDs, tp1OID)
+	// #758: recovery path stamps consumed tier immediately (TPOID 0 + armed)
+	// so vanish reconcile cannot re-book the same OID.
+	if pos.TPOIDs[0] != 0 || pos.TPOIDs[1] != 222 {
+		t.Errorf("TPOIDs = %v, want [0 222]", pos.TPOIDs)
+	}
+	if len(pos.TPArmedTiers) < 2 || !pos.TPArmedTiers[0] || pos.TPArmedTiers[1] {
+		t.Errorf("TPArmedTiers = %v, want [true false] (tier0 consumed)", pos.TPArmedTiers)
+	}
+}
+
+// TestSoleOwnerTP758_RecoveryStampsTierSoHlAttemptSkipsOID verifies that after
+// cycle-ordering recovery books TP1, hlAttemptCloseFromTPFills does not
+// attribute the same TP OID again (#758).
+func TestSoleOwnerTP758_RecoveryStampsTierSoHlAttemptSkipsOID(t *testing.T) {
+	const (
+		entryPx    = 2000.0
+		entryATR   = 50.0
+		fullQty    = 0.4
+		onChainQty = 0.2
+		tp1OID     = int64(111)
+		fillPx     = 2103.50
+		fillFee    = 0.05
+	)
+	ss := &StrategyState{
+		ID:   "hl-tp-sole",
+		Cash: 100,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol: "ETH", Quantity: fullQty, InitialQuantity: fullQty,
+				AvgCost: entryPx, EntryATR: entryATR, Side: "long",
+				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-tp-sole",
+				TPOIDs: []int64{tp1OID, 222},
+			},
+		},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: onChainQty, EntryPrice: entryPx, Leverage: 5}}
+	resolver := hlReconcileFillResolver(func(_ string, _ int64, qty float64) (HLFillLookup, bool) {
+		if math.Abs(qty-(fullQty-onChainQty)) < 1e-6 {
+			return HLFillLookup{Fee: fillFee, FilledQty: 0.2, Px: fillPx, OID: tp1OID, Count: 1}, true
+		}
+		return HLFillLookup{}, false
+	})
+	logger := newTestLogger(t)
+	if !reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", positions, resolver, logger, nil) {
+		t.Fatal("expected reconcile to return true")
+	}
+	if len(ss.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory = %d, want 1", len(ss.TradeHistory))
+	}
+	pos := ss.Positions["ETH"]
+	if pos == nil {
+		t.Fatal("expected position after partial recovery")
+	}
+	dupResolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
+		if oid == tp1OID {
+			return HLFillLookup{Fee: fillFee, FilledQty: 0.2, Px: fillPx, OID: tp1OID, Count: 1}, true
+		}
+		return HLFillLookup{}, false
+	})
+	if hlAttemptCloseFromTPFills(ss, "ETH", pos, dupResolver, logger, nil) {
+		t.Fatal("hlAttemptCloseFromTPFills should not re-book TP1 after recovery stamped tier consumed")
+	}
+	if len(ss.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory = %d after hlAttempt, want 1 (no duplicate TP1 book)", len(ss.TradeHistory))
 	}
 }
 

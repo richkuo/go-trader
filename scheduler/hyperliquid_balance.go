@@ -290,6 +290,29 @@ func reconcileHyperliquidPositionsForStrategy(
 	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts)
 }
 
+// stampSoleOwnerRecoveryTierConsumed mirrors post-protection-sync state for a
+// tier that tryBookSoleOwnerTPFill attributed via the cycle-ordering recovery
+// path (#758). Without this, pos.TPOIDs[i] stays positive until Python
+// protection-sync runs, and hlAttemptCloseFromTPFills on a later vanish
+// snapshot can book the same TP OID again.
+func stampSoleOwnerRecoveryTierConsumed(s *StrategyState, sym string, tierIdx int) {
+	pos := s.Positions[sym]
+	if pos == nil || tierIdx < 0 {
+		return
+	}
+	n := len(pos.TPOIDs)
+	if tierIdx >= n {
+		return
+	}
+	if len(pos.TPArmedTiers) < n {
+		ext := make([]bool, n)
+		copy(ext, pos.TPArmedTiers)
+		pos.TPArmedTiers = ext
+	}
+	pos.TPOIDs[tierIdx] = 0
+	pos.TPArmedTiers[tierIdx] = true
+}
+
 // tryBookSoleOwnerTPFill is the sole-owner TP attribution helper. Returns true
 // when a TP-tier fill was detected and booked via
 // recordPerpsExternalPartialCloseWithFillFee — covers both the partial-drop
@@ -315,7 +338,12 @@ func reconcileHyperliquidPositionsForStrategy(
 // fills (lookup.OID == pos.StopLossOID) and operator/CB closes (different OID)
 // don't mis-attribute. The booker shrinks pos.Quantity to match on-chain so a
 // later same-cycle protection-sync sees the fill, zeros TPOIDs[i] normally,
-// and the next cycle's reconcile finds no drift — no double-booking.
+// and the next cycle's reconcile finds no drift.
+//
+// Cycle-ordering recovery additionally stamps the consumed tier immediately
+// (#758) so a later vanish reconcile cannot re-book the same TP OID in
+// hlAttemptCloseFromTPFills while pos.TPOIDs[i] would otherwise still be
+// positive until applyHyperliquidProtectionSync runs.
 func tryBookSoleOwnerTPFill(
 	sc StrategyConfig,
 	stratState *StrategyState,
@@ -381,6 +409,7 @@ func tryBookSoleOwnerTPFill(
 	lookup, useFillFee := resolveFee(sym, 0, closeQty)
 	logHyperliquidReconcileFillLookup(logger, sym, 0, closeQty, lookup, useFillFee)
 
+	var soleOwnerRecoveryBook bool
 	tierIdx, hasCleared := hyperliquidClearedTPTier(sc, statePos, closeQty)
 	if !hasCleared {
 		// Cycle-ordering recovery (#672): protection-sync hasn't yet zeroed
@@ -408,10 +437,7 @@ func tryBookSoleOwnerTPFill(
 			return false
 		}
 		tierIdx = matched
-		// Leave pos.TPOIDs[matched] positive — protection-sync's Python
-		// pipeline re-detects the fill via userFills and zeros it through
-		// applyHyperliquidProtectionSync later this cycle (idempotent), which
-		// also feeds the plan-builder's "skip already-filled tiers" logic.
+		soleOwnerRecoveryBook = true
 	}
 
 	tpPrices := tieredTPATRPricesForRegime(sc, statePos.Side, statePos.AvgCost, statePos.EntryATR, statePos.Regime)
@@ -439,6 +465,9 @@ func tryBookSoleOwnerTPFill(
 		exchangeOrderID, "hl_sync_external_partial", logger,
 	) {
 		return false
+	}
+	if soleOwnerRecoveryBook {
+		stampSoleOwnerRecoveryTierConsumed(stratState, sym, tierIdx)
 	}
 
 	remaining := 0.0
