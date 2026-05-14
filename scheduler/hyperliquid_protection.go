@@ -307,10 +307,11 @@ type jsonNumber interface {
 
 // syncHyperliquidProtection is a package var so tests can stub the subprocess
 // call without spawning Python. Production callers use runHyperliquidProtectionSync.
-var syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidProtectionSyncResult, bool) {
+var syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, notifier *MultiNotifier, logger *StrategyLogger, reconcileFillHintsJSON []byte) (*HyperliquidProtectionSyncResult, bool) {
 	result, stderr, err := RunHyperliquidSyncProtection(
 		sc.Script, plan.Symbol, plan.Side, plan.Size, plan.AvgCost, plan.EntryATR,
 		plan.StopLossATRMult, plan.Tiers, plan.StopLossOID, plan.TPOIDs, plan.TPArmedTiers,
+		reconcileFillHintsJSON,
 	)
 	if stderr != "" && logger != nil {
 		logger.Info("protection sync stderr: %s", stderr)
@@ -443,6 +444,7 @@ func runHyperliquidProtectionSync(
 	notifier *MultiNotifier,
 	logger *StrategyLogger,
 	logTag string,
+	reconcileFillHintsJSON []byte,
 ) bool {
 	if stratState == nil || symbol == "" {
 		return false
@@ -457,7 +459,7 @@ func runHyperliquidProtectionSync(
 	if !syncOK {
 		return false
 	}
-	protection, ok := syncHyperliquidProtection(sc, plan, notifier, logger)
+	protection, ok := syncHyperliquidProtection(sc, plan, notifier, logger, reconcileFillHintsJSON)
 	if !ok || protection == nil {
 		return false
 	}

@@ -294,7 +294,7 @@ func TestReconcileHyperliquidAccountPositions_DetectorOneUsesFillFee(t *testing.
 
 	prices := map[string]float64{"BTC": 59000}
 	// nil on-chain positions => Detector 1 fires for both peers.
-	reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, nil, prices, "0xtest", nil, false)
+	_, _ = reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, nil, prices, "0xtest", nil, false)
 
 	ownerSS := state.Strategies["hl-owner"]
 	if _, open := ownerSS.Positions["BTC"]; open {

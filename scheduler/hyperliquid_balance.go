@@ -641,7 +641,8 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 	// PnL falls back to zero (legacy behavior pre-#584).
 	// This entry point is used by --once and tests; alerts are suppressed
 	// since no notifier is plumbed through here.
-	return reconcileHyperliquidAccountPositions(hlStrategies, hlStrategies, state, mu, logMgr, positions, nil, accountAddr, nil, false)
+	changed, _ := reconcileHyperliquidAccountPositions(hlStrategies, hlStrategies, state, mu, logMgr, positions, nil, accountAddr, nil, false)
+	return changed
 }
 
 // reconcileHyperliquidAccountPositions reconciles pre-fetched on-chain positions
@@ -670,12 +671,12 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 // `notify_tp_sl_fills: false`.
 //
 // Must be called WITHOUT holding any lock; acquires Lock internally.
-func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, positions []HLPosition, prices map[string]float64, accountAddress string, notifier *MultiNotifier, notifyTPSLFills bool) bool {
+func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, positions []HLPosition, prices map[string]float64, accountAddress string, notifier *MultiNotifier, notifyTPSLFills bool) (bool, []HyperliquidProtectionFillHint) {
 	// Resolve userFills BEFORE taking mu.Lock(): each lookup can sleep up
 	// to ~1.5s on indexer-lag retries, and holding the write lock blocks
 	// every reader of state (/status, /health, per-strategy phase RLocks).
 	// The resolver itself is a pure map read inside the locked region.
-	resolveFee := buildCachedHyperliquidReconcileFillResolver(accountAddress, allStrategies, state, mu, positions)
+	resolveFee, fillHints := buildCachedHyperliquidReconcileFillResolver(accountAddress, allStrategies, state, mu, positions)
 
 	// pendingAlerts is populated under mu.Lock() at the three protection-fill
 	// detection sites and drained AFTER mu.Unlock() so SendOwnerDM's blocking
@@ -1175,7 +1176,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		}
 	}
 
-	return changed
+	return changed, fillHints
 }
 
 func hyperliquidSharedPartialCloseDrift(virtualQty, onChainQty float64) (string, float64, bool) {
