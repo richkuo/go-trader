@@ -543,7 +543,7 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 			// mis-attributed to the cancelled SL at its trigger price. Match must
 			// be by exact OID; the coin+size fallback can spuriously hit a TP
 			// fill of the same size.
-			slConfirmed := useFillFee && lookup.OID == statePos.StopLossOID && lookup.FilledQty > 1e-9
+			slConfirmed := hlReconcileSLFillConfirmed(lookup, useFillFee, statePos.StopLossOID)
 			if slConfirmed {
 				// #621: When userFills returned a real fill qty smaller than the virtual
 				// position (e.g. SL was placed at the on-chain size after a manual TP
@@ -840,14 +840,16 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 							}
 							pos.Quantity = lookup.FilledQty
 						}
+						// Snapshot alertSide/alertQty/alertTriggerPx before
+						// recordPerpsStopLossCloseWithFillFee mutates state.
+						// lastBookedTradePnL relies on the just-completed RecordTrade
+						// inside the booker; do not insert another RecordTrade between
+						// here and pendingAlerts append.
 						alertSide := pos.Side
 						alertQty := pos.Quantity
 						alertTriggerPx := pos.StopLossTriggerPx
 						if recordPerpsStopLossCloseWithFillFee(ss, coin, pos.StopLossTriggerPx, lookup.Fee, useFillFee, oidStr, "hl_sync_stop_loss", logger) {
 							changed = true
-							// lastBookedTradePnL relies on the just-completed
-							// RecordTrade inside the booker; do not insert another
-							// RecordTrade between here and the booker call.
 							pendingAlerts = append(pendingAlerts, ProtectionFillAlert{
 								StrategyID:      id,
 								Symbol:          coin,
@@ -962,6 +964,11 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 								}
 								slOwnerPos.Quantity = lookup.FilledQty
 							}
+							// Snapshot alertSide/alertQty/alertTriggerPx before
+							// recordPerpsStopLossCloseWithFillFee mutates state.
+							// lastBookedTradePnL relies on the just-completed RecordTrade
+							// inside the booker; do not insert another RecordTrade between
+							// here and pendingAlerts append.
 							alertSide := slOwnerPos.Side
 							alertQty := slOwnerPos.Quantity
 							alertTriggerPx := slOwnerPos.StopLossTriggerPx
@@ -969,9 +976,6 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 								changed = true
 								virtualQty = expectedResidual
 								delta = virtualQty - onChainQty
-								// lastBookedTradePnL relies on the just-completed
-								// RecordTrade inside the booker; do not insert another
-								// RecordTrade between here and the booker call.
 								pendingAlerts = append(pendingAlerts, ProtectionFillAlert{
 									StrategyID:      slOwnerID,
 									Symbol:          coin,

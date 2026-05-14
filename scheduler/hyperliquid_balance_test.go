@@ -1503,6 +1503,72 @@ func TestReconcileSharedCoin_Detector1_WrongOIDInUserfillsBooksExternal(t *testi
 	}
 }
 
+// TestReconcileSharedCoin_Detector2_WrongOIDInUserfillsBooksExternal mirrors
+// TestReconcileSharedCoin_Detector1_WrongOIDInUserfillsBooksExternal for
+// Detector 2 (SL-owner partial): on-chain residual matches peer-only geometry
+// but userFills returns a non-matching OID for the SL query — must not book
+// hl_sync_stop_loss at the trigger (#756).
+func TestReconcileSharedCoin_Detector2_WrongOIDInUserfillsBooksExternal(t *testing.T) {
+	const mark = 3020.0
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: 1000, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
+						StopLossOID: 4242, StopLossTriggerPx: 2900},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: 500, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+	scs := []StrategyConfig{
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000, Leverage: 10}}
+	prices := map[string]float64{"ETH": mark}
+
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, coin string, oid int64, qty float64) (HLFillLookup, bool) {
+		if oid == 4242 {
+			return HLFillLookup{Fee: 0.1, FilledQty: 1.0, Count: 1, OID: 9999}, true
+		}
+		_ = coin
+		_ = qty
+		return HLFillLookup{}, false
+	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, positions, prices, "0xtest", nil, false)
+
+	owner := state.Strategies["hl-owner-eth"]
+	if len(owner.ClosedPositions) != 1 {
+		t.Fatalf("owner ClosedPositions = %d, want 1", len(owner.ClosedPositions))
+	}
+	if owner.ClosedPositions[0].CloseReason != "hl_sync_external" {
+		t.Errorf("owner CloseReason = %q, want hl_sync_external (wrong userFills OID)", owner.ClosedPositions[0].CloseReason)
+	}
+	if owner.ClosedPositions[0].ClosePrice != mark {
+		t.Errorf("owner ClosePrice = %v, want mark %v", owner.ClosedPositions[0].ClosePrice, mark)
+	}
+
+	peer := state.Strategies["hl-peer-eth"]
+	p := peer.Positions["ETH"]
+	if p == nil || math.Abs(p.Quantity-0.5) > 1e-9 || p.Side != "long" {
+		t.Errorf("peer ETH = %+v, want 0.5 long unchanged", p)
+	}
+}
+
 func TestReconcileSharedCoin_TPPartialFill_DecrementsOwnerAndBooksPnL(t *testing.T) {
 	const ownerStartCash = 1000.0
 	const ownerQty = 0.5
