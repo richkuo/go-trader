@@ -18,6 +18,7 @@ if [[ -f .env ]]; then
   set +a
 fi
 ./go-trader --config scheduler/config.json "$@" &
+# update.sh verify/rollback poll the pidfile until HEALTH_TIMEOUT — no need to sync before echo.
 echo $! >"$PIDFILE"
 wait
 EOS

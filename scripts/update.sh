@@ -92,6 +92,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [--restart] [--restart-mode systemd|signal] [--unit <systemd-unit>]"
             echo "       $0 [--restart] [--service <systemd-unit>]"
             echo "       $0 --all [--restart] [--restart-mode systemd|signal] [--update-all-root <dir>] [...]"
+            echo "  With --all + systemd: each child inherits GO_TRADER_SERVICE — set per-worktree env if units differ."
             echo "  RESTART=1 env var also enables restart."
             echo "  RESTART_MODE=signal requires Linux, GO_TRADER_RUN_SH, GO_TRADER_PIDFILE (see #766)."
             echo ""
@@ -206,6 +207,7 @@ signal_launch_wrapper() {
     fi
     # Detach like a normal nohup deployment; wrapper must write GO_TRADER_PIDFILE with the trader PID.
     setsid nohup bash "$run_sh" >>"$signal_log_out" 2>&1 &
+    # Brief yield only; pidfile freshness is enforced by verify / rollback polls (not this sleep).
     sleep 1
 }
 
@@ -329,7 +331,7 @@ do_rollback() {
 
 verify_cur_restart_pid() {
     if [[ "$restart_mode" == "signal" ]]; then
-        signal_read_pidfile "$go_trader_pidfile" || printf ''
+        signal_read_pidfile "$go_trader_pidfile" || true
     else
         local p
         p=$(systemctl show -p MainPID --value "$service_unit" 2>/dev/null || echo "")
@@ -499,12 +501,8 @@ if [[ "$restart" == "1" && "$restart_mode" == "signal" ]]; then
     if [[ -n "$proc_cwd" && -n "$repo_abs" && "$proc_cwd" != "$repo_abs" ]]; then
         echo "[update] signal: warning: process cwd ($proc_cwd) != repo root ($repo_abs)" >&2
     fi
-elif [[ "$restart" == "1" ]]; then
-    prev_main_pid=$(systemctl show -p MainPID --value "$service_unit" 2>/dev/null || echo "")
-    if [[ "$prev_main_pid" == "0" ]]; then
-        prev_main_pid=""
-    fi
 else
+    # systemd MainPID (or best-effort when --restart off — same capture for restart=0 vs systemd restart=1)
     prev_main_pid=$(systemctl show -p MainPID --value "$service_unit" 2>/dev/null || echo "")
     if [[ "$prev_main_pid" == "0" ]]; then
         prev_main_pid=""
