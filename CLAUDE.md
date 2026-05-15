@@ -106,7 +106,7 @@
 - Reference issue with `Closes #<N>` in body. In GitHub comments avoid `#N` for list items (auto-links); use `1.`.
 - Fetch latest bot review: `gh api repos/richkuo/go-trader/issues/<N>/comments --jq '[.[] | select(.user.login=="claude[bot]")] | last | .body'` (top-level summary lives on issues endpoint, not pulls).
 - Before merging long-running PR: `git fetch origin main && git diff origin/main..HEAD -- <paths>` catches silent reverts.
-- Replace default Claude Code footer with `LLM: <model> | <effort> | Harness: <action>`. No `Co-Authored-By`.
+- **Commits and PR bodies:** end with `LLM: <model> | <effort> | Harness: <action>` (same line as the default Claude Code footer slot). Do **not** append `Co-authored-by: Cursor <cursoragent@cursor.com>` or any other `Co-authored-by:` / `Co-Authored-By` trailer.
 
 ### PR review format (`@claude review`)
 Top-level review comment is one of two shapes — no preamble, no closing:

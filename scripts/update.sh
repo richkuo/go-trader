@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Atomic update with pre-flight probe, staging build, atomic binary swap,
-# post-restart verification, and rollback (#682).
+# post-restart verification, and rollback (#682). #764: extra go(1) lookup
+# paths + ExecStart vs swap-target warning before systemd restart.
 #
 # Phases:
 #   preflight  — git/uv/go sanity checks
@@ -70,6 +71,8 @@ while [[ $# -gt 0 ]]; do
             echo "  STATUS_PORT=<n>          override /health port (default: read from config, else 8099)"
             echo "  ACTIVE_TIMEOUT=<sec>     systemctl is-active poll timeout (default: 30)"
             echo "  HEALTH_TIMEOUT=<sec>     /health version-match poll timeout (default: 60)"
+            echo ""
+            echo "Go is resolved from: PATH, then /opt/homebrew/bin/go, then /usr/local/go/bin/go"
             exit 0
             ;;
         *)
@@ -123,8 +126,10 @@ if command -v go >/dev/null 2>&1; then
     go_bin=$(command -v go)
 elif [[ -x /opt/homebrew/bin/go ]]; then
     go_bin=/opt/homebrew/bin/go
+elif [[ -x /usr/local/go/bin/go ]]; then
+    go_bin=/usr/local/go/bin/go
 else
-    fail "go not on PATH and /opt/homebrew/bin/go missing"
+    fail "go not on PATH and not found at /opt/homebrew/bin/go or /usr/local/go/bin/go"
 fi
 
 repo_root=$(git rev-parse --show-toplevel)
@@ -292,6 +297,62 @@ except Exception:
 fi
 status_port="${status_port:-8099}"
 
+# Primary executable path from systemctl ExecStart= payload (#764).
+# Handles both argv form (/path/bin --flags) and structured ({ path=/path/bin ; argv[]=... }).
+execstart_main_binary() {
+    local raw="$1"
+    raw="${raw//$'\n'/ }"
+    if [[ "$raw" == \{*path=* ]]; then
+        local p="${raw#*path=}"
+        p="${p%% ;*}"
+        printf '%s' "$p"
+        return 0
+    fi
+    local b="${raw%% *}"
+    b="${b#\"}"
+    b="${b%\"}"
+    printf '%s' "$b"
+}
+
+update_canonicalize_path() {
+    local p="$1"
+    if [[ "$p" != /* ]]; then
+        printf '%s' "$p"
+        return 0
+    fi
+    if command -v realpath >/dev/null 2>&1; then
+        if rp=$(realpath "$p" 2>/dev/null); then
+            printf '%s' "$rp"
+            return 0
+        fi
+    fi
+    if rp=$(readlink -f "$p" 2>/dev/null); then
+        printf '%s' "$rp"
+        return 0
+    fi
+    printf '%s' "$p"
+}
+
+# Warn when the unit's ExecStart binary is not the repo-root ./go-trader this script swapped (#764).
+warn_execstart_vs_swap() {
+    local unit="$1"
+    local exec_line binary swap_abs bin_abs swap_res
+    exec_line=$(systemctl show -p ExecStart --value "$unit" 2>/dev/null | head -n 1 || true)
+    [[ -n "$exec_line" ]] || return 0
+    binary=$(execstart_main_binary "$exec_line")
+    [[ -n "$binary" ]] || return 0
+    swap_abs="$(pwd)/go-trader"
+    if [[ "$binary" != /* ]]; then
+        echo "[update] warning: $unit ExecStart does not start with an absolute binary path ($binary); verify manually." >&2
+        return 0
+    fi
+    bin_abs=$(update_canonicalize_path "$binary")
+    swap_res=$(update_canonicalize_path "$swap_abs")
+    if [[ "$bin_abs" != "$swap_res" ]]; then
+        echo "[update] warning: $unit ExecStart binary resolves to ($bin_abs) but this script swapped ($swap_res); restart may not run the binary just installed. Check: systemctl cat $unit | grep ExecStart" >&2
+    fi
+}
+
 # Rollback function — restores the previous binary AND reverts the git tree
 # + Python deps so the .prev binary's startup probe sees the Python contract
 # it was built against (#682). Called from trap on any post-swap failure
@@ -337,6 +398,8 @@ do_rollback() {
     done
     echo "[update] rollback: previous binary did not reach active within ${active_timeout}s" >&2
 }
+
+warn_execstart_vs_swap "$service_unit"
 
 begin_phase restart
 sudo systemctl restart "$service_unit"
