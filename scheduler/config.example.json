@@ -59,6 +59,28 @@
       "capital": 1000,
       "max_drawdown_pct": 50,
       "interval_seconds": 900
+    },
+    {
+      "id": "phemex-momentum-btc",
+      "type": "perps",
+      "script": "shared_scripts/check_phemex.py",
+      "args": ["momentum", "BTC", "1h", "--mode=paper"],
+      "capital": 1000,
+      "max_drawdown_pct": 50,
+      "interval_seconds": 3600,
+      "leverage": 1,
+      "sizing_leverage": 1
+    },
+    {
+      "id": "phemex-breakout-eth",
+      "type": "perps",
+      "script": "shared_scripts/check_phemex.py",
+      "args": ["breakout", "ETH", "1h", "--mode=paper"],
+      "capital": 1000,
+      "max_drawdown_pct": 50,
+      "interval_seconds": 3600,
+      "leverage": 1,
+      "sizing_leverage": 1
     }
   ],
   "leaderboard_post_time": "11:00",
