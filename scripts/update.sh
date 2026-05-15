@@ -66,6 +66,17 @@ while [[ $# -gt 0 ]]; do
             update_all=1
             shift
             ;;
+        --update-all-root)
+            if [[ $# -lt 2 ]]; then
+                echo "$1 requires a directory path" >&2
+                exit 2
+            fi
+            # Value is applied when processing --all from orig_argv (must parse here so argv is not rejected).
+            shift 2
+            ;;
+        --update-all-root=*)
+            shift
+            ;;
         --unit|--service)
             if [[ $# -lt 2 ]]; then
                 echo "$1 requires a systemd unit name" >&2
@@ -590,7 +601,7 @@ else
     if [[ -n "$prev_main_pid" ]] && kill -0 "$prev_main_pid" 2>/dev/null; then
         echo "[update] signal: SIGTERM old trader pid=$prev_main_pid" >&2
         kill -TERM "$prev_main_pid" 2>/dev/null || true
-        signal_wait_pid_exit "$prev_main_pid" "pre-swap-trader"
+        signal_wait_pid_exit "$prev_main_pid" "post-swap-old-trader"
     else
         echo "[update] signal: old pid not running before respawn — launching wrapper" >&2
     fi
