@@ -31,21 +31,38 @@ META_CACHE_PATH = "/tmp/hl_meta.json"
 META_CACHE_TTL_S = 3600  # 60 minutes
 
 # SDK imports: defer to avoid module-level ImportError when SDK not installed.
-# adapter.py is loaded with platforms/hyperliquid/ directly in sys.path (not platforms/),
-# so `from hyperliquid.info import Info` resolves to the SDK package (site-packages),
-# not this local directory.
+# adapter.py is loaded with platforms/hyperliquid/ directly in sys.path (not
+# platforms/), so `from hyperliquid.info import Info` resolves to the SDK
+# package (site-packages), not this local directory.
+#
+# Info + Exchange are load-bearing — if either fails to import the adapter is
+# unusable. API + ClientError power the cache-miss fetch and 429 short-circuit
+# respectively; we degrade them gracefully in their own try blocks so a future
+# SDK reshuffle of those submodules doesn't take the whole adapter dark when
+# the core Info/Exchange surface is still intact (PR #769 review point 3).
 try:
     from hyperliquid.info import Info as _HLInfo
     from hyperliquid.exchange import Exchange as _HLExchange
-    from hyperliquid.api import API as _HLAPI
-    from hyperliquid.utils.error import ClientError as _HLClientError
     _SDK_AVAILABLE = True
 except ImportError:
     _HLInfo = None
     _HLExchange = None
-    _HLAPI = None
-    _HLClientError = Exception  # fall back so isinstance checks remain valid
     _SDK_AVAILABLE = False
+
+try:
+    from hyperliquid.api import API as _HLAPI
+except ImportError:
+    _HLAPI = None  # _build_info falls back to letting Info's constructor fetch
+
+try:
+    from hyperliquid.utils.error import ClientError as _HLClientError
+except ImportError:
+    # ClientError is what we match for HTTP 429 in lookup_fill_fee_by_oid.
+    # When absent, fall back to a sentinel that never matches a real HL
+    # error, so the 429 short-circuit silently degrades to the original
+    # retry path rather than catching unrelated exceptions.
+    class _HLClientError(Exception):
+        pass
 
 
 def _safe_float(v) -> float:
@@ -166,8 +183,13 @@ def _fetch_raw_meta(base_url: str):
     """POST /info {type:spotMeta} + {type:meta} via the SDK's API base class.
 
     Returns (spot_meta, meta) — same raw shape the SDK's Info constructor
-    consumes when passed via meta=/spot_meta= kwargs. Errors bubble.
+    consumes when passed via meta=/spot_meta= kwargs. Errors bubble. Raises
+    RuntimeError when the SDK's API class isn't importable so callers fall
+    back to letting the SDK's Info constructor do the fetch (preserves the
+    pre-#768 path).
     """
+    if _HLAPI is None:
+        raise RuntimeError("hyperliquid.api.API unavailable; cannot prefetch meta")
     api = _HLAPI(base_url=base_url)
     spot_meta = api.post("/info", {"type": "spotMeta"})
     meta = api.post("/info", {"type": "meta", "dex": ""})
@@ -197,6 +219,11 @@ class HyperliquidExchangeAdapter:
         self._info = self._build_info(base_url, allow_cache=True)
         self._account_address = addr
         self._exchange = None
+        # Symbols we've already refreshed meta for and still couldn't find —
+        # capped at one /info refresh per missing symbol per subprocess
+        # lifetime, otherwise a typo or delisted asset would re-fetch meta
+        # on every order operation. (PR #769 review point 2.)
+        self._sz_decimals_misses: set[str] = set()
 
         if secret:
             try:
@@ -253,15 +280,22 @@ class HyperliquidExchangeAdapter:
         """
         if self._info is not None and symbol in self._info.asset_to_sz_decimals:
             return self._info.asset_to_sz_decimals[symbol]
+        # Already tried to refresh for this symbol earlier in this subprocess
+        # and still couldn't find it — typo or genuinely unlisted asset; the
+        # cached universe will not save us. Skip the redundant /info calls.
+        if symbol in self._sz_decimals_misses:
+            return 3
         # Symbol missing — could be a stale cached universe. Refresh once.
         try:
             self._info = self._build_info(self._base_url, allow_cache=False)
         except Exception as exc:
             print(f"[WARN] hl meta refresh failed for {symbol}: {exc}", file=sys.stderr)
+            self._sz_decimals_misses.add(symbol)
             return 3
         if self._info is not None and symbol in self._info.asset_to_sz_decimals:
             return self._info.asset_to_sz_decimals[symbol]
         print(f"[WARN] sz_decimals not found for {symbol} after refresh, defaulting to 3", file=sys.stderr)
+        self._sz_decimals_misses.add(symbol)
         return 3
 
     @property

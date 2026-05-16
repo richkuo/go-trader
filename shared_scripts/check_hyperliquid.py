@@ -1187,7 +1187,11 @@ def main():
                             help="on-chain leverage observed in Go's clearinghouseState snapshot; when paired with --account-margin-mode lets Python skip the duplicate get_position_leverage /info call (#768)")
         parser.add_argument("--account-margin-mode", default="",
                             help="on-chain margin mode observed in Go's clearinghouseState snapshot; see --account-leverage (#768)")
+        parser.add_argument("--probe-only", action="store_true",
+                            help="Startup compatibility probe (PR #769): validate execute-mode argv shape — including --account-leverage / --account-margin-mode — and exit 0 without trading.")
         args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
         if not args.close_full_position and args.size <= 0:
             print(json.dumps({"error": "--size must be > 0 unless --close-full-position is set"}))
             sys.exit(1)

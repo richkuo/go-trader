@@ -262,6 +262,44 @@ def test_sz_decimals_refreshes_on_missing_symbol(adapter_mod, monkeypatch):
     assert a._info is refreshed
 
 
+def test_sz_decimals_caches_misses_to_avoid_repeat_refresh(adapter_mod, monkeypatch):
+    """A typo'd or genuinely-unlisted symbol must only trigger one meta
+    refresh per subprocess. Without the miss cache, every subsequent
+    order/round/floor call would fire 2 fresh /info calls — exactly the
+    burst behavior #768 set out to eliminate. (PR #769 review point 2.)
+    """
+    monkeypatch.setattr(adapter_mod, "_load_meta_cache",
+                        lambda *a, **kw: (
+                            {"universe": [], "tokens": []},
+                            {"universe": [{"name": "BTC", "szDecimals": 5}]},
+                        ))
+    a = adapter_mod.HyperliquidExchangeAdapter()
+    a._info = MagicMock()
+    a._info.asset_to_sz_decimals = {"BTC": 5}
+
+    refresh_calls = {"n": 0}
+
+    def fake_build(base_url, allow_cache):
+        refresh_calls["n"] += 1
+        refreshed = MagicMock()
+        # Refresh doesn't bring UNLISTED in — typo or delisted.
+        refreshed.asset_to_sz_decimals = {"BTC": 5}
+        return refreshed
+
+    monkeypatch.setattr(a, "_build_info", fake_build)
+
+    # First call: refresh fires, miss is recorded.
+    assert a._sz_decimals("UNLISTED") == 3
+    assert refresh_calls["n"] == 1
+    # Subsequent calls: short-circuit on the recorded miss, no more refreshes.
+    for _ in range(5):
+        assert a._sz_decimals("UNLISTED") == 3
+    assert refresh_calls["n"] == 1
+    # And a different missing symbol still gets its one refresh.
+    assert a._sz_decimals("ALSOUNLISTED") == 3
+    assert refresh_calls["n"] == 2
+
+
 def test_sz_decimals_returns_3_when_still_missing_after_refresh(adapter_mod, monkeypatch):
     monkeypatch.setattr(adapter_mod, "_load_meta_cache",
                         lambda *a, **kw: (

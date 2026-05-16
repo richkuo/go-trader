@@ -132,10 +132,11 @@ func TestProbeIgnoresEmptyScripts(t *testing.T) {
 	}
 }
 
-// TestProbeRunsFetchATRForHL verifies the second --fetch-atr probe (#689) is
-// dispatched only for check_hyperliquid.py. Stubs probeOneCheckScriptFn to
-// record argv shapes per script without requiring a real .venv.
-func TestProbeRunsFetchATRForHL(t *testing.T) {
+// TestProbeRunsExtraArgvForHL verifies the extra --fetch-atr (#689) and
+// --execute (PR #769) probes are dispatched only for check_hyperliquid.py.
+// Stubs probeOneCheckScriptFn to record argv shapes per script without
+// requiring a real .venv.
+func TestProbeRunsExtraArgvForHL(t *testing.T) {
 	orig := probeOneCheckScriptFn
 	defer func() { probeOneCheckScriptFn = orig }()
 	calls := map[string][]string{}
@@ -144,6 +145,10 @@ func TestProbeRunsFetchATRForHL(t *testing.T) {
 		for _, a := range argv {
 			if a == "--fetch-atr" {
 				mode = "fetch-atr"
+				break
+			}
+			if a == "--execute" {
+				mode = "execute"
 				break
 			}
 		}
@@ -160,8 +165,8 @@ func TestProbeRunsFetchATRForHL(t *testing.T) {
 		t.Fatalf("probe failed: %v", err)
 	}
 	hl := calls["shared_scripts/check_hyperliquid.py"]
-	if len(hl) != 2 || hl[0] != "signal" || hl[1] != "fetch-atr" {
-		t.Errorf("HL should be probed signal+fetch-atr, got %v", hl)
+	if len(hl) != 3 || hl[0] != "signal" || hl[1] != "fetch-atr" || hl[2] != "execute" {
+		t.Errorf("HL should be probed signal+fetch-atr+execute, got %v", hl)
 	}
 	spot := calls["shared_scripts/check_strategy.py"]
 	if len(spot) != 1 || spot[0] != "signal" {
