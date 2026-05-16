@@ -22,6 +22,31 @@ type HLPosition struct {
 	Size       float64 // signed: positive = long, negative = short
 	EntryPrice float64
 	Leverage   float64 // on-chain leverage value (#254)
+	MarginMode string  // "isolated" | "cross" — forwarded to Python so it can skip a duplicate /info call (#768)
+}
+
+// hlExecuteSnapshotForCoin extracts the cycle-local on-chain leverage + margin
+// mode for “coin“ from the Phase 1 clearinghouseState snapshot. Returns a
+// zero-valued snapshot when “coin“ has no open position (the wallet only
+// reports leverage for assets with non-zero size), in which case Python falls
+// back to its own get_position_leverage call (#768 fix #4).
+func hlExecuteSnapshotForCoin(positions []HLPosition, coin string) hlExecuteSnapshot {
+	if coin == "" {
+		return hlExecuteSnapshot{}
+	}
+	for _, p := range positions {
+		if p.Coin != coin {
+			continue
+		}
+		if p.Leverage < 1 || (p.MarginMode != "isolated" && p.MarginMode != "cross") {
+			return hlExecuteSnapshot{}
+		}
+		return hlExecuteSnapshot{
+			AccountLeverage:   int(p.Leverage),
+			AccountMarginMode: p.MarginMode,
+		}
+	}
+	return hlExecuteSnapshot{}
 }
 
 // hlReconcileSLFillConfirmed mirrors the #685 sole-owner vanish gate for
@@ -221,11 +246,21 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 				lev = parsed
 			}
 		}
+		// #768: also capture the margin-mode label so Python can skip its
+		// duplicate get_position_leverage /info call on --execute. HL returns
+		// "isolated" or "cross"; any other value is ignored (Python falls
+		// through to today's fetch path).
+		mode := ""
+		switch ap.Position.Leverage.Type {
+		case "isolated", "cross":
+			mode = ap.Position.Leverage.Type
+		}
 		positions = append(positions, HLPosition{
 			Coin:       ap.Position.Coin,
 			Size:       szi,
 			EntryPrice: entryPx,
 			Leverage:   lev,
+			MarginMode: mode,
 		})
 	}
 

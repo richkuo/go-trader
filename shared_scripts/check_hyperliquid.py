@@ -99,7 +99,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      close_strategies=None,
                      position_side="", position_ctx=None,
                      regime_enabled=False, regime_period=14, regime_adx_threshold=20.0,
-                     close_params_by_name=None):
+                     close_params_by_name=None,
+                     mark_price=0.0):
     """Run strategy signal check using Hyperliquid OHLCV data."""
     try:
         from adapter import HyperliquidExchangeAdapter
@@ -229,13 +230,21 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             decision = finalize_decision(evaluation, position_side, signal)
             signal = decision["signal"]
 
-        # Freshen price with live mid if available
-        try:
-            mid = adapter.get_spot_price(symbol)
-            if mid > 0:
-                price = mid
-        except Exception:
-            pass
+        # Freshen price with live mid if available. Go fetches /info allMids
+        # once per cycle (fetchHyperliquidMids) and forwards the mid via
+        # --mark-price so this subprocess can skip its own /info call (#768
+        # fix #3). Zero staleness risk: same source, seconds old, used only
+        # to freshen the display price in the output JSON. Fall back to
+        # adapter.get_spot_price when the flag is absent.
+        if mark_price and mark_price > 0:
+            price = mark_price
+        else:
+            try:
+                mid = adapter.get_spot_price(symbol)
+                if mid > 0:
+                    price = mid
+            except Exception:
+                pass
 
         indicators = {}
         skip_cols = {
@@ -695,7 +704,7 @@ def run_sync_protection(
         sys.exit(1)
 
 
-def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0, close_full_position=False):
+def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0, close_full_position=False, account_leverage=0, account_margin_mode=""):
     """Place a live market order on Hyperliquid, optionally wrapping it with
     a stop-loss trigger (open) or cancelling a stale SL trigger (close).
 
@@ -755,14 +764,25 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
                 }, cls=SafeEncoder))
                 sys.exit(1)
             current = None
-            try:
-                current = adapter.get_position_leverage(symbol)
-            except Exception as ce:
-                # Don't fail-closed on a state-fetch hiccup — the
-                # update_leverage call below will fail loudly if the on-chain
-                # state actually disagrees, preserving the original safety
-                # behavior. We still log so the cause is debuggable.
-                print(f"[WARN] get_position_leverage({symbol}) failed: {ce}; will call update_leverage", file=sys.stderr)
+            # Go pulls clearinghouseState once per cycle (fetchHyperliquidState)
+            # and forwards the per-coin leverage + margin mode via
+            # --account-leverage / --account-margin-mode (#768 fix #4). When
+            # provided, skip get_position_leverage entirely — the snapshot is
+            # the same /info endpoint Python would call. Zero staleness risk:
+            # this subprocess runs in the same cycle Go produced the snapshot,
+            # and update_leverage failures still trip the original fail-loud
+            # safety path below.
+            if account_leverage and account_margin_mode in ("isolated", "cross"):
+                current = {"margin_mode": account_margin_mode, "leverage": int(account_leverage)}
+            else:
+                try:
+                    current = adapter.get_position_leverage(symbol)
+                except Exception as ce:
+                    # Don't fail-closed on a state-fetch hiccup — the
+                    # update_leverage call below will fail loudly if the on-chain
+                    # state actually disagrees, preserving the original safety
+                    # behavior. We still log so the cause is debuggable.
+                    print(f"[WARN] get_position_leverage({symbol}) failed: {ce}; will call update_leverage", file=sys.stderr)
             if current is not None and current.get("margin_mode") == margin_mode and current.get("leverage") == int(leverage):
                 print(f"update_leverage({symbol}, {leverage}x, mode={margin_mode}) SKIPPED (HL state already matches)", file=sys.stderr)
             else:
@@ -1163,6 +1183,10 @@ def main():
                             help="enforce 'isolated' or 'cross' margin via update_leverage before the order; only safe on a fresh open from flat (#486)")
         parser.add_argument("--leverage", type=float, default=0.0,
                             help="leverage to set alongside --margin-mode (HL update_leverage takes both in one call) (#486)")
+        parser.add_argument("--account-leverage", type=int, default=0,
+                            help="on-chain leverage observed in Go's clearinghouseState snapshot; when paired with --account-margin-mode lets Python skip the duplicate get_position_leverage /info call (#768)")
+        parser.add_argument("--account-margin-mode", default="",
+                            help="on-chain margin mode observed in Go's clearinghouseState snapshot; see --account-leverage (#768)")
         args = parser.parse_args()
         if not args.close_full_position and args.size <= 0:
             print(json.dumps({"error": "--size must be > 0 unless --close-full-position is set"}))
@@ -1171,7 +1195,9 @@ def main():
                     stop_loss_pct=args.stop_loss_pct, cancel_oid=args.cancel_stop_loss_oid,
                     prev_pos_qty=args.prev_pos_qty,
                     margin_mode=args.margin_mode, leverage=args.leverage,
-                    close_full_position=args.close_full_position)
+                    close_full_position=args.close_full_position,
+                    account_leverage=args.account_leverage,
+                    account_margin_mode=args.account_margin_mode)
     else:
         # Signal check mode: <strategy> <symbol> <timeframe> [--mode=paper|live] [--htf-filter]
         import argparse
@@ -1196,6 +1222,8 @@ def main():
         parser.add_argument("--position-initial-qty", type=float, default=None)
         parser.add_argument("--position-entry-atr", type=float, default=None)
         parser.add_argument("--position-regime", default="")
+        parser.add_argument("--mark-price", type=float, default=0.0,
+            help="Optional mid from Go's fetchHyperliquidMids cycle; when >0 skips adapter.get_spot_price's duplicate /info allMids call (#768).")
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#645): validate argv shape and exit 0.")
         args = parser.parse_args()
@@ -1217,6 +1245,7 @@ def main():
             regime_period=args.regime_period,
             regime_adx_threshold=args.regime_adx_threshold,
             close_params_by_name=close_params_by_name,
+            mark_price=args.mark_price,
         )
 
 

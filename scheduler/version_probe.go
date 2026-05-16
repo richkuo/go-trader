@@ -29,6 +29,10 @@ import (
 var probeArgv = []string{
 	"probe", "BTC", "1h",
 	"--strategy-refs", `{"open":{"name":"probe","params":{}},"closes":[{"name":"probe_close","params":{}}]}`,
+	// #768: new Go forwards --mark-price on every HL signal-check; probe it
+	// so a stale Python that doesn't accept the flag fails startup loudly
+	// instead of every cycle's argparse rejecting the cycle's argv.
+	"--mark-price=0",
 	"--probe-only",
 }
 

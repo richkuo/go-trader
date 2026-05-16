@@ -1583,7 +1583,13 @@ func main() {
 								runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
-								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlReconcileAll, notifier, logger)
+								// #768 fix #4: Forward Go's clearinghouseState
+								// snapshot for this coin so Python can skip its
+								// duplicate get_position_leverage /info call.
+								// Only meaningful when a peer/prior position
+								// has the leverage already pinned on-chain.
+								walletSnapshot := hlExecuteSnapshotForCoin(hlPositions, result.Symbol)
+								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, notifier, logger)
 								if ok2 {
 									execResult = er
 								} else {
@@ -1698,7 +1704,7 @@ func main() {
 								}
 								execResult, execStderr, execErr := RunHyperliquidExecute(
 									sc.Script, sc.Symbol, closeSide, closeQty,
-									0, cancelOID, 0, "", 0, closeFullPosition, extraCancelOIDs...,
+									0, cancelOID, 0, "", 0, closeFullPosition, hlExecuteSnapshot{}, extraCancelOIDs...,
 								)
 								if execStderr != "" {
 									logger.Info("HL manual close stderr: %s", execStderr)
@@ -2457,6 +2463,14 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, posCtx Po
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
 	}
+	// #768 fix #3: Forward Go's cycle-local allMids snapshot so Python skips
+	// its duplicate adapter.get_spot_price /info call. Same source, seconds
+	// old, used only to freshen the display price.
+	if sym := hyperliquidSymbol(sc.Args); sym != "" {
+		if mid, ok := prices[sym]; ok && mid > 0 {
+			args = append(args, fmt.Sprintf("--mark-price=%g", mid))
+		}
+	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
 
 	result, stderr, err := RunHyperliquidCheck(sc.Script, args)
@@ -2529,7 +2543,7 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 // Trade record, leaving state silently behind actual exchange holdings. See
 // issue #298 — 0.716 ETH of live fills were lost this way because the
 // "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
-func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	directionEnum := EffectiveDirection(sc)
 	if reason := PerpsOrderSkipReason(result.Signal, posSide, directionEnum); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
@@ -2641,7 +2655,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	} else if result.CloseFraction == 1.0 {
 		logger.Info("Final-tier close %s shares coin with HL perps peers — using sized close to preserve peer exposure", result.Symbol)
 	}
-	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen, closeFullPosition, extraCancelOIDs...)
+	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen, closeFullPosition, walletSnapshot, extraCancelOIDs...)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}

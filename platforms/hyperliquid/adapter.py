@@ -10,14 +10,25 @@ Environment variables:
     HYPERLIQUID_TESTNET=1        — use testnet instead of mainnet
 """
 
+import json
 import math
 import os
 import sys
-from decimal import Decimal, ROUND_DOWN
+import tempfile
 import time
+from decimal import Decimal, ROUND_DOWN
 
 MAINNET_URL = "https://api.hyperliquid.xyz"
 TESTNET_URL = "https://api.hyperliquid-testnet.xyz"
+
+# /info `spotMeta` + `meta` rarely change (HL lists new coins on the order of
+# weeks). The SDK's Info constructor re-fetches both on every instantiation,
+# which costs 4 /info calls per scheduler cycle (signal-check + sync-protection
+# each spawn a subprocess). Cache the raw responses to disk and pass them into
+# Info(..., meta=..., spot_meta=...) on cache hit so the SDK skips the network
+# call entirely (#768).
+META_CACHE_PATH = "/tmp/hl_meta.json"
+META_CACHE_TTL_S = 3600  # 60 minutes
 
 # SDK imports: defer to avoid module-level ImportError when SDK not installed.
 # adapter.py is loaded with platforms/hyperliquid/ directly in sys.path (not platforms/),
@@ -26,10 +37,14 @@ TESTNET_URL = "https://api.hyperliquid-testnet.xyz"
 try:
     from hyperliquid.info import Info as _HLInfo
     from hyperliquid.exchange import Exchange as _HLExchange
+    from hyperliquid.api import API as _HLAPI
+    from hyperliquid.utils.error import ClientError as _HLClientError
     _SDK_AVAILABLE = True
 except ImportError:
     _HLInfo = None
     _HLExchange = None
+    _HLAPI = None
+    _HLClientError = Exception  # fall back so isinstance checks remain valid
     _SDK_AVAILABLE = False
 
 
@@ -82,6 +97,83 @@ def _floor_size(sz: float, sz_decimals: int) -> float:
     return float(Decimal(str(sz)).quantize(quant, rounding=ROUND_DOWN))
 
 
+def _load_meta_cache(path: str = META_CACHE_PATH, ttl_s: int = META_CACHE_TTL_S, now: float = None):
+    """Return (spot_meta, meta) from on-disk cache if fresh, else None.
+
+    Returns None on any read/parse failure so callers fall through to a fresh
+    fetch. Empty {} payloads are treated as cache misses — the SDK rejects them
+    on parse, and we want a fresh fetch in that case.
+    """
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    ts = data.get("ts")
+    try:
+        ts_f = float(ts) if ts is not None else 0.0
+    except (TypeError, ValueError):
+        return None
+    cur = now if now is not None else time.time()
+    if cur - ts_f > ttl_s:
+        return None
+    spot_meta = data.get("spot_meta")
+    meta = data.get("meta")
+    if not isinstance(spot_meta, dict) or not isinstance(meta, dict):
+        return None
+    if not spot_meta.get("universe") or not meta.get("universe"):
+        return None
+    return spot_meta, meta
+
+
+def _save_meta_cache(spot_meta, meta, path: str = META_CACHE_PATH) -> None:
+    """Persist (spot_meta, meta) atomically.
+
+    Uses a temp file in the same directory + os.replace so concurrent writers
+    (multiple go-trader instances on one host share /tmp/hl_meta.json) never
+    leave a torn file. Failures are logged and swallowed — caching is an
+    optimization, not a correctness requirement.
+    """
+    payload = {"ts": time.time(), "spot_meta": spot_meta, "meta": meta}
+    dir_ = os.path.dirname(path) or "."
+    fd = None
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(prefix=".hl_meta_", suffix=".json", dir=dir_)
+        with os.fdopen(fd, "w") as f:
+            fd = None  # ownership transferred to file object
+            json.dump(payload, f)
+        os.replace(tmp_path, path)
+        tmp_path = None
+    except (OSError, TypeError, ValueError) as exc:
+        print(f"[WARN] hl meta cache save failed: {exc}", file=sys.stderr)
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _fetch_raw_meta(base_url: str):
+    """POST /info {type:spotMeta} + {type:meta} via the SDK's API base class.
+
+    Returns (spot_meta, meta) — same raw shape the SDK's Info constructor
+    consumes when passed via meta=/spot_meta= kwargs. Errors bubble.
+    """
+    api = _HLAPI(base_url=base_url)
+    spot_meta = api.post("/info", {"type": "spotMeta"})
+    meta = api.post("/info", {"type": "meta", "dex": ""})
+    return spot_meta, meta
+
+
 class HyperliquidExchangeAdapter:
     """
     Exchange adapter for Hyperliquid perpetual futures.
@@ -100,8 +192,9 @@ class HyperliquidExchangeAdapter:
         addr = os.environ.get("HYPERLIQUID_ACCOUNT_ADDRESS", "")
         testnet = os.environ.get("HYPERLIQUID_TESTNET", "") == "1"
         base_url = TESTNET_URL if testnet else MAINNET_URL
+        self._base_url = base_url
 
-        self._info = _HLInfo(base_url=base_url, skip_ws=True)
+        self._info = self._build_info(base_url, allow_cache=True)
         self._account_address = addr
         self._exchange = None
 
@@ -118,6 +211,58 @@ class HyperliquidExchangeAdapter:
                 raise RuntimeError(
                     f"Failed to initialize Hyperliquid Exchange client: {e}"
                 )
+
+    def _build_info(self, base_url: str, allow_cache: bool):
+        """Construct an SDK Info instance, using the /tmp/hl_meta.json cache
+        when fresh so the SDK skips its two-call init storm (#768).
+
+        On cache miss we POST /info {spotMeta, meta} ourselves (2 calls) and
+        pass the raw responses to Info via meta=/spot_meta= kwargs so its
+        constructor performs zero network calls. Net: 2 /info on miss, 0 on
+        hit (vs. 2 every construction in the unpatched path).
+
+        allow_cache=False forces a fresh fetch (used by _refresh_meta when a
+        symbol miss indicates the cached universe is stale).
+        """
+        cached = _load_meta_cache() if allow_cache else None
+        if cached is not None:
+            spot_meta, meta = cached
+            return _HLInfo(base_url=base_url, skip_ws=True, meta=meta, spot_meta=spot_meta)
+        try:
+            spot_meta, meta = _fetch_raw_meta(base_url)
+            _save_meta_cache(spot_meta, meta)
+            return _HLInfo(base_url=base_url, skip_ws=True, meta=meta, spot_meta=spot_meta)
+        except Exception as exc:
+            # Last-resort fallback: let the SDK's constructor fetch fresh.
+            # Costs the same 2 /info as before this change; cache write failed
+            # but trading must continue.
+            print(f"[WARN] hl meta fetch failed ({exc}); falling back to SDK init", file=sys.stderr)
+            return _HLInfo(base_url=base_url, skip_ws=True)
+
+    def _sz_decimals(self, symbol: str) -> int:
+        """Look up sz_decimals for ``symbol``, force-refreshing the cached
+        meta if the symbol is missing.
+
+        Silent fall-through to ``3`` on a missing symbol produced HL "price
+        has too many decimals" rejections on high-priced assets like BTC
+        (sz_decimals=5; allowed price decimals = 6-5 = 1). The guardrail
+        (#768 fix #1): on cache hit, if the configured symbol isn't in
+        ``asset_to_sz_decimals``, force a meta refresh once before falling
+        back. A still-missing symbol after refresh logs a warning and uses
+        the legacy default 3.
+        """
+        if self._info is not None and symbol in self._info.asset_to_sz_decimals:
+            return self._info.asset_to_sz_decimals[symbol]
+        # Symbol missing — could be a stale cached universe. Refresh once.
+        try:
+            self._info = self._build_info(self._base_url, allow_cache=False)
+        except Exception as exc:
+            print(f"[WARN] hl meta refresh failed for {symbol}: {exc}", file=sys.stderr)
+            return 3
+        if self._info is not None and symbol in self._info.asset_to_sz_decimals:
+            return self._info.asset_to_sz_decimals[symbol]
+        print(f"[WARN] sz_decimals not found for {symbol} after refresh, defaulting to 3", file=sys.stderr)
+        return 3
 
     @property
     def is_live(self) -> bool:
@@ -254,9 +399,7 @@ class HyperliquidExchangeAdapter:
                 "market_open requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
         # Round to asset's tick precision to avoid float_to_wire rounding error
-        if symbol not in self._info.asset_to_sz_decimals:
-            print(f"[WARN] sz_decimals not found for {symbol}, defaulting to 3", file=sys.stderr)
-        sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3)
+        sz_decimals = self._sz_decimals(symbol)
         size = round(size, sz_decimals)
         if size <= 0:
             raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
@@ -280,9 +423,7 @@ class HyperliquidExchangeAdapter:
             )
         if sz is not None:
             # Round to asset's tick precision to avoid float_to_wire rounding error (#425)
-            if symbol not in self._info.asset_to_sz_decimals:
-                print(f"[WARN] sz_decimals not found for {symbol}, defaulting to 3", file=sys.stderr)
-            sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3)
+            sz_decimals = self._sz_decimals(symbol)
             sz = round(sz, sz_decimals)
             if sz <= 0:
                 raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
@@ -318,6 +459,22 @@ class HyperliquidExchangeAdapter:
         while attempt < max_retries:
             try:
                 fills = self._info.user_fills_by_time(self._account_address, since_ms)
+            except _HLClientError as exc:
+                # 429 is a multi-second cool-down, not the sub-second indexer
+                # lag the retry budget exists for. Hammering through 4 retries
+                # at 0.5s intervals just deepens the rate-limit hole and turns
+                # one cycle's burst into a sustained outage (#768 fix #2). Bail
+                # immediately; callers fall through to modeled-fee / reconcile
+                # defaults. The over-close safety net is preserved because
+                # `_oid_filled_externally` treats {} as "no fill observed",
+                # not "OID confirmed unfilled".
+                if getattr(exc, "status_code", None) == 429:
+                    print(
+                        f"[WARN] userFills lookup got HTTP 429 for oid={oid}; not retrying",
+                        file=sys.stderr,
+                    )
+                    return {}
+                fills = None
             except Exception:
                 fills = None
             if isinstance(fills, list):
@@ -345,7 +502,7 @@ class HyperliquidExchangeAdapter:
         bookkeeping when the SL fills) can pre-round before calling
         ``place_stop_loss``; rounding is idempotent.
         """
-        sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3) if self._info else 3
+        sz_decimals = self._sz_decimals(symbol) if self._info else 3
         return _round_perps_px(px, sz_decimals)
 
     def place_stop_loss(
@@ -373,9 +530,7 @@ class HyperliquidExchangeAdapter:
             raise RuntimeError(
                 "place_stop_loss requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
-        if symbol not in self._info.asset_to_sz_decimals:
-            print(f"[WARN] sz_decimals not found for {symbol}, defaulting to 3", file=sys.stderr)
-        sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3)
+        sz_decimals = self._sz_decimals(symbol)
         sz = round(sz, sz_decimals)
         if sz <= 0:
             raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
@@ -412,9 +567,7 @@ class HyperliquidExchangeAdapter:
             raise RuntimeError(
                 "place_take_profit_limit requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
-        if symbol not in self._info.asset_to_sz_decimals:
-            print(f"[WARN] sz_decimals not found for {symbol}, defaulting to 3", file=sys.stderr)
-        sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3)
+        sz_decimals = self._sz_decimals(symbol)
         sz = _floor_size(sz, sz_decimals)
         if sz <= 0:
             raise ValueError(f"Size floored to zero for {symbol} (sz_decimals={sz_decimals})")
@@ -430,7 +583,7 @@ class HyperliquidExchangeAdapter:
         """Exposes the same lot-precision flooring `place_take_profit_limit`
         applies internally, so callers can pre-compute the on-chain size each
         tier will occupy and absorb the remainder into a final tier."""
-        sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3) if self._info else 3
+        sz_decimals = self._sz_decimals(symbol) if self._info else 3
         return _floor_size(sz, sz_decimals)
 
     def round_size(self, symbol: str, sz: float) -> float:
@@ -441,7 +594,7 @@ class HyperliquidExchangeAdapter:
         0.0009999...).  place_stop_loss already uses round(); this makes TP
         tier sizing consistent.
         """
-        sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3) if self._info else 3
+        sz_decimals = self._sz_decimals(symbol) if self._info else 3
         return round(sz, sz_decimals)
 
     def open_order_oids(self, symbol: str | None = None) -> set[int]:
