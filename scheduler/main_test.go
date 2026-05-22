@@ -37,6 +37,34 @@ func TestShouldSkipZeroCapital(t *testing.T) {
 	}
 }
 
+func TestApplySignalInversion(t *testing.T) {
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+
+	cases := []struct {
+		name         string
+		invertSignal bool
+		inputSignal  int
+		wantSignal   int
+	}{
+		{"disabled leaves buy unchanged", false, 1, 1},
+		{"disabled leaves sell unchanged", false, -1, -1},
+		{"enabled flips buy to sell", true, 1, -1},
+		{"enabled flips sell to buy", true, -1, 1},
+		{"enabled leaves hold unchanged", true, 0, 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := &HyperliquidResult{Signal: tc.inputSignal}
+			applySignalInversion(StrategyConfig{InvertSignal: tc.invertSignal}, result, logger)
+			if result.Signal != tc.wantSignal {
+				t.Fatalf("Signal = %d, want %d", result.Signal, tc.wantSignal)
+			}
+		})
+	}
+}
+
 func TestNotifyPerStrategyCircuitBreaker_BroadcastsFreshTriggers(t *testing.T) {
 	cases := []struct {
 		name                string
