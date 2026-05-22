@@ -89,6 +89,10 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].interval_seconds: %d -> %d", sc.ID, sc.IntervalSeconds, ns.IntervalSeconds)
 			sc.IntervalSeconds = ns.IntervalSeconds
 		}
+		if sc.InvertSignal != ns.InvertSignal {
+			addChange("strategy[%s].invert_signal: %t -> %t", sc.ID, sc.InvertSignal, ns.InvertSignal)
+			sc.InvertSignal = ns.InvertSignal
+		}
 		if !reflect.DeepEqual(sc.OpenStrategy, ns.OpenStrategy) {
 			addChange("strategy[%s].open_strategy: %s -> %s", sc.ID, formatStrategyRef(sc.OpenStrategy), formatStrategyRef(ns.OpenStrategy))
 			sc.OpenStrategy = ns.OpenStrategy
