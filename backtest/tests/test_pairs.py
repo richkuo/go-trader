@@ -45,6 +45,21 @@ def test_constructor_rejects_bad_params() -> None:
         PairsBacktester(leverage=0)
     with pytest.raises(ValueError):
         PairsBacktester(maintenance_margin=0.5, leverage=5.0)
+    with pytest.raises(ValueError):
+        PairsBacktester(initial_capital=0)
+    with pytest.raises(ValueError):
+        PairsBacktester(initial_capital=-100)
+    with pytest.raises(ValueError):
+        PairsBacktester(bar_hours=0)
+
+
+def test_bars_per_year_auto_scales_from_bar_hours() -> None:
+    """Default should be 24*365 for 1h bars and 6*365 for 4h bars."""
+    assert PairsBacktester(bar_hours=1.0).bars_per_year == 24 * 365
+    assert PairsBacktester(bar_hours=4.0).bars_per_year == 6 * 365
+    assert PairsBacktester(bar_hours=24.0).bars_per_year == 365
+    # Explicit override wins
+    assert PairsBacktester(bar_hours=4.0, bars_per_year=1000).bars_per_year == 1000
 
 
 def _make_spread_series(n: int, base_a: float, base_b: float,
@@ -133,6 +148,36 @@ def test_liquidation_on_large_adverse_move() -> None:
     assert any(t.exit_reason == "liquidation" for t in results.trades)
 
 
+def test_liquidation_loss_capped_at_margin_posted() -> None:
+    """A gap that blows through the trigger must not record a leg loss
+    exceeding the margin posted on that leg (isolated mode)."""
+    n = 300
+    # Step 1: small spike at bar 200 to seed std and trigger a short-A entry.
+    # Step 2: at bar 210, a 20% adverse gap on A — far past the 3% liquidation
+    # trigger for 20× / 2% MMR. Unconstrained MTM loss on the short-A leg is
+    # ~$200 on $1000 notional, but the isolated margin slot is only $50.
+    prices_a = [2000.0] * 200 + [2100.0] * 10 + [2500.0] * (n - 210)
+    prices_b = [60000.0] * n
+    df_a = _flat_df(prices_a)
+    df_b = _flat_df(prices_b)
+    bt = PairsBacktester(
+        base_notional=1000.0, beta=1.0, leverage=20.0, maintenance_margin=0.02,
+        lookback=50, entry_z=2.0, exit_z=0.5,
+        taker_fee_pct=0.0, maker_fee_pct=0.0,
+    )
+    results = bt.run(df_a, df_b)
+    liquidated = [t for t in results.trades if t.exit_reason == "liquidation"]
+    assert liquidated, "expected liquidation"
+    t = liquidated[0]
+    # The short-A leg got crushed; its loss must not exceed margin_a ($50).
+    assert -t.pnl_a <= t.margin_a + 1e-9, \
+        f"leg A loss {-t.pnl_a:.2f} exceeds posted margin {t.margin_a:.2f}"
+    # Total net P&L on a liquidation must not exceed total margin + fees.
+    max_loss = t.margin_a + t.margin_b + t.fees
+    assert -t.net_pnl <= max_loss + 1e-9, \
+        f"net loss {-t.net_pnl:.2f} exceeds margin+fees cap {max_loss:.2f}"
+
+
 def test_funding_accrues_correctly_per_leg() -> None:
     """If A funding is +0.01%/hr and we hold short-A for 10 bars on $1000
     notional, we should RECEIVE $1.00 on the A leg.
@@ -181,5 +226,8 @@ def test_no_lookahead_fills_at_next_bar_open() -> None:
     if not results.trades:
         pytest.skip("spread didn't cross threshold; lookahead invariant not exercised")
     t = results.trades[0]
-    # Fill price must come from a bar's open, not a previous bar's close
-    assert t.entry_price_a in df_a["open"].values
+    # Signal fires at bar 200 close (spike). Fill is bar 201's open = 2050.
+    # If the implementation used bar 200's close (2100), this would catch it.
+    assert t.entry_bar == 201, f"entry should land at bar 201, got {t.entry_bar}"
+    assert t.entry_price_a == pytest.approx(2050.0), \
+        f"entry price should be bar 201 open (2050), got {t.entry_price_a}"

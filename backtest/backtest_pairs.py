@@ -9,6 +9,11 @@ survives realistic HL costs — not for live execution.
 
 Look-ahead contract mirrors the main backtester (#730/#731): a signal at bar N
 fills at bar N+1 open. Z-score uses closed-bar values only.
+
+Not for live execution:
+- Quantities are not rounded to exchange lot/tick size, so equity curves here
+  will diverge slightly from what HL would actually fill.
+- Slippage beyond the next-bar-open assumption is not modeled.
 """
 
 from __future__ import annotations
@@ -116,8 +121,14 @@ class PairsBacktester:
         funding_a_per_hour: float = 0.0,
         funding_b_per_hour: float = 0.0,
         bar_hours: float = 1.0,
-        bars_per_year: int = 24 * 365,
+        bars_per_year: Optional[int] = None,
     ):
+        if initial_capital <= 0:
+            raise ValueError("initial_capital must be positive")
+        if base_notional <= 0:
+            raise ValueError("base_notional must be positive")
+        if bar_hours <= 0:
+            raise ValueError("bar_hours must be positive")
         if entry_z <= exit_z:
             raise ValueError("entry_z must exceed exit_z")
         if leverage <= 0:
@@ -136,7 +147,23 @@ class PairsBacktester:
         self.funding_a_per_hour = float(funding_a_per_hour)
         self.funding_b_per_hour = float(funding_b_per_hour)
         self.bar_hours = float(bar_hours)
-        self.bars_per_year = int(bars_per_year)
+        # Derive bars_per_year from bar_hours when not explicitly set so Sharpe
+        # annualizes correctly on 4h/1d data. 24*365/bar_hours = bars per year.
+        if bars_per_year is None:
+            self.bars_per_year = int(round(24 * 365 / self.bar_hours))
+        else:
+            self.bars_per_year = int(bars_per_year)
+
+        # Sanity: total margin shouldn't exceed available capital. Warn but
+        # don't reject — caller may be intentionally over-leveraging for stress
+        # tests against the liquidation logic.
+        total_margin = (self.base_notional + self.base_notional * abs(self.beta)) / self.leverage
+        if total_margin > self.initial_capital:
+            print(
+                f"warning: total margin ${total_margin:.2f} exceeds initial capital "
+                f"${self.initial_capital:.2f} — runs as if margin were free",
+                file=sys.stderr,
+            )
 
     def run(self, df_a: pd.DataFrame, df_b: pd.DataFrame) -> PairsResults:
         if not df_a.index.equals(df_b.index):
@@ -170,6 +197,15 @@ class PairsBacktester:
                 liq_loss_a = _liquidation_loss(position.notional_a, self.leverage, self.maintenance_margin)
                 liq_loss_b = _liquidation_loss(position.notional_b, self.leverage, self.maintenance_margin)
                 if (-position.pnl_a) >= liq_loss_a or (-position.pnl_b) >= liq_loss_b:
+                    # Cap each leg's loss at the margin posted (HL isolated
+                    # mode: insurance fund absorbs anything beyond). On a gap
+                    # bar the unconstrained mark-to-market loss can exceed the
+                    # isolated margin slot, so without this cap the backtester
+                    # overstates drawdown vs. live.
+                    if position.pnl_a < 0:
+                        position.pnl_a = -min(-position.pnl_a, position.margin_a)
+                    if position.pnl_b < 0:
+                        position.pnl_b = -min(-position.pnl_b, position.margin_b)
                     position.exit_bar = i
                     position.exit_time = df_a.index[i]
                     position.exit_price_a = mark_a
@@ -325,6 +361,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--funding-a-per-hour", type=float, default=0.0)
     p.add_argument("--funding-b-per-hour", type=float, default=0.0)
     p.add_argument("--bar-hours", type=float, default=1.0)
+    p.add_argument("--bars-per-year", type=int, default=None,
+                   help="override Sharpe annualization (default: 24*365/bar_hours)")
     args = p.parse_args(argv)
 
     from data_fetcher import fetch_full_history
@@ -354,6 +392,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         funding_a_per_hour=args.funding_a_per_hour,
         funding_b_per_hour=args.funding_b_per_hour,
         bar_hours=args.bar_hours,
+        bars_per_year=args.bars_per_year,
     )
     results = bt.run(df_a, df_b)
     print(format_report(results, args.symbol_a, args.symbol_b, args.timeframe))
