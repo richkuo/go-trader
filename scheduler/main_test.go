@@ -63,6 +63,15 @@ func TestApplySignalInversion(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("nil result does not panic", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("applySignalInversion panicked on nil result: %v", r)
+			}
+		}()
+		applySignalInversion(StrategyConfig{InvertSignal: true}, nil, logger)
+	})
 }
 
 func TestNotifyPerStrategyCircuitBreaker_BroadcastsFreshTriggers(t *testing.T) {

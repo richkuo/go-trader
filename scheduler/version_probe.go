@@ -29,6 +29,10 @@ import (
 var probeArgv = []string{
 	"probe", "BTC", "1h",
 	"--strategy-refs", `{"open":{"name":"probe","params":{}},"closes":[{"name":"probe_close","params":{}}]}`,
+	// #768: new Go forwards --mark-price on every HL signal-check; probe it
+	// so a stale Python that doesn't accept the flag fails startup loudly
+	// instead of every cycle's argparse rejecting the cycle's argv.
+	"--mark-price=0",
 	"--probe-only",
 }
 
@@ -37,6 +41,22 @@ var probeArgv = []string{
 // silently to computeFallbackATR on every manual-open.
 var fetchATRProbeArgv = []string{
 	"--fetch-atr", "--symbol=BTC", "--timeframe=1h", "--period=14", "--probe-only",
+}
+
+// executeProbeArgv probes check_hyperliquid.py's --execute mode (PR #769
+// review point 1). The signal-check probe doesn't cover the execute branch,
+// so without this an asymmetric deploy (new Go binary forwarding
+// --account-leverage / --account-margin-mode to a stale Python) would only
+// fail on the first signal-fire rather than at startup. --mode=paper so the
+// probe never enters the live-credentials branch; --probe-only short-circuits
+// at the top of run_execute before any adapter or order code runs.
+var executeProbeArgv = []string{
+	"--execute",
+	"--symbol=BTC", "--side=buy", "--size=0",
+	"--mode=paper",
+	"--margin-mode=cross", "--leverage=1",
+	"--account-leverage=1", "--account-margin-mode=cross",
+	"--probe-only",
 }
 
 // fetchCandlesProbeArgv probes the dashboard's on-demand OHLCV helper. The
@@ -73,6 +93,12 @@ func probeCheckScripts(cfg *Config) error {
 		// than silently degrading every manual-open to computeFallbackATR.
 		if filepath.Base(script) == "check_hyperliquid.py" {
 			if err := probeOneCheckScriptFn(script, fetchATRProbeArgv); err != nil {
+				return err
+			}
+			// PR #769: also probe --execute so the new --account-leverage /
+			// --account-margin-mode flags fail loudly at startup if Python is
+			// stale, rather than on the first signal-fire.
+			if err := probeOneCheckScriptFn(script, executeProbeArgv); err != nil {
 				return err
 			}
 		}

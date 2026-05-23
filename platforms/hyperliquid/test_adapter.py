@@ -7,26 +7,50 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 
-def _load_hl_adapter(mock_info_cls=None, mock_exchange_cls=None):
+def _load_hl_adapter(mock_info_cls=None, mock_exchange_cls=None, mock_api_cls=None):
     """Load the hyperliquid adapter with mocked SDK modules.
 
-    We inject fake hyperliquid.info.Info and hyperliquid.exchange.Exchange
-    before loading the adapter module, so it picks up _SDK_AVAILABLE = True.
+    Mocks hyperliquid.info.Info, hyperliquid.exchange.Exchange,
+    hyperliquid.api.API, and hyperliquid.utils.error.ClientError before
+    loading adapter.py so it picks up _SDK_AVAILABLE = True. ClientError
+    must be a real Exception subclass so the adapter's except clause is
+    a valid exception type.
     """
     info_mod = MagicMock()
     exchange_mod = MagicMock()
+    api_mod = MagicMock()
+    utils_pkg = MagicMock()
+    error_mod = MagicMock()
     hl_pkg = MagicMock()
 
     info_mod.Info = mock_info_cls or MagicMock()
     exchange_mod.Exchange = mock_exchange_cls or MagicMock()
+    api_mod.API = mock_api_cls or MagicMock()
+
+    class _StubClientError(Exception):
+        def __init__(self, status_code=None, *a, **kw):
+            super().__init__(*a, **kw)
+            self.status_code = status_code
+    error_mod.ClientError = _StubClientError
 
     saved = {}
-    for name in ("hyperliquid", "hyperliquid.info", "hyperliquid.exchange"):
+    mod_names = (
+        "hyperliquid",
+        "hyperliquid.info",
+        "hyperliquid.exchange",
+        "hyperliquid.api",
+        "hyperliquid.utils",
+        "hyperliquid.utils.error",
+    )
+    for name in mod_names:
         saved[name] = sys.modules.get(name)
 
     sys.modules["hyperliquid"] = hl_pkg
     sys.modules["hyperliquid.info"] = info_mod
     sys.modules["hyperliquid.exchange"] = exchange_mod
+    sys.modules["hyperliquid.api"] = api_mod
+    sys.modules["hyperliquid.utils"] = utils_pkg
+    sys.modules["hyperliquid.utils.error"] = error_mod
 
     try:
         adapter_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "adapter.py")

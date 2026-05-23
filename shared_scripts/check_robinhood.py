@@ -388,6 +388,7 @@ def main():
         parser.add_argument("--position-initial-qty", type=float, default=None)
         parser.add_argument("--position-entry-atr", type=float, default=None)
         parser.add_argument("--position-regime", default="")
+        parser.add_argument("--mark-price", type=float, default=0.0, help="Accepted for argv-shape compatibility with check_hyperliquid.py (#768); ignored on this platform.")
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#645): validate argv shape and exit 0.")
         args = parser.parse_args()

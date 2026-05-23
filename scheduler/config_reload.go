@@ -327,6 +327,14 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 			errs = append(errs, fmt.Sprintf("strategy[%s] direction changed with open positions (%q -> %q; flatten first or restart after close)",
 				sc.ID, EffectiveDirection(sc), EffectiveDirection(ns)))
 		}
+		// invert_signal flips BUY<->SELL on the very next signal — toggling
+		// while a position is open re-interprets the same signal as a close
+		// (for the side that's now opposite direction), risking an unintended
+		// flatten. Block until flat, same shape as the Direction guard above.
+		if sc.InvertSignal != ns.InvertSignal && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] invert_signal changed with open positions (%t -> %t; flatten first or restart after close)",
+				sc.ID, sc.InvertSignal, ns.InvertSignal))
+		}
 		// #486: HL rejects margin-mode changes on an open position; treat
 		// the same way as Leverage. Stays hot-reloadable when flat.
 		if sc.Type == "perps" && sc.Platform == "hyperliquid" && sc.MarginMode != ns.MarginMode && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {

@@ -308,7 +308,17 @@ func RunHyperliquidCheck(script string, args []string) (*HyperliquidResult, stri
 // Python script calls adapter.market_close(sz=None) — closing the entire
 // on-chain residual without a sized order, eliminating rounding dust on final
 // TP tiers (#592).
-func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, extraCancelOIDs ...int64) []string {
+// hlExecuteSnapshot carries cycle-local on-chain state from Go's Phase 1
+// clearinghouseState fetch into the --execute argv (#768 fix #4). When both
+// fields are present, Python skips its duplicate get_position_leverage /info
+// call. Zero-valued fields are omitted from argv — Python falls back to the
+// original fetch path.
+type hlExecuteSnapshot struct {
+	AccountLeverage   int    // on-chain leverage value for the symbol (0 == unknown)
+	AccountMarginMode string // "isolated" | "cross" (empty == unknown)
+}
+
+func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) []string {
 	args := []string{
 		"--execute",
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -339,14 +349,21 @@ func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64,
 		if leverage > 0 {
 			args = append(args, fmt.Sprintf("--leverage=%g", leverage))
 		}
+		// Forward Go's clearinghouseState snapshot only when both fields are
+		// known — Python ignores partial snapshots and falls back to its own
+		// get_position_leverage call.
+		if snapshot.AccountLeverage > 0 && (snapshot.AccountMarginMode == "isolated" || snapshot.AccountMarginMode == "cross") {
+			args = append(args, fmt.Sprintf("--account-leverage=%d", snapshot.AccountLeverage))
+			args = append(args, fmt.Sprintf("--account-margin-mode=%s", snapshot.AccountMarginMode))
+		}
 	}
 	return args
 }
 
 // RunHyperliquidExecute runs check_hyperliquid.py in execute mode (live orders).
 // See buildHyperliquidExecuteArgs for argv-contract details.
-func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
-	args := buildHyperliquidExecuteArgs(symbol, side, size, stopLossPct, cancelStopLossOID, prevPosQty, marginMode, leverage, closeFullPosition, extraCancelOIDs...)
+func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	args := buildHyperliquidExecuteArgs(symbol, side, size, stopLossPct, cancelStopLossOID, prevPosQty, marginMode, leverage, closeFullPosition, snapshot, extraCancelOIDs...)
 	stdout, stderr, err := runPythonSideEffect(script, args)
 	return parseHyperliquidExecuteOutput(stdout, string(stderr), err)
 }

@@ -57,6 +57,10 @@ func TestRunProbeHappyPath(t *testing.T) {
 				mode = "fetch-atr"
 				break
 			}
+			if a == "--execute" {
+				mode = "execute"
+				break
+			}
 		}
 		probed = append(probed, probeCall{script, mode})
 		return nil
@@ -102,26 +106,28 @@ func TestRunProbeHappyPath(t *testing.T) {
 	if rc != 0 {
 		t.Fatalf("happy-path probe should return 0, got %d", rc)
 	}
-	// Expect 4 invocations: HL signal-check, HL --fetch-atr (#689), spot
-	// signal-check, and the dashboard candle helper.
-	if len(probed) != 4 {
-		t.Fatalf("expected 4 probe invocations, got %d: %v", len(probed), probed)
+	// Expect 5 invocations: HL signal-check, HL --fetch-atr (#689), HL
+	// --execute (PR #769), spot signal-check, and the dashboard candle helper.
+	if len(probed) != 5 {
+		t.Fatalf("expected 5 probe invocations, got %d: %v", len(probed), probed)
 	}
-	var hlSignal, hlFetchATR, spotSignal, candleHelper int
+	var hlSignal, hlFetchATR, hlExecute, spotSignal, candleHelper int
 	for _, p := range probed {
 		switch {
 		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "signal":
 			hlSignal++
 		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "fetch-atr":
 			hlFetchATR++
+		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "execute":
+			hlExecute++
 		case p.script == "shared_scripts/check_strategy.py" && p.mode == "signal":
 			spotSignal++
 		case p.script == "shared_scripts/fetch_candles.py" && p.mode == "signal":
 			candleHelper++
 		}
 	}
-	if hlSignal != 1 || hlFetchATR != 1 || spotSignal != 1 || candleHelper != 1 {
-		t.Fatalf("expected 1 of each (hl-signal, hl-fetch-atr, spot-signal, candle-helper); got %d/%d/%d/%d (probed=%v)",
-			hlSignal, hlFetchATR, spotSignal, candleHelper, probed)
+	if hlSignal != 1 || hlFetchATR != 1 || hlExecute != 1 || spotSignal != 1 || candleHelper != 1 {
+		t.Fatalf("expected 1 of each (hl-signal, hl-fetch-atr, hl-execute, spot-signal, candle-helper); got %d/%d/%d/%d/%d (probed=%v)",
+			hlSignal, hlFetchATR, hlExecute, spotSignal, candleHelper, probed)
 	}
 }

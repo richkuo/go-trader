@@ -613,7 +613,7 @@ func argsHasPrefix(args []string, prefix string) bool {
 // the Python script calls adapter.market_close(sz=None) instead of
 // market_open(size). This is the load-bearing #592 contract.
 func TestBuildHyperliquidExecuteArgs_CloseFullPosition(t *testing.T) {
-	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, true)
+	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, true, hlExecuteSnapshot{})
 
 	if !argsContains(args, "--close-full-position") {
 		t.Errorf("expected --close-full-position flag in argv, got %v", args)
@@ -633,7 +633,7 @@ func TestBuildHyperliquidExecuteArgs_CloseFullPosition(t *testing.T) {
 // --close-full-position. This is the path used for shared-coin peers and for
 // partial closes.
 func TestBuildHyperliquidExecuteArgs_SizedClose(t *testing.T) {
-	args := buildHyperliquidExecuteArgs("ETH", "sell", 0.42, 0, 0, 0, "", 0, false)
+	args := buildHyperliquidExecuteArgs("ETH", "sell", 0.42, 0, 0, 0, "", 0, false, hlExecuteSnapshot{})
 
 	if argsContains(args, "--close-full-position") {
 		t.Errorf("--close-full-position must be omitted when closeFullPosition=false, got %v", args)
@@ -650,7 +650,7 @@ func TestBuildHyperliquidExecuteArgs_SizedClose(t *testing.T) {
 // --cancel-stop-loss-oid flags (mirrors the posQty>0 && !partialClose gate in
 // main.go that cancels every tier TP OID on a full or flip close).
 func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsFullClose(t *testing.T) {
-	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, true, 111, 222, 333)
+	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, true, hlExecuteSnapshot{}, 111, 222, 333)
 
 	for _, want := range []string{"--cancel-stop-loss-oid=111", "--cancel-stop-loss-oid=222", "--cancel-stop-loss-oid=333"} {
 		if !argsContains(args, want) {
@@ -664,7 +664,7 @@ func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsFullClose(t *testing.T) {
 func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsPartialClose(t *testing.T) {
 	// No extraCancelOIDs passed — matches what runHyperliquidExecuteOrder does on
 	// a partial close.
-	args := buildHyperliquidExecuteArgs("ETH", "sell", 0.5, 0, 0, 0, "", 0, false)
+	args := buildHyperliquidExecuteArgs("ETH", "sell", 0.5, 0, 0, 0, "", 0, false, hlExecuteSnapshot{})
 
 	for _, notWant := range []string{"--cancel-stop-loss-oid=111", "--cancel-stop-loss-oid=222"} {
 		if argsContains(args, notWant) {
@@ -676,7 +676,7 @@ func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsPartialClose(t *testing.T) {
 // Optional flags should be conditionally present.
 func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
 	t.Run("no optional flags", func(t *testing.T) {
-		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "", 0, false)
+		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "", 0, false, hlExecuteSnapshot{})
 		for _, prefix := range []string{"--stop-loss-pct=", "--cancel-stop-loss-oid=", "--prev-pos-qty=", "--margin-mode=", "--leverage="} {
 			if argsHasPrefix(args, prefix) {
 				t.Errorf("expected %s to be omitted, got %v", prefix, args)
@@ -684,7 +684,7 @@ func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
 		}
 	})
 	t.Run("all optional flags", func(t *testing.T) {
-		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 2.5, 12345, 0.0005, "isolated", 5, false)
+		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 2.5, 12345, 0.0005, "isolated", 5, false, hlExecuteSnapshot{})
 		for _, want := range []string{"--stop-loss-pct=2.5", "--cancel-stop-loss-oid=12345", "--prev-pos-qty=0.0005", "--margin-mode=isolated", "--leverage=5"} {
 			if !argsContains(args, want) {
 				t.Errorf("expected %q in argv, got %v", want, args)
@@ -694,7 +694,7 @@ func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
 	t.Run("margin mode without leverage", func(t *testing.T) {
 		// leverage=0 with non-empty margin_mode: --leverage must not appear (would
 		// confuse the Python validator) but --margin-mode is still emitted.
-		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "cross", 0, false)
+		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "cross", 0, false, hlExecuteSnapshot{})
 		if !argsContains(args, "--margin-mode=cross") {
 			t.Errorf("expected --margin-mode=cross, got %v", args)
 		}
@@ -702,6 +702,79 @@ func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
 			t.Errorf("--leverage must be omitted when leverage=0, got %v", args)
 		}
 	})
+}
+
+// #768 fix #4: --account-leverage / --account-margin-mode must appear in argv
+// ONLY when both fields are present AND --margin-mode is being enforced. The
+// Python side only consults them inside the `if margin_mode:` branch.
+func TestBuildHyperliquidExecuteArgs_AccountSnapshotForwarded(t *testing.T) {
+	snap := hlExecuteSnapshot{AccountLeverage: 10, AccountMarginMode: "isolated"}
+	args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "isolated", 10, false, snap)
+	for _, want := range []string{"--account-leverage=10", "--account-margin-mode=isolated"} {
+		if !argsContains(args, want) {
+			t.Errorf("expected %q in argv when snapshot is known, got %v", want, args)
+		}
+	}
+}
+
+func TestBuildHyperliquidExecuteArgs_AccountSnapshotOmittedWhenIncomplete(t *testing.T) {
+	cases := []struct {
+		name string
+		snap hlExecuteSnapshot
+	}{
+		{"zero leverage", hlExecuteSnapshot{AccountMarginMode: "isolated"}},
+		{"empty mode", hlExecuteSnapshot{AccountLeverage: 10}},
+		{"invalid mode", hlExecuteSnapshot{AccountLeverage: 10, AccountMarginMode: "weird"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "isolated", 10, false, tc.snap)
+			for _, prefix := range []string{"--account-leverage=", "--account-margin-mode="} {
+				if argsHasPrefix(args, prefix) {
+					t.Errorf("expected %s to be omitted on incomplete snapshot (%s), got %v", prefix, tc.name, args)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildHyperliquidExecuteArgs_AccountSnapshotOmittedWithoutMarginMode(t *testing.T) {
+	// Python only consults --account-leverage inside the `if margin_mode:`
+	// branch; forwarding it when margin_mode is empty would be wasted argv
+	// noise. Verify the omission so we don't drift from that contract.
+	snap := hlExecuteSnapshot{AccountLeverage: 10, AccountMarginMode: "isolated"}
+	args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "", 0, false, snap)
+	for _, prefix := range []string{"--account-leverage=", "--account-margin-mode="} {
+		if argsHasPrefix(args, prefix) {
+			t.Errorf("expected %s to be omitted when margin-mode is empty, got %v", prefix, args)
+		}
+	}
+}
+
+func TestHLExecuteSnapshotForCoin(t *testing.T) {
+	positions := []HLPosition{
+		{Coin: "BTC", Size: 0.1, EntryPrice: 60000, Leverage: 10, MarginMode: "isolated"},
+		{Coin: "ETH", Size: -2, EntryPrice: 3000, Leverage: 5, MarginMode: "cross"},
+		{Coin: "SOL", Size: 100, EntryPrice: 150, Leverage: 0, MarginMode: ""}, // bogus row — skip
+	}
+	if got := hlExecuteSnapshotForCoin(positions, "BTC"); got.AccountLeverage != 10 || got.AccountMarginMode != "isolated" {
+		t.Errorf("BTC snapshot = %+v, want lev=10 mode=isolated", got)
+	}
+	if got := hlExecuteSnapshotForCoin(positions, "ETH"); got.AccountLeverage != 5 || got.AccountMarginMode != "cross" {
+		t.Errorf("ETH snapshot = %+v, want lev=5 mode=cross", got)
+	}
+	// Bogus rows (missing margin mode) must yield zero — Python falls back.
+	if got := hlExecuteSnapshotForCoin(positions, "SOL"); got != (hlExecuteSnapshot{}) {
+		t.Errorf("SOL with bogus row should yield zero, got %+v", got)
+	}
+	// Unknown coin yields zero.
+	if got := hlExecuteSnapshotForCoin(positions, "XRP"); got != (hlExecuteSnapshot{}) {
+		t.Errorf("unknown coin should yield zero, got %+v", got)
+	}
+	// Empty coin string yields zero.
+	if got := hlExecuteSnapshotForCoin(positions, ""); got != (hlExecuteSnapshot{}) {
+		t.Errorf("empty coin should yield zero, got %+v", got)
+	}
 }
 
 func TestBuildHyperliquidSyncProtectionArgv_TPArmedTiersJSON(t *testing.T) {
