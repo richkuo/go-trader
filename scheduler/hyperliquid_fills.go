@@ -465,6 +465,26 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 			if sameDirection && onChainAbs+1e-9 < pos.Quantity {
 				addCandidate(sym, 0, pos.Quantity-onChainAbs)
 			}
+			// #777: all tiers armed+cleared with dust — prefetch per-tier fills
+			// (OID from open-trade snapshot when pos.TPOIDs are already zero).
+			if sameDirection && hyperliquidAllTiersArmedAndCleared(sc, pos) {
+				tiers := strategyTPTiersForRegime(sc, pos.Regime)
+				initQty := pos.InitialQuantity
+				if initQty <= 0 {
+					initQty = pos.Quantity
+				}
+				lookupOIDs := tpOIDsForReconcileLookup(ss, pos, sym, len(tiers))
+				for i := range tiers {
+					tierQty := hyperliquidTPTierIncrementalCloseQty(initQty, tiers, i)
+					if tierQty <= 0 {
+						continue
+					}
+					if i < len(lookupOIDs) && lookupOIDs[i] > 0 {
+						addCandidate(sym, lookupOIDs[i], tierQty)
+					}
+					addCandidate(sym, 0, tierQty)
+				}
+			}
 		}
 	}
 	mu.RUnlock()

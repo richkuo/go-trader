@@ -234,8 +234,18 @@ func TestHyperliquidClearedTPTier_TierIndex(t *testing.T) {
 	if idx, ok := hyperliquidClearedTPTier(sc, pos, 0.422); !ok || idx != 1 {
 		t.Errorf("final tier: idx=%d ok=%v, want 1,true", idx, ok)
 	}
-	// All zero but qty mismatch → not attributable
+	// All zero but qty mismatch → not attributable without armed tiers
+	pos = &Position{Quantity: 0.422, TPOIDs: []int64{0, 0}, TPArmedTiers: []bool{false, false}}
 	if _, ok := hyperliquidClearedTPTier(sc, pos, 0.1); ok {
-		t.Error("ambiguous all-zero with mismatched qty must not attribute")
+		t.Error("ambiguous all-zero with mismatched qty must not attribute when tiers never armed")
+	}
+	// All zero, dust drift, every tier armed — hyperliquidClearedTPTier stays
+	// false; hlAttemptCloseFromArmedTPClears handles booking (#777).
+	pos = &Position{Quantity: 0.422, TPOIDs: []int64{0, 0}, TPArmedTiers: []bool{true, true}}
+	if !hyperliquidAllTiersArmedAndCleared(sc, pos) {
+		t.Error("expected all tiers armed and cleared for dust path")
+	}
+	if _, ok := hyperliquidClearedTPTier(sc, pos, 0.211); ok {
+		t.Error("hyperliquidClearedTPTier must not attribute dust drift directly")
 	}
 }

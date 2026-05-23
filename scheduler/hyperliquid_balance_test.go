@@ -3313,6 +3313,11 @@ func TestHyperliquidHasClearedTPTier_AllZeroFullClose(t *testing.T) {
 	if !hyperliquidHasClearedTPTier(sc, pos, 0.422) {
 		t.Error("expected true when all OIDs zero and closeQty == pos.Quantity (sole-peer final close)")
 	}
+	if hyperliquidAllTiersArmedAndCleared(sc, &Position{Quantity: 0.422, TPOIDs: []int64{0, 0}, TPArmedTiers: []bool{true, true}}) {
+		if hyperliquidHasClearedTPTier(sc, pos, 0.211) {
+			t.Error("hyperliquidHasClearedTPTier must stay false for dust; use hlAttemptCloseFromArmedTPClears (#777)")
+		}
+	}
 }
 
 // --- #621: SL close bookkeeping uses actual fill qty from userFills ---
@@ -3347,7 +3352,7 @@ func TestReconcilePositionSLClose_UsesFilledQtyFromLookup(t *testing.T) {
 	logger := newTestLogger(t)
 
 	// On-chain is flat → reconcileHyperliquidPositionsWithResolver closes position.
-	changed := reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil)
+	changed := reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil, StrategyConfig{})
 	if !changed {
 		t.Fatal("expected changed=true")
 	}
@@ -3396,7 +3401,7 @@ func TestReconcilePositionSLClose_NoFillFallsThroughToExternal(t *testing.T) {
 	})
 	logger := newTestLogger(t)
 	startCash := ss.Cash
-	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil)
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil, StrategyConfig{})
 
 	if len(ss.ClosedPositions) != 1 {
 		t.Fatalf("ClosedPositions = %d, want 1", len(ss.ClosedPositions))
@@ -3513,7 +3518,7 @@ func TestReconcilePosition_TPFillsAttributedNotSL(t *testing.T) {
 
 	var alerts []ProtectionFillAlert
 	startCash := ss.Cash
-	changed := reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, &alerts)
+	changed := reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, &alerts, StrategyConfig{})
 	if !changed {
 		t.Fatal("expected changed=true")
 	}
@@ -3571,7 +3576,7 @@ func TestReconcilePosition_SLFillStillTakesSLPath(t *testing.T) {
 		return HLFillLookup{}, false
 	})
 	logger := newTestLogger(t)
-	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil)
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil, StrategyConfig{})
 
 	if len(ss.ClosedPositions) != 1 || ss.ClosedPositions[0].CloseReason != "stop_loss" {
 		t.Fatalf("expected one ClosedPosition with reason=stop_loss, got %+v", ss.ClosedPositions)
@@ -3614,7 +3619,7 @@ func TestReconcilePosition_PartialTPFillResidualZeroPnL(t *testing.T) {
 	})
 	logger := newTestLogger(t)
 	startCash := ss.Cash
-	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil)
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil, StrategyConfig{})
 
 	if _, open := ss.Positions["ETH"]; open {
 		t.Fatal("ETH should be removed even when TP fills under-shoot")
@@ -3652,7 +3657,7 @@ func TestReconcilePosition_NoFillsFallsBackToZeroPnL(t *testing.T) {
 	resolver := noFillFeeResolver
 	logger := newTestLogger(t)
 	startCash := ss.Cash
-	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil)
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil, StrategyConfig{})
 
 	if _, open := ss.Positions["ETH"]; open {
 		t.Fatal("ETH should be removed even when no fills found")
@@ -3696,7 +3701,7 @@ func TestReconcilePosition_AllTPOIDsZeroedSLNotFilled(t *testing.T) {
 	})
 	logger := newTestLogger(t)
 	startCash := ss.Cash
-	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil)
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil, StrategyConfig{})
 
 	if _, open := ss.Positions["ETH"]; open {
 		t.Fatal("ETH position should be removed after reconcile")
