@@ -2488,13 +2488,9 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, posCtx Po
 		logger.Error("Script returned error: %s", result.Error)
 		return nil, "", 0, false
 	}
+	applySignalInversion(sc, result, logger)
 
-	signalStr := "HOLD"
-	if result.Signal == 1 {
-		signalStr = "BUY"
-	} else if result.Signal == -1 {
-		signalStr = "SELL"
-	}
+	signalStr := signalLabel(result.Signal)
 	logger.Info("Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)
 
 	price := result.Price
@@ -2508,6 +2504,32 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, posCtx Po
 		return nil, "", 0, false
 	}
 	return result, signalStr, price, true
+}
+
+// applySignalInversion flips a non-zero signal in place when InvertSignal is
+// set on the strategy. HOLD (0) is never flipped — only the BUY (+1) / SELL
+// (-1) sign is mirrored, so reverse-trend variants can reuse the same open
+// and close strategy refs without forking the Python module. LoadConfig
+// restricts InvertSignal to HL perps/manual strategies, so this helper is
+// only invoked from runHyperliquidCheck.
+func applySignalInversion(sc StrategyConfig, result *HyperliquidResult, logger *StrategyLogger) {
+	if !sc.InvertSignal || result == nil || result.Signal == 0 {
+		return
+	}
+	original := result.Signal
+	result.Signal = -result.Signal
+	logger.Info("Signal inversion enabled: %s -> %s", signalLabel(original), signalLabel(result.Signal))
+}
+
+func signalLabel(signal int) string {
+	switch signal {
+	case 1:
+		return "BUY"
+	case -1:
+		return "SELL"
+	default:
+		return "HOLD"
+	}
 }
 
 // shouldCloseFullPosition decides whether a HL close leg should call

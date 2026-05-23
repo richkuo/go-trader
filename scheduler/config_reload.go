@@ -89,6 +89,10 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].interval_seconds: %d -> %d", sc.ID, sc.IntervalSeconds, ns.IntervalSeconds)
 			sc.IntervalSeconds = ns.IntervalSeconds
 		}
+		if sc.InvertSignal != ns.InvertSignal {
+			addChange("strategy[%s].invert_signal: %t -> %t", sc.ID, sc.InvertSignal, ns.InvertSignal)
+			sc.InvertSignal = ns.InvertSignal
+		}
 		if !reflect.DeepEqual(sc.OpenStrategy, ns.OpenStrategy) {
 			addChange("strategy[%s].open_strategy: %s -> %s", sc.ID, formatStrategyRef(sc.OpenStrategy), formatStrategyRef(ns.OpenStrategy))
 			sc.OpenStrategy = ns.OpenStrategy
@@ -322,6 +326,14 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 		if (sc.Type == "perps" || sc.Type == "manual") && EffectiveDirection(sc) != EffectiveDirection(ns) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] direction changed with open positions (%q -> %q; flatten first or restart after close)",
 				sc.ID, EffectiveDirection(sc), EffectiveDirection(ns)))
+		}
+		// invert_signal flips BUY<->SELL on the very next signal — toggling
+		// while a position is open re-interprets the same signal as a close
+		// (for the side that's now opposite direction), risking an unintended
+		// flatten. Block until flat, same shape as the Direction guard above.
+		if sc.InvertSignal != ns.InvertSignal && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] invert_signal changed with open positions (%t -> %t; flatten first or restart after close)",
+				sc.ID, sc.InvertSignal, ns.InvertSignal))
 		}
 		// #486: HL rejects margin-mode changes on an open position; treat
 		// the same way as Leverage. Stays hot-reloadable when flat.
