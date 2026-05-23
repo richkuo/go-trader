@@ -279,7 +279,7 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 // cached resolver outside the lock and call
 // reconcileHyperliquidPositionsWithResolver.
 func reconcileHyperliquidPositions(stratState *StrategyState, sym string, positions []HLPosition, accountAddress string, logger *StrategyLogger) bool {
-	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, directHyperliquidReconcileFillResolver(accountAddress), logger, nil)
+	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, directHyperliquidReconcileFillResolver(accountAddress), logger, nil, StrategyConfig{})
 }
 
 // reconcileHyperliquidPositionsForStrategy is the production entry point with
@@ -318,11 +318,11 @@ func reconcileHyperliquidPositionsForStrategy(
 		// by the booker; the legacy reconciler's qty/side/avgCost resync will
 		// no-op because virtual now matches on-chain. Continue through it for
 		// idempotent housekeeping (multiplier migration, leverage seed).
-		reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts)
+		reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts, sc)
 		return true
 	}
 
-	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts)
+	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts, sc)
 }
 
 // stampSoleOwnerRecoveryTierConsumed mirrors post-protection-sync state for a
@@ -440,6 +440,13 @@ func tryBookSoleOwnerTPFill(
 		return false
 	}
 
+	if onChainPos != nil && hyperliquidAllTiersArmedAndCleared(sc, statePos) {
+		onChainAbs := math.Abs(onChainPos.Size)
+		if hlAttemptCloseFromArmedTPClears(stratState, sc, sym, statePos, onChainAbs, resolveFee, logger, pendingAlerts) {
+			return true
+		}
+	}
+
 	lookup, useFillFee := resolveFee(sym, 0, closeQty)
 	logHyperliquidReconcileFillLookup(logger, sym, 0, closeQty, lookup, useFillFee)
 
@@ -538,7 +545,7 @@ func tryBookSoleOwnerTPFill(
 // When pendingAlerts is non-nil, hlAttemptCloseFromTPFills appends TP fill
 // alerts here (same contract as tryBookSoleOwnerTPFill) for owner DM flush
 // after mu.Unlock (#757 re-review).
-func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym string, positions []HLPosition, resolveFee hlReconcileFillResolver, logger *StrategyLogger, pendingAlerts *[]ProtectionFillAlert) bool {
+func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym string, positions []HLPosition, resolveFee hlReconcileFillResolver, logger *StrategyLogger, pendingAlerts *[]ProtectionFillAlert, sc StrategyConfig) bool {
 	changed := false
 
 	// Find the on-chain position for this strategy's symbol.
@@ -560,12 +567,20 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 			side = "short"
 		}
 		if statePos.Quantity != qty || statePos.Side != side {
-			logger.Info("hl-sync: reconciled %s: state=%.6f %s → on-chain=%.6f %s @ $%.2f",
-				sym, statePos.Quantity, statePos.Side, qty, side, onChainPos.EntryPrice)
-			statePos.Quantity = qty
-			statePos.Side = side
-			statePos.AvgCost = onChainPos.EntryPrice
-			changed = true
+			skipQtyResync := sc.ID != "" &&
+				math.Abs(statePos.Quantity-qty) > 1e-6 &&
+				hyperliquidAllTiersArmedAndCleared(sc, statePos)
+			if skipQtyResync {
+				logger.Info("hl-sync: %s qty drift state=%.6f %s on-chain=%.6f %s (not auto-resyncing — all TP tiers armed/cleared, #777)",
+					sym, statePos.Quantity, statePos.Side, qty, side)
+			} else {
+				logger.Info("hl-sync: reconciled %s: state=%.6f %s → on-chain=%.6f %s @ $%.2f",
+					sym, statePos.Quantity, statePos.Side, qty, side, onChainPos.EntryPrice)
+				statePos.Quantity = qty
+				statePos.Side = side
+				statePos.AvgCost = onChainPos.EntryPrice
+				changed = true
+			}
 		}
 		// #254: always pull the current on-chain leverage and ensure Multiplier=1
 		// so PortfolioValue uses the PnL branch. Also migrates legacy positions
@@ -1108,8 +1123,17 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 							continue
 						}
 						tierIdx, hasCleared := hyperliquidClearedTPTier(sc, pos, closeQty)
-						if !hasCleared {
+						dustAllArmed := !hasCleared &&
+							hyperliquidAllTiersArmedAndCleared(sc, pos) &&
+							closeQty > 1e-9 && closeQty < pos.Quantity-1e-6
+						if !hasCleared && !dustAllArmed {
 							continue
+						}
+						if dustAllArmed {
+							tiers := strategyTPTiersForRegime(sc, pos.Regime)
+							if len(tiers) > 0 {
+								tierIdx = len(tiers) - 1
+							}
 						}
 						if candidateID != "" {
 							// Multiple TP owners changed in the same window; leave the
@@ -1120,11 +1144,31 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 						candidateID, candidateSS, candidatePos, candidateTierIdx = id, ss, pos, tierIdx
 					}
 					if candidateID != "" && candidateSS != nil && candidatePos != nil && closeQty <= candidatePos.Quantity+1e-6 {
-						if mark, ok := prices[coin]; ok && mark > 0 {
-							logger, logErr := logMgr.GetStrategyLogger(candidateID)
-							if logErr != nil {
-								fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", candidateID, logErr)
+						sc, scOK := strategyByID[candidateID]
+						logger, logErr := logMgr.GetStrategyLogger(candidateID)
+						if logErr != nil {
+							fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", candidateID, logErr)
+						}
+						targetResidual := candidatePos.Quantity - closeQty
+						if targetResidual < 0 {
+							targetResidual = 0
+						}
+						if scOK && hyperliquidAllTiersArmedAndCleared(sc, candidatePos) {
+							beforeQty := candidatePos.Quantity
+							if hlAttemptCloseFromArmedTPClears(candidateSS, sc, coin, candidatePos, targetResidual, resolveFee, logger, &pendingAlerts) {
+								changed = true
+								bookedQty := beforeQty
+								if posAfter := candidateSS.Positions[coin]; posAfter != nil {
+									bookedQty -= posAfter.Quantity
+								}
+								if closeSide == "long" {
+									virtualQty -= bookedQty
+								} else {
+									virtualQty += bookedQty
+								}
+								delta = virtualQty - onChainQty
 							}
+						} else if mark, ok := prices[coin]; ok && mark > 0 {
 							lookup, useFillFee := resolveFee(coin, 0, closeQty)
 							logHyperliquidReconcileFillLookup(logger, coin, 0, closeQty, lookup, useFillFee)
 							detector3OID := ""
@@ -1225,6 +1269,187 @@ func hyperliquidSharedPartialCloseDrift(virtualQty, onChainQty float64) (string,
 	return "", 0, false
 }
 
+// hyperliquidAllTiersArmedAndCleared is true when every configured TP tier was
+// armed at least once and every resting TP OID is zero — i.e. all tiers have
+// filled/cleared. Distinguishes that state from a never-placed TP list
+// (TPArmedTiers all false, TPOIDs all zero) per #777.
+func hyperliquidAllTiersArmedAndCleared(sc StrategyConfig, pos *Position) bool {
+	if pos == nil {
+		return false
+	}
+	tiers := strategyTPTiersForRegime(sc, pos.Regime)
+	if len(tiers) == 0 {
+		return false
+	}
+	tpOIDs := tpOIDsForTierCount(pos.TPOIDs, len(tiers))
+	armed := tpArmedTiersForTierCount(pos.TPArmedTiers, len(tiers))
+	for i := range tiers {
+		if tpOIDs[i] != 0 {
+			return false
+		}
+		if !armed[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// hyperliquidTPTierIncrementalCloseQty returns the position-fraction closed
+// by tier tierIdx given cumulative close_fraction tiers on initialQty.
+func hyperliquidTPTierIncrementalCloseQty(initialQty float64, tiers []hlProtectionTier, tierIdx int) float64 {
+	if initialQty <= 0 || tierIdx < 0 || tierIdx >= len(tiers) {
+		return 0
+	}
+	prevFrac := 0.0
+	if tierIdx > 0 {
+		prevFrac = tiers[tierIdx-1].Fraction
+	}
+	currFrac := tiers[tierIdx].Fraction
+	if tierIdx == len(tiers)-1 {
+		currFrac = 1.0
+	}
+	delta := currFrac - prevFrac
+	if delta <= 0 {
+		return 0
+	}
+	return initialQty * delta
+}
+
+// tpOIDsFromOpenTrade returns TP OIDs snapshotted on the open trade row when
+// protection-sync has already zeroed pos.TPOIDs but the open trade still
+// carries the resting order IDs from placement time (#777).
+func tpOIDsFromOpenTrade(s *StrategyState, sym string, tierCount int) []int64 {
+	if s == nil || sym == "" || tierCount <= 0 {
+		return nil
+	}
+	for i := len(s.TradeHistory) - 1; i >= 0; i-- {
+		t := &s.TradeHistory[i]
+		if t.Symbol != sym {
+			continue
+		}
+		if t.IsClose {
+			break
+		}
+		oids := tpOIDsForTierCount(t.TPOIDs, tierCount)
+		for _, oid := range oids {
+			if oid > 0 {
+				return oids
+			}
+		}
+		return oids
+	}
+	return nil
+}
+
+// tpOIDsForReconcileLookup prefers live pos.TPOIDs when any are positive;
+// otherwise falls back to the open-trade snapshot for dust reconciliation.
+func tpOIDsForReconcileLookup(s *StrategyState, pos *Position, sym string, tierCount int) []int64 {
+	live := tpOIDsForTierCount(pos.TPOIDs, tierCount)
+	for _, oid := range live {
+		if oid > 0 {
+			return live
+		}
+	}
+	return tpOIDsFromOpenTrade(s, sym, tierCount)
+}
+
+// hlAttemptCloseFromArmedTPClears books each filled TP tier at userFills VWAP
+// when all tiers are armed+cleared (TPOIDs all zero) but a same-direction dust
+// residual remains on-chain. Returns true when at least one tier was booked.
+func hlAttemptCloseFromArmedTPClears(
+	s *StrategyState,
+	sc StrategyConfig,
+	sym string,
+	pos *Position,
+	targetResidualQty float64,
+	resolveFee hlReconcileFillResolver,
+	logger *StrategyLogger,
+	pendingAlerts *[]ProtectionFillAlert,
+) bool {
+	if s == nil || pos == nil || resolveFee == nil || !hyperliquidAllTiersArmedAndCleared(sc, pos) {
+		return false
+	}
+	if pos.Quantity <= targetResidualQty+1e-9 {
+		return false
+	}
+	if pos.StopLossOID > 0 {
+		if lookup, slFilled := resolveFee(sym, pos.StopLossOID, pos.Quantity); hlReconcileSLFillConfirmed(lookup, slFilled, pos.StopLossOID) {
+			return false
+		}
+	}
+	tiers := strategyTPTiersForRegime(sc, pos.Regime)
+	if len(tiers) == 0 {
+		return false
+	}
+	initQty := pos.InitialQuantity
+	if initQty <= 0 {
+		initQty = pos.Quantity
+	}
+	lookupOIDs := tpOIDsForReconcileLookup(s, pos, sym, len(tiers))
+	booked := false
+	for i := range tiers {
+		cur := s.Positions[sym]
+		if cur == nil || cur.Quantity <= targetResidualQty+1e-9 {
+			break
+		}
+		tierQty := hyperliquidTPTierIncrementalCloseQty(initQty, tiers, i)
+		if tierQty <= 1e-9 {
+			continue
+		}
+		var lookup HLFillLookup
+		var useFillFee bool
+		if i < len(lookupOIDs) && lookupOIDs[i] > 0 {
+			lookup, useFillFee = resolveFee(sym, lookupOIDs[i], tierQty)
+		}
+		if !useFillFee || lookup.Px <= 0 || lookup.FilledQty <= 0 {
+			lookup, useFillFee = resolveFee(sym, 0, tierQty)
+		}
+		if !useFillFee || lookup.Px <= 0 || lookup.FilledQty <= 0 {
+			continue
+		}
+		closeQty := lookup.FilledQty
+		if closeQty > cur.Quantity-targetResidualQty+1e-9 {
+			closeQty = cur.Quantity - targetResidualQty
+		}
+		if closeQty <= 1e-9 {
+			continue
+		}
+		alertSide := cur.Side
+		oidStr := ""
+		if lookup.OID > 0 {
+			oidStr = strconv.FormatInt(lookup.OID, 10)
+		}
+		logHyperliquidReconcileFillLookup(logger, sym, lookup.OID, closeQty, lookup, useFillFee)
+		reason := fmt.Sprintf("hl_sync_tp%d_fill", i+1)
+		detailsPrefix := fmt.Sprintf("TP%d fill close", i+1)
+		logPrefix := fmt.Sprintf("TP%d fill reconciled", i+1)
+		if !bookPerpsPartialCloseWithFillFee(s, sym, closeQty, lookup.Px, lookup.Fee, true, oidStr, reason, detailsPrefix, logPrefix, logger) {
+			break
+		}
+		booked = true
+		if pendingAlerts != nil {
+			remaining := 0.0
+			if posAfter := s.Positions[sym]; posAfter != nil {
+				remaining = posAfter.Quantity
+			}
+			*pendingAlerts = append(*pendingAlerts, ProtectionFillAlert{
+				StrategyID:      s.ID,
+				Symbol:          sym,
+				Side:            alertSide,
+				FillType:        tpTierLabel(i),
+				IsPartial:       remaining > targetResidualQty+1e-9,
+				FillPrice:       lookup.Px,
+				CloseQty:        closeQty,
+				RemainingQty:    remaining,
+				RealizedPnL:     lastBookedTradePnL(s),
+				HasPnL:          true,
+				ExchangeOrderID: oidStr,
+			})
+		}
+	}
+	return booked
+}
+
 // hyperliquidClearedTPTier reports whether sc/pos shows a cleared TP tier
 // attributable to closeQty, and which tier index (0-based) cleared. Used by
 // reconciler Detector 3 to attribute partial closes and by the TP-fill DM
@@ -1270,7 +1495,8 @@ func hyperliquidClearedTPTier(sc StrategyConfig, pos *Position, closeQty float64
 	// All TP tiers gone usually means the final tier filled. Treat that as
 	// attributable only when the observed drift can fully close this strategy;
 	// otherwise an all-zero, never-placed TP list would make ambiguous gaps look
-	// actionable.
+	// actionable — unless every tier was armed (filled) and only dust remains
+	// (#777).
 	if math.Abs(pos.Quantity-closeQty) <= 1e-6 {
 		return len(tpOIDs) - 1, true
 	}
