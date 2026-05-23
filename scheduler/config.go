@@ -297,39 +297,40 @@ type StrategyRef struct {
 
 // StrategyConfig describes a single strategy job.
 type StrategyConfig struct {
-	ID                     string              `json:"id"`
-	Type                   string              `json:"type"`                // "spot", "options", "perps", "futures", or "manual"
-	Platform               string              `json:"platform"`            // "deribit", "ibkr", "binanceus", "hyperliquid", "topstep"
-	Symbol                 string              `json:"symbol,omitempty"`    // manual strategies: trading symbol (e.g. "ETH")
-	Timeframe              string              `json:"timeframe,omitempty"` // manual strategies: OHLCV timeframe (e.g. "1h")
-	Script                 string              `json:"script"`
-	Args                   []string            `json:"args"`
-	OpenStrategy           StrategyRef         `json:"open_strategy"`              // entry strategy ref (name + params). Migrated from legacy string-typed open_strategy / args[0] in v13 (#640)
-	CloseStrategies        []StrategyRef       `json:"close_strategies,omitempty"` // exit strategy refs (name + params); max close_fraction wins (#480). Migrated from legacy []string in v13 (#640)
-	AllowedRegimes         []string            `json:"allowed_regimes,omitempty"`  // gate entries: skip signal when current regime not in this list; empty = allow all (#482)
-	Capital                float64             `json:"capital"`
-	CapitalPct             float64             `json:"capital_pct,omitempty"`     // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
-	InitialCapital         float64             `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
-	MaxDrawdownPct         float64             `json:"max_drawdown_pct"`
-	IntervalSeconds        int                 `json:"interval_seconds,omitempty"`           // per-strategy override (0 = use global)
-	HTFFilter              bool                `json:"htf_filter,omitempty"`                 // higher-timeframe trend filter
-	InvertSignal           bool                `json:"invert_signal,omitempty"`              // HL perps/manual only: flip BUY<->SELL on a non-zero signal before execution (HOLD/0 is never flipped). Lets inverse variants reuse the same open/close refs. Composes with Direction — invert runs in the Go layer before direction interprets the resulting sign (e.g. direction="short" + invert_signal=true opens short on raw-BUY triggers, distinct from plain direction="short" which opens on raw-SELL). Rejected outside HL perps/manual.
-	AllowShorts            bool                `json:"allow_shorts,omitempty"`               // DEPRECATED — use Direction. Perps only; legacy boolean retained on the struct so pre-v14 JSON unmarshals cleanly. Read via EffectiveDirection / PerpsAllowsShort / PerpsAllowsLong, never directly. Migrated to Direction in v14 (#656).
-	Direction              string              `json:"direction,omitempty"`                  // perps only: "long" (default; signal=1 opens, signal=-1 closes long), "short" (signal=-1 opens, signal=1 closes short), "both" (bidirectional). Empty falls back to AllowShorts (legacy). v14 migration converts allow_shorts→direction. (#656)
-	Leverage               float64             `json:"leverage,omitempty"`                   // perps exchange leverage (default 1 = no leverage); used for exchange margin/risk and HL update_leverage (#254/#497)
-	SizingLeverage         float64             `json:"sizing_leverage,omitempty"`            // perps notional multiplier; defaults to Leverage for backwards compatibility (#497). Notional formula: notional = cash * sizing_leverage; size = notional / price. For margin-based sizing, prefer MarginPerTradeUSD (#518).
-	MarginPerTradeUSD      *float64            `json:"margin_per_trade_usd,omitempty"`       // perps only: USD margin to deploy per open. When set (positive), overrides SizingLeverage: notional = min(MarginPerTradeUSD, cash) * exchange_leverage; size = notional / price. Lets operators size in margin-space directly so high exchange_leverage doesn't decouple intent from outcome (#518).
-	StopLossPct            *float64            `json:"stop_loss_pct,omitempty"`              // HL perps only: % from entry to place a reduce-only stop-loss trigger. Pointer so omitted (nil) falls through to StopLossMarginPct then MaxDrawdownPct for single-coin strategies (#484); LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables auto-SL (#412)
-	StopLossMarginPct      *float64            `json:"stop_loss_margin_pct,omitempty"`       // HL perps only: % of deployed margin to lose before stop-loss trigger; mutually exclusive with stop_loss_pct; price % derived as StopLossMarginPct / Leverage at order time. Pointer so omitted falls through to MaxDrawdownPct for single-coin strategies; LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables (#487, #484)
-	TrailingStopPct        *float64            `json:"trailing_stop_pct,omitempty"`          // HL perps only: synthetic trailing SL distance from the best mark seen while open; mutually exclusive with stop_loss_pct and stop_loss_margin_pct (#501)
-	TrailingStopATRMult    *float64            `json:"trailing_stop_atr_mult,omitempty"`     // HL perps only: trailing SL distance derived from entry ATR at open (effective_pct = mult * entry_atr / avg_cost * 100); fixed for the life of the position; mutually exclusive with trailing_stop_pct, stop_loss_pct, stop_loss_margin_pct (#505)
-	StopLossATRMult        *float64            `json:"stop_loss_atr_mult,omitempty"`         // HL perps only: fixed (non-trailing) SL distance derived from entry ATR at open (trigger_px = avg_cost ± mult * entry_atr); armed once on the cycle after open and never updated; mutually exclusive with stop_loss_pct, stop_loss_margin_pct, trailing_stop_pct, trailing_stop_atr_mult. When all five stop fields are omitted on a sole-owner HL perps strategy, LoadConfig defaults this to 1.0 so every position has volatility-adjusted exchange-side protection (#562)
-	StopLossATRRegime      *RegimeATRBlock     `json:"stop_loss_atr_regime,omitempty"`       // HL perps only: regime-aware sibling of stop_loss_atr_mult — resolves the ATR multiplier from pos.Regime stamped at open. Mutually exclusive with the four scalar siblings AND stop_loss_atr_mult. Requires regime detection enabled at the top-level cfg.Regime. (#733)
-	TrailingStopATRRegime  *RegimeATRBlock     `json:"trailing_stop_atr_regime,omitempty"`   // HL perps only: regime-aware sibling of trailing_stop_atr_mult — trailing distance frozen at open via pos.Regime. Mutually exclusive with the scalar siblings. Requires regime detection. (#733)
-	TrailingStopMinMovePct *float64            `json:"trailing_stop_min_move_pct,omitempty"` // HL perps trailing SL only: minimum trigger-price move before cancel/replace; nil defaults to 0.5% (#501)
-	MarginMode             string              `json:"margin_mode,omitempty"`                // HL perps only: "isolated" (default) or "cross"; sent via update_leverage on fresh opens to enforce per-position liq isolation (#486)
-	ThetaHarvest           *ThetaHarvestConfig `json:"theta_harvest,omitempty"`
-	FuturesConfig          *FuturesConfig      `json:"futures,omitempty"`
+	ID                      string                   `json:"id"`
+	Type                    string                   `json:"type"`                // "spot", "options", "perps", "futures", or "manual"
+	Platform                string                   `json:"platform"`            // "deribit", "ibkr", "binanceus", "hyperliquid", "topstep"
+	Symbol                  string                   `json:"symbol,omitempty"`    // manual strategies: trading symbol (e.g. "ETH")
+	Timeframe               string                   `json:"timeframe,omitempty"` // manual strategies: OHLCV timeframe (e.g. "1h")
+	Script                  string                   `json:"script"`
+	Args                    []string                 `json:"args"`
+	OpenStrategy            StrategyRef              `json:"open_strategy"`              // entry strategy ref (name + params). Migrated from legacy string-typed open_strategy / args[0] in v13 (#640)
+	CloseStrategies         []StrategyRef            `json:"close_strategies,omitempty"` // exit strategy refs (name + params); max close_fraction wins (#480). Migrated from legacy []string in v13 (#640)
+	AllowedRegimes          []string                 `json:"allowed_regimes,omitempty"`  // gate entries: skip signal when current regime not in this list; empty = allow all (#482)
+	Capital                 float64                  `json:"capital"`
+	CapitalPct              float64                  `json:"capital_pct,omitempty"`     // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
+	InitialCapital          float64                  `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
+	MaxDrawdownPct          float64                  `json:"max_drawdown_pct"`
+	IntervalSeconds         int                      `json:"interval_seconds,omitempty"`           // per-strategy override (0 = use global)
+	HTFFilter               bool                     `json:"htf_filter,omitempty"`                 // higher-timeframe trend filter
+	InvertSignal            bool                     `json:"invert_signal,omitempty"`              // HL perps/manual only: flip BUY<->SELL on a non-zero signal before execution (HOLD/0 is never flipped). Lets inverse variants reuse the same open/close refs. Composes with Direction — invert runs in the Go layer before direction interprets the resulting sign (e.g. direction="short" + invert_signal=true opens short on raw-BUY triggers, distinct from plain direction="short" which opens on raw-SELL). Rejected outside HL perps/manual.
+	AllowShorts             bool                     `json:"allow_shorts,omitempty"`               // DEPRECATED — use Direction. Perps only; legacy boolean retained on the struct so pre-v14 JSON unmarshals cleanly. Read via EffectiveDirection / PerpsAllowsShort / PerpsAllowsLong, never directly. Migrated to Direction in v14 (#656).
+	Direction               string                   `json:"direction,omitempty"`                  // perps only: "long" (default; signal=1 opens, signal=-1 closes long), "short" (signal=-1 opens, signal=1 closes short), "both" (bidirectional). Empty falls back to AllowShorts (legacy). v14 migration converts allow_shorts→direction. (#656)
+	Leverage                float64                  `json:"leverage,omitempty"`                   // perps exchange leverage (default 1 = no leverage); used for exchange margin/risk and HL update_leverage (#254/#497)
+	SizingLeverage          float64                  `json:"sizing_leverage,omitempty"`            // perps notional multiplier; defaults to Leverage for backwards compatibility (#497). Notional formula: notional = cash * sizing_leverage; size = notional / price. For margin-based sizing, prefer MarginPerTradeUSD (#518).
+	MarginPerTradeUSD       *float64                 `json:"margin_per_trade_usd,omitempty"`       // perps only: USD margin to deploy per open. When set (positive), overrides SizingLeverage: notional = min(MarginPerTradeUSD, cash) * exchange_leverage; size = notional / price. Lets operators size in margin-space directly so high exchange_leverage doesn't decouple intent from outcome (#518).
+	StopLossPct             *float64                 `json:"stop_loss_pct,omitempty"`              // HL perps only: % from entry to place a reduce-only stop-loss trigger. Pointer so omitted (nil) falls through to StopLossMarginPct then MaxDrawdownPct for single-coin strategies (#484); LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables auto-SL (#412)
+	StopLossMarginPct       *float64                 `json:"stop_loss_margin_pct,omitempty"`       // HL perps only: % of deployed margin to lose before stop-loss trigger; mutually exclusive with stop_loss_pct; price % derived as StopLossMarginPct / Leverage at order time. Pointer so omitted falls through to MaxDrawdownPct for single-coin strategies; LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables (#487, #484)
+	TrailingStopPct         *float64                 `json:"trailing_stop_pct,omitempty"`          // HL perps only: synthetic trailing SL distance from the best mark seen while open; mutually exclusive with stop_loss_pct and stop_loss_margin_pct (#501)
+	TrailingStopATRMult     *float64                 `json:"trailing_stop_atr_mult,omitempty"`     // HL perps only: trailing SL distance derived from entry ATR at open (effective_pct = mult * entry_atr / avg_cost * 100); fixed for the life of the position; mutually exclusive with trailing_stop_pct, stop_loss_pct, stop_loss_margin_pct (#505)
+	StopLossATRMult         *float64                 `json:"stop_loss_atr_mult,omitempty"`         // HL perps only: fixed (non-trailing) SL distance derived from entry ATR at open (trigger_px = avg_cost ± mult * entry_atr); armed once on the cycle after open and never updated; mutually exclusive with stop_loss_pct, stop_loss_margin_pct, trailing_stop_pct, trailing_stop_atr_mult. When all five stop fields are omitted on a sole-owner HL perps strategy, LoadConfig defaults this to 1.0 so every position has volatility-adjusted exchange-side protection (#562)
+	StopLossATRRegime       *RegimeATRBlock          `json:"stop_loss_atr_regime,omitempty"`       // HL perps only: regime-aware sibling of stop_loss_atr_mult — resolves the ATR multiplier from pos.Regime stamped at open. Mutually exclusive with the four scalar siblings AND stop_loss_atr_mult. Requires regime detection enabled at the top-level cfg.Regime. (#733)
+	TrailingStopATRRegime   *RegimeATRBlock          `json:"trailing_stop_atr_regime,omitempty"`   // HL perps only: regime-aware sibling of trailing_stop_atr_mult — trailing distance frozen at open via pos.Regime. Mutually exclusive with the scalar siblings. Requires regime detection. (#733)
+	TrailingStopMinMovePct  *float64                 `json:"trailing_stop_min_move_pct,omitempty"` // HL perps trailing SL only: minimum trigger-price move before cancel/replace; nil defaults to 0.5% (#501)
+	MarginMode              string                   `json:"margin_mode,omitempty"`                // HL perps only: "isolated" (default) or "cross"; sent via update_leverage on fresh opens to enforce per-position liq isolation (#486)
+	ThetaHarvest            *ThetaHarvestConfig      `json:"theta_harvest,omitempty"`
+	FuturesConfig           *FuturesConfig           `json:"futures,omitempty"`
+	RegimeDirectionalPolicy *RegimeDirectionalPolicy `json:"regime_directional_policy,omitempty"` // HL perps only: regime-aware override for Direction + InvertSignal. When set, runHyperliquidCheck resolves the effective pair per-cycle from the current regime (when flat) or pos.Regime (when an open position is held — "hold until natural exit" semantics). Static Direction/InvertSignal are the base; the policy overrides per regime. Requires regime detection enabled at top-level cfg.Regime. (#779)
 }
 
 // EffectiveSizingLeverage returns the notional-sizing multiplier for perps.
@@ -1404,6 +1405,23 @@ func ValidateConfig(cfg *Config) error {
 			if sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") {
 				errs = append(errs, fmt.Sprintf("%s: invert_signal is only supported for HL perps/manual strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
+		}
+
+		// regime_directional_policy: HL perps only (same surface as invert_signal
+		// since both override the same fields runHyperliquidCheck consumes).
+		// Requires regime detection enabled at top-level cfg.Regime — without it
+		// result.Regime stays empty and the resolver always falls back to the
+		// static base config, which silently defeats the policy. Reject the
+		// asymmetric config at startup so the operator sees the gap. (#779)
+		if sc.RegimeDirectionalPolicy.IsConfigured() {
+			if sc.Platform != "hyperliquid" || sc.Type != "perps" {
+				errs = append(errs, fmt.Sprintf("%s: regime_directional_policy is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			}
+			if cfg.Regime == nil || !cfg.Regime.Enabled {
+				errs = append(errs, fmt.Sprintf("%s: regime_directional_policy requires top-level regime.enabled=true", prefix))
+			}
+			polErrs := sc.RegimeDirectionalPolicy.ResolveRaw(prefix + ".regime_directional_policy")
+			errs = append(errs, polErrs...)
 		}
 
 		// #486: validate margin_mode (HL perps only). Empty is allowed

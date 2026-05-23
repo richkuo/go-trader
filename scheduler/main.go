@@ -1445,7 +1445,7 @@ func main() {
 									mu.Unlock()
 								}
 							}
-						} else if result, signalStr, price, ok := runHyperliquidCheck(sc, prices, hlPosCtx, cfg.Regime, logger); ok {
+						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, logger); ok {
 							prices[result.Symbol] = price
 							if regimeBlocksOpen(sc.AllowedRegimes, result.Regime, hlPosQty) {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", result.Regime)
@@ -2446,13 +2446,19 @@ func isHLLiveReconcilable(sc StrategyConfig) bool {
 }
 
 // runHyperliquidCheck runs check_hyperliquid.py signal-check mode (Phase 3, no lock).
-func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
+//
+// sc is a pointer because the regime-aware directional policy (#779) needs
+// to mutate Direction + InvertSignal in the caller's local sc copy after
+// result.Regime is known, so downstream EffectiveDirection / perpsLiveOrderSize
+// / PerpsOrderSkipReason calls in execute paths see the effective values.
+// Mutation is scoped to the loop-local sc; cfg.Strategies is never touched.
+func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	// Suppress in-process close evaluators that overlap on-chain reduce-only
 	// protection — running both races on the shared on-chain position
 	// (#604 review #2). Filter only changes the argv passed to Python; the
 	// stored config is untouched.
-	scForCheck := strategyConfigWithOnChainProtectionFilter(sc)
+	scForCheck := strategyConfigWithOnChainProtectionFilter(*sc)
 	args = appendOpenCloseArgs(args, scForCheck, posCtx)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
@@ -2488,7 +2494,17 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, posCtx Po
 		logger.Error("Script returned error: %s", result.Error)
 		return nil, "", 0, false
 	}
-	applySignalInversion(sc, result, logger)
+	// #779: resolve regime-aware directional policy BEFORE applySignalInversion
+	// so the invert decision uses the effective sc.InvertSignal. When flat,
+	// resolves from result.Regime (current cycle); while a position is open,
+	// uses posCtx.Regime (the regime stamped at open) so the position runs
+	// to its natural exit under the policy that opened it.
+	if entry, applied := applyRegimeDirectionalPolicy(sc, result.Regime, posCtx.Regime, posCtx.Quantity); applied {
+		regimeKey := effectiveRegimeForPolicy(result.Regime, posCtx.Regime, posCtx.Quantity)
+		logger.Info("Regime directional policy: regime=%s -> direction=%q invert_signal=%t",
+			regimeKey, entry.Direction, entry.InvertSignal)
+	}
+	applySignalInversion(*sc, result, logger)
 
 	signalStr := signalLabel(result.Signal)
 	logger.Info("Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)

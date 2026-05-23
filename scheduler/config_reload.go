@@ -151,6 +151,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			sc.Direction = ns.Direction
 			sc.AllowShorts = ns.AllowShorts
 		}
+		// #779: regime_directional_policy mutation when flat. State-compat
+		// gate above blocks the change while a position is open; if we got
+		// here with a different shape, the strategy is flat and the next
+		// cycle's resolver reads the new map. Compare structural equality.
+		if !sc.RegimeDirectionalPolicy.EqualForReload(ns.RegimeDirectionalPolicy) {
+			addChange("strategy[%s].regime_directional_policy: shape updated", sc.ID)
+			sc.RegimeDirectionalPolicy = ns.RegimeDirectionalPolicy
+		}
 	}
 
 	if portfolioRiskMaxDrawdown(cfg.PortfolioRisk) != portfolioRiskMaxDrawdown(next.PortfolioRisk) {
@@ -395,6 +403,25 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID))
 			}
 		}
+		// #779: regime_directional_policy shape changes (add/remove/mutate)
+		// while a position is open would shift the resolver's effective
+		// (Direction, InvertSignal) underneath the held position. Since
+		// effectiveRegimeForPolicy uses pos.Regime while open — by design
+		// so the policy that opened the position governs its lifecycle —
+		// mutating the per-regime entry for pos.Regime mid-position can
+		// silently change what counts as a "close" signal. Block the
+		// reshape; changes when flat take effect on the next cycle.
+		if sc.Type == "perps" && sc.Platform == "hyperliquid" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			oldConfigured := sc.RegimeDirectionalPolicy.IsConfigured()
+			newConfigured := ns.RegimeDirectionalPolicy.IsConfigured()
+			if oldConfigured != newConfigured {
+				errs = append(errs, fmt.Sprintf("strategy[%s] regime_directional_policy mode changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			} else if oldConfigured && !sc.RegimeDirectionalPolicy.EqualForReload(ns.RegimeDirectionalPolicy) {
+				errs = append(errs, fmt.Sprintf("strategy[%s] regime_directional_policy shape changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
+		}
 		// #716 item 1: sl_after rules are armed at the next cleared TP tier; a
 		// mid-position add/remove/mode change would engage the post-TP machinery
 		// (and, for trail_from_here, the trailing walker) without the validation
@@ -427,15 +454,17 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.OpenStrategy = StrategyRef{}
 	sc.CloseStrategies = nil
 	sc.AllowedRegimes = nil
-	sc.MarginMode = ""              // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
-	sc.TrailingStopPct = nil        // #501: hot-reloadable; state-compat allows pct changes but blocks mode switches while open
-	sc.TrailingStopATRMult = nil    // #505: hot-reloadable; same state-compat treatment as TrailingStopPct
-	sc.StopLossATRMult = nil        // #562: hot-reloadable; mode toggle blocked while open
-	sc.StopLossATRRegime = nil      // #733: hot-reloadable; state-compat blocks scalar↔regime + shape changes while open
-	sc.TrailingStopATRRegime = nil  // #733: hot-reloadable; state-compat blocks scalar↔regime + shape changes while open
-	sc.TrailingStopMinMovePct = nil // #501: hot-reloadable tuning knob for trailing trigger churn
-	sc.Direction = ""               // #656: hot-reloadable when flat; state-compat blocks change while open
-	sc.AllowShorts = false          // #656: legacy field — direction change is what gates hot reload
+	sc.MarginMode = ""               // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
+	sc.TrailingStopPct = nil         // #501: hot-reloadable; state-compat allows pct changes but blocks mode switches while open
+	sc.TrailingStopATRMult = nil     // #505: hot-reloadable; same state-compat treatment as TrailingStopPct
+	sc.StopLossATRMult = nil         // #562: hot-reloadable; mode toggle blocked while open
+	sc.StopLossATRRegime = nil       // #733: hot-reloadable; state-compat blocks scalar↔regime + shape changes while open
+	sc.TrailingStopATRRegime = nil   // #733: hot-reloadable; state-compat blocks scalar↔regime + shape changes while open
+	sc.TrailingStopMinMovePct = nil  // #501: hot-reloadable tuning knob for trailing trigger churn
+	sc.Direction = ""                // #656: hot-reloadable when flat; state-compat blocks change while open
+	sc.AllowShorts = false           // #656: legacy field — direction change is what gates hot reload
+	sc.InvertSignal = false          // #775: hot-reloadable; state-compat blocks change while open. Needed in shape mask so the immutable-fields DeepEqual doesn't flag a pure invert_signal toggle as "restart required" (parallel to Direction above).
+	sc.RegimeDirectionalPolicy = nil // #779: hot-reloadable; state-compat blocks add/remove/reshape while open
 	return sc
 }
 

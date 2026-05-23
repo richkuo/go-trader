@@ -325,18 +325,24 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	defer ss.mu.RUnlock()
 
 	type StratStatus struct {
-		ID              string                     `json:"id"`
-		Type            string                     `json:"type"`
-		Cash            float64                    `json:"cash"`
-		InitialCapital  float64                    `json:"initial_capital"`
-		Positions       map[string]*Position       `json:"positions"`
-		OptionPositions map[string]*OptionPosition `json:"option_positions"`
-		TradeCount      int                        `json:"trade_count"`
-		PortfolioValue  float64                    `json:"portfolio_value"`
-		PnL             float64                    `json:"pnl"`
-		PnLPct          float64                    `json:"pnl_pct"`
-		RiskState       RiskState                  `json:"risk_state"`
-		Regime          string                     `json:"regime,omitempty"`
+		ID                      string                     `json:"id"`
+		Type                    string                     `json:"type"`
+		Cash                    float64                    `json:"cash"`
+		InitialCapital          float64                    `json:"initial_capital"`
+		Positions               map[string]*Position       `json:"positions"`
+		OptionPositions         map[string]*OptionPosition `json:"option_positions"`
+		TradeCount              int                        `json:"trade_count"`
+		PortfolioValue          float64                    `json:"portfolio_value"`
+		PnL                     float64                    `json:"pnl"`
+		PnLPct                  float64                    `json:"pnl_pct"`
+		RiskState               RiskState                  `json:"risk_state"`
+		Regime                  string                     `json:"regime,omitempty"`
+		Direction               string                     `json:"direction,omitempty"`                 // #779: base direction from config
+		InvertSignal            bool                       `json:"invert_signal,omitempty"`             // #779: base invert from config
+		EffectiveDirection      string                     `json:"effective_direction,omitempty"`       // #779: resolved direction for the active regime (policy override or base)
+		EffectiveInvertSignal   bool                       `json:"effective_invert_signal,omitempty"`   // #779: resolved invert for the active regime
+		RegimeDirectionalPolicy bool                       `json:"regime_directional_policy,omitempty"` // #779: true when strategy has a policy block configured
+		EffectivePolicyRegime   string                     `json:"effective_policy_regime,omitempty"`   // #779: regime key the resolver used (pos.Regime while open, current regime when flat); shown only when policy is configured
 	}
 
 	type StatusResp struct {
@@ -385,19 +391,50 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		if initCap > 0 {
 			pnlPct = (pnl / initCap) * 100
 		}
+		// #779: surface base + effective directional policy so operators can
+		// verify why the bot is in long vs. short mode. Effective values are
+		// what the next signal will be evaluated under — pulled by replaying
+		// the resolver against the strategy's first open position (or flat).
+		effDir := EffectiveDirection(sc)
+		effInvert := sc.InvertSignal
+		var effRegimeKey string
+		policyConfigured := sc.RegimeDirectionalPolicy.IsConfigured()
+		if policyConfigured && !sc.RegimeDirectionalPolicy.IsZero() {
+			posQty := 0.0
+			posRegime := ""
+			for _, p := range s.Positions {
+				if p != nil && p.Quantity > 0 {
+					posQty = p.Quantity
+					posRegime = p.Regime
+					break
+				}
+			}
+			effRegimeKey = effectiveRegimeForPolicy(s.Regime, posRegime, posQty)
+			if entry, ok := sc.RegimeDirectionalPolicy.Resolve(effRegimeKey); ok {
+				effDir = entry.Direction
+				effInvert = entry.InvertSignal
+			}
+		}
+
 		resp.Strategies[id] = StratStatus{
-			ID:              s.ID,
-			Type:            s.Type,
-			Cash:            s.Cash,
-			InitialCapital:  initCap,
-			Positions:       s.Positions,
-			OptionPositions: s.OptionPositions,
-			TradeCount:      len(s.TradeHistory),
-			PortfolioValue:  pv,
-			PnL:             pnl,
-			PnLPct:          pnlPct,
-			RiskState:       s.RiskState,
-			Regime:          s.Regime,
+			ID:                      s.ID,
+			Type:                    s.Type,
+			Cash:                    s.Cash,
+			InitialCapital:          initCap,
+			Positions:               s.Positions,
+			OptionPositions:         s.OptionPositions,
+			TradeCount:              len(s.TradeHistory),
+			PortfolioValue:          pv,
+			PnL:                     pnl,
+			PnLPct:                  pnlPct,
+			RiskState:               s.RiskState,
+			Regime:                  s.Regime,
+			Direction:               EffectiveDirection(sc),
+			InvertSignal:            sc.InvertSignal,
+			EffectiveDirection:      effDir,
+			EffectiveInvertSignal:   effInvert,
+			RegimeDirectionalPolicy: policyConfigured,
+			EffectivePolicyRegime:   effRegimeKey,
 		}
 	}
 
