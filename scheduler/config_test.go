@@ -2419,3 +2419,119 @@ func TestValidateConfigManualPerpsMultipleTrailingStopOwnersRejected(t *testing.
 		t.Fatalf("expected trailing-stop peer error, got: %v", err)
 	}
 }
+
+// TestValidateConfigInvertSignal covers #775: invert_signal must be accepted
+// on HL perps/manual regardless of direction (long/short/both compose with
+// invert at different signal layers — invert runs in the Go executor before
+// direction interprets the sign), but must still be rejected on platforms or
+// strategy types where the Go layer never sees a numeric +1/-1 signal to flip.
+func TestValidateConfigInvertSignal(t *testing.T) {
+	hlPerps := func(direction string, invert bool) StrategyConfig {
+		return StrategyConfig{
+			ID:             "hl-test-eth",
+			Type:           "perps",
+			Platform:       "hyperliquid",
+			Script:         "shared_scripts/check_hyperliquid.py",
+			Args:           []string{"sma_crossover", "ETH", "1h", "--mode=paper"},
+			Capital:        1000,
+			Leverage:       5,
+			MaxDrawdownPct: 60,
+			Direction:      direction,
+			InvertSignal:   invert,
+		}
+	}
+	hlManual := func(direction string, invert bool) StrategyConfig {
+		return StrategyConfig{
+			ID:             "hl-manual-eth",
+			Type:           "manual",
+			Platform:       "hyperliquid",
+			Symbol:         "ETH",
+			Timeframe:      "1h",
+			Leverage:       5,
+			Capital:        1000,
+			MaxDrawdownPct: 60,
+			Direction:      direction,
+			InvertSignal:   invert,
+		}
+	}
+
+	t.Run("accepts HL perps + invert + direction=short", func(t *testing.T) {
+		cfg := Config{
+			Strategies:    []StrategyConfig{hlPerps(DirectionShort, true)},
+			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+		}
+		if err := ValidateConfig(&cfg); err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("accepts HL perps + invert + direction=long", func(t *testing.T) {
+		cfg := Config{
+			Strategies:    []StrategyConfig{hlPerps(DirectionLong, true)},
+			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+		}
+		if err := ValidateConfig(&cfg); err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("accepts HL perps + invert + direction=both", func(t *testing.T) {
+		cfg := Config{
+			Strategies:    []StrategyConfig{hlPerps(DirectionBoth, true)},
+			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+		}
+		if err := ValidateConfig(&cfg); err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("accepts HL manual + invert + direction=short", func(t *testing.T) {
+		cfg := Config{
+			Strategies:    []StrategyConfig{hlManual(DirectionShort, true)},
+			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+		}
+		if err := ValidateConfig(&cfg); err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("rejects invert on HL spot", func(t *testing.T) {
+		cfg := Config{
+			Strategies: []StrategyConfig{{
+				ID:             "hl-spot-btc",
+				Type:           "spot",
+				Platform:       "hyperliquid",
+				Script:         "shared_scripts/check_strategy.py",
+				Capital:        1000,
+				MaxDrawdownPct: 60,
+				InvertSignal:   true,
+			}},
+			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+		}
+		err := ValidateConfig(&cfg)
+		if err == nil || !strings.Contains(err.Error(), "invert_signal is only supported for HL perps/manual") {
+			t.Fatalf("expected HL-perps/manual-only error, got: %v", err)
+		}
+	})
+
+	t.Run("rejects invert on non-HL perps", func(t *testing.T) {
+		cfg := Config{
+			Strategies: []StrategyConfig{{
+				ID:             "okx-perps-btc",
+				Type:           "perps",
+				Platform:       "okx",
+				Script:         "shared_scripts/check_okx.py",
+				Args:           []string{"sma_crossover", "BTC-USDT-SWAP", "1h"},
+				Capital:        1000,
+				Leverage:       5,
+				MaxDrawdownPct: 60,
+				InvertSignal:   true,
+			}},
+			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+		}
+		err := ValidateConfig(&cfg)
+		if err == nil || !strings.Contains(err.Error(), "invert_signal is only supported for HL perps/manual") {
+			t.Fatalf("expected HL-perps/manual-only error, got: %v", err)
+		}
+	})
+}

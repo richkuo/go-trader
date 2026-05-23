@@ -313,7 +313,7 @@ type StrategyConfig struct {
 	MaxDrawdownPct         float64             `json:"max_drawdown_pct"`
 	IntervalSeconds        int                 `json:"interval_seconds,omitempty"`           // per-strategy override (0 = use global)
 	HTFFilter              bool                `json:"htf_filter,omitempty"`                 // higher-timeframe trend filter
-	InvertSignal           bool                `json:"invert_signal,omitempty"`              // HL perps/manual only: flip BUY<->SELL on a non-zero signal before execution (HOLD/0 is never flipped). Lets inverse variants reuse the same open/close refs. Rejected with direction="short" (double-flip) and outside HL perps/manual.
+	InvertSignal           bool                `json:"invert_signal,omitempty"`              // HL perps/manual only: flip BUY<->SELL on a non-zero signal before execution (HOLD/0 is never flipped). Lets inverse variants reuse the same open/close refs. Composes with Direction — invert runs in the Go layer before direction interprets the resulting sign (e.g. direction="short" + invert_signal=true opens short on raw-BUY triggers, distinct from plain direction="short" which opens on raw-SELL). Rejected outside HL perps/manual.
 	AllowShorts            bool                `json:"allow_shorts,omitempty"`               // DEPRECATED — use Direction. Perps only; legacy boolean retained on the struct so pre-v14 JSON unmarshals cleanly. Read via EffectiveDirection / PerpsAllowsShort / PerpsAllowsLong, never directly. Migrated to Direction in v14 (#656).
 	Direction              string              `json:"direction,omitempty"`                  // perps only: "long" (default; signal=1 opens, signal=-1 closes long), "short" (signal=-1 opens, signal=1 closes short), "both" (bidirectional). Empty falls back to AllowShorts (legacy). v14 migration converts allow_shorts→direction. (#656)
 	Leverage               float64             `json:"leverage,omitempty"`                   // perps exchange leverage (default 1 = no leverage); used for exchange margin/risk and HL update_leverage (#254/#497)
@@ -1394,17 +1394,15 @@ func ValidateConfig(cfg *Config) error {
 		// scripts emit their own buy/sell logic that runHyperliquidCheck
 		// doesn't see, so the flag would be a silent no-op there. Reject
 		// the config at startup rather than letting it appear to work.
+		//
+		// invert_signal composes cleanly with direction="short": the invert
+		// runs before direction interprets the sign, so the combination opens
+		// short on raw-BUY triggers (an "inverse short-only" strategy),
+		// distinct from plain direction="short" which opens short on
+		// raw-SELL. Both are valid (#775).
 		if sc.InvertSignal {
 			if sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") {
 				errs = append(errs, fmt.Sprintf("%s: invert_signal is only supported for HL perps/manual strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
-			}
-			// direction="short" already inverts open/close semantics in the
-			// executor (signal=-1 opens, signal=1 closes). Adding
-			// invert_signal=true on top double-flips back to long semantics,
-			// which is almost certainly a config mistake — reject so the
-			// operator picks one or the other.
-			if EffectiveDirection(sc) == DirectionShort {
-				errs = append(errs, fmt.Sprintf("%s: invert_signal=true with direction=%q double-flips back to long semantics; drop one of the two", prefix, DirectionShort))
 			}
 		}
 
