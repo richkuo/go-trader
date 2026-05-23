@@ -484,14 +484,18 @@ func runHyperliquidProtectionSync(
 }
 
 // hyperliquidPlacesOnChainTPs reports whether sc is configured to place
-// per-strategy on-chain reduce-only TP orders for HL perps/manual. When true the
-// in-process tiered close evaluator MUST be suppressed — the on-chain limits
-// are the source of truth for tiered exits, and running both produces a race
-// where the limit fills on-chain (shrinking position) and then the close
-// evaluator emits another close_fraction sized off the stale virtual qty
-// (#604 review #2).
+// per-strategy on-chain reduce-only TP orders for HL perps/manual in live mode.
+// When true the in-process tiered close evaluator MUST be suppressed — the
+// on-chain limits are the source of truth for tiered exits, and running both
+// produces a race where the limit fills on-chain (shrinking position) and then
+// the close evaluator emits another close_fraction sized off the stale virtual
+// qty (#604 review #2). Paper mode has no on-chain TPs; the close evaluator is
+// the only TP mechanism (#781).
 func hyperliquidPlacesOnChainTPs(sc StrategyConfig) bool {
 	if (sc.Type != "perps" && sc.Type != "manual") || sc.Platform != "hyperliquid" {
+		return false
+	}
+	if !hyperliquidIsLive(sc.Args) {
 		return false
 	}
 	// Use strategyUsesTieredTPATRClose — not strategyTPTiers(sc) — because the

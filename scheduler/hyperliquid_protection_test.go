@@ -3,6 +3,7 @@ package main
 import (
 	"math"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -181,6 +182,8 @@ func TestApplyHyperliquidProtectionSyncStampsTPArmedTiers(t *testing.T) {
 
 func TestFilterCloseStrategiesForHLOnChainProtection(t *testing.T) {
 	mult := 1.0
+	hlLiveArgs := []string{"bollinger_bands", "ETH", "30m", "--mode=live"}
+	hlPaperArgs := []string{"bollinger_bands", "ETH", "30m", "--mode=paper"}
 	cases := []struct {
 		name     string
 		sc       StrategyConfig
@@ -189,6 +192,7 @@ func TestFilterCloseStrategiesForHLOnChainProtection(t *testing.T) {
 		{
 			name: "tiered_tp_atr_live filtered when TP plan emitted",
 			sc: StrategyConfig{
+				Args:            hlLiveArgs,
 				Type:            "perps",
 				Platform:        "hyperliquid",
 				StopLossATRMult: &mult,
@@ -199,6 +203,7 @@ func TestFilterCloseStrategiesForHLOnChainProtection(t *testing.T) {
 		{
 			name: "manual tiered_tp_atr_live filtered when TP plan emitted",
 			sc: StrategyConfig{
+				Args:            hlLiveArgs,
 				Type:            "manual",
 				Platform:        "hyperliquid",
 				StopLossATRMult: &mult,
@@ -228,12 +233,24 @@ func TestFilterCloseStrategiesForHLOnChainProtection(t *testing.T) {
 		{
 			name: "tiered_tp_atr also filtered",
 			sc: StrategyConfig{
+				Args:            hlLiveArgs,
 				Type:            "perps",
 				Platform:        "hyperliquid",
 				StopLossATRMult: &mult,
 				CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}},
 			},
 			expected: []string{},
+		},
+		{
+			name: "paper tiered_tp_atr not filtered (#781)",
+			sc: StrategyConfig{
+				Args:            hlPaperArgs,
+				Type:            "perps",
+				Platform:        "hyperliquid",
+				StopLossATRMult: &mult,
+				CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}, {Name: "tp_at_pct"}},
+			},
+			expected: []string{"tiered_tp_atr", "tp_at_pct"},
 		},
 	}
 	for _, tc := range cases {
@@ -650,6 +667,7 @@ func TestHyperliquidProtectionTiersRejectsSingleTier(t *testing.T) {
 
 func TestHyperliquidPlacesOnChainTPs_RegimeAwareWithoutStampedRegime(t *testing.T) {
 	sc := StrategyConfig{
+		Args:     []string{"bollinger_bands", "ETH", "30m", "--mode=live"},
 		Type:     "perps",
 		Platform: "hyperliquid",
 		CloseStrategies: []StrategyRef{{
@@ -667,12 +685,56 @@ func TestHyperliquidPlacesOnChainTPs_RegimeAwareWithoutStampedRegime(t *testing.
 
 func TestHyperliquidPlacesOnChainTPs_ScalarTiered(t *testing.T) {
 	sc := StrategyConfig{
+		Args:            []string{"bollinger_bands", "ETH", "30m", "--mode=live"},
 		Type:            "perps",
 		Platform:        "hyperliquid",
 		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}},
 	}
 	if !hyperliquidPlacesOnChainTPs(sc) {
-		t.Fatal("expected true for scalar tiered_tp_atr")
+		t.Fatal("expected true for scalar tiered_tp_atr in live mode")
+	}
+}
+
+func TestHyperliquidPlacesOnChainTPs_PaperFalse(t *testing.T) {
+	sc := StrategyConfig{
+		Args:            []string{"bollinger_bands", "ETH", "30m", "--mode=paper"},
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr"}},
+	}
+	if hyperliquidPlacesOnChainTPs(sc) {
+		t.Fatal("paper HL perps must not place on-chain TPs (#781)")
+	}
+}
+
+func TestStrategyConfigWithOnChainProtectionFilter_PaperKeepsTieredTP(t *testing.T) {
+	sc := StrategyConfig{
+		Args: []string{"bollinger_bands", "ETH", "30m", "--mode=paper"},
+		Type: "perps", Platform: "hyperliquid",
+		OpenStrategy: StrategyRef{Name: "bollinger_bands"},
+		CloseStrategies: []StrategyRef{{
+			Name: "tiered_tp_atr",
+			Params: map[string]interface{}{
+				"tiers": []interface{}{
+					map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+					map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+				},
+			},
+		}},
+	}
+	filtered := strategyConfigWithOnChainProtectionFilter(sc)
+	if len(filtered.CloseStrategies) != 1 || filtered.CloseStrategies[0].Name != "tiered_tp_atr" {
+		t.Fatalf("paper close strategies = %#v, want tiered_tp_atr retained", filtered.CloseStrategies)
+	}
+	got, err := buildStrategyRefsArg(filtered)
+	if err != nil {
+		t.Fatalf("buildStrategyRefsArg: %v", err)
+	}
+	if len(got) != 2 || got[0] != "--strategy-refs" {
+		t.Fatalf("got %#v, want --strategy-refs", got)
+	}
+	if !strings.Contains(got[1], `"tiered_tp_atr"`) {
+		t.Fatalf("strategy-refs missing tiered_tp_atr close: %s", got[1])
 	}
 }
 
