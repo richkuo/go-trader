@@ -109,6 +109,19 @@ def load_strategy_config(config_path: str, strategy_id: str) -> dict:
                 f"{config_path}: strategy {strategy_id!r} has no open_strategy.name; "
                 f"the migrated config should always populate it."
             )
+        # #779: regime_directional_policy is HL-live-only — the backtester
+        # has no per-cycle resolver hook that mirrors runHyperliquidCheck,
+        # so the per-regime Direction / InvertSignal flip wouldn't apply
+        # and results would silently use the static config instead. Reject
+        # at config-load time so the operator sees the gap (parity with
+        # the regime-aware `sl_after` rejection at backtester init).
+        if sc.get("regime_directional_policy"):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} uses "
+                f"regime_directional_policy, which is HL-live-only in this "
+                f"release (backtester parity deferred — see #779). Use the "
+                f"static `direction` / `invert_signal` fields for backtesting."
+            )
         close_refs = []
         for ref in sc.get("close_strategies", []) or []:
             if isinstance(ref, dict) and ref.get("name"):

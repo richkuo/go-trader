@@ -101,6 +101,14 @@ func TestRegimeDirectionalPolicyResolveRaw(t *testing.T) {
 		if !found {
 			t.Fatalf("expected invalid-direction error, got: %v", errs)
 		}
+		// A present-but-invalid label must NOT also surface as
+		// "missing required regime labels: trending_up" — the operator
+		// should see one error per typo, not two.
+		for _, e := range errs {
+			if strings.Contains(e, "missing required regime labels") {
+				t.Fatalf("invalid-direction must not double-report as missing: %v", errs)
+			}
+		}
 	})
 
 	t.Run("rejects unknown entry key", func(t *testing.T) {
@@ -185,9 +193,12 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 
 	t.Run("flat uses current regime", func(t *testing.T) {
 		sc := StrategyConfig{Direction: "long", InvertSignal: false, RegimeDirectionalPolicy: makePolicy()}
-		entry, applied := applyRegimeDirectionalPolicy(&sc, "trending_down", "", 0)
+		entry, applied, legacy := applyRegimeDirectionalPolicy(&sc, "trending_down", "", 0)
 		if !applied {
 			t.Fatalf("expected applied")
+		}
+		if legacy {
+			t.Fatalf("flat state should not flag legacy fallback")
 		}
 		if entry.Direction != "short" || !entry.InvertSignal {
 			t.Fatalf("bad entry: %+v", entry)
@@ -200,9 +211,12 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 	t.Run("open position uses pos.Regime (hold)", func(t *testing.T) {
 		sc := StrategyConfig{Direction: "long", InvertSignal: false, RegimeDirectionalPolicy: makePolicy()}
 		// pos opened under trending_down, current regime flipped to trending_up
-		entry, applied := applyRegimeDirectionalPolicy(&sc, "trending_up", "trending_down", 0.001)
+		entry, applied, legacy := applyRegimeDirectionalPolicy(&sc, "trending_up", "trending_down", 0.001)
 		if !applied {
 			t.Fatalf("expected applied")
+		}
+		if legacy {
+			t.Fatalf("posRegime set; should not flag legacy fallback")
 		}
 		// Should resolve from pos.Regime -> short policy continues
 		if entry.Direction != "short" || !entry.InvertSignal {
@@ -216,9 +230,12 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 	t.Run("flat after pos closed picks new regime", func(t *testing.T) {
 		sc := StrategyConfig{Direction: "long", InvertSignal: false, RegimeDirectionalPolicy: makePolicy()}
 		// Position closed (qty=0); current regime is trending_up
-		entry, applied := applyRegimeDirectionalPolicy(&sc, "trending_up", "trending_down", 0)
+		entry, applied, legacy := applyRegimeDirectionalPolicy(&sc, "trending_up", "trending_down", 0)
 		if !applied {
 			t.Fatalf("expected applied")
+		}
+		if legacy {
+			t.Fatalf("flat state should not flag legacy fallback")
 		}
 		if entry.Direction != "long" || entry.InvertSignal {
 			t.Fatalf("expected long+no-invert after flat under trending_up, got: %+v", entry)
@@ -227,7 +244,7 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 
 	t.Run("no policy is no-op", func(t *testing.T) {
 		sc := StrategyConfig{Direction: "long", InvertSignal: false}
-		_, applied := applyRegimeDirectionalPolicy(&sc, "trending_down", "", 0)
+		_, applied, _ := applyRegimeDirectionalPolicy(&sc, "trending_down", "", 0)
 		if applied {
 			t.Fatalf("expected no-op when policy nil")
 		}
@@ -238,7 +255,7 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 
 	t.Run("unknown regime is no-op", func(t *testing.T) {
 		sc := StrategyConfig{Direction: "long", InvertSignal: false, RegimeDirectionalPolicy: makePolicy()}
-		_, applied := applyRegimeDirectionalPolicy(&sc, "", "", 0)
+		_, applied, _ := applyRegimeDirectionalPolicy(&sc, "", "", 0)
 		if applied {
 			t.Fatalf("empty regime should not resolve")
 		}
@@ -249,9 +266,12 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 
 	t.Run("legacy position without pos.Regime falls back to current", func(t *testing.T) {
 		sc := StrategyConfig{Direction: "long", InvertSignal: false, RegimeDirectionalPolicy: makePolicy()}
-		entry, applied := applyRegimeDirectionalPolicy(&sc, "trending_up", "", 0.5)
+		entry, applied, legacy := applyRegimeDirectionalPolicy(&sc, "trending_up", "", 0.5)
 		if !applied {
 			t.Fatalf("expected applied")
+		}
+		if !legacy {
+			t.Fatalf("open position with empty posRegime should flag legacy fallback")
 		}
 		if entry.Direction != "long" {
 			t.Fatalf("expected fallback to current trending_up -> long, got: %+v", entry)

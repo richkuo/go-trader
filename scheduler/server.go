@@ -337,8 +337,8 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PnLPct                  float64                    `json:"pnl_pct"`
 		RiskState               RiskState                  `json:"risk_state"`
 		Regime                  string                     `json:"regime,omitempty"`
-		Direction               string                     `json:"direction,omitempty"`                 // #779: base direction from config
-		InvertSignal            bool                       `json:"invert_signal,omitempty"`             // #779: base invert from config
+		BaseDirection           string                     `json:"base_direction,omitempty"`            // #779: base direction from config (pre-policy resolution)
+		BaseInvertSignal        bool                       `json:"base_invert_signal,omitempty"`        // #779: base invert from config (pre-policy resolution)
 		EffectiveDirection      string                     `json:"effective_direction,omitempty"`       // #779: resolved direction for the active regime (policy override or base)
 		EffectiveInvertSignal   bool                       `json:"effective_invert_signal,omitempty"`   // #779: resolved invert for the active regime
 		RegimeDirectionalPolicy bool                       `json:"regime_directional_policy,omitempty"` // #779: true when strategy has a policy block configured
@@ -395,11 +395,13 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		// verify why the bot is in long vs. short mode. Effective values are
 		// what the next signal will be evaluated under — pulled by replaying
 		// the resolver against the strategy's first open position (or flat).
-		effDir := EffectiveDirection(sc)
-		effInvert := sc.InvertSignal
+		baseDir := EffectiveDirection(sc)
+		baseInvert := sc.InvertSignal
+		effDir := baseDir
+		effInvert := baseInvert
 		var effRegimeKey string
 		policyConfigured := sc.RegimeDirectionalPolicy.IsConfigured()
-		if policyConfigured && !sc.RegimeDirectionalPolicy.IsZero() {
+		if policyConfigured {
 			posQty := 0.0
 			posRegime := ""
 			for _, p := range s.Positions {
@@ -429,8 +431,8 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			PnLPct:                  pnlPct,
 			RiskState:               s.RiskState,
 			Regime:                  s.Regime,
-			Direction:               EffectiveDirection(sc),
-			InvertSignal:            sc.InvertSignal,
+			BaseDirection:           baseDir,
+			BaseInvertSignal:        baseInvert,
 			EffectiveDirection:      effDir,
 			EffectiveInvertSignal:   effInvert,
 			RegimeDirectionalPolicy: policyConfigured,

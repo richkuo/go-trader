@@ -2499,10 +2499,21 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	// resolves from result.Regime (current cycle); while a position is open,
 	// uses posCtx.Regime (the regime stamped at open) so the position runs
 	// to its natural exit under the policy that opened it.
-	if entry, applied := applyRegimeDirectionalPolicy(sc, result.Regime, posCtx.Regime, posCtx.Quantity); applied {
+	if entry, applied, legacyFallback := applyRegimeDirectionalPolicy(sc, result.Regime, posCtx.Regime, posCtx.Quantity); applied {
 		regimeKey := effectiveRegimeForPolicy(result.Regime, posCtx.Regime, posCtx.Quantity)
 		logger.Info("Regime directional policy: regime=%s -> direction=%q invert_signal=%t",
 			regimeKey, entry.Direction, entry.InvertSignal)
+		// One-shot operator alert for pre-#741 legacy positions opened before
+		// regime stamping landed. The policy still applies, but the
+		// hold-on-transition contract (position runs under the regime it
+		// opened in) can't be honored for that position — it instead floats
+		// with the current regime until it closes naturally. Self-heals once
+		// the next entry stamps regime at open.
+		if legacyFallback {
+			if _, loaded := regimeDirectionalLegacyWarned.LoadOrStore(sc.ID, struct{}{}); !loaded {
+				logger.Warn("Regime directional policy: open position has no stamped regime (legacy pre-#741); resolving against current regime=%q. Hold-on-transition not guaranteed for this position; self-heals on next entry.", regimeKey)
+			}
+		}
 	}
 	applySignalInversion(*sc, result, logger)
 

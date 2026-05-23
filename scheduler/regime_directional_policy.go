@@ -37,7 +37,17 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 )
+
+// regimeDirectionalLegacyWarned tracks per-strategy one-shot warnings for the
+// "open position with empty pos.Regime" fallback path (positions opened before
+// regime stamping landed in #741). Keyed by strategy ID; cleared on process
+// restart. Warning is informational — the policy still resolves under the
+// current cycle's regime — but hold-on-transition isn't guaranteed for that
+// position. Self-heals once the position closes and the next entry stamps
+// regime at open.
+var regimeDirectionalLegacyWarned sync.Map
 
 // RegimeDirectionalEntry is the per-regime override pair.
 type RegimeDirectionalEntry struct {
@@ -168,12 +178,19 @@ func (p *RegimeDirectionalPolicy) ResolveRaw(label string) []string {
 		return errs
 	}
 	parsed := make(map[string]RegimeDirectionalEntry, len(classifier))
+	// `seen` records every regime label the operator actually wrote in the
+	// config (even if its body failed validation). The canonical-label
+	// "missing required" check below consults `seen`, not `parsed`, so a
+	// single typo (e.g. direction="sideways") fires one error against the
+	// offending key instead of also being double-reported as "missing".
+	seen := make(map[string]bool, len(classifier))
 	keys := make([]string, 0, len(classifier))
 	for k := range classifier {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, regimeLabel := range keys {
+		seen[regimeLabel] = true
 		entryRaw := classifier[regimeLabel]
 		entryMap, ok := entryRaw.(map[string]interface{})
 		if !ok {
@@ -228,10 +245,11 @@ func (p *RegimeDirectionalPolicy) ResolveRaw(label string) []string {
 	}
 	// Require all canonical labels present so there's never an undefined
 	// fallback at runtime. Operators who want the static config to apply
-	// for one regime can spell it out explicitly.
+	// for one regime can spell it out explicitly. Uses `seen` (not `parsed`)
+	// so a label that's present-but-invalid isn't also reported as missing.
 	missing := []string{}
 	for _, l := range canonicalTrendRegimeLabels {
-		if _, ok := parsed[l]; !ok {
+		if !seen[l] {
 			missing = append(missing, l)
 		}
 	}
@@ -266,14 +284,21 @@ func effectiveRegimeForPolicy(currentRegime, posRegime string, posQty float64) s
 // /status and inspect can show it. When the strategy has no policy block
 // (or no regime is available), sc is left untouched and changed=false.
 //
+// `legacyFallback` is true iff a position is open but pos.Regime is empty
+// (pre-#741 position predating regime stamping). The resolver still resolves
+// against the current regime so the policy doesn't no-op, but the
+// hold-on-transition guarantee can't be honored for that position — the
+// caller should emit a one-shot operator warning.
+//
 // Caller contract: pass a LOCAL copy of sc (the loop iteration variable),
 // not a pointer into cfg.Strategies. The mutation propagates to all
 // downstream uses in the same cycle (applySignalInversion, EffectiveDirection
 // calls in execute paths, etc.) without persisting into shared config state.
-func applyRegimeDirectionalPolicy(sc *StrategyConfig, currentRegime, posRegime string, posQty float64) (effective RegimeDirectionalEntry, applied bool) {
+func applyRegimeDirectionalPolicy(sc *StrategyConfig, currentRegime, posRegime string, posQty float64) (effective RegimeDirectionalEntry, applied bool, legacyFallback bool) {
 	if sc == nil || sc.RegimeDirectionalPolicy.IsZero() {
-		return RegimeDirectionalEntry{}, false
+		return RegimeDirectionalEntry{}, false, false
 	}
+	legacyFallback = posQty > 0 && strings.TrimSpace(posRegime) == ""
 	regime := effectiveRegimeForPolicy(currentRegime, posRegime, posQty)
 	entry, ok := sc.RegimeDirectionalPolicy.Resolve(regime)
 	if !ok {
@@ -281,9 +306,9 @@ func applyRegimeDirectionalPolicy(sc *StrategyConfig, currentRegime, posRegime s
 		// static base config applies. Validation guarantees all canonical
 		// labels are present, so this only happens for empty/unknown
 		// regimes (e.g. regime detection disabled).
-		return RegimeDirectionalEntry{}, false
+		return RegimeDirectionalEntry{}, false, false
 	}
 	sc.Direction = entry.Direction
 	sc.InvertSignal = entry.InvertSignal
-	return entry, true
+	return entry, true, legacyFallback
 }
