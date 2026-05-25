@@ -336,13 +336,20 @@ func EffectiveDirectionForPosition(sc StrategyConfig, currentRegime, posRegime s
 // policyAllowsPositionSide reports whether posSide is permitted under at least
 // one entry in regime_directional_policy. Used when pos.Regime is empty
 // (legacy / pre-#741) so validation does not false-positive a side that some
-// regime intentionally allows (#783).
+// regime intentionally allows (#783). Iterates resolved TrendRegime entries
+// only — no fallback to base direction for missing labels.
 func policyAllowsPositionSide(sc StrategyConfig, posSide string) bool {
 	if sc.RegimeDirectionalPolicy == nil || sc.RegimeDirectionalPolicy.IsZero() {
 		return false
 	}
-	for _, label := range canonicalTrendRegimeLabels {
-		if !perpsPositionConflictsDirection(posSide, EffectiveDirectionForRegime(sc, label)) {
+	labels := make([]string, 0, len(sc.RegimeDirectionalPolicy.TrendRegime))
+	for label := range sc.RegimeDirectionalPolicy.TrendRegime {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	for _, label := range labels {
+		entry := sc.RegimeDirectionalPolicy.TrendRegime[label]
+		if !perpsPositionConflictsDirection(posSide, entry.Direction) {
 			return true
 		}
 	}

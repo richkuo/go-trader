@@ -388,3 +388,25 @@ func TestFormatStrategySummaryLineRegimeTPTierCount(t *testing.T) {
 		t.Errorf("expected 2-tier regime TP summary, got: %s", line)
 	}
 }
+
+func TestFormatStrategyInspectionPositionOrderDeterministic(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-multi", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong}
+	state := NewAppState()
+	state.Strategies["hl-multi"] = &StrategyState{
+		ID:   "hl-multi",
+		Type: "perps",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, Side: "long", Multiplier: 1, Leverage: 1},
+			"BTC": {Symbol: "BTC", Quantity: 0.1, Side: "short", Regime: "trending_down", Multiplier: 1, Leverage: 1},
+		},
+	}
+	out := formatStrategyInspection(sc, nil, nil, state)
+	btc := strings.Index(out, "position BTC:")
+	eth := strings.Index(out, "position ETH:")
+	if btc < 0 || eth < 0 {
+		t.Fatalf("missing position lines:\n%s", out)
+	}
+	if btc > eth {
+		t.Errorf("positions should be sorted by symbol (BTC before ETH), got BTC@%d ETH@%d", btc, eth)
+	}
+}

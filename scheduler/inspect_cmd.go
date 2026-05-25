@@ -95,11 +95,13 @@ func loadInspectState(cfg *Config) *AppState {
 	}
 	sdb, err := OpenStateDB(cfg.DBFile)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[inspect] state DB unavailable: %v\n", err)
 		return nil
 	}
 	defer sdb.Close()
 	state, err := sdb.LoadState()
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[inspect] state DB unavailable: %v\n", err)
 		return nil
 	}
 	if state == nil {
@@ -704,10 +706,16 @@ func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit
 		stratState = state.Strategies[sc.ID]
 	}
 	if stratState != nil {
+		syms := make([]string, 0, len(stratState.Positions))
 		for sym, pos := range stratState.Positions {
 			if pos == nil || pos.Quantity <= 0 {
 				continue
 			}
+			syms = append(syms, sym)
+		}
+		sort.Strings(syms)
+		for _, sym := range syms {
+			pos := stratState.Positions[sym]
 			effRegime := effectiveRegimeForPolicy(stratState.Regime, pos.Regime, pos.Quantity)
 			effDir := EffectiveDirectionForPosition(sc, stratState.Regime, pos.Regime, pos.Quantity)
 			regimeSrc := "stamped at open"
@@ -721,7 +729,8 @@ func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit
 
 func directionInspectJSON(sc StrategyConfig, state *AppState) map[string]interface{} {
 	out := map[string]interface{}{
-		"direction":      EffectiveDirection(sc), // legacy key: base direction
+		// "direction" is the legacy alias; prefer "base_direction" for new consumers.
+		"direction":      EffectiveDirection(sc),
 		"base_direction": EffectiveDirection(sc),
 	}
 	if sc.RegimeDirectionalPolicy != nil && sc.RegimeDirectionalPolicy.IsConfigured() {
