@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -245,7 +246,13 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 		}
 		baseDirection := EffectiveDirection(*sc)
 		policyConfigured := sc.RegimeDirectionalPolicy != nil && sc.RegimeDirectionalPolicy.IsConfigured()
-		for sym, pos := range s.Positions {
+		syms := make([]string, 0, len(s.Positions))
+		for sym := range s.Positions {
+			syms = append(syms, sym)
+		}
+		sort.Strings(syms)
+		for _, sym := range syms {
+			pos := s.Positions[sym]
 			if pos == nil || pos.Quantity <= 0 {
 				continue
 			}

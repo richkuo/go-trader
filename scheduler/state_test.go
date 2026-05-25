@@ -323,6 +323,31 @@ func TestValidatePerpsDirectionConfig_RegimePolicyUnstampedAllowed(t *testing.T)
 	}
 }
 
+// #784 re-review: warnings for multi-position strategies must be symbol-sorted.
+func TestValidatePerpsDirectionConfig_WarningOrderDeterministic(t *testing.T) {
+	state := NewAppState()
+	state.Strategies["hl-multi"] = &StrategyState{
+		ID:   "hl-multi",
+		Type: "perps",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, Side: "short", Multiplier: 1, Leverage: 1},
+			"BTC": {Symbol: "BTC", Quantity: 0.1, Side: "short", Multiplier: 1, Leverage: 1},
+		},
+	}
+	cfg := &Config{
+		Strategies: []StrategyConfig{{
+			ID: "hl-multi", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong,
+		}},
+	}
+	warnings := ValidatePerpsDirectionConfig(state, cfg)
+	if len(warnings) != 2 {
+		t.Fatalf("want 2 warnings, got %d: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], " BTC ") || !strings.Contains(warnings[1], " ETH ") {
+		t.Errorf("warnings should be sorted by symbol (BTC before ETH), got:\n%s\n%s", warnings[0], warnings[1])
+	}
+}
+
 func TestLoadStateWithDB_SQLitePrimary(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
