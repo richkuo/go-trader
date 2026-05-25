@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -218,14 +219,10 @@ func migrateLegacyPerpsPositionMultipliers(state *AppState, cfg *Config) int {
 }
 
 // ValidatePerpsDirectionConfig flags positions whose side conflicts with the
-// strategy's configured direction (#336/#656). Two gap classes:
-//
-//  1. direction="long" with a short position (legacy AllowShorts=false). The
-//     desync can arise from state migration, paper→live handoff, operator
-//     state.db edits, or a "both"→"long" config toggle without first closing.
-//  2. direction="short" with a long position (#656 short-only mode). The
-//     symmetric gap arises from a "long"→"short" config toggle without
-//     closing, or operator edits.
+// strategy's effective direction (#336/#656/#783). When regime_directional_policy
+// is configured, resolution uses the stamped position regime (hold-on-transition)
+// or treats the side as valid if any policy regime allows it when the stamp is
+// missing (legacy pre-#741 positions).
 //
 // In either case the strategy's next signal-driven order will desync virtual
 // state from the exchange. We warn-and-continue (matching ValidateState's
@@ -242,30 +239,36 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 		if sc.Type != "perps" {
 			continue
 		}
-		direction := EffectiveDirection(*sc)
-		if direction == DirectionBoth {
-			continue
-		}
 		s, ok := state.Strategies[sc.ID]
 		if !ok {
 			continue
 		}
+		baseDirection := EffectiveDirection(*sc)
+		policyConfigured := sc.RegimeDirectionalPolicy != nil && sc.RegimeDirectionalPolicy.IsConfigured()
 		for sym, pos := range s.Positions {
-			var conflictSide string
-			switch direction {
-			case DirectionLong:
-				if pos.Side == "short" {
-					conflictSide = "short"
-				}
-			case DirectionShort:
-				if pos.Side == "long" {
-					conflictSide = "long"
-				}
-			}
-			if conflictSide == "" {
+			if pos == nil || pos.Quantity <= 0 {
 				continue
 			}
-			msg := fmt.Sprintf("perps state-vs-config gap: strategy %s has %s %s qty=%g (direction=%q). Position was likely seeded by migration, paper→live handoff, or a prior conflicting direction. Close manually before the next signal — the executor's fresh-open sizing will otherwise desync virtual state from the exchange.", sc.ID, conflictSide, sym, pos.Quantity, direction)
+			posRegime := strings.TrimSpace(pos.Regime)
+			effectiveDir := EffectiveDirectionForPosition(*sc, "", posRegime, pos.Quantity)
+			if !perpsPositionConflictsDirection(pos.Side, effectiveDir) {
+				continue
+			}
+			// Legacy / unstamped: if any configured regime allows this side, skip.
+			if policyConfigured && posRegime == "" && policyAllowsPositionSide(*sc, pos.Side) {
+				continue
+			}
+			conflictSide := pos.Side
+			var regimeNote string
+			switch {
+			case posRegime != "":
+				regimeNote = fmt.Sprintf("effective_direction=%q from stamped regime=%q; base_direction=%q", effectiveDir, posRegime, baseDirection)
+			case policyConfigured:
+				regimeNote = fmt.Sprintf("effective_direction=%q (base_direction=%q; position regime unknown — validated against base only)", effectiveDir, baseDirection)
+			default:
+				regimeNote = fmt.Sprintf("direction=%q", baseDirection)
+			}
+			msg := fmt.Sprintf("perps state-vs-config gap: strategy %s has %s %s qty=%g (%s). Position was likely seeded by migration, paper→live handoff, or a prior conflicting direction. Close manually before the next signal — the executor's fresh-open sizing will otherwise desync virtual state from the exchange.", sc.ID, conflictSide, sym, pos.Quantity, regimeNote)
 			fmt.Printf("[WARN] %s\n", msg)
 			warnings = append(warnings, msg)
 		}

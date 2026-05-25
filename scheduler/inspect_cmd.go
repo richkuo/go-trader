@@ -59,10 +59,12 @@ func runInspect(args []string) int {
 		}
 	}
 
+	inspectState := loadInspectState(cfg)
+
 	if *jsonOut {
 		out := make([]map[string]interface{}, 0, len(targets))
 		for _, sc := range targets {
-			out = append(out, buildStrategyInspectionJSON(sc, explicit[sc.ID], cfg))
+			out = append(out, buildStrategyInspectionJSON(sc, explicit[sc.ID], cfg, inspectState))
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -77,9 +79,33 @@ func runInspect(args []string) int {
 		if i > 0 {
 			fmt.Println()
 		}
-		fmt.Print(formatStrategyInspection(sc, explicit[sc.ID], cfg))
+		fmt.Print(formatStrategyInspection(sc, explicit[sc.ID], cfg, inspectState))
 	}
 	return 0
+}
+
+// loadInspectState best-effort loads persisted state so inspect can show
+// position-aware effective direction (#783). Missing or unreadable DB is fine.
+func loadInspectState(cfg *Config) *AppState {
+	if cfg == nil || cfg.DBFile == "" {
+		return nil
+	}
+	if _, err := os.Stat(cfg.DBFile); err != nil {
+		return nil
+	}
+	sdb, err := OpenStateDB(cfg.DBFile)
+	if err != nil {
+		return nil
+	}
+	defer sdb.Close()
+	state, err := sdb.LoadState()
+	if err != nil {
+		return nil
+	}
+	if state == nil {
+		return NewAppState()
+	}
+	return state
 }
 
 // loadStrategyExplicitKeys re-reads the raw config bytes and records which
@@ -393,7 +419,7 @@ func inspectRegimeTPTierProvenance(block RegimeATRBlock, closeExplicitTag string
 // for one strategy. Splitting from runInspect lets tests assert the formatter
 // independently of os.Args / file IO, and lets the startup logger reuse the
 // one-line summary helper below.
-func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *Config) string {
+func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *Config, state *AppState) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "strategy %s\n", sc.ID)
 	fmt.Fprintf(&b, "  type:                %s\n", sc.Type)
@@ -422,7 +448,7 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	}
 
 	if sc.Type == "perps" || sc.Type == "manual" {
-		fmt.Fprintf(&b, "  direction:           %s (%s)\n", EffectiveDirection(sc), directionProvenance(sc, explicit))
+		appendDirectionInspectLines(&b, sc, explicit, state)
 		fmt.Fprintf(&b, "  leverage:            %g%s\n", EffectiveExchangeLeverage(sc), markIfDefault(explicit, "leverage"))
 		fmt.Fprintf(&b, "  sizing_leverage:     %g%s\n", EffectiveSizingLeverage(sc), sizingLeverageProvenance(sc, explicit))
 		if m := EffectiveMarginPerTradeUSD(sc); m > 0 {
@@ -516,7 +542,7 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool) stri
 // buildStrategyInspectionJSON mirrors formatStrategyInspection in
 // machine-readable form. Keeps the same provenance info so external tools
 // (dashboards, audit scripts) can spot "field is at the default" cases.
-func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cfg *Config) map[string]interface{} {
+func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cfg *Config, state *AppState) map[string]interface{} {
 	if explicit == nil {
 		explicit = map[string]bool{}
 	}
@@ -542,7 +568,9 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		"max_drawdown_pct_explicit": explicit["max_drawdown_pct"],
 	}
 	if sc.Type == "perps" || sc.Type == "manual" {
-		out["direction"] = EffectiveDirection(sc)
+		for k, v := range directionInspectJSON(sc, state) {
+			out[k] = v
+		}
 		out["leverage"] = EffectiveExchangeLeverage(sc)
 		out["sizing_leverage"] = EffectiveSizingLeverage(sc)
 		out["margin_mode"] = sc.MarginMode
@@ -655,6 +683,87 @@ func stableParamSummary(params map[string]interface{}) string {
 		parts = append(parts, fmt.Sprintf("%s=%v", k, params[k]))
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
+}
+
+func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit map[string]bool, state *AppState) {
+	baseDir := EffectiveDirection(sc)
+	fmt.Fprintf(b, "  base_direction:      %s (%s)\n", baseDir, directionProvenance(sc, explicit))
+	if sc.RegimeDirectionalPolicy != nil && sc.RegimeDirectionalPolicy.IsConfigured() {
+		fmt.Fprintf(b, "  regime_directional_policy:\n")
+		for _, label := range canonicalTrendRegimeLabels {
+			dir := EffectiveDirectionForRegime(sc, label)
+			inv := false
+			if entry, ok := sc.RegimeDirectionalPolicy.Resolve(label); ok {
+				inv = entry.InvertSignal
+			}
+			fmt.Fprintf(b, "    %s: direction=%s invert_signal=%v\n", label, dir, inv)
+		}
+	}
+	var stratState *StrategyState
+	if state != nil {
+		stratState = state.Strategies[sc.ID]
+	}
+	if stratState != nil {
+		for sym, pos := range stratState.Positions {
+			if pos == nil || pos.Quantity <= 0 {
+				continue
+			}
+			effRegime := effectiveRegimeForPolicy(stratState.Regime, pos.Regime, pos.Quantity)
+			effDir := EffectiveDirectionForPosition(sc, stratState.Regime, pos.Regime, pos.Quantity)
+			regimeSrc := "stamped at open"
+			if strings.TrimSpace(pos.Regime) == "" {
+				regimeSrc = "current cycle (position regime unknown)"
+			}
+			fmt.Fprintf(b, "  position %s:         side=%s effective_direction=%s (regime=%s, %s)\n", sym, pos.Side, effDir, effRegime, regimeSrc)
+		}
+	}
+}
+
+func directionInspectJSON(sc StrategyConfig, state *AppState) map[string]interface{} {
+	out := map[string]interface{}{
+		"direction":      EffectiveDirection(sc), // legacy key: base direction
+		"base_direction": EffectiveDirection(sc),
+	}
+	if sc.RegimeDirectionalPolicy != nil && sc.RegimeDirectionalPolicy.IsConfigured() {
+		byRegime := make(map[string]interface{}, len(canonicalTrendRegimeLabels))
+		for _, label := range canonicalTrendRegimeLabels {
+			entry := map[string]interface{}{
+				"direction": EffectiveDirectionForRegime(sc, label),
+			}
+			if e, ok := sc.RegimeDirectionalPolicy.Resolve(label); ok {
+				entry["invert_signal"] = e.InvertSignal
+			}
+			byRegime[label] = entry
+		}
+		out["regime_directional_policy"] = byRegime
+	}
+	var stratState *StrategyState
+	if state != nil {
+		stratState = state.Strategies[sc.ID]
+	}
+	if stratState != nil {
+		positions := make([]map[string]interface{}, 0)
+		for sym, pos := range stratState.Positions {
+			if pos == nil || pos.Quantity <= 0 {
+				continue
+			}
+			positions = append(positions, map[string]interface{}{
+				"symbol":                  sym,
+				"side":                    pos.Side,
+				"quantity":                pos.Quantity,
+				"regime":                  pos.Regime,
+				"effective_direction":     EffectiveDirectionForPosition(sc, stratState.Regime, pos.Regime, pos.Quantity),
+				"effective_policy_regime": effectiveRegimeForPolicy(stratState.Regime, pos.Regime, pos.Quantity),
+			})
+		}
+		if len(positions) > 0 {
+			sort.Slice(positions, func(i, j int) bool {
+				return positions[i]["symbol"].(string) < positions[j]["symbol"].(string)
+			})
+			out["open_positions"] = positions
+		}
+	}
+	return out
 }
 
 // directionProvenance distinguishes the four ways EffectiveDirection can land

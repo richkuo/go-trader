@@ -312,3 +312,54 @@ func applyRegimeDirectionalPolicy(sc *StrategyConfig, currentRegime, posRegime s
 	sc.InvertSignal = entry.InvertSignal
 	return entry, true, legacyFallback
 }
+
+// EffectiveDirectionForRegime returns the direction that applies for a single
+// regime label, honoring regime_directional_policy when configured (#783).
+func EffectiveDirectionForRegime(sc StrategyConfig, regime string) string {
+	if sc.RegimeDirectionalPolicy != nil && !sc.RegimeDirectionalPolicy.IsZero() {
+		if entry, ok := sc.RegimeDirectionalPolicy.Resolve(strings.TrimSpace(regime)); ok {
+			return entry.Direction
+		}
+	}
+	return EffectiveDirection(sc)
+}
+
+// EffectiveDirectionForPosition resolves direction for an open position using
+// the same hold-on-transition semantics as applyRegimeDirectionalPolicy: when
+// posQty > 0 and pos.Regime is stamped, that regime governs; otherwise the
+// current cycle regime is used (empty at startup validation → base direction).
+func EffectiveDirectionForPosition(sc StrategyConfig, currentRegime, posRegime string, posQty float64) string {
+	regime := effectiveRegimeForPolicy(currentRegime, posRegime, posQty)
+	return EffectiveDirectionForRegime(sc, regime)
+}
+
+// policyAllowsPositionSide reports whether posSide is permitted under at least
+// one entry in regime_directional_policy. Used when pos.Regime is empty
+// (legacy / pre-#741) so validation does not false-positive a side that some
+// regime intentionally allows (#783).
+func policyAllowsPositionSide(sc StrategyConfig, posSide string) bool {
+	if sc.RegimeDirectionalPolicy == nil || sc.RegimeDirectionalPolicy.IsZero() {
+		return false
+	}
+	for _, label := range canonicalTrendRegimeLabels {
+		if !perpsPositionConflictsDirection(posSide, EffectiveDirectionForRegime(sc, label)) {
+			return true
+		}
+	}
+	return false
+}
+
+// perpsPositionConflictsDirection reports whether an open position's side
+// conflicts with a resolved effective direction ("both" never conflicts).
+func perpsPositionConflictsDirection(posSide, effectiveDir string) bool {
+	switch effectiveDir {
+	case DirectionBoth:
+		return false
+	case DirectionLong:
+		return posSide == "short"
+	case DirectionShort:
+		return posSide == "long"
+	default:
+		return false
+	}
+}

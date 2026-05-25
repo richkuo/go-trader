@@ -180,7 +180,7 @@ func TestFormatStrategyInspectionShowsResolvedTPSource(t *testing.T) {
 		"capital": true, "leverage": true, "sizing_leverage": true,
 		"margin_mode": true, "max_drawdown_pct": true, "stop_loss_atr_mult": true,
 	}
-	out := formatStrategyInspection(sc, explicit, &Config{IntervalSeconds: 600})
+	out := formatStrategyInspection(sc, explicit, &Config{IntervalSeconds: 600}, nil)
 
 	for _, want := range []string{
 		"strategy hl-rmc-eth-live",
@@ -219,7 +219,7 @@ func TestFormatStrategyInspectionMarksDefaultedFields(t *testing.T) {
 	}
 	// Operator only set id/type/platform/script/args/open_strategy.
 	explicit := map[string]bool{"id": true, "type": true, "platform": true, "script": true, "args": true, "open_strategy": true}
-	out := formatStrategyInspection(sc, explicit, &Config{IntervalSeconds: 600})
+	out := formatStrategyInspection(sc, explicit, &Config{IntervalSeconds: 600}, nil)
 
 	if !strings.Contains(out, "stop_loss_atr_mult (default)") {
 		t.Errorf("SL default marker missing.\nfull:\n%s", out)
@@ -292,7 +292,7 @@ func TestBuildStrategyInspectionJSONStableShape(t *testing.T) {
 	}
 	out := buildStrategyInspectionJSON(sc, map[string]bool{
 		"open_strategy": true, "close_strategies": true, "stop_loss_atr_mult": true,
-	}, &Config{IntervalSeconds: 600})
+	}, &Config{IntervalSeconds: 600}, nil)
 
 	bs, err := json.Marshal(out)
 	if err != nil {
@@ -362,7 +362,7 @@ func TestFormatStrategyInspectionRegimeTPUseDefaults(t *testing.T) {
 		"id": true, "type": true, "platform": true, "script": true,
 		"close_strategies": true, "leverage": true, "max_drawdown_pct": true,
 	}
-	out := formatStrategyInspection(sc, explicit, &Config{IntervalSeconds: 60})
+	out := formatStrategyInspection(sc, explicit, &Config{IntervalSeconds: 60}, nil)
 	if !strings.Contains(out, "tiered_tp_atr_regime tier[0]:") {
 		t.Errorf("missing tier[0] provenance line:\n%s", out)
 	}

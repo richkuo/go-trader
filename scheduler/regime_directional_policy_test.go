@@ -179,6 +179,48 @@ func TestRegimeDirectionalPolicyEqualForReload(t *testing.T) {
 	}
 }
 
+func TestEffectiveDirectionForPosition(t *testing.T) {
+	policy := &RegimeDirectionalPolicy{TrendRegime: map[string]RegimeDirectionalEntry{
+		"trending_up":   {Direction: DirectionLong},
+		"trending_down": {Direction: DirectionShort},
+		"ranging":       {Direction: DirectionLong},
+	}}
+	sc := StrategyConfig{Direction: DirectionLong, RegimeDirectionalPolicy: policy}
+
+	if got := EffectiveDirectionForPosition(sc, "trending_up", "trending_down", 1); got != DirectionShort {
+		t.Errorf("open position uses stamped regime: got %q want short", got)
+	}
+	if got := EffectiveDirectionForPosition(sc, "trending_up", "", 0); got != DirectionLong {
+		t.Errorf("flat uses current regime: got %q want long", got)
+	}
+	if got := EffectiveDirectionForPosition(sc, "", "", 1); got != DirectionLong {
+		t.Errorf("unstamped open falls back to current (empty): got %q want base long", got)
+	}
+}
+
+func TestPolicyAllowsPositionSide(t *testing.T) {
+	policy := &RegimeDirectionalPolicy{TrendRegime: map[string]RegimeDirectionalEntry{
+		"trending_up":   {Direction: DirectionLong},
+		"trending_down": {Direction: DirectionShort},
+		"ranging":       {Direction: DirectionLong},
+	}}
+	sc := StrategyConfig{Direction: DirectionLong, RegimeDirectionalPolicy: policy}
+	if !policyAllowsPositionSide(sc, "short") {
+		t.Error("short should be allowed via trending_down policy")
+	}
+	allLong := &RegimeDirectionalPolicy{TrendRegime: map[string]RegimeDirectionalEntry{
+		"trending_up": {Direction: DirectionLong}, "trending_down": {Direction: DirectionLong}, "ranging": {Direction: DirectionLong},
+	}}
+	scAllLong := StrategyConfig{Direction: DirectionLong, RegimeDirectionalPolicy: allLong}
+	if policyAllowsPositionSide(scAllLong, "short") {
+		t.Error("short should not be allowed when every regime is long-only")
+	}
+	scNoPolicy := StrategyConfig{Direction: DirectionLong}
+	if policyAllowsPositionSide(scNoPolicy, "short") {
+		t.Error("no policy should return false")
+	}
+}
+
 // TestApplyRegimeDirectionalPolicy covers the resolver semantics:
 // flat -> current regime, open -> pos.Regime (hold semantics),
 // no policy -> no-op.
