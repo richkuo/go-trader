@@ -689,8 +689,16 @@ func stableParamSummary(params map[string]interface{}) string {
 
 func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit map[string]bool, state *AppState) {
 	baseDir := EffectiveDirection(sc)
-	fmt.Fprintf(b, "  base_direction:      %s (%s)\n", baseDir, directionProvenance(sc, explicit))
-	if sc.RegimeDirectionalPolicy != nil && sc.RegimeDirectionalPolicy.IsConfigured() {
+	prov := directionProvenance(sc, explicit)
+	policyConfigured := sc.RegimeDirectionalPolicy != nil && sc.RegimeDirectionalPolicy.IsConfigured()
+	if policyConfigured {
+		// Policy present: distinguish static base from per-regime overrides.
+		fmt.Fprintf(b, "  base_direction:      %s (%s)\n", baseDir, prov)
+	} else {
+		// No policy: keep legacy "direction:" label for operator scripts (#784).
+		fmt.Fprintf(b, "  direction:           %s (%s)\n", baseDir, prov)
+	}
+	if policyConfigured {
 		fmt.Fprintf(b, "  regime_directional_policy:\n")
 		for _, label := range canonicalTrendRegimeLabels {
 			dir := EffectiveDirectionForRegime(sc, label)

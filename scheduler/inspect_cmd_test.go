@@ -389,6 +389,33 @@ func TestFormatStrategySummaryLineRegimeTPTierCount(t *testing.T) {
 	}
 }
 
+func TestFormatStrategyInspectionLegacyDirectionLabel(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-plain", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong}
+	out := formatStrategyInspection(sc, map[string]bool{"direction": true}, nil, nil)
+	if !strings.Contains(out, "  direction:           long") {
+		t.Errorf("strategies without regime_directional_policy should use legacy direction: label:\n%s", out)
+	}
+	if strings.Contains(out, "  base_direction:") {
+		t.Errorf("should not emit base_direction without policy:\n%s", out)
+	}
+}
+
+func TestFormatStrategyInspectionBaseDirectionWithPolicy(t *testing.T) {
+	sc := StrategyConfig{
+		ID: "hl-policy", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong,
+		RegimeDirectionalPolicy: &RegimeDirectionalPolicy{TrendRegime: map[string]RegimeDirectionalEntry{
+			"trending_up": {Direction: DirectionLong}, "trending_down": {Direction: DirectionShort}, "ranging": {Direction: DirectionLong},
+		}},
+	}
+	out := formatStrategyInspection(sc, map[string]bool{"direction": true}, nil, nil)
+	if !strings.Contains(out, "  base_direction:      long") {
+		t.Errorf("policy strategies should use base_direction: label:\n%s", out)
+	}
+	if !strings.Contains(out, "  regime_directional_policy:") {
+		t.Errorf("missing policy table:\n%s", out)
+	}
+}
+
 func TestFormatStrategyInspectionPositionOrderDeterministic(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-multi", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong}
 	state := NewAppState()
