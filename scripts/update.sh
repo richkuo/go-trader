@@ -4,9 +4,11 @@
 # paths + ExecStart vs swap-target warning before systemd restart. #766:
 # RESTART_MODE=signal (explicit) for bare-process + pidfile deployments.
 # #785: systemd mode falls back to signal restart when unit missing (exit 5).
+# #790: --rsync-from safe tree sync; warn on missing systemd EnvironmentFile.
 #
 # Phases:
 #   preflight  — git/uv/go sanity checks
+#   rsync      — optional --rsync-from (replaces pull)
 #   pull       — git pull --ff-only
 #   sync       — uv sync
 #   build      — go build to go-trader.new (live binary untouched)
@@ -45,6 +47,8 @@ if [[ -z "$service_unit" ]]; then
 fi
 go_trader_pidfile="$(trim_space "${GO_TRADER_PIDFILE:-./go-trader.pid}")"
 go_trader_run_sh="$(trim_space "${GO_TRADER_RUN_SH:-./run.sh}")"
+rsync_from=""
+tree_mutated=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -79,6 +83,18 @@ while [[ $# -gt 0 ]]; do
         --update-all-root=*)
             shift
             ;;
+        --rsync-from)
+            if [[ $# -lt 2 ]]; then
+                echo "$1 requires a source directory path" >&2
+                exit 2
+            fi
+            rsync_from="$(trim_space "$2")"
+            shift 2
+            ;;
+        --rsync-from=*)
+            rsync_from="$(trim_space "${1#*=}")"
+            shift
+            ;;
         --unit|--service)
             if [[ $# -lt 2 ]]; then
                 echo "$1 requires a systemd unit name" >&2
@@ -104,7 +120,10 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo "Usage: $0 [--restart] [--restart-mode systemd|signal] [--unit <systemd-unit>]"
             echo "       $0 [--restart] [--service <systemd-unit>]"
+            echo "       $0 [--rsync-from <source-dir>] [--restart] ..."
             echo "       $0 --all [--restart] [--restart-mode systemd|signal] [--update-all-root <dir>] [...]"
+            echo "  --rsync-from <dir>  rsync code from a source clone into this deployment (skips git pull;"
+            echo "                      hardcoded exclusions protect .env, config, state DB, venv, binaries)."
             echo "  With --all + systemd: each child inherits GO_TRADER_SERVICE — set per-worktree env if units differ."
             echo "  RESTART=1 env var also enables restart."
             echo "  RESTART_MODE=signal requires Linux, GO_TRADER_RUN_SH, GO_TRADER_PIDFILE (see #766)."
@@ -143,6 +162,11 @@ esac
 
 if [[ "$update_all" == "1" && "$restart" != "1" ]]; then
     echo "--all requires --restart (each instance is restarted after swap)" >&2
+    exit 2
+fi
+
+if [[ -n "$rsync_from" && ( "$rsync_from" == --* || ! -d "$rsync_from" ) ]]; then
+    echo "--rsync-from requires an existing source directory (got: ${rsync_from:-<empty>})" >&2
     exit 2
 fi
 
@@ -331,6 +355,69 @@ update_canonicalize_path() {
     printf '%s' "$p"
 }
 
+update_resolve_db_exclude() {
+    local db_path="scheduler/state.db"
+    if [[ -f scheduler/config.json && -x .venv/bin/python3 ]]; then
+        local custom
+        custom=$(.venv/bin/python3 -c '
+import json
+try:
+    cfg = json.load(open("scheduler/config.json"))
+    p = cfg.get("db_file") or ""
+    if isinstance(p, str) and p.strip():
+        print(p.strip())
+except Exception:
+    pass
+' 2>/dev/null || true)
+        if [[ -n "$custom" ]]; then
+            db_path="$custom"
+        fi
+    fi
+    printf '%s' "$db_path"
+}
+
+run_rsync_from() {
+    local src="$1"
+    local dest="$2"
+    local db_excl
+    if ! command -v rsync >/dev/null 2>&1; then
+        fail "rsync not on PATH — install rsync or omit --rsync-from"
+    fi
+    db_excl=$(update_resolve_db_exclude)
+    echo "[update] rsync: $src/ -> $dest/ (excludes deployment secrets/state/venv/binaries)"
+    rsync -a --delete \
+        --exclude='.env' \
+        --exclude='scheduler/config.json' \
+        --exclude="$db_excl" \
+        --exclude='trading_bot.db*' \
+        --exclude='.venv/' \
+        --exclude='node_modules/' \
+        --exclude='__pycache__/' \
+        --exclude='go-trader' \
+        --exclude='go-trader.new' \
+        --exclude='go-trader.prev' \
+        --exclude='go-trader.pid' \
+        "$src/" "$dest/"
+}
+
+warn_missing_systemd_environment_files() {
+    local unit="$1"
+    local raw entry path
+    raw=$(systemctl show -p EnvironmentFiles --value "$unit" 2>/dev/null || true)
+    [[ -n "$raw" ]] || return 0
+    for entry in $raw; do
+        [[ -n "$entry" ]] || continue
+        path="$entry"
+        if [[ "$path" == -* ]]; then
+            path="${path#-}"
+        fi
+        [[ -n "$path" ]] || continue
+        if [[ ! -f "$path" ]]; then
+            printf '\033[1;31m[update] WARNING: EnvironmentFile %s is missing for unit %s; restart proceeds but secrets from this file will be absent\033[0m\n' "$entry" "$unit" >&2
+        fi
+    done
+}
+
 warn_execstart_vs_swap() {
     local unit="$1"
     local exec_line binary swap_abs bin_abs swap_res
@@ -359,7 +446,7 @@ do_rollback() {
     fi
     mv -f ./go-trader.prev ./go-trader
 
-    if [[ -n "$pre_pull_sha" && -n "${post_pull_sha:-}" && "$pre_pull_sha" != "$post_pull_sha" ]]; then
+    if [[ "$tree_mutated" == "1" && -n "$pre_pull_sha" ]]; then
         echo "[update] rollback: reverting git tree to $pre_pull_sha" >&2
         if git reset --hard "$pre_pull_sha" >&2; then
             if ! uv sync >&2; then
@@ -528,6 +615,15 @@ EOF
     fail "scheduler/config.json missing — refusing to mutate tree from a non-deployment directory"
 fi
 
+if [[ -n "$rsync_from" ]]; then
+    rsync_from=$(cd "$rsync_from" && pwd)
+    if [[ "$(pwd)" == "$rsync_from" ]]; then
+        fail "--rsync-from cannot be the deployment directory ($(pwd))"
+    fi
+fi
+
+pre_pull_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+
 if [[ "$restart" == "1" && "$restart_mode" == "signal" ]]; then
     if [[ ! -d /proc/self ]]; then
         fail "RESTART_MODE=signal requires Linux (/proc); use systemd mode on other OSes"
@@ -537,33 +633,35 @@ if [[ "$restart" == "1" && "$restart_mode" == "signal" ]]; then
     fi
 fi
 
-build_paths=(
-    scheduler
-    shared_scripts
-    shared_strategies
-    shared_tools
-    platforms
-    backtest
-    pyproject.toml
-    uv.lock
-)
+if [[ -z "$rsync_from" ]]; then
+    build_paths=(
+        scheduler
+        shared_scripts
+        shared_strategies
+        shared_tools
+        platforms
+        backtest
+        pyproject.toml
+        uv.lock
+    )
 
-if ! git diff --quiet -- "${build_paths[@]}" || ! git diff --cached --quiet -- "${build_paths[@]}"; then
-    git status --short -- "${build_paths[@]}" >&2
-    fail "working tree has uncommitted changes in build-input paths; commit, stash, or revert first"
-fi
-if ! git diff --quiet || ! git diff --cached --quiet; then
-    echo "[update] warning: uncommitted changes outside build-input paths (will survive git pull):" >&2
-    git status --short >&2
-fi
+    if ! git diff --quiet -- "${build_paths[@]}" || ! git diff --cached --quiet -- "${build_paths[@]}"; then
+        git status --short -- "${build_paths[@]}" >&2
+        fail "working tree has uncommitted changes in build-input paths; commit, stash, or revert first"
+    fi
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        echo "[update] warning: uncommitted changes outside build-input paths (will survive git pull):" >&2
+        git status --short >&2
+    fi
 
-untracked=$(git ls-files --others --exclude-standard \
-    scheduler shared_scripts shared_strategies shared_tools platforms backtest 2>/dev/null || true)
-untracked_root=$(git ls-files --others --exclude-standard 2>/dev/null | grep -v '/' || true)
-if [[ -n "$untracked" || -n "$untracked_root" ]]; then
-    echo "[update] warning: untracked files (will not affect the build):" >&2
-    [[ -n "$untracked" ]] && echo "$untracked" >&2
-    [[ -n "$untracked_root" ]] && echo "$untracked_root" >&2
+    untracked=$(git ls-files --others --exclude-standard \
+        scheduler shared_scripts shared_strategies shared_tools platforms backtest 2>/dev/null || true)
+    untracked_root=$(git ls-files --others --exclude-standard 2>/dev/null | grep -v '/' || true)
+    if [[ -n "$untracked" || -n "$untracked_root" ]]; then
+        echo "[update] warning: untracked files (will not affect the build):" >&2
+        [[ -n "$untracked" ]] && echo "$untracked" >&2
+        [[ -n "$untracked_root" ]] && echo "$untracked_root" >&2
+    fi
 fi
 
 prev_running_version=""
@@ -572,7 +670,6 @@ if [[ -x ./go-trader ]]; then
 fi
 echo "[update] previous binary version: ${prev_running_version:-<none>}"
 
-pre_pull_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
 prev_main_pid=""
 if [[ "$restart" == "1" && "$restart_mode" == "signal" ]]; then
     prev_main_pid=$(signal_read_pidfile "$go_trader_pidfile") || fail "signal mode: could not read valid pid from $go_trader_pidfile"
@@ -599,17 +696,31 @@ fi
 
 end_phase
 
-begin_phase pull
-git pull --ff-only
-post_pull_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
-end_phase
+if [[ -n "$rsync_from" ]]; then
+    begin_phase rsync
+    run_rsync_from "$rsync_from" "$(pwd)"
+    tree_mutated=1
+    end_phase
+else
+    begin_phase pull
+    git pull --ff-only
+    post_pull_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+    if [[ -n "$pre_pull_sha" && -n "$post_pull_sha" && "$pre_pull_sha" != "$post_pull_sha" ]]; then
+        tree_mutated=1
+    fi
+    end_phase
+fi
 
 begin_phase sync
 uv sync
 end_phase
 
 begin_phase build
-ver=$(git describe --tags --always --dirty=-mod 2>/dev/null || echo dev)
+if [[ -n "$rsync_from" ]]; then
+    ver=$(git -C "$rsync_from" describe --tags --always --dirty=-mod 2>/dev/null || echo dev)
+else
+    ver=$(git describe --tags --always --dirty=-mod 2>/dev/null || echo dev)
+fi
 rm -f ./go-trader.new
 "$go_bin" -C scheduler build -ldflags "-X main.Version=$ver" -o ../go-trader.new .
 if [[ ! -s ./go-trader.new ]]; then
@@ -658,6 +769,7 @@ status_port="${status_port:-8099}"
 
 if [[ "$restart_mode" == "systemd" ]]; then
     warn_execstart_vs_swap "$service_unit"
+    warn_missing_systemd_environment_files "$service_unit"
 
     begin_phase restart
     restart_rc=0
