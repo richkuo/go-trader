@@ -15,7 +15,7 @@ func TestUpdateShellScriptSyntax(t *testing.T) {
 	}
 	schedDir := filepath.Dir(thisFile)
 	repoRoot := filepath.Join(schedDir, "..")
-	for _, name := range []string{"update.sh", "create-run-sh.sh"} {
+	for _, name := range []string{"update.sh", "update_helpers.sh", "create-run-sh.sh", "test_update_helpers.sh"} {
 		script := filepath.Join(repoRoot, "scripts", name)
 		out, err := exec.Command("bash", "-n", script).CombinedOutput()
 		if err != nil {

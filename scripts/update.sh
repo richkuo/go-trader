@@ -5,6 +5,8 @@
 # RESTART_MODE=signal (explicit) for bare-process + pidfile deployments.
 # #785: systemd mode falls back to signal restart when unit missing (exit 5).
 # #790: --rsync-from safe tree sync; warn on missing systemd EnvironmentFile.
+#   --rsync-from preserves deployment .git/ (not copied from source) so rollback
+#   git reset --hard still targets the deployment repo's pre-sync SHA.
 #
 # Phases:
 #   preflight  — git/uv/go sanity checks
@@ -27,6 +29,8 @@ set -euo pipefail
 
 THIS_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 THIS_SCRIPT="${THIS_SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+# shellcheck source=update_helpers.sh
+source "${THIS_SCRIPT_DIR}/update_helpers.sh"
 orig_argv=("$@")
 
 trim_space() {
@@ -379,43 +383,33 @@ except Exception:
 run_rsync_from() {
     local src="$1"
     local dest="$2"
-    local db_excl
+    local db_excl signal_log_excl
+    local -a rsync_excludes
     if ! command -v rsync >/dev/null 2>&1; then
         fail "rsync not on PATH — install rsync or omit --rsync-from"
     fi
     db_excl=$(update_resolve_db_exclude)
-    echo "[update] rsync: $src/ -> $dest/ (excludes deployment secrets/state/venv/binaries)"
-    rsync -a --delete \
-        --exclude='.env' \
-        --exclude='scheduler/config.json' \
-        --exclude="$db_excl" \
-        --exclude='trading_bot.db*' \
-        --exclude='.venv/' \
-        --exclude='node_modules/' \
-        --exclude='__pycache__/' \
-        --exclude='go-trader' \
-        --exclude='go-trader.new' \
-        --exclude='go-trader.prev' \
-        --exclude='go-trader.pid' \
-        "$src/" "$dest/"
-}
-
-warn_missing_systemd_environment_files() {
-    local unit="$1"
-    local raw entry path
-    raw=$(systemctl show -p EnvironmentFiles --value "$unit" 2>/dev/null || true)
-    [[ -n "$raw" ]] || return 0
-    for entry in $raw; do
-        [[ -n "$entry" ]] || continue
-        path="$entry"
-        if [[ "$path" == -* ]]; then
-            path="${path#-}"
-        fi
-        [[ -n "$path" ]] || continue
-        if [[ ! -f "$path" ]]; then
-            printf '\033[1;31m[update] WARNING: EnvironmentFile %s is missing for unit %s; restart proceeds but secrets from this file will be absent\033[0m\n' "$entry" "$unit" >&2
-        fi
-    done
+    signal_log_excl="${GO_TRADER_SIGNAL_LOG:-./go-trader-signal.log}"
+    rsync_excludes=(
+        --exclude='.git/'
+        --exclude='.env'
+        --exclude='scheduler/config.json'
+        --exclude="${db_excl}*"
+        --exclude='trading_bot.db*'
+        --exclude='.venv/'
+        --exclude='node_modules/'
+        --exclude='__pycache__/'
+        --exclude='go-trader'
+        --exclude='go-trader.new'
+        --exclude='go-trader.prev'
+        --exclude='go-trader.pid'
+        --exclude='go-trader-signal.log'
+    )
+    if [[ "$signal_log_excl" != "./go-trader-signal.log" && "$signal_log_excl" != "go-trader-signal.log" ]]; then
+        rsync_excludes+=(--exclude="$signal_log_excl")
+    fi
+    echo "[update] rsync: $src/ -> $dest/ (excludes deployment .git, secrets, state DB, venv, binaries, signal log)"
+    rsync -a --delete "${rsync_excludes[@]}" "$src/" "$dest/"
 }
 
 warn_execstart_vs_swap() {
