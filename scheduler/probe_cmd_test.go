@@ -131,3 +131,37 @@ func TestRunProbeHappyPath(t *testing.T) {
 			hlSignal, hlFetchATR, hlExecute, spotSignal, candleHelper, probed)
 	}
 }
+
+// #787: update.sh probe must load live HL configs without shell secrets.
+func TestRunProbeSkipsLiveCredentialChecks(t *testing.T) {
+	t.Setenv("HYPERLIQUID_SECRET_KEY", "")
+
+	orig := probeOneCheckScriptFn
+	defer func() { probeOneCheckScriptFn = orig }()
+	probeOneCheckScriptFn = func(script string, argv []string) error { return nil }
+
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.json")
+	body, _ := json.Marshal(map[string]any{
+		"interval_seconds": 60,
+		"strategies": []any{
+			map[string]any{
+				"id":               "hl-tema-eth-live",
+				"type":             "perps",
+				"platform":         "hyperliquid",
+				"script":           "shared_scripts/check_hyperliquid.py",
+				"args":             []string{"triple_ema", "ETH", "1h", "--mode=live"},
+				"interval_seconds": 60,
+				"capital":          1000.0,
+				"max_drawdown_pct": 60.0,
+			},
+		},
+	})
+	if err := os.WriteFile(cfgPath, body, 0o644); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	rc := runProbe([]string{"--config", cfgPath})
+	if rc != 0 {
+		t.Fatalf("probe with live HL config and no shell secrets should return 0, got %d", rc)
+	}
+}

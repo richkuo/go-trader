@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2534,4 +2535,72 @@ func TestValidateConfigInvertSignal(t *testing.T) {
 			t.Fatalf("expected HL-perps/manual-only error, got: %v", err)
 		}
 	})
+}
+
+// #787: normal startup still requires live credentials in the environment.
+func TestValidateConfigHLLiveRequiresSecretKey(t *testing.T) {
+	t.Setenv("HYPERLIQUID_SECRET_KEY", "")
+	cfg := Config{
+		Strategies: []StrategyConfig{{
+			ID:             "hl-tema-eth-live",
+			Type:           "perps",
+			Platform:       "hyperliquid",
+			Script:         "shared_scripts/check_hyperliquid.py",
+			Args:           []string{"triple_ema", "ETH", "1h", "--mode=live"},
+			Capital:        1000,
+			MaxDrawdownPct: 60,
+		}},
+	}
+	err := ValidateConfig(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "HYPERLIQUID_SECRET_KEY") {
+		t.Fatalf("expected live secret error, got: %v", err)
+	}
+}
+
+// #787: probe/update.sh loads config without shell secrets when the running
+// process has them via systemd EnvironmentFile, etc.
+func TestLoadConfigForProbeSkipsLiveCredentialChecks(t *testing.T) {
+	t.Setenv("HYPERLIQUID_SECRET_KEY", "")
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
+
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.json")
+	body, err := json.Marshal(map[string]any{
+		"interval_seconds": 600,
+		"strategies": []any{
+			map[string]any{
+				"id":               "hl-tema-eth-live",
+				"type":             "perps",
+				"platform":         "hyperliquid",
+				"script":           "shared_scripts/check_hyperliquid.py",
+				"args":             []string{"triple_ema", "ETH", "1h", "--mode=live"},
+				"interval_seconds": 60,
+				"capital":          1000.0,
+				"max_drawdown_pct": 60.0,
+			},
+			map[string]any{
+				"id":               "hl-cap-pct",
+				"type":             "perps",
+				"platform":         "hyperliquid",
+				"script":           "shared_scripts/check_hyperliquid.py",
+				"args":             []string{"triple_ema", "BTC", "1h", "--mode=live"},
+				"interval_seconds": 60,
+				"capital_pct":      0.25,
+				"max_drawdown_pct": 60.0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("LoadConfig should still require live credentials")
+	}
+	if _, err := LoadConfigForProbe(path); err != nil {
+		t.Fatalf("LoadConfigForProbe should skip live credential checks: %v", err)
+	}
 }

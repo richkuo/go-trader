@@ -18,7 +18,7 @@ func runProbe(args []string) int {
 		return 2
 	}
 
-	cfg, err := LoadConfig(*configPath)
+	cfg, err := LoadConfigForProbe(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "probe: failed to load config %s: %v\n", *configPath, err)
 		return 1

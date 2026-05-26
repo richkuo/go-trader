@@ -569,7 +569,21 @@ func EffectiveInitialCapital(sc StrategyConfig, ss *StrategyState) float64 {
 	return sc.Capital
 }
 
+// LoadConfig loads and validates a config file. Live-mode strategies require
+// platform credential env vars to be set in the process environment.
 func LoadConfig(path string) (*Config, error) {
+	return loadConfig(path, false)
+}
+
+// LoadConfigForProbe loads config for `go-trader probe` / update.sh pre-swap
+// validation. Skips live-credential env checks (#787): probe only verifies the
+// Python argv contract and never connects to exchanges; secrets may live only in
+// the running process (systemd EnvironmentFile, etc.).
+func LoadConfigForProbe(path string) (*Config, error) {
+	return loadConfig(path, true)
+}
+
+func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
@@ -903,7 +917,7 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Correlation.MaxSameDirectionPct = 75
 	}
 
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, skipLiveCredentialChecks); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -1134,6 +1148,10 @@ func ordinal(n int) string {
 
 // ValidateConfig checks script paths and strategy fields (#34, #36).
 func ValidateConfig(cfg *Config) error {
+	return validateConfig(cfg, false)
+}
+
+func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	var errs []string
 	seenIDs := make(map[string]bool)
 
@@ -1227,62 +1245,64 @@ func ValidateConfig(cfg *Config) error {
 			}
 		}
 
-		// Live-mode futures require TopStep API credentials.
-		if sc.Type == "futures" {
-			for _, arg := range sc.Args {
-				if arg == "--mode=live" {
-					if os.Getenv("TOPSTEP_API_KEY") == "" {
-						errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_API_KEY env var", prefix))
+		if !skipLiveCredentialChecks {
+			// Live-mode futures require TopStep API credentials.
+			if sc.Type == "futures" {
+				for _, arg := range sc.Args {
+					if arg == "--mode=live" {
+						if os.Getenv("TOPSTEP_API_KEY") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_API_KEY env var", prefix))
+						}
+						if os.Getenv("TOPSTEP_API_SECRET") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_API_SECRET env var", prefix))
+						}
+						if os.Getenv("TOPSTEP_ACCOUNT_ID") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_ACCOUNT_ID env var", prefix))
+						}
+						break
 					}
-					if os.Getenv("TOPSTEP_API_SECRET") == "" {
-						errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_API_SECRET env var", prefix))
-					}
-					if os.Getenv("TOPSTEP_ACCOUNT_ID") == "" {
-						errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_ACCOUNT_ID env var", prefix))
-					}
-					break
 				}
 			}
-		}
 
-		// Live-mode Robinhood crypto requires credentials.
-		if sc.Platform == "robinhood" {
-			for _, arg := range sc.Args {
-				if arg == "--mode=live" {
-					if os.Getenv("ROBINHOOD_USERNAME") == "" {
-						errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_USERNAME env var", prefix))
+			// Live-mode Robinhood crypto requires credentials.
+			if sc.Platform == "robinhood" {
+				for _, arg := range sc.Args {
+					if arg == "--mode=live" {
+						if os.Getenv("ROBINHOOD_USERNAME") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_USERNAME env var", prefix))
+						}
+						if os.Getenv("ROBINHOOD_PASSWORD") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_PASSWORD env var", prefix))
+						}
+						if os.Getenv("ROBINHOOD_TOTP_SECRET") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_TOTP_SECRET env var", prefix))
+						}
+						break
 					}
-					if os.Getenv("ROBINHOOD_PASSWORD") == "" {
-						errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_PASSWORD env var", prefix))
-					}
-					if os.Getenv("ROBINHOOD_TOTP_SECRET") == "" {
-						errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_TOTP_SECRET env var", prefix))
-					}
-					break
 				}
 			}
-		}
 
-		// Live-mode perps require platform-specific env vars.
-		if sc.Type == "perps" || (sc.Platform == "okx" && sc.Type == "spot") {
-			for _, arg := range sc.Args {
-				if arg == "--mode=live" {
-					if sc.Platform == "okx" {
-						if os.Getenv("OKX_API_KEY") == "" {
-							errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_API_KEY env var", prefix))
+			// Live-mode perps require platform-specific env vars.
+			if sc.Type == "perps" || (sc.Platform == "okx" && sc.Type == "spot") {
+				for _, arg := range sc.Args {
+					if arg == "--mode=live" {
+						if sc.Platform == "okx" {
+							if os.Getenv("OKX_API_KEY") == "" {
+								errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_API_KEY env var", prefix))
+							}
+							if os.Getenv("OKX_API_SECRET") == "" {
+								errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_API_SECRET env var", prefix))
+							}
+							if os.Getenv("OKX_PASSPHRASE") == "" {
+								errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_PASSPHRASE env var", prefix))
+							}
+						} else if sc.Platform == "hyperliquid" || sc.Platform == "" {
+							if os.Getenv("HYPERLIQUID_SECRET_KEY") == "" {
+								errs = append(errs, fmt.Sprintf("%s: --mode=live requires HYPERLIQUID_SECRET_KEY env var", prefix))
+							}
 						}
-						if os.Getenv("OKX_API_SECRET") == "" {
-							errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_API_SECRET env var", prefix))
-						}
-						if os.Getenv("OKX_PASSPHRASE") == "" {
-							errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_PASSPHRASE env var", prefix))
-						}
-					} else if sc.Platform == "hyperliquid" || sc.Platform == "" {
-						if os.Getenv("HYPERLIQUID_SECRET_KEY") == "" {
-							errs = append(errs, fmt.Sprintf("%s: --mode=live requires HYPERLIQUID_SECRET_KEY env var", prefix))
-						}
+						break
 					}
-					break
 				}
 			}
 		}
@@ -1296,7 +1316,7 @@ func ValidateConfig(cfg *Config) error {
 				fmt.Printf("[WARN] %s: both capital ($%.0f) and capital_pct (%.0f%%) set — capital_pct takes priority\n", sc.ID, sc.Capital, sc.CapitalPct*100)
 			}
 			// #101: capital_pct on hyperliquid requires account address for balance fetch.
-			if sc.CapitalPct > 0 && sc.Platform == "hyperliquid" {
+			if !skipLiveCredentialChecks && sc.CapitalPct > 0 && sc.Platform == "hyperliquid" {
 				if os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") == "" {
 					errs = append(errs, fmt.Sprintf("%s: capital_pct requires HYPERLIQUID_ACCOUNT_ADDRESS env var", prefix))
 				}
