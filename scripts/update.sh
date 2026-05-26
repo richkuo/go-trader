@@ -3,6 +3,7 @@
 # post-restart verification, and rollback (#682). #764: extra go(1) lookup
 # paths + ExecStart vs swap-target warning before systemd restart. #766:
 # RESTART_MODE=signal (explicit) for bare-process + pidfile deployments.
+# #785: default systemd mode falls back to signal restart when unit missing (exit 5).
 #
 # Phases:
 #   preflight  — git/uv/go sanity checks
@@ -11,7 +12,7 @@
 #   build      — go build to go-trader.new (live binary untouched)
 #   probe      — go-trader.new probe against the just-synced Python
 #   swap       — atomic mv: live binary -> .prev, staged -> live
-#   restart    — systemd unit OR signal/kill + wrapper respawn (only with --restart)
+#   restart    — systemd unit, or signal/kill + wrapper (explicit or #785 fallback)
 #   verify     — wait active (systemd) or /health + PID freshness
 #   rollback   — restore .prev on verify failure
 #
@@ -36,6 +37,7 @@ trim_space() {
 restart=0
 restart_mode="$(trim_space "${RESTART_MODE:-systemd}")"
 restart_mode=$(printf '%s' "$restart_mode" | tr '[:upper:]' '[:lower:]')
+restart_uses_signal=0
 update_all=0
 service_unit="$(trim_space "${GO_TRADER_SERVICE:-}")"
 if [[ -z "$service_unit" ]]; then
@@ -106,6 +108,7 @@ while [[ $# -gt 0 ]]; do
             echo "  With --all + systemd: each child inherits GO_TRADER_SERVICE — set per-worktree env if units differ."
             echo "  RESTART=1 env var also enables restart."
             echo "  RESTART_MODE=signal requires Linux, GO_TRADER_RUN_SH, GO_TRADER_PIDFILE (see #766)."
+            echo "  Default systemd mode falls back to signal when the unit is not found (systemctl exit 5)."
             echo ""
             echo "Env overrides:"
             echo "  GO_TRADER_SERVICE=<unit>   systemd unit (default: go-trader; systemd mode only)"
@@ -222,6 +225,57 @@ signal_launch_wrapper() {
     sleep 1
 }
 
+restart_uses_signal_pid() {
+    [[ "$restart_mode" == "signal" || "$restart_uses_signal" == 1 ]]
+}
+
+require_signal_restart_prereqs() {
+    if [[ ! -d /proc/self ]]; then
+        fail "systemd unit missing and signal fallback requires Linux (/proc); install the unit or use --restart-mode signal on Linux with pidfile+run.sh"
+    fi
+    if [[ ! -f "$go_trader_pidfile" ]]; then
+        fail "systemd unit missing and signal fallback requires pidfile ($go_trader_pidfile); start via wrapper once (scripts/create-run-sh.sh) or install the systemd unit"
+    fi
+}
+
+ensure_prev_main_pid_for_signal() {
+    if [[ -n "$prev_main_pid" ]]; then
+        return 0
+    fi
+    prev_main_pid=$(signal_read_pidfile "$go_trader_pidfile" || true)
+    if [[ -n "$prev_main_pid" ]] && kill -0 "$prev_main_pid" 2>/dev/null; then
+        signal_log_proc_snapshot "$prev_main_pid"
+    fi
+}
+
+run_signal_restart() {
+    ensure_prev_main_pid_for_signal
+    if [[ -n "$prev_main_pid" ]] && kill -0 "$prev_main_pid" 2>/dev/null; then
+        echo "[update] signal: SIGTERM old trader pid=$prev_main_pid" >&2
+        kill -TERM "$prev_main_pid" 2>/dev/null || true
+        signal_wait_pid_exit "$prev_main_pid" "post-swap-old-trader"
+    else
+        echo "[update] signal: old pid not running before respawn — launching wrapper" >&2
+    fi
+    signal_launch_wrapper "$go_trader_run_sh"
+}
+
+rollback_wait_signal_pidfile() {
+    local rb_waited=0
+    while [[ $rb_waited -lt $active_timeout ]]; do
+        local cur_rb=""
+        cur_rb=$(signal_read_pidfile "$go_trader_pidfile" || true)
+        if [[ -n "$cur_rb" ]] && kill -0 "$cur_rb" 2>/dev/null; then
+            echo "[update] rollback: signal respawn pid=$cur_rb (${rb_waited}s)"
+            return 0
+        fi
+        sleep 1
+        rb_waited=$((rb_waited + 1))
+    done
+    echo "[update] rollback: signal wrapper did not produce a live pid in $go_trader_pidfile within ${active_timeout}s" >&2
+    return 1
+}
+
 signal_kill_pidfile_process_then_respawn() {
     local pidfile="$1"
     local run_sh="$2"
@@ -310,24 +364,37 @@ do_rollback() {
         fi
     fi
 
-    if [[ "$restart_mode" == "signal" ]]; then
+    if restart_uses_signal_pid; then
         signal_kill_pidfile_process_then_respawn "$go_trader_pidfile" "$go_trader_run_sh"
-        local rb_waited=0
-        while [[ $rb_waited -lt $active_timeout ]]; do
-            local cur_rb=""
-            cur_rb=$(signal_read_pidfile "$go_trader_pidfile" || true)
-            if [[ -n "$cur_rb" ]] && kill -0 "$cur_rb" 2>/dev/null; then
-                echo "[update] rollback: signal respawn pid=$cur_rb (${rb_waited}s)"
-                return
-            fi
-            sleep 1
-            rb_waited=$((rb_waited + 1))
-        done
-        echo "[update] rollback: signal wrapper did not produce a live pid in $go_trader_pidfile within ${active_timeout}s" >&2
+        rollback_wait_signal_pidfile || true
         return
     fi
 
-    sudo systemctl restart "$service_unit" || true
+    local rb_rc=0
+    set +e
+    sudo systemctl restart "$service_unit"
+    rb_rc=$?
+    set -e
+    if [[ $rb_rc -eq 5 ]]; then
+        echo "[update] rollback: systemd unit $service_unit not found — trying signal respawn" >&2
+        if [[ ! -d /proc/self ]] || [[ ! -f "$go_trader_pidfile" ]]; then
+            echo "[update] rollback: signal fallback unavailable (need Linux + pidfile)" >&2
+            return
+        fi
+        if [[ ! -f "$go_trader_run_sh" ]] || [[ ! -x "$go_trader_run_sh" ]]; then
+            echo "[update] rollback: signal fallback unavailable (missing executable $go_trader_run_sh)" >&2
+            return
+        fi
+        restart_uses_signal=1
+        signal_kill_pidfile_process_then_respawn "$go_trader_pidfile" "$go_trader_run_sh"
+        rollback_wait_signal_pidfile || true
+        return
+    fi
+    if [[ $rb_rc -ne 0 ]]; then
+        echo "[update] rollback: systemctl restart failed with exit $rb_rc" >&2
+        return
+    fi
+
     local rb_waited=0
     while [[ $rb_waited -lt $active_timeout ]]; do
         if systemctl is-active --quiet "$service_unit"; then
@@ -341,7 +408,7 @@ do_rollback() {
 }
 
 verify_cur_restart_pid() {
-    if [[ "$restart_mode" == "signal" ]]; then
+    if restart_uses_signal_pid; then
         signal_read_pidfile "$go_trader_pidfile" || true
     else
         local p
@@ -518,6 +585,10 @@ else
     if [[ "$prev_main_pid" == "0" ]]; then
         prev_main_pid=""
     fi
+    # Bare-process deploys may have no unit; keep pidfile pid for #785 signal fallback + verify.
+    if [[ -z "$prev_main_pid" && "$restart" == "1" ]]; then
+        prev_main_pid=$(signal_read_pidfile "$go_trader_pidfile" || true)
+    fi
 fi
 
 end_phase
@@ -583,29 +654,34 @@ if [[ "$restart_mode" == "systemd" ]]; then
     warn_execstart_vs_swap "$service_unit"
 
     begin_phase restart
+    restart_rc=0
+    set +e
     sudo systemctl restart "$service_unit"
-
-    waited=0
-    until systemctl is-active --quiet "$service_unit"; do
-        if [[ $waited -ge $active_timeout ]]; then
-            do_rollback "systemctl is-active timeout after ${active_timeout}s"
-            fail "service did not reach active state within ${active_timeout}s"
-        fi
-        sleep 1
-        waited=$((waited + 1))
-    done
-    echo "[update] systemd reports active: $service_unit (${waited}s)"
+    restart_rc=$?
+    set -e
+    if [[ $restart_rc -eq 0 ]]; then
+        waited=0
+        until systemctl is-active --quiet "$service_unit"; do
+            if [[ $waited -ge $active_timeout ]]; then
+                do_rollback "systemctl is-active timeout after ${active_timeout}s"
+                fail "service did not reach active state within ${active_timeout}s"
+            fi
+            sleep 1
+            waited=$((waited + 1))
+        done
+        echo "[update] systemd reports active: $service_unit (${waited}s)"
+    elif [[ $restart_rc -eq 5 ]]; then
+        echo "[update] systemd: unit $service_unit not found (exit $restart_rc) — falling back to signal restart" >&2
+        require_signal_restart_prereqs
+        restart_uses_signal=1
+        run_signal_restart
+    else
+        fail "systemctl restart $service_unit failed with exit $restart_rc"
+    fi
     end_phase
 else
     begin_phase restart
-    if [[ -n "$prev_main_pid" ]] && kill -0 "$prev_main_pid" 2>/dev/null; then
-        echo "[update] signal: SIGTERM old trader pid=$prev_main_pid" >&2
-        kill -TERM "$prev_main_pid" 2>/dev/null || true
-        signal_wait_pid_exit "$prev_main_pid" "post-swap-old-trader"
-    else
-        echo "[update] signal: old pid not running before respawn — launching wrapper" >&2
-    fi
-    signal_launch_wrapper "$go_trader_run_sh"
+    run_signal_restart
     end_phase
 fi
 
