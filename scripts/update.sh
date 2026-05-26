@@ -3,7 +3,7 @@
 # post-restart verification, and rollback (#682). #764: extra go(1) lookup
 # paths + ExecStart vs swap-target warning before systemd restart. #766:
 # RESTART_MODE=signal (explicit) for bare-process + pidfile deployments.
-# #785: default systemd mode falls back to signal restart when unit missing (exit 5).
+# #785: systemd mode falls back to signal restart when unit missing (exit 5).
 #
 # Phases:
 #   preflight  — git/uv/go sanity checks
@@ -108,7 +108,7 @@ while [[ $# -gt 0 ]]; do
             echo "  With --all + systemd: each child inherits GO_TRADER_SERVICE — set per-worktree env if units differ."
             echo "  RESTART=1 env var also enables restart."
             echo "  RESTART_MODE=signal requires Linux, GO_TRADER_RUN_SH, GO_TRADER_PIDFILE (see #766)."
-            echo "  Default systemd mode falls back to signal when the unit is not found (systemctl exit 5)."
+            echo "  systemd mode falls back to signal when the unit is not found (systemctl exit 5)."
             echo ""
             echo "Env overrides:"
             echo "  GO_TRADER_SERVICE=<unit>   systemd unit (default: go-trader; systemd mode only)"
@@ -235,6 +235,12 @@ require_signal_restart_prereqs() {
     fi
     if [[ ! -f "$go_trader_pidfile" ]]; then
         fail "systemd unit missing and signal fallback requires pidfile ($go_trader_pidfile); start via wrapper once (scripts/create-run-sh.sh) or install the systemd unit"
+    fi
+    if [[ ! -f "$go_trader_run_sh" ]]; then
+        fail "systemd unit missing and signal fallback requires GO_TRADER_RUN_SH ($go_trader_run_sh); create via scripts/create-run-sh.sh or install the systemd unit"
+    fi
+    if [[ ! -x "$go_trader_run_sh" ]]; then
+        fail "systemd unit missing and signal fallback requires executable GO_TRADER_RUN_SH ($go_trader_run_sh)"
     fi
 }
 
