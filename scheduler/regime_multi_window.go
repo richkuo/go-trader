@@ -66,7 +66,17 @@ func (p RegimePayload) Label(windowKey string, rc *RegimeConfig) string {
 		return strings.TrimSpace(p.Legacy)
 	}
 	if key == "" || key == regimeWindowDefaultKey {
-		key = primaryRegimeWindowKey(rc)
+		// With explicit regime.windows, the default selector maps to the
+		// primary window. Without them, the check script still emits a
+		// single-window payload keyed by "default" (regimeWindowsSpecJSON's
+		// empty-windows branch), so fall back to that literal key rather than
+		// no-op'ing to an empty label — an empty label silently disables both
+		// regime_directional_policy and the allowed_regimes gate (#797).
+		if regimeMultiWindowEnabled(rc) {
+			key = primaryRegimeWindowKey(rc)
+		} else {
+			key = regimeWindowDefaultKey
+		}
 	}
 	if key == "" {
 		return ""

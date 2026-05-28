@@ -42,6 +42,91 @@ func TestRegimePayload_UnmarshalMultiWindow(t *testing.T) {
 	}
 }
 
+// TestRegimePayload_LabelDefaultWindowNoExplicitWindows is the #797 regression:
+// with regime.enabled=true and no explicit regime.windows, the check script
+// emits a single-window payload keyed by "default". The default selector
+// (empty / "default") must resolve that literal key instead of no-op'ing to an
+// empty label, which previously disabled both regime_directional_policy and the
+// allowed_regimes gate on live entries.
+func TestRegimePayload_LabelDefaultWindowNoExplicitWindows(t *testing.T) {
+	var p RegimePayload
+	if err := json.Unmarshal([]byte(`{"default":{"regime":"trending_down","score":0.9}}`), &p); err != nil {
+		t.Fatal(err)
+	}
+	if !p.MultiMode {
+		t.Fatal("expected multi-window payload for default-keyed result")
+	}
+	rc := &RegimeConfig{Enabled: true} // no explicit Windows — issue config shape
+	for _, key := range []string{"", "default", "DEFAULT"} {
+		if got := p.Label(key, rc); got != "trending_down" {
+			t.Fatalf("Label(%q) = %q, want trending_down", key, got)
+		}
+	}
+	if got := p.PrimaryLabel(rc); got != "trending_down" {
+		t.Fatalf("PrimaryLabel = %q, want trending_down", got)
+	}
+}
+
+// TestRegimeDirectionalPolicy_DefaultWindowResolves wires the full flat-entry
+// resolution path from #797: default-keyed payload + no explicit windows +
+// regime_directional_policy must flip a long base config to short+invert.
+func TestRegimeDirectionalPolicy_DefaultWindowResolves(t *testing.T) {
+	var p RegimePayload
+	if err := json.Unmarshal([]byte(`{"default":{"regime":"trending_down"}}`), &p); err != nil {
+		t.Fatal(err)
+	}
+	rc := &RegimeConfig{Enabled: true}
+	sc := StrategyConfig{
+		Direction:    "long",
+		InvertSignal: false,
+		RegimeDirectionalPolicy: &RegimeDirectionalPolicy{TrendRegime: map[string]RegimeDirectionalEntry{
+			"trending_up":   {Direction: "long", InvertSignal: false},
+			"trending_down": {Direction: "short", InvertSignal: true},
+			"ranging":       {Direction: "long", InvertSignal: false},
+		}},
+	}
+	label := regimeDirectionalLabel(sc, p, rc)
+	if label != "trending_down" {
+		t.Fatalf("regimeDirectionalLabel = %q, want trending_down", label)
+	}
+	entry, applied, _ := applyRegimeDirectionalPolicy(&sc, label, "", 0)
+	if !applied {
+		t.Fatal("expected policy to apply on flat default-window entry")
+	}
+	if entry.Direction != "short" || !entry.InvertSignal {
+		t.Fatalf("entry = %+v, want short+invert", entry)
+	}
+	if sc.Direction != "short" || !sc.InvertSignal {
+		t.Fatalf("sc not mutated: dir=%q invert=%t", sc.Direction, sc.InvertSignal)
+	}
+}
+
+// TestRegimeGate_DefaultWindowBlocks covers the second #797 consumer: the
+// allowed_regimes gate shares RegimePayload.Label, so a default-keyed payload
+// with no explicit windows must still produce a non-empty label and block an
+// entry whose regime is not allowed (previously failed open).
+func TestRegimeGate_DefaultWindowBlocks(t *testing.T) {
+	var p RegimePayload
+	if err := json.Unmarshal([]byte(`{"default":{"regime":"trending_down"}}`), &p); err != nil {
+		t.Fatal(err)
+	}
+	rc := &RegimeConfig{Enabled: true}
+	sc := StrategyConfig{AllowedRegimes: []string{"trending_up"}}
+
+	if got := regimeGateLabel(sc, p, rc); got != "trending_down" {
+		t.Fatalf("regimeGateLabel = %q, want trending_down", got)
+	}
+	gateLabel, blocked := applyRegimeGate(sc, p, rc, 0)
+	if !blocked {
+		t.Fatalf("expected gate to block trending_down entry (allowed=trending_up); gateLabel=%q", gateLabel)
+	}
+	// Allowed regime must pass.
+	scAllowed := StrategyConfig{AllowedRegimes: []string{"trending_down"}}
+	if _, blocked := applyRegimeGate(scAllowed, p, rc, 0); blocked {
+		t.Fatal("expected trending_down entry to pass when allowed")
+	}
+}
+
 func TestRegimeRequiredOhlcvLimit(t *testing.T) {
 	rc := &RegimeConfig{
 		Enabled: true,
