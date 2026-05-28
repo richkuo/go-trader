@@ -165,12 +165,12 @@ func TestProbeRunsExtraArgvForHL(t *testing.T) {
 		t.Fatalf("probe failed: %v", err)
 	}
 	hl := calls["shared_scripts/check_hyperliquid.py"]
-	if len(hl) != 3 || hl[0] != "signal" || hl[1] != "fetch-atr" || hl[2] != "execute" {
-		t.Errorf("HL should be probed signal+fetch-atr+execute, got %v", hl)
+	if len(hl) != 4 || hl[0] != "signal" || hl[1] != "signal" || hl[2] != "fetch-atr" || hl[3] != "execute" {
+		t.Errorf("HL should be probed signal(adx)+signal(composite)+fetch-atr+execute, got %v", hl)
 	}
 	spot := calls["shared_scripts/check_strategy.py"]
-	if len(spot) != 1 || spot[0] != "signal" {
-		t.Errorf("non-HL should be probed signal-only, got %v", spot)
+	if len(spot) != 2 || spot[0] != "signal" || spot[1] != "signal" {
+		t.Errorf("non-HL should be probed signal(adx)+signal(composite), got %v", spot)
 	}
 	candles := calls["shared_scripts/fetch_candles.py"]
 	if len(candles) != 1 || candles[0] != "signal" {

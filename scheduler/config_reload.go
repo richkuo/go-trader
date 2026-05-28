@@ -435,18 +435,23 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 			errs = append(errs, fmt.Sprintf("strategy[%s] regime_*_window changed with open positions (flatten first or restart after close)",
 				sc.ID))
 		}
-		// #795: classifier swap on a window referenced by open positions blocks reload.
+		// #795: classifier swap or window removal on a referenced window blocks reload.
 		if cfg.Regime != nil && next.Regime != nil && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
-			if !regimeWindowsClassifiersEqual(cfg.Regime.Windows, next.Regime.Windows) {
-				for _, win := range sortedRegimeWindowNamesFromConfig(cfg.Regime.Windows) {
-					if openPositionsReferenceRegimeWindow(state, win) {
-						oldCls := cfg.Regime.Windows[win].effectiveClassifier()
-						newCls := next.Regime.Windows[win].effectiveClassifier()
-						if oldCls != newCls {
-							errs = append(errs, fmt.Sprintf("strategy[%s]: regime.windows[%q] classifier changed with open positions (%q -> %q; flatten first)",
-								sc.ID, win, oldCls, newCls))
-						}
-					}
+			for _, win := range sortedRegimeWindowNamesFromConfig(cfg.Regime.Windows) {
+				if !openPositionsReferenceRegimeWindow(state, win) {
+					continue
+				}
+				newSpec, ok := regimeWindowSpec(next.Regime, win)
+				if !ok {
+					errs = append(errs, fmt.Sprintf("strategy[%s]: regime.windows[%q] removed while open positions reference it (flatten first)",
+						sc.ID, win))
+					continue
+				}
+				oldCls := cfg.Regime.Windows[win].effectiveClassifier()
+				newCls := newSpec.effectiveClassifier()
+				if oldCls != newCls {
+					errs = append(errs, fmt.Sprintf("strategy[%s]: regime.windows[%q] classifier changed with open positions (%q -> %q; flatten first)",
+						sc.ID, win, oldCls, newCls))
 				}
 			}
 		}

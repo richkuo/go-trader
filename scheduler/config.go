@@ -1437,7 +1437,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if cfg.Regime == nil || !cfg.Regime.Enabled {
 				errs = append(errs, fmt.Sprintf("%s: regime_directional_policy requires top-level regime.enabled=true", prefix))
 			}
-			// ResolveRawWithLabels runs in validateStrategyRegimeVocabulary.
+			// Shape validation also runs in validateStrategyRegimeVocabulary (ADX labels when
+			// regime.enabled=false so typos surface alongside the enabled=true error).
 		}
 
 		// #486: validate margin_mode (HL perps only). Empty is allowed

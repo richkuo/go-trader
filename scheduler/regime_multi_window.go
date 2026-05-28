@@ -380,17 +380,22 @@ func validateRegimeWindowsConfig(cfg *Config) []string {
 	return errs
 }
 
-func regimeWindowExists(rc *RegimeConfig, key string) bool {
+func regimeWindowSpec(rc *RegimeConfig, key string) (RegimeWindowSpec, bool) {
 	if rc == nil {
-		return false
+		return RegimeWindowSpec{}, false
 	}
 	normalized := normalizeRegimeWindowKey(key)
-	for name := range rc.Windows {
+	for name, spec := range rc.Windows {
 		if normalizeRegimeWindowKey(name) == normalized {
-			return true
+			return spec, true
 		}
 	}
-	return false
+	return RegimeWindowSpec{}, false
+}
+
+func regimeWindowExists(rc *RegimeConfig, key string) bool {
+	_, ok := regimeWindowSpec(rc, key)
+	return ok
 }
 
 // regimeWindowsJSON forwards to regimeWindowsSpecJSON (#795).

@@ -106,10 +106,10 @@ func TestRunProbeHappyPath(t *testing.T) {
 	if rc != 0 {
 		t.Fatalf("happy-path probe should return 0, got %d", rc)
 	}
-	// Expect 5 invocations: HL signal-check, HL --fetch-atr (#689), HL
-	// --execute (PR #769), spot signal-check, and the dashboard candle helper.
-	if len(probed) != 5 {
-		t.Fatalf("expected 5 probe invocations, got %d: %v", len(probed), probed)
+	// Expect 7 invocations: HL signal-check (adx+composite), HL --fetch-atr (#689),
+	// HL --execute (PR #769), spot signal-check (adx+composite), dashboard candle helper.
+	if len(probed) != 7 {
+		t.Fatalf("expected 7 probe invocations, got %d: %v", len(probed), probed)
 	}
 	var hlSignal, hlFetchATR, hlExecute, spotSignal, candleHelper int
 	for _, p := range probed {
@@ -126,8 +126,8 @@ func TestRunProbeHappyPath(t *testing.T) {
 			candleHelper++
 		}
 	}
-	if hlSignal != 1 || hlFetchATR != 1 || hlExecute != 1 || spotSignal != 1 || candleHelper != 1 {
-		t.Fatalf("expected 1 of each (hl-signal, hl-fetch-atr, hl-execute, spot-signal, candle-helper); got %d/%d/%d/%d/%d (probed=%v)",
+	if hlSignal != 2 || hlFetchATR != 1 || hlExecute != 1 || spotSignal != 2 || candleHelper != 1 {
+		t.Fatalf("expected hl-signal=2, hl-fetch-atr=1, hl-execute=1, spot-signal=2, candle-helper=1; got %d/%d/%d/%d/%d (probed=%v)",
 			hlSignal, hlFetchATR, hlExecute, spotSignal, candleHelper, probed)
 	}
 }

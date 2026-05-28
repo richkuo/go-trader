@@ -40,6 +40,13 @@ except ImportError:  # pragma: no cover - supports direct shared_tools/regime.py
 CLASSIFIER_ADX = "adx"
 CLASSIFIER_COMPOSITE = "composite"
 
+# Preferred multi-window name for strategy_params primary snapshot (#792).
+# When absent, the lexicographically first window name is used.
+REGIME_PRIMARY_WINDOW_KEY = "medium"
+
+# ADX persistence in composite uses a capped lookback; return/range use the full window period.
+COMPOSITE_ADX_PERIOD_CAP = 14
+
 VALID_LABELS_ADX = frozenset({"trending_up", "trending_down", "ranging"})
 VALID_LABELS_COMPOSITE = frozenset({
     "trending_up_clean",
@@ -148,7 +155,8 @@ def latest_regime_composite(
         return {**_DEFAULT_RESULT, "metrics": dict(_DEFAULT_METRICS), "classifier": CLASSIFIER_COMPOSITE}
 
     window = _window_slice(df, period)
-    atr_val = _atr_at_end(df, min(period, 14))
+    # Return/range numerators span the full window; ATR denominator matches that horizon.
+    atr_val = _atr_at_end(df, period)
     if atr_val <= 0:
         return {
             "regime": "ranging_quiet",
@@ -165,7 +173,7 @@ def latest_regime_composite(
     lo = float(window["low"].min())
     range_atr_norm = (hi - lo) / atr_val
 
-    adx_period = min(period, 14)
+    adx_period = min(period, COMPOSITE_ADX_PERIOD_CAP)
     reg_df = compute_regime(df, period=adx_period, adx_threshold=th["adx"])
     adx_val = float(reg_df["adx"].iloc[-1]) if len(reg_df) else 0.0
 
@@ -256,7 +264,11 @@ def compute_regime_composite(
     period: int,
     thresholds: dict[str, float] | None = None,
 ) -> pd.DataFrame:
-    """Vectorized per-bar composite labels for backtests (#795)."""
+    """Per-bar composite labels for backtests (#795).
+
+    Uses a rolling Python loop (not vectorized). ADX persistence uses
+    COMPOSITE_ADX_PERIOD_CAP; return/range/ATR normalization use the full window period.
+    """
     th = {**_DEFAULT_COMPOSITE_THRESHOLDS, **(thresholds or {})}
     result = df.copy()
     n = len(result)
@@ -268,13 +280,13 @@ def compute_regime_composite(
     if n == 0:
         return result
 
-    adx_period = min(period, 14)
+    adx_period = min(period, COMPOSITE_ADX_PERIOD_CAP)
     adx_df = compute_regime(result, period=adx_period, adx_threshold=th["adx"])
     result["adx"] = adx_df["adx"].values
     result["plus_di"] = adx_df["plus_di"].values
     result["minus_di"] = adx_df["minus_di"].values
 
-    atr_series = standard_atr(result, period=adx_period)
+    atr_series = standard_atr(result, period=period)
     for i in range(period, n):
         window = result.iloc[i - period + 1 : i + 1]
         atr_val = float(atr_series.iloc[i]) if i < len(atr_series) else 0.0
@@ -343,17 +355,13 @@ def compute_multi_regime(
             )
         value = windows[name]
         if isinstance(value, int) and not isinstance(value, bool):
+            if value < 2:
+                raise ValueError(f"window {trimmed!r}: period must be >= 2, got {value}")
             spec = {"classifier": CLASSIFIER_ADX, "period": value, "adx_threshold": default_adx_threshold}
-        else:
+        elif isinstance(value, dict):
             spec = value
-        if not isinstance(value, int) or isinstance(value, bool):
-            if not isinstance(spec, dict):
-                raise ValueError(f"window {trimmed!r}: period must be an int, got {type(value).__name__}")
-            period = spec.get("period")
-            if not isinstance(period, int) or isinstance(period, bool):
-                raise ValueError(f"window {trimmed!r}: period must be an int, got {type(period).__name__}")
-            if period < 2:
-                raise ValueError(f"window {trimmed!r}: period must be >= 2, got {period}")
+        else:
+            raise ValueError(f"window {trimmed!r}: must be int or object spec, got {type(value).__name__}")
         out[trimmed] = classify_window(df, spec, default_adx_threshold=default_adx_threshold)
     return out
 
@@ -427,7 +435,11 @@ def prepare_check_regime(
     spec_map = windows_spec if windows_spec is not None else windows
     if spec_map:
         multi = compute_multi_regime(df, spec_map, default_adx_threshold=adx_threshold)
-        primary_key = "medium" if "medium" in spec_map else sorted(spec_map.keys())[0]
+        primary_key = (
+            REGIME_PRIMARY_WINDOW_KEY
+            if REGIME_PRIMARY_WINDOW_KEY in spec_map
+            else sorted(spec_map.keys())[0]
+        )
         strategy_payload = multi.get(primary_key, disabled)
         atr_key = (atr_window or primary_key).strip() or primary_key
         atr_entry = multi.get(atr_key, strategy_payload)

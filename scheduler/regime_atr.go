@@ -281,8 +281,24 @@ func cloneRegimeMap(in map[string]RegimeATREntry) map[string]RegimeATREntry {
 // (tier surfaces handle their own expansion since tiers are an ordered list,
 // so passing a tier surface here returns a zero block — the caller must
 // special-case tier-level use_defaults before reaching this function).
+func labelsAreCanonicalADX(labels []string) bool {
+	if len(labels) != len(canonicalTrendRegimeLabels) {
+		return false
+	}
+	set := make(map[string]bool, len(labels))
+	for _, l := range labels {
+		set[l] = true
+	}
+	for _, l := range canonicalTrendRegimeLabels {
+		if !set[l] {
+			return false
+		}
+	}
+	return true
+}
+
 func expandRegimeATRDefaultsForLabels(baseline map[string]RegimeATREntry, labels []string) map[string]RegimeATREntry {
-	if len(labels) == len(canonicalTrendRegimeLabels) {
+	if labelsAreCanonicalADX(labels) {
 		return cloneRegimeMap(baseline)
 	}
 	up := baseline["trending_up"]

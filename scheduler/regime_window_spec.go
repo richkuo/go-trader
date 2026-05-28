@@ -284,17 +284,16 @@ func validateStrategyRegimeVocabulary(cfg *Config) []string {
 					prefix, j, label, win, cls, strings.Join(gateLabels, ", ")))
 			}
 		}
-		if rc == nil || !rc.Enabled {
-			continue
-		}
 		if sc.RegimeDirectionalPolicy.IsConfigured() {
-			dirLabels := regimeLabelsForStrategyWindow(sc, rc, "directional")
-			dirSet := make(map[string]bool, len(dirLabels))
-			for _, l := range dirLabels {
-				dirSet[l] = true
+			dirLabels := canonicalTrendRegimeLabels
+			if rc != nil && rc.Enabled {
+				dirLabels = regimeLabelsForStrategyWindow(sc, rc, "directional")
 			}
 			polErrs := sc.RegimeDirectionalPolicy.ResolveRawWithLabels(prefix+".regime_directional_policy", dirLabels)
 			errs = append(errs, polErrs...)
+		}
+		if rc == nil || !rc.Enabled {
+			continue
 		}
 		atrLabels := regimeLabelsForStrategyWindow(sc, rc, "atr")
 		if sc.StopLossATRRegime.IsConfigured() {
