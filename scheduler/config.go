@@ -48,9 +48,9 @@ type PlatformConfig struct {
 // RegimeConfig controls the market regime detector run once per (symbol, timeframe) cycle.
 // Default disabled; strategies opt in via AllowedRegimes or by reading params["regime"].
 type RegimeConfig struct {
-	Enabled      bool           `json:"enabled"`
-	Period       int            `json:"period"`            // ADX lookback (Wilder's smoothing); default 14; legacy single-window mode
-	ADXThreshold float64        `json:"adx_threshold"`     // ADX below this is "ranging"; default 20.0
+	Enabled      bool             `json:"enabled"`
+	Period       int              `json:"period"`            // ADX lookback (Wilder's smoothing); default 14; legacy single-window mode
+	ADXThreshold float64          `json:"adx_threshold"`     // ADX below this is "ranging"; default 20.0
 	Windows      RegimeWindowsMap `json:"windows,omitempty"` // name -> classifier+period; bare int = ADX period (#792/#795)
 }
 
