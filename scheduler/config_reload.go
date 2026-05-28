@@ -478,6 +478,9 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.AllowShorts = false           // #656: legacy field — direction change is what gates hot reload
 	sc.InvertSignal = false          // #775: hot-reloadable; state-compat blocks change while open. Needed in shape mask so the immutable-fields DeepEqual doesn't flag a pure invert_signal toggle as "restart required" (parallel to Direction above).
 	sc.RegimeDirectionalPolicy = nil // #779: hot-reloadable; state-compat blocks add/remove/reshape while open
+	sc.RegimeGateWindow = ""         // #792: hot-reloadable when flat; state-compat blocks change while open
+	sc.RegimeATRWindow = ""          // #792: hot-reloadable when flat; state-compat blocks change while open
+	sc.RegimeDirectionalWindow = ""  // #792: hot-reloadable when flat; state-compat blocks change while open
 	return sc
 }
 

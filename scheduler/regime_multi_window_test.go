@@ -88,3 +88,30 @@ func TestRegimeLabelAtOpen_PrefersStampedWindow(t *testing.T) {
 		t.Fatalf("default primary = %q", got)
 	}
 }
+
+func TestRegimePayload_UnmarshalWindowNamedRegime(t *testing.T) {
+	raw := `{"regime":{"regime":"ranging","score":0.1,"metrics":{"adx":10}}}`
+	var p RegimePayload
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatal(err)
+	}
+	if !p.MultiMode {
+		t.Fatal("expected multi-window payload for window named regime")
+	}
+	if got := p.Label("regime", nil); got != "ranging" {
+		t.Fatalf("label = %q", got)
+	}
+}
+
+func TestValidateRegimeWindowsConfig_RejectsReservedWindowName(t *testing.T) {
+	cfg := &Config{
+		Regime: &RegimeConfig{
+			Enabled: true,
+			Windows: map[string]int{"regime": 168},
+		},
+	}
+	errs := validateRegimeWindowsConfig(cfg)
+	if len(errs) != 1 {
+		t.Fatalf("errs = %v", errs)
+	}
+}

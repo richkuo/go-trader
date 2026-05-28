@@ -8,6 +8,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+import pytest
 
 # Insert shared_tools into sys.path so that regime.py can import atr.py
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
@@ -25,6 +26,7 @@ compute_multi_regime = _regime_mod.compute_multi_regime
 regime_payload_for_config = _regime_mod.regime_payload_for_config
 regime_label_from_payload = _regime_mod.regime_label_from_payload
 required_ohlcv_limit = _regime_mod.required_ohlcv_limit
+parse_regime_windows_json = _regime_mod.parse_regime_windows_json
 ensure_regime_columns = _regime_mod.ensure_regime_columns
 
 
@@ -371,3 +373,8 @@ def test_regime_label_from_payload_legacy_and_multi():
 def test_required_ohlcv_limit_scales_with_windows():
     assert required_ohlcv_limit(period=14) == 200
     assert required_ohlcv_limit(period=14, windows={"long": 2160}) >= 4320
+
+
+def test_parse_regime_windows_json_rejects_reserved_name():
+    with pytest.raises(ValueError, match="reserved"):
+        parse_regime_windows_json('{"regime": 168}')

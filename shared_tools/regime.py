@@ -201,6 +201,10 @@ def compute_multi_regime(
         trimmed = str(name).strip()
         if not trimmed:
             raise ValueError("window names must be non-empty strings")
+        if trimmed.lower() == "regime":
+            raise ValueError(
+                "window name 'regime' is reserved (conflicts with legacy regime snapshot JSON)"
+            )
         period = windows[name]
         if not isinstance(period, int) or isinstance(period, bool):
             raise ValueError(f"window {trimmed!r}: period must be an int, got {type(period).__name__}")
@@ -311,6 +315,10 @@ def parse_regime_windows_json(raw: str | None) -> dict[str, int] | None:
         key = str(name).strip()
         if not key:
             raise ValueError("regime window names must be non-empty")
+        if key.lower() == "regime":
+            raise ValueError(
+                "regime window name 'regime' is reserved (conflicts with legacy regime snapshot JSON)"
+            )
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(f"regime window {key!r}: bar count must be an int")
         if value < 2:

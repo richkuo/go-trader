@@ -36,7 +36,6 @@ var probeArgv = []string{
 	"--ohlcv-limit", "200",
 	"--regime-windows-json", "",
 	"--regime-atr-window", "",
-	"--regime-directional-window", "",
 	"--probe-only",
 }
 

@@ -140,9 +140,7 @@ func appendStrategyRegimeWindowArgs(args []string, sc StrategyConfig, regime *Re
 	if key := resolveStrategyRegimeWindow(sc, "atr", regime); key != "" && key != regimeWindowDefaultKey {
 		out = append(out, "--regime-atr-window", key)
 	}
-	if key := resolveStrategyRegimeWindow(sc, "directional", regime); key != "" && key != regimeWindowDefaultKey {
-		out = append(out, "--regime-directional-window", key)
-	}
+	// Directional window is resolved Go-side from RegimePayload; not forwarded to Python.
 	return out
 }
 

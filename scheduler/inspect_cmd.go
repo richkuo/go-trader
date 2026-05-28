@@ -498,9 +498,9 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	}
 	if cfg != nil && cfg.Regime != nil && len(cfg.Regime.Windows) > 0 {
 		fmt.Fprintf(&b, "  regime_windows:      %s\n", formatRegimeWindowsInspect(cfg.Regime.Windows))
-		fmt.Fprintf(&b, "  regime_gate_window:  %q\n", resolveStrategyRegimeWindow(sc, "gate", cfg.Regime))
-		fmt.Fprintf(&b, "  regime_atr_window:   %q\n", resolveStrategyRegimeWindow(sc, "atr", cfg.Regime))
-		fmt.Fprintf(&b, "  regime_directional_window: %q\n", resolveStrategyRegimeWindow(sc, "directional", cfg.Regime))
+		fmt.Fprintf(&b, "  regime_gate_window:  %s\n", formatRegimeWindowSelectorInspect(sc, "gate", cfg.Regime))
+		fmt.Fprintf(&b, "  regime_atr_window:   %s\n", formatRegimeWindowSelectorInspect(sc, "atr", cfg.Regime))
+		fmt.Fprintf(&b, "  regime_directional_window: %s\n", formatRegimeWindowSelectorInspect(sc, "directional", cfg.Regime))
 	}
 	if sc.HTFFilter {
 		fmt.Fprintf(&b, "  htf_filter:          true\n")
@@ -577,9 +577,9 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 	}
 	if cfg != nil && cfg.Regime != nil && len(cfg.Regime.Windows) > 0 {
 		out["regime_windows"] = cfg.Regime.Windows
-		out["regime_gate_window"] = resolveStrategyRegimeWindow(sc, "gate", cfg.Regime)
-		out["regime_atr_window"] = resolveStrategyRegimeWindow(sc, "atr", cfg.Regime)
-		out["regime_directional_window"] = resolveStrategyRegimeWindow(sc, "directional", cfg.Regime)
+		out["regime_gate_window"] = regimeWindowSelectorJSON(sc, "gate", cfg.Regime)
+		out["regime_atr_window"] = regimeWindowSelectorJSON(sc, "atr", cfg.Regime)
+		out["regime_directional_window"] = regimeWindowSelectorJSON(sc, "directional", cfg.Regime)
 	}
 	if sc.Type == "perps" || sc.Type == "manual" {
 		for k, v := range directionInspectJSON(sc, cfg, state) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1225,5 +1226,39 @@ func TestLoadConfigManualDefaultsRejectsEmptyTPTiersArray(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "tp_tiers") {
 		t.Errorf("error %q does not mention tp_tiers", err)
+	}
+}
+
+func TestStrategyRestartShape_RegimeWindowOnlyChange(t *testing.T) {
+	a := StrategyConfig{ID: "hl-a", RegimeGateWindow: "short", RegimeATRWindow: "medium"}
+	b := StrategyConfig{ID: "hl-a", RegimeGateWindow: "long", RegimeATRWindow: "short"}
+	if !reflect.DeepEqual(strategyRestartShape(a), strategyRestartShape(b)) {
+		t.Fatal("regime_*_window-only change should not affect restart shape")
+	}
+}
+
+func TestValidateHotReloadCompatible_RegimeWindowOnlyChange(t *testing.T) {
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID:               "hl-a",
+		Type:             "perps",
+		Platform:         "hyperliquid",
+		Script:           "shared_scripts/check_hyperliquid.py",
+		Args:             []string{"momentum", "BTC", "1h", "--mode=paper"},
+		Capital:          1000,
+		MaxDrawdownPct:   10,
+		RegimeGateWindow: "short",
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID:               "hl-a",
+		Type:             "perps",
+		Platform:         "hyperliquid",
+		Script:           "shared_scripts/check_hyperliquid.py",
+		Args:             []string{"momentum", "BTC", "1h", "--mode=paper"},
+		Capital:          1000,
+		MaxDrawdownPct:   10,
+		RegimeGateWindow: "medium",
+	}})
+	if err := validateHotReloadCompatible(cfg, next); err != nil {
+		t.Fatalf("pure regime_gate_window change should be hot-reloadable: %v", err)
 	}
 }

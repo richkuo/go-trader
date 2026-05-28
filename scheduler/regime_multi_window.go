@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	regimeWindowDefaultKey = "default"
-	regimeOhlcvBaseLimit   = 200
-	regimeOhlcvMargin      = 10
+	regimeWindowDefaultKey   = "default"
+	regimeWindowReservedName = "regime"
+	regimeOhlcvBaseLimit     = 200
+	regimeOhlcvMargin        = 10
 )
 
 // RegimeSnapshot is one window's latest regime reading from a check script.
@@ -120,14 +121,39 @@ func (p *RegimePayload) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	if _, ok := raw["regime"]; ok {
-		var snap RegimeSnapshot
-		if err := json.Unmarshal(data, &snap); err != nil {
-			return err
+		// Flat legacy snapshot: {"regime":"trending_up","score":...} — not a
+		// multi-window map whose sole key happens to be named "regime".
+		if _, hasScore := raw["score"]; hasScore {
+			var snap RegimeSnapshot
+			if err := json.Unmarshal(data, &snap); err != nil {
+				return err
+			}
+			p.Legacy = snap.Regime
+			p.MultiMode = false
+			p.Windows = nil
+			return nil
 		}
-		p.Legacy = snap.Regime
-		p.MultiMode = false
-		p.Windows = nil
-		return nil
+		if _, hasMetrics := raw["metrics"]; hasMetrics {
+			var snap RegimeSnapshot
+			if err := json.Unmarshal(data, &snap); err != nil {
+				return err
+			}
+			p.Legacy = snap.Regime
+			p.MultiMode = false
+			p.Windows = nil
+			return nil
+		}
+		var label string
+		if err := json.Unmarshal(raw["regime"], &label); err == nil {
+			var snap RegimeSnapshot
+			if err := json.Unmarshal(data, &snap); err != nil {
+				return err
+			}
+			p.Legacy = snap.Regime
+			p.MultiMode = false
+			p.Windows = nil
+			return nil
+		}
 	}
 	windows := make(map[string]RegimeSnapshot, len(raw))
 	for name, blob := range raw {
@@ -209,6 +235,39 @@ func resolveStrategyRegimeWindow(sc StrategyConfig, field string, rc *RegimeConf
 	return key
 }
 
+func strategyRegimeWindowConfigured(sc StrategyConfig, field string) string {
+	switch field {
+	case "gate":
+		return sc.RegimeGateWindow
+	case "atr":
+		return sc.RegimeATRWindow
+	case "directional":
+		return sc.RegimeDirectionalWindow
+	default:
+		return ""
+	}
+}
+
+func formatRegimeWindowSelectorInspect(sc StrategyConfig, field string, rc *RegimeConfig) string {
+	configured := strategyRegimeWindowConfigured(sc, field)
+	resolved := resolveStrategyRegimeWindow(sc, field, rc)
+	key := normalizeRegimeWindowKey(configured)
+	if key == "" || key == regimeWindowDefaultKey {
+		if strings.TrimSpace(configured) == "" {
+			return fmt.Sprintf("(default) → %q", resolved)
+		}
+		return fmt.Sprintf("%q (default) → %q", configured, resolved)
+	}
+	return fmt.Sprintf("%q → %q", configured, resolved)
+}
+
+func regimeWindowSelectorJSON(sc StrategyConfig, field string, rc *RegimeConfig) map[string]string {
+	return map[string]string{
+		"configured": strategyRegimeWindowConfigured(sc, field),
+		"resolved":   resolveStrategyRegimeWindow(sc, field, rc),
+	}
+}
+
 func regimeRequiredOhlcvLimit(rc *RegimeConfig) int {
 	maxPeriod := 14
 	if rc != nil {
@@ -287,6 +346,9 @@ func validateRegimeWindowsConfig(cfg *Config) []string {
 		}
 		if seen[strings.ToLower(trimmed)] {
 			errs = append(errs, fmt.Sprintf("regime.windows: duplicate window name %q", trimmed))
+		}
+		if normalizeRegimeWindowKey(trimmed) == regimeWindowReservedName {
+			errs = append(errs, fmt.Sprintf("regime.windows: window name %q is reserved (conflicts with legacy regime snapshot JSON)", trimmed))
 		}
 		seen[strings.ToLower(trimmed)] = true
 		if bars < 2 {

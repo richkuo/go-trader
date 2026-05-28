@@ -81,6 +81,8 @@ CREATE TABLE IF NOT EXISTS positions (
     tp_tiers_json TEXT NOT NULL DEFAULT '',
     sl_adjusted_tiers_processed INTEGER NOT NULL DEFAULT 0,
     post_tp_trailing_atr_mult REAL,
+    regime TEXT NOT NULL DEFAULT '',
+    regime_windows_json TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (strategy_id, symbol)
 );
 
