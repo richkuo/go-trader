@@ -49,8 +49,8 @@ type PlatformConfig struct {
 // Default disabled; strategies opt in via AllowedRegimes or by reading params["regime"].
 type RegimeConfig struct {
 	Enabled      bool           `json:"enabled"`
-	Period       int            `json:"period"`        // ADX lookback (Wilder's smoothing); default 14; legacy single-window mode
-	ADXThreshold float64        `json:"adx_threshold"` // ADX below this is "ranging"; default 20.0
+	Period       int            `json:"period"`            // ADX lookback (Wilder's smoothing); default 14; legacy single-window mode
+	ADXThreshold float64        `json:"adx_threshold"`     // ADX below this is "ranging"; default 20.0
 	Windows      map[string]int `json:"windows,omitempty"` // name -> ADX period in bars; empty = legacy single lookback via period (#792)
 }
 
@@ -305,9 +305,9 @@ type StrategyConfig struct {
 	Timeframe               string                   `json:"timeframe,omitempty"` // manual strategies: OHLCV timeframe (e.g. "1h")
 	Script                  string                   `json:"script"`
 	Args                    []string                 `json:"args"`
-	OpenStrategy            StrategyRef              `json:"open_strategy"`              // entry strategy ref (name + params). Migrated from legacy string-typed open_strategy / args[0] in v13 (#640)
-	CloseStrategies         []StrategyRef            `json:"close_strategies,omitempty"` // exit strategy refs (name + params); max close_fraction wins (#480). Migrated from legacy []string in v13 (#640)
-	AllowedRegimes          []string                 `json:"allowed_regimes,omitempty"`  // gate entries: skip signal when current regime not in this list; empty = allow all (#482)
+	OpenStrategy            StrategyRef              `json:"open_strategy"`                       // entry strategy ref (name + params). Migrated from legacy string-typed open_strategy / args[0] in v13 (#640)
+	CloseStrategies         []StrategyRef            `json:"close_strategies,omitempty"`          // exit strategy refs (name + params); max close_fraction wins (#480). Migrated from legacy []string in v13 (#640)
+	AllowedRegimes          []string                 `json:"allowed_regimes,omitempty"`           // gate entries: skip signal when current regime not in this list; empty = allow all (#482)
 	RegimeGateWindow        string                   `json:"regime_gate_window,omitempty"`        // window key for allowed_regimes gate; "" or "default" = legacy single lookback (#792)
 	RegimeATRWindow         string                   `json:"regime_atr_window,omitempty"`         // window key for *_atr_regime resolution (#792)
 	RegimeDirectionalWindow string                   `json:"regime_directional_window,omitempty"` // window key for regime_directional_policy (#792)
