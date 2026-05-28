@@ -1130,7 +1130,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 							continue
 						}
 						if dustAllArmed {
-							tiers := strategyTPTiersForRegime(sc, pos.Regime)
+							tiers := strategyTPTiersForRegime(sc, positionATRRegimeLabel(pos, sc))
 							if len(tiers) > 0 {
 								tierIdx = len(tiers) - 1
 							}
@@ -1277,7 +1277,7 @@ func hyperliquidAllTiersArmedAndCleared(sc StrategyConfig, pos *Position) bool {
 	if pos == nil {
 		return false
 	}
-	tiers := strategyTPTiersForRegime(sc, pos.Regime)
+	tiers := strategyTPTiersForRegime(sc, positionATRRegimeLabel(pos, sc))
 	if len(tiers) == 0 {
 		return false
 	}
@@ -1377,7 +1377,7 @@ func hlAttemptCloseFromArmedTPClears(
 			return false
 		}
 	}
-	tiers := strategyTPTiersForRegime(sc, pos.Regime)
+	tiers := strategyTPTiersForRegime(sc, positionATRRegimeLabel(pos, sc))
 	if len(tiers) == 0 {
 		return false
 	}
@@ -1469,7 +1469,7 @@ func hyperliquidClearedTPTier(sc StrategyConfig, pos *Position, closeQty float64
 	if pos == nil || len(pos.TPOIDs) == 0 {
 		return 0, false
 	}
-	tiers := strategyTPTiersForRegime(sc, pos.Regime)
+	tiers := strategyTPTiersForRegime(sc, positionATRRegimeLabel(pos, sc))
 	if len(tiers) == 0 {
 		return 0, false
 	}

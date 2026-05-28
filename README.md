@@ -167,7 +167,7 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
 
 ### Regime Detection
 
-Optional ADX+DI 3-state gate (`trending_up` / `trending_down` / `ranging`) computed from the strategy's own OHLCV. Per-strategy `allowed_regimes` blocks new entries when the current regime isn't whitelisted (closes always pass). `regime.enabled` requires a restart; `allowed_regimes` is SIGHUP-reloadable. Options strategies don't emit a regime label yet.
+Optional ADX+DI 3-state gate (`trending_up` / `trending_down` / `ranging`) computed from the strategy's own OHLCV. Per-strategy `allowed_regimes` blocks new entries when the current regime isn't whitelisted (closes always pass). `regime.enabled` and `regime.windows` require a restart; `allowed_regimes` and per-strategy `regime_*_window` selectors are SIGHUP-reloadable when flat. Options strategies don't emit a regime label yet.
 
 ```json
 {
@@ -177,6 +177,34 @@ Optional ADX+DI 3-state gate (`trending_up` / `trending_down` / `ranging`) compu
 ```
 
 `regime.period` defaults to 14, `regime.adx_threshold` to 20 (below this → `ranging`).
+
+**Multi-window regime (#792).** Optional named horizons in `regime.windows` run independent ADX classifiers (each value is the ADX **period in bars**, not a slice-then-period-14 shortcut). When `windows` is empty, behavior is unchanged — one label from `regime.period`. When set, check scripts emit a dict keyed by window name; the scheduler routes three consumers via per-strategy selectors (empty / `"default"` → legacy `period` window):
+
+| Selector | Consumer |
+|---|---|
+| `regime_gate_window` | Entry gate (`allowed_regimes`) |
+| `regime_atr_window` | Regime-aware SL/TP multipliers (stamped in `pos.RegimeWindows` at open) |
+| `regime_directional_window` | `regime_directional_policy` resolver |
+
+OHLCV fetch limit scales to `max(200, 2×max(window)−1 + margin)` so long horizons (e.g. `long: 2160` on 1h ≈ 90d) warm up reliably. `go-trader inspect <id>` shows global windows, resolved selectors, and stamped `regime_windows` on open positions. Backtester remains single-window (live-only for now).
+
+```json
+{
+  "regime": {
+    "enabled": true,
+    "period": 14,
+    "adx_threshold": 20,
+    "windows": { "short": 168, "medium": 720, "long": 2160 }
+  },
+  "strategies": [{
+    "id": "hl-triple-ema-eth",
+    "allowed_regimes": ["trending_up", "trending_down"],
+    "regime_gate_window": "short",
+    "regime_atr_window": "medium",
+    "regime_directional_window": "long"
+  }]
+}
+```
 
 **Regime-aware ATR multipliers (HL perps).** With `regime.enabled: true`, four close-strategy / stop-loss surfaces can resolve their ATR multiplier per regime label instead of using a fixed scalar: `stop_loss_atr_regime`, `trailing_stop_atr_regime` (strategy-level), and `tiered_tp_atr_regime` / `tiered_tp_atr_live_regime` (close-strategy refs). Operators opt in by swapping the scalar field for the `*_regime` sibling. `{"use_defaults": true}` expands to a baseline table (trending: tighter SL / wider TP; ranging: opposite); explicit form is `{"trend_regime": {"trending_up": {"atr": 2.0}, "trending_down": {"atr": 2.0}, "ranging": {"atr": 1.5}}}` (all three labels required). The regime is frozen at open via `pos.Regime` for stop and `_regime` TP refs; `tiered_tp_atr_live_regime` re-resolves each tick.
 
@@ -235,6 +263,9 @@ Values: `every` / `per_check` / `always` (every cycle), `hourly`, `daily`, Go du
 | `margin_mode` | HL perps — `isolated` / `cross`; applied from flat only | `isolated` |
 | `direction` | Perps — `long` / `short` / `both`; legacy `allow_shorts` migrates automatically | `long` |
 | `allowed_regimes` | Whitelist of regime labels for new entries (closes always run); requires `regime.enabled` | (no gate) |
+| `regime_gate_window` | Multi-window only: which named window feeds `allowed_regimes` (empty/`default` → `regime.period`) | legacy |
+| `regime_atr_window` | Multi-window only: which window stamps regime-aware SL/TP (`pos.RegimeWindows`) | legacy |
+| `regime_directional_window` | Multi-window only: which window feeds `regime_directional_policy` while flat | legacy |
 | `theta_harvest` | Early-exit config for sold options | null |
 
 ### Custom Strategy Parameters

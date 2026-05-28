@@ -41,16 +41,16 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		slMult = *sc.StopLossATRMult
 	} else if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
-		if v, ok := resolveRegimeATR(*sc.StopLossATRRegime, pos.Regime); ok {
+		if v, ok := resolveRegimeATR(*sc.StopLossATRRegime, positionATRRegimeLabel(pos, sc)); ok {
 			slMult = v
 		}
 	}
 	// Regime-aware tier multipliers freeze at first protection-sync after open
-	// (when pos.Regime is stamped). Empty pos.Regime → returns nil from
+	// (when pos.RegimeWindows is stamped). Empty label → returns nil from
 	// strategyTPTiersForRegime, so the plan emits SL only this cycle and
 	// re-emits TPs next cycle once stampPositionRegimeIfOpened populates the
-	// regime label.
-	tiers := strategyTPTiersForRegime(sc, pos.Regime)
+	// regime labels.
+	tiers := strategyTPTiersForRegime(sc, positionATRRegimeLabel(pos, sc))
 	if slMult <= 0 && len(tiers) == 0 {
 		return hlProtectionPlan{}, false
 	}

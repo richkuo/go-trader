@@ -407,11 +407,12 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			for _, p := range s.Positions {
 				if p != nil && p.Quantity > 0 {
 					posQty = p.Quantity
-					posRegime = p.Regime
+					posRegime = positionDirectionalRegimeLabel(p, sc)
 					break
 				}
 			}
-			effRegimeKey = effectiveRegimeForPolicy(s.Regime, posRegime, posQty)
+			currentDirRegime := strategyCurrentDirectionalRegime(s, sc)
+			effRegimeKey = effectiveRegimeForPolicy(currentDirRegime, posRegime, posQty)
 			if entry, ok := sc.RegimeDirectionalPolicy.Resolve(effRegimeKey); ok {
 				effDir = entry.Direction
 				effInvert = entry.InvertSignal

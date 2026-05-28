@@ -12,26 +12,28 @@ import (
 // by check scripts when a strategy opts into issue #480's split entry/exit
 // model. The legacy signal field remains authoritative for execution.
 type StrategyDecisionFields struct {
-	OpenStrategy    string   `json:"open_strategy,omitempty"`
-	CloseStrategies []string `json:"close_strategies,omitempty"`
-	OpenAction      string   `json:"open_action,omitempty"`
-	CloseFraction   float64  `json:"close_fraction"`
-	CloseStrategy   string   `json:"close_strategy,omitempty"`
-	Regime          string   `json:"regime,omitempty"`
+	OpenStrategy    string         `json:"open_strategy,omitempty"`
+	CloseStrategies []string       `json:"close_strategies,omitempty"`
+	OpenAction      string         `json:"open_action,omitempty"`
+	CloseFraction   float64        `json:"close_fraction"`
+	CloseStrategy   string         `json:"close_strategy,omitempty"`
+	Regime          *RegimePayload `json:"regime,omitempty"`
 }
 
 // PositionCtx is the optional state snapshot threaded into close evaluators
 // when a strategy opts into the open/close composition model (#496).
-// Regime carries pos.Regime (the regime stamped on the underlying Position
-// at open) so regime-aware close evaluators (tiered_tp_atr_regime, #733)
-// can resolve tier multipliers without re-running the classifier.
+// Regime carries the stamped label for the strategy's ATR window so
+// regime-aware close evaluators (tiered_tp_atr_regime, #733) can resolve
+// tier multipliers without re-running the classifier.
 type PositionCtx struct {
-	Side            string
-	AvgCost         float64
-	Quantity        float64
-	InitialQuantity float64
-	EntryATR        float64
-	Regime          string
+	Side              string
+	AvgCost           float64
+	Quantity          float64
+	InitialQuantity   float64
+	EntryATR          float64
+	Regime            string
+	DirectionalRegime string
+	RegimeWindows     map[string]string
 }
 
 func usesOpenCloseConfig(sc StrategyConfig) bool {
@@ -123,14 +125,32 @@ func appendRegimeArgs(args []string, regime *RegimeConfig) []string {
 	out := append(args, "--regime-enabled")
 	out = append(out, "--regime-period", strconv.Itoa(regime.Period))
 	out = append(out, "--regime-adx-threshold", strconv.FormatFloat(regime.ADXThreshold, 'f', -1, 64))
+	if blob := regimeWindowsJSON(regime); blob != "" {
+		out = append(out, "--regime-windows-json", blob)
+	}
+	out = append(out, "--ohlcv-limit", strconv.Itoa(regimeRequiredOhlcvLimit(regime)))
 	return out
 }
 
-func positionCtxForSymbol(s *StrategyState, symbol string) PositionCtx {
+func appendStrategyRegimeWindowArgs(args []string, sc StrategyConfig, regime *RegimeConfig) []string {
+	if regime == nil || !regime.Enabled || !regimeMultiWindowEnabled(regime) {
+		return args
+	}
+	out := append([]string{}, args...)
+	if key := resolveStrategyRegimeWindow(sc, "atr", regime); key != "" && key != regimeWindowDefaultKey {
+		out = append(out, "--regime-atr-window", key)
+	}
+	if key := resolveStrategyRegimeWindow(sc, "directional", regime); key != "" && key != regimeWindowDefaultKey {
+		out = append(out, "--regime-directional-window", key)
+	}
+	return out
+}
+
+func positionCtxForSymbol(s *StrategyState, symbol string, sc StrategyConfig, regime *RegimeConfig) PositionCtx {
 	if s == nil || strings.TrimSpace(symbol) == "" {
 		return PositionCtx{}
 	}
-	return positionCtxFromPosition(s.Positions[symbol])
+	return positionCtxForCheck(sc, s.Positions[symbol], regime)
 }
 
 func positionCtxFromPosition(pos *Position) PositionCtx {
@@ -138,12 +158,14 @@ func positionCtxFromPosition(pos *Position) PositionCtx {
 		return PositionCtx{}
 	}
 	return PositionCtx{
-		Side:            pos.Side,
-		AvgCost:         pos.AvgCost,
-		Quantity:        pos.Quantity,
-		InitialQuantity: pos.InitialQuantity,
-		EntryATR:        pos.EntryATR,
-		Regime:          pos.Regime,
+		Side:              pos.Side,
+		AvgCost:           pos.AvgCost,
+		Quantity:          pos.Quantity,
+		InitialQuantity:   pos.InitialQuantity,
+		EntryATR:          pos.EntryATR,
+		Regime:            pos.Regime,
+		DirectionalRegime: pos.Regime,
+		RegimeWindows:     cloneStringMap(pos.RegimeWindows),
 	}
 }
 

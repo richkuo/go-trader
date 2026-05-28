@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -108,7 +107,8 @@ type StrategyState struct {
 	OptionPositions map[string]*OptionPosition `json:"option_positions"`
 	TradeHistory    []Trade                    `json:"trade_history"`
 	RiskState       RiskState                  `json:"risk_state"`
-	Regime          string                     `json:"regime,omitempty"` // most recent regime label from check script (#482)
+	Regime          string                     `json:"regime,omitempty"`         // most recent primary regime label from check script (#482)
+	RegimeWindows   map[string]string          `json:"regime_windows,omitempty"` // latest per-window labels from check script (#792)
 	// ClosedPositions is an in-memory buffer of positions closed during the
 	// current cycle. SaveState appends these to the closed_positions table and
 	// clears the buffer on successful commit. Not serialized to JSON state
@@ -256,7 +256,7 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 			if pos == nil || pos.Quantity <= 0 {
 				continue
 			}
-			posRegime := strings.TrimSpace(pos.Regime)
+			posRegime := positionDirectionalRegimeLabel(pos, *sc)
 			effectiveDir := EffectiveDirectionForPosition(*sc, "", posRegime, pos.Quantity)
 			if !perpsPositionConflictsDirection(pos.Side, effectiveDir) {
 				continue

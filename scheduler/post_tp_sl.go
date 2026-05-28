@@ -697,7 +697,7 @@ func runPostTPStopLossAdjustment(
 	entryATR := pos.EntryATR
 	qty := pos.Quantity
 	currentOID := pos.StopLossOID
-	posRegime := pos.Regime
+	posRegime := positionATRRegimeLabel(pos, sc)
 	mu.RUnlock()
 
 	// If the matched tier has no rule, advance the watermark so we stop

@@ -468,7 +468,7 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 			// #777: all tiers armed+cleared with dust — prefetch per-tier fills
 			// (OID from open-trade snapshot when pos.TPOIDs are already zero).
 			if sameDirection && hyperliquidAllTiersArmedAndCleared(sc, pos) {
-				tiers := strategyTPTiersForRegime(sc, pos.Regime)
+				tiers := strategyTPTiersForRegime(sc, positionATRRegimeLabel(pos, sc))
 				initQty := pos.InitialQuantity
 				if initQty <= 0 {
 					initQty = pos.Quantity

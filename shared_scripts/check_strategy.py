@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
-from regime import latest_regime
+from regime import latest_regime, parse_regime_windows_json, prepare_check_regime
 
 
 def _arg_value(flag, default=None):
@@ -77,6 +77,9 @@ def main():
     regime_enabled = "--regime-enabled" in sys.argv
     regime_period = int(_arg_value("--regime-period") or 14)
     regime_adx_threshold = float(_arg_value("--regime-adx-threshold") or 20.0)
+    regime_windows = parse_regime_windows_json(_arg_value("--regime-windows-json"))
+    ohlcv_limit = int(_arg_value("--ohlcv-limit") or 200)
+    regime_atr_window = (_arg_value("--regime-atr-window") or "").strip()
     open_strategy = _arg_value("--open-strategy")
     close_strategies_raw = _arg_value("--close-strategies")
     position_side = (_arg_value("--position-side", "") or "").lower()
@@ -112,6 +115,8 @@ def main():
             "--position-initial-qty", "--position-entry-atr",
             "--position-regime",
             "--regime-period", "--regime-adx-threshold",
+            "--regime-windows-json", "--ohlcv-limit",
+            "--regime-atr-window", "--regime-directional-window",
         ):
             skip_next = True
             continue
@@ -170,12 +175,12 @@ def main():
 
         # Fetch primary data
         print(f"Fetching {symbol} {timeframe}...", file=sys.stderr)
-        df = fetch_ohlcv(symbol=symbol, timeframe=timeframe, limit=200, store=False)
+        df = fetch_ohlcv(symbol=symbol, timeframe=timeframe, limit=ohlcv_limit, store=False)
 
         # Fetch and merge secondary data for pairs strategies
         if needs_pair and symbol_b:
             print(f"Fetching secondary {symbol_b} {timeframe}...", file=sys.stderr)
-            df_b = fetch_ohlcv(symbol=symbol_b, timeframe=timeframe, limit=200, store=False)
+            df_b = fetch_ohlcv(symbol=symbol_b, timeframe=timeframe, limit=ohlcv_limit, store=False)
             if df_b.empty:
                 print(json.dumps({
                     "strategy": strategy_name,
@@ -206,12 +211,16 @@ def main():
             }))
             return
 
-        if regime_enabled:
-            regime_payload = latest_regime(df, period=regime_period, adx_threshold=regime_adx_threshold)
-        else:
-            regime_payload = {"regime": "", "score": 0.0, "metrics": {}}
+        stdout_regime, live_regime, strategy_regime = prepare_check_regime(
+            df,
+            regime_enabled=regime_enabled,
+            period=regime_period,
+            adx_threshold=regime_adx_threshold,
+            windows=regime_windows,
+            atr_window=regime_atr_window,
+        )
         strategy_params = (strategy_params or {})
-        strategy_params["regime"] = regime_payload
+        strategy_params["regime"] = strategy_regime
 
         decision = None
         if open_close_enabled:
@@ -220,7 +229,6 @@ def main():
             if atr_now > 0:
                 market_ctx["atr"] = atr_now
             # #733: live regime label for tiered_tp_atr_live_regime evaluator.
-            live_regime = (regime_payload or {}).get("regime") or ""
             if live_regime:
                 market_ctx["regime"] = live_regime
             evaluation = evaluate_open_close(
@@ -296,7 +304,7 @@ def main():
             "signal": signal,
             "price": round(price, 2),
             "indicators": indicators,
-            "regime": regime_payload["regime"],
+            "regime": stdout_regime,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         if decision:

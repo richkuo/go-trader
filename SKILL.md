@@ -626,7 +626,7 @@ Global config:
 | Portfolio warn threshold | `portfolio_risk.warn_threshold_pct` | 60 |
 | Correlation tracking | `correlation.*` | disabled |
 | Summary cadence | `summary_frequency` | legacy defaults |
-| Regime detection | `regime.enabled`, `regime.period`, `regime.adx_threshold` | disabled; period=14, threshold=20 |
+| Regime detection | `regime.enabled`, `regime.period`, `regime.adx_threshold`, `regime.windows` | disabled; period=14, threshold=20; `windows` empty = legacy single horizon (#792) |
 | Notify on HL TP/SL fill | `notify_tp_sl_fills` | enabled (nil/missing); set `false` to disable owner DMs from reconciler-detected fills |
 | `type=manual` defaults | `manual_defaults.{margin_usd,stop_loss_atr_mult,side,tp_tiers}` | Optional top-level overrides for the four hardcoded manual-open defaults ($50 margin, 1.5× ATR SL, `long`, `[{2×,0.5},{3×,1.0}]`). Resolution order: CLI/strategy-param → `manual_defaults` → hardcoded constant. Block is additive (no config-version bump). Hot-reloadable via SIGHUP; `tp_tiers: []` is rejected at validation — omit the key to inherit the default (#696/#697). |
 
@@ -656,6 +656,7 @@ Per-strategy:
 | Open strategy | `open_strategy` | Override entry strategy name (else `args[0]`) |
 | Close strategies | `close_strategies` | Ordered list; max `close_fraction` wins |
 | Regime gate | `allowed_regimes` | Labels allowing entries (`trending_up`, `trending_down`, `ranging`); empty = allow all; needs `regime.enabled=true`; not on type=options |
+| Multi-window selectors | `regime_gate_window`, `regime_atr_window`, `regime_directional_window` | Require non-empty `regime.windows`. Route entry gate, regime-aware ATR/TP, and directional policy to different ADX horizons. Empty/`default` → legacy `regime.period`. Stamped labels persist in `pos.RegimeWindows` (#792). SIGHUP when flat; blocked while open. |
 | Theta harvest | `theta_harvest.*` | Options early-exit |
 | HL on-chain TP tiers | `close_strategies[i].params.tiers` (where ref is `tiered_tp_atr` or `tiered_tp_atr_live`) | HL perps only — list of `{atr_multiple, close_fraction}` (cumulative). Default `[{1×,0.5},{2×,1.0}]`; final tier coerced to 1.0 so on-chain TPs sum to full position; non-numeric rejected per tier. **Live mode:** configuring tiers auto-suppresses the in-process `tiered_tp_atr*` close evaluator to prevent on-chain limit-fill races (#604/#615). **Paper mode:** evaluator is never suppressed — paper has no on-chain TPs (#781). Pre-v13 configs with flat `params.tiers` are routed to the matching close ref by `closeStrategyOwnedKeys` on migration (#640). |
 | Post-TP SL adjustment | `close_strategies[i].params.sl_after` (strategy-level) and/or `tiers[j].sl_after` (per-tier) — scalar modes: `"breakeven"`, `{atr_mult: N}` (signed), `{trail_from_here: {atr_mult: M}}` (perps only). Regime-aware shapes: `{kind:"atr_offset","trend_regime":{...}}` / `{kind:"trail_from_here","trail_from_here":{"trend_regime":{...}}}` | HL perps + manual. Requires fixed SL. SIGHUP blocks scalar↔regime or shape changes while open. Backtester parity for scalar modes (#712); regime-aware `sl_after` HL-live-only (backtester rejects at init, #736/#742). |

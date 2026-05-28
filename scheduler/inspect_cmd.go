@@ -450,7 +450,7 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	}
 
 	if sc.Type == "perps" || sc.Type == "manual" {
-		appendDirectionInspectLines(&b, sc, explicit, state)
+		appendDirectionInspectLines(&b, sc, explicit, cfg, state)
 		fmt.Fprintf(&b, "  leverage:            %g%s\n", EffectiveExchangeLeverage(sc), markIfDefault(explicit, "leverage"))
 		fmt.Fprintf(&b, "  sizing_leverage:     %g%s\n", EffectiveSizingLeverage(sc), sizingLeverageProvenance(sc, explicit))
 		if m := EffectiveMarginPerTradeUSD(sc); m > 0 {
@@ -495,6 +495,12 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	}
 	if len(sc.AllowedRegimes) > 0 {
 		fmt.Fprintf(&b, "  allowed_regimes:     %v\n", sc.AllowedRegimes)
+	}
+	if cfg != nil && cfg.Regime != nil && len(cfg.Regime.Windows) > 0 {
+		fmt.Fprintf(&b, "  regime_windows:      %s\n", formatRegimeWindowsInspect(cfg.Regime.Windows))
+		fmt.Fprintf(&b, "  regime_gate_window:  %q\n", resolveStrategyRegimeWindow(sc, "gate", cfg.Regime))
+		fmt.Fprintf(&b, "  regime_atr_window:   %q\n", resolveStrategyRegimeWindow(sc, "atr", cfg.Regime))
+		fmt.Fprintf(&b, "  regime_directional_window: %q\n", resolveStrategyRegimeWindow(sc, "directional", cfg.Regime))
 	}
 	if sc.HTFFilter {
 		fmt.Fprintf(&b, "  htf_filter:          true\n")
@@ -569,8 +575,14 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		"max_drawdown_pct":          sc.MaxDrawdownPct,
 		"max_drawdown_pct_explicit": explicit["max_drawdown_pct"],
 	}
+	if cfg != nil && cfg.Regime != nil && len(cfg.Regime.Windows) > 0 {
+		out["regime_windows"] = cfg.Regime.Windows
+		out["regime_gate_window"] = resolveStrategyRegimeWindow(sc, "gate", cfg.Regime)
+		out["regime_atr_window"] = resolveStrategyRegimeWindow(sc, "atr", cfg.Regime)
+		out["regime_directional_window"] = resolveStrategyRegimeWindow(sc, "directional", cfg.Regime)
+	}
 	if sc.Type == "perps" || sc.Type == "manual" {
-		for k, v := range directionInspectJSON(sc, state) {
+		for k, v := range directionInspectJSON(sc, cfg, state) {
 			out[k] = v
 		}
 		out["leverage"] = EffectiveExchangeLeverage(sc)
@@ -687,7 +699,16 @@ func stableParamSummary(params map[string]interface{}) string {
 	return "{" + strings.Join(parts, ", ") + "}"
 }
 
-func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit map[string]bool, state *AppState) {
+func formatRegimeWindowsInspect(windows map[string]int) string {
+	names := sortedRegimeWindowNamesFromConfig(windows)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s=%d", name, windows[name]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit map[string]bool, cfg *Config, state *AppState) {
 	baseDir := EffectiveDirection(sc)
 	prov := directionProvenance(sc, explicit)
 	policyConfigured := sc.RegimeDirectionalPolicy != nil && sc.RegimeDirectionalPolicy.IsConfigured()
@@ -724,18 +745,29 @@ func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit
 		sort.Strings(syms)
 		for _, sym := range syms {
 			pos := stratState.Positions[sym]
-			effRegime := effectiveRegimeForPolicy(stratState.Regime, pos.Regime, pos.Quantity)
-			effDir := EffectiveDirectionForPosition(sc, stratState.Regime, pos.Regime, pos.Quantity)
+			currentDirRegime := stratState.Regime
+			if cfg != nil && cfg.Regime != nil {
+				currentDirRegime = regimeLabelFromWindows(stratState.RegimeWindows, sc.RegimeDirectionalWindow, cfg.Regime)
+				if currentDirRegime == "" {
+					currentDirRegime = stratState.Regime
+				}
+			}
+			posDirRegime := positionDirectionalRegimeLabel(pos, sc)
+			effRegime := effectiveRegimeForPolicy(currentDirRegime, posDirRegime, pos.Quantity)
+			effDir := EffectiveDirectionForPosition(sc, currentDirRegime, posDirRegime, pos.Quantity)
 			regimeSrc := "stamped at open"
-			if strings.TrimSpace(pos.Regime) == "" {
+			if strings.TrimSpace(posDirRegime) == "" {
 				regimeSrc = "current cycle (position regime unknown)"
 			}
 			fmt.Fprintf(b, "  position %s:         side=%s effective_direction=%s (regime=%s, %s)\n", sym, pos.Side, effDir, effRegime, regimeSrc)
+			if len(pos.RegimeWindows) > 0 {
+				fmt.Fprintf(b, "    regime_windows:    %v\n", pos.RegimeWindows)
+			}
 		}
 	}
 }
 
-func directionInspectJSON(sc StrategyConfig, state *AppState) map[string]interface{} {
+func directionInspectJSON(sc StrategyConfig, cfg *Config, state *AppState) map[string]interface{} {
 	out := map[string]interface{}{
 		// "direction" is the legacy alias; prefer "base_direction" for new consumers.
 		"direction":      EffectiveDirection(sc),
@@ -759,18 +791,26 @@ func directionInspectJSON(sc StrategyConfig, state *AppState) map[string]interfa
 		stratState = state.Strategies[sc.ID]
 	}
 	if stratState != nil {
+		currentDirRegime := strategyCurrentDirectionalRegime(stratState, sc)
+		if cfg != nil && cfg.Regime != nil {
+			if label := regimeLabelFromWindows(stratState.RegimeWindows, sc.RegimeDirectionalWindow, cfg.Regime); label != "" {
+				currentDirRegime = label
+			}
+		}
 		positions := make([]map[string]interface{}, 0)
 		for sym, pos := range stratState.Positions {
 			if pos == nil || pos.Quantity <= 0 {
 				continue
 			}
+			posDirRegime := positionDirectionalRegimeLabel(pos, sc)
 			positions = append(positions, map[string]interface{}{
 				"symbol":                  sym,
 				"side":                    pos.Side,
 				"quantity":                pos.Quantity,
 				"regime":                  pos.Regime,
-				"effective_direction":     EffectiveDirectionForPosition(sc, stratState.Regime, pos.Regime, pos.Quantity),
-				"effective_policy_regime": effectiveRegimeForPolicy(stratState.Regime, pos.Regime, pos.Quantity),
+				"regime_windows":          pos.RegimeWindows,
+				"effective_direction":     EffectiveDirectionForPosition(sc, currentDirRegime, posDirRegime, pos.Quantity),
+				"effective_policy_regime": effectiveRegimeForPolicy(currentDirRegime, posDirRegime, pos.Quantity),
 			})
 		}
 		if len(positions) > 0 {

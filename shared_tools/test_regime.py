@@ -21,6 +21,10 @@ _regime_mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(_regime_mod)
 compute_regime = _regime_mod.compute_regime
 latest_regime = _regime_mod.latest_regime
+compute_multi_regime = _regime_mod.compute_multi_regime
+regime_payload_for_config = _regime_mod.regime_payload_for_config
+regime_label_from_payload = _regime_mod.regime_label_from_payload
+required_ohlcv_limit = _regime_mod.required_ohlcv_limit
 ensure_regime_columns = _regime_mod.ensure_regime_columns
 
 
@@ -292,3 +296,78 @@ def test_ensure_regime_columns_idempotent():
     first = df["regime"].copy()
     ensure_regime_columns(df)
     pd.testing.assert_series_equal(df["regime"], first)
+
+
+# ─── compute_multi_regime tests ───────────────────────────────────────────────
+
+
+def test_compute_multi_regime_returns_per_window_snapshots():
+    df = _make_uptrend(n=100)
+    result = compute_multi_regime(df, {"short": 14, "long": 28}, adx_threshold=20.0)
+    assert set(result.keys()) == {"long", "short"}
+    for snap in result.values():
+        assert "regime" in snap
+        assert "score" in snap
+        assert "metrics" in snap
+
+
+def test_compute_multi_regime_uptrend_labels():
+    df = _make_uptrend(n=100)
+    result = compute_multi_regime(df, {"short": 14, "long": 28})
+    assert result["short"]["regime"] == "trending_up"
+    assert result["long"]["regime"] == "trending_up"
+
+
+def test_compute_multi_regime_empty_windows_raises():
+    df = _make_uptrend()
+    try:
+        compute_multi_regime(df, {})
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "non-empty" in str(exc)
+
+
+def test_compute_multi_regime_invalid_period_raises():
+    df = _make_uptrend()
+    try:
+        compute_multi_regime(df, {"short": 1})
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "period" in str(exc)
+
+
+def test_compute_multi_regime_short_df_warmup_ranging():
+    df = _make_uptrend(n=10)
+    result = compute_multi_regime(df, {"short": 14, "long": 28})
+    assert result["short"]["regime"] == "ranging"
+    assert result["long"]["regime"] == "ranging"
+
+
+def test_regime_payload_for_config_legacy():
+    df = _make_uptrend(n=100)
+    payload = regime_payload_for_config(df, period=14, adx_threshold=20.0)
+    assert isinstance(payload, dict)
+    assert payload["regime"] == "trending_up"
+
+
+def test_regime_payload_for_config_multi():
+    df = _make_uptrend(n=100)
+    payload = regime_payload_for_config(
+        df, period=14, windows={"short": 14, "long": 28}
+    )
+    assert "short" in payload
+    assert payload["short"]["regime"] == "trending_up"
+
+
+def test_regime_label_from_payload_legacy_and_multi():
+    legacy = {"regime": "trending_up", "score": 0.5, "metrics": {}}
+    assert regime_label_from_payload(legacy) == "trending_up"
+    multi = {"short": {"regime": "ranging", "score": 0.1, "metrics": {}},
+             "long": {"regime": "trending_up", "score": 0.8, "metrics": {}}}
+    assert regime_label_from_payload(multi, "short") == "ranging"
+    assert regime_label_from_payload(multi, "long") == "trending_up"
+
+
+def test_required_ohlcv_limit_scales_with_windows():
+    assert required_ohlcv_limit(period=14) == 200
+    assert required_ohlcv_limit(period=14, windows={"long": 2160}) >= 4320

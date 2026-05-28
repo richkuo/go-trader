@@ -857,7 +857,7 @@ func TestExecuteHyperliquidResult_StampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := executeHyperliquidResult(sc, s, result, execResult, "BUY", 50000, logger)
+	trades, _ := executeHyperliquidResult(sc, s, result, execResult, "BUY", 50000, nil, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -894,7 +894,7 @@ func TestExecuteHyperliquidResult_PaperModeNoExchangeData(t *testing.T) {
 	defer logger.Close()
 
 	// Paper mode: execResult is nil
-	trades, _ := executeHyperliquidResult(sc, s, result, nil, "BUY", 50000, logger)
+	trades, _ := executeHyperliquidResult(sc, s, result, nil, "BUY", 50000, nil, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -934,7 +934,7 @@ func TestExecuteOKXResult_PerpsStampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, logger)
+	trades, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -973,7 +973,7 @@ func TestExecuteOKXResult_SpotStampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, logger)
+	trades, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -1012,7 +1012,7 @@ func TestExecuteRobinhoodResult_StampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := executeRobinhoodResult(sc, s, nil, result, execResult, "BUY", 50000, logger)
+	trades, _ := executeRobinhoodResult(sc, s, nil, result, execResult, "BUY", 50000, nil, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -1110,7 +1110,7 @@ func TestExecuteTopStepResult_StampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := executeTopStepResult(sc, s, nil, result, execResult, "BUY", 5000, logger)
+	trades, _ := executeTopStepResult(sc, s, nil, result, execResult, "BUY", 5000, nil, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}

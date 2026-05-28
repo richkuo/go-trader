@@ -169,6 +169,156 @@ def latest_regime(
     }
 
 
+def compute_multi_regime(
+    df: pd.DataFrame,
+    windows: dict[str, int],
+    adx_threshold: float = 20.0,
+) -> dict[str, dict]:
+    """Run ADX regime detection at each named window (ADX period in bars).
+
+    Parameters
+    ----------
+    df : DataFrame with high, low, close columns
+    windows : mapping of window name -> ADX period (bar count), e.g.
+        {"short": 168, "medium": 720, "long": 2160}
+    adx_threshold : minimum ADX to call a trend
+
+    Returns
+    -------
+    dict mapping window name -> latest_regime snapshot:
+        {"short": {"regime": "...", "score": ..., "metrics": {...}}, ...}
+
+    Raises
+    ------
+    ValueError
+        When windows is empty or contains invalid names/periods.
+    """
+    if not windows:
+        raise ValueError("windows must be a non-empty dict")
+
+    out: dict[str, dict] = {}
+    for name in sorted(windows.keys()):
+        trimmed = str(name).strip()
+        if not trimmed:
+            raise ValueError("window names must be non-empty strings")
+        period = windows[name]
+        if not isinstance(period, int) or isinstance(period, bool):
+            raise ValueError(f"window {trimmed!r}: period must be an int, got {type(period).__name__}")
+        if period < 2:
+            raise ValueError(f"window {trimmed!r}: period must be >= 2, got {period}")
+        out[trimmed] = latest_regime(df, period=period, adx_threshold=adx_threshold)
+    return out
+
+
+def regime_payload_for_config(
+    df: pd.DataFrame,
+    *,
+    period: int = 14,
+    adx_threshold: float = 20.0,
+    windows: dict[str, int] | None = None,
+) -> dict | str:
+    """Build the regime payload for check-script stdout and strategy_params.
+
+    Legacy mode (windows empty/None): returns a single-window snapshot dict
+    (same shape as latest_regime).
+
+    Multi-window mode: returns a dict mapping window name -> snapshot.
+    """
+    if windows:
+        return compute_multi_regime(df, windows, adx_threshold=adx_threshold)
+    return latest_regime(df, period=period, adx_threshold=adx_threshold)
+
+
+def regime_label_from_payload(payload: dict | str, window_key: str = "") -> str:
+    """Extract a regime label string from legacy or multi-window payload."""
+    if isinstance(payload, str):
+        return payload
+    if not isinstance(payload, dict):
+        return ""
+    if "regime" in payload and isinstance(payload.get("regime"), str):
+        # Single-window snapshot {"regime": "...", "score": ..., "metrics": {...}}
+        if "score" in payload or "metrics" in payload:
+            return str(payload["regime"])
+    key = (window_key or "").strip()
+    if key and key in payload:
+        entry = payload[key]
+        if isinstance(entry, dict):
+            return str(entry.get("regime") or "")
+    return ""
+
+
+def required_ohlcv_limit(
+    period: int = 14,
+    windows: dict[str, int] | None = None,
+    *,
+    base_limit: int = 200,
+    margin: int = 10,
+) -> int:
+    """Minimum OHLCV bar count for reliable ADX warmup across all windows."""
+    max_period = period
+    if windows:
+        max_period = max(max(windows.values()), period)
+    warmup = 2 * max_period - 1
+    return max(base_limit, warmup + margin)
+
+
+def prepare_check_regime(
+    df: pd.DataFrame,
+    *,
+    regime_enabled: bool,
+    period: int = 14,
+    adx_threshold: float = 20.0,
+    windows: dict[str, int] | None = None,
+    atr_window: str = "",
+) -> tuple[dict | str, str, dict]:
+    """Build regime outputs for check scripts.
+
+    Returns (stdout_regime, market_ctx_regime, strategy_params_regime).
+    stdout_regime is a label string (legacy) or multi-window dict (#792).
+    """
+    disabled = {"regime": "", "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
+    if not regime_enabled:
+        return "", "", disabled
+
+    if windows:
+        multi = compute_multi_regime(df, windows, adx_threshold=adx_threshold)
+        primary_key = "medium" if "medium" in windows else sorted(windows.keys())[0]
+        strategy_payload = multi.get(primary_key, disabled)
+        atr_key = (atr_window or primary_key).strip() or primary_key
+        atr_entry = multi.get(atr_key, strategy_payload)
+        live_atr = str(atr_entry.get("regime") or "")
+        return multi, live_atr, strategy_payload
+
+    legacy = latest_regime(df, period=period, adx_threshold=adx_threshold)
+    label = str(legacy.get("regime") or "")
+    return label, label, legacy
+
+
+def parse_regime_windows_json(raw: str | None) -> dict[str, int] | None:
+    """Parse --regime-windows-json from Go; returns None when unset/empty."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    import json
+
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict) or not parsed:
+        raise ValueError("regime windows JSON must be a non-empty object")
+    out: dict[str, int] = {}
+    for name, value in parsed.items():
+        key = str(name).strip()
+        if not key:
+            raise ValueError("regime window names must be non-empty")
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"regime window {key!r}: bar count must be an int")
+        if value < 2:
+            raise ValueError(f"regime window {key!r}: bar count must be >= 2")
+        out[key] = value
+    return out
+
+
 def ensure_regime_columns(
     df: pd.DataFrame,
     period: int = 14,

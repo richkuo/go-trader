@@ -48,9 +48,10 @@ type PlatformConfig struct {
 // RegimeConfig controls the market regime detector run once per (symbol, timeframe) cycle.
 // Default disabled; strategies opt in via AllowedRegimes or by reading params["regime"].
 type RegimeConfig struct {
-	Enabled      bool    `json:"enabled"`
-	Period       int     `json:"period"`        // ADX lookback (Wilder's smoothing); default 14
-	ADXThreshold float64 `json:"adx_threshold"` // ADX below this is "ranging"; default 20.0
+	Enabled      bool           `json:"enabled"`
+	Period       int            `json:"period"`        // ADX lookback (Wilder's smoothing); default 14; legacy single-window mode
+	ADXThreshold float64        `json:"adx_threshold"` // ADX below this is "ranging"; default 20.0
+	Windows      map[string]int `json:"windows,omitempty"` // name -> ADX period in bars; empty = legacy single lookback via period (#792)
 }
 
 // CorrelationConfig controls portfolio-level directional exposure tracking.
@@ -307,6 +308,9 @@ type StrategyConfig struct {
 	OpenStrategy            StrategyRef              `json:"open_strategy"`              // entry strategy ref (name + params). Migrated from legacy string-typed open_strategy / args[0] in v13 (#640)
 	CloseStrategies         []StrategyRef            `json:"close_strategies,omitempty"` // exit strategy refs (name + params); max close_fraction wins (#480). Migrated from legacy []string in v13 (#640)
 	AllowedRegimes          []string                 `json:"allowed_regimes,omitempty"`  // gate entries: skip signal when current regime not in this list; empty = allow all (#482)
+	RegimeGateWindow        string                   `json:"regime_gate_window,omitempty"`        // window key for allowed_regimes gate; "" or "default" = legacy single lookback (#792)
+	RegimeATRWindow         string                   `json:"regime_atr_window,omitempty"`         // window key for *_atr_regime resolution (#792)
+	RegimeDirectionalWindow string                   `json:"regime_directional_window,omitempty"` // window key for regime_directional_policy (#792)
 	Capital                 float64                  `json:"capital"`
 	CapitalPct              float64                  `json:"capital_pct,omitempty"`     // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
 	InitialCapital          float64                  `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
@@ -1713,6 +1717,7 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			errs = append(errs, fmt.Sprintf("regime.adx_threshold must be in (0, 100], got %g", cfg.Regime.ADXThreshold))
 		}
 	}
+	errs = append(errs, validateRegimeWindowsConfig(cfg)...)
 
 	// Warn when allowed_regimes is configured but regime.enabled=false — the
 	// gate reads result.Regime from the check script output, which requires

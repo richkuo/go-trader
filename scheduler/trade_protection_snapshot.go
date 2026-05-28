@@ -85,7 +85,7 @@ func stampPositionProtectionSnapshot(pos *Position, sc StrategyConfig) {
 		return
 	}
 	if pos.StopLossATRMult == nil {
-		pos.StopLossATRMult = tradeOpenStopLossATRMultForRegime(sc, pos.Regime)
+		pos.StopLossATRMult = tradeOpenStopLossATRMultForRegime(sc, positionATRRegimeLabel(pos, sc))
 	}
 	if pos.TPTiersJSON == "" {
 		// strategyTPTiersForRegime resolves regime-aware tier multipliers from
@@ -93,7 +93,7 @@ func stampPositionProtectionSnapshot(pos *Position, sc StrategyConfig) {
 		// raw scalar tiers when present (legacy tiered_tp_atr); regime-aware
 		// strategies without a stamped regime yet write an empty snapshot
 		// here and will be re-stamped on the next protection-sync cycle.
-		pos.TPTiersJSON = tradeOpenTPTiersJSONForRegime(sc, pos.Regime)
+		pos.TPTiersJSON = tradeOpenTPTiersJSONForRegime(sc, positionATRRegimeLabel(pos, sc))
 	}
 }
 

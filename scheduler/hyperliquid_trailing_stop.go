@@ -86,10 +86,10 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 	// the regime block at a different shape, which validateHotReloadStateCompatible
 	// blocks while open).
 	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
-		if pos == nil || pos.EntryATR <= 0 || pos.AvgCost <= 0 || pos.Regime == "" {
+		if pos == nil || pos.EntryATR <= 0 || pos.AvgCost <= 0 || positionATRRegimeLabel(pos, sc) == "" {
 			return 0
 		}
-		mult, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, pos.Regime)
+		mult, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, positionATRRegimeLabel(pos, sc))
 		if !ok {
 			return 0
 		}
@@ -164,10 +164,10 @@ func effectiveFixedStopLossATRPct(sc StrategyConfig, pos *Position) float64 {
 		// the first cycle after open; until then this returns 0 and arming
 		// is deferred to the next cycle (same deferral semantics as the
 		// scalar variant waiting on EntryATR).
-		if pos == nil || pos.Regime == "" {
+		if pos == nil || positionATRRegimeLabel(pos, sc) == "" {
 			return 0
 		}
-		v, ok := resolveRegimeATR(*sc.StopLossATRRegime, pos.Regime)
+		v, ok := resolveRegimeATR(*sc.StopLossATRRegime, positionATRRegimeLabel(pos, sc))
 		if !ok {
 			return 0
 		}

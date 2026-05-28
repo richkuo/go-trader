@@ -186,7 +186,7 @@ func TestRegimeBlocksOpen_EmptyAllowedNeverBlocks(t *testing.T) {
 // ─── StrategyDecisionFields includes Regime ───────────────────────────────────
 
 func TestStrategyDecisionFields_RegimeRoundTrip(t *testing.T) {
-	sdf := StrategyDecisionFields{Regime: "trending_up"}
+	sdf := StrategyDecisionFields{Regime: &RegimePayload{Legacy: "trending_up"}}
 	b, err := json.Marshal(sdf)
 	if err != nil {
 		t.Fatal(err)
@@ -195,8 +195,8 @@ func TestStrategyDecisionFields_RegimeRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Regime != "trending_up" {
-		t.Errorf("expected trending_up, got %q", out.Regime)
+	if out.Regime == nil || out.Regime.Label("", nil) != "trending_up" {
+		t.Errorf("expected trending_up, got %#v", out.Regime)
 	}
 }
 

@@ -1098,7 +1098,7 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 				extras += fmt.Sprintf(" | SL: $%s (%s)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct))
 			}
 		}
-		tiers := strategyTPTiersForRegime(sc, pos.Regime)
+		tiers := strategyTPTiersForRegime(sc, positionATRRegimeLabel(pos, sc))
 		tps := tieredTPATRPricesFromTiers(tiers, pos.Side, pos.AvgCost, pos.EntryATR)
 		if len(tps) > 0 {
 			// A zero TPOID alone is ambiguous (tiers also hold zero before the

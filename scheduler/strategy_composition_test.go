@@ -196,12 +196,12 @@ func TestPositionCtxForSymbol(t *testing.T) {
 			EntryATR:        125,
 		},
 	}}
-	got := positionCtxForSymbol(s, "ETH")
+	got := positionCtxForSymbol(s, "ETH", StrategyConfig{}, nil)
 	want := PositionCtx{Side: "long", AvgCost: 3000, Quantity: 0.5, InitialQuantity: 1, EntryATR: 125}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("positionCtxForSymbol() = %#v, want %#v", got, want)
 	}
-	if got := positionCtxForSymbol(s, "BTC"); !reflect.DeepEqual(got, PositionCtx{}) {
+	if got := positionCtxForSymbol(s, "BTC", StrategyConfig{}, nil); !reflect.DeepEqual(got, PositionCtx{}) {
 		t.Fatalf("missing symbol ctx = %#v, want zero", got)
 	}
 }
@@ -231,6 +231,7 @@ func TestAppendRegimeArgs(t *testing.T) {
 			"--regime-enabled",
 			"--regime-period", "28",
 			"--regime-adx-threshold", "25.5",
+			"--ohlcv-limit", "200",
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("appendRegimeArgs(enabled) = %#v, want %#v", got, want)
@@ -245,6 +246,7 @@ func TestAppendRegimeArgs(t *testing.T) {
 			"--regime-enabled",
 			"--regime-period", "14",
 			"--regime-adx-threshold", "20",
+			"--ohlcv-limit", "200",
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("appendRegimeArgs(defaults) = %#v, want %#v", got, want)

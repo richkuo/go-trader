@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
-from regime import latest_regime
+from regime import latest_regime, parse_regime_windows_json, prepare_check_regime
 
 
 def _make_dataframe(candles):
@@ -106,7 +106,9 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      strategy_params=None, open_strategy=None,
                      close_strategies=None,
                      position_side="", position_ctx=None,
-                     regime_enabled=False, regime_period=14, regime_adx_threshold=20.0, close_params_by_name=None):
+                     regime_enabled=False, regime_period=14, regime_adx_threshold=20.0,
+                     regime_windows=None, ohlcv_limit=200, regime_atr_window="",
+                     close_params_by_name=None):
     """Run strategy signal check using TopStep market data."""
     try:
         from adapter import TopStepExchangeAdapter
@@ -157,7 +159,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             return
 
         print(f"Fetching {symbol} {timeframe} from TopStepX ({mode})...", file=sys.stderr)
-        candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=200)
+        candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit)
 
         if not candles or len(candles) < 30:
             print(json.dumps({
@@ -177,12 +179,16 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             sys.exit(1)
 
         df = _make_dataframe(candles)
-        if regime_enabled:
-            regime_payload = latest_regime(df, period=regime_period, adx_threshold=regime_adx_threshold)
-        else:
-            regime_payload = {"regime": "", "score": 0.0, "metrics": {}}
+        stdout_regime, live_regime, strategy_regime = prepare_check_regime(
+            df,
+            regime_enabled=regime_enabled,
+            period=regime_period,
+            adx_threshold=regime_adx_threshold,
+            windows=regime_windows,
+            atr_window=regime_atr_window,
+        )
         strategy_params = (strategy_params or {})
-        strategy_params["regime"] = regime_payload
+        strategy_params["regime"] = strategy_regime
         decision = None
         if open_close_enabled:
             market_ctx = {"mark_price": float(df["close"].iloc[-1])}
@@ -190,7 +196,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             if atr_now > 0:
                 market_ctx["atr"] = atr_now
             # #733: live regime label for tiered_tp_atr_live_regime evaluator.
-            live_regime = (regime_payload or {}).get("regime") or ""
             if live_regime:
                 market_ctx["regime"] = live_regime
             evaluation = evaluate_open_close(
@@ -277,7 +282,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "contract_spec": adapter.get_contract_spec(symbol),
             "market_open": market_open,
             "indicators": indicators,
-            "regime": regime_payload["regime"],
+            "regime": stdout_regime,
             "mode": mode,
             "platform": "topstep",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -381,6 +386,10 @@ def main():
         parser.add_argument("--regime-enabled", action="store_true", default=False)
         parser.add_argument("--regime-period", type=int, default=14)
         parser.add_argument("--regime-adx-threshold", type=float, default=20.0)
+        parser.add_argument("--regime-windows-json", default="")
+        parser.add_argument("--ohlcv-limit", type=int, default=200)
+        parser.add_argument("--regime-atr-window", default="")
+        parser.add_argument("--regime-directional-window", default="")
         parser.add_argument("--params", default=None)
         parser.add_argument("--open-strategy", default=None)
         parser.add_argument("--close-strategies", default=None)
@@ -404,6 +413,7 @@ def main():
         params_parsed = refs["open_params"] if refs else (json.loads(args.params) if args.params else None)
         close_params_by_name = refs["close_params_by_name"] if refs else None
         position_ctx = _position_ctx_from_args(args)
+        regime_windows = parse_regime_windows_json(args.regime_windows_json or None)
         run_signal_check(
             args.strategy, args.symbol, args.timeframe, args.mode,
             args.htf_filter, params_parsed, open_strategy_name,
@@ -412,6 +422,9 @@ def main():
             regime_enabled=args.regime_enabled,
             regime_period=args.regime_period,
             regime_adx_threshold=args.regime_adx_threshold,
+            regime_windows=regime_windows,
+            ohlcv_limit=args.ohlcv_limit,
+            regime_atr_window=args.regime_atr_window,
             close_params_by_name=close_params_by_name,
         )
 
