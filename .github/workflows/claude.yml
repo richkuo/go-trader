@@ -100,9 +100,9 @@ jobs:
           echo "model_id=$MODEL_ID" >> "$GITHUB_OUTPUT"
           echo "::notice::Using model: $MODEL_ID"
 
-          # Extract optional effort level from comment: "effort:low", "effort:medium", "effort:high"
-          EFFORT_RAW=$(printf '%s' "$STRIPPED" | grep -oiE 'effort:(low|medium|high)' | head -1 | tr '[:upper:]' '[:lower:]' | cut -d: -f2 || true)
-          EFFORT="${EFFORT_RAW:-high}"
+          # Extract optional effort level from comment: "effort:low", "effort:medium", "effort:high", "effort:xhigh"
+          EFFORT_RAW=$(printf '%s' "$STRIPPED" | grep -oiE 'effort:(low|medium|xhigh|high)' | head -1 | tr '[:upper:]' '[:lower:]' | cut -d: -f2 || true)
+          EFFORT="${EFFORT_RAW:-xhigh}"
           echo "effort=$EFFORT" >> "$GITHUB_OUTPUT"
           echo "::notice::Using effort: $EFFORT"
 
