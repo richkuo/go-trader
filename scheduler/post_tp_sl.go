@@ -302,7 +302,7 @@ func parseSLAfterATROffset(m map[string]interface{}, ctxLabel string) (SLAfterRu
 		if hasUseDefaults {
 			regimeRaw["use_defaults"] = m["use_defaults"]
 		}
-		block, subErrs := parseRegimeATRBlock(regimeRaw, ctxLabel, regimeSurfaceSLAfter)
+		block, subErrs := parseRegimeATRBlock(regimeRaw, ctxLabel, regimeSurfaceSLAfter, canonicalTrendRegimeLabels)
 		if len(subErrs) > 0 {
 			return SLAfterRule{}, errors.New(strings.Join(subErrs, "; "))
 		}
@@ -335,7 +335,7 @@ func parseSLAfterTrailFromHere(m map[string]interface{}, ctxLabel string) (SLAft
 		if hasUseDefaults {
 			regimeRaw["use_defaults"] = m["use_defaults"]
 		}
-		block, subErrs := parseRegimeATRBlock(regimeRaw, ctxLabel, regimeSurfaceSLAfterTrail)
+		block, subErrs := parseRegimeATRBlock(regimeRaw, ctxLabel, regimeSurfaceSLAfterTrail, canonicalTrendRegimeLabels)
 		if len(subErrs) > 0 {
 			return SLAfterRule{}, errors.New(strings.Join(subErrs, "; "))
 		}

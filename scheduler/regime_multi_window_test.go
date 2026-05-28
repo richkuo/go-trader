@@ -29,7 +29,7 @@ func TestRegimePayload_UnmarshalMultiWindow(t *testing.T) {
 	}
 	rc := &RegimeConfig{
 		Enabled: true,
-		Windows: map[string]int{"short": 168, "medium": 720, "long": 2160},
+		Windows: RegimeWindowsMap{"short": {Period: 168}, "medium": {Period: 720}, "long": {Period: 2160}},
 	}
 	if got := p.Label("short", rc); got != "ranging" {
 		t.Fatalf("short label = %q", got)
@@ -46,7 +46,7 @@ func TestRegimeRequiredOhlcvLimit(t *testing.T) {
 	rc := &RegimeConfig{
 		Enabled: true,
 		Period:  14,
-		Windows: map[string]int{"long": 2160},
+		Windows: RegimeWindowsMap{"long": {Period: 2160}},
 	}
 	got := regimeRequiredOhlcvLimit(rc)
 	want := 2*2160 - 1 + regimeOhlcvMargin
@@ -72,7 +72,7 @@ func TestValidateRegimeWindowsConfig_RejectsWindowWithoutGlobalWindows(t *testin
 func TestRegimeLabelAtOpen_PrefersStampedWindow(t *testing.T) {
 	rc := &RegimeConfig{
 		Enabled: true,
-		Windows: map[string]int{"short": 168, "medium": 720},
+		Windows: RegimeWindowsMap{"short": {Period: 168}, "medium": {Period: 720}},
 	}
 	pos := &Position{
 		Regime: "trending_up",
@@ -107,7 +107,7 @@ func TestValidateRegimeWindowsConfig_RejectsReservedWindowName(t *testing.T) {
 	cfg := &Config{
 		Regime: &RegimeConfig{
 			Enabled: true,
-			Windows: map[string]int{"regime": 168},
+			Windows: RegimeWindowsMap{"regime": {Period: 168}},
 		},
 	}
 	errs := validateRegimeWindowsConfig(cfg)

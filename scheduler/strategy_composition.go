@@ -123,10 +123,8 @@ func appendRegimeArgs(args []string, regime *RegimeConfig) []string {
 		return args
 	}
 	out := append(args, "--regime-enabled")
-	out = append(out, "--regime-period", strconv.Itoa(regime.Period))
-	out = append(out, "--regime-adx-threshold", strconv.FormatFloat(regime.ADXThreshold, 'f', -1, 64))
-	if blob := regimeWindowsJSON(regime); blob != "" {
-		out = append(out, "--regime-windows-json", blob)
+	if blob := regimeWindowsSpecJSON(regime); blob != "" {
+		out = append(out, "--regime-windows-spec-json", blob)
 	}
 	out = append(out, "--ohlcv-limit", strconv.Itoa(regimeRequiredOhlcvLimit(regime)))
 	return out

@@ -300,7 +300,7 @@ func buildRegimeByBaseAsset(strategies []StrategyConfig, state *AppState, regime
 			continue
 		}
 		if _, ok := out[base]; !ok {
-			out[base] = ss.Regime
+			out[base] = formatStrategyRegimeDisplay(ss, regime)
 		}
 	}
 	if len(out) == 0 {

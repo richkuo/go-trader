@@ -200,7 +200,7 @@ func sortedRegimeWindowNames(windows map[string]RegimeSnapshot) []string {
 	return names
 }
 
-func sortedRegimeWindowNamesFromConfig(windows map[string]int) []string {
+func sortedRegimeWindowNamesFromConfig(windows RegimeWindowsMap) []string {
 	names := make([]string, 0, len(windows))
 	for name := range windows {
 		names = append(names, name)
@@ -274,9 +274,9 @@ func regimeRequiredOhlcvLimit(rc *RegimeConfig) int {
 		if rc.Period > maxPeriod {
 			maxPeriod = rc.Period
 		}
-		for _, bars := range rc.Windows {
-			if bars > maxPeriod {
-				maxPeriod = bars
+		for _, spec := range rc.Windows {
+			if spec.Period > maxPeriod {
+				maxPeriod = spec.Period
 			}
 		}
 	}
@@ -338,7 +338,7 @@ func validateRegimeWindowsConfig(cfg *Config) []string {
 		errs = append(errs, "regime.windows requires regime.enabled=true")
 	}
 	seen := make(map[string]bool)
-	for name, bars := range rc.Windows {
+	for name, spec := range rc.Windows {
 		trimmed := strings.TrimSpace(name)
 		if trimmed == "" {
 			errs = append(errs, "regime.windows: window names must be non-empty")
@@ -351,9 +351,7 @@ func validateRegimeWindowsConfig(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("regime.windows: window name %q is reserved (conflicts with legacy regime snapshot JSON)", trimmed))
 		}
 		seen[strings.ToLower(trimmed)] = true
-		if bars < 2 {
-			errs = append(errs, fmt.Sprintf("regime.windows[%q]: bar count must be >= 2, got %d", trimmed, bars))
-		}
+		errs = append(errs, validateRegimeWindowSpec(trimmed, spec, rc)...)
 	}
 	multi := regimeMultiWindowEnabled(rc)
 	for _, sc := range cfg.Strategies {
@@ -395,19 +393,9 @@ func regimeWindowExists(rc *RegimeConfig, key string) bool {
 	return false
 }
 
+// regimeWindowsJSON forwards to regimeWindowsSpecJSON (#795).
 func regimeWindowsJSON(rc *RegimeConfig) string {
-	if rc == nil || len(rc.Windows) == 0 {
-		return ""
-	}
-	ordered := make(map[string]int, len(rc.Windows))
-	for name, bars := range rc.Windows {
-		ordered[name] = bars
-	}
-	blob, err := json.Marshal(ordered)
-	if err != nil {
-		return ""
-	}
-	return string(blob)
+	return regimeWindowsSpecJSON(rc)
 }
 
 func syncStrategyRegimeState(stratState *StrategyState, payload RegimePayload, rc *RegimeConfig) {

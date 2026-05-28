@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
-from regime import latest_regime, parse_regime_windows_json, prepare_check_regime
+from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 
 
 def _make_dataframe(candles):
@@ -106,8 +106,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      strategy_params=None, open_strategy=None,
                      close_strategies=None,
                      position_side="", position_ctx=None,
-                     regime_enabled=False, regime_period=14, regime_adx_threshold=20.0,
-                     regime_windows=None, ohlcv_limit=200, regime_atr_window="",
+                     regime_enabled=False, regime_windows_spec=None, ohlcv_limit=200, regime_atr_window="",
                      close_params_by_name=None):
     """Run strategy signal check using TopStep market data."""
     try:
@@ -182,9 +181,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         stdout_regime, live_regime, strategy_regime = prepare_check_regime(
             df,
             regime_enabled=regime_enabled,
-            period=regime_period,
-            adx_threshold=regime_adx_threshold,
-            windows=regime_windows,
+            windows_spec=regime_windows_spec,
             atr_window=regime_atr_window,
         )
         strategy_params = (strategy_params or {})
@@ -384,9 +381,7 @@ def main():
         parser.add_argument("--mode", default="paper")
         parser.add_argument("--htf-filter", action="store_true", default=False)
         parser.add_argument("--regime-enabled", action="store_true", default=False)
-        parser.add_argument("--regime-period", type=int, default=14)
-        parser.add_argument("--regime-adx-threshold", type=float, default=20.0)
-        parser.add_argument("--regime-windows-json", default="")
+        parser.add_argument("--regime-windows-spec-json", default="")
         parser.add_argument("--ohlcv-limit", type=int, default=200)
         parser.add_argument("--regime-atr-window", default="")
         parser.add_argument("--regime-directional-window", default="")
@@ -413,16 +408,14 @@ def main():
         params_parsed = refs["open_params"] if refs else (json.loads(args.params) if args.params else None)
         close_params_by_name = refs["close_params_by_name"] if refs else None
         position_ctx = _position_ctx_from_args(args)
-        regime_windows = parse_regime_windows_json(args.regime_windows_json or None)
+        regime_windows_spec = parse_regime_windows_spec_json(args.regime_windows_spec_json or None)
         run_signal_check(
             args.strategy, args.symbol, args.timeframe, args.mode,
             args.htf_filter, params_parsed, open_strategy_name,
             close_strategies_arg,
             args.position_side, position_ctx,
             regime_enabled=args.regime_enabled,
-            regime_period=args.regime_period,
-            regime_adx_threshold=args.regime_adx_threshold,
-            regime_windows=regime_windows,
+            regime_windows_spec=regime_windows_spec,
             ohlcv_limit=args.ohlcv_limit,
             regime_atr_window=args.regime_atr_window,
             close_params_by_name=close_params_by_name,

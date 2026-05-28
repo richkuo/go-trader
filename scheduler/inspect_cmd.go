@@ -497,7 +497,7 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 		fmt.Fprintf(&b, "  allowed_regimes:     %v\n", sc.AllowedRegimes)
 	}
 	if cfg != nil && cfg.Regime != nil && len(cfg.Regime.Windows) > 0 {
-		fmt.Fprintf(&b, "  regime_windows:      %s\n", formatRegimeWindowsInspect(cfg.Regime.Windows))
+		fmt.Fprintf(&b, "  regime_windows:      %s\n", formatRegimeWindowsInspectMap(cfg.Regime.Windows, cfg.Regime))
 		fmt.Fprintf(&b, "  regime_gate_window:  %s\n", formatRegimeWindowSelectorInspect(sc, "gate", cfg.Regime))
 		fmt.Fprintf(&b, "  regime_atr_window:   %s\n", formatRegimeWindowSelectorInspect(sc, "atr", cfg.Regime))
 		fmt.Fprintf(&b, "  regime_directional_window: %s\n", formatRegimeWindowSelectorInspect(sc, "directional", cfg.Regime))
@@ -697,15 +697,6 @@ func stableParamSummary(params map[string]interface{}) string {
 		parts = append(parts, fmt.Sprintf("%s=%v", k, params[k]))
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
-}
-
-func formatRegimeWindowsInspect(windows map[string]int) string {
-	names := sortedRegimeWindowNamesFromConfig(windows)
-	parts := make([]string, 0, len(names))
-	for _, name := range names {
-		parts = append(parts, fmt.Sprintf("%s=%d", name, windows[name]))
-	}
-	return strings.Join(parts, ", ")
 }
 
 func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit map[string]bool, cfg *Config, state *AppState) {

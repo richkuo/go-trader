@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
-from regime import latest_regime, parse_regime_windows_json, prepare_check_regime
+from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 
 
 def _arg_value(flag, default=None):
@@ -75,9 +75,7 @@ def main():
     # Parse optional flags from argv before positional args
     htf_filter_enabled = "--htf-filter" in sys.argv
     regime_enabled = "--regime-enabled" in sys.argv
-    regime_period = int(_arg_value("--regime-period") or 14)
-    regime_adx_threshold = float(_arg_value("--regime-adx-threshold") or 20.0)
-    regime_windows = parse_regime_windows_json(_arg_value("--regime-windows-json"))
+    regime_windows_spec = parse_regime_windows_spec_json(_arg_value("--regime-windows-spec-json"))
     ohlcv_limit = int(_arg_value("--ohlcv-limit") or 200)
     regime_atr_window = (_arg_value("--regime-atr-window") or "").strip()
     open_strategy = _arg_value("--open-strategy")
@@ -114,8 +112,7 @@ def main():
             "--position-side", "--position-avg-cost", "--position-qty",
             "--position-initial-qty", "--position-entry-atr",
             "--position-regime",
-            "--regime-period", "--regime-adx-threshold",
-            "--regime-windows-json", "--ohlcv-limit",
+            "--regime-windows-spec-json", "--ohlcv-limit",
             "--regime-atr-window", "--regime-directional-window",
         ):
             skip_next = True
@@ -214,9 +211,7 @@ def main():
         stdout_regime, live_regime, strategy_regime = prepare_check_regime(
             df,
             regime_enabled=regime_enabled,
-            period=regime_period,
-            adx_threshold=regime_adx_threshold,
-            windows=regime_windows,
+            windows_spec=regime_windows_spec,
             atr_window=regime_atr_window,
         )
         strategy_params = (strategy_params or {})

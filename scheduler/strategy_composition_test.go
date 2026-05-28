@@ -223,33 +223,36 @@ func TestAppendRegimeArgs(t *testing.T) {
 		}
 	})
 
-	t.Run("enabled regime appends all three flags", func(t *testing.T) {
+	t.Run("enabled regime appends spec json and ohlcv limit", func(t *testing.T) {
 		regime := &RegimeConfig{Enabled: true, Period: 28, ADXThreshold: 25.5}
 		got := appendRegimeArgs(base, regime)
-		want := []string{
-			"sma_crossover", "BTC/USDT", "1h",
-			"--regime-enabled",
-			"--regime-period", "28",
-			"--regime-adx-threshold", "25.5",
-			"--ohlcv-limit", "200",
+		if len(got) < 4 || got[len(got)-4] != "--regime-windows-spec-json" {
+			t.Fatalf("appendRegimeArgs(enabled) missing spec json: %#v", got)
 		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("appendRegimeArgs(enabled) = %#v, want %#v", got, want)
+		specJSON := got[len(got)-3]
+		if !strings.Contains(specJSON, `"period":28`) || !strings.Contains(specJSON, `"adx_threshold":25.5`) {
+			t.Fatalf("spec json = %s", specJSON)
+		}
+		if got[len(got)-2] != "--ohlcv-limit" || got[len(got)-1] != "200" {
+			t.Fatalf("ohlcv tail = %v", got[len(got)-2:])
 		}
 	})
 
-	t.Run("enabled with defaults appends correct values", func(t *testing.T) {
+	t.Run("enabled with defaults appends default window spec", func(t *testing.T) {
 		regime := &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20.0}
 		got := appendRegimeArgs(base, regime)
-		want := []string{
-			"sma_crossover", "BTC/USDT", "1h",
-			"--regime-enabled",
-			"--regime-period", "14",
-			"--regime-adx-threshold", "20",
-			"--ohlcv-limit", "200",
+		specIdx := -1
+		for i, a := range got {
+			if a == "--regime-windows-spec-json" {
+				specIdx = i + 1
+				break
+			}
 		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("appendRegimeArgs(defaults) = %#v, want %#v", got, want)
+		if specIdx < 1 {
+			t.Fatalf("missing --regime-windows-spec-json in %#v", got)
+		}
+		if !strings.Contains(got[specIdx], `"period":14`) {
+			t.Fatalf("spec json = %s", got[specIdx])
 		}
 	})
 }

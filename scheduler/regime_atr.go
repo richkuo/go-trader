@@ -121,10 +121,17 @@ func (b RegimeATRBlock) MarshalJSON() ([]byte, error) {
 // allowance). Returns error strings for LoadConfig to surface; on success,
 // populates UseDefaults/TrendRegime.
 func (b *RegimeATRBlock) ResolveSurface(ctxLabel string, surface regimeATRSurface) []string {
+	return b.ResolveSurfaceWithLabels(ctxLabel, surface, canonicalTrendRegimeLabels)
+}
+
+func (b *RegimeATRBlock) ResolveSurfaceWithLabels(ctxLabel string, surface regimeATRSurface, labels []string) []string {
 	if b == nil {
 		return nil
 	}
-	parsed, errs := parseRegimeATRBlock(b.raw, ctxLabel, surface)
+	if len(labels) == 0 {
+		labels = canonicalTrendRegimeLabels
+	}
+	parsed, errs := parseRegimeATRBlock(b.raw, ctxLabel, surface, labels)
 	if len(errs) > 0 {
 		return errs
 	}
@@ -274,7 +281,28 @@ func cloneRegimeMap(in map[string]RegimeATREntry) map[string]RegimeATREntry {
 // (tier surfaces handle their own expansion since tiers are an ordered list,
 // so passing a tier surface here returns a zero block — the caller must
 // special-case tier-level use_defaults before reaching this function).
-func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface regimeATRSurface) (RegimeATRBlock, []string) {
+func expandRegimeATRDefaultsForLabels(baseline map[string]RegimeATREntry, labels []string) map[string]RegimeATREntry {
+	if len(labels) == len(canonicalTrendRegimeLabels) {
+		return cloneRegimeMap(baseline)
+	}
+	up := baseline["trending_up"]
+	down := baseline["trending_down"]
+	rng := baseline["ranging"]
+	out := make(map[string]RegimeATREntry, len(labels))
+	for _, label := range labels {
+		switch label {
+		case "trending_up_clean", "trending_up_choppy":
+			out[label] = up
+		case "trending_down_clean", "trending_down_choppy":
+			out[label] = down
+		default:
+			out[label] = rng
+		}
+	}
+	return out
+}
+
+func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface regimeATRSurface, labels []string) (RegimeATRBlock, []string) {
 	var errs []string
 	if raw == nil {
 		return RegimeATRBlock{}, nil
@@ -313,7 +341,10 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 			errs = append(errs, fmt.Sprintf("%s: use_defaults not supported on this surface (tier-level use_defaults is handled by the close evaluator parser)", ctxLabel))
 			return RegimeATRBlock{}, errs
 		}
-		return RegimeATRBlock{UseDefaults: true, TrendRegime: baseline}, errs
+		if len(labels) == 0 {
+			labels = canonicalTrendRegimeLabels
+		}
+		return RegimeATRBlock{UseDefaults: true, TrendRegime: expandRegimeATRDefaultsForLabels(baseline, labels)}, errs
 	}
 
 	if !hasTrend {
@@ -327,8 +358,11 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 		return RegimeATRBlock{}, errs
 	}
 
+	if len(labels) == 0 {
+		labels = canonicalTrendRegimeLabels
+	}
 	validLabels := map[string]bool{}
-	for _, l := range canonicalTrendRegimeLabels {
+	for _, l := range labels {
 		validLabels[l] = true
 	}
 
@@ -340,11 +374,11 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 	}
 	sort.Strings(unknownLabels)
 	for _, k := range unknownLabels {
-		errs = append(errs, fmt.Sprintf("%s.%s: unknown regime label %q (expected one of: %s)", ctxLabel, regimeClassifierKey, k, strings.Join(canonicalTrendRegimeLabels, ", ")))
+		errs = append(errs, fmt.Sprintf("%s.%s: unknown regime label %q (expected one of: %s)", ctxLabel, regimeClassifierKey, k, strings.Join(labels, ", ")))
 	}
 
 	missingLabels := []string{}
-	for _, l := range canonicalTrendRegimeLabels {
+	for _, l := range labels {
 		if _, ok := trendMap[l]; !ok {
 			missingLabels = append(missingLabels, l)
 		}
@@ -353,8 +387,8 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 		errs = append(errs, fmt.Sprintf("%s.%s: missing required regime labels: %s (must be exhaustive — no silent fallback)", ctxLabel, regimeClassifierKey, strings.Join(missingLabels, ", ")))
 	}
 
-	result := make(map[string]RegimeATREntry, len(canonicalTrendRegimeLabels))
-	for _, label := range canonicalTrendRegimeLabels {
+	result := make(map[string]RegimeATREntry, len(labels))
+	for _, label := range labels {
 		labelRaw, ok := trendMap[label]
 		if !ok {
 			continue
@@ -511,7 +545,7 @@ func parseRegimeTPTiers(raw interface{}, ctxLabel string) ([]regimeTierSpec, []s
 			}
 			subset[k] = v
 		}
-		block, subErrs := parseRegimeATRBlock(subset, fmt.Sprintf("%s.tiers[%d]", ctxLabel, idx), surface)
+		block, subErrs := parseRegimeATRBlock(subset, fmt.Sprintf("%s.tiers[%d]", ctxLabel, idx), surface, canonicalTrendRegimeLabels)
 		errs = append(errs, subErrs...)
 
 		spec := regimeTierSpec{Block: block}

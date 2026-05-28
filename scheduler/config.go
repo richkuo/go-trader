@@ -51,7 +51,7 @@ type RegimeConfig struct {
 	Enabled      bool           `json:"enabled"`
 	Period       int            `json:"period"`            // ADX lookback (Wilder's smoothing); default 14; legacy single-window mode
 	ADXThreshold float64        `json:"adx_threshold"`     // ADX below this is "ranging"; default 20.0
-	Windows      map[string]int `json:"windows,omitempty"` // name -> ADX period in bars; empty = legacy single lookback via period (#792)
+	Windows      RegimeWindowsMap `json:"windows,omitempty"` // name -> classifier+period; bare int = ADX period (#792/#795)
 }
 
 // CorrelationConfig controls portfolio-level directional exposure tracking.
@@ -1217,15 +1217,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			}
 		}
 
-		// Canonical regime label set lives in shared_tools/regime.py
-		// (_VALID_LABELS). Keep the two in sync — this validator and the Python
-		// detector must agree, or strategies will be silently misclassified.
-		validRegimeLabels := map[string]bool{"trending_up": true, "trending_down": true, "ranging": true}
-		for j, label := range sc.AllowedRegimes {
-			if !validRegimeLabels[label] {
-				errs = append(errs, fmt.Sprintf("%s: allowed_regimes[%d] unknown label %q (valid: trending_up, trending_down, ranging)", prefix, j, label))
-			}
-		}
+		// allowed_regimes vocabulary is validated in validateStrategyRegimeVocabulary
+		// against the classifier on regime_gate_window (#795).
 		// The regime gate is not wired at the options dispatch site (#553), so
 		// allowed_regimes is a silent no-op for options strategies. Reject it
 		// here until the gate is properly implemented for the multi-position model.
@@ -1444,8 +1437,7 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if cfg.Regime == nil || !cfg.Regime.Enabled {
 				errs = append(errs, fmt.Sprintf("%s: regime_directional_policy requires top-level regime.enabled=true", prefix))
 			}
-			polErrs := sc.RegimeDirectionalPolicy.ResolveRaw(prefix + ".regime_directional_policy")
-			errs = append(errs, polErrs...)
+			// ResolveRawWithLabels runs in validateStrategyRegimeVocabulary.
 		}
 
 		// #486: validate margin_mode (HL perps only). Empty is allowed
@@ -1718,6 +1710,7 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		}
 	}
 	errs = append(errs, validateRegimeWindowsConfig(cfg)...)
+	errs = append(errs, validateStrategyRegimeVocabulary(cfg)...)
 
 	// Warn when allowed_regimes is configured but regime.enabled=false — the
 	// gate reads result.Regime from the check script output, which requires

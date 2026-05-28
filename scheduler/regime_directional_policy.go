@@ -160,6 +160,10 @@ func (p *RegimeDirectionalPolicy) EqualForReload(other *RegimeDirectionalPolicy)
 // Once resolved, TrendRegime is the runtime source of truth and raw is
 // retained only for MarshalJSON re-rendering.
 func (p *RegimeDirectionalPolicy) ResolveRaw(label string) []string {
+	return p.ResolveRawWithLabels(label, canonicalTrendRegimeLabels)
+}
+
+func (p *RegimeDirectionalPolicy) ResolveRawWithLabels(label string, labels []string) []string {
 	var errs []string
 	if p == nil {
 		return errs
@@ -233,14 +237,17 @@ func (p *RegimeDirectionalPolicy) ResolveRaw(label string) []string {
 		}
 		parsed[regimeLabel] = RegimeDirectionalEntry{Direction: dir, InvertSignal: invert}
 	}
+	if len(labels) == 0 {
+		labels = canonicalTrendRegimeLabels
+	}
 	// Reject unknown regime labels.
 	validLabels := map[string]bool{}
-	for _, l := range canonicalTrendRegimeLabels {
+	for _, l := range labels {
 		validLabels[l] = true
 	}
 	for _, k := range keys {
 		if !validLabels[k] {
-			errs = append(errs, fmt.Sprintf("%s: unknown regime label %q (valid: %s)", label, k, strings.Join(canonicalTrendRegimeLabels, ", ")))
+			errs = append(errs, fmt.Sprintf("%s: unknown regime label %q (valid: %s)", label, k, strings.Join(labels, ", ")))
 		}
 	}
 	// Require all canonical labels present so there's never an undefined
@@ -248,7 +255,7 @@ func (p *RegimeDirectionalPolicy) ResolveRaw(label string) []string {
 	// for one regime can spell it out explicitly. Uses `seen` (not `parsed`)
 	// so a label that's present-but-invalid isn't also reported as missing.
 	missing := []string{}
-	for _, l := range canonicalTrendRegimeLabels {
+	for _, l := range labels {
 		if !seen[l] {
 			missing = append(missing, l)
 		}

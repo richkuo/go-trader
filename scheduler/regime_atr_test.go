@@ -10,7 +10,7 @@ import (
 
 func TestParseRegimeATRBlock_UseDefaultsExpandsToBaseline(t *testing.T) {
 	raw := map[string]interface{}{"use_defaults": true}
-	got, errs := parseRegimeATRBlock(raw, "stop_loss_atr_regime", regimeSurfaceStopLoss)
+	got, errs := parseRegimeATRBlock(raw, "stop_loss_atr_regime", regimeSurfaceStopLoss, canonicalTrendRegimeLabels)
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -39,7 +39,7 @@ func TestParseRegimeATRBlock_RejectsBareLabelKeys(t *testing.T) {
 		"trending_down": map[string]interface{}{"atr": 2.0},
 		"ranging":       map[string]interface{}{"atr": 1.5},
 	}
-	_, errs := parseRegimeATRBlock(raw, "stop_loss_atr_regime", regimeSurfaceStopLoss)
+	_, errs := parseRegimeATRBlock(raw, "stop_loss_atr_regime", regimeSurfaceStopLoss, canonicalTrendRegimeLabels)
 	if len(errs) == 0 {
 		t.Fatalf("expected errors for bare label keys")
 	}
@@ -63,7 +63,7 @@ func TestParseRegimeATRBlock_RequiresExhaustiveLabels(t *testing.T) {
 			"ranging":     map[string]interface{}{"atr": 1.5},
 		},
 	}
-	_, errs := parseRegimeATRBlock(raw, "stop_loss_atr_regime", regimeSurfaceStopLoss)
+	_, errs := parseRegimeATRBlock(raw, "stop_loss_atr_regime", regimeSurfaceStopLoss, canonicalTrendRegimeLabels)
 	if len(errs) == 0 {
 		t.Fatalf("expected missing-label error")
 	}
@@ -87,7 +87,7 @@ func TestParseRegimeATRBlock_RejectsUseDefaultsAndExplicit(t *testing.T) {
 			"ranging":       map[string]interface{}{"atr": 1.5},
 		},
 	}
-	_, errs := parseRegimeATRBlock(raw, "stop_loss_atr_regime", regimeSurfaceStopLoss)
+	_, errs := parseRegimeATRBlock(raw, "stop_loss_atr_regime", regimeSurfaceStopLoss, canonicalTrendRegimeLabels)
 	if len(errs) == 0 {
 		t.Fatalf("expected mutex error")
 	}
@@ -101,7 +101,7 @@ func TestParseRegimeATRBlock_RejectsCloseFractionOnStopLossSurface(t *testing.T)
 			"ranging":       map[string]interface{}{"atr": 1.5},
 		},
 	}
-	_, errs := parseRegimeATRBlock(raw, "stop_loss_atr_regime", regimeSurfaceStopLoss)
+	_, errs := parseRegimeATRBlock(raw, "stop_loss_atr_regime", regimeSurfaceStopLoss, canonicalTrendRegimeLabels)
 	if len(errs) == 0 {
 		t.Fatalf("expected error for close_fraction on stop_loss surface")
 	}

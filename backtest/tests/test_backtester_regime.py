@@ -76,6 +76,18 @@ def test_ensure_regime_columns_ranging_labels_ranging():
     assert out["regime"].iloc[-1] == "ranging"
 
 
+def test_ensure_regime_columns_composite_labels():
+    df = _uptrend_df(n=120)
+    out = ensure_regime_columns(
+        df,
+        period=50,
+        classifier="composite",
+        thresholds={"return_pct": 0.02, "range_pct": 0.02, "adx": 15},
+    )
+    label = out["regime"].iloc[-1]
+    assert label.startswith("trending_up")
+
+
 # ─── Backtester regime constructor params ─────────────────────────────────────
 
 

@@ -378,3 +378,27 @@ def test_required_ohlcv_limit_scales_with_windows():
 def test_parse_regime_windows_json_rejects_reserved_name():
     with pytest.raises(ValueError, match="reserved"):
         parse_regime_windows_json('{"regime": 168}')
+
+
+def test_map_composite_label_states():
+    th = {"return_pct": 0.05, "range_pct": 0.03, "adx": 25}
+    assert _regime_mod.map_composite_label(0.10, 30, 0.10, th) == "trending_up_clean"
+    assert _regime_mod.map_composite_label(0.10, 10, 0.10, th) == "trending_up_choppy"
+    assert _regime_mod.map_composite_label(-0.10, 30, 0.10, th) == "trending_down_clean"
+    assert _regime_mod.map_composite_label(0.01, 10, 0.01, th) == "ranging_quiet"
+    assert _regime_mod.map_composite_label(0.01, 30, 0.10, th) == "ranging_directional"
+
+
+def test_parse_regime_windows_spec_json_composite():
+    spec = _regime_mod.parse_regime_windows_spec_json(
+        '{"macro":{"classifier":"composite","period":100,"thresholds":{"return_pct":0.05,"range_pct":0.03,"adx":25}}}'
+    )
+    assert spec["macro"]["classifier"] == "composite"
+    assert spec["macro"]["period"] == 100
+
+
+def test_latest_regime_composite_downtrend():
+    df = _make_downtrend(n=120)
+    snap = _regime_mod.latest_regime_composite(df, period=50, thresholds={"return_pct": 0.02, "range_pct": 0.02, "adx": 15})
+    assert snap["regime"] in _regime_mod.VALID_LABELS_COMPOSITE
+    assert "trending_down" in snap["regime"]
