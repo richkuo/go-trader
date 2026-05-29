@@ -14,6 +14,15 @@
     series: null,
     timer: 0,
     sparklines: {},
+    tuner: {
+      config: null,
+      overrides: {},
+      liveMarkers: [],
+      simulatedMarkers: [],
+      previewActive: false,
+      simulateTimer: 0,
+      loading: false,
+    },
   };
 
   const SPARKLINE_LIMIT = 40;
@@ -49,6 +58,13 @@
     overviewPanel: document.getElementById("overview-panel"),
     overviewBody: document.getElementById("overview-body"),
     detailPanel: document.getElementById("detail-panel"),
+    tunerPanel: document.getElementById("tuner-panel"),
+    tunerForm: document.getElementById("tuner-form"),
+    tunerStatus: document.getElementById("tuner-status"),
+    tunerReset: document.getElementById("tuner-reset"),
+    tunerApply: document.getElementById("tuner-apply"),
+    tunerConfirmDialog: document.getElementById("tuner-confirm-dialog"),
+    tunerConfirmText: document.getElementById("tuner-confirm-text"),
   };
 
   function isMobileSidebar() {
@@ -140,6 +156,21 @@
   function authHeaders() {
     const token = window.localStorage.getItem("goTraderStatusToken");
     return token ? { Authorization: "Bearer " + token } : {};
+  }
+
+  async function postJSON(url, body) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+      body: JSON.stringify(body || {}),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      const err = new Error(text || res.statusText);
+      err.status = res.status;
+      throw err;
+    }
+    return res.json();
   }
 
   async function getJSON(url) {
@@ -361,6 +392,7 @@
   async function selectStrategy(id, options) {
     const opts = options || {};
     state.activeID = id;
+    resetTunerState();
     updateRegimeBadge("");
     const strategy = activeStrategy();
     if (strategy) {
@@ -379,10 +411,265 @@
     await refreshAll();
   }
 
+  function resetTunerState() {
+    state.tuner.config = null;
+    state.tuner.overrides = {};
+    state.tuner.liveMarkers = [];
+    state.tuner.simulatedMarkers = [];
+    state.tuner.previewActive = false;
+    if (state.tuner.simulateTimer) {
+      clearTimeout(state.tuner.simulateTimer);
+      state.tuner.simulateTimer = 0;
+    }
+    updateTunerStatus();
+    if (els.tunerPanel) {
+      els.tunerPanel.hidden = true;
+    }
+    if (els.tunerForm) {
+      els.tunerForm.innerHTML = "";
+    }
+  }
+
+  function tunerHasOverrides() {
+    return Object.keys(state.tuner.overrides).length > 0;
+  }
+
+  function updateTunerStatus() {
+    if (!els.tunerStatus) return;
+    if (state.tuner.loading) {
+      els.tunerStatus.textContent = "Simulating…";
+      els.tunerStatus.className = "tuner-status preview";
+      return;
+    }
+    if (tunerHasOverrides()) {
+      els.tunerStatus.textContent = "Preview active";
+      els.tunerStatus.className = "tuner-status preview";
+      return;
+    }
+    els.tunerStatus.textContent = "Live config";
+    els.tunerStatus.className = "tuner-status";
+  }
+
+  function groupEditableFields(fields) {
+    const groups = { runtime: [], risk: [], open_params: [] };
+    (fields || []).forEach(function (field) {
+      const key = field.group || "open_params";
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(field);
+    });
+    return groups;
+  }
+
+  function renderTunerForm(config) {
+    if (!els.tunerForm || !els.tunerPanel) return;
+    if (!config || !config.editable_fields || !config.editable_fields.length) {
+      els.tunerPanel.hidden = true;
+      els.tunerForm.innerHTML = "";
+      return;
+    }
+    els.tunerPanel.hidden = false;
+    const groups = groupEditableFields(config.editable_fields);
+    const groupLabels = {
+      runtime: "Runtime",
+      risk: "Risk",
+      open_params: "Indicator params",
+    };
+    let html = "";
+    ["runtime", "risk", "open_params"].forEach(function (groupKey) {
+      const fields = groups[groupKey] || [];
+      if (!fields.length) return;
+      html += '<div class="tuner-group-label">' + escapeHTML(groupLabels[groupKey] || groupKey) + "</div>";
+      fields.forEach(function (field) {
+        const value = state.tuner.overrides[field.key] !== undefined
+          ? state.tuner.overrides[field.key]
+          : field.value;
+        html += '<label class="tuner-field" data-key="' + escapeHTML(field.key) + '">';
+        html += "<span>" + escapeHTML(field.label || field.key) + "</span>";
+        if (field.type === "boolean") {
+          html += '<input type="checkbox" data-key="' + escapeHTML(field.key) + '"' +
+            (value ? " checked" : "") + ">";
+        } else if (field.type === "select") {
+          html += '<select data-key="' + escapeHTML(field.key) + '">';
+          (field.options || []).forEach(function (opt) {
+            html += '<option value="' + escapeHTML(opt) + '"' +
+              (String(value) === String(opt) ? " selected" : "") + ">" +
+              escapeHTML(opt) + "</option>";
+          });
+          html += "</select>";
+        } else {
+          html += '<input type="number" step="any" data-key="' + escapeHTML(field.key) + '" value="' +
+            escapeHTML(value === null || value === undefined ? "" : value) + '">';
+        }
+        html += "</label>";
+      });
+    });
+    els.tunerForm.innerHTML = html;
+  }
+
+  async function loadTunerConfig() {
+    if (!state.activeID) return;
+    const config = await getJSON("/api/strategies/" + encodeURIComponent(state.activeID) + "/config");
+    state.tuner.config = config;
+    renderTunerForm(config);
+  }
+
+  function buildSimulateOverrides() {
+    const overrides = {};
+    Object.keys(state.tuner.overrides).forEach(function (key) {
+      overrides[key] = state.tuner.overrides[key];
+    });
+    if (state.tuner.config && state.tuner.config.open_strategy && state.tuner.config.open_strategy.params) {
+      const paramOverrides = {};
+      Object.keys(overrides).forEach(function (key) {
+        if (key.indexOf("open_strategy.params.") === 0) {
+          paramOverrides[key.slice("open_strategy.params.".length)] = overrides[key];
+          delete overrides[key];
+        }
+      });
+      if (Object.keys(paramOverrides).length) {
+        overrides.open_strategy = {
+          name: state.tuner.config.open_strategy.name,
+          params: paramOverrides,
+        };
+      }
+    }
+    return overrides;
+  }
+
+  function scheduleSimulate() {
+    if (state.tuner.simulateTimer) {
+      clearTimeout(state.tuner.simulateTimer);
+    }
+    state.tuner.simulateTimer = setTimeout(function () {
+      runSimulate().catch(handleRefreshError);
+    }, 450);
+  }
+
+  async function runSimulate() {
+    if (!state.activeID) return;
+    if (!tunerHasOverrides()) {
+      state.tuner.previewActive = false;
+      state.tuner.liveMarkers = [];
+      state.tuner.simulatedMarkers = [];
+      updateTunerStatus();
+      await refreshChart();
+      return;
+    }
+    state.tuner.loading = true;
+    updateTunerStatus();
+    try {
+      const resp = await postJSON(
+        "/api/strategies/" + encodeURIComponent(state.activeID) + "/simulate",
+        { overrides: buildSimulateOverrides(), limit: 400 }
+      );
+      state.tuner.liveMarkers = resp.live_markers || [];
+      state.tuner.simulatedMarkers = resp.simulated_markers || [];
+      state.tuner.previewActive = true;
+      await refreshChart();
+    } finally {
+      state.tuner.loading = false;
+      updateTunerStatus();
+    }
+  }
+
+  function onTunerFieldChange(event) {
+    const target = event.target;
+    const key = target.dataset.key;
+    if (!key) return;
+    let value;
+    if (target.type === "checkbox") {
+      value = target.checked;
+    } else if (target.type === "number") {
+      value = target.value === "" ? null : Number(target.value);
+    } else {
+      value = target.value;
+    }
+    const base = state.tuner.config && state.tuner.config.editable_fields
+      ? state.tuner.config.editable_fields.find(function (f) { return f.key === key; })
+      : null;
+    const baseline = base ? base.value : undefined;
+    if (value === baseline || (value === null && (baseline === null || baseline === undefined))) {
+      delete state.tuner.overrides[key];
+    } else {
+      state.tuner.overrides[key] = value;
+    }
+    updateTunerStatus();
+    scheduleSimulate();
+  }
+
+  function resetTunerToLive() {
+    state.tuner.overrides = {};
+    if (state.tuner.config) {
+      renderTunerForm(state.tuner.config);
+    }
+    state.tuner.previewActive = false;
+    state.tuner.liveMarkers = [];
+    state.tuner.simulatedMarkers = [];
+    updateTunerStatus();
+    refreshChart().catch(handleRefreshError);
+  }
+
+  function tunerApplyRequiresRestartClient() {
+    const keys = Object.keys(state.tuner.overrides);
+    if (state.tuner.config && state.tuner.config.has_open_position) {
+      if (keys.indexOf("direction") >= 0 || keys.indexOf("invert_signal") >= 0 || keys.indexOf("leverage") >= 0) {
+        return true;
+      }
+    }
+    return keys.indexOf("htf_filter") >= 0;
+  }
+
+  async function applyTunerConfig() {
+    if (!state.activeID || !tunerHasOverrides()) return;
+    const resp = await postJSON(
+      "/api/strategies/" + encodeURIComponent(state.activeID) + "/config",
+      { overrides: buildSimulateOverrides() }
+    );
+    if (resp.ok) {
+      resetTunerState();
+      await loadTunerConfig();
+      await refreshAll();
+      els.statusLabel.textContent = resp.restart_required ? "Apply OK — restart" : "Apply OK";
+    }
+  }
+
   function markerText(marker) {
     if (!marker.realized_pnl) return marker.text;
     const pnl = marker.realized_pnl >= 0 ? "+" + fmtMoney(marker.realized_pnl) : fmtMoney(marker.realized_pnl);
     return marker.text + " " + pnl;
+  }
+
+  function chartMarkersFromResponse(tradeResp) {
+    if (state.tuner.previewActive && state.tuner.simulatedMarkers.length) {
+      const faded = (state.tuner.liveMarkers || []).map(function (m) {
+        return {
+          time: m.time,
+          position: m.position,
+          color: "#9ca3af",
+          shape: m.shape,
+          text: markerText(m),
+        };
+      });
+      const bright = state.tuner.simulatedMarkers.map(function (m) {
+        return {
+          time: m.time,
+          position: m.position,
+          color: m.color,
+          shape: m.shape,
+          text: markerText(m),
+        };
+      });
+      return faded.concat(bright);
+    }
+    return (tradeResp.markers || []).map(function (m) {
+      return {
+        time: m.time,
+        position: m.position,
+        color: m.color,
+        shape: m.shape,
+        text: markerText(m),
+      };
+    });
   }
 
   async function refreshChart() {
@@ -394,15 +681,7 @@
     ]);
     const candles = candleResp.candles || [];
     state.series.setData(candles);
-    state.series.setMarkers((tradeResp.markers || []).map(function (m) {
-      return {
-        time: m.time,
-        position: m.position,
-        color: m.color,
-        shape: m.shape,
-        text: markerText(m),
-      };
-    }));
+    state.series.setMarkers(chartMarkersFromResponse(tradeResp));
     els.empty.style.display = candles.length ? "none" : "flex";
     if (candles.length) state.chart.timeScale().fitContent();
     renderTradeHistory(tradeResp.trades || tradeResp.markers || []);
@@ -649,6 +928,7 @@
       await Promise.all([
         refreshChart(),
         refreshStatus(),
+        loadTunerConfig(),
         loadSparklines(filteredStrategies().map(function (s) {
           return s.id;
         })),
@@ -719,6 +999,36 @@
   }
 
   initSidebar();
+  if (els.tunerForm) {
+    els.tunerForm.addEventListener("input", onTunerFieldChange);
+    els.tunerForm.addEventListener("change", onTunerFieldChange);
+  }
+  if (els.tunerReset) {
+    els.tunerReset.addEventListener("click", resetTunerToLive);
+  }
+  if (els.tunerApply) {
+    els.tunerApply.addEventListener("click", function () {
+      if (!state.tuner.config) return;
+      const restart = tunerApplyRequiresRestartClient();
+      if (els.tunerConfirmText) {
+        els.tunerConfirmText.textContent = restart
+          ? "This writes tuned parameters to the live config file. Restart go-trader afterward — hot reload cannot apply most tuner fields."
+          : "This writes tuned parameters to the live config file. Send SIGHUP to reload when ready.";
+      }
+      if (els.tunerConfirmDialog && typeof els.tunerConfirmDialog.showModal === "function") {
+        els.tunerConfirmDialog.showModal();
+      } else if (window.confirm(els.tunerConfirmText ? els.tunerConfirmText.textContent : "Apply tuned config?")) {
+        applyTunerConfig().catch(handleRefreshError);
+      }
+    });
+  }
+  if (els.tunerConfirmDialog) {
+    els.tunerConfirmDialog.addEventListener("close", function () {
+      if (els.tunerConfirmDialog.returnValue === "apply") {
+        applyTunerConfig().catch(handleRefreshError);
+      }
+    });
+  }
   els.search.addEventListener("input", renderStrategies);
   els.darkToggle.addEventListener("click", function () {
     setDarkMode(!isDarkMode());

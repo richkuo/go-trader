@@ -81,6 +81,12 @@ var fetchCandlesProbeArgv = []string{
 	"--platform=binanceus", "--type=spot", "--symbol=BTC/USDT", "--timeframe=1h", "--limit=1", "--probe-only",
 }
 
+var strategyTunerSchemaProbeArgv = []string{
+	"--type=spot", "--strategy=sma", "--probe-only",
+}
+
+var simulateStrategyProbeArgv = []string{"--probe-only"}
+
 const probeTimeout = 15 * time.Second
 
 // probeCheckScripts invokes each unique check script configured in cfg
@@ -123,6 +129,12 @@ func probeCheckScripts(cfg *Config) error {
 	}
 	if len(scripts) > 0 {
 		if err := probeOneCheckScriptFn("shared_scripts/fetch_candles.py", fetchCandlesProbeArgv); err != nil {
+			return err
+		}
+		if err := probeOneCheckScriptFn("shared_scripts/strategy_tuner_schema.py", strategyTunerSchemaProbeArgv); err != nil {
+			return err
+		}
+		if err := probeOneCheckScriptFn("shared_scripts/simulate_strategy.py", simulateStrategyProbeArgv); err != nil {
 			return err
 		}
 	}

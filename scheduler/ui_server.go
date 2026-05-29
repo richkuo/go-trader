@@ -188,10 +188,6 @@ func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request
 	if !ss.requireAPIAuth(w, r) {
 		return
 	}
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
 	id, resource, ok := parseStrategyAPIPath(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)
@@ -199,13 +195,44 @@ func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request
 	}
 	switch resource {
 	case "candles":
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		ss.handleAPIStrategyCandles(w, r, id)
 	case "trades":
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		ss.handleAPIStrategyTrades(w, r, id)
 	case "status":
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		ss.handleAPIStrategyStatus(w, r, id)
 	case "equity":
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		ss.handleAPIStrategyEquity(w, r, id)
+	case "config":
+		switch r.Method {
+		case http.MethodGet:
+			ss.handleAPIStrategyConfig(w, r, id)
+		case http.MethodPost:
+			ss.handleAPIStrategyApplyConfig(w, r, id)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	case "simulate":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		ss.handleAPIStrategySimulate(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}

@@ -225,6 +225,7 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	}
 	if server != nil {
 		server.UpdateStrategies(cfg.Strategies)
+		server.SetConfigContext(server.configPath, cfg.Regime)
 	}
 
 	sort.Strings(changes)

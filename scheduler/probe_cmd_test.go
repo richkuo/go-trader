@@ -106,12 +106,12 @@ func TestRunProbeHappyPath(t *testing.T) {
 	if rc != 0 {
 		t.Fatalf("happy-path probe should return 0, got %d", rc)
 	}
-	// Expect 7 invocations: HL signal-check (adx+composite), HL --fetch-atr (#689),
-	// HL --execute (PR #769), spot signal-check (adx+composite), dashboard candle helper.
-	if len(probed) != 7 {
-		t.Fatalf("expected 7 probe invocations, got %d: %v", len(probed), probed)
+	// Expect 9 invocations: HL signal-check (adx+composite), HL --fetch-atr (#689),
+	// HL --execute (PR #769), spot signal-check (adx+composite), dashboard helpers.
+	if len(probed) != 9 {
+		t.Fatalf("expected 9 probe invocations, got %d: %v", len(probed), probed)
 	}
-	var hlSignal, hlFetchATR, hlExecute, spotSignal, candleHelper int
+	var hlSignal, hlFetchATR, hlExecute, spotSignal, candleHelper, schemaHelper, simulateHelper int
 	for _, p := range probed {
 		switch {
 		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "signal":
@@ -124,11 +124,15 @@ func TestRunProbeHappyPath(t *testing.T) {
 			spotSignal++
 		case p.script == "shared_scripts/fetch_candles.py" && p.mode == "signal":
 			candleHelper++
+		case p.script == "shared_scripts/strategy_tuner_schema.py" && p.mode == "signal":
+			schemaHelper++
+		case p.script == "shared_scripts/simulate_strategy.py" && p.mode == "signal":
+			simulateHelper++
 		}
 	}
-	if hlSignal != 2 || hlFetchATR != 1 || hlExecute != 1 || spotSignal != 2 || candleHelper != 1 {
-		t.Fatalf("expected hl-signal=2, hl-fetch-atr=1, hl-execute=1, spot-signal=2, candle-helper=1; got %d/%d/%d/%d/%d (probed=%v)",
-			hlSignal, hlFetchATR, hlExecute, spotSignal, candleHelper, probed)
+	if hlSignal != 2 || hlFetchATR != 1 || hlExecute != 1 || spotSignal != 2 || candleHelper != 1 || schemaHelper != 1 || simulateHelper != 1 {
+		t.Fatalf("expected hl-signal=2, hl-fetch-atr=1, hl-execute=1, spot-signal=2, candle-helper=1, schema=1, simulate=1; got %d/%d/%d/%d/%d/%d/%d (probed=%v)",
+			hlSignal, hlFetchATR, hlExecute, spotSignal, candleHelper, schemaHelper, simulateHelper, probed)
 	}
 }
 

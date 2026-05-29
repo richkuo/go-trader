@@ -808,6 +808,145 @@ h3 {
   color: var(--red);
 }
 
+.tuner-panel {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.tuner-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.tuner-header h3,
+.positions h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.tuner-status {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.tuner-status.preview {
+  color: var(--amber);
+}
+
+.tuner-note {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.tuner-form {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.tuner-field {
+  display: grid;
+  gap: 4px;
+}
+
+.tuner-field span {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.tuner-field input,
+.tuner-field select {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+
+.tuner-field input[type="checkbox"] {
+  width: auto;
+  justify-self: start;
+}
+
+.tuner-group-label {
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.tuner-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.tuner-button {
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tuner-button.primary {
+  background: #2f6f51;
+  border-color: #2f6f51;
+  color: #fff;
+}
+
+.tuner-button.secondary {
+  background: transparent;
+  color: var(--text);
+}
+
+.tuner-dialog {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0;
+  max-width: 420px;
+  width: calc(100% - 32px);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.tuner-dialog::backdrop {
+  background: rgba(29, 36, 31, 0.45);
+}
+
+.tuner-dialog-body {
+  padding: 18px;
+}
+
+.tuner-dialog-body h3 {
+  margin: 0 0 8px;
+}
+
+.tuner-dialog-body p {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.tuner-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .chart-panel,
 .content.content-table {
   grid-template-columns: minmax(0, 1fr);
@@ -823,3 +962,13 @@ h3 {
 
 .overview-panel {
   grid-column: 1 / -1;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  overflow: auto;
+}
+
+.overview-panel[hidden] {
+  display: none;
+}

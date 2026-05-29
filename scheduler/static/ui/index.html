@@ -133,12 +133,34 @@
                 <h3>Positions</h3>
                 <div id="positions-list"></div>
               </div>
+              <section id="tuner-panel" class="tuner-panel" hidden>
+                <div class="tuner-header">
+                  <h3>Strategy tuner</h3>
+                  <span id="tuner-status" class="tuner-status">Live config</span>
+                </div>
+                <p class="tuner-note">Preview signal changes without affecting the running strategy. Gray markers replay the live config over fetched candles — not recorded trade history.</p>
+                <form id="tuner-form" class="tuner-form"></form>
+                <div class="tuner-actions">
+                  <button id="tuner-reset" type="button" class="tuner-button secondary">Reset to live</button>
+                  <button id="tuner-apply" type="button" class="tuner-button primary">Apply</button>
+                </div>
+              </section>
             </aside>
           </div>
         </section>
       </main>
     </div>
     <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
+    <dialog id="tuner-confirm-dialog" class="tuner-dialog">
+      <form method="dialog" class="tuner-dialog-body">
+        <h3>Apply tuned config?</h3>
+        <p id="tuner-confirm-text">This writes changes to the live config file. A restart may be required.</p>
+        <div class="tuner-dialog-actions">
+          <button value="cancel" type="submit" class="tuner-button secondary">Cancel</button>
+          <button id="tuner-confirm-apply" value="apply" type="submit" class="tuner-button primary">Apply</button>
+        </div>
+      </form>
+    </dialog>
     <script src="/dashboard/lightweight-charts.standalone.production.js"></script>
     <script src="/dashboard/app.js"></script>
   </body>

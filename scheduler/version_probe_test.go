@@ -56,6 +56,8 @@ exec /usr/bin/env python3 "$@"
 		t.Fatalf("mkdir shared_scripts: %v", err)
 	}
 	writeProbeStub(t, fetchDir, "fetch_candles.py", true)
+	writeProbeStub(t, fetchDir, "strategy_tuner_schema.py", true)
+	writeProbeStub(t, fetchDir, "simulate_strategy.py", true)
 
 	prevCwd, _ := os.Getwd()
 	if err := os.Chdir(tmp); err != nil {
@@ -175,6 +177,14 @@ func TestProbeRunsExtraArgvForHL(t *testing.T) {
 	candles := calls["shared_scripts/fetch_candles.py"]
 	if len(candles) != 1 || candles[0] != "signal" {
 		t.Errorf("dashboard candle helper should be probed once, got %v", candles)
+	}
+	schema := calls["shared_scripts/strategy_tuner_schema.py"]
+	if len(schema) != 1 || schema[0] != "signal" {
+		t.Errorf("strategy tuner schema helper should be probed once, got %v", schema)
+	}
+	simulate := calls["shared_scripts/simulate_strategy.py"]
+	if len(simulate) != 1 || simulate[0] != "signal" {
+		t.Errorf("simulate helper should be probed once, got %v", simulate)
 	}
 }
 

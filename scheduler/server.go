@@ -29,8 +29,11 @@ type StatusServer struct {
 	// UpdateStrategies is invoked from that path, so reusing `mu` here would
 	// deadlock. Readers on the /api/strategies path also benefit: they no
 	// longer contend with the scheduler's state writes during dashboard polls.
-	strategiesMu sync.RWMutex
-	strategies   []StrategyConfig // strategy configs for initial capital lookup
+	strategiesMu  sync.RWMutex
+	strategies    []StrategyConfig // strategy configs for initial capital lookup
+	configPath    string           // live config file for tuner Apply (#811)
+	regime        *RegimeConfig    // global regime settings for simulate preview
+	configWriteMu sync.Mutex       // serializes dashboard config Apply writes
 
 	// Throttled logging for repeated mark-fetch failures on the /status
 	// rail. /status can be polled frequently (oncall dashboard, monitoring),
