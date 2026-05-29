@@ -38,6 +38,7 @@ type UIStrategyOverview struct {
 	Direction      string  `json:"direction,omitempty"`
 	PnL            float64 `json:"pnl"`
 	PortfolioValue float64 `json:"portfolio_value"`
+	InitialCapital float64 `json:"initial_capital"`
 }
 
 type UIStrategyStatus struct {
@@ -420,6 +421,7 @@ func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, Lifet
 		Direction:      strategyDisplayDirection(sc),
 		PnL:            pnl,
 		PortfolioValue: pv,
+		InitialCapital: initCap,
 	}, lifetime, true
 }
 
@@ -446,8 +448,11 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 		snapshot.RiskState = cloneUIRiskState(strat.RiskState)
 	}
 	ss.mu.RUnlock()
+	if strat == nil {
+		writeJSONError(w, http.StatusNotFound, "strategy state not found")
+		return
+	}
 
-	initCap := EffectiveInitialCapital(sc, &snapshot)
 	resp := UIStrategyStatus{
 		ID:              overview.ID,
 		Type:            sc.Type,
@@ -456,7 +461,7 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 		Timeframe:       strategyDisplayTimeframe(sc),
 		Direction:       overview.Direction,
 		Cash:            snapshot.Cash,
-		InitialCapital:  initCap,
+		InitialCapital:  overview.InitialCapital,
 		PortfolioValue:  overview.PortfolioValue,
 		PnL:             overview.PnL,
 		PnLPct:          overview.PnLPct,

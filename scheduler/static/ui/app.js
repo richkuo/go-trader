@@ -139,7 +139,7 @@
         button.querySelector(".strategy-meta").textContent =
           [strategy.type, strategy.timeframe, strategy.direction].filter(Boolean).join(" / ");
         button.addEventListener("click", function () {
-          selectStrategy(strategy.id);
+          selectStrategy(strategy.id).catch(handleRefreshError);
         });
         els.list.appendChild(button);
       });
