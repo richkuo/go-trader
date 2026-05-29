@@ -1,0 +1,265 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// composite7StateATR builds a trend_regime raw map covering all 7 composite
+// labels with the given ATR multiplier (close_fraction omitted — SL/trailing
+// surfaces).
+func composite7StateATR(atr float64) map[string]interface{} {
+	labels := regimeLabelsForClassifier(regimeClassifierComposite)
+	tr := make(map[string]interface{}, len(labels))
+	for _, l := range labels {
+		tr[l] = map[string]interface{}{"atr": atr}
+	}
+	return map[string]interface{}{"trend_regime": tr}
+}
+
+// composite7StateTier builds one tiered_tp_atr_regime tier covering all 7
+// composite labels with per-regime close_fraction.
+func composite7StateTier(atr, frac float64) map[string]interface{} {
+	labels := regimeLabelsForClassifier(regimeClassifierComposite)
+	tr := make(map[string]interface{}, len(labels))
+	for _, l := range labels {
+		tr[l] = map[string]interface{}{"atr": atr, "close_fraction": frac}
+	}
+	return map[string]interface{}{"trend_regime": tr}
+}
+
+func compositeRegimeCfg(scs ...StrategyConfig) *Config {
+	return &Config{
+		Regime: &RegimeConfig{
+			Enabled: true,
+			Windows: RegimeWindowsMap{
+				"daily": {Classifier: regimeClassifierComposite, Period: 24},
+			},
+		},
+		Strategies: scs,
+	}
+}
+
+// TestValidateRegimeATRConfig_CompositeStopLossExplicit is the #802 regression:
+// an explicit 7-state stop_loss_atr_regime under a composite regime_atr_window
+// must validate cleanly (previously rejected because the resolver hardcoded the
+// ADX 3-state vocabulary).
+func TestValidateRegimeATRConfig_CompositeStopLossExplicit(t *testing.T) {
+	sc := StrategyConfig{
+		ID:                "hl-test",
+		Type:              "perps",
+		Platform:          "hyperliquid",
+		RegimeATRWindow:   "daily",
+		StopLossATRRegime: &RegimeATRBlock{raw: composite7StateATR(2.0)},
+	}
+	cfg := compositeRegimeCfg(sc)
+	if errs := validateRegimeATRConfig(cfg); len(errs) != 0 {
+		t.Fatalf("composite stop_loss_atr_regime must validate, got: %v", errs)
+	}
+	block := cfg.Strategies[0].StopLossATRRegime
+	if got := len(block.TrendRegime); got != 7 {
+		t.Fatalf("block must be populated with all 7 composite labels, got %d: %v", got, block.TrendRegime)
+	}
+	// Runtime SL resolution must succeed for a composite label (proves the
+	// authoritative pass populated the composite vocabulary, not ADX).
+	if v, ok := resolveRegimeATR(*block, "trending_up_clean"); !ok || v != 2.0 {
+		t.Fatalf("resolveRegimeATR(trending_up_clean) = (%g, %v), want (2.0, true)", v, ok)
+	}
+}
+
+func TestValidateRegimeATRConfig_CompositeTrailingExplicit(t *testing.T) {
+	sc := StrategyConfig{
+		ID:                    "hl-test",
+		Type:                  "perps",
+		Platform:              "hyperliquid",
+		RegimeATRWindow:       "daily",
+		TrailingStopATRRegime: &RegimeATRBlock{raw: composite7StateATR(2.5)},
+	}
+	cfg := compositeRegimeCfg(sc)
+	if errs := validateRegimeATRConfig(cfg); len(errs) != 0 {
+		t.Fatalf("composite trailing_stop_atr_regime must validate, got: %v", errs)
+	}
+	if got := len(cfg.Strategies[0].TrailingStopATRRegime.TrendRegime); got != 7 {
+		t.Fatalf("trailing block must hold 7 composite labels, got %d", got)
+	}
+}
+
+// TestValidateRegimeATRConfig_CompositeMissingLabelRejected ensures the
+// exhaustiveness check uses the composite vocabulary: an incomplete 7-state
+// map is rejected and the error names the composite labels (not ADX).
+func TestValidateRegimeATRConfig_CompositeMissingLabelRejected(t *testing.T) {
+	raw := composite7StateATR(2.0)
+	delete(raw["trend_regime"].(map[string]interface{}), "ranging_volatile")
+	sc := StrategyConfig{
+		ID:                "hl-test",
+		Type:              "perps",
+		Platform:          "hyperliquid",
+		RegimeATRWindow:   "daily",
+		StopLossATRRegime: &RegimeATRBlock{raw: raw},
+	}
+	errs := validateRegimeATRConfig(compositeRegimeCfg(sc))
+	joined := strings.Join(errs, "\n")
+	if !strings.Contains(joined, "ranging_volatile") {
+		t.Fatalf("expected missing-label error naming ranging_volatile, got: %v", errs)
+	}
+	if strings.Contains(joined, "expected one of: trending_up, trending_down, ranging") {
+		t.Fatalf("error must use composite vocabulary, not ADX 3-state: %v", errs)
+	}
+	if !strings.Contains(joined, "classifier \"composite\"") {
+		t.Fatalf("error should carry composite classifier context, got: %v", errs)
+	}
+}
+
+// TestValidateRegimeATRConfig_CompositeTPTiersExplicit covers the tier path:
+// an explicit 7-state tiered_tp_atr_regime close ref must validate under a
+// composite window.
+func TestValidateRegimeATRConfig_CompositeTPTiersExplicit(t *testing.T) {
+	sc := StrategyConfig{
+		ID:              "hl-test",
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		RegimeATRWindow: "daily",
+		CloseStrategies: []StrategyRef{
+			{Name: "tiered_tp_atr_regime", Params: map[string]interface{}{
+				"tiers": []interface{}{
+					composite7StateTier(2.0, 0.5),
+					composite7StateTier(4.0, 1.0),
+				},
+			}},
+		},
+	}
+	if errs := validateRegimeATRConfig(compositeRegimeCfg(sc)); len(errs) != 0 {
+		t.Fatalf("composite tiered_tp_atr_regime must validate, got: %v", errs)
+	}
+}
+
+// TestResolveRegimeTPTiers_CompositeRuntime exercises the runtime resolver: it
+// infers the vocabulary from the raw config and resolves a composite label.
+func TestResolveRegimeTPTiers_CompositeRuntime(t *testing.T) {
+	raw := []interface{}{
+		composite7StateTier(2.0, 0.5),
+		composite7StateTier(4.0, 1.0),
+	}
+	tiers := resolveRegimeTPTiers(raw, "trending_down_choppy")
+	if len(tiers) != 2 {
+		t.Fatalf("composite runtime resolve must return 2 tiers, got %d: %v", len(tiers), tiers)
+	}
+	if tiers[0].Multiple != 2.0 || tiers[1].Multiple != 4.0 {
+		t.Fatalf("tier multiples mismatch: %v", tiers)
+	}
+	// An unknown runtime label falls back to nil (SL-only this cycle).
+	if got := resolveRegimeTPTiers(raw, "not_a_label"); got != nil {
+		t.Fatalf("unknown runtime regime should resolve to nil, got %v", got)
+	}
+}
+
+// TestStrategyTPTiersForRegime_CompositeUseDefaults covers the use_defaults
+// tier path under a composite runtime label.
+func TestStrategyTPTiersForRegime_CompositeUseDefaults(t *testing.T) {
+	sc := StrategyConfig{
+		Type:     "perps",
+		Platform: "hyperliquid",
+		CloseStrategies: []StrategyRef{
+			{Name: "tiered_tp_atr_regime", Params: map[string]interface{}{"use_defaults": true}},
+		},
+	}
+	tiers := strategyTPTiersForRegime(sc, "trending_up_clean")
+	if len(tiers) != 2 {
+		t.Fatalf("use_defaults composite must resolve 2 tiers, got %d: %v", len(tiers), tiers)
+	}
+	// trending_up_clean maps to the trending_up baseline family (2.0, 4.0).
+	if tiers[0].Multiple != 2.0 || tiers[1].Multiple != 4.0 {
+		t.Fatalf("composite use_defaults baseline mismatch: %v", tiers)
+	}
+}
+
+func TestMapRegimeToBaselineFamily(t *testing.T) {
+	baseline := regimeATRDefaults.StopLoss // trending_up/down=2.0, ranging=1.5
+	cases := []struct {
+		label   string
+		wantATR float64
+		wantOK  bool
+	}{
+		{"trending_up", 2.0, true},          // ADX exact
+		{"ranging", 1.5, true},              // ADX exact
+		{"trending_up_clean", 2.0, true},    // composite prefix → trending_up
+		{"trending_down_choppy", 2.0, true}, // composite prefix → trending_down
+		{"ranging_quiet", 1.5, true},        // composite prefix → ranging
+		{"ranging_directional", 1.5, true},
+		{"garbage", 0, false},
+	}
+	for _, tc := range cases {
+		e, ok := mapRegimeToBaselineFamily(baseline, tc.label)
+		if ok != tc.wantOK || (ok && e.ATR != tc.wantATR) {
+			t.Errorf("mapRegimeToBaselineFamily(%q) = (%g, %v), want (%g, %v)", tc.label, e.ATR, ok, tc.wantATR, tc.wantOK)
+		}
+	}
+}
+
+func TestRegimeLabelsFromTierRaw(t *testing.T) {
+	raw := []interface{}{composite7StateTier(2.0, 0.5)}
+	got := regimeLabelsFromTierRaw(raw)
+	if len(got) != 7 {
+		t.Fatalf("expected 7 inferred labels, got %d: %v", len(got), got)
+	}
+	// No per-regime keys → canonical ADX fallback.
+	if got := regimeLabelsFromTierRaw(nil); len(got) != 3 {
+		t.Fatalf("nil raw should fall back to canonical ADX (3), got %v", got)
+	}
+}
+
+// TestLoadConfig_CompositeStopLossAtrRegime is the end-to-end #802 repro: a
+// composite window with an explicit 7-state stop_loss_atr_regime must load
+// through the full ValidateConfig pipeline (both validation passes).
+func TestLoadConfig_CompositeStopLossAtrRegime(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	dbPath := filepath.Join(dir, "state.db")
+	cfgBody := `{
+		"db_file": "` + strings.ReplaceAll(dbPath, "\\", "\\\\") + `",
+		"regime": {
+			"enabled": true, "period": 14, "adx_threshold": 20,
+			"windows": {
+				"daily": {"classifier": "composite", "period": 24, "thresholds": {"return_pct": 0.05, "range_pct": 0.03, "adx": 20}}
+			}
+		},
+		"strategies": [{
+			"id": "hl-test",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["donchian_breakout", "BTC", "1h", "--mode=paper"],
+			"capital": 1000,
+			"max_drawdown_pct": 25,
+			"leverage": 1,
+			"regime_atr_window": "daily",
+			"stop_loss_atr_regime": {
+				"trend_regime": {
+					"trending_up_clean": {"atr": 2.0},
+					"trending_up_choppy": {"atr": 1.2},
+					"trending_down_clean": {"atr": 2.0},
+					"trending_down_choppy": {"atr": 1.2},
+					"ranging_quiet": {"atr": 1.5},
+					"ranging_volatile": {"atr": 1.0},
+					"ranging_directional": {"atr": 1.5}
+				}
+			}
+		}]
+	}`
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig must accept composite 7-state stop_loss_atr_regime, got: %v", err)
+	}
+	block := cfg.Strategies[0].StopLossATRRegime
+	if block == nil || len(block.TrendRegime) != 7 {
+		t.Fatalf("composite SL block must be populated with 7 labels post-load, got %#v", block)
+	}
+	if v, ok := resolveRegimeATR(*block, "trending_down_choppy"); !ok || v != 1.2 {
+		t.Fatalf("runtime resolve trending_down_choppy = (%g, %v), want (1.2, true)", v, ok)
+	}
+}

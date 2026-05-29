@@ -118,7 +118,7 @@ func TestParseRegimeTPTiers_RejectsMixedShape(t *testing.T) {
 			"close_fraction": 0.5,
 		},
 	}
-	_, errs := parseRegimeTPTiers(raw, "tiered_tp_atr_regime")
+	_, errs := parseRegimeTPTiers(raw, "tiered_tp_atr_regime", canonicalTrendRegimeLabels)
 	if len(errs) == 0 {
 		t.Fatalf("expected mixed-shape error")
 	}

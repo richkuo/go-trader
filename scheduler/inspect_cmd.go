@@ -371,7 +371,9 @@ func formatInspectRegimeTPDetailLines(closeName string, ref StrategyRef, hasTier
 	}
 	// LoadConfig + validateRegimeATRConfig already rejected malformed tier JSON;
 	// re-parse here is defense-in-depth for inspect-only paths, not a hot path.
-	specs, errs := parseRegimeTPTiers(ref.Params["tiers"], closeName+".params")
+	// Infer the vocabulary from the config so composite tier lists render too.
+	tiersRaw := ref.Params["tiers"]
+	specs, errs := parseRegimeTPTiers(tiersRaw, closeName+".params", regimeLabelsFromTierRaw(tiersRaw))
 	if len(errs) > 0 || len(specs) == 0 {
 		return []string{fmt.Sprintf("%s: regime tiers: parse error — fix config (%v)", closeName, errs)}
 	}

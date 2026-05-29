@@ -292,24 +292,11 @@ func validateStrategyRegimeVocabulary(cfg *Config) []string {
 			polErrs := sc.RegimeDirectionalPolicy.ResolveRawWithLabels(prefix+".regime_directional_policy", dirLabels)
 			errs = append(errs, polErrs...)
 		}
-		if rc == nil || !rc.Enabled {
-			continue
-		}
-		atrLabels := regimeLabelsForStrategyWindow(sc, rc, "atr")
-		if sc.StopLossATRRegime.IsConfigured() {
-			win := resolveStrategyRegimeWindow(sc, "atr", rc)
-			cls := regimeClassifierForWindow(rc, win)
-			for _, e := range sc.StopLossATRRegime.ResolveSurfaceWithLabels(prefix+".stop_loss_atr_regime", regimeSurfaceStopLoss, atrLabels) {
-				errs = append(errs, fmt.Sprintf("%s (regime_atr_window %q, classifier %q): %s", prefix, win, cls, e))
-			}
-		}
-		if sc.TrailingStopATRRegime.IsConfigured() {
-			win := resolveStrategyRegimeWindow(sc, "atr", rc)
-			cls := regimeClassifierForWindow(rc, win)
-			for _, e := range sc.TrailingStopATRRegime.ResolveSurfaceWithLabels(prefix+".trailing_stop_atr_regime", regimeSurfaceTrailing, atrLabels) {
-				errs = append(errs, fmt.Sprintf("%s (regime_atr_window %q, classifier %q): %s", prefix, win, cls, e))
-			}
-		}
+		// stop_loss_atr_regime / trailing_stop_atr_regime vocabulary is resolved
+		// authoritatively in validateRegimeATRConfig (which also populates the
+		// typed runtime fields and runs the mutex checks) using the same
+		// window-classifier labels — see #802. Re-resolving here would just
+		// double-report the same label errors.
 	}
 	return errs
 }

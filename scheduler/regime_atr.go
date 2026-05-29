@@ -297,22 +297,39 @@ func labelsAreCanonicalADX(labels []string) bool {
 	return true
 }
 
+// mapRegimeToBaselineFamily resolves a single regime label to its ADX-family
+// baseline entry. Exact ADX matches win first; composite labels fall back to
+// their trend family by prefix (trending_up_* → trending_up, trending_down_*
+// → trending_down, ranging_* → ranging). Returns (zero, false) for an
+// unrecognized label so callers can fail closed. Shared by the use_defaults
+// label expansion and the runtime default-tier resolver so composite labels
+// resolve to the right baseline at both config-load and runtime.
+func mapRegimeToBaselineFamily(baseline map[string]RegimeATREntry, label string) (RegimeATREntry, bool) {
+	if e, ok := baseline[label]; ok {
+		return e, true
+	}
+	switch {
+	case strings.HasPrefix(label, "trending_up"):
+		e, ok := baseline["trending_up"]
+		return e, ok
+	case strings.HasPrefix(label, "trending_down"):
+		e, ok := baseline["trending_down"]
+		return e, ok
+	case strings.HasPrefix(label, "ranging"):
+		e, ok := baseline["ranging"]
+		return e, ok
+	}
+	return RegimeATREntry{}, false
+}
+
 func expandRegimeATRDefaultsForLabels(baseline map[string]RegimeATREntry, labels []string) map[string]RegimeATREntry {
 	if labelsAreCanonicalADX(labels) {
 		return cloneRegimeMap(baseline)
 	}
-	up := baseline["trending_up"]
-	down := baseline["trending_down"]
-	rng := baseline["ranging"]
 	out := make(map[string]RegimeATREntry, len(labels))
 	for _, label := range labels {
-		switch label {
-		case "trending_up_clean", "trending_up_choppy":
-			out[label] = up
-		case "trending_down_clean", "trending_down_choppy":
-			out[label] = down
-		default:
-			out[label] = rng
+		if e, ok := mapRegimeToBaselineFamily(baseline, label); ok {
+			out[label] = e
 		}
 	}
 	return out
@@ -510,10 +527,13 @@ type regimeTierSpec struct {
 // errs is non-empty when the operator submitted malformed tier shapes;
 // LoadConfig surfaces them as config-validation errors so a typo can't
 // silently disable the TP plan.
-func parseRegimeTPTiers(raw interface{}, ctxLabel string) ([]regimeTierSpec, []string) {
+func parseRegimeTPTiers(raw interface{}, ctxLabel string, labels []string) ([]regimeTierSpec, []string) {
 	var errs []string
 	if raw == nil {
 		return nil, errs
+	}
+	if len(labels) == 0 {
+		labels = canonicalTrendRegimeLabels
 	}
 	items, ok := raw.([]interface{})
 	if !ok {
@@ -561,7 +581,7 @@ func parseRegimeTPTiers(raw interface{}, ctxLabel string) ([]regimeTierSpec, []s
 			}
 			subset[k] = v
 		}
-		block, subErrs := parseRegimeATRBlock(subset, fmt.Sprintf("%s.tiers[%d]", ctxLabel, idx), surface, canonicalTrendRegimeLabels)
+		block, subErrs := parseRegimeATRBlock(subset, fmt.Sprintf("%s.tiers[%d]", ctxLabel, idx), surface, labels)
 		errs = append(errs, subErrs...)
 
 		spec := regimeTierSpec{Block: block}
@@ -583,12 +603,52 @@ func parseRegimeTPTiers(raw interface{}, ctxLabel string) ([]regimeTierSpec, []s
 	return out, errs
 }
 
+// regimeLabelsFromTierRaw collects the union of trend_regime label keys present
+// across a tier list's raw JSON. The runtime tier resolver uses this so a
+// re-parse accepts whatever vocabulary the operator configured (composite or
+// ADX) without needing the RegimeConfig in scope; config-load validation has
+// already enforced exhaustiveness against the window classifier. Falls back to
+// the canonical ADX labels when no per-regime keys are present.
+func regimeLabelsFromTierRaw(raw interface{}) []string {
+	items, ok := raw.([]interface{})
+	if !ok {
+		return canonicalTrendRegimeLabels
+	}
+	set := map[string]bool{}
+	for _, item := range items {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		tr, ok := m[regimeClassifierKey].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for k := range tr {
+			set[k] = true
+		}
+	}
+	if len(set) == 0 {
+		return canonicalTrendRegimeLabels
+	}
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // resolveRegimeTPTiers takes the raw tier list and a runtime regime label,
 // returning the concrete (multiple, fraction) list. Returns nil when the
 // regime is unknown or the tier specs fail to resolve — the caller falls
 // back to placing only the SL this cycle.
 func resolveRegimeTPTiers(raw interface{}, regime string) []hlProtectionTier {
-	specs, errs := parseRegimeTPTiers(raw, "tiered_tp_atr_regime")
+	// Re-parse against the vocabulary actually present in the config (already
+	// validated exhaustively against the strategy's regime_atr_window classifier
+	// at config load). This keeps the runtime resolver classifier-agnostic — it
+	// does not need the RegimeConfig in scope to support composite labels.
+	specs, errs := parseRegimeTPTiers(raw, "tiered_tp_atr_regime", regimeLabelsFromTierRaw(raw))
 	if len(errs) > 0 || len(specs) == 0 || regime == "" {
 		return nil
 	}
@@ -633,9 +693,32 @@ func validateRegimeATRConfig(cfg *Config) []string {
 
 		usesRegime := false
 
+		// Resolve the per-regime ATR vocabulary from the strategy's
+		// regime_atr_window classifier (composite → 7 labels, ADX → 3). Falls
+		// back to the canonical ADX labels when regime detection is off (the
+		// regime-enabled requirement below then fails the load anyway). This is
+		// the authoritative resolution pass that populates the typed
+		// UseDefaults/TrendRegime fields for runtime — see #802.
+		atrLabels := canonicalTrendRegimeLabels
+		atrWindow := ""
+		atrClassifier := ""
+		if regimeEnabled {
+			atrLabels = regimeLabelsForStrategyWindow(*sc, cfg.Regime, "atr")
+			atrWindow = resolveStrategyRegimeWindow(*sc, "atr", cfg.Regime)
+			atrClassifier = regimeClassifierForWindow(cfg.Regime, atrWindow)
+		}
+		wrapATR := func(e string) string {
+			if regimeEnabled {
+				return fmt.Sprintf("%s (regime_atr_window %q, classifier %q): %s", prefix, atrWindow, atrClassifier, e)
+			}
+			return e
+		}
+
 		if sc.StopLossATRRegime != nil {
-			sub := sc.StopLossATRRegime.ResolveSurface(prefix+".stop_loss_atr_regime", regimeSurfaceStopLoss)
-			errs = append(errs, sub...)
+			sub := sc.StopLossATRRegime.ResolveSurfaceWithLabels(prefix+".stop_loss_atr_regime", regimeSurfaceStopLoss, atrLabels)
+			for _, e := range sub {
+				errs = append(errs, wrapATR(e))
+			}
 			if len(sub) == 0 && !sc.StopLossATRRegime.IsZero() {
 				usesRegime = true
 				// Mutex with scalar siblings.
@@ -663,8 +746,10 @@ func validateRegimeATRConfig(cfg *Config) []string {
 			}
 		}
 		if sc.TrailingStopATRRegime != nil {
-			sub := sc.TrailingStopATRRegime.ResolveSurface(prefix+".trailing_stop_atr_regime", regimeSurfaceTrailing)
-			errs = append(errs, sub...)
+			sub := sc.TrailingStopATRRegime.ResolveSurfaceWithLabels(prefix+".trailing_stop_atr_regime", regimeSurfaceTrailing, atrLabels)
+			for _, e := range sub {
+				errs = append(errs, wrapATR(e))
+			}
 			if len(sub) == 0 && !sc.TrailingStopATRRegime.IsZero() {
 				usesRegime = true
 				if sc.TrailingStopATRMult != nil {
@@ -725,7 +810,7 @@ func validateRegimeATRConfig(cfg *Config) []string {
 			if useDefaults {
 				continue // baseline tier list is validated at resolveDefaultRegimeTPTiers call sites
 			}
-			if specs, subErrs := parseRegimeTPTiers(tiersRaw, subPrefix); len(subErrs) > 0 {
+			if specs, subErrs := parseRegimeTPTiers(tiersRaw, subPrefix, atrLabels); len(subErrs) > 0 {
 				errs = append(errs, subErrs...)
 			} else if len(specs) < 2 {
 				errs = append(errs, fmt.Sprintf("%s: must have at least 2 tiers, got %d", subPrefix, len(specs)))
@@ -749,7 +834,9 @@ func defaultRegimeTPTiersForRegime(regime string) []hlProtectionTier {
 	}
 	out := make([]hlProtectionTier, 0, len(regimeATRDefaults.TPTiers))
 	for _, block := range regimeATRDefaults.TPTiers {
-		entry, ok := block.Resolve(regime)
+		// Map composite labels (e.g. trending_up_clean) onto the ADX-family
+		// baseline so use_defaults tier lists resolve under either classifier.
+		entry, ok := mapRegimeToBaselineFamily(block.TrendRegime, regime)
 		if !ok || entry.ATR <= 0 {
 			return nil
 		}
