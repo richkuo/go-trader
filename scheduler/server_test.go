@@ -359,6 +359,73 @@ func TestHandleAPIStrategies(t *testing.T) {
 	}
 }
 
+func TestHandleAPIStrategiesOverview(t *testing.T) {
+	state := NewAppState()
+	state.Strategies["spot-btc"] = &StrategyState{
+		ID:              "spot-btc",
+		Type:            "spot",
+		Cash:            1100,
+		InitialCapital:  1000,
+		Regime:          "trending",
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+	}
+	state.Strategies["okx-eth"] = &StrategyState{
+		ID:              "okx-eth",
+		Type:            "perps",
+		Cash:            800,
+		InitialCapital:  1000,
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+	}
+	var mu sync.RWMutex
+	strategies := []StrategyConfig{
+		{ID: "okx-eth", Platform: "okx", Type: "perps", Args: []string{"ema", "ETH", "4h"}, Direction: DirectionBoth},
+		{ID: "spot-btc", Platform: "binanceus", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}},
+	}
+	ss := NewStatusServer(state, &mu, "", strategies, nil)
+
+	req := httptest.NewRequest("GET", "/api/strategies/overview", nil)
+	w := httptest.NewRecorder()
+	ss.handleAPIStrategiesOverview(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var resp struct {
+		Strategies []UIStrategyOverview `json:"strategies"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Strategies) != 2 {
+		t.Fatalf("strategies len = %d, want 2", len(resp.Strategies))
+	}
+	byID := make(map[string]UIStrategyOverview, len(resp.Strategies))
+	for _, row := range resp.Strategies {
+		byID[row.ID] = row
+	}
+	spot := byID["spot-btc"]
+	if spot.Platform != "binanceus" || spot.Symbol != "BTC/USDT" {
+		t.Errorf("spot-btc row = %+v, want binanceus BTC/USDT", spot)
+	}
+	if spot.PnL != 100 || spot.PnLPct != 10 {
+		t.Errorf("spot-btc pnl = %v/%v, want 100/10", spot.PnL, spot.PnLPct)
+	}
+	if spot.Regime != "trending" {
+		t.Errorf("spot-btc regime = %q, want trending", spot.Regime)
+	}
+	if spot.Direction != "" {
+		t.Errorf("spot-btc direction = %q, want empty", spot.Direction)
+	}
+	okx := byID["okx-eth"]
+	if okx.Direction != DirectionBoth {
+		t.Errorf("okx-eth direction = %q, want %q", okx.Direction, DirectionBoth)
+	}
+	if okx.PnL != -200 || okx.PnLPct != -20 {
+		t.Errorf("okx-eth pnl = %v/%v, want -200/-20", okx.PnL, okx.PnLPct)
+	}
+}
+
 func TestHandleAPIStrategyCandles_UsesFetcherAndCache(t *testing.T) {
 	state := NewAppState()
 	var mu sync.RWMutex

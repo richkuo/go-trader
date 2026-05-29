@@ -27,6 +27,19 @@ type UIStrategy struct {
 	Direction string `json:"direction,omitempty"`
 }
 
+type UIStrategyOverview struct {
+	ID             string  `json:"id"`
+	Platform       string  `json:"platform"`
+	Symbol         string  `json:"symbol"`
+	PnLPct         float64 `json:"pnl_pct"`
+	WinRate        float64 `json:"win_rate,omitempty"`
+	Sharpe         float64 `json:"sharpe,omitempty"`
+	Regime         string  `json:"regime,omitempty"`
+	Direction      string  `json:"direction,omitempty"`
+	PnL            float64 `json:"pnl"`
+	PortfolioValue float64 `json:"portfolio_value"`
+}
+
 type UIStrategyStatus struct {
 	ID              string                     `json:"id"`
 	Type            string                     `json:"type"`
@@ -127,6 +140,34 @@ func (ss *StatusServer) handleAPIStrategies(w http.ResponseWriter, r *http.Reque
 	strategies := ss.uiStrategies()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string][]UIStrategy{"strategies": strategies})
+}
+
+func (ss *StatusServer) handleAPIStrategiesOverview(w http.ResponseWriter, r *http.Request) {
+	if ss.rejectIfDraining(w) {
+		return
+	}
+	if !ss.requireAPIAuth(w, r) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.Path != "/api/strategies/overview" && r.URL.Path != "/api/strategies/overview/" {
+		http.NotFound(w, r)
+		return
+	}
+
+	configs := ss.uiStrategies()
+	out := make([]UIStrategyOverview, 0, len(configs))
+	for _, item := range configs {
+		overview, _, ok := ss.uiStrategyOverview(item.ID)
+		if !ok {
+			continue
+		}
+		out = append(out, overview)
+	}
+	writeJSON(w, map[string][]UIStrategyOverview{"strategies": out})
 }
 
 func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request) {
@@ -327,11 +368,10 @@ func (ss *StatusServer) handleAPIStrategyTrades(w http.ResponseWriter, r *http.R
 	})
 }
 
-func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.Request, id string) {
+func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, LifetimeTradeStats, bool) {
 	sc, ok := ss.strategyConfig(id)
 	if !ok {
-		writeJSONError(w, http.StatusNotFound, "strategy not found")
-		return
+		return UIStrategyOverview{}, LifetimeTradeStats{}, false
 	}
 
 	ss.mu.RLock()
@@ -339,15 +379,10 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 	var snapshot StrategyState
 	if strat != nil {
 		snapshot = *strat
-		snapshot.Positions = cloneUIPositions(strat.Positions)
-		snapshot.OptionPositions = cloneUIOptionPositions(strat.OptionPositions)
-		snapshot.TradeHistory = append([]Trade(nil), strat.TradeHistory...)
-		snapshot.RiskState = cloneUIRiskState(strat.RiskState)
 	}
 	ss.mu.RUnlock()
 	if strat == nil {
-		writeJSONError(w, http.StatusNotFound, "strategy state not found")
-		return
+		return UIStrategyOverview{}, LifetimeTradeStats{}, false
 	}
 
 	prices := make(map[string]float64)
@@ -374,23 +409,62 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 		winRate = float64(lifetime.Wins) / float64(lifetime.Wins+lifetime.Losses) * 100
 	}
 
+	return UIStrategyOverview{
+		ID:             id,
+		Platform:       sc.Platform,
+		Symbol:         strategyDisplaySymbol(sc),
+		PnLPct:         pnlPct,
+		WinRate:        winRate,
+		Sharpe:         sharpe,
+		Regime:         snapshot.Regime,
+		Direction:      strategyDisplayDirection(sc),
+		PnL:            pnl,
+		PortfolioValue: pv,
+	}, lifetime, true
+}
+
+func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.Request, id string) {
+	sc, ok := ss.strategyConfig(id)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "strategy not found")
+		return
+	}
+	overview, lifetime, ok := ss.uiStrategyOverview(id)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "strategy state not found")
+		return
+	}
+
+	ss.mu.RLock()
+	strat := ss.state.Strategies[id]
+	var snapshot StrategyState
+	if strat != nil {
+		snapshot = *strat
+		snapshot.Positions = cloneUIPositions(strat.Positions)
+		snapshot.OptionPositions = cloneUIOptionPositions(strat.OptionPositions)
+		snapshot.TradeHistory = append([]Trade(nil), strat.TradeHistory...)
+		snapshot.RiskState = cloneUIRiskState(strat.RiskState)
+	}
+	ss.mu.RUnlock()
+
+	initCap := EffectiveInitialCapital(sc, &snapshot)
 	resp := UIStrategyStatus{
-		ID:              id,
+		ID:              overview.ID,
 		Type:            sc.Type,
-		Platform:        sc.Platform,
-		Symbol:          strategyDisplaySymbol(sc),
+		Platform:        overview.Platform,
+		Symbol:          overview.Symbol,
 		Timeframe:       strategyDisplayTimeframe(sc),
-		Direction:       strategyDisplayDirection(sc),
+		Direction:       overview.Direction,
 		Cash:            snapshot.Cash,
 		InitialCapital:  initCap,
-		PortfolioValue:  pv,
-		PnL:             pnl,
-		PnLPct:          pnlPct,
+		PortfolioValue:  overview.PortfolioValue,
+		PnL:             overview.PnL,
+		PnLPct:          overview.PnLPct,
 		TradeCount:      len(snapshot.TradeHistory),
-		WinRate:         winRate,
+		WinRate:         overview.WinRate,
 		LifetimeStats:   lifetime,
-		Sharpe:          sharpe,
-		Regime:          snapshot.Regime,
+		Sharpe:          overview.Sharpe,
+		Regime:          overview.Regime,
 		RiskState:       snapshot.RiskState,
 		Positions:       snapshot.Positions,
 		OptionPositions: snapshot.OptionPositions,

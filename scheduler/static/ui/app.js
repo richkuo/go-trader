@@ -1,7 +1,12 @@
 (function () {
+  const VIEW_MODE_KEY = "goTraderViewMode";
   const state = {
     strategies: [],
+    overviewRows: [],
     activeID: "",
+    viewMode: "detail",
+    sortKey: "id",
+    sortDir: "asc",
     chart: null,
     series: null,
     timer: 0,
@@ -16,6 +21,7 @@
     chart: document.getElementById("chart"),
     empty: document.getElementById("empty-chart"),
     refresh: document.getElementById("refresh-button"),
+    viewMode: document.getElementById("view-mode-button"),
     interval: document.getElementById("refresh-interval"),
     statusDot: document.getElementById("status-dot"),
     statusLabel: document.getElementById("status-label"),
@@ -23,6 +29,9 @@
     authToken: document.getElementById("auth-token"),
     statusGrid: document.getElementById("status-grid"),
     positions: document.getElementById("positions-list"),
+    overviewPanel: document.getElementById("overview-panel"),
+    overviewBody: document.getElementById("overview-body"),
+    detailPanel: document.getElementById("detail-panel"),
   };
 
   function authHeaders() {
@@ -39,6 +48,31 @@
       throw err;
     }
     return res.json();
+  }
+
+  function loadViewMode() {
+    const saved = window.localStorage.getItem(VIEW_MODE_KEY);
+    return saved === "table" ? "table" : "detail";
+  }
+
+  function saveViewMode(mode) {
+    window.localStorage.setItem(VIEW_MODE_KEY, mode);
+  }
+
+  function applyViewMode() {
+    const tableMode = state.viewMode === "table";
+    els.overviewPanel.hidden = !tableMode;
+    els.detailPanel.hidden = tableMode;
+    els.viewMode.textContent = tableMode ? "Detail" : "Table";
+    els.viewMode.setAttribute("aria-pressed", tableMode ? "true" : "false");
+    document.querySelector(".content").classList.toggle("content-table", tableMode);
+  }
+
+  function toggleViewMode() {
+    state.viewMode = state.viewMode === "table" ? "detail" : "table";
+    saveViewMode(state.viewMode);
+    applyViewMode();
+    refreshAll().catch(handleRefreshError);
   }
 
   function initChart() {
@@ -118,7 +152,8 @@
     });
   }
 
-  async function selectStrategy(id) {
+  async function selectStrategy(id, options) {
+    const opts = options || {};
     state.activeID = id;
     const strategy = activeStrategy();
     if (strategy) {
@@ -126,6 +161,11 @@
       els.subtitle.textContent = [strategy.platform, strategy.symbol, strategy.timeframe].filter(Boolean).join(" / ");
     }
     renderStrategies();
+    if (opts.switchToDetail) {
+      state.viewMode = "detail";
+      saveViewMode(state.viewMode);
+      applyViewMode();
+    }
     await refreshAll();
   }
 
@@ -209,24 +249,91 @@
       escapeHTML(side || "-") + '</span><span>' + escapeHTML(detail) + '</span><span></span></div>';
   }
 
-  async function refreshAll() {
-    try {
-      await Promise.all([refreshChart(), refreshStatus()]);
-    } catch (err) {
-      if (err.status === 401) {
-        showAuthPrompt();
-        return;
-      }
-      els.statusDot.className = "status-dot error";
-      els.statusLabel.textContent = "Error";
-      els.statusGrid.innerHTML = "<dt>Message</dt><dd>" + escapeHTML(err.message) + "</dd>";
+  function sortValue(row, key) {
+    if (key === "pnl_pct" || key === "win_rate" || key === "sharpe") {
+      const n = Number(row[key]);
+      return Number.isFinite(n) ? n : -Infinity;
     }
+    const value = row[key];
+    return value === undefined || value === null ? "" : String(value).toLowerCase();
+  }
+
+  function sortedOverviewRows() {
+    const rows = state.overviewRows.slice();
+    const dir = state.sortDir === "desc" ? -1 : 1;
+    rows.sort(function (a, b) {
+      const av = sortValue(a, state.sortKey);
+      const bv = sortValue(b, state.sortKey);
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+    return rows;
+  }
+
+  function updateSortButtons() {
+    document.querySelectorAll(".sort-button").forEach(function (button) {
+      const key = button.dataset.key;
+      const active = key === state.sortKey;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-sort", active ? (state.sortDir === "asc" ? "ascending" : "descending") : "none");
+    });
+  }
+
+  function renderOverviewTable() {
+    const rows = sortedOverviewRows();
+    els.overviewBody.innerHTML = rows.map(function (row) {
+      const pnlClass = row.pnl_pct > 0 ? "pnl-pos" : row.pnl_pct < 0 ? "pnl-neg" : "";
+      return '<tr class="overview-row' + (row.id === state.activeID ? " active" : "") + '" data-id="' + escapeHTML(row.id) + '">' +
+        "<td>" + escapeHTML(row.id) + "</td>" +
+        "<td>" + escapeHTML(row.platform || "-") + "</td>" +
+        "<td>" + escapeHTML(row.symbol || "-") + "</td>" +
+        '<td class="' + pnlClass + '">' + escapeHTML(fmtPct(row.pnl_pct)) + "</td>" +
+        "<td>" + escapeHTML(row.win_rate ? fmtPct(row.win_rate) : "-") + "</td>" +
+        "<td>" + escapeHTML(row.sharpe ? fmtNumber(row.sharpe) : "-") + "</td>" +
+        "<td>" + escapeHTML(row.regime || "-") + "</td>" +
+        "<td>" + escapeHTML(row.direction || "-") + "</td>" +
+        "</tr>";
+    }).join("");
+    updateSortButtons();
+  }
+
+  async function refreshOverview() {
+    const resp = await getJSON("/api/strategies/overview");
+    state.overviewRows = resp.strategies || [];
+    renderOverviewTable();
+    els.statusDot.className = "status-dot ok";
+    els.statusLabel.textContent = "Live";
+    els.statusGrid.innerHTML = "<dt>Strategies</dt><dd>" + escapeHTML(String(state.overviewRows.length)) + "</dd>";
+    els.positions.innerHTML = '<div class="position-row"><span>Table view</span><span>Select a row for detail</span></div>';
+  }
+
+  async function refreshAll() {
+    if (state.viewMode === "table") {
+      await refreshOverview();
+      return;
+    }
+    await Promise.all([refreshChart(), refreshStatus()]);
+  }
+
+  function handleRefreshError(err) {
+    if (err.status === 401) {
+      showAuthPrompt();
+      return;
+    }
+    els.statusDot.className = "status-dot error";
+    els.statusLabel.textContent = "Error";
+    els.statusGrid.innerHTML = "<dt>Message</dt><dd>" + escapeHTML(err.message) + "</dd>";
   }
 
   function scheduleRefresh() {
     if (state.timer) clearInterval(state.timer);
     const ms = Number(els.interval.value);
-    if (ms > 0) state.timer = setInterval(refreshStatus, ms);
+    if (ms > 0) {
+      state.timer = setInterval(function () {
+        refreshAll().catch(handleRefreshError);
+      }, ms);
+    }
   }
 
   function fmtMoney(value) {
@@ -256,19 +363,43 @@
   }
 
   async function boot() {
+    state.viewMode = loadViewMode();
+    applyViewMode();
     initChart();
     const resp = await getJSON("/api/strategies");
     state.strategies = resp.strategies || [];
     renderStrategies();
     if (state.strategies.length) {
       await selectStrategy(state.strategies[0].id);
+    } else {
+      await refreshAll();
     }
     scheduleRefresh();
   }
 
   els.search.addEventListener("input", renderStrategies);
-  els.refresh.addEventListener("click", refreshAll);
+  els.refresh.addEventListener("click", function () {
+    refreshAll().catch(handleRefreshError);
+  });
+  els.viewMode.addEventListener("click", toggleViewMode);
   els.interval.addEventListener("change", scheduleRefresh);
+  els.overviewBody.addEventListener("click", function (event) {
+    const row = event.target.closest(".overview-row");
+    if (!row || !row.dataset.id) return;
+    selectStrategy(row.dataset.id, { switchToDetail: true }).catch(handleRefreshError);
+  });
+  document.querySelectorAll(".sort-button").forEach(function (button) {
+    button.addEventListener("click", function () {
+      const key = button.dataset.key;
+      if (state.sortKey === key) {
+        state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+      } else {
+        state.sortKey = key;
+        state.sortDir = "asc";
+      }
+      renderOverviewTable();
+    });
+  });
   els.authPanel.addEventListener("submit", function (event) {
     event.preventDefault();
     const token = els.authToken.value.trim();
@@ -285,9 +416,7 @@
       showAuthPrompt();
       return;
     }
-    els.statusDot.className = "status-dot error";
-    els.statusLabel.textContent = "Error";
-    els.statusGrid.innerHTML = "<dt>Message</dt><dd>" + escapeHTML(err.message) + "</dd>";
+    handleRefreshError(err);
   });
 
   function showAuthPrompt() {

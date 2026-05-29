@@ -190,6 +190,7 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/dashboard", ss.handleDashboard)
 	mux.HandleFunc("/dashboard/", ss.handleDashboard)
 	mux.HandleFunc("/api/strategies", ss.handleAPIStrategies)
+	mux.HandleFunc("/api/strategies/overview", ss.handleAPIStrategiesOverview)
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
 
 	listener, boundPort, err := bindWithFallback(port, statusPortMaxAttempts)
