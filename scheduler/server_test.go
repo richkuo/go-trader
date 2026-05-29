@@ -465,12 +465,13 @@ func TestHandleAPIStrategyTradesMarkers(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
 	if err := db.InsertTrade("spot-btc", Trade{
-		Timestamp: now, Symbol: "BTC/USDT", Side: "buy", Quantity: 1, Price: 100,
+		Timestamp: now, Symbol: "BTC/USDT", Side: "buy", Quantity: 1, Price: 100, Regime: "trending",
 	}); err != nil {
 		t.Fatalf("InsertTrade open: %v", err)
 	}
 	if err := db.InsertTrade("spot-btc", Trade{
-		Timestamp: now.Add(time.Hour), Symbol: "BTC/USDT", Side: "sell", Quantity: 1, Price: 110, IsClose: true, RealizedPnL: 10,
+		Timestamp: now.Add(time.Hour), Symbol: "BTC/USDT", Side: "sell", Quantity: 1, Price: 110,
+		IsClose: true, RealizedPnL: 10, Regime: "ranging",
 	}); err != nil {
 		t.Fatalf("InsertTrade close: %v", err)
 	}
@@ -489,16 +490,26 @@ func TestHandleAPIStrategyTradesMarkers(t *testing.T) {
 	}
 	var resp struct {
 		Markers []UITradeMarker `json:"markers"`
+		Trades  []UITradeMarker `json:"trades"`
 		Total   int             `json:"total"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.Total != 2 || len(resp.Markers) != 2 {
-		t.Fatalf("total/markers = %d/%d, want 2/2", resp.Total, len(resp.Markers))
+	if resp.Total != 2 || len(resp.Markers) != 2 || len(resp.Trades) != 2 {
+		t.Fatalf("total/markers/trades = %d/%d/%d, want 2/2/2", resp.Total, len(resp.Markers), len(resp.Trades))
 	}
 	if resp.Markers[0].Text != "BUY" || resp.Markers[1].Text != "CLOSE" {
 		t.Errorf("marker texts = %q/%q, want BUY/CLOSE", resp.Markers[0].Text, resp.Markers[1].Text)
+	}
+	if resp.Trades[0].Text != "BUY" || resp.Trades[1].Text != "CLOSE" {
+		t.Errorf("trade texts = %q/%q, want BUY/CLOSE", resp.Trades[0].Text, resp.Trades[1].Text)
+	}
+	if resp.Markers[0].Regime != "trending" || resp.Markers[1].Regime != "ranging" {
+		t.Errorf("marker regimes = %q/%q, want trending/ranging", resp.Markers[0].Regime, resp.Markers[1].Regime)
+	}
+	if resp.Trades[0].Regime != "trending" || resp.Trades[1].Regime != "ranging" {
+		t.Errorf("trade regimes = %q/%q, want trending/ranging", resp.Trades[0].Regime, resp.Trades[1].Regime)
 	}
 }
 

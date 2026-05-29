@@ -91,8 +91,30 @@
           </div>
           <div id="detail-panel" class="detail-panel">
             <div class="chart-panel">
-              <div id="chart"></div>
-              <div id="empty-chart" class="empty-state">No candles yet</div>
+              <div class="chart-wrap">
+                <div id="chart"></div>
+                <div id="empty-chart" class="empty-state">No candles yet</div>
+              </div>
+              <div id="trade-history" class="trade-history">
+                <h3>Trade history</h3>
+                <div class="trade-history-scroll">
+                  <table class="trade-history-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Time</th>
+                        <th scope="col">Side</th>
+                        <th scope="col">Price</th>
+                        <th scope="col">Qty</th>
+                        <th scope="col">PnL</th>
+                        <th scope="col">Regime</th>
+                        <th scope="col">Details</th>
+                      </tr>
+                    </thead>
+                    <tbody id="trade-history-body"></tbody>
+                  </table>
+                  <p id="trade-history-empty" class="trade-history-empty" hidden>No trades yet</p>
+                </div>
+              </div>
             </div>
             <aside class="status-panel">
               <div class="status-header">
