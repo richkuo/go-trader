@@ -26,7 +26,7 @@ func runProbe(args []string) int {
 
 	if err := probeCheckScripts(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "probe: %v\n", err)
-		return 1
+		return ExitProbeFailure
 	}
 
 	fmt.Printf("probe: OK (%d unique check scripts, version=%s)\n", len(uniqueCheckScripts(cfg)), Version)

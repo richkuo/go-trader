@@ -205,3 +205,14 @@ func TestFormatProbeFailureFallsBackThroughChannels(t *testing.T) {
 		t.Errorf("should fall back to runErr; got %q", err.Error())
 	}
 }
+
+func TestFormatProbeFailureScriptMissing(t *testing.T) {
+	stderr := ".venv/bin/python3: can't open file 'shared_scripts/strategy_tuner_schema.py': [Errno 2] No such file or directory"
+	err := formatProbeFailure("shared_scripts/strategy_tuner_schema.py", os.ErrInvalid, stderr, "")
+	if !strings.Contains(err.Error(), "missing from deploy tree") {
+		t.Errorf("want missing-script wording; got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "rejected --probe-only") {
+		t.Errorf("should not label missing file as CLI mismatch; got %q", err.Error())
+	}
+}
