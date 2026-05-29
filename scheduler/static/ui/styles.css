@@ -196,6 +196,10 @@ h3 {
   padding: 18px 22px;
 }
 
+.topbar-heading {
+  min-width: 0;
+}
+
 .topbar-title-row {
   display: flex;
   align-items: center;

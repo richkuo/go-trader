@@ -121,6 +121,7 @@
 
   async function selectStrategy(id) {
     state.activeID = id;
+    updateRegimeBadge("");
     const strategy = activeStrategy();
     if (strategy) {
       els.title.textContent = strategy.id;
@@ -164,13 +165,13 @@
 
   function regimeBadgeClass(label) {
     const key = String(label || "").toLowerCase();
-    if (key === "trending_up" || key === "strong_trend_up" || key === "bull") {
+    if (key.startsWith("trending_up") || key === "strong_trend_up" || key === "bull") {
       return "regime-badge--bull";
     }
-    if (key === "trending_down" || key === "strong_trend_down" || key === "bear") {
+    if (key.startsWith("trending_down") || key === "strong_trend_down" || key === "bear") {
       return "regime-badge--bear";
     }
-    if (key === "ranging" || key === "weak_trend" || key === "neutral" || key === "default") {
+    if (key.startsWith("ranging") || key === "weak_trend" || key === "neutral" || key === "default") {
       return "regime-badge--neutral";
     }
     return "regime-badge--unknown";
