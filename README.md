@@ -354,13 +354,13 @@ bash scripts/update.sh                                             # build only,
 systemctl status go-trader              # service health
 curl -s localhost:8099/status            # live prices + P&L (default port 8099; override with --status-port)
 curl -s localhost:8099/health            # simple health check
-open http://localhost:8099/dashboard     # local dashboard with strategy charts and trade markers
+open http://localhost:8099/dashboard     # dashboard: charts, trade history, equity sparklines, regime badge, strategy tuner
 journalctl -u go-trader -n 50           # recent logs
 ./go-trader inspect <strategy-id>        # effective post-migration config (resolved SL/TP + provenance)
 ./go-trader inspect --all --json         # all strategies, machine-readable
 ```
 
-The dashboard is served by the same loopback-only status server as `/status` and `/health` (Go binds `localhost:<port>` — use `http://127.0.0.1:<port>/dashboard` or `http://localhost:<port>/dashboard`). If `status_token` is configured, the page prompts for that token and stores it in browser local storage for API calls. Prefer leaving each instance on loopback and reaching it through your VPN or reverse proxy; do not widen the bind to `0.0.0.0` just for remote viewing.
+The dashboard is served by the same loopback-only status server as `/status` and `/health` (Go binds `localhost:<port>` — use `http://127.0.0.1:<port>/dashboard` or `http://localhost:<port>/dashboard`). It includes candle charts with trade markers, a scrollable trade history panel, per-strategy equity sparklines, a sortable all-strategies table, a regime badge, dark mode, and a strategy tuner for editing and previewing parameter changes directly in the browser. If `status_token` is configured, the page prompts for that token and stores it in browser local storage for API calls; the tuner's Apply button requires `status_token` to be set. Prefer leaving each instance on loopback and reaching it through your VPN or reverse proxy; do not widen the bind to `0.0.0.0` just for remote viewing.
 
 ### Remote dashboard (Tailscale Serve)
 
