@@ -33,6 +33,8 @@ var probeArgv = []string{
 	// so a stale Python that doesn't accept the flag fails startup loudly
 	// instead of every cycle's argparse rejecting the cycle's argv.
 	"--mark-price=0",
+	"--position-setup-stop=0",
+	"--position-setup-trigger=0",
 	"--ohlcv-limit", "200",
 	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
 	"--regime-atr-window", "",

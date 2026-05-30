@@ -31,6 +31,8 @@ type PositionCtx struct {
 	Quantity          float64
 	InitialQuantity   float64
 	EntryATR          float64
+	SetupStop         float64
+	SetupTrigger      float64
 	Regime            string
 	DirectionalRegime string
 	RegimeWindows     map[string]string
@@ -82,6 +84,8 @@ func appendOpenCloseArgs(args []string, sc StrategyConfig, pos PositionCtx) []st
 	out = appendPositionFloatArg(out, "--position-qty", pos.Quantity)
 	out = appendPositionFloatArg(out, "--position-initial-qty", pos.InitialQuantity)
 	out = appendPositionFloatArg(out, "--position-entry-atr", pos.EntryATR)
+	out = appendPositionFloatArg(out, "--position-setup-stop", pos.SetupStop)
+	out = appendPositionFloatArg(out, "--position-setup-trigger", pos.SetupTrigger)
 	if r := strings.TrimSpace(pos.Regime); r != "" {
 		out = append(out, "--position-regime", r)
 	}
@@ -159,6 +163,8 @@ func positionCtxFromPosition(pos *Position) PositionCtx {
 		Quantity:          pos.Quantity,
 		InitialQuantity:   pos.InitialQuantity,
 		EntryATR:          pos.EntryATR,
+		SetupStop:         pos.SetupStop,
+		SetupTrigger:      pos.SetupTrigger,
 		Regime:            pos.Regime,
 		DirectionalRegime: pos.Regime,
 		RegimeWindows:     cloneStringMap(pos.RegimeWindows),

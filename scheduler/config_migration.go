@@ -549,6 +549,7 @@ var closeStrategyOwnedKeys = map[string]map[string]struct{}{
 	"tiered_tp_atr_live_regime": {"tiers": {}, "use_defaults": {}, "atr_source": {}, "sl_after": {}},
 	"tiered_tp_pct":             {"tiers": {}},
 	"tp_at_pct":                 {"pct": {}},
+	"setup_rr":                  {"target_r": {}, "breakeven_r": {}, "same_bar_priority": {}},
 }
 
 // migrateV14Direction translates the legacy boolean `allow_shorts` field on

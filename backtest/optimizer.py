@@ -310,6 +310,19 @@ DEFAULT_PARAM_RANGES = {
         "overbought": [65, 70, 75],
         "oversold": [25, 30, 35],
     },
+    "three_candle_rsi_reversal": {
+        "rsi_period": [10, 14],
+        "oversold": [25, 30, 35],
+        "overbought": [65, 70, 75],
+        "threshold_lookback": [4, 8, 12],
+        "entry_valid_bars": [2, 3, 5],
+    },
+    "four_hour_range_fakeout": {
+        "range_hours": [3, 4],
+        "max_breakout_bars": [12, 24, 48],
+        "min_range_pct": [0.0, 0.005, 0.01],
+        "max_range_pct": [0.0, 0.03, 0.05],
+    },
     "bollinger_bands": {
         "period": [15, 20, 25, 30],
         "num_std": [1.5, 2.0, 2.5],

@@ -14,6 +14,8 @@ type Position struct {
 	InitialQuantity     float64   `json:"initial_quantity,omitempty"` // original open size; partial closes must not rewrite it (#496)
 	AvgCost             float64   `json:"avg_cost"`
 	EntryATR            float64   `json:"entry_atr,omitempty"`               // ATR value from the entry strategy's open candle when available (#496)
+	SetupStop           float64   `json:"setup_stop,omitempty"`              // Entry-strategy stop level used by setup-aware close evaluators.
+	SetupTrigger        float64   `json:"setup_trigger,omitempty"`           // Entry-strategy trigger level retained for audit/debug context.
 	Side                string    `json:"side"`                              // "long" or "short"
 	Multiplier          float64   `json:"multiplier,omitempty"`              // contract multiplier (0 = spot, >0 = futures/perps PnL branch; canonical perps value is 1 — do NOT set to leverage)
 	Leverage            float64   `json:"leverage,omitempty"`                // perps exchange leverage (informational; PnL is not scaled by leverage) (#254/#497)

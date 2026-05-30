@@ -732,6 +732,8 @@ func TestDeriveShortName(t *testing.T) {
 		{"ema_crossover", "ema"},
 		{"momentum", "momentum"},
 		{"bollinger_bands", "bb"},
+		{"three_candle_rsi_reversal", "tcrr"},
+		{"four_hour_range_fakeout", "fhrf"},
 		{"mean_reversion", "mr"},
 		{"volume_weighted", "vw"},
 		{"triple_ema", "tema"},
@@ -764,6 +766,8 @@ func TestGenerateConfig_PerpsDirectionWiring(t *testing.T) {
 		"triple_ema",
 		"rsi_macd_combo",
 		"session_breakout",
+		"three_candle_rsi_reversal",
+		"four_hour_range_fakeout",
 		"donchian_breakout",
 		"chart_pattern",
 		"liquidity_sweeps",
@@ -776,6 +780,8 @@ func TestGenerateConfig_PerpsDirectionWiring(t *testing.T) {
 		"hl-tema-eth":  DirectionLong, // long-only — must NOT allow shorts
 		"hl-rmc-eth":   DirectionLong, // long-only — must NOT allow shorts
 		"hl-sbo-eth":   DirectionBoth, // bidirectional — must allow shorts (#371)
+		"hl-tcrr-eth":  DirectionBoth, // bidirectional; can open reversal shorts
+		"hl-fhrf-eth":  DirectionBoth, // bidirectional; fades failed range breaks both ways
 		"hl-dbo-eth":   DirectionBoth, // bidirectional — emits short on lower-channel breakdown (#649)
 		"hl-cpat-eth":  DirectionBoth, // bidirectional — emits short on bearish patterns (#649)
 		"hl-liqsw-eth": DirectionBoth, // bidirectional — emits short on stop-hunt wicks (#649)

@@ -46,8 +46,10 @@ class TestRegistry:
         names = list_strategies()
         assert len(names) >= 20
         # Spot-check a few
-        for expected in ["sma_crossover", "ema_crossover", "rsi", "macd", "momentum",
-                         "bollinger_bands", "mean_reversion", "supertrend", "parabolic_sar"]:
+        for expected in ["sma_crossover", "ema_crossover", "rsi", "three_candle_rsi_reversal",
+                         "four_hour_range_fakeout",
+                         "macd", "momentum", "bollinger_bands", "mean_reversion",
+                         "supertrend", "parabolic_sar"]:
             assert expected in names, f"{expected} not registered"
 
     def test_get_unknown_strategy_raises(self):
@@ -157,6 +159,136 @@ class TestRSI:
 
     def test_flat_no_signal(self):
         result = _run_strategy("rsi", make_flat(50))
+        assert (result["signal"] == 0).all()
+
+
+def _three_candle_df(rows):
+    """Build deterministic OHLCV rows for stop-entry pattern tests."""
+    index = pd.date_range("2024-01-01", periods=len(rows), freq="5min")
+    return pd.DataFrame(rows, index=index)
+
+
+class TestThreeCandleRSIReversal:
+    def test_buy_signal_after_sweep_and_trigger_break(self):
+        rows = [
+            {"open": 100, "high": 101, "low": 99, "close": 100, "volume": 100},
+            {"open": 100, "high": 100, "low": 97, "close": 98, "volume": 100},
+            {"open": 98, "high": 98, "low": 95, "close": 96, "volume": 100},
+            {"open": 96, "high": 96, "low": 93, "close": 94, "volume": 100},
+            {"open": 94, "high": 94, "low": 91, "close": 92, "volume": 100},
+            {"open": 92, "high": 92, "low": 89, "close": 90, "volume": 100},
+            {"open": 90, "high": 91, "low": 89, "close": 90, "volume": 100},
+            {"open": 90, "high": 90.5, "low": 88, "close": 89.5, "volume": 100},
+            {"open": 89.5, "high": 90, "low": 88.2, "close": 89.2, "volume": 100},
+            {"open": 89.2, "high": 91.2, "low": 89, "close": 91, "volume": 100},
+        ]
+        result = apply_strategy("three_candle_rsi_reversal", _three_candle_df(rows), {"rsi_period": 2})
+        assert result.iloc[8]["three_candle_setup"] == "long"
+        assert result.iloc[9]["signal"] == 1
+        assert result.iloc[9]["three_candle_trigger"] == 91
+        assert result.iloc[9]["three_candle_stop"] == 88
+
+    def test_sell_signal_after_sweep_and_trigger_break(self):
+        rows = [
+            {"open": 100, "high": 101, "low": 99, "close": 100, "volume": 100},
+            {"open": 100, "high": 103, "low": 100, "close": 102, "volume": 100},
+            {"open": 102, "high": 105, "low": 102, "close": 104, "volume": 100},
+            {"open": 104, "high": 107, "low": 104, "close": 106, "volume": 100},
+            {"open": 106, "high": 109, "low": 106, "close": 108, "volume": 100},
+            {"open": 108, "high": 111, "low": 108, "close": 110, "volume": 100},
+            {"open": 110, "high": 111, "low": 109, "close": 110, "volume": 100},
+            {"open": 110, "high": 112, "low": 109.5, "close": 110.5, "volume": 100},
+            {"open": 110.5, "high": 111.8, "low": 110, "close": 110.2, "volume": 100},
+            {"open": 110.2, "high": 111, "low": 108.8, "close": 109, "volume": 100},
+        ]
+        result = apply_strategy("three_candle_rsi_reversal", _three_candle_df(rows), {"rsi_period": 2})
+        assert result.iloc[8]["three_candle_setup"] == "short"
+        assert result.iloc[9]["signal"] == -1
+        assert result.iloc[9]["three_candle_trigger"] == 109
+        assert result.iloc[9]["three_candle_stop"] == 112
+
+    def test_third_candle_breaking_sweep_extreme_invalidates_setup(self):
+        rows = [
+            {"open": 100, "high": 101, "low": 99, "close": 100, "volume": 100},
+            {"open": 100, "high": 100, "low": 97, "close": 98, "volume": 100},
+            {"open": 98, "high": 98, "low": 95, "close": 96, "volume": 100},
+            {"open": 96, "high": 96, "low": 93, "close": 94, "volume": 100},
+            {"open": 94, "high": 94, "low": 91, "close": 92, "volume": 100},
+            {"open": 92, "high": 92, "low": 89, "close": 90, "volume": 100},
+            {"open": 90, "high": 91, "low": 89, "close": 90, "volume": 100},
+            {"open": 90, "high": 90.5, "low": 88, "close": 89.5, "volume": 100},
+            {"open": 89.5, "high": 90, "low": 87.9, "close": 89.2, "volume": 100},
+            {"open": 89.2, "high": 90.2, "low": 88.5, "close": 89, "volume": 100},
+        ]
+        result = apply_strategy("three_candle_rsi_reversal", _three_candle_df(rows), {"rsi_period": 2})
+        assert result.iloc[8]["three_candle_setup"] == ""
+        assert (result["signal"] == 0).all()
+
+
+def _four_hour_range_df(rows):
+    """Build deterministic 5m OHLCV rows from NY midnight onward."""
+    index = pd.date_range("2024-01-02 05:00:00", periods=len(rows), freq="5min")
+    return pd.DataFrame(rows, index=index)
+
+
+class TestFourHourRangeFakeout:
+    def test_long_signal_after_range_low_break_and_reentry(self):
+        rows = []
+        for _ in range(48):
+            rows.append({"open": 100, "high": 101, "low": 99, "close": 100, "volume": 100})
+        rows.extend([
+            {"open": 100, "high": 100.5, "low": 97.5, "close": 98.5, "volume": 100},
+            {"open": 98.5, "high": 100.2, "low": 97.0, "close": 99.5, "volume": 100},
+        ])
+
+        result = apply_strategy("four_hour_range_fakeout", _four_hour_range_df(rows))
+
+        assert result.iloc[49]["signal"] == 1
+        assert result.iloc[49]["setup_kind"] == "four_hour_range_long"
+        assert result.iloc[49]["setup_trigger"] == 99
+        assert result.iloc[49]["setup_stop"] == 97
+
+    def test_short_signal_after_range_high_break_and_reentry(self):
+        rows = []
+        for _ in range(48):
+            rows.append({"open": 100, "high": 101, "low": 99, "close": 100, "volume": 100})
+        rows.extend([
+            {"open": 100, "high": 102.5, "low": 100, "close": 101.5, "volume": 100},
+            {"open": 101.5, "high": 103.0, "low": 100.5, "close": 100.5, "volume": 100},
+        ])
+
+        result = apply_strategy("four_hour_range_fakeout", _four_hour_range_df(rows))
+
+        assert result.iloc[49]["signal"] == -1
+        assert result.iloc[49]["setup_kind"] == "four_hour_range_short"
+        assert result.iloc[49]["setup_trigger"] == 101
+        assert result.iloc[49]["setup_stop"] == 103
+
+    def test_wick_only_break_does_not_signal(self):
+        rows = []
+        for _ in range(48):
+            rows.append({"open": 100, "high": 101, "low": 99, "close": 100, "volume": 100})
+        rows.append({"open": 100, "high": 103, "low": 100, "close": 100.5, "volume": 100})
+
+        result = apply_strategy("four_hour_range_fakeout", _four_hour_range_df(rows))
+
+        assert (result["signal"] == 0).all()
+
+    def test_range_size_filter_blocks_out_of_bounds_setups(self):
+        rows = []
+        for _ in range(48):
+            rows.append({"open": 100, "high": 101, "low": 99, "close": 100, "volume": 100})
+        rows.extend([
+            {"open": 100, "high": 102.5, "low": 100, "close": 101.5, "volume": 100},
+            {"open": 101.5, "high": 103.0, "low": 100.5, "close": 100.5, "volume": 100},
+        ])
+
+        result = apply_strategy(
+            "four_hour_range_fakeout",
+            _four_hour_range_df(rows),
+            {"min_range_pct": 0.05},
+        )
+
         assert (result["signal"] == 0).all()
 
 
@@ -680,7 +812,7 @@ class TestRangeScalper:
 
 class TestEdgeCases:
     @pytest.mark.parametrize("name", [
-        "sma_crossover", "ema_crossover", "rsi", "bollinger_bands", "macd",
+        "sma_crossover", "ema_crossover", "rsi", "three_candle_rsi_reversal", "four_hour_range_fakeout", "bollinger_bands", "macd",
         "mean_reversion", "momentum", "volume_weighted", "triple_ema",
         "rsi_macd_combo", "stoch_rsi", "supertrend", "atr_breakout",
         "heikin_ashi_ema", "parabolic_sar", "amd_ifvg", "range_scalper",
@@ -692,7 +824,7 @@ class TestEdgeCases:
         assert len(result) == 0
 
     @pytest.mark.parametrize("name", [
-        "sma_crossover", "ema_crossover", "rsi", "bollinger_bands", "macd",
+        "sma_crossover", "ema_crossover", "rsi", "three_candle_rsi_reversal", "four_hour_range_fakeout", "bollinger_bands", "macd",
         "mean_reversion", "momentum", "volume_weighted", "triple_ema",
         "rsi_macd_combo", "stoch_rsi", "atr_breakout",
         "heikin_ashi_ema", "amd_ifvg", "range_scalper",

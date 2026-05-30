@@ -28,6 +28,7 @@ def test_build_close_registry_filters_valid_platforms(registry):
             "tiered_tp_atr_regime",
             "tiered_tp_atr_live_regime",
             "tp_at_pct",
+            "setup_rr",
         }
 
 
@@ -56,6 +57,74 @@ def test_tp_at_pct_hits_for_long_and_short(registry):
     )
     assert long_hit == {"close_fraction": 1.0, "reason": "tp_at_pct:hit"}
     assert short_hit == {"close_fraction": 1.0, "reason": "tp_at_pct:hit"}
+
+
+def test_setup_rr_hits_long_target_and_breakeven(registry):
+    target = registry.evaluate(
+        "setup_rr",
+        {
+            "side": "long",
+            "avg_cost": 100,
+            "current_quantity": 1,
+            "initial_quantity": 1,
+            "three_candle_stop": 90,
+            "high_water": 130,
+            "low_water": 100,
+        },
+        {"mark_price": 125, "bar_high": 130, "bar_low": 124},
+        {"target_r": 3, "breakeven_r": 2},
+    )
+    breakeven = registry.evaluate(
+        "setup_rr",
+        {
+            "side": "long",
+            "avg_cost": 100,
+            "current_quantity": 1,
+            "initial_quantity": 1,
+            "three_candle_stop": 90,
+            "high_water": 121,
+            "low_water": 100,
+        },
+        {"mark_price": 99, "bar_high": 101, "bar_low": 99},
+        {"target_r": 3, "breakeven_r": 2},
+    )
+
+    assert target == {"close_fraction": 1.0, "reason": "setup_rr:target"}
+    assert breakeven == {"close_fraction": 1.0, "reason": "setup_rr:breakeven"}
+
+
+def test_setup_rr_hits_short_target_and_stop(registry):
+    target = registry.evaluate(
+        "setup_rr",
+        {
+            "side": "short",
+            "avg_cost": 100,
+            "current_quantity": 1,
+            "initial_quantity": 1,
+            "three_candle_stop": 110,
+            "high_water": 100,
+            "low_water": 70,
+        },
+        {"mark_price": 75, "bar_high": 76, "bar_low": 70},
+        {"target_r": 3, "breakeven_r": 2},
+    )
+    stop = registry.evaluate(
+        "setup_rr",
+        {
+            "side": "short",
+            "avg_cost": 100,
+            "current_quantity": 1,
+            "initial_quantity": 1,
+            "three_candle_stop": 110,
+            "high_water": 111,
+            "low_water": 100,
+        },
+        {"mark_price": 111, "bar_high": 111, "bar_low": 105},
+        {"target_r": 3, "breakeven_r": 2},
+    )
+
+    assert target == {"close_fraction": 1.0, "reason": "setup_rr:target"}
+    assert stop == {"close_fraction": 1.0, "reason": "setup_rr:stop"}
 
 
 def test_tiered_tp_pct_closes_only_unfilled_tier_amount(registry):

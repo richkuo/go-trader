@@ -1075,6 +1075,47 @@ func TestStampEntryATRIfOpened(t *testing.T) {
 	}
 }
 
+func TestStampSetupMetadataIfOpened(t *testing.T) {
+	newState := func(existingStop, existingTrigger float64) *StrategyState {
+		return &StrategyState{Positions: map[string]*Position{
+			"BTC": {AvgCost: 50000, SetupStop: existingStop, SetupTrigger: existingTrigger},
+		}}
+	}
+
+	cases := []struct {
+		name        string
+		s           *StrategyState
+		symbol      string
+		inds        map[string]interface{}
+		wantStop    float64
+		wantTrigger float64
+	}{
+		{"stamps setup metadata", newState(0, 0), "BTC", map[string]interface{}{"setup_stop": 49250.0, "setup_trigger": 50125.0}, 49250, 50125},
+		{"falls back to three candle metadata", newState(0, 0), "BTC", map[string]interface{}{"three_candle_stop": 49100.0, "three_candle_trigger": 50200.0}, 49100, 50200},
+		{"keeps existing values", newState(49000, 50100), "BTC", map[string]interface{}{"setup_stop": 49250.0, "setup_trigger": 50125.0}, 49000, 50100},
+		{"rejects invalid setup prices", newState(0, 0), "BTC", map[string]interface{}{"setup_stop": math.NaN(), "setup_trigger": math.Inf(1)}, 0, 0},
+		{"rejects implausibly large setup prices", newState(0, 0), "BTC", map[string]interface{}{"setup_stop": 300000.0, "setup_trigger": 300000.0}, 0, 0},
+		{"no-op for missing symbol", newState(0, 0), "ETH", map[string]interface{}{"setup_stop": 49250.0, "setup_trigger": 50125.0}, 0, 0},
+		{"no-op for nil state", nil, "BTC", map[string]interface{}{"setup_stop": 49250.0, "setup_trigger": 50125.0}, 0, 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stampSetupMetadataIfOpened(tc.s, tc.symbol, tc.inds)
+			if tc.s == nil {
+				return
+			}
+			pos := tc.s.Positions["BTC"]
+			if pos == nil {
+				t.Fatal("missing BTC position")
+			}
+			if pos.SetupStop != tc.wantStop || pos.SetupTrigger != tc.wantTrigger {
+				t.Fatalf("setup metadata = stop %g trigger %g, want %g/%g", pos.SetupStop, pos.SetupTrigger, tc.wantStop, tc.wantTrigger)
+			}
+		})
+	}
+}
+
 func TestExecuteTopStepResult_StampsExchangeData(t *testing.T) {
 	s := &StrategyState{
 		ID:              "ts-momentum-es",

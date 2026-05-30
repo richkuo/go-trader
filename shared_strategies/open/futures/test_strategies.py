@@ -49,7 +49,8 @@ class TestFuturesRegistry:
         for expected in ["sma_crossover", "ema_crossover", "bollinger_bands",
                          "volume_weighted", "triple_ema", "triple_ema_bidir",
                          "rsi_macd_combo",
-                         "momentum", "mean_reversion", "rsi", "macd", "breakout",
+                         "momentum", "mean_reversion", "rsi", "three_candle_rsi_reversal",
+                         "four_hour_range_fakeout", "macd", "breakout",
                          "stoch_rsi", "supertrend", "squeeze_momentum",
                          "ichimoku_cloud", "atr_breakout", "heikin_ashi_ema",
                          "order_blocks", "parabolic_sar", "delta_neutral_funding"]:
@@ -563,7 +564,7 @@ class TestEdgeCases:
     @pytest.mark.parametrize("name", [
         "sma_crossover", "ema_crossover", "bollinger_bands",
         "volume_weighted", "triple_ema", "triple_ema_bidir", "rsi_macd_combo",
-        "momentum", "mean_reversion", "rsi", "macd", "breakout",
+        "momentum", "mean_reversion", "rsi", "three_candle_rsi_reversal", "four_hour_range_fakeout", "macd", "breakout",
         "stoch_rsi", "supertrend", "squeeze_momentum",
         "atr_breakout", "heikin_ashi_ema", "parabolic_sar",
         "ichimoku_cloud", "order_blocks", "delta_neutral_funding",
@@ -577,7 +578,7 @@ class TestEdgeCases:
     @pytest.mark.parametrize("name", [
         "sma_crossover", "ema_crossover", "bollinger_bands",
         "volume_weighted", "triple_ema", "triple_ema_bidir", "rsi_macd_combo",
-        "momentum", "mean_reversion", "rsi", "macd", "breakout",
+        "momentum", "mean_reversion", "rsi", "three_candle_rsi_reversal", "four_hour_range_fakeout", "macd", "breakout",
         "stoch_rsi", "atr_breakout", "heikin_ashi_ema",
         "supertrend", "squeeze_momentum", "ichimoku_cloud",
         "order_blocks", "delta_neutral_funding",

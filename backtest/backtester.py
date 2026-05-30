@@ -665,6 +665,15 @@ class Backtester:
             signal_for_open = pd.Series(0, index=df.index)
             df["signal"] = 0
 
+        entry_metadata_columns = (
+            "setup_kind",
+            "setup_trigger",
+            "setup_stop",
+            "three_candle_setup",
+            "three_candle_trigger",
+            "three_candle_stop",
+        )
+
         if uses_open_close:
             if "open_action" in df.columns:
                 open_actions = df["open_action"].map(_normalize_open_action)
@@ -672,6 +681,9 @@ class Backtester:
                 open_actions = signal_for_open.map(_open_action_from_signal)
             df["_open_action"] = open_actions.shift(1).fillna("none")
             df["_close_fraction"] = _max_close_fraction_series(df).shift(1).fillna(0.0)
+            for col in entry_metadata_columns:
+                if col in df.columns:
+                    df[f"_entry_meta_{col}"] = df[col].shift(1)
 
         # Regime: inject vectorized labels before the per-bar loop so each bar
         # can gate new entries. Mirrors the live path: latest_regime(df) on the
@@ -714,6 +726,24 @@ class Backtester:
         def _bar_close_regime(row) -> str:
             return str(row.get("_regime_bar_close", "") or "").strip()
 
+        def stamp_entry_metadata(row) -> dict:
+            metadata = {}
+            for col in entry_metadata_columns:
+                value = row.get(f"_entry_meta_{col}")
+                if value is None or pd.isna(value):
+                    continue
+                metadata[col] = value
+            return metadata
+
+        def _bar_extreme(row, key: str, fallback: float) -> float:
+            try:
+                value = float(row.get(key, fallback))
+            except (TypeError, ValueError):
+                return float(fallback)
+            if not (value > 0):
+                return float(fallback)
+            return value
+
         cash = self.initial_capital
         position = 0.0  # shares held
         trades = []
@@ -727,6 +757,9 @@ class Backtester:
         avg_cost = 0.0
         initial_quantity = 0.0
         entry_atr_value = 0.0
+        position_metadata: dict = {}
+        position_high_water = 0.0
+        position_low_water = 0.0
         pending_close_fraction = 0.0
 
         # Post-TP SL adjustment state (#709). Only meaningful when sl_after is
@@ -814,6 +847,9 @@ class Backtester:
                 seed_atr = 0.0
             if seed_atr > 0 and seed_atr <= 0.5 * effective_entry:
                 entry_atr_value = seed_atr
+            position_metadata = dict(starting_long.get("metadata") or {})
+            position_high_water = effective_entry
+            position_low_water = effective_entry
             stamp = str(starting_long.get("entry_regime", "") or "").strip()
             if not stamp:
                 stamp = _entry_stamp(df.iloc[0])
@@ -891,6 +927,9 @@ class Backtester:
                         avg_cost = 0.0
                         initial_quantity = 0.0
                         entry_atr_value = 0.0
+                        position_metadata = {}
+                        position_high_water = 0.0
+                        position_low_water = 0.0
                         # Reset post-TP SL state on full close so the next
                         # open starts clean.
                         sl_trigger_px = 0.0
@@ -954,6 +993,9 @@ class Backtester:
                     avg_cost = effective_price
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
+                    position_metadata = stamp_entry_metadata(row)
+                    position_high_water = effective_price
+                    position_low_water = effective_price
                     stamp_open_from_label(_entry_stamp(row))
                     # #716 item 3: seed the SL trigger only when sl_after has
                     # usable tier thresholds. Without thresholds, the post-TP
@@ -984,6 +1026,9 @@ class Backtester:
                     avg_cost = effective_price
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
+                    position_metadata = stamp_entry_metadata(row)
+                    position_high_water = effective_price
+                    position_low_water = effective_price
                     stamp_open_from_label(_entry_stamp(row))
                     if sl_after_active and self._run_tp_tier_thresholds:
                         sl_trigger_px = self._initial_sl_trigger(
@@ -998,9 +1043,18 @@ class Backtester:
                 # applied at the NEXT bar's open (mirrors live: eval at end of
                 # bar, fill at next open).
                 if self.close_strategies and position != 0 and avg_cost > 0:
+                    bar_high = _bar_extreme(row, "high", mark_price)
+                    bar_low = _bar_extreme(row, "low", mark_price)
+                    position_high_water = max(position_high_water or bar_high, bar_high)
+                    position_low_water = min(position_low_water or bar_low, bar_low)
                     pending_close_fraction = self._evaluate_close_strategies(
                         position, avg_cost, initial_quantity, entry_atr_value,
                         mark_price, atr_series, idx,
+                        metadata=position_metadata,
+                        bar_high=bar_high,
+                        bar_low=bar_low,
+                        high_water=position_high_water,
+                        low_water=position_low_water,
                         position_regime=self._run_position_regime,
                         market_regime=_bar_close_regime(row),
                     )
@@ -1141,6 +1195,11 @@ class Backtester:
                                    atr_series: Optional[pd.Series],
                                    idx,
                                    *,
+                                   metadata: Optional[dict] = None,
+                                   bar_high: Optional[float] = None,
+                                   bar_low: Optional[float] = None,
+                                   high_water: float = 0.0,
+                                   low_water: float = 0.0,
                                    position_regime: str = "",
                                    market_regime: str = "") -> float:
         """Run every configured close evaluator against the simulated position
@@ -1157,6 +1216,10 @@ class Backtester:
             "entry_atr": float(entry_atr_value),
             "regime": str(position_regime or ""),
         }
+        if metadata:
+            position_dict.update(metadata)
+        position_dict["high_water"] = float(high_water or mark_price)
+        position_dict["low_water"] = float(low_water or mark_price)
         # Always pass ``regime`` (possibly empty) so live-regime evaluators see
         # the same key shape as live check scripts — empty/NaN bars no-op with
         # an explicit label instead of a missing dict key (#747 review).
@@ -1164,6 +1227,10 @@ class Backtester:
             "mark_price": float(mark_price),
             "regime": str(market_regime or ""),
         }
+        if bar_high is not None:
+            market_dict["bar_high"] = float(bar_high)
+        if bar_low is not None:
+            market_dict["bar_low"] = float(bar_low)
         if atr_series is not None:
             # Current-bar ATR access is intentional and matches live (#730):
             # close evaluators run end-of-bar with this bar's closed mark and

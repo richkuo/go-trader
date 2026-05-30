@@ -5,7 +5,7 @@ description = "Crypto trading bot — backtesting, paper trading, live trading w
 requires-python = ">=3.12"
 dependencies = [
     "ccxt>=4.5.37",
-    "hyperliquid-python-sdk>=0.4.0",
+    "hyperliquid-python-sdk>=0.23.0",
     "numpy>=2.4.2",
     "pandas>=3.0.0",
     "robin-stocks>=3.0.0",

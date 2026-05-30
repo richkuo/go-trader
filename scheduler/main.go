@@ -2201,6 +2201,7 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 	}
 	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
+	stampSetupMetadataIfOpened(s, result.Symbol, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
@@ -2237,6 +2238,40 @@ func stampEntryATRIfOpened(s *StrategyState, symbol string, indicators map[strin
 		return
 	}
 	pos.EntryATR = atr
+}
+
+func stampSetupMetadataIfOpened(s *StrategyState, symbol string, indicators map[string]interface{}) {
+	if s == nil {
+		return
+	}
+	pos, exists := s.Positions[symbol]
+	if !exists || pos == nil {
+		return
+	}
+	if pos.SetupStop == 0 {
+		if stop, ok := indicatorFloat(indicators, "setup_stop"); ok && validSetupPrice(stop, pos.AvgCost) {
+			pos.SetupStop = stop
+		} else if stop, ok := indicatorFloat(indicators, "three_candle_stop"); ok && validSetupPrice(stop, pos.AvgCost) {
+			pos.SetupStop = stop
+		}
+	}
+	if pos.SetupTrigger == 0 {
+		if trigger, ok := indicatorFloat(indicators, "setup_trigger"); ok && validSetupPrice(trigger, pos.AvgCost) {
+			pos.SetupTrigger = trigger
+		} else if trigger, ok := indicatorFloat(indicators, "three_candle_trigger"); ok && validSetupPrice(trigger, pos.AvgCost) {
+			pos.SetupTrigger = trigger
+		}
+	}
+}
+
+func validSetupPrice(value float64, avgCost float64) bool {
+	if value <= 0 || value != value {
+		return false
+	}
+	if avgCost > 0 && value > avgCost*5 {
+		return false
+	}
+	return true
 }
 
 func indicatorFloat(indicators map[string]interface{}, key string) (float64, bool) {
@@ -2814,6 +2849,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	trades := exec.TradesExecuted
 	openTrade := exec.OpenTrade
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
+	stampSetupMetadataIfOpened(s, result.Symbol, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		stampPositionProtectionSnapshot(pos, sc)
@@ -3073,6 +3109,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 	}
 	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
+	stampSetupMetadataIfOpened(s, result.Symbol, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
@@ -3239,6 +3276,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 	}
 	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
+	stampSetupMetadataIfOpened(s, result.Symbol, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
@@ -3453,6 +3491,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	}
 	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
+	stampSetupMetadataIfOpened(s, result.Symbol, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)

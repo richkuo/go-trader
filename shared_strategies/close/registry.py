@@ -18,6 +18,7 @@ from tiered_tp_atr_live_regime import evaluate as tiered_tp_atr_live_regime_eval
 from tiered_tp_pct import DEFAULT_TIERS as DEFAULT_PCT_TIERS
 from tiered_tp_pct import evaluate as tiered_tp_pct_evaluate
 from tp_at_pct import evaluate as tp_at_pct_evaluate
+from setup_rr import evaluate as setup_rr_evaluate
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures", "options")
 
@@ -128,3 +129,9 @@ register(
     "Position-aware percentage take-profit close",
     {"pct": 0.03},
 )(tp_at_pct_evaluate)
+
+register(
+    "setup_rr",
+    "Setup stop with R-multiple target and breakeven promotion",
+    {"target_r": 3.0, "breakeven_r": 2.0, "same_bar_priority": "stop"},
+)(setup_rr_evaluate)

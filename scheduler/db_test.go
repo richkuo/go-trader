@@ -119,7 +119,7 @@ func makeTestState() *AppState {
 				Cash:           950.50,
 				InitialCapital: 1000.0,
 				Positions: map[string]*Position{
-					"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "long", Multiplier: 0, OwnerStrategyID: "hl-momentum-btc", OpenedAt: now.Add(-12 * time.Hour)},
+					"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, SetupStop: 49250, SetupTrigger: 50125, Side: "long", Multiplier: 0, OwnerStrategyID: "hl-momentum-btc", OpenedAt: now.Add(-12 * time.Hour)},
 				},
 				OptionPositions: map[string]*OptionPosition{
 					"opt-1": {
@@ -222,6 +222,9 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 	}
 	if btcPos.Quantity != 0.1 || btcPos.AvgCost != 50000 || btcPos.Side != "long" {
 		t.Errorf("position mismatch: %+v", btcPos)
+	}
+	if btcPos.SetupStop != 49250 || btcPos.SetupTrigger != 50125 {
+		t.Errorf("setup metadata = stop %g trigger %g, want 49250/50125", btcPos.SetupStop, btcPos.SetupTrigger)
 	}
 	if btcPos.OwnerStrategyID != "hl-momentum-btc" {
 		t.Errorf("OwnerStrategyID = %q, want %q", btcPos.OwnerStrategyID, "hl-momentum-btc")

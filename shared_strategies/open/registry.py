@@ -193,6 +193,253 @@ def rsi_strategy(df: pd.DataFrame, period: int = 14, overbought: float = 70, ove
 
 
 @register(
+    "three_candle_rsi_reversal",
+    "Three-Candle RSI Reversal — liquidity sweep reversal confirmed by RSI exhaustion",
+    {
+        "rsi_period": 14,
+        "oversold": 30,
+        "overbought": 70,
+        "threshold_lookback": 8,
+        "entry_valid_bars": 3,
+    },
+)
+def three_candle_rsi_reversal_strategy(
+    df: pd.DataFrame,
+    rsi_period: int = 14,
+    oversold: float = 30,
+    overbought: float = 70,
+    threshold_lookback: int = 8,
+    entry_valid_bars: int = 3,
+) -> pd.DataFrame:
+    """Detect the setup on closed candles, then wait for the entry trigger."""
+    result = df.copy()
+    result["signal"] = 0
+    result["rsi"] = np.nan
+    result["three_candle_setup"] = ""
+    result["three_candle_trigger"] = np.nan
+    result["three_candle_stop"] = np.nan
+
+    required_columns = {"high", "low", "close"}
+    if result.empty or not required_columns.issubset(result.columns):
+        return result
+
+    rsi_period = max(int(rsi_period), 1)
+    threshold_lookback = max(int(threshold_lookback), 1)
+    entry_valid_bars = max(int(entry_valid_bars), 1)
+
+    delta = result["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(alpha=1 / rsi_period, min_periods=rsi_period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / rsi_period, min_periods=rsi_period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    result["rsi"] = 100 - (100 / (1 + rs))
+    result.loc[(avg_loss == 0) & (avg_gain > 0), "rsi"] = 100.0
+    result.loc[(avg_gain == 0) & (avg_loss > 0), "rsi"] = 0.0
+
+    pending: Optional[dict] = None
+    highs = result["high"].to_numpy(dtype=float)
+    lows = result["low"].to_numpy(dtype=float)
+    closes = result["close"].to_numpy(dtype=float)
+    rsi_values = result["rsi"].to_numpy(dtype=float)
+    index = result.index
+
+    for i in range(len(result)):
+        if pending is not None:
+            invalidated = (
+                lows[i] <= pending["stop"] if pending["side"] == "long"
+                else highs[i] >= pending["stop"]
+            )
+            if i > pending["expires_at"] or invalidated:
+                pending = None
+            elif pending["side"] == "long" and highs[i] >= pending["trigger"]:
+                result.at[index[i], "signal"] = 1
+                result.at[index[i], "three_candle_trigger"] = pending["trigger"]
+                result.at[index[i], "three_candle_stop"] = pending["stop"]
+                pending = None
+            elif pending["side"] == "short" and lows[i] <= pending["trigger"]:
+                result.at[index[i], "signal"] = -1
+                result.at[index[i], "three_candle_trigger"] = pending["trigger"]
+                result.at[index[i], "three_candle_stop"] = pending["stop"]
+                pending = None
+
+        if i < 2 or pending is not None:
+            continue
+
+        c1, c2, c3 = i - 2, i - 1, i
+        recent_start = max(0, c1 - threshold_lookback + 1)
+        recent_rsi = rsi_values[recent_start : c3 + 1]
+        has_rsi = not np.isnan(recent_rsi).all()
+        recent_oversold = bool(has_rsi and np.nanmin(recent_rsi) < oversold)
+        recent_overbought = bool(has_rsi and np.nanmax(recent_rsi) > overbought)
+
+        long_setup = (
+            recent_oversold
+            and lows[c2] < lows[c1]
+            and closes[c2] > lows[c1]
+            and lows[c3] >= lows[c2]
+        )
+        short_setup = (
+            recent_overbought
+            and highs[c2] > highs[c1]
+            and closes[c2] < highs[c1]
+            and highs[c3] <= highs[c2]
+        )
+
+        if long_setup:
+            trigger = max(highs[c1], highs[c2], highs[c3])
+            stop = min(lows[c1], lows[c2], lows[c3])
+            if trigger > stop:
+                result.at[index[i], "three_candle_setup"] = "long"
+                result.at[index[i], "three_candle_trigger"] = trigger
+                result.at[index[i], "three_candle_stop"] = stop
+                pending = {"side": "long", "trigger": trigger, "stop": stop, "expires_at": i + entry_valid_bars}
+        elif short_setup:
+            trigger = min(lows[c1], lows[c2], lows[c3])
+            stop = max(highs[c1], highs[c2], highs[c3])
+            if trigger < stop:
+                result.at[index[i], "three_candle_setup"] = "short"
+                result.at[index[i], "three_candle_trigger"] = trigger
+                result.at[index[i], "three_candle_stop"] = stop
+                pending = {"side": "short", "trigger": trigger, "stop": stop, "expires_at": i + entry_valid_bars}
+
+    return result
+
+
+@register(
+    "four_hour_range_fakeout",
+    "Four-Hour Range Fakeout — fade same-day NY range breaks that close back inside",
+    {
+        "range_hours": 4,
+        "timezone": "America/New_York",
+        "max_breakout_bars": 48,
+        "min_range_pct": 0.0,
+        "max_range_pct": 0.0,
+    },
+)
+def four_hour_range_fakeout_strategy(
+    df: pd.DataFrame,
+    range_hours: int = 4,
+    timezone: str = "America/New_York",
+    max_breakout_bars: int = 48,
+    min_range_pct: float = 0.0,
+    max_range_pct: float = 0.0,
+) -> pd.DataFrame:
+    """Fade failed breaks of the first NY-session range of each day."""
+    result = df.copy()
+    result["signal"] = 0
+    result["setup_kind"] = ""
+    result["setup_trigger"] = np.nan
+    result["setup_stop"] = np.nan
+    result["range_high"] = np.nan
+    result["range_low"] = np.nan
+
+    required_columns = {"high", "low", "close"}
+    if result.empty or not required_columns.issubset(result.columns):
+        return result
+
+    range_hours = max(int(range_hours), 1)
+    max_breakout_bars = max(int(max_breakout_bars), 1)
+    min_range_pct = max(float(min_range_pct or 0.0), 0.0)
+    max_range_pct = max(float(max_range_pct or 0.0), 0.0)
+
+    index = result.index
+    if not isinstance(index, pd.DatetimeIndex):
+        return result
+    if index.tz is None:
+        local_index = index.tz_localize("UTC").tz_convert(timezone)
+    else:
+        local_index = index.tz_convert(timezone)
+
+    local_midnight = local_index.normalize()
+    minutes_from_midnight = (
+        (local_index - local_midnight).total_seconds() / 60
+    ).astype(int)
+    ny_dates = local_index.date
+
+    highs = result["high"].to_numpy(dtype=float)
+    lows = result["low"].to_numpy(dtype=float)
+    closes = result["close"].to_numpy(dtype=float)
+    out_index = result.index
+
+    for day in pd.unique(ny_dates):
+        day_mask = ny_dates == day
+        day_positions = np.flatnonzero(day_mask)
+        range_positions = [
+            pos for pos in day_positions
+            if 0 <= minutes_from_midnight[pos] < range_hours * 60
+        ]
+        trade_positions = [
+            pos for pos in day_positions
+            if minutes_from_midnight[pos] >= range_hours * 60
+        ]
+        if not range_positions or not trade_positions:
+            continue
+
+        range_high = float(np.nanmax(highs[range_positions]))
+        range_low = float(np.nanmin(lows[range_positions]))
+        if not (range_high > range_low > 0):
+            continue
+
+        result.loc[out_index[day_positions], "range_high"] = range_high
+        result.loc[out_index[day_positions], "range_low"] = range_low
+
+        pending: Optional[dict] = None
+        for pos in trade_positions:
+            close = closes[pos]
+            range_pct = (range_high - range_low) / close if close > 0 else 0.0
+            if min_range_pct > 0 and range_pct < min_range_pct:
+                continue
+            if max_range_pct > 0 and range_pct > max_range_pct:
+                continue
+
+            if pending is None:
+                if close > range_high:
+                    pending = {
+                        "side": "short",
+                        "extreme": highs[pos],
+                        "trigger": range_high,
+                        "bars": 0,
+                    }
+                elif close < range_low:
+                    pending = {
+                        "side": "long",
+                        "extreme": lows[pos],
+                        "trigger": range_low,
+                        "bars": 0,
+                    }
+                continue
+
+            pending["bars"] += 1
+            if pending["side"] == "short":
+                pending["extreme"] = max(pending["extreme"], highs[pos])
+                if close < range_high:
+                    stop = float(pending["extreme"])
+                    if stop > close:
+                        result.at[out_index[pos], "signal"] = -1
+                        result.at[out_index[pos], "setup_kind"] = "four_hour_range_short"
+                        result.at[out_index[pos], "setup_trigger"] = pending["trigger"]
+                        result.at[out_index[pos], "setup_stop"] = stop
+                    pending = None
+                elif pending["bars"] >= max_breakout_bars:
+                    pending = None
+            else:
+                pending["extreme"] = min(pending["extreme"], lows[pos])
+                if close > range_low:
+                    stop = float(pending["extreme"])
+                    if close > stop:
+                        result.at[out_index[pos], "signal"] = 1
+                        result.at[out_index[pos], "setup_kind"] = "four_hour_range_long"
+                        result.at[out_index[pos], "setup_trigger"] = pending["trigger"]
+                        result.at[out_index[pos], "setup_stop"] = stop
+                    pending = None
+                elif pending["bars"] >= max_breakout_bars:
+                    pending = None
+
+    return result
+
+
+@register(
     "bollinger_bands",
     "Bollinger Bands \u2014 mean reversion at band touches",
     {"period": 20, "num_std": 2.0},
@@ -1028,7 +1275,7 @@ def hold_strategy(df: pd.DataFrame) -> pd.DataFrame:
 
 PLATFORM_ORDER: Dict[str, List[str]] = {
     "spot": [
-        "sma_crossover", "ema_crossover", "rsi", "bollinger_bands", "macd",
+        "sma_crossover", "ema_crossover", "rsi", "three_candle_rsi_reversal", "four_hour_range_fakeout", "bollinger_bands", "macd",
         "mean_reversion", "momentum", "volume_weighted", "triple_ema",
         "rsi_macd_combo", "stoch_rsi", "supertrend", "ichimoku_cloud",
         "pairs_spread", "squeeze_momentum", "atr_breakout", "amd_ifvg",
@@ -1040,7 +1287,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
     "futures": [
         "sma_crossover", "ema_crossover", "bollinger_bands", "volume_weighted",
         "triple_ema", "triple_ema_bidir", "tema_cross", "tema_cross_bd", "rsi_macd_combo", "momentum",
-        "mean_reversion", "rsi", "macd", "breakout", "stoch_rsi", "supertrend",
+        "mean_reversion", "rsi", "three_candle_rsi_reversal", "four_hour_range_fakeout", "macd", "breakout", "stoch_rsi", "supertrend",
         "squeeze_momentum", "ichimoku_cloud", "atr_breakout", "amd_ifvg",
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",

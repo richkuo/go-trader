@@ -46,6 +46,8 @@ def _position_ctx_from_args(args):
         ("position_qty", "current_quantity"),
         ("position_initial_qty", "initial_quantity"),
         ("position_entry_atr", "entry_atr"),
+        ("position_setup_stop", "setup_stop"),
+        ("position_setup_trigger", "setup_trigger"),
     ):
         value = getattr(args, attr, None)
         if value is not None:
@@ -394,6 +396,8 @@ def main():
         parser.add_argument("--position-qty", type=float, default=None)
         parser.add_argument("--position-initial-qty", type=float, default=None)
         parser.add_argument("--position-entry-atr", type=float, default=None)
+        parser.add_argument("--position-setup-stop", type=float, default=None)
+        parser.add_argument("--position-setup-trigger", type=float, default=None)
         parser.add_argument("--position-regime", default="")
         parser.add_argument("--mark-price", type=float, default=0.0, help="Accepted for argv-shape compatibility with check_hyperliquid.py (#768); ignored on this platform.")
         parser.add_argument("--probe-only", action="store_true",

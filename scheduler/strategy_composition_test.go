@@ -165,6 +165,8 @@ func TestAppendOpenCloseArgsPositionCtx(t *testing.T) {
 				Quantity:        0.4,
 				InitialQuantity: 0.4,
 				EntryATR:        750.25,
+				SetupStop:       49800,
+				SetupTrigger:    51100,
 			},
 			want: []string{
 				"triple_ema", "ETH", "1h",
@@ -173,6 +175,8 @@ func TestAppendOpenCloseArgsPositionCtx(t *testing.T) {
 				"--position-qty=0.4",
 				"--position-initial-qty=0.4",
 				"--position-entry-atr=750.25",
+				"--position-setup-stop=49800",
+				"--position-setup-trigger=51100",
 			},
 		},
 	}
@@ -194,10 +198,12 @@ func TestPositionCtxForSymbol(t *testing.T) {
 			InitialQuantity: 1,
 			AvgCost:         3000,
 			EntryATR:        125,
+			SetupStop:       2925,
+			SetupTrigger:    3010,
 		},
 	}}
 	got := positionCtxForSymbol(s, "ETH", StrategyConfig{}, nil)
-	want := PositionCtx{Side: "long", AvgCost: 3000, Quantity: 0.5, InitialQuantity: 1, EntryATR: 125}
+	want := PositionCtx{Side: "long", AvgCost: 3000, Quantity: 0.5, InitialQuantity: 1, EntryATR: 125, SetupStop: 2925, SetupTrigger: 3010}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("positionCtxForSymbol() = %#v, want %#v", got, want)
 	}

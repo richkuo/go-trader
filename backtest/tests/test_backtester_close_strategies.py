@@ -11,12 +11,16 @@ import pandas as pd
 from backtester import Backtester
 
 
-def _df_open_then_hold(opens, closes, atrs=None):
+def _df_open_then_hold(opens, closes, atrs=None, highs=None, lows=None):
     """Build a df where bar 0 emits open_action=long; remaining bars hold."""
     n = len(closes)
     idx = pd.date_range("2024-01-01", periods=n, freq="D")
     open_actions = ["long"] + ["none"] * (n - 1)
     data = {"open": opens, "close": closes, "open_action": open_actions}
+    if highs is not None:
+        data["high"] = highs
+    if lows is not None:
+        data["low"] = lows
     if atrs is not None:
         data["atr"] = atrs
     return pd.DataFrame(data, index=idx)
@@ -180,6 +184,54 @@ def test_close_strategy_short_position_long_take_profit():
     assert result["trades"][0]["exit_price"] == 97.0
     # Short 10 @ $100 → cash 2000; close 10 @ $97 → cash 2000 - 970 = 1030.
     assert result["final_capital"] == 1030.0
+
+
+def test_setup_rr_uses_shifted_entry_metadata_and_bar_extremes():
+    # Setup metadata is emitted with the open signal on bar 0, then stamped
+    # onto the position opened at bar 1. Bar 2 reaches 3R intrabar, so the
+    # close signal fills at bar 3's open.
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 130],
+        closes=[100, 100, 125, 130],
+        highs=[100, 105, 130, 130],
+        lows=[100, 99, 124, 130],
+    )
+    df["three_candle_setup"] = ["long", None, None, None]
+    df["three_candle_trigger"] = [105, None, None, None]
+    df["three_candle_stop"] = [90, None, None, None]
+
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=[{"name": "setup_rr"}],
+    )
+    result = bt.run(df, save=False)
+
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["entry_price"] == 100.0
+    assert result["trades"][0]["exit_price"] == 130.0
+    assert result["final_capital"] == 1300.0
+
+
+def test_setup_rr_promotes_stop_to_breakeven_after_two_r():
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 100],
+        closes=[100, 100, 99, 100],
+        highs=[100, 105, 121, 100],
+        lows=[100, 99, 99, 100],
+    )
+    df["three_candle_setup"] = ["long", None, None, None]
+    df["three_candle_trigger"] = [105, None, None, None]
+    df["three_candle_stop"] = [90, None, None, None]
+
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=[{"name": "setup_rr"}],
+    )
+    result = bt.run(df, save=False)
+
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_price"] == 100.0
+    assert result["final_capital"] == 1000.0
 
 
 def test_starting_long_seed_with_entry_atr_lets_tiered_tp_atr_fire():
