@@ -279,7 +279,7 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 // cached resolver outside the lock and call
 // reconcileHyperliquidPositionsWithResolver.
 func reconcileHyperliquidPositions(stratState *StrategyState, sym string, positions []HLPosition, accountAddress string, logger *StrategyLogger) bool {
-	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, directHyperliquidReconcileFillResolver(accountAddress), logger, nil, StrategyConfig{})
+	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, directHyperliquidReconcileFillResolver(accountAddress), logger, nil, nil, StrategyConfig{})
 }
 
 // reconcileHyperliquidPositionsForStrategy is the production entry point with
@@ -308,6 +308,7 @@ func reconcileHyperliquidPositionsForStrategy(
 	resolveFee hlReconcileFillResolver,
 	logger *StrategyLogger,
 	pendingAlerts *[]ProtectionFillAlert,
+	pendingOrphanCloses *[]RegimeDirectionOrphanCloseJob,
 ) bool {
 	if stratState == nil || sym == "" {
 		return false
@@ -318,11 +319,11 @@ func reconcileHyperliquidPositionsForStrategy(
 		// by the booker; the legacy reconciler's qty/side/avgCost resync will
 		// no-op because virtual now matches on-chain. Continue through it for
 		// idempotent housekeeping (multiplier migration, leverage seed).
-		reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts, sc)
+		reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts, pendingOrphanCloses, sc)
 		return true
 	}
 
-	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts, sc)
+	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts, pendingOrphanCloses, sc)
 }
 
 // stampSoleOwnerRecoveryTierConsumed mirrors post-protection-sync state for a
@@ -545,7 +546,7 @@ func tryBookSoleOwnerTPFill(
 // When pendingAlerts is non-nil, hlAttemptCloseFromTPFills appends TP fill
 // alerts here (same contract as tryBookSoleOwnerTPFill) for owner DM flush
 // after mu.Unlock (#757 re-review).
-func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym string, positions []HLPosition, resolveFee hlReconcileFillResolver, logger *StrategyLogger, pendingAlerts *[]ProtectionFillAlert, sc StrategyConfig) bool {
+func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym string, positions []HLPosition, resolveFee hlReconcileFillResolver, logger *StrategyLogger, pendingAlerts *[]ProtectionFillAlert, pendingOrphanCloses *[]RegimeDirectionOrphanCloseJob, sc StrategyConfig) bool {
 	changed := false
 
 	// Find the on-chain position for this strategy's symbol.
@@ -603,6 +604,21 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 			logger.Info("hl-sync: %s leverage init → %v (from on-chain, legacy/zero-value position)", sym, onChainPos.Leverage)
 			statePos.Leverage = onChainPos.Leverage
 			changed = true
+		}
+		if pendingOrphanCloses != nil && sc.ID != "" {
+			if conflict, currentRegime, effectiveDir := perpsRegimeDirectionOrphanConflict(stratState, sc, statePos); conflict {
+				logger.Warn("hl-sync: %s regime/direction orphan — %s qty=%.6f conflicts with current regime %q (effective_direction=%q); queuing auto-close (#822)",
+					sym, statePos.Side, statePos.Quantity, currentRegime, effectiveDir)
+				*pendingOrphanCloses = append(*pendingOrphanCloses, RegimeDirectionOrphanCloseJob{
+					StrategyID:    sc.ID,
+					Symbol:        sym,
+					CloseQty:      statePos.Quantity,
+					CancelOIDs:    hyperliquidProtectionCancelOIDs(statePos),
+					PosSide:       statePos.Side,
+					CurrentRegime: currentRegime,
+					EffectiveDir:  effectiveDir,
+				})
+			}
 		}
 	} else if onChainPos == nil && statePos != nil {
 		// Position in state but not on-chain — closed externally.
@@ -691,7 +707,7 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 	// PnL falls back to zero (legacy behavior pre-#584).
 	// This entry point is used by --once and tests; alerts are suppressed
 	// since no notifier is plumbed through here.
-	changed, _ := reconcileHyperliquidAccountPositions(hlStrategies, hlStrategies, state, mu, logMgr, positions, nil, accountAddr, nil, false)
+	changed, _, _ := reconcileHyperliquidAccountPositions(hlStrategies, hlStrategies, state, mu, logMgr, positions, nil, accountAddr, nil, false)
 	return changed
 }
 
@@ -721,7 +737,7 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 // `notify_tp_sl_fills: false`.
 //
 // Must be called WITHOUT holding any lock; acquires Lock internally.
-func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, positions []HLPosition, prices map[string]float64, accountAddress string, notifier *MultiNotifier, notifyTPSLFills bool) (bool, []HyperliquidProtectionFillHint) {
+func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, positions []HLPosition, prices map[string]float64, accountAddress string, notifier *MultiNotifier, notifyTPSLFills bool) (bool, []HyperliquidProtectionFillHint, []RegimeDirectionOrphanCloseJob) {
 	// Resolve userFills BEFORE taking mu.Lock(): each lookup can sleep up
 	// to ~1.5s on indexer-lag retries, and holding the write lock blocks
 	// every reader of state (/status, /health, per-strategy phase RLocks).
@@ -734,6 +750,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 	// closure is registered first, so it fires LAST — after defer mu.Unlock()
 	// has already released the lock (defer runs LIFO).
 	var pendingAlerts []ProtectionFillAlert
+	var pendingOrphanCloses []RegimeDirectionOrphanCloseJob
 	defer func() {
 		for _, a := range pendingAlerts {
 			notifyProtectionFill(notifier, notifyTPSLFills, a)
@@ -788,9 +805,18 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 			fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", sc.ID, err)
 			continue
 		}
-		if reconcileHyperliquidPositionsForStrategy(sc, ss, sym, positions, resolveFee, logger, &pendingAlerts) {
+		if reconcileHyperliquidPositionsForStrategy(sc, ss, sym, positions, resolveFee, logger, &pendingAlerts, &pendingOrphanCloses) {
 			changed = true
 		}
+	}
+
+	if len(pendingOrphanCloses) > 0 {
+		sort.Slice(pendingOrphanCloses, func(i, j int) bool {
+			if pendingOrphanCloses[i].StrategyID != pendingOrphanCloses[j].StrategyID {
+				return pendingOrphanCloses[i].StrategyID < pendingOrphanCloses[j].StrategyID
+			}
+			return pendingOrphanCloses[i].Symbol < pendingOrphanCloses[j].Symbol
+		})
 	}
 
 	// For shared coins: apply non-destructive updates (multiplier migration,
@@ -1255,7 +1281,148 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		}
 	}
 
-	return changed, fillHints
+	return changed, fillHints, pendingOrphanCloses
+}
+
+// hyperliquidProtectionCancelOIDs collects resting SL/TP trigger OIDs to cancel
+// before a reduce-only flatten (#421).
+func hyperliquidProtectionCancelOIDs(pos *Position) []int64 {
+	if pos == nil {
+		return nil
+	}
+	var oids []int64
+	oids = appendUniquePositiveStopLossOID(oids, pos.StopLossOID)
+	for _, tpOID := range pos.TPOIDs {
+		oids = appendUniquePositiveStopLossOID(oids, tpOID)
+	}
+	return oids
+}
+
+// runRegimeDirectionOrphanCloses drains jobs queued by hl-sync reconcile when
+// a sole-owner position conflicts with the current regime direction (#822).
+// Must run without holding mu (subprocess I/O). Caller should invoke immediately
+// after reconcileHyperliquidAccountPositions returns.
+func runRegimeDirectionOrphanCloses(
+	ctx context.Context,
+	state *AppState,
+	strategies []StrategyConfig,
+	jobs []RegimeDirectionOrphanCloseJob,
+	positions []HLPosition,
+	closer HyperliquidLiveCloser,
+	mu *sync.RWMutex,
+	ownerDM func(string),
+) {
+	if ctx == nil || state == nil || closer == nil || len(jobs) == 0 {
+		return
+	}
+	ctxOverall, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	strategyByID := make(map[string]StrategyConfig, len(strategies))
+	for _, sc := range strategies {
+		strategyByID[sc.ID] = sc
+	}
+
+	for _, job := range jobs {
+		if err := ctxOverall.Err(); err != nil {
+			fmt.Printf("[CRITICAL] hl-regime-orphan-close: budget exhausted: %v\n", err)
+			return
+		}
+		sc, ok := strategyByID[job.StrategyID]
+		if !ok || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
+			continue
+		}
+		sym := job.Symbol
+		if sym == "" {
+			continue
+		}
+		var hlPeerScope []StrategyConfig
+		for _, s := range strategies {
+			if isHLLiveReconcilable(s) && hyperliquidSymbol(s.Args) == sym {
+				hlPeerScope = append(hlPeerScope, s)
+			}
+		}
+		if len(hlLiveStrategiesForCoin(sym, hlPeerScope)) > 1 {
+			fmt.Printf("[INFO] hl-regime-orphan-close: strategy %s coin %s shares wallet with peers — skipping auto-close (#822)\n",
+				job.StrategyID, sym)
+			continue
+		}
+
+		sz := job.CloseQty
+		var onChainSigned float64
+		for _, p := range positions {
+			if p.Coin != sym {
+				continue
+			}
+			onChainSigned = p.Size
+			absOC := math.Abs(p.Size)
+			if absOC <= 1e-15 {
+				sz = 0
+				break
+			}
+			if sz > absOC {
+				sz = absOC
+			}
+			break
+		}
+		if sz <= 1e-15 {
+			continue
+		}
+		partial := sz
+		result, err := closer(sym, &partial, job.CancelOIDs)
+		if err != nil {
+			msg := fmt.Sprintf("[CRITICAL] hl-regime-orphan-close: strategy %s %s %s qty=%.6f failed: %v (regime=%q effective_direction=%q)",
+				job.StrategyID, job.PosSide, sym, sz, err, job.CurrentRegime, job.EffectiveDir)
+			fmt.Println(msg)
+			if ownerDM != nil {
+				ownerDM(msg)
+			}
+			continue
+		}
+
+		var fillSz, fillPx, fillFee float64
+		alreadyFlat := false
+		if result != nil && result.Close != nil {
+			alreadyFlat = result.Close.AlreadyFlat
+			if result.Close.Fill != nil {
+				fillSz = result.Close.Fill.TotalSz
+				fillPx = result.Close.Fill.AvgPx
+				fillFee = result.Close.Fill.Fee
+			}
+		}
+
+		mu.Lock()
+		if ss := state.Strategies[job.StrategyID]; ss != nil && !alreadyFlat && fillSz > 1e-15 && fillPx > 0 {
+			applyHyperliquidCircuitCloseFill(ss, sym, fillSz, fillPx, fillFee, onChainSigned, "regime_direction_flip")
+		}
+		mu.Unlock()
+
+		info := fmt.Sprintf("hl-regime-orphan-close: strategy %s closed %s %s sz=%.6f (filled %.6f) — regime %q now expects %q (#822)",
+			job.StrategyID, job.PosSide, sym, sz, fillSz, job.CurrentRegime, job.EffectiveDir)
+		fmt.Println("[INFO] " + info)
+		if ownerDM != nil {
+			ownerDM(info)
+		}
+
+		if len(job.CancelOIDs) > 0 && result != nil && result.CancelStopLossSucceeded {
+			mu.Lock()
+			if ss := state.Strategies[job.StrategyID]; ss != nil {
+				if pos, ok := ss.Positions[sym]; ok && pos != nil {
+					for _, cancelOID := range job.CancelOIDs {
+						if cancelOID > 0 && pos.StopLossOID == cancelOID {
+							pos.StopLossOID = 0
+						}
+						for idx, tpOID := range pos.TPOIDs {
+							if cancelOID > 0 && tpOID == cancelOID {
+								pos.TPOIDs[idx] = 0
+							}
+						}
+					}
+				}
+			}
+			mu.Unlock()
+		}
+	}
 }
 
 func hyperliquidSharedPartialCloseDrift(virtualQty, onChainQty float64) (string, float64, bool) {
@@ -1898,7 +2065,7 @@ func applyHyperliquidKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fi
 	if fillSz <= 1e-15 {
 		return false
 	}
-	applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0)
+	applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0, "")
 	return true
 }
 
@@ -2179,7 +2346,7 @@ func runPendingHyperliquidCircuitCloses(
 			if !alreadyFlat && fillSz > 1e-15 {
 				mu.Lock()
 				if ss := state.Strategies[j.stratID]; ss != nil {
-					applyHyperliquidCircuitCloseFill(ss, c.Symbol, fillSz, fillPx, fillFee, onChainSigned)
+					applyHyperliquidCircuitCloseFill(ss, c.Symbol, fillSz, fillPx, fillFee, onChainSigned, "")
 				}
 				mu.Unlock()
 			}
@@ -2294,9 +2461,12 @@ func runPendingHyperliquidCircuitCloses(
 // (#418 review observation 4). Pass 0 if the on-chain side is unknown; the
 // trade then falls back to "sell".
 //
-// Caller must hold mu.Lock(). Reason is fixed to "circuit_breaker" for
-// clarity in trade history and closed-position rows.
-func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, fillPx, fillFee, onChainSigned float64) {
+// Caller must hold mu.Lock(). closeReason is stamped on Trade / ClosedPosition
+// rows (defaults to "circuit_breaker" when empty).
+func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, fillPx, fillFee, onChainSigned float64, closeReason string) {
+	if closeReason == "" {
+		closeReason = "circuit_breaker"
+	}
 	if s == nil || fillSz <= 0 || fillPx <= 0 {
 		return
 	}
@@ -2378,7 +2548,7 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 		// remaining ≈ 0, the original ≈ qtyClosed, so recordClosedPosition's
 		// snapshot of pos.Quantity into ClosedPosition.Quantity captures the
 		// right amount. delete() runs after the snapshot.
-		recordClosedPosition(s, pos, fillPx, pnl, "circuit_breaker", now)
+		recordClosedPosition(s, pos, fillPx, pnl, closeReason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
 	} else {

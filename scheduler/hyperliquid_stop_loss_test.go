@@ -550,7 +550,7 @@ func TestReconcileHyperliquidPositions_RestingStopLossFillBooksPnL(t *testing.T)
 	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
 		return HLFillLookup{Fee: 0.05, FilledQty: 0.1, Px: 3104, Count: 1, OID: oid}, true
 	})
-	changed := reconcileHyperliquidPositionsWithResolver(state, "ETH", nil, resolver, logger, nil, StrategyConfig{})
+	changed := reconcileHyperliquidPositionsWithResolver(state, "ETH", nil, resolver, logger, nil, nil, StrategyConfig{})
 	if !changed {
 		t.Fatalf("expected reconcile to report a state change")
 	}
@@ -609,7 +609,7 @@ func TestReconcileHyperliquidPositions_RestingStopLossFillClosesShortWithBuy(t *
 	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
 		return HLFillLookup{Fee: 0.05, FilledQty: 0.1, Px: 3296, Count: 1, OID: oid}, true
 	})
-	changed := reconcileHyperliquidPositionsWithResolver(state, "ETH", nil, resolver, logger, nil, StrategyConfig{})
+	changed := reconcileHyperliquidPositionsWithResolver(state, "ETH", nil, resolver, logger, nil, nil, StrategyConfig{})
 	if !changed {
 		t.Fatalf("expected reconcile to report a state change")
 	}

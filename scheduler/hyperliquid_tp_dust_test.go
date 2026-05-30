@@ -78,7 +78,7 @@ func TestSoleOwnerTPDust_BooksBothTiersAtUserFills(t *testing.T) {
 	})
 	logger := newTestLogger(t)
 
-	changed := reconcileHyperliquidPositionsForStrategy(sc, ss, "BTC", positions, resolver, logger, nil)
+	changed := reconcileHyperliquidPositionsForStrategy(sc, ss, "BTC", positions, resolver, logger, nil, nil)
 	if !changed {
 		t.Fatal("expected changed=true")
 	}
@@ -141,7 +141,7 @@ func TestSoleOwnerTPDust_NeverPlaced_NoBook(t *testing.T) {
 	})
 	logger := newTestLogger(t)
 
-	reconcileHyperliquidPositionsForStrategy(sc, ss, "BTC", positions, resolver, logger, nil)
+	reconcileHyperliquidPositionsForStrategy(sc, ss, "BTC", positions, resolver, logger, nil, nil)
 
 	if len(ss.TradeHistory) != 0 {
 		t.Fatalf("TradeHistory = %d, want 0 close trades", len(ss.TradeHistory))
@@ -229,7 +229,7 @@ func TestReconcileSharedCoin_TPDust_BooksBothTiers(t *testing.T) {
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, map[string]float64{"BTC": entryPx}, "0xtest", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, map[string]float64{"BTC": entryPx}, "0xtest", nil, false)
 
 	owner := state.Strategies[ownerID]
 	pos := owner.Positions["BTC"]

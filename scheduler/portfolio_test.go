@@ -106,7 +106,7 @@ func TestPartialClosePreservesInitialQuantityAndEntryATR(t *testing.T) {
 		},
 	}
 
-	applyHyperliquidCircuitCloseFill(state, "ETH", 0.4, 3100, 1, 1)
+	applyHyperliquidCircuitCloseFill(state, "ETH", 0.4, 3100, 1, 1, "")
 	pos := state.Positions["ETH"]
 	if pos == nil {
 		t.Fatal("position should remain after partial close")

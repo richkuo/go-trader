@@ -226,10 +226,10 @@ func migrateLegacyPerpsPositionMultipliers(state *AppState, cfg *Config) int {
 // missing (legacy pre-#741 positions).
 //
 // In either case the strategy's next signal-driven order will desync virtual
-// state from the exchange. We warn-and-continue (matching ValidateState's
-// precedent) rather than force-closing — marks may be unavailable at startup
-// and silent auto-close of an operator-seeded position is worse than a loud
-// warning.
+// state from the exchange. At runtime, sole-owner live HL perps orphans are
+// auto-closed during hl-sync reconcile when the position conflicts with the
+// *current* regime direction (#822). Startup still warn-and-continues (marks
+// may be unavailable; reconcile has not run yet).
 //
 // Returns human-readable warnings so the caller can both log them and forward
 // to the operator via DM once the notifier is ready.

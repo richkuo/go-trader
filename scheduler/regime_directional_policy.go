@@ -363,6 +363,51 @@ func policyAllowsPositionSide(sc StrategyConfig, posSide string) bool {
 	return false
 }
 
+// RegimeDirectionOrphanCloseJob is queued during hl-sync reconcile when a
+// sole-owner live perps position conflicts with the strategy's *current*
+// regime direction (not the stamped open regime). Drained after mu.Unlock via
+// runRegimeDirectionOrphanCloses (#822).
+type RegimeDirectionOrphanCloseJob struct {
+	StrategyID    string
+	Symbol        string
+	CloseQty      float64
+	CancelOIDs    []int64
+	PosSide       string
+	CurrentRegime string
+	EffectiveDir  string
+}
+
+// regimeDirectionOrphanEffectiveDir resolves direction from the current cycle
+// regime only — intentionally ignores pos.Regime hold-on-transition (#822).
+func regimeDirectionOrphanEffectiveDir(stratState *StrategyState, sc StrategyConfig) string {
+	current := strategyCurrentDirectionalRegime(stratState, sc)
+	if sc.RegimeDirectionalPolicy != nil && !sc.RegimeDirectionalPolicy.IsZero() {
+		return EffectiveDirectionForRegime(sc, current)
+	}
+	return EffectiveDirection(sc)
+}
+
+// perpsRegimeDirectionOrphanConflict reports whether a live HL perps position
+// should be auto-closed because its side opposes what the current regime (or
+// base direction when no policy) expects now.
+func perpsRegimeDirectionOrphanConflict(stratState *StrategyState, sc StrategyConfig, pos *Position) (conflict bool, currentRegime, effectiveDir string) {
+	if stratState == nil || pos == nil || pos.Quantity <= 0 {
+		return false, "", ""
+	}
+	if sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
+		return false, "", ""
+	}
+	if pos.OwnerStrategyID != "" && pos.OwnerStrategyID != sc.ID {
+		return false, "", ""
+	}
+	currentRegime = strategyCurrentDirectionalRegime(stratState, sc)
+	effectiveDir = regimeDirectionOrphanEffectiveDir(stratState, sc)
+	if !perpsPositionConflictsDirection(pos.Side, effectiveDir) {
+		return false, currentRegime, effectiveDir
+	}
+	return true, currentRegime, effectiveDir
+}
+
 // perpsPositionConflictsDirection reports whether an open position's side
 // conflicts with a resolved effective direction ("both" never conflicts).
 func perpsPositionConflictsDirection(posSide, effectiveDir string) bool {

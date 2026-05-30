@@ -1158,7 +1158,19 @@ func main() {
 				// pay two HL API round-trips per cycle.
 				var hlReconcileFillHintsJSON []byte
 				if len(hlReconcileDue) > 0 && hlStateFetched {
-					_, fillHints := reconcileHyperliquidAccountPositions(hlReconcileDue, hlReconcileAll, state, &mu, logMgr, hlPositions, prices, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"), notifier, cfg.NotifyTPSLFillsEnabled())
+					_, fillHints, orphanCloseJobs := reconcileHyperliquidAccountPositions(hlReconcileDue, hlReconcileAll, state, &mu, logMgr, hlPositions, prices, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"), notifier, cfg.NotifyTPSLFillsEnabled())
+					if len(orphanCloseJobs) > 0 {
+						runRegimeDirectionOrphanCloses(
+							shutdownSideEffectCtx,
+							state,
+							cfg.Strategies,
+							orphanCloseJobs,
+							hlPositions,
+							defaultHyperliquidLiveCloser,
+							&mu,
+							notifier.SendOwnerDM,
+						)
+					}
 					if len(fillHints) > 0 {
 						if b, err := json.Marshal(fillHints); err == nil {
 							hlReconcileFillHintsJSON = b
