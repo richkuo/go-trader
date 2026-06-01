@@ -322,6 +322,9 @@ signal_kill_pidfile_process_then_respawn() {
     else
         echo "[update] signal: no live pid in $pidfile (cur=${cur:-empty}) — starting wrapper anyway" >&2
     fi
+    # The pidfile may not name the failed new process (it can survive on a
+    # fallback port); sweep this instance's strays before respawning (#850).
+    signal_sweep_stray_instance_procs
     signal_launch_wrapper "$run_sh"
 }
 
@@ -429,6 +432,51 @@ warn_execstart_vs_swap() {
     if [[ "$bin_abs" != "$swap_res" ]]; then
         echo "[update] warning: $unit ExecStart binary resolves to ($bin_abs) but this script swapped ($swap_res); restart may not run the binary just installed. Check: systemctl cat $unit | grep ExecStart" >&2
     fi
+}
+
+# Return 0 when a systemd unit is active AND its ExecStart binary resolves to
+# this deployment's ./go-trader. Used to redirect an explicit signal-mode restart
+# through systemctl so we never spawn an out-of-cgroup duplicate (#850). The
+# ExecStart match avoids false-positives across sibling worktrees that each run
+# their own active unit. Conservative: any unreadable input falls through to 1.
+systemd_unit_manages_this_instance() {
+    local unit="$1"
+    command -v systemctl >/dev/null 2>&1 || return 1
+    local active_state exec_line binary bin_abs swap_res
+    active_state=$(systemctl is-active "$unit" 2>/dev/null || true)
+    exec_line=$(systemctl show -p ExecStart --value "$unit" 2>/dev/null | head -n 1 || true)
+    binary=$(execstart_main_binary "$exec_line")
+    if [[ "$binary" == /* ]]; then
+        bin_abs=$(update_canonicalize_path "$binary")
+    else
+        bin_abs=""
+    fi
+    swap_res=$(update_canonicalize_path "$(pwd)/go-trader")
+    [[ "$(update_signal_redirect_decision "$active_state" "$bin_abs" "$swap_res")" == "redirect" ]]
+}
+
+# Rollback hygiene (#850): SIGTERM (escalating to SIGKILL via signal_wait_pid_exit)
+# any go-trader process whose cwd is this deployment dir, i.e. one sharing this
+# instance's state DB — e.g. a failed new process still alive on a bindWithFallback
+# port. Runs before the wrapper respawn so a rollback cycle ends with exactly one
+# live process. cwd-matching spares other worktrees' traders. Linux/signal-only.
+signal_sweep_stray_instance_procs() {
+    [[ -d /proc ]] || return 0
+    local repo_abs
+    repo_abs=$(update_canonicalize_path "$(pwd)")
+    [[ -n "$repo_abs" ]] || return 0
+    local entry pid comm pid_cwd
+    for entry in /proc/[0-9]*; do
+        pid="${entry#/proc/}"
+        kill -0 "$pid" 2>/dev/null || continue
+        comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
+        pid_cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)
+        [[ "$(update_should_sweep_proc "$comm" "$pid_cwd" "$repo_abs")" == "sweep" ]] || continue
+        echo "[update] rollback: sweeping stray go-trader pid=$pid (cwd=$pid_cwd) sharing this instance's state DB" >&2
+        kill -TERM "$pid" 2>/dev/null || true
+        signal_wait_pid_exit "$pid" "rollback-sweep"
+    done
+    return 0
 }
 
 do_rollback() {
@@ -619,11 +667,16 @@ fi
 pre_pull_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
 
 if [[ "$restart" == "1" && "$restart_mode" == "signal" ]]; then
-    if [[ ! -d /proc/self ]]; then
-        fail "RESTART_MODE=signal requires Linux (/proc); use systemd mode on other OSes"
-    fi
-    if [[ ! -f "$go_trader_pidfile" ]]; then
-        fail "signal mode: pidfile missing ($go_trader_pidfile). Start the instance once via your wrapper so it writes the pidfile."
+    if systemd_unit_manages_this_instance "$service_unit"; then
+        echo "[update] signal: systemd unit '$service_unit' is active and its ExecStart runs this binary ($(pwd)/go-trader) — routing restart through systemctl to avoid spawning an out-of-cgroup duplicate (#850). Set GO_TRADER_SERVICE to target a different unit, or stop the unit to use signal mode." >&2
+        restart_mode="systemd"
+    else
+        if [[ ! -d /proc/self ]]; then
+            fail "RESTART_MODE=signal requires Linux (/proc); use systemd mode on other OSes"
+        fi
+        if [[ ! -f "$go_trader_pidfile" ]]; then
+            fail "signal mode: pidfile missing ($go_trader_pidfile). Start the instance once via your wrapper so it writes the pidfile."
+        fi
     fi
 fi
 
