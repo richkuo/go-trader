@@ -317,6 +317,126 @@ def test_sz_decimals_returns_3_when_still_missing_after_refresh(adapter_mod, mon
     assert a._sz_decimals("UNLISTED") == 3
 
 
+# ─── _normalize_spot_meta: sparse token index guard (#831) ─────────
+
+
+def _sdk_universe_loop(spot_meta):
+    """Re-implementation of the SDK's Info.__init__ spot loop (info.py:43-49).
+
+    Used to prove that, after normalization, the exact positional lookup the
+    SDK performs no longer raises IndexError. Returns {asset: szDecimals}.
+    """
+    asset_to_sz_decimals = {}
+    for spot_info in spot_meta["universe"]:
+        asset = spot_info["index"] + 10000
+        base, quote = spot_info["tokens"]
+        base_info = spot_meta["tokens"][base]  # positional — the crashy line
+        spot_meta["tokens"][quote]
+        asset_to_sz_decimals[asset] = base_info["szDecimals"]
+    return asset_to_sz_decimals
+
+
+def _sparse_spot_meta():
+    """Mirror the real #831 shape: token index 479 ('WARS') lives at list
+    position 459 (sparse), and spot pair '@367' references it as base.
+    """
+    tokens = [{"name": f"T{i}", "szDecimals": 0, "index": i} for i in range(458)]
+    # Sparse tail: a gap (indices 458-477 missing), then high-index tokens
+    # packed at positions 458+.
+    tokens += [
+        {"name": "WARS", "szDecimals": 2, "index": 479},
+        {"name": "ZZZ", "szDecimals": 1, "index": 513},
+    ]
+    universe = [
+        {"index": 0, "name": "PURR/USDC", "tokens": [1, 0]},
+        {"index": 367, "name": "@367", "tokens": [479, 0]},  # base at sparse idx
+    ]
+    return {"universe": universe, "tokens": tokens}
+
+
+def test_normalize_makes_sdk_positional_lookup_not_crash(adapter_mod):
+    spot_meta = _sparse_spot_meta()
+    # Sanity: the raw meta crashes the SDK's positional loop.
+    with pytest.raises(IndexError):
+        _sdk_universe_loop(spot_meta)
+
+    normalized = adapter_mod._normalize_spot_meta(spot_meta)
+    # After normalization the same loop resolves cleanly.
+    result = _sdk_universe_loop(normalized)
+    # @367's base token (index 479 = WARS, szDecimals 2) resolves correctly.
+    assert result[367 + 10000] == 2
+    # PURR/USDC base (index 1) still resolves.
+    assert (0 + 10000) in result
+
+
+def test_normalize_resolves_token_by_index_not_position(adapter_mod):
+    spot_meta = _sparse_spot_meta()
+    normalized = adapter_mod._normalize_spot_meta(spot_meta)
+    # The dense list is index-aligned: position 479 IS the WARS token.
+    assert normalized["tokens"][479]["name"] == "WARS"
+    assert normalized["tokens"][513]["name"] == "ZZZ"
+    # Original input is left untouched (shallow-copy semantics).
+    assert len(spot_meta["tokens"]) == 460
+
+
+def test_normalize_drops_unresolvable_pairs(adapter_mod):
+    spot_meta = {
+        "universe": [
+            {"index": 0, "name": "GOOD/USDC", "tokens": [1, 0]},
+            {"index": 1, "name": "BAD/USDC", "tokens": [999, 0]},  # 999 absent
+            {"index": 2, "name": "MALFORMED"},                     # no tokens
+        ],
+        "tokens": [
+            {"name": "USDC", "szDecimals": 8, "index": 0},
+            {"name": "GOOD", "szDecimals": 2, "index": 1},
+        ],
+    }
+    normalized = adapter_mod._normalize_spot_meta(spot_meta)
+    names = [u["name"] for u in normalized["universe"]]
+    assert names == ["GOOD/USDC"]
+    # Surviving pair still resolves under the SDK loop.
+    assert _sdk_universe_loop(normalized)[0 + 10000] == 2
+
+
+def test_normalize_passes_through_aligned_meta_unchanged(adapter_mod):
+    spot_meta = {
+        "universe": [{"index": 0, "name": "P/USDC", "tokens": [1, 0]}],
+        "tokens": [
+            {"name": "USDC", "szDecimals": 8, "index": 0},
+            {"name": "P", "szDecimals": 2, "index": 1},
+        ],
+    }
+    normalized = adapter_mod._normalize_spot_meta(spot_meta)
+    # Already dense + index-aligned with no drops → identity (same object).
+    assert normalized is spot_meta
+
+
+def test_normalize_passes_through_malformed_input(adapter_mod):
+    assert adapter_mod._normalize_spot_meta(None) is None
+    bad = {"universe": "nope", "tokens": []}
+    assert adapter_mod._normalize_spot_meta(bad) is bad
+
+
+def test_build_info_normalizes_before_sdk(adapter_mod, monkeypatch):
+    """_build_info must hand the SDK a normalized spot_meta so the crashy
+    positional loop never sees a sparse token list (cache-hit path)."""
+    spot_meta = _sparse_spot_meta()
+    monkeypatch.setattr(adapter_mod, "_load_meta_cache",
+                        lambda *a, **kw: (spot_meta, {"universe": [{"name": "BTC", "szDecimals": 5}]}))
+
+    captured = {}
+
+    def fake_info(base_url, skip_ws, meta=None, spot_meta=None):
+        captured["spot_meta"] = spot_meta
+        # Prove the SDK's own loop would survive on what it was handed.
+        _sdk_universe_loop(spot_meta)
+        return MagicMock()
+
+    monkeypatch.setattr(adapter_mod, "_HLInfo", fake_info)
+    adapter_mod.HyperliquidExchangeAdapter()
+    assert captured["spot_meta"]["tokens"][479]["name"] == "WARS"
+
+
 def test_sz_decimals_uses_cached_value_without_refresh(adapter_mod, monkeypatch):
     monkeypatch.setattr(adapter_mod, "_load_meta_cache",
                         lambda *a, **kw: (

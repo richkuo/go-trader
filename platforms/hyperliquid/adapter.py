@@ -179,6 +179,80 @@ def _save_meta_cache(spot_meta, meta, path: str = META_CACHE_PATH) -> None:
                 pass
 
 
+def _normalize_spot_meta(spot_meta):
+    """Make ``spot_meta`` safe for the SDK's positional ``tokens[idx]`` lookup.
+
+    The SDK's ``Info`` constructor resolves each spot pair's base/quote tokens
+    via ``spot_meta["tokens"][idx]`` (info.py:47-49), treating the token's
+    ``index`` as a LIST POSITION. Hyperliquid's token indices used to be dense
+    (position == index) but have become sparse — e.g. token index 479 ("WARS")
+    now lives at list position 459 — so the SDK's ``tokens[479]`` raises
+    ``IndexError`` and kills ``HLInfo`` init for every strategy (#831). The
+    token data is all present; only the positional assumption is wrong.
+
+    We rebuild ``tokens`` into an index-aligned (dense) list so positional
+    lookup resolves the correct token for every referenced index, and drop any
+    spot pair whose token indices can't be resolved at all (defends against a
+    genuinely truncated payload). Returns a shallow copy; the original is left
+    untouched. Non-dict/list inputs pass through unchanged so a malformed
+    payload still reaches the SDK's own validation.
+    """
+    if not isinstance(spot_meta, dict):
+        return spot_meta
+    tokens = spot_meta.get("tokens")
+    universe = spot_meta.get("universe")
+    if not isinstance(tokens, list) or not isinstance(universe, list):
+        return spot_meta
+
+    by_index = {}
+    max_index = -1
+    for tok in tokens:
+        if isinstance(tok, dict) and isinstance(tok.get("index"), int):
+            idx = tok["index"]
+            by_index[idx] = tok
+            if idx > max_index:
+                max_index = idx
+
+    # Drop spot pairs whose base/quote indices aren't resolvable.
+    clean_universe = []
+    dropped = []
+    for entry in universe:
+        pair = entry.get("tokens") if isinstance(entry, dict) else None
+        if (
+            isinstance(pair, list)
+            and len(pair) == 2
+            and all(isinstance(x, int) and x in by_index for x in pair)
+        ):
+            clean_universe.append(entry)
+        else:
+            dropped.append(entry.get("name") if isinstance(entry, dict) else None)
+
+    # Fast path: already dense + index-aligned (position == index) and nothing
+    # to drop → return the original untouched so the cache round-trip is exact.
+    aligned = max_index + 1 == len(tokens) and all(
+        isinstance(t, dict) and t.get("index") == i for i, t in enumerate(tokens)
+    )
+    if aligned and not dropped:
+        return spot_meta
+
+    # Dense, index-aligned token list. Gap slots get a harmless placeholder
+    # that no surviving pair references (unresolvable pairs were dropped above).
+    placeholder = {"name": "", "szDecimals": 0, "index": -1}
+    dense_tokens = [by_index.get(i, placeholder) for i in range(max_index + 1)]
+
+    if dropped:
+        print(
+            f"[WARN] hl spotMeta: dropped {len(dropped)} unresolvable spot "
+            f"pair(s): {dropped[:5]}",
+            file=sys.stderr,
+        )
+
+    normalized = dict(spot_meta)
+    normalized["tokens"] = dense_tokens
+    normalized["universe"] = clean_universe
+    return normalized
+
+
 def _fetch_raw_meta(base_url: str):
     """POST /info {type:spotMeta} + {type:meta} via the SDK's API base class.
 
@@ -254,11 +328,13 @@ class HyperliquidExchangeAdapter:
         cached = _load_meta_cache() if allow_cache else None
         if cached is not None:
             spot_meta, meta = cached
-            return _HLInfo(base_url=base_url, skip_ws=True, meta=meta, spot_meta=spot_meta)
+            return _HLInfo(base_url=base_url, skip_ws=True, meta=meta,
+                           spot_meta=_normalize_spot_meta(spot_meta))
         try:
             spot_meta, meta = _fetch_raw_meta(base_url)
             _save_meta_cache(spot_meta, meta)
-            return _HLInfo(base_url=base_url, skip_ws=True, meta=meta, spot_meta=spot_meta)
+            return _HLInfo(base_url=base_url, skip_ws=True, meta=meta,
+                           spot_meta=_normalize_spot_meta(spot_meta))
         except Exception as exc:
             # Last-resort fallback: let the SDK's constructor fetch fresh.
             # Costs the same 2 /info as before this change; cache write failed
