@@ -121,7 +121,10 @@ class TestMarketData:
         mock_info.all_mids.return_value = {}
         assert adapter.get_spot_price("XYZ") == 0.0
 
-    def test_get_ohlcv(self):
+    def test_get_ohlcv(self, monkeypatch):
+        # Disable the #839 OHLCV cache so this exercises the live fetch path
+        # deterministically (no /tmp cross-run state).
+        monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
         adapter, mock_info = self._make_adapter()
         mock_info.candles_snapshot.return_value = [
             {"T": 1700000000000, "o": "100", "h": "110", "l": "90", "c": "105", "v": "50"},
@@ -131,7 +134,8 @@ class TestMarketData:
         assert len(result) == 2
         assert result[0] == [1700000000000, 100.0, 110.0, 90.0, 105.0, 50.0]
 
-    def test_get_ohlcv_uses_t_key_fallback(self):
+    def test_get_ohlcv_uses_t_key_fallback(self, monkeypatch):
+        monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
         adapter, mock_info = self._make_adapter()
         mock_info.candles_snapshot.return_value = [
             {"t": 1700000000000, "o": "100", "h": "110", "l": "90", "c": "105", "v": "50"},

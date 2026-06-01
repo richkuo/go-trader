@@ -8,6 +8,7 @@ Environment variables:
     HYPERLIQUID_SECRET_KEY       — private key for live trading (hex string)
     HYPERLIQUID_ACCOUNT_ADDRESS  — account address (inferred from key if omitted)
     HYPERLIQUID_TESTNET=1        — use testnet instead of mainnet
+    GO_TRADER_HL_OHLCV_CACHE=0   — disable the per-cycle OHLCV /info cache (#839)
 """
 
 import json
@@ -29,6 +30,20 @@ TESTNET_URL = "https://api.hyperliquid-testnet.xyz"
 # call entirely (#768).
 META_CACHE_PATH = "/tmp/hl_meta.json"
 META_CACHE_TTL_S = 3600  # 60 minutes
+
+# OHLCV candles are re-fetched from /info by every strategy subprocess. With
+# ~20 strategies per instance sharing a handful of asset+timeframe combos, the
+# identical candle request is fired dozens of times per cycle from one IP,
+# which trips HL's 429 rate limit and cascades into script-failure alerts
+# (#839). Cache the transformed candles to disk keyed by (symbol, interval,
+# limit) with a short TTL so the first strategy of a cycle fetches and the rest
+# read from cache. /tmp is shared across an instance's subprocesses but
+# isolated per systemd instance (PrivateTmp=true), so this dedups within an
+# instance — exactly the per-IP burst we need to flatten. Disable via
+# GO_TRADER_HL_OHLCV_CACHE=0. Mirrors the meta-cache pattern above.
+OHLCV_CACHE_DIR = "/tmp"
+OHLCV_CACHE_PREFIX = "hl_ohlcv_"
+OHLCV_CACHE_TTL_S = 60
 
 # SDK imports: defer to avoid module-level ImportError when SDK not installed.
 # adapter.py is loaded with platforms/hyperliquid/ directly in sys.path (not
@@ -166,6 +181,92 @@ def _save_meta_cache(spot_meta, meta, path: str = META_CACHE_PATH) -> None:
         tmp_path = None
     except (OSError, TypeError, ValueError) as exc:
         print(f"[WARN] hl meta cache save failed: {exc}", file=sys.stderr)
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _ohlcv_cache_enabled() -> bool:
+    """OHLCV caching is on by default; GO_TRADER_HL_OHLCV_CACHE=0 disables it.
+
+    Read at call time so tests (and an operator) can toggle it without
+    reloading the module.
+    """
+    return os.environ.get("GO_TRADER_HL_OHLCV_CACHE", "1") != "0"
+
+
+def _ohlcv_cache_path(symbol: str, interval: str, limit: int,
+                      cache_dir: str = None) -> str:
+    """Per-(symbol, interval, limit) cache file path.
+
+    Symbol is sanitized to alphanumerics + underscore so spot symbols like
+    ``PURR/USDC`` or ``@367`` can't escape the cache directory or collide.
+    ``cache_dir`` resolves to ``OHLCV_CACHE_DIR`` at call time (not bound as a
+    default) so tests can repoint it via monkeypatch.
+    """
+    if cache_dir is None:
+        cache_dir = OHLCV_CACHE_DIR
+    safe = "".join(c if c.isalnum() else "_" for c in str(symbol))
+    return os.path.join(cache_dir, f"{OHLCV_CACHE_PREFIX}{safe}_{interval}_{limit}.json")
+
+
+def _load_ohlcv_cache(path: str, ttl_s: int = OHLCV_CACHE_TTL_S, now: float = None):
+    """Return cached candles (list of [ts, o, h, l, c, v]) if fresh, else None.
+
+    None on any read/parse/TTL failure so callers fall through to a live
+    fetch. An empty candle list is never cached (insufficient-data results
+    must not pin every strategy to the error path for the TTL window), so a
+    present-but-empty payload is treated as a miss.
+    """
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    ts = data.get("ts")
+    try:
+        ts_f = float(ts) if ts is not None else 0.0
+    except (TypeError, ValueError):
+        return None
+    cur = now if now is not None else time.time()
+    if cur - ts_f > ttl_s:
+        return None
+    candles = data.get("candles")
+    if not isinstance(candles, list) or not candles:
+        return None
+    return candles
+
+
+def _save_ohlcv_cache(candles, path: str) -> None:
+    """Persist transformed candles atomically (temp file + os.replace).
+
+    Mirrors _save_meta_cache: concurrent subprocess writers never observe a
+    torn file, and failures are logged + swallowed since caching is an
+    optimization, not a correctness requirement.
+    """
+    payload = {"ts": time.time(), "candles": candles}
+    dir_ = os.path.dirname(path) or "."
+    fd = None
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(prefix=".hl_ohlcv_", suffix=".json", dir=dir_)
+        with os.fdopen(fd, "w") as f:
+            fd = None  # ownership transferred to file object
+            json.dump(payload, f)
+        os.replace(tmp_path, path)
+        tmp_path = None
+    except (OSError, TypeError, ValueError) as exc:
+        print(f"[WARN] hl ohlcv cache save failed: {exc}", file=sys.stderr)
     finally:
         if fd is not None:
             try:
@@ -415,6 +516,16 @@ class HyperliquidExchangeAdapter:
         end_ms = int(time.time() * 1000)
         start_ms = end_ms - interval_ms * limit
 
+        # Cycle-scoped dedup: reuse a fresh on-disk snapshot so peer strategies
+        # sharing this (symbol, interval, limit) don't each hit /info (#839).
+        cache_enabled = _ohlcv_cache_enabled()
+        cache_path = None
+        if cache_enabled:
+            cache_path = _ohlcv_cache_path(symbol, interval, limit)
+            cached = _load_ohlcv_cache(cache_path)
+            if cached is not None:
+                return cached
+
         candles = self._info.candles_snapshot(symbol, interval, start_ms, end_ms)
         result = []
         for c in candles:
@@ -427,6 +538,10 @@ class HyperliquidExchangeAdapter:
                 float(c["c"]),
                 float(c["v"]),
             ])
+        # Never cache an empty result — insufficient-data fetches must keep
+        # retrying live rather than pinning every peer to the error path.
+        if cache_enabled and result:
+            _save_ohlcv_cache(result, cache_path)
         return result
 
     def get_funding_rate(self, symbol: str) -> float:
