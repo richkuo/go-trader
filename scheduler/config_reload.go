@@ -469,6 +469,15 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				errs = append(errs, fmt.Sprintf("strategy[%s] sl_after rules changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
+			// #841 2b: the unified per-regime close block carries the whole exit
+			// plan (per-regime TP ladder + SL + sl_after) armed at open. The
+			// empty-regime sl_after parse above can't see it, so gate the block
+			// as a unit — any change (incl. add/remove) re-arms a plan the open
+			// didn't respect.
+			if !unifiedCloseParamsEqualForReload(sc, ns) {
+				errs = append(errs, fmt.Sprintf("strategy[%s] unified per-regime close block changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
 		}
 	}
 	if len(errs) > 0 {

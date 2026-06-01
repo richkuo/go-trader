@@ -261,3 +261,30 @@ func TestValidateUnifiedCloseSoleOwner(t *testing.T) {
 		t.Fatalf("non-unified strategy should not trip sole-owner: %v", errs)
 	}
 }
+
+// TestUnifiedCloseParamsEqualForReload verifies #841 2b hot-reload gating: a
+// changed (or added/removed) unified per-regime close block is detected so the
+// reload validator can reject it while a position is open.
+func TestUnifiedCloseParamsEqualForReload(t *testing.T) {
+	mk := func(params map[string]interface{}) StrategyConfig {
+		return StrategyConfig{CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr_live_regime", Params: params}}}
+	}
+	a := mk(unifiedBlock())
+	if !unifiedCloseParamsEqualForReload(a, mk(unifiedBlock())) {
+		t.Fatal("identical unified blocks should compare equal")
+	}
+	// Change a tier multiple → not equal.
+	changed := unifiedBlock()
+	changed[regimeClassifierKey].(map[string]interface{})["ranging"].(map[string]interface{})["tp_tiers"].([]interface{})[0].(map[string]interface{})["atr_multiple"] = 9.9
+	if unifiedCloseParamsEqualForReload(a, mk(changed)) {
+		t.Fatal("changed tier multiple should compare unequal")
+	}
+	// Remove the unified close entirely → not equal.
+	if unifiedCloseParamsEqualForReload(a, StrategyConfig{}) {
+		t.Fatal("removing the unified close should compare unequal")
+	}
+	// Two non-unified strategies → both nil → equal (no false positive).
+	if !unifiedCloseParamsEqualForReload(StrategyConfig{}, StrategyConfig{}) {
+		t.Fatal("two non-unified strategies should compare equal")
+	}
+}

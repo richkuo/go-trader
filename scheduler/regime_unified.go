@@ -25,6 +25,7 @@ package main
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 )
@@ -112,6 +113,30 @@ func unifiedCloseStopLossATR(sc StrategyConfig, regime string) (float64, bool) {
 		return sl, true
 	}
 	return 0, false
+}
+
+// unifiedCloseRefParams returns the params of a strategy's unified per-regime
+// close ref, or nil if it doesn't use one.
+func unifiedCloseRefParams(sc StrategyConfig) map[string]interface{} {
+	for _, ref := range sc.CloseStrategies {
+		n := strings.ToLower(strings.TrimSpace(ref.Name))
+		if n != "tiered_tp_atr_regime" && n != "tiered_tp_atr_live_regime" {
+			continue
+		}
+		if closeParamsAreUnifiedRegime(ref.Params) {
+			return ref.Params
+		}
+	}
+	return nil
+}
+
+// unifiedCloseParamsEqualForReload reports whether two strategy revisions carry
+// an equivalent unified per-regime close block. The block holds the whole exit
+// plan (per-regime TP ladder + SL + sl_after) armed at open, so any change —
+// including adding/removing the unified close — is unsafe while a position is
+// open. #841 2b.
+func unifiedCloseParamsEqualForReload(a, b StrategyConfig) bool {
+	return reflect.DeepEqual(unifiedCloseRefParams(a), unifiedCloseRefParams(b))
 }
 
 // validateUnifiedCloseSoleOwner enforces that a strategy using a unified
