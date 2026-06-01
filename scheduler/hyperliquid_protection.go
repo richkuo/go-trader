@@ -38,7 +38,10 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 	// otherwise the regime-aware sibling resolves via pos.Regime. Validation
 	// ensures only one is set (#733).
 	slMult := 0.0
-	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
+	if v, ok := unifiedCloseStopLossATR(sc, positionATRRegimeLabel(pos, sc)); ok {
+		// #841 2b: unified close owns the per-regime SL.
+		slMult = v
+	} else if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		slMult = *sc.StopLossATRMult
 	} else if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
 		if v, ok := resolveRegimeATR(*sc.StopLossATRRegime, positionATRRegimeLabel(pos, sc)); ok {

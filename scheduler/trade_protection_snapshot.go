@@ -19,6 +19,10 @@ func tradeOpenStopLossATRMult(sc StrategyConfig) *float64 {
 }
 
 func tradeOpenStopLossATRMultForRegime(sc StrategyConfig, regime string) *float64 {
+	if v, ok := unifiedCloseStopLossATR(sc, regime); ok {
+		// #841 2b: unified close owns the per-regime SL snapshot.
+		return &v
+	}
 	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		v := *sc.StopLossATRMult
 		return &v

@@ -145,3 +145,54 @@ func TestUnifiedRegimeScalarParams_ShapeMatchesScalarConfig(t *testing.T) {
 		t.Fatalf("scalar = %v, want %v", scalar, want)
 	}
 }
+
+// TestUnifiedRegimeSLFolding verifies #841 2b SL folding: the on-chain
+// protection plan resolves the per-regime stop_loss_atr from the unified close
+// block, and EffectiveStopLossPct defers (returns 0) instead of using the
+// max-drawdown fallback.
+func TestUnifiedRegimeSLFolding(t *testing.T) {
+	tiers := func(a, b float64) []interface{} {
+		return []interface{}{
+			map[string]interface{}{"atr_multiple": a, "close_fraction": 0.5},
+			map[string]interface{}{"atr_multiple": b, "close_fraction": 1.0},
+		}
+	}
+	sc := StrategyConfig{
+		ID: "hl-unified-sl", Platform: "hyperliquid", Type: "perps",
+		MaxDrawdownPct: 25,
+		CloseStrategies: []StrategyRef{{
+			Name: "tiered_tp_atr_live_regime",
+			Params: map[string]interface{}{
+				regimeClassifierKey: map[string]interface{}{
+					"trending_up":   map[string]interface{}{"stop_loss_atr": 1.5, "tp_tiers": tiers(2.0, 4.0)},
+					"trending_down": map[string]interface{}{"stop_loss_atr": 1.2, "tp_tiers": tiers(1.8, 3.0)},
+					"ranging":       map[string]interface{}{"stop_loss_atr": 0.8, "tp_tiers": tiers(1.0, 2.0)},
+				},
+			},
+		}},
+	}
+
+	if !strategyUsesUnifiedRegimeClose(sc) {
+		t.Fatal("strategyUsesUnifiedRegimeClose = false, want true")
+	}
+	// EffectiveStopLossPct must defer (0), not fall through to MaxDrawdownPct.
+	if got := EffectiveStopLossPct(sc); got != 0 {
+		t.Fatalf("EffectiveStopLossPct = %g, want 0 (deferred, not max-drawdown fallback)", got)
+	}
+
+	mkPos := func(regime string) *Position {
+		return &Position{Symbol: "ETH", Quantity: 1, AvgCost: 100, EntryATR: 5, Side: "long", Regime: regime}
+	}
+	for _, tc := range []struct {
+		regime string
+		wantSL float64
+	}{{"trending_up", 1.5}, {"ranging", 0.8}} {
+		plan, ok := buildHyperliquidProtectionPlan(sc, mkPos(tc.regime))
+		if !ok {
+			t.Fatalf("%s: protection plan not built", tc.regime)
+		}
+		if plan.StopLossATRMult != tc.wantSL {
+			t.Fatalf("%s: plan.StopLossATRMult = %g, want %g", tc.regime, plan.StopLossATRMult, tc.wantSL)
+		}
+	}
+}

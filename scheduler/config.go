@@ -508,6 +508,12 @@ func EffectiveStopLossPct(sc StrategyConfig) float64 {
 	if sc.Platform != "hyperliquid" || sc.Type != "perps" {
 		return 0
 	}
+	if strategyUsesUnifiedRegimeClose(sc) {
+		// #841 2b: the unified close owns an ATR-based SL armed on the cycle
+		// after open (same deferral as stop_loss_atr_regime). Returning 0 here
+		// avoids falling through to the max-drawdown pct fallback below.
+		return 0
+	}
 	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
 		// ATR-derived trailing stop. The price % depends on per-position
 		// EntryATR and AvgCost which are not available at order placement

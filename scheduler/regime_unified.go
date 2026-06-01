@@ -75,6 +75,45 @@ func unifiedRegimeScalarParams(params map[string]interface{}, regime string) (sc
 	return scalar, stopLossATR, true
 }
 
+// strategyUsesUnifiedRegimeClose reports whether the strategy has a regime-aware
+// tiered close ref written in the unified per-regime shape. Used to gate SL
+// resolution: the unified close owns the (ATR-based) stop loss, armed on the
+// cycle after open like stop_loss_atr_regime. #841 2b.
+func strategyUsesUnifiedRegimeClose(sc StrategyConfig) bool {
+	for _, ref := range sc.CloseStrategies {
+		n := strings.ToLower(strings.TrimSpace(ref.Name))
+		if n != "tiered_tp_atr_regime" && n != "tiered_tp_atr_live_regime" {
+			continue
+		}
+		if closeParamsAreUnifiedRegime(ref.Params) {
+			return true
+		}
+	}
+	return false
+}
+
+// unifiedCloseStopLossATR returns the per-regime stop_loss_atr multiple from a
+// strategy's unified per-regime close block for the given regime label. ok=false
+// when the strategy isn't unified, the label is absent, or the label set no
+// stop_loss_atr (slMult 0 → no fixed SL placed for that regime). #841 2b.
+func unifiedCloseStopLossATR(sc StrategyConfig, regime string) (float64, bool) {
+	for _, ref := range sc.CloseStrategies {
+		n := strings.ToLower(strings.TrimSpace(ref.Name))
+		if n != "tiered_tp_atr_regime" && n != "tiered_tp_atr_live_regime" {
+			continue
+		}
+		if !closeParamsAreUnifiedRegime(ref.Params) {
+			return 0, false
+		}
+		_, sl, ok := unifiedRegimeScalarParams(ref.Params, regime)
+		if !ok || sl <= 0 {
+			return 0, false
+		}
+		return sl, true
+	}
+	return 0, false
+}
+
 // validateUnifiedRegimeClose validates a unified per-regime close block against
 // the strategy's regime label vocabulary. Errors are config-load failures so a
 // typo can't silently disable the exit plan. The label set must be exhaustive

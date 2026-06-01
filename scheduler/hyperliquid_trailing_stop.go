@@ -157,7 +157,10 @@ func effectiveFixedStopLossATRPct(sc StrategyConfig, pos *Position) float64 {
 		return 0
 	}
 	mult := 0.0
-	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
+	if v, ok := unifiedCloseStopLossATR(sc, positionATRRegimeLabel(pos, sc)); ok {
+		// #841 2b: unified close owns the per-regime SL distance.
+		mult = v
+	} else if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		mult = *sc.StopLossATRMult
 	} else if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
 		// #733: regime-resolved fixed SL distance. pos.Regime is stamped on
