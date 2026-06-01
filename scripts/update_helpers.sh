@@ -40,3 +40,35 @@ warn_missing_systemd_environment_files() {
     systemctl show -p EnvironmentFiles --value "$unit" 2>/dev/null \
         | warn_missing_systemd_environment_files_from_text "$unit"
 }
+
+# Decide whether signal-mode restart must be redirected to systemctl to avoid an
+# out-of-cgroup duplicate (#850). Inputs (pre-resolved by the caller):
+#   is_active      — `systemctl is-active <unit>` output ("active" when running)
+#   exec_bin_abs   — canonicalized ExecStart binary path for the unit
+#   swap_bin_abs   — canonicalized swap-target binary (this deployment's ./go-trader)
+# Echoes "redirect" only when the unit is active AND its ExecStart binary matches
+# this deployment's binary (so a sibling worktree's active unit does not redirect a
+# legitimate signal-mode restart of a different instance); echoes "" otherwise.
+update_signal_redirect_decision() {
+    local is_active="$1" exec_bin_abs="$2" swap_bin_abs="$3"
+    [[ "$is_active" == "active" ]] || { printf ''; return 0; }
+    [[ -n "$exec_bin_abs" && "$exec_bin_abs" == /* ]] || { printf ''; return 0; }
+    [[ -n "$swap_bin_abs" ]] || { printf ''; return 0; }
+    if [[ "$exec_bin_abs" == "$swap_bin_abs" ]]; then
+        printf 'redirect'
+        return 0
+    fi
+    printf ''
+}
+
+# Pure predicate for the rollback stray-process sweep (#850): should a candidate
+# pid be SIGTERM'd as a leftover of THIS instance? Matches a go-trader process
+# whose working directory is this deployment dir (i.e. it shares this instance's
+# state DB), which catches a failed new process surviving on a fallback port.
+# cwd-matching deliberately spares other worktrees' traders. Echoes "sweep" or "".
+update_should_sweep_proc() {
+    local comm="$1" pid_cwd="$2" repo_abs="$3"
+    [[ "$comm" == "go-trader" ]] || { printf ''; return 0; }
+    [[ -n "$repo_abs" && "$pid_cwd" == "$repo_abs" ]] || { printf ''; return 0; }
+    printf 'sweep'
+}
