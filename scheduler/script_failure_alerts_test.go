@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -134,9 +136,11 @@ func TestScriptFailureTracker_IndependentPerStrategy(t *testing.T) {
 
 func TestFormatScriptFailureAlert_NamesModeAndCount(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-rmc-eth-live", Platform: "hyperliquid", Script: "check_hyperliquid.py"}
+	pidTag := fmt.Sprintf("pid=%d", os.Getpid())
 	crash := formatScriptFailureAlert(sc, scriptFailureCrash, "signal: killed", 4)
 	if !strings.Contains(crash, "hard crash") || !strings.Contains(crash, "4 consecutive") ||
-		!strings.Contains(crash, "hl-rmc-eth-live") || !strings.Contains(crash, "check_hyperliquid.py") {
+		!strings.Contains(crash, "hl-rmc-eth-live") || !strings.Contains(crash, "check_hyperliquid.py") ||
+		!strings.Contains(crash, pidTag) {
 		t.Fatalf("crash alert missing fields: %q", crash)
 	}
 	soft := formatScriptFailureAlert(sc, scriptFailureError, "list index out of range", 3)
@@ -147,8 +151,10 @@ func TestFormatScriptFailureAlert_NamesModeAndCount(t *testing.T) {
 
 func TestFormatScriptRecoveredAlert(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-x", Platform: "hyperliquid", Script: "check_hyperliquid.py"}
+	pidTag := fmt.Sprintf("pid=%d", os.Getpid())
 	msg := formatScriptRecoveredAlert(sc, 7)
-	if !strings.Contains(msg, "RECOVERED") || !strings.Contains(msg, "7 consecutive") {
+	if !strings.Contains(msg, "RECOVERED") || !strings.Contains(msg, "7 consecutive") ||
+		!strings.Contains(msg, pidTag) {
 		t.Fatalf("recovery alert missing fields: %q", msg)
 	}
 }

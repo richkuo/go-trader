@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"time"
 )
@@ -123,18 +124,21 @@ func (t *ScriptFailureTracker) Clear(strategyID string) (bool, int) {
 var scriptFailureTracker = &ScriptFailureTracker{}
 
 // formatScriptFailureAlert builds the operator message for a failing signal
-// script. count is the consecutive-failure count after incrementing.
+// script. count is the consecutive-failure count after incrementing. The
+// scheduler PID is included so operators can tell which process is producing
+// the errors when duplicate go-trader processes are suspected (#845).
 func formatScriptFailureAlert(sc StrategyConfig, mode scriptFailureMode, errMsg string, count int) string {
-	return fmt.Sprintf("**SIGNAL SCRIPT FAILING** [%s] %s %s (%s, %d consecutive failures): %s",
-		sc.ID, sc.Platform, sc.Script, scriptFailureModeLabel(mode), count, errMsg)
+	return fmt.Sprintf("**SIGNAL SCRIPT FAILING** [%s] %s %s (pid=%d, %s, %d consecutive failures): %s",
+		sc.ID, sc.Platform, sc.Script, os.Getpid(), scriptFailureModeLabel(mode), count, errMsg)
 }
 
 // formatScriptRecoveredAlert builds the operator message for a signal script
 // that succeeded after having alerted as dead. priorCount is the streak length
-// that just ended.
+// that just ended. The scheduler PID is included to match the failing alert so
+// operators can correlate the recovery with the process that was failing (#845).
 func formatScriptRecoveredAlert(sc StrategyConfig, priorCount int) string {
-	return fmt.Sprintf("**SIGNAL SCRIPT RECOVERED** [%s] %s %s: succeeded after %d consecutive failures",
-		sc.ID, sc.Platform, sc.Script, priorCount)
+	return fmt.Sprintf("**SIGNAL SCRIPT RECOVERED** [%s] %s %s (pid=%d): succeeded after %d consecutive failures",
+		sc.ID, sc.Platform, sc.Script, os.Getpid(), priorCount)
 }
 
 // notifyScriptFailure records a signal-script failure for sc and fires a
