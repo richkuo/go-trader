@@ -1669,3 +1669,53 @@ func TestCloseTierListParam(t *testing.T) {
 		})
 	}
 }
+
+// TestParseStrategyTPSLAfterRules_UnifiedBlock verifies #841 2b sl_after
+// resolution: the active regime's scalar per-tier sl_after and tier multiples
+// are selected from a unified per-regime block (select-then-scalar).
+func TestParseStrategyTPSLAfterRules_UnifiedBlock(t *testing.T) {
+	mkTier := func(mult, frac, frac2, m2 float64) []interface{} {
+		return []interface{}{
+			map[string]interface{}{"atr_multiple": mult, "close_fraction": frac,
+				"sl_after": map[string]interface{}{"kind": "trail_from_here", "tp_atr_fraction": frac2}},
+			map[string]interface{}{"atr_multiple": m2, "close_fraction": 1.0},
+		}
+	}
+	sc := StrategyConfig{
+		ID: "hl-unified-slafter", Platform: "hyperliquid", Type: "perps",
+		CloseStrategies: []StrategyRef{{
+			Name: "tiered_tp_atr_live_regime",
+			Params: map[string]interface{}{
+				regimeClassifierKey: map[string]interface{}{
+					"trending_up":   map[string]interface{}{"stop_loss_atr": 1.5, "tp_tiers": mkTier(2.0, 0.5, 0.5, 4.0)},
+					"trending_down": map[string]interface{}{"stop_loss_atr": 1.0, "tp_tiers": mkTier(1.8, 0.5, 0.4, 3.0)},
+					"ranging":       map[string]interface{}{"stop_loss_atr": 0.8, "tp_tiers": mkTier(1.0, 0.5, 0.3, 2.0)},
+				},
+			},
+		}},
+	}
+
+	up, errs := parseStrategyTPSLAfterRulesForRegime(sc, nil, "trending_up")
+	if len(errs) > 0 {
+		t.Fatalf("trending_up errs: %v", errs)
+	}
+	if len(up.PerTier) < 1 || up.PerTier[0].Kind != "trail_from_here" || up.PerTier[0].TPATRFraction != 0.5 {
+		t.Fatalf("trending_up PerTier[0] = %+v, want trail_from_here tp_atr_fraction=0.5", up.PerTier[0])
+	}
+	if len(up.Multiples) < 1 || up.Multiples[0] != 2.0 {
+		t.Fatalf("trending_up Multiples = %v, want [2,...]", up.Multiples)
+	}
+
+	rng, errs := parseStrategyTPSLAfterRulesForRegime(sc, nil, "ranging")
+	if len(errs) > 0 {
+		t.Fatalf("ranging errs: %v", errs)
+	}
+	if rng.PerTier[0].TPATRFraction != 0.3 || rng.Multiples[0] != 1.0 {
+		t.Fatalf("ranging PerTier[0]=%+v Multiples=%v, want frac=0.3 mult=1.0", rng.PerTier[0], rng.Multiples)
+	}
+
+	empty, _ := parseStrategyTPSLAfterRulesForRegime(sc, nil, "")
+	if empty.HasAny() || len(empty.PerTier) != 0 {
+		t.Fatalf("empty regime should yield no rules, got %+v", empty)
+	}
+}

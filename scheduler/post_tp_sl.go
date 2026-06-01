@@ -721,6 +721,7 @@ func parseStrategyTPSLAfterRulesForRegime(sc StrategyConfig, labels []string, re
 	}
 	var defaultRaw interface{}
 	var tiersRaw interface{}
+	var refParams map[string]interface{}
 	tieredName := ""
 	regimeUseDefaults := false
 	for _, ref := range sc.CloseStrategies {
@@ -729,6 +730,7 @@ func parseStrategyTPSLAfterRulesForRegime(sc StrategyConfig, labels []string, re
 			continue
 		}
 		tieredName = n
+		refParams = ref.Params
 		if v, ok := ref.Params["sl_after"]; ok {
 			defaultRaw = v
 		}
@@ -740,6 +742,19 @@ func parseStrategyTPSLAfterRulesForRegime(sc StrategyConfig, labels []string, re
 		}
 		break
 	}
+	// #841 2b: unified per-regime block — select the active regime's scalar
+	// ladder so sl_after resolves through the scalar per-tier path below (the
+	// per-label sl_after is already scalar). An unknown/empty regime yields no
+	// rules this cycle; the next cycle retries once pos.Regime is stamped.
+	unifiedScalar := false
+	if closeParamsAreUnifiedRegime(refParams) {
+		scalar, _, ok := unifiedRegimeScalarParams(refParams, regime)
+		if !ok {
+			return rules, errs
+		}
+		tiersRaw, _ = closeTierListParam(scalar)
+		unifiedScalar = true
+	}
 	if defaultRaw != nil {
 		r, err := parseSLAfterRuleWithLabels(defaultRaw, labels)
 		if err != nil {
@@ -750,7 +765,7 @@ func parseStrategyTPSLAfterRulesForRegime(sc StrategyConfig, labels []string, re
 			rules.Default = r
 		}
 	}
-	if tieredName == "tiered_tp_atr_regime" || tieredName == "tiered_tp_atr_live_regime" {
+	if !unifiedScalar && (tieredName == "tiered_tp_atr_regime" || tieredName == "tiered_tp_atr_live_regime") {
 		rules, regimeErrs := parseRegimeStrategyTPSLAfterRules(tieredName, tiersRaw, labels, regime, regimeUseDefaults, rules)
 		errs = append(errs, regimeErrs...)
 		return rules, errs
