@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -24,8 +26,16 @@ func TestHandleHealth(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	var resp map[string]string
-	json.NewDecoder(w.Body).Decode(&resp)
+	// Capture the raw body before decoding drains the buffer — update.sh
+	// matches the literal `"version":"<ver>"` substring, so assert the added
+	// #849 pid field didn't disturb it.
+	body := w.Body.String()
+	if !strings.Contains(body, "\"version\":\""+Version+"\"") {
+		t.Errorf("body %q missing literal version substring update.sh greps for", body)
+	}
+
+	var resp map[string]any
+	json.Unmarshal([]byte(body), &resp)
 	if resp["status"] != "ok" {
 		t.Errorf("status = %q, want %q", resp["status"], "ok")
 	}
@@ -33,6 +43,11 @@ func TestHandleHealth(t *testing.T) {
 	// the post-restart process matches the just-built binary.
 	if resp["version"] != Version {
 		t.Errorf("version = %q, want %q", resp["version"], Version)
+	}
+	// #849: pid lets external monitoring detect a duplicate (health.pid !=
+	// systemd MainPID). JSON numbers decode to float64 into map[string]any.
+	if pid, ok := resp["pid"].(float64); !ok || int(pid) != os.Getpid() {
+		t.Errorf("pid = %v, want %d", resp["pid"], os.Getpid())
 	}
 }
 
@@ -53,7 +68,7 @@ func TestHandleHealthStale(t *testing.T) {
 	// Even when stale, the version field should be present so a rolling
 	// update can still distinguish old from new during the brief window
 	// between restart and the first completed cycle.
-	var resp map[string]string
+	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 	if resp["version"] != Version {
 		t.Errorf("version = %q, want %q", resp["version"], Version)

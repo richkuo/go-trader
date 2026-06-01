@@ -4,6 +4,7 @@ __pycache__/
 trading_bot.db
 *.db-wal
 *.db-shm
+*.db.lock
 .env
 trading-scheduler
 # Compiled binaries

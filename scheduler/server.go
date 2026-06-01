@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -204,8 +205,12 @@ func (ss *StatusServer) Start(port int) {
 	if boundPort != port {
 		// Prominent fallback notice: operators running `--once` next to a
 		// live instance used to get a hard port-collision error; now the
-		// bind silently advances, so make the advance itself visible.
-		fmt.Printf("[server] NOTICE: requested port %d was in use, bound to %d instead\n", port, boundPort)
+		// bind silently advances, so make the advance itself visible. A
+		// fallback on the daemon path can also mean a duplicate instance is
+		// already bound to the configured port — the #849 state-DB lock is the
+		// authoritative guard, but flag it loudly here too and point at the
+		// /health pid as the external detection signal.
+		fmt.Printf("[server] WARNING: requested port %d was in use, bound to %d instead — another go-trader may already be running on %d; compare /health pid across ports\n", port, boundPort, port)
 	}
 	fmt.Printf("[server] Status endpoint at http://localhost:%d/status\n", boundPort)
 	fmt.Printf("[server] Dashboard at http://localhost:%d/dashboard\n", boundPort)
@@ -222,12 +227,19 @@ func (ss *StatusServer) Start(port int) {
 func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
+	// `pid` (#849) lets external monitoring detect a duplicate from the
+	// outside: alert when health.pid != systemd MainPID, or when two ports
+	// (8099/8100) both report healthy with different pids. It complements the
+	// state-DB flock — a cheap detection aid, not a replacement. Included on
+	// every branch (incl. draining) so the signal is always available.
+	pid := os.Getpid()
+
 	// 503 once SIGTERM has fired so any future load-balancer-style probe
 	// stops sending traffic immediately. Returns before the staleness check
 	// since the daemon is intentionally winding down.
 	if isDraining() {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(`{"status":"draining"}`))
+		json.NewEncoder(w).Encode(map[string]any{"status": "draining", "pid": pid})
 		return
 	}
 
@@ -237,10 +249,13 @@ func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	// `version` is the build-stamped Version (#682) so scripts/update.sh can
 	// confirm the post-restart process matches the just-built binary before
-	// declaring the update successful (and rolling back otherwise).
-	resp := map[string]string{
+	// declaring the update successful (and rolling back otherwise). update.sh
+	// matches the `"version":"<ver>"` substring, which the sorted-key JSON
+	// encoding preserves regardless of the added pid field.
+	resp := map[string]any{
 		"status":  "ok",
 		"version": Version,
+		"pid":     pid,
 	}
 	if !lastCycle.IsZero() && time.Since(lastCycle) > 30*time.Minute {
 		resp["status"] = "unhealthy"

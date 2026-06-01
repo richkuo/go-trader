@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -408,6 +409,49 @@ func main() {
 			notifier.SendOwnerDM(fmt.Sprintf("**Startup probe failed** — refusing to start (exit %d; fix deploy, then restart):\n```\n%v\n```", ExitProbeFailure, err))
 		}
 		os.Exit(ExitProbeFailure)
+	}
+
+	// #849: Singleton guard — claim an exclusive lock on the resolved state-DB
+	// path so a second daemon (e.g. an operator manually launching the binary
+	// alongside the systemd-managed instance, or an out-of-cgroup process from a
+	// signal-mode update) refuses to start instead of silently double-trading
+	// against the same state.db / exchange account.
+	//
+	// Scoped to the persistent daemon loop only: CLI subcommands and --summary /
+	// --leaderboard have already exited above, and --once is intentionally left
+	// unguarded (it's update.sh's post-deploy smoke and the operator's
+	// responsibility). The probe ran first because update.sh invokes the
+	// `probe` subcommand against the still-live old daemon during a deploy;
+	// that path never reaches here. The lock is a kernel flock the OS releases
+	// on exit/crash, so a SIGKILLed daemon leaves nothing stale to block the
+	// next start (see singleton_lock.go).
+	if !*once {
+		lock, lockErr := acquireStateDBLock(cfg.DBFile)
+		if lockErr != nil {
+			var locked *stateDBLockedError
+			if errors.As(lockErr, &locked) {
+				msg := fmt.Sprintf("CRITICAL: %s — refusing to start so this process can't double-trade against the same state DB. If no other go-trader is actually running, the lock auto-releases on exit; check `pgrep -af go-trader`.", locked.Error())
+				fmt.Fprintln(os.Stderr, "[singleton] "+msg)
+				if notifier != nil && notifier.HasOwner() {
+					notifier.SendOwnerDM("**Singleton guard** — " + msg)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "[singleton] CRITICAL: could not acquire state DB lock: %v — refusing to start.\n", lockErr)
+				if notifier != nil && notifier.HasOwner() {
+					notifier.SendOwnerDM(fmt.Sprintf("**Singleton guard** — could not acquire state DB lock, refusing to start: %v", lockErr))
+				}
+			}
+			os.Exit(ExitSingletonLock)
+		}
+		// Hold for the entire process lifetime. We deliberately do NOT release
+		// on the happy path: the OS drops the flock when the process exits,
+		// which is strictly after the deferred final SaveState + stateDB.Close
+		// have run. Releasing earlier (e.g. via defer) would run BEFORE those
+		// in LIFO order and open a window where a duplicate could grab the lock
+		// and start trading while we're still flushing state. Stashing it in a
+		// package var also keeps the fd reachable so its os.File finalizer
+		// can't close (and release) it mid-run.
+		heldStateDBLock = lock
 	}
 
 	// Track the last remote hash we notified about to avoid re-notifying on every cycle.
