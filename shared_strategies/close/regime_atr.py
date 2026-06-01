@@ -93,8 +93,23 @@ def _default_block_for_surface(surface: str) -> Optional[Dict[str, RegimeATREntr
     return None
 
 
+def _default_entry_for_label(
+    baseline: Dict[str, RegimeATREntry],
+    label: str,
+) -> Optional[RegimeATREntry]:
+    if label in baseline:
+        return baseline[label]
+    if label.startswith("trending_up"):
+        return baseline.get("trending_up")
+    if label.startswith("trending_down"):
+        return baseline.get("trending_down")
+    if label.startswith("ranging"):
+        return baseline.get("ranging")
+    return None
+
+
 def parse_regime_atr_block(
-    raw: Any, ctx_label: str, surface: str
+    raw: Any, ctx_label: str, surface: str, labels: Optional[Tuple[str, ...]] = None
 ) -> Tuple[RegimeATRBlock, List[str]]:
     """Validate + parse the `trend_regime` shape. Returns (block, errors).
 
@@ -105,6 +120,7 @@ def parse_regime_atr_block(
     whether close_fraction is allowed inside per-regime entries.
     """
     errs: List[str] = []
+    labels = tuple(labels or CANONICAL_TREND_REGIME_LABELS)
     if raw is None:
         return RegimeATRBlock(), errs
     if not isinstance(raw, dict):
@@ -164,15 +180,15 @@ def parse_regime_atr_block(
         )
         return RegimeATRBlock(), errs
 
-    valid_labels = set(CANONICAL_TREND_REGIME_LABELS)
+    valid_labels = set(labels)
     unknown_labels = sorted([k for k in trend_raw.keys() if k not in valid_labels])
     for k in unknown_labels:
         errs.append(
             f"{ctx_label}.{REGIME_CLASSIFIER_KEY}: unknown regime label {k!r} "
-            f"(expected one of: {', '.join(CANONICAL_TREND_REGIME_LABELS)})"
+            f"(expected one of: {', '.join(labels)})"
         )
 
-    missing_labels = [l for l in CANONICAL_TREND_REGIME_LABELS if l not in trend_raw]
+    missing_labels = [l for l in labels if l not in trend_raw]
     if missing_labels:
         errs.append(
             f"{ctx_label}.{REGIME_CLASSIFIER_KEY}: missing required regime labels: "
@@ -183,7 +199,7 @@ def parse_regime_atr_block(
     allow_frac = surface == SURFACE_TP_TIER_WITH_FRAC
     allowed_entry_keys = {"atr"} | ({"close_fraction"} if allow_frac else set())
 
-    for label in CANONICAL_TREND_REGIME_LABELS:
+    for label in labels:
         entry_raw = trend_raw.get(label)
         if entry_raw is None:
             continue
@@ -277,7 +293,10 @@ class RegimeTierSpec:
 
 
 def parse_regime_tp_tiers(
-    raw_tiers: Any, ctx_label: str, use_defaults: bool
+    raw_tiers: Any,
+    ctx_label: str,
+    use_defaults: bool,
+    labels: Optional[Tuple[str, ...]] = None,
 ) -> Tuple[List[RegimeTierSpec], List[str]]:
     """Parse the tier list for tiered_tp_atr_regime / tiered_tp_atr_live_regime.
 
@@ -289,6 +308,7 @@ def parse_regime_tp_tiers(
     is fine (one tier per-regime, another tier scalar).
     """
     errs: List[str] = []
+    labels = tuple(labels or CANONICAL_TREND_REGIME_LABELS)
     if use_defaults:
         if raw_tiers is not None:
             errs.append(
@@ -300,10 +320,16 @@ def parse_regime_tp_tiers(
         # close_fraction (HasCloseFrac=True).
         out: List[RegimeTierSpec] = []
         for default_block in REGIME_ATR_DEFAULTS_TP_TIERS:
-            # Deep copy so caller mutations don't bleed back into the table.
+            # Deep copy and expand composite labels onto their ADX-family
+            # defaults so Python mirrors Go's defaultRegimeTPTiersForRegime.
+            expanded: Dict[str, RegimeATREntry] = {}
+            for label in labels:
+                entry = _default_entry_for_label(default_block.trend_regime, label)
+                if entry is not None:
+                    expanded[label] = entry
             block_copy = RegimeATRBlock(
                 use_defaults=True,
-                trend_regime={k: v for k, v in default_block.trend_regime.items()},
+                trend_regime=expanded,
             )
             out.append(RegimeTierSpec(block=block_copy, tier_close_fraction=None))
         return out, errs
@@ -354,7 +380,12 @@ def parse_regime_tp_tiers(
         # block shape.
         tier_subset = {k: v for k, v in item.items() if k != "close_fraction"}
         sub_label = f"{ctx_label}.tiers[{idx}]"
-        block, sub_errs = parse_regime_atr_block(tier_subset, sub_label, surface)
+        block, sub_errs = parse_regime_atr_block(
+            tier_subset,
+            sub_label,
+            surface,
+            labels=labels,
+        )
         errs.extend(sub_errs)
 
         tier_frac: Optional[float] = None

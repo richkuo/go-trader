@@ -757,6 +757,83 @@ func TestRunPostTPStopLossAdjustment_TrailFromHereTransition(t *testing.T) {
 	}
 }
 
+func TestRunPostTPStopLossAdjustment_TPATRFractionUsesFiringTierMultiple(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	var gotTrigger float64
+	runHyperliquidUpdateStopLossFunc = func(_, _, _ string, _, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		gotTrigger = triggerPx
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
+	}
+
+	sc := postTPSLTestStrategy(nil, []interface{}{
+		map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5, "sl_after": map[string]interface{}{
+			"trail_from_here": map[string]interface{}{"tp_atr_fraction": 0.5},
+		}},
+		map[string]interface{}{"atr_multiple": 4.0, "close_fraction": 1.0},
+	})
+	pos := &Position{
+		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 1.0,
+		AvgCost: 100, EntryATR: 5, Side: "long",
+		StopLossOID:              111,
+		StopLossTriggerPx:        95,
+		TPOIDs:                   []int64{0, 222},
+		TPArmedTiers:             []bool{true, true},
+		SLAdjustedTiersProcessed: 0,
+	}
+	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
+	var mu sync.RWMutex
+
+	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil) {
+		t.Fatal("expected runPostTPStopLossAdjustment to apply")
+	}
+	// TP1 fired at 2×ATR; tp_atr_fraction=0.5 resolves to a 1×ATR trail.
+	if gotTrigger != 105 {
+		t.Fatalf("trigger=%v, want 105", gotTrigger)
+	}
+	if pos.PostTPTrailingATRMult == nil || *pos.PostTPTrailingATRMult != 1.0 {
+		t.Fatalf("PostTPTrailingATRMult=%v, want 1.0", pos.PostTPTrailingATRMult)
+	}
+}
+
+func TestRunPostTPStopLossAdjustment_TPATRFractionUsesDefaultTierMultiple(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	var gotTrigger float64
+	runHyperliquidUpdateStopLossFunc = func(_, _, _ string, _, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		gotTrigger = triggerPx
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
+	}
+
+	sc := postTPSLTestStrategy(map[string]interface{}{
+		"trail_from_here": map[string]interface{}{"tp_atr_fraction": 0.5},
+	}, nil)
+	pos := &Position{
+		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 1.0,
+		AvgCost: 100, EntryATR: 5, Side: "long",
+		StopLossOID:              111,
+		StopLossTriggerPx:        95,
+		TPOIDs:                   []int64{0, 222},
+		TPArmedTiers:             []bool{true, true},
+		SLAdjustedTiersProcessed: 0,
+	}
+	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
+	var mu sync.RWMutex
+
+	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil) {
+		t.Fatal("expected runPostTPStopLossAdjustment to apply")
+	}
+	// Default TP1 is 1×ATR; tp_atr_fraction=0.5 resolves to a 0.5×ATR trail.
+	if gotTrigger != 107.5 {
+		t.Fatalf("trigger=%v, want 107.5", gotTrigger)
+	}
+	if pos.PostTPTrailingATRMult == nil || *pos.PostTPTrailingATRMult != 0.5 {
+		t.Fatalf("PostTPTrailingATRMult=%v, want 0.5", pos.PostTPTrailingATRMult)
+	}
+}
+
 func TestRunPostTPStopLossAdjustment_TrailDefersWithoutMark(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -1172,6 +1249,18 @@ func TestParseSLAfterRule_RegimeTrailFromHere(t *testing.T) {
 	}
 	if got.TrailATRMult != 0 {
 		t.Fatalf("scalar trail_atr_mult should be zero, got %g", got.TrailATRMult)
+	}
+}
+
+func TestParseSLAfterRule_TPATRFractionScalar(t *testing.T) {
+	got, err := parseSLAfterRule(map[string]interface{}{
+		"trail_from_here": map[string]interface{}{"tp_atr_fraction": 0.5},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Kind != "trail_from_here" {
+		t.Fatalf("kind = %q, want trail_from_here", got.Kind)
 	}
 }
 

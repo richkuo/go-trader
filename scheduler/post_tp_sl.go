@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -31,6 +32,47 @@ type SLAfterRule struct {
 	// (validated at config-load via the regimeSurfaceSLAfterTrail surface).
 	// Kind must be "trail_from_here". #736.
 	TrailATRRegime *RegimeATRBlock
+	// TPATRFraction derives a trail_from_here distance from the firing TP
+	// tier's own ATR multiple: trail_atr_mult = fraction * tier.atr_multiple.
+	// Mutually exclusive with TrailATRMult / TrailATRRegime.
+	TPATRFraction float64
+	// TPATRFractionRegime supplies the tp_atr_fraction per regime. Values are
+	// resolved at fire time, then multiplied by the firing tier multiple.
+	TPATRFractionRegime *RegimeFloatBlock
+}
+
+// RegimeFloatBlock is a small resolver for regime-keyed scalar values whose
+// config shape is `{"trend_regime": {"label": number}}`.
+type RegimeFloatBlock struct {
+	TrendRegime map[string]float64
+}
+
+func (b *RegimeFloatBlock) Resolve(regime string) (float64, bool) {
+	if b == nil || len(b.TrendRegime) == 0 {
+		return 0, false
+	}
+	v, ok := b.TrendRegime[strings.TrimSpace(regime)]
+	return v, ok
+}
+
+func (b *RegimeFloatBlock) EqualForReload(other *RegimeFloatBlock) bool {
+	aZero := b == nil || len(b.TrendRegime) == 0
+	bZero := other == nil || len(other.TrendRegime) == 0
+	if aZero != bZero {
+		return false
+	}
+	if aZero {
+		return true
+	}
+	if len(b.TrendRegime) != len(other.TrendRegime) {
+		return false
+	}
+	for k, va := range b.TrendRegime {
+		if vb, ok := other.TrendRegime[k]; !ok || vb != va {
+			return false
+		}
+	}
+	return true
 }
 
 // IsEmpty reports whether the rule is a no-op.
@@ -39,7 +81,7 @@ func (r SLAfterRule) IsEmpty() bool { return r.Kind == "" }
 // HasRegime reports whether the rule's active multiplier comes from a regime
 // block (vs the scalar ATRMult / TrailATRMult fields).
 func (r SLAfterRule) HasRegime() bool {
-	return r.ATRRegime != nil || r.TrailATRRegime != nil
+	return r.ATRRegime != nil || r.TrailATRRegime != nil || r.TPATRFractionRegime != nil
 }
 
 // resolveForRegime collapses a regime-aware rule into the scalar form for the
@@ -49,6 +91,10 @@ func (r SLAfterRule) HasRegime() bool {
 // (next cycle, with a stamped pos.Regime, retries). Scalar rules pass through
 // unchanged.
 func (r SLAfterRule) resolveForRegime(regime string) (SLAfterRule, bool) {
+	return r.resolveForRegimeAndTier(regime, 0)
+}
+
+func (r SLAfterRule) resolveForRegimeAndTier(regime string, tierMultiple float64) (SLAfterRule, bool) {
 	switch r.Kind {
 	case "atr_offset":
 		if r.ATRRegime == nil {
@@ -60,6 +106,19 @@ func (r SLAfterRule) resolveForRegime(regime string) (SLAfterRule, bool) {
 		}
 		return SLAfterRule{Kind: "atr_offset", ATRMult: entry.ATR}, true
 	case "trail_from_here":
+		if r.TPATRFractionRegime != nil {
+			frac, ok := r.TPATRFractionRegime.Resolve(regime)
+			if !ok || frac <= 0 || tierMultiple <= 0 {
+				return SLAfterRule{}, false
+			}
+			return SLAfterRule{Kind: "trail_from_here", TrailATRMult: frac * tierMultiple}, true
+		}
+		if r.TPATRFraction > 0 {
+			if tierMultiple <= 0 {
+				return SLAfterRule{}, false
+			}
+			return SLAfterRule{Kind: "trail_from_here", TrailATRMult: r.TPATRFraction * tierMultiple}, true
+		}
 		if r.TrailATRRegime == nil {
 			return r, true
 		}
@@ -79,13 +138,17 @@ func (r SLAfterRule) resolveForRegime(regime string) (SLAfterRule, bool) {
 // — scalar↔regime and use_defaults↔explicit shape changes both surface as
 // !Equal so an open position blocks the reload.
 func (r SLAfterRule) Equal(other SLAfterRule) bool {
-	if r.Kind != other.Kind || r.ATRMult != other.ATRMult || r.TrailATRMult != other.TrailATRMult {
+	if r.Kind != other.Kind || r.ATRMult != other.ATRMult ||
+		r.TrailATRMult != other.TrailATRMult || r.TPATRFraction != other.TPATRFraction {
 		return false
 	}
 	if !r.ATRRegime.EqualForReload(other.ATRRegime) {
 		return false
 	}
 	if !r.TrailATRRegime.EqualForReload(other.TrailATRRegime) {
+		return false
+	}
+	if !r.TPATRFractionRegime.EqualForReload(other.TPATRFractionRegime) {
 		return false
 	}
 	return true
@@ -168,13 +231,13 @@ func validateSLAfterRule(rule SLAfterRule) error {
 	case "":
 		return nil
 	case "breakeven":
-		if rule.ATRRegime != nil || rule.TrailATRRegime != nil {
-			return errors.New("sl_after breakeven does not accept a trend_regime block")
+		if rule.ATRRegime != nil || rule.TrailATRRegime != nil || rule.TPATRFractionRegime != nil || rule.TPATRFraction != 0 {
+			return errors.New("sl_after breakeven does not accept trend_regime or tp_atr_fraction")
 		}
 		return nil
 	case "atr_offset":
-		if rule.TrailATRRegime != nil {
-			return errors.New("sl_after atr_offset accepts trend_regime under atr, not trail_from_here.atr")
+		if rule.TrailATRRegime != nil || rule.TPATRFractionRegime != nil || rule.TPATRFraction != 0 {
+			return errors.New("sl_after atr_offset accepts trend_regime under atr, not trail_from_here trail fields")
 		}
 		// Scalar atr_mult of zero is legal (== breakeven). Regime variant
 		// validates per-label atr at parse time via regimeSurfaceSLAfter.
@@ -183,11 +246,21 @@ func validateSLAfterRule(rule SLAfterRule) error {
 		if rule.ATRRegime != nil {
 			return errors.New("sl_after trail_from_here accepts trend_regime under trail_from_here.atr, not at the top level")
 		}
-		// Scalar form requires explicit > 0; regime form is validated at
-		// parse time (regimeSurfaceSLAfterTrail enforces strictly positive
-		// per-label atr).
-		if rule.TrailATRRegime == nil && rule.TrailATRMult <= 0 {
-			return errors.New("sl_after trail_from_here requires atr_mult > 0")
+		forms := 0
+		if rule.TrailATRMult > 0 {
+			forms++
+		}
+		if rule.TrailATRRegime != nil {
+			forms++
+		}
+		if rule.TPATRFraction > 0 {
+			forms++
+		}
+		if rule.TPATRFractionRegime != nil {
+			forms++
+		}
+		if forms != 1 {
+			return errors.New("sl_after trail_from_here requires exactly one of atr_mult, trend_regime, or tp_atr_fraction")
 		}
 		return nil
 	default:
@@ -214,6 +287,14 @@ func validateSLAfterRule(rule SLAfterRule) error {
 // errors are concatenated into a single returned error (with "; " between
 // entries) so callers that surface a single error per field stay compatible.
 func parseSLAfterRule(raw interface{}) (SLAfterRule, error) {
+	return parseSLAfterRuleWithLabels(raw, canonicalTrendRegimeLabels)
+}
+
+func parseSLAfterRuleRuntime(raw interface{}) (SLAfterRule, error) {
+	return parseSLAfterRuleWithLabels(raw, nil)
+}
+
+func parseSLAfterRuleWithLabels(raw interface{}, labels []string) (SLAfterRule, error) {
 	if raw == nil {
 		return SLAfterRule{}, nil
 	}
@@ -240,9 +321,9 @@ func parseSLAfterRule(raw interface{}) (SLAfterRule, error) {
 			case "breakeven":
 				return SLAfterRule{Kind: "breakeven"}, nil
 			case "atr_offset":
-				return parseSLAfterATROffset(v, "sl_after kind=atr_offset")
+				return parseSLAfterATROffset(v, "sl_after kind=atr_offset", labels)
 			case "trail_from_here":
-				return parseSLAfterTrailFromHere(v, "sl_after kind=trail_from_here")
+				return parseSLAfterTrailFromHere(v, "sl_after kind=trail_from_here", labels)
 			default:
 				return SLAfterRule{}, fmt.Errorf("sl_after kind %q is not recognized", kind)
 			}
@@ -253,15 +334,15 @@ func parseSLAfterRule(raw interface{}) (SLAfterRule, error) {
 			if !isMap {
 				return SLAfterRule{}, fmt.Errorf("sl_after.trail_from_here must be an object, got %T", trailRaw)
 			}
-			return parseSLAfterTrailFromHere(trailMap, "sl_after.trail_from_here")
+			return parseSLAfterTrailFromHere(trailMap, "sl_after.trail_from_here", labels)
 		}
 		// Implicit discrimination: trend_regime at top level → atr_offset regime.
 		if _, ok := v[regimeClassifierKey]; ok {
-			return parseSLAfterATROffset(v, "sl_after")
+			return parseSLAfterATROffset(v, "sl_after", labels)
 		}
 		// Implicit discrimination: atr_mult at top level → atr_offset scalar.
 		if _, ok := firstNonNil(v, "atr_mult", "atr_offset"); ok {
-			return parseSLAfterATROffset(v, "sl_after atr_mult")
+			return parseSLAfterATROffset(v, "sl_after atr_mult", labels)
 		}
 		// `use_defaults: true` at the top level is ambiguous between
 		// atr_offset and trail_from_here — the operator has to nest it
@@ -288,7 +369,7 @@ var scalarMultKeysTrailFromHere = []string{"atr_mult", "trail_atr_mult", "atr_of
 // parseSLAfterATROffset parses the atr_offset variant — either scalar
 // (atr_mult / atr_offset) or regime (trend_regime / use_defaults). ctxLabel
 // is prefixed onto regime sub-errors so per-label problems are attributable.
-func parseSLAfterATROffset(m map[string]interface{}, ctxLabel string) (SLAfterRule, error) {
+func parseSLAfterATROffset(m map[string]interface{}, ctxLabel string, labels []string) (SLAfterRule, error) {
 	_, hasTrend := m[regimeClassifierKey]
 	_, hasUseDefaults := m["use_defaults"]
 	if hasTrend || hasUseDefaults {
@@ -302,7 +383,7 @@ func parseSLAfterATROffset(m map[string]interface{}, ctxLabel string) (SLAfterRu
 		if hasUseDefaults {
 			regimeRaw["use_defaults"] = m["use_defaults"]
 		}
-		block, subErrs := parseRegimeATRBlock(regimeRaw, ctxLabel, regimeSurfaceSLAfter, canonicalTrendRegimeLabels)
+		block, subErrs := parseRegimeATRBlock(regimeRaw, ctxLabel, regimeSurfaceSLAfter, slAfterLabelsForRaw(regimeRaw, labels))
 		if len(subErrs) > 0 {
 			return SLAfterRule{}, errors.New(strings.Join(subErrs, "; "))
 		}
@@ -321,9 +402,22 @@ func parseSLAfterATROffset(m map[string]interface{}, ctxLabel string) (SLAfterRu
 // scalar (atr_mult / trail_atr_mult) or regime (trend_regime / use_defaults).
 // The regime form uses regimeSurfaceSLAfterTrail so per-label atr must be
 // strictly positive (trail distance is a magnitude).
-func parseSLAfterTrailFromHere(m map[string]interface{}, ctxLabel string) (SLAfterRule, error) {
+func parseSLAfterTrailFromHere(m map[string]interface{}, ctxLabel string, labels []string) (SLAfterRule, error) {
 	_, hasTrend := m[regimeClassifierKey]
 	_, hasUseDefaults := m["use_defaults"]
+	if tpRaw, hasTPFraction := m["tp_atr_fraction"]; hasTPFraction {
+		if hasTrend || hasUseDefaults {
+			return SLAfterRule{}, fmt.Errorf("%s: cannot combine tp_atr_fraction with trend_regime/use_defaults — pick one trail_from_here shape", ctxLabel)
+		}
+		if _, ok := firstNonNil(m, scalarMultKeysTrailFromHere...); ok {
+			return SLAfterRule{}, fmt.Errorf("%s: cannot combine tp_atr_fraction with atr_mult/trail_atr_mult/atr_offset — pick one shape", ctxLabel)
+		}
+		rule, err := parseSLAfterTPATRFraction(tpRaw, ctxLabel+".tp_atr_fraction", labels)
+		if err != nil {
+			return SLAfterRule{}, err
+		}
+		return rule, validateSLAfterRule(rule)
+	}
 	if hasTrend || hasUseDefaults {
 		if _, ok := firstNonNil(m, scalarMultKeysTrailFromHere...); ok {
 			return SLAfterRule{}, fmt.Errorf("%s: cannot combine scalar atr_mult/trail_atr_mult/atr_offset with trend_regime/use_defaults — pick one shape", ctxLabel)
@@ -335,7 +429,7 @@ func parseSLAfterTrailFromHere(m map[string]interface{}, ctxLabel string) (SLAft
 		if hasUseDefaults {
 			regimeRaw["use_defaults"] = m["use_defaults"]
 		}
-		block, subErrs := parseRegimeATRBlock(regimeRaw, ctxLabel, regimeSurfaceSLAfterTrail, canonicalTrendRegimeLabels)
+		block, subErrs := parseRegimeATRBlock(regimeRaw, ctxLabel, regimeSurfaceSLAfterTrail, slAfterLabelsForRaw(regimeRaw, labels))
 		if len(subErrs) > 0 {
 			return SLAfterRule{}, errors.New(strings.Join(subErrs, "; "))
 		}
@@ -350,6 +444,114 @@ func parseSLAfterTrailFromHere(m map[string]interface{}, ctxLabel string) (SLAft
 	return rule, validateSLAfterRule(rule)
 }
 
+func parseSLAfterTPATRFraction(raw interface{}, ctxLabel string, labels []string) (SLAfterRule, error) {
+	switch v := raw.(type) {
+	case map[string]interface{}:
+		block, errs := parseRegimeFloatBlock(v, ctxLabel, slAfterLabelsForRaw(v, labels))
+		if len(errs) > 0 {
+			return SLAfterRule{}, errors.New(strings.Join(errs, "; "))
+		}
+		return SLAfterRule{Kind: "trail_from_here", TPATRFractionRegime: &block}, nil
+	default:
+		frac, err := floatFromAnyChecked(raw)
+		if err != nil {
+			return SLAfterRule{}, fmt.Errorf("%s: %w", ctxLabel, err)
+		}
+		if frac <= 0 {
+			return SLAfterRule{}, fmt.Errorf("%s: must be > 0, got %g", ctxLabel, frac)
+		}
+		return SLAfterRule{Kind: "trail_from_here", TPATRFraction: frac}, nil
+	}
+}
+
+func parseRegimeFloatBlock(raw map[string]interface{}, ctxLabel string, labels []string) (RegimeFloatBlock, []string) {
+	var errs []string
+	for k := range raw {
+		if k != regimeClassifierKey {
+			errs = append(errs, fmt.Sprintf("%s: unknown key %q (expected %q)", ctxLabel, k, regimeClassifierKey))
+		}
+	}
+	trendRaw, ok := raw[regimeClassifierKey]
+	if !ok {
+		errs = append(errs, fmt.Sprintf("%s: missing %q", ctxLabel, regimeClassifierKey))
+		return RegimeFloatBlock{}, errs
+	}
+	trend, ok := trendRaw.(map[string]interface{})
+	if !ok {
+		errs = append(errs, fmt.Sprintf("%s.%s: must be an object, got %T", ctxLabel, regimeClassifierKey, trendRaw))
+		return RegimeFloatBlock{}, errs
+	}
+	if len(labels) == 0 {
+		labels = canonicalTrendRegimeLabels
+	}
+	valid := map[string]bool{}
+	for _, label := range labels {
+		valid[label] = true
+	}
+	unknown := make([]string, 0)
+	for label := range trend {
+		if !valid[label] {
+			unknown = append(unknown, label)
+		}
+	}
+	sort.Strings(unknown)
+	for _, label := range unknown {
+		errs = append(errs, fmt.Sprintf("%s.%s: unknown regime label %q (expected one of: %s)",
+			ctxLabel, regimeClassifierKey, label, strings.Join(labels, ", ")))
+	}
+	missing := make([]string, 0)
+	for _, label := range labels {
+		if _, ok := trend[label]; !ok {
+			missing = append(missing, label)
+		}
+	}
+	if len(missing) > 0 {
+		errs = append(errs, fmt.Sprintf("%s.%s: missing required regime labels: %s (must be exhaustive — no silent fallback)",
+			ctxLabel, regimeClassifierKey, strings.Join(missing, ", ")))
+	}
+	out := RegimeFloatBlock{TrendRegime: map[string]float64{}}
+	for _, label := range labels {
+		rawEntry, ok := trend[label]
+		if !ok {
+			continue
+		}
+		frac, err := floatFromAnyChecked(rawEntry)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s.%s.%s: %v", ctxLabel, regimeClassifierKey, label, err))
+			continue
+		}
+		if frac <= 0 {
+			errs = append(errs, fmt.Sprintf("%s.%s.%s: must be > 0, got %g", ctxLabel, regimeClassifierKey, label, frac))
+			continue
+		}
+		out.TrendRegime[label] = frac
+	}
+	if len(errs) > 0 {
+		return RegimeFloatBlock{}, errs
+	}
+	return out, nil
+}
+
+func slAfterLabelsForRaw(raw interface{}, labels []string) []string {
+	if labels != nil {
+		return labels
+	}
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return canonicalTrendRegimeLabels
+	}
+	trend, ok := m[regimeClassifierKey].(map[string]interface{})
+	if !ok || len(trend) == 0 {
+		return canonicalTrendRegimeLabels
+	}
+	out := make([]string, 0, len(trend))
+	for label := range trend {
+		out = append(out, label)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func firstNonNil(m map[string]interface{}, keys ...string) (interface{}, bool) {
 	for _, k := range keys {
 		if v, ok := m[k]; ok && v != nil {
@@ -362,8 +564,10 @@ func firstNonNil(m map[string]interface{}, keys ...string) (interface{}, bool) {
 // tierSLAfterRules carries the strategy-level default plus per-tier overrides
 // (aligned with strategyTPTiers output by ascending atr_multiple).
 type tierSLAfterRules struct {
-	Default SLAfterRule
-	PerTier []SLAfterRule
+	Default          SLAfterRule
+	PerTier          []SLAfterRule
+	Multiples        []float64
+	TierFingerprints []string
 }
 
 // ForTier returns the rule to apply when tier index idx fires: tier-level
@@ -374,6 +578,13 @@ func (r tierSLAfterRules) ForTier(idx int) SLAfterRule {
 		return r.PerTier[idx]
 	}
 	return r.Default
+}
+
+func (r tierSLAfterRules) TierMultiple(idx int) float64 {
+	if idx >= 0 && idx < len(r.Multiples) {
+		return r.Multiples[idx]
+	}
+	return 0
 }
 
 // HasAny reports whether the strategy configures any sl_after rule (default or
@@ -390,6 +601,18 @@ func (r tierSLAfterRules) HasAny() bool {
 	return false
 }
 
+func (r tierSLAfterRules) UsesTPATRFraction() bool {
+	if r.Default.TPATRFraction > 0 || r.Default.TPATRFractionRegime != nil {
+		return true
+	}
+	for _, rule := range r.PerTier {
+		if rule.TPATRFraction > 0 || rule.TPATRFractionRegime != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // EqualForReload reports whether two rule sets are equivalent for SIGHUP
 // hot-reload gating: same strategy-level default AND same per-tier rule at
 // every index. Trailing empty PerTier entries are ignored so that
@@ -399,9 +622,13 @@ func (r tierSLAfterRules) HasAny() bool {
 // Uses SLAfterRule.Equal so scalar↔regime and use_defaults↔explicit shape
 // changes inside any rule surface as a config-load mismatch (#736).
 func (r tierSLAfterRules) EqualForReload(other tierSLAfterRules) bool {
+	if !r.HasAny() && !other.HasAny() {
+		return true
+	}
 	if !r.Default.Equal(other.Default) {
 		return false
 	}
+	compareTierMetadata := r.UsesTPATRFraction() || other.UsesTPATRFraction()
 	maxLen := len(r.PerTier)
 	if len(other.PerTier) > maxLen {
 		maxLen = len(other.PerTier)
@@ -417,6 +644,29 @@ func (r tierSLAfterRules) EqualForReload(other tierSLAfterRules) bool {
 		if !a.Equal(b) {
 			return false
 		}
+		if !compareTierMetadata {
+			continue
+		}
+		am, bm := 0.0, 0.0
+		if i < len(r.Multiples) {
+			am = r.Multiples[i]
+		}
+		if i < len(other.Multiples) {
+			bm = other.Multiples[i]
+		}
+		if am != bm {
+			return false
+		}
+		af, bf := "", ""
+		if i < len(r.TierFingerprints) {
+			af = r.TierFingerprints[i]
+		}
+		if i < len(other.TierFingerprints) {
+			bf = other.TierFingerprints[i]
+		}
+		if af != bf {
+			return false
+		}
 	}
 	return true
 }
@@ -426,26 +676,40 @@ func (r tierSLAfterRules) EqualForReload(other tierSLAfterRules) bool {
 // errs is non-nil when individual fields are malformed; callers may surface
 // them at config-load time but the parser still returns whatever it could.
 func parseStrategyTPSLAfterRules(sc StrategyConfig) (rules tierSLAfterRules, errs []string) {
+	return parseStrategyTPSLAfterRulesForRegime(sc, nil, "")
+}
+
+func parseStrategyTPSLAfterRulesWithLabels(sc StrategyConfig, labels []string) (rules tierSLAfterRules, errs []string) {
+	return parseStrategyTPSLAfterRulesForRegime(sc, labels, "")
+}
+
+func parseStrategyTPSLAfterRulesForRegime(sc StrategyConfig, labels []string, regime string) (rules tierSLAfterRules, errs []string) {
 	if !strategyUsesTieredTPATRClose(sc) {
 		return rules, nil
 	}
 	var defaultRaw interface{}
 	var tiersRaw interface{}
+	tieredName := ""
+	regimeUseDefaults := false
 	for _, ref := range sc.CloseStrategies {
 		n := strings.ToLower(strings.TrimSpace(ref.Name))
-		if n != "tiered_tp_atr" && n != "tiered_tp_atr_live" {
+		if !isTieredTPATRCloseName(n) {
 			continue
 		}
+		tieredName = n
 		if v, ok := ref.Params["sl_after"]; ok {
 			defaultRaw = v
 		}
 		if v, ok := ref.Params["tiers"]; ok {
 			tiersRaw = v
 		}
+		if v, ok := ref.Params["use_defaults"].(bool); ok {
+			regimeUseDefaults = v
+		}
 		break
 	}
 	if defaultRaw != nil {
-		r, err := parseSLAfterRule(defaultRaw)
+		r, err := parseSLAfterRuleWithLabels(defaultRaw, labels)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("sl_after (strategy-level): %v", err))
 		} else if err := validateSLAfterRule(r); err != nil {
@@ -454,13 +718,23 @@ func parseStrategyTPSLAfterRules(sc StrategyConfig) (rules tierSLAfterRules, err
 			rules.Default = r
 		}
 	}
+	if tieredName == "tiered_tp_atr_regime" || tieredName == "tiered_tp_atr_live_regime" {
+		rules, regimeErrs := parseRegimeStrategyTPSLAfterRules(sc, tieredName, defaultRaw, tiersRaw, labels, regime, regimeUseDefaults, rules)
+		errs = append(errs, regimeErrs...)
+		return rules, errs
+	}
 	items, ok := tiersRaw.([]interface{})
-	if !ok {
+	if !ok || len(items) == 0 {
+		if rules.HasAny() {
+			rules.Multiples = []float64{1, 2}
+			rules.TierFingerprints = []string{"default:1", "default:2"}
+		}
 		return rules, errs
 	}
 	type pair struct {
-		multiple float64
-		rule     SLAfterRule
+		multiple    float64
+		rule        SLAfterRule
+		fingerprint string
 	}
 	pairs := make([]pair, 0, len(items))
 	for idx, item := range items {
@@ -474,7 +748,7 @@ func parseStrategyTPSLAfterRules(sc StrategyConfig) (rules tierSLAfterRules, err
 		}
 		var r SLAfterRule
 		if raw, ok := m["sl_after"]; ok && raw != nil {
-			parsed, perr := parseSLAfterRule(raw)
+			parsed, perr := parseSLAfterRuleWithLabels(raw, labels)
 			if perr != nil {
 				errs = append(errs, fmt.Sprintf("sl_after (tier[%d]): %v", idx, perr))
 			} else if verr := validateSLAfterRule(parsed); verr != nil {
@@ -483,14 +757,131 @@ func parseStrategyTPSLAfterRules(sc StrategyConfig) (rules tierSLAfterRules, err
 				r = parsed
 			}
 		}
-		pairs = append(pairs, pair{multiple: mult, rule: r})
+		pairs = append(pairs, pair{multiple: mult, rule: r, fingerprint: slAfterTierFingerprint(m)})
 	}
 	sort.SliceStable(pairs, func(i, j int) bool { return pairs[i].multiple < pairs[j].multiple })
 	rules.PerTier = make([]SLAfterRule, len(pairs))
+	rules.Multiples = make([]float64, len(pairs))
+	rules.TierFingerprints = make([]string, len(pairs))
 	for i, p := range pairs {
 		rules.PerTier[i] = p.rule
+		rules.Multiples[i] = p.multiple
+		rules.TierFingerprints[i] = p.fingerprint
 	}
 	return rules, errs
+}
+
+func parseRegimeStrategyTPSLAfterRules(sc StrategyConfig, tieredName string, defaultRaw, tiersRaw interface{}, labels []string, regime string, useDefaults bool, rules tierSLAfterRules) (tierSLAfterRules, []string) {
+	var errs []string
+	items, ok := tiersRaw.([]interface{})
+	if !ok {
+		if useDefaults && strings.TrimSpace(regime) != "" && rules.HasAny() {
+			tiers := defaultRegimeTPTiersForRegime(regime)
+			rules.Multiples = make([]float64, len(tiers))
+			rules.TierFingerprints = make([]string, len(tiers))
+			for i, tier := range tiers {
+				rules.Multiples[i] = tier.Multiple
+				rules.TierFingerprints[i] = fmt.Sprintf("use_defaults:%g", tier.Multiple)
+			}
+		}
+		return rules, errs
+	}
+	parseRule := func(idx int, raw interface{}) SLAfterRule {
+		if raw == nil {
+			return SLAfterRule{}
+		}
+		parsed, perr := parseSLAfterRuleWithLabels(raw, labels)
+		if perr != nil {
+			errs = append(errs, fmt.Sprintf("sl_after (tier[%d]): %v", idx, perr))
+			return SLAfterRule{}
+		}
+		if verr := validateSLAfterRule(parsed); verr != nil {
+			errs = append(errs, fmt.Sprintf("sl_after (tier[%d]): %v", idx, verr))
+			return SLAfterRule{}
+		}
+		return parsed
+	}
+	if strings.TrimSpace(regime) == "" {
+		rules.PerTier = make([]SLAfterRule, 0, len(items))
+		rules.TierFingerprints = make([]string, 0, len(items))
+		for idx, item := range items {
+			m, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			rules.PerTier = append(rules.PerTier, parseRule(idx, m["sl_after"]))
+			rules.TierFingerprints = append(rules.TierFingerprints, slAfterTierFingerprint(m))
+		}
+		return rules, errs
+	}
+	specs, tierErrs := parseRegimeTPTiers(tiersRaw, tieredName, slAfterLabelsForRegimeTiers(tiersRaw, labels))
+	errs = append(errs, tierErrs...)
+	if len(tierErrs) > 0 {
+		return rules, errs
+	}
+	type pair struct {
+		multiple    float64
+		rule        SLAfterRule
+		fingerprint string
+	}
+	pairs := make([]pair, 0, len(specs))
+	for idx, spec := range specs {
+		entry, ok := spec.Block.Resolve(regime)
+		if !ok || entry.ATR <= 0 {
+			errs = append(errs, fmt.Sprintf("%s.tiers[%d]: regime %q resolved to no atr for sl_after tier alignment", tieredName, idx, regime))
+			continue
+		}
+		var raw interface{}
+		if idx < len(items) {
+			if m, ok := items[idx].(map[string]interface{}); ok {
+				raw = m["sl_after"]
+			}
+		}
+		fp := ""
+		if idx < len(items) {
+			if m, ok := items[idx].(map[string]interface{}); ok {
+				fp = slAfterTierFingerprint(m)
+			}
+		}
+		pairs = append(pairs, pair{multiple: entry.ATR, rule: parseRule(idx, raw), fingerprint: fp})
+	}
+	sort.SliceStable(pairs, func(i, j int) bool { return pairs[i].multiple < pairs[j].multiple })
+	rules.PerTier = make([]SLAfterRule, len(pairs))
+	rules.Multiples = make([]float64, len(pairs))
+	rules.TierFingerprints = make([]string, len(pairs))
+	for i, p := range pairs {
+		rules.PerTier[i] = p.rule
+		rules.Multiples[i] = p.multiple
+		rules.TierFingerprints[i] = p.fingerprint
+	}
+	_ = sc
+	_ = defaultRaw
+	return rules, errs
+}
+
+func slAfterTierFingerprint(m map[string]interface{}) string {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Sprintf("%v", m)
+	}
+	return string(b)
+}
+
+func slAfterLabelsForRegimeTiers(raw interface{}, labels []string) []string {
+	if labels != nil {
+		return labels
+	}
+	return regimeLabelsFromTierRaw(raw)
+}
+
+func strategyUsesRegimeTieredTPATRClose(sc StrategyConfig) bool {
+	for _, ref := range sc.CloseStrategies {
+		n := strings.ToLower(strings.TrimSpace(ref.Name))
+		if n == "tiered_tp_atr_regime" || n == "tiered_tp_atr_live_regime" {
+			return true
+		}
+	}
+	return false
 }
 
 // validatePostTPStopLossRules returns config-load errors for a single
@@ -505,11 +896,15 @@ func parseStrategyTPSLAfterRules(sc StrategyConfig) (rules tierSLAfterRules, err
 //     sl_after under e.g. tp_at_pct would silently get no SL bumps. Better to
 //     fail loud at load than to swallow the intent.
 func validatePostTPStopLossRules(sc StrategyConfig) []string {
-	rules, errs := parseStrategyTPSLAfterRules(sc)
+	return validatePostTPStopLossRulesWithLabels(sc, canonicalTrendRegimeLabels)
+}
+
+func validatePostTPStopLossRulesWithLabels(sc StrategyConfig, labels []string) []string {
+	rules, errs := parseStrategyTPSLAfterRulesWithLabels(sc, labels)
 	out := append([]string(nil), errs...)
 	for _, ref := range sc.CloseStrategies {
 		n := strings.ToLower(strings.TrimSpace(ref.Name))
-		if n == "tiered_tp_atr" || n == "tiered_tp_atr_live" {
+		if isTieredTPATRCloseName(n) {
 			continue
 		}
 		if _, ok := ref.Params["sl_after"]; ok {
@@ -535,10 +930,11 @@ func validatePostTPStopLossRules(sc StrategyConfig) []string {
 		out = append(out, "sl_after cannot be combined with trailing_stop_atr_mult or trailing_stop_pct — trailing already walks the SL continuously")
 	}
 	hasFixedSL := (sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0) ||
+		(sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero()) ||
 		(sc.StopLossPct != nil && *sc.StopLossPct > 0) ||
 		(sc.StopLossMarginPct != nil && *sc.StopLossMarginPct > 0)
 	if !hasFixedSL {
-		out = append(out, "sl_after requires a fixed stop-loss to adjust (set stop_loss_atr_mult, stop_loss_pct, or stop_loss_margin_pct)")
+		out = append(out, "sl_after requires a fixed stop-loss to adjust (set stop_loss_atr_mult, stop_loss_atr_regime, stop_loss_pct, or stop_loss_margin_pct)")
 	}
 	// trail_from_here drives the trailing-stop walker, which currently only
 	// runs for perps strategies. Reject it on manual strategies in v1.
@@ -691,7 +1087,6 @@ func runPostTPStopLossAdjustment(
 		mu.RUnlock()
 		return false
 	}
-	rawRule := rules.ForTier(clearedIdx)
 	side := pos.Side
 	avgCost := pos.AvgCost
 	entryATR := pos.EntryATR
@@ -699,6 +1094,12 @@ func runPostTPStopLossAdjustment(
 	currentOID := pos.StopLossOID
 	posRegime := positionATRRegimeLabel(pos, sc)
 	mu.RUnlock()
+
+	if strategyUsesRegimeTieredTPATRClose(sc) {
+		rules, _ = parseStrategyTPSLAfterRulesForRegime(sc, nil, posRegime)
+	}
+	rawRule := rules.ForTier(clearedIdx)
+	tierMultiple := rules.TierMultiple(clearedIdx)
 
 	// If the matched tier has no rule, advance the watermark so we stop
 	// re-evaluating it each cycle. No subprocess work.
@@ -722,7 +1123,7 @@ func runPostTPStopLossAdjustment(
 	// position's stamped regime. A missing/unstamped regime defers (no
 	// watermark advance) so the next cycle retries once stampPositionRegimeIfOpened
 	// runs. #736.
-	rule, resolved := rawRule.resolveForRegime(posRegime)
+	rule, resolved := rawRule.resolveForRegimeAndTier(posRegime, tierMultiple)
 	if !resolved {
 		if logger != nil {
 			logger.Info("post-TP SL adjustment for %s deferred: tier %d rule is regime-aware but pos.Regime=%q yields no entry",

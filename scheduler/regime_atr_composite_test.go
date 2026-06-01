@@ -263,3 +263,58 @@ func TestLoadConfig_CompositeStopLossAtrRegime(t *testing.T) {
 		t.Fatalf("runtime resolve trending_down_choppy = (%g, %v), want (1.2, true)", v, ok)
 	}
 }
+
+func TestLoadConfig_CompositeSLAfterTrailFromHere(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	dbPath := filepath.Join(dir, "state.db")
+	cfgBody := `{
+		"db_file": "` + strings.ReplaceAll(dbPath, "\\", "\\\\") + `",
+		"regime": {
+			"enabled": true, "period": 14, "adx_threshold": 20,
+			"windows": {
+				"daily": {"classifier": "composite", "period": 24, "thresholds": {"return_pct": 0.05, "range_pct": 0.03, "adx": 20}}
+			}
+		},
+		"strategies": [{
+			"id": "hl-test",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["donchian_breakout", "BTC", "1h", "--mode=paper"],
+			"capital": 1000,
+			"max_drawdown_pct": 25,
+			"leverage": 1,
+			"regime_atr_window": "daily",
+			"stop_loss_atr_mult": 1.0,
+			"close_strategies": [{
+				"name": "tiered_tp_atr",
+				"params": {
+					"sl_after": {
+						"trail_from_here": {
+							"trend_regime": {
+								"trending_up_clean": {"atr": 0.75},
+								"trending_up_choppy": {"atr": 0.5},
+								"trending_down_clean": {"atr": 0.75},
+								"trending_down_choppy": {"atr": 0.5},
+								"ranging_directional": {"atr": 0.4},
+								"ranging_volatile": {"atr": 0.4},
+								"ranging_quiet": {"atr": 0.3}
+							}
+						}
+					},
+					"tiers": [
+						{"atr_multiple": 2.0, "close_fraction": 0.5},
+						{"atr_multiple": 4.0, "close_fraction": 1.0}
+					]
+				}
+			}]
+		}]
+	}`
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := LoadConfig(cfgPath); err != nil {
+		t.Fatalf("LoadConfig must accept composite sl_after trail_from_here, got: %v", err)
+	}
+}

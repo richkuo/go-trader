@@ -497,6 +497,58 @@ def test_backtester_trail_from_here_long_walks_up():
     assert ("long", 107.0) in sides_prices, sides_prices
 
 
+def test_backtester_tp_atr_fraction_uses_firing_tier_multiple():
+    """tp_atr_fraction=0.5 on a 2×ATR TP1 resolves to a 1×ATR trail."""
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 120, 125, 128, 117],
+        closes=[100, 100, 120, 125, 128, 117, 117],
+        atrs=[10, 10, 10, 10, 10, 10, 10],
+    )
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        platform="hyperliquid", strategy_type="perps",
+        stop_loss_atr_mult=1.0,
+        close_strategies=[{
+            "name": "tiered_tp_atr",
+            "params": {
+                "sl_after": {"trail_from_here": {"tp_atr_fraction": 0.5}},
+                "tiers": [
+                    {"atr_multiple": 2.0, "close_fraction": 0.5},
+                    {"atr_multiple": 4.0, "close_fraction": 1.0},
+                ],
+            },
+        }],
+    )
+    result = bt.run(df, save=False)
+    sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
+    assert ("long", 120.0) in sides_prices, sides_prices
+    assert ("long", 117.0) in sides_prices, sides_prices
+
+
+def test_backtester_tp_atr_fraction_uses_default_tier_multiple():
+    """Default TP1 is 1×ATR, so tp_atr_fraction=0.5 resolves to 0.5×ATR."""
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 110, 115, 118, 112],
+        closes=[100, 100, 110, 115, 118, 112, 112],
+        atrs=[10, 10, 10, 10, 10, 10, 10],
+    )
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        platform="hyperliquid", strategy_type="perps",
+        stop_loss_atr_mult=1.0,
+        close_strategies=[{
+            "name": "tiered_tp_atr",
+            "params": {
+                "sl_after": {"trail_from_here": {"tp_atr_fraction": 0.5}},
+            },
+        }],
+    )
+    result = bt.run(df, save=False)
+    sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
+    assert ("long", 110.0) in sides_prices, sides_prices
+    assert ("long", 112.0) in sides_prices, sides_prices
+
+
 def test_backtester_trail_from_here_short_walks_down():
     """Mirror image for shorts: hwm tracks lowest mark, trigger sits above
     it by trail_atr_mult × ATR. Prices stay above TP2's 2×ATR ($80)
@@ -653,6 +705,78 @@ def test_backtester_validation_rejects_regime_sl_after_per_tier():
                             },
                         },
                         {"atr_multiple": 2.0, "close_fraction": 1.0},
+                    ],
+                },
+            }],
+        )
+
+
+def test_backtester_validation_rejects_regime_tp_atr_fraction():
+    with pytest.raises(ValueError, match="HL-live-only"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            platform="hyperliquid", strategy_type="perps",
+            stop_loss_atr_mult=1.0,
+            close_strategies=[{
+                "name": "tiered_tp_atr",
+                "params": {
+                    "sl_after": {
+                        "trail_from_here": {
+                            "tp_atr_fraction": {
+                                "trend_regime": {
+                                    "trending_up": 0.75,
+                                    "trending_down": 0.75,
+                                    "ranging": 0.5,
+                                },
+                            },
+                        },
+                    },
+                    "tiers": [
+                        {"atr_multiple": 2.0, "close_fraction": 0.5},
+                        {"atr_multiple": 4.0, "close_fraction": 1.0},
+                    ],
+                },
+            }],
+        )
+
+
+def test_backtester_validation_rejects_regime_tp_atr_fraction_on_regime_tier():
+    with pytest.raises(ValueError, match="HL-live-only"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            platform="hyperliquid", strategy_type="perps",
+            stop_loss_atr_mult=1.0,
+            close_strategies=[{
+                "name": "tiered_tp_atr_regime",
+                "params": {
+                    "tiers": [
+                        {
+                            "trend_regime": {
+                                "trending_up": {"atr": 2.0},
+                                "trending_down": {"atr": 2.0},
+                                "ranging": {"atr": 1.5},
+                            },
+                            "close_fraction": 0.5,
+                            "sl_after": {
+                                "trail_from_here": {
+                                    "tp_atr_fraction": {
+                                        "trend_regime": {
+                                            "trending_up": 0.75,
+                                            "trending_down": 0.75,
+                                            "ranging": 0.5,
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                        {
+                            "trend_regime": {
+                                "trending_up": {"atr": 4.0},
+                                "trending_down": {"atr": 4.0},
+                                "ranging": {"atr": 3.0},
+                            },
+                            "close_fraction": 1.0,
+                        },
                     ],
                 },
             }],

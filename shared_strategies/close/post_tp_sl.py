@@ -8,7 +8,7 @@ fills. The Go file is the source of truth for behavior; keep this in sync.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 # Absolute import (not relative) so this module loads cleanly under
 # importlib.util.spec_from_file_location — the backtester tests use that
@@ -16,6 +16,7 @@ from typing import Any, Iterable, List, Optional, Tuple
 # relative imports require a parent-package context that the loader
 # doesn't set up.
 from shared_strategies.close.regime_atr import (
+    CANONICAL_TREND_REGIME_LABELS,
     REGIME_CLASSIFIER_KEY,
     SURFACE_SL_AFTER,
     SURFACE_SL_AFTER_TRAIL,
@@ -34,6 +35,19 @@ _TIERED_TP_NAMES = (
     "tiered_tp_atr_live_regime",
 )
 
+_DEFAULT_SCALAR_TP_TIERS: Tuple[Tuple[float, float], ...] = (
+    (1.0, 0.5),
+    (2.0, 1.0),
+)
+
+
+@dataclass(frozen=True)
+class RegimeFloatBlock:
+    trend_regime: Dict[str, float] = field(default_factory=dict)
+
+    def resolve(self, regime: str) -> Optional[float]:
+        return self.trend_regime.get((regime or "").strip())
+
 
 @dataclass(frozen=True)
 class SLAfterRule:
@@ -50,14 +64,22 @@ class SLAfterRule:
     trail_atr_mult: float = 0.0  # > 0 for trail_from_here
     atr_regime: Optional[RegimeATRBlock] = None
     trail_atr_regime: Optional[RegimeATRBlock] = None
+    tp_atr_fraction: float = 0.0
+    tp_atr_fraction_regime: Optional[RegimeFloatBlock] = None
 
     def is_empty(self) -> bool:
         return self.kind == ""
 
     def has_regime(self) -> bool:
-        return self.atr_regime is not None or self.trail_atr_regime is not None
+        return (
+            self.atr_regime is not None
+            or self.trail_atr_regime is not None
+            or self.tp_atr_fraction_regime is not None
+        )
 
-    def resolve_for_regime(self, regime: str) -> Optional["SLAfterRule"]:
+    def resolve_for_regime(
+        self, regime: str, tier_multiple: float = 0.0,
+    ) -> Optional["SLAfterRule"]:
         """Collapse a regime-aware rule to its scalar form for the given
         regime label. Returns None when the rule is regime-aware but the
         label is missing (caller should defer). Scalar rules pass through
@@ -73,6 +95,21 @@ class SLAfterRule:
             if entry is None or entry.atr <= 0:
                 return None
             return SLAfterRule(kind="trail_from_here", trail_atr_mult=entry.atr)
+        if self.kind == "trail_from_here" and self.tp_atr_fraction_regime is not None:
+            frac = self.tp_atr_fraction_regime.resolve(regime)
+            if frac is None or frac <= 0 or tier_multiple <= 0:
+                return None
+            return SLAfterRule(
+                kind="trail_from_here",
+                trail_atr_mult=frac * tier_multiple,
+            )
+        if self.kind == "trail_from_here" and self.tp_atr_fraction > 0:
+            if tier_multiple <= 0:
+                return None
+            return SLAfterRule(
+                kind="trail_from_here",
+                trail_atr_mult=self.tp_atr_fraction * tier_multiple,
+            )
         return self
 
 
@@ -83,11 +120,17 @@ class TierSLAfterRules:
 
     default: SLAfterRule = field(default_factory=SLAfterRule)
     per_tier: List[SLAfterRule] = field(default_factory=list)
+    multiples: List[float] = field(default_factory=list)
 
     def for_tier(self, idx: int) -> SLAfterRule:
         if 0 <= idx < len(self.per_tier) and not self.per_tier[idx].is_empty():
             return self.per_tier[idx]
         return self.default
+
+    def tier_multiple(self, idx: int) -> float:
+        if 0 <= idx < len(self.multiples):
+            return self.multiples[idx]
+        return 0.0
 
     def has_any(self) -> bool:
         if not self.default.is_empty():
@@ -118,7 +161,10 @@ def _first_non_nil(d: dict, *keys: str) -> bool:
     return False
 
 
-def parse_sl_after_rule(raw: Any) -> SLAfterRule:
+def parse_sl_after_rule(
+    raw: Any,
+    labels: Optional[Iterable[str]] = CANONICAL_TREND_REGIME_LABELS,
+) -> SLAfterRule:
     """Parse the raw value found at ``params["sl_after"]`` (or inside a tier).
 
     Mirrors ``parseSLAfterRule`` in scheduler/post_tp_sl.go. Accepts:
@@ -158,9 +204,9 @@ def parse_sl_after_rule(raw: Any) -> SLAfterRule:
             if kind == "breakeven":
                 return SLAfterRule(kind="breakeven")
             if kind == "atr_offset":
-                return _parse_sl_after_atr_offset(raw, "sl_after kind=atr_offset")
+                return _parse_sl_after_atr_offset(raw, "sl_after kind=atr_offset", labels)
             if kind == "trail_from_here":
-                return _parse_sl_after_trail_from_here(raw, "sl_after kind=trail_from_here")
+                return _parse_sl_after_trail_from_here(raw, "sl_after kind=trail_from_here", labels)
             raise ValueError(f"sl_after kind {kind!r} is not recognized")
         if "trail_from_here" in raw:
             trail_raw = raw["trail_from_here"]
@@ -169,11 +215,13 @@ def parse_sl_after_rule(raw: Any) -> SLAfterRule:
                     f"sl_after.trail_from_here must be an object, got "
                     f"{type(trail_raw).__name__}"
                 )
-            return _parse_sl_after_trail_from_here(trail_raw, "sl_after.trail_from_here")
+            return _parse_sl_after_trail_from_here(
+                trail_raw, "sl_after.trail_from_here", labels,
+            )
         if REGIME_CLASSIFIER_KEY in raw:
-            return _parse_sl_after_atr_offset(raw, "sl_after")
+            return _parse_sl_after_atr_offset(raw, "sl_after", labels)
         if _first_non_nil(raw, "atr_mult", "atr_offset"):
-            return _parse_sl_after_atr_offset(raw, "sl_after atr_mult")
+            return _parse_sl_after_atr_offset(raw, "sl_after atr_mult", labels)
         raise ValueError(
             'sl_after object must contain "kind", "atr_mult", "trail_from_here", '
             'or "trend_regime"'
@@ -191,7 +239,11 @@ _SCALAR_MULT_KEYS_ATR_OFFSET = ("atr_mult", "atr_offset", "trail_atr_mult")
 _SCALAR_MULT_KEYS_TRAIL = ("atr_mult", "trail_atr_mult", "atr_offset")
 
 
-def _parse_sl_after_atr_offset(m: dict, ctx_label: str) -> SLAfterRule:
+def _parse_sl_after_atr_offset(
+    m: dict,
+    ctx_label: str,
+    labels: Optional[Iterable[str]] = None,
+) -> SLAfterRule:
     """Parse the atr_offset variant — scalar (atr_mult/atr_offset) or regime
     (trend_regime/use_defaults). Multi-label regime errors join with '; '
     so callers that surface a single error per field stay compatible."""
@@ -209,7 +261,10 @@ def _parse_sl_after_atr_offset(m: dict, ctx_label: str) -> SLAfterRule:
             regime_raw[REGIME_CLASSIFIER_KEY] = m[REGIME_CLASSIFIER_KEY]
         if has_use_defaults:
             regime_raw["use_defaults"] = m["use_defaults"]
-        block, errs = parse_regime_atr_block(regime_raw, ctx_label, SURFACE_SL_AFTER)
+        block, errs = parse_regime_atr_block(
+            regime_raw, ctx_label, SURFACE_SL_AFTER,
+            labels=_labels_for_regime_raw(regime_raw, labels),
+        )
         if errs:
             raise ValueError("; ".join(errs))
         rule = SLAfterRule(kind="atr_offset", atr_regime=block)
@@ -224,12 +279,34 @@ def _parse_sl_after_atr_offset(m: dict, ctx_label: str) -> SLAfterRule:
     return rule
 
 
-def _parse_sl_after_trail_from_here(m: dict, ctx_label: str) -> SLAfterRule:
+def _parse_sl_after_trail_from_here(
+    m: dict,
+    ctx_label: str,
+    labels: Optional[Iterable[str]] = None,
+) -> SLAfterRule:
     """Parse the trail_from_here variant — scalar (atr_mult/trail_atr_mult)
     or regime (trend_regime/use_defaults). Regime form uses
     SURFACE_SL_AFTER_TRAIL so per-label atr must be strictly positive."""
     has_trend = REGIME_CLASSIFIER_KEY in m
     has_use_defaults = "use_defaults" in m
+    if "tp_atr_fraction" in m:
+        if has_trend or has_use_defaults:
+            raise ValueError(
+                f"{ctx_label}: cannot combine tp_atr_fraction with "
+                "trend_regime/use_defaults — pick one trail_from_here shape"
+            )
+        if _first_non_nil(m, *_SCALAR_MULT_KEYS_TRAIL):
+            raise ValueError(
+                f"{ctx_label}: cannot combine tp_atr_fraction with "
+                "atr_mult/trail_atr_mult/atr_offset — pick one shape"
+            )
+        rule = _parse_tp_atr_fraction(
+            m["tp_atr_fraction"],
+            f"{ctx_label}.tp_atr_fraction",
+            labels,
+        )
+        validate_sl_after_rule(rule)
+        return rule
     if has_trend or has_use_defaults:
         if _first_non_nil(m, *_SCALAR_MULT_KEYS_TRAIL):
             raise ValueError(
@@ -243,7 +320,8 @@ def _parse_sl_after_trail_from_here(m: dict, ctx_label: str) -> SLAfterRule:
         if has_use_defaults:
             regime_raw["use_defaults"] = m["use_defaults"]
         block, errs = parse_regime_atr_block(
-            regime_raw, ctx_label, SURFACE_SL_AFTER_TRAIL
+            regime_raw, ctx_label, SURFACE_SL_AFTER_TRAIL,
+            labels=_labels_for_regime_raw(regime_raw, labels),
         )
         if errs:
             raise ValueError("; ".join(errs))
@@ -259,20 +337,132 @@ def _parse_sl_after_trail_from_here(m: dict, ctx_label: str) -> SLAfterRule:
     return rule
 
 
+def _parse_tp_atr_fraction(
+    raw: Any,
+    ctx_label: str,
+    labels: Optional[Iterable[str]] = None,
+) -> SLAfterRule:
+    if isinstance(raw, dict):
+        block, errs = _parse_regime_float_block(
+            raw, ctx_label, _labels_for_regime_raw(raw, labels),
+        )
+        if errs:
+            raise ValueError("; ".join(errs))
+        return SLAfterRule(
+            kind="trail_from_here",
+            tp_atr_fraction_regime=block,
+        )
+    frac = _float_or_raise(raw, ctx_label)
+    if frac <= 0:
+        raise ValueError(f"{ctx_label}: must be > 0, got {frac:g}")
+    return SLAfterRule(kind="trail_from_here", tp_atr_fraction=frac)
+
+
+def _parse_regime_float_block(
+    raw: dict,
+    ctx_label: str,
+    labels: Iterable[str],
+) -> Tuple[RegimeFloatBlock, List[str]]:
+    labels = tuple(labels)
+    errs: List[str] = []
+    for key in raw:
+        if key != REGIME_CLASSIFIER_KEY:
+            errs.append(f"{ctx_label}: unknown key {key!r} (expected {REGIME_CLASSIFIER_KEY!r})")
+    trend_raw = raw.get(REGIME_CLASSIFIER_KEY)
+    if not isinstance(trend_raw, dict):
+        errs.append(
+            f"{ctx_label}.{REGIME_CLASSIFIER_KEY}: must be an object, "
+            f"got {type(trend_raw).__name__}"
+        )
+        return RegimeFloatBlock(), errs
+    valid = set(labels)
+    unknown = sorted(k for k in trend_raw if k not in valid)
+    for label in unknown:
+        errs.append(
+            f"{ctx_label}.{REGIME_CLASSIFIER_KEY}: unknown regime label {label!r} "
+            f"(expected one of: {', '.join(labels)})"
+        )
+    missing = [label for label in labels if label not in trend_raw]
+    if missing:
+        errs.append(
+            f"{ctx_label}.{REGIME_CLASSIFIER_KEY}: missing required regime labels: "
+            f"{', '.join(missing)} (must be exhaustive — no silent fallback)"
+        )
+    out: Dict[str, float] = {}
+    for label in labels:
+        if label not in trend_raw:
+            continue
+        try:
+            frac = float(trend_raw[label])
+        except (TypeError, ValueError):
+            errs.append(
+                f"{ctx_label}.{REGIME_CLASSIFIER_KEY}.{label}: expected number, "
+                f"got {trend_raw[label]!r}"
+            )
+            continue
+        if frac <= 0:
+            errs.append(
+                f"{ctx_label}.{REGIME_CLASSIFIER_KEY}.{label}: must be > 0, got {frac:g}"
+            )
+            continue
+        out[label] = frac
+    if errs:
+        return RegimeFloatBlock(), errs
+    return RegimeFloatBlock(trend_regime=out), []
+
+
+def _labels_for_regime_raw(
+    raw: Any,
+    labels: Optional[Iterable[str]],
+) -> Tuple[str, ...]:
+    if labels is not None:
+        return tuple(labels)
+    if isinstance(raw, dict) and isinstance(raw.get(REGIME_CLASSIFIER_KEY), dict):
+        inferred = tuple(sorted(raw[REGIME_CLASSIFIER_KEY].keys()))
+        if inferred:
+            return inferred
+    return tuple(CANONICAL_TREND_REGIME_LABELS)
+
+
+def _labels_for_regime_tiers(
+    raw_tiers: Any,
+    labels: Optional[Iterable[str]],
+) -> Tuple[str, ...]:
+    if labels is not None:
+        return tuple(labels)
+    if isinstance(raw_tiers, list):
+        found = set()
+        for item in raw_tiers:
+            if isinstance(item, dict) and isinstance(item.get(REGIME_CLASSIFIER_KEY), dict):
+                found.update(item[REGIME_CLASSIFIER_KEY].keys())
+        if found:
+            return tuple(sorted(found))
+    return tuple(CANONICAL_TREND_REGIME_LABELS)
+
+
 def validate_sl_after_rule(rule: SLAfterRule) -> None:
     """Sanity-check a parsed rule. Raises ``ValueError`` on bad shapes; the
     empty rule passes silently."""
     if rule.kind == "":
         return
     if rule.kind == "breakeven":
-        if rule.atr_regime is not None or rule.trail_atr_regime is not None:
-            raise ValueError("sl_after breakeven does not accept a trend_regime block")
+        if (
+            rule.atr_regime is not None
+            or rule.trail_atr_regime is not None
+            or rule.tp_atr_fraction_regime is not None
+            or rule.tp_atr_fraction != 0
+        ):
+            raise ValueError("sl_after breakeven does not accept trend_regime or tp_atr_fraction")
         return
     if rule.kind == "atr_offset":
-        if rule.trail_atr_regime is not None:
+        if (
+            rule.trail_atr_regime is not None
+            or rule.tp_atr_fraction_regime is not None
+            or rule.tp_atr_fraction != 0
+        ):
             raise ValueError(
                 "sl_after atr_offset accepts trend_regime under atr, not "
-                "trail_from_here.atr"
+                "trail_from_here trail fields"
             )
         return
     if rule.kind == "trail_from_here":
@@ -281,8 +471,19 @@ def validate_sl_after_rule(rule: SLAfterRule) -> None:
                 "sl_after trail_from_here accepts trend_regime under "
                 "trail_from_here.atr, not at the top level"
             )
-        if rule.trail_atr_regime is None and rule.trail_atr_mult <= 0:
-            raise ValueError("sl_after trail_from_here requires atr_mult > 0")
+        forms = sum(
+            [
+                rule.trail_atr_mult > 0,
+                rule.trail_atr_regime is not None,
+                rule.tp_atr_fraction > 0,
+                rule.tp_atr_fraction_regime is not None,
+            ]
+        )
+        if forms != 1:
+            raise ValueError(
+                "sl_after trail_from_here requires exactly one of atr_mult, "
+                "trend_regime, or tp_atr_fraction"
+            )
         return
     raise ValueError(
         f"sl_after kind {rule.kind!r} is not recognized "
@@ -367,6 +568,7 @@ def _strategy_uses_tiered_tp_atr_close(close_refs: Iterable[dict]) -> bool:
 def parse_strategy_tp_sl_after_rules(
     close_refs: Iterable[dict],
     regime: Optional[str] = None,
+    labels: Optional[Iterable[str]] = None,
 ) -> Tuple[TierSLAfterRules, List[str]]:
     """Walk the strategy's close refs and extract the strategy-level default
     and per-tier sl_after rules from the first ``tiered_tp_atr*`` entry.
@@ -401,7 +603,7 @@ def parse_strategy_tp_sl_after_rules(
         break
     if default_raw is not None:
         try:
-            r = parse_sl_after_rule(default_raw)
+            r = parse_sl_after_rule(default_raw, labels=labels)
             validate_sl_after_rule(r)
             rules.default = r
         except ValueError as e:
@@ -409,6 +611,19 @@ def parse_strategy_tp_sl_after_rules(
     if tiered_name in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime"):
         reg = (regime or "").strip()
         if not reg:
+            if isinstance(tiers_raw, list):
+                for idx, item in enumerate(tiers_raw):
+                    if not isinstance(item, dict):
+                        continue
+                    rule = SLAfterRule()
+                    if item.get("sl_after") is not None:
+                        try:
+                            parsed = parse_sl_after_rule(item["sl_after"], labels=labels)
+                            validate_sl_after_rule(parsed)
+                            rule = parsed
+                        except ValueError as e:
+                            errs.append(f"sl_after (tier[{idx}]): {e}")
+                    rules.per_tier.append(rule)
             return rules, errs
         ref_params: dict = {}
         for ref in close_refs:
@@ -417,7 +632,14 @@ def parse_strategy_tp_sl_after_rules(
                 break
         use_defaults = bool(ref_params.get("use_defaults"))
         specs, terr = parse_regime_tp_tiers(
-            tiers_raw, f"{tiered_name}.tiers", use_defaults,
+            tiers_raw,
+            f"{tiered_name}.tiers",
+            use_defaults,
+            labels=(
+                tuple(labels)
+                if labels is not None
+                else ((reg,) if use_defaults else _labels_for_regime_tiers(tiers_raw, labels))
+            ),
         )
         errs.extend(terr)
         if terr:
@@ -439,7 +661,7 @@ def parse_strategy_tp_sl_after_rules(
             rule = SLAfterRule()
             if item.get("sl_after") is not None:
                 try:
-                    parsed = parse_sl_after_rule(item["sl_after"])
+                    parsed = parse_sl_after_rule(item["sl_after"], labels=labels)
                     validate_sl_after_rule(parsed)
                     rule = parsed
                 except ValueError as e:
@@ -447,9 +669,12 @@ def parse_strategy_tp_sl_after_rules(
             pairs.append((mult, rule))
         pairs.sort(key=lambda p: p[0])
         rules.per_tier = [p[1] for p in pairs]
+        rules.multiples = [p[0] for p in pairs]
         return rules, errs
 
-    if not isinstance(tiers_raw, list):
+    if not isinstance(tiers_raw, list) or len(tiers_raw) == 0:
+        if rules.has_any():
+            rules.multiples = [p[0] for p in _DEFAULT_SCALAR_TP_TIERS]
         return rules, errs
     pairs: List[Tuple[float, SLAfterRule]] = []
     for idx, item in enumerate(tiers_raw):
@@ -465,7 +690,7 @@ def parse_strategy_tp_sl_after_rules(
         rule = SLAfterRule()
         if item.get("sl_after") is not None:
             try:
-                parsed = parse_sl_after_rule(item["sl_after"])
+                parsed = parse_sl_after_rule(item["sl_after"], labels=labels)
                 validate_sl_after_rule(parsed)
                 rule = parsed
             except ValueError as e:
@@ -473,6 +698,7 @@ def parse_strategy_tp_sl_after_rules(
         pairs.append((mult, rule))
     pairs.sort(key=lambda p: p[0])
     rules.per_tier = [p[1] for p in pairs]
+    rules.multiples = [p[0] for p in pairs]
     return rules, errs
 
 
@@ -597,7 +823,10 @@ def parse_tp_tier_close_fractions(
             use_defaults = bool(params.get("use_defaults"))
             tiers_raw = params.get("tiers")
             specs, terr = parse_regime_tp_tiers(
-                tiers_raw, f"{name}.tiers", use_defaults,
+                tiers_raw,
+                f"{name}.tiers",
+                use_defaults,
+                labels=((reg,) if use_defaults else _labels_for_regime_tiers(tiers_raw, None)),
             )
             if terr:
                 return []
@@ -617,8 +846,8 @@ def parse_tp_tier_close_fractions(
             return out
 
         tiers_raw = params.get("tiers")
-        if not isinstance(tiers_raw, list):
-            return []
+        if not isinstance(tiers_raw, list) or len(tiers_raw) == 0:
+            return [p[1] for p in _DEFAULT_SCALAR_TP_TIERS]
         pairs = []
         for item in tiers_raw:
             if not isinstance(item, dict):

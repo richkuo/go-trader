@@ -11,6 +11,7 @@ import pytest
 
 from .post_tp_sl import (
     SLAfterRule,
+    parse_tp_tier_close_fractions,
     parse_sl_after_rule,
     parse_strategy_tp_sl_after_rules,
     validate_post_tp_stop_loss_rules,
@@ -44,6 +45,13 @@ def test_scalar_trail_from_here():
         {"trail_from_here": {"atr_mult": 1.0}}
     )
     assert rule == SLAfterRule(kind="trail_from_here", trail_atr_mult=1.0)
+
+
+def test_scalar_trail_from_here_tp_atr_fraction():
+    rule = parse_sl_after_rule(
+        {"trail_from_here": {"tp_atr_fraction": 0.5}}
+    )
+    assert rule.kind == "trail_from_here"
 
 
 def test_scalar_breakeven_string():
@@ -278,6 +286,52 @@ def test_parse_strategy_tp_sl_after_rules_regime():
     assert len(rules.per_tier) == 2
     assert rules.per_tier[0].kind == "trail_from_here"
     assert rules.per_tier[0].trail_atr_regime is not None
+
+
+def test_parse_strategy_tp_sl_after_rules_regime_composite_labels():
+    labels = (
+        "ranging_directional",
+        "ranging_quiet",
+        "ranging_volatile",
+        "trending_down_choppy",
+        "trending_down_clean",
+        "trending_up_choppy",
+        "trending_up_clean",
+    )
+    close_refs = [{
+        "name": "tiered_tp_atr_regime",
+        "params": {
+            "tiers": [
+                {
+                    "trend_regime": {label: {"atr": 2.0} for label in labels},
+                    "close_fraction": 0.5,
+                },
+                {
+                    "trend_regime": {label: {"atr": 4.0} for label in labels},
+                    "close_fraction": 1.0,
+                },
+            ],
+        },
+    }]
+    rules, errs = parse_strategy_tp_sl_after_rules(
+        close_refs,
+        regime="trending_up_clean",
+        labels=labels,
+    )
+    assert errs == []
+    assert rules.multiples == [2.0, 4.0]
+
+
+def test_parse_tp_tier_close_fractions_use_defaults_composite_label():
+    close_refs = [{
+        "name": "tiered_tp_atr_regime",
+        "params": {"use_defaults": True},
+    }]
+    got = parse_tp_tier_close_fractions(
+        close_refs,
+        regime="trending_up_clean",
+    )
+    assert got == [0.5, 1.0]
 
 
 # --- Manual rejection: trail_from_here regime variant ----------------------

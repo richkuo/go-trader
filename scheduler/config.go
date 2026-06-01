@@ -1591,7 +1591,11 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			}
 		}
 		// #708: sl_after rules on tiered TPs (post-fill SL adjustment).
-		for _, msg := range validatePostTPStopLossRules(sc) {
+		slAfterLabels := canonicalTrendRegimeLabels
+		if cfg.Regime != nil && cfg.Regime.Enabled {
+			slAfterLabels = regimeLabelsForStrategyWindow(sc, cfg.Regime, "atr")
+		}
+		for _, msg := range validatePostTPStopLossRulesWithLabels(sc, slAfterLabels) {
 			errs = append(errs, fmt.Sprintf("%s: %s", prefix, msg))
 		}
 

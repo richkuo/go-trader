@@ -1301,8 +1301,8 @@ class Backtester:
         )
         if highest < 0:
             return sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, sl_high_water_px
-        rule = self._active_sl_after_rules.for_tier(highest)
-        if rule.is_empty():
+        raw_rule = self._active_sl_after_rules.for_tier(highest)
+        if raw_rule.is_empty():
             return sl_trigger_px, highest + 1, post_tp_trail_mult, sl_high_water_px
         # Defer when no fixed SL is currently armed — mirrors the live
         # `currentOID == 0` short-circuit in scheduler/post_tp_sl.go (~L510).
@@ -1313,6 +1313,10 @@ class Backtester:
         # compute_ok=False, so this is breakeven-specific in practice. Do
         # NOT advance the watermark — same as the live behavior.
         if sl_trigger_px <= 0:
+            return sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, sl_high_water_px
+        tier_multiple = self._active_sl_after_rules.tier_multiple(highest)
+        rule = raw_rule.resolve_for_regime(self._run_position_regime, tier_multiple)
+        if rule is None:
             return sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, sl_high_water_px
         # Seed mark for trail_from_here at fill_price — that's the price the
         # partial close just filled at, matching the live "trigger seeded at
