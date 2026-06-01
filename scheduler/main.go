@@ -1358,7 +1358,7 @@ func main() {
 					switch sc.Type {
 					case "spot":
 						if sc.Platform == "okx" {
-							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, logger); ok {
+							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, notifier, logger); ok {
 								prices[result.Symbol] = price
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, okxPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
@@ -1383,7 +1383,7 @@ func main() {
 								}
 							}
 						} else if sc.Platform == "robinhood" {
-							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, rhPosCtx, cfg.Regime, logger); ok {
+							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, rhPosCtx, cfg.Regime, notifier, logger); ok {
 								prices[result.Symbol] = price
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, rhPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
@@ -1407,7 +1407,7 @@ func main() {
 									mu.Unlock()
 								}
 							}
-						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, spotPosCtx, cfg.Regime, logger); ok {
+						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, spotPosCtx, cfg.Regime, notifier, logger); ok {
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, spotPosCtx.Quantity); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 								result.Signal = 0
@@ -1418,7 +1418,7 @@ func main() {
 							mu.Unlock()
 						}
 					case "options":
-						if result, signalStr, ok := runOptionsCheck(sc, posJSON, logger); ok {
+						if result, signalStr, ok := runOptionsCheck(sc, posJSON, notifier, logger); ok {
 							mu.Lock()
 							stratState.Regime = result.Regime
 							var harvestDetails []string
@@ -1431,7 +1431,7 @@ func main() {
 						}
 					case "perps":
 						if sc.Platform == "okx" {
-							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, logger); ok {
+							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, notifier, logger); ok {
 								prices[result.Symbol] = price
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, okxPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
@@ -1455,7 +1455,7 @@ func main() {
 									mu.Unlock()
 								}
 							}
-						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, logger); ok {
+						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, notifier, logger); ok {
 							prices[result.Symbol] = price
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, hlPosQty); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
@@ -1640,7 +1640,7 @@ func main() {
 							}
 						}
 					case "futures":
-						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, cfg.Regime, logger); ok {
+						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, cfg.Regime, notifier, logger); ok {
 							prices[result.Symbol] = price
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, tsContracts); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
@@ -1678,7 +1678,7 @@ func main() {
 							runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON)
 							runPostTPStopLossAdjustment(sc, stratState, sc.Symbol, prices[sc.Symbol], cfg, &mu, notifier, logger, hlOnChainAbsQty)
 						}
-						if closeFraction, _, ok := runManualCloseEval(sc, stratState, cfg, logger); ok && closeFraction > 0 {
+						if closeFraction, _, ok := runManualCloseEval(sc, stratState, cfg, notifier, logger); ok && closeFraction > 0 {
 							mu.RLock()
 							pos = stratState.Positions[sc.Symbol]
 							mu.RUnlock()
@@ -2148,7 +2148,7 @@ func spotSymbol(args []string) string {
 
 // runSpotCheck runs the spot check subprocess and returns the parsed result.
 // No state access. Returns (result, signalStr, price, ok); ok=false means skip execution.
-func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, logger *StrategyLogger) (*SpotResult, string, float64, bool) {
+func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*SpotResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
@@ -2169,6 +2169,7 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 		if stderr != "" {
 			logger.Error("stderr: %s", stderr)
 		}
+		notifyScriptFailure(notifier, sc, scriptFailureCrash, err.Error())
 		return nil, "", 0, false
 	}
 	if stderr != "" {
@@ -2177,8 +2178,10 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 
 	if result.Error != "" {
 		logger.Error("Script returned error: %s", result.Error)
+		notifyScriptFailure(notifier, sc, scriptFailureError, result.Error)
 		return nil, "", 0, false
 	}
+	clearScriptFailure(notifier, sc)
 
 	signalStr := "HOLD"
 	if result.Signal == 1 {
@@ -2278,7 +2281,7 @@ func indicatorFloat(indicators map[string]interface{}, key string) (float64, boo
 
 // runOptionsCheck runs the options check subprocess and returns the parsed result.
 // No state access. Returns (result, signalStr, ok); ok=false means skip execution.
-func runOptionsCheck(sc StrategyConfig, posJSON string, logger *StrategyLogger) (*OptionsResult, string, bool) {
+func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier, logger *StrategyLogger) (*OptionsResult, string, bool) {
 	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
 
 	result, stderr, err := RunOptionsCheckWithStdin(sc.Script, sc.Args, posJSON)
@@ -2287,6 +2290,7 @@ func runOptionsCheck(sc StrategyConfig, posJSON string, logger *StrategyLogger) 
 		if stderr != "" {
 			logger.Error("stderr: %s", stderr)
 		}
+		notifyScriptFailure(notifier, sc, scriptFailureCrash, err.Error())
 		return nil, "", false
 	}
 	if stderr != "" {
@@ -2295,8 +2299,10 @@ func runOptionsCheck(sc StrategyConfig, posJSON string, logger *StrategyLogger) 
 
 	if result.Error != "" {
 		logger.Error("Script returned error: %s", result.Error)
+		notifyScriptFailure(notifier, sc, scriptFailureError, result.Error)
 		return nil, "", false
 	}
+	clearScriptFailure(notifier, sc)
 
 	signalStr := "HOLD"
 	if result.Signal == 1 {
@@ -2448,7 +2454,7 @@ func isHLLiveReconcilable(sc StrategyConfig) bool {
 // result.Regime is known, so downstream EffectiveDirection / perpsLiveOrderSize
 // / PerpsOrderSkipReason calls in execute paths see the effective values.
 // Mutation is scoped to the loop-local sc; cfg.Strategies is never touched.
-func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
+func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	// Suppress in-process close evaluators that overlap on-chain reduce-only
 	// protection — running both races on the shared on-chain position
@@ -2482,6 +2488,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 		if stderr != "" {
 			logger.Error("stderr: %s", stderr)
 		}
+		notifyScriptFailure(notifier, *sc, scriptFailureCrash, err.Error())
 		return nil, "", 0, false
 	}
 	if stderr != "" {
@@ -2489,8 +2496,10 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	}
 	if result.Error != "" {
 		logger.Error("Script returned error: %s", result.Error)
+		notifyScriptFailure(notifier, *sc, scriptFailureError, result.Error)
 		return nil, "", 0, false
 	}
+	clearScriptFailure(notifier, *sc)
 	// #779: resolve regime-aware directional policy BEFORE applySignalInversion
 	// so the invert decision uses the effective sc.InvertSignal. When flat,
 	// resolves from result.Regime (current cycle); while a position is open,
@@ -2917,7 +2926,7 @@ func topstepSymbol(args []string) string {
 }
 
 // runTopStepCheck runs check_topstep.py signal-check mode (Phase 3, no lock).
-func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, logger *StrategyLogger) (*TopStepResult, string, float64, bool) {
+func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*TopStepResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
@@ -2938,6 +2947,7 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 		if stderr != "" {
 			logger.Error("stderr: %s", stderr)
 		}
+		notifyScriptFailure(notifier, sc, scriptFailureCrash, err.Error())
 		return nil, "", 0, false
 	}
 	if stderr != "" {
@@ -2945,8 +2955,10 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 	}
 	if result.Error != "" {
 		logger.Error("Script returned error: %s", result.Error)
+		notifyScriptFailure(notifier, sc, scriptFailureError, result.Error)
 		return nil, "", 0, false
 	}
+	clearScriptFailure(notifier, sc)
 
 	if !result.MarketOpen {
 		logger.Info("Market closed for %s, skipping", result.Symbol)
@@ -3115,7 +3127,7 @@ func robinhoodSymbol(args []string) string {
 }
 
 // runRobinhoodCheck runs check_robinhood.py signal-check mode (Phase 3, no lock).
-func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, logger *StrategyLogger) (*RobinhoodResult, string, float64, bool) {
+func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*RobinhoodResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
@@ -3136,6 +3148,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 		if stderr != "" {
 			logger.Error("stderr: %s", stderr)
 		}
+		notifyScriptFailure(notifier, sc, scriptFailureCrash, err.Error())
 		return nil, "", 0, false
 	}
 	if stderr != "" {
@@ -3143,8 +3156,10 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 	}
 	if result.Error != "" {
 		logger.Error("Script returned error: %s", result.Error)
+		notifyScriptFailure(notifier, sc, scriptFailureError, result.Error)
 		return nil, "", 0, false
 	}
+	clearScriptFailure(notifier, sc)
 
 	signalStr := "HOLD"
 	if result.Signal == 1 {
@@ -3291,7 +3306,7 @@ func okxInstType(args []string) string {
 }
 
 // runOKXCheck runs check_okx.py signal-check mode (Phase 3, no lock).
-func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
+func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
@@ -3312,6 +3327,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 		if stderr != "" {
 			logger.Error("stderr: %s", stderr)
 		}
+		notifyScriptFailure(notifier, sc, scriptFailureCrash, err.Error())
 		return nil, "", 0, false
 	}
 	if stderr != "" {
@@ -3319,8 +3335,10 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 	}
 	if result.Error != "" {
 		logger.Error("Script returned error: %s", result.Error)
+		notifyScriptFailure(notifier, sc, scriptFailureError, result.Error)
 		return nil, "", 0, false
 	}
+	clearScriptFailure(notifier, sc)
 
 	signalStr := "HOLD"
 	if result.Signal == 1 {
