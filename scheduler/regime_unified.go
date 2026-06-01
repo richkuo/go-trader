@@ -119,9 +119,16 @@ func unifiedCloseStopLossATR(sc StrategyConfig, regime string) (float64, bool) {
 // typo can't silently disable the exit plan. The label set must be exhaustive
 // (no silent fallback) and contain no unknown labels.
 func validateUnifiedRegimeClose(params map[string]interface{}, labels []string, ctxLabel string) []string {
+	var errs []string
+	for k := range params {
+		if k != regimeClassifierKey && k != "atr_source" {
+			errs = append(errs, fmt.Sprintf("%s: unknown param %q (allowed: trend_regime, atr_source)", ctxLabel, k))
+		}
+	}
 	trendRaw, ok := params[regimeClassifierKey].(map[string]interface{})
 	if !ok {
-		return []string{fmt.Sprintf("%s.%s: must be an object", ctxLabel, regimeClassifierKey)}
+		errs = append(errs, fmt.Sprintf("%s.%s: must be an object", ctxLabel, regimeClassifierKey))
+		return errs
 	}
 	if len(labels) == 0 {
 		labels = canonicalTrendRegimeLabels
@@ -131,7 +138,6 @@ func validateUnifiedRegimeClose(params map[string]interface{}, labels []string, 
 		valid[l] = true
 	}
 
-	var errs []string
 	unknown := make([]string, 0)
 	for l := range trendRaw {
 		if !valid[l] {

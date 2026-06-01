@@ -814,6 +814,12 @@ func validateRegimeATRConfig(cfg *Config) []string {
 			}
 			usesRegime = true
 			subPrefix := fmt.Sprintf("%s.close_strategies[%d](%s)", prefix, j, ref.Name)
+			// #841 2b: unified per-regime block — validate the top-level
+			// trend_regime shape and skip the legacy tier-keyed checks.
+			if closeParamsAreUnifiedRegime(ref.Params) {
+				errs = append(errs, validateUnifiedRegimeClose(ref.Params, atrLabels, subPrefix)...)
+				continue
+			}
 			useDefaults := false
 			if v, ok := ref.Params["use_defaults"].(bool); ok {
 				useDefaults = v
