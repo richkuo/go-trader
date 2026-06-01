@@ -110,6 +110,30 @@ def test_cache_path_distinct_per_limit_and_interval(adapter_mod, tmp_path):
     assert len({p1, p2, p3}) == 3
 
 
+def test_cache_path_sanitizes_interval(adapter_mod, tmp_path):
+    # A stray slash / dotdot in interval must not escape the cache dir.
+    path = adapter_mod._ohlcv_cache_path("BTC", "../1h", 200, cache_dir=str(tmp_path))
+    assert os.path.dirname(path) == str(tmp_path)
+    assert ".." not in os.path.basename(path)
+    assert "/" not in os.path.basename(path)
+
+
+# ─── interval-aware TTL ────────────────────────────────────────────
+
+def test_ttl_caps_fast_intervals_to_half_bar(adapter_mod):
+    # 1m bar = 60_000ms → half-bar 30s, below the 60s cap.
+    assert adapter_mod._ohlcv_cache_ttl(60_000) == 30
+
+
+def test_ttl_caps_slow_intervals_at_default(adapter_mod):
+    # 1h bar → half-bar would be 1800s, capped at OHLCV_CACHE_TTL_S (60).
+    assert adapter_mod._ohlcv_cache_ttl(3_600_000) == adapter_mod.OHLCV_CACHE_TTL_S
+
+
+def test_ttl_never_zero(adapter_mod):
+    assert adapter_mod._ohlcv_cache_ttl(1) >= 1
+
+
 # ─── load/save round-trip ──────────────────────────────────────────
 
 def test_save_then_load_returns_candles(adapter_mod, cache_path):

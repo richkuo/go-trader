@@ -203,19 +203,33 @@ def _ohlcv_cache_enabled() -> bool:
     return os.environ.get("GO_TRADER_HL_OHLCV_CACHE", "1") != "0"
 
 
+def _ohlcv_cache_ttl(interval_ms: int) -> int:
+    """Cache freshness bound for a given candle interval.
+
+    Capped at ``OHLCV_CACHE_TTL_S`` but never longer than half the bar, so a
+    fast-interval strategy (e.g. 1m) can't read a snapshot more than half a
+    bar stale even when ``effectiveStrategyIntervalSeconds`` starts a new
+    cycle inside the TTL window. 1m → 30s, 3m+ → 60s, sub-minute scales down.
+    """
+    half_bar_s = max(1, interval_ms // 2000)
+    return min(OHLCV_CACHE_TTL_S, half_bar_s)
+
+
 def _ohlcv_cache_path(symbol: str, interval: str, limit: int,
                       cache_dir: str = None) -> str:
     """Per-(symbol, interval, limit) cache file path.
 
-    Symbol is sanitized to alphanumerics + underscore so spot symbols like
-    ``PURR/USDC`` or ``@367`` can't escape the cache directory or collide.
-    ``cache_dir`` resolves to ``OHLCV_CACHE_DIR`` at call time (not bound as a
-    default) so tests can repoint it via monkeypatch.
+    Both ``symbol`` and ``interval`` are sanitized to alphanumerics +
+    underscore so neither (spot symbols like ``PURR/USDC``/``@367``, or a
+    stray ``/``/``..`` in an interval) can escape the cache directory or
+    collide. ``cache_dir`` resolves to ``OHLCV_CACHE_DIR`` at call time (not
+    bound as a default) so tests can repoint it via monkeypatch.
     """
     if cache_dir is None:
         cache_dir = OHLCV_CACHE_DIR
-    safe = "".join(c if c.isalnum() else "_" for c in str(symbol))
-    return os.path.join(cache_dir, f"{OHLCV_CACHE_PREFIX}{safe}_{interval}_{limit}.json")
+    safe_sym = "".join(c if c.isalnum() else "_" for c in str(symbol))
+    safe_int = "".join(c if c.isalnum() else "_" for c in str(interval))
+    return os.path.join(cache_dir, f"{OHLCV_CACHE_PREFIX}{safe_sym}_{safe_int}_{limit}.json")
 
 
 def _load_ohlcv_cache(path: str, ttl_s: int = OHLCV_CACHE_TTL_S, now: float = None):
@@ -522,7 +536,7 @@ class HyperliquidExchangeAdapter:
         cache_path = None
         if cache_enabled:
             cache_path = _ohlcv_cache_path(symbol, interval, limit)
-            cached = _load_ohlcv_cache(cache_path)
+            cached = _load_ohlcv_cache(cache_path, ttl_s=_ohlcv_cache_ttl(interval_ms))
             if cached is not None:
                 return cached
 
