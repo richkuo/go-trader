@@ -1240,9 +1240,9 @@ func TestLoadConfigManualDefaultsTPTiersOverride(t *testing.T) {
 	if len(sc.CloseStrategies) != 1 || sc.CloseStrategies[0].Name != "tiered_tp_atr_live" {
 		t.Fatalf("CloseStrategies = %+v, want single tiered_tp_atr_live entry", sc.CloseStrategies)
 	}
-	tiersAny, ok := sc.CloseStrategies[0].Params["tiers"]
+	tiersAny, ok := sc.CloseStrategies[0].Params["tp_tiers"]
 	if !ok {
-		t.Fatal("close strategy params missing tiers")
+		t.Fatal("close strategy params missing tp_tiers")
 	}
 	tiers, ok := tiersAny.([]interface{})
 	if !ok {
@@ -1333,7 +1333,7 @@ func TestLoadConfigManualDefaultsAbsentPreservesHardcodedDefaults(t *testing.T) 
 	if sc.StopLossATRMult == nil || *sc.StopLossATRMult != defaultManualStopLossATRMult {
 		t.Errorf("StopLossATRMult = %v, want %g (hardcoded fallback)", sc.StopLossATRMult, defaultManualStopLossATRMult)
 	}
-	tiers := sc.CloseStrategies[0].Params["tiers"].([]interface{})
+	tiers := sc.CloseStrategies[0].Params["tp_tiers"].([]interface{})
 	if len(tiers) != 2 {
 		t.Fatalf("tiers length = %d, want 2 (hardcoded fallback)", len(tiers))
 	}

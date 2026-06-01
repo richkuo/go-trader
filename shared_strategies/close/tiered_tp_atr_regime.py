@@ -12,7 +12,12 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from _helpers import clamp_fraction, current_close_fraction, float_from
+from _helpers import (
+    clamp_fraction,
+    current_close_fraction,
+    float_from,
+    tier_list_from_params,
+)
 from regime_atr import (
     RegimeTierSpec,
     parse_regime_tp_tiers,
@@ -32,7 +37,7 @@ def _resolve_tiers_for_regime(
     rely on this helper to mirror parser semantics.
     """
     use_defaults = bool(params.get("use_defaults"))
-    raw_tiers = params.get("tiers")
+    raw_tiers = tier_list_from_params(params)
     specs, errs = parse_regime_tp_tiers(raw_tiers, "tiered_tp_atr_regime", use_defaults)
     if errs:
         return [], errs

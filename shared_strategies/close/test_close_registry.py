@@ -216,3 +216,47 @@ def test_market_atr_wiring_end_to_end(registry):
     assert result["reason"].startswith("tiered_tp_atr_live:live:"), (
         f"market_ctx['atr'] not flowing through to evaluator: reason={result['reason']!r}"
     )
+
+
+def _load_helpers():
+    path = Path(__file__).resolve().parent / "_helpers.py"
+    spec = importlib.util.spec_from_file_location("_close_helpers_under_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_tier_list_from_params_canonical_and_legacy():
+    """#841: tp_tiers is canonical; tiers is the deprecated fallback; when both
+    are present (registry default 'tiers' merged under operator 'tp_tiers') the
+    canonical key wins."""
+    h = _load_helpers()
+    tp = [{"atr_multiple": 2.0, "close_fraction": 1.0}]
+    legacy = [{"atr_multiple": 9.0, "close_fraction": 1.0}]
+
+    assert h.tier_list_from_params({"tp_tiers": tp}) == tp
+    assert h.tier_list_from_params({"tiers": legacy}) == legacy
+    assert h.tier_list_from_params({"tp_tiers": tp, "tiers": legacy}) == tp
+    assert h.tier_list_from_params({"atr_source": "live"}) is None
+    assert h.tier_list_from_params(None) is None
+
+
+def test_evaluate_reads_tp_tiers_and_legacy_tiers_equivalently(registry):
+    """#841: tiered_tp_atr fires identically whether the operator supplies the
+    tier ladder under canonical 'tp_tiers' or the deprecated 'tiers' key, and an
+    operator 'tp_tiers' is not shadowed by the registry default 'tiers'."""
+    position = {
+        "avg_cost": 100.0,
+        "current_quantity": 1.0,
+        "initial_quantity": 1.0,
+        "entry_atr": 10.0,
+        "side": "long",
+    }
+    market = {"mark_price": 130.0}  # +3 ATR → clears a 2x tier
+    ladder = [{"atr_multiple": 2.0, "close_fraction": 1.0}]
+
+    canonical = registry.evaluate("tiered_tp_atr", position, market, {"tp_tiers": ladder})
+    legacy = registry.evaluate("tiered_tp_atr", position, market, {"tiers": ladder})
+    assert canonical["close_fraction"] == pytest.approx(1.0)
+    assert legacy["close_fraction"] == pytest.approx(1.0)
+    assert canonical["close_fraction"] == legacy["close_fraction"]

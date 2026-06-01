@@ -266,7 +266,7 @@ func resolveTP(sc StrategyConfig, explicit map[string]bool) tpResolution {
 		res.OK = true
 		res.CloseIndex = i
 		res.CloseName = ref.Name
-		_, hasTiers := ref.Params["tiers"]
+		_, hasTiers := closeTierListParam(ref.Params)
 		useDefaults := false
 		if ud, ok := ref.Params["use_defaults"].(bool); ok && ud {
 			useDefaults = true
@@ -303,7 +303,7 @@ func resolveTP(sc StrategyConfig, explicit map[string]bool) tpResolution {
 
 func inferRegimeTPTierCount(ref StrategyRef, hasTiers, useDefaults bool) int {
 	if hasTiers {
-		if raw, ok := ref.Params["tiers"]; ok {
+		if raw, ok := closeTierListParam(ref.Params); ok {
 			if items, ok := raw.([]interface{}); ok {
 				return len(items)
 			}
@@ -372,7 +372,7 @@ func formatInspectRegimeTPDetailLines(closeName string, ref StrategyRef, hasTier
 	// LoadConfig + validateRegimeATRConfig already rejected malformed tier JSON;
 	// re-parse here is defense-in-depth for inspect-only paths, not a hot path.
 	// Infer the vocabulary from the config so composite tier lists render too.
-	tiersRaw := ref.Params["tiers"]
+	tiersRaw, _ := closeTierListParam(ref.Params)
 	specs, errs := parseRegimeTPTiers(tiersRaw, closeName+".params", regimeLabelsFromTierRaw(tiersRaw))
 	if len(errs) > 0 || len(specs) == 0 {
 		return []string{fmt.Sprintf("%s: regime tiers: parse error — fix config (%v)", closeName, errs)}
@@ -607,11 +607,11 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		if tp.OK {
 			tiers := make([]map[string]interface{}, len(tp.Tiers))
 			for i, t := range tp.Tiers {
-				tiers[i] = map[string]interface{}{"atr_multiple": t.Multiple, "fraction": t.Fraction}
+				tiers[i] = map[string]interface{}{"atr_multiple": t.Multiple, "close_fraction": t.Fraction}
 			}
 			tpMap["close_index"] = tp.CloseIndex
 			tpMap["close_name"] = tp.CloseName
-			tpMap["tiers"] = tiers
+			tpMap["tp_tiers"] = tiers
 			tpMap["tiers_source"] = tp.TiersFrom
 			tpMap["tier_count"] = tp.TierCount
 			if len(tp.DetailLines) > 0 {

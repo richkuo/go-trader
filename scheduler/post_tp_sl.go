@@ -9,6 +9,38 @@ import (
 	"sync"
 )
 
+// deprecatedCloseKeyWarned dedupes one-shot deprecation warnings per legacy
+// close-config key so a busy scheduler doesn't spam the log every cycle (#841).
+var deprecatedCloseKeyWarned sync.Map
+
+// warnDeprecatedCloseKey emits a single [DEPRECATED] notice the first time a
+// legacy close-config key is read, pointing operators at the canonical name.
+func warnDeprecatedCloseKey(old, canonical string) {
+	if _, loaded := deprecatedCloseKeyWarned.LoadOrStore(old+"->"+canonical, true); loaded {
+		return
+	}
+	fmt.Printf("[DEPRECATED] close config key %q is deprecated; use %q (#841)\n", old, canonical)
+}
+
+// closeTierListParam returns the take-profit tier list from a close ref's
+// params, preferring the canonical "tp_tiers" key and falling back to the
+// deprecated "tiers" alias (with a one-shot warning). Returns (value, true)
+// when either key is present. Canonical source of the tier-list key across the
+// close family (#841).
+func closeTierListParam(params map[string]interface{}) (interface{}, bool) {
+	if params == nil {
+		return nil, false
+	}
+	if v, ok := params["tp_tiers"]; ok {
+		return v, true
+	}
+	if v, ok := params["tiers"]; ok {
+		warnDeprecatedCloseKey("tiers", "tp_tiers")
+		return v, true
+	}
+	return nil, false
+}
+
 // SLAfterRule describes how to adjust the stop-loss trigger after a tiered TP
 // fills. Configured per-tier (with optional strategy-level default) on
 // tiered_tp_atr / tiered_tp_atr_live close evaluators. See #708, #736.
@@ -700,7 +732,7 @@ func parseStrategyTPSLAfterRulesForRegime(sc StrategyConfig, labels []string, re
 		if v, ok := ref.Params["sl_after"]; ok {
 			defaultRaw = v
 		}
-		if v, ok := ref.Params["tiers"]; ok {
+		if v, ok := closeTierListParam(ref.Params); ok {
 			tiersRaw = v
 		}
 		if v, ok := ref.Params["use_defaults"].(bool); ok {
@@ -917,7 +949,7 @@ func validatePostTPStopLossRulesWithLabels(sc StrategyConfig, labels []string) [
 		if _, ok := ref.Params["sl_after"]; ok {
 			out = append(out, fmt.Sprintf("sl_after is only honored on tiered_tp_atr / tiered_tp_atr_live close refs; found on %q", ref.Name))
 		}
-		if tiersRaw, ok := ref.Params["tiers"]; ok {
+		if tiersRaw, ok := closeTierListParam(ref.Params); ok {
 			if items, ok := tiersRaw.([]interface{}); ok {
 				for i, item := range items {
 					if m, ok := item.(map[string]interface{}); ok {

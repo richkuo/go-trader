@@ -880,8 +880,8 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 			if cs.Params == nil {
 				cs.Params = map[string]interface{}{}
 			}
-			if _, hasTP := cs.Params["tiers"]; !hasTP {
-				cs.Params["tiers"] = cfg.resolveManualTPTiers()
+			if _, hasTP := closeTierListParam(cs.Params); !hasTP {
+				cs.Params["tp_tiers"] = cfg.resolveManualTPTiers()
 			}
 		}
 	}

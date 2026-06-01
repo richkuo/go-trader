@@ -93,6 +93,12 @@ def evaluate(name: str, position: dict, market: dict, params: Optional[dict] = N
 register(
     "tiered_tp_pct",
     "Tiered take-profit by percentage move from average cost",
+    # default_params keep the legacy "tiers" key during the #841 deprecation
+    # window: default_params merge UNDER operator params per-key, so a canonical
+    # "tp_tiers" default would coexist with (and — via tier_list_from_params
+    # precedence — shadow) an operator's legacy "tiers". Keying the default on
+    # "tiers" lets an operator's "tiers" overwrite it and an operator's
+    # "tp_tiers" win by precedence. Flip to "tp_tiers" when the alias is dropped.
     {"tiers": list(DEFAULT_PCT_TIERS)},
 )(tiered_tp_pct_evaluate)
 

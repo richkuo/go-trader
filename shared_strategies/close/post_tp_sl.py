@@ -26,6 +26,7 @@ from shared_strategies.close.regime_atr import (
     parse_regime_tp_tiers,
     resolve_regime_tier,
 )
+from shared_strategies.close._helpers import tier_list_from_params
 
 
 _TIERED_TP_NAMES = (
@@ -602,8 +603,9 @@ def parse_strategy_tp_sl_after_rules(
         params = ref.get("params") or {}
         if "sl_after" in params:
             default_raw = params["sl_after"]
-        if "tiers" in params:
-            tiers_raw = params["tiers"]
+        _tiers = tier_list_from_params(params)
+        if _tiers is not None:
+            tiers_raw = _tiers
         break
     if default_raw is not None:
         try:
@@ -740,7 +742,7 @@ def validate_post_tp_stop_loss_rules(
                 f"sl_after is only honored on tiered_tp_atr* close refs; "
                 f"found on {ref.get('name')!r}"
             )
-        tiers_raw = params.get("tiers")
+        tiers_raw = tier_list_from_params(params)
         if isinstance(tiers_raw, list):
             for i, item in enumerate(tiers_raw):
                 if isinstance(item, dict) and "sl_after" in item:
@@ -825,7 +827,7 @@ def parse_tp_tier_close_fractions(
             if not reg:
                 return []
             use_defaults = bool(params.get("use_defaults"))
-            tiers_raw = params.get("tiers")
+            tiers_raw = tier_list_from_params(params)
             specs, terr = parse_regime_tp_tiers(
                 tiers_raw,
                 f"{name}.tiers",
@@ -849,7 +851,7 @@ def parse_tp_tier_close_fractions(
                 out[-1] = 1.0
             return out
 
-        tiers_raw = params.get("tiers")
+        tiers_raw = tier_list_from_params(params)
         if not isinstance(tiers_raw, list) or len(tiers_raw) == 0:
             return [p[1] for p in _DEFAULT_SCALAR_TP_TIERS]
         pairs = []

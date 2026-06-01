@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from _helpers import clamp_fraction, current_close_fraction, float_from
+from _helpers import (
+    clamp_fraction,
+    current_close_fraction,
+    float_from,
+    tier_list_from_params,
+)
 
 DEFAULT_TIERS = (
     {"profit_pct": 0.03, "close_fraction": 0.5},
@@ -41,7 +46,7 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
         return {"close_fraction": 0.0, "reason": "noop:missing_position"}
 
     pnl_pct = (mark_price - avg_cost) / avg_cost if side == "long" else (avg_cost - mark_price) / avg_cost
-    hit_tiers = [(pct, fraction) for pct, fraction in _tiers(params.get("tiers")) if pnl_pct >= pct]
+    hit_tiers = [(pct, fraction) for pct, fraction in _tiers(tier_list_from_params(params)) if pnl_pct >= pct]
     if not hit_tiers:
         return {"close_fraction": 0.0, "reason": "noop:not_hit"}
 

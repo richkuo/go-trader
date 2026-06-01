@@ -101,7 +101,7 @@ func strategyTPTiersForRegime(sc StrategyConfig, regime string) []hlProtectionTi
 		if n == "tiered_tp_atr_regime" || n == "tiered_tp_atr_live_regime" {
 			regimeAware = true
 		}
-		if v, ok := ref.Params["tiers"]; ok {
+		if v, ok := closeTierListParam(ref.Params); ok {
 			raw = v
 			break
 		}

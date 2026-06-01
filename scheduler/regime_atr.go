@@ -794,7 +794,7 @@ func validateRegimeATRConfig(cfg *Config) []string {
 			if v, ok := ref.Params["use_defaults"].(bool); ok {
 				useDefaults = v
 			}
-			tiersRaw, hasTiers := ref.Params["tiers"]
+			tiersRaw, hasTiers := closeTierListParam(ref.Params)
 			if useDefaults && hasTiers {
 				errs = append(errs, fmt.Sprintf("%s: cannot combine use_defaults:true with explicit tiers (use_defaults is all-or-nothing)", subPrefix))
 				continue
@@ -807,10 +807,10 @@ func validateRegimeATRConfig(cfg *Config) []string {
 			// atr_source, sl_after).
 			for k := range ref.Params {
 				switch k {
-				case "use_defaults", "tiers", "atr_source", "sl_after":
+				case "use_defaults", "tp_tiers", "tiers", "atr_source", "sl_after":
 					// known
 				default:
-					errs = append(errs, fmt.Sprintf("%s: unknown param %q (allowed: use_defaults, tiers, atr_source, sl_after)", subPrefix, k))
+					errs = append(errs, fmt.Sprintf("%s: unknown param %q (allowed: use_defaults, tp_tiers, atr_source, sl_after)", subPrefix, k))
 				}
 			}
 			if useDefaults {

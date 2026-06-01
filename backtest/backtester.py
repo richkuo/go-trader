@@ -510,7 +510,7 @@ class Backtester:
             if "sl_after" in params:
                 any_sl_after_key = True
                 break
-            tiers_raw = params.get("tiers")
+            tiers_raw = params.get("tp_tiers", params.get("tiers"))  # #841 canonical key
             if isinstance(tiers_raw, list) and any(
                 isinstance(t, dict) and "sl_after" in t for t in tiers_raw
             ):

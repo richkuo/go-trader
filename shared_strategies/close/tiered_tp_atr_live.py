@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from _helpers import current_close_fraction, float_from
+from _helpers import current_close_fraction, float_from, tier_list_from_params
 from tiered_tp_atr import _tiers
 
 
@@ -44,7 +44,7 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
     atr_profit = profit_distance / atr_value
     hit_tiers = [
         (multiple, fraction)
-        for multiple, fraction in _tiers(params.get("tiers"))
+        for multiple, fraction in _tiers(tier_list_from_params(params))
         if atr_profit >= multiple
     ]
     if not hit_tiers:

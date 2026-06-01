@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from _helpers import clamp_fraction, current_close_fraction, float_from
+from _helpers import (
+    clamp_fraction,
+    current_close_fraction,
+    float_from,
+    tier_list_from_params,
+)
 
 DEFAULT_TIERS = (
     {"atr_multiple": 1.0, "close_fraction": 0.5},
@@ -45,7 +50,7 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
 
     profit_distance = mark_price - avg_cost if side == "long" else avg_cost - mark_price
     atr_profit = profit_distance / entry_atr
-    hit_tiers = [(multiple, fraction) for multiple, fraction in _tiers(params.get("tiers")) if atr_profit >= multiple]
+    hit_tiers = [(multiple, fraction) for multiple, fraction in _tiers(tier_list_from_params(params)) if atr_profit >= multiple]
     if not hit_tiers:
         return {"close_fraction": 0.0, "reason": "noop:not_hit"}
 
