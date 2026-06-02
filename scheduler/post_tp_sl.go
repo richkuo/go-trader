@@ -954,6 +954,12 @@ func validatePostTPStopLossRulesWithLabels(sc StrategyConfig, labels []string) [
 		if isTieredTPATRCloseName(n) {
 			continue
 		}
+		if isTrailingTPRatchetCloseName(n) {
+			if _, ok := ref.Params["sl_after"]; ok {
+				out = append(out, fmt.Sprintf("sl_after is not used with %q — use per-tier trailing_mult_after / tp_atr_fraction instead", ref.Name))
+			}
+			continue
+		}
 		if _, ok := ref.Params["sl_after"]; ok {
 			out = append(out, fmt.Sprintf("sl_after is only honored on tiered_tp_atr / tiered_tp_atr_live close refs; found on %q", ref.Name))
 		}

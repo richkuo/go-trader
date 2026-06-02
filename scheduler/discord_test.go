@@ -1533,6 +1533,49 @@ func TestCollectPositions_TieredTPATRLive_Long(t *testing.T) {
 	}
 }
 
+func TestCollectPositions_TrailingTPRatchetShowsRatchetState(t *testing.T) {
+	initialTrail := 3.0
+	currentTrail := 1.0
+	sc := StrategyConfig{
+		ID: "hl-ratchet-btc",
+		CloseStrategy: &StrategyRef{
+			Name: "trailing_tp_ratchet",
+			Params: map[string]interface{}{
+				"tp_tiers": []interface{}{
+					map[string]interface{}{
+						"atr_multiple": 1.0, "close_fraction": 0.0, "trailing_mult_after": 2.0,
+					},
+					map[string]interface{}{
+						"atr_multiple": 2.0, "close_fraction": 0.0, "trailing_mult_after": 1.0,
+					},
+				},
+			},
+		},
+		TrailingStopATRMult: &initialTrail,
+	}
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {
+				Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", EntryATR: 1000,
+				SLAdjustedTiersProcessed: 1, PostTPTrailingATRMult: &currentTrail,
+			},
+		},
+	}
+	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	for _, want := range []string{
+		"| Ratchet: 1/2 | Trail: 1x ATR",
+		"| RT1: $64,500.00 (+1.6%) (1x -> 2x trail)",
+		"| RT2: $65,500.00 (+3.1%) (2x -> 1x trail)",
+	} {
+		if !strings.Contains(lines[0], want) {
+			t.Errorf("expected ratchet fragment %q, got: %s", want, lines[0])
+		}
+	}
+}
+
 func TestCollectPositions_TieredTPATR_OmittedWithoutCloseStrategy(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-rsi-btc", CloseStrategy: &StrategyRef{Name: "tiered_tp_pct"}}
 	ss := &StrategyState{

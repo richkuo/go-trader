@@ -73,6 +73,7 @@ _ensure_regime_fn = None
 # module lives in shared_strategies/close/ but isn't a registered strategy,
 # so we import it directly without going through the registry.
 _post_tp_sl_module = None
+_trailing_ratchet_module = None
 
 
 def _load_regime():
@@ -99,6 +100,23 @@ def _load_post_tp_sl():
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
     _post_tp_sl_module = mod
+    return mod
+
+
+def _load_trailing_ratchet():
+    global _trailing_ratchet_module
+    if _trailing_ratchet_module is not None:
+        return _trailing_ratchet_module
+    import importlib.util
+    name = "_go_trader_trailing_ratchet"
+    path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "shared_strategies", "close", "trailing_tp_ratchet.py",
+    ))
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    _trailing_ratchet_module = mod
     return mod
 
 
@@ -373,6 +391,32 @@ class Backtester:
         self._uses_regime_tiered_close = _close_refs_use_regime_tiered_tp(
             self._close_refs,
         )
+        self._uses_trailing_ratchet_close = any(
+            (r.get("name") or "").strip().lower()
+            in ("trailing_tp_ratchet", "trailing_tp_ratchet_regime")
+            for r in self._close_refs
+        )
+        self._ratchet_mod = None
+        self._ratchet_ref: Optional[dict] = None
+        self._ratchet_tiers_run: list = []
+        if self._uses_trailing_ratchet_close:
+            self._ratchet_mod = _load_trailing_ratchet()
+            for ref in self._close_refs:
+                n = (ref.get("name") or "").strip().lower()
+                if n in ("trailing_tp_ratchet", "trailing_tp_ratchet_regime"):
+                    self._ratchet_ref = ref
+                    break
+            if (
+                self.trailing_stop_atr_mult is None
+                or self.trailing_stop_atr_mult <= 0
+            ):
+                raise ValueError(
+                    "trailing_tp_ratchet* requires trailing_stop_atr_mult > 0"
+                )
+            if self.trailing_stop_pct is not None and self.trailing_stop_pct > 0:
+                raise ValueError(
+                    "trailing_tp_ratchet* cannot combine with trailing_stop_pct"
+                )
         _needs_regime_atr = (
             self.stop_loss_atr_regime is not None
             or self.trailing_stop_atr_regime is not None
@@ -762,8 +806,19 @@ class Backtester:
         self._run_trailing_stop_atr_mult: Optional[float] = None
         self._run_position_regime = ""
         sl_after_active = self._sl_after_pipeline_enabled
+        trailing_ratchet_active = self._uses_trailing_ratchet_close
 
         atr_series = df["atr"] if "atr" in df.columns else None
+
+        def _initial_trail_trigger(side: str, mark: float, entry_atr: float,
+                                    trail_mult: float) -> float:
+            if mark <= 0 or entry_atr <= 0 or trail_mult <= 0:
+                return 0.0
+            if side == "long":
+                return mark - trail_mult * entry_atr
+            if side == "short":
+                return mark + trail_mult * entry_atr
+            return 0.0
 
         def stamp_open_from_label(stamp: str) -> None:
             lab = (stamp or "").strip()
@@ -779,6 +834,24 @@ class Backtester:
             else:
                 self._active_sl_after_rules = self._sl_after_rules_static
                 self._run_tp_tier_thresholds = list(self._tp_tier_thresholds_static)
+
+            self._ratchet_tiers_run = []
+            if self._uses_trailing_ratchet_close and self._ratchet_mod and self._ratchet_ref:
+                regime_table = (
+                    (self._ratchet_ref.get("name") or "").strip().lower()
+                    == "trailing_tp_ratchet_regime"
+                )
+                tiers, terr = self._ratchet_mod.resolve_tiers_for_regime(
+                    self._ratchet_ref.get("params") or {},
+                    lab,
+                    regime_table=regime_table,
+                )
+                if terr:
+                    raise ValueError(
+                        "trailing_tp_ratchet tier resolution failed: "
+                        + "; ".join(terr)
+                    )
+                self._ratchet_tiers_run = tiers
 
             self._run_stop_loss_atr_mult = None
             self._run_trailing_stop_atr_mult = None
@@ -991,6 +1064,14 @@ class Backtester:
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = 0.0
+                    elif trailing_ratchet_active and self._run_trailing_stop_atr_mult:
+                        sl_trigger_px = _initial_trail_trigger(
+                            "long", mark_price, entry_atr_value,
+                            self._run_trailing_stop_atr_mult,
+                        )
+                        sl_tiers_processed = 0
+                        post_tp_trail_mult = None
+                        sl_high_water_px = mark_price
                 elif open_action == "short" and position == 0 and not regime_blocked:
                     effective_price = fill_price * (1 - self.slippage_pct)
                     commission = cash * self.commission_pct
@@ -1012,6 +1093,14 @@ class Backtester:
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = 0.0
+                    elif trailing_ratchet_active and self._run_trailing_stop_atr_mult:
+                        sl_trigger_px = _initial_trail_trigger(
+                            "short", mark_price, entry_atr_value,
+                            self._run_trailing_stop_atr_mult,
+                        )
+                        sl_tiers_processed = 0
+                        post_tp_trail_mult = None
+                        sl_high_water_px = mark_price
 
                 # End-of-bar: evaluate close strategies against the now-current
                 # position using this bar's close as the mark. The result is
@@ -1024,6 +1113,27 @@ class Backtester:
                         position_regime=self._run_position_regime,
                         market_regime=_bar_close_regime(row),
                     )
+                    if (
+                        trailing_ratchet_active
+                        and self._ratchet_mod
+                        and self._ratchet_tiers_run
+                        and position != 0
+                        and entry_atr_value > 0
+                    ):
+                        side_now = "long" if position > 0 else "short"
+                        base_trail = self._run_trailing_stop_atr_mult or 0.0
+                        sl_tiers_processed, post_tp_trail_mult = (
+                            self._ratchet_mod.maybe_apply_mark_ratchet(
+                                self._ratchet_tiers_run,
+                                watermark=sl_tiers_processed,
+                                mark_price=mark_price,
+                                avg_cost=avg_cost,
+                                entry_atr=entry_atr_value,
+                                side=side_now,
+                                post_tp_trail_mult=post_tp_trail_mult,
+                                trailing_stop_atr_mult=base_trail,
+                            )
+                        )
 
                 # End-of-bar: walk the trailing-stop high-water mark (only
                 # active after a TP tier transitioned the position to
@@ -1032,22 +1142,25 @@ class Backtester:
                 # pending_close_fraction=1.0 which fills at the next bar's
                 # open — same alignment as the rest of the close pipeline.
                 if (
-                    sl_after_active
+                    (sl_after_active or trailing_ratchet_active)
                     and not sl_after_just_applied
                     and position != 0
                     and avg_cost > 0
                 ):
                     side_now = "long" if position > 0 else "short"
+                    trail_mult = post_tp_trail_mult
+                    if trail_mult is None or trail_mult <= 0:
+                        trail_mult = self._run_trailing_stop_atr_mult
                     if (
-                        post_tp_trail_mult is not None
-                        and post_tp_trail_mult > 0
+                        trail_mult is not None
+                        and trail_mult > 0
                         and entry_atr_value > 0
                     ):
                         sl_trigger_px, sl_high_water_px = self._walk_trail(
                             side=side_now,
                             mark_price=mark_price,
                             entry_atr=entry_atr_value,
-                            trail_mult=post_tp_trail_mult,
+                            trail_mult=trail_mult,
                             sl_trigger_px=sl_trigger_px,
                             sl_high_water_px=sl_high_water_px,
                         )

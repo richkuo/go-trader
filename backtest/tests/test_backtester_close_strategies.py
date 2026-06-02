@@ -243,6 +243,65 @@ def test_starting_long_seed_without_entry_atr_atr_evaluator_noops():
     assert result["trades"][0]["exit_price"] == 120.0
 
 
+def test_trailing_tp_ratchet_trail_only_tier_exits_on_tightened_trail():
+    idx = pd.date_range("2024-01-01", periods=6, freq="D")
+    df = pd.DataFrame({
+        "open": [100, 100, 100, 110, 99, 120],
+        "close": [100, 100, 110, 99, 120, 120],
+        "atr": [10, 10, 10, 10, 10, 10],
+        "open_action": ["long", "none", "none", "none", "none", "none"],
+    }, index=idx)
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        trailing_stop_atr_mult=3.0,
+        close_strategies=[{"name": "trailing_tp_ratchet", "params": {
+            "tp_tiers": [
+                {"atr_multiple": 1.0, "close_fraction": 0.0, "trailing_mult_after": 1.0},
+            ],
+        }}],
+    )
+    result = bt.run(df, save=False)
+
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_date"] == str(idx[4])
+    assert result["trades"][0]["exit_price"] == 99.0
+
+
+def test_trailing_tp_ratchet_regime_uses_open_time_regime():
+    idx = pd.date_range("2024-01-01", periods=6, freq="D")
+    df = pd.DataFrame({
+        "open": [100, 100, 100, 110, 99, 120],
+        "close": [100, 100, 110, 99, 120, 120],
+        "atr": [10, 10, 10, 10, 10, 10],
+        "regime": ["ranging", "ranging", "trending_up", "trending_up", "trending_up", "trending_up"],
+        "open_action": ["long", "none", "none", "none", "none", "none"],
+    }, index=idx)
+    close_ref = {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {"tp_tiers": {
+            "ranging": [
+                {"atr_multiple": 1.0, "close_fraction": 0.0, "trailing_mult_after": 1.0},
+            ],
+            "trending_up": [
+                {"atr_multiple": 99.0, "close_fraction": 0.0, "trailing_mult_after": 1.0},
+            ],
+            "trending_down": [
+                {"atr_multiple": 99.0, "close_fraction": 0.0, "trailing_mult_after": 1.0},
+            ],
+        }},
+    }
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        trailing_stop_atr_mult=3.0,
+        close_strategies=[close_ref],
+    )
+    result = bt.run(df, save=False)
+
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_date"] == str(idx[4])
+    assert result["trades"][0]["exit_price"] == 99.0
+
+
 def test_close_strategy_unknown_name_raises():
     try:
         Backtester(

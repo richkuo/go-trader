@@ -483,6 +483,10 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				errs = append(errs, fmt.Sprintf("strategy[%s] unified per-regime close block changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
+			if strategyUsesTrailingTPRatchetClose(sc) && !trailingRatchetRulesEqualForReload(sc, ns) {
+				errs = append(errs, fmt.Sprintf("strategy[%s] trailing_tp_ratchet tier table changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
 		}
 	}
 	if len(errs) > 0 {

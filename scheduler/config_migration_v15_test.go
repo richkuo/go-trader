@@ -303,3 +303,58 @@ func TestLoadConfig_V15_MigratesCloseKeysOnDisk(t *testing.T) {
 		t.Errorf("tp_tiers = %#v, want %#v", tiersRaw, want)
 	}
 }
+
+func TestMigrateV15CloseKeys_TrailingTPRatchetRegimeTable(t *testing.T) {
+	raw := map[string]interface{}{
+		"config_version": 14,
+		"strategies": []interface{}{
+			map[string]interface{}{
+				"id":       "s1",
+				"type":     "perps",
+				"platform": "hyperliquid",
+				"close_strategy": map[string]interface{}{
+					"name": "trailing_tp_ratchet_regime",
+					"params": map[string]interface{}{
+						"tp_tiers": map[string]interface{}{
+							"trending_up": []interface{}{
+								map[string]interface{}{
+									"atr":                 1.5,
+									"fraction":            0.0,
+									"trailing_mult_after": 2.0,
+								},
+							},
+							"trending_down": []interface{}{
+								map[string]interface{}{
+									"multiple":            1.0,
+									"close_fraction":      0.25,
+									"trailing_mult_after": 1.5,
+								},
+							},
+							"ranging": []interface{}{
+								map[string]interface{}{
+									"atr_multiple":        1.0,
+									"close_fraction":      0.0,
+									"trailing_mult_after": 2.5,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	migrateV15CloseKeys(raw)
+	ref := raw["strategies"].([]interface{})[0].(map[string]interface{})["close_strategy"].(map[string]interface{})
+	params := ref["params"].(map[string]interface{})
+	table, ok := params["tp_tiers"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tp_tiers = %#v, want regime-keyed map", params["tp_tiers"])
+	}
+	up := table["trending_up"].([]interface{})[0].(map[string]interface{})
+	if up["atr_multiple"].(float64) != 1.5 || up["close_fraction"].(float64) != 0 {
+		t.Errorf("trending_up tier = %#v", up)
+	}
+	if up["trailing_mult_after"].(float64) != 2.0 {
+		t.Errorf("trailing_mult_after = %v", up["trailing_mult_after"])
+	}
+}

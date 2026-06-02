@@ -1616,8 +1616,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if mult < 0 {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_mult must be >= 0, got %g", prefix, mult))
 			}
-			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
-				errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_mult is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			manualRatchet := sc.Type == "manual" && strategyUsesTrailingTPRatchetClose(sc)
+			if sc.Platform != "hyperliquid" || (sc.Type != "perps" && !manualRatchet) {
+				errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_mult is only supported for HL perps strategies or HL manual trailing_tp_ratchet strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 			if mult > 0 {
 				fixedPct := 0.0
@@ -1685,8 +1686,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if pct < 0 || pct > 100 {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct must be in [0, 100], got %g", prefix, pct))
 			}
-			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
-				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			manualRatchet := sc.Type == "manual" && strategyUsesTrailingTPRatchetClose(sc)
+			if sc.Platform != "hyperliquid" || (sc.Type != "perps" && !manualRatchet) {
+				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct is only supported for HL perps strategies or HL manual trailing_tp_ratchet strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 			fixedTrailingPct := 0.0
 			if sc.TrailingStopPct != nil {

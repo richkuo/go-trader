@@ -195,6 +195,16 @@ func migrateV15CloseRef(ref map[string]interface{}, slRegime map[string]interfac
 				return true
 			}
 		}
+	case trailingTPRatchetRegimeCloseName:
+		if len(params) > 0 {
+			ref["params"] = canonicalizeTrailingRatchetRegimeParams(params)
+		}
+		return false
+	case trailingTPRatchetCloseName:
+		if len(params) > 0 {
+			ref["params"] = canonicalizeTrailingRatchetScalarParams(params)
+		}
+		return false
 	}
 
 	if len(params) > 0 {
@@ -226,6 +236,44 @@ func v15TierListRaw(params map[string]interface{}) (interface{}, bool) {
 		return v, true
 	}
 	return nil, false
+}
+
+// canonicalizeTrailingRatchetRegimeParams preserves the regime→tier-list map
+// shape for trailing_tp_ratchet_regime (#844). The generic canonicalizeTierList
+// path only accepts []interface{} and would wipe a keyed table.
+func canonicalizeTrailingRatchetRegimeParams(params map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(params))
+	for k, v := range params {
+		switch k {
+		case "tp_tiers":
+			table, ok := v.(map[string]interface{})
+			if !ok {
+				out["tp_tiers"] = v
+				continue
+			}
+			tableOut := make(map[string]interface{}, len(table))
+			for label, block := range table {
+				tableOut[label] = canonicalizeTierList(block)
+			}
+			out["tp_tiers"] = tableOut
+		default:
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func canonicalizeTrailingRatchetScalarParams(params map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(params))
+	for k, v := range params {
+		switch k {
+		case "tp_tiers", "tiers":
+			out["tp_tiers"] = canonicalizeTierList(v)
+		default:
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func canonicalizeCloseParams(params map[string]interface{}) map[string]interface{} {

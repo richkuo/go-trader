@@ -1282,6 +1282,7 @@ func main() {
 					var hlTPOIDs []int64
 					var hlStopLossTriggerPx float64
 					var hlStopLossHighWaterPx float64
+					var hlPostTPTrailingATRMult *float64
 					if sc.Type == "perps" && sc.Platform == "hyperliquid" {
 						if hlLiveStrategy {
 							hlCash = stratState.Cash
@@ -1300,6 +1301,7 @@ func main() {
 								hlTPOIDs = cloneInt64s(pos.TPOIDs)
 								hlStopLossTriggerPx = pos.StopLossTriggerPx
 								hlStopLossHighWaterPx = pos.StopLossHighWaterPx
+								hlPostTPTrailingATRMult = pos.PostTPTrailingATRMult
 							}
 						}
 					}
@@ -1510,7 +1512,16 @@ func main() {
 							mu.Unlock()
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
-							hlPosSnapshot := &Position{AvgCost: hlAvgCost, EntryATR: hlEntryATR}
+							hlPosSnapshot := &Position{AvgCost: hlAvgCost, EntryATR: hlEntryATR, PostTPTrailingATRMult: hlPostTPTrailingATRMult}
+							if result.Signal == 0 && hlPosQty > 0 && strategyUsesTrailingTPRatchetClose(sc) {
+								applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
+								mu.RLock()
+								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos != nil {
+									hlPostTPTrailingATRMult = pos.PostTPTrailingATRMult
+									hlPosSnapshot.PostTPTrailingATRMult = hlPostTPTrailingATRMult
+								}
+								mu.RUnlock()
+							}
 							if result.Signal == 0 && hlPosQty > 0 && atrMultMissingEntryATR(sc, hlPosSnapshot) {
 								// ATR-mult is configured but the position is missing EntryATR — the
 								// open candle did not produce an ATR indicator, so the trailing loop
@@ -1556,26 +1567,9 @@ func main() {
 								}
 								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, notifier, logger)
 								mu.Lock()
-								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
-									if newHighWater > 0 && updateConfirmed {
-										pos.StopLossHighWaterPx = newHighWater
-									}
-									if slUpdate != nil {
-										if slUpdate.StopLossFilledImmediately && slUpdate.StopLossTriggerPx > 0 {
-											if recordPerpsStopLossClose(stratState, result.Symbol, slUpdate.StopLossTriggerPx, "trailing_stop_loss_immediate", logger) {
-												trades++
-												detail = fmt.Sprintf("[%s] LIVE TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, slUpdate.StopLossTriggerPx)
-											}
-										} else if slUpdate.StopLossOID > 0 {
-											pos.StopLossOID = slUpdate.StopLossOID
-											pos.StopLossTriggerPx = slUpdate.StopLossTriggerPx
-											logger.Info("Trailing SL trigger updated oid=%d @ $%.4f", slUpdate.StopLossOID, slUpdate.StopLossTriggerPx)
-										} else if slUpdate.CancelStopLossSucceeded && hlStopLossOID > 0 && pos.StopLossOID == hlStopLossOID {
-											pos.StopLossOID = 0
-											pos.StopLossTriggerPx = 0
-											logger.Warn("Trailing SL old OID=%d was cancelled but replacement did not rest", hlStopLossOID)
-										}
-									}
+								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, result.Symbol, hlPosSide, hlStopLossOID, newHighWater, updateConfirmed, slUpdate, logger); immediateFill {
+									trades++
+									detail = fmt.Sprintf("[%s] LIVE TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, fillPx)
 								}
 								mu.Unlock()
 							}
@@ -1721,6 +1715,34 @@ func main() {
 						if pos != nil && hyperliquidIsLive(sc.Args) {
 							runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON)
 							runPostTPStopLossAdjustment(sc, stratState, sc.Symbol, prices[sc.Symbol], cfg, &mu, notifier, logger, hlOnChainAbsQty)
+							// Manual ratchet + trailing walker run live-only by design (this
+							// whole block is gated on hyperliquidIsLive above): manual is a
+							// live trading tool, so a record-only manual config intentionally
+							// does not ratchet (unlike perps, which also runs a paper trailing
+							// path at main.go ~1537).
+							mark := prices[sc.Symbol]
+							if mark > 0 && strategyUsesTrailingTPRatchetClose(sc) {
+								applyTrailingTPRatchet(sc, stratState, sc.Symbol, mark, &mu, logger)
+							}
+							mu.RLock()
+							pos = stratState.Positions[sc.Symbol]
+							mu.RUnlock()
+							if pos != nil && mark > 0 && strategyUsesTrailingTPRatchetClose(sc) && effectiveTrailingStopPct(sc, pos) > 0 {
+								slEffectiveQty, capped := hlSLEffectiveQty(sc.Symbol, pos.Quantity, hlOnChainAbsQty)
+								if capped {
+									logger.Warn("manual trailing SL: virtual qty %.6f > on-chain %.6f for %s; capping (#621)", pos.Quantity, slEffectiveQty, sc.Symbol)
+								}
+								prevSLOID := pos.StopLossOID
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, notifier, logger)
+								mu.Lock()
+								// Shared handler with the perps path — books an immediate fill,
+								// updates a resting replacement, or clears a cancelled-without-rest
+								// OID. Previously this only handled the resting-replacement case.
+								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, sc.Symbol, pos.Side, prevSLOID, newHighWater, updateConfirmed, slUpdate, logger); immediateFill {
+									logger.Info("[%s] manual trailing SL filled immediately %s @ $%.2f", sc.ID, sc.Symbol, fillPx)
+								}
+								mu.Unlock()
+							}
 						}
 						if closeFraction, _, ok := runManualCloseEval(sc, stratState, cfg, notifier, logger); ok && closeFraction > 0 {
 							mu.RLock()
@@ -2882,6 +2904,11 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		stampPositionProtectionSnapshot(pos, sc)
+	}
+	if trades > 0 {
+		if pos, ok := s.Positions[result.Symbol]; ok {
+			applyTrailingTPRatchetToPosition(sc, pos, result.Symbol, price, logger)
+		}
 	}
 	if trades > 0 && fillOID != "" {
 		logger.Info("Exchange order ID: %s", fillOID)

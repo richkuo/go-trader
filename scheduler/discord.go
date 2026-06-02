@@ -1043,6 +1043,13 @@ func percentFromEntry(side string, entry, target float64) float64 {
 	return pct
 }
 
+func ratchetTargetPrice(side string, entry, entryATR, multiple float64) float64 {
+	if strings.ToLower(side) == "short" {
+		return entry - multiple*entryATR
+	}
+	return entry + multiple*entryATR
+}
+
 // positionMargin returns notional / leverage; 0 when leverage is non-positive.
 func positionMargin(qty, avgCost, leverage float64) float64 {
 	if leverage <= 0 {
@@ -1116,6 +1123,26 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 				}
 				pct := percentFromEntry(pos.Side, pos.AvgCost, tp)
 				extras += fmt.Sprintf(" | TP%d: $%s (%s)%s", i+1, fmtComma2(tp), fmtPnlPct(pct), multSuffix)
+			}
+		}
+		ratchetTiers := trailingRatchetTiersForRegime(sc, positionATRRegimeLabel(pos, sc))
+		if len(tps) == 0 && len(ratchetTiers) > 0 && pos.EntryATR > 0 && pos.AvgCost > 0 {
+			processed := pos.SLAdjustedTiersProcessed
+			if processed < 0 {
+				processed = 0
+			}
+			if processed > len(ratchetTiers) {
+				processed = len(ratchetTiers)
+			}
+			if trail := effectiveTrailingRatchetMult(pos, sc); trail > 0 {
+				extras += fmt.Sprintf(" | Ratchet: %d/%d | Trail: %gx ATR", processed, len(ratchetTiers), trail)
+			} else {
+				extras += fmt.Sprintf(" | Ratchet: %d/%d", processed, len(ratchetTiers))
+			}
+			for i, tier := range ratchetTiers {
+				target := ratchetTargetPrice(pos.Side, pos.AvgCost, pos.EntryATR, tier.ATRMultiple)
+				pct := percentFromEntry(pos.Side, pos.AvgCost, target)
+				extras += fmt.Sprintf(" | RT%d: $%s (%s) (%gx -> %gx trail)", i+1, fmtComma2(target), fmtPnlPct(pct), tier.ATRMultiple, tier.TrailingMultAfter)
 			}
 		}
 		if pos.Leverage > 1 {
