@@ -158,20 +158,43 @@ func TestValidateTrailingTPRatchetClose_BadRegimeLabel(t *testing.T) {
 }
 
 func TestValidateTrailingTPRatchetClose_CompositeLabelsOK(t *testing.T) {
-	params := map[string]interface{}{
-		"tp_tiers": map[string]interface{}{
-			"trending_up_clean": []interface{}{map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.0, "trailing_mult_after": 2.0}},
-			"ranging_volatile":  []interface{}{map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.5, "trailing_mult_after": 0.5}},
-		},
-	}
-	sc := ratchetSC("trailing_tp_ratchet_regime", params, ratchetFloatPtr(3.0))
 	composite := []string{
 		"trending_up_clean", "trending_up_choppy", "trending_down_clean",
 		"trending_down_choppy", "ranging_quiet", "ranging_volatile", "ranging_directional",
 	}
+	// Exhaustive coverage over all 7 composite labels.
+	tiers := map[string]interface{}{}
+	for _, l := range composite {
+		tiers[l] = []interface{}{map[string]interface{}{"atr_multiple": 1.5, "close_fraction": 0.0, "trailing_mult_after": 1.0}}
+	}
+	sc := ratchetSC("trailing_tp_ratchet_regime", map[string]interface{}{"tp_tiers": tiers}, ratchetFloatPtr(3.0))
 	errs, _ := validateTrailingTPRatchetClose(sc, composite, "strategy[s1]")
 	if len(errs) != 0 {
 		t.Fatalf("expected composite labels to validate, got %v", errs)
+	}
+}
+
+func TestValidateTrailingTPRatchetClose_MissingRegimeLabel(t *testing.T) {
+	// Only 2 of the 3 adx labels supplied → exhaustiveness error.
+	params := map[string]interface{}{
+		"tp_tiers": map[string]interface{}{
+			"trending_up": []interface{}{map[string]interface{}{"atr_multiple": 1.5, "close_fraction": 0.0, "trailing_mult_after": 2.0}},
+			"ranging":     []interface{}{map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.25, "trailing_mult_after": 1.5}},
+		},
+	}
+	sc := ratchetSC("trailing_tp_ratchet_regime", params, ratchetFloatPtr(3.0))
+	errs, _ := validateTrailingTPRatchetClose(sc, canonicalTrendRegimeLabels, "strategy[s1]")
+	if !hasErrContaining(errs, "missing required regime labels") {
+		t.Fatalf("expected missing-labels error, got %v", errs)
+	}
+}
+
+func TestValidateTrailingTPRatchetClose_ManualRejected(t *testing.T) {
+	sc := ratchetSC("trailing_tp_ratchet", plainTiers(), ratchetFloatPtr(3.0))
+	sc.Type = "manual"
+	errs, _ := validateTrailingTPRatchetClose(sc, canonicalTrendRegimeLabels, "strategy[s1]")
+	if !hasErrContaining(errs, "HL perps only") {
+		t.Fatalf("expected perps-only error for manual, got %v", errs)
 	}
 }
 
@@ -190,7 +213,7 @@ func TestValidateTrailingTPRatchetClose_WrongPlatform(t *testing.T) {
 	sc.Platform = "binanceus"
 	sc.Type = "spot"
 	errs, _ := validateTrailingTPRatchetClose(sc, canonicalTrendRegimeLabels, "strategy[s1]")
-	if !hasErrContaining(errs, "HL perps/manual only") {
+	if !hasErrContaining(errs, "HL perps only") {
 		t.Fatalf("expected platform error, got %v", errs)
 	}
 }

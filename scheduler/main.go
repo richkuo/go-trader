@@ -1722,16 +1722,7 @@ func main() {
 							runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON)
 							runPostTPStopLossAdjustment(sc, stratState, sc.Symbol, prices[sc.Symbol], cfg, &mu, notifier, logger, hlOnChainAbsQty)
 						}
-						closeFraction, _, trailMult, ceOK := runManualCloseEval(sc, stratState, cfg, notifier, logger)
-						if ceOK && trailMult != nil {
-							// #844: stamp the trailing_tp_ratchet trail tightening even on
-							// a trail-only rung (closeFraction==0); the next cycle's trailing
-							// loop arms the tighter on-chain trigger.
-							mu.Lock()
-							applyTrailingTPRatchet(stratState, sc.Symbol, trailMult)
-							mu.Unlock()
-						}
-						if ceOK && closeFraction > 0 {
+						if closeFraction, _, ok := runManualCloseEval(sc, stratState, cfg, notifier, logger); ok && closeFraction > 0 {
 							mu.RLock()
 							pos = stratState.Positions[sc.Symbol]
 							mu.RUnlock()

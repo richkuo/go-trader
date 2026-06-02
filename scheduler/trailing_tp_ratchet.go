@@ -135,9 +135,15 @@ func validateTrailingTPRatchetClose(sc *StrategyConfig, atrLabels []string, pref
 			usesRegime = true
 		}
 
-		// HL perps / manual only — the trailing-stop walker is HL-only.
-		if sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") {
-			errs = append(errs, fmt.Sprintf("%s: %s is HL perps/manual only (got platform=%q type=%q)", sub, ref.Name, sc.Platform, sc.Type))
+		// HL perps only. The trailing walker (effectiveTrailingStopPct /
+		// runHyperliquidTrailingStopUpdate) early-returns for non-perps and the
+		// manual dispatch never runs it, so a stamped trail would be a silent
+		// no-op on manual — same reason sl_after: trail_from_here is rejected on
+		// manual. Scale-out-only tiers would still work via runManualCloseEval,
+		// but a pure-trailing manual config would never exit via the ratchet, so
+		// reject the whole family on manual rather than half-support it.
+		if sc.Platform != "hyperliquid" || sc.Type != "perps" {
+			errs = append(errs, fmt.Sprintf("%s: %s is HL perps only (got platform=%q type=%q)", sub, ref.Name, sc.Platform, sc.Type))
 		}
 
 		// The strategy-level trailing_stop_atr_mult is the initial (loose) trail
@@ -184,6 +190,19 @@ func validateTrailingTPRatchetClose(sc *StrategyConfig, atrLabels []string, pref
 					continue
 				}
 				errs = append(errs, validateRatchetTierList(tableRaw[label], fmt.Sprintf("%s.tp_tiers.%s", sub, label))...)
+			}
+			// Require exhaustive coverage of the classifier vocabulary (matching
+			// the unified per-regime close validator). An unconfigured regime
+			// would otherwise resolve to no tiers at runtime and silently never
+			// ratchet — the position would ride only the initial loose trail.
+			var missing []string
+			for _, l := range atrLabels {
+				if _, ok := tableRaw[l]; !ok {
+					missing = append(missing, l)
+				}
+			}
+			if len(missing) > 0 {
+				errs = append(errs, fmt.Sprintf("%s.tp_tiers: missing required regime labels: %s (must be exhaustive over the classifier vocabulary: %s)", sub, strings.Join(missing, ", "), strings.Join(atrLabels, ", ")))
 			}
 			continue
 		}

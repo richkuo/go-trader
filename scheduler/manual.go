@@ -881,17 +881,16 @@ func openTradeSide(posSide string) string {
 // runManualCloseEval runs the close-evaluator loop for a single type=manual
 // strategy that has an open position. Called from the main scheduler loop.
 // Returns (closeFraction, closePrice, ok).
-func runManualCloseEval(sc StrategyConfig, ss *StrategyState, cfg *Config, notifier *MultiNotifier, logger *StrategyLogger) (float64, float64, *float64, bool) {
+func runManualCloseEval(sc StrategyConfig, ss *StrategyState, cfg *Config, notifier *MultiNotifier, logger *StrategyLogger) (float64, float64, bool) {
 	pos := ss.Positions[sc.Symbol]
 	if pos == nil {
-		return 0, 0, nil, true // flat — nothing to do
+		return 0, 0, true // flat — nothing to do
 	}
 
 	posCtx := positionCtxFromPosition(pos)
 	result, _, price, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, notifier, logger)
 	if !ok {
-		return 0, 0, nil, false
+		return 0, 0, false
 	}
-	// PostTPTrailingATRMult is set only by the trailing_tp_ratchet close family (#844).
-	return result.CloseFraction, price, result.PostTPTrailingATRMult, true
+	return result.CloseFraction, price, true
 }

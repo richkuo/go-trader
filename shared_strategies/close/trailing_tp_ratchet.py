@@ -22,6 +22,14 @@ incremental fraction-of-current-quantity). The new trail distance is either
 ``trailing_mult_after`` (absolute ATR multiple) or ``tp_atr_fraction`` (relative:
 ``fraction × tier.atr_multiple``) — mutually exclusive per tier.
 
+Note on ``tp_atr_fraction``: because the trail is ``fraction × atr_multiple``, a
+*constant* fraction across tiers yields a *larger* (looser) absolute trail at
+higher tiers. Since the runtime only ever tightens (Go monotonic-stamps and this
+evaluator returns the tightest trail among cleared tiers), such a table pins the
+trail at the lowest cleared tier's value rather than tightening further. If you
+want each successive tier to tighten the trail, either use ``trailing_mult_after``
+with explicitly decreasing values, or shrink ``tp_atr_fraction`` as tiers rise.
+
 Output adds ``post_tp_trailing_atr_mult``: the tightest trailing ATR multiple
 among the cleared tiers. The Go runtime stamps it onto
 ``Position.PostTPTrailingATRMult`` (monotonically tightening only) and the
