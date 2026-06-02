@@ -89,6 +89,48 @@ func TestApplyTrailingTPRatchet_MonotonicTighten(t *testing.T) {
 	}
 }
 
+func TestValidateTrailingTPRatchetClose_RejectsNonMonotonicTrail(t *testing.T) {
+	trail := 2.0
+	sc := StrategyConfig{
+		ID: "s1", Type: "perps", Platform: "hyperliquid",
+		TrailingStopATRMult: &trail,
+		CloseStrategy: &StrategyRef{
+			Name: "trailing_tp_ratchet",
+			Params: map[string]interface{}{
+				"tp_tiers": []interface{}{
+					map[string]interface{}{
+						"atr_multiple": 1.0, "close_fraction": 0.0, "trailing_mult_after": 2.0,
+					},
+					map[string]interface{}{
+						"atr_multiple": 2.0, "close_fraction": 0.0, "trailing_mult_after": 3.0,
+					},
+				},
+			},
+		},
+	}
+	errs := validateTrailingTPRatchetClose(sc, canonicalTrendRegimeLabels)
+	if len(errs) == 0 {
+		t.Fatal("expected monotonic trail validation error")
+	}
+}
+
+func TestEffectiveTrailingStopPct_ManualNonRatchetReturnsZero(t *testing.T) {
+	trail := 2.0
+	sc := StrategyConfig{
+		ID: "m1", Type: "manual", Platform: "hyperliquid",
+		TrailingStopATRMult: &trail,
+		CloseStrategy:       &StrategyRef{Name: "tiered_tp_atr_live"},
+	}
+	pos := &Position{AvgCost: 100, EntryATR: 5}
+	if got := effectiveTrailingStopPct(sc, pos); got != 0 {
+		t.Fatalf("manual non-ratchet effectiveTrailingStopPct = %v, want 0", got)
+	}
+	sc.CloseStrategy = &StrategyRef{Name: "trailing_tp_ratchet"}
+	if got := effectiveTrailingStopPct(sc, pos); got <= 0 {
+		t.Fatalf("manual ratchet effectiveTrailingStopPct = %v, want > 0", got)
+	}
+}
+
 func TestValidateTrailingTPRatchetClose_RequiresTrailingMult(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "s1", Type: "perps", Platform: "hyperliquid",

@@ -1739,7 +1739,7 @@ func main() {
 							mu.RLock()
 							pos = stratState.Positions[sc.Symbol]
 							mu.RUnlock()
-							if pos != nil && mark > 0 && effectiveTrailingStopPct(sc, pos) > 0 {
+							if pos != nil && mark > 0 && strategyUsesTrailingTPRatchetClose(sc) && effectiveTrailingStopPct(sc, pos) > 0 {
 								slEffectiveQty, capped := hlSLEffectiveQty(sc.Symbol, pos.Quantity, hlOnChainAbsQty)
 								if capped {
 									logger.Warn("manual trailing SL: virtual qty %.6f > on-chain %.6f for %s; capping (#621)", pos.Quantity, slEffectiveQty, sc.Symbol)

@@ -196,7 +196,9 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string) []string
 		}
 		for k := range ref.Params {
 			switch k {
-			case "tp_tiers", "tiers", "use_defaults":
+			case "tp_tiers", "use_defaults":
+			case "tiers":
+				errs = append(errs, fmt.Sprintf("%s: legacy param %q is not supported — use tp_tiers (#841)", sub, k))
 			default:
 				errs = append(errs, fmt.Sprintf("%s: unknown param %q (allowed: tp_tiers, use_defaults)", sub, k))
 			}
@@ -222,8 +224,9 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string) []string
 					errs = append(errs, fmt.Sprintf("%s.tp_tiers: missing required regime key %q", sub, key))
 					continue
 				}
-				_, subErrs := parseTrailingRatchetTierList(block, sub+".tp_tiers."+key)
+				tiers, subErrs := parseTrailingRatchetTierList(block, sub+".tp_tiers."+key)
 				errs = append(errs, subErrs...)
+				errs = append(errs, validateTrailingRatchetTierMonotonicity(tiers, sub+".tp_tiers."+key)...)
 			}
 			continue
 		}
@@ -233,12 +236,33 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string) []string
 				errs = append(errs, fmt.Sprintf("%s.tp_tiers: object form requires a \"default\" key", sub))
 				continue
 			}
-			_, subErrs := parseTrailingRatchetTierList(block, sub+".tp_tiers")
+			tiers, subErrs := parseTrailingRatchetTierList(block, sub+".tp_tiers")
 			errs = append(errs, subErrs...)
+			errs = append(errs, validateTrailingRatchetTierMonotonicity(tiers, sub+".tp_tiers")...)
 			continue
 		}
-		_, subErrs := parseTrailingRatchetTierList(raw, sub+".tp_tiers")
+		tiers, subErrs := parseTrailingRatchetTierList(raw, sub+".tp_tiers")
 		errs = append(errs, subErrs...)
+		errs = append(errs, validateTrailingRatchetTierMonotonicity(tiers, sub+".tp_tiers")...)
+	}
+	return errs
+}
+
+func validateTrailingRatchetTierMonotonicity(tiers []trailingRatchetTier, ctxLabel string) []string {
+	if len(tiers) < 2 {
+		return nil
+	}
+	var errs []string
+	prev := tiers[0].TrailingMultAfter
+	for i := 1; i < len(tiers); i++ {
+		cur := tiers[i].TrailingMultAfter
+		if cur > prev+1e-12 {
+			errs = append(errs, fmt.Sprintf(
+				"%s[%d].trailing distance %.4g×ATR must be <= tier[%d] (%.4g×ATR) — ratchet tiers tighten monotonically",
+				ctxLabel, i, cur, i-1, prev,
+			))
+		}
+		prev = cur
 	}
 	return errs
 }
@@ -324,9 +348,6 @@ func applyTrailingTPRatchet(
 	}
 	mult := newMult
 	p.PostTPTrailingATRMult = &mult
-	if mark > 0 {
-		p.StopLossHighWaterPx = mark
-	}
 	p.SLAdjustedTiersProcessed = clearedIdx + 1
 	mu.Unlock()
 	if logger != nil {
