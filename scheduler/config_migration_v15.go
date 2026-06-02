@@ -233,7 +233,18 @@ func canonicalizeCloseParams(params map[string]interface{}) map[string]interface
 	for k, v := range params {
 		switch k {
 		case "tiers", "tp_tiers":
-			out["tp_tiers"] = canonicalizeTierList(v)
+			// #844: trailing_tp_ratchet_regime keys tp_tiers by regime label;
+			// canonicalize each per-regime tier list and preserve the map shape
+			// (canonicalizeTierList alone would nil out a non-list value).
+			if rm, ok := v.(map[string]interface{}); ok {
+				canon := make(map[string]interface{}, len(rm))
+				for label, lst := range rm {
+					canon[label] = canonicalizeTierList(lst)
+				}
+				out["tp_tiers"] = canon
+			} else {
+				out["tp_tiers"] = canonicalizeTierList(v)
+			}
 		case "trend_regime":
 			out["trend_regime"] = canonicalizeUnifiedTrendRegime(v)
 		default:

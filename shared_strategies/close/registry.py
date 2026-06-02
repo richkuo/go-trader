@@ -17,6 +17,7 @@ from tiered_tp_atr_live import evaluate as tiered_tp_atr_live_evaluate
 from tiered_tp_atr_regime import evaluate as tiered_tp_atr_regime_evaluate
 from tiered_tp_atr_live_regime import evaluate as tiered_tp_atr_live_regime_evaluate
 from tiered_tp_atr_live_regime_dynamic import evaluate as tiered_tp_atr_live_regime_dynamic_evaluate
+from trailing_tp_ratchet import evaluate as trailing_tp_ratchet_evaluate
 from tiered_tp_pct import DEFAULT_TIERS as DEFAULT_PCT_TIERS
 from tiered_tp_pct import evaluate as tiered_tp_pct_evaluate
 
@@ -149,3 +150,17 @@ register(
     "Unified per-regime TP/SL — live ATR-regime re-resolution (#843; HL live uses on-chain sync)",
     {"atr_source": "live", "regime_confirm_cycles": 2},
 )(tiered_tp_atr_live_regime_dynamic_evaluate)
+
+register(
+    "trailing_tp_ratchet",
+    "Trailing ATR stop ratcheted by cleared TP tiers — close_fraction 0 = trail-only rung (#844)",
+    # default_params intentionally empty: the operator supplies tp_tiers (each
+    # tier carries its own trail tightening). Tier triggers use frozen entry ATR.
+    {},
+)(trailing_tp_ratchet_evaluate)
+
+register(
+    "trailing_tp_ratchet_regime",
+    "Regime-keyed trailing-TP ratchet — tp_tiers table frozen at open via Position.Regime (#844)",
+    {},
+)(trailing_tp_ratchet_evaluate)

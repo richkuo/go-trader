@@ -102,6 +102,32 @@ def _load_post_tp_sl():
     return mod
 
 
+_trailing_tp_ratchet_module = None
+
+
+def _load_trailing_tp_ratchet():
+    """Load shared_strategies/close/trailing_tp_ratchet.py for the backtester's
+    ratchet trail resolution (#844). The close dir is added to sys.path so the
+    module's ``from _helpers import ...`` resolves."""
+    global _trailing_tp_ratchet_module
+    if _trailing_tp_ratchet_module is not None:
+        return _trailing_tp_ratchet_module
+    import importlib.util
+    close_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "shared_strategies", "close",
+    ))
+    if close_dir not in sys.path:
+        sys.path.insert(0, close_dir)
+    name = "_go_trader_trailing_tp_ratchet"
+    path = os.path.join(close_dir, "trailing_tp_ratchet.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    _trailing_tp_ratchet_module = mod
+    return mod
+
+
 def _load_close_registry():
     global _close_registry
     if _close_registry is None:
@@ -197,6 +223,15 @@ def _close_refs_use_regime_tiered_tp(refs: list[dict]) -> bool:
     for ref in refs:
         n = (ref.get("name") or "").strip().lower()
         if n in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime"):
+            return True
+    return False
+
+
+def _close_refs_use_ratchet(refs: list[dict]) -> bool:
+    """#844: whether any close ref is a trailing_tp_ratchet[_regime] evaluator."""
+    for ref in refs:
+        n = (ref.get("name") or "").strip().lower()
+        if n in ("trailing_tp_ratchet", "trailing_tp_ratchet_regime"):
             return True
     return False
 
@@ -373,6 +408,14 @@ class Backtester:
         self._uses_regime_tiered_close = _close_refs_use_regime_tiered_tp(
             self._close_refs,
         )
+        # #844 trailing_tp_ratchet: the trail (not the close evaluator) owns the
+        # per-tier trailing-stop tightening. Partial closes still flow through
+        # the registered close evaluator; this drives _walk_trail.
+        self._uses_ratchet_close = _close_refs_use_ratchet(self._close_refs)
+        self._ratchet_mod = (
+            _load_trailing_tp_ratchet() if self._uses_ratchet_close else None
+        )
+        self._run_ratchet_tiers: list = []
         _needs_regime_atr = (
             self.stop_loss_atr_regime is not None
             or self.trailing_stop_atr_regime is not None
@@ -761,6 +804,7 @@ class Backtester:
         self._run_stop_loss_atr_mult: Optional[float] = None
         self._run_trailing_stop_atr_mult: Optional[float] = None
         self._run_position_regime = ""
+        self._run_ratchet_tiers = []
         sl_after_active = self._sl_after_pipeline_enabled
 
         atr_series = df["atr"] if "atr" in df.columns else None
@@ -779,6 +823,11 @@ class Backtester:
             else:
                 self._active_sl_after_rules = self._sl_after_rules_static
                 self._run_tp_tier_thresholds = list(self._tp_tier_thresholds_static)
+            if self._uses_ratchet_close:
+                # #844: freeze the ratchet tier table for this regime at open.
+                self._run_ratchet_tiers = self._resolve_ratchet_tiers(lab)
+            else:
+                self._run_ratchet_tiers = []
 
             self._run_stop_loss_atr_mult = None
             self._run_trailing_stop_atr_mult = None
@@ -838,6 +887,13 @@ class Backtester:
             if not stamp:
                 stamp = _entry_stamp(df.iloc[0])
             stamp_open_from_label(stamp)
+            if (
+                self._uses_ratchet_close
+                and self.trailing_stop_atr_mult
+                and self.trailing_stop_atr_mult > 0
+            ):
+                post_tp_trail_mult = self.trailing_stop_atr_mult
+                sl_high_water_px = avg_cost
 
         for i, (idx, row) in enumerate(df.iterrows()):
             fill_price = row["open"] if has_open else row["close"]
@@ -925,6 +981,7 @@ class Backtester:
                         self._run_stop_loss_atr_mult = None
                         self._run_trailing_stop_atr_mult = None
                         self._run_position_regime = ""
+                        self._run_ratchet_tiers = []
                     elif sl_after_active and self._run_tp_tier_thresholds:
                         # After applying a partial close at this bar's open,
                         # detect which tier(s) just cleared and apply the
@@ -975,6 +1032,16 @@ class Backtester:
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
                     stamp_open_from_label(_entry_stamp(row))
+                    if (
+                        self._uses_ratchet_close
+                        and self.trailing_stop_atr_mult
+                        and self.trailing_stop_atr_mult > 0
+                    ):
+                        # #844: arm the initial (loose) trailing stop at open;
+                        # tiers ratchet it tighter as profit clears them.
+                        post_tp_trail_mult = self.trailing_stop_atr_mult
+                        sl_high_water_px = avg_cost
+                        sl_trigger_px = 0.0
                     # #716 item 3: seed the SL trigger only when sl_after has
                     # usable tier thresholds. Without thresholds, the post-TP
                     # adjustment machinery never fires (`_maybe_apply_sl_after`
@@ -1005,6 +1072,14 @@ class Backtester:
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
                     stamp_open_from_label(_entry_stamp(row))
+                    if (
+                        self._uses_ratchet_close
+                        and self.trailing_stop_atr_mult
+                        and self.trailing_stop_atr_mult > 0
+                    ):
+                        post_tp_trail_mult = self.trailing_stop_atr_mult
+                        sl_high_water_px = avg_cost
+                        sl_trigger_px = 0.0
                     if sl_after_active and self._run_tp_tier_thresholds:
                         sl_trigger_px = self._initial_sl_trigger(
                             "short", avg_cost, entry_atr_value,
@@ -1031,8 +1106,17 @@ class Backtester:
                 # been hit by this bar's close. A hit produces
                 # pending_close_fraction=1.0 which fills at the next bar's
                 # open — same alignment as the rest of the close pipeline.
+                # #844 trailing_tp_ratchet: tighten the trailing ATR mult as
+                # entry-ATR profit clears tiers (frozen regime), then let the
+                # walker below trail at the new (tighter) distance.
+                if self._uses_ratchet_close and position != 0 and avg_cost > 0:
+                    _ratchet_side = "long" if position > 0 else "short"
+                    post_tp_trail_mult = self._ratchet_trail_step(
+                        _ratchet_side, avg_cost, entry_atr_value, mark_price,
+                        post_tp_trail_mult,
+                    )
                 if (
-                    sl_after_active
+                    (sl_after_active or self._uses_ratchet_close)
                     and not sl_after_just_applied
                     and position != 0
                     and avg_cost > 0
@@ -1285,6 +1369,43 @@ class Backtester:
             if new_trigger <= 0 or candidate < new_trigger:
                 new_trigger = candidate
         return new_trigger, new_hwm
+
+    def _resolve_ratchet_tiers(self, regime: str):
+        """Resolve [(atr_multiple, abs_trail_mult)] for the frozen-at-open regime
+        (#844). Empty when no table resolves for the regime."""
+        if self._ratchet_mod is None:
+            return []
+        for ref in self._close_refs:
+            name = (ref.get("name") or "").strip().lower()
+            if name not in ("trailing_tp_ratchet", "trailing_tp_ratchet_regime"):
+                continue
+            params = ref.get("params") or {}
+            raw = self._ratchet_mod.ratchet_tiers_for_regime(params, regime)
+            return self._ratchet_mod.resolve_trail_tiers(raw)
+        return []
+
+    def _ratchet_trail_step(self, side: str, avg_cost: float, entry_atr: float,
+                            mark_price: float,
+                            post_tp_trail_mult: Optional[float]) -> Optional[float]:
+        """Tighten ``post_tp_trail_mult`` as entry-ATR profit clears ratchet
+        tiers (#844). Monotone — only a smaller absolute ATR mult (a tighter
+        trail) is adopted, never loosens. Highest cleared tier wins. Mirrors
+        scheduler/trailing_tp_ratchet.go runTrailingTPRatchetAdjustment."""
+        if not self._run_ratchet_tiers or entry_atr <= 0 or avg_cost <= 0:
+            return post_tp_trail_mult
+        if side == "long":
+            atr_profit = (mark_price - avg_cost) / entry_atr
+        else:
+            atr_profit = (avg_cost - mark_price) / entry_atr
+        cleared = None
+        for mult, trail in self._run_ratchet_tiers:
+            if atr_profit + 1e-9 >= mult and trail > 0:
+                cleared = trail
+        if cleared is None:
+            return post_tp_trail_mult
+        if post_tp_trail_mult is None or cleared < post_tp_trail_mult:
+            return cleared
+        return post_tp_trail_mult
 
     def _maybe_apply_sl_after(
         self, *, side: str, avg_cost: float, entry_atr: float,

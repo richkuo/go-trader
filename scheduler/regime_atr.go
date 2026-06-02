@@ -818,6 +818,18 @@ func validateRegimeATRConfig(cfg *Config) []string {
 				}
 				continue
 			}
+			if isTrailingTPRatchetCloseName(name) {
+				// #844: trailing_tp_ratchet[_regime] — the trailing stop is the SL
+				// owner (strategy-level trailing_stop_atr_mult). Validate the tier
+				// table + per-tier trail spec; the regime form keys tp_tiers on the
+				// window vocabulary, so it requires regime.enabled=true.
+				subErrs, ur := validateTrailingTPRatchetCloseRef(*sc, ref, atrLabels, prefix)
+				errs = append(errs, subErrs...)
+				if ur {
+					usesRegime = true
+				}
+				continue
+			}
 			if name != "tiered_tp_atr_regime" && name != "tiered_tp_atr_live_regime" {
 				continue
 			}

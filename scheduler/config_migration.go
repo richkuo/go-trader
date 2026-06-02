@@ -567,8 +567,13 @@ var closeStrategyOwnedKeys = map[string]map[string]struct{}{
 	"tiered_tp_atr_regime":              {"tp_tiers": {}, "tiers": {}, "use_defaults": {}, "sl_after": {}},
 	"tiered_tp_atr_live_regime":         {"tp_tiers": {}, "tiers": {}, "use_defaults": {}, "atr_source": {}, "sl_after": {}},
 	"tiered_tp_atr_live_regime_dynamic": {"trend_regime": {}, "atr_source": {}, "regime_confirm_cycles": {}},
-	"tiered_tp_pct":                     {"tp_tiers": {}, "tiers": {}},
-	"tp_at_pct":                         {"pct": {}}, // v15 migrates to tiered_tp_pct; kept for v13 legacy param routing only
+	// #844: trailing_tp_ratchet[_regime] own the tp_tiers tier table (plain list
+	// or regime-keyed map). The trailing stop is the SL owner (strategy-level
+	// trailing_stop_atr_mult), which is not a close-ref param.
+	"trailing_tp_ratchet":        {"tp_tiers": {}, "tiers": {}},
+	"trailing_tp_ratchet_regime": {"tp_tiers": {}, "tiers": {}},
+	"tiered_tp_pct":              {"tp_tiers": {}, "tiers": {}},
+	"tp_at_pct":                  {"pct": {}}, // v15 migrates to tiered_tp_pct; kept for v13 legacy param routing only
 }
 
 // migrateV14Direction translates the legacy boolean `allow_shorts` field on

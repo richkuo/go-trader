@@ -1511,6 +1511,15 @@ func main() {
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
 							hlPosSnapshot := &Position{AvgCost: hlAvgCost, EntryATR: hlEntryATR}
+							if result.Signal == 0 && hlPosQty > 0 && strategyUsesTrailingTPRatchetClose(sc) {
+								// #844: ratchet the trailing stop tighter as TP tiers clear
+								// (entry-ATR profit distance, frozen pos.Regime), then feed the
+								// tightened PostTP trailing mult into the snapshot so the existing
+								// trailing-stop walker below trails at the new distance this cycle.
+								if m := runTrailingTPRatchetAdjustment(sc, stratState, result.Symbol, price, &mu, logger); m != nil {
+									hlPosSnapshot.PostTPTrailingATRMult = m
+								}
+							}
 							if result.Signal == 0 && hlPosQty > 0 && atrMultMissingEntryATR(sc, hlPosSnapshot) {
 								// ATR-mult is configured but the position is missing EntryATR — the
 								// open candle did not produce an ATR indicator, so the trailing loop
