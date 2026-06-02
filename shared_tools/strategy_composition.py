@@ -25,6 +25,10 @@ POSITION_CONTEXT_PARAM_KEYS = {"side", "avg_cost", "current_quantity", "initial_
 class CloseEvaluation:
     strategy: str
     close_fraction: float
+    # #844: trailing_tp_ratchet emits the tightened trailing ATR multiple for
+    # the highest cleared tier. None for every other close evaluator. The Go
+    # runtime stamps it onto Position.PostTPTrailingATRMult (monotonic tighten).
+    post_tp_trailing_atr_mult: Optional[float] = None
 
 
 @dataclass
@@ -355,6 +359,7 @@ def evaluate_open_close(
                 close_evals.append(CloseEvaluation(
                     strategy=resolved,
                     close_fraction=result.get("close_fraction", 0.0),
+                    post_tp_trailing_atr_mult=result.get("post_tp_trailing_atr_mult"),
                 ))
                 continue
             except ValueError as exc:
@@ -385,7 +390,7 @@ def finalize_decision(
     signal = evaluation.open_signal if open_signal is None else normalize_signal(open_signal)
     open_action = open_action_from_signal(signal)
     close_fraction, close_strategy = max_close_fraction(evaluation.close_evaluations)
-    return {
+    decision = {
         "open_strategy": evaluation.open_strategy,
         "close_strategies": evaluation.close_strategies,
         "open_action": open_action,
@@ -393,3 +398,20 @@ def finalize_decision(
         "close_strategy": close_strategy,
         "signal": compose_signal(open_action, close_fraction, position_side),
     }
+    # #844: surface the tightest trail-ratchet multiple across close evaluators.
+    # close_fraction may be 0 on a trail-only rung, so this is independent of the
+    # max-close winner. The Go runtime monotonic-tightens from this value.
+    trailing_mult: Optional[float] = None
+    for ev in evaluation.close_evaluations:
+        m = ev.post_tp_trailing_atr_mult
+        if m is None:
+            continue
+        try:
+            m = float(m)
+        except (TypeError, ValueError):
+            continue
+        if m > 0 and (trailing_mult is None or m < trailing_mult):
+            trailing_mult = m
+    if trailing_mult is not None:
+        decision["post_tp_trailing_atr_mult"] = trailing_mult
+    return decision

@@ -483,6 +483,14 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				errs = append(errs, fmt.Sprintf("strategy[%s] unified per-regime close block changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
+			// #844: the trailing_tp_ratchet tier table (per-tier triggers, close
+			// fractions, and trail-tightening) is frozen at open. Block tier-table
+			// edits while open; allowed when flat (trailing_stop_atr_mult numeric
+			// changes stay hot-reloadable as before).
+			if !trailingTPRatchetParamsEqualForReload(sc, ns) {
+				errs = append(errs, fmt.Sprintf("strategy[%s] trailing_tp_ratchet tp_tiers changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
 		}
 	}
 	if len(errs) > 0 {

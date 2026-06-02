@@ -373,6 +373,15 @@ class Backtester:
         self._uses_regime_tiered_close = _close_refs_use_regime_tiered_tp(
             self._close_refs,
         )
+        # #844: trailing_tp_ratchet drives a strategy-level trailing ATR stop
+        # whose distance tightens each time a cleared TP tier returns a
+        # post_tp_trailing_atr_mult. The initial (loose) trail is the
+        # strategy-level trailing_stop_atr_mult resolved at open.
+        self._uses_trailing_tp_ratchet = any(
+            (r.get("name") or "").strip().lower()
+            in ("trailing_tp_ratchet", "trailing_tp_ratchet_regime")
+            for r in self._close_refs
+        )
         _needs_regime_atr = (
             self.stop_loss_atr_regime is not None
             or self.trailing_stop_atr_regime is not None
@@ -755,6 +764,9 @@ class Backtester:
         sl_trigger_px = 0.0
         sl_tiers_processed = 0
         post_tp_trail_mult: Optional[float] = None
+        # #844: trail tightening detected at a bar's close, applied at the next
+        # bar (mirrors live's stamp-this-cycle / walk-next-cycle ordering).
+        pending_post_tp_trail: Optional[float] = None
         sl_high_water_px = 0.0
         self._active_sl_after_rules = self._sl_after_rules_static
         self._run_tp_tier_thresholds = list(self._tp_tier_thresholds_static)
@@ -762,6 +774,7 @@ class Backtester:
         self._run_trailing_stop_atr_mult: Optional[float] = None
         self._run_position_regime = ""
         sl_after_active = self._sl_after_pipeline_enabled
+        trailing_ratchet_active = self._uses_trailing_tp_ratchet
 
         atr_series = df["atr"] if "atr" in df.columns else None
 
@@ -879,6 +892,12 @@ class Backtester:
                 col_close_fraction = float(row.get("_close_fraction", 0.0))
                 close_fraction = max(col_close_fraction, pending_close_fraction)
                 pending_close_fraction = 0.0
+                # #844: apply the trail tightening detected at the prior bar's
+                # close (monotonic — never loosen).
+                if pending_post_tp_trail is not None and pending_post_tp_trail > 0:
+                    if post_tp_trail_mult is None or pending_post_tp_trail < post_tp_trail_mult:
+                        post_tp_trail_mult = pending_post_tp_trail
+                pending_post_tp_trail = None
                 open_action = row.get("_open_action", "none")
 
                 if close_fraction > 0 and position != 0:
@@ -916,6 +935,7 @@ class Backtester:
                         sl_trigger_px = 0.0
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
+                        pending_post_tp_trail = None
                         sl_high_water_px = 0.0
                         sl_after_just_applied = False
                         self._active_sl_after_rules = self._sl_after_rules_static
@@ -991,6 +1011,19 @@ class Backtester:
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = 0.0
+                    # #844: arm the initial (loose) trailing stop from the
+                    # strategy-level trailing_stop_atr_mult; the first end-of-bar
+                    # walk establishes the trigger from the seeded high-water mark.
+                    if (
+                        trailing_ratchet_active
+                        and self._run_trailing_stop_atr_mult is not None
+                        and self._run_trailing_stop_atr_mult > 0
+                    ):
+                        post_tp_trail_mult = self._run_trailing_stop_atr_mult
+                        sl_high_water_px = avg_cost
+                        sl_trigger_px = 0.0
+                        sl_tiers_processed = 0
+                        pending_post_tp_trail = None
                 elif open_action == "short" and position == 0 and not regime_blocked:
                     effective_price = fill_price * (1 - self.slippage_pct)
                     commission = cash * self.commission_pct
@@ -1012,18 +1045,34 @@ class Backtester:
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = 0.0
+                    # #844: arm the initial (loose) trailing stop (short).
+                    if (
+                        trailing_ratchet_active
+                        and self._run_trailing_stop_atr_mult is not None
+                        and self._run_trailing_stop_atr_mult > 0
+                    ):
+                        post_tp_trail_mult = self._run_trailing_stop_atr_mult
+                        sl_high_water_px = avg_cost
+                        sl_trigger_px = 0.0
+                        sl_tiers_processed = 0
+                        pending_post_tp_trail = None
 
                 # End-of-bar: evaluate close strategies against the now-current
                 # position using this bar's close as the mark. The result is
                 # applied at the NEXT bar's open (mirrors live: eval at end of
                 # bar, fill at next open).
                 if self.close_strategies and position != 0 and avg_cost > 0:
-                    pending_close_fraction = self._evaluate_close_strategies(
+                    pending_close_fraction, eval_trail = self._evaluate_close_strategies(
                         position, avg_cost, initial_quantity, entry_atr_value,
                         mark_price, atr_series, idx,
                         position_regime=self._run_position_regime,
                         market_regime=_bar_close_regime(row),
                     )
+                    # #844: defer the trail tightening to the next bar (consumed
+                    # at the top of the loop) so it never fires an SL on the same
+                    # bar the tier cleared — matches live's one-cycle delay.
+                    if eval_trail is not None and eval_trail > 0:
+                        pending_post_tp_trail = eval_trail
 
                 # End-of-bar: walk the trailing-stop high-water mark (only
                 # active after a TP tier transitioned the position to
@@ -1032,7 +1081,7 @@ class Backtester:
                 # pending_close_fraction=1.0 which fills at the next bar's
                 # open — same alignment as the rest of the close pipeline.
                 if (
-                    sl_after_active
+                    (sl_after_active or trailing_ratchet_active)
                     and not sl_after_just_applied
                     and position != 0
                     and avg_cost > 0
@@ -1162,10 +1211,13 @@ class Backtester:
                                    idx,
                                    *,
                                    position_regime: str = "",
-                                   market_regime: str = "") -> float:
+                                   market_regime: str = "") -> tuple[float, Optional[float]]:
         """Run every configured close evaluator against the simulated position
-        and return the max ``close_fraction``. Same max-wins resolution as the
-        live composition flow in shared_tools/strategy_composition.py.
+        and return ``(max_close_fraction, post_tp_trailing_atr_mult)``. The
+        close fraction uses the same max-wins resolution as the live composition
+        flow in shared_tools/strategy_composition.py; the trail multiple is the
+        tightest (smallest positive) emitted by any evaluator (#844 — only the
+        trailing_tp_ratchet family emits one; None otherwise).
         """
         evaluate, _list_strategies = _load_close_registry()
         side = "long" if position > 0 else "short"
@@ -1203,16 +1255,22 @@ class Backtester:
                 market_dict["atr"] = live_atr
 
         best = 0.0
+        best_trail: Optional[float] = None
         for name in self.close_strategies:
             params = self.close_params.get(name)
             result = evaluate(name, position_dict, market_dict, params)
             fraction = float(result.get("close_fraction", 0.0) or 0.0)
             if fraction > best:
                 best = fraction
-                if best >= 1.0:
-                    # Full close already wins — remaining evaluators can't change the outcome.
-                    return 1.0
-        return min(max(best, 0.0), 1.0)
+            trail_raw = result.get("post_tp_trailing_atr_mult")
+            if trail_raw is not None:
+                try:
+                    trail = float(trail_raw)
+                except (TypeError, ValueError):
+                    trail = 0.0
+                if trail > 0 and (best_trail is None or trail < best_trail):
+                    best_trail = trail
+        return min(max(best, 0.0), 1.0), best_trail
 
     def _initial_sl_trigger(self, side: str, avg_cost: float,
                             entry_atr: float) -> float:

@@ -862,6 +862,16 @@ func validateRegimeATRConfig(cfg *Config) []string {
 			}
 		}
 
+		// #844: trailing_tp_ratchet / trailing_tp_ratchet_regime close validation.
+		// Uses the same regime_atr_window classifier vocabulary (atrLabels) so a
+		// composite window accepts the 7-state labels and an adx window the
+		// 3-state ones. The _regime variant requires regime.enabled.
+		ratchetErrs, ratchetRegime := validateTrailingTPRatchetClose(sc, atrLabels, prefix)
+		errs = append(errs, ratchetErrs...)
+		if ratchetRegime {
+			usesRegime = true
+		}
+
 		if usesRegime && !regimeEnabled {
 			errs = append(errs, fmt.Sprintf("%s: regime-aware stop/TP fields require top-level regime.enabled=true", prefix))
 		}

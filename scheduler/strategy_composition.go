@@ -18,6 +18,11 @@ type StrategyDecisionFields struct {
 	CloseFraction   float64        `json:"close_fraction"`
 	CloseStrategy   string         `json:"close_strategy,omitempty"`
 	Regime          *RegimePayload `json:"regime,omitempty"`
+	// PostTPTrailingATRMult is set only by the trailing_tp_ratchet close family
+	// (#844): the tightened trailing ATR multiple for the highest cleared tier.
+	// The runtime stamps it onto Position.PostTPTrailingATRMult (tighten-only)
+	// and the trailing-stop walker takes over at that distance. nil otherwise.
+	PostTPTrailingATRMult *float64 `json:"post_tp_trailing_atr_mult,omitempty"`
 }
 
 // PositionCtx is the optional state snapshot threaded into close evaluators

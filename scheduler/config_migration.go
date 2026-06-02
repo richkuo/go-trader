@@ -569,6 +569,12 @@ var closeStrategyOwnedKeys = map[string]map[string]struct{}{
 	"tiered_tp_atr_live_regime_dynamic": {"trend_regime": {}, "atr_source": {}, "regime_confirm_cycles": {}},
 	"tiered_tp_pct":                     {"tp_tiers": {}, "tiers": {}},
 	"tp_at_pct":                         {"pct": {}}, // v15 migrates to tiered_tp_pct; kept for v13 legacy param routing only
+	// #844: trailing_tp_ratchet — tp_tiers is either a flat list (plain) or a
+	// regime-keyed {label: [tiers]} map (the _regime variant). Both are post-v13;
+	// listed for unknown-key symmetry. The initial trail is the strategy-level
+	// trailing_stop_atr_mult, not a close param.
+	"trailing_tp_ratchet":        {"tp_tiers": {}, "tiers": {}},
+	"trailing_tp_ratchet_regime": {"tp_tiers": {}, "tiers": {}},
 }
 
 // migrateV14Direction translates the legacy boolean `allow_shorts` field on

@@ -1722,7 +1722,16 @@ func main() {
 							runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON)
 							runPostTPStopLossAdjustment(sc, stratState, sc.Symbol, prices[sc.Symbol], cfg, &mu, notifier, logger, hlOnChainAbsQty)
 						}
-						if closeFraction, _, ok := runManualCloseEval(sc, stratState, cfg, notifier, logger); ok && closeFraction > 0 {
+						closeFraction, _, trailMult, ceOK := runManualCloseEval(sc, stratState, cfg, notifier, logger)
+						if ceOK && trailMult != nil {
+							// #844: stamp the trailing_tp_ratchet trail tightening even on
+							// a trail-only rung (closeFraction==0); the next cycle's trailing
+							// loop arms the tighter on-chain trigger.
+							mu.Lock()
+							applyTrailingTPRatchet(stratState, sc.Symbol, trailMult)
+							mu.Unlock()
+						}
+						if ceOK && closeFraction > 0 {
 							mu.RLock()
 							pos = stratState.Positions[sc.Symbol]
 							mu.RUnlock()
@@ -2880,6 +2889,10 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	openTrade := exec.OpenTrade
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	// #844: stamp the trailing_tp_ratchet trail tightening (monotonic). Runs even
+	// when the close evaluator took no profit (trail-only rung, signal==0) — the
+	// trailing-stop walker picks up the tighter distance on the next cycle.
+	applyTrailingTPRatchet(s, result.Symbol, result.PostTPTrailingATRMult)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		stampPositionProtectionSnapshot(pos, sc)
 	}
