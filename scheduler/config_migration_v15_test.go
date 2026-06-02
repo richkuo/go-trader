@@ -318,8 +318,8 @@ func TestMigrateV15CloseKeys_TrailingTPRatchetRegimeTable(t *testing.T) {
 						"tp_tiers": map[string]interface{}{
 							"trending_up": []interface{}{
 								map[string]interface{}{
-									"atr":      1.5,
-									"fraction": 0.0,
+									"atr":                 1.5,
+									"fraction":            0.0,
 									"trailing_mult_after": 2.0,
 								},
 							},
