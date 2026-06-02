@@ -547,6 +547,60 @@ func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Positi
 	return nhw, 0, false, 0
 }
 
+// applyTrailingStopUpdateResult applies a runHyperliquidTrailingStopUpdate
+// outcome to the live position. The caller MUST hold the state write lock.
+// Both the perps and the manual trailing_tp_ratchet dispatches route through
+// this single helper so they can never diverge on the three slUpdate outcomes:
+//
+//  1. immediate fill — the replacement trigger filled on placement; book a
+//     "trailing_stop_loss_immediate" close now (returns immediateFill=true with
+//     the fill price) instead of leaving it for a later reconcile to pick up as
+//     a delayed, mislabeled hl_sync_external close;
+//  2. resting replacement — update the position's OID + trigger;
+//  3. cancel-without-rest — the old OID was cancelled but no replacement
+//     rested; clear the stale OID/trigger.
+//
+// expectedSide guards against a side flip between snapshot and lock; prevSLOID
+// is the OID captured before the update (used to confirm the cancel applies to
+// the OID we expected to replace).
+func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string, prevSLOID int64, newHighWater float64, updateConfirmed bool, slUpdate *HyperliquidStopLossUpdateResult, logger *StrategyLogger) (immediateFill bool, fillPx float64) {
+	if s == nil {
+		return false, 0
+	}
+	pos, ok := s.Positions[symbol]
+	if !ok || pos == nil || pos.Quantity <= 0 {
+		return false, 0
+	}
+	if expectedSide != "" && pos.Side != expectedSide {
+		return false, 0
+	}
+	if newHighWater > 0 && updateConfirmed {
+		pos.StopLossHighWaterPx = newHighWater
+	}
+	if slUpdate == nil {
+		return false, 0
+	}
+	switch {
+	case slUpdate.StopLossFilledImmediately && slUpdate.StopLossTriggerPx > 0:
+		if recordPerpsStopLossClose(s, symbol, slUpdate.StopLossTriggerPx, "trailing_stop_loss_immediate", logger) {
+			return true, slUpdate.StopLossTriggerPx
+		}
+	case slUpdate.StopLossOID > 0:
+		pos.StopLossOID = slUpdate.StopLossOID
+		pos.StopLossTriggerPx = slUpdate.StopLossTriggerPx
+		if logger != nil {
+			logger.Info("Trailing SL trigger updated oid=%d @ $%.4f", slUpdate.StopLossOID, slUpdate.StopLossTriggerPx)
+		}
+	case slUpdate.CancelStopLossSucceeded && prevSLOID > 0 && pos.StopLossOID == prevSLOID:
+		pos.StopLossOID = 0
+		pos.StopLossTriggerPx = 0
+		if logger != nil {
+			logger.Warn("Trailing SL old OID=%d was cancelled but replacement did not rest", prevSLOID)
+		}
+	}
+	return false, 0
+}
+
 // runHyperliquidTrailingStopUpdate evaluates the per-cycle trailing-stop
 // update for an HL perps position. pos is the caller's snapshot of the
 // position fields needed for trailing math (AvgCost, EntryATR — held

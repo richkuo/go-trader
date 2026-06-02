@@ -434,6 +434,66 @@ func TestValidateTrailingTPRatchetClose_CompositeVocabulary(t *testing.T) {
 	}
 }
 
+// applyTrailingStopUpdateResult is the shared handler routed through by both the
+// perps and manual trailing dispatches. These cover the three slUpdate outcomes
+// the manual path previously dropped (immediate fill + cancel-without-rest).
+func ratchetTestState(pos *Position) *StrategyState {
+	return &StrategyState{
+		ID: "s1", Type: "perps", Platform: "hyperliquid",
+		Positions: map[string]*Position{pos.Symbol: pos},
+	}
+}
+
+func TestApplyTrailingStopUpdateResult_RestingReplacement(t *testing.T) {
+	s := ratchetTestState(&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: 5, StopLossOID: 7})
+	upd := &HyperliquidStopLossUpdateResult{StopLossOID: 42, StopLossTriggerPx: 95}
+	fill, px := applyTrailingStopUpdateResult(s, "ETH", "long", 7, 0, false, upd, nil)
+	if fill || px != 0 {
+		t.Fatalf("resting replacement: fill=%v px=%v want false,0", fill, px)
+	}
+	p := s.Positions["ETH"]
+	if p.StopLossOID != 42 || p.StopLossTriggerPx != 95 {
+		t.Fatalf("resting replacement OID/trigger = %d/%v want 42/95", p.StopLossOID, p.StopLossTriggerPx)
+	}
+}
+
+func TestApplyTrailingStopUpdateResult_ImmediateFillBooksClose(t *testing.T) {
+	s := ratchetTestState(&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: 5, StopLossOID: 7})
+	upd := &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 95}
+	fill, px := applyTrailingStopUpdateResult(s, "ETH", "long", 7, 0, false, upd, nil)
+	if !fill || px != 95 {
+		t.Fatalf("immediate fill: fill=%v px=%v want true,95", fill, px)
+	}
+	if p, ok := s.Positions["ETH"]; ok && p != nil && p.Quantity > 0 {
+		t.Fatalf("immediate fill should have booked/closed the position, still qty=%v", p.Quantity)
+	}
+}
+
+func TestApplyTrailingStopUpdateResult_CancelWithoutRestClearsStaleOID(t *testing.T) {
+	s := ratchetTestState(&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: 5, StopLossOID: 7, StopLossTriggerPx: 96})
+	upd := &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true}
+	fill, _ := applyTrailingStopUpdateResult(s, "ETH", "long", 7, 0, false, upd, nil)
+	if fill {
+		t.Fatal("cancel-without-rest: want fill=false")
+	}
+	p := s.Positions["ETH"]
+	if p.StopLossOID != 0 || p.StopLossTriggerPx != 0 {
+		t.Fatalf("stale OID/trigger not cleared: %d/%v want 0/0", p.StopLossOID, p.StopLossTriggerPx)
+	}
+}
+
+func TestApplyTrailingStopUpdateResult_SideGuardSkipsMutation(t *testing.T) {
+	s := ratchetTestState(&Position{Symbol: "ETH", Side: "short", Quantity: 1, AvgCost: 100, EntryATR: 5, StopLossOID: 7})
+	upd := &HyperliquidStopLossUpdateResult{StopLossOID: 42, StopLossTriggerPx: 95}
+	fill, _ := applyTrailingStopUpdateResult(s, "ETH", "long", 7, 0, false, upd, nil)
+	if fill {
+		t.Fatal("side mismatch: want fill=false")
+	}
+	if p := s.Positions["ETH"]; p.StopLossOID != 7 {
+		t.Fatalf("side mismatch must not mutate OID, got %d want 7", p.StopLossOID)
+	}
+}
+
 func errListContains(errs []string, needle string) bool {
 	for _, err := range errs {
 		if strings.Contains(err, needle) {
