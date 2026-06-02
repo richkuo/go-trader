@@ -1282,6 +1282,7 @@ func main() {
 					var hlTPOIDs []int64
 					var hlStopLossTriggerPx float64
 					var hlStopLossHighWaterPx float64
+					var hlPostTPTrailingATRMult *float64
 					if sc.Type == "perps" && sc.Platform == "hyperliquid" {
 						if hlLiveStrategy {
 							hlCash = stratState.Cash
@@ -1300,6 +1301,7 @@ func main() {
 								hlTPOIDs = cloneInt64s(pos.TPOIDs)
 								hlStopLossTriggerPx = pos.StopLossTriggerPx
 								hlStopLossHighWaterPx = pos.StopLossHighWaterPx
+								hlPostTPTrailingATRMult = pos.PostTPTrailingATRMult
 							}
 						}
 					}
@@ -1510,7 +1512,16 @@ func main() {
 							mu.Unlock()
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
-							hlPosSnapshot := &Position{AvgCost: hlAvgCost, EntryATR: hlEntryATR}
+							hlPosSnapshot := &Position{AvgCost: hlAvgCost, EntryATR: hlEntryATR, PostTPTrailingATRMult: hlPostTPTrailingATRMult}
+							if result.Signal == 0 && hlPosQty > 0 && strategyUsesTrailingTPRatchetClose(sc) {
+								applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
+								mu.RLock()
+								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos != nil {
+									hlPostTPTrailingATRMult = pos.PostTPTrailingATRMult
+									hlPosSnapshot.PostTPTrailingATRMult = hlPostTPTrailingATRMult
+								}
+								mu.RUnlock()
+							}
 							if result.Signal == 0 && hlPosQty > 0 && atrMultMissingEntryATR(sc, hlPosSnapshot) {
 								// ATR-mult is configured but the position is missing EntryATR — the
 								// open candle did not produce an ATR indicator, so the trailing loop
@@ -1721,6 +1732,31 @@ func main() {
 						if pos != nil && hyperliquidIsLive(sc.Args) {
 							runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON)
 							runPostTPStopLossAdjustment(sc, stratState, sc.Symbol, prices[sc.Symbol], cfg, &mu, notifier, logger, hlOnChainAbsQty)
+							mark := prices[sc.Symbol]
+							if mark > 0 && strategyUsesTrailingTPRatchetClose(sc) {
+								applyTrailingTPRatchet(sc, stratState, sc.Symbol, mark, &mu, logger)
+							}
+							mu.RLock()
+							pos = stratState.Positions[sc.Symbol]
+							mu.RUnlock()
+							if pos != nil && mark > 0 && effectiveTrailingStopPct(sc, pos) > 0 {
+								slEffectiveQty, capped := hlSLEffectiveQty(sc.Symbol, pos.Quantity, hlOnChainAbsQty)
+								if capped {
+									logger.Warn("manual trailing SL: virtual qty %.6f > on-chain %.6f for %s; capping (#621)", pos.Quantity, slEffectiveQty, sc.Symbol)
+								}
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, notifier, logger)
+								mu.Lock()
+								if p, ok2 := stratState.Positions[sc.Symbol]; ok2 && p != nil && p.Quantity > 0 {
+									if newHighWater > 0 && updateConfirmed {
+										p.StopLossHighWaterPx = newHighWater
+									}
+									if slUpdate != nil && slUpdate.StopLossOID > 0 {
+										p.StopLossOID = slUpdate.StopLossOID
+										p.StopLossTriggerPx = slUpdate.StopLossTriggerPx
+									}
+								}
+								mu.Unlock()
+							}
 						}
 						if closeFraction, _, ok := runManualCloseEval(sc, stratState, cfg, notifier, logger); ok && closeFraction > 0 {
 							mu.RLock()

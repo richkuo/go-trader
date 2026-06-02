@@ -45,7 +45,7 @@ func hlSLEffectiveQty(symbol string, virtualQty float64, onChainQtyMap map[strin
 // expect a strictly fixed distance for the life of a position should not
 // edit the multiplier while a position is active.
 func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
-	if sc.Platform != "hyperliquid" || sc.Type != "perps" {
+	if sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") {
 		return 0
 	}
 	// #708: Post-TP trailing transition — `sl_after: trail_from_here` stamps

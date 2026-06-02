@@ -17,6 +17,8 @@ from tiered_tp_atr_live import evaluate as tiered_tp_atr_live_evaluate
 from tiered_tp_atr_regime import evaluate as tiered_tp_atr_regime_evaluate
 from tiered_tp_atr_live_regime import evaluate as tiered_tp_atr_live_regime_evaluate
 from tiered_tp_atr_live_regime_dynamic import evaluate as tiered_tp_atr_live_regime_dynamic_evaluate
+from trailing_tp_ratchet import evaluate_regime as trailing_tp_ratchet_regime_evaluate
+from trailing_tp_ratchet import evaluate_scalar as trailing_tp_ratchet_evaluate
 from tiered_tp_pct import DEFAULT_TIERS as DEFAULT_PCT_TIERS
 from tiered_tp_pct import evaluate as tiered_tp_pct_evaluate
 
@@ -149,3 +151,15 @@ register(
     "Unified per-regime TP/SL — live ATR-regime re-resolution (#843; HL live uses on-chain sync)",
     {"atr_source": "live", "regime_confirm_cycles": 2},
 )(tiered_tp_atr_live_regime_dynamic_evaluate)
+
+register(
+    "trailing_tp_ratchet",
+    "Tiered trail ratchet — tightens trailing_stop_atr_mult at each ATR tier (close_fraction may be 0)",
+    {"tp_tiers": [{"atr_multiple": 1.5, "close_fraction": 0.0, "trailing_mult_after": 2.0}]},
+)(trailing_tp_ratchet_evaluate)
+
+register(
+    "trailing_tp_ratchet_regime",
+    "Regime-keyed tiered trail ratchet — frozen at open via Position.Regime (#844)",
+    {},
+)(trailing_tp_ratchet_regime_evaluate)
