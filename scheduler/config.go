@@ -367,6 +367,30 @@ type StrategyConfig struct {
 	ThetaHarvest            *ThetaHarvestConfig      `json:"theta_harvest,omitempty"`
 	FuturesConfig           *FuturesConfig           `json:"futures,omitempty"`
 	RegimeDirectionalPolicy *RegimeDirectionalPolicy `json:"regime_directional_policy,omitempty"` // HL perps only: regime-aware override for Direction + InvertSignal. When set, runHyperliquidCheck resolves the effective pair per-cycle from the current regime (when flat) or pos.Regime (when an open position is held — "hold until natural exit" semantics). Static Direction/InvertSignal are the base; the policy overrides per regime. Requires regime detection enabled at top-level cfg.Regime. (#779)
+	AllowScaleIn            bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
+	ScaleIn                 *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
+}
+
+// ScaleInConfig tunes the opt-in scale-in / pyramiding path (#873). All fields
+// are optional. Consulted only when StrategyConfig.AllowScaleIn is true.
+type ScaleInConfig struct {
+	// MaxAdds caps the number of add legs per position (0 = unlimited). A fresh
+	// open is not an add; the first add takes ScaleInCount 0→1.
+	MaxAdds int `json:"max_adds,omitempty"`
+	// MaxAddedNotionalUSD caps the cumulative USD notional added across all add
+	// legs of a position (0 = unlimited). The initial open notional does not
+	// count against this cap — only subsequent adds.
+	MaxAddedNotionalUSD float64 `json:"max_added_notional_usd,omitempty"`
+	// AddSpacingATR is the signed price-move requirement, in multiples of the
+	// frozen EntryATR, before the next add is allowed (measured from the last
+	// entry leg's fill price). >0 = add-to-winners (price must have moved
+	// in-favor by N×EntryATR); <0 = average-down (price must have moved adverse
+	// by |N|×EntryATR); 0 = no spacing gate (add on every same-direction signal
+	// up to the caps). Requires a positive frozen EntryATR to evaluate.
+	AddSpacingATR float64 `json:"add_spacing_atr,omitempty"`
+	// AddNotionalUSD is the USD notional to add per leg (0 = default to the
+	// strategy's standard open notional, i.e. the same sizing a fresh open uses).
+	AddNotionalUSD float64 `json:"add_notional_usd,omitempty"`
 }
 
 // UnmarshalJSON parses a StrategyConfig while accepting both the canonical
@@ -1504,6 +1528,34 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			}
 			if *sc.MarginPerTradeUSD <= 0 {
 				errs = append(errs, fmt.Sprintf("%s: margin_per_trade_usd must be positive, got %g", prefix, *sc.MarginPerTradeUSD))
+			}
+		}
+
+		// #873: scale-in / pyramiding is opt-in and scoped to HL perps + manual
+		// (live + paper). The blend math is platform-agnostic, but the on-chain
+		// protection re-size is HL-specific and the dispatch wiring only covers
+		// these two types — reject the flag elsewhere so an operator can't
+		// silently enable a no-op.
+		if sc.AllowScaleIn {
+			if sc.Type != "perps" && sc.Type != "manual" {
+				errs = append(errs, fmt.Sprintf("%s: allow_scale_in is only supported for perps/manual strategies (got type %q)", prefix, sc.Type))
+			}
+			if sc.Platform != "hyperliquid" {
+				errs = append(errs, fmt.Sprintf("%s: allow_scale_in is only supported on hyperliquid (got platform %q)", prefix, sc.Platform))
+			}
+		}
+		if sc.ScaleIn != nil {
+			if !sc.AllowScaleIn {
+				errs = append(errs, fmt.Sprintf("%s: scale_in block is set but allow_scale_in is false — enable allow_scale_in or remove the block", prefix))
+			}
+			if sc.ScaleIn.MaxAdds < 0 {
+				errs = append(errs, fmt.Sprintf("%s: scale_in.max_adds must be >= 0, got %d", prefix, sc.ScaleIn.MaxAdds))
+			}
+			if sc.ScaleIn.MaxAddedNotionalUSD < 0 {
+				errs = append(errs, fmt.Sprintf("%s: scale_in.max_added_notional_usd must be >= 0, got %g", prefix, sc.ScaleIn.MaxAddedNotionalUSD))
+			}
+			if sc.ScaleIn.AddNotionalUSD < 0 {
+				errs = append(errs, fmt.Sprintf("%s: scale_in.add_notional_usd must be >= 0, got %g", prefix, sc.ScaleIn.AddNotionalUSD))
 			}
 		}
 

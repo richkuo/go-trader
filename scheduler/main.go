@@ -21,6 +21,7 @@ var knownSubcommands = []string{
 	"init",
 	"export",
 	"manual-open",
+	"manual-add",
 	"manual-close",
 	"backfill",
 	"probe",
@@ -57,6 +58,8 @@ func main() {
 			os.Exit(runExport(os.Args[2:]))
 		case "manual-open":
 			os.Exit(runManualOpen(os.Args[2:]))
+		case "manual-add":
+			os.Exit(runManualAdd(os.Args[2:]))
 		case "manual-close":
 			os.Exit(runManualClose(os.Args[2:]))
 		case "backfill":
@@ -1296,10 +1299,18 @@ func main() {
 					var hlStopLossTriggerPx float64
 					var hlStopLossHighWaterPx float64
 					var hlPostTPTrailingATRMult *float64
+					var hlScaleInCount int
+					var hlLastAddPrice float64
+					var hlAddedNotionalUSD float64
+					var hlScaleInCash float64
 					if sc.Type == "perps" && sc.Platform == "hyperliquid" {
 						if hlLiveStrategy {
 							hlCash = stratState.Cash
 						}
+						// #873: scale-in's default per-add notional uses the
+						// strategy cash like a fresh open — captured for paper too
+						// (hlCash above is live-only), under the same RLock.
+						hlScaleInCash = stratState.Cash
 						// Live-order sizing/cancel snapshots below are intentionally
 						// consumed only inside live execution branches. Paper paths
 						// should continue using PositionCtx only for close evaluation.
@@ -1315,6 +1326,9 @@ func main() {
 								hlStopLossTriggerPx = pos.StopLossTriggerPx
 								hlStopLossHighWaterPx = pos.StopLossHighWaterPx
 								hlPostTPTrailingATRMult = pos.PostTPTrailingATRMult
+								hlScaleInCount = pos.ScaleInCount
+								hlLastAddPrice = pos.LastAddPrice
+								hlAddedNotionalUSD = pos.AddedNotionalUSD
 							}
 						}
 					}
@@ -1643,6 +1657,23 @@ func main() {
 								runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON)
 								runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 							}
+							// #873 scale-in: a same-direction signal on an open HL
+							// perps position ADDS size when allow_scale_in is
+							// enabled and the caps/spacing allow. Computed once
+							// from the Phase-1 snapshot so the live order and the
+							// Trade record agree (closing the #298 fill-without-
+							// Trade gap). Applies to live and paper; paper just
+							// blends (no on-chain order / re-size).
+							scaleInAddQty := 0.0
+							if result.Signal != 0 && sc.Type == "perps" && sc.AllowScaleIn {
+								defOpenNotional := PerpsOpenNotional(hlScaleInCash, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc))
+								snap := scaleInSnapshot{Side: hlPosSide, Quantity: hlPosQty, AvgCost: hlAvgCost, EntryATR: hlEntryATR, ScaleInCount: hlScaleInCount, AddedNotionalUSD: hlAddedNotionalUSD, LastAddPrice: hlLastAddPrice}
+								if q, okAdd, reason := perpsScaleInDecision(sc, snap, result.Signal, price, defOpenNotional); okAdd {
+									scaleInAddQty = q
+								} else if reason != "" && reason != "not a same-direction add" {
+									logger.Info("Scale-in not taken for %s: %s", result.Symbol, reason)
+								}
+							}
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
 								// #768 fix #4: Forward Go's clearinghouseState
 								// snapshot for this coin so Python can skip its
@@ -1650,24 +1681,35 @@ func main() {
 								// Only meaningful when a peer/prior position
 								// has the leverage already pinned on-chain.
 								walletSnapshot := hlExecuteSnapshotForCoin(hlPositions, result.Symbol)
-								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, notifier, logger)
-								if ok2 {
-									execResult = er
+								if scaleInAddQty > 0 {
+									// Add path: same-side market order; no SL/TP
+									// cancel, no update_leverage. The post-add
+									// protection sync re-sizes SL + un-cleared TPs.
+									if er, ok2 := runHyperliquidScaleInOrder(sc, result, scaleInAddQty, walletSnapshot, notifier, logger); ok2 {
+										execResult = er
+									} else {
+										liveExecFailed = true
+									}
 								} else {
-									liveExecFailed = true
-									// Even on failure, if the Python side
-									// confirmed the stale-SL cancel went
-									// through, drop the dead OID so the next
-									// cycle doesn't try to cancel it again.
-									if er != nil && er.CancelStopLossSucceeded && hlStopLossOID > 0 {
-										sym := hyperliquidSymbol(sc.Args)
-										if sym != "" {
-											mu.Lock()
-											if pos, ok3 := stratState.Positions[sym]; ok3 && pos.StopLossOID == hlStopLossOID {
-												pos.StopLossOID = 0
-												logger.Info("cleared stale SL OID=%d after open failed but cancel succeeded", hlStopLossOID)
+									er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, notifier, logger)
+									if ok2 {
+										execResult = er
+									} else {
+										liveExecFailed = true
+										// Even on failure, if the Python side
+										// confirmed the stale-SL cancel went
+										// through, drop the dead OID so the next
+										// cycle doesn't try to cancel it again.
+										if er != nil && er.CancelStopLossSucceeded && hlStopLossOID > 0 {
+											sym := hyperliquidSymbol(sc.Args)
+											if sym != "" {
+												mu.Lock()
+												if pos, ok3 := stratState.Positions[sym]; ok3 && pos.StopLossOID == hlStopLossOID {
+													pos.StopLossOID = 0
+													logger.Info("cleared stale SL OID=%d after open failed but cancel succeeded", hlStopLossOID)
+												}
+												mu.Unlock()
 											}
-											mu.Unlock()
 										}
 									}
 								}
@@ -1675,7 +1717,11 @@ func main() {
 							if !liveExecFailed {
 								mu.Lock()
 								var openTrade *Trade
-								trades, detail, openTrade = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, logger)
+								if scaleInAddQty > 0 {
+									trades, detail, openTrade = executeHyperliquidScaleInDeferredOpen(sc, stratState, result, execResult, signalStr, price, scaleInAddQty, logger)
+								} else {
+									trades, detail, openTrade = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, logger)
+								}
 								mu.Unlock()
 								if execResult != nil && trades > 0 {
 									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON)
