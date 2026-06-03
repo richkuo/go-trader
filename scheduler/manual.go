@@ -382,6 +382,232 @@ func runManualOpen(args []string) int {
 	return 0
 }
 
+// runManualAdd implements `go-trader manual-add <strategy-id>`.
+// It increases an existing manual position's size (scale-in / pyramiding) without
+// re-basing EntryATR, regime, or TP tier geometry (#873).
+func runManualAdd(args []string) int {
+	fs := flag.NewFlagSet("manual-add", flag.ContinueOnError)
+	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
+	size := fs.Float64("size", 0, "Add size in base units (coin qty)")
+	notional := fs.Float64("notional", 0, "Add size as USD notional (size = notional / price)")
+	margin := fs.Float64("margin", 0, "Add size as USD margin (size = margin * leverage / price)")
+	fillPrice := fs.Float64("fill-price", 0, "Fill price for --record-only (required when --record-only is set)")
+	recordOnly := fs.Bool("record-only", false, "Register an existing fill without placing a new on-chain order")
+	dryRun := fs.Bool("dry-run", false, "Print planned action without placing order or mutating state")
+
+	args = reorderArgsForPositional(args, collectBoolFlagNames(fs))
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "Usage: go-trader manual-add <strategy-id> [--size N | --notional N | --margin N] [--record-only --size N --fill-price N] [--dry-run]")
+		return 2
+	}
+	strategyID := fs.Arg(0)
+
+	cfg, err := LoadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		return 1
+	}
+
+	sc, ok := findManualStrategy(cfg, strategyID)
+	if !ok {
+		return 1
+	}
+
+	sizingInputs := countSizingFlags(*size, *notional, *margin)
+	if sizingInputs == 0 && !*recordOnly {
+		*margin = cfg.resolveManualMarginUSD()
+		sizingInputs = 1
+		fmt.Fprintf(os.Stderr, "[manual-add] no sizing flag provided; defaulting to --margin %g\n", *margin)
+	}
+	if sizingInputs == 0 {
+		fmt.Fprintln(os.Stderr, "error: one of --size, --notional, or --margin is required")
+		return 2
+	}
+	if sizingInputs > 1 {
+		fmt.Fprintln(os.Stderr, "error: only one of --size, --notional, or --margin may be specified")
+		return 2
+	}
+	if *recordOnly {
+		if *size <= 0 {
+			fmt.Fprintln(os.Stderr, "error: --record-only requires --size (coin qty of the fill you placed)")
+			return 2
+		}
+		if *fillPrice <= 0 {
+			fmt.Fprintln(os.Stderr, "error: --record-only requires --fill-price (the price at which your fill executed)")
+			return 2
+		}
+	}
+
+	stateDB, err := OpenStateDB(cfg.DBFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
+		return 1
+	}
+	defer stateDB.Close()
+
+	state, err := LoadStateWithDB(cfg, stateDB)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load state: %v\n", err)
+		return 1
+	}
+	ss := state.Strategies[strategyID]
+	pos := ss.Positions[sc.Symbol]
+	if pos == nil {
+		fmt.Fprintf(os.Stderr, "error: no open position for %s/%s — use manual-open first\n", strategyID, sc.Symbol)
+		return 1
+	}
+	if !manualPositionOwnedByStrategy(pos, strategyID) {
+		fmt.Fprintf(os.Stderr, "error: position %s/%s is owned by %q, not %q\n", strategyID, sc.Symbol, pos.OwnerStrategyID, strategyID)
+		return 1
+	}
+
+	if !*dryRun {
+		if state.PortfolioRisk.KillSwitchActive {
+			fmt.Fprintln(os.Stderr, "error: portfolio kill switch is active — manual-add blocked")
+			return 1
+		}
+		if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
+			fmt.Fprintln(os.Stderr, "error: strategy has a pending circuit-breaker close — manual-add blocked")
+			return 1
+		}
+	}
+
+	openSide := "buy"
+	if pos.Side == "short" {
+		openSide = "sell"
+	}
+
+	var resolvedOrderSize, sizingMark float64
+	var sizingFailed bool
+	if !*recordOnly && !*dryRun {
+		qty, mark, err := resolveManualOpenOrderSize(sc, *size, *notional, *margin, fetchHyperliquidMids)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		resolvedOrderSize = qty
+		sizingMark = mark
+	} else if !*recordOnly {
+		qty, mark, err := resolveManualOpenOrderSize(sc, *size, *notional, *margin, fetchHyperliquidMids)
+		if err != nil {
+			if *dryRun {
+				fmt.Fprintf(os.Stderr, "warning: dry-run sizing best-effort failed: %v\n", err)
+				sizingFailed = true
+			} else {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				return 1
+			}
+		} else {
+			resolvedOrderSize = qty
+			sizingMark = mark
+		}
+	}
+
+	if *dryRun {
+		prefix := "[dry-run]"
+		if sizingFailed {
+			prefix = "[dry-run] [sizing failed]"
+		}
+		blended := previewBlendedAvgCost(pos.Quantity, pos.AvgCost, resolvedOrderSize, sizingMark)
+		fmt.Printf("%s manual-add %s: %s +%.6f %s (current=%.6f avg=$%.4f -> blended avg=$%.4f, mark=$%.4f)\n",
+			prefix, strategyID, pos.Side, resolvedOrderSize, sc.Symbol, pos.Quantity, pos.AvgCost, blended, sizingMark)
+		return 0
+	}
+
+	var resolvedFillPrice, fillQty, fillFee float64
+	var exchangeOID string
+
+	if *recordOnly {
+		fillQty = *size
+		resolvedFillPrice = *fillPrice
+	} else {
+		cancelOID := pos.StopLossOID
+		extraCancelOIDs := cloneInt64s(pos.TPOIDs)
+		execResult, execStderr, execErr := RunHyperliquidExecute(
+			sc.Script, sc.Symbol, openSide,
+			resolvedOrderSize,
+			0, cancelOID, 0, "", 0, false,
+			hlExecuteSnapshot{},
+			extraCancelOIDs...,
+		)
+		if execStderr != "" {
+			fmt.Fprintf(os.Stderr, "HL execute stderr: %s\n", execStderr)
+		}
+		if execErr != nil {
+			fmt.Fprintf(os.Stderr, "error placing add order: %v\n", execErr)
+			return 1
+		}
+		if execResult.Error != "" {
+			fmt.Fprintf(os.Stderr, "error from HL: %s\n", execResult.Error)
+			return 1
+		}
+		fill := execResult.Execution
+		if fill == nil || fill.Fill == nil {
+			fmt.Fprintln(os.Stderr, "error: no fill returned from execute")
+			return 1
+		}
+		resolvedFillPrice = fill.Fill.AvgPx
+		fillQty = fill.Fill.TotalSz
+		fillFee = fill.Fill.Fee
+		if fill.Fill.OID != 0 {
+			exchangeOID = fmt.Sprintf("%d", fill.Fill.OID)
+		}
+		if fillQty <= 0 {
+			fillQty = resolveManualSize(*size, *notional, *margin, resolvedFillPrice, sc.Leverage)
+		}
+	}
+
+	totalQty := pos.Quantity + fillQty
+	blendedAvg := previewBlendedAvgCost(pos.Quantity, pos.AvgCost, fillQty, resolvedFillPrice)
+	fmt.Printf("Filled add: %s +%.6f %s @ $%.4f (blended avg $%.4f, total %.6f, fee=$%.4f)\n",
+		pos.Side, fillQty, sc.Symbol, resolvedFillPrice, blendedAvg, totalQty, fillFee)
+
+	notifier, closeNotifier := buildNotifierFromConfig(cfg)
+	defer closeNotifier()
+
+	var stopLossOID int64
+	var stopLossTriggerPx float64
+	var tpOIDs []int64
+	if !*recordOnly {
+		var warn string
+		var resizeErr error
+		stopLossOID, stopLossTriggerPx, tpOIDs, warn, resizeErr = resizeManualProtectionAfterScaleIn(sc, pos, totalQty, blendedAvg)
+		if resizeErr != nil {
+			warnNotifier(notifier, fmt.Sprintf("[manual-add] %s %s: protection resize failed: %v", strategyID, sc.Symbol, resizeErr))
+		} else if warn != "" {
+			warnNotifier(notifier, fmt.Sprintf("[manual-add] %s %s: protection resize issue: %s", strategyID, sc.Symbol, warn))
+		} else if stopLossOID > 0 || len(tpOIDs) > 0 {
+			fmt.Printf("Protection re-sized: sl_oid=%d tp_oids=%v\n", stopLossOID, tpOIDs)
+		}
+	}
+
+	action := PendingManualAction{
+		StrategyID:        strategyID,
+		Action:            "add",
+		Symbol:            sc.Symbol,
+		Side:              pos.Side,
+		Quantity:          fillQty,
+		FillPrice:         resolvedFillPrice,
+		FillFee:           fillFee,
+		ExchangeOrderID:   exchangeOID,
+		StopLossOID:       stopLossOID,
+		StopLossTriggerPx: stopLossTriggerPx,
+		TPOIDs:            tpOIDs,
+		CreatedAt:         time.Now().UTC(),
+	}
+	if err := stateDB.InsertPendingManualAction(action); err != nil {
+		fmt.Fprintf(os.Stderr, "error queuing manual-add action: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("Queued: %s scale-in will apply after the next scheduler cycle.\n", strategyID)
+	return 0
+}
+
 // runManualClose implements `go-trader manual-close <strategy-id>`.
 func runManualClose(args []string) int {
 	fs := flag.NewFlagSet("manual-close", flag.ContinueOnError)
@@ -654,6 +880,67 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 		ss.Cash -= a.FillFee
 		fmt.Printf("[manual] applied open: %s %s %.6f %s @ $%.4f\n",
 			a.StrategyID, a.Side, a.Quantity, a.Symbol, a.FillPrice)
+
+	case "add":
+		pos, exists := ss.Positions[a.Symbol]
+		if !exists || pos == nil {
+			return fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
+		}
+		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
+			return fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
+		}
+		if a.Side != "" && pos.Side != a.Side {
+			return fmt.Errorf("position side %q does not match add side %q", pos.Side, a.Side)
+		}
+		oldEntryATR := pos.EntryATR
+		oldRegime := pos.Regime
+		oldSLTrigger := pos.StopLossTriggerPx
+		oldSLAdjusted := pos.SLAdjustedTiersProcessed
+		oldTPArmed := append([]bool(nil), pos.TPArmedTiers...)
+
+		blendPositionScaleIn(pos, a.Quantity, a.FillPrice)
+		if a.StopLossOID > 0 {
+			pos.StopLossOID = a.StopLossOID
+			pos.StopLossTriggerPx = a.StopLossTriggerPx
+		}
+		if len(a.TPOIDs) > 0 {
+			pos.TPOIDs = cloneInt64s(a.TPOIDs)
+		}
+		pos.EntryATR = oldEntryATR
+		pos.Regime = oldRegime
+		if oldSLTrigger > 0 && pos.StopLossTriggerPx == 0 {
+			pos.StopLossTriggerPx = oldSLTrigger
+		}
+		pos.SLAdjustedTiersProcessed = oldSLAdjusted
+		if len(oldTPArmed) > 0 {
+			pos.TPArmedTiers = oldTPArmed
+		}
+
+		trade := Trade{
+			Timestamp:         now,
+			StrategyID:        a.StrategyID,
+			Symbol:            a.Symbol,
+			Side:              openTradeSide(pos.Side),
+			Quantity:          a.Quantity,
+			Price:             a.FillPrice,
+			Value:             a.Quantity * a.FillPrice,
+			TradeType:         "perps",
+			Details:           fmt.Sprintf("manual add %s +%.6f %s @ $%.4f (blended avg $%.4f, total %.6f)", pos.Side, a.Quantity, a.Symbol, a.FillPrice, pos.AvgCost, pos.Quantity),
+			PositionID:        ensurePositionTradeID(a.StrategyID, a.Symbol, pos),
+			ExchangeOrderID:   a.ExchangeOrderID,
+			ExchangeFee:       a.FillFee,
+			IsScaleIn:         true,
+			Manual:            true,
+			EntryATR:          pos.EntryATR,
+			StopLossOID:       pos.StopLossOID,
+			StopLossTriggerPx: pos.StopLossTriggerPx,
+			TPOIDs:            cloneInt64s(pos.TPOIDs),
+			Regime:            pos.Regime,
+		}
+		RecordTrade(ss, trade)
+		ss.Cash -= a.FillFee
+		fmt.Printf("[manual] applied add: %s +%.6f %s @ $%.4f (total %.6f, blended avg $%.4f)\n",
+			a.StrategyID, a.Quantity, a.Symbol, a.FillPrice, pos.Quantity, pos.AvgCost)
 
 	case "close":
 		pos, exists := ss.Positions[a.Symbol]

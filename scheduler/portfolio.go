@@ -429,7 +429,8 @@ type Trade struct {
 	// inserted on a close, they identify the round-trip in the trades table.
 	IsClose     bool    `json:"is_close,omitempty"`
 	RealizedPnL float64 `json:"realized_pnl,omitempty"`
-	Regime      string  `json:"regime,omitempty"` // market regime label at time of trade (#482)
+	IsScaleIn   bool    `json:"is_scale_in,omitempty"` // add leg on an existing position; excluded from lifetime open counts (#873)
+	Regime      string  `json:"regime,omitempty"`      // market regime label at time of trade (#482)
 
 	EntryATR          float64 `json:"entry_atr,omitempty"`
 	StopLossOID       int64   `json:"stop_loss_oid,omitempty"`
@@ -591,7 +592,10 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 // live callers guard cash upstream before placing the order (see
 // runHyperliquidExecuteOrder). If a new side-based no-op branch is added to
 // ExecutePerpsSignal, add it here too.
-func PerpsOrderSkipReason(signal int, posSide, direction string) string {
+func PerpsOrderSkipReason(signal int, posSide, direction string, allowScaleIn bool) string {
+	if PerpsScaleInIntent(signal, posSide, direction, allowScaleIn) {
+		return ""
+	}
 	switch direction {
 	case DirectionLong, "":
 		switch signal {
@@ -685,10 +689,20 @@ func PerpsOrderSkipReason(signal int, posSide, direction string) string {
 // unreachable when closeFraction > 0 because compose_signal does not emit a
 // flip alongside a close (open_action is dropped while a position is open),
 // so closeFraction is intentionally ignored on the open/flip path.
-func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, posSide, direction string, closeFraction float64) (size float64, ok bool, reason string) {
+func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, posSide, direction string, closeFraction float64, allowScaleIn bool) (size float64, ok bool, reason string) {
 	isBuy := signal == 1
 	allowsLong := direction == DirectionLong || direction == DirectionBoth || direction == ""
 	allowsShort := direction == DirectionShort || direction == DirectionBoth
+	if PerpsScaleInIntent(signal, posSide, direction, allowScaleIn) {
+		if posQty <= 0 || price <= 0 {
+			return 0, false, "no position to scale into"
+		}
+		budget := PerpsOpenNotional(cash, sizingLeverage, exchangeLeverage, marginPerTradeUSD)
+		if budget < 1 {
+			return 0, false, fmt.Sprintf("insufficient cash ($%.2f) for scale-in", cash)
+		}
+		return budget / price, true, ""
+	}
 	// Flip only happens under bidirectional ("both"); a directional gate
 	// ("long"/"short") never flips because the opposite-direction signal is
 	// either a close-only (long-only sell on long, short-only buy on short)
@@ -847,7 +861,7 @@ func FuturesOrderSkipReason(signal int, posSide string) string {
 // true → "both". To get short-only semantics (#656), call
 // ExecutePerpsSignalWithDirection directly with direction="short".
 func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, fillOID string, fillFee float64, allowShorts bool, logger *StrategyLogger) (int, error) {
-	return ExecutePerpsSignalWithLeverage(s, signal, symbol, price, leverage, leverage, 0, fillQty, fillOID, fillFee, directionFromAllowShorts(allowShorts), 0, logger)
+	return ExecutePerpsSignalWithLeverage(s, signal, symbol, price, leverage, leverage, 0, fillQty, fillOID, fillFee, directionFromAllowShorts(allowShorts), 0, ScaleInPolicy{}, logger)
 }
 
 // ExecutePerpsSignalWithLeverage processes a perps signal.
@@ -867,15 +881,15 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 //   - "both": fully bidirectional (legacy AllowShorts=true).
 //
 // Empty direction is treated as "long" for safety.
-func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger) (int, error) {
-	return executePerpsSignalWithLeverage(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, logger, func(trade Trade) {
+func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, policy ScaleInPolicy, logger *StrategyLogger) (int, error) {
+	return executePerpsSignalWithLeverage(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, policy, logger, func(trade Trade) {
 		RecordTrade(s, trade)
 	})
 }
 
-func ExecutePerpsSignalWithLeverageDeferredOpen(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger) (SignalExecutionResult, error) {
+func ExecutePerpsSignalWithLeverageDeferredOpen(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, policy ScaleInPolicy, logger *StrategyLogger) (SignalExecutionResult, error) {
 	var result SignalExecutionResult
-	trades, err := executePerpsSignalWithLeverage(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, logger, func(trade Trade) {
+	trades, err := executePerpsSignalWithLeverage(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, policy, logger, func(trade Trade) {
 		t := trade
 		result.OpenTrade = &t
 	})
@@ -883,7 +897,7 @@ func ExecutePerpsSignalWithLeverageDeferredOpen(s *StrategyState, signal int, sy
 	return result, err
 }
 
-func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger, recordOpen func(Trade)) (int, error) {
+func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, policy ScaleInPolicy, logger *StrategyLogger, recordOpen func(Trade)) (int, error) {
 	if direction == "" {
 		direction = DirectionLong
 	}
@@ -925,14 +939,15 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 
 	if signal == 1 { // Buy — go long (close short first if any)
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
-			// #656 review: surface the state-config gap on signal=1 with an
-			// orphan long under direction="short" — symmetric with the
-			// orphan-long warning in the signal=-1 branch below.
 			if !allowsLong {
 				logger.Warn("Orphan long %s under direction=%q (qty=%.6f); skipping buy — close manually if intentional", symbol, direction, pos.Quantity)
-			} else {
-				logger.Info("Already long %s (qty=%.6f), skipping buy", symbol, pos.Quantity)
+				return 0, nil
 			}
+			if PerpsScaleInIntent(1, "long", direction, policy.Allowed) {
+				n, err := executePerpsScaleIn(s, pos, symbol, 1, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, policy, feePlatform, leverageLabel, logger, recordOpen)
+				return n, err
+			}
+			logger.Info("Already long %s (qty=%.6f), skipping buy", symbol, pos.Quantity)
 			return 0, nil
 		}
 		// Close short if exists — realize PnL only (no notional swing).
@@ -1105,6 +1120,10 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		// and is handled by the close-long branch (no match) + the
 		// "no long to sell" return at the bottom.
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" && allowsShort {
+			if PerpsScaleInIntent(-1, "short", direction, policy.Allowed) {
+				n, err := executePerpsScaleIn(s, pos, symbol, -1, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, policy, feePlatform, leverageLabel, logger, recordOpen)
+				return n, err
+			}
 			logger.Info("Already short %s (qty=%.6f), skipping sell", symbol, pos.Quantity)
 			return 0, nil
 		}

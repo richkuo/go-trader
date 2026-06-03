@@ -122,7 +122,9 @@ func recordPositionOpen(s *StrategyState, sc StrategyConfig, trade *Trade, pos *
 	if s == nil || trade == nil {
 		return false
 	}
-	stampPositionProtectionSnapshot(pos, sc)
+	if !trade.IsScaleIn {
+		stampPositionProtectionSnapshot(pos, sc)
+	}
 	copyPositionOpenSnapshotToTrade(trade, pos)
 	RecordTrade(s, *trade)
 	return true

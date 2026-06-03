@@ -836,7 +836,7 @@ func TestExecutePerpsSignalDecouplesSizingAndExchangeLeverage(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 2, 20, 0, 0, "", 0, DirectionLong, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 2, 20, 0, 0, "", 0, DirectionLong, 0, ScaleInPolicy{}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1055,9 +1055,34 @@ func TestPerpsOrderSkipReason(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := PerpsOrderSkipReason(tc.signal, tc.posSide, tc.direction)
+			got := PerpsOrderSkipReason(tc.signal, tc.posSide, tc.direction, false)
 			if (got != "") != tc.wantSet {
 				t.Errorf("PerpsOrderSkipReason(%d, %q, direction=%q) = %q, wantSet=%v",
+					tc.signal, tc.posSide, tc.direction, got, tc.wantSet)
+			}
+		})
+	}
+}
+
+func TestPerpsOrderSkipReasonScaleInEnabled(t *testing.T) {
+	cases := []struct {
+		name      string
+		signal    int
+		posSide   string
+		direction string
+		wantSet   bool
+	}{
+		{"scale_in_long_buy", 1, "long", DirectionLong, false},
+		{"scale_in_short_sell", -1, "short", DirectionShort, false},
+		{"scale_in_both_long", 1, "long", DirectionBoth, false},
+		{"scale_in_both_short", -1, "short", DirectionBoth, false},
+		{"scale_in_flat_still_skips", 1, "", DirectionLong, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := PerpsOrderSkipReason(tc.signal, tc.posSide, tc.direction, true)
+			if (got != "") != tc.wantSet {
+				t.Errorf("PerpsOrderSkipReason(scale-in, %d, %q, direction=%q) = %q, wantSet=%v",
 					tc.signal, tc.posSide, tc.direction, got, tc.wantSet)
 			}
 		})
@@ -1414,7 +1439,7 @@ func TestExecutePerpsSignal_DirectionShort_OpenShortFromFlat(t *testing.T) {
 		TradeHistory:    []Trade{},
 	}
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, 1, 1, 0, 0, "", 0, DirectionShort, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, 1, 1, 0, 0, "", 0, DirectionShort, 0, ScaleInPolicy{}, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
@@ -1448,7 +1473,7 @@ func TestExecutePerpsSignal_DirectionShort_BuyFromFlatSkipped(t *testing.T) {
 		TradeHistory:    []Trade{},
 	}
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 1, 1, 0, 0, "", 0, DirectionShort, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 1, 1, 0, 0, "", 0, DirectionShort, 0, ScaleInPolicy{}, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
@@ -1482,7 +1507,7 @@ func TestExecutePerpsSignal_DirectionShort_BuyClosesShort(t *testing.T) {
 		TradeHistory:    []Trade{},
 	}
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 1, 1, 0, 0, "", 0, DirectionShort, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 1, 1, 0, 0, "", 0, DirectionShort, 0, ScaleInPolicy{}, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
@@ -1522,7 +1547,7 @@ func TestExecutePerpsSignal_DirectionShort_OrphanLongNotAutoClosed(t *testing.T)
 	}
 	cashBefore := s.Cash
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, 1, 1, 0, 0, "", 0, DirectionShort, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, 1, 1, 0, 0, "", 0, DirectionShort, 0, ScaleInPolicy{}, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
@@ -1557,7 +1582,7 @@ func TestExecutePerpsSignal_DirectionShort_AlreadyShortDedupes(t *testing.T) {
 	}
 	cashBefore := s.Cash
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, 1, 1, 0, 0, "", 0, DirectionShort, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, 1, 1, 0, 0, "", 0, DirectionShort, 0, ScaleInPolicy{}, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
@@ -1788,7 +1813,7 @@ func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			size, ok, reason := perpsLiveOrderSize(tc.signal, 2000, 1000, tc.posQty, tc.avgCost, 1.0, 1.0, 0, tc.posSide, tc.direction, 0)
+			size, ok, reason := perpsLiveOrderSize(tc.signal, 2000, 1000, tc.posQty, tc.avgCost, 1.0, 1.0, 0, tc.posSide, tc.direction, 0, false)
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v (reason=%q), want %v", ok, reason, tc.wantOK)
 			}
@@ -1804,7 +1829,7 @@ func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
 // (the old close-only behavior that silently broke bidirectional execution).
 func TestPerpsLiveOrderSize_FlipLongToShortExceedsCloseOnly(t *testing.T) {
 	posQty := 0.5
-	size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, posQty, 2000, 1.0, 1.0, 0, "long", DirectionBoth, 0)
+	size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, posQty, 2000, 1.0, 1.0, 0, "long", DirectionBoth, 0, false)
 	if !ok {
 		t.Fatal("expected ok")
 	}
@@ -1824,7 +1849,7 @@ func TestPerpsLiveOrderSize_FlipSizesAgainstPostCloseMargin(t *testing.T) {
 	// After #518 (no 0.95 buffer): new-side budget = 950 * 5 / 1900 = 2.5 →
 	// flip size = 0.5 + 2.5 = 3.0. Pre-close sizing (bug) would yield:
 	// 1000 * 5 / 1900 = 2.6316 → 3.1316, over-sized.
-	size, ok, reason := perpsLiveOrderSize(-1, 1900, 1000, 0.5, 2000, 5.0, 5.0, 0, "long", DirectionBoth, 0)
+	size, ok, reason := perpsLiveOrderSize(-1, 1900, 1000, 0.5, 2000, 5.0, 5.0, 0, "long", DirectionBoth, 0, false)
 	if !ok {
 		t.Fatalf("expected ok, got reason=%q", reason)
 	}
@@ -1848,7 +1873,7 @@ func TestPerpsLiveOrderSize_CatastrophicFlipDegradesToCloseOnly(t *testing.T) {
 	// long 1.0 ETH @ 2000, price crashes to 500, 1x leverage, cash=100.
 	// closePnL = 1.0 * (500 - 2000) = -1500 → effectiveCash = 100 - 1500 = -1400.
 	// PerpsOpenNotional returns 0 for non-positive cash → fallback to close-only.
-	size, ok, reason := perpsLiveOrderSize(-1, 500, 100, 1.0, 2000, 1.0, 1.0, 0, "long", DirectionBoth, 0)
+	size, ok, reason := perpsLiveOrderSize(-1, 500, 100, 1.0, 2000, 1.0, 1.0, 0, "long", DirectionBoth, 0, false)
 	if !ok {
 		t.Fatalf("expected ok (should degrade to close-only, not abort); reason=%q", reason)
 	}
@@ -1865,7 +1890,7 @@ func TestPerpsLiveOrderSize_FlipProfitableFlipUsesRealizedGain(t *testing.T) {
 	// Close leg realizes: 0.5 * (2000 - 1900) = +50 → post-close cash = 1050.
 	// After #518 (no 0.95 buffer): new-side budget = 1050 * 5 / 1900 = 2.7632 →
 	// flip size = 0.5 + 2.7632 = 3.2632.
-	size, ok, _ := perpsLiveOrderSize(1, 1900, 1000, 0.5, 2000, 5.0, 5.0, 0, "short", DirectionBoth, 0)
+	size, ok, _ := perpsLiveOrderSize(1, 1900, 1000, 0.5, 2000, 5.0, 5.0, 0, "short", DirectionBoth, 0, false)
 	if !ok {
 		t.Fatal("expected ok")
 	}
@@ -1946,7 +1971,7 @@ func TestExecutePerpsSignalMarginPerTradeUSDOverridesSizingLeverage(t *testing.T
 	// Mirrors issue #518: sizing_leverage=0.1, exchange leverage=20, price=2257.
 	// Without margin_per_trade_usd: notional = 560 * 0.1 = 56 → qty ≈ 0.025 ETH.
 	// With margin_per_trade_usd=56: notional = 56 * 20 = 1120 → qty ≈ 0.50 ETH.
-	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2257, 0.1, 20, 56, 0, "", 0, DirectionLong, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2257, 0.1, 20, 56, 0, "", 0, DirectionLong, 0, ScaleInPolicy{}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1968,7 +1993,7 @@ func TestExecutePerpsSignalMarginPerTradeUSDOverridesSizingLeverage(t *testing.T
 // live order to match the residual it intends to leave behind.
 func TestPerpsLiveOrderSize_PartialCloseScalesPosQty(t *testing.T) {
 	// long 0.4 ETH @ 2000, signal=-1 (close), fraction=0.5 → size 0.2.
-	size, ok, reason := perpsLiveOrderSize(-1, 2100, 1000, 0.4, 2000, 1.0, 1.0, 0, "long", DirectionLong, 0.5)
+	size, ok, reason := perpsLiveOrderSize(-1, 2100, 1000, 0.4, 2000, 1.0, 1.0, 0, "long", DirectionLong, 0.5, false)
 	if !ok {
 		t.Fatalf("expected ok, got reason=%q", reason)
 	}
@@ -1981,7 +2006,7 @@ func TestPerpsLiveOrderSize_PartialCloseScalesPosQty(t *testing.T) {
 // pin: don't accidentally re-scale the close leg on a complete tier hit.
 func TestPerpsLiveOrderSize_FullCloseFractionIsFullPosQty(t *testing.T) {
 	for _, frac := range []float64{0, 1.0} {
-		size, ok, _ := perpsLiveOrderSize(-1, 2100, 1000, 0.4, 2000, 1.0, 1.0, 0, "long", DirectionLong, frac)
+		size, ok, _ := perpsLiveOrderSize(-1, 2100, 1000, 0.4, 2000, 1.0, 1.0, 0, "long", DirectionLong, frac, false)
 		if !ok || math.Abs(size-0.4) > 1e-9 {
 			t.Errorf("frac=%g: size = %g (ok=%v), want 0.4", frac, size, ok)
 		}
@@ -2019,7 +2044,7 @@ func TestExecutePerpsSignal_PartialCloseLongPaperPreservesRemainder(t *testing.T
 	defer logger.Close()
 
 	// Close 0.5 of 0.4 ETH @ 2100 (+5% from cost). closeFraction=0.5.
-	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, 1, 1, 0, 0, "", 0, DirectionLong, 0.5, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, 1, 1, 0, 0, "", 0, DirectionLong, 0.5, ScaleInPolicy{}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2091,7 +2116,7 @@ func TestExecutePerpsSignal_PartialCloseDoesNotFlipShortWithAllowShorts(t *testi
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, 1, 1, 0, 0, "", 0, DirectionBoth, 0.5, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, 1, 1, 0, 0, "", 0, DirectionBoth, 0.5, ScaleInPolicy{}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2140,7 +2165,7 @@ func TestExecutePerpsSignal_FullCloseFromRegistryDoesNotFlip(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, 1, 1, 0, 0, "", 0, DirectionBoth, 1.0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, 1, 1, 0, 0, "", 0, DirectionBoth, 1.0, ScaleInPolicy{}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2184,7 +2209,7 @@ func TestExecutePerpsSignal_PartialCloseLongLiveUsesFillQty(t *testing.T) {
 	// fillQty=0.18 (slightly below the 0.2 the order requested due to
 	// exchange rounding). closeFraction signals "partial" but the actual
 	// closed qty must come from fillQty.
-	_, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, 1, 1, 0, 0.18, "live-oid", 0.05, DirectionLong, 0.5, logger)
+	_, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, 1, 1, 0, 0.18, "live-oid", 0.05, DirectionLong, 0.5, ScaleInPolicy{}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

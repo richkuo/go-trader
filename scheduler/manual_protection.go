@@ -53,7 +53,47 @@ func computeFallbackATR(fillPrice, leverage float64) (float64, bool) {
 	return 0.1 * fillPrice / leverage, true
 }
 
-// placeManualProtectionInline calls --sync-protection inline after a manual fill
+// resizeManualProtectionAfterScaleIn cancels and re-places on-chain TP/SL at
+// the frozen entry geometry so reduce-only orders cover the new total qty (#873).
+func resizeManualProtectionAfterScaleIn(
+	sc StrategyConfig,
+	pos *Position,
+	totalQty, blendedAvg float64,
+) (stopLossOID int64, stopLossTriggerPx float64, tpOIDs []int64, warnMsg string, err error) {
+	if pos == nil || totalQty <= 0 {
+		return 0, 0, nil, "", fmt.Errorf("invalid position for protection resize")
+	}
+	effectiveSLATRMult := 0.0
+	if pos.StopLossATRMult != nil {
+		effectiveSLATRMult = *pos.StopLossATRMult
+	} else if sc.StopLossATRMult != nil {
+		effectiveSLATRMult = *sc.StopLossATRMult
+	}
+	tiers := strategyTPTiersForRegime(sc, pos.Regime)
+	forceTP := make([]bool, len(tiers))
+	for i := range tiers {
+		forceTP[i] = true
+	}
+	result, stderr, syncErr := runHLSyncProtectionFn(
+		sc.Script, sc.Symbol, pos.Side, totalQty, blendedAvg, pos.EntryATR,
+		effectiveSLATRMult, tiers, pos.StopLossOID, pos.TPOIDs, pos.TPArmedTiers,
+		true, forceTP, nil, nil,
+	)
+	if stderr != "" {
+		fmt.Fprintf(os.Stderr, "[manual-add] sync-protection stderr: %s\n", stderr)
+	}
+	if syncErr != nil {
+		return 0, 0, nil, "", syncErr
+	}
+	if result == nil {
+		return 0, 0, nil, "nil result from protection sync", nil
+	}
+	if result.Error != "" {
+		return 0, 0, nil, result.Error, nil
+	}
+	return result.StopLossOID, result.StopLossTriggerPx, result.TPOIDs, strings.Join(formatProtectionSyncWarnings(result), "; "), nil
+}
+
 // and returns the placed TP OIDs. Returns (nil, "", nil) when no tiers are configured
 // without spawning Python. A non-empty warnMsg signals a partial failure (position
 // remains open; caller should warn but not abort).

@@ -21,6 +21,7 @@ var knownSubcommands = []string{
 	"init",
 	"export",
 	"manual-open",
+	"manual-add",
 	"manual-close",
 	"backfill",
 	"probe",
@@ -57,6 +58,8 @@ func main() {
 			os.Exit(runExport(os.Args[2:]))
 		case "manual-open":
 			os.Exit(runManualOpen(os.Args[2:]))
+		case "manual-add":
+			os.Exit(runManualAdd(os.Args[2:]))
 		case "manual-close":
 			os.Exit(runManualClose(os.Args[2:]))
 		case "backfill":
@@ -2681,18 +2684,19 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 // "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
 func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	directionEnum := EffectiveDirection(sc)
-	if reason := PerpsOrderSkipReason(result.Signal, posSide, directionEnum); reason != "" {
+	if reason := PerpsOrderSkipReason(result.Signal, posSide, directionEnum, sc.AllowScaleIn); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
 	}
 	isBuy := result.Signal == 1
+	scalingIn := PerpsScaleInIntent(result.Signal, posSide, directionEnum, sc.AllowScaleIn)
 	// #254/#497/#518: perps sizing — sizing_leverage scales cash → notional in
 	// the legacy formula; margin_per_trade_usd (when set) overrides to a
 	// margin-space formula so high exchange leverage doesn't shrink intent.
 	sizingLeverage := EffectiveSizingLeverage(sc)
 	exchangeLeverage := EffectiveExchangeLeverage(sc)
 	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
-	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, directionEnum, result.CloseFraction)
+	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, directionEnum, result.CloseFraction, sc.AllowScaleIn)
 	if !ok {
 		logger.Info("%s for %s", reason, result.Symbol)
 		return nil, false
@@ -2748,12 +2752,14 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		extraCancelOIDs = append(extraCancelOIDs, existingTPOIDs...)
 	}
 	var slPct float64
-	if !pureClose && !partialClose {
+	if !pureClose && !partialClose && !scalingIn {
 		// EffectiveStopLossPct self-guards on platform/type and returns the
 		// explicit price %, derives it from stop_loss_margin_pct / leverage
 		// (#487), or falls back to max_drawdown_pct capped at 50% (#484).
 		// Validation in config.go guarantees stop_loss_pct and
 		// stop_loss_margin_pct are mutually exclusive.
+		// Scale-in skips inline SL — protection sync re-arms at frozen trigger
+		// geometry after the add leg blends virtual state (#873).
 		slPct = EffectiveStopLossPct(sc)
 	}
 	var prevPosQty float64
@@ -2906,7 +2912,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		fillFee = fill.Fee
 	}
 
-	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
+	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, ScaleInPolicyFromConfig(sc), logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, "", nil
@@ -3457,7 +3463,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, posSide string, avgCost float64, notifier *MultiNotifier, logger *StrategyLogger) (*OKXExecuteResult, bool) {
 	var skip string
 	if sc.Type == "perps" {
-		skip = PerpsOrderSkipReason(result.Signal, posSide, EffectiveDirection(sc))
+		skip = PerpsOrderSkipReason(result.Signal, posSide, EffectiveDirection(sc), sc.AllowScaleIn)
 	} else {
 		skip = SpotOrderSkipReason(result.Signal, posSide)
 	}
@@ -3477,7 +3483,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 	if sc.Type == "perps" {
 		var ok bool
 		var reason string
-		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, EffectiveDirection(sc), result.CloseFraction)
+		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, EffectiveDirection(sc), result.CloseFraction, sc.AllowScaleIn)
 		if !ok {
 			logger.Info("%s for %s", reason, result.Symbol)
 			return nil, false
@@ -3557,7 +3563,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	var exec SignalExecutionResult
 	var err error
 	if sc.Type == "perps" {
-		exec, err = ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc), fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
+		exec, err = ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc), fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, ScaleInPolicyFromConfig(sc), logger)
 	} else {
 		exec, err = ExecuteSpotSignalWithFillFeeDeferredOpen(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, logger)
 	}

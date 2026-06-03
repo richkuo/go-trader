@@ -347,6 +347,9 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE positions ADD COLUMN regime_pending_label TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE positions ADD COLUMN regime_pending_count INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN regime_applied_label TEXT NOT NULL DEFAULT ''",
+		// Scale-in add legs on existing positions (#873). Excluded from lifetime
+		// PositionsOpened counts; still grouped under the same position_id for W/L.
+		"ALTER TABLE trades ADD COLUMN is_scale_in INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -656,14 +659,18 @@ func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
 	if trade.Manual {
 		isManual = 1
 	}
+	isScaleIn := 0
+	if trade.IsScaleIn {
+		isScaleIn = 1
+	}
 	_, err := sdb.db.Exec(`INSERT INTO trades
-			(strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_oid, stop_loss_trigger_px, tp_oids_json, manual, stop_loss_atr_mult, tp_tiers_json)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_oid, stop_loss_trigger_px, tp_oids_json, manual, stop_loss_atr_mult, tp_tiers_json, is_scale_in)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strategyID, formatTime(trade.Timestamp), trade.Symbol, trade.PositionID, trade.Side,
 		trade.Quantity, trade.Price, trade.Value, trade.TradeType, trade.Details,
 		trade.ExchangeOrderID, trade.ExchangeFee, isClose, trade.RealizedPnL, trade.Regime,
 		trade.EntryATR, trade.StopLossOID, trade.StopLossTriggerPx, marshalTPOIDsJSON(trade.TPOIDs), isManual,
-		nullableFloat64(trade.StopLossATRMult), trade.TPTiersJSON)
+		nullableFloat64(trade.StopLossATRMult), trade.TPTiersJSON, isScaleIn)
 	if err != nil {
 		return fmt.Errorf("insert trade for %s: %w", strategyID, err)
 	}
@@ -907,8 +914,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	//    failed, even if later-timestamped rows were persisted successfully
 	//    (fixes the MAX(timestamp) dedup gap that would silently drop
 	//    out-of-order retries).
-	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_oid, stop_loss_trigger_px, tp_oids_json, manual, stop_loss_atr_mult, tp_tiers_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_oid, stop_loss_trigger_px, tp_oids_json, manual, stop_loss_atr_mult, tp_tiers_json, is_scale_in)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare trade insert: %w", err)
 	}
@@ -936,7 +943,11 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			if t.Manual {
 				isManual = 1
 			}
-			if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL, t.Regime, t.EntryATR, t.StopLossOID, t.StopLossTriggerPx, marshalTPOIDsJSON(t.TPOIDs), isManual, nullableFloat64(t.StopLossATRMult), t.TPTiersJSON); err != nil {
+			isScaleIn := 0
+			if t.IsScaleIn {
+				isScaleIn = 1
+			}
+			if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL, t.Regime, t.EntryATR, t.StopLossOID, t.StopLossTriggerPx, marshalTPOIDsJSON(t.TPOIDs), isManual, nullableFloat64(t.StopLossATRMult), t.TPTiersJSON, isScaleIn); err != nil {
 				return fmt.Errorf("insert trade for %s: %w", s.ID, err)
 			}
 			flushed = append(flushed, trackedFlush{strat: s, index: i})
@@ -1363,7 +1374,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 
 	// 5. Load most recent 1000 trades per strategy (full history stays in SQLite).
 	for id, s := range state.Strategies {
-		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json
+		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(is_scale_in, 0) AS is_scale_in
 			FROM trades WHERE strategy_id = ? ORDER BY timestamp ASC`, id)
 		if err != nil {
 			return nil, fmt.Errorf("load trades for %s: %w", id, err)
@@ -1372,16 +1383,17 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		for tradeRows.Next() {
 			var t Trade
 			var tsStr string
-			var isCloseInt, isManualInt int
+			var isCloseInt, isManualInt, isScaleInInt int
 			var tpOIDsJSON string
 			var slATRMult sql.NullFloat64
-			if err := tradeRows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossOID, &t.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &t.TPTiersJSON); err != nil {
+			if err := tradeRows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossOID, &t.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &t.TPTiersJSON, &isScaleInInt); err != nil {
 				tradeRows.Close()
 				return nil, fmt.Errorf("scan trade: %w", err)
 			}
 			t.Timestamp = parseTime(tsStr)
 			t.IsClose = isCloseInt != 0
 			t.Manual = isManualInt != 0
+			t.IsScaleIn = isScaleInInt != 0
 			t.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
 			if slATRMult.Valid {
 				v := slATRMult.Float64
@@ -1483,7 +1495,7 @@ func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, erro
 
 	openRows, err := sdb.db.Query(`SELECT strategy_id, COUNT(*)
 		FROM trades
-		WHERE is_close = 0
+		WHERE is_close = 0 AND COALESCE(is_scale_in, 0) = 0
 		GROUP BY strategy_id`)
 	if err != nil {
 		return nil, fmt.Errorf("query lifetime open counts: %w", err)
@@ -1556,7 +1568,7 @@ func (sdb *StateDB) LifetimeTradeStatsForStrategy(strategyID string) (LifetimeTr
 	var opens sql.NullInt64
 	if err := sdb.db.QueryRow(`SELECT COUNT(*)
 		FROM trades
-		WHERE strategy_id = ? AND is_close = 0`, strategyID).Scan(&opens); err != nil {
+		WHERE strategy_id = ? AND is_close = 0 AND COALESCE(is_scale_in, 0) = 0`, strategyID).Scan(&opens); err != nil {
 		return LifetimeTradeStats{}, fmt.Errorf("query lifetime open count for %s: %w", strategyID, err)
 	}
 	out.PositionsOpened = int(opens.Int64)
@@ -1710,7 +1722,7 @@ func (sdb *StateDB) QueryTradingViewExportTrades(strategyIDs []string) ([]Trade,
 type PendingManualAction struct {
 	ID                int64
 	StrategyID        string
-	Action            string // "open" | "close"
+	Action            string // "open" | "add" | "close"
 	Symbol            string
 	Side              string
 	Quantity          float64
