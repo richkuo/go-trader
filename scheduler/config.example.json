@@ -4,6 +4,14 @@
   "db_file": "scheduler/state.db",
   "status_port": 8099,
   "default_stop_loss_atr_mult": 1.0,
+  "user_close_defaults": {
+    "trailing_tp_ratchet": {
+      "tp_tiers": [
+        { "atr_multiple": 2.0, "trailing_mult_after": 1.5, "close_fraction": 0.0 },
+        { "atr_multiple": 3.0, "trailing_mult_after": 1.0, "close_fraction": 0.0 }
+      ]
+    }
+  },
   "portfolio_risk": {
     "max_drawdown_pct": 25,
     "max_notional_usd": 0

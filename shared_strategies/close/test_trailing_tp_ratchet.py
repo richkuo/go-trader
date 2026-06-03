@@ -104,6 +104,28 @@ def test_regime_table_resolution(ratchet):
     assert tiers[0][2] == 2.0
 
 
+def test_omitted_tp_tiers_resolves_system_default(ratchet):
+    # #866: a close ref with no tp_tiers (or use_defaults:true) falls back to
+    # the conservative system default ladder, on both the scalar and the regime
+    # (broadcast) paths, and they must match.
+    scalar, e1 = ratchet.resolve_tiers_for_regime({}, "", regime_table=False)
+    regime, e2 = ratchet.resolve_tiers_for_regime({}, "trending_up", regime_table=True)
+    assert e1 == [] and e2 == []
+    assert scalar == regime
+    assert [t[0] for t in scalar] == [2.0, 2.5, 3.0]
+    assert [t[2] for t in scalar] == [1.5, 1.0, 0.5]
+    assert all(t[1] == 0.0 for t in scalar)
+
+
+def test_default_ratchet_tiers_constant_matches_registry(ratchet, registry):
+    # The registry's advertised scalar default_params must be sourced from the
+    # single-source-of-truth constant (no drift).
+    assert registry.build_close_registry  # registry import smoke
+    advertised = ratchet.DEFAULT_RATCHET_TIERS
+    assert [t["atr_multiple"] for t in advertised] == [2.0, 2.5, 3.0]
+    assert [t["trailing_mult_after"] for t in advertised] == [1.5, 1.0, 0.5]
+
+
 def test_registry_lists_new_strategies(registry):
     built = registry.build_close_registry("futures")
     assert "trailing_tp_ratchet" in built

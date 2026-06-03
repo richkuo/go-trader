@@ -75,7 +75,49 @@ DEFAULT_SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
 DEFAULT_TIMEFRAMES = ["4h", "1d"]
 
 
-def load_strategy_config(config_path: str, strategy_id: str) -> dict:
+# #866: close evaluators whose default ladder is overridable via
+# user_close_defaults. Mirrors scheduler/close_defaults.go closeDefaultsSupported
+# — the evaluators that resolve purely through tp_tiers (the regime tiered-ATR
+# variants are excluded; their use_defaults baseline is #870 territory).
+_USER_CLOSE_DEFAULTS_SUPPORTED = {
+    "tiered_tp_pct",
+    "tiered_tp_atr",
+    "tiered_tp_atr_live",
+    "trailing_tp_ratchet",
+    "trailing_tp_ratchet_regime",
+}
+
+
+def _apply_user_close_defaults(close_refs: list, user_defaults: Optional[dict]) -> None:
+    """Inject user_close_defaults tp_tiers into close refs that omit tp_tiers
+    (#866, --defaults user). Mirrors the Go injection at load: an explicit
+    per-ref tp_tiers (the strategy layer) wins, an unsupported evaluator name is
+    skipped, and a ref with no matching entry falls through to the evaluator's
+    built-in system default."""
+    if not user_defaults:
+        return
+    for ref in close_refs:
+        name = str(ref.get("name", "")).strip().lower()
+        if name not in _USER_CLOSE_DEFAULTS_SUPPORTED:
+            continue
+        params = ref.setdefault("params", {})
+        if params.get("tp_tiers") is not None:
+            continue  # strategy_close_defaults layer wins
+        entry = user_defaults.get(name)
+        if not isinstance(entry, dict):
+            continue
+        tp = entry.get("tp_tiers")
+        # Mirror the Go loader (validateUserCloseDefaults): an empty or
+        # wrong-typed tp_tiers is not a valid override — injecting [] would
+        # suppress the system default. Skip it so resolution falls through to the
+        # evaluator's built-in default, matching the daemon (which rejects such a
+        # config outright at load).
+        if (isinstance(tp, list) or isinstance(tp, dict)) and tp:
+            params["tp_tiers"] = tp
+
+
+def load_strategy_config(config_path: str, strategy_id: str,
+                         inject_user_defaults: bool = False) -> dict:
     """Load a single strategy's refs from a live go-trader config (#641).
 
     Reads the v13+ config at ``config_path``, finds the strategy with
@@ -154,6 +196,12 @@ def load_strategy_config(config_path: str, strategy_id: str) -> dict:
                     f"tiered_tp_atr_live_regime_dynamic, which is HL-live-only "
                     f"in this release (backtester parity deferred — see #843)."
                 )
+        # #866: with --defaults user, apply the config's user_close_defaults to
+        # any close ref that omits tp_tiers (so backtest matches the live daemon
+        # under the operator override). --defaults system leaves them untouched,
+        # falling through to the evaluators' built-in defaults.
+        if inject_user_defaults:
+            _apply_user_close_defaults(close_refs, cfg.get("user_close_defaults"))
         return {
             "open_strategy": {
                 "name": open_ref["name"],
@@ -464,6 +512,11 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Path to a live go-trader config.json. Loads a single strategy by "
                              "--strategy ID and uses its open_strategy/close_strategies refs verbatim "
                              "for the backtest. Lets you backtest a live config without reshaping (#641).")
+    parser.add_argument("--defaults", choices=["system", "user"], default="system",
+                        help="Which close-default layer to apply when a close ref omits tp_tiers (#866): "
+                             "'system' (default) uses the built-in defaults; 'user' applies the "
+                             "user_close_defaults block from --config. Per-strategy tp_tiers always wins. "
+                             "Requires --config when set to 'user'.")
     parser.add_argument("--regime-enabled", action="store_true", default=False,
                         help="Enable market regime detection. Injects vectorized regime "
                              "column from shared_tools/regime.py before the per-bar loop, "
@@ -510,6 +563,11 @@ def main():
     if args.close_strategies:
         close_refs = [_parse_close_strategy_arg(v) for v in args.close_strategies]
 
+    # #866: --defaults user only has an effect via the config's user_close_defaults.
+    if args.defaults == "user" and not args.config:
+        print("--defaults user requires --config (user_close_defaults lives in the config); "
+              "falling back to system defaults")
+
     # #641: --config loads a single strategy by ID and uses its refs directly.
     open_params: Optional[dict] = None
     live_stop_kwargs: dict = {}
@@ -520,7 +578,8 @@ def main():
         if args.mode != "single":
             print("--config is only valid with --mode single (loads one strategy by --strategy <id>)")
             sys.exit(1)
-        live_kwargs = load_strategy_config(args.config, args.strategy)
+        live_kwargs = load_strategy_config(args.config, args.strategy,
+                                           inject_user_defaults=(args.defaults == "user"))
         # Live config refs take precedence; --close-strategy on top is rejected
         # to avoid silent overrides.
         if close_refs:

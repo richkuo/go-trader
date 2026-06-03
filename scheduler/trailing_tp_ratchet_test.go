@@ -494,6 +494,106 @@ func TestApplyTrailingStopUpdateResult_SideGuardSkipsMutation(t *testing.T) {
 	}
 }
 
+// --- #866: system default fallback when tp_tiers is omitted / use_defaults ---
+
+// TestDefaultTrailingRatchetTiers_InternallyValid proves the conservative system
+// default ladder satisfies the ratchet invariants (ascending triggers, monotonic
+// tighten) so it never fails its own validation when broadcast.
+func TestDefaultTrailingRatchetTiers_InternallyValid(t *testing.T) {
+	def := defaultTrailingRatchetTiers()
+	if len(def) != 3 {
+		t.Fatalf("default ladder len=%d want 3", len(def))
+	}
+	if def[0].TrailingMultAfter != 1.5 {
+		t.Fatalf("default first rung trail=%v want 1.5", def[0].TrailingMultAfter)
+	}
+	if errs := validateTrailingRatchetTierMonotonicity(def, "default"); len(errs) > 0 {
+		t.Fatalf("default ladder must be monotonic, got: %v", errs)
+	}
+	// Initial trail >= first rung (2.0 >= 1.5) must validate clean.
+	if errs := validateTrailingRatchetInitialTrail(def, 2.0, "default"); len(errs) > 0 {
+		t.Fatalf("default vs initial 2.0 must validate, got: %v", errs)
+	}
+}
+
+func TestValidateTrailingTPRatchetClose_OmittedTiersUsesDefault(t *testing.T) {
+	trail := 2.0
+	for _, params := range []map[string]interface{}{
+		nil,                    // bare ratchet, no params
+		{"use_defaults": true}, // explicit opt-in
+	} {
+		sc := StrategyConfig{
+			ID: "s1", Type: "perps", Platform: "hyperliquid",
+			TrailingStopATRMult: &trail,
+			CloseStrategy:       &StrategyRef{Name: "trailing_tp_ratchet", Params: params},
+		}
+		if errs := validateTrailingTPRatchetClose(sc, canonicalTrendRegimeLabels, true); len(errs) > 0 {
+			t.Fatalf("omitted tp_tiers (params=%v) should validate via default, got: %v", params, errs)
+		}
+	}
+}
+
+func TestValidateTrailingTPRatchetClose_DefaultRespectsInitialTrail(t *testing.T) {
+	// Default first rung tightens to 1.5×; an initial trail looser-than... no,
+	// TIGHTER than 1.5 (here 1.0) means the default's first rung (1.5) is LOOSER
+	// than the initial 1.0 and would silently no-op, so it must be rejected.
+	trail := 1.0
+	sc := StrategyConfig{
+		ID: "s1", Type: "perps", Platform: "hyperliquid",
+		TrailingStopATRMult: &trail,
+		CloseStrategy:       &StrategyRef{Name: "trailing_tp_ratchet", Params: map[string]interface{}{"use_defaults": true}},
+	}
+	if errs := validateTrailingTPRatchetClose(sc, canonicalTrendRegimeLabels, true); !errListContains(errs, "can only tighten") {
+		t.Fatalf("expected initial-trail validation error for default ladder, got: %v", errs)
+	}
+}
+
+func TestValidateTrailingTPRatchetClose_RegimeOmittedTiersUsesDefault(t *testing.T) {
+	trail := 2.0
+	sc := StrategyConfig{
+		ID: "s1", Type: "perps", Platform: "hyperliquid",
+		TrailingStopATRMult: &trail,
+		CloseStrategy:       &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
+	}
+	// regime.enabled=true: the broadcast default satisfies exhaustiveness for all labels.
+	if errs := validateTrailingTPRatchetClose(sc, canonicalTrendRegimeLabels, true); len(errs) > 0 {
+		t.Fatalf("regime ratchet use_defaults should validate via broadcast default, got: %v", errs)
+	}
+	// regime.enabled=false still rejected (independent of tier source).
+	if errs := validateTrailingTPRatchetClose(sc, canonicalTrendRegimeLabels, false); !errListContains(errs, "requires top-level regime.enabled=true") {
+		t.Fatalf("regime ratchet must still require regime.enabled even with defaults, got: %v", errs)
+	}
+}
+
+func TestTrailingRatchetTiersForRegime_OmittedReturnsDefault(t *testing.T) {
+	trail := 2.0
+	want := defaultTrailingRatchetTiers()
+	cases := []struct {
+		name, closeName, regime string
+	}{
+		{"scalar", "trailing_tp_ratchet", ""},
+		{"regime-broadcast", "trailing_tp_ratchet_regime", "trending_up"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := StrategyConfig{
+				ID: "s1", Type: "perps", Platform: "hyperliquid",
+				TrailingStopATRMult: &trail,
+				CloseStrategy:       &StrategyRef{Name: tc.closeName, Params: map[string]interface{}{"use_defaults": true}},
+			}
+			got := trailingRatchetTiersForRegime(sc, tc.regime)
+			if len(got) != len(want) {
+				t.Fatalf("resolved %d tiers want %d (%+v)", len(got), len(want), got)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("tier[%d]=%+v want %+v", i, got[i], want[i])
+				}
+			}
+		})
+	}
+}
+
 func errListContains(errs []string, needle string) bool {
 	for _, err := range errs {
 		if strings.Contains(err, needle) {

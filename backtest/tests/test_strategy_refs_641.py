@@ -177,6 +177,77 @@ def test_load_strategy_config_reads_single_close_strategy(tmp_path):
     assert kwargs["close_strategies"][0]["params"]["tp_tiers"][1]["atr_multiple"] == 3.0
 
 
+# ─── #866: --defaults system|user (user_close_defaults injection) ────────────
+
+
+def _write_full_config(tmp_path, cfg):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps(cfg, indent=2))
+    return str(p)
+
+
+_USER_RATCHET = {
+    "trailing_tp_ratchet": {"tp_tiers": [
+        {"atr_multiple": 1.0, "trailing_mult_after": 2.0, "close_fraction": 0.0},
+        {"atr_multiple": 2.0, "trailing_mult_after": 1.0, "close_fraction": 0.0},
+    ]}
+}
+
+
+def _ratchet_cfg(tmp_path, close_params):
+    return _write_full_config(tmp_path, {
+        "config_version": 15,
+        "user_close_defaults": _USER_RATCHET,
+        "strategies": [{
+            "id": "hl-r", "type": "perps", "platform": "hyperliquid",
+            "open_strategy": {"name": "tema_cross_bd"},
+            "trailing_stop_atr_mult": 3.0,
+            "close_strategy": {"name": "trailing_tp_ratchet", "params": close_params},
+        }],
+    })
+
+
+def test_defaults_user_injects_user_close_defaults(tmp_path):
+    path = _ratchet_cfg(tmp_path, {"use_defaults": True})
+    kwargs = run_backtest.load_strategy_config(path, "hl-r", inject_user_defaults=True)
+    tp = kwargs["close_strategies"][0]["params"].get("tp_tiers")
+    assert tp is not None and len(tp) == 2
+    assert tp[0]["trailing_mult_after"] == 2.0
+
+
+def test_defaults_system_does_not_inject(tmp_path):
+    path = _ratchet_cfg(tmp_path, {"use_defaults": True})
+    kwargs = run_backtest.load_strategy_config(path, "hl-r", inject_user_defaults=False)
+    # No injection: the close ref omits tp_tiers and falls through to the
+    # evaluator's built-in system default at runtime.
+    assert kwargs["close_strategies"][0]["params"].get("tp_tiers") is None
+
+
+def test_defaults_user_empty_tiers_not_injected(tmp_path):
+    # Go↔Python parity: an empty user tp_tiers is not a valid override — skip it
+    # so resolution falls through to the system default instead of injecting [].
+    path = _write_full_config(tmp_path, {
+        "config_version": 15,
+        "user_close_defaults": {"trailing_tp_ratchet": {"tp_tiers": []}},
+        "strategies": [{
+            "id": "hl-r", "type": "perps", "platform": "hyperliquid",
+            "open_strategy": {"name": "tema_cross_bd"},
+            "trailing_stop_atr_mult": 3.0,
+            "close_strategy": {"name": "trailing_tp_ratchet", "params": {"use_defaults": True}},
+        }],
+    })
+    kwargs = run_backtest.load_strategy_config(path, "hl-r", inject_user_defaults=True)
+    assert kwargs["close_strategies"][0]["params"].get("tp_tiers") is None
+
+
+def test_defaults_user_strategy_tiers_win(tmp_path):
+    explicit = [{"atr_multiple": 5.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}]
+    path = _ratchet_cfg(tmp_path, {"tp_tiers": explicit})
+    kwargs = run_backtest.load_strategy_config(path, "hl-r", inject_user_defaults=True)
+    tp = kwargs["close_strategies"][0]["params"]["tp_tiers"]
+    assert len(tp) == 1 and tp[0]["atr_multiple"] == 5.0  # not overridden
+
+
 def test_load_strategy_config_rejects_multi_legacy_close_array(tmp_path):
     # #842: the live Go loader rejects a len>1 close_strategies array; the
     # backtester loader must reject it the same way instead of running it under

@@ -17,6 +17,7 @@ from tiered_tp_atr_live import evaluate as tiered_tp_atr_live_evaluate
 from tiered_tp_atr_regime import evaluate as tiered_tp_atr_regime_evaluate
 from tiered_tp_atr_live_regime import evaluate as tiered_tp_atr_live_regime_evaluate
 from tiered_tp_atr_live_regime_dynamic import evaluate as tiered_tp_atr_live_regime_dynamic_evaluate
+from trailing_tp_ratchet import DEFAULT_RATCHET_TIERS
 from trailing_tp_ratchet import evaluate_regime as trailing_tp_ratchet_regime_evaluate
 from trailing_tp_ratchet import evaluate_scalar as trailing_tp_ratchet_evaluate
 from tiered_tp_pct import DEFAULT_TIERS as DEFAULT_PCT_TIERS
@@ -155,7 +156,7 @@ register(
 register(
     "trailing_tp_ratchet",
     "Tiered trail ratchet — tightens trailing_stop_atr_mult at each ATR tier (close_fraction may be 0)",
-    {"tp_tiers": [{"atr_multiple": 1.5, "close_fraction": 0.0, "trailing_mult_after": 2.0}]},
+    {"tp_tiers": [dict(t) for t in DEFAULT_RATCHET_TIERS]},
 )(trailing_tp_ratchet_evaluate)
 
 register(

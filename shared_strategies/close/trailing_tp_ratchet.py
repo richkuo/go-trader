@@ -16,6 +16,20 @@ from _helpers import (
 )
 from regime_atr import CANONICAL_TREND_REGIME_LABELS
 
+# DEFAULT_RATCHET_TIERS is the conservative fallback ladder (#866) used when a
+# trailing_tp_ratchet* close ref omits tp_tiers (or sets use_defaults:true). It
+# mirrors the Go single source of truth defaultTrailingRatchetTiers() in
+# scheduler/trailing_tp_ratchet.go — keep the two in sync. The regime variant
+# broadcasts this same ladder across every classifier label (per-regime
+# differentiation lands in #870). Precondition: the first rung tightens to
+# 1.5xATR, so a strategy using this default must set trailing_stop_atr_mult >=
+# 1.5 (else the Go loader rejects it via validateTrailingRatchetInitialTrail).
+DEFAULT_RATCHET_TIERS = [
+    {"atr_multiple": 2.0, "trailing_mult_after": 1.5, "close_fraction": 0.0},
+    {"atr_multiple": 2.5, "trailing_mult_after": 1.0, "close_fraction": 0.0},
+    {"atr_multiple": 3.0, "trailing_mult_after": 0.5, "close_fraction": 0.0},
+]
+
 
 def _first_present(d: dict, *keys: str):
     for k in keys:
@@ -121,6 +135,10 @@ def resolve_tiers_for_regime(
 ) -> Tuple[List[Tuple[float, float, float]], List[str]]:
     """Resolve concrete tiers for the stamped regime label."""
     raw = tier_list_from_params(params)
+    if raw is None:
+        # #866: omitted tp_tiers (or use_defaults:true) resolves to the system
+        # default ladder, broadcast across regimes for the regime variant.
+        return _parse_scalar_tiers([dict(t) for t in DEFAULT_RATCHET_TIERS])
     if regime_table:
         if not isinstance(raw, dict):
             return [], ["tp_tiers must be a regime-keyed object"]

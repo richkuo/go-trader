@@ -150,7 +150,14 @@ type Config struct {
 	NotifyTPSLFills        *bool                      `json:"notify_tp_sl_fills,omitempty"`         // #661 — owner DM when HL on-chain TP/SL fills are detected by the reconciler. Nil/missing → enabled; explicit false disables.
 	ManualDefaults         *ManualDefaultsConfig      `json:"manual_defaults,omitempty"`            // #696 — operator-tunable defaults for `manual-open` CLI and `type=manual` strategy auto-config. Each field optional; absent values fall back to the hardcoded defaults.
 	TradingViewExport      TradingViewExportConfig    `json:"tradingview_export,omitempty"`         // #3 — optional symbol overrides for TradingView portfolio CSV exports
+	UserCloseDefaults      CloseDefaultsMap           `json:"user_close_defaults,omitempty"`        // #866 — operator override layer for close-evaluator default tier ladders. Keyed by close evaluator name → {"tp_tiers": <list|regime-map>}. Injected into any close ref that omits tp_tiers at load; per-strategy tp_tiers still wins, and an absent entry falls through to the system default.
 }
+
+// CloseDefaultsMap is the #866 user_close_defaults block: close-evaluator name →
+// params object carrying tp_tiers (a scalar tier list, or a regime-keyed map for
+// the *_regime evaluators). The inner values are left as decoded interface{}s so
+// they can be injected straight into a close ref's Params at load.
+type CloseDefaultsMap map[string]map[string]interface{}
 
 // ManualDefaultsConfig holds operator-tunable defaults for the manual-open CLI
 // and type=manual strategy auto-config. All fields are optional; missing values
@@ -1015,6 +1022,12 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 		cfg.Correlation.MaxSameDirectionPct = 75
 	}
 
+	// #866: inject user_close_defaults into close refs that omit tp_tiers, after
+	// all per-strategy close-ref normalization/auto-config is complete. The
+	// strategy layer (explicit tp_tiers) still wins; refs with no matching entry
+	// fall through to the evaluator's system default.
+	applyUserCloseDefaults(&cfg)
+
 	if err := validateConfig(&cfg, skipLiveCredentialChecks); err != nil {
 		return nil, err
 	}
@@ -1259,6 +1272,11 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			errs = append(errs, fmt.Sprintf("leaderboard_post_time must be in \"HH:MM\" format (24h UTC), got %q", cfg.LeaderboardPostTime))
 		}
 	}
+
+	// #866: validate the user_close_defaults block shape (known evaluator names,
+	// tp_tiers present, no stray keys). Tier *contents* are validated per-strategy
+	// below once injected, against each consuming strategy's regime vocabulary.
+	errs = append(errs, validateUserCloseDefaults(cfg.UserCloseDefaults)...)
 
 	for i, sc := range cfg.Strategies {
 		prefix := fmt.Sprintf("strategy[%d]", i)

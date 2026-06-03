@@ -37,6 +37,30 @@ func strategyUsesTrailingTPRatchetClose(sc StrategyConfig) bool {
 	return false
 }
 
+// defaultTrailingRatchetTiers is the canonical conservative fallback ladder
+// (#866) used when a trailing_tp_ratchet* close ref omits tp_tiers (or sets
+// use_defaults:true). Pure let-it-ride: starting from the operator's
+// trailing_stop_atr_mult, tighten to 1.5 / 1.0 / 0.5 ×ATR at 2 / 2.5 / 3 ×ATR
+// profit, never force-selling (close_fraction 0). It is the single source of
+// truth on the Go side; mirrored in
+// shared_strategies/close/trailing_tp_ratchet.py as DEFAULT_RATCHET_TIERS — keep
+// the two in sync. The regime variant broadcasts this same ladder to every
+// classifier label (per-regime group differentiation + per-regime opening trail
+// land in #870).
+//
+// Precondition: the first rung tightens to 1.5×ATR, so a strategy relying on
+// this default must set trailing_stop_atr_mult >= 1.5 — otherwise
+// validateTrailingRatchetInitialTrail rejects it at load (a looser first rung
+// would silently no-op at runtime). The reported bug is fully fixed for trails
+// >= 1.5×ATR; a tighter initial trail still needs an explicit tp_tiers.
+func defaultTrailingRatchetTiers() []trailingRatchetTier {
+	return []trailingRatchetTier{
+		{ATRMultiple: 2.0, CloseFraction: 0, TrailingMultAfter: 1.5},
+		{ATRMultiple: 2.5, CloseFraction: 0, TrailingMultAfter: 1.0},
+		{ATRMultiple: 3.0, CloseFraction: 0, TrailingMultAfter: 0.5},
+	}
+}
+
 func resolveTrailingMultAfter(tier map[string]interface{}, firingMultiple float64) (float64, error) {
 	_, hasAbs := tier["trailing_mult_after"]
 	_, hasFrac := tier["tp_atr_fraction"]
@@ -137,7 +161,10 @@ func trailingRatchetTiersForRegime(sc StrategyConfig, regime string) []trailingR
 		}
 		raw, ok := closeTierListParam(ref.Params)
 		if !ok {
-			return nil
+			// #866: omitted tp_tiers (or use_defaults:true) resolves to the
+			// system default ladder, broadcast across every regime for the
+			// regime variant.
+			return defaultTrailingRatchetTiers()
 		}
 		if name == trailingTPRatchetRegimeCloseName {
 			table, ok := raw.(map[string]interface{})
@@ -205,11 +232,9 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 		}
 		sub := fmt.Sprintf("%s.close_strategy(%s)", prefix, ref.Name)
 		name := strings.ToLower(strings.TrimSpace(ref.Name))
-		raw, hasTiers := closeTierListParam(ref.Params)
-		if !hasTiers {
-			errs = append(errs, fmt.Sprintf("%s: missing tp_tiers", sub))
-			continue
-		}
+		isRegime := name == trailingTPRatchetRegimeCloseName
+		// Unknown-key guard runs in every branch, including the
+		// omitted-tp_tiers / use_defaults fallback below.
 		for k := range ref.Params {
 			switch k {
 			case "tp_tiers", "use_defaults":
@@ -219,10 +244,22 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 				errs = append(errs, fmt.Sprintf("%s: unknown param %q (allowed: tp_tiers, use_defaults)", sub, k))
 			}
 		}
-		if name == trailingTPRatchetRegimeCloseName {
-			if !regimeEnabled {
-				errs = append(errs, fmt.Sprintf("%s: trailing_tp_ratchet_regime requires top-level regime.enabled=true", sub))
-			}
+		if isRegime && !regimeEnabled {
+			errs = append(errs, fmt.Sprintf("%s: trailing_tp_ratchet_regime requires top-level regime.enabled=true", sub))
+		}
+		raw, hasTiers := closeTierListParam(ref.Params)
+		if !hasTiers {
+			// #866: omitted tp_tiers (or use_defaults:true) resolves to the
+			// system default ladder — broadcast across every regime label for
+			// the regime variant, so exhaustiveness is satisfied automatically.
+			// The default is internally valid (monotonic, ascending); the only
+			// load-time check that still applies is the initial-trail coupling
+			// against the operator's trailing_stop_atr_mult.
+			def := defaultTrailingRatchetTiers()
+			errs = append(errs, validateTrailingRatchetInitialTrail(def, initialTrail, sub+".tp_tiers(default)")...)
+			continue
+		}
+		if isRegime {
 			table, ok := raw.(map[string]interface{})
 			if !ok {
 				errs = append(errs, fmt.Sprintf("%s.tp_tiers: must be a regime-keyed object", sub))
