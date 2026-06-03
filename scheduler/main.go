@@ -1653,7 +1653,7 @@ func main() {
 								// Only meaningful when a peer/prior position
 								// has the leverage already pinned on-chain.
 								walletSnapshot := hlExecuteSnapshotForCoin(hlPositions, result.Symbol)
-								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, notifier, logger)
+								er, ok2 := runHyperliquidExecuteOrder(sc, stratState, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, notifier, logger)
 								if ok2 {
 									execResult = er
 								} else {
@@ -2682,7 +2682,7 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 // Trade record, leaving state silently behind actual exchange holdings. See
 // issue #298 — 0.716 ETH of live fills were lost this way because the
 // "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
-func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+func runHyperliquidExecuteOrder(sc StrategyConfig, stratState *StrategyState, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	directionEnum := EffectiveDirection(sc)
 	if reason := PerpsOrderSkipReason(result.Signal, posSide, directionEnum, sc.AllowScaleIn); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
@@ -2690,16 +2690,27 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	}
 	isBuy := result.Signal == 1
 	scalingIn := PerpsScaleInIntent(result.Signal, posSide, directionEnum, sc.AllowScaleIn)
+	scaleInPolicy := ScaleInPolicyFromConfig(sc)
 	// #254/#497/#518: perps sizing — sizing_leverage scales cash → notional in
 	// the legacy formula; margin_per_trade_usd (when set) overrides to a
 	// margin-space formula so high exchange leverage doesn't shrink intent.
 	sizingLeverage := EffectiveSizingLeverage(sc)
 	exchangeLeverage := EffectiveExchangeLeverage(sc)
 	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
-	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, directionEnum, result.CloseFraction, sc.AllowScaleIn)
+	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, directionEnum, result.CloseFraction, scaleInPolicy)
 	if !ok {
 		logger.Info("%s for %s", reason, result.Symbol)
 		return nil, false
+	}
+	if scalingIn {
+		var pos *Position
+		if stratState != nil {
+			pos = stratState.Positions[result.Symbol]
+		}
+		if reason := scaleInPreExecBlockedReason(stratState, pos, scaleInPolicy, size, price); reason != "" {
+			logger.Info("Skipping scale-in for %s: %s", result.Symbol, reason)
+			return nil, false
+		}
 	}
 
 	side := "buy"
@@ -2752,15 +2763,29 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		extraCancelOIDs = append(extraCancelOIDs, existingTPOIDs...)
 	}
 	var slPct float64
-	if !pureClose && !partialClose && !scalingIn {
-		// EffectiveStopLossPct self-guards on platform/type and returns the
-		// explicit price %, derives it from stop_loss_margin_pct / leverage
-		// (#487), or falls back to max_drawdown_pct capped at 50% (#484).
-		// Validation in config.go guarantees stop_loss_pct and
-		// stop_loss_margin_pct are mutually exclusive.
-		// Scale-in skips inline SL — protection sync re-arms at frozen trigger
-		// geometry after the add leg blends virtual state (#873).
-		slPct = EffectiveStopLossPct(sc)
+	if !pureClose && !partialClose {
+		if scalingIn {
+			var pos *Position
+			if stratState != nil {
+				pos = stratState.Positions[result.Symbol]
+			}
+			if pos != nil {
+				if _, syncOK := buildHyperliquidProtectionPlan(sc, pos); syncOK {
+					// ATR/tiered path re-arms via runHyperliquidProtectionSync after blend.
+				} else {
+					slPct = EffectiveStopLossPct(sc)
+				}
+			} else {
+				slPct = EffectiveStopLossPct(sc)
+			}
+		} else {
+			// EffectiveStopLossPct self-guards on platform/type and returns the
+			// explicit price %, derives it from stop_loss_margin_pct / leverage
+			// (#487), or falls back to max_drawdown_pct capped at 50% (#484).
+			// Validation in config.go guarantees stop_loss_pct and
+			// stop_loss_margin_pct are mutually exclusive.
+			slPct = EffectiveStopLossPct(sc)
+		}
 	}
 	var prevPosQty float64
 	if flipping {
@@ -3483,7 +3508,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 	if sc.Type == "perps" {
 		var ok bool
 		var reason string
-		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, EffectiveDirection(sc), result.CloseFraction, sc.AllowScaleIn)
+		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, EffectiveDirection(sc), result.CloseFraction, ScaleInPolicyFromConfig(sc))
 		if !ok {
 			logger.Info("%s for %s", reason, result.Symbol)
 			return nil, false

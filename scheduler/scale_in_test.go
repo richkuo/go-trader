@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -60,13 +61,59 @@ func TestPerpsOrderSkipReasonAllowsScaleIn(t *testing.T) {
 }
 
 func TestPerpsLiveOrderSizeScaleInBranch(t *testing.T) {
-	size, ok, reason := perpsLiveOrderSize(1, 2000, 1000, 0.4, 2000, 1.0, 1.0, 0, "long", DirectionLong, 0, true)
+	size, ok, reason := perpsLiveOrderSize(1, 2000, 1000, 0.4, 2000, 1.0, 1.0, 0, "long", DirectionLong, 0, ScaleInPolicy{Allowed: true})
 	if !ok || reason != "" {
 		t.Fatalf("scale-in sizing failed: ok=%v reason=%q", ok, reason)
 	}
 	want := 1000.0 / 2000.0
 	if math.Abs(size-want) > 1e-9 {
 		t.Fatalf("size = %g, want %g", size, want)
+	}
+}
+
+func TestPerpsLiveOrderSizeScaleInNotionalClamp(t *testing.T) {
+	policy := ScaleInPolicy{Allowed: true, MaxNotionalUSD: 100}
+	size, ok, reason := perpsLiveOrderSize(1, 2000, 10000, 0.4, 2000, 1.0, 1.0, 0, "long", DirectionLong, 0, policy)
+	if !ok || reason != "" {
+		t.Fatalf("clamp sizing failed: ok=%v reason=%q", ok, reason)
+	}
+	want := 100.0 / 2000.0
+	if math.Abs(size-want) > 1e-9 {
+		t.Fatalf("size = %g, want clamped %g", size, want)
+	}
+}
+
+func TestScaleInPreExecBlockedReason(t *testing.T) {
+	s := &StrategyState{
+		TradeHistory: []Trade{{PositionID: "p1", IsScaleIn: true}},
+	}
+	pos := &Position{TradePositionID: "p1", Quantity: 1, Side: "long"}
+	policy := ScaleInPolicy{Allowed: true, MaxAdds: 1}
+	if got := scaleInPreExecBlockedReason(s, pos, policy, 0.1, 2000); got == "" {
+		t.Fatal("expected max-adds pre-exec block")
+	}
+}
+
+func TestAllowScaleInRejectsScalarStopOnLive(t *testing.T) {
+	stopPct := 5.0
+	cfg := Config{
+		Strategies: []StrategyConfig{{
+			ID:             "hl-test-eth",
+			Type:           "perps",
+			Platform:       "hyperliquid",
+			Script:         "shared_scripts/check_hyperliquid.py",
+			Args:           []string{"sma_crossover", "ETH", "1h", "--mode=live"},
+			Capital:        1000,
+			Leverage:       5,
+			MaxDrawdownPct: 60,
+			AllowScaleIn:   true,
+			StopLossPct:    &stopPct,
+		}},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	err := ValidateConfig(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "allow_scale_in on HL live requires ATR-based stop loss") {
+		t.Fatalf("expected scalar-SL scale-in rejection, got: %v", err)
 	}
 }
 

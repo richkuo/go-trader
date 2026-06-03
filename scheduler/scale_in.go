@@ -70,6 +70,17 @@ func countScaleInAdds(s *StrategyState, positionID string) int {
 	return n
 }
 
+func clampScaleInAddQty(addQty, price float64, policy ScaleInPolicy) float64 {
+	if addQty <= 0 || price <= 0 || policy.MaxNotionalUSD <= 0 {
+		return addQty
+	}
+	capQty := policy.MaxNotionalUSD / price
+	if addQty > capQty {
+		return capQty
+	}
+	return addQty
+}
+
 func scaleInBlockedReason(s *StrategyState, pos *Position, policy ScaleInPolicy, addQty, addPrice float64) string {
 	if !policy.Allowed {
 		return "scale-in not enabled for strategy"
@@ -80,13 +91,52 @@ func scaleInBlockedReason(s *StrategyState, pos *Position, policy ScaleInPolicy,
 	if policy.MaxAdds > 0 && countScaleInAdds(s, pos.TradePositionID) >= policy.MaxAdds {
 		return fmt.Sprintf("max scale-in adds (%d) reached", policy.MaxAdds)
 	}
-	if policy.MaxNotionalUSD > 0 {
-		addNotional := addQty * addPrice
-		if addNotional > policy.MaxNotionalUSD+1e-9 {
-			return fmt.Sprintf("scale-in notional $%.2f exceeds cap $%.2f", addNotional, policy.MaxNotionalUSD)
+	if policy.MaxNotionalUSD > 0 && addQty > 0 && addPrice > 0 {
+		if addQty*addPrice > policy.MaxNotionalUSD+1e-9 {
+			return fmt.Sprintf("scale-in notional $%.2f exceeds cap $%.2f", addQty*addPrice, policy.MaxNotionalUSD)
 		}
 	}
 	return ""
+}
+
+// scaleInPreExecBlockedReason mirrors scaleInBlockedReason for the live order
+// spawn guard — must run before RunHyperliquidExecute cancels resting SL/TP (#873).
+func scaleInPreExecBlockedReason(s *StrategyState, pos *Position, policy ScaleInPolicy, addQty, addPrice float64) string {
+	if !policy.Allowed || pos == nil {
+		return ""
+	}
+	return scaleInBlockedReason(s, pos, policy, addQty, addPrice)
+}
+
+// scaleInLiveProtectionRearmSupported reports whether on-chain TP/SL can be
+// re-sized after a scale-in add cancels resting orders. Scalar pct/margin SLs
+// placed via --stop-loss-pct are not re-armed by buildHyperliquidProtectionPlan.
+func scaleInLiveProtectionRearmSupported(sc StrategyConfig) bool {
+	if !hyperliquidIsLive(sc.Args) {
+		return true
+	}
+	if strategyUsesTieredTPATRClose(sc) {
+		return true
+	}
+	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
+		return true
+	}
+	if sc.StopLossATRRegime != nil && sc.StopLossATRRegime.IsConfigured() {
+		return true
+	}
+	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
+		return true
+	}
+	if sc.TrailingStopATRRegime != nil && sc.TrailingStopATRRegime.IsConfigured() {
+		return true
+	}
+	if strategyUsesUnifiedRegimeClose(sc) {
+		return true
+	}
+	if strategyUsesTrailingTPRatchetClose(sc) {
+		return true
+	}
+	return false
 }
 
 func previewBlendedAvgCost(oldQty, oldAvg, addQty, addPrice float64) float64 {
@@ -126,7 +176,7 @@ func executePerpsScaleIn(
 			return 0, nil
 		}
 		budget := PerpsOpenNotional(s.Cash, sizingLeverage, exchangeLeverage, marginPerTradeUSD)
-		addQty = budget / execPrice
+		addQty = clampScaleInAddQty(budget/execPrice, execPrice, policy)
 	}
 	if addQty <= 0 {
 		return 0, nil

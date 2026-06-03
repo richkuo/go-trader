@@ -689,11 +689,11 @@ func PerpsOrderSkipReason(signal int, posSide, direction string, allowScaleIn bo
 // unreachable when closeFraction > 0 because compose_signal does not emit a
 // flip alongside a close (open_action is dropped while a position is open),
 // so closeFraction is intentionally ignored on the open/flip path.
-func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, posSide, direction string, closeFraction float64, allowScaleIn bool) (size float64, ok bool, reason string) {
+func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, posSide, direction string, closeFraction float64, policy ScaleInPolicy) (size float64, ok bool, reason string) {
 	isBuy := signal == 1
 	allowsLong := direction == DirectionLong || direction == DirectionBoth || direction == ""
 	allowsShort := direction == DirectionShort || direction == DirectionBoth
-	if PerpsScaleInIntent(signal, posSide, direction, allowScaleIn) {
+	if PerpsScaleInIntent(signal, posSide, direction, policy.Allowed) {
 		if posQty <= 0 || price <= 0 {
 			return 0, false, "no position to scale into"
 		}
@@ -701,7 +701,11 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage
 		if budget < 1 {
 			return 0, false, fmt.Sprintf("insufficient cash ($%.2f) for scale-in", cash)
 		}
-		return budget / price, true, ""
+		addQty := clampScaleInAddQty(budget/price, price, policy)
+		if addQty <= 0 {
+			return 0, false, fmt.Sprintf("scale-in size below minimum (cap $%.2f)", policy.MaxNotionalUSD)
+		}
+		return addQty, true, ""
 	}
 	// Flip only happens under bidirectional ("both"); a directional gate
 	// ("long"/"short") never flips because the opposite-direction signal is

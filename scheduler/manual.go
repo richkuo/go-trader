@@ -483,15 +483,7 @@ func runManualAdd(args []string) int {
 
 	var resolvedOrderSize, sizingMark float64
 	var sizingFailed bool
-	if !*recordOnly && !*dryRun {
-		qty, mark, err := resolveManualOpenOrderSize(sc, *size, *notional, *margin, fetchHyperliquidMids)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return 1
-		}
-		resolvedOrderSize = qty
-		sizingMark = mark
-	} else if !*recordOnly {
+	if !*recordOnly {
 		qty, mark, err := resolveManualOpenOrderSize(sc, *size, *notional, *margin, fetchHyperliquidMids)
 		if err != nil {
 			if *dryRun {
@@ -580,7 +572,22 @@ func runManualAdd(args []string) int {
 			warnNotifier(notifier, fmt.Sprintf("[manual-add] %s %s: protection resize failed: %v", strategyID, sc.Symbol, resizeErr))
 		} else if warn != "" {
 			warnNotifier(notifier, fmt.Sprintf("[manual-add] %s %s: protection resize issue: %s", strategyID, sc.Symbol, warn))
-		} else if stopLossOID > 0 || len(tpOIDs) > 0 {
+		}
+		if stopLossOID == 0 && pos.StopLossTriggerPx > 0 {
+			slResult, slStderr, slErr := RunHyperliquidUpdateStopLoss(sc.Script, sc.Symbol, pos.Side, totalQty, pos.StopLossTriggerPx, 0)
+			if slStderr != "" {
+				fmt.Fprintf(os.Stderr, "SL re-arm stderr: %s\n", slStderr)
+			}
+			if slErr != nil {
+				warnNotifier(notifier, fmt.Sprintf("[manual-add] %s %s: scalar SL re-arm failed: %v", strategyID, sc.Symbol, slErr))
+			} else if slResult != nil && slResult.Error != "" {
+				warnNotifier(notifier, fmt.Sprintf("[manual-add] %s %s: scalar SL re-arm error: %s", strategyID, sc.Symbol, slResult.Error))
+			} else if slResult != nil {
+				stopLossOID = slResult.StopLossOID
+				stopLossTriggerPx = slResult.StopLossTriggerPx
+			}
+		}
+		if stopLossOID > 0 || len(tpOIDs) > 0 {
 			fmt.Printf("Protection re-sized: sl_oid=%d tp_oids=%v\n", stopLossOID, tpOIDs)
 		}
 	}

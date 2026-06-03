@@ -1563,6 +1563,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if sc.MaxScaleInNotionalUSD != nil && *sc.MaxScaleInNotionalUSD < 0 {
 				errs = append(errs, fmt.Sprintf("%s: max_scale_in_notional_usd must be >= 0, got %g", prefix, *sc.MaxScaleInNotionalUSD))
 			}
+			if sc.AllowScaleIn && !scaleInLiveProtectionRearmSupported(sc) {
+				errs = append(errs, fmt.Sprintf("%s: allow_scale_in on HL live requires ATR-based stop loss or tiered TP — scalar stop_loss_pct/stop_loss_margin_pct/trailing_stop_pct cannot be re-sized after an add", prefix))
+			}
 		}
 
 		// regime_directional_policy: HL perps only (same surface as invert_signal
