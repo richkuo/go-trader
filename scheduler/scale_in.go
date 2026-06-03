@@ -40,6 +40,12 @@ func applyScaleIn(pos *Position, addQty, addPrice float64) {
 	if pos == nil || addQty <= 0 || addPrice <= 0 {
 		return
 	}
+	// Capture the frozen risk anchor before the first blend overwrites AvgCost.
+	// On the first add, AvgCost still equals the original entry, so this pins the
+	// SL/TP trigger geometry to the first entry for the life of the position.
+	if pos.RiskAnchorPrice <= 0 {
+		pos.RiskAnchorPrice = pos.AvgCost
+	}
 	oldQty := pos.Quantity
 	newQty := oldQty + addQty
 	if newQty > 0 {
@@ -117,6 +123,10 @@ func perpsScaleInDecision(sc StrategyConfig, snap scaleInSnapshot, signal int, p
 	if addNotional <= 0 {
 		return 0, false, "scale-in add notional resolves to zero"
 	}
+	// The cap compares the cumulative ACTUAL added notional (snap.AddedNotionalUSD,
+	// accumulated from fills) plus this add's REQUESTED notional. Live fills can
+	// slip slightly from the requested sizing, so the cap is an approximate
+	// guardrail, not an exact ceiling — acceptable for a soft limit (#873 review).
 	if cfg.MaxAddedNotionalUSD > 0 && snap.AddedNotionalUSD+addNotional > cfg.MaxAddedNotionalUSD+1e-9 {
 		return 0, false, "scale-in max_added_notional_usd reached"
 	}
@@ -161,8 +171,19 @@ func perpsScaleInDecision(sc StrategyConfig, snap scaleInSnapshot, signal int, p
 // caller records the trade — deferred until after the protection sync for live,
 // immediately for paper.
 func applyPerpsScaleIn(s *StrategyState, sc StrategyConfig, symbol string, addPrice, addQty, fillFee float64, fillOID string, useFillFee bool, logger *StrategyLogger) (int, *Trade) {
+	if addQty <= 0 || addPrice <= 0 {
+		return 0, nil
+	}
 	pos, ok := s.Positions[symbol]
-	if !ok || pos == nil || addQty <= 0 || addPrice <= 0 {
+	if !ok || pos == nil {
+		// Defensive (#873 review): the add decision is computed from the Phase-1
+		// snapshot and the position can only vanish here if some other path
+		// flattened it between the fill and this apply — not reachable in the
+		// current single-threaded per-strategy dispatch. Surface it loudly rather
+		// than silently dropping a booked fill (the #298 gap class).
+		if useFillFee {
+			logger.Error("scale-in fill (oid=%s qty=%.6f @ $%.2f) has no position to apply to for %s — fill booked on-chain with NO Trade record", fillOID, addQty, addPrice, symbol)
+		}
 		return 0, nil
 	}
 	feePlatform := s.Platform

@@ -20,7 +20,7 @@ func TestScaleInStatePersistsRoundTrip(t *testing.T) {
 					"ETH": {
 						Symbol: "ETH", Quantity: 2, InitialQuantity: 2, AvgCost: 2100, Side: "long",
 						Multiplier: 1, OwnerStrategyID: "hl-scalein-eth", OpenedAt: now,
-						ScaleInCount: 3, LastAddPrice: 2200, AddedNotionalUSD: 2200,
+						ScaleInCount: 3, LastAddPrice: 2200, AddedNotionalUSD: 2200, RiskAnchorPrice: 2000,
 					},
 				},
 				OptionPositions: map[string]*OptionPosition{},
@@ -44,6 +44,9 @@ func TestScaleInStatePersistsRoundTrip(t *testing.T) {
 	}
 	if !approxEq(pos.AddedNotionalUSD, 2200) {
 		t.Errorf("AddedNotionalUSD = %v, want 2200", pos.AddedNotionalUSD)
+	}
+	if !approxEq(pos.RiskAnchorPrice, 2000) {
+		t.Errorf("RiskAnchorPrice = %v, want 2000", pos.RiskAnchorPrice)
 	}
 }
 
@@ -120,6 +123,47 @@ func TestScaleInProtectionForceReplace(t *testing.T) {
 	// watermark untouched by the force-replace computation
 	if pos.SLAdjustedTiersProcessed != 1 {
 		t.Errorf("watermark mutated: %d, want 1", pos.SLAdjustedTiersProcessed)
+	}
+}
+
+// forceResize makes the trailing-stop walker cancel+replace at the EXISTING
+// trigger even when no trailing move occurred, so a scale-in's grown size gets
+// covered (#873 review finding 2). Without it, the same inputs are a no-op.
+func TestTrailingStopForceResizeReplacesWithoutMove(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	var called bool
+	var gotSize, gotTrigger float64
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		called = true
+		gotSize = size
+		gotTrigger = triggerPx
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 222, StopLossTriggerPx: triggerPx}, "", nil
+	}
+	trail := 3.0
+	minMove := 0.25
+	sc := StrategyConfig{ID: "hl-test", Platform: "hyperliquid", Type: "perps", Script: "shared_scripts/check_hyperliquid.py", TrailingStopPct: &trail, TrailingStopMinMovePct: &minMove}
+	logger := silentStrategyLogger("hl-test")
+	defer logger.Close()
+
+	// mark==highWater, currentTrigger already at the trailing level → no move.
+	// forceResize=false: no replace.
+	called = false
+	_, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 2.0, &Position{AvgCost: 100}, 100, 100, 97, 111, false, nil, logger)
+	if !ok || result != nil || called {
+		t.Fatalf("without force, expected no replace (called=%v result=%+v)", called, result)
+	}
+	// forceResize=true: replace at the existing trigger (97) with the grown size (2.0).
+	called = false
+	_, result, ok = runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 2.0, &Position{AvgCost: 100}, 100, 100, 97, 111, true, nil, logger)
+	if !ok || result == nil || !called {
+		t.Fatalf("with force, expected a replace (called=%v result=%+v ok=%v)", called, result, ok)
+	}
+	if !approxEq(gotSize, 2.0) {
+		t.Errorf("replace size = %v, want 2.0 (grown total)", gotSize)
+	}
+	if !approxEq(gotTrigger, 97) {
+		t.Errorf("replace trigger = %v, want 97 (existing trigger, frozen)", gotTrigger)
 	}
 }
 
@@ -288,6 +332,58 @@ func TestApplyScaleInMultipleAddsAccumulate(t *testing.T) {
 	}
 	if !approxEq(pos.LastAddPrice, 110) {
 		t.Fatalf("LastAddPrice = %v, want 110", pos.LastAddPrice)
+	}
+}
+
+// applyScaleIn stamps a frozen risk anchor (= the AvgCost at first add, which is
+// the original entry) so on-chain SL/TP triggers stay pinned to the first entry
+// even though the blended AvgCost drives PnL (#873 review finding 1).
+func TestApplyScaleInStampsFrozenRiskAnchor(t *testing.T) {
+	pos := &Position{Side: "long", Quantity: 100, InitialQuantity: 100, AvgCost: 2000}
+	applyScaleIn(pos, 100, 2200) // blend → AvgCost 2100
+	if !approxEq(pos.RiskAnchorPrice, 2000) {
+		t.Fatalf("RiskAnchorPrice = %v, want 2000 (original entry frozen)", pos.RiskAnchorPrice)
+	}
+	if !approxEq(pos.AvgCost, 2100) {
+		t.Fatalf("AvgCost = %v, want 2100 (blended for PnL)", pos.AvgCost)
+	}
+	applyScaleIn(pos, 200, 2400) // second add must NOT move the anchor
+	if !approxEq(pos.RiskAnchorPrice, 2000) {
+		t.Fatalf("RiskAnchorPrice moved on second add: %v, want 2000", pos.RiskAnchorPrice)
+	}
+	if !approxEq(pos.riskAnchorPrice(), 2000) {
+		t.Fatalf("riskAnchorPrice() = %v, want 2000", pos.riskAnchorPrice())
+	}
+}
+
+// A position that never scaled in falls back to AvgCost for the risk anchor, so
+// trigger geometry is unchanged for the common case (#873).
+func TestRiskAnchorPriceFallsBackToAvgCost(t *testing.T) {
+	pos := &Position{AvgCost: 1500}
+	if !approxEq(pos.riskAnchorPrice(), 1500) {
+		t.Fatalf("riskAnchorPrice() = %v, want 1500 (fallback to AvgCost)", pos.riskAnchorPrice())
+	}
+}
+
+// The protection plan computes SL/TP triggers from the frozen risk anchor, not
+// the blended AvgCost — so a forced re-size after a scale-in keeps triggers at
+// the original entry (#873 review finding 1).
+func TestProtectionPlanFreezesTriggersAtRiskAnchor(t *testing.T) {
+	mult := 1.5
+	pos := &Position{
+		Symbol: "ETH", Side: "long", Quantity: 200, InitialQuantity: 200,
+		AvgCost: 2100, RiskAnchorPrice: 2000, EntryATR: 50, StopLossATRMult: &mult,
+	}
+	sc := StrategyConfig{Type: "perps", Platform: "hyperliquid", StopLossATRMult: &mult}
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	if !ok {
+		t.Fatalf("expected a protection plan")
+	}
+	if !approxEq(plan.AvgCost, 2000) {
+		t.Fatalf("plan.AvgCost = %v, want 2000 (frozen anchor, not blended 2100)", plan.AvgCost)
+	}
+	if !approxEq(plan.Size, 200) {
+		t.Fatalf("plan.Size = %v, want 200 (grown total)", plan.Size)
 	}
 }
 
