@@ -94,6 +94,35 @@ func TestScaleInPreExecBlockedReason(t *testing.T) {
 	}
 }
 
+func TestScaleInNeedsFrozenTriggerSLRearm(t *testing.T) {
+	trailMult := 2.0
+	scTrail := StrategyConfig{
+		Platform:            "hyperliquid",
+		Type:                "perps",
+		TrailingStopATRMult: &trailMult,
+	}
+	pos := &Position{
+		Symbol:            "ETH",
+		Side:              "long",
+		Quantity:          1,
+		AvgCost:           2000,
+		EntryATR:          50,
+		StopLossTriggerPx: 1900,
+	}
+	if !scaleInNeedsFrozenTriggerSLRearm(scTrail, pos) {
+		t.Fatal("trailing owner should need frozen-trigger SL re-arm")
+	}
+	slMult := 1.5
+	scATR := StrategyConfig{
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		StopLossATRMult: &slMult,
+	}
+	if scaleInNeedsFrozenTriggerSLRearm(scATR, pos) {
+		t.Fatal("fixed ATR SL should be covered by protection sync")
+	}
+}
+
 func TestAllowScaleInRejectsScalarStopOnLive(t *testing.T) {
 	stopPct := 5.0
 	cfg := Config{

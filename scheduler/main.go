@@ -1682,6 +1682,9 @@ func main() {
 								mu.Unlock()
 								if execResult != nil && trades > 0 {
 									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON)
+									if openTrade != nil && openTrade.IsScaleIn {
+										rearmScaleInStopLossAtFrozenTrigger(sc, stratState, result.Symbol, hlOnChainAbsQty, &mu, logger)
+									}
 									runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 									mu.Lock()
 									var pos *Position
@@ -2976,6 +2979,12 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 				pos.StopLossOID = slOID
 				pos.StopLossTriggerPx = execResult.Execution.Fill.StopLossTriggerPx
 				logger.Info("SL trigger placed oid=%d @ $%.4f", slOID, execResult.Execution.Fill.StopLossTriggerPx)
+			}
+		} else if openTrade != nil && openTrade.IsScaleIn {
+			// Scale-in cancels the resting SL before the add fills; clear the
+			// stale virtual OID so post-trade re-arm / trailing walker can run.
+			if pos, ok := s.Positions[result.Symbol]; ok {
+				pos.StopLossOID = 0
 			}
 		}
 	}
