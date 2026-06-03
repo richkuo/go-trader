@@ -1726,17 +1726,21 @@ func main() {
 							break
 						}
 						if pos != nil && hyperliquidIsLive(sc.Args) {
+							// Protection-sync must run before the close evaluator so
+							// the latter sees on-chain-reconciled qty. Post-TP SL
+							// adjustment is deferred to the post-stamp block below so
+							// regime-keyed *_atr_regime SL sees pos.Regime (#878 review).
 							runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON)
-							runPostTPStopLossAdjustment(sc, stratState, sc.Symbol, prices[sc.Symbol], cfg, &mu, notifier, logger, hlOnChainAbsQty)
 						}
 						// #872: run the close evaluator and stamp the regime BEFORE
-						// arming the ratchet/trailing walker below. The regime is the
-						// close-eval's classifier output, and the regime-keyed close
-						// features (trailing_tp_ratchet_regime, *_atr_regime SL/TP)
-						// resolve their tier table / trail distance from pos.Regime.
-						// Arming first (the previous order) left pos.Regime == "" on
-						// the first post-open cycle, so the regime trail no-op'd for
-						// one interval; stamping first arms it correctly on cycle 1.
+						// arming the post-TP SL / ratchet / trailing walker below. The
+						// regime is the close-eval's classifier output, and the
+						// regime-keyed close features (trailing_tp_ratchet_regime,
+						// *_atr_regime SL/TP) resolve their tier table / trail distance
+						// from pos.Regime. Arming first (the previous order) left
+						// pos.Regime == "" on the first post-open cycle, so the regime
+						// trail no-op'd for one interval; stamping first arms it
+						// correctly on cycle 1.
 						closeFraction, _, manualRegime, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger)
 						if manualOK {
 							mu.Lock()
@@ -1761,7 +1765,9 @@ func main() {
 							// tool, so a record-only manual config intentionally does
 							// not ratchet (unlike perps, which also runs a paper
 							// trailing path at main.go ~1537). Runs after the stamp
-							// above so regime-keyed trails see pos.Regime on cycle 1.
+							// above so regime-keyed trails / post-TP SL see pos.Regime
+							// on cycle 1.
+							runPostTPStopLossAdjustment(sc, stratState, sc.Symbol, prices[sc.Symbol], cfg, &mu, notifier, logger, hlOnChainAbsQty)
 							mark := prices[sc.Symbol]
 							if mark > 0 && strategyUsesTrailingTPRatchetClose(sc) {
 								applyTrailingTPRatchet(sc, stratState, sc.Symbol, mark, &mu, logger)
