@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -360,4 +363,293 @@ func parseBacktestSummary(report string) string {
 	}
 	return fmt.Sprintf("Total Return: %s | Sharpe: %s | Max DD: %s | Trades: %s | Win Rate: %s",
 		grab("Total Return:"), grab("Sharpe Ratio:"), grab("Max Drawdown:"), grab("Total Trades:"), grab("Win Rate:"))
+}
+
+// dmContext restricts a command to DMs with the bot (used for ops commands).
+func dmContext() *[]discordgo.InteractionContextType {
+	return &[]discordgo.InteractionContextType{discordgo.InteractionContextBotDM}
+}
+
+// slashCommands returns the full set of application commands to register globally.
+func slashCommands() []*discordgo.ApplicationCommand {
+	return []*discordgo.ApplicationCommand{
+		{Name: "status", Description: "Live portfolio status (cash, positions, value, regime)"},
+		{Name: "health", Description: "Daemon health: running, last cycle, version"},
+		{Name: "positions", Description: "Open positions across platforms"},
+		{Name: "pnl", Description: "Portfolio P&L (total, per-platform, per-strategy)"},
+		{Name: "leaderboard", Description: "Strategies ranked by P&L%", Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionInteger, Name: "top", Description: "How many to show (default 5)"},
+		}},
+		{Name: "circuit-breakers", Description: "Active circuit breakers and kill-switch state"},
+		{Name: "dead-strategies", Description: "Strategies that have never opened a position"},
+		{Name: "correlation", Description: "Correlation / concentration warnings"},
+		{Name: "logs", Description: "Recent journalctl lines", Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionInteger, Name: "n", Description: "Number of lines (default 50, max 200)"},
+		}},
+		{Name: "restart", Description: "Restart the go-trader service (owner DM only)", Contexts: dmContext()},
+		{Name: "backtest", Description: "Run a single backtest (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy name", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "symbol", Description: "Symbol, e.g. BTC/USDT", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "timeframe", Description: "Timeframe (default 1h)"},
+		}},
+	}
+}
+
+// RegisterSlashCommands stores the data references the handlers need, attaches the
+// interaction handler, and registers commands globally. Non-fatal on failure: the
+// caller logs/DMs and the daemon keeps running.
+func (d *DiscordNotifier) RegisterSlashCommands(ss *StatusServer, cfg *Config) error {
+	if d == nil || d.session == nil {
+		return fmt.Errorf("discord session not initialized")
+	}
+	if d.session.State == nil || d.session.State.User == nil {
+		return fmt.Errorf("discord gateway not ready (no application identity)")
+	}
+	d.ss = ss
+	d.cfg = cfg
+	d.session.AddHandler(d.interactionCreate)
+	appID := d.session.State.User.ID
+	if _, err := d.session.ApplicationCommandBulkOverwrite(appID, "", slashCommands()); err != nil {
+		return fmt.Errorf("bulk overwrite commands: %w", err)
+	}
+	return nil
+}
+
+// interactionCreate is the gateway handler for slash commands.
+func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i.Type != discordgo.InteractionApplicationCommand {
+		return
+	}
+	data := i.ApplicationCommandData()
+	name := data.Name
+	ok, reason := authorizeCommand(name, interactionUserID(i), i.GuildID, d.ownerID)
+	if !ok {
+		respondEphemeral(s, i, reason)
+		return
+	}
+	switch name {
+	case "status":
+		respondText(s, i, d.buildReadOnly(formatStatusResponse))
+	case "positions":
+		respondText(s, i, d.buildReadOnly(formatPositionsResponse))
+	case "health":
+		respondText(s, i, d.buildHealth())
+	case "pnl":
+		respondText(s, i, d.buildPnL())
+	case "leaderboard":
+		respondText(s, i, d.buildLeaderboard(optionInt(data.Options, "top", 5)))
+	case "circuit-breakers":
+		respondText(s, i, d.buildCircuitBreakers())
+	case "dead-strategies":
+		respondText(s, i, d.buildDeadStrategies())
+	case "correlation":
+		respondText(s, i, d.buildCorrelation())
+	case "logs":
+		respondText(s, i, runLogs(optionInt(data.Options, "n", 50)))
+	case "restart":
+		d.handleRestart(s, i)
+	case "backtest":
+		d.handleBacktest(s, i, data)
+	default:
+		respondEphemeral(s, i, "unknown command")
+	}
+}
+
+// optionInt reads an integer option by name, with a default and a 1..200 clamp.
+func optionInt(opts []*discordgo.ApplicationCommandInteractionDataOption, name string, def int) int {
+	for _, o := range opts {
+		if o.Name == name && o.Type == discordgo.ApplicationCommandOptionInteger {
+			v := int(o.IntValue())
+			if v < 1 {
+				v = 1
+			}
+			if v > 200 {
+				v = 200
+			}
+			return v
+		}
+	}
+	return def
+}
+
+// optionString reads a string option by name with a default.
+func optionString(opts []*discordgo.ApplicationCommandInteractionDataOption, name, def string) string {
+	for _, o := range opts {
+		if o.Name == name && o.Type == discordgo.ApplicationCommandOptionString {
+			if v := strings.TrimSpace(o.StringValue()); v != "" {
+				return v
+			}
+		}
+	}
+	return def
+}
+
+// truncateForDiscord caps content to Discord's 2000-char message limit.
+func truncateForDiscord(s string) string {
+	const max = 2000
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
+}
+
+func respondText(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
+	if content == "" {
+		content = "(no output)"
+	}
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Content: truncateForDiscord(content)},
+	})
+}
+
+func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Content: truncateForDiscord(content), Flags: discordgo.MessageFlagsEphemeral},
+	})
+}
+
+// buildReadOnly runs a (state, prices) builder under RLock with live prices.
+func (d *DiscordNotifier) buildReadOnly(fn func(*AppState, map[string]float64) string) string {
+	if d.ss == nil {
+		return "status server not wired"
+	}
+	prices := d.ss.fetchLiveMarkPrices() // must run without holding mu
+	d.ss.mu.RLock()
+	defer d.ss.mu.RUnlock()
+	return fn(d.ss.state, prices)
+}
+
+func (d *DiscordNotifier) buildHealth() string {
+	if d.ss == nil {
+		return "status server not wired"
+	}
+	d.ss.mu.RLock()
+	lastCycle := d.ss.state.LastCycle
+	cycles := d.ss.state.CycleCount
+	d.ss.mu.RUnlock()
+	return formatHealthResponse(lastCycle, cycles, Version, time.Now())
+}
+
+func (d *DiscordNotifier) buildPnL() string {
+	if d.ss == nil {
+		return "status server not wired"
+	}
+	lifetime := d.lifetimeStats()
+	prices := d.ss.fetchLiveMarkPrices()
+	d.ss.mu.RLock()
+	defer d.ss.mu.RUnlock()
+	return formatPnLResponse(d.ss.state, prices, lifetime)
+}
+
+func (d *DiscordNotifier) buildLeaderboard(topN int) string {
+	if d.ss == nil || d.cfg == nil {
+		return "status server not wired"
+	}
+	lifetime := d.lifetimeStats()
+	prices := d.ss.fetchLiveMarkPrices()
+	d.ss.mu.RLock()
+	defer d.ss.mu.RUnlock()
+	return formatLeaderboardResponse(d.cfg, d.ss.state, prices, lifetime, topN)
+}
+
+func (d *DiscordNotifier) buildCircuitBreakers() string {
+	if d.ss == nil {
+		return "status server not wired"
+	}
+	d.ss.mu.RLock()
+	defer d.ss.mu.RUnlock()
+	return formatCircuitBreakersResponse(d.ss.state, time.Now())
+}
+
+func (d *DiscordNotifier) buildDeadStrategies() string {
+	if d.ss == nil {
+		return "status server not wired"
+	}
+	lifetime := d.lifetimeStats()
+	d.ss.mu.RLock()
+	defer d.ss.mu.RUnlock()
+	return formatDeadStrategiesResponse(d.ss.state, lifetime)
+}
+
+func (d *DiscordNotifier) buildCorrelation() string {
+	if d.ss == nil {
+		return "status server not wired"
+	}
+	d.ss.mu.RLock()
+	defer d.ss.mu.RUnlock()
+	return formatCorrelationResponse(d.ss.state.CorrelationSnapshot)
+}
+
+// lifetimeStats fetches per-strategy lifetime stats from SQLite (independent of mu).
+func (d *DiscordNotifier) lifetimeStats() map[string]LifetimeTradeStats {
+	if d.ss == nil || d.ss.stateDB == nil {
+		return nil
+	}
+	stats, err := d.ss.stateDB.LifetimeTradeStatsAll()
+	if err != nil {
+		return nil
+	}
+	return stats
+}
+
+// runLogs returns the last n journalctl lines for the go-trader unit.
+func runLogs(n int) string {
+	out, err := exec.Command("journalctl", "-u", "go-trader", "-n", strconv.Itoa(n), "--no-pager").CombinedOutput()
+	if err != nil {
+		return fmt.Sprintf("journalctl failed: %v\n%s", err, string(out))
+	}
+	body := strings.TrimSpace(string(out))
+	if body == "" {
+		return "(no log output)"
+	}
+	return "```\n" + body + "\n```"
+}
+
+// deferAck acknowledges an interaction so the bot has 15 minutes to follow up.
+func deferAck(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	})
+}
+
+// handleRestart restarts the systemd service. Best-effort follow-up: the process
+// is replaced by systemd, so the confirmation may not arrive — that is expected.
+func (d *DiscordNotifier) handleRestart(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	deferAck(s, i)
+	_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+		Content: "Restarting go-trader service… (this instance will go offline; the new one resumes the cycle)",
+	})
+	// Fire-and-forget; this process is about to be replaced.
+	go func() {
+		_ = exec.Command("systemctl", "restart", "go-trader").Run()
+	}()
+}
+
+// handleBacktest runs run_backtest.py and replies with a summary plus the full report file.
+func (d *DiscordNotifier) handleBacktest(s *discordgo.Session, i *discordgo.InteractionCreate, data discordgo.ApplicationCommandInteractionData) {
+	strategy := optionString(data.Options, "strategy", "")
+	symbol := optionString(data.Options, "symbol", "")
+	timeframe := optionString(data.Options, "timeframe", "1h")
+	deferAck(s, i)
+
+	args := []string{"--strategy", strategy, "--symbol", symbol, "--timeframe", timeframe, "--mode", "single"}
+	stdout, stderr, err := runPythonWithTimeout(shutdownReadOnlyCtx, "backtest/run_backtest.py", args, nil, 5*time.Minute)
+	report := string(stdout)
+	if err != nil {
+		_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: truncateForDiscord(fmt.Sprintf("Backtest failed: %v\n```\n%s\n```", err, strings.TrimSpace(string(stderr)))),
+		})
+		return
+	}
+	summary := parseBacktestSummary(report)
+	_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+		Content: truncateForDiscord(fmt.Sprintf("**Backtest %s on %s (%s)**\n%s", strategy, symbol, timeframe, summary)),
+		Files: []*discordgo.File{{
+			Name:        "backtest.txt",
+			ContentType: "text/plain",
+			Reader:      bytes.NewReader([]byte(report)),
+		}},
+	})
 }

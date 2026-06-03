@@ -28,6 +28,10 @@ type DiscordNotifier struct {
 	ownerID    string
 	dmHandlers []dmHandler
 	mu         sync.Mutex
+
+	// Slash-command context, set by RegisterSlashCommands; nil until then.
+	ss  *StatusServer
+	cfg *Config
 }
 
 // NewDiscordNotifier creates a discordgo session, registers the DM message handler, and opens the gateway.
