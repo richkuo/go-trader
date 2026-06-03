@@ -1576,6 +1576,50 @@ func TestCollectPositions_TrailingTPRatchetShowsRatchetState(t *testing.T) {
 	}
 }
 
+// TestCollectPositions_ShowsCloseStrategyName verifies the summary line names the
+// configured close evaluator so operators can see how a (manual or otherwise)
+// position will be managed without checking the config (#863). The label precedes
+// the derived close params (ATR/SL/TP/ratchet).
+func TestCollectPositions_ShowsCloseStrategyName(t *testing.T) {
+	sc := StrategyConfig{
+		ID:            "manual-eth",
+		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet"},
+	}
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"ETH/USDT": {Symbol: "ETH/USDT", Quantity: 0.516, AvgCost: 1938, Side: "short", EntryATR: 30},
+		},
+	}
+	lines := collectPositions(sc, ss, map[string]float64{"ETH/USDT": 1938})
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], "| close: trailing_tp_ratchet") {
+		t.Errorf("expected close-strategy name fragment, got: %s", lines[0])
+	}
+	// The name must precede the derived ATR param so it reads name-then-params.
+	closeIdx := strings.Index(lines[0], "| close:")
+	atrIdx := strings.Index(lines[0], "| ATR:")
+	if closeIdx < 0 || atrIdx < 0 || closeIdx > atrIdx {
+		t.Errorf("expected close label before ATR param, got: %s", lines[0])
+	}
+}
+
+// TestCollectPositions_OmitsCloseLabelWhenOpenAsClose verifies open-as-close (nil
+// CloseStrategy) adds no close label — the open strategy is implied by the ID.
+func TestCollectPositions_OmitsCloseLabelWhenOpenAsClose(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-rsi-btc"}
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long"},
+		},
+	}
+	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
+	if strings.Contains(lines[0], "close:") {
+		t.Errorf("open-as-close should add no close label, got: %s", lines[0])
+	}
+}
+
 func TestCollectPositions_TieredTPATR_OmittedWithoutCloseStrategy(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-rsi-btc", CloseStrategy: &StrategyRef{Name: "tiered_tp_pct"}}
 	ss := &StrategyState{

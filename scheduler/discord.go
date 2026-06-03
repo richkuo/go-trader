@@ -1071,6 +1071,20 @@ func strategyUsesTieredTPATRClose(sc StrategyConfig) bool {
 	return false
 }
 
+// closeStrategySummaryName returns the configured close evaluator's name for the
+// position summary line, or "" when the strategy uses open-as-close (nil
+// CloseStrategy) — there the open strategy is already implied by the strategy ID.
+// Surfacing the name lets operators see how a position will be managed (trailing
+// stop, tiered TP, ratchet, …) at a glance without opening the config or DMs.
+// Manual positions in particular auto-fill their close, so the name is otherwise
+// invisible in summaries (#863).
+func closeStrategySummaryName(sc StrategyConfig) string {
+	if sc.CloseStrategy == nil {
+		return ""
+	}
+	return strings.TrimSpace(sc.CloseStrategy.Name)
+}
+
 // collectPositions returns human-readable position lines for a strategy.
 func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]float64) []string {
 	var lines []string
@@ -1094,6 +1108,9 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 			dateStr = fmt.Sprintf(" [%s]", pos.OpenedAt.Format("Jan 02 15:04"))
 		}
 		extras := ""
+		if name := closeStrategySummaryName(sc); name != "" {
+			extras += fmt.Sprintf(" | close: %s", name)
+		}
 		if pos.EntryATR > 0 {
 			extras += fmt.Sprintf(" | ATR: $%s", fmtComma2(pos.EntryATR))
 		}
