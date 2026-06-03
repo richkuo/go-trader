@@ -162,3 +162,27 @@ func TestFormatCorrelationResponse(t *testing.T) {
 		t.Errorf("expected BTC concentration, got: %s", got)
 	}
 }
+
+func TestFormatCorrelationResponseDeterministicTies(t *testing.T) {
+	snap := &CorrelationSnapshot{
+		PortfolioGrossUSD: 1000,
+		Assets: map[string]*AssetExposure{
+			"ETH": {NetDeltaUSD: 500, ConcentrationPct: 50},
+			"BTC": {NetDeltaUSD: 500, ConcentrationPct: 50},
+			"SOL": {NetDeltaUSD: 500, ConcentrationPct: 50},
+		},
+	}
+	// Equal concentration -> tie-break by asset name ascending, stable across runs.
+	first := formatCorrelationResponse(snap)
+	for i := 0; i < 20; i++ {
+		if got := formatCorrelationResponse(snap); got != first {
+			t.Fatalf("non-deterministic output on tied concentration:\n%s\n---\n%s", first, got)
+		}
+	}
+	bi := strings.Index(first, "BTC")
+	ei := strings.Index(first, "ETH")
+	si := strings.Index(first, "SOL")
+	if !(bi < ei && ei < si) {
+		t.Errorf("expected BTC<ETH<SOL ordering on ties, got: %s", first)
+	}
+}

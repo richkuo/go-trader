@@ -238,7 +238,7 @@ func formatCircuitBreakersResponse(state *AppState, now time.Time) string {
 			lines = append(lines, fmt.Sprintf("  %s: OPEN (%s)", id, until))
 		}
 		if len(rs.PendingCircuitCloses) > 0 {
-			lines = append(lines, fmt.Sprintf("  %s: pending circuit close (%d venue)", id, len(rs.PendingCircuitCloses)))
+			lines = append(lines, fmt.Sprintf("  %s: pending circuit close (%d venue(s))", id, len(rs.PendingCircuitCloses)))
 		}
 	}
 	var sb strings.Builder
@@ -289,8 +289,12 @@ func formatCorrelationResponse(snap *CorrelationSnapshot) string {
 	for a := range snap.Assets {
 		assets = append(assets, a)
 	}
-	sort.Slice(assets, func(i, j int) bool {
-		return snap.Assets[assets[i]].ConcentrationPct > snap.Assets[assets[j]].ConcentrationPct
+	sort.SliceStable(assets, func(i, j int) bool {
+		ci, cj := snap.Assets[assets[i]].ConcentrationPct, snap.Assets[assets[j]].ConcentrationPct
+		if ci != cj {
+			return ci > cj
+		}
+		return assets[i] < assets[j]
 	})
 	for _, a := range assets {
 		e := snap.Assets[a]
