@@ -142,14 +142,14 @@ func scaleInLiveProtectionRearmSupported(sc StrategyConfig) bool {
 }
 
 // scaleInNeedsFrozenTriggerSLRearm reports whether the SL cancelled during a
-// scale-in add must be re-placed at pos.StopLossTriggerPx because
-// buildHyperliquidProtectionPlan does not cover trailing/ratchet owners.
+// scale-in add must be re-placed at pos.StopLossTriggerPx because protection
+// sync will not place an SL (pure trailing/ratchet, or tiered-TP-only plan).
 func scaleInNeedsFrozenTriggerSLRearm(sc StrategyConfig, pos *Position) bool {
 	if pos == nil || pos.StopLossTriggerPx <= 0 || pos.Quantity <= 0 {
 		return false
 	}
-	_, syncOK := buildHyperliquidProtectionPlan(sc, pos)
-	return !syncOK
+	plan, syncOK := buildHyperliquidProtectionPlan(sc, pos)
+	return !syncOK || plan.StopLossATRMult <= 0
 }
 
 // rearmScaleInStopLossAtFrozenTrigger re-places a reduce-only SL at the frozen
@@ -168,17 +168,25 @@ func rearmScaleInStopLossAtFrozenTrigger(
 	}
 	mu.RLock()
 	pos := stratState.Positions[symbol]
+	var slQty float64
+	var capped bool
+	var side string
+	var cancelOID int64
+	var triggerPx float64
+	if pos != nil {
+		slQty, capped = hlSLEffectiveQty(symbol, pos.Quantity, onChainAbsQty)
+		side = pos.Side
+		cancelOID = pos.StopLossOID
+		triggerPx = pos.StopLossTriggerPx
+	}
 	mu.RUnlock()
 	if !scaleInNeedsFrozenTriggerSLRearm(sc, pos) {
 		return false
 	}
-	slQty, capped := hlSLEffectiveQty(symbol, pos.Quantity, onChainAbsQty)
 	if capped && logger != nil {
 		logger.Warn("scale-in SL re-arm: virtual qty %.6f > on-chain %.6f for %s; capping (#621)", pos.Quantity, slQty, symbol)
 	}
-	cancelOID := pos.StopLossOID
-	triggerPx := pos.StopLossTriggerPx
-	slResult, stderr, err := RunHyperliquidUpdateStopLoss(sc.Script, symbol, pos.Side, slQty, triggerPx, cancelOID)
+	slResult, stderr, err := RunHyperliquidUpdateStopLoss(sc.Script, symbol, side, slQty, triggerPx, cancelOID)
 	if stderr != "" && logger != nil {
 		logger.Info("scale-in SL re-arm stderr: %s", stderr)
 	}

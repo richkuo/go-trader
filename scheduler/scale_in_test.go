@@ -121,6 +121,24 @@ func TestScaleInNeedsFrozenTriggerSLRearm(t *testing.T) {
 	if scaleInNeedsFrozenTriggerSLRearm(scATR, pos) {
 		t.Fatal("fixed ATR SL should be covered by protection sync")
 	}
+	scTrailTP := StrategyConfig{
+		Platform:            "hyperliquid",
+		Type:                "perps",
+		TrailingStopATRMult: &trailMult,
+		CloseStrategy: &StrategyRef{
+			Name: "tiered_tp_atr_live",
+			Params: map[string]interface{}{
+				"tp_tiers": []interface{}{
+					map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.5},
+					map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
+				},
+			},
+		},
+		Args: []string{"sma_crossover", "ETH", "1h", "--mode=live"},
+	}
+	if !scaleInNeedsFrozenTriggerSLRearm(scTrailTP, pos) {
+		t.Fatal("trailing SL + on-chain tiered TP should still need frozen-trigger SL re-arm")
+	}
 }
 
 func TestAllowScaleInRejectsScalarStopOnLive(t *testing.T) {
