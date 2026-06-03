@@ -1728,11 +1728,34 @@ func main() {
 						if pos != nil && hyperliquidIsLive(sc.Args) {
 							runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON)
 							runPostTPStopLossAdjustment(sc, stratState, sc.Symbol, prices[sc.Symbol], cfg, &mu, notifier, logger, hlOnChainAbsQty)
-							// Manual ratchet + trailing walker run live-only by design (this
-							// whole block is gated on hyperliquidIsLive above): manual is a
-							// live trading tool, so a record-only manual config intentionally
-							// does not ratchet (unlike perps, which also runs a paper trailing
-							// path at main.go ~1537).
+						}
+						// #872: run the close evaluator and stamp the regime BEFORE
+						// arming the ratchet/trailing walker below. The regime is the
+						// close-eval's classifier output, and the regime-keyed close
+						// features (trailing_tp_ratchet_regime, *_atr_regime SL/TP)
+						// resolve their tier table / trail distance from pos.Regime.
+						// Arming first (the previous order) left pos.Regime == "" on
+						// the first post-open cycle, so the regime trail no-op'd for
+						// one interval; stamping first arms it correctly on cycle 1.
+						closeFraction, _, manualRegime, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger)
+						if manualOK {
+							// Stamp the current regime onto the position the first
+							// time we observe one. Idempotent — stampPosition-
+							// RegimeFromPayload only writes when pos.Regime == "" (and
+							// pos.RegimeWindows is empty) — so this fires exactly once,
+							// on the first close-eval cycle after open, regardless of
+							// live vs --record-only.
+							mu.Lock()
+							stampPositionRegimeIfOpened(stratState, sc.Symbol, manualRegime, sc, cfg.Regime)
+							mu.Unlock()
+						}
+						if pos != nil && hyperliquidIsLive(sc.Args) {
+							// Manual ratchet + trailing walker run live-only by design
+							// (gated on hyperliquidIsLive): manual is a live trading
+							// tool, so a record-only manual config intentionally does
+							// not ratchet (unlike perps, which also runs a paper
+							// trailing path at main.go ~1537). Runs after the stamp
+							// above so regime-keyed trails see pos.Regime on cycle 1.
 							mark := prices[sc.Symbol]
 							if mark > 0 && strategyUsesTrailingTPRatchetClose(sc) {
 								applyTrailingTPRatchet(sc, stratState, sc.Symbol, mark, &mu, logger)
@@ -1756,20 +1779,6 @@ func main() {
 								}
 								mu.Unlock()
 							}
-						}
-						closeFraction, _, manualRegime, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger)
-						if manualOK {
-							// #872: manual positions have no open signal, so the
-							// frozen-label close features (trailing_tp_ratchet_regime,
-							// *_atr_regime SL/TP) never see a regime and silently
-							// no-op. Stamp the current regime onto the position the
-							// first time we observe one. Idempotent — stampPosition-
-							// RegimeFromPayload only writes when pos.Regime == "" — so
-							// this fires exactly once, on the first close-eval cycle
-							// after open, regardless of live vs --record-only.
-							mu.Lock()
-							stampPositionRegimeIfOpened(stratState, sc.Symbol, manualRegime, sc, cfg.Regime)
-							mu.Unlock()
 						}
 						if manualOK && closeFraction > 0 {
 							mu.RLock()
