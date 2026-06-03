@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"math"
 	"strings"
 	"testing"
@@ -86,6 +87,79 @@ func TestBlendPositionScaleInPreservesOpenGeometry(t *testing.T) {
 	}
 	if pos.SLAdjustedTiersProcessed != 1 {
 		t.Errorf("SLAdjustedTiersProcessed = %d, want 1", pos.SLAdjustedTiersProcessed)
+	}
+}
+
+func TestExecuteHyperliquidScaleInKeepsProtectionQuantityBehindUntilTPSync(t *testing.T) {
+	prevRecorder := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prevRecorder })
+
+	capUSD := 10000.0
+	sc := StrategyConfig{
+		ID:                            "hl-test",
+		Type:                          "perps",
+		Platform:                      "hyperliquid",
+		Args:                          []string{"hold", "ETH", "1h", "--mode=live"},
+		AllowScaleIn:                  true,
+		ScaleInMaxPositionNotionalUSD: &capUSD,
+		CloseStrategy:                 &StrategyRef{Name: "tiered_tp_atr_live"},
+	}
+	s := &StrategyState{
+		ID:       "hl-test",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Cash:     1000,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol:             "ETH",
+				Quantity:           1,
+				InitialQuantity:    1,
+				AvgCost:            2000,
+				EntryPrice:         2000,
+				EntryATR:           80,
+				Side:               "long",
+				Multiplier:         1,
+				OwnerStrategyID:    "hl-test",
+				TradePositionID:    "pos-1",
+				StopLossOID:        111,
+				StopLossTriggerPx:  1880,
+				ProtectionQuantity: 1,
+				TPOIDs:             []int64{222, 333},
+				TPArmedTiers:       []bool{true, true},
+			},
+		},
+	}
+	result := &HyperliquidResult{Symbol: "ETH", Signal: 1, Price: 2200}
+	execResult := &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{
+		AvgPx:             2200,
+		TotalSz:           0.5,
+		OID:               555,
+		Fee:               0.9,
+		StopLossOID:       444,
+		StopLossTriggerPx: 1850,
+	}}}
+	logger := &StrategyLogger{stratID: "hl-test", writer: io.Discard}
+
+	trades, _, openTrade := executeHyperliquidResultDeferredOpen(sc, s, result, execResult, "BUY", 2200, nil, logger)
+	if trades != 1 || openTrade == nil {
+		t.Fatalf("trades/openTrade = %d/%v, want 1/non-nil", trades, openTrade)
+	}
+	pos := s.Positions["ETH"]
+	if pos == nil {
+		t.Fatal("position missing")
+	}
+	if math.Abs(pos.Quantity-1.5) > 1e-9 {
+		t.Fatalf("Quantity = %g, want 1.5", pos.Quantity)
+	}
+	if pos.StopLossOID != 444 || pos.StopLossTriggerPx != 1850 {
+		t.Fatalf("SL = oid %d px %g, want 444/1850", pos.StopLossOID, pos.StopLossTriggerPx)
+	}
+	if pos.ProtectionQuantity != 1 {
+		t.Fatalf("ProtectionQuantity = %g, want old qty 1 until TP sync replaces existing ladder", pos.ProtectionQuantity)
+	}
+	if len(pos.TPOIDs) != 2 || pos.TPOIDs[0] != 222 || pos.TPOIDs[1] != 333 {
+		t.Fatalf("TPOIDs = %v, want existing ladder retained for protection sync", pos.TPOIDs)
 	}
 }
 

@@ -1587,8 +1587,12 @@ func main() {
 								}
 								forceResize := positionProtectionNeedsResize(hlPosSnapshot)
 								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, forceResize, notifier, logger)
+								protectedQty := slEffectiveQty
+								if hyperliquidPlacesOnChainTPs(sc) {
+									protectedQty = 0
+								}
 								mu.Lock()
-								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, result.Symbol, hlPosSide, hlStopLossOID, newHighWater, updateConfirmed, slUpdate, slEffectiveQty, logger); immediateFill {
+								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, result.Symbol, hlPosSide, hlStopLossOID, newHighWater, updateConfirmed, slUpdate, protectedQty, logger); immediateFill {
 									trades++
 									detail = fmt.Sprintf("[%s] LIVE TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, fillPx)
 								}
@@ -1639,7 +1643,9 @@ func main() {
 											} else if slResult.StopLossOID > 0 {
 												pos.StopLossOID = slResult.StopLossOID
 												pos.StopLossTriggerPx = slResult.StopLossTriggerPx
-												pos.ProtectionQuantity = pos.Quantity
+												if !hyperliquidPlacesOnChainTPs(sc) {
+													pos.ProtectionQuantity = pos.Quantity
+												}
 												stampOpenTradeWithProtectionSnapshot(stratState, stateDB, sc, result.Symbol, pos)
 												logger.Info("Fixed ATR SL armed oid=%d @ $%.4f", slResult.StopLossOID, slResult.StopLossTriggerPx)
 											}
@@ -1757,11 +1763,15 @@ func main() {
 								prevSLOID := pos.StopLossOID
 								forceResize := positionProtectionNeedsResize(pos)
 								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, forceResize, notifier, logger)
+								protectedQty := slEffectiveQty
+								if hyperliquidPlacesOnChainTPs(sc) {
+									protectedQty = 0
+								}
 								mu.Lock()
 								// Shared handler with the perps path — books an immediate fill,
 								// updates a resting replacement, or clears a cancelled-without-rest
 								// OID. Previously this only handled the resting-replacement case.
-								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, sc.Symbol, pos.Side, prevSLOID, newHighWater, updateConfirmed, slUpdate, slEffectiveQty, logger); immediateFill {
+								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, sc.Symbol, pos.Side, prevSLOID, newHighWater, updateConfirmed, slUpdate, protectedQty, logger); immediateFill {
 									logger.Info("[%s] manual trailing SL filled immediately %s @ $%.2f", sc.ID, sc.Symbol, fillPx)
 								}
 								mu.Unlock()
@@ -2969,7 +2979,9 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 			if pos, ok := s.Positions[result.Symbol]; ok {
 				pos.StopLossOID = slOID
 				pos.StopLossTriggerPx = execResult.Execution.Fill.StopLossTriggerPx
-				pos.ProtectionQuantity = pos.Quantity
+				if !scaleInBefore || !hyperliquidPlacesOnChainTPs(sc) {
+					pos.ProtectionQuantity = pos.Quantity
+				}
 				logger.Info("SL trigger placed oid=%d @ $%.4f", slOID, execResult.Execution.Fill.StopLossTriggerPx)
 			}
 		}

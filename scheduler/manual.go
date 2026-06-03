@@ -909,7 +909,9 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 		if a.StopLossOID > 0 {
 			pos.StopLossOID = a.StopLossOID
 			pos.StopLossTriggerPx = a.StopLossTriggerPx
-			pos.ProtectionQuantity = pos.Quantity
+			if !hyperliquidPlacesOnChainTPs(sc) {
+				pos.ProtectionQuantity = pos.Quantity
+			}
 		}
 		ss.Cash -= a.FillFee
 		stampPositionProtectionSnapshot(pos, sc)
