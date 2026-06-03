@@ -7,14 +7,14 @@ import (
 
 func TestBlendPositionScaleIn(t *testing.T) {
 	pos := &Position{
-		Quantity:        1.0,
-		InitialQuantity: 1.0,
-		AvgCost:         2000,
-		EntryATR:        50,
-		Regime:          "trending",
-		StopLossTriggerPx: 1900,
+		Quantity:                 1.0,
+		InitialQuantity:          1.0,
+		AvgCost:                  2000,
+		EntryATR:                 50,
+		Regime:                   "trending",
+		StopLossTriggerPx:        1900,
 		SLAdjustedTiersProcessed: 1,
-		TPArmedTiers:    []bool{true, false},
+		TPArmedTiers:             []bool{true, false},
 	}
 	blendPositionScaleIn(pos, 0.5, 2200)
 	wantAvg := (1.0*2000 + 0.5*2200) / 1.5
@@ -79,14 +79,14 @@ func TestExecutePerpsScaleInBlendsVirtualState(t *testing.T) {
 		Cash:     1000,
 		Positions: map[string]*Position{
 			"ETH": {
-				Symbol:              "ETH",
-				TradePositionID:     "s1:ETH:1",
-				Quantity:            0.4,
-				InitialQuantity:     0.4,
-				AvgCost:             2000,
-				EntryATR:            40,
-				Side:                "long",
-				StopLossTriggerPx:   1900,
+				Symbol:                   "ETH",
+				TradePositionID:          "s1:ETH:1",
+				Quantity:                 0.4,
+				InitialQuantity:          0.4,
+				AvgCost:                  2000,
+				EntryATR:                 40,
+				Side:                     "long",
+				StopLossTriggerPx:        1900,
 				SLAdjustedTiersProcessed: 1,
 			},
 		},

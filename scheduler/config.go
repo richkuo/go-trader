@@ -367,9 +367,9 @@ type StrategyConfig struct {
 	ThetaHarvest            *ThetaHarvestConfig      `json:"theta_harvest,omitempty"`
 	FuturesConfig           *FuturesConfig           `json:"futures,omitempty"`
 	RegimeDirectionalPolicy *RegimeDirectionalPolicy `json:"regime_directional_policy,omitempty"` // HL perps only: regime-aware override for Direction + InvertSignal. When set, runHyperliquidCheck resolves the effective pair per-cycle from the current regime (when flat) or pos.Regime (when an open position is held — "hold until natural exit" semantics). Static Direction/InvertSignal are the base; the policy overrides per regime. Requires regime detection enabled at top-level cfg.Regime. (#779)
-	AllowScaleIn            bool                     `json:"allow_scale_in,omitempty"`              // HL perps/manual only: opt-in pyramiding — same-direction signals blend into the open leg instead of skipping (#873). Default false preserves legacy idempotency.
-	MaxScaleInAdds          *int                     `json:"max_scale_in_adds,omitempty"`           // when allow_scale_in: cap count of add legs per position (0 or nil = unlimited)
-	MaxScaleInNotionalUSD   *float64                 `json:"max_scale_in_notional_usd,omitempty"`   // when allow_scale_in: cap USD notional per add leg (0 or nil = unlimited)
+	AllowScaleIn            bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt-in pyramiding — same-direction signals blend into the open leg instead of skipping (#873). Default false preserves legacy idempotency.
+	MaxScaleInAdds          *int                     `json:"max_scale_in_adds,omitempty"`         // when allow_scale_in: cap count of add legs per position (0 or nil = unlimited)
+	MaxScaleInNotionalUSD   *float64                 `json:"max_scale_in_notional_usd,omitempty"` // when allow_scale_in: cap USD notional per add leg (0 or nil = unlimited)
 }
 
 // UnmarshalJSON parses a StrategyConfig while accepting both the canonical
