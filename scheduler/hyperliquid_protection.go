@@ -67,10 +67,14 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 	}
 	tierCount := len(tiers)
 	return hlProtectionPlan{
-		Symbol:          pos.Symbol,
-		Side:            pos.Side,
-		Size:            pos.Quantity,
-		AvgCost:         pos.AvgCost,
+		Symbol: pos.Symbol,
+		Side:   pos.Side,
+		Size:   pos.Quantity,
+		// #873: SL/TP triggers anchor to the FROZEN entry (riskAnchorPrice), not
+		// the blended AvgCost — so a scale-in re-sizes protection to the new
+		// total at the unchanged trigger geometry. Equals AvgCost for a position
+		// that never scaled in.
+		AvgCost:         pos.riskAnchorPrice(),
 		EntryATR:        pos.EntryATR,
 		StopLossATRMult: slMult,
 		StopLossOID:     pos.StopLossOID,

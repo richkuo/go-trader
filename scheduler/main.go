@@ -1303,6 +1303,7 @@ func main() {
 					var hlLastAddPrice float64
 					var hlAddedNotionalUSD float64
 					var hlScaleInCash float64
+					var hlScaleInResizePending bool
 					if sc.Type == "perps" && sc.Platform == "hyperliquid" {
 						if hlLiveStrategy {
 							hlCash = stratState.Cash
@@ -1329,6 +1330,7 @@ func main() {
 								hlScaleInCount = pos.ScaleInCount
 								hlLastAddPrice = pos.LastAddPrice
 								hlAddedNotionalUSD = pos.AddedNotionalUSD
+								hlScaleInResizePending = pos.ScaleInResizePending
 							}
 						}
 					}
@@ -1592,11 +1594,25 @@ func main() {
 								if capped {
 									logger.Warn("trailing SL arm: virtual qty %.6f > on-chain %.6f for %s; capping SL size to on-chain qty (#621)", hlPosQty, slEffectiveQty, result.Symbol)
 								}
-								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, notifier, logger)
+								// #873: after a scale-in grew the position, force a
+								// cancel+replace once the reconcile has confirmed the new
+								// on-chain size (!capped) so the trailing SL covers the
+								// new total without waiting for a trailing trigger move.
+								forceResize := hlScaleInResizePending && !capped
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, forceResize, notifier, logger)
 								mu.Lock()
 								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, result.Symbol, hlPosSide, hlStopLossOID, newHighWater, updateConfirmed, slUpdate, logger); immediateFill {
 									trades++
 									detail = fmt.Sprintf("[%s] LIVE TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, fillPx)
+								}
+								// Clear only when the protection sync isn't the one that
+								// re-sizes on-chain TPs (it clears the flag itself); for a
+								// pure trailing-SL strategy the sync returns early, so the
+								// trailing path owns the clear.
+								if forceResize && updateConfirmed && !hyperliquidPlacesOnChainTPs(sc) {
+									if p, ok := stratState.Positions[result.Symbol]; ok && p != nil {
+										p.ScaleInResizePending = false
+									}
 								}
 								mu.Unlock()
 							}
@@ -1792,13 +1808,22 @@ func main() {
 									logger.Warn("manual trailing SL: virtual qty %.6f > on-chain %.6f for %s; capping (#621)", pos.Quantity, slEffectiveQty, sc.Symbol)
 								}
 								prevSLOID := pos.StopLossOID
-								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, notifier, logger)
+								// #873: force a re-size when a manual scale-in grew the
+								// position (the trailing SL otherwise covers only the
+								// pre-add size until the next trigger move).
+								forceResize := pos.ScaleInResizePending && !capped
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, forceResize, notifier, logger)
 								mu.Lock()
 								// Shared handler with the perps path — books an immediate fill,
 								// updates a resting replacement, or clears a cancelled-without-rest
 								// OID. Previously this only handled the resting-replacement case.
 								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, sc.Symbol, pos.Side, prevSLOID, newHighWater, updateConfirmed, slUpdate, logger); immediateFill {
 									logger.Info("[%s] manual trailing SL filled immediately %s @ $%.2f", sc.ID, sc.Symbol, fillPx)
+								}
+								if forceResize && updateConfirmed && !hyperliquidPlacesOnChainTPs(sc) {
+									if p, ok := stratState.Positions[sc.Symbol]; ok && p != nil {
+										p.ScaleInResizePending = false
+									}
 								}
 								mu.Unlock()
 							}

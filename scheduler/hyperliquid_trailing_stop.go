@@ -607,7 +607,7 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 // outside the state mutex so the subprocess call below can run without
 // blocking other strategies). The pointer is taken by value semantics; the
 // helper only reads, never writes through it.
-func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qty float64, pos *Position, mark, highWater, currentTrigger float64, currentOID int64, notifier *MultiNotifier, logger *StrategyLogger) (float64, *HyperliquidStopLossUpdateResult, bool) {
+func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qty float64, pos *Position, mark, highWater, currentTrigger float64, currentOID int64, forceResize bool, notifier *MultiNotifier, logger *StrategyLogger) (float64, *HyperliquidStopLossUpdateResult, bool) {
 	trailingPct := effectiveTrailingStopPct(sc, pos)
 	if trailingPct <= 0 || qty <= 0 || mark <= 0 {
 		return highWater, nil, true
@@ -620,6 +620,17 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		highWater = avgCost
 	}
 	newHighWater, newTrigger, replace := computeTrailingStopUpdate(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger)
+	if forceResize && !replace {
+		// #873: a scale-in grew the position; the resting trailing SL still
+		// covers only the pre-add size. Force a cancel+replace at the EXISTING
+		// trigger so the reduce-only SL covers the new total. Keep the current
+		// trigger price (no trailing move yet); fall through to the computed
+		// trigger when nothing is resting (currentTrigger==0).
+		replace = true
+		if currentTrigger > 0 {
+			newTrigger = currentTrigger
+		}
+	}
 	if !replace {
 		return newHighWater, nil, true
 	}

@@ -58,10 +58,29 @@ type Position struct {
 	// force-replaces SL + un-cleared TP tiers at the grown size; cleared after
 	// the sync. The cleared-tier watermark (SLAdjustedTiersProcessed/TPArmedTiers)
 	// is never reset by an add.
-	ScaleInCount         int     `json:"scale_in_count,omitempty"`
-	LastAddPrice         float64 `json:"last_add_price,omitempty"`
-	AddedNotionalUSD     float64 `json:"added_notional_usd,omitempty"`
+	ScaleInCount     int     `json:"scale_in_count,omitempty"`
+	LastAddPrice     float64 `json:"last_add_price,omitempty"` // fill price of the most recent ADD leg (stamped only by applyScaleIn; the add_spacing_atr watermark, falls back to AvgCost when 0)
+	AddedNotionalUSD float64 `json:"added_notional_usd,omitempty"`
+	// RiskAnchorPrice is the AvgCost captured at the FIRST scale-in (= the
+	// original entry price, before any blend). On-chain SL/TP triggers are
+	// computed from this frozen anchor — not the blended AvgCost — so an add
+	// re-sizes protection to the new total at the UNCHANGED trigger geometry
+	// (#873 design: freeze the entry; the blended AvgCost drives PnL only).
+	// 0 = never scaled in → callers fall back to AvgCost.
+	RiskAnchorPrice      float64 `json:"risk_anchor_price,omitempty"`
 	ScaleInResizePending bool    `json:"-"`
+}
+
+// riskAnchorPrice returns the price geometry that on-chain SL/TP triggers are
+// anchored to: the frozen original entry (RiskAnchorPrice) once a position has
+// scaled in, else the current AvgCost (which equals the entry for a position
+// that never scaled in). Keeps trigger prices pinned to the first entry across
+// adds while the blended AvgCost drives PnL (#873).
+func (p *Position) riskAnchorPrice() float64 {
+	if p.RiskAnchorPrice > 0 {
+		return p.RiskAnchorPrice
+	}
+	return p.AvgCost
 }
 
 // ClosedPosition is a historical record of a position after it closed (#288).
