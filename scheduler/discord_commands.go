@@ -29,9 +29,10 @@ var readOnlyCommandNames = map[string]bool{
 // output; restricted to the owner in a DM. `logs` is here (not read-only)
 // because journalctl can carry wallet addresses and error payloads.
 var opsCommandNames = map[string]bool{
-	"restart":  true,
-	"backtest": true,
-	"logs":     true,
+	"restart":         true,
+	"backtest":        true,
+	"logs":            true,
+	"report-an-issue": true,
 }
 
 // authorizeCommand decides whether invokerID may run command `name`. Read-only
@@ -390,6 +391,11 @@ func slashCommands() []*discordgo.ApplicationCommand {
 			{Type: discordgo.ApplicationCommandOptionInteger, Name: "n", Description: "Number of lines (default 50, max 200)"},
 		}},
 		{Name: "restart", Description: "Restart the go-trader service (owner DM only)", Contexts: dmContext()},
+		{Name: "report-an-issue", Description: "File a GitHub issue (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "title", Description: "Issue title", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "body", Description: "Issue description", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "label", Description: "Optional label (applied if it exists on the repo)"},
+		}},
 		{Name: "backtest", Description: "Run a single backtest (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy name", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "symbol", Description: "Symbol, e.g. BTC/USDT", Required: true},
@@ -459,6 +465,8 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 		d.handleRestart(s, i)
 	case "backtest":
 		d.handleBacktest(s, i, data)
+	case "report-an-issue":
+		d.handleReport(s, i, data)
 	default:
 		respondEphemeral(s, i, "unknown command")
 	}

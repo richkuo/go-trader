@@ -433,6 +433,13 @@ in the handler by `authorizeCommand`):
   (5-min timeout via `runPythonWithTimeout` + `shutdownReadOnlyCtx`; holds one of 4
   `pythonSemaphore` slots while running); replies with a summary and attaches the full
   report as `backtest.txt`.
+- `/report-an-issue <title> <body> [label]` — files a GitHub issue against `discord.report_repo`
+  (default `richkuo/go-trader`) via the REST API (`discord_report.go`: `buildIssueRequest`
+  builds the payload + a "Filed via /report-an-issue" footer; `createGitHubIssue` POSTs and returns
+  the issue URL). Defers the ACK because the GitHub round-trip can exceed Discord's 3s
+  deadline. Token resolves from `GO_TRADER_GITHUB_TOKEN`, then `GITHUB_TOKEN`, then
+  `discord.report_github_token` (env preferred; keep the secret in `/opt/go-trader/.env`).
+  Replies that reporting is not configured when no token is set.
 
 Auth lives in `authorizeCommand`; command set in `slashCommands()`; pure response builders
 (`format*Response`) are unit-tested in `discord_commands_test.go`. Registration failure is
