@@ -13,6 +13,8 @@ type Position struct {
 	Quantity            float64   `json:"quantity"`
 	InitialQuantity     float64   `json:"initial_quantity,omitempty"` // original open size; partial closes must not rewrite it (#496)
 	AvgCost             float64   `json:"avg_cost"`
+	EntryPrice          float64   `json:"entry_price,omitempty"`             // first-entry price used for frozen ATR SL/TP geometry; AvgCost may blend after scale-ins (#873)
+	ProtectionQuantity  float64   `json:"protection_quantity,omitempty"`     // last virtual qty used to size exchange-side SL/TP protection; scale-ins force resize when Quantity grows (#873)
 	EntryATR            float64   `json:"entry_atr,omitempty"`               // ATR value from the entry strategy's open candle when available (#496)
 	Side                string    `json:"side"`                              // "long" or "short"
 	Multiplier          float64   `json:"multiplier,omitempty"`              // contract multiplier (0 = spot, >0 = futures/perps PnL branch; canonical perps value is 1 — do NOT set to leverage)
@@ -46,6 +48,54 @@ type Position struct {
 	// fires; it tells the trailing-stop walker to take over for the remainder
 	// of the position at this ATR distance. nil = no post-TP trailing (#708).
 	PostTPTrailingATRMult *float64 `json:"post_tp_trailing_atr_mult,omitempty"`
+}
+
+// positionEntryPrice returns the frozen first-entry price used for protection
+// geometry. Legacy positions loaded before #873 have EntryPrice=0, so they
+// fall back to AvgCost until a scale-in stamps the original basis.
+func positionEntryPrice(pos *Position) float64 {
+	if pos == nil {
+		return 0
+	}
+	if pos.EntryPrice > 0 {
+		return pos.EntryPrice
+	}
+	return pos.AvgCost
+}
+
+// blendPositionScaleIn adds quantity to an existing same-side position while
+// preserving the first-entry protection basis. AvgCost blends for PnL, and
+// InitialQuantity grows so Quantity < InitialQuantity remains a true partial-
+// close signal after scale-ins.
+func blendPositionScaleIn(pos *Position, addQty, addPrice float64) bool {
+	if pos == nil || pos.Quantity <= 0 || pos.AvgCost <= 0 || addQty <= 0 || addPrice <= 0 {
+		return false
+	}
+	if pos.EntryPrice <= 0 {
+		pos.EntryPrice = pos.AvgCost
+	}
+	oldQty := pos.Quantity
+	if pos.ProtectionQuantity <= 0 {
+		pos.ProtectionQuantity = oldQty
+	}
+	newQty := oldQty + addQty
+	pos.AvgCost = (oldQty*pos.AvgCost + addQty*addPrice) / newQty
+	pos.Quantity = newQty
+	if pos.InitialQuantity <= 0 {
+		pos.InitialQuantity = oldQty
+	}
+	pos.InitialQuantity += addQty
+	if pos.InitialQuantity < pos.Quantity {
+		pos.InitialQuantity = pos.Quantity
+	}
+	return true
+}
+
+func positionProtectionNeedsResize(pos *Position) bool {
+	if pos == nil || pos.Quantity <= 0 || pos.ProtectionQuantity <= 0 {
+		return false
+	}
+	return pos.Quantity > pos.ProtectionQuantity+1e-9
 }
 
 // ClosedPosition is a historical record of a position after it closed (#288).
@@ -591,12 +641,32 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 // live callers guard cash upstream before placing the order (see
 // runHyperliquidExecuteOrder). If a new side-based no-op branch is added to
 // ExecutePerpsSignal, add it here too.
+func perpsScaleInSignal(signal int, posSide, direction string, allowScaleIn bool) bool {
+	if !allowScaleIn {
+		return false
+	}
+	if direction == "" {
+		direction = DirectionLong
+	}
+	allowsLong := direction == DirectionLong || direction == DirectionBoth
+	allowsShort := direction == DirectionShort || direction == DirectionBoth
+	return (signal == 1 && posSide == "long" && allowsLong) ||
+		(signal == -1 && posSide == "short" && allowsShort)
+}
+
 func PerpsOrderSkipReason(signal int, posSide, direction string) string {
+	return PerpsOrderSkipReasonWithScaleIn(signal, posSide, direction, false)
+}
+
+func PerpsOrderSkipReasonWithScaleIn(signal int, posSide, direction string, allowScaleIn bool) string {
 	switch direction {
 	case DirectionLong, "":
 		switch signal {
 		case 1:
 			if posSide == "long" {
+				if perpsScaleInSignal(signal, posSide, direction, allowScaleIn) {
+					return ""
+				}
 				return "already long, skipping buy"
 			}
 		case -1:
@@ -612,6 +682,9 @@ func PerpsOrderSkipReason(signal int, posSide, direction string) string {
 			}
 		case -1:
 			if posSide == "short" {
+				if perpsScaleInSignal(signal, posSide, direction, allowScaleIn) {
+					return ""
+				}
 				return "already short, skipping sell"
 			}
 			// #656: orphan long under direction="short" must NOT place an
@@ -626,10 +699,16 @@ func PerpsOrderSkipReason(signal int, posSide, direction string) string {
 		switch signal {
 		case 1:
 			if posSide == "long" {
+				if perpsScaleInSignal(signal, posSide, direction, allowScaleIn) {
+					return ""
+				}
 				return "already long, skipping buy"
 			}
 		case -1:
 			if posSide == "short" {
+				if perpsScaleInSignal(signal, posSide, direction, allowScaleIn) {
+					return ""
+				}
 				return "already short, skipping sell"
 			}
 		}
@@ -686,9 +765,34 @@ func PerpsOrderSkipReason(signal int, posSide, direction string) string {
 // flip alongside a close (open_action is dropped while a position is open),
 // so closeFraction is intentionally ignored on the open/flip path.
 func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, posSide, direction string, closeFraction float64) (size float64, ok bool, reason string) {
+	return perpsLiveOrderSizeWithScaleIn(signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, direction, closeFraction, false, 0)
+}
+
+func perpsLiveOrderSizeWithScaleIn(signal int, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, posSide, direction string, closeFraction float64, allowScaleIn bool, scaleInMaxPositionNotionalUSD float64) (size float64, ok bool, reason string) {
 	isBuy := signal == 1
 	allowsLong := direction == DirectionLong || direction == DirectionBoth || direction == ""
 	allowsShort := direction == DirectionShort || direction == DirectionBoth
+	if perpsScaleInSignal(signal, posSide, direction, allowScaleIn) && closeFraction == 0 {
+		if price <= 0 {
+			return 0, false, "price required for live scale-in sizing"
+		}
+		if scaleInMaxPositionNotionalUSD <= 0 {
+			return 0, false, "scale-in max position notional is not configured"
+		}
+		currentNotional := posQty * price
+		remainingNotional := scaleInMaxPositionNotionalUSD - currentNotional
+		if remainingNotional < 1 {
+			return 0, false, fmt.Sprintf("scale-in cap reached for live %s (current notional $%.2f, cap $%.2f)", posSide, currentNotional, scaleInMaxPositionNotionalUSD)
+		}
+		budget := PerpsOpenNotional(cash, sizingLeverage, exchangeLeverage, marginPerTradeUSD)
+		if budget < 1 {
+			return 0, false, fmt.Sprintf("insufficient cash ($%.2f) for live scale-in", cash)
+		}
+		if budget > remainingNotional {
+			budget = remainingNotional
+		}
+		return budget / price, true, ""
+	}
 	// Flip only happens under bidirectional ("both"); a directional gate
 	// ("long"/"short") never flips because the opposite-direction signal is
 	// either a close-only (long-only sell on long, short-only buy on short)
@@ -868,14 +972,22 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 //
 // Empty direction is treated as "long" for safety.
 func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger) (int, error) {
-	return executePerpsSignalWithLeverage(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, logger, func(trade Trade) {
+	return ExecutePerpsSignalWithLeverageScaleIn(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, false, 0, logger)
+}
+
+func ExecutePerpsSignalWithLeverageScaleIn(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, allowScaleIn bool, scaleInMaxPositionNotionalUSD float64, logger *StrategyLogger) (int, error) {
+	return executePerpsSignalWithLeverage(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, allowScaleIn, scaleInMaxPositionNotionalUSD, logger, func(trade Trade) {
 		RecordTrade(s, trade)
 	})
 }
 
 func ExecutePerpsSignalWithLeverageDeferredOpen(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger) (SignalExecutionResult, error) {
+	return ExecutePerpsSignalWithLeverageDeferredOpenScaleIn(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, false, 0, logger)
+}
+
+func ExecutePerpsSignalWithLeverageDeferredOpenScaleIn(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, allowScaleIn bool, scaleInMaxPositionNotionalUSD float64, logger *StrategyLogger) (SignalExecutionResult, error) {
 	var result SignalExecutionResult
-	trades, err := executePerpsSignalWithLeverage(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, logger, func(trade Trade) {
+	trades, err := executePerpsSignalWithLeverage(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, allowScaleIn, scaleInMaxPositionNotionalUSD, logger, func(trade Trade) {
 		t := trade
 		result.OpenTrade = &t
 	})
@@ -883,7 +995,7 @@ func ExecutePerpsSignalWithLeverageDeferredOpen(s *StrategyState, signal int, sy
 	return result, err
 }
 
-func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger, recordOpen func(Trade)) (int, error) {
+func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, allowScaleIn bool, scaleInMaxPositionNotionalUSD float64, logger *StrategyLogger, recordOpen func(Trade)) (int, error) {
 	if direction == "" {
 		direction = DirectionLong
 	}
@@ -930,10 +1042,75 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			// orphan-long warning in the signal=-1 branch below.
 			if !allowsLong {
 				logger.Warn("Orphan long %s under direction=%q (qty=%.6f); skipping buy — close manually if intentional", symbol, direction, pos.Quantity)
-			} else {
-				logger.Info("Already long %s (qty=%.6f), skipping buy", symbol, pos.Quantity)
+				return 0, nil
 			}
-			return 0, nil
+			if !perpsScaleInSignal(signal, pos.Side, direction, allowScaleIn) || closeOnlyAction {
+				logger.Info("Already long %s (qty=%.6f), skipping buy", symbol, pos.Quantity)
+				return 0, nil
+			}
+			var execPrice, qty float64
+			if fillQty > 0 {
+				execPrice = price
+				qty = fillQty
+			} else {
+				execPrice = ApplySlippage(price)
+				if execPrice <= 0 {
+					return 0, nil
+				}
+				if scaleInMaxPositionNotionalUSD <= 0 {
+					logger.Info("Scale-in skipped for %s: max position notional is not configured", symbol)
+					return 0, nil
+				}
+				remainingNotional := scaleInMaxPositionNotionalUSD - pos.Quantity*execPrice
+				if remainingNotional < 1 {
+					logger.Info("Scale-in cap reached for %s: current notional $%.2f cap $%.2f", symbol, pos.Quantity*execPrice, scaleInMaxPositionNotionalUSD)
+					return 0, nil
+				}
+				budget := PerpsOpenNotional(s.Cash, sizingLeverage, exchangeLeverage, marginPerTradeUSD)
+				if budget < 1 {
+					logger.Info("Insufficient cash ($%.2f) to scale into long %s perp", s.Cash, symbol)
+					return 0, nil
+				}
+				if budget > remainingNotional {
+					budget = remainingNotional
+				}
+				qty = budget / execPrice
+			}
+			if qty <= 0 {
+				return 0, nil
+			}
+			positionID := ensurePositionTradeID(s.ID, symbol, pos)
+			if !blendPositionScaleIn(pos, qty, execPrice) {
+				logger.Info("Scale-in skipped for %s: invalid existing position or fill", symbol)
+				return 0, nil
+			}
+			notional := qty * execPrice
+			fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), fillFee, true)
+			s.Cash -= fee
+			now := time.Now().UTC()
+			trade := Trade{
+				Timestamp:       now,
+				StrategyID:      s.ID,
+				Symbol:          symbol,
+				PositionID:      positionID,
+				Side:            "buy",
+				Quantity:        qty,
+				Price:           execPrice,
+				Value:           notional,
+				TradeType:       "perps",
+				Details:         fmt.Sprintf("Scale in long %.6f @ $%.2f (%s, blended avg $%.2f, fee $%.2f)", qty, execPrice, leverageLabel, pos.AvgCost, fee),
+				ExchangeOrderID: fillOID,
+				ExchangeFee:     exchangeFeeForTrade(fillFee, true),
+			}
+			if pos.Regime != "" {
+				trade.Regime = pos.Regime
+			} else {
+				trade.Regime = s.Regime
+			}
+			copyPositionOpenSnapshotToTrade(&trade, pos)
+			recordOpen(trade)
+			logger.Info("SCALE-IN BUY %s: +%.6f @ $%.2f (%s, qty %.6f, avg $%.2f, notional +$%.2f, fee $%.2f)", symbol, qty, execPrice, leverageLabel, pos.Quantity, pos.AvgCost, notional, fee)
+			return 1, nil
 		}
 		// Close short if exists — realize PnL only (no notional swing).
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" {
@@ -1070,6 +1247,7 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			Quantity:        qty,
 			InitialQuantity: qty,
 			AvgCost:         execPrice,
+			EntryPrice:      execPrice,
 			Side:            "long",
 			Multiplier:      1, // perps use 1:1 contract size; PnL-branch in PortfolioValue
 			Leverage:        exchangeLeverage,
@@ -1105,8 +1283,73 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		// and is handled by the close-long branch (no match) + the
 		// "no long to sell" return at the bottom.
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" && allowsShort {
-			logger.Info("Already short %s (qty=%.6f), skipping sell", symbol, pos.Quantity)
-			return 0, nil
+			if !perpsScaleInSignal(signal, pos.Side, direction, allowScaleIn) || closeOnlyAction {
+				logger.Info("Already short %s (qty=%.6f), skipping sell", symbol, pos.Quantity)
+				return 0, nil
+			}
+			var execPrice, qty float64
+			if fillQty > 0 {
+				execPrice = price
+				qty = fillQty
+			} else {
+				execPrice = ApplySlippage(price)
+				if execPrice <= 0 {
+					return 0, nil
+				}
+				if scaleInMaxPositionNotionalUSD <= 0 {
+					logger.Info("Scale-in skipped for %s: max position notional is not configured", symbol)
+					return 0, nil
+				}
+				remainingNotional := scaleInMaxPositionNotionalUSD - pos.Quantity*execPrice
+				if remainingNotional < 1 {
+					logger.Info("Scale-in cap reached for %s: current notional $%.2f cap $%.2f", symbol, pos.Quantity*execPrice, scaleInMaxPositionNotionalUSD)
+					return 0, nil
+				}
+				budget := PerpsOpenNotional(s.Cash, sizingLeverage, exchangeLeverage, marginPerTradeUSD)
+				if budget < 1 {
+					logger.Info("Insufficient cash ($%.2f) to scale into short %s perp", s.Cash, symbol)
+					return 0, nil
+				}
+				if budget > remainingNotional {
+					budget = remainingNotional
+				}
+				qty = budget / execPrice
+			}
+			if qty <= 0 {
+				return 0, nil
+			}
+			positionID := ensurePositionTradeID(s.ID, symbol, pos)
+			if !blendPositionScaleIn(pos, qty, execPrice) {
+				logger.Info("Scale-in skipped for %s: invalid existing position or fill", symbol)
+				return 0, nil
+			}
+			notional := qty * execPrice
+			fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), fillFee, true)
+			s.Cash -= fee
+			now := time.Now().UTC()
+			trade := Trade{
+				Timestamp:       now,
+				StrategyID:      s.ID,
+				Symbol:          symbol,
+				PositionID:      positionID,
+				Side:            "sell",
+				Quantity:        qty,
+				Price:           execPrice,
+				Value:           notional,
+				TradeType:       "perps",
+				Details:         fmt.Sprintf("Scale in short %.6f @ $%.2f (%s, blended avg $%.2f, fee $%.2f)", qty, execPrice, leverageLabel, pos.AvgCost, fee),
+				ExchangeOrderID: fillOID,
+				ExchangeFee:     exchangeFeeForTrade(fillFee, true),
+			}
+			if pos.Regime != "" {
+				trade.Regime = pos.Regime
+			} else {
+				trade.Regime = s.Regime
+			}
+			copyPositionOpenSnapshotToTrade(&trade, pos)
+			recordOpen(trade)
+			logger.Info("SCALE-IN SELL %s: +%.6f @ $%.2f (%s, qty %.6f, avg $%.2f, notional +$%.2f, fee $%.2f) [short]", symbol, qty, execPrice, leverageLabel, pos.Quantity, pos.AvgCost, notional, fee)
+			return 1, nil
 		}
 		// Close long if exists — realize PnL.
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
@@ -1238,6 +1481,7 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			Quantity:        qty,
 			InitialQuantity: qty,
 			AvgCost:         execPrice,
+			EntryPrice:      execPrice,
 			Side:            "short",
 			Multiplier:      1,
 			Leverage:        exchangeLeverage,
@@ -1425,6 +1669,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			Quantity:        qty,
 			InitialQuantity: qty,
 			AvgCost:         execPrice,
+			EntryPrice:      execPrice,
 			Side:            "long",
 			OwnerStrategyID: s.ID,
 			OpenedAt:        now,
@@ -1685,6 +1930,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			Quantity:        float64(contracts),
 			InitialQuantity: float64(contracts),
 			AvgCost:         execPrice,
+			EntryPrice:      execPrice,
 			Side:            "long",
 			Multiplier:      multiplier,
 			OwnerStrategyID: s.ID,
@@ -1830,6 +2076,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				Quantity:        float64(contracts),
 				InitialQuantity: float64(contracts),
 				AvgCost:         execPrice,
+				EntryPrice:      execPrice,
 				Side:            "short",
 				Multiplier:      multiplier,
 				OwnerStrategyID: s.ID,

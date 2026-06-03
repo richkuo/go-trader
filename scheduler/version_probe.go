@@ -62,13 +62,18 @@ var fetchATRProbeArgv = []string{
 // review point 1). The signal-check probe doesn't cover the execute branch,
 // so without this an asymmetric deploy (new Go binary forwarding
 // --account-leverage / --account-margin-mode to a stale Python) would only
-// fail on the first signal-fire rather than at startup. --mode=paper so the
-// probe never enters the live-credentials branch; --probe-only short-circuits
-// at the top of run_execute before any adapter or order code runs.
+// fail on the first signal-fire rather than at startup. It also covers
+// --existing-same-side-qty / --stop-loss-trigger-px (#873), used only by
+// scale-in execute calls.
+// --mode=paper so the probe never enters the live-credentials branch;
+// --probe-only short-circuits at the top of run_execute before any adapter or
+// order code runs.
 var executeProbeArgv = []string{
 	"--execute",
 	"--symbol=BTC", "--side=buy", "--size=0",
 	"--mode=paper",
+	"--stop-loss-trigger-px=59000",
+	"--existing-same-side-qty=0.001",
 	"--margin-mode=cross", "--leverage=1",
 	"--account-leverage=1", "--account-margin-mode=cross",
 	"--probe-only",

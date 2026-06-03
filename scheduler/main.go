@@ -21,6 +21,7 @@ var knownSubcommands = []string{
 	"init",
 	"export",
 	"manual-open",
+	"manual-add",
 	"manual-close",
 	"backfill",
 	"probe",
@@ -57,6 +58,8 @@ func main() {
 			os.Exit(runExport(os.Args[2:]))
 		case "manual-open":
 			os.Exit(runManualOpen(os.Args[2:]))
+		case "manual-add":
+			os.Exit(runManualAdd(os.Args[2:]))
 		case "manual-close":
 			os.Exit(runManualClose(os.Args[2:]))
 		case "backfill":
@@ -1289,7 +1292,9 @@ func main() {
 					var hlPosQty float64
 					var hlPosSide string
 					var hlAvgCost float64
+					var hlEntryPrice float64
 					var hlEntryATR float64
+					var hlProtectionQuantity float64
 					var hlPosCtx PositionCtx
 					var hlStopLossOID int64
 					var hlTPOIDs []int64
@@ -1309,7 +1314,9 @@ func main() {
 								hlPosSide = hlPosCtx.Side
 								hlPosQty = hlPosCtx.Quantity
 								hlAvgCost = hlPosCtx.AvgCost
+								hlEntryPrice = pos.EntryPrice
 								hlEntryATR = pos.EntryATR
+								hlProtectionQuantity = pos.ProtectionQuantity
 								hlStopLossOID = pos.StopLossOID
 								hlTPOIDs = cloneInt64s(pos.TPOIDs)
 								hlStopLossTriggerPx = pos.StopLossTriggerPx
@@ -1525,7 +1532,7 @@ func main() {
 							mu.Unlock()
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
-							hlPosSnapshot := &Position{AvgCost: hlAvgCost, EntryATR: hlEntryATR, PostTPTrailingATRMult: hlPostTPTrailingATRMult}
+							hlPosSnapshot := &Position{Quantity: hlPosQty, AvgCost: hlAvgCost, EntryPrice: hlEntryPrice, EntryATR: hlEntryATR, ProtectionQuantity: hlProtectionQuantity, PostTPTrailingATRMult: hlPostTPTrailingATRMult}
 							if result.Signal == 0 && hlPosQty > 0 && strategyUsesTrailingTPRatchetClose(sc) {
 								applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
 								mu.RLock()
@@ -1578,9 +1585,10 @@ func main() {
 								if capped {
 									logger.Warn("trailing SL arm: virtual qty %.6f > on-chain %.6f for %s; capping SL size to on-chain qty (#621)", hlPosQty, slEffectiveQty, result.Symbol)
 								}
-								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, notifier, logger)
+								forceResize := positionProtectionNeedsResize(hlPosSnapshot)
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, forceResize, notifier, logger)
 								mu.Lock()
-								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, result.Symbol, hlPosSide, hlStopLossOID, newHighWater, updateConfirmed, slUpdate, logger); immediateFill {
+								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, result.Symbol, hlPosSide, hlStopLossOID, newHighWater, updateConfirmed, slUpdate, slEffectiveQty, logger); immediateFill {
 									trades++
 									detail = fmt.Sprintf("[%s] LIVE TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, fillPx)
 								}
@@ -1590,7 +1598,7 @@ func main() {
 							// returns 0 at order-placement time when StopLossATRMult > 0, so
 							// the open leg lands without a trigger. On the cycle after open
 							// (Signal == 0, position exists, EntryATR stamped, no OID/trigger
-							// yet) we arm a one-shot fixed trigger at AvgCost ± mult*EntryATR.
+							// yet) we arm a one-shot fixed trigger at EntryPrice ± mult*EntryATR.
 							// Subsequent cycles short-circuit because the position carries an
 							// OID (live) or TriggerPx (paper) — the trigger is fixed for the
 							// life of the position and never re-armed.
@@ -1607,7 +1615,7 @@ func main() {
 										pos.StopLossTriggerPx = newTrigger
 										stampOpenTradeWithProtectionSnapshot(stratState, stateDB, sc, result.Symbol, pos)
 										logger.Info("Paper fixed ATR SL armed @ $%.4f (%.2f%% from entry $%.4f)",
-											newTrigger, effectiveFixedStopLossATRPct(sc, hlPosSnapshot), pos.AvgCost)
+											newTrigger, effectiveFixedStopLossATRPct(sc, hlPosSnapshot), positionEntryPrice(pos))
 									}
 								}
 								mu.Unlock()
@@ -1631,6 +1639,7 @@ func main() {
 											} else if slResult.StopLossOID > 0 {
 												pos.StopLossOID = slResult.StopLossOID
 												pos.StopLossTriggerPx = slResult.StopLossTriggerPx
+												pos.ProtectionQuantity = pos.Quantity
 												stampOpenTradeWithProtectionSnapshot(stratState, stateDB, sc, result.Symbol, pos)
 												logger.Info("Fixed ATR SL armed oid=%d @ $%.4f", slResult.StopLossOID, slResult.StopLossTriggerPx)
 											}
@@ -1650,7 +1659,7 @@ func main() {
 								// Only meaningful when a peer/prior position
 								// has the leverage already pinned on-chain.
 								walletSnapshot := hlExecuteSnapshotForCoin(hlPositions, result.Symbol)
-								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, notifier, logger)
+								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlStopLossTriggerPx, hlTPOIDs, hlReconcileAll, walletSnapshot, notifier, logger)
 								if ok2 {
 									execResult = er
 								} else {
@@ -1746,12 +1755,13 @@ func main() {
 									logger.Warn("manual trailing SL: virtual qty %.6f > on-chain %.6f for %s; capping (#621)", pos.Quantity, slEffectiveQty, sc.Symbol)
 								}
 								prevSLOID := pos.StopLossOID
-								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, notifier, logger)
+								forceResize := positionProtectionNeedsResize(pos)
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, forceResize, notifier, logger)
 								mu.Lock()
 								// Shared handler with the perps path — books an immediate fill,
 								// updates a resting replacement, or clears a cancelled-without-rest
 								// OID. Previously this only handled the resting-replacement case.
-								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, sc.Symbol, pos.Side, prevSLOID, newHighWater, updateConfirmed, slUpdate, logger); immediateFill {
+								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, sc.Symbol, pos.Side, prevSLOID, newHighWater, updateConfirmed, slUpdate, slEffectiveQty, logger); immediateFill {
 									logger.Info("[%s] manual trailing SL filled immediately %s @ $%.2f", sc.ID, sc.Symbol, fillPx)
 								}
 								mu.Unlock()
@@ -1793,7 +1803,7 @@ func main() {
 								}
 								execResult, execStderr, execErr := RunHyperliquidExecute(
 									sc.Script, sc.Symbol, closeSide, closeQty,
-									0, cancelOID, 0, "", 0, closeFullPosition, hlExecuteSnapshot{}, extraCancelOIDs...,
+									0, 0, cancelOID, 0, 0, "", 0, closeFullPosition, hlExecuteSnapshot{}, extraCancelOIDs...,
 								)
 								if execStderr != "" {
 									logger.Info("HL manual close stderr: %s", execStderr)
@@ -2679,9 +2689,10 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 // Trade record, leaving state silently behind actual exchange holdings. See
 // issue #298 — 0.716 ETH of live fills were lost this way because the
 // "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
-func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, existingStopLossOID int64, existingStopLossTriggerPx float64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	directionEnum := EffectiveDirection(sc)
-	if reason := PerpsOrderSkipReason(result.Signal, posSide, directionEnum); reason != "" {
+	allowScaleIn := sc.AllowScaleIn && result.CloseFraction == 0
+	if reason := PerpsOrderSkipReasonWithScaleIn(result.Signal, posSide, directionEnum, allowScaleIn); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
 	}
@@ -2692,7 +2703,8 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	sizingLeverage := EffectiveSizingLeverage(sc)
 	exchangeLeverage := EffectiveExchangeLeverage(sc)
 	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
-	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, directionEnum, result.CloseFraction)
+	scaleInMaxPositionNotionalUSD := EffectiveScaleInMaxPositionNotionalUSD(sc)
+	size, ok, reason := perpsLiveOrderSizeWithScaleIn(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, directionEnum, result.CloseFraction, allowScaleIn, scaleInMaxPositionNotionalUSD)
 	if !ok {
 		logger.Info("%s for %s", reason, result.Symbol)
 		return nil, false
@@ -2760,6 +2772,15 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	if flipping {
 		prevPosQty = posQty
 	}
+	var existingSameSideQty float64
+	if perpsScaleInSignal(result.Signal, posSide, directionEnum, allowScaleIn) && result.CloseFraction == 0 {
+		existingSameSideQty = posQty
+	}
+	slTriggerPx := 0.0
+	if existingSameSideQty > 0 && existingStopLossOID > 0 && existingStopLossTriggerPx > 0 {
+		slTriggerPx = existingStopLossTriggerPx
+		slPct = 0
+	}
 
 	// #486: enforce margin mode + leverage on fresh opens only. HL rejects
 	// updateLeverage on an open position, so flip/add legs (posQty > 0)
@@ -2791,7 +2812,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	} else if result.CloseFraction == 1.0 {
 		logger.Info("Final-tier close %s shares coin with HL perps peers — using sized close to preserve peer exposure", result.Symbol)
 	}
-	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen, closeFullPosition, walletSnapshot, extraCancelOIDs...)
+	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size, slPct, slTriggerPx, cancelOID, prevPosQty, existingSameSideQty, marginMode, leverageForOpen, closeFullPosition, walletSnapshot, extraCancelOIDs...)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
@@ -2890,6 +2911,10 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	exchangeLeverage := EffectiveExchangeLeverage(sc)
 	sizingLeverage := EffectiveSizingLeverage(sc)
 	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
+	scaleInBefore := false
+	if pos, ok := s.Positions[result.Symbol]; ok && pos != nil {
+		scaleInBefore = perpsScaleInSignal(result.Signal, pos.Side, EffectiveDirection(sc), sc.AllowScaleIn) && result.CloseFraction == 0
+	}
 
 	// Thread exchange metadata into ExecutePerpsSignal so each Trade is built
 	// with the OID and fee before RecordTrade persists it (#289). Stamping the
@@ -2906,7 +2931,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		fillFee = fill.Fee
 	}
 
-	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
+	exec, err := ExecutePerpsSignalWithLeverageDeferredOpenScaleIn(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, sc.AllowScaleIn, EffectiveScaleInMaxPositionNotionalUSD(sc), logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, "", nil
@@ -2926,7 +2951,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	if trades > 0 && fillOID != "" {
 		logger.Info("Exchange order ID: %s", fillOID)
 	}
-	if trades > 0 {
+	if trades > 0 && !scaleInBefore {
 		if pos, ok := s.Positions[result.Symbol]; ok && effectiveTrailingStopPct(sc, pos) > 0 {
 			// Partial closes may reset this hint, but StopLossTriggerPx is the
 			// durable ratchet. The helper never lowers a favorable trigger.
@@ -2944,6 +2969,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 			if pos, ok := s.Positions[result.Symbol]; ok {
 				pos.StopLossOID = slOID
 				pos.StopLossTriggerPx = execResult.Execution.Fill.StopLossTriggerPx
+				pos.ProtectionQuantity = pos.Quantity
 				logger.Info("SL trigger placed oid=%d @ $%.4f", slOID, execResult.Execution.Fill.StopLossTriggerPx)
 			}
 		}

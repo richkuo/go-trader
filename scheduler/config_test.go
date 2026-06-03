@@ -1014,6 +1014,111 @@ func TestLoadConfigMarginPerTradeUSDRejectsNonPositive(t *testing.T) {
 	}
 }
 
+func TestLoadConfigScaleInAcceptedWithCap(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"leverage": 20,
+			"allow_scale_in": true,
+			"scale_in_max_position_notional_usd": 5000
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig with allow_scale_in failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if !sc.AllowScaleIn {
+		t.Fatal("AllowScaleIn = false, want true")
+	}
+	if sc.ScaleInMaxPositionNotionalUSD == nil || *sc.ScaleInMaxPositionNotionalUSD != 5000 {
+		t.Fatalf("ScaleInMaxPositionNotionalUSD = %v, want 5000", sc.ScaleInMaxPositionNotionalUSD)
+	}
+	if got := EffectiveScaleInMaxPositionNotionalUSD(sc); got != 5000 {
+		t.Errorf("EffectiveScaleInMaxPositionNotionalUSD = %g, want 5000", got)
+	}
+}
+
+func TestLoadConfigScaleInRequiresCap(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"leverage": 20,
+			"allow_scale_in": true
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for allow_scale_in without cap")
+	}
+	if !strings.Contains(err.Error(), "allow_scale_in requires scale_in_max_position_notional_usd") {
+		t.Errorf("error = %v, want cap-required message", err)
+	}
+}
+
+func TestLoadConfigScaleInCapRequiresOptIn(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "hl-test-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"leverage": 20,
+			"scale_in_max_position_notional_usd": 5000
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for cap without allow_scale_in")
+	}
+	if !strings.Contains(err.Error(), "scale_in_max_position_notional_usd requires allow_scale_in=true") {
+		t.Errorf("error = %v, want opt-in-required message", err)
+	}
+}
+
+func TestLoadConfigScaleInRejectsNonHLPerps(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "okx-test-eth",
+			"type": "perps",
+			"platform": "okx",
+			"script": "shared_scripts/check_okx.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"leverage": 20,
+			"allow_scale_in": true,
+			"scale_in_max_position_notional_usd": 5000
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for scale-in on non-HL perps")
+	}
+	if !strings.Contains(err.Error(), "allow_scale_in is only supported for HL perps") {
+		t.Errorf("error = %v, want HL-perps-only message", err)
+	}
+}
+
 // #518: an omitted margin_per_trade_usd leaves the legacy sizing_leverage
 // formula in effect — the field is purely additive opt-in.
 func TestEffectiveMarginPerTradeUSDOmittedReturnsZero(t *testing.T) {

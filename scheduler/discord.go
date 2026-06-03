@@ -1118,8 +1118,9 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 		if pos.EntryATR > 0 {
 			extras += fmt.Sprintf(" | ATR: $%s", fmtComma2(pos.EntryATR))
 		}
+		entryPrice := positionEntryPrice(pos)
 		if pos.StopLossTriggerPx > 0 {
-			slPct := percentFromEntry(pos.Side, pos.AvgCost, pos.StopLossTriggerPx)
+			slPct := percentFromEntry(pos.Side, entryPrice, pos.StopLossTriggerPx)
 			if pos.StopLossATRMult != nil {
 				extras += fmt.Sprintf(" | SL: $%s (%s) (%gx)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct), *pos.StopLossATRMult)
 			} else {
@@ -1127,7 +1128,7 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 			}
 		}
 		tiers := strategyTPTiersForRegime(sc, positionATRRegimeLabel(pos, sc))
-		tps := tieredTPATRPricesFromTiers(tiers, pos.Side, pos.AvgCost, pos.EntryATR)
+		tps := tieredTPATRPricesFromTiers(tiers, pos.Side, entryPrice, pos.EntryATR)
 		if len(tps) > 0 {
 			// A zero TPOID alone is ambiguous (tiers also hold zero before the
 			// first protection-sync places them); require an observed shrink
@@ -1142,12 +1143,12 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 					extras += fmt.Sprintf(" | TP%d: $%s%s ✓", i+1, fmtComma2(tp), multSuffix)
 					continue
 				}
-				pct := percentFromEntry(pos.Side, pos.AvgCost, tp)
+				pct := percentFromEntry(pos.Side, entryPrice, tp)
 				extras += fmt.Sprintf(" | TP%d: $%s (%s)%s", i+1, fmtComma2(tp), fmtPnlPct(pct), multSuffix)
 			}
 		}
 		ratchetTiers := trailingRatchetTiersForRegime(sc, positionATRRegimeLabel(pos, sc))
-		if len(tps) == 0 && len(ratchetTiers) > 0 && pos.EntryATR > 0 && pos.AvgCost > 0 {
+		if len(tps) == 0 && len(ratchetTiers) > 0 && pos.EntryATR > 0 && entryPrice > 0 {
 			processed := pos.SLAdjustedTiersProcessed
 			if processed < 0 {
 				processed = 0
@@ -1161,8 +1162,8 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 				extras += fmt.Sprintf(" | Ratchet: %d/%d", processed, len(ratchetTiers))
 			}
 			for i, tier := range ratchetTiers {
-				target := ratchetTargetPrice(pos.Side, pos.AvgCost, pos.EntryATR, tier.ATRMultiple)
-				pct := percentFromEntry(pos.Side, pos.AvgCost, target)
+				target := ratchetTargetPrice(pos.Side, entryPrice, pos.EntryATR, tier.ATRMultiple)
+				pct := percentFromEntry(pos.Side, entryPrice, target)
 				extras += fmt.Sprintf(" | RT%d: $%s (%s) (%gx -> %gx trail)", i+1, fmtComma2(target), fmtPnlPct(pct), tier.ATRMultiple, tier.TrailingMultAfter)
 			}
 		}

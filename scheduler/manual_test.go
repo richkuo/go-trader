@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -123,6 +124,9 @@ func TestApplyManualActionOpen(t *testing.T) {
 	if pos.AvgCost != 2000 {
 		t.Errorf("pos.AvgCost = %g, want 2000", pos.AvgCost)
 	}
+	if pos.EntryPrice != 2000 {
+		t.Errorf("pos.EntryPrice = %g, want 2000", pos.EntryPrice)
+	}
 	if pos.Side != "long" {
 		t.Errorf("pos.Side = %q, want \"long\"", pos.Side)
 	}
@@ -160,6 +164,113 @@ func TestApplyManualActionOpen(t *testing.T) {
 	}
 	if tr.StopLossATRMult == nil || *tr.StopLossATRMult != slMult {
 		t.Errorf("trade.StopLossATRMult = %v, want %.1f", tr.StopLossATRMult, slMult)
+	}
+}
+
+func TestApplyManualActionAddBlendsExistingPosition(t *testing.T) {
+	openAt := time.Now().UTC().Add(-time.Hour)
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-manual-eth-live": {
+				ID:       "hl-manual-eth-live",
+				Platform: "hyperliquid",
+				Type:     "manual",
+				Positions: map[string]*Position{
+					"ETH": {
+						Symbol:                   "ETH",
+						Quantity:                 1,
+						InitialQuantity:          1,
+						AvgCost:                  2000,
+						EntryPrice:               2000,
+						EntryATR:                 80,
+						Side:                     "long",
+						Multiplier:               1,
+						Leverage:                 10,
+						OwnerStrategyID:          "hl-manual-eth-live",
+						OpenedAt:                 openAt,
+						TradePositionID:          "manual-pos-1",
+						StopLossOID:              111,
+						StopLossTriggerPx:        1880,
+						TPOIDs:                   []int64{222, 333},
+						TPArmedTiers:             []bool{true, false},
+						SLAdjustedTiersProcessed: 1,
+						Regime:                   "trending_up",
+					},
+				},
+				Cash: 10000,
+			},
+		},
+	}
+	slMult := 1.5
+	scByID := map[string]StrategyConfig{
+		"hl-manual-eth-live": {
+			ID:              "hl-manual-eth-live",
+			Type:            "manual",
+			Platform:        "hyperliquid",
+			Symbol:          "ETH",
+			Leverage:        10,
+			StopLossATRMult: &slMult,
+		},
+	}
+
+	var recorded []Trade
+	origRecorder := tradeRecorder
+	tradeRecorder = func(stratID string, trade Trade) error {
+		recorded = append(recorded, trade)
+		return nil
+	}
+	defer func() { tradeRecorder = origRecorder }()
+
+	now := time.Now().UTC()
+	a := PendingManualAction{
+		ID:              2,
+		StrategyID:      "hl-manual-eth-live",
+		Action:          "add",
+		Symbol:          "ETH",
+		Side:            "long",
+		Quantity:        0.5,
+		FillPrice:       2200,
+		FillFee:         0.9,
+		ExchangeOrderID: "add-oid",
+		CreatedAt:       now,
+	}
+	if err := applyManualAction(state, scByID, a); err != nil {
+		t.Fatalf("applyManualAction add: %v", err)
+	}
+
+	ss := state.Strategies["hl-manual-eth-live"]
+	pos := ss.Positions["ETH"]
+	if pos == nil {
+		t.Fatal("position missing")
+	}
+	if math.Abs(pos.Quantity-1.5) > 1e-9 || math.Abs(pos.InitialQuantity-1.5) > 1e-9 {
+		t.Fatalf("qty/initial = %g/%g, want 1.5/1.5", pos.Quantity, pos.InitialQuantity)
+	}
+	wantAvg := (1*2000 + 0.5*2200) / 1.5
+	if math.Abs(pos.AvgCost-wantAvg) > 1e-9 {
+		t.Errorf("AvgCost = %g, want %g", pos.AvgCost, wantAvg)
+	}
+	if pos.EntryPrice != 2000 || pos.EntryATR != 80 || pos.Regime != "trending_up" {
+		t.Errorf("frozen fields changed: entry_price=%g atr=%g regime=%q", pos.EntryPrice, pos.EntryATR, pos.Regime)
+	}
+	if pos.StopLossOID != 111 || pos.StopLossTriggerPx != 1880 || len(pos.TPOIDs) != 2 || pos.TPOIDs[0] != 222 || pos.SLAdjustedTiersProcessed != 1 {
+		t.Errorf("protection state changed: sl_oid=%d sl_px=%g tp_oids=%v sl_after=%d", pos.StopLossOID, pos.StopLossTriggerPx, pos.TPOIDs, pos.SLAdjustedTiersProcessed)
+	}
+	if math.Abs(ss.Cash-9999.1) > 1e-9 {
+		t.Errorf("Cash = %g, want 9999.1 after fee-only debit", ss.Cash)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("recorded trades = %d, want 1", len(recorded))
+	}
+	tr := recorded[0]
+	if tr.IsClose || !tr.Manual {
+		t.Errorf("trade flags IsClose=%t Manual=%t, want open/add manual", tr.IsClose, tr.Manual)
+	}
+	if tr.PositionID != "manual-pos-1" || tr.Side != "buy" || tr.ExchangeOrderID != "add-oid" {
+		t.Errorf("trade identity = position_id=%q side=%q oid=%q", tr.PositionID, tr.Side, tr.ExchangeOrderID)
+	}
+	if tr.EntryATR != 80 || tr.StopLossOID != 111 || len(tr.TPOIDs) != 2 || tr.TPOIDs[0] != 222 {
+		t.Errorf("trade protection snapshot = entry_atr=%g sl_oid=%d tp_oids=%v", tr.EntryATR, tr.StopLossOID, tr.TPOIDs)
 	}
 }
 

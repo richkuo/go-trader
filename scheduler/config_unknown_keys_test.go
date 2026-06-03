@@ -21,6 +21,7 @@ func TestKnownStrategyConfigKeysCoversCoreFields(t *testing.T) {
 		"max_drawdown_pct", "interval_seconds",
 		"htf_filter", "allow_shorts", "direction",
 		"leverage", "sizing_leverage", "margin_per_trade_usd",
+		"allow_scale_in", "scale_in_max_position_notional_usd",
 		"stop_loss_pct", "stop_loss_margin_pct",
 		"trailing_stop_pct", "trailing_stop_atr_mult", "stop_loss_atr_mult",
 		"trailing_stop_min_move_pct", "margin_mode",

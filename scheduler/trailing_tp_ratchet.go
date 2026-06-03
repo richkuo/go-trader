@@ -414,7 +414,8 @@ func applyTrailingTPRatchetToPosition(sc StrategyConfig, pos *Position, symbol s
 	if !strategyUsesTrailingTPRatchetClose(sc) || pos == nil || symbol == "" || mark <= 0 {
 		return false
 	}
-	if pos.Quantity <= 0 || pos.AvgCost <= 0 || pos.EntryATR <= 0 {
+	entryPrice := positionEntryPrice(pos)
+	if pos.Quantity <= 0 || entryPrice <= 0 || pos.EntryATR <= 0 {
 		return false
 	}
 	side := strings.ToLower(strings.TrimSpace(pos.Side))
@@ -426,9 +427,9 @@ func applyTrailingTPRatchetToPosition(sc StrategyConfig, pos *Position, symbol s
 	if len(tiers) == 0 {
 		return false
 	}
-	profitDistance := mark - pos.AvgCost
+	profitDistance := mark - entryPrice
 	if side == "short" {
-		profitDistance = pos.AvgCost - mark
+		profitDistance = entryPrice - mark
 	}
 	atrProfit := profitDistance / pos.EntryATR
 	clearedIdx, clearedOK := findHighestMarkClearedRatchetTier(tiers, atrProfit, pos.SLAdjustedTiersProcessed)

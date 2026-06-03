@@ -119,7 +119,7 @@ func makeTestState() *AppState {
 				Cash:           950.50,
 				InitialCapital: 1000.0,
 				Positions: map[string]*Position{
-					"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "long", Multiplier: 0, OwnerStrategyID: "hl-momentum-btc", OpenedAt: now.Add(-12 * time.Hour)},
+					"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, EntryPrice: 49000, ProtectionQuantity: 0.08, Side: "long", Multiplier: 0, OwnerStrategyID: "hl-momentum-btc", OpenedAt: now.Add(-12 * time.Hour)},
 				},
 				OptionPositions: map[string]*OptionPosition{
 					"opt-1": {
@@ -222,6 +222,9 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 	}
 	if btcPos.Quantity != 0.1 || btcPos.AvgCost != 50000 || btcPos.Side != "long" {
 		t.Errorf("position mismatch: %+v", btcPos)
+	}
+	if btcPos.EntryPrice != 49000 || btcPos.ProtectionQuantity != 0.08 {
+		t.Errorf("position entry/protection basis mismatch: entry_price=%g protection_quantity=%g", btcPos.EntryPrice, btcPos.ProtectionQuantity)
 	}
 	if btcPos.OwnerStrategyID != "hl-momentum-btc" {
 		t.Errorf("OwnerStrategyID = %q, want %q", btcPos.OwnerStrategyID, "hl-momentum-btc")
@@ -2250,6 +2253,35 @@ func TestLifetimeTradeStatsAll_PartialClosesNetByPositionID(t *testing.T) {
 	}
 	if got := stats["s1"]; got.PositionsOpened != 1 || got.Wins != 1 || got.Losses != 0 {
 		t.Errorf("stats = %+v, want PositionsOpened=1 Wins=1 Losses=0", got)
+	}
+}
+
+func TestLifetimeTradeStatsAll_ScaleInOpenRowsSharePositionID(t *testing.T) {
+	sdb := openTestDB(t)
+	now := time.Now().UTC()
+	positionID := "s1-ETH-open-1"
+	trades := []Trade{
+		{StrategyID: "s1", Timestamp: now, Symbol: "ETH", PositionID: positionID, Side: "buy", Quantity: 1, Price: 2000, Value: 2000, TradeType: "perps", Details: "Open long"},
+		{StrategyID: "s1", Timestamp: now.Add(time.Second), Symbol: "ETH", PositionID: positionID, Side: "buy", Quantity: 0.5, Price: 2100, Value: 1050, TradeType: "perps", Details: "Scale in long"},
+		{StrategyID: "s1", Timestamp: now.Add(2 * time.Second), Symbol: "ETH", PositionID: positionID, Side: "sell", Quantity: 1.5, Price: 2200, Value: 3300, TradeType: "perps", Details: "Close long, PnL: $250.00", IsClose: true, RealizedPnL: 250},
+	}
+	for _, tr := range trades {
+		if err := sdb.InsertTrade(tr.StrategyID, tr); err != nil {
+			t.Fatalf("InsertTrade: %v", err)
+		}
+	}
+
+	stats, err := sdb.LifetimeTradeStatsAll()
+	if err != nil {
+		t.Fatalf("LifetimeTradeStatsAll: %v", err)
+	}
+	if got := stats["s1"]; got.PositionsOpened != 1 || got.Wins != 1 || got.Losses != 0 {
+		t.Errorf("stats = %+v, want PositionsOpened=1 Wins=1 Losses=0", got)
+	}
+	if got, err := sdb.LifetimeTradeStatsForStrategy("s1"); err != nil {
+		t.Fatalf("LifetimeTradeStatsForStrategy: %v", err)
+	} else if got.PositionsOpened != 1 || got.Wins != 1 || got.Losses != 0 {
+		t.Errorf("single-strategy stats = %+v, want PositionsOpened=1 Wins=1 Losses=0", got)
 	}
 }
 

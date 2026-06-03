@@ -340,6 +340,63 @@ func TestApplyHotReloadConfigAllowsMarginModeChangeWhenFlat(t *testing.T) {
 	}
 }
 
+func TestApplyHotReloadConfigAllowsScaleInChangeWhenFlat(t *testing.T) {
+	cap := 5000.0
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, MarginMode: "isolated",
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, MarginMode: "isolated",
+		AllowScaleIn: true, ScaleInMaxPositionNotionalUSD: &cap,
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Cash: 1000, Positions: map[string]*Position{}},
+	}}
+
+	changes, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+	if err != nil {
+		t.Fatalf("expected scale-in settings to reload while flat, got: %v", err)
+	}
+	joined := strings.Join(changes, "\n")
+	if !strings.Contains(joined, "strategy[hl-eth].allow_scale_in: false -> true") ||
+		!strings.Contains(joined, "strategy[hl-eth].scale_in_max_position_notional_usd: <nil> -> $5000.00") {
+		t.Fatalf("scale-in changes missing:\n%s", joined)
+	}
+	if !cfg.Strategies[0].AllowScaleIn || cfg.Strategies[0].ScaleInMaxPositionNotionalUSD == nil || *cfg.Strategies[0].ScaleInMaxPositionNotionalUSD != cap {
+		t.Fatalf("scale-in settings not applied: %+v", cfg.Strategies[0])
+	}
+}
+
+func TestApplyHotReloadConfigRejectsScaleInChangeWithOpenPerpsPosition(t *testing.T) {
+	cap := 5000.0
+	cfg := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, MarginMode: "isolated",
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, MarginMode: "isolated",
+		AllowScaleIn: true, ScaleInMaxPositionNotionalUSD: &cap,
+	}})
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {
+			ID: "hl-eth", Cash: 900,
+			Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 1, Side: "long", AvgCost: 3000, Leverage: 2},
+			},
+		},
+	}}
+
+	_, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+	if err == nil {
+		t.Fatal("expected scale-in settings to be rejected while open")
+	}
+	if !strings.Contains(err.Error(), "allow_scale_in changed with open positions") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Strategies[0].AllowScaleIn || cfg.Strategies[0].ScaleInMaxPositionNotionalUSD != nil {
+		t.Fatalf("current config mutated after rejected reload: %+v", cfg.Strategies[0])
+	}
+}
+
 func TestApplyHotReloadConfigPreservesRuntimeCapitalPctCapital(t *testing.T) {
 	cfg := minimalReloadConfig([]StrategyConfig{{
 		ID: "s1", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "BTC", "1h"}, Capital: 2500, CapitalPct: 0.5, MaxDrawdownPct: 10, Leverage: 2,

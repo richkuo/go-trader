@@ -29,16 +29,16 @@ func hlSLEffectiveQty(symbol string, virtualQty float64, onChainQtyMap map[strin
 // Resolution order:
 //   - explicit TrailingStopPct (fixed distance) wins; explicit 0 disables.
 //   - TrailingStopATRMult derives the distance from the position's EntryATR
-//     and AvgCost: pct = mult * entry_atr / avg_cost * 100, capped at
+//     and first-entry price: pct = mult * entry_atr / entry_price * 100, capped at
 //     MaxAutoStopLossPct so a volatile coin (e.g. mult=3 on a 30%-of-price
 //     ATR coin) cannot produce a long-side trigger price <= 0 that HL would
 //     silently reject (review of #505). Returns 0 if pos is nil or
-//     EntryATR / AvgCost is missing — the trailing loop will simply no-op
+//     EntryATR / entry price is missing — the trailing loop will simply no-op
 //     until stampEntryATRIfOpened populates the position on the cycle after
 //     the open fills.
 //
 // Mutability: EntryATR is stamped once at position open and never re-read,
-// so the EntryATR/AvgCost inputs are fixed for the life of the position.
+// so the EntryATR/entry-price inputs are fixed for the life of the position.
 // However, the TrailingStopATRMult value itself IS hot-reloadable — bumping
 // the multiplier mid-position via SIGHUP will alter the derived distance on
 // the next trailing cycle. Only the nil↔positive *mode* toggle is blocked
@@ -67,10 +67,11 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 	// strategy itself doesn't have sc.TrailingStop* configured (the validator
 	// blocks combining sl_after with strategy-level trailing).
 	if pos != nil && pos.PostTPTrailingATRMult != nil && *pos.PostTPTrailingATRMult > 0 {
-		if pos.EntryATR <= 0 || pos.AvgCost <= 0 {
+		entryPrice := positionEntryPrice(pos)
+		if pos.EntryATR <= 0 || entryPrice <= 0 {
 			return 0
 		}
-		pct := *pos.PostTPTrailingATRMult * pos.EntryATR / pos.AvgCost * 100.0
+		pct := *pos.PostTPTrailingATRMult * pos.EntryATR / entryPrice * 100.0
 		if pct > MaxAutoStopLossPct {
 			pct = MaxAutoStopLossPct
 		}
@@ -83,10 +84,11 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 		return 0
 	}
 	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
-		if pos == nil || pos.EntryATR <= 0 || pos.AvgCost <= 0 {
+		entryPrice := positionEntryPrice(pos)
+		if pos == nil || pos.EntryATR <= 0 || entryPrice <= 0 {
 			return 0
 		}
-		pct := *sc.TrailingStopATRMult * pos.EntryATR / pos.AvgCost * 100.0
+		pct := *sc.TrailingStopATRMult * pos.EntryATR / entryPrice * 100.0
 		if pct > MaxAutoStopLossPct {
 			pct = MaxAutoStopLossPct
 		}
@@ -99,14 +101,15 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 	// the regime block at a different shape, which validateHotReloadStateCompatible
 	// blocks while open).
 	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
-		if pos == nil || pos.EntryATR <= 0 || pos.AvgCost <= 0 || positionATRRegimeLabel(pos, sc) == "" {
+		entryPrice := positionEntryPrice(pos)
+		if pos == nil || pos.EntryATR <= 0 || entryPrice <= 0 || positionATRRegimeLabel(pos, sc) == "" {
 			return 0
 		}
 		mult, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, positionATRRegimeLabel(pos, sc))
 		if !ok {
 			return 0
 		}
-		pct := mult * pos.EntryATR / pos.AvgCost * 100.0
+		pct := mult * pos.EntryATR / entryPrice * 100.0
 		if pct > MaxAutoStopLossPct {
 			pct = MaxAutoStopLossPct
 		}
@@ -116,7 +119,7 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 }
 
 // atrMultMissingEntryATR reports whether sc is configured for ATR-derived
-// trailing stops but the open position is missing the EntryATR/AvgCost inputs
+// trailing stops but the open position is missing the EntryATR/entry-price inputs
 // needed to derive a trigger distance. The trailing loop uses this to surface
 // a one-shot operator alert when stampEntryATRIfOpened never fired (e.g. the
 // open strategy did not emit an "atr" indicator), so the position cannot run
@@ -147,15 +150,15 @@ func atrMultMissingEntryATR(sc StrategyConfig, pos *Position) bool {
 	if pos == nil {
 		return false
 	}
-	return pos.EntryATR <= 0 || pos.AvgCost <= 0
+	return pos.EntryATR <= 0 || positionEntryPrice(pos) <= 0
 }
 
 // effectiveFixedStopLossATRPct returns the per-position fixed (non-trailing)
 // stop loss distance as a price-% derived from StopLossATRMult * EntryATR /
-// AvgCost. HL perps only.
+// first-entry price. HL perps only.
 //
 // Returns 0 when sc is non-HL-perps, StopLossATRMult is nil/<=0, or the
-// position is missing EntryATR / AvgCost — the arming step will simply
+// position is missing EntryATR / entry price — the arming step will simply
 // no-op until stampEntryATRIfOpened populates the position on the cycle
 // after the open fills. The derived price-% is capped at MaxAutoStopLossPct
 // to mirror trailing_stop_atr_mult so an extreme volatility window can't
@@ -192,10 +195,11 @@ func effectiveFixedStopLossATRPct(sc StrategyConfig, pos *Position) float64 {
 	if mult <= 0 {
 		return 0
 	}
-	if pos == nil || pos.EntryATR <= 0 || pos.AvgCost <= 0 {
+	entryPrice := positionEntryPrice(pos)
+	if pos == nil || pos.EntryATR <= 0 || entryPrice <= 0 {
 		return 0
 	}
-	pct := mult * pos.EntryATR / pos.AvgCost * 100.0
+	pct := mult * pos.EntryATR / entryPrice * 100.0
 	if pct > MaxAutoStopLossPct {
 		pct = MaxAutoStopLossPct
 	}
@@ -203,19 +207,20 @@ func effectiveFixedStopLossATRPct(sc StrategyConfig, pos *Position) float64 {
 }
 
 // fixedStopLossATRTriggerPx returns the fixed trigger price for a position
-// using StopLossATRMult. Long: AvgCost - mult*EntryATR; short: AvgCost +
+// using StopLossATRMult. Long: entry_price - mult*EntryATR; short: entry_price +
 // mult*EntryATR (clamped via the MaxAutoStopLossPct distance cap).
 // Returns 0 if not armable.
 func fixedStopLossATRTriggerPx(sc StrategyConfig, side string, pos *Position) float64 {
 	pct := effectiveFixedStopLossATRPct(sc, pos)
-	if pct <= 0 || pos == nil || pos.AvgCost <= 0 {
+	entryPrice := positionEntryPrice(pos)
+	if pct <= 0 || pos == nil || entryPrice <= 0 {
 		return 0
 	}
 	switch side {
 	case "long":
-		return pos.AvgCost * (1.0 - pct/100.0)
+		return entryPrice * (1.0 - pct/100.0)
 	case "short":
-		return pos.AvgCost * (1.0 + pct/100.0)
+		return entryPrice * (1.0 + pct/100.0)
 	}
 	return 0
 }
@@ -398,7 +403,7 @@ func tieredTPATRMissingEntryATR(sc StrategyConfig, pos *Position) bool {
 	if pos == nil {
 		return false
 	}
-	return pos.EntryATR <= 0 && pos.AvgCost > 0
+	return pos.EntryATR <= 0 && positionEntryPrice(pos) > 0
 }
 
 // notifyTieredTPATRMissingEntryATROnce emits a WARN log + notifier alert the
@@ -535,7 +540,7 @@ func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Positi
 	}
 	avgCost := 0.0
 	if pos != nil {
-		avgCost = pos.AvgCost
+		avgCost = positionEntryPrice(pos)
 	}
 	if highWater <= 0 {
 		highWater = avgCost
@@ -563,7 +568,7 @@ func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Positi
 // expectedSide guards against a side flip between snapshot and lock; prevSLOID
 // is the OID captured before the update (used to confirm the cancel applies to
 // the OID we expected to replace).
-func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string, prevSLOID int64, newHighWater float64, updateConfirmed bool, slUpdate *HyperliquidStopLossUpdateResult, logger *StrategyLogger) (immediateFill bool, fillPx float64) {
+func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string, prevSLOID int64, newHighWater float64, updateConfirmed bool, slUpdate *HyperliquidStopLossUpdateResult, protectedQty float64, logger *StrategyLogger) (immediateFill bool, fillPx float64) {
 	if s == nil {
 		return false, 0
 	}
@@ -588,6 +593,9 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 	case slUpdate.StopLossOID > 0:
 		pos.StopLossOID = slUpdate.StopLossOID
 		pos.StopLossTriggerPx = slUpdate.StopLossTriggerPx
+		if protectedQty > 0 {
+			pos.ProtectionQuantity = pos.Quantity
+		}
 		if logger != nil {
 			logger.Info("Trailing SL trigger updated oid=%d @ $%.4f", slUpdate.StopLossOID, slUpdate.StopLossTriggerPx)
 		}
@@ -603,23 +611,27 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 
 // runHyperliquidTrailingStopUpdate evaluates the per-cycle trailing-stop
 // update for an HL perps position. pos is the caller's snapshot of the
-// position fields needed for trailing math (AvgCost, EntryATR — held
+// position fields needed for trailing math (entry price, EntryATR — held
 // outside the state mutex so the subprocess call below can run without
 // blocking other strategies). The pointer is taken by value semantics; the
 // helper only reads, never writes through it.
-func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qty float64, pos *Position, mark, highWater, currentTrigger float64, currentOID int64, notifier *MultiNotifier, logger *StrategyLogger) (float64, *HyperliquidStopLossUpdateResult, bool) {
+func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qty float64, pos *Position, mark, highWater, currentTrigger float64, currentOID int64, forceReplace bool, notifier *MultiNotifier, logger *StrategyLogger) (float64, *HyperliquidStopLossUpdateResult, bool) {
 	trailingPct := effectiveTrailingStopPct(sc, pos)
 	if trailingPct <= 0 || qty <= 0 || mark <= 0 {
 		return highWater, nil, true
 	}
 	avgCost := 0.0
 	if pos != nil {
-		avgCost = pos.AvgCost
+		avgCost = positionEntryPrice(pos)
 	}
 	if highWater <= 0 {
 		highWater = avgCost
 	}
 	newHighWater, newTrigger, replace := computeTrailingStopUpdate(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger)
+	if !replace && forceReplace && currentOID > 0 && currentTrigger > 0 {
+		newTrigger = currentTrigger
+		replace = true
+	}
 	if !replace {
 		return newHighWater, nil, true
 	}

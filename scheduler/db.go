@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS positions (
     quantity REAL NOT NULL,
     initial_quantity REAL NOT NULL DEFAULT 0,
     avg_cost REAL NOT NULL,
+    entry_price REAL NOT NULL DEFAULT 0,
+    protection_quantity REAL NOT NULL DEFAULT 0,
     entry_atr REAL NOT NULL DEFAULT 0,
     side TEXT NOT NULL,
     multiplier REAL NOT NULL DEFAULT 0,
@@ -347,6 +349,11 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE positions ADD COLUMN regime_pending_label TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE positions ADD COLUMN regime_pending_count INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN regime_applied_label TEXT NOT NULL DEFAULT ''",
+		// #873: first-entry price for frozen ATR SL/TP geometry. AvgCost may
+		// blend after scale-ins, so protection math needs a durable basis.
+		"ALTER TABLE positions ADD COLUMN entry_price REAL NOT NULL DEFAULT 0",
+		// #873: virtual quantity last used to size exchange-side protection.
+		"ALTER TABLE positions ADD COLUMN protection_quantity REAL NOT NULL DEFAULT 0",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -830,8 +837,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	defer stmtStrat.Close()
 
-	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, tp_armed_tiers_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, regime, regime_windows_json, regime_pending_label, regime_pending_count, regime_applied_label)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_price, protection_quantity, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, tp_armed_tiers_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, regime, regime_windows_json, regime_pending_label, regime_pending_count, regime_applied_label)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare position insert: %w", err)
 	}
@@ -882,7 +889,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		for _, pos := range s.Positions {
 			positionID := ensurePositionTradeID(s.ID, pos.Symbol, pos)
 			tp1OID, tp2OID := firstTwoTPOIDs(pos.TPOIDs)
-			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel); err != nil {
+			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryPrice, pos.ProtectionQuantity, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel); err != nil {
 				return fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
 			}
 		}
@@ -1293,7 +1300,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	}
 
 	// 3. Load positions for each strategy.
-	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, COALESCE(tp1_oid, 0) AS tp1_oid, COALESCE(tp2_oid, 0) AS tp2_oid, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(tp_armed_tiers_json, '') AS tp_armed_tiers_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(sl_adjusted_tiers_processed, 0) AS sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, COALESCE(regime, '') AS regime, COALESCE(regime_windows_json, '') AS regime_windows_json, COALESCE(regime_pending_label, '') AS regime_pending_label, COALESCE(regime_pending_count, 0) AS regime_pending_count, COALESCE(regime_applied_label, '') AS regime_applied_label FROM positions")
+	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, COALESCE(entry_price, 0) AS entry_price, COALESCE(protection_quantity, 0) AS protection_quantity, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, COALESCE(tp1_oid, 0) AS tp1_oid, COALESCE(tp2_oid, 0) AS tp2_oid, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(tp_armed_tiers_json, '') AS tp_armed_tiers_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(sl_adjusted_tiers_processed, 0) AS sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, COALESCE(regime, '') AS regime, COALESCE(regime_windows_json, '') AS regime_windows_json, COALESCE(regime_pending_label, '') AS regime_pending_label, COALESCE(regime_pending_count, 0) AS regime_pending_count, COALESCE(regime_applied_label, '') AS regime_applied_label FROM positions")
 	if err != nil {
 		return nil, fmt.Errorf("load positions: %w", err)
 	}
@@ -1308,7 +1315,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		var regimeWindowsJSON string
 		var slATRMult sql.NullFloat64
 		var postTPTrailingMult sql.NullFloat64
-		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx, &tp1OID, &tp2OID, &tpOIDsJSON, &tpArmedTiersJSON, &slATRMult, &pos.TPTiersJSON, &pos.SLAdjustedTiersProcessed, &postTPTrailingMult, &pos.Regime, &regimeWindowsJSON, &pos.RegimePendingLabel, &pos.RegimePendingCount, &pos.RegimeAppliedLabel); err != nil {
+		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryPrice, &pos.ProtectionQuantity, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx, &tp1OID, &tp2OID, &tpOIDsJSON, &tpArmedTiersJSON, &slATRMult, &pos.TPTiersJSON, &pos.SLAdjustedTiersProcessed, &postTPTrailingMult, &pos.Regime, &regimeWindowsJSON, &pos.RegimePendingLabel, &pos.RegimePendingCount, &pos.RegimeAppliedLabel); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
 		pos.OpenedAt = parseTime(openedAtStr)
@@ -1454,13 +1461,13 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 
 // LifetimeTradeStats holds the per-strategy lifetime totals derived from
 // the trades table (#455/#471/#607). PositionsOpened is the lifetime count
-// of open legs (is_close=0 rows) — the #T column in summaries / leaderboard
-// shows positions entered, not closed round trips, so partial-close legs
-// don't inflate the count and still-open positions are included. Wins and
+// of distinct opened positions (is_close=0 grouped by position_id) — the #T
+// column in summaries / leaderboard shows positions entered, not open legs, so
+// scale-in/add rows sharing a position_id do not inflate it (#873). Wins and
 // Losses are derived from closed round trips grouped by position_id and
 // partitioned by strict net realized PnL sign (PnL > 0 → win, PnL < 0 →
-// loss); breakeven round trips are excluded from both buckets. Legacy close
-// rows without a position_id fall back to one synthetic group per row.
+// loss); breakeven round trips are excluded from both buckets. Legacy rows
+// without a position_id fall back to one synthetic group per row.
 type LifetimeTradeStats struct {
 	PositionsOpened int `json:"positions_opened"`
 	Wins            int `json:"wins"`
@@ -1470,11 +1477,12 @@ type LifetimeTradeStats struct {
 // LifetimeTradeStatsAll returns lifetime stats for every strategy that has
 // any trade row in the trades table. Strategies with no trades are absent
 // from the result; callers should treat a missing key as an all-zero
-// struct. PositionsOpened counts is_close=0 rows; Wins/Losses come from
-// closed-round-trip aggregation. Used by FormatCategorySummary (#455) and
-// the leaderboard (#580) to render lifetime #T / W/L columns that are
-// immune to kill-switch / circuit-breaker resets of the in-memory RiskState
-// counters.
+// struct. PositionsOpened counts distinct open position ids; Wins/Losses come
+// from closed-round-trip aggregation. Used by FormatCategorySummary (#455) and
+// the leaderboard (#580) to render lifetime #T / W/L columns that are immune
+// to kill-switch / circuit-breaker resets of the in-memory RiskState counters.
+// Scale-in rows share the original position_id, so the open count remains
+// "positions entered" rather than "add legs recorded" (#873).
 func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
@@ -1482,8 +1490,18 @@ func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, erro
 	out := make(map[string]LifetimeTradeStats)
 
 	openRows, err := sdb.db.Query(`SELECT strategy_id, COUNT(*)
-		FROM trades
-		WHERE is_close = 0
+		FROM (
+			SELECT
+				strategy_id,
+				CASE
+					WHEN position_id IS NULL OR position_id = ''
+					THEN 'legacy-open:' || rowid
+					ELSE position_id
+				END AS pkey
+			FROM trades
+			WHERE is_close = 0
+			GROUP BY strategy_id, pkey
+		)
 		GROUP BY strategy_id`)
 	if err != nil {
 		return nil, fmt.Errorf("query lifetime open counts: %w", err)
@@ -1555,8 +1573,17 @@ func (sdb *StateDB) LifetimeTradeStatsForStrategy(strategyID string) (LifetimeTr
 	var out LifetimeTradeStats
 	var opens sql.NullInt64
 	if err := sdb.db.QueryRow(`SELECT COUNT(*)
-		FROM trades
-		WHERE strategy_id = ? AND is_close = 0`, strategyID).Scan(&opens); err != nil {
+		FROM (
+			SELECT
+				CASE
+					WHEN position_id IS NULL OR position_id = ''
+					THEN 'legacy-open:' || rowid
+					ELSE position_id
+				END AS pkey
+			FROM trades
+			WHERE strategy_id = ? AND is_close = 0
+			GROUP BY pkey
+		)`, strategyID).Scan(&opens); err != nil {
 		return LifetimeTradeStats{}, fmt.Errorf("query lifetime open count for %s: %w", strategyID, err)
 	}
 	out.PositionsOpened = int(opens.Int64)
@@ -1705,12 +1732,12 @@ func (sdb *StateDB) QueryTradingViewExportTrades(strategyIDs []string) ([]Trade,
 }
 
 // PendingManualAction is a row from the pending_manual_actions queue table
-// written by the manual-open / manual-close CLI and drained by the scheduler
-// at the top of each cycle (#569).
+// written by the manual-open / manual-add / manual-close CLI and drained by
+// the scheduler at the top of each cycle (#569/#873).
 type PendingManualAction struct {
 	ID                int64
 	StrategyID        string
-	Action            string // "open" | "close"
+	Action            string // "open" | "add" | "close"
 	Symbol            string
 	Side              string
 	Quantity          float64
@@ -1726,8 +1753,8 @@ type PendingManualAction struct {
 	CreatedAt         time.Time
 }
 
-// InsertPendingManualAction enqueues a manual-open or manual-close action for
-// the scheduler to drain on its next cycle.
+// InsertPendingManualAction enqueues a manual-open, manual-add, or
+// manual-close action for the scheduler to drain on its next cycle.
 func (sdb *StateDB) InsertPendingManualAction(a PendingManualAction) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")

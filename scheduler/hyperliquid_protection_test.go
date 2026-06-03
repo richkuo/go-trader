@@ -42,6 +42,82 @@ func TestBuildHyperliquidProtectionPlanUsesDefaultTieredATR(t *testing.T) {
 	}
 }
 
+func TestBuildHyperliquidProtectionPlanUsesEntryPriceAfterScaleIn(t *testing.T) {
+	mult := 1.0
+	sc := StrategyConfig{
+		ID:              "hl-eth",
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		StopLossATRMult: &mult,
+		CloseStrategy:   &StrategyRef{Name: "tiered_tp_atr_live"},
+	}
+	pos := &Position{
+		Symbol:          "ETH",
+		Quantity:        1.5,
+		InitialQuantity: 1.5,
+		AvgCost:         110,
+		EntryPrice:      100,
+		EntryATR:        10,
+		Side:            "long",
+		TPOIDs:          []int64{101, 202},
+		TPArmedTiers:    []bool{true, false},
+	}
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	if !ok {
+		t.Fatal("buildHyperliquidProtectionPlan returned ok=false")
+	}
+	if plan.Size != 1.5 {
+		t.Errorf("Size = %g, want grown virtual quantity 1.5", plan.Size)
+	}
+	if plan.AvgCost != 100 {
+		t.Errorf("AvgCost = %g, want frozen EntryPrice 100", plan.AvgCost)
+	}
+	if !reflect.DeepEqual(plan.TPOIDs, []int64{101, 202}) {
+		t.Errorf("TPOIDs = %v, want existing OIDs preserved", plan.TPOIDs)
+	}
+	if !reflect.DeepEqual(plan.TPArmedTiers, []bool{true, false}) {
+		t.Errorf("TPArmedTiers = %v, want existing armed watermark preserved", plan.TPArmedTiers)
+	}
+}
+
+func TestBuildHyperliquidProtectionPlanForcesProtectionResizeAfterScaleIn(t *testing.T) {
+	mult := 1.0
+	sc := StrategyConfig{
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		StopLossATRMult: &mult,
+		CloseStrategy:   &StrategyRef{Name: "tiered_tp_atr"},
+	}
+	pos := &Position{
+		Symbol:             "ETH",
+		Quantity:           0.75,
+		InitialQuantity:    0.75,
+		AvgCost:            106,
+		EntryPrice:         100,
+		ProtectionQuantity: 0.5,
+		EntryATR:           10,
+		Side:               "long",
+		StopLossOID:        99,
+		TPOIDs:             []int64{0, 202},
+		TPArmedTiers:       []bool{true, true},
+	}
+
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	if !ok {
+		t.Fatal("buildHyperliquidProtectionPlan returned ok=false")
+	}
+	if !plan.ForceSLReplace {
+		t.Fatal("ForceSLReplace = false, want true after quantity grows")
+	}
+	wantForceTP := []bool{false, true}
+	if !reflect.DeepEqual(plan.ForceTPReplace, wantForceTP) {
+		t.Errorf("ForceTPReplace = %v, want %v", plan.ForceTPReplace, wantForceTP)
+	}
+	if !reflect.DeepEqual(plan.TPArmedTiers, []bool{true, true}) {
+		t.Errorf("TPArmedTiers = %v, want consumed-tier watermarks preserved", plan.TPArmedTiers)
+	}
+}
+
 func TestBuildHyperliquidProtectionPlanManualStrategy(t *testing.T) {
 	mult := 1.5
 	sc := StrategyConfig{
@@ -527,6 +603,9 @@ func TestRunHyperliquidProtectionSyncManualAppliesOIDs(t *testing.T) {
 	pos := state.Positions["ETH"]
 	if pos.StopLossOID != 999 {
 		t.Errorf("StopLossOID = %d, want 999", pos.StopLossOID)
+	}
+	if pos.ProtectionQuantity != 0.4 {
+		t.Errorf("ProtectionQuantity = %g, want 0.4", pos.ProtectionQuantity)
 	}
 	if !reflect.DeepEqual(pos.TPOIDs, []int64{111, 222}) {
 		t.Errorf("TPOIDs = %v, want [111 222]", pos.TPOIDs)

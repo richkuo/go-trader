@@ -1141,7 +1141,7 @@ func runPostTPStopLossAdjustment(
 		return false
 	}
 	side := pos.Side
-	avgCost := pos.AvgCost
+	avgCost := positionEntryPrice(pos)
 	entryATR := pos.EntryATR
 	qty := pos.Quantity
 	currentOID := pos.StopLossOID

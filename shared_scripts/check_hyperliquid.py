@@ -794,7 +794,7 @@ def run_sync_protection(
         sys.exit(1)
 
 
-def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0, close_full_position=False, account_leverage=0, account_margin_mode=""):
+def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, stop_loss_trigger_px=0.0, cancel_oid=0, prev_pos_qty=0.0, existing_same_side_qty=0.0, margin_mode="", leverage=0, close_full_position=False, account_leverage=0, account_margin_mode=""):
     """Place a live market order on Hyperliquid, optionally wrapping it with
     a stop-loss trigger (open) or cancelling a stale SL trigger (close).
 
@@ -806,6 +806,11 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
     flipped through (e.g. long→short). On a flip, total_sz from the fill is
     closeQty + newQty, so the SL must be sized against ``total_sz - prev_pos_qty``
     to avoid placing an oversized reduce-only trigger that HL may reject (#421).
+    ``existing_same_side_qty`` is the absolute quantity of an existing same-side
+    position being scaled into; percent-SL replacement must cover old+new size
+    rather than just the add fill (#873).
+    ``stop_loss_trigger_px`` preserves an existing first-entry SL trigger during
+    same-side scale-ins; when set it wins over ``stop_loss_pct`` for placement.
     For pure opens from flat (no flip), pass 0 — full total_sz is the new
     position size."""
     if mode != "live":
@@ -963,21 +968,28 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
         # usually means the order was rejected and there's nothing to protect.
         sl_err = ""
         sl_filled_immediately = False
-        # Net new-position size: on a flip (long→short or vice versa) total_sz
-        # is closeQty + newQty, but reduce-only triggers must be sized against
-        # the resulting net position (#421).
-        net_new_sz = max(fill.get("total_sz", 0) - max(prev_pos_qty, 0.0), 0.0)
-        if stop_loss_pct > 0 and fill.get("avg_px", 0) > 0 and net_new_sz > 0:
+        # Resulting position size for the replacement SL. On a flip
+        # (long→short or vice versa) total_sz is closeQty + newQty, but
+        # reduce-only triggers must be sized against the resulting net position
+        # (#421). On a same-side scale-in, the fill only reports the add leg,
+        # so include the pre-existing same-side virtual quantity (#873).
+        resulting_pos_sz = max(fill.get("total_sz", 0), 0.0)
+        if existing_same_side_qty > 0:
+            resulting_pos_sz += existing_same_side_qty
+        elif prev_pos_qty > 0:
+            resulting_pos_sz = max(resulting_pos_sz - prev_pos_qty, 0.0)
+        should_place_sl = (stop_loss_trigger_px > 0 or stop_loss_pct > 0) and resulting_pos_sz > 0
+        if should_place_sl and fill.get("avg_px", 0) > 0:
             entry_px = fill["avg_px"]
-            sl_size = net_new_sz
+            sl_size = resulting_pos_sz
             # Stop-loss fires against the opposite direction of the open:
             # long open (is_buy=True)  → SL sells when price drops below entry*(1-pct).
             # short open (is_buy=False) → SL buys when price rises above entry*(1+pct).
             if is_buy:
-                trigger_px = entry_px * (1.0 - stop_loss_pct / 100.0)
+                trigger_px = stop_loss_trigger_px if stop_loss_trigger_px > 0 else entry_px * (1.0 - stop_loss_pct / 100.0)
                 sl_is_buy = False
             else:
-                trigger_px = entry_px * (1.0 + stop_loss_pct / 100.0)
+                trigger_px = stop_loss_trigger_px if stop_loss_trigger_px > 0 else entry_px * (1.0 + stop_loss_pct / 100.0)
                 sl_is_buy = True
             # Pre-round to HL's per-asset px tick so the recorded value matches
             # the price the order actually rests at — the scheduler books PnL
@@ -1289,10 +1301,14 @@ def main():
         parser.add_argument("--mode", default="live")
         parser.add_argument("--stop-loss-pct", type=float, default=0.0,
                             help="place a reduce-only SL trigger this pct away from fill (#412)")
+        parser.add_argument("--stop-loss-trigger-px", type=float, default=0.0,
+                            help="place a replacement SL at this existing trigger price, preserving first-entry geometry during scale-in (#873)")
         parser.add_argument("--cancel-stop-loss-oid", type=int, action="append", default=[],
                             help="cancel this trigger OID before placing the new order (#412)")
         parser.add_argument("--prev-pos-qty", type=float, default=0.0,
                             help="abs qty of existing position being flipped, so SL is sized against the new net position (#421)")
+        parser.add_argument("--existing-same-side-qty", type=float, default=0.0,
+                            help="abs qty of an existing same-side position being scaled into, so replacement SL covers old+new size (#873)")
         parser.add_argument("--margin-mode", default="",
                             help="enforce 'isolated' or 'cross' margin via update_leverage before the order; only safe on a fresh open from flat (#486)")
         parser.add_argument("--leverage", type=float, default=0.0,
@@ -1310,8 +1326,10 @@ def main():
             print(json.dumps({"error": "--size must be > 0 unless --close-full-position is set"}))
             sys.exit(1)
         run_execute(args.symbol, args.side, args.size, args.mode,
-                    stop_loss_pct=args.stop_loss_pct, cancel_oid=args.cancel_stop_loss_oid,
+                    stop_loss_pct=args.stop_loss_pct, stop_loss_trigger_px=args.stop_loss_trigger_px,
+                    cancel_oid=args.cancel_stop_loss_oid,
                     prev_pos_qty=args.prev_pos_qty,
+                    existing_same_side_qty=args.existing_same_side_qty,
                     margin_mode=args.margin_mode, leverage=args.leverage,
                     close_full_position=args.close_full_position,
                     account_leverage=args.account_leverage,

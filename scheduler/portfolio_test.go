@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +39,53 @@ func TestPositionJSONUsesPositionID(t *testing.T) {
 				t.Fatalf("trade_position_id should not be emitted in %s JSON: %s", tc.name, raw)
 			}
 		})
+	}
+}
+
+func TestBlendPositionScaleInPreservesOpenGeometry(t *testing.T) {
+	pos := &Position{
+		Symbol:                   "ETH",
+		Quantity:                 1,
+		InitialQuantity:          1,
+		AvgCost:                  100,
+		EntryPrice:               100,
+		EntryATR:                 5,
+		Side:                     "long",
+		Regime:                   "trending_up",
+		TPOIDs:                   []int64{11, 22},
+		TPArmedTiers:             []bool{true, true},
+		SLAdjustedTiersProcessed: 1,
+	}
+	if !blendPositionScaleIn(pos, 0.5, 110) {
+		t.Fatal("blendPositionScaleIn returned false")
+	}
+	if math.Abs(pos.Quantity-1.5) > 1e-9 {
+		t.Errorf("Quantity = %g, want 1.5", pos.Quantity)
+	}
+	if math.Abs(pos.InitialQuantity-1.5) > 1e-9 {
+		t.Errorf("InitialQuantity = %g, want 1.5", pos.InitialQuantity)
+	}
+	wantAvg := (1*100 + 0.5*110) / 1.5
+	if math.Abs(pos.AvgCost-wantAvg) > 1e-9 {
+		t.Errorf("AvgCost = %g, want %g", pos.AvgCost, wantAvg)
+	}
+	if pos.EntryPrice != 100 {
+		t.Errorf("EntryPrice = %g, want frozen first entry 100", pos.EntryPrice)
+	}
+	if pos.ProtectionQuantity != 1 {
+		t.Errorf("ProtectionQuantity = %g, want old qty 1 before scale-in", pos.ProtectionQuantity)
+	}
+	if pos.EntryATR != 5 || pos.Regime != "trending_up" {
+		t.Errorf("EntryATR/Regime changed: atr=%g regime=%q", pos.EntryATR, pos.Regime)
+	}
+	if len(pos.TPOIDs) != 2 || pos.TPOIDs[0] != 11 || pos.TPOIDs[1] != 22 {
+		t.Errorf("TPOIDs changed: %v", pos.TPOIDs)
+	}
+	if len(pos.TPArmedTiers) != 2 || !pos.TPArmedTiers[0] || !pos.TPArmedTiers[1] {
+		t.Errorf("TPArmedTiers changed: %v", pos.TPArmedTiers)
+	}
+	if pos.SLAdjustedTiersProcessed != 1 {
+		t.Errorf("SLAdjustedTiersProcessed = %d, want 1", pos.SLAdjustedTiersProcessed)
 	}
 }
 
@@ -1064,6 +1112,21 @@ func TestPerpsOrderSkipReason(t *testing.T) {
 	}
 }
 
+func TestPerpsOrderSkipReasonWithScaleInAllowsOptedInSameSide(t *testing.T) {
+	if got := PerpsOrderSkipReason(1, "long", DirectionLong); got == "" {
+		t.Fatal("default guard should still skip same-side long buys")
+	}
+	if got := PerpsOrderSkipReasonWithScaleIn(1, "long", DirectionLong, true); got != "" {
+		t.Fatalf("scale-in guard returned %q, want allowed same-side long buy", got)
+	}
+	if got := PerpsOrderSkipReasonWithScaleIn(-1, "short", DirectionShort, true); got != "" {
+		t.Fatalf("scale-in guard returned %q, want allowed same-side short sell", got)
+	}
+	if got := PerpsOrderSkipReasonWithScaleIn(1, "long", DirectionShort, true); got == "" {
+		t.Fatal("orphan long under direction=short must still skip, even with scale-in enabled")
+	}
+}
+
 // #300 regression — SpotOrderSkipReason must mirror every side-based skip
 // branch of ExecuteSpotSignal. Live helpers (Robinhood, OKX spot) consult
 // this guard BEFORE placing live orders; a missed case re-introduces the
@@ -1879,6 +1942,24 @@ func TestPerpsLiveOrderSize_FlipProfitableFlipUsesRealizedGain(t *testing.T) {
 	}
 }
 
+func TestPerpsLiveOrderSize_ScaleInRespectsPositionCap(t *testing.T) {
+	// Existing long: 1 ETH at mark $100. Cap $150 leaves $50 room; the normal
+	// open budget ($100 cash × 2x = $200) must be clipped to the remaining cap.
+	size, ok, reason := perpsLiveOrderSizeWithScaleIn(1, 100, 100, 1, 100, 2, 2, 0, "long", DirectionLong, 0, true, 150)
+	if !ok {
+		t.Fatalf("expected ok, got reason=%q", reason)
+	}
+	if math.Abs(size-0.5) > 1e-9 {
+		t.Errorf("size = %g, want 0.5 (remaining $50 / $100)", size)
+	}
+
+	if size, ok, reason = perpsLiveOrderSizeWithScaleIn(1, 100, 100, 1, 100, 2, 2, 0, "long", DirectionLong, 0, true, 100); ok {
+		t.Fatalf("expected cap-reached skip, got size=%g reason=%q", size, reason)
+	} else if !strings.Contains(reason, "scale-in cap reached") {
+		t.Fatalf("reason = %q, want cap reached", reason)
+	}
+}
+
 // #518 — PerpsOpenNotional: margin-based sizing kicks in when
 // marginPerTradeUSD is positive and overrides the legacy sizing_leverage
 // formula. The pain point in the issue (sizing_leverage=0.1 + leverage=20
@@ -1960,6 +2041,78 @@ func TestExecutePerpsSignalMarginPerTradeUSDOverridesSizingLeverage(t *testing.T
 	// Allow a small slippage margin around 0.50 ETH.
 	if pos.Quantity < 0.45 || pos.Quantity > 0.55 {
 		t.Errorf("quantity = %g, want ~0.50 (margin_per_trade_usd=$56 × 20x leverage at $2257)", pos.Quantity)
+	}
+}
+
+func TestExecutePerpsSignalScaleInBlendsExistingPosition(t *testing.T) {
+	s := &StrategyState{
+		ID:       "hl-test-eth",
+		Cash:     1000,
+		Platform: "hyperliquid",
+		Type:     "perps",
+		Regime:   "ranging",
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol:                   "ETH",
+				Quantity:                 1,
+				InitialQuantity:          1,
+				AvgCost:                  100,
+				EntryPrice:               100,
+				EntryATR:                 7,
+				Side:                     "long",
+				Multiplier:               1,
+				Leverage:                 2,
+				Regime:                   "trending_up",
+				TradePositionID:          "pos-1",
+				TPOIDs:                   []int64{101, 202},
+				TPArmedTiers:             []bool{true, false},
+				SLAdjustedTiersProcessed: 1,
+			},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	trades, err := ExecutePerpsSignalWithLeverageScaleIn(s, 1, "ETH", 110, 1, 2, 0, 0.5, "oid-2", 0.03, DirectionLong, 0, true, 300, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	pos := s.Positions["ETH"]
+	if pos == nil {
+		t.Fatal("position missing")
+	}
+	if math.Abs(pos.Quantity-1.5) > 1e-9 || math.Abs(pos.InitialQuantity-1.5) > 1e-9 {
+		t.Fatalf("qty/initial = %g/%g, want 1.5/1.5", pos.Quantity, pos.InitialQuantity)
+	}
+	wantAvg := (1*100 + 0.5*110) / 1.5
+	if math.Abs(pos.AvgCost-wantAvg) > 1e-9 {
+		t.Errorf("AvgCost = %g, want %g", pos.AvgCost, wantAvg)
+	}
+	if pos.EntryPrice != 100 || pos.EntryATR != 7 || pos.Regime != "trending_up" {
+		t.Errorf("frozen fields changed: entry_price=%g atr=%g regime=%q", pos.EntryPrice, pos.EntryATR, pos.Regime)
+	}
+	if pos.SLAdjustedTiersProcessed != 1 || len(pos.TPOIDs) != 2 || pos.TPOIDs[0] != 101 {
+		t.Errorf("protection state changed: sl_after=%d tp_oids=%v", pos.SLAdjustedTiersProcessed, pos.TPOIDs)
+	}
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory len = %d, want 1", len(s.TradeHistory))
+	}
+	tr := s.TradeHistory[0]
+	if tr.IsClose {
+		t.Fatal("scale-in trade must be an open/add row, not close")
+	}
+	if tr.PositionID != "pos-1" || tr.ExchangeOrderID != "oid-2" || tr.Regime != "trending_up" {
+		t.Errorf("trade identity snapshot = position_id=%q oid=%q regime=%q", tr.PositionID, tr.ExchangeOrderID, tr.Regime)
+	}
+	if tr.ExchangeFee != 0.03 {
+		t.Errorf("ExchangeFee = %g, want 0.03", tr.ExchangeFee)
 	}
 }
 

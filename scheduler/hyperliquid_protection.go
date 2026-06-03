@@ -35,7 +35,8 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 	if (sc.Type != "perps" && sc.Type != "manual") || sc.Platform != "hyperliquid" || pos == nil {
 		return hlProtectionPlan{}, false
 	}
-	if pos.Symbol == "" || pos.Quantity <= 0 || pos.AvgCost <= 0 || pos.EntryATR <= 0 {
+	entryPrice := positionEntryPrice(pos)
+	if pos.Symbol == "" || pos.Quantity <= 0 || entryPrice <= 0 || pos.EntryATR <= 0 {
 		return hlProtectionPlan{}, false
 	}
 	if pos.Side != "long" && pos.Side != "short" {
@@ -66,18 +67,64 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 		return hlProtectionPlan{}, false
 	}
 	tierCount := len(tiers)
-	return hlProtectionPlan{
+	plan := hlProtectionPlan{
 		Symbol:          pos.Symbol,
 		Side:            pos.Side,
 		Size:            pos.Quantity,
-		AvgCost:         pos.AvgCost,
+		AvgCost:         entryPrice,
 		EntryATR:        pos.EntryATR,
 		StopLossATRMult: slMult,
 		StopLossOID:     pos.StopLossOID,
 		Tiers:           tiers,
 		TPOIDs:          tpOIDsForTierCount(pos.TPOIDs, tierCount),
 		TPArmedTiers:    tpArmedTiersForTierCount(pos.TPArmedTiers, tierCount),
-	}, true
+	}
+	if positionProtectionNeedsResize(pos) {
+		if plan.StopLossATRMult > 0 && plan.StopLossOID > 0 {
+			plan.ForceSLReplace = true
+		}
+		plan.ForceTPReplace = protectionResizeForceTPReplace(plan)
+	}
+	return plan, true
+}
+
+func protectionResizeForceTPReplace(plan hlProtectionPlan) []bool {
+	if len(plan.Tiers) == 0 {
+		return nil
+	}
+	out := make([]bool, len(plan.Tiers))
+	any := false
+	for i := range out {
+		if i < len(plan.TPOIDs) && plan.TPOIDs[i] > 0 {
+			out[i] = true
+			any = true
+		}
+	}
+	if !any {
+		return nil
+	}
+	return out
+}
+
+func protectionSyncResultFullySized(result *HyperliquidProtectionSyncResult) bool {
+	if result == nil {
+		return false
+	}
+	if len(formatProtectionSyncWarnings(result)) > 0 {
+		return false
+	}
+	if result.StopLossFilledExternally {
+		return false
+	}
+	for _, filled := range result.TPFilledExternally {
+		if filled {
+			return false
+		}
+	}
+	if result.TP1FilledExternally || result.TP2FilledExternally {
+		return false
+	}
+	return true
 }
 
 // strategyTPTiers returns the cumulative ATR take-profit tiers for the
@@ -571,8 +618,8 @@ func runHyperliquidProtectionSync(
 				plan.CancelTPOIDs = dynamicProtectionSurplusTPOIDs(pos.TPOIDs, len(plan.Tiers))
 				if regimeChanged {
 					forceSL, forceTP := dynamicProtectionForceReplace(sc, pos, plan, oldAppliedRegime, true)
-					plan.ForceSLReplace = forceSL
-					plan.ForceTPReplace = forceTP
+					plan.ForceSLReplace = plan.ForceSLReplace || forceSL
+					plan.ForceTPReplace = mergeForceTPReplace(plan.ForceTPReplace, forceTP, len(plan.Tiers))
 				}
 			}
 		}
@@ -598,6 +645,9 @@ func runHyperliquidProtectionSync(
 		return false
 	}
 	applyHyperliquidProtectionSync(pos, protection, plan.CancelTPOIDs)
+	if protectionSyncResultFullySized(protection) {
+		pos.ProtectionQuantity = plan.Size
+	}
 	if logger != nil && len(protection.TPCancelFilledOIDs) > 0 {
 		logger.Info("surplus TP OIDs filled on-chain (reconciler will book): %v", protection.TPCancelFilledOIDs)
 	}
@@ -612,6 +662,24 @@ func runHyperliquidProtectionSync(
 		logger.Info("%s (sl_oid=%d tp_oids=%v)", logTag, pos.StopLossOID, pos.TPOIDs)
 	}
 	return true
+}
+
+func mergeForceTPReplace(a, b []bool, n int) []bool {
+	if n <= 0 {
+		return nil
+	}
+	out := make([]bool, n)
+	any := false
+	for i := 0; i < n; i++ {
+		if (i < len(a) && a[i]) || (i < len(b) && b[i]) {
+			out[i] = true
+			any = true
+		}
+	}
+	if !any {
+		return nil
+	}
+	return out
 }
 
 // hyperliquidPlacesOnChainTPs reports whether sc is configured to place

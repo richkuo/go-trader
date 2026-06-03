@@ -447,7 +447,7 @@ func ratchetTestState(pos *Position) *StrategyState {
 func TestApplyTrailingStopUpdateResult_RestingReplacement(t *testing.T) {
 	s := ratchetTestState(&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: 5, StopLossOID: 7})
 	upd := &HyperliquidStopLossUpdateResult{StopLossOID: 42, StopLossTriggerPx: 95}
-	fill, px := applyTrailingStopUpdateResult(s, "ETH", "long", 7, 0, false, upd, nil)
+	fill, px := applyTrailingStopUpdateResult(s, "ETH", "long", 7, 0, false, upd, 1, nil)
 	if fill || px != 0 {
 		t.Fatalf("resting replacement: fill=%v px=%v want false,0", fill, px)
 	}
@@ -455,12 +455,15 @@ func TestApplyTrailingStopUpdateResult_RestingReplacement(t *testing.T) {
 	if p.StopLossOID != 42 || p.StopLossTriggerPx != 95 {
 		t.Fatalf("resting replacement OID/trigger = %d/%v want 42/95", p.StopLossOID, p.StopLossTriggerPx)
 	}
+	if p.ProtectionQuantity != 1 {
+		t.Fatalf("ProtectionQuantity = %g want 1", p.ProtectionQuantity)
+	}
 }
 
 func TestApplyTrailingStopUpdateResult_ImmediateFillBooksClose(t *testing.T) {
 	s := ratchetTestState(&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: 5, StopLossOID: 7})
 	upd := &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 95}
-	fill, px := applyTrailingStopUpdateResult(s, "ETH", "long", 7, 0, false, upd, nil)
+	fill, px := applyTrailingStopUpdateResult(s, "ETH", "long", 7, 0, false, upd, 0, nil)
 	if !fill || px != 95 {
 		t.Fatalf("immediate fill: fill=%v px=%v want true,95", fill, px)
 	}
@@ -472,7 +475,7 @@ func TestApplyTrailingStopUpdateResult_ImmediateFillBooksClose(t *testing.T) {
 func TestApplyTrailingStopUpdateResult_CancelWithoutRestClearsStaleOID(t *testing.T) {
 	s := ratchetTestState(&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: 5, StopLossOID: 7, StopLossTriggerPx: 96})
 	upd := &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true}
-	fill, _ := applyTrailingStopUpdateResult(s, "ETH", "long", 7, 0, false, upd, nil)
+	fill, _ := applyTrailingStopUpdateResult(s, "ETH", "long", 7, 0, false, upd, 0, nil)
 	if fill {
 		t.Fatal("cancel-without-rest: want fill=false")
 	}
@@ -485,7 +488,7 @@ func TestApplyTrailingStopUpdateResult_CancelWithoutRestClearsStaleOID(t *testin
 func TestApplyTrailingStopUpdateResult_SideGuardSkipsMutation(t *testing.T) {
 	s := ratchetTestState(&Position{Symbol: "ETH", Side: "short", Quantity: 1, AvgCost: 100, EntryATR: 5, StopLossOID: 7})
 	upd := &HyperliquidStopLossUpdateResult{StopLossOID: 42, StopLossTriggerPx: 95}
-	fill, _ := applyTrailingStopUpdateResult(s, "ETH", "long", 7, 0, false, upd, nil)
+	fill, _ := applyTrailingStopUpdateResult(s, "ETH", "long", 7, 0, false, upd, 0, nil)
 	if fill {
 		t.Fatal("side mismatch: want fill=false")
 	}

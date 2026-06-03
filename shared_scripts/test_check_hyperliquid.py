@@ -223,6 +223,52 @@ class TestFillExtraction:
         result = self._run_execute_with_mock_response(sdk_response)
         assert result["execution"]["fill"] == {}
 
+    def test_scale_in_stop_loss_sizes_old_plus_new(self):
+        """#873: same-side add should replace percent SL for old+new quantity."""
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.market_open.return_value = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [
+                {"filled": {"avgPx": "2000", "totalSz": "0.25"}}
+            ]}},
+        }
+        mock_adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 4)
+        mock_adapter.place_stop_loss.return_value = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [
+                {"resting": {"oid": 777}}
+            ]}},
+        }
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                mod.run_execute(
+                    "ETH", "buy", 0.25, "live",
+                    stop_loss_pct=5,
+                    stop_loss_trigger_px=1850,
+                    existing_same_side_qty=0.5,
+                )
+
+        out = json.loads(captured.getvalue())
+        assert out["execution"]["fill"]["stop_loss_oid"] == 777
+        mock_adapter.place_stop_loss.assert_called_once_with("ETH", 0.75, 1850.0, False)
+
 
 class TestMarginMode:
     """#486: run_execute calls update_leverage with isolated/cross before placing

@@ -392,9 +392,10 @@ func tryBookSoleOwnerTPFill(
 	if statePos == nil || statePos.Quantity <= 0 {
 		return false
 	}
-	if statePos.AvgCost <= 0 || statePos.EntryATR <= 0 {
-		// TP price computation needs AvgCost + EntryATR; without them we
-		// can't attribute. Fall back to the legacy reconciler.
+	entryPrice := positionEntryPrice(statePos)
+	if entryPrice <= 0 || statePos.EntryATR <= 0 {
+		// TP price computation needs first-entry price + EntryATR; without
+		// them we can't attribute. Fall back to the legacy reconciler.
 		return false
 	}
 
@@ -482,7 +483,7 @@ func tryBookSoleOwnerTPFill(
 		soleOwnerRecoveryBook = true
 	}
 
-	tpPrices := tieredTPATRPricesForRegime(sc, statePos.Side, statePos.AvgCost, statePos.EntryATR, statePos.Regime)
+	tpPrices := tieredTPATRPricesForRegime(sc, statePos.Side, entryPrice, statePos.EntryATR, statePos.Regime)
 	tpPrice := 0.0
 	if tierIdx >= 0 && tierIdx < len(tpPrices) {
 		tpPrice = tpPrices[tierIdx]

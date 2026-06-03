@@ -85,6 +85,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].margin_per_trade_usd: %s -> %s", sc.ID, formatFloatPtrUSD(sc.MarginPerTradeUSD), formatFloatPtrUSD(ns.MarginPerTradeUSD))
 			sc.MarginPerTradeUSD = ns.MarginPerTradeUSD
 		}
+		if sc.AllowScaleIn != ns.AllowScaleIn {
+			addChange("strategy[%s].allow_scale_in: %t -> %t", sc.ID, sc.AllowScaleIn, ns.AllowScaleIn)
+			sc.AllowScaleIn = ns.AllowScaleIn
+		}
+		if !floatPtrEqual(sc.ScaleInMaxPositionNotionalUSD, ns.ScaleInMaxPositionNotionalUSD) {
+			addChange("strategy[%s].scale_in_max_position_notional_usd: %s -> %s", sc.ID, formatFloatPtrUSD(sc.ScaleInMaxPositionNotionalUSD), formatFloatPtrUSD(ns.ScaleInMaxPositionNotionalUSD))
+			sc.ScaleInMaxPositionNotionalUSD = ns.ScaleInMaxPositionNotionalUSD
+		}
 		if sc.IntervalSeconds != ns.IntervalSeconds {
 			addChange("strategy[%s].interval_seconds: %d -> %d", sc.ID, sc.IntervalSeconds, ns.IntervalSeconds)
 			sc.IntervalSeconds = ns.IntervalSeconds
@@ -337,6 +345,16 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 			errs = append(errs, fmt.Sprintf("strategy[%s] leverage changed with open positions (%.2fx -> %.2fx; flatten first or restart after close)",
 				sc.ID, sc.Leverage, ns.Leverage))
 		}
+		if sc.Type == "perps" && sc.Platform == "hyperliquid" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			if sc.AllowScaleIn != ns.AllowScaleIn {
+				errs = append(errs, fmt.Sprintf("strategy[%s] allow_scale_in changed with open positions (%t -> %t; flatten first or restart after close)",
+					sc.ID, sc.AllowScaleIn, ns.AllowScaleIn))
+			}
+			if !floatPtrEqual(sc.ScaleInMaxPositionNotionalUSD, ns.ScaleInMaxPositionNotionalUSD) {
+				errs = append(errs, fmt.Sprintf("strategy[%s] scale_in_max_position_notional_usd changed with open positions (%s -> %s; flatten first or restart after close)",
+					sc.ID, formatFloatPtrUSD(sc.ScaleInMaxPositionNotionalUSD), formatFloatPtrUSD(ns.ScaleInMaxPositionNotionalUSD)))
+			}
+		}
 		// #656: direction change with open positions risks orphaning the
 		// existing side or flipping it on the next signal. Block until flat;
 		// numeric changes when flat take effect on the next cycle. Compares
@@ -502,6 +520,8 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.Leverage = 0
 	sc.SizingLeverage = 0
 	sc.MarginPerTradeUSD = nil // #518: hot-reloadable; nil/positive switching is purely additive
+	sc.AllowScaleIn = false    // #873: hot-reloadable when flat; state-compat blocks while open
+	sc.ScaleInMaxPositionNotionalUSD = nil
 	sc.IntervalSeconds = 0
 	sc.OpenStrategy = StrategyRef{}
 	sc.CloseStrategy = nil
