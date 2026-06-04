@@ -1768,6 +1768,24 @@ func main() {
 											trades += extraTrades
 											detail = slDetail
 										}
+									} else {
+										// #885: arm the initial trailing SL inline on the open
+										// cycle for ATR-trailing owners. They get no inline SL at
+										// the execute order (EffectiveStopLossPct defers to 0) and
+										// the sync above doesn't place one (the plan never reads
+										// the trailing fields), so without this they stay naked
+										// until the next Signal==0 walker cycle. No-op for every
+										// other owner and for close/partial-close legs (the
+										// helper's internal guards: live + trailing owner + no
+										// resting SL).
+										filledQty := 0.0
+										if execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.TotalSz > 0 {
+											filledQty = execResult.Execution.Fill.TotalSz
+										}
+										if extraTrades, slDetail := armTrailingStopAtOpenNow(sc, stratState, result.Symbol, price, hlOnChainAbsQty, filledQty, &mu, notifier, logger); extraTrades > 0 {
+											trades += extraTrades
+											detail = slDetail
+										}
 									}
 									mu.Lock()
 									var pos *Position
