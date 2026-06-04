@@ -72,6 +72,7 @@ var knownShortNames = map[string]string{
 	"session_breakout":      "sbo",
 	"bear_pullback_st":      "bps",
 	"vwap_rejection_st":     "vrs",
+	"consolidation_range":   "cr",
 }
 
 // bidirectionalPerpsStrategies lists strategy IDs that emit signal=-1 as a
@@ -79,14 +80,15 @@ var knownShortNames = map[string]string{
 // set AllowShorts=true so ExecutePerpsSignal opens shorts from flat instead
 // of skipping the signal (#328).
 var bidirectionalPerpsStrategies = map[string]bool{
-	"triple_ema_bidir":  true,
-	"tema_cross_bd":     true,
-	"session_breakout":  true,
-	"donchian_breakout": true, // emits short on lower-channel breakdown (#649)
-	"chart_pattern":     true, // emits short on bearish patterns (double top, H&S, bear flag) (#649)
-	"liquidity_sweeps":  true, // emits short on stop-hunt wicks above swing highs (#649)
-	"bear_pullback_st":  true, // dedicated short-only strategy for bear-market rally rejections (#651)
-	"vwap_rejection_st": true, // dedicated short-only strategy for VWAP/EMA rally rejections in bearish regime (#652)
+	"triple_ema_bidir":    true,
+	"tema_cross_bd":       true,
+	"session_breakout":    true,
+	"donchian_breakout":   true, // emits short on lower-channel breakdown (#649)
+	"chart_pattern":       true, // emits short on bearish patterns (double top, H&S, bear flag) (#649)
+	"liquidity_sweeps":    true, // emits short on stop-hunt wicks above swing highs (#649)
+	"bear_pullback_st":    true, // dedicated short-only strategy for bear-market rally rejections (#651)
+	"vwap_rejection_st":   true, // dedicated short-only strategy for VWAP/EMA rally rejections in bearish regime (#652)
+	"consolidation_range": true, // emits short at the top edge of a consolidation box (range-edge mean-reversion)
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {

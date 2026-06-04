@@ -439,6 +439,11 @@ DEFAULT_PARAM_RANGES = {
         "entry_period": [10, 20, 30],
         "exit_period": [5, 10, 15],
     },
+    "consolidation_range": {
+        "box_width_pct": [0.03, 0.05, 0.08, 0.10],
+        "min_bars": [12, 16, 24],
+        "edge_entry_frac": [0.1, 0.2, 0.33],
+    },
     "bear_pullback_st": {
         "ema_short": [13, 20, 26],
         "ema_mid": [34, 50, 80],

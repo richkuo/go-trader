@@ -21,3 +21,6 @@ local/
 # macOS
 .DS_Store
 architecture.md
+
+# consolidation research generated output (regenerable)
+backtest/consolidation_out/
