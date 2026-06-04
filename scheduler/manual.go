@@ -33,7 +33,7 @@ func runManualOpen(args []string) int {
 	slPct := fs.Float64("stop-loss-pct", 0, "Override stop_loss_pct for this position (0 = use strategy default)")
 	fillPrice := fs.Float64("fill-price", 0, "Fill price for --record-only (required when --record-only is set)")
 	limitPrice := fs.Float64("limit-price", 0, "Place a resting limit order at this price instead of a market order (#883). The scheduler tracks fills and arms protection post-fill.")
-	tif := fs.String("tif", "Alo", "Time-in-force for --limit-price: Alo=post-only maker (default, rejects a crossed price), Gtc=allow immediate marketable fill")
+	tif := fs.String("tif", "Alo", "Time-in-force for --limit-price: Alo=post-only maker (default, rejects a crossed price) or Gtc=allow immediate marketable fill")
 	expireAfter := fs.Duration("expire-after", 0, "Auto-cancel a resting --limit-price order after this duration (e.g. 2h, 30m); 0 = GTC, no expiry")
 	recordOnly := fs.Bool("record-only", false, "Register an existing fill without placing a new on-chain order")
 	dryRun := fs.Bool("dry-run", false, "Print planned action without placing order or mutating state")
@@ -120,8 +120,11 @@ func runManualOpen(args []string) int {
 			fmt.Fprintln(os.Stderr, "error: --limit-price cannot be combined with --record-only (a resting order has no fill to record yet)")
 			return 2
 		}
-		if *tif != "Alo" && *tif != "Gtc" && *tif != "Ioc" {
-			fmt.Fprintf(os.Stderr, "error: --tif must be Alo, Gtc or Ioc, got %q\n", *tif)
+		// Ioc is intentionally NOT accepted here: an immediate-or-cancel order
+		// never rests, so it doesn't fit a feature about resting limit orders.
+		// (adapter.limit_open still supports Ioc for any future internal use.)
+		if *tif != "Alo" && *tif != "Gtc" {
+			fmt.Fprintf(os.Stderr, "error: --tif must be Alo or Gtc, got %q\n", *tif)
 			return 2
 		}
 		if *expireAfter < 0 {

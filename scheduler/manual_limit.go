@@ -206,7 +206,7 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateDB, in man
 	}
 
 	if in.dryRun {
-		exp := "GTC"
+		exp := "none"
 		if in.expireAfter > 0 {
 			exp = in.expireAfter.String()
 		}
@@ -500,14 +500,19 @@ func applyLimitFillProgress(state *AppState, sc StrategyConfig, o PendingLimitOr
 	}
 
 	trade := Trade{
-		Timestamp:       now,
-		StrategyID:      o.StrategyID,
-		Symbol:          o.Symbol,
-		Side:            openTradeSide(o.Side),
-		Quantity:        deltaQty,
-		Price:           avgPx,
-		Value:           deltaQty * avgPx,
-		TradeType:       "perps",
+		Timestamp:  now,
+		StrategyID: o.StrategyID,
+		Symbol:     o.Symbol,
+		Side:       openTradeSide(o.Side),
+		Quantity:   deltaQty,
+		Price:      avgPx,
+		Value:      deltaQty * avgPx,
+		// A growth leg is an additional fill of the SAME order, not a new
+		// position open. Tag it scale_in (like #873 adds) so LifetimeTradeStats
+		// open-count (COUNT WHERE is_close=0 AND trade_type<>'scale_in') treats a
+		// multi-partial limit fill as ONE opened position, matching a market open.
+		// W/L are grouped by position_id and so are unaffected.
+		TradeType:       scaleInTradeType,
 		Details:         fmt.Sprintf("manual limit add %s %s %.6f @ $%.4f (oid=%d)", o.Side, o.Symbol, deltaQty, avgPx, o.OrderOID),
 		PositionID:      ensurePositionTradeID(o.StrategyID, o.Symbol, pos),
 		ExchangeOrderID: fmt.Sprintf("%d", o.OrderOID),

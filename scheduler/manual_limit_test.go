@@ -225,6 +225,25 @@ func TestApplyLimitFillProgressGrow(t *testing.T) {
 	if got := state.Strategies[sc.ID].Cash; got != 10000-0.5 {
 		t.Errorf("cash = %g, want %g", got, 10000-0.5)
 	}
+
+	// #886 review: a multi-partial fill must count as ONE opened position. The
+	// first leg is a real open (trade_type=perps); each growth leg is tagged
+	// scale_in so LifetimeTradeStats' open-count (is_close=0 AND
+	// trade_type<>'scale_in') excludes it — matching a single market open.
+	hist := state.Strategies[sc.ID].TradeHistory
+	if len(hist) != 2 {
+		t.Fatalf("expected 2 trade legs, got %d", len(hist))
+	}
+	if hist[0].TradeType != "perps" || hist[0].IsClose {
+		t.Errorf("first leg should be an open perps trade, got type=%q is_close=%v", hist[0].TradeType, hist[0].IsClose)
+	}
+	if hist[1].TradeType != scaleInTradeType {
+		t.Errorf("growth leg should be tagged %q (excluded from open-count), got %q", scaleInTradeType, hist[1].TradeType)
+	}
+	// Both legs share the position_id so W/L grouping stays correct.
+	if hist[0].PositionID == "" || hist[0].PositionID != hist[1].PositionID {
+		t.Errorf("legs must share position_id: %q vs %q", hist[0].PositionID, hist[1].PositionID)
+	}
 }
 
 func TestApplyLimitFillProgressOwnerGuard(t *testing.T) {
