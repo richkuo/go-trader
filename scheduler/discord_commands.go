@@ -27,12 +27,19 @@ var readOnlyCommandNames = map[string]bool{
 
 // opsCommandNames mutate state, run heavy work, or expose operator-sensitive
 // output; restricted to the owner in a DM. `logs` is here (not read-only)
-// because journalctl can carry wallet addresses and error payloads.
+// because journalctl can carry wallet addresses and error payloads. The #868
+// mutating set (config/add-strategy/remove-strategy/add-platform/paper-to-live)
+// changes the config file, so it gets the same owner-DM-only gate.
 var opsCommandNames = map[string]bool{
 	"restart":         true,
 	"backtest":        true,
 	"logs":            true,
 	"report-an-issue": true,
+	"config":          true,
+	"add-strategy":    true,
+	"remove-strategy": true,
+	"add-platform":    true,
+	"paper-to-live":   true,
 }
 
 // authorizeCommand decides whether invokerID may run command `name`. Read-only
@@ -401,6 +408,28 @@ func slashCommands() []*discordgo.ApplicationCommand {
 			{Type: discordgo.ApplicationCommandOptionString, Name: "symbol", Description: "Symbol, e.g. BTC/USDT", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "timeframe", Description: "Timeframe (default 1h)"},
 		}},
+		// Mutating ops — owner-DM-only (#868). Restricted by Contexts; re-checked in the handler.
+		{Name: "config", Description: "Show or change configuration (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "show", Description: "Show the current config (secrets redacted)"},
+			{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "set", Description: "Set a config key", Options: []*discordgo.ApplicationCommandOption{
+				{Type: discordgo.ApplicationCommandOptionString, Name: "key", Description: "e.g. interval_seconds or strategies.<id>.leverage", Required: true},
+				{Type: discordgo.ApplicationCommandOptionString, Name: "value", Description: "New value", Required: true},
+			}},
+		}},
+		{Name: "add-strategy", Description: "Add a strategy to the config (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Strategy name, e.g. momentum", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "platform", Description: "hyperliquid or binanceus", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "asset", Description: "Ticker, e.g. BTC", Required: true},
+		}},
+		{Name: "remove-strategy", Description: "Remove a strategy from the config (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "id", Description: "Strategy ID to remove", Required: true},
+		}},
+		{Name: "add-platform", Description: "Guided platform setup instructions (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Platform name, e.g. hyperliquid", Required: true},
+		}},
+		{Name: "paper-to-live", Description: "Switch a strategy from paper to live (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID to switch to live", Required: true},
+		}},
 	}
 }
 
@@ -467,6 +496,25 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 		d.handleBacktest(s, i, data)
 	case "report-an-issue":
 		d.handleReport(s, i, data)
+	// Mutating ops (#868) — owner DM only.
+	case "config":
+		sub, subOpts := subcommandOptions(data)
+		switch sub {
+		case "show":
+			d.handleConfigShow(s, i)
+		case "set":
+			d.handleConfigSet(s, i, subOpts)
+		default:
+			respondEphemeral(s, i, "usage: /config show | /config set <key> <value>")
+		}
+	case "add-strategy":
+		d.handleAddStrategy(s, i, data.Options)
+	case "remove-strategy":
+		d.handleRemoveStrategy(s, i, data.Options)
+	case "add-platform":
+		d.handleAddPlatform(s, i, data.Options)
+	case "paper-to-live":
+		d.handlePaperToLive(s, i, data.Options)
 	default:
 		respondEphemeral(s, i, "unknown command")
 	}
