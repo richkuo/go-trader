@@ -1,0 +1,526 @@
+package main
+
+import (
+	"errors"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func limitTestBoolPtr(b bool) *bool { return &b }
+
+func errInjected() error { return errors.New("injected subprocess error") }
+
+func TestBuildHyperliquidLimitOpenArgs(t *testing.T) {
+	// Plain Alo order, no margin enforcement.
+	got := buildHyperliquidLimitOpenArgs("BTC", "buy", 0.01, 58000, "Alo", "", 0, hlExecuteSnapshot{})
+	joined := strings.Join(got, " ")
+	for _, want := range []string{"--limit-open", "--symbol=BTC", "--side=buy", "--size=0.01", "--limit-price=58000", "--tif=Alo", "--mode=live"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("argv missing %q: %v", want, got)
+		}
+	}
+	if strings.Contains(joined, "--margin-mode") {
+		t.Errorf("argv should omit --margin-mode when empty: %v", got)
+	}
+
+	// Margin mode + leverage + account snapshot forwarded.
+	got = buildHyperliquidLimitOpenArgs("ETH", "sell", 1.5, 3000, "Gtc", "cross", 5, hlExecuteSnapshot{AccountLeverage: 5, AccountMarginMode: "cross"})
+	joined = strings.Join(got, " ")
+	for _, want := range []string{"--margin-mode=cross", "--leverage=5", "--account-leverage=5", "--account-margin-mode=cross", "--tif=Gtc"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("argv missing %q: %v", want, got)
+		}
+	}
+
+	// Empty tif defaults to Alo.
+	got = buildHyperliquidLimitOpenArgs("BTC", "buy", 0.01, 1, "", "", 0, hlExecuteSnapshot{})
+	if !strings.Contains(strings.Join(got, " "), "--tif=Alo") {
+		t.Errorf("empty tif should default to Alo: %v", got)
+	}
+}
+
+func TestParseHyperliquidLimitOpenOutput(t *testing.T) {
+	resting := []byte(`{"platform":"hyperliquid","timestamp":"t","status":"resting","order_oid":12345,"limit_price":58000,"tif":"Alo"}`)
+	res, _, err := parseHyperliquidLimitOpenOutput(resting, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Status != "resting" || res.OrderOID != 12345 {
+		t.Errorf("got status=%q oid=%d", res.Status, res.OrderOID)
+	}
+
+	// An Alo rejection arrives as status=error + JSON, alongside a non-nil runErr
+	// (exit 1). The JSON is authoritative — parse must surface it, not bury it.
+	rejected := []byte(`{"platform":"hyperliquid","timestamp":"t","status":"error","error":"limit order rejected: post only order would have immediately matched"}`)
+	res, _, err = parseHyperliquidLimitOpenOutput(rejected, "stderr", errInjected())
+	if err != nil {
+		t.Fatalf("structured error should parse cleanly, got err: %v", err)
+	}
+	if res.Status != "error" || !strings.Contains(res.Error, "post only") {
+		t.Errorf("got status=%q error=%q", res.Status, res.Error)
+	}
+
+	// Garbage stdout + runErr → wrapped error.
+	if _, _, err := parseHyperliquidLimitOpenOutput([]byte("not json"), "", errInjected()); err == nil {
+		t.Error("expected error for garbage stdout")
+	}
+}
+
+func TestParseHyperliquidLimitStatusOutput(t *testing.T) {
+	// resting=true, partial fill.
+	out := []byte(`{"platform":"hyperliquid","timestamp":"t","orders":[{"oid":1,"resting":true,"filled_size":0.4,"avg_px":2000,"fee":0.2,"count":1}]}`)
+	res, _, err := parseHyperliquidLimitStatusOutput(out, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(res.Orders) != 1 {
+		t.Fatalf("want 1 order, got %d", len(res.Orders))
+	}
+	o := res.Orders[0]
+	if o.Resting == nil || !*o.Resting {
+		t.Errorf("resting should be true ptr, got %v", o.Resting)
+	}
+	if o.FilledSize != 0.4 || o.AvgPx != 2000 {
+		t.Errorf("got filled=%g avg=%g", o.FilledSize, o.AvgPx)
+	}
+
+	// resting=null (open-orders fetch failed) must decode to a nil pointer so the
+	// scheduler defers the cancelled verdict.
+	out = []byte(`{"platform":"hyperliquid","timestamp":"t","open_orders_error":"boom","orders":[{"oid":1,"resting":null,"filled_size":0,"avg_px":0,"fee":0,"count":0}]}`)
+	res, _, err = parseHyperliquidLimitStatusOutput(out, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Orders[0].Resting != nil {
+		t.Errorf("resting should be nil ptr on null, got %v", res.Orders[0].Resting)
+	}
+	if res.OpenOrdersError != "boom" {
+		t.Errorf("open_orders_error not surfaced: %q", res.OpenOrdersError)
+	}
+}
+
+func TestParseHyperliquidCancelOrderOutput(t *testing.T) {
+	out := []byte(`{"platform":"hyperliquid","timestamp":"t","oid":7,"cancelled":true}`)
+	res, _, err := parseHyperliquidCancelOrderOutput(out, "", nil)
+	if err != nil || !res.Cancelled || res.OID != 7 {
+		t.Fatalf("got res=%+v err=%v", res, err)
+	}
+	// Non-fatal "already gone" cancel: cancelled=false + cancel_error, exit 0.
+	out = []byte(`{"platform":"hyperliquid","timestamp":"t","oid":7,"cancelled":false,"cancel_error":"order not found"}`)
+	res, _, err = parseHyperliquidCancelOrderOutput(out, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Cancelled || !strings.Contains(res.CancelError, "not found") {
+		t.Errorf("got cancelled=%v cancel_error=%q", res.Cancelled, res.CancelError)
+	}
+}
+
+func TestLimitOrderFullyFilled(t *testing.T) {
+	if !limitOrderFullyFilled(1.0, 1.0) {
+		t.Error("exact match should be full")
+	}
+	if !limitOrderFullyFilled(0.9999999, 1.0) {
+		t.Error("within tolerance should be full")
+	}
+	if limitOrderFullyFilled(0.4, 1.0) {
+		t.Error("partial should not be full")
+	}
+}
+
+func newLimitTestStrategy() (StrategyConfig, *AppState) {
+	sc := StrategyConfig{
+		ID:       "hl-manual-eth-live",
+		Type:     "manual",
+		Platform: "hyperliquid",
+		Symbol:   "ETH",
+		Script:   "shared_scripts/check_hyperliquid.py",
+		Leverage: 10,
+		Args:     []string{"hold", "ETH", "30m", "--mode=live"},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			sc.ID: {
+				ID:        sc.ID,
+				Platform:  "hyperliquid",
+				Type:      "manual",
+				Positions: map[string]*Position{},
+				Cash:      10000,
+			},
+		},
+	}
+	return sc, state
+}
+
+func TestApplyLimitFillProgressCreate(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	origRecorder := tradeRecorder
+	tradeRecorder = func(string, Trade) error { return nil }
+	defer func() { tradeRecorder = origRecorder }()
+
+	o := PendingLimitOrder{
+		ID: 1, StrategyID: sc.ID, Symbol: "ETH", Side: "long",
+		OrderOID: 9001, LimitPrice: 2000, OrderSize: 0.5, FilledSize: 0,
+	}
+	now := time.Now().UTC()
+	n, err := applyLimitFillProgress(state, sc, o, 0.5, 2000, 0.7, 50, now)
+	if err != nil {
+		t.Fatalf("apply create: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("trades booked = %d, want 1", n)
+	}
+	pos := state.Strategies[sc.ID].Positions["ETH"]
+	if pos == nil {
+		t.Fatal("position not created")
+	}
+	if pos.Quantity != 0.5 || pos.AvgCost != 2000 || pos.EntryATR != 50 || pos.Side != "long" {
+		t.Errorf("pos = %+v", pos)
+	}
+	if pos.OwnerStrategyID != sc.ID {
+		t.Errorf("owner = %q", pos.OwnerStrategyID)
+	}
+	if got := state.Strategies[sc.ID].Cash; got != 10000-0.7 {
+		t.Errorf("cash = %g, want %g (fee deducted)", got, 10000-0.7)
+	}
+}
+
+func TestApplyLimitFillProgressGrow(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	origRecorder := tradeRecorder
+	tradeRecorder = func(string, Trade) error { return nil }
+	defer func() { tradeRecorder = origRecorder }()
+	now := time.Now().UTC()
+
+	// First fill 0.4 @ 2000.
+	o := PendingLimitOrder{ID: 1, StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001, LimitPrice: 2000, OrderSize: 1.0, FilledSize: 0}
+	if _, err := applyLimitFillProgress(state, sc, o, 0.4, 2000, 0.2, 50, now); err != nil {
+		t.Fatalf("first fill: %v", err)
+	}
+	// Watermark advances (simulating the reconcile loop).
+	o.FilledSize, o.AvgFillPrice, o.FillFee = 0.4, 2000, 0.2
+
+	// Second fill grows to cumulative 1.0 @ VWAP 2010, cumulative fee 0.5.
+	n, err := applyLimitFillProgress(state, sc, o, 1.0, 2010, 0.5, 50, now)
+	if err != nil {
+		t.Fatalf("grow: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("trades booked = %d, want 1", n)
+	}
+	pos := state.Strategies[sc.ID].Positions["ETH"]
+	if pos.Quantity != 1.0 {
+		t.Errorf("pos.Quantity = %g, want 1.0", pos.Quantity)
+	}
+	if pos.AvgCost != 2010 {
+		t.Errorf("pos.AvgCost = %g, want 2010 (cumulative VWAP)", pos.AvgCost)
+	}
+	if pos.InitialQuantity != 1.0 {
+		t.Errorf("pos.InitialQuantity = %g, want 1.0", pos.InitialQuantity)
+	}
+	// Cash deducts only the delta fee across both legs: 0.2 + (0.5-0.2) = 0.5.
+	if got := state.Strategies[sc.ID].Cash; got != 10000-0.5 {
+		t.Errorf("cash = %g, want %g", got, 10000-0.5)
+	}
+}
+
+func TestApplyLimitFillProgressOwnerGuard(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	// Pre-existing foreign position; a first fill must NOT adopt it.
+	state.Strategies[sc.ID].Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 3, OwnerStrategyID: "someone-else"}
+	o := PendingLimitOrder{ID: 1, StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001, LimitPrice: 2000, OrderSize: 0.5, FilledSize: 0}
+	if _, err := applyLimitFillProgress(state, sc, o, 0.5, 2000, 0.7, 50, time.Now().UTC()); err == nil {
+		t.Fatal("expected error adopting a pre-existing foreign position")
+	}
+	if state.Strategies[sc.ID].Positions["ETH"].Quantity != 3 {
+		t.Error("foreign position must be untouched")
+	}
+}
+
+func newLimitTestStateDB(t *testing.T) *StateDB {
+	t.Helper()
+	db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+func TestPendingLimitOrderCRUD(t *testing.T) {
+	db := newLimitTestStateDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	id, err := db.InsertPendingLimitOrder(PendingLimitOrder{
+		StrategyID: "s1", Symbol: "ETH", Side: "long", OrderOID: 9001,
+		LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50,
+		ExpiresAt: now.Add(2 * time.Hour), CreatedAt: now,
+	})
+	if err != nil || id == 0 {
+		t.Fatalf("insert: id=%d err=%v", id, err)
+	}
+
+	orders, err := db.LoadPendingLimitOrders()
+	if err != nil || len(orders) != 1 {
+		t.Fatalf("load: n=%d err=%v", len(orders), err)
+	}
+	o := orders[0]
+	if o.OrderOID != 9001 || o.LimitPrice != 2000 || o.OrderSize != 0.5 || o.TIF != "Alo" || o.EntryATR != 50 {
+		t.Errorf("round-trip mismatch: %+v", o)
+	}
+	if o.ExpiresAt.IsZero() || o.ExpiresAt.Unix() != now.Add(2*time.Hour).Unix() {
+		t.Errorf("expires_at mismatch: %v", o.ExpiresAt)
+	}
+
+	if cnt, _ := db.CountPendingLimitOrders("s1", "ETH"); cnt != 1 {
+		t.Errorf("count = %d, want 1", cnt)
+	}
+
+	if err := db.UpdatePendingLimitOrderFill(id, 0.3, 1999, 0.15); err != nil {
+		t.Fatalf("update fill: %v", err)
+	}
+	orders, _ = db.LoadPendingLimitOrders()
+	if orders[0].FilledSize != 0.3 || orders[0].AvgFillPrice != 1999 || orders[0].FillFee != 0.15 {
+		t.Errorf("watermark not updated: %+v", orders[0])
+	}
+
+	n, err := db.MarkPendingLimitOrderCancelRequested("s1", "ETH")
+	if err != nil || n != 1 {
+		t.Fatalf("mark cancel: n=%d err=%v", n, err)
+	}
+	orders, _ = db.LoadPendingLimitOrders()
+	if !orders[0].CancelRequested {
+		t.Error("cancel_requested not set")
+	}
+
+	if err := db.DeletePendingLimitOrder(id); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	orders, _ = db.LoadPendingLimitOrders()
+	if len(orders) != 0 {
+		t.Errorf("expected empty after delete, got %d", len(orders))
+	}
+}
+
+// withStubbedLimitDeps swaps the subprocess hooks the reconcile uses and returns
+// a restore func. The protection sync is stubbed so no .venv is needed.
+func withStubbedLimitDeps(t *testing.T, status func(script, symbol string, oids []int64) (*HyperliquidLimitStatusResult, string, error), cancel func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)) {
+	t.Helper()
+	origStatus := runHyperliquidLimitStatusFn
+	origCancel := runHyperliquidCancelOrderFn
+	origSync := syncHyperliquidProtection
+	origRecorder := tradeRecorder
+	runHyperliquidLimitStatusFn = status
+	runHyperliquidCancelOrderFn = cancel
+	syncHyperliquidProtection = func(StrategyConfig, hlProtectionPlan, *MultiNotifier, *StrategyLogger, []byte) (*HyperliquidProtectionSyncResult, bool) {
+		return &HyperliquidProtectionSyncResult{}, true
+	}
+	tradeRecorder = func(string, Trade) error { return nil }
+	t.Cleanup(func() {
+		runHyperliquidLimitStatusFn = origStatus
+		runHyperliquidCancelOrderFn = origCancel
+		syncHyperliquidProtection = origSync
+		tradeRecorder = origRecorder
+	})
+}
+
+func TestReconcilePendingLimitOrdersFullFill(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	cfg := &Config{Strategies: []StrategyConfig{sc}}
+	db := newLimitTestStateDB(t)
+	var mu sync.RWMutex
+
+	id, _ := db.InsertPendingLimitOrder(PendingLimitOrder{
+		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
+		LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50, CreatedAt: time.Now().UTC(),
+	})
+
+	// Status: fully filled, no longer resting.
+	withStubbedLimitDeps(t,
+		func(string, string, []int64) (*HyperliquidLimitStatusResult, string, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.5, AvgPx: 2000, Fee: 0.7, Count: 1},
+			}}, "", nil
+		},
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+			t.Error("cancel should not be called on a clean fill")
+			return &HyperliquidCancelOrderResult{}, "", nil
+		},
+	)
+
+	alerts := reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	if len(alerts) != 1 || alerts[0].trades != 1 {
+		t.Fatalf("alerts = %+v", alerts)
+	}
+	pos := state.Strategies[sc.ID].Positions["ETH"]
+	if pos == nil || pos.Quantity != 0.5 || pos.AvgCost != 2000 {
+		t.Fatalf("position = %+v", pos)
+	}
+	// Terminal: row deleted.
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
+		t.Errorf("expected row deleted, got %d (id=%d)", len(orders), id)
+	}
+}
+
+func TestReconcilePendingLimitOrdersPartialThenComplete(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	cfg := &Config{Strategies: []StrategyConfig{sc}}
+	db := newLimitTestStateDB(t)
+	var mu sync.RWMutex
+	db.InsertPendingLimitOrder(PendingLimitOrder{
+		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
+		LimitPrice: 2000, OrderSize: 1.0, TIF: "Alo", EntryATR: 50, CreatedAt: time.Now().UTC(),
+	})
+
+	// Cycle 1: partial 0.4, still resting.
+	withStubbedLimitDeps(t,
+		func(string, string, []int64) (*HyperliquidLimitStatusResult, string, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: limitTestBoolPtr(true), FilledSize: 0.4, AvgPx: 2000, Fee: 0.2, Count: 1},
+			}}, "", nil
+		},
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+			return &HyperliquidCancelOrderResult{}, "", nil
+		},
+	)
+	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	pos := state.Strategies[sc.ID].Positions["ETH"]
+	if pos == nil || pos.Quantity != 0.4 {
+		t.Fatalf("after partial: pos=%+v", pos)
+	}
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 1 || orders[0].FilledSize != 0.4 {
+		t.Fatalf("watermark not persisted: %+v", orders)
+	}
+
+	// Cycle 2: completes to 1.0, no longer resting.
+	withStubbedLimitDeps(t,
+		func(string, string, []int64) (*HyperliquidLimitStatusResult, string, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 1.0, AvgPx: 2005, Fee: 0.5, Count: 2},
+			}}, "", nil
+		},
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+			return &HyperliquidCancelOrderResult{}, "", nil
+		},
+	)
+	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	pos = state.Strategies[sc.ID].Positions["ETH"]
+	if pos.Quantity != 1.0 || pos.AvgCost != 2005 {
+		t.Fatalf("after complete: pos=%+v", pos)
+	}
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
+		t.Errorf("expected row deleted after full fill, got %d", len(orders))
+	}
+}
+
+func TestReconcilePendingLimitOrdersCancelRequested(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	cfg := &Config{Strategies: []StrategyConfig{sc}}
+	db := newLimitTestStateDB(t)
+	var mu sync.RWMutex
+	db.InsertPendingLimitOrder(PendingLimitOrder{
+		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
+		LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50,
+		CancelRequested: true, CreatedAt: time.Now().UTC(),
+	})
+
+	// Still resting, no fill. Cancel must be issued; row retained for next cycle.
+	cancelCalls := 0
+	withStubbedLimitDeps(t,
+		func(string, string, []int64) (*HyperliquidLimitStatusResult, string, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: limitTestBoolPtr(true), FilledSize: 0, AvgPx: 0, Fee: 0},
+			}}, "", nil
+		},
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+			cancelCalls++
+			return &HyperliquidCancelOrderResult{OID: 9001, Cancelled: true}, "", nil
+		},
+	)
+	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	if cancelCalls != 1 {
+		t.Errorf("cancel calls = %d, want 1", cancelCalls)
+	}
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 1 {
+		t.Errorf("row should be retained pending finalize, got %d", len(orders))
+	}
+	if pos := state.Strategies[sc.ID].Positions["ETH"]; pos != nil {
+		t.Error("no position should exist for an unfilled cancelled order")
+	}
+
+	// Next cycle: order gone (resting=false), no fill → finalize + delete.
+	withStubbedLimitDeps(t,
+		func(string, string, []int64) (*HyperliquidLimitStatusResult, string, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0},
+			}}, "", nil
+		},
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+			return &HyperliquidCancelOrderResult{}, "", nil
+		},
+	)
+	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
+		t.Errorf("expected row deleted after cancel finalize, got %d", len(orders))
+	}
+}
+
+func TestReconcilePendingLimitOrdersExpiry(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	cfg := &Config{Strategies: []StrategyConfig{sc}}
+	db := newLimitTestStateDB(t)
+	var mu sync.RWMutex
+	// expires_at in the past → TTL expiry triggers a cancel.
+	db.InsertPendingLimitOrder(PendingLimitOrder{
+		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
+		LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50,
+		ExpiresAt: time.Now().UTC().Add(-time.Minute), CreatedAt: time.Now().UTC().Add(-time.Hour),
+	})
+
+	cancelCalls := 0
+	withStubbedLimitDeps(t,
+		func(string, string, []int64) (*HyperliquidLimitStatusResult, string, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: limitTestBoolPtr(true), FilledSize: 0},
+			}}, "", nil
+		},
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+			cancelCalls++
+			return &HyperliquidCancelOrderResult{OID: 9001, Cancelled: true}, "", nil
+		},
+	)
+	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	if cancelCalls != 1 {
+		t.Errorf("expiry should issue a cancel, calls = %d", cancelCalls)
+	}
+}
+
+// TestReconcilePendingLimitOrdersDeferOnUnknownBook verifies that when the
+// open-orders fetch failed (resting=nil) the reconcile does NOT finalize the
+// row as cancelled — it waits for a definitive book state.
+func TestReconcilePendingLimitOrdersDeferOnUnknownBook(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	cfg := &Config{Strategies: []StrategyConfig{sc}}
+	db := newLimitTestStateDB(t)
+	var mu sync.RWMutex
+	db.InsertPendingLimitOrder(PendingLimitOrder{
+		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
+		LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50, CreatedAt: time.Now().UTC(),
+	})
+	withStubbedLimitDeps(t,
+		func(string, string, []int64) (*HyperliquidLimitStatusResult, string, error) {
+			return &HyperliquidLimitStatusResult{OpenOrdersError: "boom", Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: nil, FilledSize: 0},
+			}}, "", nil
+		},
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+			return &HyperliquidCancelOrderResult{}, "", nil
+		},
+	)
+	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 1 {
+		t.Errorf("row must be retained when book state is unknown, got %d", len(orders))
+	}
+}

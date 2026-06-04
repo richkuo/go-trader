@@ -32,6 +32,9 @@ func runManualOpen(args []string) int {
 	slATRMult := fs.Float64("stop-loss-atr-mult", 0, "Override stop_loss_atr_mult for this position (0 = use strategy default)")
 	slPct := fs.Float64("stop-loss-pct", 0, "Override stop_loss_pct for this position (0 = use strategy default)")
 	fillPrice := fs.Float64("fill-price", 0, "Fill price for --record-only (required when --record-only is set)")
+	limitPrice := fs.Float64("limit-price", 0, "Place a resting limit order at this price instead of a market order (#883). The scheduler tracks fills and arms protection post-fill.")
+	tif := fs.String("tif", "Alo", "Time-in-force for --limit-price: Alo=post-only maker (default, rejects a crossed price), Gtc=allow immediate marketable fill")
+	expireAfter := fs.Duration("expire-after", 0, "Auto-cancel a resting --limit-price order after this duration (e.g. 2h, 30m); 0 = GTC, no expiry")
 	recordOnly := fs.Bool("record-only", false, "Register an existing fill without placing a new on-chain order")
 	dryRun := fs.Bool("dry-run", false, "Print planned action without placing order or mutating state")
 
@@ -109,6 +112,24 @@ func runManualOpen(args []string) int {
 		}
 	}
 
+	// #883: resting-limit-order mode. Incompatible with --record-only (that path
+	// registers an already-executed fill, which has no resting order) and bounded
+	// to the same HL-live scope as the market path.
+	if *limitPrice > 0 {
+		if *recordOnly {
+			fmt.Fprintln(os.Stderr, "error: --limit-price cannot be combined with --record-only (a resting order has no fill to record yet)")
+			return 2
+		}
+		if *tif != "Alo" && *tif != "Gtc" && *tif != "Ioc" {
+			fmt.Fprintf(os.Stderr, "error: --tif must be Alo, Gtc or Ioc, got %q\n", *tif)
+			return 2
+		}
+		if *expireAfter < 0 {
+			fmt.Fprintln(os.Stderr, "error: --expire-after must be non-negative")
+			return 2
+		}
+	}
+
 	stateDB, err := OpenStateDB(cfg.DBFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
@@ -155,6 +176,27 @@ func runManualOpen(args []string) int {
 	}
 
 	script := sc.Script
+
+	// #883: resting-limit-order placement is a self-contained fire-and-exit path
+	// — it places the maker order, persists its OID, and returns. The scheduler
+	// owns fill detection + protection arming (there is no synchronous fill here).
+	if *limitPrice > 0 {
+		return runManualLimitOpen(cfg, sc, stateDB, manualLimitOpenInputs{
+			strategyID:  strategyID,
+			side:        *side,
+			openSide:    openSide,
+			size:        *size,
+			notional:    *notional,
+			margin:      *margin,
+			limitPrice:  *limitPrice,
+			tif:         *tif,
+			atr:         *atr,
+			slATRMult:   *slATRMult,
+			slPct:       *slPct,
+			expireAfter: *expireAfter,
+			dryRun:      *dryRun,
+		})
+	}
 
 	// #711: --margin/--notional need a price to resolve to coin qty; passing
 	// price=0 to resolveManualSize returns 0 and HL rejects the order with

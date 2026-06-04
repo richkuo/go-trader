@@ -644,6 +644,47 @@ class HyperliquidExchangeAdapter:
             raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
         return self._exchange.market_open(symbol, is_buy, size, None, 0.01)
 
+    def limit_open(
+        self,
+        symbol: str,
+        is_buy: bool,
+        size: float,
+        limit_px: float,
+        tif: str = "Alo",
+    ) -> dict:
+        """Place a NON-reduce-only resting limit order to open a position (#883).
+
+        Unlike ``market_open`` (immediate taker fill) this rests on the book
+        until the price reaches ``limit_px``. ``tif`` defaults to ``Alo``
+        (add-liquidity-only / post-only) so the order is guaranteed to rest as a
+        maker and never crosses into an accidental taker fill — HL rejects an
+        ``Alo`` order whose price is already marketable, which surfaces a
+        mis-priced entry to the operator instead of silently filling. Pass
+        ``tif="Gtc"`` to allow an immediately-marketable price to fill.
+
+        ``reduce_only=False`` is the net-new piece: every other ``order`` call in
+        this adapter (stop-loss, take-profit) is reduce-only. Only available in
+        live mode; raises RuntimeError in paper mode.
+        Returns the raw SDK response dict.
+        """
+        if not self._exchange:
+            raise RuntimeError(
+                "limit_open requires live mode (set HYPERLIQUID_SECRET_KEY)"
+            )
+        sz_decimals = self._sz_decimals(symbol)
+        size = round(size, sz_decimals)
+        if size <= 0:
+            raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
+        if limit_px <= 0:
+            raise ValueError(f"limit_px must be > 0, got {limit_px}")
+        if tif not in ("Alo", "Gtc", "Ioc"):
+            raise ValueError(f"unsupported tif {tif!r}, expected 'Alo', 'Gtc' or 'Ioc'")
+        limit_px = _round_perps_px(limit_px, sz_decimals)
+        order_type = {"limit": {"tif": tif}}
+        return self._exchange.order(
+            symbol, is_buy, size, limit_px, order_type, reduce_only=False
+        )
+
     def market_close(self, symbol: str, sz: float | None = None) -> dict:
         """
         Close an open perp position for a symbol (reduce-only).
@@ -727,6 +768,74 @@ class HyperliquidExchangeAdapter:
                     return {
                         "fee": fee_total,
                         "closed_pnl": pnl_total,
+                        "count": len(matched),
+                    }
+            attempt += 1
+            if attempt < max_retries:
+                time.sleep(retry_delay_s)
+        return {}
+
+    def fills_summary_by_oid(
+        self,
+        oid: int,
+        since_ms: int,
+        max_retries: int = 4,
+        retry_delay_s: float = 0.5,
+    ) -> dict:
+        """Summarise the cumulative on-chain fills for a resting order (#883).
+
+        ``lookup_fill_fee_by_oid`` returns only fee/closed_pnl/count, which is
+        enough for the market-order post-fill path but NOT for tracking a
+        resting limit order that fills incrementally — the scheduler needs the
+        cumulative filled **size** and a size-weighted average **price** to grow
+        the tracked position and re-size its protection each cycle.
+
+        Returns ``{"filled_size", "avg_px", "fee", "count"}`` summed across all
+        partial fills sharing ``oid``. Empty dict when no fills match within the
+        retry budget (caller treats {} as "no fill observed yet", never as
+        "confirmed zero" — the over-adopt hazard is avoided by combining this
+        with an ``open_order_oids`` check). ``avg_px`` is size-weighted across
+        legs; 0 when the summed size is 0.
+        """
+        if oid <= 0 or not self._account_address:
+            return {}
+        attempt = 0
+        while attempt < max_retries:
+            try:
+                fills = self._info.user_fills_by_time(self._account_address, since_ms)
+            except _HLClientError as exc:
+                # Mirror lookup_fill_fee_by_oid: a 429 is a multi-second
+                # cooldown, not the sub-second indexer lag the retry budget
+                # targets — bail immediately so we don't deepen the rate limit.
+                if getattr(exc, "status_code", None) == 429:
+                    print(
+                        f"[WARN] fills_summary lookup got HTTP 429 for oid={oid}; not retrying",
+                        file=sys.stderr,
+                    )
+                    return {}
+                fills = None
+            except Exception:
+                fills = None
+            if isinstance(fills, list):
+                matched = [
+                    f for f in fills
+                    if isinstance(f, dict) and _safe_int(f.get("oid")) == int(oid)
+                ]
+                if matched:
+                    size_total = 0.0
+                    notional_total = 0.0
+                    fee_total = 0.0
+                    for f in matched:
+                        sz = _safe_float(f.get("sz"))
+                        px = _safe_float(f.get("px"))
+                        size_total += sz
+                        notional_total += sz * px
+                        fee_total += _safe_float(f.get("fee"))
+                    avg_px = (notional_total / size_total) if size_total > 0 else 0.0
+                    return {
+                        "filled_size": size_total,
+                        "avg_px": avg_px,
+                        "fee": fee_total,
                         "count": len(matched),
                     }
             attempt += 1

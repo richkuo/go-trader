@@ -1171,6 +1171,242 @@ def run_fetch_atr(symbol: str, timeframe: str, period: int):
         print(json.dumps({"error": f"{type(e).__name__}: {e}"}, cls=SafeEncoder))
 
 
+def run_limit_open(symbol, side, size, limit_px, mode, tif="Alo",
+                   margin_mode="", leverage=0, account_leverage=0,
+                   account_margin_mode=""):
+    """Place a resting NON-reduce-only limit order to open a position (#883).
+
+    Unlike --execute (a market order that must fill immediately) this places a
+    maker limit order that rests until ``limit_px`` is reached, then exits with
+    the resting OID. NO stop-loss / take-profit is armed here — there is no fill
+    at placement, so the scheduler arms protection post-fill via the existing
+    per-cycle manual protection sync (#883 design point 4).
+
+    Margin mode / leverage are enforced before placement exactly like --execute,
+    so the resting order carries the operator's intended leverage when it fills.
+    """
+    if mode != "live":
+        print(json.dumps({"error": "--limit-open requires --mode=live"}, cls=SafeEncoder))
+        sys.exit(1)
+
+    try:
+        from adapter import HyperliquidExchangeAdapter
+        adapter = HyperliquidExchangeAdapter()
+
+        side = side.lower()
+        if side not in ("buy", "sell"):
+            print(json.dumps({
+                "platform": "hyperliquid",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": f"invalid side {side!r}, expected 'buy' or 'sell'",
+            }, cls=SafeEncoder))
+            sys.exit(1)
+        is_buy = side == "buy"
+
+        # Enforce margin mode + leverage from flat before resting the order
+        # (mirrors run_execute). The position is flat at placement (limit hasn't
+        # filled), so HL accepts the update. Reuse Go's clearinghouse snapshot
+        # when forwarded to skip a duplicate /info call.
+        if margin_mode:
+            if margin_mode not in ("isolated", "cross"):
+                print(json.dumps({
+                    "platform": "hyperliquid",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": f"invalid margin_mode {margin_mode!r}, expected 'isolated' or 'cross'",
+                }, cls=SafeEncoder))
+                sys.exit(1)
+            if leverage < 1:
+                print(json.dumps({
+                    "platform": "hyperliquid",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": f"--margin-mode requires --leverage >= 1, got {leverage}",
+                }, cls=SafeEncoder))
+                sys.exit(1)
+            current = None
+            if account_leverage and account_margin_mode in ("isolated", "cross"):
+                current = {"margin_mode": account_margin_mode, "leverage": int(account_leverage)}
+            else:
+                try:
+                    current = adapter.get_position_leverage(symbol)
+                except Exception as ce:
+                    print(f"[WARN] get_position_leverage({symbol}) failed: {ce}; will call update_leverage", file=sys.stderr)
+            if current is not None and current.get("margin_mode") == margin_mode and current.get("leverage") == int(leverage):
+                print(f"update_leverage({symbol}, {leverage}x, mode={margin_mode}) SKIPPED (HL state already matches)", file=sys.stderr)
+            else:
+                try:
+                    adapter.update_leverage(int(leverage), symbol, is_cross=(margin_mode == "cross"))
+                    print(f"update_leverage({symbol}, {leverage}x, mode={margin_mode}) OK", file=sys.stderr)
+                except Exception as ue:
+                    traceback.print_exc(file=sys.stderr)
+                    print(json.dumps({
+                        "platform": "hyperliquid",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "error": f"update_leverage failed (margin_mode={margin_mode}, leverage={leverage}): {ue}",
+                    }, cls=SafeEncoder))
+                    sys.exit(1)
+
+        try:
+            resp = adapter.limit_open(symbol, is_buy, size, limit_px, tif=tif)
+        except Exception as oe:
+            traceback.print_exc(file=sys.stderr)
+            print(json.dumps({
+                "platform": "hyperliquid",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": f"limit_open failed: {oe}",
+            }, cls=SafeEncoder))
+            sys.exit(1)
+
+        kind, payload = _classify_sl_response(resp)
+        out = {
+            "platform": "hyperliquid",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "limit_price": limit_px,
+            "tif": tif,
+        }
+        if kind == "resting":
+            out["order_oid"] = int(payload)
+            out["status"] = "resting"
+        elif kind == "filled":
+            # Gtc price was already marketable and filled at submit. The order
+            # is not resting; the scheduler reconcile will detect the fill by
+            # OID on its next poll exactly as it would for a delayed fill.
+            out["order_oid"] = int(payload)
+            out["status"] = "filled"
+            print(f"[WARN] limit order filled immediately at submit (price already marketable)", file=sys.stderr)
+        elif kind == "error":
+            # Alo rejection of a marketable price lands here — surface so the
+            # operator re-prices instead of silently degrading to a taker fill.
+            out["status"] = "error"
+            out["error"] = f"limit order rejected: {payload}"
+        else:
+            out["status"] = "error"
+            out["error"] = f"limit order returned no usable status: {resp}"
+        print(json.dumps(out, cls=SafeEncoder))
+        if out["status"] == "error":
+            sys.exit(1)
+
+    except SystemExit:
+        raise
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        print(json.dumps({
+            "platform": "hyperliquid",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": str(e),
+        }, cls=SafeEncoder))
+        sys.exit(1)
+
+
+def run_limit_status(symbol, oids, mode, since_ms=0):
+    """Report resting/fill status for one or more limit-order OIDs (#883).
+
+    For each OID emit ``{oid, resting, filled_size, avg_px, fee, count}`` where
+    ``resting`` reflects HL's open-orders book and the fill fields are the
+    cumulative on-chain fills summed across partial legs. The scheduler combines
+    these: ``resting=false`` + ``filled_size>=order_size`` ⇒ fully filled;
+    ``resting=false`` + ``filled_size<order_size`` ⇒ cancelled/expired with a
+    (possibly zero) partial fill; ``resting=true`` ⇒ still working, adopt any
+    incremental fill and keep polling.
+
+    open_orders fetch failure is reported as ``open_orders_error`` and
+    ``resting`` is left null so the caller defers the cancelled/expired verdict
+    (never books a phantom cancellation on a transient indexer error).
+    """
+    if mode != "live":
+        print(json.dumps({"error": "--limit-status requires --mode=live"}, cls=SafeEncoder))
+        sys.exit(1)
+    try:
+        from adapter import HyperliquidExchangeAdapter
+        adapter = HyperliquidExchangeAdapter()
+
+        if since_ms <= 0:
+            # Default lookback: 7 days. Resting orders can sit far longer than a
+            # market fill's 10s window, so the userFills scan must reach back to
+            # at least the order's placement.
+            since_ms = int(time.time() * 1000) - 7 * 24 * 60 * 60 * 1000
+
+        open_oids = None
+        open_orders_error = ""
+        try:
+            open_oids = adapter.open_order_oids(symbol)
+        except Exception as oe:
+            open_orders_error = str(oe)
+            print(f"[WARN] open_order_oids({symbol}) failed: {oe}", file=sys.stderr)
+
+        results = []
+        for oid in oids:
+            oid = int(oid)
+            entry = {"oid": oid}
+            if open_oids is not None:
+                entry["resting"] = oid in open_oids
+            else:
+                entry["resting"] = None
+            summary = {}
+            try:
+                summary = adapter.fills_summary_by_oid(oid, since_ms)
+            except Exception as fe:
+                print(f"[WARN] fills_summary_by_oid({oid}) failed: {fe}", file=sys.stderr)
+                entry["fills_error"] = str(fe)
+            entry["filled_size"] = float(summary.get("filled_size", 0) or 0)
+            entry["avg_px"] = float(summary.get("avg_px", 0) or 0)
+            entry["fee"] = float(summary.get("fee", 0) or 0)
+            entry["count"] = int(summary.get("count", 0) or 0)
+            results.append(entry)
+
+        out = {
+            "platform": "hyperliquid",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "orders": results,
+        }
+        if open_orders_error:
+            out["open_orders_error"] = open_orders_error
+        print(json.dumps(out, cls=SafeEncoder))
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        print(json.dumps({
+            "platform": "hyperliquid",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": str(e),
+        }, cls=SafeEncoder))
+        sys.exit(1)
+
+
+def run_cancel_order(symbol, oid, mode):
+    """Cancel a resting order by OID (#883). Idempotent: a "not found" cancel
+    (order already filled or already cancelled) is reported as a non-fatal
+    warning, not an error, so the scheduler's cancel+finalize path is safe to
+    retry across cycles."""
+    if mode != "live":
+        print(json.dumps({"error": "--cancel-order requires --mode=live"}, cls=SafeEncoder))
+        sys.exit(1)
+    try:
+        from adapter import HyperliquidExchangeAdapter
+        adapter = HyperliquidExchangeAdapter()
+        out = {
+            "platform": "hyperliquid",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "oid": int(oid),
+        }
+        try:
+            adapter.cancel_order_by_oid(symbol, int(oid))
+            out["cancelled"] = True
+        except Exception as ce:
+            # Treat as non-fatal: the order may have already filled or been
+            # cancelled. The caller re-polls fill status to reconcile truth.
+            out["cancelled"] = False
+            out["cancel_error"] = str(ce)
+            print(f"[WARN] cancel_order_by_oid({symbol}, {oid}) failed: {ce}", file=sys.stderr)
+        print(json.dumps(out, cls=SafeEncoder))
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        print(json.dumps({
+            "platform": "hyperliquid",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": str(e),
+        }, cls=SafeEncoder))
+        sys.exit(1)
+
+
 def main():
     if "--fetch-atr" in sys.argv:
         import argparse
@@ -1316,6 +1552,82 @@ def main():
                     close_full_position=args.close_full_position,
                     account_leverage=args.account_leverage,
                     account_margin_mode=args.account_margin_mode)
+    elif "--limit-open" in sys.argv:
+        # Resting limit-order open: --limit-open --symbol=BTC --side=buy
+        #   --size=0.01 --limit-price=58000 [--tif=Alo] [--mode=live] (#883)
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--limit-open", action="store_true")
+        parser.add_argument("--symbol", required=True)
+        parser.add_argument("--side", required=True, choices=["buy", "sell"])
+        parser.add_argument("--size", type=float, required=True)
+        parser.add_argument("--limit-price", type=float, required=True)
+        parser.add_argument("--tif", default="Alo", choices=["Alo", "Gtc", "Ioc"],
+                            help="time-in-force: Alo=post-only maker (default), Gtc=allow immediate marketable fill")
+        parser.add_argument("--mode", default="live")
+        parser.add_argument("--margin-mode", default="",
+                            help="enforce 'isolated'/'cross' via update_leverage before resting the order (#486 parity)")
+        parser.add_argument("--leverage", type=float, default=0.0)
+        parser.add_argument("--account-leverage", type=int, default=0)
+        parser.add_argument("--account-margin-mode", default="")
+        parser.add_argument("--probe-only", action="store_true",
+                            help="Startup compatibility probe (#883): validate argv shape and exit 0 without trading.")
+        args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
+        if args.size <= 0:
+            print(json.dumps({"error": "--size must be > 0"}))
+            sys.exit(1)
+        if args.limit_price <= 0:
+            print(json.dumps({"error": "--limit-price must be > 0"}))
+            sys.exit(1)
+        run_limit_open(args.symbol, args.side, args.size, args.limit_price, args.mode,
+                       tif=args.tif, margin_mode=args.margin_mode, leverage=args.leverage,
+                       account_leverage=args.account_leverage,
+                       account_margin_mode=args.account_margin_mode)
+    elif "--limit-status" in sys.argv:
+        # Resting limit-order fill poll: --limit-status --symbol=BTC
+        #   --oids-json='[123,456]' [--since-ms=N] [--mode=live] (#883)
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--limit-status", action="store_true")
+        parser.add_argument("--symbol", required=True)
+        parser.add_argument("--oids-json", required=True,
+                            help="JSON array of resting order OIDs to poll")
+        parser.add_argument("--since-ms", type=int, default=0,
+                            help="userFills lookback floor in epoch ms; 0 = default 7-day window")
+        parser.add_argument("--mode", default="live")
+        parser.add_argument("--probe-only", action="store_true",
+                            help="Startup compatibility probe (#883): validate argv shape and exit 0.")
+        args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
+        try:
+            oids = json.loads(args.oids_json)
+        except Exception as e:
+            print(json.dumps({"error": f"invalid --oids-json: {e}"}))
+            sys.exit(1)
+        if not isinstance(oids, list):
+            print(json.dumps({"error": "--oids-json must be a JSON array"}))
+            sys.exit(1)
+        run_limit_status(args.symbol, oids, args.mode, since_ms=args.since_ms)
+    elif "--cancel-order" in sys.argv:
+        # Cancel a resting order by OID: --cancel-order --symbol=BTC --oid=123 (#883)
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--cancel-order", action="store_true")
+        parser.add_argument("--symbol", required=True)
+        parser.add_argument("--oid", type=int, required=True)
+        parser.add_argument("--mode", default="live")
+        parser.add_argument("--probe-only", action="store_true",
+                            help="Startup compatibility probe (#883): validate argv shape and exit 0.")
+        args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
+        if args.oid <= 0:
+            print(json.dumps({"error": "--oid must be > 0"}))
+            sys.exit(1)
+        run_cancel_order(args.symbol, args.oid, args.mode)
     else:
         # Signal check mode: <strategy> <symbol> <timeframe> [--mode=paper|live] [--htf-filter]
         import argparse

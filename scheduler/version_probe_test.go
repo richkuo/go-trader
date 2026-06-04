@@ -145,12 +145,19 @@ func TestProbeRunsExtraArgvForHL(t *testing.T) {
 	probeOneCheckScriptFn = func(script string, argv []string) error {
 		mode := "signal"
 		for _, a := range argv {
-			if a == "--fetch-atr" {
+			switch a {
+			case "--fetch-atr":
 				mode = "fetch-atr"
-				break
-			}
-			if a == "--execute" {
+			case "--execute":
 				mode = "execute"
+			case "--limit-open":
+				mode = "limit-open"
+			case "--limit-status":
+				mode = "limit-status"
+			case "--cancel-order":
+				mode = "cancel-order"
+			}
+			if mode != "signal" {
 				break
 			}
 		}
@@ -167,8 +174,15 @@ func TestProbeRunsExtraArgvForHL(t *testing.T) {
 		t.Fatalf("probe failed: %v", err)
 	}
 	hl := calls["shared_scripts/check_hyperliquid.py"]
-	if len(hl) != 4 || hl[0] != "signal" || hl[1] != "signal" || hl[2] != "fetch-atr" || hl[3] != "execute" {
-		t.Errorf("HL should be probed signal(adx)+signal(composite)+fetch-atr+execute, got %v", hl)
+	wantHL := []string{"signal", "signal", "fetch-atr", "execute", "limit-open", "limit-status", "cancel-order"}
+	if len(hl) != len(wantHL) {
+		t.Errorf("HL should be probed %v, got %v", wantHL, hl)
+	} else {
+		for i, w := range wantHL {
+			if hl[i] != w {
+				t.Errorf("HL probe[%d] = %q, want %q (full: %v)", i, hl[i], w, hl)
+			}
+		}
 	}
 	spot := calls["shared_scripts/check_strategy.py"]
 	if len(spot) != 2 || spot[0] != "signal" || spot[1] != "signal" {

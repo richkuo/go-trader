@@ -86,12 +86,19 @@ func TestRunProbeHappyPath(t *testing.T) {
 	probeOneCheckScriptFn = func(script string, argv []string) error {
 		mode := "signal"
 		for _, a := range argv {
-			if a == "--fetch-atr" {
+			switch a {
+			case "--fetch-atr":
 				mode = "fetch-atr"
-				break
-			}
-			if a == "--execute" {
+			case "--execute":
 				mode = "execute"
+			case "--limit-open":
+				mode = "limit-open"
+			case "--limit-status":
+				mode = "limit-status"
+			case "--cancel-order":
+				mode = "cancel-order"
+			}
+			if mode != "signal" {
 				break
 			}
 		}
@@ -141,10 +148,11 @@ func TestRunProbeHappyPath(t *testing.T) {
 	}
 	// Expect 9 invocations: HL signal-check (adx+composite), HL --fetch-atr (#689),
 	// HL --execute (PR #769), spot signal-check (adx+composite), dashboard helpers.
-	if len(probed) != 9 {
-		t.Fatalf("expected 9 probe invocations, got %d: %v", len(probed), probed)
+	// 9 prior shapes + 3 #883 limit-order shapes (limit-open/limit-status/cancel-order).
+	if len(probed) != 12 {
+		t.Fatalf("expected 12 probe invocations, got %d: %v", len(probed), probed)
 	}
-	var hlSignal, hlFetchATR, hlExecute, spotSignal, candleHelper, schemaHelper, simulateHelper int
+	var hlSignal, hlFetchATR, hlExecute, hlLimitOpen, hlLimitStatus, hlCancelOrder, spotSignal, candleHelper, schemaHelper, simulateHelper int
 	for _, p := range probed {
 		switch {
 		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "signal":
@@ -153,6 +161,12 @@ func TestRunProbeHappyPath(t *testing.T) {
 			hlFetchATR++
 		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "execute":
 			hlExecute++
+		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "limit-open":
+			hlLimitOpen++
+		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "limit-status":
+			hlLimitStatus++
+		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "cancel-order":
+			hlCancelOrder++
 		case p.script == "shared_scripts/check_strategy.py" && p.mode == "signal":
 			spotSignal++
 		case p.script == "shared_scripts/fetch_candles.py" && p.mode == "signal":
@@ -163,9 +177,9 @@ func TestRunProbeHappyPath(t *testing.T) {
 			simulateHelper++
 		}
 	}
-	if hlSignal != 2 || hlFetchATR != 1 || hlExecute != 1 || spotSignal != 2 || candleHelper != 1 || schemaHelper != 1 || simulateHelper != 1 {
-		t.Fatalf("expected hl-signal=2, hl-fetch-atr=1, hl-execute=1, spot-signal=2, candle-helper=1, schema=1, simulate=1; got %d/%d/%d/%d/%d/%d/%d (probed=%v)",
-			hlSignal, hlFetchATR, hlExecute, spotSignal, candleHelper, schemaHelper, simulateHelper, probed)
+	if hlSignal != 2 || hlFetchATR != 1 || hlExecute != 1 || hlLimitOpen != 1 || hlLimitStatus != 1 || hlCancelOrder != 1 || spotSignal != 2 || candleHelper != 1 || schemaHelper != 1 || simulateHelper != 1 {
+		t.Fatalf("expected hl-signal=2, hl-fetch-atr=1, hl-execute=1, hl-limit-open=1, hl-limit-status=1, hl-cancel-order=1, spot-signal=2, candle-helper=1, schema=1, simulate=1; got %d/%d/%d/%d/%d/%d/%d/%d/%d/%d (probed=%v)",
+			hlSignal, hlFetchATR, hlExecute, hlLimitOpen, hlLimitStatus, hlCancelOrder, spotSignal, candleHelper, schemaHelper, simulateHelper, probed)
 	}
 }
 

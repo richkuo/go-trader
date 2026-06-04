@@ -224,6 +224,24 @@ CREATE TABLE IF NOT EXISTS pending_manual_actions (
     tp_oids_json TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS pending_limit_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    order_oid INTEGER NOT NULL,
+    limit_price REAL NOT NULL,
+    order_size REAL NOT NULL,
+    tif TEXT NOT NULL DEFAULT 'Alo',
+    filled_size REAL NOT NULL DEFAULT 0,
+    avg_fill_price REAL NOT NULL DEFAULT 0,
+    fill_fee REAL NOT NULL DEFAULT 0,
+    entry_atr REAL NOT NULL DEFAULT 0,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
 `
 
 // StateDB wraps a SQLite database for persistent state storage.
@@ -1779,6 +1797,141 @@ func (sdb *StateDB) DeletePendingManualActionsThrough(maxID int64) error {
 	}
 	_, err := sdb.db.Exec("DELETE FROM pending_manual_actions WHERE id <= ?", maxID)
 	return err
+}
+
+// PendingLimitOrder is a row from the pending_limit_orders table (#883). Unlike
+// PendingManualAction (which holds an already-filled action awaiting scheduler
+// adoption), a PendingLimitOrder is a *resting* on-chain limit order with no
+// fill at placement time. The scheduler polls each row by order_oid every cycle
+// and grows the tracked position as fills arrive. filled_size / avg_fill_price /
+// fill_fee are watermarks: the cumulative quantity already adopted into the
+// position so the next poll only books the incremental delta.
+type PendingLimitOrder struct {
+	ID              int64
+	StrategyID      string
+	Symbol          string
+	Side            string // "long" | "short"
+	OrderOID        int64
+	LimitPrice      float64
+	OrderSize       float64
+	TIF             string
+	FilledSize      float64 // cumulative qty already booked into the position
+	AvgFillPrice    float64 // size-weighted avg fill price booked so far
+	FillFee         float64 // cumulative fee booked so far
+	EntryATR        float64 // operator-supplied entry ATR (0 = fetch at fill)
+	CancelRequested bool    // operator manual-cancel flips this; scheduler cancels + finalizes
+	ExpiresAt       time.Time
+	CreatedAt       time.Time
+}
+
+// boolToInt maps a bool to the 0/1 integer SQLite stores for boolean columns.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// InsertPendingLimitOrder records a freshly-placed resting limit order for the
+// scheduler to poll. Returns the new row id.
+func (sdb *StateDB) InsertPendingLimitOrder(o PendingLimitOrder) (int64, error) {
+	if sdb == nil || sdb.db == nil {
+		return 0, fmt.Errorf("state db unavailable")
+	}
+	expiresStr := ""
+	if !o.ExpiresAt.IsZero() {
+		expiresStr = formatTime(o.ExpiresAt.UTC())
+	}
+	res, err := sdb.db.Exec(`INSERT INTO pending_limit_orders
+		(strategy_id, symbol, side, order_oid, limit_price, order_size, tif, filled_size, avg_fill_price, fill_fee, entry_atr, cancel_requested, expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		o.StrategyID, o.Symbol, o.Side, o.OrderOID, o.LimitPrice, o.OrderSize, o.TIF,
+		o.FilledSize, o.AvgFillPrice, o.FillFee, o.EntryATR, boolToInt(o.CancelRequested),
+		expiresStr, formatTime(o.CreatedAt.UTC()))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// LoadPendingLimitOrders returns all resting limit orders ordered by id.
+func (sdb *StateDB) LoadPendingLimitOrders() ([]PendingLimitOrder, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, nil
+	}
+	rows, err := sdb.db.Query(`SELECT id, strategy_id, symbol, side, order_oid, limit_price, order_size, tif, filled_size, avg_fill_price, fill_fee, entry_atr, cancel_requested, expires_at, created_at FROM pending_limit_orders ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("load pending limit orders: %w", err)
+	}
+	defer rows.Close()
+	var orders []PendingLimitOrder
+	for rows.Next() {
+		var o PendingLimitOrder
+		var cancelInt int
+		var expiresStr, createdStr string
+		if err := rows.Scan(&o.ID, &o.StrategyID, &o.Symbol, &o.Side, &o.OrderOID, &o.LimitPrice, &o.OrderSize, &o.TIF, &o.FilledSize, &o.AvgFillPrice, &o.FillFee, &o.EntryATR, &cancelInt, &expiresStr, &createdStr); err != nil {
+			return nil, fmt.Errorf("scan pending limit order: %w", err)
+		}
+		o.CancelRequested = cancelInt != 0
+		if expiresStr != "" {
+			o.ExpiresAt = parseTime(expiresStr)
+		}
+		o.CreatedAt = parseTime(createdStr)
+		orders = append(orders, o)
+	}
+	return orders, rows.Err()
+}
+
+// UpdatePendingLimitOrderFill advances the watermark fields after the scheduler
+// books an incremental fill for a resting order.
+func (sdb *StateDB) UpdatePendingLimitOrderFill(id int64, filledSize, avgFillPrice, fillFee float64) error {
+	if sdb == nil || sdb.db == nil {
+		return nil
+	}
+	_, err := sdb.db.Exec(
+		"UPDATE pending_limit_orders SET filled_size = ?, avg_fill_price = ?, fill_fee = ? WHERE id = ?",
+		filledSize, avgFillPrice, fillFee, id)
+	return err
+}
+
+// MarkPendingLimitOrderCancelRequested flags a resting order for cancellation by
+// the scheduler. Returns the number of rows affected so the caller can tell the
+// operator whether a matching open order existed.
+func (sdb *StateDB) MarkPendingLimitOrderCancelRequested(strategyID, symbol string) (int64, error) {
+	if sdb == nil || sdb.db == nil {
+		return 0, fmt.Errorf("state db unavailable")
+	}
+	res, err := sdb.db.Exec(
+		"UPDATE pending_limit_orders SET cancel_requested = 1 WHERE strategy_id = ? AND symbol = ?",
+		strategyID, symbol)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeletePendingLimitOrder removes a single resting-order row by id (terminal:
+// fully filled, cancelled, or expired).
+func (sdb *StateDB) DeletePendingLimitOrder(id int64) error {
+	if sdb == nil || sdb.db == nil {
+		return nil
+	}
+	_, err := sdb.db.Exec("DELETE FROM pending_limit_orders WHERE id = ?", id)
+	return err
+}
+
+// CountPendingLimitOrders returns the number of resting limit orders for a
+// strategy/symbol. Used by manual-open to reject a second resting order (or an
+// open position) for the same coin before placing.
+func (sdb *StateDB) CountPendingLimitOrders(strategyID, symbol string) (int, error) {
+	if sdb == nil || sdb.db == nil {
+		return 0, nil
+	}
+	var n int
+	err := sdb.db.QueryRow(
+		"SELECT COUNT(*) FROM pending_limit_orders WHERE strategy_id = ? AND symbol = ?",
+		strategyID, symbol).Scan(&n)
+	return n, err
 }
 
 // EarliestTradeTimestamp returns the oldest trade timestamp across the given

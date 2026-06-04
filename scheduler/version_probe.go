@@ -74,6 +74,27 @@ var executeProbeArgv = []string{
 	"--probe-only",
 }
 
+// limitOpenProbeArgv / limitStatusProbeArgv / cancelOrderProbeArgv probe the
+// #883 resting-limit-order modes so an asymmetric deploy (new Go binary
+// forwarding --limit-open / --limit-status / --cancel-order to a stale Python)
+// fails at startup rather than on the first manual-open --limit-price.
+// --probe-only short-circuits before any adapter or order code runs.
+var limitOpenProbeArgv = []string{
+	"--limit-open",
+	"--symbol=BTC", "--side=buy", "--size=0.01", "--limit-price=1",
+	"--tif=Alo", "--margin-mode=cross", "--leverage=1",
+	"--account-leverage=1", "--account-margin-mode=cross",
+	"--probe-only",
+}
+
+var limitStatusProbeArgv = []string{
+	"--limit-status", "--symbol=BTC", "--oids-json=[1]", "--probe-only",
+}
+
+var cancelOrderProbeArgv = []string{
+	"--cancel-order", "--symbol=BTC", "--oid=1", "--probe-only",
+}
+
 // fetchCandlesProbeArgv probes the dashboard's on-demand OHLCV helper. The
 // helper is not a configured strategy script, so it needs its own argv shape to
 // catch stale Python deploys before the dashboard starts returning 500s.
@@ -123,6 +144,18 @@ func probeCheckScripts(cfg *Config) error {
 			// --account-margin-mode flags fail loudly at startup if Python is
 			// stale, rather than on the first signal-fire.
 			if err := probeOneCheckScriptFn(script, executeProbeArgv); err != nil {
+				return err
+			}
+			// #883: probe the resting-limit-order modes so manual-open
+			// --limit-price / manual-cancel / the scheduler fill poll fail at
+			// startup on a stale Python rather than at first use.
+			if err := probeOneCheckScriptFn(script, limitOpenProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn(script, limitStatusProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn(script, cancelOrderProbeArgv); err != nil {
 				return err
 			}
 		}

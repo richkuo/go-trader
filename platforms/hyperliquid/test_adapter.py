@@ -545,3 +545,104 @@ class TestLookupFillFeeByOID:
         monkeypatch.setattr("time.sleep", lambda s: None)
         result = adapter.lookup_fill_fee_by_oid(100, since_ms=1000, max_retries=2, retry_delay_s=0.0)
         assert result == {}
+
+
+class TestLimitOpen:
+    """Coverage for limit_open — the net-new non-reduce-only entry limit order (#883)."""
+
+    def _make_adapter(self, sz_decimals=None):
+        mock_info = MagicMock()
+        mock_info.asset_to_sz_decimals = sz_decimals or {"BTC": 4, "ETH": 4}
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mock_exchange = MagicMock()
+        mock_exchange.order.return_value = {"status": "ok"}
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._exchange = mock_exchange
+        adapter._info = mock_info
+        return adapter, mock_exchange
+
+    def test_paper_mode_raises(self):
+        mod = _load_hl_adapter()
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._exchange = None
+        with pytest.raises(RuntimeError, match="limit_open requires live mode"):
+            adapter.limit_open("BTC", True, 0.01, 58000)
+
+    def test_alo_post_only_non_reduce_only(self):
+        adapter, mock_exchange = self._make_adapter()
+        adapter.limit_open("ETH", True, 0.5, 3000.0)
+        # Default tif is Alo (post-only), and the entry order is NOT reduce-only —
+        # the distinguishing property vs every other order this adapter places.
+        args, kwargs = mock_exchange.order.call_args
+        assert args[0] == "ETH"
+        assert args[1] is True  # is_buy
+        assert args[2] == 0.5   # size
+        assert args[4] == {"limit": {"tif": "Alo"}}
+        assert kwargs.get("reduce_only") is False
+
+    def test_gtc_tif_passthrough(self):
+        adapter, mock_exchange = self._make_adapter()
+        adapter.limit_open("ETH", False, 0.5, 3000.0, tif="Gtc")
+        _, _, _, _, order_type = mock_exchange.order.call_args[0]
+        assert order_type == {"limit": {"tif": "Gtc"}}
+
+    def test_invalid_limit_px_raises(self):
+        adapter, _ = self._make_adapter()
+        with pytest.raises(ValueError, match="limit_px must be > 0"):
+            adapter.limit_open("ETH", True, 0.5, 0)
+
+    def test_bad_tif_raises(self):
+        adapter, _ = self._make_adapter()
+        with pytest.raises(ValueError, match="unsupported tif"):
+            adapter.limit_open("ETH", True, 0.5, 3000.0, tif="Fok")
+
+    def test_size_rounded_to_zero_raises(self):
+        adapter, _ = self._make_adapter(sz_decimals={"BTC": 0})
+        with pytest.raises(ValueError, match="Size rounded to zero"):
+            adapter.limit_open("BTC", True, 0.4, 58000)
+
+
+class TestFillsSummaryByOID:
+    """Coverage for fills_summary_by_oid — cumulative size + VWAP for resting
+    limit-order fill tracking (#883)."""
+
+    def _make_adapter(self):
+        mock_info = MagicMock()
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._account_address = "0xABC123"
+        return adapter, mock_info
+
+    def test_no_address_returns_empty(self):
+        mod = _load_hl_adapter()
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._account_address = ""
+        assert adapter.fills_summary_by_oid(100, since_ms=0) == {}
+
+    def test_sums_size_and_size_weighted_vwap(self):
+        adapter, mock_info = self._make_adapter()
+        # Two partial legs of OID 100: 0.4@2000 and 0.6@2010, plus an unrelated OID.
+        mock_info.user_fills_by_time.return_value = [
+            {"oid": 100, "sz": "0.4", "px": "2000", "fee": "0.20"},
+            {"oid": 100, "sz": "0.6", "px": "2010", "fee": "0.30"},
+            {"oid": 999, "sz": "5", "px": "1", "fee": "9"},
+        ]
+        out = adapter.fills_summary_by_oid(100, since_ms=1000)
+        assert out["filled_size"] == pytest.approx(1.0)
+        assert out["fee"] == pytest.approx(0.50)
+        assert out["count"] == 2
+        # VWAP = (0.4*2000 + 0.6*2010) / 1.0 = 2006.0
+        assert out["avg_px"] == pytest.approx(2006.0)
+
+    def test_no_match_returns_empty(self, monkeypatch):
+        adapter, mock_info = self._make_adapter()
+        mock_info.user_fills_by_time.return_value = [{"oid": 7, "sz": "1", "px": "1", "fee": "0"}]
+        monkeypatch.setattr("time.sleep", lambda s: None)
+        assert adapter.fills_summary_by_oid(100, since_ms=1000, max_retries=2, retry_delay_s=0.0) == {}
+
+    def test_zero_oid_returns_empty(self):
+        adapter, mock_info = self._make_adapter()
+        assert adapter.fills_summary_by_oid(0, since_ms=1000) == {}
+        mock_info.user_fills_by_time.assert_not_called()

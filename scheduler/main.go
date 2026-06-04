@@ -22,6 +22,7 @@ var knownSubcommands = []string{
 	"export",
 	"manual-open",
 	"manual-close",
+	"manual-cancel",
 	"backfill",
 	"probe",
 	"inspect",
@@ -59,6 +60,8 @@ func main() {
 			os.Exit(runManualOpen(os.Args[2:]))
 		case "manual-close":
 			os.Exit(runManualClose(os.Args[2:]))
+		case "manual-cancel":
+			os.Exit(runManualCancel(os.Args[2:]))
 		case "backfill":
 			os.Exit(runBackfill(os.Args[2:]))
 		case "probe":
@@ -580,6 +583,16 @@ func main() {
 		// (which runs under mu.Lock) would self-deadlock. This gives manual fills
 		// the same DM/channel routing as normal live trades.
 		for _, ma := range manualAlerts {
+			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier)
+		}
+
+		// #883: poll resting limit orders, adopt fills into tracked positions
+		// (arming protection immediately), and finalize filled/cancelled/expired
+		// orders. Runs after the manual drain so a same-cycle market action and a
+		// limit fill are both visible. Manages its own locking (network calls run
+		// outside mu); alerts fire after, like the drain (#880).
+		limitAlerts := reconcilePendingLimitOrders(state, cfg, stateDB, &mu, notifier, logMgr)
+		for _, ma := range limitAlerts {
 			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier)
 		}
 
