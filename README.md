@@ -297,10 +297,15 @@ For hand-placed positions (or TradingView alerts) tracked by the scheduler for P
 ./go-trader manual-open  hl-manual-btc                                          # defaults: --side long --margin 50
 ./go-trader manual-open  hl-manual-btc --side long  --notional 500 --atr 250
 ./go-trader manual-open  hl-manual-btc --side short --size 0.05 --record-only --fill-price 64500
+./go-trader manual-open  hl-manual-btc --limit-price 68000 --side long --margin 50  # post-only limit open
+./go-trader manual-open  hl-manual-btc --limit-price 68000 --tif Gtc --expire-after 4h
+./go-trader manual-cancel <limit-order-id>                                      # cancel a resting limit
 ./go-trader manual-close hl-manual-btc [--qty 0.025]
 ```
 
 Sizing flags are mutually exclusive (`--size` / `--notional` / `--margin`); when all three are omitted (and not `--record-only`), `--margin 50` is auto-applied. `--side` defaults to `long`. Omitting `--atr` auto-fetches ATR(14) from Hyperliquid OHLCV for the strategy's symbol+timeframe; a leverage-aware fallback (`0.1 * fill_price / leverage`) is used only if the fetch fails. SL + N-tier TPs are placed inline so the position is never naked; on queue-insert failure the scheduler auto-flattens and cancels the protective orders. `type=manual` strategies with no stop fields default to `stop_loss_atr_mult = 1.5×`. All four defaults (margin, SL multiplier, side, TP tiers) are overridable via an optional top-level `manual_defaults` config block (hot-reloadable via SIGHUP).
+
+Resting limit opens (`--limit-price`) are ALO (post-only) by default or GTC with `--tif Gtc`; the CLI exits immediately and the scheduler polls fill status each cycle, booking fills incrementally. `manual-cancel <id>` queues a cancel that the scheduler finalizes next cycle.
 
 ---
 
@@ -397,8 +402,8 @@ Open-position lines append `SL: $<trigger_px> (<signed_pct>%)` when a Hyperliqui
 - **Portfolio kill switch** — halts trading at `portfolio_risk.max_drawdown_pct` (default 25); submits real close orders on HL / OKX perps / Robinhood crypto / TopStep, clearing virtual state only after every platform confirms flat.
 - **Per-strategy circuit breakers** — pause on max-drawdown breach (24h cooldown); peak-relative for spot/options/futures, margin-relative for perps. HL/OKX perps, Robinhood crypto, and TopStep CBs auto-close reduce-only; OKX spot and Robinhood options surface an `operator-required` warning every cycle until flattened by hand.
 - **Hyperliquid stop-loss** — exchange-side reduce-only trigger via one of `stop_loss_pct` / `stop_loss_margin_pct` / `stop_loss_atr_mult` / `trailing_stop_pct` / `trailing_stop_atr_mult` (mutually exclusive when positive). All five omitted → fixed ATR stop at `default_stop_loss_atr_mult * entry_atr` (default `1.0`); explicit `0` opts out. Trailing stops debounce via `trailing_stop_min_move_pct` to stay under HL's 1000-OID cap.
-- **On-chain N-tier TP/SL ladders** — `tiered_tp_atr` / `tiered_tp_atr_live` close evaluators place reduce-only TPs at configured ATR multiples (default `[{1×, 0.5}, {2×, 1.0}]`); final tier absorbs rounding dust. Full close cancels all SL+TP OIDs in one shot.
-- **Trailing-ratchet close** — `trailing_tp_ratchet` / `trailing_tp_ratchet_regime` close evaluators turn each cleared profit tier into a tighter trailing stop (monotonic — the trail only ratchets in) and optionally scale out a slice of the position at each rung. Unlike the tiered TP ladder, no fixed take-profit is placed on-chain: the position rides a single trailing stop that keeps tightening as price runs. Requires a strategy-level `trailing_stop_atr_mult` as the initial trail; available on HL perps and `type=manual`.
+- **On-chain N-tier TP/SL ladders** — `tiered_tp_atr` / `tiered_tp_atr_live` close evaluators place reduce-only TPs at configured ATR multiples (default `[{1.5×, 0.4}, {3×, 0.8}, {5×, 1.0}]`); final tier absorbs rounding dust. Full close cancels all SL+TP OIDs in one shot.
+- **Trailing-ratchet close** — `trailing_tp_ratchet` / `trailing_tp_ratchet_regime` close evaluators turn each cleared profit tier into a tighter trailing stop (monotonic — the trail only ratchets in) and optionally scale out a slice of the position at each rung. Unlike the tiered TP ladder, no fixed take-profit is placed on-chain: the position rides a single trailing stop that keeps tightening as price runs. Scalar form requires `trailing_stop_atr_mult` as the initial trail; regime form (`trailing_tp_ratchet_regime`) requires `trailing_stop_atr_regime` instead. Available on HL perps and `type=manual`.
 - **Regime gate** — per-strategy `allowed_regimes` blocks new entries outside the whitelist; closes always run.
 - **HL margin mode** — defaults to `isolated`; override with `margin_mode: "cross"` (applied from flat only).
 - **Misc** — notional cap (`portfolio_risk.max_notional_usd`); correlation warnings (opt-in); 5 consecutive losses → 1h pause; spot max 95% capital per position; options max 4 positions per strategy with portfolio-aware scoring; theta harvesting on sold options.
