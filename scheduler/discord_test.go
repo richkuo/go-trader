@@ -95,6 +95,22 @@ func TestIsOptionsType(t *testing.T) {
 	}
 }
 
+func TestIsPerpsType(t *testing.T) {
+	spotFutures := []StrategyConfig{{Type: "spot"}, {Type: "futures"}}
+	spotManual := []StrategyConfig{{Type: "spot"}, {Type: "manual"}}
+	spotPerps := []StrategyConfig{{Type: "spot"}, {Type: "perps"}}
+
+	if isPerpsType(spotFutures) {
+		t.Error("expected false for spot/futures only")
+	}
+	if !isPerpsType(spotManual) {
+		t.Error("expected true when manual present")
+	}
+	if !isPerpsType(spotPerps) {
+		t.Error("expected true when perps present")
+	}
+}
+
 func TestExtractAsset(t *testing.T) {
 	cases := []struct {
 		sc   StrategyConfig
