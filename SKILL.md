@@ -586,6 +586,10 @@ CLI:
 # Optional: pass live ATR for accurate SL/TP distances; omit to auto-fetch ATR(14)
 ./go-trader manual-open hl-manual-btc --side long --size 0.01 --atr 850
 
+# Scale in — ADD to an open position (side inferred; blends avg cost, freezes risk plan)
+./go-trader manual-add hl-manual-btc --margin 50
+./go-trader manual-add hl-manual-btc --size 0.01 --record-only --fill-price 68100
+
 # Close — full or partial
 ./go-trader manual-close hl-manual-btc            # full close
 ./go-trader manual-close hl-manual-btc --qty 0.005
@@ -607,6 +611,16 @@ Notes:
 - A 99% partial close is **not** silently collapsed into a full close — the queue carries explicit `is_full_close` intent from `--qty`.
 - External closes (UI, SL, TP) detected by reconciler and cleared automatically (#576) — no ghosts.
 - `type=manual` exempt from CB drawdown checks (#574).
+
+### Scale-in / pyramiding (#873)
+
+Opt-in way to **increase** an open position's size instead of the default skip-on-same-direction. Scope: **HL perps + manual, live + paper**. A same-direction add **blends only price and size** for PnL (`AvgCost`, `Quantity`, `InitialQuantity` grow) and **freezes the original risk plan** — `EntryATR`, the regime label, and the SL/TP trigger geometry stay pinned to the first entry (`RiskAnchorPrice`); the cleared-tier watermark is never reset. Only the on-chain protection **size** is re-based (SL + un-cleared TP tiers cancel+replaced at the unchanged triggers on the next protection sync).
+
+- **Strategy flag (perps):** `allow_scale_in: true` plus an optional `scale_in` block: `max_adds` (0=unlimited), `max_added_notional_usd` (0=unlimited), `add_spacing_atr` (signed: `>0` add-to-winners, `<0` average-down, `0` no gate — measured in ×EntryATR from the last entry leg), `add_notional_usd` (0=standard open notional per add). Fires only when a same-direction signal actually reaches Go (the population the existing skip guards target); close-evaluator strategies use `manual-add`.
+- **CLI (manual):** `manual-add <strategy-id>` with the same sizing flags as `manual-open` (`--size`/`--notional`/`--margin`, `--record-only` + `--fill-price`, `--dry-run`). Side is inferred from the open position; refuses when flat; kill-switch + pending-CB guards apply; queued in `pending_manual_actions` and applied next cycle.
+- An add leg is booked `trade_type=scale_in` (open-side, same position id) and **excluded from the `#T` open count** so `#T` stays distinct positions; W/L is unaffected.
+- **Live perps guard:** `allow_scale_in` requires an ATR/regime or trailing stop-loss (one the resize path can grow). A static scalar SL (`stop_loss_pct`/`stop_loss_margin_pct` or the `max_drawdown` fallback) is rejected at load — it would under-cover the grown position after an add. Manual auto-uses an ATR SL, so it qualifies.
+- Hot-reloadable when flat; toggling `allow_scale_in` or editing the `scale_in` block while a position is open is blocked (flatten first). Not backtested; no Python changes.
 
 ---
 

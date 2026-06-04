@@ -482,7 +482,10 @@ func tryBookSoleOwnerTPFill(
 		soleOwnerRecoveryBook = true
 	}
 
-	tpPrices := tieredTPATRPricesForRegime(sc, statePos.Side, statePos.AvgCost, statePos.EntryATR, statePos.Regime)
+	// #873: TP price reconciliation matches against triggers anchored to the
+	// FROZEN entry (riskAnchorPrice), so a scaled-in position's on-chain TPs
+	// still line up after the blended AvgCost shifts.
+	tpPrices := tieredTPATRPricesForRegime(sc, statePos.Side, statePos.riskAnchorPrice(), statePos.EntryATR, statePos.Regime)
 	tpPrice := 0.0
 	if tierIdx >= 0 && tierIdx < len(tpPrices) {
 		tpPrice = tpPrices[tierIdx]

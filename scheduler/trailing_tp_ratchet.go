@@ -523,9 +523,13 @@ func applyTrailingTPRatchetToPosition(sc StrategyConfig, pos *Position, symbol s
 	if len(tiers) == 0 {
 		return false
 	}
-	profitDistance := mark - pos.AvgCost
+	// #873: ratchet tier-clearing measures ATR profit distance from the FROZEN
+	// entry (riskAnchorPrice), not the blended AvgCost, so a scale-in keeps the
+	// TP tier offsets pinned to the first entry.
+	anchor := pos.riskAnchorPrice()
+	profitDistance := mark - anchor
 	if side == "short" {
-		profitDistance = pos.AvgCost - mark
+		profitDistance = anchor - mark
 	}
 	atrProfit := profitDistance / pos.EntryATR
 	clearedIdx, clearedOK := findHighestMarkClearedRatchetTier(tiers, atrProfit, pos.SLAdjustedTiersProcessed)

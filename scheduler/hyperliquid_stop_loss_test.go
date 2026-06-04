@@ -249,7 +249,7 @@ func TestRunHyperliquidTrailingStopUpdate_CancelThenPlaceArgs(t *testing.T) {
 	logger := silentStrategyLogger("hl-test")
 	defer logger.Close()
 
-	newHighWater, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, &Position{AvgCost: 100}, 110, 100, 97, 111, nil, logger)
+	newHighWater, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, &Position{AvgCost: 100}, 110, 100, 97, 111, false, nil, logger)
 	if !ok {
 		t.Fatalf("runHyperliquidTrailingStopUpdate returned ok=false")
 	}
@@ -288,7 +288,7 @@ func TestRunHyperliquidTrailingStopUpdate_AlertsOnOrphanedOldOID(t *testing.T) {
 		ownerID:  "owner",
 	})
 
-	_, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, &Position{AvgCost: 100}, 110, 100, 97, 111, notifier, logger)
+	_, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, &Position{AvgCost: 100}, 110, 100, 97, 111, false, notifier, logger)
 	if !ok || result == nil || result.StopLossOID != 222 {
 		t.Fatalf("runHyperliquidTrailingStopUpdate = (%+v, %v), want placed replacement", result, ok)
 	}

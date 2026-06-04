@@ -1115,11 +1115,18 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 		if name := closeStrategySummaryName(sc); name != "" {
 			extras += fmt.Sprintf(" | close: %s", name)
 		}
+		// #873: SL/TP price geometry is anchored to the FROZEN entry
+		// (riskAnchorPrice), so after a scale-in the displayed triggers match the
+		// actual resting on-chain orders rather than the blended AvgCost.
+		anchor := pos.riskAnchorPrice()
 		if pos.EntryATR > 0 {
 			extras += fmt.Sprintf(" | ATR: $%s", fmtComma2(pos.EntryATR))
 		}
+		if pos.ScaleInCount > 0 {
+			extras += fmt.Sprintf(" | scaled-in: %d (+$%s)", pos.ScaleInCount, fmtComma2(pos.AddedNotionalUSD))
+		}
 		if pos.StopLossTriggerPx > 0 {
-			slPct := percentFromEntry(pos.Side, pos.AvgCost, pos.StopLossTriggerPx)
+			slPct := percentFromEntry(pos.Side, anchor, pos.StopLossTriggerPx)
 			if pos.StopLossATRMult != nil {
 				extras += fmt.Sprintf(" | SL: $%s (%s) (%gx)", fmtComma2(pos.StopLossTriggerPx), fmtPnlPct(slPct), *pos.StopLossATRMult)
 			} else {
@@ -1127,7 +1134,7 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 			}
 		}
 		tiers := strategyTPTiersForRegime(sc, positionATRRegimeLabel(pos, sc))
-		tps := tieredTPATRPricesFromTiers(tiers, pos.Side, pos.AvgCost, pos.EntryATR)
+		tps := tieredTPATRPricesFromTiers(tiers, pos.Side, anchor, pos.EntryATR)
 		if len(tps) > 0 {
 			// A zero TPOID alone is ambiguous (tiers also hold zero before the
 			// first protection-sync places them); require an observed shrink
@@ -1142,7 +1149,7 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 					extras += fmt.Sprintf(" | TP%d: $%s%s ✓", i+1, fmtComma2(tp), multSuffix)
 					continue
 				}
-				pct := percentFromEntry(pos.Side, pos.AvgCost, tp)
+				pct := percentFromEntry(pos.Side, anchor, tp)
 				extras += fmt.Sprintf(" | TP%d: $%s (%s)%s", i+1, fmtComma2(tp), fmtPnlPct(pct), multSuffix)
 			}
 		}
@@ -1161,8 +1168,8 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 				extras += fmt.Sprintf(" | Ratchet: %d/%d", processed, len(ratchetTiers))
 			}
 			for i, tier := range ratchetTiers {
-				target := ratchetTargetPrice(pos.Side, pos.AvgCost, pos.EntryATR, tier.ATRMultiple)
-				pct := percentFromEntry(pos.Side, pos.AvgCost, target)
+				target := ratchetTargetPrice(pos.Side, anchor, pos.EntryATR, tier.ATRMultiple)
+				pct := percentFromEntry(pos.Side, anchor, target)
 				extras += fmt.Sprintf(" | RT%d: $%s (%s) (%gx -> %gx trail)", i+1, fmtComma2(target), fmtPnlPct(pct), tier.ATRMultiple, tier.TrailingMultAfter)
 			}
 		}

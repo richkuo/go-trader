@@ -1141,7 +1141,9 @@ func runPostTPStopLossAdjustment(
 		return false
 	}
 	side := pos.Side
-	avgCost := pos.AvgCost
+	// #873: post-TP SL adjustment geometry (entry ± ATR / breakeven) anchors to
+	// the FROZEN entry so a scale-in keeps the original risk plan unchanged.
+	avgCost := pos.riskAnchorPrice()
 	entryATR := pos.EntryATR
 	qty := pos.Quantity
 	currentOID := pos.StopLossOID

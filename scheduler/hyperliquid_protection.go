@@ -67,10 +67,14 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 	}
 	tierCount := len(tiers)
 	return hlProtectionPlan{
-		Symbol:          pos.Symbol,
-		Side:            pos.Side,
-		Size:            pos.Quantity,
-		AvgCost:         pos.AvgCost,
+		Symbol: pos.Symbol,
+		Side:   pos.Side,
+		Size:   pos.Quantity,
+		// #873: SL/TP triggers anchor to the FROZEN entry (riskAnchorPrice), not
+		// the blended AvgCost — so a scale-in re-sizes protection to the new
+		// total at the unchanged trigger geometry. Equals AvgCost for a position
+		// that never scaled in.
+		AvgCost:         pos.riskAnchorPrice(),
 		EntryATR:        pos.EntryATR,
 		StopLossATRMult: slMult,
 		StopLossOID:     pos.StopLossOID,
@@ -578,6 +582,14 @@ func runHyperliquidProtectionSync(
 					plan.ForceSLReplace = forceSL
 					plan.ForceTPReplace = forceTP
 				}
+				if pos.ScaleInResizePending {
+					// #873: a scale-in grew the size at the frozen triggers —
+					// force-replace SL + already-placed TP tiers so they cover
+					// the new total. OR with any regime-change force flags.
+					fSL, fTP := scaleInProtectionForceReplace(pos, plan)
+					plan.ForceSLReplace = plan.ForceSLReplace || fSL
+					plan.ForceTPReplace = orForceReplace(plan.ForceTPReplace, fTP)
+				}
 			}
 		}
 		mu.Unlock()
@@ -585,6 +597,11 @@ func runHyperliquidProtectionSync(
 		mu.RLock()
 		if pos, ok := stratState.Positions[symbol]; ok {
 			plan, syncOK = buildHyperliquidProtectionPlan(sc, pos)
+			if syncOK && pos.ScaleInResizePending {
+				// #873: re-size SL + un-cleared TP tiers to the grown total at
+				// the frozen trigger geometry; the watermark is not reset.
+				plan.ForceSLReplace, plan.ForceTPReplace = scaleInProtectionForceReplace(pos, plan)
+			}
 		}
 		mu.RUnlock()
 	}
@@ -602,6 +619,17 @@ func runHyperliquidProtectionSync(
 		return false
 	}
 	applyHyperliquidProtectionSync(pos, protection, plan.CancelTPOIDs)
+	// #873: the scale-in re-size has been applied on-chain; clear the one-shot
+	// flag so subsequent syncs don't keep force-replacing unchanged triggers.
+	// EXCEPT when the trailing walker owns the SL (effectiveTrailingStopPct > 0):
+	// this sync only re-sizes the on-chain TP tiers (plan.StopLossATRMult == 0 →
+	// no forceSL), and the SL re-size happens on a later Signal==0 cycle in the
+	// trailing walker, which reads this flag from its Phase-1 snapshot and clears
+	// it itself. Clearing here would hide the pending re-size from the walker and
+	// leave the trailing SL covering only the pre-add size (#882 review).
+	if effectiveTrailingStopPct(sc, pos) <= 0 {
+		pos.ScaleInResizePending = false
+	}
 	if logger != nil && len(protection.TPCancelFilledOIDs) > 0 {
 		logger.Info("surplus TP OIDs filled on-chain (reconciler will book): %v", protection.TPCancelFilledOIDs)
 	}

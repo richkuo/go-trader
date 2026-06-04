@@ -171,6 +171,23 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			sc.RegimeATRWindow = ns.RegimeATRWindow
 			sc.RegimeDirectionalWindow = ns.RegimeDirectionalWindow
 		}
+		// #873: scale-in config is hot-reloadable when flat. The state-compat
+		// gate above blocks the change while a position is open; if we got here
+		// with a difference, the strategy is flat and the next signal/manual-add
+		// reads the new gate.
+		if sc.AllowScaleIn != ns.AllowScaleIn {
+			addChange("strategy[%s].allow_scale_in: %t -> %t", sc.ID, sc.AllowScaleIn, ns.AllowScaleIn)
+			sc.AllowScaleIn = ns.AllowScaleIn
+		}
+		if !scaleInConfigEqual(sc.ScaleIn, ns.ScaleIn) {
+			addChange("strategy[%s].scale_in: shape updated", sc.ID)
+			if ns.ScaleIn != nil {
+				clone := *ns.ScaleIn
+				sc.ScaleIn = &clone
+			} else {
+				sc.ScaleIn = nil
+			}
+		}
 	}
 
 	if portfolioRiskMaxDrawdown(cfg.PortfolioRisk) != portfolioRiskMaxDrawdown(next.PortfolioRisk) {
@@ -356,6 +373,20 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 			errs = append(errs, fmt.Sprintf("strategy[%s] invert_signal changed with open positions (%t -> %t; flatten first or restart after close)",
 				sc.ID, sc.InvertSignal, ns.InvertSignal))
 		}
+		// #873: scale-in config only gates the NEXT add decision, but mutating
+		// it mid-position is surprising (e.g. flipping add_spacing_atr sign, or
+		// lowering a cap below the current count). Block toggle/shape changes
+		// while open; edits when flat take effect on the next cycle. Applies to
+		// both perps (strategy-flag adds) and manual (manual-add).
+		if (sc.Type == "perps" || sc.Type == "manual") && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			if sc.AllowScaleIn != ns.AllowScaleIn {
+				errs = append(errs, fmt.Sprintf("strategy[%s] allow_scale_in changed with open positions (%t -> %t; flatten first or restart after close)",
+					sc.ID, sc.AllowScaleIn, ns.AllowScaleIn))
+			} else if !scaleInConfigEqual(sc.ScaleIn, ns.ScaleIn) {
+				errs = append(errs, fmt.Sprintf("strategy[%s] scale_in shape changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
+		}
 		// #486: HL rejects margin-mode changes on an open position; treat
 		// the same way as Leverage. Stays hot-reloadable when flat.
 		if sc.Type == "perps" && sc.Platform == "hyperliquid" && sc.MarginMode != ns.MarginMode && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
@@ -521,7 +552,20 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.RegimeGateWindow = ""         // #792: hot-reloadable when flat; state-compat blocks change while open
 	sc.RegimeATRWindow = ""          // #792: hot-reloadable when flat; state-compat blocks change while open
 	sc.RegimeDirectionalWindow = ""  // #792: hot-reloadable when flat; state-compat blocks change while open
+	sc.AllowScaleIn = false          // #873: hot-reloadable when flat; state-compat blocks change while open
+	sc.ScaleIn = nil                 // #873: hot-reloadable when flat; state-compat blocks change while open
 	return sc
+}
+
+// scaleInConfigEqual reports whether two scale_in blocks are identical for
+// hot-reload purposes (#873). Treats nil and a zero-value block as distinct
+// only by pointer presence so a bare allow_scale_in toggle is caught by the
+// AllowScaleIn comparison, not here.
+func scaleInConfigEqual(a, b *ScaleInConfig) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func floatPtrEqual(a, b *float64) bool {

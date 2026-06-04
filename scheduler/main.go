@@ -21,6 +21,7 @@ var knownSubcommands = []string{
 	"init",
 	"export",
 	"manual-open",
+	"manual-add",
 	"manual-close",
 	"manual-cancel",
 	"backfill",
@@ -58,6 +59,8 @@ func main() {
 			os.Exit(runExport(os.Args[2:]))
 		case "manual-open":
 			os.Exit(runManualOpen(os.Args[2:]))
+		case "manual-add":
+			os.Exit(runManualAdd(os.Args[2:]))
 		case "manual-close":
 			os.Exit(runManualClose(os.Args[2:]))
 		case "manual-cancel":
@@ -1316,10 +1319,19 @@ func main() {
 					var hlStopLossTriggerPx float64
 					var hlStopLossHighWaterPx float64
 					var hlPostTPTrailingATRMult *float64
+					var hlScaleInCount int
+					var hlLastAddPrice float64
+					var hlAddedNotionalUSD float64
+					var hlScaleInCash float64
+					var hlScaleInResizePending bool
 					if sc.Type == "perps" && sc.Platform == "hyperliquid" {
 						if hlLiveStrategy {
 							hlCash = stratState.Cash
 						}
+						// #873: scale-in's default per-add notional uses the
+						// strategy cash like a fresh open — captured for paper too
+						// (hlCash above is live-only), under the same RLock.
+						hlScaleInCash = stratState.Cash
 						// Live-order sizing/cancel snapshots below are intentionally
 						// consumed only inside live execution branches. Paper paths
 						// should continue using PositionCtx only for close evaluation.
@@ -1335,6 +1347,10 @@ func main() {
 								hlStopLossTriggerPx = pos.StopLossTriggerPx
 								hlStopLossHighWaterPx = pos.StopLossHighWaterPx
 								hlPostTPTrailingATRMult = pos.PostTPTrailingATRMult
+								hlScaleInCount = pos.ScaleInCount
+								hlLastAddPrice = pos.LastAddPrice
+								hlAddedNotionalUSD = pos.AddedNotionalUSD
+								hlScaleInResizePending = pos.ScaleInResizePending
 							}
 						}
 					}
@@ -1598,11 +1614,27 @@ func main() {
 								if capped {
 									logger.Warn("trailing SL arm: virtual qty %.6f > on-chain %.6f for %s; capping SL size to on-chain qty (#621)", hlPosQty, slEffectiveQty, result.Symbol)
 								}
-								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, notifier, logger)
+								// #873: after a scale-in grew the position, force a
+								// cancel+replace once the reconcile has confirmed the new
+								// on-chain size (!capped) so the trailing SL covers the
+								// new total without waiting for a trailing trigger move.
+								forceResize := hlScaleInResizePending && !capped
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, forceResize, notifier, logger)
 								mu.Lock()
 								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, result.Symbol, hlPosSide, hlStopLossOID, newHighWater, updateConfirmed, slUpdate, logger); immediateFill {
 									trades++
 									detail = fmt.Sprintf("[%s] LIVE TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, fillPx)
+								}
+								// The trailing walker owns the SL re-size whenever it fires
+								// (this block only runs when effectiveTrailingStopPct > 0), so
+								// it always clears the flag — including when the strategy also
+								// places on-chain TPs (the sync re-sizes those but defers the
+								// flag clear to here, #882 review). The sync clears the flag
+								// only for non-trailing SL owners.
+								if forceResize && updateConfirmed {
+									if p, ok := stratState.Positions[result.Symbol]; ok && p != nil {
+										p.ScaleInResizePending = false
+									}
 								}
 								mu.Unlock()
 							}
@@ -1663,6 +1695,23 @@ func main() {
 								runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON)
 								runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 							}
+							// #873 scale-in: a same-direction signal on an open HL
+							// perps position ADDS size when allow_scale_in is
+							// enabled and the caps/spacing allow. Computed once
+							// from the Phase-1 snapshot so the live order and the
+							// Trade record agree (closing the #298 fill-without-
+							// Trade gap). Applies to live and paper; paper just
+							// blends (no on-chain order / re-size).
+							scaleInAddQty := 0.0
+							if result.Signal != 0 && sc.Type == "perps" && sc.AllowScaleIn {
+								defOpenNotional := PerpsOpenNotional(hlScaleInCash, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc))
+								snap := scaleInSnapshot{Side: hlPosSide, Quantity: hlPosQty, AvgCost: hlAvgCost, EntryATR: hlEntryATR, ScaleInCount: hlScaleInCount, AddedNotionalUSD: hlAddedNotionalUSD, LastAddPrice: hlLastAddPrice}
+								if q, okAdd, reason := perpsScaleInDecision(sc, snap, result.Signal, price, defOpenNotional); okAdd {
+									scaleInAddQty = q
+								} else if reason != "" && reason != "not a same-direction add" {
+									logger.Info("Scale-in not taken for %s: %s", result.Symbol, reason)
+								}
+							}
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
 								// #768 fix #4: Forward Go's clearinghouseState
 								// snapshot for this coin so Python can skip its
@@ -1670,24 +1719,35 @@ func main() {
 								// Only meaningful when a peer/prior position
 								// has the leverage already pinned on-chain.
 								walletSnapshot := hlExecuteSnapshotForCoin(hlPositions, result.Symbol)
-								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, notifier, logger)
-								if ok2 {
-									execResult = er
+								if scaleInAddQty > 0 {
+									// Add path: same-side market order; no SL/TP
+									// cancel, no update_leverage. The post-add
+									// protection sync re-sizes SL + un-cleared TPs.
+									if er, ok2 := runHyperliquidScaleInOrder(sc, result, scaleInAddQty, walletSnapshot, notifier, logger); ok2 {
+										execResult = er
+									} else {
+										liveExecFailed = true
+									}
 								} else {
-									liveExecFailed = true
-									// Even on failure, if the Python side
-									// confirmed the stale-SL cancel went
-									// through, drop the dead OID so the next
-									// cycle doesn't try to cancel it again.
-									if er != nil && er.CancelStopLossSucceeded && hlStopLossOID > 0 {
-										sym := hyperliquidSymbol(sc.Args)
-										if sym != "" {
-											mu.Lock()
-											if pos, ok3 := stratState.Positions[sym]; ok3 && pos.StopLossOID == hlStopLossOID {
-												pos.StopLossOID = 0
-												logger.Info("cleared stale SL OID=%d after open failed but cancel succeeded", hlStopLossOID)
+									er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, notifier, logger)
+									if ok2 {
+										execResult = er
+									} else {
+										liveExecFailed = true
+										// Even on failure, if the Python side
+										// confirmed the stale-SL cancel went
+										// through, drop the dead OID so the next
+										// cycle doesn't try to cancel it again.
+										if er != nil && er.CancelStopLossSucceeded && hlStopLossOID > 0 {
+											sym := hyperliquidSymbol(sc.Args)
+											if sym != "" {
+												mu.Lock()
+												if pos, ok3 := stratState.Positions[sym]; ok3 && pos.StopLossOID == hlStopLossOID {
+													pos.StopLossOID = 0
+													logger.Info("cleared stale SL OID=%d after open failed but cancel succeeded", hlStopLossOID)
+												}
+												mu.Unlock()
 											}
-											mu.Unlock()
 										}
 									}
 								}
@@ -1695,11 +1755,33 @@ func main() {
 							if !liveExecFailed {
 								mu.Lock()
 								var openTrade *Trade
-								trades, detail, openTrade = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, logger)
+								if scaleInAddQty > 0 {
+									trades, detail, openTrade = executeHyperliquidScaleInDeferredOpen(sc, stratState, result, execResult, signalStr, price, scaleInAddQty, logger)
+								} else {
+									trades, detail, openTrade = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, logger)
+								}
 								mu.Unlock()
 								if execResult != nil && trades > 0 {
 									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON)
 									runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
+									// #873/#882: for a trailing-SL owner the post-trade sync
+									// re-sized only the on-chain TPs (the walker owns the SL).
+									// Grow the trailing SL NOW via the same walker primitive
+									// instead of deferring to the next Signal==0 cycle, so a
+									// scale-in's added size is covered immediately even on a
+									// long strategy interval. No-op for non-trailing owners
+									// (their SL was already re-sized + flag cleared by the sync)
+									// and when the add wasn't a scale-in (flag unset).
+									if scaleInAddQty > 0 {
+										filledAddQty := scaleInAddQty
+										if execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.TotalSz > 0 {
+											filledAddQty = execResult.Execution.Fill.TotalSz
+										}
+										if extraTrades, slDetail := scaleInResizeTrailingSLNow(sc, stratState, result.Symbol, price, hlOnChainAbsQty, filledAddQty, &mu, notifier, logger); extraTrades > 0 {
+											trades += extraTrades
+											detail = slDetail
+										}
+									}
 									mu.Lock()
 									var pos *Position
 									if p, ok := stratState.Positions[result.Symbol]; ok {
@@ -1801,13 +1883,26 @@ func main() {
 									logger.Warn("manual trailing SL: virtual qty %.6f > on-chain %.6f for %s; capping (#621)", pos.Quantity, slEffectiveQty, sc.Symbol)
 								}
 								prevSLOID := pos.StopLossOID
-								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, notifier, logger)
+								// #873: force a re-size when a manual scale-in grew the
+								// position (the trailing SL otherwise covers only the
+								// pre-add size until the next trigger move).
+								forceResize := pos.ScaleInResizePending && !capped
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, forceResize, notifier, logger)
 								mu.Lock()
 								// Shared handler with the perps path — books an immediate fill,
 								// updates a resting replacement, or clears a cancelled-without-rest
 								// OID. Previously this only handled the resting-replacement case.
 								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, sc.Symbol, pos.Side, prevSLOID, newHighWater, updateConfirmed, slUpdate, logger); immediateFill {
 									logger.Info("[%s] manual trailing SL filled immediately %s @ $%.2f", sc.ID, sc.Symbol, fillPx)
+								}
+								// The manual trailing walker owns the SL re-size when it fires
+								// (ratchet closes place no on-chain TPs), so it always clears
+								// the flag; the sync defers the clear to here for trailing
+								// owners (#882 review).
+								if forceResize && updateConfirmed {
+									if p, ok := stratState.Positions[sc.Symbol]; ok && p != nil {
+										p.ScaleInResizePending = false
+									}
 								}
 								mu.Unlock()
 							}

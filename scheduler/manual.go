@@ -424,6 +424,195 @@ func runManualOpen(args []string) int {
 	return 0
 }
 
+// runManualAdd implements `go-trader manual-add <strategy-id>` (#873). It scales
+// into an EXISTING manual position: places a same-side on-chain HL order (or
+// records an existing fill with --record-only), then enqueues an "add" action
+// for the scheduler to blend in. The side is inferred from the open position;
+// EntryATR, the regime label, and the TP tier geometry stay frozen — only the
+// on-chain protection SIZING is re-based on the next scheduler cycle.
+func runManualAdd(args []string) int {
+	// #873: manual-add is the operator-intent path and deliberately bypasses the
+	// allow_scale_in flag and the scaleInLiveProtectionResizable load-time guard
+	// (those gate the strategy-flag perps path only). That is safe because a
+	// type=manual strategy always auto-configures an ATR stop-loss, which the
+	// protection-sync resize path can grow after an add.
+	fs := flag.NewFlagSet("manual-add", flag.ContinueOnError)
+	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
+	size := fs.Float64("size", 0, "Add size in base units (coin qty)")
+	notional := fs.Float64("notional", 0, "Add size as USD notional (size = notional / price)")
+	margin := fs.Float64("margin", 0, "Add size as USD margin (size = margin * leverage / price)")
+	fillPrice := fs.Float64("fill-price", 0, "Fill price for --record-only (required when --record-only is set)")
+	recordOnly := fs.Bool("record-only", false, "Register an existing same-side add fill without placing a new on-chain order")
+	dryRun := fs.Bool("dry-run", false, "Print planned action without placing order or mutating state")
+
+	args = reorderArgsForPositional(args, collectBoolFlagNames(fs))
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "Usage: go-trader manual-add <strategy-id> [--size N | --notional N | --margin N] [--record-only --size N --fill-price P] [flags]")
+		return 2
+	}
+	strategyID := fs.Arg(0)
+
+	cfg, err := LoadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		return 1
+	}
+	sc, ok := findManualStrategy(cfg, strategyID)
+	if !ok {
+		return 1
+	}
+
+	sizingInputs := countSizingFlags(*size, *notional, *margin)
+	if sizingInputs == 0 && !*recordOnly {
+		*margin = cfg.resolveManualMarginUSD()
+		sizingInputs = 1
+		fmt.Fprintf(os.Stderr, "[manual-add] no sizing flag provided; defaulting to --margin %g\n", *margin)
+	}
+	if sizingInputs == 0 {
+		fmt.Fprintln(os.Stderr, "error: one of --size, --notional, or --margin is required")
+		return 2
+	}
+	if sizingInputs > 1 {
+		fmt.Fprintln(os.Stderr, "error: only one of --size, --notional, or --margin may be specified")
+		return 2
+	}
+	if *recordOnly {
+		if *size <= 0 {
+			fmt.Fprintln(os.Stderr, "error: --record-only requires --size (coin qty of the fill you placed)")
+			return 2
+		}
+		if *fillPrice <= 0 {
+			fmt.Fprintln(os.Stderr, "error: --record-only requires --fill-price (the price at which your fill executed)")
+			return 2
+		}
+	}
+
+	stateDB, err := OpenStateDB(cfg.DBFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
+		return 1
+	}
+	defer stateDB.Close()
+
+	// An add requires the position to already exist — load state to infer the
+	// side and run the same kill-switch / CB-pending guards as manual-open.
+	state, loadErr := LoadStateWithDB(cfg, stateDB)
+	if loadErr != nil {
+		fmt.Fprintf(os.Stderr, "error: could not load state to locate the open position: %v\n", loadErr)
+		return 1
+	}
+	if state.PortfolioRisk.KillSwitchActive {
+		fmt.Fprintln(os.Stderr, "error: portfolio kill switch is active — manual-add blocked (use manual-close to flatten)")
+		return 1
+	}
+	ss := state.Strategies[strategyID]
+	if ss == nil {
+		fmt.Fprintf(os.Stderr, "error: no state for strategy %q\n", strategyID)
+		return 1
+	}
+	if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
+		fmt.Fprintln(os.Stderr, "error: strategy has a pending circuit-breaker close — manual-add blocked")
+		return 1
+	}
+	pos, exists := ss.Positions[sc.Symbol]
+	if !exists || pos == nil {
+		fmt.Fprintf(os.Stderr, "error: no open position for %s/%s; open one first with manual-open\n", strategyID, sc.Symbol)
+		return 1
+	}
+	side := pos.Side
+	addSide := "buy"
+	if side == "short" {
+		addSide = "sell"
+	}
+
+	var resolvedOrderSize, sizingMark float64
+	if !*recordOnly {
+		qty, mark, err := resolveManualOpenOrderSize(sc, *size, *notional, *margin, fetchHyperliquidMids)
+		if err != nil {
+			if *dryRun {
+				fmt.Fprintf(os.Stderr, "warning: dry-run sizing best-effort failed: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				return 1
+			}
+		}
+		resolvedOrderSize = qty
+		sizingMark = mark
+	}
+
+	if *dryRun {
+		fmt.Printf("[dry-run] manual-add %s: %s +%.6f %s (script=%s, mark=$%.4f, current qty=%.6f avg=$%.4f)\n",
+			strategyID, side, resolvedOrderSize, sc.Symbol, sc.Script, sizingMark, pos.Quantity, pos.AvgCost)
+		return 0
+	}
+
+	var resolvedFillPrice, fillQty, fillFee float64
+	var exchangeOID string
+
+	if *recordOnly {
+		fillQty = *size
+		resolvedFillPrice = *fillPrice
+	} else {
+		// Add order: same-side market order. No SL pct, no cancel OID, and NO
+		// margin-mode/leverage (HL rejects update_leverage on an open position);
+		// the post-add protection sync re-sizes SL + un-cleared TPs.
+		execResult, execStderr, execErr := RunHyperliquidExecute(
+			sc.Script, sc.Symbol, addSide,
+			resolvedOrderSize,
+			0, 0, 0, "", 0, false,
+			hlExecuteSnapshot{},
+		)
+		if execStderr != "" {
+			fmt.Fprintf(os.Stderr, "HL execute stderr: %s\n", execStderr)
+		}
+		if execErr != nil {
+			fmt.Fprintf(os.Stderr, "error placing order: %v\n", execErr)
+			return 1
+		}
+		if execResult.Error != "" {
+			fmt.Fprintf(os.Stderr, "error from HL: %s\n", execResult.Error)
+			return 1
+		}
+		fill := execResult.Execution
+		if fill == nil || fill.Fill == nil {
+			fmt.Fprintln(os.Stderr, "error: no fill returned from execute")
+			return 1
+		}
+		resolvedFillPrice = fill.Fill.AvgPx
+		fillQty = fill.Fill.TotalSz
+		fillFee = fill.Fill.Fee
+		if fill.Fill.OID != 0 {
+			exchangeOID = fmt.Sprintf("%d", fill.Fill.OID)
+		}
+		if fillQty <= 0 {
+			fillQty = resolveManualSize(*size, *notional, *margin, resolvedFillPrice, sc.Leverage)
+		}
+	}
+
+	fmt.Printf("Filled scale-in: %s +%.6f %s @ $%.4f (fee=$%.4f)\n", side, fillQty, sc.Symbol, resolvedFillPrice, fillFee)
+
+	action := PendingManualAction{
+		StrategyID:      strategyID,
+		Action:          "add",
+		Symbol:          sc.Symbol,
+		Side:            side,
+		Quantity:        fillQty,
+		FillPrice:       resolvedFillPrice,
+		FillFee:         fillFee,
+		ExchangeOrderID: exchangeOID,
+		CreatedAt:       time.Now().UTC(),
+	}
+	if err := stateDB.InsertPendingManualAction(action); err != nil {
+		fmt.Fprintf(os.Stderr, "error queuing action: %v\n", err)
+		return 1
+	}
+	fmt.Printf("Queued: scale-in for %s will blend into the position after the next scheduler cycle.\n", strategyID)
+	return 0
+}
+
 // runManualClose implements `go-trader manual-close <strategy-id>`.
 func runManualClose(args []string) int {
 	fs := flag.NewFlagSet("manual-close", flag.ContinueOnError)
@@ -771,6 +960,46 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 		}
 		fmt.Printf("[manual] applied close: %s %.6f %s @ $%.4f | PnL=$%.2f\n",
 			a.StrategyID, a.Quantity, a.Symbol, a.FillPrice, a.RealizedPnL)
+
+	case "add":
+		// #873 manual scale-in: blend an add leg into the open position. Side is
+		// inferred from the position at CLI time; freezes EntryATR/regime/TP
+		// geometry (applyScaleIn) and grows InitialQuantity. The next manual
+		// protection sync re-sizes the on-chain SL/TP via ScaleInResizePending.
+		pos, exists := ss.Positions[a.Symbol]
+		if !exists || pos == nil {
+			return fmt.Errorf("no open position for %s/%s; open one first", a.StrategyID, a.Symbol)
+		}
+		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
+			return fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
+		}
+		if a.Side != "" && a.Side != pos.Side {
+			return fmt.Errorf("scale-in side %q does not match open position side %q for %s/%s", a.Side, pos.Side, a.StrategyID, a.Symbol)
+		}
+		applyScaleIn(pos, a.Quantity, a.FillPrice)
+		trade := Trade{
+			Timestamp:       now,
+			StrategyID:      a.StrategyID,
+			Symbol:          a.Symbol,
+			Side:            openTradeSide(pos.Side),
+			Quantity:        a.Quantity,
+			Price:           a.FillPrice,
+			Value:           a.Quantity * a.FillPrice,
+			TradeType:       scaleInTradeType,
+			Details:         fmt.Sprintf("manual scale-in %s %s @ $%.4f (add #%d, new qty %.6f, avg $%.4f)", pos.Side, a.Symbol, a.FillPrice, pos.ScaleInCount, pos.Quantity, pos.AvgCost),
+			PositionID:      ensurePositionTradeID(a.StrategyID, a.Symbol, pos),
+			ExchangeOrderID: a.ExchangeOrderID,
+			ExchangeFee:     a.FillFee,
+			IsClose:         false,
+			Manual:          true,
+		}
+		trade.Regime = pos.Regime
+		trade.EntryATR = pos.EntryATR
+		RecordTrade(ss, trade)
+		// Perps add deducts only the fee; notional stays virtual (mirrors open).
+		ss.Cash -= a.FillFee
+		fmt.Printf("[manual] applied scale-in: %s +%.6f %s @ $%.4f (new qty %.6f, avg $%.4f)\n",
+			a.StrategyID, a.Quantity, a.Symbol, a.FillPrice, pos.Quantity, pos.AvgCost)
 
 	default:
 		return fmt.Errorf("unknown action %q", a.Action)

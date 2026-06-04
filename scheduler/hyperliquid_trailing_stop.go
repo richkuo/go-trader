@@ -70,7 +70,7 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 		if pos.EntryATR <= 0 || pos.AvgCost <= 0 {
 			return 0
 		}
-		pct := *pos.PostTPTrailingATRMult * pos.EntryATR / pos.AvgCost * 100.0
+		pct := *pos.PostTPTrailingATRMult * pos.EntryATR / pos.riskAnchorPrice() * 100.0
 		if pct > MaxAutoStopLossPct {
 			pct = MaxAutoStopLossPct
 		}
@@ -86,7 +86,7 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 		if pos == nil || pos.EntryATR <= 0 || pos.AvgCost <= 0 {
 			return 0
 		}
-		pct := *sc.TrailingStopATRMult * pos.EntryATR / pos.AvgCost * 100.0
+		pct := *sc.TrailingStopATRMult * pos.EntryATR / pos.riskAnchorPrice() * 100.0
 		if pct > MaxAutoStopLossPct {
 			pct = MaxAutoStopLossPct
 		}
@@ -106,7 +106,7 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 		if !ok {
 			return 0
 		}
-		pct := mult * pos.EntryATR / pos.AvgCost * 100.0
+		pct := mult * pos.EntryATR / pos.riskAnchorPrice() * 100.0
 		if pct > MaxAutoStopLossPct {
 			pct = MaxAutoStopLossPct
 		}
@@ -195,7 +195,7 @@ func effectiveFixedStopLossATRPct(sc StrategyConfig, pos *Position) float64 {
 	if pos == nil || pos.EntryATR <= 0 || pos.AvgCost <= 0 {
 		return 0
 	}
-	pct := mult * pos.EntryATR / pos.AvgCost * 100.0
+	pct := mult * pos.EntryATR / pos.riskAnchorPrice() * 100.0
 	if pct > MaxAutoStopLossPct {
 		pct = MaxAutoStopLossPct
 	}
@@ -211,11 +211,15 @@ func fixedStopLossATRTriggerPx(sc StrategyConfig, side string, pos *Position) fl
 	if pct <= 0 || pos == nil || pos.AvgCost <= 0 {
 		return 0
 	}
+	// #873: the fixed ATR trigger is anchored to the FROZEN entry
+	// (riskAnchorPrice), not the blended AvgCost, so a scale-in never shifts
+	// the operator's original stop geometry.
+	anchor := pos.riskAnchorPrice()
 	switch side {
 	case "long":
-		return pos.AvgCost * (1.0 - pct/100.0)
+		return anchor * (1.0 - pct/100.0)
 	case "short":
-		return pos.AvgCost * (1.0 + pct/100.0)
+		return anchor * (1.0 + pct/100.0)
 	}
 	return 0
 }
@@ -535,7 +539,10 @@ func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Positi
 	}
 	avgCost := 0.0
 	if pos != nil {
-		avgCost = pos.AvgCost
+		// #873: seed the trailing high-water from the FROZEN entry so a
+		// scale-in before the first favorable move doesn't reset the trail
+		// to the blended average.
+		avgCost = pos.riskAnchorPrice()
 	}
 	if highWater <= 0 {
 		highWater = avgCost
@@ -607,19 +614,33 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 // outside the state mutex so the subprocess call below can run without
 // blocking other strategies). The pointer is taken by value semantics; the
 // helper only reads, never writes through it.
-func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qty float64, pos *Position, mark, highWater, currentTrigger float64, currentOID int64, notifier *MultiNotifier, logger *StrategyLogger) (float64, *HyperliquidStopLossUpdateResult, bool) {
+func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qty float64, pos *Position, mark, highWater, currentTrigger float64, currentOID int64, forceResize bool, notifier *MultiNotifier, logger *StrategyLogger) (float64, *HyperliquidStopLossUpdateResult, bool) {
 	trailingPct := effectiveTrailingStopPct(sc, pos)
 	if trailingPct <= 0 || qty <= 0 || mark <= 0 {
 		return highWater, nil, true
 	}
 	avgCost := 0.0
 	if pos != nil {
-		avgCost = pos.AvgCost
+		// #873: seed the trailing high-water from the FROZEN entry so a
+		// scale-in before the first favorable move doesn't reset the trail
+		// to the blended average.
+		avgCost = pos.riskAnchorPrice()
 	}
 	if highWater <= 0 {
 		highWater = avgCost
 	}
 	newHighWater, newTrigger, replace := computeTrailingStopUpdate(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger)
+	if forceResize && !replace {
+		// #873: a scale-in grew the position; the resting trailing SL still
+		// covers only the pre-add size. Force a cancel+replace at the EXISTING
+		// trigger so the reduce-only SL covers the new total. Keep the current
+		// trigger price (no trailing move yet); fall through to the computed
+		// trigger when nothing is resting (currentTrigger==0).
+		replace = true
+		if currentTrigger > 0 {
+			newTrigger = currentTrigger
+		}
+	}
 	if !replace {
 		return newHighWater, nil, true
 	}
