@@ -528,7 +528,9 @@ class HyperliquidExchangeAdapter:
         }
         interval_ms = interval_ms_map.get(interval, 3_600_000)
         end_ms = int(time.time() * 1000)
-        start_ms = end_ms - interval_ms * limit
+        # Calculate start time to fetch at least `limit` candles
+        # Add margin for any gaps in data
+        start_ms = end_ms - interval_ms * (limit + 50)
 
         # Cycle-scoped dedup: reuse a fresh on-disk snapshot so peer strategies
         # sharing this (symbol, interval, limit) don't each hit /info (#839).
