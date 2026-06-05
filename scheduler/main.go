@@ -1523,6 +1523,12 @@ func main() {
 						if result, signalStr, ok := runOptionsCheck(sc, posJSON, notifier, logger); ok {
 							mu.Lock()
 							stratState.Regime = result.Regime
+							// #879: surface options regime in the portfolio/dashboard store.
+							// Options computes regime inline (advisory 4h ADX, embedded in its
+							// evaluators); populate from the result so options behavior is unchanged.
+							if cfg.Regime != nil && cfg.Regime.Enabled && strings.TrimSpace(result.Regime) != "" {
+								regimeStore.put(optionsRegimeSignature(result.Underlying, cfg.Regime), RegimePayload{Legacy: result.Regime}, nil)
+							}
 							var harvestDetails []string
 							trades, detail, harvestDetails = executeOptionsResult(sc, stratState, result, signalStr, logger)
 							mu.Unlock()

@@ -147,3 +147,18 @@ func TestBuildRegimeStoreDisabledSkips(t *testing.T) {
 		t.Fatalf("disabled regime must not spawn subprocesses, got %d", calls)
 	}
 }
+
+func TestOptionsRegimeSignature(t *testing.T) {
+	rc := &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}
+	sig := optionsRegimeSignature("BTC", rc)
+	if sig.Symbol != "BTC" || sig.Interval != "4h" {
+		t.Fatalf("got %+v", sig)
+	}
+	// store round-trips an options-sourced label
+	s := newRegimeStore()
+	s.put(sig, RegimePayload{Legacy: "trending_up"}, nil)
+	got, ok := s.get(sig)
+	if !ok || got.PrimaryLabel(rc) != "trending_up" {
+		t.Fatalf("options store read failed: %+v ok=%v", got, ok)
+	}
+}

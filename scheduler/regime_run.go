@@ -11,6 +11,21 @@ import (
 
 const regimeFetchScript = "shared_scripts/fetch_regime.py"
 
+// optionsRegimeInterval mirrors check_options.py REGIME_TIMEFRAME. Options
+// regime is advisory (3-state ADX, no gate) and computed inside the options
+// evaluators, so #879 populates the store FROM the check result rather than
+// injecting — preserving exact options behavior while still surfacing options
+// regime in the portfolio/dashboard view.
+const optionsRegimeInterval = "4h"
+
+func optionsRegimeSignature(underlying string, rc *RegimeConfig) RegimeSignature {
+	return RegimeSignature{
+		Symbol:   strings.TrimSpace(underlying),
+		Interval: optionsRegimeInterval,
+		SpecHash: regimeSpecHash(rc),
+	}
+}
+
 // regimeSubprocessArgv builds the argv for the dedicated read-only regime
 // subprocess. instType/mode are forwarded only when non-empty (OKX inst-type;
 // RH/TopStep adapter mode).
