@@ -36,6 +36,10 @@ var probeArgv = []string{
 	"--ohlcv-limit", "200",
 	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
 	"--regime-atr-window", "",
+	// #879: scheduler injects the precomputed regime payload; probe the new
+	// flags so a stale check script that doesn't accept them fails startup
+	// instead of every cycle's argv rejecting the injection.
+	"--regime-injected", "--regime-payload-json", `{"default":{"regime":"trending_up","score":0.4}}`,
 	"--probe-only",
 }
 
@@ -48,7 +52,17 @@ var probeCompositeArgv = []string{
 	"--ohlcv-limit", "200",
 	"--regime-windows-spec-json", `{"macro":{"classifier":"composite","period":14,"thresholds":{"return_pct":0.05,"range_pct":0.03,"adx":25}}}`,
 	"--regime-atr-window", "",
+	"--regime-injected", "--regime-payload-json", `{"macro":{"regime":"ranging_quiet","score":0.1}}`,
 	"--probe-only",
+}
+
+// fetchRegimeProbeArgv probes the #879 dedicated regime subprocess. Like
+// fetch_candles.py it is not a configured strategy script, so it needs its own
+// probe to catch stale Python before the trading loop's per-cycle store build.
+var fetchRegimeProbeArgv = []string{
+	"--platform=hyperliquid", "--symbol=BTC", "--interval=1h",
+	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
+	"--ohlcv-limit=200", "--probe-only",
 }
 
 // fetchATRProbeArgv probes check_hyperliquid.py's --fetch-atr mode (#689) so a
@@ -162,6 +176,12 @@ func probeCheckScripts(cfg *Config) error {
 	}
 	if len(scripts) > 0 {
 		if err := probeOneCheckScriptFn("shared_scripts/fetch_candles.py", fetchCandlesProbeArgv); err != nil {
+			return err
+		}
+		// #879: probe the dedicated regime subprocess so an asymmetric deploy
+		// (new Go binary invoking fetch_regime.py against a stale/missing Python)
+		// fails at startup rather than on the first per-cycle store build.
+		if err := probeOneCheckScriptFn("shared_scripts/fetch_regime.py", fetchRegimeProbeArgv); err != nil {
 			return err
 		}
 		if err := probeOneCheckScriptFn("shared_scripts/strategy_tuner_schema.py", strategyTunerSchemaProbeArgv); err != nil {

@@ -148,9 +148,9 @@ func TestRunProbeHappyPath(t *testing.T) {
 	}
 	// Expect 9 invocations: HL signal-check (adx+composite), HL --fetch-atr (#689),
 	// HL --execute (PR #769), spot signal-check (adx+composite), dashboard helpers.
-	// 9 prior shapes + 3 #883 limit-order shapes (limit-open/limit-status/cancel-order).
-	if len(probed) != 12 {
-		t.Fatalf("expected 12 probe invocations, got %d: %v", len(probed), probed)
+	// 9 prior shapes + 3 #883 limit-order shapes + 1 #879 fetch_regime.py.
+	if len(probed) != 13 {
+		t.Fatalf("expected 13 probe invocations, got %d: %v", len(probed), probed)
 	}
 	var hlSignal, hlFetchATR, hlExecute, hlLimitOpen, hlLimitStatus, hlCancelOrder, spotSignal, candleHelper, schemaHelper, simulateHelper int
 	for _, p := range probed {
