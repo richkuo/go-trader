@@ -21,6 +21,8 @@ spec = importlib.util.spec_from_file_location(
 _regime_mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(_regime_mod)
 compute_regime = _regime_mod.compute_regime
+compute_regime_bundle = _regime_mod.compute_regime_bundle
+map_adx_label = _regime_mod.map_adx_label
 latest_regime = _regime_mod.latest_regime
 compute_multi_regime = _regime_mod.compute_multi_regime
 regime_payload_for_config = _regime_mod.regime_payload_for_config
@@ -430,6 +432,62 @@ def test_parse_regime_windows_spec_json_composite():
     )
     assert spec["macro"]["classifier"] == "composite"
     assert spec["macro"]["period"] == 100
+
+
+def test_compute_regime_bundle_matches_latest_regime_adx3():
+    df = _make_uptrend(n=120)
+    bundle = compute_regime_bundle(df, period=14)
+    assert bundle is not None
+    snap = latest_regime(df, period=14, adx_threshold=20.0)
+    assert bundle["labels_default"]["adx3"] == snap["regime"]
+    assert bundle["raw"]["adx"] == pytest.approx(snap["metrics"]["adx"])
+
+
+def test_compute_regime_bundle_period_28_matches_full_period_adx():
+    df = _make_uptrend(n=200)
+    bundle = compute_regime_bundle(df, period=28)
+    assert bundle is not None
+    snap = latest_regime(df, period=28, adx_threshold=20.0)
+    assert bundle["labels_default"]["adx3"] == snap["regime"]
+
+
+def test_compute_regime_bundle_composite7_matches_latest_composite():
+    df = _make_uptrend(n=120)
+    bundle = compute_regime_bundle(df, period=14)
+    assert bundle is not None
+    snap = _regime_mod.latest_regime_composite(df, period=14)
+    assert bundle["labels_default"]["composite7"] == snap["regime"]
+
+
+def test_ensure_regime_columns_last_bar_matches_latest_regime():
+    df = _make_uptrend(n=120)
+    out = ensure_regime_columns(df.copy(), period=14, adx_threshold=20.0)
+    snap = latest_regime(df, period=14, adx_threshold=20.0)
+    assert str(out["regime"].iloc[-1]) == snap["regime"]
+
+
+def test_map_adx_label_trending_down():
+    assert map_adx_label(30, 5, 20, 20) == "trending_down"
+
+
+def test_resolve_check_regime_uses_injected_legacy():
+    df = _make_uptrend(n=120)
+    stdout, live, strategy = _regime_mod.resolve_check_regime(
+        df,
+        regime_enabled=True,
+        injected_payload="trending_up",
+    )
+    assert stdout == "trending_up"
+    assert live == "trending_up"
+    assert strategy["regime"] == "trending_up"
+
+
+def test_resolve_check_regime_falls_back_to_inline():
+    df = _make_uptrend(n=120)
+    out_inj = _regime_mod.resolve_check_regime(df, regime_enabled=True, injected_payload="ranging")
+    out_inline = _regime_mod.resolve_check_regime(df, regime_enabled=True, injected_payload=None)
+    assert out_inj[0] == "ranging"
+    assert out_inline[0] in _regime_mod.VALID_LABELS_ADX
 
 
 def test_latest_regime_composite_downtrend():

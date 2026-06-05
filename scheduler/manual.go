@@ -1195,7 +1195,7 @@ func runManualCloseEval(sc StrategyConfig, ss *StrategyState, cfg *Config, notif
 	}
 
 	posCtx := positionCtxFromPosition(pos)
-	result, _, price, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, notifier, logger)
+	result, _, price, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, RegimePayload{}, notifier, logger)
 	if !ok {
 		return 0, 0, RegimePayload{}, false
 	}

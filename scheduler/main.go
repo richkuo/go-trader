@@ -1274,6 +1274,21 @@ func main() {
 					}
 				}
 
+				cycleRegimeStore := newGlobalRegimeStore()
+				populateGlobalRegimeStore(shutdownReadOnlyCtx, cycleRegimeStore, dueStrategies, cfg, notifier)
+				setActiveCycleRegimeStore(cycleRegimeStore)
+				defer setActiveCycleRegimeStore(nil)
+				mu.Lock()
+				if cfg.Regime != nil && cfg.Regime.Enabled {
+					state.MarketRegimes = cycleRegimeStore.MarketRegimeEntries()
+				} else {
+					state.MarketRegimes = nil
+				}
+				mu.Unlock()
+				cycleRegime := func(sc StrategyConfig) RegimePayload {
+					return cycleRegimePayload(cycleRegimeStore, sc, cfg.Regime)
+				}
+
 				for _, sc := range dueStrategies {
 					stratState := state.Strategies[sc.ID]
 					if stratState == nil {
@@ -1453,14 +1468,14 @@ func main() {
 					switch sc.Type {
 					case "spot":
 						if sc.Platform == "okx" {
-							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, notifier, logger); ok {
+							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, cycleRegime(sc), notifier, logger); ok {
 								prices[result.Symbol] = price
-								if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, okxPosQty); regimeBlocked {
+								if gateRegime, regimeBlocked := applyRegimeGate(sc, cycleRegime(sc), cfg.Regime, okxPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 									result.Signal = 0
 								}
 								mu.Lock()
-								syncStrategyRegimeState(stratState, regimePayloadValue(result.Regime), cfg.Regime)
+								syncStrategyRegimeState(stratState, cycleRegime(sc), cfg.Regime)
 								mu.Unlock()
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
@@ -1478,14 +1493,14 @@ func main() {
 								}
 							}
 						} else if sc.Platform == "robinhood" {
-							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, rhPosCtx, cfg.Regime, notifier, logger); ok {
+							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, rhPosCtx, cfg.Regime, cycleRegime(sc), notifier, logger); ok {
 								prices[result.Symbol] = price
-								if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, rhPosQty); regimeBlocked {
+								if gateRegime, regimeBlocked := applyRegimeGate(sc, cycleRegime(sc), cfg.Regime, rhPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 									result.Signal = 0
 								}
 								mu.Lock()
-								syncStrategyRegimeState(stratState, regimePayloadValue(result.Regime), cfg.Regime)
+								syncStrategyRegimeState(stratState, cycleRegime(sc), cfg.Regime)
 								mu.Unlock()
 								var execResult *RobinhoodExecuteResult
 								liveExecFailed := false
@@ -1502,20 +1517,20 @@ func main() {
 									mu.Unlock()
 								}
 							}
-						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, spotPosCtx, cfg.Regime, notifier, logger); ok {
-							if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, spotPosCtx.Quantity); regimeBlocked {
+						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, spotPosCtx, cfg.Regime, cycleRegime(sc), notifier, logger); ok {
+							if gateRegime, regimeBlocked := applyRegimeGate(sc, cycleRegime(sc), cfg.Regime, spotPosCtx.Quantity); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 								result.Signal = 0
 							}
 							mu.Lock()
-							syncStrategyRegimeState(stratState, regimePayloadValue(result.Regime), cfg.Regime)
+							syncStrategyRegimeState(stratState, cycleRegime(sc), cfg.Regime)
 							trades, detail = executeSpotResult(sc, stratState, stateDB, result, signalStr, price, cfg.Regime, logger)
 							mu.Unlock()
 						}
 					case "options":
-						if result, signalStr, ok := runOptionsCheck(sc, posJSON, notifier, logger); ok {
+						if result, signalStr, ok := runOptionsCheck(sc, posJSON, cfg.Regime, cycleRegime(sc), notifier, logger); ok {
 							mu.Lock()
-							stratState.Regime = result.Regime
+							syncStrategyRegimeState(stratState, cycleRegime(sc), cfg.Regime)
 							var harvestDetails []string
 							trades, detail, harvestDetails = executeOptionsResult(sc, stratState, result, signalStr, logger)
 							mu.Unlock()
@@ -1526,14 +1541,14 @@ func main() {
 						}
 					case "perps":
 						if sc.Platform == "okx" {
-							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, notifier, logger); ok {
+							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, cycleRegime(sc), notifier, logger); ok {
 								prices[result.Symbol] = price
-								if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, okxPosQty); regimeBlocked {
+								if gateRegime, regimeBlocked := applyRegimeGate(sc, cycleRegime(sc), cfg.Regime, okxPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 									result.Signal = 0
 								}
 								mu.Lock()
-								syncStrategyRegimeState(stratState, regimePayloadValue(result.Regime), cfg.Regime)
+								syncStrategyRegimeState(stratState, cycleRegime(sc), cfg.Regime)
 								mu.Unlock()
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
@@ -1550,14 +1565,14 @@ func main() {
 									mu.Unlock()
 								}
 							}
-						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, notifier, logger); ok {
+						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, cycleRegime(sc), notifier, logger); ok {
 							prices[result.Symbol] = price
-							if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, hlPosQty); regimeBlocked {
+							if gateRegime, regimeBlocked := applyRegimeGate(sc, cycleRegime(sc), cfg.Regime, hlPosQty); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 								result.Signal = 0
 							}
 							mu.Lock()
-							syncStrategyRegimeState(stratState, regimePayloadValue(result.Regime), cfg.Regime)
+							syncStrategyRegimeState(stratState, cycleRegime(sc), cfg.Regime)
 							mu.Unlock()
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
@@ -1811,14 +1826,14 @@ func main() {
 							}
 						}
 					case "futures":
-						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, cfg.Regime, notifier, logger); ok {
+						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, cfg.Regime, cycleRegime(sc), notifier, logger); ok {
 							prices[result.Symbol] = price
-							if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, tsContracts); regimeBlocked {
+							if gateRegime, regimeBlocked := applyRegimeGate(sc, cycleRegime(sc), cfg.Regime, tsContracts); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 								result.Signal = 0
 							}
 							mu.Lock()
-							syncStrategyRegimeState(stratState, regimePayloadValue(result.Regime), cfg.Regime)
+							syncStrategyRegimeState(stratState, cycleRegime(sc), cfg.Regime)
 							mu.Unlock()
 							var execResult *TopStepExecuteResult
 							liveExecFailed := false
@@ -1861,22 +1876,20 @@ func main() {
 						// pos.Regime == "" on the first post-open cycle, so the regime
 						// trail no-op'd for one interval; stamping first arms it
 						// correctly on cycle 1.
-						closeFraction, _, manualRegime, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger)
+						manualLiveRegime := cycleRegime(sc)
+						var closeFraction float64
+						var manualOK bool
+						if pos != nil {
+							closeFraction, _, _, manualOK = runManualCloseEval(sc, stratState, cfg, notifier, logger)
+						} else {
+							manualOK = true
+						}
 						if manualOK {
 							mu.Lock()
-							// Refresh the strategy-level live regime every cycle, like
-							// the other five dispatches do — this is what the Phase 6
-							// status line and dashboard read (stratState.Regime). Without
-							// it a manual strategy reports regime=- even with an open,
-							// correctly-stamped position (#872 review).
-							syncStrategyRegimeState(stratState, manualRegime, cfg.Regime)
-							// Stamp the current regime onto the position the first
-							// time we observe one. Idempotent — stampPosition-
-							// RegimeFromPayload only writes when pos.Regime == "" (and
-							// pos.RegimeWindows is empty) — so this fires exactly once,
-							// on the first close-eval cycle after open, regardless of
-							// live vs --record-only.
-							stampPositionRegimeIfOpened(stratState, sc.Symbol, manualRegime, sc, cfg.Regime)
+							syncStrategyRegimeState(stratState, manualLiveRegime, cfg.Regime)
+							if pos != nil {
+								stampPositionRegimeIfOpened(stratState, sc.Symbol, manualLiveRegime, sc, cfg.Regime)
+							}
 							mu.Unlock()
 						}
 						if pos != nil && hyperliquidIsLive(sc.Args) {
@@ -2395,13 +2408,13 @@ func spotSymbol(args []string) string {
 
 // runSpotCheck runs the spot check subprocess and returns the parsed result.
 // No state access. Returns (result, signalStr, price, ok); ok=false means skip execution.
-func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*SpotResult, string, float64, bool) {
+func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, liveRegime RegimePayload, notifier *MultiNotifier, logger *StrategyLogger) (*SpotResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
-	args = appendRegimeArgs(args, regime)
+	args = appendRegimeArgs(args, regime, liveRegime)
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
@@ -2463,7 +2476,7 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 	}
 	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
-	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	stampPositionRegimeIfOpened(s, result.Symbol, openStampRegimePayload(sc, regime, regimePayloadValue(result.Regime)), sc, regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
@@ -2528,10 +2541,12 @@ func indicatorFloat(indicators map[string]interface{}, key string) (float64, boo
 
 // runOptionsCheck runs the options check subprocess and returns the parsed result.
 // No state access. Returns (result, signalStr, ok); ok=false means skip execution.
-func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier, logger *StrategyLogger) (*OptionsResult, string, bool) {
-	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
+func runOptionsCheck(sc StrategyConfig, posJSON string, regime *RegimeConfig, injected RegimePayload, notifier *MultiNotifier, logger *StrategyLogger) (*OptionsResult, string, bool) {
+	args := append([]string{}, sc.Args...)
+	args = appendRegimeArgs(args, regime, injected)
+	logger.Info("Running: python3 %s %v", sc.Script, args)
 
-	result, stderr, err := RunOptionsCheckWithStdin(sc.Script, sc.Args, posJSON)
+	result, stderr, err := RunOptionsCheckWithStdin(sc.Script, args, posJSON)
 	if err != nil {
 		logger.Error("Script failed: %v", err)
 		if stderr != "" {
@@ -2701,7 +2716,7 @@ func isHLLiveReconcilable(sc StrategyConfig) bool {
 // result.Regime is known, so downstream EffectiveDirection / perpsLiveOrderSize
 // / PerpsOrderSkipReason calls in execute paths see the effective values.
 // Mutation is scoped to the loop-local sc; cfg.Strategies is never touched.
-func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
+func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, liveRegime RegimePayload, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	// Suppress in-process close evaluators that overlap on-chain reduce-only
 	// protection — running both races on the shared on-chain position
@@ -2712,7 +2727,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
-	args = appendRegimeArgs(args, regime)
+	args = appendRegimeArgs(args, regime, liveRegime)
 	args = appendStrategyRegimeWindowArgs(args, *sc, regime)
 	if refsArgs, err := buildStrategyRefsArg(scForCheck); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
@@ -2752,7 +2767,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	// resolves from result.Regime (current cycle); while a position is open,
 	// uses posCtx.Regime (the regime stamped at open) so the position runs
 	// to its natural exit under the policy that opened it.
-	currentDirRegime := regimeDirectionalLabel(*sc, regimePayloadValue(result.Regime), regime)
+	currentDirRegime := regimeDirectionalLabel(*sc, liveRegime, regime)
 	posDirRegime := posCtx.DirectionalRegime
 	if entry, applied, legacyFallback := applyRegimeDirectionalPolicy(sc, currentDirRegime, posDirRegime, posCtx.Quantity); applied {
 		regimeKey := effectiveRegimeForPolicy(currentDirRegime, posDirRegime, posCtx.Quantity)
@@ -3082,7 +3097,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	trades := exec.TradesExecuted
 	openTrade := exec.OpenTrade
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
-	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	stampPositionRegimeIfOpened(s, result.Symbol, openStampRegimePayload(sc, regime, regimePayloadValue(result.Regime)), sc, regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		stampPositionProtectionSnapshot(pos, sc)
 	}
@@ -3178,13 +3193,13 @@ func topstepSymbol(args []string) string {
 }
 
 // runTopStepCheck runs check_topstep.py signal-check mode (Phase 3, no lock).
-func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*TopStepResult, string, float64, bool) {
+func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, liveRegime RegimePayload, notifier *MultiNotifier, logger *StrategyLogger) (*TopStepResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
-	args = appendRegimeArgs(args, regime)
+	args = appendRegimeArgs(args, regime, liveRegime)
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
@@ -3349,7 +3364,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 	}
 	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
-	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	stampPositionRegimeIfOpened(s, result.Symbol, openStampRegimePayload(sc, regime, regimePayloadValue(result.Regime)), sc, regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
@@ -3379,13 +3394,13 @@ func robinhoodSymbol(args []string) string {
 }
 
 // runRobinhoodCheck runs check_robinhood.py signal-check mode (Phase 3, no lock).
-func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*RobinhoodResult, string, float64, bool) {
+func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, liveRegime RegimePayload, notifier *MultiNotifier, logger *StrategyLogger) (*RobinhoodResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
-	args = appendRegimeArgs(args, regime)
+	args = appendRegimeArgs(args, regime, liveRegime)
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
@@ -3518,7 +3533,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 	}
 	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
-	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	stampPositionRegimeIfOpened(s, result.Symbol, openStampRegimePayload(sc, regime, regimePayloadValue(result.Regime)), sc, regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
@@ -3558,13 +3573,13 @@ func okxInstType(args []string) string {
 }
 
 // runOKXCheck runs check_okx.py signal-check mode (Phase 3, no lock).
-func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
+func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, liveRegime RegimePayload, notifier *MultiNotifier, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
-	args = appendRegimeArgs(args, regime)
+	args = appendRegimeArgs(args, regime, liveRegime)
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
@@ -3735,7 +3750,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	}
 	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
-	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	stampPositionRegimeIfOpened(s, result.Symbol, openStampRegimePayload(sc, regime, regimePayloadValue(result.Regime)), sc, regime)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}

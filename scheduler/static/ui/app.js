@@ -899,13 +899,31 @@
     updateSortButtons();
   }
 
+  function formatMarketRegimeSummary(entries) {
+    if (!entries || !entries.length) {
+      return "";
+    }
+    return entries.slice(0, 12).map(function (entry) {
+      const parts = [entry.symbol || "-", entry.interval || "-", entry.label || "-"];
+      if (entry.classifier) {
+        parts.push("(" + entry.classifier + ")");
+      }
+      return parts.join(" ");
+    }).join(" · ");
+  }
+
   async function refreshOverview() {
     const resp = await getJSON("/api/strategies/overview");
     state.overviewRows = resp.strategies || [];
     renderOverviewTable();
     els.statusDot.className = "status-dot ok";
     els.statusLabel.textContent = "Live";
-    els.statusGrid.innerHTML = "<dt>Strategies</dt><dd>" + escapeHTML(String(state.overviewRows.length)) + "</dd>";
+    const regimeSummary = formatMarketRegimeSummary(resp.market_regimes);
+    els.statusGrid.innerHTML =
+      "<dt>Strategies</dt><dd>" + escapeHTML(String(state.overviewRows.length)) + "</dd>" +
+      (regimeSummary
+        ? "<dt>Market regimes</dt><dd>" + escapeHTML(regimeSummary) + "</dd>"
+        : "");
     els.positions.innerHTML = '<div class="position-row"><span>Table view</span><span>Select a row for detail</span></div>';
   }
 

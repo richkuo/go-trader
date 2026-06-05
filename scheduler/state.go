@@ -86,8 +86,10 @@ type AppState struct {
 	PortfolioRisk       PortfolioRiskState        `json:"portfolio_risk"`
 	CorrelationSnapshot *CorrelationSnapshot      `json:"correlation_snapshot,omitempty"`
 	// ReconciliationGaps is ephemeral — recomputed each sync cycle, not persisted to SQLite.
-	ReconciliationGaps      map[string]*ReconciliationGap `json:"reconciliation_gaps,omitempty"`
-	LastLeaderboardPostDate string                        `json:"last_leaderboard_post_date,omitempty"`
+	ReconciliationGaps map[string]*ReconciliationGap `json:"reconciliation_gaps,omitempty"`
+	// MarketRegimes is the last cycle's global regime calculator output (#879); ephemeral.
+	MarketRegimes           []MarketRegimeEntry `json:"market_regimes,omitempty"`
+	LastLeaderboardPostDate string              `json:"last_leaderboard_post_date,omitempty"`
 	// LastLeaderboardSummaries tracks the last-post time for each configured
 	// leaderboard_summaries entry, keyed by LeaderboardSummaryConfig.Key().
 	// Used by the scheduler to avoid reposting within the configured frequency. (#308)

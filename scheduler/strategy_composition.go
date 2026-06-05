@@ -122,7 +122,7 @@ func appendPositionFloatArg(args []string, flag string, value float64) []string 
 	return append(args, flag+"="+strconv.FormatFloat(value, 'f', -1, 64))
 }
 
-func appendRegimeArgs(args []string, regime *RegimeConfig) []string {
+func appendRegimeArgs(args []string, regime *RegimeConfig, injected RegimePayload) []string {
 	if regime == nil || !regime.Enabled {
 		return args
 	}
@@ -131,6 +131,11 @@ func appendRegimeArgs(args []string, regime *RegimeConfig) []string {
 		out = append(out, "--regime-windows-spec-json", blob)
 	}
 	out = append(out, "--ohlcv-limit", strconv.Itoa(regimeRequiredOhlcvLimit(regime)))
+	if !injected.IsEmpty() {
+		if blob, err := json.Marshal(injected); err == nil {
+			out = append(out, "--regime-payload-json", string(blob))
+		}
+	}
 	return out
 }
 

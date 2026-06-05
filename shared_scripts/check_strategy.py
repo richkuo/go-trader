@@ -23,7 +23,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
-from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
+from regime import (
+    latest_regime,
+    parse_injected_regime_payload,
+    parse_regime_windows_spec_json,
+    resolve_check_regime,
+)
 
 
 def _arg_value(flag, default=None):
@@ -78,6 +83,7 @@ def main():
     regime_windows_spec = parse_regime_windows_spec_json(_arg_value("--regime-windows-spec-json"))
     ohlcv_limit = int(_arg_value("--ohlcv-limit") or 200)
     regime_atr_window = (_arg_value("--regime-atr-window") or "").strip()
+    regime_payload_json = _arg_value("--regime-payload-json") or ""
     open_strategy = _arg_value("--open-strategy")
     close_strategies_raw = _arg_value("--close-strategies")
     position_side = (_arg_value("--position-side", "") or "").lower()
@@ -113,7 +119,7 @@ def main():
             "--position-initial-qty", "--position-entry-atr",
             "--position-regime",
             "--regime-windows-spec-json", "--ohlcv-limit",
-            "--regime-atr-window", "--regime-directional-window",
+            "--regime-atr-window", "--regime-payload-json", "--regime-directional-window",
         ):
             skip_next = True
             continue
@@ -208,9 +214,11 @@ def main():
             }))
             return
 
-        stdout_regime, live_regime, strategy_regime = prepare_check_regime(
+        injected = parse_injected_regime_payload(regime_payload_json or None)
+        stdout_regime, live_regime, strategy_regime = resolve_check_regime(
             df,
             regime_enabled=regime_enabled,
+            injected_payload=injected,
             windows_spec=regime_windows_spec,
             atr_window=regime_atr_window,
         )

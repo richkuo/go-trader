@@ -34,8 +34,10 @@ var probeArgv = []string{
 	// instead of every cycle's argparse rejecting the cycle's argv.
 	"--mark-price=0",
 	"--ohlcv-limit", "200",
+	"--regime-enabled",
 	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
 	"--regime-atr-window", "",
+	"--regime-payload-json", `{"regime":"ranging","score":0,"metrics":{"adx":15,"plus_di":10,"minus_di":12,"atr_pct":1.2}}`,
 	"--probe-only",
 }
 
@@ -46,8 +48,10 @@ var probeCompositeArgv = []string{
 	"--strategy-refs", `{"open":{"name":"probe","params":{}},"closes":[{"name":"probe_close","params":{}}]}`,
 	"--mark-price=0",
 	"--ohlcv-limit", "200",
+	"--regime-enabled",
 	"--regime-windows-spec-json", `{"macro":{"classifier":"composite","period":14,"thresholds":{"return_pct":0.05,"range_pct":0.03,"adx":25}}}`,
 	"--regime-atr-window", "",
+	"--regime-payload-json", `{"macro":{"regime":"ranging_quiet","score":0.1,"metrics":{"adx":15,"plus_di":10,"minus_di":12,"atr_pct":1.2}}}`,
 	"--probe-only",
 }
 
@@ -161,6 +165,12 @@ func probeCheckScripts(cfg *Config) error {
 		}
 	}
 	if len(scripts) > 0 {
+		if err := probeOneCheckScriptFn(regimeBundleScript, []string{
+			"--platform=hyperliquid", "--type=perps", "--symbol=BTC", "--timeframe=1h",
+			"--period=14", "--ohlcv-limit=200", "--probe-only",
+		}); err != nil {
+			return err
+		}
 		if err := probeOneCheckScriptFn("shared_scripts/fetch_candles.py", fetchCandlesProbeArgv); err != nil {
 			return err
 		}

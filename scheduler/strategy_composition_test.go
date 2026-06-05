@@ -202,14 +202,14 @@ func TestAppendRegimeArgs(t *testing.T) {
 	base := []string{"sma_crossover", "BTC/USDT", "1h"}
 
 	t.Run("nil regime returns args unchanged", func(t *testing.T) {
-		got := appendRegimeArgs(base, nil)
+		got := appendRegimeArgs(base, nil, RegimePayload{})
 		if !reflect.DeepEqual(got, base) {
 			t.Fatalf("appendRegimeArgs(nil) = %#v, want %#v", got, base)
 		}
 	})
 
 	t.Run("disabled regime returns args unchanged", func(t *testing.T) {
-		got := appendRegimeArgs(base, &RegimeConfig{Enabled: false})
+		got := appendRegimeArgs(base, &RegimeConfig{Enabled: false}, RegimePayload{})
 		if !reflect.DeepEqual(got, base) {
 			t.Fatalf("appendRegimeArgs(disabled) = %#v, want %#v", got, base)
 		}
@@ -217,7 +217,7 @@ func TestAppendRegimeArgs(t *testing.T) {
 
 	t.Run("enabled regime appends spec json and ohlcv limit", func(t *testing.T) {
 		regime := &RegimeConfig{Enabled: true, Period: 28, ADXThreshold: 25.5}
-		got := appendRegimeArgs(base, regime)
+		got := appendRegimeArgs(base, regime, RegimePayload{})
 		if len(got) < 4 || got[len(got)-4] != "--regime-windows-spec-json" {
 			t.Fatalf("appendRegimeArgs(enabled) missing spec json: %#v", got)
 		}
@@ -230,9 +230,25 @@ func TestAppendRegimeArgs(t *testing.T) {
 		}
 	})
 
+	t.Run("enabled with injected payload appends regime-payload-json", func(t *testing.T) {
+		regime := &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20.0}
+		injected := RegimePayload{Legacy: "trending_up"}
+		got := appendRegimeArgs(base, regime, injected)
+		found := false
+		for i, a := range got {
+			if a == "--regime-payload-json" && i+1 < len(got) && got[i+1] == `"trending_up"` {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing injected payload in %#v", got)
+		}
+	})
+
 	t.Run("enabled with defaults appends default window spec", func(t *testing.T) {
 		regime := &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20.0}
-		got := appendRegimeArgs(base, regime)
+		got := appendRegimeArgs(base, regime, RegimePayload{})
 		specIdx := -1
 		for i, a := range got {
 			if a == "--regime-windows-spec-json" {

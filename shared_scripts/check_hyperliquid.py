@@ -61,7 +61,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 
 from atr import ensure_atr_indicator, latest_atr
 from hl_user_fills import apply_user_fills_lookup
-from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
+from regime import (
+    latest_regime,
+    parse_injected_regime_payload,
+    parse_regime_windows_spec_json,
+    resolve_check_regime,
+)
 
 
 def _make_dataframe(candles):
@@ -99,6 +104,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      close_strategies=None,
                      position_side="", position_ctx=None,
                      regime_enabled=False, regime_windows_spec=None, ohlcv_limit=200, regime_atr_window="",
+                     regime_payload_json="",
                      close_params_by_name=None,
                      mark_price=0.0):
     """Run strategy signal check using Hyperliquid OHLCV data."""
@@ -166,9 +172,11 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             sys.exit(1)
 
         df = _make_dataframe(candles)
-        stdout_regime, live_regime, strategy_regime = prepare_check_regime(
+        injected = parse_injected_regime_payload(regime_payload_json or None)
+        stdout_regime, live_regime, strategy_regime = resolve_check_regime(
             df,
             regime_enabled=regime_enabled,
+            injected_payload=injected,
             windows_spec=regime_windows_spec,
             atr_window=regime_atr_window,
         )
@@ -1641,6 +1649,8 @@ def main():
         parser.add_argument("--regime-windows-spec-json", default="")
         parser.add_argument("--ohlcv-limit", type=int, default=200)
         parser.add_argument("--regime-atr-window", default="")
+        parser.add_argument("--regime-payload-json", default="",
+                            help="Precomputed regime from Go global calculator (#879); skips inline regime math when set.")
         parser.add_argument("--regime-directional-window", default="")
         parser.add_argument("--params", default=None)
         parser.add_argument("--open-strategy", default=None)
@@ -1678,6 +1688,7 @@ def main():
             regime_windows_spec=regime_windows_spec,
             ohlcv_limit=args.ohlcv_limit,
             regime_atr_window=args.regime_atr_window,
+            regime_payload_json=args.regime_payload_json,
             close_params_by_name=close_params_by_name,
             mark_price=args.mark_price,
         )

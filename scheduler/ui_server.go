@@ -178,7 +178,16 @@ func (ss *StatusServer) handleAPIStrategiesOverview(w http.ResponseWriter, r *ht
 		}
 		out = append(out, overview)
 	}
-	writeJSON(w, map[string][]UIStrategyOverview{"strategies": out})
+	marketRegimes := []MarketRegimeEntry(nil)
+	ss.mu.RLock()
+	if ss.state != nil {
+		marketRegimes = append([]MarketRegimeEntry(nil), ss.state.MarketRegimes...)
+	}
+	ss.mu.RUnlock()
+	writeJSON(w, map[string]interface{}{
+		"strategies":     out,
+		"market_regimes": marketRegimes,
+	})
 }
 
 func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request) {

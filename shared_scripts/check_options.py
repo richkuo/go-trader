@@ -20,7 +20,7 @@ _REPO_ROOT = os.path.dirname(_THIS_DIR)
 sys.path.insert(0, _REPO_ROOT)
 sys.path.insert(0, os.path.join(_REPO_ROOT, "shared_tools"))
 
-from regime import latest_regime
+from regime import latest_regime, parse_injected_regime_payload, regime_label_from_payload
 
 MAX_POSITIONS_PER_STRATEGY = 4
 MIN_SCORE_THRESHOLD = 0.3
@@ -405,21 +405,48 @@ STRATEGY_MAP = {
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
+def _arg_value(flag, default=None):
+    prefix = flag + "="
+    for arg in sys.argv:
+        if arg.startswith(prefix):
+            return arg.split("=", 1)[1]
+    if flag not in sys.argv:
+        return default
+    idx = sys.argv.index(flag)
+    if idx + 1 >= len(sys.argv):
+        return default
+    return sys.argv[idx + 1]
+
+
 def main():
     # #645: startup compatibility probe — exit 0 without running the strategy.
     if "--probe-only" in sys.argv:
         sys.exit(0)
-    # Parse args: strip --platform= before positional parsing
+    # Parse args: strip --platform= and regime flags before positional parsing
     args = sys.argv[1:]
     platform = "deribit"
     remaining = []
-    for arg in args:
+    i = 0
+    while i < len(args):
+        arg = args[i]
         if arg.startswith("--platform="):
             platform = arg.split("=", 1)[1]
-        elif arg.startswith("--platform"):
-            pass  # bare flag without value, ignore
-        else:
-            remaining.append(arg)
+            i += 1
+            continue
+        if arg.startswith("--platform"):
+            i += 1
+            continue
+        if arg in ("--regime-enabled",):
+            i += 1
+            continue
+        if arg.startswith("--regime-payload-json="):
+            i += 1
+            continue
+        if arg == "--regime-payload-json":
+            i += 2 if i + 1 < len(args) and not args[i + 1].startswith("--") else 1
+            continue
+        remaining.append(arg)
+        i += 1
 
     if len(remaining) < 2:
         print(json.dumps({
@@ -498,9 +525,14 @@ def main():
 
         vol_annual, iv_rank = adapter.get_vol_metrics(underlying)
 
-        regime_df = _fetch_ohlcv_df(underlying, REGIME_TIMEFRAME, REGIME_LIMIT,
-                                    REGIME_MIN_BARS, adapter=adapter)
-        regime_label = _regime_label_from_df(regime_df)
+        regime_label = None
+        injected = parse_injected_regime_payload(_arg_value("--regime-payload-json"))
+        if injected is not None:
+            regime_label = regime_label_from_payload(injected)
+        if regime_label is None:
+            regime_df = _fetch_ohlcv_df(underlying, REGIME_TIMEFRAME, REGIME_LIMIT,
+                                        REGIME_MIN_BARS, adapter=adapter)
+            regime_label = _regime_label_from_df(regime_df)
 
         evaluate_fn = STRATEGY_MAP[strategy_name]
         signal, actions, iv_rank = evaluate_fn(

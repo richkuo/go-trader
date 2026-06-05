@@ -327,6 +327,85 @@ def compute_regime_composite(
     return result
 
 
+def map_adx_label(
+    adx_val: float,
+    plus_di: float,
+    minus_di: float,
+    adx_threshold: float,
+) -> str:
+    """Map ADX + DI to a 3-state label (shared by live bundle + Go projection)."""
+    if adx_val < adx_threshold:
+        return "ranging"
+    if plus_di > minus_di:
+        return "trending_up"
+    if minus_di > plus_di:
+        return "trending_down"
+    return "ranging"
+
+
+def compute_regime_bundle(df: pd.DataFrame, period: int) -> dict | None:
+    """Compute raw indicators + default labels for one (symbol, interval, period) key (#879).
+
+    ADX/±DI use the full period for exact 3-state parity when period > 14; composite
+    corroboration uses min(period, COMPOSITE_ADX_PERIOD_CAP) to match latest_regime_composite.
+    Returns None when OHLCV is too short for a reliable reading.
+    """
+    if period < 2 or len(df) < period + 1:
+        return None
+
+    window = _window_slice(df, period)
+    atr_val = _atr_at_end(df, period)
+    if atr_val <= 0:
+        return None
+
+    eff = _composite_efficiency_metrics(window, atr_val, period)
+    full_reg = compute_regime(df, period=period, adx_threshold=20.0)
+    adx_full = float(full_reg["adx"].iloc[-1]) if len(full_reg) else 0.0
+    plus_di = float(full_reg["plus_di"].iloc[-1]) if len(full_reg) else 0.0
+    minus_di = float(full_reg["minus_di"].iloc[-1]) if len(full_reg) else 0.0
+
+    adx_cap_period = min(period, COMPOSITE_ADX_PERIOD_CAP)
+    cap_reg = compute_regime(df, period=adx_cap_period, adx_threshold=_DEFAULT_COMPOSITE_THRESHOLDS["adx"])
+    composite_adx = float(cap_reg["adx"].iloc[-1]) if len(cap_reg) else 0.0
+
+    close_end = eff["close_end"]
+    atr_pct = round(atr_val / close_end * 100.0, 4) if close_end else 0.0
+    default_adx_th = 20.0
+    adx3 = map_adx_label(adx_full, plus_di, minus_di, default_adx_th)
+    composite7 = map_composite_label(
+        eff["return_eff"],
+        composite_adx,
+        eff["range_eff"],
+        eff["efficiency"],
+        _DEFAULT_COMPOSITE_THRESHOLDS,
+    )
+
+    bar_time = 0
+    if "timestamp" in df.columns and len(df) > 0:
+        try:
+            bar_time = int(df["timestamp"].iloc[-1]) // 1000
+        except (TypeError, ValueError):
+            bar_time = 0
+
+    return {
+        "bar_time": bar_time,
+        "raw": {
+            "adx": adx_full,
+            "plus_di": plus_di,
+            "minus_di": minus_di,
+            "composite_adx": composite_adx,
+            "return_eff": round(eff["return_eff"], 4),
+            "range_eff": round(eff["range_eff"], 4),
+            "efficiency": round(eff["efficiency"], 4),
+            "atr_pct": atr_pct,
+        },
+        "labels_default": {
+            "adx3": adx3,
+            "composite7": composite7,
+        },
+    }
+
+
 def latest_regime(
     df: pd.DataFrame,
     period: int = 14,
@@ -440,6 +519,122 @@ def required_ohlcv_limit(
     return max(base_limit, warmup + margin)
 
 
+def parse_injected_regime_payload(raw: str | None):
+    """Parse --regime-payload-json from the Go scheduler (#879)."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    return json.loads(text)
+
+
+def _normalize_injected_snapshot(entry: Any) -> dict:
+    if isinstance(entry, str):
+        label = entry.strip()
+        return {"regime": label, "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
+    if isinstance(entry, dict):
+        if "regime" in entry:
+            out = {**_DEFAULT_RESULT, **entry}
+            metrics = out.get("metrics")
+            if not isinstance(metrics, dict):
+                out["metrics"] = dict(_DEFAULT_METRICS)
+            return out
+    raise ValueError("injected regime entry must be a string label or snapshot dict")
+
+
+def _injected_is_multi_window_map(injected: dict) -> bool:
+    """Distinguish multi-window maps from flat legacy snapshots."""
+    if not injected:
+        return False
+    if "regime" in injected and isinstance(injected.get("regime"), str):
+        if "score" in injected or "metrics" in injected:
+            return False
+    return True
+
+
+def resolve_injected_regime(
+    injected: Any,
+    *,
+    windows_spec: dict[str, dict[str, Any]] | None = None,
+    atr_window: str = "",
+) -> tuple[dict | str, str, dict]:
+    """Project a Go-precomputed payload into check-script stdout/live/strategy shapes."""
+    disabled = {"regime": "", "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
+    if isinstance(injected, str):
+        snap = _normalize_injected_snapshot(injected)
+        label = str(snap.get("regime") or "")
+        return label, label, snap
+    if not isinstance(injected, dict):
+        raise ValueError("injected regime payload must be a string or object")
+
+    if not _injected_is_multi_window_map(injected):
+        snap = _normalize_injected_snapshot(injected)
+        label = str(snap.get("regime") or "")
+        return label, label, snap
+
+    multi: dict[str, dict] = {}
+    for name, entry in injected.items():
+        key = str(name).strip()
+        if not key:
+            continue
+        multi[key] = _normalize_injected_snapshot(entry)
+
+    spec_map = windows_spec or {}
+    if spec_map:
+        primary_key = (
+            REGIME_PRIMARY_WINDOW_KEY
+            if REGIME_PRIMARY_WINDOW_KEY in spec_map
+            else sorted(spec_map.keys())[0]
+        )
+    elif multi:
+        primary_key = (
+            REGIME_PRIMARY_WINDOW_KEY
+            if REGIME_PRIMARY_WINDOW_KEY in multi
+            else sorted(multi.keys())[0]
+        )
+    else:
+        return "", "", disabled
+
+    strategy_payload = multi.get(primary_key, disabled)
+    atr_key = (atr_window or primary_key).strip() or primary_key
+    atr_entry = multi.get(atr_key, strategy_payload)
+    live_atr = str(atr_entry.get("regime") or "")
+    return multi, live_atr, strategy_payload
+
+
+def resolve_check_regime(
+    df: pd.DataFrame,
+    *,
+    regime_enabled: bool,
+    injected_payload: Any | None = None,
+    period: int = 14,
+    adx_threshold: float = 20.0,
+    windows: dict[str, dict[str, Any]] | None = None,
+    windows_spec: dict[str, dict[str, Any]] | None = None,
+    atr_window: str = "",
+) -> tuple[dict | str, str, dict]:
+    """Use injected Go bundle when present; otherwise compute from OHLCV inline."""
+    disabled = {"regime": "", "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
+    if not regime_enabled:
+        return "", "", disabled
+    if injected_payload is not None:
+        return resolve_injected_regime(
+            injected_payload,
+            windows_spec=windows_spec if windows_spec is not None else windows,
+            atr_window=atr_window,
+        )
+    return prepare_check_regime(
+        df,
+        regime_enabled=True,
+        period=period,
+        adx_threshold=adx_threshold,
+        windows=windows,
+        windows_spec=windows_spec,
+        atr_window=atr_window,
+    )
+
+
 def prepare_check_regime(
     df: pd.DataFrame,
     *,
@@ -523,7 +718,12 @@ def ensure_regime_columns(
     windows_spec: dict[str, dict[str, Any]] | None = None,
     gate_window: str = "",
 ) -> pd.DataFrame:
-    """Inject regime columns in-place for backtests (#737/#795)."""
+    """Inject regime columns in-place for backtests (#737/#795).
+
+    Per-bar classification uses the same ``compute_regime`` / ``compute_regime_composite``
+    paths as live. The last bar matches ``compute_regime_bundle`` / ``latest_regime*``
+    for the same period and thresholds (#879 parity).
+    """
     if all(col in df.columns for col in _REGIME_COLUMNS):
         return df
 

@@ -136,6 +136,12 @@ func formatStatusResponse(state *AppState, prices map[string]float64) string {
 	var cash, value float64
 	posCount, trades := 0, 0
 	regime := ""
+	for _, entry := range state.MarketRegimes {
+		if strings.TrimSpace(entry.Label) != "" {
+			regime = entry.Label
+			break
+		}
+	}
 	for _, id := range sortedAppStateIDs(state) {
 		s := state.Strategies[id]
 		cash += s.Cash

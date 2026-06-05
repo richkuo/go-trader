@@ -312,6 +312,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		TotalNotional      float64                       `json:"total_notional"`
 		Correlation        *CorrelationSnapshot          `json:"correlation,omitempty"`
 		ReconciliationGaps map[string]*ReconciliationGap `json:"reconciliation_gaps,omitempty"`
+		MarketRegimes      []MarketRegimeEntry           `json:"market_regimes,omitempty"`
 	}
 
 	totalValue := 0.0
@@ -329,6 +330,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		TotalNotional:      totalNotional,
 		Correlation:        ss.state.CorrelationSnapshot,
 		ReconciliationGaps: ss.state.ReconciliationGaps,
+		MarketRegimes:      append([]MarketRegimeEntry(nil), ss.state.MarketRegimes...),
 	}
 
 	// Build config lookup for EffectiveInitialCapital. strategies has its own
