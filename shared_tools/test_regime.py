@@ -28,6 +28,8 @@ regime_label_from_payload = _regime_mod.regime_label_from_payload
 required_ohlcv_limit = _regime_mod.required_ohlcv_limit
 parse_regime_windows_json = _regime_mod.parse_regime_windows_json
 ensure_regime_columns = _regime_mod.ensure_regime_columns
+prepare_check_regime = _regime_mod.prepare_check_regime
+resolve_injected_regime = _regime_mod.resolve_injected_regime
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -437,3 +439,54 @@ def test_latest_regime_composite_downtrend():
     snap = _regime_mod.latest_regime_composite(df, period=50, thresholds={"return_pct": 0.02, "range_pct": 0.02, "adx": 15})
     assert snap["regime"] in _regime_mod.VALID_LABELS_COMPOSITE
     assert "trending_down" in snap["regime"]
+
+
+# ─── #879 resolve_injected_regime parity ─────────────────────────────────────
+
+
+def test_resolve_injected_regime_matches_prepare_multi_window():
+    n = 120
+    close = pd.Series(range(100, 100 + n)).astype(float)
+    df = pd.DataFrame({"timestamp": range(n), "open": close, "high": close + 1,
+                       "low": close - 1, "close": close, "volume": [1.0] * n})
+    spec = {"medium": {"classifier": "adx", "period": 14, "adx_threshold": 20},
+            "macro": {"classifier": "composite", "period": 30}}
+    want_payload, want_live, want_strat = prepare_check_regime(
+        df, regime_enabled=True, windows_spec=spec, atr_window="macro")
+    inj_payload, inj_live, inj_strat = resolve_injected_regime(
+        want_payload, primary_key="medium", atr_window="macro")
+    assert inj_payload == want_payload
+    assert inj_live == want_live
+    assert inj_strat == want_strat
+
+
+def test_resolve_injected_regime_legacy_string():
+    payload, live, strat = resolve_injected_regime("trending_up")
+    assert payload == "trending_up"
+    assert live == "trending_up"
+    assert strat["regime"] == "trending_up"
+
+
+def test_resolve_injected_regime_empty_fail_open():
+    payload, live, strat = resolve_injected_regime("")
+    assert payload == ""
+    assert live == ""
+    assert strat["regime"] == ""
+    payload2, live2, strat2 = resolve_injected_regime({})
+    assert payload2 == ""
+    assert live2 == ""
+
+
+def test_resolve_injected_regime_default_primary_when_no_medium():
+    n = 120
+    close = pd.Series(range(100, 100 + n)).astype(float)
+    df = pd.DataFrame({"timestamp": range(n), "open": close, "high": close + 1,
+                       "low": close - 1, "close": close, "volume": [1.0] * n})
+    spec = {"alpha": {"classifier": "adx", "period": 14, "adx_threshold": 20},
+            "beta": {"classifier": "adx", "period": 20, "adx_threshold": 20}}
+    want_payload, want_live, want_strat = prepare_check_regime(
+        df, regime_enabled=True, windows_spec=spec)
+    inj_payload, inj_live, inj_strat = resolve_injected_regime(want_payload)
+    assert inj_payload == want_payload
+    assert inj_live == want_live
+    assert inj_strat == want_strat

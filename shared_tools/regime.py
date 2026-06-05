@@ -477,6 +477,62 @@ def prepare_check_regime(
     return label, label, legacy
 
 
+def resolve_injected_regime(
+    payload: dict | str,
+    *,
+    primary_key: str = "",
+    atr_window: str = "",
+) -> tuple[dict | str, str, dict]:
+    """#879: reconstruct prepare_check_regime's 3-tuple from a scheduler-injected
+    payload WITHOUT recomputing.
+
+    `payload` is either the multi-window map {window: snapshot}, a legacy single
+    snapshot dict, or a legacy label string. The selection logic mirrors
+    prepare_check_regime's multi-window branch line-for-line so the injected and
+    inline paths produce identical (stdout_payload, live_atr_label,
+    strategy_params_snapshot) for the same windows.
+
+    An empty payload means regime is unavailable (disabled or a failed scheduler
+    subprocess) → fail-open empty, never recompute inline.
+    """
+    disabled = {"regime": "", "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
+    if not payload:
+        return "", "", disabled
+
+    if isinstance(payload, str):
+        legacy = {
+            "regime": payload,
+            "score": 0.0,
+            "metrics": dict(_DEFAULT_METRICS),
+            "classifier": CLASSIFIER_ADX,
+        }
+        return payload, payload, legacy
+
+    if not isinstance(payload, dict):
+        return "", "", disabled
+
+    # Legacy single snapshot dict ({"regime":..., "score"/"metrics":...}).
+    if isinstance(payload.get("regime"), str) and ("score" in payload or "metrics" in payload):
+        label = str(payload.get("regime") or "")
+        return payload, label, payload
+
+    # Multi-window map.
+    keys = sorted(payload.keys())
+    if primary_key and primary_key in payload:
+        pkey = primary_key
+    elif REGIME_PRIMARY_WINDOW_KEY in payload:
+        pkey = REGIME_PRIMARY_WINDOW_KEY
+    elif keys:
+        pkey = keys[0]
+    else:
+        return "", "", disabled
+    strategy_payload = payload.get(pkey, disabled)
+    atr_key = (atr_window or pkey).strip() or pkey
+    atr_entry = payload.get(atr_key, strategy_payload)
+    live_atr = str(atr_entry.get("regime") or "") if isinstance(atr_entry, dict) else ""
+    return payload, live_atr, strategy_payload
+
+
 def parse_regime_windows_spec_json(raw: str | None) -> dict[str, dict[str, Any]] | None:
     """Parse --regime-windows-spec-json from Go (#795). Bare ints → ADX specs."""
     if raw is None:
