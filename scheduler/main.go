@@ -1274,6 +1274,13 @@ func main() {
 					}
 				}
 
+				// #879: build the per-cycle global regime store once before the
+				// per-strategy dispatch fan-out. One read-only subprocess per
+				// distinct (symbol, interval, windows-spec) signature; peers
+				// share the result. Failed signatures clear to empty (fail-open).
+				// Injected into each check below so checks skip inline compute.
+				regimeStore := buildRegimeStore(dueStrategies, cfg.Regime)
+
 				for _, sc := range dueStrategies {
 					stratState := state.Strategies[sc.ID]
 					if stratState == nil {
@@ -1550,7 +1557,7 @@ func main() {
 									mu.Unlock()
 								}
 							}
-						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, notifier, logger); ok {
+						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, regimeStore.payloadForStrategy(sc, cfg.Regime), notifier, logger); ok {
 							prices[result.Symbol] = price
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, hlPosQty); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
@@ -1861,7 +1868,15 @@ func main() {
 						// pos.Regime == "" on the first post-open cycle, so the regime
 						// trail no-op'd for one interval; stamping first arms it
 						// correctly on cycle 1.
-						closeFraction, _, manualRegime, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger)
+						manualInjectedRegime := regimeStore.payloadForStrategy(sc, cfg.Regime)
+						closeFraction, _, manualRegime, manualOK := runManualCloseEval(sc, stratState, cfg, manualInjectedRegime, notifier, logger)
+						// #879: when flat, runManualCloseEval returns an empty
+						// regime (no position to evaluate). Read the global store
+						// directly so status/dashboard show the live regime without
+						// an open position.
+						if manualRegime.IsEmpty() && !manualInjectedRegime.IsEmpty() {
+							manualRegime = manualInjectedRegime
+						}
 						if manualOK {
 							mu.Lock()
 							// Refresh the strategy-level live regime every cycle, like
@@ -2701,7 +2716,7 @@ func isHLLiveReconcilable(sc StrategyConfig) bool {
 // result.Regime is known, so downstream EffectiveDirection / perpsLiveOrderSize
 // / PerpsOrderSkipReason calls in execute paths see the effective values.
 // Mutation is scoped to the loop-local sc; cfg.Strategies is never touched.
-func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
+func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, injectedRegime RegimePayload, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	// Suppress in-process close evaluators that overlap on-chain reduce-only
 	// protection — running both races on the shared on-chain position
@@ -2712,8 +2727,12 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
+	// appendRegimeArgs still forwards the windows-spec/atr-window so the check
+	// can RESOLVE the injected payload; #879 appendInjectedRegimeArgs supplies
+	// the scheduler-computed payload and suppresses inline regime compute.
 	args = appendRegimeArgs(args, regime)
 	args = appendStrategyRegimeWindowArgs(args, *sc, regime)
+	args = appendInjectedRegimeArgs(args, injectedRegime)
 	if refsArgs, err := buildStrategyRefsArg(scForCheck); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
