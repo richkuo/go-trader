@@ -23,7 +23,21 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
-from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
+from regime import (
+    latest_regime,
+    parse_regime_windows_spec_json,
+    prepare_check_regime,
+    resolve_injected_regime,
+)
+
+
+def _primary_window_key(windows_spec):
+    """#879: primary window key for an injected payload, matching prepare_check_regime."""
+    if not windows_spec:
+        return ""
+    if "medium" in windows_spec:
+        return "medium"
+    return sorted(windows_spec.keys())[0]
 
 
 def _arg_value(flag, default=None):
@@ -78,6 +92,12 @@ def main():
     regime_windows_spec = parse_regime_windows_spec_json(_arg_value("--regime-windows-spec-json"))
     ohlcv_limit = int(_arg_value("--ohlcv-limit") or 200)
     regime_atr_window = (_arg_value("--regime-atr-window") or "").strip()
+    regime_injected = "--regime-injected" in sys.argv
+    regime_payload = (
+        json.loads(_arg_value("--regime-payload-json"))
+        if regime_injected and (_arg_value("--regime-payload-json") or "").strip()
+        else None
+    )
     open_strategy = _arg_value("--open-strategy")
     close_strategies_raw = _arg_value("--close-strategies")
     position_side = (_arg_value("--position-side", "") or "").lower()
@@ -114,6 +134,7 @@ def main():
             "--position-regime",
             "--regime-windows-spec-json", "--ohlcv-limit",
             "--regime-atr-window", "--regime-directional-window",
+            "--regime-payload-json",
         ):
             skip_next = True
             continue
@@ -208,12 +229,21 @@ def main():
             }))
             return
 
-        stdout_regime, live_regime, strategy_regime = prepare_check_regime(
-            df,
-            regime_enabled=regime_enabled,
-            windows_spec=regime_windows_spec,
-            atr_window=regime_atr_window,
-        )
+        if regime_injected:
+            # #879: regime computed once per signature by the scheduler and
+            # injected; do NOT recompute inline. Empty payload → fail-open empty.
+            stdout_regime, live_regime, strategy_regime = resolve_injected_regime(
+                regime_payload,
+                primary_key=_primary_window_key(regime_windows_spec),
+                atr_window=regime_atr_window,
+            )
+        else:
+            stdout_regime, live_regime, strategy_regime = prepare_check_regime(
+                df,
+                regime_enabled=regime_enabled,
+                windows_spec=regime_windows_spec,
+                atr_window=regime_atr_window,
+            )
         strategy_params = (strategy_params or {})
         strategy_params["regime"] = strategy_regime
 

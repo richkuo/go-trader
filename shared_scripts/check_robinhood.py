@@ -25,7 +25,21 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
-from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
+from regime import (
+    latest_regime,
+    parse_regime_windows_spec_json,
+    prepare_check_regime,
+    resolve_injected_regime,
+)
+
+
+def _primary_window_key(windows_spec):
+    """#879: primary window key for an injected payload, matching prepare_check_regime."""
+    if not windows_spec:
+        return ""
+    if "medium" in windows_spec:
+        return "medium"
+    return sorted(windows_spec.keys())[0]
 
 
 def _make_dataframe(candles):
@@ -119,6 +133,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      close_strategies=None,
                      position_side="", position_ctx=None,
                      regime_enabled=False, regime_windows_spec=None, ohlcv_limit=200, regime_atr_window="",
+                     regime_injected=False, regime_payload=None,
                      close_params_by_name=None):
     """Run strategy signal check using yfinance OHLCV data."""
     try:
@@ -170,12 +185,21 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             sys.exit(1)
 
         df = _make_dataframe(candles)
-        stdout_regime, live_regime, strategy_regime = prepare_check_regime(
-            df,
-            regime_enabled=regime_enabled,
-            windows_spec=regime_windows_spec,
-            atr_window=regime_atr_window,
-        )
+        if regime_injected:
+            # #879: regime computed once per signature by the scheduler and
+            # injected; do NOT recompute inline. Empty payload → fail-open empty.
+            stdout_regime, live_regime, strategy_regime = resolve_injected_regime(
+                regime_payload,
+                primary_key=_primary_window_key(regime_windows_spec),
+                atr_window=regime_atr_window,
+            )
+        else:
+            stdout_regime, live_regime, strategy_regime = prepare_check_regime(
+                df,
+                regime_enabled=regime_enabled,
+                windows_spec=regime_windows_spec,
+                atr_window=regime_atr_window,
+            )
         strategy_params = (strategy_params or {})
         strategy_params["regime"] = strategy_regime
         decision = None
@@ -382,6 +406,9 @@ def main():
         parser.add_argument("--ohlcv-limit", type=int, default=200)
         parser.add_argument("--regime-atr-window", default="")
         parser.add_argument("--regime-directional-window", default="")
+        parser.add_argument("--regime-injected", action="store_true", default=False,
+            help="#879: regime payload injected by the scheduler; skip inline compute.")
+        parser.add_argument("--regime-payload-json", default="")
         parser.add_argument("--params", default=None)
         parser.add_argument("--open-strategy", default=None)
         parser.add_argument("--close-strategies", default=None)
@@ -406,6 +433,11 @@ def main():
         close_params_by_name = refs["close_params_by_name"] if refs else None
         position_ctx = _position_ctx_from_args(args)
         regime_windows_spec = parse_regime_windows_spec_json(args.regime_windows_spec_json or None)
+        regime_payload = (
+            json.loads(args.regime_payload_json)
+            if args.regime_injected and args.regime_payload_json.strip()
+            else None
+        )
         run_signal_check(
             args.strategy, args.symbol, args.timeframe, args.mode,
             args.htf_filter, params_parsed, open_strategy_name,
@@ -415,6 +447,8 @@ def main():
             regime_windows_spec=regime_windows_spec,
             ohlcv_limit=args.ohlcv_limit,
             regime_atr_window=args.regime_atr_window,
+            regime_injected=args.regime_injected,
+            regime_payload=regime_payload,
             close_params_by_name=close_params_by_name,
         )
 
