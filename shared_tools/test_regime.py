@@ -370,6 +370,25 @@ def test_regime_label_from_payload_legacy_and_multi():
     assert regime_label_from_payload(multi, "long") == "trending_up"
 
 
+def test_regime_payload_from_injection_resolves_primary_and_atr_window():
+    raw = (
+        '{"short":{"regime":"ranging","score":0.1,"metrics":{"adx":10}},'
+        '"medium":{"regime":"trending_up","score":0.8,"metrics":{"adx":40}}}'
+    )
+    windows = {
+        "short": {"classifier": "adx", "period": 14, "adx_threshold": 20},
+        "medium": {"classifier": "adx", "period": 28, "adx_threshold": 20},
+    }
+    stdout_regime, live_regime, strategy_regime = _regime_mod.regime_payload_from_injection(
+        raw,
+        windows_spec=windows,
+        atr_window="short",
+    )
+    assert stdout_regime["medium"]["regime"] == "trending_up"
+    assert strategy_regime["regime"] == "trending_up"
+    assert live_regime == "ranging"
+
+
 def test_required_ohlcv_limit_scales_with_windows():
     assert required_ohlcv_limit(period=14) == 200
     assert required_ohlcv_limit(period=14, windows={"long": 2160}) >= 4320

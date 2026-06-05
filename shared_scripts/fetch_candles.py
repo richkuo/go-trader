@@ -96,6 +96,10 @@ def _fetch(args):
     exchange_id = args.platform if args.platform else "binanceus"
     if exchange_id in ("manual", "hyperliquid"):
         exchange_id = "binanceus"
+    if args.type == "options" and adapter is None:
+        exchange_id = "binanceus"
+        if "/" not in symbol:
+            symbol = f"{symbol}/USDT"
     df = fetch_ohlcv(
         symbol=symbol,
         timeframe=args.timeframe,

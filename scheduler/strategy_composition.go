@@ -146,6 +146,17 @@ func appendStrategyRegimeWindowArgs(args []string, sc StrategyConfig, regime *Re
 	return out
 }
 
+func appendRegimePayloadArg(args []string, payload RegimePayload) []string {
+	if payload.IsEmpty() {
+		return args
+	}
+	blob, err := json.Marshal(payload)
+	if err != nil {
+		return args
+	}
+	return append(args, "--regime-payload-json", string(blob))
+}
+
 func positionCtxForSymbol(s *StrategyState, symbol string, sc StrategyConfig, regime *RegimeConfig) PositionCtx {
 	if s == nil || strings.TrimSpace(symbol) == "" {
 		return PositionCtx{}

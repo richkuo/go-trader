@@ -249,6 +249,31 @@ func TestAppendRegimeArgs(t *testing.T) {
 	})
 }
 
+func TestAppendRegimePayloadArg(t *testing.T) {
+	base := []string{"sma_crossover", "BTC/USDT", "1h"}
+	if got := appendRegimePayloadArg(base, RegimePayload{}); !reflect.DeepEqual(got, base) {
+		t.Fatalf("empty payload args = %#v, want unchanged", got)
+	}
+
+	payload := RegimePayload{
+		MultiMode: true,
+		Windows: map[string]RegimeSnapshot{
+			"default": {Regime: "trending_up", Score: 0.7},
+		},
+	}
+	got := appendRegimePayloadArg(base, payload)
+	if len(got) != len(base)+2 || got[len(base)] != "--regime-payload-json" {
+		t.Fatalf("payload args = %#v", got)
+	}
+	var roundTrip RegimePayload
+	if err := json.Unmarshal([]byte(got[len(base)+1]), &roundTrip); err != nil {
+		t.Fatalf("payload json: %v", err)
+	}
+	if label := roundTrip.Label("default", &RegimeConfig{Enabled: true}); label != "trending_up" {
+		t.Fatalf("round-trip label = %q", label)
+	}
+}
+
 func TestMaxCloseFraction(t *testing.T) {
 	got := maxCloseFraction([]float64{0.25, 0.8, 1.2, -1})
 	if got != 1 {

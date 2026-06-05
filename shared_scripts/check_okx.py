@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'platforms', 'o
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
-from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
+from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime, regime_payload_from_injection
 
 # Use futures registry for perps (swap), spot registry for spot.
 # Default is swap, matching argparse defaults below.
@@ -91,6 +91,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      open_strategy=None, close_strategies=None,
                      position_side="", position_ctx=None,
                      regime_enabled=False, regime_windows_spec=None, ohlcv_limit=200, regime_atr_window="",
+                     regime_payload_json="",
                      close_params_by_name=None):
     """Run strategy signal check using OKX OHLCV data."""
     try:
@@ -160,12 +161,20 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             sys.exit(1)
 
         df = _make_dataframe(candles)
-        stdout_regime, live_regime, strategy_regime = prepare_check_regime(
-            df,
-            regime_enabled=regime_enabled,
+        injected_regime = regime_payload_from_injection(
+            regime_payload_json,
             windows_spec=regime_windows_spec,
             atr_window=regime_atr_window,
         )
+        if injected_regime is not None:
+            stdout_regime, live_regime, strategy_regime = injected_regime
+        else:
+            stdout_regime, live_regime, strategy_regime = prepare_check_regime(
+                df,
+                regime_enabled=regime_enabled,
+                windows_spec=regime_windows_spec,
+                atr_window=regime_atr_window,
+            )
         strategy_params["regime"] = strategy_regime
         if strategy_params_override:
             merged = {**strategy_params_override, **strategy_params}
@@ -369,6 +378,7 @@ def main():
         parser.add_argument("--htf-filter", action="store_true", default=False)
         parser.add_argument("--regime-enabled", action="store_true", default=False)
         parser.add_argument("--regime-windows-spec-json", default="")
+        parser.add_argument("--regime-payload-json", default="")
         parser.add_argument("--ohlcv-limit", type=int, default=200)
         parser.add_argument("--regime-atr-window", default="")
         parser.add_argument("--regime-directional-window", default="")
@@ -406,6 +416,7 @@ def main():
             regime_windows_spec=regime_windows_spec,
             ohlcv_limit=args.ohlcv_limit,
             regime_atr_window=args.regime_atr_window,
+            regime_payload_json=args.regime_payload_json,
             close_params_by_name=close_params_by_name,
         )
 

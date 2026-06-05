@@ -420,6 +420,40 @@ def regime_label_from_payload(payload: dict | str, window_key: str = "") -> str:
     return ""
 
 
+def regime_payload_from_injection(
+    raw: str | None,
+    *,
+    windows_spec: dict[str, dict[str, Any]] | None = None,
+    atr_window: str = "",
+) -> tuple[dict | str, str, dict] | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    payload = json.loads(text)
+    disabled = {"regime": "", "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
+    if isinstance(payload, str):
+        return payload, payload, {"regime": payload, "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
+    if not isinstance(payload, dict):
+        raise ValueError("injected regime payload must be a string or object")
+    if "regime" in payload and isinstance(payload.get("regime"), str):
+        label = str(payload.get("regime") or "")
+        return payload, label, payload
+    if not payload:
+        return payload, "", disabled
+    primary_key = ""
+    if windows_spec:
+        primary_key = REGIME_PRIMARY_WINDOW_KEY if REGIME_PRIMARY_WINDOW_KEY in windows_spec else sorted(windows_spec.keys())[0]
+    if not primary_key:
+        primary_key = REGIME_PRIMARY_WINDOW_KEY if REGIME_PRIMARY_WINDOW_KEY in payload else sorted(payload.keys())[0]
+    strategy_payload = payload.get(primary_key, disabled)
+    atr_key = (atr_window or primary_key).strip() or primary_key
+    atr_entry = payload.get(atr_key, strategy_payload)
+    live_atr = str(atr_entry.get("regime") or "") if isinstance(atr_entry, dict) else ""
+    if not isinstance(strategy_payload, dict):
+        strategy_payload = disabled
+    return payload, live_atr, strategy_payload
+
+
 def required_ohlcv_limit(
     period: int = 14,
     windows: dict[str, dict[str, Any]] | None = None,
