@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type errString string
@@ -117,7 +118,7 @@ func TestBuildRegimeStoreDedupsAndClearsFailures(t *testing.T) {
 		}
 		return RegimePayload{Legacy: "trending_up"}, nil
 	}
-	store := buildRegimeStore(due, rc)
+	store := buildRegimeStore(due, rc, nil)
 	if calls != 3 {
 		t.Fatalf("expected 3 distinct signatures, got %d", calls)
 	}
@@ -142,7 +143,7 @@ func TestBuildRegimeStoreDisabledSkips(t *testing.T) {
 		atomic.AddInt32(&calls, 1)
 		return RegimePayload{}, nil
 	}
-	buildRegimeStore(due, &RegimeConfig{Enabled: false})
+	buildRegimeStore(due, &RegimeConfig{Enabled: false}, nil)
 	if calls != 0 {
 		t.Fatalf("disabled regime must not spawn subprocesses, got %d", calls)
 	}
@@ -181,5 +182,24 @@ func TestRegimeStoreSnapshotSorted(t *testing.T) {
 	}
 	if snap[2].Symbol != "ETH" || snap[2].Regime != "ranging" {
 		t.Fatalf("entry2 = %+v", snap[2])
+	}
+}
+
+func TestRegimeFailureThrottleCrossesThreshold(t *testing.T) {
+	regimeFailureTracker = &ScriptFailureTracker{} // isolate
+	sig := RegimeSignature{Symbol: "BTC", Interval: "1h", SpecHash: "z"}
+	key := regimeSignatureKey(sig)
+	now := time.Now().UTC()
+	for i := 1; i < scriptFailureAlertThreshold; i++ {
+		if notify, _ := regimeFailureTracker.Record(key, "boom", now); notify {
+			t.Fatalf("alert fired early at failure %d", i)
+		}
+	}
+	if notify, count := regimeFailureTracker.Record(key, "boom", now); !notify || count != scriptFailureAlertThreshold {
+		t.Fatalf("expected alert at threshold, notify=%v count=%d", notify, count)
+	}
+	// recovery clears
+	if recovered, _ := regimeFailureTracker.Clear(key); !recovered {
+		t.Fatal("expected recovery flag after alerted streak")
 	}
 }

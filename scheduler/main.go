@@ -1279,7 +1279,7 @@ func main() {
 				// distinct (symbol, interval, windows-spec) signature; peers
 				// share the result. Failed signatures clear to empty (fail-open).
 				// Injected into each check below so checks skip inline compute.
-				regimeStore := buildRegimeStore(dueStrategies, cfg.Regime)
+				regimeStore := buildRegimeStore(dueStrategies, cfg.Regime, notifier)
 
 				for _, sc := range dueStrategies {
 					stratState := state.Strategies[sc.ID]

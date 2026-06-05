@@ -5,8 +5,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 const regimeFetchScript = "shared_scripts/fetch_regime.py"
@@ -148,11 +150,41 @@ func collectRegimeSignatures(due []StrategyConfig, rc *RegimeConfig) map[RegimeS
 	return out
 }
 
+// regimeFailureTracker throttles operator alerts for sustained regime-subprocess
+// failures, keyed by signature (separate from the per-strategy signal-script
+// tracker so a regime outage doesn't perturb signal-script alert state). #879
+// failure policy: fail-open + log + throttled alert.
+var regimeFailureTracker = &ScriptFailureTracker{}
+
+func regimeSignatureKey(sig RegimeSignature) string {
+	return sig.Symbol + "/" + sig.Interval + "/" + sig.SpecHash
+}
+
+func notifyRegimeSubprocessFailure(notifier *MultiNotifier, sig RegimeSignature, errMsg string) {
+	shouldNotify, count := regimeFailureTracker.Record(regimeSignatureKey(sig), errMsg, time.Now().UTC())
+	fmt.Fprintf(os.Stderr, "[WARN] regime subprocess failed for %s/%s (%d consecutive): %s\n", sig.Symbol, sig.Interval, count, errMsg)
+	if !shouldNotify || notifier == nil || !notifier.HasBackends() {
+		return
+	}
+	msg := fmt.Sprintf("**REGIME SUBPROCESS FAILING** %s/%s (pid=%d, %d consecutive): regime cleared to empty (fail-open): %s",
+		sig.Symbol, sig.Interval, os.Getpid(), count, errMsg)
+	notifier.SendOwnerDM(msg)
+}
+
+func clearRegimeSubprocessFailure(notifier *MultiNotifier, sig RegimeSignature) {
+	recovered, priorCount := regimeFailureTracker.Clear(regimeSignatureKey(sig))
+	if !recovered || notifier == nil || !notifier.HasBackends() {
+		return
+	}
+	notifier.SendOwnerDM(fmt.Sprintf("**REGIME SUBPROCESS RECOVERED** %s/%s (pid=%d): succeeded after %d consecutive failures",
+		sig.Symbol, sig.Interval, os.Getpid(), priorCount))
+}
+
 // buildRegimeStore computes the per-cycle global regime store: one read-only
 // subprocess per distinct signature, fanned out concurrently (bounded by the
 // shared pythonSemaphore inside runPythonReadOnly). A failed subprocess clears
-// that signature to empty (fail-open).
-func buildRegimeStore(due []StrategyConfig, rc *RegimeConfig) *RegimeStore {
+// that signature to empty (fail-open) and fires a throttled operator alert.
+func buildRegimeStore(due []StrategyConfig, rc *RegimeConfig, notifier *MultiNotifier) *RegimeStore {
 	store := newRegimeStore()
 	sigs := collectRegimeSignatures(due, rc)
 	if len(sigs) == 0 {
@@ -172,6 +204,11 @@ func buildRegimeStore(due []StrategyConfig, rc *RegimeConfig) *RegimeStore {
 				regimeModeForStrategy(rep),
 			)
 			store.put(sig, pl, err)
+			if err != nil {
+				notifyRegimeSubprocessFailure(notifier, sig, err.Error())
+			} else {
+				clearRegimeSubprocessFailure(notifier, sig)
+			}
 		}(sig, rep)
 	}
 	wg.Wait()
