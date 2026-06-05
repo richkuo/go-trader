@@ -280,3 +280,20 @@ func TestComposeOpenCloseSignal(t *testing.T) {
 		})
 	}
 }
+
+func TestAppendInjectedRegimeArgs(t *testing.T) {
+	pl := RegimePayload{MultiMode: true, Windows: map[string]RegimeSnapshot{
+		"default": {Regime: "trending_up", Score: 0.4}}}
+	got := appendInjectedRegimeArgs(nil, pl)
+	j := strings.Join(got, " ")
+	if !strings.Contains(j, "--regime-injected") || !strings.Contains(j, "--regime-payload-json") {
+		t.Fatalf("missing injection flags: %v", got)
+	}
+	if !strings.Contains(j, "trending_up") {
+		t.Fatalf("payload not marshaled: %v", got)
+	}
+	got2 := appendInjectedRegimeArgs(nil, RegimePayload{})
+	if !strings.Contains(strings.Join(got2, " "), "--regime-injected") {
+		t.Fatal("empty payload must still set --regime-injected to suppress inline compute")
+	}
+}

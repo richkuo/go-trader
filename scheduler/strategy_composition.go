@@ -134,6 +134,20 @@ func appendRegimeArgs(args []string, regime *RegimeConfig) []string {
 	return out
 }
 
+// appendInjectedRegimeArgs (#879) forwards the scheduler-computed regime payload
+// to a check script. --regime-injected is ALWAYS set (even on an empty payload)
+// so the check skips prepare_check_regime — an empty payload means fail-open,
+// never "recompute inline". The check echoes the payload back as result.Regime,
+// so Go consumers keep reading result.Regime with the store as the source.
+func appendInjectedRegimeArgs(args []string, payload RegimePayload) []string {
+	out := append(args, "--regime-injected")
+	blob, err := json.Marshal(payload)
+	if err != nil || string(blob) == "null" {
+		blob = []byte(`""`)
+	}
+	return append(out, "--regime-payload-json", string(blob))
+}
+
 func appendStrategyRegimeWindowArgs(args []string, sc StrategyConfig, regime *RegimeConfig) []string {
 	if regime == nil || !regime.Enabled || !regimeMultiWindowEnabled(regime) {
 		return args
