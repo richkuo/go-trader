@@ -2084,6 +2084,12 @@ func main() {
 					logger.Close()
 					lastRun[sc.ID] = time.Now()
 				}
+				// #879: snapshot the per-cycle regime store onto state for the
+				// dashboard portfolio view, after the dispatch loop so options'
+				// store-from-result contributions are included. Ephemeral.
+				mu.Lock()
+				state.RegimePortfolio = regimeStore.snapshot()
+				mu.Unlock()
 			} // end if !killSwitchFired
 		}
 

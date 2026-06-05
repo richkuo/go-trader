@@ -94,6 +94,20 @@ type AppState struct {
 	LastLeaderboardSummaries map[string]time.Time `json:"last_leaderboard_summaries,omitempty"`
 	// LastSummaryPost tracks the last regular summary post per notification channel key.
 	LastSummaryPost map[string]time.Time `json:"last_summary_post,omitempty"`
+	// RegimePortfolio is the per-cycle global regime store snapshot for the
+	// dashboard portfolio view (#879). Ephemeral — rebuilt every cycle, never
+	// persisted (json:"-").
+	RegimePortfolio []RegimePortfolioEntry `json:"-"`
+}
+
+// RegimePortfolioEntry is one (symbol, interval) signature's regime from the
+// per-cycle global store, surfaced to the dashboard portfolio view (#879).
+type RegimePortfolioEntry struct {
+	Symbol   string            `json:"symbol"`
+	Interval string            `json:"interval"`
+	Regime   string            `json:"regime"`
+	Windows  map[string]string `json:"windows,omitempty"`
+	Failed   bool              `json:"failed,omitempty"`
 }
 
 // StrategyState is the per-strategy persistent state.

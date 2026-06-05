@@ -181,6 +181,34 @@ func (ss *StatusServer) handleAPIStrategiesOverview(w http.ResponseWriter, r *ht
 	writeJSON(w, map[string][]UIStrategyOverview{"strategies": out})
 }
 
+// handleAPIRegime serves the per-cycle global regime store snapshot (#879):
+// one entry per distinct (symbol, interval) signature, with the primary label
+// and per-window labels. Portfolio-level regime view, independent of any single
+// strategy. Loopback-only like the rest of the dashboard API.
+func (ss *StatusServer) handleAPIRegime(w http.ResponseWriter, r *http.Request) {
+	if ss.rejectIfDraining(w) {
+		return
+	}
+	if !ss.requireAPIAuth(w, r) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.Path != "/api/regime" && r.URL.Path != "/api/regime/" {
+		http.NotFound(w, r)
+		return
+	}
+	ss.mu.RLock()
+	snapshot := append([]RegimePortfolioEntry(nil), ss.state.RegimePortfolio...)
+	ss.mu.RUnlock()
+	if snapshot == nil {
+		snapshot = []RegimePortfolioEntry{}
+	}
+	writeJSON(w, map[string][]RegimePortfolioEntry{"regime": snapshot})
+}
+
 func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request) {
 	if ss.rejectIfDraining(w) {
 		return

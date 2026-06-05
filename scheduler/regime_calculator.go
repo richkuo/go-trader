@@ -16,6 +16,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -123,4 +124,34 @@ func (s *RegimeStore) payloadForStrategy(sc StrategyConfig, rc *RegimeConfig) Re
 	}
 	pl, _ := s.get(regimeSignatureForStrategy(sc, rc))
 	return pl
+}
+
+// snapshot returns a deterministic (sorted) copy of the store for the dashboard
+// portfolio view. Safe to hand to another goroutine — no shared map.
+func (s *RegimeStore) snapshot() []RegimePortfolioEntry {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]RegimePortfolioEntry, 0, len(s.entries))
+	for sig, e := range s.entries {
+		entry := RegimePortfolioEntry{
+			Symbol:   sig.Symbol,
+			Interval: sig.Interval,
+			Regime:   e.payload.PrimaryLabel(nil),
+			Failed:   e.failed,
+		}
+		if labels := e.payload.WindowLabels(); len(labels) > 0 {
+			entry.Windows = cloneStringMap(labels)
+		}
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Symbol != out[j].Symbol {
+			return out[i].Symbol < out[j].Symbol
+		}
+		return out[i].Interval < out[j].Interval
+	})
+	return out
 }

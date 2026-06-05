@@ -676,3 +676,29 @@ func TestUpdateStrategiesDoesNotDeadlockUnderStateLock(t *testing.T) {
 		t.Fatalf("uiStrategies len = %d, want 2 (%+v)", len(got), got)
 	}
 }
+
+func TestHandleAPIRegime(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{},
+		RegimePortfolio: []RegimePortfolioEntry{
+			{Symbol: "BTC", Interval: "1h", Regime: "trending_up", Windows: map[string]string{"default": "trending_up"}},
+		},
+	}
+	var mu sync.RWMutex
+	ss := NewStatusServer(state, &mu, "", nil, nil)
+	req := httptest.NewRequest("GET", "/api/regime", nil)
+	w := httptest.NewRecorder()
+	ss.handleAPIRegime(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var resp struct {
+		Regime []RegimePortfolioEntry `json:"regime"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Regime) != 1 || resp.Regime[0].Symbol != "BTC" || resp.Regime[0].Regime != "trending_up" {
+		t.Fatalf("resp = %+v", resp.Regime)
+	}
+}

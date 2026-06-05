@@ -162,3 +162,24 @@ func TestOptionsRegimeSignature(t *testing.T) {
 		t.Fatalf("options store read failed: %+v ok=%v", got, ok)
 	}
 }
+
+func TestRegimeStoreSnapshotSorted(t *testing.T) {
+	s := newRegimeStore()
+	s.put(RegimeSignature{Symbol: "ETH", Interval: "1h", SpecHash: "x"}, RegimePayload{Legacy: "ranging"}, nil)
+	s.put(RegimeSignature{Symbol: "BTC", Interval: "4h", SpecHash: "x"}, RegimePayload{Legacy: "trending_up"}, nil)
+	s.put(RegimeSignature{Symbol: "BTC", Interval: "1h", SpecHash: "x"}, RegimePayload{}, errSentinel)
+	snap := s.snapshot()
+	if len(snap) != 3 {
+		t.Fatalf("want 3 entries, got %d", len(snap))
+	}
+	// sorted by symbol then interval: BTC/1h, BTC/4h, ETH/1h
+	if snap[0].Symbol != "BTC" || snap[0].Interval != "1h" || !snap[0].Failed {
+		t.Fatalf("entry0 = %+v", snap[0])
+	}
+	if snap[1].Symbol != "BTC" || snap[1].Interval != "4h" || snap[1].Regime != "trending_up" {
+		t.Fatalf("entry1 = %+v", snap[1])
+	}
+	if snap[2].Symbol != "ETH" || snap[2].Regime != "ranging" {
+		t.Fatalf("entry2 = %+v", snap[2])
+	}
+}
