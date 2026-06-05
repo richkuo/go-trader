@@ -12,8 +12,9 @@ import (
 const regimeFetchScript = "shared_scripts/fetch_regime.py"
 
 // regimeSubprocessArgv builds the argv for the dedicated read-only regime
-// subprocess. instType is forwarded only when non-empty (OKX swap/spot).
-func regimeSubprocessArgv(platform, symbol, interval, specJSON string, ohlcvLimit int, instType string) []string {
+// subprocess. instType/mode are forwarded only when non-empty (OKX inst-type;
+// RH/TopStep adapter mode).
+func regimeSubprocessArgv(platform, symbol, interval, specJSON string, ohlcvLimit int, instType, mode string) []string {
 	argv := []string{
 		"--platform=" + platform,
 		"--symbol=" + symbol,
@@ -23,6 +24,9 @@ func regimeSubprocessArgv(platform, symbol, interval, specJSON string, ohlcvLimi
 	}
 	if strings.TrimSpace(instType) != "" {
 		argv = append(argv, "--inst-type="+instType)
+	}
+	if strings.TrimSpace(mode) != "" {
+		argv = append(argv, "--mode="+mode)
 	}
 	return argv
 }
@@ -38,8 +42,8 @@ var runRegimeSubprocessFn = runRegimeSubprocess
 
 // runRegimeSubprocess runs fetch_regime.py read-only (runPythonReadOnly acquires
 // pythonSemaphore + scriptTimeout internally) and parses its payload.
-func runRegimeSubprocess(platform, symbol, interval, specJSON string, ohlcvLimit int, instType string) (RegimePayload, error) {
-	argv := regimeSubprocessArgv(platform, symbol, interval, specJSON, ohlcvLimit, instType)
+func runRegimeSubprocess(platform, symbol, interval, specJSON string, ohlcvLimit int, instType, mode string) (RegimePayload, error) {
+	argv := regimeSubprocessArgv(platform, symbol, interval, specJSON, ohlcvLimit, instType, mode)
 	stdout, stderr, err := runPythonReadOnly(regimeFetchScript, argv)
 	if err != nil {
 		return RegimePayload{}, fmt.Errorf("regime subprocess %s/%s/%s: %w (stderr: %s)", platform, symbol, interval, err, strings.TrimSpace(string(stderr)))
@@ -77,6 +81,19 @@ func regimeInstTypeForStrategy(sc StrategyConfig) string {
 		return okxInstType(sc.Args)
 	}
 	return ""
+}
+
+// regimeModeForStrategy extracts --mode= (paper/live) from the strategy args;
+// needed only for RH/TopStep adapter instantiation. Defaults to "paper".
+func regimeModeForStrategy(sc StrategyConfig) string {
+	for _, a := range sc.Args {
+		if strings.HasPrefix(a, "--mode=") {
+			if m := strings.TrimSpace(strings.TrimPrefix(a, "--mode=")); m != "" {
+				return m
+			}
+		}
+	}
+	return "paper"
 }
 
 // strategyParticipatesInRegime reports whether a strategy reads the regime store
@@ -137,6 +154,7 @@ func buildRegimeStore(due []StrategyConfig, rc *RegimeConfig) *RegimeStore {
 				regimePlatformForStrategy(rep),
 				sig.Symbol, sig.Interval, specJSON, limit,
 				regimeInstTypeForStrategy(rep),
+				regimeModeForStrategy(rep),
 			)
 			store.put(sig, pl, err)
 		}(sig, rep)

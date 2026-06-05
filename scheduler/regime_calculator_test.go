@@ -78,7 +78,7 @@ func TestPayloadForStrategyDisabledRegime(t *testing.T) {
 
 func TestRegimeSubprocessArgv(t *testing.T) {
 	argv := regimeSubprocessArgv("hyperliquid", "BTC", "1h",
-		`{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`, 200, "")
+		`{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`, 200, "", "")
 	joined := strings.Join(argv, " ")
 	for _, want := range []string{"--platform=hyperliquid", "--symbol=BTC", "--interval=1h",
 		"--regime-windows-spec-json", "--ohlcv-limit=200"} {
@@ -89,11 +89,11 @@ func TestRegimeSubprocessArgv(t *testing.T) {
 }
 
 func TestRegimeSubprocessArgvInstType(t *testing.T) {
-	argv := regimeSubprocessArgv("okx", "BTC", "1h", `{}`, 200, "swap")
+	argv := regimeSubprocessArgv("okx", "BTC", "1h", `{}`, 200, "swap", "")
 	if !strings.Contains(strings.Join(argv, " "), "--inst-type=swap") {
 		t.Fatalf("expected --inst-type=swap: %v", argv)
 	}
-	argv2 := regimeSubprocessArgv("hyperliquid", "BTC", "1h", `{}`, 200, "")
+	argv2 := regimeSubprocessArgv("hyperliquid", "BTC", "1h", `{}`, 200, "", "")
 	if strings.Contains(strings.Join(argv2, " "), "--inst-type") {
 		t.Fatalf("empty inst-type must be omitted: %v", argv2)
 	}
@@ -110,7 +110,7 @@ func TestBuildRegimeStoreDedupsAndClearsFailures(t *testing.T) {
 	var calls int32
 	orig := runRegimeSubprocessFn
 	defer func() { runRegimeSubprocessFn = orig }()
-	runRegimeSubprocessFn = func(platform, symbol, interval, spec string, limit int, instType string) (RegimePayload, error) {
+	runRegimeSubprocessFn = func(platform, symbol, interval, spec string, limit int, instType, mode string) (RegimePayload, error) {
 		atomic.AddInt32(&calls, 1)
 		if symbol == "ETH" && interval == "4h" {
 			return RegimePayload{}, errSentinel
@@ -138,7 +138,7 @@ func TestBuildRegimeStoreDisabledSkips(t *testing.T) {
 	orig := runRegimeSubprocessFn
 	defer func() { runRegimeSubprocessFn = orig }()
 	var calls int32
-	runRegimeSubprocessFn = func(platform, symbol, interval, spec string, limit int, instType string) (RegimePayload, error) {
+	runRegimeSubprocessFn = func(platform, symbol, interval, spec string, limit int, instType, mode string) (RegimePayload, error) {
 		atomic.AddInt32(&calls, 1)
 		return RegimePayload{}, nil
 	}
