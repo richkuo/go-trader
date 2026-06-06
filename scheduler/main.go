@@ -1527,7 +1527,7 @@ func main() {
 							// Options computes regime inline (advisory 4h ADX, embedded in its
 							// evaluators); populate from the result so options behavior is unchanged.
 							if cfg.Regime != nil && cfg.Regime.Enabled && strings.TrimSpace(result.Regime) != "" {
-								regimeStore.put(optionsRegimeSignature(result.Underlying, cfg.Regime), RegimePayload{Legacy: result.Regime}, nil)
+								regimeStore.put(optionsRegimeSignature(sc, result.Underlying, cfg.Regime), RegimePayload{Legacy: result.Regime}, nil)
 							}
 							var harvestDetails []string
 							trades, detail, harvestDetails = executeOptionsResult(sc, stratState, result, signalStr, logger)
@@ -2088,7 +2088,7 @@ func main() {
 				// dashboard portfolio view, after the dispatch loop so options'
 				// store-from-result contributions are included. Ephemeral.
 				mu.Lock()
-				state.RegimePortfolio = regimeStore.snapshot()
+				state.RegimePortfolio = regimeStore.snapshot(cfg.Regime)
 				mu.Unlock()
 			} // end if !killSwitchFired
 		}

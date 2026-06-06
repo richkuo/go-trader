@@ -21,18 +21,38 @@ import (
 	"sync"
 )
 
-// RegimeSignature dedups regime computation across peer strategies.
+// Regime signature kinds keep two store entries that share
+// (platform, symbol, interval, spec) from clobbering each other:
+//   - bundle:  the per-cycle multi-window payload from the fetch_regime.py
+//     subprocess, READ by every participating strategy's gate/ATR/directional.
+//   - options: the advisory 3-state ADX label populated FROM the options check
+//     result (write-only, dashboard display). Without a distinct kind an
+//     options strategy on underlying BTC at 4h would overwrite a real BTC/4h
+//     bundle that a later-dispatched peer then reads (#901 review #1).
+const (
+	regimeSignatureKindBundle  = "bundle"
+	regimeSignatureKindOptions = "options"
+)
+
+// RegimeSignature dedups regime computation across peer strategies. Platform is
+// part of the key because two exchanges' candles for the same symbol string
+// differ (#901 review #2); Kind separates the bundle from the advisory options
+// entry (#901 review #1).
 type RegimeSignature struct {
+	Platform string
 	Symbol   string
 	Interval string
 	SpecHash string
+	Kind     string
 }
 
 func regimeSignatureForStrategy(sc StrategyConfig, rc *RegimeConfig) RegimeSignature {
 	return RegimeSignature{
+		Platform: regimePlatformForStrategy(sc),
 		Symbol:   regimeSignatureSymbol(sc),
 		Interval: regimeSignatureInterval(sc),
 		SpecHash: regimeSpecHash(rc),
+		Kind:     regimeSignatureKindBundle,
 	}
 }
 
@@ -127,8 +147,10 @@ func (s *RegimeStore) payloadForStrategy(sc StrategyConfig, rc *RegimeConfig) Re
 }
 
 // snapshot returns a deterministic (sorted) copy of the store for the dashboard
-// portfolio view. Safe to hand to another goroutine — no shared map.
-func (s *RegimeStore) snapshot() []RegimePortfolioEntry {
+// portfolio view. Safe to hand to another goroutine — no shared map. rc is
+// threaded so the top-level label honors the configured primary window
+// (medium) instead of the lexicographically-first one (#901 review #3).
+func (s *RegimeStore) snapshot(rc *RegimeConfig) []RegimePortfolioEntry {
 	if s == nil {
 		return nil
 	}
@@ -139,7 +161,7 @@ func (s *RegimeStore) snapshot() []RegimePortfolioEntry {
 		entry := RegimePortfolioEntry{
 			Symbol:   sig.Symbol,
 			Interval: sig.Interval,
-			Regime:   e.payload.PrimaryLabel(nil),
+			Regime:   e.payload.PrimaryLabel(rc),
 			Failed:   e.failed,
 		}
 		if labels := e.payload.WindowLabels(); len(labels) > 0 {

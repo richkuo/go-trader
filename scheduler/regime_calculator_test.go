@@ -151,7 +151,7 @@ func TestBuildRegimeStoreDisabledSkips(t *testing.T) {
 
 func TestOptionsRegimeSignature(t *testing.T) {
 	rc := &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}
-	sig := optionsRegimeSignature("BTC", rc)
+	sig := optionsRegimeSignature(StrategyConfig{Platform: "deribit", Type: "options"}, "BTC", rc)
 	if sig.Symbol != "BTC" || sig.Interval != "4h" {
 		t.Fatalf("got %+v", sig)
 	}
@@ -169,7 +169,7 @@ func TestRegimeStoreSnapshotSorted(t *testing.T) {
 	s.put(RegimeSignature{Symbol: "ETH", Interval: "1h", SpecHash: "x"}, RegimePayload{Legacy: "ranging"}, nil)
 	s.put(RegimeSignature{Symbol: "BTC", Interval: "4h", SpecHash: "x"}, RegimePayload{Legacy: "trending_up"}, nil)
 	s.put(RegimeSignature{Symbol: "BTC", Interval: "1h", SpecHash: "x"}, RegimePayload{}, errSentinel)
-	snap := s.snapshot()
+	snap := s.snapshot(nil)
 	if len(snap) != 3 {
 		t.Fatalf("want 3 entries, got %d", len(snap))
 	}
@@ -201,5 +201,53 @@ func TestRegimeFailureThrottleCrossesThreshold(t *testing.T) {
 	// recovery clears
 	if recovered, _ := regimeFailureTracker.Clear(key); !recovered {
 		t.Fatal("expected recovery flag after alerted streak")
+	}
+}
+
+func TestOptionsSignatureCannotClobberBundle(t *testing.T) {
+	rc := &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}
+	// A perps strategy on BTC at 4h and an options strategy on underlying BTC at
+	// the hardcoded 4h interval must NOT collapse to the same store key (#901 #1).
+	perps := StrategyConfig{ID: "hl-btc-4h", Symbol: "BTC", Type: "perps", Platform: "hyperliquid", Args: []string{"m", "BTC", "4h"}}
+	bundleSig := regimeSignatureForStrategy(perps, rc)
+	optSig := optionsRegimeSignature(StrategyConfig{Platform: "deribit", Type: "options"}, "BTC", rc)
+	if bundleSig == optSig {
+		t.Fatalf("options and bundle signatures collided: %+v", bundleSig)
+	}
+
+	store := newRegimeStore()
+	store.put(bundleSig, RegimePayload{MultiMode: true, Windows: map[string]RegimeSnapshot{
+		"medium": {Regime: "trending_up", Score: 0.5}}}, nil)
+	// Options put must not overwrite the real bundle.
+	store.put(optSig, RegimePayload{Legacy: "ranging"}, nil)
+	if lbl := store.payloadForStrategy(perps, rc).PrimaryLabel(rc); lbl != "trending_up" {
+		t.Fatalf("bundle was clobbered by options put: got %q", lbl)
+	}
+}
+
+func TestRegimeSignatureIncludesPlatform(t *testing.T) {
+	rc := &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}
+	// Same symbol string + interval on different platforms must differ (#901 #2).
+	hl := StrategyConfig{Type: "perps", Platform: "hyperliquid", Args: []string{"m", "BTC", "1h"}}
+	okx := StrategyConfig{Type: "perps", Platform: "okx", Args: []string{"m", "BTC", "1h"}}
+	if regimeSignatureForStrategy(hl, rc) == regimeSignatureForStrategy(okx, rc) {
+		t.Fatal("cross-platform same-symbol signatures must differ")
+	}
+}
+
+func TestSnapshotHonorsPrimaryWindow(t *testing.T) {
+	rc := &RegimeConfig{Enabled: true, Windows: RegimeWindowsMap{
+		"macro":  {Classifier: "adx", Period: 50},
+		"medium": {Classifier: "adx", Period: 14},
+	}}
+	s := newRegimeStore()
+	sig := RegimeSignature{Platform: "hyperliquid", Symbol: "BTC", Interval: "1h", Kind: regimeSignatureKindBundle}
+	s.put(sig, RegimePayload{MultiMode: true, Windows: map[string]RegimeSnapshot{
+		"macro":  {Regime: "ranging"},
+		"medium": {Regime: "trending_up"},
+	}}, nil)
+	snap := s.snapshot(rc)
+	if len(snap) != 1 || snap[0].Regime != "trending_up" {
+		t.Fatalf("snapshot should honor primary window 'medium', got %+v", snap)
 	}
 }

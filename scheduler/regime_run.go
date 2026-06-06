@@ -20,11 +20,13 @@ const regimeFetchScript = "shared_scripts/fetch_regime.py"
 // regime in the portfolio/dashboard view.
 const optionsRegimeInterval = "4h"
 
-func optionsRegimeSignature(underlying string, rc *RegimeConfig) RegimeSignature {
+func optionsRegimeSignature(sc StrategyConfig, underlying string, rc *RegimeConfig) RegimeSignature {
 	return RegimeSignature{
+		Platform: regimePlatformForStrategy(sc),
 		Symbol:   strings.TrimSpace(underlying),
 		Interval: optionsRegimeInterval,
 		SpecHash: regimeSpecHash(rc),
+		Kind:     regimeSignatureKindOptions,
 	}
 }
 
@@ -157,7 +159,7 @@ func collectRegimeSignatures(due []StrategyConfig, rc *RegimeConfig) map[RegimeS
 var regimeFailureTracker = &ScriptFailureTracker{}
 
 func regimeSignatureKey(sig RegimeSignature) string {
-	return sig.Symbol + "/" + sig.Interval + "/" + sig.SpecHash
+	return sig.Platform + "/" + sig.Symbol + "/" + sig.Interval + "/" + sig.SpecHash + "/" + sig.Kind
 }
 
 func notifyRegimeSubprocessFailure(notifier *MultiNotifier, sig RegimeSignature, errMsg string) {
