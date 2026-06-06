@@ -889,7 +889,7 @@ func TestManualCloseEval_FlatReturnsEmptyPayload(t *testing.T) {
 	ss := &StrategyState{ID: sc.ID, Positions: map[string]*Position{}}
 	cfg := &Config{Regime: &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}}
 
-	cf, px, payload, ok := runManualCloseEval(sc, ss, cfg, nil, nil)
+	cf, px, payload, ok := runManualCloseEval(sc, ss, cfg, RegimePayload{}, nil, nil)
 	if !ok {
 		t.Fatalf("flat manual close-eval ok = false, want true")
 	}

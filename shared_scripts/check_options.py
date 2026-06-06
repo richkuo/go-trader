@@ -20,7 +20,7 @@ _REPO_ROOT = os.path.dirname(_THIS_DIR)
 sys.path.insert(0, _REPO_ROOT)
 sys.path.insert(0, os.path.join(_REPO_ROOT, "shared_tools"))
 
-from regime import latest_regime
+from regime import latest_regime, parse_regime_payload_json, prepare_injected_regime
 
 MAX_POSITIONS_PER_STRATEGY = 4
 MIN_SCORE_THRESHOLD = 0.3
@@ -412,14 +412,33 @@ def main():
     # Parse args: strip --platform= before positional parsing
     args = sys.argv[1:]
     platform = "deribit"
+    regime_payload_raw = ""
     remaining = []
-    for arg in args:
+    i = 0
+    while i < len(args):
+        arg = args[i]
         if arg.startswith("--platform="):
             platform = arg.split("=", 1)[1]
-        elif arg.startswith("--platform"):
-            pass  # bare flag without value, ignore
+        elif arg == "--platform":
+            if i + 1 < len(args):
+                platform = args[i + 1]
+                i += 1
+        elif arg.startswith("--regime-payload-json="):
+            regime_payload_raw = arg.split("=", 1)[1]
+        elif arg == "--regime-payload-json":
+            if i + 1 < len(args):
+                regime_payload_raw = args[i + 1]
+                i += 1
         else:
             remaining.append(arg)
+        i += 1
+
+    injected_regime = prepare_injected_regime(parse_regime_payload_json(regime_payload_raw))
+    injected_regime_label = ""
+    if injected_regime is not None:
+        _, _, strategy_regime = injected_regime
+        if isinstance(strategy_regime, dict):
+            injected_regime_label = str(strategy_regime.get("regime") or "")
 
     if len(remaining) < 2:
         print(json.dumps({
@@ -455,7 +474,7 @@ def main():
             "spot_price": 0,
             "actions": [],
             "iv_rank": 0,
-            "regime": None,
+            "regime": injected_regime_label or None,
             "platform": platform,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "skip_reason": f"Max positions reached ({len(existing_positions)}/{MAX_POSITIONS_PER_STRATEGY})"
@@ -470,7 +489,7 @@ def main():
             "spot_price": 0,
             "actions": [],
             "iv_rank": 0,
-            "regime": None,
+            "regime": injected_regime_label or None,
             "platform": platform,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": f"Unknown strategy: {strategy_name}. Available: {list(STRATEGY_MAP.keys())}"
@@ -489,7 +508,7 @@ def main():
                 "spot_price": 0,
                 "actions": [],
                 "iv_rank": 0,
-                "regime": None,
+                "regime": injected_regime_label or None,
                 "platform": platform,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "error": "Could not fetch spot price"
@@ -498,9 +517,12 @@ def main():
 
         vol_annual, iv_rank = adapter.get_vol_metrics(underlying)
 
-        regime_df = _fetch_ohlcv_df(underlying, REGIME_TIMEFRAME, REGIME_LIMIT,
-                                    REGIME_MIN_BARS, adapter=adapter)
-        regime_label = _regime_label_from_df(regime_df)
+        if injected_regime is not None:
+            regime_label = injected_regime_label or None
+        else:
+            regime_df = _fetch_ohlcv_df(underlying, REGIME_TIMEFRAME, REGIME_LIMIT,
+                                        REGIME_MIN_BARS, adapter=adapter)
+            regime_label = _regime_label_from_df(regime_df)
 
         evaluate_fn = STRATEGY_MAP[strategy_name]
         signal, actions, iv_rank = evaluate_fn(
@@ -551,7 +573,7 @@ def main():
             "spot_price": 0,
             "actions": [],
             "iv_rank": 0,
-            "regime": None,
+            "regime": injected_regime_label or None,
             "platform": platform,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": str(e)

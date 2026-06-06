@@ -23,7 +23,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
-from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
+from regime import (
+    latest_regime,
+    parse_regime_payload_json,
+    parse_regime_windows_spec_json,
+    prepare_check_regime,
+    prepare_injected_regime,
+)
 
 
 def _arg_value(flag, default=None):
@@ -76,6 +82,7 @@ def main():
     htf_filter_enabled = "--htf-filter" in sys.argv
     regime_enabled = "--regime-enabled" in sys.argv
     regime_windows_spec = parse_regime_windows_spec_json(_arg_value("--regime-windows-spec-json"))
+    regime_payload = parse_regime_payload_json(_arg_value("--regime-payload-json"))
     ohlcv_limit = int(_arg_value("--ohlcv-limit") or 200)
     regime_atr_window = (_arg_value("--regime-atr-window") or "").strip()
     open_strategy = _arg_value("--open-strategy")
@@ -114,6 +121,7 @@ def main():
             "--position-regime",
             "--regime-windows-spec-json", "--ohlcv-limit",
             "--regime-atr-window", "--regime-directional-window",
+            "--regime-payload-json",
         ):
             skip_next = True
             continue
@@ -208,12 +216,16 @@ def main():
             }))
             return
 
-        stdout_regime, live_regime, strategy_regime = prepare_check_regime(
-            df,
-            regime_enabled=regime_enabled,
-            windows_spec=regime_windows_spec,
-            atr_window=regime_atr_window,
-        )
+        injected_regime = prepare_injected_regime(regime_payload, atr_window=regime_atr_window)
+        if injected_regime is not None:
+            stdout_regime, live_regime, strategy_regime = injected_regime
+        else:
+            stdout_regime, live_regime, strategy_regime = prepare_check_regime(
+                df,
+                regime_enabled=regime_enabled,
+                windows_spec=regime_windows_spec,
+                atr_window=regime_atr_window,
+            )
         strategy_params = (strategy_params or {})
         strategy_params["regime"] = strategy_regime
 

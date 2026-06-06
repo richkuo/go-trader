@@ -43,6 +43,7 @@ CLASSIFIER_COMPOSITE = "composite"
 # Preferred multi-window name for strategy_params primary snapshot (#792).
 # When absent, the lexicographically first window name is used.
 REGIME_PRIMARY_WINDOW_KEY = "medium"
+REGIME_WINDOW_DEFAULT_KEY = "default"
 
 # ADX persistence in composite uses a capped lookback; return/range use the full window period.
 COMPOSITE_ADX_PERIOD_CAP = 14
@@ -420,6 +421,53 @@ def regime_label_from_payload(payload: dict | str, window_key: str = "") -> str:
     return ""
 
 
+def parse_regime_payload_json(raw: str | None) -> dict | str | None:
+    """Parse Go-injected regime JSON. Empty input means "no injection"."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    return json.loads(text)
+
+
+def prepare_injected_regime(
+    payload: dict | str | None,
+    *,
+    atr_window: str = "",
+) -> tuple[dict | str, str, dict] | None:
+    """Return prepare_check_regime-compatible values from an injected payload.
+
+    Check scripts use this to skip inline regime computation when the Go
+    scheduler has already populated the per-cycle global regime store.
+    """
+    if payload is None:
+        return None
+    disabled = {"regime": "", "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
+    if isinstance(payload, str):
+        label = payload.strip()
+        return label, label, {**disabled, "regime": label}
+    if not isinstance(payload, dict) or not payload:
+        return "", "", disabled
+    if "regime" in payload and isinstance(payload.get("regime"), str):
+        label = str(payload.get("regime") or "")
+        snap = payload if isinstance(payload, dict) else {**disabled, "regime": label}
+        return snap, label, snap
+
+    primary_key = (
+        REGIME_PRIMARY_WINDOW_KEY
+        if REGIME_PRIMARY_WINDOW_KEY in payload
+        else (REGIME_WINDOW_DEFAULT_KEY if REGIME_WINDOW_DEFAULT_KEY in payload else sorted(payload.keys())[0])
+    )
+    strategy_payload = payload.get(primary_key) or disabled
+    atr_key = (atr_window or primary_key).strip() or primary_key
+    atr_entry = payload.get(atr_key) or strategy_payload
+    live_regime = ""
+    if isinstance(atr_entry, dict):
+        live_regime = str(atr_entry.get("regime") or "")
+    return payload, live_regime, strategy_payload if isinstance(strategy_payload, dict) else disabled
+
+
 def required_ohlcv_limit(
     period: int = 14,
     windows: dict[str, dict[str, Any]] | None = None,
@@ -547,3 +595,191 @@ def ensure_regime_columns(
     for col in _REGIME_COLUMNS:
         df[col] = reg_df[col].values
     return df
+
+
+def _bundle_dataframe_from_rows(rows) -> pd.DataFrame:
+    df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    return df
+
+
+def _repo_root():
+    from pathlib import Path
+
+    return Path(__file__).resolve().parents[1]
+
+
+def _load_platform_adapter(platform: str, mode: str = "paper"):
+    import importlib.util
+    import sys
+
+    root = _repo_root()
+    adapter_path = root / "platforms" / platform / "adapter.py"
+    if not adapter_path.exists():
+        raise ImportError(f"No adapter found for platform {platform!r} at {adapter_path}")
+    platform_dir = str(adapter_path.parent)
+    if platform_dir not in sys.path:
+        sys.path.insert(0, platform_dir)
+    spec = importlib.util.spec_from_file_location(f"{platform}_adapter", adapter_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load adapter for platform {platform!r}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for name in dir(module):
+        if name.endswith("ExchangeAdapter"):
+            cls = getattr(module, name)
+            try:
+                return cls(mode=mode)
+            except TypeError:
+                return cls()
+    raise AttributeError(f"No ExchangeAdapter class found in {adapter_path}")
+
+
+def _fetch_bundle_ohlcv(platform: str, kind: str, symbol: str, timeframe: str, limit: int, inst_type: str):
+    import sys
+
+    root = _repo_root()
+    shared_tools = str(root / "shared_tools")
+    if shared_tools not in sys.path:
+        sys.path.insert(0, shared_tools)
+    platform = (platform or "binanceus").strip().lower()
+    kind = (kind or "spot").strip().lower()
+    inst_type = (inst_type or "").strip().lower()
+
+    if platform in ("", "binanceus"):
+        from data_fetcher import fetch_ohlcv
+
+        df = fetch_ohlcv(symbol=symbol, timeframe=timeframe, limit=limit, store=False)
+        if df is None or df.empty:
+            return None
+        return df.reset_index(drop=True) if "timestamp" in df.index.names else df
+
+    adapter = _load_platform_adapter(platform)
+    if platform == "okx" and (inst_type == "swap" or kind == "perps"):
+        rows = adapter.get_perp_ohlcv(symbol, interval=timeframe, limit=limit)
+    else:
+        ohlcv_fn = getattr(adapter, "get_ohlcv", None)
+        if ohlcv_fn is not None:
+            rows = ohlcv_fn(symbol, interval=timeframe, limit=limit)
+        else:
+            from data_fetcher import fetch_ohlcv
+
+            df = fetch_ohlcv(symbol=f"{symbol}/USDT", timeframe=timeframe, limit=limit, store=False)
+            if df is None or df.empty:
+                return None
+            return df.reset_index(drop=True) if "timestamp" in df.index.names else df
+    if not rows:
+        return None
+    return _bundle_dataframe_from_rows(rows)
+
+
+def regime_raw_bundle(df: pd.DataFrame, period: int, adx_threshold: float = 20.0) -> dict:
+    if df is None or len(df) <= period:
+        raise ValueError(f"insufficient OHLCV for regime period {period}: {0 if df is None else len(df)} bars")
+
+    reg_full = compute_regime(df, period=period, adx_threshold=adx_threshold)
+    last = reg_full.iloc[-1]
+    atr_val = _atr_at_end(df, period)
+    close_val = float(df["close"].iloc[-1])
+    atr_pct = round(atr_val / close_val * 100.0, 4) if close_val else 0.0
+
+    window = _window_slice(df, period)
+    eff = _composite_efficiency_metrics(window, atr_val, period) if atr_val > 0 else {
+        "return_eff": 0.0,
+        "range_eff": 0.0,
+        "efficiency": 0.0,
+    }
+    composite_period = min(period, COMPOSITE_ADX_PERIOD_CAP)
+    reg_composite_adx = compute_regime(
+        df,
+        period=composite_period,
+        adx_threshold=_DEFAULT_COMPOSITE_THRESHOLDS["adx"],
+    )
+    composite_adx = float(reg_composite_adx["adx"].iloc[-1]) if len(reg_composite_adx) else 0.0
+
+    raw = {
+        "adx": float(last["adx"]),
+        "plus_di": float(last["plus_di"]),
+        "minus_di": float(last["minus_di"]),
+        "composite_adx": composite_adx,
+        "return_eff": round(float(eff["return_eff"]), 4),
+        "range_eff": round(float(eff["range_eff"]), 4),
+        "efficiency": round(float(eff["efficiency"]), 4),
+        "atr_pct": atr_pct,
+    }
+    adx3 = map_adx_label(raw["adx"], raw["plus_di"], raw["minus_di"], adx_threshold)
+    composite7 = map_composite_label(
+        raw["return_eff"],
+        raw["composite_adx"],
+        raw["range_eff"],
+        raw["efficiency"],
+        _DEFAULT_COMPOSITE_THRESHOLDS,
+    )
+    bar_time = ""
+    if "timestamp" in df.columns:
+        try:
+            bar_time = str(df["timestamp"].iloc[-1])
+        except Exception:
+            bar_time = ""
+    return {
+        "bar_time": bar_time,
+        "raw": raw,
+        "labels": {
+            "adx3": adx3,
+            "composite7": composite7,
+        },
+    }
+
+
+def map_adx_label(adx_val: float, plus_di: float, minus_di: float, threshold: float) -> str:
+    if adx_val < threshold:
+        return "ranging"
+    if plus_di > minus_di:
+        return "trending_up"
+    if minus_di > plus_di:
+        return "trending_down"
+    return "ranging"
+
+
+def _main() -> int:
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description="Regime helper")
+    parser.add_argument("--bundle", action="store_true", help="emit one raw regime bundle")
+    parser.add_argument("--platform", default="binanceus")
+    parser.add_argument("--type", default="spot")
+    parser.add_argument("--inst-type", default="")
+    parser.add_argument("--symbol", default="")
+    parser.add_argument("--timeframe", default="1h")
+    parser.add_argument("--period", type=int, default=14)
+    parser.add_argument("--adx-threshold", type=float, default=20.0)
+    parser.add_argument("--limit", type=int, default=200)
+    parser.add_argument("--probe-only", action="store_true")
+    args = parser.parse_args()
+    if args.probe_only:
+        return 0
+    if not args.bundle:
+        parser.error("--bundle is required")
+    if not args.symbol:
+        parser.error("--symbol is required")
+    try:
+        df = _fetch_bundle_ohlcv(
+            args.platform,
+            args.type,
+            args.symbol,
+            args.timeframe,
+            args.limit,
+            args.inst_type,
+        )
+        if df is None or len(df) == 0:
+            raise ValueError("no OHLCV rows returned")
+        print(json.dumps(regime_raw_bundle(df, args.period, args.adx_threshold)))
+        return 0
+    except Exception as exc:
+        print(json.dumps({"error": str(exc)}))
+        print(f"regime bundle failed: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

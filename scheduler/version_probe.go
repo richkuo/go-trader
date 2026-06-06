@@ -36,6 +36,7 @@ var probeArgv = []string{
 	"--ohlcv-limit", "200",
 	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
 	"--regime-atr-window", "",
+	"--regime-payload-json", `{"default":{"regime":"ranging","score":0,"metrics":{"adx":0,"plus_di":0,"minus_di":0,"atr_pct":0}}}`,
 	"--probe-only",
 }
 
@@ -48,6 +49,7 @@ var probeCompositeArgv = []string{
 	"--ohlcv-limit", "200",
 	"--regime-windows-spec-json", `{"macro":{"classifier":"composite","period":14,"thresholds":{"return_pct":0.05,"range_pct":0.03,"adx":25}}}`,
 	"--regime-atr-window", "",
+	"--regime-payload-json", `{"macro":{"regime":"ranging_quiet","score":0,"metrics":{"adx":0,"return_eff":0,"range_eff":0,"efficiency":0,"atr_pct":0}}}`,
 	"--probe-only",
 }
 
@@ -107,6 +109,12 @@ var strategyTunerSchemaProbeArgv = []string{
 }
 
 var simulateStrategyProbeArgv = []string{"--probe-only"}
+
+var regimeBundleProbeArgv = []string{
+	"--bundle", "--platform=hyperliquid", "--type=perps",
+	"--symbol=BTC", "--timeframe=1h", "--period=14", "--limit=200",
+	"--probe-only",
+}
 
 const probeTimeout = 15 * time.Second
 
@@ -168,6 +176,9 @@ func probeCheckScripts(cfg *Config) error {
 			return err
 		}
 		if err := probeOneCheckScriptFn("shared_scripts/simulate_strategy.py", simulateStrategyProbeArgv); err != nil {
+			return err
+		}
+		if err := probeOneCheckScriptFn(regimeBundleScript, regimeBundleProbeArgv); err != nil {
 			return err
 		}
 	}

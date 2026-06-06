@@ -28,6 +28,8 @@ regime_label_from_payload = _regime_mod.regime_label_from_payload
 required_ohlcv_limit = _regime_mod.required_ohlcv_limit
 parse_regime_windows_json = _regime_mod.parse_regime_windows_json
 ensure_regime_columns = _regime_mod.ensure_regime_columns
+prepare_injected_regime = _regime_mod.prepare_injected_regime
+regime_raw_bundle = _regime_mod.regime_raw_bundle
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -207,6 +209,42 @@ def test_compute_regime_tied_di_labels_ranging(monkeypatch):
     result = compute_regime(df, period=14, adx_threshold=20.0)
 
     assert result["regime"].iloc[-1] == "ranging"
+
+
+def test_regime_raw_bundle_adx3_matches_standalone_adx_period_above_composite_cap():
+    """Bundle ADX view must use full-period ADX, not composite's capped ADX."""
+    df = _make_downtrend(n=120)
+    period = 28
+
+    standalone = latest_regime(df, period=period, adx_threshold=20.0)["regime"]
+    bundled = regime_raw_bundle(df, period=period, adx_threshold=20.0)
+
+    assert bundled["labels"]["adx3"] == standalone
+    assert "composite_adx" in bundled["raw"]
+
+
+def test_prepare_injected_regime_returns_prepare_check_shape():
+    payload = {
+        "default": {
+            "regime": "trending_up",
+            "score": 0.4,
+            "metrics": {"adx": 40.0, "plus_di": 30.0, "minus_di": 10.0},
+        },
+        "atr": {
+            "regime": "ranging",
+            "score": 0.1,
+            "metrics": {"adx": 10.0, "plus_di": 15.0, "minus_di": 14.0},
+        },
+    }
+
+    stdout_regime, live_regime, strategy_regime = prepare_injected_regime(
+        payload,
+        atr_window="atr",
+    )
+
+    assert stdout_regime == payload
+    assert live_regime == "ranging"
+    assert strategy_regime["regime"] == "trending_up"
 
 
 # ─── latest_regime tests ──────────────────────────────────────────────────────

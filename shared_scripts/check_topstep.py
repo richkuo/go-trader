@@ -23,7 +23,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
-from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
+from regime import (
+    latest_regime,
+    parse_regime_payload_json,
+    parse_regime_windows_spec_json,
+    prepare_check_regime,
+    prepare_injected_regime,
+)
 
 
 def _make_dataframe(candles):
@@ -107,7 +113,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      close_strategies=None,
                      position_side="", position_ctx=None,
                      regime_enabled=False, regime_windows_spec=None, ohlcv_limit=200, regime_atr_window="",
-                     close_params_by_name=None):
+                     close_params_by_name=None,
+                     regime_payload=None):
     """Run strategy signal check using TopStep market data."""
     try:
         from adapter import TopStepExchangeAdapter
@@ -178,12 +185,16 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             sys.exit(1)
 
         df = _make_dataframe(candles)
-        stdout_regime, live_regime, strategy_regime = prepare_check_regime(
-            df,
-            regime_enabled=regime_enabled,
-            windows_spec=regime_windows_spec,
-            atr_window=regime_atr_window,
-        )
+        injected_regime = prepare_injected_regime(regime_payload, atr_window=regime_atr_window)
+        if injected_regime is not None:
+            stdout_regime, live_regime, strategy_regime = injected_regime
+        else:
+            stdout_regime, live_regime, strategy_regime = prepare_check_regime(
+                df,
+                regime_enabled=regime_enabled,
+                windows_spec=regime_windows_spec,
+                atr_window=regime_atr_window,
+            )
         strategy_params = (strategy_params or {})
         strategy_params["regime"] = strategy_regime
         decision = None
@@ -385,6 +396,7 @@ def main():
         parser.add_argument("--ohlcv-limit", type=int, default=200)
         parser.add_argument("--regime-atr-window", default="")
         parser.add_argument("--regime-directional-window", default="")
+        parser.add_argument("--regime-payload-json", default="")
         parser.add_argument("--params", default=None)
         parser.add_argument("--open-strategy", default=None)
         parser.add_argument("--close-strategies", default=None)
@@ -409,6 +421,7 @@ def main():
         close_params_by_name = refs["close_params_by_name"] if refs else None
         position_ctx = _position_ctx_from_args(args)
         regime_windows_spec = parse_regime_windows_spec_json(args.regime_windows_spec_json or None)
+        regime_payload = parse_regime_payload_json(args.regime_payload_json or None)
         run_signal_check(
             args.strategy, args.symbol, args.timeframe, args.mode,
             args.htf_filter, params_parsed, open_strategy_name,
@@ -419,6 +432,7 @@ def main():
             ohlcv_limit=args.ohlcv_limit,
             regime_atr_window=args.regime_atr_window,
             close_params_by_name=close_params_by_name,
+            regime_payload=regime_payload,
         )
 
 

@@ -58,6 +58,11 @@ exec /usr/bin/env python3 "$@"
 	writeProbeStub(t, fetchDir, "fetch_candles.py", true)
 	writeProbeStub(t, fetchDir, "strategy_tuner_schema.py", true)
 	writeProbeStub(t, fetchDir, "simulate_strategy.py", true)
+	regimeDir := filepath.Join(tmp, "shared_tools")
+	if err := os.MkdirAll(regimeDir, 0o755); err != nil {
+		t.Fatalf("mkdir shared_tools: %v", err)
+	}
+	writeProbeStub(t, regimeDir, "regime.py", true)
 
 	prevCwd, _ := os.Getwd()
 	if err := os.Chdir(tmp); err != nil {
@@ -199,6 +204,10 @@ func TestProbeRunsExtraArgvForHL(t *testing.T) {
 	simulate := calls["shared_scripts/simulate_strategy.py"]
 	if len(simulate) != 1 || simulate[0] != "signal" {
 		t.Errorf("simulate helper should be probed once, got %v", simulate)
+	}
+	regime := calls["shared_tools/regime.py"]
+	if len(regime) != 1 || regime[0] != "signal" {
+		t.Errorf("regime bundle helper should be probed once, got %v", regime)
 	}
 }
 
