@@ -49,7 +49,7 @@ func TestProjectRegimeSnapshotCompositeUsesCompositeADX(t *testing.T) {
 	}
 }
 
-func TestBuildCycleRegimeStoreFailureInjectsEmptyPayload(t *testing.T) {
+func TestBuildCycleRegimeStoreFailureFallsBackToInlineRegime(t *testing.T) {
 	orig := runRegimeBundleComputeFn
 	defer func() { runRegimeBundleComputeFn = orig }()
 	runRegimeBundleComputeFn = func(RegimeRawKey, int) (regimeRawBundle, error) {
@@ -72,11 +72,8 @@ func TestBuildCycleRegimeStoreFailureInjectsEmptyPayload(t *testing.T) {
 	if stats.RawRequested != 1 || stats.RawComputed != 0 || stats.Failures != 1 {
 		t.Fatalf("stats = %+v, want one failed raw compute", stats)
 	}
-	if payload.IsEmpty() {
-		t.Fatalf("failed global compute should still inject an explicit empty payload")
-	}
-	if got := payload.PrimaryLabel(cfg.Regime); got != "" {
-		t.Fatalf("failed global compute label = %q, want empty", got)
+	if !payload.IsEmpty() {
+		t.Fatalf("failed global compute should omit injected payload so checks compute regime inline, got %+v", payload)
 	}
 }
 

@@ -223,6 +223,16 @@ def test_regime_raw_bundle_adx3_matches_standalone_adx_period_above_composite_ca
     assert "composite_adx" in bundled["raw"]
 
 
+def test_regime_raw_bundle_composite7_matches_latest_regime_composite():
+    df = _make_downtrend(n=120)
+    period = 50
+
+    standalone = _regime_mod.latest_regime_composite(df, period=period)["regime"]
+    bundled = regime_raw_bundle(df, period=period)
+
+    assert bundled["labels"]["composite7"] == standalone
+
+
 def test_prepare_injected_regime_returns_prepare_check_shape():
     payload = {
         "default": {

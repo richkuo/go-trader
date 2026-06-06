@@ -148,13 +148,19 @@ func buildCycleRegimeStore(due []StrategyConfig, cfg *Config, notifier *MultiNot
 		clearRegimeScriptFailure(notifier, key)
 	}
 	for _, req := range requests {
+		ready := true
+		for _, win := range req.Windows {
+			if _, ok := store.raw[win.RawKey]; !ok {
+				ready = false
+				break
+			}
+		}
+		if !ready {
+			continue
+		}
 		windows := make(map[string]RegimeSnapshot, len(req.Windows))
 		for _, win := range req.Windows {
-			raw, ok := store.raw[win.RawKey]
-			if !ok {
-				windows[win.Window] = RegimeSnapshot{}
-				continue
-			}
+			raw := store.raw[win.RawKey]
 			snap := store.labels[win.Signature]
 			if strings.TrimSpace(snap.Regime) == "" {
 				snap = projectRegimeSnapshot(raw, win.Spec)
@@ -460,6 +466,7 @@ func projectRegimeSnapshot(bundle regimeRawBundle, spec RegimeWindowSpec) Regime
 	}
 }
 
+// Keep in sync with shared_tools/regime.py:map_adx_label.
 func mapADXRegimeLabel(adx, plusDI, minusDI, threshold float64) string {
 	if adx < threshold {
 		return "ranging"
@@ -473,6 +480,7 @@ func mapADXRegimeLabel(adx, plusDI, minusDI, threshold float64) string {
 	return "ranging"
 }
 
+// Keep in sync with shared_tools/regime.py:map_composite_label.
 func mapCompositeRegimeLabel(returnEff, adxVal, rangeEff, efficiency float64, th RegimeCompositeThresholds) string {
 	t := th.withDefaults()
 	bigMove := math.Abs(returnEff) >= t.ReturnPct
