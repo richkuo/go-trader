@@ -55,6 +55,7 @@ exec /usr/bin/env python3 "$@"
 	if err := os.MkdirAll(fetchDir, 0o755); err != nil {
 		t.Fatalf("mkdir shared_scripts: %v", err)
 	}
+	writeProbeStub(t, fetchDir, "check_regime.py", true)
 	writeProbeStub(t, fetchDir, "fetch_candles.py", true)
 	writeProbeStub(t, fetchDir, "strategy_tuner_schema.py", true)
 	writeProbeStub(t, fetchDir, "simulate_strategy.py", true)

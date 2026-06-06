@@ -20,7 +20,7 @@ _REPO_ROOT = os.path.dirname(_THIS_DIR)
 sys.path.insert(0, _REPO_ROOT)
 sys.path.insert(0, os.path.join(_REPO_ROOT, "shared_tools"))
 
-from regime import latest_regime
+from regime import latest_regime, prepare_check_regime, regime_injection_kwargs
 
 MAX_POSITIONS_PER_STRATEGY = 4
 MIN_SCORE_THRESHOLD = 0.3
@@ -409,15 +409,29 @@ def main():
     # #645: startup compatibility probe — exit 0 without running the strategy.
     if "--probe-only" in sys.argv:
         sys.exit(0)
-    # Parse args: strip --platform= before positional parsing
+    # Parse args: strip --platform= and #879 regime-injection flags before positional parsing
     args = sys.argv[1:]
     platform = "deribit"
+    regime_injected_present = False
+    regime_injected_raw = ""
     remaining = []
-    for arg in args:
+    skip_next = False
+    for i, arg in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
         if arg.startswith("--platform="):
             platform = arg.split("=", 1)[1]
         elif arg.startswith("--platform"):
             pass  # bare flag without value, ignore
+        elif arg == "--regime-injected":
+            regime_injected_present = True  # #879: Go owns regime via the global store
+        elif arg.startswith("--regime-injected-json="):
+            regime_injected_raw = arg.split("=", 1)[1]
+        elif arg == "--regime-injected-json":
+            if i + 1 < len(args):
+                regime_injected_raw = args[i + 1]
+                skip_next = True
         else:
             remaining.append(arg)
 
@@ -498,9 +512,18 @@ def main():
 
         vol_annual, iv_rank = adapter.get_vol_metrics(underlying)
 
-        regime_df = _fetch_ohlcv_df(underlying, REGIME_TIMEFRAME, REGIME_LIMIT,
-                                    REGIME_MIN_BARS, adapter=adapter)
-        regime_label = _regime_label_from_df(regime_df)
+        if regime_injected_present:
+            # #879: Go precomputed the options regime (4h ADX signature) in the
+            # global store and injected it — skip the duplicate 4h OHLCV fetch.
+            stdout_regime, _live, _strat = prepare_check_regime(
+                None, regime_enabled=True,
+                **regime_injection_kwargs(True, regime_injected_raw),
+            )
+            regime_label = stdout_regime if isinstance(stdout_regime, str) and stdout_regime else None
+        else:
+            regime_df = _fetch_ohlcv_df(underlying, REGIME_TIMEFRAME, REGIME_LIMIT,
+                                        REGIME_MIN_BARS, adapter=adapter)
+            regime_label = _regime_label_from_df(regime_df)
 
         evaluate_fn = STRATEGY_MAP[strategy_name]
         signal, actions, iv_rank = evaluate_fn(

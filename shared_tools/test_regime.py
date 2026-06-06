@@ -28,6 +28,7 @@ regime_label_from_payload = _regime_mod.regime_label_from_payload
 required_ohlcv_limit = _regime_mod.required_ohlcv_limit
 parse_regime_windows_json = _regime_mod.parse_regime_windows_json
 ensure_regime_columns = _regime_mod.ensure_regime_columns
+prepare_check_regime = _regime_mod.prepare_check_regime
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -437,3 +438,125 @@ def test_latest_regime_composite_downtrend():
     snap = _regime_mod.latest_regime_composite(df, period=50, thresholds={"return_pct": 0.02, "range_pct": 0.02, "adx": 15})
     assert snap["regime"] in _regime_mod.VALID_LABELS_COMPOSITE
     assert "trending_down" in snap["regime"]
+
+
+# ─── #879: injected regime path (Go-side global store) ──────────────────────────
+#
+# The Go scheduler computes regime once per (platform, symbol, interval) and injects
+# the serialized RegimePayload into each check. prepare_check_regime(injected=...) must
+# project the SAME (stdout, live_atr, strategy) tuple the inline df path produces —
+# this is the "no behavior change" guarantee.
+
+
+def _spec_multi():
+    return {
+        "fast": {"classifier": "adx", "period": 14, "adx_threshold": 20.0},
+        "medium": {"classifier": "adx", "period": 28, "adx_threshold": 20.0},
+        "slow": {"classifier": "adx", "period": 50, "adx_threshold": 20.0},
+    }
+
+
+def test_injected_multi_matches_computed_multi():
+    """Injecting the computed multi map reproduces the inline result exactly."""
+    df = _make_uptrend(n=160)
+    spec = _spec_multi()
+    computed_multi, computed_live, computed_strat = prepare_check_regime(
+        df, regime_enabled=True, windows_spec=spec, atr_window="slow"
+    )
+    # Serialize like Go's RegimePayload.MarshalJSON (multi -> {name: {regime,score,metrics}}),
+    # then re-inject. Go strips the per-window "classifier" key, so drop it here too.
+    injected = {
+        name: {"regime": snap["regime"], "score": snap.get("score", 0.0),
+               "metrics": snap.get("metrics", {})}
+        for name, snap in computed_multi.items()
+    }
+    inj_multi, inj_live, inj_strat = prepare_check_regime(
+        df, regime_enabled=True, injected=injected, atr_window="slow"
+    )
+    # Primary (medium) label and the atr-window (slow) live label must match.
+    assert inj_strat["regime"] == computed_strat["regime"]
+    assert inj_live == computed_live
+    # Every window label is preserved through injection.
+    for name in spec:
+        assert inj_multi[name]["regime"] == computed_multi[name]["regime"]
+
+
+def test_injected_atr_window_selects_from_shared_bundle():
+    """A different per-strategy atr_window picks a different label out of one bundle."""
+    df = _make_uptrend(n=160)
+    computed_multi, _, _ = prepare_check_regime(
+        df, regime_enabled=True, windows_spec=_spec_multi(), atr_window="fast"
+    )
+    injected = {n: {"regime": s["regime"], "score": 0.0, "metrics": {}}
+                for n, s in computed_multi.items()}
+    _, live_fast, _ = prepare_check_regime(df, regime_enabled=True, injected=injected, atr_window="fast")
+    _, live_slow, _ = prepare_check_regime(df, regime_enabled=True, injected=injected, atr_window="slow")
+    assert live_fast == injected["fast"]["regime"]
+    assert live_slow == injected["slow"]["regime"]
+
+
+def test_injected_legacy_string_matches_computed_legacy():
+    df = _make_downtrend(n=120)
+    comp_stdout, comp_live, comp_strat = prepare_check_regime(
+        df, regime_enabled=True, period=14, adx_threshold=20.0
+    )
+    assert isinstance(comp_stdout, str)
+    inj_stdout, inj_live, inj_strat = prepare_check_regime(
+        df, regime_enabled=True, injected=comp_stdout
+    )
+    assert inj_stdout == comp_stdout
+    assert inj_live == comp_live
+    assert inj_strat["regime"] == comp_strat["regime"]
+
+
+def test_injected_empty_fails_open():
+    """Store miss / subprocess failure → empty regime → consumers fail open."""
+    df = _make_uptrend(n=80)
+    for empty in (None, "", {}):
+        stdout, live, strat = prepare_check_regime(df, regime_enabled=True, injected=empty)
+        assert stdout == ""
+        assert live == ""
+        assert strat["regime"] == ""
+
+
+def test_injected_ignored_when_regime_disabled():
+    df = _make_uptrend(n=80)
+    stdout, live, strat = prepare_check_regime(
+        df, regime_enabled=False, injected={"medium": {"regime": "trending_up", "metrics": {}}}
+    )
+    assert stdout == "" and live == "" and strat["regime"] == ""
+
+
+def test_injected_does_not_read_df():
+    """Injected path must never touch df (Go owns regime) — pass a 1-row df that
+    would otherwise produce empty/ranging if computed."""
+    tiny = _make_uptrend(n=1)
+    injected = {"medium": {"regime": "trending_up_clean", "score": 0.9, "metrics": {}}}
+    stdout, live, strat = prepare_check_regime(tiny, regime_enabled=True, injected=injected)
+    assert strat["regime"] == "trending_up_clean"
+
+
+def test_adx_window_period_gt_14_uses_full_period_no_cap():
+    """#879 parity: an adx-classifier window at period>14 must use the FULL period
+    (COMPOSITE_ADX_PERIOD_CAP applies ONLY to composite's internal ADX). Each window
+    in the shared bundle computes its declared classifier directly, so the 3-state
+    ADX view is exact — prepare_check_regime's adx window == standalone latest_regime."""
+    df = _make_uptrend(n=180)
+    spec = {"slow": {"classifier": "adx", "period": 28, "adx_threshold": 20.0}}
+    multi, _, _ = prepare_check_regime(df, regime_enabled=True, windows_spec=spec)
+    direct = latest_regime(df, period=28, adx_threshold=20.0)
+    assert multi["slow"]["regime"] == direct["regime"]
+    assert abs(multi["slow"]["metrics"]["adx"] - direct["metrics"]["adx"]) < 1e-9
+
+
+def test_composite_window_internal_adx_capped_but_label_unchanged():
+    """A composite window's internal ADX is capped at 14 (by design); confirm the
+    bundle's composite label is exactly what latest_regime_composite produces — i.e.
+    the standalone subprocess path introduces no drift from the inline path."""
+    df = _make_uptrend(n=180)
+    spec = {"macro": {"classifier": "composite", "period": 40,
+                      "thresholds": {"return_pct": 0.05, "range_pct": 0.03, "adx": 25, "efficiency": 0.5}}}
+    multi, _, _ = prepare_check_regime(df, regime_enabled=True, windows_spec=spec)
+    direct = _regime_mod.latest_regime_composite(df, period=40,
+                                                 thresholds={"return_pct": 0.05, "range_pct": 0.03, "adx": 25, "efficiency": 0.5})
+    assert multi["macro"]["regime"] == direct["regime"]

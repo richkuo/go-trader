@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,6 +36,12 @@ type StatusServer struct {
 	configPath    string           // live config file for tuner Apply (#811)
 	regime        *RegimeConfig    // global regime settings for simulate preview
 	configWriteMu sync.Mutex       // serializes dashboard config Apply writes
+
+	// regimeStore holds the latest per-cycle global regime store (#879) for the
+	// portfolio-level dashboard view. Published once per cycle by the main loop
+	// (SetRegimeStore) and read concurrently by /api/regime; an atomic pointer
+	// swap keeps reads lock-free and always sees a fully-built, immutable store.
+	regimeStore atomic.Pointer[RegimeStore]
 
 	// Throttled logging for repeated mark-fetch failures on the /status
 	// rail. /status can be polled frequently (oncall dashboard, monitoring),
@@ -79,6 +86,24 @@ func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, stra
 		candleFetcher:  FetchUICandles,
 		candleCache:    NewUICandleCache(30 * time.Second),
 	}
+}
+
+// SetRegimeStore publishes the current cycle's global regime store (#879) for the
+// dashboard. The store is immutable once built, so a lock-free atomic swap is safe.
+func (ss *StatusServer) SetRegimeStore(store *RegimeStore) {
+	if ss == nil {
+		return
+	}
+	ss.regimeStore.Store(store)
+}
+
+// RegimeSnapshot returns the latest portfolio-level regime view (#879 scope 5),
+// or an empty snapshot when no cycle has built a store yet.
+func (ss *StatusServer) RegimeSnapshot() regimeStoreSnapshot {
+	if ss == nil {
+		return regimeStoreSnapshot{}
+	}
+	return ss.regimeStore.Load().snapshot()
 }
 
 // UpdateStrategies refreshes config-derived status metadata after a hot reload.
@@ -195,6 +220,7 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/dashboard/", ss.handleDashboard)
 	mux.HandleFunc("/api/strategies", ss.handleAPIStrategies)
 	mux.HandleFunc("/api/strategies/overview", ss.handleAPIStrategiesOverview)
+	mux.HandleFunc("/api/regime", ss.handleAPIRegime)
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
 
 	listener, boundPort, err := bindWithFallback(port, statusPortMaxAttempts)

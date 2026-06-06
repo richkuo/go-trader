@@ -181,6 +181,27 @@ func (ss *StatusServer) handleAPIStrategiesOverview(w http.ResponseWriter, r *ht
 	writeJSON(w, map[string][]UIStrategyOverview{"strategies": out})
 }
 
+// handleAPIRegime serves the portfolio-level global regime view (#879 scope 5):
+// one entry per (platform, symbol, interval) computed this cycle, with its
+// primary label. ok=false entries are assets whose regime subprocess failed.
+func (ss *StatusServer) handleAPIRegime(w http.ResponseWriter, r *http.Request) {
+	if ss.rejectIfDraining(w) {
+		return
+	}
+	if !ss.requireAPIAuth(w, r) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.Path != "/api/regime" && r.URL.Path != "/api/regime/" {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, ss.RegimeSnapshot())
+}
+
 func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request) {
 	if ss.rejectIfDraining(w) {
 		return

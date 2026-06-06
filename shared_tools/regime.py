@@ -440,6 +440,38 @@ def required_ohlcv_limit(
     return max(base_limit, warmup + margin)
 
 
+# Sentinel distinguishing "Go injected regime (#879)" from "compute inline".
+# A real injected payload is a str/dict/None; _INJECT_UNSET means no injection.
+_INJECT_UNSET = object()
+
+
+def _project_multi_regime(
+    multi: dict[str, dict],
+    window_names,
+    atr_window: str,
+    disabled: dict,
+) -> tuple[dict, str, dict]:
+    """Project a multi-window snapshot map into (stdout, live_atr, strategy) (#795/#879).
+
+    Shared by the compute path (multi freshly computed from df) and the injected
+    path (#879: multi supplied by the Go-side global regime store). Primary window
+    is `medium` when present else the first sorted window name; the live-ATR label
+    comes from the per-strategy `atr_window` selector (falling back to primary).
+    """
+    names = set(window_names)
+    if REGIME_PRIMARY_WINDOW_KEY in names:
+        primary_key = REGIME_PRIMARY_WINDOW_KEY
+    elif names:
+        primary_key = sorted(names)[0]
+    else:
+        primary_key = ""
+    strategy_payload = multi.get(primary_key, disabled) if primary_key else disabled
+    atr_key = (atr_window or primary_key).strip() or primary_key
+    atr_entry = multi.get(atr_key, strategy_payload)
+    live_atr = str(atr_entry.get("regime") or "") if isinstance(atr_entry, dict) else ""
+    return multi, live_atr, strategy_payload
+
+
 def prepare_check_regime(
     df: pd.DataFrame,
     *,
@@ -449,24 +481,37 @@ def prepare_check_regime(
     windows: dict[str, dict[str, Any]] | None = None,
     windows_spec: dict[str, dict[str, Any]] | None = None,
     atr_window: str = "",
+    injected: Any = _INJECT_UNSET,
 ) -> tuple[dict | str, str, dict]:
     disabled = {"regime": "", "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
     if not regime_enabled:
         return "", "", disabled
 
+    # #879: when Go injects the precomputed regime from the global store, project
+    # from it and NEVER recompute from df. An empty/missing payload (store miss or
+    # subprocess failure) yields empty regime → consumers fail open, exactly as the
+    # inline empty case would, keeping fail-open behavior identical to inline compute.
+    if injected is not _INJECT_UNSET:
+        if not injected:  # None, "", {} → store miss / failure → empty
+            return "", "", disabled
+        if isinstance(injected, str):
+            label = injected.strip()
+            if not label:
+                return "", "", disabled
+            snap = {"regime": label, "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
+            return label, label, snap
+        if isinstance(injected, dict):
+            # Flat single-window snapshot vs multi-window map (mirrors RegimePayload).
+            if "regime" in injected and ("score" in injected or "metrics" in injected):
+                label = str(injected.get("regime") or "")
+                return label, label, (injected if label else disabled)
+            return _project_multi_regime(injected, injected.keys(), atr_window, disabled)
+        return "", "", disabled
+
     spec_map = windows_spec if windows_spec is not None else windows
     if spec_map:
         multi = compute_multi_regime(df, spec_map, default_adx_threshold=adx_threshold)
-        primary_key = (
-            REGIME_PRIMARY_WINDOW_KEY
-            if REGIME_PRIMARY_WINDOW_KEY in spec_map
-            else sorted(spec_map.keys())[0]
-        )
-        strategy_payload = multi.get(primary_key, disabled)
-        atr_key = (atr_window or primary_key).strip() or primary_key
-        atr_entry = multi.get(atr_key, strategy_payload)
-        live_atr = str(atr_entry.get("regime") or "")
-        return multi, live_atr, strategy_payload
+        return _project_multi_regime(multi, spec_map.keys(), atr_window, disabled)
 
     legacy = classify_window(
         df,
@@ -475,6 +520,27 @@ def prepare_check_regime(
     )
     label = str(legacy.get("regime") or "")
     return label, label, legacy
+
+
+def regime_injection_kwargs(present: bool, raw: str | None) -> dict:
+    """Build the `injected=` kwarg for prepare_check_regime from CLI flags (#879).
+
+    Returns {} when Go is NOT injecting (the check computes regime inline, legacy
+    behavior). When `present` (Go owns regime via the global store), returns
+    {"injected": payload} where payload is the parsed JSON (str label or multi-window
+    dict), or None on empty/unparseable input → empty regime → fail open. The
+    presence flag, not the payload, decides ownership: an empty payload still means
+    "Go owns it, regime is empty" (store miss / subprocess failure), never "compute".
+    """
+    if not present:
+        return {}
+    text = (raw or "").strip()
+    if not text:
+        return {"injected": None}
+    try:
+        return {"injected": json.loads(text)}
+    except (ValueError, TypeError):
+        return {"injected": None}
 
 
 def parse_regime_windows_spec_json(raw: str | None) -> dict[str, dict[str, Any]] | None:

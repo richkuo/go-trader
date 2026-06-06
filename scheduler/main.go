@@ -1274,10 +1274,29 @@ func main() {
 					}
 				}
 
+				// #879: build the per-cycle global regime store BEFORE the
+				// per-strategy fan-out (Phase 3) so every strategy — and the
+				// dashboard — reads ONE consistent regime per (platform, symbol,
+				// interval) instead of each check recomputing it inline. Rebuilt
+				// every cycle, in-memory, never persisted (like stratState.Regime).
+				cycleRegimeStore := buildRegimeStore(dueStrategies, cfg.Regime, notifier)
+				if server != nil {
+					server.SetRegimeStore(cycleRegimeStore)
+				}
+
 				for _, sc := range dueStrategies {
 					stratState := state.Strategies[sc.ID]
 					if stratState == nil {
 						continue
+					}
+
+					// #879: when Go owns regime for this strategy, inject the
+					// precomputed payload into its check (skip inline compute) and
+					// take the live label from the store, NOT from the check output.
+					regimeInjectionArgs := cycleRegimeStore.injectionArgs(sc)
+					goOwnsRegime := len(regimeInjectionArgs) > 0
+					if goOwnsRegime {
+						sc.Args = append(append([]string{}, sc.Args...), regimeInjectionArgs...)
 					}
 
 					logger, err := logMgr.GetStrategyLogger(sc.ID)
@@ -1455,6 +1474,9 @@ func main() {
 						if sc.Platform == "okx" {
 							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, notifier, logger); ok {
 								prices[result.Symbol] = price
+								if goOwnsRegime {
+									result.Regime = cycleRegimeStore.payloadFor(sc)
+								}
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, okxPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 									result.Signal = 0
@@ -1480,6 +1502,9 @@ func main() {
 						} else if sc.Platform == "robinhood" {
 							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, rhPosCtx, cfg.Regime, notifier, logger); ok {
 								prices[result.Symbol] = price
+								if goOwnsRegime {
+									result.Regime = cycleRegimeStore.payloadFor(sc)
+								}
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, rhPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 									result.Signal = 0
@@ -1503,6 +1528,9 @@ func main() {
 								}
 							}
 						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, spotPosCtx, cfg.Regime, notifier, logger); ok {
+							if goOwnsRegime {
+								result.Regime = cycleRegimeStore.payloadFor(sc)
+							}
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, spotPosCtx.Quantity); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 								result.Signal = 0
@@ -1515,7 +1543,11 @@ func main() {
 					case "options":
 						if result, signalStr, ok := runOptionsCheck(sc, posJSON, notifier, logger); ok {
 							mu.Lock()
-							stratState.Regime = result.Regime
+							if goOwnsRegime {
+								stratState.Regime = cycleRegimeStore.primaryLabelFor(sc)
+							} else {
+								stratState.Regime = result.Regime
+							}
 							var harvestDetails []string
 							trades, detail, harvestDetails = executeOptionsResult(sc, stratState, result, signalStr, logger)
 							mu.Unlock()
@@ -1528,6 +1560,9 @@ func main() {
 						if sc.Platform == "okx" {
 							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, notifier, logger); ok {
 								prices[result.Symbol] = price
+								if goOwnsRegime {
+									result.Regime = cycleRegimeStore.payloadFor(sc)
+								}
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, okxPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 									result.Signal = 0
@@ -1552,6 +1587,9 @@ func main() {
 							}
 						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, notifier, logger); ok {
 							prices[result.Symbol] = price
+							if goOwnsRegime {
+								result.Regime = cycleRegimeStore.payloadFor(sc)
+							}
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, hlPosQty); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 								result.Signal = 0
@@ -1813,6 +1851,9 @@ func main() {
 					case "futures":
 						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, cfg.Regime, notifier, logger); ok {
 							prices[result.Symbol] = price
+							if goOwnsRegime {
+								result.Regime = cycleRegimeStore.payloadFor(sc)
+							}
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, tsContracts); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 								result.Signal = 0
@@ -1862,6 +1903,13 @@ func main() {
 						// trail no-op'd for one interval; stamping first arms it
 						// correctly on cycle 1.
 						closeFraction, _, manualRegime, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger)
+						if goOwnsRegime {
+							if p := cycleRegimeStore.payloadFor(sc); p != nil {
+								manualRegime = *p
+							} else {
+								manualRegime = RegimePayload{}
+							}
+						}
 						if manualOK {
 							mu.Lock()
 							// Refresh the strategy-level live regime every cycle, like

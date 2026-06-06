@@ -36,6 +36,10 @@ var probeArgv = []string{
 	"--ohlcv-limit", "200",
 	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
 	"--regime-atr-window", "",
+	// #879: new Go injects the precomputed regime on every regime-enabled check;
+	// probe both flags so a stale Python missing them fails startup loudly.
+	"--regime-injected",
+	"--regime-injected-json", `{"default":{"regime":"trending_up","score":0.5,"metrics":{}}}`,
 	"--probe-only",
 }
 
@@ -48,6 +52,20 @@ var probeCompositeArgv = []string{
 	"--ohlcv-limit", "200",
 	"--regime-windows-spec-json", `{"macro":{"classifier":"composite","period":14,"thresholds":{"return_pct":0.05,"range_pct":0.03,"adx":25}}}`,
 	"--regime-atr-window", "",
+	"--regime-injected",
+	"--regime-injected-json", `{"macro":{"regime":"trending_up_clean","score":0.6,"metrics":{}}}`,
+	"--probe-only",
+}
+
+// regimeCheckProbeArgv probes the #879 standalone regime subprocess
+// (shared_scripts/check_regime.py). Go computes the global regime store with this
+// script every cycle, so an asymmetric deploy (new binary, stale/missing script)
+// must fail at startup rather than blanking the whole portfolio's regime mid-cycle.
+// --probe-only short-circuits before any network fetch.
+var regimeCheckProbeArgv = []string{
+	"BTC", "1h", "--platform", "binanceus",
+	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
+	"--ohlcv-limit", "200",
 	"--probe-only",
 }
 
@@ -161,6 +179,10 @@ func probeCheckScripts(cfg *Config) error {
 		}
 	}
 	if len(scripts) > 0 {
+		// #879: the global regime store runs this dedicated script every cycle.
+		if err := probeOneCheckScriptFn(regimeCheckScript, regimeCheckProbeArgv); err != nil {
+			return err
+		}
 		if err := probeOneCheckScriptFn("shared_scripts/fetch_candles.py", fetchCandlesProbeArgv); err != nil {
 			return err
 		}

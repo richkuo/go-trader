@@ -23,7 +23,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
-from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
+from regime import (
+    latest_regime,
+    parse_regime_windows_spec_json,
+    prepare_check_regime,
+    regime_injection_kwargs,
+)
 
 
 def _arg_value(flag, default=None):
@@ -78,6 +83,10 @@ def main():
     regime_windows_spec = parse_regime_windows_spec_json(_arg_value("--regime-windows-spec-json"))
     ohlcv_limit = int(_arg_value("--ohlcv-limit") or 200)
     regime_atr_window = (_arg_value("--regime-atr-window") or "").strip()
+    # #879: when Go injects regime from the global store, skip inline compute.
+    regime_inject_kwargs = regime_injection_kwargs(
+        "--regime-injected" in sys.argv, _arg_value("--regime-injected-json")
+    )
     open_strategy = _arg_value("--open-strategy")
     close_strategies_raw = _arg_value("--close-strategies")
     position_side = (_arg_value("--position-side", "") or "").lower()
@@ -114,6 +123,7 @@ def main():
             "--position-regime",
             "--regime-windows-spec-json", "--ohlcv-limit",
             "--regime-atr-window", "--regime-directional-window",
+            "--regime-injected-json",
         ):
             skip_next = True
             continue
@@ -213,6 +223,7 @@ def main():
             regime_enabled=regime_enabled,
             windows_spec=regime_windows_spec,
             atr_window=regime_atr_window,
+            **regime_inject_kwargs,
         )
         strategy_params = (strategy_params or {})
         strategy_params["regime"] = strategy_regime
