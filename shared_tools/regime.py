@@ -344,8 +344,9 @@ def map_adx_label(
 
 
 def compute_regime_bundle(df: pd.DataFrame, period: int) -> dict | None:
-    """Compute raw indicators + default labels for one (symbol, interval, period) key (#879).
+    """Compute raw ADX/efficiency indicators for one (symbol, interval, period) key (#879).
 
+    Go projects labels from ``raw`` via ``map_adx_label`` / ``map_composite_label`` parity.
     ADX/±DI use the full period for exact 3-state parity when period > 14; composite
     corroboration uses min(period, COMPOSITE_ADX_PERIOD_CAP) to match latest_regime_composite.
     Returns None when OHLCV is too short for a reliable reading.
@@ -370,15 +371,6 @@ def compute_regime_bundle(df: pd.DataFrame, period: int) -> dict | None:
 
     close_end = eff["close_end"]
     atr_pct = round(atr_val / close_end * 100.0, 4) if close_end else 0.0
-    default_adx_th = 20.0
-    adx3 = map_adx_label(adx_full, plus_di, minus_di, default_adx_th)
-    composite7 = map_composite_label(
-        eff["return_eff"],
-        composite_adx,
-        eff["range_eff"],
-        eff["efficiency"],
-        _DEFAULT_COMPOSITE_THRESHOLDS,
-    )
 
     bar_time = 0
     if "timestamp" in df.columns and len(df) > 0:
@@ -398,10 +390,6 @@ def compute_regime_bundle(df: pd.DataFrame, period: int) -> dict | None:
             "range_eff": round(eff["range_eff"], 4),
             "efficiency": round(eff["efficiency"], 4),
             "atr_pct": atr_pct,
-        },
-        "labels_default": {
-            "adx3": adx3,
-            "composite7": composite7,
         },
     }
 

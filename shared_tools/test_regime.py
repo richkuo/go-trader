@@ -434,13 +434,15 @@ def test_parse_regime_windows_spec_json_composite():
     assert spec["macro"]["period"] == 100
 
 
-def test_compute_regime_bundle_matches_latest_regime_adx3():
+def test_compute_regime_bundle_raw_projects_like_latest_regime_adx3():
     df = _make_uptrend(n=120)
     bundle = compute_regime_bundle(df, period=14)
     assert bundle is not None
     snap = latest_regime(df, period=14, adx_threshold=20.0)
-    assert bundle["labels_default"]["adx3"] == snap["regime"]
-    assert bundle["raw"]["adx"] == pytest.approx(snap["metrics"]["adx"])
+    raw = bundle["raw"]
+    projected = map_adx_label(raw["adx"], raw["plus_di"], raw["minus_di"], 20.0)
+    assert projected == snap["regime"]
+    assert raw["adx"] == pytest.approx(snap["metrics"]["adx"])
 
 
 def test_compute_regime_bundle_period_28_matches_full_period_adx():
@@ -448,15 +450,24 @@ def test_compute_regime_bundle_period_28_matches_full_period_adx():
     bundle = compute_regime_bundle(df, period=28)
     assert bundle is not None
     snap = latest_regime(df, period=28, adx_threshold=20.0)
-    assert bundle["labels_default"]["adx3"] == snap["regime"]
+    raw = bundle["raw"]
+    assert map_adx_label(raw["adx"], raw["plus_di"], raw["minus_di"], 20.0) == snap["regime"]
 
 
-def test_compute_regime_bundle_composite7_matches_latest_composite():
+def test_compute_regime_bundle_raw_projects_like_latest_composite():
     df = _make_uptrend(n=120)
     bundle = compute_regime_bundle(df, period=14)
     assert bundle is not None
     snap = _regime_mod.latest_regime_composite(df, period=14)
-    assert bundle["labels_default"]["composite7"] == snap["regime"]
+    raw = bundle["raw"]
+    projected = _regime_mod.map_composite_label(
+        raw["return_eff"],
+        raw["composite_adx"],
+        raw["range_eff"],
+        raw["efficiency"],
+        _regime_mod._DEFAULT_COMPOSITE_THRESHOLDS,
+    )
+    assert projected == snap["regime"]
 
 
 def test_ensure_regime_columns_last_bar_matches_latest_regime():

@@ -15,6 +15,25 @@ func TestProjectADXLabel(t *testing.T) {
 	}
 }
 
+// TestProjectADXLabelParityVectors mirrors shared_tools/regime.py map_adx_label cases.
+func TestProjectADXLabelParityVectors(t *testing.T) {
+	cases := []struct {
+		raw  RegimeBundleRaw
+		th   float64
+		want string
+	}{
+		{RegimeBundleRaw{ADX: 30, PlusDI: 25, MinusDI: 10}, 20, "trending_up"},
+		{RegimeBundleRaw{ADX: 30, PlusDI: 5, MinusDI: 20}, 20, "trending_down"},
+		{RegimeBundleRaw{ADX: 10, PlusDI: 25, MinusDI: 10}, 20, "ranging"},
+		{RegimeBundleRaw{ADX: 30, PlusDI: 10, MinusDI: 10}, 20, "ranging"},
+	}
+	for _, tc := range cases {
+		if got := projectADXLabel(tc.raw, tc.th); got != tc.want {
+			t.Fatalf("projectADXLabel(%+v, %g) = %q, want %q", tc.raw, tc.th, got, tc.want)
+		}
+	}
+}
+
 func TestProjectCompositeLabel(t *testing.T) {
 	th := defaultCompositeThresholds
 	raw := RegimeBundleRaw{

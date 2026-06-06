@@ -405,6 +405,46 @@ STRATEGY_MAP = {
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
+def _split_options_argv(args):
+    """Strip platform/regime flags; return (platform, positional remaining)."""
+    platform = "deribit"
+    remaining = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg.startswith("--platform="):
+            platform = arg.split("=", 1)[1]
+            i += 1
+            continue
+        if arg.startswith("--platform"):
+            i += 1
+            continue
+        if arg in ("--regime-enabled", "--probe-only"):
+            i += 1
+            continue
+        consumed = False
+        for flag in (
+            "--regime-payload-json",
+            "--regime-windows-spec-json",
+            "--regime-atr-window",
+            "--regime-directional-window",
+            "--ohlcv-limit",
+        ):
+            if arg == flag:
+                i += 2 if i + 1 < len(args) and not args[i + 1].startswith("--") else 1
+                consumed = True
+                break
+            if arg.startswith(flag + "="):
+                i += 1
+                consumed = True
+                break
+        if consumed:
+            continue
+        remaining.append(arg)
+        i += 1
+    return platform, remaining
+
+
 def _arg_value(flag, default=None):
     prefix = flag + "="
     for arg in sys.argv:
@@ -422,31 +462,7 @@ def main():
     # #645: startup compatibility probe — exit 0 without running the strategy.
     if "--probe-only" in sys.argv:
         sys.exit(0)
-    # Parse args: strip --platform= and regime flags before positional parsing
-    args = sys.argv[1:]
-    platform = "deribit"
-    remaining = []
-    i = 0
-    while i < len(args):
-        arg = args[i]
-        if arg.startswith("--platform="):
-            platform = arg.split("=", 1)[1]
-            i += 1
-            continue
-        if arg.startswith("--platform"):
-            i += 1
-            continue
-        if arg in ("--regime-enabled",):
-            i += 1
-            continue
-        if arg.startswith("--regime-payload-json="):
-            i += 1
-            continue
-        if arg == "--regime-payload-json":
-            i += 2 if i + 1 < len(args) and not args[i + 1].startswith("--") else 1
-            continue
-        remaining.append(arg)
-        i += 1
+    platform, remaining = _split_options_argv(sys.argv[1:])
 
     if len(remaining) < 2:
         print(json.dumps({
@@ -457,9 +473,9 @@ def main():
     strategy_name = remaining[0]
     underlying = remaining[1].upper()
 
-    # Parse existing positions from stdin or argv[2]
+    # Parse existing positions from stdin or argv[2] (never a regime flag tail).
     raw_positions = []
-    if len(remaining) > 2:
+    if len(remaining) > 2 and not str(remaining[2]).startswith("--"):
         try:
             raw_positions = json.loads(remaining[2])
         except (json.JSONDecodeError, ValueError):

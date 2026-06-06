@@ -233,11 +233,10 @@ func collectRegimeCycleNeeds(due []StrategyConfig, cfg *Config) ([]regimeRawKey,
 }
 
 type regimeBundleScriptResult struct {
-	OK      bool              `json:"ok"`
-	Error   string            `json:"error"`
-	BarTime int64             `json:"bar_time"`
-	Raw     RegimeBundleRaw   `json:"raw"`
-	Labels  map[string]string `json:"labels_default"`
+	OK      bool            `json:"ok"`
+	Error   string          `json:"error"`
+	BarTime int64           `json:"bar_time"`
+	Raw     RegimeBundleRaw `json:"raw"`
 }
 
 var runRegimeBundleScriptFn = runRegimeBundleScript

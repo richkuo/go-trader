@@ -1277,7 +1277,6 @@ func main() {
 				cycleRegimeStore := newGlobalRegimeStore()
 				populateGlobalRegimeStore(shutdownReadOnlyCtx, cycleRegimeStore, dueStrategies, cfg, notifier)
 				setActiveCycleRegimeStore(cycleRegimeStore)
-				defer setActiveCycleRegimeStore(nil)
 				mu.Lock()
 				if cfg.Regime != nil && cfg.Regime.Enabled {
 					state.MarketRegimes = cycleRegimeStore.MarketRegimeEntries()

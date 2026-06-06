@@ -74,6 +74,30 @@ def test_check_options_accepts_injected_regime_probe() -> None:
     assert proc.returncode == 0, proc.stderr or proc.stdout
 
 
+def test_options_argv_strips_regime_flags_for_stdin_positions() -> None:
+    import importlib.util
+
+    path = REPO / "shared_scripts" / "check_options.py"
+    spec = importlib.util.spec_from_file_location("check_options", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    argv = [
+        "short_put",
+        "BTC",
+        "--platform=deribit",
+        "--regime-enabled",
+        "--regime-windows-spec-json",
+        '{"default":{"classifier":"adx","period":14,"adx_threshold":20}}',
+        "--ohlcv-limit",
+        "200",
+        "--regime-payload-json",
+        '"ranging"',
+    ]
+    platform, remaining = mod._split_options_argv(argv)
+    assert platform == "deribit"
+    assert remaining == ["short_put", "BTC"]
+
+
 def test_compute_regime_bundle_probe_only() -> None:
     path = REPO / "shared_scripts" / "compute_regime_bundle.py"
     proc = subprocess.run(
