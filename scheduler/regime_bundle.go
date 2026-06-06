@@ -39,13 +39,14 @@ type regimeStrategySignature struct {
 }
 
 type regimeRawMetrics struct {
-	ADX        float64 `json:"adx"`
-	PlusDI     float64 `json:"plus_di"`
-	MinusDI    float64 `json:"minus_di"`
-	ReturnEff  float64 `json:"return_eff"`
-	RangeEff   float64 `json:"range_eff"`
-	Efficiency float64 `json:"efficiency"`
-	ATRPct     float64 `json:"atr_pct"`
+	ADX          float64  `json:"adx"`
+	CompositeADX *float64 `json:"composite_adx"`
+	PlusDI       float64  `json:"plus_di"`
+	MinusDI      float64  `json:"minus_di"`
+	ReturnEff    float64  `json:"return_eff"`
+	RangeEff     float64  `json:"range_eff"`
+	Efficiency   float64  `json:"efficiency"`
+	ATRPct       float64  `json:"atr_pct"`
 }
 
 type regimeRawResult struct {
@@ -138,6 +139,7 @@ func buildRegimeBundleStore(due []StrategyConfig, rc *RegimeConfig, notifier *Mu
 			continue
 		}
 		store.raw[key] = result
+		clearRegimeBundleFailure(notifier, key)
 	}
 
 	for _, sig := range signatures {
@@ -170,6 +172,9 @@ func regimeStrategySignatureFor(sc StrategyConfig, rc *RegimeConfig) (regimeStra
 
 	var windows map[string]RegimeWindowSpec
 	if typ == "options" {
+		if rc == nil || !rc.Enabled {
+			return regimeStrategySignature{}, false
+		}
 		if timeframe == "" {
 			timeframe = optionsDefaultRegimeTimebar
 		}
@@ -341,13 +346,17 @@ func projectRegimePayload(sig regimeStrategySignature, raw map[regimeRawKey]regi
 
 func projectRegimeSnapshot(spec RegimeWindowSpec, metrics regimeRawMetrics) RegimeSnapshot {
 	label := ""
+	snapshotMetrics := metrics
 	switch spec.effectiveClassifier() {
 	case regimeClassifierComposite:
-		label = mapCompositeRegimeLabel(metrics, spec.compositeThresholds())
+		if snapshotMetrics.CompositeADX != nil {
+			snapshotMetrics.ADX = *snapshotMetrics.CompositeADX
+		}
+		label = mapCompositeRegimeLabel(snapshotMetrics, spec.compositeThresholds())
 	default:
 		label = mapADXRegimeLabel(metrics, spec.adxThreshold(nil))
 	}
-	score := metrics.ADX / 100.0
+	score := snapshotMetrics.ADX / 100.0
 	if score < 0 {
 		score = 0
 	}
@@ -358,15 +367,23 @@ func projectRegimeSnapshot(spec RegimeWindowSpec, metrics regimeRawMetrics) Regi
 		Regime: label,
 		Score:  score,
 		Metrics: map[string]float64{
-			"adx":        metrics.ADX,
-			"plus_di":    metrics.PlusDI,
-			"minus_di":   metrics.MinusDI,
-			"return_eff": metrics.ReturnEff,
-			"range_eff":  metrics.RangeEff,
-			"efficiency": metrics.Efficiency,
-			"atr_pct":    metrics.ATRPct,
+			"adx":           snapshotMetrics.ADX,
+			"composite_adx": compositeADXValue(metrics),
+			"plus_di":       metrics.PlusDI,
+			"minus_di":      metrics.MinusDI,
+			"return_eff":    metrics.ReturnEff,
+			"range_eff":     metrics.RangeEff,
+			"efficiency":    metrics.Efficiency,
+			"atr_pct":       metrics.ATRPct,
 		},
 	}
+}
+
+func compositeADXValue(metrics regimeRawMetrics) float64 {
+	if metrics.CompositeADX == nil {
+		return 0
+	}
+	return *metrics.CompositeADX
 }
 
 func mapADXRegimeLabel(metrics regimeRawMetrics, threshold float64) string {
@@ -424,11 +441,18 @@ func absFloat(v float64) float64 {
 }
 
 func notifyRegimeBundleFailure(notifier *MultiNotifier, key regimeRawKey, errMsg string) {
-	sc := StrategyConfig{
+	notifyScriptFailure(notifier, regimeBundleFailureStrategyConfig(key), scriptFailureCrash, errMsg)
+}
+
+func clearRegimeBundleFailure(notifier *MultiNotifier, key regimeRawKey) {
+	clearScriptFailure(notifier, regimeBundleFailureStrategyConfig(key))
+}
+
+func regimeBundleFailureStrategyConfig(key regimeRawKey) StrategyConfig {
+	return StrategyConfig{
 		ID:       "regime:" + key.String(),
 		Platform: key.Platform,
 		Type:     key.Type,
 		Script:   regimeBundleScript,
 	}
-	notifyScriptFailure(notifier, sc, scriptFailureCrash, errMsg)
 }

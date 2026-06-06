@@ -21,7 +21,7 @@ _SHARED_TOOLS = pathlib.Path(__file__).parent.parent / "shared_tools"
 if str(_SHARED_TOOLS) not in sys.path:
     sys.path.insert(0, str(_SHARED_TOOLS))
 
-from regime import latest_regime
+from regime import COMPOSITE_ADX_PERIOD_CAP, compute_regime, latest_regime
 
 _SHARED_STRATEGIES_TOOLS = str(_SHARED_TOOLS)
 
@@ -76,6 +76,22 @@ def test_latest_regime_output_json_serializable_flat():
     serialized = json.dumps(payload)
     parsed = json.loads(serialized)
     assert parsed["regime"] == "ranging"
+
+
+def test_regime_bundle_composite_adx_uses_capped_period():
+    src_path = pathlib.Path(__file__).parent / "regime_bundle.py"
+    spec = importlib.util.spec_from_file_location("_regime_bundle_under_test", src_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    period = 50
+    df = _make_uptrend_df(160).reset_index(drop=True)
+    metrics = module._raw_metrics(df, period)
+    capped = compute_regime(df, period=COMPOSITE_ADX_PERIOD_CAP, adx_threshold=0.0)
+    full = compute_regime(df, period=period, adx_threshold=0.0)
+
+    assert metrics["composite_adx"] == capped["adx"].iloc[-1]
+    assert metrics["adx"] == full["adx"].iloc[-1]
 
 
 def test_regime_label_string_is_safe_for_output_field():

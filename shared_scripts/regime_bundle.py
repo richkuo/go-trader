@@ -15,7 +15,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(ROOT, "shared_tools"))
 
 from fetch_candles import _fetch  # type: ignore
-from regime import _atr_at_end, _composite_efficiency_metrics, compute_regime  # type: ignore
+from regime import COMPOSITE_ADX_PERIOD_CAP, _atr_at_end, _composite_efficiency_metrics, compute_regime  # type: ignore
 
 
 def _clean_float(value) -> float:
@@ -61,10 +61,17 @@ def _raw_metrics(df: pd.DataFrame, period: int) -> dict:
         "atr_pct": round((atr_val / close_val * 100.0), 4) if close_val else 0.0,
     }
     if atr_val > 0 and len(df) >= period:
+        composite_adx_period = min(period, COMPOSITE_ADX_PERIOD_CAP)
+        if composite_adx_period == period:
+            composite_adx = metrics["adx"]
+        else:
+            composite_reg_df = compute_regime(df, period=composite_adx_period, adx_threshold=0.0)
+            composite_adx = _clean_float(composite_reg_df.iloc[-1].get("adx"))
         window = df.iloc[-period:]
         eff = _composite_efficiency_metrics(window, atr_val, period)
         metrics.update(
             {
+                "composite_adx": composite_adx,
                 "return_eff": round(_clean_float(eff.get("return_eff")), 4),
                 "range_eff": round(_clean_float(eff.get("range_eff")), 4),
                 "efficiency": round(_clean_float(eff.get("efficiency")), 4),
