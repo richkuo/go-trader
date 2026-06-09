@@ -281,9 +281,6 @@ func circuitBreakerStrategyLabel(sc StrategyConfig) string {
 	if sc.Type != "" {
 		parts = append(parts, sc.Type)
 	}
-	if sc.Type == "perps" && sc.Leverage > 0 {
-		parts = append(parts, fmt.Sprintf("%sx leverage", formatCBNumber(sc.Leverage)))
-	}
 	filtered := parts[:0]
 	for _, p := range parts {
 		p = strings.TrimSpace(p)

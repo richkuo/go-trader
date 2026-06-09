@@ -2639,7 +2639,7 @@ func TestFormatPerStrategyCircuitBreakerBlock_IncludesTriageSections(t *testing.
 	})
 
 	for _, want := range []string{
-		"**CIRCUIT BREAKER** [hl-btc-sma-30] - Hyperliquid, BTC, 30m, sma_cross, perps, 5x leverage",
+		"**CIRCUIT BREAKER** [hl-btc-sma-30] - Hyperliquid, BTC, 30m, sma_cross, perps",
 		"Trigger: max drawdown exceeded - 8.2% > 5.0% (denom: margin=$300.00)",
 		"Cooldown: 1d0h (until 2026-06-07 06:08 UTC)",
 		"Portfolio impact: ~$4195 of ~$10060 (41.7%)",
@@ -2655,6 +2655,9 @@ func TestFormatPerStrategyCircuitBreakerBlock_IncludesTriageSections(t *testing.
 		if !strings.Contains(msg, want) {
 			t.Errorf("circuit-breaker message missing %q:\n%s", want, msg)
 		}
+	}
+	if header, _, _ := strings.Cut(msg, "\n"); strings.Contains(header, "leverage") {
+		t.Fatalf("circuit-breaker header should not duplicate leverage context: %q", header)
 	}
 	if len(msg) >= 2000 {
 		t.Fatalf("circuit-breaker message len = %d, want under Discord limit; msg:\n%s", len(msg), msg)
