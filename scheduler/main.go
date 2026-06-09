@@ -1449,9 +1449,13 @@ func main() {
 					}
 					mu.Lock()
 					allowed, reason := CheckRisk(&sc, stratState, pv, prices, logger, riskAssist)
+					cbSnapshot := perStrategyCircuitBreakerSnapshot{}
+					if !allowed {
+						cbSnapshot = snapshotPerStrategyCircuitBreaker(stratState, prices)
+					}
 					mu.Unlock()
 					if !allowed {
-						notifyPerStrategyCircuitBreaker(sc, reason, pv, notifier, killSwitchFired)
+						notifyPerStrategyCircuitBreakerWithSnapshot(sc, cbSnapshot, reason, pv, totalPV, stateDB, notifier, killSwitchFired)
 						logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
 						logger.Close()
 						lastRun[sc.ID] = time.Now()
@@ -2667,10 +2671,30 @@ func shouldSkipZeroCapital(sc StrategyConfig) bool {
 }
 
 func notifyPerStrategyCircuitBreaker(sc StrategyConfig, reason string, portfolioValue float64, notifier *MultiNotifier, portfolioKillSwitchFired bool) {
+	notifyPerStrategyCircuitBreakerWithSnapshot(sc, perStrategyCircuitBreakerSnapshot{}, reason, portfolioValue, 0, nil, notifier, portfolioKillSwitchFired)
+}
+
+func notifyPerStrategyCircuitBreakerWithSnapshot(sc StrategyConfig, snap perStrategyCircuitBreakerSnapshot, reason string, strategyValue, totalPortfolioValue float64, sdb *StateDB, notifier *MultiNotifier, portfolioKillSwitchFired bool) {
 	if notifier == nil || !notifier.HasBackends() || portfolioKillSwitchFired || !isFreshPerStrategyCircuitBreaker(reason) {
 		return
 	}
-	msg := formatPerStrategyCircuitBreakerMessage(sc.ID, reason, portfolioValue)
+	var recent []Trade
+	if sdb != nil {
+		rows, err := sdb.RecentTradesForStrategy(sc.ID, circuitBreakerAlertMaxRows)
+		if err != nil {
+			fmt.Printf("[WARN] circuit-breaker recent-trade lookup failed for %s: %v\n", sc.ID, err)
+		} else {
+			recent = rows
+		}
+	}
+	msg := formatPerStrategyCircuitBreakerBlock(perStrategyCircuitBreakerFormatInput{
+		Strategy:            sc,
+		Snapshot:            snap,
+		Reason:              reason,
+		StrategyValue:       strategyValue,
+		TotalPortfolioValue: totalPortfolioValue,
+		RecentTrades:        recent,
+	})
 	notifier.SendToAllChannels(msg)
 	notifier.SendOwnerDM(msg)
 }
@@ -2681,16 +2705,6 @@ func isFreshPerStrategyCircuitBreaker(reason string) bool {
 	}
 	return strings.HasPrefix(reason, RiskReasonMaxDrawdownExceeded) ||
 		strings.HasPrefix(reason, RiskReasonConsecutiveLosses)
-}
-
-func formatPerStrategyCircuitBreakerMessage(strategyID, reason string, portfolioValue float64) string {
-	// The max-drawdown reason already embeds a portfolio=$... token, so don't
-	// append a duplicate trailing value. Consecutive-losses reasons carry no
-	// portfolio context, so include it there.
-	if strings.Contains(reason, "portfolio=$") {
-		return fmt.Sprintf("**CIRCUIT BREAKER** [%s] %s", strategyID, reason)
-	}
-	return fmt.Sprintf("**CIRCUIT BREAKER** [%s] %s (portfolio=$%.2f)", strategyID, reason, portfolioValue)
 }
 
 // sendTradeAlerts sends trade alerts via DM and/or channel for all configured backends.

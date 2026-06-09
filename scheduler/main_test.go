@@ -76,22 +76,17 @@ func TestApplySignalInversion(t *testing.T) {
 
 func TestNotifyPerStrategyCircuitBreaker_BroadcastsFreshTriggers(t *testing.T) {
 	cases := []struct {
-		name                string
-		reason              string
-		wantTrailingPortVal bool
+		name   string
+		reason string
 	}{
 		{
 			name: "max drawdown",
 			reason: RiskReasonMaxDrawdownExceeded +
 				" (30.0% > 25.0%, portfolio=$700.00 peak=$1000.00, denom=peak=$1000.00)",
-			// Reason already embeds portfolio=$700.00 — formatter must not
-			// duplicate the value with a trailing (portfolio=$1234.56).
-			wantTrailingPortVal: false,
 		},
 		{
-			name:                "consecutive losses",
-			reason:              RiskReasonConsecutiveLosses,
-			wantTrailingPortVal: true,
+			name:   "consecutive losses",
+			reason: RiskReasonConsecutiveLosses,
 		},
 	}
 
@@ -110,7 +105,7 @@ func TestNotifyPerStrategyCircuitBreaker_BroadcastsFreshTriggers(t *testing.T) {
 					},
 				},
 			}
-			sc := StrategyConfig{ID: "test-strategy", Platform: "binanceus", Type: "spot"}
+			sc := StrategyConfig{ID: "test-strategy", Platform: "binanceus", Type: "spot", Args: []string{"sma_cross", "BTC/USDT", "30m"}}
 
 			notifyPerStrategyCircuitBreaker(sc, tc.reason, 1234.56, notifier, false)
 
@@ -123,15 +118,16 @@ func TestNotifyPerStrategyCircuitBreaker_BroadcastsFreshTriggers(t *testing.T) {
 			for _, msg := range []string{mock.messages[0].content, mock.messages[1].content, mock.dms[0].content} {
 				if !strings.Contains(msg, "**CIRCUIT BREAKER**") ||
 					!strings.Contains(msg, "[test-strategy]") ||
-					!strings.Contains(msg, tc.reason) {
+					!strings.Contains(msg, "Trigger:") ||
+					!strings.Contains(msg, "Portfolio impact:") ||
+					!strings.Contains(msg, "BinanceUS, BTC/USDT, 30m, sma_cross, spot") {
 					t.Fatalf("notification missing required context: %q", msg)
 				}
-				hasTrailing := strings.Contains(msg, "(portfolio=$1234.56)")
-				if tc.wantTrailingPortVal && !hasTrailing {
-					t.Fatalf("expected trailing (portfolio=$1234.56) in %q", msg)
+				if tc.reason == RiskReasonConsecutiveLosses && !strings.Contains(msg, "5 consecutive losses") {
+					t.Fatalf("expected consecutive-loss trigger in %q", msg)
 				}
-				if !tc.wantTrailingPortVal && hasTrailing {
-					t.Fatalf("portfolio value duplicated when reason already embeds one: %q", msg)
+				if strings.HasPrefix(tc.reason, RiskReasonMaxDrawdownExceeded) && !strings.Contains(msg, "30.0% > 25.0%") {
+					t.Fatalf("expected parsed max-drawdown numbers in %q", msg)
 				}
 			}
 		})
