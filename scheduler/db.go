@@ -753,6 +753,50 @@ func (sdb *StateDB) RecentTrades(since time.Time, limit int) ([]Trade, error) {
 	return out, nil
 }
 
+// RecentTradesForStrategy returns the newest trade rows for one strategy.
+func (sdb *StateDB) RecentTradesForStrategy(strategyID string, limit int) ([]Trade, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, fmt.Errorf("state db unavailable")
+	}
+	if strings.TrimSpace(strategyID) == "" {
+		return nil, fmt.Errorf("strategy id required")
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json
+		FROM trades WHERE strategy_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, strategyID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query recent trades for %s: %w", strategyID, err)
+	}
+	defer rows.Close()
+	var out []Trade
+	for rows.Next() {
+		var tr Trade
+		var tsStr string
+		var isCloseInt, isManualInt int
+		var tpOIDsJSON string
+		var slATRMult sql.NullFloat64
+		if err := rows.Scan(&tsStr, &tr.StrategyID, &tr.Symbol, &tr.PositionID, &tr.Side, &tr.Quantity, &tr.Price, &tr.Value, &tr.TradeType, &tr.Details, &tr.ExchangeOrderID, &tr.ExchangeFee, &isCloseInt, &tr.RealizedPnL, &tr.Regime, &tr.EntryATR, &tr.StopLossOID, &tr.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &tr.TPTiersJSON); err != nil {
+			return nil, fmt.Errorf("scan recent trade for %s: %w", strategyID, err)
+		}
+		tr.Timestamp = parseTime(tsStr)
+		tr.IsClose = isCloseInt != 0
+		tr.Manual = isManualInt != 0
+		tr.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
+		if slATRMult.Valid {
+			v := slATRMult.Float64
+			tr.StopLossATRMult = &v
+		}
+		tr.persisted = true
+		out = append(out, tr)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recent trades for %s: %w", strategyID, err)
+	}
+	return out, nil
+}
+
 // UpdateTradeStampedFields updates open-trade snapshot fields on an existing
 // trade row identified by (strategy_id, timestamp). The normal same-cycle open
 // path writes these fields in InsertTrade; this remains for fallback arming

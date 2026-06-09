@@ -487,6 +487,41 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 			}
 		}
 	}
+	// Shared-coin Detector 3 partial: prefetch the aggregate virtual/on-chain
+	// drift qty. Per-strategy prefetch above uses each strategy's own qty, but
+	// Detector 3 books the coin-level delta (sum of peers minus on-chain).
+	coinStratCount := make(map[string]int)
+	coinVirtualQty := make(map[string]float64)
+	for _, sc := range allStrategies {
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		sym := hyperliquidSymbol(sc.Args)
+		if sym == "" {
+			continue
+		}
+		coinStratCount[sym]++
+		pos := ss.Positions[sym]
+		if pos == nil || pos.Quantity <= 0 {
+			continue
+		}
+		switch pos.Side {
+		case "long":
+			coinVirtualQty[sym] += pos.Quantity
+		case "short":
+			coinVirtualQty[sym] -= pos.Quantity
+		}
+	}
+	for coin, count := range coinStratCount {
+		if count < 2 {
+			continue
+		}
+		onChainQty := onChainByCoin[coin]
+		if _, closeQty, ok := hyperliquidSharedPartialCloseDrift(coinVirtualQty[coin], onChainQty); ok {
+			addCandidate(coin, 0, closeQty)
+		}
+	}
 	mu.RUnlock()
 
 	if len(candidates) == 0 {

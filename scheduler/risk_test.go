@@ -2714,3 +2714,112 @@ func TestRiskState_PendingCircuitClose_LegacyShapeDefaultsZeroConsecutiveFailure
 		t.Errorf("legacy row must default LastNotifiedAt=zero, got %v", got.LastNotifiedAt)
 	}
 }
+
+func TestFormatPerStrategyCircuitBreakerBlock_IncludesTriageSections(t *testing.T) {
+	now := time.Date(2026, 6, 6, 6, 8, 0, 0, time.UTC)
+	sc := StrategyConfig{
+		ID:         "hl-btc-sma-30",
+		Type:       "perps",
+		Platform:   "hyperliquid",
+		Args:       []string{"sma_cross", "BTC", "30m", "--mode=live"},
+		Leverage:   5,
+		CapitalPct: 0.417,
+	}
+	state := &StrategyState{
+		ID:              sc.ID,
+		Type:            sc.Type,
+		Platform:        sc.Platform,
+		Cash:            4200,
+		InitialCapital:  4500,
+		Positions:       map[string]*Position{},
+		OptionPositions: map[string]*OptionPosition{},
+		RiskState: RiskState{
+			PeakValue:           4500,
+			CurrentDrawdownPct:  8.2,
+			MaxDrawdownPct:      5,
+			ConsecutiveLosses:   5,
+			CircuitBreaker:      true,
+			CircuitBreakerUntil: now.Add(24 * time.Hour),
+			PendingCircuitCloses: map[string]*PendingCircuitClose{
+				PlatformPendingCloseOKXSpot: {
+					Symbols:          []PendingCircuitCloseSymbol{{Symbol: "BTC-USDT", Size: 0.5}},
+					OperatorRequired: true,
+				},
+			},
+		},
+		ClosedPositions: []ClosedPosition{
+			{StrategyID: sc.ID, Symbol: "BTC", Quantity: 0.5, Side: "short", ClosePrice: 67800, RealizedPnL: -180, CloseReason: "circuit_breaker"},
+		},
+	}
+	snap := snapshotPerStrategyCircuitBreaker(state, map[string]float64{"BTC": 67800})
+	snap.Now = now
+	msg := formatPerStrategyCircuitBreakerBlock(perStrategyCircuitBreakerFormatInput{
+		Strategy:            sc,
+		Snapshot:            snap,
+		Reason:              RiskReasonMaxDrawdownExceeded + " (8.2% > 5.0%, portfolio=$4200.00 peak=$4500.00, denom=margin=$300.00)",
+		StrategyValue:       4200,
+		TotalPortfolioValue: 10060,
+		RecentTrades: []Trade{
+			{Timestamp: now.Add(-7 * time.Minute), StrategyID: sc.ID, Symbol: "BTC", Side: "buy", Quantity: 0.5, Price: 67800, IsClose: true, RealizedPnL: -180, Details: "Circuit breaker close short, PnL: $-180.00"},
+		},
+	})
+
+	for _, want := range []string{
+		"**CIRCUIT BREAKER** [hl-btc-sma-30] - Hyperliquid, BTC, 30m, sma_cross, perps",
+		"Trigger: max drawdown exceeded - 8.2% > 5.0% (denom: margin=$300.00)",
+		"Cooldown: 1d0h (until 2026-06-07 06:08 UTC)",
+		"Portfolio impact: ~$4195 of ~$10060 (41.7%)",
+		"Perps context: 5x leverage, margin deployed=$300.00",
+		"Positions force-closed:",
+		"short 0.5 BTC @ $67800  P&L -$180",
+		"Pending operator closes:",
+		"okx_spot BTC-USDT size 0.5 (manual flatten required)",
+		"Recent trades:",
+		"06:01  close  buy 0.5 BTC @ $67800 P&L -$180",
+		"Reason: Investigate whether the signal is still valid or the regime has flipped.",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("circuit-breaker message missing %q:\n%s", want, msg)
+		}
+	}
+	if header, _, _ := strings.Cut(msg, "\n"); strings.Contains(header, "leverage") {
+		t.Fatalf("circuit-breaker header should not duplicate leverage context: %q", header)
+	}
+	if len(msg) >= 2000 {
+		t.Fatalf("circuit-breaker message len = %d, want under Discord limit; msg:\n%s", len(msg), msg)
+	}
+}
+
+func TestCircuitBreakerStrategyLabel_SkipsFlagTimeframe(t *testing.T) {
+	sc := StrategyConfig{
+		ID:       "deribit-btc-options",
+		Type:     "options",
+		Platform: "deribit",
+		Args:     []string{"wheel", "BTC", "--platform=deribit"},
+	}
+	got := circuitBreakerStrategyLabel(sc)
+	if strings.Contains(got, "--platform=deribit") {
+		t.Fatalf("strategy label rendered flag as timeframe: %q", got)
+	}
+	for _, want := range []string{"Deribit", "BTC", "wheel", "options"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("strategy label missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestCircuitBreakerStrategyLabel_StripsSpotQuoteSuffix(t *testing.T) {
+	sc := StrategyConfig{
+		ID:       "spot-btc",
+		Type:     "spot",
+		Platform: "binanceus",
+		Args:     []string{"sma_cross", "BTC/USDT", "30m"},
+	}
+	got := circuitBreakerStrategyLabel(sc)
+	if !strings.Contains(got, "BinanceUS, BTC, 30m, sma_cross, spot") {
+		t.Fatalf("strategy label = %q, want normalized BTC asset", got)
+	}
+	if strings.Contains(got, "BTC/USDT") {
+		t.Fatalf("strategy label should not render raw spot pair: %q", got)
+	}
+}

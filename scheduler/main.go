@@ -745,8 +745,9 @@ func main() {
 		// totalPV holds the shared-wallet-adjusted portfolio value computed during
 		// the portfolio risk check; it is reused in the cycle summary log below
 		// so the summary doesn't double-count virtual cash in shared-wallet
-		// setups (#908). Zero when saveFailures >= 3 (trades skipped).
+		// setups (#908).
 		var totalPV float64
+		sharedWallets := detectSharedWallets(cfg.Strategies)
 
 		// Process only due strategies
 		if saveFailures >= 3 {
@@ -755,6 +756,9 @@ func main() {
 			// /api/regime must not keep serving the prior cycle's labels as
 			// fake-live while trading is suspended.
 			globalRegimeStore.resetForCycle(time.Now().UTC())
+			mu.RLock()
+			totalPV, _ = computeTotalPortfolioValue(cfg.Strategies, state, prices, nil, sharedWallets)
+			mu.RUnlock()
 		} else {
 			// #879: kick off the per-cycle global regime store — one regime
 			// subprocess per distinct (platform, symbol, timeframe, spec)
@@ -778,6 +782,7 @@ func main() {
 			// perps strategies on the same account don't get double-counted.
 			killSwitchFired := false
 			notionalBlocked := false
+			usedPVFallback := false
 
 			// Partition HL live strategies up-front: shared-wallet detection
 			// must see all strategies in cfg, while position sync only touches
@@ -857,7 +862,6 @@ func main() {
 				}
 			}
 
-			sharedWallets := detectSharedWallets(cfg.Strategies)
 			hlAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 			hlKey := SharedWalletKey{Platform: "hyperliquid", Account: hlAddr}
 			_, hlShared := sharedWallets[hlKey]
@@ -933,7 +937,6 @@ func main() {
 			}
 
 			mu.RLock()
-			var usedPVFallback bool
 			totalPV, usedPVFallback = computeTotalPortfolioValue(cfg.Strategies, state, prices, walletBalances, sharedWallets)
 			totalNotional := PortfolioNotional(state.Strategies, prices)
 			// #296: aggregate perps margin drawdown inputs alongside the
@@ -1476,9 +1479,13 @@ func main() {
 					}
 					mu.Lock()
 					allowed, reason := CheckRisk(&sc, stratState, pv, prices, logger, riskAssist)
+					cbSnapshot := perStrategyCircuitBreakerSnapshot{}
+					if !allowed && isFreshPerStrategyCircuitBreaker(reason) {
+						cbSnapshot = snapshotPerStrategyCircuitBreaker(stratState, prices)
+					}
 					mu.Unlock()
 					if !allowed {
-						notifyPerStrategyCircuitBreaker(sc, reason, pv, notifier, killSwitchFired)
+						notifyPerStrategyCircuitBreakerWithSnapshot(sc, cbSnapshot, reason, pv, totalPV, stateDB, notifier, killSwitchFired)
 						logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
 						logger.Close()
 						lastRun[sc.ID] = time.Now()
@@ -2694,10 +2701,30 @@ func shouldSkipZeroCapital(sc StrategyConfig) bool {
 }
 
 func notifyPerStrategyCircuitBreaker(sc StrategyConfig, reason string, portfolioValue float64, notifier *MultiNotifier, portfolioKillSwitchFired bool) {
+	notifyPerStrategyCircuitBreakerWithSnapshot(sc, perStrategyCircuitBreakerSnapshot{}, reason, portfolioValue, 0, nil, notifier, portfolioKillSwitchFired)
+}
+
+func notifyPerStrategyCircuitBreakerWithSnapshot(sc StrategyConfig, snap perStrategyCircuitBreakerSnapshot, reason string, strategyValue, totalPortfolioValue float64, sdb *StateDB, notifier *MultiNotifier, portfolioKillSwitchFired bool) {
 	if notifier == nil || !notifier.HasBackends() || portfolioKillSwitchFired || !isFreshPerStrategyCircuitBreaker(reason) {
 		return
 	}
-	msg := formatPerStrategyCircuitBreakerMessage(sc.ID, reason, portfolioValue)
+	var recent []Trade
+	if sdb != nil {
+		rows, err := sdb.RecentTradesForStrategy(sc.ID, circuitBreakerAlertMaxRows)
+		if err != nil {
+			fmt.Printf("[WARN] circuit-breaker recent-trade lookup failed for %s: %v\n", sc.ID, err)
+		} else {
+			recent = rows
+		}
+	}
+	msg := formatPerStrategyCircuitBreakerBlock(perStrategyCircuitBreakerFormatInput{
+		Strategy:            sc,
+		Snapshot:            snap,
+		Reason:              reason,
+		StrategyValue:       strategyValue,
+		TotalPortfolioValue: totalPortfolioValue,
+		RecentTrades:        recent,
+	})
 	notifier.SendToAllChannels(msg)
 	notifier.SendOwnerDM(msg)
 }
@@ -2708,16 +2735,6 @@ func isFreshPerStrategyCircuitBreaker(reason string) bool {
 	}
 	return strings.HasPrefix(reason, RiskReasonMaxDrawdownExceeded) ||
 		strings.HasPrefix(reason, RiskReasonConsecutiveLosses)
-}
-
-func formatPerStrategyCircuitBreakerMessage(strategyID, reason string, portfolioValue float64) string {
-	// The max-drawdown reason already embeds a portfolio=$... token, so don't
-	// append a duplicate trailing value. Consecutive-losses reasons carry no
-	// portfolio context, so include it there.
-	if strings.Contains(reason, "portfolio=$") {
-		return fmt.Sprintf("**CIRCUIT BREAKER** [%s] %s", strategyID, reason)
-	}
-	return fmt.Sprintf("**CIRCUIT BREAKER** [%s] %s (portfolio=$%.2f)", strategyID, reason, portfolioValue)
 }
 
 // sendTradeAlerts sends trade alerts via DM and/or channel for all configured backends.
