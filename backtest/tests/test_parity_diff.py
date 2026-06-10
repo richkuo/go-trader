@@ -15,12 +15,14 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import parity_diff
 from parity_diff import (
     LIVE_MIN_CANDLES,
     ParityConfig,
     compute_parity_frame,
     config_from_live_config,
     extract_fills,
+    main,
     summarize,
 )
 from registry_loader import load_registry
@@ -284,3 +286,135 @@ def test_backtest_effective_columns_are_prior_bar_inputs():
     got = frame["backtest_effective_signal"].iloc[1:].tolist()
     want = frame["bt_signal"].iloc[:-1].tolist()
     assert got == want
+
+def _live_config_json(stype: str = "perps") -> dict:
+    return {
+        "config_version": 15,
+        "strategies": [{
+            "id": "test-strat",
+            "type": stype,
+            "script": "shared_scripts/check_hyperliquid.py",
+            "args": ["sma_crossover", "BTC/USDT", "1h"],
+            "open_strategy": {
+                "name": "sma_crossover",
+                "params": {"fast_period": 5, "slow_period": 20},
+            },
+        }],
+    }
+
+
+@pytest.mark.parametrize("stype,want_platform", [
+    ("perps", "hyperliquid"),
+    ("manual", "hyperliquid"),
+    ("futures", "binanceus"),
+    ("spot", "binanceus"),
+])
+def test_config_mode_platform_autodetect(tmp_path, stype, want_platform):
+    """An unset --platform (empty string, as main passes it) must let the
+    strategy type drive the fee platform — perps/manual map to hyperliquid,
+    everything else to binanceus."""
+    import json as _json
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(_json.dumps(_live_config_json(stype)))
+    cfg = config_from_live_config(str(cfg_path), "test-strat", platform="")
+    assert cfg.platform == want_platform
+
+
+def test_config_mode_explicit_platform_overrides_autodetect(tmp_path):
+    import json as _json
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(_json.dumps(_live_config_json("spot")))
+    cfg = config_from_live_config(str(cfg_path), "test-strat",
+                                  platform="hyperliquid")
+    assert cfg.platform == "hyperliquid"
+
+
+def test_main_config_mode_fills_use_autodetected_platform(tmp_path, monkeypatch):
+    """Regression: the CLI's --platform default must not short-circuit the
+    --config auto-detect — an HL perps config run exactly as the CLI runs it
+    must reach extract_fills with platform=hyperliquid, not binanceus."""
+    import json as _json
+    import data_fetcher
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(_json.dumps(_live_config_json("perps")))
+    monkeypatch.setattr(data_fetcher, "load_cached_data",
+                        lambda *a, **k: _trending_ohlcv(200))
+    captured = {}
+
+    def spy_extract_fills(df, cfg):
+        captured["platform"] = cfg.platform
+        return []
+
+    monkeypatch.setattr(parity_diff, "extract_fills", spy_extract_fills)
+    rc = main(["--config", str(cfg_path), "--strategy-id", "test-strat",
+               "--fills", "--window", "60"])
+    assert rc in (0, 1)
+    assert captured["platform"] == "hyperliquid"
+
+
+def test_main_zero_bars_compared_is_data_error(monkeypatch):
+    """A run whose data is shorter than the trailing window compares zero
+    bars — that is a data error (exit 2), never a CLEAN pass (exit 0)."""
+    import data_fetcher
+    monkeypatch.setattr(data_fetcher, "load_cached_data",
+                        lambda *a, **k: _ohlcv(40))
+    rc = main(["--strategy", "sma_crossover", "--window", "200"])
+    assert rc == 2
+
+
+def test_fractional_signal_normalized_identically_on_both_sides():
+    """A strategy emitting fractional signals (0.5/-0.5) must not diff on
+    normalization alone — both replay paths collapse to {-1, 0, 1} by the
+    same float-aware rule (int() truncation on one side would flag 0.5→0
+    vs 0.5→1 as drift)."""
+    reg = load_registry("spot")
+
+    def fractional_signal_strategy(df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        sma = out["close"].rolling(10).mean()
+        out["signal"] = np.where(out["close"] > sma, 0.5, -0.5)
+        return out
+
+    name = "_parity_diff_test_fractional_signal"
+    reg.STRATEGY_REGISTRY[name] = {
+        "fn": fractional_signal_strategy,
+        "description": "test-only fractional-signal strategy",
+        "default_params": {},
+    }
+    try:
+        df = _ohlcv(200)
+        frame = compute_parity_frame(df, name, window=60)
+        assert summarize(frame)["clean"], frame[~frame["match"]].head()
+        assert set(frame["bt_signal"].unique()) <= {-1, 0, 1}
+        assert (frame["bt_signal"] != 0).any()
+    finally:
+        del reg.STRATEGY_REGISTRY[name]
+
+
+def test_bt_close_evaluator_uses_engine_dict_shape(monkeypatch):
+    """The backtest-side evaluator call must mirror the engine (#747):
+    ``regime`` always present (possibly empty) in BOTH dicts and
+    ``entry_atr`` always a float — even when regime is disabled and the
+    shared context omits the keys."""
+    from atr import ensure_atr_indicator
+    captured = {}
+
+    def fake_evaluate(name, position, market, params):
+        captured["position"] = position
+        captured["market"] = market
+        return {"close_fraction": 0.0}
+
+    monkeypatch.setattr(parity_diff, "close_evaluate", fake_evaluate)
+    df = _trending_ohlcv(80)
+    atr_full = ensure_atr_indicator(df.copy())["atr"]
+    cfg = ParityConfig(
+        strategy_name="sma_crossover",
+        close_refs=[{"name": "tiered_tp_atr", "params": {}}],
+    )
+    ctx = {"side": "long", "avg_cost": 100.0,
+           "current_quantity": 1.0, "initial_quantity": 1.0}
+    parity_diff._bt_close_evaluator_fraction(cfg, 60, df, atr_full, None, ctx)
+    assert captured["market"]["regime"] == ""
+    assert captured["position"]["regime"] == ""
+    assert isinstance(captured["position"]["entry_atr"], float)
+    assert captured["position"]["entry_atr"] == 0.0

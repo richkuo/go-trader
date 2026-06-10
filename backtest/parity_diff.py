@@ -51,10 +51,15 @@ omission: it needs a second-timeframe fetch and is orthogonal to
 frame-dependence.)
 
 When close refs are configured, both sides share a single simulated
-position context (side / avg_cost / quantities / entry_atr / entry
-regime), seeded from the backtest-effective open/close decisions. The
-context is deliberately identical on both sides so it can never be the
-source of a diff — only the evaluator's window-derived inputs can.
+position lifecycle (side / avg_cost / quantities / entry values),
+seeded from the backtest-effective open/close decisions — shared so the
+position itself can never be the source of a diff. The dict shape each
+evaluator sees mirrors its real caller: the backtest side always passes
+``regime`` (possibly empty) and ``entry_atr``, exactly like
+``Backtester._evaluate_close_strategies`` (#747); the live side omits
+empty keys, exactly like the check scripts. The asymmetry is deliberate
+— a diff at empty-regime bars surfaces that genuine engine-vs-live
+shape divergence instead of masking it.
 
 Every row also carries ``backtest_effective_*`` columns — the post-
 ``shift(1)`` values the engine actually reads at bar N — informational
@@ -78,7 +83,10 @@ candles and reports the simulated entry/exit fills (price + modeled fee)
 so a decision-level diff can be lined up against the trades it produced.
 
 Exit code 0 when the paths agree on every compared bar, 1 when any bar
-differs (CI-friendly), 2 on usage/data errors.
+differs (CI-friendly), 2 on usage/data errors. A run that compares zero
+bars (data shorter than the trailing window, or --since/--stride
+leaving nothing to compare) is a data error — a vacuous comparison is
+not agreement.
 
 The per-bar loop re-runs the strategy O(N) times on trailing windows —
 this is a debugging tool, not a benchmark; bound the range with --since
@@ -107,7 +115,6 @@ from strategy_composition import (
     compose_signal,
     evaluate_open_close,
     finalize_decision,
-    normalize_signal,
     open_action_from_signal,
     rewrite_deprecated_close_ref,
 )
@@ -293,7 +300,10 @@ def _live_bar_decision(window: pd.DataFrame, cfg: ParityConfig, reg,
 
     result_df = reg.apply_strategy(cfg.strategy_name, window, params)
     last = result_df.iloc[-1]
-    decision["signal"] = normalize_signal(last.get("signal", 0))
+    # Same float-aware normalizer as the backtest side — both paths must
+    # collapse a raw signal to {-1, 0, 1} by identical rules so a signal
+    # diff reflects input drift, never the normalizer.
+    decision["signal"] = _normalize_signal(last.get("signal", 0))
     decision["open_action"] = open_action_from_signal(decision["signal"])
     if _has_close_fraction_columns(result_df):
         decision["close_fraction"] = float(
@@ -311,19 +321,34 @@ def _bt_close_evaluator_fraction(cfg: ParityConfig, i: int,
 
     Mirrors ``Backtester``'s close-evaluator inputs: bar-N close as the
     mark, full-frame closed-bar ATR at bar N, full-frame regime label at
-    bar N. Same ``close_registry_loader.evaluate``, same position context
-    as the live side — only the window-derived inputs differ.
+    bar N. Same ``close_registry_loader.evaluate``, same position
+    lifecycle as the live side — but the dict SHAPE mirrors the engine
+    (#747): ``regime`` always present (possibly empty) in both dicts,
+    ``entry_atr`` always a float. The live side omits empty keys like
+    the check scripts do; the asymmetry deliberately lets the tool
+    surface a genuine engine-vs-live shape divergence at empty-regime
+    bars instead of masking it.
     """
     if not position_ctx:
         return 0.0
-    market = {"mark_price": float(df["close"].iloc[i])}
+    position = {
+        "side": str(position_ctx.get("side", "")),
+        "avg_cost": float(position_ctx.get("avg_cost", 0.0) or 0.0),
+        "current_quantity": float(
+            position_ctx.get("current_quantity", 0.0) or 0.0),
+        "initial_quantity": float(
+            position_ctx.get("initial_quantity", 0.0) or 0.0),
+        "entry_atr": float(position_ctx.get("entry_atr", 0.0) or 0.0),
+        "regime": str(position_ctx.get("regime", "") or ""),
+    }
+    label = ""
+    if regime_full is not None:
+        raw_label = regime_full.iloc[i]
+        label = "" if pd.isna(raw_label) else str(raw_label)
+    market = {"mark_price": float(df["close"].iloc[i]), "regime": label}
     atr_val = float(atr_full.iloc[i]) if pd.notna(atr_full.iloc[i]) else 0.0
     if atr_val > 0:
         market["atr"] = atr_val
-    if regime_full is not None:
-        label = str(regime_full.iloc[i] or "")
-        if label:
-            market["regime"] = label
     params_by_name = _close_params_by_name(cfg.close_refs)
     best = 0.0
     for name in _close_names(cfg.close_refs):
@@ -332,7 +357,7 @@ def _bt_close_evaluator_fraction(cfg: ParityConfig, i: int,
         if ref_params is None and resolved == cfg.strategy_name:
             ref_params = dict(cfg.params or {})
         try:
-            result = close_evaluate(resolved, position_ctx, market, ref_params)
+            result = close_evaluate(resolved, position, market, ref_params)
         except ValueError:
             # Non-registry (signal-strategy) close refs are covered by the
             # column path on both sides; skip the evaluator comparison.
@@ -617,8 +642,10 @@ def main(argv: Optional[list] = None) -> int:
                         help="JSON dict of strategy param overrides")
     parser.add_argument("--registry", choices=["spot", "futures"],
                         default="spot")
-    parser.add_argument("--platform", default="binanceus",
-                        help="Fee platform for --fills (default binanceus)")
+    parser.add_argument("--platform", default=None,
+                        help="Fee platform for --fills (ad-hoc default "
+                             "binanceus; --config mode auto-detects from the "
+                             "strategy type unless explicitly set)")
     parser.add_argument("--close", action="append", default=[],
                         help="Close ref: name or name:{json params} "
                              "(repeatable; single ref since #842)")
@@ -655,8 +682,11 @@ def main(argv: Optional[list] = None) -> int:
             print("--strategy-id is required with --config", file=sys.stderr)
             return 2
         try:
+            # An unset --platform must never force binanceus here — the
+            # empty string lets the loader auto-detect from the strategy
+            # type (perps/manual → hyperliquid); an explicit flag wins.
             cfg = config_from_live_config(args.config, args.strategy_id,
-                                          platform=args.platform)
+                                          platform=args.platform or "")
         except (ValueError, OSError, json.JSONDecodeError) as e:
             print(f"--config: {e}", file=sys.stderr)
             return 2
@@ -686,7 +716,7 @@ def main(argv: Optional[list] = None) -> int:
             strategy_name=args.strategy,
             params=dict(params or {}),
             registry=args.registry,
-            platform=args.platform,
+            platform=args.platform or "binanceus",
             symbol=args.symbol,
             timeframe=args.timeframe,
             close_refs=close_refs,
@@ -707,6 +737,12 @@ def main(argv: Optional[list] = None) -> int:
     frame = compute_parity_frame(df, cfg=cfg, window=window,
                                  stride=args.stride)
     result = summarize(frame)
+    if result["bars_compared"] == 0:
+        print(f"No bars compared: {len(df)} candles loaded but the trailing "
+              f"window needs {window or LIVE_MIN_CANDLES} (after --since/"
+              f"--stride). A zero-bar comparison is a data error, not a pass.",
+              file=sys.stderr)
+        return 2
     fills = extract_fills(df, cfg) if args.fills else []
 
     if args.csv:
