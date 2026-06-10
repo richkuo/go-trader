@@ -418,11 +418,11 @@ def test_position_context_entry_regime_is_decision_bar_label():
     bt.iloc[9, bt.columns.get_loc("open_action")] = "long"
     atr_full = ensure_atr_indicator(df.copy())["atr"]
     regime_full = pd.Series([f"label{i}" for i in range(n)], index=df.index)
-    contexts = parity_diff._simulate_position_contexts(
+    contexts, _ = parity_diff._simulate_position_contexts(
         bt, df, atr_full, regime_full)
-    assert contexts[10] is None  # fill happens AT bar 10; ctx visible after
-    assert contexts[11] is not None
-    assert contexts[11]["regime"] == "label9", (
+    assert contexts[9] is None  # decision bar — not yet filled
+    assert contexts[10] is not None  # fill bar: position visible end-of-bar
+    assert contexts[10]["regime"] == "label9", (
         "entry regime must be the decision bar's (9) label, "
         "not the fill bar's (10)"
     )
@@ -502,9 +502,10 @@ def test_entry_atr_plausibility_guard_matches_engine():
     bt.iloc[19, bt.columns.get_loc("open_action")] = "long"  # fill at bar 20
     atr_full = ensure_atr_indicator(df.copy())["atr"]
     assert float(atr_full.iloc[20]) > 0.5 * float(df["close"].iloc[20])
-    contexts = parity_diff._simulate_position_contexts(bt, df, atr_full, None)
-    assert contexts[21] is not None
-    assert "entry_atr" not in contexts[21]
+    contexts, _ = parity_diff._simulate_position_contexts(
+        bt, df, atr_full, None)
+    assert contexts[20] is not None
+    assert "entry_atr" not in contexts[20]
 
 def test_position_context_avg_cost_is_fill_bar_open_with_slippage():
     """The scaffold must open at the fill bar's OPEN adjusted by the
@@ -525,9 +526,50 @@ def test_position_context_avg_cost_is_fill_bar_open_with_slippage():
             "close_fraction": [0.0] * n,
         }, index=df.index)
         bt.iloc[19, bt.columns.get_loc("open_action")] = action  # fill @ 20
-        contexts = parity_diff._simulate_position_contexts(
+        contexts, _ = parity_diff._simulate_position_contexts(
             bt, df, atr_full, None)
         expected = float(df["open"].iloc[20]) * (1 + sign * slip)
-        assert contexts[21]["avg_cost"] == pytest.approx(expected), action
-        assert contexts[21]["avg_cost"] != pytest.approx(
+        assert contexts[20]["avg_cost"] == pytest.approx(expected), action
+        assert contexts[20]["avg_cost"] != pytest.approx(
             float(df["close"].iloc[20]))
+
+def test_registry_close_advances_quantity_ladder():
+    """The cumulative tier ladder must advance like the engine books it:
+    tier 1 fires its 0.4 ONCE, the next bar's quantity drops to 0.6 and
+    the evaluator returns 0, and tier 2 later contributes the 0.4
+    INCREMENT to the 0.8 cumulative — never a repeated cumulative value
+    that neither the engine nor live produces."""
+    from atr import ensure_atr_indicator
+    n = 60
+    close = np.array([100.0] * 30 + [104.0] * 10 + [108.0] * 20)
+    df = pd.DataFrame({
+        "open": close,
+        "high": close + 1.0,   # TR = 2 → entry ATR = 2.0
+        "low": close - 1.0,
+        "close": close,
+        "volume": [1000.0] * n,
+    }, index=pd.date_range("2024-01-01", periods=n, freq="1h"))
+    bt = pd.DataFrame({
+        "signal": [0] * n,
+        "open_action": ["none"] * n,
+        "close_fraction": [0.0] * n,
+    }, index=df.index)
+    bt.iloc[19, bt.columns.get_loc("open_action")] = "long"  # fill @ 20
+    atr_full = ensure_atr_indicator(df.copy())["atr"]
+    cfg = ParityConfig(
+        strategy_name="sma_crossover",
+        close_refs=[{"name": "tiered_tp_atr", "params": {}}],
+    )
+    contexts, fracs = parity_diff._simulate_position_contexts(
+        bt, df, atr_full, None, cfg)
+    # Bar 30: mark 104, avg_cost ~100.05, entry ATR 2 → ratio ~1.97 → tier 1.
+    assert fracs[30] == pytest.approx(0.4)
+    # Bar 31: quantity decremented, already_closed=0.4 → increment is 0.
+    assert contexts[31]["current_quantity"] == pytest.approx(0.6)
+    assert fracs[31] == pytest.approx(0.0)
+    # Bar 40: mark 108 → ratio ~3.97 → tier 2 cumulative 0.8. The increment
+    # is 0.4 of INITIAL size, expressed as a fraction of the CURRENT 0.6
+    # position (the evaluator's contract): 0.4/0.6 = 2/3.
+    assert fracs[40] == pytest.approx(2.0 / 3.0)
+    assert contexts[41]["current_quantity"] == pytest.approx(0.2)
+    assert fracs[41] == pytest.approx(0.0)

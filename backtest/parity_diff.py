@@ -60,7 +60,11 @@ would manufacture mismatches, so the tool fails loudly instead.
 When close refs are configured, both sides share a single simulated
 position lifecycle (side / avg_cost / quantities / entry values),
 seeded from the backtest-effective open/close decisions — shared so the
-position itself can never be the source of a diff. The dict shape each
+position itself can never be the source of a diff. The bt-side registry
+evaluator's fraction folds back into the next bar's quantity (the
+engine's ``pending_close_fraction``), so cumulative tier ladders advance
+exactly as the engine books them and each compared fraction is the
+per-bar increment, not a repeated cumulative value. The dict shape each
 evaluator sees mirrors its real caller: the backtest side always passes
 ``regime`` (possibly empty) and ``entry_atr``, exactly like
 ``Backtester._evaluate_close_strategies`` (#747); the live side omits
@@ -394,17 +398,33 @@ def _bt_close_evaluator_fraction(cfg: ParityConfig, i: int,
 
 def _simulate_position_contexts(bt: pd.DataFrame, df: pd.DataFrame,
                                 atr_full: pd.Series,
-                                regime_full: Optional[pd.Series]) -> list:
+                                regime_full: Optional[pd.Series],
+                                cfg: Optional[ParityConfig] = None) -> tuple:
     """Walk the backtest-effective decisions and track a scaffold position.
 
     The context exists so close evaluators see a plausible position on
     BOTH sides — it is shared, so it can never be the source of a diff.
     Entries/exits follow the engine's shift(1) semantics: bar N acts on
-    bar N-1's signal/open_action/close_fraction. The scaffold tracks the
-    column/signal surface only (registry-evaluator closes are the output
-    under test, not an input to the scaffold).
+    bar N-1's signal/open_action/close_fraction. ``contexts[i]`` is the
+    position AFTER bar i's open fills — the state the engine holds during
+    its end-of-bar close evaluation, and the position live's bar-i cycle
+    sees.
+
+    Registry close-evaluator output is folded back into the quantity the
+    NEXT bar — the engine's ``pending_close_fraction`` — so the cumulative
+    tier ladder advances exactly as the engine books it: 0.4 once, then 0,
+    then the increment to 0.8 at the next rung. Without the fold,
+    ``current_quantity`` would stay pinned at ``initial_quantity`` and
+    every post-tier-1 bar would repeat the cumulative fraction — a value
+    neither the engine nor live produces.
+
+    Returns ``(contexts, registry_fractions)``; ``registry_fractions[i]``
+    is the bt-side evaluator fraction at bar i computed with that shared
+    context — the same value ``compute_parity_frame`` compares, so the
+    scaffold's accounting and the comparison can never disagree.
     """
     contexts = []
+    registry_fractions = []
     side = ""
     avg_cost = 0.0
     qty = 0.0
@@ -413,6 +433,60 @@ def _simulate_position_contexts(bt: pd.DataFrame, df: pd.DataFrame,
     entry_regime = ""
 
     for i in range(len(df)):
+        if i > 0:
+            # Backtest-effective inputs at bar i = unshifted bar i-1 values;
+            # the registry-evaluator fraction from bar i-1 fills here too,
+            # exactly like the engine's pending_close_fraction (max-wins
+            # against the column path, same resolution as the comparison).
+            eff_signal = int(bt["signal"].iloc[i - 1])
+            eff_action = str(bt["open_action"].iloc[i - 1])
+            eff_close = max(float(bt["close_fraction"].iloc[i - 1]),
+                            registry_fractions[i - 1])
+            mark = float(df["close"].iloc[i])
+
+            if side and (eff_close > 0
+                         or (side == "long" and eff_signal < 0)
+                         or (side == "short" and eff_signal > 0)):
+                frac = eff_close if eff_close > 0 else 1.0
+                # Engine booking: qty_to_close = abs(position) * fraction —
+                # the fraction applies to the CURRENT position, not the
+                # initial size (Backtester.run's close-fraction fill).
+                qty = max(qty - qty * min(frac, 1.0), 0.0)
+                if qty <= 1e-12:
+                    side = ""
+                    avg_cost = qty = initial_qty = entry_atr = 0.0
+                    entry_regime = ""
+            elif not side and eff_action in ("long", "short"):
+                side = eff_action
+                # Engine fill semantics: an open fills at the fill bar's
+                # OPEN (fallback close), adjusted by the engine's default
+                # slippage — ``effective_price`` in Backtester.run, not the
+                # bar's close.
+                fill_price = (float(df["open"].iloc[i])
+                              if "open" in df.columns else mark)
+                if side == "long":
+                    avg_cost = fill_price * (1 + _ENGINE_SLIPPAGE_PCT)
+                else:
+                    avg_cost = fill_price * (1 - _ENGINE_SLIPPAGE_PCT)
+                qty = initial_qty = 1.0
+                atr_val = atr_full.iloc[i]
+                entry_atr = float(atr_val) if pd.notna(atr_val) else 0.0
+                # Engine plausibility guard (_stamp_entry_atr, mirroring
+                # Go's stampEntryATRIfOpened): non-positive or > 50% of the
+                # entry price (effective_price, same as the engine) stamps
+                # 0.0, so ATR-requiring close evaluators no-op.
+                if not (0.0 < entry_atr <= 0.5 * avg_cost):
+                    entry_atr = 0.0
+                if regime_full is not None:
+                    # Engine semantics: the position regime is stamped from
+                    # the SHIFTED regime column at the fill row — the
+                    # decision bar's (i-1) label, which is also what live
+                    # stamps at open (the label computed alongside the
+                    # signal). The fill bar's own label (i) would match
+                    # neither side.
+                    raw_label = regime_full.iloc[i - 1]
+                    entry_regime = "" if pd.isna(raw_label) else str(raw_label)
+
         ctx = None
         if side:
             ctx = {
@@ -426,53 +500,12 @@ def _simulate_position_contexts(bt: pd.DataFrame, df: pd.DataFrame,
             if entry_regime:
                 ctx["regime"] = entry_regime
         contexts.append(ctx)
-
-        if i == 0:
-            continue
-        # Backtest-effective inputs at bar i = unshifted bar i-1 values.
-        eff_signal = int(bt["signal"].iloc[i - 1])
-        eff_action = str(bt["open_action"].iloc[i - 1])
-        eff_close = float(bt["close_fraction"].iloc[i - 1])
-        mark = float(df["close"].iloc[i])
-
-        if side and (eff_close > 0
-                     or (side == "long" and eff_signal < 0)
-                     or (side == "short" and eff_signal > 0)):
-            frac = eff_close if eff_close > 0 else 1.0
-            qty = max(qty - initial_qty * frac, 0.0)
-            if qty <= 1e-12:
-                side = ""
-                avg_cost = qty = initial_qty = entry_atr = 0.0
-                entry_regime = ""
-        elif not side and eff_action in ("long", "short"):
-            side = eff_action
-            # Engine fill semantics: an open fills at the fill bar's OPEN
-            # (fallback close), adjusted by the engine's default slippage —
-            # ``effective_price`` in Backtester.run, not the bar's close.
-            fill_price = (float(df["open"].iloc[i])
-                          if "open" in df.columns else mark)
-            if side == "long":
-                avg_cost = fill_price * (1 + _ENGINE_SLIPPAGE_PCT)
-            else:
-                avg_cost = fill_price * (1 - _ENGINE_SLIPPAGE_PCT)
-            qty = initial_qty = 1.0
-            atr_val = atr_full.iloc[i]
-            entry_atr = float(atr_val) if pd.notna(atr_val) else 0.0
-            # Engine plausibility guard (_stamp_entry_atr, mirroring Go's
-            # stampEntryATRIfOpened): non-positive or > 50% of the entry
-            # price (effective_price, same as the engine) stamps 0.0, so
-            # ATR-requiring close evaluators no-op.
-            if not (0.0 < entry_atr <= 0.5 * avg_cost):
-                entry_atr = 0.0
-            if regime_full is not None:
-                # Engine semantics: the position regime is stamped from the
-                # SHIFTED regime column at the fill row — the decision bar's
-                # (i-1) label, which is also what live stamps at open (the
-                # label computed alongside the signal). The fill bar's own
-                # label (i) would match neither side.
-                raw_label = regime_full.iloc[i - 1]
-                entry_regime = "" if pd.isna(raw_label) else str(raw_label)
-    return contexts
+        registry_fractions.append(
+            _bt_close_evaluator_fraction(cfg, i, df, atr_full,
+                                         regime_full, ctx)
+            if (cfg is not None and ctx is not None) else 0.0
+        )
+    return contexts, registry_fractions
 
 
 def compute_parity_frame(
@@ -545,10 +578,11 @@ def compute_parity_frame(
                     f"no engine path to diff; the live signal-strategy close "
                     f"fallback is live-only. Available: {sorted(available)}"
                 )
-    contexts = (
-        _simulate_position_contexts(bt, df, atr_full, regime_full)
-        if has_close_refs else [None] * len(df)
-    )
+    if has_close_refs:
+        contexts, registry_fracs = _simulate_position_contexts(
+            bt, df, atr_full, regime_full, cfg)
+    else:
+        contexts, registry_fracs = [None] * len(df), [0.0] * len(df)
 
     start = (window - 1) if window is not None else (LIVE_MIN_CANDLES - 1)
     rows = []
@@ -563,8 +597,10 @@ def compute_parity_frame(
         bt_close = float(bt["close_fraction"].iloc[i])
         bt_signal = int(bt["signal"].iloc[i])
         if has_close_refs:
-            bt_close = max(bt_close, _bt_close_evaluator_fraction(
-                cfg, i, df, atr_full, regime_full, ctx))
+            # The scaffold already evaluated the bt-side registry close at
+            # bar i with this exact context — reuse it so the fraction
+            # compared here is the same one the ladder accounting applied.
+            bt_close = max(bt_close, registry_fracs[i])
             # The live decision composes open intent + close intent +
             # position side into one signal (finalize_decision). Compose
             # the backtest inputs identically so the signal column compares
