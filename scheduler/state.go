@@ -98,17 +98,18 @@ type AppState struct {
 
 // StrategyState is the per-strategy persistent state.
 type StrategyState struct {
-	ID              string                     `json:"id"`
-	Type            string                     `json:"type"`
-	Platform        string                     `json:"platform,omitempty"`
-	Cash            float64                    `json:"cash"`
-	InitialCapital  float64                    `json:"initial_capital"`
-	Positions       map[string]*Position       `json:"positions"`
-	OptionPositions map[string]*OptionPosition `json:"option_positions"`
-	TradeHistory    []Trade                    `json:"trade_history"`
-	RiskState       RiskState                  `json:"risk_state"`
-	Regime          string                     `json:"regime,omitempty"`         // most recent primary regime label from check script (#482)
-	RegimeWindows   map[string]string          `json:"regime_windows,omitempty"` // latest per-window labels from check script (#792)
+	ID               string                     `json:"id"`
+	Type             string                     `json:"type"`
+	Platform         string                     `json:"platform,omitempty"`
+	Cash             float64                    `json:"cash"`
+	InitialCapital   float64                    `json:"initial_capital"`
+	Positions        map[string]*Position       `json:"positions"`
+	OptionPositions  map[string]*OptionPosition `json:"option_positions"`
+	TradeHistory     []Trade                    `json:"trade_history"`
+	RiskState        RiskState                  `json:"risk_state"`
+	Regime           string                     `json:"regime,omitempty"`         // most recent primary regime label from check script (#482)
+	RegimeWindows    map[string]string          `json:"regime_windows,omitempty"` // latest per-window labels from check script (#792)
+	RegimeDivergence *RegimeDivergenceState     `json:"-"`                        // in-memory divergence state; not persisted (self-heals on restart within 1 cycle) (#907)
 	// ClosedPositions is an in-memory buffer of positions closed during the
 	// current cycle. SaveState appends these to the closed_positions table and
 	// clears the buffer on successful commit. Not serialized to JSON state
@@ -117,6 +118,21 @@ type StrategyState struct {
 	// ClosedOptionPositions mirrors ClosedPositions for option-position
 	// lifecycle tracking; flushed to closed_option_positions table. (#288)
 	ClosedOptionPositions []ClosedOptionPosition `json:"-"`
+
+	// SharedWalletValue is the exchange-authoritative display value for this
+	// strategy when it is a member of a shared on-exchange wallet (#918). It is
+	// recomputed each cycle from the real account balance + on-chain positions
+	// so the per-strategy operator rows sum EXACTLY to the wallet balance.
+	// In-memory only (never persisted): a stale value would misreport equity;
+	// it self-heals every cycle. Consumed by displayStrategyValue; risk math
+	// continues to use the modeled PortfolioValue (s.Cash + modeled P&L).
+	SharedWalletValue float64 `json:"-"`
+	// SharedWalletValueSet gates SharedWalletValue: true only on cycles where a
+	// fresh balance + position snapshot was reconciled for this strategy's
+	// wallet. False (the default, and reset whenever the fetch fails or the
+	// strategy is not a shared-wallet member) makes display fall back to the
+	// modeled PortfolioValue.
+	SharedWalletValueSet bool `json:"-"`
 }
 
 func NewStrategyState(cfg StrategyConfig) *StrategyState {

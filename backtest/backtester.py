@@ -57,6 +57,7 @@ import numpy as np
 import pandas as pd
 
 from storage import store_backtest_result
+from atr import standard_atr
 
 # Close-registry import is deferred until needed so backtests with no
 # close_strategies don't pay the import cost. Uses ``close_registry_loader``
@@ -810,6 +811,14 @@ class Backtester:
         sl_tiers_processed = 0
         post_tp_trail_mult: Optional[float] = None
         sl_high_water_px = 0.0
+
+        # Standalone hard-stop state for the simple signal path (no close
+        # strategy). The open/close pipeline above seeds its own SL trigger from
+        # the sl_after/TP machinery; the plain signal path has none, so a bare
+        # stop_loss_atr_mult / trailing_stop_atr_mult would otherwise no-op. A
+        # hit is detected at bar close and fills at the next bar's open, matching
+        # the engine's N→N+1 fill convention.
+        pending_signal_sl_close = False
         self._active_sl_after_rules = self._sl_after_rules_static
         self._run_tp_tier_thresholds = list(self._tp_tier_thresholds_static)
         self._run_stop_loss_atr_mult: Optional[float] = None
@@ -819,6 +828,16 @@ class Backtester:
         trailing_ratchet_active = self._uses_trailing_ratchet_close
 
         atr_series = df["atr"] if "atr" in df.columns else None
+        # An ATR-multiple stop/trail needs an `atr` series to stamp entry_atr;
+        # without it the stop silently no-ops (entry_atr stays 0). Strategies that
+        # don't emit `atr` (e.g. momentum_pro) would otherwise run stopless. Inject
+        # a standard ATR(14) so scalar ATR stops work for any open strategy, not
+        # only those paired with a close evaluator that pre-injects it.
+        if atr_series is None and (
+            (self.stop_loss_atr_mult is not None and self.stop_loss_atr_mult > 0)
+            or (self.trailing_stop_atr_mult is not None and self.trailing_stop_atr_mult > 0)
+        ):
+            atr_series = standard_atr(df)
 
         def _initial_trail_trigger(side: str, mark: float, entry_atr: float,
                                     trail_mult: float) -> float:
@@ -1180,6 +1199,31 @@ class Backtester:
                         pending_close_fraction = 1.0
                 continue
 
+            # Standalone hard stop fires first: close at this bar's open before
+            # any new signal is acted on (the hit was flagged on the prior bar's
+            # close, so this is the next-bar-open fill).
+            if pending_signal_sl_close and position > 0:
+                effective_price = fill_price * (1 - self.slippage_pct)
+                proceeds = position * effective_price
+                commission = proceeds * self.commission_pct
+                cash = proceeds - commission
+                position = 0.0
+                if current_trade:
+                    current_trade.close(idx, effective_price)
+                    trades.append(current_trade)
+                    current_trade = None
+                pending_signal_sl_close = False
+                sl_trigger_px = 0.0
+                avg_cost = 0.0
+                entry_atr_value = 0.0
+                sl_high_water_px = 0.0
+                continue
+
+            # NOTE: this signal path is long/flat only — signal == 1 opens a
+            # long, signal == -1 only *closes* it; a short is never opened. So
+            # OOS validation of bidirectional strategies (momentum_pro,
+            # mean_reversion_pro, consolidation_range) exercises the LONG side
+            # only; their live short signals are not covered by backtest.
             if signal == 1 and position == 0 and not regime_blocked:
                 # BUY — go long with all available cash
                 effective_price = fill_price * (1 + self.slippage_pct)
@@ -1191,6 +1235,29 @@ class Backtester:
 
                 current_trade = Trade(idx, effective_price, "long")
                 current_trade.shares = shares
+
+                # Seed a standalone stop for the plain signal path (fixed ATR
+                # mult > trailing ATR mult > fixed pct). entry_atr is the
+                # closed-bar ATR at the fill bar (same convention as the
+                # open/close path's _stamp_entry_atr).
+                avg_cost = effective_price
+                entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
+                sl_trigger_px = 0.0
+                sl_high_water_px = mark_price
+                if (
+                    self.stop_loss_atr_mult is not None
+                    and self.stop_loss_atr_mult > 0
+                    and entry_atr_value > 0
+                ):
+                    sl_trigger_px = avg_cost - self.stop_loss_atr_mult * entry_atr_value
+                elif (
+                    self.trailing_stop_atr_mult is not None
+                    and self.trailing_stop_atr_mult > 0
+                    and entry_atr_value > 0
+                ):
+                    sl_trigger_px = mark_price - self.trailing_stop_atr_mult * entry_atr_value
+                elif self.stop_loss_pct is not None and self.stop_loss_pct > 0:
+                    sl_trigger_px = avg_cost * (1 - self.stop_loss_pct)
 
             elif signal == -1 and position > 0:
                 # SELL — close long position
@@ -1204,6 +1271,27 @@ class Backtester:
                     current_trade.close(idx, effective_price)
                     trades.append(current_trade)
                     current_trade = None
+                sl_trigger_px = 0.0
+                avg_cost = 0.0
+                entry_atr_value = 0.0
+                sl_high_water_px = 0.0
+
+            # End-of-bar: for a trailing ATR stop, ratchet the trigger up on new
+            # highs; then check whether this bar's close breached the trigger.
+            # A hit fills at the next bar's open via pending_signal_sl_close.
+            if position > 0 and sl_trigger_px > 0:
+                if (
+                    self.trailing_stop_atr_mult is not None
+                    and self.trailing_stop_atr_mult > 0
+                    and entry_atr_value > 0
+                ):
+                    if mark_price > sl_high_water_px:
+                        sl_high_water_px = mark_price
+                    candidate = sl_high_water_px - self.trailing_stop_atr_mult * entry_atr_value
+                    if candidate > sl_trigger_px:
+                        sl_trigger_px = candidate
+                if self._sl_hit("long", mark_price, sl_trigger_px):
+                    pending_signal_sl_close = True
 
         # Close any open position at the end
         if position != 0:

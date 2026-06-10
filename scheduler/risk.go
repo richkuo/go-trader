@@ -222,6 +222,11 @@ type PortfolioRiskState struct {
 	KillSwitchActive         bool              `json:"kill_switch_active"`
 	KillSwitchAt             time.Time         `json:"kill_switch_at,omitempty"`
 	WarningSent              bool              `json:"warning_sent,omitempty"`
+	WarnBandEnteredAt        time.Time         `json:"warn_band_entered_at,omitempty"`
+	LastWarningEquityDDPct   float64           `json:"last_warning_equity_dd_pct,omitempty"`
+	LastWarningMarginDDPct   float64           `json:"last_warning_margin_dd_pct,omitempty"`
+	WarningEquityDeltaPct    float64           `json:"warning_equity_delta_pct,omitempty"`
+	WarningMarginDeltaPct    float64           `json:"warning_margin_delta_pct,omitempty"`
 	Events                   []KillSwitchEvent `json:"events,omitempty"`
 }
 
@@ -308,6 +313,11 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 	state.PortfolioRisk.KillSwitchActive = false
 	state.PortfolioRisk.KillSwitchAt = time.Time{}
 	state.PortfolioRisk.WarningSent = false
+	state.PortfolioRisk.WarnBandEnteredAt = time.Time{}
+	state.PortfolioRisk.LastWarningEquityDDPct = 0
+	state.PortfolioRisk.LastWarningMarginDDPct = 0
+	state.PortfolioRisk.WarningEquityDeltaPct = 0
+	state.PortfolioRisk.WarningMarginDeltaPct = 0
 	// Re-baseline peak to the verified on-chain total so CheckPortfolioRisk
 	// does not immediately re-latch on the first tick using the stale
 	// (potentially double-counted) peak.
@@ -349,6 +359,11 @@ func AutoResetConfirmedFlatKillSwitch(prs *PortfolioRiskState, rebaselineValue f
 	prs.KillSwitchActive = false
 	prs.KillSwitchAt = time.Time{}
 	prs.WarningSent = false
+	prs.WarnBandEnteredAt = time.Time{}
+	prs.LastWarningEquityDDPct = 0
+	prs.LastWarningMarginDDPct = 0
+	prs.WarningEquityDeltaPct = 0
+	prs.WarningMarginDeltaPct = 0
 	prs.PeakValue = rebaselineValue
 	prs.CurrentDrawdownPct = 0
 	prs.CurrentMarginDrawdownPct = 0
@@ -480,6 +495,12 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 	if equityDD > cfg.MaxDrawdownPct || marginDD > cfg.MaxDrawdownPct {
 		prs.KillSwitchActive = true
 		prs.KillSwitchAt = time.Now().UTC()
+		prs.WarningSent = false
+		prs.WarnBandEnteredAt = time.Time{}
+		prs.LastWarningEquityDDPct = 0
+		prs.LastWarningMarginDDPct = 0
+		prs.WarningEquityDeltaPct = 0
+		prs.WarningMarginDeltaPct = 0
 		var r, source string
 		var dd float64
 		// Tie-break to margin when the two signals are equal: the margin
@@ -506,6 +527,17 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 		equityWarn := equityDD > warnDrawdownPct
 		marginWarn := marginDD > warnDrawdownPct
 		if equityWarn || marginWarn {
+			now := time.Now().UTC()
+			if !prs.WarningSent {
+				prs.WarnBandEnteredAt = now
+				prs.WarningEquityDeltaPct = 0
+				prs.WarningMarginDeltaPct = 0
+			} else {
+				prs.WarningEquityDeltaPct = equityDD - prs.LastWarningEquityDDPct
+				prs.WarningMarginDeltaPct = marginDD - prs.LastWarningMarginDDPct
+			}
+			prs.LastWarningEquityDDPct = equityDD
+			prs.LastWarningMarginDDPct = marginDD
 			prs.WarningSent = true
 			warning = true
 			switch {
@@ -525,6 +557,11 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 		} else {
 			// Recovered below warning threshold — no active warning band.
 			prs.WarningSent = false
+			prs.WarnBandEnteredAt = time.Time{}
+			prs.LastWarningEquityDDPct = 0
+			prs.LastWarningMarginDDPct = 0
+			prs.WarningEquityDeltaPct = 0
+			prs.WarningMarginDeltaPct = 0
 		}
 	}
 

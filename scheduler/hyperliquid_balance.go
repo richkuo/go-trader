@@ -23,6 +23,12 @@ type HLPosition struct {
 	EntryPrice float64
 	Leverage   float64 // on-chain leverage value (#254)
 	MarginMode string  // "isolated" | "cross" — forwarded to Python so it can skip a duplicate /info call (#768)
+	// UnrealizedPnL is the exchange-reported unrealized P&L for this position
+	// (clearinghouseState assetPositions.position.unrealizedPnl). Used by the
+	// shared-wallet exchange-authoritative reconciliation (#918) to attribute
+	// real position P&L to the owning strategy instead of modeling it from a
+	// fetched mark. Zero when the field is absent or unparseable.
+	UnrealizedPnL float64
 }
 
 // hlExecuteSnapshotForCoin extracts the cycle-local on-chain leverage + margin
@@ -54,6 +60,15 @@ func hlExecuteSnapshotForCoin(positions []HLPosition, coin string) hlExecuteSnap
 // userFills confirms this exact SL OID filled with positive size (#756).
 func hlReconcileSLFillConfirmed(lookup HLFillLookup, useFillFee bool, stopLossOID int64) bool {
 	return useFillFee && lookup.OID == stopLossOID && lookup.FilledQty > 1e-9
+}
+
+// hlReconcileExternalClosePx prefers the matched userFills price when available
+// (#909), otherwise falls back to mark.
+func hlReconcileExternalClosePx(mark float64, lookup HLFillLookup, useFillFee bool) float64 {
+	if useFillFee && lookup.Px > 0 {
+		return lookup.Px
+	}
+	return mark
 }
 
 var hlMainnetURL = "https://api.hyperliquid.xyz"
@@ -216,6 +231,7 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 					Type  string      `json:"type"`
 					Value json.Number `json:"value"`
 				} `json:"leverage"`
+				UnrealizedPnl string `json:"unrealizedPnl"`
 			} `json:"position"`
 		} `json:"assetPositions"`
 	}
@@ -255,12 +271,23 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 		case "isolated", "cross":
 			mode = ap.Position.Leverage.Type
 		}
+		// #918: exchange-reported unrealized P&L. Tolerated as absent/empty
+		// (older snapshots or parse failure) → 0, which the reconciler treats
+		// as "no P&L contribution" and the drift alarm will surface if it
+		// causes the member sum to miss the account balance.
+		var uPnL float64
+		if ap.Position.UnrealizedPnl != "" {
+			if parsed, perr := strconv.ParseFloat(ap.Position.UnrealizedPnl, 64); perr == nil {
+				uPnL = parsed
+			}
+		}
 		positions = append(positions, HLPosition{
-			Coin:       ap.Position.Coin,
-			Size:       szi,
-			EntryPrice: entryPx,
-			Leverage:   lev,
-			MarginMode: mode,
+			Coin:          ap.Position.Coin,
+			Size:          szi,
+			EntryPrice:    entryPx,
+			Leverage:      lev,
+			MarginMode:    mode,
+			UnrealizedPnL: uPnL,
 		})
 	}
 
@@ -491,10 +518,7 @@ func tryBookSoleOwnerTPFill(
 		tpPrice = tpPrices[tierIdx]
 	}
 
-	closePx := tpPrice
-	if useFillFee && lookup.Px > 0 {
-		closePx = lookup.Px
-	}
+	closePx := hlReconcileExternalClosePx(tpPrice, lookup, useFillFee)
 	if closePx <= 0 {
 		return false
 	}
@@ -740,7 +764,7 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 // `notify_tp_sl_fills: false`.
 //
 // Must be called WITHOUT holding any lock; acquires Lock internally.
-func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, positions []HLPosition, prices map[string]float64, accountAddress string, notifier *MultiNotifier, notifyTPSLFills bool) (bool, []HyperliquidProtectionFillHint, []RegimeDirectionOrphanCloseJob) {
+func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, positions []HLPosition, prices map[string]float64, accountAddress string, notifier ownerDMSender, notifyTPSLFills bool) (bool, []HyperliquidProtectionFillHint, []RegimeDirectionOrphanCloseJob) {
 	// Resolve userFills BEFORE taking mu.Lock(): each lookup can sleep up
 	// to ~1.5s on indexer-lag retries, and holding the write lock blocks
 	// every reader of state (/status, /health, per-strategy phase RLocks).
@@ -986,7 +1010,8 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 						if mark, ok := prices[coin]; ok && mark > 0 {
 							lookupExt, useFillFeeExt := resolveFee(coin, 0, pos.Quantity)
 							logHyperliquidReconcileFillLookup(logger, coin, 0, pos.Quantity, lookupExt, useFillFeeExt)
-							if recordPerpsExternalCloseWithFillFee(ss, coin, mark, lookupExt.Fee, useFillFeeExt, "", "hl_sync_external", logger) {
+							closePx := hlReconcileExternalClosePx(mark, lookupExt, useFillFeeExt)
+							if recordPerpsExternalCloseWithFillFee(ss, coin, closePx, lookupExt.Fee, useFillFeeExt, "", "hl_sync_external", logger) {
 								changed = true
 							}
 						} else {
@@ -1000,17 +1025,19 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 						}
 					}
 				} else if mark, ok := prices[coin]; ok && mark > 0 {
-					// #584: credit s.Cash with mark-based PnL so the per-strategy
+					// #584: credit s.Cash with close-based PnL so the per-strategy
 					// PortfolioValue (and the summary TOTAL) match the real HL
-					// account after an external close. The mark is fetched at
-					// cycle start, so cp.RealizedPnL is an *approximation* — it
-					// will drift from the true on-chain fill price (which can be
-					// minutes earlier). Do not treat the resulting Trade /
-					// ClosedPosition rows as authoritative for tax or reporting;
-					// they exist to keep cash bookkeeping in sync.
+					// account after an external close. When userFills matches the
+					// close (#909), hlReconcileExternalClosePx books at the fill
+					// VWAP; otherwise the cycle-start mark is an approximation that
+					// can drift from the true on-chain fill price. Do not treat
+					// the resulting Trade / ClosedPosition rows as authoritative
+					// for tax or reporting; they exist to keep cash bookkeeping
+					// in sync.
 					lookup, useFillFee := resolveFee(coin, 0, pos.Quantity)
 					logHyperliquidReconcileFillLookup(logger, coin, 0, pos.Quantity, lookup, useFillFee)
-					if recordPerpsExternalCloseWithFillFee(ss, coin, mark, lookup.Fee, useFillFee, "", "hl_sync_external", logger) {
+					closePx := hlReconcileExternalClosePx(mark, lookup, useFillFee)
+					if recordPerpsExternalCloseWithFillFee(ss, coin, closePx, lookup.Fee, useFillFee, "", "hl_sync_external", logger) {
 						changed = true
 					}
 				} else {
@@ -1112,7 +1139,8 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 							if mark, ok := prices[coin]; ok && mark > 0 {
 								lookupExt, useFillFeeExt := resolveFee(coin, 0, slOwnerPos.Quantity)
 								logHyperliquidReconcileFillLookup(logger, coin, 0, slOwnerPos.Quantity, lookupExt, useFillFeeExt)
-								if recordPerpsExternalCloseWithFillFee(ownerSS, coin, mark, lookupExt.Fee, useFillFeeExt, "", "hl_sync_external", logger) {
+								closePx := hlReconcileExternalClosePx(mark, lookupExt, useFillFeeExt)
+								if recordPerpsExternalCloseWithFillFee(ownerSS, coin, closePx, lookupExt.Fee, useFillFeeExt, "", "hl_sync_external", logger) {
 									changed = true
 									virtualQty = expectedResidual
 									delta = virtualQty - onChainQty
@@ -1204,7 +1232,8 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 							if useFillFee && lookup.OID > 0 {
 								detector3OID = strconv.FormatInt(lookup.OID, 10)
 							}
-							if recordPerpsExternalPartialCloseWithFillFee(candidateSS, coin, closeQty, mark, lookup.Fee, useFillFee, detector3OID, "hl_sync_external_partial", logger) {
+							closePx := hlReconcileExternalClosePx(mark, lookup, useFillFee)
+							if recordPerpsExternalPartialCloseWithFillFee(candidateSS, coin, closeQty, closePx, lookup.Fee, useFillFee, detector3OID, "hl_sync_external_partial", logger) {
 								changed = true
 								if closeSide == "long" {
 									virtualQty -= closeQty
@@ -1229,7 +1258,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 									Side:            closeSide,
 									FillType:        tpTierLabel(candidateTierIdx),
 									IsPartial:       true,
-									FillPrice:       mark,
+									FillPrice:       closePx,
 									CloseQty:        closeQty,
 									RemainingQty:    remaining,
 									RealizedPnL:     lastBookedTradePnL(candidateSS),

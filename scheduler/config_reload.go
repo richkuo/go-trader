@@ -164,6 +164,11 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].regime_directional_policy: shape updated", sc.ID)
 			sc.RegimeDirectionalPolicy = ns.RegimeDirectionalPolicy
 		}
+		// #907: regime_window_divergence mutation when flat.
+		if !sc.RegimeWindowDivergence.EqualForReload(ns.RegimeWindowDivergence) {
+			addChange("strategy[%s].regime_window_divergence: shape updated", sc.ID)
+			sc.RegimeWindowDivergence = ns.RegimeWindowDivergence
+		}
 		if !regimeWindowFieldsEqual(*sc, ns) {
 			addChange("strategy[%s].regime_*_window: gate=%q atr=%q directional=%q updated",
 				sc.ID, ns.RegimeGateWindow, ns.RegimeATRWindow, ns.RegimeDirectionalWindow)
@@ -463,6 +468,20 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID))
 			} else if oldConfigured && !sc.RegimeDirectionalPolicy.EqualForReload(ns.RegimeDirectionalPolicy) {
 				errs = append(errs, fmt.Sprintf("strategy[%s] regime_directional_policy shape changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
+		}
+		// #907: regime_window_divergence shape changes while a position is open
+		// would shift the override direction underneath the held position. Block
+		// the reshape; changes when flat take effect on the next cycle.
+		if sc.Type == "perps" && sc.Platform == "hyperliquid" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			oldDivConfigured := sc.RegimeWindowDivergence.IsConfigured()
+			newDivConfigured := ns.RegimeWindowDivergence.IsConfigured()
+			if oldDivConfigured != newDivConfigured {
+				errs = append(errs, fmt.Sprintf("strategy[%s] regime_window_divergence mode changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			} else if oldDivConfigured && !sc.RegimeWindowDivergence.EqualForReload(ns.RegimeWindowDivergence) {
+				errs = append(errs, fmt.Sprintf("strategy[%s] regime_window_divergence shape changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
 		}

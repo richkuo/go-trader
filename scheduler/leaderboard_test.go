@@ -49,7 +49,7 @@ func TestBuildLeaderboardMessages(t *testing.T) {
 		"ETH/USDT": 3000,
 	}
 
-	messages := BuildLeaderboardMessages(cfg, state, prices, nil, nil)
+	messages := BuildLeaderboardMessages(cfg, state, prices, nil, nil, nil, nil)
 	if messages == nil {
 		t.Fatal("BuildLeaderboardMessages returned nil")
 	}
@@ -114,7 +114,7 @@ func TestBuildLeaderboardMessages_SharpeColumn(t *testing.T) {
 		"rsi-eth": -0.33,
 	}
 
-	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}, sharpe, nil)
+	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}, sharpe, nil, nil, nil)
 	if messages == nil {
 		t.Fatal("BuildLeaderboardMessages returned nil")
 	}
@@ -152,7 +152,7 @@ func TestBuildLeaderboardMessages_TfIntColumns(t *testing.T) {
 		ss.Cash = sc.Capital + 100
 		state.Strategies[sc.ID] = ss
 	}
-	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}, nil, nil)
+	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}, nil, nil, nil, nil)
 	topMsg := messages["top"]
 	// Per-strategy interval (sma-btc): Tf="30m", Int="10m" → " 30m  10m".
 	smaCell := fmt.Sprintf("%4s %4s", "30m", "10m")
@@ -183,7 +183,7 @@ func TestBuildLeaderboardMessages_PositionsOpenedAndWinLoss(t *testing.T) {
 	lifetime := map[string]LifetimeTradeStats{
 		"sma-btc": {PositionsOpened: 7, Wins: 5, Losses: 2},
 	}
-	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000}, nil, lifetime)
+	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000}, nil, lifetime, nil, nil)
 	topMsg := messages["top"]
 	// Assert on the full #T+W/L cell pair (`"%4d %5s"`) so a future width
 	// change to either column fails loudly instead of silently passing on the
@@ -201,7 +201,7 @@ func TestBuildLeaderboardMessages_Empty(t *testing.T) {
 	cfg := &Config{DBFile: filepath.Join(t.TempDir(), "state.db")}
 	state := NewAppState()
 
-	if messages := BuildLeaderboardMessages(cfg, state, nil, nil, nil); messages != nil {
+	if messages := BuildLeaderboardMessages(cfg, state, nil, nil, nil, nil, nil); messages != nil {
 		t.Errorf("Expected nil messages for empty state, got %v", messages)
 	}
 }
@@ -291,7 +291,7 @@ func TestBuildLeaderboardMessages_TopN(t *testing.T) {
 		state.Strategies[sc.ID] = ss
 	}
 
-	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000}, nil, nil)
+	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000}, nil, nil, nil, nil)
 	if messages == nil {
 		t.Fatal("BuildLeaderboardMessages returned nil")
 	}
@@ -528,7 +528,7 @@ func TestBuildLeaderboardSummary_PlatformOnly(t *testing.T) {
 	}
 
 	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", TopN: 10, Channel: "chan-1"}
-	msg := BuildLeaderboardSummary(lc, cfg, state, nil, nil, nil)
+	msg := BuildLeaderboardSummary(lc, cfg, state, nil, nil, nil, nil, nil)
 	if msg == "" {
 		t.Fatal("Expected non-empty message")
 	}
@@ -559,7 +559,7 @@ func TestBuildLeaderboardSummary_RegimePriceLine741(t *testing.T) {
 
 	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", TopN: 5, Channel: "chan-1"}
 	prices := map[string]float64{"ETH/USDT": 3000}
-	msg := BuildLeaderboardSummary(lc, cfg, state, prices, nil, nil)
+	msg := BuildLeaderboardSummary(lc, cfg, state, prices, nil, nil, nil, nil)
 	if msg == "" {
 		t.Fatal("Expected non-empty message")
 	}
@@ -584,7 +584,7 @@ func TestBuildLeaderboardSummary_TickerFilter(t *testing.T) {
 	}
 
 	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", Ticker: "eth", TopN: 5, Channel: "chan-1"}
-	msg := BuildLeaderboardSummary(lc, cfg, state, nil, nil, nil)
+	msg := BuildLeaderboardSummary(lc, cfg, state, nil, nil, nil, nil, nil)
 	if msg == "" {
 		t.Fatal("Expected non-empty message")
 	}
@@ -627,7 +627,7 @@ func TestBuildLeaderboardSummary_DefaultTopN(t *testing.T) {
 
 	// TopN=0 means default (5).
 	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", Channel: "c1"}
-	msg := BuildLeaderboardSummary(lc, cfg, state, nil, nil, nil)
+	msg := BuildLeaderboardSummary(lc, cfg, state, nil, nil, nil, nil, nil)
 	if !containsStr(msg, "Hyperliquid Top 5") {
 		t.Errorf("Expected default TopN=5 in title, got:\n%s", msg)
 	}
@@ -650,7 +650,7 @@ func TestBuildLeaderboardSummary_PositionsOpenedAndWinLoss(t *testing.T) {
 		"hl-sma-btc": {PositionsOpened: 4, Wins: 3, Losses: 1},
 	}
 	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", TopN: 5, Channel: "c1"}
-	msg := BuildLeaderboardSummary(lc, cfg, state, map[string]float64{"BTC/USDT": 50000}, nil, lifetime)
+	msg := BuildLeaderboardSummary(lc, cfg, state, map[string]float64{"BTC/USDT": 50000}, nil, lifetime, nil, nil)
 	if msg == "" {
 		t.Fatal("BuildLeaderboardSummary returned empty message")
 	}
@@ -670,7 +670,7 @@ func TestBuildLeaderboardSummary_NoMatches(t *testing.T) {
 	state.Strategies["sma-btc"] = NewStrategyState(cfg.Strategies[0])
 
 	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", Channel: "c1"}
-	if msg := BuildLeaderboardSummary(lc, cfg, state, nil, nil, nil); msg != "" {
+	if msg := BuildLeaderboardSummary(lc, cfg, state, nil, nil, nil, nil, nil); msg != "" {
 		t.Errorf("Expected empty message when no strategies match, got:\n%s", msg)
 	}
 }
@@ -735,5 +735,107 @@ func TestFindLeaderboardSummariesByChannel(t *testing.T) {
 
 	if got := findLeaderboardSummariesByChannel(cfg, "none"); got != nil {
 		t.Errorf("unknown channel should return nil, got %v", got)
+	}
+}
+
+// TestBuildLeaderboardMessages_AdjustedTotal verifies #915: when wallet
+// balances are provided, the TOTAL row in the leaderboard uses the
+// shared-wallet-adjusted value rather than the naive per-strategy sum.
+func TestBuildLeaderboardMessages_AdjustedTotal(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
+
+	cfg := &Config{
+		DBFile: t.TempDir() + "/state.db",
+		Strategies: []StrategyConfig{
+			{ID: "hl-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 5000},
+			{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 5000},
+		},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-btc": {ID: "hl-btc", Cash: 5000, InitialCapital: 5000, Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}},
+			"hl-eth": {ID: "hl-eth", Cash: 5000, InitialCapital: 5000, Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}},
+		},
+	}
+	prices := map[string]float64{}
+
+	walletBalances := map[SharedWalletKey]float64{
+		{Platform: "hyperliquid", Account: "0xtest"}: 8000, // real balance < naive sum
+	}
+	accountShared := detectSharedWallets(cfg.Strategies)
+
+	msgs := BuildLeaderboardMessages(cfg, state, prices, nil, nil, walletBalances, accountShared)
+	if msgs == nil {
+		t.Fatal("BuildLeaderboardMessages returned nil")
+	}
+
+	for key, msg := range msgs {
+		var totalLine string
+		for _, line := range strings.Split(msg, "\n") {
+			if strings.HasPrefix(line, "TOTAL") {
+				totalLine = line
+				break
+			}
+		}
+		if totalLine == "" {
+			t.Errorf("[%s] no TOTAL row found", key)
+			continue
+		}
+		if !strings.Contains(totalLine, "8,000") {
+			t.Errorf("[%s] TOTAL row should show adjusted $8,000; got: %q", key, totalLine)
+		}
+		if strings.Contains(totalLine, "10,000") {
+			t.Errorf("[%s] TOTAL row must NOT show naive $10,000; got: %q", key, totalLine)
+		}
+	}
+}
+
+// TestBuildLeaderboardSummary_AdjustedTotal verifies #915: BuildLeaderboardSummary
+// uses shared-wallet-adjusted values for the TOTAL row.
+func TestBuildLeaderboardSummary_AdjustedTotal(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
+
+	cfg := &Config{
+		DBFile: t.TempDir() + "/state.db",
+		Strategies: []StrategyConfig{
+			{ID: "hl-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 5000},
+			{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 5000},
+		},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-btc": {ID: "hl-btc", Cash: 5000, InitialCapital: 5000, Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}},
+			"hl-eth": {ID: "hl-eth", Cash: 5000, InitialCapital: 5000, Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}},
+		},
+	}
+	prices := map[string]float64{}
+
+	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", TopN: 5, Channel: "test"}
+
+	// Inject a real wallet balance ($8,000) for the shared HL account so the
+	// TOTAL row dedups to it instead of the naive $10,000 virtual sum (#915).
+	// Both strategies share key {hyperliquid, 0xtest}, fully contained in the
+	// subset, so the adjusted total = the injected balance.
+	walletKey := SharedWalletKey{Platform: "hyperliquid", Account: "0xtest"}
+	walletBalances := map[SharedWalletKey]float64{walletKey: 8000}
+	accountShared := detectSharedWallets(cfg.Strategies)
+
+	msg := BuildLeaderboardSummary(lc, cfg, state, prices, nil, nil, walletBalances, accountShared)
+	if msg == "" {
+		t.Fatal("BuildLeaderboardSummary returned empty string")
+	}
+	var totalLine string
+	for _, line := range strings.Split(msg, "\n") {
+		if strings.HasPrefix(line, "TOTAL") {
+			totalLine = line
+			break
+		}
+	}
+	if totalLine == "" {
+		t.Fatalf("no TOTAL row found in:\n%s", msg)
+	}
+	// Adjusted TOTAL value must be $8,000 (deduped), not $10,000 (naive sum).
+	if !strings.Contains(totalLine, "8,000") {
+		t.Errorf("TOTAL row should show adjusted $8,000; got: %q\nfull msg:\n%s", totalLine, msg)
 	}
 }

@@ -304,6 +304,14 @@ h3 {
   border-color: rgba(102, 112, 98, 0.28);
 }
 
+/* #907: divergence badge — amber warning colour */
+.regime-badge--divergence {
+  color: var(--amber);
+  background: rgba(164, 95, 8, 0.13);
+  border-color: rgba(164, 95, 8, 0.40);
+  cursor: help;
+}
+
 .sidebar-toggle {
   display: none;
   flex-shrink: 0;

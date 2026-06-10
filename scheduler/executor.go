@@ -53,6 +53,10 @@ type HyperliquidResult struct {
 	Platform   string                 `json:"platform"`
 	Timestamp  string                 `json:"timestamp"`
 	Error      string                 `json:"error,omitempty"`
+	// Divergence is the regime-window divergence result computed inside
+	// runHyperliquidCheck (#907). Not from the Python script — derived Go-side
+	// from the payload after regime resolution. Zero value = none.
+	Divergence DivergenceResult `json:"-"`
 }
 
 // HyperliquidFill holds fill details from a live Hyperliquid order.
@@ -1090,10 +1094,11 @@ type OKXPositionsResult struct {
 
 // OKXPositionJSON is the per-position payload from fetch_okx_positions.py.
 type OKXPositionJSON struct {
-	Coin       string  `json:"coin"`
-	Size       float64 `json:"size"`
-	EntryPrice float64 `json:"entry_price"`
-	Side       string  `json:"side"`
+	Coin          string  `json:"coin"`
+	Size          float64 `json:"size"`
+	EntryPrice    float64 `json:"entry_price"`
+	Side          string  `json:"side"`
+	UnrealizedPnL float64 `json:"unrealized_pnl"`
 }
 
 // RunOKXFetchPositions runs fetch_okx_positions.py and returns the parsed

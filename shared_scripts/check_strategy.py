@@ -78,6 +78,9 @@ def main():
     regime_windows_spec = parse_regime_windows_spec_json(_arg_value("--regime-windows-spec-json"))
     ohlcv_limit = int(_arg_value("--ohlcv-limit") or 200)
     regime_atr_window = (_arg_value("--regime-atr-window") or "").strip()
+    # #879: precomputed global-store regime payload; presence (even empty)
+    # disables inline regime computation. None when the flag is absent.
+    regime_payload_json = _arg_value("--regime-payload-json")
     open_strategy = _arg_value("--open-strategy")
     close_strategies_raw = _arg_value("--close-strategies")
     position_side = (_arg_value("--position-side", "") or "").lower()
@@ -114,6 +117,7 @@ def main():
             "--position-regime",
             "--regime-windows-spec-json", "--ohlcv-limit",
             "--regime-atr-window", "--regime-directional-window",
+            "--regime-payload-json",
         ):
             skip_next = True
             continue
@@ -213,6 +217,7 @@ def main():
             regime_enabled=regime_enabled,
             windows_spec=regime_windows_spec,
             atr_window=regime_atr_window,
+            injected_payload_json=regime_payload_json,
         )
         strategy_params = (strategy_params or {})
         strategy_params["regime"] = strategy_regime

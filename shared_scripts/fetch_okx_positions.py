@@ -65,11 +65,21 @@ def main():
             entry_price = float(p.get("entryPrice") or 0)
         except (TypeError, ValueError):
             pass
+        # #918: exchange-reported unrealized P&L so the scheduler can attribute
+        # real position P&L to the owning strategy in shared-wallet
+        # reconciliation instead of modeling it from a fetched mark. ccxt
+        # exposes it as `unrealizedPnl`; absent/None → 0.0.
+        unrealized_pnl = 0.0
+        try:
+            unrealized_pnl = float(p.get("unrealizedPnl") or 0)
+        except (TypeError, ValueError):
+            pass
         positions.append({
             "coin": coin,
             "size": signed_size,
             "entry_price": entry_price,
             "side": side,
+            "unrealized_pnl": unrealized_pnl,
         })
 
     print(json.dumps({

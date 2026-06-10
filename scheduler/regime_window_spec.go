@@ -302,6 +302,50 @@ func validateStrategyRegimeVocabulary(cfg *Config) []string {
 			polErrs := sc.RegimeDirectionalPolicy.ResolveRawWithLabels(prefix+".regime_directional_policy", dirLabels)
 			errs = append(errs, polErrs...)
 		}
+		// #907: regime_window_divergence shape validation (window names, on_divergence)
+		// AND window-existence. Both run here (not in validateRegimeWindowsConfig)
+		// because ResolveRaw populates ShortWindow/MediumWindow — and that function
+		// runs BEFORE this one in validateConfig, so the typed fields are empty there
+		// and an existence guard keyed on them would silently skip (PR #916 review).
+		if sc.RegimeWindowDivergence.IsConfigured() {
+			divErrs := sc.RegimeWindowDivergence.ResolveRaw(prefix + ".regime_window_divergence")
+			errs = append(errs, divErrs...)
+			// Existence check only when shape resolved cleanly and regime windows exist.
+			if len(divErrs) == 0 && rc != nil && rc.Enabled {
+				for _, pair := range []struct {
+					field string
+					value string
+				}{
+					{"short_window", sc.RegimeWindowDivergence.ShortWindow},
+					{"medium_window", sc.RegimeWindowDivergence.MediumWindow},
+				} {
+					key := normalizeRegimeWindowKey(pair.value)
+					if key == "" || key == regimeWindowDefaultKey {
+						continue
+					}
+					if !regimeMultiWindowEnabled(rc) {
+						errs = append(errs, fmt.Sprintf("%s: regime_window_divergence.%s=%q requires regime.windows to be configured", prefix, pair.field, pair.value))
+						continue
+					}
+					if !regimeWindowExists(rc, key) {
+						errs = append(errs, fmt.Sprintf("%s: regime_window_divergence.%s=%q not found in regime.windows (valid: %s)", prefix, pair.field, pair.value, strings.Join(sortedRegimeWindowNamesFromConfig(rc.Windows), ", ")))
+					}
+				}
+				// #907/PR#916: louder stand-aside foot-gun warning. A mutating mode
+				// (trust_short/trust_medium) on a non-"both" base direction can only
+				// gate the base side's entries — it can never synthesize the opposite
+				// entry (the signal script already ran with the pre-override direction;
+				// see applyRegimeDivergenceOverride doc). Skip when a directional policy
+				// is configured, since that resolves direction per-regime (may be "both").
+				mode := sc.RegimeWindowDivergence.OnDivergence
+				if (mode == onDivergenceTrustShort || mode == onDivergenceTrustMedium) &&
+					EffectiveDirection(sc) != DirectionBoth &&
+					!sc.RegimeDirectionalPolicy.IsConfigured() {
+					fmt.Printf("[WARN] %s: regime_window_divergence on_divergence=%q with direction=%q acts as a stand-aside gate, not a flip — it can block %s entries but cannot open the opposite side. Use direction=\"both\" for full divergence-driven flipping.\n",
+						prefix, mode, EffectiveDirection(sc), EffectiveDirection(sc))
+				}
+			}
+		}
 		// stop_loss_atr_regime / trailing_stop_atr_regime vocabulary is resolved
 		// authoritatively in validateRegimeATRConfig (which also populates the
 		// typed runtime fields and runs the mutex checks) using the same

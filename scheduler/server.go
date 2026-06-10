@@ -195,6 +195,7 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/dashboard/", ss.handleDashboard)
 	mux.HandleFunc("/api/strategies", ss.handleAPIStrategies)
 	mux.HandleFunc("/api/strategies/overview", ss.handleAPIStrategiesOverview)
+	mux.HandleFunc("/api/regime", ss.handleAPIRegime)
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
 
 	listener, boundPort, err := bindWithFallback(port, statusPortMaxAttempts)
@@ -301,6 +302,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		EffectiveInvertSignal   bool                       `json:"effective_invert_signal,omitempty"`   // #779: resolved invert for the active regime
 		RegimeDirectionalPolicy bool                       `json:"regime_directional_policy,omitempty"` // #779: true when strategy has a policy block configured
 		EffectivePolicyRegime   string                     `json:"effective_policy_regime,omitempty"`   // #779: regime key the resolver used (pos.Regime while open, current regime when flat); shown only when policy is configured
+		RegimeDivergence        *RegimeDivergenceState     `json:"regime_divergence,omitempty"`         // #907: active window-divergence state; nil when none
 	}
 
 	type StatusResp struct {
@@ -316,7 +318,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	totalValue := 0.0
 	for _, s := range ss.state.Strategies {
-		totalValue += PortfolioValue(s, prices)
+		totalValue += displayStrategyValue(s, prices)
 	}
 	totalNotional := PortfolioNotional(ss.state.Strategies, prices)
 
@@ -341,7 +343,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	ss.strategiesMu.RUnlock()
 
 	for id, s := range ss.state.Strategies {
-		pv := PortfolioValue(s, prices)
+		pv := displayStrategyValue(s, prices)
 		sc := cfgByID[id]
 		initCap := EffectiveInitialCapital(sc, s)
 		pnl := pv - initCap
@@ -396,6 +398,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			EffectiveInvertSignal:   effInvert,
 			RegimeDirectionalPolicy: policyConfigured,
 			EffectivePolicyRegime:   effRegimeKey,
+			RegimeDivergence:        s.RegimeDivergence,
 		}
 	}
 

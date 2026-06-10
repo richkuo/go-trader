@@ -467,6 +467,10 @@ type Trade struct {
 	IsClose     bool    `json:"is_close,omitempty"`
 	RealizedPnL float64 `json:"realized_pnl,omitempty"`
 	Regime      string  `json:"regime,omitempty"` // market regime label at time of trade (#482)
+	// RegimeDivergenceNote carries a pre-formatted divergence line for trade DMs
+	// when a regime_window_divergence override was active at entry (#907). Not
+	// persisted to SQLite — set transiently when a trade is recorded.
+	RegimeDivergenceNote string `json:"-"`
 
 	EntryATR          float64 `json:"entry_atr,omitempty"`
 	StopLossOID       int64   `json:"stop_loss_oid,omitempty"`
@@ -1129,6 +1133,7 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
 		}
 		trade.Regime = s.Regime
+		trade.RegimeDivergenceNote = formatDivergenceDMLine(s.RegimeDivergence)
 		recordOpen(trade)
 		logger.Info("BUY %s: %.6f @ $%.2f (%s, notional $%.2f, fee $%.2f)", symbol, qty, execPrice, leverageLabel, notional, fee)
 		tradesExecuted++
@@ -1297,6 +1302,7 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
 		}
 		trade.Regime = s.Regime
+		trade.RegimeDivergenceNote = formatDivergenceDMLine(s.RegimeDivergence)
 		recordOpen(trade)
 		logger.Info("SELL %s: %.6f @ $%.2f (%s, notional $%.2f, fee $%.2f) [open short]", symbol, qty, execPrice, leverageLabel, notional, fee)
 		tradesExecuted++

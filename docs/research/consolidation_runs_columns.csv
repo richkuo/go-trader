@@ -1,0 +1,22 @@
+column,measures,unit,notes
+run_id,Sequential identifier for one research run (one parameter configuration),integer,Auto-increments; a single run writes one row per detector method
+date,Date the run was executed,YYYY-MM-DD,
+symbol,Trading pair analyzed,pair,e.g. BTC/USDT
+timeframe,Candle interval analyzed,duration,e.g. 15m / 1h / 4h / 1d
+since,Start date of the historical window pulled,YYYY-MM-DD,Data runs from this date to now; sets the lookback depth
+bars,Number of OHLCV candles analyzed in this run,count,
+method,Consolidation detector used for this row,category,One of range_containment / volatility_contraction / regression_flatness
+is_primary,Whether this detector was the one measured in depth for the run,0 or 1,Only the primary method gets episode-level distribution + correlation columns filled
+n_episodes,Number of consolidation periods this detector found,count,
+avg_bars,Mean episode length (duration),bars,Across all episodes from this detector
+avg_width_pct,Mean box height (episode high-low span) relative to mid price,fraction,0.02 = 2% tall box
+false_break_rate,Fraction of episodes whose escape candle did NOT exceed the ATR or edge thresholds,fraction 0-1,Lower = crisper detection (escapes are real breakouts not noise)
+coverage_pct,Fraction of all bars that fell inside a detected consolidation,fraction 0-1,High (>0.5) means the detector is too loose / labels most of the series as range
+score,Composite ranking heuristic for the detector,unitless,= (1 - false_break_rate) * n_episodes / (1 + avg_width_pct); higher is better
+dur_median_bars,Median episode duration (primary method only),bars,Typical consolidation length
+width_pct_median,Median box height relative to mid price (primary method only),fraction,Typical range width
+escape_xatr_median,Median escape-candle true range divided by ATR (primary method only),x ATR,Size of the breakout candle in ATR units; the stop-distance anchor for the future strategy
+corr_contraction_vs_escape,Pearson correlation between width-contraction ratio and escape size (primary method only),correlation -1..1,Tests whether box shape predicts breakout magnitude; near 0 = shape is not predictive
+params,Detector parameters used for this row,key=value;...,Encodes the swept settings (e.g. box_width_pct=0.02;min_bars=12)
+out_dir,Directory holding this run's full outputs (episode tables + charts),path,"(metrics-only) when outputs were skipped for speed (sweeps)"
+takeaway,Free-text human note about the run,text,Filled in by hand after reviewing the run

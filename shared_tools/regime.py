@@ -440,6 +440,59 @@ def required_ohlcv_limit(
     return max(base_limit, warmup + margin)
 
 
+def regime_from_injected_payload(
+    raw: str | None,
+    *,
+    atr_window: str = "",
+) -> tuple[dict | str, str, dict]:
+    """Resolve the (stdout_regime, live_regime, strategy_regime) triple from a
+    Go-injected precomputed payload (#879) instead of computing inline.
+
+    `raw` is the --regime-payload-json value: the multi-window snapshot map the
+    Go scheduler's global regime store holds for this strategy's signature
+    (same shape compute_multi_regime returns). Empty/blank/invalid payloads —
+    including the deliberate empty injection after a regime-subprocess failure
+    — resolve to the disabled triple so every consumer falls back to its
+    existing empty-case behavior (entry gate fails open, status shows
+    regime=-). There is NO inline recompute fallback by design.
+    """
+    disabled = {"regime": "", "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
+    text = str(raw or "").strip()
+    if not text:
+        return "", "", disabled
+    try:
+        payload = json.loads(text)
+    except (ValueError, TypeError):
+        return "", "", disabled
+    if isinstance(payload, str):
+        label = payload.strip()
+        snap = dict(disabled, regime=label) if label else disabled
+        return label, label, snap
+    if not isinstance(payload, dict) or not payload:
+        return "", "", disabled
+
+    windows: dict[str, dict] = {}
+    for name, snap in payload.items():
+        key = str(name).strip()
+        if key and isinstance(snap, dict):
+            windows[key] = snap
+    if not windows:
+        return "", "", disabled
+
+    # Primary/atr selection mirrors prepare_check_regime's multi branch: the
+    # payload keys are exactly the windows-spec keys the Go side resolved.
+    primary_key = (
+        REGIME_PRIMARY_WINDOW_KEY
+        if REGIME_PRIMARY_WINDOW_KEY in windows
+        else sorted(windows.keys())[0]
+    )
+    strategy_payload = windows.get(primary_key, disabled)
+    atr_key = (atr_window or primary_key).strip() or primary_key
+    atr_entry = windows.get(atr_key, strategy_payload)
+    live_atr = str(atr_entry.get("regime") or "")
+    return windows, live_atr, strategy_payload
+
+
 def prepare_check_regime(
     df: pd.DataFrame,
     *,
@@ -449,10 +502,16 @@ def prepare_check_regime(
     windows: dict[str, dict[str, Any]] | None = None,
     windows_spec: dict[str, dict[str, Any]] | None = None,
     atr_window: str = "",
+    injected_payload_json: str | None = None,
 ) -> tuple[dict | str, str, dict]:
     disabled = {"regime": "", "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
     if not regime_enabled:
         return "", "", disabled
+    # #879: when the Go scheduler injects the precomputed global-store payload,
+    # never recompute inline — even when the injected payload is empty (that is
+    # the explicit fail-open signal after a regime-subprocess failure).
+    if injected_payload_json is not None:
+        return regime_from_injected_payload(injected_payload_json, atr_window=atr_window)
 
     spec_map = windows_spec if windows_spec is not None else windows
     if spec_map:

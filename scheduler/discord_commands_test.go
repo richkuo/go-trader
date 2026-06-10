@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +50,51 @@ func TestAuthorizeCommand(t *testing.T) {
 		}
 		if !ok && reason == "" {
 			t.Errorf("authorizeCommand(%q,...) denied without a reason", c.name)
+		}
+	}
+}
+
+// discordCommandNameRe is Discord's CHAT_INPUT command-name constraint for our
+// ASCII command set: 1..32 chars, lowercase letters, digits, dash, underscore.
+var discordCommandNameRe = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
+
+// TestSlashCommandsNamespaced locks the #891 namespacing invariants: every
+// registered command is prefixed with commandPrefix, is a valid Discord command
+// name, and strips back (as interactionCreate does) to a bare ID that is exactly
+// one of the routable commands in readOnlyCommandNames or opsCommandNames. The
+// stripped set must equal the union of those maps — so a command added to
+// slashCommands() without a classification (or vice versa) fails the build.
+func TestSlashCommandsNamespaced(t *testing.T) {
+	registered := map[string]bool{}
+	for _, c := range slashCommands() {
+		if !strings.HasPrefix(c.Name, commandPrefix) {
+			t.Errorf("command %q is not prefixed with %q", c.Name, commandPrefix)
+		}
+		if !discordCommandNameRe.MatchString(c.Name) {
+			t.Errorf("command %q is not a valid Discord command name (len/charset)", c.Name)
+		}
+		bare := strings.TrimPrefix(c.Name, commandPrefix)
+		if bare == "" {
+			t.Errorf("command %q strips to an empty ID", c.Name)
+			continue
+		}
+		if !readOnlyCommandNames[bare] && !opsCommandNames[bare] {
+			t.Errorf("command %q strips to %q, which is in neither readOnlyCommandNames nor opsCommandNames", c.Name, bare)
+		}
+		if registered[bare] {
+			t.Errorf("command ID %q registered more than once", bare)
+		}
+		registered[bare] = true
+	}
+
+	for name := range readOnlyCommandNames {
+		if !registered[name] {
+			t.Errorf("readOnlyCommandNames has %q but slashCommands() never registers %q", name, commandPrefix+name)
+		}
+	}
+	for name := range opsCommandNames {
+		if !registered[name] {
+			t.Errorf("opsCommandNames has %q but slashCommands() never registers %q", name, commandPrefix+name)
 		}
 	}
 }

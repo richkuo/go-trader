@@ -42,15 +42,21 @@ func leaderboardTopN(cfg *Config) int {
 // (previously written to leaderboard.json every cycle). lifetimeStats (#580)
 // is keyed by strategy ID; missing keys render zero round trips because
 // SQLite trades are authoritative — pass nil when unavailable.
-func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats) map[string]string {
+// BuildLeaderboardMessages builds the daily top/bottom leaderboard messages.
+// walletBalances and accountShared are used to compute shared-wallet-adjusted
+// TOTAL rows (#915); pass nil maps to skip adjustment (falls back to the naive
+// per-strategy sum for the TOTAL row).
+func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats, walletBalances map[SharedWalletKey]float64, accountShared map[SharedWalletKey][]string) map[string]string {
 	var allEntries []LeaderboardEntry
+	configByID := make(map[string]StrategyConfig, len(cfg.Strategies))
 
 	for _, sc := range cfg.Strategies {
+		configByID[sc.ID] = sc
 		ss := state.Strategies[sc.ID]
 		if ss == nil {
 			continue
 		}
-		pv := PortfolioValue(ss, prices)
+		pv := displayStrategyValue(ss, prices)
 		initCap := EffectiveInitialCapital(sc, ss)
 		pnl := pv - initCap
 		pnlPct := 0.0
@@ -67,8 +73,8 @@ func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]fl
 
 	topN := leaderboardTopN(cfg)
 	return map[string]string{
-		"top":    formatAllTimeMessage("🏆", "Top All-Time Performers", allEntries, true, topN, prices, cfg.Regime, state, cfg),
-		"bottom": formatAllTimeMessage("💀", "Bottom All-Time Performers", allEntries, false, topN, prices, cfg.Regime, state, cfg),
+		"top":    formatAllTimeMessage("🏆", "Top All-Time Performers", allEntries, true, topN, prices, cfg.Regime, state, cfg, configByID, walletBalances, accountShared),
+		"bottom": formatAllTimeMessage("💀", "Bottom All-Time Performers", allEntries, false, topN, prices, cfg.Regime, state, cfg, configByID, walletBalances, accountShared),
 	}
 }
 
@@ -176,7 +182,38 @@ func writeLeaderboardHeaderPrices(sb *strings.Builder, entries []LeaderboardEntr
 // formatLeaderboardMessage formats a leaderboard message for a sorted slice of entries.
 // Used by formatAllTimeMessage (top/bottom) and BuildLeaderboardSummary (per-platform summaries).
 // Callers are responsible for passing a positive topN (see leaderboardTopN).
-func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, showType bool, topN int, prices map[string]float64, regime *RegimeConfig, state *AppState, cfg *Config) string {
+// leaderboardAdjustedTotal returns the shared-wallet-adjusted portfolio value
+// for a set of leaderboard entries. Entries whose strategy configs cannot be
+// found in configByID contribute their e.Value directly (no dedup).
+// Returns -1 (the "no adjustment available" sentinel — a portfolio value is
+// never negative) when no wallet dedup can be performed (e.g. nil configByID)
+// so the caller falls through to the naive sum. A real adjusted value of $0
+// (drained shared wallet) is returned as 0 and used as-is.
+func leaderboardAdjustedTotal(
+	entries []LeaderboardEntry,
+	configByID map[string]StrategyConfig,
+	state *AppState,
+	prices map[string]float64,
+	walletBalances map[SharedWalletKey]float64,
+	accountShared map[SharedWalletKey][]string,
+) float64 {
+	if len(configByID) == 0 || len(entries) == 0 {
+		return -1
+	}
+	var subset []StrategyConfig
+	for _, e := range entries {
+		if sc, ok := configByID[e.ID]; ok {
+			subset = append(subset, sc)
+		}
+	}
+	if len(subset) == 0 {
+		return -1
+	}
+	adj, _ := computeSubsetDisplayValue(subset, state, prices, walletBalances, accountShared)
+	return adj
+}
+
+func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, showType bool, topN int, prices map[string]float64, regime *RegimeConfig, state *AppState, cfg *Config, adjustedTotal float64) string {
 	// Sort by PnL% descending.
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].PnLPct > entries[j].PnLPct
@@ -207,7 +244,19 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 			flat++
 		}
 	}
-	totalPnl := totalValue - totalCapital
+	// Use the caller-supplied shared-wallet-adjusted total when available so
+	// the TOTAL row doesn't double-count virtual cash in shared-wallet setups
+	// (#915). Per-strategy rows above are unaffected.
+	//
+	// Sentinel: a negative adjustedTotal means "no adjustment available" (fall
+	// back to the naive Σ e.Value). A portfolio value is never negative, so a
+	// legitimately drained shared wallet (real balance $0) displays $0 instead
+	// of being mistaken for "unset" (#917 review item 3).
+	totalDisplayValue := totalValue
+	if adjustedTotal >= 0 {
+		totalDisplayValue = adjustedTotal
+	}
+	totalPnl := totalDisplayValue - totalCapital
 	totalPnlPct := 0.0
 	if totalCapital > 0 {
 		totalPnlPct = (totalPnl / totalCapital) * 100
@@ -270,7 +319,7 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 	if len(totalLabel) > labelMax {
 		totalLabel = totalLabel[:labelMax]
 	}
-	totValStr := "$" + fmtComma(totalValue)
+	totValStr := "$" + fmtComma(totalDisplayValue)
 	totPnlStr := fmtSignedDollar(totalPnl)
 	totPctStr := fmtSignedPct(totalPnlPct)
 	totWlStr := fmtWinLossRatio(totalWins, totalLosses)
@@ -287,7 +336,9 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 
 // formatAllTimeMessage formats the top/bottom all-time leaderboard.
 // isTop controls sort direction; topN controls how many entries to show.
-func formatAllTimeMessage(icon, title string, entries []LeaderboardEntry, isTop bool, topN int, prices map[string]float64, regime *RegimeConfig, state *AppState, cfg *Config) string {
+// configByID, walletBalances, and accountShared are used to compute a
+// shared-wallet-adjusted TOTAL row (#915); pass nil maps to skip adjustment.
+func formatAllTimeMessage(icon, title string, entries []LeaderboardEntry, isTop bool, topN int, prices map[string]float64, regime *RegimeConfig, state *AppState, cfg *Config, configByID map[string]StrategyConfig, walletBalances map[SharedWalletKey]float64, accountShared map[SharedWalletKey][]string) string {
 	// Sort: top = descending PnL%, bottom = ascending PnL%.
 	sorted := make([]LeaderboardEntry, len(entries))
 	copy(sorted, entries)
@@ -307,7 +358,8 @@ func formatAllTimeMessage(icon, title string, entries []LeaderboardEntry, isTop 
 	}
 	top := sorted[:n]
 
-	return formatLeaderboardMessage(icon, title, top, true, n, prices, regime, state, cfg)
+	adj := leaderboardAdjustedTotal(top, configByID, state, prices, walletBalances, accountShared)
+	return formatLeaderboardMessage(icon, title, top, true, n, prices, regime, state, cfg, adj)
 }
 
 // PostLeaderboard computes the leaderboard on-demand and posts all messages to
@@ -316,7 +368,12 @@ func formatAllTimeMessage(icon, title string, entries []LeaderboardEntry, isTop 
 // fresh data at post time — the data is only used by the daily cron post and
 // the --leaderboard flag, so there is no benefit to pre-computation.
 func PostLeaderboard(cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats, notifier *MultiNotifier) error {
-	return postLeaderboardMessages(BuildLeaderboardMessages(cfg, state, prices, sharpeByStrategy, lifetimeStats), notifier)
+	// Fetch shared-wallet balances for adjusted TOTAL rows (#915). Best-effort:
+	// failures produce nil maps and BuildLeaderboardMessages falls back to the
+	// naive sum (same as before #915).
+	walletBalances, _ := fetchSharedWalletBalances(cfg.Strategies, nil)
+	accountShared := detectSharedWallets(cfg.Strategies)
+	return postLeaderboardMessages(BuildLeaderboardMessages(cfg, state, prices, sharpeByStrategy, lifetimeStats, walletBalances, accountShared), notifier)
 }
 
 // postLeaderboardMessages posts pre-built leaderboard messages. Separated from
@@ -383,7 +440,14 @@ func platformIcon(platform string) string {
 // optionally ticker) sorted by PnL% descending, truncated to TopN. Returns ""
 // if no strategies match — caller should skip posting in that case.
 // Issue #308. lifetimeStats may be nil; missing keys render zero round trips.
-func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats) string {
+//
+// walletBalances/accountShared feed the shared-wallet-adjusted TOTAL (#915) and
+// are supplied by the caller — NOT fetched here — because this runs under the
+// state write lock on the per-cycle path (collectDueLeaderboardSummaries); the
+// network I/O of fetchSharedWalletBalances must stay outside the lock. The
+// CLI exit path (runLeaderboardSummariesAndExit) fetches once before the loop
+// and passes the result in. Pass nil for both to fall back to the naive sum.
+func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats, walletBalances map[SharedWalletKey]float64, accountShared map[SharedWalletKey][]string) string {
 	topN := lc.TopN
 	if topN <= 0 {
 		topN = 5
@@ -391,6 +455,7 @@ func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *Ap
 	tickerFilter := strings.ToUpper(strings.TrimSpace(lc.Ticker))
 
 	var entries []LeaderboardEntry
+	configByID := make(map[string]StrategyConfig)
 	for _, sc := range cfg.Strategies {
 		if !strings.EqualFold(sc.Platform, lc.Platform) {
 			continue
@@ -402,7 +467,7 @@ func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *Ap
 		if ss == nil {
 			continue
 		}
-		pv := PortfolioValue(ss, prices)
+		pv := displayStrategyValue(ss, prices)
 		initCap := EffectiveInitialCapital(sc, ss)
 		pnl := pv - initCap
 		pnlPct := 0.0
@@ -410,6 +475,7 @@ func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *Ap
 			pnlPct = (pnl / initCap) * 100
 		}
 		entries = append(entries, newLeaderboardEntry(sc, ss, pv, initCap, pnl, pnlPct, sharpeByStrategy, lifetimeStats, cfg.IntervalSeconds))
+		configByID[sc.ID] = sc
 	}
 
 	if len(entries) == 0 {
@@ -424,12 +490,18 @@ func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *Ap
 		n = len(entries)
 	}
 
+	// Compute shared-wallet-adjusted TOTAL for the shown entries (#915). Wallet
+	// balances are supplied by the caller (already fetched outside the lock) so
+	// this path performs no network I/O — critical because the per-cycle caller
+	// holds the state write lock. nil balances → naive sum fallback.
+	adj := leaderboardAdjustedTotal(entries[:n], configByID, state, prices, walletBalances, accountShared)
+
 	platformTitle := titleCase(lc.Platform)
 	title := fmt.Sprintf("%s Top %d", platformTitle, n)
 	if tickerFilter != "" {
 		title = fmt.Sprintf("%s %s Top %d", platformTitle, tickerFilter, n)
 	}
-	return formatLeaderboardMessage(platformIcon(lc.Platform), title, entries[:n], false, n, prices, cfg.Regime, state, cfg)
+	return formatLeaderboardMessage(platformIcon(lc.Platform), title, entries[:n], false, n, prices, cfg.Regime, state, cfg, adj)
 }
 
 // truncateRunes returns s clipped to at most max runes. Rune-aware so multi-byte

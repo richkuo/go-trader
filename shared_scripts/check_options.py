@@ -20,7 +20,7 @@ _REPO_ROOT = os.path.dirname(_THIS_DIR)
 sys.path.insert(0, _REPO_ROOT)
 sys.path.insert(0, os.path.join(_REPO_ROOT, "shared_tools"))
 
-from regime import latest_regime
+from regime import latest_regime, regime_from_injected_payload
 
 MAX_POSITIONS_PER_STRATEGY = 4
 MIN_SCORE_THRESHOLD = 0.3
@@ -409,15 +409,22 @@ def main():
     # #645: startup compatibility probe — exit 0 without running the strategy.
     if "--probe-only" in sys.argv:
         sys.exit(0)
-    # Parse args: strip --platform= before positional parsing
+    # Parse args: strip --platform= / --regime-payload-json= before positional parsing
     args = sys.argv[1:]
     platform = "deribit"
+    # #879: precomputed global-store regime payload; presence (even empty)
+    # disables the inline 4h regime fetch. None when the flag is absent.
+    regime_payload_json = None
     remaining = []
     for arg in args:
         if arg.startswith("--platform="):
             platform = arg.split("=", 1)[1]
         elif arg.startswith("--platform"):
             pass  # bare flag without value, ignore
+        elif arg.startswith("--regime-payload-json="):
+            regime_payload_json = arg.split("=", 1)[1]
+        elif arg.startswith("--regime-payload-json"):
+            regime_payload_json = ""
         else:
             remaining.append(arg)
 
@@ -498,9 +505,17 @@ def main():
 
         vol_annual, iv_rank = adapter.get_vol_metrics(underlying)
 
-        regime_df = _fetch_ohlcv_df(underlying, REGIME_TIMEFRAME, REGIME_LIMIT,
-                                    REGIME_MIN_BARS, adapter=adapter)
-        regime_label = _regime_label_from_df(regime_df)
+        if regime_payload_json is not None:
+            # #879: Go injected the precomputed bundle for this underlying's
+            # (4h, ADX) signature — never refetch/recompute inline. An empty
+            # injection (regime-subprocess failure) resolves to None, the same
+            # value the inline path emits on a failed fetch.
+            _, _, regime_snap = regime_from_injected_payload(regime_payload_json)
+            regime_label = str(regime_snap.get("regime") or "") or None
+        else:
+            regime_df = _fetch_ohlcv_df(underlying, REGIME_TIMEFRAME, REGIME_LIMIT,
+                                        REGIME_MIN_BARS, adapter=adapter)
+            regime_label = _regime_label_from_df(regime_df)
 
         evaluate_fn = STRATEGY_MAP[strategy_name]
         signal, actions, iv_rank = evaluate_fn(

@@ -206,7 +206,7 @@ func main() {
 	// first risk-check cycle once current value drops to the surviving subset.
 	if pruned && state.PortfolioRisk.PeakValue > 0 {
 		oldPeak := state.PortfolioRisk.PeakValue
-		newPeak := rebaselinePortfolioPeakAfterPrune(state, cfg)
+		newPeak := rebaselinePortfolioPeakAfterPrune(state, cfg, nil)
 		if newPeak != oldPeak {
 			state.PortfolioRisk.PeakValue = newPeak
 			fmt.Printf("  Portfolio peak rebaselined after prune: $%.0f -> $%.0f\n", oldPeak, newPeak)
@@ -742,10 +742,50 @@ func main() {
 			fmt.Println()
 		}
 
+		// totalPV holds the shared-wallet-adjusted portfolio value computed during
+		// the portfolio risk check; it is reused in the cycle summary log below
+		// so the summary doesn't double-count virtual cash in shared-wallet
+		// setups (#908).
+		var totalPV float64
+		sharedWallets := detectSharedWallets(cfg.Strategies)
+		// walletBalances is populated in the else branch below (where HL/OKX
+		// state is fetched) and reused by the summary and leaderboard paths
+		// that follow. Empty in the saveFailures>=3 fast-exit branch — those
+		// paths fall back to virtual-sum as before.
+		walletBalances := make(map[SharedWalletKey]float64)
+
 		// Process only due strategies
 		if saveFailures >= 3 {
 			fmt.Println("[CRITICAL] State save failed 3x, skipping trades this cycle")
+			// #879: the fan-out below is skipped, so clear the regime store —
+			// /api/regime must not keep serving the prior cycle's labels as
+			// fake-live while trading is suspended.
+			globalRegimeStore.resetForCycle(time.Now().UTC())
+			// #918: no balance fetch on this degenerate cycle, so clear any prior
+			// exchange-derived shared-wallet values to avoid serving stale equity
+			// from /status; display falls back to PortfolioValue.
+			mu.Lock()
+			for _, ss := range state.Strategies {
+				if ss != nil {
+					ss.SharedWalletValueSet = false
+				}
+			}
+			mu.Unlock()
+			mu.RLock()
+			totalPV, _ = computeTotalPortfolioValue(cfg.Strategies, state, prices, nil, sharedWallets)
+			mu.RUnlock()
 		} else {
+			// #879: kick off the per-cycle global regime store — one regime
+			// subprocess per distinct (platform, symbol, timeframe, spec)
+			// signature among due strategies. Runs CONCURRENTLY with the
+			// portfolio risk / kill-switch phase below so a regime hang can
+			// never delay risk management; regimeStoreReady() blocks (with a
+			// phase budget) right before the check fan-out, the first store
+			// consumer. Every regime consumer this cycle (entry gates,
+			// stratState sync, stamp-at-open, check-script injection, flat
+			// manual, options, dashboard) reads this map; check scripts no
+			// longer compute regime inline.
+			regimeStoreReady := startRegimeStorePopulation(globalRegimeStore, dueStrategies, cfg.Regime, notifier)
 			// #42 / #243: Portfolio-level risk check before running any strategy.
 			//
 			// Fetch live Hyperliquid clearinghouseState ONCE per cycle (outside
@@ -757,6 +797,7 @@ func main() {
 			// perps strategies on the same account don't get double-counted.
 			killSwitchFired := false
 			notionalBlocked := false
+			usedPVFallback := false
 
 			// Partition HL live strategies up-front: shared-wallet detection
 			// must see all strategies in cfg, while position sync only touches
@@ -836,7 +877,6 @@ func main() {
 				}
 			}
 
-			sharedWallets := detectSharedWallets(cfg.Strategies)
 			hlAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 			hlKey := SharedWalletKey{Platform: "hyperliquid", Account: hlAddr}
 			_, hlShared := sharedWallets[hlKey]
@@ -844,7 +884,7 @@ func main() {
 			// Fetch HL clearinghouseState once if any consumer needs it:
 			// - shared-wallet risk check (2+ live HL strategies in cfg)
 			// - position sync for at least one due HL strategy
-			walletBalances := make(map[SharedWalletKey]float64)
+			// walletBalances is declared at cycle scope (above) and populated here.
 			var hlPositions []HLPosition
 			var hlStateFetched bool
 			// Fetch clearinghouseState whenever any live HL strategy exists (#356
@@ -912,7 +952,7 @@ func main() {
 			}
 
 			mu.RLock()
-			totalPV, usedPVFallback := computeTotalPortfolioValue(cfg.Strategies, state, prices, walletBalances, sharedWallets)
+			totalPV, usedPVFallback = computeTotalPortfolioValue(cfg.Strategies, state, prices, walletBalances, sharedWallets)
 			totalNotional := PortfolioNotional(state.Strategies, prices)
 			// #296: aggregate perps margin drawdown inputs alongside the
 			// equity total so the portfolio kill switch can fire on a
@@ -968,7 +1008,17 @@ func main() {
 			if notionalBlocked {
 				fmt.Printf("[WARN] %s\n", portfolioReason)
 			}
+			// #918: exchange-authoritative shared-wallet reconciliation. Derive
+			// each member strategy's display value from the real account balance
+			// + on-chain positions just fetched (no extra I/O) so the per-strategy
+			// operator rows sum EXACTLY to the wallet balance, and capture
+			// per-wallet drift for the alarm below. Runs under the same write lock
+			// the risk check holds (mutates StrategyState.SharedWalletValue*).
+			driftResults := reconcileSharedWalletDisplayValues(cfg.Strategies, state, sharedWallets, walletBalances, hlPositions, okxPositions, okxStateFetched)
 			mu.Unlock()
+
+			// Fire throttled drift alarms outside the lock (notifier I/O).
+			reportSharedWalletDrift(notifier, driftResults)
 
 			// #341 / #345 / #346 / #347: Submit market closes to
 			// Hyperliquid, OKX, Robinhood, AND TopStep for every non-zero
@@ -1081,6 +1131,16 @@ func main() {
 
 			// Warning alert: drawdown approaching kill switch threshold.
 			if portfolioWarning && notifier.HasBackends() {
+				warnNow := time.Now().UTC()
+				var recentTrades []Trade
+				if stateDB != nil {
+					if rows, err := stateDB.RecentTrades(warnNow.Add(-portfolioWarningRecentWindow), portfolioWarningMaxRows); err != nil {
+						fmt.Printf("[WARN] portfolio warning recent-trade lookup failed: %v\n", err)
+					} else {
+						recentTrades = rows
+					}
+				}
+				var warnMsg string
 				mu.Lock()
 				// Source mirrors CheckPortfolioRisk's tie-break: margin wins
 				// ties so the newer #296 signal is surfaced preferentially.
@@ -1097,8 +1157,18 @@ func main() {
 				if portfolioWarnBandEntered {
 					addKillSwitchEvent(&state.PortfolioRisk, "warning", source, warnDD, totalPV, state.PortfolioRisk.PeakValue, portfolioReason)
 				}
+				warnMsg = BuildPortfolioWarningMessage(PortfolioWarningMessageInputs{
+					Reason:      portfolioReason,
+					Config:      cfg.PortfolioRisk,
+					State:       state,
+					Prices:      prices,
+					TotalValue:  totalPV,
+					PerpsLoss:   perpsLoss,
+					PerpsMargin: perpsMargin,
+					Recent:      recentTrades,
+					Now:         warnNow,
+				})
 				mu.Unlock()
-				warnMsg := fmt.Sprintf("**PORTFOLIO WARNING**\n%s", portfolioReason)
 				notifier.SendToAllChannels(warnMsg)
 				notifier.SendOwnerDM(warnMsg)
 				fmt.Printf("[WARN] %s\n", portfolioReason)
@@ -1274,6 +1344,10 @@ func main() {
 					}
 				}
 
+				// #879: the dispatch loop below is the first regime-store
+				// consumer — wait (bounded by regimeStorePhaseBudget) for the
+				// population kicked off before the risk phase.
+				regimeStoreReady()
 				for _, sc := range dueStrategies {
 					stratState := state.Strategies[sc.ID]
 					if stratState == nil {
@@ -1430,9 +1504,13 @@ func main() {
 					}
 					mu.Lock()
 					allowed, reason := CheckRisk(&sc, stratState, pv, prices, logger, riskAssist)
+					cbSnapshot := perStrategyCircuitBreakerSnapshot{}
+					if !allowed && isFreshPerStrategyCircuitBreaker(reason) {
+						cbSnapshot = snapshotPerStrategyCircuitBreaker(stratState, prices)
+					}
 					mu.Unlock()
 					if !allowed {
-						notifyPerStrategyCircuitBreaker(sc, reason, pv, notifier, killSwitchFired)
+						notifyPerStrategyCircuitBreakerWithSnapshot(sc, cbSnapshot, reason, pv, totalPV, stateDB, notifier, killSwitchFired)
 						logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
 						logger.Close()
 						lastRun[sc.ID] = time.Now()
@@ -1455,12 +1533,17 @@ func main() {
 						if sc.Platform == "okx" {
 							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, notifier, logger); ok {
 								prices[result.Symbol] = price
-								if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, okxPosQty); regimeBlocked {
+								// #879: single-source regime — read the global store for this
+								// strategy's signature instead of the check output, and point
+								// result.Regime at it so stamp-at-open inside execute* shares it.
+								storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
+								result.Regime = &storeRegime
+								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, okxPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 									result.Signal = 0
 								}
 								mu.Lock()
-								syncStrategyRegimeState(stratState, regimePayloadValue(result.Regime), cfg.Regime)
+								syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 								mu.Unlock()
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
@@ -1480,12 +1563,17 @@ func main() {
 						} else if sc.Platform == "robinhood" {
 							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, rhPosCtx, cfg.Regime, notifier, logger); ok {
 								prices[result.Symbol] = price
-								if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, rhPosQty); regimeBlocked {
+								// #879: single-source regime — read the global store for this
+								// strategy's signature instead of the check output, and point
+								// result.Regime at it so stamp-at-open inside execute* shares it.
+								storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
+								result.Regime = &storeRegime
+								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, rhPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 									result.Signal = 0
 								}
 								mu.Lock()
-								syncStrategyRegimeState(stratState, regimePayloadValue(result.Regime), cfg.Regime)
+								syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 								mu.Unlock()
 								var execResult *RobinhoodExecuteResult
 								liveExecFailed := false
@@ -1503,19 +1591,29 @@ func main() {
 								}
 							}
 						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, spotPosCtx, cfg.Regime, notifier, logger); ok {
-							if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, spotPosCtx.Quantity); regimeBlocked {
+							// #879: single-source regime — read the global store for this
+							// strategy's signature instead of the check output, and point
+							// result.Regime at it so stamp-at-open inside execute* shares it.
+							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
+							result.Regime = &storeRegime
+							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, spotPosCtx.Quantity); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 								result.Signal = 0
 							}
 							mu.Lock()
-							syncStrategyRegimeState(stratState, regimePayloadValue(result.Regime), cfg.Regime)
+							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							trades, detail = executeSpotResult(sc, stratState, stateDB, result, signalStr, price, cfg.Regime, logger)
 							mu.Unlock()
 						}
 					case "options":
 						if result, signalStr, ok := runOptionsCheck(sc, posJSON, notifier, logger); ok {
+							// #879: options regime now comes from the global store's
+							// (underlying, 4h, ADX-default) bundle instead of the
+							// check script's inline fetch; the injected payload keeps
+							// the script's own emitted label identical.
+							optionsRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							mu.Lock()
-							stratState.Regime = result.Regime
+							stratState.Regime = optionsRegime.PrimaryLabel(nil)
 							var harvestDetails []string
 							trades, detail, harvestDetails = executeOptionsResult(sc, stratState, result, signalStr, logger)
 							mu.Unlock()
@@ -1528,12 +1626,17 @@ func main() {
 						if sc.Platform == "okx" {
 							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, notifier, logger); ok {
 								prices[result.Symbol] = price
-								if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, okxPosQty); regimeBlocked {
+								// #879: single-source regime — read the global store for this
+								// strategy's signature instead of the check output, and point
+								// result.Regime at it so stamp-at-open inside execute* shares it.
+								storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
+								result.Regime = &storeRegime
+								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, okxPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 									result.Signal = 0
 								}
 								mu.Lock()
-								syncStrategyRegimeState(stratState, regimePayloadValue(result.Regime), cfg.Regime)
+								syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 								mu.Unlock()
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
@@ -1552,12 +1655,21 @@ func main() {
 							}
 						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, notifier, logger); ok {
 							prices[result.Symbol] = price
-							if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, hlPosQty); regimeBlocked {
+							// #879: single-source regime — read the global store for this
+							// strategy's signature instead of the check output, and point
+							// result.Regime at it so stamp-at-open inside execute* shares it.
+							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
+							result.Regime = &storeRegime
+							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, hlPosQty); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 								result.Signal = 0
 							}
 							mu.Lock()
-							syncStrategyRegimeState(stratState, regimePayloadValue(result.Regime), cfg.Regime)
+							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
+							// #907: update per-strategy divergence state after regime sync.
+							// result.Divergence is populated by runHyperliquidCheck when
+							// regime_window_divergence is configured on sc.
+							updateStrategyDivergenceState(stratState, result.Divergence)
 							mu.Unlock()
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
@@ -1813,12 +1925,17 @@ func main() {
 					case "futures":
 						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, cfg.Regime, notifier, logger); ok {
 							prices[result.Symbol] = price
-							if gateRegime, regimeBlocked := applyRegimeGate(sc, regimePayloadValue(result.Regime), cfg.Regime, tsContracts); regimeBlocked {
+							// #879: single-source regime — read the global store for this
+							// strategy's signature instead of the check output, and point
+							// result.Regime at it so stamp-at-open inside execute* shares it.
+							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
+							result.Regime = &storeRegime
+							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, tsContracts); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 								result.Signal = 0
 							}
 							mu.Lock()
-							syncStrategyRegimeState(stratState, regimePayloadValue(result.Regime), cfg.Regime)
+							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							mu.Unlock()
 							var execResult *TopStepExecuteResult
 							liveExecFailed := false
@@ -1861,7 +1978,17 @@ func main() {
 						// pos.Regime == "" on the first post-open cycle, so the regime
 						// trail no-op'd for one interval; stamping first arms it
 						// correctly on cycle 1.
-						closeFraction, _, manualRegime, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger)
+						closeFraction, _, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger)
+						// #879: the live regime comes from the global store, not the
+						// close-eval's check output — so a FLAT manual strategy now
+						// shows a live regime too (pre-#879 the HL check only ran
+						// with an open position, leaving regime=- while flat).
+						// If the bundle failed on the very cycle a manual position
+						// opened, the stamp below is an empty no-op and regime-keyed
+						// closes stay unarmed until a later cycle's bundle succeeds —
+						// the stamp is idempotent on pos.Regime == "", so it
+						// self-heals (documented fail-open tradeoff).
+						manualRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 						if manualOK {
 							mu.Lock()
 							// Refresh the strategy-level live regime every cycle, like
@@ -2052,7 +2179,7 @@ func main() {
 
 					// Phase 6: RLock — status log
 					mu.RLock()
-					pv = PortfolioValue(stratState, prices)
+					pv = displayStrategyValue(stratState, prices)
 					posCount := len(stratState.Positions) + len(stratState.OptionPositions)
 					cash := stratState.Cash
 					regimeLabel := stratState.Regime
@@ -2066,18 +2193,16 @@ func main() {
 			} // end if !killSwitchFired
 		}
 
-		// Calculate total portfolio value and per-channel values/strategies.
-		// Group by logical channel key (platform or type) so summaries work with any backend.
+		// Build per-channel strategy lists for channel-level summaries.
+		// Adjusted TOTAL rows are computed per-channel/per-asset below via
+		// computeSubsetDisplayValue using the hoisted walletBalances map so
+		// shared wallets are not double-counted in TOTAL rows (#915) and the
+		// TOTAL reconciles with exchange-derived per-strategy rows (#918).
 		mu.RLock()
-		totalValue := 0.0
-		channelValue := make(map[string]float64)
 		channelStrats := make(map[string][]StrategyConfig)
 		for _, sc := range cfg.Strategies {
-			if s, ok := state.Strategies[sc.ID]; ok {
-				pv := PortfolioValue(s, prices)
-				totalValue += pv
+			if _, ok := state.Strategies[sc.ID]; ok {
 				if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type); chKey != "" {
-					channelValue[chKey] += pv
 					channelStrats[chKey] = append(channelStrats[chKey], sc)
 				}
 			}
@@ -2085,7 +2210,7 @@ func main() {
 		mu.RUnlock()
 
 		elapsed := time.Since(cycleStart)
-		logMgr.LogSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalValue)
+		logMgr.LogSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalPV)
 
 		// Pre-compute closed-position history once per cycle so per-channel /
 		// per-asset Sharpe calls (and the later ComputeSharpeByStrategy for
@@ -2118,7 +2243,7 @@ func main() {
 				}
 				chTrades := channelTrades[chKey]
 				// Per-channel summary cadence (#30). Legacy default: continuous
-				// channel types (options/perps/futures) post every channel run; spot
+				// channel types (options/perps/futures/manual) post every channel run; spot
 				// posts hourly. Override per channel via cfg.SummaryFrequency.
 				// Trades always force a post so operators see executions
 				// immediately regardless of cadence.
@@ -2134,9 +2259,12 @@ func main() {
 						detailKey = chKey + "|" + assetKeys[0]
 					}
 					chDetails := channelTradeDetails[detailKey]
-					chValue := channelValue[chKey]
+					// Compute shared-wallet-adjusted total for TOTAL row (#915);
+					// gated members sum exchange-derived values so the TOTAL
+					// reconciles with the per-strategy rows (#918).
+					chAdj, _ := computeSubsetDisplayValue(chStrats, state, prices, walletBalances, sharedWallets)
 					chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
-					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chValue, prices, chDetails, chStrats, state, chKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats, cfg.Regime)
+					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chAdj, prices, chDetails, chStrats, state, chKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats, cfg.Regime)
 					for _, msg := range msgs {
 						notifier.SendToChannel(chKey, chKey, msg)
 					}
@@ -2145,15 +2273,14 @@ func main() {
 					for _, asset := range assetKeys {
 						assetStrats := assetGroups[asset]
 						assetDetails := channelTradeDetails[chKey+"|"+asset]
-						assetValue := 0.0
-						for _, sc := range assetStrats {
-							if s, ok := state.Strategies[sc.ID]; ok {
-								assetValue += PortfolioValue(s, prices)
-							}
-						}
+						// Subset-adjusted total. Per-asset groups always straddle a
+						// multi-coin shared wallet; gated members sum their
+						// exchange-derived values so this one-row TOTAL matches
+						// the rows above it (#918), ungated keep #915 semantics.
+						assetAdj, _ := computeSubsetDisplayValue(assetStrats, state, prices, walletBalances, sharedWallets)
 						assetTrades := len(assetDetails)
 						assetSharpe := aggregateSharpe(closedByStrategy, assetStrats, state, rfr)
-						msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetValue, prices, assetDetails, assetStrats, state, chKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats, cfg.Regime)
+						msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetAdj, prices, assetDetails, assetStrats, state, chKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats, cfg.Regime)
 						for _, msg := range msgs {
 							notifier.SendToChannel(chKey, chKey, msg)
 						}
@@ -2174,7 +2301,7 @@ func main() {
 		// HTTPS latency can't stall the scheduler cycle.
 		var duePending []pendingLeaderboardSummary
 		if notifier.HasBackends() {
-			duePending = collectDueLeaderboardSummaries(cfg, state, prices, ComputeSharpeByStrategy(closedByStrategy, cfg, state), lifetimeStats)
+			duePending = collectDueLeaderboardSummaries(cfg, state, prices, ComputeSharpeByStrategy(closedByStrategy, cfg, state), lifetimeStats, walletBalances, sharedWallets)
 		}
 
 		if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
@@ -2230,7 +2357,9 @@ func main() {
 			} else {
 				sharpeByStrategy := ComputeSharpeByStrategy(closedByStrategy, cfg, state)
 				mu.RLock()
-				lbMessages := BuildLeaderboardMessages(cfg, state, prices, sharpeByStrategy, lifetimeStats)
+				// Pass hoisted walletBalances so the leaderboard TOTAL rows use
+				// shared-wallet-adjusted values (#915).
+				lbMessages := BuildLeaderboardMessages(cfg, state, prices, sharpeByStrategy, lifetimeStats, walletBalances, sharedWallets)
 				mu.RUnlock()
 				if len(lbMessages) == 0 {
 					fmt.Println("[leaderboard] Auto-post skipped: no strategy state to leaderboard yet")
@@ -2343,13 +2472,11 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	}
 	augmentMarksBestEffort(cfg, prices)
 
-	// Calculate channel value.
-	chValue := 0.0
-	for _, sc := range chStrats {
-		if s, ok := state.Strategies[sc.ID]; ok {
-			chValue += PortfolioValue(s, prices)
-		}
-	}
+	// Fetch shared-wallet balances for adjusted TOTAL rows (#915). Must be
+	// done without holding any state lock; best-effort — failure falls back
+	// to the per-strategy virtual sum for the TOTAL row.
+	summaryWalletBalances, _ := fetchSharedWalletBalances(cfg.Strategies, nil)
+	summaryAccountShared := detectSharedWallets(cfg.Strategies)
 
 	// Format and send summary using the same asset-grouping logic as the main loop.
 	closedByStrategy := LoadClosedPositionsByStrategy(sdb, cfg)
@@ -2357,8 +2484,9 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	lifetimeStats := loadLifetimeStatsBestEffort(sdb, "[summary]")
 	assetGroups, assetKeys := groupByAsset(chStrats)
 	if len(assetKeys) <= 1 {
+		chAdj, _ := computeSubsetDisplayValue(chStrats, state, prices, summaryWalletBalances, summaryAccountShared)
 		chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
-		msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, chValue, prices, nil, chStrats, state, channelKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats, cfg.Regime)
+		msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, chAdj, prices, nil, chStrats, state, channelKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats, cfg.Regime)
 		for _, msg := range msgs {
 			notifier.SendToChannel(channelKey, channelKey, msg)
 			fmt.Println(msg)
@@ -2366,14 +2494,9 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	} else {
 		for _, asset := range assetKeys {
 			assetStrats := assetGroups[asset]
-			assetValue := 0.0
-			for _, sc := range assetStrats {
-				if s, ok := state.Strategies[sc.ID]; ok {
-					assetValue += PortfolioValue(s, prices)
-				}
-			}
+			assetAdj, _ := computeSubsetDisplayValue(assetStrats, state, prices, summaryWalletBalances, summaryAccountShared)
 			assetSharpe := aggregateSharpe(closedByStrategy, assetStrats, state, rfr)
-			msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetValue, prices, nil, assetStrats, state, channelKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats, cfg.Regime)
+			msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetAdj, prices, nil, assetStrats, state, channelKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats, cfg.Regime)
 			for _, msg := range msgs {
 				notifier.SendToChannel(channelKey, channelKey, msg)
 				fmt.Println(msg)
@@ -2403,6 +2526,7 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 	}
 	args = appendRegimeArgs(args, regime)
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
+	args = appendRegimePayloadArg(args, sc, regime)
 	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
@@ -2529,9 +2653,16 @@ func indicatorFloat(indicators map[string]interface{}, key string) (float64, boo
 // runOptionsCheck runs the options check subprocess and returns the parsed result.
 // No state access. Returns (result, signalStr, ok); ok=false means skip execution.
 func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier, logger *StrategyLogger) (*OptionsResult, string, bool) {
-	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
+	args := append([]string{}, sc.Args...)
+	// #879: inject the global store's (underlying, 4h, ADX-default) bundle so
+	// check_options.py skips its inline regime fetch. The options signature
+	// ignores cfg.Regime — the inline path was never gated on it.
+	if raw, ok := globalRegimeStore.InjectionJSONForStrategy(sc, nil); ok {
+		args = append(args, "--regime-payload-json="+raw)
+	}
+	logger.Info("Running: python3 %s %v", sc.Script, args)
 
-	result, stderr, err := RunOptionsCheckWithStdin(sc.Script, sc.Args, posJSON)
+	result, stderr, err := RunOptionsCheckWithStdin(sc.Script, args, posJSON)
 	if err != nil {
 		logger.Error("Script failed: %v", err)
 		if stderr != "" {
@@ -2595,10 +2726,30 @@ func shouldSkipZeroCapital(sc StrategyConfig) bool {
 }
 
 func notifyPerStrategyCircuitBreaker(sc StrategyConfig, reason string, portfolioValue float64, notifier *MultiNotifier, portfolioKillSwitchFired bool) {
+	notifyPerStrategyCircuitBreakerWithSnapshot(sc, perStrategyCircuitBreakerSnapshot{}, reason, portfolioValue, 0, nil, notifier, portfolioKillSwitchFired)
+}
+
+func notifyPerStrategyCircuitBreakerWithSnapshot(sc StrategyConfig, snap perStrategyCircuitBreakerSnapshot, reason string, strategyValue, totalPortfolioValue float64, sdb *StateDB, notifier *MultiNotifier, portfolioKillSwitchFired bool) {
 	if notifier == nil || !notifier.HasBackends() || portfolioKillSwitchFired || !isFreshPerStrategyCircuitBreaker(reason) {
 		return
 	}
-	msg := formatPerStrategyCircuitBreakerMessage(sc.ID, reason, portfolioValue)
+	var recent []Trade
+	if sdb != nil {
+		rows, err := sdb.RecentTradesForStrategy(sc.ID, circuitBreakerAlertMaxRows)
+		if err != nil {
+			fmt.Printf("[WARN] circuit-breaker recent-trade lookup failed for %s: %v\n", sc.ID, err)
+		} else {
+			recent = rows
+		}
+	}
+	msg := formatPerStrategyCircuitBreakerBlock(perStrategyCircuitBreakerFormatInput{
+		Strategy:            sc,
+		Snapshot:            snap,
+		Reason:              reason,
+		StrategyValue:       strategyValue,
+		TotalPortfolioValue: totalPortfolioValue,
+		RecentTrades:        recent,
+	})
 	notifier.SendToAllChannels(msg)
 	notifier.SendOwnerDM(msg)
 }
@@ -2609,16 +2760,6 @@ func isFreshPerStrategyCircuitBreaker(reason string) bool {
 	}
 	return strings.HasPrefix(reason, RiskReasonMaxDrawdownExceeded) ||
 		strings.HasPrefix(reason, RiskReasonConsecutiveLosses)
-}
-
-func formatPerStrategyCircuitBreakerMessage(strategyID, reason string, portfolioValue float64) string {
-	// The max-drawdown reason already embeds a portfolio=$... token, so don't
-	// append a duplicate trailing value. Consecutive-losses reasons carry no
-	// portfolio context, so include it there.
-	if strings.Contains(reason, "portfolio=$") {
-		return fmt.Sprintf("**CIRCUIT BREAKER** [%s] %s", strategyID, reason)
-	}
-	return fmt.Sprintf("**CIRCUIT BREAKER** [%s] %s (portfolio=$%.2f)", strategyID, reason, portfolioValue)
 }
 
 // sendTradeAlerts sends trade alerts via DM and/or channel for all configured backends.
@@ -2714,6 +2855,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	}
 	args = appendRegimeArgs(args, regime)
 	args = appendStrategyRegimeWindowArgs(args, *sc, regime)
+	args = appendRegimePayloadArg(args, *sc, regime)
 	if refsArgs, err := buildStrategyRefsArg(scForCheck); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
@@ -2768,6 +2910,25 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 			if _, loaded := regimeDirectionalLegacyWarned.LoadOrStore(sc.ID, struct{}{}); !loaded {
 				logger.Warn("Regime directional policy: open position has no stamped regime (legacy pre-#741); resolving against current regime=%q. Hold-on-transition not guaranteed for this position; self-heals on next entry.", regimeKey)
 			}
+		}
+	}
+	// #907: regime window divergence override — runs AFTER applyRegimeDirectionalPolicy
+	// so the divergence wins when both are configured (medium-window policy entry is
+	// superseded by the short-window hard-flip). Only affects new-entry direction when flat;
+	// open positions keep hold-on-transition freeze (applyRegimeDivergenceOverride guards posQty).
+	if sc.RegimeWindowDivergence.IsConfigured() {
+		payload := regimePayloadValue(result.Regime)
+		divResult := applyRegimeDivergenceOverride(sc, payload, regime, posCtx.Quantity)
+		result.Divergence = divResult
+		if divResult.IsActive() && posCtx.Quantity <= 0 {
+			logger.Info("Regime divergence override: short=%s medium=%s -> direction=%q (was policy-resolved)",
+				divResult.ShortLabel, divResult.MediumLabel, divResult.OverrideDir)
+		} else if divResult.Kind == DivergenceHard {
+			logger.Info("Regime divergence: hard divergence short=%s medium=%s (position open, holding direction)",
+				divResult.ShortLabel, divResult.MediumLabel)
+		} else if divResult.Kind == DivergenceSoft {
+			logger.Info("Regime divergence: soft divergence short=%s medium=%s (no override)",
+				divResult.ShortLabel, divResult.MediumLabel)
 		}
 	}
 	applySignalInversion(*sc, result, logger)
@@ -3186,6 +3347,7 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 	}
 	args = appendRegimeArgs(args, regime)
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
+	args = appendRegimePayloadArg(args, sc, regime)
 	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
@@ -3387,6 +3549,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 	}
 	args = appendRegimeArgs(args, regime)
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
+	args = appendRegimePayloadArg(args, sc, regime)
 	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
@@ -3566,6 +3729,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 	}
 	args = appendRegimeArgs(args, regime)
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
+	args = appendRegimePayloadArg(args, sc, regime)
 	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
@@ -3831,9 +3995,13 @@ func runLeaderboardSummariesAndExit(lcs []LeaderboardSummaryConfig, cfg *Config,
 	prices := fetchPricesForSummary(cfg)
 	sharpeByStrategy := ComputeSharpeByStrategy(LoadClosedPositionsByStrategy(sdb, cfg), cfg, state)
 	lifetimeStats := loadLifetimeStatsBestEffort(sdb, "[leaderboard]")
+	// CLI exit path holds no state lock — safe to fetch wallet balances once
+	// here and reuse across every summary (#915).
+	walletBalances, _ := fetchSharedWalletBalances(cfg.Strategies, nil)
+	accountShared := detectSharedWallets(cfg.Strategies)
 	posted := 0
 	for _, lc := range lcs {
-		msg := BuildLeaderboardSummary(lc, cfg, state, prices, sharpeByStrategy, lifetimeStats)
+		msg := BuildLeaderboardSummary(lc, cfg, state, prices, sharpeByStrategy, lifetimeStats, walletBalances, accountShared)
 		if msg == "" {
 			fmt.Fprintf(os.Stderr, "No strategies match leaderboard summary platform=%s ticker=%s\n", lc.Platform, lc.Ticker)
 			continue
@@ -3892,7 +4060,7 @@ type pendingLeaderboardSummary struct {
 // optimistically so duplicate posts are avoided if the caller's Discord send
 // fails; same semantics as the previous in-lock implementation. Caller must
 // hold the write lock on state. (#308)
-func collectDueLeaderboardSummaries(cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats) []pendingLeaderboardSummary {
+func collectDueLeaderboardSummaries(cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats, walletBalances map[SharedWalletKey]float64, accountShared map[SharedWalletKey][]string) []pendingLeaderboardSummary {
 	if len(cfg.LeaderboardSummaries) == 0 {
 		return nil
 	}
@@ -3911,7 +4079,7 @@ func collectDueLeaderboardSummaries(cfg *Config, state *AppState, prices map[str
 		if !last.IsZero() && now.Sub(last) < freq {
 			continue
 		}
-		msg := BuildLeaderboardSummary(lc, cfg, state, prices, sharpeByStrategy, lifetimeStats)
+		msg := BuildLeaderboardSummary(lc, cfg, state, prices, sharpeByStrategy, lifetimeStats, walletBalances, accountShared)
 		if msg == "" {
 			continue
 		}

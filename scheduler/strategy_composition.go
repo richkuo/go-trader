@@ -134,6 +134,19 @@ func appendRegimeArgs(args []string, regime *RegimeConfig) []string {
 	return out
 }
 
+// appendRegimePayloadArg injects the per-cycle global-store regime payload
+// (#879). Presence of the flag — even with an EMPTY value after a bundle
+// failure — tells the check script to skip inline regime computation and
+// resolve fail-open; omitting it (regime disabled / no signature) leaves the
+// script's inline path untouched for manual CLI invocations.
+func appendRegimePayloadArg(args []string, sc StrategyConfig, regime *RegimeConfig) []string {
+	raw, ok := globalRegimeStore.InjectionJSONForStrategy(sc, regime)
+	if !ok {
+		return args
+	}
+	return append(args, "--regime-payload-json", raw)
+}
+
 func appendStrategyRegimeWindowArgs(args []string, sc StrategyConfig, regime *RegimeConfig) []string {
 	if regime == nil || !regime.Enabled || !regimeMultiWindowEnabled(regime) {
 		return args

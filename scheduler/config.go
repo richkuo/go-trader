@@ -367,6 +367,7 @@ type StrategyConfig struct {
 	ThetaHarvest            *ThetaHarvestConfig      `json:"theta_harvest,omitempty"`
 	FuturesConfig           *FuturesConfig           `json:"futures,omitempty"`
 	RegimeDirectionalPolicy *RegimeDirectionalPolicy `json:"regime_directional_policy,omitempty"` // HL perps only: regime-aware override for Direction + InvertSignal. When set, runHyperliquidCheck resolves the effective pair per-cycle from the current regime (when flat) or pos.Regime (when an open position is held — "hold until natural exit" semantics). Static Direction/InvertSignal are the base; the policy overrides per regime. Requires regime detection enabled at top-level cfg.Regime. (#779)
+	RegimeWindowDivergence  *RegimeWindowDivergence  `json:"regime_window_divergence,omitempty"`  // HL perps live only: detect divergence between two regime windows (short vs medium) and optionally override effective direction when they hard-diverge. Builds on regime_directional_policy surface (#907).
 	AllowScaleIn            bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
 	ScaleIn                 *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
 }
@@ -1625,6 +1626,21 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			}
 			// Shape validation also runs in validateStrategyRegimeVocabulary (ADX labels when
 			// regime.enabled=false so typos surface alongside the enabled=true error).
+		}
+
+		// regime_window_divergence: HL perps live only. Requires regime.enabled=true
+		// and at least two windows configured. Shape validation runs in
+		// validateStrategyRegimeVocabulary (ResolveRaw). (#907)
+		if sc.RegimeWindowDivergence.IsConfigured() {
+			if sc.Platform != "hyperliquid" || sc.Type != "perps" {
+				errs = append(errs, fmt.Sprintf("%s: regime_window_divergence is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			}
+			if cfg.Regime == nil || !cfg.Regime.Enabled {
+				errs = append(errs, fmt.Sprintf("%s: regime_window_divergence requires top-level regime.enabled=true", prefix))
+			}
+			if cfg.Regime != nil && cfg.Regime.Enabled && len(cfg.Regime.Windows) < 2 {
+				errs = append(errs, fmt.Sprintf("%s: regime_window_divergence requires at least two windows in regime.windows", prefix))
+			}
 		}
 
 		// #486: validate margin_mode (HL perps only). Empty is allowed

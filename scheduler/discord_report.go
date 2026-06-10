@@ -33,7 +33,7 @@ type githubIssueRequest struct {
 // applied only when non-empty (GitHub silently ignores labels that don't exist
 // on the repo).
 func buildIssueRequest(title, body, label, reporter string) githubIssueRequest {
-	footer := "Filed via `/report-an-issue`"
+	footer := "Filed via `/go-trader-report-an-issue`"
 	if r := strings.TrimSpace(reporter); r != "" {
 		footer += " by " + r
 	}

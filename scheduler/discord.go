@@ -233,10 +233,10 @@ func isFuturesType(strats []StrategyConfig) bool {
 	return false
 }
 
-// isPerpsType returns true if any strategy in the list is a perps strategy.
+// isPerpsType returns true if any strategy in the list is a perps or manual strategy.
 func isPerpsType(strats []StrategyConfig) bool {
 	for _, sc := range strats {
-		if sc.Type == "perps" {
+		if sc.Type == "perps" || sc.Type == "manual" {
 			return true
 		}
 	}
@@ -505,7 +505,7 @@ func FormatCategorySummary(
 		if ss == nil {
 			continue
 		}
-		pv := PortfolioValue(ss, prices)
+		pv := displayStrategyValue(ss, prices)
 		walletPct := 0.0
 
 		// Shared wallet indicator (no value scaling — cash is already split by capital_pct).
@@ -560,7 +560,20 @@ func FormatCategorySummary(
 		})
 	}
 
-	totalPnl := filteredValue - totalInitCap
+	// For the TOTAL row, use the caller-supplied shared-wallet-adjusted value
+	// when one is provided. This prevents double-counting virtual cash in
+	// shared-wallet setups (#915). Per-strategy rows are unaffected — they use
+	// bot.value from the loop above.
+	//
+	// Sentinel: a negative totalValue means "no adjustment available" (fall back
+	// to the naive sum). A portfolio value is never negative, so this lets a
+	// legitimately drained shared wallet display $0 instead of being mistaken
+	// for "unset" and falling back to the inflated naive sum (#917 review item 3).
+	totalRowValue := filteredValue
+	if totalValue >= 0 {
+		totalRowValue = totalValue
+	}
+	totalPnl := totalRowValue - totalInitCap
 	totalPnlPct := 0.0
 	if totalInitCap > 0 {
 		totalPnlPct = (totalPnl / totalInitCap) * 100
@@ -569,7 +582,7 @@ func FormatCategorySummary(
 	// Render the strategy table in chunks of catTableMaxRows. The first chunk
 	// is appended to the in-message header; any extra chunks become standalone
 	// continuation messages so the table never overflows the 2000-char limit.
-	tableChunks := writeCatTableChunks(tableBots, filteredValue, totalPnl, totalPnlPct, hasSharedWallet)
+	tableChunks := writeCatTableChunks(tableBots, totalRowValue, totalPnl, totalPnlPct, hasSharedWallet)
 	if len(tableChunks) > 0 {
 		sb.WriteString(tableChunks[0])
 	}
@@ -1245,6 +1258,9 @@ func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 	}
 	if trade.Regime != "" {
 		extras = append(extras, "Regime: "+trade.Regime)
+	}
+	if trade.RegimeDivergenceNote != "" {
+		extras = append(extras, trade.RegimeDivergenceNote)
 	}
 	direction := strings.ToLower(tradeDirectionLabel(trade))
 	var tiers []hlProtectionTier

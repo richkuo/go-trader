@@ -18,6 +18,11 @@ type OKXPosition struct {
 	Size       float64
 	EntryPrice float64
 	Side       string // "long" or "short"; empty when szi==0 (filtered)
+	// UnrealizedPnL is the exchange-reported unrealized P&L for this position
+	// (ccxt unified position `unrealizedPnl`). Used by the shared-wallet
+	// exchange-authoritative reconciliation (#918), mirroring HLPosition. Zero
+	// when absent/unparseable.
+	UnrealizedPnL float64
 }
 
 // okxLiveCloseScript is the path to the Python close helper. Exposed as a
@@ -70,10 +75,11 @@ func defaultOKXPositionsFetcher() ([]OKXPosition, error) {
 	positions := make([]OKXPosition, 0, len(result.Positions))
 	for _, p := range result.Positions {
 		positions = append(positions, OKXPosition{
-			Coin:       p.Coin,
-			Size:       p.Size,
-			EntryPrice: p.EntryPrice,
-			Side:       p.Side,
+			Coin:          p.Coin,
+			Size:          p.Size,
+			EntryPrice:    p.EntryPrice,
+			Side:          p.Side,
+			UnrealizedPnL: p.UnrealizedPnL,
 		})
 	}
 	return positions, nil

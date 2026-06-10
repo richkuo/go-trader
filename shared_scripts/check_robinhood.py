@@ -119,6 +119,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      close_strategies=None,
                      position_side="", position_ctx=None,
                      regime_enabled=False, regime_windows_spec=None, ohlcv_limit=200, regime_atr_window="",
+                     regime_payload_json=None,
                      close_params_by_name=None):
     """Run strategy signal check using yfinance OHLCV data."""
     try:
@@ -175,6 +176,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             regime_enabled=regime_enabled,
             windows_spec=regime_windows_spec,
             atr_window=regime_atr_window,
+            injected_payload_json=regime_payload_json,
         )
         strategy_params = (strategy_params or {})
         strategy_params["regime"] = strategy_regime
@@ -381,6 +383,9 @@ def main():
         parser.add_argument("--regime-windows-spec-json", default="")
         parser.add_argument("--ohlcv-limit", type=int, default=200)
         parser.add_argument("--regime-atr-window", default="")
+        # #879: precomputed global-store regime payload; presence (even empty)
+        # disables inline regime computation.
+        parser.add_argument("--regime-payload-json", default=None)
         parser.add_argument("--regime-directional-window", default="")
         parser.add_argument("--params", default=None)
         parser.add_argument("--open-strategy", default=None)
@@ -415,6 +420,7 @@ def main():
             regime_windows_spec=regime_windows_spec,
             ohlcv_limit=args.ohlcv_limit,
             regime_atr_window=args.regime_atr_window,
+            regime_payload_json=args.regime_payload_json,
             close_params_by_name=close_params_by_name,
         )
 

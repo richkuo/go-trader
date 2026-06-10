@@ -386,6 +386,10 @@ func validateRegimeWindowsConfig(cfg *Config) []string {
 				errs = append(errs, fmt.Sprintf("%s: %s=%q not found in regime.windows (valid: %s)", prefix, pair.field, pair.value, strings.Join(sortedRegimeWindowNamesFromConfig(rc.Windows), ", ")))
 			}
 		}
+		// #907: regime_window_divergence window-existence is validated in
+		// validateStrategyRegimeVocabulary (after ResolveRaw populates the typed
+		// fields) — not here, because this function runs first and the fields are
+		// still empty at this point.
 	}
 	return errs
 }

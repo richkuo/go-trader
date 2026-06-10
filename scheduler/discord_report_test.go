@@ -21,7 +21,7 @@ func TestBuildIssueRequest(t *testing.T) {
 	if !strings.Contains(req.Body, "It crashes") {
 		t.Fatalf("body missing original text: %q", req.Body)
 	}
-	if !strings.Contains(req.Body, "Filed via `/report-an-issue` by alice (Discord ID 42).") {
+	if !strings.Contains(req.Body, "Filed via `/go-trader-report-an-issue` by alice (Discord ID 42).") {
 		t.Fatalf("body missing reporter footer: %q", req.Body)
 	}
 	if !strings.Contains(req.Body, "\n---\n") {
@@ -34,7 +34,7 @@ func TestBuildIssueRequestNoLabelNoReporter(t *testing.T) {
 	if req.Labels != nil {
 		t.Fatalf("expected no labels, got %v", req.Labels)
 	}
-	if !strings.HasSuffix(strings.TrimRight(req.Body, "\n"), "Filed via `/report-an-issue`.") {
+	if !strings.HasSuffix(strings.TrimRight(req.Body, "\n"), "Filed via `/go-trader-report-an-issue`.") {
 		t.Fatalf("footer should omit reporter when unknown: %q", req.Body)
 	}
 }

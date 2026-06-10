@@ -33,6 +33,7 @@
     search: document.getElementById("strategy-search"),
     title: document.getElementById("active-title"),
     regimeBadge: document.getElementById("regime-badge"),
+    divergenceBadge: document.getElementById("divergence-badge"),
     subtitle: document.getElementById("active-subtitle"),
     chart: document.getElementById("chart"),
     empty: document.getElementById("empty-chart"),
@@ -394,6 +395,7 @@
     state.activeID = id;
     resetTunerState();
     updateRegimeBadge("");
+    updateDivergenceBadge(null);
     const strategy = activeStrategy();
     if (strategy) {
       els.title.textContent = strategy.id;
@@ -793,10 +795,24 @@
     els.regimeBadge.hidden = false;
   }
 
+  function updateDivergenceBadge(divergence) {
+    if (!divergence || divergence.kind !== "hard" || !divergence.resolved_direction) {
+      els.divergenceBadge.hidden = true;
+      els.divergenceBadge.textContent = "";
+      return;
+    }
+    const dir = divergence.resolved_direction === "long" ? "↑" : "↓";
+    els.divergenceBadge.textContent = "⚠ divergence " + dir + " (" + divergence.cycles_active + "c)";
+    els.divergenceBadge.title = "Regime divergence: short=" + divergence.short + " medium=" + divergence.medium +
+      " → " + divergence.resolved_direction + " (" + divergence.cycles_active + " cycles)";
+    els.divergenceBadge.hidden = false;
+  }
+
   async function refreshStatus() {
     if (!state.activeID) return;
     const status = await getJSON("/api/strategies/" + encodeURIComponent(state.activeID) + "/status");
     updateRegimeBadge(status.regime);
+    updateDivergenceBadge(status.regime_divergence);
     els.statusDot.className = "status-dot ok";
     els.statusLabel.textContent = "Live";
     const drawdownPct = status.risk_state && status.risk_state.current_drawdown_pct;

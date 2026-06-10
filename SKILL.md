@@ -104,6 +104,7 @@ Manual config rules:
   All regime labels must be present (exhaustive, no fallback); tier counts may differ per regime; every value under a label is a plain scalar (the regime is resolved once at the top, so `sl_after` carries no `trend_regime` sub-block). The block **owns the stop loss** via per-regime `stop_loss_atr` — declaring any strategy-level stop field (`stop_loss_atr_mult`/`stop_loss_atr_regime`/`stop_loss_pct`/`stop_loss_margin_pct`/`trailing_stop_*`) alongside it is rejected at load. The whole block is hot-reload-gated as a unit (changing it while a position is open is rejected — flatten first).
 - `discord.channels` / `telegram.channels` keys: `spot`, `options`, `hyperliquid`, `topstep`, `robinhood`, `okx`, `luno`, plus optional paper keys (e.g., `okx-paper`).
 - `summary_frequency`: same key scheme. Values: `hourly`, `daily`, `every`, `per_check`, `always`, or Go durations (`30m`, `2h`). Wall-clock cadence persisted in SQLite (`app_state.last_summary_post`); survives restart/SIGHUP.
+- **Cadence defaults:** `options`, `perps`, `futures`, and `manual` channel types post every channel run (continuous); `spot` posts hourly. Override per channel via `summary_frequency`. (#890 — `manual` added to the continuous-cadence group, matching perps behavior.)
 - Trades always force an immediate summary post regardless of cadence.
 - `discord.owner_id` from `DISCORD_OWNER_ID`; enables DM upgrade/migration prompts.
 
@@ -379,12 +380,26 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
 - **HL spotMeta sparse token index fix (#831)** — `_normalize_spot_meta` in `platforms/hyperliquid/adapter.py` rebuilds the `spot_meta["tokens"]` list into an index-aligned dense form before passing it to the SDK (`HLInfo.__init__`). Prevents `IndexError` crashes that killed adapter init for all strategies when HL's token index became sparse (e.g. index 479 at list position 459). Applied on both cache-hit and fresh-fetch paths, so a poisoned cache is also fixed transparently. No operator action.
 - **Per-tier `sl_after` on regime closes now works (#836)** — was: a `tiers[j].sl_after` entry (e.g. `tp_atr_fraction`) under `tiered_tp_atr_regime` or `tiered_tp_atr_live_regime` failed config-load with an unknown-key error AND silently never armed at fire time (fire-path re-parses tier multiples through the same function). Fixed: `parseRegimeTPTiers` now strips `sl_after` from the subset passed to ATR-block parsing (same treatment as `close_fraction`). Also: `defaultHLProtectionTiers()` extracted as a single source of truth for the `[{1×,0.5},{2×,1.0}]` default ladder so `tp_atr_fraction` fire-tier multiples can't drift; `stop_loss_atr_regime` now satisfies the `sl_after` fixed-SL requirement. Fires automatically — no config change required; existing `sl_after` on regime closes now activates correctly.
 - **HL OHLCV fetch dedup cache (#839)** — every HL strategy subprocess fetched its own candles from `/info`; ~20 strategies sharing a handful of asset+timeframe combos fired the same request dozens of times per cycle from one IP, tripping HL's 429 rate limit and cascading into script-failure alerts (#829). Fix: `get_ohlcv` in `platforms/hyperliquid/adapter.py` now caches transformed candles to `/tmp/hl_ohlcv_<symbol>_<interval>_<limit>.json` with an interval-aware TTL (`min(60s, half-bar)`, so 1m strategies never read >½-bar-stale data) — the first batch of a cycle fetches, peers read from cache. Covers signal, HTF-filter, and ATR-recompute fetch paths uniformly (all route through `get_ohlcv`). Empty/insufficient results are never cached (peers keep retrying live); writes are atomic (temp + `os.replace`), mirroring the meta cache. **Per-instance only:** `/tmp` is shared across an instance's subprocesses but isolated per systemd instance (`PrivateTmp=true`), so dedup is within an instance, not across the IP's instances — still flattens each instance's burst enough to clear the 429s. Enabled by default; disable with `GO_TRADER_HL_OHLCV_CACHE=0`. No config change, no Go/CLI change, no operator action.
+- **Discord mutating slash commands (#868)** — five new owner-DM-only commands: `/go-trader-config show|set`, `/go-trader-add-strategy`, `/go-trader-remove-strategy`, `/go-trader-add-platform`, `/go-trader-paper-to-live`. All write through `writeValidatedConfigRoot` / `applyStrategyConfigPatch` serialized on `configWriteMu`. No config change required — commands appear automatically after update if the bot was already configured. Operator action: if using multi-instance or `GO_TRADER_SERVICE` env deployments, verify that `/go-trader-restart` and the mutating restart path use the correct unit name (now via `restartSelf()`, not hardcoded `go-trader` unit, since #893).
+- **Discord command namespacing (#891)** — all commands now register under the `go-trader-` prefix (e.g. `/go-trader-status`, `/go-trader-restart`). Existing command entries in guild command lists will be replaced on next startup; first propagation can take up to ~1h. No config change required. **Operator action:** if you set up slash command shortcuts or permissions by name in Discord, re-configure them with the new prefixed names.
+- **Manual strategies use continuous Discord cadence (#890)** — `type=manual` strategies now post to Discord every channel run (same as perps/futures), not hourly. No config change required. To restore hourly, add `"manual": "hourly"` to `summary_frequency` in config.
+- **New strategies: momentum_pro, mean_reversion_pro (#895); range_scalper, consolidation_range (#896)** — four new open strategies added to the registry. All opt-in (no existing strategy config is affected). `momentum_pro` and `mean_reversion_pro` are bidirectional; use `direction: "both"` for HL perps. `consolidation_range` is bidirectional (range-edge mean-reversion). `range_scalper` is unidirectional. **Operator action:** none unless you want to add one of these strategies.
+
+- **Global per-cycle regime store (#879)** — `regime_store.go` runs all regime subprocesses once per cycle (via `check_regime.py`) and serves `RegimePayload` / injection JSON to every strategy, eliminating per-strategy regime fetches. Failure policy: a failed bundle → empty `RegimePayload` → gate fails open, `regime=-`, no inline fallback; sustained failure → `scriptFailureTracker` alerts. `/api/regime` endpoint exposes window snapshots + `adx3`/`composite7` views. `--regime-payload-json` appended to signal probe argvs so asymmetric deploys fail at startup. Fires automatically — no operator action.
+- **Enriched portfolio warning DMs (#904)** — `BuildPortfolioWarningMessage` expands single-line portfolio risk reason into a triage block: top-5 contributors (ID, P&L, dd%, position), trend direction, distance to kill switch, last 15m activity, recommendation. Fires automatically when the portfolio enters the warning band.
+- **Enriched circuit-breaker DMs (#905)** — `formatPerStrategyCircuitBreakerBlock` builds a rich alert with trigger line, portfolio impact, perps context, position table, trade rows, and recommendation. Fires automatically on CB trigger.
+- **Regime window divergence (#907)** — new per-strategy opt-in `regime_window_divergence` block. See Opt-in field below.
+- **Shared-wallet total dedup (#915)** — `computeSubsetPortfolioValue` and `computeInitialPortfolioPeak` deduplicate same-account HL total-value reads across all participant strategies. Fires automatically for any shared-wallet HL setup; no config change.
+- **Shared-wallet exchange-authoritative display (#918)** — `reconcileSharedWalletMemberValues` now splits real account balance (`value_i = w_i*(acctBal-U)+ownedUPnL_i`) and writes `StrategyState.SharedWalletValue` for operator surfaces. Risk/kill-switch math still uses `PortfolioValue` unchanged. `SharedWalletDriftTracker` alerts on >$0.01 drift confirmed 2 consecutive cycles, re-alerts at 10% ratio. Fires automatically.
+- **Risk-path manual dedup (#921/#924)** — same-account `type=manual` strategies are folded into the shared-wallet dedup for `computeSubsetPortfolioValue`, `computeInitialPortfolioPeak`, and `rebaselinePortfolioPeakAfterPrune`, preventing double-count of HL account balance. Fires automatically for any deployment mixing `type=manual` and shared-wallet HL perps on the same account.
+- **`regime_window_divergence` opt-in (#907)** — new per-strategy `regime_window_divergence` block for HL perps live only. Shape: `{"short_window": "<name>", "medium_window": "<name>", "on_divergence": "<mode>"}`. Modes: `trust_short` / `trust_medium` / `alert_only`. When short and medium windows disagree (hard divergence = bullish+bearish; soft = one ranging), overrides local `sc.Direction` after `regime_directional_policy`. `ranging_directional` composite label supported via `return_eff`. `RegimeDivergenceState.CyclesActive` tracked in-memory; visible in `/status` + DMs + dashboard badge. SIGHUP-blocked while open. Requires non-empty `regime.windows` with both named windows. Default: off.
 
 **Open-position constraint**
 - `margin_mode`, exchange `leverage`, kill-switch identity changes
 - HL `trailing_stop_atr_mult` / `stop_loss_atr_mult` nil↔positive toggle blocked while open
 - `invert_signal` toggle blocked while open
 - `regime_directional_policy` add/remove/shape change blocked while open (flatten first or restart after close)
+- `regime_window_divergence` add/remove/shape change blocked while open (flatten first)
 
 ---
 
@@ -414,15 +429,24 @@ wired in `main.go` via `DiscordNotifier.RegisterSlashCommands`). Global registra
 covers every guild the bot is in plus DMs; first-time command-shape changes can take up
 to ~1h to propagate.
 
+**Namespacing (#891):** every command is registered under the `go-trader-` prefix
+(`commandPrefix`) so the bot's commands are unambiguous in shared guilds (e.g.
+`/go-trader-status`, `/go-trader-restart`). The prefix is the wire name only —
+`slashCommands()` builds each command as `commandPrefix+<id>` and `interactionCreate`
+strips it back to the bare `<id>` before auth/dispatch, so `readOnlyCommandNames`,
+`opsCommandNames`, and the dispatch `switch` all operate on the unprefixed IDs.
+`commandPrefix` is the single source of truth; subcommand/option names are not prefixed.
+
 **Setup:** the bot must be invited with the `applications.commands` OAuth scope (in
 addition to `bot`) for the commands to appear. No code/config change — re-invite via the
 Discord developer portal OAuth2 URL generator.
 
 **Read-only** (usable in a guild OR a DM, by anyone):
-`/status`, `/health`, `/positions`, `/pnl`, `/leaderboard [top]`, `/circuit-breakers`,
-`/dead-strategies`, `/correlation`. These read live in-process state via the
-`StatusServer` (no HTTP round-trip). The four that fetch live marks (`/status`,
-`/positions`, `/pnl`, `/leaderboard`) use a deferred ACK + follow-up so they don't blow
+`/go-trader-status`, `/go-trader-health`, `/go-trader-positions`, `/go-trader-pnl`,
+`/go-trader-leaderboard [top]`, `/go-trader-circuit-breakers`, `/go-trader-dead-strategies`,
+`/go-trader-correlation`. These read live in-process state via the
+`StatusServer` (no HTTP round-trip). The four that fetch live marks (`/go-trader-status`,
+`/go-trader-positions`, `/go-trader-pnl`, `/go-trader-leaderboard`) use a deferred ACK + follow-up so they don't blow
 Discord's 3-second interaction deadline (`fetchLiveMarkPrices` spawns a Python subprocess +
 venue HTTP); the rest answer inline. Replies are public in-channel by default; set
 `discord.ephemeral_replies: true` in config to make read-only replies ephemeral
@@ -430,20 +454,30 @@ venue HTTP); the rest answer inline. Replies are public in-channel by default; s
 
 **Ops** (owner-only AND DM-only; restricted via command `Contexts: [BotDM]` and re-checked
 in the handler by `authorizeCommand`):
-- `/logs [n]` — last N `journalctl -u go-trader` lines. Owner-DM-only because daemon logs
+- `/go-trader-logs [n]` — last N `journalctl -u go-trader` lines. Owner-DM-only because daemon logs
   can carry wallet addresses / error payloads (sharper exposure than P&L/positions).
-- `/restart` — `systemctl restart go-trader` (ACKs, then this instance is replaced).
-- `/backtest <strategy> <symbol> [timeframe]` — runs `backtest/run_backtest.py --mode single`
+- `/go-trader-restart` — `systemctl restart go-trader` (ACKs, then this instance is replaced).
+- `/go-trader-backtest <strategy> <symbol> [timeframe]` — runs `backtest/run_backtest.py --mode single`
   (5-min timeout via `runPythonWithTimeout` + `shutdownReadOnlyCtx`; holds one of 4
   `pythonSemaphore` slots while running); replies with a summary and attaches the full
   report as `backtest.txt`.
-- `/report-an-issue <title> <body> [label]` — files a GitHub issue against `discord.report_repo`
+- `/go-trader-report-an-issue <title> <body> [label]` — files a GitHub issue against `discord.report_repo`
   (default `richkuo/go-trader`) via the REST API (`discord_report.go`: `buildIssueRequest`
-  builds the payload + a "Filed via /report-an-issue" footer; `createGitHubIssue` POSTs and returns
+  builds the payload + a "Filed via /go-trader-report-an-issue" footer; `createGitHubIssue` POSTs and returns
   the issue URL). Defers the ACK because the GitHub round-trip can exceed Discord's 3s
   deadline. Token resolves from `GO_TRADER_GITHUB_TOKEN`, then `GITHUB_TOKEN`, then
   `discord.report_github_token` (env preferred; keep the secret in `/opt/go-trader/.env`).
   Replies that reporting is not configured when no token is set.
+
+**Mutating ops** (#868; owner-only AND DM-only):
+- `/go-trader-config show` — displays the running config with secrets redacted (`redactConfigForDisplay`).
+- `/go-trader-config set <key> <value>` — sets a top-level or per-strategy config field. Per-strategy keys (`strategies.<id>.<field>`) route through `applyStrategyConfigPatch` (tuner path, requires `config_version>=13`); top-level keys use `applyTopLevelConfigSet`. Writes atomic via `writeValidatedConfigRoot` (`configWriteMu` serializes with the dashboard tuner). Apply path: SIGHUP hot-reload when `applyHotReloadConfig` allows it; else `restartSelf()` (strategy add/remove, paper→live args). Reply states which path was taken.
+- `/go-trader-add-strategy <name> <platform> <asset>` — generates a new HL-perps (always `--mode=paper`) or BinanceUS-spot strategy entry. `name` must be in `knownShortNames`. New strategy includes a comment noting the default SL and recommending configuration before `/paper-to-live`.
+- `/go-trader-remove-strategy <id>` — removes a strategy from config after an out-of-band DM confirm. Requires `restartSelf()` (shape change).
+- `/go-trader-add-platform <name>` — emits a setup checklist for the requested platform (secrets live in `/opt/go-trader/.env`, never the config file).
+- `/go-trader-paper-to-live <strategy>` — flips a strategy from `--mode=paper` to `--mode=live` after an out-of-band DM confirm. Requires `restartSelf()`.
+
+All config writes serialize on `ss.configWriteMu`; mutating commands use `restartSelf()` for deployment-agnostic restart (#893 — tries `systemctl restart` with `GO_TRADER_SERVICE` name, falls back to `syscall.Exec` for signal-mode deploys). Pure helpers (`redactConfigForDisplay`, `buildAddStrategyEntry`, `flipStrategyToLive`, `applyTopLevelConfigSet`, `buildTunerOverride`, `classifyConfigSetKey`) are unit-tested in `discord_mutating_commands_test.go` without a gateway.
 
 Auth lives in `authorizeCommand`; command set in `slashCommands()`; pure response builders
 (`format*Response`) are unit-tested in `discord_commands_test.go`. Registration failure is
@@ -722,7 +756,7 @@ sudo systemctl kill -s HUP go-trader   # hot reload (no state loss)
 sudo systemctl restart go-trader       # full restart
 ```
 
-Hot reload (`SIGHUP`) re-applies a safe subset: capital, drawdown, intervals, params, stop-loss (incl. `%`/ATR-mult trailing), sizing leverage, theta-harvest, portfolio risk knobs, summary cadence, correlation thresholds, `allowed_regimes` per-strategy, auto-update mode, Discord/Telegram channels and tokens; per-strategy `regime_*_window` selectors when flat. Refuses if strategy roster, script/args/type/platform, HTF filter, kill-switch identity, or DB path changed; refuses per-strategy exchange `leverage` / HL `margin_mode` while positions open; refuses `regime_*_window` while open. Global `regime` block (enabled/period/adx_threshold/windows) requires full restart (mirrors `correlation`). Re-runs HL peer-on-same-coin check (`margin_mode`/exchange `leverage` agreement; at most one trailing-stop owner). On rejection, fall back to restart. Status server reflects new port immediately.
+Hot reload (`SIGHUP`) re-applies a safe subset: capital, drawdown, intervals, params, stop-loss (incl. `%`/ATR-mult trailing), sizing leverage, theta-harvest, portfolio risk knobs, summary cadence, correlation thresholds, `allowed_regimes` per-strategy, auto-update mode, Discord/Telegram channels and tokens; per-strategy `regime_*_window` selectors when flat. Refuses if strategy roster, script/args/type/platform, HTF filter, kill-switch identity, or DB path changed; refuses per-strategy exchange `leverage` / HL `margin_mode` while positions open; refuses `regime_*_window`, `regime_window_divergence`, `regime_directional_policy` while open. Global `regime` block (enabled/period/adx_threshold/windows) requires full restart (mirrors `correlation`). Re-runs HL peer-on-same-coin check (`margin_mode`/exchange `leverage` agreement; at most one trailing-stop owner). On rejection, fall back to restart. Status server reflects new port immediately.
 
 Common changes:
 
@@ -771,6 +805,7 @@ Per-strategy:
 | Direction | `direction` | Perps gate: `"long"` (default), `"short"` (#656 — open shorts only), or `"both"` (bidirectional). Replaces legacy `allow_shorts`; v14 migration converts `false→"long"`, `true→"both"`. SIGHUP-aware when flat. |
 | Invert signal | `invert_signal` | HL perps/manual only. `true` flips BUY↔SELL on every non-zero signal; HOLD (0) never flipped. Allows inverse-trend use of any open strategy without a new Python module. Composes with `direction="short"` (opens short on raw-BUY, distinct from plain short-direction which opens on raw-SELL). SIGHUP-blocked while open. Default `false`. |
 | Regime directional policy | `regime_directional_policy` | HL perps only. Per-regime `direction`+`invert_signal` override that auto-switches long/short/inverse mode as market regime changes. Requires `regime.enabled=true`; all three canonical regime labels required. When flat, resolves from current regime; while a position is open, resolves from `pos.Regime` at open (hold-on-transition). Startup state-vs-config validation and `inspect` use the same effective-direction rules (#783). SIGHUP blocks shape changes while open. `base_direction`/`effective_direction` visible in `/status`. Backtester rejects (HL-live-only). |
+| Regime window divergence | `regime_window_divergence` | HL perps live only. Shape: `{"short_window": "<name>", "medium_window": "<name>", "on_divergence": "<mode>"}`. Modes: `trust_short` / `trust_medium` / `alert_only`. Overrides `sc.Direction` when short + medium windows diverge (hard = bullish+bearish; soft = one ranging), applied after `regime_directional_policy`. Requires non-empty `regime.windows` with both named windows. Visible in `/status` + DMs + dashboard badge. SIGHUP-blocked while open. Default off. |
 | Stop loss (price %) | `stop_loss_pct` | HL perps. Sole-owner auto-derives from `max_drawdown_pct` (cap 50) when omitted; same-coin peers need one explicit positive owner. `0` opts out. |
 | Stop loss (margin %) | `stop_loss_margin_pct` | HL perps — leverage-aware; mutually exclusive with the other four owners. `0` opts out. |
 | Fixed ATR stop | `stop_loss_atr_mult` | HL perps — trigger `avg_cost ± mult × entry_atr`, armed once after open. Top-level `default_stop_loss_atr_mult` defaults to `1.0` and applies to every HL perps with all five stop fields omitted (incl. shared-coin peers since #601) (#562/#601/#605); per-strategy `0` or top-level `0` restores `max_drawdown_pct` fallback. |
@@ -861,6 +896,8 @@ Short-name conventions:
 - OKX: `okx-{strategy_short}-{asset}` for spot/options, `okx-{strategy_short}-{asset}-perp` for perps
 - `triple_ema_bidir` is futures/perps only and needs `"direction": "both"` (formerly `"allow_shorts": true`; v14 migrates automatically). Use `"direction": "short"` to run any bidirectional strategy as a dedicated bear-only instrument (#656).
 - Short-focused strategies (futures/perps only): `bear_pullback_st` (rally-into-EMA20/50 in EMA50<EMA200 + ADX>20 regime, RSI 55–65 rebound, #655), `vwap_rejection_st` (intraday VWAP/EMA20/EMA50 rejection inside bearish HTF + RSI≤50 confirmation, #657). Both emit `signal=-1` only and are pre-registered as bidirectional so `direction: "short"` or `"both"` is required. Pair with `allowed_regimes: ["trending_down"]` for clean entry gating.
+- **New bidirectional strategies (#895):** `momentum_pro` (`mompro`) — stacked-EMA trend-pullback entry (fast>mid>long EMA), ADX-confirmed, volume-backed bar break; requires `direction: "both"`. `mean_reversion_pro` (`mrpro`) — z-score reversion gated by no-trend ADX ceiling + RSI extreme confirmation; requires `direction: "both"`. Both spot + futures/perps. Walk-forward OOS result: `momentum_pro` BTC 4h is marginally validated (~+6% median Sharpe ~1, high variance); `mean_reversion_pro` is not OOS validated — paper-trade before live.
+- **New range strategies (#896):** `range_scalper` (`rs`) — spot/perps support/resistance scalper; unidirectional. `consolidation_range` (`cr`) — range-edge mean-reversion at the top/bottom of a consolidation box; bidirectional (emits `signal=-1` at the top edge), requires `direction: "both"` for HL perps. Negative OOS result at default params — treat as tunable baseline; tune `box_width_pct` and `atr_stop_mult` before live.
 - `donchian_breakout`, `chart_pattern`, `liquidity_sweeps` already emitted `signal=-1` for bearish setups but were generated long-only by `init.go`. Since #654 they default to `direction: "both"` so existing perps configs need a regenerate or a manual `direction` flip to capture the short side.
 - `session_breakout` is futures/perps only; short name `sbo`
 - Multiple HL perps strategies on the same coin share an on-chain position; peers must agree on `margin_mode` and exchange `leverage` (`sizing_leverage` may differ). Since #601 each peer places its own per-strategy sized reduce-only protection, so multiple peers can own fixed ATR / margin / trailing stops simultaneously. `LoadConfig` defaults all-five-omitted peers to `default_stop_loss_atr_mult` (#562/#601/#605); set per-strategy `stop_loss_atr_mult: 0` (one) or top-level `default_stop_loss_atr_mult: 0` (fleet-wide) to opt out. **Per-strategy CB (#515):** drain skips on-chain close when peers share the coin — exchange leg stays open until another path flattens. Sub-account isolation is the only path for full per-strategy independence.

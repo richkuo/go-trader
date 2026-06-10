@@ -36,6 +36,9 @@ var probeArgv = []string{
 	"--ohlcv-limit", "200",
 	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
 	"--regime-atr-window", "",
+	// #879: new Go injects the global-store regime payload on every check;
+	// probe it so a stale Python that rejects the flag fails startup loudly.
+	"--regime-payload-json", `{"default":{"regime":"trending_up","score":0.5,"classifier":"adx","metrics":{"adx":25.0,"plus_di":20.0,"minus_di":10.0,"atr_pct":1.0}}}`,
 	"--probe-only",
 }
 
@@ -48,6 +51,7 @@ var probeCompositeArgv = []string{
 	"--ohlcv-limit", "200",
 	"--regime-windows-spec-json", `{"macro":{"classifier":"composite","period":14,"thresholds":{"return_pct":0.05,"range_pct":0.03,"adx":25}}}`,
 	"--regime-atr-window", "",
+	"--regime-payload-json", `{"macro":{"regime":"trending_up_clean","score":0.5,"classifier":"composite","metrics":{"adx":30.0}}}`,
 	"--probe-only",
 }
 
@@ -100,6 +104,17 @@ var cancelOrderProbeArgv = []string{
 // catch stale Python deploys before the dashboard starts returning 500s.
 var fetchCandlesProbeArgv = []string{
 	"--platform=binanceus", "--type=spot", "--symbol=BTC/USDT", "--timeframe=1h", "--limit=1", "--probe-only",
+}
+
+// checkRegimeProbeArgv probes the #879 dedicated regime-bundle subprocess.
+// Probed whenever any strategy is configured (mirrors the tuner-schema
+// precedent): the scheduler spawns it per distinct regime signature each
+// cycle, so a missing/stale script must fail at startup, not mid-cycle.
+var checkRegimeProbeArgv = []string{
+	"--platform=binanceus", "--symbol=BTC/USDT", "--timeframe=1h",
+	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
+	"--ohlcv-limit", "200", "--min-bars", "30",
+	"--probe-only",
 }
 
 var strategyTunerSchemaProbeArgv = []string{
@@ -165,6 +180,9 @@ func probeCheckScripts(cfg *Config) error {
 			return err
 		}
 		if err := probeOneCheckScriptFn("shared_scripts/strategy_tuner_schema.py", strategyTunerSchemaProbeArgv); err != nil {
+			return err
+		}
+		if err := probeOneCheckScriptFn(regimeCheckScript, checkRegimeProbeArgv); err != nil {
 			return err
 		}
 		if err := probeOneCheckScriptFn("shared_scripts/simulate_strategy.py", simulateStrategyProbeArgv); err != nil {

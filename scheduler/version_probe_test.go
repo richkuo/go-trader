@@ -58,6 +58,7 @@ exec /usr/bin/env python3 "$@"
 	writeProbeStub(t, fetchDir, "fetch_candles.py", true)
 	writeProbeStub(t, fetchDir, "strategy_tuner_schema.py", true)
 	writeProbeStub(t, fetchDir, "simulate_strategy.py", true)
+	writeProbeStub(t, fetchDir, "check_regime.py", true)
 
 	prevCwd, _ := os.Getwd()
 	if err := os.Chdir(tmp); err != nil {

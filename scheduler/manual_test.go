@@ -880,24 +880,21 @@ func TestResolveManualOpenOrderSize(t *testing.T) {
 	})
 }
 
-// TestManualCloseEval_FlatReturnsEmptyPayload covers the #872 signature change:
-// runManualCloseEval now returns the cycle's regime payload as a fourth value.
-// The flat (no open position) early-return must yield an empty payload and not
-// spawn a subprocess.
-func TestManualCloseEval_FlatReturnsEmptyPayload(t *testing.T) {
+// TestManualCloseEval_FlatShortCircuits covers the flat early-return: no open
+// position means no subprocess spawn and ok=true. (#879 moved the live regime
+// off this eval's return — the dispatch reads the global regime store, which
+// is what gives FLAT manual strategies a live regime at all.)
+func TestManualCloseEval_FlatShortCircuits(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-manual-eth-live", Type: "manual", Platform: "hyperliquid", Symbol: "ETH"}
 	ss := &StrategyState{ID: sc.ID, Positions: map[string]*Position{}}
 	cfg := &Config{Regime: &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}}
 
-	cf, px, payload, ok := runManualCloseEval(sc, ss, cfg, nil, nil)
+	cf, px, ok := runManualCloseEval(sc, ss, cfg, nil, nil)
 	if !ok {
 		t.Fatalf("flat manual close-eval ok = false, want true")
 	}
 	if cf != 0 || px != 0 {
 		t.Errorf("flat manual close-eval = (cf=%v, px=%v), want (0, 0)", cf, px)
-	}
-	if !payload.IsEmpty() {
-		t.Errorf("flat manual close-eval payload = %+v, want empty", payload)
 	}
 }
 

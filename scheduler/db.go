@@ -192,7 +192,12 @@ CREATE TABLE IF NOT EXISTS portfolio_risk (
     current_margin_drawdown_pct REAL NOT NULL DEFAULT 0,
     kill_switch_active INTEGER NOT NULL DEFAULT 0,
     kill_switch_at TEXT NOT NULL DEFAULT '',
-    warning_sent INTEGER NOT NULL DEFAULT 0
+    warning_sent INTEGER NOT NULL DEFAULT 0,
+    warn_band_entered_at TEXT NOT NULL DEFAULT '',
+    last_warning_equity_dd_pct REAL NOT NULL DEFAULT 0,
+    last_warning_margin_dd_pct REAL NOT NULL DEFAULT 0,
+    warning_equity_delta_pct REAL NOT NULL DEFAULT 0,
+    warning_margin_delta_pct REAL NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS kill_switch_events (
@@ -301,6 +306,12 @@ func (sdb *StateDB) migrateSchema() error {
 		// Portfolio margin drawdown + kill-switch source tracking (#296 review).
 		"ALTER TABLE portfolio_risk ADD COLUMN current_margin_drawdown_pct REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE kill_switch_events ADD COLUMN source TEXT NOT NULL DEFAULT ''",
+		// Portfolio warning diagnostics (#904).
+		"ALTER TABLE portfolio_risk ADD COLUMN warn_band_entered_at TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE portfolio_risk ADD COLUMN last_warning_equity_dd_pct REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE portfolio_risk ADD COLUMN last_warning_margin_dd_pct REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE portfolio_risk ADD COLUMN warning_equity_delta_pct REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE portfolio_risk ADD COLUMN warning_margin_delta_pct REAL NOT NULL DEFAULT 0",
 		// Per-leaderboard-summary last-post timestamps stored as JSON (#308).
 		"ALTER TABLE app_state ADD COLUMN last_leaderboard_summaries TEXT NOT NULL DEFAULT ''",
 		// Per-channel regular summary last-post timestamps stored as JSON (#474).
@@ -701,6 +712,91 @@ func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
 	return nil
 }
 
+// RecentTrades returns the newest trade rows since a cutoff, newest first.
+func (sdb *StateDB) RecentTrades(since time.Time, limit int) ([]Trade, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, fmt.Errorf("state db unavailable")
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json
+		FROM trades WHERE timestamp >= ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, formatTime(since), limit)
+	if err != nil {
+		return nil, fmt.Errorf("query recent trades: %w", err)
+	}
+	defer rows.Close()
+	var out []Trade
+	for rows.Next() {
+		var tr Trade
+		var tsStr string
+		var isCloseInt, isManualInt int
+		var tpOIDsJSON string
+		var slATRMult sql.NullFloat64
+		if err := rows.Scan(&tsStr, &tr.StrategyID, &tr.Symbol, &tr.PositionID, &tr.Side, &tr.Quantity, &tr.Price, &tr.Value, &tr.TradeType, &tr.Details, &tr.ExchangeOrderID, &tr.ExchangeFee, &isCloseInt, &tr.RealizedPnL, &tr.Regime, &tr.EntryATR, &tr.StopLossOID, &tr.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &tr.TPTiersJSON); err != nil {
+			return nil, fmt.Errorf("scan recent trade: %w", err)
+		}
+		tr.Timestamp = parseTime(tsStr)
+		tr.IsClose = isCloseInt != 0
+		tr.Manual = isManualInt != 0
+		tr.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
+		if slATRMult.Valid {
+			v := slATRMult.Float64
+			tr.StopLossATRMult = &v
+		}
+		tr.persisted = true
+		out = append(out, tr)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recent trades: %w", err)
+	}
+	return out, nil
+}
+
+// RecentTradesForStrategy returns the newest trade rows for one strategy.
+func (sdb *StateDB) RecentTradesForStrategy(strategyID string, limit int) ([]Trade, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, fmt.Errorf("state db unavailable")
+	}
+	if strings.TrimSpace(strategyID) == "" {
+		return nil, fmt.Errorf("strategy id required")
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json
+		FROM trades WHERE strategy_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, strategyID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query recent trades for %s: %w", strategyID, err)
+	}
+	defer rows.Close()
+	var out []Trade
+	for rows.Next() {
+		var tr Trade
+		var tsStr string
+		var isCloseInt, isManualInt int
+		var tpOIDsJSON string
+		var slATRMult sql.NullFloat64
+		if err := rows.Scan(&tsStr, &tr.StrategyID, &tr.Symbol, &tr.PositionID, &tr.Side, &tr.Quantity, &tr.Price, &tr.Value, &tr.TradeType, &tr.Details, &tr.ExchangeOrderID, &tr.ExchangeFee, &isCloseInt, &tr.RealizedPnL, &tr.Regime, &tr.EntryATR, &tr.StopLossOID, &tr.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &tr.TPTiersJSON); err != nil {
+			return nil, fmt.Errorf("scan recent trade for %s: %w", strategyID, err)
+		}
+		tr.Timestamp = parseTime(tsStr)
+		tr.IsClose = isCloseInt != 0
+		tr.Manual = isManualInt != 0
+		tr.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
+		if slATRMult.Valid {
+			v := slATRMult.Float64
+			tr.StopLossATRMult = &v
+		}
+		tr.persisted = true
+		out = append(out, tr)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recent trades for %s: %w", strategyID, err)
+	}
+	return out, nil
+}
+
 // UpdateTradeStampedFields updates open-trade snapshot fields on an existing
 // trade row identified by (strategy_id, timestamp). The normal same-cycle open
 // path writes these fields in InsertTrade; this remains for fallback arming
@@ -1051,10 +1147,12 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	if state.PortfolioRisk.WarningSent {
 		warnSent = 1
 	}
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO portfolio_risk (id, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent)
-		VALUES (1, ?, ?, ?, ?, ?, ?)`,
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO portfolio_risk (id, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, warn_band_entered_at, last_warning_equity_dd_pct, last_warning_margin_dd_pct, warning_equity_delta_pct, warning_margin_delta_pct)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		state.PortfolioRisk.PeakValue, state.PortfolioRisk.CurrentDrawdownPct, state.PortfolioRisk.CurrentMarginDrawdownPct,
-		ksActive, formatTime(state.PortfolioRisk.KillSwitchAt), warnSent,
+		ksActive, formatTime(state.PortfolioRisk.KillSwitchAt), warnSent, formatTime(state.PortfolioRisk.WarnBandEnteredAt),
+		state.PortfolioRisk.LastWarningEquityDDPct, state.PortfolioRisk.LastWarningMarginDDPct,
+		state.PortfolioRisk.WarningEquityDeltaPct, state.PortfolioRisk.WarningMarginDeltaPct,
 	); err != nil {
 		return fmt.Errorf("upsert portfolio_risk: %w", err)
 	}
@@ -1443,16 +1541,18 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 
 	// 6. Load portfolio_risk.
 	var ksActiveInt, warnSentInt int
-	var ksAtStr string
-	err = sdb.db.QueryRow("SELECT peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent FROM portfolio_risk WHERE id = 1").
+	var ksAtStr, warnBandEnteredAtStr string
+	err = sdb.db.QueryRow("SELECT peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, COALESCE(warn_band_entered_at, '') AS warn_band_entered_at, COALESCE(last_warning_equity_dd_pct, 0) AS last_warning_equity_dd_pct, COALESCE(last_warning_margin_dd_pct, 0) AS last_warning_margin_dd_pct, COALESCE(warning_equity_delta_pct, 0) AS warning_equity_delta_pct, COALESCE(warning_margin_delta_pct, 0) AS warning_margin_delta_pct FROM portfolio_risk WHERE id = 1").
 		Scan(&state.PortfolioRisk.PeakValue, &state.PortfolioRisk.CurrentDrawdownPct, &state.PortfolioRisk.CurrentMarginDrawdownPct,
-			&ksActiveInt, &ksAtStr, &warnSentInt)
+			&ksActiveInt, &ksAtStr, &warnSentInt, &warnBandEnteredAtStr, &state.PortfolioRisk.LastWarningEquityDDPct,
+			&state.PortfolioRisk.LastWarningMarginDDPct, &state.PortfolioRisk.WarningEquityDeltaPct, &state.PortfolioRisk.WarningMarginDeltaPct)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("load portfolio_risk: %w", err)
 	}
 	state.PortfolioRisk.KillSwitchActive = ksActiveInt != 0
 	state.PortfolioRisk.KillSwitchAt = parseTime(ksAtStr)
 	state.PortfolioRisk.WarningSent = warnSentInt != 0
+	state.PortfolioRisk.WarnBandEnteredAt = parseTime(warnBandEnteredAtStr)
 
 	// 7. Load kill switch events.
 	evtRows, err := sdb.db.Query("SELECT timestamp, type, source, drawdown_pct, portfolio_value, peak_value, details FROM kill_switch_events ORDER BY rowid ASC")

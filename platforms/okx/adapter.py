@@ -232,10 +232,22 @@ class OKXExchangeAdapter:
         return results[0] if results else {}
 
     def get_account_balance(self) -> float:
-        """Return total USDT-denominated account value for shared-wallet
-        aggregation (#360 phase 2 — unlocks multi-strategy OKX portfolio
-        value correctness). Sums free + used USDT; callers that need to
-        include open-position PnL should rely on ccxt's total field.
+        """Return the total USDT-denominated account VALUE for shared-wallet
+        aggregation (#360 phase 2 — unlocks multi-strategy OKX portfolio value
+        correctness).
+
+        Returns ccxt's ``balance["total"]["USDT"]``, which ccxt's OKX driver
+        maps from the account's equity field (``eq``) — i.e. cash balance PLUS
+        unrealized P&L on open positions for the unified/cross margin account.
+
+        #918 RELIES on this being equity-inclusive: the shared-wallet
+        reconciler computes ``base = accountBalance - Σ unrealizedPnL`` and
+        redistributes the base by capital weight, attributing each position's
+        unrealized P&L to its owning strategy. If this value ever excluded
+        unrealized P&L the per-member equity rows would be skewed by the
+        owners' P&L (the member SUM still reconciles to this number, so the
+        drift alarm stays correct, but the split would misreport per strategy).
+        Verify against a live OKX account if the ccxt mapping changes.
 
         Only available in live mode; raises RuntimeError in paper mode.
         """

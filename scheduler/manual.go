@@ -1185,19 +1185,21 @@ func openTradeSide(posSide string) string {
 
 // runManualCloseEval runs the close-evaluator loop for a single type=manual
 // strategy that has an open position. Called from the main scheduler loop.
-// Returns (closeFraction, closePrice, regimePayload, ok). The regime payload is
-// the classifier output from this cycle's check; the caller stamps it onto the
-// position once (#872) so frozen-label close features arm on manual positions.
-func runManualCloseEval(sc StrategyConfig, ss *StrategyState, cfg *Config, notifier *MultiNotifier, logger *StrategyLogger) (float64, float64, RegimePayload, bool) {
+// Returns (closeFraction, closePrice, ok). The live regime no longer rides on
+// the check output (#879): the caller reads the global regime store for this
+// strategy's signature directly, which also covers the flat case — this eval
+// doesn't even spawn a subprocess then — so status/dashboard show a regime
+// for manual strategies without a position.
+func runManualCloseEval(sc StrategyConfig, ss *StrategyState, cfg *Config, notifier *MultiNotifier, logger *StrategyLogger) (float64, float64, bool) {
 	pos := ss.Positions[sc.Symbol]
 	if pos == nil {
-		return 0, 0, RegimePayload{}, true // flat — nothing to do
+		return 0, 0, true // flat — nothing to do
 	}
 
 	posCtx := positionCtxFromPosition(pos)
 	result, _, price, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, notifier, logger)
 	if !ok {
-		return 0, 0, RegimePayload{}, false
+		return 0, 0, false
 	}
-	return result.CloseFraction, price, regimePayloadValue(result.Regime), true
+	return result.CloseFraction, price, true
 }

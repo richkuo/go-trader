@@ -158,8 +158,13 @@ func makeTestState() *AppState {
 		},
 		PortfolioRisk: PortfolioRiskState{
 			PeakValue: 2050, CurrentDrawdownPct: 1.5, CurrentMarginDrawdownPct: 18.7,
-			KillSwitchActive: false,
-			WarningSent:      true,
+			KillSwitchActive:       false,
+			WarningSent:            true,
+			WarnBandEnteredAt:      now.Add(-20 * time.Minute),
+			LastWarningEquityDDPct: 1.5,
+			LastWarningMarginDDPct: 18.7,
+			WarningEquityDeltaPct:  0.3,
+			WarningMarginDeltaPct:  -0.2,
 			Events: []KillSwitchEvent{
 				{Timestamp: now.Add(-3 * time.Hour), Type: "warning", Source: "margin", DrawdownPct: 18.7, PortfolioValue: 1950, PeakValue: 2050, Details: "approaching threshold"},
 			},
@@ -279,6 +284,21 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 	}
 	if !loaded.PortfolioRisk.WarningSent {
 		t.Error("PortfolioRisk.WarningSent should be true")
+	}
+	if loaded.PortfolioRisk.WarnBandEnteredAt.IsZero() {
+		t.Error("PortfolioRisk.WarnBandEnteredAt should round-trip")
+	}
+	if loaded.PortfolioRisk.LastWarningEquityDDPct != 1.5 {
+		t.Errorf("PortfolioRisk.LastWarningEquityDDPct = %f, want 1.5", loaded.PortfolioRisk.LastWarningEquityDDPct)
+	}
+	if loaded.PortfolioRisk.LastWarningMarginDDPct != 18.7 {
+		t.Errorf("PortfolioRisk.LastWarningMarginDDPct = %f, want 18.7", loaded.PortfolioRisk.LastWarningMarginDDPct)
+	}
+	if loaded.PortfolioRisk.WarningEquityDeltaPct != 0.3 {
+		t.Errorf("PortfolioRisk.WarningEquityDeltaPct = %f, want 0.3", loaded.PortfolioRisk.WarningEquityDeltaPct)
+	}
+	if loaded.PortfolioRisk.WarningMarginDeltaPct != -0.2 {
+		t.Errorf("PortfolioRisk.WarningMarginDeltaPct = %f, want -0.2", loaded.PortfolioRisk.WarningMarginDeltaPct)
 	}
 	if len(loaded.PortfolioRisk.Events) != 1 {
 		t.Fatalf("kill switch events = %d, want 1", len(loaded.PortfolioRisk.Events))

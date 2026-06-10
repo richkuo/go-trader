@@ -91,7 +91,7 @@ func TestShouldPostSummary_LegacyContinuousPostsEveryRun(t *testing.T) {
 	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
 	lastPost := now
 
-	// Empty freq + continuous (options/perps/futures) = every channel run.
+	// Empty freq + continuous (options/perps/futures/manual) = every channel run.
 	for i := 0; i < 5; i++ {
 		if !ShouldPostSummary("", true, false, lastPost, now.Add(time.Duration(i)*time.Second)) {
 			t.Errorf("continuous legacy default should post every run; iteration %d did not", i)

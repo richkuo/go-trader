@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // yesterday returns the UTC date string for one day before today.
@@ -822,6 +823,9 @@ func TestCheckPortfolioRisk_WarningFires(t *testing.T) {
 	if !prs.WarningSent {
 		t.Error("expected WarningSent=true after warning fires")
 	}
+	if prs.WarnBandEnteredAt.IsZero() {
+		t.Error("expected WarnBandEnteredAt to be stamped after warning fires")
+	}
 
 	// Second call at same drawdown — warning should fire again so operators get
 	// a reminder each cycle while the account remains in the warning band.
@@ -831,6 +835,12 @@ func TestCheckPortfolioRisk_WarningFires(t *testing.T) {
 	}
 	if reason == "" {
 		t.Error("expected non-empty reason for repeated warning")
+	}
+	if prs.LastWarningEquityDDPct < 20.9 || prs.LastWarningEquityDDPct > 21.1 {
+		t.Errorf("LastWarningEquityDDPct = %.2f, want about 21", prs.LastWarningEquityDDPct)
+	}
+	if math.Abs(prs.WarningEquityDeltaPct) > 0.01 {
+		t.Errorf("WarningEquityDeltaPct = %.2f, want 0 for unchanged drawdown", prs.WarningEquityDeltaPct)
 	}
 }
 
@@ -908,6 +918,9 @@ func TestCheckPortfolioRisk_WarningResetOnRecovery(t *testing.T) {
 	CheckPortfolioRisk(prs, cfg, 8500.0, 0, 0, 0)
 	if prs.WarningSent {
 		t.Error("expected WarningSent=false after recovery below warn threshold")
+	}
+	if !prs.WarnBandEnteredAt.IsZero() {
+		t.Error("expected WarnBandEnteredAt reset after recovery below warn threshold")
 	}
 
 	// Cross warning threshold again — should warn again.
@@ -2356,6 +2369,119 @@ func TestCheckPortfolioRisk_BothSignalsBreachWarn_ReasonIncludesBoth(t *testing.
 	}
 }
 
+func TestBuildPortfolioWarningMessage_IncludesTriageSections(t *testing.T) {
+	now := time.Date(2026, 6, 6, 6, 5, 0, 0, time.UTC)
+	state := &AppState{
+		PortfolioRisk: PortfolioRiskState{
+			PeakValue:                10060,
+			CurrentDrawdownPct:       16.5,
+			CurrentMarginDrawdownPct: 18.2,
+			WarningSent:              true,
+			WarnBandEnteredAt:        now.Add(-18 * time.Minute),
+			WarningEquityDeltaPct:    1.2,
+			WarningMarginDeltaPct:    0.8,
+		},
+		Strategies: map[string]*StrategyState{
+			"hl-btc-sma-30": {
+				ID:             "hl-btc-sma-30",
+				Type:           "perps",
+				Cash:           1000,
+				InitialCapital: 1500,
+				RiskState:      RiskState{CurrentDrawdownPct: 9.1},
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 67800, Side: "short", Multiplier: 1},
+				},
+				OptionPositions: map[string]*OptionPosition{},
+			},
+			"hl-eth-ema-30": {
+				ID:              "hl-eth-ema-30",
+				Type:            "perps",
+				Cash:            905,
+				InitialCapital:  1000,
+				RiskState:       RiskState{CurrentDrawdownPct: 4.1},
+				Positions:       map[string]*Position{},
+				OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	msg := BuildPortfolioWarningMessage(PortfolioWarningMessageInputs{
+		Config:      &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
+		State:       state,
+		Prices:      map[string]float64{"BTC": 68080},
+		TotalValue:  8400,
+		PerpsLoss:   250,
+		PerpsMargin: 1500,
+		Recent: []Trade{
+			{Timestamp: now.Add(-14 * time.Minute), StrategyID: "hl-btc-sma-30", Symbol: "BTC", Side: "sell", Quantity: 0.5, Price: 67800, TradeType: "perps", Details: "signal flip"},
+		},
+		Now: now,
+	})
+
+	for _, want := range []string{
+		"**PORTFOLIO WARNING**",
+		"Kill switch: 25.0% drawdown | Warn threshold: 15.0%",
+		"In band since: 2026-06-06 05:47 UTC (18m)",
+		"Current: equity=16.5% ($8400 / peak $10060) | perps margin=18.2% ($250 loss on $1500 margin)",
+		"Distance to kill switch: 8.5% equity / 6.8% margin",
+		"Trend: WORSENING - equity dd +1.2% since last cycle; margin dd +0.8%",
+		"Top contributors:",
+		"```",
+		"hl-btc-sma-30",
+		"pos: short 0.5 BTC @ $67800 (-$140 unrealized)",
+		"Recent activity (last 15m):",
+		"05:51  perps  hl-btc-sma-30",
+		"Recommended:",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("warning message missing %q:\n%s", want, msg)
+		}
+	}
+	if len(msg) >= 2000 {
+		t.Fatalf("warning message len = %d, want under Discord limit; msg:\n%s", len(msg), msg)
+	}
+}
+
+func TestBuildPortfolioWarningMessage_DailyPnLFallbackLabel(t *testing.T) {
+	now := time.Date(2026, 6, 6, 6, 5, 0, 0, time.UTC)
+	state := &AppState{
+		PortfolioRisk: PortfolioRiskState{
+			PeakValue:          1000,
+			CurrentDrawdownPct: 20,
+			WarningSent:        true,
+			WarnBandEnteredAt:  now.Add(-5 * time.Minute),
+		},
+		Strategies: map[string]*StrategyState{
+			"no-initial-cap": {
+				ID:              "no-initial-cap",
+				Cash:            900,
+				InitialCapital:  0,
+				RiskState:       RiskState{DailyPnL: -75, CurrentDrawdownPct: 7.5},
+				Positions:       map[string]*Position{},
+				OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	msg := BuildPortfolioWarningMessage(PortfolioWarningMessageInputs{
+		Config:     &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
+		State:      state,
+		TotalValue: 800,
+		Now:        now,
+	})
+	if !strings.Contains(msg, "daily P&L -$75") {
+		t.Fatalf("expected daily P&L fallback label in warning message:\n%s", msg)
+	}
+}
+
+func TestTruncateWarningField_UTF8Safe(t *testing.T) {
+	got := truncateWarningField("alpha-éclair", 9)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncateWarningField returned invalid UTF-8: %q", got)
+	}
+	if got != "alpha-..." {
+		t.Fatalf("truncateWarningField = %q, want %q", got, "alpha-...")
+	}
+}
+
 // TestCheckPortfolioRisk_MarginWarning_FieldsPopulated makes sure the
 // dedicated CurrentMarginDrawdownPct field is kept current even when the
 // warning does not fire (so /status surfaces the live margin signal). This
@@ -2586,5 +2712,114 @@ func TestRiskState_PendingCircuitClose_LegacyShapeDefaultsZeroConsecutiveFailure
 	}
 	if !got.LastNotifiedAt.IsZero() {
 		t.Errorf("legacy row must default LastNotifiedAt=zero, got %v", got.LastNotifiedAt)
+	}
+}
+
+func TestFormatPerStrategyCircuitBreakerBlock_IncludesTriageSections(t *testing.T) {
+	now := time.Date(2026, 6, 6, 6, 8, 0, 0, time.UTC)
+	sc := StrategyConfig{
+		ID:         "hl-btc-sma-30",
+		Type:       "perps",
+		Platform:   "hyperliquid",
+		Args:       []string{"sma_cross", "BTC", "30m", "--mode=live"},
+		Leverage:   5,
+		CapitalPct: 0.417,
+	}
+	state := &StrategyState{
+		ID:              sc.ID,
+		Type:            sc.Type,
+		Platform:        sc.Platform,
+		Cash:            4200,
+		InitialCapital:  4500,
+		Positions:       map[string]*Position{},
+		OptionPositions: map[string]*OptionPosition{},
+		RiskState: RiskState{
+			PeakValue:           4500,
+			CurrentDrawdownPct:  8.2,
+			MaxDrawdownPct:      5,
+			ConsecutiveLosses:   5,
+			CircuitBreaker:      true,
+			CircuitBreakerUntil: now.Add(24 * time.Hour),
+			PendingCircuitCloses: map[string]*PendingCircuitClose{
+				PlatformPendingCloseOKXSpot: {
+					Symbols:          []PendingCircuitCloseSymbol{{Symbol: "BTC-USDT", Size: 0.5}},
+					OperatorRequired: true,
+				},
+			},
+		},
+		ClosedPositions: []ClosedPosition{
+			{StrategyID: sc.ID, Symbol: "BTC", Quantity: 0.5, Side: "short", ClosePrice: 67800, RealizedPnL: -180, CloseReason: "circuit_breaker"},
+		},
+	}
+	snap := snapshotPerStrategyCircuitBreaker(state, map[string]float64{"BTC": 67800})
+	snap.Now = now
+	msg := formatPerStrategyCircuitBreakerBlock(perStrategyCircuitBreakerFormatInput{
+		Strategy:            sc,
+		Snapshot:            snap,
+		Reason:              RiskReasonMaxDrawdownExceeded + " (8.2% > 5.0%, portfolio=$4200.00 peak=$4500.00, denom=margin=$300.00)",
+		StrategyValue:       4200,
+		TotalPortfolioValue: 10060,
+		RecentTrades: []Trade{
+			{Timestamp: now.Add(-7 * time.Minute), StrategyID: sc.ID, Symbol: "BTC", Side: "buy", Quantity: 0.5, Price: 67800, IsClose: true, RealizedPnL: -180, Details: "Circuit breaker close short, PnL: $-180.00"},
+		},
+	})
+
+	for _, want := range []string{
+		"**CIRCUIT BREAKER** [hl-btc-sma-30] - Hyperliquid, BTC, 30m, sma_cross, perps",
+		"Trigger: max drawdown exceeded - 8.2% > 5.0% (denom: margin=$300.00)",
+		"Cooldown: 1d0h (until 2026-06-07 06:08 UTC)",
+		"Portfolio impact: ~$4195 of ~$10060 (41.7%)",
+		"Perps context: 5x leverage, margin deployed=$300.00",
+		"Positions force-closed:",
+		"short 0.5 BTC @ $67800  P&L -$180",
+		"Pending operator closes:",
+		"okx_spot BTC-USDT size 0.5 (manual flatten required)",
+		"Recent trades:",
+		"06:01  close  buy 0.5 BTC @ $67800 P&L -$180",
+		"Reason: Investigate whether the signal is still valid or the regime has flipped.",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("circuit-breaker message missing %q:\n%s", want, msg)
+		}
+	}
+	if header, _, _ := strings.Cut(msg, "\n"); strings.Contains(header, "leverage") {
+		t.Fatalf("circuit-breaker header should not duplicate leverage context: %q", header)
+	}
+	if len(msg) >= 2000 {
+		t.Fatalf("circuit-breaker message len = %d, want under Discord limit; msg:\n%s", len(msg), msg)
+	}
+}
+
+func TestCircuitBreakerStrategyLabel_SkipsFlagTimeframe(t *testing.T) {
+	sc := StrategyConfig{
+		ID:       "deribit-btc-options",
+		Type:     "options",
+		Platform: "deribit",
+		Args:     []string{"wheel", "BTC", "--platform=deribit"},
+	}
+	got := circuitBreakerStrategyLabel(sc)
+	if strings.Contains(got, "--platform=deribit") {
+		t.Fatalf("strategy label rendered flag as timeframe: %q", got)
+	}
+	for _, want := range []string{"Deribit", "BTC", "wheel", "options"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("strategy label missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestCircuitBreakerStrategyLabel_StripsSpotQuoteSuffix(t *testing.T) {
+	sc := StrategyConfig{
+		ID:       "spot-btc",
+		Type:     "spot",
+		Platform: "binanceus",
+		Args:     []string{"sma_cross", "BTC/USDT", "30m"},
+	}
+	got := circuitBreakerStrategyLabel(sc)
+	if !strings.Contains(got, "BinanceUS, BTC, 30m, sma_cross, spot") {
+		t.Fatalf("strategy label = %q, want normalized BTC asset", got)
+	}
+	if strings.Contains(got, "BTC/USDT") {
+		t.Fatalf("strategy label should not render raw spot pair: %q", got)
 	}
 }
