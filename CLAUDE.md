@@ -85,9 +85,11 @@ Other dirs:
 - **Commits and PR bodies:** end with `LLM: <model> | <effort> | Harness: <action>` (default Claude Code footer slot). Do **not** append any `Co-authored-by:` / `Co-Authored-By` trailer.
 
 ### PR review format (`@claude review`)
-Top-level review comment is one of two shapes — no preamble, no closing:
-1. **Approve:** `LGTM — ` + one-sentence rationale (what was checked + why safe to merge).
-2. **Changes requested:** numbered list (`1.`,`2.`,…), each item one sentence with `file:line` when applicable, ordered by severity. Nice-to-haves under a final `Optional:` line or dropped.
+The posted comment is written as instructions for an agent to act on, and contains **nothing outside this structure** (no preamble, intro, header, emoji, or footer). Enforced via `--append-system-prompt` in `.github/workflows/claude.yml` (overrides the code-review plugin's default comment shape; the multi-agent review process is unchanged).
+- First line is a verdict: exactly `LGTM` **or** `Needs Updates`.
+- `LGTM` stands alone with no explanation — given **only** when there are zero findings in every category. It signals the reading agent may merge and close the PR.
+- When findings exist, the first line is `Needs Updates`, then every finding goes under exactly one H3 section (omit empty sections): `### Needs Fixing`, `### Recommended Optional`, `### Create Follow-up Issue`, `### Requires Human Review`.
+- Each section is a numbered list; each item is a single **bold one-sentence title** stating the item, then a newline, then a description with only the critical details (`file:line` + why it matters).
 Inline review threads are exempt.
 
 ## Build & Deploy
