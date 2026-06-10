@@ -474,7 +474,18 @@ def supertrend_strategy(df: pd.DataFrame, atr_period: int = 10, multiplier: floa
     final_lower = basic_lower.copy()
     direction = pd.Series(0, index=result.index, dtype=int)
 
-    for i in range(1, n):
+    # Seed the recursion from the first non-NaN ATR row; the rolling ATR is NaN
+    # for the first atr_period-1 bars and NaN comparisons are always False, so
+    # starting at i=1 would carry NaN bands forward forever and never emit a signal.
+    atr_valid = atr.notna().to_numpy()
+    if not atr_valid.any():
+        result["supertrend"] = np.nan
+        result["st_direction"] = direction
+        result["signal"] = 0
+        return result
+    start = int(atr_valid.argmax())
+
+    for i in range(start + 1, n):
         if basic_upper.iloc[i] < final_upper.iloc[i-1] or result["close"].iloc[i-1] > final_upper.iloc[i-1]:
             final_upper.iloc[i] = basic_upper.iloc[i]
         else:
