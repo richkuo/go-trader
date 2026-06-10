@@ -462,6 +462,18 @@ DEFAULT_PARAM_RANGES = {
         "rsi_oversold": [25.0, 30.0, 35.0],
         "rsi_overbought": [65.0, 70.0, 75.0],
     },
+    "mtf_confluence": {
+        "htf_factor": [3, 4, 6],
+        "htf_ema_fast": [10, 20, 26],
+        # NOTE: the real warmup need is ~htf_factor × htf_ema_slow NATIVE bars
+        # (the slow EMA counts HTF buckets), which max_indicator_lookback's
+        # raw-int heuristic can't see. Safe regardless: the strategy holds the
+        # HTF trend neutral until primed, so under-provisioned folds just
+        # trade less at the start — never on look-ahead or junk EMAs.
+        "htf_ema_slow": [40, 50],
+        "ltf_ema": [13, 20],
+        "pullback_window": [4, 6, 8],
+    },
     "consolidation_range": {
         "box_width_pct": [0.03, 0.05, 0.08, 0.10],
         "min_bars": [12, 16, 24],

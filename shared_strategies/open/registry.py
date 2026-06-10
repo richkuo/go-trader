@@ -45,6 +45,7 @@ from bear_pullback_st import bear_pullback_st_core
 from donchian_breakout import donchian_breakout_core
 from momentum_pro import momentum_pro_core
 from mean_reversion_pro import mean_reversion_pro_core
+from mtf_confluence import mtf_confluence_core
 from session_breakout import session_breakout_core
 from vwap_rejection_st import vwap_rejection_st_core
 
@@ -1052,6 +1053,25 @@ def consolidation_range_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "mtf_confluence",
+    "MTF Confluence — higher-timeframe EMA trend gate (resampled in-frame, no extra data) over native-frame pullback resumption entries; exits when the HTF trend flips",
+    {
+        "htf_factor": 4, "htf_ema_fast": 20, "htf_ema_slow": 40,
+        "htf_sep_pct": 0.001, "ltf_ema": 20, "pullback_window": 6,
+        "pullback_touch_buffer_pct": 0.0, "allow_short": False,
+    },
+    variants={
+        "futures": {
+            "description": "MTF Confluence — bidirectional: HTF EMA trend gate over native-frame pullback resumption entries; shorts mirror the logic in HTF downtrends",
+            "default_params": {"allow_short": True},
+        },
+    },
+)
+def mtf_confluence_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return mtf_confluence_core(df, **params)
+
+
+@register(
     "hold",
     "Hold — always returns signal=0; used internally by type=manual strategies for the close-evaluator loop (#569)",
     {},
@@ -1078,7 +1098,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "donchian_breakout", "tema_cross",
-        "momentum_pro", "mean_reversion_pro",
+        "momentum_pro", "mean_reversion_pro", "mtf_confluence",
         "hold",
     ],
     "futures": [
@@ -1091,6 +1111,6 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "sweep_squeeze_combo", "adx_trend", "delta_neutral_funding",
         "donchian_breakout", "session_breakout", "bear_pullback_st",
         "vwap_rejection_st", "momentum_pro", "mean_reversion_pro",
-        "consolidation_range", "hold",
+        "consolidation_range", "mtf_confluence", "hold",
     ],
 }
