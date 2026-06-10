@@ -165,6 +165,32 @@ class TestMarketData:
         assert result[0][4] == 102.0
         assert result[-1][4] == 104.0
 
+    def test_get_ohlcv_warns_on_shortfall_below_limit(self, monkeypatch, capsys):
+        monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
+        adapter, mock_info = self._make_adapter()
+        # Window widened to limit+margin but gaps left fewer than `limit` rows.
+        mock_info.candles_snapshot.return_value = [
+            {"T": 1700000000000 + i * 3_600_000, "o": "100", "h": "110", "l": "90",
+             "c": str(100 + i), "v": "50"}
+            for i in range(3)
+        ]
+        result = adapter.get_ohlcv("BTC", "1h", 200)
+        assert len(result) == 3  # returned as-is, not padded
+        err = capsys.readouterr().err
+        assert "shortfall" in err
+        assert "3 of 200" in err
+
+    def test_get_ohlcv_no_shortfall_warning_when_full(self, monkeypatch, capsys):
+        monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
+        adapter, mock_info = self._make_adapter()
+        mock_info.candles_snapshot.return_value = [
+            {"T": 1700000000000 + i * 3_600_000, "o": "100", "h": "110", "l": "90",
+             "c": str(100 + i), "v": "50"}
+            for i in range(3)
+        ]
+        adapter.get_ohlcv("BTC", "1h", 3)
+        assert "shortfall" not in capsys.readouterr().err
+
     def test_get_funding_rate_found(self):
         adapter, mock_info = self._make_adapter()
         mock_info.meta_and_asset_ctxs.return_value = [

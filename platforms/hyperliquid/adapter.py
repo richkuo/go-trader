@@ -557,6 +557,18 @@ class HyperliquidExchangeAdapter:
             ])
         if len(result) > limit:
             result = result[-limit:]
+        elif result and len(result) < limit:
+            # Widened window (+OHLCV_GAP_MARGIN) still came up short: gaps
+            # exceeded the margin for this symbol/interval. Callers continue
+            # while len >= 30 (check_hyperliquid.py), so flag the shortfall to
+            # stderr rather than letting indicators silently warm up on fewer
+            # bars than requested (#937).
+            print(
+                f"[WARN] hl ohlcv shortfall for {symbol} {interval}: got "
+                f"{len(result)} of {limit} requested (gaps exceed "
+                f"{OHLCV_GAP_MARGIN}-candle margin)",
+                file=sys.stderr,
+            )
         # Never cache an empty result — insufficient-data fetches must keep
         # retrying live rather than pinning every peer to the error path.
         if cache_enabled and result:
