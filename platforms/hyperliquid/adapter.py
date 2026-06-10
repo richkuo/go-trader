@@ -47,9 +47,14 @@ OHLCV_CACHE_TTL_S = 60
 # Extra intervals requested beyond `limit` so sparse candleSnapshot gaps (#937)
 # still yield at least `limit` rows before trimming to the most recent `limit`.
 OHLCV_GAP_MARGIN = 50
-# Hyperliquid's candleSnapshot returns at most ~5000 candles per request; the
-# extend-until-limit retry loop (#947) never requests a wider window than this.
+# Hyperliquid's candleSnapshot caps the RETURNED COUNT (most-recent ~5000
+# candles within the range), NOT the request span. The extend-until-limit loop
+# (#947) treats this as the ceiling on obtainable rows: once the returned count
+# reaches it, a wider window can't yield more, so we stop.
 OHLCV_MAX_CANDLES = 5000
+# Backstop on extend passes so a pathological dribble of new candles per widen
+# can't loop unbounded; the count-plateau check is the normal terminator.
+OHLCV_MAX_EXTEND_PASSES = 12
 
 # SDK imports: defer to avoid module-level ImportError when SDK not installed.
 # adapter.py is loaded with platforms/hyperliquid/ directly in sys.path (not
@@ -545,15 +550,27 @@ class HyperliquidExchangeAdapter:
             if cached is not None:
                 return cached
 
-        # Extend-until-limit (#947): start at `limit + OHLCV_GAP_MARGIN` and,
-        # if sparse candleSnapshot gaps still leave fewer than `limit` rows,
-        # widen the window and refetch until we reach `limit` or hit HL's
-        # ~5000-candle API cap. `requested` is capped at OHLCV_MAX_CANDLES so we
-        # never ask for a window the API would reject; doubling reaches the cap
-        # in a few passes. Only the rare shortfall path makes extra /info calls.
-        requested = min(limit + OHLCV_GAP_MARGIN, OHLCV_MAX_CANDLES)
+        # Extend-until-limit (#947): start at `limit + OHLCV_GAP_MARGIN`
+        # intervals and, if sparse candleSnapshot gaps still leave fewer than
+        # `limit` rows, double the window and refetch. HL caps the *returned
+        # count* (not the request span), so we widen the span until one of:
+        #   - we have >= limit rows (done);
+        #   - the returned count stops growing (plateau — the symbol's full
+        #     history is now in-window; a wider span can't add more);
+        #   - the count hits OHLCV_MAX_CANDLES (HL's return cap — can't get more
+        #     from a single call);
+        #   - the window is empty (halted/untraded symbol won't populate by
+        #     widening; empty is the caller's error path); or
+        #   - the pass backstop trips (pathological dribble guard).
+        # We deliberately do NOT persist a "short symbol" marker: a brand-new
+        # listing accumulates candles over time and must be re-attempted on each
+        # cache miss, not pinned short. Extra /info calls are bounded per call
+        # (plateau usually trips in 1-2 widens) and only on the cache-miss
+        # shortfall path.
+        requested = limit + OHLCV_GAP_MARGIN
         result = []
-        while True:
+        prev_count = -1
+        for _ in range(OHLCV_MAX_EXTEND_PASSES):
             start_ms = end_ms - interval_ms * requested
             candles = self._info.candles_snapshot(symbol, interval, start_ms, end_ms)
             result = []
@@ -567,26 +584,26 @@ class HyperliquidExchangeAdapter:
                     float(c["c"]),
                     float(c["v"]),
                 ])
-            # Stop once we have enough rows, the window already spans HL's cap
-            # (no wider request is possible), or the window is entirely empty
-            # (a halted / untraded symbol won't populate by widening — extending
-            # would just burn /info calls; empty is the caller's error path).
-            if not result or len(result) >= limit or requested >= OHLCV_MAX_CANDLES:
+            if (not result
+                    or len(result) >= limit
+                    or len(result) >= OHLCV_MAX_CANDLES
+                    or len(result) == prev_count):
                 break
-            requested = min(requested * 2, OHLCV_MAX_CANDLES)
+            prev_count = len(result)
+            requested *= 2
 
         if len(result) > limit:
             result = result[-limit:]
         elif result and len(result) < limit:
-            # Even after extending to HL's ~5000-candle cap the symbol/interval
-            # has too few traded bars. Callers continue while len >= 30
-            # (check_hyperliquid.py), so flag the shortfall to stderr rather
-            # than letting indicators silently warm up on fewer bars than
-            # requested (#937/#947).
+            # The symbol/interval has fewer traded bars than the requested
+            # lookback even after widening to its full available history.
+            # Callers continue while len >= 30 (check_hyperliquid.py), so flag
+            # the shortfall to stderr rather than letting indicators silently
+            # warm up on fewer bars than requested (#937/#947).
             print(
                 f"[WARN] hl ohlcv shortfall for {symbol} {interval}: got "
-                f"{len(result)} of {limit} requested after extending to the "
-                f"{OHLCV_MAX_CANDLES}-candle cap",
+                f"{len(result)} of {limit} requested after extending the window "
+                f"to the symbol's available history",
                 file=sys.stderr,
             )
         # Never cache an empty result — insufficient-data fetches must keep

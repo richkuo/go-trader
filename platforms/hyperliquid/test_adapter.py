@@ -176,6 +176,10 @@ class TestMarketData:
         ]
         result = adapter.get_ohlcv("BTC", "1h", 200)
         assert len(result) == 3  # returned as-is, not padded
+        # Count plateaus immediately (every widen returns the same 3 rows), so
+        # the extend loop stops after 2 fetches — it does NOT walk to a cap
+        # (#947 finding-2: bounded extra /info calls on the shortfall path).
+        assert mock_info.candles_snapshot.call_count == 2
         err = capsys.readouterr().err
         assert "shortfall" in err
         assert "3 of 200" in err
@@ -218,27 +222,44 @@ class TestMarketData:
                  for c in mock_info.candles_snapshot.call_args_list]
         assert spans == [250, 500]
 
-    def test_get_ohlcv_caps_extension_at_max_candles_and_warns(self, monkeypatch, capsys):
-        # Symbol can never reach `limit` even at the cap: window must never
-        # exceed OHLCV_MAX_CANDLES, and the shortfall is warned (#947).
+    def test_get_ohlcv_stops_extending_on_history_plateau_and_warns(self, monkeypatch, capsys):
+        # A new listing with only 150 lifetime candles: widening past its full
+        # history returns the same count, so the loop must terminate on the
+        # plateau (NOT keep doubling to some span ceiling) and warn (#947).
         monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
         adapter, mock_info = self._make_adapter()
+        available = 150
 
         def side_effect(symbol, interval, start_ms, end_ms):
             span = round((end_ms - start_ms) / 3_600_000)
-            return self._gappy_candles(int(span * 0.5))
+            return self._gappy_candles(min(int(span * 0.6), available))
 
         mock_info.candles_snapshot.side_effect = side_effect
-        result = adapter.get_ohlcv("BTC", "1h", 4000)
-        spans = [round((c.args[3] - c.args[2]) / 3_600_000)
-                 for c in mock_info.candles_snapshot.call_args_list]
-        assert max(spans) == 5000  # never requests beyond the cap
-        assert all(s <= 5000 for s in spans)
-        assert len(result) == 2500  # 0.5 * 5000, still short of 4000
+        result = adapter.get_ohlcv("BTC", "1h", 200)
+        # 250→150 (== available), 500→150 (plateau): stops after 2 fetches,
+        # well short of the OHLCV_MAX_EXTEND_PASSES backstop.
+        assert mock_info.candles_snapshot.call_count == 2
+        assert len(result) == 150  # full available history, still < limit
         err = capsys.readouterr().err
         assert "shortfall" in err
-        assert "2500 of 4000" in err
-        assert "5000-candle cap" in err
+        assert "150 of 200" in err
+
+    def test_get_ohlcv_extend_passes_are_bounded(self, monkeypatch):
+        # Pathological: every widen adds exactly one candle (never plateaus,
+        # never reaches `limit`). The pass backstop must cap the /info calls.
+        monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
+        adapter, mock_info = self._make_adapter()
+        counter = {"n": 1}
+
+        def side_effect(symbol, interval, start_ms, end_ms):
+            n = counter["n"]
+            counter["n"] += 1  # strictly growing → no plateau, never hits limit
+            return self._gappy_candles(n)
+
+        mock_info.candles_snapshot.side_effect = side_effect
+        adapter.get_ohlcv("BTC", "1h", 10_000)
+        max_passes = type(adapter).get_ohlcv.__globals__["OHLCV_MAX_EXTEND_PASSES"]
+        assert mock_info.candles_snapshot.call_count == max_passes
 
     def test_get_funding_rate_found(self):
         adapter, mock_info = self._make_adapter()
