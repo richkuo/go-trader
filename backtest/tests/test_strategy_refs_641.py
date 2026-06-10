@@ -136,7 +136,7 @@ def _write_config(tmp_path, version, strategies):
 
 
 def test_load_strategy_config_extracts_refs(tmp_path):
-    path = _write_config(tmp_path, version=13, strategies=[
+    path = _write_config(tmp_path, version=15, strategies=[
         {
             "id": "hl-temacb-btc",
             "type": "perps",
@@ -282,7 +282,10 @@ def test_load_strategy_config_single_close_wins_over_legacy_array(tmp_path):
     assert [r["name"] for r in kwargs["close_strategies"]] == ["tiered_tp_pct"]
 
 
-def test_load_strategy_config_rejects_pre_v13(tmp_path):
+def test_load_strategy_config_rejects_pre_v15_gate(tmp_path):
+    # #942 (D2.8): the loader gates on v15 (not v13) because the v15 migration
+    # canonicalizes close params on disk. A pre-gate version raises before any
+    # ref parsing.
     path = _write_config(tmp_path, version=12, strategies=[
         # Pre-v13 flat shape: open_strategy is a string, params is flat.
         {"id": "hl-temacb-btc", "open_strategy": "tema_cross_bd",
@@ -292,8 +295,34 @@ def test_load_strategy_config_rejects_pre_v13(tmp_path):
         run_backtest.load_strategy_config(path, "hl-temacb-btc")
 
 
+@pytest.mark.parametrize("version", [13, 14])
+def test_load_strategy_config_rejects_pre_v15_with_legacy_tiers(tmp_path, version):
+    # #942 (D2.8) regression: a v13/v14 config still carries pre-canonicalization
+    # close keys (legacy `tiers` rather than `tp_tiers`, `atr_multiple` written
+    # as `atr`). The Python close evaluators read ONLY the canonical runtime
+    # keys, so these would silently no-op (explicit tiers dropped to the system
+    # default; --defaults user injecting over them) while live canonicalizes on
+    # read. The v15 gate must reject the file instead of running it.
+    path = _write_config(tmp_path, version=version, strategies=[
+        {
+            "id": "hl-temacb-btc",
+            "type": "perps",
+            "open_strategy": {"name": "tema_cross_bd"},
+            "close_strategy": {"name": "tiered_tp_atr", "params": {
+                # Legacy on-disk shape the v15 migration rewrites:
+                "tiers": [
+                    {"atr": 2.0, "fraction": 0.5},
+                    {"atr": 3.0, "fraction": 1.0},
+                ],
+            }},
+        },
+    ])
+    with pytest.raises(ValueError, match=f"config_version={version}"):
+        run_backtest.load_strategy_config(path, "hl-temacb-btc")
+
+
 def test_load_strategy_config_rejects_unknown_id(tmp_path):
-    path = _write_config(tmp_path, version=13, strategies=[
+    path = _write_config(tmp_path, version=15, strategies=[
         {"id": "hl-temacb-btc",
          "open_strategy": {"name": "tema_cross_bd"},
          "close_strategies": []},
@@ -303,7 +332,7 @@ def test_load_strategy_config_rejects_unknown_id(tmp_path):
 
 
 def test_load_strategy_config_rejects_dynamic_regime_close_single(tmp_path):
-    path = _write_config(tmp_path, version=13, strategies=[
+    path = _write_config(tmp_path, version=15, strategies=[
         {
             "id": "hl-dyn-btc",
             "open_strategy": {"name": "tema_cross_bd"},
@@ -315,7 +344,7 @@ def test_load_strategy_config_rejects_dynamic_regime_close_single(tmp_path):
 
 
 def test_load_strategy_config_rejects_dynamic_regime_close_legacy_array(tmp_path):
-    path = _write_config(tmp_path, version=13, strategies=[
+    path = _write_config(tmp_path, version=15, strategies=[
         {
             "id": "hl-dyn-btc",
             "open_strategy": {"name": "tema_cross_bd"},
@@ -331,7 +360,7 @@ def test_load_strategy_config_rejects_dynamic_regime_close_legacy_array(tmp_path
 def test_load_strategy_config_then_backtester_parity(tmp_path):
     """Same JSON block produces same Backtester wiring as constructing the
     refs by hand. This is the live↔backtest parity contract from the issue."""
-    path = _write_config(tmp_path, version=13, strategies=[
+    path = _write_config(tmp_path, version=15, strategies=[
         {
             "id": "hl-temacb-btc",
             "open_strategy": {"name": "tema_cross_bd", "params": {"short_period": 5}},
@@ -361,7 +390,7 @@ def test_config_flag_threads_live_open_params_to_result(tmp_path, monkeypatch):
     registry's default_params. Regression for #643 review #1.
     """
     # Real strategy that has overridable defaults: triple_ema (default short=8).
-    config_path = _write_config(tmp_path, version=13, strategies=[
+    config_path = _write_config(tmp_path, version=15, strategies=[
         {
             "id": "hl-triple-btc",
             "type": "perps",
@@ -411,7 +440,7 @@ def test_config_flag_rejects_non_single_modes(tmp_path):
     """--config loads exactly one strategy; rejecting compare/multi/optimize
     upfront prevents misleading reports where only the matched strategy gets
     the live close refs and the rest run with no close strategies (#643 review #4)."""
-    config_path = _write_config(tmp_path, version=13, strategies=[
+    config_path = _write_config(tmp_path, version=15, strategies=[
         {"id": "x", "open_strategy": {"name": "triple_ema"}, "close_strategies": []},
     ])
     import sys as _sys
@@ -424,3 +453,119 @@ def test_config_flag_rejects_non_single_modes(tmp_path):
                 run_backtest.main()
         finally:
             _sys.argv = old_argv
+
+
+# ─── #942: direction / invert_signal / regime_window_divergence parity ───────
+
+
+def _perps_strategy(strategy_id="hl-d-btc", **extra):
+    base = {
+        "id": strategy_id,
+        "type": "perps",
+        "open_strategy": {"name": "tema_cross_bd"},
+        "close_strategy": {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+            {"atr_multiple": 2.0, "close_fraction": 1.0},
+        ]}},
+    }
+    base.update(extra)
+    return base
+
+
+def test_load_strategy_config_returns_direction_and_invert(tmp_path):
+    path = _write_config(tmp_path, version=15, strategies=[
+        _perps_strategy(direction="short", invert_signal=True),
+    ])
+    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
+    assert kwargs["direction"] == "short"
+    assert kwargs["invert_signal"] is True
+
+
+def test_load_strategy_config_direction_defaults_long(tmp_path):
+    # No direction field on a perps strategy → effective "long" (matches
+    # EffectiveDirection); invert_signal defaults False.
+    path = _write_config(tmp_path, version=15, strategies=[_perps_strategy()])
+    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
+    assert kwargs["direction"] == "long"
+    assert kwargs["invert_signal"] is False
+
+
+def test_load_strategy_config_allow_shorts_maps_to_both(tmp_path):
+    # Legacy pre-v14 toggle: allow_shorts=true with no explicit direction →
+    # "both" (mirrors EffectiveDirection's AllowShorts fallback).
+    path = _write_config(tmp_path, version=15, strategies=[
+        _perps_strategy(allow_shorts=True),
+    ])
+    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
+    assert kwargs["direction"] == "both"
+
+
+def test_load_strategy_config_spot_direction_is_long(tmp_path):
+    # direction is meaningful only for perps/manual; a spot strategy is long by
+    # construction even if a stray direction field is present.
+    path = _write_config(tmp_path, version=15, strategies=[
+        {
+            "id": "spot-x",
+            "type": "spot",
+            "open_strategy": {"name": "sma_crossover"},
+            "direction": "short",
+        },
+    ])
+    kwargs = run_backtest.load_strategy_config(path, "spot-x")
+    assert kwargs["direction"] == "long"
+
+
+def test_load_strategy_config_rejects_regime_window_divergence(tmp_path):
+    # #942 (D2.5): regime_window_divergence (#907) is HL-live-only and was
+    # silently ignored; the loader must reject it loudly like its siblings.
+    path = _write_config(tmp_path, version=15, strategies=[
+        _perps_strategy(regime_window_divergence={
+            "short_window": "short", "medium_window": "medium",
+            "on_divergence": {"mode": "trust_short"},
+        }),
+    ])
+    with pytest.raises(ValueError, match="regime_window_divergence"):
+        run_backtest.load_strategy_config(path, "hl-d-btc")
+
+
+@pytest.mark.parametrize("direction", ["short", "both"])
+def test_load_strategy_config_rejects_short_or_both_without_close(tmp_path, direction):
+    # The plain long/flat signal path cannot open shorts, so a short/both
+    # direction with no close evaluator would silently drop the short side.
+    # Reject instead of backtesting long-only.
+    path = _write_config(tmp_path, version=15, strategies=[
+        {
+            "id": "hl-noclose",
+            "type": "perps",
+            "open_strategy": {"name": "tema_cross_bd"},
+            "direction": direction,
+            # No close_strategy → plain long/flat path.
+        },
+    ])
+    with pytest.raises(ValueError, match="cannot open shorts"):
+        run_backtest.load_strategy_config(path, "hl-noclose")
+
+
+def test_load_strategy_config_long_without_close_is_allowed(tmp_path):
+    # direction="long" + no close evaluator is fine: the plain long/flat path
+    # is already long-only and matches live (signal=-1 closes the long).
+    path = _write_config(tmp_path, version=15, strategies=[
+        {
+            "id": "hl-longnoclose",
+            "type": "perps",
+            "open_strategy": {"name": "tema_cross_bd"},
+            "direction": "long",
+        },
+    ])
+    kwargs = run_backtest.load_strategy_config(path, "hl-longnoclose")
+    assert kwargs["direction"] == "long"
+    assert kwargs["close_strategies"] == []
+
+
+def test_load_strategy_config_both_with_close_is_allowed(tmp_path):
+    # direction="both" WITH a close evaluator uses the open/close engine path,
+    # which opens both sides — allowed.
+    path = _write_config(tmp_path, version=15, strategies=[
+        _perps_strategy(direction="both"),
+    ])
+    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
+    assert kwargs["direction"] == "both"

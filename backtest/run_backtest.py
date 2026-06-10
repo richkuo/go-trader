@@ -116,6 +116,23 @@ def _apply_user_close_defaults(close_refs: list, user_defaults: Optional[dict]) 
             params["tp_tiers"] = tp
 
 
+def _effective_direction(sc: dict) -> str:
+    """Resolve a strategy entry's effective entry direction (#942).
+
+    Mirrors ``EffectiveDirection`` (scheduler/config.go): direction is
+    meaningful only for ``perps``/``manual`` (other types are long by
+    construction). An explicit ``"long"``/``"short"``/``"both"`` wins; otherwise
+    the legacy ``allow_shorts`` toggle maps absent->``"long"`` / true->``"both"``
+    so pre-v14 configs gate identically to live.
+    """
+    if str(sc.get("type") or "perps") not in ("perps", "manual"):
+        return "long"
+    d = str(sc.get("direction") or "").strip().lower()
+    if d in ("long", "short", "both"):
+        return d
+    return "both" if sc.get("allow_shorts") else "long"
+
+
 def load_strategy_config(config_path: str, strategy_id: str,
                          inject_user_defaults: bool = False) -> dict:
     """Load a single strategy's refs from a live go-trader config (#641).
@@ -136,11 +153,25 @@ def load_strategy_config(config_path: str, strategy_id: str,
     with open(config_path) as fh:
         cfg = _json.load(fh)
     version = int(cfg.get("config_version", 0) or 0)
-    if version < 13:
+    # #942 (D2.8): gate on v15, not v13. The v13 co-located ref shape (#640) is
+    # necessary but not sufficient — the v15 migration is what canonicalizes
+    # close-strategy params on disk (tiers->tp_tiers, atr/multiple/fraction->
+    # atr_multiple/close_fraction; config_migration_v15.go). The Python close
+    # evaluators read ONLY the canonical runtime keys (tier_list_from_params
+    # reads tp_tiers exclusively), so a pre-v15 config passes the old gate while
+    # its legacy close keys silently no-op: explicit tiers are dropped to the
+    # system-default ladder, and --defaults user injects user defaults over the
+    # operator's legacy tiers. Live is unaffected (Go canonicalizes on read), so
+    # backtest and live would silently diverge on the same file. Reject instead.
+    if version < 15:
         raise ValueError(
-            f"{config_path}: config_version={version} predates the co-located "
-            f"strategy ref shape (#640). Run go-trader once against this file "
-            f"to migrate it, then retry."
+            f"{config_path}: config_version={version} predates the v15 "
+            f"close-param canonicalization (tiers->tp_tiers, atr/multiple/"
+            f"fraction->atr_multiple/close_fraction). The backtest close "
+            f"evaluators read only the canonical runtime keys, so a pre-v15 "
+            f"config's legacy close params would silently no-op (diverging from "
+            f"live, which canonicalizes on read). Run go-trader once against "
+            f"this file to migrate it, then retry."
         )
     for sc in cfg.get("strategies", []) or []:
         if sc.get("id") != strategy_id:
@@ -162,6 +193,21 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"{config_path}: strategy {strategy_id!r} uses "
                 f"regime_directional_policy, which is HL-live-only in this "
                 f"release (backtester parity deferred — see #779). Use the "
+                f"static `direction` / `invert_signal` fields for backtesting."
+            )
+        # #942 (D2.5): regime_window_divergence (#907) is HL-perps-live-only —
+        # it mutates sc.Direction per-cycle off a live short/medium regime
+        # split, which the bar-level backtester has no resolver hook to mirror.
+        # Unlike its rejected siblings (regime_directional_policy above,
+        # tiered_tp_atr_live_regime_dynamic below) it was silently ignored
+        # rather than rejected, so a divergence-driven flip would backtest the
+        # static config and diverge from live. Reject with the same wording
+        # pattern so the operator sees the gap.
+        if sc.get("regime_window_divergence"):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} uses "
+                f"regime_window_divergence, which is HL-live-only in this "
+                f"release (backtester parity deferred — see #907). Use the "
                 f"static `direction` / `invert_signal` fields for backtesting."
             )
         # #842: a strategy has a single close_strategy ref. Still accept the
@@ -202,6 +248,27 @@ def load_strategy_config(config_path: str, strategy_id: str,
         # falling through to the evaluators' built-in defaults.
         if inject_user_defaults:
             _apply_user_close_defaults(close_refs, cfg.get("user_close_defaults"))
+        # #942 (D2.1): model the live entry transforms the backtester used to
+        # drop silently. ``invert_signal`` flips BUY<->SELL; ``direction`` gates
+        # which side may open. Both are applied to the signal in Backtester.run
+        # (see _apply_direction_invert), in the live order (invert then gate).
+        direction = _effective_direction(sc)
+        invert_signal = bool(sc.get("invert_signal"))
+        # The plain long/flat signal path (no close evaluator) is structurally
+        # long-only: signal=-1 *closes* a long rather than opening a short. A
+        # short/both direction there can't open the short side, so it would
+        # silently backtest long-only — the exact silent-divergence class this
+        # parity fix closes. Require the open/close engine path (a close
+        # evaluator, which models both open sides) or reject loudly.
+        if not close_refs and direction in ("short", "both"):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} has "
+                f"direction={direction!r} but no close_strategy. The "
+                f"backtester's plain long/flat signal path cannot open shorts "
+                f"(signal=-1 only closes a long), so the short side would be "
+                f"silently dropped. Add a close_strategy (the open/close engine "
+                f"models both sides) or backtest a long-only variant."
+            )
         return {
             "open_strategy": {
                 "name": open_ref["name"],
@@ -216,6 +283,8 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "stop_loss_atr_regime": sc.get("stop_loss_atr_regime"),
             "trailing_stop_atr_regime": sc.get("trailing_stop_atr_regime"),
             "strategy_type": str(sc.get("type") or "perps"),
+            "direction": direction,
+            "invert_signal": invert_signal,
         }
     raise ValueError(
         f"{config_path}: no strategy with id={strategy_id!r}. "
@@ -246,6 +315,8 @@ def run_single_backtest(
     stop_loss_atr_regime: Optional[dict] = None,
     trailing_stop_atr_regime: Optional[dict] = None,
     strategy_type: str = "perps",
+    direction: Optional[str] = None,
+    invert_signal: bool = False,
 ) -> Optional[dict]:
     """Run a single backtest and print results.
 
@@ -309,6 +380,8 @@ def run_single_backtest(
         stop_loss_atr_regime=stop_loss_atr_regime,
         trailing_stop_atr_regime=trailing_stop_atr_regime,
         strategy_type=strategy_type,
+        direction=direction,
+        invert_signal=invert_signal,
     )
     results = bt.run(
         df_signals,
@@ -615,6 +688,10 @@ def main():
             "stop_loss_atr_regime",
             "trailing_stop_atr_regime",
             "strategy_type",
+            # #942: direction / invert_signal entry transforms, applied to the
+            # signal inside Backtester.run (mirrors live invert-then-gate order).
+            "direction",
+            "invert_signal",
         )
         live_stop_kwargs = {k: live_kwargs[k] for k in stop_keys if k in live_kwargs}
 

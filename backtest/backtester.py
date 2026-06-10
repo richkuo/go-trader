@@ -325,7 +325,9 @@ class Backtester:
                  trailing_stop_pct: Optional[float] = None,
                  stop_loss_atr_regime: Optional[dict] = None,
                  trailing_stop_atr_regime: Optional[dict] = None,
-                 strategy_type: str = "perps"):
+                 strategy_type: str = "perps",
+                 direction: Optional[str] = None,
+                 invert_signal: bool = False):
         """
         Args:
             initial_capital: Starting portfolio value.
@@ -397,6 +399,13 @@ class Backtester:
         self.trailing_stop_atr_mult = trailing_stop_atr_mult
         self.trailing_stop_pct = trailing_stop_pct
         self.strategy_type = strategy_type
+        # #942: live strategy-level entry transforms the backtester must mirror
+        # so --config doesn't silently diverge from the daemon. ``invert_signal``
+        # flips BUY<->SELL; ``direction`` gates which side may open. Both are
+        # applied to the raw signal in ``run()`` (see _apply_direction_invert),
+        # mirroring the live order (applySignalInversion before EffectiveDirection).
+        self.direction = (str(direction).strip().lower() if direction else None)
+        self.invert_signal = bool(invert_signal)
         self.stop_loss_atr_regime = (
             dict(stop_loss_atr_regime) if stop_loss_atr_regime else None
         )
@@ -689,6 +698,45 @@ class Backtester:
                         "stop_loss_atr_mult or stop_loss_pct."
                     )
 
+    def _apply_direction_invert(self, sig_int: pd.Series,
+                                uses_open_close: bool) -> pd.Series:
+        """Apply live ``invert_signal`` then ``direction`` gating to the raw
+        integer signal (#942).
+
+        Mirrors the live scheduler ordering: ``applySignalInversion`` flips
+        BUY<->SELL (scheduler/main.go) BEFORE ``EffectiveDirection`` /
+        ``PerpsOrderSkipReason`` gate which side may OPEN. Both are integer
+        frame transforms on ``{-1, 0, 1}``.
+
+        Direction masks the signal that would OPEN a disallowed side. The
+        signal's meaning is path-dependent, so masking is too:
+
+          - open/close path (``uses_open_close``): ``signal>0`` opens long,
+            ``signal<0`` opens short, and closes come from the close evaluator.
+            Masking the disallowed open side is exact and never suppresses a
+            close.
+          - plain long/flat path: ``signal=1`` opens long, ``signal=-1`` only
+            *closes* the long (a short is never opened). It is structurally
+            long-only, so ``direction="long"`` already matches live and needs
+            no mask; ``"short"``/``"both"`` are unmodelable here and are
+            rejected at config load (``run_backtest.load_strategy_config``).
+            Masking ``-1`` in this path would wrongly suppress long-closes, so
+            it is intentionally skipped.
+        """
+        sig = sig_int
+        if self.invert_signal:
+            # ``-sig`` keeps the {-1, 0, 1} domain (0 stays 0).
+            sig = -sig
+        d = self.direction or ""
+        if uses_open_close and d in ("long", "short"):
+            if d == "long":
+                # Disallow short opens: drop signal<0, keep long-opens/holds.
+                sig = sig.where(sig >= 0, 0)
+            else:  # "short"
+                # Disallow long opens: drop signal>0, keep short-opens/holds.
+                sig = sig.where(sig <= 0, 0)
+        return sig.astype(int)
+
     def run(self, df: pd.DataFrame, strategy_name: str = "Unknown",
             symbol: str = "BTC/USDT", timeframe: str = "1d",
             params: Optional[dict] = None, save: bool = True,
@@ -750,6 +798,12 @@ class Backtester:
                     f"signal column must be in {{-1, 0, 1}} — got "
                     f"unexpected values {sorted(bad.unique().tolist())}"
                 )
+            # #942: apply the live entry transforms (invert_signal, then
+            # direction gating) to the raw signal BEFORE the open snapshot and
+            # the look-ahead shift, so both ``signal_for_open`` and the shifted
+            # ``df["signal"]`` see the gated values. No-op unless --config wired
+            # direction/invert_signal from the live strategy entry.
+            sig_int = self._apply_direction_invert(sig_int, uses_open_close)
             signal_for_open = sig_int
             df["signal"] = sig_int.shift(1).fillna(0).astype(int)
         else:
