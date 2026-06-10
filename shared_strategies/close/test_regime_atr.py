@@ -44,6 +44,18 @@ def test_use_defaults_expands(regime_atr):
     assert block.trend_regime["trending_up"].atr == 2.0
 
 
+def test_trailing_use_defaults_composite_clean(regime_atr):
+    # #940: fleet baseline must resolve clean composite opening trails to 2.0.
+    block, errs = regime_atr.parse_regime_atr_block(
+        {"use_defaults": True}, "trailing_stop_atr_regime", regime_atr.SURFACE_TRAILING
+    )
+    assert errs == []
+    for label in ("trending_up_clean", "trending_down_clean"):
+        assert regime_atr.resolve_regime_atr(block, label) == 2.0
+    assert regime_atr.resolve_regime_atr(block, "trending_up_choppy") == 2.0
+    assert regime_atr.resolve_regime_atr(block, "ranging_quiet") == 1.0
+
+
 def test_rejects_bare_label_keys(regime_atr):
     raw = {
         "trending_up": {"atr_multiple": 2.0},

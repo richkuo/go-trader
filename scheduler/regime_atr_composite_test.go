@@ -121,6 +121,30 @@ func TestValidateRegimeATRConfig_CompositeTrailingExplicit(t *testing.T) {
 	}
 }
 
+// TestParseRegimeATRBlock_TrailingUseDefaultsCompositeClean (#940): fleet
+// baseline expansion for composite labels must resolve clean opening trails to
+// 2.0 ATR (aligned with choppy composite; ratchet/TP ladders unchanged).
+func TestParseRegimeATRBlock_TrailingUseDefaultsCompositeClean(t *testing.T) {
+	labels := regimeLabelsForClassifier(regimeClassifierComposite)
+	raw := map[string]interface{}{"use_defaults": true}
+	block, errs := parseRegimeATRBlock(raw, "trailing_stop_atr_regime", regimeSurfaceTrailing, labels)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	for _, label := range []string{"trending_up_clean", "trending_down_clean"} {
+		v, ok := resolveRegimeATR(block, label)
+		if !ok || v != 2.0 {
+			t.Fatalf("resolveRegimeATR(%s) = (%g, %v), want (2.0, true)", label, v, ok)
+		}
+	}
+	if v, ok := resolveRegimeATR(block, "trending_up_choppy"); !ok || v != 2.0 {
+		t.Fatalf("resolveRegimeATR(trending_up_choppy) = (%g, %v), want (2.0, true)", v, ok)
+	}
+	if v, ok := resolveRegimeATR(block, "ranging_quiet"); !ok || v != 1.0 {
+		t.Fatalf("resolveRegimeATR(ranging_quiet) = (%g, %v), want (1.0, true)", v, ok)
+	}
+}
+
 // TestValidateRegimeATRConfig_CompositeMissingLabelRejected ensures the
 // exhaustiveness check uses the composite vocabulary: an incomplete 7-state
 // map is rejected and the error names the composite labels (not ADX).

@@ -121,11 +121,11 @@ REGIME_ATR_DEFAULTS_TRAILING: Dict[str, RegimeATREntry] = {
     "trending_up": RegimeATREntry(atr=2.5),
     "trending_down": RegimeATREntry(atr=2.5),
     "ranging": RegimeATREntry(atr=2.0),
-    # #870: composite group opening trails (clean=2.5, choppy=2.0, ranging=1.0).
+    # #870: composite group opening trails (clean=2.0, choppy=2.0, ranging=1.0).
     # ADX labels keep their pre-#870 values; resolve() exact-matches keys so the
     # extra composite entries are inert for an ADX strategy.
-    "trending_up_clean": RegimeATREntry(atr=2.5),
-    "trending_down_clean": RegimeATREntry(atr=2.5),
+    "trending_up_clean": RegimeATREntry(atr=2.0),
+    "trending_down_clean": RegimeATREntry(atr=2.0),
     "trending_up_choppy": RegimeATREntry(atr=2.0),
     "trending_down_choppy": RegimeATREntry(atr=2.0),
     "ranging_quiet": RegimeATREntry(atr=1.0),

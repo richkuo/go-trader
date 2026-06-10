@@ -222,15 +222,15 @@ var regimeATRDefaults = struct {
 		"ranging":       {ATR: 1.5},
 	},
 	// #870: the regime ratchet/trailing opening trail. ADX labels keep their
-	// pre-#870 values; composite labels resolve per quality group (clean=2.5,
+	// pre-#870 values; composite labels resolve per quality group (clean=2.0,
 	// choppy=2.0, ranging=1.0) so a trailing_stop_atr_regime use_defaults block
-	// differentiates clean trends (wide initial risk) from ranges (tight).
+	// differentiates trend groups from ranges (tight).
 	Trailing: map[string]RegimeATREntry{
 		"trending_up":          {ATR: 2.5},
 		"trending_down":        {ATR: 2.5},
 		"ranging":              {ATR: 2.0},
-		"trending_up_clean":    {ATR: 2.5},
-		"trending_down_clean":  {ATR: 2.5},
+		"trending_up_clean":    {ATR: 2.0},
+		"trending_down_clean":  {ATR: 2.0},
 		"trending_up_choppy":   {ATR: 2.0},
 		"trending_down_choppy": {ATR: 2.0},
 		"ranging_quiet":        {ATR: 1.0},

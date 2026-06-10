@@ -65,7 +65,7 @@ func defaultTrailingRatchetTiers() []trailingRatchetTier {
 // the regime variant (#870 C2). Trend groups (clean/choppy) are pure
 // let-it-ride (close_fraction 0); ranging scales out as ranges mean-revert.
 // Each group's first-rung trail couples to that group's opening trail in
-// regimeATRDefaults.Trailing (clean 2.5 / choppy 2.0 / ranging 1.0). Mirrors
+// regimeATRDefaults.Trailing (clean 2.0 / choppy 2.0 / ranging 1.0). Mirrors
 // DEFAULT_RATCHET_TIERS_BY_GROUP in shared_strategies/close/trailing_tp_ratchet.py.
 var ratchetTierGroupDefaults = map[string][]trailingRatchetTier{
 	"clean": {

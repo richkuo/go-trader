@@ -34,7 +34,7 @@ DEFAULT_RATCHET_TIERS = [
 # Mirrors ratchetTierGroupDefaults in scheduler/trailing_tp_ratchet.go. Trend
 # groups (clean/choppy) are pure let-it-ride (close_fraction 0); ranging scales
 # out. Each group's first rung couples to that group's opening trail in
-# REGIME_ATR_DEFAULTS_TRAILING (clean 2.5 / choppy 2.0 / ranging 1.0).
+# REGIME_ATR_DEFAULTS_TRAILING (clean 2.0 / choppy 2.0 / ranging 1.0).
 DEFAULT_RATCHET_TIERS_BY_GROUP = {
     "clean": [
         {"atr_multiple": 3.0, "trailing_mult_after": 1.5, "close_fraction": 0.0},

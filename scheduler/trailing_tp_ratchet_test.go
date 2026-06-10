@@ -723,7 +723,7 @@ func TestDefaultTrailingRatchetTiersForRegime(t *testing.T) {
 // TestValidateRegimeRatchet_AllDefaultsCompositeValidates is the #870
 // integration case: trailing_stop_atr_regime + trailing_tp_ratchet_regime both
 // on use_defaults under a composite classifier. The full validateRegimeATRConfig
-// path expands the per-group opening trails (clean 2.5 / choppy 2.0 / ranging
+// path expands the per-group opening trails (clean 2.0 / choppy 2.0 / ranging
 // 1.0) and per-group ratchet ladders, and the per-key initial-trail coupling
 // must hold for every label (each group's first rung ≤ its open).
 func TestValidateRegimeRatchet_AllDefaultsCompositeValidates(t *testing.T) {
