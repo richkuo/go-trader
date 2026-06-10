@@ -176,10 +176,11 @@ class TestMarketData:
         ]
         result = adapter.get_ohlcv("BTC", "1h", 200)
         assert len(result) == 3  # returned as-is, not padded
-        # Count plateaus immediately (every widen returns the same 3 rows), so
-        # the extend loop stops after 2 fetches — it does NOT walk to a cap
-        # (#947 finding-2: bounded extra /info calls on the shortfall path).
-        assert mock_info.candles_snapshot.call_count == 2
+        # Every widen returns the same 3 rows. The plateau needs TWO consecutive
+        # zero-growth widens to confirm, so it stops after 3 fetches — still
+        # bounded, NOT the full backstop ladder (#947 finding-2 + the interior-
+        # gap refinement).
+        assert mock_info.candles_snapshot.call_count == 3
         err = capsys.readouterr().err
         assert "shortfall" in err
         assert "3 of 200" in err
@@ -236,13 +237,30 @@ class TestMarketData:
 
         mock_info.candles_snapshot.side_effect = side_effect
         result = adapter.get_ohlcv("BTC", "1h", 200)
-        # 250→150 (== available), 500→150 (plateau): stops after 2 fetches,
-        # well short of the OHLCV_MAX_EXTEND_PASSES backstop.
-        assert mock_info.candles_snapshot.call_count == 2
+        # 250→150 (grows), 500→150 (stale #1), 1000→150 (stale #2 → confirmed
+        # plateau): stops after 3 fetches, well short of the
+        # OHLCV_MAX_EXTEND_PASSES backstop.
+        assert mock_info.candles_snapshot.call_count == 3
         assert len(result) == 150  # full available history, still < limit
         err = capsys.readouterr().err
         assert "shortfall" in err
         assert "150 of 200" in err
+
+    def test_get_ohlcv_does_not_stop_on_single_interior_gap_widen(self, monkeypatch):
+        # An interior no-trade gap makes ONE widen add zero candles, but older
+        # bars sit one more doubling back. A single dead window must NOT be
+        # mistaken for history exhaustion — the loop must keep widening and
+        # reach `limit` (#947 interior-gap refinement).
+        monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
+        adapter, mock_info = self._make_adapter()
+        # pass1=150, pass2=150 (dead window), pass3=250 (recovers past the gap).
+        returns = iter([150, 150, 250])
+        mock_info.candles_snapshot.side_effect = (
+            lambda *a, **kw: self._gappy_candles(next(returns))
+        )
+        result = adapter.get_ohlcv("BTC", "1h", 200)
+        assert mock_info.candles_snapshot.call_count == 3  # did not stop at pass 2
+        assert len(result) == 200  # reached limit at pass 3, trimmed
 
     def test_get_ohlcv_extend_passes_are_bounded(self, monkeypatch):
         # Pathological: every widen adds exactly one candle (never plateaus,

@@ -555,21 +555,29 @@ class HyperliquidExchangeAdapter:
         # `limit` rows, double the window and refetch. HL caps the *returned
         # count* (not the request span), so we widen the span until one of:
         #   - we have >= limit rows (done);
-        #   - the returned count stops growing (plateau — the symbol's full
-        #     history is now in-window; a wider span can't add more);
+        #   - the returned count plateaus across two consecutive widens (the
+        #     symbol's full history is in-window; a wider span can't add more);
         #   - the count hits OHLCV_MAX_CANDLES (HL's return cap — can't get more
         #     from a single call);
         #   - the window is empty (halted/untraded symbol won't populate by
         #     widening; empty is the caller's error path); or
         #   - the pass backstop trips (pathological dribble guard).
+        # The plateau needs TWO consecutive zero-growth widens, not one: because
+        # candleSnapshot omits no-trade bars, a single doubling can land entirely
+        # inside an interior no-trade gap (e.g. an overnight stretch on a
+        # session-traded illiquid symbol) and add nothing, while older bars sit
+        # just one more doubling back. A 2-widen confirmation clears that single
+        # dead window at the cost of ~1 extra /info call; a genuinely exhausted
+        # or leading-gap symbol still terminates in a small bounded number of
+        # passes (it never walks the full backstop ladder).
         # We deliberately do NOT persist a "short symbol" marker: a brand-new
         # listing accumulates candles over time and must be re-attempted on each
         # cache miss, not pinned short. Extra /info calls are bounded per call
-        # (plateau usually trips in 1-2 widens) and only on the cache-miss
-        # shortfall path.
+        # and only on the cache-miss shortfall path.
         requested = limit + OHLCV_GAP_MARGIN
         result = []
         prev_count = -1
+        stale_widens = 0
         for _ in range(OHLCV_MAX_EXTEND_PASSES):
             start_ms = end_ms - interval_ms * requested
             candles = self._info.candles_snapshot(symbol, interval, start_ms, end_ms)
@@ -586,9 +594,16 @@ class HyperliquidExchangeAdapter:
                 ])
             if (not result
                     or len(result) >= limit
-                    or len(result) >= OHLCV_MAX_CANDLES
-                    or len(result) == prev_count):
+                    or len(result) >= OHLCV_MAX_CANDLES):
                 break
+            # Track consecutive zero-growth widens; one dead window (interior
+            # gap) is not enough to declare history exhausted — require two.
+            if len(result) > prev_count:
+                stale_widens = 0
+            else:
+                stale_widens += 1
+                if stale_widens >= 2:
+                    break
             prev_count = len(result)
             requested *= 2
 
