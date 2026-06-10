@@ -191,6 +191,55 @@ class TestMarketData:
         adapter.get_ohlcv("BTC", "1h", 3)
         assert "shortfall" not in capsys.readouterr().err
 
+    @staticmethod
+    def _gappy_candles(n):
+        return [
+            {"T": 1700000000000 + i * 3_600_000, "o": "100", "h": "110",
+             "l": "90", "c": str(100 + i), "v": "50"}
+            for i in range(n)
+        ]
+
+    def test_get_ohlcv_extends_window_until_limit_reached(self, monkeypatch):
+        # candleSnapshot returns ~60% of the requested span (sparse gaps): the
+        # first limit+50 window is short, a wider one clears `limit` (#947).
+        monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
+        adapter, mock_info = self._make_adapter()
+
+        def side_effect(symbol, interval, start_ms, end_ms):
+            span = round((end_ms - start_ms) / 3_600_000)
+            return self._gappy_candles(int(span * 0.6))
+
+        mock_info.candles_snapshot.side_effect = side_effect
+        result = adapter.get_ohlcv("BTC", "1h", 200)
+        assert len(result) == 200  # trimmed to exactly limit
+        # 250→150 (short) then 500→300 (enough): exactly two fetches.
+        assert mock_info.candles_snapshot.call_count == 2
+        spans = [round((c.args[3] - c.args[2]) / 3_600_000)
+                 for c in mock_info.candles_snapshot.call_args_list]
+        assert spans == [250, 500]
+
+    def test_get_ohlcv_caps_extension_at_max_candles_and_warns(self, monkeypatch, capsys):
+        # Symbol can never reach `limit` even at the cap: window must never
+        # exceed OHLCV_MAX_CANDLES, and the shortfall is warned (#947).
+        monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
+        adapter, mock_info = self._make_adapter()
+
+        def side_effect(symbol, interval, start_ms, end_ms):
+            span = round((end_ms - start_ms) / 3_600_000)
+            return self._gappy_candles(int(span * 0.5))
+
+        mock_info.candles_snapshot.side_effect = side_effect
+        result = adapter.get_ohlcv("BTC", "1h", 4000)
+        spans = [round((c.args[3] - c.args[2]) / 3_600_000)
+                 for c in mock_info.candles_snapshot.call_args_list]
+        assert max(spans) == 5000  # never requests beyond the cap
+        assert all(s <= 5000 for s in spans)
+        assert len(result) == 2500  # 0.5 * 5000, still short of 4000
+        err = capsys.readouterr().err
+        assert "shortfall" in err
+        assert "2500 of 4000" in err
+        assert "5000-candle cap" in err
+
     def test_get_funding_rate_found(self):
         adapter, mock_info = self._make_adapter()
         mock_info.meta_and_asset_ctxs.return_value = [

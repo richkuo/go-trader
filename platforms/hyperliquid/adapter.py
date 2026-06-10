@@ -47,6 +47,9 @@ OHLCV_CACHE_TTL_S = 60
 # Extra intervals requested beyond `limit` so sparse candleSnapshot gaps (#937)
 # still yield at least `limit` rows before trimming to the most recent `limit`.
 OHLCV_GAP_MARGIN = 50
+# Hyperliquid's candleSnapshot returns at most ~5000 candles per request; the
+# extend-until-limit retry loop (#947) never requests a wider window than this.
+OHLCV_MAX_CANDLES = 5000
 
 # SDK imports: defer to avoid module-level ImportError when SDK not installed.
 # adapter.py is loaded with platforms/hyperliquid/ directly in sys.path (not
@@ -531,7 +534,6 @@ class HyperliquidExchangeAdapter:
         }
         interval_ms = interval_ms_map.get(interval, 3_600_000)
         end_ms = int(time.time() * 1000)
-        start_ms = end_ms - interval_ms * (limit + OHLCV_GAP_MARGIN)
 
         # Cycle-scoped dedup: reuse a fresh on-disk snapshot so peer strategies
         # sharing this (symbol, interval, limit) don't each hit /info (#839).
@@ -543,30 +545,48 @@ class HyperliquidExchangeAdapter:
             if cached is not None:
                 return cached
 
-        candles = self._info.candles_snapshot(symbol, interval, start_ms, end_ms)
+        # Extend-until-limit (#947): start at `limit + OHLCV_GAP_MARGIN` and,
+        # if sparse candleSnapshot gaps still leave fewer than `limit` rows,
+        # widen the window and refetch until we reach `limit` or hit HL's
+        # ~5000-candle API cap. `requested` is capped at OHLCV_MAX_CANDLES so we
+        # never ask for a window the API would reject; doubling reaches the cap
+        # in a few passes. Only the rare shortfall path makes extra /info calls.
+        requested = min(limit + OHLCV_GAP_MARGIN, OHLCV_MAX_CANDLES)
         result = []
-        for c in candles:
-            # T = close time, t = open time; use T as the candle timestamp
-            result.append([
-                int(c.get("T", c.get("t", 0))),
-                float(c["o"]),
-                float(c["h"]),
-                float(c["l"]),
-                float(c["c"]),
-                float(c["v"]),
-            ])
+        while True:
+            start_ms = end_ms - interval_ms * requested
+            candles = self._info.candles_snapshot(symbol, interval, start_ms, end_ms)
+            result = []
+            for c in candles:
+                # T = close time, t = open time; use T as the candle timestamp
+                result.append([
+                    int(c.get("T", c.get("t", 0))),
+                    float(c["o"]),
+                    float(c["h"]),
+                    float(c["l"]),
+                    float(c["c"]),
+                    float(c["v"]),
+                ])
+            # Stop once we have enough rows, the window already spans HL's cap
+            # (no wider request is possible), or the window is entirely empty
+            # (a halted / untraded symbol won't populate by widening — extending
+            # would just burn /info calls; empty is the caller's error path).
+            if not result or len(result) >= limit or requested >= OHLCV_MAX_CANDLES:
+                break
+            requested = min(requested * 2, OHLCV_MAX_CANDLES)
+
         if len(result) > limit:
             result = result[-limit:]
         elif result and len(result) < limit:
-            # Widened window (+OHLCV_GAP_MARGIN) still came up short: gaps
-            # exceeded the margin for this symbol/interval. Callers continue
-            # while len >= 30 (check_hyperliquid.py), so flag the shortfall to
-            # stderr rather than letting indicators silently warm up on fewer
-            # bars than requested (#937).
+            # Even after extending to HL's ~5000-candle cap the symbol/interval
+            # has too few traded bars. Callers continue while len >= 30
+            # (check_hyperliquid.py), so flag the shortfall to stderr rather
+            # than letting indicators silently warm up on fewer bars than
+            # requested (#937/#947).
             print(
                 f"[WARN] hl ohlcv shortfall for {symbol} {interval}: got "
-                f"{len(result)} of {limit} requested (gaps exceed "
-                f"{OHLCV_GAP_MARGIN}-candle margin)",
+                f"{len(result)} of {limit} requested after extending to the "
+                f"{OHLCV_MAX_CANDLES}-candle cap",
                 file=sys.stderr,
             )
         # Never cache an empty result — insufficient-data fetches must keep

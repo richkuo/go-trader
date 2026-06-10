@@ -212,11 +212,15 @@ def _raw(ts):
 def test_second_call_hits_cache_and_skips_snapshot(adapter_mod, monkeypatch, tmp_path):
     monkeypatch.delenv("GO_TRADER_HL_OHLCV_CACHE", raising=False)  # default = enabled
     monkeypatch.setattr(adapter_mod, "OHLCV_CACHE_DIR", str(tmp_path))
-    a = _make_adapter(adapter_mod, monkeypatch, [_raw(1700000000000)])
+    # Enough rows to satisfy `limit` in one fetch — the extend loop (#947) is
+    # inert here so this stays a pure cache-dedup test.
+    rows = [_raw(1700000000000 + i * 3_600_000) for i in range(200)]
+    a = _make_adapter(adapter_mod, monkeypatch, rows)
 
     first = a.get_ohlcv("BTC", "1h", 200)
     assert a._info.candles_snapshot.call_count == 1
-    assert first == [[1700000000000, 100.0, 110.0, 90.0, 105.0, 50.0]]
+    assert len(first) == 200
+    assert first[0] == [1700000000000, 100.0, 110.0, 90.0, 105.0, 50.0]
 
     # A peer strategy (same symbol/interval/limit) reads from cache.
     second = a.get_ohlcv("BTC", "1h", 200)
@@ -227,7 +231,8 @@ def test_second_call_hits_cache_and_skips_snapshot(adapter_mod, monkeypatch, tmp
 def test_disabled_cache_always_fetches(adapter_mod, monkeypatch, tmp_path):
     monkeypatch.setattr(adapter_mod, "OHLCV_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
-    a = _make_adapter(adapter_mod, monkeypatch, [_raw(1700000000000)])
+    rows = [_raw(1700000000000 + i * 3_600_000) for i in range(200)]
+    a = _make_adapter(adapter_mod, monkeypatch, rows)
 
     a.get_ohlcv("BTC", "1h", 200)
     a.get_ohlcv("BTC", "1h", 200)
@@ -238,7 +243,8 @@ def test_disabled_cache_always_fetches(adapter_mod, monkeypatch, tmp_path):
 
 def test_distinct_limits_do_not_share_cache(adapter_mod, monkeypatch, tmp_path):
     monkeypatch.setattr(adapter_mod, "OHLCV_CACHE_DIR", str(tmp_path))
-    a = _make_adapter(adapter_mod, monkeypatch, [_raw(1700000000000)])
+    rows = [_raw(1700000000000 + i * 3_600_000) for i in range(200)]
+    a = _make_adapter(adapter_mod, monkeypatch, rows)
 
     a.get_ohlcv("BTC", "1h", 200)
     a.get_ohlcv("BTC", "1h", 50)  # different limit → separate fetch
