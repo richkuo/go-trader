@@ -188,18 +188,30 @@ def config_from_live_config(config_path: str, strategy_id: str,
 
 
 def _normalize_signal(value) -> int:
-    """Collapse a raw strategy signal to the live {-1, 0, 1} domain."""
+    """Collapse a raw signal to {-1, 0, 1}, mirroring the engine's contract.
+
+    NaN → 0 (the engine ``fillna(0)``s); any other value outside
+    {-1, 0, 1} is rejected the way ``Backtester.run`` rejects it. On such
+    a signal the engine raises while the live check script's
+    ``normalize_signal`` coerces (``int(0.5)`` → 0) — a real divergence.
+    Normalizing it identically on both tool paths would report CLEAN for
+    a value neither real path produces, so the tool surfaces the contract
+    violation loudly instead.
+    """
     try:
         f = float(value)
     except (TypeError, ValueError):
         return 0
     if pd.isna(f):
         return 0
-    if f > 0:
-        return 1
-    if f < 0:
-        return -1
-    return 0
+    if f not in (-1.0, 0.0, 1.0):
+        raise ValueError(
+            f"signal must be in {{-1, 0, 1}} — got {value!r}. The engine "
+            f"rejects this signal (Backtester.run) while the live check "
+            f"script would coerce it; fix the strategy rather than relying "
+            f"on either behavior."
+        )
+    return int(f)
 
 
 def _close_names(close_refs: Optional[list]) -> list:
@@ -300,9 +312,9 @@ def _live_bar_decision(window: pd.DataFrame, cfg: ParityConfig, reg,
 
     result_df = reg.apply_strategy(cfg.strategy_name, window, params)
     last = result_df.iloc[-1]
-    # Same float-aware normalizer as the backtest side — both paths must
-    # collapse a raw signal to {-1, 0, 1} by identical rules so a signal
-    # diff reflects input drift, never the normalizer.
+    # Same strict normalizer as the backtest side: in-contract signals
+    # collapse identically, out-of-contract signals raise (see
+    # _normalize_signal) instead of being coerced into a false CLEAN.
     decision["signal"] = _normalize_signal(last.get("signal", 0))
     decision["open_action"] = open_action_from_signal(decision["signal"])
     if _has_close_fraction_columns(result_df):
@@ -425,7 +437,13 @@ def _simulate_position_contexts(bt: pd.DataFrame, df: pd.DataFrame,
             atr_val = atr_full.iloc[i]
             entry_atr = float(atr_val) if pd.notna(atr_val) else 0.0
             if regime_full is not None:
-                entry_regime = str(regime_full.iloc[i] or "")
+                # Engine semantics: the position regime is stamped from the
+                # SHIFTED regime column at the fill row — the decision bar's
+                # (i-1) label, which is also what live stamps at open (the
+                # label computed alongside the signal). The fill bar's own
+                # label (i) would match neither side.
+                raw_label = regime_full.iloc[i - 1]
+                entry_regime = "" if pd.isna(raw_label) else str(raw_label)
     return contexts
 
 

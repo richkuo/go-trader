@@ -362,11 +362,12 @@ def test_main_zero_bars_compared_is_data_error(monkeypatch):
     assert rc == 2
 
 
-def test_fractional_signal_normalized_identically_on_both_sides():
-    """A strategy emitting fractional signals (0.5/-0.5) must not diff on
-    normalization alone — both replay paths collapse to {-1, 0, 1} by the
-    same float-aware rule (int() truncation on one side would flag 0.5→0
-    vs 0.5→1 as drift)."""
+def test_out_of_contract_signal_rejected_loudly():
+    """A strategy emitting out-of-contract signals (0.5) must NOT diff
+    clean: the engine raises on non-integral signals while the live check
+    script truncates to 0 — a real divergence. The tool mirrors the
+    engine's strict {-1, 0, 1} rejection on both paths so the class is
+    surfaced, never normalized into a false CLEAN."""
     reg = load_registry("spot")
 
     def fractional_signal_strategy(df: pd.DataFrame) -> pd.DataFrame:
@@ -383,12 +384,48 @@ def test_fractional_signal_normalized_identically_on_both_sides():
     }
     try:
         df = _ohlcv(200)
-        frame = compute_parity_frame(df, name, window=60)
-        assert summarize(frame)["clean"], frame[~frame["match"]].head()
-        assert set(frame["bt_signal"].unique()) <= {-1, 0, 1}
-        assert (frame["bt_signal"] != 0).any()
+        with pytest.raises(ValueError, match="signal must be in"):
+            compute_parity_frame(df, name, window=60)
     finally:
         del reg.STRATEGY_REGISTRY[name]
+
+
+def test_normalize_signal_contract():
+    """In-contract values collapse identically on both paths; NaN → 0;
+    anything else (fractional, out-of-domain integer) raises."""
+    assert parity_diff._normalize_signal(np.float64(1.0)) == 1
+    assert parity_diff._normalize_signal(-1) == -1
+    assert parity_diff._normalize_signal(0.0) == 0
+    assert parity_diff._normalize_signal(float("nan")) == 0
+    assert parity_diff._normalize_signal(None) == 0
+    for bad in (0.5, -0.5, 2, -3):
+        with pytest.raises(ValueError, match="signal must be in"):
+            parity_diff._normalize_signal(bad)
+
+
+def test_position_context_entry_regime_is_decision_bar_label():
+    """The scaffold must stamp the entry regime from the DECISION bar
+    (i-1), mirroring the engine's shifted-regime ``_entry_stamp`` and the
+    live label computed alongside the signal — not the fill bar's label."""
+    from atr import ensure_atr_indicator
+    n = 40
+    df = _ohlcv(n)
+    bt = pd.DataFrame({
+        "signal": [0] * n,
+        "open_action": ["none"] * n,
+        "close_fraction": [0.0] * n,
+    }, index=df.index)
+    bt.iloc[9, bt.columns.get_loc("open_action")] = "long"
+    atr_full = ensure_atr_indicator(df.copy())["atr"]
+    regime_full = pd.Series([f"label{i}" for i in range(n)], index=df.index)
+    contexts = parity_diff._simulate_position_contexts(
+        bt, df, atr_full, regime_full)
+    assert contexts[10] is None  # fill happens AT bar 10; ctx visible after
+    assert contexts[11] is not None
+    assert contexts[11]["regime"] == "label9", (
+        "entry regime must be the decision bar's (9) label, "
+        "not the fill bar's (10)"
+    )
 
 
 def test_bt_close_evaluator_uses_engine_dict_shape(monkeypatch):
