@@ -505,3 +505,29 @@ def test_entry_atr_plausibility_guard_matches_engine():
     contexts = parity_diff._simulate_position_contexts(bt, df, atr_full, None)
     assert contexts[21] is not None
     assert "entry_atr" not in contexts[21]
+
+def test_position_context_avg_cost_is_fill_bar_open_with_slippage():
+    """The scaffold must open at the fill bar's OPEN adjusted by the
+    engine's default slippage (Backtester's effective_price) — not the
+    bar's close — so tier triggers ((mark - avg_cost)/entry_atr) see the
+    same entry price the engine and live would on large-bodied bars."""
+    from atr import ensure_atr_indicator
+    n = 40
+    df = _ohlcv(n)
+    atr_full = ensure_atr_indicator(df.copy())["atr"]
+    slip = parity_diff._ENGINE_SLIPPAGE_PCT
+    assert slip == pytest.approx(0.0005)
+
+    for action, sign in (("long", 1), ("short", -1)):
+        bt = pd.DataFrame({
+            "signal": [0] * n,
+            "open_action": ["none"] * n,
+            "close_fraction": [0.0] * n,
+        }, index=df.index)
+        bt.iloc[19, bt.columns.get_loc("open_action")] = action  # fill @ 20
+        contexts = parity_diff._simulate_position_contexts(
+            bt, df, atr_full, None)
+        expected = float(df["open"].iloc[20]) * (1 + sign * slip)
+        assert contexts[21]["avg_cost"] == pytest.approx(expected), action
+        assert contexts[21]["avg_cost"] != pytest.approx(
+            float(df["close"].iloc[20]))

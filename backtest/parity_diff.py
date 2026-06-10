@@ -101,6 +101,7 @@ or thin the comparison with --stride for long histories.
 """
 
 import argparse
+import inspect
 import json
 import os
 import sys
@@ -139,6 +140,11 @@ from backtester import (
 
 # Mirror live: check_strategy.py refuses to evaluate fewer than 30 candles.
 LIVE_MIN_CANDLES = 30
+# Engine default slippage, read from the Backtester signature so the
+# scaffold's effective_price math can never drift out of sync with it.
+_ENGINE_SLIPPAGE_PCT = float(
+    inspect.signature(Backtester.__init__).parameters["slippage_pct"].default
+)
 # Mirror live: check scripts fetch --ohlcv-limit candles (default 200).
 DEFAULT_WINDOW = 200
 
@@ -440,14 +446,23 @@ def _simulate_position_contexts(bt: pd.DataFrame, df: pd.DataFrame,
                 entry_regime = ""
         elif not side and eff_action in ("long", "short"):
             side = eff_action
-            avg_cost = mark
+            # Engine fill semantics: an open fills at the fill bar's OPEN
+            # (fallback close), adjusted by the engine's default slippage —
+            # ``effective_price`` in Backtester.run, not the bar's close.
+            fill_price = (float(df["open"].iloc[i])
+                          if "open" in df.columns else mark)
+            if side == "long":
+                avg_cost = fill_price * (1 + _ENGINE_SLIPPAGE_PCT)
+            else:
+                avg_cost = fill_price * (1 - _ENGINE_SLIPPAGE_PCT)
             qty = initial_qty = 1.0
             atr_val = atr_full.iloc[i]
             entry_atr = float(atr_val) if pd.notna(atr_val) else 0.0
             # Engine plausibility guard (_stamp_entry_atr, mirroring Go's
             # stampEntryATRIfOpened): non-positive or > 50% of the entry
-            # price stamps 0.0, so ATR-requiring close evaluators no-op.
-            if not (0.0 < entry_atr <= 0.5 * mark):
+            # price (effective_price, same as the engine) stamps 0.0, so
+            # ATR-requiring close evaluators no-op.
+            if not (0.0 < entry_atr <= 0.5 * avg_cost):
                 entry_atr = 0.0
             if regime_full is not None:
                 # Engine semantics: the position regime is stamped from the
