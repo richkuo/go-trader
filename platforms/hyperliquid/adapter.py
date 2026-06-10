@@ -47,6 +47,14 @@ OHLCV_CACHE_TTL_S = 60
 # Extra intervals requested beyond `limit` so sparse candleSnapshot gaps (#937)
 # still yield at least `limit` rows before trimming to the most recent `limit`.
 OHLCV_GAP_MARGIN = 50
+# Hyperliquid's candleSnapshot caps the RETURNED COUNT (most-recent ~5000
+# candles within the range), NOT the request span. The extend-until-limit loop
+# (#947) treats this as the ceiling on obtainable rows: once the returned count
+# reaches it, a wider window can't yield more, so we stop.
+OHLCV_MAX_CANDLES = 5000
+# Backstop on extend passes so a pathological dribble of new candles per widen
+# can't loop unbounded; the count-plateau check is the normal terminator.
+OHLCV_MAX_EXTEND_PASSES = 12
 
 # SDK imports: defer to avoid module-level ImportError when SDK not installed.
 # adapter.py is loaded with platforms/hyperliquid/ directly in sys.path (not
@@ -531,7 +539,6 @@ class HyperliquidExchangeAdapter:
         }
         interval_ms = interval_ms_map.get(interval, 3_600_000)
         end_ms = int(time.time() * 1000)
-        start_ms = end_ms - interval_ms * (limit + OHLCV_GAP_MARGIN)
 
         # Cycle-scoped dedup: reuse a fresh on-disk snapshot so peer strategies
         # sharing this (symbol, interval, limit) don't each hit /info (#839).
@@ -543,30 +550,75 @@ class HyperliquidExchangeAdapter:
             if cached is not None:
                 return cached
 
-        candles = self._info.candles_snapshot(symbol, interval, start_ms, end_ms)
+        # Extend-until-limit (#947): start at `limit + OHLCV_GAP_MARGIN`
+        # intervals and, if sparse candleSnapshot gaps still leave fewer than
+        # `limit` rows, double the window and refetch. HL caps the *returned
+        # count* (not the request span), so we widen the span until one of:
+        #   - we have >= limit rows (done);
+        #   - the returned count plateaus across two consecutive widens (the
+        #     symbol's full history is in-window; a wider span can't add more);
+        #   - the count hits OHLCV_MAX_CANDLES (HL's return cap — can't get more
+        #     from a single call);
+        #   - the window is empty (halted/untraded symbol won't populate by
+        #     widening; empty is the caller's error path); or
+        #   - the pass backstop trips (pathological dribble guard).
+        # The plateau needs TWO consecutive zero-growth widens, not one: because
+        # candleSnapshot omits no-trade bars, a single doubling can land entirely
+        # inside an interior no-trade gap (e.g. an overnight stretch on a
+        # session-traded illiquid symbol) and add nothing, while older bars sit
+        # just one more doubling back. A 2-widen confirmation clears that single
+        # dead window at the cost of ~1 extra /info call; a genuinely exhausted
+        # or leading-gap symbol still terminates in a small bounded number of
+        # passes (it never walks the full backstop ladder).
+        # We deliberately do NOT persist a "short symbol" marker: a brand-new
+        # listing accumulates candles over time and must be re-attempted on each
+        # cache miss, not pinned short. Extra /info calls are bounded per call
+        # and only on the cache-miss shortfall path.
+        requested = limit + OHLCV_GAP_MARGIN
         result = []
-        for c in candles:
-            # T = close time, t = open time; use T as the candle timestamp
-            result.append([
-                int(c.get("T", c.get("t", 0))),
-                float(c["o"]),
-                float(c["h"]),
-                float(c["l"]),
-                float(c["c"]),
-                float(c["v"]),
-            ])
+        prev_count = -1
+        stale_widens = 0
+        for _ in range(OHLCV_MAX_EXTEND_PASSES):
+            start_ms = end_ms - interval_ms * requested
+            candles = self._info.candles_snapshot(symbol, interval, start_ms, end_ms)
+            result = []
+            for c in candles:
+                # T = close time, t = open time; use T as the candle timestamp
+                result.append([
+                    int(c.get("T", c.get("t", 0))),
+                    float(c["o"]),
+                    float(c["h"]),
+                    float(c["l"]),
+                    float(c["c"]),
+                    float(c["v"]),
+                ])
+            if (not result
+                    or len(result) >= limit
+                    or len(result) >= OHLCV_MAX_CANDLES):
+                break
+            # Track consecutive zero-growth widens; one dead window (interior
+            # gap) is not enough to declare history exhausted — require two.
+            if len(result) > prev_count:
+                stale_widens = 0
+            else:
+                stale_widens += 1
+                if stale_widens >= 2:
+                    break
+            prev_count = len(result)
+            requested *= 2
+
         if len(result) > limit:
             result = result[-limit:]
         elif result and len(result) < limit:
-            # Widened window (+OHLCV_GAP_MARGIN) still came up short: gaps
-            # exceeded the margin for this symbol/interval. Callers continue
-            # while len >= 30 (check_hyperliquid.py), so flag the shortfall to
-            # stderr rather than letting indicators silently warm up on fewer
-            # bars than requested (#937).
+            # The symbol/interval has fewer traded bars than the requested
+            # lookback even after widening to its full available history.
+            # Callers continue while len >= 30 (check_hyperliquid.py), so flag
+            # the shortfall to stderr rather than letting indicators silently
+            # warm up on fewer bars than requested (#937/#947).
             print(
                 f"[WARN] hl ohlcv shortfall for {symbol} {interval}: got "
-                f"{len(result)} of {limit} requested (gaps exceed "
-                f"{OHLCV_GAP_MARGIN}-candle margin)",
+                f"{len(result)} of {limit} requested after extending the window "
+                f"to the symbol's available history",
                 file=sys.stderr,
             )
         # Never cache an empty result — insufficient-data fetches must keep
