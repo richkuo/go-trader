@@ -480,23 +480,12 @@ DEFAULT_PARAM_RANGES = {
         "rally_window": [3, 5, 8],
         "rally_touch_buffer_pct": [0.0005, 0.001, 0.002],
     },
-    "tp_at_pct": {
-        "pct": [0.01, 0.03, 0.05],
-    },
-    "tiered_tp_pct": {
-        "tiers": [
-            [{"profit_pct": 0.02, "close_fraction": 0.5}, {"profit_pct": 0.04, "close_fraction": 1.0}],
-            [{"profit_pct": 0.03, "close_fraction": 0.5}, {"profit_pct": 0.06, "close_fraction": 1.0}],
-            [{"profit_pct": 0.05, "close_fraction": 0.5}, {"profit_pct": 0.1, "close_fraction": 1.0}],
-        ],
-    },
-    "tiered_tp_atr": {
-        "tiers": [
-            [{"atr_multiple": 1.0, "close_fraction": 0.5}, {"atr_multiple": 2.0, "close_fraction": 1.0}],
-            [{"atr_multiple": 1.5, "close_fraction": 0.5}, {"atr_multiple": 3.0, "close_fraction": 1.0}],
-            [{"atr_multiple": 2.0, "close_fraction": 0.5}, {"atr_multiple": 4.0, "close_fraction": 1.0}],
-        ],
-    },
+    # NOTE: close-evaluator names (tp_at_pct, tiered_tp_pct, tiered_tp_atr, …) are
+    # intentionally absent here. run_optimize only sweeps OPEN-registry strategy
+    # params (it builds the entry signal via the open registry), so any close-param
+    # grid keyed by a close name would be dead weight — unreachable and never swept.
+    # Wiring real close-param optimization is a separate feature (#944); until then
+    # do not re-add close names to DEFAULT_PARAM_RANGES.
     # Futures-only
     "breakout": {
         "lookback": [10, 20, 30],

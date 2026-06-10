@@ -282,6 +282,15 @@ class ThetaHarvestBacktester:
 
         win_rate = (self.winning_trades / self.total_trades * 100) if self.total_trades > 0 else 0
 
+        # DAILY-SAMPLING CONSTRAINT: this metrics block assumes one equity-curve
+        # point per calendar day. That holds because ``main`` always feeds
+        # ``fetch_historical_data`` which returns 1d candles, and ``run`` appends
+        # exactly one equity point per candle. So ``len(self.equity_curve)`` IS the
+        # day count, and the ``sqrt(365)`` Sharpe annualization below is correct.
+        # If this backtester is ever switched to a sub-daily timeframe, replace
+        # ``days = len(...)`` with calendar-day elapsed and ``sqrt(365)`` with
+        # ``sqrt(periods_per_year(timeframe))`` — mirror backtest_options.py's
+        # ``_elapsed_days`` / ``periods_per_year`` approach. See issue #944.
         days = len(self.equity_curve)
         years = days / 365
         ann_return = ((final_value / self.initial_capital) ** (1 / years) - 1) * 100 if years > 0 and final_value > 0 else 0
@@ -298,6 +307,7 @@ class ThetaHarvestBacktester:
             if rets:
                 avg = sum(rets) / len(rets)
                 std = math.sqrt(sum((r - avg)**2 for r in rets) / len(rets))
+                # sqrt(365): daily returns → annualized (see daily-sampling note above).
                 sharpe = (avg / std * math.sqrt(365)) if std > 0 else 0
 
         return {

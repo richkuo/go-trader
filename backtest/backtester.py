@@ -62,10 +62,8 @@ decision-layer parity checks; see ``backtest/AUDIT.md`` for the full matrix):
 
 import sys
 import os
-import json
 import math
-from datetime import datetime
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
