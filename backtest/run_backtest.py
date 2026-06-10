@@ -7,6 +7,7 @@ Main entry point for strategy evaluation.
 import sys
 import os
 import argparse
+import json
 from typing import List, Optional
 
 import numpy as np
@@ -19,6 +20,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 from atr import ensure_atr_indicator
 from data_fetcher import load_cached_data
 from htf_filter import get_default_htf, apply_htf_filter  # noqa: E402
+from regime import (  # noqa: E402
+    CLASSIFIER_ADX,
+    CLASSIFIER_COMPOSITE,
+    VALID_LABELS_ADX,
+    VALID_LABELS_COMPOSITE,
+    parse_regime_windows_spec_json,
+)
 from registry_loader import load_registry
 from backtester import Backtester, format_results
 from optimizer import walk_forward_optimize, DEFAULT_PARAM_RANGES
@@ -73,6 +81,7 @@ def _apply_htf_filter_to_df(df: pd.DataFrame, symbol: str,
 
 DEFAULT_SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
 DEFAULT_TIMEFRAMES = ["4h", "1d"]
+REGIME_ALLOWED_LABELS = sorted(VALID_LABELS_ADX | VALID_LABELS_COMPOSITE)
 
 
 # #866: close evaluators whose default ladder is overridable via
@@ -237,6 +246,10 @@ def run_single_backtest(
     regime_enabled: bool = False,
     regime_period: int = 14,
     regime_adx_threshold: float = 20.0,
+    regime_classifier: str = CLASSIFIER_ADX,
+    regime_thresholds: Optional[dict] = None,
+    regime_windows_spec: Optional[dict] = None,
+    regime_gate_window: str = "",
     allowed_regimes: Optional[List[str]] = None,
     stop_loss_atr_mult: Optional[float] = None,
     stop_loss_pct: Optional[float] = None,
@@ -300,6 +313,10 @@ def run_single_backtest(
         regime_enabled=regime_enabled,
         regime_period=regime_period,
         regime_adx_threshold=regime_adx_threshold,
+        regime_classifier=regime_classifier,
+        regime_thresholds=regime_thresholds,
+        regime_windows_spec=regime_windows_spec,
+        regime_gate_window=regime_gate_window,
         allowed_regimes=allowed_regimes,
         stop_loss_atr_mult=stop_loss_atr_mult,
         stop_loss_pct=stop_loss_pct,
@@ -335,6 +352,10 @@ def run_all_strategies(
     regime_enabled: bool = False,
     regime_period: int = 14,
     regime_adx_threshold: float = 20.0,
+    regime_classifier: str = CLASSIFIER_ADX,
+    regime_thresholds: Optional[dict] = None,
+    regime_windows_spec: Optional[dict] = None,
+    regime_gate_window: str = "",
     allowed_regimes: Optional[List[str]] = None,
 ) -> list:
     """Run multiple strategies on one asset and compare."""
@@ -353,6 +374,10 @@ def run_all_strategies(
             close_strategies=close_strategies,
             regime_enabled=regime_enabled, regime_period=regime_period,
             regime_adx_threshold=regime_adx_threshold,
+            regime_classifier=regime_classifier,
+            regime_thresholds=regime_thresholds,
+            regime_windows_spec=regime_windows_spec,
+            regime_gate_window=regime_gate_window,
             allowed_regimes=allowed_regimes,
         )
         if result:
@@ -377,6 +402,10 @@ def run_multi_asset(
     regime_enabled: bool = False,
     regime_period: int = 14,
     regime_adx_threshold: float = 20.0,
+    regime_classifier: str = CLASSIFIER_ADX,
+    regime_thresholds: Optional[dict] = None,
+    regime_windows_spec: Optional[dict] = None,
+    regime_gate_window: str = "",
     allowed_regimes: Optional[List[str]] = None,
 ) -> dict:
     """Run strategies across multiple assets."""
@@ -403,6 +432,10 @@ def run_multi_asset(
                 close_strategies=close_strategies,
                 regime_enabled=regime_enabled, regime_period=regime_period,
                 regime_adx_threshold=regime_adx_threshold,
+                regime_classifier=regime_classifier,
+                regime_thresholds=regime_thresholds,
+                regime_windows_spec=regime_windows_spec,
+                regime_gate_window=regime_gate_window,
                 allowed_regimes=allowed_regimes,
             )
             if result:
@@ -424,6 +457,10 @@ def run_walk_forward(
     regime_enabled: bool = False,
     regime_period: int = 14,
     regime_adx_threshold: float = 20.0,
+    regime_classifier: str = CLASSIFIER_ADX,
+    regime_thresholds: Optional[dict] = None,
+    regime_windows_spec: Optional[dict] = None,
+    regime_gate_window: str = "",
     allowed_regimes: Optional[List[str]] = None,
     stop_loss_atr_mult: Optional[float] = None,
     trailing_stop_atr_mult: Optional[float] = None,
@@ -466,6 +503,10 @@ def run_walk_forward(
         regime_enabled=regime_enabled,
         regime_period=regime_period,
         regime_adx_threshold=regime_adx_threshold,
+        regime_classifier=regime_classifier,
+        regime_thresholds=regime_thresholds,
+        regime_windows_spec=regime_windows_spec,
+        regime_gate_window=regime_gate_window,
         allowed_regimes=allowed_regimes,
         stop_loss_atr_mult=stop_loss_atr_mult,
         trailing_stop_atr_mult=trailing_stop_atr_mult,
@@ -531,11 +572,30 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="ADX lookback period for regime detection (default: 14).")
     parser.add_argument("--regime-adx-threshold", type=float, default=20.0,
                         help="ADX threshold below which market is 'ranging' (default: 20.0).")
+    parser.add_argument("--regime-classifier",
+                        choices=[CLASSIFIER_ADX, CLASSIFIER_COMPOSITE],
+                        default=CLASSIFIER_ADX,
+                        help="Regime classifier to inject when the DataFrame "
+                             "does not already carry a regime column. "
+                             "'adx' emits the legacy 3 labels; 'composite' "
+                             "emits the 7-state classifier.")
+    parser.add_argument("--regime-thresholds-json", default=None,
+                        help="JSON object of composite classifier thresholds "
+                             "(return_pct, range_pct, adx, efficiency).")
+    parser.add_argument("--regime-windows-spec-json", default=None,
+                        help="JSON object matching the live regime.windows spec. "
+                             "When set, the selected gate window supplies the "
+                             "backtest regime column.")
+    parser.add_argument("--regime-gate-window", default="",
+                        help="Window key from --regime-windows-spec-json used "
+                             "for entry gating. Defaults to 'medium' when present, "
+                             "otherwise the first sorted window.")
     parser.add_argument("--allowed-regimes", action="append", dest="allowed_regimes",
-                        default=None, choices=["trending_up", "trending_down", "ranging"],
+                        default=None, choices=REGIME_ALLOWED_LABELS,
                         metavar="LABEL",
                         help="Regime label to allow entries for (repeat for multiple). "
-                             "Empty = allow all. Valid: trending_up, trending_down, ranging.")
+                             "Empty = allow all. Supports both ADX labels and "
+                             "composite labels.")
     parser.add_argument("--stop-loss-atr-mult", type=float, default=None,
                         dest="stop_loss_atr_mult", metavar="MULT",
                         help="Fixed ATR-multiple stop loss (e.g. 2.0). Applied in "
@@ -570,12 +630,37 @@ def _parse_close_strategy_arg(raw: str) -> dict:
     return {"name": name, "params": dict(ref.get("params") or {})}
 
 
+def _parse_regime_thresholds_json(raw: Optional[str]) -> Optional[dict]:
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"--regime-thresholds-json not valid JSON: {exc}\nGot: {raw}")
+    if not isinstance(parsed, dict):
+        raise SystemExit(
+            f"--regime-thresholds-json must be a JSON object, got {type(parsed).__name__}"
+        )
+    return parsed
+
+
+def _parse_regime_windows_spec_arg(raw: Optional[str]) -> Optional[dict]:
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        return parse_regime_windows_spec_json(raw)
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        raise SystemExit(f"--regime-windows-spec-json invalid: {exc}\nGot: {raw}")
+
+
 def main():
     args = _build_parser().parse_args()
 
     close_refs = None
     if args.close_strategies:
         close_refs = [_parse_close_strategy_arg(v) for v in args.close_strategies]
+    regime_thresholds = _parse_regime_thresholds_json(args.regime_thresholds_json)
+    regime_windows_spec = _parse_regime_windows_spec_arg(args.regime_windows_spec_json)
 
     # #866: --defaults user only has an effect via the config's user_close_defaults.
     if args.defaults == "user" and not args.config:
@@ -639,6 +724,10 @@ def main():
                             regime_enabled=args.regime_enabled,
                             regime_period=args.regime_period,
                             regime_adx_threshold=args.regime_adx_threshold,
+                            regime_classifier=args.regime_classifier,
+                            regime_thresholds=regime_thresholds,
+                            regime_windows_spec=regime_windows_spec,
+                            regime_gate_window=args.regime_gate_window,
                             allowed_regimes=args.allowed_regimes,
                             **live_stop_kwargs)
 
@@ -652,6 +741,10 @@ def main():
                            regime_enabled=args.regime_enabled,
                            regime_period=args.regime_period,
                            regime_adx_threshold=args.regime_adx_threshold,
+                           regime_classifier=args.regime_classifier,
+                           regime_thresholds=regime_thresholds,
+                           regime_windows_spec=regime_windows_spec,
+                           regime_gate_window=args.regime_gate_window,
                            allowed_regimes=args.allowed_regimes)
 
     elif args.mode == "multi":
@@ -665,6 +758,10 @@ def main():
                         regime_enabled=args.regime_enabled,
                         regime_period=args.regime_period,
                         regime_adx_threshold=args.regime_adx_threshold,
+                        regime_classifier=args.regime_classifier,
+                        regime_thresholds=regime_thresholds,
+                        regime_windows_spec=regime_windows_spec,
+                        regime_gate_window=args.regime_gate_window,
                         allowed_regimes=args.allowed_regimes)
 
     elif args.mode == "optimize":
@@ -676,6 +773,10 @@ def main():
                                  regime_enabled=args.regime_enabled,
                                  regime_period=args.regime_period,
                                  regime_adx_threshold=args.regime_adx_threshold,
+                                 regime_classifier=args.regime_classifier,
+                                 regime_thresholds=regime_thresholds,
+                                 regime_windows_spec=regime_windows_spec,
+                                 regime_gate_window=args.regime_gate_window,
                                  allowed_regimes=args.allowed_regimes,
                                  stop_loss_atr_mult=args.stop_loss_atr_mult,
                                  trailing_stop_atr_mult=args.trailing_stop_atr_mult,
@@ -687,6 +788,10 @@ def main():
                              regime_enabled=args.regime_enabled,
                              regime_period=args.regime_period,
                              regime_adx_threshold=args.regime_adx_threshold,
+                             regime_classifier=args.regime_classifier,
+                             regime_thresholds=regime_thresholds,
+                             regime_windows_spec=regime_windows_spec,
+                             regime_gate_window=args.regime_gate_window,
                              allowed_regimes=args.allowed_regimes,
                              stop_loss_atr_mult=args.stop_loss_atr_mult,
                              trailing_stop_atr_mult=args.trailing_stop_atr_mult,

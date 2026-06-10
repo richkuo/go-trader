@@ -18,7 +18,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent / "shared_too
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from backtester import Backtester
-from regime import compute_regime, latest_regime, ensure_regime_columns
+from regime import (
+    VALID_LABELS_COMPOSITE,
+    compute_regime,
+    latest_regime,
+    ensure_regime_columns,
+)
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -86,6 +91,41 @@ def test_ensure_regime_columns_composite_labels():
     )
     label = out["regime"].iloc[-1]
     assert label.startswith("trending_up")
+
+
+@pytest.mark.parametrize("label", sorted(VALID_LABELS_COMPOSITE))
+def test_backtester_gate_accepts_each_composite_regime_label(label):
+    """The backtester gate must treat composite labels as first-class regime
+    labels, not only the legacy ADX trio. The signal and regime both live on
+    bar 2, then Backtester shifts them to the bar-3 open fill."""
+    idx = pd.date_range("2024-01-01", periods=6, freq="D")
+    prices = np.linspace(100.0, 105.0, len(idx))
+    df = pd.DataFrame(
+        {
+            "open": prices,
+            "high": prices + 0.5,
+            "low": prices - 0.5,
+            "close": prices,
+            "volume": 1000.0,
+            "signal": 0,
+            "regime": "ranging",
+        },
+        index=idx,
+    )
+    df.iloc[2, df.columns.get_loc("signal")] = 1
+    df.iloc[2, df.columns.get_loc("regime")] = label
+
+    bt = Backtester(
+        initial_capital=1000.0,
+        commission_pct=0.0,
+        slippage_pct=0.0,
+        regime_enabled=True,
+        allowed_regimes=[label],
+    )
+    result = bt.run(df, save=False)
+
+    assert result["total_trades"] == 1
+    assert pd.Timestamp(result["trades"][0]["entry_date"]) == idx[3]
 
 
 # ─── Backtester regime constructor params ─────────────────────────────────────

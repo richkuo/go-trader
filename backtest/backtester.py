@@ -51,7 +51,10 @@ import math
 from datetime import datetime
 from typing import Any, Callable, Optional, Tuple
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+sys.path.insert(0, os.path.join(_REPO_ROOT, 'shared_tools'))
 
 import numpy as np
 import pandas as pd
@@ -301,6 +304,10 @@ class Backtester:
                  regime_enabled: bool = False,
                  regime_period: int = 14,
                  regime_adx_threshold: float = 20.0,
+                 regime_classifier: str = "adx",
+                 regime_thresholds: Optional[dict] = None,
+                 regime_windows_spec: Optional[dict] = None,
+                 regime_gate_window: str = "",
                  allowed_regimes: Optional[list[str]] = None,
                  stop_loss_atr_mult: Optional[float] = None,
                  stop_loss_pct: Optional[float] = None,
@@ -374,6 +381,12 @@ class Backtester:
         self.regime_enabled = regime_enabled
         self.regime_period = regime_period
         self.regime_adx_threshold = regime_adx_threshold
+        self.regime_classifier = str(regime_classifier or "adx").strip().lower()
+        self.regime_thresholds = dict(regime_thresholds or {})
+        self.regime_windows_spec = (
+            dict(regime_windows_spec) if regime_windows_spec else None
+        )
+        self.regime_gate_window = str(regime_gate_window or "").strip()
         self.allowed_regimes = list(allowed_regimes or [])
         self.stop_loss_atr_mult = stop_loss_atr_mult
         self.stop_loss_pct = stop_loss_pct
@@ -676,7 +689,8 @@ class Backtester:
     def run(self, df: pd.DataFrame, strategy_name: str = "Unknown",
             symbol: str = "BTC/USDT", timeframe: str = "1d",
             params: Optional[dict] = None, save: bool = True,
-            starting_long: Optional[dict] = None) -> dict:
+            starting_long: Optional[dict] = None,
+            trace: bool = False) -> dict:
         """
         Run backtest on a DataFrame that already has a 'signal' column.
         signal: 1 = buy, -1 = sell, 0 = hold
@@ -753,7 +767,15 @@ class Backtester:
         # same OHLCV window → identical label by construction (same algorithm).
         if self.regime_enabled and "regime" not in df.columns:
             ensure_regime = _load_regime()
-            ensure_regime(df, period=self.regime_period, adx_threshold=self.regime_adx_threshold)
+            ensure_regime(
+                df,
+                period=self.regime_period,
+                adx_threshold=self.regime_adx_threshold,
+                classifier=self.regime_classifier,
+                thresholds=self.regime_thresholds or None,
+                windows_spec=self.regime_windows_spec,
+                gate_window=self.regime_gate_window,
+            )
 
         # Snapshot the bar-close regime label before any shift so close
         # evaluators that re-resolve per bar (``tiered_tp_atr_live_regime``)
@@ -794,6 +816,7 @@ class Backtester:
         trades = []
         current_trade = None
         equity_curve = []
+        debug_trace = []
 
         # Position context for close-strategy evaluators. Stamped at open,
         # cleared at full close. ``initial_quantity`` is preserved across
@@ -941,6 +964,38 @@ class Backtester:
                 stamp = _entry_stamp(df.iloc[0])
             stamp_open_from_label(stamp)
 
+        def _trace_float(value: float) -> float:
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return 0.0
+            if not math.isfinite(value):
+                return 0.0
+            return round(value, 10)
+
+        def _add_trace_event(row: dict, event: str, fill_px: float = 0.0,
+                             fee: float = 0.0) -> None:
+            if not trace or row is None:
+                return
+            if event:
+                existing = row.get("event", "")
+                row["event"] = f"{existing}|{event}" if existing else event
+            if fill_px:
+                row["fill_px"] = _trace_float(fill_px)
+            if fee:
+                row["fee"] = _trace_float(float(row.get("fee", 0.0) or 0.0) + fee)
+
+        def _finish_trace_row(row: Optional[dict], mark_price: float) -> None:
+            if not trace or row is None:
+                return
+            row["position_after"] = _trace_float(position)
+            row["cash_after"] = _trace_float(cash)
+            row["equity_after"] = _trace_float(cash + position * mark_price)
+            row["scheduled_close_fraction"] = _trace_float(pending_close_fraction)
+            row["sl_trigger_px"] = _trace_float(sl_trigger_px)
+            row["entry_atr"] = _trace_float(entry_atr_value)
+            debug_trace.append(row)
+
         for i, (idx, row) in enumerate(df.iterrows()):
             fill_price = row["open"] if has_open else row["close"]
             mark_price = row["close"]
@@ -976,10 +1031,39 @@ class Backtester:
                 and bool(self.allowed_regimes)
                 and bar_regime not in self.allowed_regimes
             )
+            trace_row = None
+            if trace:
+                trace_row = {
+                    "date": str(idx),
+                    "signal": int(signal),
+                    "regime": bar_regime,
+                    "market_regime": _bar_close_regime(row),
+                    "open_action": (
+                        str(row.get("_open_action", "none"))
+                        if uses_open_close
+                        else _open_action_from_signal(int(signal))
+                    ),
+                    "close_fraction": 0.0,
+                    "scheduled_close_fraction": 0.0,
+                    "fill_px": 0.0,
+                    "fee": 0.0,
+                    "event": "",
+                    "regime_blocked": bool(regime_blocked),
+                    "position_before": _trace_float(position),
+                    "cash_before": _trace_float(cash),
+                    "equity_before": _trace_float(equity),
+                    "position_after": 0.0,
+                    "cash_after": 0.0,
+                    "equity_after": 0.0,
+                    "sl_trigger_px": _trace_float(sl_trigger_px),
+                    "entry_atr": _trace_float(entry_atr_value),
+                }
 
             if uses_open_close:
                 col_close_fraction = float(row.get("_close_fraction", 0.0))
                 close_fraction = max(col_close_fraction, pending_close_fraction)
+                if trace_row is not None:
+                    trace_row["close_fraction"] = _trace_float(close_fraction)
                 pending_close_fraction = 0.0
                 open_action = row.get("_open_action", "none")
 
@@ -991,12 +1075,14 @@ class Backtester:
                         commission = proceeds * self.commission_pct
                         cash += proceeds - commission
                         position -= qty_to_close
+                        _add_trace_event(trace_row, "close_long", effective_price, commission)
                     else:
                         effective_price = fill_price * (1 + self.slippage_pct)
                         cost = qty_to_close * effective_price
                         commission = cost * self.commission_pct
                         cash -= cost + commission
                         position += qty_to_close
+                        _add_trace_event(trace_row, "close_short", effective_price, commission)
 
                     if current_trade:
                         closed = Trade(current_trade.entry_date, current_trade.entry_price, current_trade.side)
@@ -1070,6 +1156,7 @@ class Backtester:
                     shares = available / effective_price
                     position = shares
                     cash = 0.0
+                    _add_trace_event(trace_row, "open_long", effective_price, commission)
 
                     current_trade = Trade(idx, effective_price, "long")
                     current_trade.shares = shares
@@ -1108,6 +1195,7 @@ class Backtester:
                     shares = notional / effective_price
                     cash = 2 * notional  # pay commission, receive short-sale proceeds
                     position = -shares
+                    _add_trace_event(trace_row, "open_short", effective_price, commission)
 
                     current_trade = Trade(idx, effective_price, "short")
                     current_trade.shares = shares
@@ -1197,6 +1285,8 @@ class Backtester:
                         side_now, mark_price, sl_trigger_px,
                     ):
                         pending_close_fraction = 1.0
+                        _add_trace_event(trace_row, "schedule_sl_close")
+                _finish_trace_row(trace_row, mark_price)
                 continue
 
             # Standalone hard stop fires first: close at this bar's open before
@@ -1208,6 +1298,7 @@ class Backtester:
                 commission = proceeds * self.commission_pct
                 cash = proceeds - commission
                 position = 0.0
+                _add_trace_event(trace_row, "signal_stop_close", effective_price, commission)
                 if current_trade:
                     current_trade.close(idx, effective_price)
                     trades.append(current_trade)
@@ -1217,6 +1308,7 @@ class Backtester:
                 avg_cost = 0.0
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
+                _finish_trace_row(trace_row, mark_price)
                 continue
 
             # NOTE: this signal path is long/flat only — signal == 1 opens a
@@ -1232,6 +1324,7 @@ class Backtester:
                 shares = available / effective_price
                 position = shares
                 cash = 0.0
+                _add_trace_event(trace_row, "signal_open_long", effective_price, commission)
 
                 current_trade = Trade(idx, effective_price, "long")
                 current_trade.shares = shares
@@ -1266,6 +1359,7 @@ class Backtester:
                 commission = proceeds * self.commission_pct
                 cash = proceeds - commission
                 position = 0.0
+                _add_trace_event(trace_row, "signal_close_long", effective_price, commission)
 
                 if current_trade:
                     current_trade.close(idx, effective_price)
@@ -1292,6 +1386,8 @@ class Backtester:
                         sl_trigger_px = candidate
                 if self._sl_hit("long", mark_price, sl_trigger_px):
                     pending_signal_sl_close = True
+                    _add_trace_event(trace_row, "schedule_signal_sl_close")
+            _finish_trace_row(trace_row, mark_price)
 
         # Close any open position at the end
         if position != 0:
@@ -1300,12 +1396,20 @@ class Backtester:
                 proceeds = position * final_price
                 commission = proceeds * self.commission_pct
                 cash += proceeds - commission
+                if trace and debug_trace:
+                    _add_trace_event(debug_trace[-1], "force_close_long", final_price, commission)
             else:
                 final_price = df["close"].iloc[-1] * (1 + self.slippage_pct)
                 cost = abs(position) * final_price
                 commission = cost * self.commission_pct
                 cash -= cost + commission
+                if trace and debug_trace:
+                    _add_trace_event(debug_trace[-1], "force_close_short", final_price, commission)
             position = 0.0
+            if trace and debug_trace:
+                debug_trace[-1]["position_after"] = _trace_float(position)
+                debug_trace[-1]["cash_after"] = _trace_float(cash)
+                debug_trace[-1]["equity_after"] = _trace_float(cash)
 
             if current_trade:
                 current_trade.close(df.index[-1], final_price)
@@ -1337,6 +1441,8 @@ class Backtester:
             "close_strategies": [dict(r) for r in self._close_refs],
             "trades": [t.to_dict() for t in trades],
         })
+        if trace:
+            metrics["debug_trace"] = debug_trace
 
         if save:
             store_backtest_result(metrics)
