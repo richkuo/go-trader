@@ -33,11 +33,21 @@ const sharedWalletDriftAlertThreshold = 2
 
 // sharedWalletDriftEntry is one slot in the per-wallet drift tracker.
 type sharedWalletDriftEntry struct {
-	count          int
+	// coinStreaks counts, per orphan coin, how many CONSECUTIVE over-tolerance
+	// cycles that coin has stayed unowned. Continuity is per coin — not the
+	// exact orphan set — so a persistent orphan keeps confirming even while
+	// unrelated one-cycle transients churn the set around it (#920 review).
+	// An over-tolerance cycle with no orphan coins (weighting bug) tracks under
+	// the pseudo-coin "".
+	coinStreaks map[string]int
+	// alertedCoins marks coins whose confirmation alert already fired, so a NEW
+	// persistent orphan appearing after a prior alert (no intervening clean
+	// cycle) re-confirms and alerts deterministically when ITS streak crosses
+	// the threshold, regardless of drift magnitude.
+	alertedCoins   map[string]bool
 	lastNotifiedAt time.Time
 	alerted        bool
-	lastDriftCents int64  // re-alert when the drift magnitude shifts
-	lastOrphanSig  string // streak identity: the sorted orphan-coin set
+	lastDriftCents int64 // re-alert when the drift magnitude shifts
 }
 
 // SharedWalletDriftTracker throttles the cent-exact drift alarm per shared
@@ -58,16 +68,18 @@ type SharedWalletDriftTracker struct {
 // re-throttles (a materially changed drift, every 10th cycle, or once an hour)
 // while the drift persists.
 //
-// orphanSig identifies WHICH orphan is drifting (the sorted unattributed coin
-// set). The confirmation streak is keyed on it: a different signature on the
-// next cycle means a DIFFERENT transient (e.g. a resting-limit fill on one coin
-// followed by an external manual open on another, each self-healing in one
-// cycle), so the streak restarts at 1 instead of two unrelated one-cycle
-// transients summing to a spurious alert + recovery pair (#920 review). A
-// genuine persistent orphan keeps the same coin set and still alerts on its
-// second cycle. The drift magnitude is deliberately NOT part of the streak key
-// — a real orphan's unrealized P&L moves with the mark every cycle.
-func (t *SharedWalletDriftTracker) Record(walletKey string, drift float64, orphanSig string, now time.Time) (bool, int) {
+// orphanCoins identifies WHICH positions are unattributed this cycle (sorted).
+// Confirmation continuity is tracked PER COIN: a coin must stay unowned for
+// sharedWalletDriftAlertThreshold consecutive cycles before it alerts. Two
+// unrelated one-cycle transients on consecutive cycles (a resting-limit fill on
+// one coin, an external manual open on another) therefore never confirm — but a
+// genuinely persistent orphan keeps confirming even while transients on OTHER
+// coins churn the set around it. The drift magnitude is deliberately NOT part
+// of the continuity key — a real orphan's unrealized P&L moves with the mark
+// every cycle. An over-tolerance cycle with no orphan coins (weighting bug)
+// counts continuity under a pseudo-coin so it still confirms like a bare
+// counter. The returned count is the longest current per-coin streak.
+func (t *SharedWalletDriftTracker) Record(walletKey string, drift float64, orphanCoins []string, now time.Time) (bool, int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.entries == nil {
@@ -78,33 +90,54 @@ func (t *SharedWalletDriftTracker) Record(walletKey string, drift float64, orpha
 		e = &sharedWalletDriftEntry{}
 		t.entries[walletKey] = e
 	}
-	if e.count > 0 && e.lastOrphanSig != orphanSig {
-		// A different orphan than the one being confirmed → new streak.
-		// `alerted` is kept: if the wallet already alerted, recovery still
-		// requires a clean cycle, and the changed drift re-notifies below.
-		e.count = 0
+
+	coins := orphanCoins
+	if len(coins) == 0 {
+		coins = []string{""} // weighting-bug drift: no orphan coin to key on
 	}
+	// Advance per-coin streaks; coins owned again this cycle drop out (their
+	// continuity — and any per-coin alerted mark — resets).
+	streaks := make(map[string]int, len(coins))
+	for _, coin := range coins {
+		streaks[coin] = e.coinStreaks[coin] + 1
+	}
+	e.coinStreaks = streaks
+	maxStreak := 0
+	confirmedNew := false
+	for coin, n := range streaks {
+		if n > maxStreak {
+			maxStreak = n
+		}
+		if n >= sharedWalletDriftAlertThreshold && !e.alertedCoins[coin] {
+			confirmedNew = true
+		}
+	}
+	for coin := range e.alertedCoins {
+		if _, still := streaks[coin]; !still {
+			delete(e.alertedCoins, coin)
+		}
+	}
+
 	driftCents := int64(math.Round(drift * 100))
 	// "Materially changed" = the drift moved by more than a cent since the last
 	// notification, so a slowly-worsening bug re-surfaces.
 	sigChanged := absInt64(driftCents-e.lastDriftCents) > 1
-	e.count++
 	e.lastDriftCents = driftCents
-	e.lastOrphanSig = orphanSig
 
-	// Confirmation window: a transient one-cycle orphan never reaches the
-	// threshold (it clears next cycle via Clear), so it never alerts.
-	if e.count < sharedWalletDriftAlertThreshold {
-		return false, e.count
+	// Confirmation window: no coin has stayed unowned long enough yet — a
+	// transient one-cycle orphan never reaches the threshold (it clears next
+	// cycle via Clear or drops out of coinStreaks), so it never alerts.
+	if maxStreak < sharedWalletDriftAlertThreshold {
+		return false, maxStreak
 	}
 
 	shouldNotify := false
 	switch {
-	case !e.alerted:
-		shouldNotify = true // confirmation window crossed
+	case confirmedNew:
+		shouldNotify = true // a coin crossed its confirmation window
 	case sigChanged:
 		shouldNotify = true
-	case e.count%10 == 0:
+	case maxStreak%10 == 0:
 		shouldNotify = true
 	case !e.lastNotifiedAt.IsZero() && now.Sub(e.lastNotifiedAt) >= time.Hour:
 		shouldNotify = true
@@ -112,8 +145,16 @@ func (t *SharedWalletDriftTracker) Record(walletKey string, drift float64, orpha
 	if shouldNotify {
 		e.alerted = true
 		e.lastNotifiedAt = now
+		if e.alertedCoins == nil {
+			e.alertedCoins = make(map[string]bool)
+		}
+		for coin, n := range streaks {
+			if n >= sharedWalletDriftAlertThreshold {
+				e.alertedCoins[coin] = true
+			}
+		}
 	}
-	return shouldNotify, e.count
+	return shouldNotify, maxStreak
 }
 
 // Clear resets the drift streak for walletKey after a within-tolerance cycle
@@ -130,7 +171,12 @@ func (t *SharedWalletDriftTracker) Clear(walletKey string) (bool, int) {
 		return false, 0
 	}
 	recovered := e.alerted
-	priorCount := e.count
+	priorCount := 0
+	for _, n := range e.coinStreaks {
+		if n > priorCount {
+			priorCount = n
+		}
+	}
 	delete(t.entries, walletKey)
 	return recovered, priorCount
 }
@@ -180,10 +226,9 @@ func reportSharedWalletDrift(notifier *MultiNotifier, results []sharedWalletDrif
 	for _, r := range results {
 		label := sharedWalletKeyLabel(r.Key)
 		if math.Abs(r.Drift) > sharedWalletDriftTolerance {
-			orphanSig := strings.Join(r.OrphanCoins, ",")
-			shouldNotify, count := sharedWalletDriftTracker.Record(label, r.Drift, orphanSig, now)
+			shouldNotify, count := sharedWalletDriftTracker.Record(label, r.Drift, r.OrphanCoins, now)
 			fmt.Printf("[WARN] shared-wallet %s drift $%+.2f (Σ members $%.2f vs balance $%.2f, orphans=[%s])\n",
-				label, r.Drift, r.MemberSum, r.Balance, orphanSig)
+				label, r.Drift, r.MemberSum, r.Balance, strings.Join(r.OrphanCoins, ","))
 			if !shouldNotify || notifier == nil || !notifier.HasBackends() {
 				continue
 			}
