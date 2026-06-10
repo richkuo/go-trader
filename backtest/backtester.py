@@ -42,6 +42,22 @@ SL/TP intra-bar races
 Bar-level granularity — when an SL hit and a TP fill could both occur within
 the same bar, the engine resolves them at bar close, not by intra-bar OHLC
 walking. Documented under ``Backtest`` in CLAUDE.md.
+
+Live parity limitations (#906 audit)
+------------------------------------
+Surfaces intentionally **not** modeled here (use ``backtest/parity_diff.py`` for
+decision-layer parity checks; see ``backtest/AUDIT.md`` for the full matrix):
+
+  • **Scale-in / pyramiding** (#873) — HL perps + manual live-only; same-direction
+    adds are skipped in backtest.
+  • **Resting manual limit orders** (#883) — maker fills / partial OID reconcile
+    have no bar-level simulation.
+  • **``tiered_tp_atr_live_regime_dynamic``** (#843) — rejected at
+    ``run_backtest.load_strategy_config`` (on-chain regime hysteresis).
+  • **``regime_directional_policy``** (#822) — rejected at config load; use static
+    ``direction`` / ``invert_signal`` for backtests.
+  • **Inline trailing SL at open** (#885) — live arms same-cycle; backtest seeds
+    trailing/ratchet triggers on the bar after open (no naked-gap modeling).
 """
 
 import sys
