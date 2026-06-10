@@ -481,9 +481,10 @@ DEFAULT_PARAM_RANGES = {
         "rally_touch_buffer_pct": [0.0005, 0.001, 0.002],
     },
     # NOTE: close-evaluator names (tp_at_pct, tiered_tp_pct, tiered_tp_atr, …) are
-    # intentionally absent here. run_optimize only sweeps OPEN-registry strategy
-    # params (it builds the entry signal via the open registry), so any close-param
-    # grid keyed by a close name would be dead weight — unreachable and never swept.
+    # intentionally absent here. walk_forward_optimize only sweeps OPEN-registry
+    # strategy params (it builds the entry signal via the open registry), so any
+    # close-param grid keyed by a close name would be dead weight — unreachable and
+    # never swept.
     # Wiring real close-param optimization is a separate feature (#944); until then
     # do not re-add close names to DEFAULT_PARAM_RANGES.
     # Futures-only
