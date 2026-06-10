@@ -143,6 +143,28 @@ class TestMarketData:
         result = adapter.get_ohlcv("BTC", "1h", 1)
         assert result[0][0] == 1700000000000
 
+    def test_get_ohlcv_widens_window_for_gap_margin(self, monkeypatch):
+        monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
+        adapter, mock_info = self._make_adapter()
+        mock_info.candles_snapshot.return_value = []
+        adapter.get_ohlcv("BTC", "1h", 200)
+        _name, interval, start_ms, end_ms = mock_info.candles_snapshot.call_args[0]
+        assert interval == "1h"
+        assert end_ms - start_ms == 3_600_000 * (200 + 50)
+
+    def test_get_ohlcv_trims_to_limit_when_api_returns_extra(self, monkeypatch):
+        monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
+        adapter, mock_info = self._make_adapter()
+        mock_info.candles_snapshot.return_value = [
+            {"T": 1700000000000 + i * 3_600_000, "o": "100", "h": "110", "l": "90",
+             "c": str(100 + i), "v": "50"}
+            for i in range(5)
+        ]
+        result = adapter.get_ohlcv("BTC", "1h", 3)
+        assert len(result) == 3
+        assert result[0][4] == 102.0
+        assert result[-1][4] == 104.0
+
     def test_get_funding_rate_found(self):
         adapter, mock_info = self._make_adapter()
         mock_info.meta_and_asset_ctxs.return_value = [

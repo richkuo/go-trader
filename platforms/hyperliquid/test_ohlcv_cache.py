@@ -254,3 +254,27 @@ def test_empty_result_is_not_cached(adapter_mod, monkeypatch, tmp_path):
     # Both calls hit the network — an empty result must never be cached.
     assert a._info.candles_snapshot.call_count == 2
     assert [p for p in tmp_path.iterdir()] == []
+
+
+def test_cache_stores_trimmed_rows_not_widened_fetch(adapter_mod, monkeypatch, tmp_path):
+    """Peers must read exactly `limit` rows from cache (#937), not limit+margin."""
+    monkeypatch.setattr(adapter_mod, "OHLCV_CACHE_DIR", str(tmp_path))
+    extra = [
+        _raw(1700000000000 + i * 3_600_000) for i in range(adapter_mod.OHLCV_GAP_MARGIN + 5)
+    ]
+    a = _make_adapter(adapter_mod, monkeypatch, extra)
+
+    got = a.get_ohlcv("BTC", "1h", 5)
+    assert len(got) == 5
+
+    cache_files = list(tmp_path.iterdir())
+    assert len(cache_files) == 1
+    with open(cache_files[0], "r") as f:
+        cached = json.load(f)["candles"]
+    assert len(cached) == 5
+
+    a._info.candles_snapshot.reset_mock()
+    peer = a.get_ohlcv("BTC", "1h", 5)
+    assert a._info.candles_snapshot.call_count == 0
+    assert len(peer) == 5
+    assert peer == got

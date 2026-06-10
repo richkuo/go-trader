@@ -44,6 +44,9 @@ META_CACHE_TTL_S = 3600  # 60 minutes
 OHLCV_CACHE_DIR = "/tmp"
 OHLCV_CACHE_PREFIX = "hl_ohlcv_"
 OHLCV_CACHE_TTL_S = 60
+# Extra intervals requested beyond `limit` so sparse candleSnapshot gaps (#937)
+# still yield at least `limit` rows before trimming to the most recent `limit`.
+OHLCV_GAP_MARGIN = 50
 
 # SDK imports: defer to avoid module-level ImportError when SDK not installed.
 # adapter.py is loaded with platforms/hyperliquid/ directly in sys.path (not
@@ -528,9 +531,7 @@ class HyperliquidExchangeAdapter:
         }
         interval_ms = interval_ms_map.get(interval, 3_600_000)
         end_ms = int(time.time() * 1000)
-        # Calculate start time to fetch at least `limit` candles
-        # Add margin for any gaps in data
-        start_ms = end_ms - interval_ms * (limit + 50)
+        start_ms = end_ms - interval_ms * (limit + OHLCV_GAP_MARGIN)
 
         # Cycle-scoped dedup: reuse a fresh on-disk snapshot so peer strategies
         # sharing this (symbol, interval, limit) don't each hit /info (#839).
@@ -554,6 +555,8 @@ class HyperliquidExchangeAdapter:
                 float(c["c"]),
                 float(c["v"]),
             ])
+        if len(result) > limit:
+            result = result[-limit:]
         # Never cache an empty result — insufficient-data fetches must keep
         # retrying live rather than pinning every peer to the error path.
         if cache_enabled and result:
