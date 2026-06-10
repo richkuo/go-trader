@@ -50,6 +50,13 @@ semantics, not a model of them. (The HTF filter is the one deliberate
 omission: it needs a second-timeframe fetch and is orthogonal to
 frame-dependence.)
 
+Non-registry (signal-strategy) close refs are rejected upfront with the
+engine's own error: ``Backtester`` refuses unknown close names at init,
+so there is no backtest path to diff against. The live composition's
+signal-strategy close fallback (``legacy_close_fraction_from_signal``)
+is a live-only surface; comparing it against a silent bt-side zero
+would manufacture mismatches, so the tool fails loudly instead.
+
 When close refs are configured, both sides share a single simulated
 position lifecycle (side / avg_cost / quantities / entry values),
 seeded from the backtest-effective open/close decisions — shared so the
@@ -118,7 +125,10 @@ from strategy_composition import (
     open_action_from_signal,
     rewrite_deprecated_close_ref,
 )
-from close_registry_loader import evaluate as close_evaluate
+from close_registry_loader import (
+    evaluate as close_evaluate,
+    list_strategies as close_list_strategies,
+)
 from backtester import (
     Backtester,
     _max_close_fraction_series,
@@ -368,12 +378,10 @@ def _bt_close_evaluator_fraction(cfg: ParityConfig, i: int,
             name, params_by_name.get(name))
         if ref_params is None and resolved == cfg.strategy_name:
             ref_params = dict(cfg.params or {})
-        try:
-            result = close_evaluate(resolved, position, market, ref_params)
-        except ValueError:
-            # Non-registry (signal-strategy) close refs are covered by the
-            # column path on both sides; skip the evaluator comparison.
-            continue
+        # Unknown names were rejected upfront (compute_parity_frame), so any
+        # ValueError here is a genuine evaluator error — propagate, exactly
+        # as the engine would.
+        result = close_evaluate(resolved, position, market, ref_params)
         best = max(best, float(result.get("close_fraction", 0.0) or 0.0))
     return best
 
@@ -436,6 +444,11 @@ def _simulate_position_contexts(bt: pd.DataFrame, df: pd.DataFrame,
             qty = initial_qty = 1.0
             atr_val = atr_full.iloc[i]
             entry_atr = float(atr_val) if pd.notna(atr_val) else 0.0
+            # Engine plausibility guard (_stamp_entry_atr, mirroring Go's
+            # stampEntryATRIfOpened): non-positive or > 50% of the entry
+            # price stamps 0.0, so ATR-requiring close evaluators no-op.
+            if not (0.0 < entry_atr <= 0.5 * mark):
+                entry_atr = 0.0
             if regime_full is not None:
                 # Engine semantics: the position regime is stamped from the
                 # SHIFTED regime column at the fill row — the decision bar's
@@ -502,6 +515,21 @@ def compute_parity_frame(
         )["regime"]
 
     has_close_refs = bool(_close_names(cfg.close_refs))
+    if has_close_refs:
+        # Mirror the engine: Backtester rejects non-registry close names at
+        # init, so a signal-strategy close ref has no backtest path to diff
+        # — fail with the same error instead of silently contributing 0 on
+        # the bt side while the live fallback fully evaluates it.
+        available = set(close_list_strategies())
+        for name in _close_names(cfg.close_refs):
+            resolved, _ = rewrite_deprecated_close_ref(name, None)
+            if resolved not in available:
+                raise ValueError(
+                    f"Unknown close strategy: {resolved}. The backtester "
+                    f"rejects non-registry close refs at init, so there is "
+                    f"no engine path to diff; the live signal-strategy close "
+                    f"fallback is live-only. Available: {sorted(available)}"
+                )
     contexts = (
         _simulate_position_contexts(bt, df, atr_full, regime_full)
         if has_close_refs else [None] * len(df)
@@ -752,8 +780,12 @@ def main(argv: Optional[list] = None) -> int:
         return 2
 
     window = args.window if args.window and args.window > 0 else None
-    frame = compute_parity_frame(df, cfg=cfg, window=window,
-                                 stride=args.stride)
+    try:
+        frame = compute_parity_frame(df, cfg=cfg, window=window,
+                                     stride=args.stride)
+    except ValueError as e:
+        print(f"parity: {e}", file=sys.stderr)
+        return 2
     result = summarize(frame)
     if result["bars_compared"] == 0:
         print(f"No bars compared: {len(df)} candles loaded but the trailing "

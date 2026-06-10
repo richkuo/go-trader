@@ -455,3 +455,53 @@ def test_bt_close_evaluator_uses_engine_dict_shape(monkeypatch):
     assert captured["position"]["regime"] == ""
     assert isinstance(captured["position"]["entry_atr"], float)
     assert captured["position"]["entry_atr"] == 0.0
+
+def test_non_registry_close_ref_rejected_like_engine():
+    """A signal-strategy close ref has no engine path (Backtester rejects
+    unknown close names at init), so the tool must fail with the same
+    error instead of silently scoring 0 on the bt side while the live
+    fallback fully evaluates it — a manufactured mismatch."""
+    df = _trending_ohlcv(120)
+    with pytest.raises(ValueError, match="Unknown close strategy"):
+        compute_parity_frame(
+            df, "sma_crossover",
+            params={"fast_period": 5, "slow_period": 20},
+            window=60,
+            close_refs=[{"name": "rsi_oversold", "params": {}}],
+        )
+    from backtester import Backtester
+    with pytest.raises(ValueError, match="Unknown close strategy"):
+        Backtester(
+            initial_capital=1000.0,
+            open_strategy={"name": "sma_crossover", "params": {}},
+            close_strategies=[{"name": "rsi_oversold", "params": {}}],
+        )
+
+
+def test_entry_atr_plausibility_guard_matches_engine():
+    """The scaffold must apply the engine's _stamp_entry_atr guard: an ATR
+    above 50% of the entry price stamps 0.0 (key omitted from the shared
+    context) so ATR-requiring close evaluators no-op, matching both the
+    engine and Go's stampEntryATRIfOpened."""
+    from atr import ensure_atr_indicator
+    n = 40
+    rng = np.random.default_rng(3)
+    close = 100.0 + rng.normal(0, 0.2, n)
+    df = pd.DataFrame({
+        "open": close,
+        "high": close + 90.0,   # huge bar ranges → ATR ≈ 180 > 50% of price
+        "low": close - 90.0,
+        "close": close,
+        "volume": [1000.0] * n,
+    }, index=pd.date_range("2024-01-01", periods=n, freq="1h"))
+    bt = pd.DataFrame({
+        "signal": [0] * n,
+        "open_action": ["none"] * n,
+        "close_fraction": [0.0] * n,
+    }, index=df.index)
+    bt.iloc[19, bt.columns.get_loc("open_action")] = "long"  # fill at bar 20
+    atr_full = ensure_atr_indicator(df.copy())["atr"]
+    assert float(atr_full.iloc[20]) > 0.5 * float(df["close"].iloc[20])
+    contexts = parity_diff._simulate_position_contexts(bt, df, atr_full, None)
+    assert contexts[21] is not None
+    assert "entry_atr" not in contexts[21]
