@@ -569,3 +569,117 @@ def test_load_strategy_config_both_with_close_is_allowed(tmp_path):
     ])
     kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
     assert kwargs["direction"] == "both"
+
+
+# ─── #942 review: spot/futures --config masks shorts (long-by-construction) ──
+#
+# Requires-Human-Review item on PR #951: a non-perps --config with a close
+# evaluator now forces direction='long' (_effective_direction), so the
+# open/close engine path masks short opens. The behavior is more correct (spot
+# can't short) but silently shifts pre-PR spot/futures --config numbers, where a
+# raw signal=-1 used to open an (erroneous) short. These tests pin the kept
+# behavior end-to-end and cover the compound case the masking exposes.
+
+
+_SPOT_NEVER_FIRES_CLOSE = {"name": "tiered_tp_pct", "params": {"tp_tiers": [
+    {"profit_pct": 0.9, "close_fraction": 1.0},
+]}}
+
+
+def _flat_ohlc(signal):
+    # Flat prices so the 90%-profit close never fires: the position survives to
+    # the end-of-run flush and the recorded trade carries its OPEN side.
+    n = len(signal)
+    return pd.DataFrame(
+        {
+            "open":   [100.0] * n,
+            "high":   [101.0] * n,
+            "low":    [99.0] * n,
+            "close":  [100.0] * n,
+            "volume": [1.0] * n,
+            "signal": signal,
+        },
+        index=pd.date_range("2024-01-01", periods=n, freq="D"),
+    )
+
+
+def _spot_close_cfg(tmp_path, strategy_type="spot", **extra):
+    strat = {
+        "id": "sc-x",
+        "type": strategy_type,
+        "open_strategy": {"name": "sma_crossover"},
+        "close_strategy": dict(_SPOT_NEVER_FIRES_CLOSE),
+    }
+    strat.update(extra)
+    return _write_config(tmp_path, version=15, strategies=[strat])
+
+
+def _run_config(path, strategy_id, signal):
+    kwargs = run_backtest.load_strategy_config(path, strategy_id)
+    bt = Backtester(initial_capital=1000, commission_pct=0.0,
+                    slippage_pct=0.0, **kwargs)
+    return bt.run(_flat_ohlc(signal), save=False)
+
+
+@pytest.mark.parametrize("strategy_type", ["spot", "futures"])
+def test_config_non_perps_masks_short_open_end_to_end(tmp_path, strategy_type):
+    # The flagged item: a non-perps --config with a close evaluator forces
+    # direction='long', so a short-opening signal opens NOTHING (not a short).
+    path = _spot_close_cfg(tmp_path, strategy_type=strategy_type)
+    assert _run_config(path, "sc-x", [-1, 0, 0, 0])["trades"] == []
+
+
+@pytest.mark.parametrize("strategy_type", ["spot", "futures"])
+def test_config_non_perps_allows_long_open_end_to_end(tmp_path, strategy_type):
+    # Inverse of the masked case: a long-opening signal is untouched and opens a
+    # long. The mask must not suppress the allowed side.
+    path = _spot_close_cfg(tmp_path, strategy_type=strategy_type)
+    result = _run_config(path, "sc-x", [1, 0, 0, 0])
+    assert [t["side"] for t in result["trades"]] == ["long"]
+
+
+def test_config_spot_stray_direction_short_is_ignored(tmp_path):
+    # A stray direction='short' on a spot strategy is ignored (long-by-
+    # construction, matching EffectiveDirection): a long signal still opens
+    # long, and a short signal is still masked. Direction never makes spot short.
+    path = _spot_close_cfg(tmp_path, direction="short")
+    assert [t["side"] for t in _run_config(path, "sc-x", [1, 0, 0, 0])["trades"]] == ["long"]
+    assert _run_config(path, "sc-x", [-1, 0, 0, 0])["trades"] == []
+
+
+@pytest.mark.parametrize("strategy_type", ["spot", "futures"])
+def test_load_strategy_config_rejects_invert_signal_on_non_perps(tmp_path, strategy_type):
+    # Compound case the masking exposes: invert_signal is HL-perps/manual-only —
+    # live (config.go) rejects the config at startup for any other type. Without
+    # a matching gate the backtester would flip BUY<->SELL (then mask the
+    # inverted short), producing numbers for a config the daemon won't load.
+    path = _write_config(tmp_path, version=15, strategies=[
+        {
+            "id": "inv-x",
+            "type": strategy_type,
+            "open_strategy": {"name": "sma_crossover"},
+            "close_strategy": dict(_SPOT_NEVER_FIRES_CLOSE),
+            "invert_signal": True,
+        },
+    ])
+    with pytest.raises(ValueError, match="invert_signal"):
+        run_backtest.load_strategy_config(path, "inv-x")
+
+
+@pytest.mark.parametrize("strategy_type", ["perps", "manual"])
+def test_load_strategy_config_allows_invert_signal_on_hl_types(tmp_path, strategy_type):
+    # The two HL types that honor invert_signal in live are accepted unchanged.
+    path = _write_config(tmp_path, version=15, strategies=[
+        {
+            "id": "inv-x",
+            "type": strategy_type,
+            "open_strategy": {"name": "tema_cross_bd"},
+            "close_strategy": {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+                {"atr_multiple": 2.0, "close_fraction": 1.0},
+            ]}},
+            "invert_signal": True,
+        },
+    ])
+    kwargs = run_backtest.load_strategy_config(path, "inv-x")
+    assert kwargs["invert_signal"] is True
+    assert kwargs["strategy_type"] == strategy_type

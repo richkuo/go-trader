@@ -254,6 +254,26 @@ def load_strategy_config(config_path: str, strategy_id: str,
         # (see _apply_direction_invert), in the live order (invert then gate).
         direction = _effective_direction(sc)
         invert_signal = bool(sc.get("invert_signal"))
+        strategy_type = str(sc.get("type") or "perps")
+        # #942 review: invert_signal is HL-perps/manual-only. LoadConfig
+        # (config.go) REJECTS the config at startup for any other type/platform
+        # because runHyperliquidCheck (applySignalInversion) is its only
+        # consumer — spot/options/futures check scripts emit their own buy/sell
+        # logic that the Go invert never sees. _effective_direction already
+        # forces non-perps types to long-by-construction; without the matching
+        # invert gate a stray invert_signal on a spot/futures --config would
+        # silently flip BUY<->SELL in the backtest (and then mask the inverted
+        # short), producing numbers for a config the live daemon would refuse to
+        # load. Reject it the same way, with the established loud-rejection
+        # pattern, instead of diverging silently.
+        if invert_signal and strategy_type not in ("perps", "manual"):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} sets invert_signal "
+                f"on type={strategy_type!r}, but invert_signal is HL-perps/"
+                f"manual-only (the live daemon rejects this config at startup — "
+                f"config.go). Remove invert_signal or backtest a perps/manual "
+                f"strategy."
+            )
         # The plain long/flat signal path (no close evaluator) is structurally
         # long-only: signal=-1 *closes* a long rather than opening a short. A
         # short/both direction there can't open the short side, so it would
@@ -282,7 +302,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "trailing_stop_pct": sc.get("trailing_stop_pct"),
             "stop_loss_atr_regime": sc.get("stop_loss_atr_regime"),
             "trailing_stop_atr_regime": sc.get("trailing_stop_atr_regime"),
-            "strategy_type": str(sc.get("type") or "perps"),
+            "strategy_type": strategy_type,
             "direction": direction,
             "invert_signal": invert_signal,
         }
