@@ -79,6 +79,7 @@ var knownShortNames = map[string]string{
 	"mtf_confluence":        "mtfc",
 	"vol_momentum":          "volmom",
 	"regime_adaptive":       "regad",
+	"regime_adaptive_htf":   "rahtf",
 }
 
 // bidirectionalPerpsStrategies lists strategy IDs that emit signal=-1 as a
@@ -152,6 +153,7 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "mtf_confluence", ShortName: "mtfc"},
 	{ID: "vol_momentum", ShortName: "volmom"},
 	{ID: "regime_adaptive", ShortName: "regad"},
+	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
 
 var defaultOptionsStrategies = []stratDef{
@@ -179,6 +181,7 @@ var defaultPerpsStrategies = []stratDef{
 	{ID: "mtf_confluence", ShortName: "mtfc"},
 	{ID: "vol_momentum", ShortName: "volmom"},
 	{ID: "regime_adaptive", ShortName: "regad"},
+	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
 
 var defaultFuturesStrategies = []stratDef{
@@ -209,6 +212,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "mtf_confluence", ShortName: "mtfc"},
 	{ID: "vol_momentum", ShortName: "volmom"},
 	{ID: "regime_adaptive", ShortName: "regad"},
+	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
 
 // Supported CME futures symbols for the init wizard.

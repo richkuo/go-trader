@@ -496,6 +496,22 @@ DEFAULT_PARAM_RANGES = {
         "mr_entry_z": [1.5, 2.0],
         "slow_veto_threshold": [0.03, 0.05, 0.08],
     },
+    "regime_adaptive_htf": {
+        # Real warmup is ~htf_factor × (period + confirm_buckets) NATIVE bars
+        # (composite metrics count HTF buckets), which max_indicator_lookback's
+        # raw-int heuristic can't see; the pinned slow_trend_lookback value
+        # provisions 100 bars and under-provisioned folds stay flat until the
+        # label primes — never look-ahead (same caveat as mtf_confluence).
+        "htf_factor": [4, 6, 8],
+        "confirm_buckets": [1, 2, 3],
+        "period": [10, 14],
+        "mr_entry_z": [1.75, 2.0, 2.25],
+        # Drift-confirmed trend participation: "breakout" dominates in
+        # trending years (2023/2024), "off" in grind years (2026 OOS) — see
+        # the regime_adaptive_htf module docstring's per-window table.
+        "trend_entry": ["off", "breakout"],
+        "slow_trend_lookback": [100],
+    },
     "consolidation_range": {
         "box_width_pct": [0.03, 0.05, 0.08, 0.10],
         "min_bars": [12, 16, 24],
