@@ -48,6 +48,7 @@ from momentum_pro import momentum_pro_core
 from mean_reversion_pro import mean_reversion_pro_core
 from mtf_confluence import mtf_confluence_core
 from regime_adaptive import regime_adaptive_core
+from regime_adaptive_htf import regime_adaptive_htf_core
 from session_breakout import session_breakout_core
 from vwap_rejection_st import vwap_rejection_st_core
 from vol_momentum import vol_momentum_core
@@ -1148,6 +1149,38 @@ def regime_adaptive_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "regime_adaptive_htf",
+    "Regime Adaptive HTF — selective z-score fades gated by composite regime labels (return/range/Kaufman efficiency + ADX) classified on higher-timeframe buckets with confirmation hysteresis; optional clean-trend entry modes; flat in chop and directional grinds",
+    {
+        "htf_factor": 6,
+        "period": 14,
+        "adx_threshold": 20.0,
+        "return_eff_threshold": 0.05,
+        "range_eff_threshold": 0.03,
+        "efficiency_threshold": 0.5,
+        "confirm_buckets": 2,
+        "trend_entry": "off",
+        "transition_window": 6,
+        "pullback_z": 1.0,
+        "fade_labels": "ranging",
+        "breakout_lookback": 10,
+        "mr_lookback": 20,
+        "mr_entry_z": 2.0,
+        "mr_exit_z": 0.0,
+        "slow_trend_lookback": 100,
+        "slow_veto_threshold": 0.05,
+        "allow_short": False,
+    },
+    # No bidirectional futures variant (unlike regime_adaptive/vol_momentum):
+    # allow_short=True benchmarked at OOS mean Sharpe -1.68 vs -0.32 long-only
+    # (short fades of range tops get run over by squeezes). Long/flat on
+    # perps; allow_short stays sweepable.
+)
+def regime_adaptive_htf_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return regime_adaptive_htf_core(df, **params)
+
+
+@register(
     "hold",
     "Hold — always returns signal=0; used internally by type=manual strategies for the close-evaluator loop (#569)",
     {},
@@ -1175,7 +1208,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "donchian_breakout", "tema_cross",
         "momentum_pro", "mean_reversion_pro", "mtf_confluence",
-        "vol_momentum", "regime_adaptive",
+        "vol_momentum", "regime_adaptive", "regime_adaptive_htf",
         "hold",
     ],
     "futures": [
@@ -1189,6 +1222,6 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "funding_skew", "donchian_breakout", "session_breakout", "bear_pullback_st",
         "vwap_rejection_st", "momentum_pro", "mean_reversion_pro",
         "consolidation_range", "mtf_confluence", "vol_momentum",
-        "regime_adaptive", "hold",
+        "regime_adaptive", "regime_adaptive_htf", "hold",
     ],
 }
