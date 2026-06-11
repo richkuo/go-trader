@@ -494,6 +494,7 @@ DEFAULT_PARAM_RANGES = {
         "efficiency_threshold": [0.3, 0.4, 0.5],
         "breakout_lookback": [10, 20, 30],
         "mr_entry_z": [1.5, 2.0],
+        "slow_veto_threshold": [0.03, 0.05, 0.08],
     },
     "consolidation_range": {
         "box_width_pct": [0.03, 0.05, 0.08, 0.10],

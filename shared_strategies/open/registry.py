@@ -1135,6 +1135,8 @@ def vol_momentum_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "mr_lookback": 20,
         "mr_entry_z": 2.0,
         "mr_exit_z": 0.0,
+        "slow_trend_lookback": 100,
+        "slow_veto_threshold": 0.05,
         "allow_short": False,
     },
     variants={

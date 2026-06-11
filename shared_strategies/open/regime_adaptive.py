@@ -56,6 +56,16 @@ Mean-reversion positions exit at the mean (z reaches ``mr_exit_z``) or when a
 *clean* trend ignites against the fade (the choppy label opposing the fade is
 expected at entry — the dip being faded — and must not insta-exit it).
 
+Slow-trend veto (#967 follow-up): a counter-trend fade is blocked when the
+*slow drift* opposes it — ``slow_eff``, the ATR-normalized net move over
+``slow_trend_lookback`` bars (same construction as ``return_eff`` on a longer
+window), at or beyond ``slow_veto_threshold`` against the fade side. The gate
+is drift-based, not price-vs-mean: a fade buys below its rolling mean by
+construction, so a price-level gate would make fades unreachable. In a flat
+range slow_eff ~ 0 and the veto never fires; in a persistent bear it blocks
+the long fades that bled in the #967 OOS window. ``slow_trend_lookback=0``
+disables the veto.
+
 Anti-look-ahead: every input is a trailing rolling window / shift(1) /
 diff — no centered windows, no future rows. The signal at bar N uses bars
 <= N only and fills at bar N+1 open per the engine contract.
@@ -107,6 +117,8 @@ def regime_adaptive_core(
     mr_lookback: int = 20,
     mr_entry_z: float = 2.0,
     mr_exit_z: float = 0.0,
+    slow_trend_lookback: int = 100,
+    slow_veto_threshold: float = 0.05,
     allow_short: bool = False,
 ) -> pd.DataFrame:
     """Generate regime-switched breakout / mean-reversion signals.
@@ -127,6 +139,8 @@ def regime_adaptive_core(
     mr_lookback : z-score window for the ranging-mode fade
     mr_entry_z : band (in std devs) whose recovery-cross triggers a fade entry
     mr_exit_z : z level at which a mean-reversion position takes the mean
+    slow_trend_lookback : window for the slow-drift fade veto; 0 disables
+    slow_veto_threshold : |slow_eff| at which an opposing drift blocks a fade
     allow_short : open shorts (futures variant); False = long-only base
 
     Returns
@@ -140,6 +154,7 @@ def regime_adaptive_core(
         ra_efficiency : rolling Kaufman efficiency ratio
         ra_adx        : Wilder ADX (0 during warmup)
         ra_z          : z-score of close vs SMA(mr_lookback)
+        ra_slow_eff   : ATR-normalized slow drift backing the fade veto
     """
     result = df.copy()
     n = len(result)
@@ -152,6 +167,7 @@ def regime_adaptive_core(
     result["ra_efficiency"] = np.nan
     result["ra_adx"] = 0.0
     result["ra_z"] = np.nan
+    result["ra_slow_eff"] = np.nan
     # _compute_adx_components indexes smooth_tr[adx_period] unguarded — any
     # frame with n <= adx_period raises IndexError. Too short to prime ADX ⇒
     # return the already-initialized all-flat frame (a short backtest window
@@ -228,6 +244,21 @@ def regime_adaptive_core(
     mr_short_trig = ((z < mr_entry_z) & (z.shift(1) >= mr_entry_z)).values
     z_vals = z.values
 
+    # Slow-trend fade veto: ATR-normalized drift over a long window (same
+    # construction as return_eff). NaN warmup compares False on both sides —
+    # no veto until the slow window primes, preserving short-frame behavior.
+    if slow_trend_lookback > 0:
+        slow_denom = atr * slow_trend_lookback
+        slow_eff = ((close - close.shift(slow_trend_lookback)) / slow_denom).where(
+            slow_denom > 0, 0.0
+        )
+        veto_long_fade = (slow_eff <= -slow_veto_threshold).values
+        veto_short_fade = (slow_eff >= slow_veto_threshold).values
+    else:
+        slow_eff = pd.Series(np.nan, index=result.index)
+        veto_long_fade = np.zeros(n, dtype=bool)
+        veto_short_fade = np.zeros(n, dtype=bool)
+
     up_family = (_TREND_UP_CLEAN, _TREND_UP_CHOPPY)
     down_family = (_TREND_DOWN_CLEAN, _TREND_DOWN_CHOPPY)
     # Choppy "trends" are swings inside a range (big move, low efficiency) —
@@ -266,9 +297,9 @@ def regime_adaptive_core(
             elif allow_short and lab == _TREND_DOWN_CLEAN and breakout_down[i]:
                 pos = -1
             elif lab in mr_family:
-                if mr_long_trig[i]:
+                if mr_long_trig[i] and not veto_long_fade[i]:
                     pos = 2
-                elif allow_short and mr_short_trig[i]:
+                elif allow_short and mr_short_trig[i] and not veto_short_fade[i]:
                     pos = -2
 
         positions[i] = 1 if pos > 0 else (-1 if pos < 0 else 0)
@@ -283,4 +314,5 @@ def regime_adaptive_core(
     result["ra_efficiency"] = efficiency
     result["ra_adx"] = adx
     result["ra_z"] = z
+    result["ra_slow_eff"] = slow_eff
     return result

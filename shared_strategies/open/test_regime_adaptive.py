@@ -162,6 +162,73 @@ def test_impossible_entry_z_blocks_fades():
     assert (out["position"] == 0).all()
 
 
+def make_bear_with_dips(n_legs=8, seed=7):
+    """Persistent downtrend with periodic sharp dips that snap back enough to
+    fire the z-recovery long-fade trigger — the #967 OOS bleed pattern. The
+    slow drift is decisively negative, so the veto must block these fades."""
+    rng = np.random.RandomState(seed)
+    seg = []
+    level = 200.0
+    for _ in range(n_legs):
+        seg += list(level + np.cumsum(rng.randn(20) * 0.2) - np.linspace(0, 4, 20))
+        level -= 4
+        seg += [level - 4, level - 8, level - 12, level - 8, level - 3]
+        level -= 2
+    return np.array(seg, dtype=float)
+
+
+def test_slow_trend_veto_blocks_bear_market_fades():
+    """In a persistent bear, long fades fire with the veto disabled and are
+    blocked once the slow drift opposes them (the #967 follow-up)."""
+    df = make_ohlcv(make_bear_with_dips(), noise=0.4)
+    base = regime_adaptive_core(df, slow_trend_lookback=0, **PIN)
+    vetoed = regime_adaptive_core(
+        df, slow_trend_lookback=60, slow_veto_threshold=0.05, **PIN)
+    base_fades = int((base["signal"] == 1).sum())
+    vetoed_fades = int((vetoed["signal"] == 1).sum())
+    assert base_fades > 0
+    assert vetoed_fades < base_fades
+    # Any surviving long FADE (mr-family label at entry; clean-trend breakouts
+    # are deliberately not vetoed) must not have fired against a vetoing drift.
+    mr_labels = {"ranging_quiet", "ranging_volatile",
+                 "trending_up_choppy", "trending_down_choppy"}
+    surviving = np.where(vetoed["signal"].values == 1)[0]
+    for i in surviving:
+        if vetoed["ra_label"].iloc[i] in mr_labels:
+            assert not (vetoed["ra_slow_eff"].iloc[i] <= -0.05)
+
+
+def test_slow_trend_veto_inverse_blocks_short_fades_in_bull():
+    """Inverse scenario: in a persistent bull with spikes, short fades are
+    blocked by a positive slow drift when shorts are allowed."""
+    closes = make_bear_with_dips()[::-1].copy()
+    df = make_ohlcv(closes, noise=0.4)
+    base = regime_adaptive_core(df, slow_trend_lookback=0, allow_short=True, **PIN)
+    vetoed = regime_adaptive_core(
+        df, slow_trend_lookback=60, slow_veto_threshold=0.05, allow_short=True, **PIN)
+    mr_labels = {"ranging_quiet", "ranging_volatile",
+                 "trending_up_choppy", "trending_down_choppy"}
+    surviving = np.where(vetoed["signal"].values == -1)[0]
+    for i in surviving:
+        # Short FADE entries only — long exits and clean-trend breakout
+        # shorts (not vetoed by design) are excluded.
+        if vetoed["position"].iloc[i] == -1 and vetoed["ra_label"].iloc[i] in mr_labels:
+            assert not (vetoed["ra_slow_eff"].iloc[i] >= 0.05)
+    assert int((vetoed["position"] == -1).sum()) <= int((base["position"] == -1).sum())
+
+
+def test_slow_trend_veto_inactive_in_flat_range():
+    """In a drift-free range the veto must never fire — fade behavior is
+    byte-identical with the veto enabled vs disabled (boundary: a fade buys
+    below the mean by construction, so a price-vs-mean gate would kill all
+    fades; the drift gate must not)."""
+    df = make_ohlcv(make_range_with_swings())
+    off = regime_adaptive_core(df, slow_trend_lookback=0, **PIN)
+    on = regime_adaptive_core(df, slow_trend_lookback=100, slow_veto_threshold=0.05, **PIN)
+    assert (off["signal"].values == on["signal"].values).all()
+    assert (off["position"].values == on["position"].values).all()
+
+
 def test_no_lookahead_future_perturbation():
     """Signals up to bar N must be byte-identical when every row after N is
     rescaled — all inputs are trailing windows."""
