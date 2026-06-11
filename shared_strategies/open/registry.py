@@ -43,6 +43,7 @@ from sweep_squeeze_combo import sweep_squeeze_combo_core
 from adx_trend import adx_trend_core
 from bear_pullback_st import bear_pullback_st_core
 from donchian_breakout import donchian_breakout_core
+from funding_skew import funding_skew_core
 from momentum_pro import momentum_pro_core
 from mean_reversion_pro import mean_reversion_pro_core
 from session_breakout import session_breakout_core
@@ -963,6 +964,23 @@ def delta_neutral_funding_strategy(df: pd.DataFrame,
 
 
 @register(
+    "funding_skew",
+    "Funding Skew \u2014 funding-rate crowding extremes (rolling z-score) with EMA price confirmation: long crowded-short squeezes, short crowded-long breakdowns; flat when funding is unavailable",
+    {
+        "funding_window": 168,
+        "z_entry": 2.0,
+        "z_exit": 0.5,
+        "confirm_ema": 40,
+        "min_abs_rate": 0.00001,
+        "allow_short": True,
+    },
+    platforms=("futures",),
+)
+def funding_skew_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return funding_skew_core(df, **params)
+
+
+@register(
     "donchian_breakout",
     "Donchian Channel Breakout \u2014 turtle-trading style entry on new high/low channel breakouts",
     {"entry_period": 20, "exit_period": 10},
@@ -1089,7 +1107,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "delta_neutral_funding",
-        "donchian_breakout", "session_breakout", "bear_pullback_st",
+        "funding_skew", "donchian_breakout", "session_breakout", "bear_pullback_st",
         "vwap_rejection_st", "momentum_pro", "mean_reversion_pro",
         "consolidation_range", "hold",
     ],

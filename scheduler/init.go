@@ -62,6 +62,7 @@ var knownShortNames = map[string]string{
 	"liquidity_sweeps":      "liqsw",
 	"parabolic_sar":         "psar",
 	"delta_neutral_funding": "dnf",
+	"funding_skew":          "fskew",
 	"supertrend":            "st",
 	"squeeze_momentum":      "sqm",
 	"heikin_ashi_ema":       "hae",
@@ -93,6 +94,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"momentum_pro":        true, // emits short on stacked-bearish-EMA trend-pullback breakdowns
 	"mean_reversion_pro":  true, // emits short on overbought reversion in no-trend regimes
 	"consolidation_range": true, // emits short at the top edge of a consolidation box (range-edge mean-reversion)
+	"funding_skew":        true, // shorts crowded-long funding extremes on EMA breakdown (#960)
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {
@@ -157,6 +159,7 @@ var defaultPerpsStrategies = []stratDef{
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
+	{ID: "funding_skew", ShortName: "fskew"},
 	{ID: "range_scalper", ShortName: "rs"},
 	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
 	{ID: "adx_trend", ShortName: "adxt"},
@@ -181,6 +184,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "parabolic_sar", ShortName: "psar"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
+	{ID: "funding_skew", ShortName: "fskew"},
 	{ID: "range_scalper", ShortName: "rs"},
 	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
 	{ID: "adx_trend", ShortName: "adxt"},

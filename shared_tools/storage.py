@@ -53,6 +53,18 @@ def init_db(db_path: str = DB_PATH):
         CREATE INDEX IF NOT EXISTS idx_ohlcv_lookup
             ON ohlcv(exchange, symbol, timeframe, timestamp);
 
+        CREATE TABLE IF NOT EXISTS funding_rates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            exchange TEXT NOT NULL,
+            coin TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            rate REAL NOT NULL,
+            UNIQUE(exchange, coin, timestamp)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_funding_lookup
+            ON funding_rates(exchange, coin, timestamp);
+
         CREATE TABLE IF NOT EXISTS backtest_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             strategy_name TEXT NOT NULL,
@@ -128,6 +140,45 @@ def load_ohlcv(exchange: str, symbol: str, timeframe: str,
         df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
         df.set_index("datetime", inplace=True)
 
+    return df
+
+
+def store_funding_rates(records: list, exchange: str, coin: str,
+                        db_path: str = DB_PATH):
+    """Store funding-rate snapshots: list of {"rate": float, "time": int(ms)}."""
+    if not records:
+        return
+    conn = get_connection(db_path)
+    conn.executemany(
+        "INSERT OR REPLACE INTO funding_rates (exchange, coin, timestamp, rate)"
+        " VALUES (?, ?, ?, ?)",
+        [(exchange, coin, int(r["time"]), float(r["rate"])) for r in records],
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_funding_rates(exchange: str, coin: str,
+                       start_ts: Optional[int] = None,
+                       end_ts: Optional[int] = None,
+                       db_path: str = DB_PATH) -> pd.DataFrame:
+    """Load funding rates as a DataFrame(timestamp, rate) with a UTC
+    DatetimeIndex, oldest first."""
+    conn = get_connection(db_path)
+    query = "SELECT timestamp, rate FROM funding_rates WHERE exchange=? AND coin=?"
+    params = [exchange, coin]
+    if start_ts is not None:
+        query += " AND timestamp >= ?"
+        params.append(start_ts)
+    if end_ts is not None:
+        query += " AND timestamp <= ?"
+        params.append(end_ts)
+    query += " ORDER BY timestamp ASC"
+    df = pd.read_sql_query(query, conn, params=params)
+    conn.close()
+    if not df.empty:
+        df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+        df.set_index("datetime", inplace=True)
     return df
 
 
