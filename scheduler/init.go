@@ -75,6 +75,7 @@ var knownShortNames = map[string]string{
 	"momentum_pro":          "mompro",
 	"mean_reversion_pro":    "mrpro",
 	"consolidation_range":   "cr",
+	"vol_momentum":          "volmom",
 }
 
 // bidirectionalPerpsStrategies lists strategy IDs that emit signal=-1 as a
@@ -93,6 +94,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"momentum_pro":        true, // emits short on stacked-bearish-EMA trend-pullback breakdowns
 	"mean_reversion_pro":  true, // emits short on overbought reversion in no-trend regimes
 	"consolidation_range": true, // emits short at the top edge of a consolidation box (range-edge mean-reversion)
+	"vol_momentum":        true, // emits short on ATR-normalized negative momentum with efficiency confirmation (#959)
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {
@@ -141,6 +143,7 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "tema_cross", ShortName: "temac"},
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
+	{ID: "vol_momentum", ShortName: "volmom"},
 }
 
 var defaultOptionsStrategies = []stratDef{
@@ -164,6 +167,7 @@ var defaultPerpsStrategies = []stratDef{
 	{ID: "session_breakout", ShortName: "sbo"},
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
+	{ID: "vol_momentum", ShortName: "volmom"},
 }
 
 var defaultFuturesStrategies = []stratDef{
@@ -190,6 +194,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "tema_cross_bd", ShortName: "temacb"},
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
+	{ID: "vol_momentum", ShortName: "volmom"},
 }
 
 // Supported CME futures symbols for the init wizard.
