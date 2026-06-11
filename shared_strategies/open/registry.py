@@ -1160,6 +1160,7 @@ def regime_adaptive_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "efficiency_threshold": 0.5,
         "confirm_buckets": 2,
         "trend_entry": "off",
+        "trend_drift_confirm": 0.10,
         "transition_window": 6,
         "pullback_z": 1.0,
         "fade_labels": "ranging",

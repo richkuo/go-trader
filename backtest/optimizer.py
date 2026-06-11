@@ -506,6 +506,10 @@ DEFAULT_PARAM_RANGES = {
         "confirm_buckets": [1, 2, 3],
         "period": [10, 14],
         "mr_entry_z": [1.75, 2.0, 2.25],
+        # Drift-confirmed trend participation: "breakout" dominates in
+        # trending years (2023/2024), "off" in grind years (2026 OOS) — see
+        # the regime_adaptive_htf module docstring's per-window table.
+        "trend_entry": ["off", "breakout"],
         "slow_trend_lookback": [100],
     },
     "consolidation_range": {

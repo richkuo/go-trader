@@ -180,6 +180,39 @@ def test_trend_breakout_mode_enters_clean_trend():
     assert out["rah_label"].iloc[entries[0]] == "trending_up_clean"
     # Held through the trend: position stays long once entered.
     assert (out["position"].iloc[entries[0] + 1:] == 1).all()
+    # The ramp's slow drift agrees at the entry bar (the gate was satisfied,
+    # not bypassed).
+    assert out["rah_slow_eff"].iloc[entries[0]] >= 0.05
+
+
+def test_trend_drift_confirm_blocks_without_agreeing_drift():
+    """The gate is the fade veto's mirror: an impossible threshold blocks all
+    clean-trend entries on the same frame where the default fires."""
+    df = make_ohlcv(make_htf_clean_uptrend(), noise=0.4)
+    base = regime_adaptive_htf_core(df, trend_entry="breakout",
+                                    breakout_lookback=10, **PIN)
+    gated = regime_adaptive_htf_core(df, trend_entry="breakout",
+                                     breakout_lookback=10,
+                                     trend_drift_confirm=99.0, **PIN)
+    assert (base["signal"] == 1).any()
+    assert (gated["position"] == 0).all()
+    # Fades are untouched by the trend gate: a ranging frame is byte-identical
+    # across trend_drift_confirm values.
+    rdf = make_ohlcv(make_htf_range())
+    a = regime_adaptive_htf_core(rdf, trend_drift_confirm=0.05, **PIN)
+    b = regime_adaptive_htf_core(rdf, trend_drift_confirm=99.0, **PIN)
+    assert (a["signal"].values == b["signal"].values).all()
+
+
+def test_trend_drift_confirm_inactive_when_veto_disabled():
+    """slow_trend_lookback=0 disables the drift series; the trend gate must
+    pass (not block) so short frames / veto-off configs still trend-enter."""
+    df = make_ohlcv(make_htf_clean_uptrend(), noise=0.4)
+    out = regime_adaptive_htf_core(df, trend_entry="breakout",
+                                   breakout_lookback=10,
+                                   slow_trend_lookback=0,
+                                   trend_drift_confirm=99.0, **PIN)
+    assert (out["signal"] == 1).any()
 
 
 def test_trend_transition_mode_enters_at_flip():

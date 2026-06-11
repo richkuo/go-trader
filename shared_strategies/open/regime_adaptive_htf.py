@@ -35,9 +35,26 @@ deliberate than execution; what survived benchmarking is **selectivity**:
 The shipped default is therefore **fade-only in confirmed true ranges**
 (``trend_entry="off"``, ``fade_labels="ranging"``): a z-score recovery fade
 fires only when the confirmed HTF label is ``ranging_quiet`` or
-``ranging_volatile``. Clean-trend entries (breakout / pullback / transition
-variants all benchmarked below the bar) stay available behind ``trend_entry``
-but default off. Crucially, HTF labels make the ranging-only gate *workable*:
+``ranging_volatile``. Clean-trend entries stay available behind
+``trend_entry`` but default off — the choice is regime-dependent, measured
+against the per-window incumbent-median bar on four design windows plus the
+protocol OOS window:
+
+    window               fade-only    breakout + drift confirm 0.10
+    2023 (bull)            +0.27          +1.35
+    2024 (bull)            +0.28          +0.90
+    2025H1 (mixed)         -0.85          -0.28
+    2025H2 (bear-ish IS)   +0.23          +0.32
+    2026 OOS (grind)       -0.32 PASS     -0.78 (bar -0.72)
+
+Trend entries (``trend_entry="breakout"``) require BOTH the confirmed
+clean-trend label and slow-drift agreement at ``trend_drift_confirm`` (the
+fade veto's mirror — confirmed-label trends without sustained drift are the
+false-trend/exhaustion entries that bleed in grind years). That profile
+dominates in trending years and is the validated alternative for bull
+deployments / the optimizer; the default stays fade-only because the #955
+validation bar is judged on the protocol OOS window, where trend entries
+miss the bar. Crucially, HTF labels make the ranging-only gate *workable*:
 #967 had to map choppy-trend labels to fades because a same-timeframe
 big-move label almost always covers the z-recovery bar — but a 6x-slower
 bucket label does not flip on one native recovery bar, so fades in true
@@ -212,6 +229,7 @@ def regime_adaptive_htf_core(
     efficiency_threshold: float = 0.5,
     confirm_buckets: int = 2,
     trend_entry: str = "off",
+    trend_drift_confirm: float = 0.10,
     transition_window: int = 6,
     pullback_z: float = 1.0,
     fade_labels: str = "ranging",
@@ -240,6 +258,9 @@ def regime_adaptive_htf_core(
         "breakout" (prior N-bar extreme), "pullback" (shallow z-dip recovery
         at ``pullback_z``), or "transition" (confirmed label flip itself,
         within ``transition_window`` native bars)
+    trend_drift_confirm : slow-drift agreement required for a clean-trend
+        entry (the fade veto's mirror; same ``slow_eff`` series). Inactive
+        when ``slow_trend_lookback == 0`` or ``trend_entry == "off"``
     transition_window : native bars after a confirmed label flip during which
         ``trend_entry="transition"`` may enter
     pullback_z : shallow recovery band (std devs) for ``trend_entry="pullback"``
@@ -338,10 +359,21 @@ def regime_adaptive_htf_core(
         )
         veto_long_fade = (slow_eff <= -slow_veto_threshold).values
         veto_short_fade = (slow_eff >= slow_veto_threshold).values
+        # Drift CONFIRMATION for trend entries (the veto's mirror): a
+        # clean-trend entry additionally requires the slow drift to agree at
+        # trend_drift_confirm. Confirmed-label trends without sustained drift
+        # are the false-trend/exhaustion entries that bleed in grind years;
+        # real bull/bear legs hold the drift sign for months. NaN warmup
+        # compares False → no trend entries until the slow window primes.
+        drift_ok_long = (slow_eff >= trend_drift_confirm).values
+        drift_ok_short = (slow_eff <= -trend_drift_confirm).values
     else:
         slow_eff = pd.Series(np.nan, index=result.index)
         veto_long_fade = np.zeros(n, dtype=bool)
         veto_short_fade = np.zeros(n, dtype=bool)
+        # Veto disabled ⇒ drift confirmation disabled too (always passes).
+        drift_ok_long = np.ones(n, dtype=bool)
+        drift_ok_short = np.ones(n, dtype=bool)
 
     # ── Forward-only state loop ─────────────────────────────────────────────
     # pos encodes side and logic: 1 trend-long, -1 trend-short, 2 mr-long,
@@ -388,9 +420,9 @@ def regime_adaptive_htf_core(
             else:  # "off" — fade-only
                 trend_long_trig = False
                 trend_short_trig = False
-            if lab == _TREND_UP_CLEAN and trend_long_trig:
+            if lab == _TREND_UP_CLEAN and trend_long_trig and drift_ok_long[i]:
                 pos = 1
-            elif allow_short and lab == _TREND_DOWN_CLEAN and trend_short_trig:
+            elif allow_short and lab == _TREND_DOWN_CLEAN and trend_short_trig and drift_ok_short[i]:
                 pos = -1
             elif lab in fade_family:
                 if mr_long_trig[i] and not veto_long_fade[i]:
