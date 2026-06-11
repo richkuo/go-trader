@@ -167,10 +167,14 @@ func TestSoleOwnerTPPartial_PrefersUserFillsPxOverConfiguredTP(t *testing.T) {
 	if trade.ExchangeOrderID != "999" {
 		t.Errorf("trade.ExchangeOrderID = %q, want %q (from lookup.OID)", trade.ExchangeOrderID, "999")
 	}
-	// Realized PnL = (actualPx - entryPx) * 0.2 - actualFee
-	wantPnL := (actualPx-entryPx)*0.2 - actualFee
-	if math.Abs(trade.RealizedPnL-wantPnL) > 1e-6 {
-		t.Errorf("RealizedPnL = %g, want %g", trade.RealizedPnL, wantPnL)
+	// #954 gross convention: RealizedPnL is the pre-fee slice PnL; the net
+	// (what cash moved by) comes via tradeNetPnL.
+	wantGross := (actualPx - entryPx) * 0.2
+	if !trade.PnLGross || math.Abs(trade.RealizedPnL-wantGross) > 1e-6 {
+		t.Errorf("RealizedPnL = %g (gross=%v), want gross %g", trade.RealizedPnL, trade.PnLGross, wantGross)
+	}
+	if math.Abs(tradeNetPnL(trade)-(wantGross-actualFee)) > 1e-6 {
+		t.Errorf("tradeNetPnL = %g, want %g", tradeNetPnL(trade), wantGross-actualFee)
 	}
 }
 

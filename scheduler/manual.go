@@ -908,6 +908,8 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			PositionID:        pos.TradePositionID,
 			ExchangeOrderID:   a.ExchangeOrderID,
 			ExchangeFee:       a.FillFee,
+			FeeSource:         FeeSourceUserFills,
+			PnLGross:          true,
 			EntryATR:          a.EntryATR,
 			StopLossOID:       a.StopLossOID,
 			StopLossTriggerPx: a.StopLossTriggerPx,
@@ -947,8 +949,10 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			PositionID:      ensurePositionTradeID(a.StrategyID, a.Symbol, pos),
 			ExchangeOrderID: a.ExchangeOrderID,
 			ExchangeFee:     a.FillFee,
+			FeeSource:       FeeSourceUserFills,
 			IsClose:         true,
-			RealizedPnL:     a.RealizedPnL,
+			RealizedPnL:     a.RealizedPnL + a.FillFee, // action PnL is net; gross row adds the fee back
+			PnLGross:        true,
 			Manual:          true,
 		}
 		RecordTrade(ss, trade)
@@ -993,6 +997,8 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			PositionID:      ensurePositionTradeID(a.StrategyID, a.Symbol, pos),
 			ExchangeOrderID: a.ExchangeOrderID,
 			ExchangeFee:     a.FillFee,
+			FeeSource:       FeeSourceUserFills,
+			PnLGross:        true,
 			IsClose:         false,
 			Manual:          true,
 		}

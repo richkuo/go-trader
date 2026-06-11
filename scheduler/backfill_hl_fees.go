@@ -26,6 +26,10 @@ type HLFillSummary struct {
 	Fee            float64 `json:"fee"`
 	ClosedPnLGross float64 `json:"closed_pnl"`
 	Count          int     `json:"count"`
+	// Qty / Px (#954): total filled size and size-weighted average fill price
+	// across the OID's partial fills. Older script versions omit them (0).
+	Qty float64 `json:"qty"`
+	Px  float64 `json:"px"`
 }
 
 // HLUserFillsResult is the stdout envelope from fetch_hl_user_fills.py.
@@ -62,11 +66,17 @@ type TradeBackfillRow struct {
 	Timestamp       time.Time
 	Symbol          string
 	PositionID      string
+	Side            string
+	Quantity        float64
+	Price           float64
 	Value           float64
+	TradeType       string
 	IsClose         bool
 	ExchangeOrderID string
 	ExchangeFee     float64
 	RealizedPnL     float64
+	PnLGross        bool
+	FeeSource       string
 }
 
 // TradeChange describes one trade-row update produced by planBackfillForStrategy.
@@ -162,12 +172,15 @@ func planBackfillForStrategy(
 	// runBackfillHLFees can refuse --apply unless the operator opts in.
 	preReplayCash := initialCapital
 	for _, t := range sortedTrades {
+		if t.TradeType == TradeTypeFunding {
+			continue // funding rows never touch the modeled cash book (#954)
+		}
 		preFee := t.ExchangeFee
-		if preFee == 0 {
+		if preFee == 0 && !t.PnLGross {
 			preFee = math.Abs(t.Value) * HyperliquidTakerFeePct
 		}
 		if t.IsClose {
-			preReplayCash += t.RealizedPnL
+			preReplayCash += tradeBackfillRowNetPnL(t)
 		} else {
 			preReplayCash -= preFee
 		}
@@ -179,9 +192,32 @@ func planBackfillForStrategy(
 
 	cash := initialCapital
 	for _, t := range sortedTrades {
+		if t.TradeType == TradeTypeFunding {
+			continue // funding rows never touch the modeled cash book (#954)
+		}
 		newFee := t.ExchangeFee
 		newPnL := t.RealizedPnL
 		modeledFee := math.Abs(t.Value) * HyperliquidTakerFeePct
+
+		// #954 gross-convention rows are owned by `backfill trade-ledger` —
+		// this legacy fee backfill must not reinterpret their net/gross
+		// semantics. Replay them as-is and skip the rewrite.
+		if t.PnLGross {
+			plan.AlreadyRealFeeCount++
+			plan.Skipped = append(plan.Skipped, SkippedTrade{
+				RowID:     t.RowID,
+				Timestamp: t.Timestamp,
+				Symbol:    t.Symbol,
+				OID:       t.ExchangeOrderID,
+				Reason:    "gross_convention_row",
+			})
+			if t.IsClose {
+				cash += tradeBackfillRowNetPnL(t)
+			} else {
+				cash -= t.ExchangeFee
+			}
+			continue
+		}
 
 		matchAttempted := false
 		matched := false
@@ -390,12 +426,14 @@ func planClosedPositionRecomputes(
 // runBackfill is the dispatcher for `go-trader backfill <subcommand>`.
 func runBackfill(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: go-trader backfill hl-fees [--config scheduler/config.json] (--all | --strategy <id>) [--apply]")
+		fmt.Fprintln(os.Stderr, "Usage: go-trader backfill <hl-fees|trade-ledger> [--config scheduler/config.json] (--all | --strategy <id>) [--apply]")
 		return 2
 	}
 	switch args[0] {
 	case "hl-fees":
 		return runBackfillHLFees(args[1:])
+	case "trade-ledger":
+		return runBackfillTradeLedger(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown backfill target %q\n", args[0])
 		return 2

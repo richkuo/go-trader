@@ -434,8 +434,8 @@ func formatCircuitBreakerTrade(tr Trade) string {
 		details = " (" + truncateCircuitBreakerField(details, 44) + ")"
 	}
 	pnl := ""
-	if tr.IsClose || tr.RealizedPnL != 0 {
-		pnl = " P&L " + formatCBSignedMoney(tr.RealizedPnL)
+	if netPnL := tradeNetPnL(tr); tr.IsClose || netPnL != 0 {
+		pnl = " P&L " + formatCBSignedMoney(netPnL)
 	}
 	return fmt.Sprintf("%s  %s  %s %s %s @ $%s%s%s",
 		tr.Timestamp.UTC().Format("15:04"), kind, tr.Side, formatCBQty(tr.Quantity), tr.Symbol, formatCBPrice(tr.Price), pnl, details)

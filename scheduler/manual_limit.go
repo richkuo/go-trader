@@ -492,6 +492,8 @@ func applyLimitFillProgress(state *AppState, sc StrategyConfig, o PendingLimitOr
 			PositionID:      pos.TradePositionID,
 			ExchangeOrderID: fmt.Sprintf("%d", o.OrderOID),
 			ExchangeFee:     cumFee,
+			FeeSource:       FeeSourceUserFills,
+			PnLGross:        true,
 			EntryATR:        entryATR,
 			Manual:          true,
 		}
@@ -540,6 +542,8 @@ func applyLimitFillProgress(state *AppState, sc StrategyConfig, o PendingLimitOr
 		PositionID:      ensurePositionTradeID(o.StrategyID, o.Symbol, pos),
 		ExchangeOrderID: fmt.Sprintf("%d", o.OrderOID),
 		ExchangeFee:     deltaFee,
+		FeeSource:       FeeSourceUserFills,
+		PnLGross:        true,
 		EntryATR:        pos.EntryATR,
 		Manual:          true,
 	}

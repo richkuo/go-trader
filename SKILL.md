@@ -272,6 +272,7 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
 - **Manual-open queue-failure cleanup (#635)** — when `InsertPendingManualAction` fails after a successful on-chain fill (disk full, DB locked), `attemptManualOpenCleanup` flattens the position via reduce-only market close sized to `fillQty` and cancels SL + TP OIDs in the same call; sized so peer manual/perps positions on the same coin are preserved; skipped under `--record-only`. Cleanup failures notify loudly — operator must flatten manually if both queue insert and cleanup fail
 - **Discord SL line shows ATR multiplier (#638) + ATR before SL ordering (#639)** — open trade DMs and per-position summary extras now read `ATR | SL [×Nmult] | TP[i] | leverage`; sole-owner fixed-ATR stops display the multiplier next to the SL price so operators can confirm the configured `stop_loss_atr_mult` from the alert without checking config
 - **Portfolio peak rebaselined after strategy prune (#650/#653)** — when strategies are removed from config and the service restarts, `rebaselinePortfolioPeakAfterPrune` resets `PortfolioRisk.PeakValue` to the sum of surviving strategies' `RiskState.PeakValue` (falling back to configured `Capital` for cold starts), floored at `computeInitialPortfolioPeak`. Was: stale pre-prune peak survived restart and the first risk-check cycle latched the kill switch immediately on a shrunken book. No action needed — fires automatically on any prune
+- **#954 trade-ledger display PnL + gross convention** — trades rows now store PRE-FEE `realized_pnl` with `exchange_fee` always stamped (`pnl_gross=1`, `fee_source` = `userfills`|`modeled`); HL shared-wallet display values derive from `initial_capital + Σ ledger + owned uPnL` (the wallet balance becomes a pure drift alarm, baseline-anchored on first cycle); hourly funding is booked as `trade_type='funding'` rows split by virtual-qty share; deposits/withdrawals/transfers land in `wallet_transfers`; live flips apportion the single real fill fee across close+open legs (was: full real fee on close + modeled fee on open, overcharging cash); no-mark-price external closes book at AvgCost (zero gross PnL, modeled fee) instead of dropping the row. Prompt the operator to run `./go-trader backfill trade-ledger --all --apply` (daemon stopped) so history is migrated and the drift baseline is meaningful — without it, legacy rows replay under net semantics (correct but fee-lossy for paper opens).
 - **Update.sh hardening (#647/#648)** — `scripts/update.sh` is now the single source of truth for `git pull --ff-only` + `uv sync` + `go build` (under `set -euo pipefail`); both the operator-DM snippet and `applyUpgrade` (auto-update DM path) call it. Fails fast with a friendly error if `uv` is missing on PATH; `applyUpgrade` timeout bumped 180s→300s for cold dep bumps; output tail-trimmed to 1500 chars for DM. External deploy automation (Ansible, image bake) should call this script too
 - **Owner DM on HL TP/SL fill (#661/#663)** — was: reconciler-detected TP/SL fills only surfaced via the next summary post (up to 5 min later). Now: all three reconciler detectors emit an owner DM the same cycle. Default on; disable with top-level `notify_tp_sl_fills: false`. Filled TP tiers also marked `✓` in Discord/Telegram position summaries (#662/#664) — no toggle
 - **Sole-owner TP partial-fill attribution (#670/#672)** — was: non-shared HL perps strategies silently absorbed TP partial fills (no Trade row, no realized PnL credited, no `#T`/W-L update, no owner DM); final-tier flatten was booked at SL trigger price when the auto-cancel hadn't propagated. Now: `tryBookSoleOwnerTPFill` mirrors shared-coin Detector 3 — books partial drift / final-tier flatten at the actual VWAP fill price (or configured TP price as fallback) and emits a TP{n} owner DM. **Full-close attribution requires ALL `TPOIDs[i]==0`** so a residual closed by SL/operator/CB after a prior partial TP defers to the legacy SL branch instead of mis-attributing to the already-booked tier. After recovery booking, `stampSoleOwnerRecoveryTierConsumed` clears that tier's OID and arms `TPArmedTiers` so `hlAttemptCloseFromTPFills` cannot re-book the same TP OID on a later vanish (#758/#760). Fires automatically — no operator action.
@@ -591,6 +592,7 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    ./go-trader manual-cancel <limit-order-id>
    ./go-trader manual-close <strategy-id> [--qty N]
    ./go-trader backfill hl-fees [--strategy <id>|--all] [--apply] [--reset-cash]
+   ./go-trader backfill trade-ledger [--strategy <id>|--all] [--apply] [--reset-cash]
    ./go-trader inspect <strategy-id> [--all] [--json]
    sudo systemctl start|stop|restart|status go-trader
    journalctl -u go-trader -n 50 --no-pager
@@ -713,6 +715,33 @@ Notes:
 - Cash replay divergence > $1 (likely SIGHUP capital top-up) is WARNING and blocks `--apply` unless `--reset-cash` passed.
 - Paper-mode HL strategies skipped (no real OIDs). Manual strategies included.
 - Skip reasons (`missing_oid`, `no_fill_match`, `already_real_fee`) reported per row.
+- Rows already on the #954 gross convention (`pnl_gross=1`) are skipped (`gross_convention_row`) — they belong to `backfill trade-ledger` below.
+
+---
+
+## Backfill Trade Ledger (#954)
+
+Migrates legacy trades rows to the gross-PnL convention and trues fee/price/PnL up to HL `userFills`, so the shared-wallet ledger display path (`initial_capital + Σ ledger + owned uPnL`) reads exchange-accurate values:
+
+```bash
+# Dry run
+./go-trader backfill trade-ledger --all
+./go-trader backfill trade-ledger --strategy hl-btc-momentum
+
+# Apply (stop daemon first)
+sudo systemctl stop go-trader
+./go-trader backfill trade-ledger --all --apply
+sudo systemctl start go-trader
+```
+
+Notes:
+
+- Two passes per row, chronological: (1) legacy `pnl_gross=0` rows migrate net→gross (the fee deducted at booking — stored real fee, else the modeled taker fee — is stamped into `exchange_fee`; close-leg `realized_pnl` gets it added back; `fee_source` records provenance); (2) rows whose OID matches a userFills aggregate get the real fee, fill VWAP price, and exchange gross `closedPnl`.
+- Rows sharing one OID (partial TP legs, flip close+open pairs) apportion the aggregate by quantity share — fee across ALL legs, closedPnl across close legs only.
+- `strategies.cash` and `closed_positions` replayed under net semantics; same `--reset-cash` divergence gate as `backfill hl-fees`.
+- Funding rows (`trade_type='funding'`) are never rewritten and never touch cash.
+- `--apply` resets every shared wallet's ledger drift baseline so the next reconciled cycle re-anchors on the repaired ledger instead of alarming on the correction.
+- Idempotent: a second run over the same fills reports zero changes.
 
 ---
 

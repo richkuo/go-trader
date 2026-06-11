@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -497,11 +498,13 @@ func TestRecordTrade_PersistFailureTriggersWarnHook(t *testing.T) {
 
 // TestExecutePerpsSignal_FlipDoesNotDoubleCountFee pins the policy that when
 // a buy signal encounters an existing short — producing a close-short +
-// open-long pair in memory — only one synthetic leg carries the exchange
-// fee. A single live fill represents one exchange fee; stamping it on both
-// synthetic legs would 2× it in analytics. Summed ExchangeFee across the
-// two persisted rows must equal the one real fee, and the OID must appear
-// on exactly one row.
+// open-long pair in memory — the single real exchange fee is apportioned
+// across both synthetic legs by quantity share (#954). One live fill, one
+// fee: summed ExchangeFee across the two persisted rows must equal it
+// exactly (pre-#954 the close leg took the full real fee AND the open leg
+// deducted an unstamped modeled fee — overcharging the cash book and
+// drifting the trade ledger from the wallet). Both legs stamp the shared
+// flip OID so `backfill trade-ledger` can re-apportion from userFills.
 func TestExecutePerpsSignal_FlipDoesNotDoubleCountFee(t *testing.T) {
 	db := openTestDB(t)
 	prev := tradeRecorder
@@ -562,23 +565,28 @@ func TestExecutePerpsSignal_FlipDoesNotDoubleCountFee(t *testing.T) {
 		totalFee += tr.ExchangeFee
 		if tr.ExchangeOrderID == "99999" {
 			oidHits++
-			closeFee = tr.ExchangeFee
 		}
 		if strings.Contains(tr.Details, "Open long") {
 			openerFee = tr.ExchangeFee
+		} else if tr.IsClose {
+			closeFee = tr.ExchangeFee
+		}
+		if !tr.PnLGross || tr.FeeSource != FeeSourceUserFills {
+			t.Errorf("flip leg %q: gross=%v src=%q, want gross userfills row", tr.Details, tr.PnLGross, tr.FeeSource)
 		}
 	}
-	if totalFee != 0.42 {
+	if math.Abs(totalFee-0.42) > 1e-9 {
 		t.Errorf("sum(ExchangeFee) = %v, want 0.42 (fee double-counted across flip legs)", totalFee)
 	}
-	if oidHits != 1 {
-		t.Errorf("rows with OID=99999 = %d, want 1", oidHits)
+	if oidHits != 2 {
+		t.Errorf("rows with OID=99999 = %d, want 2 (both flip legs share the order)", oidHits)
 	}
-	if closeFee != 0.42 {
-		t.Errorf("close ExchangeFee = %v, want 0.42", closeFee)
+	// Apportioned by qty share of the 0.8 net fill: close 0.5 → 0.2625, open 0.3 → 0.1575.
+	if math.Abs(closeFee-0.2625) > 1e-9 {
+		t.Errorf("close ExchangeFee = %v, want 0.2625 (0.5/0.8 share)", closeFee)
 	}
-	if openerFee != 0 {
-		t.Errorf("opener ExchangeFee = %v, want 0 (open leg uses modeled cash fee)", openerFee)
+	if math.Abs(openerFee-0.1575) > 1e-9 {
+		t.Errorf("opener ExchangeFee = %v, want 0.1575 (0.3/0.8 share)", openerFee)
 	}
 }
 

@@ -520,6 +520,7 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 				r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, pnl),
 			IsClose:           true,
 			RealizedPnL:       pnl,
+			PnLGross:          true, // no fee modeled on assignment: gross == net
 			Regime:            s.Regime,
 			EntryATR:          posEntryATR,
 			StopLossTriggerPx: posStopLossTriggerPx,

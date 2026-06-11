@@ -1178,6 +1178,7 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			Details:           fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f", pos.Side, pnl),
 			IsClose:           true,
 			RealizedPnL:       pnl,
+			PnLGross:          true, // no fee modeled on paper force-close: gross == net
 			Regime:            s.Regime,
 			EntryATR:          pos.EntryATR,
 			StopLossTriggerPx: pos.StopLossTriggerPx,
@@ -1220,6 +1221,7 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			Details:     fmt.Sprintf("Circuit breaker force-close, PnL: $%.2f", pnl),
 			IsClose:     true,
 			RealizedPnL: pnl,
+			PnLGross:    true, // no fee modeled on paper force-close: gross == net
 			Regime:      s.Regime,
 		}
 		RecordTrade(s, trade)

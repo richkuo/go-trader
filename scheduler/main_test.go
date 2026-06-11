@@ -899,8 +899,11 @@ func TestExecuteHyperliquidResult_PaperModeNoExchangeData(t *testing.T) {
 	if tr.ExchangeOrderID != "" {
 		t.Errorf("ExchangeOrderID should be empty in paper mode, got %q", tr.ExchangeOrderID)
 	}
-	if tr.ExchangeFee != 0 {
-		t.Errorf("ExchangeFee should be 0 in paper mode, got %g", tr.ExchangeFee)
+	// #954 gross convention: paper opens stamp the MODELED fee that was
+	// deducted from cash (fee_source distinguishes it from a real fill fee).
+	wantFee := CalculatePlatformSpotFee("hyperliquid", tr.Value)
+	if math.Abs(tr.ExchangeFee-wantFee) > 1e-9 || tr.FeeSource != FeeSourceModeled {
+		t.Errorf("paper open fee = %g (src %q), want modeled %g", tr.ExchangeFee, tr.FeeSource, wantFee)
 	}
 }
 

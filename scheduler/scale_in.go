@@ -321,7 +321,9 @@ func applyPerpsScaleIn(s *StrategyState, sc StrategyConfig, symbol string, addPr
 		TradeType:       scaleInTradeType,
 		Details:         fmt.Sprintf("Scale-in %s %.6f @ $%.2f (add #%d, new qty %.6f, avg $%.2f, fee $%.2f)", pos.Side, addQty, addPrice, pos.ScaleInCount, pos.Quantity, pos.AvgCost, fee),
 		ExchangeOrderID: oid,
-		ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
+		ExchangeFee:     fee,
+		FeeSource:       executionFeeSource(fillFee, useFillFee),
+		PnLGross:        true,
 		IsClose:         false,
 	}
 	trade.Regime = pos.Regime

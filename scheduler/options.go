@@ -264,6 +264,7 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 				Details:     fmt.Sprintf("Close %s PnL=$%.2f", pos.ID, pnl),
 				IsClose:     true,
 				RealizedPnL: pnl,
+				PnLGross:    true, // no fee modeled on option closes: gross == net
 			}
 			trade.Regime = s.Regime
 			RecordTrade(s, trade)
@@ -469,6 +470,7 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 			Details:     fmt.Sprintf("Theta harvest close %s PnL=$%.2f", pos.ID, pnl),
 			IsClose:     true,
 			RealizedPnL: pnl,
+			PnLGross:    true, // no fee modeled on option closes: gross == net
 		}
 		trade.Regime = s.Regime
 		RecordTrade(s, trade)

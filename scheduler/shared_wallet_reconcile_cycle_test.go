@@ -30,6 +30,9 @@ func buildSharedWalletTestState() (*AppState, []StrategyConfig) {
 	return state, strategies
 }
 
+// sdb=nil → the HL wallet uses the #918 capital-weight split fallback (the
+// #954 ledger path needs a StateDB; see shared_wallet_ledger_test.go). The
+// gating/summing contract under test is identical on both paths.
 func TestReconcileSharedWalletDisplayValues_SetsGatesAndSums(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	state, strategies := buildSharedWalletTestState()
@@ -44,7 +47,7 @@ func TestReconcileSharedWalletDisplayValues_SetsGatesAndSums(t *testing.T) {
 		{Coin: "ETH", Size: 2, UnrealizedPnL: -20},
 	}
 
-	results := reconcileSharedWalletDisplayValues(strategies, state, sharedWallets, walletBalances, hlPositions, nil, false)
+	results := reconcileSharedWalletDisplayValues(strategies, state, nil, sharedWallets, walletBalances, hlPositions, nil, false)
 
 	if len(results) != 1 || math.Abs(results[0].Drift) > 0.01 {
 		t.Fatalf("expected 1 result with ~0 drift, got %+v", results)
@@ -100,7 +103,7 @@ func TestReconcileSharedWalletDisplayValues_ManualMemberAttributed(t *testing.T)
 		{Coin: "SOL", Size: 5, UnrealizedPnL: 15}, // manual's on-chain position
 	}
 
-	results := reconcileSharedWalletDisplayValues(strategies, state, sharedWallets, walletBalances, hlPositions, nil, false)
+	results := reconcileSharedWalletDisplayValues(strategies, state, nil, sharedWallets, walletBalances, hlPositions, nil, false)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
@@ -141,7 +144,7 @@ func TestReconcileSharedWalletDisplayValues_OKXPositionsNotFetchedSkips(t *testi
 	walletBalances := map[SharedWalletKey]float64{key: 1000.0}
 
 	// okxPositionsFetched=false → OKX wallet must be skipped.
-	results := reconcileSharedWalletDisplayValues(strategies, state, sharedWallets, walletBalances, nil, nil, false)
+	results := reconcileSharedWalletDisplayValues(strategies, state, nil, sharedWallets, walletBalances, nil, nil, false)
 	if len(results) != 0 {
 		t.Fatalf("expected OKX wallet skipped when positions not fetched, got %d results", len(results))
 	}
@@ -150,7 +153,7 @@ func TestReconcileSharedWalletDisplayValues_OKXPositionsNotFetchedSkips(t *testi
 	}
 
 	// With okxPositionsFetched=true it reconciles.
-	results = reconcileSharedWalletDisplayValues(strategies, state, sharedWallets, walletBalances, nil, nil, true)
+	results = reconcileSharedWalletDisplayValues(strategies, state, nil, sharedWallets, walletBalances, nil, nil, true)
 	if len(results) != 1 || !state.Strategies["okx-a"].SharedWalletValueSet {
 		t.Fatalf("expected OKX reconcile when positions fetched, got %+v", results)
 	}
@@ -165,7 +168,7 @@ func TestReconcileSharedWalletDisplayValues_FetchFailedFallsBack(t *testing.T) {
 	sharedWallets := detectSharedWallets(strategies)
 
 	// Empty walletBalances simulates a failed balance fetch this cycle.
-	results := reconcileSharedWalletDisplayValues(strategies, state, sharedWallets, map[SharedWalletKey]float64{}, nil, nil, false)
+	results := reconcileSharedWalletDisplayValues(strategies, state, nil, sharedWallets, map[SharedWalletKey]float64{}, nil, nil, false)
 
 	if len(results) != 0 {
 		t.Fatalf("expected no drift results when balance missing, got %d", len(results))

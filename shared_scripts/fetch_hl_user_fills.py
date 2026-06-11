@@ -14,7 +14,8 @@ Args:
 
 Stdout (always JSON):
     {
-        "by_oid": {"<oid>": {"fee": float, "closed_pnl": float, "count": int}, ...},
+        "by_oid": {"<oid>": {"fee": float, "closed_pnl": float, "count": int,
+                             "qty": float, "px": float}, ...},
         "fill_count": int,
         "page_count": int,
         "account_address": "0x...",
@@ -161,11 +162,18 @@ def main():
                 key = str(oid)
                 entry = by_oid.get(key)
                 if entry is None:
-                    entry = {"fee": 0.0, "closed_pnl": 0.0, "count": 0}
+                    entry = {"fee": 0.0, "closed_pnl": 0.0, "count": 0,
+                             "qty": 0.0, "_px_num": 0.0}
                     by_oid[key] = entry
                 entry["fee"] += fee
                 entry["closed_pnl"] += closed_pnl
                 entry["count"] += 1
+                # Size-weighted average fill price across partial fills of the
+                # same OID (#954 `backfill trade-ledger` rewrites trades.price
+                # from this). Finalized into "px" before emit.
+                sz = _safe_float(f.get("sz"))
+                entry["qty"] += sz
+                entry["_px_num"] += sz * _safe_float(f.get("px"))
             fill_count += 1
             new_in_page += 1
             if ts > next_cursor:
@@ -197,6 +205,11 @@ def main():
 
         if cursor_ms > end_ms:
             break
+
+    for entry in by_oid.values():
+        num = entry.pop("_px_num", 0.0)
+        qty = entry.get("qty", 0.0)
+        entry["px"] = (num / qty) if qty > 0 else 0.0
 
     _emit({
         "by_oid": by_oid,

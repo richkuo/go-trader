@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"sort"
@@ -152,41 +153,7 @@ func reconcileSharedWalletMemberValues(
 	for _, id := range members {
 		memberSet[id] = true
 	}
-	ownedUPnL := make(map[string]float64, len(members))
-	attributedUPnL := 0.0
-	var orphanCoins []string
-	// Deterministic coin order for stable rounding behavior.
-	coins := make([]string, 0, len(uPnLByCoin))
-	for coin := range uPnLByCoin {
-		coins = append(coins, coin)
-	}
-	sort.Strings(coins)
-	for _, coin := range coins {
-		pnl := uPnLByCoin[coin]
-		owners := virtualQty[coin]
-		if len(owners) == 0 {
-			orphanCoins = append(orphanCoins, coin)
-			continue // orphan: no member holds this coin virtually
-		}
-		sumQty := 0.0
-		for id, qty := range owners {
-			if memberSet[id] && qty > 0 {
-				sumQty += qty
-			}
-		}
-		if sumQty <= 0 {
-			orphanCoins = append(orphanCoins, coin)
-			continue // owners present but all non-member / non-positive → orphan
-		}
-		for id, qty := range owners {
-			if !memberSet[id] || qty <= 0 {
-				continue
-			}
-			share := (qty / sumQty) * pnl
-			ownedUPnL[id] += share
-			attributedUPnL += share
-		}
-	}
+	ownedUPnL, _, orphanCoins := attributeSharedWalletUPnL(memberSet, uPnLByCoin, virtualQty)
 
 	// Raw (un-rounded) per-member values. Σ raw = base + attributedUPnL
 	// = accountBalance - (totalUPnL - attributedUPnL) = accountBalance - drift.
@@ -220,6 +187,129 @@ func reconcileSharedWalletMemberValues(
 	}
 
 	return sharedWalletReconcileResult{Values: values, Drift: drift, OrphanCoins: orphanCoins}
+}
+
+// attributeSharedWalletUPnL splits each coin's exchange-reported unrealized
+// PnL across the members that virtually own it (by virtual-quantity share —
+// mirrors hyperliquidKillSwitchFillShare). Coins with on-chain uPnL but no
+// positive-qty member owner are returned as sorted orphanCoins; their PnL is
+// excluded from attributedUPnL and surfaces in the caller's drift.
+func attributeSharedWalletUPnL(
+	memberSet map[string]bool,
+	uPnLByCoin map[string]float64,
+	virtualQty map[string]map[string]float64,
+) (ownedUPnL map[string]float64, attributedUPnL float64, orphanCoins []string) {
+	ownedUPnL = make(map[string]float64, len(memberSet))
+	// Deterministic coin order for stable rounding behavior.
+	coins := make([]string, 0, len(uPnLByCoin))
+	for coin := range uPnLByCoin {
+		coins = append(coins, coin)
+	}
+	sort.Strings(coins)
+	for _, coin := range coins {
+		pnl := uPnLByCoin[coin]
+		owners := virtualQty[coin]
+		if len(owners) == 0 {
+			orphanCoins = append(orphanCoins, coin)
+			continue // orphan: no member holds this coin virtually
+		}
+		sumQty := 0.0
+		for id, qty := range owners {
+			if memberSet[id] && qty > 0 {
+				sumQty += qty
+			}
+		}
+		if sumQty <= 0 {
+			orphanCoins = append(orphanCoins, coin)
+			continue // owners present but all non-member / non-positive → orphan
+		}
+		for id, qty := range owners {
+			if !memberSet[id] || qty <= 0 {
+				continue
+			}
+			share := (qty / sumQty) * pnl
+			ownedUPnL[id] += share
+			attributedUPnL += share
+		}
+	}
+	return ownedUPnL, attributedUPnL, orphanCoins
+}
+
+// ledgerWalletInputs feeds ledgerSharedWalletMemberValues — the #954
+// trade-ledger replacement for the capital-weight split on Hyperliquid
+// shared wallets. All fields are point-in-time snapshots; the function is
+// pure (no state mutation, no I/O).
+type ledgerWalletInputs struct {
+	Members     []string
+	InitialByID map[string]float64 // operator-set starting capital (EffectiveInitialCapital)
+	LedgerByID  map[string]float64 // Σ tradeLedgerDelta per member (close net PnL − open fees + funding)
+	Positions   []SharedWalletPosition
+	VirtualQty  map[string]map[string]float64
+	// AccountBalance is the real wallet equity (inclusive of unrealized PnL).
+	AccountBalance float64
+	// NonTradeFlows is Σ wallet_transfers.amount_usd — deposits, withdrawals,
+	// transfers, and orphaned funding since the ledger watermarks were set.
+	NonTradeFlows float64
+	// BaselineOffset/BaselineSet anchor the drift at adoption time so history
+	// predating the ledger (or repaired by `backfill trade-ledger`) reads as
+	// zero drift. When !BaselineSet the caller stores RawDrift as the new
+	// baseline and reports zero.
+	BaselineOffset float64
+	BaselineSet    bool
+}
+
+// ledgerSharedWalletMemberValues derives each member's display value from the
+// local trades ledger instead of splitting the wallet balance (#954):
+//
+//	value_i = initial_capital_i + ledger_i + ownedUPnL_i
+//
+// where ledger_i is the strategy's cumulative trades-ledger delta (close-leg
+// net PnL − open-leg fees + funding payments) and ownedUPnL_i the real
+// unrealized PnL of the positions it owns (same attribution as #918/#920).
+// Capital weight no longer enters the display number; an idle member's value
+// no longer inherits drift from an active peer's trading.
+//
+// The wallet balance becomes a pure drift alarm:
+//
+//	rawDrift = balance − Σ value_i − NonTradeFlows
+//	Drift    = rawDrift − BaselineOffset
+//
+// In steady state rawDrift−baseline ≈ 0; persistent non-zero drift means the
+// ledger is missing or mis-pricing fills (lost rows, modeled-vs-real fee gap,
+// mark-based close px) or an on-chain position is unowned (OrphanCoins names
+// those). Unlike the #918 split, member values do NOT sum to the balance by
+// construction — that independence is what makes the alarm able to see
+// ledger errors at all.
+func ledgerSharedWalletMemberValues(in ledgerWalletInputs) (sharedWalletReconcileResult, float64) {
+	values := make(map[string]float64, len(in.Members))
+	memberSet := make(map[string]bool, len(in.Members))
+	for _, id := range in.Members {
+		memberSet[id] = true
+	}
+
+	uPnLByCoin := make(map[string]float64)
+	for _, p := range in.Positions {
+		uPnLByCoin[p.Coin] += p.UnrealizedPnL
+	}
+	ownedUPnL, _, orphanCoins := attributeSharedWalletUPnL(memberSet, uPnLByCoin, in.VirtualQty)
+
+	rawSum := 0.0
+	ordered := append([]string(nil), in.Members...)
+	sort.Strings(ordered)
+	for _, id := range ordered {
+		v := in.InitialByID[id] + in.LedgerByID[id] + ownedUPnL[id]
+		rawSum += v
+		values[id] = roundCents(v)
+	}
+
+	rawDrift := in.AccountBalance - rawSum - in.NonTradeFlows
+	drift := rawDrift
+	if in.BaselineSet {
+		drift = rawDrift - in.BaselineOffset
+	} else {
+		drift = 0 // first reconciled cycle: caller stores rawDrift as baseline
+	}
+	return sharedWalletReconcileResult{Values: values, Drift: drift, OrphanCoins: orphanCoins}, rawDrift
 }
 
 // roundCents rounds a dollar amount to the nearest cent.
@@ -265,9 +355,18 @@ type sharedWalletDriftResult struct {
 // reports whether the OKX position fetch succeeded this cycle; when it did not,
 // OKX wallets are skipped (members fall back to PortfolioValue) rather than
 // reconciled with U=0, which would skew each member's split for one cycle.
+//
+// #954 path split: Hyperliquid wallets derive member values from the local
+// trades ledger (ledgerSharedWalletMemberValues; the wallet balance is a pure
+// drift alarm, anchored by the wallet's stored baseline offset). OKX wallets
+// keep the #918 capital-weight split until the ledger path is extended there.
+// sdb supplies the per-member ledger sums + non-trade flows; when it is nil
+// or a ledger read fails, HL wallets fall back to the split path for the
+// cycle (display stays populated, WARN logged) rather than dropping rows.
 func reconcileSharedWalletDisplayValues(
 	strategies []StrategyConfig,
 	state *AppState,
+	sdb *StateDB,
 	sharedWallets map[SharedWalletKey][]string,
 	walletBalances map[SharedWalletKey]float64,
 	hlPositions []HLPosition,
@@ -326,61 +425,15 @@ func reconcileSharedWalletDisplayValues(
 			continue // no position source wired for this platform yet
 		}
 
-		// Fold in same-account live HL manual strategies (detectSharedWallets is
-		// perps-only, but their on-chain positions are in the snapshot above).
-		members := memberIDs
-		if manualIDs := sameAccountLiveManualMembers(key, strategies); len(manualIDs) > 0 {
-			seen := make(map[string]bool, len(members))
-			for _, id := range members {
-				seen[id] = true
-			}
-			members = append([]string(nil), memberIDs...)
-			for _, id := range manualIDs {
-				if !seen[id] {
-					members = append(members, id)
-				}
-			}
-		}
+		members := sharedWalletMembersWithManual(key, memberIDs, strategies)
+		capitalByID, virtualQty := buildSharedWalletBooks(key, members, byID, state)
 
-		capitalByID := make(map[string]float64, len(members))
-		virtualQty := make(map[string]map[string]float64)
-		for _, id := range members {
-			sc, ok := byID[id]
-			if !ok {
-				continue
-			}
-			ss := state.Strategies[id]
-			capitalByID[id] = EffectiveInitialCapital(sc, ss)
-			if ss == nil {
-				continue
-			}
-			// posKey is the config symbol the strategy keys its virtual
-			// position under; coin is its upper-case form, matching positions[].
-			// HL manual keys by sc.Symbol; perps/OKX by the args symbol.
-			var posKey string
-			switch key.Platform {
-			case "hyperliquid":
-				if sc.Type == "manual" {
-					posKey = sc.Symbol
-				} else {
-					posKey = hyperliquidSymbol(sc.Args)
-				}
-			case "okx":
-				posKey = okxSymbol(sc.Args)
-			}
-			if posKey == "" {
-				continue
-			}
-			coin := strings.ToUpper(strings.TrimSpace(posKey))
-			if pos, pok := ss.Positions[posKey]; pok && pos != nil && pos.Quantity > 0 {
-				if virtualQty[coin] == nil {
-					virtualQty[coin] = make(map[string]float64)
-				}
-				virtualQty[coin][id] = pos.Quantity
-			}
+		var res sharedWalletReconcileResult
+		if key.Platform == "hyperliquid" {
+			res = reconcileHLWalletViaLedger(sdb, key, members, capitalByID, positions, virtualQty, bal)
+		} else {
+			res = reconcileSharedWalletMemberValues(members, capitalByID, positions, virtualQty, bal)
 		}
-
-		res := reconcileSharedWalletMemberValues(members, capitalByID, positions, virtualQty, bal)
 		memberSum := 0.0
 		for _, id := range members {
 			ss := state.Strategies[id]
@@ -400,6 +453,136 @@ func reconcileSharedWalletDisplayValues(
 		})
 	}
 	return results
+}
+
+// sharedWalletMembersWithManual folds same-account live HL manual strategies
+// into a wallet's perps member list (detectSharedWallets is perps-only, but
+// their on-chain positions are in the same clearinghouseState snapshot).
+func sharedWalletMembersWithManual(key SharedWalletKey, memberIDs []string, strategies []StrategyConfig) []string {
+	manualIDs := sameAccountLiveManualMembers(key, strategies)
+	if len(manualIDs) == 0 {
+		return memberIDs
+	}
+	seen := make(map[string]bool, len(memberIDs))
+	for _, id := range memberIDs {
+		seen[id] = true
+	}
+	members := append([]string(nil), memberIDs...)
+	for _, id := range manualIDs {
+		if !seen[id] {
+			members = append(members, id)
+		}
+	}
+	return members
+}
+
+// buildSharedWalletBooks snapshots each member's starting capital and virtual
+// position quantity (coin → memberID → qty>0). posKey is the config symbol
+// the strategy keys its virtual position under; the coin is its upper-case
+// form, matching the SharedWalletPosition coins. HL manual keys by sc.Symbol;
+// perps/OKX by the args symbol. Used by both the display reconcile and the
+// wallet-ledger funding attribution (#954).
+func buildSharedWalletBooks(
+	key SharedWalletKey,
+	members []string,
+	byID map[string]StrategyConfig,
+	state *AppState,
+) (map[string]float64, map[string]map[string]float64) {
+	capitalByID := make(map[string]float64, len(members))
+	virtualQty := make(map[string]map[string]float64)
+	for _, id := range members {
+		sc, ok := byID[id]
+		if !ok {
+			continue
+		}
+		ss := state.Strategies[id]
+		capitalByID[id] = EffectiveInitialCapital(sc, ss)
+		if ss == nil {
+			continue
+		}
+		var posKey string
+		switch key.Platform {
+		case "hyperliquid":
+			if sc.Type == "manual" {
+				posKey = sc.Symbol
+			} else {
+				posKey = hyperliquidSymbol(sc.Args)
+			}
+		case "okx":
+			posKey = okxSymbol(sc.Args)
+		}
+		if posKey == "" {
+			continue
+		}
+		coin := strings.ToUpper(strings.TrimSpace(posKey))
+		if pos, pok := ss.Positions[posKey]; pok && pos != nil && pos.Quantity > 0 {
+			if virtualQty[coin] == nil {
+				virtualQty[coin] = make(map[string]float64)
+			}
+			virtualQty[coin][id] = pos.Quantity
+		}
+	}
+	return capitalByID, virtualQty
+}
+
+// reconcileHLWalletViaLedger derives a Hyperliquid wallet's member values from
+// the trades ledger (#954) and anchors the drift baseline on first contact.
+// Any ledger read failure falls back to the #918 capital-weight split for the
+// cycle so operator rows stay populated — the fallback Drift then measures
+// orphan uPnL (split semantics), which stays within tolerance in normal
+// operation, so a transient DB error does not fire a false ledger-drift alarm.
+func reconcileHLWalletViaLedger(
+	sdb *StateDB,
+	key SharedWalletKey,
+	members []string,
+	capitalByID map[string]float64,
+	positions []SharedWalletPosition,
+	virtualQty map[string]map[string]float64,
+	bal float64,
+) sharedWalletReconcileResult {
+	fallback := func(why string, err error) sharedWalletReconcileResult {
+		fmt.Printf("[WARN] shared-wallet %s: ledger display path unavailable (%s: %v) — capital-weight split fallback this cycle\n",
+			sharedWalletKeyLabel(key), why, err)
+		return reconcileSharedWalletMemberValues(members, capitalByID, positions, virtualQty, bal)
+	}
+	if sdb == nil {
+		return fallback("no state db", fmt.Errorf("sdb nil"))
+	}
+	ledgerByID, err := sdb.LedgerNetByStrategy(members)
+	if err != nil {
+		return fallback("ledger sums", err)
+	}
+	flows, err := sdb.SumWalletTransfers(key.Platform, key.Account)
+	if err != nil {
+		return fallback("transfer sum", err)
+	}
+	st, _, err := sdb.GetWalletLedgerState(key.Platform, key.Account)
+	if err != nil {
+		return fallback("ledger state", err)
+	}
+	res, rawDrift := ledgerSharedWalletMemberValues(ledgerWalletInputs{
+		Members:        members,
+		InitialByID:    capitalByID,
+		LedgerByID:     ledgerByID,
+		Positions:      positions,
+		VirtualQty:     virtualQty,
+		AccountBalance: bal,
+		NonTradeFlows:  flows,
+		BaselineOffset: st.BaselineOffset,
+		BaselineSet:    st.BaselineSet,
+	})
+	if !st.BaselineSet {
+		st.BaselineOffset = rawDrift
+		st.BaselineSet = true
+		if err := sdb.UpsertWalletLedgerState(key.Platform, key.Account, st); err != nil {
+			fmt.Printf("[WARN] shared-wallet %s: baseline store failed: %v — will recompute next cycle\n",
+				sharedWalletKeyLabel(key), err)
+		} else {
+			fmt.Printf("[shared-wallet] %s: ledger drift baseline set to $%+.2f (balance $%.2f vs ledger-derived $%.2f + flows $%.2f)\n",
+				sharedWalletKeyLabel(key), rawDrift, bal, bal-rawDrift-flows, flows)
+		}
+	}
+	return res
 }
 
 // displayStrategyValue returns the value to SHOW operators for a strategy: the

@@ -175,7 +175,9 @@ CREATE TABLE IF NOT EXISTS trades (
     stop_loss_atr_mult REAL,
     tp_tiers_json TEXT NOT NULL DEFAULT '',
     stop_loss_oid INTEGER NOT NULL DEFAULT 0,
-    tp_oids_json TEXT NOT NULL DEFAULT ''
+    tp_oids_json TEXT NOT NULL DEFAULT '',
+    pnl_gross INTEGER NOT NULL DEFAULT 0,
+    fee_source TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy_id);
@@ -233,6 +235,38 @@ CREATE TABLE IF NOT EXISTS pending_manual_actions (
     is_full_close INTEGER NOT NULL DEFAULT 0,
     tp_oids_json TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
+);
+
+-- #954: per-wallet ledger ingestion state for shared on-exchange accounts.
+-- Watermarks bound the userFunding / userNonFundingLedgerUpdates fetch windows;
+-- baseline_offset_usd zeroes the ledger-vs-balance drift at adoption time so the
+-- alarm watches NEW divergence only (history before adoption lives in neither
+-- the trades ledger nor wallet_transfers). baseline_set=0 forces a recompute on
+-- the next reconciled cycle (also reset by 'backfill trade-ledger --apply').
+CREATE TABLE IF NOT EXISTS wallet_ledger_state (
+    platform TEXT NOT NULL,
+    account TEXT NOT NULL,
+    funding_since_ms INTEGER NOT NULL DEFAULT 0,
+    transfers_since_ms INTEGER NOT NULL DEFAULT 0,
+    baseline_offset_usd REAL NOT NULL DEFAULT 0,
+    baseline_set INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (platform, account)
+);
+
+-- #954: non-trade cash flows that move the wallet balance but belong to no
+-- strategy: deposits, withdrawals, class/internal/sub-account transfers, and
+-- funding payments on coins no member owns ("funding_orphan"). amount_usd is
+-- SIGNED from the perps account's perspective (+ = balance increased). The
+-- drift comparison subtracts SUM(amount_usd) so these flows never read as
+-- accounting bugs. dedup_id is the exchange event identity (hash + kind).
+CREATE TABLE IF NOT EXISTS wallet_transfers (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL,
+    account TEXT NOT NULL,
+    time_ms INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    amount_usd REAL NOT NULL,
+    dedup_id TEXT NOT NULL UNIQUE
 );
 
 CREATE TABLE IF NOT EXISTS pending_limit_orders (
@@ -389,6 +423,16 @@ func (sdb *StateDB) migrateSchema() error {
 		// #873: durable resize-pending flag so a restart between an add and the
 		// deferred trailing-SL re-size still grows the on-chain stop next cycle.
 		"ALTER TABLE positions ADD COLUMN scale_in_resize_pending INTEGER NOT NULL DEFAULT 0",
+		// #954 gross PnL convention marker + fee provenance. pnl_gross=1 rows
+		// store the PRE-FEE realized PnL in realized_pnl with the deducted fee
+		// always stamped in exchange_fee; legacy rows (0) store net PnL and
+		// stamp exchange_fee only when a real fill fee was captured. All sums
+		// must go through tradeNetPnLSQL / tradeLedgerDeltaSQL (trade_pnl.go)
+		// so the two conventions never mix. fee_source records provenance:
+		// 'userfills' (real exchange fee) vs 'modeled' (taker-rate estimate) —
+		// `backfill trade-ledger` targets modeled rows for repair.
+		"ALTER TABLE trades ADD COLUMN pnl_gross INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE trades ADD COLUMN fee_source TEXT NOT NULL DEFAULT ''",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -699,13 +743,13 @@ func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
 		isManual = 1
 	}
 	_, err := sdb.db.Exec(`INSERT INTO trades
-			(strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_oid, stop_loss_trigger_px, tp_oids_json, manual, stop_loss_atr_mult, tp_tiers_json)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_oid, stop_loss_trigger_px, tp_oids_json, manual, stop_loss_atr_mult, tp_tiers_json, pnl_gross, fee_source)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strategyID, formatTime(trade.Timestamp), trade.Symbol, trade.PositionID, trade.Side,
 		trade.Quantity, trade.Price, trade.Value, trade.TradeType, trade.Details,
 		trade.ExchangeOrderID, trade.ExchangeFee, isClose, trade.RealizedPnL, trade.Regime,
 		trade.EntryATR, trade.StopLossOID, trade.StopLossTriggerPx, marshalTPOIDsJSON(trade.TPOIDs), isManual,
-		nullableFloat64(trade.StopLossATRMult), trade.TPTiersJSON)
+		nullableFloat64(trade.StopLossATRMult), trade.TPTiersJSON, boolToInt(trade.PnLGross), trade.FeeSource)
 	if err != nil {
 		return fmt.Errorf("insert trade for %s: %w", strategyID, err)
 	}
@@ -720,7 +764,7 @@ func (sdb *StateDB) RecentTrades(since time.Time, limit int) ([]Trade, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
-	rows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json
+	rows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
 		FROM trades WHERE timestamp >= ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, formatTime(since), limit)
 	if err != nil {
 		return nil, fmt.Errorf("query recent trades: %w", err)
@@ -730,15 +774,16 @@ func (sdb *StateDB) RecentTrades(since time.Time, limit int) ([]Trade, error) {
 	for rows.Next() {
 		var tr Trade
 		var tsStr string
-		var isCloseInt, isManualInt int
+		var isCloseInt, isManualInt, pnlGrossInt int
 		var tpOIDsJSON string
 		var slATRMult sql.NullFloat64
-		if err := rows.Scan(&tsStr, &tr.StrategyID, &tr.Symbol, &tr.PositionID, &tr.Side, &tr.Quantity, &tr.Price, &tr.Value, &tr.TradeType, &tr.Details, &tr.ExchangeOrderID, &tr.ExchangeFee, &isCloseInt, &tr.RealizedPnL, &tr.Regime, &tr.EntryATR, &tr.StopLossOID, &tr.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &tr.TPTiersJSON); err != nil {
+		if err := rows.Scan(&tsStr, &tr.StrategyID, &tr.Symbol, &tr.PositionID, &tr.Side, &tr.Quantity, &tr.Price, &tr.Value, &tr.TradeType, &tr.Details, &tr.ExchangeOrderID, &tr.ExchangeFee, &isCloseInt, &tr.RealizedPnL, &tr.Regime, &tr.EntryATR, &tr.StopLossOID, &tr.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &tr.TPTiersJSON, &pnlGrossInt, &tr.FeeSource); err != nil {
 			return nil, fmt.Errorf("scan recent trade: %w", err)
 		}
 		tr.Timestamp = parseTime(tsStr)
 		tr.IsClose = isCloseInt != 0
 		tr.Manual = isManualInt != 0
+		tr.PnLGross = pnlGrossInt != 0
 		tr.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
 		if slATRMult.Valid {
 			v := slATRMult.Float64
@@ -764,7 +809,7 @@ func (sdb *StateDB) RecentTradesForStrategy(strategyID string, limit int) ([]Tra
 	if limit <= 0 {
 		return nil, nil
 	}
-	rows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json
+	rows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
 		FROM trades WHERE strategy_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, strategyID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query recent trades for %s: %w", strategyID, err)
@@ -774,15 +819,16 @@ func (sdb *StateDB) RecentTradesForStrategy(strategyID string, limit int) ([]Tra
 	for rows.Next() {
 		var tr Trade
 		var tsStr string
-		var isCloseInt, isManualInt int
+		var isCloseInt, isManualInt, pnlGrossInt int
 		var tpOIDsJSON string
 		var slATRMult sql.NullFloat64
-		if err := rows.Scan(&tsStr, &tr.StrategyID, &tr.Symbol, &tr.PositionID, &tr.Side, &tr.Quantity, &tr.Price, &tr.Value, &tr.TradeType, &tr.Details, &tr.ExchangeOrderID, &tr.ExchangeFee, &isCloseInt, &tr.RealizedPnL, &tr.Regime, &tr.EntryATR, &tr.StopLossOID, &tr.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &tr.TPTiersJSON); err != nil {
+		if err := rows.Scan(&tsStr, &tr.StrategyID, &tr.Symbol, &tr.PositionID, &tr.Side, &tr.Quantity, &tr.Price, &tr.Value, &tr.TradeType, &tr.Details, &tr.ExchangeOrderID, &tr.ExchangeFee, &isCloseInt, &tr.RealizedPnL, &tr.Regime, &tr.EntryATR, &tr.StopLossOID, &tr.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &tr.TPTiersJSON, &pnlGrossInt, &tr.FeeSource); err != nil {
 			return nil, fmt.Errorf("scan recent trade for %s: %w", strategyID, err)
 		}
 		tr.Timestamp = parseTime(tsStr)
 		tr.IsClose = isCloseInt != 0
 		tr.Manual = isManualInt != 0
+		tr.PnLGross = pnlGrossInt != 0
 		tr.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
 		if slATRMult.Valid {
 			v := slATRMult.Float64
@@ -1038,8 +1084,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	//    failed, even if later-timestamped rows were persisted successfully
 	//    (fixes the MAX(timestamp) dedup gap that would silently drop
 	//    out-of-order retries).
-	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_oid, stop_loss_trigger_px, tp_oids_json, manual, stop_loss_atr_mult, tp_tiers_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_oid, stop_loss_trigger_px, tp_oids_json, manual, stop_loss_atr_mult, tp_tiers_json, pnl_gross, fee_source)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare trade insert: %w", err)
 	}
@@ -1067,7 +1113,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			if t.Manual {
 				isManual = 1
 			}
-			if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL, t.Regime, t.EntryATR, t.StopLossOID, t.StopLossTriggerPx, marshalTPOIDsJSON(t.TPOIDs), isManual, nullableFloat64(t.StopLossATRMult), t.TPTiersJSON); err != nil {
+			if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL, t.Regime, t.EntryATR, t.StopLossOID, t.StopLossTriggerPx, marshalTPOIDsJSON(t.TPOIDs), isManual, nullableFloat64(t.StopLossATRMult), t.TPTiersJSON, boolToInt(t.PnLGross), t.FeeSource); err != nil {
 				return fmt.Errorf("insert trade for %s: %w", s.ID, err)
 			}
 			flushed = append(flushed, trackedFlush{strat: s, index: i})
@@ -1498,7 +1544,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 
 	// 5. Load most recent 1000 trades per strategy (full history stays in SQLite).
 	for id, s := range state.Strategies {
-		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json
+		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
 			FROM trades WHERE strategy_id = ? ORDER BY timestamp ASC`, id)
 		if err != nil {
 			return nil, fmt.Errorf("load trades for %s: %w", id, err)
@@ -1507,16 +1553,17 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		for tradeRows.Next() {
 			var t Trade
 			var tsStr string
-			var isCloseInt, isManualInt int
+			var isCloseInt, isManualInt, pnlGrossInt int
 			var tpOIDsJSON string
 			var slATRMult sql.NullFloat64
-			if err := tradeRows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossOID, &t.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &t.TPTiersJSON); err != nil {
+			if err := tradeRows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossOID, &t.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &t.TPTiersJSON, &pnlGrossInt, &t.FeeSource); err != nil {
 				tradeRows.Close()
 				return nil, fmt.Errorf("scan trade: %w", err)
 			}
 			t.Timestamp = parseTime(tsStr)
 			t.IsClose = isCloseInt != 0
 			t.Manual = isManualInt != 0
+			t.PnLGross = pnlGrossInt != 0
 			t.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
 			if slATRMult.Valid {
 				v := slATRMult.Float64
@@ -1624,7 +1671,7 @@ func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, erro
 	// legs, which a scale-in never is).
 	openRows, err := sdb.db.Query(`SELECT strategy_id, COUNT(*)
 		FROM trades
-		WHERE is_close = 0 AND trade_type <> 'scale_in'
+		WHERE is_close = 0 AND trade_type NOT IN ('scale_in', 'funding')
 		GROUP BY strategy_id`)
 	if err != nil {
 		return nil, fmt.Errorf("query lifetime open counts: %w", err)
@@ -1656,7 +1703,7 @@ func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, erro
 					THEN 'legacy:' || rowid
 					ELSE position_id
 				END AS pkey,
-				SUM(realized_pnl) AS net_pnl
+				SUM` + tradeNetPnLSQL + ` AS net_pnl
 			FROM trades
 			WHERE is_close = 1
 			GROUP BY strategy_id, pkey
@@ -1699,7 +1746,7 @@ func (sdb *StateDB) LifetimeTradeStatsForStrategy(strategyID string) (LifetimeTr
 	// position, not new round-trips (mirrors LifetimeTradeStatsAll).
 	if err := sdb.db.QueryRow(`SELECT COUNT(*)
 		FROM trades
-		WHERE strategy_id = ? AND is_close = 0 AND trade_type <> 'scale_in'`, strategyID).Scan(&opens); err != nil {
+		WHERE strategy_id = ? AND is_close = 0 AND trade_type NOT IN ('scale_in', 'funding')`, strategyID).Scan(&opens); err != nil {
 		return LifetimeTradeStats{}, fmt.Errorf("query lifetime open count for %s: %w", strategyID, err)
 	}
 	out.PositionsOpened = int(opens.Int64)
@@ -1715,7 +1762,7 @@ func (sdb *StateDB) LifetimeTradeStatsForStrategy(strategyID string) (LifetimeTr
 					THEN 'legacy:' || rowid
 					ELSE position_id
 				END AS pkey,
-				SUM(realized_pnl) AS net_pnl
+				SUM`+tradeNetPnLSQL+` AS net_pnl
 			FROM trades
 			WHERE strategy_id = ? AND is_close = 1
 			GROUP BY pkey
@@ -1767,7 +1814,7 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 		limit = 500
 	}
 
-	query := fmt.Sprintf("SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json FROM trades %s ORDER BY timestamp DESC LIMIT ? OFFSET ?", whereClause)
+	query := fmt.Sprintf("SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source FROM trades %s ORDER BY timestamp DESC LIMIT ? OFFSET ?", whereClause)
 	queryArgs := append(args, limit, offset)
 	rows, err := sdb.db.Query(query, queryArgs...)
 	if err != nil {
@@ -1779,14 +1826,15 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 	for rows.Next() {
 		var t Trade
 		var tsStr string
-		var isCloseInt int
+		var isCloseInt, pnlGrossInt int
 		var tpOIDsJSON string
 		var slATRMult sql.NullFloat64
-		if err := rows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossOID, &t.StopLossTriggerPx, &tpOIDsJSON, &slATRMult, &t.TPTiersJSON); err != nil {
+		if err := rows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossOID, &t.StopLossTriggerPx, &tpOIDsJSON, &slATRMult, &t.TPTiersJSON, &pnlGrossInt, &t.FeeSource); err != nil {
 			return nil, 0, fmt.Errorf("scan trade: %w", err)
 		}
 		t.Timestamp = parseTime(tsStr)
 		t.IsClose = isCloseInt != 0
+		t.PnLGross = pnlGrossInt != 0
 		t.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
 		if slATRMult.Valid {
 			v := slATRMult.Float64
@@ -2099,7 +2147,8 @@ func (sdb *StateDB) ListTradesForBackfill(strategyID string) ([]TradeBackfillRow
 	}
 	rows, err := sdb.db.Query(`
 		SELECT rowid, timestamp, symbol, COALESCE(position_id, '') AS position_id,
-		       value, is_close, exchange_order_id, exchange_fee, realized_pnl
+		       side, quantity, price, value, trade_type, is_close, exchange_order_id, exchange_fee, realized_pnl,
+		       COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
 		FROM trades
 		WHERE strategy_id = ?
 		ORDER BY timestamp ASC, rowid ASC`, strategyID)
@@ -2111,13 +2160,14 @@ func (sdb *StateDB) ListTradesForBackfill(strategyID string) ([]TradeBackfillRow
 	for rows.Next() {
 		var t TradeBackfillRow
 		var tsStr string
-		var isCloseInt int
-		if err := rows.Scan(&t.RowID, &tsStr, &t.Symbol, &t.PositionID, &t.Value, &isCloseInt,
-			&t.ExchangeOrderID, &t.ExchangeFee, &t.RealizedPnL); err != nil {
+		var isCloseInt, pnlGrossInt int
+		if err := rows.Scan(&t.RowID, &tsStr, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &isCloseInt,
+			&t.ExchangeOrderID, &t.ExchangeFee, &t.RealizedPnL, &pnlGrossInt, &t.FeeSource); err != nil {
 			return nil, fmt.Errorf("scan trade: %w", err)
 		}
 		t.Timestamp = parseTime(tsStr)
 		t.IsClose = isCloseInt != 0
+		t.PnLGross = pnlGrossInt != 0
 		out = append(out, t)
 	}
 	return out, rows.Err()

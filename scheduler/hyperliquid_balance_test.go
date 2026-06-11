@@ -176,9 +176,13 @@ func TestReconcileRemoveClosedPosition(t *testing.T) {
 	if _, ok := s.Positions["BTC"]; ok {
 		t.Error("BTC position should have been removed")
 	}
-	// Cash should not change.
-	if s.Cash != 5000 {
-		t.Errorf("cash = %g, want 5000", s.Cash)
+	// #954: the external close books at AvgCost (zero gross PnL) with the
+	// modeled fee — only the fee moves cash, never reconciled-away PnL.
+	if len(s.TradeHistory) != 1 || s.TradeHistory[0].RealizedPnL != 0 || !s.TradeHistory[0].PnLGross {
+		t.Fatalf("want one zero-gross-PnL trade row, got %+v", s.TradeHistory)
+	}
+	if got, want := s.Cash, 5000-s.TradeHistory[0].ExchangeFee; math.Abs(got-want) > 1e-9 {
+		t.Errorf("cash = %g, want %g (modeled fee only)", got, want)
 	}
 }
 
@@ -1426,8 +1430,8 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash(t *tes
 		t.Fatalf("peer close trades = %d, want 1 (history=%+v)", len(closeTrades), peer.TradeHistory)
 	}
 	ct := closeTrades[0]
-	if math.Abs(ct.RealizedPnL-wantPnL) > 1e-6 {
-		t.Errorf("trade RealizedPnL = %v, want %v", ct.RealizedPnL, wantPnL)
+	if !ct.PnLGross || math.Abs(tradeNetPnL(ct)-wantPnL) > 1e-6 {
+		t.Errorf("trade net PnL = %v (gross=%v), want %v", tradeNetPnL(ct), ct.PnLGross, wantPnL)
 	}
 	if ct.Price != mark {
 		t.Errorf("trade Price = %v, want %v", ct.Price, mark)
@@ -1724,8 +1728,8 @@ func TestReconcileSharedCoin_Detector3_PartialUsesFillPrice(t *testing.T) {
 		t.Errorf("close trade = %+v, want close %.2f @ fill %v", tr, closeQty, fillPx)
 	}
 	wantPnL := closeQty*(fillPx-avgCost) - wantFee
-	if math.Abs(tr.RealizedPnL-wantPnL) > 1e-6 {
-		t.Errorf("trade RealizedPnL = %v, want %v", tr.RealizedPnL, wantPnL)
+	if !tr.PnLGross || math.Abs(tradeNetPnL(tr)-wantPnL) > 1e-6 {
+		t.Errorf("trade net PnL = %v (gross=%v), want %v", tradeNetPnL(tr), tr.PnLGross, wantPnL)
 	}
 	if math.Abs(owner.Cash-(ownerStartCash+wantPnL)) > 1e-6 {
 		t.Errorf("owner Cash = %v, want %v", owner.Cash, ownerStartCash+wantPnL)
@@ -1932,8 +1936,8 @@ func TestReconcileSharedCoin_TPPartialFill_DecrementsOwnerAndBooksPnL(t *testing
 	if !tr.IsClose || tr.Side != "sell" || math.Abs(tr.Quantity-0.25) > 1e-9 || tr.Price != mark {
 		t.Errorf("close trade = %+v, want sell close 0.25 @ %v", tr, mark)
 	}
-	if math.Abs(tr.RealizedPnL-wantPnL) > 1e-6 {
-		t.Errorf("trade RealizedPnL = %v, want %v", tr.RealizedPnL, wantPnL)
+	if !tr.PnLGross || math.Abs(tradeNetPnL(tr)-wantPnL) > 1e-6 {
+		t.Errorf("trade net PnL = %v (gross=%v), want %v", tradeNetPnL(tr), tr.PnLGross, wantPnL)
 	}
 	if tr.EntryATR != 100 || tr.StopLossTriggerPx != 2900 {
 		t.Errorf("trade context EntryATR/SL = %v/%v, want 100/2900", tr.EntryATR, tr.StopLossTriggerPx)
@@ -2014,8 +2018,8 @@ func TestReconcileSharedCoin_TPPartialFill_Short(t *testing.T) {
 	if !tr.IsClose || tr.Side != "buy" || math.Abs(tr.Quantity-0.25) > 1e-9 || tr.Price != mark {
 		t.Errorf("close trade = %+v, want buy close 0.25 @ %v", tr, mark)
 	}
-	if math.Abs(tr.RealizedPnL-wantPnL) > 1e-6 {
-		t.Errorf("trade RealizedPnL = %v, want %v", tr.RealizedPnL, wantPnL)
+	if !tr.PnLGross || math.Abs(tradeNetPnL(tr)-wantPnL) > 1e-6 {
+		t.Errorf("trade net PnL = %v (gross=%v), want %v", tradeNetPnL(tr), tr.PnLGross, wantPnL)
 	}
 	gap := state.ReconciliationGaps["ETH"]
 	if gap == nil {
@@ -2170,11 +2174,17 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_NoMarkPrice_FallsBack(
 	if peer.Positions["ETH"] != nil {
 		t.Error("peer ETH position should be nil")
 	}
-	if len(peer.ClosedPositions) != 1 || peer.ClosedPositions[0].RealizedPnL != 0 {
-		t.Errorf("expected zero-PnL fallback, got %+v", peer.ClosedPositions)
+	// #954: no mark price → booked at AvgCost (zero GROSS PnL, modeled fee)
+	// so the close still lands in the trades ledger. Only the fee moves cash.
+	if len(peer.TradeHistory) != 1 || peer.TradeHistory[0].RealizedPnL != 0 || !peer.TradeHistory[0].PnLGross {
+		t.Fatalf("want one zero-gross-PnL trade row, got %+v", peer.TradeHistory)
 	}
-	if peer.Cash != peerStartCash {
-		t.Errorf("peer Cash = %v, want unchanged %v (no mark price → no credit)", peer.Cash, peerStartCash)
+	fee := peer.TradeHistory[0].ExchangeFee
+	if len(peer.ClosedPositions) != 1 || math.Abs(peer.ClosedPositions[0].RealizedPnL-(-fee)) > 1e-9 {
+		t.Errorf("expected fee-only close PnL, got %+v", peer.ClosedPositions)
+	}
+	if math.Abs(peer.Cash-(peerStartCash-fee)) > 1e-9 {
+		t.Errorf("peer Cash = %v, want %v (no mark price → modeled fee only, no PnL credit)", peer.Cash, peerStartCash-fee)
 	}
 }
 
@@ -3152,7 +3162,7 @@ func TestApplyHyperliquidCircuitCloseFill_PartialPreservesAvgCost(t *testing.T) 
 			"BTC": {Symbol: "BTC", Quantity: 1.0, AvgCost: 50000, Side: "long", Multiplier: 1, Leverage: 5},
 		},
 	}
-	applyHyperliquidCircuitCloseFill(s, "BTC", 0.3, 49000, 1.5, 1.0, "")
+	applyHyperliquidCircuitCloseFill(s, "BTC", 0.3, 49000, 1.5, 1.0, 0, "")
 
 	pos, ok := s.Positions["BTC"]
 	if !ok {
@@ -3342,7 +3352,7 @@ func TestApplyHyperliquidCircuitCloseFill_NoPositionShortCloseRecordsBuy(t *test
 		Positions: map[string]*Position{},
 	}
 	// On-chain shows a short (negative size); closer reports a buy fill.
-	applyHyperliquidCircuitCloseFill(s, "ETH", 0.5, 3000, 0.5, -0.5, "")
+	applyHyperliquidCircuitCloseFill(s, "ETH", 0.5, 3000, 0.5, -0.5, 0, "")
 
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("expected 1 defensive trade, got %d", len(s.TradeHistory))
@@ -3359,7 +3369,7 @@ func TestApplyHyperliquidCircuitCloseFill_NoPositionLongCloseRecordsSell(t *test
 		Positions: map[string]*Position{},
 	}
 	// On-chain shows a long (positive size); closer reports a sell fill.
-	applyHyperliquidCircuitCloseFill(s, "ETH", 0.5, 3000, 0.5, 0.5, "")
+	applyHyperliquidCircuitCloseFill(s, "ETH", 0.5, 3000, 0.5, 0.5, 0, "")
 
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("expected 1 defensive trade, got %d", len(s.TradeHistory))
@@ -3663,13 +3673,18 @@ func TestReconcilePositionSLClose_UsesFilledQtyFromLookup(t *testing.T) {
 	if cp.Quantity < filledQty-1e-9 || cp.Quantity > filledQty+1e-9 {
 		t.Errorf("ClosedPosition.Quantity = %g, want %g (actual fill qty, not virtual)", cp.Quantity, filledQty)
 	}
-	// PnL must use filledQty: (1800 - 2000) * 0.211 - 0.08 = -42.28
-	wantPnL := filledQty*(slTriggerPx-avgCost) - 0.08
+	// PnL must use filledQty. #954 gross convention: the row stores the
+	// pre-fee (1800 − 2000) × 0.211 = −42.20; net (−42.28) via tradeNetPnL.
+	wantGross := filledQty * (slTriggerPx - avgCost)
 	if len(ss.TradeHistory) != 1 {
 		t.Fatalf("TradeHistory = %d, want 1", len(ss.TradeHistory))
 	}
-	if ss.TradeHistory[0].RealizedPnL < wantPnL-0.01 || ss.TradeHistory[0].RealizedPnL > wantPnL+0.01 {
-		t.Errorf("RealizedPnL = %g, want %g (based on actual fill qty)", ss.TradeHistory[0].RealizedPnL, wantPnL)
+	tr := ss.TradeHistory[0]
+	if !tr.PnLGross || math.Abs(tr.RealizedPnL-wantGross) > 0.01 {
+		t.Errorf("RealizedPnL = %g (gross=%v), want gross %g (based on actual fill qty)", tr.RealizedPnL, tr.PnLGross, wantGross)
+	}
+	if math.Abs(tradeNetPnL(tr)-(wantGross-0.08)) > 0.01 {
+		t.Errorf("tradeNetPnL = %g, want %g", tradeNetPnL(tr), wantGross-0.08)
 	}
 }
 
@@ -3707,11 +3722,18 @@ func TestReconcilePositionSLClose_NoFillFallsThroughToExternal(t *testing.T) {
 	if cp.CloseReason != "hl_sync_external" {
 		t.Errorf("CloseReason = %q, want hl_sync_external (SL not confirmed filled)", cp.CloseReason)
 	}
-	if cp.ClosePrice != 0 {
-		t.Errorf("ClosePrice = %g, want 0 (off-scheduler close, price unknown)", cp.ClosePrice)
+	// #954: the unknown-price close books at AvgCost (zero gross PnL) so the
+	// trades ledger keeps the row; the SL trigger price must never be used.
+	if cp.ClosePrice != 2000 {
+		t.Errorf("ClosePrice = %g, want 2000 (AvgCost — zero-PnL booking, not the SL trigger)", cp.ClosePrice)
 	}
-	if ss.Cash != startCash {
-		t.Errorf("cash = %g, want unchanged (%g) on zero-PnL fallback", ss.Cash, startCash)
+	if len(ss.TradeHistory) != 1 || ss.TradeHistory[0].RealizedPnL != 0 || !ss.TradeHistory[0].PnLGross {
+		t.Fatalf("want one zero-gross-PnL trade row, got %+v", ss.TradeHistory)
+	}
+	// The resolver DID report a real $0.15 fee for the matched coin+size
+	// lookup — only that fee may move cash, never SL-trigger PnL.
+	if math.Abs(ss.Cash-(startCash-0.15)) > 1e-9 {
+		t.Errorf("cash = %g, want %g (real fee only) on zero-PnL fallback", ss.Cash, startCash-0.15)
 	}
 }
 
@@ -3962,8 +3984,13 @@ func TestReconcilePosition_NoFillsFallsBackToZeroPnL(t *testing.T) {
 	if len(ss.ClosedPositions) != 1 || ss.ClosedPositions[0].CloseReason != "hl_sync_external" {
 		t.Fatalf("expected ClosedPosition with reason=hl_sync_external, got %+v", ss.ClosedPositions)
 	}
-	if ss.Cash != startCash {
-		t.Errorf("cash = %g, want unchanged (%g) on zero-PnL fallback", ss.Cash, startCash)
+	// #954: zero-info close books at AvgCost (zero gross PnL) with the
+	// modeled fee — the row must exist for the ledger sum.
+	if len(ss.TradeHistory) != 1 || ss.TradeHistory[0].RealizedPnL != 0 || ss.TradeHistory[0].FeeSource != FeeSourceModeled {
+		t.Fatalf("want one zero-gross-PnL modeled-fee trade row, got %+v", ss.TradeHistory)
+	}
+	if math.Abs(ss.Cash-(startCash-ss.TradeHistory[0].ExchangeFee)) > 1e-9 {
+		t.Errorf("cash = %g, want %g (modeled fee only) on zero-PnL fallback", ss.Cash, startCash-ss.TradeHistory[0].ExchangeFee)
 	}
 }
 
@@ -4013,8 +4040,21 @@ func TestReconcilePosition_AllTPOIDsZeroedSLNotFilled(t *testing.T) {
 	if cp.ClosePrice == slTriggerPx {
 		t.Errorf("ClosePrice = %g matches stale SL trigger — #685 regression", cp.ClosePrice)
 	}
-	if ss.Cash != startCash {
-		t.Errorf("cash = %g, want unchanged (%g) — fictitious SL PnL must not credit/debit", ss.Cash, startCash)
+	// #685 invariant: no fictitious SL PnL. #954: the close is still BOOKED —
+	// at AvgCost (zero gross PnL) with the modeled fee deducted, so the
+	// trades ledger never silently loses a close. Only the fee moves cash.
+	if len(ss.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory = %d, want 1 (no-mark-price close must book a row, #954)", len(ss.TradeHistory))
+	}
+	tr := ss.TradeHistory[0]
+	if !tr.PnLGross || tr.RealizedPnL != 0 || tr.Price != 2329.8 {
+		t.Errorf("zero-info close row = pnl %g px %g (gross=%v), want gross 0 @ AvgCost", tr.RealizedPnL, tr.Price, tr.PnLGross)
+	}
+	if tr.FeeSource != FeeSourceModeled {
+		t.Errorf("FeeSource = %q, want modeled (no userFills match)", tr.FeeSource)
+	}
+	if math.Abs(ss.Cash-(startCash-tr.ExchangeFee)) > 1e-9 {
+		t.Errorf("cash = %g, want %g — only the modeled fee may move cash, never fictitious SL PnL", ss.Cash, startCash-tr.ExchangeFee)
 	}
 }
 

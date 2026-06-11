@@ -101,5 +101,7 @@ func lastBookedTradePnL(s *StrategyState) float64 {
 	if s == nil || len(s.TradeHistory) == 0 {
 		return 0
 	}
-	return s.TradeHistory[len(s.TradeHistory)-1].RealizedPnL
+	// Net of fees regardless of row convention (#954): operator DMs always
+	// show the cash effect, matching the pre-gross-convention behavior.
+	return tradeNetPnL(s.TradeHistory[len(s.TradeHistory)-1])
 }

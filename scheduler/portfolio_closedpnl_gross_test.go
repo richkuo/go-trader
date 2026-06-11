@@ -6,10 +6,12 @@ import (
 )
 
 // TestBookPerpsPartialCloseWithFillFee_NetOfFee locks in the contract that
-// realized PnL is computed locally as `(closePx - avgCost) * qty - fillFee`
-// (long) — i.e. NET of the real exchange fee. Hyperliquid's `userFills.closedPnl`
-// is gross of fees (#698); any future refactor that wires HLFillLookup.ClosedPnLGross
-// into Trade.RealizedPnL would overstate PnL by exactly the fee and fail this test.
+// realized PnL is computed LOCALLY from position geometry — never wired from
+// HLFillLookup.ClosedPnLGross (#698). Under the #954 gross convention the row
+// stores the pre-fee `(closePx - avgCost) * qty` with the real fee stamped
+// alongside (PnLGross=true); CASH still moves by the fee-net amount and
+// tradeNetPnL recovers it. The #698 trap — exchange-reported gross leaking in
+// and overstating net PnL by the fee — is now guarded at the net layer.
 //
 // Numbers below are the live manual-eth example from #698:
 //
@@ -50,25 +52,27 @@ func TestBookPerpsPartialCloseWithFillFee_NetOfFee(t *testing.T) {
 		t.Fatal("TP1 booking returned false")
 	}
 	tp1Trade := s.TradeHistory[len(s.TradeHistory)-1]
-	if math.Abs(tp1Trade.RealizedPnL-tp1NetPnL) > 1e-6 {
-		t.Errorf("TP1 RealizedPnL = %.6f, want %.6f (local fee-net)", tp1Trade.RealizedPnL, tp1NetPnL)
+	// #954: the row stores the LOCAL geometric gross (here it coincides with
+	// HL's number because entry price matches); net comes via tradeNetPnL.
+	if !tp1Trade.PnLGross || math.Abs(tp1Trade.RealizedPnL-tp1Gross) > 1e-6 {
+		t.Errorf("TP1 RealizedPnL = %.6f (gross=%v), want local gross %.4f", tp1Trade.RealizedPnL, tp1Trade.PnLGross, tp1Gross)
 	}
-	if math.Abs(tp1Trade.RealizedPnL-tp1Gross) < 0.01 {
-		t.Errorf("TP1 RealizedPnL = %.6f matches HL closedPnl gross %.4f — booking must use fee-net, not gross (#698)", tp1Trade.RealizedPnL, tp1Gross)
+	if math.Abs(tradeNetPnL(tp1Trade)-tp1NetPnL) > 1e-6 {
+		t.Errorf("TP1 tradeNetPnL = %.6f, want %.6f (local fee-net, #698)", tradeNetPnL(tp1Trade), tp1NetPnL)
 	}
-	if math.Abs(tp1Trade.ExchangeFee-tp1Fee) > 1e-9 {
-		t.Errorf("TP1 ExchangeFee = %.6f, want %.6f", tp1Trade.ExchangeFee, tp1Fee)
+	if math.Abs(tp1Trade.ExchangeFee-tp1Fee) > 1e-9 || tp1Trade.FeeSource != FeeSourceUserFills {
+		t.Errorf("TP1 ExchangeFee = %.6f (src %q), want %.6f userfills", tp1Trade.ExchangeFee, tp1Trade.FeeSource, tp1Fee)
 	}
 
 	if !bookPerpsPartialCloseWithFillFee(s, "ETH", tp2Qty, tp2Px, tp2Fee, true, "tp2-oid", "tp_partial_test", "TP2", "TP2", nil) {
 		t.Fatal("TP2 booking returned false")
 	}
 	tp2Trade := s.TradeHistory[len(s.TradeHistory)-1]
-	if math.Abs(tp2Trade.RealizedPnL-tp2NetPnL) > 1e-6 {
-		t.Errorf("TP2 RealizedPnL = %.6f, want %.6f (local fee-net)", tp2Trade.RealizedPnL, tp2NetPnL)
+	if !tp2Trade.PnLGross || math.Abs(tp2Trade.RealizedPnL-tp2Gross) > 1e-6 {
+		t.Errorf("TP2 RealizedPnL = %.6f (gross=%v), want local gross %.4f", tp2Trade.RealizedPnL, tp2Trade.PnLGross, tp2Gross)
 	}
-	if math.Abs(tp2Trade.RealizedPnL-tp2Gross) < 0.01 {
-		t.Errorf("TP2 RealizedPnL = %.6f matches HL closedPnl gross %.4f — booking must use fee-net, not gross (#698)", tp2Trade.RealizedPnL, tp2Gross)
+	if math.Abs(tradeNetPnL(tp2Trade)-tp2NetPnL) > 1e-6 {
+		t.Errorf("TP2 tradeNetPnL = %.6f, want %.6f (local fee-net, #698)", tradeNetPnL(tp2Trade), tp2NetPnL)
 	}
 
 	// After both partial closes the position should be flat and recorded as closed.
@@ -124,12 +128,19 @@ func TestHLFillLookup_ClosedPnLGrossNotUsedForBooking(t *testing.T) {
 		t.Fatal("booking returned false")
 	}
 
-	wantNet := (lookup.Px-60000)*lookup.FilledQty - lookup.Fee // 1000*0.05 - 5 = 45
-	got := s.TradeHistory[len(s.TradeHistory)-1].RealizedPnL
-	if math.Abs(got-wantNet) > 1e-9 {
-		t.Errorf("RealizedPnL = %.6f, want %.6f (local fee-net)", got, wantNet)
+	wantLocalGross := (lookup.Px - 60000) * lookup.FilledQty // 1000*0.05 = 50
+	wantNet := wantLocalGross - lookup.Fee                   // 45
+	tr := s.TradeHistory[len(s.TradeHistory)-1]
+	if math.Abs(tr.RealizedPnL-wantLocalGross) > 1e-9 {
+		t.Errorf("RealizedPnL = %.6f, want %.6f (LOCAL geometric gross)", tr.RealizedPnL, wantLocalGross)
 	}
-	if math.Abs(got-lookup.ClosedPnLGross) < 1.0 {
-		t.Errorf("RealizedPnL = %.6f leaked from HLFillLookup.ClosedPnLGross %.2f (#698)", got, lookup.ClosedPnLGross)
+	if math.Abs(tr.RealizedPnL-lookup.ClosedPnLGross) < 1.0 {
+		t.Errorf("RealizedPnL = %.6f leaked from HLFillLookup.ClosedPnLGross %.2f (#698)", tr.RealizedPnL, lookup.ClosedPnLGross)
+	}
+	if math.Abs(tradeNetPnL(tr)-wantNet) > 1e-9 {
+		t.Errorf("tradeNetPnL = %.6f, want %.6f (local fee-net)", tradeNetPnL(tr), wantNet)
+	}
+	if math.Abs(s.Cash-1000-wantNet) > 1e-9 {
+		t.Errorf("cash delta = %.6f, want %.6f (fee-net)", s.Cash-1000, wantNet)
 	}
 }

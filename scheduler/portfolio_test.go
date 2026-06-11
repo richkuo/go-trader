@@ -106,7 +106,7 @@ func TestPartialClosePreservesInitialQuantityAndEntryATR(t *testing.T) {
 		},
 	}
 
-	applyHyperliquidCircuitCloseFill(state, "ETH", 0.4, 3100, 1, 1, "")
+	applyHyperliquidCircuitCloseFill(state, "ETH", 0.4, 3100, 1, 1, 0, "")
 	pos := state.Positions["ETH"]
 	if pos == nil {
 		t.Fatal("position should remain after partial close")
@@ -1638,11 +1638,14 @@ func TestExecutePerpsSignalLegacyCloseShortThenOpenLongUsesOpenFillFee(t *testin
 	}
 
 	closeLeg, openLeg := s.TradeHistory[0], s.TradeHistory[1]
-	if closeLeg.ExchangeOrderID != "" || closeLeg.ExchangeFee != 0 {
-		t.Errorf("legacy close leg exchange metadata = oid %q fee %g, want empty modeled-fee leg",
-			closeLeg.ExchangeOrderID, closeLeg.ExchangeFee)
+	// #954 gross convention: the modeled fee deducted from cash is ALWAYS
+	// stamped (fee_source says it's modeled); the leg still carries no OID.
+	modeledCloseFee := CalculatePlatformSpotFee("hyperliquid", 0.5*2000)
+	if closeLeg.ExchangeOrderID != "" || math.Abs(closeLeg.ExchangeFee-modeledCloseFee) > 1e-9 || closeLeg.FeeSource != FeeSourceModeled {
+		t.Errorf("legacy close leg = oid %q fee %g src %q, want no-OID modeled fee %g",
+			closeLeg.ExchangeOrderID, closeLeg.ExchangeFee, closeLeg.FeeSource, modeledCloseFee)
 	}
-	if openLeg.ExchangeOrderID != "legacy-open-oid" || openLeg.ExchangeFee != 0.42 {
+	if openLeg.ExchangeOrderID != "legacy-open-oid" || openLeg.ExchangeFee != 0.42 || openLeg.FeeSource != FeeSourceUserFills {
 		t.Errorf("legacy open leg exchange metadata = oid %q fee %g, want oid legacy-open-oid fee 0.42",
 			openLeg.ExchangeOrderID, openLeg.ExchangeFee)
 	}
@@ -1651,7 +1654,6 @@ func TestExecutePerpsSignalLegacyCloseShortThenOpenLongUsesOpenFillFee(t *testin
 		t.Fatalf("position after legacy close/open = %+v, want long qty 0.3", pos)
 	}
 
-	modeledCloseFee := CalculatePlatformSpotFee("hyperliquid", 0.5*2000)
 	wantCash := 1000.0 + (0.5*(2100-2000) - modeledCloseFee) - 0.42
 	if math.Abs(s.Cash-wantCash) > 1e-9 {
 		t.Errorf("cash = %.9f, want %.9f (close modeled fee + open real fill fee)", s.Cash, wantCash)
@@ -1660,8 +1662,9 @@ func TestExecutePerpsSignalLegacyCloseShortThenOpenLongUsesOpenFillFee(t *testin
 
 // #328 — long + signal=-1 + AllowShorts closes the long AND opens a short.
 // Mirrors the existing signal=1+short close-and-flip branch. Produces exactly
-// two Trade rows; the close leg carries the real fill fee while the open leg
-// uses modeled fee cash math so a single fill's fee isn't double-counted (#451).
+// two Trade rows sharing the flip OID; the single real fill fee apportions
+// across them by quantity share so it is neither double-counted nor padded
+// with a modeled open fee (#451, reworked by #954 for ledger accuracy).
 func TestExecutePerpsSignalFlipLongToShort(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
@@ -1701,19 +1704,21 @@ func TestExecutePerpsSignalFlipLongToShort(t *testing.T) {
 		t.Fatalf("TradeHistory len = %d, want 2", len(s.TradeHistory))
 	}
 	closeLeg, openLeg := s.TradeHistory[0], s.TradeHistory[1]
-	if closeLeg.ExchangeOrderID != "live-flip-oid" || closeLeg.ExchangeFee != 0.5 {
-		t.Errorf("close leg exchange metadata = oid %q fee %g, want oid live-flip-oid fee 0.5",
+	// Fee apportioned by qty share of the 1.0 net fill: 0.5/1.0 each.
+	if closeLeg.ExchangeOrderID != "live-flip-oid" || math.Abs(closeLeg.ExchangeFee-0.25) > 1e-9 {
+		t.Errorf("close leg exchange metadata = oid %q fee %g, want oid live-flip-oid fee 0.25",
 			closeLeg.ExchangeOrderID, closeLeg.ExchangeFee)
 	}
-	if openLeg.ExchangeOrderID != "" || openLeg.ExchangeFee != 0 {
-		t.Errorf("open leg exchange metadata = oid %q fee %g, want empty modeled-fee leg",
+	if openLeg.ExchangeOrderID != "live-flip-oid" || math.Abs(openLeg.ExchangeFee-0.25) > 1e-9 || openLeg.FeeSource != FeeSourceUserFills {
+		t.Errorf("open leg exchange metadata = oid %q fee %g, want shared OID with fee 0.25",
 			openLeg.ExchangeOrderID, openLeg.ExchangeFee)
 	}
-	// Close PnL: +$50 - $0.50 real fill fee. Open notional: 0.5 * $2000
-	// with Hyperliquid modeled taker fee 0.035% = $0.35.
-	wantCash := 1000.0 + 49.5 - 0.35
+	// One real $0.50 fee for the whole flip order: close PnL +$50 − $0.25
+	// share, open leg deducts its $0.25 share — cash moves by exactly the
+	// real fee, never real + modeled (#954).
+	wantCash := 1000.0 + 50 - 0.5
 	if math.Abs(s.Cash-wantCash) > 1e-9 {
-		t.Errorf("cash = %.9f, want %.9f (flip close real fee + open modeled fee)", s.Cash, wantCash)
+		t.Errorf("cash = %.9f, want %.9f (single real fee apportioned across flip legs)", s.Cash, wantCash)
 	}
 }
 
@@ -2054,10 +2059,15 @@ func TestExecutePerpsSignal_PartialCloseLongPaperPreservesRemainder(t *testing.T
 	}
 	// Paper mode applies ApplySlippage to the requested price; recompute
 	// expected PnL using the actual recorded price so the assertion is
-	// slippage-tolerant.
-	wantPnL := 0.2*(tr.Price-2000) - CalculatePlatformSpotFee("hyperliquid", 0.2*tr.Price)
-	if math.Abs(tr.RealizedPnL-wantPnL) > 1e-6 {
-		t.Errorf("RealizedPnL = %g, want %g (partial slice only)", tr.RealizedPnL, wantPnL)
+	// slippage-tolerant. #954: RealizedPnL stores the PRE-FEE slice PnL
+	// (PnLGross), with the modeled fee stamped; net comes via tradeNetPnL.
+	wantGross := 0.2 * (tr.Price - 2000)
+	wantFee := CalculatePlatformSpotFee("hyperliquid", 0.2*tr.Price)
+	if !tr.PnLGross || math.Abs(tr.RealizedPnL-wantGross) > 1e-6 {
+		t.Errorf("RealizedPnL = %g (gross=%v), want gross %g (partial slice only)", tr.RealizedPnL, tr.PnLGross, wantGross)
+	}
+	if math.Abs(tradeNetPnL(tr)-(wantGross-wantFee)) > 1e-6 {
+		t.Errorf("tradeNetPnL = %g, want %g (slice PnL net of modeled fee)", tradeNetPnL(tr), wantGross-wantFee)
 	}
 }
 

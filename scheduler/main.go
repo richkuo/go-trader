@@ -903,6 +903,18 @@ func main() {
 				}
 			}
 
+			// #954: pull funding payments + non-trade cash flows for each HL
+			// shared wallet (two HTTP POSTs, outside the state lock). Booked
+			// under the risk-phase write lock below, before the display
+			// reconcile, so this cycle's ledger sums include them. Skipped
+			// when the balance fetch failed — the reconcile skips the wallet
+			// then too, and the watermark keeps the events for next cycle.
+			var walletLedgerFetches []walletLedgerFetchResult
+			if hlShared && hlStateFetched {
+				walletLedgerFetches = append(walletLedgerFetches,
+					fetchWalletLedgerEvents(stateDB, hlKey, time.Now().UTC()))
+			}
+
 			// #360: Fetch OKX positions once if any live OKX perps strategy
 			// exists. Drives per-strategy circuit-breaker pending closes
 			// (PlatformRiskAssist.OKXPositions). Gated on OKX_API_KEY so
@@ -1008,13 +1020,17 @@ func main() {
 			if notionalBlocked {
 				fmt.Printf("[WARN] %s\n", portfolioReason)
 			}
-			// #918: exchange-authoritative shared-wallet reconciliation. Derive
-			// each member strategy's display value from the real account balance
-			// + on-chain positions just fetched (no extra I/O) so the per-strategy
-			// operator rows sum EXACTLY to the wallet balance, and capture
-			// per-wallet drift for the alarm below. Runs under the same write lock
-			// the risk check holds (mutates StrategyState.SharedWalletValue*).
-			driftResults := reconcileSharedWalletDisplayValues(cfg.Strategies, state, sharedWallets, walletBalances, hlPositions, okxPositions, okxStateFetched)
+			// #954: book this cycle's funding payments + non-trade flows into
+			// the ledger BEFORE the display reconcile reads the ledger sums —
+			// the wallet balance being reconciled already includes them.
+			ingestSharedWalletLedgers(stateDB, state, cfg.Strategies, sharedWallets, walletLedgerFetches)
+			// #918/#954: shared-wallet display reconciliation. HL wallets derive
+			// each member's display value from the local trades ledger
+			// (initial_capital + ledger PnL + owned uPnL); the real balance is a
+			// pure drift alarm. OKX wallets keep the #918 capital-weight split.
+			// Runs under the same write lock the risk check holds (mutates
+			// StrategyState.SharedWalletValue*).
+			driftResults := reconcileSharedWalletDisplayValues(cfg.Strategies, state, stateDB, sharedWallets, walletBalances, hlPositions, okxPositions, okxStateFetched)
 			mu.Unlock()
 
 			// Fire throttled drift alarms outside the lock (notifier I/O).

@@ -199,6 +199,22 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	if !ok || pos == nil {
 		return false
 	}
+	// #954 one-fill-one-row: a FULL close whose OID already produced a close
+	// row for this strategy (a circuit-breaker force-close and the
+	// reconciler's external-close detection racing over the same on-chain
+	// fill) must not double-book cash or insert a second Trade. Clear the
+	// virtual position and report success. Partial closes are exempt —
+	// multiple legs of one OID across cycles are legitimate
+	// (bookPerpsPartialCloseWithFillFee).
+	if useFillFee && exchangeOrderID != "" && strategyHasCloseTradeForOID(s, exchangeOrderID) {
+		if logger != nil {
+			logger.Warn("%s: close for OID %s already booked — clearing virtual position without a duplicate Trade (#954)", logPrefix, exchangeOrderID)
+		}
+		recordClosedPosition(s, pos, closePx, 0, reason+"_dup_oid", time.Now().UTC())
+		delete(s.Positions, symbol)
+		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
+		return true
+	}
 
 	now := time.Now().UTC()
 	qty := pos.Quantity
@@ -221,11 +237,12 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	// useFillFee=true with fillFee=0 simply means "paper close, no exchange
 	// fee" and the modeled fee is the right model.
 	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
-	exchangeFeeStamp := 0.0
+	feeSource := FeeSourceModeled
 	if useFillFee {
 		fee = fillFee
-		exchangeFeeStamp = fillFee
+		feeSource = FeeSourceUserFills
 	}
+	grossPnL := pnl
 	pnl -= fee
 	s.Cash += pnl
 	positionID := ensurePositionTradeID(s.ID, symbol, pos)
@@ -251,9 +268,11 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 		TradeType:       "perps",
 		Details:         fmt.Sprintf("%s, PnL: $%.2f (fee $%.2f)", detailsPrefix, pnl, fee),
 		IsClose:         true,
-		RealizedPnL:     pnl,
+		RealizedPnL:     grossPnL,
+		PnLGross:        true,
 		ExchangeOrderID: exchangeOrderIDForTrade(exchangeOrderID, useFillFee),
-		ExchangeFee:     exchangeFeeStamp,
+		ExchangeFee:     fee,
+		FeeSource:       feeSource,
 	}
 	trade.Regime = s.Regime
 	trade.EntryATR = pos.EntryATR
@@ -308,11 +327,12 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	// TP fills are typically maker-priced; use the taker rate as a conservative
 	// fallback when userFills misses so virtual cash is not overstated.
 	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
-	exchangeFeeStamp := 0.0
+	feeSource := FeeSourceModeled
 	if useFillFee {
 		fee = fillFee
-		exchangeFeeStamp = fillFee
+		feeSource = FeeSourceUserFills
 	}
+	grossPnL := pnl
 	pnl -= fee
 	s.Cash += pnl
 	positionID := ensurePositionTradeID(s.ID, symbol, pos)
@@ -329,9 +349,11 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 		TradeType:       "perps",
 		Details:         fmt.Sprintf("%s %.6f, PnL: $%.2f (fee $%.2f)", detailsPrefix, qty, pnl, fee),
 		IsClose:         true,
-		RealizedPnL:     pnl,
+		RealizedPnL:     grossPnL,
+		PnLGross:        true,
 		ExchangeOrderID: exchangeOrderIDForTrade(exchangeOrderID, useFillFee),
-		ExchangeFee:     exchangeFeeStamp,
+		ExchangeFee:     fee,
+		FeeSource:       feeSource,
 	}
 	trade.Regime = s.Regime
 	trade.EntryATR = pos.EntryATR
@@ -466,7 +488,23 @@ type Trade struct {
 	// inserted on a close, they identify the round-trip in the trades table.
 	IsClose     bool    `json:"is_close,omitempty"`
 	RealizedPnL float64 `json:"realized_pnl,omitempty"`
-	Regime      string  `json:"regime,omitempty"` // market regime label at time of trade (#482)
+
+	// PnLGross marks rows written under the #954 gross convention: RealizedPnL
+	// stores the PRE-FEE realized PnL on close legs (still 0 on opens; the
+	// funding amount on trade_type="funding" rows) and ExchangeFee always
+	// carries the fee that was deducted from cash — real userFills fee or the
+	// modeled taker estimate, FeeSource says which. Legacy rows (false) store
+	// net RealizedPnL and stamp ExchangeFee only when a real fill fee was
+	// captured. Never sum RealizedPnL directly across rows — use tradeNetPnL /
+	// tradeNetPnLSQL / tradeLedgerDeltaSQL (trade_pnl.go) so the two
+	// conventions cannot mix (#698's gross-vs-net guard, generalized).
+	PnLGross bool `json:"pnl_gross,omitempty"`
+	// FeeSource records ExchangeFee provenance: "userfills" (real exchange
+	// fee), "modeled" (taker-rate estimate; `backfill trade-ledger` repairs
+	// these from userFills), or "" (legacy row / no fee context).
+	FeeSource string `json:"fee_source,omitempty"`
+
+	Regime string `json:"regime,omitempty"` // market regime label at time of trade (#482)
 	// RegimeDivergenceNote carries a pre-formatted divergence line for trade DMs
 	// when a regime_window_divergence override was active at entry (#907). Not
 	// persisted to SQLite — set transiently when a trade is recorded.
@@ -555,11 +593,31 @@ func executionFee(modeledFee, fillFee float64, useFillFee bool) float64 {
 	return modeledFee
 }
 
-func exchangeFeeForTrade(fillFee float64, useFillFee bool) float64 {
+// executionFeeSource reports the Trade.FeeSource matching what executionFee
+// returned: the real fill fee only when useFillFee gated a positive value.
+func executionFeeSource(fillFee float64, useFillFee bool) string {
 	if useFillFee && fillFee > 0 {
+		return FeeSourceUserFills
+	}
+	return FeeSourceModeled
+}
+
+// flipFeeShare apportions a live flip order's SINGLE real exchange fee to one
+// leg by quantity share (#954). A bidirectional flip executes one net order of
+// (closeQty + openQty); HL charges one fee on the whole fill. Pre-#954 the
+// close leg absorbed the full real fee AND the open leg deducted a modeled fee
+// on its own notional, overcharging the virtual cash book by the modeled open
+// fee each flip — invisible while open-leg fees were not stamped, but a
+// permanent ledger-vs-balance drift under the trade-ledger display path.
+func flipFeeShare(fillFee, legQty, fillQty float64) float64 {
+	if fillQty <= 0 || legQty <= 0 {
 		return fillFee
 	}
-	return 0
+	share := legQty / fillQty
+	if share > 1 {
+		share = 1
+	}
+	return fillFee * share
 }
 
 func exchangeOrderIDForTrade(fillOID string, useFillMetadata bool) string {
@@ -567,6 +625,25 @@ func exchangeOrderIDForTrade(fillOID string, useFillMetadata bool) string {
 		return fillOID
 	}
 	return ""
+}
+
+// strategyHasCloseTradeForOID reports whether the strategy's in-memory trade
+// history already holds a CLOSE leg for this exchange order id (#954
+// one-fill-one-row). In-memory is sufficient: the racing bookers run
+// sequentially under the same write lock within a cycle or two, well inside
+// the maxTradeHistory window, and TradeHistory is rehydrated from SQLite at
+// startup.
+func strategyHasCloseTradeForOID(s *StrategyState, exchangeOrderID string) bool {
+	if s == nil || exchangeOrderID == "" {
+		return false
+	}
+	for i := len(s.TradeHistory) - 1; i >= 0; i-- {
+		t := s.TradeHistory[i]
+		if t.IsClose && t.ExchangeOrderID == exchangeOrderID {
+			return true
+		}
+	}
+	return false
 }
 
 // formatStatusLine renders the per-strategy Phase 6 status log line. regime is
@@ -1005,7 +1082,15 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			// Either way the close leg owns the single live fill fee.
 			terminalClose := closeOnlyAction || !allowsLong
 			useFillFee := flipCloseQty > 0 || terminalClose
-			fee := executionFee(CalculatePlatformSpotFee(feePlatform, closeQty*execPrice), fillFee, useFillFee)
+			legFillFee := fillFee
+			if flipCloseQty > 0 && !terminalClose && fillQty > 0 {
+				// Live flip: the exchange charged ONE fee for the whole
+				// (close + open) order — this leg takes its qty share; the
+				// open leg below takes the rest (#954).
+				legFillFee = flipFeeShare(fillFee, closeQty, fillQty)
+			}
+			fee := executionFee(CalculatePlatformSpotFee(feePlatform, closeQty*execPrice), legFillFee, useFillFee)
+			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
 			now := time.Now().UTC()
@@ -1030,9 +1115,11 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 				TradeType:       "perps",
 				Details:         details,
 				ExchangeOrderID: closeOID,
-				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
+				ExchangeFee:     fee,
+				FeeSource:       executionFeeSource(legFillFee, useFillFee),
 				IsClose:         true,
-				RealizedPnL:     pnl,
+				RealizedPnL:     grossPnL,
+				PnLGross:        true,
 			}
 			trade.Regime = s.Regime
 			trade.EntryATR = pos.EntryATR
@@ -1098,7 +1185,16 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		}
 		notional := qty * execPrice
 		useFillFee := flipCloseQty == 0
-		fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), fillFee, useFillFee)
+		legFillFee := fillFee
+		if flipCloseQty > 0 && fillQty > 0 && fillFee > 0 {
+			// Live flip: this open leg carries its qty share of the single
+			// fill fee (the close leg took the rest) and stamps the shared
+			// OID — `backfill trade-ledger` apportions fee across all legs
+			// of one OID, closedPnl across close legs only (#954).
+			useFillFee = true
+			legFillFee = flipFeeShare(fillFee, qty, fillQty)
+		}
+		fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), legFillFee, useFillFee)
 		s.Cash -= fee // margin-based: only fee leaves cash, notional stays virtual
 		now := time.Now().UTC()
 		positionID := newTradePositionID(s.ID, symbol, now)
@@ -1130,7 +1226,9 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			TradeType:       "perps",
 			Details:         fmt.Sprintf("Open long %.6f @ $%.2f (%s, fee $%.2f)", qty, execPrice, leverageLabel, fee),
 			ExchangeOrderID: openOID,
-			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
+			ExchangeFee:     fee,
+			FeeSource:       executionFeeSource(legFillFee, useFillFee),
+			PnLGross:        true,
 		}
 		trade.Regime = s.Regime
 		trade.RegimeDivergenceNote = formatDivergenceDMLine(s.RegimeDivergence)
@@ -1183,7 +1281,14 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			// close-only action (#519) or when direction forbids short opens (#656).
 			terminalClose := closeOnlyAction || !allowsShort
 			useFillFee := flipCloseQty > 0 || terminalClose
-			fee := executionFee(CalculatePlatformSpotFee(feePlatform, closeQty*execPrice), fillFee, useFillFee)
+			legFillFee := fillFee
+			if flipCloseQty > 0 && !terminalClose && fillQty > 0 {
+				// Live flip: qty share of the single fill fee (see the
+				// symmetric signal==1 branch).
+				legFillFee = flipFeeShare(fillFee, closeQty, fillQty)
+			}
+			fee := executionFee(CalculatePlatformSpotFee(feePlatform, closeQty*execPrice), legFillFee, useFillFee)
+			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
 			now := time.Now().UTC()
@@ -1208,9 +1313,11 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 				TradeType:       "perps",
 				Details:         details,
 				ExchangeOrderID: closeOID,
-				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
+				ExchangeFee:     fee,
+				FeeSource:       executionFeeSource(legFillFee, useFillFee),
 				IsClose:         true,
-				RealizedPnL:     pnl,
+				RealizedPnL:     grossPnL,
+				PnLGross:        true,
 			}
 			trade.Regime = s.Regime
 			trade.EntryATR = pos.EntryATR
@@ -1267,7 +1374,16 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		}
 		notional := qty * execPrice
 		useFillFee := flipCloseQty == 0
-		fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), fillFee, useFillFee)
+		legFillFee := fillFee
+		if flipCloseQty > 0 && fillQty > 0 && fillFee > 0 {
+			// Live flip: this open leg carries its qty share of the single
+			// fill fee (the close leg took the rest) and stamps the shared
+			// OID — `backfill trade-ledger` apportions fee across all legs
+			// of one OID, closedPnl across close legs only (#954).
+			useFillFee = true
+			legFillFee = flipFeeShare(fillFee, qty, fillQty)
+		}
+		fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), legFillFee, useFillFee)
 		s.Cash -= fee // margin-based: only fee leaves cash
 		now := time.Now().UTC()
 		positionID := newTradePositionID(s.ID, symbol, now)
@@ -1299,7 +1415,9 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			TradeType:       "perps",
 			Details:         fmt.Sprintf("Open short %.6f @ $%.2f (%s, fee $%.2f)", qty, execPrice, leverageLabel, fee),
 			ExchangeOrderID: openOID,
-			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillFee),
+			ExchangeFee:     fee,
+			FeeSource:       executionFeeSource(legFillFee, useFillFee),
+			PnLGross:        true,
 		}
 		trade.Regime = s.Regime
 		trade.RegimeDivergenceNote = formatDivergenceDMLine(s.RegimeDivergence)
@@ -1387,6 +1505,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			}
 			totalCost := buyCost + fee
 			pnl := closeQty*pos.AvgCost - totalCost
+			grossPnL := pnl + fee
 			s.Cash += closeQty*pos.AvgCost - totalCost
 			now := time.Now().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
@@ -1406,9 +1525,11 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 				TradeType:       "spot",
 				Details:         details,
 				ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
-				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
+				ExchangeFee:     fee,
+				FeeSource:       executionFeeSource(fillFee, useFillMetadata),
 				IsClose:         true,
-				RealizedPnL:     pnl,
+				RealizedPnL:     grossPnL,
+				PnLGross:        true,
 			}
 			trade.Regime = s.Regime
 			trade.EntryATR = pos.EntryATR
@@ -1484,7 +1605,9 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			TradeType:       "spot",
 			Details:         fmt.Sprintf("Open long %.6f @ $%.2f (fee $%.2f)", qty, execPrice, fee),
 			ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
-			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
+			ExchangeFee:     fee,
+			FeeSource:       executionFeeSource(fillFee, useFillMetadata),
+			PnLGross:        true,
 		}
 		trade.Regime = s.Regime
 		recordOpen(trade)
@@ -1516,6 +1639,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			}
 			netProceeds := saleValue - fee
 			pnl := netProceeds - (closeQty * pos.AvgCost)
+			grossPnL := pnl + fee
 			s.Cash += netProceeds
 			now := time.Now().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
@@ -1535,9 +1659,11 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 				TradeType:       "spot",
 				Details:         details,
 				ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
-				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
+				ExchangeFee:     fee,
+				FeeSource:       executionFeeSource(fillFee, useFillMetadata),
 				IsClose:         true,
-				RealizedPnL:     pnl,
+				RealizedPnL:     grossPnL,
+				PnLGross:        true,
 			}
 			trade.Regime = s.Regime
 			trade.EntryATR = pos.EntryATR
@@ -1637,6 +1763,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			if useFillMetadata {
 				fillMetadataUsed = true
 			}
+			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
 			now := time.Now().UTC()
@@ -1657,9 +1784,11 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				TradeType:       "futures",
 				Details:         details,
 				ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
-				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
+				ExchangeFee:     fee,
+				FeeSource:       executionFeeSource(fillFee, useFillMetadata),
 				IsClose:         true,
-				RealizedPnL:     pnl,
+				RealizedPnL:     grossPnL,
+				PnLGross:        true,
 			}
 			trade.Regime = s.Regime
 			trade.EntryATR = pos.EntryATR
@@ -1745,7 +1874,9 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			TradeType:       "futures",
 			Details:         fmt.Sprintf("Open long %d contracts @ $%.2f (fee $%.2f)", contracts, execPrice, fee),
 			ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
-			ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
+			ExchangeFee:     fee,
+			FeeSource:       executionFeeSource(fillFee, useFillMetadata),
+			PnLGross:        true,
 		}
 		trade.Regime = s.Regime
 		recordOpen(trade)
@@ -1783,6 +1914,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			if useFillMetadata {
 				fillMetadataUsed = true
 			}
+			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
 			now := time.Now().UTC()
@@ -1803,9 +1935,11 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				TradeType:       "futures",
 				Details:         details,
 				ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
-				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
+				ExchangeFee:     fee,
+				FeeSource:       executionFeeSource(fillFee, useFillMetadata),
 				IsClose:         true,
-				RealizedPnL:     pnl,
+				RealizedPnL:     grossPnL,
+				PnLGross:        true,
 			}
 			trade.Regime = s.Regime
 			trade.EntryATR = pos.EntryATR
@@ -1890,7 +2024,9 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				TradeType:       "futures",
 				Details:         fmt.Sprintf("Open short %d contracts @ $%.2f (fee $%.2f)", contracts, execPrice, fee),
 				ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
-				ExchangeFee:     exchangeFeeForTrade(fillFee, useFillMetadata),
+				ExchangeFee:     fee,
+				FeeSource:       executionFeeSource(fillFee, useFillMetadata),
+				PnLGross:        true,
 			}
 			trade.Regime = s.Regime
 			recordOpen(trade)
