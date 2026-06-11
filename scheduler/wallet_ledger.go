@@ -101,16 +101,21 @@ func (sdb *StateDB) UpsertWalletLedgerState(platform, account string, st WalletL
 	return nil
 }
 
-// ResetWalletLedgerBaselines marks every wallet's drift baseline unset so the
+// ResetWalletLedgerBaseline marks ONE wallet's drift baseline unset so the
 // next reconciled cycle recomputes it. Called by `backfill trade-ledger
-// --apply`: the repaired ledger changes Σ member values, so the old offset
-// would misread the correction as drift.
-func (sdb *StateDB) ResetWalletLedgerBaselines() error {
+// --apply` for each wallet whose members were repaired: the repaired ledger
+// changes that wallet's Σ member values, so its old offset would misread the
+// correction as drift. Deliberately scoped — clearing an untouched wallet's
+// baseline would fold its genuine standing drift into the new offset and
+// silence a real alarm.
+func (sdb *StateDB) ResetWalletLedgerBaseline(platform, account string) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
 	}
-	if _, err := sdb.db.Exec(`UPDATE wallet_ledger_state SET baseline_set = 0, baseline_offset_usd = 0`); err != nil {
-		return fmt.Errorf("reset wallet ledger baselines: %w", err)
+	if _, err := sdb.db.Exec(
+		`UPDATE wallet_ledger_state SET baseline_set = 0, baseline_offset_usd = 0 WHERE platform = ? AND account = ?`,
+		platform, account); err != nil {
+		return fmt.Errorf("reset wallet ledger baseline: %w", err)
 	}
 	return nil
 }
@@ -221,8 +226,14 @@ func signedPerpFlowUSD(d hlLedgerEventDelta, account string) (float64, bool) {
 	case "deposit":
 		return usdc, true
 	case "withdraw":
-		// HL deducts the withdrawal fee from the account in addition to the
-		// withdrawn amount when `fee` is present on the delta.
+		// Assumes `usdc` is the requested principal and the $1 withdrawal fee
+		// is debited from the HL balance ON TOP of it (Chainstack's withdraw3
+		// reference: "deducted from your Hyperliquid balance, not from the
+		// withdrawal amount"). Community sources conflict and the official
+		// docs are ambiguous — UNVERIFIED against a real ledger sample. If
+		// `usdc` actually already includes the fee, every withdrawal injects
+		// exactly +$1 of permanent ledger-vs-balance drift: a drift step of
+		// +$1×(withdrawal count) is the signature; fix = drop the fee term.
 		return -(usdc + parseHLFloat(d.Fee)), true
 	case "accountClassTransfer":
 		// Spot ↔ perps transfer inside the same account.
@@ -320,8 +331,11 @@ func transferDedupID(ev hlLedgerEvent) string {
 //
 // MUST run under the state write lock: it mutates StrategyState.TradeHistory
 // via RecordTrade. DB writes are immediate (RecordTrade → InsertTrade hook;
-// transfers insert directly), so a crash before the watermark write only
-// causes a re-read that the dedup keys absorb.
+// transfers insert directly), and EVERY insert path — funding-owner rows
+// included — halts the watermark on persist failure, so a crash before the
+// watermark write only causes a re-read that the dedup keys absorb. A
+// watermark must never advance past an event whose row is not durably
+// persisted.
 func ingestWalletLedgerEvents(sdb *StateDB, state *AppState, res walletLedgerFetchResult, virtualQty map[string]map[string]float64) {
 	if sdb == nil || !res.StateFound {
 		return
@@ -460,10 +474,23 @@ func ingestFundingEvent(sdb *StateDB, state *AppState, key SharedWalletKey, ev h
 		}
 		if !exists {
 			for i := len(ss.TradeHistory) - 1; i >= 0; i-- {
-				if ss.TradeHistory[i].ExchangeOrderID == dedupID {
-					exists = true
-					break
+				if ss.TradeHistory[i].ExchangeOrderID != dedupID {
+					continue
 				}
+				exists = true
+				// The row exists in memory but its eager persist failed
+				// (SaveState will retry it). Don't re-book — but don't let
+				// the watermark advance past an event that is not yet on
+				// disk either: a crash before the flush would lose it
+				// behind an advanced watermark (permanent ledger shortfall,
+				// alarm forever). Only enforced under eager persistence;
+				// with tradeRecorder unset, rows are flushed in batch and
+				// persisted is legitimately false.
+				if tradeRecorder != nil && !ss.TradeHistory[i].persisted {
+					fmt.Printf("[WARN] wallet-ledger %s: funding row for %s still awaiting persist — holding watermark\n", sharedWalletKeyLabel(key), id)
+					return false
+				}
+				break
 			}
 		}
 		if exists {
@@ -482,6 +509,14 @@ func ingestFundingEvent(sdb *StateDB, state *AppState, key SharedWalletKey, ev h
 			PnLGross:        true,
 		}
 		RecordTrade(ss, trade)
+		// RecordTrade is void: on eager-insert failure it logs, leaves the
+		// row persisted=false, and SaveState retries later. Mirror the
+		// transfer/orphan paths and hold the watermark until the row is
+		// durably on disk (already-persisted co-owners dedup-skip on retry).
+		if tradeRecorder != nil && len(ss.TradeHistory) > 0 && !ss.TradeHistory[len(ss.TradeHistory)-1].persisted {
+			fmt.Printf("[WARN] wallet-ledger %s: funding row persist failed for %s — holding watermark for retry\n", sharedWalletKeyLabel(key), id)
+			return false
+		}
 	}
 	return true
 }

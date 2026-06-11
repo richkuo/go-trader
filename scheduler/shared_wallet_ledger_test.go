@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"path/filepath"
 	"testing"
@@ -268,8 +269,8 @@ func TestReconcileSharedWalletDisplayValues_HLLedgerPath(t *testing.T) {
 	}
 
 	// Baseline reset (backfill --apply) → next cycle re-anchors, drift 0 again.
-	if err := db.ResetWalletLedgerBaselines(); err != nil {
-		t.Fatalf("ResetWalletLedgerBaselines: %v", err)
+	if err := db.ResetWalletLedgerBaseline("hyperliquid", "0xtest"); err != nil {
+		t.Fatalf("ResetWalletLedgerBaseline: %v", err)
 	}
 	results = reconcileSharedWalletDisplayValues(strategies, state, db, sharedWallets, walletBalances, hlPositions, nil, false)
 	if len(results) != 1 || math.Abs(results[0].Drift) > 0.001 {
@@ -384,6 +385,139 @@ func TestIngestFundingEvent_SplitsByQtyShareAndDedups(t *testing.T) {
 	}
 	if math.Abs(sums["hl-a"]-(-3)) > 1e-9 || math.Abs(sums["hl-b"]-(-1)) > 1e-9 {
 		t.Errorf("ledger sums = %v, want hl-a:-3 hl-b:-1", sums)
+	}
+}
+
+// A funding row whose eager DB insert fails must HOLD the watermark — a
+// crash before the SaveState flush would otherwise lose the row behind an
+// advanced watermark (permanent ledger shortfall, drift alarm forever).
+// Already-persisted co-owners must not double-book on the retry.
+func TestIngestFundingEvent_PersistFailureHoldsWatermark(t *testing.T) {
+	db := newLedgerTestDB(t)
+	prev := tradeRecorder
+	defer func() { tradeRecorder = prev }()
+
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {ID: "hl-a", Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Side: "long", Quantity: 0.3, AvgCost: 60000},
+		}},
+		"hl-b": {ID: "hl-b", Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Side: "long", Quantity: 0.1, AvgCost: 61000},
+		}},
+	}}
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xtest"}
+	virtualQty := map[string]map[string]float64{"BTC": {"hl-a": 0.3, "hl-b": 0.1}}
+	ev := hlLedgerEvent{Time: 1700000000000, Hash: "0xfail", Delta: hlLedgerEventDelta{Type: "funding", Coin: "BTC", USDC: "-4.0"}}
+
+	// hl-a persists, hl-b's eager insert fails (owners iterate sorted).
+	tradeRecorder = func(strategyID string, trade Trade) error {
+		if strategyID == "hl-b" {
+			return errInjectedPersist
+		}
+		return db.InsertTrade(strategyID, trade)
+	}
+	if ok := ingestFundingEvent(db, state, key, ev, virtualQty); ok {
+		t.Fatal("persist failure must return false (hold the watermark)")
+	}
+	if got := len(state.Strategies["hl-a"].TradeHistory); got != 1 {
+		t.Fatalf("hl-a rows = %d, want 1 (persisted before the failure)", got)
+	}
+
+	// Same cycle retry: hl-b's row is in TradeHistory but NOT on disk —
+	// still held (the watermark may only advance once it is durable).
+	tradeRecorder = db.InsertTrade
+	if ok := ingestFundingEvent(db, state, key, ev, virtualQty); ok {
+		t.Fatal("unpersisted in-memory row must keep holding the watermark")
+	}
+
+	// SaveState-equivalent flush lands the row → retry succeeds, advances.
+	bss := state.Strategies["hl-b"]
+	if n := len(bss.TradeHistory); n != 1 {
+		t.Fatalf("hl-b rows = %d, want 1 (booked in memory despite failed persist)", n)
+	}
+	if err := db.InsertTrade("hl-b", bss.TradeHistory[0]); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	bss.TradeHistory[0].persisted = true
+	if ok := ingestFundingEvent(db, state, key, ev, virtualQty); !ok {
+		t.Fatal("fully persisted split must release the watermark")
+	}
+	// No double-booking anywhere.
+	if len(state.Strategies["hl-a"].TradeHistory) != 1 || len(bss.TradeHistory) != 1 {
+		t.Fatalf("retry double-booked: %d/%d rows", len(state.Strategies["hl-a"].TradeHistory), len(bss.TradeHistory))
+	}
+	sums, err := db.LedgerNetByStrategy([]string{"hl-a", "hl-b"})
+	if err != nil || math.Abs(sums["hl-a"]-(-3)) > 1e-9 || math.Abs(sums["hl-b"]-(-1)) > 1e-9 {
+		t.Errorf("ledger sums = %v (err %v), want hl-a:-3 hl-b:-1", sums, err)
+	}
+}
+
+// End-to-end through ingestWalletLedgerEvents: the funding watermark must not
+// advance while a row's persist fails, and must advance after recovery.
+func TestIngestWalletLedgerEvents_FundingWatermarkHeldOnPersistFailure(t *testing.T) {
+	db := newLedgerTestDB(t)
+	prev := tradeRecorder
+	defer func() { tradeRecorder = prev }()
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xtest"}
+	st := WalletLedgerState{FundingSinceMs: 1000, TransfersSinceMs: 1000}
+	if err := db.UpsertWalletLedgerState(key.Platform, key.Account, st); err != nil {
+		t.Fatalf("UpsertWalletLedgerState: %v", err)
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {ID: "hl-a", Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Side: "long", Quantity: 0.3, AvgCost: 60000},
+		}},
+	}}
+	virtualQty := map[string]map[string]float64{"BTC": {"hl-a": 0.3}}
+	res := walletLedgerFetchResult{
+		Key: key, State: st, StateFound: true,
+		Funding: []hlLedgerEvent{
+			{Time: 2000, Hash: "0xf1", Delta: hlLedgerEventDelta{Type: "funding", Coin: "BTC", USDC: "-1.0"}},
+		},
+		FundingFetched: true,
+	}
+
+	tradeRecorder = func(string, Trade) error { return errInjectedPersist }
+	ingestWalletLedgerEvents(db, state, res, virtualQty)
+	got, _, err := db.GetWalletLedgerState(key.Platform, key.Account)
+	if err != nil || got.FundingSinceMs != 1000 {
+		t.Fatalf("funding watermark = %d (err %v), want 1000 (held on persist failure)", got.FundingSinceMs, err)
+	}
+
+	// Recovery: flush the stranded row, then the next cycle advances.
+	ass := state.Strategies["hl-a"]
+	if err := db.InsertTrade("hl-a", ass.TradeHistory[0]); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	ass.TradeHistory[0].persisted = true
+	tradeRecorder = db.InsertTrade
+	ingestWalletLedgerEvents(db, state, res, virtualQty)
+	got, _, _ = db.GetWalletLedgerState(key.Platform, key.Account)
+	if got.FundingSinceMs != 2001 {
+		t.Errorf("funding watermark = %d, want 2001 after recovery", got.FundingSinceMs)
+	}
+	if len(ass.TradeHistory) != 1 {
+		t.Errorf("recovery double-booked: %d rows", len(ass.TradeHistory))
+	}
+}
+
+// With no eager persistence configured (tradeRecorder=nil, batch SaveState
+// flush), a successful split must still advance — persisted=false is the
+// legitimate steady state there, not a failure signal.
+func TestIngestFundingEvent_NoEagerPersistStillAdvances(t *testing.T) {
+	db := newLedgerTestDB(t)
+	prev := tradeRecorder
+	tradeRecorder = nil
+	defer func() { tradeRecorder = prev }()
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {ID: "hl-a", Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Side: "long", Quantity: 0.3, AvgCost: 60000},
+		}},
+	}}
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xtest"}
+	ev := hlLedgerEvent{Time: 1700000000000, Hash: "0xnil", Delta: hlLedgerEventDelta{Type: "funding", Coin: "BTC", USDC: "-2.0"}}
+	if ok := ingestFundingEvent(db, state, key, ev, map[string]map[string]float64{"BTC": {"hl-a": 0.3}}); !ok {
+		t.Fatal("batch-persist context must not hold the watermark")
 	}
 }
 
@@ -737,5 +871,72 @@ func TestApplyTradeLedgerPlan_RoundTrip(t *testing.T) {
 	sums, err := db.LedgerNetByStrategy([]string{"hl-x"})
 	if err != nil || math.Abs(sums["hl-x"]-(99-2.05)) > 1e-9 {
 		t.Errorf("ledger sum = %v (err %v), want 96.95", sums["hl-x"], err)
+	}
+}
+
+// errInjectedPersist simulates an eager trade-persist failure.
+var errInjectedPersist = fmt.Errorf("injected persist failure")
+
+// A matched row whose ONLY stale column is value (price already equals the
+// VWAP) must still be rewritten — value is one of the columns the repair owns.
+func TestPlanTradeLedgerForStrategy_StaleValueAloneTriggersRewrite(t *testing.T) {
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	trades := []TradeBackfillRow{
+		{RowID: 1, Timestamp: base, Symbol: "BTC", Side: "buy", Quantity: 0.1, Price: 60010,
+			Value:       5000, // inconsistent with qty*price (= 6001)
+			ExchangeFee: 1.95, PnLGross: true, FeeSource: FeeSourceUserFills, ExchangeOrderID: "100"},
+	}
+	fills := map[string]HLFillSummary{"100": {Fee: 1.95, Qty: 0.1, Px: 60010}}
+	plan := planTradeLedgerForStrategy("hl-x", trades, fills, 1000, 0)
+	if len(plan.Changes) != 1 {
+		t.Fatalf("stale value alone must trigger a rewrite, got %d changes", len(plan.Changes))
+	}
+	if c := plan.Changes[0]; math.Abs(c.NewValue-6001) > 1e-9 {
+		t.Errorf("NewValue = %v, want 6001 (qty × VWAP)", c.NewValue)
+	}
+	// Idempotent after the repair; fully-correct rows stay untouched.
+	trades[0].Value = 6001
+	if second := planTradeLedgerForStrategy("hl-x", trades, fills, 1000, plan.NewCash); len(second.Changes) != 0 {
+		t.Errorf("corrected row re-flagged: %+v", second.Changes)
+	}
+}
+
+// The post-apply baseline reset must touch ONLY wallets whose members were
+// repaired — clearing an untouched wallet's baseline would fold its genuine
+// standing drift into a fresh offset and silence a real alarm.
+func TestResetWalletBaselinesForAppliedStrategies_Scoped(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xmain")
+	db := newLedgerTestDB(t)
+	seed := WalletLedgerState{FundingSinceMs: 1, TransfersSinceMs: 1, BaselineOffset: 7.5, BaselineSet: true}
+	for _, acct := range []string{"0xmain", "0xother"} {
+		if err := db.UpsertWalletLedgerState("hyperliquid", acct, seed); err != nil {
+			t.Fatalf("seed %s: %v", acct, err)
+		}
+	}
+	// Two wallets via per-strategy account overrides (walletKeyRegistry reads
+	// hl_account_address from args-independent config Account fields); use
+	// the strategies' resolved accounts as detectSharedWallets sees them.
+	strategies := []StrategyConfig{
+		{ID: "hl-a1", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+		{ID: "hl-a2", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}},
+	}
+	resetWalletBaselinesForAppliedStrategies(db, strategies, map[string]bool{"hl-a1": true})
+
+	got, _, err := db.GetWalletLedgerState("hyperliquid", "0xmain")
+	if err != nil || got.BaselineSet {
+		t.Errorf("repaired wallet baseline = %+v (err %v), want cleared", got, err)
+	}
+	other, _, err := db.GetWalletLedgerState("hyperliquid", "0xother")
+	if err != nil || !other.BaselineSet || math.Abs(other.BaselineOffset-7.5) > 1e-9 {
+		t.Errorf("untouched wallet baseline = %+v (err %v), want preserved 7.5", other, err)
+	}
+	// No applied members → nothing reset.
+	if err := db.UpsertWalletLedgerState("hyperliquid", "0xmain", seed); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	resetWalletBaselinesForAppliedStrategies(db, strategies, map[string]bool{})
+	got, _, _ = db.GetWalletLedgerState("hyperliquid", "0xmain")
+	if !got.BaselineSet {
+		t.Error("no-op apply must reset no baselines")
 	}
 }

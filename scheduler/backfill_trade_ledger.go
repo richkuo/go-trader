@@ -31,9 +31,10 @@ import (
 //
 // Idempotent: a second run against the same fills produces zero changes —
 // migration keys off the pnl_gross marker and the userFills true-up converges.
-// --apply also resets every wallet's ledger drift baseline
-// (ResetWalletLedgerBaselines) so the repaired ledger re-anchors instead of
-// reading the correction as drift.
+// --apply also resets the ledger drift baseline of each wallet whose members
+// were repaired (ResetWalletLedgerBaseline, scoped) so the repaired ledger
+// re-anchors instead of reading the correction as drift; untouched wallets
+// keep their baseline and any standing drift there keeps alarming.
 
 // TradeLedgerChange is one trade-row rewrite produced by planTradeLedgerForStrategy.
 type TradeLedgerChange struct {
@@ -211,6 +212,7 @@ func planTradeLedgerForStrategy(
 			math.Abs(nv.Fee-t.ExchangeFee) > 1e-9 ||
 			math.Abs(nv.PnL-t.RealizedPnL) > 1e-9 ||
 			math.Abs(nv.Price-t.Price) > 1e-9 ||
+			math.Abs(nv.Value-t.Value) > 1e-9 ||
 			nv.FeeSource != t.FeeSource
 		if changed {
 			plan.Changes = append(plan.Changes, TradeLedgerChange{
@@ -405,7 +407,7 @@ func runBackfillTradeLedger(args []string) int {
 	fmt.Printf("\n=== %s mode ===\n", mode)
 
 	exitCode := 0
-	applied := false
+	appliedIDs := make(map[string]bool)
 	for _, sc := range targets {
 		ss := state.Strategies[sc.ID]
 		var oldCash, initialCapital float64
@@ -441,26 +443,29 @@ func runBackfillTradeLedger(args []string) int {
 				exitCode = 1
 				continue
 			}
+			if len(plan.Changes) == 0 && len(plan.ClosedPositions) == 0 && math.Abs(plan.NewCash-plan.OldCash) <= 1e-9 {
+				fmt.Printf("[%s] APPLY skipped: no changes (ledger already repaired)\n", sc.ID)
+				continue
+			}
 			if err := stateDB.ApplyTradeLedgerPlan(plan); err != nil {
 				fmt.Fprintf(os.Stderr, "[%s] APPLY failed: %v\n", sc.ID, err)
 				exitCode = 1
 				continue
 			}
-			applied = true
+			appliedIDs[sc.ID] = true
 			fmt.Printf("[%s] APPLY committed: %d trade rows, %d closed_positions, cash %.4f → %.4f\n",
 				sc.ID, len(plan.Changes), len(plan.ClosedPositions), plan.OldCash, plan.NewCash)
 		}
 	}
 
-	if applied {
-		// Repaired ledger sums shift Σ member values — recompute each wallet's
-		// drift baseline on the next reconciled cycle instead of alarming on
-		// the correction itself.
-		if err := stateDB.ResetWalletLedgerBaselines(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to reset wallet ledger drift baselines: %v\n", err)
-		} else {
-			fmt.Println("Reset shared-wallet ledger drift baselines (recomputed next cycle).")
-		}
+	if len(appliedIDs) > 0 {
+		// Repaired ledger sums shift Σ member values — recompute the drift
+		// baseline on the next reconciled cycle instead of alarming on the
+		// correction itself. Scoped to wallets whose members were actually
+		// repaired: a targeted --strategy run must not re-anchor an unrelated
+		// wallet's baseline (that would fold its genuine standing drift into
+		// the new offset and silence a real alarm).
+		resetWalletBaselinesForAppliedStrategies(stateDB, cfg.Strategies, appliedIDs)
 	}
 	if !*apply {
 		fmt.Println("\n(dry-run — re-run with --apply to commit)")
@@ -488,5 +493,42 @@ func printTradeLedgerReport(plan TradeLedgerPlan) {
 	if plan.CashBaselineDivergent {
 		fmt.Printf("  WARNING: cash baseline diverges from pre-correction replay by $%+.4f\n", plan.OldCash-plan.ReplayedCash)
 		fmt.Printf("           (replayed=$%.4f vs stored=$%.4f) — --apply requires --reset-cash.\n", plan.ReplayedCash, plan.OldCash)
+	}
+}
+
+// resetWalletBaselinesForAppliedStrategies clears the drift baseline of every
+// shared wallet that has at least one repaired member (perps members from
+// detectSharedWallets plus same-account live manual strategies — the same
+// membership the reconcile uses). Wallets untouched by the apply keep their
+// baseline so genuine standing drift there keeps alarming.
+func resetWalletBaselinesForAppliedStrategies(sdb *StateDB, strategies []StrategyConfig, appliedIDs map[string]bool) {
+	wallets := detectSharedWallets(strategies)
+	keys := make([]SharedWalletKey, 0, len(wallets))
+	for key := range wallets {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Platform != keys[j].Platform {
+			return keys[i].Platform < keys[j].Platform
+		}
+		return keys[i].Account < keys[j].Account
+	})
+	for _, key := range keys {
+		members := sharedWalletMembersWithManual(key, wallets[key], strategies)
+		touched := false
+		for _, id := range members {
+			if appliedIDs[id] {
+				touched = true
+				break
+			}
+		}
+		if !touched {
+			continue
+		}
+		if err := sdb.ResetWalletLedgerBaseline(key.Platform, key.Account); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to reset ledger drift baseline for %s: %v\n", sharedWalletKeyLabel(key), err)
+		} else {
+			fmt.Printf("Reset ledger drift baseline for %s (recomputed next cycle).\n", sharedWalletKeyLabel(key))
+		}
 	}
 }
