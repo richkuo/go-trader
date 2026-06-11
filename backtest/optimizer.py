@@ -482,6 +482,12 @@ DEFAULT_PARAM_RANGES = {
         "exit_threshold": [0.0, 0.05, 0.10],
         "eff_entry": [0.25, 0.35, 0.45],
     },
+    "funding_skew": {
+        "funding_window": [96, 168, 336],
+        "z_entry": [1.0, 1.5, 2.0],
+        "z_exit": [0.25, 0.5],
+        "confirm_ema": [10, 20, 40],
+    },
     "consolidation_range": {
         "box_width_pct": [0.03, 0.05, 0.08, 0.10],
         "min_bars": [12, 16, 24],

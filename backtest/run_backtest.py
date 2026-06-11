@@ -18,6 +18,37 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 
 from atr import ensure_atr_indicator
 from data_fetcher import load_cached_data
+
+# Strategies whose signals read a per-bar `funding_rate` column. The column is
+# attached after the OHLCV load (Hyperliquid hourly funding, cached in SQLite,
+# merge_asof backward — see shared_tools/funding_fetcher). Without it these
+# strategies are fail-safe flat, which silently zeroes the backtest, so the
+# attach failure warns loudly.
+FUNDING_COLUMN_STRATEGIES = {"funding_skew"}
+
+
+def _attach_funding_if_needed(df, strategy_name, symbol, since):
+    if strategy_name not in FUNDING_COLUMN_STRATEGIES or df.empty:
+        return df
+    from funding_fetcher import attach_funding_column, load_cached_funding
+    coin = symbol.split("/")[0]
+    try:
+        # Pass the data's actual window end so a repeat run over the same
+        # window is a cache hit regardless of elapsed wall-clock time
+        # (end_date=None compares coverage against `now`, refetching forever).
+        funding = load_cached_funding(coin, since, end_date=df.index[-1])
+    except Exception as e:
+        print(f"[WARN] funding history fetch failed for {coin}: {e} — "
+              f"'{strategy_name}' will produce zero entries.")
+        funding = None
+    out = attach_funding_column(df, funding)
+    have = int(out["funding_rate"].notna().sum())
+    if have == 0:
+        print(f"[WARN] no funding data attached for {coin} since {since} — "
+              f"'{strategy_name}' will produce zero entries.")
+    else:
+        print(f"  Funding: {have}/{len(out)} bars covered (HL hourly, coin={coin})")
+    return out
 from htf_filter import get_default_htf, apply_htf_filter  # noqa: E402
 from registry_loader import load_registry
 from backtester import Backtester, format_results
@@ -368,6 +399,7 @@ def run_single_backtest(
     if df.empty:
         print("No data available!")
         return None
+    df = _attach_funding_if_needed(df, strategy_name, symbol, since)
 
     print(f"  Data: {len(df)} candles from {df.index[0]} to {df.index[-1]}")
 
@@ -546,6 +578,7 @@ def run_walk_forward(
     if df.empty:
         print("No data available!")
         return None
+    df = _attach_funding_if_needed(df, strategy_name, symbol, since)
 
     result = walk_forward_optimize(
         df, strategy_name, param_ranges,

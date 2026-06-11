@@ -133,8 +133,11 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
 
         adapter = HyperliquidExchangeAdapter()
 
-        # Fetch funding rate data for delta-neutral strategy
+        # Fetch funding rate data for funding-aware strategies. delta_neutral
+        # gets the scalar current/7d-avg pair; funding_skew needs per-bar
+        # history aligned to the OHLCV window, fetched after the candles below.
         strategy_params = {}
+        funding_aware_name = open_strategy or strategy_name
         if strategy_name == "delta_neutral_funding":
             try:
                 current_rate = adapter.get_funding_rate(symbol)
@@ -167,6 +170,19 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             sys.exit(1)
 
         df = _make_dataframe(candles)
+
+        if funding_aware_name == "funding_skew":
+            # Paginated range fetch: the OHLCV window can exceed the single-call
+            # funding_history cap (~500 hourly records), e.g. 200 4h bars.
+            try:
+                start_ms = int(df["timestamp"].iloc[0])
+                records = adapter.get_funding_history_range(symbol, start_ms)
+                strategy_params["funding_records"] = records
+                print(f"Funding history {symbol}: {len(records)} records since bar0",
+                      file=sys.stderr)
+            except Exception as e:
+                print(f"Warning: failed to fetch funding history: {e}", file=sys.stderr)
+
         stdout_regime, live_regime, strategy_regime = prepare_check_regime(
             df,
             regime_enabled=regime_enabled,
@@ -216,7 +232,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         # Apply HTF trend filter if enabled (skip for funding-rate strategies — #103)
         htf_info = {}
         htf_strategy_name = open_strategy or strategy_name
-        if htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
+        if htf_filter_enabled and htf_strategy_name not in ("delta_neutral_funding", "funding_skew"):
             from htf_filter import htf_trend_filter, apply_htf_filter
 
             def _fetch_htf(sym, tf, limit):

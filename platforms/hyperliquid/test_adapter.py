@@ -782,3 +782,68 @@ class TestFillsSummaryByOID:
         adapter, mock_info = self._make_adapter()
         assert adapter.fills_summary_by_oid(0, since_ms=1000) == {}
         mock_info.user_fills_by_time.assert_not_called()
+
+
+class TestFundingHistoryRange:
+    """get_funding_history_range — pagination past the ~500-record API cap (#960)."""
+
+    _HOUR = 3_600_000
+
+    def _paged_info(self, total_hours, page_size=500, base_ms=1_700_000_000_000):
+        """funding_history stub: returns up to page_size hourly records
+        starting at the requested time, oldest-first — the real API shape."""
+        all_records = [
+            {"fundingRate": str((i % 7 - 3) * 1e-5), "time": base_ms + i * self._HOUR}
+            for i in range(total_hours)
+        ]
+
+        def funding_history(symbol, start_time):
+            eligible = [r for r in all_records if r["time"] >= start_time]
+            return eligible[:page_size]
+
+        mock_info = MagicMock()
+        mock_info.funding_history.side_effect = funding_history
+        return mock_info, all_records, base_ms
+
+    def _adapter(self, mock_info):
+        mod = _load_hl_adapter(mock_info_cls=MagicMock(return_value=mock_info))
+        return mod.HyperliquidExchangeAdapter()
+
+    def test_paginates_past_single_page_cap(self):
+        mock_info, all_records, base = self._paged_info(total_hours=1200)
+        adapter = self._adapter(mock_info)
+        out = adapter.get_funding_history_range("BTC", base, base + 1199 * self._HOUR)
+        assert len(out) == 1200
+        assert out[0]["time"] == base
+        assert out[-1]["time"] == base + 1199 * self._HOUR
+        assert mock_info.funding_history.call_count >= 3
+
+    def test_single_page_range(self):
+        mock_info, _, base = self._paged_info(total_hours=100)
+        adapter = self._adapter(mock_info)
+        out = adapter.get_funding_history_range("BTC", base)
+        assert len(out) == 100
+        times = [r["time"] for r in out]
+        assert times == sorted(times)
+        assert len(set(times)) == len(times), "must dedupe on time"
+
+    def test_end_ms_bound_respected(self):
+        mock_info, _, base = self._paged_info(total_hours=1200)
+        adapter = self._adapter(mock_info)
+        out = adapter.get_funding_history_range("BTC", base, base + 49 * self._HOUR)
+        assert len(out) == 50
+        assert out[-1]["time"] == base + 49 * self._HOUR
+
+    def test_api_error_returns_empty(self):
+        mock_info = MagicMock()
+        mock_info.funding_history.side_effect = Exception("boom")
+        adapter = self._adapter(mock_info)
+        assert adapter.get_funding_history_range("BTC", 0) == []
+
+    def test_no_progress_terminates(self):
+        """An API that keeps returning the same page must not loop forever."""
+        mock_info, all_records, base = self._paged_info(total_hours=10)
+        mock_info.funding_history.side_effect = lambda s, t: all_records[:5]
+        adapter = self._adapter(mock_info)
+        out = adapter.get_funding_history_range("BTC", base, base + 100 * self._HOUR)
+        assert len(out) == 5
