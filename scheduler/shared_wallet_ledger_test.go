@@ -940,3 +940,162 @@ func TestResetWalletBaselinesForAppliedStrategies_Scoped(t *testing.T) {
 		t.Error("no-op apply must reset no baselines")
 	}
 }
+
+// A failure on an event sharing a millisecond with an already-processed
+// sibling must NOT advance the watermark past that millisecond — otherwise
+// the failed event is never re-fetched (permanent ledger shortfall). HL
+// emits same-ms events routinely (two coins funding at one hourly tick).
+func TestIngestWalletLedgerEvents_SameMsFailureDoesNotSkipEvent(t *testing.T) {
+	db := newLedgerTestDB(t)
+	prev := tradeRecorder
+	defer func() { tradeRecorder = prev }()
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xtest"}
+	st := WalletLedgerState{FundingSinceMs: 1000, TransfersSinceMs: 1000}
+	if err := db.UpsertWalletLedgerState(key.Platform, key.Account, st); err != nil {
+		t.Fatalf("UpsertWalletLedgerState: %v", err)
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {ID: "hl-a", Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Side: "long", Quantity: 0.3, AvgCost: 60000},
+		}},
+		"hl-b": {ID: "hl-b", Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 3000},
+		}},
+	}}
+	virtualQty := map[string]map[string]float64{"BTC": {"hl-a": 0.3}, "ETH": {"hl-b": 1}}
+	res := walletLedgerFetchResult{
+		Key: key, State: st, StateFound: true,
+		Funding: []hlLedgerEvent{
+			{Time: 2000, Hash: "0xbtc", Delta: hlLedgerEventDelta{Type: "funding", Coin: "BTC", USDC: "-1.0"}},
+			{Time: 2000, Hash: "0xeth", Delta: hlLedgerEventDelta{Type: "funding", Coin: "ETH", USDC: "-2.0"}},
+		},
+		FundingFetched: true,
+	}
+	// hl-a (BTC) persists; hl-b (ETH) fails — both events share t=2000.
+	tradeRecorder = func(strategyID string, trade Trade) error {
+		if strategyID == "hl-b" {
+			return errInjectedPersist
+		}
+		return db.InsertTrade(strategyID, trade)
+	}
+	ingestWalletLedgerEvents(db, state, res, virtualQty)
+	got, _, err := db.GetWalletLedgerState(key.Platform, key.Account)
+	if err != nil || got.FundingSinceMs > 2000 {
+		t.Fatalf("funding watermark = %d (err %v), must not pass 2000 (failed same-ms event)", got.FundingSinceMs, err)
+	}
+
+	// SaveState-equivalent flush lands hl-b's stranded in-memory row (the
+	// conservative hold keeps the watermark until the row is durable), then
+	// the recovery cycle re-fetches both events: BTC dedup-skips, ETH's
+	// flushed row dedup-skips too, and the watermark releases.
+	bss := state.Strategies["hl-b"]
+	if err := db.InsertTrade("hl-b", bss.TradeHistory[0]); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	bss.TradeHistory[0].persisted = true
+	tradeRecorder = db.InsertTrade
+	res.State = got
+	ingestWalletLedgerEvents(db, state, res, virtualQty)
+	got, _, _ = db.GetWalletLedgerState(key.Platform, key.Account)
+	if got.FundingSinceMs != 2001 {
+		t.Errorf("funding watermark = %d, want 2001 after recovery", got.FundingSinceMs)
+	}
+	if len(state.Strategies["hl-a"].TradeHistory) != 1 || len(state.Strategies["hl-b"].TradeHistory) != 1 {
+		t.Errorf("rows = %d/%d, want 1/1 (no loss, no double-book)",
+			len(state.Strategies["hl-a"].TradeHistory), len(state.Strategies["hl-b"].TradeHistory))
+	}
+	sums, err := db.LedgerNetByStrategy([]string{"hl-a", "hl-b"})
+	if err != nil || math.Abs(sums["hl-a"]-(-1)) > 1e-9 || math.Abs(sums["hl-b"]-(-2)) > 1e-9 {
+		t.Errorf("ledger sums = %v (err %v), want hl-a:-1 hl-b:-2", sums, err)
+	}
+}
+
+// A failure at a LATER millisecond must still advance the watermark past the
+// processed prefix (no regression to never-advancing).
+func TestIngestWalletLedgerEvents_LaterFailureStillAdvancesPastPrefix(t *testing.T) {
+	db := newLedgerTestDB(t)
+	prev := tradeRecorder
+	defer func() { tradeRecorder = prev }()
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xtest"}
+	st := WalletLedgerState{FundingSinceMs: 1000, TransfersSinceMs: 1000}
+	if err := db.UpsertWalletLedgerState(key.Platform, key.Account, st); err != nil {
+		t.Fatalf("UpsertWalletLedgerState: %v", err)
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {ID: "hl-a", Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Side: "long", Quantity: 0.3, AvgCost: 60000},
+		}},
+		"hl-b": {ID: "hl-b", Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 3000},
+		}},
+	}}
+	virtualQty := map[string]map[string]float64{"BTC": {"hl-a": 0.3}, "ETH": {"hl-b": 1}}
+	res := walletLedgerFetchResult{
+		Key: key, State: st, StateFound: true,
+		Funding: []hlLedgerEvent{
+			{Time: 2000, Hash: "0xbtc", Delta: hlLedgerEventDelta{Type: "funding", Coin: "BTC", USDC: "-1.0"}},
+			{Time: 2005, Hash: "0xeth", Delta: hlLedgerEventDelta{Type: "funding", Coin: "ETH", USDC: "-2.0"}},
+		},
+		FundingFetched: true,
+	}
+	tradeRecorder = func(strategyID string, trade Trade) error {
+		if strategyID == "hl-b" {
+			return errInjectedPersist
+		}
+		return db.InsertTrade(strategyID, trade)
+	}
+	ingestWalletLedgerEvents(db, state, res, virtualQty)
+	got, _, err := db.GetWalletLedgerState(key.Platform, key.Account)
+	if err != nil || got.FundingSinceMs != 2001 {
+		t.Fatalf("funding watermark = %d (err %v), want 2001 (past processed prefix, before failed 2005)", got.FundingSinceMs, err)
+	}
+}
+
+// The #455 boot-time Details-parse migration must never touch gross-convention
+// rows: a zero-gross close (no-mark-price AvgCost booking, exact breakeven)
+// has realized_pnl=0 with a NET "PnL: $..." token in Details — parsing it in
+// while pnl_gross=1 stays set would double-subtract the fee via tradeNetPnL.
+func TestBackfillTradeCloseFlags_SkipsGrossConventionRows(t *testing.T) {
+	db := newLedgerTestDB(t)
+	now := time.Now().UTC()
+	// Gross zero-PnL close (the #954 no-mark-price booking shape).
+	if err := db.InsertTrade("hl-x", Trade{
+		Timestamp: now, StrategyID: "hl-x", Symbol: "ETH", Side: "sell", Quantity: 0.5,
+		Price: 2000, Value: 1000, TradeType: "perps", IsClose: true,
+		Details:     "External close @ mark, PnL: $-0.18 (fee $0.18)",
+		RealizedPnL: 0, ExchangeFee: 0.18, PnLGross: true, FeeSource: FeeSourceModeled,
+	}); err != nil {
+		t.Fatalf("InsertTrade gross: %v", err)
+	}
+	// Legacy close row that the migration SHOULD repair.
+	if err := db.InsertTrade("hl-x", Trade{
+		Timestamp: now, StrategyID: "hl-x", Symbol: "BTC", Side: "sell", Quantity: 0.1,
+		Price: 61000, Value: 6100, TradeType: "perps", IsClose: true,
+		Details:     "Close long, PnL: $42.50 (fee $0.50)",
+		RealizedPnL: 0,
+	}); err != nil {
+		t.Fatalf("InsertTrade legacy: %v", err)
+	}
+	// Run twice — restarts must be idempotent for the gross row.
+	for i := 0; i < 2; i++ {
+		if err := db.backfillTradeCloseFlags(); err != nil {
+			t.Fatalf("backfillTradeCloseFlags run %d: %v", i+1, err)
+		}
+	}
+	rows, err := db.ListTradesForBackfill("hl-x")
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows: %v (err %v)", len(rows), err)
+	}
+	for _, r := range rows {
+		switch r.Symbol {
+		case "ETH":
+			if r.RealizedPnL != 0 || !r.PnLGross {
+				t.Errorf("gross row rewritten by legacy migration: pnl=%v gross=%v, want 0/true", r.RealizedPnL, r.PnLGross)
+			}
+		case "BTC":
+			if math.Abs(r.RealizedPnL-42.50) > 1e-9 {
+				t.Errorf("legacy row not migrated: pnl=%v, want 42.50", r.RealizedPnL)
+			}
+		}
+	}
+}

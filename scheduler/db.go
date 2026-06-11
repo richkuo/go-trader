@@ -585,8 +585,14 @@ func (sdb *StateDB) backfillTradeCloseFlags() error {
 	// the "PnL" substring (covers "PnL: $X" and "PnL=$X" forms) — this
 	// matches every Details string emitted by a close-leg RecordTrade
 	// call site at the time of #455.
+	// #954: gross-convention rows are excluded outright. A zero-gross close
+	// (no-mark-price AvgCost booking, exact breakeven) legitimately has
+	// realized_pnl=0 with a "PnL: $..." Details token carrying the NET value;
+	// parsing that into realized_pnl while pnl_gross=1 stays set would make
+	// tradeNetPnL subtract the fee twice. This migration is legacy-rows-only
+	// by definition.
 	_, err := sdb.db.Exec(`UPDATE trades SET is_close = 1
-		WHERE is_close = 0 AND realized_pnl = 0 AND details LIKE '%PnL%'`)
+		WHERE is_close = 0 AND realized_pnl = 0 AND COALESCE(pnl_gross, 0) = 0 AND details LIKE '%PnL%'`)
 	if err != nil {
 		return fmt.Errorf("backfill is_close: %w", err)
 	}
@@ -597,7 +603,7 @@ func (sdb *StateDB) backfillTradeCloseFlags() error {
 	// can never match parseDetailsPnL and would be re-scanned every boot
 	// otherwise.
 	rows, err := sdb.db.Query(`SELECT rowid, details FROM trades
-		WHERE is_close = 1 AND realized_pnl = 0 AND details LIKE '%PnL%'`)
+		WHERE is_close = 1 AND realized_pnl = 0 AND COALESCE(pnl_gross, 0) = 0 AND details LIKE '%PnL%'`)
 	if err != nil {
 		return fmt.Errorf("scan backfill candidates: %w", err)
 	}

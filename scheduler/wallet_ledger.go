@@ -345,6 +345,7 @@ func ingestWalletLedgerEvents(sdb *StateDB, state *AppState, res walletLedgerFet
 
 	if res.FundingFetched {
 		maxTime := st.FundingSinceMs - 1
+		failedAt := int64(-1)
 		events := append([]hlLedgerEvent(nil), res.Funding...)
 		sort.SliceStable(events, func(i, j int) bool { return events[i].Time < events[j].Time })
 		for _, ev := range events {
@@ -352,21 +353,29 @@ func ingestWalletLedgerEvents(sdb *StateDB, state *AppState, res walletLedgerFet
 				continue // endpoint may return boundary events; dedup also covers this
 			}
 			if ok := ingestFundingEvent(sdb, state, key, ev, virtualQty); !ok {
-				// Insert failure: stop before advancing the watermark past this
-				// event so the next cycle retries it.
+				// Persist failure: stop, and remember WHERE — the watermark
+				// must not advance to or past this event's timestamp even if
+				// a same-ms sibling already succeeded (maxTime == ev.Time
+				// would otherwise skip it forever).
+				failedAt = ev.Time
 				break
 			}
 			if ev.Time > maxTime {
 				maxTime = ev.Time
 			}
 		}
-		if maxTime >= st.FundingSinceMs {
-			st.FundingSinceMs = maxTime + 1
+		next := maxTime + 1
+		if failedAt >= 0 && failedAt < next {
+			next = failedAt // re-fetch from the failed event; dedup absorbs same-ms re-reads
+		}
+		if next > st.FundingSinceMs {
+			st.FundingSinceMs = next
 		}
 	}
 
 	if res.TransfersFetched {
 		maxTime := st.TransfersSinceMs - 1
+		failedAt := int64(-1)
 		events := append([]hlLedgerEvent(nil), res.Transfers...)
 		sort.SliceStable(events, func(i, j int) bool { return events[i].Time < events[j].Time })
 		for _, ev := range events {
@@ -380,14 +389,19 @@ func ingestWalletLedgerEvents(sdb *StateDB, state *AppState, res walletLedgerFet
 			}
 			if err := sdb.InsertWalletTransfer(key.Platform, key.Account, ev.Time, ev.Delta.Type, amount, transferDedupID(ev)); err != nil {
 				fmt.Printf("[WARN] wallet-ledger %s: transfer insert failed: %v — retrying next cycle\n", sharedWalletKeyLabel(key), err)
+				failedAt = ev.Time
 				break
 			}
 			if ev.Time > maxTime {
 				maxTime = ev.Time
 			}
 		}
-		if maxTime >= st.TransfersSinceMs {
-			st.TransfersSinceMs = maxTime + 1
+		next := maxTime + 1
+		if failedAt >= 0 && failedAt < next {
+			next = failedAt // same-ms sibling may have succeeded; never skip the failed event
+		}
+		if next > st.TransfersSinceMs {
+			st.TransfersSinceMs = next
 		}
 	}
 
