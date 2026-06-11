@@ -663,6 +663,52 @@ class HyperliquidExchangeAdapter:
         except Exception:
             return []
 
+    def get_funding_history_range(self, symbol: str, start_ms: int,
+                                  end_ms: int = None) -> list:
+        """Get historical funding snapshots over an arbitrary range, paginated.
+
+        ``funding_history`` returns at most ~500 records (oldest-first) per
+        call — about 20 days of hourly funding — so ``get_funding_history``
+        silently truncates longer windows. This walks forward page by page
+        until ``end_ms`` (default: now) is covered or the API stops making
+        progress.
+
+        Args:
+            symbol: Coin name (e.g. 'BTC').
+            start_ms: Range start, Unix ms.
+            end_ms: Range end, Unix ms (default now).
+
+        Returns list of {"rate": float, "time": int} dicts, oldest first,
+        de-duplicated on time. Empty list on any API failure.
+        """
+        if end_ms is None:
+            end_ms = int(time.time() * 1000)
+        out = []
+        seen = set()
+        cursor = int(start_ms)
+        try:
+            while cursor < end_ms:
+                records = self._info.funding_history(symbol, cursor)
+                if not records:
+                    break
+                progressed = False
+                for r in records:
+                    t = int(r["time"])
+                    if t > end_ms:
+                        continue
+                    if t not in seen:
+                        seen.add(t)
+                        out.append({"rate": float(r["fundingRate"]), "time": t})
+                        progressed = True
+                last_t = int(records[-1]["time"])
+                if last_t <= cursor or not progressed:
+                    break
+                cursor = last_t + 1
+        except Exception:
+            return []
+        out.sort(key=lambda r: r["time"])
+        return out
+
     # ─────────────────────────────────────────────
     # Account data (requires HYPERLIQUID_ACCOUNT_ADDRESS)
     # ─────────────────────────────────────────────

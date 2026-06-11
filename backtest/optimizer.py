@@ -482,6 +482,12 @@ DEFAULT_PARAM_RANGES = {
         "exit_threshold": [0.0, 0.05, 0.10],
         "eff_entry": [0.25, 0.35, 0.45],
     },
+    "funding_skew": {
+        "funding_window": [96, 168, 336],
+        "z_entry": [1.0, 1.5, 2.0],
+        "z_exit": [0.25, 0.5],
+        "confirm_ema": [10, 20, 40],
+    },
     "regime_adaptive": {
         "period": [14, 20, 30],
         "adx_threshold": [20.0, 25.0, 30.0],

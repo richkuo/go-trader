@@ -62,6 +62,7 @@ var knownShortNames = map[string]string{
 	"liquidity_sweeps":      "liqsw",
 	"parabolic_sar":         "psar",
 	"delta_neutral_funding": "dnf",
+	"funding_skew":          "fskew",
 	"supertrend":            "st",
 	"squeeze_momentum":      "sqm",
 	"heikin_ashi_ema":       "hae",
@@ -98,6 +99,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"consolidation_range": true, // emits short at the top edge of a consolidation box (range-edge mean-reversion)
 	"mtf_confluence":      true, // futures variant (allow_short) shorts LTF pullback rallies in HTF downtrends (#957)
 	"vol_momentum":        true, // emits short on ATR-normalized negative momentum with efficiency confirmation (#959)
+	"funding_skew":        true, // shorts crowded-long funding extremes on EMA breakdown (#960)
 	"regime_adaptive":     true, // futures variant (allow_short) shorts clean downtrend breakouts and fades range tops (#958)
 }
 
@@ -166,6 +168,7 @@ var defaultPerpsStrategies = []stratDef{
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
+	{ID: "funding_skew", ShortName: "fskew"},
 	{ID: "range_scalper", ShortName: "rs"},
 	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
 	{ID: "adx_trend", ShortName: "adxt"},
@@ -193,6 +196,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "parabolic_sar", ShortName: "psar"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
+	{ID: "funding_skew", ShortName: "fskew"},
 	{ID: "range_scalper", ShortName: "rs"},
 	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
 	{ID: "adx_trend", ShortName: "adxt"},
