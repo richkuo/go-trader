@@ -45,6 +45,7 @@ from bear_pullback_st import bear_pullback_st_core
 from donchian_breakout import donchian_breakout_core
 from momentum_pro import momentum_pro_core
 from mean_reversion_pro import mean_reversion_pro_core
+from mtf_confluence import mtf_confluence_core
 from regime_adaptive import regime_adaptive_core
 from session_breakout import session_breakout_core
 from vwap_rejection_st import vwap_rejection_st_core
@@ -475,7 +476,18 @@ def supertrend_strategy(df: pd.DataFrame, atr_period: int = 10, multiplier: floa
     final_lower = basic_lower.copy()
     direction = pd.Series(0, index=result.index, dtype=int)
 
-    for i in range(1, n):
+    # Seed the recursion from the first non-NaN ATR row; the rolling ATR is NaN
+    # for the first atr_period-1 bars and NaN comparisons are always False, so
+    # starting at i=1 would carry NaN bands forward forever and never emit a signal.
+    atr_valid = atr.notna().to_numpy()
+    if not atr_valid.any():
+        result["supertrend"] = np.nan
+        result["st_direction"] = direction
+        result["signal"] = 0
+        return result
+    start = int(atr_valid.argmax())
+
+    for i in range(start + 1, n):
         if basic_upper.iloc[i] < final_upper.iloc[i-1] or result["close"].iloc[i-1] > final_upper.iloc[i-1]:
             final_upper.iloc[i] = basic_upper.iloc[i]
         else:
@@ -1053,6 +1065,25 @@ def consolidation_range_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "mtf_confluence",
+    "MTF Confluence — higher-timeframe EMA trend gate (resampled in-frame, no extra data) over native-frame pullback resumption entries; exits when the HTF trend flips",
+    {
+        "htf_factor": 4, "htf_ema_fast": 20, "htf_ema_slow": 40,
+        "htf_sep_pct": 0.001, "ltf_ema": 20, "pullback_window": 6,
+        "pullback_touch_buffer_pct": 0.0, "allow_short": False,
+    },
+    variants={
+        "futures": {
+            "description": "MTF Confluence — bidirectional: HTF EMA trend gate over native-frame pullback resumption entries; shorts mirror the logic in HTF downtrends",
+            "default_params": {"allow_short": True},
+        },
+    },
+)
+def mtf_confluence_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return mtf_confluence_core(df, **params)
+
+
+@register(
     "regime_adaptive",
     "Regime Adaptive — per-bar composite regime metrics (return/range/Kaufman efficiency + ADX) switch between breakout entries in clean trends and mean-reversion fades in ranges; flat in chop",
     {
@@ -1102,7 +1133,8 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "donchian_breakout", "tema_cross",
-        "momentum_pro", "mean_reversion_pro", "regime_adaptive",
+        "momentum_pro", "mean_reversion_pro", "mtf_confluence",
+        "regime_adaptive",
         "hold",
     ],
     "futures": [
@@ -1115,6 +1147,6 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "sweep_squeeze_combo", "adx_trend", "delta_neutral_funding",
         "donchian_breakout", "session_breakout", "bear_pullback_st",
         "vwap_rejection_st", "momentum_pro", "mean_reversion_pro",
-        "consolidation_range", "regime_adaptive", "hold",
+        "consolidation_range", "mtf_confluence", "regime_adaptive", "hold",
     ],
 }

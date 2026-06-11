@@ -152,7 +152,12 @@ def regime_adaptive_core(
     result["ra_efficiency"] = np.nan
     result["ra_adx"] = 0.0
     result["ra_z"] = np.nan
-    if n == 0:
+    # _compute_adx_components indexes smooth_tr[adx_period] unguarded — any
+    # frame with n <= adx_period raises IndexError. Too short to prime ADX ⇒
+    # return the already-initialized all-flat frame (a short backtest window
+    # or newly-listed symbol must be a no-signal frame, not a script failure).
+    adx_period = min(period, _COMPOSITE_ADX_PERIOD_CAP)
+    if n <= adx_period:
         return result
 
     close = result["close"]
@@ -181,7 +186,6 @@ def regime_adaptive_core(
     path = close.diff().abs().rolling(window=period - 1).sum()
     efficiency = (net.abs() / path).where(path > 0, 0.0)
 
-    adx_period = min(period, _COMPOSITE_ADX_PERIOD_CAP)
     comps = _compute_adx_components(high.values, low.values, close.values, adx_period)
     adx = pd.Series(comps["adx"], index=result.index)
 

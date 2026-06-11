@@ -69,6 +69,25 @@ def test_empty_df_is_safe():
     assert len(out) == 0
 
 
+def test_short_inputs_return_flat_never_raise():
+    """Frames too short to prime ADX (n <= adx_period) must return a valid
+    all-flat frame, never IndexError — a newly-listed symbol with few candles
+    is a no-signal frame, not a script failure."""
+    # Default period=20 caps adx_period at 14: cover n below, at, and just
+    # past the boundary, plus the still-all-zero ADX warmup band.
+    for n in (1, 5, 13, 14, 15, 28):
+        out = regime_adaptive_core(make_ohlcv([100.0 + 0.1 * i for i in range(n)]))
+        assert len(out) == n
+        assert (out["signal"] == 0).all()
+        assert (out["position"] == 0).all()
+    # period < 14 ⇒ adx_period == period (cap inactive): boundary at n == period.
+    for n in (8, 9, 16):
+        out = regime_adaptive_core(
+            make_ohlcv([100.0 + 0.1 * i for i in range(n)]), period=8)
+        assert len(out) == n
+        assert (out["signal"] == 0).all()
+
+
 def test_warmup_returns_no_signal():
     out = regime_adaptive_core(make_ohlcv([100.0] * 30))
     assert (out["signal"] == 0).all()

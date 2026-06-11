@@ -75,6 +75,7 @@ var knownShortNames = map[string]string{
 	"momentum_pro":          "mompro",
 	"mean_reversion_pro":    "mrpro",
 	"consolidation_range":   "cr",
+	"mtf_confluence":        "mtfc",
 	"regime_adaptive":       "regad",
 }
 
@@ -94,6 +95,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"momentum_pro":        true, // emits short on stacked-bearish-EMA trend-pullback breakdowns
 	"mean_reversion_pro":  true, // emits short on overbought reversion in no-trend regimes
 	"consolidation_range": true, // emits short at the top edge of a consolidation box (range-edge mean-reversion)
+	"mtf_confluence":      true, // futures variant (allow_short) shorts LTF pullback rallies in HTF downtrends (#957)
 	"regime_adaptive":     true, // futures variant (allow_short) shorts clean downtrend breakouts and fades range tops (#958)
 }
 
@@ -143,6 +145,7 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "tema_cross", ShortName: "temac"},
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
+	{ID: "mtf_confluence", ShortName: "mtfc"},
 	{ID: "regime_adaptive", ShortName: "regad"},
 }
 
@@ -167,6 +170,7 @@ var defaultPerpsStrategies = []stratDef{
 	{ID: "session_breakout", ShortName: "sbo"},
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
+	{ID: "mtf_confluence", ShortName: "mtfc"},
 	{ID: "regime_adaptive", ShortName: "regad"},
 }
 
@@ -194,6 +198,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "tema_cross_bd", ShortName: "temacb"},
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
+	{ID: "mtf_confluence", ShortName: "mtfc"},
 	{ID: "regime_adaptive", ShortName: "regad"},
 }
 
