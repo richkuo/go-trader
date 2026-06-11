@@ -92,7 +92,7 @@ Python provides the quant libraries (pandas, numpy, scipy, CCXT); Go provides me
 
 ## Strategies & Platforms
 
-Strategies are auto-discovered from `shared_strategies/` at `go-trader init` time. Common picks: spot entries include `sma_crossover`, `ema_crossover`, `momentum`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `triple_ema`, `tema_cross`, `pairs_spread`, `chart_pattern`, `liquidity_sweeps`, `donchian_breakout`, `range_scalper`; futures/perps also include `session_breakout`, `triple_ema_bidir`, `bear_pullback_st`, `vwap_rejection_st`, `delta_neutral_funding`, `momentum_pro`, `mean_reversion_pro`, `consolidation_range`. Options use `vol_mean_reversion`, `momentum_options`, `protective_puts`, `covered_calls` (plus `wheel` and `butterfly` on Robinhood); new trades are scored vs. existing positions (strike distance, expiry spread, Greek balance). Max 4 positions per options strategy; min score 0.3 to execute.
+Strategies are auto-discovered from `shared_strategies/` at `go-trader init` time. Common picks: spot entries include `sma_crossover`, `ema_crossover`, `momentum`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `triple_ema`, `tema_cross`, `pairs_spread`, `chart_pattern`, `liquidity_sweeps`, `donchian_breakout`, `range_scalper`; futures/perps also include `session_breakout`, `triple_ema_bidir`, `bear_pullback_st`, `vwap_rejection_st`, `delta_neutral_funding`, `funding_skew`, `momentum_pro`, `mean_reversion_pro`, `consolidation_range`, `mtf_confluence`, `vol_momentum`, `regime_adaptive`, `regime_adaptive_htf`. Options use `vol_mean_reversion`, `momentum_options`, `protective_puts`, `covered_calls` (plus `wheel` and `butterfly` on Robinhood); new trades are scored vs. existing positions (strike distance, expiry spread, Greek balance). Max 4 positions per options strategy; min score 0.3 to execute.
 
 | Platform | Type | Assets | Live env vars | Paper data |
 |---|---|---|---|---|
@@ -106,9 +106,9 @@ Strategies are auto-discovered from `shared_strategies/` at `go-trader init` tim
 | OKX | Spot + Perps + Options | BTC, ETH, SOL | `OKX_API_KEY` / `_SECRET` / `_PASSPHRASE` (`OKX_SANDBOX=1` for demo) | CCXT public |
 | Luno | Spot | BTC, ETH, … | Luno creds | CCXT public |
 
-**Hyperliquid perps direction** — per-strategy `direction: "long" | "short" | "both"`. `long` (default) opens longs only; `short` opens shorts only; `both` flips on reversals. Bidirectional/short-focused strategies (`triple_ema_bidir`, `bear_pullback_st`, `vwap_rejection_st`, `donchian_breakout`, `chart_pattern`, `liquidity_sweeps`, `momentum_pro`, `mean_reversion_pro`, `consolidation_range`) require `"short"` or `"both"`. Legacy `allow_shorts` migrates automatically.
+**Hyperliquid perps direction** — per-strategy `direction: "long" | "short" | "both"`. `long` (default) opens longs only; `short` opens shorts only; `both` flips on reversals. Bidirectional/short-focused strategies (`triple_ema_bidir`, `bear_pullback_st`, `vwap_rejection_st`, `donchian_breakout`, `chart_pattern`, `liquidity_sweeps`, `momentum_pro`, `mean_reversion_pro`, `consolidation_range`, `mtf_confluence`, `vol_momentum`, `funding_skew`, `regime_adaptive`) require `"short"` or `"both"`. Legacy `allow_shorts` migrates automatically.
 
-**Coin sharing on Hyperliquid** — multiple HL strategies (including `type: "manual"`) can share a coin/wallet, with per-strategy SQLite bookkeeping over a single on-chain position. Peers must share `margin_mode` + `leverage`; at most one peer may run a trailing stop. Reduce-only SL and N-tier TPs are sized per strategy. Sub-accounts are the only path to fully independent direction/leverage/margin.
+**Coin sharing on Hyperliquid** — multiple HL strategies (including `type: "manual"`) can share a coin/wallet, with per-strategy SQLite bookkeeping over a single on-chain position. Peers must share `margin_mode` + `leverage`; multiple peers may each run a trailing stop (live replacement is serialized per coin and reconciliation books only exact OID-confirmed fills). Reduce-only SL and N-tier TPs are sized per strategy. Sub-accounts are the only path to fully independent direction/leverage/margin.
 
 ---
 
@@ -322,6 +322,15 @@ Historical `exchange_fee = 0` rows can be rewritten from Hyperliquid `userFills`
 
 `--apply` refuses to run while another `go-trader` process is alive on the same DB.
 
+Hyperliquid shared-wallet strategies on the gross-PnL ledger convention use a companion command to migrate legacy rows and true fee/price/PnL up to exchange `userFills`, so the dashboard wallet value reads exchange-accurate (`initial_capital + Σ ledger + owned uPnL`):
+
+```bash
+./go-trader backfill trade-ledger --all                                # dry-run, all HL strategies
+./go-trader backfill trade-ledger --all --apply                        # apply (stop the daemon first)
+```
+
+Run it once after adopting the convention so the wallet drift baseline is meaningful; it is idempotent.
+
 ---
 
 ## Build & Deploy
@@ -365,7 +374,7 @@ journalctl -u go-trader -n 50           # recent logs
 ./go-trader inspect --all --json         # all strategies, machine-readable
 ```
 
-The dashboard is served by the same loopback-only status server as `/status` and `/health` (Go binds `localhost:<port>` — use `http://127.0.0.1:<port>/dashboard` or `http://localhost:<port>/dashboard`). It includes candle charts with trade markers, a scrollable trade history panel, per-strategy equity sparklines, a sortable all-strategies table, a regime badge, dark mode, and a strategy tuner for editing and previewing parameter changes directly in the browser. If `status_token` is configured, the page prompts for that token and stores it in browser local storage for API calls; the tuner's Apply button requires `status_token` to be set. Prefer leaving each instance on loopback and reaching it through your VPN or reverse proxy; do not widen the bind to `0.0.0.0` just for remote viewing.
+The dashboard is served by the same loopback-only status server as `/status` and `/health` (Go binds `localhost:<port>` — use `http://127.0.0.1:<port>/dashboard` or `http://localhost:<port>/dashboard`). It includes candle charts with trade markers, a scrollable trade history panel, per-strategy equity sparklines, a sortable all-strategies table, a regime badge, dark mode, a strategy tuner for editing and previewing parameter changes directly in the browser, and a **Reports** section (`/reports`) with a strategy-audit ranking page. If `status_token` is configured, the page prompts for that token and stores it in browser local storage for API calls; the tuner's Apply button requires `status_token` to be set. Prefer leaving each instance on loopback and reaching it through your VPN or reverse proxy; do not widen the bind to `0.0.0.0` just for remote viewing.
 
 ### Remote dashboard (Tailscale Serve)
 
