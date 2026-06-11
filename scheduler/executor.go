@@ -102,6 +102,8 @@ type HyperliquidStopLossUpdateResult struct {
 	CancelStopLossSucceeded   bool    `json:"cancel_stop_loss_succeeded,omitempty"`
 	StopLossError             string  `json:"stop_loss_error,omitempty"`
 	StopLossFilledImmediately bool    `json:"stop_loss_filled_immediately,omitempty"`
+	StopLossFilledExternally  bool    `json:"stop_loss_filled_externally,omitempty"`
+	OpenOrderCheckError       string  `json:"open_order_check_error,omitempty"`
 }
 
 // HyperliquidProtectionSyncResult is emitted by check_hyperliquid.py
