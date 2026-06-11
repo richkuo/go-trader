@@ -169,6 +169,25 @@ h3 {
   gap: 6px;
 }
 
+.sidebar-links {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.sidebar-links a {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.sidebar-links a:hover {
+  background: var(--strategy-hover);
+}
+
 .platform-heading {
   color: var(--muted);
   font-size: 12px;
