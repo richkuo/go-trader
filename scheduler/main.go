@@ -1344,6 +1344,12 @@ func main() {
 							fmt.Fprintf(os.Stderr, "[WARN] hl-sync: json.Marshal(fillHints): %v\n", err)
 						}
 					}
+					// #971: surface persistent shared-coin reconciliation gaps
+					// (fail-closed residuals the reconciler could not confirm by
+					// exact OID, leaving a phantom virtual position) to the
+					// operator after a short confirmation window. Alerting only —
+					// never books or guesses, so the fail-closed invariant holds.
+					reportHLReconcileGaps(notifier, collectHLReconcileGapResults(state, &mu))
 				}
 
 				// #621: Build a coin→|on-chain qty| map from the pre-fetched positions
