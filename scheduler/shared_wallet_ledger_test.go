@@ -324,8 +324,21 @@ func TestSignedPerpFlowUSD(t *testing.T) {
 		{"internal transfer outbound", hlLedgerEventDelta{Type: "internalTransfer", USDC: "10", Destination: "0xother"}, -10, true},
 		{"subaccount inbound", hlLedgerEventDelta{Type: "subAccountTransfer", USDC: "7", Destination: "0xME"}, 7, true},
 		{"vault deposit", hlLedgerEventDelta{Type: "vaultDeposit", USDC: "30"}, -30, true},
-		{"vault withdraw", hlLedgerEventDelta{Type: "vaultWithdraw", USDC: "30"}, 30, true},
+		// vaultWithdraw carries NO usdc field — the net amount is credited
+		// (real shape: requestedUsd/commission/closingCost/netWithdrawnUsd).
+		{"vault withdraw nets after commission", hlLedgerEventDelta{Type: "vaultWithdraw", NetWithdrawnUSD: "688.5"}, 688.5, true},
+		{"vault create includes fee", hlLedgerEventDelta{Type: "vaultCreate", USDC: "100", Fee: "0.5"}, -100.5, true},
 		{"spot transfer no perp effect", hlLedgerEventDelta{Type: "spotTransfer", USDC: "99"}, 0, true},
+		{"core USDC send inbound", hlLedgerEventDelta{Type: "send", Token: "USDC", Amount: "20", Destination: "0xME"}, 20, true},
+		{"core USDC send outbound with fee", hlLedgerEventDelta{Type: "send", Token: "USDC", Amount: "20", Fee: "1", Destination: "0xpeer"}, -21, true},
+		{"non-USDC send is spot-side", hlLedgerEventDelta{Type: "send", Token: "PURR", Amount: "50000", Destination: "0xpeer"}, 0, true},
+		{"dex-routed USDC send unmapped", hlLedgerEventDelta{Type: "send", Token: "USDC", Amount: "20", DestinationDex: "builder"}, 0, false},
+		{"outbound internal transfer includes fee", hlLedgerEventDelta{Type: "internalTransfer", USDC: "10", Fee: "1", Destination: "0xother"}, -11, true},
+		{"USDC rewards claim credits", hlLedgerEventDelta{Type: "rewardsClaim", Token: "USDC", Amount: "12.5"}, 12.5, true},
+		{"token rewards claim spot-side", hlLedgerEventDelta{Type: "rewardsClaim", Token: "HYPE", Amount: "3"}, 0, true},
+		{"gas auction spot-side", hlLedgerEventDelta{Type: "gossipPriorityGasAuction", Token: "HYPE", Amount: "0.98"}, 0, true},
+		{"staking transfer spot-side", hlLedgerEventDelta{Type: "cStakingTransfer", Token: "HYPE", Amount: "10"}, 0, true},
+		{"liquidation informational (impact via fills)", hlLedgerEventDelta{Type: "liquidation"}, 0, true},
 		{"unknown kind", hlLedgerEventDelta{Type: "mysteryNewKind", USDC: "5"}, 0, false},
 	}
 	for _, tc := range cases {

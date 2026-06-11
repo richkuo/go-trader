@@ -162,6 +162,15 @@ type hlLedgerEventDelta struct {
 	ToPerp      bool   `json:"toPerp,omitempty"`
 	User        string `json:"user,omitempty"`
 	Destination string `json:"destination,omitempty"`
+	// Token-denominated deltas (send, rewardsClaim, spot/staking kinds).
+	Token  string `json:"token,omitempty"`
+	Amount string `json:"amount,omitempty"`
+	// send: non-empty when routed through a builder dex (not core USDC).
+	SourceDex      string `json:"sourceDex,omitempty"`
+	DestinationDex string `json:"destinationDex,omitempty"`
+	// vaultWithdraw carries NO usdc field — the perps account is credited
+	// netWithdrawnUsd (= requestedUsd − commission − closingCost).
+	NetWithdrawnUSD string `json:"netWithdrawnUsd,omitempty"`
 }
 
 // hlLedgerEvent is one userFunding / userNonFundingLedgerUpdates entry.
@@ -226,14 +235,11 @@ func signedPerpFlowUSD(d hlLedgerEventDelta, account string) (float64, bool) {
 	case "deposit":
 		return usdc, true
 	case "withdraw":
-		// Assumes `usdc` is the requested principal and the $1 withdrawal fee
-		// is debited from the HL balance ON TOP of it (Chainstack's withdraw3
-		// reference: "deducted from your Hyperliquid balance, not from the
-		// withdrawal amount"). Community sources conflict and the official
-		// docs are ambiguous — UNVERIFIED against a real ledger sample. If
-		// `usdc` actually already includes the fee, every withdrawal injects
-		// exactly +$1 of permanent ledger-vs-balance drift: a drift step of
-		// +$1×(withdrawal count) is the signature; fix = drop the fee term.
+		// VERIFIED against mainnet userNonFundingLedgerUpdates samples
+		// (2026-06): `usdc` is the NET amount (post-fee) and `fee` is
+		// debited ON TOP — real entries read usdc=1999999.0/999.0/9.0 with
+		// fee=1.0, i.e. round requested amounts minus the $1 fee. Total
+		// account debit = usdc + fee = the requested amount.
 		return -(usdc + parseHLFloat(d.Fee)), true
 	case "accountClassTransfer":
 		// Spot ↔ perps transfer inside the same account.
@@ -242,16 +248,52 @@ func signedPerpFlowUSD(d hlLedgerEventDelta, account string) (float64, bool) {
 		}
 		return -usdc, true
 	case "internalTransfer", "subAccountTransfer":
+		// Outbound legs may carry a fee (mainnet samples show fee=0.0, but
+		// mirror the withdraw convention defensively: usdc is what the peer
+		// receives, the fee is debited on top). subAccountTransfer has no
+		// fee field → parseHLFloat("") = 0.
 		if strings.EqualFold(d.Destination, account) {
 			return usdc, true
 		}
-		return -usdc, true
+		return -(usdc + parseHLFloat(d.Fee)), true
+	case "send":
+		// Unified transfer primitive. Core USDC sends (no builder dex on
+		// either side) move the perps balance exactly like internalTransfer;
+		// non-USDC tokens are spot-side. Dex-routed USDC falls through to
+		// unmapped (visible via the $0 row + drift) rather than guessing.
+		if !strings.EqualFold(d.Token, "USDC") {
+			return 0, true
+		}
+		if d.SourceDex == "" && d.DestinationDex == "" {
+			amt := parseHLFloat(d.Amount)
+			if strings.EqualFold(d.Destination, account) {
+				return amt, true
+			}
+			return -(amt + parseHLFloat(d.Fee)), true
+		}
+		return 0, false
 	case "vaultDeposit", "vaultCreate":
-		return -usdc, true
-	case "vaultWithdraw", "vaultDistribution":
+		return -(usdc + parseHLFloat(d.Fee)), true
+	case "vaultWithdraw":
+		// No usdc field on this kind — the account is credited the net
+		// amount after vault commission and position closing costs.
+		return parseHLFloat(d.NetWithdrawnUSD), true
+	case "vaultDistribution":
 		return usdc, true
-	case "spotTransfer", "spotGenesis":
-		// Spot-side token movement; perps accountValue unaffected.
+	case "rewardsClaim":
+		// USDC rewards land in the perps balance; token rewards are spot-side.
+		if strings.EqualFold(d.Token, "USDC") {
+			return parseHLFloat(d.Amount), true
+		}
+		return 0, true
+	case "spotTransfer", "spotGenesis", "cStakingTransfer",
+		"gossipPriorityGasAuction", "deployGasAuction":
+		// Spot/staking-side token movement; perps accountValue unaffected.
+		return 0, true
+	case "liquidation":
+		// Informational (no USDC amount on the delta). The balance impact of
+		// a liquidation arrives through its fills, which the reconciler books
+		// as external closes — recording a flow here would double-count.
 		return 0, true
 	}
 	return 0, false
