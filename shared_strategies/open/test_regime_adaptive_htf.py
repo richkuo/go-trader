@@ -315,6 +315,24 @@ def test_slow_trend_veto_inactive_in_flat_range():
     assert (off["position"].values == on["position"].values).all()
 
 
+# ── Registration pins ────────────────────────────────────────────────────────
+
+
+def test_registered_long_only_on_both_platforms():
+    """Bidirectional was benchmarked below the bar (OOS -1.68 vs -0.32) and
+    deliberately not registered: both platform builds must ship
+    allow_short=False with no futures override. Pins the docstring/registry
+    agreement — re-adding a futures allow_short variant must consciously
+    update all three (registry, docstring, init.go) together."""
+    import registry as open_registry
+    entry = open_registry.STRATEGIES["regime_adaptive_htf"]
+    assert entry["default_params"]["allow_short"] is False
+    assert entry["variants"] == {}
+    for platform in ("spot", "futures"):
+        built = open_registry.build_registry(platform)["regime_adaptive_htf"]
+        assert built["default_params"]["allow_short"] is False
+
+
 # ── Look-ahead regression (the #955 bar) ─────────────────────────────────────
 
 

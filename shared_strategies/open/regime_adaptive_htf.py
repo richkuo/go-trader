@@ -74,8 +74,12 @@ HTF labels are projected to native bars at bucket close only (the in-progress
 bucket is never read); confirmation runs on closed buckets. The signal at bar
 N uses bars <= N only and fills at bar N+1 open per the engine contract.
 
-The base registration is long-only (shorts only ever flatten); the futures
-variant sets ``allow_short=True`` for bidirectional perps.
+Both registrations (spot and futures) are long/flat: ``allow_short=True``
+benchmarked at OOS mean Sharpe -1.68 vs -0.32 long-only (short fades of range
+tops get run over by squeezes), so no bidirectional futures variant is
+registered and the strategy is deliberately NOT in
+``bidirectionalPerpsStrategies`` (scheduler/init.go). ``allow_short`` remains
+a sweepable research knob only.
 """
 
 import numpy as np
@@ -275,7 +279,9 @@ def regime_adaptive_htf_core(
     slow_trend_lookback : window (native bars) for the slow-drift fade veto;
         0 disables
     slow_veto_threshold : |slow_eff| at which an opposing drift blocks a fade
-    allow_short : open shorts (futures variant); False = long-only base
+    allow_short : open shorts — research knob only; both registered variants
+        ship False (bidirectional benchmarked below the bar, see module
+        docstring)
 
     Returns
     -------
