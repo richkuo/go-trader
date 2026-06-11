@@ -556,9 +556,19 @@ func reconcileHLWalletViaLedger(
 	if err != nil {
 		return fallback("transfer sum", err)
 	}
-	st, _, err := sdb.GetWalletLedgerState(key.Platform, key.Account)
+	st, found, err := sdb.GetWalletLedgerState(key.Platform, key.Account)
 	if err != nil {
 		return fallback("ledger state", err)
+	}
+	// The watermark row is owned by fetchWalletLedgerEvents, which anchors
+	// FundingSinceMs/TransfersSinceMs at `now` on first contact. If the row is
+	// absent here its init failed this cycle — upserting the zero-value state
+	// below would persist watermarks of 0 and make the next fetch replay the
+	// wallet's entire funding history past a baseline that never accounted for
+	// it. Never originate the row from the display path; fall back for the
+	// cycle and let the next fetch re-init before the baseline is anchored.
+	if !found {
+		return fallback("ledger state", fmt.Errorf("watermark row not initialized"))
 	}
 	res, rawDrift := ledgerSharedWalletMemberValues(ledgerWalletInputs{
 		Members:        members,

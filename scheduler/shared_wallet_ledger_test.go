@@ -220,6 +220,14 @@ func TestReconcileSharedWalletDisplayValues_HLLedgerPath(t *testing.T) {
 	if err := db.InsertWalletTransfer("hyperliquid", "0xtest", now.UnixMilli(), "deposit", 100, "dep1"); err != nil {
 		t.Fatalf("InsertWalletTransfer: %v", err)
 	}
+	// fetchWalletLedgerEvents owns first-contact init of the watermark row;
+	// seed it here as that cycle would (reconcile never originates the row —
+	// see TestReconcileSharedWalletDisplayValues_HLMissingLedgerStateFallsBack).
+	if err := db.UpsertWalletLedgerState("hyperliquid", "0xtest", WalletLedgerState{
+		FundingSinceMs: now.UnixMilli(), TransfersSinceMs: now.UnixMilli(),
+	}); err != nil {
+		t.Fatalf("seed ledger state: %v", err)
+	}
 
 	strategies := []StrategyConfig{
 		{ID: "hl-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 600},
@@ -255,6 +263,9 @@ func TestReconcileSharedWalletDisplayValues_HLLedgerPath(t *testing.T) {
 	st, found, err := db.GetWalletLedgerState("hyperliquid", "0xtest")
 	if err != nil || !found || !st.BaselineSet || math.Abs(st.BaselineOffset-5) > 0.001 {
 		t.Fatalf("baseline not stored: found=%v err=%v st=%+v", found, err, st)
+	}
+	if st.FundingSinceMs != now.UnixMilli() || st.TransfersSinceMs != now.UnixMilli() {
+		t.Fatalf("baseline upsert clobbered watermarks: %+v", st)
 	}
 
 	// Cycle 2: balance loses $3 the ledger didn't book → drift -3.
@@ -303,6 +314,66 @@ func TestReconcileSharedWalletDisplayValues_HLNilDBFallsBackToSplit(t *testing.T
 	}
 	if !state.Strategies["hl-a"].SharedWalletValueSet {
 		t.Error("fallback must still gate members on")
+	}
+}
+
+// Reconcile must never originate the watermark row (#969 review): if
+// fetchWalletLedgerEvents' first-contact init failed this cycle, the row is
+// absent here and upserting a baseline would persist watermarks of 0 — the
+// next fetch would then replay the wallet's entire funding history past a
+// baseline that never accounted for it. Absent row → split fallback, no row
+// written; once fetch re-inits the row, the ledger path anchors normally.
+func TestReconcileSharedWalletDisplayValues_HLMissingLedgerStateFallsBack(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
+	db := newLedgerTestDB(t)
+	now := time.Now().UTC()
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 600},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 400},
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {ID: "hl-a", Cash: 600, Positions: map[string]*Position{}, InitialCapital: 600},
+		"hl-b": {ID: "hl-b", Cash: 400, Positions: map[string]*Position{}, InitialCapital: 400},
+	}}
+	sharedWallets := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xtest"}
+	// Balance $100 above Σinitial distinguishes the paths: the split spreads
+	// it capital-weight (hl-a 660); the ledger path keeps values at initial
+	// (hl-a 600) and would anchor the +100 into the baseline.
+	walletBalances := map[SharedWalletKey]float64{key: 1100}
+
+	// Cycle 1: no watermark row → split fallback, and no row may be created.
+	results := reconcileSharedWalletDisplayValues(strategies, state, db, sharedWallets, walletBalances, nil, nil, false)
+	if len(results) != 1 {
+		t.Fatalf("want 1 result via split fallback, got %d", len(results))
+	}
+	if got := state.Strategies["hl-a"].SharedWalletValue; math.Abs(got-660) > 0.001 {
+		t.Errorf("fallback hl-a = %v, want 660 (0.6 × 1100 split)", got)
+	}
+	if _, found, err := db.GetWalletLedgerState("hyperliquid", "0xtest"); err != nil || found {
+		t.Fatalf("reconcile originated the watermark row: found=%v err=%v", found, err)
+	}
+
+	// Cycle 2: fetch init succeeded (row anchored at now) → ledger path
+	// baselines the +100 and reports drift 0 with ledger-derived values.
+	if err := db.UpsertWalletLedgerState("hyperliquid", "0xtest", WalletLedgerState{
+		FundingSinceMs: now.UnixMilli(), TransfersSinceMs: now.UnixMilli(),
+	}); err != nil {
+		t.Fatalf("seed ledger state: %v", err)
+	}
+	results = reconcileSharedWalletDisplayValues(strategies, state, db, sharedWallets, walletBalances, nil, nil, false)
+	if len(results) != 1 || math.Abs(results[0].Drift) > 0.001 {
+		t.Fatalf("cycle 2: want drift 0 (baseline anchor), got %+v", results)
+	}
+	if got := state.Strategies["hl-a"].SharedWalletValue; math.Abs(got-600) > 0.001 {
+		t.Errorf("ledger hl-a = %v, want 600 (initial, no ledger rows)", got)
+	}
+	st, found, err := db.GetWalletLedgerState("hyperliquid", "0xtest")
+	if err != nil || !found || !st.BaselineSet || math.Abs(st.BaselineOffset-100) > 0.001 {
+		t.Fatalf("baseline not anchored after row init: found=%v err=%v st=%+v", found, err, st)
+	}
+	if st.FundingSinceMs != now.UnixMilli() {
+		t.Fatalf("watermark clobbered: %+v", st)
 	}
 }
 
