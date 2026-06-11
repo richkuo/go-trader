@@ -65,6 +65,14 @@ def init_db(db_path: str = DB_PATH):
         CREATE INDEX IF NOT EXISTS idx_funding_lookup
             ON funding_rates(exchange, coin, timestamp);
 
+        CREATE TABLE IF NOT EXISTS funding_coverage (
+            exchange TEXT NOT NULL,
+            coin TEXT NOT NULL,
+            start_ts INTEGER NOT NULL,
+            end_ts INTEGER NOT NULL,
+            UNIQUE(exchange, coin)
+        );
+
         CREATE TABLE IF NOT EXISTS backtest_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             strategy_name TEXT NOT NULL,
@@ -180,6 +188,40 @@ def load_funding_rates(exchange: str, coin: str,
         df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
         df.set_index("datetime", inplace=True)
     return df
+
+
+def load_funding_coverage(exchange: str, coin: str,
+                          db_path: str = DB_PATH) -> Optional[tuple]:
+    """Return the (start_ts, end_ts) range already fetched from the API for
+    this coin, or None. Distinct from the stored rates themselves: a coin
+    listed mid-range has rates starting later than the fetched-from point, and
+    only the coverage row proves nothing earlier exists to fetch."""
+    conn = get_connection(db_path)
+    row = conn.execute(
+        "SELECT start_ts, end_ts FROM funding_coverage WHERE exchange=? AND coin=?",
+        (exchange, coin),
+    ).fetchone()
+    conn.close()
+    return (int(row[0]), int(row[1])) if row else None
+
+
+def store_funding_coverage(exchange: str, coin: str,
+                           start_ts: int, end_ts: int,
+                           db_path: str = DB_PATH):
+    """Record that [start_ts, end_ts] has been fetched, widening (never
+    shrinking) any existing coverage row."""
+    existing = load_funding_coverage(exchange, coin, db_path=db_path)
+    if existing:
+        start_ts = min(start_ts, existing[0])
+        end_ts = max(end_ts, existing[1])
+    conn = get_connection(db_path)
+    conn.execute(
+        "INSERT OR REPLACE INTO funding_coverage (exchange, coin, start_ts, end_ts)"
+        " VALUES (?, ?, ?, ?)",
+        (exchange, coin, int(start_ts), int(end_ts)),
+    )
+    conn.commit()
+    conn.close()
 
 
 def store_backtest_result(result: dict, db_path: str = DB_PATH):

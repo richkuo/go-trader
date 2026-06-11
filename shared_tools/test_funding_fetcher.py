@@ -64,6 +64,73 @@ def test_uncovered_range_refetches():
     os.unlink(db)
 
 
+def test_cache_hit_survives_elapsed_wallclock():
+    """A fully-covered historical range must be served from cache no matter
+    how long after population it's requested — coverage is compared against
+    the requested end, never wall-clock now (2026-01 range, 'now' is months
+    later; the old rates-based check refetched every run >4h apart)."""
+    db = _tmp_db()
+    stub = StubAdapter(_BASE_MS, hours=72)
+    load_cached_funding("BTC", "2026-01-01", "2026-01-03", adapter=stub, db_path=db)
+    assert stub.calls == 1
+    again = load_cached_funding("BTC", "2026-01-01", "2026-01-03",
+                                adapter=stub, db_path=db)
+    assert stub.calls == 1
+    assert not again.empty
+    os.unlink(db)
+
+
+def test_late_listed_coin_cached_after_first_fetch():
+    """A coin whose first funding snapshot is well after the requested start
+    (listed mid-range) must still be a cache hit on the second run — coverage
+    records the requested start, not the first record's timestamp."""
+    db = _tmp_db()
+    listed_at = _BASE_MS + 30 * 24 * _HOUR_MS  # listed 30 days into the range
+    stub = StubAdapter(listed_at, hours=24 * 5)
+    first = load_cached_funding("LATECOIN", "2026-01-01", "2026-02-04",
+                                adapter=stub, db_path=db)
+    assert stub.calls == 1
+    assert int(first["timestamp"].iloc[0]) == listed_at
+    again = load_cached_funding("LATECOIN", "2026-01-01", "2026-02-04",
+                                adapter=stub, db_path=db)
+    assert stub.calls == 1, "late-listed coin must not refetch forever"
+    assert len(again) == len(first)
+    os.unlink(db)
+
+
+def test_partial_fetch_does_not_claim_tail_coverage():
+    """When records stop well short of the requested end (pagination died or
+    the API has nothing newer), the tail must not be marked covered — the
+    next run must retry it."""
+    db = _tmp_db()
+    stub = StubAdapter(_BASE_MS, hours=24)  # records end 2026-01-01 23:00
+    load_cached_funding("BTC", "2026-01-01", "2026-01-10", adapter=stub, db_path=db)
+    assert stub.calls == 1
+    load_cached_funding("BTC", "2026-01-01", "2026-01-10", adapter=stub, db_path=db)
+    assert stub.calls == 2, "uncovered tail must refetch"
+    # The covered head alone is still a hit.
+    load_cached_funding("BTC", "2026-01-01", "2026-01-01 20:00",
+                        adapter=stub, db_path=db)
+    assert stub.calls == 2
+    os.unlink(db)
+
+
+def test_timestamp_end_date_accepted():
+    """run_backtest passes df.index[-1] (a Timestamp, possibly tz-naive) as
+    end_date — both naive and aware must work and hit the cache."""
+    db = _tmp_db()
+    stub = StubAdapter(_BASE_MS, hours=72)
+    naive_end = pd.Timestamp("2026-01-03")
+    aware_end = pd.Timestamp("2026-01-03", tz="UTC")
+    out = load_cached_funding("BTC", "2026-01-01", naive_end,
+                              adapter=stub, db_path=db)
+    assert stub.calls == 1 and not out.empty
+    out2 = load_cached_funding("BTC", "2026-01-01", aware_end,
+                               adapter=stub, db_path=db)
+    assert stub.calls == 1 and len(out2) == len(out)
+    os.unlink(db)
+
+
 def test_empty_api_returns_cached_or_empty():
     db = _tmp_db()
     stub = StubAdapter(_BASE_MS, hours=0)

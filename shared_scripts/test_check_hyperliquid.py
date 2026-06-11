@@ -504,7 +504,16 @@ class TestUpdateStopLoss:
     """#501: trailing stops reuse cancel_trigger_order + place_stop_loss without
     submitting a market order."""
 
-    def _run_update(self, side="long", place_response=None, cancel_side_effect=None):
+    def _run_update(
+        self,
+        side="long",
+        place_response=None,
+        cancel_side_effect=None,
+        open_oids=None,
+        open_oids_side_effect=None,
+        lookup_result=_UNSET,
+        cancel_oid=11111,
+    ):
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
 
@@ -512,8 +521,14 @@ class TestUpdateStopLoss:
         mock_adapter = MagicMock()
         mock_adapter_cls.return_value = mock_adapter
         mock_adapter.round_perps_trigger_px.side_effect = lambda _symbol, px: round(px, 2)
+        if open_oids_side_effect is not None:
+            mock_adapter.open_order_oids.side_effect = open_oids_side_effect
+        else:
+            mock_adapter.open_order_oids.return_value = {11111} if open_oids is None else open_oids
         if cancel_side_effect is not None:
             mock_adapter.cancel_trigger_order.side_effect = cancel_side_effect
+        if lookup_result is not _UNSET:
+            mock_adapter.lookup_fill_fee_by_oid.return_value = lookup_result
         mock_adapter.place_stop_loss.return_value = place_response or {
             "response": {"type": "order", "data": {"statuses": [
                 {"resting": {"oid": 22222}}
@@ -533,7 +548,7 @@ class TestUpdateStopLoss:
 
         with patch("builtins.__import__", side_effect=mock_import):
             with patch("sys.stdout", captured):
-                mod.run_update_stop_loss("ETH", side, 0.5, 3104.123, "live", cancel_oid=11111)
+                mod.run_update_stop_loss("ETH", side, 0.5, 3104.123, "live", cancel_oid=cancel_oid)
         return json.loads(captured.getvalue()), mock_adapter
 
     def test_cancel_then_place_long_stop(self):
@@ -549,6 +564,41 @@ class TestUpdateStopLoss:
     def test_short_stop_places_buy_trigger(self):
         out, adapter = self._run_update(side="short")
         adapter.place_stop_loss.assert_called_once_with("ETH", 0.5, 3104.12, True)
+        assert out["stop_loss_oid"] == 22222
+
+    def test_cancel_failure_defers_replacement(self):
+        out, adapter = self._run_update(cancel_side_effect=RuntimeError("cancel down"))
+        adapter.cancel_trigger_order.assert_called_once_with("ETH", 11111)
+        adapter.place_stop_loss.assert_not_called()
+        assert "cancel down" in out["cancel_stop_loss_error"]
+        assert "stop_loss_oid" not in out
+
+    def test_open_order_lookup_failure_defers_replacement(self):
+        out, adapter = self._run_update(open_oids_side_effect=RuntimeError("indexer down"))
+        adapter.cancel_trigger_order.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+        assert out["open_order_check_error"] == "indexer down"
+        assert "stop_loss_oid" not in out
+
+    def test_missing_old_oid_with_fill_does_not_replace(self):
+        out, adapter = self._run_update(open_oids=set(), lookup_result={"fee": 0.01, "count": 1})
+        adapter.cancel_trigger_order.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+        assert out["stop_loss_filled_externally"] is True
+        assert "stop_loss_oid" not in out
+
+    def test_missing_old_oid_without_fill_places_replacement(self):
+        out, adapter = self._run_update(open_oids=set(), lookup_result=None)
+        adapter.cancel_trigger_order.assert_not_called()
+        adapter.lookup_fill_fee_by_oid.assert_called_once()
+        adapter.place_stop_loss.assert_called_once_with("ETH", 0.5, 3104.12, False)
+        assert out["stop_loss_oid"] == 22222
+
+    def test_initial_placement_without_cancel_oid(self):
+        out, adapter = self._run_update(cancel_oid=0)
+        adapter.open_order_oids.assert_not_called()
+        adapter.cancel_trigger_order.assert_not_called()
+        adapter.place_stop_loss.assert_called_once_with("ETH", 0.5, 3104.12, False)
         assert out["stop_loss_oid"] == 22222
 
 

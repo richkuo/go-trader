@@ -1079,7 +1079,9 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
     cancel_succeeded = False
     sl_err = ""
     sl_filled_immediately = False
+    sl_filled_externally = False
     resting_oid = 0
+    open_order_check_error = ""
 
     try:
         from adapter import HyperliquidExchangeAdapter
@@ -1094,33 +1096,54 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
             }, cls=SafeEncoder))
             sys.exit(1)
 
+        open_oids = None
         if cancel_attempted:
             try:
-                adapter.cancel_trigger_order(symbol, cancel_oid)
-                cancel_succeeded = True
-            except Exception as ce:
-                cancel_err = str(ce)
-                print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) failed: {ce}", file=sys.stderr)
+                open_oids = adapter.open_order_oids(symbol)
+            except Exception as oe:
+                open_order_check_error = str(oe)
+                print(f"[WARN] open_order_oids({symbol}) failed: {oe}; deferring trailing SL replacement", file=sys.stderr)
+
+        fill_check_since_ms = int(time.time() * 1000) - 7 * 24 * 3600 * 1000
+        should_place = True
+        if cancel_attempted:
+            if open_oids is None:
+                should_place = False
+            elif _oid_is_open(open_oids, cancel_oid):
+                try:
+                    adapter.cancel_trigger_order(symbol, cancel_oid)
+                    cancel_succeeded = True
+                except Exception as ce:
+                    cancel_err = str(ce)
+                    should_place = False
+                    print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) failed: {ce}; not placing replacement", file=sys.stderr)
+            else:
+                fill = _oid_filled_externally(adapter, cancel_oid, fill_check_since_ms, None)
+                if fill.get("filled"):
+                    sl_filled_externally = True
+                    should_place = False
+                    print(f"[WARN] stop-loss OID={cancel_oid} already filled on-chain; not re-placing — reconciler will book the close", file=sys.stderr)
 
         sl_is_buy = side == "short"
         trigger_px = adapter.round_perps_trigger_px(symbol, trigger_px)
-        try:
-            sl_resp = adapter.place_stop_loss(symbol, size, trigger_px, sl_is_buy)
-            kind, payload = _classify_sl_response(sl_resp)
-            if kind == "resting":
-                resting_oid = payload
-            elif kind == "filled":
-                sl_filled_immediately = True
-                print(f"[WARN] stop-loss filled immediately at submit (price already through {trigger_px})", file=sys.stderr)
-            elif kind == "error":
-                sl_err = f"place_stop_loss SDK error: {payload}"
-                print(f"[WARN] {sl_err}", file=sys.stderr)
-            else:
-                sl_err = f"place_stop_loss returned no usable status: {sl_resp}"
-                print(f"[WARN] {sl_err}", file=sys.stderr)
-        except Exception as se:
-            sl_err = str(se)
-            print(f"[WARN] place_stop_loss({symbol}, {size}, {trigger_px}) failed: {se}", file=sys.stderr)
+        if should_place:
+            try:
+                sl_resp = adapter.place_stop_loss(symbol, size, trigger_px, sl_is_buy)
+                kind, payload = _classify_sl_response(sl_resp)
+                if kind == "resting":
+                    resting_oid = payload
+                elif kind == "filled":
+                    sl_filled_immediately = True
+                    print(f"[WARN] stop-loss filled immediately at submit (price already through {trigger_px})", file=sys.stderr)
+                elif kind == "error":
+                    sl_err = f"place_stop_loss SDK error: {payload}"
+                    print(f"[WARN] {sl_err}", file=sys.stderr)
+                else:
+                    sl_err = f"place_stop_loss returned no usable status: {sl_resp}"
+                    print(f"[WARN] {sl_err}", file=sys.stderr)
+            except Exception as se:
+                sl_err = str(se)
+                print(f"[WARN] place_stop_loss({symbol}, {size}, {trigger_px}) failed: {se}", file=sys.stderr)
 
         out = {
             "platform": "hyperliquid",
@@ -1133,10 +1156,14 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
             out["cancel_stop_loss_error"] = cancel_err
         if cancel_succeeded:
             out["cancel_stop_loss_succeeded"] = True
+        if open_order_check_error:
+            out["open_order_check_error"] = open_order_check_error
         if sl_err:
             out["stop_loss_error"] = sl_err
         if sl_filled_immediately:
             out["stop_loss_filled_immediately"] = True
+        if sl_filled_externally:
+            out["stop_loss_filled_externally"] = True
         print(json.dumps(out, cls=SafeEncoder))
 
     except SystemExit:

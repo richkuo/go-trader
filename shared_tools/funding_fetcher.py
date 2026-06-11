@@ -18,11 +18,16 @@ from typing import Optional
 
 import pandas as pd
 
-from storage import load_funding_rates, store_funding_rates
+from storage import (
+    load_funding_coverage,
+    load_funding_rates,
+    store_funding_coverage,
+    store_funding_rates,
+)
 
 _HOUR_MS = 3_600_000
 
-# Refetch when the cache doesn't reach within this many hours of the
+# Refetch when recorded coverage doesn't reach within this many hours of the
 # requested range edges (funding is hourly; allow a small ragged edge).
 _EDGE_TOLERANCE_HOURS = 4
 
@@ -39,39 +44,58 @@ def _hl_adapter():
     return HyperliquidExchangeAdapter()
 
 
+def _to_utc_ms(value) -> int:
+    """Date string / Timestamp / datetime → Unix ms (naive read as UTC)."""
+    ts = pd.Timestamp(value)
+    ts = ts.tz_localize("UTC") if ts.tz is None else ts.tz_convert("UTC")
+    return int(ts.timestamp() * 1000)
+
+
 def load_cached_funding(coin: str,
-                        start_date: str,
-                        end_date: Optional[str] = None,
+                        start_date,
+                        end_date=None,
                         exchange: str = "hyperliquid",
                         adapter=None,
                         db_path: Optional[str] = None) -> pd.DataFrame:
     """Load hourly funding for ``coin`` (e.g. ``"BTC"``) covering
     [start_date, end_date]; fetch from Hyperliquid and cache on a miss.
+    Dates accept strings or Timestamps; ``end_date=None`` means now (callers
+    with a known window end — e.g. a backtest's last bar — should pass it so
+    a repeat run is a cache hit regardless of elapsed wall-clock time).
+
+    Cache hits are decided by the ``funding_coverage`` ledger (the range
+    already fetched from the API), not by the stored rates: a coin listed
+    mid-range legitimately has no rates near the range start, and only the
+    coverage row distinguishes "nothing exists to fetch" from "never fetched".
 
     Returns DataFrame(timestamp, rate) with a UTC DatetimeIndex (may be empty
     when the API has no data for the range — e.g. a coin listed later).
     """
-    start_ts = int(pd.Timestamp(start_date, tz="UTC").timestamp() * 1000)
-    end_ts = (int(pd.Timestamp(end_date, tz="UTC").timestamp() * 1000)
-              if end_date else int(time.time() * 1000))
+    start_ts = _to_utc_ms(start_date)
+    end_ts = _to_utc_ms(end_date) if end_date is not None else int(time.time() * 1000)
 
     db_kwargs = {"db_path": db_path} if db_path else {}
-    cached = load_funding_rates(exchange, coin, start_ts, end_ts, **db_kwargs)
     tol = _EDGE_TOLERANCE_HOURS * _HOUR_MS
-    if not cached.empty:
-        covers_start = int(cached["timestamp"].iloc[0]) <= start_ts + tol
-        covers_end = int(cached["timestamp"].iloc[-1]) >= end_ts - tol
-        if covers_start and covers_end:
-            return cached
+    coverage = load_funding_coverage(exchange, coin, **db_kwargs)
+    if coverage and coverage[0] <= start_ts + tol and coverage[1] >= end_ts - tol:
+        return load_funding_rates(exchange, coin, start_ts, end_ts, **db_kwargs)
 
     if adapter is None:
         adapter = _hl_adapter()
     records = adapter.get_funding_history_range(coin, start_ts, end_ts)
     if records:
         store_funding_rates(records, exchange, coin, **db_kwargs)
+        # Coverage start is the requested start even when the first record is
+        # later (coin listed mid-range — nothing earlier exists). Coverage end
+        # claims the requested end only when records actually reach near it;
+        # a pagination that died early must not mark the tail as covered.
+        last_t = int(records[-1]["time"])
+        covered_end = end_ts if last_t >= end_ts - tol else last_t
+        store_funding_coverage(exchange, coin, start_ts, covered_end, **db_kwargs)
         return load_funding_rates(exchange, coin, start_ts, end_ts, **db_kwargs)
-    # API returned nothing new — serve whatever the cache has (possibly empty).
-    return cached
+    # API returned nothing (range before listing, or a transient failure —
+    # indistinguishable here, so record no coverage and retry next run).
+    return load_funding_rates(exchange, coin, start_ts, end_ts, **db_kwargs)
 
 
 def attach_funding_column(df: pd.DataFrame, funding: pd.DataFrame) -> pd.DataFrame:

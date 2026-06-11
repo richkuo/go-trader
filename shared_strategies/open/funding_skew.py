@@ -14,8 +14,21 @@ entry also requires price to have started moving against the crowd:
 The z-score is computed over a rolling window of bars against the funding
 series itself, so "extreme" adapts to each coin's own funding regime; a
 ``min_abs_rate`` floor keeps quiet near-zero funding from registering as an
-extreme. Exits: the crowding resolves (z returns inside ±z_exit) or the price
-confirmation flips (close crosses the EMA against the position).
+extreme.
+
+Exit ownership — depends on the execution path:
+  * Plain long/flat backtest path: the exits modeled here govern — crowding
+    resolves (z returns inside ±z_exit), the price confirmation flips (close
+    crosses the EMA against the position), or funding goes missing.
+  * Live HL perps and the backtester's open/close engine path: a close
+    evaluator (default tiered ATR take-profit + stop) owns exits; the z/EMA
+    exits here do NOT flatten the position. Because ``signal`` encodes
+    position *transitions*, an exit emitted while the engine is already flat
+    (close evaluator fired first) reads as an opposite-side value and — with
+    the strategy wired bidirectional — can be taken as an unconfirmed entry.
+    This conflation is inherent to transition-signal bidirectional
+    strategies; benchmark per-side numbers on the plain path (long-only via
+    ``allow_short=False``) when judging the strategy itself.
 
 Funding input — two shapes, column preferred:
   * ``funding_rate`` column on the df (backtest path — attached by

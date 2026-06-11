@@ -2410,11 +2410,7 @@ func TestValidateConfigManualPerpsPeerMarginModeMismatchRejected(t *testing.T) {
 	}
 }
 
-// TestValidateConfigManualPerpsMultipleTrailingStopOwnersRejected verifies the
-// trailing-stop owner guard now spans manual+perps peers (#619/#620): only one
-// peer per coin may own a trailing stop because the cancel/replace cycle races
-// on the shared on-chain position.
-func TestValidateConfigManualPerpsMultipleTrailingStopOwnersRejected(t *testing.T) {
+func TestValidateConfigManualPerpsMultipleTrailingStopOwnersAllowed(t *testing.T) {
 	manualTrailing := 1.5
 	perpsTrailingPct := 0.02
 	cfg := Config{
@@ -2429,6 +2425,7 @@ func TestValidateConfigManualPerpsMultipleTrailingStopOwnersRejected(t *testing.
 				Capital:             1000,
 				MaxDrawdownPct:      60,
 				TrailingStopATRMult: &manualTrailing,
+				CloseStrategy:       &StrategyRef{Name: "trailing_tp_ratchet"},
 			},
 			{
 				ID:              "hl-perps-eth-live",
@@ -2445,8 +2442,53 @@ func TestValidateConfigManualPerpsMultipleTrailingStopOwnersRejected(t *testing.
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
 	err := ValidateConfig(&cfg)
-	if err == nil || !strings.Contains(err.Error(), "multiple trailing-stop owners") {
-		t.Fatalf("expected trailing-stop peer error, got: %v", err)
+	if err != nil {
+		t.Fatalf("expected manual+perps trailing peers to validate, got: %v", err)
+	}
+}
+
+func TestValidateConfigMultipleTrailingRatchetRegimeOwnersAllowed(t *testing.T) {
+	regimeTrail := func() *RegimeATRBlock {
+		return &RegimeATRBlock{raw: map[string]interface{}{
+			"trend_regime": map[string]interface{}{
+				"trending_up":   map[string]interface{}{"atr_multiple": 3.0},
+				"trending_down": map[string]interface{}{"atr_multiple": 3.0},
+				"ranging":       map[string]interface{}{"atr_multiple": 3.0},
+			},
+		}}
+	}
+	cfg := Config{
+		Regime: &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20},
+		Strategies: []StrategyConfig{
+			{
+				ID:                    "hl-ratchet-a",
+				Type:                  "perps",
+				Platform:              "hyperliquid",
+				Script:                "shared_scripts/check_hyperliquid.py",
+				Args:                  []string{"tema", "ETH", "1h", "--mode=paper"},
+				Capital:               1000,
+				Leverage:              5,
+				MaxDrawdownPct:        60,
+				TrailingStopATRRegime: regimeTrail(),
+				CloseStrategy:         &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
+			},
+			{
+				ID:                    "hl-ratchet-b",
+				Type:                  "perps",
+				Platform:              "hyperliquid",
+				Script:                "shared_scripts/check_hyperliquid.py",
+				Args:                  []string{"rmc", "ETH", "1h", "--mode=paper"},
+				Capital:               1000,
+				Leverage:              5,
+				MaxDrawdownPct:        60,
+				TrailingStopATRRegime: regimeTrail(),
+				CloseStrategy:         &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
+			},
+		},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	if err := ValidateConfig(&cfg); err != nil {
+		t.Fatalf("expected multiple trailing_tp_ratchet_regime owners to validate, got: %v", err)
 	}
 }
 

@@ -33,7 +33,10 @@ def _attach_funding_if_needed(df, strategy_name, symbol, since):
     from funding_fetcher import attach_funding_column, load_cached_funding
     coin = symbol.split("/")[0]
     try:
-        funding = load_cached_funding(coin, since)
+        # Pass the data's actual window end so a repeat run over the same
+        # window is a cache hit regardless of elapsed wall-clock time
+        # (end_date=None compares coverage against `now`, refetching forever).
+        funding = load_cached_funding(coin, since, end_date=df.index[-1])
     except Exception as e:
         print(f"[WARN] funding history fetch failed for {coin}: {e} — "
               f"'{strategy_name}' will produce zero entries.")
