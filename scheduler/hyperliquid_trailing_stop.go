@@ -10,6 +10,23 @@ const defaultTrailingStopMinMovePct = 0.5
 
 var runHyperliquidUpdateStopLossFunc = RunHyperliquidUpdateStopLoss
 
+var (
+	hlTrailingUpdateLocksMu sync.Mutex
+	hlTrailingUpdateLocks   = make(map[string]*sync.Mutex)
+)
+
+func lockHyperliquidTrailingUpdate(symbol string) func() {
+	hlTrailingUpdateLocksMu.Lock()
+	m := hlTrailingUpdateLocks[symbol]
+	if m == nil {
+		m = &sync.Mutex{}
+		hlTrailingUpdateLocks[symbol] = m
+	}
+	hlTrailingUpdateLocksMu.Unlock()
+	m.Lock()
+	return m.Unlock
+}
+
 // hlSLEffectiveQty returns the quantity to use for stop-loss placement.
 // When the on-chain position is smaller than the virtual position (e.g.
 // after a manual TP reduced the position without the bot's knowledge),
@@ -647,26 +664,47 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 
 	logger.Info("Updating trailing SL for %s: side=%s mark=$%.4f high_water=$%.4f trigger=$%.4f cancel_oid=%d",
 		symbol, side, mark, newHighWater, newTrigger, currentOID)
+	unlock := lockHyperliquidTrailingUpdate(symbol)
+	defer unlock()
 	result, stderr, err := runHyperliquidUpdateStopLossFunc(sc.Script, symbol, side, qty, newTrigger, currentOID)
 	if stderr != "" {
 		logger.Info("update stop-loss stderr: %s", stderr)
 	}
 	if err != nil {
 		logger.Error("Trailing SL update failed: %v", err)
-		return newHighWater, result, false
+		return highWater, result, false
+	}
+	if result == nil {
+		logger.Error("Trailing SL update returned no result")
+		return highWater, nil, false
 	}
 	if result.Error != "" {
 		logger.Error("Trailing SL update returned error: %s", result.Error)
-		return newHighWater, result, false
+		return highWater, result, false
 	}
-	if result.CancelStopLossError != "" {
-		logger.Warn("Trailing SL cancel failed (non-fatal): %s", result.CancelStopLossError)
-		if result.StopLossOID > 0 && currentOID > 0 && notifier != nil && notifier.HasBackends() {
-			msg := fmt.Sprintf("**HL TRAILING SL CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while new trigger OID %d was placed. Check Hyperliquid open triggers before they accumulate toward the account cap. Error: %s",
-				sc.ID, symbol, currentOID, result.StopLossOID, result.CancelStopLossError)
+	if result.OpenOrderCheckError != "" {
+		logger.Warn("Trailing SL open-order check failed; replacement deferred: %s", result.OpenOrderCheckError)
+		if currentOID > 0 && notifier != nil && notifier.HasBackends() {
+			msg := fmt.Sprintf("**HL TRAILING SL REPLACEMENT DEFERRED** [%s] %s old trigger OID %d was not replaced because open-order lookup failed. The scheduler will retry next cycle. Error: %s",
+				sc.ID, symbol, currentOID, result.OpenOrderCheckError)
 			notifier.SendToAllChannels(msg)
 			notifier.SendOwnerDM(msg)
 		}
+		return highWater, result, false
+	}
+	if result.StopLossFilledExternally {
+		logger.Warn("Trailing SL OID=%d already filled on-chain for %s — reconciler will book the close", currentOID, symbol)
+		return highWater, result, false
+	}
+	if result.CancelStopLossError != "" {
+		logger.Warn("Trailing SL cancel failed; replacement deferred: %s", result.CancelStopLossError)
+		if currentOID > 0 && notifier != nil && notifier.HasBackends() {
+			msg := fmt.Sprintf("**HL TRAILING SL CANCEL FAILED** [%s] %s old trigger OID %d was not replaced. The scheduler will retry next cycle. Error: %s",
+				sc.ID, symbol, currentOID, result.CancelStopLossError)
+			notifier.SendToAllChannels(msg)
+			notifier.SendOwnerDM(msg)
+		}
+		return highWater, result, false
 	}
 	if result.StopLossError != "" {
 		if isHLOpenOrderCapRejection(result.StopLossError) {
@@ -684,6 +722,12 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	}
 	if result.StopLossFilledImmediately {
 		logger.Warn("Trailing SL trigger filled at submit for %s — position is flat on-chain", symbol)
+	}
+	updateConfirmed := (result.StopLossOID > 0) ||
+		(result.StopLossFilledImmediately && result.StopLossTriggerPx > 0) ||
+		result.CancelStopLossSucceeded
+	if !updateConfirmed {
+		return highWater, result, false
 	}
 	return newHighWater, result, true
 }
