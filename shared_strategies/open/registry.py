@@ -49,6 +49,7 @@ from mean_reversion_pro import mean_reversion_pro_core
 from mtf_confluence import mtf_confluence_core
 from session_breakout import session_breakout_core
 from vwap_rejection_st import vwap_rejection_st_core
+from vol_momentum import vol_momentum_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -1101,6 +1102,26 @@ def mtf_confluence_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "vol_momentum",
+    "Vol Momentum — volatility-targeted time-series momentum: ATR-normalized N-bar net move with Kaufman efficiency-ratio trend confirmation; hysteresis exit on momentum decay or efficiency collapse",
+    {
+        "mom_window": 24, "atr_period": 14,
+        "entry_threshold": 0.30, "exit_threshold": 0.05,
+        "eff_entry": 0.35, "eff_exit": 0.15,
+        "allow_short": False,
+    },
+    variants={
+        "futures": {
+            "description": "Vol Momentum — volatility-targeted time-series momentum, bidirectional: long/short on ATR-normalized momentum with Kaufman efficiency confirmation",
+            "default_params": {"allow_short": True},
+        },
+    },
+)
+def vol_momentum_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return vol_momentum_core(df, **params)
+
+
+@register(
     "hold",
     "Hold — always returns signal=0; used internally by type=manual strategies for the close-evaluator loop (#569)",
     {},
@@ -1128,6 +1149,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "donchian_breakout", "tema_cross",
         "momentum_pro", "mean_reversion_pro", "mtf_confluence",
+        "vol_momentum",
         "hold",
     ],
     "futures": [
@@ -1140,6 +1162,6 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "sweep_squeeze_combo", "adx_trend", "delta_neutral_funding",
         "funding_skew", "donchian_breakout", "session_breakout", "bear_pullback_st",
         "vwap_rejection_st", "momentum_pro", "mean_reversion_pro",
-        "consolidation_range", "mtf_confluence", "hold",
+        "consolidation_range", "mtf_confluence", "vol_momentum", "hold",
     ],
 }

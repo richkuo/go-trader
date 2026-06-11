@@ -474,6 +474,14 @@ DEFAULT_PARAM_RANGES = {
         "ltf_ema": [13, 20],
         "pullback_window": [4, 6, 8],
     },
+    "vol_momentum": {
+        # mom_window dominates warmup; atr_period (14) is below every value here
+        # so max_indicator_lookback provisions enough history per fold.
+        "mom_window": [16, 24, 48],
+        "entry_threshold": [0.20, 0.30, 0.40],
+        "exit_threshold": [0.0, 0.05, 0.10],
+        "eff_entry": [0.25, 0.35, 0.45],
+    },
     "funding_skew": {
         "funding_window": [96, 168, 336],
         "z_entry": [1.0, 1.5, 2.0],
