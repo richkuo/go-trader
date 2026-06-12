@@ -48,6 +48,18 @@ def test_salvage_verdict_healthy_when_net_survives():
     assert fa.salvage_verdict(50, 12.0, 4.0) == "healthy"
 
 
+def test_salvage_verdict_short_unmeasured_withholds_negative_calls():
+    # A non-positive *measured* long leg cannot justify deprecate/no_trades
+    # when short entries were dropped — the short half is simply unknown.
+    assert fa.salvage_verdict(0, None, None, short_unmeasured=True) == "unscreened_short"
+    assert fa.salvage_verdict(100, -2.0, -5.0, short_unmeasured=True) == "unscreened_short"
+    assert fa.salvage_verdict(100, 0.0, -5.0, short_unmeasured=True) == "unscreened_short"
+    # A positive long edge is a real finding even with the short half
+    # unmeasured — graduate/healthy still stand (report flags them long-only).
+    assert fa.salvage_verdict(100, 8.0, -3.0, short_unmeasured=True) == "graduate_m1"
+    assert fa.salvage_verdict(50, 12.0, 4.0, short_unmeasured=True) == "healthy"
+
+
 # ---------------------------------------------------------------------------
 # trades_per_year — annualization + guards
 # ---------------------------------------------------------------------------
@@ -91,8 +103,11 @@ def test_aggregate_excludes_errors_and_sums_trades():
     assert row["mean_net_ret"] == pytest.approx(-35.0)
     assert row["fee_drag_pp"] == pytest.approx(41.0)
     assert row["verdict"] == "graduate_m1"
-    # drag per trade = 41 / 1500, rounded to 4dp by the aggregator
-    assert row["drag_per_trade_pp"] == pytest.approx(round(41.0 / 1500, 4))
+    assert row["short_unmeasured"] is False
+    # Unit-consistent drag/trade: total drag (mean 41pp x 2 legs) over total
+    # trades (1500), rounded to 4dp — NOT the per-leg mean over the leg-summed
+    # denominator (the #1003 unit-mismatch fix).
+    assert row["drag_per_trade_pp"] == pytest.approx(round(41.0 * 2 / 1500, 4))
 
 
 def test_aggregate_all_no_data_is_no_trades():
@@ -109,6 +124,64 @@ def test_aggregate_deprecate_when_gross_negative():
     row = fa.aggregate_strategy("macd", "spot", legs)
     assert row["mean_gross_ret"] == pytest.approx(-3.0)
     assert row["verdict"] == "deprecate"
+    assert row["short_unmeasured"] is False
+
+
+def test_aggregate_short_unmeasured_withholds_deprecate():
+    # Same gross-negative long leg, but the strategy is short-capable: the
+    # verdict must withhold deprecate (short half unmeasured), not assert it.
+    legs = [_leg(300, 182.6, -10.0, -2.0), _leg(300, 182.6, -12.0, -4.0)]
+    row = fa.aggregate_strategy("triple_ema_bidir", "futures", legs,
+                                short_capable=True)
+    assert row["short_unmeasured"] is True
+    assert row["verdict"] == "unscreened_short"
+
+
+def test_aggregate_short_only_no_long_trades_is_unscreened_not_no_trades():
+    # Short-only strategy with zero long trades. The honest verdict is
+    # unscreened_short, NOT no_trades ("never fired").
+    legs = [_leg(0, 182.6, 0.0, 0.0)]
+    row = fa.aggregate_strategy("bear_pullback_st", "futures", legs,
+                                short_capable=True)
+    assert row["trades"] == 0
+    assert row["verdict"] == "unscreened_short"
+
+
+def test_aggregate_short_unmeasured_keeps_positive_long_verdict():
+    # Gross-positive long leg stays a real graduate finding (flagged
+    # long-only), not withheld, even when short-capable.
+    legs = [_leg(200, 182.6, -3.0, 8.0)]
+    row = fa.aggregate_strategy("vol_momentum", "futures", legs,
+                                short_capable=True)
+    assert row["short_unmeasured"] is True
+    assert row["verdict"] == "graduate_m1"
+
+
+def test_strategy_is_short_capable_predicate():
+    # Long-only name: never short-capable regardless of params.
+    assert fa.strategy_is_short_capable({}, "sma_crossover") is False
+    # Bidirectional name with no allow_short gate: short-capable.
+    assert fa.strategy_is_short_capable({"short_period": 8}, "triple_ema_bidir") is True
+    assert fa.strategy_is_short_capable(None, "bear_pullback_st") is True
+    # allow_short-gated name: per-variant flag decides (spot long-only, futures short).
+    assert fa.strategy_is_short_capable({"allow_short": False}, "mtf_confluence") is False
+    assert fa.strategy_is_short_capable({"allow_short": True}, "mtf_confluence") is True
+
+
+def test_live_bidirectional_set_matches_go_source():
+    # Anti-staleness guard: the Python set must equal init.go's
+    # bidirectionalPerpsStrategies map, so a new short-entry strategy added in
+    # Go cannot silently leave a stale long-only classification here.
+    import re
+    init_go = os.path.abspath(os.path.join(
+        _BT_DIR, "..", "scheduler", "init.go"))
+    with open(init_go) as fh:
+        src = fh.read()
+    block = src.split("bidirectionalPerpsStrategies = map[string]bool{", 1)[1]
+    block = block.split("}", 1)[0]
+    go_names = set(re.findall(r'"([^"]+)":\s*true', block))
+    assert go_names, "failed to parse init.go bidirectional set"
+    assert set(fa.LIVE_BIDIRECTIONAL_STRATEGIES) == go_names
 
 
 # ---------------------------------------------------------------------------
@@ -160,20 +233,68 @@ def test_render_markdown_has_table_and_sections():
     assert "raise selectivity" in md
 
 
+def test_render_markdown_unscreened_short_section_and_dagger():
+    ranked = fa.rank_rows([
+        # gross-negative long leg BUT short-capable → withheld, not deprecated
+        fa.aggregate_strategy("shorty", "futures",
+                              [_leg(80, 365.0, -10.0, -2.0)],
+                              short_capable=True),
+        fa.aggregate_strategy("clean", "spot",
+                              [_leg(900, 365.0, -20.0, -5.0)]),   # deprecate
+    ])
+    meta = {"command": "uv run ...", "registry": "both",
+            "windows_desc": "oos", "datasets_desc": "BTC/USDT 4h",
+            "capital": 1000.0, "date": "2026-06-12"}
+    md = fa.render_markdown(ranked, meta)
+    assert "## Unscreened short legs" in md
+    assert "shorty †" in md                       # dagger flags the row
+    # a withheld strategy must NOT appear in the deprecation deliverable
+    dep_section = md.split("## Deprecation list")[1].split("## M1 graduations")[0]
+    assert "shorty" not in dep_section
+    assert "clean" in dep_section
+
+
 # ---------------------------------------------------------------------------
 # enumerate_targets — registry union + subset filter
 # ---------------------------------------------------------------------------
 
-def test_enumerate_targets_both_dedups_and_skips_hold():
+def test_enumerate_targets_both_skips_hold_and_handles_variants():
     targets = fa.enumerate_targets("both")
     names = [t[0] for t in targets]
     assert "hold" not in names
-    # no duplicate names across the spot+futures union
-    assert len(names) == len(set(names))
-    # a shared name resolves to spot; a futures-only name to futures
-    by_name = {t[0]: t[1] for t in targets}
-    assert by_name.get("sma_crossover") == "spot"
-    assert by_name.get("delta_neutral_funding") == "futures"  # futures-only
+    pairs = {(t[0], t[1]) for t in targets}
+
+    # A futures-only name resolves to futures.
+    assert ("delta_neutral_funding", "futures") in pairs
+
+    # A shared name with byte-identical params is screened ONCE (spot only).
+    assert ("sma_crossover", "spot") in pairs
+    assert ("sma_crossover", "futures") not in pairs
+    assert names.count("sma_crossover") == 1
+
+    # A shared name whose futures default_params differ materially (e.g.
+    # momentum threshold 3.0 vs 5.0) is screened on BOTH registries (#1003).
+    assert ("momentum", "spot") in pairs
+    assert ("momentum", "futures") in pairs
+    assert names.count("momentum") == 2
+
+
+def test_enumerate_targets_variant_detection_matches_registry():
+    # The variant set must be derived from the registries, not a stale list:
+    # every shared name with differing default_params appears twice, every
+    # byte-identical shared name once.
+    from registry_loader import load_registry
+    s, f = load_registry("spot"), load_registry("futures")
+    shared = (set(s.list_strategies()) & set(f.list_strategies())) - fa.SKIP_STRATEGIES
+    differing = {n for n in shared
+                 if s.STRATEGY_REGISTRY[n].get("default_params")
+                 != f.STRATEGY_REGISTRY[n].get("default_params")}
+
+    names = [t[0] for t in fa.enumerate_targets("both")]
+    for n in differing:
+        assert names.count(n) == 2, n
+    for n in shared - differing:
+        assert names.count(n) == 1, n
 
 
 def test_enumerate_targets_subset_filter_and_unknown_raises():
@@ -211,6 +332,25 @@ def _synthetic_df(n=160):
         "open": base, "high": base * 1.01, "low": base * 0.99,
         "close": base, "volume": np.full(n, 1000.0),
     }, index=idx)
+
+
+def test_screen_leg_count_mismatch_becomes_error(monkeypatch):
+    # If the net and gross runs disagree on trade count, the pair is not
+    # comparable — screen_leg must demote it to an error leg, not a drag row.
+    def fake_run_leg(reg, name, params, sym, tf, window, capital=0.0,
+                     commission_pct=None, slippage_pct=None, **kw):
+        trades = 5 if commission_pct is None else 4   # gross differs
+        return {"trades": trades, "span_days": 10.0, "return_pct": 1.0,
+                "sharpe": 0.5}
+
+    monkeypatch.setattr(fa, "run_leg", fake_run_leg, raising=True)
+    leg = fa.screen_leg(object(), "x", "BTC/USDT", "1h",
+                        ("2026-01-01", None), capital=1000.0)
+    assert leg is not None
+    assert leg["error"] is not None and "mismatch" in leg["error"]
+    # and an aggregate over it counts the error, scores no data
+    row = fa.aggregate_strategy("x", "spot", [leg])
+    assert row["n_errors"] == 1 and row["verdict"] == "no_trades"
 
 
 def test_run_leg_stamps_span_days(monkeypatch):
