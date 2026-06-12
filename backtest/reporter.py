@@ -153,6 +153,7 @@ def format_walk_forward_report(wf_result: dict) -> str:
         f"{'='*70}",
         f"  Folds:             {wf_result.get('n_valid_folds', 0)}/{wf_result.get('n_splits', 0)}",
         f"  Param Combos:      {wf_result.get('param_grid_size', 0)}",
+        f"  Close Stacks:      {wf_result.get('close_stack_grid_size', 1)}",
         f"  Optimize Metric:   {wf_result.get('optimize_metric', 'sharpe_ratio')}",
         f"{'─'*70}",
         f"  OUT-OF-SAMPLE PERFORMANCE",
@@ -166,6 +167,11 @@ def format_walk_forward_report(wf_result: dict) -> str:
         f"  STABILITY",
         f"    Most Stable Params: {wf_result.get('most_common_best_params', 'N/A')}",
     ]
+    swept_closes = wf_result.get("close_stack_grid_size", 1) > 1
+    if swept_closes:
+        lines.append(
+            f"    Most Stable Close Stack: "
+            f"{wf_result.get('most_common_best_close_stack', 'N/A')}")
 
     # Per-fold details
     windows = wf_result.get("window_results", [])
@@ -176,12 +182,14 @@ def format_walk_forward_report(wf_result: dict) -> str:
         lines.append(f"  {'─'*68}")
         for w in windows:
             tr = w.get("test_result", {})
+            stack = f" | close: {w['best_close_stack']}" if (
+                swept_closes and w.get("best_close_stack")) else ""
             lines.append(
                 f"  {w.get('fold',0):<6} "
                 f"{w.get('test_period','?'):<25} "
                 f"{tr.get('total_return_pct',0):>+7.1f}% "
                 f"{tr.get('sharpe_ratio',0):>7.2f} "
-                f"{w.get('best_params', {})}"
+                f"{w.get('best_params', {})}{stack}"
             )
 
     lines.append(f"{'='*70}")

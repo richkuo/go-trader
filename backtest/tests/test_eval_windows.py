@@ -265,6 +265,25 @@ def test_run_leg_empty_data_returns_none(monkeypatch):
                       ("2023-01-01", "2024-01-01")) is None
 
 
+def test_run_leg_threads_stop_loss_atr_mult(monkeypatch):
+    """#996: candidate stop owners must reach the Backtester — a paper-thin
+    stop forces stopped-out exits, so the leg must differ from the unstopped
+    run (acceptance without threading would leave them identical)."""
+    df = _synthetic_df(n=240)
+    import data_fetcher
+    monkeypatch.setattr(data_fetcher, "load_cached_data",
+                        lambda *a, **k: df, raising=True)
+    plain = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                       ("2026-01-01", None))
+    stopped = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                         ("2026-01-01", None), stop_loss_atr_mult=0.1)
+    assert plain is not None and stopped is not None
+    assert (stopped["return_pct"], stopped["max_dd_pct"]) != \
+        (plain["return_pct"], plain["max_dd_pct"]), (
+        "stop_loss_atr_mult=0.1 produced an identical leg — the stop never "
+        "reached the Backtester")
+
+
 # ---------------------------------------------------------------------------
 # validate_candidate — entry transforms must be modeled faithfully or rejected
 # (mirrors run_backtest.py --config guards; review finding on PR #994)
@@ -303,6 +322,16 @@ def test_validate_candidate_rejects_bogus_direction_and_missing_name():
         ew.validate_candidate({"name": "x", "direction": "sideways"})
     with pytest.raises(ValueError, match="name"):
         ew.validate_candidate({})
+
+
+def test_validate_candidate_stop_owners_mutually_exclusive():
+    # #996: one ATR stop owner is fine; both together mirror the live
+    # config's exclusive stop fields and are rejected.
+    assert ew.validate_candidate({"name": "x", "stop_loss_atr_mult": 2.0})
+    assert ew.validate_candidate({"name": "x", "trailing_stop_atr_mult": 2.5})
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        ew.validate_candidate({"name": "x", "stop_loss_atr_mult": 2.0,
+                               "trailing_stop_atr_mult": 2.5})
 
 
 def test_evaluate_window_validates_before_any_work():

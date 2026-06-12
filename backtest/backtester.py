@@ -1153,15 +1153,15 @@ class Backtester:
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
                     stamp_open_from_label(_entry_stamp(row))
-                    # #716 item 3: seed the SL trigger only when sl_after has
-                    # usable tier thresholds. Without thresholds, the post-TP
-                    # adjustment machinery never fires (`_maybe_apply_sl_after`
-                    # is gated on `self._run_tp_tier_thresholds`), so a seeded-
-                    # then-never-adjusted trigger would represent a phantom
-                    # fixed SL the rest of the engine doesn't actually
-                    # simulate. Mirrors the live shape, where the fixed SL is
-                    # placed by `runHyperliquidProtectionSync` independently
-                    # of `sl_after` configuration.
+                    # Seed the SL trigger at open. sl_after configs seed only
+                    # when usable tier thresholds exist (#716 item 3 — without
+                    # thresholds the post-TP machinery never fires); otherwise
+                    # a bare fixed/trailing stop alongside a close evaluator is
+                    # seeded here and simulated by the end-of-bar hit check
+                    # below (#996 — live arms this SL via
+                    # runHyperliquidProtectionSync / armTrailingStopAtOpenNow
+                    # independently of sl_after; pre-#996 the engine path
+                    # silently dropped it).
                     if sl_after_active and self._run_tp_tier_thresholds:
                         sl_trigger_px = self._initial_sl_trigger(
                             "long", avg_cost, entry_atr_value,
@@ -1174,6 +1174,18 @@ class Backtester:
                             "long", mark_price, entry_atr_value,
                             self._run_trailing_stop_atr_mult,
                         )
+                        sl_tiers_processed = 0
+                        post_tp_trail_mult = None
+                        sl_high_water_px = mark_price
+                    else:
+                        sl_trigger_px = self._initial_sl_trigger(
+                            "long", avg_cost, entry_atr_value,
+                        )
+                        if sl_trigger_px <= 0 and self._run_trailing_stop_atr_mult:
+                            sl_trigger_px = _initial_trail_trigger(
+                                "long", mark_price, entry_atr_value,
+                                self._run_trailing_stop_atr_mult,
+                            )
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = mark_price
@@ -1203,6 +1215,20 @@ class Backtester:
                             "short", mark_price, entry_atr_value,
                             self._run_trailing_stop_atr_mult,
                         )
+                        sl_tiers_processed = 0
+                        post_tp_trail_mult = None
+                        sl_high_water_px = mark_price
+                    else:
+                        # Bare fixed/trailing stop with a close evaluator —
+                        # see the long-side comment (#996).
+                        sl_trigger_px = self._initial_sl_trigger(
+                            "short", avg_cost, entry_atr_value,
+                        )
+                        if sl_trigger_px <= 0 and self._run_trailing_stop_atr_mult:
+                            sl_trigger_px = _initial_trail_trigger(
+                                "short", mark_price, entry_atr_value,
+                                self._run_trailing_stop_atr_mult,
+                            )
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = mark_price
@@ -1240,14 +1266,23 @@ class Backtester:
                             )
                         )
 
-                # End-of-bar: walk the trailing-stop high-water mark (only
-                # active after a TP tier transitioned the position to
-                # trail_from_here mode) and check whether the SL trigger has
-                # been hit by this bar's close. A hit produces
+                # End-of-bar: walk the trailing-stop high-water mark (for
+                # trail_from_here transitions, the ratchet, or a bare scalar
+                # trailing stop) and check whether the SL trigger has been
+                # hit by this bar's close. A hit produces
                 # pending_close_fraction=1.0 which fills at the next bar's
                 # open — same alignment as the rest of the close pipeline.
+                # #996: also runs for bare fixed/trailing/pct stops paired
+                # with a close evaluator, which live arms independently of
+                # sl_after (pre-#996 these were silently dropped here).
+                scalar_stop_active = (
+                    (self._run_stop_loss_atr_mult or 0) > 0
+                    or (self._run_trailing_stop_atr_mult or 0) > 0
+                    or (self.stop_loss_pct or 0) > 0
+                )
                 if (
-                    (sl_after_active or trailing_ratchet_active)
+                    (sl_after_active or trailing_ratchet_active
+                     or scalar_stop_active)
                     and not sl_after_just_applied
                     and position != 0
                     and avg_cost > 0

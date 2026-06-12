@@ -118,3 +118,50 @@ def test_backtester_imports_under_script_style_sys_path(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     assert "OK" in proc.stdout
+
+
+def test_build_parser_accepts_close_stack_flags():
+    parser = run_backtest._build_parser()
+    args = parser.parse_args([
+        "--mode", "optimize", "--strategy", "sma_crossover",
+        "--sweep-close", "--optimize-metric", "dd_adjusted_return",
+        "--direction", "long",
+    ])
+    assert args.sweep_close is True
+    assert args.optimize_metric == "dd_adjusted_return"
+    assert args.direction == "long"
+    assert args.close_stacks_json is None
+
+
+def test_build_parser_rejects_unknown_optimize_metric():
+    parser = run_backtest._build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--optimize-metric", "alpha_decay"])
+
+
+def test_run_walk_forward_threads_close_stack_grid(monkeypatch):
+    """The close-stack grid, metric, and direction must reach
+    walk_forward_optimize — a dropped kwarg silently degrades #996 sweeps to
+    a fixed-close run."""
+    seen = {}
+
+    def spy_wfo(df, strategy_name, param_ranges, **kwargs):
+        seen.update(kwargs)
+        return {"error": "spy", "strategy": strategy_name}
+
+    monkeypatch.setattr(run_backtest, "walk_forward_optimize", spy_wfo)
+    monkeypatch.setattr(
+        run_backtest, "load_cached_data",
+        lambda *a, **k: pd.DataFrame(
+            {"open": [1.0] * 300, "high": [1.0] * 300, "low": [1.0] * 300,
+             "close": [1.0] * 300, "volume": [1.0] * 300},
+            index=pd.date_range("2024-01-01", periods=300, freq="D")))
+
+    grid = [{"label": "baseline", "close_strategies": [],
+             "stop_loss_atr_mult": None, "trailing_stop_atr_mult": None}]
+    run_backtest.run_walk_forward(
+        "sma_crossover", close_stack_grid=grid,
+        optimize_metric="dd_adjusted_return", direction="long")
+    assert seen["close_stack_grid"] == grid
+    assert seen["optimize_metric"] == "dd_adjusted_return"
+    assert seen["direction"] == "long"

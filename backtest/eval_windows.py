@@ -249,7 +249,9 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             window: tuple, capital: float = DEFAULT_CAPITAL,
             close_strategies: Optional[List[dict]] = None,
             direction: Optional[str] = None,
-            invert_signal: bool = False) -> Optional[dict]:
+            invert_signal: bool = False,
+            stop_loss_atr_mult: Optional[float] = None,
+            trailing_stop_atr_mult: Optional[float] = None) -> Optional[dict]:
     """Run one (strategy, dataset, window) leg on the audit-identical harness."""
     from atr import ensure_atr_indicator
     from data_fetcher import load_cached_data
@@ -277,6 +279,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         open_strategy={"name": name, "params": dict(strat_params or {})},
         close_strategies=close_strategies,
         direction=direction, invert_signal=invert_signal,
+        stop_loss_atr_mult=stop_loss_atr_mult,
+        trailing_stop_atr_mult=trailing_stop_atr_mult,
     )
     results = bt.run(df_signals, strategy_name=name, symbol=symbol,
                      timeframe=timeframe, params=strat_params, save=False)
@@ -331,6 +335,13 @@ def validate_candidate(candidate: dict) -> dict:
             f"invert_signal is HL-perps/manual-only (the live daemon rejects "
             f"this at startup — config.go). Remove invert_signal or declare "
             f"type perps/manual.")
+    # #996: backtester-level ATR stop owners are mutually exclusive (mirrors
+    # the live config's exclusive stop fields).
+    if candidate.get("stop_loss_atr_mult") and candidate.get("trailing_stop_atr_mult"):
+        raise ValueError(
+            "candidate sets both stop_loss_atr_mult and "
+            "trailing_stop_atr_mult; the stop owners are mutually exclusive "
+            "— pick one.")
     return candidate
 
 
@@ -352,8 +363,14 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
             reg, candidate["name"], candidate.get("params"),
             symbol, timeframe, window, capital=capital,
             close_strategies=candidate.get("close_strategies"),
-            direction=candidate.get("direction"),
+            # The validated default ("long") must also be the EXECUTED
+            # default: with close refs and direction=None the engine path
+            # would open shorts on raw signal=-1, silently scoring a
+            # different entry universe than the long-leg harness (#996).
+            direction=candidate.get("direction") or "long",
             invert_signal=bool(candidate.get("invert_signal")),
+            stop_loss_atr_mult=candidate.get("stop_loss_atr_mult"),
+            trailing_stop_atr_mult=candidate.get("trailing_stop_atr_mult"),
         )
     score = score_candidate(candidate_legs, bars)
     score["window"] = window_name
@@ -468,7 +485,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Candidate params JSON (default: registry default_params)")
     p.add_argument("--candidate-json", default=None,
                    help="Path to a candidate JSON file: {name, params, "
-                        "close_strategies?, direction?, invert_signal?}. "
+                        "close_strategies?, direction?, invert_signal?, "
+                        "stop_loss_atr_mult?, trailing_stop_atr_mult?}. "
                         "Overrides --strategy/--params.")
     p.add_argument("--registry", choices=["spot", "futures"], default="spot")
     p.add_argument("--windows", default=None,

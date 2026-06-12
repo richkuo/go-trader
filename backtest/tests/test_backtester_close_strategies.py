@@ -319,3 +319,127 @@ def test_close_strategy_unknown_name_raises():
         assert "does_not_exist" in str(exc)
     else:
         raise AssertionError("expected ValueError for unknown close strategy")
+
+
+# ---------------------------------------------------------------------------
+# #996: bare fixed/trailing/pct stops paired with a close evaluator. Live arms
+# these via runHyperliquidProtectionSync / armTrailingStopAtOpenNow regardless
+# of sl_after; pre-#996 the open/close engine path silently dropped them
+# (the SL trigger was only seeded when sl_after had usable tier thresholds).
+# ---------------------------------------------------------------------------
+
+_FAR_TP = [{"name": "tp_at_pct", "params": {"pct": 0.5}}]  # never fires
+
+
+def test_scalar_atr_stop_fires_alongside_close_evaluator():
+    # Entry bar 1 @100, ATR=2, mult=1 → trigger 98. Bar 2 close=96 breaches;
+    # fill at bar 3's OPEN (95, distinct from the breach close — pins the
+    # N→N+1 fill alignment, no look-ahead).
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 95, 95],
+        closes=[100, 100, 96, 95, 95],
+        atrs=[2.0] * 5,
+    )
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=_FAR_TP, stop_loss_atr_mult=1.0,
+    )
+    result = bt.run(df, save=False)
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_price"] == 95.0
+    assert result["final_capital"] == 950.0
+
+
+def test_scalar_atr_stop_inverse_no_breach_is_noop():
+    # Same config, price never reaches the 98 trigger → identical to no-stop.
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 99, 99],
+        closes=[100, 100, 99, 99, 99],
+        atrs=[2.0] * 5,
+    )
+    kw = dict(initial_capital=1000, commission_pct=0, slippage_pct=0,
+              close_strategies=_FAR_TP)
+    with_stop = Backtester(stop_loss_atr_mult=1.0, **kw).run(df.copy(), save=False)
+    no_stop = Backtester(**kw).run(df.copy(), save=False)
+    assert with_stop["final_capital"] == no_stop["final_capital"]
+    assert with_stop["total_trades"] == no_stop["total_trades"]
+
+
+def test_scalar_trailing_stop_walks_alongside_close_evaluator():
+    # Entry bar 1 @100, ATR=2, trail mult=1. Bar 1 close=106 ratchets the
+    # trigger to 104; bar 3 close=103 breaches the WALKED trigger (the
+    # entry-anchored level would be 98, never touched) → fill bar 4 open.
+    df = _df_open_then_hold(
+        opens=[100, 100, 106, 106, 103, 103],
+        closes=[100, 106, 106, 103, 103, 103],
+        atrs=[2.0] * 6,
+    )
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=_FAR_TP, trailing_stop_atr_mult=1.0,
+    )
+    result = bt.run(df, save=False)
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_price"] == 103.0
+    assert result["final_capital"] == 1030.0
+
+
+def test_scalar_atr_stop_protects_short_side():
+    # Short entry bar 1 @100, ATR=2, mult=1 → trigger 102. Bar 2 close=103
+    # breaches (price moved against the short) → fill bar 3 open=103.
+    n = 5
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    df = pd.DataFrame({
+        "open": [100, 100, 100, 103, 103],
+        "close": [100, 100, 103, 103, 103],
+        "atr": [2.0] * n,
+        "open_action": ["short"] + ["none"] * (n - 1),
+    }, index=idx)
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=_FAR_TP, stop_loss_atr_mult=1.0,
+    )
+    result = bt.run(df, save=False)
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["side"] == "short"
+    assert result["trades"][0]["exit_price"] == 103.0
+    assert result["final_capital"] == 970.0
+
+
+def test_pct_stop_fires_alongside_close_evaluator():
+    # stop_loss_pct=0.02 → trigger 98; same shape as the ATR variant.
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 95, 95],
+        closes=[100, 100, 96, 95, 95],
+        atrs=[2.0] * 5,
+    )
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=_FAR_TP, stop_loss_pct=0.02,
+    )
+    result = bt.run(df, save=False)
+    assert result["total_trades"] == 1
+    assert result["final_capital"] == 950.0
+
+
+def test_tp_tier_partial_then_scalar_stop_closes_remainder():
+    # Compound: a 1-ATR TP tier banks half at 102, then the crash through the
+    # 98 stop closes the remainder — both exits must book.
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 102, 102, 96, 96],
+        closes=[100, 100, 102, 102, 96, 96, 96],
+        atrs=[2.0] * 7,
+    )
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=[{"name": "tiered_tp_atr", "params": {
+            "tp_tiers": [{"atr_multiple": 1.0, "close_fraction": 0.5}],
+        }}],
+        stop_loss_atr_mult=1.0,
+    )
+    result = bt.run(df, save=False)
+    assert result["total_trades"] == 2
+    exits = sorted(t["exit_price"] for t in result["trades"])
+    assert exits == [96.0, 102.0]
+    # 5 shares banked at 102 + 5 shares stopped at 96
+    assert result["final_capital"] == 5 * 102.0 + 5 * 96.0

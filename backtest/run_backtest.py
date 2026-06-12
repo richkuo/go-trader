@@ -52,7 +52,8 @@ def _attach_funding_if_needed(df, strategy_name, symbol, since):
 from htf_filter import get_default_htf, apply_htf_filter  # noqa: E402
 from registry_loader import load_registry
 from backtester import Backtester, format_results
-from optimizer import walk_forward_optimize, DEFAULT_PARAM_RANGES
+from optimizer import (walk_forward_optimize, DEFAULT_PARAM_RANGES,
+                       DEFAULT_CLOSE_STACK_SPECS, generate_close_stack_grid)
 from reporter import (
     format_single_report, format_comparison_report,
     format_multi_asset_report, format_walk_forward_report,
@@ -553,6 +554,9 @@ def run_walk_forward(
     stop_loss_atr_mult: Optional[float] = None,
     trailing_stop_atr_mult: Optional[float] = None,
     close_strategies: Optional[List[dict]] = None,
+    close_stack_grid: Optional[List[dict]] = None,
+    optimize_metric: str = "sharpe_ratio",
+    direction: Optional[str] = None,
 ) -> Optional[dict]:
     """Run walk-forward optimization for a strategy."""
     reg = load_registry(registry)
@@ -596,6 +600,9 @@ def run_walk_forward(
         stop_loss_atr_mult=stop_loss_atr_mult,
         trailing_stop_atr_mult=trailing_stop_atr_mult,
         close_strategies=close_strategies,
+        close_stack_grid=close_stack_grid,
+        optimize_metric=optimize_metric,
+        direction=direction,
     )
 
     print(format_walk_forward_report(result))
@@ -670,6 +677,29 @@ def _build_parser() -> argparse.ArgumentParser:
                         dest="trailing_stop_atr_mult", metavar="MULT",
                         help="Trailing ATR-multiple stop (e.g. 2.5). Applied in "
                              "optimize/walk-forward mode.")
+    parser.add_argument("--sweep-close", action="store_true",
+                        help="Optimize mode (#996): sweep the built-in close-stack "
+                             "grid (DEFAULT_CLOSE_STACK_SPECS — baseline, ATR "
+                             "stops, tiered-TP ladders) jointly with the open-"
+                             "param grid.")
+    parser.add_argument("--close-stacks-json", default=None, metavar="PATH",
+                        help="Optimize mode (#996): JSON file with a list of "
+                             "close-stack sweep specs (see optimizer."
+                             "generate_close_stack_grid) swept jointly with "
+                             "the open-param grid. Overrides --sweep-close.")
+    parser.add_argument("--optimize-metric", default="sharpe_ratio",
+                        choices=["sharpe_ratio", "total_return_pct",
+                                 "dd_adjusted_return"],
+                        help="Selection metric for optimize mode (default: "
+                             "sharpe_ratio). dd_adjusted_return = return / "
+                             "|max DD| (#963 DDadj).")
+    parser.add_argument("--direction", default=None,
+                        choices=["long", "short", "both"],
+                        help="Optimize mode: side the open/close engine may "
+                             "OPEN. Defaults to long when a close-stack grid "
+                             "is swept so every stack scores on the same "
+                             "entry universe (raw signal=-1 opens a short in "
+                             "the engine path).")
     return parser
 
 
@@ -798,6 +828,28 @@ def main():
                         allowed_regimes=args.allowed_regimes)
 
     elif args.mode == "optimize":
+        # #996: close-stack co-optimization. The grid owns the close stack;
+        # fixed exit flags alongside it would be silently shadowed — reject.
+        close_stack_grid = None
+        if args.close_stacks_json or args.sweep_close:
+            if close_refs or args.stop_loss_atr_mult is not None \
+                    or args.trailing_stop_atr_mult is not None:
+                print("--sweep-close/--close-stacks-json is mutually exclusive "
+                      "with --close-strategy/--stop-loss-atr-mult/"
+                      "--trailing-stop-atr-mult (the grid owns the close stack)")
+                sys.exit(1)
+            if args.close_stacks_json:
+                import json as _json
+                with open(args.close_stacks_json) as fh:
+                    specs = _json.load(fh)
+                if not isinstance(specs, list):
+                    print(f"{args.close_stacks_json}: expected a JSON list of "
+                          f"close-stack specs")
+                    sys.exit(1)
+            else:
+                specs = DEFAULT_CLOSE_STACK_SPECS
+            close_stack_grid = generate_close_stack_grid(specs)
+
         if args.strategy == "all":
             for strat in reg.list_strategies():
                 run_walk_forward(strat, args.symbol, args.timeframe,
@@ -809,7 +861,10 @@ def main():
                                  allowed_regimes=args.allowed_regimes,
                                  stop_loss_atr_mult=args.stop_loss_atr_mult,
                                  trailing_stop_atr_mult=args.trailing_stop_atr_mult,
-                                 close_strategies=close_refs)
+                                 close_strategies=close_refs,
+                                 close_stack_grid=close_stack_grid,
+                                 optimize_metric=args.optimize_metric,
+                                 direction=args.direction)
         else:
             run_walk_forward(args.strategy, args.symbol, args.timeframe,
                              args.since, args.splits, args.capital,
@@ -820,7 +875,10 @@ def main():
                              allowed_regimes=args.allowed_regimes,
                              stop_loss_atr_mult=args.stop_loss_atr_mult,
                              trailing_stop_atr_mult=args.trailing_stop_atr_mult,
-                             close_strategies=close_refs)
+                             close_strategies=close_refs,
+                             close_stack_grid=close_stack_grid,
+                             optimize_metric=args.optimize_metric,
+                             direction=args.direction)
 
 
 if __name__ == "__main__":
