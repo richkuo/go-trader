@@ -251,8 +251,20 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             direction: Optional[str] = None,
             invert_signal: bool = False,
             stop_loss_atr_mult: Optional[float] = None,
-            trailing_stop_atr_mult: Optional[float] = None) -> Optional[dict]:
-    """Run one (strategy, dataset, window) leg on the audit-identical harness."""
+            trailing_stop_atr_mult: Optional[float] = None,
+            *,
+            commission_pct: Optional[float] = None,
+            slippage_pct: Optional[float] = None) -> Optional[dict]:
+    """Run one (strategy, dataset, window) leg on the audit-identical harness.
+
+    ``commission_pct`` / ``slippage_pct`` are keyword-only friction overrides
+    (default ``None``): with both ``None`` the harness is byte-identical to the
+    M1 scorer (platform fee + the Backtester's 5 bps slippage default). The fee
+    audit (#999) passes ``commission_pct=0.0, slippage_pct=0.0`` for the gross
+    (zero-friction) re-run. The returned leg dict carries an additive
+    ``span_days`` key (calendar span of the data slice) so callers can
+    annualize trade counts.
+    """
     from atr import ensure_atr_indicator
     from data_fetcher import load_cached_data
     from backtester import Backtester
@@ -274,19 +286,33 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     if close_strategies:
         df_signals = ensure_atr_indicator(df_signals)
 
-    bt = Backtester(
+    bt_kwargs = dict(
         initial_capital=capital, platform=PLATFORM,
         open_strategy={"name": name, "params": dict(strat_params or {})},
         close_strategies=close_strategies,
         direction=direction, invert_signal=invert_signal,
         stop_loss_atr_mult=stop_loss_atr_mult,
         trailing_stop_atr_mult=trailing_stop_atr_mult,
+        # commission_pct=None keeps the Backtester's platform-derived fee — the
+        # M1 default; an explicit 0.0 (fee audit gross run) overrides it.
+        commission_pct=commission_pct,
     )
+    # Only override slippage when asked; otherwise the Backtester's 5 bps
+    # default stands (passing None would zero it out via the constructor).
+    if slippage_pct is not None:
+        bt_kwargs["slippage_pct"] = slippage_pct
+    bt = Backtester(**bt_kwargs)
     results = bt.run(df_signals, strategy_name=name, symbol=symbol,
                      timeframe=timeframe, params=strat_params, save=False)
     closes = df["close"].astype(float)
     bh = round((closes.iloc[-1] - closes.iloc[0]) / closes.iloc[0] * 100, 2)
-    return leg_from_results(results, bh_return_pct=bh)
+    leg = leg_from_results(results, bh_return_pct=bh)
+    try:
+        span_days = (df.index[-1] - df.index[0]).total_seconds() / 86400.0
+    except (AttributeError, TypeError):
+        span_days = None
+    leg["span_days"] = round(span_days, 4) if span_days else span_days
+    return leg
 
 
 def compute_incumbent_legs(reg, datasets: List[tuple], window: tuple,
