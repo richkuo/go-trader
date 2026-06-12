@@ -325,3 +325,41 @@ def test_joint_sweep_rejects_short_universe_with_no_close_stack():
             n_splits=2, verbose=False, close_stack_grid=grid,
             direction="both",
         )
+
+
+def test_optimize_rejects_short_direction_with_no_close_ref():
+    # PR #1000 review: the no-grid optimize path must hit the same guard —
+    # direction=short with no close evaluator cannot open shorts (plain
+    # long/flat path) and must error, not silently run long-only.
+    df = _trending_ohlc()
+    with pytest.raises(ValueError, match="close evaluator"):
+        walk_forward_optimize(
+            df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
+            n_splits=2, verbose=False, direction="short",
+        )
+
+
+def test_optimize_both_direction_with_fixed_close_ref_runs():
+    # Inverse case: a fixed --close-strategy activates the open/close engine,
+    # which legitimately opens both sides — the guard must not over-reject.
+    df = _trending_ohlc()
+    result = walk_forward_optimize(
+        df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
+        n_splits=2, verbose=False, direction="both",
+        close_strategies=[{"name": "tiered_tp_atr",
+                           "params": {"tp_tiers": WIDE_LADDER}}],
+    )
+    assert "window_results" in result, result
+
+
+def test_optimize_long_direction_with_no_close_ref_runs():
+    # Boundary: explicit long with no close ref is the structurally-valid
+    # default and must keep running long/flat unchanged.
+    df = _trending_ohlc()
+    result = walk_forward_optimize(
+        df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
+        n_splits=2, verbose=False, direction="long",
+    )
+    sides = {t["side"] for w in result["window_results"]
+             for t in w["test_result"]["trades"]}
+    assert sides <= {"long"}, sides

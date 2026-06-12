@@ -325,14 +325,6 @@ def walk_forward_optimize(
             "kwargs — the grid owns the close stack")
     if close_stack_grid and direction is None:
         direction = "long"
-    if direction in ("short", "both") and close_stack_grid and any(
-        not stack.get("close_strategies") for stack in close_stack_grid
-    ):
-        raise ValueError(
-            f"direction={direction!r} requires every close stack to carry a "
-            f"close evaluator — the plain long/flat signal path cannot open "
-            f"shorts, so a no-close stack would silently score as long/flat "
-            f"(mirrors the eval_windows/run_backtest guards)")
 
     reg = load_registry(registry)
     apply_strategy = reg.apply_strategy
@@ -352,6 +344,17 @@ def walk_forward_optimize(
         }
         fixed["label"] = close_stack_label(fixed)
         stacks = [fixed]
+    # Guard the whole optimize surface, grid or not: without a close evaluator
+    # the plain long/flat signal path cannot open shorts, so a short/both
+    # request would silently score as long/flat (mirrors the eval_windows/
+    # run_backtest --config guards).
+    if direction in ("short", "both") and any(
+        not stack.get("close_strategies") for stack in stacks
+    ):
+        raise ValueError(
+            f"direction={direction!r} requires a close evaluator on every "
+            f"close stack — the plain long/flat signal path cannot open "
+            f"shorts, so the run would silently score as long/flat")
     stack_bts = [
         (stack, Backtester(
             initial_capital=initial_capital, platform=platform,
