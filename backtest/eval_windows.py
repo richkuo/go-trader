@@ -28,6 +28,10 @@ Examples:
   # Plateau sweep (M1 step 6) over htf_factor on the protocol OOS window
   uv run --no-sync python backtest/eval_windows.py --strategy regime_adaptive_htf \\
       --sweep htf_factor=4,5,6,8,10,12
+
+  # Short leg of a short-only strategy (#989: signal=-1 opens, +1 closes)
+  uv run --no-sync python backtest/eval_windows.py --strategy bear_pullback_st \\
+      --registry futures --direction short
 """
 
 import argparse
@@ -351,10 +355,12 @@ def compute_incumbent_legs(reg, datasets: List[tuple], window: tuple,
 def validate_candidate(candidate: dict) -> dict:
     """Reject candidate configs the harness cannot faithfully model.
 
-    Mirrors the run_backtest.py --config guards: the plain long/flat signal
-    path (no close evaluator) cannot open shorts (signal=-1 only closes a
-    long), so a short/both direction there would silently score as long/flat
-    — a misleading verdict, not an error. Likewise invert_signal is
+    Mirrors the run_backtest.py --config guards: the plain signal path (no
+    close evaluator) runs one leg at a time — long/flat by default, short/flat
+    under direction="short" (#989: signal=-1 opens the short, +1 closes it).
+    direction="both" remains unmodelable there (one signal cannot open one
+    side and close the other), so it would silently score as long/flat — a
+    misleading verdict, not an error. Likewise invert_signal is
     HL-perps/manual-only live (config.go rejects it elsewhere at startup), so
     a candidate declaring another type must not have signals flipped on a
     path the live daemon would refuse to load.
@@ -367,13 +373,14 @@ def validate_candidate(candidate: dict) -> dict:
             f"candidate direction must be long/short/both, got "
             f"{candidate.get('direction')!r}")
     close_refs = candidate.get("close_strategies")
-    if direction in ("short", "both") and not close_refs:
+    if direction == "both" and not close_refs:
         raise ValueError(
-            f"candidate has direction={direction!r} but no close_strategies. "
-            f"The plain long/flat signal path cannot open shorts (signal=-1 "
-            f"only closes a long), so the short side would be silently "
-            f"dropped. Add close_strategies (the open/close engine models "
-            f"both sides) or evaluate a long-only variant.")
+            "candidate has direction='both' but no close_strategies. The "
+            "plain signal path runs one leg at a time (long/flat, or "
+            "short/flat under direction='short'), so the short side of a "
+            "'both' candidate would be silently dropped. Add "
+            "close_strategies (the open/close engine models both sides) or "
+            "evaluate each leg separately.")
     ctype = str(candidate.get("type") or "perps").strip().lower()
     if candidate.get("invert_signal") and ctype not in ("perps", "manual"):
         raise ValueError(
@@ -548,6 +555,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "stop_loss_atr_mult?, trailing_stop_atr_mult?}. "
                         "Overrides --strategy/--params.")
     p.add_argument("--registry", choices=["spot", "futures"], default="spot")
+    p.add_argument("--direction", default=None,
+                   choices=["long", "short", "both"],
+                   help="Candidate entry side (#989). 'short' runs the "
+                        "short/flat mirror path (signal=-1 opens a short, "
+                        "+1 closes it) so short-only/bidirectional "
+                        "strategies score their short leg instead of zero "
+                        "trades. 'both' requires close_strategies (engine "
+                        "path). Default: long.")
     p.add_argument("--windows", default=None,
                    help=f"Comma list of windows (default: all). "
                         f"Known: {', '.join(WINDOWS)}")
@@ -586,6 +601,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.profile_allocation:
         candidate["profile_allocation"] = json.loads(args.profile_allocation)
+
+    if args.direction:
+        candidate["direction"] = args.direction
 
     try:
         validate_candidate(candidate)

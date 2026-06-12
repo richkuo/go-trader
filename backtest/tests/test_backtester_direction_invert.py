@@ -9,9 +9,11 @@ paths:
 
   • open/close path (a close evaluator drives exits): signal>0 opens long,
     signal<0 opens short; masking the disallowed open side is exact.
-  • plain long/flat path: signal=1 opens long, signal=-1 only *closes* the long;
-    it is structurally long-only, so direction masking is skipped there (and
-    short/both is rejected at config load — see test_strategy_refs_641).
+  • plain signal path: single-leg, so direction masking is skipped there.
+    Long/flat (default): signal=1 opens long, signal=-1 only *closes* it.
+    direction="short" engages the short/flat mirror (#989 — see
+    test_backtester_short_leg); direction="both" stays unmodelable on this
+    path and is rejected at config load (see test_strategy_refs_641).
 """
 import pandas as pd
 import pytest

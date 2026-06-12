@@ -289,9 +289,11 @@ def test_run_leg_threads_stop_loss_atr_mult(monkeypatch):
 # (mirrors run_backtest.py --config guards; review finding on PR #994)
 # ---------------------------------------------------------------------------
 
-def test_validate_candidate_rejects_short_without_close_refs():
-    with pytest.raises(ValueError, match="silently dropped"):
-        ew.validate_candidate({"name": "x", "direction": "short"})
+def test_validate_candidate_allows_short_without_close_refs():
+    # #989: direction="short" no longer needs close refs — the Backtester's
+    # short/flat plain path models it (signal=-1 opens, +1 closes).
+    c = {"name": "x", "direction": "short"}
+    assert ew.validate_candidate(c) is c
 
 
 def test_validate_candidate_rejects_both_without_close_refs():

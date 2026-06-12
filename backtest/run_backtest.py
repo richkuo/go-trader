@@ -338,20 +338,23 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"config.go). Remove invert_signal or backtest a perps/manual "
                 f"strategy."
             )
-        # The plain long/flat signal path (no close evaluator) is structurally
-        # long-only: signal=-1 *closes* a long rather than opening a short. A
-        # short/both direction there can't open the short side, so it would
-        # silently backtest long-only — the exact silent-divergence class this
-        # parity fix closes. Require the open/close engine path (a close
-        # evaluator, which models both open sides) or reject loudly.
-        if not close_refs and direction in ("short", "both"):
+        # The plain signal path (no close evaluator) is structurally
+        # single-leg: long/flat by default, short/flat under direction="short"
+        # (#989 — signal=-1 opens the short, +1 closes it). direction="both"
+        # remains unmodelable there (one signal cannot open one side and close
+        # the other), so it would silently backtest long-only — the exact
+        # silent-divergence class this parity fix closes. Require the
+        # open/close engine path (a close evaluator, which models both open
+        # sides) or reject loudly.
+        if not close_refs and direction == "both":
             raise ValueError(
                 f"{config_path}: strategy {strategy_id!r} has "
-                f"direction={direction!r} but no close_strategy. The "
-                f"backtester's plain long/flat signal path cannot open shorts "
-                f"(signal=-1 only closes a long), so the short side would be "
-                f"silently dropped. Add a close_strategy (the open/close engine "
-                f"models both sides) or backtest a long-only variant."
+                f"direction='both' but no close_strategy. The backtester's "
+                f"plain signal path runs one leg at a time (long/flat, or "
+                f"short/flat under direction='short'), so the short side of a "
+                f"'both' config would be silently dropped. Add a "
+                f"close_strategy (the open/close engine models both sides) or "
+                f"backtest each leg separately."
             )
         # #998: regime_profile_allocation is backtestable (unlike its rejected
         # siblings) — the slow long-window switch is a pure function of closed-bar
