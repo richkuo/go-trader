@@ -298,10 +298,47 @@ def compute_incumbent_legs(reg, datasets: List[tuple], window: tuple,
     return out
 
 
+def validate_candidate(candidate: dict) -> dict:
+    """Reject candidate configs the harness cannot faithfully model.
+
+    Mirrors the run_backtest.py --config guards: the plain long/flat signal
+    path (no close evaluator) cannot open shorts (signal=-1 only closes a
+    long), so a short/both direction there would silently score as long/flat
+    — a misleading verdict, not an error. Likewise invert_signal is
+    HL-perps/manual-only live (config.go rejects it elsewhere at startup), so
+    a candidate declaring another type must not have signals flipped on a
+    path the live daemon would refuse to load.
+    """
+    if not isinstance(candidate, dict) or not candidate.get("name"):
+        raise ValueError("candidate needs a 'name'")
+    direction = str(candidate.get("direction") or "long").strip().lower()
+    if direction not in ("long", "short", "both"):
+        raise ValueError(
+            f"candidate direction must be long/short/both, got "
+            f"{candidate.get('direction')!r}")
+    close_refs = candidate.get("close_strategies")
+    if direction in ("short", "both") and not close_refs:
+        raise ValueError(
+            f"candidate has direction={direction!r} but no close_strategies. "
+            f"The plain long/flat signal path cannot open shorts (signal=-1 "
+            f"only closes a long), so the short side would be silently "
+            f"dropped. Add close_strategies (the open/close engine models "
+            f"both sides) or evaluate a long-only variant.")
+    ctype = str(candidate.get("type") or "perps").strip().lower()
+    if candidate.get("invert_signal") and ctype not in ("perps", "manual"):
+        raise ValueError(
+            f"candidate sets invert_signal on type={ctype!r}, but "
+            f"invert_signal is HL-perps/manual-only (the live daemon rejects "
+            f"this at startup — config.go). Remove invert_signal or declare "
+            f"type perps/manual.")
+    return candidate
+
+
 def evaluate_window(reg, candidate: dict, datasets: List[tuple],
                     window_name: str, capital: float,
                     bars_memo: dict) -> dict:
     """Candidate legs + incumbent bars + verdict for one window."""
+    validate_candidate(candidate)
     window = WINDOWS[window_name]
     if window_name not in bars_memo:
         bars_memo[window_name] = incumbent_bars(
@@ -464,6 +501,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             candidate["params"] = json.loads(args.params)
     else:
         raise SystemExit("supply --strategy or --candidate-json")
+
+    try:
+        validate_candidate(candidate)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
 
     if args.windows:
         window_names = [w.strip() for w in args.windows.split(",") if w.strip()]

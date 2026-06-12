@@ -263,3 +263,50 @@ def test_run_leg_empty_data_returns_none(monkeypatch):
                         lambda *a, **k: pd.DataFrame(), raising=True)
     assert ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
                       ("2023-01-01", "2024-01-01")) is None
+
+
+# ---------------------------------------------------------------------------
+# validate_candidate — entry transforms must be modeled faithfully or rejected
+# (mirrors run_backtest.py --config guards; review finding on PR #994)
+# ---------------------------------------------------------------------------
+
+def test_validate_candidate_rejects_short_without_close_refs():
+    with pytest.raises(ValueError, match="silently dropped"):
+        ew.validate_candidate({"name": "x", "direction": "short"})
+
+
+def test_validate_candidate_rejects_both_without_close_refs():
+    # "both" is the sneakier case: _apply_direction_invert never masks it,
+    # so without this guard it runs long/flat with zero indication.
+    with pytest.raises(ValueError, match="silently dropped"):
+        ew.validate_candidate({"name": "x", "direction": "both"})
+
+
+def test_validate_candidate_allows_short_with_close_refs():
+    c = {"name": "x", "direction": "short",
+         "close_strategies": [{"name": "tp_at_pct", "params": {}}]}
+    assert ew.validate_candidate(c) is c
+
+
+def test_validate_candidate_invert_signal_gated_by_type():
+    # default type is perps → allowed; declared non-perps type → rejected
+    assert ew.validate_candidate({"name": "x", "invert_signal": True})
+    assert ew.validate_candidate(
+        {"name": "x", "invert_signal": True, "type": "manual"})
+    with pytest.raises(ValueError, match="invert_signal"):
+        ew.validate_candidate(
+            {"name": "x", "invert_signal": True, "type": "spot"})
+
+
+def test_validate_candidate_rejects_bogus_direction_and_missing_name():
+    with pytest.raises(ValueError, match="direction"):
+        ew.validate_candidate({"name": "x", "direction": "sideways"})
+    with pytest.raises(ValueError, match="name"):
+        ew.validate_candidate({})
+
+
+def test_evaluate_window_validates_before_any_work():
+    # Bad candidate must fail at the gate — reg=None proves nothing ran.
+    with pytest.raises(ValueError, match="silently dropped"):
+        ew.evaluate_window(None, {"name": "x", "direction": "both"},
+                           [("BTC/USDT", "1h")], "oos", 1000.0, {})
