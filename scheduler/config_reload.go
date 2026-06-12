@@ -169,6 +169,22 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].regime_window_divergence: shape updated", sc.ID)
 			sc.RegimeWindowDivergence = ns.RegimeWindowDivergence
 		}
+		// #998: regime_profile_allocation mutation when flat. State-compat gate
+		// blocks the reshape while a position is open; reaching here flat means
+		// the next cycle resolves against the new profiles. A reshape invalidates
+		// the running switch state machine, so reset the active profile to the
+		// new initial and zero the pending counter.
+		if !sc.RegimeProfileAllocation.EqualForReload(ns.RegimeProfileAllocation) {
+			addChange("strategy[%s].regime_profile_allocation: shape updated", sc.ID)
+			sc.RegimeProfileAllocation = ns.RegimeProfileAllocation
+			if stratState := stateStrategy(state, sc.ID); stratState != nil {
+				if ns.RegimeProfileAllocation.IsConfigured() {
+					stratState.RegimeProfile = &RegimeProfileState{ActiveProfile: ns.RegimeProfileAllocation.InitialProfile}
+				} else {
+					stratState.RegimeProfile = nil
+				}
+			}
+		}
 		if !regimeWindowFieldsEqual(*sc, ns) {
 			addChange("strategy[%s].regime_*_window: gate=%q atr=%q directional=%q updated",
 				sc.ID, ns.RegimeGateWindow, ns.RegimeATRWindow, ns.RegimeDirectionalWindow)
@@ -485,6 +501,21 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID))
 			}
 		}
+		// #998: regime_profile_allocation shape changes while a position is open
+		// would re-bind the frozen active profile (pos.OpenProfile governs the
+		// held position by design). Block the reshape; changes when flat take
+		// effect on the next cycle.
+		if sc.Type == "perps" && sc.Platform == "hyperliquid" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			oldPALConfigured := sc.RegimeProfileAllocation.IsConfigured()
+			newPALConfigured := ns.RegimeProfileAllocation.IsConfigured()
+			if oldPALConfigured != newPALConfigured {
+				errs = append(errs, fmt.Sprintf("strategy[%s] regime_profile_allocation mode changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			} else if oldPALConfigured && !sc.RegimeProfileAllocation.EqualForReload(ns.RegimeProfileAllocation) {
+				errs = append(errs, fmt.Sprintf("strategy[%s] regime_profile_allocation shape changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
+		}
 		// #792: per-feature regime window selectors route live gate/ATR/policy
 		// lookups; changing them while open would rebind stamped semantics.
 		if strategyHasOpenPositions(stateStrategy(state, sc.ID)) && !regimeWindowFieldsEqual(sc, ns) {
@@ -568,6 +599,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.AllowShorts = false           // #656: legacy field — direction change is what gates hot reload
 	sc.InvertSignal = false          // #775: hot-reloadable; state-compat blocks change while open. Needed in shape mask so the immutable-fields DeepEqual doesn't flag a pure invert_signal toggle as "restart required" (parallel to Direction above).
 	sc.RegimeDirectionalPolicy = nil // #779: hot-reloadable; state-compat blocks add/remove/reshape while open
+	sc.RegimeProfileAllocation = nil // #998: hot-reloadable when flat; state-compat blocks add/remove/reshape while open
 	sc.RegimeGateWindow = ""         // #792: hot-reloadable when flat; state-compat blocks change while open
 	sc.RegimeATRWindow = ""          // #792: hot-reloadable when flat; state-compat blocks change while open
 	sc.RegimeDirectionalWindow = ""  // #792: hot-reloadable when flat; state-compat blocks change while open

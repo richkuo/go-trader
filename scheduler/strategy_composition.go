@@ -34,6 +34,7 @@ type PositionCtx struct {
 	Regime            string
 	DirectionalRegime string
 	RegimeWindows     map[string]string
+	Profile           string // regime-profile allocation: pos.OpenProfile frozen at open (#998)
 }
 
 func usesOpenCloseConfig(sc StrategyConfig) bool {
@@ -179,6 +180,7 @@ func positionCtxFromPosition(pos *Position) PositionCtx {
 		Regime:            pos.Regime,
 		DirectionalRegime: pos.Regime,
 		RegimeWindows:     cloneStringMap(pos.RegimeWindows),
+		Profile:           pos.OpenProfile,
 	}
 }
 

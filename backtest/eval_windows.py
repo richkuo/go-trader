@@ -252,6 +252,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             invert_signal: bool = False,
             stop_loss_atr_mult: Optional[float] = None,
             trailing_stop_atr_mult: Optional[float] = None,
+            profile_allocation: Optional[dict] = None,
             *,
             commission_pct: Optional[float] = None,
             slippage_pct: Optional[float] = None) -> Optional[dict]:
@@ -268,7 +269,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     from atr import ensure_atr_indicator
     from data_fetcher import load_cached_data
     from backtester import Backtester
-    from run_backtest import FUNDING_COLUMN_STRATEGIES, _attach_funding_if_needed
+    from run_backtest import (FUNDING_COLUMN_STRATEGIES, _attach_funding_if_needed,
+                              _build_profile_label_series)
 
     start, end = window
     df = load_cached_data(symbol, timeframe, start_date=start, end_date=end)
@@ -282,9 +284,26 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         raise SystemExit(f"Unknown strategy {name!r}; available: {reg.list_strategies()}")
     strat_params = params if params is not None else strat["default_params"]
 
-    df_signals = reg.apply_strategy(name, df, strat_params)
-    if close_strategies:
-        df_signals = ensure_atr_indicator(df_signals)
+    if profile_allocation:
+        # #998: per-profile signals + long-window label, then engine replays the switch.
+        param_sets = profile_allocation["param_sets"]
+        df_signals = None
+        for p in sorted(param_sets):
+            p_params = {**(strat_params or {}), **(param_sets[p] or {})}
+            res = reg.apply_strategy(name, df, p_params)
+            if df_signals is None:
+                df_signals = res.copy()
+                df_signals["signal__" + p] = df_signals.pop("signal")
+            else:
+                df_signals["signal__" + p] = res["signal"].values
+        if close_strategies:
+            df_signals = ensure_atr_indicator(df_signals)
+        df_signals["_profile_label"] = _build_profile_label_series(
+            df_signals, profile_allocation["window_spec"]).values
+    else:
+        df_signals = reg.apply_strategy(name, df, strat_params)
+        if close_strategies:
+            df_signals = ensure_atr_indicator(df_signals)
 
     bt_kwargs = dict(
         initial_capital=capital, platform=PLATFORM,
@@ -293,6 +312,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         direction=direction, invert_signal=invert_signal,
         stop_loss_atr_mult=stop_loss_atr_mult,
         trailing_stop_atr_mult=trailing_stop_atr_mult,
+        profile_allocation=profile_allocation,
         # commission_pct=None keeps the Backtester's platform-derived fee — the
         # M1 default; an explicit 0.0 (fee audit gross run) overrides it.
         commission_pct=commission_pct,
@@ -368,6 +388,18 @@ def validate_candidate(candidate: dict) -> dict:
             "candidate sets both stop_loss_atr_mult and "
             "trailing_stop_atr_mult; the stop owners are mutually exclusive "
             "— pick one.")
+    # #998: regime-profile allocation is backtestable; validate the block shape
+    # and require an inline window_spec so the harness can compute the label
+    # series (eval_windows has no live regime store / config).
+    pal = candidate.get("profile_allocation")
+    if pal:
+        from backtester import _parse_profile_allocation
+        _parse_profile_allocation(pal)  # raises on bad param_sets/confirm/initial
+        if not pal.get("window_spec"):
+            raise ValueError(
+                "candidate.profile_allocation needs an inline 'window_spec' "
+                "({classifier, period[, thresholds|adx_threshold]}) so the "
+                "harness can compute the switch label series.")
     return candidate
 
 
@@ -397,6 +429,7 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
             invert_signal=bool(candidate.get("invert_signal")),
             stop_loss_atr_mult=candidate.get("stop_loss_atr_mult"),
             trailing_stop_atr_mult=candidate.get("trailing_stop_atr_mult"),
+            profile_allocation=candidate.get("profile_allocation"),
         )
     score = score_candidate(candidate_legs, bars)
     score["window"] = window_name
@@ -526,6 +559,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Plateau sweep over a param (repeatable; cartesian)")
     p.add_argument("--sweep-window", default="oos", choices=list(WINDOWS),
                    help="Window the sweep is scored on (default: oos)")
+    p.add_argument("--profile-allocation", default=None,
+                   help="#998 regime-profile allocation JSON: {window_spec:"
+                        "{classifier,period,...}, profiles:{label:profile}, "
+                        "param_sets:{profile:{...}}, confirm_bars, initial_profile}. "
+                        "Scores the switched composite on the same harness.")
     p.add_argument("--json", default=None, dest="json_out",
                    help="Write the full structured result to this path")
     return p
@@ -545,6 +583,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             candidate["params"] = json.loads(args.params)
     else:
         raise SystemExit("supply --strategy or --candidate-json")
+
+    if args.profile_allocation:
+        candidate["profile_allocation"] = json.loads(args.profile_allocation)
 
     try:
         validate_candidate(candidate)

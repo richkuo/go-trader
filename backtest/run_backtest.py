@@ -59,6 +59,38 @@ from reporter import (
     format_multi_asset_report, format_walk_forward_report,
     generate_full_report,
 )
+from regime import compute_regime, compute_regime_composite  # noqa: E402
+
+
+def _normalize_regime_window_spec(spec) -> dict:
+    """Normalize a regime.windows entry into a {classifier, period, ...} dict.
+    A bare int is ADX shorthand (mirrors Go RegimeWindowsMap.UnmarshalJSON)."""
+    if isinstance(spec, (int, float)) and not isinstance(spec, bool):
+        return {"classifier": "adx", "period": int(spec)}
+    spec = dict(spec or {})
+    classifier = str(spec.get("classifier") or "adx").strip().lower() or "adx"
+    out = {"classifier": classifier, "period": int(spec.get("period") or 0)}
+    if classifier == "adx":
+        out["adx_threshold"] = float(spec.get("adx_threshold") or 20.0)
+    else:
+        out["thresholds"] = dict(spec.get("thresholds") or {})
+    return out
+
+
+def _build_profile_label_series(df: pd.DataFrame, window_spec: dict) -> pd.Series:
+    """Compute the per-bar regime label at the switch window's classifier/period
+    (#998). Mirrors the live regime store: composite via compute_regime_composite,
+    ADX via compute_regime. The result is the bar-close label; Backtester shifts
+    it by one so bar N's label governs the N+1 fill (look-ahead guard)."""
+    classifier = window_spec.get("classifier", "adx")
+    period = int(window_spec.get("period") or 14)
+    if classifier == "composite":
+        reg = compute_regime_composite(df, period=period,
+                                       thresholds=window_spec.get("thresholds") or None)
+    else:
+        reg = compute_regime(df, period=period,
+                             adx_threshold=float(window_spec.get("adx_threshold") or 20.0))
+    return reg["regime"].astype(str)
 
 
 def _htf_trend_series(symbol: str, timeframe: str, ltf_index: pd.Index,
@@ -321,6 +353,38 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"silently dropped. Add a close_strategy (the open/close engine "
                 f"models both sides) or backtest a long-only variant."
             )
+        # #998: regime_profile_allocation is backtestable (unlike its rejected
+        # siblings) — the slow long-window switch is a pure function of closed-bar
+        # OHLCV, so Backtester replays it. Resolve the referenced switch window's
+        # spec from the config's regime.windows so run_single_backtest can compute
+        # the per-bar label series; reject loudly if the window is absent.
+        profile_allocation = None
+        pal = sc.get("regime_profile_allocation")
+        if pal:
+            window = str(pal.get("window") or "").strip()
+            regime_cfg = cfg.get("regime") or {}
+            windows = regime_cfg.get("windows") or {}
+            spec = windows.get(window)
+            if not regime_cfg.get("enabled"):
+                raise ValueError(
+                    f"{config_path}: strategy {strategy_id!r} uses "
+                    f"regime_profile_allocation but regime.enabled is not true."
+                )
+            if spec is None:
+                raise ValueError(
+                    f"{config_path}: regime_profile_allocation.window={window!r} "
+                    f"not found in regime.windows (have: {sorted(windows)})."
+                )
+            profile_allocation = {
+                "window": window,
+                "window_spec": _normalize_regime_window_spec(spec),
+                "profiles": dict(pal.get("profiles") or {}),
+                "param_sets": {
+                    k: dict(v or {}) for k, v in (pal.get("param_sets") or {}).items()
+                },
+                "confirm_bars": int(pal.get("confirm_bars") or 0),
+                "initial_profile": str(pal.get("initial_profile") or "").strip(),
+            }
         return {
             "open_strategy": {
                 "name": open_ref["name"],
@@ -337,6 +401,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "strategy_type": strategy_type,
             "direction": direction,
             "invert_signal": invert_signal,
+            "profile_allocation": profile_allocation,
         }
     raise ValueError(
         f"{config_path}: no strategy with id={strategy_id!r}. "
@@ -369,6 +434,7 @@ def run_single_backtest(
     strategy_type: str = "perps",
     direction: Optional[str] = None,
     invert_signal: bool = False,
+    profile_allocation: Optional[dict] = None,
 ) -> Optional[dict]:
     """Run a single backtest and print results.
 
@@ -404,14 +470,39 @@ def run_single_backtest(
 
     print(f"  Data: {len(df)} candles from {df.index[0]} to {df.index[-1]}")
 
-    df_signals = reg.apply_strategy(strategy_name, df, strat_params)
+    if profile_allocation:
+        # #998: compute one signal series per profile (base params overlaid with
+        # the profile's param_set) plus the long-window label series, then hand
+        # the multi-profile frame to the engine, which replays the switch.
+        param_sets = profile_allocation["param_sets"]
+        names = sorted(param_sets)
+        df_signals = None
+        for p in names:
+            p_params = {**(strat_params or {}), **(param_sets[p] or {})}
+            res = reg.apply_strategy(strategy_name, df, p_params)
+            if df_signals is None:
+                # Seed from the first profile's full frame (OHLCV + indicators)
+                # and rename its signal; later profiles contribute only signals.
+                df_signals = res.copy()
+                df_signals["signal__" + p] = df_signals.pop("signal")
+            else:
+                df_signals["signal__" + p] = res["signal"].values
+        if close_strategies:
+            df_signals = ensure_atr_indicator(df_signals)
+        df_signals["_profile_label"] = _build_profile_label_series(
+            df_signals, profile_allocation["window_spec"]
+        ).values
+        print(f"  Profile allocation: window={profile_allocation['window']} "
+              f"profiles={names} confirm_bars={profile_allocation['confirm_bars']}")
+    else:
+        df_signals = reg.apply_strategy(strategy_name, df, strat_params)
 
-    # Mirror the runtime check-script contract: inject ATR(14) when the
-    # open strategy doesn't emit `atr`, so close evaluators that require
-    # `entry_atr` (tiered_tp_atr) and `market.atr` (tiered_tp_atr_live)
-    # see consistent volatility input. Idempotent when `atr` already exists.
-    if close_strategies:
-        df_signals = ensure_atr_indicator(df_signals)
+        # Mirror the runtime check-script contract: inject ATR(14) when the
+        # open strategy doesn't emit `atr`, so close evaluators that require
+        # `entry_atr` (tiered_tp_atr) and `market.atr` (tiered_tp_atr_live)
+        # see consistent volatility input. Idempotent when `atr` already exists.
+        if close_strategies:
+            df_signals = ensure_atr_indicator(df_signals)
 
     if htf_filter:
         df_signals = _apply_htf_filter_to_df(df_signals, symbol, timeframe)
@@ -435,6 +526,7 @@ def run_single_backtest(
         strategy_type=strategy_type,
         direction=direction,
         invert_signal=invert_signal,
+        profile_allocation=profile_allocation,
     )
     results = bt.run(
         df_signals,
@@ -775,6 +867,8 @@ def main():
             # signal inside Backtester.run (mirrors live invert-then-gate order).
             "direction",
             "invert_signal",
+            # #998: regime-profile allocation switch block (None when unused).
+            "profile_allocation",
         )
         live_stop_kwargs = {k: live_kwargs[k] for k in stop_keys if k in live_kwargs}
 

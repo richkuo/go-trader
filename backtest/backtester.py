@@ -234,6 +234,91 @@ def _open_action_from_signal(signal: int) -> str:
     return "none"
 
 
+def _parse_profile_allocation(alloc: Optional[dict]) -> Optional[dict]:
+    """Validate and compact a regime_profile_allocation block for the engine
+    (#998). Returns None when unset; raises ValueError on a malformed block so
+    a misconfigured --config fails loudly rather than silently single-profile.
+
+    The compact form mirrors the Go RegimeProfileAllocation: profiles (label ->
+    profile name), param_sets (profile -> params), confirm_bars, initial_profile.
+    The window key and per-profile signal computation live in run_backtest.py;
+    the engine only replays the switch over the supplied ``signal__<profile>``
+    columns.
+    """
+    if not alloc:
+        return None
+    profiles = dict(alloc.get("profiles") or {})
+    param_sets = dict(alloc.get("param_sets") or {})
+    confirm_bars = int(alloc.get("confirm_bars") or 0)
+    initial_profile = str(alloc.get("initial_profile") or "").strip()
+    if len(param_sets) != 2:
+        raise ValueError(
+            f"regime_profile_allocation.param_sets must define exactly 2 "
+            f"profiles (the M4 two-profile model), got {len(param_sets)}"
+        )
+    if confirm_bars < 1:
+        raise ValueError("regime_profile_allocation.confirm_bars must be >= 1")
+    if initial_profile not in param_sets:
+        raise ValueError(
+            f"regime_profile_allocation.initial_profile={initial_profile!r} "
+            f"is not a param_sets profile {sorted(param_sets)}"
+        )
+    for lbl, prof in profiles.items():
+        if prof not in param_sets:
+            raise ValueError(
+                f"regime_profile_allocation.profiles[{lbl!r}]={prof!r} is not "
+                f"a param_sets profile {sorted(param_sets)}"
+            )
+    return {
+        "profiles": profiles,
+        "param_sets": param_sets,
+        "confirm_bars": confirm_bars,
+        "initial_profile": initial_profile,
+        "names": sorted(param_sets),
+    }
+
+
+class _ProfileSwitcher:
+    """Per-bar flat-only, confirm_bars hysteresis profile switch — the exact
+    state machine resolveRegimeProfile replays live (#998). The backtester is
+    bar-cadenced, so every ``step`` is a closed-bar advance.
+    """
+
+    def __init__(self, alloc: dict):
+        self._profiles = alloc["profiles"]
+        self._confirm_bars = alloc["confirm_bars"]
+        self.active = alloc["initial_profile"]
+        self._pending = ""
+        self._seen = 0
+
+    def step(self, label: str, flat: bool) -> str:
+        """Advance one closed bar and return the profile governing THIS bar's
+        open decision. ``flat`` is the position state at decision time (the
+        backtester's position carried into this bar)."""
+        desired = self._profiles.get((label or "").strip(), "")
+        if desired == "":
+            # Fail-open / unknown label: freeze the counter, hold active.
+            return self.active
+        if desired == self.active:
+            self._pending = ""
+            self._seen = 0
+            return self.active
+        # Desired differs from active: accrue hysteresis.
+        if self._pending == desired:
+            self._seen += 1
+        else:
+            self._pending = desired
+            self._seen = 1
+        # Commit only when flat AND the desired profile has persisted long
+        # enough. While a position is open the counter keeps growing but the
+        # switch is deferred to the first flat bar.
+        if flat and self._seen >= self._confirm_bars:
+            self.active = desired
+            self._pending = ""
+            self._seen = 0
+        return self.active
+
+
 def _close_refs_use_regime_tiered_tp(refs: list[dict]) -> bool:
     for ref in refs:
         n = (ref.get("name") or "").strip().lower()
@@ -424,7 +509,8 @@ class Backtester:
                  trailing_stop_atr_regime: Optional[dict] = None,
                  strategy_type: str = "perps",
                  direction: Optional[str] = None,
-                 invert_signal: bool = False):
+                 invert_signal: bool = False,
+                 profile_allocation: Optional[dict] = None):
         """
         Args:
             initial_capital: Starting portfolio value.
@@ -503,6 +589,12 @@ class Backtester:
         # mirroring the live order (applySignalInversion before EffectiveDirection).
         self.direction = (str(direction).strip().lower() if direction else None)
         self.invert_signal = bool(invert_signal)
+        # #998: regime-profile allocation. When set, run() expects per-profile
+        # signal columns ("signal__<profile>") plus a "_profile_label" column
+        # (the long-window regime label per bar) and replays the live flat-only,
+        # confirm_bars hysteresis switch inside the per-bar loop. None = single
+        # profile (the normal path). Validated into a compact dict.
+        self._profile_alloc = _parse_profile_allocation(profile_allocation)
         self.stop_loss_atr_regime = (
             dict(stop_loss_atr_regime) if stop_loss_atr_regime else None
         )
@@ -858,6 +950,47 @@ class Backtester:
                 sig = sig.where(sig <= 0, 0)
         return sig.astype(int)
 
+    def _normalize_profile_signals(self, df: pd.DataFrame, uses_open_close: bool) -> None:
+        """Normalize each profile's ``signal__<p>`` column exactly like the
+        single-signal path (domain check → invert/direction gate → look-ahead
+        shift) and shift ``_profile_label`` so the per-bar switch reads bar N's
+        label to govern the N+1 fill (#998). Mutates ``df`` in place.
+
+        Each profile differs only in the OPEN signal; closes come from the shared
+        close evaluator, so the engine derives ``_open_action__<p>`` from each
+        profile's signal but keeps a single (profile-independent) ``_close_fraction``.
+        """
+        for p in self._profile_alloc["names"]:
+            col = "signal__" + p
+            sig_raw = df[col].fillna(0).astype(float)
+            non_integral = sig_raw[sig_raw != sig_raw.round()]
+            if not non_integral.empty:
+                raise ValueError(
+                    f"{col} must be in {{-1, 0, 1}} — got non-integral values "
+                    f"{sorted(set(non_integral.unique().tolist()))}"
+                )
+            sig_int = sig_raw.astype(int)
+            bad = sig_int[~sig_int.isin([-1, 0, 1])]
+            if not bad.empty:
+                raise ValueError(
+                    f"{col} must be in {{-1, 0, 1}} — got unexpected values "
+                    f"{sorted(bad.unique().tolist())}"
+                )
+            sig_int = self._apply_direction_invert(sig_int, uses_open_close)
+            if uses_open_close:
+                df["_open_action__" + p] = (
+                    sig_int.map(_open_action_from_signal).shift(1).fillna("none")
+                )
+            df[col] = sig_int.shift(1).fillna(0).astype(int)
+        # Dummy single-signal column so downstream code that references
+        # ``df["signal"]`` doesn't KeyError; the per-bar loop overrides ``signal``
+        # (and ``open_action``) from the active profile each bar.
+        df["signal"] = 0
+        if uses_open_close:
+            df["_open_action"] = "none"
+            df["_close_fraction"] = _max_close_fraction_series(df).shift(1).fillna(0.0)
+        df["_profile_label"] = df["_profile_label"].shift(1).fillna("")
+
     def run(self, df: pd.DataFrame, strategy_name: str = "Unknown",
             symbol: str = "BTC/USDT", timeframe: str = "1d",
             params: Optional[dict] = None, save: bool = True,
@@ -897,11 +1030,28 @@ class Backtester:
             or bool(_close_fraction_columns(df))
             or bool(self.close_strategies)
         )
-        if "signal" not in df.columns and not uses_open_close:
+        has_profile_alloc = self._profile_alloc is not None
+        if has_profile_alloc:
+            if "_profile_label" not in df.columns:
+                raise ValueError(
+                    "regime_profile_allocation backtest requires a '_profile_label' column"
+                )
+            missing = [
+                p for p in self._profile_alloc["names"]
+                if ("signal__" + p) not in df.columns
+            ]
+            if missing:
+                raise ValueError(
+                    f"regime_profile_allocation backtest is missing signal columns "
+                    f"for profiles {missing} (expected 'signal__<profile>')"
+                )
+        if "signal" not in df.columns and not uses_open_close and not has_profile_alloc:
             raise ValueError("DataFrame must have a 'signal' column or open_action/close_fraction columns")
 
         df = df.copy()
-        if "signal" in df.columns:
+        if has_profile_alloc:
+            self._normalize_profile_signals(df, uses_open_close)
+        elif "signal" in df.columns:
             # Contract: signal ∈ {-1, 0, 1}. position.diff() emits ±1.0 floats
             # and some strategies emit ints; coerce NaN → 0, reject non-integral
             # floats before casting, and then reject any out-of-domain integer.
@@ -931,7 +1081,7 @@ class Backtester:
             signal_for_open = pd.Series(0, index=df.index)
             df["signal"] = 0
 
-        if uses_open_close:
+        if uses_open_close and not has_profile_alloc:
             if "open_action" in df.columns:
                 open_actions = df["open_action"].map(_normalize_open_action)
             else:
@@ -1190,10 +1340,24 @@ class Backtester:
             sl_tiers_processed = 0
             post_tp_trail_mult = None
 
+        profile_switcher = (
+            _ProfileSwitcher(self._profile_alloc) if has_profile_alloc else None
+        )
+        active_profile = ""
+
         for i, (idx, row) in enumerate(df.iterrows()):
             fill_price = row["open"] if has_open else row["close"]
             mark_price = row["close"]
             signal = row["signal"]
+            # #998: regime-profile allocation — advance the flat-only, confirm_bars
+            # hysteresis switch and read the active profile's signal for this bar.
+            # ``flat`` is the position carried into the bar (= the position state at
+            # the decision time the shifted columns correspond to).
+            if profile_switcher is not None:
+                active_profile = profile_switcher.step(
+                    str(row.get("_profile_label", "") or ""), position == 0
+                )
+                signal = row["signal__" + active_profile]
 
             # Per-bar reset: when _maybe_apply_sl_after bumps the SL trigger on
             # this bar, the end-of-bar block (both the trail-walker HWM update
@@ -1239,7 +1403,10 @@ class Backtester:
                     close_reason = pending_close_reason
                 pending_close_fraction = 0.0
                 pending_close_reason = ""
-                open_action = row.get("_open_action", "none")
+                if profile_switcher is not None:
+                    open_action = row.get("_open_action__" + active_profile, "none")
+                else:
+                    open_action = row.get("_open_action", "none")
 
                 if close_fraction > 0 and position != 0:
                     qty_to_close = abs(position) * min(close_fraction, 1.0)

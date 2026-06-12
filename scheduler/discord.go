@@ -1262,6 +1262,9 @@ func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 	if trade.RegimeDivergenceNote != "" {
 		extras = append(extras, trade.RegimeDivergenceNote)
 	}
+	if trade.RegimeProfileNote != "" {
+		extras = append(extras, trade.RegimeProfileNote)
+	}
 	direction := strings.ToLower(tradeDirectionLabel(trade))
 	var tiers []hlProtectionTier
 	var tps []float64
