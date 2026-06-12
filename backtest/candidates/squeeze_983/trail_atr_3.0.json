@@ -1,0 +1,5 @@
+{
+  "name": "squeeze_momentum",
+  "direction": "long",
+  "trailing_stop_atr_mult": 3.0
+}

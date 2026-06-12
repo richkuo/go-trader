@@ -1,0 +1,42 @@
+[
+  {
+    "label": "ratchet_def_t3",
+    "mean_ddadj": -0.299,
+    "mean_sharpe": -0.346,
+    "mean_ret": -3.61,
+    "worst_dd": -19.81,
+    "trades": 126
+  },
+  {
+    "label": "ratchet_wide_t5",
+    "mean_ddadj": -0.365,
+    "mean_sharpe": -0.539,
+    "mean_ret": -7.81,
+    "worst_dd": -30.06,
+    "trades": 109
+  },
+  {
+    "label": "ratchet_wide_t4",
+    "mean_ddadj": -0.446,
+    "mean_sharpe": -0.65,
+    "mean_ret": -8.42,
+    "worst_dd": -30.23,
+    "trades": 114
+  },
+  {
+    "label": "ratchet_def_t5",
+    "mean_ddadj": -0.453,
+    "mean_sharpe": -0.783,
+    "mean_ret": -9.97,
+    "worst_dd": -29.92,
+    "trades": 114
+  },
+  {
+    "label": "ratchet_def_t4",
+    "mean_ddadj": -0.472,
+    "mean_sharpe": -0.691,
+    "mean_ret": -8.33,
+    "worst_dd": -27.76,
+    "trades": 119
+  }
+]

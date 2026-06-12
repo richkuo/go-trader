@@ -1,0 +1,74 @@
+[
+  {
+    "label": "time_stop_200",
+    "mean_ddadj": 0.425,
+    "mean_sharpe": 0.487,
+    "mean_ret": 5.76,
+    "worst_dd": -46.65,
+    "trades": 59
+  },
+  {
+    "label": "trail_atr_5",
+    "mean_ddadj": 0.128,
+    "mean_sharpe": -0.298,
+    "mean_ret": -1.46,
+    "worst_dd": -43.92,
+    "trades": 114
+  },
+  {
+    "label": "time_stop_100",
+    "mean_ddadj": 0.081,
+    "mean_sharpe": -0.039,
+    "mean_ret": -5.76,
+    "worst_dd": -47.27,
+    "trades": 86
+  },
+  {
+    "label": "tp_tight",
+    "mean_ddadj": -0.035,
+    "mean_sharpe": -0.22,
+    "mean_ret": -10.9,
+    "worst_dd": -52.64,
+    "trades": 107
+  },
+  {
+    "label": "time_stop_150",
+    "mean_ddadj": -0.188,
+    "mean_sharpe": -0.324,
+    "mean_ret": -11.04,
+    "worst_dd": -50.81,
+    "trades": 77
+  },
+  {
+    "label": "trail_atr_4",
+    "mean_ddadj": -0.303,
+    "mean_sharpe": -0.71,
+    "mean_ret": -6.13,
+    "worst_dd": -36.16,
+    "trades": 118
+  },
+  {
+    "label": "tp_runner",
+    "mean_ddadj": -0.34,
+    "mean_sharpe": -0.523,
+    "mean_ret": -14.72,
+    "worst_dd": -52.64,
+    "trades": 115
+  },
+  {
+    "label": "tp_default_trail4",
+    "mean_ddadj": -0.379,
+    "mean_sharpe": -0.634,
+    "mean_ret": -6.52,
+    "worst_dd": -26.11,
+    "trades": 280
+  },
+  {
+    "label": "tp_default_sl4",
+    "mean_ddadj": -0.429,
+    "mean_sharpe": -0.683,
+    "mean_ret": -7.87,
+    "worst_dd": -24.73,
+    "trades": 332
+  }
+]
