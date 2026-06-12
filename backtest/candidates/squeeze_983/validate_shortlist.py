@@ -9,7 +9,12 @@ reproduce any single table independently.
 
 Run from repo root:
   uv run --no-sync python backtest/candidates/squeeze_983/validate_shortlist.py \
+      [--candidates baseline.json,tp_default.json,...] \
       [--json backtest/candidates/squeeze_983/validation.json]
+
+Committed artifacts:
+  validation.json          default shortlist (CANDIDATES below)
+  validation_timestop.json --candidates time_stop_200.json,time_stop_225.json,time_stop_250.json
 """
 
 import argparse
@@ -36,19 +41,24 @@ CANDIDATES = [
 def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--json", default=None, dest="json_out")
+    p.add_argument("--candidates", default=None,
+                   help="Comma list of candidate JSON files in this dir "
+                        "(default: the committed shortlist)")
     p.add_argument("--windows", default=None,
                    help=f"Comma list (default: all). Known: {', '.join(WINDOWS)}")
     args = p.parse_args(argv)
 
     window_names = ([w.strip() for w in args.windows.split(",") if w.strip()]
                     if args.windows else list(WINDOWS))
+    candidates = ([c.strip() for c in args.candidates.split(",") if c.strip()]
+                  if args.candidates else list(CANDIDATES))
 
     from registry_loader import load_registry
     reg = load_registry("spot")
 
     bars_memo = {}
     out = {}
-    for fn in CANDIDATES:
+    for fn in candidates:
         with open(os.path.join(_HERE, fn)) as fh:
             candidate = json.load(fh)
         label = fn[:-5]

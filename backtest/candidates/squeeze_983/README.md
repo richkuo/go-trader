@@ -13,16 +13,31 @@ M1 protocol on every judged window yet *collapses on the continuous audit
 window* — a window-segmentation blind spot worth keeping in the M1 playbook.
 Per #995 step 4 a negative result is documented, not deleted.
 
-Every number reproduces from the repo root with the cache DB present
-(`shared_tools/trading_bot.db`).
+Every committed artifact regenerates from the repo root with the cache DB
+present (`shared_tools/trading_bot.db`) via one of the four committed drivers
+(`sweep_close_stacks.py`, `sweep_supplementary.py`, `validate_shortlist.py`,
+`audit_headline.py`) or the documented `eval_windows.py` command — each
+section below states its exact command. Protocol windows (`is`, `oos`,
+held-out) are date-pinned; the continuous audit window ends at the latest
+cache by default, so `audit_headline.py` records the effective per-dataset
+data range in its artifact — diff that against the committed file before
+comparing numbers regenerated under a fresher cache.
 
 ## Baseline reproduction (M1 step 1)
+
+```
+uv run --no-sync python backtest/candidates/squeeze_983/audit_headline.py \
+    --json backtest/candidates/squeeze_983/audit_window_headline.json
+```
 
 `baseline.json` on the continuous audit window (2025-06-10 → latest cache,
 six audit datasets) reproduces #956 almost exactly — mean Sharpe +0.07
 (audit +0.03), vs B&H +45.9pts (+47.9), worst max DD **-58.46%** (-58.5%),
 130 trades (131); residuals are five extra days of cache. Artifact:
-`audit_window_headline.json`.
+`audit_window_headline.json` (also carries the step-5 `tp_default` run; the
+committed file's `effective_range` block pins the per-dataset data range the
+numbers were computed from — last bars 2026-06-04 → 2026-06-12 depending on
+dataset).
 
 ## Step 1 — diagnose (where the -58.5% DD accumulates)
 
@@ -70,17 +85,31 @@ path re-enters the next bar and pays the round trip again — exactly the
 fee-sensitivity the M5 screen flagged (gross edge -0.29%/leg, borderline
 `deprecate`). Returns die before the DD benefit can matter.
 
-Supplementary screens (same harness, artifacts committed):
+Supplementary screens (same harness; generator `sweep_supplementary.py`,
+every artifact row embeds its full stack spec):
+
+```
+uv run --no-sync python backtest/candidates/squeeze_983/sweep_supplementary.py \
+    --screen <sweep2|timestop|ratchet> \
+    --json backtest/candidates/squeeze_983/<sweep2_is|timestop_plateau_is|ratchet_screen_is>.json
+```
 
 - `sweep2_is.json` — ladder plateau, wide trails (4/5 ATR), time stops,
   ladder+wide-stop combos. Only `time_stop` produced a positive IS profile.
 - `timestop_plateau_is.json` — `max_bars` ∈ {75…400}: positive region
   200–250 (DDadj +0.27…+0.53), falls off both sides.
 - `ratchet_screen_is.json` — `trailing_tp_ratchet` (let-winners-run rungs,
-  default + clean-group ladders × opening trail 3/4/5 ATR): all worse than
-  baseline on IS (DDadj -0.30…-0.47); same re-entry churn.
+  default + clean-group ladders × opening trail 3/4/5 ATR for the default
+  rungs, 4/5 for the wide rungs — wide's first rung sits at 3.0 ATR, so an
+  opening trail of 3 never fires a rung before the trail itself): all worse
+  than baseline on IS (DDadj -0.30…-0.47); same re-entry churn.
 
 ## Step 3 — M2 walk-forward fold stability (frozen entry)
+
+```
+uv run --no-sync python backtest/candidates/squeeze_983/walkforward.py \
+    --json backtest/candidates/squeeze_983/walkforward_folds.json
+```
 
 `walk_forward_optimize` with singleton open-param ranges and the 25-stack
 grid, `dd_adjusted_return` selection, 5 folds over 2023-01-01 → 2026-01-01 on
@@ -96,9 +125,10 @@ uv run --no-sync python backtest/eval_windows.py \
     --candidate-json backtest/candidates/squeeze_983/<candidate>.json
 ```
 
-(`validate_shortlist.py` runs the same `eval_windows` functions for all
-shortlist candidates in one process so the incumbent bars are computed once;
-artifacts `validation.json`, `validation_timestop.json`.)
+(`validate_shortlist.py` runs the same `eval_windows` functions for a list of
+candidates in one process so the incumbent bars are computed once. The
+default shortlist emits `validation.json`; `validation_timestop.json` is
+`--candidates time_stop_200.json,time_stop_225.json,time_stop_250.json`.)
 
 | Candidate | IS | OOS (judged) | 2023 | 2024 | 2025H1 | held-out |
 |---|---|---|---|---|---|---|
@@ -118,7 +148,8 @@ artifacts `validation.json`, `validation_timestop.json`.)
 ## Step 5 — the catch: continuous-window headline (why nothing ships)
 
 Re-running baseline vs `tp_default` on the **continuous** audit window
-(2025-06-10 → latest, the #956 frame; `audit_window_headline.json`):
+(2025-06-10 → latest, the #956 frame; `audit_window_headline.json`, generated
+by the `audit_headline.py` command in step 1):
 
 | | mean Sharpe | mean ret | vs B&H | worst DD | #T |
 |---|---:|---:|---:|---:|---:|

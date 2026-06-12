@@ -1,46 +1,18 @@
 [
   {
-    "max_bars": 75,
-    "mean_ddadj": -0.222,
-    "mean_sharpe": -0.387,
-    "mean_ret": -10.39,
-    "worst_dd": -47.31,
-    "trades": 102
-  },
-  {
-    "max_bars": 125,
-    "mean_ddadj": 0.063,
-    "mean_sharpe": 0.185,
-    "mean_ret": 1.26,
-    "worst_dd": -42.1,
-    "trades": 79
-  },
-  {
-    "max_bars": 175,
-    "mean_ddadj": 0.167,
-    "mean_sharpe": 0.076,
-    "mean_ret": -5.4,
-    "worst_dd": -48.17,
-    "trades": 69
-  },
-  {
-    "max_bars": 200,
-    "mean_ddadj": 0.425,
-    "mean_sharpe": 0.487,
-    "mean_ret": 5.76,
-    "worst_dd": -46.65,
-    "trades": 59
-  },
-  {
-    "max_bars": 225,
-    "mean_ddadj": 0.266,
-    "mean_sharpe": 0.45,
-    "mean_ret": 4.97,
-    "worst_dd": -43.58,
-    "trades": 55
-  },
-  {
-    "max_bars": 250,
+    "label": "time_stop_250",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 250
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
     "mean_ddadj": 0.528,
     "mean_sharpe": 0.586,
     "mean_ret": 8.64,
@@ -48,7 +20,79 @@
     "trades": 53
   },
   {
-    "max_bars": 300,
+    "label": "time_stop_200",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 200
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": 0.425,
+    "mean_sharpe": 0.487,
+    "mean_ret": 5.76,
+    "worst_dd": -46.65,
+    "trades": 59
+  },
+  {
+    "label": "time_stop_225",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 225
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": 0.266,
+    "mean_sharpe": 0.45,
+    "mean_ret": 4.97,
+    "worst_dd": -43.58,
+    "trades": 55
+  },
+  {
+    "label": "time_stop_175",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 175
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": 0.167,
+    "mean_sharpe": 0.076,
+    "mean_ret": -5.4,
+    "worst_dd": -48.17,
+    "trades": 69
+  },
+  {
+    "label": "time_stop_300",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 300
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
     "mean_ddadj": 0.139,
     "mean_sharpe": 0.142,
     "mean_ret": -0.53,
@@ -56,11 +100,63 @@
     "trades": 46
   },
   {
-    "max_bars": 400,
+    "label": "time_stop_125",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 125
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": 0.063,
+    "mean_sharpe": 0.185,
+    "mean_ret": 1.26,
+    "worst_dd": -42.1,
+    "trades": 79
+  },
+  {
+    "label": "time_stop_400",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 400
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
     "mean_ddadj": -0.114,
     "mean_sharpe": -0.224,
     "mean_ret": -8.3,
     "worst_dd": -63.53,
     "trades": 39
+  },
+  {
+    "label": "time_stop_75",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 75
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.222,
+    "mean_sharpe": -0.387,
+    "mean_ret": -10.39,
+    "worst_dd": -47.31,
+    "trades": 102
   }
 ]
