@@ -1515,7 +1515,14 @@ class Backtester:
                         ):
                             sl_after_just_applied = True
 
-                if open_action == "long" and position == 0 and not regime_blocked:
+                # Entry guard (PR #1004 review): a blown short can leave
+                # flat-state cash <= 0 (buy-back cost exceeded the 2x notional
+                # held). Opening from non-positive cash computes negative
+                # shares, silently flipping the position sign against the
+                # booked trade side and inverting all subsequent PnL. The
+                # account is economically bust — skip the entry. cash == 0 is
+                # included: it would book a zero-share phantom trade.
+                if open_action == "long" and position == 0 and cash > 0 and not regime_blocked:
                     effective_price = fill_price * (1 + self.slippage_pct)
                     commission = cash * self.commission_pct
                     available = cash - commission
@@ -1566,7 +1573,7 @@ class Backtester:
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = mark_price
-                elif open_action == "short" and position == 0 and not regime_blocked:
+                elif open_action == "short" and position == 0 and cash > 0 and not regime_blocked:
                     effective_price = fill_price * (1 - self.slippage_pct)
                     commission = cash * self.commission_pct
                     notional = cash - commission
@@ -1753,7 +1760,13 @@ class Backtester:
             # signal == 1 only *closes* it. Bidirectional strategies are
             # therefore measured one leg per run — long leg by default,
             # short leg via direction="short" — never both in one run.
-            if plain_short and signal == -1 and position == 0 and not regime_blocked:
+            # ``cash > 0`` on every open: a blown short leaves flat-state cash
+            # <= 0, and opening from it computes negative shares — a phantom
+            # position whose sign contradicts the booked side (PR #1004
+            # review). Bust account: entries skip until end of data. The
+            # long/flat path can't reach negative cash today, but carries the
+            # same guard so the invariant holds by construction.
+            if plain_short and signal == -1 and position == 0 and cash > 0 and not regime_blocked:
                 # SELL — open short with full notional. Mirrors the engine
                 # path's short-open mechanics: pay commission, receive the
                 # short-sale proceeds (cash = 2 * notional).
@@ -1809,7 +1822,7 @@ class Backtester:
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
 
-            elif not plain_short and signal == 1 and position == 0 and not regime_blocked:
+            elif not plain_short and signal == 1 and position == 0 and cash > 0 and not regime_blocked:
                 # BUY — go long with all available cash
                 effective_price = fill_price * (1 + self.slippage_pct)
                 commission = cash * self.commission_pct

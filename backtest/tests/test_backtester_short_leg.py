@@ -234,6 +234,75 @@ def test_direction_long_default_is_unchanged():
     assert [t["side"] for t in explicit["trades"]] == ["long"]
 
 
+# ─── Bust-account entry guard (PR #1004 review) ──────────────────────────────
+# Invariant: an opened position's sign always matches its booked trade side.
+# A short losing >100% leaves flat-state cash <= 0; opening from it would
+# compute negative shares — a phantom opposite-side position with inverted
+# PnL. Entries must skip instead, on BOTH paths and BOTH sides.
+
+
+def test_no_short_reentry_after_blowup_plain_path():
+    # Short 100 → buy back 250 leaves cash at -5000. The later -1 must NOT
+    # open: a phantom long would profit from the 250→50 crash (final > -5000),
+    # a sign-flipped "short" booking would corrupt PnL. Cash stays put.
+    closes = [100, 100, 250, 250, 100, 50, 50]
+    signals = [-1, 0, 1, -1, 0, 0, 0]
+    res = _run(_df(closes, signals))
+    assert res["total_trades"] == 1
+    assert res["trades"][0]["pnl"] < 0
+    assert res["final_capital"] == pytest.approx(-5000.0)
+
+
+def test_consecutive_reentry_attempts_after_blowup_do_not_compound():
+    closes = [100, 100, 250, 250, 100, 80, 50]
+    signals = [-1, 0, 1, -1, -1, -1, 0]
+    res = _run(_df(closes, signals))
+    assert res["total_trades"] == 1
+    assert res["final_capital"] == pytest.approx(-5000.0)
+
+
+def test_cash_zero_boundary_books_no_phantom_trade():
+    # Exact-wipeout buy-back (100 → 200, fee-free) leaves cash == 0.0; the
+    # next -1 must not open a zero-share trade (dangling current_trade).
+    closes = [100, 100, 200, 200, 200]
+    signals = [-1, 0, 1, -1, 0]
+    res = _run(_df(closes, signals))
+    assert res["total_trades"] == 1
+    assert len(res["trades"]) == 1
+    assert res["final_capital"] == pytest.approx(0.0)
+
+
+def test_no_short_reentry_after_blowup_engine_path():
+    # Same invariant via the open/close engine path: time_stop force-closes
+    # the short at 300 (-100% and change, cash -10000); the later -1
+    # open_action must skip, not book a sign-flipped entry that would
+    # "profit" from the 300→100 fall.
+    closes = [100, 100, 200, 300, 300, 100, 100]
+    signals = [-1, 0, 0, 0, -1, 0, 0]
+    df = _df(closes, signals, atr=2.0)
+    res = _run(df, close_strategies=[
+        {"name": "time_stop", "params": {"max_bars": 2}},
+    ])
+    assert res["total_trades"] == 1
+    assert res["trades"][0]["side"] == "short"
+    assert res["final_capital"] == pytest.approx(-10000.0)
+
+
+def test_no_long_open_after_short_blowup_engine_path_both():
+    # Inverse side, same state: with direction="both" a +1 after the blowup
+    # would open a LONG from negative cash (negative shares booked as
+    # "long"). The guard must cover the long open block too.
+    closes = [100, 100, 200, 300, 300, 300, 300]
+    signals = [-1, 0, 0, 0, 1, 0, 0]
+    df = _df(closes, signals, atr=2.0)
+    res = _run(df, direction="both", close_strategies=[
+        {"name": "time_stop", "params": {"max_bars": 2}},
+    ])
+    assert res["total_trades"] == 1
+    assert res["trades"][0]["side"] == "short"
+    assert res["final_capital"] == pytest.approx(-10000.0)
+
+
 def test_short_mode_with_close_refs_uses_engine_path_not_plain():
     # With a close evaluator the engine path owns execution: direction=short
     # masks long opens, raw -1 opens the short, and the evaluator closes it.
