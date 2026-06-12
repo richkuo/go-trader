@@ -1,0 +1,2 @@
+{"name": "ichimoku_cloud", "direction": "long",
+ "close_strategies": [{"name": "zscore_target", "params": {"lookback": 20, "z_target": 2.0}}]}

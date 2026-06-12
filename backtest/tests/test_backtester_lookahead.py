@@ -263,3 +263,37 @@ def test_shift_moves_signal_by_exactly_one_row():
     exit_date = pd.Timestamp(result["trades"][0]["exit_date"])
     assert entry_date == df.index[6], f"Entry should be at bar 6, got {entry_date}"
     assert exit_date == df.index[11], f"Exit should be at bar 11, got {exit_date}"
+
+
+def test_zscore_target_close_uses_closed_bar_z_and_fills_next_open():
+    """#997: the zscore_target exit must read bar N's closed-bar z-score and
+    fill at bar N+1's open — never act on a spike intrabar at bar N.
+
+    Build a flat series that spikes once at bar K. The rolling z first reaches
+    the target at bar K (computed from closed data through K); the close must
+    therefore fill at K+1's open, not K's close.
+    """
+    import pandas as pd
+    n = 12
+    idx = pd.date_range("2024-01-01", periods=n, freq="h")
+    closes = [100.0] * 6 + [100.0, 100.0, 130.0, 130.0, 130.0, 130.0]
+    spike_bar = 8  # close jumps here
+    df = pd.DataFrame({
+        "open": closes, "high": closes, "low": closes, "close": closes,
+        "open_action": ["long"] + ["none"] * (n - 1),
+    }, index=idx)
+    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0,
+                    open_strategy={"name": "x"},
+                    close_strategies=[{"name": "zscore_target",
+                                       "params": {"lookback": 4, "z_target": 1.0}}],
+                    direction="long")
+    result = bt.run(df, strategy_name="x", save=False)
+    assert result["total_trades"] == 1
+    exit_date = pd.Timestamp(result["trades"][0]["exit_date"])
+    # z first crosses the target at the spike bar (closed-bar data); the exit
+    # fills at the NEXT bar's open, strictly after the spike bar.
+    assert exit_date > df.index[spike_bar], (
+        f"exit {exit_date} must be after the spike bar {df.index[spike_bar]} "
+        "(next-open fill, not intrabar)"
+    )
+    assert result["trades"][0]["exit_reason"].startswith("zscore_target:")

@@ -571,6 +571,14 @@ var closeStrategyOwnedKeys = map[string]map[string]struct{}{
 	"trailing_tp_ratchet_regime":        {"tp_tiers": {}, "use_defaults": {}},
 	"tiered_tp_pct":                     {"tp_tiers": {}, "tiers": {}},
 	"tp_at_pct":                         {"pct": {}}, // v15 migrates to tiered_tp_pct; kept for v13 legacy param routing only
+	// #997 M3 exit-quality knobs. No legacy migration story (post-v13); listed
+	// for symmetry so unknown-key hints index off this table and the Python
+	// registry mirror test (TestCloseStrategyOwnedKeysMirrorsPythonRegistry)
+	// stays green. Backtest-wired; live wiring of bars_held/zscore context is
+	// deferred (see #997), so a live config using these fails safe (no-op).
+	"time_stop":     {"max_bars": {}},
+	"atr_stop":      {"atr_mult": {}, "atr_source": {}},
+	"zscore_target": {"lookback": {}, "z_target": {}},
 }
 
 // migrateV14Direction translates the legacy boolean `allow_shorts` field on

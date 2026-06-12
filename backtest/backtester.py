@@ -282,6 +282,22 @@ class Trade:
         self.pnl = 0.0
         self.pnl_pct = 0.0
         self.shares = 0.0
+        # #997 hold telemetry — stamped at close via _stamp_hold(). Defaults
+        # keep pre-#997 callers/tests valid (a trade never stamped just reports
+        # zeros). bars_held is closed-bar count since the entry-fill bar
+        # inclusive (filled at bar N's open -> bars_held==1 at bar N's close).
+        # mfe_pct / mae_pct are signed, side-aware excursions vs entry price
+        # (mfe >= 0 favourable, mae <= 0 adverse); bars_to_* index when each
+        # extreme occurred. entry_fee / exit_fee are this leg's commissions.
+        self.bars_held = 0
+        self.mfe_pct = 0.0
+        self.mae_pct = 0.0
+        self.bars_to_mfe = 0
+        self.bars_to_mae = 0
+        self.entry_atr = 0.0
+        self.entry_fee = 0.0
+        self.exit_fee = 0.0
+        self.exit_reason = ""
 
     def close(self, exit_date, exit_price):
         self.exit_date = exit_date
@@ -302,7 +318,82 @@ class Trade:
             "shares": self.shares,
             "pnl": round(self.pnl, 2),
             "pnl_pct": round(self.pnl_pct * 100, 2),
+            # #997 hold telemetry (additive; existing consumers ignore these).
+            "bars_held": self.bars_held,
+            "mfe_pct": round(self.mfe_pct * 100, 4),
+            "mae_pct": round(self.mae_pct * 100, 4),
+            "bars_to_mfe": self.bars_to_mfe,
+            "bars_to_mae": self.bars_to_mae,
+            "entry_atr": round(self.entry_atr, 6),
+            "entry_fee": round(self.entry_fee, 6),
+            "exit_fee": round(self.exit_fee, 6),
+            "exit_reason": self.exit_reason,
         }
+
+
+class _HoldTracker:
+    """Per-position intra-hold excursion + holding-time accumulator (#997).
+
+    Output-only: feeds the exit-quality diagnostic, never a trading decision,
+    so reading the current bar's high/low at its own close is look-ahead-safe.
+    Reset at every open via ``open()``; advanced once per held bar via
+    ``step()`` (called after this bar's open-fill close/open processing so a
+    trade closed at the bar's open does not absorb that bar's range, while a
+    trade opened at the bar's open does); read at close via ``metrics()``.
+    """
+
+    __slots__ = ("bars", "high", "low", "high_bar", "low_bar",
+                 "entry_fee", "entry_price", "side")
+
+    def __init__(self):
+        self.open(0.0, "long", 0.0)
+
+    def open(self, entry_price: float, side: str, entry_fee: float) -> None:
+        self.bars = 0
+        self.high = entry_price
+        self.low = entry_price
+        self.high_bar = 0
+        self.low_bar = 0
+        self.entry_fee = entry_fee
+        self.entry_price = entry_price
+        self.side = side
+
+    def step(self, high: float, low: float) -> None:
+        self.bars += 1
+        if high > self.high:
+            self.high = high
+            self.high_bar = self.bars
+        if low < self.low:
+            self.low = low
+            self.low_bar = self.bars
+
+    def metrics(self):
+        """Return (mfe_pct, mae_pct, bars_to_mfe, bars_to_mae), side-aware."""
+        e = self.entry_price
+        if e <= 0:
+            return 0.0, 0.0, 0, 0
+        if self.side == "long":
+            return (self.high - e) / e, (self.low - e) / e, self.high_bar, self.low_bar
+        return (e - self.low) / e, (e - self.high) / e, self.low_bar, self.high_bar
+
+
+def _stamp_hold(trade, hold: "_HoldTracker", *, entry_atr: float,
+                exit_fee: float, reason: str, qty_frac: float = 1.0) -> None:
+    """Stamp #997 hold telemetry onto a closing trade leg.
+
+    ``qty_frac`` pro-rates the entry commission for a partial-close leg (each
+    leg gets its share of the single entry fee; the legs' fractions sum to 1).
+    """
+    mfe, mae, b_mfe, b_mae = hold.metrics()
+    trade.bars_held = hold.bars
+    trade.mfe_pct = mfe
+    trade.mae_pct = mae
+    trade.bars_to_mfe = b_mfe
+    trade.bars_to_mae = b_mae
+    trade.entry_atr = entry_atr
+    trade.entry_fee = hold.entry_fee * qty_frac
+    trade.exit_fee = exit_fee
+    trade.exit_reason = reason
 
 
 class Backtester:
@@ -428,6 +519,30 @@ class Backtester:
             in ("trailing_tp_ratchet", "trailing_tp_ratchet_regime")
             for r in self._close_refs
         )
+        # #997 zscore_target: the rolling z-score the evaluator reads is
+        # computed once per run from closed-bar data (same N-close -> N+1-open
+        # fill contract as ATR). Resolve the lookback here. Reject a duplicate
+        # ref outright: close_params is keyed by name (last-write-wins), so a
+        # second zscore_target with a different lookback would silently lose
+        # its window — a footgun, not a feature.
+        _zscore_refs = [
+            r for r in self._close_refs
+            if (r.get("name") or "").strip().lower() == "zscore_target"
+        ]
+        if len(_zscore_refs) > 1:
+            raise ValueError(
+                "duplicate zscore_target close refs are not supported "
+                "(close params are keyed by name; the second would silently "
+                "override the first's lookback)"
+            )
+        self._zscore_lookback = 0
+        if _zscore_refs:
+            try:
+                self._zscore_lookback = int(
+                    (_zscore_refs[0].get("params") or {}).get("lookback", 0) or 0
+                )
+            except (TypeError, ValueError):
+                self._zscore_lookback = 0
         self._ratchet_mod = None
         self._ratchet_ref: Optional[dict] = None
         self._ratchet_tiers_run: list = []
@@ -879,6 +994,11 @@ class Backtester:
         initial_quantity = 0.0
         entry_atr_value = 0.0
         pending_close_fraction = 0.0
+        # #997: reason that produced the pending close, carried to the next
+        # bar's open-fill so the closed leg records WHICH mechanism exited it.
+        pending_close_reason = ""
+        # #997 hold telemetry accumulator (intra-hold excursions + bars held).
+        hold = _HoldTracker()
 
         # Post-TP SL adjustment state (#709). Only meaningful when sl_after is
         # configured; otherwise the per-bar machinery short-circuits and these
@@ -902,6 +1022,19 @@ class Backtester:
         self._run_position_regime = ""
         sl_after_active = self._sl_after_pipeline_enabled
         trailing_ratchet_active = self._uses_trailing_ratchet_close
+
+        # #997 zscore_target: rolling z of close over the ref's lookback,
+        # computed from closed-bar data. Bar N's value uses bars [N-lb+1, N]
+        # (population std, ddof=0); warmup rows are NaN and the evaluator
+        # no-ops on them. Passed to the evaluator at end-of-bar exactly like
+        # ATR, so the resulting close fills at the next bar's open.
+        zscore_series = None
+        if self._zscore_lookback > 0 and "close" in df.columns:
+            lb = self._zscore_lookback
+            closes = df["close"].astype(float)
+            roll = closes.rolling(lb)
+            std = roll.std(ddof=0)
+            zscore_series = (closes - roll.mean()) / std.replace(0.0, float("nan"))
 
         atr_series = df["atr"] if "atr" in df.columns else None
         # An ATR-multiple stop/trail needs an `atr` series to stamp entry_atr;
@@ -1001,6 +1134,9 @@ class Backtester:
             current_trade.shares = position
             avg_cost = effective_entry
             initial_quantity = position
+            # #997: seed hold telemetry for the walk-forward-seeded position.
+            # bars_held starts at 0 (its true warmup hold length is unknown).
+            hold.open(effective_entry, "long", entry_commission)
             # Optional ATR for the seeded position so walk-forward folds with
             # ATR-based close evaluators (tiered_tp_atr) don't silently no-op
             # for the seeded position's lifetime. Same plausibility guard as
@@ -1055,8 +1191,17 @@ class Backtester:
 
             if uses_open_close:
                 col_close_fraction = float(row.get("_close_fraction", 0.0))
-                close_fraction = max(col_close_fraction, pending_close_fraction)
+                # #997: attribute the exit. The column-driven fraction (open
+                # signal acting as close) wins ties; otherwise the pending
+                # reason from the prior bar's evaluator / SL hit carries.
+                if col_close_fraction >= pending_close_fraction:
+                    close_fraction = col_close_fraction
+                    close_reason = "column_close_fraction" if col_close_fraction > 0 else ""
+                else:
+                    close_fraction = pending_close_fraction
+                    close_reason = pending_close_reason
                 pending_close_fraction = 0.0
+                pending_close_reason = ""
                 open_action = row.get("_open_action", "none")
 
                 if close_fraction > 0 and position != 0:
@@ -1079,6 +1224,16 @@ class Backtester:
                         closed.shares = qty_to_close
                         closed.close(idx, effective_price)
                         closed.pnl -= commission
+                        # #997: stamp hold telemetry. This leg exits at THIS
+                        # bar's open, so hold reflects bars through the prior
+                        # bar (step() for this bar runs after the open-fill
+                        # block, below). Entry fee is pro-rated by the leg's
+                        # share of the original position.
+                        qty_frac = (qty_to_close / initial_quantity) if initial_quantity > 0 else 1.0
+                        _stamp_hold(closed, hold, entry_atr=entry_atr_value,
+                                    exit_fee=commission,
+                                    reason=close_reason or "close_strategy",
+                                    qty_frac=qty_frac)
                         trades.append(closed)
                         current_trade.shares -= qty_to_close
                         if current_trade.shares <= 1e-12:
@@ -1152,6 +1307,7 @@ class Backtester:
                     avg_cost = effective_price
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
+                    hold.open(effective_price, "long", commission)
                     stamp_open_from_label(_entry_stamp(row))
                     # #716 item 3: seed the SL trigger only when sl_after has
                     # usable tier thresholds. Without thresholds, the post-TP
@@ -1190,6 +1346,7 @@ class Backtester:
                     avg_cost = effective_price
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
+                    hold.open(effective_price, "short", commission)
                     stamp_open_from_label(_entry_stamp(row))
                     if sl_after_active and self._run_tp_tier_thresholds:
                         sl_trigger_px = self._initial_sl_trigger(
@@ -1207,16 +1364,30 @@ class Backtester:
                         post_tp_trail_mult = None
                         sl_high_water_px = mark_price
 
+                # #997: advance hold telemetry for the position held through
+                # this bar. Runs AFTER the open-fill close/open block so a leg
+                # closed at this bar's open excludes this bar's range, while a
+                # position opened (or held) at this bar's open includes it.
+                # Output-only — never feeds a decision — so reading this bar's
+                # high/low at its close is look-ahead-safe.
+                if position != 0:
+                    hold.step(
+                        float(row.get("high", mark_price) or mark_price),
+                        float(row.get("low", mark_price) or mark_price),
+                    )
+
                 # End-of-bar: evaluate close strategies against the now-current
                 # position using this bar's close as the mark. The result is
                 # applied at the NEXT bar's open (mirrors live: eval at end of
                 # bar, fill at next open).
                 if self.close_strategies and position != 0 and avg_cost > 0:
-                    pending_close_fraction = self._evaluate_close_strategies(
+                    pending_close_fraction, pending_close_reason = self._evaluate_close_strategies(
                         position, avg_cost, initial_quantity, entry_atr_value,
                         mark_price, atr_series, idx,
                         position_regime=self._run_position_regime,
                         market_regime=_bar_close_regime(row),
+                        bars_held=hold.bars,
+                        zscore_series=zscore_series,
                     )
                     if (
                         trailing_ratchet_active
@@ -1273,6 +1444,7 @@ class Backtester:
                         side_now, mark_price, sl_trigger_px,
                     ):
                         pending_close_fraction = 1.0
+                        pending_close_reason = "sl"
                 continue
 
             # Standalone hard stop fires first: close at this bar's open before
@@ -1286,6 +1458,8 @@ class Backtester:
                 position = 0.0
                 if current_trade:
                     current_trade.close(idx, effective_price)
+                    _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
+                                exit_fee=commission, reason="signal_sl")
                     trades.append(current_trade)
                     current_trade = None
                 pending_signal_sl_close = False
@@ -1318,6 +1492,7 @@ class Backtester:
                 # open/close path's _stamp_entry_atr).
                 avg_cost = effective_price
                 entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
+                hold.open(effective_price, "long", commission)
                 sl_trigger_px = 0.0
                 sl_high_water_px = mark_price
                 if (
@@ -1345,12 +1520,23 @@ class Backtester:
 
                 if current_trade:
                     current_trade.close(idx, effective_price)
+                    _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
+                                exit_fee=commission, reason="signal")
                     trades.append(current_trade)
                     current_trade = None
                 sl_trigger_px = 0.0
                 avg_cost = 0.0
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
+
+            # #997: advance hold telemetry for a position held through this bar
+            # (plain long/flat path). Same rationale as the open/close path:
+            # runs after the open-fill BUY/SELL block, output-only.
+            if position != 0:
+                hold.step(
+                    float(row.get("high", mark_price) or mark_price),
+                    float(row.get("low", mark_price) or mark_price),
+                )
 
             # End-of-bar: for a trailing ATR stop, ratchet the trigger up on new
             # highs; then check whether this bar's close breached the trigger.
@@ -1385,6 +1571,8 @@ class Backtester:
 
             if current_trade:
                 current_trade.close(df.index[-1], final_price)
+                _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
+                            exit_fee=commission, reason="end_of_data")
                 trades.append(current_trade)
 
         final_equity = cash
@@ -1449,10 +1637,14 @@ class Backtester:
                                    idx,
                                    *,
                                    position_regime: str = "",
-                                   market_regime: str = "") -> float:
+                                   market_regime: str = "",
+                                   bars_held: int = 0,
+                                   zscore_series: Optional[pd.Series] = None
+                                   ) -> Tuple[float, str]:
         """Run every configured close evaluator against the simulated position
-        and return the max ``close_fraction``. Same max-wins resolution as the
-        live composition flow in shared_tools/strategy_composition.py.
+        and return ``(max close_fraction, reason of the winning evaluator)``.
+        Same max-wins resolution as the live composition flow in
+        shared_tools/strategy_composition.py.
         """
         evaluate, _list_strategies = _load_close_registry()
         side = "long" if position > 0 else "short"
@@ -1463,6 +1655,10 @@ class Backtester:
             "initial_quantity": float(initial_quantity or abs(position)),
             "entry_atr": float(entry_atr_value),
             "regime": str(position_regime or ""),
+            # #997: holding-time context for time_stop. Closed-bar count since
+            # the entry-fill bar inclusive (live check scripts don't pass this
+            # yet — live wiring deferred; time_stop fails safe without it).
+            "bars_held": int(bars_held),
         }
         # Always pass ``regime`` (possibly empty) so live-regime evaluators see
         # the same key shape as live check scripts — empty/NaN bars no-op with
@@ -1489,17 +1685,30 @@ class Backtester:
             if live_atr > 0:
                 market_dict["atr"] = live_atr
 
+        # #997: rolling z-score for zscore_target. Current-bar (closed) value,
+        # same N-close -> N+1-open fill alignment as ATR above. NaN warmup
+        # rows are omitted so the evaluator no-ops on them.
+        if zscore_series is not None:
+            try:
+                z = float(zscore_series.loc[idx])
+            except (KeyError, TypeError, ValueError):
+                z = float("nan")
+            if z == z:  # not NaN
+                market_dict["zscore"] = z
+
         best = 0.0
+        best_reason = ""
         for name in self.close_strategies:
             params = self.close_params.get(name)
             result = evaluate(name, position_dict, market_dict, params)
             fraction = float(result.get("close_fraction", 0.0) or 0.0)
             if fraction > best:
                 best = fraction
+                best_reason = str(result.get("reason") or name)
                 if best >= 1.0:
                     # Full close already wins — remaining evaluators can't change the outcome.
-                    return 1.0
-        return min(max(best, 0.0), 1.0)
+                    return 1.0, best_reason
+        return min(max(best, 0.0), 1.0), best_reason
 
     def _initial_sl_trigger(self, side: str, avg_cost: float,
                             entry_atr: float) -> float:

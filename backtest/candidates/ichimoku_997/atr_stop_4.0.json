@@ -1,0 +1,2 @@
+{"name": "ichimoku_cloud", "direction": "long",
+ "close_strategies": [{"name": "atr_stop", "params": {"atr_mult": 4.0, "atr_source": "entry"}}]}

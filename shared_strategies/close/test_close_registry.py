@@ -30,6 +30,9 @@ def test_build_close_registry_filters_valid_platforms(registry):
             "tiered_tp_atr_live_regime_dynamic",
             "trailing_tp_ratchet",
             "trailing_tp_ratchet_regime",
+            "time_stop",
+            "atr_stop",
+            "zscore_target",
         }
 
 

@@ -22,6 +22,9 @@ from trailing_tp_ratchet import evaluate_regime as trailing_tp_ratchet_regime_ev
 from trailing_tp_ratchet import evaluate_scalar as trailing_tp_ratchet_evaluate
 from tiered_tp_pct import DEFAULT_TIERS as DEFAULT_PCT_TIERS
 from tiered_tp_pct import evaluate as tiered_tp_pct_evaluate
+from time_stop import evaluate as time_stop_evaluate
+from atr_stop import evaluate as atr_stop_evaluate
+from zscore_target import evaluate as zscore_target_evaluate
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures", "options")
 
@@ -164,3 +167,22 @@ register(
     "Regime-keyed tiered trail ratchet — frozen at open via Position.Regime (#844)",
     {},
 )(trailing_tp_ratchet_regime_evaluate)
+
+# #997 M3 exit-quality knobs — default-off; backtest-wired, live wiring deferred.
+register(
+    "time_stop",
+    "Holding-time cap — full close after max_bars held (default-off; needs bars_held context)",
+    {"max_bars": 0},
+)(time_stop_evaluate)
+
+register(
+    "atr_stop",
+    "Standalone ATR stop — full close at atr_mult ATR against avg_cost (default-off; atr_source: entry|live)",
+    {"atr_mult": 0.0, "atr_source": "entry"},
+)(atr_stop_evaluate)
+
+register(
+    "zscore_target",
+    "Z-score target exit — full close when price stretches z_target sigma in favour (default-off; needs zscore context)",
+    {"lookback": 0, "z_target": 0.0},
+)(zscore_target_evaluate)
