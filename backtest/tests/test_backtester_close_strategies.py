@@ -443,3 +443,114 @@ def test_tp_tier_partial_then_scalar_stop_closes_remainder():
     assert exits == [96.0, 102.0]
     # 5 shares banked at 102 + 5 shares stopped at 96
     assert result["final_capital"] == 5 * 102.0 + 5 * 96.0
+
+
+# ---------------------------------------------------------------------------
+# PR #1000 review: a position carried across a walk-forward fold boundary
+# (starting_long seed) must be managed by the same close stack as a position
+# opened mid-window — the seed block arms the fixed/trailing SL trigger from
+# the seeded entry_atr/high_water instead of leaving it at 0 for the carried
+# position's lifetime. Seed stamping itself is covered in
+# test_walk_forward_warmup.py.
+# ---------------------------------------------------------------------------
+
+def test_seeded_position_fixed_atr_stop_fires_plain_path():
+    # Plain signal path (no close refs). Seed long @100 with EntryATR=2,
+    # stop mult=2 → trigger 96. Bar 0 close=95 breaches → fill bar 1 open.
+    n = 3
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    df = pd.DataFrame({
+        "open": [100, 95, 95],
+        "high": [100, 95, 95],
+        "low": [95, 95, 95],
+        "close": [95, 95, 95],
+        "signal": [0] * n,
+    }, index=idx)
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        stop_loss_atr_mult=2.0,
+    )
+    result = bt.run(
+        df, save=False,
+        starting_long={"entry_price": 100.0, "entry_atr": 2.0},
+    )
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_price"] == 95.0
+    assert result["final_capital"] == 950.0
+
+
+def test_seeded_position_trailing_stop_anchors_at_seed_high_water():
+    # Trail mult=2, EntryATR=2, seeded high_water=110 → trigger 106. Bar 0
+    # close=105 breaches the warmup-walked trigger (entry-anchored would be
+    # 96, never touched) → fill bar 1 open=105, not the 120 ride.
+    n = 3
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    df = pd.DataFrame({
+        "open": [105, 105, 120],
+        "high": [105, 120, 120],
+        "low": [105, 105, 120],
+        "close": [105, 120, 120],
+        "signal": [0] * n,
+    }, index=idx)
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        trailing_stop_atr_mult=2.0,
+    )
+    result = bt.run(
+        df, save=False,
+        starting_long={"entry_price": 100.0, "entry_atr": 2.0,
+                       "high_water": 110.0},
+    )
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_price"] == 105.0
+
+
+def test_seeded_position_fixed_atr_stop_fires_engine_path():
+    # Same carried-position stop, open/close engine path (a far TP close ref
+    # alongside the bare stop — the joint-sweep stack shape). Trigger 96,
+    # bar 0 close=95 breaches → fill bar 1 open=95.
+    n = 3
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    df = pd.DataFrame({
+        "open": [100, 95, 95],
+        "close": [95, 95, 95],
+        "atr": [2.0] * n,
+        "open_action": ["none"] * n,
+    }, index=idx)
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=_FAR_TP, stop_loss_atr_mult=2.0,
+    )
+    result = bt.run(
+        df, save=False,
+        starting_long={"entry_price": 100.0, "entry_atr": 2.0},
+    )
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_price"] == 95.0
+    assert result["final_capital"] == 950.0
+
+
+def test_seeded_position_without_entry_atr_stop_stays_unarmed():
+    # Boundary: no entry_atr in the seed → the ATR stop cannot price a
+    # trigger and must stay unarmed (no spurious exits), matching the
+    # mid-window open behavior when ATR is unavailable.
+    n = 3
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    df = pd.DataFrame({
+        "open": [100, 95, 95],
+        "high": [100, 95, 95],
+        "low": [95, 95, 95],
+        "close": [95, 95, 95],
+        "signal": [0] * n,
+    }, index=idx)
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        stop_loss_atr_mult=2.0,
+    )
+    result = bt.run(
+        df, save=False,
+        starting_long={"entry_price": 100.0},
+    )
+    # Rides to the forced end-of-run close at 95 — exactly one forced close.
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_date"] == str(idx[-1])

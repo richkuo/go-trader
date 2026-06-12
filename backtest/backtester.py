@@ -1016,6 +1016,43 @@ class Backtester:
             if not stamp:
                 stamp = _entry_stamp(df.iloc[0])
             stamp_open_from_label(stamp)
+            # Arm the carried position's SL the same way the open block does
+            # (PR #1000 review): a seeded position never routes through the
+            # open block, so without this the fixed/trailing trigger stays at
+            # 0 for its entire lifetime and ATR stacks score as
+            # hold-to-reversal on every fold that opens already-long. The
+            # trail anchors at max(entry, seed high-water) — live would have
+            # walked the HWM through the warmup bars. Works for both paths:
+            # the plain signal path's hit check reads the same sl_trigger_px.
+            seed_hwm = starting_long.get("high_water", 0.0)
+            try:
+                seed_hwm = float(seed_hwm or 0.0)
+            except (TypeError, ValueError):
+                seed_hwm = 0.0
+            hwm_anchor = max(effective_entry, seed_hwm)
+            if sl_after_active and self._run_tp_tier_thresholds:
+                sl_trigger_px = self._initial_sl_trigger(
+                    "long", avg_cost, entry_atr_value,
+                )
+                sl_high_water_px = 0.0
+            elif trailing_ratchet_active and self._run_trailing_stop_atr_mult:
+                sl_trigger_px = _initial_trail_trigger(
+                    "long", hwm_anchor, entry_atr_value,
+                    self._run_trailing_stop_atr_mult,
+                )
+                sl_high_water_px = hwm_anchor
+            else:
+                sl_trigger_px = self._initial_sl_trigger(
+                    "long", avg_cost, entry_atr_value,
+                )
+                if sl_trigger_px <= 0 and self._run_trailing_stop_atr_mult:
+                    sl_trigger_px = _initial_trail_trigger(
+                        "long", hwm_anchor, entry_atr_value,
+                        self._run_trailing_stop_atr_mult,
+                    )
+                sl_high_water_px = hwm_anchor
+            sl_tiers_processed = 0
+            post_tp_trail_mult = None
 
         for i, (idx, row) in enumerate(df.iterrows()):
             fill_price = row["open"] if has_open else row["close"]

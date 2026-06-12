@@ -40,7 +40,13 @@ def warmup_exit_long_entry(warmup_with_signal: pd.DataFrame,
     (signal at bar t fills at bar t+1's open), slippage is added on entry.
 
     Returns ``{"entry_price": float, "entry_date": idx}`` when the warmup
-    ends long, or ``None`` when flat. The caller passes the dict to
+    ends long, or ``None`` when flat. When the warmup frame carries an
+    ``atr`` column the seed also stamps ``entry_atr`` (the fill-bar ATR,
+    same plausibility guard as ``Backtester._stamp_entry_atr``) and
+    ``high_water`` (max close since entry) so the carried position is
+    managed by ATR-based close stacks and trailing stops exactly like a
+    mid-window open — without them every ATR exit silently no-ops on the
+    seeded position for its entire lifetime. The caller passes the dict to
     ``Backtester.run(starting_long=...)`` so a SELL in the train window
     actually closes the warmup position rather than being silently dropped.
     """
@@ -54,6 +60,7 @@ def warmup_exit_long_entry(warmup_with_signal: pd.DataFrame,
     in_position = False
     entry_price = None
     entry_date = None
+    high_water = 0.0
     for idx, row in shifted.iterrows():
         fill_price = row["open"] if has_open else row["close"]
         sig = row["signal"]
@@ -61,13 +68,26 @@ def warmup_exit_long_entry(warmup_with_signal: pd.DataFrame,
             entry_price = fill_price * (1 + slippage_pct)
             entry_date = idx
             in_position = True
+            high_water = float(row["close"])
         elif sig == -1 and in_position:
             in_position = False
             entry_price = None
             entry_date = None
+            high_water = 0.0
+        elif in_position:
+            high_water = max(high_water, float(row["close"]))
 
     if in_position and entry_price is not None:
-        return {"entry_price": entry_price, "entry_date": entry_date}
+        seed = {"entry_price": entry_price, "entry_date": entry_date,
+                "high_water": high_water}
+        if "atr" in shifted.columns:
+            try:
+                atr_val = float(shifted["atr"].loc[entry_date])
+            except (KeyError, TypeError, ValueError):
+                atr_val = 0.0
+            if atr_val > 0 and atr_val <= 0.5 * entry_price:
+                seed["entry_atr"] = atr_val
+        return seed
     return None
 
 
@@ -370,9 +390,14 @@ def walk_forward_optimize(
     ]
     bt = stack_bts[0][1]  # slippage reference for warmup_exit_long_entry
 
-    # Close evaluators need an `atr` column to stamp entry_atr (mirror of the
-    # run_backtest single-mode injection — without it tiered_tp_atr silently
-    # no-ops); ATR(14) also needs warmup bars to prime before the first fill.
+    # Any ATR-based exit needs an `atr` column on the signal frame: close
+    # evaluators stamp entry_atr from it (mirror of the run_backtest
+    # single-mode injection — without it tiered_tp_atr silently no-ops), and
+    # the warmup slice needs it so warmup_exit_long_entry can stamp the
+    # carried position's entry_atr (bare scalar stops included — the
+    # Backtester self-injects ATR for mid-window opens but never sees the
+    # warmup bars). ATR(14) also needs warmup bars to prime before the
+    # first fill.
     needs_atr = any(stack.get("close_strategies") for stack, _ in stack_bts)
     uses_exits = needs_atr or any(
         stack.get("stop_loss_atr_mult") or stack.get("trailing_stop_atr_mult")
@@ -438,7 +463,7 @@ def walk_forward_optimize(
         for params in param_grid:
             try:
                 signals_ext = apply_strategy(strategy_name, train_ext_df, params)
-                if needs_atr:
+                if uses_exits:
                     signals_ext = ensure_atr_indicator(signals_ext)
                 signals_df = signals_ext.iloc[train_boundary_idx:]
                 train_seed = warmup_exit_long_entry(
@@ -473,7 +498,7 @@ def walk_forward_optimize(
         test_boundary_idx = max(test_trim - 1, 0)
         try:
             test_signals_ext = apply_strategy(strategy_name, test_ext_df, best_params)
-            if needs_atr:
+            if uses_exits:
                 test_signals_ext = ensure_atr_indicator(test_signals_ext)
             test_signals = test_signals_ext.iloc[test_boundary_idx:]
             test_seed = warmup_exit_long_entry(

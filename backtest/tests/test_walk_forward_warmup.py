@@ -280,3 +280,61 @@ def test_seeded_metrics_anchor_at_initial_capital():
     )
     assert result["total_return_pct"] == pytest.approx(0.0, abs=0.01)
     assert result["max_drawdown_pct"] == pytest.approx(0.0, abs=0.01)
+
+
+def test_warmup_seed_stamps_entry_atr_and_high_water():
+    """PR #1000 review: the seed must carry the fill-bar ATR and the max
+    close since entry so ATR-based close stacks and trailing stops manage
+    the carried position like a mid-window open."""
+    n = 30
+    opens = [100.0] * n
+    closes = [100.0] * 10 + [104.0, 108.0] + [103.0] * (n - 12)
+    signals = [0] * n
+    signals[5] = 1  # BUY → fills at bar 6 open
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    df = pd.DataFrame({
+        "open": opens, "close": closes, "signal": signals,
+        "atr": [2.5] * n,
+    }, index=idx)
+    seed = warmup_exit_long_entry(df, slippage_pct=0.0)
+    assert seed is not None
+    assert seed["entry_atr"] == pytest.approx(2.5)
+    assert seed["high_water"] == pytest.approx(108.0)
+
+
+def test_warmup_seed_omits_implausible_entry_atr():
+    """Mirrors Backtester._stamp_entry_atr: an ATR above 50% of the entry
+    price (or NaN/non-positive) is rejected — the seed simply omits the
+    key and the carried position degrades to the pre-stamp behavior."""
+    n = 20
+    signals = [0] * n
+    signals[5] = 1
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    df = pd.DataFrame({
+        "open": [100.0] * n, "close": [100.0] * n, "signal": signals,
+        "atr": [80.0] * n,  # > 50% of the $100 entry
+    }, index=idx)
+    seed = warmup_exit_long_entry(df, slippage_pct=0.0)
+    assert seed is not None
+    assert "entry_atr" not in seed
+    assert seed["high_water"] == pytest.approx(100.0)
+
+
+def test_warmup_seed_high_water_resets_on_reentry():
+    """A round trip inside the warmup must not leak its high-water mark
+    into a later entry's seed."""
+    n = 20
+    closes = [100.0] * 5 + [150.0] * 5 + [100.0] * 10
+    signals = [0] * n
+    signals[2] = 1    # first BUY → fills bar 3
+    signals[9] = -1   # SELL → fills bar 10 (HWM 150 ends here)
+    signals[12] = 1   # re-entry → fills bar 13
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    df = pd.DataFrame({
+        "open": closes[:], "close": closes, "signal": signals,
+        "atr": [2.0] * n,
+    }, index=idx)
+    seed = warmup_exit_long_entry(df, slippage_pct=0.0)
+    assert seed is not None
+    assert seed["high_water"] == pytest.approx(100.0), (
+        "the closed first trade's 150 HWM must not survive the re-entry")
