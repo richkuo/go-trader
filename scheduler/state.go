@@ -110,6 +110,7 @@ type StrategyState struct {
 	Regime           string                     `json:"regime,omitempty"`         // most recent primary regime label from check script (#482)
 	RegimeWindows    map[string]string          `json:"regime_windows,omitempty"` // latest per-window labels from check script (#792)
 	RegimeDivergence *RegimeDivergenceState     `json:"-"`                        // in-memory divergence state; not persisted (self-heals on restart within 1 cycle) (#907)
+	RegimeProfile    *RegimeProfileState        `json:"regime_profile,omitempty"` // regime-profile allocation switch state (#998). ActiveProfile is persisted (strategies.active_profile); the pending counter is in-memory and re-arms on restart.
 	// ClosedPositions is an in-memory buffer of positions closed during the
 	// current cycle. SaveState appends these to the closed_positions table and
 	// clears the buffer on successful commit. Not serialized to JSON state

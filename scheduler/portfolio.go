@@ -34,6 +34,7 @@ type Position struct {
 	TPTiersJSON     string            `json:"tp_tiers_json,omitempty"`      // HL perps: JSON snapshot of [{atr_multiple,close_fraction},...] resolved at fill time; "" = strategy doesn't use tiered_tp_atr* (#669)
 	Regime          string            `json:"regime,omitempty"`             // regime label stamped at position open via stampPositionRegimeIfOpened. Drives regime-aware tier/SL multipliers for the life of the position (#733). Distinct from StrategyState.Regime which tracks the most recent classifier output.
 	RegimeWindows   map[string]string `json:"regime_windows,omitempty"`     // per-window regime labels stamped at open (#792)
+	OpenProfile     string            `json:"open_profile,omitempty"`       // regime-profile allocation: profile active when this position opened, frozen for its life (hold-on-transition). Read by resolveRegimeProfile when a position is open. (#998)
 	// #843 dynamic close: confirm-cycle state for live ATR-regime re-resolution.
 	RegimePendingLabel string `json:"regime_pending_label,omitempty"`
 	RegimePendingCount int    `json:"regime_pending_count,omitempty"`
@@ -509,6 +510,10 @@ type Trade struct {
 	// when a regime_window_divergence override was active at entry (#907). Not
 	// persisted to SQLite — set transiently when a trade is recorded.
 	RegimeDivergenceNote string `json:"-"`
+	// RegimeProfileNote carries a pre-formatted active-profile line for trade
+	// DMs when a regime_profile_allocation block is active (#998). Not persisted
+	// to SQLite — set transiently when a trade is recorded.
+	RegimeProfileNote string `json:"-"`
 
 	EntryATR          float64 `json:"entry_atr,omitempty"`
 	StopLossOID       int64   `json:"stop_loss_oid,omitempty"`
@@ -1232,6 +1237,7 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		}
 		trade.Regime = s.Regime
 		trade.RegimeDivergenceNote = formatDivergenceDMLine(s.RegimeDivergence)
+		trade.RegimeProfileNote = formatProfileDMLine(s.RegimeProfile)
 		recordOpen(trade)
 		logger.Info("BUY %s: %.6f @ $%.2f (%s, notional $%.2f, fee $%.2f)", symbol, qty, execPrice, leverageLabel, notional, fee)
 		tradesExecuted++
@@ -1421,6 +1427,7 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		}
 		trade.Regime = s.Regime
 		trade.RegimeDivergenceNote = formatDivergenceDMLine(s.RegimeDivergence)
+		trade.RegimeProfileNote = formatProfileDMLine(s.RegimeProfile)
 		recordOpen(trade)
 		logger.Info("SELL %s: %.6f @ $%.2f (%s, notional $%.2f, fee $%.2f) [open short]", symbol, qty, execPrice, leverageLabel, notional, fee)
 		tradesExecuted++

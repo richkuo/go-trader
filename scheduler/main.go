@@ -1420,9 +1420,16 @@ func main() {
 					var hlAddedNotionalUSD float64
 					var hlScaleInCash float64
 					var hlScaleInResizePending bool
+					var hlProfileState *RegimeProfileState
 					if sc.Type == "perps" && sc.Platform == "hyperliquid" {
 						if hlLiveStrategy {
 							hlCash = stratState.Cash
+						}
+						// #998: snapshot the regime-profile switch state under the
+						// Phase-1 RLock so the lock-free resolution reads a stable copy.
+						if stratState.RegimeProfile != nil {
+							cp := *stratState.RegimeProfile
+							hlProfileState = &cp
 						}
 						// #873: scale-in's default per-add notional uses the
 						// strategy cash like a fresh open — captured for paper too
@@ -1645,6 +1652,25 @@ func main() {
 							}
 						}
 					case "perps":
+						// #998: regime-profile allocation resolves BEFORE the check
+						// subprocess so the active profile's params shape the signal
+						// itself (the merged params ride the --strategy-refs JSON).
+						// HL perps only; the switch reads the global regime store at
+						// the configured long window and the closed-bar hysteresis
+						// counter advances only when the bundle's BarTime moves.
+						var hlProfileNext RegimeProfileState
+						var hlProfileActive string
+						hlProfileResolved := false
+						if sc.Platform == "hyperliquid" && sc.RegimeProfileAllocation.IsConfigured() {
+							palPayload := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
+							palBarTime := globalRegimeStore.BarTimeForStrategy(sc, cfg.Regime)
+							palLabel := palPayload.Label(sc.RegimeProfileAllocation.Window, cfg.Regime)
+							hlProfileActive, hlProfileNext = resolveRegimeProfile(sc.RegimeProfileAllocation, palLabel, palBarTime, hlProfileState, hlPosQty, hlPosCtx.Profile)
+							applyRegimeProfileParams(&sc, sc.RegimeProfileAllocation, hlProfileActive)
+							hlProfileResolved = true
+							logger.Info("Regime profile: window=%s label=%s active=%q (pending=%q seen=%d)",
+								sc.RegimeProfileAllocation.Window, palLabel, hlProfileActive, hlProfileNext.PendingProfile, hlProfileNext.PendingBarsSeen)
+						}
 						if sc.Platform == "okx" {
 							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, notifier, logger); ok {
 								prices[result.Symbol] = price
@@ -1942,6 +1968,17 @@ func main() {
 									recordPositionOpen(stratState, sc, openTrade, pos)
 									mu.Unlock()
 								}
+							}
+							// #998: stamp the active profile on a freshly opened
+							// position (freezes it for the position's life) and commit
+							// the resolved switch state. Runs whenever the check
+							// succeeded — independent of whether a trade executed — so
+							// the flat hysteresis counter advances every cycle.
+							if hlProfileResolved {
+								mu.Lock()
+								stampPositionProfileIfOpened(stratState, result.Symbol, hlProfileActive)
+								updateStrategyProfileState(stratState, hlProfileNext)
+								mu.Unlock()
 							}
 						}
 					case "futures":

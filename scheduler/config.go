@@ -368,6 +368,7 @@ type StrategyConfig struct {
 	FuturesConfig           *FuturesConfig           `json:"futures,omitempty"`
 	RegimeDirectionalPolicy *RegimeDirectionalPolicy `json:"regime_directional_policy,omitempty"` // HL perps only: regime-aware override for Direction + InvertSignal. When set, runHyperliquidCheck resolves the effective pair per-cycle from the current regime (when flat) or pos.Regime (when an open position is held — "hold until natural exit" semantics). Static Direction/InvertSignal are the base; the policy overrides per regime. Requires regime detection enabled at top-level cfg.Regime. (#779)
 	RegimeWindowDivergence  *RegimeWindowDivergence  `json:"regime_window_divergence,omitempty"`  // HL perps live only: detect divergence between two regime windows (short vs medium) and optionally override effective direction when they hard-diverge. Builds on regime_directional_policy surface (#907).
+	RegimeProfileAllocation *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"` // HL perps only: slow regime switch between two validated open_strategy param profiles. A long-window regime label (from the #879 store) selects the active profile; switching is hysteretic (confirm_bars closed bars) and flat-only. Requires regime.enabled=true. Backtester replays the switch. (#998)
 	AllowScaleIn            bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
 	ScaleIn                 *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
 }
@@ -1598,6 +1599,20 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			}
 			if cfg.Regime != nil && cfg.Regime.Enabled && len(cfg.Regime.Windows) < 2 {
 				errs = append(errs, fmt.Sprintf("%s: regime_window_divergence requires at least two windows in regime.windows", prefix))
+			}
+		}
+
+		// regime_profile_allocation: HL perps only (live + paper). Requires
+		// regime.enabled=true — the switch reads the global regime store, which
+		// is only populated when regime detection is on. Shape validation
+		// (param_sets count, label coverage, window existence) runs in
+		// validateStrategyRegimeVocabulary (ResolveRaw). (#998)
+		if sc.RegimeProfileAllocation.IsConfigured() {
+			if sc.Platform != "hyperliquid" || sc.Type != "perps" {
+				errs = append(errs, fmt.Sprintf("%s: regime_profile_allocation is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			}
+			if cfg.Regime == nil || !cfg.Regime.Enabled {
+				errs = append(errs, fmt.Sprintf("%s: regime_profile_allocation requires top-level regime.enabled=true", prefix))
 			}
 		}
 

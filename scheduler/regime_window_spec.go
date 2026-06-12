@@ -346,6 +346,32 @@ func validateStrategyRegimeVocabulary(cfg *Config) []string {
 				}
 			}
 		}
+		// #998: regime_profile_allocation shape validation (param_sets count,
+		// label coverage, profile references) AND window existence. Check window
+		// existence FIRST: a typo'd window otherwise resolves to the ADX-default
+		// classifier and surfaces a confusing label-coverage error instead of the
+		// real "window not found" cause. When the window is bad we still run
+		// ResolveRaw with nil labels so param_sets/initial_profile shape errors
+		// are not masked.
+		if sc.RegimeProfileAllocation.IsConfigured() {
+			windowRaw := regimeProfileAllocationWindow(sc)
+			windowKey := normalizeRegimeWindowKey(windowRaw)
+			windowOK := true
+			if rc != nil && rc.Enabled && windowKey != "" && windowKey != regimeWindowDefaultKey {
+				if !regimeMultiWindowEnabled(rc) {
+					errs = append(errs, fmt.Sprintf("%s: regime_profile_allocation.window=%q requires regime.windows to be configured", prefix, windowRaw))
+					windowOK = false
+				} else if !regimeWindowExists(rc, windowKey) {
+					errs = append(errs, fmt.Sprintf("%s: regime_profile_allocation.window=%q not found in regime.windows (valid: %s)", prefix, windowRaw, strings.Join(sortedRegimeWindowNamesFromConfig(rc.Windows), ", ")))
+					windowOK = false
+				}
+			}
+			var labels []string
+			if windowOK && rc != nil && rc.Enabled {
+				labels = regimeLabelsForClassifier(regimeClassifierForWindow(rc, windowKey))
+			}
+			errs = append(errs, sc.RegimeProfileAllocation.ResolveRaw(prefix+".regime_profile_allocation", labels)...)
+		}
 		// stop_loss_atr_regime / trailing_stop_atr_regime vocabulary is resolved
 		// authoritatively in validateRegimeATRConfig (which also populates the
 		// typed runtime fields and runs the mutex checks) using the same

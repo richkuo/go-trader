@@ -560,6 +560,22 @@ func (s *RegimeStore) PayloadForStrategy(sc StrategyConfig, rc *RegimeConfig) Re
 	return b.Payload
 }
 
+// BarTimeForStrategy returns the closed-bar timestamp of sc's regime bundle
+// this cycle, or "" when sc has no signature or the bundle is missing/failed.
+// Used by regime_profile_allocation to advance the closed-bar hysteresis counter
+// only when the bar moves (#998).
+func (s *RegimeStore) BarTimeForStrategy(sc StrategyConfig, rc *RegimeConfig) string {
+	req, ok := strategyRegimeBundleRequest(sc, rc)
+	if !ok {
+		return ""
+	}
+	b, found := s.get(req.Key)
+	if !found || b == nil {
+		return ""
+	}
+	return b.BarTime
+}
+
 // InjectionJSONForStrategy returns (raw payload JSON, true) when sc's check
 // script should receive --regime-payload-json this cycle. The flag is passed
 // whenever sc HAS a signature — with an EMPTY value after a bundle failure,
