@@ -91,3 +91,30 @@ def test_run_single_backtest_threads_platform_to_backtester(monkeypatch):
         f"platform did not thread through to Backtester — got {seen}"
     )
     assert seen["capital"] == 777.0
+
+
+def test_backtester_imports_under_script_style_sys_path(tmp_path):
+    """Script-style invocation (`python backtest/run_backtest.py`) puts only
+    backtest/ on sys.path. Backtester.__init__ unconditionally loads
+    post_tp_sl.py, whose absolute `shared_strategies.close...` import needs the
+    repo root — backtester.py must insert it itself (pytest masks the gap by
+    inserting the root during shared_strategies package collection)."""
+    import os
+    import subprocess
+    import sys
+
+    backtest_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    snippet = tmp_path / "script_style_import.py"
+    snippet.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {backtest_dir!r})\n"
+        "import backtester\n"
+        "backtester.Backtester()\n"
+        "print('OK')\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, str(snippet)],
+        cwd=tmp_path, capture_output=True, text=True, timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "OK" in proc.stdout

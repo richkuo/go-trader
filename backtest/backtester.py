@@ -66,6 +66,14 @@ import math
 from typing import Any, Optional, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
+# Repo root, so `from shared_strategies.close... import` (post_tp_sl.py,
+# trailing_tp_ratchet.py — loaded unconditionally in __init__) resolves under
+# script-style invocation (`python backtest/run_backtest.py`), where only the
+# script's own directory is on sys.path. pytest masks this by inserting the
+# root during collection of the shared_strategies package tests.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 import numpy as np
 import pandas as pd
