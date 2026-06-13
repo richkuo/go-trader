@@ -328,14 +328,41 @@ def test_joint_sweep_rejects_short_universe_with_no_close_stack():
 
 
 def test_optimize_rejects_short_direction_with_no_close_ref():
-    # PR #1000 review: the no-grid optimize path must hit the same guard —
-    # direction=short with no close evaluator cannot open shorts (plain
-    # long/flat path) and must error, not silently run long-only.
+    # PR #1004 review: direction=short is rejected wholesale — the warmup
+    # seeder (warmup_exit_long_entry) is long-only, so walk-forward cannot
+    # measure the short leg faithfully. The error must state that true
+    # reason, not the stale "plain path cannot open shorts" claim (#989
+    # made the plain path open shorts under direction=short).
     df = _trending_ohlc()
-    with pytest.raises(ValueError, match="close evaluator"):
+    with pytest.raises(ValueError, match="warmup seeder"):
         walk_forward_optimize(
             df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
             n_splits=2, verbose=False, direction="short",
+        )
+
+
+def test_optimize_rejects_short_direction_even_with_close_refs():
+    # PR #1004 review must-survive: close-evaluator-only stacks pass the
+    # "both" stack guard, but the long-only warmup seeder would still carry
+    # a phantom long into a short engine run — short is rejected regardless
+    # of the close stack.
+    df = _trending_ohlc()
+    with pytest.raises(ValueError, match="warmup seeder"):
+        walk_forward_optimize(
+            df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
+            n_splits=2, verbose=False, direction="short",
+            close_strategies=[{"name": "tiered_tp_atr",
+                               "params": {"tp_tiers": WIDE_LADDER}}],
+        )
+    grid = generate_close_stack_grid([
+        {"close": {"name": "tiered_tp_atr",
+                   "params": {"tp_tiers": [WIDE_LADDER]}}},
+    ])
+    with pytest.raises(ValueError, match="warmup seeder"):
+        walk_forward_optimize(
+            df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
+            n_splits=2, verbose=False, direction="short",
+            close_stack_grid=grid,
         )
 
 

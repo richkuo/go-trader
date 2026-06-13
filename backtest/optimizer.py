@@ -321,7 +321,9 @@ def walk_forward_optimize(
             grid — selection picks the best (open params, close stack) pair
             per fold. Mutually exclusive with the fixed ``close_strategies``/
             stop-mult kwargs.
-        direction: Backtester direction gate (long/short/both). When a
+        direction: Backtester direction gate (long/both; "short" is rejected
+            — the walk-forward warmup seeder is long-only, see the guard
+            below). When a
             close-stack grid is supplied and direction is omitted it defaults
             to "long": close refs activate the open/close engine where a raw
             signal=-1 OPENS a short, so without the gate the baseline stack
@@ -345,6 +347,21 @@ def walk_forward_optimize(
             "kwargs — the grid owns the close stack")
     if close_stack_grid and direction is None:
         direction = "long"
+    # #989 review: walk-forward cannot measure the short leg faithfully yet.
+    # The warmup seeder (warmup_exit_long_entry) scans the raw warmup signals
+    # for a carried LONG position and feeds it to Backtester.run as
+    # starting_long — but under direction="short" a +1 signal never opens
+    # anything in the actual run, so the seed would inject a phantom long
+    # into the short measurement. Faithful support needs a short-aware
+    # warmup seeder; until then reject loudly regardless of close stacks.
+    if direction == "short":
+        raise ValueError(
+            "direction='short' is not supported by walk-forward optimization "
+            "yet — the warmup seeder (warmup_exit_long_entry) is long-only "
+            "and would carry a phantom long position into the short run. "
+            "Measure the short leg with run_backtest.py --mode single "
+            "--direction short or eval_windows.py --direction short."
+        )
 
     reg = load_registry(registry)
     apply_strategy = reg.apply_strategy
@@ -364,17 +381,18 @@ def walk_forward_optimize(
         }
         fixed["label"] = close_stack_label(fixed)
         stacks = [fixed]
-    # Guard the whole optimize surface, grid or not: without a close evaluator
-    # the plain long/flat signal path cannot open shorts, so a short/both
-    # request would silently score as long/flat (mirrors the eval_windows/
-    # run_backtest --config guards).
-    if direction in ("short", "both") and any(
+    # Guard the whole optimize surface, grid or not: a no-close stack runs on
+    # the plain single-leg path, which cannot model "both" (one signal cannot
+    # open one side and close the other — Backtester.run rejects it too), so
+    # a baseline stack in the grid cannot score the requested universe.
+    # direction="short" was rejected wholesale above (warmup seeder).
+    if direction == "both" and any(
         not stack.get("close_strategies") for stack in stacks
     ):
         raise ValueError(
-            f"direction={direction!r} requires a close evaluator on every "
-            f"close stack — the plain long/flat signal path cannot open "
-            f"shorts, so the run would silently score as long/flat")
+            "direction='both' requires a close evaluator on every close "
+            "stack — a no-close (baseline) stack runs the plain single-leg "
+            "path, which cannot open one side and close the other")
     stack_bts = [
         (stack, Backtester(
             initial_capital=initial_capital, platform=platform,

@@ -213,9 +213,51 @@ def test_direction_both_with_close_strategy_threads_through(monkeypatch):
         {"name": "tiered_tp_atr", "params": {}}]
 
 
-def test_direction_both_with_sweep_close_reaches_walk_forward(monkeypatch):
-    # The close-stack grid supplies the engine path, so "both" is legitimate
-    # in optimize mode without explicit --close-strategy refs.
+def test_direction_short_rejected_in_optimize_mode(monkeypatch):
+    # PR #1004 review: the walk-forward warmup seeder is long-only, so
+    # optimize mode cannot measure the short leg faithfully — reject at the
+    # CLI before any data fetch, with or without a close-stack sweep.
+    seen = {}
+    monkeypatch.setattr(run_backtest, "run_walk_forward",
+                        lambda *a, **kw: seen.setdefault("hit", True))
+    for extra in ([], ["--sweep-close"],
+                  ["--close-strategy", "tiered_tp_atr"]):
+        monkeypatch.setattr("sys.argv", [
+            "run_backtest.py", "--mode", "optimize",
+            "--strategy", "sma_crossover", "--direction", "short", *extra,
+        ])
+        with pytest.raises(SystemExit):
+            run_backtest.main()
+    assert "hit" not in seen
+
+
+def test_direction_both_with_default_sweep_grid_rejected(monkeypatch):
+    # PR #1004 review: the default --sweep-close grid always contains
+    # no-close baseline stacks, which run the plain single-leg path and
+    # cannot model "both" — reject before any data fetch instead of
+    # tracebacking inside walk_forward_optimize.
+    seen = {}
+    monkeypatch.setattr(run_backtest, "run_walk_forward",
+                        lambda *a, **kw: seen.setdefault("hit", True))
+    monkeypatch.setattr("sys.argv", [
+        "run_backtest.py", "--mode", "optimize",
+        "--strategy", "sma_crossover", "--sweep-close",
+        "--direction", "both",
+    ])
+    with pytest.raises(SystemExit):
+        run_backtest.main()
+    assert "hit" not in seen
+
+
+def test_direction_both_with_close_only_stacks_json_reaches_walk_forward(
+        monkeypatch, tmp_path):
+    # "both" is legitimate in optimize mode when every swept stack carries a
+    # close evaluator (engine path on every stack).
+    import json
+    specs = tmp_path / "stacks.json"
+    specs.write_text(json.dumps([
+        {"close": {"name": "tiered_tp_atr", "params": {}}},
+    ]))
     seen = {}
 
     def spy_wf(*args, **kwargs):
@@ -224,12 +266,14 @@ def test_direction_both_with_sweep_close_reaches_walk_forward(monkeypatch):
     monkeypatch.setattr(run_backtest, "run_walk_forward", spy_wf)
     monkeypatch.setattr("sys.argv", [
         "run_backtest.py", "--mode", "optimize",
-        "--strategy", "sma_crossover", "--sweep-close",
+        "--strategy", "sma_crossover",
+        "--close-stacks-json", str(specs),
         "--direction", "both",
     ])
     run_backtest.main()
     assert seen["direction"] == "both"
     assert seen["close_stack_grid"]
+    assert all(s.get("close_strategies") for s in seen["close_stack_grid"])
 
 
 def test_run_walk_forward_threads_close_stack_grid(monkeypatch):

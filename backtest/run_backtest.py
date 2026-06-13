@@ -907,6 +907,18 @@ def main():
               "or a close-stack sweep); backtest each leg separately with "
               "--direction long / --direction short")
         sys.exit(1)
+    # #989 review: optimize mode cannot measure the short leg yet — the
+    # walk-forward warmup seeder (optimizer.warmup_exit_long_entry) is
+    # long-only, so a carried warmup position would inject a phantom LONG
+    # into the short run. walk_forward_optimize rejects it too (backstop for
+    # API callers); refuse here before any data fetch and point at the
+    # surfaces that do measure the short leg.
+    if args.direction == "short" and args.mode == "optimize":
+        print("--direction short is not supported in optimize mode (the "
+              "walk-forward warmup seeder is long-only and would carry a "
+              "phantom long into the short run); use --mode single "
+              "--direction short or eval_windows.py --direction short")
+        sys.exit(1)
     if args.direction:
         # --config + --direction was rejected above, so the key can't collide.
         live_stop_kwargs["direction"] = args.direction
@@ -978,6 +990,19 @@ def main():
             else:
                 specs = DEFAULT_CLOSE_STACK_SPECS
             close_stack_grid = generate_close_stack_grid(specs)
+            # #989 review: a no-close (baseline) stack runs the plain
+            # single-leg path, which cannot model "both" — the default
+            # --sweep-close grid always contains baselines, so reject here
+            # before any data fetch instead of tracebacking mid-optimize
+            # (walk_forward_optimize raises the same way as a backstop).
+            if args.direction == "both" and any(
+                    not s.get("close_strategies") for s in close_stack_grid):
+                print("--direction both requires a close evaluator on every "
+                      "swept close stack, but the grid contains no-close "
+                      "baseline stacks (the default --sweep-close grid always "
+                      "does); supply --close-stacks-json with close-evaluator "
+                      "stacks only, or backtest each leg separately")
+                sys.exit(1)
 
         if args.strategy == "all":
             for strat in reg.list_strategies():
