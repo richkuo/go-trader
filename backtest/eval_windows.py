@@ -117,6 +117,9 @@ def leg_from_results(results: dict, bh_return_pct: Optional[float] = None) -> di
         "ddadj": round(dd_adjusted_return(ret, dd), 3),
         "trades": int(results["total_trades"]),
         "bh_return_pct": bh_return_pct,
+        # #1005: equity hit 0 — metrics are floored at the bust bar (return
+        # and DD read −100%); surfaced so blown legs are never silent.
+        "liquidated": bool(results.get("liquidated")),
     }
 
 
@@ -170,6 +173,8 @@ def score_candidate(candidate_legs: dict, bars: dict) -> dict:
     mean_bar_sharpe = statistics.mean(r["bar"]["sharpe"] for r in scored)
     mean_bar_ddadj = statistics.mean(r["bar"]["ddadj"] for r in scored)
     traded = sum(1 for r in scored if r["leg"]["trades"] > 0)
+    liquidated = sum(1 for r in rows
+                     if r["leg"] is not None and r["leg"].get("liquidated"))
     degenerate = traded < math.ceil(len(scored) / 2)
     beats_both = (mean_sharpe > mean_bar_sharpe) and (mean_ddadj > mean_bar_ddadj)
 
@@ -190,6 +195,7 @@ def score_candidate(candidate_legs: dict, bars: dict) -> dict:
         "mean_bar_ddadj": round(mean_bar_ddadj, 3),
         "beats_sharpe_count": sum(1 for r in scored if r["beats_sharpe"]),
         "beats_ddadj_count": sum(1 for r in scored if r["beats_ddadj"]),
+        "liquidated_legs": liquidated,
         "degenerate": degenerate,
         "verdict": verdict,
     }
@@ -471,6 +477,8 @@ def format_window_report(score: dict) -> str:
         if row["beats_sharpe"] is not None:
             beats = ("S" if row["beats_sharpe"] else "-") + \
                     ("D" if row["beats_ddadj"] else "-")
+        if leg.get("liquidated"):
+            beats = (beats + " LIQ").strip()
         lines.append(
             f"{row['dataset']:<14} {_fmt(leg['sharpe'])} "
             f"{_fmt(bar['sharpe'] if bar else None)} {_fmt(leg['ddadj'])} "
@@ -491,6 +499,9 @@ def format_window_report(score: dict) -> str:
         f"{score['beats_ddadj_count']}/{score['scored_datasets']} (DDadj); "
         f"traded {score['traded_datasets']}/{score['scored_datasets']}"
         + (" [degenerate: majority of legs zero-trade]" if score["degenerate"] else "")
+        + (f" [{score['liquidated_legs']} liquidated leg(s): equity hit 0, "
+           f"metrics floored at the bust bar]"
+           if score.get("liquidated_legs") else "")
     )
     return "\n".join(lines)
 

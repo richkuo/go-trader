@@ -2232,6 +2232,20 @@ class Backtester:
         equity = equity_df["equity"]
         ann_factor = math.sqrt(periods_per_year(timeframe))
 
+        # Liquidation floor (#1005): a stop-less short losing >100% drives
+        # equity negative, and pct_change over a negative base inverts return
+        # signs (a deepening blowup reads as a positive return, a recovery as
+        # negative), corrupting Sharpe/Sortino/volatility. A real account is
+        # dead at zero — floor the curve at 0 from the first bust bar onward
+        # (sticky: no resurrection if the position later recovers) and flag
+        # the run so harness consumers (eval_windows, fee_audit) can surface
+        # it. Post-bust bars contribute 0/0 = NaN returns, dropped below.
+        liquidated = bool((equity <= 0).any())
+        if liquidated:
+            bust_pos = int(np.argmax(equity.values <= 0))
+            equity = equity.copy()
+            equity.iloc[bust_pos:] = 0.0
+
         # Anchor return + drawdown at initial_capital so seeded runs (where
         # equity[0] reflects the starting_long mark-to-market, not the true
         # pre-trade balance) don't distort the baseline. For non-seeded runs
@@ -2307,6 +2321,7 @@ class Backtester:
             "total_trades": total_trades,
             "avg_win_pct": round(avg_win * 100, 2),
             "avg_loss_pct": round(avg_loss * 100, 2),
+            "liquidated": liquidated,
         }
 
 
@@ -2321,6 +2336,12 @@ def format_results(results: dict) -> str:
         f"  Period:          {results['start_date'][:10]} → {results['end_date'][:10]}",
         f"  Initial Capital: ${results['initial_capital']:,.2f}",
         f"  Final Capital:   ${results['final_capital']:,.2f}",
+    ]
+    if results.get("liquidated"):
+        lines.append(
+            "  *** LIQUIDATED: equity hit 0 — metrics floored at the bust bar ***"
+        )
+    lines += [
         f"{'─'*60}",
         f"  RETURNS",
         f"    Total Return:    {results['total_return_pct']:+.2f}%",

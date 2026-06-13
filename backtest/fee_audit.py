@@ -194,6 +194,7 @@ def aggregate_strategy(strategy: str, registry_label: str,
     mean_gross = _mean([l.get("gross_ret") for l in data_legs])
     mean_net = _mean([l.get("net_ret") for l in data_legs])
     mean_sharpe = _mean([l.get("net_sharpe") for l in data_legs])
+    n_liquidated = sum(1 for l in data_legs if l.get("liquidated"))
 
     fee_drag = (mean_gross - mean_net) if (mean_gross is not None
                                            and mean_net is not None) else None
@@ -218,6 +219,7 @@ def aggregate_strategy(strategy: str, registry_label: str,
         "mean_net_sharpe": round(mean_sharpe, 3) if mean_sharpe is not None else None,
         "short_unmeasured": short_unmeasured,
         "n_legs": n_legs,
+        "n_liquidated": n_liquidated,
         "n_errors": len(errors),
         "errors": errors,
         "verdict": verdict,
@@ -346,6 +348,17 @@ def render_markdown(ranked: List[dict], meta: dict) -> str:
     else:
         lines.append("- (none)")
 
+    liquidated = [r for r in ranked if r.get("n_liquidated")]
+    if liquidated:
+        lines += ["", "## Liquidated legs (equity hit 0 — metrics floored at "
+                  "the bust bar, #1005)", ""]
+        for r in liquidated:
+            lines.append(
+                f"- **{r['strategy']}** ({r['registry']}): "
+                f"{r['n_liquidated']}/{r['n_legs']} leg(s) liquidated — "
+                f"return/DD read −100% for those legs; means above include "
+                f"the floored values")
+
     if errored:
         lines += ["", "## Errors / skips", ""]
         for r in errored:
@@ -402,6 +415,9 @@ def screen_leg(reg, name: str, symbol: str, timeframe: str,
         "net_ret": net["return_pct"],
         "gross_ret": gross["return_pct"],
         "net_sharpe": net["sharpe"],
+        # #1005: either run blew the account (equity hit 0; metrics floored
+        # at the bust bar) — surfaced so blown legs are never silent.
+        "liquidated": bool(net.get("liquidated") or gross.get("liquidated")),
     }
 
 
