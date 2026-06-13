@@ -232,9 +232,18 @@ func formatSharedWalletDriftAlert(key SharedWalletKey, balance, memberSum, drift
 	if len(orphanCoins) > 0 {
 		orphanDetail = "unattributed coins: " + strings.Join(orphanCoins, ", ")
 	}
+	// The "diff" in the alert is the BASELINE-ANCHORED drift (post-baseline
+	// change since the wallet was first reconciled). The displayed Σ member
+	// value vs balance, however, is the RAW reconciliation — those are the
+	// rows the operator sees. Showing raw diff (memberSum - balance) makes
+	// the alert self-consistent with the numbers above it. A large raw diff
+	// with a small baseline-anchored drift = legacy phantom ledger data
+	// adopted into the baseline at first contact (the alert is masked by
+	// design — see wallet_ledger_state.baseline_offset_usd).
+	rawDiff := memberSum - balance
 	return fmt.Sprintf(
-		"**SHARED-WALLET DRIFT** %s (pid=%d, %d consecutive): Σ member value $%.2f vs real balance $%.2f — diff $%+.2f exceeds $%.2f tolerance (%s). Exchange-derived rows should reconcile exactly; this indicates an attribution/accounting bug (orphan position or weighting).",
-		sharedWalletKeyLabel(key), os.Getpid(), count, memberSum, balance, drift, sharedWalletDriftTolerance, orphanDetail)
+		"**SHARED-WALLET DRIFT** %s (pid=%d, %d consecutive): Σ member value $%.2f vs real balance $%.2f — raw reconciliation diff $%+.2f, post-baseline drift $%+.2f (>$%.2f tolerance). %s. Exchange-derived rows should reconcile exactly; a large raw diff with a small post-baseline drift means legacy phantom ledger data is baked into the adopted baseline — values will re-reconcile once phantom rows are cleared.",
+		sharedWalletKeyLabel(key), os.Getpid(), count, memberSum, balance, rawDiff, drift, sharedWalletDriftTolerance, orphanDetail)
 }
 
 func formatSharedWalletDriftRecovered(key SharedWalletKey, priorCount int) string {
@@ -256,8 +265,9 @@ func reportSharedWalletDrift(notifier *MultiNotifier, results []sharedWalletDrif
 		label := sharedWalletKeyLabel(r.Key)
 		if math.Abs(r.Drift) > sharedWalletDriftTolerance {
 			shouldNotify, count := sharedWalletDriftTracker.Record(label, r.Drift, r.OrphanCoins, now)
-			fmt.Printf("[WARN] shared-wallet %s drift $%+.2f (Σ members $%.2f vs balance $%.2f, orphans=[%s])\n",
-				label, r.Drift, r.MemberSum, r.Balance, strings.Join(r.OrphanCoins, ","))
+			rawDiff := r.MemberSum - r.Balance
+			fmt.Printf("[WARN] shared-wallet %s drift $%+.2f (Σ members $%.2f vs balance $%.2f, rawDiff $%+.2f, orphans=[%s])\n",
+				label, r.Drift, r.MemberSum, r.Balance, rawDiff, strings.Join(r.OrphanCoins, ","))
 			if !shouldNotify || notifier == nil || !notifier.HasBackends() {
 				continue
 			}

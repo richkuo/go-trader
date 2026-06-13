@@ -1129,6 +1129,32 @@ func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices m
 	forceCloseAllPositions(s, prices, logger)
 }
 
+// classifyPositionTradeType maps a position to the correct trade_type label
+// for circuit-breaker / kill-switch close records. HL perps and OKX perps
+// carry pos.Multiplier=1 (#254/#497 perps PnL valuation convention — NOT a
+// contract multiplier), so the legacy "Multiplier>0 → futures" classifier
+// mislabels every perps force-close as "futures" and leaks phantom PnL into
+// the #954 shared-wallet trade ledger. TopStep/CME futures keep pos.Multiplier
+// as the real contract multiplier; that is the only branch where "futures"
+// is correct.
+func classifyPositionTradeType(s *StrategyState, pos *Position) string {
+	if pos == nil {
+		return "spot"
+	}
+	if pos.Multiplier > 0 {
+		if s != nil {
+			switch {
+			case s.Platform == "hyperliquid" && (s.Type == "perps" || s.Type == "manual"):
+				return "perps"
+			case s.Platform == "okx" && s.Type == "perps":
+				return "perps"
+			}
+		}
+		return "futures"
+	}
+	return "spot"
+}
+
 // forceCloseAllPositions liquidates all open positions at current prices.
 // Called when any circuit breaker fires.
 func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger *StrategyLogger) {
@@ -1140,10 +1166,13 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			price = pos.AvgCost
 		}
 		var pnl, value float64
-		tradeType := "spot"
+		// PnL branch is the same for perps (Multiplier=1) and futures
+		// (Multiplier=contract size) — qty*multiplier*price_delta. Only the
+		// trade_type LABEL differs by venue, classified via
+		// classifyPositionTradeType so perps force-closes no longer leak into
+		// the "futures" trade_ledger bucket.
+		tradeType := classifyPositionTradeType(s, pos)
 		if pos.Multiplier > 0 {
-			// Futures: PnL-based (contracts * multiplier * price delta)
-			tradeType = "futures"
 			if pos.Side == "long" {
 				pnl = pos.Quantity * pos.Multiplier * (price - pos.AvgCost)
 			} else {

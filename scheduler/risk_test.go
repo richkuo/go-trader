@@ -2823,3 +2823,50 @@ func TestCircuitBreakerStrategyLabel_StripsSpotQuoteSuffix(t *testing.T) {
 		t.Fatalf("strategy label should not render raw spot pair: %q", got)
 	}
 }
+
+// TestForceCloseAllPositions_TradeType_PerpsVsFutures pins the trade_type
+// label for circuit-breaker / kill-switch force-closes: HL perps and OKX perps
+// carry pos.Multiplier=1 (#254/#497 perps PnL valuation convention, NOT a
+// contract multiplier), so the legacy "Multiplier>0 → futures" classifier
+// mislabeled every perps force-close as "futures" and leaked phantom PnL into
+// the #954 shared-wallet trade ledger. TopStep/legacy futures keep
+// pos.Multiplier as the real contract multiplier and keep the "futures" label.
+// Spot (Multiplier=0) stays "spot".
+func TestForceCloseAllPositions_TradeType_PerpsVsFutures(t *testing.T) {
+	cases := []struct {
+		name      string
+		platform  string
+		stratType string
+		multiplier float64
+		want      string
+	}{
+		{"hl-perps-multiplier-1", "hyperliquid", "perps", 1, "perps"},
+		{"hl-manual-multiplier-1", "hyperliquid", "manual", 1, "perps"},
+		{"okx-perps-multiplier-1", "okx", "perps", 1, "perps"},
+		{"hl-perps-multiplier-0", "hyperliquid", "perps", 0, "spot"},
+		{"spot-multiplier-0", "binanceus", "spot", 0, "spot"},
+		{"topstep-futures-multiplier-50", "topstep", "futures", 50, "futures"},
+		{"legacy-futures-multiplier-5", "ibkr", "futures", 5, "futures"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &StrategyState{
+				ID:       "test-" + tc.name,
+				Platform: tc.platform,
+				Type:     tc.stratType,
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "long", Multiplier: tc.multiplier},
+				},
+				TradeHistory: []Trade{},
+				RiskState:    RiskState{},
+			}
+			forceCloseAllPositions(s, map[string]float64{"BTC": 51000}, nil)
+			if len(s.TradeHistory) != 1 {
+				t.Fatalf("TradeHistory len = %d, want 1", len(s.TradeHistory))
+			}
+			if got := s.TradeHistory[0].TradeType; got != tc.want {
+				t.Errorf("TradeType = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
