@@ -1038,8 +1038,17 @@ class Backtester:
         # OPENS a short, signal=+1 CLOSES it. The open/close engine path is
         # unaffected (direction masking there already models short opens).
         # direction="both" remains unmodelable on the plain path (one signal
-        # cannot both open one side and close the other) and is rejected at
-        # config/candidate load.
+        # cannot both open one side and close the other) — rejected at
+        # config/candidate load AND here, so API callers that bypass the
+        # loaders cannot silently score a long/flat run as "both".
+        if self.direction == "both" and not uses_open_close:
+            raise ValueError(
+                "direction='both' requires a close evaluator (open/close "
+                "engine path) — the plain single-leg path cannot open one "
+                "side and close the other, so the run would silently score "
+                "long/flat. Backtest each leg separately with "
+                "direction='long' / direction='short'."
+            )
         plain_short = (not uses_open_close) and self.direction == "short"
         if plain_short and starting_long:
             raise ValueError(

@@ -455,6 +455,27 @@ def test_config_flag_rejects_non_single_modes(tmp_path):
             _sys.argv = old_argv
 
 
+def test_direction_flag_rejected_alongside_config(tmp_path, monkeypatch):
+    """#989 review: the live config's `direction` field owns the entry
+    transform; a CLI --direction silently losing to it would score the wrong
+    leg — the exact divergence class the flag exists to prevent. Reject
+    loudly, like --close-strategy alongside --config."""
+    config_path = _write_config(tmp_path, version=15, strategies=[
+        {"id": "x", "open_strategy": {"name": "triple_ema"}, "close_strategies": []},
+    ])
+    called = {}
+    monkeypatch.setattr(run_backtest, "run_single_backtest",
+                        lambda *a, **kw: called.setdefault("hit", True))
+    monkeypatch.setattr("sys.argv", [
+        "run_backtest.py", "--mode", "single",
+        "--config", config_path, "--strategy", "x",
+        "--direction", "short",
+    ])
+    with pytest.raises(SystemExit):
+        run_backtest.main()
+    assert "hit" not in called
+
+
 # ─── #942: direction / invert_signal / regime_window_divergence parity ───────
 
 

@@ -139,6 +139,99 @@ def test_build_parser_rejects_unknown_optimize_metric():
         parser.parse_args(["--optimize-metric", "alpha_decay"])
 
 
+# ─── #989 review: --direction must reach every mode, not just optimize ───────
+# Invariant: every backtest CLI surface either honors the requested entry
+# direction or rejects it loudly — a requested short leg is never silently
+# scored as long/flat.
+
+
+def _spy_single(monkeypatch):
+    seen = {}
+
+    def spy(*args, **kwargs):
+        seen.setdefault("calls", []).append(kwargs)
+        return None
+
+    monkeypatch.setattr(run_backtest, "run_single_backtest", spy)
+    return seen
+
+
+def test_single_mode_threads_direction(monkeypatch):
+    seen = _spy_single(monkeypatch)
+    monkeypatch.setattr("sys.argv", [
+        "run_backtest.py", "--mode", "single",
+        "--strategy", "sma_crossover", "--direction", "short",
+    ])
+    run_backtest.main()
+    assert seen["calls"][0]["direction"] == "short"
+
+
+def test_compare_mode_threads_direction(monkeypatch):
+    seen = _spy_single(monkeypatch)
+    monkeypatch.setattr("sys.argv", [
+        "run_backtest.py", "--mode", "compare",
+        "--strategy", "sma_crossover", "--direction", "short",
+    ])
+    run_backtest.main()
+    assert seen["calls"][0]["direction"] == "short"
+
+
+def test_multi_mode_threads_direction(monkeypatch):
+    seen = _spy_single(monkeypatch)
+    monkeypatch.setattr("sys.argv", [
+        "run_backtest.py", "--mode", "multi",
+        "--strategy", "sma_crossover", "--symbols", "BTC/USDT",
+        "--direction", "short",
+    ])
+    run_backtest.main()
+    assert seen["calls"][0]["direction"] == "short"
+
+
+def test_direction_both_without_close_rejected_before_running(monkeypatch):
+    # "both" cannot run on the plain single-leg path; naive forwarding would
+    # bypass the loader's rejection and silently score long/flat.
+    seen = _spy_single(monkeypatch)
+    monkeypatch.setattr("sys.argv", [
+        "run_backtest.py", "--mode", "single",
+        "--strategy", "sma_crossover", "--direction", "both",
+    ])
+    with pytest.raises(SystemExit):
+        run_backtest.main()
+    assert "calls" not in seen
+
+
+def test_direction_both_with_close_strategy_threads_through(monkeypatch):
+    seen = _spy_single(monkeypatch)
+    monkeypatch.setattr("sys.argv", [
+        "run_backtest.py", "--mode", "single",
+        "--strategy", "sma_crossover", "--direction", "both",
+        "--close-strategy", "tiered_tp_atr",
+    ])
+    run_backtest.main()
+    assert seen["calls"][0]["direction"] == "both"
+    assert seen["calls"][0]["close_strategies"] == [
+        {"name": "tiered_tp_atr", "params": {}}]
+
+
+def test_direction_both_with_sweep_close_reaches_walk_forward(monkeypatch):
+    # The close-stack grid supplies the engine path, so "both" is legitimate
+    # in optimize mode without explicit --close-strategy refs.
+    seen = {}
+
+    def spy_wf(*args, **kwargs):
+        seen.update(kwargs)
+
+    monkeypatch.setattr(run_backtest, "run_walk_forward", spy_wf)
+    monkeypatch.setattr("sys.argv", [
+        "run_backtest.py", "--mode", "optimize",
+        "--strategy", "sma_crossover", "--sweep-close",
+        "--direction", "both",
+    ])
+    run_backtest.main()
+    assert seen["direction"] == "both"
+    assert seen["close_stack_grid"]
+
+
 def test_run_walk_forward_threads_close_stack_grid(monkeypatch):
     """The close-stack grid, metric, and direction must reach
     walk_forward_optimize — a dropped kwarg silently degrades #996 sweeps to

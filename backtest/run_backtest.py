@@ -557,6 +557,7 @@ def run_all_strategies(
     regime_period: int = 14,
     regime_adx_threshold: float = 20.0,
     allowed_regimes: Optional[List[str]] = None,
+    direction: Optional[str] = None,
 ) -> list:
     """Run multiple strategies on one asset and compare."""
     reg = load_registry(registry)
@@ -575,6 +576,7 @@ def run_all_strategies(
             regime_enabled=regime_enabled, regime_period=regime_period,
             regime_adx_threshold=regime_adx_threshold,
             allowed_regimes=allowed_regimes,
+            direction=direction,
         )
         if result:
             all_results.append(result)
@@ -599,6 +601,7 @@ def run_multi_asset(
     regime_period: int = 14,
     regime_adx_threshold: float = 20.0,
     allowed_regimes: Optional[List[str]] = None,
+    direction: Optional[str] = None,
 ) -> dict:
     """Run strategies across multiple assets."""
     reg = load_registry(registry)
@@ -625,6 +628,7 @@ def run_multi_asset(
                 regime_enabled=regime_enabled, regime_period=regime_period,
                 regime_adx_threshold=regime_adx_threshold,
                 allowed_regimes=allowed_regimes,
+                direction=direction,
             )
             if result:
                 results_by_asset[symbol].append(result)
@@ -790,11 +794,13 @@ def _build_parser() -> argparse.ArgumentParser:
                              "|max DD| (#963 DDadj).")
     parser.add_argument("--direction", default=None,
                         choices=["long", "short", "both"],
-                        help="Optimize mode: side the open/close engine may "
-                             "OPEN. Defaults to long when a close-stack grid "
-                             "is swept so every stack scores on the same "
-                             "entry universe (raw signal=-1 opens a short in "
-                             "the engine path).")
+                        help="Side the engine may OPEN; forwarded to every "
+                             "mode (#989). 'short' on the plain single-leg "
+                             "path runs the short/flat mirror (signal=-1 "
+                             "opens, +1 closes); 'both' requires a close "
+                             "evaluator. In optimize mode defaults to long "
+                             "when a close-stack grid is swept so every "
+                             "stack scores on the same entry universe.")
     return parser
 
 
@@ -850,6 +856,15 @@ def main():
         if close_refs:
             print("--close-strategy is not allowed alongside --config (refs come from the live config)")
             sys.exit(1)
+        # #989 review: the live config's `direction` field owns the entry
+        # transform; a CLI --direction losing to it via setdefault would
+        # silently score the wrong leg — the exact divergence class the flag
+        # exists to prevent. Reject loudly, like --close-strategy above.
+        if args.direction:
+            print("--direction is not allowed alongside --config (the live "
+                  "config's `direction` field owns the entry transform); "
+                  "edit the config or backtest the strategy by name")
+            sys.exit(1)
         close_refs = live_kwargs["close_strategies"]
         # Open strategy name + params come from the live config. Threading
         # params through to run_single_backtest is required — without it,
@@ -881,6 +896,21 @@ def main():
     if args.trailing_stop_atr_mult is not None:
         live_stop_kwargs.setdefault("trailing_stop_atr_mult", args.trailing_stop_atr_mult)
 
+    # #989 review: --direction was parsed for every mode but forwarded only to
+    # optimize — single/compare/multi silently scored the long leg of a
+    # requested short run. Forward it to every mode; "both" needs a close
+    # evaluator (the plain single-leg path cannot open one side and close the
+    # other — Backtester.run rejects it too, as a backstop for API callers).
+    if args.direction == "both" and not close_refs \
+            and not (args.sweep_close or args.close_stacks_json):
+        print("--direction both requires a close evaluator (--close-strategy "
+              "or a close-stack sweep); backtest each leg separately with "
+              "--direction long / --direction short")
+        sys.exit(1)
+    if args.direction:
+        # --config + --direction was rejected above, so the key can't collide.
+        live_stop_kwargs["direction"] = args.direction
+
     reg = load_registry(args.registry)
 
     if args.mode == "single":
@@ -909,7 +939,8 @@ def main():
                            regime_enabled=args.regime_enabled,
                            regime_period=args.regime_period,
                            regime_adx_threshold=args.regime_adx_threshold,
-                           allowed_regimes=args.allowed_regimes)
+                           allowed_regimes=args.allowed_regimes,
+                           direction=args.direction)
 
     elif args.mode == "multi":
         strategies = None if args.strategy == "all" else [args.strategy]
@@ -922,7 +953,8 @@ def main():
                         regime_enabled=args.regime_enabled,
                         regime_period=args.regime_period,
                         regime_adx_threshold=args.regime_adx_threshold,
-                        allowed_regimes=args.allowed_regimes)
+                        allowed_regimes=args.allowed_regimes,
+                        direction=args.direction)
 
     elif args.mode == "optimize":
         # #996: close-stack co-optimization. The grid owns the close stack;

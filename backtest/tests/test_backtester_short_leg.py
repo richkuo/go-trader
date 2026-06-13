@@ -222,6 +222,17 @@ def test_starting_long_rejected_on_short_path():
                starting_long={"entry_price": 100.0})
 
 
+def test_direction_both_rejected_on_plain_path():
+    # PR #1004 review: "both" is unmodelable on the single-leg path (one
+    # signal cannot open one side and close the other). The loaders reject it,
+    # but API callers can construct Backtester directly — run() must refuse
+    # rather than silently score a long/flat run as "both".
+    closes = [100, 100, 110, 120, 120]
+    signals = [1, 0, 0, -1, 0]
+    with pytest.raises(ValueError, match="direction='both'"):
+        _run(_df(closes, signals), direction="both")
+
+
 def test_direction_long_default_is_unchanged():
     # The long/flat path must be byte-identical with and without an explicit
     # direction="long" (regression guard for the plain_short branch).
