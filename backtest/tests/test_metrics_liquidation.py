@@ -94,6 +94,42 @@ def test_zero_equity_bar_counts_as_bust():
     assert m["total_return_pct"] == pytest.approx(-100.0)
 
 
+def test_early_bust_one_sample_reads_negative_not_neutral():
+    # The #1005 regression at the degenerate boundary: a bust on the 2nd bar
+    # leaves a single surviving return (the -100% bust bar); post-bust bars
+    # drop out as NaN. The len>1 variance guard previously collapsed
+    # Sharpe/Sortino/volatility to a NEUTRAL 0.0 — a dead account reading as
+    # "fine" — which ranks a fast blowup ABOVE a slow one. A liquidated leg
+    # must read clearly negative on the risk-adjusted axes and non-zero vol.
+    m = _metrics([1000, -500, 800, 900])  # bust idx 1 -> 1 surviving sample
+    assert m["liquidated"] is True
+    assert m["sharpe_ratio"] < 0
+    assert m["sortino_ratio"] < 0
+    assert m["volatility_pct"] != 0
+
+
+def test_first_bar_bust_zero_samples_reads_negative():
+    # Boundary: equity <= 0 on the very first bar leaves ZERO surviving
+    # returns (empty series). Must still read negative, never neutral 0.0.
+    m = _metrics([-100, 50, 75])  # bust idx 0 -> 0 surviving samples
+    assert m["liquidated"] is True
+    assert m["total_return_pct"] == pytest.approx(-100.0)
+    assert m["sharpe_ratio"] < 0
+    assert m["sortino_ratio"] < 0
+
+
+def test_faster_bust_never_outranks_slower_on_sharpe():
+    # Invariant: a leg busting earlier (less of the death path measured) must
+    # never report a HIGHER Sharpe than one busting later. Pre-fix the 1-sample
+    # fast bust read 0.0 while the 3-sample slow bust read negative, inverting
+    # the ranking on the very axis #1005 set out to fix.
+    fast = _metrics([1000, -500, 0, 0])      # bust idx 1 -> 1 sample
+    slow = _metrics([1000, 900, 800, -200])  # bust idx 3 -> 3 samples
+    assert fast["liquidated"] and slow["liquidated"]
+    assert fast["sharpe_ratio"] <= slow["sharpe_ratio"]
+    assert fast["sortino_ratio"] <= slow["sortino_ratio"]
+
+
 # ---------------------------------------------------------------------------
 # End-to-end — stop-less short leg blowing past -100% (#989 harness shape)
 # ---------------------------------------------------------------------------
@@ -158,6 +194,21 @@ def test_score_candidate_counts_liquidated_legs_without_verdict_change():
     no_key = {k: v for k, v in healthy.items() if k != "liquidated"}
     score2 = ew.score_candidate({"A 1h": no_key}, {"A 1h": bar})
     assert score2["liquidated_legs"] == 0
+
+
+def test_liquidated_legs_counts_every_blowup_including_unscored():
+    # Design (#1005): liquidated_legs counts EVERY blown leg, including one
+    # with no incumbent bar (absent from `scored`), so operators see all
+    # deaths even when a dataset has no comparison baseline. The count is
+    # therefore over `rows`, not `scored`, and may exceed scored_datasets.
+    blown_no_bar = ew.leg_from_results(_results())  # liquidated, no bar below
+    healthy = ew.leg_from_results(_results(ret=20.0, dd=-10.0, sharpe=1.5,
+                                           liquidated=False))
+    score = ew.score_candidate(
+        {"A 1h": blown_no_bar, "B 1h": healthy},
+        {"B 1h": {"sharpe": 0.5, "ddadj": 0.5, "n": 8}})  # only B has a bar
+    assert score["scored_datasets"] == 1            # only B is scored
+    assert score["liquidated_legs"] == 1            # A counted despite no bar
 
 
 def test_format_window_report_marks_liquidated_rows():

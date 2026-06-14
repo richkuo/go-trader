@@ -2308,6 +2308,20 @@ class Backtester:
         # Calmar ratio
         calmar = annual_return / abs(max_drawdown) if max_drawdown != 0 else 0
 
+        # Liquidation risk-adjusted floor (#1005): when the sticky floor leaves
+        # <2 surviving returns (a leg busting within 1-2 bars — the post-bust
+        # NaN tail drops out), the variance guards above collapse Sharpe/
+        # Sortino/volatility to a NEUTRAL 0.0. That reads a dead account as
+        # "fine" and ranks a fast blowup ABOVE a slow one — re-inverting the
+        # exact axis this issue fixed. Floor every blown leg to the annualized
+        # total-loss magnitude (−100% return) so all deaths tie below any
+        # surviving leg, mirroring the −100% floor already applied to
+        # return/DD. Uniform (not path-dependent) so two busts at different
+        # bars tie instead of the earlier one out-ranking the later.
+        if liquidated:
+            sharpe = sortino = -ann_factor
+            volatility = ann_factor
+
         return {
             "total_return_pct": round(total_return * 100, 2),
             "annual_return_pct": round(annual_return * 100, 2),

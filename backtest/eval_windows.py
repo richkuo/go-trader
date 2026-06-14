@@ -173,6 +173,9 @@ def score_candidate(candidate_legs: dict, bars: dict) -> dict:
     mean_bar_sharpe = statistics.mean(r["bar"]["sharpe"] for r in scored)
     mean_bar_ddadj = statistics.mean(r["bar"]["ddadj"] for r in scored)
     traded = sum(1 for r in scored if r["leg"]["trades"] > 0)
+    # Counted over `rows` (all legs), NOT `scored`, by design (#1005): a blown
+    # leg with no incumbent bar is excluded from the scored means but operators
+    # must still see every death, so this count can exceed scored_datasets.
     liquidated = sum(1 for r in rows
                      if r["leg"] is not None and r["leg"].get("liquidated"))
     degenerate = traded < math.ceil(len(scored) / 2)
