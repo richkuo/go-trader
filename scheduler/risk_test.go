@@ -2834,11 +2834,11 @@ func TestCircuitBreakerStrategyLabel_StripsSpotQuoteSuffix(t *testing.T) {
 // Spot (Multiplier=0) stays "spot".
 func TestForceCloseAllPositions_TradeType_PerpsVsFutures(t *testing.T) {
 	cases := []struct {
-		name      string
-		platform  string
-		stratType string
+		name       string
+		platform   string
+		stratType  string
 		multiplier float64
-		want      string
+		want       string
 	}{
 		{"hl-perps-multiplier-1", "hyperliquid", "perps", 1, "perps"},
 		{"hl-manual-multiplier-1", "hyperliquid", "manual", 1, "perps"},
