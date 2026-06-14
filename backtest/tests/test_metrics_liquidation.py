@@ -28,13 +28,13 @@ from backtester import Backtester  # noqa: E402
 # _calculate_metrics — unit level
 # ---------------------------------------------------------------------------
 
-def _metrics(equities, initial_capital=1000.0):
+def _metrics(equities, initial_capital=1000.0, timeframe="1d"):
     idx = pd.date_range("2024-01-01", periods=len(equities), freq="D")
     equity_df = pd.DataFrame({"equity": np.asarray(equities, dtype=float)},
                              index=idx)
     df = pd.DataFrame({"close": np.full(len(equities), 100.0)}, index=idx)
     bt = Backtester(initial_capital=initial_capital)
-    return bt._calculate_metrics(equity_df, [], df, timeframe="1d")
+    return bt._calculate_metrics(equity_df, [], df, timeframe=timeframe)
 
 
 def test_deepening_blowup_reads_negative_not_positive():
@@ -116,6 +116,25 @@ def test_first_bar_bust_zero_samples_reads_negative():
     assert m["total_return_pct"] == pytest.approx(-100.0)
     assert m["sharpe_ratio"] < 0
     assert m["sortino_ratio"] < 0
+
+
+def test_liquidation_floor_is_timeframe_independent():
+    # #1005 follow-up: the blown-leg risk-adjusted floor must be uniform across
+    # timeframes. The earlier `-ann_factor` floor scaled with the timeframe
+    # (1h ≈ -93.6, 4h ≈ -46.8), so the SAME total loss carried a ~2x different
+    # Sharpe by timeframe and perturbed mean-Sharpe rankings of liquidated
+    # strategies by which timeframe they busted on. Two equally-dead legs must
+    # now tie on every risk-adjusted axis regardless of timeframe.
+    bust = [1000, 500, -500, -1500]
+    m_1h = _metrics(bust, timeframe="1h")
+    m_4h = _metrics(bust, timeframe="4h")
+    m_1d = _metrics(bust, timeframe="1d")
+    assert m_1h["liquidated"] and m_4h["liquidated"] and m_1d["liquidated"]
+    for key in ("sharpe_ratio", "sortino_ratio", "volatility_pct"):
+        assert m_1h[key] == m_4h[key] == m_1d[key]
+    # And still clearly negative / non-zero, not collapsed to neutral.
+    assert m_1h["sharpe_ratio"] < 0
+    assert m_1h["volatility_pct"] != 0
 
 
 def test_faster_bust_never_outranks_slower_on_sharpe():

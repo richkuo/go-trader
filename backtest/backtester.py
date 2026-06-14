@@ -208,6 +208,17 @@ def periods_per_year(timeframe: str) -> int:
     return TIMEFRAME_PERIODS_PER_YEAR.get(timeframe, 365)
 
 
+# Timeframe-independent sentinel for the risk-adjusted floor applied to blown
+# (liquidated) legs (#1005). Must be uniform across timeframes so two equally
+# dead legs tie regardless of which timeframe they busted on. The earlier floor
+# used the per-leg ``-ann_factor`` (1h ≈ -93.6, 4h ≈ -46.8), which let the SAME
+# total loss carry a ~2x different Sharpe by timeframe and perturbed mean-Sharpe
+# rankings of liquidated strategies by bust timeframe rather than severity. The
+# magnitude (100, mirroring the -100% return floor) dominates any surviving
+# leg's annualized Sharpe on the harness timeframes (1h/4h).
+LIQUIDATED_METRIC_FLOOR = 100.0
+
+
 # Taker fee rates per platform — mirrors scheduler/fees.go:CalculatePlatformSpotFee
 # and related constants. test_platform_fees.py scrapes fees.go to enforce parity.
 PLATFORM_FEE_PCT = {
@@ -2313,14 +2324,15 @@ class Backtester:
         # NaN tail drops out), the variance guards above collapse Sharpe/
         # Sortino/volatility to a NEUTRAL 0.0. That reads a dead account as
         # "fine" and ranks a fast blowup ABOVE a slow one — re-inverting the
-        # exact axis this issue fixed. Floor every blown leg to the annualized
-        # total-loss magnitude (−100% return) so all deaths tie below any
-        # surviving leg, mirroring the −100% floor already applied to
-        # return/DD. Uniform (not path-dependent) so two busts at different
-        # bars tie instead of the earlier one out-ranking the later.
+        # exact axis this issue fixed. Floor every blown leg to a fixed sentinel
+        # so all deaths tie below any surviving leg, mirroring the −100% floor
+        # already applied to return/DD. The sentinel is timeframe-INDEPENDENT
+        # (not -ann_factor) so two equally-dead legs tie regardless of bust
+        # timeframe, and not path-dependent so an earlier bust never out-ranks
+        # a later one.
         if liquidated:
-            sharpe = sortino = -ann_factor
-            volatility = ann_factor
+            sharpe = sortino = -LIQUIDATED_METRIC_FLOOR
+            volatility = LIQUIDATED_METRIC_FLOOR
 
         return {
             "total_return_pct": round(total_return * 100, 2),
