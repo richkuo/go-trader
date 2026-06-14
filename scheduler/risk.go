@@ -1129,6 +1129,35 @@ func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices m
 	forceCloseAllPositions(s, prices, logger)
 }
 
+// classifyPositionTradeType maps a position to the correct trade_type label
+// for circuit-breaker / kill-switch close records. HL perps and OKX perps
+// carry pos.Multiplier=1 (#254/#497 perps PnL valuation convention — NOT a
+// contract multiplier), so the legacy "Multiplier>0 → futures" classifier
+// mislabels every perps force-close as "futures". This is an operator-facing
+// label fix only: tradeLedgerDeltaSQL (trade_pnl.go) keys on
+// is_close/pnl_gross/realized_pnl/exchange_fee and never reads trade_type, so
+// the label does NOT affect any ledger sum — relabeling here changes what an
+// operator sees (Discord/leaderboard/audit), not the #954 ledger math.
+// TopStep/CME futures keep pos.Multiplier as the real contract multiplier;
+// that is the only branch where "futures" is correct.
+func classifyPositionTradeType(s *StrategyState, pos *Position) string {
+	if pos == nil {
+		return "spot"
+	}
+	if pos.Multiplier > 0 {
+		if s != nil {
+			switch {
+			case s.Platform == "hyperliquid" && (s.Type == "perps" || s.Type == "manual"):
+				return "perps"
+			case s.Platform == "okx" && s.Type == "perps":
+				return "perps"
+			}
+		}
+		return "futures"
+	}
+	return "spot"
+}
+
 // forceCloseAllPositions liquidates all open positions at current prices.
 // Called when any circuit breaker fires.
 func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger *StrategyLogger) {
@@ -1140,10 +1169,13 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			price = pos.AvgCost
 		}
 		var pnl, value float64
-		tradeType := "spot"
-		if pos.Multiplier > 0 {
-			tradeType = "futures"
-		}
+		// PnL branch is the same for perps (Multiplier=1) and futures
+		// (Multiplier=contract size) — qty*multiplier*price_delta. Only the
+		// trade_type LABEL differs by venue, classified via
+		// classifyPositionTradeType so perps force-closes carry an accurate
+		// operator-facing label. The label does not feed any ledger sum
+		// (tradeLedgerDeltaSQL ignores trade_type); it is display-only.
+		tradeType := classifyPositionTradeType(s, pos)
 		reason := "circuit_breaker"
 		details := ""
 		// #1009: a force-close must never book PnL off a structurally-corrupt
