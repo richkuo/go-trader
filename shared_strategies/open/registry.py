@@ -947,6 +947,27 @@ def adx_trend_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return adx_trend_core(df, **params)
 
 
+# Trailing window for the delta_neutral_funding average, in days. Named "7d" in
+# the strategy description and the live scalar (avg_funding_rate_7d); kept as a
+# module constant rather than a registered param so the registry's --list-json
+# output (and Go's discoverStrategies) stays byte-identical (#988).
+_DELTA_FUNDING_WINDOW_DAYS = 7.0
+
+
+def _funding_window_bars(index: pd.Index) -> int:
+    """Bars spanning the funding window, inferred from the index spacing so the
+    average is the same ~7 days regardless of timeframe (168 1h bars, 42 4h
+    bars). Falls back to hourly when spacing can't be inferred."""
+    bar_hours = 1.0
+    if isinstance(index, pd.DatetimeIndex) and len(index) >= 2:
+        deltas = index.to_series().diff().dropna()
+        if not deltas.empty:
+            secs = deltas.median().total_seconds()
+            if secs and secs > 0:
+                bar_hours = secs / 3600.0
+    return max(1, int(round(_DELTA_FUNDING_WINDOW_DAYS * 24.0 / bar_hours)))
+
+
 @register(
     "delta_neutral_funding",
     "Delta-Neutral Funding \u2014 enter when 7d avg funding rate exceeds threshold, exit when below",
@@ -960,17 +981,48 @@ def delta_neutral_funding_strategy(df: pd.DataFrame,
                                    drift_threshold: float = 2.0,
                                    current_funding_rate: float = 0.0,
                                    avg_funding_rate_7d: float = 0.0) -> pd.DataFrame:
+    """SHORT the perp to collect funding when the trailing 7d-average funding
+    rate is rich; exit when it decays. Positive funding = longs pay shorts (#102).
+
+    Two input paths:
+
+    * **Backtest** — when a per-bar ``funding_rate`` column is attached (#988,
+      ``FUNDING_COLUMN_STRATEGIES``), the trailing average is computed from it
+      and a *per-bar* signal series is emitted, so the engine can replay
+      entries/exits across the whole window. The 7d window is converted to a
+      bar count from the index spacing (timeframe-correct) and requires a full
+      window before any signal (warmup → 0), mirroring the live 7d average.
+    * **Live / paper** — when no column is present, the scalar
+      ``avg_funding_rate_7d`` injected by ``check_hyperliquid.py`` drives a
+      single decision on the latest bar (unchanged behavior).
+    """
     result = df.copy()
+    result["delta_drift_pct"] = 0.0
+    result["rebalance_needed"] = 0.0
+
+    has_series = "funding_rate" in df.columns and pd.to_numeric(
+        df["funding_rate"], errors="coerce").notna().any()
+    if has_series:
+        funding = pd.to_numeric(df["funding_rate"], errors="coerce")
+        window_bars = _funding_window_bars(result.index)
+        avg = funding.rolling(window_bars, min_periods=window_bars).mean()
+        result["funding_rate"] = funding
+        result["avg_funding_7d"] = avg
+        result["funding_apy"] = avg * 24 * 365 * 100  # HL funding is hourly
+        sig = pd.Series(0, index=result.index, dtype=int)
+        sig[avg > entry_threshold] = -1   # enter / hold short to collect
+        sig[avg < exit_threshold] = 1     # exit short
+        sig[avg.isna()] = 0               # warmup / missing funding → no signal
+        result["signal"] = sig.values
+        return result
+
     avg = avg_funding_rate_7d
     result["funding_rate"] = current_funding_rate
     result["avg_funding_7d"] = avg
     result["funding_apy"] = avg * 3 * 365 * 100
-    result["delta_drift_pct"] = 0.0
-    result["rebalance_needed"] = 0.0
     result["signal"] = 0
     if avg == 0.0:
         return result
-    # Positive avg funding = longs pay shorts → SHORT perp to collect (#102)
     if avg > entry_threshold:
         result.iloc[-1, result.columns.get_loc("signal")] = -1  # enter short
     elif avg < exit_threshold:

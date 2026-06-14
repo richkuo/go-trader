@@ -508,6 +508,60 @@ class TestDeltaNeutralFunding:
                        {"avg_funding_rate_7d": 0.0})
         assert (result["signal"] == 0).all()
 
+    # ── #988: per-bar funding-column path (backtest) ──
+    # A 4h DatetimeIndex makes the 7d window 42 bars, so warmup is the first 41
+    # bars; signals begin at bar 41.
+
+    @staticmethod
+    def _series_df(funding_values, freq="4h"):
+        n = len(funding_values)
+        idx = pd.date_range("2026-01-01", periods=n, freq=freq, tz="UTC")
+        df = make_ohlcv(make_flat(n), index=idx)
+        df["funding_rate"] = np.asarray(funding_values, dtype=float)
+        return df
+
+    def test_series_shorts_after_full_window_when_funding_rich(self):
+        df = self._series_df([0.0005] * 60)  # > entry_threshold every hour
+        out = apply_strategy("delta_neutral_funding", df,
+                             {"entry_threshold": 0.0001, "exit_threshold": 0.00005})
+        assert (out["signal"].iloc[:41] == 0).all()   # warmup, no full window yet
+        assert out["signal"].iloc[41] == -1
+        assert out["signal"].iloc[-1] == -1
+
+    def test_series_exits_when_funding_cheap(self):
+        df = self._series_df([0.00003] * 60)  # < exit_threshold
+        out = apply_strategy("delta_neutral_funding", df,
+                             {"entry_threshold": 0.0001, "exit_threshold": 0.00005})
+        assert out["signal"].iloc[-1] == 1
+
+    def test_series_holds_in_hysteresis_band(self):
+        df = self._series_df([0.00007] * 60)  # between exit and entry
+        out = apply_strategy("delta_neutral_funding", df,
+                             {"entry_threshold": 0.0001, "exit_threshold": 0.00005})
+        assert (out["signal"] == 0).all()
+
+    def test_series_warmup_waits_for_full_window_of_real_data(self):
+        # NaN funding (pre-listing) for the first 10 bars, then rich funding.
+        # A full 42-bar non-NaN window completes at bar 10+41 = 51.
+        df = self._series_df([np.nan] * 10 + [0.0005] * 50)
+        out = apply_strategy("delta_neutral_funding", df,
+                             {"entry_threshold": 0.0001, "exit_threshold": 0.00005})
+        assert (out["signal"].iloc[:51] == 0).all()
+        assert out["signal"].iloc[51] == -1
+
+    def test_series_column_overrides_live_scalar(self):
+        # Presence of the per-bar column takes the series path even if a live
+        # scalar avg is also supplied (the scalar is the live-only input).
+        df = self._series_df([0.0005] * 60)
+        out = apply_strategy("delta_neutral_funding", df,
+                             {"avg_funding_rate_7d": 0.0})
+        assert out["signal"].iloc[-1] == -1
+
+    def test_series_signals_are_valid(self):
+        df = self._series_df([0.0005] * 30 + [0.00001] * 30)
+        out = apply_strategy("delta_neutral_funding", df)
+        assert set(out["signal"].unique()).issubset({-1, 0, 1})
+
 
 # ─── Chart Pattern (wrapper) ────────────────
 

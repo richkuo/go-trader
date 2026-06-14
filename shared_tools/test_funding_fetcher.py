@@ -6,10 +6,15 @@ import tempfile
 
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from funding_fetcher import attach_funding_column, load_cached_funding  # noqa: E402
+from funding_fetcher import (  # noqa: E402
+    attach_funding_accrual_column,
+    attach_funding_column,
+    load_cached_funding,
+)
 
 _HOUR_MS = 3_600_000
 _BASE_MS = int(pd.Timestamp("2026-01-01", tz="UTC").timestamp() * 1000)
@@ -191,3 +196,60 @@ def test_attach_tz_naive_bars():
     f = _funding_frame([_BASE_MS], [3e-5])
     out = attach_funding_column(df, f)
     assert out["funding_rate"].iloc[0] == 3e-5
+
+
+# ---- funding accrual (#988) ----
+
+def test_accrual_1h_is_per_bar_event():
+    """On 1h bars each bar accrues the single hourly funding event landing in
+    its (prev, this] interval; the first bar accrues nothing."""
+    df = _bars(4, freq="1h")
+    rates = [1e-5, 2e-5, 3e-5, 4e-5]
+    times = [_BASE_MS + i * _HOUR_MS for i in range(4)]
+    out = attach_funding_accrual_column(df, _funding_frame(times, rates))
+    acc = out["funding_accrual"].tolist()
+    assert acc[0] == 0.0
+    assert acc[1] == pytest.approx(2e-5)
+    assert acc[2] == pytest.approx(3e-5)
+    assert acc[3] == pytest.approx(4e-5)
+
+
+def test_accrual_4h_sums_the_interval():
+    """A 4h bar accrues the SUM of the ~4 hourly events inside it — the whole
+    point of accrual vs the signal snapshot (which would take only one)."""
+    df = _bars(3, freq="4h")
+    times = [_BASE_MS + i * _HOUR_MS for i in range(9)]  # 00:00..08:00
+    rates = [1e-5] * 9
+    out = attach_funding_accrual_column(df, _funding_frame(times, rates))
+    acc = out["funding_accrual"].tolist()
+    assert acc[0] == 0.0
+    assert acc[1] == pytest.approx(4e-5)  # events in (00:00, 04:00]
+    assert acc[2] == pytest.approx(4e-5)  # events in (04:00, 08:00]
+
+
+def test_accrual_total_equals_held_funding():
+    """Summed accrual over the held span equals the total funding paid — the
+    invariant the engine relies on to book carry without double-count or gap."""
+    df = _bars(5, freq="1h")
+    times = [_BASE_MS + i * _HOUR_MS for i in range(5)]
+    rates = [1e-5, 2e-5, 3e-5, 4e-5, 5e-5]
+    out = attach_funding_accrual_column(df, _funding_frame(times, rates))
+    # Held from bar0 through bar4 → accrues events at bars 1..4.
+    assert out["funding_accrual"].sum() == pytest.approx(2e-5 + 3e-5 + 4e-5 + 5e-5)
+
+
+def test_accrual_empty_funding_is_zero():
+    assert (attach_funding_accrual_column(_bars(3), None)["funding_accrual"] == 0.0).all()
+    empty = attach_funding_accrual_column(_bars(3), _funding_frame([], []))
+    assert (empty["funding_accrual"] == 0.0).all()
+
+
+def test_accrual_event_at_bar_is_right_closed():
+    """An event landing exactly on a bar timestamp belongs to that bar's
+    interval (right-closed), not the next."""
+    df = _bars(3, freq="1h")
+    out = attach_funding_accrual_column(
+        df, _funding_frame([_BASE_MS + _HOUR_MS], [9e-5]))  # exactly at bar1
+    acc = out["funding_accrual"].tolist()
+    assert acc[1] == pytest.approx(9e-5)
+    assert acc[2] == 0.0

@@ -24,13 +24,24 @@ from data_fetcher import load_cached_data
 # merge_asof backward — see shared_tools/funding_fetcher). Without it these
 # strategies are fail-safe flat, which silently zeroes the backtest, so the
 # attach failure warns loudly.
-FUNDING_COLUMN_STRATEGIES = {"funding_skew"}
+FUNDING_COLUMN_STRATEGIES = {"funding_skew", "delta_neutral_funding"}
+
+# Strategies whose PnL is carry, not price direction (#988): they additionally
+# get a `funding_accrual` column (total funding over each bar's interval), which
+# the Backtester books against the held position. Without booking the carry, a
+# delta-neutral funding strategy's result is meaningless (it shorts to collect
+# funding, so its edge lives entirely in the accrual the engine would otherwise
+# ignore). funding_skew is intentionally excluded — its edge is the price move
+# and its M1 baseline was established without accrual; adding it here would move
+# that baseline. See the issue for the (separate) follow-up.
+FUNDING_ACCRUAL_STRATEGIES = {"delta_neutral_funding"}
 
 
 def _attach_funding_if_needed(df, strategy_name, symbol, since):
     if strategy_name not in FUNDING_COLUMN_STRATEGIES or df.empty:
         return df
-    from funding_fetcher import attach_funding_column, load_cached_funding
+    from funding_fetcher import (attach_funding_accrual_column,
+                                 attach_funding_column, load_cached_funding)
     coin = symbol.split("/")[0]
     try:
         # Pass the data's actual window end so a repeat run over the same
@@ -48,6 +59,10 @@ def _attach_funding_if_needed(df, strategy_name, symbol, since):
               f"'{strategy_name}' will produce zero entries.")
     else:
         print(f"  Funding: {have}/{len(out)} bars covered (HL hourly, coin={coin})")
+    if strategy_name in FUNDING_ACCRUAL_STRATEGIES:
+        # Carry to book against the held position (timeframe-correct sum, not
+        # the signal snapshot). The engine auto-detects the column.
+        out = attach_funding_accrual_column(out, funding)
     return out
 from htf_filter import get_default_htf, apply_htf_filter  # noqa: E402
 from registry_loader import load_registry

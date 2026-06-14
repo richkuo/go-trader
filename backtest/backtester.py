@@ -1382,6 +1382,14 @@ class Backtester:
         )
         active_profile = ""
 
+        # #988: carry strategies (delta_neutral_funding) attach a per-bar
+        # `funding_accrual` column — the total funding rate accrued over the bar.
+        # When present, book it each bar against the position carried into the
+        # bar. Auto-detected so no construction-site plumbing is needed; other
+        # strategies' frames have no such column and are unaffected.
+        book_funding = "funding_accrual" in df.columns
+        total_funding_pnl = 0.0
+
         for i, (idx, row) in enumerate(df.iterrows()):
             fill_price = row["open"] if has_open else row["close"]
             mark_price = row["close"]
@@ -1409,6 +1417,22 @@ class Backtester:
             # trail_from_here path inside _maybe_apply_sl_after already seeds
             # the HWM at the partial-close fill price. See #715.
             sl_after_just_applied = False
+
+            # #988: book funding carry on the position carried into this bar,
+            # over this bar's interval, before marking equity to the close. A
+            # long pays funding when the rate is positive, a short receives it:
+            #   funding_cash = -position * mark * rate
+            # (position is signed: + long, - short), which lands in `cash` and
+            # flows into the close-marked equity below. Newly opened positions
+            # this bar start accruing next bar; closed positions stop after
+            # their last full bar — the standard discrete one-bar convention.
+            if book_funding and position != 0:
+                accrual = row.get("funding_accrual", 0.0)
+                accrual = float(accrual) if accrual == accrual else 0.0  # NaN→0
+                if accrual != 0.0:
+                    funding_cash = -position * mark_price * accrual
+                    cash += funding_cash
+                    total_funding_pnl += funding_cash
 
             equity = cash + position * mark_price
             equity_curve.append({"date": idx, "equity": equity})
@@ -1981,6 +2005,7 @@ class Backtester:
             "end_date": str(df.index[-1]),
             "initial_capital": self.initial_capital,
             "final_capital": round(final_equity, 2),
+            "total_funding_pnl": round(total_funding_pnl, 4),
             "params": open_ref.get("params") or params or {},
             "open_strategy": open_ref,
             "close_strategies": [dict(r) for r in self._close_refs],

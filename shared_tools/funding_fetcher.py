@@ -16,6 +16,7 @@ import sys
 import time
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 from storage import (
@@ -124,4 +125,45 @@ def attach_funding_column(df: pd.DataFrame, funding: pd.DataFrame) -> pd.DataFra
     }).sort_values("ts")
     merged = pd.merge_asof(left, right, on="ts", direction="backward")
     out["funding_rate"] = merged["funding_rate"].values
+    return out
+
+
+def attach_funding_accrual_column(df: pd.DataFrame, funding: pd.DataFrame) -> pd.DataFrame:
+    """Attach a ``funding_accrual`` column: the TOTAL funding rate accrued over
+    each bar's holding interval — the sum of the hourly funding snapshots in
+    ``(previous_bar, this_bar]`` (#988).
+
+    This is distinct from ``attach_funding_column``: that returns a
+    point-in-time snapshot used as a *signal* input (the current rate level);
+    this returns the per-bar *carry* to BOOK against a held position. It is
+    timeframe-correct — a 4h bar sums the ~4 hourly funding events inside it
+    where the snapshot would capture only one. Purely backward-looking (a bar's
+    accrual covers the closed interval ending at the bar), preserving the
+    look-ahead invariant. The first bar (and any bar before the first funding
+    event) accrues 0.0.
+    """
+    out = df.copy()
+    if funding is None or funding.empty or len(out) == 0:
+        out["funding_accrual"] = 0.0
+        return out
+
+    bar_ts = pd.to_datetime(out.index)
+    if bar_ts.tz is None:
+        bar_ts = bar_ts.tz_localize("UTC")
+    bar_ts = bar_ts.tz_convert("UTC")
+
+    f_ts = pd.to_datetime(funding["timestamp"], unit="ms", utc=True)
+    order = np.argsort(f_ts.values)
+    ev_t = f_ts.values[order]
+    ev_cum = np.cumsum(funding["rate"].astype(float).values[order])
+
+    bt = bar_ts.values
+    # Count of funding events at or before each bar (right-closed interval),
+    # then the cumulative funding up to that point.
+    pos = np.searchsorted(ev_t, bt, side="right")
+    cum_at_bar = np.where(pos > 0, ev_cum[np.clip(pos - 1, 0, len(ev_cum) - 1)], 0.0)
+
+    accrual = np.zeros(len(bt), dtype=float)
+    accrual[1:] = cum_at_bar[1:] - cum_at_bar[:-1]
+    out["funding_accrual"] = accrual
     return out
