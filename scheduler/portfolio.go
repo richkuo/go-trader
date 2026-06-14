@@ -944,6 +944,40 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage
 	return posQty, true, ""
 }
 
+// perpsCloseActionSuppressesNewSL reports whether a perps order is a close-only
+// action that opens no new position, so the HL execute path must NOT arm a new
+// reduce-only stop-loss (it may still cancel the existing one — that is gated
+// separately on !partialClose). It is the `pureClose` decision in
+// runHyperliquidExecuteOrder, extracted as a pure helper for testability.
+//
+// True when:
+//   - a directional gate closes only: signal=-1 on a long with shorts disallowed,
+//     or signal=1 on a short with longs disallowed (legacy long/short-only exits); or
+//   - a FULL close-action from the open/close registry (closeFraction == 1.0) —
+//     the executor's closeOnlyAction returns before any open leg, so no new side
+//     exists to protect. Before #1009 this case was masked by `flipping == true`
+//     (which set prev_pos_qty = posQty → net_new_sz = 0 → SL skipped); once the
+//     flip predicate correctly required closeFraction == 0, the suppression had
+//     to move here or a fresh SL leaked onto a just-closed position.
+//
+// False for a genuine reversal flip (direction="both", opposite side,
+// closeFraction == 0): that opens a new side and MUST arm its stop-loss. A
+// partial close (0 < frac < 1) is handled by the caller's separate partialClose
+// guard (which suppresses BOTH cancel and new-SL), so it is intentionally not
+// folded in here.
+func perpsCloseActionSuppressesNewSL(signal int, posSide string, allowsLong, allowsShort bool, closeFraction float64) bool {
+	if signal == -1 && posSide == "long" && !allowsShort {
+		return true
+	}
+	if signal == 1 && posSide == "short" && !allowsLong {
+		return true
+	}
+	if closeFraction == 1.0 {
+		return true
+	}
+	return false
+}
+
 // SpotOrderSkipReason mirrors PerpsOrderSkipReason for spot. ExecuteSpotSignal's
 // side-based skip branches ("already long, skipping buy" at signal=1,
 // "No long position to sell, skipping" at signal=-1) must be consulted BEFORE

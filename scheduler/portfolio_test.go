@@ -2331,6 +2331,47 @@ func TestExecutePerpsSignal_PartialCloseCapsCloseQtyAtPosQuantity(t *testing.T) 
 	}
 }
 
+// #1009 (PR #1010 review) — a full close-action (closeFraction == 1.0) under
+// direction="both" must suppress the NEW stop-loss; before this the corrected
+// flip predicate (flipping requires frac==0) flipped prev_pos_qty to 0 and a
+// fresh reduce-only stop leaked onto the just-closed position. Covers the
+// reviewer's must-survive cases on the pure SL-suppression decision.
+func TestPerpsCloseActionSuppressesNewSL(t *testing.T) {
+	cases := []struct {
+		name                    string
+		signal                  int
+		posSide                 string
+		allowsLong, allowsShort bool
+		frac                    float64
+		want                    bool
+	}{
+		// The reported regression: full close-action under "both" → suppress.
+		{"full close long under both", -1, "long", true, true, 1.0, true},
+		{"full close short under both", 1, "short", true, true, 1.0, true},
+		// Must survive (a): a genuine reversal flip (frac==0) opens a new side
+		// and MUST arm its SL → not suppressed.
+		{"flip long-to-short under both", -1, "long", true, true, 0, false},
+		{"flip short-to-long under both", 1, "short", true, true, 0, false},
+		// Must survive (c): a partial close is handled by the caller's separate
+		// partialClose guard, so the pure-close helper does NOT suppress here.
+		{"partial close under both not pureClose", -1, "long", true, true, 0.5, false},
+		// Legacy directional-gate close-only exits still suppress.
+		{"long-only sell on long", -1, "long", true, false, 0, true},
+		{"short-only buy on short", 1, "short", false, true, 0, true},
+		// A long-only fresh sell-from-flat shape (no short pos) is not a
+		// close-only here and should not suppress on its own.
+		{"both-direction long open arms SL", 1, "", true, true, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := perpsCloseActionSuppressesNewSL(tc.signal, tc.posSide, tc.allowsLong, tc.allowsShort, tc.frac)
+			if got != tc.want {
+				t.Errorf("perpsCloseActionSuppressesNewSL = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // #519 — paper partial close on a spot long must keep the position with
 // the residual quantity and realize PnL only on the closed slice.
 func TestExecuteSpotSignal_PartialCloseLongPaperPreservesRemainder(t *testing.T) {

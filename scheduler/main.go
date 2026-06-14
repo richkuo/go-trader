@@ -3106,13 +3106,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	// only when there's nothing to flip into (never true here — flips always
 	// open a new side). Direction="short" + signal=-1 with orphan long is
 	// blocked by PerpsOrderSkipReason so it never reaches this code (#656).
-	pureClose := false
-	if result.Signal == -1 && posSide == "long" && !PerpsAllowsShort(sc) {
-		pureClose = true
-	}
-	if result.Signal == 1 && posSide == "short" && !PerpsAllowsLong(sc) {
-		pureClose = true
-	}
+	pureClose := perpsCloseActionSuppressesNewSL(result.Signal, posSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc), result.CloseFraction)
 	// Partial close (#519): a fractional close from the open/close registry
 	// must NOT cancel the resting stop-loss — the SL is reduce-only and will
 	// continue to protect the residual position; cancelling without
