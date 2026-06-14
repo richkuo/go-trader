@@ -171,6 +171,28 @@ func recordClosedPosition(s *StrategyState, pos *Position, closePrice, realizedP
 	})
 }
 
+// closePositionIsCorrupt reports whether a position's structural fields make a
+// qty*(price-avgCost) realized-PnL meaningless (#1009). A non-positive quantity
+// (e.g. the negative residual a mis-sized direction reversal used to leave) or a
+// non-positive average cost (a zeroed/garbage entry that books the full notional
+// as PnL — the ~4884x overstatement folded in from PR #1008) must never feed a
+// PnL booking. A force/flatten close on such a position has to clear it with a
+// zero-PnL leg rather than inject a phantom realized_pnl that diverges from its
+// closed_positions row and drives a persistent shared-wallet drift alert.
+func closePositionIsCorrupt(pos *Position) bool {
+	return pos == nil || pos.Quantity <= 0 || pos.AvgCost <= 0
+}
+
+// absQty returns the magnitude of a (possibly corrupt, possibly negative)
+// position quantity for display on a reconciliation/close leg without pulling in
+// the math package at these hot call sites.
+func absQty(q float64) float64 {
+	if q < 0 {
+		return -q
+	}
+	return q
+}
+
 // bookPerpsClose is the shared close-booking path for perps: computes PnL at
 // closePx, deducts the platform taker fee, credits s.Cash, records a close
 // Trade + ClosedPosition, and removes the virtual position. detailsPrefix is
@@ -199,6 +221,41 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	pos, ok := s.Positions[symbol]
 	if !ok || pos == nil {
 		return false
+	}
+	// #1009: an executable flatten/drain/kill-switch close must never compute
+	// PnL off a structurally-corrupt position. Clear it with a zero-PnL leg so
+	// the booked realized_pnl reconciles with the closed_positions row instead
+	// of inventing a number that drives shared-wallet drift alerts.
+	if closePositionIsCorrupt(pos) {
+		now := time.Now().UTC()
+		if logger != nil {
+			logger.Warn("%s: refusing to book PnL for corrupt position %s (qty=%.6f avg_cost=%.4f); clearing with zero realized PnL (#1009)", logPrefix, symbol, pos.Quantity, pos.AvgCost)
+		}
+		positionID := ensurePositionTradeID(s.ID, symbol, pos)
+		trade := Trade{
+			Timestamp:       now,
+			StrategyID:      s.ID,
+			Symbol:          symbol,
+			PositionID:      positionID,
+			Side:            closeTradeSide(pos.Side),
+			Quantity:        absQty(pos.Quantity),
+			Price:           closePx,
+			Value:           0,
+			TradeType:       "perps",
+			Details:         fmt.Sprintf("%s (corrupt position qty=%.6f avg_cost=%.4f) — zero PnL booked", detailsPrefix, pos.Quantity, pos.AvgCost),
+			IsClose:         true,
+			RealizedPnL:     0,
+			PnLGross:        true,
+			ExchangeOrderID: exchangeOrderIDForTrade(exchangeOrderID, useFillFee),
+			FeeSource:       FeeSourceModeled,
+		}
+		trade.Regime = s.Regime
+		RecordTrade(s, trade)
+		RecordTradeResult(&s.RiskState, 0)
+		recordClosedPosition(s, pos, closePx, 0, reason+"_corrupt", now)
+		delete(s.Positions, symbol)
+		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
+		return true
 	}
 	// #954 one-fill-one-row: a FULL close whose OID already produced a close
 	// row for this strategy (a circuit-breaker force-close and the
@@ -816,7 +873,14 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage
 	// ("long"/"short") never flips because the opposite-direction signal is
 	// either a close-only (long-only sell on long, short-only buy on short)
 	// or has already been rejected by PerpsOrderSkipReason.
-	flipping := direction == DirectionBoth && posQty > 0 && ((isBuy && posSide == "short") || (!isBuy && posSide == "long"))
+	//
+	// #1009: a flip must also require closeFraction == 0. Any closeFraction > 0
+	// is a close action from the open/close registry — closeOnlyAction in the
+	// executor (ExecutePerpsSignalWithLeverage) skips the open leg entirely, so
+	// the sizer must NOT size a (posQty + newSize) reversal here. Without this
+	// guard a fractional/full close under "both" placed a flip-sized order whose
+	// fill (> posQty) drove the executor's close leg negative.
+	flipping := direction == DirectionBoth && posQty > 0 && closeFraction == 0 && ((isBuy && posSide == "short") || (!isBuy && posSide == "long"))
 	// Fresh open: a buy from flat under any direction that allows longs, or
 	// a sell from flat under any direction that allows shorts. Buy + short
 	// position under "long"-direction is the legacy-migrated-short edge case
@@ -1067,6 +1131,14 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 				} else {
 					closeQty = pos.Quantity * closeFraction
 				}
+				// #1009 backstop: a flip-sized fill must never close more than
+				// the position holds — else pos.Quantity -= closeQty goes
+				// negative and realized_pnl is booked against the over-large
+				// fill qty. perpsLiveOrderSize no longer flip-sizes a close, but
+				// cap here defensively across every caller (paper, OKX, manual).
+				if closeQty > pos.Quantity {
+					closeQty = pos.Quantity
+				}
 			}
 			// Flip semantics only under direction="both"; "short"-direction
 			// closes the short terminally (no open-long follows), and the
@@ -1271,6 +1343,12 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 					closeQty = fillQty
 				} else {
 					closeQty = pos.Quantity * closeFraction
+				}
+				// #1009 backstop: see the symmetric close-short branch above —
+				// cap a flip-sized fill at the held quantity so the residual
+				// never goes negative and PnL is not overstated.
+				if closeQty > pos.Quantity {
+					closeQty = pos.Quantity
 				}
 			}
 			if bidirectional {

@@ -2213,6 +2213,124 @@ func TestExecutePerpsSignal_PartialCloseLongLiveUsesFillQty(t *testing.T) {
 	}
 }
 
+// #1009 — a close action (closeFraction > 0) under direction="both" must NOT
+// flip-size the live order. perpsLiveOrderSize's flip branch ignored
+// closeFraction, so a fractional/full close on a "both" strategy sized the
+// order as (posQty + newSize) — a full reversal — while the executor treated
+// the same signal as close-only. The flip-sized fill then drove the close
+// leg's qty negative. The sizer must mirror closeOnlyAction: any closeFraction
+// > 0 is close-only, never a flip.
+func TestPerpsLiveOrderSize_CloseActionUnderBothDoesNotFlipSize(t *testing.T) {
+	cases := []struct {
+		name     string
+		signal   int
+		posSide  string
+		frac     float64
+		wantSize float64
+	}{
+		// long 0.4 @ 2000, sell partial 0.5 under "both" → 0.2, not a flip.
+		{"partial close long", -1, "long", 0.5, 0.2},
+		// short 0.4 @ 2000, buy partial 0.5 under "both" → 0.2, not a flip.
+		{"partial close short", 1, "short", 0.5, 0.2},
+		// final-tier full close (frac=1.0) under "both" → full posQty 0.4.
+		{"full close long", -1, "long", 1.0, 0.4},
+		{"full close short", 1, "short", 1.0, 0.4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			size, ok, reason := perpsLiveOrderSize(tc.signal, 2000, 1000, 0.4, 2000, 1.0, 1.0, 0, tc.posSide, DirectionBoth, tc.frac)
+			if !ok {
+				t.Fatalf("expected ok, got reason=%q", reason)
+			}
+			if math.Abs(size-tc.wantSize) > 1e-9 {
+				t.Errorf("size = %g, want %g (close-only, must not flip-size posQty+newSize)", size, tc.wantSize)
+			}
+		})
+	}
+}
+
+// #1009 — a genuine flip (closeFraction == 0) under direction="both" must still
+// flip-size (posQty + newSize). Guards against the fix over-reaching and
+// breaking legitimate same-cycle reversals.
+func TestPerpsLiveOrderSize_GenuineFlipStillFlipSizes(t *testing.T) {
+	// long 0.4 @ 2000, sell reversal (frac=0) → posQty + newSize > posQty.
+	size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, 0.4, 2000, 1.0, 1.0, 0, "long", DirectionBoth, 0)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if size <= 0.4 {
+		t.Errorf("size = %g, want > 0.4 (flip = closeQty + newSize)", size)
+	}
+}
+
+// #1009 — backstop: even if a flip-sized fill (fillQty > pos.Quantity) reaches
+// the partial-close executor, closeQty must be capped at pos.Quantity so the
+// residual never goes negative and the close-leg PnL is not overstated.
+// Without the cap, pos.Quantity -= fillQty stored a negative-quantity position
+// and booked realized_pnl against the full (over-large) fill qty.
+func TestExecutePerpsSignal_PartialCloseCapsCloseQtyAtPosQuantity(t *testing.T) {
+	cases := []struct {
+		name    string
+		signal  int
+		posSide string
+	}{
+		{"close long oversized fill", -1, "long"},
+		{"close short oversized fill", 1, "short"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pos := &Position{
+				Symbol:          "ETH",
+				TradePositionID: "etrip-cap",
+				Quantity:        0.597,
+				InitialQuantity: 0.597,
+				AvgCost:         2000,
+				Side:            tc.posSide,
+				Multiplier:      1,
+				Leverage:        1,
+			}
+			s := &StrategyState{
+				ID:              "hl-cap",
+				Cash:            990,
+				Platform:        "hyperliquid",
+				Type:            "perps",
+				Positions:       map[string]*Position{"ETH": pos},
+				OptionPositions: make(map[string]*OptionPosition),
+				TradeHistory:    []Trade{},
+				RiskState:       RiskState{PeakValue: 1000},
+			}
+			lm, _ := NewLogManager("")
+			logger, _ := lm.GetStrategyLogger("test")
+			defer logger.Close()
+
+			// fillQty 1.192 simulates a flip-sized fill landing on the
+			// partial-close path (the pre-fix corruption scenario). Close at
+			// avgCost so the closed-leg PnL is ~0 — a capped close leg books
+			// ~0, an uncapped one would book against 1.192 qty.
+			_, err := ExecutePerpsSignalWithLeverage(s, tc.signal, "ETH", 2000, 1, 1, 0, 1.192, "oid", 0, DirectionBoth, 0.5, logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := s.Positions["ETH"]
+			if got == nil {
+				t.Fatal("position should remain (zero or residual), not be dropped")
+			}
+			if got.Quantity < 0 {
+				t.Errorf("Quantity = %g, must never be negative (cap closeQty at pos.Quantity)", got.Quantity)
+			}
+			if got.Quantity > 1e-9 {
+				t.Errorf("Quantity = %g, want ~0 (closeQty capped at 0.597 fully closes)", got.Quantity)
+			}
+			if len(s.TradeHistory) != 1 {
+				t.Fatalf("history = %d, want 1", len(s.TradeHistory))
+			}
+			if math.Abs(s.TradeHistory[0].Quantity-0.597) > 1e-9 {
+				t.Errorf("trade.Quantity = %g, want 0.597 (capped close leg, not 1.192)", s.TradeHistory[0].Quantity)
+			}
+		})
+	}
+}
+
 // #519 — paper partial close on a spot long must keep the position with
 // the residual quantity and realize PnL only on the closed slice.
 func TestExecuteSpotSignal_PartialCloseLongPaperPreservesRemainder(t *testing.T) {

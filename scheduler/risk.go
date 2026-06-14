@@ -1142,8 +1142,25 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 		var pnl, value float64
 		tradeType := "spot"
 		if pos.Multiplier > 0 {
-			// Futures: PnL-based (contracts * multiplier * price delta)
 			tradeType = "futures"
+		}
+		reason := "circuit_breaker"
+		details := ""
+		// #1009: a force-close must never book PnL off a structurally-corrupt
+		// position. A non-positive quantity (the negative residual a mis-sized
+		// direction reversal used to leave) or a non-positive avg cost (a zeroed
+		// entry that books the full notional as PnL — the ~4884x overstatement
+		// folded in from PR #1008) makes qty*(price-avgCost) meaningless. Clear
+		// it with a zero-PnL leg and leave cash untouched so the booked
+		// realized_pnl reconciles with the closed_positions row.
+		if closePositionIsCorrupt(pos) {
+			reason = "circuit_breaker_corrupt"
+			details = fmt.Sprintf("Circuit breaker close %s (corrupt qty=%.6f avg_cost=%.4f) — zero PnL booked", pos.Side, pos.Quantity, pos.AvgCost)
+			if logger != nil {
+				logger.Warn("Circuit breaker: corrupt %s position %s (qty=%.6f avg_cost=%.4f) — booking zero realized PnL, not qty*(price-avgCost)", pos.Side, symbol, pos.Quantity, pos.AvgCost)
+			}
+		} else if pos.Multiplier > 0 {
+			// Futures/perps: PnL-based (contracts * multiplier * price delta)
 			if pos.Side == "long" {
 				pnl = pos.Quantity * pos.Multiplier * (price - pos.AvgCost)
 			} else {
@@ -1161,6 +1178,9 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			s.Cash += pos.Quantity*pos.AvgCost - pos.Quantity*price
 			value = pos.Quantity * price
 		}
+		if details == "" {
+			details = fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f", pos.Side, pnl)
+		}
 		if logger != nil {
 			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)
 		}
@@ -1171,11 +1191,11 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			Symbol:            symbol,
 			PositionID:        positionID,
 			Side:              closeTradeSide(pos.Side),
-			Quantity:          pos.Quantity,
+			Quantity:          absQty(pos.Quantity),
 			Price:             price,
 			Value:             value,
 			TradeType:         tradeType,
-			Details:           fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f", pos.Side, pnl),
+			Details:           details,
 			IsClose:           true,
 			RealizedPnL:       pnl,
 			PnLGross:          true, // no fee modeled on paper force-close: gross == net
@@ -1187,7 +1207,7 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 		}
 		RecordTrade(s, trade)
 		RecordTradeResult(&s.RiskState, pnl)
-		recordClosedPosition(s, pos, price, pnl, "circuit_breaker", now)
+		recordClosedPosition(s, pos, price, pnl, reason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
 	}

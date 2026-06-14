@@ -3126,7 +3126,10 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	// inherited a short position would otherwise see prevPosQty=posQty here
 	// while perpsLiveOrderSize sized it as a fresh open without that offset,
 	// leaving net_new_sz negative and the SL silently undersized (#421 review).
-	flipping := EffectiveDirection(sc) == DirectionBoth && posQty > 0 && ((result.Signal == 1 && posSide == "short") || (result.Signal == -1 && posSide == "long"))
+	// #1009: also require CloseFraction == 0 — a close action (any fraction > 0)
+	// is close-only, never a flip; the sizer's flip branch carries the same
+	// guard, so this mirror must too or prevPosQty diverges from the order size.
+	flipping := EffectiveDirection(sc) == DirectionBoth && posQty > 0 && result.CloseFraction == 0 && ((result.Signal == 1 && posSide == "short") || (result.Signal == -1 && posSide == "long"))
 	var cancelOID int64
 	if existingStopLossOID > 0 && posQty > 0 && !partialClose {
 		cancelOID = existingStopLossOID
