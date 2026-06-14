@@ -72,3 +72,13 @@ update_should_sweep_proc() {
     [[ -n "$repo_abs" && "$pid_cwd" == "$repo_abs" ]] || { printf ''; return 0; }
     printf 'sweep'
 }
+
+# Static, extension-based DB rsync excludes (#1012). Emits one glob per line so
+# any .db / SQLite sidecar / lock file at ANY path survives --rsync-from's
+# --delete, independent of the config-resolved db_file. These globs are
+# unanchored (no leading slash), so rsync matches them at every directory depth.
+# Defense-in-depth: run_rsync_from still adds the config-resolved db_excl for
+# DBs whose name doesn't end in .db. Keep in sync with .gitignore's *.db family.
+update_db_rsync_excludes() {
+    printf '%s\n' '*.db' '*.db-wal' '*.db-shm' '*.db.lock'
+}
