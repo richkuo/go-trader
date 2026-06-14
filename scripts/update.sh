@@ -399,6 +399,15 @@ run_rsync_from() {
         --exclude='scheduler/config.json'
         --exclude="${db_excl}*"
         --exclude='trading_bot.db*'
+    )
+    # Extension-based DB protection (#1012): any *.db (+ SQLite sidecar/lock) at
+    # any path survives --delete, even if it isn't the config-resolved db_file.
+    # db_excl above stays as belt-and-suspenders for non-.db-suffixed DB paths.
+    local db_glob
+    while IFS= read -r db_glob; do
+        [[ -n "$db_glob" ]] && rsync_excludes+=(--exclude="$db_glob")
+    done < <(update_db_rsync_excludes)
+    rsync_excludes+=(
         --exclude='.venv/'
         --exclude='node_modules/'
         --exclude='__pycache__/'
@@ -750,6 +759,10 @@ if [[ -n "$rsync_from" ]]; then
     end_phase
 else
     begin_phase pull
+    # DB protection on the pull path (#1012): a fast-forward only advances tracked
+    # files. Every *.db is gitignored (untracked), and git never overwrites or
+    # deletes untracked/ignored files on a fast-forward, so state DBs at any path
+    # survive `pull --ff-only` unchanged — the guarantee is explicit, not incidental.
     git pull --ff-only
     post_pull_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
     if [[ -n "$pre_pull_sha" && -n "$post_pull_sha" && "$pre_pull_sha" != "$post_pull_sha" ]]; then

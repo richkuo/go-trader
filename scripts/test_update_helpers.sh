@@ -69,4 +69,19 @@ assert_eq "$(update_should_sweep_proc go-trader /opt/go-trader '')" \
 assert_eq "$(update_should_sweep_proc go-trader '' /opt/go-trader)" \
     "" "unreadable proc cwd -> spare"
 
+# --- #1012: extension-based DB rsync excludes --------------------------------
+db_globs=$(update_db_rsync_excludes)
+assert_eq "$db_globs" $'*.db\n*.db-wal\n*.db-shm\n*.db.lock' \
+    "db rsync excludes emit the full .db family, one glob per line"
+# Globs must be unanchored (no leading slash) so rsync matches at any depth.
+if printf '%s\n' "$db_globs" | grep -q '^/'; then
+    echo "FAIL: db rsync globs must be unanchored (no leading slash)" >&2
+    exit 1
+fi
+# Each suffix is distinct: *.db must NOT cover *.db-wal / *.db.lock (different
+# trailing chars), which is why all four globs are required.
+case "stale_instance.db" in *.db) ;; *) echo "FAIL: *.db should match stale_instance.db" >&2; exit 1;; esac
+case "state.db-wal" in *.db) echo "FAIL: *.db must not match state.db-wal" >&2; exit 1;; esac
+case "state.db.lock" in *.db) echo "FAIL: *.db must not match state.db.lock" >&2; exit 1;; esac
+
 echo "OK: update_helpers tests passed"
