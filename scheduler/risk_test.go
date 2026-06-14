@@ -2828,10 +2828,11 @@ func TestCircuitBreakerStrategyLabel_StripsSpotQuoteSuffix(t *testing.T) {
 // label for circuit-breaker / kill-switch force-closes: HL perps and OKX perps
 // carry pos.Multiplier=1 (#254/#497 perps PnL valuation convention, NOT a
 // contract multiplier), so the legacy "Multiplier>0 → futures" classifier
-// mislabeled every perps force-close as "futures" and leaked phantom PnL into
-// the #954 shared-wallet trade ledger. TopStep/legacy futures keep
-// pos.Multiplier as the real contract multiplier and keep the "futures" label.
-// Spot (Multiplier=0) stays "spot".
+// mislabeled every perps force-close as "futures". The label is operator-facing
+// only — tradeLedgerDeltaSQL ignores trade_type, so it never affected a ledger
+// sum — but an accurate label keeps display/audit surfaces honest. TopStep/legacy
+// futures keep pos.Multiplier as the real contract multiplier and keep the
+// "futures" label. Spot (Multiplier=0) stays "spot".
 func TestForceCloseAllPositions_TradeType_PerpsVsFutures(t *testing.T) {
 	cases := []struct {
 		name       string

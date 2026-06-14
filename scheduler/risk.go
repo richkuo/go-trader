@@ -1133,10 +1133,13 @@ func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices m
 // for circuit-breaker / kill-switch close records. HL perps and OKX perps
 // carry pos.Multiplier=1 (#254/#497 perps PnL valuation convention — NOT a
 // contract multiplier), so the legacy "Multiplier>0 → futures" classifier
-// mislabels every perps force-close as "futures" and leaks phantom PnL into
-// the #954 shared-wallet trade ledger. TopStep/CME futures keep pos.Multiplier
-// as the real contract multiplier; that is the only branch where "futures"
-// is correct.
+// mislabels every perps force-close as "futures". This is an operator-facing
+// label fix only: tradeLedgerDeltaSQL (trade_pnl.go) keys on
+// is_close/pnl_gross/realized_pnl/exchange_fee and never reads trade_type, so
+// the label does NOT affect any ledger sum — relabeling here changes what an
+// operator sees (Discord/leaderboard/audit), not the #954 ledger math.
+// TopStep/CME futures keep pos.Multiplier as the real contract multiplier;
+// that is the only branch where "futures" is correct.
 func classifyPositionTradeType(s *StrategyState, pos *Position) string {
 	if pos == nil {
 		return "spot"
@@ -1169,8 +1172,9 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 		// PnL branch is the same for perps (Multiplier=1) and futures
 		// (Multiplier=contract size) — qty*multiplier*price_delta. Only the
 		// trade_type LABEL differs by venue, classified via
-		// classifyPositionTradeType so perps force-closes no longer leak into
-		// the "futures" trade_ledger bucket.
+		// classifyPositionTradeType so perps force-closes carry an accurate
+		// operator-facing label. The label does not feed any ledger sum
+		// (tradeLedgerDeltaSQL ignores trade_type); it is display-only.
 		tradeType := classifyPositionTradeType(s, pos)
 		if pos.Multiplier > 0 {
 			if pos.Side == "long" {

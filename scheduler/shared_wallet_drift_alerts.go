@@ -237,12 +237,14 @@ func formatSharedWalletDriftAlert(key SharedWalletKey, balance, memberSum, drift
 	// value vs balance, however, is the RAW reconciliation — those are the
 	// rows the operator sees. Showing raw diff (memberSum - balance) makes
 	// the alert self-consistent with the numbers above it. A large raw diff
-	// with a small baseline-anchored drift = legacy phantom ledger data
-	// adopted into the baseline at first contact (the alert is masked by
-	// design — see wallet_ledger_state.baseline_offset_usd).
+	// with a small baseline-anchored drift MAY be legacy data adopted into the
+	// baseline at first contact (masked by design — see
+	// wallet_ledger_state.baseline_offset_usd), but can equally be a live
+	// orphan/weighting bug sitting near the offset; the alert flags it for
+	// investigation rather than pre-explaining it.
 	rawDiff := memberSum - balance
 	return fmt.Sprintf(
-		"**SHARED-WALLET DRIFT** %s (pid=%d, %d consecutive): Σ member value $%.2f vs real balance $%.2f — raw reconciliation diff $%+.2f, post-baseline drift $%+.2f (>$%.2f tolerance). %s. Exchange-derived rows should reconcile exactly; a large raw diff with a small post-baseline drift means legacy phantom ledger data is baked into the adopted baseline — values will re-reconcile once phantom rows are cleared.",
+		"**SHARED-WALLET DRIFT** %s (pid=%d, %d consecutive): Σ member value $%.2f vs real balance $%.2f — raw reconciliation diff $%+.2f, post-baseline drift $%+.2f (>$%.2f tolerance). %s. Exchange-derived rows should reconcile exactly; a large raw diff with a small post-baseline drift may indicate legacy data baked into the adopted baseline OR a live attribution bug (orphan/weighting) near the offset — investigate before assuming it is benign.",
 		sharedWalletKeyLabel(key), os.Getpid(), count, memberSum, balance, rawDiff, drift, sharedWalletDriftTolerance, orphanDetail)
 }
 
