@@ -1798,6 +1798,40 @@ func TestRunHyperliquidTrailingStopPaper(t *testing.T) {
 	}
 }
 
+func TestRunHyperliquidTrailingStopPaper_RegimeSnapshotArms(t *testing.T) {
+	regimeBlock := &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
+		"trending": {ATR: 2.0},
+		"ranging":  {ATR: 1.0},
+	}}
+	sc := StrategyConfig{
+		ID:                    "hl-regime-paper",
+		Platform:              "hyperliquid",
+		Type:                  "perps",
+		RegimeATRWindow:       "medium",
+		TrailingStopATRRegime: regimeBlock,
+	}
+	pos := &Position{
+		AvgCost:         2100,
+		EntryATR:        50,
+		RiskAnchorPrice: 2000,
+		Regime:          "ranging",
+		RegimeWindows:   map[string]string{"medium": "trending"},
+	}
+
+	incomplete := &Position{AvgCost: pos.AvgCost, EntryATR: pos.EntryATR}
+	_, gotTrig, gotBreach, gotPx := runHyperliquidTrailingStopPaper(sc, "long", incomplete, 2000, 0, 0)
+	if gotTrig != 0 || gotBreach || gotPx != 0 {
+		t.Fatalf("incomplete snapshot unexpectedly armed: trig=%v breach=%v px=%v", gotTrig, gotBreach, gotPx)
+	}
+
+	snapshot := hyperliquidProtectionPositionSnapshot(pos)
+	gotHW, gotTrig, gotBreach, gotPx := runHyperliquidTrailingStopPaper(sc, "long", snapshot, 2000, 0, 0)
+	if !approxEq(gotHW, 2000) || !approxEq(gotTrig, 1900) || gotBreach || gotPx != 0 {
+		t.Fatalf("regime snapshot paper trail = (hw=%v trig=%v breach=%v px=%v), want (2000, 1900, false, 0)",
+			gotHW, gotTrig, gotBreach, gotPx)
+	}
+}
+
 // #532: paper-mode trailing stop close must operate only on the strategy's
 // own virtual position. Two strategies on the same symbol with independent
 // StrategyState maps must remain isolated when one breaches.

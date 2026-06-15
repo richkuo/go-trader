@@ -15,6 +15,36 @@ var (
 	hlTrailingUpdateLocks   = make(map[string]*sync.Mutex)
 )
 
+// hyperliquidProtectionPositionSnapshot builds an isolated, lock-free copy of a
+// Position for the HL perps trailing/fixed protection walkers. It deliberately
+// carries the full protection surface — regime label + windows, the frozen risk
+// anchor, and post-TP/regime transition state — so effectiveTrailingStopPct can
+// resolve a regime-keyed distance (trailing_stop_atr_regime) and the frozen
+// #873 anchor off the snapshot. The earlier partial snapshot dropped the regime
+// fields, which left paper regime trailing SLs unarmed (#1015). RegimeWindows is
+// deep-copied so the lock-free walker never reads a map the main loop may mutate.
+func hyperliquidProtectionPositionSnapshot(pos *Position) *Position {
+	if pos == nil {
+		return nil
+	}
+	snap := &Position{
+		AvgCost:                  pos.AvgCost,
+		EntryATR:                 pos.EntryATR,
+		RiskAnchorPrice:          pos.RiskAnchorPrice,
+		Regime:                   pos.Regime,
+		RegimeWindows:            cloneStringMap(pos.RegimeWindows),
+		RegimeAppliedLabel:       pos.RegimeAppliedLabel,
+		RegimePendingLabel:       pos.RegimePendingLabel,
+		RegimePendingCount:       pos.RegimePendingCount,
+		SLAdjustedTiersProcessed: pos.SLAdjustedTiersProcessed,
+	}
+	if pos.PostTPTrailingATRMult != nil {
+		v := *pos.PostTPTrailingATRMult
+		snap.PostTPTrailingATRMult = &v
+	}
+	return snap
+}
+
 func lockHyperliquidTrailingUpdate(symbol string) func() {
 	hlTrailingUpdateLocksMu.Lock()
 	m := hlTrailingUpdateLocks[symbol]

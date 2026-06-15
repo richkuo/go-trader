@@ -1414,7 +1414,7 @@ func main() {
 					var hlTPOIDs []int64
 					var hlStopLossTriggerPx float64
 					var hlStopLossHighWaterPx float64
-					var hlPostTPTrailingATRMult *float64
+					var hlPosSnapshot *Position
 					var hlScaleInCount int
 					var hlLastAddPrice float64
 					var hlAddedNotionalUSD float64
@@ -1449,7 +1449,7 @@ func main() {
 								hlTPOIDs = cloneInt64s(pos.TPOIDs)
 								hlStopLossTriggerPx = pos.StopLossTriggerPx
 								hlStopLossHighWaterPx = pos.StopLossHighWaterPx
-								hlPostTPTrailingATRMult = pos.PostTPTrailingATRMult
+								hlPosSnapshot = hyperliquidProtectionPositionSnapshot(pos)
 								hlScaleInCount = pos.ScaleInCount
 								hlLastAddPrice = pos.LastAddPrice
 								hlAddedNotionalUSD = pos.AddedNotionalUSD
@@ -1721,13 +1721,11 @@ func main() {
 							mu.Unlock()
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
-							hlPosSnapshot := &Position{AvgCost: hlAvgCost, EntryATR: hlEntryATR, PostTPTrailingATRMult: hlPostTPTrailingATRMult}
 							if result.Signal == 0 && hlPosQty > 0 && strategyUsesTrailingTPRatchetClose(sc) {
 								applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
 								mu.RLock()
 								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos != nil {
-									hlPostTPTrailingATRMult = pos.PostTPTrailingATRMult
-									hlPosSnapshot.PostTPTrailingATRMult = hlPostTPTrailingATRMult
+									hlPosSnapshot = hyperliquidProtectionPositionSnapshot(pos)
 								}
 								mu.RUnlock()
 							}
