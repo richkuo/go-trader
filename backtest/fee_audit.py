@@ -94,7 +94,7 @@ LIVE_BIDIRECTIONAL_STRATEGIES = frozenset({
     "triple_ema_bidir", "tema_cross_bd", "session_breakout", "donchian_breakout",
     "chart_pattern", "liquidity_sweeps", "bear_pullback_st", "vwap_rejection_st",
     "momentum_pro", "mean_reversion_pro", "consolidation_range", "mtf_confluence",
-    "vol_momentum", "funding_skew", "regime_adaptive",
+    "vol_momentum", "funding_skew", "regime_adaptive", "anchored_vwap",
 })
 
 # The #956/#963 protocol windows; held-out windows overlap `is` and would
