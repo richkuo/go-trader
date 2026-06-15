@@ -304,23 +304,70 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent / "shared_str
 from anchored_vwap import anchored_vwap_core  # noqa: E402
 
 
+_AVWAP_PARAMS = dict(pivot_strength=2, confirm_bars=2, atr_period=3)
+
+
+def _avwap_mixed_fixture() -> pd.DataFrame:
+    """OHLCV forming a strict swing LOW (idx 5) then a strict swing HIGH (idx 17).
+
+    The reclaim above the low-anchored AVWAP fires +1 (bar 11) and the breakdown
+    below the high-anchored AVWAP fires -1 (bar 20) — a non-trivial mix across a
+    re-anchor (anchors progress -1 -> 5 -> 9 -> 17). A smooth linspace fixture is
+    NOT usable here: equal lows/highs at a monotonic turn tie under the strict
+    pivot rule, so no pivot confirms, anchor_index stays -1, signal is all zeros,
+    and the truncation assertion would be vacuous (#1019 review).
+    """
+    seg = [110, 108, 106, 104, 102, 100, 100.5, 100.2, 99.8, 99.5,
+           103.5, 104, 104.5, 105, 105.5, 106, 108, 110, 109.5, 109,
+           108.5, 104.5, 104, 103.5, 103]
+    closes = np.array(seg, dtype=float)
+    idx = pd.date_range("2026-01-01", periods=len(closes), freq="1h")
+    return pd.DataFrame(
+        {"open": closes, "high": closes + 0.5, "low": closes - 0.5,
+         "close": closes, "volume": np.full(len(closes), 10.0)},
+        index=idx,
+    )
+
+
 def test_anchored_vwap_no_lookahead():
     """Truncating future bars must not change any signal at bars <= cut.
 
-    anchored_vwap_core anchors to *confirmed* pivots (needs pivot_strength bars
-    on each side) and computes AVWAP/ATR from prefix sums — all using only data
-    at or before the current bar. Appending future bars cannot retroactively
-    change an earlier signal.
+    anchored_vwap_core anchors to *confirmed* pivots (pivot_strength bars on each
+    side) and derives AVWAP/ATR from prefix sums — all using only data at or
+    before the current bar, so appending future bars cannot change an earlier
+    signal.
+
+    Guards against the #1019 review finding (a vacuous all-zero fixture): the
+    fixture must emit nonzero signals, and a deliberately forward-peeking variant
+    must make the invariance assertion FAIL (sensitivity check), proving the test
+    can actually detect look-ahead.
     """
-    closes = list(np.linspace(120, 100, 30)) + list(np.linspace(100, 115, 20))
-    idx = pd.date_range("2026-01-01", periods=len(closes), freq="1h")
-    df = pd.DataFrame(
-        {"open": closes, "high": np.array(closes) + 0.5,
-         "low": np.array(closes) - 0.5, "close": closes,
-         "volume": np.full(len(closes), 10.0)},
-        index=idx,
-    )
-    full = anchored_vwap_core(df, pivot_strength=3, confirm_bars=2)["signal"].to_numpy()
-    cut = 40
-    trunc = anchored_vwap_core(df.iloc[:cut], pivot_strength=3, confirm_bars=2)["signal"].to_numpy()
-    assert np.array_equal(full[:cut], trunc), "signals <= cut must not depend on future bars"
+    df = _avwap_mixed_fixture()
+    cut = 20  # straddles the confirm_bars window [19, 20]; bar 20 fires -1
+
+    def real(d):
+        return anchored_vwap_core(d, **_AVWAP_PARAMS)["signal"].to_numpy()
+
+    def forward_peeking(d):
+        # bar n adopts bar n+1's signal — a canonical look-ahead contamination.
+        s = anchored_vwap_core(d, **_AVWAP_PARAMS)["signal"].to_numpy().copy()
+        if len(s) > 1:
+            s[:-1] = s[1:]
+        return s
+
+    full = real(df)
+    # Non-vacuity: the fixture must actually produce signals (both directions).
+    assert (full != 0).any(), "fixture is vacuous — no signal to guard"
+    assert (full == 1).any() and (full == -1).any(), "expected a +1 and a -1"
+
+    # Invariant: signals at bars < cut are unchanged when future bars are dropped.
+    trunc = real(df.iloc[:cut])
+    assert np.array_equal(full[:cut], trunc), "signals < cut must not depend on future bars"
+
+    # Sensitivity: a forward-peeking core variant must NOT be truncation-invariant,
+    # else the assertion above proves nothing.
+    bf = forward_peeking(df)
+    bt = forward_peeking(df.iloc[:cut])
+    assert not np.array_equal(bf[:cut], bt), (
+        "forward-peeking variant should break truncation-invariance — the test "
+        "is not sensitive to look-ahead")
