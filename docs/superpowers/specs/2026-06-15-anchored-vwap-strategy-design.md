@@ -29,10 +29,15 @@ read as support (anchored from a low) or resistance (anchored from a high).
 
 ## 3. Anchor: confirmed swing pivot
 
-A swing high at bar *p* requires `high[p] == max(high[p-strength : p+strength+1])`;
-a swing low mirrors on `low`. Because confirmation needs `strength` bars **on
-each side**, a pivot at *p* is only *knowable* at bar `p + strength` — this is
-the look-ahead guarantee.
+A swing high at bar *p* requires `high[p]` to be the **strict** maximum of the
+window `high[p-strength : p+strength+1]` (strict `>` against every other bar).
+Strictness is deliberate: existing pivot code uses `==`/`max()` (e.g.
+`liquidity_sweeps.py:21`), which flags every bar of a flat-top plateau as a
+pivot; strict `>` flags none on a plateau, keeping anchor selection
+deterministic — we simply don't anchor on a flat top, the next clean pivot
+anchors instead. A swing low mirrors on `low` with strict `<`. Because
+confirmation needs `strength` bars **on each side**, a pivot at *p* is only
+*knowable* at bar `p + strength` — this is the look-ahead guarantee.
 
 - `pivot_strength` (default **5**) — bars required on each side.
 - At any bar *n*, the **active anchor** = bar index of the most recent pivot
@@ -41,6 +46,17 @@ the look-ahead guarantee.
 - The anchor **re-anchors forward** each time a newer pivot confirms.
 - Before the first pivot confirms there is **no anchor → no signal** (signal 0).
   Do **not** fall back to a session/global VWAP.
+- **Re-anchor frequency** is governed entirely by `pivot_strength`: a wider
+  window confirms fewer, more significant pivots and re-anchors less often.
+  Because the type-agnostic "most recent pivot" alternates high/low, the line
+  can be jumpy at low `pivot_strength` — but this is a **tuning** concern owned
+  by the swept `pivot_strength` range, **not** a separate `min_anchor_bars`
+  param (which would be redundant). Measure re-anchor cadence during backtest.
+- **Warmup / guards:** while a bar has no confirmed anchor, or `ATR[n]` is NaN
+  (pre-`atr_period` warmup), emit `signal = 0`. Add an empty / short-df early
+  return mirroring `vwap_rejection_st.py:91-98` — return the df with `signal=0`
+  and helper columns populated where possible — so smoke tests that iterate
+  every registered strategy don't index out of range.
 
 ### Anchor selection (implementation note)
 Compute boolean pivot-high / pivot-low masks, OR them into a single
@@ -82,26 +98,38 @@ ATR comes from `shared_tools/atr.py:standard_atr(df, period)` — **do not add a
 buffer = buffer_atr_mult × ATR[n]          # price units
 ```
 
-**Long (+1):** price was below the line, then `close ≥ AVWAP + buffer`, and
-`close ≥ AVWAP` holds for `confirm_bars` consecutive bars. Fire **+1 only on the
-bar that completes the hold** (the transition), not continuously while held —
-mirrors `vwap_reversion`'s cross-once pattern (`buy_cross` = condition true now
-& false on prior bar).
+The window length is `confirm_bars` (default 2, inclusive of the breach bar:
+`confirm_bars=2` = breach bar + 1 confirming bar). Define, for the window
+`W = [n-confirm_bars+1, n]` ending at the current bar `n`:
 
-**Short (−1):** mirror — `close ≤ AVWAP − buffer` and `close ≤ AVWAP` held for
-`confirm_bars`. Fire −1 on the completing transition.
+**Long (+1) fires at bar `n`** iff **all** hold:
+1. **Hold (bare line, no buffer):** `close[k] ≥ AVWAP[k]` for every `k ∈ W`.
+2. **Buffered breach on the window's first bar:** at `b = n-confirm_bars+1`,
+   `close[b] ≥ AVWAP[b] + buffer[b]`. The buffer applies to the **breach bar
+   only** — hold bars use the bare line.
+3. **Fresh crossing:** the bar immediately before the window was below the line,
+   `close[b-1] < AVWAP[b-1]`.
+
+Clause 3 is the multi-bar analogue of `vwap_reversion`'s `shift(1)` cross idiom
+(`registry.py:818`): it makes the fire **local and unique**, so the column is
+`+1` only on the completing bar and `0` elsewhere — *without* relying on the
+backtester/live position dedup downstream (that dedup exists, but the signal
+column must be deterministic on its own, per §10's "0 elsewhere" assertion).
+This is a transition condition, **not** a stateful "must return below after a
+fire" rule.
+
+**Short (−1)** mirrors with `≤`, `AVWAP − buffer`, and `close[b-1] > AVWAP[b-1]`.
 
 **Reversal/exit:** the opposite flip emits the opposite signal. On bidirectional
-perps this flips the position; on spot/backtest the −1 is an exit (or short per
-backtester support).
+perps this flips the position; on spot / long-only backtest the −1 flattens.
 
 ### Whipsaw / state notes
-- A new anchor confirming mid-trade resets the "was below/above" reference to
-  the new line; the next qualifying buffered-and-held cross of the **new** line
-  fires. This is intended (the level the market respects has moved).
-- `confirm_bars` counts bars strictly **after** the buffered breach bar,
-  inclusive of the breach bar itself = 1; default `confirm_bars=2` means breach
-  bar + 1 confirming bar.
+- A new anchor confirming inside a window: each bar `k` compares `close[k]` to
+  *its own* live-anchor `AVWAP[k]`, so the window naturally re-references the new
+  line, and a fresh crossing (clause 3) of the new line must then form. Intended
+  — the level the market respects has moved.
+- Where the window or its `b-1` reference extends before the first valid bar
+  (anchor / ATR warmup), no signal (clauses can't be evaluated → 0).
 
 ## 6. Parameters
 
@@ -169,15 +197,30 @@ These are **verification** items, not new code, unless a gap is found.
 
 ## 11. Backtest validation
 
+The backtester measures **one direction per run**. On the default long/flat path
+`signal=-1` only flattens a long — it **never opens a short**
+(`backtester.py:1800-1806`). Shorts open only under `direction="short"`
+(`:1063`, `:1813`). So validate the two legs with **two separate runs**, and do
+**not** use `--config`: the live config maps `allow_shorts → direction="both"`
+(`run_backtest.py:209-212`), which the plain path rejects (`backtester.py:1055-1062`),
+and a `--config` run with no close evaluator (this design has none, §2)
+hard-fails at `run_backtest.py:364-373`.
+
 ```
+# Long leg (default direction):
 uv run --no-sync python backtest/run_backtest.py \
   --strategy anchored_vwap --symbol BTC/USDT --timeframe 1h --mode single
+
+# Short leg (explicit):
+uv run --no-sync python backtest/run_backtest.py \
+  --strategy anchored_vwap --symbol BTC/USDT --timeframe 1h --mode single \
+  --direction short
 ```
 
-Vanilla bidirectional signal strategy → backtestable (unlike
-`regime_directional_policy`). The perps-specific live flip path is **not**
-backtested; signal generation (long+short) is. Entry ATR guard (50%-of-AvgCost)
-applies. Sanity-check trade count and that both long and short legs fire.
+This is backtestable (unlike `regime_directional_policy`): each run exercises one
+leg's **signal generation**. The perps-specific live flip path is **not**
+backtested — it is validated by unit tests + paper (§9). Entry ATR guard
+(50%-of-AvgCost) applies. Sanity-check trade counts on each run.
 
 ## 12. Out of scope (tracked in #1017)
 
