@@ -15,6 +15,29 @@ var (
 	hlTrailingUpdateLocks   = make(map[string]*sync.Mutex)
 )
 
+func hyperliquidProtectionPositionSnapshot(pos *Position) *Position {
+	if pos == nil {
+		return nil
+	}
+	snap := &Position{
+		AvgCost:                  pos.AvgCost,
+		EntryATR:                 pos.EntryATR,
+		RiskAnchorPrice:          pos.RiskAnchorPrice,
+		Regime:                   pos.Regime,
+		RegimeWindows:            cloneStringMap(pos.RegimeWindows),
+		RegimeAppliedLabel:       pos.RegimeAppliedLabel,
+		RegimePendingLabel:       pos.RegimePendingLabel,
+		RegimePendingCount:       pos.RegimePendingCount,
+		PostTPTrailingATRMult:    nil,
+		SLAdjustedTiersProcessed: pos.SLAdjustedTiersProcessed,
+	}
+	if pos.PostTPTrailingATRMult != nil {
+		v := *pos.PostTPTrailingATRMult
+		snap.PostTPTrailingATRMult = &v
+	}
+	return snap
+}
+
 func lockHyperliquidTrailingUpdate(symbol string) func() {
 	hlTrailingUpdateLocksMu.Lock()
 	m := hlTrailingUpdateLocks[symbol]
