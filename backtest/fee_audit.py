@@ -26,11 +26,12 @@ The salvage test then sorts strategies into:
                    so the strategy graduates to an M1 application with "raise
                    selectivity" as the mechanism (#991/#992/#993 etc.).
   - healthy      — net > 0; edge already survives fees (the incumbent tier).
-  - unscreened_short — short-capable (bidirectional / allow_short): the plain
-                   long/flat harness drops short entries, so a non-positive
-                   long leg cannot justify deprecate/no_trades; the short half
-                   needs the open/close engine. (A positive long edge still
-                   graduates/passes, flagged long-leg-only.)
+  - unscreened_short — short-capable (bidirectional / allow_short): the default
+                   plain long/flat harness drops short entries, so a
+                   non-positive long leg cannot justify deprecate/no_trades;
+                   run again with --direction short to measure that leg. (A
+                   positive long edge still graduates/passes, flagged
+                   long-leg-only.)
   - no_trades    — never fired on the audit slices; unscored.
 
 Output is ranked by fee drag and committed as a markdown table so the verdict
@@ -47,6 +48,10 @@ Usage:
   # a focused subset on one dataset/window (fast path)
   uv run --no-sync python backtest/fee_audit.py \
       --strategies vwap_reversion,macd,sma_crossover --windows oos --datasets BTC/USDT:4h
+
+  # focused short-leg screen for a short-only strategy (#990)
+  uv run --no-sync python backtest/fee_audit.py \
+      --registry futures --strategies vwap_rejection_st --direction short
 """
 
 from __future__ import annotations
@@ -277,6 +282,7 @@ def render_markdown(ranked: List[dict], meta: dict) -> str:
         f"- Registries: {meta['registry']}",
         f"- Windows: {meta['windows_desc']}",
         f"- Datasets: {meta['datasets_desc']}",
+        f"- Direction: {meta.get('direction', 'long')}",
         f"- Capital: {meta['capital']}",
         f"- Fee model: {PLATFORM} platform taker fee + 5 bps slippage (net); "
         "commission=0 and slippage=0 (gross). Fee drag = mean per-leg "
@@ -375,7 +381,8 @@ def render_markdown(ranked: List[dict], meta: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def screen_leg(reg, name: str, symbol: str, timeframe: str,
-               window: tuple, capital: float) -> Optional[dict]:
+               window: tuple, capital: float,
+               direction: Optional[str] = None) -> Optional[dict]:
     """Run the net + gross legs for one (strategy, dataset, window).
 
     Returns None when the net leg has no data; an ``{"error": ...}`` dict when
@@ -383,14 +390,16 @@ def screen_leg(reg, name: str, symbol: str, timeframe: str,
     aborts the registry-wide screen.
     """
     try:
-        net = run_leg(reg, name, None, symbol, timeframe, window, capital=capital)
+        net = run_leg(reg, name, None, symbol, timeframe, window,
+                      capital=capital, direction=direction)
     except Exception as exc:  # noqa: BLE001 — one strategy must not kill the run
         return {"dataset": dataset_key(symbol, timeframe), "error": f"net: {exc}"}
     if net is None:
         return None  # no data on this slice
     try:
         gross = run_leg(reg, name, None, symbol, timeframe, window,
-                        capital=capital, commission_pct=0.0, slippage_pct=0.0)
+                        capital=capital, direction=direction,
+                        commission_pct=0.0, slippage_pct=0.0)
     except Exception as exc:  # noqa: BLE001
         return {"dataset": dataset_key(symbol, timeframe), "error": f"gross: {exc}"}
     if gross is None:
@@ -422,18 +431,23 @@ def screen_leg(reg, name: str, symbol: str, timeframe: str,
 
 
 def screen_strategy(reg, name: str, registry_label: str, datasets: List[tuple],
-                    window_names: List[str], capital: float) -> dict:
+                    window_names: List[str], capital: float,
+                    direction: Optional[str] = None) -> dict:
     """All legs for one strategy across the windows/datasets → aggregated row."""
     leg_results = []
     for wname in window_names:
         window = WINDOWS[wname]
         for symbol, timeframe in datasets:
-            leg = screen_leg(reg, name, symbol, timeframe, window, capital)
+            leg = screen_leg(reg, name, symbol, timeframe, window, capital,
+                             direction=direction)
             if leg is None:
                 continue
             leg["window"] = wname
             leg_results.append(leg)
-    short_capable = strategy_is_short_capable(_default_params(reg, name), name)
+    short_capable = (
+        strategy_is_short_capable(_default_params(reg, name), name)
+        and direction != "short"
+    )
     return aggregate_strategy(name, registry_label, leg_results, short_capable)
 
 
@@ -503,6 +517,11 @@ def build_parser() -> argparse.ArgumentParser:
                         f"Known: {', '.join(WINDOWS)}")
     p.add_argument("--datasets", default=None,
                    help="Comma list of SYMBOL:TIMEFRAME (default: the six audit datasets)")
+    p.add_argument("--direction", default=None, choices=["long", "short"],
+                   help="Entry side to screen. Default is the historical "
+                        "long/flat harness; pass short to measure a short leg "
+                        "(signal=-1 opens, +1 closes) instead of withholding "
+                        "short-capable rows as unscreened.")
     p.add_argument("--capital", type=float, default=DEFAULT_CAPITAL)
     p.add_argument("--json", default=None, dest="json_out",
                    help="Write the full structured result to this path")
@@ -539,7 +558,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     for idx, (name, label, reg) in enumerate(targets, 1):
         print(f"  [{idx}/{len(targets)}] {name} ({label}) ...", flush=True)
         rows.append(screen_strategy(reg, name, label, datasets, window_names,
-                                    args.capital))
+                                    args.capital, direction=args.direction))
 
     ranked = rank_rows(rows)
     counts = verdict_counts(ranked)
@@ -562,6 +581,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "windows_desc": ", ".join(
             f"{w} ({WINDOWS[w][0]} → {WINDOWS[w][1] or 'latest'})" for w in window_names),
         "datasets_desc": ", ".join(dataset_key(s, t) for s, t in datasets),
+        "direction": args.direction or "long",
         "capital": args.capital,
     }
 
@@ -575,6 +595,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "registry": args.registry,
             "windows": {w: list(WINDOWS[w]) for w in window_names},
             "datasets": [dataset_key(s, t) for s, t in datasets],
+            "direction": args.direction or "long",
             "capital": args.capital,
             "verdict_counts": counts,
             "rows": ranked,
@@ -594,6 +615,8 @@ def _reproduce_command(args) -> str:
         parts.append(f"--windows {args.windows}")
     if args.datasets:
         parts.append(f"--datasets {args.datasets}")
+    if args.direction:
+        parts.append(f"--direction {args.direction}")
     if args.capital != DEFAULT_CAPITAL:
         parts.append(f"--capital {args.capital}")
     if args.markdown_out:

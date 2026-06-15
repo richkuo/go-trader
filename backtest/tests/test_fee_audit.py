@@ -7,6 +7,7 @@ identical trade count, and out-returns the net leg.
 """
 import os
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -353,6 +354,44 @@ def test_screen_leg_count_mismatch_becomes_error(monkeypatch):
     assert row["n_errors"] == 1 and row["verdict"] == "no_trades"
 
 
+def test_screen_leg_forwards_direction_to_net_and_gross(monkeypatch):
+    seen = []
+
+    def fake_run_leg(reg, name, params, sym, tf, window, capital=0.0,
+                     direction=None, commission_pct=None, slippage_pct=None, **kw):
+        seen.append((direction, commission_pct, slippage_pct))
+        return {"trades": 2, "span_days": 10.0, "return_pct": 1.0,
+                "sharpe": 0.5}
+
+    monkeypatch.setattr(fa, "run_leg", fake_run_leg, raising=True)
+    leg = fa.screen_leg(object(), "x", "BTC/USDT", "1h",
+                        ("2026-01-01", None), capital=1000.0,
+                        direction="short")
+    assert leg is not None and leg["error"] is None
+    assert seen == [
+        ("short", None, None),
+        ("short", 0.0, 0.0),
+    ]
+
+
+def test_screen_strategy_direction_short_is_measured_not_unscreened(monkeypatch):
+    class _ShortRegistry:
+        STRATEGY_REGISTRY = {"bear_pullback_st": {"default_params": {}}}
+
+    def fake_screen_leg(*args, **kwargs):
+        assert kwargs["direction"] == "short"
+        return {"dataset": "BTC/USDT 1h", "error": None, "trades": 4,
+                "span_days": 30.0, "net_ret": -2.0, "gross_ret": -1.0,
+                "net_sharpe": -0.5}
+
+    monkeypatch.setattr(fa, "screen_leg", fake_screen_leg, raising=True)
+    row = fa.screen_strategy(_ShortRegistry(), "bear_pullback_st", "futures",
+                             [("BTC/USDT", "1h")], ["oos"], 1000.0,
+                             direction="short")
+    assert row["short_unmeasured"] is False
+    assert row["verdict"] == "deprecate"
+
+
 def test_run_leg_stamps_span_days(monkeypatch):
     df = _synthetic_df()
     import data_fetcher
@@ -404,3 +443,17 @@ def test_screen_leg_error_is_captured_not_raised(monkeypatch):
                         ("2026-01-01", None), capital=1000.0)
     assert leg is not None
     assert leg["error"] is not None and "blew up" in leg["error"]
+
+
+def test_reproduce_command_includes_direction():
+    args = SimpleNamespace(
+        registry="futures",
+        strategies="vwap_rejection_st",
+        windows="oos",
+        datasets=None,
+        direction="short",
+        capital=fa.DEFAULT_CAPITAL,
+        markdown_out=None,
+    )
+    cmd = fa._reproduce_command(args)
+    assert "--direction short" in cmd
