@@ -297,3 +297,30 @@ def test_zscore_target_close_uses_closed_bar_z_and_fills_next_open():
         "(next-open fill, not intrabar)"
     )
     assert result["trades"][0]["exit_reason"].startswith("zscore_target:")
+
+
+# ─── anchored_vwap: signals at bars <= cut don't depend on future bars (#1016) ─
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent / "shared_strategies" / "open"))
+from anchored_vwap import anchored_vwap_core  # noqa: E402
+
+
+def test_anchored_vwap_no_lookahead():
+    """Truncating future bars must not change any signal at bars <= cut.
+
+    anchored_vwap_core anchors to *confirmed* pivots (needs pivot_strength bars
+    on each side) and computes AVWAP/ATR from prefix sums — all using only data
+    at or before the current bar. Appending future bars cannot retroactively
+    change an earlier signal.
+    """
+    closes = list(np.linspace(120, 100, 30)) + list(np.linspace(100, 115, 20))
+    idx = pd.date_range("2026-01-01", periods=len(closes), freq="1h")
+    df = pd.DataFrame(
+        {"open": closes, "high": np.array(closes) + 0.5,
+         "low": np.array(closes) - 0.5, "close": closes,
+         "volume": np.full(len(closes), 10.0)},
+        index=idx,
+    )
+    full = anchored_vwap_core(df, pivot_strength=3, confirm_bars=2)["signal"].to_numpy()
+    cut = 40
+    trunc = anchored_vwap_core(df.iloc[:cut], pivot_strength=3, confirm_bars=2)["signal"].to_numpy()
+    assert np.array_equal(full[:cut], trunc), "signals <= cut must not depend on future bars"

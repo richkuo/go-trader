@@ -723,6 +723,11 @@ DEFAULT_PARAM_RANGES = {
         "entry_std": [1.0, 1.5, 2.0],
         "exit_std": [0.0, 0.2, 0.5],
     },
+    "anchored_vwap": {
+        "pivot_strength": [3, 5, 8],
+        "buffer_atr_mult": [0.1, 0.25, 0.5],
+        "confirm_bars": [1, 2, 3],
+    },
     "chart_pattern": {
         "pivot_lookback": [3, 5, 7],
         "tolerance": [0.02, 0.03, 0.05],
