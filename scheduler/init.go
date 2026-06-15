@@ -58,6 +58,7 @@ var knownShortNames = map[string]string{
 	"ichimoku_cloud":        "ichi",
 	"order_blocks":          "ob",
 	"vwap_reversion":        "vwap",
+	"anchored_vwap":         "avwap",
 	"chart_pattern":         "cpat",
 	"liquidity_sweeps":      "liqsw",
 	"parabolic_sar":         "psar",
@@ -95,6 +96,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"liquidity_sweeps":    true, // emits short on stop-hunt wicks above swing highs (#649)
 	"bear_pullback_st":    true, // dedicated short-only strategy for bear-market rally rejections (#651)
 	"vwap_rejection_st":   true, // dedicated short-only strategy for VWAP/EMA rally rejections in bearish regime (#652)
+	"anchored_vwap":       true, // single-AVWAP S/R flip; emits short on a buffered breakdown below the line (#1016)
 	"momentum_pro":        true, // emits short on stacked-bearish-EMA trend-pullback breakdowns
 	"mean_reversion_pro":  true, // emits short on overbought reversion in no-trend regimes
 	"consolidation_range": true, // emits short at the top edge of a consolidation box (range-edge mean-reversion)
@@ -140,6 +142,7 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "ichimoku_cloud", ShortName: "ichi"},
 	{ID: "order_blocks", ShortName: "ob"},
 	{ID: "vwap_reversion", ShortName: "vwap"},
+	{ID: "anchored_vwap", ShortName: "avwap"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "parabolic_sar", ShortName: "psar"},
@@ -169,6 +172,7 @@ var defaultPerpsStrategies = []stratDef{
 	{ID: "tema_cross_bd", ShortName: "temacb"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
+	{ID: "anchored_vwap", ShortName: "avwap"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
 	{ID: "funding_skew", ShortName: "fskew"},
 	{ID: "range_scalper", ShortName: "rs"},
@@ -195,6 +199,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "ichimoku_cloud", ShortName: "ichi"},
 	{ID: "order_blocks", ShortName: "ob"},
 	{ID: "vwap_reversion", ShortName: "vwap"},
+	{ID: "anchored_vwap", ShortName: "avwap"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "parabolic_sar", ShortName: "psar"},
