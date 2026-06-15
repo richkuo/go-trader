@@ -91,8 +91,14 @@ AVWAP[n] = (prefix_tpvol[n] - prefix_tpvol[a-1]) / (prefix_vol[n] - prefix_vol[a
 
 ## 5. Trigger: ATR buffer + N-bar hold (symmetric)
 
-ATR comes from `shared_tools/atr.py:standard_atr(df, period)` — **do not add a
-5th inline ATR copy** (CLAUDE.md: ATR has 4 sites already).
+ATR is computed **inline** in the module (rolling mean of True Range,
+integer-round only when `atr ≥ 100`), mirroring `vol_momentum.py:88-95` and
+`regime_adaptive.py` — the established open-strategy convention. Do **not**
+`from atr import standard_atr`: open strategies cannot assume `shared_tools` is
+on `sys.path` at module-load time (the registry parity test loads `registry.py`
+via `importlib` without it, so a top-level import there raises `ModuleNotFoundError`).
+The inline copy is byte-identical to `standard_atr`'s formula. Emit it as the
+`atr` column.
 
 ```
 buffer = buffer_atr_mult × ATR[n]          # price units
