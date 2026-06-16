@@ -763,3 +763,133 @@ def test_load_strategy_config_allows_invert_signal_on_hl_types(tmp_path, strateg
     kwargs = run_backtest.load_strategy_config(path, "inv-x")
     assert kwargs["invert_signal"] is True
     assert kwargs["strategy_type"] == strategy_type
+
+
+# ─── #1025 review: --config threads the allowed_regimes entry-gate ───────────
+
+
+def test_load_strategy_config_threads_allowed_regimes(tmp_path):
+    # The strategy's allowed_regimes entry-filter must reach the backtester so a
+    # config that pairs it with regime_directional_policy gates entries the same
+    # way live does. It was silently dropped — only --allowed-regimes fed the
+    # gate — so such a config took entries in backtest that live blocks.
+    path = _write_full_config(tmp_path, {
+        "config_version": 15,
+        "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
+        "strategies": [_perps_strategy(allowed_regimes=["trending_up", "ranging"])],
+    })
+    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
+    assert kwargs["allowed_regimes"] == ["trending_up", "ranging"]
+    assert kwargs["regime_enabled"] is True
+
+
+def test_load_strategy_config_allowed_regimes_none_when_unset(tmp_path):
+    # No allowed_regimes field → None (the backtester's "allow all" sentinel).
+    path = _write_full_config(tmp_path, {
+        "config_version": 15,
+        "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
+        "strategies": [_perps_strategy()],
+    })
+    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
+    assert kwargs["allowed_regimes"] is None
+
+
+def test_load_strategy_config_empty_allowed_regimes_is_none(tmp_path):
+    # An empty list means "allow all" — normalized to None so it never gates.
+    path = _write_full_config(tmp_path, {
+        "config_version": 15,
+        "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
+        "strategies": [_perps_strategy(allowed_regimes=[])],
+    })
+    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
+    assert kwargs["allowed_regimes"] is None
+
+
+def test_load_strategy_config_rejects_allowed_regimes_with_named_gate_window(tmp_path):
+    # The backtester models only the legacy single-lookback ADX regime; a named
+    # regime_gate_window (#792) keys the gate off a window it cannot compute, so
+    # enforcing allowed_regimes against the legacy lookback would silently gate
+    # on the WRONG window. Reject loudly instead of diverging.
+    path = _write_full_config(tmp_path, {
+        "config_version": 15,
+        "regime": {"enabled": True, "period": 10, "adx_threshold": 25,
+                   "windows": {"slow": {"classifier": "adx", "period": 40}}},
+        "strategies": [
+            _perps_strategy(allowed_regimes=["trending_up"], regime_gate_window="slow"),
+        ],
+    })
+    with pytest.raises(ValueError, match="regime_gate_window"):
+        run_backtest.load_strategy_config(path, "hl-d-btc")
+
+
+@pytest.mark.parametrize("gate_window", ["", "default"])
+def test_load_strategy_config_default_gate_window_threads(tmp_path, gate_window):
+    # An explicit ""/"default" gate window keys off the legacy lookback the
+    # backtester models — allowed_regimes threads through with no reject.
+    path = _write_full_config(tmp_path, {
+        "config_version": 15,
+        "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
+        "strategies": [
+            _perps_strategy(allowed_regimes=["ranging"], regime_gate_window=gate_window),
+        ],
+    })
+    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
+    assert kwargs["allowed_regimes"] == ["ranging"]
+
+
+def test_load_strategy_config_named_gate_window_no_op_when_regime_disabled(tmp_path):
+    # With regime.enabled=false the gate is a no-op in both live and backtest, so
+    # there is nothing to diverge — the named-window reject must NOT fire, and
+    # the (inert) allowed_regimes still threads through unchanged.
+    path = _write_full_config(tmp_path, {
+        "config_version": 15,
+        "regime": {"enabled": False, "windows": {"slow": 40}},
+        "strategies": [
+            _perps_strategy(allowed_regimes=["trending_up"], regime_gate_window="slow"),
+        ],
+    })
+    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
+    assert kwargs["regime_enabled"] is False
+    assert kwargs["allowed_regimes"] == ["trending_up"]
+
+
+def test_allowed_regimes_flag_rejected_alongside_config(tmp_path, monkeypatch):
+    # The live config's allowed_regimes field owns the regime gate; a CLI
+    # --allowed-regimes alongside --config would silently shadow it. Reject
+    # loudly, like --close-strategy / --direction.
+    config_path = _write_full_config(tmp_path, {
+        "config_version": 15,
+        "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
+        "strategies": [_perps_strategy(allowed_regimes=["trending_up"])],
+    })
+    called = {}
+    monkeypatch.setattr(run_backtest, "run_single_backtest",
+                        lambda *a, **kw: called.setdefault("hit", True))
+    monkeypatch.setattr("sys.argv", [
+        "run_backtest.py", "--mode", "single",
+        "--config", config_path, "--strategy", "hl-d-btc",
+        "--allowed-regimes", "ranging",
+    ])
+    with pytest.raises(SystemExit):
+        run_backtest.main()
+    assert "hit" not in called
+
+
+def test_config_flag_threads_allowed_regimes_to_run_single(tmp_path, monkeypatch):
+    # End-to-end: main() forwards the config's allowed_regimes to
+    # run_single_backtest, so the backtest applies the same entry gate as live.
+    config_path = _write_full_config(tmp_path, {
+        "config_version": 15,
+        "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
+        "strategies": [_perps_strategy(allowed_regimes=["trending_up", "ranging"])],
+    })
+    captured = {}
+    monkeypatch.setattr(run_backtest, "run_single_backtest",
+                        lambda *a, **kw: captured.update(kw))
+    monkeypatch.setattr("sys.argv", [
+        "run_backtest.py", "--mode", "single",
+        "--config", config_path, "--strategy", "hl-d-btc",
+    ])
+    run_backtest.main()
+    assert captured.get("allowed_regimes") == ["trending_up", "ranging"]
+    assert captured.get("regime_enabled") is True

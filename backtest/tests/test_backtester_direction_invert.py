@@ -183,3 +183,86 @@ def test_regime_directional_policy_holds_open_position_regime_plain_path():
     res = bt.run(df, save=False)
     assert [t["side"] for t in res["trades"]] == ["short"]
     assert res["trades"][0]["exit_reason"] == "end_of_data"
+
+
+# ─── #1025 review: same-bar close→reopen on the open/close engine path ────────
+#
+# Invariant: an entry opened on a bar resolves its direction/invert from the
+# regime that applies to a FLAT book at that bar (the current bar regime), never
+# from a regime frozen to a position fully closed earlier in the same bar. The
+# fix re-resolves the open-action gate AFTER the close leg, once the position
+# state for the open block is known.
+
+
+def _oc_flip_df(open_action, close_fraction, regime):
+    # open_action / close_fraction / regime columns are each shifted +1 by the
+    # engine (live N→N+1 fill), so row i governs the fill at bar i+1. Flat prices
+    # (no stop fields, no close evaluator) keep the only close driver the
+    # close_fraction column, so the surviving leg flushes at end-of-data.
+    n = len(open_action)
+    return pd.DataFrame(
+        {
+            "open":   [100.0] * n,
+            "high":   [100.5] * n,
+            "low":    [99.5] * n,
+            "close":  [100.0] * n,
+            "volume": [1.0] * n,
+            "signal": [0] * n,
+            "open_action": open_action,
+            "close_fraction": close_fraction,
+            "regime": regime,
+        },
+        index=pd.date_range("2024-01-01", periods=n, freq="D"),
+    )
+
+
+def _run_oc_flip(open_action, close_fraction, regime):
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0.0, slippage_pct=0.0,
+        regime_enabled=True, regime_directional_policy=_REGIME_POLICY,
+    )
+    return bt.run(_oc_flip_df(open_action, close_fraction, regime), save=False)
+
+
+def test_open_close_same_bar_flip_reopens_from_current_regime():
+    # Long opens at bar 1 in trending_up; at bar 3 the close_fraction column
+    # fully closes it AND the open_action re-enters with the regime flipped to
+    # trending_down (short policy). The re-entry must resolve from the CURRENT
+    # bar regime (flat book → short), not the just-closed long's frozen
+    # trending_up (which would wrongly re-open long).
+    res = _run_oc_flip(
+        open_action=["long", "none", "long", "none", "none", "none"],
+        close_fraction=[0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+        regime=["trending_up", "trending_up", "trending_down",
+                "trending_down", "trending_down", "trending_down"],
+    )
+    assert [t["side"] for t in res["trades"]] == ["long", "short"]
+
+
+def test_open_close_same_bar_flip_inverse_reopens_long():
+    # Inverse case: short opens at bar 1 in trending_down; at bar 3 the regime
+    # flips to trending_up and the same close+reopen lands. The re-entry must
+    # open LONG from the current regime, not short from the frozen trending_down.
+    res = _run_oc_flip(
+        open_action=["long", "none", "long", "none", "none", "none"],
+        close_fraction=[0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+        regime=["trending_down", "trending_down", "trending_up",
+                "trending_up", "trending_up", "trending_up"],
+    )
+    assert [t["side"] for t in res["trades"]] == ["short", "long"]
+
+
+def test_open_close_partial_close_keeps_frozen_regime_no_flip():
+    # A partial close on a regime-flip bar must NOT re-open: the surviving leg
+    # keeps position != 0 (the open block can't fire) and its frozen regime, so
+    # no opposite-side phantom trade appears. Only the two long legs (the partial
+    # close at bar 3 and the surviving leg at end-of-data) are recorded — the
+    # freeze must still hold whenever the position stays non-zero.
+    res = _run_oc_flip(
+        open_action=["long", "none", "long", "none", "none", "none"],
+        close_fraction=[0.0, 0.0, 0.5, 0.0, 0.0, 0.0],
+        regime=["trending_up", "trending_up", "trending_down",
+                "trending_down", "trending_down", "trending_down"],
+    )
+    assert [t["side"] for t in res["trades"]] == ["long", "long"]
+    assert res["trades"][-1]["exit_reason"] == "end_of_data"

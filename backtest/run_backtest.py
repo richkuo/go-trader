@@ -399,6 +399,34 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 "confirm_bars": int(pal.get("confirm_bars") or 0),
                 "initial_profile": str(pal.get("initial_profile") or "").strip(),
             }
+        # #1025 review: thread the strategy's allowed_regimes entry-gate so the
+        # backtester applies the same regime filter the live daemon does. It was
+        # silently dropped here — only the --allowed-regimes CLI flag fed the
+        # gate — so a config that pairs a regime entry-filter with
+        # regime_directional_policy took entries in backtest that live blocks.
+        # The backtester models only the legacy single-lookback ADX regime
+        # (regime.period / regime.adx_threshold). When the gate keys off a named
+        # regime_gate_window (#792) the backtester cannot compute that window's
+        # regime, so enforcing allowed_regimes against the legacy lookback would
+        # silently gate on the WRONG window — reject loudly instead (matching the
+        # reject-what-it-can't-model pattern above). Only the active-gate case is
+        # rejected: with regime.enabled=false the gate is a no-op in both live
+        # and backtest, so there is nothing to diverge.
+        allowed_regimes = sc.get("allowed_regimes") or None
+        gate_window = str(sc.get("regime_gate_window") or "").strip().lower()
+        if (
+            allowed_regimes
+            and regime_cfg.get("enabled")
+            and gate_window not in ("", "default")
+        ):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} gates allowed_regimes "
+                f"on regime_gate_window={gate_window!r}, but the backtester models "
+                f"only the legacy single-lookback regime (regime.period / "
+                f"regime.adx_threshold) — a named gate window has no bar-level "
+                f"parity path. Gate on the default lookback (remove "
+                f"regime_gate_window) or drop allowed_regimes for backtesting."
+            )
         return {
             "open_strategy": {
                 "name": open_ref["name"],
@@ -419,6 +447,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "regime_enabled": bool(regime_cfg.get("enabled")),
             "regime_period": int(regime_cfg.get("period", 14) or 14),
             "regime_adx_threshold": float(regime_cfg.get("adx_threshold", 20.0) or 20.0),
+            "allowed_regimes": allowed_regimes,
             "profile_allocation": profile_allocation,
         }
     raise ValueError(
@@ -882,6 +911,15 @@ def main():
                   "config's `direction` field owns the entry transform); "
                   "edit the config or backtest the strategy by name")
             sys.exit(1)
+        # #1025 review: the live config's allowed_regimes field owns the regime
+        # entry-gate; a CLI --allowed-regimes alongside --config would lose to it
+        # on the thread below and silently mislead. Reject loudly, like
+        # --close-strategy / --direction above.
+        if args.allowed_regimes:
+            print("--allowed-regimes is not allowed alongside --config (the "
+                  "live config's `allowed_regimes` field owns the regime gate); "
+                  "edit the config or backtest the strategy by name")
+            sys.exit(1)
         close_refs = live_kwargs["close_strategies"]
         # Open strategy name + params come from the live config. Threading
         # params through to run_single_backtest is required — without it,
@@ -911,6 +949,11 @@ def main():
         args.regime_period = live_kwargs.get("regime_period", args.regime_period)
         args.regime_adx_threshold = live_kwargs.get(
             "regime_adx_threshold", args.regime_adx_threshold,
+        )
+        # #1025 review: thread the config's allowed_regimes entry-gate (rejected
+        # as a CLI flag above, so args.allowed_regimes is None here).
+        args.allowed_regimes = live_kwargs.get(
+            "allowed_regimes", args.allowed_regimes,
         )
 
     # CLI ATR-stop flags apply in single mode too; --config refs win on collision.

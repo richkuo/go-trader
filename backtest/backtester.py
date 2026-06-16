@@ -1603,16 +1603,16 @@ class Backtester:
                     open_action = row.get("_open_action__" + active_profile, "none")
                 else:
                     open_action = row.get("_open_action", "none")
-                if self.regime_directional_policy is not None:
-                    raw_open_signal = _signal_from_open_action(open_action)
-                    open_action = _open_action_from_signal(
-                        _apply_direction_invert_value(
-                            raw_open_signal,
-                            uses_open_close=True,
-                            direction=effective_direction,
-                            invert_signal=effective_invert,
-                        )
-                    )
+                # #1025: capture the raw open-action signal now; the directional
+                # gate is applied AFTER the close leg below (see the gate just
+                # before the open block) so a same-bar close→reopen re-resolves
+                # the entry direction against the regime that applies to a flat
+                # book at this bar, not the just-closed position's frozen regime.
+                raw_open_signal = (
+                    _signal_from_open_action(open_action)
+                    if self.regime_directional_policy is not None
+                    else 0
+                )
 
                 if close_fraction > 0 and position != 0:
                     qty_to_close = abs(position) * min(close_fraction, 1.0)
@@ -1703,6 +1703,34 @@ class Backtester:
                             or post_tp_trail_mult != prev_post_tp_trail
                         ):
                             sl_after_just_applied = True
+
+                # #1025 same-bar flip: resolve the entry direction/invert
+                # against the position state AFTER this bar's close leg. The
+                # open block below only ever fires from a flat book, so its gate
+                # must use the regime that applies to a flat book at this bar —
+                # never a regime frozen to a position that was already fully
+                # closed earlier in the same bar. When the close above fully
+                # exited the incoming position, _run_position_regime was cleared
+                # (position == 0) and _effective_directional_entry falls through
+                # to the CURRENT bar regime, matching live (which re-evaluates a
+                # fresh entry from the current regime on the next cycle). A
+                # surviving leg (partial close, or no close) keeps position != 0
+                # and its frozen regime, so the open block won't fire and the
+                # freeze is preserved unchanged.
+                if self.regime_directional_policy is not None:
+                    entry_direction, entry_invert = self._effective_directional_entry(
+                        bar_regime,
+                        self._run_position_regime,
+                        abs(position),
+                    )
+                    open_action = _open_action_from_signal(
+                        _apply_direction_invert_value(
+                            raw_open_signal,
+                            uses_open_close=True,
+                            direction=entry_direction,
+                            invert_signal=entry_invert,
+                        )
+                    )
 
                 # Entry guard (PR #1004 review): a blown short can leave
                 # flat-state cash <= 0 (buy-back cost exceeded the 2x notional

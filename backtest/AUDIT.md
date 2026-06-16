@@ -48,7 +48,8 @@ label parity).
 | Default tier ladders (#870/#887) | ✅ Values synced across Go and all three Python mirrors — but unpinned by tests (#944). |
 | Single close ref (#842) | ✅ `--config` rejects legacy `len>1` arrays with the same semantics live rejects them; the engine's max-wins multi-ref path remains for direct-constructor/test use only. |
 | `tiered_tp_atr_live_regime_dynamic` (#843) | ✅ Loudly rejected at config load (`run_backtest.py:193-196`); no evaluator registered under the name. |
-| `regime_directional_policy` (#822/#1025) | ✅ Backtested through the per-cycle direction/invert resolver; `--config` requires `regime.enabled=true`, matches live flat/open regime source, and parity diff transforms the same decision layer. |
+| `regime_directional_policy` (#822/#1025) | ✅ Backtested through the per-cycle direction/invert resolver; `--config` requires `regime.enabled=true`, matches live flat/open regime source, and parity diff transforms the same decision layer. Open/close-path entry gate re-resolves after the close leg, so a same-bar full close→reopen uses the current-bar regime (#1025 review). |
+| `allowed_regimes` entry-gate (#482/#1025) | ✅ `--config` threads the strategy's `allowed_regimes` into `self.allowed_regimes` (was dropped — only the `--allowed-regimes` CLI flag fed it; CLI flag now rejected alongside `--config`). Backtester models only the legacy single-lookback ADX regime, so an active gate keyed off a named `regime_gate_window` (#792) is rejected at load. |
 | Regime-aware `sl_after` (#736) | ✅ Loudly rejected at `Backtester` init; scalar forms backtestable. |
 | `user_close_defaults` (#866) | ✅ `--defaults system\|user` mirrors the live three-layer resolution. |
 | Scale-in (#873), manual limit orders (#883) | Live-only **by design** (HL perps/manual execution mechanics, no signal-path component). Config keys are ignored by the backtest loader; acceptable while the features stay execution-side. |
