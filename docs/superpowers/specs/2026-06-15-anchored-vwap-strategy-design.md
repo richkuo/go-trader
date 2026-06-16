@@ -223,10 +223,10 @@ uv run --no-sync python backtest/run_backtest.py \
   --direction short
 ```
 
-This is backtestable (unlike `regime_directional_policy`): each run exercises one
-leg's **signal generation**. The perps-specific live flip path is **not**
-backtested — it is validated by unit tests + paper (§9). Entry ATR guard
-(50%-of-AvgCost) applies. Sanity-check trade counts on each run.
+This is backtestable: each run exercises one leg's **signal generation**.
+Per-cycle regime directional policy is backtestable separately through
+`--config` parity (#1025). Entry ATR guard (50%-of-AvgCost) applies.
+Sanity-check trade counts on each run.
 
 ## 12. Out of scope (tracked in #1017)
 

@@ -136,9 +136,13 @@ from close_registry_loader import (
 )
 from backtester import (
     Backtester,
+    _apply_direction_invert_value,
     _max_close_fraction_series,
     _normalize_open_action,
+    _normalize_regime_directional_policy,
     _open_action_from_signal,
+    _resolve_regime_directional_entry,
+    _signal_from_open_action,
     fee_pct_for_platform,
 )
 
@@ -168,6 +172,14 @@ class ParityConfig:
     regime_enabled: bool = False
     regime_period: int = 14
     regime_adx_threshold: float = 20.0
+    direction: Optional[str] = None
+    invert_signal: bool = False
+    regime_directional_policy: Optional[dict] = None
+
+    def __post_init__(self):
+        self.regime_directional_policy = _normalize_regime_directional_policy(
+            self.regime_directional_policy,
+        )
 
 
 def config_from_live_config(config_path: str, strategy_id: str,
@@ -189,7 +201,7 @@ def config_from_live_config(config_path: str, strategy_id: str,
         {},
     )
     args = entry.get("args") or []
-    regime = entry.get("regime") or {}
+    regime = raw.get("regime") or entry.get("regime") or {}
     open_ref = loaded["open_strategy"]
     stype = str(entry.get("type", "spot"))
     return ParityConfig(
@@ -201,9 +213,14 @@ def config_from_live_config(config_path: str, strategy_id: str,
         symbol=str(args[1]) if len(args) > 1 else "BTC/USDT",
         timeframe=str(args[2]) if len(args) > 2 else "1h",
         close_refs=loaded.get("close_strategies") or None,
-        regime_enabled=bool(regime.get("enabled")),
-        regime_period=int(regime.get("period", 14) or 14),
-        regime_adx_threshold=float(regime.get("adx_threshold", 20.0) or 20.0),
+        regime_enabled=bool(loaded.get("regime_enabled", regime.get("enabled"))),
+        regime_period=int(loaded.get("regime_period", regime.get("period", 14)) or 14),
+        regime_adx_threshold=float(
+            loaded.get("regime_adx_threshold", regime.get("adx_threshold", 20.0)) or 20.0
+        ),
+        direction=loaded.get("direction"),
+        invert_signal=bool(loaded.get("invert_signal")),
+        regime_directional_policy=loaded.get("regime_directional_policy"),
     )
 
 
@@ -237,6 +254,38 @@ def _normalize_signal(value) -> int:
 def _close_names(close_refs: Optional[list]) -> list:
     return [str(r.get("name", "")).strip() for r in (close_refs or [])
             if r.get("name")]
+
+
+def _effective_directional_pair(cfg: ParityConfig, current_regime: str,
+                                position_ctx: Optional[dict]) -> tuple[str, bool]:
+    direction = cfg.direction or ""
+    invert = bool(cfg.invert_signal)
+    entry = _resolve_regime_directional_entry(
+        cfg.regime_directional_policy,
+        current_regime,
+        str((position_ctx or {}).get("regime", "") or ""),
+        float((position_ctx or {}).get("current_quantity", 0.0) or 0.0),
+    )
+    if entry is not None:
+        direction = str(entry["direction"])
+        invert = bool(entry["invert_signal"])
+    return direction, invert
+
+
+def _transform_entry_signal(signal: int, cfg: ParityConfig,
+                            current_regime: str,
+                            position_ctx: Optional[dict],
+                            *,
+                            uses_open_close: bool) -> int:
+    direction, invert = _effective_directional_pair(
+        cfg, current_regime, position_ctx,
+    )
+    return _apply_direction_invert_value(
+        int(signal),
+        uses_open_close=uses_open_close,
+        direction=direction,
+        invert_signal=invert,
+    )
 
 
 def _close_params_by_name(close_refs: Optional[list]) -> dict:
@@ -315,8 +364,14 @@ def _live_bar_decision(window: pd.DataFrame, cfg: ParityConfig, reg,
             market_ctx=market_ctx,
             close_params_by_name=_close_params_by_name(cfg.close_refs),
         )
-        final = finalize_decision(evaluation, position_side,
-                                  evaluation.open_signal)
+        open_signal = _transform_entry_signal(
+            int(evaluation.open_signal),
+            cfg,
+            str(live_regime or ""),
+            position_ctx,
+            uses_open_close=True,
+        )
+        final = finalize_decision(evaluation, position_side, open_signal)
         decision["signal"] = int(final["signal"])
         decision["open_action"] = str(final["open_action"])
         decision["close_fraction"] = float(final["close_fraction"])
@@ -335,7 +390,13 @@ def _live_bar_decision(window: pd.DataFrame, cfg: ParityConfig, reg,
     # Same strict normalizer as the backtest side: in-contract signals
     # collapse identically, out-of-contract signals raise (see
     # _normalize_signal) instead of being coerced into a false CLEAN.
-    decision["signal"] = _normalize_signal(last.get("signal", 0))
+    decision["signal"] = _transform_entry_signal(
+        _normalize_signal(last.get("signal", 0)),
+        cfg,
+        str(live_regime or ""),
+        position_ctx,
+        uses_open_close=False,
+    )
     decision["open_action"] = open_action_from_signal(decision["signal"])
     if _has_close_fraction_columns(result_df):
         decision["close_fraction"] = float(
@@ -399,7 +460,9 @@ def _bt_close_evaluator_fraction(cfg: ParityConfig, i: int,
 def _simulate_position_contexts(bt: pd.DataFrame, df: pd.DataFrame,
                                 atr_full: pd.Series,
                                 regime_full: Optional[pd.Series],
-                                cfg: Optional[ParityConfig] = None) -> tuple:
+                                cfg: Optional[ParityConfig] = None,
+                                *,
+                                return_decisions: bool = False) -> tuple:
     """Walk the backtest-effective decisions and track a scaffold position.
 
     The context exists so close evaluators see a plausible position on
@@ -418,11 +481,14 @@ def _simulate_position_contexts(bt: pd.DataFrame, df: pd.DataFrame,
     every post-tier-1 bar would repeat the cumulative fraction — a value
     neither the engine nor live produces.
 
-    Returns ``(contexts, registry_fractions)``; ``registry_fractions[i]``
+    Returns ``(contexts, registry_fractions)`` by default. With
+    ``return_decisions=True`` also returns the transformed decision frame.
+    ``registry_fractions[i]``
     is the bt-side evaluator fraction at bar i computed with that shared
     context — the same value ``compute_parity_frame`` compares, so the
     scaffold's accounting and the comparison can never disagree.
     """
+    decisions = bt.copy()
     contexts = []
     registry_fractions = []
     side = ""
@@ -438,9 +504,9 @@ def _simulate_position_contexts(bt: pd.DataFrame, df: pd.DataFrame,
             # the registry-evaluator fraction from bar i-1 fills here too,
             # exactly like the engine's pending_close_fraction (max-wins
             # against the column path, same resolution as the comparison).
-            eff_signal = int(bt["signal"].iloc[i - 1])
-            eff_action = str(bt["open_action"].iloc[i - 1])
-            eff_close = max(float(bt["close_fraction"].iloc[i - 1]),
+            eff_signal = int(decisions["signal"].iloc[i - 1])
+            eff_action = str(decisions["open_action"].iloc[i - 1])
+            eff_close = max(float(decisions["close_fraction"].iloc[i - 1]),
                             registry_fractions[i - 1])
             mark = float(df["close"].iloc[i])
 
@@ -499,12 +565,39 @@ def _simulate_position_contexts(bt: pd.DataFrame, df: pd.DataFrame,
                 ctx["entry_atr"] = entry_atr
             if entry_regime:
                 ctx["regime"] = entry_regime
+        if cfg is not None:
+            label = ""
+            if regime_full is not None:
+                raw_label = regime_full.iloc[i]
+                label = "" if pd.isna(raw_label) else str(raw_label)
+            if _close_names(cfg.close_refs):
+                transformed = _transform_entry_signal(
+                    _signal_from_open_action(bt["open_action"].iloc[i]),
+                    cfg,
+                    label,
+                    ctx,
+                    uses_open_close=True,
+                )
+            else:
+                transformed = _transform_entry_signal(
+                    int(bt["signal"].iloc[i]),
+                    cfg,
+                    label,
+                    ctx,
+                    uses_open_close=False,
+                )
+            decisions.iloc[i, decisions.columns.get_loc("signal")] = transformed
+            decisions.iloc[i, decisions.columns.get_loc("open_action")] = (
+                _open_action_from_signal(transformed)
+            )
         contexts.append(ctx)
         registry_fractions.append(
             _bt_close_evaluator_fraction(cfg, i, df, atr_full,
                                          regime_full, ctx)
             if (cfg is not None and ctx is not None) else 0.0
         )
+    if return_decisions:
+        return contexts, registry_fractions, decisions
     return contexts, registry_fractions
 
 
@@ -578,9 +671,15 @@ def compute_parity_frame(
                     f"no engine path to diff; the live signal-strategy close "
                     f"fallback is live-only. Available: {sorted(available)}"
                 )
-    if has_close_refs:
-        contexts, registry_fracs = _simulate_position_contexts(
-            bt, df, atr_full, regime_full, cfg)
+    needs_decision_walk = (
+        has_close_refs
+        or bool(cfg.direction)
+        or bool(cfg.invert_signal)
+        or cfg.regime_directional_policy is not None
+    )
+    if needs_decision_walk:
+        contexts, registry_fracs, bt = _simulate_position_contexts(
+            bt, df, atr_full, regime_full, cfg, return_decisions=True)
     else:
         contexts, registry_fracs = [None] * len(df), [0.0] * len(df)
 
@@ -662,6 +761,9 @@ def extract_fills(df: pd.DataFrame, cfg: ParityConfig) -> list:
         regime_enabled=cfg.regime_enabled,
         regime_period=cfg.regime_period,
         regime_adx_threshold=cfg.regime_adx_threshold,
+        direction=cfg.direction,
+        invert_signal=cfg.invert_signal,
+        regime_directional_policy=cfg.regime_directional_policy,
     )
     metrics = bt.run(
         work,

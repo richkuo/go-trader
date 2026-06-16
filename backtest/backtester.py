@@ -54,8 +54,6 @@ decision-layer parity checks; see ``backtest/AUDIT.md`` for the full matrix):
     have no bar-level simulation.
   • **``tiered_tp_atr_live_regime_dynamic``** (#843) — rejected at
     ``run_backtest.load_strategy_config`` (on-chain regime hysteresis).
-  • **``regime_directional_policy``** (#822) — rejected at config load; use static
-    ``direction`` / ``invert_signal`` for backtests.
   • **Inline trailing SL at open** (#885) — live arms same-cycle; backtest seeds
     trailing/ratchet triggers on the bar after open (no naked-gap modeling).
 """
@@ -105,6 +103,100 @@ def _load_regime():
         from regime import ensure_regime_columns as _ensure_regime_columns
         _ensure_regime_fn = _ensure_regime_columns
     return _ensure_regime_fn
+
+
+def _normalize_regime_directional_policy(policy: Optional[dict]) -> Optional[dict]:
+    """Validate and compact ``regime_directional_policy`` for replay (#1025).
+
+    Go owns vocabulary validation because labels depend on the selected regime
+    classifier/window. The backtester only mirrors the already-validated runtime
+    shape: ``trend_regime`` label -> {direction, invert_signal}.
+    """
+    if not policy:
+        return None
+    if not isinstance(policy, dict):
+        raise ValueError("regime_directional_policy must be an object")
+    raw = policy.get("trend_regime")
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "regime_directional_policy must contain a trend_regime object"
+        )
+    parsed: dict[str, dict[str, object]] = {}
+    for label, entry in raw.items():
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"regime_directional_policy.{label}: must be an object"
+            )
+        direction = entry.get("direction")
+        if not isinstance(direction, str):
+            raise ValueError(
+                f"regime_directional_policy.{label}.direction: must be a string"
+            )
+        if direction not in ("long", "short", "both"):
+            raise ValueError(
+                f"regime_directional_policy.{label}.direction: must be "
+                f"'long', 'short', or 'both'"
+            )
+        invert = entry.get("invert_signal", False)
+        if not isinstance(invert, bool):
+            raise ValueError(
+                f"regime_directional_policy.{label}.invert_signal: "
+                f"must be a boolean"
+            )
+        for key in entry:
+            if key not in ("direction", "invert_signal"):
+                raise ValueError(
+                    f"regime_directional_policy.{label}: unknown key {key!r}"
+                )
+        parsed[str(label).strip()] = {
+            "direction": direction,
+            "invert_signal": invert,
+        }
+    return parsed or None
+
+
+def _resolve_regime_directional_entry(
+    policy: Optional[dict],
+    current_regime: str,
+    position_regime: str = "",
+    position_qty: float = 0.0,
+) -> Optional[dict]:
+    """Return the effective per-regime direction/invert override (#1025)."""
+    if not policy:
+        return None
+    regime = str(current_regime or "").strip()
+    if position_qty > 0 and str(position_regime or "").strip():
+        regime = str(position_regime or "").strip()
+    entry = policy.get(regime)
+    return dict(entry) if isinstance(entry, dict) else None
+
+
+def _apply_direction_invert_value(
+    signal: int,
+    uses_open_close: bool,
+    direction: Optional[str],
+    invert_signal: bool,
+) -> int:
+    """Scalar form of Backtester._apply_direction_invert (#1025)."""
+    sig = int(signal)
+    if invert_signal and sig != 0:
+        sig = -sig
+    d = (direction or "").strip().lower()
+    if uses_open_close and d in ("long", "short"):
+        if d == "long" and sig < 0:
+            return 0
+        if d == "short" and sig > 0:
+            return 0
+    return sig
+
+
+def _signal_from_open_action(action: str) -> int:
+    action = str(action or "").strip().lower()
+    if action == "long":
+        return 1
+    if action == "short":
+        return -1
+    return 0
 
 
 def _load_post_tp_sl():
@@ -521,6 +613,7 @@ class Backtester:
                  strategy_type: str = "perps",
                  direction: Optional[str] = None,
                  invert_signal: bool = False,
+                 regime_directional_policy: Optional[dict] = None,
                  profile_allocation: Optional[dict] = None):
         """
         Args:
@@ -600,6 +693,13 @@ class Backtester:
         # mirroring the live order (applySignalInversion before EffectiveDirection).
         self.direction = (str(direction).strip().lower() if direction else None)
         self.invert_signal = bool(invert_signal)
+        self.regime_directional_policy = _normalize_regime_directional_policy(
+            regime_directional_policy,
+        )
+        if self.regime_directional_policy is not None and not self.regime_enabled:
+            raise ValueError(
+                "regime_directional_policy requires regime_enabled=True"
+            )
         # #998: regime-profile allocation. When set, run() expects per-profile
         # signal columns ("signal__<profile>") plus a "_profile_label" column
         # (the long-window regime label per bar) and replays the live flat-only,
@@ -949,19 +1049,24 @@ class Backtester:
             side and close the other) and is rejected at config/candidate
             load (``run_backtest.load_strategy_config``).
         """
-        sig = sig_int
-        if self.invert_signal:
-            # ``-sig`` keeps the {-1, 0, 1} domain (0 stays 0).
-            sig = -sig
-        d = self.direction or ""
-        if uses_open_close and d in ("long", "short"):
-            if d == "long":
-                # Disallow short opens: drop signal<0, keep long-opens/holds.
-                sig = sig.where(sig >= 0, 0)
-            else:  # "short"
-                # Disallow long opens: drop signal>0, keep short-opens/holds.
-                sig = sig.where(sig <= 0, 0)
-        return sig.astype(int)
+        return sig_int.map(
+            lambda s: _apply_direction_invert_value(
+                int(s), uses_open_close, self.direction, self.invert_signal,
+            )
+        ).astype(int)
+
+    def _effective_directional_entry(
+        self, current_regime: str, position_regime: str, position_qty: float,
+    ) -> tuple[str, bool]:
+        entry = _resolve_regime_directional_entry(
+            self.regime_directional_policy,
+            current_regime,
+            position_regime,
+            abs(position_qty),
+        )
+        if entry is None:
+            return self.direction or "", self.invert_signal
+        return str(entry["direction"]), bool(entry["invert_signal"])
 
     def _normalize_profile_signals(self, df: pd.DataFrame, uses_open_close: bool) -> None:
         """Normalize each profile's ``signal__<p>`` column exactly like the
@@ -989,7 +1094,8 @@ class Backtester:
                     f"{col} must be in {{-1, 0, 1}} — got unexpected values "
                     f"{sorted(bad.unique().tolist())}"
                 )
-            sig_int = self._apply_direction_invert(sig_int, uses_open_close)
+            if self.regime_directional_policy is None:
+                sig_int = self._apply_direction_invert(sig_int, uses_open_close)
             if uses_open_close:
                 df["_open_action__" + p] = (
                     sig_int.map(_open_action_from_signal).shift(1).fillna("none")
@@ -1060,6 +1166,17 @@ class Backtester:
                 "long/flat. Backtest each leg separately with "
                 "direction='long' / direction='short'."
             )
+        if self.regime_directional_policy is not None and not uses_open_close:
+            both_labels = sorted(
+                label for label, entry in self.regime_directional_policy.items()
+                if entry.get("direction") == "both"
+            )
+            if both_labels:
+                raise ValueError(
+                    "regime_directional_policy direction='both' requires a "
+                    "close evaluator on the plain signal path; labels with "
+                    f"both: {both_labels}"
+                )
         plain_short = (not uses_open_close) and self.direction == "short"
         if plain_short and starting_long:
             raise ValueError(
@@ -1106,12 +1223,12 @@ class Backtester:
                     f"signal column must be in {{-1, 0, 1}} — got "
                     f"unexpected values {sorted(bad.unique().tolist())}"
                 )
-            # #942: apply the live entry transforms (invert_signal, then
-            # direction gating) to the raw signal BEFORE the open snapshot and
-            # the look-ahead shift, so both ``signal_for_open`` and the shifted
-            # ``df["signal"]`` see the gated values. No-op unless --config wired
-            # direction/invert_signal from the live strategy entry.
-            sig_int = self._apply_direction_invert(sig_int, uses_open_close)
+            # #942: static entry transforms (invert_signal, then direction
+            # gating) apply BEFORE the look-ahead shift. #1025 regime policies
+            # are position-aware, so they replay later inside the per-bar loop
+            # where the stamped position regime is known.
+            if self.regime_directional_policy is None:
+                sig_int = self._apply_direction_invert(sig_int, uses_open_close)
             signal_for_open = sig_int
             df["signal"] = sig_int.shift(1).fillna(0).astype(int)
         else:
@@ -1404,6 +1521,25 @@ class Backtester:
                 )
                 signal = row["signal__" + active_profile]
 
+            bar_regime = str(row.get("regime", "")) if self.regime_enabled else ""
+            effective_direction = self.direction or ""
+            effective_invert = self.invert_signal
+            plain_short_for_bar = plain_short
+            if self.regime_directional_policy is not None:
+                effective_direction, effective_invert = self._effective_directional_entry(
+                    bar_regime,
+                    self._run_position_regime,
+                    abs(position),
+                )
+                if not uses_open_close:
+                    signal = _apply_direction_invert_value(
+                        int(signal),
+                        uses_open_close=False,
+                        direction=effective_direction,
+                        invert_signal=effective_invert,
+                    )
+                    plain_short_for_bar = effective_direction == "short"
+
             # Per-bar reset: when _maybe_apply_sl_after bumps the SL trigger on
             # this bar, the end-of-bar block (both the trail-walker HWM update
             # and the SL hit check) must skip — live places the new SL OID
@@ -1444,7 +1580,6 @@ class Backtester:
             # shift (#730) row 0 is empty — that empty label fails the
             # ``in allowed_regimes`` check and blocks the bar-0 entry, which
             # is correct (no prior-bar data, no decision).
-            bar_regime = str(row.get("regime", "")) if self.regime_enabled else ""
             regime_blocked = (
                 self.regime_enabled
                 and bool(self.allowed_regimes)
@@ -1468,6 +1603,16 @@ class Backtester:
                     open_action = row.get("_open_action__" + active_profile, "none")
                 else:
                     open_action = row.get("_open_action", "none")
+                # #1025: capture the raw open-action signal now; the directional
+                # gate is applied AFTER the close leg below (see the gate just
+                # before the open block) so a same-bar close→reopen re-resolves
+                # the entry direction against the regime that applies to a flat
+                # book at this bar, not the just-closed position's frozen regime.
+                raw_open_signal = (
+                    _signal_from_open_action(open_action)
+                    if self.regime_directional_policy is not None
+                    else 0
+                )
 
                 if close_fraction > 0 and position != 0:
                     qty_to_close = abs(position) * min(close_fraction, 1.0)
@@ -1558,6 +1703,34 @@ class Backtester:
                             or post_tp_trail_mult != prev_post_tp_trail
                         ):
                             sl_after_just_applied = True
+
+                # #1025 same-bar flip: resolve the entry direction/invert
+                # against the position state AFTER this bar's close leg. The
+                # open block below only ever fires from a flat book, so its gate
+                # must use the regime that applies to a flat book at this bar —
+                # never a regime frozen to a position that was already fully
+                # closed earlier in the same bar. When the close above fully
+                # exited the incoming position, _run_position_regime was cleared
+                # (position == 0) and _effective_directional_entry falls through
+                # to the CURRENT bar regime, matching live (which re-evaluates a
+                # fresh entry from the current regime on the next cycle). A
+                # surviving leg (partial close, or no close) keeps position != 0
+                # and its frozen regime, so the open block won't fire and the
+                # freeze is preserved unchanged.
+                if self.regime_directional_policy is not None:
+                    entry_direction, entry_invert = self._effective_directional_entry(
+                        bar_regime,
+                        self._run_position_regime,
+                        abs(position),
+                    )
+                    open_action = _open_action_from_signal(
+                        _apply_direction_invert_value(
+                            raw_open_signal,
+                            uses_open_close=True,
+                            direction=entry_direction,
+                            invert_signal=entry_invert,
+                        )
+                    )
 
                 # Entry guard (PR #1004 review): a blown short can leave
                 # flat-state cash <= 0 (buy-back cost exceeded the 2x notional
@@ -1774,6 +1947,7 @@ class Backtester:
                 avg_cost = 0.0
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
+                self._run_position_regime = ""
                 continue
 
             # Short/flat mirror of the standalone-stop fill above: buy back
@@ -1795,6 +1969,7 @@ class Backtester:
                 avg_cost = 0.0
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
+                self._run_position_regime = ""
                 continue
 
             # NOTE: this signal path runs one leg at a time. Default
@@ -1810,7 +1985,7 @@ class Backtester:
             # review). Bust account: entries skip until end of data. The
             # long/flat path can't reach negative cash today, but carries the
             # same guard so the invariant holds by construction.
-            if plain_short and signal == -1 and position == 0 and cash > 0 and not regime_blocked:
+            if plain_short_for_bar and signal == -1 and position == 0 and cash > 0 and not regime_blocked:
                 # SELL — open short with full notional. Mirrors the engine
                 # path's short-open mechanics: pay commission, receive the
                 # short-sale proceeds (cash = 2 * notional).
@@ -1830,6 +2005,7 @@ class Backtester:
                 avg_cost = effective_price
                 entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
                 hold.open(effective_price, "short", commission)
+                stamp_open_from_label(_entry_stamp(row))
                 sl_trigger_px = 0.0
                 sl_high_water_px = mark_price
                 if (
@@ -1847,7 +2023,7 @@ class Backtester:
                 elif self.stop_loss_pct is not None and self.stop_loss_pct > 0:
                     sl_trigger_px = avg_cost * (1 + self.stop_loss_pct)
 
-            elif plain_short and signal == 1 and position < 0:
+            elif plain_short_for_bar and signal == 1 and position < 0:
                 # BUY — close short (buy back)
                 effective_price = fill_price * (1 + self.slippage_pct)
                 cost = abs(position) * effective_price
@@ -1865,8 +2041,9 @@ class Backtester:
                 avg_cost = 0.0
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
+                self._run_position_regime = ""
 
-            elif not plain_short and signal == 1 and position == 0 and cash > 0 and not regime_blocked:
+            elif not plain_short_for_bar and signal == 1 and position == 0 and cash > 0 and not regime_blocked:
                 # BUY — go long with all available cash
                 effective_price = fill_price * (1 + self.slippage_pct)
                 commission = cash * self.commission_pct
@@ -1885,6 +2062,7 @@ class Backtester:
                 avg_cost = effective_price
                 entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
                 hold.open(effective_price, "long", commission)
+                stamp_open_from_label(_entry_stamp(row))
                 sl_trigger_px = 0.0
                 sl_high_water_px = mark_price
                 if (
@@ -1920,6 +2098,7 @@ class Backtester:
                 avg_cost = 0.0
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
+                self._run_position_regime = ""
 
             # #997: advance hold telemetry for a position held through this bar
             # (plain long/flat path). Same rationale as the open/close path:

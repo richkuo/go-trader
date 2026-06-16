@@ -11,9 +11,9 @@ package main
 // bullish, the other bearish), surface that disagreement and optionally use
 // it to override the effective direction for new entries.
 //
-// HL perps live only — inherits the same surface restriction as
-// regime_directional_policy, which is explicitly rejected by the backtester
-// (backtest/run_backtest.py raises ValueError on regime_directional_policy).
+// HL perps live only. Unlike regime_directional_policy's #1025 backtest
+// resolver, this divergence override still has no bar-level parity path and is
+// rejected by backtest/run_backtest.py.
 //
 // Config shape (per strategy):
 //
