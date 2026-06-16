@@ -190,6 +190,69 @@ def test_composed_signal_with_close_refs_diffs_clean():
     )
 
 
+def test_regime_directional_policy_decision_layer_parity(monkeypatch):
+    """#1025: policy-resolved direction/invert must match live per bar."""
+    import regime as regime_mod
+
+    df = _ohlcv(140)
+    df["_test_regime"] = "trending_down"
+
+    def fake_compute_regime(frame, period=14, adx_threshold=20.0):
+        out = frame.copy()
+        out["regime"] = frame["_test_regime"].values
+        out["regime_score"] = 1.0
+        out["adx"] = 50.0
+        out["plus_di"] = 10.0
+        out["minus_di"] = 40.0
+        return out
+
+    def fake_prepare_check_regime(window, **kwargs):
+        label = str(window["_test_regime"].iloc[-1])
+        snap = {"regime": label, "score": 1.0, "metrics": {}}
+        return label, label, snap
+
+    monkeypatch.setattr(regime_mod, "compute_regime", fake_compute_regime)
+    monkeypatch.setattr(parity_diff, "prepare_check_regime", fake_prepare_check_regime)
+
+    reg = load_registry("futures")
+    name = "_parity_regime_directional_always_buy"
+
+    def always_buy(frame: pd.DataFrame) -> pd.DataFrame:
+        out = frame.copy()
+        out["signal"] = 1
+        return out
+
+    reg.STRATEGY_REGISTRY[name] = {
+        "fn": always_buy,
+        "description": "test-only always buy",
+        "default_params": {},
+    }
+    try:
+        cfg = ParityConfig(
+            strategy_name=name,
+            registry="futures",
+            close_refs=[{"name": "tiered_tp_pct", "params": {"tp_tiers": [
+                {"profit_pct": 0.9, "close_fraction": 1.0},
+            ]}}],
+            regime_enabled=True,
+            direction="long",
+            invert_signal=False,
+            regime_directional_policy={
+                "trend_regime": {
+                    "trending_up": {"direction": "long", "invert_signal": False},
+                    "trending_down": {"direction": "short", "invert_signal": True},
+                    "ranging": {"direction": "long", "invert_signal": False},
+                },
+            },
+        )
+        frame = compute_parity_frame(df, cfg=cfg, window=60)
+        assert summarize(frame)["clean"], frame[~frame["match"]].head()
+        assert (frame["bt_open_action"] == "short").any()
+        assert (frame["live_open_action"] == "short").any()
+    finally:
+        del reg.STRATEGY_REGISTRY[name]
+
+
 def test_frame_dependent_strategy_caught_with_close_refs_too():
     """The detection guarantee must survive the close-ref code path —
     composition and position simulation may not mask open-signal drift."""
@@ -224,12 +287,12 @@ def test_config_mode_builds_parity_config(tmp_path):
     cfg_path = tmp_path / "config.json"
     cfg_path.write_text(_json.dumps({
         "config_version": 15,
+        "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
         "strategies": [{
             "id": "hl-sma-btc",
             "type": "perps",
             "script": "shared_scripts/check_hyperliquid.py",
             "args": ["sma_crossover", "BTC/USDT", "4h"],
-            "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
             "open_strategy": {
                 "name": "sma_crossover",
                 "params": {"fast_period": 5, "slow_period": 20},

@@ -29,6 +29,18 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from backtester import Backtester
 
+_NEVER_FIRES_CLOSE = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [
+    {"profit_pct": 0.9, "close_fraction": 1.0},
+]}}]
+
+_REGIME_DIRECTIONAL_POLICY = {
+    "trend_regime": {
+        "trending_up": {"direction": "long", "invert_signal": False},
+        "trending_down": {"direction": "short", "invert_signal": True},
+        "ranging": {"direction": "long", "invert_signal": False},
+    },
+}
+
 
 def _step_up_df(n: int = 20, jump_bar: int = 10, jump_pct: float = 0.10) -> pd.DataFrame:
     """Flat price with a single up-jump at ``jump_bar``.
@@ -182,6 +194,32 @@ def test_regime_gate_blocks_when_prior_bar_regime_disallows():
         "Entry should be blocked by bar 9's 'ranging' regime. "
         "If a trade fired, the backtester is reading bar 10's regime "
         "(look-ahead). See the regime-shift block in Backtester.run."
+    )
+
+
+def test_regime_directional_policy_uses_prior_bar_regime_not_current():
+    """A policy-resolved entry at row N+1 must use bar N's regime label."""
+    df = _step_up_df(n=20, jump_bar=15)
+    df["signal"] = 0
+    df.iloc[9, df.columns.get_loc("signal")] = 1
+    df["regime"] = "trending_up"
+    df.iloc[9, df.columns.get_loc("regime")] = "trending_down"
+    # bar 10 stays trending_up. A look-ahead resolver would open long; the
+    # correct closed-bar resolver opens the inverse short from bar 9's label.
+
+    bt = Backtester(
+        initial_capital=1000.0,
+        commission_pct=0.0,
+        slippage_pct=0.0,
+        close_strategies=_NEVER_FIRES_CLOSE,
+        regime_enabled=True,
+        regime_directional_policy=_REGIME_DIRECTIONAL_POLICY,
+    )
+    result = bt.run(df, save=False)
+
+    assert [t["side"] for t in result["trades"]] == ["short"], (
+        "Policy resolver must read bar 9's trending_down label for the bar 10 "
+        "fill. Reading bar 10's trending_up label would open long instead."
     )
 
 

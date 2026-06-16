@@ -48,12 +48,12 @@ label parity).
 | Default tier ladders (#870/#887) | ✅ Values synced across Go and all three Python mirrors — but unpinned by tests (#944). |
 | Single close ref (#842) | ✅ `--config` rejects legacy `len>1` arrays with the same semantics live rejects them; the engine's max-wins multi-ref path remains for direct-constructor/test use only. |
 | `tiered_tp_atr_live_regime_dynamic` (#843) | ✅ Loudly rejected at config load (`run_backtest.py:193-196`); no evaluator registered under the name. |
-| `regime_directional_policy` (#822) | ✅ Loudly rejected (`run_backtest.py:160-166`). |
+| `regime_directional_policy` (#822/#1025) | ✅ Backtested through the per-cycle direction/invert resolver; `--config` requires `regime.enabled=true`, matches live flat/open regime source, and parity diff transforms the same decision layer. |
 | Regime-aware `sl_after` (#736) | ✅ Loudly rejected at `Backtester` init; scalar forms backtestable. |
 | `user_close_defaults` (#866) | ✅ `--defaults system\|user` mirrors the live three-layer resolution. |
 | Scale-in (#873), manual limit orders (#883) | Live-only **by design** (HL perps/manual execution mechanics, no signal-path component). Config keys are ignored by the backtest loader; acceptable while the features stay execution-side. |
 | **v13/v14 legacy close keys** | ❌ **#942** — the `--config` gate admits pre-v15 configs whose `tiers`/alias keys silently no-op in the Python evaluators while live canonicalizes them. |
-| **`direction` / `invert_signal` / `regime_window_divergence`** | ❌ **#943** — silently ignored by `--config`; the `regime_directional_policy` rejection message even recommends two of them. |
+| **`regime_window_divergence`** | ❌ **#943** — still loudly rejected by `--config`; no backtest resolver yet for the live short/medium window override. |
 
 ## D3/D8 — Coverage
 
@@ -130,9 +130,7 @@ label parity).
 ## Known live-only surfaces (decision record)
 
 `scale_in` (#873), manual resting limit orders (#883), per-cycle regime
-hysteresis (`tiered_tp_atr_live_regime_dynamic`, #843),
-`regime_directional_policy` (#822), regime-aware `sl_after` (#736), and
-`regime_window_divergence` (#907) are execution/per-cycle mechanics with no
-bar-level equivalent; the first two are silently ignored by design (no signal
-path), the middle three are loudly rejected, and the last should be promoted
-to a loud rejection (#943).
+hysteresis (`tiered_tp_atr_live_regime_dynamic`, #843), regime-aware
+`sl_after` (#736), and `regime_window_divergence` (#907) are execution/per-cycle
+mechanics with no bar-level equivalent yet; the first two are silently ignored
+by design (no signal path), while the remaining three are loudly rejected.

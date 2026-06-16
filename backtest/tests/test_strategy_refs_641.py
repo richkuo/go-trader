@@ -548,6 +548,49 @@ def test_load_strategy_config_rejects_regime_window_divergence(tmp_path):
         run_backtest.load_strategy_config(path, "hl-d-btc")
 
 
+_REGIME_DIRECTIONAL_POLICY = {
+    "trend_regime": {
+        "trending_up": {"direction": "long", "invert_signal": False},
+        "trending_down": {"direction": "short", "invert_signal": True},
+        "ranging": {"direction": "long", "invert_signal": False},
+    },
+}
+
+
+def test_load_strategy_config_threads_regime_directional_policy(tmp_path):
+    path = _write_full_config(tmp_path, {
+        "config_version": 15,
+        "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
+        "strategies": [
+            _perps_strategy(regime_directional_policy=_REGIME_DIRECTIONAL_POLICY),
+        ],
+    })
+    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
+    assert kwargs["regime_directional_policy"] == _REGIME_DIRECTIONAL_POLICY
+    assert kwargs["regime_enabled"] is True
+    assert kwargs["regime_period"] == 10
+    assert kwargs["regime_adx_threshold"] == 25.0
+
+
+def test_load_strategy_config_rejects_policy_without_regime_enabled(tmp_path):
+    path = _write_config(tmp_path, version=15, strategies=[
+        _perps_strategy(regime_directional_policy=_REGIME_DIRECTIONAL_POLICY),
+    ])
+    with pytest.raises(ValueError, match="regime.enabled=true"):
+        run_backtest.load_strategy_config(path, "hl-d-btc")
+
+
+def test_load_strategy_config_requires_top_level_regime_for_policy(tmp_path):
+    path = _write_config(tmp_path, version=15, strategies=[
+        _perps_strategy(
+            regime={"enabled": True, "period": 10, "adx_threshold": 25},
+            regime_directional_policy=_REGIME_DIRECTIONAL_POLICY,
+        ),
+    ])
+    with pytest.raises(ValueError, match="regime.enabled=true"):
+        run_backtest.load_strategy_config(path, "hl-d-btc")
+
+
 def test_load_strategy_config_rejects_both_without_close(tmp_path):
     # The plain signal path runs one leg at a time, so direction="both" with
     # no close evaluator would silently drop the short side. Reject instead

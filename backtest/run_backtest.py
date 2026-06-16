@@ -261,27 +261,23 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"{config_path}: strategy {strategy_id!r} has no open_strategy.name; "
                 f"the migrated config should always populate it."
             )
-        # #779: regime_directional_policy is HL-live-only — the backtester
-        # has no per-cycle resolver hook that mirrors runHyperliquidCheck,
-        # so the per-regime Direction / InvertSignal flip wouldn't apply
-        # and results would silently use the static config instead. Reject
-        # at config-load time so the operator sees the gap (parity with
-        # the regime-aware `sl_after` rejection at backtester init).
-        if sc.get("regime_directional_policy"):
+        regime_cfg = cfg.get("regime") or {}
+        if not isinstance(regime_cfg, dict):
+            regime_cfg = {}
+        regime_directional_policy = sc.get("regime_directional_policy")
+        if regime_directional_policy and not regime_cfg.get("enabled"):
             raise ValueError(
                 f"{config_path}: strategy {strategy_id!r} uses "
-                f"regime_directional_policy, which is HL-live-only in this "
-                f"release (backtester parity deferred — see #779). Use the "
-                f"static `direction` / `invert_signal` fields for backtesting."
+                f"regime_directional_policy, which requires regime.enabled=true "
+                f"for backtest/live parity."
             )
         # #942 (D2.5): regime_window_divergence (#907) is HL-perps-live-only —
         # it mutates sc.Direction per-cycle off a live short/medium regime
         # split, which the bar-level backtester has no resolver hook to mirror.
-        # Unlike its rejected siblings (regime_directional_policy above,
-        # tiered_tp_atr_live_regime_dynamic below) it was silently ignored
-        # rather than rejected, so a divergence-driven flip would backtest the
-        # static config and diverge from live. Reject with the same wording
-        # pattern so the operator sees the gap.
+        # Unlike tiered_tp_atr_live_regime_dynamic below, it was silently
+        # ignored rather than rejected, so a divergence-driven flip would
+        # backtest the static config and diverge from live. Reject with the
+        # same wording pattern so the operator sees the gap.
         if sc.get("regime_window_divergence"):
             raise ValueError(
                 f"{config_path}: strategy {strategy_id!r} uses "
@@ -371,8 +367,8 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"close_strategy (the open/close engine models both sides) or "
                 f"backtest each leg separately."
             )
-        # #998: regime_profile_allocation is backtestable (unlike its rejected
-        # siblings) — the slow long-window switch is a pure function of closed-bar
+        # #998: regime_profile_allocation is backtestable: the slow
+        # long-window switch is a pure function of closed-bar
         # OHLCV, so Backtester replays it. Resolve the referenced switch window's
         # spec from the config's regime.windows so run_single_backtest can compute
         # the per-bar label series; reject loudly if the window is absent.
@@ -419,6 +415,10 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "strategy_type": strategy_type,
             "direction": direction,
             "invert_signal": invert_signal,
+            "regime_directional_policy": regime_directional_policy,
+            "regime_enabled": bool(regime_cfg.get("enabled")),
+            "regime_period": int(regime_cfg.get("period", 14) or 14),
+            "regime_adx_threshold": float(regime_cfg.get("adx_threshold", 20.0) or 20.0),
             "profile_allocation": profile_allocation,
         }
     raise ValueError(
@@ -452,6 +452,7 @@ def run_single_backtest(
     strategy_type: str = "perps",
     direction: Optional[str] = None,
     invert_signal: bool = False,
+    regime_directional_policy: Optional[dict] = None,
     profile_allocation: Optional[dict] = None,
 ) -> Optional[dict]:
     """Run a single backtest and print results.
@@ -544,6 +545,7 @@ def run_single_backtest(
         strategy_type=strategy_type,
         direction=direction,
         invert_signal=invert_signal,
+        regime_directional_policy=regime_directional_policy,
         profile_allocation=profile_allocation,
     )
     results = bt.run(
@@ -900,10 +902,16 @@ def main():
             # signal inside Backtester.run (mirrors live invert-then-gate order).
             "direction",
             "invert_signal",
+            "regime_directional_policy",
             # #998: regime-profile allocation switch block (None when unused).
             "profile_allocation",
         )
         live_stop_kwargs = {k: live_kwargs[k] for k in stop_keys if k in live_kwargs}
+        args.regime_enabled = live_kwargs.get("regime_enabled", args.regime_enabled)
+        args.regime_period = live_kwargs.get("regime_period", args.regime_period)
+        args.regime_adx_threshold = live_kwargs.get(
+            "regime_adx_threshold", args.regime_adx_threshold,
+        )
 
     # CLI ATR-stop flags apply in single mode too; --config refs win on collision.
     if args.stop_loss_atr_mult is not None:

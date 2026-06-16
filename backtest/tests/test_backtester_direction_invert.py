@@ -102,6 +102,14 @@ _NEVER_FIRES_CLOSE = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [
     {"profit_pct": 0.9, "close_fraction": 1.0},
 ]}}]
 
+_REGIME_POLICY = {
+    "trend_regime": {
+        "trending_up": {"direction": "long", "invert_signal": False},
+        "trending_down": {"direction": "short", "invert_signal": True},
+        "ranging": {"direction": "long", "invert_signal": False},
+    },
+}
+
 
 def _run(signal, **kw):
     bt = Backtester(
@@ -141,3 +149,37 @@ def test_invert_then_direction_opens_long_from_inverted_sell():
     inverted_buy = _run([1, 0, 0, 0], direction="long", invert_signal=True)
     assert [t["side"] for t in inverted_sell["trades"]] == ["long"]
     assert inverted_buy["trades"] == []
+
+
+def test_regime_directional_policy_opens_inverse_short():
+    df = _ohlc([1, 0, 0, 0])
+    df["regime"] = "trending_down"
+    bt = Backtester(
+        initial_capital=1000,
+        commission_pct=0.0,
+        slippage_pct=0.0,
+        close_strategies=_NEVER_FIRES_CLOSE,
+        regime_enabled=True,
+        regime_directional_policy=_REGIME_POLICY,
+    )
+    res = bt.run(df, save=False)
+    assert [t["side"] for t in res["trades"]] == ["short"]
+
+
+def test_regime_directional_policy_holds_open_position_regime_plain_path():
+    df = _ohlc([1, 0, 1, 0, 0])
+    df["regime"] = "trending_down"
+    # The second +1 decision would close the short if the resolver followed the
+    # current row's trending_up regime. The stamped entry regime keeps the short
+    # policy in force until the end-of-data flush.
+    df.iloc[2:, df.columns.get_loc("regime")] = "trending_up"
+    bt = Backtester(
+        initial_capital=1000,
+        commission_pct=0.0,
+        slippage_pct=0.0,
+        regime_enabled=True,
+        regime_directional_policy=_REGIME_POLICY,
+    )
+    res = bt.run(df, save=False)
+    assert [t["side"] for t in res["trades"]] == ["short"]
+    assert res["trades"][0]["exit_reason"] == "end_of_data"
