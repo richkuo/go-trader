@@ -334,34 +334,48 @@ func (sdb *StateDB) ApplyTradeLedgerPlan(plan TradeLedgerPlan) error {
 	return tx.Commit()
 }
 
-func tradeLedgerDenominatorStrategies(strategies, targets []StrategyConfig) []StrategyConfig {
+func tradeLedgerDenominatorIDsByTarget(strategies, targets []StrategyConfig) map[string][]string {
 	byID := make(map[string]StrategyConfig, len(strategies))
 	for _, sc := range strategies {
 		byID[sc.ID] = sc
 	}
 	targetIDs := make(map[string]bool, len(targets))
-	denomIDs := make(map[string]bool, len(targets))
+	out := make(map[string][]string, len(targets))
 	for _, sc := range targets {
 		targetIDs[sc.ID] = true
-		denomIDs[sc.ID] = true
+		out[sc.ID] = []string{sc.ID}
 	}
 	for key, memberIDs := range detectSharedWallets(strategies) {
 		members := sharedWalletMembersWithManual(key, memberIDs, strategies)
-		selected := false
-		for _, id := range members {
-			if targetIDs[id] {
-				selected = true
-				break
-			}
-		}
-		if !selected {
-			continue
-		}
+		var sharedIDs []string
 		for _, id := range members {
 			sc, ok := byID[id]
 			if !ok || sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") {
 				continue
 			}
+			sharedIDs = append(sharedIDs, id)
+		}
+		sort.Strings(sharedIDs)
+		for _, id := range members {
+			if targetIDs[id] {
+				out[id] = append([]string(nil), sharedIDs...)
+			}
+		}
+	}
+	for id := range out {
+		sort.Strings(out[id])
+	}
+	return out
+}
+
+func tradeLedgerDenominatorStrategies(strategies, targets []StrategyConfig) []StrategyConfig {
+	byID := make(map[string]StrategyConfig, len(strategies))
+	for _, sc := range strategies {
+		byID[sc.ID] = sc
+	}
+	denomIDs := make(map[string]bool, len(targets))
+	for _, ids := range tradeLedgerDenominatorIDsByTarget(strategies, targets) {
+		for _, id := range ids {
 			denomIDs[id] = true
 		}
 	}
@@ -476,6 +490,7 @@ func runBackfillTradeLedger(args []string) int {
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].ID < targets[j].ID })
 	denomStrategies := tradeLedgerDenominatorStrategies(cfg.Strategies, targets)
+	denomIDsByTarget := tradeLedgerDenominatorIDsByTarget(cfg.Strategies, targets)
 
 	earliest, err := stateDB.EarliestTradeTimestamp(strategyIDsOf(denomStrategies))
 	if err != nil {
@@ -502,11 +517,12 @@ func runBackfillTradeLedger(args []string) int {
 		fillResult.FillCount, fillResult.PageCount, fillResult.AccountAddress)
 
 	tradesByID := make(map[string][]TradeBackfillRow, len(denomStrategies))
+	tradeLoadErrors := make(map[string]error)
 	for _, sc := range denomStrategies {
 		trades, err := stateDB.ListTradesForBackfill(sc.ID)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] failed to list trades: %v\n", sc.ID, err)
-			return 1
+			tradeLoadErrors[sc.ID] = err
+			continue
 		}
 		tradesByID[sc.ID] = trades
 	}
@@ -531,6 +547,22 @@ func runBackfillTradeLedger(args []string) int {
 			initialCapital = sc.Capital
 		}
 
+		if err := tradeLoadErrors[sc.ID]; err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] failed to list trades: %v\n", sc.ID, err)
+			exitCode = 1
+			continue
+		}
+		denomLoadOK := true
+		for _, id := range denomIDsByTarget[sc.ID] {
+			if err := tradeLoadErrors[id]; err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] failed to list shared-wallet peer trades for %s: %v\n", sc.ID, id, err)
+				exitCode = 1
+				denomLoadOK = false
+			}
+		}
+		if !denomLoadOK {
+			continue
+		}
 		trades := tradesByID[sc.ID]
 		closedRows, err := stateDB.LoadClosedPositionRows(sc.ID)
 		if err != nil {

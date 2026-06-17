@@ -1040,16 +1040,11 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 						} else if logger != nil {
 							logger.Info("hl-sync: %s Detector 1 SL OID %s unfilled — routing external (userFills miss)", coin, oidStr)
 						}
-						lookupExt, useFillFeeExt := resolveFee(coin, 0, pos.Quantity)
-						oidExt := ""
-						if useFillFeeExt && lookupExt.OID > 0 {
-							oidExt = strconv.FormatInt(lookupExt.OID, 10)
-						}
+						lookupExt, useFillFeeExt, oidExt := detector1AggregateShare(pos.Quantity)
 						if !useFillFeeExt {
-							if sharedLookup, sharedUseFill, sharedOID := detector1AggregateShare(pos.Quantity); sharedUseFill {
-								lookupExt = sharedLookup
-								useFillFeeExt = true
-								oidExt = sharedOID
+							lookupExt, useFillFeeExt = resolveFee(coin, 0, pos.Quantity)
+							if useFillFeeExt && lookupExt.OID > 0 {
+								oidExt = strconv.FormatInt(lookupExt.OID, 10)
 							}
 						}
 						logHyperliquidReconcileFillLookup(logger, coin, 0, pos.Quantity, lookupExt, useFillFeeExt)
@@ -1078,16 +1073,11 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 					// every fill to land in trades. Do not treat the resulting
 					// Trade / ClosedPosition rows as authoritative for tax or
 					// reporting; they exist to keep cash bookkeeping in sync.
-					lookup, useFillFee := resolveFee(coin, 0, pos.Quantity)
-					oidStr := ""
-					if useFillFee && lookup.OID > 0 {
-						oidStr = strconv.FormatInt(lookup.OID, 10)
-					}
+					lookup, useFillFee, oidStr := detector1AggregateShare(pos.Quantity)
 					if !useFillFee {
-						if sharedLookup, sharedUseFill, sharedOID := detector1AggregateShare(pos.Quantity); sharedUseFill {
-							lookup = sharedLookup
-							useFillFee = true
-							oidStr = sharedOID
+						lookup, useFillFee = resolveFee(coin, 0, pos.Quantity)
+						if useFillFee && lookup.OID > 0 {
+							oidStr = strconv.FormatInt(lookup.OID, 10)
 						}
 					}
 					logHyperliquidReconcileFillLookup(logger, coin, 0, pos.Quantity, lookup, useFillFee)

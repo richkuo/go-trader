@@ -248,7 +248,8 @@ func TestReconcileHyperliquidPositions_ExternalCloseUsesFillFee(t *testing.T) {
 
 func TestReconcileHyperliquidAccountPositions_DetectorOneUsesFillFee(t *testing.T) {
 	// Detector 1 (Full external close on shared coin): SL owner gets OID-keyed
-	// fee lookup; non-owner peer gets coin+size match.
+	// fee lookup; non-owner peer gets the coin-level external fill split by
+	// virtual qty.
 	origLookup := lookupHyperliquidReconcileFillFee
 	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
 	lookupHyperliquidReconcileFillFee = func(addr, coin string, oid int64, qty float64) (HLFillLookup, bool) {
@@ -314,8 +315,8 @@ func TestReconcileHyperliquidAccountPositions_DetectorOneUsesFillFee(t *testing.
 	if len(peerSS.TradeHistory) != 1 {
 		t.Fatalf("peer TradeHistory = %d, want 1", len(peerSS.TradeHistory))
 	}
-	if peerSS.TradeHistory[0].ExchangeFee < 0.749 || peerSS.TradeHistory[0].ExchangeFee > 0.751 {
-		t.Errorf("peer ExchangeFee = %g, want ~0.75 (coin+size fallback)", peerSS.TradeHistory[0].ExchangeFee)
+	if peerSS.TradeHistory[0].ExchangeFee < 0.249 || peerSS.TradeHistory[0].ExchangeFee > 0.251 {
+		t.Errorf("peer ExchangeFee = %g, want ~0.25 (aggregate split)", peerSS.TradeHistory[0].ExchangeFee)
 	}
 }
 
