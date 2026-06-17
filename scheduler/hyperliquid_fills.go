@@ -41,6 +41,26 @@ type HLFillLookup struct {
 	OID            int64
 }
 
+func splitHyperliquidFillLookupByQty(lookup HLFillLookup, qty, totalQty float64) (HLFillLookup, bool) {
+	if qty <= 0 || totalQty <= 0 {
+		return HLFillLookup{}, false
+	}
+	share := qty / totalQty
+	if share <= 0 {
+		return HLFillLookup{}, false
+	}
+	if share > 1 {
+		share = 1
+	}
+	out := lookup
+	out.Fee = lookup.Fee * share
+	out.ClosedPnLGross = lookup.ClosedPnLGross * share
+	if lookup.FilledQty > 0 {
+		out.FilledQty = lookup.FilledQty * share
+	}
+	return out, true
+}
+
 // hlFillRecord is the trimmed userFills payload we care about. The HL indexer
 // returns numeric fields as strings; ParseFloat tolerates missing/empty.
 type hlFillRecord struct {
@@ -487,9 +507,10 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 			}
 		}
 	}
-	// Shared-coin Detector 3 partial: prefetch the aggregate virtual/on-chain
-	// drift qty. Per-strategy prefetch above uses each strategy's own qty, but
-	// Detector 3 books the coin-level delta (sum of peers minus on-chain).
+	// Shared-coin aggregate paths: prefetch Detector 1's full-flat coin-level
+	// virtual qty and Detector 3's virtual/on-chain drift qty. Per-strategy
+	// prefetch above uses each strategy's own qty, but these detectors book
+	// against a wallet-level userFills row.
 	coinStratCount := make(map[string]int)
 	coinVirtualQty := make(map[string]float64)
 	for _, sc := range allStrategies {
@@ -518,6 +539,9 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 			continue
 		}
 		onChainQty := onChainByCoin[coin]
+		if math.Abs(onChainQty) < 1e-6 && math.Abs(coinVirtualQty[coin]) > 1e-6 {
+			addCandidate(coin, 0, math.Abs(coinVirtualQty[coin]))
+		}
 		if _, closeQty, ok := hyperliquidSharedPartialCloseDrift(coinVirtualQty[coin], onChainQty); ok {
 			addCandidate(coin, 0, closeQty)
 		}

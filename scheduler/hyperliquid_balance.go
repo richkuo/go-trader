@@ -954,16 +954,37 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		if math.Abs(onChainQty) < 1e-6 && math.Abs(virtualQty) > 1e-6 {
 			// Detector 1: everything gone on-chain — close all peers.
 			//
-			// Fee-lookup caveat for the multi-peer case: a single aggregated
-			// UI close produces one userFills row sized at the *aggregate*
-			// quantity, while each non-owner peer here queries with its own
-			// per-strategy pos.Quantity. The hlReconcileFillSizeTolerance
-			// (1e-4) won't accept that mismatch, so peers fall back to the
-			// modeled fee. SL attribution additionally requires an OID-keyed
-			// userFills hit matching Position.StopLossOID (#756); otherwise the
-			// peer is closed as hl_sync_external (mark or zero PnL). Per-peer fee
-			// accuracy on external closes is only achievable when each peer's qty
-			// happens to equal the aggregate close size.
+			// Multi-peer external closes usually have one userFills row sized
+			// at the coin-level virtual quantity. Split that aggregate fill
+			// across peers by virtual qty when a per-strategy lookup misses so
+			// each Trade row carries a real fee, fill price, and OID for later
+			// ledger true-up (#1029).
+			detector1ShareDenom := 0.0
+			for _, id := range stratIDs {
+				ss := state.Strategies[id]
+				if ss == nil {
+					continue
+				}
+				pos := ss.Positions[coin]
+				if pos != nil && pos.Quantity > 0 {
+					detector1ShareDenom += pos.Quantity
+				}
+			}
+			detector1AggregateLookup, detector1AggregateUseFill := resolveFee(coin, 0, math.Abs(virtualQty))
+			detector1AggregateOID := ""
+			if detector1AggregateUseFill && detector1AggregateLookup.OID > 0 {
+				detector1AggregateOID = strconv.FormatInt(detector1AggregateLookup.OID, 10)
+			}
+			detector1AggregateShare := func(qty float64) (HLFillLookup, bool, string) {
+				if !detector1AggregateUseFill || detector1ShareDenom <= 0 {
+					return HLFillLookup{}, false, ""
+				}
+				lookup, ok := splitHyperliquidFillLookupByQty(detector1AggregateLookup, qty, detector1ShareDenom)
+				if !ok {
+					return HLFillLookup{}, false, ""
+				}
+				return lookup, true, detector1AggregateOID
+			}
 			for _, id := range stratIDs {
 				ss := state.Strategies[id]
 				if ss == nil {
@@ -1020,6 +1041,17 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 							logger.Info("hl-sync: %s Detector 1 SL OID %s unfilled — routing external (userFills miss)", coin, oidStr)
 						}
 						lookupExt, useFillFeeExt := resolveFee(coin, 0, pos.Quantity)
+						oidExt := ""
+						if useFillFeeExt && lookupExt.OID > 0 {
+							oidExt = strconv.FormatInt(lookupExt.OID, 10)
+						}
+						if !useFillFeeExt {
+							if sharedLookup, sharedUseFill, sharedOID := detector1AggregateShare(pos.Quantity); sharedUseFill {
+								lookupExt = sharedLookup
+								useFillFeeExt = true
+								oidExt = sharedOID
+							}
+						}
 						logHyperliquidReconcileFillLookup(logger, coin, 0, pos.Quantity, lookupExt, useFillFeeExt)
 						closePx := hlReconcileExternalClosePx(prices[coin], lookupExt, useFillFeeExt)
 						if closePx <= 0 {
@@ -1030,7 +1062,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 								logger.Info("hl-sync: %s Detector 1 external close has no price source — booking at avg cost $%.4f (zero PnL)", coin, closePx)
 							}
 						}
-						if recordPerpsExternalCloseWithFillFee(ss, coin, closePx, lookupExt.Fee, useFillFeeExt, "", "hl_sync_external", logger) {
+						if recordPerpsExternalCloseWithFillFee(ss, coin, closePx, lookupExt.Fee, useFillFeeExt, oidExt, "hl_sync_external", logger) {
 							changed = true
 						}
 					}
@@ -1047,6 +1079,17 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 					// Trade / ClosedPosition rows as authoritative for tax or
 					// reporting; they exist to keep cash bookkeeping in sync.
 					lookup, useFillFee := resolveFee(coin, 0, pos.Quantity)
+					oidStr := ""
+					if useFillFee && lookup.OID > 0 {
+						oidStr = strconv.FormatInt(lookup.OID, 10)
+					}
+					if !useFillFee {
+						if sharedLookup, sharedUseFill, sharedOID := detector1AggregateShare(pos.Quantity); sharedUseFill {
+							lookup = sharedLookup
+							useFillFee = true
+							oidStr = sharedOID
+						}
+					}
 					logHyperliquidReconcileFillLookup(logger, coin, 0, pos.Quantity, lookup, useFillFee)
 					closePx := hlReconcileExternalClosePx(prices[coin], lookup, useFillFee)
 					if closePx <= 0 {
@@ -1055,7 +1098,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 							logger.Info("hl-sync: %s external close has no price source — booking at avg cost $%.4f (zero PnL)", coin, closePx)
 						}
 					}
-					if recordPerpsExternalCloseWithFillFee(ss, coin, closePx, lookup.Fee, useFillFee, "", "hl_sync_external", logger) {
+					if recordPerpsExternalCloseWithFillFee(ss, coin, closePx, lookup.Fee, useFillFee, oidStr, "hl_sync_external", logger) {
 						changed = true
 					}
 				}

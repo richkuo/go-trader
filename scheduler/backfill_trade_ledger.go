@@ -77,12 +77,27 @@ type tradeLedgerRowNewValues struct {
 	FeeSource              string
 }
 
+type tradeLedgerOIDTotals struct {
+	FeeQty   float64
+	CloseQty float64
+}
+
 // planTradeLedgerForStrategy is the pure planner (no I/O).
 func planTradeLedgerForStrategy(
 	strategyID string,
 	trades []TradeBackfillRow,
 	fillMap map[string]HLFillSummary,
 	initialCapital, oldCash float64,
+) TradeLedgerPlan {
+	return planTradeLedgerForStrategyWithOIDTotals(strategyID, trades, fillMap, initialCapital, oldCash, nil)
+}
+
+func planTradeLedgerForStrategyWithOIDTotals(
+	strategyID string,
+	trades []TradeBackfillRow,
+	fillMap map[string]HLFillSummary,
+	initialCapital, oldCash float64,
+	oidTotals map[string]tradeLedgerOIDTotals,
 ) TradeLedgerPlan {
 	plan := TradeLedgerPlan{StrategyID: strategyID, OldCash: oldCash}
 
@@ -114,13 +129,13 @@ func planTradeLedgerForStrategy(
 		plan.CashBaselineDivergent = true
 	}
 
-	// Quantity totals per OID across THIS strategy's rows. A userFills
-	// aggregate spans every leg of the OID — partial TP legs, resting-limit
-	// partial adds, and the close+open legs of a bidirectional flip order —
-	// so apportion by qty share instead of letting each leg absorb the full
-	// aggregate. The FEE was charged on the whole order (all legs); the
-	// closedPnl accrues only on close legs, so the two use different
-	// denominators.
+	// Quantity totals per OID across this strategy's rows, optionally widened
+	// to shared-wallet peers. A userFills aggregate spans every leg of the OID
+	// — partial TP legs, resting-limit partial adds, bidirectional flip legs,
+	// and shared-wallet external closes — so apportion by qty share instead
+	// of letting each leg absorb the full aggregate. The fee was charged on
+	// the whole order (all legs); closedPnl accrues only on close legs, so the
+	// two use different denominators.
 	feeQtyByOID := make(map[string]float64)
 	closeQtyByOID := make(map[string]float64)
 	for _, t := range sorted {
@@ -131,6 +146,20 @@ func planTradeLedgerForStrategy(
 		if t.IsClose {
 			closeQtyByOID[t.ExchangeOrderID] += t.Quantity
 		}
+	}
+	feeQtyTotal := func(oid string) float64 {
+		total := feeQtyByOID[oid]
+		if oidTotals != nil && oidTotals[oid].FeeQty > total {
+			total = oidTotals[oid].FeeQty
+		}
+		return total
+	}
+	closeQtyTotal := func(oid string) float64 {
+		total := closeQtyByOID[oid]
+		if oidTotals != nil && oidTotals[oid].CloseQty > total {
+			total = oidTotals[oid].CloseQty
+		}
+		return total
 	}
 
 	cash := initialCapital
@@ -180,7 +209,7 @@ func planTradeLedgerForStrategy(
 			})
 		default:
 			feeShare := 1.0
-			if total := feeQtyByOID[t.ExchangeOrderID]; total > 0 && t.Quantity > 0 {
+			if total := feeQtyTotal(t.ExchangeOrderID); total > 0 && t.Quantity > 0 {
 				feeShare = t.Quantity / total
 			}
 			nv.Fee = summary.Fee * feeShare
@@ -191,7 +220,7 @@ func planTradeLedgerForStrategy(
 			}
 			if t.IsClose {
 				pnlShare := 1.0
-				if total := closeQtyByOID[t.ExchangeOrderID]; total > 0 && t.Quantity > 0 {
+				if total := closeQtyTotal(t.ExchangeOrderID); total > 0 && t.Quantity > 0 {
 					pnlShare = t.Quantity / total
 				}
 				// Exchange-reported gross closedPnl. For shared-coin peers HL
@@ -305,6 +334,77 @@ func (sdb *StateDB) ApplyTradeLedgerPlan(plan TradeLedgerPlan) error {
 	return tx.Commit()
 }
 
+func tradeLedgerDenominatorStrategies(strategies, targets []StrategyConfig) []StrategyConfig {
+	byID := make(map[string]StrategyConfig, len(strategies))
+	for _, sc := range strategies {
+		byID[sc.ID] = sc
+	}
+	targetIDs := make(map[string]bool, len(targets))
+	denomIDs := make(map[string]bool, len(targets))
+	for _, sc := range targets {
+		targetIDs[sc.ID] = true
+		denomIDs[sc.ID] = true
+	}
+	for key, memberIDs := range detectSharedWallets(strategies) {
+		members := sharedWalletMembersWithManual(key, memberIDs, strategies)
+		selected := false
+		for _, id := range members {
+			if targetIDs[id] {
+				selected = true
+				break
+			}
+		}
+		if !selected {
+			continue
+		}
+		for _, id := range members {
+			sc, ok := byID[id]
+			if !ok || sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") {
+				continue
+			}
+			denomIDs[id] = true
+		}
+	}
+	out := make([]StrategyConfig, 0, len(denomIDs))
+	for id := range denomIDs {
+		if sc, ok := byID[id]; ok {
+			out = append(out, sc)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func tradeLedgerSharedWalletOIDTotals(strategies []StrategyConfig, tradesByID map[string][]TradeBackfillRow) map[string]map[string]tradeLedgerOIDTotals {
+	out := make(map[string]map[string]tradeLedgerOIDTotals)
+	for key, memberIDs := range detectSharedWallets(strategies) {
+		members := sharedWalletMembersWithManual(key, memberIDs, strategies)
+		totals := make(map[string]tradeLedgerOIDTotals)
+		for _, id := range members {
+			for _, t := range tradesByID[id] {
+				if t.ExchangeOrderID == "" || t.TradeType == TradeTypeFunding {
+					continue
+				}
+				total := totals[t.ExchangeOrderID]
+				total.FeeQty += t.Quantity
+				if t.IsClose {
+					total.CloseQty += t.Quantity
+				}
+				totals[t.ExchangeOrderID] = total
+			}
+		}
+		if len(totals) == 0 {
+			continue
+		}
+		for _, id := range members {
+			if _, loaded := tradesByID[id]; loaded {
+				out[id] = totals
+			}
+		}
+	}
+	return out
+}
+
 // runBackfillTradeLedger implements `go-trader backfill trade-ledger`.
 // Dry-run by default; --apply commits and resets the per-wallet ledger drift
 // baselines so the next reconcile re-anchors on the repaired ledger.
@@ -375,8 +475,9 @@ func runBackfillTradeLedger(args []string) int {
 		return 1
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].ID < targets[j].ID })
+	denomStrategies := tradeLedgerDenominatorStrategies(cfg.Strategies, targets)
 
-	earliest, err := stateDB.EarliestTradeTimestamp(strategyIDsOf(targets))
+	earliest, err := stateDB.EarliestTradeTimestamp(strategyIDsOf(denomStrategies))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to read earliest trade timestamp: %v\n", err)
 		return 1
@@ -400,6 +501,17 @@ func runBackfillTradeLedger(args []string) int {
 	fmt.Printf("Fetched %d fills across %d pages (account=%s)\n",
 		fillResult.FillCount, fillResult.PageCount, fillResult.AccountAddress)
 
+	tradesByID := make(map[string][]TradeBackfillRow, len(denomStrategies))
+	for _, sc := range denomStrategies {
+		trades, err := stateDB.ListTradesForBackfill(sc.ID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] failed to list trades: %v\n", sc.ID, err)
+			return 1
+		}
+		tradesByID[sc.ID] = trades
+	}
+	sharedOIDTotalsByID := tradeLedgerSharedWalletOIDTotals(cfg.Strategies, tradesByID)
+
 	mode := "DRY-RUN"
 	if *apply {
 		mode = "APPLY"
@@ -419,12 +531,7 @@ func runBackfillTradeLedger(args []string) int {
 			initialCapital = sc.Capital
 		}
 
-		trades, err := stateDB.ListTradesForBackfill(sc.ID)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] failed to list trades: %v\n", sc.ID, err)
-			exitCode = 1
-			continue
-		}
+		trades := tradesByID[sc.ID]
 		closedRows, err := stateDB.LoadClosedPositionRows(sc.ID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[%s] failed to load closed_positions: %v\n", sc.ID, err)
@@ -432,7 +539,7 @@ func runBackfillTradeLedger(args []string) int {
 			continue
 		}
 
-		plan := planTradeLedgerForStrategy(sc.ID, trades, fillResult.ByOID, initialCapital, oldCash)
+		plan := planTradeLedgerForStrategyWithOIDTotals(sc.ID, trades, fillResult.ByOID, initialCapital, oldCash, sharedOIDTotalsByID[sc.ID])
 		plan.ClosedPositions = planClosedPositionRecomputes(tradeLedgerCorrectedNetRows(trades, plan), closedRows)
 		printTradeLedgerReport(plan)
 

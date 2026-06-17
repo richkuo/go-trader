@@ -1581,6 +1581,117 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash(t *tes
 	}
 }
 
+func TestReconcileSharedCoin_Detector1SplitsAggregateFillAcrossPeers(t *testing.T) {
+	const (
+		fillPx    = 3200.0
+		aggFee    = 4.0
+		aggOID    = int64(98765)
+		ownerQty  = 1.5
+		peerQty   = 0.5
+		avgCost   = 3000.0
+		ownerCash = 1000.0
+		peerCash  = 500.0
+	)
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: ownerCash, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: ownerQty, AvgCost: avgCost, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth"},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: peerCash, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: peerQty, AvgCost: avgCost, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+	allStrategies := []StrategyConfig{
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, coin string, oid int64, qty float64) (HLFillLookup, bool) {
+		if oid == 0 && coin == "ETH" && math.Abs(qty-(ownerQty+peerQty)) < 1e-9 {
+			return HLFillLookup{
+				Fee:            aggFee,
+				ClosedPnLGross: (ownerQty + peerQty) * (fillPx - avgCost),
+				FilledQty:      ownerQty + peerQty,
+				Px:             fillPx,
+				Count:          1,
+				OID:            aggOID,
+			}, true
+		}
+		return HLFillLookup{}, false
+	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, map[string]float64{"ETH": 3100}, "0xtest", nil, false)
+
+	assertClose := func(id string, startCash, qty, wantFee float64) {
+		t.Helper()
+		ss := state.Strategies[id]
+		if ss.Positions["ETH"] != nil {
+			t.Fatalf("%s ETH position should be nil", id)
+		}
+		if len(ss.ClosedPositions) != 1 {
+			t.Fatalf("%s ClosedPositions = %d, want 1", id, len(ss.ClosedPositions))
+		}
+		cp := ss.ClosedPositions[0]
+		if cp.CloseReason != "hl_sync_external" {
+			t.Errorf("%s CloseReason = %q, want hl_sync_external", id, cp.CloseReason)
+		}
+		if cp.ClosePrice != fillPx {
+			t.Errorf("%s ClosePrice = %v, want fill %v", id, cp.ClosePrice, fillPx)
+		}
+		wantNetPnL := qty*(fillPx-avgCost) - wantFee
+		if math.Abs(cp.RealizedPnL-wantNetPnL) > 1e-9 {
+			t.Errorf("%s ClosedPosition net PnL = %v, want %v", id, cp.RealizedPnL, wantNetPnL)
+		}
+		if math.Abs(ss.Cash-(startCash+wantNetPnL)) > 1e-9 {
+			t.Errorf("%s Cash = %v, want %v", id, ss.Cash, startCash+wantNetPnL)
+		}
+		var closeTrades []Trade
+		for _, tr := range ss.TradeHistory {
+			if tr.IsClose {
+				closeTrades = append(closeTrades, tr)
+			}
+		}
+		if len(closeTrades) != 1 {
+			t.Fatalf("%s close trades = %d, want 1 (history=%+v)", id, len(closeTrades), ss.TradeHistory)
+		}
+		tr := closeTrades[0]
+		if tr.ExchangeOrderID != "98765" {
+			t.Errorf("%s ExchangeOrderID = %q, want 98765", id, tr.ExchangeOrderID)
+		}
+		if tr.FeeSource != FeeSourceUserFills {
+			t.Errorf("%s FeeSource = %q, want %q", id, tr.FeeSource, FeeSourceUserFills)
+		}
+		if math.Abs(tr.ExchangeFee-wantFee) > 1e-9 {
+			t.Errorf("%s ExchangeFee = %v, want %v", id, tr.ExchangeFee, wantFee)
+		}
+		if tr.Price != fillPx {
+			t.Errorf("%s trade Price = %v, want %v", id, tr.Price, fillPx)
+		}
+		if math.Abs(tr.RealizedPnL-qty*(fillPx-avgCost)) > 1e-9 {
+			t.Errorf("%s trade gross PnL = %v, want %v", id, tr.RealizedPnL, qty*(fillPx-avgCost))
+		}
+		if math.Abs(tradeNetPnL(tr)-wantNetPnL) > 1e-9 {
+			t.Errorf("%s trade net PnL = %v, want %v", id, tradeNetPnL(tr), wantNetPnL)
+		}
+	}
+
+	assertClose("hl-owner-eth", ownerCash, ownerQty, aggFee*(ownerQty/(ownerQty+peerQty)))
+	assertClose("hl-peer-eth", peerCash, peerQty, aggFee*(peerQty/(ownerQty+peerQty)))
+}
+
 func TestHlReconcileExternalClosePx(t *testing.T) {
 	const mark = 63564.5
 	const fillPx = 63597.0

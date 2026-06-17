@@ -850,6 +850,53 @@ func TestPlanTradeLedgerForStrategy_SharedOIDApportionsByQty(t *testing.T) {
 	}
 }
 
+func TestPlanTradeLedgerForStrategy_SharedWalletOIDTotalsAcrossStrategies(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xabc")
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	tradesA := []TradeBackfillRow{
+		{RowID: 1, Timestamp: base, Symbol: "ETH", Side: "sell", Quantity: 1.5, Price: 3100, Value: 4650,
+			IsClose: true, RealizedPnL: 150, ExchangeFee: 0, PnLGross: true, ExchangeOrderID: "98765"},
+	}
+	tradesB := []TradeBackfillRow{
+		{RowID: 2, Timestamp: base, Symbol: "ETH", Side: "sell", Quantity: 0.5, Price: 3100, Value: 1550,
+			IsClose: true, RealizedPnL: 50, ExchangeFee: 0, PnLGross: true, ExchangeOrderID: "98765"},
+	}
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	totalsByID := tradeLedgerSharedWalletOIDTotals(strategies, map[string][]TradeBackfillRow{
+		"hl-a": tradesA,
+		"hl-b": tradesB,
+	})
+	fills := map[string]HLFillSummary{
+		"98765": {Fee: 4, ClosedPnLGross: 400, Qty: 2, Px: 3200},
+	}
+
+	planA := planTradeLedgerForStrategyWithOIDTotals("hl-a", tradesA, fills, 1000, 0, totalsByID["hl-a"])
+	planB := planTradeLedgerForStrategyWithOIDTotals("hl-b", tradesB, fills, 500, 0, totalsByID["hl-b"])
+
+	if len(planA.Changes) != 1 || len(planB.Changes) != 1 {
+		t.Fatalf("changes A/B = %d/%d, want 1/1", len(planA.Changes), len(planB.Changes))
+	}
+	a, b := planA.Changes[0], planB.Changes[0]
+	if math.Abs(a.NewFee-3) > 1e-9 || math.Abs(a.NewPnL-300) > 1e-9 {
+		t.Errorf("strategy A share = fee %v pnl %v, want 3 / 300", a.NewFee, a.NewPnL)
+	}
+	if math.Abs(b.NewFee-1) > 1e-9 || math.Abs(b.NewPnL-100) > 1e-9 {
+		t.Errorf("strategy B share = fee %v pnl %v, want 1 / 100", b.NewFee, b.NewPnL)
+	}
+	if math.Abs(a.NewFee+b.NewFee-4) > 1e-9 {
+		t.Errorf("fee sum = %v, want aggregate 4", a.NewFee+b.NewFee)
+	}
+	if math.Abs(a.NewPnL+b.NewPnL-400) > 1e-9 {
+		t.Errorf("pnl sum = %v, want aggregate 400", a.NewPnL+b.NewPnL)
+	}
+	if math.Abs(planA.NewCash-1297) > 1e-9 || math.Abs(planB.NewCash-599) > 1e-9 {
+		t.Errorf("cash A/B = %v/%v, want 1297/599", planA.NewCash, planB.NewCash)
+	}
+}
+
 // A flip order's close and open legs share one OID: the fee apportions
 // across BOTH legs (the exchange charged it on the whole order) while the
 // closedPnl lands entirely on the close leg.
