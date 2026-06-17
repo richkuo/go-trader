@@ -86,6 +86,16 @@ def test_platform_order_matches_platform_tags(registry):
         )
 
 
+def test_hidden_strategies_stay_registered_but_leave_discovery(registry):
+    for platform in registry.VALID_PLATFORMS:
+        visible = registry.build_registry(platform)
+        full = registry.build_registry(platform, include_hidden=True)
+        for name in registry.DISCOVERY_HIDDEN_STRATEGIES:
+            if platform in registry.STRATEGIES[name]["platforms"]:
+                assert name in full
+                assert name not in visible
+
+
 def test_build_registry_rejects_unknown_platform(registry):
     with pytest.raises(ValueError, match="Unknown platform"):
         registry.build_registry("options")
@@ -131,6 +141,15 @@ def test_shims_produce_independent_registries(spot_shim, futures_shim):
     assert "delta_neutral_funding" in futures_shim.STRATEGY_REGISTRY
     assert "triple_ema_bidir" not in spot_shim.STRATEGY_REGISTRY
     assert "triple_ema_bidir" in futures_shim.STRATEGY_REGISTRY
+
+
+def test_deprecated_range_scalper_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
+    for shim in (spot_shim, futures_shim):
+        assert "range_scalper" not in shim.list_strategies()
+        assert "range_scalper" in shim.STRATEGY_REGISTRY
+        df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(80))
+        result = shim.apply_strategy("range_scalper", df)
+        assert "signal" in result.columns
 
 
 def test_momentum_variant_overrides_threshold(spot_shim, futures_shim):
