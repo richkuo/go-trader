@@ -92,6 +92,12 @@ Other dirs (guardrails; inventories in ARCHITECTURE.md):
 ### Addressing review findings
 Before implementing `@claude review` findings: restate each item as an invariant, enumerate states that would break the proposed fix (especially the inverse of the reported scenario and compound/concurrent cases), and add tests for that class — not only the reported example — before pushing.
 
+## GitHub Issues
+- Create with `gh issue create`; prefix the title with a complexity score: `[C<0-100>] <title>` (e.g. `[C70] Fix order-fill race`).
+- **Complexity score (0–100):** an approximation, **not** a time/effort estimate. Weigh **scope** (files/layers/surfaces touched), **risk** (blast radius — money/data-integrity/security/auto-protective paths weigh heaviest), and **uncertainty** (unknowns/research before the work is well-defined).
+- First body line is a one-line rationale naming the drivers, number matching the title: `**Complexity: 70/100** — scope: medium; risk: high (order-fill path); uncertainty: exchange API behavior unverified`.
+- End the body with the same footer as commits/PRs — `LLM: <model> | <effort> | Harness: <action>` — no `Co-authored-by` trailer.
+
 ## Build & Deploy
 - **Update:** `bash scripts/update.sh --restart` — atomic: preflight → `pull --ff-only` (or `--rsync-from <src>`, won't clobber `.git/`/config/state DB/venv/binary — DBs guarded by `*.db`/`*.db-wal`/`*.db-shm`/`*.db.lock` extension globs via `update_db_rsync_excludes`, not just named files, #1013) → `uv sync` → build → probe → swap (`.prev`) → restart+verify → rollback on timeout. Env `STATUS_PORT`/`ACTIVE_TIMEOUT=30s`/`HEALTH_TIMEOUT=60s`. **Never rebuild Go alone — argv contract requires both sides (Go+Python) at same SHA.** Restart `--restart-mode systemd` (default; falls back to signal) / `signal` (`GO_TRADER_PIDFILE`/`GO_TRADER_RUN_SH`). Batch `--all --restart`.
 - **Graceful shutdown:** drains side-effecting subprocesses ≤ `shutdownDrainCap=15s` then SIGKILLs; state-save/notifier-flush/DB-close after via deferred LIFO. Unit `TimeoutStopSec=20`; service-file changes require `daemon-reload`.
