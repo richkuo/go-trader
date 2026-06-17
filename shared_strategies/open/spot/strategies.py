@@ -40,7 +40,8 @@ def _load_registry_module():
 
 _registry = _load_registry_module()
 
-STRATEGY_REGISTRY: Dict[str, dict] = _registry.build_registry("spot")
+STRATEGY_REGISTRY: Dict[str, dict] = _registry.build_registry("spot", include_hidden=True)
+DISCOVERY_STRATEGY_REGISTRY: Dict[str, dict] = _registry.build_registry("spot")
 
 
 def get_strategy(name: str) -> dict:
@@ -50,7 +51,7 @@ def get_strategy(name: str) -> dict:
 
 
 def list_strategies() -> List[str]:
-    return list(STRATEGY_REGISTRY.keys())
+    return list(DISCOVERY_STRATEGY_REGISTRY.keys())
 
 
 def apply_strategy(name: str, df: pd.DataFrame, params: Optional[dict] = None) -> pd.DataFrame:
@@ -63,10 +64,10 @@ def apply_strategy(name: str, df: pd.DataFrame, params: Optional[dict] = None) -
 
 if __name__ == "__main__":
     if "--list-json" in sys.argv:
-        print(json.dumps([{"id": name, "description": STRATEGY_REGISTRY[name]["description"]} for name in list_strategies()]))
+        print(json.dumps([{"id": name, "description": DISCOVERY_STRATEGY_REGISTRY[name]["description"]} for name in list_strategies()]))
     else:
         print(f"Registered strategies: {list_strategies()}")
         for name in list_strategies():
-            s = STRATEGY_REGISTRY[name]
+            s = DISCOVERY_STRATEGY_REGISTRY[name]
             print(f"  {name}: {s['description']}")
             print(f"    Defaults: {s['default_params']}")

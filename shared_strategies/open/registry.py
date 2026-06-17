@@ -8,11 +8,12 @@ per-platform ``description`` / ``default_params`` overrides.
 ``shared_strategies/open/futures/strategies.py``
 are thin shims that call ``build_registry("spot")`` / ``build_registry("futures")``
 to materialize a platform-filtered view with the same shape as the legacy
-``STRATEGY_REGISTRY`` dict.
+``STRATEGY_REGISTRY`` dict. Deprecated strategies may stay registered so
+explicit existing configs remain loadable while discovery/list-json hides them.
 
 Per-platform ordering is explicit in ``PLATFORM_ORDER`` at the bottom of this
-file — it must match the legacy registration order in each shim so
-``--list-json`` output stays byte-identical.
+file. ``DISCOVERY_HIDDEN_STRATEGIES`` entries keep that canonical order for
+explicit loads but are omitted from ``--list-json`` discovery.
 """
 
 import os
@@ -60,6 +61,10 @@ VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
 # name -> {fn, description, default_params, platforms, variants}
 STRATEGIES: Dict[str, Dict[str, Any]] = {}
 
+# Strategies kept loadable for existing configs/backtests but hidden from
+# discovery surfaces such as --list-json and generated defaults.
+DISCOVERY_HIDDEN_STRATEGIES = frozenset({"range_scalper"})
+
 
 def register(
     name: str,
@@ -105,7 +110,7 @@ def register(
     return decorator
 
 
-def build_registry(platform: str) -> Dict[str, Dict[str, Any]]:
+def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, Dict[str, Any]]:
     """Return a fresh ``{name: {fn, description, default_params}}`` dict
     filtered to ``platform`` and in the order declared in ``PLATFORM_ORDER``.
 
@@ -117,7 +122,8 @@ def build_registry(platform: str) -> Dict[str, Dict[str, Any]]:
             f"Unknown platform {platform!r}; expected one of {VALID_PLATFORMS}"
         )
     order = PLATFORM_ORDER[platform]
-    expected = {n for n, e in STRATEGIES.items() if platform in e["platforms"]}
+    tagged = {n for n, e in STRATEGIES.items() if platform in e["platforms"]}
+    expected = set(tagged)
     missing_from_order = expected - set(order)
     if missing_from_order:
         raise RuntimeError(
@@ -132,6 +138,8 @@ def build_registry(platform: str) -> Dict[str, Dict[str, Any]]:
 
     out: Dict[str, Dict[str, Any]] = {}
     for name in order:
+        if not include_hidden and name in DISCOVERY_HIDDEN_STRATEGIES:
+            continue
         entry = STRATEGIES[name]
         variant = entry["variants"].get(platform, {})
         out[name] = {
@@ -1262,8 +1270,8 @@ def hold_strategy(df: pd.DataFrame) -> pd.DataFrame:
 
 # ─────────────────────────────────────────────
 # Per-platform display order.
-# These lists MUST match the legacy registration order in each shim so
-# ``--list-json`` output stays byte-identical (agent tooling depends on it).
+# These lists preserve canonical registration order. Deprecated strategies may
+# remain here when hidden from discovery, so explicit configs keep resolving.
 # ─────────────────────────────────────────────
 
 PLATFORM_ORDER: Dict[str, List[str]] = {
