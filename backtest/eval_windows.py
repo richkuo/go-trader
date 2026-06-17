@@ -266,6 +266,10 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             stop_loss_atr_mult: Optional[float] = None,
             trailing_stop_atr_mult: Optional[float] = None,
             profile_allocation: Optional[dict] = None,
+            allowed_regimes: Optional[list[str]] = None,
+            regime_enabled: bool = False,
+            regime_period: int = 14,
+            regime_adx_threshold: float = 20.0,
             *,
             commission_pct: Optional[float] = None,
             slippage_pct: Optional[float] = None) -> Optional[dict]:
@@ -278,6 +282,10 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     (zero-friction) re-run. The returned leg dict carries an additive
     ``span_days`` key (calendar span of the data slice) so callers can
     annualize trade counts.
+
+    allowed_regimes (when provided) turns on the regime entry gate for this
+    leg using the legacy single-lookback; regime_enabled is forced true in
+    that case so the Backtester injects the regime column and applies the gate.
     """
     from atr import ensure_atr_indicator
     from data_fetcher import load_cached_data
@@ -318,6 +326,9 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         if close_strategies:
             df_signals = ensure_atr_indicator(df_signals)
 
+    # Regime gate support for M1: if allowed_regimes given, enable the
+    # (legacy) regime computation so the gate can filter entries on the bar.
+    use_regime = regime_enabled or bool(allowed_regimes)
     bt_kwargs = dict(
         initial_capital=capital, platform=PLATFORM,
         open_strategy={"name": name, "params": dict(strat_params or {})},
@@ -326,6 +337,10 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         stop_loss_atr_mult=stop_loss_atr_mult,
         trailing_stop_atr_mult=trailing_stop_atr_mult,
         profile_allocation=profile_allocation,
+        regime_enabled=use_regime,
+        regime_period=regime_period,
+        regime_adx_threshold=regime_adx_threshold,
+        allowed_regimes=allowed_regimes,
         # commission_pct=None keeps the Backtester's platform-derived fee — the
         # M1 default; an explicit 0.0 (fee audit gross run) overrides it.
         commission_pct=commission_pct,
@@ -446,6 +461,7 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
             stop_loss_atr_mult=candidate.get("stop_loss_atr_mult"),
             trailing_stop_atr_mult=candidate.get("trailing_stop_atr_mult"),
             profile_allocation=candidate.get("profile_allocation"),
+            allowed_regimes=candidate.get("allowed_regimes"),
         )
     score = score_candidate(candidate_legs, bars)
     score["window"] = window_name
@@ -566,8 +582,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--candidate-json", default=None,
                    help="Path to a candidate JSON file: {name, params, "
                         "close_strategies?, direction?, invert_signal?, "
-                        "stop_loss_atr_mult?, trailing_stop_atr_mult?}. "
-                        "Overrides --strategy/--params.")
+                        "stop_loss_atr_mult?, trailing_stop_atr_mult?, "
+                        "allowed_regimes?, profile_allocation?}. "
+                        "Overrides --strategy/--params. allowed_regimes enables "
+                        "the entry gate on the M1 bar (legacy lookback).")
     p.add_argument("--registry", choices=["spot", "futures"], default="spot")
     p.add_argument("--direction", default=None,
                    choices=["long", "short", "both"],
@@ -577,6 +595,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "strategies score their short leg instead of zero "
                         "trades. 'both' requires close_strategies (engine "
                         "path). Default: long.")
+    p.add_argument("--allowed-regimes", action="append", default=None,
+                   metavar="LABEL",
+                   help="Regime label to allow entries (repeatable). Enables "
+                        "the backtester entry gate for this candidate on the "
+                        "M1 incumbent-relative bar (uses the legacy single-"
+                        "lookback ADX regime).")
     p.add_argument("--windows", default=None,
                    help=f"Comma list of windows (default: all). "
                         f"Known: {', '.join(WINDOWS)}")
@@ -618,6 +642,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.direction:
         candidate["direction"] = args.direction
+
+    if args.allowed_regimes:
+        candidate["allowed_regimes"] = list(args.allowed_regimes)
 
     try:
         validate_candidate(candidate)
