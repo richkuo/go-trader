@@ -133,7 +133,20 @@ jobs:
       - name: Record HEAD sha before Claude runs
         if: steps.verify_invocation.outputs.invoked == 'true'
         id: pre_claude
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          BASELINE_SHA="$PR_HEAD_SHA"
+          if [ -z "$BASELINE_SHA" ] && [ -n "$ISSUE_NUMBER" ]; then
+            BASELINE_SHA=$(gh pr view "$ISSUE_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)
+          fi
+          if [ -z "$BASELINE_SHA" ]; then
+            BASELINE_SHA=$(git rev-parse HEAD)
+          fi
+          echo "sha=$BASELINE_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Compose review prompt
         if: steps.verify_invocation.outputs.invoked == 'true'
@@ -187,6 +200,33 @@ jobs:
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
           claude_args: ${{ steps.compose_prompt.outputs.claude_args }}
+
+      - name: Fail if Claude Code returned an error
+        if: steps.verify_invocation.outputs.invoked == 'true' && steps.claude.outcome == 'success'
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          if [ -z "$EXECUTION_FILE" ] || [ ! -f "$EXECUTION_FILE" ]; then
+            echo "::error::Claude Code execution output file is missing."
+            exit 1
+          fi
+
+          RESULT=$(jq -s '
+            def records:
+              .[] | if type == "array" then .[] else . end;
+            [records | select(type == "object" and .type == "result")] | last // {}
+          ' "$EXECUTION_FILE")
+          IS_ERROR=$(printf '%s' "$RESULT" | jq -r '.is_error // false')
+          if [ "$IS_ERROR" = "true" ]; then
+            API_STATUS=$(printf '%s' "$RESULT" | jq -r '.api_error_status // empty')
+            MESSAGE=$(printf '%s' "$RESULT" | jq -r '.result // "Claude Code reported an error."')
+            if [ -n "$API_STATUS" ]; then
+              echo "::error::Claude Code failed with API status ${API_STATUS}: ${MESSAGE}"
+            else
+              echo "::error::Claude Code failed: ${MESSAGE}"
+            fi
+            exit 1
+          fi
 
       - name: Detect if Claude made commits
         if: steps.verify_invocation.outputs.invoked == 'true' && steps.claude.outcome == 'success'
