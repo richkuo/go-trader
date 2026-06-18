@@ -57,7 +57,12 @@ cat > /tmp/sbo-short-atr.json <<'J'
 J
 uv run --no-sync python backtest/eval_windows.py --registry futures \
   --candidate-json /tmp/sbo-short-atr.json \
-  --windows is,oos,heldout --json /tmp/1031-short-atr.json
+  --windows is,oos --json /tmp/1031-short-atr.json
+
+# Held-out windows (use the real keys; protocol IS/OOS + held-out table per decision gate)
+uv run --no-sync python backtest/eval_windows.py --registry futures \
+  --candidate-json /tmp/sbo-short-atr.json \
+  --windows 2023,2024,2025H1 --json /tmp/1031-short-atr-heldout.json
 
 # Bear-regime gate (primary DD control) + close on the M1 bar
 cat > /tmp/sbo-short-gated.json <<'J'
@@ -72,14 +77,26 @@ cat > /tmp/sbo-short-gated.json <<'J'
 J
 uv run --no-sync python backtest/eval_windows.py --registry futures \
   --candidate-json /tmp/sbo-short-gated.json \
-  --windows is,oos,heldout
+  --windows is,oos
+
+# Held-out (full table):
+uv run --no-sync python backtest/eval_windows.py --registry futures \
+  --candidate-json /tmp/sbo-short-gated.json \
+  --windows 2023,2024,2025H1
 
 # Same via CLI pieces (allowed_regimes repeatable; direction on CLI)
 uv run --no-sync python backtest/eval_windows.py --strategy session_breakout \
   --registry futures --direction short \
   --allowed-regimes trending_down --allowed-regimes ranging \
   --candidate-json /tmp/sbo-short-atr.json \
-  --windows is,oos,heldout
+  --windows is,oos
+
+# Held-out:
+uv run --no-sync python backtest/eval_windows.py --strategy session_breakout \
+  --registry futures --direction short \
+  --allowed-regimes trending_down --allowed-regimes ranging \
+  --candidate-json /tmp/sbo-short-atr.json \
+  --windows 2023,2024,2025H1
 
 # Add zscore_target for late giveback (avoid time_stop)
 cat > /tmp/sbo-short-z.json <<'J'
@@ -94,7 +111,11 @@ cat > /tmp/sbo-short-z.json <<'J'
 }
 J
 uv run --no-sync python backtest/eval_windows.py --registry futures \
-  --candidate-json /tmp/sbo-short-z.json --windows is,oos,heldout
+  --candidate-json /tmp/sbo-short-z.json --windows is,oos
+
+# Held-out:
+uv run --no-sync python backtest/eval_windows.py --registry futures \
+  --candidate-json /tmp/sbo-short-z.json --windows 2023,2024,2025H1
 
 # Full M1 candidate grid + continuous re-run if holding structure changes
 uv run --no-sync python backtest/run_backtest.py --mode optimize --sweep-close ...
@@ -122,7 +143,7 @@ default lookback).
 
 ## Actual M1 run results (2026-06-17, focused scope)
 
-Data was fetched on-the-fly for the oos window (BTC/USDT 1h slice from 2026-01). Commands used the exact forms from the plan above (candidate-json + CLI shorthands on eval_windows).
+Data was fetched on-the-fly for the oos window (BTC/USDT 1h slice from 2026-01). The plan examples below now use only valid window names (`is,oos` for protocol; `2023,2024,2025H1` for held-out). The runs captured here used minimal correct invocations (`--windows oos`) for speed on a single dataset; a full pass would add the held-out keys as shown in the plan.
 
 All runs used the M1 bar producer (`eval_windows.py`) against the current 8-incumbent median for the window.
 

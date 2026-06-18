@@ -360,6 +360,22 @@ def test_validate_candidate_accepts_allowed_regimes():
           "allowed_regimes": ["ranging", "trending_down"]}
     assert ew.validate_candidate(c2) is c2
 
+    # empty list = no gate (valid, treated as allow-all downstream)
+    c3 = {"name": "x", "allowed_regimes": []}
+    assert ew.validate_candidate(c3) is c3
+    assert "allowed_regimes" not in c3  # normalized away
+
+
+def test_validate_candidate_rejects_malformed_allowed_regimes():
+    # Bare string (common JSON mistake) must be rejected loudly, not become
+    # a list of chars that silently gates everything to 0 trades.
+    with pytest.raises(ValueError, match="list of strings"):
+        ew.validate_candidate({"name": "x", "allowed_regimes": "trending_down"})
+
+    # Non-string elements also bad.
+    with pytest.raises(ValueError, match="strings"):
+        ew.validate_candidate({"name": "x", "allowed_regimes": ["trending_down", 123]})
+
 
 def test_validate_candidate_stop_owners_mutually_exclusive():
     # #996: one ATR stop owner is fine; both together mirror the live

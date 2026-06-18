@@ -431,6 +431,22 @@ def validate_candidate(candidate: dict) -> dict:
                 "candidate.profile_allocation needs an inline 'window_spec' "
                 "({classifier, period[, thresholds|adx_threshold]}) so the "
                 "harness can compute the switch label series.")
+
+    # #1031: allowed_regimes must be a list of str (or absent/empty).
+    # Bare string (common in hand JSON) becomes per-char list in Backtester
+    # and silently blocks every entry → 0-trade "result" instead of loud error.
+    # CLI path produces a proper list; JSON path needs this guard.
+    ar = candidate.get("allowed_regimes")
+    if ar is not None:
+        if not isinstance(ar, list):
+            raise ValueError(
+                "candidate.allowed_regimes must be a list of strings "
+                "(or omitted for no gate)")
+        if not all(isinstance(x, str) for x in ar):
+            raise ValueError(
+                "candidate.allowed_regimes entries must all be strings")
+        if len(ar) == 0:
+            candidate.pop("allowed_regimes", None)
     return candidate
 
 
