@@ -3027,3 +3027,36 @@ func TestForceCloseAllPositions_TradeType_PerpsVsFutures(t *testing.T) {
 		})
 	}
 }
+
+// TestCircuitBreakerPermitsManagement verifies the #1046 gate that lets a
+// latched per-strategy circuit breaker keep running trailing-SL/TP management
+// on an open HL perps position while still skipping every other CB-blocked case.
+func TestCircuitBreakerPermitsManagement(t *testing.T) {
+	cases := []struct {
+		name      string
+		reason    string
+		platform  string
+		stratType string
+		posQty    float64
+		want      bool
+	}{
+		{"latched CB, open HL perps -> manage", RiskReasonCircuitBreakerActive, "hyperliquid", "perps", 0.5, true},
+		{"latched CB, no open position -> skip", RiskReasonCircuitBreakerActive, "hyperliquid", "perps", 0, false},
+		{"latched CB, flat-ish negative qty guard -> skip", RiskReasonCircuitBreakerActive, "hyperliquid", "perps", -0.1, false},
+		{"first-fire max drawdown -> skip (mid-transition)", RiskReasonMaxDrawdownExceeded, "hyperliquid", "perps", 0.5, false},
+		{"first-fire max drawdown formatted -> skip", RiskReasonMaxDrawdownExceeded + " (40.0% > 18.0%)", "hyperliquid", "perps", 0.5, false},
+		{"first-fire consecutive losses -> skip", RiskReasonConsecutiveLosses, "hyperliquid", "perps", 0.5, false},
+		{"latched CB, OKX perps -> skip (no HL walker)", RiskReasonCircuitBreakerActive, "okx", "perps", 0.5, false},
+		{"latched CB, HL futures -> skip", RiskReasonCircuitBreakerActive, "hyperliquid", "futures", 0.5, false},
+		{"latched CB, HL spot -> skip", RiskReasonCircuitBreakerActive, "hyperliquid", "spot", 0.5, false},
+		{"empty reason (allowed) -> skip", "", "hyperliquid", "perps", 0.5, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := circuitBreakerPermitsManagement(tc.reason, tc.platform, tc.stratType, tc.posQty); got != tc.want {
+				t.Errorf("circuitBreakerPermitsManagement(%q, %q, %q, %v) = %v, want %v",
+					tc.reason, tc.platform, tc.stratType, tc.posQty, got, tc.want)
+			}
+		})
+	}
+}
