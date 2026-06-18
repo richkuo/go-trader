@@ -1612,3 +1612,61 @@ func TestRunInitFromJSON_WriteError(t *testing.T) {
 		t.Errorf("expected exit code 1 when writing to a directory, got %d", code)
 	}
 }
+
+// #1048: DisableCircuitBreaker stamps circuit_breaker:false on every generated
+// non-manual strategy; manual is exempt from CheckRisk so it is skipped (left
+// nil). Default (false) leaves every strategy nil → enabled.
+func TestGenerateConfig_DisableCircuitBreaker(t *testing.T) {
+	opts := InitOptions{
+		Assets:          []string{"BTC", "ETH"},
+		EnableSpot:      true,
+		EnablePerps:     true,
+		PerpsMode:       "paper",
+		SpotStrategies:  []string{"momentum"},
+		PerpsStrategies: []string{"momentum"},
+		SpotCapital:     1000,
+		PerpsCapital:    1000,
+		SpotDrawdown:    5,
+		PerpsDrawdown:   5,
+		// #569 manual tracking strategy — must stay nil (CB no-op for manual).
+		EnableManual:    true,
+		ManualSymbol:    "ETH",
+		ManualTimeframe: "1h",
+		ManualCapital:   1000,
+		ManualDrawdown:  20,
+		ManualLeverage:  20,
+	}
+
+	// Default: no stamping — every strategy stays nil → enabled.
+	def := generateConfig(opts)
+	for _, s := range def.Strategies {
+		if s.CircuitBreaker != nil {
+			t.Fatalf("default generateConfig should leave circuit_breaker nil; %s has %v", s.ID, *s.CircuitBreaker)
+		}
+	}
+
+	// Opt-out: every non-manual strategy gets explicit false; manual stays nil.
+	opts.DisableCircuitBreaker = true
+	cfg := generateConfig(opts)
+	sawNonManual := false
+	sawManual := false
+	for _, s := range cfg.Strategies {
+		if s.Type == "manual" {
+			sawManual = true
+			if s.CircuitBreaker != nil {
+				t.Fatalf("manual strategy %s should be skipped (CB no-op), got %v", s.ID, *s.CircuitBreaker)
+			}
+			continue
+		}
+		sawNonManual = true
+		if s.CircuitBreaker == nil || *s.CircuitBreaker {
+			t.Fatalf("non-manual strategy %s should have circuit_breaker:false, got %v", s.ID, s.CircuitBreaker)
+		}
+	}
+	if !sawNonManual {
+		t.Fatal("expected at least one non-manual strategy")
+	}
+	if !sawManual {
+		t.Fatal("expected the manual tracking strategy to be generated")
+	}
+}

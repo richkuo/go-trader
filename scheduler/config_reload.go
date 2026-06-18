@@ -59,6 +59,17 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 				ss.RiskState.MaxDrawdownPct = ns.MaxDrawdownPct
 			}
 		}
+		// #1048: per-strategy circuit-breaker toggle is hot-reloadable always,
+		// including while a position is open (no state-compat guard). Disabling
+		// only suppresses NEW fires from the next cycle; an already-latched CB
+		// and any pending circuit close continue to drain. Re-enabling resumes
+		// evaluation next cycle and may fire immediately if already past a
+		// threshold — intended re-arming. The next CheckRisk reads sc.CircuitBreaker
+		// directly, so no state mutation is needed here.
+		if !boolPtrEqual(sc.CircuitBreaker, ns.CircuitBreaker) {
+			addChange("strategy[%s].circuit_breaker: %s -> %s", sc.ID, formatCircuitBreaker(sc.CircuitBreaker), formatCircuitBreaker(ns.CircuitBreaker))
+			sc.CircuitBreaker = ns.CircuitBreaker
+		}
 		if sc.CapitalPct == 0 && sc.Capital != ns.Capital {
 			addChange("strategy[%s].capital: $%.2f -> $%.2f", sc.ID, sc.Capital, ns.Capital)
 			sc.Capital = ns.Capital
@@ -579,6 +590,7 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 
 func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.MaxDrawdownPct = 0
+	sc.CircuitBreaker = nil // #1048: hot-reloadable always, including while open. No state-compat guard — disabling only suppresses new fires; an already-latched CB and pending close still drain, and re-enabling just resumes evaluation on the next cycle.
 	sc.Capital = 0
 	sc.Leverage = 0
 	sc.SizingLeverage = 0
@@ -645,6 +657,26 @@ func formatFloatPtrUSD(p *float64) string {
 		return "<nil>"
 	}
 	return fmt.Sprintf("$%.2f", *p)
+}
+
+func boolPtrEqual(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// formatCircuitBreaker renders the per-strategy circuit-breaker flag for reload
+// change logs. nil → "default(on)" so an operator sees the implicit-enabled
+// state explicitly; explicit true/false → "on"/"off". (#1048)
+func formatCircuitBreaker(p *bool) string {
+	if p == nil {
+		return "default(on)"
+	}
+	if *p {
+		return "on"
+	}
+	return "off"
 }
 
 func strategyConfigByID(strategies []StrategyConfig) map[string]StrategyConfig {

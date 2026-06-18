@@ -115,12 +115,21 @@ func TestValidateStrategyJSONKeysAcceptsAllKnownFields(t *testing.T) {
 				"stop_loss_atr_mult": 1.5,
 				"trailing_stop_min_move_pct": 0.5,
 				"direction": "long",
-				"max_drawdown_pct": 50
+				"max_drawdown_pct": 50,
+				"circuit_breaker": false
 			}
 		]
 	}`)
 	if errs := validateStrategyJSONKeys(raw); len(errs) != 0 {
 		t.Fatalf("expected no errors for known fields, got: %v", errs)
+	}
+}
+
+// #1048: the reflection-derived known-key set must include the new
+// circuit_breaker field so configs carrying it validate.
+func TestKnownStrategyConfigKeysIncludesCircuitBreaker(t *testing.T) {
+	if !knownStrategyConfigKeys()["circuit_breaker"] {
+		t.Fatal("circuit_breaker should be a known strategy config key")
 	}
 }
 

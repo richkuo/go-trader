@@ -242,6 +242,18 @@ func (c *Config) NotifyTPSLFillsEnabled() bool {
 	return *c.NotifyTPSLFills
 }
 
+// CircuitBreakerEnabled reports whether the per-strategy circuit breaker is
+// active. Nil pointer (missing field) defaults to true so existing configs keep
+// the auto-protective behavior without an explicit opt-in; an explicit false
+// disables both firing arms in CheckRisk (drawdown and consecutive-loss). Safe
+// on a nil receiver (treated as enabled). (#1048)
+func (sc *StrategyConfig) CircuitBreakerEnabled() bool {
+	if sc == nil || sc.CircuitBreaker == nil {
+		return true
+	}
+	return *sc.CircuitBreaker
+}
+
 // ParseSummaryFrequency converts a summary_frequency value to a duration.
 // Returns -1 to mean "use legacy default", 0 to mean "every channel run", or a
 // positive duration when caller should post every duration. An unrecognized
@@ -347,6 +359,7 @@ type StrategyConfig struct {
 	CapitalPct              float64                  `json:"capital_pct,omitempty"`     // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
 	InitialCapital          float64                  `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
 	MaxDrawdownPct          float64                  `json:"max_drawdown_pct"`
+	CircuitBreaker          *bool                    `json:"circuit_breaker,omitempty"`            // #1048 — per-strategy circuit-breaker opt-out. Nil/missing → enabled (the safe default); explicit false disables BOTH firing arms in CheckRisk (drawdown > max_drawdown_pct AND 5 consecutive losses), uniformly for live and paper (no platform/live gating). Hot-reloadable via SIGHUP including while a position is open: disabling only suppresses NEW fires — an already-latched CB and any pending circuit close still drain. No effect on type=manual (exempt from CheckRisk). Read via CircuitBreakerEnabled(), never directly.
 	IntervalSeconds         int                      `json:"interval_seconds,omitempty"`           // per-strategy override (0 = use global)
 	HTFFilter               bool                     `json:"htf_filter,omitempty"`                 // higher-timeframe trend filter
 	InvertSignal            bool                     `json:"invert_signal,omitempty"`              // HL perps/manual only: flip BUY<->SELL on a non-zero signal before execution (HOLD/0 is never flipped). Lets inverse variants reuse the same open/close refs. Composes with Direction — invert runs in the Go layer before direction interprets the resulting sign (e.g. direction="short" + invert_signal=true opens short on raw-BUY triggers, distinct from plain direction="short" which opens on raw-SELL). Rejected outside HL perps/manual.

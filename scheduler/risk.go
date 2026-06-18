@@ -1401,6 +1401,14 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		r.ConsecutiveLosses = 0
 	}
 
+	// #1048: per-strategy circuit-breaker opt-out. When explicitly disabled, both
+	// firing arms below are suppressed so the strategy never latches a NEW circuit
+	// break. The gate sits BELOW the latch check and the drawdown computation on
+	// purpose: an already-latched CB still blocks/drains (the latch check above is
+	// ungated), and CurrentDrawdownPct/peak still update for the status UI. Manual
+	// is already exempt via the early return at the top of CheckRisk.
+	cbEnabled := sc.CircuitBreakerEnabled()
+
 	// Update peak
 	if portfolioValue > r.PeakValue {
 		r.PeakValue = portfolioValue
@@ -1449,7 +1457,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		} else {
 			r.CurrentDrawdownPct = 0
 		}
-		if r.CurrentDrawdownPct > r.MaxDrawdownPct {
+		if r.CurrentDrawdownPct > r.MaxDrawdownPct && cbEnabled {
 			r.CircuitBreaker = true
 			r.CircuitBreakerUntil = now.Add(24 * time.Hour)
 			setHyperliquidCircuitBreakerPending(sc, s, assist)
@@ -1466,7 +1474,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 	}
 
 	// Consecutive losses circuit breaker (5 in a row → pause 1h, close positions)
-	if r.ConsecutiveLosses >= 5 {
+	if r.ConsecutiveLosses >= 5 && cbEnabled {
 		r.CircuitBreaker = true
 		r.CircuitBreakerUntil = now.Add(1 * time.Hour)
 		setHyperliquidCircuitBreakerPending(sc, s, assist)

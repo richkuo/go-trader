@@ -434,3 +434,34 @@ func TestFormatStrategyInspectionPositionOrderDeterministic(t *testing.T) {
 		t.Errorf("positions should be sorted by symbol (BTC before ETH), got BTC@%d ETH@%d", btc, eth)
 	}
 }
+
+// #1048: a strategy with the circuit breaker explicitly disabled surfaces
+// "cb=off" in the startup summary so it isn't silently unprotected; an enabled
+// (default) strategy and a manual strategy (CB no-op) show nothing.
+func TestFormatStrategySummaryLineShowsCircuitBreakerOff(t *testing.T) {
+	off := false
+	disabled := StrategyConfig{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
+		OpenStrategy: StrategyRef{Name: "momentum"}, CircuitBreaker: &off,
+	}
+	if line := formatStrategySummaryLine(disabled, nil); !strings.Contains(line, "cb=off") {
+		t.Errorf("disabled CB should show cb=off: %s", line)
+	}
+
+	enabled := StrategyConfig{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
+		OpenStrategy: StrategyRef{Name: "momentum"},
+	}
+	if line := formatStrategySummaryLine(enabled, nil); strings.Contains(line, "cb=") {
+		t.Errorf("default CB should not mention cb=: %s", line)
+	}
+
+	// Manual is exempt from CheckRisk — the flag is a no-op, so don't surface it.
+	manual := StrategyConfig{
+		ID: "manual-eth", Type: "manual", Platform: "hyperliquid",
+		OpenStrategy: StrategyRef{Name: "hold"}, CircuitBreaker: &off,
+	}
+	if line := formatStrategySummaryLine(manual, nil); strings.Contains(line, "cb=") {
+		t.Errorf("manual strategy should not mention cb=: %s", line)
+	}
+}

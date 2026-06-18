@@ -381,6 +381,7 @@ type InitOptions struct {
 	OKXDrawdown             float64
 	CapitalPct              float64 `json:"capitalPct,omitempty"` // 0-1; global capital_pct applied to all strategies
 	HTFFilter               bool    // higher-timeframe trend filter for all strategies
+	DisableCircuitBreaker   bool    `json:"disableCircuitBreaker,omitempty"` // #1048 — when true, stamp circuit_breaker:false on every generated non-manual strategy (fleet-wide opt-out of the per-strategy circuit breaker). Default false keeps the safe default (CB on). Exposed for the JSON-driven `init --json` path; the interactive wizard leaves it false (disabling an auto-protective halt at setup is a footgun — operators opt out per-strategy via config edit + SIGHUP instead).
 	// Risk settings — prompted explicitly during live-mode setup (#85) so operators
 	// don't hit the post-launch migration DM for portfolio_risk fields.
 	PortfolioMaxDrawdownPct   float64 `json:"portfolioMaxDrawdownPct,omitempty"`   // kill switch threshold; 0 → default 25
@@ -734,6 +735,20 @@ func generateConfig(opts InitOptions) *Config {
 			if cfg.Strategies[i].Type != "options" && (len(cfg.Strategies[i].Args) == 0 || cfg.Strategies[i].Args[0] != "delta_neutral_funding") {
 				cfg.Strategies[i].HTFFilter = true
 			}
+		}
+	}
+
+	// #1048: fleet-wide circuit-breaker opt-out. Default (false) leaves
+	// CircuitBreaker nil → enabled (the safe default). When set, stamp explicit
+	// false on every non-manual strategy; manual is exempt from CheckRisk so the
+	// flag is a no-op there and is skipped to avoid implying otherwise.
+	if opts.DisableCircuitBreaker {
+		cbOff := false
+		for i := range cfg.Strategies {
+			if cfg.Strategies[i].Type == "manual" {
+				continue
+			}
+			cfg.Strategies[i].CircuitBreaker = &cbOff
 		}
 	}
 

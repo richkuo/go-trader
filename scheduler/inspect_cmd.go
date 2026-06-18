@@ -496,6 +496,12 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	}
 
 	fmt.Fprintf(&b, "  max_drawdown_pct:    %g%s\n", sc.MaxDrawdownPct, markIfDefault(explicit, "max_drawdown_pct"))
+	// #1048: circuit-breaker state (skip manual — exempt from CheckRisk). Surface
+	// only when explicitly disabled so the unprotected case is visible; the
+	// default-on state stays uncluttered.
+	if sc.Type != "manual" && !sc.CircuitBreakerEnabled() {
+		fmt.Fprintf(&b, "  circuit_breaker:     off (explicit) — drawdown + consecutive-loss halt disabled\n")
+	}
 	if sc.IntervalSeconds > 0 {
 		fmt.Fprintf(&b, "  interval_seconds:    %d\n", sc.IntervalSeconds)
 	} else if cfg != nil {
@@ -548,6 +554,13 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool) stri
 			parts = append(parts, "tp=none")
 		}
 	}
+	// #1048: surface an explicitly disabled circuit breaker so a strategy
+	// trading live without the auto-protective drawdown/loss-streak halt is not
+	// silently unprotected. Manual is exempt from CheckRisk, so the flag is a
+	// no-op there and not shown.
+	if sc.Type != "manual" && !sc.CircuitBreakerEnabled() {
+		parts = append(parts, "cb=off")
+	}
 	return fmt.Sprintf("[config] %s: %s", sc.ID, strings.Join(parts, " "))
 }
 
@@ -578,6 +591,12 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		"close_strategy_explicit":   explicit["close_strategy"],
 		"max_drawdown_pct":          sc.MaxDrawdownPct,
 		"max_drawdown_pct_explicit": explicit["max_drawdown_pct"],
+	}
+	// #1048: circuit-breaker enable state. Manual is exempt from CheckRisk, so
+	// the flag is meaningless there and omitted.
+	if sc.Type != "manual" {
+		out["circuit_breaker_enabled"] = sc.CircuitBreakerEnabled()
+		out["circuit_breaker_explicit"] = explicit["circuit_breaker"]
 	}
 	if cfg != nil && cfg.Regime != nil && len(cfg.Regime.Windows) > 0 {
 		out["regime_windows"] = cfg.Regime.Windows

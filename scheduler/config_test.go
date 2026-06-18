@@ -2675,3 +2675,26 @@ func TestLoadConfigForProbeSkipsLiveCredentialChecks(t *testing.T) {
 		t.Fatalf("LoadConfigForProbe should skip live credential checks: %v", err)
 	}
 }
+
+// #1048: CircuitBreakerEnabled defaults to true (safe default) for nil receiver
+// and nil field; explicit true/false are honored.
+func TestCircuitBreakerEnabled_DefaultsToTrue(t *testing.T) {
+	var nilSC *StrategyConfig
+	if !nilSC.CircuitBreakerEnabled() {
+		t.Fatal("nil receiver should report enabled")
+	}
+	sc := &StrategyConfig{}
+	if !sc.CircuitBreakerEnabled() {
+		t.Fatal("nil CircuitBreaker field should report enabled")
+	}
+	f := false
+	sc.CircuitBreaker = &f
+	if sc.CircuitBreakerEnabled() {
+		t.Fatal("explicit false should report disabled")
+	}
+	tr := true
+	sc.CircuitBreaker = &tr
+	if !sc.CircuitBreakerEnabled() {
+		t.Fatal("explicit true should report enabled")
+	}
+}
