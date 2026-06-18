@@ -265,14 +265,21 @@ Supporting context (does not change the verdict):
   years) — a window-edge artifact would not produce that consistency, so a continuous re-run cannot
   reverse it.
 
-### Recommended action
-Deprecate `session_breakout` following the #1034 / #1035 pattern (mark deprecated + hide from
-discovery). Not done in this PR — left as an owner-approved follow-up. The gross short edge is worth
-revisiting only if (a) a bull-regime *flat* filter that genuinely zeroes bull-year trading is added,
-and (b) the futures live short path is wired — both out of scope here.
+### Deprecation (implemented — owner-approved, #1034 / #1035 pattern)
+`session_breakout` is now hidden from discovery but kept loadable for any existing config/backtest:
+- `shared_strategies/open/registry.py`: added to `DISCOVERY_HIDDEN_STRATEGIES` (drops from `--list-json`;
+  futures discovery 43 → 42 strategies, spot unchanged).
+- `scheduler/init.go`: removed from `defaultPerpsStrategies` / `defaultFuturesStrategies` (kept in
+  `knownShortNames` + `bidirectionalPerpsStrategies` so explicit configs still resolve + wire shorts).
+- `scheduler/ui_reports.go`: audit verdict `watch` → `deprecate`, plus a Deprecations entry.
+- `README.md`: removed from the futures discovery example list.
+- Tests: `test_registry_parity.py` (hidden-but-loadable, futures-only) + `ui_reports_test.go` (count 15 → 16).
+
+The gross short edge is worth revisiting only if (a) a bull-regime *flat* filter that genuinely zeroes
+bull-year trading is added, and (b) the futures live short path is wired — both out of scope here.
 
 Status: M1 protocol complete (baseline + 3 candidates + atr sweep + exit diagnostics, all 6 datasets
-× 5 windows). Verdict: deprecate. Awaiting owner approval to land the registry change.
+× 5 windows). Verdict: deprecate — **implemented** (hidden from discovery, kept loadable).
 
 Generated: 2026-06-17 (initial plan + validation)
 Updated: 2026-06-17 (focused single-dataset runs + test + review fixes)

@@ -152,6 +152,22 @@ def test_deprecated_range_scalper_hidden_but_loadable(spot_shim, futures_shim, c
         assert "signal" in result.columns
 
 
+def test_deprecated_session_breakout_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
+    # #1031: futures-only short leg deprecated. Hidden from discovery but kept
+    # registered so explicit existing configs/backtests still resolve it.
+    import pandas as pd
+    assert "session_breakout" not in futures_shim.list_strategies()
+    assert "session_breakout" in futures_shim.STRATEGY_REGISTRY
+    # session_breakout is futures-only — never present on the spot shim at all.
+    assert "session_breakout" not in spot_shim.list_strategies()
+    assert "session_breakout" not in spot_shim.STRATEGY_REGISTRY
+    # Needs a DatetimeIndex (session/hour bucketing).
+    idx = pd.date_range("2024-01-01", periods=200, freq="15min")
+    df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(200), index=idx)
+    result = futures_shim.apply_strategy("session_breakout", df)
+    assert "signal" in result.columns
+
+
 def test_momentum_variant_overrides_threshold(spot_shim, futures_shim):
     # The only non-description default_params override; spot uses 5.0, futures 3.0.
     assert spot_shim.STRATEGY_REGISTRY["momentum"]["default_params"]["threshold"] == 5.0

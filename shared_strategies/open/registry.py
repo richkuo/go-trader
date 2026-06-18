@@ -63,7 +63,7 @@ STRATEGIES: Dict[str, Dict[str, Any]] = {}
 
 # Strategies kept loadable for existing configs/backtests but hidden from
 # discovery surfaces such as --list-json and generated defaults.
-DISCOVERY_HIDDEN_STRATEGIES = frozenset({"range_scalper"})
+DISCOVERY_HIDDEN_STRATEGIES = frozenset({"range_scalper", "session_breakout"})
 
 
 def register(
