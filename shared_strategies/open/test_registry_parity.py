@@ -168,6 +168,20 @@ def test_deprecated_session_breakout_hidden_but_loadable(spot_shim, futures_shim
     assert "signal" in result.columns
 
 
+def test_deprecated_vol_momentum_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
+    # #1021: static M1 failed held-out stress. Hidden from discovery but kept
+    # registered so explicit existing configs/backtests still resolve it.
+    for shim in (spot_shim, futures_shim):
+        assert "vol_momentum" not in shim.list_strategies()
+        assert "vol_momentum" in shim.STRATEGY_REGISTRY
+        df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(80))
+        result = shim.apply_strategy("vol_momentum", df)
+        assert "signal" in result.columns
+
+    assert spot_shim.STRATEGY_REGISTRY["vol_momentum"]["default_params"]["allow_short"] is False
+    assert futures_shim.STRATEGY_REGISTRY["vol_momentum"]["default_params"]["allow_short"] is True
+
+
 def test_momentum_variant_overrides_threshold(spot_shim, futures_shim):
     # The only non-description default_params override; spot uses 5.0, futures 3.0.
     assert spot_shim.STRATEGY_REGISTRY["momentum"]["default_params"]["threshold"] == 5.0

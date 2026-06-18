@@ -153,7 +153,6 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
 	{ID: "mtf_confluence", ShortName: "mtfc"},
-	{ID: "vol_momentum", ShortName: "volmom"},
 	{ID: "regime_adaptive", ShortName: "regad"},
 	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
@@ -180,7 +179,6 @@ var defaultPerpsStrategies = []stratDef{
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
 	{ID: "mtf_confluence", ShortName: "mtfc"},
-	{ID: "vol_momentum", ShortName: "volmom"},
 	{ID: "regime_adaptive", ShortName: "regad"},
 	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
@@ -210,7 +208,6 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
 	{ID: "mtf_confluence", ShortName: "mtfc"},
-	{ID: "vol_momentum", ShortName: "volmom"},
 	{ID: "regime_adaptive", ShortName: "regad"},
 	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
