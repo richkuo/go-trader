@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"strings"
@@ -3181,5 +3182,123 @@ func TestCheckRisk_CircuitBreakerDisabled_StillHonorsExistingLatch(t *testing.T)
 	}
 	if reason != RiskReasonCircuitBreakerActive {
 		t.Fatalf("reason = %q, want %q", reason, RiskReasonCircuitBreakerActive)
+	}
+}
+
+// #1048: a strategy with the circuit breaker disabled that crosses a halt
+// threshold must leave a runtime WARNING — once per suppression episode, not
+// every cycle — clearly stating there is NO circuit breaker and that it is only
+// a warning (nothing closed). Re-enabling or clearing the breach resets the
+// throttle so a later episode warns again.
+func TestCheckRisk_CircuitBreakerDisabled_WarnsOncePerEpisode(t *testing.T) {
+	off, on := false, true
+	id := "hl-cb-suppress-warn"
+	circuitBreakerSuppressedWarned.Delete(id) // isolate from other tests
+
+	newState := func() *StrategyState {
+		// drawdown 23% > 20% AND 5 consecutive losses → both arms would fire.
+		return &StrategyState{
+			ID:   id,
+			Type: "perps",
+			Cash: 7700,
+			RiskState: RiskState{
+				PeakValue:         10000,
+				MaxDrawdownPct:    20,
+				ConsecutiveLosses: 5,
+				DailyPnLDate:      todayUTC(),
+			},
+			Positions:       map[string]*Position{},
+			OptionPositions: map[string]*OptionPosition{},
+			TradeHistory:    []Trade{},
+		}
+	}
+	scWith := func(cb *bool) *StrategyConfig {
+		return &StrategyConfig{
+			ID: id, Type: "perps", Platform: "hyperliquid",
+			Args: []string{"momentum", "ETH", "1h", "--mode=live"}, MaxDrawdownPct: 20, CircuitBreaker: cb,
+		}
+	}
+	// run executes one CheckRisk cycle against a fresh breached state and returns
+	// (allowed, logOutput).
+	run := func(cb *bool) (bool, string) {
+		var buf bytes.Buffer
+		logger := &StrategyLogger{stratID: id, writer: &buf}
+		s := newState()
+		allowed, _ := CheckRisk(scWith(cb), s, PortfolioValue(s, nil), nil, logger, nil)
+		return allowed, buf.String()
+	}
+
+	// First disabled cycle that breaches: trading is allowed (no halt), and the
+	// warning names the missing protection on both arms.
+	allowed, out := run(&off)
+	if !allowed {
+		t.Fatal("disabled CB should allow trading")
+	}
+	for _, want := range []string{"WARN", "DISABLED", "NO circuit breaker", "warning only", "drawdown 23.0% > 20.0%", "5 consecutive losses"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("first suppression cycle missing %q in: %s", want, out)
+		}
+	}
+
+	// Second disabled+breached cycle: deduped — no new warning.
+	if _, out := run(&off); strings.Contains(out, "circuit breaker is DISABLED") {
+		t.Fatalf("expected dedup (no repeat warning) on the second cycle, got: %s", out)
+	}
+
+	// Re-enable while still breached: the genuine circuit breaker FIRES (normal
+	// path, allowed=false), does NOT emit the suppression warning, and the
+	// throttle is cleared so a later re-disable warns afresh.
+	allowed, out = run(&on)
+	if allowed {
+		t.Fatal("re-enabled CB on a breached state should fire")
+	}
+	if strings.Contains(out, "circuit breaker is DISABLED") {
+		t.Fatalf("enabled CB must not emit a suppression warning, got: %s", out)
+	}
+	if _, ok := circuitBreakerSuppressedWarned.Load(id); ok {
+		t.Fatal("re-enabling should clear the suppression throttle")
+	}
+
+	// Disable again after the re-enable: a fresh episode warns again.
+	if _, out := run(&off); !strings.Contains(out, "circuit breaker is DISABLED") {
+		t.Fatalf("a fresh suppression episode after re-enable should warn again, got: %s", out)
+	}
+
+	circuitBreakerSuppressedWarned.Delete(id)
+}
+
+// #1048: when the breach clears while still disabled, the throttle resets so a
+// later re-breach warns again (episode-scoped, not strategy-lifetime).
+func TestCheckRisk_CircuitBreakerDisabled_ThrottleClearsWhenBreachClears(t *testing.T) {
+	off := false
+	id := "hl-cb-suppress-clear"
+	circuitBreakerSuppressedWarned.Delete(id)
+	defer circuitBreakerSuppressedWarned.Delete(id)
+
+	sc := &StrategyConfig{
+		ID: id, Type: "perps", Platform: "hyperliquid",
+		Args: []string{"momentum", "ETH", "1h", "--mode=live"}, MaxDrawdownPct: 20, CircuitBreaker: &off,
+	}
+	breached := &StrategyState{
+		ID: id, Type: "perps", Cash: 7700,
+		RiskState:       RiskState{PeakValue: 10000, MaxDrawdownPct: 20, DailyPnLDate: todayUTC()},
+		Positions:       map[string]*Position{},
+		OptionPositions: map[string]*OptionPosition{},
+	}
+	CheckRisk(sc, breached, PortfolioValue(breached, nil), nil, &StrategyLogger{stratID: id, writer: &bytes.Buffer{}}, nil)
+	if _, ok := circuitBreakerSuppressedWarned.Load(id); !ok {
+		t.Fatal("expected throttle set after a breached disabled cycle")
+	}
+
+	// No breach this cycle (portfolio back at peak) → throttle cleared.
+	healthy := &StrategyState{
+		ID: id, Type: "perps", Cash: 10000,
+		RiskState:       RiskState{PeakValue: 10000, MaxDrawdownPct: 20, DailyPnLDate: todayUTC()},
+		Positions:       map[string]*Position{},
+		OptionPositions: map[string]*OptionPosition{},
+	}
+	CheckRisk(sc, healthy, PortfolioValue(healthy, nil), nil, &StrategyLogger{stratID: id, writer: &bytes.Buffer{}}, nil)
+	if _, ok := circuitBreakerSuppressedWarned.Load(id); ok {
+		t.Fatal("throttle should clear once the breach clears")
 	}
 }

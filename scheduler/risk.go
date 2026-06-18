@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -1408,6 +1410,14 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 	// ungated), and CurrentDrawdownPct/peak still update for the status UI. Manual
 	// is already exempt via the early return at the top of CheckRisk.
 	cbEnabled := sc.CircuitBreakerEnabled()
+	if cbEnabled {
+		// Clear any sticky suppression-warning throttle eagerly: while the
+		// breaker is enabled the warning never applies, and an enabled+breached
+		// cycle fires (returning before recordCircuitBreakerSuppression below),
+		// so this is the only place a re-enable reliably resets the throttle —
+		// ensuring a later re-disable warns afresh. (#1048)
+		circuitBreakerSuppressedWarned.Delete(s.ID)
+	}
 
 	// Update peak
 	if portfolioValue > r.PeakValue {
@@ -1488,7 +1498,56 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		return false, RiskReasonConsecutiveLosses
 	}
 
+	// #1048: if the circuit breaker is disabled and a halt threshold was just
+	// crossed, the two arms above fell through silently. Leave a runtime trace
+	// (a WARNING, not a halt) so the missing auto-protection is observable in
+	// logs at the cycle it matters — not only at startup / on-demand inspect.
+	recordCircuitBreakerSuppression(s, cbEnabled, logger)
+
 	return true, ""
+}
+
+// circuitBreakerSuppressedWarned throttles the "circuit breaker disabled but a
+// halt threshold was crossed" warning to once per strategy per suppression
+// episode. The key is cleared by recordCircuitBreakerSuppression when the
+// breaker is re-enabled or the breach clears, so a fresh crossing — or a later
+// re-disable — warns again. (#1048)
+var circuitBreakerSuppressedWarned sync.Map
+
+// recordCircuitBreakerSuppression emits a one-shot WARNING when a strategy with
+// the circuit breaker explicitly disabled (circuit_breaker:false) crosses a
+// halt threshold that WOULD have fired. It makes the absence of the
+// auto-protective halt observable at the cycle it matters, not only via the
+// startup summary / inspect surfaces. It is a warning, never a halt: nothing is
+// closed and trading continues. The notice is deduped to once per suppression
+// episode and cleared when the breaker is re-enabled or all thresholds clear —
+// so a later genuine fire (once re-enabled) still alerts through the normal
+// circuit-breaker path, and a subsequent re-disable warns afresh. (#1048)
+func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, logger *StrategyLogger) {
+	if s == nil {
+		return
+	}
+	r := &s.RiskState
+	drawdownBreached := r.PeakValue > 0 && r.CurrentDrawdownPct > r.MaxDrawdownPct
+	lossBreached := r.ConsecutiveLosses >= 5
+	if cbEnabled || (!drawdownBreached && !lossBreached) {
+		circuitBreakerSuppressedWarned.Delete(s.ID)
+		return
+	}
+	if _, loaded := circuitBreakerSuppressedWarned.LoadOrStore(s.ID, struct{}{}); loaded {
+		return // already warned this episode — do not repeat every cycle
+	}
+	var reasons []string
+	if drawdownBreached {
+		reasons = append(reasons, fmt.Sprintf("drawdown %.1f%% > %.1f%%", r.CurrentDrawdownPct, r.MaxDrawdownPct))
+	}
+	if lossBreached {
+		reasons = append(reasons, fmt.Sprintf("%d consecutive losses", r.ConsecutiveLosses))
+	}
+	if logger != nil {
+		logger.Warn("WARNING: circuit breaker is DISABLED (circuit_breaker:false) and a halt threshold was crossed (%s) — NO circuit breaker fired. This strategy is trading WITHOUT the drawdown/consecutive-loss auto-halt and positions are NOT being auto-closed on this condition. This is a warning only (nothing was closed); re-enable circuit_breaker to restore protection.",
+			strings.Join(reasons, "; "))
+	}
 }
 
 // RecordTradeResult updates risk state with realized PnL for daily limits and
