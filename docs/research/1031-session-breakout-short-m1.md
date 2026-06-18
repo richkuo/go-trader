@@ -203,14 +203,79 @@ Holders 51+ bars: 80% win rate (profit concentration in long holds, as hypothesi
 - `backtest/tests/test_eval_windows.py`: `test_run_leg_threads_allowed_regimes_and_blocks_entries` (synthetic, proves gate reaches Backtester and can zero entries) + `test_validate_candidate_accepts_allowed_regimes`.
 - Full suite `test_eval_windows.py`: 28 passed (including new).
 
-### Next steps on this branch
-- Expand to full protocol + held-out + all 6 datasets (or more symbols).
-- Try different atr_mult / z_target values and regime label sets (use the composite classifier if #992 used it).
-- If a gated+exit variant clears the full M1 bar (PASS on IS/OOS/held-out + plateau), prepare a minimal config PR. Otherwise close with deprecation recommendation.
+## Full M1 results — all 6 audit datasets, all 5 windows (2026-06-18)
 
-Status: first real candidates executed; mechanism proven on the M1 bar; regression test added; PR review items addressed.
+Harness: `eval_windows.py` (merged `allowed_regimes` wiring), futures registry, `direction=short`,
+8-strategy incumbent-median bar recomputed per (window, dataset). Each cell is the **mean across
+the 6 audit datasets** (BTC/ETH/SOL × 1h/4h). "bar" is the M1 incumbent-median for that window.
+Raw JSON: `/tmp/1031/{baseline,candA_gate,candB_out,candC_out}.json`.
+
+| Window | M1 bar (Sharpe / DDadj) | Baseline (open-as-close) | A: + bear gate | B: + gate + atr_stop 2.0 | C: + gate + atr 1.5 + zscore |
+|--------|-------------------------|--------------------------|----------------|--------------------------|------------------------------|
+| IS     | −0.12 / −0.14 | 0.02 / 0.13 **PASS** | 0.13 / 0.06 **PASS** | 0.44 / 0.21 **PASS** | −2.01 / −0.72 FAIL |
+| OOS    | −0.75 / −0.49 | 0.84 / 0.47 **PASS** | 1.32 / 1.26 **PASS** | 2.50 / 2.86 **PASS** | −0.17 / 0.19 **PASS** |
+| 2023   | **+1.46 / +3.67** | −1.54 / −0.80 FAIL | −1.28 / −0.47 FAIL | −1.73 / −0.94 FAIL | −2.24 / −0.83 FAIL |
+| 2024   | **+0.90 / +1.07** | −0.82 / −0.80 FAIL | −0.64 / −0.54 FAIL | −0.99 / −0.75 FAIL | −1.36 / −0.88 FAIL |
+| 2025H1 | −0.42 / −0.37 | 0.09 / 0.05 **PASS** | 0.37 / 0.38 **PASS** | 0.66 / 0.56 **PASS** | −1.23 / −0.49 FAIL |
+| **Held-out passed** | | **1/3** | **1/3** | **1/3** | **0/3** |
+
+`atr_mult` sweep (gate + `atr_stop`, held-out windows only, mean Sharpe) — confirms no stop width salvages the bull years:
+
+| atr_mult | 2023 | 2024 |
+|----------|------|------|
+| 2.0 | −1.73 | −0.99 |
+| 2.5 | −1.87 | −1.02 |
+| 3.0 | −1.97 | −1.07 |
+
+Wider stops are monotonically **worse** in a bull tape (the short rides further against the uptrend
+before stopping). The no-stop baseline (−1.54 / −0.82) is the least-bad of all — `atr_stop` strictly
+*hurts* the held-out years.
+
+### Why the mechanisms cannot fix the held-out tail
+
+1. **Bull-year windows have a high positive bar.** 2023 (BTC +157%, SOL +922%) and 2024 are
+   long-dominated, so the incumbent-median bar is strongly positive (Sharpe +1.46 / +0.90). A
+   short-only leg is structurally incapable of *beating a long-biased bar* in a screaming bull year.
+   The only "safe" play is to not trade — but a flat leg scores degenerate (zero-trade), not a pass.
+2. **The bear gate reduces but cannot eliminate counter-trend shorts.** The legacy single-lookback
+   ADX `trending_down` label still fires on intra-uptrend pullbacks (2023 BTC 1h trade count
+   102 → 73 with the gate, not → 0). Its threshold (period 14 / ADX 20) is not tunable through
+   `eval_windows`, but even a perfect gate can only push the leg toward flat — degenerate, not a pass.
+3. **The edge lives in long holds; every early exit amputates it.** `exit_diagnostics.py` confirms
+   profit concentrates in 51+ bar holds (60–100% win rate) while short holds lose; late_giveback is
+   41–73% of trades. `atr_stop` and `zscore_target` cut holds early, so they realize the bull-tape
+   losses faster (B worse on held-out than baseline) and, when tight + combined with `zscore_target`,
+   sever the winners outright (C fails even IS at −2.01). Same contraindication the issue flagged for
+   `time_stop`.
+
+### Verdict — DEPRECATE `session_breakout` (per the #1031 decision gate)
+
+The decision gate: *"If a bear-gated, exit-improved short leg cannot clear the bar OOS + held-out,
+deprecate."* Every variant tested clears OOS (the gross short edge is real — OOS Sharpe up to 2.50),
+but **none clears held-out** (best 1/3, and only on the chop-y 2025H1). The 2023/2024 bull-year
+failures are directional and structural; the bear gate, every `atr_stop` width, and `zscore_target`
+either leave them unchanged or make them worse. No config in the tested space survives OOS **and**
+held-out → **recommend deprecation.**
+
+Supporting context (does not change the verdict):
+- Futures **live short opens are not wired** today (TopStep executor is close-long-only,
+  `FuturesOrderSkipReason`), so any graduated short config would have been paper-only regardless.
+- Holding-structure note (#977 continuous re-run): the held-out failure is uniformly directional
+  across all three calendar-year windows and both protocol windows (strong-pass OOS, hard-fail bull
+  years) — a window-edge artifact would not produce that consistency, so a continuous re-run cannot
+  reverse it.
+
+### Recommended action
+Deprecate `session_breakout` following the #1034 / #1035 pattern (mark deprecated + hide from
+discovery). Not done in this PR — left as an owner-approved follow-up. The gross short edge is worth
+revisiting only if (a) a bull-regime *flat* filter that genuinely zeroes bull-year trading is added,
+and (b) the futures live short path is wired — both out of scope here.
+
+Status: M1 protocol complete (baseline + 3 candidates + atr sweep + exit diagnostics, all 6 datasets
+× 5 windows). Verdict: deprecate. Awaiting owner approval to land the registry change.
 
 Generated: 2026-06-17 (initial plan + validation)
-Updated: 2026-06-17 (actual focused runs + test + fixes for review)
+Updated: 2026-06-17 (focused single-dataset runs + test + review fixes)
+Updated: 2026-06-18 (full 6-dataset × 5-window M1 protocol + atr sweep + verdict: deprecate)
 
-LLM: grok-build-0.1 | medium | Harness: code audit + backtester review + live M1 runs
+LLM: Opus 4.8 | high | Harness: Claude Code + live M1 runs
