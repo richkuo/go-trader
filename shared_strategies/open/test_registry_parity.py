@@ -182,6 +182,28 @@ def test_deprecated_vol_momentum_hidden_but_loadable(spot_shim, futures_shim, co
     assert futures_shim.STRATEGY_REGISTRY["vol_momentum"]["default_params"]["allow_short"] is True
 
 
+def test_deprecated_amd_ifvg_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
+    # #1023: DST/session-timing corrected (NY-anchored ICT killzones) and
+    # rebaselined at the designed 15m timeframe; the corrected baseline passes
+    # protocol OOS but fails the 2023/2024 held-out years on both 15m and
+    # 1h/4h. Hidden from discovery but kept registered so explicit existing
+    # configs/backtests still resolve it.
+    import pandas as pd
+    # Needs a DatetimeIndex (session/hour bucketing reads index.hour).
+    idx = pd.date_range("2024-01-01", periods=200, freq="15min")
+    df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(200), index=idx)
+    for shim in (spot_shim, futures_shim):
+        assert "amd_ifvg" not in shim.list_strategies()
+        assert "amd_ifvg" in shim.STRATEGY_REGISTRY
+        result = shim.apply_strategy("amd_ifvg", df)
+        assert "signal" in result.columns
+    # Defaults are the canonical ICT killzones in DST-aware civil time.
+    p = spot_shim.STRATEGY_REGISTRY["amd_ifvg"]["default_params"]
+    assert p["session_tz"] == "America/New_York"
+    assert (p["asian_start_hour"], p["asian_end_hour"]) == (20, 0)
+    assert (p["london_start_hour"], p["london_end_hour"]) == (2, 5)
+
+
 def test_momentum_variant_overrides_threshold(spot_shim, futures_shim):
     # The only non-description default_params override; spot uses 5.0, futures 3.0.
     assert spot_shim.STRATEGY_REGISTRY["momentum"]["default_params"]["threshold"] == 5.0

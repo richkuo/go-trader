@@ -64,6 +64,7 @@ STRATEGIES: Dict[str, Dict[str, Any]] = {}
 # Strategies kept loadable for existing configs/backtests but hidden from
 # discovery surfaces such as --list-json and generated defaults.
 DISCOVERY_HIDDEN_STRATEGIES = frozenset({
+    "amd_ifvg",
     "range_scalper",
     "session_breakout",
     "vol_momentum",
@@ -687,9 +688,13 @@ def atr_breakout_strategy(df: pd.DataFrame, atr_period: int = 14, multiplier: fl
     "amd_ifvg",
     "AMD+IFVG \u2014 ICT Accumulation-Manipulation-Distribution with Implied Fair Value Gap (15m, session-aware)",
     {
-        "asian_start_hour": 0, "asian_end_hour": 8,
-        "london_start_hour": 8, "london_end_hour": 12,
+        # Canonical ICT killzones in civil (DST-aware) time, anchored to
+        # session_tz: Asian range 20:00-00:00 ET (accumulation), London open
+        # kill zone 02:00-05:00 ET (manipulation). See amd_ifvg.py.
+        "asian_start_hour": 20, "asian_end_hour": 0,
+        "london_start_hour": 2, "london_end_hour": 5,
         "min_ifvg_pct": 0.05, "sweep_threshold_pct": 0.01,
+        "session_tz": "America/New_York",
     },
 )
 def amd_ifvg_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
