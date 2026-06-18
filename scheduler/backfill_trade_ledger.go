@@ -20,6 +20,8 @@ import (
 //     (stored exchange_fee when real, else the modeled taker fee) is stamped
 //     into exchange_fee, close-leg realized_pnl gets that fee added back
 //     (net → gross), pnl_gross=1, fee_source records provenance.
+//     Rows marked fee_source='reconcile_adjustment' are already explicit
+//     model-only cleanup rows and are not userFills true-up candidates.
 //  2. Rows whose OID matches a userFills aggregate are then trued up:
 //     exchange_fee ← real fee, price/value ← fill VWAP, close-leg
 //     realized_pnl ← exchange closedPnl (gross), fee_source='userfills'.
@@ -69,6 +71,7 @@ type TradeLedgerPlan struct {
 	MatchedCount          int // rows trued up from a userFills aggregate
 	UnmatchedOIDCount     int
 	MissingOIDCount       int
+	ReconcileAdjustCount  int
 }
 
 // tradeLedgerRowNewValues is the planner's per-row outcome.
@@ -175,6 +178,20 @@ func planTradeLedgerForStrategyWithOIDTotals(
 			Fee:       t.ExchangeFee,
 			PnL:       t.RealizedPnL,
 			FeeSource: t.FeeSource,
+		}
+
+		if t.FeeSource == FeeSourceReconcileAdjustment {
+			plan.ReconcileAdjustCount++
+			plan.Skipped = append(plan.Skipped, SkippedTrade{
+				RowID: t.RowID, Timestamp: t.Timestamp, Symbol: t.Symbol,
+				OID: t.ExchangeOrderID, Reason: "reconcile_adjustment",
+			})
+			if t.IsClose {
+				cash += tradeBackfillRowNetPnL(t)
+			} else {
+				cash -= t.ExchangeFee
+			}
+			continue
 		}
 
 		// Step 1: legacy net → gross migration.
@@ -622,8 +639,8 @@ func printTradeLedgerReport(plan TradeLedgerPlan) {
 	fmt.Printf("\n--- %s ---\n", plan.StrategyID)
 	fmt.Printf("  rows updated:        %d (net→gross migrated %d, userFills matched %d)\n",
 		len(plan.Changes), plan.MigratedCount, plan.MatchedCount)
-	fmt.Printf("  rows skipped:        %d (missing_oid=%d, unmatched=%d)\n",
-		len(plan.Skipped), plan.MissingOIDCount, plan.UnmatchedOIDCount)
+	fmt.Printf("  rows skipped:        %d (missing_oid=%d, unmatched=%d, reconcile_adjustment=%d)\n",
+		len(plan.Skipped), plan.MissingOIDCount, plan.UnmatchedOIDCount, plan.ReconcileAdjustCount)
 	fmt.Printf("  fee delta (sum):     $%+.4f\n", feeDelta)
 	fmt.Printf("  pnl delta (sum):     $%+.4f (gross-convention values)\n", pnlDelta)
 	fmt.Printf("  cash:                $%.4f → $%.4f (Δ %+.4f)\n",

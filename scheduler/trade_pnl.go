@@ -28,10 +28,12 @@ import (
 // PnL via tradeLedgerDeltaSQL.
 const TradeTypeFunding = "funding"
 
-// FeeSourceUserFills / FeeSourceModeled are the Trade.FeeSource values.
+// FeeSourceUserFills / FeeSourceModeled / FeeSourceReconcileAdjustment are the
+// Trade.FeeSource values.
 const (
-	FeeSourceUserFills = "userfills"
-	FeeSourceModeled   = "modeled"
+	FeeSourceUserFills           = "userfills"
+	FeeSourceModeled             = "modeled"
+	FeeSourceReconcileAdjustment = "reconcile_adjustment"
 )
 
 // tradeNetPnLSQL is the convention-aware NET realized PnL of one row,

@@ -790,6 +790,9 @@ func TestForceCloseAllPositionsRecordsDirectionalTradeSides(t *testing.T) {
 		if !tr.IsClose {
 			t.Errorf("Trade %s IsClose = false, want true", tr.Symbol)
 		}
+		if tr.FeeSource != FeeSourceReconcileAdjustment {
+			t.Errorf("Trade %s FeeSource = %q, want %q", tr.Symbol, tr.FeeSource, FeeSourceReconcileAdjustment)
+		}
 		gotSide[tr.Symbol] = tr.Side
 	}
 	wantSide := map[string]string{
@@ -895,6 +898,66 @@ func TestForceCloseAllPositions_HealthyPositionReconciles(t *testing.T) {
 	}
 	if math.Abs(tr.RealizedPnL-s.ClosedPositions[0].RealizedPnL) > 1e-9 {
 		t.Errorf("trade PnL %g != closed_positions PnL %g", tr.RealizedPnL, s.ClosedPositions[0].RealizedPnL)
+	}
+}
+
+func TestForceCloseAllPositions_ResidualRowMarkedReconcileAdjustment(t *testing.T) {
+	s := &StrategyState{
+		ID:              "hl-residual",
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		Cash:            10000,
+		Positions:       map[string]*Position{"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 1}},
+		OptionPositions: map[string]*OptionPosition{},
+		TradeHistory:    []Trade{},
+		ClosedPositions: []ClosedPosition{},
+		RiskState:       RiskState{},
+	}
+	forceCloseAllPositions(s, map[string]float64{"ETH": 2100}, nil)
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory len = %d, want 1", len(s.TradeHistory))
+	}
+	tr := s.TradeHistory[0]
+	if tr.ExchangeOrderID != "" {
+		t.Errorf("ExchangeOrderID = %q, want empty for model-only residual cleanup", tr.ExchangeOrderID)
+	}
+	if tr.ExchangeFee != 0 || !tr.PnLGross || tr.FeeSource != FeeSourceReconcileAdjustment {
+		t.Errorf("force-close row fee metadata = fee %v gross %v source %q, want 0 / true / %q",
+			tr.ExchangeFee, tr.PnLGross, tr.FeeSource, FeeSourceReconcileAdjustment)
+	}
+	if !strings.Contains(tr.Details, "model-only reconciliation adjustment") {
+		t.Errorf("Details = %q, want model-only reconciliation marker", tr.Details)
+	}
+	if got, want := tradeLedgerDelta(tr), tr.RealizedPnL; math.Abs(got-want) > 1e-9 {
+		t.Errorf("ledger delta = %v, want gross==net PnL %v", got, want)
+	}
+}
+
+func TestForceCloseAllPositions_OptionRowsMarkedReconcileAdjustment(t *testing.T) {
+	s := &StrategyState{
+		ID:        "options-residual",
+		Cash:      5000,
+		Positions: map[string]*Position{},
+		OptionPositions: map[string]*OptionPosition{
+			"BTC-call-60000": {ID: "BTC-call-60000", Action: "buy", Quantity: 2, EntryPremiumUSD: 1000, CurrentValueUSD: 1200},
+			"BTC-put-50000":  {ID: "BTC-put-50000", Action: "sell", Quantity: 1, EntryPremiumUSD: 700, CurrentValueUSD: -900},
+		},
+		TradeHistory:    []Trade{},
+		ClosedPositions: []ClosedPosition{},
+		RiskState:       RiskState{},
+	}
+	forceCloseAllPositions(s, nil, nil)
+	if len(s.TradeHistory) != 2 {
+		t.Fatalf("TradeHistory len = %d, want 2", len(s.TradeHistory))
+	}
+	for _, tr := range s.TradeHistory {
+		if tr.TradeType != "options" || !tr.IsClose {
+			t.Errorf("trade = type %q close %v, want options close", tr.TradeType, tr.IsClose)
+		}
+		if tr.ExchangeOrderID != "" || tr.ExchangeFee != 0 || !tr.PnLGross || tr.FeeSource != FeeSourceReconcileAdjustment {
+			t.Errorf("option force-close metadata for %s = oid %q fee %v gross %v source %q, want empty / 0 / true / %q",
+				tr.Symbol, tr.ExchangeOrderID, tr.ExchangeFee, tr.PnLGross, tr.FeeSource, FeeSourceReconcileAdjustment)
+		}
 	}
 }
 

@@ -1211,7 +1211,7 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			value = pos.Quantity * price
 		}
 		if details == "" {
-			details = fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f", pos.Side, pnl)
+			details = fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f (model-only reconciliation adjustment; no exchange fill)", pos.Side, pnl)
 		}
 		if logger != nil {
 			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)
@@ -1230,7 +1230,8 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			Details:           details,
 			IsClose:           true,
 			RealizedPnL:       pnl,
-			PnLGross:          true, // no fee modeled on paper force-close: gross == net
+			PnLGross:          true, // model-only adjustment has no exchange fee: gross == net
+			FeeSource:         FeeSourceReconcileAdjustment,
 			Regime:            s.Regime,
 			EntryATR:          pos.EntryATR,
 			StopLossTriggerPx: pos.StopLossTriggerPx,
@@ -1273,7 +1274,8 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			Details:     fmt.Sprintf("Circuit breaker force-close, PnL: $%.2f", pnl),
 			IsClose:     true,
 			RealizedPnL: pnl,
-			PnLGross:    true, // no fee modeled on paper force-close: gross == net
+			PnLGross:    true, // model-only adjustment has no exchange fee: gross == net
+			FeeSource:   FeeSourceReconcileAdjustment,
 			Regime:      s.Regime,
 		}
 		RecordTrade(s, trade)

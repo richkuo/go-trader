@@ -98,7 +98,7 @@ type SkippedTrade struct {
 	Timestamp time.Time
 	Symbol    string
 	OID       string
-	Reason    string // "missing_oid", "no_fill_match", "already_real_fee"
+	Reason    string // "missing_oid", "no_fill_match", "already_real_fee", "gross_convention_row", "reconcile_adjustment"
 }
 
 // ClosedPositionRecompute carries the new aggregate PnL for a single

@@ -784,6 +784,54 @@ func TestPlanTradeLedgerForStrategy_MigratesAndTruesUp(t *testing.T) {
 	}
 }
 
+func TestPlanTradeLedgerForStrategy_SkipsReconcileAdjustmentRows(t *testing.T) {
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	trades := []TradeBackfillRow{
+		{
+			RowID: 1, Timestamp: base, Symbol: "ETH", Side: "sell", Quantity: 0.5,
+			Price: 2100, Value: 1050, TradeType: "perps", IsClose: true,
+			RealizedPnL: 50, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
+		},
+		{
+			RowID: 2, Timestamp: base.Add(time.Minute), Symbol: "BTC", Side: "sell", Quantity: 0.1,
+			Price: 61000, Value: 6100, TradeType: "perps", IsClose: true,
+			RealizedPnL: 95, ExchangeOrderID: "matched-adjustment", FeeSource: FeeSourceReconcileAdjustment,
+		},
+	}
+	fills := map[string]HLFillSummary{
+		"matched-adjustment": {Fee: 2.05, ClosedPnLGross: 99, Qty: 0.1, Px: 60990},
+	}
+
+	plan := planTradeLedgerForStrategy("hl-residual", trades, fills, 1000, 1145)
+	if len(plan.Changes) != 0 {
+		t.Fatalf("changes = %d, want 0 for model-only adjustment", len(plan.Changes))
+	}
+	if plan.MigratedCount != 0 || plan.MatchedCount != 0 {
+		t.Fatalf("migrated/matched = %d/%d, want 0/0 for adjustment rows", plan.MigratedCount, plan.MatchedCount)
+	}
+	if plan.ReconcileAdjustCount != 2 || plan.MissingOIDCount != 0 || plan.UnmatchedOIDCount != 0 {
+		t.Fatalf("skip counts = reconcile_adjustment %d missing %d unmatched %d, want 2/0/0",
+			plan.ReconcileAdjustCount, plan.MissingOIDCount, plan.UnmatchedOIDCount)
+	}
+	if len(plan.Skipped) != 2 {
+		t.Fatalf("skipped = %+v, want two reconcile_adjustment skips", plan.Skipped)
+	}
+	for _, skipped := range plan.Skipped {
+		if skipped.Reason != "reconcile_adjustment" {
+			t.Fatalf("skipped = %+v, want only reconcile_adjustment skips", plan.Skipped)
+		}
+	}
+	if math.Abs(plan.NewCash-1145) > 1e-9 {
+		t.Errorf("NewCash = %v, want 1145 (rows are replayed, only userFills true-up is skipped)", plan.NewCash)
+	}
+
+	second := planTradeLedgerForStrategy("hl-residual", trades, fills, 1000, plan.NewCash)
+	if len(second.Changes) != 0 || second.ReconcileAdjustCount != 2 || second.CashBaselineDivergent {
+		t.Fatalf("second pass = changes %d reconcile_adjustment %d divergent %v, want 0 / 2 / false",
+			len(second.Changes), second.ReconcileAdjustCount, second.CashBaselineDivergent)
+	}
+}
+
 // Running the planner a second time over its own output must be a no-op.
 func TestPlanTradeLedgerForStrategy_Idempotent(t *testing.T) {
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)

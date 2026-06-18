@@ -559,7 +559,9 @@ type Trade struct {
 	PnLGross bool `json:"pnl_gross,omitempty"`
 	// FeeSource records ExchangeFee provenance: "userfills" (real exchange
 	// fee), "modeled" (taker-rate estimate; `backfill trade-ledger` repairs
-	// these from userFills), or "" (legacy row / no fee context).
+	// these from userFills), "reconcile_adjustment" (model-only virtual-state
+	// cleanup with no exchange fill to true up), or "" (legacy row / no fee
+	// context).
 	FeeSource string `json:"fee_source,omitempty"`
 
 	Regime string `json:"regime,omitempty"` // market regime label at time of trade (#482)
