@@ -202,32 +202,62 @@ def _make_utc_df_from_ny(ny_bars: list, day: str, tz="America/New_York") -> pd.D
     )
 
 
+def _ny_asian_bars() -> list:
+    """Asian range, 16 bars (4 h) → range ≈ [99.0, 101.0]."""
+    return [
+        (m - 0.1, m + 0.5, m - 0.5, m)
+        for i in range(16)
+        for m in (100 + 0.5 * (1 if i % 2 else -1),)
+    ]
+
+
+def _ny_london_bars() -> list:
+    """London sweep below the Asian low, bullish IFVG, retrace entry, drift
+    (8 bars). Designed to fire signal=+1 once placed in the London window."""
+    return [
+        (99.5, 99.6, 98.7, 99.0),     # sweep below 99.0
+        (99.5, 100.0, 99.4, 99.9),    # IFVG c0: high 100.0
+        (100.3, 100.9, 100.1, 100.7), # IFVG c1 (displacement)
+        (100.5, 101.3, 100.8, 101.2), # IFVG c2: low 100.8 → gap [100.0, 100.8]
+        (100.4, 100.6, 100.0, 100.4), # retrace entry: dips in, closes inside
+        (100.6, 100.9, 100.3, 100.6),
+        (100.6, 100.9, 100.3, 100.6),
+        (100.6, 100.9, 100.3, 100.6),
+    ]
+
+
 def _build_ny_bullish_setup() -> list:
-    """A bullish AMD+IFVG setup laid out on a continuous 15m NY-civil grid
-    starting at 20:00 ET. Phases by civil time:
-      20:00–23:45  Asian range  (16 bars) → range ≈ [99.0, 101.0]
-      00:00–01:45  inter-session drift     (8 bars, no role)
-      02:00+       London sweep below, bullish IFVG, retrace entry.
-    Fires signal=+1 under the default NY-canon windows."""
-    bars = []
-    # Asian 20:00–23:45 ET: oscillate (high 101.0, low 99.0)
-    for i in range(16):
-        mid = 100 + 0.5 * (1 if i % 2 else -1)
-        bars.append((mid - 0.1, mid + 0.5, mid - 0.5, mid))
-    # 00:00–01:45 ET: quiet drift inside the range (pre-London, no setup role)
-    for _ in range(8):
-        bars.append((100.0, 100.2, 99.8, 100.0))
-    # 02:00 ET London sweep below the Asian low (99.0)
-    bars.append((99.5, 99.6, 98.7, 99.0))
-    # Bullish IFVG: c0.high (100.0) < c2.low (100.8) → gap [100.0, 100.8]
-    bars.append((99.5, 100.0, 99.4, 99.9))
-    bars.append((100.3, 100.9, 100.1, 100.7))
-    bars.append((100.5, 101.3, 100.8, 101.2))
-    # Retrace entry: dips into the IFVG, closes inside → fire
-    bars.append((100.4, 100.6, 100.0, 100.4))
-    # A little post-entry drift
-    bars += [(100.6, 100.9, 100.3, 100.6)] * 3
-    return bars
+    """A bullish AMD+IFVG setup on a continuous 15m NY-civil grid from 20:00 ET:
+      20:00–23:45  Asian range        (16 bars)
+      00:00–01:45  inter-session drift  (8 bars, pushes the sweep to 02:00 ET)
+      02:00+       London sweep + bullish IFVG + retrace entry.
+    Fires signal=+1 under the default NY-canon windows; crosses civil midnight."""
+    drift = [(100.0, 100.2, 99.8, 100.0)] * 8
+    return _ny_asian_bars() + drift + _ny_london_bars()
+
+
+def _make_dst_crossing_df(tz="America/New_York") -> pd.DataFrame:
+    """Same bullish setup, but the Asian range (evening of 2024-11-02) and the
+    London phase (early 2024-11-03) bracket the US fall-back DST transition
+    (02:00 EDT → 01:00 EST). The two phases are built as separate civil-time
+    grids — avoiding the ambiguous repeated 01:00 hour — so the *session*
+    spans the boundary while the bar placement stays unambiguous. Fires +1."""
+    asian = _ny_asian_bars()                     # 20:00–23:45 EDT, 2024-11-02
+    london = _ny_london_bars()                   # 02:30–04:15 EST, 2024-11-03
+    a_idx = pd.date_range("2024-11-02 20:00", periods=len(asian), freq="15min", tz=tz)
+    l_idx = pd.date_range("2024-11-03 02:30", periods=len(london), freq="15min", tz=tz)
+    idx = a_idx.append(l_idx).tz_convert("UTC").tz_localize(None)
+    rows = asian + london
+    return pd.DataFrame(
+        {
+            "open":   [b[0] for b in rows],
+            "high":   [b[1] for b in rows],
+            "low":    [b[2] for b in rows],
+            "close":  [b[3] for b in rows],
+            "volume": [100.0] * len(rows),
+        },
+        index=idx,
+    )
 
 
 class TestDSTInvariance:
@@ -283,6 +313,35 @@ class TestSessionDayWrap:
             "setup straddling civil midnight failed to fire — session-day "
             "grouping likely split the Asian range from the London sweep"
         )
+
+
+class TestTruncationDefaultPath:
+    """#732 truncation invariance on the PRODUCTION default (America/New_York)
+    path, not only the legacy UTC override. Session bucketing is a function of
+    the index alone, so the invariant is timezone-independent — these lock it in
+    against future session-derivation edits while amd_ifvg stays live-loadable."""
+
+    def _assert_truncation_invariant(self, df):
+        full = amd_ifvg_core(df)  # default NY-canon windows
+        signal_bars = full.index[full["signal"] != 0]
+        assert len(signal_bars) >= 1, "fixture produced no signal to test against"
+        for k in signal_bars:
+            partial = amd_ifvg_core(df.loc[:k])
+            assert partial.loc[k, "signal"] == full.loc[k, "signal"], (
+                f"signal at {k} changed after truncation at K: "
+                f"full={full.loc[k,'signal']} truncated={partial.loc[k,'signal']}"
+            )
+
+    def test_default_ny_path_truncation_invariant(self):
+        # (a) default NY path; (c) the setup crosses civil midnight (Asian
+        # evening → London next morning) within one session day.
+        df = _make_utc_df_from_ny(_build_ny_bullish_setup(), "2024-01-15")
+        self._assert_truncation_invariant(df)
+
+    def test_dst_boundary_truncation_invariant(self):
+        # (b) the session brackets the US fall-back DST transition; (c) it also
+        # crosses civil midnight. Truncating at the entry bar must not change it.
+        self._assert_truncation_invariant(_make_dst_crossing_df())
 
 
 class TestSmoke:
