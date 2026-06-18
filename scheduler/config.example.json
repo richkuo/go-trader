@@ -60,10 +60,10 @@
       "interval_seconds": 300
     },
     {
-      "id": "hl-amd-btc",
+      "id": "hl-chart-btc",
       "type": "perps",
       "script": "shared_scripts/check_hyperliquid.py",
-      "args": ["amd_ifvg", "BTC", "15m", "--mode=paper"],
+      "args": ["chart_pattern", "BTC", "1h", "--mode=paper"],
       "capital": 1000,
       "max_drawdown_pct": 50,
       "interval_seconds": 900
