@@ -1538,16 +1538,31 @@ func main() {
 						cbSnapshot = snapshotPerStrategyCircuitBreaker(stratState, prices)
 					}
 					mu.Unlock()
+					// #1046: a latched per-strategy circuit breaker on an HL perps
+					// strategy with an open position falls through in manage-only
+					// mode rather than skipping — the dispatch below forces the
+					// signal to hold (0), which suppresses every entry/add/flip/
+					// close path while still running the Signal==0 trailing-SL/TP
+					// management so a stranded (e.g. shared-coin) position keeps
+					// ratcheting its stop-loss. All other blocks skip as before.
+					cbManageOnly := false
 					if !allowed {
 						notifyPerStrategyCircuitBreakerWithSnapshot(sc, cbSnapshot, reason, pv, totalPV, stateDB, notifier, killSwitchFired)
 						logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
-						logger.Close()
-						lastRun[sc.ID] = time.Now()
-						continue
+						if circuitBreakerPermitsManagement(reason, sc.Platform, sc.Type, hlPosQty) {
+							cbManageOnly = true
+							logger.Info("Circuit breaker latched — suppressing new entries but continuing trailing-SL/TP management for open position (#1046)")
+						} else {
+							logger.Close()
+							lastRun[sc.ID] = time.Now()
+							continue
+						}
 					}
 
-					// #42: Notional cap blocks new trades for this strategy.
-					if notionalBlocked {
+					// #42: Notional cap blocks new trades for this strategy. Under
+					// manage-only the position is never grown anyway, so let the
+					// trailing-SL/TP management run instead of skipping.
+					if !cbManageOnly && notionalBlocked {
 						logger.Warn("Notional cap exceeded — skipping new trades")
 						logger.Close()
 						lastRun[sc.ID] = time.Now()
@@ -1703,6 +1718,15 @@ func main() {
 							}
 						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, notifier, logger); ok {
 							prices[result.Symbol] = price
+							// #1046: circuit breaker latched — force hold so no entry/
+							// add/flip/close executes (every execution path below gates
+							// on Signal != 0, and executePerpsSignalWithLeverage returns
+							// early on signal==0). The Signal==0 trailing-SL/TP-ratchet
+							// management blocks below still run, keeping the open
+							// position's stop-loss ratcheting through the latch window.
+							if cbManageOnly {
+								result.Signal = 0
+							}
 							// #879: single-source regime — read the global store for this
 							// strategy's signature instead of the check output, and point
 							// result.Regime at it so stamp-at-open inside execute* shares it.

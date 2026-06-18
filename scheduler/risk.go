@@ -1354,6 +1354,28 @@ const (
 	RiskReasonConsecutiveLosses    = "5 consecutive losses"
 )
 
+// circuitBreakerPermitsManagement reports whether a CheckRisk block should still
+// run existing-position management (trailing SL ratchet, TP ratchet, protection
+// sync) for an open position instead of skipping the strategy outright. A
+// per-strategy circuit breaker exists to block NEW entries; it must not freeze
+// the stop-loss on a position that is already open — e.g. a shared-coin residual
+// the CB cannot force-close (shouldForceCloseAllPositionsOnCircuitBreaker is
+// false when the coin is shared), which then sits with a stale trailing SL for
+// the whole latch window and fails to lock in favorable movement (#1046).
+//
+// Scoped to the latched reason and to HL perps: only that path runs the
+// trailing-SL/TP-ratchet walker. Manual strategies are exempt from CheckRisk
+// entirely (returns allowed early), and other platforms/types have no equivalent
+// in-loop SL ratchet, so they keep the plain skip. The first-fire cycle (reason
+// "max drawdown exceeded" / "5 consecutive losses") is deliberately excluded:
+// that is the cycle that force-closes / enqueues the reduce-only drain, so the
+// position state is mid-transition; management resumes on the next (latched)
+// cycle, which is ~the entire latch window.
+func circuitBreakerPermitsManagement(reason, platform, stratType string, posQty float64) bool {
+	return reason == RiskReasonCircuitBreakerActive &&
+		platform == "hyperliquid" && stratType == "perps" && posQty > 0
+}
+
 // CheckRisk evaluates risk state and returns whether trading is allowed.
 // sc is the strategy config for this state (nil in some tests — platform
 // pending logic is skipped). assist carries pre-fetched per-platform state
