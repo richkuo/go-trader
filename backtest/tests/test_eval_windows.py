@@ -284,6 +284,30 @@ def test_run_leg_threads_stop_loss_atr_mult(monkeypatch):
         "reached the Backtester")
 
 
+def test_run_leg_threads_allowed_regimes_and_blocks_entries(monkeypatch):
+    """#1031 / M1: allowed_regimes (bear gate etc) must reach Backtester via
+    eval_windows run_leg so gated short candidates can be scored on the
+    incumbent-relative bar. When bar regime never matches allowed set, entries
+    are suppressed while closes (none here) would still be honored."""
+    df = _synthetic_df(n=240)
+    df = df.copy()
+    df["regime"] = "trending_up"  # deliberately not in the allowed set below
+    import data_fetcher
+    monkeypatch.setattr(data_fetcher, "load_cached_data",
+                        lambda *a, **k: df, raising=True)
+    # No gate: fake signals should produce trades
+    plain = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                       ("2026-01-01", None))
+    # Gate to non-matching regime(s): entries blocked
+    gated = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                       ("2026-01-01", None), allowed_regimes=["trending_down"])
+    assert plain is not None and plain.get("trades", 0) > 0
+    assert gated is not None
+    assert gated.get("trades", -1) == 0, (
+        "allowed_regimes gate did not suppress entries when bar regime "
+        "was never in the allowed set")
+
+
 # ---------------------------------------------------------------------------
 # validate_candidate — entry transforms must be modeled faithfully or rejected
 # (mirrors run_backtest.py --config guards; review finding on PR #994)
@@ -324,6 +348,17 @@ def test_validate_candidate_rejects_bogus_direction_and_missing_name():
         ew.validate_candidate({"name": "x", "direction": "sideways"})
     with pytest.raises(ValueError, match="name"):
         ew.validate_candidate({})
+
+
+def test_validate_candidate_accepts_allowed_regimes():
+    # allowed_regimes is a pass-through for the entry gate on the M1 bar path
+    # (#1031); validate_candidate should not reject it.
+    c = {"name": "x", "allowed_regimes": ["trending_down"]}
+    assert ew.validate_candidate(c) is c
+    c2 = {"name": "x", "direction": "short",
+          "close_strategies": [{"name": "atr_stop", "params": {"atr_mult": 1.5}}],
+          "allowed_regimes": ["ranging", "trending_down"]}
+    assert ew.validate_candidate(c2) is c2
 
 
 def test_validate_candidate_stop_owners_mutually_exclusive():

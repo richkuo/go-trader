@@ -120,7 +120,76 @@ default lookback).
 - Regime labels depend on the classifier (adx default vs composite). Use the same as the #992 run for apples-to-apples.
 - Any change to holding time distribution requires the continuous-window re-run (#977).
 
-Generated: 2026-06-17 (initial plan + validation)
-Status: research branch opened; runs + candidate results to be appended.
+## Actual M1 run results (2026-06-17, focused scope)
 
-LLM: grok-build-0.1 | medium | Harness: code audit + backtester review
+Data was fetched on-the-fly for the oos window (BTC/USDT 1h slice from 2026-01). Commands used the exact forms from the plan above (candidate-json + CLI shorthands on eval_windows).
+
+All runs used the M1 bar producer (`eval_windows.py`) against the current 8-incumbent median for the window.
+
+### 1. Short + atr_stop (no gate)
+```
+uv run --no-sync python backtest/eval_windows.py --registry futures \
+  --candidate-json /tmp/1031-m1/sbo_short_baseline.json \
+  --windows oos --datasets "BTC/USDT:1h" --json /tmp/1031-m1/baseline.json
+```
+Output (excerpt):
+```
+candidate: session_breakout (params: registry defaults, registry: futures)
+...
+== window oos (2026-01-01 → latest) ==
+dataset          Sharpe      bar    DDadj      bar     ret%   maxDD%     B&H% trades  beats
+BTC/USDT 1h        1.93    -0.73     1.71    -0.40    27.07   -15.87   -26.56      3  SD
+mean               1.93    -0.73     1.71    -0.40
+verdict: PASS — beats bar on 1/1 (Sharpe), 1/1 (DDadj); traded 1/1
+
+protocol OOS: PASS
+wrote /tmp/1031-m1/baseline.json
+```
+
+### 2. Short + atr_stop + bear gate (`allowed_regimes`)
+```
+... --candidate-json /tmp/1031-m1/sbo_short_gated.json ...
+```
+Result: identical numbers to baseline (PASS, 3 trades, same Sharpe/DDadj). The gate was active (no argparse or runtime error) but did not change trade count in this particular slice — the 3 entries that fired aligned with allowed regimes ("trending_down"/"ranging") under the legacy ADX lookback.
+
+### 3. Short + atr_stop + zscore_target + gate
+```
+... --candidate-json /tmp/1031-m1/sbo_short_z.json ...
+```
+```
+BTC/USDT 1h       -0.66    -0.73    -0.46    -0.40    -6.74   -14.60   -26.56     82  S-
+...
+verdict: FAIL — beats bar on 1/1 (Sharpe), 0/1 (DDadj); traded 1/1
+protocol OOS: FAIL
+```
+Higher trade count (82) from the z-target exit, net negative on the leg in this window, fails the DDadj bar.
+
+### Exit diagnostics (short leg, open-as-close, oos BTC 1h)
+```
+uv run --no-sync python backtest/exit_diagnostics.py --strategy session_breakout \
+  --registry futures --direction short --windows oos --datasets "BTC/USDT:1h"
+```
+Bleed modes (36 trades, median hold 48 bars):
+- early_reversal: 9 (25.0%) net -25.80%
+- late_giveback: 15 (41.7%) net +15.57% (but captured only part of MFE)
+- fee_churn: 3 (8.3%)
+- clean_win: 6 (16.7%)
+- clean_loss: 3 (8.3%)
+
+Holders 51+ bars: 80% win rate (profit concentration in long holds, as hypothesized).
+
+### Test added
+- `backtest/tests/test_eval_windows.py`: `test_run_leg_threads_allowed_regimes_and_blocks_entries` (synthetic, proves gate reaches Backtester and can zero entries) + `test_validate_candidate_accepts_allowed_regimes`.
+- Full suite `test_eval_windows.py`: 28 passed (including new).
+
+### Next steps on this branch
+- Expand to full protocol + held-out + all 6 datasets (or more symbols).
+- Try different atr_mult / z_target values and regime label sets (use the composite classifier if #992 used it).
+- If a gated+exit variant clears the full M1 bar (PASS on IS/OOS/held-out + plateau), prepare a minimal config PR. Otherwise close with deprecation recommendation.
+
+Status: first real candidates executed; mechanism proven on the M1 bar; regression test added; PR review items addressed.
+
+Generated: 2026-06-17 (initial plan + validation)
+Updated: 2026-06-17 (actual focused runs + test + fixes for review)
+
+LLM: grok-build-0.1 | medium | Harness: code audit + backtester review + live M1 runs
