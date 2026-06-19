@@ -7,9 +7,11 @@
 # #790: --rsync-from safe tree sync; warn on missing systemd EnvironmentFile.
 #   --rsync-from preserves deployment .git/ (not copied from source) so rollback
 #   git reset --hard still targets the deployment repo's pre-sync SHA.
-# #1055: --all auto-discovers deployment dirs from loaded go-trader systemd units'
-#   WorkingDirectory (layout-independent); falls back to the <root>/go-trader-*/
-#   glob when systemctl is absent, no units load, or --update-all-root pins a root.
+# #1055: --all batch = UNION of ACTIVE go-trader systemd units' WorkingDirectory
+#   (layout-independent) and the <root>/go-trader-*/ glob, so neither a scattered
+#   systemd deployment nor a signal-mode/unloaded one under the glob root silently
+#   leaves the batch. Auto-discovery is active-only (never starts a stopped unit).
+#   An explicit --update-all-root / GO_TRADER_UPDATE_ALL_ROOT pins the glob root.
 #
 # Phases:
 #   preflight  — git/uv/go sanity checks
@@ -131,9 +133,11 @@ while [[ $# -gt 0 ]]; do
             echo "       $0 --all [--restart] [--restart-mode systemd|signal] [--update-all-root <dir>] [...]"
             echo "  --rsync-from <dir>  rsync code from a source clone into this deployment (skips git pull;"
             echo "                      hardcoded exclusions protect .env, config, state DB, venv, binaries)."
-            echo "  --all               update every deployment. Auto-discovers dirs from loaded go-trader"
-            echo "                      systemd units' WorkingDirectory (layout-independent); falls back to"
-            echo "                      the <root>/go-trader-*/ glob when systemctl is absent or no units load."
+            echo "  --all               update+restart every deployment. Batch = union of ACTIVE go-trader"
+            echo "                      systemd units' WorkingDirectory (layout-independent) and the"
+            echo "                      <root>/go-trader-*/ glob. Auto-discovery is active-only, so it never"
+            echo "                      starts a stopped/failed deployment; the glob still restarts anything"
+            echo "                      under <root>. --update-all-root pins the glob root (skips systemd)."
             echo "  With --all + systemd: each child inherits GO_TRADER_SERVICE — set per-worktree env if units differ."
             echo "  RESTART=1 env var also enables restart."
             echo "  RESTART_MODE=signal requires Linux, GO_TRADER_RUN_SH, GO_TRADER_PIDFILE (see #766)."
@@ -618,34 +622,45 @@ if [[ "$update_all" == "1" ]]; then
         fi
         child_args+=("$a")
     done
-    # Prefer systemd auto-discovery (canonical WorkingDirectory, layout-independent,
-    # #1055); fall back to the legacy $scan_root/go-trader-*/ glob when systemctl is
-    # absent, no go-trader units are loaded, or the operator pinned a batch root.
-    declare -a all_dirs=()
-    discovery_source=""
+    # Build the deployment batch by UNIONing two sources, so no deployment the
+    # operator expects --all to cover silently leaves the batch (#1055 review):
+    #   - systemd: ACTIVE go-trader units' WorkingDirectory (canonical, layout-
+    #     independent, even across different parent dirs).
+    #   - glob: $scan_root/go-trader-*/ (the pre-#1055 behavior), which still catches
+    #     a signal-mode or not-currently-loaded deployment living under the glob root
+    #     that active-unit discovery alone would miss.
+    # An explicit --update-all-root / GO_TRADER_UPDATE_ALL_ROOT pins the glob root and
+    # SUPPRESSES systemd discovery, keeping that documented flow unchanged.
+    declare -a discovered=()
+    declare -a discovery_sources=()
     if [[ "$scan_root_explicit" != "1" ]]; then
+        before_count=${#discovered[@]}
         while IFS= read -r line; do
-            [[ -n "$line" ]] && all_dirs+=("$line")
+            [[ -n "$line" ]] && discovered+=("$line")
         done < <(discover_deployment_dirs_from_systemd)
-        [[ ${#all_dirs[@]} -gt 0 ]] && discovery_source="systemd"
+        [[ ${#discovered[@]} -gt $before_count ]] && discovery_sources+=("systemd")
     fi
-    if [[ ${#all_dirs[@]} -eq 0 ]]; then
-        if [[ ! -d "$scan_root" ]]; then
-            fail "GO_TRADER_UPDATE_ALL_ROOT / --update-all-root is not a directory: $scan_root"
-        fi
+    if [[ -d "$scan_root" ]]; then
         shopt -s nullglob
-        all_dirs=( "$scan_root"/go-trader-*/ )
+        glob_dirs=( "$scan_root"/go-trader-*/ )
         shopt -u nullglob
-        if [[ ${#all_dirs[@]} -eq 0 ]]; then
-            fail "no deployments found: systemd auto-discovery yielded none (systemctl absent or no go-trader units loaded) and no directories match $scan_root/go-trader-*/ (batch root: $scan_root). Set --update-all-root <dir> / GO_TRADER_UPDATE_ALL_ROOT, or ensure go-trader systemd units are loaded."
+        if [[ ${#glob_dirs[@]} -gt 0 ]]; then
+            discovered+=( "${glob_dirs[@]}" )
+            discovery_sources+=("glob")
         fi
-        discovery_source="glob"
-        declare -a sorted_dirs=()
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && sorted_dirs+=("$line")
-        done < <(printf '%s\n' "${all_dirs[@]}" | sort -u)
-        all_dirs=( "${sorted_dirs[@]}" )
+    elif [[ "$scan_root_explicit" == "1" ]]; then
+        fail "GO_TRADER_UPDATE_ALL_ROOT / --update-all-root is not a directory: $scan_root"
     fi
+    if [[ ${#discovered[@]} -eq 0 ]]; then
+        fail "no deployments found: no ACTIVE go-trader systemd units (systemctl absent or none active) and no directories match $scan_root/go-trader-*/ (batch root: $scan_root). Set --update-all-root <dir> / GO_TRADER_UPDATE_ALL_ROOT, or start the deployments' systemd units."
+    fi
+    # De-dupe across the unioned sources (a dir may appear in both) and sort for
+    # stable operator output.
+    declare -a all_dirs=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && all_dirs+=("$line")
+    done < <(printf '%s\n' "${discovered[@]}" | sort -u)
+    discovery_source=$(IFS='+'; printf '%s' "${discovery_sources[*]}")
     echo "[update] --all: ${#all_dirs[@]} deployment dir(s) via ${discovery_source} discovery"
     fail_count=0
     skip_count=0

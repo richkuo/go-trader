@@ -159,3 +159,104 @@ func TestUpdateShellAllDispatchesWithoutBuildToolchain1055(t *testing.T) {
 		}
 	}
 }
+
+// allUnionTestEnv builds a controllable --all environment for the union/suppress
+// tests (#1055 review): a real temp git repo (so `git rev-parse --show-toplevel`
+// resolves), a sibling glob-root deployment dir, a scattered deployment dir, and a
+// fake `systemctl` on PATH that reports the scattered unit as ACTIVE. Neither
+// deployment carries scheduler/config.json, so the run skips both and fails with
+// the zero-update error — but each skip line names its dir, which is what lets the
+// tests prove which source(s) the dir came from. Returns (repoDir, scatteredDir, env).
+func allUnionTestEnv(t *testing.T) (string, string, []string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	// Sibling of the repo under the default scan_root (= parent): glob-only source.
+	if err := os.MkdirAll(filepath.Join(parent, "go-trader-globonly"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Scattered deployment outside the glob root: systemd-only source.
+	scattered := filepath.Join(t.TempDir(), "go-trader-scattered")
+	if err := os.MkdirAll(scattered, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	fake := "#!/usr/bin/env bash\n" +
+		"case \"$1\" in\n" +
+		"  list-units) printf '%s\\n' \"go-trader-scattered.service loaded active running scattered\" ;;\n" +
+		"  show) printf '%s\\n' \"${GO_TRADER_TEST_SCATTERED:-}\" ;;\n" + // show <unit> -p WorkingDirectory --value
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(binDir, "systemctl"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"GO_TRADER_TEST_SCATTERED="+scattered,
+	)
+	return repo, scattered, env
+}
+
+// #1055 review (finding 1): the --all batch must be the UNION of active systemd
+// units and the glob root, so neither a scattered systemd deployment nor a
+// glob-root-only (signal-mode / unloaded) deployment silently leaves the batch.
+func TestUpdateShellAllUnionsSystemdAndGlob1055(t *testing.T) {
+	t.Parallel()
+	script := updateShellScriptPath(t)
+	repo, _, env := allUnionTestEnv(t)
+
+	cmd := exec.Command("bash", script, "--all", "--restart")
+	cmd.Dir = repo // so scan_root defaults to parent (non-explicit -> systemd enabled)
+	cmd.Env = env
+	out, _ := cmd.CombinedOutput()
+	text := string(out)
+
+	for _, want := range []string{
+		"2 deployment dir(s) via systemd+glob discovery", // both sources contributed
+		"go-trader-scattered",                            // systemd-only dir present
+		"go-trader-globonly",                             // glob-only dir present
+		"updated 0 deployments",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("union --all missing %q\n%s", want, text)
+		}
+	}
+}
+
+// #1055 (AC): an explicit --update-all-root pins the glob root and SUPPRESSES
+// systemd discovery, so the scattered active unit must NOT be pulled into the
+// batch — keeping the documented --update-all-root flow unchanged.
+func TestUpdateShellAllExplicitRootSuppressesSystemd1055(t *testing.T) {
+	t.Parallel()
+	script := updateShellScriptPath(t)
+	repo, _, env := allUnionTestEnv(t)
+	parent := filepath.Dir(repo)
+
+	cmd := exec.Command("bash", script, "--all", "--restart", "--update-all-root", parent)
+	cmd.Dir = repo
+	cmd.Env = env
+	out, _ := cmd.CombinedOutput()
+	text := string(out)
+
+	if strings.Contains(text, "go-trader-scattered") {
+		t.Errorf("explicit --update-all-root must suppress systemd discovery, but scattered unit appeared\n%s", text)
+	}
+	for _, want := range []string{
+		"1 deployment dir(s) via glob discovery", // glob root only
+		"go-trader-globonly",
+		"updated 0 deployments",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("explicit-root --all missing %q\n%s", want, text)
+		}
+	}
+}

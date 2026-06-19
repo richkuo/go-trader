@@ -114,25 +114,36 @@ fi
 
 # Full pipeline with a stubbed systemctl (runs on every platform): list-units ->
 # show WorkingDirectory -> normalize. Exercises layout-independence (units in
-# unrelated parent dirs), the unset-WorkingDirectory unit (dropped), and de-dupe.
+# unrelated parent dirs), de-dupe, the unset-WorkingDirectory unit (dropped by the
+# normalizer), and — critically (#1055 review) — that discovery passes --state=active
+# so a stopped-but-loaded unit with a valid WorkingDirectory is NEVER surfaced (and
+# thus never restarted/started by --all --restart).
 (
     systemctl() {
         case "$1" in
             list-units)
+                # Honor --state=active: real systemctl lists only running units then.
+                local active_only=0 a
+                for a in "$@"; do [[ "$a" == "--state=active" ]] && active_only=1; done
                 # --plain --no-legend rows: UNIT LOAD ACTIVE SUB DESCRIPTION
                 printf '%s\n' \
-                    'go-trader.service          loaded active running primary' \
-                    'go-trader-live.service     loaded active running live' \
-                    'go-trader@paper-1.service  loaded active running paper-1' \
-                    'go-trader@stale.service    loaded inactive dead stale'
+                    'go-trader.service           loaded active running primary' \
+                    'go-trader-live.service      loaded active running live' \
+                    'go-trader@paper-1.service   loaded active running paper-1' \
+                    'go-trader@noworkdir.service loaded active running noworkdir'
+                if [[ "$active_only" != "1" ]]; then
+                    # Only --all (which we must NOT use) would surface this stopped unit.
+                    printf '%s\n' 'go-trader@stopped.service   loaded inactive dead stopped'
+                fi
                 ;;
             show)
-                # $4 is the unit (show <unit> -p WorkingDirectory --value)
+                # show <unit> -p WorkingDirectory --value  ->  $2 is the unit
                 case "$2" in
                     go-trader.service) printf '%s\n' '/root/go-trader' ;;
                     go-trader-live.service) printf '%s\n' '/root/.openclaw/workspace/go-trader-live' ;;
                     go-trader@paper-1.service) printf '%s\n' '/srv/deploys/go-trader-paper-1/' ;;
-                    go-trader@stale.service) printf '%s\n' '' ;;  # unset -> dropped
+                    go-trader@noworkdir.service) printf '%s\n' '' ;;          # unset -> dropped by normalizer
+                    go-trader@stopped.service) printf '%s\n' '/srv/deploys/go-trader-stopped' ;;  # valid WD, but inactive -> excluded by --state=active
                 esac
                 ;;
         esac
@@ -140,7 +151,11 @@ fi
     export -f systemctl 2>/dev/null || true
     got=$(discover_deployment_dirs_from_systemd)
     want=$'/root/go-trader/\n/root/.openclaw/workspace/go-trader-live/\n/srv/deploys/go-trader-paper-1/'
-    assert_eq "$got" "$want" "discover: stubbed systemctl -> normalized layout-independent dirs (unset unit dropped)"
+    assert_eq "$got" "$want" "discover: active-only, layout-independent, unset-WD dropped, stopped unit excluded"
+    # Explicit guard: the stopped deployment's dir must never appear (would be started).
+    case "$got" in
+        *go-trader-stopped*) echo "FAIL: discovery surfaced a stopped-but-loaded unit (--state=active not applied)" >&2; exit 1 ;;
+    esac
 )
 
 echo "OK: update_helpers tests passed"

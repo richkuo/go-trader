@@ -112,7 +112,14 @@ normalize_systemd_deployment_dirs() {
 # (#1055) — canonical and layout-independent (works regardless of where each
 # deployment lives, even across different parent dirs). Emits normalized dirs on
 # stdout, one per line; emits nothing when systemctl is absent or no matching
-# loaded units exist, so the caller falls back to the legacy go-trader-*/ glob.
+# ACTIVE units exist, so the caller can union with / fall back to the glob.
+#
+# --state=active (NOT --all): only currently-running units are surfaced. --all is
+# a fan-out of `--restart`, so discovering a loaded-but-inactive unit would let the
+# child `systemctl restart` START a deliberately stopped/failed trading bot (#1055
+# review). Restricting to active units means auto-discovery never changes a
+# deployment's run/stop state; stopped deployments must be named via the glob root
+# (--update-all-root) if the operator really intends to (re)start them.
 discover_deployment_dirs_from_systemd() {
     command -v systemctl >/dev/null 2>&1 || return 0
     local -a globs=()
@@ -124,7 +131,7 @@ discover_deployment_dirs_from_systemd() {
     local unit
     while IFS= read -r unit; do
         [[ -n "$unit" ]] && units+=("$unit")
-    done < <(systemctl list-units --type=service --all --no-legend --plain "${globs[@]}" 2>/dev/null | awk '{print $1}')
+    done < <(systemctl list-units --type=service --state=active --no-legend --plain "${globs[@]}" 2>/dev/null | awk '{print $1}')
     [[ ${#units[@]} -gt 0 ]] || return 0
     for unit in "${units[@]}"; do
         systemctl show "$unit" -p WorkingDirectory --value 2>/dev/null
