@@ -352,3 +352,137 @@ def test_cli_by_name_threads_windows_spec_to_backtester(monkeypatch):
     assert spec is not None, "windows spec did not thread to the Backtester"
     assert spec["medium"]["classifier"] == "composite"
     assert spec["medium"]["period"] == 20
+
+
+# ─── --allowed-regimes vocabulary tracks the primary window's classifier ──────
+# (#1058 review: composite primary → 7-state gate labels; ADX primary → 3 labels.
+# The gate must be expressible through the SAME surface that computes the label.)
+
+
+_ADX_SPEC = {"medium": {"classifier": "adx", "period": 14}}
+_COMPOSITE_PRIMARY_WITH_ADX = {
+    "medium": {"classifier": "composite", "period": 30},
+    "short": {"classifier": "adx", "period": 7},
+}
+_COMPOSITE_NO_MEDIUM = {"slow": {"classifier": "composite", "period": 40}}
+
+
+def test_primary_classifier_none_spec_is_adx():
+    assert run_backtest._primary_window_classifier(None) == "adx"
+    assert run_backtest._primary_window_classifier({}) == "adx"
+
+
+def test_primary_classifier_medium_first():
+    assert run_backtest._primary_window_classifier(COMPOSITE_SPEC) == "composite"
+
+
+def test_primary_classifier_mixed_spec_uses_medium_not_other_window():
+    # Must-survive (c): medium is the primary even when an ADX window coexists.
+    assert run_backtest._primary_window_classifier(
+        _COMPOSITE_PRIMARY_WITH_ADX) == "composite"
+
+
+def test_primary_classifier_no_medium_uses_sorted_first():
+    assert run_backtest._primary_window_classifier(_COMPOSITE_NO_MEDIUM) == "composite"
+    assert run_backtest._primary_window_classifier(
+        {"z": {"classifier": "composite"}, "a": {"classifier": "adx"}}) == "adx"
+
+
+def test_validate_accepts_adx_label_no_spec():
+    # Preserves the old argparse choices behavior for the legacy ADX path.
+    run_backtest._validate_allowed_regimes_vocabulary(["trending_up", "ranging"], None)
+
+
+def test_validate_accepts_composite_label_with_composite_spec():
+    # Must-survive (a): composite gate label with a composite primary is valid.
+    run_backtest._validate_allowed_regimes_vocabulary(["ranging_quiet"], COMPOSITE_SPEC)
+    run_backtest._validate_allowed_regimes_vocabulary(
+        ["trending_up_clean", "ranging_directional"], COMPOSITE_SPEC)
+
+
+def test_validate_rejects_composite_label_without_spec():
+    # Must-survive (b): the inverse — ADX primary must NOT accept composite labels.
+    with pytest.raises(SystemExit):
+        run_backtest._validate_allowed_regimes_vocabulary(["ranging_quiet"], None)
+    with pytest.raises(SystemExit):
+        run_backtest._validate_allowed_regimes_vocabulary(["trending_up_clean"], _ADX_SPEC)
+
+
+def test_validate_rejects_bare_adx_label_with_composite_primary():
+    # Must-survive (c): a composite classifier never emits bare "trending_up",
+    # so gating on it would silently block every entry — reject loudly.
+    with pytest.raises(SystemExit):
+        run_backtest._validate_allowed_regimes_vocabulary(["trending_up"], COMPOSITE_SPEC)
+    with pytest.raises(SystemExit):
+        run_backtest._validate_allowed_regimes_vocabulary(
+            ["trending_up"], _COMPOSITE_PRIMARY_WITH_ADX)
+
+
+def test_validate_rejects_garbage_label():
+    with pytest.raises(SystemExit):
+        run_backtest._validate_allowed_regimes_vocabulary(["not_a_regime"], None)
+
+
+def test_validate_noop_on_empty():
+    run_backtest._validate_allowed_regimes_vocabulary(None, COMPOSITE_SPEC)
+    run_backtest._validate_allowed_regimes_vocabulary([], COMPOSITE_SPEC)
+
+
+def test_validate_compound_partial_invalid_rejects():
+    # One valid + one invalid → reject (graded by the weakest member).
+    with pytest.raises(SystemExit):
+        run_backtest._validate_allowed_regimes_vocabulary(
+            ["ranging_quiet", "trending_up"], COMPOSITE_SPEC)
+
+
+def test_cli_composite_label_reaches_backtester_with_spec(monkeypatch):
+    """Must-survive (a) end-to-end: --allowed-regimes <composite> no longer
+    argparse-rejects when a composite spec is supplied; it threads through."""
+    seen = {}
+
+    class SpyBacktester:
+        def __init__(self, *args, regime_windows_spec=None, allowed_regimes=None, **kwargs):
+            seen["regime_windows_spec"] = regime_windows_spec
+            seen["allowed_regimes"] = allowed_regimes
+
+        def run(self, df, **kwargs):
+            return {
+                "strategy_name": "sma_crossover", "symbol": "BTC/USDT",
+                "timeframe": "1d", "start_date": str(df.index[0]),
+                "end_date": str(df.index[-1]), "initial_capital": 1000.0,
+                "final_capital": 1000.0, "total_return_pct": 0.0,
+                "annual_return_pct": 0.0, "sharpe_ratio": 0.0,
+                "sortino_ratio": 0.0, "max_drawdown_pct": 0.0,
+                "calmar_ratio": 0.0, "volatility_pct": 0.0, "win_rate": 0.0,
+                "profit_factor": 0.0, "total_trades": 0, "avg_win_pct": 0.0,
+                "avg_loss_pct": 0.0, "trades": [], "params": {},
+            }
+
+    df = pd.DataFrame(
+        {"open": [100.0] * 60, "high": [101.0] * 60, "low": [99.0] * 60,
+         "close": [100.0] * 60, "volume": [1000.0] * 60},
+        index=pd.date_range("2024-01-01", periods=60, freq="D"),
+    )
+    monkeypatch.setattr(run_backtest, "Backtester", SpyBacktester)
+    monkeypatch.setattr(run_backtest, "load_cached_data", lambda *a, **kw: df)
+
+    _run_main(monkeypatch, [
+        "--mode", "single", "--strategy", "sma_crossover",
+        "--regime-enabled",
+        "--regime-windows-spec-json", json.dumps(COMPOSITE_SPEC),
+        "--allowed-regimes", "ranging_quiet",
+        "--allowed-regimes", "trending_up_clean",
+    ])
+    assert seen.get("allowed_regimes") == ["ranging_quiet", "trending_up_clean"]
+    assert seen["regime_windows_spec"]["medium"]["classifier"] == "composite"
+
+
+def test_cli_composite_label_rejected_without_spec(monkeypatch):
+    """Must-survive (b) end-to-end: composite label on an ADX (no-spec) by-name
+    backtest is rejected by our validator (not silently accepted)."""
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch, [
+            "--mode", "single", "--strategy", "sma_crossover",
+            "--regime-enabled",
+            "--allowed-regimes", "ranging_quiet",
+        ])

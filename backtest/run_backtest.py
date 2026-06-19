@@ -78,6 +78,11 @@ from regime import (  # noqa: E402
     compute_regime,
     compute_regime_composite,
     parse_regime_windows_spec_json,
+    valid_labels_for_classifier,
+    CLASSIFIER_ADX,
+    CLASSIFIER_COMPOSITE,
+    REGIME_PRIMARY_WINDOW_KEY,
+    VALID_LABELS_COMPOSITE,
 )
 
 
@@ -150,6 +155,63 @@ def _resolve_regime_windows_spec(regime_cfg: dict) -> Optional[dict]:
     # parse_regime_windows_spec_json validates (period >= 2, reserved names) and
     # normalizes to the exact shape ensure_regime_columns indexes.
     return parse_regime_windows_spec_json(_json.dumps(raw))
+
+
+def _primary_window_classifier(spec: Optional[dict]) -> str:
+    """Classifier of the PRIMARY (medium-first) window — the one whose label the
+    backtester's single ``regime`` column carries and the entry gate reads (#1058).
+
+    Mirrors ``ensure_regime_columns`` / ``regime_from_injected_payload`` primary
+    selection (``REGIME_PRIMARY_WINDOW_KEY`` else ``sorted(keys)[0]``). ``None``
+    spec (no ``regime.windows``) is the legacy single-lookback ADX path, so the
+    gate vocabulary is the 3 ADX labels.
+    """
+    if not spec:
+        return CLASSIFIER_ADX
+    primary_key = (
+        REGIME_PRIMARY_WINDOW_KEY
+        if REGIME_PRIMARY_WINDOW_KEY in spec
+        else sorted(spec.keys())[0]
+    )
+    return str(spec[primary_key].get("classifier") or CLASSIFIER_ADX).strip().lower()
+
+
+def _validate_allowed_regimes_vocabulary(
+    allowed_regimes: Optional[List[str]],
+    windows_spec: Optional[dict],
+) -> None:
+    """Reject ``--allowed-regimes`` labels the primary window's classifier can
+    never emit (#1058 review). The entry gate compares each per-bar regime label
+    (the primary window's output) against this set, so a label outside that
+    classifier's vocabulary blocks every entry silently — exactly the divergence
+    class the live ``validateStrategyRegimeVocabulary`` guards on the Go side.
+
+    Vocabulary tracks the SUPPLIED spec's primary classifier, NOT an
+    unconditional widen: an ADX-only (or no-windows) by-name backtest still
+    rejects composite substates; a composite-primary spec still rejects bare ADX
+    labels (which its classifier never emits). On error, exits with status 1.
+    """
+    if not allowed_regimes:
+        return
+    classifier = _primary_window_classifier(windows_spec)
+    valid = valid_labels_for_classifier(classifier)
+    invalid = [lab for lab in allowed_regimes if lab not in valid]
+    if not invalid:
+        return
+    msg = (
+        f"--allowed-regimes {invalid!r}: not valid label(s) for the primary "
+        f"regime window's {classifier!r} classifier. Valid: "
+        f"{', '.join(sorted(valid))}."
+    )
+    # Most common slip: composite substates supplied without a composite spec.
+    if classifier == CLASSIFIER_ADX and any(lab in VALID_LABELS_COMPOSITE for lab in invalid):
+        msg += (
+            " (Composite 7-state labels require a composite primary window — "
+            "supply --regime-windows-spec-json with a composite classifier, or "
+            "use --config.)"
+        )
+    print(msg)
+    sys.exit(1)
 
 
 def _build_profile_label_series(df: pd.DataFrame, window_spec: dict) -> pd.Series:
@@ -883,10 +945,13 @@ def _build_parser() -> argparse.ArgumentParser:
                              "the entry gate and close evaluators read (#1058). Mutually exclusive "
                              "with --config (the config's regime.windows owns it). Single mode only.")
     parser.add_argument("--allowed-regimes", action="append", dest="allowed_regimes",
-                        default=None, choices=["trending_up", "trending_down", "ranging"],
-                        metavar="LABEL",
+                        default=None, metavar="LABEL",
                         help="Regime label to allow entries for (repeat for multiple). "
-                             "Empty = allow all. Valid: trending_up, trending_down, ranging.")
+                             "Empty = allow all. Validated against the PRIMARY regime "
+                             "window's classifier vocabulary (#1058): ADX (default / no "
+                             "--regime-windows-spec-json) accepts trending_up, "
+                             "trending_down, ranging; a composite primary window accepts "
+                             "the 7-state substates (trending_up_clean, ranging_quiet, ...).")
     parser.add_argument("--stop-loss-atr-mult", type=float, default=None,
                         dest="stop_loss_atr_mult", metavar="MULT",
                         help="Fixed ATR-multiple stop loss (e.g. 2.0). Applied in "
@@ -970,6 +1035,16 @@ def main():
         if args.mode != "single":
             print("--regime-windows-spec-json is only valid with --mode single")
             sys.exit(1)
+
+    # #1058 review: a composite primary window classifies 7-state substates the
+    # entry gate must be able to filter on; validate the by-name --allowed-regimes
+    # against that classifier's vocabulary so a label the classifier can never emit
+    # (which would silently block every entry) is rejected loudly. The --config
+    # path threads the live config's allowed_regimes (validated upstream by the Go
+    # validateStrategyRegimeVocabulary) and rejects the CLI flag below, so skip it.
+    if not args.config:
+        _validate_allowed_regimes_vocabulary(
+            args.allowed_regimes, args.regime_windows_spec)
 
     # #866: --defaults user only has an effect via the config's user_close_defaults.
     if args.defaults == "user" and not args.config:
