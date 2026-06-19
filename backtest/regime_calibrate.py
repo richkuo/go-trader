@@ -9,20 +9,38 @@ for _p in (_THIS_DIR, os.path.abspath(os.path.join(_THIS_DIR, "..")),
 
 SEPARATION_TOLERANCE = 0.05   # model KW-H may dip at most 5% below the hand-rule
 STABILITY_MIN_GAIN = 0.02     # transition-rate must drop by >= this (absolute)
+SIGNIFICANCE_ALPHA = 0.05     # block-shuffle permutation p ceiling for "real" separation
 
 
 def gate_verdict(handrule_report: dict, model_report: dict, primary: str = "h4") -> dict:
     hr_h = handrule_report[primary]["separation"]["kruskal_h"]
     md_h = model_report[primary]["separation"]["kruskal_h"]
+    hr_p = handrule_report[primary]["significance"]["p_value"]
+    md_p = model_report[primary]["significance"]["p_value"]
     hr_tr = handrule_report["stability"]["transition_rate"]
     md_tr = model_report["stability"]["transition_rate"]
-    separation_ok = md_h >= hr_h * (1.0 - SEPARATION_TOLERANCE)
+    # Absolute floor: the relative KW-H tolerance is meaningless when the incumbent itself
+    # separates ~nothing (threshold collapses toward 0, and any model — including a
+    # near-constant-label one that also maximizes the stability arm — passes). So require
+    # the model's OWN forward-return separation to be statistically real (block-shuffle
+    # permutation p <= alpha), not merely "not much worse than a weak incumbent".
+    model_separation_real = md_p <= SIGNIFICANCE_ALPHA
+    # Abstain when the incumbent shows no significant separation on this window: there is
+    # no trustworthy baseline to validate a live-classifier replacement against, so we must
+    # not ship off it regardless of how the model scores.
+    incumbent_trustworthy = hr_p <= SIGNIFICANCE_ALPHA
+    separation_ok = (md_h >= hr_h * (1.0 - SEPARATION_TOLERANCE)) and model_separation_real
     stability_ok = (hr_tr - md_tr) >= STABILITY_MIN_GAIN
+    ship = separation_ok and stability_ok and incumbent_trustworthy
     return {
         "separation_ok": bool(separation_ok),
         "stability_ok": bool(stability_ok),
-        "ship": bool(separation_ok and stability_ok),
+        "model_separation_real": bool(model_separation_real),
+        "incumbent_trustworthy": bool(incumbent_trustworthy),
+        "abstained": bool(not incumbent_trustworthy),
+        "ship": bool(ship),
         "detail": {"handrule_kruskal_h": hr_h, "model_kruskal_h": md_h,
+                   "handrule_p_value": hr_p, "model_p_value": md_p,
                    "handrule_transition_rate": hr_tr, "model_transition_rate": md_tr},
     }
 
