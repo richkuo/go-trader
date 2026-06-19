@@ -592,3 +592,119 @@ def test_config_absent_allowed_regimes_runs(monkeypatch, tmp_path):
     ])
     assert seen["allowed_regimes"] is None
     assert seen["regime_windows_spec"]["medium"]["classifier"] == "composite"
+
+
+# ─── Regime-keyed exit consumers resolve composite labels (#1058 review 3) ────
+# The composite label now feeds _run_position_regime, so the regime-keyed
+# stop_loss_atr_regime / trailing_stop_atr_regime / sl_after blocks must validate
+# and resolve against the PRIMARY window's classifier vocabulary — mirroring live
+# regimeLabelsForStrategyWindow -> parseRegimeATRBlock. Else a composite-keyed
+# block is falsely rejected, and an ADX-keyed block silently resolves to the
+# default stop under a composite stamp.
+
+
+from backtester import _regime_primary_labels  # noqa: E402
+
+_COMPOSITE_SL_BLOCK = {"trend_regime": {
+    "trending_up_clean": {"atr_multiple": 2.0},
+    "trending_up_choppy": {"atr_multiple": 1.8},
+    "trending_down_clean": {"atr_multiple": 2.0},
+    "trending_down_choppy": {"atr_multiple": 1.8},
+    "ranging_quiet": {"atr_multiple": 1.2},
+    "ranging_volatile": {"atr_multiple": 1.5},
+    "ranging_directional": {"atr_multiple": 1.4},
+}}
+_ADX_SL_BLOCK = {"trend_regime": {
+    "trending_up": {"atr_multiple": 2.0},
+    "trending_down": {"atr_multiple": 2.0},
+    "ranging": {"atr_multiple": 1.5},
+}}
+_COMPOSITE_TRAIL_BLOCK = {"trend_regime": {
+    k: {"atr_multiple": v["atr_multiple"] + 0.5}
+    for k, v in _COMPOSITE_SL_BLOCK["trend_regime"].items()
+}}
+
+
+def test_regime_primary_labels_helper():
+    labels = _regime_primary_labels(COMPOSITE_SPEC)
+    assert set(labels) == set(VALID_LABELS_COMPOSITE)
+    # ADX-primary and no-spec both fall back to the canonical ADX default (None).
+    assert _regime_primary_labels({"medium": {"classifier": "adx", "period": 14}}) is None
+    assert _regime_primary_labels(None) is None
+    # Mixed spec: primary is medium (composite) even with an ADX sibling window.
+    assert set(_regime_primary_labels({
+        "medium": {"classifier": "composite", "period": 30},
+        "short": {"classifier": "adx", "period": 7},
+    })) == set(VALID_LABELS_COMPOSITE)
+
+
+def _bt_with_sl_regime(spec, block, *, trailing=False):
+    kw = {"trailing_stop_atr_regime": block} if trailing else {"stop_loss_atr_regime": block}
+    return Backtester(initial_capital=1000.0, regime_enabled=True,
+                      regime_windows_spec=spec, **kw)
+
+
+def test_composite_keyed_sl_regime_parses_and_resolves():
+    # Must-survive (a): composite primary + exhaustive composite-keyed SL block
+    # parses and resolves per substate (not rejected, not defaulted).
+    bt = _bt_with_sl_regime(COMPOSITE_SPEC, _COMPOSITE_SL_BLOCK)
+    assert bt._stop_loss_regime_block.resolve("ranging_quiet").atr == 1.2
+    assert bt._stop_loss_regime_block.resolve("trending_up_clean").atr == 2.0
+
+
+def test_composite_primary_adx_keyed_sl_regime_rejects():
+    # Must-survive (b): ADX-keyed block under a composite primary is rejected
+    # loudly — never a silent fall-back to the default stop.
+    with pytest.raises(ValueError) as exc:
+        _bt_with_sl_regime(COMPOSITE_SPEC, _ADX_SL_BLOCK)
+    msg = str(exc.value)
+    assert "unknown regime label" in msg
+    # The message names the composite vocabulary, not the misleading ADX one.
+    assert "ranging_quiet" in msg or "trending_up_clean" in msg
+
+
+def test_adx_primary_adx_keyed_sl_regime_byte_identical():
+    # Must-survive (c): ADX primary + ADX-keyed and the legacy no-spec path both
+    # resolve the 3 ADX labels exactly as before.
+    bt_adx = _bt_with_sl_regime({"medium": {"classifier": "adx", "period": 14}}, _ADX_SL_BLOCK)
+    assert bt_adx._stop_loss_regime_block.resolve("ranging").atr == 1.5
+    bt_legacy = _bt_with_sl_regime(None, _ADX_SL_BLOCK)
+    assert bt_legacy._stop_loss_regime_block.resolve("trending_up").atr == 2.0
+
+
+def test_composite_primary_adx_keyed_sl_regime_does_not_silently_default():
+    # The pre-fix bug: ADX-keyed block under composite parsed, then resolve of the
+    # composite stamp returned None → default stop. Assert it now raises instead
+    # of producing a block that silently misses on every composite label.
+    with pytest.raises(ValueError):
+        _bt_with_sl_regime(COMPOSITE_SPEC, _ADX_SL_BLOCK)
+
+
+def test_composite_keyed_trailing_regime_parses_and_resolves():
+    # Same guarantee on the trailing-stop surface.
+    bt = _bt_with_sl_regime(COMPOSITE_SPEC, _COMPOSITE_TRAIL_BLOCK, trailing=True)
+    assert bt._trailing_stop_regime_block.resolve("ranging_quiet").atr == 1.7
+
+
+def test_composite_primary_adx_keyed_trailing_rejects():
+    with pytest.raises(ValueError):
+        _bt_with_sl_regime(COMPOSITE_SPEC, _ADX_SL_BLOCK, trailing=True)
+
+
+def test_validator_accepts_composite_sl_with_sl_after():
+    # Exercises validate_post_tp_stop_loss_rules' threaded labels: a composite SL
+    # block paired with a tiered close carrying sl_after must NOT be falsely
+    # rejected (the validator re-parses stop_loss_atr_regime with the labels).
+    close_ref = {"name": "tiered_tp_atr", "params": {
+        "tp_tiers": [
+            {"atr_multiple": 2.0, "close_fraction": 0.5},
+            {"atr_multiple": 3.0, "close_fraction": 1.0, "sl_after": {"kind": "breakeven"}},
+        ],
+    }}
+    bt = Backtester(
+        initial_capital=1000.0, regime_enabled=True,
+        regime_windows_spec=COMPOSITE_SPEC,
+        stop_loss_atr_regime=_COMPOSITE_SL_BLOCK,
+        close_strategies=[close_ref],
+    )
+    assert bt._stop_loss_regime_block.resolve("ranging_volatile").atr == 1.5

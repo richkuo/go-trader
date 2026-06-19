@@ -720,8 +720,9 @@ def validate_post_tp_stop_loss_rules(
     trailing_stop_pct: Optional[float] = None,
     stop_loss_atr_regime: Optional[Any] = None,
     strategy_type: str = "perps",
+    labels: Optional[Iterable[str]] = None,
 ) -> List[str]:
-    """Mirror ``validatePostTPStopLossRules`` in scheduler/post_tp_sl.go.
+    """Mirror ``validatePostTPStopLossRulesWithLabels`` in scheduler/post_tp_sl.go.
 
     Conditions enforced:
       - shape/field-level errors from parsing
@@ -730,9 +731,16 @@ def validate_post_tp_stop_loss_rules(
       - reject combination with a strategy-level trailing stop
       - require a fixed stop-loss to adjust
       - reject trail_from_here on manual strategies (perps-only in v1)
+
+    ``labels`` is the regime vocabulary the strategy's primary/ATR window
+    classifier emits (#1058): live threads ``regimeLabelsForStrategyWindow`` here
+    so a composite-keyed ``stop_loss_atr_regime`` / ``sl_after`` block validates
+    against the 7-state substates instead of the 3 ADX labels. ``None`` keeps the
+    legacy ADX behavior byte-identical (``parse_regime_atr_block`` defaults to the
+    canonical ADX labels; ``parse_strategy_tp_sl_after_rules`` infers from keys).
     """
     close_refs = list(close_refs)
-    rules, parse_errs = parse_strategy_tp_sl_after_rules(close_refs)
+    rules, parse_errs = parse_strategy_tp_sl_after_rules(close_refs, labels=labels)
     out: List[str] = list(parse_errs)
     for ref in close_refs:
         name = (ref.get("name") or "").strip().lower()
@@ -763,6 +771,7 @@ def validate_post_tp_stop_loss_rules(
         )
     blk_sl_regime, sl_regime_errs = parse_regime_atr_block(
         stop_loss_atr_regime, "stop_loss_atr_regime", SURFACE_STOP_LOSS,
+        labels=tuple(labels) if labels is not None else None,
     )
     if stop_loss_atr_regime is not None and sl_regime_errs:
         out.extend(sl_regime_errs)
