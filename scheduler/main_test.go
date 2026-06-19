@@ -1252,7 +1252,7 @@ func TestValidateDaemonInvocation(t *testing.T) {
 }
 
 func TestKnownSubcommandsMatchDispatch(t *testing.T) {
-	expected := []string{"init", "export", "manual-open", "manual-add", "manual-close", "manual-cancel", "backfill", "probe", "inspect", "version"}
+	expected := []string{"init", "export", "manual-open", "manual-add", "manual-close", "manual-cancel", "manual-update-sl", "manual-cancel-sl", "backfill", "probe", "inspect", "version"}
 	if len(knownSubcommands) != len(expected) {
 		t.Fatalf("knownSubcommands length = %d, want %d (update validateDaemonInvocation when adding/removing a subcommand in main())", len(knownSubcommands), len(expected))
 	}
