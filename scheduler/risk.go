@@ -1528,7 +1528,10 @@ func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, logger *S
 		return
 	}
 	r := &s.RiskState
-	drawdownBreached := r.PeakValue > 0 && r.CurrentDrawdownPct > r.MaxDrawdownPct
+	// Mirror the drawdown arm's condition exactly (risk.go ~1470) so the warning
+	// stays in sync if that gate is later edited — the PeakValue>0 guard is
+	// implicit there (CurrentDrawdownPct is 0 when PeakValue is 0). (#1048)
+	drawdownBreached := r.CurrentDrawdownPct > r.MaxDrawdownPct
 	lossBreached := r.ConsecutiveLosses >= 5
 	if cbEnabled || (!drawdownBreached && !lossBreached) {
 		circuitBreakerSuppressedWarned.Delete(s.ID)
