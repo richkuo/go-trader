@@ -809,6 +809,60 @@ def validate_post_tp_stop_loss_rules(
     return out
 
 
+def validate_regime_tiered_tp_labels(
+    close_refs: Iterable[dict],
+    labels: Optional[Iterable[str]] = None,
+) -> List[str]:
+    """Validate ``tiered_tp_atr_regime`` / ``tiered_tp_atr_live_regime`` tier-key
+    vocabularies against the strategy's primary-window classifier ``labels`` (#1058).
+
+    Mirrors the intent of the live config-load check in scheduler/regime_atr.go
+    (``parseRegimeTPTiers`` keyed by ``regimeLabelsForStrategyWindow``): a tier's
+    ``trend_regime`` block keyed by labels the primary window's classifier can
+    never emit — an ADX-keyed tier under a composite primary window, or the
+    inverse — is rejected loudly at load. Without it the backtester's
+    ``parse_tp_tier_close_fractions`` infers labels from the tier keys and then
+    ``resolve_regime_tier`` silently misses on every stamped label, disabling all
+    take-profit tiers (a 0-TP run that reads as "never hit TP", not "bad config").
+
+    Guards the tier-key VOCABULARY only — by inspecting each tier's
+    ``trend_regime`` keys, never re-parsing tier shape/count/sibling keys
+    (``sl_after``, ``tp_atr_fraction``, scalar ``close_fraction``), which the
+    backtester's existing machinery and the HL-live-only guards already handle.
+    A tier key not in the expected vocabulary is the only thing flagged, so a
+    single-tier or partially-keyed regime config that was valid before is not
+    newly rejected. ``labels=None`` resolves to the canonical 3 ADX labels, so the
+    ADX/legacy path is byte-identical AND an ADX-primary strategy still rejects
+    composite-keyed tiers (must-survive (b)). Returns error strings (empty=valid).
+    """
+    expected = set(labels) if labels is not None else set(CANONICAL_TREND_REGIME_LABELS)
+    errs: List[str] = []
+    for ref in close_refs:
+        name = (ref.get("name") or "").strip().lower()
+        if name not in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime"):
+            continue
+        params = ref.get("params") or {}
+        if bool(params.get("use_defaults")):
+            # Baseline ladder carries no operator-supplied keys to mis-vocabulary;
+            # validated at the default-tier resolver, like live.
+            continue
+        tiers_raw = tier_list_from_params(params)
+        if not isinstance(tiers_raw, list):
+            continue
+        for i, tier in enumerate(tiers_raw):
+            if not isinstance(tier, dict):
+                continue
+            block = tier.get(REGIME_CLASSIFIER_KEY)
+            if not isinstance(block, dict):
+                continue
+            for key in sorted(k for k in block.keys() if k not in expected):
+                errs.append(
+                    f"{name}.tiers[{i}].{REGIME_CLASSIFIER_KEY}: unknown regime "
+                    f"label {key!r} (expected one of: {', '.join(sorted(expected))})"
+                )
+    return errs
+
+
 def parse_tp_tier_close_fractions(
     close_refs: Iterable[dict],
     regime: Optional[str] = None,

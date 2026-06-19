@@ -708,3 +708,87 @@ def test_validator_accepts_composite_sl_with_sl_after():
         close_strategies=[close_ref],
     )
     assert bt._stop_loss_regime_block.resolve("ranging_volatile").atr == 1.5
+
+
+# ─── tiered_tp_atr_regime tier vocabulary validated at load (#1058 review 4) ──
+# A tier set keyed by labels the primary classifier can never emit must be
+# rejected at construction (mirroring live regime_atr.go parseRegimeTPTiers),
+# not silently no-op every take-profit tier at runtime.
+
+_ADX_TP_LABELS = ["trending_up", "trending_down", "ranging"]
+_COMPOSITE_TP_LABELS = list(VALID_LABELS_COMPOSITE)
+
+
+def _regime_tp_tier(labels, atr, frac):
+    return {"trend_regime": {l: {"atr_multiple": atr, "close_fraction": frac} for l in labels}}
+
+
+def _regime_tiered_ref(labels):
+    return {"name": "tiered_tp_atr_regime", "params": {"tp_tiers": [
+        _regime_tp_tier(labels, 2.0, 0.5),
+        _regime_tp_tier(labels, 3.0, 1.0),
+    ]}}
+
+
+def _bt_with_tiered_regime(spec, labels):
+    return Backtester(initial_capital=1000.0, regime_enabled=True,
+                      regime_windows_spec=spec,
+                      close_strategies=[_regime_tiered_ref(labels)])
+
+
+def test_composite_keyed_tiered_tp_resolves():
+    # Must-survive (c): composite primary + composite-keyed tiers → constructs and
+    # the per-substate close fractions resolve.
+    bt = _bt_with_tiered_regime(COMPOSITE_SPEC, _COMPOSITE_TP_LABELS)
+    fr = bt._sl_mod.parse_tp_tier_close_fractions(
+        [_regime_tiered_ref(_COMPOSITE_TP_LABELS)], regime="ranging_quiet")
+    assert fr == [0.5, 1.0]
+
+
+def test_composite_primary_adx_keyed_tiered_tp_rejects():
+    # Must-survive (a): ADX-keyed tiers under a composite primary → reject at load,
+    # never a silent 0-TP run.
+    with pytest.raises(ValueError) as exc:
+        _bt_with_tiered_regime(COMPOSITE_SPEC, _ADX_TP_LABELS)
+    assert "tiered-TP" in str(exc.value) and "unknown regime label" in str(exc.value)
+
+
+def test_adx_primary_composite_keyed_tiered_tp_rejects():
+    # Must-survive (b): inverse — composite-keyed tiers under an ADX primary →
+    # reject, not a silent no-op.
+    with pytest.raises(ValueError):
+        _bt_with_tiered_regime({"medium": {"classifier": "adx", "period": 14}},
+                               _COMPOSITE_TP_LABELS)
+
+
+def test_adx_keyed_tiered_tp_byte_identical():
+    # Must-survive (c): ADX primary + ADX-keyed and legacy no-spec + ADX-keyed
+    # both construct and resolve exactly as before.
+    bt_adx = _bt_with_tiered_regime({"medium": {"classifier": "adx", "period": 14}},
+                                    _ADX_TP_LABELS)
+    assert bt_adx._sl_mod.parse_tp_tier_close_fractions(
+        [_regime_tiered_ref(_ADX_TP_LABELS)], regime="ranging") == [0.5, 1.0]
+    bt_legacy = _bt_with_tiered_regime(None, _ADX_TP_LABELS)
+    assert bt_legacy._sl_mod.parse_tp_tier_close_fractions(
+        [_regime_tiered_ref(_ADX_TP_LABELS)], regime="trending_up") == [0.5, 1.0]
+
+
+def test_validate_regime_tiered_tp_labels_helper():
+    # Direct unit on the shared-module validator: labels=None (legacy) accepts ADX
+    # keys; composite labels reject ADX keys; composite labels accept composite.
+    # Reach the close module via a constructed Backtester so the close-strategies
+    # path is on sys.path regardless of test ordering.
+    _sl = _bt_with_tiered_regime(None, _ADX_TP_LABELS)._sl_mod
+    assert _sl.validate_regime_tiered_tp_labels([_regime_tiered_ref(_ADX_TP_LABELS)]) == []
+    assert _sl.validate_regime_tiered_tp_labels(
+        [_regime_tiered_ref(_ADX_TP_LABELS)],
+        labels=_COMPOSITE_TP_LABELS) != []
+    assert _sl.validate_regime_tiered_tp_labels(
+        [_regime_tiered_ref(_COMPOSITE_TP_LABELS)],
+        labels=_COMPOSITE_TP_LABELS) == []
+    # A non-regime close ref is ignored (no false positive).
+    assert _sl.validate_regime_tiered_tp_labels(
+        [{"name": "tiered_tp_atr", "params": {"tp_tiers": [
+            {"atr_multiple": 2.0, "close_fraction": 0.5},
+            {"atr_multiple": 3.0, "close_fraction": 1.0}]}}],
+        labels=_COMPOSITE_TP_LABELS) == []

@@ -961,6 +961,20 @@ class Backtester:
         # thresholds once at init. When no sl_after is configured this is a
         # no-op and the per-bar SL machinery in run() short-circuits.
         self._sl_mod = _load_post_tp_sl()
+        # #1058: reject a tiered_tp_atr_regime / tiered_tp_atr_live_regime tier set
+        # keyed by labels the primary window's classifier can never emit (e.g. an
+        # ADX-keyed block under a composite primary, or the inverse) — live
+        # rejects it at config-load (regime_atr.go parseRegimeTPTiers with the
+        # ATR-window classifier labels). Without this the tier-fraction parser
+        # infers labels from the keys and resolve_regime_tier silently misses on
+        # every stamped label, disabling all take-profit tiers (a silent 0-TP run).
+        _tier_vocab_errs = self._sl_mod.validate_regime_tiered_tp_labels(
+            self._close_refs, labels=self._regime_primary_labels,
+        )
+        if _tier_vocab_errs:
+            raise ValueError(
+                "Invalid regime tiered-TP configuration: " + "; ".join(_tier_vocab_errs)
+            )
         self._sl_after_rules_static, _sl_parse_errs = (
             self._sl_mod.parse_strategy_tp_sl_after_rules(
                 self._close_refs, labels=self._regime_primary_labels)
