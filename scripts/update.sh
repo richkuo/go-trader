@@ -575,24 +575,14 @@ verify_cur_restart_pid() {
 
 begin_phase preflight
 
-if ! command -v uv >/dev/null 2>&1; then
-    fail "uv not on PATH — install uv first (see CLAUDE.md → Setup)"
-fi
-
-go_bin=""
-if command -v go >/dev/null 2>&1; then
-    go_bin=$(command -v go)
-elif [[ -x /opt/homebrew/bin/go ]]; then
-    go_bin=/opt/homebrew/bin/go
-elif [[ -x /usr/local/go/bin/go ]]; then
-    go_bin=/usr/local/go/bin/go
-else
-    fail "go not on PATH and not found at /opt/homebrew/bin/go or /usr/local/go/bin/go"
-fi
-
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
 
+# The --all coordinator only fans out to per-deployment child update.sh runs (each
+# does its own uv/go preflight + build), so it must reach discovery/dispatch WITHOUT
+# the build toolchain on the coordinator host (#1055 review): the CI go-job has no
+# uv, and a thin coordinator may carry only git + systemd. Dispatch BEFORE the uv/go
+# checks below, which gate the single-repo build path only.
 if [[ "$update_all" == "1" ]]; then
     # scan_root drives the legacy go-trader-*/ glob fallback. An explicit override
     # (env or --update-all-root) means the operator is pinning the batch root, so we
@@ -692,6 +682,23 @@ if [[ "$update_all" == "1" ]]; then
     fi
     echo "[update] --all: all instances OK ($update_count updated, $skip_count skipped of ${#all_dirs[@]} discovered)"
     exit 0
+fi
+
+# Build-toolchain preflight: gates the single-repo update path only (the --all
+# coordinator dispatched above without it; each child re-runs this in its own dir).
+if ! command -v uv >/dev/null 2>&1; then
+    fail "uv not on PATH — install uv first (see CLAUDE.md → Setup)"
+fi
+
+go_bin=""
+if command -v go >/dev/null 2>&1; then
+    go_bin=$(command -v go)
+elif [[ -x /opt/homebrew/bin/go ]]; then
+    go_bin=/opt/homebrew/bin/go
+elif [[ -x /usr/local/go/bin/go ]]; then
+    go_bin=/usr/local/go/bin/go
+else
+    fail "go not on PATH and not found at /opt/homebrew/bin/go or /usr/local/go/bin/go"
 fi
 
 if [[ ! -f scheduler/config.json ]]; then

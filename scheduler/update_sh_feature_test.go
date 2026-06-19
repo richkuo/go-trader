@@ -104,3 +104,58 @@ func TestUpdateShellAllReportsSkippedAndFailsOnZeroUpdate1055(t *testing.T) {
 		t.Errorf("--all glob should not match 'unrelated'\n%s", text)
 	}
 }
+
+// #1055: the --all coordinator must reach discovery/dispatch on a host that has
+// only what fan-out needs (git + coreutils), WITHOUT uv/go — those gate the
+// per-deployment children's build, not the parent. Regression for the CI go-job
+// (no uv) that the first cut of this feature broke by running the uv/go preflight
+// before the --all dispatcher. Deterministic on any host: we build a curated PATH
+// that deliberately omits uv and go.
+func TestUpdateShellAllDispatchesWithoutBuildToolchain1055(t *testing.T) {
+	t.Parallel()
+	script := updateShellScriptPath(t)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "go-trader-x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Curated bin with only the externals the --all glob path invokes; uv and go
+	// are intentionally absent. (bash itself is resolved from the parent PATH by
+	// exec.Command, not from cmd.Env, so it need not be symlinked here.)
+	binDir := t.TempDir()
+	for _, tool := range []string{"git", "sort", "tr", "dirname", "basename"} {
+		src, err := exec.LookPath(tool)
+		if err != nil {
+			t.Skipf("required tool %q not found on host: %v", tool, err)
+		}
+		if err := os.Symlink(src, filepath.Join(binDir, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// PATH is exactly binDir (no uv/go), so a pass proves the dispatcher ran before
+	// the uv/go preflight rather than the toolchain merely happening to be present.
+	cmd := exec.Command("bash", script, "--all", "--restart")
+	cmd.Env = []string{
+		"PATH=" + binDir,
+		"GO_TRADER_UPDATE_ALL_ROOT=" + root,
+		"HOME=" + t.TempDir(),
+	}
+	out, err := cmd.CombinedOutput()
+	text := string(out)
+	// Coordinator must NOT abort in the build-toolchain preflight.
+	if strings.Contains(text, "uv not on PATH") || strings.Contains(text, "go not on PATH") {
+		t.Fatalf("--all aborted in build-toolchain preflight without uv/go (must dispatch first)\n%s", text)
+	}
+	// It must reach discovery; the lone dir has no config.json, so it skips it and
+	// fails with the zero-update error (non-zero exit) — that proves it got past
+	// preflight all the way to the dispatch/skip logic.
+	if err == nil {
+		t.Fatalf("expected non-zero exit (zero deployments updated)\n%s", text)
+	}
+	for _, want := range []string{"via glob discovery", "updated 0 deployments"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("--all without uv/go did not reach dispatch: missing %q\n%s", want, text)
+		}
+	}
+}
