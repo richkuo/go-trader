@@ -658,12 +658,25 @@ if [[ "$update_all" == "1" ]]; then
     fi
     echo "[update] --all: ${#all_dirs[@]} deployment dir(s) via ${discovery_source} discovery"
     fail_count=0
+    skip_count=0
+    update_count=0
+    # Every counted dir that is skipped is reported with a reason, so the announced
+    # count above reconciles with what actually updates (#1055 review). Systemd
+    # discovery can surface dirs with no deployment (e.g. the primary unit's source
+    # repo, which has no scheduler/config.json); they must not vanish silently.
     for d in "${all_dirs[@]}"; do
-        [[ -d "$d" ]] || continue
+        if [[ ! -d "$d" ]]; then
+            echo "[update] --all: skipping $d (no longer a directory)" >&2
+            skip_count=$((skip_count + 1))
+            continue
+        fi
         if [[ ! -f "${d}scheduler/config.json" ]]; then
+            echo "[update] --all: skipping $(cd "$d" && pwd) (no scheduler/config.json — not a deployment)" >&2
+            skip_count=$((skip_count + 1))
             continue
         fi
         echo "[update] --all: $(cd "$d" && pwd)"
+        update_count=$((update_count + 1))
         if (cd "$d" && bash "$THIS_SCRIPT" "${child_args[@]}"); then
             :
         else
@@ -672,9 +685,12 @@ if [[ "$update_all" == "1" ]]; then
         fi
     done
     if [[ $fail_count -ne 0 ]]; then
-        fail "--all completed with $fail_count failing instance(s)"
+        fail "--all completed with $fail_count failing instance(s) ($update_count updated, $skip_count skipped)"
     fi
-    echo "[update] --all: all instances OK"
+    if [[ $update_count -eq 0 ]]; then
+        fail "--all updated 0 deployments ($skip_count of ${#all_dirs[@]} discovered dir(s) skipped — none had scheduler/config.json). Check discovery: --update-all-root <dir> / GO_TRADER_UPDATE_ALL_ROOT, or systemd unit WorkingDirectory."
+    fi
+    echo "[update] --all: all instances OK ($update_count updated, $skip_count skipped of ${#all_dirs[@]} discovered)"
     exit 0
 fi
 
