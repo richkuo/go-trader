@@ -73,6 +73,20 @@ func TestAgentInfoEnvVarsCoverSource(t *testing.T) {
 			t.Errorf("env var %q is read via os.Getenv but missing from agentInfoEnvVars", name)
 		}
 	}
+
+	// The literal-regex pass above misses env vars read through a variable —
+	// notably shared_wallet.go's walletKeyRegistry, which does
+	// os.Getenv(entry.envVar). Cross-check that registry directly so the
+	// coverage guarantee survives registry/indirection reads (a fifth platform
+	// entry whose envVar is unregistered must fail this test).
+	for _, entry := range walletKeyRegistry {
+		if entry.envVar == "" {
+			continue
+		}
+		if !registered[entry.envVar] {
+			t.Errorf("walletKeyRegistry reads env var %q (os.Getenv(entry.envVar)) but it is missing from agentInfoEnvVars", entry.envVar)
+		}
+	}
 }
 
 func TestReflectConfigSchema(t *testing.T) {
