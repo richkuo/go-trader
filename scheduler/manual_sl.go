@@ -166,7 +166,53 @@ func resolveManualSLTarget(cmdName, configPath, strategyID, symbolFlag string) (
 		return manualSLTarget{}, 1
 	}
 
+	// Refuse a second SL edit while a prior one is still un-drained. The new OID
+	// from the first edit lives only in the queued PendingManualAction, not yet
+	// in pos.StopLossOID, so a second edit would cancel the STALE (already-
+	// cancelled) OID and place a duplicate resting stop-loss — orphaning the
+	// first edit's order on-chain (the daemon adopts only the latest OID). Fail
+	// closed: a check error blocks the edit rather than risk the orphan.
+	if pending, err := pendingSLActionExists(stateDB, strategyID, symbol); err != nil {
+		fmt.Fprintf(os.Stderr, "error: could not check for queued stop-loss edits (%v) — refusing to avoid orphaning an on-chain order; retry once the scheduler is reachable\n", err)
+		stateDB.Close()
+		return manualSLTarget{}, 1
+	} else if pending {
+		fmt.Fprintf(os.Stderr, "error: a stop-loss edit for %s/%s is already queued and not yet applied — run the scheduler (`--once`) or wait for the next cycle before editing again (a second edit now would orphan the first stop-loss on-chain)\n", strategyID, symbol)
+		stateDB.Close()
+		return manualSLTarget{}, 1
+	}
+
 	return manualSLTarget{cfg: cfg, sc: sc, stateDB: stateDB, pos: pos, symbol: symbol}, 0
+}
+
+// slPlacementFailureLeftNaked reports whether a no-OID stop-loss placement
+// failure left the position unprotected on-chain (#1052 review): true when the
+// old order was cancelled (cancelSucceeded) or there was none to begin with
+// (oldOID == 0); false when the cancel did not run, so the previous stop-loss
+// is still resting and the position remains protected.
+func slPlacementFailureLeftNaked(cancelSucceeded bool, oldOID int64) bool {
+	return cancelSucceeded || oldOID == 0
+}
+
+// pendingSLActionExists reports whether an un-drained update-sl/cancel-sl action
+// is already queued for strategy+symbol (#1052 review). A second SL edit before
+// the daemon drains the first would read the stale pre-edit OID from state.db
+// and orphan the first edit's resting order on-chain, so the caller must refuse
+// until the queue drains.
+func pendingSLActionExists(stateDB *StateDB, strategyID, symbol string) (bool, error) {
+	actions, err := stateDB.LoadPendingManualActions()
+	if err != nil {
+		return false, err
+	}
+	for _, a := range actions {
+		if a.StrategyID != strategyID || !strings.EqualFold(a.Symbol, symbol) {
+			continue
+		}
+		if a.Action == "update-sl" || a.Action == "cancel-sl" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // runManualUpdateSL implements `go-trader manual-update-sl <strategy-id>
@@ -225,7 +271,10 @@ func runManualUpdateSL(args []string) int {
 		fmt.Fprintf(os.Stderr, "SL update stderr: %s\n", slStderr)
 	}
 	if slErr != nil {
-		fmt.Fprintf(os.Stderr, "error updating stop-loss: %v\n", slErr)
+		// Subprocess failure (timeout / transport). If the cancel ran before the
+		// failure the position may now be naked — we cannot tell from here, so
+		// direct the operator to verify on-chain rather than implying safety.
+		fmt.Fprintf(os.Stderr, "error updating stop-loss: %v — the old stop-loss may have been cancelled without a replacement; verify protection on the HL UI before retrying.\n", slErr)
 		return 1
 	}
 	if slResult.Error != "" {
@@ -240,7 +289,15 @@ func runManualUpdateSL(args []string) int {
 		return 1
 	}
 	if slResult.StopLossOID == 0 {
-		fmt.Fprintln(os.Stderr, "error: HL returned no stop-loss OID after update; on-chain state may be inconsistent — verify on the HL UI")
+		// Placement returned no OID without raising (script exit 0, stop_loss_error
+		// set). Distinguish naked from safe: if the old order was cancelled (or
+		// there was none to begin with) the position is now unprotected; if the
+		// cancel did not succeed the previous stop-loss is still resting.
+		if slPlacementFailureLeftNaked(slResult.CancelStopLossSucceeded, pos.StopLossOID) {
+			fmt.Fprintf(os.Stderr, "CRITICAL: stop-loss placement failed after the old order was removed (%s) — the position is now UNPROTECTED on-chain. Re-arm immediately (manual-update-sl) or close the position.\n", slResult.StopLossError)
+		} else {
+			fmt.Fprintf(os.Stderr, "error: stop-loss replacement failed (%s); the previous stop-loss (OID=%d) is still resting on-chain — verify on the HL UI.\n", slResult.StopLossError, pos.StopLossOID)
+		}
 		return 1
 	}
 

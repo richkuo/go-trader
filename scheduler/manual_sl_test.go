@@ -130,6 +130,60 @@ func TestSLTriggerWouldFillImmediately(t *testing.T) {
 	}
 }
 
+// TestSLPlacementFailureLeftNaked verifies a no-OID placement failure is
+// classified naked only when the old stop-loss was actually removed (#1052).
+func TestSLPlacementFailureLeftNaked(t *testing.T) {
+	cases := []struct {
+		name            string
+		cancelSucceeded bool
+		oldOID          int64
+		wantNaked       bool
+	}{
+		{"cancel succeeded then place failed = naked", true, 1001, true},
+		{"no prior stop-loss then place failed = naked", false, 0, true},
+		{"cancel failed so old SL still resting = safe", false, 1001, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := slPlacementFailureLeftNaked(tc.cancelSucceeded, tc.oldOID); got != tc.wantNaked {
+				t.Fatalf("slPlacementFailureLeftNaked(%v,%d) = %v, want %v", tc.cancelSucceeded, tc.oldOID, got, tc.wantNaked)
+			}
+		})
+	}
+}
+
+// TestPendingSLActionExists verifies the same-cycle orphan guard: a second SL
+// edit is detected only when an un-drained update-sl/cancel-sl action for the
+// SAME strategy+symbol is already queued (#1052).
+func TestPendingSLActionExists(t *testing.T) {
+	db, err := OpenStateDB(":memory:")
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+
+	// Unrelated queued actions must NOT trip the guard.
+	if err := db.InsertPendingManualAction(PendingManualAction{StrategyID: "hl-eth", Action: "open", Symbol: "ETH", Side: "long", Quantity: 1, FillPrice: 2000, CreatedAt: now}); err != nil {
+		t.Fatalf("insert open: %v", err)
+	}
+	if err := db.InsertPendingManualAction(PendingManualAction{StrategyID: "hl-btc", Action: "update-sl", Symbol: "BTC", Side: "long", Quantity: 1, StopLossOID: 7, CreatedAt: now}); err != nil {
+		t.Fatalf("insert other-strategy update-sl: %v", err)
+	}
+
+	if pending, err := pendingSLActionExists(db, "hl-eth", "ETH"); err != nil || pending {
+		t.Fatalf("expected no pending SL action for hl-eth/ETH (open + other-strategy only), got pending=%v err=%v", pending, err)
+	}
+
+	// A queued update-sl for the same strategy+symbol trips it (case-insensitive).
+	if err := db.InsertPendingManualAction(PendingManualAction{StrategyID: "hl-eth", Action: "update-sl", Symbol: "ETH", Side: "long", Quantity: 1, StopLossOID: 9, StopLossTriggerPx: 1950, CreatedAt: now}); err != nil {
+		t.Fatalf("insert same update-sl: %v", err)
+	}
+	if pending, err := pendingSLActionExists(db, "hl-eth", "eth"); err != nil || !pending {
+		t.Fatalf("expected pending SL action for hl-eth/eth, got pending=%v err=%v", pending, err)
+	}
+}
+
 func TestManualActionRecordsTrade(t *testing.T) {
 	records := map[string]bool{"open": true, "close": true, "add": true}
 	noRecords := []string{"update-sl", "cancel-sl"}
