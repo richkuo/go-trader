@@ -73,6 +73,64 @@ update_should_sweep_proc() {
     printf 'sweep'
 }
 
+# Unit name-patterns --all matches when auto-discovering deployments from systemd
+# (#1055). Covers the primary unit (go-trader.service), plain per-deployment units
+# (go-trader-live.service), and template instances (go-trader@live.service). The
+# bare template file go-trader@.service is never listed by `systemctl list-units`
+# (only loaded instances are), so it cannot leak an empty WorkingDirectory here.
+update_systemd_unit_globs() {
+    printf '%s\n' 'go-trader.service' 'go-trader-*.service' 'go-trader@*.service'
+}
+
+# Normalize systemd WorkingDirectory values (one per line on stdin) into the
+# deployment-dir list update.sh --all iterates (#1055). Drops empty/unset and
+# relative values, collapses to exactly one trailing slash (the --all loop reads
+# "${d}scheduler/config.json"), and de-duplicates preserving first-seen order.
+# Pure: no systemctl, no filesystem access — unit-testable.
+normalize_systemd_deployment_dirs() {
+    # Newline-delimited "seen" accumulator instead of an associative array, so the
+    # helper runs under bash 3.2 (macOS dev/CI) as well as Linux deployments.
+    local line seen=$'\n'
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # trim surrounding whitespace (helper is sourced standalone in tests, so
+        # it cannot rely on update.sh's trim_space).
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -n "$line" ]] || continue
+        # WorkingDirectory must be absolute; systemctl prints empty for unset.
+        [[ "$line" == /* ]] || continue
+        line="${line%/}/"
+        case "$seen" in
+            *$'\n'"$line"$'\n'*) continue ;;
+        esac
+        seen="${seen}${line}"$'\n'
+        printf '%s\n' "$line"
+    done
+}
+
+# Auto-discover deployment dirs for --all from systemd unit WorkingDirectory
+# (#1055) — canonical and layout-independent (works regardless of where each
+# deployment lives, even across different parent dirs). Emits normalized dirs on
+# stdout, one per line; emits nothing when systemctl is absent or no matching
+# loaded units exist, so the caller falls back to the legacy go-trader-*/ glob.
+discover_deployment_dirs_from_systemd() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    local -a globs=()
+    local g
+    while IFS= read -r g; do
+        [[ -n "$g" ]] && globs+=("$g")
+    done < <(update_systemd_unit_globs)
+    local -a units=()
+    local unit
+    while IFS= read -r unit; do
+        [[ -n "$unit" ]] && units+=("$unit")
+    done < <(systemctl list-units --type=service --all --no-legend --plain "${globs[@]}" 2>/dev/null | awk '{print $1}')
+    [[ ${#units[@]} -gt 0 ]] || return 0
+    for unit in "${units[@]}"; do
+        systemctl show "$unit" -p WorkingDirectory --value 2>/dev/null
+    done | normalize_systemd_deployment_dirs
+}
+
 # Static, extension-based DB rsync excludes (#1012). Emits one glob per line so
 # any .db / SQLite sidecar / lock file at ANY path survives --rsync-from's
 # --delete, independent of the config-resolved db_file. These globs are

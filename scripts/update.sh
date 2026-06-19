@@ -7,6 +7,9 @@
 # #790: --rsync-from safe tree sync; warn on missing systemd EnvironmentFile.
 #   --rsync-from preserves deployment .git/ (not copied from source) so rollback
 #   git reset --hard still targets the deployment repo's pre-sync SHA.
+# #1055: --all auto-discovers deployment dirs from loaded go-trader systemd units'
+#   WorkingDirectory (layout-independent); falls back to the <root>/go-trader-*/
+#   glob when systemctl is absent, no units load, or --update-all-root pins a root.
 #
 # Phases:
 #   preflight  — git/uv/go sanity checks
@@ -128,6 +131,9 @@ while [[ $# -gt 0 ]]; do
             echo "       $0 --all [--restart] [--restart-mode systemd|signal] [--update-all-root <dir>] [...]"
             echo "  --rsync-from <dir>  rsync code from a source clone into this deployment (skips git pull;"
             echo "                      hardcoded exclusions protect .env, config, state DB, venv, binaries)."
+            echo "  --all               update every deployment. Auto-discovers dirs from loaded go-trader"
+            echo "                      systemd units' WorkingDirectory (layout-independent); falls back to"
+            echo "                      the <root>/go-trader-*/ glob when systemctl is absent or no units load."
             echo "  With --all + systemd: each child inherits GO_TRADER_SERVICE — set per-worktree env if units differ."
             echo "  RESTART=1 env var also enables restart."
             echo "  RESTART_MODE=signal requires Linux, GO_TRADER_RUN_SH, GO_TRADER_PIDFILE (see #766)."
@@ -138,7 +144,7 @@ while [[ $# -gt 0 ]]; do
             echo "  GO_TRADER_RUN_SH=<path>    wrapper to respawn (default: ./run.sh; signal mode)"
             echo "  GO_TRADER_PIDFILE=<path>   pidfile written by wrapper (default: ./go-trader.pid)"
             echo "  GO_TRADER_SIGNAL_LOG=<path> append stdout/stderr from wrapper (default: ./go-trader-signal.log)"
-            echo "  GO_TRADER_UPDATE_ALL_ROOT=<dir>  parent scanned by --all for go-trader-*/ (default: parent of this repo)"
+            echo "  GO_TRADER_UPDATE_ALL_ROOT=<dir>  pin --all to the <dir>/go-trader-*/ glob (skips systemd auto-discovery; default: parent of this repo)"
             echo "  STATUS_PORT=<n>            override /health port (default: read from config, else 8099)"
             echo "  ACTIVE_TIMEOUT=<sec>       systemd is-active or signal SIGTERM wait (default: 30)"
             echo "  HEALTH_TIMEOUT=<sec>       /health version-match poll timeout (default: 60)"
@@ -588,8 +594,14 @@ repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
 
 if [[ "$update_all" == "1" ]]; then
+    # scan_root drives the legacy go-trader-*/ glob fallback. An explicit override
+    # (env or --update-all-root) means the operator is pinning the batch root, so we
+    # honor the glob and skip systemd auto-discovery (keeps that flow unchanged, #1055).
     scan_root="$(trim_space "${GO_TRADER_UPDATE_ALL_ROOT:-}")"
-    if [[ -z "$scan_root" ]]; then
+    scan_root_explicit=0
+    if [[ -n "$scan_root" ]]; then
+        scan_root_explicit=1
+    else
         scan_root=$(dirname "$repo_root")
     fi
     declare -a child_args=()
@@ -605,29 +617,46 @@ if [[ "$update_all" == "1" ]]; then
         fi
         if [[ "$a" == --update-all-root=* ]]; then
             scan_root="$(trim_space "${a#*=}")"
+            scan_root_explicit=1
             continue
         fi
         if [[ "$a" == "--update-all-root" ]]; then
             scan_root="$(trim_space "${orig_argv[$((i + 1))]}")"
+            scan_root_explicit=1
             skip_next=1
             continue
         fi
         child_args+=("$a")
     done
-    if [[ ! -d "$scan_root" ]]; then
-        fail "GO_TRADER_UPDATE_ALL_ROOT / --update-all-root is not a directory: $scan_root"
+    # Prefer systemd auto-discovery (canonical WorkingDirectory, layout-independent,
+    # #1055); fall back to the legacy $scan_root/go-trader-*/ glob when systemctl is
+    # absent, no go-trader units are loaded, or the operator pinned a batch root.
+    declare -a all_dirs=()
+    discovery_source=""
+    if [[ "$scan_root_explicit" != "1" ]]; then
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && all_dirs+=("$line")
+        done < <(discover_deployment_dirs_from_systemd)
+        [[ ${#all_dirs[@]} -gt 0 ]] && discovery_source="systemd"
     fi
-    shopt -s nullglob
-    all_dirs=( "$scan_root"/go-trader-*/ )
-    shopt -u nullglob
     if [[ ${#all_dirs[@]} -eq 0 ]]; then
-        fail "no directories matching $scan_root/go-trader-*/ (batch root: $scan_root)"
+        if [[ ! -d "$scan_root" ]]; then
+            fail "GO_TRADER_UPDATE_ALL_ROOT / --update-all-root is not a directory: $scan_root"
+        fi
+        shopt -s nullglob
+        all_dirs=( "$scan_root"/go-trader-*/ )
+        shopt -u nullglob
+        if [[ ${#all_dirs[@]} -eq 0 ]]; then
+            fail "no deployments found: systemd auto-discovery yielded none (systemctl absent or no go-trader units loaded) and no directories match $scan_root/go-trader-*/ (batch root: $scan_root). Set --update-all-root <dir> / GO_TRADER_UPDATE_ALL_ROOT, or ensure go-trader systemd units are loaded."
+        fi
+        discovery_source="glob"
+        declare -a sorted_dirs=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && sorted_dirs+=("$line")
+        done < <(printf '%s\n' "${all_dirs[@]}" | sort -u)
+        all_dirs=( "${sorted_dirs[@]}" )
     fi
-    declare -a sorted_dirs=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && sorted_dirs+=("$line")
-    done < <(printf '%s\n' "${all_dirs[@]}" | sort -u)
-    all_dirs=( "${sorted_dirs[@]}" )
+    echo "[update] --all: ${#all_dirs[@]} deployment dir(s) via ${discovery_source} discovery"
     fail_count=0
     for d in "${all_dirs[@]}"; do
         [[ -d "$d" ]] || continue
