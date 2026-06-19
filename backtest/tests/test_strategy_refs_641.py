@@ -177,6 +177,91 @@ def test_load_strategy_config_reads_single_close_strategy(tmp_path):
     assert kwargs["close_strategies"][0]["params"]["tp_tiers"][1]["atr_multiple"] == 3.0
 
 
+# ─── #1067: open name falls back to args[0] (init/legacy args-form configs) ───
+#
+# `go-trader init` (and `init --json`) emit each strategy in the positional
+# args-form — args[0]=concept name, no open_strategy.name — and stamp the file
+# config_version=15. The v13->v15 migration only backfills open_strategy.name
+# for pre-v13 files, so init's v15 config reaches load_strategy_config with an
+# empty name. The live daemon runs these fine via effectiveOpenStrategy's
+# args[0] fallback (strategy_composition.go); the backtester --config reader
+# must resolve the identical name instead of rejecting, or backtest and live
+# diverge on a config the daemon accepts.
+
+
+def _init_shaped_strategy():
+    """The exact strategy shape emitted by generateConfig (init.go), captured
+    verbatim from `go-trader init --json '{...,"SpotStrategies":["momentum"]}'`:
+    args carry the concept name, open_strategy.name is empty."""
+    return {
+        "id": "momentum-btc",
+        "type": "spot",
+        "platform": "binanceus",
+        "script": "shared_scripts/check_strategy.py",
+        "args": ["momentum", "BTC/USDT", "1h"],
+        "open_strategy": {"name": ""},
+        "capital": 1000,
+        "max_drawdown_pct": 5,
+        "interval_seconds": 3600,
+    }
+
+
+def test_load_strategy_config_init_config_falls_back_to_args0(tmp_path):
+    # Round-trip the init-generated shape through the --config reader: an empty
+    # open_strategy.name must resolve to args[0] rather than raising.
+    path = _write_config(tmp_path, version=15, strategies=[_init_shaped_strategy()])
+    kwargs = run_backtest.load_strategy_config(path, "momentum-btc")
+    assert kwargs["open_strategy"]["name"] == "momentum"
+    assert kwargs["open_strategy"]["params"] == {}
+    assert kwargs["close_strategies"] == []
+
+
+def test_load_strategy_config_missing_open_strategy_key_falls_back(tmp_path):
+    # No open_strategy key at all (the inverse of the empty-name case) still
+    # resolves from args[0].
+    path = _write_config(tmp_path, version=15, strategies=[
+        {"id": "spot-x", "type": "spot",
+         "args": ["mean_reversion", "ETH/USDT", "1h"]},
+    ])
+    kwargs = run_backtest.load_strategy_config(path, "spot-x")
+    assert kwargs["open_strategy"]["name"] == "mean_reversion"
+
+
+def test_load_strategy_config_open_name_wins_over_args0(tmp_path):
+    # Precedence parity with effectiveOpenStrategy: when both are present and
+    # differ, the explicit open_strategy.name wins over the positional args[0].
+    path = _write_config(tmp_path, version=15, strategies=[
+        {"id": "hl-x", "type": "perps",
+         "args": ["legacy_positional", "BTC/USDT", "1h"],
+         "open_strategy": {"name": "tema_cross_bd", "params": {"short_period": 5}}},
+    ])
+    kwargs = run_backtest.load_strategy_config(path, "hl-x")
+    assert kwargs["open_strategy"]["name"] == "tema_cross_bd"
+    assert kwargs["open_strategy"]["params"]["short_period"] == 5
+
+
+def test_load_strategy_config_whitespace_open_name_falls_back(tmp_path):
+    # A whitespace-only name is not a name (effectiveOpenStrategy TrimSpaces it);
+    # fall through to args[0] rather than carrying " " as the open strategy.
+    path = _write_config(tmp_path, version=15, strategies=[
+        {"id": "spot-y", "type": "spot",
+         "args": ["momentum", "BTC/USDT", "1h"],
+         "open_strategy": {"name": "   "}},
+    ])
+    kwargs = run_backtest.load_strategy_config(path, "spot-y")
+    assert kwargs["open_strategy"]["name"] == "momentum"
+
+
+def test_load_strategy_config_rejects_when_no_open_name_and_no_args(tmp_path):
+    # Neither an open_strategy.name nor a positional args[0] to fall back to:
+    # the open strategy is genuinely unresolvable, so reject loudly.
+    path = _write_config(tmp_path, version=15, strategies=[
+        {"id": "spot-z", "type": "spot", "args": [], "open_strategy": {"name": ""}},
+    ])
+    with pytest.raises(ValueError, match="neither open_strategy.name nor"):
+        run_backtest.load_strategy_config(path, "spot-z")
+
+
 # ─── #866: --defaults system|user (user_close_defaults injection) ────────────
 
 

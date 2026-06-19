@@ -377,11 +377,29 @@ def load_strategy_config(config_path: str, strategy_id: str,
     for sc in cfg.get("strategies", []) or []:
         if sc.get("id") != strategy_id:
             continue
-        open_ref = sc.get("open_strategy") or {}
-        if not isinstance(open_ref, dict) or not open_ref.get("name"):
+        open_ref = sc.get("open_strategy")
+        if not isinstance(open_ref, dict):
+            open_ref = {}
+        # #1067: mirror the live daemon's open-strategy resolution
+        # (effectiveOpenStrategy, strategy_composition.go): prefer
+        # open_strategy.name, else fall back to the positional args[0] strategy
+        # arg. `go-trader init` emits the args-form (args[0]=concept name) with an
+        # empty open_strategy.name, and the v13->v15 migration only backfills
+        # open_strategy.name for pre-v13 files — so an init-stamped v15 config
+        # (and any hand-edited args-form config) reaches here name-less. The live
+        # daemon runs these fine via this same args[0] fallback, so the backtester
+        # must resolve the identical name instead of rejecting, or backtest and
+        # live silently diverge on a config the daemon accepts.
+        open_name = str(open_ref.get("name") or "").strip()
+        if not open_name:
+            args_list = sc.get("args")
+            if isinstance(args_list, list) and args_list:
+                open_name = str(args_list[0] or "").strip()
+        if not open_name:
             raise ValueError(
-                f"{config_path}: strategy {strategy_id!r} has no open_strategy.name; "
-                f"the migrated config should always populate it."
+                f"{config_path}: strategy {strategy_id!r} has neither "
+                f"open_strategy.name nor a positional args[0] strategy arg to "
+                f"resolve the open strategy from."
             )
         regime_cfg = cfg.get("regime") or {}
         if not isinstance(regime_cfg, dict):
@@ -551,7 +569,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
             )
         return {
             "open_strategy": {
-                "name": open_ref["name"],
+                "name": open_name,
                 "params": dict(open_ref.get("params") or {}),
             },
             "close_strategies": close_refs,
