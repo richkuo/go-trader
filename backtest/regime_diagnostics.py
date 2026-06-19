@@ -1,5 +1,5 @@
-from __future__ import annotations
 """7-state regime quality diagnostics (#1065 PR1). Pure scorers; CLI at bottom."""
+from __future__ import annotations
 import os, sys
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
