@@ -3,10 +3,10 @@
 ## Environment
 - Go 1.26.2; full binary path if not on PATH (`/opt/homebrew/bin/go`).
 - Python via `uv run --no-sync python` for dev/backtest/manual CLI; Go subprocess (scheduler) calls `.venv/bin/python3` directly — deterministic after `uv sync`, no systemd PATH config. Worktrees: `uv sync` once per checkout.
-- **systemd:** `go-trader.service`, `systemd/go-trader@.service` use `ProtectSystem=strict`; no `PATH`/`UV_CACHE_DIR` injection. `/opt/go-trader/.env` (or per-instance) sets `DISCORD_BOT_TOKEN` + secrets.
+- **systemd:** `go-trader.service`, `systemd/go-trader@.service` use `ProtectSystem=strict`; no `PATH`/`UV_CACHE_DIR` injection. `/opt/go-trader/.env` (or per-instance) sets `DISCORD_BOT_TOKEN` + secrets. **#1056** runtime config lives OUT of the deploy tree at `/var/lib/go-trader[/<instance>]/config.json` (created writable via `StateDirectory=go-trader[/%i]`; the daemon rewrites config in place — migration/UI-tuner/Discord — so the *directory*, for the atomic temp+rename, must be writable under `ProtectSystem=strict`); `ExecStart … --config <that path>`. `WorkingDirectory` stays the code checkout (scripts/.venv/state DB resolve relative to it). `scheduler/config.json` is a transition **symlink** → that path; migrate with `scripts/migrate-config-out-of-tree.sh`.
 
 ## Setup
-- `uv sync`; copy `scheduler/config.example.json` → `scheduler/config.json`, fill API keys.
+- `uv sync`; copy `scheduler/config.example.json` → `scheduler/config.json`, fill API keys. **#1056 (deployments):** keep runtime config OUT of the deploy tree (`/var/lib/go-trader[/<instance>]/config.json`) with `scheduler/config.json` as a symlink — run `scripts/migrate-config-out-of-tree.sh` once, then point the unit's `ExecStart --config` + `StateDirectory` at it. Stops any rsync/`git clean`/`rm` from reaching the live config.
 
 ## Decision Priorities
 - **Pick the best technical solution.** Tests, code volume, time-to-implement are NOT design constraints — update/rewrite tests after the feature is done. These govern *quality*, not *scope*; don't override the branch+PR workflow, "verify issue claims against code", or destructive-action safety rules.

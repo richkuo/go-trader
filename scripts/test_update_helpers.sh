@@ -84,4 +84,22 @@ case "stale_instance.db" in *.db) ;; *) echo "FAIL: *.db should match stale_inst
 case "state.db-wal" in *.db) echo "FAIL: *.db must not match state.db-wal" >&2; exit 1;; esac
 case "state.db.lock" in *.db) echo "FAIL: *.db must not match state.db.lock" >&2; exit 1;; esac
 
+# --- #1056: out-of-tree config migration state classifier -------------------
+mig_tmp=$(mktemp -d)
+assert_eq "$(update_config_migration_state "$mig_tmp/none.json")" \
+    "missing" "absent config -> missing"
+: > "$mig_tmp/real.json"
+assert_eq "$(update_config_migration_state "$mig_tmp/real.json")" \
+    "regular" "regular file still in tree -> regular (needs migrating)"
+ln -s "$mig_tmp/real.json" "$mig_tmp/link.json"
+assert_eq "$(update_config_migration_state "$mig_tmp/link.json")" \
+    "symlink" "symlink -> symlink (already migrated; idempotent no-op)"
+# Adversarial: a DANGLING symlink (target already moved/removed) must still
+# classify as 'symlink', never 'missing' — otherwise a re-run would treat the
+# deployment as un-migrated and clobber the live config pointer.
+ln -s "$mig_tmp/gone.json" "$mig_tmp/dangling.json"
+assert_eq "$(update_config_migration_state "$mig_tmp/dangling.json")" \
+    "symlink" "dangling symlink -> symlink (not missing)"
+rm -rf "$mig_tmp"
+
 echo "OK: update_helpers tests passed"

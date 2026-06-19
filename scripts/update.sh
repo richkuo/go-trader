@@ -660,6 +660,10 @@ and the probe phase would later fail without it.
 If this IS your deployment directory, copy scheduler/config.example.json to
 scheduler/config.json and fill in API keys (see CLAUDE.md → Setup).
 
+If you moved config out of the tree (#1056), scheduler/config.json should be a
+symlink to e.g. /var/lib/go-trader/<instance>/config.json — recreate it with
+scripts/migrate-config-out-of-tree.sh or `ln -s <target> scheduler/config.json`.
+
 If you are syncing source to multiple deployment instances, build in the
 source repo and run scripts/update.sh from each deployment instance.
 EOF

@@ -8,8 +8,17 @@ Type=simple
 # Create before deploying: useradd --system --no-create-home go-trader
 User=go-trader
 Group=go-trader
+# WorkingDirectory stays the code checkout — shared_scripts/, .venv/, and the
+# state DB (scheduler/state.db) all resolve relative to it.
 WorkingDirectory=/opt/go-trader-%i
-ExecStart=/opt/go-trader-%i/go-trader --config /opt/go-trader-%i/scheduler/config.json
+# #1056: runtime config lives OUTSIDE the deploy tree so no rsync/git-clean/rm
+# can reach it. StateDirectory creates /var/lib/go-trader/%i (0750, owned by
+# User/Group) and makes it writable even under ProtectSystem=strict — the daemon
+# rewrites config in place (config migration, UI tuner, Discord /config), so the
+# config DIRECTORY (for the atomic temp+rename), not just the file, must be
+# writable. Migrate with: scripts/migrate-config-out-of-tree.sh --instance %i
+StateDirectory=go-trader/%i
+ExecStart=/opt/go-trader-%i/go-trader --config /var/lib/go-trader/%i/config.json
 Restart=always
 RestartSec=10
 # Probe/deploy failures exit 78 — do not restart until scripts are synced.
@@ -35,7 +44,10 @@ EnvironmentFile=-/opt/go-trader-%i/.env
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-# Allow writes only to the data and logs directories
+# Allow writes only to the state DB and logs directories. The config dir
+# (/var/lib/go-trader/%i) is granted automatically by StateDirectory above; if
+# you keep config somewhere other than /var/lib, drop StateDirectory and add
+# that directory here instead.
 ReadWritePaths=/opt/go-trader-%i/scheduler /opt/go-trader-%i/logs
 
 [Install]

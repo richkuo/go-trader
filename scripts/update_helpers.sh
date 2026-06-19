@@ -73,6 +73,26 @@ update_should_sweep_proc() {
     printf 'sweep'
 }
 
+# Classify a config path for the out-of-tree migration (#1056). Echoes:
+#   symlink  — already a symlink (migration done; idempotent no-op). Checked
+#              FIRST so a DANGLING symlink (target moved/removed) still reports
+#              'symlink', never 'missing' — re-migrating would clobber the live
+#              config pointer.
+#   regular  — a real file still in the deployment tree (needs migrating)
+#   missing  — nothing there
+update_config_migration_state() {
+    local path="$1"
+    if [[ -L "$path" ]]; then
+        printf 'symlink'
+        return 0
+    fi
+    if [[ -e "$path" ]]; then
+        printf 'regular'
+        return 0
+    fi
+    printf 'missing'
+}
+
 # Static, extension-based DB rsync excludes (#1012). Emits one glob per line so
 # any .db / SQLite sidecar / lock file at ANY path survives --rsync-from's
 # --delete, independent of the config-resolved db_file. These globs are

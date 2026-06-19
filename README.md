@@ -60,15 +60,19 @@ curl -s localhost:8099/status | python3 -m json.tool
 
 ### Running multiple instances
 
-Use the templated unit `systemd/go-trader@.service`; each instance lives under `/opt/go-trader-<name>/`:
+Use the templated unit `systemd/go-trader@.service`; each instance's **code** lives under `/opt/go-trader-<name>/`, and its **runtime config lives outside the tree** at `/var/lib/go-trader/<name>/config.json` (#1056). Keeping config out of the deployment directory means no `rsync --delete`, `git clean`, or stray `rm` can reach the live config — and the shipped unit's `StateDirectory=go-trader/%i` creates that directory writable even under `ProtectSystem=strict` (the daemon rewrites config in place):
 
 ```bash
-sudo mkdir -p /opt/go-trader-paper-testing/scheduler
+sudo mkdir -p /opt/go-trader-paper-testing/scheduler /var/lib/go-trader/paper-testing
 sudo cp go-trader /opt/go-trader-paper-testing/
-sudo cp scheduler/config.json /opt/go-trader-paper-testing/scheduler/
-sudo chown -R go-trader:go-trader /opt/go-trader-paper-testing
+sudo cp scheduler/config.json /var/lib/go-trader/paper-testing/config.json
+# transition symlink so update.sh and ad-hoc runs keep finding the config:
+sudo ln -s /var/lib/go-trader/paper-testing/config.json /opt/go-trader-paper-testing/scheduler/config.json
+sudo chown -R go-trader:go-trader /opt/go-trader-paper-testing /var/lib/go-trader/paper-testing
 sudo bash scripts/install-service.sh systemd/go-trader@.service paper-testing
 ```
+
+For an existing in-tree deployment, `scripts/migrate-config-out-of-tree.sh --instance <name>` does the move + symlink in one idempotent step and prints the unit edits to apply.
 
 Set `NO_START=1` to enable without starting.
 
