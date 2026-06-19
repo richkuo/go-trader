@@ -74,7 +74,11 @@ from reporter import (
     format_multi_asset_report, format_walk_forward_report,
     generate_full_report,
 )
-from regime import compute_regime, compute_regime_composite  # noqa: E402
+from regime import (  # noqa: E402
+    compute_regime,
+    compute_regime_composite,
+    parse_regime_windows_spec_json,
+)
 
 
 def _normalize_regime_window_spec(spec) -> dict:
@@ -90,6 +94,62 @@ def _normalize_regime_window_spec(spec) -> dict:
     else:
         out["thresholds"] = dict(spec.get("thresholds") or {})
     return out
+
+
+def _resolve_regime_windows_spec(regime_cfg: dict) -> Optional[dict]:
+    """Build the normalized composite-capable windows spec the Backtester threads
+    into ``ensure_regime_columns`` (#1058), sourced from the live config's
+    ``regime.windows``.
+
+    Mirrors the Go scheduler's ``regimeWindowsSpecJSON`` + ``resolvedForEmit`` so
+    the backtester classifies the SAME primary-window (medium-first) label the
+    live regime store feeds close evaluators:
+
+      - period defaults to the window's value, else the top-level
+        ``regime.period`` (Go ``resolvedForEmit``);
+      - ADX windows: ``adx_threshold`` defaults to the window's value, else the
+        top-level ``regime.adx_threshold``, else 20.0 (Go ``adxThreshold``);
+      - composite windows: ``thresholds`` are merged over
+        ``_DEFAULT_COMPOSITE_THRESHOLDS`` downstream by ``_normalize_spec``.
+
+    Returns ``None`` when regime is disabled or no ``regime.windows`` is
+    configured. The empty-``windows`` case is left to the existing
+    ``regime_period`` / ``regime_adx_threshold`` threading, which is behaviorally
+    identical to a synthesized ``{"default": adx}`` window — so the legacy
+    single-lookback ADX backtest stays byte-identical.
+    """
+    if not regime_cfg or not regime_cfg.get("enabled"):
+        return None
+    windows = regime_cfg.get("windows") or {}
+    if not windows:
+        return None
+    top_period = int(regime_cfg.get("period", 14) or 14)
+    top_adx = float(regime_cfg.get("adx_threshold", 20.0) or 20.0)
+    raw: dict = {}
+    for name, spec in windows.items():
+        if isinstance(spec, (int, float)) and not isinstance(spec, bool):
+            entry: dict = {"classifier": "adx", "period": int(spec)}
+        else:
+            entry = dict(spec or {})
+        classifier = str(entry.get("classifier") or "adx").strip().lower() or "adx"
+        period = int(entry.get("period") or 0)
+        if period <= 0:
+            period = top_period
+        out_entry: dict = {"classifier": classifier, "period": period}
+        if classifier == "adx":
+            adx_th = float(entry.get("adx_threshold") or 0.0)
+            if adx_th <= 0:
+                adx_th = top_adx if top_adx > 0 else 20.0
+            out_entry["adx_threshold"] = adx_th
+        else:
+            th = dict(entry.get("thresholds") or {})
+            if th:
+                out_entry["thresholds"] = th
+        raw[str(name)] = out_entry
+    import json as _json
+    # parse_regime_windows_spec_json validates (period >= 2, reserved names) and
+    # normalizes to the exact shape ensure_regime_columns indexes.
+    return parse_regime_windows_spec_json(_json.dumps(raw))
 
 
 def _build_profile_label_series(df: pd.DataFrame, window_spec: dict) -> pd.Series:
@@ -447,6 +507,9 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "regime_enabled": bool(regime_cfg.get("enabled")),
             "regime_period": int(regime_cfg.get("period", 14) or 14),
             "regime_adx_threshold": float(regime_cfg.get("adx_threshold", 20.0) or 20.0),
+            # #1058: composite (7-state) regime from regime.windows. None when no
+            # windows are configured → legacy single-lookback ADX path unchanged.
+            "regime_windows_spec": _resolve_regime_windows_spec(regime_cfg),
             "allowed_regimes": allowed_regimes,
             "profile_allocation": profile_allocation,
         }
@@ -470,6 +533,7 @@ def run_single_backtest(
     regime_enabled: bool = False,
     regime_period: int = 14,
     regime_adx_threshold: float = 20.0,
+    regime_windows_spec: Optional[dict] = None,
     allowed_regimes: Optional[List[str]] = None,
     stop_loss_atr_mult: Optional[float] = None,
     stop_loss_pct: Optional[float] = None,
@@ -563,6 +627,7 @@ def run_single_backtest(
         regime_enabled=regime_enabled,
         regime_period=regime_period,
         regime_adx_threshold=regime_adx_threshold,
+        regime_windows_spec=regime_windows_spec,
         allowed_regimes=allowed_regimes,
         stop_loss_atr_mult=stop_loss_atr_mult,
         stop_loss_pct=stop_loss_pct,
@@ -809,6 +874,14 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="ADX lookback period for regime detection (default: 14).")
     parser.add_argument("--regime-adx-threshold", type=float, default=20.0,
                         help="ADX threshold below which market is 'ranging' (default: 20.0).")
+    parser.add_argument("--regime-windows-spec-json", default=None,
+                        dest="regime_windows_spec_json", metavar="JSON",
+                        help="Composite (7-state) regime windows spec, same shape as the live "
+                             "--regime-windows-spec-json arg: a JSON object mapping window name "
+                             "-> {classifier,period,...} (bare int = ADX period). The PRIMARY "
+                             "window (medium-first) is classified into the per-bar regime label "
+                             "the entry gate and close evaluators read (#1058). Mutually exclusive "
+                             "with --config (the config's regime.windows owns it). Single mode only.")
     parser.add_argument("--allowed-regimes", action="append", dest="allowed_regimes",
                         default=None, choices=["trending_up", "trending_down", "ranging"],
                         metavar="LABEL",
@@ -880,6 +953,24 @@ def main():
     if args.close_strategies:
         close_refs = [_parse_close_strategy_arg(v) for v in args.close_strategies]
 
+    # #1058: parse the composite regime windows spec once. Reuses the same
+    # validator the live --regime-windows-spec-json arg uses, so a malformed
+    # spec fails loudly here rather than silently no-opping into the ADX path.
+    args.regime_windows_spec = None
+    if args.regime_windows_spec_json:
+        try:
+            args.regime_windows_spec = parse_regime_windows_spec_json(
+                args.regime_windows_spec_json)
+        except (ValueError, TypeError) as exc:
+            print(f"--regime-windows-spec-json: {exc}")
+            sys.exit(1)
+        # Only single mode threads the spec into the Backtester (compare/multi/
+        # optimize don't accept it). Reject other modes loudly rather than
+        # silently classifying with the legacy ADX path.
+        if args.mode != "single":
+            print("--regime-windows-spec-json is only valid with --mode single")
+            sys.exit(1)
+
     # #866: --defaults user only has an effect via the config's user_close_defaults.
     if args.defaults == "user" and not args.config:
         print("--defaults user requires --config (user_close_defaults lives in the config); "
@@ -920,6 +1011,14 @@ def main():
                   "live config's `allowed_regimes` field owns the regime gate); "
                   "edit the config or backtest the strategy by name")
             sys.exit(1)
+        # #1058: the config's regime.windows owns the composite spec; a CLI
+        # --regime-windows-spec-json alongside --config would lose to it on the
+        # thread below and silently mislead. Reject loudly, like the gates above.
+        if args.regime_windows_spec is not None:
+            print("--regime-windows-spec-json is not allowed alongside --config "
+                  "(the live config's `regime.windows` owns the composite spec); "
+                  "edit the config or backtest the strategy by name")
+            sys.exit(1)
         close_refs = live_kwargs["close_strategies"]
         # Open strategy name + params come from the live config. Threading
         # params through to run_single_backtest is required — without it,
@@ -943,6 +1042,11 @@ def main():
             "regime_directional_policy",
             # #998: regime-profile allocation switch block (None when unused).
             "profile_allocation",
+            # #1058: composite (7-state) regime windows spec (None when the
+            # config has no regime.windows → legacy ADX path). Only single mode
+            # consumes live_stop_kwargs; optimize/compare/multi stay ADX, as they
+            # already drop the other config-sourced close fields here.
+            "regime_windows_spec",
         )
         live_stop_kwargs = {k: live_kwargs[k] for k in stop_keys if k in live_kwargs}
         args.regime_enabled = live_kwargs.get("regime_enabled", args.regime_enabled)
@@ -961,6 +1065,12 @@ def main():
         live_stop_kwargs.setdefault("stop_loss_atr_mult", args.stop_loss_atr_mult)
     if args.trailing_stop_atr_mult is not None:
         live_stop_kwargs.setdefault("trailing_stop_atr_mult", args.trailing_stop_atr_mult)
+
+    # #1058: by-name single backtest can supply the composite spec via the CLI.
+    # --config + this flag was rejected above, so the key can't collide. Only
+    # single mode threads live_stop_kwargs into run_single_backtest.
+    if args.regime_windows_spec is not None:
+        live_stop_kwargs["regime_windows_spec"] = args.regime_windows_spec
 
     # #989 review: --direction was parsed for every mode but forwarded only to
     # optimize — single/compare/multi silently scored the long leg of a

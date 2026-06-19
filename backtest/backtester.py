@@ -602,6 +602,7 @@ class Backtester:
                  regime_enabled: bool = False,
                  regime_period: int = 14,
                  regime_adx_threshold: float = 20.0,
+                 regime_windows_spec: Optional[dict] = None,
                  allowed_regimes: Optional[list[str]] = None,
                  stop_loss_atr_mult: Optional[float] = None,
                  stop_loss_pct: Optional[float] = None,
@@ -679,6 +680,15 @@ class Backtester:
         self.regime_enabled = regime_enabled
         self.regime_period = regime_period
         self.regime_adx_threshold = regime_adx_threshold
+        # #1058: optional composite (7-state) regime. When set, this is the live
+        # ``regime.windows`` spec map (already normalized: name -> {classifier,
+        # period, adx_threshold|thresholds}). The per-bar ``regime`` column and
+        # the close evaluator's ``_run_position_regime`` are then classified from
+        # the PRIMARY window — "medium" if present, else the first sorted key —
+        # mirroring live's REGIME_PRIMARY_WINDOW_KEY selection in
+        # regime_from_injected_payload. None keeps the legacy single-lookback ADX
+        # path (regime_period / regime_adx_threshold) byte-identical.
+        self.regime_windows_spec = dict(regime_windows_spec) if regime_windows_spec else None
         self.allowed_regimes = list(allowed_regimes or [])
         self.stop_loss_atr_mult = stop_loss_atr_mult
         self.stop_loss_pct = stop_loss_pct
@@ -1248,7 +1258,17 @@ class Backtester:
         # same OHLCV window → identical label by construction (same algorithm).
         if self.regime_enabled and "regime" not in df.columns:
             ensure_regime = _load_regime()
-            ensure_regime(df, period=self.regime_period, adx_threshold=self.regime_adx_threshold)
+            # #1058: when a composite windows spec is threaded, ensure_regime_columns
+            # classifies the PRIMARY window (medium-first) — composite (7-state) or
+            # ADX — exactly as live's regime store does for the strategy_regime that
+            # feeds close evaluators. Without it, the legacy single-lookback ADX
+            # (period / adx_threshold) path is unchanged.
+            ensure_regime(
+                df,
+                period=self.regime_period,
+                adx_threshold=self.regime_adx_threshold,
+                windows_spec=self.regime_windows_spec,
+            )
 
         # Snapshot the bar-close regime label before any shift so close
         # evaluators that re-resolve per bar (``tiered_tp_atr_live_regime``)
