@@ -64,6 +64,8 @@ var agentInfoCommands = []agentCommand{
 	{Name: "manual-add", Summary: "Scale into an existing manual position.", Usage: "go-trader manual-add [...]"},
 	{Name: "manual-close", Summary: "Close (or partially close) a manual position.", Usage: "go-trader manual-close [...]"},
 	{Name: "manual-cancel", Summary: "Cancel a resting manual limit order.", Usage: "go-trader manual-cancel [...]"},
+	{Name: "manual-update-sl", Summary: "Move the stop-loss trigger on a manual position.", Usage: "go-trader manual-update-sl <strategy-id> --trigger N [--symbol Y] [--dry-run]"},
+	{Name: "manual-cancel-sl", Summary: "Cancel the resting stop-loss on a manual position.", Usage: "go-trader manual-cancel-sl <strategy-id> [--symbol Y] [--dry-run]"},
 	{Name: "backfill", Summary: "Backfill derived data (trade-ledger fees/PnL, HL fees).", Usage: "go-trader backfill <trade-ledger|hl-fees> [...]"},
 	{Name: "probe", Summary: "Run startup probes against the configured check scripts.", Usage: "go-trader probe [--config <path>]"},
 	{Name: "inspect", Summary: "Print a strategy's effective (post-migration, post-default) config.", Usage: "go-trader inspect [--config <path>] [--json] <strategy-id>|--all"},
@@ -501,15 +503,14 @@ func renderAgentInfoMarkdown(info agentInfo) string {
 	return b.String()
 }
 
-// writeAgentInfoMarkdown writes (or refreshes) the markdown file. With
-// appendChangelog, it appends a version-stamped entry under a Changelog section
-// preserved across regenerations.
+// writeAgentInfoMarkdown writes (or refreshes) the markdown file. Any existing
+// Changelog block is preserved across regenerations regardless of mode — a bare
+// refresh never silently drops history. With appendChangelog, a new
+// version-stamped entry is prepended to that history.
 func writeAgentInfoMarkdown(path, md string, appendChangelog bool, info agentInfo, now time.Time) error {
-	if !appendChangelog {
-		return os.WriteFile(path, []byte(md), 0644)
-	}
-
-	// Preserve any existing changelog block so the history survives a refresh.
+	// Preserve any existing changelog block so the history survives a refresh in
+	// either mode. Without this, a bare --bootstrap-md would overwrite prior
+	// history; the invariant is that history only changes on explicit opt-in.
 	const changelogMarker = "## Changelog\n"
 	existingChangelog := ""
 	if prev, err := os.ReadFile(path); err == nil {
@@ -517,16 +518,22 @@ func writeAgentInfoMarkdown(path, md string, appendChangelog bool, info agentInf
 			existingChangelog = string(prev)[idx+len(changelogMarker):]
 		}
 	}
+	existingChangelog = strings.TrimLeft(existingChangelog, "\n")
 
-	entry := fmt.Sprintf("- %s — version `%s` (%d strategies, %d open positions)\n",
-		now.Format("2006-01-02"), info.Version, len(info.Strategies), len(info.LiveState.OpenPositions))
+	// Nothing to carry forward and no new entry requested: plain render.
+	if !appendChangelog && existingChangelog == "" {
+		return os.WriteFile(path, []byte(md), 0644)
+	}
 
 	var b strings.Builder
 	b.WriteString(md)
 	b.WriteString("\n")
 	b.WriteString(changelogMarker)
 	b.WriteString("\n")
-	b.WriteString(entry)
-	b.WriteString(strings.TrimLeft(existingChangelog, "\n"))
+	if appendChangelog {
+		fmt.Fprintf(&b, "- %s — version `%s` (%d strategies, %d open positions)\n",
+			now.Format("2006-01-02"), info.Version, len(info.Strategies), len(info.LiveState.OpenPositions))
+	}
+	b.WriteString(existingChangelog)
 	return os.WriteFile(path, []byte(b.String()), 0644)
 }

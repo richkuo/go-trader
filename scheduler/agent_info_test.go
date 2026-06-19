@@ -245,6 +245,56 @@ func TestRenderAgentInfoMarkdownAndChangelog(t *testing.T) {
 	}
 }
 
+// TestBareRefreshPreservesChangelog guards the invariant that a non-append
+// regeneration never silently drops prior changelog history (only an explicit
+// --append-changelog mutates it, by prepending). Covers the adversarial cases
+// from the review: bare refresh after an append, and alternating modes.
+func TestBareRefreshPreservesChangelog(t *testing.T) {
+	info := agentInfo{Version: "v1.0.0", Capabilities: agentInfoCommands, EnvVars: agentInfoEnvVars}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.generated.md")
+
+	// 1. Append establishes a history entry.
+	md := renderAgentInfoMarkdown(info)
+	if err := writeAgentInfoMarkdown(path, md, true, info, time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	// 2. Bare refresh (appendChangelog=false) must NOT drop the prior entry.
+	info.Version = "v1.1.0"
+	md2 := renderAgentInfoMarkdown(info)
+	if err := writeAgentInfoMarkdown(path, md2, false, info, time.Date(2026, 6, 19, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("bare refresh: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	s := string(data)
+	if !strings.Contains(s, "v1.0.0") {
+		t.Error("bare refresh dropped prior changelog history (v1.0.0)")
+	}
+	if strings.Count(s, "## Changelog") != 1 {
+		t.Errorf("changelog section should appear once, got %d", strings.Count(s, "## Changelog"))
+	}
+	// A bare refresh must not add a new dated entry — history is unchanged.
+	if strings.Contains(s, "v1.1.0") && strings.Contains(s, "2026-06-19") {
+		t.Error("bare refresh wrote a new changelog entry; only --append-changelog may")
+	}
+
+	// 3. A subsequent append prepends on top of the preserved history.
+	info.Version = "v1.2.0"
+	md3 := renderAgentInfoMarkdown(info)
+	if err := writeAgentInfoMarkdown(path, md3, true, info, time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("append 2: %v", err)
+	}
+	data, _ = os.ReadFile(path)
+	s = string(data)
+	if !strings.Contains(s, "v1.0.0") || !strings.Contains(s, "v1.2.0") {
+		t.Error("append after bare refresh lost history or new entry")
+	}
+	if i2, i0 := strings.Index(s, "v1.2.0"), strings.LastIndex(s, "v1.0.0"); i2 > i0 {
+		t.Error("newest changelog entry should come first")
+	}
+}
+
 // TestLoadConfigSnapshotDoesNotMutateFile guards the core safety invariant:
 // agent-info is read-only, but LoadConfig migrates pre-v15 configs in place.
 // loadConfigSnapshot must load the effective shape without rewriting the input.
