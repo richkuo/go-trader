@@ -158,4 +158,85 @@ fi
     esac
 )
 
+# canonicalize_deployment_dir (#1055 review): symlink + /./ + // spellings of the
+# same dir resolve to one physical path so the --all dedup collapses them; a
+# non-existent path is returned trailing-slash-normalized (loop reports/skips it).
+canon_tmp=$(mktemp -d)
+canon_phys=$(cd "$canon_tmp" && pwd -P)/
+ln -s "$canon_tmp" "${canon_tmp}.link"
+assert_eq "$(canonicalize_deployment_dir "$canon_tmp")" "$canon_phys" \
+    "canon: plain dir -> physical path + trailing slash"
+assert_eq "$(canonicalize_deployment_dir "${canon_tmp}.link")" "$canon_phys" \
+    "canon: symlink -> physical target (aliases collapse)"
+assert_eq "$(canonicalize_deployment_dir "${canon_tmp}/./")" "$canon_phys" \
+    "canon: /./ segment normalized to the same physical path"
+assert_eq "$(canonicalize_deployment_dir "/no/such/go-trader-x")" "/no/such/go-trader-x/" \
+    "canon: non-existent dir -> trailing-slash literal (no collapse)"
+# Two genuinely distinct dirs must NOT collapse.
+canon_b=$(mktemp -d)
+if [[ "$(canonicalize_deployment_dir "$canon_tmp")" == "$(canonicalize_deployment_dir "$canon_b")" ]]; then
+    echo "FAIL: distinct dirs must not canonicalize to the same path" >&2; exit 1
+fi
+rm -rf "$canon_tmp" "${canon_tmp}.link" "$canon_b"
+
+# --- #1056: out-of-tree config migration state classifier -------------------
+mig_tmp=$(mktemp -d)
+assert_eq "$(update_config_migration_state "$mig_tmp/none.json")" \
+    "missing" "absent config -> missing"
+: > "$mig_tmp/real.json"
+assert_eq "$(update_config_migration_state "$mig_tmp/real.json")" \
+    "regular" "regular file still in tree -> regular (needs migrating)"
+ln -s "$mig_tmp/real.json" "$mig_tmp/link.json"
+assert_eq "$(update_config_migration_state "$mig_tmp/link.json")" \
+    "symlink" "symlink -> symlink (already migrated; idempotent no-op)"
+# Adversarial: a DANGLING symlink (target already moved/removed) must still
+# classify as 'symlink', never 'missing' — otherwise a re-run would treat the
+# deployment as un-migrated and clobber the live config pointer.
+ln -s "$mig_tmp/gone.json" "$mig_tmp/dangling.json"
+assert_eq "$(update_config_migration_state "$mig_tmp/dangling.json")" \
+    "symlink" "dangling symlink -> symlink (not missing)"
+rm -rf "$mig_tmp"
+
+# --- #1056: instance-name validation (PR #1060 review) -----------------------
+assert_eq "$(update_validate_instance_name live)" "ok" "plain name -> ok"
+assert_eq "$(update_validate_instance_name paper-hl-btc)" "ok" "dashed name -> ok"
+assert_eq "$(update_validate_instance_name paper_testing.1)" "ok" "underscore/dot -> ok"
+# Adversarial: path-escape and flag-misparse names the bare char-class let through.
+assert_eq "$(update_validate_instance_name ..)" "bad" "'..' -> bad (escapes target dir)"
+assert_eq "$(update_validate_instance_name .)" "bad" "'.' -> bad (escapes target dir)"
+assert_eq "$(update_validate_instance_name -live)" "bad" "leading dash -> bad (misparses as flag)"
+assert_eq "$(update_validate_instance_name 'a/b')" "bad" "slash -> bad (path separator)"
+assert_eq "$(update_validate_instance_name 'a b')" "bad" "space -> bad (disallowed char)"
+assert_eq "$(update_validate_instance_name '')" "bad" "empty -> bad (caller handles no-instance separately)"
+
+# --- #1056: base-aware systemd writable directive (PR #1060 review) ----------
+assert_eq "$(update_config_writable_directive /var/lib/go-trader live)" \
+    "StateDirectory=go-trader/live" "default base + instance -> StateDirectory subdir"
+assert_eq "$(update_config_writable_directive /var/lib/go-trader '')" \
+    "StateDirectory=go-trader" "default base, no instance -> StateDirectory"
+assert_eq "$(update_config_writable_directive /etc/go-trader live)" \
+    "ReadWritePaths=/etc/go-trader/live" "non-/var/lib base -> ReadWritePaths (StateDirectory can't reach it)"
+assert_eq "$(update_config_writable_directive /etc/go-trader '')" \
+    "ReadWritePaths=/etc/go-trader" "non-/var/lib base, no instance -> ReadWritePaths"
+
+# --- #1056/#1060: re-running on an already-migrated (symlink) deployment must
+# be an idempotent no-op and must NOT trip the daemon-running refusal — that
+# refusal is gated to the mutating (regular-file) case only. (End-to-end over
+# the migrate script, since the ordering is script-level, not a pure helper.)
+mig2=$(mktemp -d)
+mkdir -p "$mig2/deploy/scheduler" "$mig2/var/live"
+: > "$mig2/var/live/config.json"
+ln -s "$mig2/var/live/config.json" "$mig2/deploy/scheduler/config.json"
+noop_out=$(bash "${SCRIPT_DIR}/migrate-config-out-of-tree.sh" \
+    --deploy-dir "$mig2/deploy" --base "$mig2/var" --instance live 2>&1) && noop_rc=0 || noop_rc=$?
+assert_eq "$noop_rc" "0" "already-migrated symlink -> idempotent no-op exit 0 (no daemon refusal)"
+if [[ "$noop_out" != *"already migrated"* ]]; then
+    echo "FAIL: expected 'already migrated' no-op message, got: $noop_out" >&2
+    exit 1
+fi
+# And the no-op must not have mutated anything (symlink intact, target intact).
+[[ -L "$mig2/deploy/scheduler/config.json" ]] || { echo "FAIL: no-op altered the symlink" >&2; exit 1; }
+[[ -f "$mig2/var/live/config.json" ]] || { echo "FAIL: no-op altered the target" >&2; exit 1; }
+rm -rf "$mig2"
+
 echo "OK: update_helpers tests passed"

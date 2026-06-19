@@ -138,6 +138,81 @@ discover_deployment_dirs_from_systemd() {
     done | normalize_systemd_deployment_dirs
 }
 
+# Canonicalize a discovered deployment dir to its PHYSICAL path (resolving symlinks,
+# /./ and // segments) with a single trailing slash, so two different spellings of
+# the same directory — a systemd WorkingDirectory taken verbatim from the unit file
+# vs. a glob hit under $scan_root — collapse under the --all `sort -u` dedup. Without
+# this the same live trading process would be updated AND restarted twice (#1055
+# review). `cd … && pwd -P` is the portable resolver (bash 3.2, no realpath needed).
+# A path that is not an existing directory cannot be resolved — it is returned
+# trailing-slash-normalized only (the --all loop then reports/skips it); two genuinely
+# distinct dirs never collapse because their physical paths differ.
+canonicalize_deployment_dir() {
+    local d="$1" phys
+    if [[ -d "$d" ]] && phys=$(cd "$d" 2>/dev/null && pwd -P); then
+        printf '%s/\n' "$phys"
+    else
+        printf '%s\n' "${d%/}/"
+    fi
+}
+
+# Classify a config path for the out-of-tree migration (#1056). Echoes:
+#   symlink  — already a symlink (migration done; idempotent no-op). Checked
+#              FIRST so a DANGLING symlink (target moved/removed) still reports
+#              'symlink', never 'missing' — re-migrating would clobber the live
+#              config pointer.
+#   regular  — a real file still in the deployment tree (needs migrating)
+#   missing  — nothing there
+update_config_migration_state() {
+    local path="$1"
+    if [[ -L "$path" ]]; then
+        printf 'symlink'
+        return 0
+    fi
+    if [[ -e "$path" ]]; then
+        printf 'regular'
+        return 0
+    fi
+    printf 'missing'
+}
+
+# Validate a systemd/path instance name for the #1056 migration. Echoes 'ok' or
+# 'bad'. The bare char-class [A-Za-z0-9_.-] is not enough: '.' and '..' are
+# composed only of allowed chars yet escape the target dir ($base/.. writes
+# outside the intended tree), and a leading '-' misparses as a flag downstream
+# (install-service.sh, systemctl). Empty is 'bad' here — the caller treats an
+# empty --instance as the no-instance default and must not route it through this.
+update_validate_instance_name() {
+    local name="$1"
+    [[ -n "$name" ]] || { printf 'bad'; return 0; }
+    case "$name" in
+        .|..) printf 'bad'; return 0 ;;
+        -*)   printf 'bad'; return 0 ;;
+    esac
+    if [[ "$name" =~ [^a-zA-Z0-9_.-] ]]; then
+        printf 'bad'
+        return 0
+    fi
+    printf 'ok'
+}
+
+# Emit the systemd directive that makes the #1056 config directory writable
+# under ProtectSystem=strict, given the migration --base and --instance. A base
+# under /var/lib maps to StateDirectory (systemd creates+owns the dir on start);
+# ANY other base must use ReadWritePaths (the operator created the dir) because
+# StateDirectory is always relative to /var/lib and would otherwise grant the
+# wrong directory while the real config dir stays read-only. Keeps the migration
+# script's printed unit edits valid for every --base value it accepts.
+update_config_writable_directive() {
+    local base="$1" instance="$2" sub=""
+    [[ -n "$instance" ]] && sub="/$instance"
+    if [[ "$base" == /var/lib/* ]]; then
+        printf 'StateDirectory=%s%s' "${base#/var/lib/}" "$sub"
+    else
+        printf 'ReadWritePaths=%s%s' "$base" "$sub"
+    fi
+}
+
 # Static, extension-based DB rsync excludes (#1012). Emits one glob per line so
 # any .db / SQLite sidecar / lock file at ANY path survives --rsync-from's
 # --delete, independent of the config-resolved db_file. These globs are

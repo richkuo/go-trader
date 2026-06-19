@@ -654,12 +654,19 @@ if [[ "$update_all" == "1" ]]; then
     if [[ ${#discovered[@]} -eq 0 ]]; then
         fail "no deployments found: no ACTIVE go-trader systemd units (systemctl absent or none active) and no directories match $scan_root/go-trader-*/ (batch root: $scan_root). Set --update-all-root <dir> / GO_TRADER_UPDATE_ALL_ROOT, or start the deployments' systemd units."
     fi
-    # De-dupe across the unioned sources (a dir may appear in both) and sort for
-    # stable operator output.
+    # Canonicalize each dir to its physical path BEFORE de-duping, so a systemd
+    # WorkingDirectory and a glob hit that resolve to the same directory (via a
+    # symlink, /./ or //) collapse to one entry — otherwise that one live deployment
+    # would be updated and restarted twice (#1055 review). De-dupe + sort for stable
+    # operator output; genuinely distinct physical dirs are preserved.
+    declare -a canon=()
+    for d in "${discovered[@]}"; do
+        canon+=("$(canonicalize_deployment_dir "$d")")
+    done
     declare -a all_dirs=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && all_dirs+=("$line")
-    done < <(printf '%s\n' "${discovered[@]}" | sort -u)
+    done < <(printf '%s\n' "${canon[@]}" | sort -u)
     discovery_source=$(IFS='+'; printf '%s' "${discovery_sources[*]}")
     echo "[update] --all: ${#all_dirs[@]} deployment dir(s) via ${discovery_source} discovery"
     fail_count=0
@@ -726,6 +733,10 @@ and the probe phase would later fail without it.
 
 If this IS your deployment directory, copy scheduler/config.example.json to
 scheduler/config.json and fill in API keys (see CLAUDE.md → Setup).
+
+If you moved config out of the tree (#1056), scheduler/config.json should be a
+symlink to e.g. /var/lib/go-trader/<instance>/config.json — recreate it with
+scripts/migrate-config-out-of-tree.sh or \`ln -s <target> scheduler/config.json\`.
 
 If you are syncing source to multiple deployment instances, build in the
 source repo and run scripts/update.sh from each deployment instance.

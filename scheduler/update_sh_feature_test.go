@@ -260,3 +260,61 @@ func TestUpdateShellAllExplicitRootSuppressesSystemd1055(t *testing.T) {
 		}
 	}
 }
+
+// #1055 review (dedup canonicalization): when a systemd WorkingDirectory is a
+// symlink that resolves to a directory ALSO matched by the glob, the two spellings
+// must collapse to a single batch entry — otherwise the one live deployment is
+// updated and restarted twice. Here the glob hit (parent/go-trader-aliased) and the
+// systemd WorkingDirectory (a symlink pointing at it) are the same physical dir, so
+// the batch count must be 1, not 2.
+func TestUpdateShellAllDedupesCanonicalAliases1055(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	script := updateShellScriptPath(t)
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	// The real deployment dir (a glob hit under the default scan_root = parent).
+	aliased := filepath.Join(parent, "go-trader-aliased")
+	if err := os.MkdirAll(aliased, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink elsewhere that systemd reports as the unit's WorkingDirectory.
+	link := filepath.Join(t.TempDir(), "go-trader-link")
+	if err := os.Symlink(aliased, link); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	fake := "#!/usr/bin/env bash\n" +
+		"case \"$1\" in\n" +
+		"  list-units) printf '%s\\n' \"go-trader-aliased.service loaded active running aliased\" ;;\n" +
+		"  show) printf '%s\\n' \"${GO_TRADER_TEST_SCATTERED:-}\" ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(binDir, "systemctl"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("bash", script, "--all", "--restart")
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"GO_TRADER_TEST_SCATTERED="+link, // systemd WorkingDirectory = symlink to the glob dir
+	)
+	out, _ := cmd.CombinedOutput()
+	text := string(out)
+
+	if strings.Contains(text, "2 deployment dir(s)") {
+		t.Errorf("symlinked WorkingDirectory aliasing a glob dir was not de-duped (counted twice)\n%s", text)
+	}
+	if !strings.Contains(text, "1 deployment dir(s) via systemd+glob discovery") {
+		t.Errorf("expected a single canonicalized entry from both sources\n%s", text)
+	}
+}
