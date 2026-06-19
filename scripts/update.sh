@@ -807,6 +807,20 @@ fi
 mv -f ./go-trader.new ./go-trader
 end_phase
 
+# #1051: refresh the auto-generated agent capability doc from the freshly
+# swapped binary. Best-effort — a doc-generation failure must never fail or
+# roll back a deploy. Writes AGENTS.generated.md (NOT AGENTS.md, a symlink to
+# the hand-maintained CLAUDE.md).
+begin_phase agent-info
+agent_info_cfg=()
+[[ -f scheduler/config.json ]] && agent_info_cfg=(--config scheduler/config.json)
+if ./go-trader agent-info "${agent_info_cfg[@]}" --bootstrap-md --append-changelog; then
+    echo "[update] refreshed AGENTS.generated.md"
+else
+    echo "[update] warning: agent-info --bootstrap-md failed (non-fatal); AGENTS.generated.md not refreshed" >&2
+fi
+end_phase
+
 if [[ "$restart" != "1" ]]; then
     echo "[update] build OK at $ver (skipping restart; pass --restart to enable)"
     exit 0

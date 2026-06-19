@@ -29,3 +29,6 @@ architecture.md
 
 # consolidation research generated output (regenerable)
 backtest/consolidation_out/
+
+# #1051: auto-generated agent capability doc (contains a live-state snapshot; regenerable via `go-trader agent-info --bootstrap-md`)
+AGENTS.generated.md

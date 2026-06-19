@@ -27,6 +27,7 @@ var knownSubcommands = []string{
 	"backfill",
 	"probe",
 	"inspect",
+	"agent-info",
 	"version",
 }
 
@@ -71,6 +72,8 @@ func main() {
 			os.Exit(runProbe(os.Args[2:]))
 		case "inspect":
 			os.Exit(runInspect(os.Args[2:]))
+		case "agent-info":
+			os.Exit(runAgentInfo(os.Args[2:]))
 		case "version", "--version", "-version":
 			fmt.Println(Version)
 			os.Exit(0)
