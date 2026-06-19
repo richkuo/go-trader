@@ -792,3 +792,67 @@ def test_validate_regime_tiered_tp_labels_helper():
             {"atr_multiple": 2.0, "close_fraction": 0.5},
             {"atr_multiple": 3.0, "close_fraction": 1.0}]}}],
         labels=_COMPOSITE_TP_LABELS) == []
+
+
+# --- Missing-label exhaustiveness (#1058 review 5) ----------------------------
+# Live rejects a non-exhaustive per-tier trend_regime block: parseRegimeATRBlock
+# ("missing required regime labels … must be exhaustive — no silent fallback"),
+# invoked per tier from parseRegimeTPTiers. The backtester must match — a
+# partially-keyed tier passes the unknown-label arm but, left unchecked, makes
+# resolve_regime_tier silently no-op TP on every un-keyed substate.
+
+def _partial_tiered_ref(labels, omit):
+    kept = [l for l in labels if l != omit]
+    return {"name": "tiered_tp_atr_regime", "params": {"tp_tiers": [
+        _regime_tp_tier(kept, 2.0, 0.5),
+        _regime_tp_tier(kept, 3.0, 1.0),
+    ]}}
+
+
+def _bt_with_tiered_ref(spec, ref):
+    return Backtester(initial_capital=1000.0, regime_enabled=True,
+                      regime_windows_spec=spec, close_strategies=[ref])
+
+
+def test_composite_primary_non_exhaustive_tiered_tp_rejects():
+    # Composite primary + composite-keyed tiers omitting one substate → reject at
+    # load, never a silent no-op on the omitted substate.
+    ref = _partial_tiered_ref(_COMPOSITE_TP_LABELS, "ranging_directional")
+    with pytest.raises(ValueError) as exc:
+        _bt_with_tiered_ref(COMPOSITE_SPEC, ref)
+    msg = str(exc.value)
+    assert "tiered-TP" in msg
+    assert "missing required regime labels" in msg
+    assert "ranging_directional" in msg
+
+
+def test_adx_primary_non_exhaustive_tiered_tp_rejects():
+    # Inverse vocabulary: ADX primary (legacy no-spec, labels=None) + ADX-keyed
+    # tiers omitting one of the 3 labels → still rejected as non-exhaustive.
+    ref = _partial_tiered_ref(_ADX_TP_LABELS, "ranging")
+    with pytest.raises(ValueError) as exc:
+        _bt_with_tiered_ref(None, ref)
+    msg = str(exc.value)
+    assert "missing required regime labels" in msg
+    assert "ranging" in msg
+
+
+def test_validate_regime_tiered_tp_labels_exhaustiveness_unit():
+    # Direct unit on the missing-label arm and the use_defaults exemption.
+    _sl = _bt_with_tiered_regime(None, _ADX_TP_LABELS)._sl_mod
+    # Composite vocabulary, tier omits one composite substate → flagged missing.
+    errs = _sl.validate_regime_tiered_tp_labels(
+        [_partial_tiered_ref(_COMPOSITE_TP_LABELS, "ranging_volatile")],
+        labels=_COMPOSITE_TP_LABELS)
+    assert errs and any("missing required regime labels" in e for e in errs)
+    assert any("ranging_volatile" in e for e in errs)
+    # A tier-level use_defaults carries no operator keys → exempt (expands to the
+    # full vocabulary at the resolver, mirroring live's early-return).
+    use_defaults_ref = {"name": "tiered_tp_atr_regime", "params": {"tp_tiers": [
+        {"use_defaults": True, "close_fraction": 1.0}]}}
+    assert _sl.validate_regime_tiered_tp_labels(
+        [use_defaults_ref], labels=_COMPOSITE_TP_LABELS) == []
+    # Exhaustive composite tiers still accepted (no false positive from the arm).
+    assert _sl.validate_regime_tiered_tp_labels(
+        [_regime_tiered_ref(_COMPOSITE_TP_LABELS)],
+        labels=_COMPOSITE_TP_LABELS) == []

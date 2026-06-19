@@ -829,10 +829,17 @@ def validate_regime_tiered_tp_labels(
     ``trend_regime`` keys, never re-parsing tier shape/count/sibling keys
     (``sl_after``, ``tp_atr_fraction``, scalar ``close_fraction``), which the
     backtester's existing machinery and the HL-live-only guards already handle.
-    A tier key not in the expected vocabulary is the only thing flagged, so a
-    single-tier or partially-keyed regime config that was valid before is not
-    newly rejected. ``labels=None`` resolves to the canonical 3 ADX labels, so the
-    ADX/legacy path is byte-identical AND an ADX-primary strategy still rejects
+    Each per-regime tier must be EXHAUSTIVE over the expected vocabulary: a key
+    the classifier can never emit is flagged as unknown, and an omitted label is
+    flagged as missing — mirroring live ``parseRegimeATRBlock`` (regime_atr.go),
+    which rejects a non-exhaustive ``trend_regime`` block per tier ("must be
+    exhaustive — no silent fallback"). Without the missing-label arm a
+    composite-primary config with a partially-keyed tier passes the backtester
+    but is rejected live, and ``resolve_regime_tier`` silently no-ops TP on every
+    un-keyed substate. A tier-level ``use_defaults`` expands to the full
+    vocabulary at the resolver, so it is exempt (like live's early-return).
+    ``labels=None`` resolves to the canonical 3 ADX labels, so the ADX/legacy
+    path is byte-identical AND an ADX-primary strategy still rejects
     composite-keyed tiers (must-survive (b)). Returns error strings (empty=valid).
     """
     expected = set(labels) if labels is not None else set(CANONICAL_TREND_REGIME_LABELS)
@@ -852,6 +859,11 @@ def validate_regime_tiered_tp_labels(
         for i, tier in enumerate(tiers_raw):
             if not isinstance(tier, dict):
                 continue
+            if bool(tier.get("use_defaults")):
+                # Tier-level use_defaults expands to the full vocabulary at the
+                # resolver (mirrors live parseRegimeATRBlock early-return) — no
+                # operator-supplied keys to mis-vocabulary or omit.
+                continue
             block = tier.get(REGIME_CLASSIFIER_KEY)
             if not isinstance(block, dict):
                 continue
@@ -859,6 +871,13 @@ def validate_regime_tiered_tp_labels(
                 errs.append(
                     f"{name}.tiers[{i}].{REGIME_CLASSIFIER_KEY}: unknown regime "
                     f"label {key!r} (expected one of: {', '.join(sorted(expected))})"
+                )
+            missing = [label for label in sorted(expected) if label not in block]
+            if missing:
+                errs.append(
+                    f"{name}.tiers[{i}].{REGIME_CLASSIFIER_KEY}: missing required "
+                    f"regime labels: {', '.join(missing)} "
+                    f"(must be exhaustive — no silent fallback)"
                 )
     return errs
 
