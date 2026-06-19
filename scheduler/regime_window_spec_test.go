@@ -184,13 +184,82 @@ func TestFormatStrategyRegimeDisplay_CaseInsensitiveMatch(t *testing.T) {
 	}
 }
 
-func TestFormatStrategyRegimeDisplay_NoMatchFallsBackToPrimary(t *testing.T) {
+func TestFormatStrategyRegimeDisplay_SelectedWindowsUnpopulatedFallsBackToPrimary(t *testing.T) {
+	// Config validation rejects display_windows that name no configured window,
+	// so the render-time fallback is reached when the *selected* (valid) windows
+	// simply have no label this cycle. Drop the composite labels to simulate that.
 	rc, ss := regimeDisplayTestConfig()
-	rc.DisplayWindows = []string{"does_not_exist"}
+	rc.DisplayWindows = []string{"composite_long", "composite_medium", "composite_short"}
+	delete(ss.RegimeWindows, "composite_long")
+	delete(ss.RegimeWindows, "composite_medium")
+	delete(ss.RegimeWindows, "composite_short")
 	got := formatStrategyRegimeDisplay(ss, rc)
 	if got != "ranging" {
-		t.Fatalf("no matching window should fall back to ss.Regime %q; got: %s", ss.Regime, got)
+		t.Fatalf("all selected windows unpopulated should fall back to ss.Regime %q; got: %s", ss.Regime, got)
 	}
+}
+
+func TestValidateRegimeWindowsConfig_DisplayWindows(t *testing.T) {
+	baseWindows := func() RegimeWindowsMap {
+		return RegimeWindowsMap{
+			"long":           {Period: 2160},
+			"composite_long": {Classifier: regimeClassifierComposite, Period: 2160},
+		}
+	}
+	hasErrContaining := func(errs []string, sub string) bool {
+		for _, e := range errs {
+			if strings.Contains(e, sub) {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("valid names pass", func(t *testing.T) {
+		cfg := &Config{Regime: &RegimeConfig{Enabled: true, Windows: baseWindows(),
+			DisplayWindows: []string{"composite_long", "LONG"}}} // case-insensitive
+		if errs := validateRegimeWindowsConfig(cfg); len(errs) != 0 {
+			t.Fatalf("valid display_windows should pass; got: %v", errs)
+		}
+	})
+
+	t.Run("single typo errors", func(t *testing.T) {
+		cfg := &Config{Regime: &RegimeConfig{Enabled: true, Windows: baseWindows(),
+			DisplayWindows: []string{"composit_long"}}}
+		errs := validateRegimeWindowsConfig(cfg)
+		if !hasErrContaining(errs, `"composit_long" not found`) {
+			t.Fatalf("typo should error; got: %v", errs)
+		}
+	})
+
+	t.Run("mixed list errors only on the typo", func(t *testing.T) {
+		cfg := &Config{Regime: &RegimeConfig{Enabled: true, Windows: baseWindows(),
+			DisplayWindows: []string{"composite_long", "shrot"}}}
+		errs := validateRegimeWindowsConfig(cfg)
+		if !hasErrContaining(errs, `"shrot" not found`) {
+			t.Fatalf("typo should error; got: %v", errs)
+		}
+		if hasErrContaining(errs, `"composite_long" not found`) {
+			t.Fatalf("valid name must not error; got: %v", errs)
+		}
+	})
+
+	t.Run("blank entries ignored", func(t *testing.T) {
+		cfg := &Config{Regime: &RegimeConfig{Enabled: true, Windows: baseWindows(),
+			DisplayWindows: []string{"", "   "}}}
+		if errs := validateRegimeWindowsConfig(cfg); len(errs) != 0 {
+			t.Fatalf("blank entries should be ignored, not errored; got: %v", errs)
+		}
+	})
+
+	t.Run("requires windows configured", func(t *testing.T) {
+		cfg := &Config{Regime: &RegimeConfig{Enabled: true,
+			DisplayWindows: []string{"composite_long"}}} // no Windows
+		errs := validateRegimeWindowsConfig(cfg)
+		if !hasErrContaining(errs, "regime.display_windows requires regime.windows") {
+			t.Fatalf("display_windows without windows should error; got: %v", errs)
+		}
+	})
 }
 
 func TestFormatStrategyRegimeDisplay_BlankEntriesTreatedAsUnset(t *testing.T) {

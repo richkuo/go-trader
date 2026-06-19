@@ -364,6 +364,28 @@ func validateRegimeWindowsConfig(cfg *Config) []string {
 		errs = append(errs, validateRegimeWindowSpec(trimmed, spec, rc)...)
 	}
 	multi := regimeMultiWindowEnabled(rc)
+	// #1062: display_windows is a display-only summary filter, but a typo would
+	// silently fall back to the single primary regime string (indistinguishable
+	// from "feature off") — the #704-class misdiagnosis the unknown-key guards
+	// exist to prevent. Window labels are emitted only for configured windows
+	// (check_regime.compute_regime_bundle keys snapshots by windows_spec names),
+	// so every valid display name must be a regime.windows key — validate loudly
+	// at load instead of failing silent at render time.
+	if len(rc.DisplayWindows) > 0 {
+		if !multi {
+			errs = append(errs, "regime.display_windows requires regime.windows to be configured")
+		} else {
+			for _, name := range rc.DisplayWindows {
+				key := normalizeRegimeWindowKey(name)
+				if key == "" {
+					continue // blank entries are ignored at render time (treated as unset)
+				}
+				if !regimeWindowExists(rc, key) {
+					errs = append(errs, fmt.Sprintf("regime.display_windows: %q not found in regime.windows (valid: %s)", name, strings.Join(sortedRegimeWindowNamesFromConfig(rc.Windows), ", ")))
+				}
+			}
+		}
+	}
 	for _, sc := range cfg.Strategies {
 		prefix := fmt.Sprintf("strategy[%s]", sc.ID)
 		for _, pair := range []struct {

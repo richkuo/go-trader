@@ -46,6 +46,15 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		cfg.ManualDefaults = cloneManualDefaults(next.ManualDefaults)
 	}
 
+	// #1062: regime.display_windows hot-reloads (display-only summary filter).
+	// validateHotReloadCompatible masked it but rejects any other regime change,
+	// so reaching here means display_windows is the only regime difference.
+	// Clearing it (next nil/empty) reverts to render-all without a restart.
+	if cfg.Regime != nil && next.Regime != nil && !reflect.DeepEqual(cfg.Regime.DisplayWindows, next.Regime.DisplayWindows) {
+		addChange("regime.display_windows: %v -> %v", cfg.Regime.DisplayWindows, next.Regime.DisplayWindows)
+		cfg.Regime.DisplayWindows = append([]string(nil), next.Regime.DisplayWindows...)
+	}
+
 	nextByID := strategyConfigByID(next.Strategies)
 	for i := range cfg.Strategies {
 		sc := &cfg.Strategies[i]
@@ -286,6 +295,21 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	return changes, nil
 }
 
+// regimeConfigEqualIgnoringDisplayWindows reports whether two regime configs are
+// identical except possibly for DisplayWindows (#1062) — the display-only field
+// that hot-reloads. nil-vs-non-nil counts as a difference (regime add/remove is
+// restart-required). Copies the structs before zeroing the slice header so the
+// live configs are untouched; Windows (a map) is only read by DeepEqual.
+func regimeConfigEqualIgnoringDisplayWindows(a, b *RegimeConfig) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	ac, bc := *a, *b
+	ac.DisplayWindows = nil
+	bc.DisplayWindows = nil
+	return reflect.DeepEqual(ac, bc)
+}
+
 func validateHotReloadCompatible(cfg, next *Config) error {
 	var errs []string
 	if cfg.DBFile != next.DBFile {
@@ -309,7 +333,12 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	if !reflect.DeepEqual(cfg.Correlation, next.Correlation) {
 		errs = append(errs, "correlation changed (restart required)")
 	}
-	if !reflect.DeepEqual(cfg.Regime, next.Regime) {
+	// #1062: regime.display_windows is a display-only summary filter (no effect
+	// on calculation, gating, or persisted state), so it hot-reloads — masked
+	// out of this comparison and applied in applyHotReloadConfig. Any OTHER
+	// regime field change (alone or compounded with a display_windows edit)
+	// still rejects, because the mask only zeroes DisplayWindows before DeepEqual.
+	if !regimeConfigEqualIgnoringDisplayWindows(cfg.Regime, next.Regime) {
 		errs = append(errs, "regime changed (restart required)")
 	}
 	if !reflect.DeepEqual(cfg.LeaderboardSummaries, next.LeaderboardSummaries) {

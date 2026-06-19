@@ -908,6 +908,79 @@ func TestApplyHotReloadConfigAllowsRegimeTierMultipleChangeWithoutSLAfter(t *tes
 	}
 }
 
+// #1062 — regime.display_windows is display-only and hot-reloads, but any other
+// regime field change still requires a restart.
+func TestApplyHotReloadConfigDisplayWindows(t *testing.T) {
+	regimeWith := func(display []string) *RegimeConfig {
+		return &RegimeConfig{
+			Enabled: true, Period: 14, ADXThreshold: 20,
+			Windows: RegimeWindowsMap{
+				"long":           {Period: 2160},
+				"composite_long": {Classifier: regimeClassifierComposite, Period: 2160},
+			},
+			DisplayWindows: display,
+		}
+	}
+	openState := func() *AppState {
+		return &AppState{Strategies: map[string]*StrategyState{
+			"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long", Regime: "ranging"},
+			}},
+		}}
+	}
+	stratWith := func(r *RegimeConfig) *Config {
+		c := minimalReloadConfig([]StrategyConfig{{
+			ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+			Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+			Leverage: 5, MarginMode: "isolated",
+		}})
+		c.Regime = r
+		return c
+	}
+
+	// (1) display-only change applies while a position is open.
+	t.Run("display-only change applies with open position", func(t *testing.T) {
+		cfg := stratWith(regimeWith(nil))
+		next := stratWith(regimeWith([]string{"composite_long"}))
+		changes, err := applyHotReloadConfig(cfg, next, openState(), nil, nil)
+		if err != nil {
+			t.Fatalf("display-only regime change should hot-reload, got: %v", err)
+		}
+		if len(cfg.Regime.DisplayWindows) != 1 || cfg.Regime.DisplayWindows[0] != "composite_long" {
+			t.Fatalf("DisplayWindows not applied: %v", cfg.Regime.DisplayWindows)
+		}
+		joined := strings.Join(changes, " | ")
+		if !strings.Contains(joined, "regime.display_windows") {
+			t.Fatalf("expected a display_windows change entry, got: %v", changes)
+		}
+	})
+
+	// (2) compound change (display_windows + a real regime field) still rejects.
+	t.Run("compound change still rejects", func(t *testing.T) {
+		cfg := stratWith(regimeWith(nil))
+		next := stratWith(regimeWith([]string{"composite_long"}))
+		next.Regime.ADXThreshold = 25 // a genuinely restart-required edit
+		if _, err := applyHotReloadConfig(cfg, next, openState(), nil, nil); err == nil {
+			t.Fatal("regime change compounded with display_windows must still require restart")
+		}
+		if len(cfg.Regime.DisplayWindows) != 0 {
+			t.Fatalf("rejected reload must not mutate DisplayWindows: %v", cfg.Regime.DisplayWindows)
+		}
+	})
+
+	// (3) clearing display_windows reverts to render-all without a restart.
+	t.Run("clearing reverts to render-all", func(t *testing.T) {
+		cfg := stratWith(regimeWith([]string{"composite_long"}))
+		next := stratWith(regimeWith(nil))
+		if _, err := applyHotReloadConfig(cfg, next, openState(), nil, nil); err != nil {
+			t.Fatalf("clearing display_windows should hot-reload, got: %v", err)
+		}
+		if len(cfg.Regime.DisplayWindows) != 0 {
+			t.Fatalf("DisplayWindows should be cleared, got: %v", cfg.Regime.DisplayWindows)
+		}
+	})
+}
+
 // #656 — direction change is allowed when the strategy is flat.
 func TestApplyHotReloadConfigAllowsDirectionChangeWhenFlat(t *testing.T) {
 	cfg := minimalReloadConfig([]StrategyConfig{{
