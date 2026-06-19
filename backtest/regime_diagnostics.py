@@ -10,7 +10,7 @@ for _p in (_ROOT, os.path.join(_ROOT, "shared_tools")):
         sys.path.insert(0, _p)
 
 import numpy as np
-from regime_stats import kruskal_h, benjamini_hochberg  # noqa: F401 (BH used in Task 7)
+from regime_stats import kruskal_h, benjamini_hochberg
 
 
 def forward_returns(close: np.ndarray, horizon: int) -> np.ndarray:
@@ -83,12 +83,64 @@ def block_shuffle_pvalue(labels, fwd, block_len, n_perm=200, seed=0) -> dict:
     ge = 0
     for _ in range(n_perm):
         perm = rng.permutation(len(starts))
-        shuffled = np.concatenate([labels[s : s + block_len] for s in (starts[i] for i in perm)])
+        shuffled = np.concatenate([labels[b : b + block_len] for b in (starts[i] for i in perm)])
         shuffled = shuffled[:n]
         if separation(shuffled, fwd)["kruskal_h"] >= h_obs:
             ge += 1
     return {"kruskal_h": float(h_obs), "p_value": float((ge + 1) / (n_perm + 1)),
             "block_len": block_len, "n_perm": int(n_perm)}
+
+
+def per_state_significance(labels, fwd, block_len, n_perm=200, seed=0) -> dict:
+    """Per-state forward-return significance with Benjamini-Hochberg FDR correction.
+
+    Returns {state: {"gap": float, "p_value": float, "fdr_reject": bool}}.
+    States with no in-group or no out-group bars are skipped.
+    """
+    labels = np.asarray(labels, dtype=object)
+    fwd = np.asarray(fwd, dtype=float)
+    valid = ~np.isnan(fwd)
+    labels, fwd = labels[valid], fwd[valid]
+    states = sorted(set(labels.tolist()))
+
+    gap_obs: dict[str, float] = {}
+    for s in states:
+        in_group = fwd[labels == s]
+        out_group = fwd[labels != s]
+        if len(in_group) == 0 or len(out_group) == 0:
+            continue
+        gap_obs[s] = float(in_group.mean() - out_group.mean())
+
+    if not gap_obs:
+        return {}
+
+    active_states = sorted(gap_obs.keys())
+    ge: dict[str, int] = {s: 0 for s in active_states}
+
+    n = len(labels)
+    block_len = max(1, int(block_len))
+    starts = list(range(0, n, block_len))
+    rng = np.random.default_rng(seed)
+
+    for _ in range(n_perm):
+        perm = rng.permutation(len(starts))
+        shuffled = np.concatenate([labels[b : b + block_len] for b in (starts[i] for i in perm)])
+        shuffled = shuffled[:n]
+        for s in active_states:
+            in_perm = fwd[shuffled == s]
+            out_perm = fwd[shuffled != s]
+            if len(in_perm) == 0 or len(out_perm) == 0:
+                continue
+            gap_perm = float(in_perm.mean() - out_perm.mean())
+            if abs(gap_perm) >= abs(gap_obs[s]):
+                ge[s] += 1
+
+    p_vals = {s: float((ge[s] + 1) / (n_perm + 1)) for s in active_states}
+    bh_results = benjamini_hochberg([p_vals[s] for s in active_states])
+    return {
+        s: {"gap": gap_obs[s], "p_value": p_vals[s], "fdr_reject": bool(reject)}
+        for s, reject in zip(active_states, bh_results)
+    }
 
 
 def _kmeans(z, k, seed, iters=50):
@@ -128,16 +180,25 @@ def kmeans_yardstick(features, fwd, k_range=(2, 3, 4, 5, 6, 7), seed=0) -> dict:
 def score_labels(close, labels, features, horizons=(1, 4, 12), block_mult=3, seed=0) -> dict:
     labels = np.asarray(labels, dtype=object)
     features = np.asarray(features, dtype=float)
-    st = stability(labels)
+    # Identical NaN-mask on both label streams: warmup + low-ATR bars (NaN feature rows)
+    # are excluded from coverage/stability/separation so neither the hand-rule's
+    # ranging_quiet nor the model's default_label for those bars biases the comparison.
+    valid = ~np.isnan(features).any(axis=1)
+    vlabels = labels[valid]
+    st = stability(vlabels)
     mean_dwell = float(np.mean(list(st["mean_dwell"].values()))) if st["mean_dwell"] else 1.0
-    out = {"coverage": coverage(labels), "stability": st, "horizons": {}}
+    out = {"coverage": coverage(vlabels), "stability": st, "horizons": {}}
     for h in horizons:
-        fwd = forward_returns(close, h)
+        # Forward returns computed on the FULL close (index-aligned); then subset by valid
+        # so each retained bar keeps its true h-ahead return.
+        fwd_full = forward_returns(close, h)
+        fwd = fwd_full[valid]
         block_len = max(int(block_mult * mean_dwell), h)
         out["horizons"][f"h{h}"] = {
-            "separation": separation(labels, fwd),
-            "significance": block_shuffle_pvalue(labels, fwd, block_len, seed=seed),
-            "yardstick": kmeans_yardstick(features, fwd, seed=seed),
+            "separation": separation(vlabels, fwd),
+            "significance": block_shuffle_pvalue(vlabels, fwd, block_len, seed=seed),
+            "yardstick": kmeans_yardstick(features, fwd_full, seed=seed),
+            "per_state_fdr": per_state_significance(vlabels, fwd, block_len, seed=seed),
         }
     # flat aliases for the pre-registered primary (h=4)
     if "h4" in out["horizons"]:
@@ -165,7 +226,7 @@ def run_window(symbol, timeframe, window, *, model=None, horizons=(1, 4, 12), se
 
 def build_parser() -> "argparse.ArgumentParser":
     import argparse
-    from eval_windows import WINDOWS, DATASETS
+    from eval_windows import WINDOWS
     p = argparse.ArgumentParser(description="7-state regime quality diagnostics (#1065)")
     p.add_argument("--symbol", default="BTC/USDT")
     p.add_argument("--timeframe", default="1h")

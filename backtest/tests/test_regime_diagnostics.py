@@ -69,3 +69,53 @@ def test_score_labels_bundle():
     assert "h4" in out and "kruskal_h" in out["h4"]["separation"]
     assert "coverage" in out and "stability" in out
     assert "p_value" in out["h4"]["significance"]
+
+
+def test_score_labels_masks_warmup():
+    """NaN feature rows are excluded: labeling them 'ranging_quiet' vs 'default_label' is irrelevant."""
+    from regime_diagnostics import score_labels
+    rng = np.random.default_rng(42)
+    n = 120
+    close = 100 * np.cumprod(1 + rng.normal(0, 0.005, n))
+    base_labels = np.array(
+        ["up" if r >= 0 else "down" for r in np.diff(close, prepend=close[0])], dtype=object
+    )
+    feats = rng.normal(0, 1, (n, 4))
+    feats[:10] = np.nan  # warmup bars have NaN features
+
+    labels_a = base_labels.copy()
+    labels_a[:10] = "ranging_quiet"
+    labels_b = base_labels.copy()
+    labels_b[:10] = "default_label"
+
+    out_a = score_labels(close, labels_a, feats, horizons=(4,), seed=0)
+    out_b = score_labels(close, labels_b, feats, horizons=(4,), seed=0)
+
+    # warmup-label variants must not appear in coverage
+    assert "ranging_quiet" not in out_a["coverage"]
+    assert "default_label" not in out_b["coverage"]
+    # scoring is identical regardless of which label the warmup bars carry
+    assert out_a["coverage"] == out_b["coverage"]
+    assert out_a["stability"] == out_b["stability"]
+    assert out_a["h4"]["significance"]["p_value"] == out_b["h4"]["significance"]["p_value"]
+
+
+def test_per_state_significance():
+    from regime_diagnostics import per_state_significance
+
+    # Clearly separated returns → both states should reject at FDR level
+    labels_sep = np.array(["up"] * 100 + ["down"] * 100)
+    fwd_sep = np.concatenate([np.full(100, 0.02), np.full(100, -0.02)])
+    result = per_state_significance(labels_sep, fwd_sep, block_len=5, n_perm=200, seed=0)
+    assert result["up"]["fdr_reject"] is True
+    assert result["down"]["fdr_reject"] is True
+    assert result["up"]["gap"] > 0  # up mean > global mean
+    assert result["down"]["gap"] < 0
+
+    # All-noise: random labels, random returns → few/no rejects expected
+    rng = np.random.default_rng(7)
+    labels_noise = np.array(["a", "b"])[rng.integers(0, 2, 300)]
+    fwd_noise = rng.normal(0, 0.01, 300)
+    result_noise = per_state_significance(labels_noise, fwd_noise, block_len=10, n_perm=200, seed=0)
+    n_reject = sum(1 for v in result_noise.values() if v["fdr_reject"])
+    assert n_reject <= 1  # at most 1 false positive under noise

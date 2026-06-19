@@ -38,14 +38,16 @@ def test_fit_drops_nan_rows():
 def test_forward_filter_look_ahead_safe():
     from regime_hmm import forward_filter_labels
     rng = np.random.default_rng(0)
+    # 120-bar series; filter_window=8; assert through bar k=70, mutate from k+1=71
+    # so even a +1 look-ahead from bar 70 would hit the mutated region.
     feats = np.vstack([rng.normal(0, 1, (60, 4)), rng.normal(4, 1, (60, 4))])
     labels = np.array(["s0"] * 60 + ["s1"] * 60, dtype=object)
     m = fit_label_anchored_hmm(feats, labels, STATES, filter_window=8)
     lab_a, _ = forward_filter_labels(feats, m)
     perturbed = feats.copy()
-    perturbed[80:] += 100.0  # mutate the FUTURE relative to bar 70
+    perturbed[71:] += 100.0  # mutate from bar 71, immediately after the last asserted bar
     lab_b, _ = forward_filter_labels(perturbed, m)
-    assert list(lab_a[:71]) == list(lab_b[:71])  # labels <=70 unchanged by future
+    assert list(lab_a[:71]) == list(lab_b[:71])  # labels 0..70 unchanged by future
 
 
 def test_forward_filter_recovers_regime():
