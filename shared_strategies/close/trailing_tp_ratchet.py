@@ -29,12 +29,24 @@ DEFAULT_RATCHET_TIERS = [
     {"atr_multiple": 3.0, "trailing_mult_after": 0.8, "close_fraction": 0.0},
 ]
 
-# #870: per-quality-group default ratchet ladders for the REGIME variant
+# #870: per-group default ratchet ladders for the REGIME variant
 # (trailing_tp_ratchet_regime) when tp_tiers is omitted / use_defaults:true.
 # Mirrors ratchetTierGroupDefaults in scheduler/trailing_tp_ratchet.go. Trend
-# groups (clean/choppy) are pure let-it-ride (close_fraction 0); ranging scales
-# out. Each group's first rung couples to that group's opening trail in
-# REGIME_ATR_DEFAULTS_TRAILING (clean 2.0 / choppy 2.0 / ranging 1.0).
+# groups (clean/choppy) are pure let-it-ride (close_fraction 0). #1059 split the
+# single ranging ladder into three composite substate ladders keyed by
+# ratchet_close_default_group (NOT the shared regime_close_default_group, which
+# still collapses ranging* → "ranging" for the B2 ATR-TP path):
+#   - ranging_quiet keeps the pre-#1059 ranging geometry and is also the target
+#     for bare ADX "ranging", so ADX behavior is unchanged.
+#   - ranging_volatile widens the triggers (avoid scaling out on wide-range
+#     noise); close fractions unchanged.
+#   - ranging_directional scales out lighter early (25/50/75) and adds a 4th
+#     let-ride rung that only tightens the trail (no extra close) so a nascent
+#     breakout's runner survives.
+# Each group's first rung couples to that group's opening trail in
+# REGIME_ATR_DEFAULTS_TRAILING (clean 2.0 / choppy 2.0 / ranging family 1.0).
+# Split values are starting priors — validate via the #1058 7-state backtester
+# before relying on the exact geometry.
 DEFAULT_RATCHET_TIERS_BY_GROUP = {
     "clean": [
         {"atr_multiple": 3.0, "trailing_mult_after": 1.5, "close_fraction": 0.0},
@@ -46,12 +58,40 @@ DEFAULT_RATCHET_TIERS_BY_GROUP = {
         {"atr_multiple": 2.5, "trailing_mult_after": 1.0, "close_fraction": 0.0},
         {"atr_multiple": 3.0, "trailing_mult_after": 0.8, "close_fraction": 0.0},
     ],
-    "ranging": [
+    "ranging_quiet": [
         {"atr_multiple": 0.75, "trailing_mult_after": 1.0, "close_fraction": 0.4},
         {"atr_multiple": 1.5, "trailing_mult_after": 0.75, "close_fraction": 0.8},
         {"atr_multiple": 2.0, "trailing_mult_after": 0.75, "close_fraction": 1.0},
     ],
+    "ranging_volatile": [
+        {"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.4},
+        {"atr_multiple": 2.0, "trailing_mult_after": 0.75, "close_fraction": 0.8},
+        {"atr_multiple": 3.0, "trailing_mult_after": 0.75, "close_fraction": 1.0},
+    ],
+    "ranging_directional": [
+        {"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.25},
+        {"atr_multiple": 2.0, "trailing_mult_after": 1.0, "close_fraction": 0.50},
+        {"atr_multiple": 3.0, "trailing_mult_after": 0.8, "close_fraction": 0.75},
+        {"atr_multiple": 4.5, "trailing_mult_after": 0.6, "close_fraction": 0.75},
+    ],
 }
+
+
+def ratchet_close_default_group(label: str) -> Optional[str]:
+    """Resolve a classifier label to a ratchet default-ladder group key (#1059).
+
+    Unlike the shared regime_close_default_group (which collapses every ranging*
+    → "ranging" for the B2 ATR-TP path), the ratchet ladder differentiates the
+    three composite ranging substates. Bare ADX "ranging" maps to the quiet
+    ladder (pre-#1059 behavior). clean/choppy and ADX-trend labels delegate
+    unchanged to regime_close_default_group. Mirrors ratchetCloseDefaultGroup in
+    scheduler/trailing_tp_ratchet.go."""
+    l = (label or "").strip()
+    if l in ("ranging_quiet", "ranging_volatile", "ranging_directional"):
+        return l
+    if l == "ranging":
+        return "ranging_quiet"
+    return regime_close_default_group(l)
 
 
 def _first_present(d: dict, *keys: str):
@@ -163,7 +203,7 @@ def resolve_tiers_for_regime(
         # ladder. #870: the regime variant resolves the per-quality-group ladder
         # for the stamped regime; the scalar variant uses the single #866 default.
         if regime_table:
-            group = regime_close_default_group(regime)
+            group = ratchet_close_default_group(regime)
             ladder = DEFAULT_RATCHET_TIERS_BY_GROUP.get(group) if group else None
             if not ladder:
                 return [], []

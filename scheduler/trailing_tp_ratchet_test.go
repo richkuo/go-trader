@@ -596,6 +596,17 @@ func TestTrailingRatchetTiersForRegime_OmittedReturnsDefault(t *testing.T) {
 		{"regime-ranging", "trailing_tp_ratchet_regime", "ranging_quiet", []trailingRatchetTier{
 			{ATRMultiple: 0.75, CloseFraction: 0.4, TrailingMultAfter: 1.0}, {ATRMultiple: 1.5, CloseFraction: 0.8, TrailingMultAfter: 0.75}, {ATRMultiple: 2.0, CloseFraction: 1.0, TrailingMultAfter: 0.75},
 		}},
+		// #1059: ranging substates resolve to distinct ladders.
+		{"regime-ranging-volatile", "trailing_tp_ratchet_regime", "ranging_volatile", []trailingRatchetTier{
+			{ATRMultiple: 1.0, CloseFraction: 0.4, TrailingMultAfter: 1.0}, {ATRMultiple: 2.0, CloseFraction: 0.8, TrailingMultAfter: 0.75}, {ATRMultiple: 3.0, CloseFraction: 1.0, TrailingMultAfter: 0.75},
+		}},
+		{"regime-ranging-directional", "trailing_tp_ratchet_regime", "ranging_directional", []trailingRatchetTier{
+			{ATRMultiple: 1.0, CloseFraction: 0.25, TrailingMultAfter: 1.0}, {ATRMultiple: 2.0, CloseFraction: 0.50, TrailingMultAfter: 1.0}, {ATRMultiple: 3.0, CloseFraction: 0.75, TrailingMultAfter: 0.8}, {ATRMultiple: 4.5, CloseFraction: 0.75, TrailingMultAfter: 0.6},
+		}},
+		// Bare ADX "ranging" still resolves to the quiet ladder (#1059).
+		{"regime-ranging-adx", "trailing_tp_ratchet_regime", "ranging", []trailingRatchetTier{
+			{ATRMultiple: 0.75, CloseFraction: 0.4, TrailingMultAfter: 1.0}, {ATRMultiple: 1.5, CloseFraction: 0.8, TrailingMultAfter: 0.75}, {ATRMultiple: 2.0, CloseFraction: 1.0, TrailingMultAfter: 0.75},
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -705,18 +716,72 @@ func TestValidateTrailingTPRatchetClose_ManualRegimeRatchet(t *testing.T) {
 	}
 }
 
-// TestDefaultTrailingRatchetTiersForRegime covers #870 per-group ratchet ladders.
+// TestDefaultTrailingRatchetTiersForRegime covers #870 per-group ratchet ladders
+// and the #1059 ranging-substate split.
 func TestDefaultTrailingRatchetTiersForRegime(t *testing.T) {
 	clean := defaultTrailingRatchetTiersForRegime("trending_up_clean")
 	if len(clean) != 3 || clean[0].ATRMultiple != 3.0 || clean[0].TrailingMultAfter != 1.5 || clean[2].ATRMultiple != 6.0 {
 		t.Fatalf("clean group mismatch: %+v", clean)
 	}
-	ranging := defaultTrailingRatchetTiersForRegime("ranging_volatile")
-	if len(ranging) != 3 || ranging[0].CloseFraction != 0.4 || ranging[2].CloseFraction != 1.0 {
-		t.Fatalf("ranging group mismatch: %+v", ranging)
+	// #1059: ranging_quiet keeps the pre-split geometry; bare ADX "ranging" maps
+	// to it too, so ADX behavior is unchanged.
+	quiet := defaultTrailingRatchetTiersForRegime("ranging_quiet")
+	if len(quiet) != 3 || quiet[0].ATRMultiple != 0.75 || quiet[0].CloseFraction != 0.4 || quiet[2].CloseFraction != 1.0 {
+		t.Fatalf("ranging_quiet mismatch: %+v", quiet)
+	}
+	adx := defaultTrailingRatchetTiersForRegime("ranging")
+	if len(adx) != 3 || adx[0].ATRMultiple != 0.75 || adx[2].CloseFraction != 1.0 {
+		t.Fatalf("bare ADX ranging must map to the quiet ladder: %+v", adx)
+	}
+	// #1059: ranging_volatile widens triggers, close fractions unchanged.
+	volatile := defaultTrailingRatchetTiersForRegime("ranging_volatile")
+	if len(volatile) != 3 ||
+		volatile[0].ATRMultiple != 1.0 || volatile[2].ATRMultiple != 3.0 ||
+		volatile[0].CloseFraction != 0.4 || volatile[2].CloseFraction != 1.0 {
+		t.Fatalf("ranging_volatile mismatch: %+v", volatile)
+	}
+	// #1059: ranging_directional rides further — 4 tiers, 25/50/75/75 with a
+	// let-ride final rung (no extra close, tighter trail).
+	dir := defaultTrailingRatchetTiersForRegime("ranging_directional")
+	if len(dir) != 4 {
+		t.Fatalf("ranging_directional want 4 tiers, got %+v", dir)
+	}
+	if dir[0].CloseFraction != 0.25 || dir[1].CloseFraction != 0.50 ||
+		dir[2].CloseFraction != 0.75 || dir[3].CloseFraction != 0.75 {
+		t.Fatalf("ranging_directional close fractions mismatch: %+v", dir)
+	}
+	if dir[3].ATRMultiple != 4.5 || dir[3].TrailingMultAfter != 0.6 {
+		t.Fatalf("ranging_directional let-ride rung mismatch: %+v", dir[3])
 	}
 	if defaultTrailingRatchetTiersForRegime("") != nil {
 		t.Error("empty regime must resolve to nil")
+	}
+}
+
+// TestRatchetCloseDefaultGroup covers #1059: the ratchet-only resolver
+// differentiates the composite ranging substates, while regimeCloseDefaultGroup
+// (the shared B2 ATR-TP fn) keeps collapsing them — verified in
+// TestRegimeCloseDefaultGroup.
+func TestRatchetCloseDefaultGroup(t *testing.T) {
+	cases := []struct {
+		label, group string
+		ok           bool
+	}{
+		{"ranging_quiet", "ranging_quiet", true},
+		{"ranging_volatile", "ranging_volatile", true},
+		{"ranging_directional", "ranging_directional", true},
+		{"ranging", "ranging_quiet", true}, // bare ADX → quiet ladder
+		{"trending_up_clean", "clean", true},
+		{"trending_up_choppy", "choppy", true},
+		{"trending_up", "choppy", true},
+		{"", "", false},
+		{"bogus", "", false},
+	}
+	for _, tc := range cases {
+		g, ok := ratchetCloseDefaultGroup(tc.label)
+		if ok != tc.ok || g != tc.group {
+			t.Errorf("ratchetCloseDefaultGroup(%q) = (%q, %v), want (%q, %v)", tc.label, g, ok, tc.group, tc.ok)
+		}
 	}
 }
 

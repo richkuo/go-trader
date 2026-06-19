@@ -168,3 +168,50 @@ def test_resolve_tiers_for_regime_group_defaults(ratchet):
     )
     assert errs == []
     assert [t[0] for t in scalar] == [2.0, 2.5, 3.0]
+
+
+def test_ratchet_close_default_group_differentiates_ranging_substates(ratchet):
+    # #1059: the ratchet-only resolver splits the composite ranging substates.
+    g = ratchet.ratchet_close_default_group
+    assert g("ranging_quiet") == "ranging_quiet"
+    assert g("ranging_volatile") == "ranging_volatile"
+    assert g("ranging_directional") == "ranging_directional"
+    # Bare ADX "ranging" (no substate signal) → quiet ladder (pre-#1059 behavior).
+    assert g("ranging") == "ranging_quiet"
+    # clean/choppy/trend labels delegate to the shared fn, unchanged.
+    assert g("trending_up_clean") == "clean"
+    assert g("trending_up") == "choppy"
+    assert g("") is None
+    assert g("bogus") is None
+    # The shared regime_close_default_group MUST still collapse the substates, or
+    # the B2 ATR-TP use_defaults path would miss its map and never-arm (#1059).
+    assert ratchet.regime_close_default_group("ranging_directional") == "ranging"
+    assert ratchet.regime_close_default_group("ranging_volatile") == "ranging"
+
+
+def test_resolve_tiers_for_regime_ranging_substates(ratchet):
+    # #1059 ranging_volatile: widened triggers, close fractions unchanged vs quiet.
+    volatile, errs = ratchet.resolve_tiers_for_regime(
+        {"use_defaults": True}, "ranging_volatile", regime_table=True,
+    )
+    assert errs == []
+    assert [t[0] for t in volatile] == [1.0, 2.0, 3.0]
+    assert [t[1] for t in volatile] == [0.4, 0.8, 1.0]
+
+    # #1059 ranging_directional: lighter early scale-out (25/50/75) + a 4th
+    # let-ride rung adding no close (cumulative stays 0.75) but tightening trail.
+    directional, errs = ratchet.resolve_tiers_for_regime(
+        {"use_defaults": True}, "ranging_directional", regime_table=True,
+    )
+    assert errs == []
+    assert [t[0] for t in directional] == [1.0, 2.0, 3.0, 4.5]
+    assert [t[1] for t in directional] == [0.25, 0.50, 0.75, 0.75]
+    assert [t[2] for t in directional] == [1.0, 1.0, 0.8, 0.6]  # trail non-increasing
+
+    # Bare ADX "ranging" still resolves to the quiet ladder (unchanged pre-#1059).
+    adx_ranging, errs = ratchet.resolve_tiers_for_regime(
+        {"use_defaults": True}, "ranging", regime_table=True,
+    )
+    assert errs == []
+    assert [t[0] for t in adx_ranging] == [0.75, 1.5, 2.0]
+    assert [t[1] for t in adx_ranging] == [0.4, 0.8, 1.0]

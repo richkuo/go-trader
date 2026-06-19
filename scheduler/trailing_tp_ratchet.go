@@ -61,12 +61,26 @@ func defaultTrailingRatchetTiers() []trailingRatchetTier {
 	}
 }
 
-// ratchetTierGroupDefaults is the per-quality-group default ratchet ladder for
-// the regime variant (#870 C2). Trend groups (clean/choppy) are pure
-// let-it-ride (close_fraction 0); ranging scales out as ranges mean-revert.
+// ratchetTierGroupDefaults is the per-group default ratchet ladder for the
+// regime variant (#870 C2). Trend groups (clean/choppy) are pure let-it-ride
+// (close_fraction 0); the ranging family scales out as ranges mean-revert.
+// #1059 split the single ranging ladder into three composite substate ladders
+// keyed by ratchetCloseDefaultGroup (NOT the shared regimeCloseDefaultGroup,
+// which still collapses ranging* → "ranging" for the B2 ATR-TP path):
+//   - ranging_quiet keeps the pre-#1059 ranging geometry and is also the target
+//     for bare ADX "ranging" (no substate signal), so ADX behavior is unchanged.
+//   - ranging_volatile widens the triggers (0.75→1.0, 1.5→2.0, 2.0→3.0) to stop
+//     scaling out on wide-range noise; close fractions are unchanged.
+//   - ranging_directional scales out lighter early (25/50/75 vs 40/80/100) and
+//     adds a 4th let-ride rung that only tightens the trail (no extra close) so
+//     the runner survives a nascent breakout instead of being fully scaled out.
+//
 // Each group's first-rung trail couples to that group's opening trail in
-// regimeATRDefaults.Trailing (clean 2.0 / choppy 2.0 / ranging 1.0). Mirrors
-// DEFAULT_RATCHET_TIERS_BY_GROUP in shared_strategies/close/trailing_tp_ratchet.py.
+// regimeATRDefaults.Trailing (clean 2.0 / choppy 2.0 / ranging family 1.0), so
+// every first rung is <= 1.0 for the ranging substates. The split values are
+// starting priors — validate via the #1058 7-state backtester (item 4) before
+// relying on the exact geometry. Mirrors DEFAULT_RATCHET_TIERS_BY_GROUP in
+// shared_strategies/close/trailing_tp_ratchet.py.
 var ratchetTierGroupDefaults = map[string][]trailingRatchetTier{
 	"clean": {
 		{ATRMultiple: 3.0, CloseFraction: 0, TrailingMultAfter: 1.5},
@@ -78,11 +92,43 @@ var ratchetTierGroupDefaults = map[string][]trailingRatchetTier{
 		{ATRMultiple: 2.5, CloseFraction: 0, TrailingMultAfter: 1.0},
 		{ATRMultiple: 3.0, CloseFraction: 0, TrailingMultAfter: 0.8},
 	},
-	"ranging": {
+	"ranging_quiet": {
 		{ATRMultiple: 0.75, CloseFraction: 0.4, TrailingMultAfter: 1.0},
 		{ATRMultiple: 1.5, CloseFraction: 0.8, TrailingMultAfter: 0.75},
 		{ATRMultiple: 2.0, CloseFraction: 1.0, TrailingMultAfter: 0.75},
 	},
+	"ranging_volatile": {
+		{ATRMultiple: 1.0, CloseFraction: 0.4, TrailingMultAfter: 1.0},
+		{ATRMultiple: 2.0, CloseFraction: 0.8, TrailingMultAfter: 0.75},
+		{ATRMultiple: 3.0, CloseFraction: 1.0, TrailingMultAfter: 0.75},
+	},
+	"ranging_directional": {
+		{ATRMultiple: 1.0, CloseFraction: 0.25, TrailingMultAfter: 1.0},
+		{ATRMultiple: 2.0, CloseFraction: 0.50, TrailingMultAfter: 1.0},
+		{ATRMultiple: 3.0, CloseFraction: 0.75, TrailingMultAfter: 0.8},
+		{ATRMultiple: 4.5, CloseFraction: 0.75, TrailingMultAfter: 0.6},
+	},
+}
+
+// ratchetCloseDefaultGroup resolves a classifier label to a ratchet default-
+// ladder group key (#1059). Unlike the shared regimeCloseDefaultGroup — which
+// collapses every ranging* → "ranging" for the B2 ATR-TP path — the ratchet
+// ladder differentiates the three composite ranging substates, so each gets its
+// own scale-out geometry. Bare ADX "ranging" (no substate signal) maps to the
+// quiet ladder, preserving pre-#1059 behavior. clean/choppy and ADX-trend
+// labels delegate unchanged to regimeCloseDefaultGroup. Routing the substates
+// back through the shared fn would make the B2 regimeTPTierGroupDefaults lookup
+// miss and silently emit no TP tiers (never-arm of an auto-protective exit) —
+// keep this resolver ratchet-only.
+func ratchetCloseDefaultGroup(label string) (string, bool) {
+	l := strings.TrimSpace(label)
+	switch l {
+	case "ranging_quiet", "ranging_volatile", "ranging_directional":
+		return l, true
+	case "ranging":
+		return "ranging_quiet", true
+	}
+	return regimeCloseDefaultGroup(l)
 }
 
 // defaultTrailingRatchetTiersForRegime resolves the per-group default ratchet
@@ -90,7 +136,7 @@ var ratchetTierGroupDefaults = map[string][]trailingRatchetTier{
 // trailing_tp_ratchet_regime). Returns nil for an empty/unknown label so the
 // caller emits only the SL until the position regime is stamped.
 func defaultTrailingRatchetTiersForRegime(regime string) []trailingRatchetTier {
-	group, ok := regimeCloseDefaultGroup(regime)
+	group, ok := ratchetCloseDefaultGroup(regime)
 	if !ok {
 		return nil
 	}
