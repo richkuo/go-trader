@@ -7,6 +7,7 @@ test_eval_windows / test_exit_diagnostics.
 
 import math
 
+import pandas as pd
 import pytest
 
 import exit_policy_ab as m
@@ -503,3 +504,141 @@ def test_gate_window_on_single_window_spec_naming_that_window_ok():
     spec = m._resolve_spec(_spec_args(["--regime-windows-json", _SINGLE_WINDOW,
                                        "--gate-window", "slow"]))
     assert list(spec["regime_cfg"]["windows_spec"].keys()) == ["slow"]
+
+
+# --------------------------------------------------------------------------
+# Unreplayable entry-shaper reject (#1066 re-review finding-1): a baseline
+# incumbent using invert_signal / regime_directional_policy / profile_allocation
+# cannot be replayed faithfully → refuse, never silently compare a phantom.
+# --------------------------------------------------------------------------
+
+def test_reject_invert_signal_incumbent():
+    # Must-survive (a): invert_signal=true → the run refuses (control would trade
+    # the opposite side from live).
+    with pytest.raises(SystemExit):
+        m._reject_unreplayable_entry_shapers({"invert_signal": True})
+
+
+def test_reject_regime_directional_policy_incumbent():
+    # Must-survive (b): a regime_directional_policy is flagged, not silently dropped.
+    with pytest.raises(SystemExit):
+        m._reject_unreplayable_entry_shapers(
+            {"regime_directional_policy": {"trending_up": "long"}})
+
+
+def test_reject_profile_allocation_incumbent():
+    with pytest.raises(SystemExit):
+        m._reject_unreplayable_entry_shapers(
+            {"profile_allocation": {"window": "long", "param_sets": {}}})
+
+
+def test_reject_names_all_offenders():
+    with pytest.raises(SystemExit) as ei:
+        m._reject_unreplayable_entry_shapers(
+            {"invert_signal": True,
+             "regime_directional_policy": {"x": "long"},
+             "profile_allocation": {"y": 1}})
+    msg = str(ei.value)
+    assert "invert_signal" in msg and "regime_directional_policy" in msg \
+        and "profile_allocation" in msg
+
+
+def test_no_reject_when_entry_shapers_absent_or_falsy():
+    # Must-survive (c): none set (or explicitly falsy/empty) → runs silently.
+    m._reject_unreplayable_entry_shapers({"open_strategy": {"name": "x"}})
+    m._reject_unreplayable_entry_shapers(
+        {"invert_signal": False, "regime_directional_policy": None,
+         "profile_allocation": {}})
+
+
+# --------------------------------------------------------------------------
+# Stop-class candidate stacking warning predicate (#1066 re-review finding-2).
+# --------------------------------------------------------------------------
+
+def test_stop_candidate_stacks_under_inherited_stop():
+    # Must-survive (a): atr_stop candidate + inherited scalar stop → stacks.
+    assert m._candidate_stacks_on_inherited_stop(
+        [{"name": "atr_stop", "params": {}}], "inherit", {"stop_loss_atr_mult": 1.5})
+    assert m._candidate_stacks_on_inherited_stop(
+        [{"name": "trailing_stop_atr_regime", "params": {}}], "inherit",
+        {"trailing_stop_atr_mult": 2.0})
+
+
+def test_tp_ladder_candidate_does_not_stack():
+    # Must-survive (b): a take-profit ladder is not a downside stop → no warning.
+    assert not m._candidate_stacks_on_inherited_stop(
+        [{"name": "tiered_tp_atr", "params": {}}], "inherit", {"stop_loss_atr_mult": 1.5})
+    assert not m._candidate_stacks_on_inherited_stop(
+        [{"name": "zscore_target", "params": {}}], "inherit", {"stop_loss_atr_mult": 1.5})
+
+
+def test_no_stack_warning_when_dropped_or_no_inherited_stop():
+    # Must-survive (c): drop mode → candidate stop measured alone → no warning.
+    assert not m._candidate_stacks_on_inherited_stop(
+        [{"name": "atr_stop", "params": {}}], "drop", {"stop_loss_atr_mult": 1.5})
+    # No inherited stop at all → nothing to stack under.
+    assert not m._candidate_stacks_on_inherited_stop(
+        [{"name": "atr_stop", "params": {}}], "inherit", {})
+    # Open-as-close candidate → no candidate stop.
+    assert not m._candidate_stacks_on_inherited_stop(None, "inherit", {"stop_loss_atr_mult": 1.5})
+
+
+# --------------------------------------------------------------------------
+# Per-entry replay alignment (#1066 re-review finding-3): positions/regime MUST be
+# derived from df_signals (the frame the backtester indexes), not the pre-
+# apply_strategy df — else a row-dropping strategy silently misaligns every replay.
+# --------------------------------------------------------------------------
+
+def test_replay_positions_anchored_on_df_signals_not_df(monkeypatch):
+    import data_fetcher
+
+    # df has 10 bars; the open strategy "drops" the first 2 warmup bars, so
+    # df_signals has 8 bars on a SHIFTED positional index. The control entry is
+    # bar T5 — position 5 in df, position 3 in df_signals.
+    idx = pd.date_range("2025-01-01", periods=10, freq="h")
+    df = pd.DataFrame({"close": range(10)}, index=idx)
+    df_signals = df.iloc[2:].copy()
+    df_signals["signal"] = 0
+    entry_ts = str(df.index[5])  # == str(df_signals.index[3])
+
+    captured = {}
+
+    def fake_prepare(reg, open_name, params, _df):
+        return df_signals
+
+    def fake_regime_series(frame, regime_cfg):
+        captured["regime_frame_len"] = len(frame)
+        return ["r"] * len(frame)
+
+    def fake_run_free_arm(reg, open_name, params, sig, close_refs, direction,
+                          capital, gate, symbol, timeframe, stops=None):
+        return {"total_trades": 1, "total_return_pct": 0.0, "max_drawdown_pct": 0.0,
+                "sharpe_ratio": 0.0, "liquidated": False,
+                "trades": [_leg(entry_date=entry_ts, side="long")]}
+
+    def fake_replay(reg, open_name, params, sig, sig_pos, side_sign, candidate_close,
+                    direction, capital, gate, symbol, timeframe, stops=None):
+        captured["sig_pos"] = sig_pos
+        return {"net_pct": 1.0, "mfe_pct": 1.0, "mae_pct": -1.0, "bars_held": 2}
+
+    monkeypatch.setattr(data_fetcher, "load_cached_data", lambda *a, **k: df)
+    monkeypatch.setattr(m, "_prepare_signals", fake_prepare)
+    monkeypatch.setattr(m, "_regime_label_series", fake_regime_series)
+    monkeypatch.setattr(m, "run_free_arm", fake_run_free_arm)
+    monkeypatch.setattr(m, "replay_candidate_for_entry", fake_replay)
+
+    spec = {
+        "open_name": "test_open", "params": None, "direction": "long",
+        "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
+        "candidate_close": [{"name": "atr_stop", "params": {}}],
+        "control_stops": {}, "candidate_stops": {}, "replayable": True,
+        "gate": {"allowed_regimes": None}, "regime_cfg": {"classifier": "adx"},
+        "capital": 10000.0, "n_resamples": 50, "ci": 0.95, "seed": 1,
+    }
+    res = m.evaluate_dataset_window(object(), spec, "BTC/USDT", "1h",
+                                    ("2025-01-01", None))
+    # The forced entry must land at df_signals position 3 − 1 = 2; the df-based
+    # bug would have produced 5 − 1 = 4.
+    assert captured["sig_pos"] == 2
+    assert captured["regime_frame_len"] == 8  # df_signals, not df (10)
+    assert res is not None and res["paired_diag"]["paired"] == 1

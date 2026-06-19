@@ -57,10 +57,12 @@ of plain dicts), unit-tested without data access — same architecture as
 ``eval_windows.py`` so M6 sees byte-identical data to the rest of the suite.
 
 Usage:
-  # Candidate exit vs the strategy's live incumbent close (from a v15 config):
+  # Replace the strategy's whole live exit with a candidate stop (--candidate-stops
+  # drop so the atr_stop is measured alone, NOT stacked under the incumbent's stop):
   uv run --no-sync python backtest/exit_policy_ab.py \\
       --baseline-config /var/lib/go-trader/config.json --strategy hl-btc-ranging \\
-      --candidate-close '[{"name":"atr_stop","params":{"atr_mult":2.5}}]'
+      --candidate-close '[{"name":"atr_stop","params":{"atr_mult":2.5}}]' \\
+      --candidate-stops drop
 
   # Candidate vs an explicit named control exit, gated to one regime substate:
   uv run --no-sync python backtest/exit_policy_ab.py --strategy squeeze_momentum \\
@@ -672,8 +674,15 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
         df = _attach_funding_if_needed(df, spec["open_name"], symbol, start)
 
     df_signals = _prepare_signals(reg, spec["open_name"], spec.get("params"), df)
-    regime_series = _regime_label_series(df, spec["regime_cfg"])
-    pos_by_date = {str(ts): i for i, ts in enumerate(df.index)}
+    # Positions and attribution labels MUST be derived from df_signals — the exact
+    # frame the backtester indexes (run_free_arm/replay both run on df_signals) — not
+    # the pre-apply_strategy df. They share an index today, but a future open
+    # strategy that drops warmup rows or reindexes would silently misalign every
+    # forced-entry replay (one.iloc[sig_pos] lands on the wrong bar) and the regime
+    # bucket of every paired delta. Anchoring on df_signals makes the gate ≡
+    # attribution ≡ replay-injection coupling explicit instead of accidental.
+    regime_series = _regime_label_series(df_signals, spec["regime_cfg"])
+    pos_by_date = {str(ts): i for i, ts in enumerate(df_signals.index)}
 
     # Free-running arms (realistic, own re-entry schedule each). The control arm
     # carries the incumbent's strategy-level stops (full live exit fidelity); the
@@ -764,6 +773,41 @@ def _stops_from_kwargs(kwargs: dict) -> dict:
     return {k: kwargs.get(k) for k in STOP_FIELD_KEYS if kwargs.get(k) is not None}
 
 
+# Live entry-shaping fields that M6's entry-locked replay cannot reproduce
+# faithfully: invert_signal flips the traded side (BUY↔SELL), regime_directional_policy
+# mutates the entry direction per regime, and profile_allocation swaps the open
+# params per profile (a different signal series altogether). When a baseline config's
+# incumbent sets any of these, the control arm would NOT match the live incumbent's
+# entries — so M6 refuses rather than A/B a phantom incumbent (matching
+# load_strategy_config's own loud-reject convention for un-modellable fields).
+_UNREPLAYABLE_ENTRY_SHAPERS = (
+    "invert_signal",
+    "regime_directional_policy",
+    "profile_allocation",
+)
+
+
+def _reject_unreplayable_entry_shapers(kwargs: dict) -> None:
+    """Raise if a baseline-resolved incumbent uses an entry-shaper M6 can't replay.
+
+    Operates on a ``load_strategy_config`` result. Truthy detection handles both the
+    bool (``invert_signal``) and the dict (``regime_directional_policy`` /
+    ``profile_allocation``) forms; absent/None/empty → no offence.
+    """
+    offenders = [k for k in _UNREPLAYABLE_ENTRY_SHAPERS if kwargs.get(k)]
+    if offenders:
+        raise SystemExit(
+            f"--baseline-config strategy uses live entry-shaping field(s) {offenders} "
+            f"that M6's entry-locked replay cannot reproduce faithfully "
+            f"(invert_signal flips the traded side, regime_directional_policy mutates "
+            f"the entry direction per regime, profile_allocation swaps open params per "
+            f"profile) — the control arm would silently NOT trade the live incumbent's "
+            f"entries, so the A/B would compare against a phantom incumbent. M6 refuses "
+            f"rather than mislead. To A/B this strategy's EXIT, drive the open side "
+            f"explicitly instead of resolving it from the config: --incumbent-close "
+            f"'<live close json>' --direction <long|short> (drop --baseline-config).")
+
+
 def _candidate_stops(mode: str, incumbent_stops: dict) -> dict:
     """Resolve the candidate arm's stop fields from the --candidate-stops mode.
 
@@ -778,6 +822,35 @@ def _candidate_stops(mode: str, incumbent_stops: dict) -> dict:
     return dict(incumbent_stops or {})
 
 
+# Candidate close evaluators that ARE protective price stops — under
+# ``--candidate-stops inherit`` they stack under the incumbent's own stop and the
+# effective exit becomes the tighter of the two, so the A/B reflects mostly the
+# inherited stop, not the candidate in isolation. Take-profit ladders
+# (``tiered_tp_atr``) and mean-reversion targets (``zscore_target``) don't
+# min()-stack on the downside, so they're excluded (no spurious warning).
+_STOP_CLASS_CANDIDATE_NAMES = {
+    "atr_stop",
+    "stop_loss_atr_mult",
+    "trailing_stop_atr_mult",
+    "trailing_stop_atr_regime",
+}
+
+
+def _candidate_stacks_on_inherited_stop(candidate_close: Optional[Sequence[dict]],
+                                        mode: str, incumbent_stops: dict) -> bool:
+    """True iff a stop-class candidate would stack under an inherited incumbent stop.
+
+    Only fires under ``inherit`` mode WITH a non-empty incumbent stop AND a
+    stop-class candidate — the exact combination where the candidate's protective
+    stop is masked by the tighter inherited one. ``drop`` mode, no inherited stop,
+    or a non-stop candidate (TP ladder) → False.
+    """
+    if mode != "inherit" or not incumbent_stops or not candidate_close:
+        return False
+    return any(isinstance(r, dict) and r.get("name") in _STOP_CLASS_CANDIDATE_NAMES
+               for r in candidate_close)
+
+
 def resolve_from_baseline(config_path: str, strategy_id: str) -> dict:
     """Resolve open + incumbent close + stops from a live config (v15-gated, #951).
 
@@ -785,12 +858,14 @@ def resolve_from_baseline(config_path: str, strategy_id: str) -> dict:
     regime_section}. ``stops`` is the incumbent's strategy-level stop/trailing exit
     surface (``STOP_FIELD_KEYS``) so the control arm replays the COMPLETE live exit
     policy, not just the close evaluator. Fails loud (the load_strategy_config
-    guards) on pre-v15, missing strategy, or backtester-incompatible close — never a
-    silent fallback.
+    guards) on pre-v15, missing strategy, or backtester-incompatible close — and on
+    an incumbent using an entry-shaper M6 can't replay (``invert_signal`` /
+    ``regime_directional_policy`` / ``profile_allocation``) — never a silent fallback.
     """
     from run_backtest import load_strategy_config
     import json as _json
     kwargs = load_strategy_config(config_path, strategy_id)
+    _reject_unreplayable_entry_shapers(kwargs)
     open_ref = kwargs.get("open_strategy") or {}
     with open(config_path) as fh:
         cfg = _json.load(fh)
@@ -1045,6 +1120,14 @@ def _resolve_spec(args) -> dict:
     direction = direction or "long"
 
     candidate_stops = _candidate_stops(args.candidate_stops, incumbent_stops)
+    if _candidate_stacks_on_inherited_stop(candidate_close, args.candidate_stops,
+                                           incumbent_stops):
+        print("[WARN] the candidate is a protective stop AND --candidate-stops inherit "
+              "(default) keeps the incumbent's stop, so the candidate stacks under it "
+              "— the effective exit is the TIGHTER of the two and the A/B reflects "
+              "mostly the inherited stop, not the candidate in isolation. Pass "
+              "--candidate-stops drop to measure the candidate stop alone.",
+              file=sys.stderr)
 
     regime_cfg = resolve_regime_cfg(args, regime_section)
     # #1066 finding-2: the backtester's entry gate has no gate-window parameter —
