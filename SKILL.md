@@ -600,6 +600,8 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    ./go-trader manual-open <strategy-id> --limit-price N [--tif Alo|Gtc] [--expire-after N]
    ./go-trader manual-cancel <limit-order-id>
    ./go-trader manual-close <strategy-id> [--qty N]
+   ./go-trader manual-update-sl <strategy-id> --trigger N [--symbol Y] [--dry-run]
+   ./go-trader manual-cancel-sl <strategy-id> [--symbol Y] [--dry-run]
    ./go-trader backfill hl-fees [--strategy <id>|--all] [--apply] [--reset-cash]
    ./go-trader backfill trade-ledger [--strategy <id>|--all] [--apply] [--reset-cash]
    ./go-trader inspect <strategy-id> [--all] [--json]
@@ -643,6 +645,10 @@ CLI:
 ./go-trader manual-add hl-manual-btc --margin 50
 ./go-trader manual-add hl-manual-btc --size 0.01 --record-only --fill-price 68100
 
+# Edit the stop-loss in place (#1050) — cancel-then-place / remove on-chain, scheduler adopts next cycle
+./go-trader manual-update-sl hl-manual-btc --trigger 66000   # ratchet the SL trigger
+./go-trader manual-cancel-sl hl-manual-btc                   # remove the resting SL
+
 # Close — full or partial
 ./go-trader manual-close hl-manual-btc            # full close
 ./go-trader manual-close hl-manual-btc --qty 0.005
@@ -662,6 +668,7 @@ Notes:
 - Open blocked when portfolio kill switch active or strategy has pending CB close.
 - Fills queued in `pending_manual_actions`, applied at top of next scheduler cycle (need `--once` if daemon idle). If the queue insert fails after a successful on-chain fill, the position is auto-flattened and SL/TP cancelled (#635); cleanup failures notify loudly — flatten manually.
 - A 99% partial close is **not** silently collapsed into a full close — the queue carries explicit `is_full_close` intent from `--qty`.
+- `manual-update-sl` / `manual-cancel-sl` (#1050) edit the resting stop-loss in place: they cancel-then-place (update) or cancel (remove) the on-chain SL, then queue an `update-sl`/`cancel-sl` action the daemon drains into memory — **no direct `state.db` write, no restart**. They are **hard-rejected** when the strategy's automated protection (ATR/regime `stop_loss_atr_mult`, trailing close) would re-pin the edit on the next cycle — only strategies opted out of auto-SL (`stop_loss_atr_mult: 0`, no trailing) qualify; the error names the opt-out. `update-sl` also refuses a trigger that would fill immediately against the current mark. Same kill-switch / pending-CB guards as `manual-open`; SL edits record no trade (no Discord trade DM).
 - External closes (UI, SL, TP) detected by reconciler and cleared automatically (#576) — no ghosts.
 - `type=manual` exempt from CB drawdown checks (#574).
 

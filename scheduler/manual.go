@@ -827,9 +827,14 @@ func drainPendingManualActions(state *AppState, cfg *Config, stateDB *StateDB) [
 		if a.ID > maxDrained {
 			maxDrained = a.ID
 		}
-		// applyManualAction appends exactly one trade per successful apply (open
-		// via recordPositionOpen, close via RecordTrade); aggregate per strategy
-		// so sendTradeAlerts alerts the correct tail slice of TradeHistory.
+		// Trade-recording actions (open via recordPositionOpen, close/add via
+		// RecordTrade) append exactly one trade per successful apply; aggregate
+		// per strategy so sendTradeAlerts alerts the correct tail slice of
+		// TradeHistory. SL-only actions (#1050 update-sl/cancel-sl) record no
+		// trade — skip alert bookkeeping so the tail slice isn't misaligned.
+		if !manualActionRecordsTrade(a.Action) {
+			continue
+		}
 		ma := applied[a.StrategyID]
 		if ma == nil {
 			ma = &manualAlert{sc: scByID[a.StrategyID], ss: state.Strategies[a.StrategyID]}
@@ -1009,6 +1014,39 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 		ss.Cash -= a.FillFee
 		fmt.Printf("[manual] applied scale-in: %s +%.6f %s @ $%.4f (new qty %.6f, avg $%.4f)\n",
 			a.StrategyID, a.Quantity, a.Symbol, a.FillPrice, pos.Quantity, pos.AvgCost)
+
+	case "update-sl":
+		// #1050: adopt a manually-moved stop-loss. The CLI already cancelled the
+		// old OID and placed the new trigger on-chain; this only syncs the
+		// in-memory OID + trigger so the daemon tracks the live order. No trade
+		// is recorded (an SL move is not a fill).
+		pos, exists := ss.Positions[a.Symbol]
+		if !exists || pos == nil {
+			return fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
+		}
+		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
+			return fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
+		}
+		pos.StopLossOID = a.StopLossOID
+		pos.StopLossTriggerPx = a.StopLossTriggerPx
+		fmt.Printf("[manual] applied update-sl: %s %s stop-loss -> $%.4f (OID=%d)\n",
+			a.StrategyID, a.Symbol, a.StopLossTriggerPx, a.StopLossOID)
+
+	case "cancel-sl":
+		// #1050: adopt a manually-cancelled stop-loss. The CLI already cancelled
+		// the OID on-chain; clear the in-memory trigger so the daemon no longer
+		// believes the position is protected. No trade is recorded.
+		pos, exists := ss.Positions[a.Symbol]
+		if !exists || pos == nil {
+			return fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
+		}
+		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
+			return fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
+		}
+		pos.StopLossOID = 0
+		pos.StopLossTriggerPx = 0
+		fmt.Printf("[manual] applied cancel-sl: %s %s (stop-loss removed)\n",
+			a.StrategyID, a.Symbol)
 
 	default:
 		return fmt.Errorf("unknown action %q", a.Action)
