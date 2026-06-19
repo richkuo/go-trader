@@ -153,6 +153,14 @@ func TestReadStateDBReadOnly(t *testing.T) {
 	if _, err := sdb.db.Exec(`INSERT INTO app_state (id, cycle_count) VALUES (1, 42) ON CONFLICT(id) DO UPDATE SET cycle_count=42`); err != nil {
 		t.Fatalf("seed app_state: %v", err)
 	}
+	// Seed an open option position to confirm that class is included in the
+	// snapshot (an options account must not read as zero exposure).
+	if _, err := sdb.db.Exec(`INSERT INTO strategies (id, type, platform) VALUES ('opt1','options','deribit')`); err != nil {
+		t.Fatalf("seed option strategy: %v", err)
+	}
+	if _, err := sdb.db.Exec(`INSERT INTO option_positions (strategy_id, id, underlying, option_type, strike, expiry, action, quantity) VALUES ('opt1','o-1','BTC','call',70000,'2026-12-25','buy',2)`); err != nil {
+		t.Fatalf("seed option position: %v", err)
+	}
 	sdb.Close()
 
 	tables, live := readStateDBReadOnly(dbPath, 8099)
@@ -164,6 +172,9 @@ func TestReadStateDBReadOnly(t *testing.T) {
 	}
 	if len(live.OpenPositions) != 1 || live.OpenPositions[0].Symbol != "ETH" || live.OpenPositions[0].Quantity != 1.5 {
 		t.Errorf("open positions snapshot wrong: %+v", live.OpenPositions)
+	}
+	if len(live.OpenOptionPositions) != 1 || live.OpenOptionPositions[0].Underlying != "BTC" || live.OpenOptionPositions[0].Quantity != 2 {
+		t.Errorf("open option positions snapshot wrong: %+v", live.OpenOptionPositions)
 	}
 	if !strings.Contains(live.Note, "8099") {
 		t.Errorf("live note should point at status port: %q", live.Note)

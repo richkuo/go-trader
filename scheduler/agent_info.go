@@ -135,15 +135,27 @@ type agentOpenPosition struct {
 	Regime     string  `json:"regime"`
 }
 
+// agentOpenOptionPosition is a read-only snapshot of one open option row.
+type agentOpenOptionPosition struct {
+	StrategyID string  `json:"strategy_id"`
+	Underlying string  `json:"underlying"`
+	OptionType string  `json:"option_type"`
+	Strike     float64 `json:"strike"`
+	Expiry     string  `json:"expiry"`
+	Action     string  `json:"action"`
+	Quantity   float64 `json:"quantity"`
+}
+
 // agentLiveState is the DB-snapshot view of runtime state. NOT authoritative —
 // the running daemon holds in-memory state; agents wanting live truth should
 // hit the status API on the port named in Note.
 type agentLiveState struct {
-	Source        string              `json:"source"`
-	Note          string              `json:"note"`
-	DBPresent     bool                `json:"db_present"`
-	CycleCount    int64               `json:"cycle_count"`
-	OpenPositions []agentOpenPosition `json:"open_positions"`
+	Source              string                    `json:"source"`
+	Note                string                    `json:"note"`
+	DBPresent           bool                      `json:"db_present"`
+	CycleCount          int64                     `json:"cycle_count"`
+	OpenPositions       []agentOpenPosition       `json:"open_positions"`
+	OpenOptionPositions []agentOpenOptionPosition `json:"open_option_positions"`
 }
 
 // agentStrategyInfo summarizes a strategy's decision modules.
@@ -373,9 +385,18 @@ func readStateDBReadOnly(path string, statusPort int) ([]agentTable, agentLiveSt
 		live.Note = fmt.Sprintf("state DB %s present but open-position read failed (%v) — do not trust this snapshot; query the status API on port %d. %s", path, err, statusPort, live.Note)
 		return tables, live
 	}
+	// option_positions is a separate class; omitting it would read as zero
+	// exposure for an options account. Same fail-closed contract as above.
+	optionPositions, err := readOpenOptionPositions(db)
+	if err != nil {
+		live.DBPresent = false
+		live.Note = fmt.Sprintf("state DB %s present but option-position read failed (%v) — do not trust this snapshot; query the status API on port %d. %s", path, err, statusPort, live.Note)
+		return tables, live
+	}
 	live.DBPresent = true
 	live.CycleCount = readCycleCount(db)
 	live.OpenPositions = positions
+	live.OpenOptionPositions = optionPositions
 	return tables, live
 }
 
@@ -462,6 +483,25 @@ func readOpenPositions(db *sql.DB) ([]agentOpenPosition, error) {
 	return out, rows.Err()
 }
 
+func readOpenOptionPositions(db *sql.DB) ([]agentOpenOptionPosition, error) {
+	rows, err := db.Query(`SELECT strategy_id, underlying, option_type, strike, expiry, action, quantity FROM option_positions ORDER BY strategy_id, underlying, expiry`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []agentOpenOptionPosition
+	for rows.Next() {
+		var p agentOpenOptionPosition
+		if err := rows.Scan(&p.StrategyID, &p.Underlying, &p.OptionType, &p.Strike, &p.Expiry, &p.Action, &p.Quantity); err != nil {
+			// Same fail-closed contract as readOpenPositions: never return a
+			// silently truncated slice that reads as a complete snapshot.
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // renderAgentInfoMarkdown renders the report as agent-readable markdown.
 func renderAgentInfoMarkdown(info agentInfo) string {
 	var b strings.Builder
@@ -514,7 +554,8 @@ func renderAgentInfoMarkdown(info agentInfo) string {
 	b.WriteString("\n## Live state (DB snapshot)\n\n")
 	fmt.Fprintf(&b, "%s\n\n", info.LiveState.Note)
 	if info.LiveState.DBPresent {
-		fmt.Fprintf(&b, "Cycle count: %d  ·  Open positions: %d\n", info.LiveState.CycleCount, len(info.LiveState.OpenPositions))
+		fmt.Fprintf(&b, "Cycle count: %d  ·  Open positions: %d (perps/spot/futures) + %d option legs\n",
+			info.LiveState.CycleCount, len(info.LiveState.OpenPositions), len(info.LiveState.OpenOptionPositions))
 	}
 
 	return b.String()
