@@ -23,19 +23,38 @@ func manualActionRecordsTrade(action string) bool {
 
 // manualSLAutoManaged reports whether sc's automated protection would re-pin or
 // re-arm a manually-edited stop-loss on the next scheduler cycle, making a
-// manual SL edit ineffective (#1050). It is true when an ATR/regime stop-loss
-// is armed (buildHyperliquidProtectionPlan yields a positive SL multiple) or a
-// trailing stop manages the SL. Returns a human-readable reason when true.
+// manual SL edit ineffective (#1050). Returns a human-readable reason when true.
 //
 // A manual SL edit is only coherent on a strategy that has opted out of
-// auto-protection (e.g. stop_loss_atr_mult: 0, no trailing close) — otherwise
-// the per-cycle protection sync overwrites the operator's trigger.
+// auto-protection (e.g. stop_loss_atr_mult: 0, no trailing/regime close) —
+// otherwise the per-cycle protection sync overwrites the operator's trigger.
+//
+// The check has two layers. First a resolved-value pass catches the scalar
+// stop_loss_atr_mult and any regime SL/trailing that already resolves to a
+// positive multiplier at command time. Second a configuration-presence pass
+// catches regime-resolved SL owners (#733 stop_loss_atr_regime /
+// trailing_stop_atr_regime, #841 unified regime close) whose label is
+// transiently the #879 fail-open "-" at command time: those resolve to a zero
+// multiplier in the first pass and would otherwise slip through, yet a later
+// regime resolution plus a force-SL-replace cycle re-pins the trigger. Because
+// this is an auto-protective path, judge those by configuration presence, not
+// by the multiplier the label happens to resolve to at the instant the command
+// runs.
 func manualSLAutoManaged(sc StrategyConfig, pos *Position) (bool, string) {
 	if plan, ok := buildHyperliquidProtectionPlan(sc, pos); ok && plan.StopLossATRMult > 0 {
 		return true, fmt.Sprintf("an ATR stop-loss is armed (effective stop_loss_atr_mult=%g)", plan.StopLossATRMult)
 	}
 	if effectiveTrailingStopPct(sc, pos) > 0 {
 		return true, "a trailing stop manages the stop-loss"
+	}
+	if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
+		return true, "a regime-aware stop-loss (stop_loss_atr_regime) manages the stop-loss"
+	}
+	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
+		return true, "a regime-aware trailing stop (trailing_stop_atr_regime) manages the stop-loss"
+	}
+	if strategyUsesUnifiedRegimeClose(sc) {
+		return true, "a unified regime close owns the stop-loss"
 	}
 	return false, ""
 }

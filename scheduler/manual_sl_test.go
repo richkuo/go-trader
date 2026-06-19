@@ -22,6 +22,15 @@ func TestManualSLAutoManaged(t *testing.T) {
 	}
 	slMult := 1.5
 	trailMult := 2.0
+	regimeBlock := func() *RegimeATRBlock {
+		return &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
+			"trending": {ATR: 2.0},
+			"ranging":  {ATR: 1.0},
+		}}
+	}
+	regimePos := func(label string) *Position {
+		return &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, EntryATR: 50, Side: "long", Regime: label}
+	}
 
 	cases := []struct {
 		name       string
@@ -58,6 +67,28 @@ func TestManualSLAutoManaged(t *testing.T) {
 				Side:     "long",
 			},
 			wantManage: false,
+		},
+		{
+			// #1052 review: a regime SL whose label is transiently the #879
+			// fail-open "-" resolves to a zero multiplier in the value pass, so
+			// the config-presence pass must still reject it — a later resolution
+			// + force-SL-replace cycle would re-pin the operator's trigger.
+			name:       "regime stop-loss with unresolved label rejected by config presence",
+			sc:         StrategyConfig{ID: "x", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", StopLossATRRegime: regimeBlock()},
+			pos:        regimePos("-"),
+			wantManage: true,
+		},
+		{
+			name:       "regime stop-loss with resolved label still rejected (no regression)",
+			sc:         StrategyConfig{ID: "x", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", StopLossATRRegime: regimeBlock()},
+			pos:        regimePos("trending"),
+			wantManage: true,
+		},
+		{
+			name:       "regime trailing stop with unresolved label rejected by config presence",
+			sc:         StrategyConfig{ID: "x", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", TrailingStopATRRegime: regimeBlock()},
+			pos:        regimePos("-"),
+			wantManage: true,
 		},
 	}
 	for _, tc := range cases {
