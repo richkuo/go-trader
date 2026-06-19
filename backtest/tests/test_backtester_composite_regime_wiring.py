@@ -486,3 +486,109 @@ def test_cli_composite_label_rejected_without_spec(monkeypatch):
             "--regime-enabled",
             "--allowed-regimes", "ranging_quiet",
         ])
+
+
+# ─── --config path enforces the SAME vocabulary check (#1058 review 2) ────────
+# The backtester reads config JSON directly and never runs the Go
+# validateStrategyRegimeVocabulary, so the --config path must validate the
+# config-threaded (allowed_regimes, regime_windows_spec) pair itself — else a
+# hand-edited config silently blocks every entry (0-trade run).
+
+
+def _config_with_regime(tmp_path, *, classifier, allowed_regimes=None):
+    strat = {
+        "id": "hl-temacb-btc", "type": "perps", "platform": "hyperliquid",
+        # sma_crossover (a registry strategy) so the accept-path tests reach the
+        # Backtester; the open name is irrelevant to the vocabulary check itself.
+        "open_strategy": {"name": "sma_crossover"},
+        "close_strategy": {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+            {"atr_multiple": 2.0, "close_fraction": 1.0}]}},
+    }
+    if allowed_regimes is not None:
+        strat["allowed_regimes"] = allowed_regimes
+    return _write_config(tmp_path, {
+        "config_version": 15,
+        "regime": {
+            "enabled": True, "period": 14, "adx_threshold": 20.0,
+            "windows": {"medium": {"classifier": classifier, "period": 30}},
+        },
+        "strategies": [strat],
+    })
+
+
+def test_config_rejects_adx_label_under_composite_primary(monkeypatch, tmp_path):
+    # Must-survive (a): composite primary window + config allowed_regimes holding
+    # a bare ADX label → reject, not a silent 0-trade run.
+    cfg = _config_with_regime(tmp_path, classifier="composite", allowed_regimes=["ranging"])
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch, [
+            "--mode", "single", "--strategy", "hl-temacb-btc", "--config", cfg,
+        ])
+
+
+def test_config_rejects_composite_label_under_adx_primary(monkeypatch, tmp_path):
+    # Must-survive (b): inverse — ADX primary + config allowed_regimes holding a
+    # composite substate → reject.
+    cfg = _config_with_regime(tmp_path, classifier="adx", allowed_regimes=["ranging_quiet"])
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch, [
+            "--mode", "single", "--strategy", "hl-temacb-btc", "--config", cfg,
+        ])
+
+
+def _spy_backtester_seen(monkeypatch, df):
+    seen = {}
+
+    class SpyBacktester:
+        def __init__(self, *args, regime_windows_spec=None, allowed_regimes=None, **kwargs):
+            seen["regime_windows_spec"] = regime_windows_spec
+            seen["allowed_regimes"] = allowed_regimes
+
+        def run(self, df, **kwargs):
+            return {
+                "strategy_name": "tema_cross_bd", "symbol": "BTC/USDT",
+                "timeframe": "1d", "start_date": str(df.index[0]),
+                "end_date": str(df.index[-1]), "initial_capital": 1000.0,
+                "final_capital": 1000.0, "total_return_pct": 0.0,
+                "annual_return_pct": 0.0, "sharpe_ratio": 0.0,
+                "sortino_ratio": 0.0, "max_drawdown_pct": 0.0,
+                "calmar_ratio": 0.0, "volatility_pct": 0.0, "win_rate": 0.0,
+                "profit_factor": 0.0, "total_trades": 0, "avg_win_pct": 0.0,
+                "avg_loss_pct": 0.0, "trades": [], "params": {},
+            }
+
+    monkeypatch.setattr(run_backtest, "Backtester", SpyBacktester)
+    monkeypatch.setattr(run_backtest, "load_cached_data", lambda *a, **kw: df)
+    return seen
+
+
+def test_config_matching_composite_label_runs(monkeypatch, tmp_path):
+    # Composite primary + matching composite label → no false rejection; threads.
+    df = pd.DataFrame(
+        {"open": [100.0] * 60, "high": [101.0] * 60, "low": [99.0] * 60,
+         "close": [100.0] * 60, "volume": [1000.0] * 60},
+        index=pd.date_range("2024-01-01", periods=60, freq="D"),
+    )
+    seen = _spy_backtester_seen(monkeypatch, df)
+    cfg = _config_with_regime(tmp_path, classifier="composite", allowed_regimes=["ranging_quiet"])
+    _run_main(monkeypatch, [
+        "--mode", "single", "--strategy", "hl-temacb-btc", "--config", cfg,
+    ])
+    assert seen["allowed_regimes"] == ["ranging_quiet"]
+    assert seen["regime_windows_spec"]["medium"]["classifier"] == "composite"
+
+
+def test_config_absent_allowed_regimes_runs(monkeypatch, tmp_path):
+    # Must-survive (c): empty/absent allowed_regimes must NOT be falsely rejected.
+    df = pd.DataFrame(
+        {"open": [100.0] * 60, "high": [101.0] * 60, "low": [99.0] * 60,
+         "close": [100.0] * 60, "volume": [1000.0] * 60},
+        index=pd.date_range("2024-01-01", periods=60, freq="D"),
+    )
+    seen = _spy_backtester_seen(monkeypatch, df)
+    cfg = _config_with_regime(tmp_path, classifier="composite", allowed_regimes=None)
+    _run_main(monkeypatch, [
+        "--mode", "single", "--strategy", "hl-temacb-btc", "--config", cfg,
+    ])
+    assert seen["allowed_regimes"] is None
+    assert seen["regime_windows_spec"]["medium"]["classifier"] == "composite"

@@ -1134,6 +1134,14 @@ def main():
         args.allowed_regimes = live_kwargs.get(
             "allowed_regimes", args.allowed_regimes,
         )
+        # #1058 review: the backtester reads the config JSON directly and never
+        # runs the Go validateStrategyRegimeVocabulary, so a hand-edited / never-
+        # daemon-loaded config that switches the primary window to composite but
+        # leaves allowed_regimes as bare ADX labels would silently block every
+        # entry (0-trade run) — the same failure the by-name guard above rejects.
+        # Validate the config-threaded pair against its own primary classifier.
+        _validate_allowed_regimes_vocabulary(
+            args.allowed_regimes, live_kwargs.get("regime_windows_spec"))
 
     # CLI ATR-stop flags apply in single mode too; --config refs win on collision.
     if args.stop_loss_atr_mult is not None:
