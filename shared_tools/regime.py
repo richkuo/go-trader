@@ -327,6 +327,40 @@ def compute_regime_composite(
     return result
 
 
+def composite_feature_matrix(
+    df: pd.DataFrame,
+    period: int,
+    thresholds: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Per-bar composite feature tuple (return_eff, range_eff, efficiency, adx).
+
+    Additive, offline-only (#1065 PR1). Mirrors compute_regime_composite's loop
+    but emits the features map_composite_label consumes instead of the label, so
+    an offline model fits on byte-consistent inputs. Warmup (i < period) and
+    atr<=0 bars are NaN.
+    """
+    th = {**_DEFAULT_COMPOSITE_THRESHOLDS, **(thresholds or {})}
+    cols = ["return_eff", "range_eff", "efficiency", "adx"]
+    out = pd.DataFrame(float("nan"), index=df.index, columns=cols)
+    n = len(df)
+    if n == 0:
+        return out
+    adx_period = min(period, COMPOSITE_ADX_PERIOD_CAP)
+    adx_df = compute_regime(df, period=adx_period, adx_threshold=th["adx"])
+    atr_series = standard_atr(df, period=period)
+    for i in range(period, n):
+        window = df.iloc[i - period + 1 : i + 1]
+        atr_val = float(atr_series.iloc[i]) if i < len(atr_series) else 0.0
+        if not (atr_val > 0):
+            continue
+        eff = _composite_efficiency_metrics(window, atr_val, period)
+        out.iat[i, 0] = eff["return_eff"]
+        out.iat[i, 1] = eff["range_eff"]
+        out.iat[i, 2] = eff["efficiency"]
+        out.iat[i, 3] = float(adx_df["adx"].iloc[i])
+    return out
+
+
 def latest_regime(
     df: pd.DataFrame,
     period: int = 14,
