@@ -93,6 +93,43 @@ update_config_migration_state() {
     printf 'missing'
 }
 
+# Validate a systemd/path instance name for the #1056 migration. Echoes 'ok' or
+# 'bad'. The bare char-class [A-Za-z0-9_.-] is not enough: '.' and '..' are
+# composed only of allowed chars yet escape the target dir ($base/.. writes
+# outside the intended tree), and a leading '-' misparses as a flag downstream
+# (install-service.sh, systemctl). Empty is 'bad' here — the caller treats an
+# empty --instance as the no-instance default and must not route it through this.
+update_validate_instance_name() {
+    local name="$1"
+    [[ -n "$name" ]] || { printf 'bad'; return 0; }
+    case "$name" in
+        .|..) printf 'bad'; return 0 ;;
+        -*)   printf 'bad'; return 0 ;;
+    esac
+    if [[ "$name" =~ [^a-zA-Z0-9_.-] ]]; then
+        printf 'bad'
+        return 0
+    fi
+    printf 'ok'
+}
+
+# Emit the systemd directive that makes the #1056 config directory writable
+# under ProtectSystem=strict, given the migration --base and --instance. A base
+# under /var/lib maps to StateDirectory (systemd creates+owns the dir on start);
+# ANY other base must use ReadWritePaths (the operator created the dir) because
+# StateDirectory is always relative to /var/lib and would otherwise grant the
+# wrong directory while the real config dir stays read-only. Keeps the migration
+# script's printed unit edits valid for every --base value it accepts.
+update_config_writable_directive() {
+    local base="$1" instance="$2" sub=""
+    [[ -n "$instance" ]] && sub="/$instance"
+    if [[ "$base" == /var/lib/* ]]; then
+        printf 'StateDirectory=%s%s' "${base#/var/lib/}" "$sub"
+    else
+        printf 'ReadWritePaths=%s%s' "$base" "$sub"
+    fi
+}
+
 # Static, extension-based DB rsync excludes (#1012). Emits one glob per line so
 # any .db / SQLite sidecar / lock file at ANY path survives --rsync-from's
 # --delete, independent of the config-resolved db_file. These globs are

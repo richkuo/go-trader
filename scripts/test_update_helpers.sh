@@ -102,4 +102,26 @@ assert_eq "$(update_config_migration_state "$mig_tmp/dangling.json")" \
     "symlink" "dangling symlink -> symlink (not missing)"
 rm -rf "$mig_tmp"
 
+# --- #1056: instance-name validation (PR #1060 review) -----------------------
+assert_eq "$(update_validate_instance_name live)" "ok" "plain name -> ok"
+assert_eq "$(update_validate_instance_name paper-hl-btc)" "ok" "dashed name -> ok"
+assert_eq "$(update_validate_instance_name paper_testing.1)" "ok" "underscore/dot -> ok"
+# Adversarial: path-escape and flag-misparse names the bare char-class let through.
+assert_eq "$(update_validate_instance_name ..)" "bad" "'..' -> bad (escapes target dir)"
+assert_eq "$(update_validate_instance_name .)" "bad" "'.' -> bad (escapes target dir)"
+assert_eq "$(update_validate_instance_name -live)" "bad" "leading dash -> bad (misparses as flag)"
+assert_eq "$(update_validate_instance_name 'a/b')" "bad" "slash -> bad (path separator)"
+assert_eq "$(update_validate_instance_name 'a b')" "bad" "space -> bad (disallowed char)"
+assert_eq "$(update_validate_instance_name '')" "bad" "empty -> bad (caller handles no-instance separately)"
+
+# --- #1056: base-aware systemd writable directive (PR #1060 review) ----------
+assert_eq "$(update_config_writable_directive /var/lib/go-trader live)" \
+    "StateDirectory=go-trader/live" "default base + instance -> StateDirectory subdir"
+assert_eq "$(update_config_writable_directive /var/lib/go-trader '')" \
+    "StateDirectory=go-trader" "default base, no instance -> StateDirectory"
+assert_eq "$(update_config_writable_directive /etc/go-trader live)" \
+    "ReadWritePaths=/etc/go-trader/live" "non-/var/lib base -> ReadWritePaths (StateDirectory can't reach it)"
+assert_eq "$(update_config_writable_directive /etc/go-trader '')" \
+    "ReadWritePaths=/etc/go-trader" "non-/var/lib base, no instance -> ReadWritePaths"
+
 echo "OK: update_helpers tests passed"

@@ -72,7 +72,7 @@ sudo chown -R go-trader:go-trader /opt/go-trader-paper-testing /var/lib/go-trade
 sudo bash scripts/install-service.sh systemd/go-trader@.service paper-testing
 ```
 
-For an existing in-tree deployment, `scripts/migrate-config-out-of-tree.sh --instance <name>` does the move + symlink in one idempotent step and prints the unit edits to apply.
+For an existing in-tree deployment, **stop the service first**, then `scripts/migrate-config-out-of-tree.sh --instance <name>` does the move + symlink in one idempotent step and prints the unit edits to apply (it refuses to run while that deployment's daemon is live, since a config write during the migrate→restart window would clobber the new symlink back into an in-tree file). Use `--base /etc/go-trader` for a non-`/var/lib` location — the printed guidance switches to the `ReadWritePaths` form automatically.
 
 Set `NO_START=1` to enable without starting.
 
