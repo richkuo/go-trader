@@ -1,5 +1,14 @@
-"""7-state regime quality diagnostics (#1065 PR1). Pure scorers; CLI at bottom."""
 from __future__ import annotations
+"""7-state regime quality diagnostics (#1065 PR1). Pure scorers; CLI at bottom."""
+import os, sys
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _THIS_DIR not in sys.path:
+    sys.path.insert(0, _THIS_DIR)
+_ROOT = os.path.abspath(os.path.join(_THIS_DIR, ".."))
+for _p in (_ROOT, os.path.join(_ROOT, "shared_tools")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 import numpy as np
 from regime_stats import kruskal_h, benjamini_hochberg  # noqa: F401 (BH used in Task 7)
 
@@ -114,3 +123,85 @@ def kmeans_yardstick(features, fwd, k_range=(2, 3, 4, 5, 6, 7), seed=0) -> dict:
         groups = [fr[cl == j] for j in range(k) if (cl == j).any()]
         out[k] = {"kruskal_h": kruskal_h(groups)}
     return out
+
+
+def score_labels(close, labels, features, horizons=(1, 4, 12), block_mult=3, seed=0) -> dict:
+    labels = np.asarray(labels, dtype=object)
+    features = np.asarray(features, dtype=float)
+    st = stability(labels)
+    mean_dwell = float(np.mean(list(st["mean_dwell"].values()))) if st["mean_dwell"] else 1.0
+    out = {"coverage": coverage(labels), "stability": st, "horizons": {}}
+    for h in horizons:
+        fwd = forward_returns(close, h)
+        block_len = max(int(block_mult * mean_dwell), h)
+        out["horizons"][f"h{h}"] = {
+            "separation": separation(labels, fwd),
+            "significance": block_shuffle_pvalue(labels, fwd, block_len, seed=seed),
+            "yardstick": kmeans_yardstick(features, fwd, seed=seed),
+        }
+    # flat aliases for the pre-registered primary (h=4)
+    if "h4" in out["horizons"]:
+        out["h4"] = out["horizons"]["h4"]
+    return out
+
+
+def run_window(symbol, timeframe, window, *, model=None, horizons=(1, 4, 12), seed=0) -> dict:
+    from regime import compute_regime_composite, composite_feature_matrix, _DEFAULT_COMPOSITE_THRESHOLDS
+    from data_fetcher import load_cached_data
+    from eval_windows import WINDOWS, PLATFORM
+    start, end = WINDOWS[window]
+    df = load_cached_data(symbol, timeframe, exchange_id=PLATFORM, start_date=start, end_date=end)
+    period = int(model["period"]) if model and "period" in model else 48
+    th = dict(_DEFAULT_COMPOSITE_THRESHOLDS)
+    feats_df = composite_feature_matrix(df, period, th)
+    features = feats_df.to_numpy()
+    if model is None:
+        labels = compute_regime_composite(df, period=period, thresholds=th)["regime"].to_numpy()
+    else:
+        from regime_hmm import forward_filter_labels
+        labels, _conf = forward_filter_labels(features, model)
+    return score_labels(df["close"].to_numpy(), labels, features, horizons=horizons, seed=seed)
+
+
+def build_parser() -> "argparse.ArgumentParser":
+    import argparse
+    from eval_windows import WINDOWS, DATASETS
+    p = argparse.ArgumentParser(description="7-state regime quality diagnostics (#1065)")
+    p.add_argument("--symbol", default="BTC/USDT")
+    p.add_argument("--timeframe", default="1h")
+    p.add_argument("--windows", default="is,oos", help=f"known: {', '.join(WINDOWS)}")
+    p.add_argument("--model-json", default=None, help="score a fitted model instead of the hand-rule")
+    p.add_argument("--horizons", default="1,4,12")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--json", default=None, help="write report JSON to this path")
+    return p
+
+
+def main(argv=None) -> int:
+    import argparse, json
+    args = build_parser().parse_args(argv)
+    from eval_windows import WINDOWS
+    model = None
+    if args.model_json:
+        with open(args.model_json) as fh:
+            loaded = json.load(fh)
+        model = loaded.get("model", loaded) if isinstance(loaded, dict) else loaded
+    horizons = tuple(int(x) for x in args.horizons.split(","))
+    report = {}
+    for w in args.windows.split(","):
+        if w not in WINDOWS:
+            raise SystemExit(f"unknown window {w}; known: {list(WINDOWS)}")
+        report[w] = run_window(args.symbol, args.timeframe, w, model=model,
+                               horizons=horizons, seed=args.seed)
+    payload = {"symbol": args.symbol, "timeframe": args.timeframe,
+               "source": "model" if model else "hand_rule", "windows": report}
+    text = json.dumps(payload, indent=2, default=float)
+    if args.json:
+        with open(args.json, "w") as fh:
+            fh.write(text)
+    print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

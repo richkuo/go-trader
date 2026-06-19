@@ -57,3 +57,15 @@ def test_kmeans_yardstick_runs():
     fwd = np.concatenate([np.full(100, 0.02), np.full(100, -0.02)])
     out = kmeans_yardstick(feats, fwd, k_range=(2, 3), seed=0)
     assert out[2]["kruskal_h"] > 5.0
+
+
+def test_score_labels_bundle():
+    from regime_diagnostics import score_labels
+    rng = np.random.default_rng(0)
+    close = 100 * np.cumprod(1 + rng.normal(0, 0.005, 300))
+    labels = np.array(["up" if r >= 0 else "down" for r in np.diff(close, prepend=close[0])], dtype=object)
+    feats = rng.normal(0, 1, (300, 4))
+    out = score_labels(close, labels, feats, horizons=(1, 4), block_mult=3, seed=0)
+    assert "h4" in out and "kruskal_h" in out["h4"]["separation"]
+    assert "coverage" in out and "stability" in out
+    assert "p_value" in out["h4"]["significance"]
