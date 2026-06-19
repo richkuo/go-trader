@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -383,18 +384,36 @@ func TestReadOpenPositionsScanErrorSignalsFailure(t *testing.T) {
 }
 
 // TestLoadConfigSnapshotDoesNotMutateFile guards the core safety invariant:
-// agent-info is read-only, but LoadConfig migrates pre-v15 configs in place.
+// agent-info is read-only, but LoadConfig migrates pre-current configs in place.
 // loadConfigSnapshot must load the effective shape without rewriting the input.
+//
+// The assertion is only meaningful when the input actually triggers a migration
+// write — so the test forces a pre-current config_version into the copy instead
+// of trusting config.example.json to stay below CurrentConfigVersion. If the
+// fixture is later bumped to (or past) the current version, the guard below
+// fails loudly rather than silently no-opping the migration and passing even if
+// loadConfigSnapshot regressed to writing through to the input.
 func TestLoadConfigSnapshotDoesNotMutateFile(t *testing.T) {
-	// config.example.json ships pre-current-version; copy it so the migration
-	// (if any) cannot touch the repo fixture.
 	orig, err := os.ReadFile("config.example.json")
 	if err != nil {
 		t.Skipf("no config.example.json fixture: %v", err)
 	}
+
+	// Force the input to a pre-current version so MigrateConfig always attempts a
+	// write-back. Missing field unmarshals to 0 (pre-v1 baseline) — also pre-current.
+	var raw map[string]any
+	if err := json.Unmarshal(orig, &raw); err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	raw["config_version"] = CurrentConfigVersion - 1
+	forced, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		t.Fatalf("re-marshal fixture: %v", err)
+	}
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, orig, 0644); err != nil {
+	if err := os.WriteFile(path, forced, 0644); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
 	before, _ := os.ReadFile(path)
@@ -406,10 +425,27 @@ func TestLoadConfigSnapshotDoesNotMutateFile(t *testing.T) {
 	if cfg == nil || len(cfg.Strategies) == 0 {
 		t.Fatal("expected a loaded config with strategies")
 	}
+	// The load must have produced a higher effective version than the input —
+	// proving a migration genuinely ran (so "input unchanged" is a real guard).
+	if cfg.ConfigVersion <= CurrentConfigVersion-1 {
+		t.Fatalf("migration did not advance config_version (in=%d, out=%d); test no longer exercises the write path", CurrentConfigVersion-1, cfg.ConfigVersion)
+	}
 
 	after, _ := os.ReadFile(path)
 	if string(before) != string(after) {
 		t.Error("loadConfigSnapshot mutated the input config file (must be read-only)")
+	}
+
+	// A migration that writes a sibling (e.g. config.json.bak) next to the input
+	// is also a mutation of the operator's directory — assert nothing else appeared.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != "config.json" {
+			t.Errorf("loadConfigSnapshot left a stray file in the input dir: %q", e.Name())
+		}
 	}
 }
 
