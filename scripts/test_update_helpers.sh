@@ -124,4 +124,24 @@ assert_eq "$(update_config_writable_directive /etc/go-trader live)" \
 assert_eq "$(update_config_writable_directive /etc/go-trader '')" \
     "ReadWritePaths=/etc/go-trader" "non-/var/lib base, no instance -> ReadWritePaths"
 
+# --- #1056/#1060: re-running on an already-migrated (symlink) deployment must
+# be an idempotent no-op and must NOT trip the daemon-running refusal — that
+# refusal is gated to the mutating (regular-file) case only. (End-to-end over
+# the migrate script, since the ordering is script-level, not a pure helper.)
+mig2=$(mktemp -d)
+mkdir -p "$mig2/deploy/scheduler" "$mig2/var/live"
+: > "$mig2/var/live/config.json"
+ln -s "$mig2/var/live/config.json" "$mig2/deploy/scheduler/config.json"
+noop_out=$(bash "${SCRIPT_DIR}/migrate-config-out-of-tree.sh" \
+    --deploy-dir "$mig2/deploy" --base "$mig2/var" --instance live 2>&1) && noop_rc=0 || noop_rc=$?
+assert_eq "$noop_rc" "0" "already-migrated symlink -> idempotent no-op exit 0 (no daemon refusal)"
+if [[ "$noop_out" != *"already migrated"* ]]; then
+    echo "FAIL: expected 'already migrated' no-op message, got: $noop_out" >&2
+    exit 1
+fi
+# And the no-op must not have mutated anything (symlink intact, target intact).
+[[ -L "$mig2/deploy/scheduler/config.json" ]] || { echo "FAIL: no-op altered the symlink" >&2; exit 1; }
+[[ -f "$mig2/var/live/config.json" ]] || { echo "FAIL: no-op altered the target" >&2; exit 1; }
+rm -rf "$mig2"
+
 echo "OK: update_helpers tests passed"

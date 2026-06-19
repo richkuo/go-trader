@@ -75,37 +75,6 @@ if [[ ! -d "$deploy_dir" ]]; then
 fi
 deploy_dir=$(cd "$deploy_dir" && pwd)
 
-# Refuse to migrate while THIS deployment's daemon is still running (#1060
-# review): its --config still points at scheduler/config.json, which we are
-# about to turn into a symlink. A config write (UI tuner, Discord /config) or a
-# Restart=always crash-restart that re-runs startup migration in the window
-# before the unit is re-pointed does os.Rename(tmp, configPath) — and rename(2)
-# over a symlink REPLACES the symlink with a real file in the tree, orphaning
-# the moved copy and losing that write. Detect the daemon by working directory
-# (== deploy_dir, where the symlink lives) via the existing tested predicate.
-# Best-effort: needs /proc, so non-Linux/undetectable falls through to the
-# stop-first guidance printed at the end. --force overrides.
-if [[ "$force" -ne 1 ]] && command -v pgrep >/dev/null 2>&1; then
-    running_pid=""
-    while IFS= read -r pid; do
-        [[ -n "$pid" ]] || continue
-        pcwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
-        if [[ "$(update_should_sweep_proc go-trader "$pcwd" "$deploy_dir")" == "sweep" ]]; then
-            running_pid="$pid"
-            break
-        fi
-    done < <(pgrep -x go-trader 2>/dev/null || true)
-    if [[ -n "$running_pid" ]]; then
-        echo "error: a go-trader daemon (pid $running_pid) is running in $deploy_dir." >&2
-        echo "       Stop it before migrating, or a config write/crash-restart during the" >&2
-        echo "       migrate->restart window will clobber the new symlink back into an" >&2
-        echo "       in-tree file and lose that write:" >&2
-        echo "         sudo systemctl stop <unit>   # then re-run this script" >&2
-        echo "       Re-run with --force only if you have already stopped the service." >&2
-        exit 1
-    fi
-fi
-
 src="$deploy_dir/scheduler/config.json"
 if [[ -n "$instance" ]]; then
     target_dir="$base/$instance"
@@ -126,6 +95,43 @@ case "$state" in
     regular)
         : ;;  # proceed
 esac
+
+# Only past this point is a mutating mv/ln impending (state == regular). The
+# already-migrated (symlink) and missing cases have exited above, so gating the
+# daemon-running refusal here keeps a re-run on an already-migrated deployment a
+# true idempotent no-op even with the daemon live (#1060 review) — nothing is
+# clobbered when the path is already a symlink.
+#
+# Refuse to migrate while THIS deployment's daemon is still running: its
+# --config still points at scheduler/config.json, which we are about to turn
+# into a symlink. A config write (UI tuner, Discord /config) or a Restart=always
+# crash-restart in the window before the unit is re-pointed does
+# os.Rename(tmp, configPath) — and rename(2) over a symlink REPLACES the symlink
+# with a real file in the tree, orphaning the moved copy and losing that write.
+# Detect the daemon by working directory (== deploy_dir, where the symlink
+# lives) via the existing tested predicate. Best-effort: needs /proc, so
+# non-Linux/undetectable falls through to the stop-first guidance printed at the
+# end. --force overrides.
+if [[ "$force" -ne 1 ]] && command -v pgrep >/dev/null 2>&1; then
+    running_pid=""
+    while IFS= read -r pid; do
+        [[ -n "$pid" ]] || continue
+        pcwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
+        if [[ "$(update_should_sweep_proc go-trader "$pcwd" "$deploy_dir")" == "sweep" ]]; then
+            running_pid="$pid"
+            break
+        fi
+    done < <(pgrep -x go-trader 2>/dev/null || true)
+    if [[ -n "$running_pid" ]]; then
+        echo "error: a go-trader daemon (pid $running_pid) is running in $deploy_dir." >&2
+        echo "       Stop it before migrating, or a config write/crash-restart during the" >&2
+        echo "       migrate->restart window will clobber the new symlink back into an" >&2
+        echo "       in-tree file and lose that write:" >&2
+        echo "         sudo systemctl stop <unit>   # then re-run this script" >&2
+        echo "       Re-run with --force only if you have already stopped the service." >&2
+        exit 1
+    fi
+fi
 
 # Never clobber anything at the target (another instance's config, or a
 # half-finished prior run). Refuse on any existing path — even a broken symlink.
