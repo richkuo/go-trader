@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -292,6 +293,81 @@ func TestBareRefreshPreservesChangelog(t *testing.T) {
 	}
 	if i2, i0 := strings.Index(s, "v1.2.0"), strings.LastIndex(s, "v1.0.0"); i2 > i0 {
 		t.Error("newest changelog entry should come first")
+	}
+}
+
+// TestChangelogCapBounded confirms the auto-generated file cannot grow without
+// bound: after many more than the cap of appends, only the newest
+// agentInfoChangelogMaxEntries entries survive, newest first.
+func TestChangelogCapBounded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.generated.md")
+	info := agentInfo{Capabilities: agentInfoCommands, EnvVars: agentInfoEnvVars}
+	md := renderAgentInfoMarkdown(info)
+
+	total := agentInfoChangelogMaxEntries + 25
+	for i := 0; i < total; i++ {
+		info.Version = "v0.0." + strconv.Itoa(i)
+		// Distinct dates so entries are individually identifiable.
+		day := 1 + (i % 27)
+		if err := writeAgentInfoMarkdown(path, md, true, info, time.Date(2026, 1, day, 0, 0, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+	data, _ := os.ReadFile(path)
+	s := string(data)
+	// Count entry lines only within the changelog block (the rendered body also
+	// uses "- " bullets for capabilities/env vars).
+	idx := strings.Index(s, "## Changelog")
+	if idx < 0 {
+		t.Fatal("no changelog block written")
+	}
+	gotEntries := strings.Count(s[idx:], "\n- ")
+	if gotEntries != agentInfoChangelogMaxEntries {
+		t.Errorf("changelog retained %d entries, want cap %d", gotEntries, agentInfoChangelogMaxEntries)
+	}
+	// Newest (last appended) must be present; oldest must have aged out.
+	if !strings.Contains(s, "v0.0."+strconv.Itoa(total-1)) {
+		t.Error("newest entry missing after cap")
+	}
+	if strings.Contains(s, "v0.0.0 ") || strings.Contains(s, "`v0.0.0`") {
+		t.Error("oldest entry should have aged out past the cap")
+	}
+}
+
+// TestReadOpenPositionsScanErrorSignalsFailure builds a positions table whose
+// quantity column holds a non-numeric value so the row scan fails mid-iteration.
+// readStateDBReadOnly must then mark the snapshot untrustworthy (DBPresent=false)
+// rather than return a silently truncated position list.
+func TestReadOpenPositionsScanErrorSignalsFailure(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "bad.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	stmts := []string{
+		`CREATE TABLE app_state (id INTEGER PRIMARY KEY, cycle_count INTEGER)`,
+		`INSERT INTO app_state (id, cycle_count) VALUES (1, 5)`,
+		`CREATE TABLE positions (strategy_id TEXT, symbol TEXT, side TEXT, quantity TEXT, avg_cost REAL, regime TEXT)`,
+		`INSERT INTO positions (strategy_id, symbol, side, quantity, avg_cost, regime) VALUES ('s1','ETH','long','not-a-number',3000,'trend')`,
+	}
+	for _, q := range stmts {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("seed (%s): %v", q, err)
+		}
+	}
+	db.Close()
+
+	_, live := readStateDBReadOnly(dbPath, 8099)
+	if live.DBPresent {
+		t.Error("scan failure must mark DBPresent=false, not return a partial list as complete")
+	}
+	if len(live.OpenPositions) != 0 {
+		t.Errorf("must not hand back a truncated position slice, got %d", len(live.OpenPositions))
+	}
+	if !strings.Contains(live.Note, "do not trust") {
+		t.Errorf("note should flag the snapshot as untrustworthy: %q", live.Note)
 	}
 }
 

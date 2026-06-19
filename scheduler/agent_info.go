@@ -182,11 +182,16 @@ func runAgentInfo(args []string) int {
 
 	// LoadConfig emits [INFO] default-application lines via fmt.Printf (stdout).
 	// The default JSON dump must keep stdout pure, so route those to stderr by
-	// temporarily redirecting os.Stdout across the load.
-	realStdout := os.Stdout
-	os.Stdout = os.Stderr
-	cfg, err := loadConfigSnapshot(*configPath)
-	os.Stdout = realStdout
+	// temporarily redirecting os.Stdout across the load. The swap is wrapped in a
+	// closure with a deferred restore so a panic inside the load (e.g. a nil deref
+	// in a migration path) cannot leave os.Stdout pointing at stderr for the rest
+	// of the process; the closure also restores stdout before the JSON dump below.
+	cfg, err := func() (*Config, error) {
+		realStdout := os.Stdout
+		defer func() { os.Stdout = realStdout }()
+		os.Stdout = os.Stderr
+		return loadConfigSnapshot(*configPath)
+	}()
 	if err != nil {
 		// Config is optional for agent-info: capabilities/schema/env are still
 		// useful without it. Warn, continue with a nil config.
@@ -359,9 +364,18 @@ func readStateDBReadOnly(path string, statusPort int) ([]agentTable, agentLiveSt
 		live.DBPresent = false
 		return nil, live
 	}
+	positions, err := readOpenPositions(db)
+	if err != nil {
+		// A read that failed mid-iteration could under-report open exposure; mark
+		// the snapshot untrustworthy rather than hand back a partial list that
+		// looks complete. Schema is still returned (it read cleanly).
+		live.DBPresent = false
+		live.Note = fmt.Sprintf("state DB %s present but open-position read failed (%v) — do not trust this snapshot; query the status API on port %d. %s", path, err, statusPort, live.Note)
+		return tables, live
+	}
 	live.DBPresent = true
 	live.CycleCount = readCycleCount(db)
-	live.OpenPositions = readOpenPositions(db)
+	live.OpenPositions = positions
 	return tables, live
 }
 
@@ -428,21 +442,24 @@ func readCycleCount(db *sql.DB) int64 {
 	return c
 }
 
-func readOpenPositions(db *sql.DB) []agentOpenPosition {
+func readOpenPositions(db *sql.DB) ([]agentOpenPosition, error) {
 	rows, err := db.Query(`SELECT strategy_id, symbol, side, quantity, avg_cost, regime FROM positions ORDER BY strategy_id, symbol`)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 	var out []agentOpenPosition
 	for rows.Next() {
 		var p agentOpenPosition
 		if err := rows.Scan(&p.StrategyID, &p.Symbol, &p.Side, &p.Quantity, &p.AvgCost, &p.Regime); err != nil {
-			return out
+			// A mid-scan failure must not return a silently truncated slice that
+			// reads as a complete snapshot — signal the error so the caller can
+			// mark the live state untrustworthy rather than under-report exposure.
+			return nil, err
 		}
 		out = append(out, p)
 	}
-	return out
+	return out, rows.Err()
 }
 
 // renderAgentInfoMarkdown renders the report as agent-readable markdown.
@@ -503,25 +520,47 @@ func renderAgentInfoMarkdown(info agentInfo) string {
 	return b.String()
 }
 
+// agentInfoChangelogMaxEntries bounds the retained changelog history so the
+// auto-generated file (refreshed on every deploy via update.sh) cannot grow
+// without limit; ~50 entries is roughly two months of daily deploys.
+const agentInfoChangelogMaxEntries = 50
+
 // writeAgentInfoMarkdown writes (or refreshes) the markdown file. Any existing
 // Changelog block is preserved across regenerations regardless of mode — a bare
 // refresh never silently drops history. With appendChangelog, a new
-// version-stamped entry is prepended to that history.
+// version-stamped entry is prepended to that history. The retained history is
+// capped at agentInfoChangelogMaxEntries (newest kept).
 func writeAgentInfoMarkdown(path, md string, appendChangelog bool, info agentInfo, now time.Time) error {
-	// Preserve any existing changelog block so the history survives a refresh in
-	// either mode. Without this, a bare --bootstrap-md would overwrite prior
-	// history; the invariant is that history only changes on explicit opt-in.
 	const changelogMarker = "## Changelog\n"
-	existingChangelog := ""
+
+	// Collect prior entries (newest-first) from any existing changelog block so
+	// the history survives a refresh in either mode. Without this, a bare
+	// --bootstrap-md would overwrite prior history; history only changes on
+	// explicit opt-in (appendChangelog) or by aging past the retention cap.
+	var entries []string
 	if prev, err := os.ReadFile(path); err == nil {
 		if idx := strings.Index(string(prev), changelogMarker); idx >= 0 {
-			existingChangelog = string(prev)[idx+len(changelogMarker):]
+			for _, line := range strings.Split(string(prev)[idx+len(changelogMarker):], "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "- ") {
+					entries = append(entries, strings.TrimRight(line, "\r"))
+				}
+			}
 		}
 	}
-	existingChangelog = strings.TrimLeft(existingChangelog, "\n")
+
+	if appendChangelog {
+		entry := fmt.Sprintf("- %s — version `%s` (%d strategies, %d open positions)",
+			now.Format("2006-01-02"), info.Version, len(info.Strategies), len(info.LiveState.OpenPositions))
+		entries = append([]string{entry}, entries...)
+	}
+
+	// Bound the file: keep only the newest entries.
+	if len(entries) > agentInfoChangelogMaxEntries {
+		entries = entries[:agentInfoChangelogMaxEntries]
+	}
 
 	// Nothing to carry forward and no new entry requested: plain render.
-	if !appendChangelog && existingChangelog == "" {
+	if len(entries) == 0 {
 		return os.WriteFile(path, []byte(md), 0644)
 	}
 
@@ -530,10 +569,9 @@ func writeAgentInfoMarkdown(path, md string, appendChangelog bool, info agentInf
 	b.WriteString("\n")
 	b.WriteString(changelogMarker)
 	b.WriteString("\n")
-	if appendChangelog {
-		fmt.Fprintf(&b, "- %s — version `%s` (%d strategies, %d open positions)\n",
-			now.Format("2006-01-02"), info.Version, len(info.Strategies), len(info.LiveState.OpenPositions))
+	for _, e := range entries {
+		b.WriteString(e)
+		b.WriteString("\n")
 	}
-	b.WriteString(existingChangelog)
 	return os.WriteFile(path, []byte(b.String()), 0644)
 }
