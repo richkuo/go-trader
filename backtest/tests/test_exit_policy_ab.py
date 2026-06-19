@@ -353,3 +353,153 @@ def test_resolve_regime_explicit_adx_overrides_config_windows():
     cfg = m.resolve_regime_cfg(_regime_args(classifier="adx"),
                                {"windows": {"medium": {"classifier": "composite", "period": 14}}})
     assert cfg["classifier"] == "adx" and cfg["windows_spec"] is None
+
+
+# --------------------------------------------------------------------------
+# Incumbent stop-field fidelity (#1066 finding-1): the control arm must replay
+# the incumbent's strategy-level stops, never a phantom subset.
+# --------------------------------------------------------------------------
+
+def test_stops_from_kwargs_collects_all_present_and_drops_none():
+    # A load_strategy_config result carries every STOP_FIELD_KEYS entry; keep the
+    # present ones (here an ATR stop AND a regime trailing stop) and drop None.
+    kwargs = {
+        "open_strategy": {"name": "x", "params": {}},
+        "close_strategies": [{"name": "tiered_tp_atr", "params": {}}],
+        "stop_loss_atr_mult": 1.5,
+        "stop_loss_pct": None,
+        "stop_loss_margin_pct": None,
+        "trailing_stop_atr_mult": None,
+        "trailing_stop_pct": None,
+        "stop_loss_atr_regime": None,
+        "trailing_stop_atr_regime": {"trending_up": 2.0, "ranging_quiet": 3.0},
+    }
+    stops = m._stops_from_kwargs(kwargs)
+    assert stops == {"stop_loss_atr_mult": 1.5,
+                     "trailing_stop_atr_regime": {"trending_up": 2.0, "ranging_quiet": 3.0}}
+    # No spurious None keys leak through (would override the Backtester defaults).
+    assert all(v is not None for v in stops.values())
+
+
+def test_stops_from_kwargs_empty_when_no_stops():
+    assert m._stops_from_kwargs({"open_strategy": {}, "close_strategies": None}) == {}
+
+
+def test_candidate_stops_inherit_copies_and_drop_clears():
+    incumbent = {"stop_loss_atr_mult": 1.5}
+    inh = m._candidate_stops("inherit", incumbent)
+    assert inh == incumbent and inh is not incumbent  # copy, not alias
+    assert m._candidate_stops("drop", incumbent) == {}
+    # Defensive: None incumbent never raises.
+    assert m._candidate_stops("inherit", None) == {}
+
+
+def test_backtester_kwargs_threads_present_stops_only():
+    kw = m._backtester_kwargs(
+        "sqz", {}, [{"name": "tiered_tp_atr", "params": {}}], "long", 10000.0,
+        {"allowed_regimes": None}, stops={"stop_loss_atr_mult": 1.5})
+    assert kw["stop_loss_atr_mult"] == 1.5
+    # Absent stop fields must NOT appear (so the Backtester keeps its None default).
+    assert "trailing_stop_atr_mult" not in kw
+    assert "stop_loss_pct" not in kw
+
+
+def test_backtester_kwargs_no_stops_means_no_stop_keys():
+    kw = m._backtester_kwargs("sqz", {}, None, "long", 10000.0,
+                              {"allowed_regimes": None}, stops=None)
+    assert not any(k in kw for k in m.STOP_FIELD_KEYS)
+
+
+def test_backtester_kwargs_threads_regime_trailing_stop_with_open_as_close():
+    # Must-survive (b): incumbent has NO close evaluator but a regime trailing
+    # stop — the control arm must still carry that stop.
+    regime_trail = {"trending_up": 2.0, "ranging_quiet": 3.0}
+    kw = m._backtester_kwargs("sqz", {}, None, "long", 10000.0,
+                              {"allowed_regimes": None},
+                              stops={"trailing_stop_atr_regime": regime_trail})
+    assert kw["close_strategies"] is None
+    assert kw["trailing_stop_atr_regime"] == regime_trail
+
+
+def test_control_keeps_stop_regardless_of_candidate_mode():
+    # Must-survive (c): candidate = atr_stop, incumbent's only protection was a
+    # strategy-level stop_loss_atr_mult. The control arm must carry that stop in
+    # BOTH candidate modes, so the candidate never gets false credit for re-adding
+    # protection the control silently lacked.
+    incumbent_stops = {"stop_loss_atr_mult": 1.5}
+    control_kw = m._backtester_kwargs(
+        "sqz", {}, [{"name": "tiered_tp_atr", "params": {}}], "long", 10000.0,
+        {"allowed_regimes": None}, stops=incumbent_stops)
+    assert control_kw["stop_loss_atr_mult"] == 1.5
+
+    inherit_kw = m._backtester_kwargs(
+        "sqz", {}, [{"name": "atr_stop", "params": {}}], "long", 10000.0,
+        {"allowed_regimes": None},
+        stops=m._candidate_stops("inherit", incumbent_stops))
+    drop_kw = m._backtester_kwargs(
+        "sqz", {}, [{"name": "atr_stop", "params": {}}], "long", 10000.0,
+        {"allowed_regimes": None},
+        stops=m._candidate_stops("drop", incumbent_stops))
+    assert inherit_kw["stop_loss_atr_mult"] == 1.5      # held fixed
+    assert "stop_loss_atr_mult" not in drop_kw          # full replacement
+
+
+# --------------------------------------------------------------------------
+# _resolve_spec wiring (explicit-close path needs no config file / registry).
+# --------------------------------------------------------------------------
+
+def _spec_args(extra=None):
+    base = [
+        "--strategy", "squeeze_momentum",
+        "--incumbent-close", "none",
+        "--candidate-close", '[{"name":"atr_stop","params":{}}]',
+    ]
+    return m.build_parser().parse_args(base + (extra or []))
+
+
+def test_resolve_spec_explicit_path_has_no_stops():
+    spec = m._resolve_spec(_spec_args())
+    # The explicit --incumbent-close path resolves no strategy-level stops.
+    assert spec["control_stops"] == {} and spec["candidate_stops"] == {}
+    assert spec["candidate_stops_mode"] == "inherit"
+
+
+# --------------------------------------------------------------------------
+# Gate-window / attribution divergence (#1066 finding-2): a named --gate-window
+# on a multi-window spec steers attribution to a window the backtester gate can't
+# honor → reject loudly.
+# --------------------------------------------------------------------------
+
+_MULTI_WINDOW = ('{"fast":{"classifier":"composite","period":7},'
+                 '"slow":{"classifier":"composite","period":21}}')
+_SINGLE_WINDOW = '{"slow":{"classifier":"composite","period":21}}'
+
+
+def test_gate_window_on_multi_window_spec_rejected():
+    # Must-survive (a)/(b): naming either window of a multi-window spec must error,
+    # because the gate default-picks its primary window irrespective of the name.
+    with pytest.raises(SystemExit):
+        m._resolve_spec(_spec_args(["--regime-windows-json", _MULTI_WINDOW,
+                                    "--gate-window", "slow"]))
+    with pytest.raises(SystemExit):
+        m._resolve_spec(_spec_args(["--regime-windows-json", _MULTI_WINDOW,
+                                    "--gate-window", "fast"]))
+
+
+def test_multi_window_without_gate_window_is_allowed():
+    # Must-survive (c): no --gate-window → gate and attribution both default-pick
+    # the same primary window → agree → no rejection.
+    spec = m._resolve_spec(_spec_args(["--regime-windows-json", _MULTI_WINDOW]))
+    assert len(spec["regime_cfg"]["windows_spec"]) == 2
+
+
+def test_gate_window_naming_absent_window_rejected():
+    with pytest.raises(SystemExit):
+        m._resolve_spec(_spec_args(["--regime-windows-json", _SINGLE_WINDOW,
+                                    "--gate-window", "nope"]))
+
+
+def test_gate_window_on_single_window_spec_naming_that_window_ok():
+    spec = m._resolve_spec(_spec_args(["--regime-windows-json", _SINGLE_WINDOW,
+                                       "--gate-window", "slow"]))
+    assert list(spec["regime_cfg"]["windows_spec"].keys()) == ["slow"]

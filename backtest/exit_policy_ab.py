@@ -13,10 +13,17 @@ Three things separate this from a tidier A/B script (the #1059 one-off had none)
 1. **Incumbent-relative, fail-loud.** The control arm's exit resolves from a
    named baseline config the way the live daemon would (``--baseline-config``
    → ``run_backtest.load_strategy_config``, v15-gated for #951 parity), never a
-   frozen ladder literal. If the strategy is absent or has no close, the harness
-   ERRORS — it never silently substitutes a different baseline (the
-   open-as-close fallback is available only via the explicit
-   ``--incumbent-close none``).
+   frozen ladder literal. It replays the incumbent's COMPLETE live exit policy —
+   the close evaluator AND the strategy-level stop/trailing fields
+   (``STOP_FIELD_KEYS``: ``stop_loss_atr_mult`` / ``trailing_stop_atr_regime`` /
+   …), which the ``Backtester`` consumes as real exit logic — so the A/B is never
+   measured against a phantom incumbent with a weaker exit than runs live. The
+   candidate arm holds those same stops fixed by default (``--candidate-stops
+   inherit``, isolating the close-evaluator change) or drops them
+   (``--candidate-stops drop``, candidate close refs become the entire exit). If
+   the strategy is absent or has no close, the harness ERRORS — it never silently
+   substitutes a different baseline (the open-as-close fallback is available only
+   via the explicit ``--incumbent-close none``).
 
 2. **Walk-forward / out-of-sample.** Both arms run across the versioned audit
    ``WINDOWS`` imported from ``eval_windows.py`` (in-sample / OOS / held-out), so
@@ -100,6 +107,22 @@ DEFAULT_SEED = 1066
 # bucket (warmup rows, mid-series NaN) — kept distinct so it never silently
 # merges with a real regime.
 UNKNOWN_REGIME = "?"
+
+# Strategy-level stop/trailing exit fields a live config carries ALONGSIDE the
+# close evaluator (config.go's seven mutually-exclusive HL stop owners, minus the
+# duplicate accessors). ``load_strategy_config`` resolves these the way the daemon
+# would (#951 parity) and the ``Backtester`` consumes each as real exit logic —
+# so the control arm MUST replay them, or it measures a phantom incumbent with a
+# weaker exit than the live strategy actually runs.
+STOP_FIELD_KEYS = (
+    "stop_loss_atr_mult",
+    "stop_loss_pct",
+    "stop_loss_margin_pct",
+    "trailing_stop_atr_mult",
+    "trailing_stop_pct",
+    "stop_loss_atr_regime",
+    "trailing_stop_atr_regime",
+)
 
 
 # ===========================================================================
@@ -560,10 +583,18 @@ def _regime_label_series(df, regime_cfg: dict):
 
 def _backtester_kwargs(open_name: str, params: Optional[dict],
                        close_refs: Optional[Sequence[dict]], direction: Optional[str],
-                       capital: float, gate: dict) -> dict:
-    """Shared Backtester kwargs so both arms + the replay gate identically."""
+                       capital: float, gate: dict,
+                       stops: Optional[dict] = None) -> dict:
+    """Shared Backtester kwargs so both arms + the replay gate identically.
+
+    ``stops`` is the strategy-level stop/trailing exit surface (``STOP_FIELD_KEYS``)
+    spread into the constructor verbatim — these are real exit logic the
+    ``Backtester`` consumes (``run_backtest.run_single_backtest`` threads the same
+    fields). The control arm passes the incumbent's resolved stops so it replays
+    the *complete* live exit policy, not just the close evaluator.
+    """
     use_regime = bool(gate.get("allowed_regimes"))
-    return dict(
+    kw = dict(
         initial_capital=capital, platform=PLATFORM,
         open_strategy={"name": open_name, "params": dict(params or {})},
         close_strategies=(list(close_refs) if close_refs else None),
@@ -574,14 +605,23 @@ def _backtester_kwargs(open_name: str, params: Optional[dict],
         regime_windows_spec=gate.get("windows_spec"),
         allowed_regimes=(list(gate["allowed_regimes"]) if gate.get("allowed_regimes") else None),
     )
+    # Spread only the present (non-None) stop fields; the Backtester defaults each
+    # to None. STOP_FIELD_KEYS never collides with the keys set above.
+    for k in STOP_FIELD_KEYS:
+        v = (stops or {}).get(k)
+        if v is not None:
+            kw[k] = v
+    return kw
 
 
 def run_free_arm(reg, open_name: str, params: Optional[dict], df_signals,
                  close_refs: Optional[Sequence[dict]], direction: Optional[str],
-                 capital: float, gate: dict, symbol: str, timeframe: str) -> dict:
+                 capital: float, gate: dict, symbol: str, timeframe: str,
+                 stops: Optional[dict] = None) -> dict:
     """Run one free-running arm over the prepared signals → full results dict."""
     from backtester import Backtester
-    bt = Backtester(**_backtester_kwargs(open_name, params, close_refs, direction, capital, gate))
+    bt = Backtester(**_backtester_kwargs(open_name, params, close_refs, direction,
+                                         capital, gate, stops))
     return bt.run(df_signals.copy(), strategy_name=open_name, symbol=symbol,
                   timeframe=timeframe, params=params, save=False)
 
@@ -590,7 +630,7 @@ def replay_candidate_for_entry(reg, open_name: str, params: Optional[dict], df_s
                                sig_pos: int, side_sign: int,
                                candidate_close: Sequence[dict], direction: Optional[str],
                                capital: float, gate: dict, symbol: str,
-                               timeframe: str) -> Optional[dict]:
+                               timeframe: str, stops: Optional[dict] = None) -> Optional[dict]:
     """Entry-locked replay: open ONE position at ``sig_pos`` under the candidate exit.
 
     The signal column is overwritten so the only entry is ``side_sign`` at
@@ -604,7 +644,8 @@ def replay_candidate_for_entry(reg, open_name: str, params: Optional[dict], df_s
     sig_col = one.columns.get_loc("signal")
     one.iloc[:, sig_col] = 0
     one.iloc[sig_pos, sig_col] = int(side_sign)
-    bt = Backtester(**_backtester_kwargs(open_name, params, candidate_close, direction, capital, gate))
+    bt = Backtester(**_backtester_kwargs(open_name, params, candidate_close, direction,
+                                         capital, gate, stops))
     results = bt.run(one, strategy_name=open_name, symbol=symbol,
                      timeframe=timeframe, params=params, save=False)
     return collapse_entry(results.get("trades", []) or [])
@@ -634,15 +675,18 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
     regime_series = _regime_label_series(df, spec["regime_cfg"])
     pos_by_date = {str(ts): i for i, ts in enumerate(df.index)}
 
-    # Free-running arms (realistic, own re-entry schedule each).
+    # Free-running arms (realistic, own re-entry schedule each). The control arm
+    # carries the incumbent's strategy-level stops (full live exit fidelity); the
+    # candidate arm carries them only under --candidate-stops inherit (held fixed
+    # so the A/B isolates the close-evaluator change), none under drop.
     control_results = run_free_arm(
         reg, spec["open_name"], spec.get("params"), df_signals,
         spec.get("incumbent_close"), spec.get("direction"), spec["capital"],
-        spec["gate"], symbol, timeframe)
+        spec["gate"], symbol, timeframe, spec.get("control_stops"))
     candidate_results = run_free_arm(
         reg, spec["open_name"], spec.get("params"), df_signals,
         spec.get("candidate_close"), spec.get("direction"), spec["capital"],
-        spec["gate"], symbol, timeframe)
+        spec["gate"], symbol, timeframe, spec.get("candidate_stops"))
 
     control_entries = free_arm_entries(control_results.get("trades", []) or [])
 
@@ -665,7 +709,8 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
             candidate_by_date[date] = replay_candidate_for_entry(
                 reg, spec["open_name"], spec.get("params"), df_signals, sig_pos,
                 side_sign, spec["candidate_close"], spec.get("direction"),
-                spec["capital"], spec["gate"], symbol, timeframe)
+                spec["capital"], spec["gate"], symbol, timeframe,
+                spec.get("candidate_stops"))
         paired_rows, paired_diag = build_paired_rows(
             control_entries, candidate_by_date, regime_by_date)
         paired_diag["replayable"] = True
@@ -709,12 +754,39 @@ def _parse_close_arg(raw: str, label: str) -> Optional[List[dict]]:
     return refs
 
 
-def resolve_from_baseline(config_path: str, strategy_id: str) -> dict:
-    """Resolve open + incumbent close from a live config (v15-gated, #951).
+def _stops_from_kwargs(kwargs: dict) -> dict:
+    """Collect the non-None strategy-level stop fields from a load_strategy_config result.
 
-    Returns {open_name, params, incumbent_close, direction, allowed_regimes,
-    regime_section}. Fails loud (the load_strategy_config guards) on pre-v15,
-    missing strategy, or backtester-incompatible close — never a silent fallback.
+    ``load_strategy_config`` returns every ``STOP_FIELD_KEYS`` entry (None when the
+    strategy doesn't set it). Keep only the present ones so ``_backtester_kwargs``
+    spreads exactly the live exit surface and nothing else.
+    """
+    return {k: kwargs.get(k) for k in STOP_FIELD_KEYS if kwargs.get(k) is not None}
+
+
+def _candidate_stops(mode: str, incumbent_stops: dict) -> dict:
+    """Resolve the candidate arm's stop fields from the --candidate-stops mode.
+
+    ``inherit`` (default) holds the incumbent's strategy-level stops fixed on the
+    candidate arm so the A/B isolates the close-evaluator change; ``drop`` runs the
+    candidate arm with NO strategy-level stops so its close refs are the entire
+    exit (a full exit-policy replacement). The control arm ALWAYS keeps the
+    incumbent stops regardless of this mode.
+    """
+    if mode == "drop":
+        return {}
+    return dict(incumbent_stops or {})
+
+
+def resolve_from_baseline(config_path: str, strategy_id: str) -> dict:
+    """Resolve open + incumbent close + stops from a live config (v15-gated, #951).
+
+    Returns {open_name, params, incumbent_close, stops, direction, allowed_regimes,
+    regime_section}. ``stops`` is the incumbent's strategy-level stop/trailing exit
+    surface (``STOP_FIELD_KEYS``) so the control arm replays the COMPLETE live exit
+    policy, not just the close evaluator. Fails loud (the load_strategy_config
+    guards) on pre-v15, missing strategy, or backtester-incompatible close — never a
+    silent fallback.
     """
     from run_backtest import load_strategy_config
     import json as _json
@@ -728,6 +800,7 @@ def resolve_from_baseline(config_path: str, strategy_id: str) -> dict:
         "open_name": open_ref.get("name"),
         "params": dict(open_ref.get("params") or {}) or None,
         "incumbent_close": kwargs.get("close_strategies") or None,
+        "stops": _stops_from_kwargs(kwargs),
         "direction": kwargs.get("direction"),
         "allowed_regimes": sc.get("allowed_regimes") or None,
         "regime_section": cfg.get("regime") or {},
@@ -890,6 +963,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--candidate-close", required=True,
                    help="Candidate close refs JSON under test (or 'none' to test "
                         "removing the exit). The thing being A/B'd.")
+    p.add_argument("--candidate-stops", choices=["inherit", "drop"], default="inherit",
+                   help="How the candidate arm treats the incumbent's strategy-level "
+                        "stops (resolved from --baseline-config). 'inherit' (default) "
+                        "holds them fixed so the A/B isolates the close-evaluator "
+                        "change; 'drop' runs the candidate with NO strategy-level stop "
+                        "so its close refs are the entire exit (full-policy "
+                        "replacement). The control arm always keeps the incumbent "
+                        "stops either way.")
     p.add_argument("--direction", default=None, choices=["long", "short", "both"],
                    help="Entry side held fixed across both arms (default: long, "
                         "or the baseline config's direction)")
@@ -924,6 +1005,7 @@ def _resolve_spec(args) -> dict:
     params = json.loads(args.params) if args.params else None
     direction = args.direction
     incumbent_close = None
+    incumbent_stops: dict = {}
     regime_section: dict = {}
     config_allowed_regimes = None
 
@@ -937,6 +1019,7 @@ def _resolve_spec(args) -> dict:
         if params is None:
             params = resolved["params"]
         incumbent_close = resolved["incumbent_close"]
+        incumbent_stops = resolved["stops"]
         if direction is None:
             direction = resolved["direction"]
         config_allowed_regimes = resolved["allowed_regimes"]
@@ -951,11 +1034,41 @@ def _resolve_spec(args) -> dict:
                 "to resolve the live close, or --incumbent-close '<json>' (or "
                 "--incumbent-close none for an explicit open-as-close control).")
         incumbent_close = _parse_close_arg(args.incumbent_close, "--incumbent-close")
+        # The explicit-close path carries no strategy-level stops (only --baseline-config
+        # resolves them); --candidate-stops is therefore a no-op here.
+        if args.candidate_stops == "drop":
+            print("[WARN] --candidate-stops drop has no effect without --baseline-config "
+                  "(the explicit --incumbent-close path resolves no strategy-level stops).",
+                  file=sys.stderr)
 
     candidate_close = _parse_close_arg(args.candidate_close, "--candidate-close")
     direction = direction or "long"
 
+    candidate_stops = _candidate_stops(args.candidate_stops, incumbent_stops)
+
     regime_cfg = resolve_regime_cfg(args, regime_section)
+    # #1066 finding-2: the backtester's entry gate has no gate-window parameter —
+    # it default-picks the primary window of a composite windows_spec (regime.py),
+    # exactly why run_backtest.load_strategy_config rejects a named regime_gate_window
+    # as having no bar-level parity. A user-supplied --gate-window naming one window
+    # of a MULTI-window spec would steer attribution to a window the gate cannot
+    # honor, silently mis-bucketing every regime-conditioned delta. Reject loudly.
+    if args.gate_window:
+        ws = regime_cfg.get("windows_spec") or {}
+        if len(ws) > 1:
+            raise SystemExit(
+                f"--gate-window {args.gate_window!r} selects one window of a "
+                f"multi-window spec for attribution, but the backtester's entry gate "
+                f"has no gate-window parameter and default-picks the primary window "
+                f"(regime.py) — so the gate and the regime attribution would classify "
+                f"on different windows and silently mis-bucket the A/B (same reason "
+                f"run_backtest rejects a named regime_gate_window). Use a single-window "
+                f"--regime-windows-json so gate and attribution agree, or drop "
+                f"--gate-window (both then default-pick the same window).")
+        if ws and args.gate_window not in ws:
+            raise SystemExit(
+                f"--gate-window {args.gate_window!r} names no window in the resolved "
+                f"windows_spec (keys: {sorted(ws)}).")
     allowed_regimes = args.allowed_regimes or config_allowed_regimes
     gate = {
         "allowed_regimes": allowed_regimes,
@@ -971,6 +1084,9 @@ def _resolve_spec(args) -> dict:
         "direction": direction,
         "incumbent_close": incumbent_close,
         "candidate_close": candidate_close,
+        "control_stops": incumbent_stops,
+        "candidate_stops": candidate_stops,
+        "candidate_stops_mode": args.candidate_stops,
         "replayable": candidate_is_replayable(candidate_close),
         "gate": gate,
         "regime_cfg": regime_cfg,
@@ -1005,6 +1121,10 @@ def main(argv: Optional[List[str]] = None) -> int:
           f"registry: {args.registry}, direction: {spec['direction']})")
     print(f"incumbent close: {spec['incumbent_close'] or 'open-as-close (signal reversal)'}")
     print(f"candidate close: {spec['candidate_close'] or 'open-as-close (signal reversal)'}")
+    ctrl_stops = spec.get("control_stops") or {}
+    print(f"incumbent stops (control arm): {ctrl_stops or 'none'}"
+          + (f"  |  candidate arm stops: {spec['candidate_stops_mode']} "
+             f"({spec.get('candidate_stops') or 'none'})" if ctrl_stops else ""))
     print(f"regime: classifier={spec['regime_cfg']['classifier']}"
           + (f", gate={spec['gate']['allowed_regimes']}" if spec['gate']['allowed_regimes']
              else ", gate=none (attribution only)"))
@@ -1032,6 +1152,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                      "direction": spec["direction"]},
             "incumbent_close": spec["incumbent_close"],
             "candidate_close": spec["candidate_close"],
+            "control_stops": spec.get("control_stops"),
+            "candidate_stops": spec.get("candidate_stops"),
+            "candidate_stops_mode": spec.get("candidate_stops_mode"),
             "replayable": spec["replayable"],
             "regime_cfg": spec["regime_cfg"],
             "gate_allowed_regimes": spec["gate"]["allowed_regimes"],
