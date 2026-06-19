@@ -40,6 +40,7 @@ from chart_patterns import chart_pattern_core
 from liquidity_sweeps import liquidity_sweep_core
 from range_scalper import range_scalper_core
 from consolidation_range import consolidation_range_core
+from atr_band_revert import atr_band_revert_core
 from sweep_squeeze_combo import sweep_squeeze_combo_core
 from adx_trend import adx_trend_core
 from bear_pullback_st import bear_pullback_st_core
@@ -1169,6 +1170,21 @@ def consolidation_range_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "atr_band_revert",
+    "ATR Band Reversion — ranging-market mean reversion: fade ATR-scaled bands around an SMA (long below mid-k*ATR; short above mid+k*ATR on futures). Entries only — pair with allowed_regimes=ranging and tiered_tp_atr / stop_loss_atr_mult for the take-profit-at-mid and range-break exit (see atr_band_revert.py)",
+    {"period": 20, "atr_period": 14, "k_entry": 1.5, "allow_short": False},
+    variants={
+        "futures": {
+            "description": "ATR Band Reversion — bidirectional ranging mean reversion: fade ATR-scaled bands around an SMA (long below mid-k*ATR, short above mid+k*ATR). Entries only — pair with allowed_regimes=ranging and tiered_tp_atr / stop_loss_atr_mult for exit",
+            "default_params": {"allow_short": True},
+        },
+    },
+)
+def atr_band_revert_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return atr_band_revert_core(df, **params)
+
+
+@register(
     "mtf_confluence",
     "MTF Confluence — higher-timeframe EMA trend gate (resampled in-frame, no extra data) over native-frame pullback resumption entries; exits when the HTF trend flips",
     {
@@ -1292,7 +1308,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "anchored_vwap", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "donchian_breakout", "tema_cross",
-        "momentum_pro", "mean_reversion_pro", "mtf_confluence",
+        "momentum_pro", "mean_reversion_pro", "atr_band_revert", "mtf_confluence",
         "vol_momentum", "regime_adaptive", "regime_adaptive_htf",
         "hold",
     ],
@@ -1306,7 +1322,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "sweep_squeeze_combo", "adx_trend", "delta_neutral_funding",
         "funding_skew", "donchian_breakout", "session_breakout", "bear_pullback_st",
         "vwap_rejection_st", "momentum_pro", "mean_reversion_pro",
-        "consolidation_range", "mtf_confluence", "vol_momentum",
+        "consolidation_range", "atr_band_revert", "mtf_confluence", "vol_momentum",
         "regime_adaptive", "regime_adaptive_htf", "hold",
     ],
 }

@@ -831,6 +831,11 @@ DEFAULT_PARAM_RANGES = {
         "min_bars": [12, 16, 24],
         "edge_entry_frac": [0.1, 0.2, 0.33],
     },
+    "atr_band_revert": {
+        "period": [14, 20, 30],
+        "atr_period": [10, 14, 20],
+        "k_entry": [1.0, 1.5, 2.0],
+    },
     "bear_pullback_st": {
         "ema_short": [13, 20, 26],
         "ema_mid": [34, 50, 80],
