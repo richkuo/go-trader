@@ -697,6 +697,23 @@ func runManualClose(args []string) int {
 		return 0
 	}
 
+	// #1052 review: refuse a full close while an SL edit for this position is
+	// still un-drained. manual-update-sl placed a fresh on-chain SL OID that
+	// lives only in the queued PendingManualAction; pos.StopLossOID here is the
+	// stale (already-cancelled) OID, so a full close would cancel the wrong OID
+	// and leave the new stop-loss resting orphaned after the position goes flat
+	// (able to fire against a later re-open of the coin). Fail closed on a check
+	// error. Partial close leaves the SL resting (cancelOID stays 0) — no orphan.
+	if intentFullClose {
+		if pending, perr := pendingSLActionExists(stateDB, strategyID, sc.Symbol); perr != nil {
+			fmt.Fprintf(os.Stderr, "error: could not check for queued stop-loss edits (%v) — refusing the full close to avoid orphaning an on-chain order; retry once the scheduler is reachable\n", perr)
+			return 1
+		} else if pending {
+			fmt.Fprintf(os.Stderr, "error: a stop-loss edit for %s/%s is queued and not yet applied — run the scheduler (`--once`) or wait for the next cycle before a full close (closing now would orphan the new stop-loss on-chain)\n", strategyID, sc.Symbol)
+			return 1
+		}
+	}
+
 	// Fix #2: only cancel the SL on a full close; leave it resting on partial close.
 	cancelOID := int64(0)
 	if intentFullClose {

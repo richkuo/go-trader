@@ -182,6 +182,15 @@ func TestPendingSLActionExists(t *testing.T) {
 	if pending, err := pendingSLActionExists(db, "hl-eth", "eth"); err != nil || !pending {
 		t.Fatalf("expected pending SL action for hl-eth/eth, got pending=%v err=%v", pending, err)
 	}
+
+	// A queued cancel-sl is also detected (the full manual-close guard refuses
+	// for either SL action type).
+	if err := db.InsertPendingManualAction(PendingManualAction{StrategyID: "hl-sol", Action: "cancel-sl", Symbol: "SOL", Side: "long", CreatedAt: now}); err != nil {
+		t.Fatalf("insert cancel-sl: %v", err)
+	}
+	if pending, err := pendingSLActionExists(db, "hl-sol", "SOL"); err != nil || !pending {
+		t.Fatalf("expected pending cancel-sl action for hl-sol/SOL, got pending=%v err=%v", pending, err)
+	}
 }
 
 func TestManualActionRecordsTrade(t *testing.T) {
