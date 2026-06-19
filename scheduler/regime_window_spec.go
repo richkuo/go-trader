@@ -392,11 +392,34 @@ func formatRegimeWindowSpecInspect(name string, spec RegimeWindowSpec, rc *Regim
 	return fmt.Sprintf("%s: classifier=%s period=%d adx_threshold=%g", name, cls, resolved.Period, resolved.ADXThreshold)
 }
 
+// regimeDisplayWindowAllowSet returns the normalized set of window names the
+// operator opted to show in the summary (#1062), or nil when DisplayWindows is
+// unset/blank — nil means "render every window" (legacy behavior). Blank
+// entries are ignored so a stray "" can't collapse the set to show-nothing.
+func regimeDisplayWindowAllowSet(rc *RegimeConfig) map[string]bool {
+	if rc == nil || len(rc.DisplayWindows) == 0 {
+		return nil
+	}
+	allow := make(map[string]bool, len(rc.DisplayWindows))
+	for _, name := range rc.DisplayWindows {
+		key := normalizeRegimeWindowKey(name)
+		if key == "" {
+			continue
+		}
+		allow[key] = true
+	}
+	if len(allow) == 0 {
+		return nil
+	}
+	return allow
+}
+
 func formatStrategyRegimeDisplay(ss *StrategyState, rc *RegimeConfig) string {
 	if ss == nil {
 		return ""
 	}
 	if regimeMultiWindowEnabled(rc) && len(ss.RegimeWindows) > 0 {
+		allow := regimeDisplayWindowAllowSet(rc)
 		names := make([]string, 0, len(ss.RegimeWindows))
 		for name := range ss.RegimeWindows {
 			names = append(names, name)
@@ -404,6 +427,9 @@ func formatStrategyRegimeDisplay(ss *StrategyState, rc *RegimeConfig) string {
 		sort.Strings(names)
 		parts := make([]string, 0, len(names))
 		for _, name := range names {
+			if allow != nil && !allow[normalizeRegimeWindowKey(name)] {
+				continue
+			}
 			label := strings.TrimSpace(ss.RegimeWindows[name])
 			if label == "" {
 				continue

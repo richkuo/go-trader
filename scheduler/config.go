@@ -76,6 +76,14 @@ type RegimeConfig struct {
 	Period       int              `json:"period"`            // ADX lookback (Wilder's smoothing); default 14; legacy single-window mode
 	ADXThreshold float64          `json:"adx_threshold"`     // ADX below this is "ranging"; default 20.0
 	Windows      RegimeWindowsMap `json:"windows,omitempty"` // name -> classifier+period; bare int = ADX period (#792/#795)
+	// DisplayWindows optionally restricts which regime windows appear in the
+	// Discord/cycle summary (#1062). Display-only: it never affects regime
+	// calculation or gating. Names match window keys case-insensitively (e.g.
+	// "composite_long", "long"). Empty/omitted preserves the legacy behavior of
+	// rendering every window. When set but no configured window matches a
+	// populated label, the summary falls back to the single primary regime
+	// string (same fallback as the multi-window-disabled path).
+	DisplayWindows []string `json:"display_windows,omitempty"`
 }
 
 // CorrelationConfig controls portfolio-level directional exposure tracking.

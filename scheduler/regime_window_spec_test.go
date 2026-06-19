@@ -115,6 +115,110 @@ func policyPtr(p RegimeDirectionalPolicy) *RegimeDirectionalPolicy {
 	return &p
 }
 
+// regimeDisplayTestConfig returns a multi-window-enabled regime config carrying
+// both scalar (adx) and composite windows, plus a matching label map — the
+// verbose six-window state #1062 narrows.
+func regimeDisplayTestConfig() (*RegimeConfig, *StrategyState) {
+	rc := &RegimeConfig{
+		Enabled: true,
+		Windows: RegimeWindowsMap{
+			"long":             {Period: 2160},
+			"medium":           {Period: 720},
+			"short":            {Period: 168},
+			"composite_long":   {Classifier: regimeClassifierComposite, Period: 2160},
+			"composite_medium": {Classifier: regimeClassifierComposite, Period: 720},
+			"composite_short":  {Classifier: regimeClassifierComposite, Period: 168},
+		},
+	}
+	ss := &StrategyState{
+		Regime: "ranging",
+		RegimeWindows: map[string]string{
+			"long":             "ranging",
+			"medium":           "ranging",
+			"short":            "trending_down",
+			"composite_long":   "ranging_directional",
+			"composite_medium": "ranging_directional",
+			"composite_short":  "trending_down_choppy",
+		},
+	}
+	return rc, ss
+}
+
+func TestFormatStrategyRegimeDisplay_DefaultShowsAllWindows(t *testing.T) {
+	rc, ss := regimeDisplayTestConfig()
+	got := formatStrategyRegimeDisplay(ss, rc)
+	for _, name := range []string{"long", "medium", "short", "composite_long", "composite_medium", "composite_short"} {
+		if !strings.Contains(got, name+"=") {
+			t.Fatalf("unset DisplayWindows should render %q; got: %s", name, got)
+		}
+	}
+}
+
+func TestFormatStrategyRegimeDisplay_CompositeOnly(t *testing.T) {
+	rc, ss := regimeDisplayTestConfig()
+	rc.DisplayWindows = []string{"composite_long", "composite_medium", "composite_short"}
+	got := formatStrategyRegimeDisplay(ss, rc)
+	for _, name := range []string{"composite_long", "composite_medium", "composite_short"} {
+		if !strings.Contains(got, name+"=") {
+			t.Fatalf("composite window %q should render; got: %s", name, got)
+		}
+	}
+	// Scalar windows must be suppressed. Match "long=" etc. with a leading
+	// delimiter/start so "composite_long=" doesn't false-positive on "long=".
+	for _, scalar := range []string{"long", "medium", "short"} {
+		if regimeDisplayHasBareWindow(got, scalar) {
+			t.Fatalf("scalar window %q should be hidden; got: %s", scalar, got)
+		}
+	}
+}
+
+func TestFormatStrategyRegimeDisplay_CaseInsensitiveMatch(t *testing.T) {
+	rc, ss := regimeDisplayTestConfig()
+	rc.DisplayWindows = []string{"  COMPOSITE_LONG  "}
+	got := formatStrategyRegimeDisplay(ss, rc)
+	if !strings.Contains(got, "composite_long=") {
+		t.Fatalf("case/space-insensitive match should render composite_long; got: %s", got)
+	}
+	if regimeDisplayHasBareWindow(got, "long") || strings.Contains(got, "composite_medium=") {
+		t.Fatalf("only composite_long should render; got: %s", got)
+	}
+}
+
+func TestFormatStrategyRegimeDisplay_NoMatchFallsBackToPrimary(t *testing.T) {
+	rc, ss := regimeDisplayTestConfig()
+	rc.DisplayWindows = []string{"does_not_exist"}
+	got := formatStrategyRegimeDisplay(ss, rc)
+	if got != "ranging" {
+		t.Fatalf("no matching window should fall back to ss.Regime %q; got: %s", ss.Regime, got)
+	}
+}
+
+func TestFormatStrategyRegimeDisplay_BlankEntriesTreatedAsUnset(t *testing.T) {
+	rc, ss := regimeDisplayTestConfig()
+	rc.DisplayWindows = []string{"", "   "}
+	got := formatStrategyRegimeDisplay(ss, rc)
+	// A stray blank list must not collapse the summary to "show nothing" — it
+	// behaves like unset and renders every window.
+	for _, name := range []string{"long", "composite_long"} {
+		if !strings.Contains(got, name+"=") {
+			t.Fatalf("blank DisplayWindows should render all windows; missing %q in: %s", name, got)
+		}
+	}
+}
+
+// regimeDisplayHasBareWindow reports whether out contains a `name=` token that
+// is the actual window key, not a suffix of a longer key (e.g. "long" must not
+// match inside "composite_long=").
+func regimeDisplayHasBareWindow(out, name string) bool {
+	needle := name + "="
+	for _, part := range strings.Split(out, "; ") {
+		if strings.HasPrefix(strings.TrimSpace(part), needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func mustParseRegimeDirectionalPolicy(t *testing.T, raw string) RegimeDirectionalPolicy {
 	t.Helper()
 	var p RegimeDirectionalPolicy
