@@ -35,6 +35,30 @@ def test_fit_drops_nan_rows():
     assert m["emissions"][0]["n"] == 1  # the NaN s0 row was dropped
 
 
+def test_fit_no_spurious_transition_across_midseries_nan():
+    # #1078: a mid-series NaN (low-ATR) bar between a pure s0 run and a pure s1 run must NOT
+    # be counted as an s0->s1 transition. Layout: s0 s0 s0 [NaN] s1 s1 s1.
+    feats = np.array([[0.0], [0.0], [0.0], [np.nan], [1.0], [1.0], [1.0]])
+    labels = np.array(["s0", "s0", "s0", "s0", "s1", "s1", "s1"], dtype=object)
+    m = fit_label_anchored_hmm(feats, labels, STATES, filter_window=4, laplace=1.0)
+    A = np.array(m["transition"])
+    # Raw counts with the gap skipped: s0->s0 = 2, s0->s1 = 0. With laplace=1 the s0 row is
+    # [3, 1] -> [0.75, 0.25]. The buggy NaN-dropped zip would have counted one s0->s1 (-> 0.4).
+    assert abs(A[0][1] - 0.25) < 1e-9
+    assert abs(A[0][0] - 0.75) < 1e-9
+
+
+def test_fit_counts_genuine_adjacent_transition():
+    # Control for the fix above: with NO NaN gap the s0->s1 boundary transition IS counted,
+    # so the fix suppresses only spurious NaN-spanned adjacencies, not real ones.
+    feats = np.array([[0.0], [0.0], [0.0], [1.0], [1.0], [1.0]])
+    labels = np.array(["s0", "s0", "s0", "s1", "s1", "s1"], dtype=object)
+    m = fit_label_anchored_hmm(feats, labels, STATES, filter_window=4, laplace=1.0)
+    A = np.array(m["transition"])
+    # Raw s0->s0 = 2, s0->s1 = 1 -> s0 row [3, 2] -> [0.6, 0.4].
+    assert abs(A[0][1] - 0.4) < 1e-9
+
+
 def test_forward_filter_look_ahead_safe():
     from regime_hmm import forward_filter_labels
     rng = np.random.default_rng(0)

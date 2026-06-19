@@ -2,7 +2,9 @@
 import os, sys
 import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from regime_diagnostics import forward_returns, coverage, separation, stability
+from regime_diagnostics import (
+    forward_returns, forward_realized_vol, coverage, separation, stability,
+)
 
 
 def test_forward_returns_horizon():
@@ -10,6 +12,37 @@ def test_forward_returns_horizon():
     fr = forward_returns(close, 1)
     np.testing.assert_allclose(fr[:2], [0.10, 0.10])
     assert np.isnan(fr[-1])
+
+
+def test_forward_realized_vol_horizon1():
+    # log prices [0, 0.1, 0.3, 0.6] -> 1-bar log returns [0, 0.1, 0.2, 0.3].
+    # forward realized vol at h=1 is |next log return|: [0.1, 0.2, 0.3, NaN].
+    close = np.exp(np.array([0.0, 0.1, 0.3, 0.6]))
+    fv = forward_realized_vol(close, 1)
+    np.testing.assert_allclose(fv[:3], [0.1, 0.2, 0.3], atol=1e-12)
+    assert np.isnan(fv[-1])
+
+
+def test_forward_realized_vol_horizon2_sums_squared_log_returns():
+    close = np.exp(np.array([0.0, 0.1, 0.3, 0.6]))
+    fv = forward_realized_vol(close, 2)
+    # out[0] = sqrt(0.1^2 + 0.2^2) = sqrt(0.05); out[1] = sqrt(0.2^2 + 0.3^2) = sqrt(0.13)
+    np.testing.assert_allclose(fv[:2], [np.sqrt(0.05), np.sqrt(0.13)], atol=1e-12)
+    assert np.isnan(fv[2]) and np.isnan(fv[3])  # last `horizon` bars have no full window
+
+
+def test_forward_realized_vol_separates_quiet_from_volatile():
+    # A quiet leg (tiny moves) then a volatile leg (large moves): forward vol must rank
+    # the volatile-state bars far above the quiet-state bars (the regime's real signal).
+    rng = np.random.default_rng(0)
+    quiet = rng.normal(0, 0.001, 200)
+    loud = rng.normal(0, 0.02, 200)
+    close = 100 * np.exp(np.cumsum(np.concatenate([quiet, loud])))
+    labels = np.array(["quiet"] * 200 + ["loud"] * 200, dtype=object)
+    fv = forward_realized_vol(close, 4)
+    sep = separation(labels, fv)
+    assert sep["per_state"]["loud"]["mean"] > sep["per_state"]["quiet"]["mean"]
+    assert sep["kruskal_h"] > 5.0
 
 
 def test_coverage_counts():
@@ -98,6 +131,34 @@ def test_score_labels_masks_warmup():
     assert out_a["coverage"] == out_b["coverage"]
     assert out_a["stability"] == out_b["stability"]
     assert out_a["h4"]["significance"]["p_value"] == out_b["h4"]["significance"]["p_value"]
+
+
+def test_score_labels_target_volatility_stamped_and_distinct():
+    from regime_diagnostics import score_labels
+    rng = np.random.default_rng(1)
+    # Quiet then volatile leg so the vol target genuinely separates the two label groups.
+    steps = np.concatenate([rng.normal(0, 0.001, 150), rng.normal(0, 0.02, 150)])
+    close = 100 * np.exp(np.cumsum(steps))
+    labels = np.array(["quiet"] * 150 + ["loud"] * 150, dtype=object)
+    feats = rng.normal(0, 1, (300, 4))
+
+    vol = score_labels(close, labels, feats, horizons=(4,), seed=0, target="volatility")
+    ret = score_labels(close, labels, feats, horizons=(4,), seed=0, target="returns")
+    assert vol["target"] == "volatility" and ret["target"] == "returns"
+    # Different forward variable -> different separation statistic on the same labels.
+    assert vol["h4"]["separation"]["kruskal_h"] != ret["h4"]["separation"]["kruskal_h"]
+    # Vol target strongly separates quiet vs loud; the gate reads this KW-H.
+    assert vol["h4"]["separation"]["kruskal_h"] > 5.0
+
+
+def test_score_labels_rejects_unknown_target():
+    from regime_diagnostics import score_labels
+    import pytest
+    close = 100 * np.cumprod(1 + np.zeros(50))
+    labels = np.array(["a"] * 50, dtype=object)
+    feats = np.zeros((50, 4))
+    with pytest.raises(ValueError):
+        score_labels(close, labels, feats, horizons=(4,), target="sharpe")
 
 
 def test_per_state_significance():

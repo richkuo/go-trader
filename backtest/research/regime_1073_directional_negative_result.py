@@ -44,6 +44,7 @@ from data_fetcher import load_cached_data
 from eval_windows import WINDOWS, PLATFORM
 from regime_diagnostics import (
     forward_returns,
+    forward_realized_vol,
     separation,
     stability,
     block_shuffle_pvalue,
@@ -75,14 +76,6 @@ def _load(symbol, timeframe, window, thresholds):
         "mean_dwell": mean_dwell,
         "transition_rate": st["transition_rate"],
     }
-
-
-def _fwd_realized_vol(close, h):
-    log_ret = np.diff(np.log(close), prepend=np.log(close[0]))
-    out = np.full(len(close), np.nan)
-    for i in range(len(close) - h):
-        out[i] = np.sqrt(np.sum(log_ret[i + 1: i + 1 + h] ** 2))
-    return out
 
 
 def diag_windows(symbol, timeframe, windows, th, horizon=4):
@@ -138,7 +131,7 @@ def diag_vol(symbol, timeframe, windows, th):
         loaded[w] = d
         row = f"{w:8s} |"
         for h in (4, 24):
-            fv = _fwd_realized_vol(d["close"], h)[d["valid"]]
+            fv = forward_realized_vol(d["close"], h)[d["valid"]]
             bl = max(int(3 * d["mean_dwell"]), h)
             sig = block_shuffle_pvalue(d["vlabels"], fv, bl, seed=0)
             flag = "*" if sig["p_value"] <= 0.05 else " "

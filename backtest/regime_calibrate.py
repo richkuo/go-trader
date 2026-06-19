@@ -19,20 +19,29 @@ def gate_verdict(handrule_report: dict, model_report: dict, primary: str = "h4")
     md_p = model_report[primary]["significance"]["p_value"]
     hr_tr = handrule_report["stability"]["transition_rate"]
     md_tr = model_report["stability"]["transition_rate"]
+    # The forward target the reports were scored on (#1078 re-targets this from "returns" to
+    # "volatility"). The gate logic is target-agnostic — it scores between-state separation of
+    # whatever forward variable score_labels stamped — but we surface it so a verdict can never
+    # be misread as a directional (return) result when it is a volatility result.
+    target = model_report.get("target") or handrule_report.get("target")
     # Absolute floor: the relative KW-H tolerance is meaningless when the incumbent itself
     # separates ~nothing (threshold collapses toward 0, and any model — including a
     # near-constant-label one that also maximizes the stability arm — passes). So require
-    # the model's OWN forward-return separation to be statistically real (block-shuffle
+    # the model's OWN forward separation to be statistically real (block-shuffle
     # permutation p <= alpha), not merely "not much worse than a weak incumbent".
     model_separation_real = md_p <= SIGNIFICANCE_ALPHA
     # Abstain when the incumbent shows no significant separation on this window: there is
     # no trustworthy baseline to validate a live-classifier replacement against, so we must
-    # not ship off it regardless of how the model scores.
+    # not ship off it regardless of how the model scores. On the forward-return target the
+    # hand-rule is never significant (#1073), so this abstained on every window; on the
+    # forward-volatility target it is significant on 4/5 windows (PR #1077), so the gate can
+    # now honestly ship a stability-improved model.
     incumbent_trustworthy = hr_p <= SIGNIFICANCE_ALPHA
     separation_ok = (md_h >= hr_h * (1.0 - SEPARATION_TOLERANCE)) and model_separation_real
     stability_ok = (hr_tr - md_tr) >= STABILITY_MIN_GAIN
     ship = separation_ok and stability_ok and incumbent_trustworthy
     return {
+        "target": target,
         "separation_ok": bool(separation_ok),
         "stability_ok": bool(stability_ok),
         "model_separation_real": bool(model_separation_real),
@@ -73,6 +82,8 @@ def build_parser():
     p.add_argument("--held-out", default="oos")
     p.add_argument("--period", type=int, default=48)
     p.add_argument("--filter-window", type=int, default=64)
+    p.add_argument("--target", default="volatility", choices=("returns", "volatility"),
+                   help="forward variable the gate scores separation on (default: volatility, #1078)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default=None, help="write fitted model JSON here")
     p.add_argument("--json", default=None, help="write validation report JSON here")
@@ -88,10 +99,12 @@ def main(argv=None) -> int:
     if args.out:
         with open(args.out, "w") as fh:
             json.dump({"model": model}, fh, indent=2, default=float)
-    hr = run_window(args.symbol, args.timeframe, args.held_out, model=None, seed=args.seed)
-    md = run_window(args.symbol, args.timeframe, args.held_out, model=model, seed=args.seed)
+    hr = run_window(args.symbol, args.timeframe, args.held_out, model=None,
+                    seed=args.seed, target=args.target)
+    md = run_window(args.symbol, args.timeframe, args.held_out, model=model,
+                    seed=args.seed, target=args.target)
     verdict = gate_verdict(hr, md)
-    payload = {"symbol": args.symbol, "timeframe": args.timeframe,
+    payload = {"symbol": args.symbol, "timeframe": args.timeframe, "target": args.target,
                "in_sample": args.in_sample, "held_out": args.held_out,
                "verdict": verdict, "handrule": hr, "model": md}
     text = json.dumps(payload, indent=2, default=float)

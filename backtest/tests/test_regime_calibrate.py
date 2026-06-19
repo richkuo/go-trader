@@ -4,12 +4,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from regime_calibrate import gate_verdict
 
 
-def _report(kw_h, transition_rate, p_value=0.005):
+def _report(kw_h, transition_rate, p_value=0.005, target=None):
     # p_value defaults to "significant" so existing separation/stability cases are
     # exercised in isolation; cases that probe the significance floor set it explicitly.
-    return {"stability": {"transition_rate": transition_rate},
-            "h4": {"separation": {"kruskal_h": kw_h},
-                   "significance": {"p_value": p_value}}}
+    r = {"stability": {"transition_rate": transition_rate},
+         "h4": {"separation": {"kruskal_h": kw_h},
+                "significance": {"p_value": p_value}}}
+    if target is not None:
+        r["target"] = target
+    return r
 
 
 def test_gate_ships_when_stability_better_and_separation_kept():
@@ -76,3 +79,27 @@ def test_gate_abstains_when_incumbent_not_significant():
     assert v["incumbent_trustworthy"] is False
     assert v["abstained"] is True
     assert v["ship"] is False
+
+
+# --- #1078: gate re-founded on the forward-VOLATILITY target -----------------------------
+
+def test_gate_surfaces_target_from_reports():
+    # The verdict must echo the forward target the reports were scored on, so a volatility
+    # result can never be misread as a directional (return) one.
+    hr = _report(13.0, 0.40, p_value=0.005, target="volatility")
+    md = _report(12.4, 0.25, p_value=0.005, target="volatility")
+    assert gate_verdict(hr, md)["target"] == "volatility"
+
+
+def test_gate_ships_on_trustworthy_volatility_incumbent():
+    # The crux of #1078: on the forward-VOLATILITY axis the hand-rule IS significant
+    # (PR #1077: 4/5 windows p <= 0.01), so a stability-improved model that keeps the
+    # separation now ships honestly — exactly the path that was impossible on the return
+    # target, where the incumbent was never significant (#1073) and the gate always abstained.
+    hr = _report(90.0, 0.45, p_value=0.005, target="volatility")  # strong, real vol incumbent
+    md = _report(88.0, 0.30, p_value=0.005, target="volatility")  # within tol, whipsaw down
+    v = gate_verdict(hr, md)
+    assert v["incumbent_trustworthy"] is True
+    assert v["abstained"] is False
+    assert v["separation_ok"] and v["stability_ok"]
+    assert v["ship"] is True

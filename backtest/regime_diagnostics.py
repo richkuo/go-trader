@@ -21,6 +21,33 @@ def forward_returns(close: np.ndarray, horizon: int) -> np.ndarray:
     return fwd
 
 
+def forward_realized_vol(close: np.ndarray, horizon: int) -> np.ndarray:
+    """Cumulative realized volatility over the FORWARD `horizon` bars.
+
+    For bar i: sqrt(sum of squared 1-bar log returns over bars (i, i+horizon]).
+    The last `horizon` bars are NaN (no full forward window). This is the signal the
+    ATR-scaled SL/TP ladders actually consume, and the target #1073/PR #1077 showed the
+    composite classifier separates strongly — so it is the gate's separation axis (#1078).
+    Single definition shared with the #1073 research script.
+    """
+    close = np.asarray(close, dtype=float)
+    n = len(close)
+    out = np.full(n, np.nan)
+    h = int(horizon)
+    if n < 2 or h < 1 or h >= n:
+        return out
+    log_ret = np.diff(np.log(close), prepend=np.log(close[0]))
+    for i in range(n - h):
+        out[i] = np.sqrt(np.sum(log_ret[i + 1 : i + 1 + h] ** 2))
+    return out
+
+
+# Forward-target registry: the variable whose between-state separation the gate scores.
+# "returns" is the directional axis (#1073/#1076 reproductions); "volatility" is the
+# axis the regime really carries and the one the gate is re-founded on (#1078).
+FORWARD_TARGETS = {"returns": forward_returns, "volatility": forward_realized_vol}
+
+
 def coverage(labels: np.ndarray) -> dict:
     labels = np.asarray(labels, dtype=object)
     n = len(labels)
@@ -177,9 +204,14 @@ def kmeans_yardstick(features, fwd, k_range=(2, 3, 4, 5, 6, 7), seed=0) -> dict:
     return out
 
 
-def score_labels(close, labels, features, horizons=(1, 4, 12), block_mult=3, seed=0) -> dict:
+def score_labels(close, labels, features, horizons=(1, 4, 12), block_mult=3, seed=0,
+                 target="returns") -> dict:
     labels = np.asarray(labels, dtype=object)
     features = np.asarray(features, dtype=float)
+    try:
+        fwd_fn = FORWARD_TARGETS[target]
+    except KeyError:
+        raise ValueError(f"unknown forward target {target!r}; known: {sorted(FORWARD_TARGETS)}")
     # Identical NaN-mask on both label streams: warmup + low-ATR bars (NaN feature rows)
     # are excluded from coverage/stability/separation so neither the hand-rule's
     # ranging_quiet nor the model's default_label for those bars biases the comparison.
@@ -187,11 +219,11 @@ def score_labels(close, labels, features, horizons=(1, 4, 12), block_mult=3, see
     vlabels = labels[valid]
     st = stability(vlabels)
     mean_dwell = float(np.mean(list(st["mean_dwell"].values()))) if st["mean_dwell"] else 1.0
-    out = {"coverage": coverage(vlabels), "stability": st, "horizons": {}}
+    out = {"target": target, "coverage": coverage(vlabels), "stability": st, "horizons": {}}
     for h in horizons:
-        # Forward returns computed on the FULL close (index-aligned); then subset by valid
-        # so each retained bar keeps its true h-ahead return.
-        fwd_full = forward_returns(close, h)
+        # Forward target (returns or realized vol) computed on the FULL close (index-aligned);
+        # then subset by valid so each retained bar keeps its true h-ahead value.
+        fwd_full = fwd_fn(close, h)
         fwd = fwd_full[valid]
         block_len = max(int(block_mult * mean_dwell), h)
         out["horizons"][f"h{h}"] = {
@@ -206,7 +238,8 @@ def score_labels(close, labels, features, horizons=(1, 4, 12), block_mult=3, see
     return out
 
 
-def run_window(symbol, timeframe, window, *, model=None, horizons=(1, 4, 12), seed=0) -> dict:
+def run_window(symbol, timeframe, window, *, model=None, horizons=(1, 4, 12), seed=0,
+               target="returns") -> dict:
     from regime import compute_regime_composite, composite_feature_matrix, _DEFAULT_COMPOSITE_THRESHOLDS
     from data_fetcher import load_cached_data
     from eval_windows import WINDOWS, PLATFORM
@@ -221,7 +254,8 @@ def run_window(symbol, timeframe, window, *, model=None, horizons=(1, 4, 12), se
     else:
         from regime_hmm import forward_filter_labels
         labels, _conf = forward_filter_labels(features, model)
-    return score_labels(df["close"].to_numpy(), labels, features, horizons=horizons, seed=seed)
+    return score_labels(df["close"].to_numpy(), labels, features, horizons=horizons,
+                        seed=seed, target=target)
 
 
 def build_parser() -> "argparse.ArgumentParser":
@@ -233,6 +267,8 @@ def build_parser() -> "argparse.ArgumentParser":
     p.add_argument("--windows", default="is,oos", help=f"known: {', '.join(WINDOWS)}")
     p.add_argument("--model-json", default=None, help="score a fitted model instead of the hand-rule")
     p.add_argument("--horizons", default="1,4,12")
+    p.add_argument("--target", default="returns", choices=("returns", "volatility"),
+                   help="forward variable the separation is scored on (default: returns)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--json", default=None, help="write report JSON to this path")
     return p
@@ -253,8 +289,8 @@ def main(argv=None) -> int:
         if w not in WINDOWS:
             raise SystemExit(f"unknown window {w}; known: {list(WINDOWS)}")
         report[w] = run_window(args.symbol, args.timeframe, w, model=model,
-                               horizons=horizons, seed=args.seed)
-    payload = {"symbol": args.symbol, "timeframe": args.timeframe,
+                               horizons=horizons, seed=args.seed, target=args.target)
+    payload = {"symbol": args.symbol, "timeframe": args.timeframe, "target": args.target,
                "source": "model" if model else "hand_rule", "windows": report}
     text = json.dumps(payload, indent=2, default=float)
     if args.json:
