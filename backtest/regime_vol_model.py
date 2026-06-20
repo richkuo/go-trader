@@ -53,3 +53,30 @@ def _logsumexp_rows(m: np.ndarray) -> np.ndarray:
     m = np.asarray(m, dtype=float)
     mx = m.max(axis=1, keepdims=True)
     return (mx[:, 0] + np.log(np.exp(m - mx).sum(axis=1)))
+
+
+def fit_kmeans(z, k, *, seed=0, iters=100, var_floor=1e-3):
+    z = np.asarray(z, dtype=float)
+    n = len(z)
+    rng = np.random.default_rng(seed)
+    centers = z[rng.choice(n, size=k, replace=False)].copy()
+    assign = np.zeros(n, dtype=int)
+    for _ in range(iters):
+        d = ((z[:, None, :] - centers[None, :, :]) ** 2).sum(-1)
+        new = d.argmin(1)
+        if np.array_equal(new, assign):
+            break
+        assign = new
+        for j in range(k):
+            if (assign == j).any():
+                centers[j] = z[assign == j].mean(0)
+    em_mean = centers
+    em_var = np.ones((k, z.shape[1]))
+    counts = np.zeros(k, dtype=int)
+    for j in range(k):
+        members = z[assign == j]
+        counts[j] = len(members)
+        if len(members) >= 2:
+            em_var[j] = members.var(0)
+    em_var = np.maximum(em_var, var_floor)
+    return assign, em_mean, em_var, counts

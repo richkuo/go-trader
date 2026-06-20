@@ -47,3 +47,32 @@ def test_logsumexp_matches_naive():
     m = np.array([[-1.0, -2.0], [0.0, -5.0]])
     assert np.allclose(rvm._logsumexp_rows(m),
                        np.log(np.exp(m).sum(1)))
+
+
+def _three_blobs(seed=0, per=200):
+    rng = np.random.default_rng(seed)
+    centers = np.array([[-3, -3, -3, -3], [0, 0, 0, 0], [3, 3, 3, 3]], dtype=float)
+    pts, truth = [], []
+    for c_idx, c in enumerate(centers):
+        pts.append(rng.normal(c, 0.25, size=(per, 4)))
+        truth += [c_idx] * per
+    return np.vstack(pts), np.array(truth)
+
+
+def _purity(assign, truth, k):
+    correct = 0
+    for j in range(k):
+        members = truth[assign == j]
+        if len(members):
+            maj = np.bincount(members).argmax()
+            correct += int((members == maj).sum())
+    return correct / len(truth)
+
+
+def test_fit_kmeans_recovers_three_blobs():
+    z, truth = _three_blobs()
+    assign, em_mean, em_var, counts = rvm.fit_kmeans(z, 3, seed=0)
+    assert em_mean.shape == (3, 4) and em_var.shape == (3, 4)
+    assert counts.sum() == len(z)
+    assert (em_var > 0).all()
+    assert _purity(assign, truth, 3) > 0.95
