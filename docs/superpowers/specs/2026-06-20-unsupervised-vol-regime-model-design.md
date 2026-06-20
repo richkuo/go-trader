@@ -189,6 +189,15 @@ significant (`incumbent_trustworthy = hr_p ≤ SIGNIFICANCE_ALPHA`, `regime_cali
 non-significant one, the gate abstains regardless of model quality. The harness reports this
 (`verdict.abstained`) across all held-out windows rather than crashing or silently failing.
 
+## Note for #1074 (live wiring)
+
+The HMM **fit** receives the NaN-compacted feature matrix (`z = features[mask]`), so Baum-Welch
+treats gap-separated bars as temporally adjacent when estimating *emissions* — a minor in-sample
+approximation. It does **not** affect correctness downstream: the stored `transition` is recomputed
+gap-correctly by `empirical_transition` (mirroring `regime_hmm`'s NaN discipline), and the causal
+decoder `forward_filter_labels` honors NaN bars via its carry branch. k-means/GMM are
+order-independent and unaffected. No action needed here; flagged so #1074 doesn't re-derive it.
+
 ## Out of scope
 
 - Live / Go classifier wiring and parity — **#1074**.

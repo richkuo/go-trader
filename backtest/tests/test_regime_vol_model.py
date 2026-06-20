@@ -27,11 +27,13 @@ def test_empirical_transition_skips_pairs_spanning_a_dropped_bar():
     valid_mask = np.array([True, True, False, True])
     assignments_valid = np.array([0, 1, 0])              # only for the 3 valid bars
     A = rvm.empirical_transition(assignments_valid, valid_mask, k=2, laplace=1.0)
-    # only adjacency 0->1 counts (bars 0,1). Pair (1,2)&(2,3) span the dropped bar.
     assert A.shape == (2, 2)
     assert np.allclose(A.sum(1), 1.0)                     # row-stochastic
-    # 0->1 got the lone real count; with laplace=1 row0 = [1,2]/3
-    assert A[0, 1] > A[0, 0]
+    # Only adjacency 0->1 (bars 0,1) counts; (1,2) and (2,3) span the dropped bar 2.
+    # Correct: laplace [[1,1],[1,1]] + one 0->1 => [[1,2],[1,1]] -> rows [1/3,2/3],[1/2,1/2].
+    # The gap-splice bug (treating compacted [0,1,0] as contiguous) would add a spurious
+    # 1->0, giving row1 [2/3,1/3] — so ROW 1, not row 0, is the discriminating assertion.
+    assert np.allclose(A, [[1.0 / 3, 2.0 / 3], [0.5, 0.5]])
 
 
 def test_init_distribution_is_stationary_and_sums_to_one():
