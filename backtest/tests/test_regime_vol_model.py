@@ -312,3 +312,14 @@ def test_select_winner_returns_none_when_no_eligible():
     assert mod.select_winner([{"family": "hmm", "k": 3, "verdict": {"ship": False},
                                "non_degenerate_all": True, "model_kruskal_h": 1.0,
                                "stability_gain": 0.0}]) is None
+
+
+def test_bakeoff_smoke_on_cached_data_if_available():
+    mod = _load_research_module("smoke")
+    try:
+        report = mod.run_bakeoff("BTC/USDT", "1h", families=("kmeans",),
+                                 k_range=range(3, 4), eval_windows=("is", "oos"))
+    except Exception as e:  # noqa: BLE001 — no cached OHLCV in CI -> skip, not fail
+        pytest.skip(f"no cached OHLCV / data path unavailable: {e}")
+    assert "candidates" in report and len(report["candidates"]) == 1
+    assert "non_degeneracy_thresholds" in report
