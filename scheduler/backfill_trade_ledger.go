@@ -90,18 +90,46 @@ type tradeLedgerOIDTotals struct {
 
 const tradeLedgerNoOIDRepairWindow = 2 * time.Minute
 
-func tradeLedgerNoOIDReconcileMatches(trades []TradeBackfillRow, fillMap map[string]HLFillSummary) map[int64]hlFillOIDMatch {
+func tradeLedgerNoOIDReconcileMatches(trades []TradeBackfillRow, fillMap map[string]HLFillSummary, reservedOIDs map[string]bool) map[int64]hlFillOIDMatch {
 	out := make(map[int64]hlFillOIDMatch)
 	if len(trades) == 0 || len(fillMap) == 0 {
 		return out
 	}
+	type rowMatch struct {
+		row   TradeBackfillRow
+		match hlFillOIDMatch
+	}
+	byOID := make(map[string][]rowMatch)
 	for _, t := range trades {
 		if t.FeeSource != FeeSourceReconcileAdjustment || !t.IsClose || t.ExchangeOrderID != "" || t.Quantity <= 0 {
 			continue
 		}
-		match, ok, _ := findUniqueHLFillByCoinQty(fillMap, t.Symbol, t.Quantity, false, t.Timestamp, tradeLedgerNoOIDRepairWindow)
-		if ok {
-			out[t.RowID] = match
+		candidates := findHLFillCandidatesByCoinQty(fillMap, t.Symbol, t.Quantity, false, t.Timestamp, tradeLedgerNoOIDRepairWindow, reservedOIDs)
+		if len(candidates) != 1 {
+			continue
+		}
+		match := candidates[0]
+		byOID[match.OID] = append(byOID[match.OID], rowMatch{row: t, match: match})
+	}
+	oids := make([]string, 0, len(byOID))
+	for oid := range byOID {
+		oids = append(oids, oid)
+	}
+	sort.Strings(oids)
+	for _, oid := range oids {
+		rows := byOID[oid]
+		if len(rows) == 0 {
+			continue
+		}
+		totalQty := 0.0
+		for _, row := range rows {
+			totalQty += row.row.Quantity
+		}
+		if !hlFillQtyCloseEnough(totalQty, rows[0].match.Summary.Qty) {
+			continue
+		}
+		for _, row := range rows {
+			out[row.row.RowID] = row.match
 		}
 	}
 	return out
@@ -186,7 +214,18 @@ func planTradeLedgerForStrategyWithOIDTotals(
 		}
 		return total
 	}
-	noOIDMatches := tradeLedgerNoOIDReconcileMatches(sorted, fillMap)
+	reservedOIDs := make(map[string]bool)
+	for oid := range feeQtyByOID {
+		if oid != "" {
+			reservedOIDs[oid] = true
+		}
+	}
+	for oid := range oidTotals {
+		if oid != "" {
+			reservedOIDs[oid] = true
+		}
+	}
+	noOIDMatches := tradeLedgerNoOIDReconcileMatches(sorted, fillMap, reservedOIDs)
 
 	cash := initialCapital
 	for _, t := range sorted {

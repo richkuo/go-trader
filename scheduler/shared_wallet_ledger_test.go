@@ -900,6 +900,11 @@ func TestPlanTradeLedgerForStrategy_NoOIDRepairApportionsSharedFillByQty(t *test
 			Price: 3000, Value: 1500, TradeType: "perps", IsClose: true,
 			RealizedPnL: 80, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
 		},
+		{
+			RowID: 2, Timestamp: base.Add(10 * time.Second), Symbol: "ETH", Side: "sell", Quantity: 1.5,
+			Price: 3000, Value: 4500, TradeType: "perps", IsClose: true,
+			RealizedPnL: 240, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
+		},
 	}
 	fills := map[string]HLFillSummary{
 		"98765": {
@@ -909,18 +914,76 @@ func TestPlanTradeLedgerForStrategy_NoOIDRepairApportionsSharedFillByQty(t *test
 	}
 
 	plan := planTradeLedgerForStrategy("hl-a", trades, fills, 1000, 0)
-	if len(plan.Changes) != 1 {
-		t.Fatalf("changes = %d, want 1", len(plan.Changes))
+	if len(plan.Changes) != 2 {
+		t.Fatalf("changes = %d, want 2", len(plan.Changes))
 	}
-	c := plan.Changes[0]
-	if c.NewOID != "98765" {
-		t.Fatalf("NewOID = %q, want 98765", c.NewOID)
+	byRow := map[int64]TradeLedgerChange{}
+	for _, c := range plan.Changes {
+		if c.NewOID != "98765" {
+			t.Fatalf("NewOID = %q, want 98765", c.NewOID)
+		}
+		byRow[c.RowID] = c
 	}
-	if math.Abs(c.NewFee-1) > 1e-9 || math.Abs(c.NewPnL-100) > 1e-9 {
-		t.Fatalf("shared repair fee/pnl = %.6f/%.6f, want 1/100", c.NewFee, c.NewPnL)
+	if c := byRow[1]; math.Abs(c.NewFee-1) > 1e-9 || math.Abs(c.NewPnL-100) > 1e-9 || math.Abs(c.NewValue-1600) > 1e-9 {
+		t.Fatalf("row1 fee/pnl/value = %.6f/%.6f/%.6f, want 1/100/1600", c.NewFee, c.NewPnL, c.NewValue)
 	}
-	if math.Abs(c.NewValue-1600) > 1e-9 {
-		t.Fatalf("value = %.6f, want 1600", c.NewValue)
+	if c := byRow[2]; math.Abs(c.NewFee-3) > 1e-9 || math.Abs(c.NewPnL-300) > 1e-9 || math.Abs(c.NewValue-4800) > 1e-9 {
+		t.Fatalf("row2 fee/pnl/value = %.6f/%.6f/%.6f, want 3/300/4800", c.NewFee, c.NewPnL, c.NewValue)
+	}
+}
+
+func TestPlanTradeLedgerForStrategy_NoOIDRepairSkipsFillAlreadyOwnedByOIDRow(t *testing.T) {
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	trades := []TradeBackfillRow{
+		{
+			RowID: 1, Timestamp: base, Symbol: "ETH", Side: "sell", Quantity: 0.3,
+			Price: 3200, Value: 960, TradeType: "perps", IsClose: true,
+			RealizedPnL: 60, ExchangeFee: 0.4, PnLGross: true, FeeSource: FeeSourceUserFills,
+			ExchangeOrderID: "474",
+		},
+		{
+			RowID: 2, Timestamp: base.Add(time.Minute), Symbol: "ETH", Side: "sell", Quantity: 0.2,
+			Price: 3190, Value: 638, TradeType: "perps", IsClose: true,
+			RealizedPnL: 20, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
+		},
+	}
+	fills := map[string]HLFillSummary{
+		"474": {Coin: "ETH", LastTimeMS: base.UnixMilli(), Fee: 0.4, ClosedPnLGross: 60, Count: 1, Qty: 0.3, Px: 3200},
+	}
+
+	plan := planTradeLedgerForStrategy("hl-a", trades, fills, 1000, 0)
+	if len(plan.Changes) != 0 {
+		t.Fatalf("changes = %+v, want none; no-OID residual must not claim already-owned OID", plan.Changes)
+	}
+	if plan.ReconcileAdjustCount != 1 || plan.ReconcileAdjustMatchedCount != 0 {
+		t.Fatalf("reconcile counts = skipped %d repaired %d, want 1/0", plan.ReconcileAdjustCount, plan.ReconcileAdjustMatchedCount)
+	}
+}
+
+func TestPlanTradeLedgerForStrategy_NoOIDRepairSkipsIncompleteSharedFill(t *testing.T) {
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	trades := []TradeBackfillRow{
+		{
+			RowID: 1, Timestamp: base, Symbol: "ETH", Side: "sell", Quantity: 0.2,
+			Price: 2000, Value: 400, TradeType: "perps", IsClose: true,
+			RealizedPnL: 10, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
+		},
+		{
+			RowID: 2, Timestamp: base.Add(10 * time.Second), Symbol: "ETH", Side: "sell", Quantity: 0.2,
+			Price: 2000, Value: 400, TradeType: "perps", IsClose: true,
+			RealizedPnL: 10, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
+		},
+	}
+	fills := map[string]HLFillSummary{
+		"500": {Coin: "ETH", LastTimeMS: base.UnixMilli(), Fee: 1.0, ClosedPnLGross: 50, Qty: 0.5, Px: 2100},
+	}
+
+	plan := planTradeLedgerForStrategy("hl-eth", trades, fills, 1000, 1020)
+	if len(plan.Changes) != 0 {
+		t.Fatalf("changes = %+v, want none when no-OID rows do not sum to the fill qty", plan.Changes)
+	}
+	if plan.ReconcileAdjustCount != 2 || plan.ReconcileAdjustMatchedCount != 0 {
+		t.Fatalf("reconcile counts = skipped %d repaired %d, want 2/0", plan.ReconcileAdjustCount, plan.ReconcileAdjustMatchedCount)
 	}
 }
 
@@ -944,6 +1007,45 @@ func TestPlanTradeLedgerForStrategy_NoOIDRepairSkipsAmbiguousFill(t *testing.T) 
 	}
 	if plan.ReconcileAdjustCount != 1 || plan.ReconcileAdjustMatchedCount != 0 {
 		t.Fatalf("reconcile counts = skipped %d repaired %d, want 1/0", plan.ReconcileAdjustCount, plan.ReconcileAdjustMatchedCount)
+	}
+}
+
+func TestPlanTradeLedgerForStrategy_NoOIDRepairSkipsFillOwnedBySharedPeer(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xabc")
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	tradesA := []TradeBackfillRow{
+		{
+			RowID: 1, Timestamp: base, Symbol: "ETH", Side: "sell", Quantity: 0.3,
+			Price: 3200, Value: 960, TradeType: "perps", IsClose: true,
+			RealizedPnL: 60, ExchangeFee: 0.4, PnLGross: true, FeeSource: FeeSourceUserFills,
+			ExchangeOrderID: "474",
+		},
+	}
+	tradesB := []TradeBackfillRow{
+		{
+			RowID: 2, Timestamp: base.Add(time.Minute), Symbol: "ETH", Side: "sell", Quantity: 0.2,
+			Price: 3190, Value: 638, TradeType: "perps", IsClose: true,
+			RealizedPnL: 20, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
+		},
+	}
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	totalsByID := tradeLedgerSharedWalletOIDTotals(strategies, map[string][]TradeBackfillRow{
+		"hl-a": tradesA,
+		"hl-b": tradesB,
+	})
+	fills := map[string]HLFillSummary{
+		"474": {Coin: "ETH", LastTimeMS: base.UnixMilli(), Fee: 0.4, ClosedPnLGross: 60, Count: 1, Qty: 0.3, Px: 3200},
+	}
+
+	planB := planTradeLedgerForStrategyWithOIDTotals("hl-b", tradesB, fills, 1000, 1020, totalsByID["hl-b"])
+	if len(planB.Changes) != 0 {
+		t.Fatalf("peer residual changes = %+v, want none because OID is owned by shared peer", planB.Changes)
+	}
+	if planB.ReconcileAdjustCount != 1 || planB.ReconcileAdjustMatchedCount != 0 {
+		t.Fatalf("peer reconcile counts = skipped %d repaired %d, want 1/0", planB.ReconcileAdjustCount, planB.ReconcileAdjustMatchedCount)
 	}
 }
 

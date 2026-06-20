@@ -65,9 +65,17 @@ func parseHLFillOID(oid string) int64 {
 }
 
 func findUniqueHLFillByCoinQty(fillMap map[string]HLFillSummary, coin string, qty float64, exactQty bool, at time.Time, window time.Duration) (hlFillOIDMatch, bool, bool) {
+	matches := findHLFillCandidatesByCoinQty(fillMap, coin, qty, exactQty, at, window, nil)
+	if len(matches) != 1 {
+		return hlFillOIDMatch{}, false, len(matches) > 1
+	}
+	return matches[0], true, false
+}
+
+func findHLFillCandidatesByCoinQty(fillMap map[string]HLFillSummary, coin string, qty float64, exactQty bool, at time.Time, window time.Duration, excludedOIDs map[string]bool) []hlFillOIDMatch {
 	targetCoin := normalizeHLFillCoin(coin)
 	if targetCoin == "" || qty <= 0 || len(fillMap) == 0 {
-		return hlFillOIDMatch{}, false, false
+		return nil
 	}
 	keys := make([]string, 0, len(fillMap))
 	for oid := range fillMap {
@@ -77,6 +85,9 @@ func findUniqueHLFillByCoinQty(fillMap map[string]HLFillSummary, coin string, qt
 
 	var matches []hlFillOIDMatch
 	for _, oid := range keys {
+		if excludedOIDs != nil && excludedOIDs[oid] {
+			continue
+		}
 		summary := fillMap[oid]
 		if normalizeHLFillCoin(summary.Coin) != targetCoin {
 			continue
@@ -109,8 +120,5 @@ func findUniqueHLFillByCoinQty(fillMap map[string]HLFillSummary, coin string, qt
 			Summary: summary,
 		})
 	}
-	if len(matches) != 1 {
-		return hlFillOIDMatch{}, false, len(matches) > 1
-	}
-	return matches[0], true, false
+	return matches
 }
