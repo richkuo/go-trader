@@ -303,6 +303,95 @@ func TestHyperliquidKillSwitchClose_AlreadyFlatRecoversRecentUserFill(t *testing
 	}
 }
 
+// Covers the lowercase-k coin casing path (kPEPE etc): recovery must store
+// under the raw coin key from AlreadyFlat (and from hyperliquidSymbol/strategy
+// args and p.Coin) so the consumer apply finds it. Using normalized uppercase
+// would silently drop the recovery for these coins.
+func TestHyperliquidKillSwitchClose_AlreadyFlatRecoversRecentUserFill_LowerKCoin(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-kpepe", Platform: "hyperliquid", Type: "perps", Leverage: 5,
+			Args: []string{"sma", "kPEPE", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "kPEPE", Size: 12345.0, EntryPrice: 0.00012}}
+	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	fetcher, _ := stubHLStateFetcher(nil, nil)
+	var recoverCalls int
+	in := defaultHLInputs("0xaddr", true, positions, hlLive,
+		"portfolio drawdown 25.0% exceeds limit 20.0%",
+		time.Second, closer, fetcher)
+	in.HLNoFillRecoverer = func(since time.Time) (*HLUserFillsResult, error) {
+		recoverCalls++
+		if since.IsZero() {
+			t.Fatal("recovery since timestamp must be populated")
+		}
+		return &HLUserFillsResult{
+			ByOID: map[string]HLFillSummary{
+				"98765": {
+					Coin:           "kPEPE",
+					FirstTimeMS:    time.Now().Add(-time.Second).UnixMilli(),
+					LastTimeMS:     time.Now().Add(-time.Second).UnixMilli(),
+					Fee:            0.123,
+					ClosedPnLGross: -1.23,
+					Count:          1,
+					Qty:            12345.0,
+					Px:             0.000119,
+				},
+			},
+		}, nil
+	}
+
+	plan := planKillSwitchClose(in)
+	if !plan.OnChainConfirmedFlat {
+		t.Fatalf("expected confirmed-flat plan, got %+v", plan)
+	}
+	if recoverCalls != 1 {
+		t.Fatalf("recoverCalls = %d, want 1", recoverCalls)
+	}
+	// Key must be the raw casing used by consumer (hyperliquidSymbol returns
+	// args[1] verbatim) and by normal fill path (p.Coin). Uppercase must not
+	// be used.
+	fill, ok := plan.CloseReport.Fills["kPEPE"]
+	if !ok {
+		t.Fatalf("missing recovered fill under raw 'kPEPE' key: %+v", plan.CloseReport.Fills)
+	}
+	if _, ok := plan.CloseReport.Fills["KPEPE"]; ok {
+		t.Fatalf("must not also write normalized uppercase key: %+v", plan.CloseReport.Fills)
+	}
+	if fill.OID != 98765 || math.Abs(fill.TotalSz-12345.0) > 1e-9 || math.Abs(fill.AvgPx-0.000119) > 1e-9 || math.Abs(fill.Fee-0.123) > 1e-9 {
+		t.Fatalf("recovered fill = %+v, want oid 98765 qty 12345 px 0.000119 fee 0.123", fill)
+	}
+	logs := strings.Join(plan.LogLines, "\n")
+	if !strings.Contains(logs, "recovered already-flat fill for kPEPE") {
+		t.Fatalf("missing recovery log line with raw casing: %v", plan.LogLines)
+	}
+
+	s := &StrategyState{
+		ID:       "hl-kpepe",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Cash:     1000,
+		Positions: map[string]*Position{
+			"kPEPE": {Symbol: "kPEPE", Quantity: 12345.0, AvgCost: 0.00012, Side: "long", Multiplier: 1, Leverage: 5},
+		},
+	}
+	forceCloseKillSwitchPositions(s, hlLive[0], map[string]float64{"kPEPE": 0.0001}, plan.CloseReport.Fills, hlLive, nil, nil)
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("expected 1 trade, got %d", len(s.TradeHistory))
+	}
+	trade := s.TradeHistory[0]
+	if trade.ExchangeOrderID != "98765" || trade.FeeSource != FeeSourceUserFills || !trade.PnLGross {
+		t.Fatalf("trade fill metadata = oid %q fee_source %q gross %v, want 98765/userfills/true", trade.ExchangeOrderID, trade.FeeSource, trade.PnLGross)
+	}
+	if math.Abs(trade.Price-0.000119) > 1e-9 || math.Abs(trade.ExchangeFee-0.123) > 1e-9 {
+		t.Fatalf("trade price/fee = %.9f/%.6f, want 0.000119/0.123", trade.Price, trade.ExchangeFee)
+	}
+}
+
 func TestHyperliquidKillSwitchClose_AlreadyFlatAmbiguousUserFillFallsBack(t *testing.T) {
 	hlLive := []StrategyConfig{
 		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",

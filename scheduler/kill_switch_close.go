@@ -265,27 +265,27 @@ func recoverHyperliquidAlreadyFlatFills(report *HyperliquidLiveCloseReport, posi
 		}
 		expectedByCoin[coin] = expectedFill{qty: qty}
 	}
-	eligibleByCoin := make(map[string]expectedFill)
+	eligibleByRaw := make(map[string]expectedFill)
 	for _, rawCoin := range report.AlreadyFlat {
-		coin := normalizeHLFillCoin(rawCoin)
-		if coin == "" {
+		norm := normalizeHLFillCoin(rawCoin)
+		if norm == "" {
 			continue
 		}
 		if report.Fills != nil {
-			if _, ok := report.Fills[coin]; ok {
-				continue
-			}
 			if _, ok := report.Fills[rawCoin]; ok {
 				continue
 			}
+			if _, ok := report.Fills[norm]; ok {
+				continue
+			}
 		}
-		expected, ok := expectedByCoin[coin]
+		expected, ok := expectedByCoin[norm]
 		if !ok || expected.qty <= 0 {
 			continue
 		}
-		eligibleByCoin[coin] = expected
+		eligibleByRaw[rawCoin] = expected
 	}
-	if len(eligibleByCoin) == 0 {
+	if len(eligibleByRaw) == 0 {
 		return nil
 	}
 
@@ -303,31 +303,31 @@ func recoverHyperliquidAlreadyFlatFills(report *HyperliquidLiveCloseReport, posi
 		report.Fills = make(map[string]HyperliquidCloseFill)
 	}
 
-	coins := make([]string, 0, len(eligibleByCoin))
-	for coin := range eligibleByCoin {
-		coins = append(coins, coin)
+	raws := make([]string, 0, len(eligibleByRaw))
+	for r := range eligibleByRaw {
+		raws = append(raws, r)
 	}
-	sort.Strings(coins)
+	sort.Strings(raws)
 	var lines []string
-	for _, coin := range coins {
-		expected := eligibleByCoin[coin]
-		match, ok, ambiguous := findUniqueHLFillByCoinQty(result.ByOID, coin, expected.qty, true, time.Time{}, 0)
+	for _, rawCoin := range raws {
+		expected := eligibleByRaw[rawCoin]
+		match, ok, ambiguous := findUniqueHLFillByCoinQty(result.ByOID, rawCoin, expected.qty, true, time.Time{}, 0)
 		switch {
 		case ok:
-			report.Fills[coin] = HyperliquidCloseFill{
+			report.Fills[rawCoin] = HyperliquidCloseFill{
 				AvgPx:   match.Summary.Px,
 				TotalSz: expected.qty,
 				OID:     match.OIDInt,
 				Fee:     match.Summary.Fee,
 			}
 			lines = append(lines,
-				fmt.Sprintf("[INFO] hl-close: recovered already-flat fill for %s from userFills oid=%s qty=%.6f px=%.6f fee=%.6f", coin, match.OID, expected.qty, match.Summary.Px, match.Summary.Fee))
+				fmt.Sprintf("[INFO] hl-close: recovered already-flat fill for %s from userFills oid=%s qty=%.6f px=%.6f fee=%.6f", rawCoin, match.OID, expected.qty, match.Summary.Px, match.Summary.Fee))
 		case ambiguous:
 			lines = append(lines,
-				fmt.Sprintf("[WARN] hl-close: multiple userFills candidates for already-flat %s qty=%.6f; falling back to model-only cleanup", coin, expected.qty))
+				fmt.Sprintf("[WARN] hl-close: multiple userFills candidates for already-flat %s qty=%.6f; falling back to model-only cleanup", rawCoin, expected.qty))
 		default:
 			lines = append(lines,
-				fmt.Sprintf("[WARN] hl-close: no userFills match for already-flat %s qty=%.6f; falling back to model-only cleanup", coin, expected.qty))
+				fmt.Sprintf("[WARN] hl-close: no userFills match for already-flat %s qty=%.6f; falling back to model-only cleanup", rawCoin, expected.qty))
 		}
 	}
 	return lines
