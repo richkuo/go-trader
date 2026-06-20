@@ -80,3 +80,42 @@ def fit_kmeans(z, k, *, seed=0, iters=100, var_floor=1e-3):
             em_var[j] = members.var(0)
     em_var = np.maximum(em_var, var_floor)
     return assign, em_mean, em_var, counts
+
+
+def _diag_logprob(z, mu, var):
+    # log N(z; mu, diag(var)) per row -> [n]
+    diff = z - mu
+    return -0.5 * (np.log(2 * np.pi * var) + diff ** 2 / var).sum(1)
+
+
+def fit_gmm(z, k, *, seed=0, iters=100, var_floor=1e-3, tol=1e-4):
+    z = np.asarray(z, dtype=float)
+    n, d = z.shape
+    assign0, mu, var, _ = fit_kmeans(z, k, seed=seed)
+    mu = mu.copy(); var = var.copy()
+    weights = np.array([max(int((assign0 == j).sum()), 1) for j in range(k)], dtype=float)
+    weights /= weights.sum()
+    prev_ll = -np.inf
+    for _ in range(iters):
+        log_resp = np.empty((n, k))
+        for j in range(k):
+            log_resp[:, j] = np.log(weights[j] + 1e-300) + _diag_logprob(z, mu[j], var[j])
+        lse = _logsumexp_rows(log_resp)
+        ll = float(lse.sum())
+        resp = np.exp(log_resp - lse[:, None])
+        Nk = resp.sum(0) + 1e-10
+        weights = Nk / n
+        mu = (resp.T @ z) / Nk[:, None]
+        for j in range(k):
+            diff = z - mu[j]
+            var[j] = (resp[:, j][:, None] * diff ** 2).sum(0) / Nk[j]
+        var = np.maximum(var, var_floor)
+        if prev_ll != -np.inf and abs(ll - prev_ll) < tol * abs(prev_ll):
+            break
+        prev_ll = ll
+    log_resp = np.empty((n, k))
+    for j in range(k):
+        log_resp[:, j] = np.log(weights[j] + 1e-300) + _diag_logprob(z, mu[j], var[j])
+    assign = log_resp.argmax(1)
+    counts = np.array([int((assign == j).sum()) for j in range(k)], dtype=int)
+    return assign, mu, var, counts

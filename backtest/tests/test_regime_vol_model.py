@@ -76,3 +76,11 @@ def test_fit_kmeans_recovers_three_blobs():
     assert counts.sum() == len(z)
     assert (em_var > 0).all()
     assert _purity(assign, truth, 3) > 0.95
+
+
+def test_fit_gmm_recovers_three_blobs():
+    z, truth = _three_blobs(seed=1)
+    assign, em_mean, em_var, counts = rvm.fit_gmm(z, 3, seed=0)
+    assert em_mean.shape == (3, 4) and (em_var > 0).all()
+    assert counts.sum() == len(z)
+    assert _purity(assign, truth, 3) > 0.95
