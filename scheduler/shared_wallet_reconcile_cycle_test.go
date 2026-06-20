@@ -201,19 +201,19 @@ func TestSharedWalletDriftTracker_ConfirmThenThrottleThenRecover(t *testing.T) {
 	tr := &SharedWalletDriftTracker{}
 	now := time.Now().UTC()
 	// First detection is within the confirmation window → no alert yet.
-	if notify, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now); notify {
+	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now); notify {
 		t.Fatal("first detection must NOT alert (confirmation window)")
 	}
 	// Second consecutive detection crosses the threshold → alert.
-	if notify, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(time.Minute)); !notify {
+	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(time.Minute)); !notify {
 		t.Fatal("second consecutive detection must alert")
 	}
-	// Same drift again → throttled (no signature change, not 10th, <1h).
-	if notify, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(2*time.Minute)); notify {
+	// Same drift again → throttled (no signature change, <1h since last alert).
+	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(2*time.Minute)); notify {
 		t.Error("third identical detection should be throttled")
 	}
 	// Materially changed drift → re-alert.
-	if notify, _ := tr.Record("hyperliquid/0xabc", 9.00, []string{"BTC"}, now.Add(3*time.Minute)); !notify {
+	if notify, _, _ := tr.Record("hyperliquid/0xabc", 9.00, []string{"BTC"}, now.Add(3*time.Minute)); !notify {
 		t.Error("materially changed drift should re-alert")
 	}
 	// Recovery: within tolerance clears and reports recovered.
@@ -232,7 +232,7 @@ func TestSharedWalletDriftTracker_ConfirmThenThrottleThenRecover(t *testing.T) {
 func TestSharedWalletDriftTracker_OneCycleTransientSilent(t *testing.T) {
 	tr := &SharedWalletDriftTracker{}
 	now := time.Now().UTC()
-	if notify, _ := tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now); notify {
+	if notify, _, _ := tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now); notify {
 		t.Fatal("single transient detection must not alert")
 	}
 	// Next cycle the book catches up → within tolerance → Clear.
@@ -295,12 +295,12 @@ func TestFetchHyperliquidState_ParsesUnrealizedPnL(t *testing.T) {
 func TestSharedWalletDriftTracker_DistinctConsecutiveTransientsNoAlert(t *testing.T) {
 	tr := &SharedWalletDriftTracker{}
 	now := time.Now().UTC()
-	if notify, count := tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now); notify || count != 1 {
+	if notify, _, count := tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now); notify || count != 1 {
 		t.Fatalf("first transient: want no alert at count 1, got notify=%v count=%d", notify, count)
 	}
 	// Next cycle a DIFFERENT orphan appears → per-coin confirmation restarts
 	// (no alert); the wallet-level duration counter still advances to 2.
-	if notify, count := tr.Record("hyperliquid/0xabc", 12.00, []string{"ETH"}, now.Add(time.Minute)); notify || count != 2 {
+	if notify, _, count := tr.Record("hyperliquid/0xabc", 12.00, []string{"ETH"}, now.Add(time.Minute)); notify || count != 2 {
 		t.Fatalf("second distinct transient: want no alert at cycle 2, got notify=%v count=%d", notify, count)
 	}
 	// Clean cycle → never alerted, so no recovery notice either.
@@ -314,10 +314,10 @@ func TestSharedWalletDriftTracker_DistinctConsecutiveTransientsNoAlert(t *testin
 func TestSharedWalletDriftTracker_SameOrphanChangingMagnitudeStillAlerts(t *testing.T) {
 	tr := &SharedWalletDriftTracker{}
 	now := time.Now().UTC()
-	if notify, _ := tr.Record("hyperliquid/0xabc", 25.00, []string{"SOL"}, now); notify {
+	if notify, _, _ := tr.Record("hyperliquid/0xabc", 25.00, []string{"SOL"}, now); notify {
 		t.Fatal("first detection must not alert")
 	}
-	if notify, count := tr.Record("hyperliquid/0xabc", 31.40, []string{"SOL"}, now.Add(time.Minute)); !notify || count != 2 {
+	if notify, _, count := tr.Record("hyperliquid/0xabc", 31.40, []string{"SOL"}, now.Add(time.Minute)); !notify || count != 2 {
 		t.Fatalf("same orphan second cycle must alert at count 2, got notify=%v count=%d", notify, count)
 	}
 }
@@ -442,17 +442,17 @@ func TestComputeSubsetDisplayValue_GatedManualNoDoubleCount(t *testing.T) {
 func TestSharedWalletDriftTracker_PersistentOrphanSurvivesChurn(t *testing.T) {
 	tr := &SharedWalletDriftTracker{}
 	now := time.Now().UTC()
-	if notify, _ := tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now); notify {
+	if notify, _, _ := tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now); notify {
 		t.Fatal("first detection must not alert")
 	}
 	// BTC persists; a transient DOGE orphan joins → BTC's streak reaches the
 	// threshold and must alert despite the set change.
-	if notify, count := tr.Record("hyperliquid/0xabc", 30.00, []string{"BTC", "DOGE"}, now.Add(time.Minute)); !notify || count != 2 {
+	if notify, _, count := tr.Record("hyperliquid/0xabc", 30.00, []string{"BTC", "DOGE"}, now.Add(time.Minute)); !notify || count != 2 {
 		t.Fatalf("persistent BTC orphan must alert through churn, got notify=%v count=%d", notify, count)
 	}
 	// DOGE clears, a different transient SHIB joins; BTC drift unchanged →
 	// throttled (BTC already alerted, SHIB at streak 1, magnitude stable).
-	if notify, count := tr.Record("hyperliquid/0xabc", 30.00, []string{"BTC", "SHIB"}, now.Add(2*time.Minute)); notify || count != 3 {
+	if notify, _, count := tr.Record("hyperliquid/0xabc", 30.00, []string{"BTC", "SHIB"}, now.Add(2*time.Minute)); notify || count != 3 {
 		t.Errorf("already-alerted persistent orphan should be throttled, got notify=%v count=%d", notify, count)
 	}
 }
@@ -465,18 +465,18 @@ func TestSharedWalletDriftTracker_NewOrphanAfterAlertReconfirms(t *testing.T) {
 	tr := &SharedWalletDriftTracker{}
 	now := time.Now().UTC()
 	tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now)
-	if notify, _ := tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now.Add(time.Minute)); !notify {
+	if notify, _, _ := tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now.Add(time.Minute)); !notify {
 		t.Fatal("BTC orphan must alert on its second cycle")
 	}
 	// BTC clears but ETH goes orphan the same cycle (drift stays over
 	// tolerance, magnitude coincidentally identical) → new confirmation window
 	// (the wallet-level duration counter keeps running: cycle 3).
-	if notify, count := tr.Record("hyperliquid/0xabc", 25.00, []string{"ETH"}, now.Add(2*time.Minute)); notify || count != 3 {
+	if notify, _, count := tr.Record("hyperliquid/0xabc", 25.00, []string{"ETH"}, now.Add(2*time.Minute)); notify || count != 3 {
 		t.Fatalf("new orphan's first cycle must not alert, got notify=%v count=%d", notify, count)
 	}
 	// ETH persists → crosses ITS confirmation window → must alert even though
 	// the wallet already alerted and the magnitude never changed.
-	if notify, count := tr.Record("hyperliquid/0xabc", 25.00, []string{"ETH"}, now.Add(3*time.Minute)); !notify || count != 4 {
+	if notify, _, count := tr.Record("hyperliquid/0xabc", 25.00, []string{"ETH"}, now.Add(3*time.Minute)); !notify || count != 4 {
 		t.Fatalf("new persistent orphan must re-confirm and alert, got notify=%v count=%d", notify, count)
 	}
 }
@@ -486,10 +486,10 @@ func TestSharedWalletDriftTracker_NewOrphanAfterAlertReconfirms(t *testing.T) {
 func TestSharedWalletDriftTracker_NoOrphanCoinsStillConfirms(t *testing.T) {
 	tr := &SharedWalletDriftTracker{}
 	now := time.Now().UTC()
-	if notify, _ := tr.Record("okx/acct", 5.00, nil, now); notify {
+	if notify, _, _ := tr.Record("okx/acct", 5.00, nil, now); notify {
 		t.Fatal("first detection must not alert")
 	}
-	if notify, count := tr.Record("okx/acct", 5.00, nil, now.Add(time.Minute)); !notify || count != 2 {
+	if notify, _, count := tr.Record("okx/acct", 5.00, nil, now.Add(time.Minute)); !notify || count != 2 {
 		t.Fatalf("coinless drift must alert on second consecutive cycle, got notify=%v count=%d", notify, count)
 	}
 }
@@ -502,22 +502,22 @@ func TestSharedWalletDriftTracker_MarkWiggleStaysThrottled(t *testing.T) {
 	tr := &SharedWalletDriftTracker{}
 	now := time.Now().UTC()
 	tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now)
-	if notify, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(time.Minute)); !notify {
+	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(time.Minute)); !notify {
 		t.Fatal("confirmation alert must fire on cycle 2")
 	}
 	// +4% then +8% vs the notified $5.00 anchor → throttled despite each move
 	// exceeding a cent.
-	if notify, _ := tr.Record("hyperliquid/0xabc", 5.20, []string{"BTC"}, now.Add(2*time.Minute)); notify {
+	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.20, []string{"BTC"}, now.Add(2*time.Minute)); notify {
 		t.Error("+4% mark wiggle must stay throttled")
 	}
-	if notify, _ := tr.Record("hyperliquid/0xabc", 5.40, []string{"BTC"}, now.Add(3*time.Minute)); notify {
+	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.40, []string{"BTC"}, now.Add(3*time.Minute)); notify {
 		t.Error("+8% cumulative wiggle must stay throttled")
 	}
 	// +12% vs the anchor → materially changed → re-alert, and the anchor moves.
-	if notify, _ := tr.Record("hyperliquid/0xabc", 5.60, []string{"BTC"}, now.Add(4*time.Minute)); !notify {
+	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.60, []string{"BTC"}, now.Add(4*time.Minute)); !notify {
 		t.Error("+12% cumulative move must re-alert")
 	}
-	if notify, _ := tr.Record("hyperliquid/0xabc", 5.65, []string{"BTC"}, now.Add(5*time.Minute)); notify {
+	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.65, []string{"BTC"}, now.Add(5*time.Minute)); notify {
 		t.Error("small wiggle vs the NEW anchor must stay throttled")
 	}
 }
@@ -536,5 +536,95 @@ func TestSharedWalletDriftTracker_RecoveryCountSurvivesChurn(t *testing.T) {
 	recovered, prior := tr.Clear("hyperliquid/0xabc")
 	if !recovered || prior != 4 {
 		t.Fatalf("want recovery with 4-cycle duration, got recovered=%v prior=%d", recovered, prior)
+	}
+}
+
+// #1088: the stdout [WARN] log must NOT fire every reconcile cycle. For a
+// STABLE drift it logs at the onset of an over-tolerance episode, on any cycle
+// that fires an operator alert, and otherwise at most once per the (hourly)
+// sharedWalletDriftLogInterval heartbeat — so intra-hour cycles stay silent even
+// though every cycle is over tolerance and Record runs every cycle. This is the
+// 620-lines-in-6h spam the issue reported; a 1-minute interval only halved it,
+// so the heartbeat is aligned to the hourly notification cadence.
+func TestSharedWalletDriftTracker_LogThrottledPerInterval(t *testing.T) {
+	tr := &SharedWalletDriftTracker{}
+	now := time.Now().UTC()
+	// Cycle 1: onset. In the confirmation window (no alert) but MUST log once.
+	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now); notify || !log {
+		t.Fatalf("onset cycle: want notify=false log=true, got notify=%v log=%v", notify, log)
+	}
+	// Cycle 2 (+1s): confirmation alert fires → log forced true alongside it.
+	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(time.Second)); !notify || !log {
+		t.Fatalf("alert cycle: want notify=true log=true, got notify=%v log=%v", notify, log)
+	}
+	// Cycle 3 (+2s): stable drift, throttled alert AND within the heartbeat
+	// interval of the last log → MUST NOT log (this is the spam the issue
+	// reported).
+	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(2*time.Second)); notify || log {
+		t.Fatalf("intra-interval cycle: want notify=false log=false, got notify=%v log=%v", notify, log)
+	}
+	// A cycle well into the hour but still under the heartbeat (and under the
+	// hourly re-alert) stays silent — no spam from a stable drift.
+	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(30*time.Minute)); notify || log {
+		t.Fatalf("mid-hour stable cycle: want notify=false log=false, got notify=%v log=%v", notify, log)
+	}
+	// The next log for a stable drift coincides with the hourly re-alert (which
+	// forces a log), one hour after the last notification (the +1s alert).
+	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(time.Second+time.Hour)); !notify || !log {
+		t.Fatalf("hourly re-alert cycle: want notify=true log=true, got notify=%v log=%v", notify, log)
+	}
+}
+
+// #1088: a WORSENING drift must log immediately — even within the heartbeat
+// interval and even when no alert fires — so the operator keeps per-move
+// visibility of a growing sub-threshold drift (the explicit reason #1088
+// throttled rather than gated the log behind shouldNotify). Driven here through
+// a churning orphan set so each coin only ever reaches streak 1: the wallet
+// stays in the confirmation window (no alert can fire), isolating the
+// materially-changed LOG gate from the notification path.
+func TestSharedWalletDriftTracker_WorseningDriftLogsWithinInterval(t *testing.T) {
+	tr := &SharedWalletDriftTracker{}
+	now := time.Now().UTC()
+	// Cycle 1: onset, orphan BTC. Confirmation window (no alert) but logs once.
+	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now); notify || !log {
+		t.Fatalf("onset cycle: want notify=false log=true, got notify=%v log=%v", notify, log)
+	}
+	// Cycle 2 (+1s): orphan churns to ETH (BTC drops out) → still streak 1, no
+	// alert; drift unchanged and within the heartbeat → MUST NOT log.
+	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"ETH"}, now.Add(time.Second)); notify || log {
+		t.Fatalf("stable churn cycle: want notify=false log=false, got notify=%v log=%v", notify, log)
+	}
+	// Cycle 3 (+2s): orphan churns to SOL (still no alert), but the drift jumps
+	// from $5 to $20 (a >10% material move) → MUST log immediately despite being
+	// far inside the hourly heartbeat and despite no alert firing.
+	if notify, log, _ := tr.Record("hyperliquid/0xabc", 20.00, []string{"SOL"}, now.Add(2*time.Second)); notify || !log {
+		t.Fatalf("worsening cycle: want notify=false log=true, got notify=%v log=%v", notify, log)
+	}
+}
+
+// #1088: removing the cycles%10 re-alert case means a stable, already-alerted
+// drift re-alerts on the HOURLY back-off only — not every 10th cycle. With a
+// short reconcile cadence the old %10 rule fired a Discord/DM alert roughly
+// every few minutes; the hourly case was preempted and never reached.
+func TestSharedWalletDriftTracker_StableDriftRealertsHourlyNotEveryTenth(t *testing.T) {
+	tr := &SharedWalletDriftTracker{}
+	now := time.Now().UTC()
+	tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now) // onset
+	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(time.Second)); !notify {
+		t.Fatal("confirmation alert must fire on cycle 2")
+	}
+	// Drive many stable over-tolerance cycles, each 3s apart (well under 1h).
+	// The old %10 rule would have re-alerted at cycles 10, 20, 30, ...; the
+	// hourly back-off must keep every one of them throttled.
+	base := now.Add(time.Second)
+	for i := 1; i <= 40; i++ {
+		ts := base.Add(time.Duration(i) * 3 * time.Second)
+		if notify, _, count := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, ts); notify {
+			t.Fatalf("stable drift must not re-alert within the hour (cycle count=%d)", count)
+		}
+	}
+	// Past one hour since the last notification → the hourly back-off re-alerts.
+	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, base.Add(time.Hour+time.Second)); !notify {
+		t.Fatal("stable drift must re-alert once the hourly back-off elapses")
 	}
 }

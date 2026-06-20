@@ -30,11 +30,11 @@ func TestHLReconcileGapTracker_ConfirmationWindow(t *testing.T) {
 	tr := &HLReconcileGapTracker{}
 	now := time.Now().UTC()
 	for i := 1; i < hlReconcileGapAlertThreshold; i++ {
-		if notify, count := tr.Record("ETH", 1.0, now); notify {
+		if notify, _, count := tr.Record("ETH", 1.0, now); notify {
 			t.Fatalf("cycle %d: alerted before confirmation window (count=%d)", i, count)
 		}
 	}
-	notify, count := tr.Record("ETH", 1.0, now)
+	notify, _, count := tr.Record("ETH", 1.0, now)
 	if !notify {
 		t.Fatalf("expected alert on threshold crossing (count=%d)", count)
 	}
@@ -48,27 +48,27 @@ func TestHLReconcileGapTracker_ConfirmationWindow(t *testing.T) {
 func TestHLReconcileGapTracker_TransientSelfHeals(t *testing.T) {
 	tr := &HLReconcileGapTracker{}
 	now := time.Now().UTC()
-	if notify, _ := tr.Record("ETH", 1.0, now); notify {
+	if notify, _, _ := tr.Record("ETH", 1.0, now); notify {
 		t.Fatalf("cycle 1 should not alert")
 	}
 	if recovered, prior := tr.Clear("ETH"); recovered {
 		t.Fatalf("transient clear should not be a recovery (alerted=false), prior=%d", prior)
 	}
 	// Streak fully reset: a fresh gap starts the window over.
-	if notify, count := tr.Record("ETH", 1.0, now); notify || count != 1 {
+	if notify, _, count := tr.Record("ETH", 1.0, now); notify || count != 1 {
 		t.Fatalf("post-clear Record = (%v, %d), want (false, 1)", notify, count)
 	}
 }
 
 // TestHLReconcileGapTracker_ThrottleAndRealert verifies that after the first
 // alert the tracker re-throttles, re-alerts on a materially changed residual,
-// and otherwise only on the every-10th-cycle cadence.
+// and otherwise stays throttled until the hourly back-off.
 func TestHLReconcileGapTracker_ThrottleAndRealert(t *testing.T) {
 	tr := &HLReconcileGapTracker{}
 	now := time.Now().UTC()
 	var firstAlertCycle int
 	for i := 0; i < hlReconcileGapAlertThreshold; i++ {
-		notify, count := tr.Record("ETH", 1.0, now)
+		notify, _, count := tr.Record("ETH", 1.0, now)
 		if notify {
 			firstAlertCycle = count
 		}
@@ -76,17 +76,85 @@ func TestHLReconcileGapTracker_ThrottleAndRealert(t *testing.T) {
 	if firstAlertCycle != hlReconcileGapAlertThreshold {
 		t.Fatalf("first alert at cycle %d, want %d", firstAlertCycle, hlReconcileGapAlertThreshold)
 	}
-	// Same residual next cycle: throttled (not 10th, not materially changed).
-	if notify, _ := tr.Record("ETH", 1.0, now); notify {
+	// Same residual next cycle: throttled (not materially changed, sub-hour).
+	if notify, _, _ := tr.Record("ETH", 1.0, now); notify {
 		t.Fatalf("steady gap should be throttled immediately after first alert")
 	}
 	// Materially changed residual (>10% move): re-alert.
-	if notify, _ := tr.Record("ETH", 1.5, now); !notify {
+	if notify, _, _ := tr.Record("ETH", 1.5, now); !notify {
 		t.Fatalf("materially changed residual should re-alert")
 	}
 	// Back to throttled for a steady residual.
-	if notify, _ := tr.Record("ETH", 1.5, now); notify {
+	if notify, _, _ := tr.Record("ETH", 1.5, now); notify {
 		t.Fatalf("steady residual after re-alert should throttle")
+	}
+}
+
+// TestHLReconcileGapTracker_StableGapRealertsHourlyNotEveryTenth is the #1088
+// sibling regression: a stable, already-alerted gap must re-alert on the HOURLY
+// back-off only — not every 10th reconcile cycle. The old cycles%10 case sat
+// ahead of the hourly case in the switch, so at the ~35s reconcile cadence it
+// re-DM'd the operator roughly every 6 minutes and the hourly case was never
+// reached.
+func TestHLReconcileGapTracker_StableGapRealertsHourlyNotEveryTenth(t *testing.T) {
+	tr := &HLReconcileGapTracker{}
+	now := time.Now().UTC()
+	// Cross the confirmation window → first alert.
+	var lastAlertAt time.Time
+	for i := 0; i < hlReconcileGapAlertThreshold; i++ {
+		ts := now.Add(time.Duration(i) * 3 * time.Second)
+		if notify, _, _ := tr.Record("ETH", 1.0, ts); notify {
+			lastAlertAt = ts
+		}
+	}
+	if lastAlertAt.IsZero() {
+		t.Fatal("confirmation alert must fire on the threshold crossing")
+	}
+	// Drive many stable over-tolerance cycles 3s apart (well under 1h). The old
+	// %10 rule would have re-alerted at cycles 10/20/30/40; the hourly back-off
+	// must keep every one of them throttled.
+	base := now.Add(time.Duration(hlReconcileGapAlertThreshold) * 3 * time.Second)
+	for i := 1; i <= 40; i++ {
+		ts := base.Add(time.Duration(i) * 3 * time.Second)
+		if notify, _, count := tr.Record("ETH", 1.0, ts); notify {
+			t.Fatalf("stable gap must not re-alert within the hour (cycle count=%d)", count)
+		}
+	}
+	// Past one hour since the last notification → the hourly back-off re-alerts.
+	if notify, _, _ := tr.Record("ETH", 1.0, lastAlertAt.Add(time.Hour+time.Second)); !notify {
+		t.Fatal("stable gap must re-alert once the hourly back-off elapses")
+	}
+}
+
+// TestHLReconcileGapTracker_LogThrottled is the #1088 sibling regression for the
+// stdout [WARN] line: it previously fired every reconcile cycle a gap persisted
+// (unconditionally, outside the alert gate). It must now log at onset, on any
+// alert cycle, and on a materially-changed residual, but stay silent on stable
+// intra-heartbeat cycles.
+func TestHLReconcileGapTracker_LogThrottled(t *testing.T) {
+	tr := &HLReconcileGapTracker{}
+	now := time.Now().UTC()
+	// Cycle 1: onset, in the confirmation window (no alert) but MUST log once.
+	if notify, log, _ := tr.Record("ETH", 1.0, now); notify || !log {
+		t.Fatalf("onset cycle: want notify=false log=true, got notify=%v log=%v", notify, log)
+	}
+	// Cycle 2 (+1s): still in the window, stable residual, within heartbeat →
+	// MUST NOT log (the per-cycle spam this fix removes).
+	if notify, log, _ := tr.Record("ETH", 1.0, now.Add(time.Second)); notify || log {
+		t.Fatalf("intra-heartbeat window cycle: want notify=false log=false, got notify=%v log=%v", notify, log)
+	}
+	// Cycle 3 (+2s): confirmation crossing fires an alert → log forced true.
+	if notify, log, _ := tr.Record("ETH", 1.0, now.Add(2*time.Second)); !notify || !log {
+		t.Fatalf("alert cycle: want notify=true log=true, got notify=%v log=%v", notify, log)
+	}
+	// Cycle 4 (+3s): stable, throttled alert and within heartbeat → no log.
+	if notify, log, _ := tr.Record("ETH", 1.0, now.Add(3*time.Second)); notify || log {
+		t.Fatalf("stable post-alert cycle: want notify=false log=false, got notify=%v log=%v", notify, log)
+	}
+	// Cycle 5 (+4s): residual jumps 1.0 → 1.5 (>10% move) → logs immediately even
+	// within the heartbeat (worsening-gap visibility).
+	if _, log, _ := tr.Record("ETH", 1.5, now.Add(4*time.Second)); !log {
+		t.Fatal("materially-changed residual must log within the heartbeat interval")
 	}
 }
 

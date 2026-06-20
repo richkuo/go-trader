@@ -43,15 +43,25 @@ const hlReconcileGapAlertThreshold = 3
 // hlReconcileGapRealertRatio gates re-alerts on an already-alerted coin to a
 // material change in the residual qty (relative to the qty at the LAST
 // notification), so a gap whose residual drifts slightly (a peer partial fill,
-// a small re-open) does not spam; combined with the every-10th-cycle / hourly
-// back-off below.
+// a small re-open) does not spam; combined with the hourly back-off below. The
+// same ratio (anchored to the last LOGGED residual) gates the stdout log.
 const hlReconcileGapRealertRatio = 0.10
+
+// hlReconcileGapLogInterval is the heartbeat ceiling for the stdout [WARN] gap
+// line per coin (#1088 sibling fix): once a gap is persisting, a STABLE,
+// unchanging residual re-logs at most once per this interval. The stdout line
+// previously fired every reconcile cycle a gap persisted (unconditionally,
+// outside the alert gate) — the identical per-cycle log spam #1088 fixed in the
+// drift reporter. Aligned to the hourly notification back-off so a persistent
+// stable gap's stdout cadence matches its alert cadence; a materially-changed
+// residual (hlReconcileGapRealertRatio) or any cycle that fires an alert logs
+// immediately regardless, preserving onset, worsening, and alert visibility.
+const hlReconcileGapLogInterval = time.Hour
 
 // hlReconcileGapEntry is one slot in the per-coin gap tracker.
 type hlReconcileGapEntry struct {
 	// cycles counts CONSECUTIVE over-tolerance reconcile cycles for this coin.
-	// It is the duration shown in operator messages and the base of the
-	// every-10th-cycle cadence.
+	// It is the duration shown in operator messages.
 	cycles int
 	// alerted marks that the confirmation window has been crossed and an alert
 	// has fired, so subsequent cycles re-throttle instead of re-confirming.
@@ -61,25 +71,41 @@ type hlReconcileGapEntry struct {
 	// lastNotifiedDelta is the residual qty at the LAST NOTIFICATION (not the
 	// previous cycle) — the anchor for the materially-changed re-alert gate.
 	lastNotifiedDelta float64
+	// lastLoggedAt anchors the per-coin stdout [WARN] log heartbeat (#1088
+	// sibling fix), independent of the notification throttle.
+	lastLoggedAt time.Time
+	// lastLoggedDelta is the residual qty at the last stdout [WARN] line — the
+	// anchor for the materially-changed log gate, kept separate from
+	// lastNotifiedDelta so the looser log cadence and the notification cadence
+	// don't perturb each other.
+	lastLoggedDelta float64
 }
 
 // HLReconcileGapTracker throttles operator alerts for persistent Hyperliquid
 // shared-coin reconciliation gaps (#971). State is per-coin and in-memory;
 // it resets on restart. A gap must persist hlReconcileGapAlertThreshold
 // consecutive cycles before the first alert; thereafter it re-alerts only on a
-// materially changed residual, every 10th cycle, or once an hour, until the
-// gap clears (Clear).
+// materially changed residual or once an hour, until the gap clears (Clear).
 type HLReconcileGapTracker struct {
 	mu      sync.Mutex
 	entries map[string]*hlReconcileGapEntry
 }
 
 // Record registers an over-tolerance gap for coin and reports whether this
-// cycle should fire an operator alert, along with the coin's post-increment
-// consecutive over-tolerance cycle count (the duration shown in messages). No
-// alert fires until the streak reaches hlReconcileGapAlertThreshold; the first
-// alert fires on that crossing, then re-throttles while the gap persists.
-func (t *HLReconcileGapTracker) Record(coin string, delta float64, now time.Time) (bool, int) {
+// cycle should fire an operator alert (shouldNotify), whether it should emit a
+// stdout [WARN] line (shouldLog, #1088 sibling fix), and the coin's
+// post-increment consecutive over-tolerance cycle count (the duration shown in
+// messages). No alert fires until the streak reaches
+// hlReconcileGapAlertThreshold; the first alert fires on that crossing, then
+// re-throttles (a materially changed residual, or once an hour) while the gap
+// persists.
+//
+// shouldLog is throttled separately and more loosely than shouldNotify: it is
+// true at the onset of a gap, whenever the residual materially changes since the
+// last logged line, on any cycle that fires an alert, and otherwise at most once
+// per hlReconcileGapLogInterval as a heartbeat — so a stable gap collapses to
+// onset + the hourly heartbeat + alert cycles instead of logging every cycle.
+func (t *HLReconcileGapTracker) Record(coin string, delta float64, now time.Time) (shouldNotify bool, shouldLog bool, cycles int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.entries == nil {
@@ -92,11 +118,28 @@ func (t *HLReconcileGapTracker) Record(coin string, delta float64, now time.Time
 	}
 	e.cycles++
 
+	// Log throttle (#1088 sibling fix): emit the stdout [WARN] at onset, on a
+	// materially-changed residual (anchored to the last LOGGED line so worsening
+	// gaps stay visible per-move), and otherwise at most once per
+	// hlReconcileGapLogInterval. Computed before the confirmation-window early
+	// return so onset logs during the (un-alerted) window. An alert cycle forces
+	// a log (below).
+	logMove := math.Abs(delta - e.lastLoggedDelta)
+	logSigChanged := logMove > hlReconcileGapTolerance &&
+		logMove > hlReconcileGapRealertRatio*math.Abs(e.lastLoggedDelta)
+	shouldLog = e.lastLoggedAt.IsZero() ||
+		logSigChanged ||
+		now.Sub(e.lastLoggedAt) >= hlReconcileGapLogInterval
+
 	// Confirmation window: a transient one- or two-cycle gap (indexer lag that
 	// resolves once the fill is indexed) never reaches the threshold — it
 	// clears via Clear first — so it never alerts.
 	if e.cycles < hlReconcileGapAlertThreshold {
-		return false, e.cycles
+		if shouldLog {
+			e.lastLoggedAt = now
+			e.lastLoggedDelta = delta
+		}
+		return false, shouldLog, e.cycles
 	}
 
 	// "Materially changed" = the residual moved, since the LAST NOTIFICATION,
@@ -107,23 +150,25 @@ func (t *HLReconcileGapTracker) Record(coin string, delta float64, now time.Time
 	sigChanged := deltaMove > hlReconcileGapTolerance &&
 		deltaMove > hlReconcileGapRealertRatio*math.Abs(e.lastNotifiedDelta)
 
-	shouldNotify := false
 	switch {
 	case !e.alerted:
 		shouldNotify = true // first crossing of the confirmation window
 	case sigChanged:
 		shouldNotify = true
-	case e.cycles%10 == 0:
-		shouldNotify = true
 	case !e.lastNotifiedAt.IsZero() && now.Sub(e.lastNotifiedAt) >= time.Hour:
 		shouldNotify = true
 	}
 	if shouldNotify {
+		shouldLog = true // always log a cycle that fires an operator alert
 		e.alerted = true
 		e.lastNotifiedAt = now
 		e.lastNotifiedDelta = delta
 	}
-	return shouldNotify, e.cycles
+	if shouldLog {
+		e.lastLoggedAt = now
+		e.lastLoggedDelta = delta
+	}
+	return shouldNotify, shouldLog, e.cycles
 }
 
 // Clear resets the streak for coin after a within-tolerance (or vanished)
@@ -212,9 +257,11 @@ func reportHLReconcileGaps(notifier ownerDMSender, results []hlReconcileGapResul
 	for _, r := range results {
 		present[r.Coin] = true
 		if math.Abs(r.DeltaQty) > hlReconcileGapTolerance {
-			shouldNotify, count := hlReconcileGapTracker.Record(r.Coin, r.DeltaQty, now)
-			fmt.Printf("[WARN] hl-sync: %s reconciliation gap residual=%+.6f persists (virtual=%.6f on-chain=%.6f, strategies: %v)\n",
-				r.Coin, r.DeltaQty, r.VirtualQty, r.OnChainQty, r.Strategies)
+			shouldNotify, shouldLog, count := hlReconcileGapTracker.Record(r.Coin, r.DeltaQty, now)
+			if shouldLog {
+				fmt.Printf("[WARN] hl-sync: %s reconciliation gap residual=%+.6f persists (virtual=%.6f on-chain=%.6f, strategies: %v)\n",
+					r.Coin, r.DeltaQty, r.VirtualQty, r.OnChainQty, r.Strategies)
+			}
 			if shouldNotify {
 				emit(formatHLReconcileGapAlert(r, count))
 			}
