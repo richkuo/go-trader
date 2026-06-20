@@ -201,6 +201,9 @@ def test_fit_unsupervised_no_leakage_does_not_call_compute_regime_composite(monk
     model = rvm.fit_unsupervised(feats, family="kmeans", k=3, filter_window=32,
                                  thresholds=dict(TH), seed=0)
     assert model["latent_count"] == 3
+    # also exercise the thresholds=None branch (lazy-imports defaults) under the same guard
+    model2 = rvm.fit_unsupervised(feats, family="kmeans", k=3, filter_window=32, seed=0)
+    assert model2["latent_count"] == 3
 
 
 def test_decode_is_causal_future_bars_do_not_change_past_labels():
@@ -242,4 +245,5 @@ def test_model_satisfies_bounded_window_and_forward_filter_contract():
         assert key in model
     prov = bw._provenance_status(model, "BTC/USDT", "1h", "oos")
     assert prov["verified"] is True
-    assert prov["in_sample"] is False
+    assert prov["overlap_resolvable"] is True   # both windows in WINDOWS -> date-range path engaged
+    assert prov["in_sample"] is False           # is/oos disjoint -> held-out, promotable

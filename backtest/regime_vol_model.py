@@ -195,6 +195,10 @@ def map_latent_to_names(em_mean_z, feature_means, feature_stds, thresholds):
     em_mean_z = np.asarray(em_mean_z, dtype=float)
     mean = np.asarray(feature_means, dtype=float)
     std = np.asarray(feature_stds, dtype=float)
+    d = em_mean_z.shape[1]
+    if mean.shape != (d,) or std.shape != (d,):     # a mis-shaped scalar/wrong-length std would
+        raise ValueError(f"feature_means/stds must be shape ({d},); "  # silently broadcast garbage
+                         f"got {mean.shape} and {std.shape}")
     raw = em_mean_z * std + mean                       # un-standardize centroids -> raw features
     order = sorted(range(len(raw)), key=lambda i: (raw[i, 1], i))   # by range_eff, stable on ties
     rank = {i: r for r, i in enumerate(order)}
