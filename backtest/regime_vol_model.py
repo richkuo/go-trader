@@ -185,3 +185,24 @@ def fit_hmm(z, k, *, seed=0, iters=50, var_floor=1e-3, tol=1e-4):
 
 
 FITTERS = {"kmeans": fit_kmeans, "gmm": fit_gmm, "hmm": fit_hmm}
+
+
+def map_latent_to_names(em_mean_z, feature_means, feature_stds, thresholds):
+    """Name each latent state by un-standardizing its centroid to raw feature space and running
+    the canonical map_composite_label on it. Uses only training-window centroids (no per-bar
+    hand-rule labels). volatility_rank orders states by centroid range_eff (ascending)."""
+    from regime import map_composite_label
+    em_mean_z = np.asarray(em_mean_z, dtype=float)
+    mean = np.asarray(feature_means, dtype=float)
+    std = np.asarray(feature_stds, dtype=float)
+    raw = em_mean_z * std + mean                       # un-standardize centroids -> raw features
+    order = sorted(range(len(raw)), key=lambda i: (raw[i, 1], i))   # by range_eff, stable on ties
+    rank = {i: r for r, i in enumerate(order)}
+    names, mapping = [], {}
+    for i in range(len(raw)):
+        # map_composite_label(return_eff, adx_val, range_eff, efficiency, thresholds)
+        name = map_composite_label(raw[i, 0], raw[i, 3], raw[i, 1], raw[i, 2], thresholds)
+        names.append(name)
+        mapping[str(i)] = {"name": name, "centroid_raw": raw[i].tolist(),
+                           "volatility_rank": int(rank[i])}
+    return names, mapping

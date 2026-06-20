@@ -120,3 +120,36 @@ def test_fit_kmeans_k1_returns_global_mean_not_random_init():
     assign, em_mean, em_var, counts = rvm.fit_kmeans(z, 1, seed=0)
     assert counts[0] == 300
     assert np.allclose(em_mean[0], z.mean(0), atol=1e-9)   # the true global mean, not the rng pick
+
+
+def test_map_latent_to_names_uses_canonical_boundaries_and_is_deterministic():
+    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+    mean = np.zeros(4); std = np.ones(4)
+    em = np.array([[0.0, 0.0, 0.1, 0.0],
+                   [0.5, 0.5, 0.9, 40.0]], dtype=float)
+    names, mapping = rvm.map_latent_to_names(em, mean, std, dict(TH))
+    assert names == ["ranging_quiet", "trending_up_clean"]
+    from regime import VALID_LABELS_COMPOSITE
+    assert all(nm in VALID_LABELS_COMPOSITE for nm in names)
+    names2, _ = rvm.map_latent_to_names(em, mean, std, dict(TH))
+    assert names2 == names
+    assert mapping["1"]["centroid_raw"] == [0.5, 0.5, 0.9, 40.0]
+
+
+def test_volatility_rank_orders_by_range_eff():
+    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+    mean = np.zeros(4); std = np.ones(4)
+    em = np.array([[0.0, 0.8, 0.1, 10.0],
+                   [0.0, 0.01, 0.1, 10.0],
+                   [0.0, 0.3, 0.1, 10.0]], dtype=float)
+    _, mapping = rvm.map_latent_to_names(em, mean, std, dict(TH))
+    ranks = {int(i): m["volatility_rank"] for i, m in mapping.items()}
+    assert ranks[1] < ranks[2] < ranks[0]
+
+
+def test_map_composite_label_monotone_in_range_within_ranging():
+    from regime import map_composite_label, _DEFAULT_COMPOSITE_THRESHOLDS as TH
+    quiet = map_composite_label(0.0, 5.0, 0.0, 0.1, dict(TH))
+    volatile = map_composite_label(0.0, 5.0, 0.9, 0.1, dict(TH))
+    assert quiet == "ranging_quiet"
+    assert volatile == "ranging_volatile"
