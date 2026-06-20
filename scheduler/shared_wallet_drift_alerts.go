@@ -36,8 +36,17 @@ const sharedWalletDriftAlertThreshold = 2
 // wallet ("materially changed"). The drift is an orphan position's
 // exchange-reported unrealized P&L, which moves with the mark every cycle —
 // an absolute cent threshold compared cycle-over-cycle would re-alert
-// continuously and defeat the every-10th-cycle/hourly back-off.
+// continuously and defeat the hourly back-off.
 const sharedWalletDriftRealertRatio = 0.10
+
+// sharedWalletDriftLogInterval throttles the stdout [WARN] drift line per
+// wallet (#1088). The log is operator visibility, not an alert, so it fires at
+// the onset of an over-tolerance episode and then at most once per this
+// interval while the drift persists — NOT every reconcile cycle. Without it a
+// stable drift logged once per ~35s reconcile cycle produced 620 lines in 6h.
+// A cycle that ALSO fires an operator alert is always logged regardless, so the
+// stdout trail and the Discord/DM alerts stay correlated.
+const sharedWalletDriftLogInterval = time.Minute
 
 // sharedWalletDriftEntry is one slot in the per-wallet drift tracker.
 type sharedWalletDriftEntry struct {
@@ -55,12 +64,15 @@ type sharedWalletDriftEntry struct {
 	alertedCoins map[string]bool
 	// cycles counts CONSECUTIVE over-tolerance cycles at the WALLET level,
 	// independent of which orphan coin is responsible. It is the duration shown
-	// in alert/recovery messages and the base of the every-10th-cycle cadence —
-	// per-coin streaks would undercount when the orphan coin churns (#920
-	// review round 4).
+	// in alert/recovery messages — per-coin streaks would undercount when the
+	// orphan coin churns (#920 review round 4).
 	cycles         int
 	lastNotifiedAt time.Time
-	alerted        bool
+	// lastLoggedAt is the time of the last stdout [WARN] line for this wallet —
+	// the anchor for the per-wallet log throttle (#1088), independent of the
+	// notification throttle (lastNotifiedAt).
+	lastLoggedAt time.Time
+	alerted      bool
 	// lastNotifiedDriftCents is the drift at the LAST NOTIFICATION (not the
 	// previous cycle) — the anchor for the materially-changed re-alert gate.
 	lastNotifiedDriftCents int64
@@ -78,12 +90,19 @@ type SharedWalletDriftTracker struct {
 }
 
 // Record registers an over-tolerance drift for walletKey and reports whether
-// this cycle should fire an operator alert, along with the wallet's
-// post-increment consecutive over-tolerance cycle count (the duration shown in
-// operator messages). No alert fires until some coin's streak reaches
+// this cycle should fire an operator alert (shouldNotify), whether it should
+// emit a stdout [WARN] line (shouldLog, #1088), and the wallet's post-increment
+// consecutive over-tolerance cycle count (the duration shown in operator
+// messages). No alert fires until some coin's streak reaches
 // sharedWalletDriftAlertThreshold; the first alert fires on that crossing, then
-// re-throttles (a materially changed drift, every 10th cycle, or once an hour)
-// while the drift persists.
+// re-throttles (a materially changed drift, or once an hour) while the drift
+// persists.
+//
+// shouldLog is throttled separately and more loosely than shouldNotify: it is
+// true at the onset of an over-tolerance episode and then at most once per
+// sharedWalletDriftLogInterval, plus on any cycle that fires an alert. This
+// stops the per-cycle log spam (#1088: 620 lines in 6h) while preserving an
+// onset record and periodic visibility of a persistent drift.
 //
 // orphanCoins identifies WHICH positions are unattributed this cycle (sorted).
 // Confirmation continuity is tracked PER COIN: a coin must stay unowned for
@@ -101,10 +120,10 @@ type SharedWalletDriftTracker struct {
 // which moves with the mark EVERY cycle, so "materially changed" is measured
 // against the drift at the LAST NOTIFICATION (not the previous cycle) and must
 // clear a relative threshold (sharedWalletDriftRealertRatio) as well as a
-// cent. Mark wiggle therefore settles into the every-10th-cycle/hourly
-// cadence, while a genuinely growing (or sign-flipping) drift accumulates
-// against the anchor and re-surfaces.
-func (t *SharedWalletDriftTracker) Record(walletKey string, drift float64, orphanCoins []string, now time.Time) (bool, int) {
+// cent. Mark wiggle therefore settles into the hourly cadence, while a
+// genuinely growing (or sign-flipping) drift accumulates against the anchor and
+// re-surfaces.
+func (t *SharedWalletDriftTracker) Record(walletKey string, drift float64, orphanCoins []string, now time.Time) (shouldNotify bool, shouldLog bool, cycles int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.entries == nil {
@@ -155,25 +174,33 @@ func (t *SharedWalletDriftTracker) Record(walletKey string, drift float64, orpha
 	sigChanged := deltaCents > 1 &&
 		float64(deltaCents) > sharedWalletDriftRealertRatio*float64(absInt64(e.lastNotifiedDriftCents))
 
+	// Log throttle (#1088): emit the stdout [WARN] at the onset of an episode
+	// and then at most once per sharedWalletDriftLogInterval. Computed before
+	// the confirmation-window early return so onset is logged even during the
+	// (un-alerted) confirmation window. A cycle that fires an alert overrides
+	// this to always log (below).
+	shouldLog = e.lastLoggedAt.IsZero() || now.Sub(e.lastLoggedAt) >= sharedWalletDriftLogInterval
+
 	// Confirmation window: no coin has stayed unowned long enough yet — a
 	// transient one-cycle orphan never reaches the threshold (it clears next
 	// cycle via Clear or drops out of coinStreaks), so it never alerts.
 	if maxStreak < sharedWalletDriftAlertThreshold {
-		return false, e.cycles
+		if shouldLog {
+			e.lastLoggedAt = now
+		}
+		return false, shouldLog, e.cycles
 	}
 
-	shouldNotify := false
 	switch {
 	case confirmedNew:
 		shouldNotify = true // a coin crossed its confirmation window
 	case e.alerted && sigChanged:
 		shouldNotify = true
-	case e.cycles%10 == 0:
-		shouldNotify = true
 	case !e.lastNotifiedAt.IsZero() && now.Sub(e.lastNotifiedAt) >= time.Hour:
 		shouldNotify = true
 	}
 	if shouldNotify {
+		shouldLog = true // always log a cycle that fires an operator alert
 		e.alerted = true
 		e.lastNotifiedAt = now
 		e.lastNotifiedDriftCents = driftCents
@@ -186,7 +213,10 @@ func (t *SharedWalletDriftTracker) Record(walletKey string, drift float64, orpha
 			}
 		}
 	}
-	return shouldNotify, e.cycles
+	if shouldLog {
+		e.lastLoggedAt = now
+	}
+	return shouldNotify, shouldLog, e.cycles
 }
 
 // Clear resets the drift streak for walletKey after a within-tolerance cycle
@@ -266,10 +296,12 @@ func reportSharedWalletDrift(notifier *MultiNotifier, results []sharedWalletDrif
 	for _, r := range results {
 		label := sharedWalletKeyLabel(r.Key)
 		if math.Abs(r.Drift) > sharedWalletDriftTolerance {
-			shouldNotify, count := sharedWalletDriftTracker.Record(label, r.Drift, r.OrphanCoins, now)
-			rawDiff := r.MemberSum - r.Balance
-			fmt.Printf("[WARN] shared-wallet %s drift $%+.2f (Σ members $%.2f vs balance $%.2f, rawDiff $%+.2f, orphans=[%s])\n",
-				label, r.Drift, r.MemberSum, r.Balance, rawDiff, strings.Join(r.OrphanCoins, ","))
+			shouldNotify, shouldLog, count := sharedWalletDriftTracker.Record(label, r.Drift, r.OrphanCoins, now)
+			if shouldLog {
+				rawDiff := r.MemberSum - r.Balance
+				fmt.Printf("[WARN] shared-wallet %s drift $%+.2f (Σ members $%.2f vs balance $%.2f, rawDiff $%+.2f, orphans=[%s])\n",
+					label, r.Drift, r.MemberSum, r.Balance, rawDiff, strings.Join(r.OrphanCoins, ","))
+			}
 			if !shouldNotify || notifier == nil || !notifier.HasBackends() {
 				continue
 			}
