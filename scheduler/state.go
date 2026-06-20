@@ -278,7 +278,7 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 			// position (certified=false) validates against BASE direction — this is
 			// the from-flat migration surface: a side that conflicts with base is
 			// flagged for the operator to close before the next signal.
-			effectiveDir := EffectiveDirectionForPositionGated(*sc, "", posRegime, pos.Quantity, pos.DirectionCertifiedAtOpen)
+			effectiveDir := EffectiveDirectionForPositionGated(*sc, "", posRegime, pos.Quantity, pos.DirectionCertifiedStatesAtOpen)
 			if !perpsPositionConflictsDirection(pos.Side, effectiveDir) {
 				continue
 			}
@@ -286,7 +286,7 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 			// regime allows this side, skip (it opened under the honored policy).
 			// Uncertified positions are NOT skipped — they must surface for
 			// from-flat migration (#1085).
-			if policyConfigured && pos.DirectionCertifiedAtOpen && posRegime == "" && policyAllowsPositionSide(*sc, pos.Side) {
+			if policyConfigured && pos.DirectionCertifiedAtOpen && posRegime == "" && policyAllowsPositionSideGated(*sc, pos.Side, pos.DirectionCertifiedStatesAtOpen) {
 				continue
 			}
 			conflictSide := pos.Side

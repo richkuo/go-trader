@@ -316,10 +316,17 @@ func stampDirectionCertifiedAtOpenIfOpened(s *StrategyState, symbol string, open
 	}
 	if !sc.RegimeDirectionalPolicy.IsConfigured() {
 		pos.DirectionCertifiedAtOpen = false
+		pos.DirectionCertifiedStatesAtOpen = nil
 		return
 	}
-	_, certified := strategyDirectionalCertified(sc, rc, time.Now().UTC())
+	states, certified := strategyDirectionalCertified(sc, rc, time.Now().UTC())
 	pos.DirectionCertifiedAtOpen = certified
+	// Freeze a COPY of the certified per-state direction map at the entry
+	// instant so PER-STATE sign gating of the open position (hold-on-transition
+	// AND the #822 orphan check) consults the open-time evidence, never the live
+	// artifact a SIGHUP/expiry could change mid-position (#1085 req 2). nil when
+	// the cell is uncertified → every state resolves to base direction.
+	pos.DirectionCertifiedStatesAtOpen = cloneStringMap(states)
 }
 
 // strategyDirectionalCertStatus is the messaging-oriented sibling of
@@ -359,7 +366,7 @@ func directionalCertStartupSummary(cfg *Config) []string {
 			states, _ := store.Certified(asset, tf, classifier, now)
 			line := fmt.Sprintf("[#1085] %s: regime_directional_policy CERTIFIED for %s — directional selection ACTIVE", sc.ID, cell)
 			if mm := directionalCertSignMismatches(sc, states); len(mm) > 0 {
-				line += fmt.Sprintf("; [WARN] config contradicts certified evidence: %s", strings.Join(mm, ", "))
+				line += fmt.Sprintf("; [WARN] config contradicts certified evidence — these states resolve to BASE direction (the configured side is NOT traded): %s", strings.Join(mm, ", "))
 			}
 			out = append(out, line)
 		case CertExpired:
@@ -395,10 +402,12 @@ func directionalCertInspectStatus(sc StrategyConfig, cfg *Config) (status, cell 
 }
 
 // directionalCertSignMismatches returns, sorted, the regime labels where the
-// operator's configured policy direction contradicts the certified direction
-// for an otherwise-certified cell. A non-empty result means the config asks to
-// bet a side the evidence does not support for that state — surfaced at config
-// load (the cell is still gated, but the contradiction is operator-visible).
+// operator's configured policy direction contradicts the certified direction for
+// an otherwise-certified cell. A non-empty result means the config asks to bet a
+// side the evidence does not support for that state; the PER-STATE runtime gate
+// (gatedDirectionalEntry) resolves those states to BASE direction, so this is an
+// operator-visible heads-up that the configured side is inert there — never a
+// state that actually trades the contradicting side.
 func directionalCertSignMismatches(sc StrategyConfig, certStates map[string]string) []string {
 	if sc.RegimeDirectionalPolicy == nil || len(certStates) == 0 {
 		return nil

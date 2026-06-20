@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS positions (
     scale_in_resize_pending INTEGER NOT NULL DEFAULT 0,
     open_profile TEXT NOT NULL DEFAULT '',
     direction_certified_at_open INTEGER NOT NULL DEFAULT 0,
+    direction_certified_states_json TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (strategy_id, symbol)
 );
 
@@ -447,6 +448,11 @@ func (sdb *StateDB) migrateSchema() error {
 		// uncertified (pos.Regime persists, so the open-time stamp is never
 		// re-derived) and gets migrated to base direction (req-2 violation).
 		"ALTER TABLE positions ADD COLUMN direction_certified_at_open INTEGER NOT NULL DEFAULT 0",
+		// #1085 (per-state sign gate): freeze the certified PER-STATE direction
+		// map at open so an open position's sign gating (hold-on-transition AND the
+		// #822 orphan check) uses the open-time evidence, immune to a live-artifact
+		// change (req 2). Empty string = uncertified at open → base direction.
+		"ALTER TABLE positions ADD COLUMN direction_certified_states_json TEXT NOT NULL DEFAULT ''",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -490,6 +496,32 @@ func marshalRegimeWindowsJSON(windows map[string]string) string {
 }
 
 func parseRegimeWindowsJSON(raw string) map[string]string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out map[string]string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// marshalStringMapJSON / parseStringMapJSON are the generic map[string]string
+// JSON codecs for persisted snapshot maps that aren't regime windows (e.g. the
+// #1085 frozen certified per-state direction map). Empty/unparseable -> "".
+func marshalStringMapJSON(m map[string]string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func parseStringMapJSON(raw string) map[string]string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil
@@ -1023,8 +1055,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	defer stmtStrat.Close()
 
-	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, tp_armed_tiers_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, regime, regime_windows_json, regime_pending_label, regime_pending_count, regime_applied_label, scale_in_count, last_add_price, added_notional_usd, risk_anchor_price, scale_in_resize_pending, open_profile, direction_certified_at_open)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, tp_armed_tiers_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, regime, regime_windows_json, regime_pending_label, regime_pending_count, regime_applied_label, scale_in_count, last_add_price, added_notional_usd, risk_anchor_price, scale_in_resize_pending, open_profile, direction_certified_at_open, direction_certified_states_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare position insert: %w", err)
 	}
@@ -1084,7 +1116,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			if pos.DirectionCertifiedAtOpen {
 				directionCertifiedAtOpen = 1
 			}
-			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel, pos.ScaleInCount, pos.LastAddPrice, pos.AddedNotionalUSD, pos.RiskAnchorPrice, scaleInResizePending, pos.OpenProfile, directionCertifiedAtOpen); err != nil {
+			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel, pos.ScaleInCount, pos.LastAddPrice, pos.AddedNotionalUSD, pos.RiskAnchorPrice, scaleInResizePending, pos.OpenProfile, directionCertifiedAtOpen, marshalStringMapJSON(pos.DirectionCertifiedStatesAtOpen)); err != nil {
 				return fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
 			}
 		}
@@ -1503,7 +1535,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	}
 
 	// 3. Load positions for each strategy.
-	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, COALESCE(tp1_oid, 0) AS tp1_oid, COALESCE(tp2_oid, 0) AS tp2_oid, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(tp_armed_tiers_json, '') AS tp_armed_tiers_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(sl_adjusted_tiers_processed, 0) AS sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, COALESCE(regime, '') AS regime, COALESCE(regime_windows_json, '') AS regime_windows_json, COALESCE(regime_pending_label, '') AS regime_pending_label, COALESCE(regime_pending_count, 0) AS regime_pending_count, COALESCE(regime_applied_label, '') AS regime_applied_label, COALESCE(scale_in_count, 0) AS scale_in_count, COALESCE(last_add_price, 0) AS last_add_price, COALESCE(added_notional_usd, 0) AS added_notional_usd, COALESCE(risk_anchor_price, 0) AS risk_anchor_price, COALESCE(scale_in_resize_pending, 0) AS scale_in_resize_pending, COALESCE(open_profile, '') AS open_profile, COALESCE(direction_certified_at_open, 0) AS direction_certified_at_open FROM positions")
+	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, COALESCE(tp1_oid, 0) AS tp1_oid, COALESCE(tp2_oid, 0) AS tp2_oid, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(tp_armed_tiers_json, '') AS tp_armed_tiers_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(sl_adjusted_tiers_processed, 0) AS sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, COALESCE(regime, '') AS regime, COALESCE(regime_windows_json, '') AS regime_windows_json, COALESCE(regime_pending_label, '') AS regime_pending_label, COALESCE(regime_pending_count, 0) AS regime_pending_count, COALESCE(regime_applied_label, '') AS regime_applied_label, COALESCE(scale_in_count, 0) AS scale_in_count, COALESCE(last_add_price, 0) AS last_add_price, COALESCE(added_notional_usd, 0) AS added_notional_usd, COALESCE(risk_anchor_price, 0) AS risk_anchor_price, COALESCE(scale_in_resize_pending, 0) AS scale_in_resize_pending, COALESCE(open_profile, '') AS open_profile, COALESCE(direction_certified_at_open, 0) AS direction_certified_at_open, COALESCE(direction_certified_states_json, '') AS direction_certified_states_json FROM positions")
 	if err != nil {
 		return nil, fmt.Errorf("load positions: %w", err)
 	}
@@ -1520,11 +1552,13 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		var postTPTrailingMult sql.NullFloat64
 		var scaleInResizePending int
 		var directionCertifiedAtOpen int
-		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx, &tp1OID, &tp2OID, &tpOIDsJSON, &tpArmedTiersJSON, &slATRMult, &pos.TPTiersJSON, &pos.SLAdjustedTiersProcessed, &postTPTrailingMult, &pos.Regime, &regimeWindowsJSON, &pos.RegimePendingLabel, &pos.RegimePendingCount, &pos.RegimeAppliedLabel, &pos.ScaleInCount, &pos.LastAddPrice, &pos.AddedNotionalUSD, &pos.RiskAnchorPrice, &scaleInResizePending, &pos.OpenProfile, &directionCertifiedAtOpen); err != nil {
+		var directionCertifiedStatesJSON string
+		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx, &tp1OID, &tp2OID, &tpOIDsJSON, &tpArmedTiersJSON, &slATRMult, &pos.TPTiersJSON, &pos.SLAdjustedTiersProcessed, &postTPTrailingMult, &pos.Regime, &regimeWindowsJSON, &pos.RegimePendingLabel, &pos.RegimePendingCount, &pos.RegimeAppliedLabel, &pos.ScaleInCount, &pos.LastAddPrice, &pos.AddedNotionalUSD, &pos.RiskAnchorPrice, &scaleInResizePending, &pos.OpenProfile, &directionCertifiedAtOpen, &directionCertifiedStatesJSON); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
 		pos.ScaleInResizePending = scaleInResizePending != 0
 		pos.DirectionCertifiedAtOpen = directionCertifiedAtOpen != 0
+		pos.DirectionCertifiedStatesAtOpen = parseStringMapJSON(directionCertifiedStatesJSON)
 		pos.OpenedAt = parseTime(openedAtStr)
 		pos.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, tp1OID, tp2OID)
 		pos.TPArmedTiers = parseTPArmedTiersJSON(tpArmedTiersJSON)

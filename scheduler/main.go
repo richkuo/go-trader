@@ -3010,19 +3010,21 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	// to its natural exit under the policy that opened it.
 	currentDirRegime := regimeDirectionalLabel(*sc, regimePayloadValue(result.Regime), regime)
 	posDirRegime := posCtx.DirectionalRegime
-	// #1085: evidence gate. When FLAT, key the entry side on the LIVE
-	// certification verdict for this strategy's (asset,timeframe,classifier). When
-	// a position is OPEN, ride under the certification stamped at open so an
-	// expiry/refresh never flips it mid-position. Default-off → base direction.
-	dirCertified := false
+	// #1085: evidence gate (PER STATE). When FLAT, key the entry side on the LIVE
+	// certified per-state direction map for this strategy's (asset,timeframe,classifier).
+	// When a position is OPEN, ride under the map frozen at open so an artifact
+	// expiry/refresh never re-gates it mid-position; a state whose configured side
+	// contradicts the certified sign (or is uncertified) resolves to base, so a
+	// certified cell can never bet opposite the evidence. Then per-position:
+	var dirCertStates map[string]string
 	if sc.RegimeDirectionalPolicy.IsConfigured() {
 		if posCtx.Quantity > 0 {
-			dirCertified = posCtx.DirectionCertifiedAtOpen
+			dirCertStates = posCtx.DirectionCertifiedStatesAtOpen
 		} else {
-			_, dirCertified = strategyDirectionalCertified(*sc, regime, time.Now().UTC())
+			dirCertStates, _ = strategyDirectionalCertified(*sc, regime, time.Now().UTC())
 		}
 	}
-	if entry, applied, legacyFallback := applyRegimeDirectionalPolicy(sc, currentDirRegime, posDirRegime, posCtx.Quantity, dirCertified); applied {
+	if entry, applied, legacyFallback := applyRegimeDirectionalPolicy(sc, currentDirRegime, posDirRegime, posCtx.Quantity, dirCertStates); applied {
 		regimeKey := effectiveRegimeForPolicy(currentDirRegime, posDirRegime, posCtx.Quantity)
 		logger.Info("Regime directional policy: regime=%s -> direction=%q invert_signal=%t",
 			regimeKey, entry.Direction, entry.InvertSignal)

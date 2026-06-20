@@ -40,6 +40,12 @@ type PositionCtx struct {
 	// opened. Drives the entry resolver's gate for OPEN positions so a later
 	// certification expiry/refresh never disturbs them.
 	DirectionCertifiedAtOpen bool
+	// DirectionCertifiedStatesAtOpen mirrors
+	// Position.DirectionCertifiedStatesAtOpen (#1085): the certified per-state
+	// direction map frozen at open, driving PER-STATE sign gating of the OPEN
+	// position's effective direction (a state whose config contradicts the
+	// certified sign resolves to base).
+	DirectionCertifiedStatesAtOpen map[string]string
 }
 
 func usesOpenCloseConfig(sc StrategyConfig) bool {
@@ -187,6 +193,8 @@ func positionCtxFromPosition(pos *Position) PositionCtx {
 		RegimeWindows:            cloneStringMap(pos.RegimeWindows),
 		Profile:                  pos.OpenProfile,
 		DirectionCertifiedAtOpen: pos.DirectionCertifiedAtOpen,
+		// Clone so the snapshot can't alias the live position's frozen map.
+		DirectionCertifiedStatesAtOpen: cloneStringMap(pos.DirectionCertifiedStatesAtOpen),
 	}
 }
 

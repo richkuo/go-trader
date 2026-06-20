@@ -266,7 +266,8 @@ func TestValidatePerpsDirectionConfig_RegimePolicyStampedTrendingDown(t *testing
 		ID:   "hl-mr-hype",
 		Type: "perps",
 		Positions: map[string]*Position{
-			"HYPE": {Symbol: "HYPE", Quantity: 1, Side: "short", Regime: "trending_down", Multiplier: 1, Leverage: 1, DirectionCertifiedAtOpen: true},
+			"HYPE": {Symbol: "HYPE", Quantity: 1, Side: "short", Regime: "trending_down", Multiplier: 1, Leverage: 1, DirectionCertifiedAtOpen: true,
+				DirectionCertifiedStatesAtOpen: map[string]string{"trending_up": DirectionLong, "trending_down": DirectionShort, "ranging": DirectionLong}},
 		},
 	}
 	cfg := &Config{
@@ -289,7 +290,8 @@ func TestValidatePerpsDirectionConfig_RegimePolicyStampedTrendingUpConflict(t *t
 		ID:   "hl-mr-hype",
 		Type: "perps",
 		Positions: map[string]*Position{
-			"HYPE": {Symbol: "HYPE", Quantity: 1, Side: "short", Regime: "trending_up", Multiplier: 1, Leverage: 1, DirectionCertifiedAtOpen: true},
+			"HYPE": {Symbol: "HYPE", Quantity: 1, Side: "short", Regime: "trending_up", Multiplier: 1, Leverage: 1, DirectionCertifiedAtOpen: true,
+				DirectionCertifiedStatesAtOpen: map[string]string{"trending_up": DirectionLong, "trending_down": DirectionShort, "ranging": DirectionLong}},
 		},
 	}
 	cfg := &Config{

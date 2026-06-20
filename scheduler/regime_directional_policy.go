@@ -305,32 +305,63 @@ func effectiveRegimeForPolicy(currentRegime, posRegime string, posQty float64) s
 // not a pointer into cfg.Strategies. The mutation propagates to all
 // downstream uses in the same cycle (applySignalInversion, EffectiveDirection
 // calls in execute paths, etc.) without persisting into shared config state.
-func applyRegimeDirectionalPolicy(sc *StrategyConfig, currentRegime, posRegime string, posQty float64, certified bool) (effective RegimeDirectionalEntry, applied bool, legacyFallback bool) {
+//
+// `certStates` is the certified per-regime-state direction map driving the #1085
+// evidence gate: the LIVE artifact map when flat, the frozen open-time map
+// (Position.DirectionCertifiedStatesAtOpen) when a position is open. The gate is
+// PER STATE (gatedDirectionalEntry): the policy override is honored only for a
+// regime whose certified evidence supports the configured direction. An
+// uncertified cell, an uncertified state, or a state whose config contradicts
+// the certified sign all leave sc untouched → base direction.
+func applyRegimeDirectionalPolicy(sc *StrategyConfig, currentRegime, posRegime string, posQty float64, certStates map[string]string) (effective RegimeDirectionalEntry, applied bool, legacyFallback bool) {
 	if sc == nil || sc.RegimeDirectionalPolicy.IsZero() {
-		return RegimeDirectionalEntry{}, false, false
-	}
-	// #1085: evidence gate. The directional-selection surface is DEFAULT-OFF and
-	// resolves to base direction (sc left untouched) unless this strategy's exact
-	// (asset, timeframe, classifier) is certified. When flat the caller passes the
-	// LIVE certification verdict; when a position is open it passes the stamp
-	// recorded at open (Position.DirectionCertifiedAtOpen) so a later
-	// expiry/refresh never silently flips the open position's effective direction.
-	if !certified {
 		return RegimeDirectionalEntry{}, false, false
 	}
 	legacyFallback = posQty > 0 && strings.TrimSpace(posRegime) == ""
 	regime := effectiveRegimeForPolicy(currentRegime, posRegime, posQty)
-	entry, ok := sc.RegimeDirectionalPolicy.Resolve(regime)
-	if !ok {
-		// Regime unknown / not in policy map. Leave sc untouched so the
-		// static base config applies. Validation guarantees all canonical
-		// labels are present, so this only happens for empty/unknown
-		// regimes (e.g. regime detection disabled).
-		return RegimeDirectionalEntry{}, false, false
+	entry, honored := gatedDirectionalEntry(*sc, regime, certStates)
+	if !honored {
+		// Not honored: uncertified cell/state, a sign contradiction, or an
+		// unknown/empty regime. Leave sc untouched so the static base config
+		// applies (legacyFallback is reported but only meaningful when applied).
+		return RegimeDirectionalEntry{}, false, legacyFallback
 	}
 	sc.Direction = entry.Direction
 	sc.InvertSignal = entry.InvertSignal
 	return entry, true, legacyFallback
+}
+
+// gatedDirectionalEntry applies the #1085 PER-STATE evidence gate for one regime
+// label and returns the honored policy entry (honored=true) only when the
+// certified evidence supports the operator's configured direction for that state:
+//   - certStates carries no direction for the label (uncertified cell, or a state
+//     the artifact doesn't certify) → not honored (base);
+//   - the configured direction contradicts the certified sign → not honored
+//     (base): a certified CELL can never place a directional bet opposite the
+//     certified direction for a state on cell-level certification alone;
+//   - the configured direction matches the certified sign, OR is "both" (which
+//     defers to the signal and so never contradicts the evidence) → honored.
+//
+// certStates is the live artifact map when flat and the frozen open-time map for
+// an open position, so a later artifact expiry/refresh never re-gates an already
+// open position (req 2). A nil certStates (uncertified) yields not-honored for
+// every label — the fail-closed default.
+func gatedDirectionalEntry(sc StrategyConfig, regime string, certStates map[string]string) (RegimeDirectionalEntry, bool) {
+	if sc.RegimeDirectionalPolicy == nil || sc.RegimeDirectionalPolicy.IsZero() {
+		return RegimeDirectionalEntry{}, false
+	}
+	certDir, certOK := certStates[strings.TrimSpace(regime)]
+	if !certOK {
+		return RegimeDirectionalEntry{}, false
+	}
+	entry, ok := sc.RegimeDirectionalPolicy.Resolve(regime)
+	if !ok {
+		return RegimeDirectionalEntry{}, false
+	}
+	if entry.Direction != DirectionBoth && entry.Direction != certDir {
+		return RegimeDirectionalEntry{}, false
+	}
+	return entry, true
 }
 
 // EffectiveDirectionForRegime returns the direction that applies for a single
@@ -347,14 +378,16 @@ func EffectiveDirectionForRegime(sc StrategyConfig, regime string) string {
 }
 
 // EffectiveDirectionForRegimeGated is the #1085 certification-gated direction:
-// the policy's per-regime direction only when certified, otherwise the base
-// direction. Every runtime direction decision that consults the policy resolves
-// through a gated form so the directional-selection surface is default-off.
-func EffectiveDirectionForRegimeGated(sc StrategyConfig, regime string, certified bool) string {
-	if !certified {
-		return EffectiveDirection(sc)
+// the policy's per-regime direction only when the PER-STATE evidence gate honors
+// it (gatedDirectionalEntry), otherwise the base direction. Every runtime
+// direction decision that consults the policy resolves through a gated form so
+// the directional-selection surface is default-off and never reports a side
+// opposite the certified sign for a state.
+func EffectiveDirectionForRegimeGated(sc StrategyConfig, regime string, certStates map[string]string) string {
+	if entry, honored := gatedDirectionalEntry(sc, regime, certStates); honored {
+		return entry.Direction
 	}
-	return EffectiveDirectionForRegime(sc, regime)
+	return EffectiveDirection(sc)
 }
 
 // EffectiveDirectionForPosition resolves direction for an open position using
@@ -367,13 +400,14 @@ func EffectiveDirectionForPosition(sc StrategyConfig, currentRegime, posRegime s
 }
 
 // EffectiveDirectionForPositionGated is the #1085 certification-gated sibling of
-// EffectiveDirectionForPosition: resolves through the evidence gate so an
-// uncertified/legacy open position (certified=false) reports its TRUE effective
-// direction (base), not the un-gated policy direction. `certified` is the
-// position's DirectionCertifiedAtOpen stamp.
-func EffectiveDirectionForPositionGated(sc StrategyConfig, currentRegime, posRegime string, posQty float64, certified bool) string {
+// EffectiveDirectionForPosition: resolves through the PER-STATE evidence gate so
+// an uncertified/legacy open position (nil certStates) — or a state whose config
+// contradicts the certified sign — reports its TRUE effective direction (base),
+// not the un-gated policy direction. `certStates` is the position's frozen
+// DirectionCertifiedStatesAtOpen map.
+func EffectiveDirectionForPositionGated(sc StrategyConfig, currentRegime, posRegime string, posQty float64, certStates map[string]string) string {
 	regime := effectiveRegimeForPolicy(currentRegime, posRegime, posQty)
-	return EffectiveDirectionForRegimeGated(sc, regime, certified)
+	return EffectiveDirectionForRegimeGated(sc, regime, certStates)
 }
 
 // policyAllowsPositionSide reports whether posSide is permitted under at least
@@ -399,6 +433,34 @@ func policyAllowsPositionSide(sc StrategyConfig, posSide string) bool {
 	return false
 }
 
+// policyAllowsPositionSideGated is the #1085 PER-STATE-gated sibling of
+// policyAllowsPositionSide: posSide is permitted only under a regime whose policy
+// the certified evidence actually HONORS (config matches the certified sign, or
+// "both"), using the open-time frozen certStates. A side allowed only by a
+// sign-contradicting (un-honored → base) regime must NOT suppress the from-flat
+// migration warning, so the orphan/startup check keys on this, never the un-gated
+// form. nil certStates (uncertified at open) → no honored regime → false.
+func policyAllowsPositionSideGated(sc StrategyConfig, posSide string, certStates map[string]string) bool {
+	if sc.RegimeDirectionalPolicy == nil || sc.RegimeDirectionalPolicy.IsZero() {
+		return false
+	}
+	labels := make([]string, 0, len(sc.RegimeDirectionalPolicy.TrendRegime))
+	for label := range sc.RegimeDirectionalPolicy.TrendRegime {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	for _, label := range labels {
+		entry, honored := gatedDirectionalEntry(sc, label, certStates)
+		if !honored {
+			continue
+		}
+		if !perpsPositionConflictsDirection(posSide, entry.Direction) {
+			return true
+		}
+	}
+	return false
+}
+
 // RegimeDirectionOrphanCloseJob is queued during hl-sync reconcile when a
 // sole-owner live perps position conflicts with the strategy's *current*
 // regime direction (not the stamped open regime). Drained after mu.Unlock via
@@ -416,18 +478,23 @@ type RegimeDirectionOrphanCloseJob struct {
 // regimeDirectionOrphanEffectiveDir resolves direction from the current cycle
 // regime only — intentionally ignores pos.Regime hold-on-transition (#822).
 //
-// #1085: certified is the OPEN position's stamp (DirectionCertifiedAtOpen).
-//   - certified=true: the policy's current-regime direction governs — the
-//     legitimate #822 regime-flip auto-close. A later certification expiry does
-//     NOT change this (the stamp is frozen at open), so expiry never triggers a
+// #1085: certStates is the OPEN position's frozen per-state direction map
+// (DirectionCertifiedStatesAtOpen), gated PER STATE for the CURRENT regime:
+//   - the current regime is honored (config matches the certified sign, or
+//     "both"): the policy's current-regime direction governs — the legitimate
+//     #822 regime-flip auto-close. A later artifact expiry/refresh does NOT
+//     change this (the map is frozen at open), so expiry never triggers a
 //     migration auto-close of a position that opened certified.
-//   - certified=false (uncertified now, or a legacy pre-#1085 position): base
-//     direction governs. This IS the intended from-flat migration — a position
-//     whose side conflicts with base is auto-closed for sole-owner coins and
-//     surfaced (never silently flipped) for shared coins.
-func regimeDirectionOrphanEffectiveDir(stratState *StrategyState, sc StrategyConfig, certified bool) string {
+//   - uncertified cell (nil map), an uncertified current state, or the current
+//     state's config contradicts the certified sign: base direction governs.
+//     This IS the intended from-flat migration — a position whose side conflicts
+//     with base is auto-closed for sole-owner coins and surfaced (never silently
+//     flipped) for shared coins. Critically, a sign-contradicting current state
+//     resolves to BASE here too, so the orphan check never closes a position on
+//     the strength of an un-evidenced (counter-certified) configured side.
+func regimeDirectionOrphanEffectiveDir(stratState *StrategyState, sc StrategyConfig, certStates map[string]string) string {
 	current := strategyCurrentDirectionalRegime(stratState, sc)
-	return EffectiveDirectionForRegimeGated(sc, current, certified)
+	return EffectiveDirectionForRegimeGated(sc, current, certStates)
 }
 
 // perpsRegimeDirectionOrphanConflict reports whether a live HL perps position
@@ -453,7 +520,7 @@ func perpsRegimeDirectionOrphanConflict(stratState *StrategyState, sc StrategyCo
 		return false, "", ""
 	}
 	currentRegime = strategyCurrentDirectionalRegime(stratState, sc)
-	effectiveDir = regimeDirectionOrphanEffectiveDir(stratState, sc, pos.DirectionCertifiedAtOpen)
+	effectiveDir = regimeDirectionOrphanEffectiveDir(stratState, sc, pos.DirectionCertifiedStatesAtOpen)
 	if !perpsPositionConflictsDirection(pos.Side, effectiveDir) {
 		return false, currentRegime, effectiveDir
 	}

@@ -156,7 +156,7 @@ func TestApplyRegimeDirectionalPolicyDefaultOffWhenUncertified(t *testing.T) {
 			"ranging":       {Direction: DirectionLong},
 		}}}
 	// certified=false → default-off: policy not applied, base config preserved.
-	_, applied, _ := applyRegimeDirectionalPolicy(&sc, "trending_down", "", 0, false)
+	_, applied, _ := applyRegimeDirectionalPolicy(&sc, "trending_down", "", 0, nil)
 	if applied {
 		t.Fatal("uncertified policy must not apply (default-off)")
 	}
@@ -164,7 +164,7 @@ func TestApplyRegimeDirectionalPolicyDefaultOffWhenUncertified(t *testing.T) {
 		t.Fatalf("sc must stay at base, got dir=%q invert=%t", sc.Direction, sc.InvertSignal)
 	}
 	// certified=true → applied, sc mutated to the regime's direction.
-	entry, applied, _ := applyRegimeDirectionalPolicy(&sc, "trending_down", "", 0, true)
+	entry, applied, _ := applyRegimeDirectionalPolicy(&sc, "trending_down", "", 0, map[string]string{"trending_down": DirectionShort, "trending_up": DirectionLong, "ranging": DirectionLong})
 	if !applied || entry.Direction != DirectionShort || sc.Direction != DirectionShort {
 		t.Fatalf("certified policy must apply short, got applied=%t entry=%+v dir=%q", applied, entry, sc.Direction)
 	}
@@ -233,7 +233,8 @@ func TestDirectionCertifiedAtOpenDBRoundTrip(t *testing.T) {
 			ID: "hl-x", Type: "perps", Platform: "hyperliquid", Cash: 1000,
 			Positions: map[string]*Position{
 				"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 50000, Side: "short",
-					Multiplier: 1, Regime: "trending_down", DirectionCertifiedAtOpen: true},
+					Multiplier: 1, Regime: "trending_down", DirectionCertifiedAtOpen: true,
+					DirectionCertifiedStatesAtOpen: map[string]string{"trending_down": "short", "trending_up": "long", "ranging": "long"}},
 				"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "short",
 					Multiplier: 1, Regime: "trending_down", DirectionCertifiedAtOpen: false},
 			},
@@ -253,9 +254,13 @@ func TestDirectionCertifiedAtOpenDBRoundTrip(t *testing.T) {
 	}
 	if pos := s.Positions["BTC"]; pos == nil || !pos.DirectionCertifiedAtOpen {
 		t.Fatalf("certified-at-open stamp must survive restart, got %+v", pos)
+	} else if pos.DirectionCertifiedStatesAtOpen["trending_down"] != "short" || len(pos.DirectionCertifiedStatesAtOpen) != 3 {
+		t.Fatalf("frozen per-state cert map must survive restart, got %v", pos.DirectionCertifiedStatesAtOpen)
 	}
 	if pos := s.Positions["ETH"]; pos == nil || pos.DirectionCertifiedAtOpen {
 		t.Fatalf("uncertified stamp must stay false across restart, got %+v", pos)
+	} else if len(pos.DirectionCertifiedStatesAtOpen) != 0 {
+		t.Fatalf("uncertified position must have no frozen cert map, got %v", pos.DirectionCertifiedStatesAtOpen)
 	}
 }
 
@@ -303,6 +308,9 @@ func TestDirectionCertifiedAtOpenIsWriteOnce(t *testing.T) {
 	if ssA.Positions["BTC"].DirectionCertifiedAtOpen {
 		t.Fatal("(a) uncertified-at-open must stamp false")
 	}
+	if len(ssA.Positions["BTC"].DirectionCertifiedStatesAtOpen) != 0 {
+		t.Fatal("(a) uncertified-at-open must freeze a nil per-state map")
+	}
 	setDirectionalCertStore(certifiedStore())
 	stampDirectionCertifiedAtOpenIfOpened(ssA, "BTC", false /*no new open*/, sc, rc)
 	stampPositionRegimeIfOpened(ssA, "BTC", RegimePayload{Legacy: "ranging"}, sc, rc)
@@ -312,6 +320,9 @@ func TestDirectionCertifiedAtOpenIsWriteOnce(t *testing.T) {
 	if ssA.Positions["BTC"].Regime != "ranging" {
 		t.Fatalf("(a) the regime label must still record independently, got %q", ssA.Positions["BTC"].Regime)
 	}
+	if len(ssA.Positions["BTC"].DirectionCertifiedStatesAtOpen) != 0 {
+		t.Fatal("(a) a later SIGHUP/label cycle must not populate the frozen per-state map")
+	}
 
 	// (b) Certified at open → true; later de-certification + label-record must NOT flip it.
 	setDirectionalCertStore(certifiedStore())
@@ -320,11 +331,17 @@ func TestDirectionCertifiedAtOpenIsWriteOnce(t *testing.T) {
 	if !ssB.Positions["BTC"].DirectionCertifiedAtOpen {
 		t.Fatal("(b) certified-at-open must stamp true")
 	}
+	if ssB.Positions["BTC"].DirectionCertifiedStatesAtOpen["ranging"] != "long" {
+		t.Fatalf("(b) certified-at-open must freeze the per-state map, got %v", ssB.Positions["BTC"].DirectionCertifiedStatesAtOpen)
+	}
 	setDirectionalCertStore(emptyDirectionalCertSet())
 	stampDirectionCertifiedAtOpenIfOpened(ssB, "BTC", false, sc, rc)
 	stampPositionRegimeIfOpened(ssB, "BTC", RegimePayload{Legacy: "ranging"}, sc, rc)
 	if !ssB.Positions["BTC"].DirectionCertifiedAtOpen {
 		t.Fatal("(b) de-certification / label-record cycle must NOT flip an open position to false")
+	}
+	if ssB.Positions["BTC"].DirectionCertifiedStatesAtOpen["ranging"] != "long" {
+		t.Fatal("(b) de-cert/label cycle must not clear the frozen per-state map")
 	}
 
 	// (c) A position whose regime label records on the first post-open cycle still
@@ -383,6 +400,9 @@ func TestDirectionCertifiedAtOpenIsWriteOnce(t *testing.T) {
 	}
 	if ssD.Positions["BTC"].DirectionCertifiedAtOpen {
 		t.Fatal("(d) warmup→SIGHUP-certify→label-record must NOT flip the open stamp to true")
+	}
+	if len(ssD.Positions["BTC"].DirectionCertifiedStatesAtOpen) != 0 {
+		t.Fatal("(d) the frozen per-state map must stay empty (opened uncertified)")
 	}
 }
 

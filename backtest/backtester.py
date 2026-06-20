@@ -191,6 +191,37 @@ def _normalize_regime_directional_policy(policy: Optional[dict]) -> Optional[dic
     return parsed or None
 
 
+def _gate_directional_policy_by_states(
+    policy: Optional[dict], cert_states: Optional[dict],
+) -> Optional[dict]:
+    """#1085 PER-STATE evidence gate (mirrors Go gatedDirectionalEntry): retain a
+    regime's override only where the certified evidence supports the configured
+    direction for that state — config == certified sign, or config "both" (which
+    defers to the signal and never contradicts). A state with no certified
+    direction, or whose config contradicts the certified sign, is DROPPED so that
+    regime resolves to base direction.
+
+    cert_states semantics:
+      - None  -> "honor all" (legacy cell-level certified caller; the policy is
+                 returned unchanged),
+      - {}    -> uncertified cell: every state dropped (returns {} -> caller nulls),
+      - dict  -> keep only the per-state-supported overrides."""
+    if not policy:
+        return policy
+    if cert_states is None:
+        return policy
+    gated = {}
+    for label, entry in policy.items():
+        cert_dir = str(cert_states.get(label) or "").strip().lower()
+        if not cert_dir:
+            continue
+        direction = str((entry or {}).get("direction") or "").strip().lower()
+        if direction != "both" and direction != cert_dir:
+            continue
+        gated[label] = entry
+    return gated
+
+
 def _resolve_regime_directional_entry(
     policy: Optional[dict],
     current_regime: str,
@@ -652,6 +683,7 @@ class Backtester:
                  invert_signal: bool = False,
                  regime_directional_policy: Optional[dict] = None,
                  regime_directional_certified: bool = False,
+                 regime_directional_certified_states: Optional[dict] = None,
                  profile_allocation: Optional[dict] = None):
         """
         Args:
@@ -748,20 +780,35 @@ class Backtester:
         self.regime_directional_policy = _normalize_regime_directional_policy(
             regime_directional_policy,
         )
-        # #1085: evidence gate. The directional-selection surface is DEFAULT-OFF
-        # and resolves to base direction unless this (asset, timeframe,
-        # classifier) is certified. Nulling the policy here makes every
-        # downstream resolver (_effective_directional_entry / _resolve_*) fall
-        # back to base, exactly mirroring the live default-off — so a backtest
-        # can never show a directional edge the live path suppresses. The caller
-        # (run_backtest.py) computes regime_directional_certified from the same
-        # artifact the live daemon reads.
-        if self.regime_directional_policy is not None and not bool(regime_directional_certified):
-            print("[#1085] regime_directional_policy present but NOT certified for "
-                  "this (asset,timeframe,classifier) — DEFAULT-OFF in backtest "
-                  "(base direction), mirroring live (#1076 negative result).",
-                  file=sys.stderr)
-            self.regime_directional_policy = None
+        # #1085: evidence gate (PER STATE). The directional-selection surface is
+        # DEFAULT-OFF and resolves to base direction unless this (asset, timeframe,
+        # classifier) is certified — AND, per state, the configured direction
+        # agrees with the certified sign (or is "both"). Dropping a state's
+        # override here makes every downstream resolver (_resolve_* /
+        # _effective_directional_entry) fall back to base for that regime, exactly
+        # mirroring the live per-state gate (gatedDirectionalEntry) — so a backtest
+        # can never show a directional edge the live path suppresses, including a
+        # cell whose config contradicts the certified sign for some state. The
+        # caller (run_backtest.py) reads the SAME artifact the live daemon reads:
+        # it passes the certified per-state map; the legacy bool is the cell-level
+        # fallback (honor-all) for callers that don't supply the map.
+        if self.regime_directional_policy is not None:
+            if regime_directional_certified_states is not None:
+                cert_states = regime_directional_certified_states
+            elif bool(regime_directional_certified):
+                cert_states = None  # legacy cell-level certified caller: honor all states
+            else:
+                cert_states = {}  # uncertified cell: drop every state -> base
+            self.regime_directional_policy = _gate_directional_policy_by_states(
+                self.regime_directional_policy, cert_states,
+            )
+            if not self.regime_directional_policy:
+                print("[#1085] regime_directional_policy present but NOT certified "
+                      "(or no state survives the per-state sign gate) for this "
+                      "(asset,timeframe,classifier) — DEFAULT-OFF in backtest "
+                      "(base direction), mirroring live (#1076 negative result).",
+                      file=sys.stderr)
+                self.regime_directional_policy = None
         if self.regime_directional_policy is not None and not self.regime_enabled:
             raise ValueError(
                 "regime_directional_policy requires regime_enabled=True"

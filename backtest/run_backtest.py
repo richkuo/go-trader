@@ -22,6 +22,7 @@ from directional_certification import (
     config_directional_classifier,
     load_certifications,
     is_directional_certified,
+    certified_states,
     backtest_classifier,
 )
 
@@ -582,11 +583,18 @@ def load_strategy_config(config_path: str, strategy_id: str,
         cert_symbol = str(cfg_args[1]) if len(cfg_args) > 1 else ""
         cert_timeframe = str(cfg_args[2]) if len(cfg_args) > 2 else ""
         regime_directional_certified = False
+        regime_directional_certified_states = None
         if regime_directional_policy and cert_symbol and cert_timeframe:
-            regime_directional_certified = is_directional_certified(
-                load_certifications(), cert_symbol, cert_timeframe,
-                config_directional_classifier(regime_cfg, sc),
+            # #1085 per-state parity: resolve the certified per-state direction map
+            # (not just a cell-level bool) with the LIVE directional-window
+            # classifier, so the backtester drops the exact states the live gate
+            # drops (config contradicting the certified sign -> base).
+            _certs = load_certifications()
+            _clf = config_directional_classifier(regime_cfg, sc)
+            regime_directional_certified_states = certified_states(
+                _certs, cert_symbol, cert_timeframe, _clf,
             )
+            regime_directional_certified = regime_directional_certified_states is not None
         return {
             "open_strategy": {
                 "name": open_name,
@@ -605,6 +613,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "invert_signal": invert_signal,
             "regime_directional_policy": regime_directional_policy,
             "regime_directional_certified": regime_directional_certified,
+            "regime_directional_certified_states": regime_directional_certified_states,
             "regime_enabled": bool(regime_cfg.get("enabled")),
             "regime_period": int(regime_cfg.get("period", 14) or 14),
             "regime_adx_threshold": float(regime_cfg.get("adx_threshold", 20.0) or 20.0),
@@ -648,6 +657,7 @@ def run_single_backtest(
     invert_signal: bool = False,
     regime_directional_policy: Optional[dict] = None,
     regime_directional_certified: Optional[bool] = None,
+    regime_directional_certified_states: Optional[dict] = None,
     directional_cert_path: Optional[str] = None,
     profile_allocation: Optional[dict] = None,
 ) -> Optional[dict]:
@@ -731,13 +741,18 @@ def run_single_backtest(
     # #1085: when the caller (--config via load_strategy_config) already resolved
     # the verdict with the LIVE directional-window classifier, honor it. For a
     # by-name run, resolve here against the backtester's modeled classifier.
-    if regime_directional_policy and regime_directional_certified is None:
+    # By-name run (caller supplied no per-state map and no bool): resolve the
+    # per-state verdict here against the backtester's modeled classifier. The
+    # --config path (load_strategy_config) already resolved it with the live
+    # directional-window classifier and threaded both the map and the bool.
+    if (regime_directional_policy and regime_directional_certified_states is None
+            and regime_directional_certified is None):
         certs = load_certifications(directional_cert_path)
         clf = backtest_classifier(regime_windows_spec)
-        regime_directional_certified = is_directional_certified(
+        regime_directional_certified_states = certified_states(
             certs, symbol, timeframe, clf,
         )
-        if not regime_directional_certified:
+        if regime_directional_certified_states is None:
             print(f"  [#1085] regime_directional_policy default-off: "
                   f"({symbol},{timeframe},{clf}) not certified — base direction "
                   f"(matches live; #1076 negative result).")
@@ -764,6 +779,7 @@ def run_single_backtest(
         invert_signal=invert_signal,
         regime_directional_policy=regime_directional_policy,
         regime_directional_certified=regime_directional_certified,
+        regime_directional_certified_states=regime_directional_certified_states,
         profile_allocation=profile_allocation,
     )
     results = bt.run(
@@ -1178,8 +1194,11 @@ def main():
             "invert_signal",
             "regime_directional_policy",
             # #1085 parity: the certification verdict resolved with the live
-            # directional-window classifier (a Backtester param).
+            # directional-window classifier (a Backtester param). The per-state
+            # map drives the PER-STATE sign gate; the bool is the cell-level
+            # fallback for callers that don't supply the map.
             "regime_directional_certified",
+            "regime_directional_certified_states",
             # #998: regime-profile allocation switch block (None when unused).
             "profile_allocation",
             # #1058: composite (7-state) regime windows spec (None when the

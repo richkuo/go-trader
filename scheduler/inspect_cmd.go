@@ -779,7 +779,7 @@ func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit
 			effRegime := effectiveRegimeForPolicy(currentDirRegime, posDirRegime, pos.Quantity)
 			// #1085: gate by the open stamp so the reported effective direction is
 			// what the runtime actually uses (base for uncertified/legacy).
-			effDir := EffectiveDirectionForPositionGated(sc, currentDirRegime, posDirRegime, pos.Quantity, pos.DirectionCertifiedAtOpen)
+			effDir := EffectiveDirectionForPositionGated(sc, currentDirRegime, posDirRegime, pos.Quantity, pos.DirectionCertifiedStatesAtOpen)
 			regimeSrc := "stamped at open"
 			if strings.TrimSpace(posDirRegime) == "" {
 				regimeSrc = "current cycle (position regime unknown)"
@@ -844,7 +844,7 @@ func directionInspectJSON(sc StrategyConfig, cfg *Config, state *AppState) map[s
 				"quantity":                    pos.Quantity,
 				"regime":                      pos.Regime,
 				"regime_windows":              pos.RegimeWindows,
-				"effective_direction":         EffectiveDirectionForPositionGated(sc, currentDirRegime, posDirRegime, pos.Quantity, pos.DirectionCertifiedAtOpen),
+				"effective_direction":         EffectiveDirectionForPositionGated(sc, currentDirRegime, posDirRegime, pos.Quantity, pos.DirectionCertifiedStatesAtOpen),
 				"effective_policy_regime":     effectiveRegimeForPolicy(currentDirRegime, posDirRegime, pos.Quantity),
 				"direction_certified_at_open": pos.DirectionCertifiedAtOpen,
 			})

@@ -89,7 +89,7 @@ func TestRegimeDirectionalPolicy_DefaultWindowResolves(t *testing.T) {
 	if label != "trending_down" {
 		t.Fatalf("regimeDirectionalLabel = %q, want trending_down", label)
 	}
-	entry, applied, _ := applyRegimeDirectionalPolicy(&sc, label, "", 0, true)
+	entry, applied, _ := applyRegimeDirectionalPolicy(&sc, label, "", 0, map[string]string{"trending_up": "long", "trending_down": "short", "ranging": "long"})
 	if !applied {
 		t.Fatal("expected policy to apply on flat default-window entry")
 	}

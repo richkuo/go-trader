@@ -114,6 +114,32 @@ def is_directional_certified(
     return True
 
 
+def certified_states(
+    certs: dict, asset: str, timeframe: str, classifier: str,
+    now: Optional[datetime] = None,
+) -> Optional[dict]:
+    """Return the certified PER-STATE direction map ({regime_label: "long"/"short"})
+    when (asset, timeframe, classifier) has a present, non-expired certification;
+    else None (default-off -> base direction). Mirrors Go
+    DirectionalCertSet.Certified so the backtester can gate the directional policy
+    PER STATE exactly as live does — a state whose configured side contradicts the
+    certified sign falls to base, not just an all-or-nothing cell check. A present
+    certification with a missing/non-dict states map yields {} (certifies no
+    state)."""
+    entry = certs.get(_cert_key(asset, timeframe, classifier))
+    if not entry:
+        return None
+    exp = _parse_expiry(entry.get("expires_at", ""))
+    if exp is not None:
+        now = now or datetime.now(timezone.utc)
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp <= now:
+            return None
+    states = entry.get("states")
+    return dict(states) if isinstance(states, dict) else {}
+
+
 def backtest_classifier(regime_windows_spec: Optional[dict]) -> str:
     """The regime classifier the BACKTESTER applies for an ad-hoc (by-name) run:
     composite when a regime_windows_spec is configured (#1058), else legacy ADX.

@@ -45,6 +45,16 @@ type Position struct {
 	// from-flat migration; #822 auto-closes sole-owner conflicts, shared-coin
 	// conflicts are surfaced to the operator).
 	DirectionCertifiedAtOpen bool `json:"direction_certified_at_open,omitempty"`
+	// DirectionCertifiedStatesAtOpen freezes the certified PER-STATE direction
+	// map (#1085) at the moment the position opened. Per-state SIGN gating of an
+	// OPEN position (hold-on-transition AND the #822 orphan check) consults this
+	// open-time evidence — never the live artifact, which a SIGHUP/expiry could
+	// change mid-position (req 2) — so a certified cell never bets opposite the
+	// certified sign for a state, and an open position is never re-gated by a later
+	// artifact change. nil = cell uncertified at open / no policy → every state
+	// resolves to base direction. Persisted as a JSON map column (mirrors
+	// regime_windows_json).
+	DirectionCertifiedStatesAtOpen map[string]string `json:"direction_certified_states_at_open,omitempty"`
 	// #843 dynamic close: confirm-cycle state for live ATR-regime re-resolution.
 	RegimePendingLabel string `json:"regime_pending_label,omitempty"`
 	RegimePendingCount int    `json:"regime_pending_count,omitempty"`

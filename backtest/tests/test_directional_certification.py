@@ -7,6 +7,7 @@ from directional_certification import (
     normalize_cert_asset,
     load_certifications,
     is_directional_certified,
+    certified_states,
     backtest_classifier,
     config_directional_classifier,
 )
@@ -102,6 +103,57 @@ def test_config_directional_classifier_matches_live_resolution():
     # A window with a blank classifier defaults to adx (effectiveClassifier).
     rc3 = {"windows": {"medium": {"period": 48}}}
     assert config_directional_classifier(rc3, {}) == "adx"
+
+
+def test_certified_states_active_expired_never(tmp_path):
+    # #1085 per-state: certified_states returns the per-state direction MAP for an
+    # active cell, None for expired/never (fail-closed → base direction).
+    now = datetime(2026, 6, 19, tzinfo=timezone.utc)
+    future = (now + timedelta(days=2)).isoformat().replace("+00:00", "Z")
+    past = (now - timedelta(days=2)).isoformat().replace("+00:00", "Z")
+    p = tmp_path / "cert.json"
+    p.write_text(json.dumps({
+        "schema_version": 1,
+        "certified": [
+            {"asset": "BTC/USDT", "timeframe": "1h", "classifier": "composite",
+             "expires_at": future,
+             "states": {"trending_up": "long", "trending_down": "short"}},
+            {"asset": "ETH", "timeframe": "4h", "classifier": "adx",
+             "expires_at": past, "states": {"trending_down": "short"}},
+        ],
+    }))
+    certs = load_certifications(str(p))
+    assert certified_states(certs, "BTC", "1h", "composite", now) == {
+        "trending_up": "long", "trending_down": "short"}
+    assert certified_states(certs, "ETH", "4h", "adx", now) is None      # expired
+    assert certified_states(certs, "SOL", "1h", "composite", now) is None  # never
+
+
+def test_gate_directional_policy_by_states_per_state_sign():
+    # #1085 review-finding fix (parity with Go gatedDirectionalEntry): the gate is
+    # PER STATE — a state whose configured side contradicts the certified sign (or
+    # is uncertified) is dropped → base; "both" never contradicts; None = honor-all.
+    from backtester import _gate_directional_policy_by_states
+    policy = {
+        "trending_up": {"direction": "short", "invert_signal": True},  # operator wants short
+        "trending_down": {"direction": "short"},
+        "ranging": {"direction": "long"},
+    }
+    certs = {"trending_up": "long", "trending_down": "short", "ranging": "long"}
+    gated = _gate_directional_policy_by_states(policy, certs)
+    assert "trending_up" not in gated                       # (a) sign contradiction → base
+    assert gated["trending_down"]["direction"] == "short"   # (b) match stays honored
+    assert gated["ranging"]["direction"] == "long"          # (b) match stays honored
+    # (c) config "both" never contradicts → kept.
+    pol_both = {"trending_up": {"direction": "both"}}
+    assert _gate_directional_policy_by_states(pol_both, {"trending_up": "long"}) == pol_both
+    # Absent (uncertified) state → dropped; only the certified-and-matching one stays.
+    assert _gate_directional_policy_by_states(policy, {"trending_up": "short"}) == {
+        "trending_up": {"direction": "short", "invert_signal": True}}
+    # Uncertified cell (empty map) → everything dropped.
+    assert _gate_directional_policy_by_states(policy, {}) == {}
+    # None → legacy cell-level honor-all (policy returned unchanged).
+    assert _gate_directional_policy_by_states(policy, None) == policy
 
 
 def test_repo_artifact_is_empty_and_valid():
