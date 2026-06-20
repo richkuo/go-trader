@@ -206,3 +206,33 @@ def map_latent_to_names(em_mean_z, feature_means, feature_stds, thresholds):
         mapping[str(i)] = {"name": name, "centroid_raw": raw[i].tolist(),
                            "volatility_rank": int(rank[i])}
     return names, mapping
+
+
+def fit_unsupervised(features, *, family, k, filter_window, period=48,
+                     thresholds=None, seed=0, fitted_on=None):
+    """Fit one unsupervised family and assemble the forward_filter_labels-decodable model dict.
+    Emissions come from the family fit; the transition table + init are always estimated
+    empirically from the training-window state sequence; states are named post-fit from centroids."""
+    if family not in FITTERS:
+        raise ValueError(f"unknown family {family!r}; known: {sorted(FITTERS)}")
+    if thresholds is None:
+        from regime import _DEFAULT_COMPOSITE_THRESHOLDS
+        thresholds = dict(_DEFAULT_COMPOSITE_THRESHOLDS)
+    features = np.asarray(features, dtype=float)
+    mean, std, mask = standardize(features)
+    z = (features[mask] - mean) / std
+    assign_valid, em_mean, em_var, counts = FITTERS[family](z, k, seed=seed)
+    transition = empirical_transition(assign_valid, mask, k)
+    init = init_distribution(transition)
+    names, mapping = map_latent_to_names(em_mean, mean, std, thresholds)
+    emissions = [{"mean": em_mean[i].tolist(), "var": em_var[i].tolist(),
+                  "n": int(counts[i])} for i in range(k)]
+    return {
+        "type": MODEL_TYPE, "version": MODEL_VERSION, "fit_method": family,
+        "features": list(FEATURES),
+        "feature_means": mean.tolist(), "feature_stds": std.tolist(),
+        "states": names, "latent_count": int(k), "emissions": emissions,
+        "transition": transition.tolist(), "init": init.tolist(),
+        "filter_window": int(filter_window), "period": int(period),
+        "fitted_on": dict(fitted_on or {}), "mapping": mapping,
+    }

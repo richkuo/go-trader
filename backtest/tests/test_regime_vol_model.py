@@ -153,3 +153,93 @@ def test_map_composite_label_monotone_in_range_within_ranging():
     volatile = map_composite_label(0.0, 5.0, 0.9, 0.1, dict(TH))
     assert quiet == "ranging_quiet"
     assert volatile == "ranging_volatile"
+
+
+REQUIRED_KEYS = {"type", "version", "fit_method", "features", "feature_means",
+                 "feature_stds", "states", "latent_count", "emissions",
+                 "transition", "init", "filter_window", "period", "fitted_on", "mapping"}
+
+
+def _feature_blob_matrix(seed=0):
+    rng = np.random.default_rng(seed)
+    centers = np.array([[0.0, 0.02, 0.1, 8.0],
+                        [0.4, 0.5, 0.9, 40.0],
+                        [-0.4, 0.5, 0.9, 40.0]], dtype=float)
+    rows = []
+    for c in centers:
+        rows.append(rng.normal(c, [0.02, 0.02, 0.02, 1.0], size=(150, 4)))
+    feats = np.vstack(rows)
+    feats = np.vstack([np.full((5, 4), np.nan), feats])
+    return feats
+
+
+@pytest.mark.parametrize("family", ["kmeans", "gmm", "hmm"])
+def test_fit_unsupervised_schema_and_decodes(family):
+    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH, VALID_LABELS_COMPOSITE
+    from regime_hmm import forward_filter_labels
+    feats = _feature_blob_matrix()
+    model = rvm.fit_unsupervised(feats, family=family, k=3, filter_window=32,
+                                 thresholds=dict(TH), seed=0,
+                                 fitted_on={"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"})
+    assert REQUIRED_KEYS <= set(model)
+    assert model["fit_method"] == family and model["latent_count"] == 3
+    assert len(model["states"]) == 3 and len(model["emissions"]) == 3
+    assert np.allclose(np.sum(model["transition"], axis=1), 1.0)
+    assert all(s in VALID_LABELS_COMPOSITE for s in model["states"])
+    labels, conf = forward_filter_labels(feats, model)
+    assert len(labels) == len(feats)
+    assert set(labels[~np.isnan(feats).any(1)]).issubset(VALID_LABELS_COMPOSITE)
+
+
+def test_fit_unsupervised_no_leakage_does_not_call_compute_regime_composite(monkeypatch):
+    import regime
+    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+    def _boom(*a, **k):
+        raise AssertionError("fit path must not call compute_regime_composite")
+    monkeypatch.setattr(regime, "compute_regime_composite", _boom)
+    feats = _feature_blob_matrix()
+    model = rvm.fit_unsupervised(feats, family="kmeans", k=3, filter_window=32,
+                                 thresholds=dict(TH), seed=0)
+    assert model["latent_count"] == 3
+
+
+def test_decode_is_causal_future_bars_do_not_change_past_labels():
+    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+    from regime_hmm import forward_filter_labels
+    feats = _feature_blob_matrix()
+    model = rvm.fit_unsupervised(feats, family="hmm", k=3, filter_window=32,
+                                 thresholds=dict(TH), seed=0)
+    base, _ = forward_filter_labels(feats, model)
+    t = 200
+    mutated = feats.copy()
+    mutated[t + 1:] = mutated[t + 1:] * 5.0 + 1.0
+    after, _ = forward_filter_labels(mutated, model)
+    assert list(base[: t + 1]) == list(after[: t + 1])
+
+
+def test_fitted_model_scores_through_score_labels():
+    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+    from regime_hmm import forward_filter_labels
+    from regime_diagnostics import score_labels
+    feats = _feature_blob_matrix()
+    close = np.cumprod(1 + np.zeros(len(feats))) * 100 + np.arange(len(feats))
+    model = rvm.fit_unsupervised(feats, family="gmm", k=3, filter_window=32,
+                                 thresholds=dict(TH), seed=0)
+    labels, _ = forward_filter_labels(feats, model)
+    rep = score_labels(close, labels, feats, target="volatility")
+    assert "stability" in rep and "coverage" in rep
+
+
+def test_model_satisfies_bounded_window_and_forward_filter_contract():
+    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+    import regime_bounded_window_validate as bw
+    feats = _feature_blob_matrix()
+    model = rvm.fit_unsupervised(feats, family="hmm", k=3, filter_window=32,
+                                 thresholds=dict(TH), seed=0,
+                                 fitted_on={"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"})
+    for key in ("states", "feature_means", "feature_stds", "emissions",
+                "init", "transition", "filter_window", "period", "fitted_on"):
+        assert key in model
+    prov = bw._provenance_status(model, "BTC/USDT", "1h", "oos")
+    assert prov["verified"] is True
+    assert prov["in_sample"] is False
