@@ -20,8 +20,9 @@ import (
 //     (stored exchange_fee when real, else the modeled taker fee) is stamped
 //     into exchange_fee, close-leg realized_pnl gets that fee added back
 //     (net → gross), pnl_gross=1, fee_source records provenance.
-//     Rows marked fee_source='reconcile_adjustment' are already explicit
-//     model-only cleanup rows and are not userFills true-up candidates.
+//     Rows marked fee_source='reconcile_adjustment' are explicit model-only
+//     cleanup rows. They are repaired only when they lack an OID and can be
+//     uniquely matched to a userFills close by coin + time + quantity (#1091).
 //  2. Rows whose OID matches a userFills aggregate are then trued up:
 //     exchange_fee ← real fee, price/value ← fill VWAP, close-leg
 //     realized_pnl ← exchange closedPnl (gross), fee_source='userfills'.
@@ -44,6 +45,7 @@ type TradeLedgerChange struct {
 	Timestamp    time.Time
 	Symbol       string
 	OID          string
+	NewOID       string
 	IsClose      bool
 	OldPrice     float64
 	NewPrice     float64
@@ -59,19 +61,20 @@ type TradeLedgerChange struct {
 
 // TradeLedgerPlan is the full change set for one strategy.
 type TradeLedgerPlan struct {
-	StrategyID            string
-	Changes               []TradeLedgerChange
-	Skipped               []SkippedTrade
-	ClosedPositions       []ClosedPositionRecompute
-	OldCash               float64
-	NewCash               float64
-	ReplayedCash          float64
-	CashBaselineDivergent bool
-	MigratedCount         int // legacy net→gross conversions
-	MatchedCount          int // rows trued up from a userFills aggregate
-	UnmatchedOIDCount     int
-	MissingOIDCount       int
-	ReconcileAdjustCount  int
+	StrategyID                  string
+	Changes                     []TradeLedgerChange
+	Skipped                     []SkippedTrade
+	ClosedPositions             []ClosedPositionRecompute
+	OldCash                     float64
+	NewCash                     float64
+	ReplayedCash                float64
+	CashBaselineDivergent       bool
+	MigratedCount               int // legacy net→gross conversions
+	MatchedCount                int // rows trued up from a userFills aggregate
+	ReconcileAdjustMatchedCount int
+	UnmatchedOIDCount           int
+	MissingOIDCount             int
+	ReconcileAdjustCount        int
 }
 
 // tradeLedgerRowNewValues is the planner's per-row outcome.
@@ -83,6 +86,53 @@ type tradeLedgerRowNewValues struct {
 type tradeLedgerOIDTotals struct {
 	FeeQty   float64
 	CloseQty float64
+}
+
+const tradeLedgerNoOIDRepairWindow = 2 * time.Minute
+
+func tradeLedgerNoOIDReconcileMatches(trades []TradeBackfillRow, fillMap map[string]HLFillSummary, reservedOIDs map[string]bool) map[int64]hlFillOIDMatch {
+	out := make(map[int64]hlFillOIDMatch)
+	if len(trades) == 0 || len(fillMap) == 0 {
+		return out
+	}
+	type rowMatch struct {
+		row   TradeBackfillRow
+		match hlFillOIDMatch
+	}
+	byOID := make(map[string][]rowMatch)
+	for _, t := range trades {
+		if t.FeeSource != FeeSourceReconcileAdjustment || !t.IsClose || t.ExchangeOrderID != "" || t.Quantity <= 0 {
+			continue
+		}
+		candidates := findHLFillCandidatesByCoinQty(fillMap, t.Symbol, t.Quantity, false, t.Timestamp, tradeLedgerNoOIDRepairWindow, reservedOIDs)
+		if len(candidates) != 1 {
+			continue
+		}
+		match := candidates[0]
+		byOID[match.OID] = append(byOID[match.OID], rowMatch{row: t, match: match})
+	}
+	oids := make([]string, 0, len(byOID))
+	for oid := range byOID {
+		oids = append(oids, oid)
+	}
+	sort.Strings(oids)
+	for _, oid := range oids {
+		rows := byOID[oid]
+		if len(rows) == 0 {
+			continue
+		}
+		totalQty := 0.0
+		for _, row := range rows {
+			totalQty += row.row.Quantity
+		}
+		if !hlFillQtyCloseEnough(totalQty, rows[0].match.Summary.Qty) {
+			continue
+		}
+		for _, row := range rows {
+			out[row.row.RowID] = row.match
+		}
+	}
+	return out
 }
 
 // planTradeLedgerForStrategy is the pure planner (no I/O).
@@ -164,6 +214,18 @@ func planTradeLedgerForStrategyWithOIDTotals(
 		}
 		return total
 	}
+	reservedOIDs := make(map[string]bool)
+	for oid := range feeQtyByOID {
+		if oid != "" {
+			reservedOIDs[oid] = true
+		}
+	}
+	for oid := range oidTotals {
+		if oid != "" {
+			reservedOIDs[oid] = true
+		}
+	}
+	noOIDMatches := tradeLedgerNoOIDReconcileMatches(sorted, fillMap, reservedOIDs)
 
 	cash := initialCapital
 	for _, t := range sorted {
@@ -179,75 +241,97 @@ func planTradeLedgerForStrategyWithOIDTotals(
 			PnL:       t.RealizedPnL,
 			FeeSource: t.FeeSource,
 		}
+		newOID := t.ExchangeOrderID
 
 		if t.FeeSource == FeeSourceReconcileAdjustment {
-			plan.ReconcileAdjustCount++
-			plan.Skipped = append(plan.Skipped, SkippedTrade{
-				RowID: t.RowID, Timestamp: t.Timestamp, Symbol: t.Symbol,
-				OID: t.ExchangeOrderID, Reason: "reconcile_adjustment",
-			})
-			if t.IsClose {
-				cash += tradeBackfillRowNetPnL(t)
-			} else {
-				cash -= t.ExchangeFee
-			}
-			continue
-		}
-
-		// Step 1: legacy net → gross migration.
-		if !t.PnLGross {
-			feePaid := t.ExchangeFee
-			source := FeeSourceUserFills
-			if feePaid == 0 {
-				feePaid = modeledFee
-				source = FeeSourceModeled
-			}
-			nv.Fee = feePaid
-			nv.FeeSource = source
-			if t.IsClose {
-				nv.PnL = t.RealizedPnL + feePaid
-			}
-		}
-
-		// Step 2: userFills true-up when the OID matched.
-		summary, matched := fillMap[t.ExchangeOrderID]
-		switch {
-		case t.ExchangeOrderID == "":
-			plan.MissingOIDCount++
-			plan.Skipped = append(plan.Skipped, SkippedTrade{
-				RowID: t.RowID, Timestamp: t.Timestamp, Symbol: t.Symbol,
-				Reason: "missing_oid",
-			})
-		case !matched:
-			plan.UnmatchedOIDCount++
-			plan.Skipped = append(plan.Skipped, SkippedTrade{
-				RowID: t.RowID, Timestamp: t.Timestamp, Symbol: t.Symbol,
-				OID: t.ExchangeOrderID, Reason: "no_fill_match",
-			})
-		default:
-			feeShare := 1.0
-			if total := feeQtyTotal(t.ExchangeOrderID); total > 0 && t.Quantity > 0 {
-				feeShare = t.Quantity / total
-			}
-			nv.Fee = summary.Fee * feeShare
-			nv.FeeSource = FeeSourceUserFills
-			if summary.Px > 0 {
-				nv.Price = summary.Px
-				nv.Value = t.Quantity * summary.Px
-			}
-			if t.IsClose {
-				pnlShare := 1.0
-				if total := closeQtyTotal(t.ExchangeOrderID); total > 0 && t.Quantity > 0 {
-					pnlShare = t.Quantity / total
+			if match, ok := noOIDMatches[t.RowID]; ok {
+				share := 1.0
+				if match.Summary.Qty > 0 && t.Quantity > 0 {
+					share = t.Quantity / match.Summary.Qty
+					if share < 0 {
+						share = 0
+					} else if share > 1 {
+						share = 1
+					}
 				}
-				// Exchange-reported gross closedPnl. For shared-coin peers HL
-				// computes this against the ACCOUNT's average entry, so the
-				// per-strategy attribution can shift slightly vs the locally
-				// computed (px − AvgCost) value — the per-wallet SUM is exact,
-				// which is what the drift alarm reconciles.
-				nv.PnL = summary.ClosedPnLGross * pnlShare
+				nv.Price = match.Summary.Px
+				nv.Value = t.Quantity * match.Summary.Px
+				nv.Fee = match.Summary.Fee * share
+				nv.PnL = match.Summary.ClosedPnLGross * share
+				nv.FeeSource = FeeSourceUserFills
+				newOID = match.OID
+				plan.MatchedCount++
+				plan.ReconcileAdjustMatchedCount++
+			} else {
+				plan.ReconcileAdjustCount++
+				plan.Skipped = append(plan.Skipped, SkippedTrade{
+					RowID: t.RowID, Timestamp: t.Timestamp, Symbol: t.Symbol,
+					OID: t.ExchangeOrderID, Reason: "reconcile_adjustment",
+				})
+				if t.IsClose {
+					cash += tradeBackfillRowNetPnL(t)
+				} else {
+					cash -= t.ExchangeFee
+				}
+				continue
 			}
-			plan.MatchedCount++
+		} else {
+
+			// Step 1: legacy net → gross migration.
+			if !t.PnLGross {
+				feePaid := t.ExchangeFee
+				source := FeeSourceUserFills
+				if feePaid == 0 {
+					feePaid = modeledFee
+					source = FeeSourceModeled
+				}
+				nv.Fee = feePaid
+				nv.FeeSource = source
+				if t.IsClose {
+					nv.PnL = t.RealizedPnL + feePaid
+				}
+			}
+
+			// Step 2: userFills true-up when the OID matched.
+			summary, matched := fillMap[t.ExchangeOrderID]
+			switch {
+			case t.ExchangeOrderID == "":
+				plan.MissingOIDCount++
+				plan.Skipped = append(plan.Skipped, SkippedTrade{
+					RowID: t.RowID, Timestamp: t.Timestamp, Symbol: t.Symbol,
+					Reason: "missing_oid",
+				})
+			case !matched:
+				plan.UnmatchedOIDCount++
+				plan.Skipped = append(plan.Skipped, SkippedTrade{
+					RowID: t.RowID, Timestamp: t.Timestamp, Symbol: t.Symbol,
+					OID: t.ExchangeOrderID, Reason: "no_fill_match",
+				})
+			default:
+				feeShare := 1.0
+				if total := feeQtyTotal(t.ExchangeOrderID); total > 0 && t.Quantity > 0 {
+					feeShare = t.Quantity / total
+				}
+				nv.Fee = summary.Fee * feeShare
+				nv.FeeSource = FeeSourceUserFills
+				if summary.Px > 0 {
+					nv.Price = summary.Px
+					nv.Value = t.Quantity * summary.Px
+				}
+				if t.IsClose {
+					pnlShare := 1.0
+					if total := closeQtyTotal(t.ExchangeOrderID); total > 0 && t.Quantity > 0 {
+						pnlShare = t.Quantity / total
+					}
+					// Exchange-reported gross closedPnl. For shared-coin peers HL
+					// computes this against the ACCOUNT's average entry, so the
+					// per-strategy attribution can shift slightly vs the locally
+					// computed (px − AvgCost) value — the per-wallet SUM is exact,
+					// which is what the drift alarm reconciles.
+					nv.PnL = summary.ClosedPnLGross * pnlShare
+				}
+				plan.MatchedCount++
+			}
 		}
 
 		if !t.PnLGross {
@@ -259,11 +343,12 @@ func planTradeLedgerForStrategyWithOIDTotals(
 			math.Abs(nv.PnL-t.RealizedPnL) > 1e-9 ||
 			math.Abs(nv.Price-t.Price) > 1e-9 ||
 			math.Abs(nv.Value-t.Value) > 1e-9 ||
-			nv.FeeSource != t.FeeSource
+			nv.FeeSource != t.FeeSource ||
+			newOID != t.ExchangeOrderID
 		if changed {
 			plan.Changes = append(plan.Changes, TradeLedgerChange{
 				RowID: t.RowID, Timestamp: t.Timestamp, Symbol: t.Symbol,
-				OID: t.ExchangeOrderID, IsClose: t.IsClose,
+				OID: t.ExchangeOrderID, NewOID: newOID, IsClose: t.IsClose,
 				OldPrice: t.Price, NewPrice: nv.Price,
 				OldValue: t.Value, NewValue: nv.Value,
 				OldFee: t.ExchangeFee, NewFee: nv.Fee,
@@ -295,11 +380,13 @@ func tradeLedgerCorrectedNetRows(trades []TradeBackfillRow, plan TradeLedgerPlan
 	for _, t := range trades {
 		row := t
 		if c, ok := byRowID[t.RowID]; ok {
+			row.ExchangeOrderID = c.NewOID
 			row.Price = c.NewPrice
 			row.Value = c.NewValue
 			row.ExchangeFee = c.NewFee
 			row.RealizedPnL = c.NewPnL
 			row.PnLGross = true
+			row.FeeSource = c.NewFeeSource
 		}
 		row.RealizedPnL = tradeBackfillRowNetPnL(row)
 		row.PnLGross = false // values now net; prevent double subtraction downstream
@@ -320,14 +407,14 @@ func (sdb *StateDB) ApplyTradeLedgerPlan(plan TradeLedgerPlan) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		"UPDATE trades SET price = ?, value = ?, exchange_fee = ?, realized_pnl = ?, pnl_gross = 1, fee_source = ? WHERE rowid = ?",
+		"UPDATE trades SET exchange_order_id = ?, price = ?, value = ?, exchange_fee = ?, realized_pnl = ?, pnl_gross = 1, fee_source = ? WHERE rowid = ?",
 	)
 	if err != nil {
 		return fmt.Errorf("prepare trade update: %w", err)
 	}
 	defer stmt.Close()
 	for _, c := range plan.Changes {
-		if _, err := stmt.Exec(c.NewPrice, c.NewValue, c.NewFee, c.NewPnL, c.NewFeeSource, c.RowID); err != nil {
+		if _, err := stmt.Exec(c.NewOID, c.NewPrice, c.NewValue, c.NewFee, c.NewPnL, c.NewFeeSource, c.RowID); err != nil {
 			return fmt.Errorf("update trade rowid=%d: %w", c.RowID, err)
 		}
 	}
@@ -637,8 +724,8 @@ func printTradeLedgerReport(plan TradeLedgerPlan) {
 		pnlDelta += c.NewPnL - c.OldPnL
 	}
 	fmt.Printf("\n--- %s ---\n", plan.StrategyID)
-	fmt.Printf("  rows updated:        %d (net→gross migrated %d, userFills matched %d)\n",
-		len(plan.Changes), plan.MigratedCount, plan.MatchedCount)
+	fmt.Printf("  rows updated:        %d (net→gross migrated %d, userFills matched %d, reconcile_adjustment repaired %d)\n",
+		len(plan.Changes), plan.MigratedCount, plan.MatchedCount, plan.ReconcileAdjustMatchedCount)
 	fmt.Printf("  rows skipped:        %d (missing_oid=%d, unmatched=%d, reconcile_adjustment=%d)\n",
 		len(plan.Skipped), plan.MissingOIDCount, plan.UnmatchedOIDCount, plan.ReconcileAdjustCount)
 	fmt.Printf("  fee delta (sum):     $%+.4f\n", feeDelta)

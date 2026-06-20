@@ -3,9 +3,17 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
+)
+
+type HLNoFillRecoverer func(since time.Time) (*HLUserFillsResult, error)
+
+const (
+	hlKillSwitchNoFillRecoveryLookback = 30 * time.Second
+	hlKillSwitchNoFillRecoveryTimeout  = 20 * time.Second
 )
 
 // KillSwitchCloseInputs bundles every platform-specific bit the kill-switch
@@ -32,6 +40,11 @@ type KillSwitchCloseInputs struct {
 	HLLiveAll      []StrategyConfig
 	HLCloser       HyperliquidLiveCloser
 	HLFetcher      HLStateFetcher
+	// HLNoFillRecoverer fetches recent userFills when the close subprocess
+	// reports already_flat with no OID/fill. That response can happen after
+	// the exchange accepted the reduce-only close but before statuses surface,
+	// so the normal OID-based fill path has nothing to book (#1091).
+	HLNoFillRecoverer HLNoFillRecoverer
 	// HLStopLossOIDs maps coin → resting per-trade SL trigger OIDs so the
 	// kill-switch close path can cancel them before flattening. Without
 	// this, kill-switch wipes virtual state but the on-chain triggers sit
@@ -103,6 +116,10 @@ func (in KillSwitchCloseInputs) platformCloseBudget(override time.Duration) time
 		return override
 	}
 	return in.CloseTimeout
+}
+
+func defaultHLKillSwitchNoFillRecoverer(since time.Time) (*HLUserFillsResult, error) {
+	return runFetchHLUserFillsWithTimeout(since, hlKillSwitchNoFillRecoveryTimeout)
 }
 
 // KillSwitchClosePlan is the output of planKillSwitchClose — everything the
@@ -229,6 +246,93 @@ func clearVerifiedFlatHLErrors(report *HyperliquidLiveCloseReport, positions []H
 	return verified
 }
 
+func recoverHyperliquidAlreadyFlatFills(report *HyperliquidLiveCloseReport, positions []HLPosition, recoverer HLNoFillRecoverer, since time.Time) []string {
+	if report == nil || len(report.AlreadyFlat) == 0 || recoverer == nil {
+		return nil
+	}
+	type expectedFill struct {
+		qty float64
+	}
+	expectedByCoin := make(map[string]expectedFill)
+	for _, p := range positions {
+		qty := math.Abs(p.Size)
+		if qty <= 0 {
+			continue
+		}
+		coin := normalizeHLFillCoin(p.Coin)
+		if coin == "" {
+			continue
+		}
+		expectedByCoin[coin] = expectedFill{qty: qty}
+	}
+	eligibleByRaw := make(map[string]expectedFill)
+	for _, rawCoin := range report.AlreadyFlat {
+		norm := normalizeHLFillCoin(rawCoin)
+		if norm == "" {
+			continue
+		}
+		if report.Fills != nil {
+			if _, ok := report.Fills[rawCoin]; ok {
+				continue
+			}
+			if _, ok := report.Fills[norm]; ok {
+				continue
+			}
+		}
+		expected, ok := expectedByCoin[norm]
+		if !ok || expected.qty <= 0 {
+			continue
+		}
+		eligibleByRaw[rawCoin] = expected
+	}
+	if len(eligibleByRaw) == 0 {
+		return nil
+	}
+
+	result, err := recoverer(since)
+	if err != nil {
+		return []string{fmt.Sprintf("[WARN] hl-close: unable to recover already-flat fill from userFills: %v", err)}
+	}
+	if result == nil {
+		return []string{"[WARN] hl-close: unable to recover already-flat fill from userFills: empty result"}
+	}
+	if strings.TrimSpace(result.Error) != "" {
+		return []string{fmt.Sprintf("[WARN] hl-close: unable to recover already-flat fill from userFills: %s", result.Error)}
+	}
+	if report.Fills == nil {
+		report.Fills = make(map[string]HyperliquidCloseFill)
+	}
+
+	raws := make([]string, 0, len(eligibleByRaw))
+	for r := range eligibleByRaw {
+		raws = append(raws, r)
+	}
+	sort.Strings(raws)
+	var lines []string
+	for _, rawCoin := range raws {
+		expected := eligibleByRaw[rawCoin]
+		match, ok, ambiguous := findUniqueHLFillByCoinQty(result.ByOID, rawCoin, expected.qty, true, time.Time{}, 0)
+		switch {
+		case ok:
+			report.Fills[rawCoin] = HyperliquidCloseFill{
+				AvgPx:   match.Summary.Px,
+				TotalSz: expected.qty,
+				OID:     match.OIDInt,
+				Fee:     match.Summary.Fee,
+			}
+			lines = append(lines,
+				fmt.Sprintf("[INFO] hl-close: recovered already-flat fill for %s from userFills oid=%s qty=%.6f px=%.6f fee=%.6f", rawCoin, match.OID, expected.qty, match.Summary.Px, match.Summary.Fee))
+		case ambiguous:
+			lines = append(lines,
+				fmt.Sprintf("[WARN] hl-close: multiple userFills candidates for already-flat %s qty=%.6f; falling back to model-only cleanup", rawCoin, expected.qty))
+		default:
+			lines = append(lines,
+				fmt.Sprintf("[WARN] hl-close: no userFills match for already-flat %s qty=%.6f; falling back to model-only cleanup", rawCoin, expected.qty))
+		}
+	}
+	return lines
+}
+
 // planKillSwitchClose runs the kill-switch close logic without touching any
 // mutable state — no locks, no virtual state mutation, no Discord delivery.
 // The caller applies mutations based on the returned plan.
@@ -278,6 +382,7 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 
 	switch {
 	case hlStateFetched && len(in.HLLiveAll) > 0:
+		recoverSince := time.Now().UTC().Add(-hlKillSwitchNoFillRecoveryLookback)
 		ctx, cancel := context.WithTimeout(context.Background(), in.platformCloseBudget(in.HLCloseTimeout))
 		plan.CloseReport = forceCloseHyperliquidLive(ctx, hlPositions, in.HLLiveAll, in.HLCloser, in.HLStopLossOIDs)
 		cancel()
@@ -293,6 +398,8 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 				}
 			}
 		}
+		plan.LogLines = append(plan.LogLines,
+			recoverHyperliquidAlreadyFlatFills(&plan.CloseReport, hlPositions, in.HLNoFillRecoverer, recoverSince)...)
 		if !plan.CloseReport.ConfirmedFlat() {
 			plan.OnChainConfirmedFlat = false
 		}
