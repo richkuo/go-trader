@@ -1,4 +1,5 @@
 # backtest/tests/test_regime_calibrate.py
+import math
 import os, sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from regime_calibrate import gate_verdict, SIGNIFICANCE_ALPHA, STABILITY_MIN_GAIN
@@ -144,13 +145,54 @@ def test_engaged_gate_blocks_model_that_keeps_separation_but_loses_stability_gai
 
 def test_engaged_gate_ships_at_inclusive_floor_boundaries():
     # (3) Boundary: model exactly AT both floors — md_p == SIGNIFICANCE_ALPHA and stability gain
-    # == STABILITY_MIN_GAIN — must still ship, pinning that both comparisons are inclusive
-    # (<= / >=). A future edit flipping either to a strict bound would break this.
-    hr = _report(90.0, 0.45, p_value=0.005, target="volatility")
-    md = _report(90.0, 0.45 - STABILITY_MIN_GAIN, p_value=SIGNIFICANCE_ALPHA, target="volatility")
+    # == STABILITY_MIN_GAIN — must still ship, pinning that BOTH comparisons are inclusive
+    # (<= / >=). The gain must land bit-exactly on the floor or the test fails to distinguish
+    # >= from >: `0.45 - (0.45 - 0.02)` is 0.020000000000000018 in IEEE-754 double (one ulp ABOVE
+    # 0.02), which passes a strict `>` too, so a `>=`->`>` regression would slip through (bot
+    # review #1079). `STABILITY_MIN_GAIN - 0.0` is exactly the double 0.02, so a strict-bound
+    # regression on EITHER arm turns this red. incumbent_trustworthy keys off hr_p (not the
+    # transition-rate magnitude), so the small hr_tr keeps the engaged (non-abstaining) path.
+    hr = _report(90.0, STABILITY_MIN_GAIN, p_value=0.005, target="volatility")
+    md = _report(90.0, 0.0, p_value=SIGNIFICANCE_ALPHA, target="volatility")
+    assert (hr["stability"]["transition_rate"] - md["stability"]["transition_rate"]) == STABILITY_MIN_GAIN
     v = gate_verdict(hr, md)
     assert v["incumbent_trustworthy"] is True
+    assert v["abstained"] is False
     assert v["model_separation_real"] is True   # md_p == alpha is inside the floor
     assert v["separation_ok"] is True
     assert v["stability_ok"] is True            # gain == STABILITY_MIN_GAIN is inside the floor
     assert v["ship"] is True
+
+
+def test_engaged_gate_blocks_stability_gain_one_ulp_below_floor():
+    # (4) Must-survive inverse of the boundary: a stability gain one ULP below STABILITY_MIN_GAIN
+    # must block, isolating the stability arm (separation kept within tolerance + significant).
+    # Constructed exactly: hr_tr = nextafter(floor, 0), md_tr = 0.0, so the gain (subtracting 0.0
+    # is exact) is exactly one ulp under the floor — `>=` correctly rejects it.
+    hr_tr = math.nextafter(STABILITY_MIN_GAIN, 0.0)
+    hr = _report(90.0, hr_tr, p_value=0.005, target="volatility")
+    md = _report(90.0, 0.0, p_value=0.005, target="volatility")
+    assert (hr_tr - 0.0) < STABILITY_MIN_GAIN
+    v = gate_verdict(hr, md)
+    assert v["incumbent_trustworthy"] is True
+    assert v["abstained"] is False
+    assert v["separation_ok"] is True           # separation arm green — only stability blocks
+    assert v["stability_ok"] is False
+    assert v["ship"] is False
+
+
+def test_engaged_gate_blocks_model_p_one_ulp_above_alpha():
+    # (5) Symmetric must-survive on the significance floor: a model p one ULP above
+    # SIGNIFICANCE_ALPHA is NOT real separation and must block, isolating the separation arm
+    # (stability gain large + green). Pins that model_separation_real uses an inclusive `<=`.
+    md_p = math.nextafter(SIGNIFICANCE_ALPHA, 1.0)
+    hr = _report(90.0, 0.45, p_value=0.005, target="volatility")
+    md = _report(90.0, 0.0, p_value=md_p, target="volatility")
+    assert md_p > SIGNIFICANCE_ALPHA
+    v = gate_verdict(hr, md)
+    assert v["incumbent_trustworthy"] is True
+    assert v["abstained"] is False
+    assert v["stability_ok"] is True            # stability arm green — only separation blocks
+    assert v["model_separation_real"] is False
+    assert v["separation_ok"] is False
+    assert v["ship"] is False
