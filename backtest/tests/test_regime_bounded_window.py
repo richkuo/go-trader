@@ -19,6 +19,8 @@ from regime_hmm import fit_label_anchored_hmm, forward_filter_labels
 from regime_bounded_window_validate import (
     DEFAULT_AGREEMENT_THRESHOLD,
     _align_eval_start,
+    _gate_primary_horizon,
+    _provenance_status,
     _sweep_blocked,
     adx_drift_stats,
     bounded_window_adx,
@@ -277,6 +279,109 @@ def test_validate_frames_handrule_only_without_model():
                           lookback=90, target="volatility", seed=0, horizons=(4,))
     assert "model" not in rep and "go_no_go" not in rep
     assert "handrule" in rep and rep["adx_drift"]["n"] > 0
+
+
+# --- gate primary horizon guard (PR review finding 2) -----------------------------
+
+def test_gate_primary_horizon_tracks_gate_default():
+    # The guard must read the gate's own `primary` default, not a hardcoded 4, so a future
+    # change to gate_verdict's primary keeps this in lockstep.
+    from regime_calibrate import gate_verdict
+    import inspect
+    expected = int(str(inspect.signature(gate_verdict).parameters["primary"].default).lstrip("h"))
+    assert _gate_primary_horizon() == expected == 4
+
+
+def test_validate_frames_rejects_horizons_missing_gate_primary():
+    # With a model present, the gate runs; omitting the gate's primary horizon from
+    # `horizons` would make gate_verdict raise a deep KeyError mid-run. Reject up front.
+    import pytest
+    df_ext = _ohlcv(220, seed=31)
+    eval_start = 140
+    df_window = df_ext.iloc[eval_start:].reset_index(drop=True)
+    model = _fit_model(df_ext, filter_window=24)
+    with pytest.raises(ValueError, match=r"h4"):
+        validate_frames(df_window, df_ext, eval_start, model, period=PERIOD,
+                        lookback=90, horizons=(1, 12))
+
+
+def test_validate_frames_handrule_only_allows_horizons_without_gate_primary():
+    # No model => no gate => no h4 requirement. Hand-rule drift on horizons={1,12} is fine.
+    df_ext = _ohlcv(220, seed=32)
+    eval_start = 140
+    df_window = df_ext.iloc[eval_start:].reset_index(drop=True)
+    rep = validate_frames(df_window, df_ext, eval_start, None, period=PERIOD,
+                          lookback=90, horizons=(1, 12))
+    assert "go_no_go" not in rep and rep["adx_drift"]["n"] > 0
+
+
+# --- in-sample / provenance guard (PR review finding 1) ---------------------------
+
+def test_provenance_status_flags_in_sample_and_out_of_sample():
+    fit = {"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"}
+    model = {"fitted_on": fit}
+    same = _provenance_status(model, "BTC/USDT", "1h", "is")
+    assert same["in_sample"] is True and same["verified"] is True
+    diff_window = _provenance_status(model, "BTC/USDT", "1h", "oos")
+    assert diff_window["in_sample"] is False and diff_window["verified"] is True
+    diff_symbol = _provenance_status(model, "ETH/USDT", "1h", "is")
+    assert diff_symbol["in_sample"] is False     # different instrument is not in-sample
+    missing = _provenance_status({"states": []}, "BTC/USDT", "1h", "is")
+    assert missing["verified"] is False and missing["in_sample"] is False
+
+
+def test_go_no_go_blocks_in_sample_rescore():
+    # An in-sample re-score scores the gate optimistically; it must never promote even when
+    # the bounded gate ships and agreement is perfect.
+    hr = _scored(10.0, 0.40)
+    md = _scored(9.7, 0.25)
+    v = go_no_go(md, hr, md, hr, _drift(1.0), in_sample=True)
+    assert v["promote"] is False
+    assert v["in_sample"] is True
+    assert any("in-sample re-score" in r for r in v["blocking_reasons"])
+    assert v["bounded_window_verdict"]["ship"] is True   # gate ok; in-sample is the blocker
+
+
+def test_go_no_go_unverified_provenance_warns_but_does_not_block_by_default():
+    hr = _scored(10.0, 0.40)
+    md = _scored(9.7, 0.25)
+    v = go_no_go(md, hr, md, hr, _drift(0.99), provenance_verified=False)
+    assert v["promote"] is True                          # flagged, not blocked, by default
+    assert v["provenance_verified"] is False
+    assert v["warnings"] and any("provenance" in w for w in v["warnings"])
+    assert v["blocking_reasons"] == []
+
+
+def test_go_no_go_unverified_provenance_blocks_when_required():
+    hr = _scored(10.0, 0.40)
+    md = _scored(9.7, 0.25)
+    v = go_no_go(md, hr, md, hr, _drift(0.99), provenance_verified=False,
+                 require_provenance=True)
+    assert v["promote"] is False
+    assert any("provenance unverifiable" in r for r in v["blocking_reasons"])
+
+
+def test_go_no_go_promote_iff_no_blocking_reason():
+    # Invariant: promote is the single negation of blocking_reasons -- a new blocking
+    # condition can never be added while promote stays True.
+    hr = _scored(10.0, 0.40)
+    md = _scored(9.7, 0.25)
+    ok = go_no_go(md, hr, md, hr, _drift(0.99))
+    assert ok["promote"] is (ok["blocking_reasons"] == [])
+    blocked = go_no_go(md, hr, md, hr, _drift(0.99), in_sample=True)
+    assert blocked["promote"] is (blocked["blocking_reasons"] == [])
+
+
+def test_validate_frames_in_sample_blocks_end_to_end():
+    df_ext = _ohlcv(260, seed=33)
+    eval_start = 180
+    df_window = df_ext.iloc[eval_start:].reset_index(drop=True)
+    model = _fit_model(df_ext, filter_window=24)
+    rep = validate_frames(df_window, df_ext, eval_start, model, period=PERIOD,
+                          lookback=120, target="volatility", seed=0, horizons=(4,),
+                          in_sample=True)
+    assert rep["go_no_go"]["promote"] is False
+    assert any("in-sample re-score" in r for r in rep["go_no_go"]["blocking_reasons"])
 
 
 def test_validate_frames_scores_incumbent_at_its_own_period():

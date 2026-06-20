@@ -75,6 +75,7 @@ gate can exit success while promotion is blocked.
 """
 from __future__ import annotations
 
+import inspect
 import os
 import sys
 
@@ -114,6 +115,31 @@ DEFAULT_AGREEMENT_THRESHOLD = 0.95
 # on ~0 bars; the gate must BLOCK, not promote. 30 mirrors check_regime's `--min-bars 30`.
 DEFAULT_MIN_AGREEMENT_BARS = 30
 ADX_COL = 3  # composite_feature_matrix column order: return_eff, range_eff, efficiency, adx
+
+
+def _gate_primary_horizon() -> int:
+    """Forward horizon the calibrate gate scores on, derived from gate_verdict's own
+    `primary` default (e.g. 'h4' -> 4). gate_verdict reads report[primary]['separation']
+    etc., and score_labels only emits that flat alias when the horizon is in `horizons`
+    (regime_diagnostics.score_labels). Introspecting the signature (instead of hardcoding
+    4 here) keeps this guard locked to the gate's real primary if it ever changes."""
+    primary = inspect.signature(gate_verdict).parameters["primary"].default
+    return int(str(primary).lstrip("h"))
+
+
+def _provenance_status(model, symbol: str, timeframe: str, window: str) -> dict:
+    """Compare the validation context against the model's fit provenance (#1082 gate
+    safety). fit_on_window stamps fitted_on={symbol,timeframe,window}; an empty/absent
+    fitted_on means the model wasn't stamped (hand-built/legacy) and provenance can't be
+    verified. `in_sample` is True only when all three keys match -- re-scoring the gate on
+    the model's own fit window makes its separation/stability optimistic and would let an
+    overfit model clear the #1074 promotion gate, so the gate must refuse it."""
+    fitted_on = dict((model or {}).get("fitted_on") or {})
+    validated_on = {"symbol": symbol, "timeframe": timeframe, "window": window}
+    verified = bool(fitted_on)
+    in_sample = verified and all(fitted_on.get(k) == v for k, v in validated_on.items())
+    return {"fitted_on": fitted_on, "validated_on": validated_on,
+            "verified": verified, "in_sample": in_sample}
 
 
 # ---------------------------------------------------------------------------
@@ -257,21 +283,44 @@ def _feature_valid_mask(full_feats: np.ndarray, bounded_feats: np.ndarray) -> np
 def go_no_go(full_model_scored, full_hr_scored, bounded_model_scored, bounded_hr_scored,
              model_label_drift: dict, *,
              agreement_threshold: float = DEFAULT_AGREEMENT_THRESHOLD,
-             min_agreement_bars: int = DEFAULT_MIN_AGREEMENT_BARS) -> dict:
-    """Promotion gate for #1074. Promote iff the calibrate gate still ships under
-    bounded-window labels AND the full-vs-bounded model label agreement clears the
-    threshold AND that agreement was measured on enough comparable bars.
+             min_agreement_bars: int = DEFAULT_MIN_AGREEMENT_BARS,
+             in_sample: bool = False, provenance_verified: bool = True,
+             require_provenance: bool = False) -> dict:
+    """Promotion gate for #1074. Promote iff EVERY blocking condition is clear: the
+    calibrate gate still ships under bounded-window labels, the full-vs-bounded model
+    label agreement clears the threshold, that agreement was measured on enough
+    comparable bars, AND the validation was not an in-sample re-score.
 
     `model_label_drift` is the model arm's label_drift_stats dict; its `n` is the count
     of bars BOTH views scored. The bar-count guard is load-bearing: label_drift_stats
     returns a vacuous agreement=1.0 on zero comparable bars, so without it a window too
     short to give the cold full-window arm any overlap with the warm bounded arm would
-    promote on ~0 bars while the bounded gate ships on its own larger sample."""
+    promote on ~0 bars while the bounded gate ships on its own larger sample.
+
+    `in_sample` True means the validation window equals the model's fit window
+    (symbol/timeframe/window all match): gate separation/stability would be optimistic, so
+    promotion is refused outright. `provenance_verified` False means the model carries no
+    fitted_on stamp so out-of-sample-ness can't be confirmed -- a non-blocking warning by
+    default (the dangerous confirmed-overlap case is already refused), or a hard block when
+    `require_provenance` is set (fail-closed mode for the #1074 automation)."""
     label_agreement = float(model_label_drift.get("agreement", 0.0))
     comparable_bars = int(model_label_drift.get("n", 0))
     full_verdict = gate_verdict(full_hr_scored, full_model_scored)
     bounded_verdict = gate_verdict(bounded_hr_scored, bounded_model_scored)
     reasons: list[str] = []
+    warnings: list[str] = []
+    if in_sample:
+        reasons.append(
+            "in-sample re-score: the validation window equals the model's fit window "
+            "(symbol/timeframe/window) -- separation/stability are optimistic; validate "
+            "on a held-out window")
+    if not provenance_verified:
+        msg = ("model provenance unverifiable (no fitted_on stamp) -- cannot confirm the "
+               "validation window is held out from the fit window")
+        if require_provenance:
+            reasons.append(msg + " and --require-provenance is set")
+        else:
+            warnings.append(msg)
     if not bounded_verdict["ship"]:
         reasons.append("model fails the calibrate gate under bounded-window ADX")
     if full_verdict["ship"] and not bounded_verdict["ship"]:
@@ -285,11 +334,15 @@ def go_no_go(full_model_scored, full_hr_scored, bounded_model_scored, bounded_hr
         reasons.append(
             f"full-vs-bounded model label agreement {label_agreement:.4f} "
             f"< threshold {agreement_threshold:.4f}")
-    promote = bool(bounded_verdict["ship"] and enough_bars
-                   and label_agreement >= agreement_threshold)
+    # promote iff NO blocking reason fired -- single source of truth so a new blocking
+    # condition can never be added to `reasons` while still letting `promote` stay True.
+    promote = not reasons
     return {
         "promote": promote,
         "blocking_reasons": reasons,
+        "warnings": warnings,
+        "in_sample": bool(in_sample),
+        "provenance_verified": bool(provenance_verified),
         "label_agreement": label_agreement,
         "agreement_threshold": float(agreement_threshold),
         "comparable_bars": comparable_bars,
@@ -309,7 +362,9 @@ def validate_frames(df_window: pd.DataFrame, df_ext: pd.DataFrame, eval_start: i
                     lookback: int = DEFAULT_LOOKBACK, target: str = "volatility",
                     seed: int = 0, horizons=(1, 4, 12),
                     agreement_threshold: float = DEFAULT_AGREEMENT_THRESHOLD,
-                    min_agreement_bars: int = DEFAULT_MIN_AGREEMENT_BARS) -> dict:
+                    min_agreement_bars: int = DEFAULT_MIN_AGREEMENT_BARS,
+                    in_sample: bool = False, provenance_verified: bool = True,
+                    require_provenance: bool = False) -> dict:
     """Pure validation core. `df_window` is the exact eval window (full-window/fit
     view); `df_ext` is the same window prefixed with >= `lookback` warm-up bars,
     with `eval_start` the index in df_ext where the eval window begins. The eval
@@ -319,11 +374,26 @@ def validate_frames(df_window: pd.DataFrame, df_ext: pd.DataFrame, eval_start: i
     "period", else DEFAULT_PERIOD); the HAND-RULE incumbent arm is scored at
     `incumbent_period` (DEFAULT_PERIOD) -- the same period regime_calibrate's gate uses
     for the incumbent (run_window with model=None), so the full-window verdict here
-    equals the calibrate verdict for the same model+window even when period != 48."""
+    equals the calibrate verdict for the same model+window even when period != 48.
+
+    `in_sample`/`provenance_verified`/`require_provenance` are passed through to go_no_go
+    (provenance is resolved by the data-loading `validate` wrapper, which knows the
+    symbol/timeframe/window the model was fit on)."""
     th = dict(_DEFAULT_COMPOSITE_THRESHOLDS if thresholds is None else thresholds)
     close = df_window["close"].to_numpy(dtype=float)
     model_period = int(period) if period is not None else (
         int(model["period"]) if model and "period" in model else DEFAULT_PERIOD)
+    if model is not None:
+        # Reject before any scoring: the calibrate gate reads report['h<primary>'], an alias
+        # score_labels only emits when that horizon is in `horizons`. Omitting it would make
+        # go_no_go -> gate_verdict raise a deep KeyError partway through the run instead of a
+        # clear up-front rejection.
+        gate_h = _gate_primary_horizon()
+        if gate_h not in {int(h) for h in horizons}:
+            raise ValueError(
+                f"horizons {tuple(int(h) for h in horizons)} omit the calibrate gate's "
+                f"primary horizon h{gate_h}; gate_verdict reads report['h{gate_h}'] and "
+                f"would KeyError mid-run. Include {gate_h} in horizons.")
 
     # Hand-rule incumbent arm at the incumbent period (no model labels needed here).
     hr_full_feats, _, hr_full_labels = full_window_views(
@@ -378,7 +448,8 @@ def validate_frames(df_window: pd.DataFrame, df_ext: pd.DataFrame, eval_start: i
         report["go_no_go"] = go_no_go(
             full_model_scored, hr_full_scored, bounded_model_scored, hr_bounded_scored,
             model_drift, agreement_threshold=agreement_threshold,
-            min_agreement_bars=min_agreement_bars)
+            min_agreement_bars=min_agreement_bars, in_sample=in_sample,
+            provenance_verified=provenance_verified, require_provenance=require_provenance)
     else:
         report["n_scored_bars"] = int(hr_valid.sum())
         report["adx_drift"] = adx_drift_stats(hr_full_feats[:, ADX_COL], hr_bounded_feats[:, ADX_COL])
@@ -403,10 +474,15 @@ def validate(symbol: str, timeframe: str, window: str, model, *,
              lookback: int = DEFAULT_LOOKBACK, incumbent_period: int = DEFAULT_PERIOD,
              target: str = "volatility", seed: int = 0, horizons=(1, 4, 12),
              agreement_threshold: float = DEFAULT_AGREEMENT_THRESHOLD,
-             min_agreement_bars: int = DEFAULT_MIN_AGREEMENT_BARS) -> dict:
+             min_agreement_bars: int = DEFAULT_MIN_AGREEMENT_BARS,
+             require_provenance: bool = False) -> dict:
     """Data-loading wrapper: load the eval window plus a >= lookback warm-up
     prefix, then run validate_frames (model arm at the model's fit period, incumbent
-    arm at `incumbent_period`)."""
+    arm at `incumbent_period`).
+
+    Resolves the model's fit provenance against (symbol, timeframe, window): an in-sample
+    re-score (validation window == fit window) is refused by the gate, and unverifiable
+    provenance is flagged (or blocked under `require_provenance`)."""
     from data_fetcher import load_cached_data
     from eval_windows import WINDOWS, PLATFORM
     if window not in WINDOWS:
@@ -417,12 +493,18 @@ def validate(symbol: str, timeframe: str, window: str, model, *,
     df_ext = load_cached_data(symbol, timeframe, exchange_id=PLATFORM,
                               start_date=None, end_date=end)
     eval_start = _align_eval_start(df_window, df_ext)
+    prov = _provenance_status(model, symbol, timeframe, window) if model is not None else None
     report = validate_frames(df_window, df_ext, eval_start, model, period=None,
                              incumbent_period=incumbent_period, lookback=lookback,
                              target=target, seed=seed, horizons=horizons,
                              agreement_threshold=agreement_threshold,
-                             min_agreement_bars=min_agreement_bars)
+                             min_agreement_bars=min_agreement_bars,
+                             in_sample=bool(prov and prov["in_sample"]),
+                             provenance_verified=bool(prov and prov["verified"]),
+                             require_provenance=require_provenance)
     report.update({"symbol": symbol, "timeframe": timeframe, "window": window})
+    if prov is not None:
+        report["provenance"] = prov
     return report
 
 
@@ -476,14 +558,34 @@ def build_parser():
     p.add_argument("--min-agreement-bars", type=int, default=DEFAULT_MIN_AGREEMENT_BARS,
                    help=f"fail closed if fewer than this many bars are scored by both arms "
                         f"(default {DEFAULT_MIN_AGREEMENT_BARS})")
+    p.add_argument("--require-provenance", action="store_true",
+                   help="block promotion when the model carries no fitted_on stamp "
+                        "(cannot confirm the validation window is held out from the fit). "
+                        "An in-sample re-score is always refused regardless of this flag.")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--json", default=None, help="write the full report JSON to this path")
     return p
 
 
+def _warn_provenance(prov: dict | None, require_provenance: bool) -> None:
+    """Loud stderr flag for the provenance hazards (the invariant: an in-sample re-score is
+    never silently promoted). Confirmed in-sample is always a blocking error; unverifiable
+    provenance is a warning unless --require-provenance escalates it to a block."""
+    if not prov:
+        return
+    if prov.get("in_sample"):
+        print(f"ERROR: in-sample re-score -- validation window {prov['validated_on']} equals "
+              f"the model's fit window; promotion refused.", file=sys.stderr)
+    elif not prov.get("verified"):
+        sev = "ERROR" if require_provenance else "WARNING"
+        print(f"{sev}: model has no fitted_on provenance stamp; cannot confirm "
+              f"{prov['validated_on']} is held out from the fit window.", file=sys.stderr)
+
+
 def main(argv=None) -> int:
     import json
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     model = None
     if args.model_json:
         with open(args.model_json) as fh:
@@ -491,29 +593,45 @@ def main(argv=None) -> int:
         model = loaded.get("model", loaded) if isinstance(loaded, dict) else loaded
     horizons = tuple(int(x) for x in args.horizons.split(","))
 
+    # Reject up front (before loading data / scoring) when a model is present but the gate's
+    # primary horizon is missing: the calibrate gate reads report['h<primary>'].
+    if model is not None:
+        gate_h = _gate_primary_horizon()
+        if gate_h not in set(horizons):
+            parser.error(
+                f"--horizons {','.join(str(h) for h in horizons)} omits the calibrate gate's "
+                f"primary horizon {gate_h}; the gate scores h{gate_h}. Include {gate_h}.")
+
     if args.lookback_sweep:
         lookbacks = [int(x) for x in args.lookback_sweep.split(",")]
         sweep = []
+        prov = None
         for lb in lookbacks:
             rep = validate(args.symbol, args.timeframe, args.window, model, lookback=lb,
                            incumbent_period=args.incumbent_period, target=args.target,
                            seed=args.seed, horizons=horizons,
                            agreement_threshold=args.agreement_threshold,
-                           min_agreement_bars=args.min_agreement_bars)
+                           min_agreement_bars=args.min_agreement_bars,
+                           require_provenance=args.require_provenance)
             sweep.append(_sweep_summary(rep))
+            prov = rep.get("provenance", prov)
         blocked = _sweep_blocked(sweep)
         payload = {"symbol": args.symbol, "timeframe": args.timeframe, "window": args.window,
                    "target": args.target, "sweep": sweep,
                    "promotion_blocked": blocked,
                    "blocked_lookbacks": [r["lookback"] for r in sweep
                                          if "promote" in r and not r["promote"]]}
+        if prov is not None:
+            payload["provenance"] = prov
     else:
         payload = validate(args.symbol, args.timeframe, args.window, model,
                            lookback=args.lookback, incumbent_period=args.incumbent_period,
                            target=args.target, seed=args.seed, horizons=horizons,
                            agreement_threshold=args.agreement_threshold,
-                           min_agreement_bars=args.min_agreement_bars)
+                           min_agreement_bars=args.min_agreement_bars,
+                           require_provenance=args.require_provenance)
 
+    _warn_provenance(payload.get("provenance"), args.require_provenance)
     text = json.dumps(payload, indent=2, default=float)
     if args.json:
         with open(args.json, "w") as fh:
