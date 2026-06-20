@@ -39,11 +39,13 @@ def fit_label_anchored_hmm(features, labels, states, *, filter_window,
     si = {s: i for i, s in enumerate(states)}
     k = len(states)
     A = np.full((k, k), float(laplace))
-    # Consecutive pairs counted on the NaN-dropped sequence: a mid-series NaN (low-ATR)
-    # bar produces a spurious adjacency between its pre- and post-NaN neighbours.
-    # Effect is small after Laplace smoothing; revisit when the fit is ported live in PR2.
-    for a, b in zip(y[:-1], y[1:]):
-        A[si[a], si[b]] += 1.0
+    # Transition counts only between bars adjacent in the ORIGINAL series AND both retained
+    # (non-NaN features). The old NaN-dropped zip spliced a mid-series NaN (low-ATR) bar's
+    # pre- and post-NaN neighbours into a spurious adjacency; pairs spanning a dropped bar
+    # are now skipped so the fitted transition matrix matches true bar-to-bar dynamics (#1078).
+    for i in range(len(mask) - 1):
+        if mask[i] and mask[i + 1]:
+            A[si[labels[i]], si[labels[i + 1]]] += 1.0
     A = A / A.sum(1, keepdims=True)
     return {
         "type": MODEL_TYPE, "version": MODEL_VERSION, "features": list(FEATURES),
