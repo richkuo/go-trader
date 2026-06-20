@@ -330,6 +330,52 @@ def test_provenance_status_flags_in_sample_and_out_of_sample():
     assert missing["verified"] is False and missing["in_sample"] is False
 
 
+def test_windows_overlap_half_open_boundary_is_disjoint():
+    from regime_bounded_window_validate import _windows_overlap
+    # Half-open [start, end): a SHARED boundary is NOT an overlap -> the is/oos protocol
+    # split must stay disjoint.
+    assert _windows_overlap(("2025-06-10", "2026-01-01"), ("2026-01-01", None)) is False
+    # is vs 2025H1 share 2025-06-10..2025-07-01.
+    assert _windows_overlap(("2025-06-10", "2026-01-01"), ("2025-01-01", "2025-07-01")) is True
+    # is vs 2024 / 2023 are genuinely disjoint.
+    assert _windows_overlap(("2025-06-10", "2026-01-01"), ("2024-01-01", "2025-01-01")) is False
+    assert _windows_overlap(("2025-06-10", "2026-01-01"), ("2023-01-01", "2024-01-01")) is False
+    # None end (open to latest) overlaps anything that starts before it.
+    assert _windows_overlap(("2026-01-01", None), ("2025-06-10", "2026-06-01")) is True
+
+
+def test_provenance_status_detects_date_overlap_across_window_names():
+    # The headline finding: a model fit on `is` validated on the differently-NAMED held-out
+    # `2025H1` shares ~3 weeks of bars, so name-equality=False but it is STILL in-sample.
+    WIN = {"is": ("2025-06-10", "2026-01-01"), "oos": ("2026-01-01", None),
+           "2023": ("2023-01-01", "2024-01-01"), "2025H1": ("2025-01-01", "2025-07-01")}
+    model = {"fitted_on": {"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"}}
+
+    overlap = _provenance_status(model, "BTC/USDT", "1h", "2025H1", WIN)
+    assert overlap["in_sample"] is True and overlap["date_overlap"] is True
+    assert overlap["name_match"] is False and overlap["overlap_detail"]["fit_window"] == "is"
+
+    disjoint = _provenance_status(model, "BTC/USDT", "1h", "2023", WIN)
+    assert disjoint["in_sample"] is False and disjoint["date_overlap"] is False
+
+    boundary = _provenance_status(model, "BTC/USDT", "1h", "oos", WIN)
+    assert boundary["in_sample"] is False   # shared 2026-01-01 boundary is not an overlap
+
+    cross_instrument = _provenance_status(model, "ETH/USDT", "1h", "2025H1", WIN)
+    assert cross_instrument["in_sample"] is False   # different symbol shares no bars
+
+
+def test_provenance_status_unresolvable_fit_window_is_unverifiable():
+    # A fit-window name absent from WINDOWS can't be range-resolved -> we can't prove the
+    # validation window is disjoint -> treat as unverifiable, never silently OK (no crash).
+    WIN = {"is": ("2025-06-10", "2026-01-01"), "2025H1": ("2025-01-01", "2025-07-01")}
+    model = {"fitted_on": {"symbol": "BTC/USDT", "timeframe": "1h", "window": "ancient"}}
+    p = _provenance_status(model, "BTC/USDT", "1h", "2025H1", WIN)
+    assert p["verified"] is True            # it IS stamped...
+    assert p["overlap_resolvable"] is False  # ...but the fit window range is unknown
+    assert p["in_sample"] is False          # cannot assert overlap, only flag
+
+
 def test_go_no_go_blocks_in_sample_rescore():
     # An in-sample re-score scores the gate optimistically; it must never promote even when
     # the bounded gate ships and agreement is perfect.
@@ -401,3 +447,116 @@ def test_validate_frames_scores_incumbent_at_its_own_period():
     assert rep["incumbent_period"] == 48
     assert rep["model"]["period"] == 30
     assert rep["handrule"]["period"] == 48
+
+
+# --- validate() + main() real-data glue (PR review finding 2) ---------------------
+# These exercise the loader->provenance->go_no_go wiring and the CLI exit-code contract
+# (the headline safety feature) by monkeypatching the data loader, so a regression in the
+# glue that lets an in-sample model promote cannot pass unnoticed. gate_verdict is stubbed
+# to ship so the gate's own statistics don't make the promote-path flaky -- the glue under
+# test is "did validate() resolve provenance and thread in_sample/provenance_verified into
+# the gate", not the gate's separation math (covered by the go_no_go unit tests).
+
+import json  # noqa: E402
+
+import regime_bounded_window_validate as rbwv  # noqa: E402
+
+
+def _wire_loader(monkeypatch, n_ext=200, n_window=140, seed=40):
+    """Patch data_fetcher.load_cached_data to serve a fixed (window, ext) pair: the ext
+    frame on the warm-up call (start_date=None), the window frame otherwise."""
+    df_ext = _ohlcv(n_ext, seed=seed)
+    df_window = df_ext.iloc[n_ext - n_window:].reset_index(drop=True)
+
+    def loader(symbol, timeframe, exchange_id=None, start_date=None, end_date=None):
+        return df_ext if start_date is None else df_window
+
+    import data_fetcher
+    monkeypatch.setattr(data_fetcher, "load_cached_data", loader)
+    return df_ext, df_window
+
+
+def _stub_gate_ship(monkeypatch):
+    monkeypatch.setattr(rbwv, "gate_verdict", lambda hr, md, primary="h4": {"ship": True})
+
+
+def _write_model(tmp_path, df, fitted_on=None):
+    model = _fit_model(df, filter_window=24)
+    if fitted_on is not None:
+        model["fitted_on"] = fitted_on
+    path = tmp_path / "model.json"
+    path.write_text(json.dumps({"model": model}))
+    return str(path)
+
+
+def _argv(model_json, window, lookback=250, extra=None):
+    a = ["--symbol", "BTC/USDT", "--timeframe", "1h", "--window", window,
+         "--model-json", model_json, "--lookback", str(lookback), "--horizons", "4",
+         "--agreement-threshold", "0", "--min-agreement-bars", "1", "--seed", "0"]
+    return a + (extra or [])
+
+
+def test_validate_blocks_confirmed_in_sample_model(monkeypatch):
+    df_ext, _ = _wire_loader(monkeypatch)
+    _stub_gate_ship(monkeypatch)
+    model = _fit_model(df_ext, filter_window=24)
+    model["fitted_on"] = {"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"}
+    rep = rbwv.validate("BTC/USDT", "1h", "is", model, lookback=250,
+                        agreement_threshold=0.0, min_agreement_bars=1)
+    assert rep["provenance"]["in_sample"] is True
+    assert rep["go_no_go"]["promote"] is False
+    assert any("in-sample re-score" in r for r in rep["go_no_go"]["blocking_reasons"])
+
+
+def test_validate_promotes_disjoint_oos_model(monkeypatch):
+    df_ext, _ = _wire_loader(monkeypatch)
+    _stub_gate_ship(monkeypatch)
+    model = _fit_model(df_ext, filter_window=24)
+    model["fitted_on"] = {"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"}
+    rep = rbwv.validate("BTC/USDT", "1h", "oos", model, lookback=250,
+                        agreement_threshold=0.0, min_agreement_bars=1)
+    assert rep["provenance"]["in_sample"] is False
+    assert rep["go_no_go"]["provenance_verified"] is True
+    assert rep["go_no_go"]["promote"] is True
+
+
+def test_main_exit_codes_block_in_sample_promote_oos(monkeypatch, tmp_path, capsys):
+    df_ext, _ = _wire_loader(monkeypatch)
+    _stub_gate_ship(monkeypatch)
+    fit = {"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"}
+    mj = _write_model(tmp_path, df_ext, fitted_on=fit)
+    assert rbwv.main(_argv(mj, "is")) == 1     # in-sample re-score blocks
+    capsys.readouterr()
+    assert rbwv.main(_argv(mj, "oos")) == 0     # disjoint held-out promotes
+
+
+def test_main_require_provenance_blocks_unstamped(monkeypatch, tmp_path, capsys):
+    df_ext, _ = _wire_loader(monkeypatch)
+    _stub_gate_ship(monkeypatch)
+    mj = _write_model(tmp_path, df_ext, fitted_on=None)   # no provenance stamp
+    assert rbwv.main(_argv(mj, "oos")) == 0                       # warns, does not block
+    capsys.readouterr()
+    assert rbwv.main(_argv(mj, "oos", extra=["--require-provenance"])) == 1   # blocks
+
+
+def test_main_rejects_horizons_missing_gate_primary(monkeypatch, tmp_path):
+    import pytest
+    _wire_loader(monkeypatch)
+    df = _ohlcv(200, seed=41)
+    mj = _write_model(tmp_path, df, fitted_on={"symbol": "BTC/USDT", "timeframe": "1h",
+                                               "window": "is"})
+    argv = ["--window", "oos", "--model-json", mj, "--horizons", "1,12"]
+    with pytest.raises(SystemExit):     # parser.error before any scoring
+        rbwv.main(argv)
+
+
+def test_main_sweep_worst_case_exit_on_in_sample(monkeypatch, tmp_path):
+    _wire_loader(monkeypatch)
+    _stub_gate_ship(monkeypatch)
+    df_ext = _ohlcv(200, seed=42)
+    mj = _write_model(tmp_path, df_ext, fitted_on={"symbol": "BTC/USDT", "timeframe": "1h",
+                                                   "window": "is"})
+    argv = ["--symbol", "BTC/USDT", "--timeframe", "1h", "--window", "is", "--model-json", mj,
+            "--lookback-sweep", "120,250", "--horizons", "4",
+            "--agreement-threshold", "0", "--min-agreement-bars", "1"]
+    assert rbwv.main(argv) == 1     # every swept lookback is in-sample -> worst-case blocks

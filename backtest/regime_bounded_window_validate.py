@@ -127,19 +127,65 @@ def _gate_primary_horizon() -> int:
     return int(str(primary).lstrip("h"))
 
 
-def _provenance_status(model, symbol: str, timeframe: str, window: str) -> dict:
+def _windows_overlap(fit_range, val_range) -> bool:
+    """True iff two eval windows share any bars. WINDOWS are half-open [start, end) date
+    ranges (an end of None means 'open to the latest cached bar'), so a SHARED boundary is
+    NOT an overlap -- e.g. is=[..,2026-01-01) and oos=[2026-01-01,..) are disjoint, which is
+    exactly the clean protocol split. ISO date strings compare lexicographically; None end
+    is treated as +infinity via a sentinel."""
+    fs, fe = fit_range
+    vs, ve = val_range
+    fe = "9999-12-31" if fe is None else str(fe)
+    ve = "9999-12-31" if ve is None else str(ve)
+    return str(fs) < ve and str(vs) < fe
+
+
+def _provenance_status(model, symbol: str, timeframe: str, window: str,
+                       windows: dict | None = None) -> dict:
     """Compare the validation context against the model's fit provenance (#1082 gate
     safety). fit_on_window stamps fitted_on={symbol,timeframe,window}; an empty/absent
     fitted_on means the model wasn't stamped (hand-built/legacy) and provenance can't be
-    verified. `in_sample` is True only when all three keys match -- re-scoring the gate on
-    the model's own fit window makes its separation/stability optimistic and would let an
-    overfit model clear the #1074 promotion gate, so the gate must refuse it."""
+    verified. The gate must refuse any **in-sample** validation -- re-scoring separation/
+    stability on bars the model was fit on is optimistic and would let an overfit model
+    clear the #1074 promotion gate.
+
+    `in_sample` fires on BOTH exact name equality AND date-range overlap: named windows
+    overlap by calendar even when their names differ (e.g. a model fit on `is` validated on
+    the held-out `2025H1` shares ~3 weeks), so name equality alone is not enough. Overlap is
+    only meaningful for the same (symbol, timeframe); a different instrument shares no bars.
+    `overlap_resolvable` is False when the fit window's name can't be resolved to a date
+    range (absent from WINDOWS) -- the validation can't be confirmed held-out, so it is
+    treated as unverifiable (warn, or block under --require-provenance), never silently OK."""
+    if windows is None:
+        try:
+            from eval_windows import WINDOWS as windows  # dict literal; no data access
+        except Exception:
+            windows = {}
     fitted_on = dict((model or {}).get("fitted_on") or {})
     validated_on = {"symbol": symbol, "timeframe": timeframe, "window": window}
     verified = bool(fitted_on)
-    in_sample = verified and all(fitted_on.get(k) == v for k, v in validated_on.items())
-    return {"fitted_on": fitted_on, "validated_on": validated_on,
-            "verified": verified, "in_sample": in_sample}
+    name_match = verified and all(fitted_on.get(k) == v for k, v in validated_on.items())
+    same_instrument = (verified and fitted_on.get("symbol") == symbol
+                       and fitted_on.get("timeframe") == timeframe)
+    date_overlap = False
+    overlap_resolvable = True
+    overlap_detail = None
+    if same_instrument and not name_match:
+        fit_range = windows.get(fitted_on.get("window"))
+        val_range = windows.get(window)
+        if fit_range is None or val_range is None:
+            overlap_resolvable = False  # cannot confirm disjoint -> unverifiable
+        elif _windows_overlap(fit_range, val_range):
+            date_overlap = True
+            overlap_detail = {"fit_window": fitted_on.get("window"),
+                              "fit_range": list(fit_range),
+                              "validation_window": window,
+                              "validation_range": list(val_range)}
+    in_sample = bool(name_match or date_overlap)
+    return {"fitted_on": fitted_on, "validated_on": validated_on, "verified": verified,
+            "name_match": bool(name_match), "date_overlap": date_overlap,
+            "overlap_resolvable": overlap_resolvable, "overlap_detail": overlap_detail,
+            "in_sample": in_sample}
 
 
 # ---------------------------------------------------------------------------
@@ -311,9 +357,9 @@ def go_no_go(full_model_scored, full_hr_scored, bounded_model_scored, bounded_hr
     warnings: list[str] = []
     if in_sample:
         reasons.append(
-            "in-sample re-score: the validation window equals the model's fit window "
-            "(symbol/timeframe/window) -- separation/stability are optimistic; validate "
-            "on a held-out window")
+            "in-sample re-score: the validation window equals OR overlaps (by date range) "
+            "the model's fit window -- separation/stability are optimistic; validate on a "
+            "disjoint held-out window")
     if not provenance_verified:
         msg = ("model provenance unverifiable (no fitted_on stamp) -- cannot confirm the "
                "validation window is held out from the fit window")
@@ -493,14 +539,18 @@ def validate(symbol: str, timeframe: str, window: str, model, *,
     df_ext = load_cached_data(symbol, timeframe, exchange_id=PLATFORM,
                               start_date=None, end_date=end)
     eval_start = _align_eval_start(df_window, df_ext)
-    prov = _provenance_status(model, symbol, timeframe, window) if model is not None else None
+    prov = _provenance_status(model, symbol, timeframe, window, WINDOWS) if model is not None else None
+    # Unverifiable provenance = no fitted_on stamp OR a fit-window name we can't resolve to a
+    # date range (so we can't prove the validation window is disjoint). Both route to the
+    # warn-by-default / block-under-require-provenance channel.
+    provenance_verified = bool(prov and prov["verified"] and prov["overlap_resolvable"])
     report = validate_frames(df_window, df_ext, eval_start, model, period=None,
                              incumbent_period=incumbent_period, lookback=lookback,
                              target=target, seed=seed, horizons=horizons,
                              agreement_threshold=agreement_threshold,
                              min_agreement_bars=min_agreement_bars,
                              in_sample=bool(prov and prov["in_sample"]),
-                             provenance_verified=bool(prov and prov["verified"]),
+                             provenance_verified=provenance_verified,
                              require_provenance=require_provenance)
     report.update({"symbol": symbol, "timeframe": timeframe, "window": window})
     if prov is not None:
@@ -569,17 +619,31 @@ def build_parser():
 
 def _warn_provenance(prov: dict | None, require_provenance: bool) -> None:
     """Loud stderr flag for the provenance hazards (the invariant: an in-sample re-score is
-    never silently promoted). Confirmed in-sample is always a blocking error; unverifiable
-    provenance is a warning unless --require-provenance escalates it to a block."""
+    never silently promoted). Confirmed in-sample (name match or date overlap) is always a
+    blocking error; unverifiable provenance (no stamp, or a fit window whose date range can't
+    be resolved) is a warning unless --require-provenance escalates it to a block."""
     if not prov:
         return
     if prov.get("in_sample"):
-        print(f"ERROR: in-sample re-score -- validation window {prov['validated_on']} equals "
-              f"the model's fit window; promotion refused.", file=sys.stderr)
+        if prov.get("date_overlap"):
+            d = prov.get("overlap_detail") or {}
+            print(f"ERROR: in-sample re-score -- validation window {d.get('validation_window')!r} "
+                  f"{d.get('validation_range')} overlaps the model's fit window "
+                  f"{d.get('fit_window')!r} {d.get('fit_range')}; promotion refused.",
+                  file=sys.stderr)
+        else:
+            print(f"ERROR: in-sample re-score -- validation window {prov['validated_on']} equals "
+                  f"the model's fit window; promotion refused.", file=sys.stderr)
     elif not prov.get("verified"):
-        sev = "ERROR" if require_provenance else "WARNING"
-        print(f"{sev}: model has no fitted_on provenance stamp; cannot confirm "
-              f"{prov['validated_on']} is held out from the fit window.", file=sys.stderr)
+        print("WARNING: model has no fitted_on provenance stamp; cannot confirm "
+              f"{prov['validated_on']} is held out from the fit window."
+              f"{' Blocked by --require-provenance.' if require_provenance else ''}",
+              file=sys.stderr)
+    elif not prov.get("overlap_resolvable"):
+        print(f"WARNING: the model's fit window {prov['fitted_on'].get('window')!r} is not in "
+              "WINDOWS; cannot confirm the validation window is disjoint from it."
+              f"{' Blocked by --require-provenance.' if require_provenance else ''}",
+              file=sys.stderr)
 
 
 def main(argv=None) -> int:
