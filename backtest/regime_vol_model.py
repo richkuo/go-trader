@@ -8,6 +8,8 @@ for _p in (_THIS_DIR, os.path.abspath(os.path.join(_THIS_DIR, "..")),
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from dataclasses import dataclass
+
 import numpy as np
 from regime_hmm import stationary_distribution
 
@@ -242,9 +244,6 @@ def fit_unsupervised(features, *, family, k, filter_window, period=48,
     }
 
 
-from dataclasses import dataclass
-
-
 @dataclass
 class NonDegeneracyThresholds:
     min_active_labels: int
@@ -279,6 +278,8 @@ def derive_thresholds(handrule_streams, *, active_margin=1, occupancy_margin=0.0
                       rate_margin=0.5):
     """Lock non-degeneracy cutoffs from the incumbent's WORST window, loosened by a fixed
     margin (anti-gaming). Must be called before scoring any candidate."""
+    if not handrule_streams:
+        raise ValueError("derive_thresholds needs at least one hand-rule stream")
     stats = [_stream_stats(np.asarray(s, dtype=object)) for s in handrule_streams]
     worst_active = min(a for a, _, _ in stats)
     worst_occ = max(o for _, o, _ in stats)
@@ -296,7 +297,8 @@ def build_parser():
     p = argparse.ArgumentParser(description="Fit one unsupervised vol-regime model (#1080)")
     p.add_argument("--symbol", default="BTC/USDT")
     p.add_argument("--timeframe", default="1h")
-    p.add_argument("--window", default="is", help=f"known: {', '.join(WINDOWS)}")
+    p.add_argument("--window", default="is", choices=list(WINDOWS),
+                   help=f"known: {', '.join(WINDOWS)}")
     p.add_argument("--family", default="hmm", choices=sorted(FITTERS))
     p.add_argument("--k", type=int, default=4)
     p.add_argument("--period", type=int, default=48)

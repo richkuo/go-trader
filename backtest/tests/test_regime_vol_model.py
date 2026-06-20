@@ -315,11 +315,37 @@ def test_select_winner_returns_none_when_no_eligible():
 
 
 def test_bakeoff_smoke_on_cached_data_if_available():
-    mod = _load_research_module("smoke")
     try:
+        # module load is inside the guard: a missing transitive dep / unparseable
+        # eval_windows config must SKIP, not FAIL.
+        mod = _load_research_module("smoke")
         report = mod.run_bakeoff("BTC/USDT", "1h", families=("kmeans",),
                                  k_range=range(3, 4), eval_windows=("is", "oos"))
     except Exception as e:  # noqa: BLE001 — no cached OHLCV in CI -> skip, not fail
         pytest.skip(f"no cached OHLCV / data path unavailable: {e}")
     assert "candidates" in report and len(report["candidates"]) == 1
     assert "non_degeneracy_thresholds" in report
+    assert "handrule_held_out" in report and "abstained" in report["handrule_held_out"]
+
+
+def test_non_degeneracy_flags_high_occupancy():
+    from regime_vol_model import NonDegeneracyThresholds, non_degeneracy
+    thr = NonDegeneracyThresholds(min_active_labels=2, max_occupancy=0.8,
+                                  min_transition_rate=0.0)
+    # 90% one label, 10% another: 2 active labels (passes), but occupancy 0.9 > 0.8 fails.
+    stream = np.array((["a"] * 9 + ["b"]) * 50, dtype=object)
+    rep = non_degeneracy(stream, thr)
+    assert rep["ok"] is False
+    assert "max_occupancy" in " ".join(rep["reasons"])
+    assert rep["active_labels"] == 2
+
+
+def test_non_degeneracy_flags_low_transition_rate():
+    from regime_vol_model import NonDegeneracyThresholds, non_degeneracy
+    thr = NonDegeneracyThresholds(min_active_labels=2, max_occupancy=1.0,
+                                  min_transition_rate=0.5)
+    # two long blocks: 2 active labels, balanced occupancy, but only 1 flip in 599 -> tr ~ 0.0017.
+    stream = np.array(["a"] * 300 + ["b"] * 300, dtype=object)
+    rep = non_degeneracy(stream, thr)
+    assert rep["ok"] is False
+    assert "min_transition_rate" in " ".join(rep["reasons"])
