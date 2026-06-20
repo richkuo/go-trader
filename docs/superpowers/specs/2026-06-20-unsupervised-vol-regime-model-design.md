@@ -118,6 +118,14 @@ Named thresholds, reported per eval window; a candidate **fails** if any window 
 These directly counter PR #1079's documented failure mode: a near-constant stream can win the
 stability arm while losing real separation.
 
+**Threshold derivation (anti-gaming):** the cutoff values are **derived from the hand-rule
+incumbent's own worst-window behavior** (its minimum distinct-label count, maximum single-label
+occupancy, and minimum transition rate across the eval windows), each loosened by a fixed margin,
+and **locked before any candidate is scored**. They are never hand-picked numbers and never tuned to
+let a chosen model pass — the incumbent never collapses, so a guard set a fixed margin looser than
+its worst window is defensible by construction and cannot be reverse-engineered to a favored
+candidate.
+
 ### 3. Look-ahead safety
 
 - Fit consumes only the training window's feature matrix (no `compute_regime_composite` as target).
