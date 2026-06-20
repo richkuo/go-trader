@@ -285,6 +285,43 @@ func strategyDirectionalCertified(sc StrategyConfig, rc *RegimeConfig, now time.
 	return getDirectionalCertStore().Certified(asset, tf, classifier, now)
 }
 
+// stampDirectionCertifiedAtOpenIfOpened freezes the directional-certification
+// verdict onto a freshly-opened position, write-once at the ENTRY INSTANT (#1085
+// req 2). The verdict must be frozen here — at the moment the side is decided —
+// rather than deferred to whenever the regime LABEL happens to record, because:
+//   - the label warms up lazily over several cycles in multi-window mode (a
+//     short-period window populates first, so the gate/primary window's Label is
+//     "" for a while even though payload.IsEmpty() is false), and
+//   - the verdict does NOT depend on the live label at all — it keys on the
+//     config-derived (asset, timeframe, classifier) cell, which is known the
+//     instant the position opens.
+//
+// Coupling the stamp to the label-recording cycle (the prior approach) let a
+// SIGHUP cert change land between open and label-record, so the eventual stamp
+// captured the CHANGED verdict — corrupting an already-open position's
+// #822 orphan-close decision. opened is true only when a genuine open Trade was
+// produced this cycle (Execute*Signal's OpenTrade != nil): flat→open or a flip's
+// fresh leg — NEVER a scale-in add (a distinct dispatch that preserves the
+// original entry's stamp), so this is naturally write-once for the life of the
+// position. Default false (base direction) when the policy isn't configured and
+// for positions that appear via reconciliation rather than our execute path —
+// the fail-closed from-flat migration the issue requires.
+func stampDirectionCertifiedAtOpenIfOpened(s *StrategyState, symbol string, opened bool, sc StrategyConfig, rc *RegimeConfig) {
+	if s == nil || !opened {
+		return
+	}
+	pos, ok := s.Positions[symbol]
+	if !ok || pos == nil {
+		return
+	}
+	if !sc.RegimeDirectionalPolicy.IsConfigured() {
+		pos.DirectionCertifiedAtOpen = false
+		return
+	}
+	_, certified := strategyDirectionalCertified(sc, rc, time.Now().UTC())
+	pos.DirectionCertifiedAtOpen = certified
+}
+
 // strategyDirectionalCertStatus is the messaging-oriented sibling of
 // strategyDirectionalCertified (certified/expired/never).
 func strategyDirectionalCertStatus(sc StrategyConfig, rc *RegimeConfig, now time.Time) DirectionalCertStatus {

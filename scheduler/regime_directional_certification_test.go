@@ -259,11 +259,15 @@ func TestDirectionCertifiedAtOpenDBRoundTrip(t *testing.T) {
 	}
 }
 
-// Review finding 2: the open-time stamp must be WRITE-ONCE — frozen together
-// with pos.Regime and never re-evaluated against a later (SIGHUP-changed) live
-// verdict. Covers: (a) uncertified-at-open stays false even after the cell is
-// later certified; (b) certified-at-open stays true even after de-certification;
-// (c) an empty-label cycle must NOT prematurely freeze the stamp.
+// Review finding 2 (re-review): the directional-cert stamp must be WRITE-ONCE at
+// the ENTRY INSTANT — frozen by stampDirectionCertifiedAtOpenIfOpened the cycle a
+// genuine open Trade is produced (OpenTrade != nil), and NEVER re-derived after.
+// The prior approach tied the stamp to stampPositionRegimeFromPayload (the regime
+// LABEL stamp); in multi-window mode the label warms up over several cycles, so a
+// SIGHUP cert change landing between open and label-record corrupted the stamp.
+// The stamp is now fully decoupled from the label: NO stampPositionRegimeIfOpened
+// call (any payload, any store state) may move it. Covers the bot's must-survive
+// cases (a)/(b)/(c) plus (d) the exact multi-window warmup race.
 func TestDirectionCertifiedAtOpenIsWriteOnce(t *testing.T) {
 	rc := &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}
 	policy := &RegimeDirectionalPolicy{TrendRegime: map[string]RegimeDirectionalEntry{
@@ -291,42 +295,94 @@ func TestDirectionCertifiedAtOpenIsWriteOnce(t *testing.T) {
 	prev := getDirectionalCertStore()
 	defer setDirectionalCertStore(prev)
 
-	// (a) Uncertified at open → false; later certification must NOT flip it.
+	// (a) Uncertified at open → false; a later SIGHUP certification AND the cycle
+	// that finally records the regime label must NOT flip it.
 	setDirectionalCertStore(emptyDirectionalCertSet())
 	ssA := newState()
-	stampPositionRegimeIfOpened(ssA, "BTC", RegimePayload{Legacy: "trending_down"}, sc, rc)
+	stampDirectionCertifiedAtOpenIfOpened(ssA, "BTC", true /*opened*/, sc, rc)
 	if ssA.Positions["BTC"].DirectionCertifiedAtOpen {
 		t.Fatal("(a) uncertified-at-open must stamp false")
 	}
 	setDirectionalCertStore(certifiedStore())
+	stampDirectionCertifiedAtOpenIfOpened(ssA, "BTC", false /*no new open*/, sc, rc)
 	stampPositionRegimeIfOpened(ssA, "BTC", RegimePayload{Legacy: "ranging"}, sc, rc)
 	if ssA.Positions["BTC"].DirectionCertifiedAtOpen {
-		t.Fatal("(a) a later SIGHUP certification must NOT flip an open position to true")
+		t.Fatal("(a) a later SIGHUP certification / label-record cycle must NOT flip an open position to true")
+	}
+	if ssA.Positions["BTC"].Regime != "ranging" {
+		t.Fatalf("(a) the regime label must still record independently, got %q", ssA.Positions["BTC"].Regime)
 	}
 
-	// (b) Certified at open → true; later de-certification must NOT flip it.
+	// (b) Certified at open → true; later de-certification + label-record must NOT flip it.
 	setDirectionalCertStore(certifiedStore())
 	ssB := newState()
-	stampPositionRegimeIfOpened(ssB, "BTC", RegimePayload{Legacy: "trending_down"}, sc, rc)
+	stampDirectionCertifiedAtOpenIfOpened(ssB, "BTC", true, sc, rc)
 	if !ssB.Positions["BTC"].DirectionCertifiedAtOpen {
 		t.Fatal("(b) certified-at-open must stamp true")
 	}
 	setDirectionalCertStore(emptyDirectionalCertSet())
+	stampDirectionCertifiedAtOpenIfOpened(ssB, "BTC", false, sc, rc)
 	stampPositionRegimeIfOpened(ssB, "BTC", RegimePayload{Legacy: "ranging"}, sc, rc)
 	if !ssB.Positions["BTC"].DirectionCertifiedAtOpen {
-		t.Fatal("(b) de-certification must NOT flip an open position to false")
+		t.Fatal("(b) de-certification / label-record cycle must NOT flip an open position to false")
 	}
 
-	// (c) Empty-label cycle must not prematurely freeze the stamp (it is only
-	// frozen on the cycle that records the regime label).
+	// (c) A position whose regime label records on the first post-open cycle still
+	// stamps the OPEN-cycle verdict (verdict frozen at open, label stamps alongside).
 	setDirectionalCertStore(certifiedStore())
 	ssC := newState()
-	stampPositionRegimeIfOpened(ssC, "BTC", RegimePayload{}, sc, rc)
-	if ssC.Positions["BTC"].Regime != "" {
-		t.Fatal("(c) empty payload must not stamp a regime")
+	stampDirectionCertifiedAtOpenIfOpened(ssC, "BTC", true, sc, rc)
+	stampPositionRegimeIfOpened(ssC, "BTC", RegimePayload{Legacy: "trending_down"}, sc, rc)
+	if ssC.Positions["BTC"].Regime != "trending_down" {
+		t.Fatalf("(c) the regime label must record on the first post-open cycle, got %q", ssC.Positions["BTC"].Regime)
 	}
-	if ssC.Positions["BTC"].DirectionCertifiedAtOpen {
-		t.Fatal("(c) empty-label cycle must not freeze the cert stamp")
+	if !ssC.Positions["BTC"].DirectionCertifiedAtOpen {
+		t.Fatal("(c) the stamp must equal the open-cycle verdict (certified)")
+	}
+
+	// (d) The exact finding-2 multi-window warmup race: a position opens while the
+	// gate/primary window label is still empty (payload non-empty because a
+	// shorter window is present but unlabeled), a SIGHUP certifies the cell, and
+	// THEN the primary window fills and the label records. The stamp must reflect
+	// the OPEN-instant (uncertified) verdict, not the SIGHUP-changed one.
+	rcMW := &RegimeConfig{Enabled: true, Period: 14, Windows: RegimeWindowsMap{
+		"short":  {Classifier: "adx", Period: 14},
+		"medium": {Classifier: "composite", Period: 48},
+	}}
+	certifiedMW := func() *DirectionalCertSet {
+		s, err := parseDirectionalCertSet([]byte(`{"schema_version":1,"certified":[
+			{"asset":"BTC","timeframe":"1h","classifier":"composite",
+			 "states":{"trending_up_clean":"long","trending_down_clean":"short"}}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	// This multi-window config keys the cert on the composite directional window —
+	// so a wrongful re-evaluation against certifiedMW WOULD flip the stamp; the fix
+	// prevents that.
+	if _, _, cls, ok := directionalCertIdentity(sc, rcMW); !ok || cls != "composite" {
+		t.Fatalf("(d) expected composite directional classifier, got %q ok=%v", cls, ok)
+	}
+	setDirectionalCertStore(emptyDirectionalCertSet())
+	ssD := newState()
+	stampDirectionCertifiedAtOpenIfOpened(ssD, "BTC", true /*open instant*/, sc, rcMW)
+	// Warmup cycle: only "short" present and unlabeled → gate AND primary labels
+	// resolve empty → the regime label must NOT record yet, cert untouched.
+	warmup := RegimePayload{MultiMode: true, Windows: map[string]RegimeSnapshot{"short": {Regime: ""}}}
+	stampPositionRegimeIfOpened(ssD, "BTC", warmup, sc, rcMW)
+	if ssD.Positions["BTC"].Regime != "" {
+		t.Fatalf("(d) warmup must not record a regime label, got %q", ssD.Positions["BTC"].Regime)
+	}
+	// SIGHUP certifies the cell mid-warmup, then the primary window fills.
+	setDirectionalCertStore(certifiedMW())
+	filled := RegimePayload{MultiMode: true, Windows: map[string]RegimeSnapshot{"medium": {Regime: "trending_down_clean"}}}
+	stampPositionRegimeIfOpened(ssD, "BTC", filled, sc, rcMW)
+	if ssD.Positions["BTC"].Regime != "trending_down_clean" {
+		t.Fatalf("(d) the regime label must record once the primary window fills, got %q", ssD.Positions["BTC"].Regime)
+	}
+	if ssD.Positions["BTC"].DirectionCertifiedAtOpen {
+		t.Fatal("(d) warmup→SIGHUP-certify→label-record must NOT flip the open stamp to true")
 	}
 }
 
