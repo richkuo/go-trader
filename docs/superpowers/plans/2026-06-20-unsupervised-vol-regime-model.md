@@ -436,7 +436,9 @@ def fit_hmm(z, k, *, seed=0, iters=50, var_floor=1e-3, tol=1e-4):
         logA = np.log(A + 1e-300)
         log_alpha = np.empty((n, k)); log_alpha[0] = np.log(pi + 1e-300) + logB[0]
         for t in range(1, n):
-            log_alpha[t] = _logsumexp_rows(log_alpha[t - 1][:, None] + logA) + logB[t]
+            # alpha[t,j] = logsumexp_i(alpha[t-1,i] + logA[i,j]) + logB[t,j]; reduce over the
+            # SOURCE state i (axis 0). Transpose [i,j]->[j,i] so the per-row reducer sums over i.
+            log_alpha[t] = _logsumexp_rows((log_alpha[t - 1][:, None] + logA).T) + logB[t]
         ll = _logsumexp(log_alpha[-1])
         log_beta = np.zeros((n, k))
         for t in range(n - 2, -1, -1):
