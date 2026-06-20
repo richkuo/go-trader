@@ -60,17 +60,17 @@ def fit_kmeans(z, k, *, seed=0, iters=100, var_floor=1e-3):
     n = len(z)
     rng = np.random.default_rng(seed)
     centers = z[rng.choice(n, size=k, replace=False)].copy()
-    assign = np.zeros(n, dtype=int)
+    assign = None  # None != any real assignment -> first iteration never early-breaks (k=1 safe)
     for _ in range(iters):
         d = ((z[:, None, :] - centers[None, :, :]) ** 2).sum(-1)
         new = d.argmin(1)
-        if np.array_equal(new, assign):
+        if assign is not None and np.array_equal(new, assign):
             break
         assign = new
         for j in range(k):
             if (assign == j).any():
                 centers[j] = z[assign == j].mean(0)
-    em_mean = centers
+    em_mean = centers.copy()  # decouple from `centers` so callers can't mutate the alias
     em_var = np.ones((k, z.shape[1]))
     counts = np.zeros(k, dtype=int)
     for j in range(k):
@@ -90,7 +90,7 @@ def _diag_logprob(z, mu, var):
 
 def fit_gmm(z, k, *, seed=0, iters=100, var_floor=1e-3, tol=1e-4):
     z = np.asarray(z, dtype=float)
-    n, d = z.shape
+    n = z.shape[0]
     assign0, mu, var, _ = fit_kmeans(z, k, seed=seed)
     mu = mu.copy(); var = var.copy()
     weights = np.array([max(int((assign0 == j).sum()), 1) for j in range(k)], dtype=float)
@@ -103,12 +103,13 @@ def fit_gmm(z, k, *, seed=0, iters=100, var_floor=1e-3, tol=1e-4):
         lse = _logsumexp_rows(log_resp)
         ll = float(lse.sum())
         resp = np.exp(log_resp - lse[:, None])
-        Nk = resp.sum(0) + 1e-10
+        Nk = resp.sum(0)                       # exact responsibility mass; sum(Nk) == n
+        safe_Nk = np.maximum(Nk, 1e-10)        # guard division only — never inflates the mass
         weights = Nk / n
-        mu = (resp.T @ z) / Nk[:, None]
+        mu = (resp.T @ z) / safe_Nk[:, None]
         for j in range(k):
             diff = z - mu[j]
-            var[j] = (resp[:, j][:, None] * diff ** 2).sum(0) / Nk[j]
+            var[j] = (resp[:, j][:, None] * diff ** 2).sum(0) / safe_Nk[j]
         var = np.maximum(var, var_floor)
         if prev_ll != -np.inf and abs(ll - prev_ll) < tol * abs(prev_ll):
             break
@@ -140,7 +141,7 @@ def _viterbi(z, mu, var, A, pi):
 
 def fit_hmm(z, k, *, seed=0, iters=50, var_floor=1e-3, tol=1e-4):
     z = np.asarray(z, dtype=float)
-    n, d = z.shape
+    n = len(z)
     _, mu, var, _ = fit_kmeans(z, k, seed=seed)
     mu = mu.copy(); var = var.copy()
     A = np.full((k, k), 1.0 / k)

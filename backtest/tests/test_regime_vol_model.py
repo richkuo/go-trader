@@ -81,7 +81,7 @@ def test_fit_kmeans_recovers_three_blobs():
 def test_fit_gmm_recovers_three_blobs():
     z, truth = _three_blobs(seed=1)
     assign, em_mean, em_var, counts = rvm.fit_gmm(z, 3, seed=0)
-    assert em_mean.shape == (3, 4) and (em_var > 0).all()
+    assert em_mean.shape == (3, 4) and em_var.shape == (3, 4) and (em_var > 0).all()
     assert counts.sum() == len(z)
     assert _purity(assign, truth, 3) > 0.95
 
@@ -105,3 +105,18 @@ def test_fit_hmm_recovers_markov_states():
     assert em_mean.shape == (3, 4) and (em_var > 0).all()
     assert counts.sum() == len(z)
     assert _purity(assign, truth, 3) > 0.9
+
+
+def test_fitters_registry_complete():
+    assert set(rvm.FITTERS) == {"kmeans", "gmm", "hmm"}
+    assert rvm.FITTERS["hmm"] is rvm.fit_hmm
+
+
+def test_fit_kmeans_k1_returns_global_mean_not_random_init():
+    # regression: k=1's first assignment trivially equals the sentinel; the loop must NOT
+    # early-break before computing the single cluster's mean.
+    rng = np.random.default_rng(3)
+    z = rng.normal([5.0, -2.0, 0.0, 1.0], 0.5, size=(300, 4))
+    assign, em_mean, em_var, counts = rvm.fit_kmeans(z, 1, seed=0)
+    assert counts[0] == 300
+    assert np.allclose(em_mean[0], z.mean(0), atol=1e-9)   # the true global mean, not the rng pick
