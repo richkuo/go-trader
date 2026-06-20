@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-06-19T00:00:00Z",
+  "generator": "backtest/research/regime_1076_certify.py",
+  "source_evidence": "backtest/research/README_1076_directional_premise.md",
+  "criteria": {
+    "global_correction": "benjamini-hochberg",
+    "fdr_q": 0.05,
+    "also_require_bonferroni": false,
+    "require_sign_aligned": true,
+    "require_held_out_forward": true,
+    "held_out_windows": ["is", "oos"],
+    "n_perm": 500
+  },
+  "default_ttl_days": 90,
+  "certified": []
+}

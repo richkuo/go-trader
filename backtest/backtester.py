@@ -651,6 +651,7 @@ class Backtester:
                  direction: Optional[str] = None,
                  invert_signal: bool = False,
                  regime_directional_policy: Optional[dict] = None,
+                 regime_directional_certified: bool = False,
                  profile_allocation: Optional[dict] = None):
         """
         Args:
@@ -747,6 +748,20 @@ class Backtester:
         self.regime_directional_policy = _normalize_regime_directional_policy(
             regime_directional_policy,
         )
+        # #1085: evidence gate. The directional-selection surface is DEFAULT-OFF
+        # and resolves to base direction unless this (asset, timeframe,
+        # classifier) is certified. Nulling the policy here makes every
+        # downstream resolver (_effective_directional_entry / _resolve_*) fall
+        # back to base, exactly mirroring the live default-off — so a backtest
+        # can never show a directional edge the live path suppresses. The caller
+        # (run_backtest.py) computes regime_directional_certified from the same
+        # artifact the live daemon reads.
+        if self.regime_directional_policy is not None and not bool(regime_directional_certified):
+            print("[#1085] regime_directional_policy present but NOT certified for "
+                  "this (asset,timeframe,classifier) — DEFAULT-OFF in backtest "
+                  "(base direction), mirroring live (#1076 negative result).",
+                  file=sys.stderr)
+            self.regime_directional_policy = None
         if self.regime_directional_policy is not None and not self.regime_enabled:
             raise ValueError(
                 "regime_directional_policy requires regime_enabled=True"

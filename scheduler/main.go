@@ -106,6 +106,17 @@ func main() {
 	}
 	fmt.Printf("Loaded config: %d strategies, interval=%ds\n", len(cfg.Strategies), cfg.IntervalSeconds)
 
+	// #1085: load the directional-certification artifact (SSoT for the
+	// regime->direction edge gate). Fail-closed — a missing/malformed artifact
+	// runs every regime_directional_policy strategy DEFAULT-OFF (base
+	// direction), never a wrong-side bet, and never crashes the daemon.
+	setDirectionalCertStore(LoadDirectionalCertSetFailClosed(directionalCertPath(), func(f string, a ...interface{}) {
+		fmt.Fprintf(os.Stderr, f+"\n", a...)
+	}))
+	for _, line := range directionalCertStartupSummary(cfg) {
+		fmt.Println(line)
+	}
+
 	// #704: emit a one-line resolved summary per strategy so operators can
 	// audit close/SL/TP wiring without grepping the JSON. Best-effort — a
 	// failed re-read just means we can't mark explicit-vs-default but the
@@ -528,6 +539,18 @@ func main() {
 		tickSeconds = schedulerTickSeconds(cfg)
 		drawdownWarnThresholdPct = configuredDrawdownWarnThresholdPct(cfg)
 		mu.Unlock()
+
+		// #1085: refresh the directional-certification artifact on SIGHUP so a
+		// re-run of regime_1076_certify.py takes effect without a restart.
+		// Fail-closed on error (keeps default-off). Certification status changes
+		// never disturb an OPEN position — the entry gate keys on the live
+		// verdict only when flat; open positions ride under their open stamp.
+		setDirectionalCertStore(LoadDirectionalCertSetFailClosed(directionalCertPath(), func(f string, a ...interface{}) {
+			fmt.Fprintf(os.Stderr, "[reload] "+f+"\n", a...)
+		}))
+		for _, line := range directionalCertStartupSummary(cfg) {
+			fmt.Printf("[reload] %s\n", line)
+		}
 
 		if len(changes) == 0 {
 			fmt.Println("[reload] Config reload applied: no hot-reloadable changes")
@@ -2986,7 +3009,19 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	// to its natural exit under the policy that opened it.
 	currentDirRegime := regimeDirectionalLabel(*sc, regimePayloadValue(result.Regime), regime)
 	posDirRegime := posCtx.DirectionalRegime
-	if entry, applied, legacyFallback := applyRegimeDirectionalPolicy(sc, currentDirRegime, posDirRegime, posCtx.Quantity); applied {
+	// #1085: evidence gate. When FLAT, key the entry side on the LIVE
+	// certification verdict for this strategy's (asset,timeframe,classifier). When
+	// a position is OPEN, ride under the certification stamped at open so an
+	// expiry/refresh never flips it mid-position. Default-off → base direction.
+	dirCertified := false
+	if sc.RegimeDirectionalPolicy.IsConfigured() {
+		if posCtx.Quantity > 0 {
+			dirCertified = posCtx.DirectionCertifiedAtOpen
+		} else {
+			_, dirCertified = strategyDirectionalCertified(*sc, regime, time.Now().UTC())
+		}
+	}
+	if entry, applied, legacyFallback := applyRegimeDirectionalPolicy(sc, currentDirRegime, posDirRegime, posCtx.Quantity, dirCertified); applied {
 		regimeKey := effectiveRegimeForPolicy(currentDirRegime, posDirRegime, posCtx.Quantity)
 		logger.Info("Regime directional policy: regime=%s -> direction=%q invert_signal=%t",
 			regimeKey, entry.Direction, entry.InvertSignal)

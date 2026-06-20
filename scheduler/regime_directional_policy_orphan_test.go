@@ -34,6 +34,10 @@ func TestPerpsRegimeDirectionOrphanConflict_RegimeFlip(t *testing.T) {
 				Side:            "short",
 				OwnerStrategyID: sc.ID,
 				Regime:          "trending_down",
+				// #1085: opened under a certified policy → the regime-flip auto-close
+				// resolves via the policy (not base), so this tests the genuine #822
+				// flip rather than a base-direction coincidence.
+				DirectionCertifiedAtOpen: true,
 			},
 		},
 	}
@@ -71,11 +75,59 @@ func TestPerpsRegimeDirectionOrphanConflict_HoldStampedNoConflict(t *testing.T) 
 				Side:            "short",
 				OwnerStrategyID: sc.ID,
 				Regime:          "trending_down",
+				// #1085: certified-at-open → rides under the policy (short in
+				// trending_down) without conflict while the regime holds.
+				DirectionCertifiedAtOpen: true,
 			},
 		},
 	}
 	if conflict, _, _ := perpsRegimeDirectionOrphanConflict(ss, sc, ss.Positions["BTC"]); conflict {
 		t.Fatal("short under trending_down should not conflict with current regime")
+	}
+}
+
+// #1085: an UNCERTIFIED/legacy open position (no DirectionCertifiedAtOpen stamp)
+// resolves through the evidence gate to BASE direction, so a side opposing base
+// is an orphan — the intended from-flat migration. A later certification expiry
+// must NOT cause this for a position that opened certified (covered by the
+// stamped tests above).
+func TestPerpsRegimeDirectionOrphanConflict_UncertifiedResolvesToBase(t *testing.T) {
+	sc := StrategyConfig{
+		ID:        "hl-test",
+		Type:      "perps",
+		Platform:  "hyperliquid",
+		Args:      []string{"vwap", "BTC", "1h", "--mode=live"},
+		Direction: DirectionLong,
+		RegimeDirectionalPolicy: &RegimeDirectionalPolicy{
+			TrendRegime: map[string]RegimeDirectionalEntry{
+				"trending_down": {Direction: DirectionShort},
+				"trending_up":   {Direction: DirectionLong},
+				"ranging":       {Direction: DirectionLong},
+			},
+		},
+	}
+	// Current regime trending_down (policy would say short), but the position is
+	// uncertified → base direction (long) governs → short conflicts → orphan.
+	ss := &StrategyState{
+		ID:     sc.ID,
+		Regime: "trending_down",
+		Positions: map[string]*Position{
+			"BTC": {
+				Symbol:          "BTC",
+				Quantity:        0.01,
+				Side:            "short",
+				OwnerStrategyID: sc.ID,
+				Regime:          "trending_down",
+				// DirectionCertifiedAtOpen defaults false (legacy/uncertified).
+			},
+		},
+	}
+	conflict, _, eff := perpsRegimeDirectionOrphanConflict(ss, sc, ss.Positions["BTC"])
+	if !conflict {
+		t.Fatal("uncertified short must conflict with base direction (migration)")
+	}
+	if eff != DirectionLong {
+		t.Fatalf("uncertified orphan must resolve to base direction long, got %q", eff)
 	}
 }
 
@@ -219,6 +271,48 @@ func TestRunRegimeDirectionOrphanCloses_AlreadyFlatLeavesVirtual(t *testing.T) {
 	}
 	if len(ss.TradeHistory) != 0 {
 		t.Fatal("AlreadyFlat: no trade should be booked without a fill")
+	}
+}
+
+// #1085 req 1: a shared-coin conflicting position must NOT be auto-closed
+// (reduce-only would touch live peers) — it is surfaced to the operator for
+// manual close, never silently flipped.
+func TestRunRegimeDirectionOrphanCloses_SharedCoinSurfacesNoAutoClose(t *testing.T) {
+	scA := StrategyConfig{
+		ID: "hl-a", Type: "perps", Platform: "hyperliquid",
+		Args: []string{"vwap", "BTC", "1h", "--mode=live"}, Direction: DirectionLong,
+	}
+	scB := StrategyConfig{
+		ID: "hl-b", Type: "perps", Platform: "hyperliquid",
+		Args: []string{"vwap", "BTC", "1h", "--mode=live"}, Direction: DirectionLong,
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			scA.ID: {
+				ID: scA.ID, Cash: 1000, Type: "perps", Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 0.01, AvgCost: 50000, Side: "short", Multiplier: 1},
+				},
+			},
+		},
+	}
+	closer, calls := fakeCloser(nil)
+	var dms []string
+	jobs := []RegimeDirectionOrphanCloseJob{{
+		StrategyID: scA.ID, Symbol: "BTC", CloseQty: 0.01, PosSide: "short",
+		CurrentRegime: "trending_up", EffectiveDir: DirectionLong,
+	}}
+	runRegimeDirectionOrphanCloses(context.Background(), state, []StrategyConfig{scA, scB}, jobs,
+		[]HLPosition{{Coin: "BTC", Size: -0.01}}, closer, &sync.RWMutex{},
+		func(m string) { dms = append(dms, m) })
+	if len(*calls) != 0 {
+		t.Fatalf("shared-coin orphan must NOT auto-close, got closer calls %v", *calls)
+	}
+	if len(dms) != 1 || !strings.Contains(dms[0], "MANUAL CLOSE REQUIRED") {
+		t.Fatalf("expected one owner DM citing manual close, got %v", dms)
+	}
+	if pos := state.Strategies[scA.ID].Positions["BTC"]; pos == nil {
+		t.Fatal("shared-coin position must be left in place (not closed)")
 	}
 }
 

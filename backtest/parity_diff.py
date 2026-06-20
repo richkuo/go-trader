@@ -204,14 +204,29 @@ def config_from_live_config(config_path: str, strategy_id: str,
     regime = raw.get("regime") or entry.get("regime") or {}
     open_ref = loaded["open_strategy"]
     stype = str(entry.get("type", "spot"))
+    symbol = str(args[1]) if len(args) > 1 else "BTC/USDT"
+    timeframe = str(args[2]) if len(args) > 2 else "1h"
+    # #1085: apply the same evidence gate the live daemon and backtester do —
+    # an uncertified (asset,timeframe,classifier) drops the directional policy to
+    # base direction, so parity_diff reflects the gated runtime rather than the
+    # ungated config.
+    rdp = loaded.get("regime_directional_policy")
+    if rdp:
+        from directional_certification import (
+            load_certifications, is_directional_certified, backtest_classifier,
+        )
+        certs = load_certifications()
+        clf = backtest_classifier(regime.get("windows"))
+        if not is_directional_certified(certs, symbol, timeframe, clf):
+            rdp = None
     return ParityConfig(
         strategy_name=open_ref["name"],
         params=dict(open_ref.get("params") or {}),
         registry="futures" if stype in ("perps", "futures", "manual") else "spot",
         platform=platform or ("hyperliquid" if stype in ("perps", "manual")
                               else "binanceus"),
-        symbol=str(args[1]) if len(args) > 1 else "BTC/USDT",
-        timeframe=str(args[2]) if len(args) > 2 else "1h",
+        symbol=symbol,
+        timeframe=timeframe,
         close_refs=loaded.get("close_strategies") or None,
         regime_enabled=bool(loaded.get("regime_enabled", regime.get("enabled"))),
         regime_period=int(loaded.get("regime_period", regime.get("period", 14)) or 14),
@@ -220,7 +235,7 @@ def config_from_live_config(config_path: str, strategy_id: str,
         ),
         direction=loaded.get("direction"),
         invert_signal=bool(loaded.get("invert_signal")),
-        regime_directional_policy=loaded.get("regime_directional_policy"),
+        regime_directional_policy=rdp,
     )
 
 

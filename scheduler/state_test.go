@@ -256,14 +256,17 @@ func makeRegimeDirectionalPolicyForValidation() *RegimeDirectionalPolicy {
 	}}
 }
 
-// #783: short under base direction=long is valid when stamped regime policy allows short.
+// #783/#1085: short under base direction=long is valid when the position opened
+// under a CERTIFIED policy (DirectionCertifiedAtOpen=true) and the stamped regime
+// allows short. Under #1085 the certification stamp is required — an uncertified
+// position resolves to base and is flagged for from-flat migration instead.
 func TestValidatePerpsDirectionConfig_RegimePolicyStampedTrendingDown(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["hl-mr-hype"] = &StrategyState{
 		ID:   "hl-mr-hype",
 		Type: "perps",
 		Positions: map[string]*Position{
-			"HYPE": {Symbol: "HYPE", Quantity: 1, Side: "short", Regime: "trending_down", Multiplier: 1, Leverage: 1},
+			"HYPE": {Symbol: "HYPE", Quantity: 1, Side: "short", Regime: "trending_down", Multiplier: 1, Leverage: 1, DirectionCertifiedAtOpen: true},
 		},
 	}
 	cfg := &Config{
@@ -277,14 +280,16 @@ func TestValidatePerpsDirectionConfig_RegimePolicyStampedTrendingDown(t *testing
 	}
 }
 
-// #783: short with stamped trending_up conflicts with policy long-only for that regime.
+// #783/#1085: short with a CERTIFIED-at-open stamp under trending_up conflicts
+// with the policy's long-only direction for that regime (the legitimate
+// regime-flip warning that cites the stamped regime).
 func TestValidatePerpsDirectionConfig_RegimePolicyStampedTrendingUpConflict(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["hl-mr-hype"] = &StrategyState{
 		ID:   "hl-mr-hype",
 		Type: "perps",
 		Positions: map[string]*Position{
-			"HYPE": {Symbol: "HYPE", Quantity: 1, Side: "short", Regime: "trending_up", Multiplier: 1, Leverage: 1},
+			"HYPE": {Symbol: "HYPE", Quantity: 1, Side: "short", Regime: "trending_up", Multiplier: 1, Leverage: 1, DirectionCertifiedAtOpen: true},
 		},
 	}
 	cfg := &Config{
@@ -302,13 +307,18 @@ func TestValidatePerpsDirectionConfig_RegimePolicyStampedTrendingUpConflict(t *t
 	}
 }
 
-// #783: unstamped short with policy that allows short in some regime → no hard warning.
-func TestValidatePerpsDirectionConfig_RegimePolicyUnstampedAllowed(t *testing.T) {
+// #1085: an UNCERTIFIED (legacy/unstamped) directional position no longer rides
+// under the policy — the surface is default-off, so it validates against BASE
+// direction and a conflicting side surfaces for from-flat migration. This
+// inverts the pre-#1085 #783 "unstamped allowed → no warning" behavior: leaving
+// a refuted-premise short in place silently is exactly what #1085 prevents.
+func TestValidatePerpsDirectionConfig_RegimePolicyUncertifiedWarnsForMigration(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["hl-mr-hype"] = &StrategyState{
 		ID:   "hl-mr-hype",
 		Type: "perps",
 		Positions: map[string]*Position{
+			// No DirectionCertifiedAtOpen stamp → uncertified/legacy.
 			"HYPE": {Symbol: "HYPE", Quantity: 1, Side: "short", Multiplier: 1, Leverage: 1},
 		},
 	}
@@ -318,8 +328,12 @@ func TestValidatePerpsDirectionConfig_RegimePolicyUnstampedAllowed(t *testing.T)
 			RegimeDirectionalPolicy: makeRegimeDirectionalPolicyForValidation(),
 		}},
 	}
-	if warnings := ValidatePerpsDirectionConfig(state, cfg); len(warnings) != 0 {
-		t.Fatalf("unstamped short allowed by trending_down policy should not warn, got: %v", warnings)
+	warnings := ValidatePerpsDirectionConfig(state, cfg)
+	if len(warnings) != 1 {
+		t.Fatalf("uncertified legacy short must surface for migration, got %d: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "DEFAULT-OFF") || !strings.Contains(warnings[0], "#1085") {
+		t.Errorf("warning should cite the #1085 default-off migration, got: %s", warnings[0])
 	}
 }
 

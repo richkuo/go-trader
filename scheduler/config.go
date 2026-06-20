@@ -1288,7 +1288,7 @@ func regimeDirectionalPolicyWarnings(cfg *Config) []string {
 	var out []string
 	for _, sc := range cfg.Strategies {
 		if sc.RegimeDirectionalPolicy.IsConfigured() {
-			out = append(out, fmt.Sprintf("[WARN] %s: regime_directional_policy selects long/short by regime, but the regime→forward-direction premise is empirically unvalidated (#1076 negative result) — it changes exposure, not a directional forecast. Prefer the regime for ATR-scaled SL/TP sizing (#1078); disable from flat.", sc.ID))
+			out = append(out, fmt.Sprintf("[WARN] %s: regime_directional_policy selects long/short by regime, but the regime→forward-direction premise is empirically unvalidated (#1076 negative result). It is now DEFAULT-OFF / evidence-gated (#1085): the side resolves to base direction unless a per-(asset,timeframe,classifier) certification passes (none currently does). Prefer the regime for ATR-scaled SL/TP sizing (#1078); disable from flat.", sc.ID))
 		}
 	}
 	return out

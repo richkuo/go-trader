@@ -305,8 +305,17 @@ func effectiveRegimeForPolicy(currentRegime, posRegime string, posQty float64) s
 // not a pointer into cfg.Strategies. The mutation propagates to all
 // downstream uses in the same cycle (applySignalInversion, EffectiveDirection
 // calls in execute paths, etc.) without persisting into shared config state.
-func applyRegimeDirectionalPolicy(sc *StrategyConfig, currentRegime, posRegime string, posQty float64) (effective RegimeDirectionalEntry, applied bool, legacyFallback bool) {
+func applyRegimeDirectionalPolicy(sc *StrategyConfig, currentRegime, posRegime string, posQty float64, certified bool) (effective RegimeDirectionalEntry, applied bool, legacyFallback bool) {
 	if sc == nil || sc.RegimeDirectionalPolicy.IsZero() {
+		return RegimeDirectionalEntry{}, false, false
+	}
+	// #1085: evidence gate. The directional-selection surface is DEFAULT-OFF and
+	// resolves to base direction (sc left untouched) unless this strategy's exact
+	// (asset, timeframe, classifier) is certified. When flat the caller passes the
+	// LIVE certification verdict; when a position is open it passes the stamp
+	// recorded at open (Position.DirectionCertifiedAtOpen) so a later
+	// expiry/refresh never silently flips the open position's effective direction.
+	if !certified {
 		return RegimeDirectionalEntry{}, false, false
 	}
 	legacyFallback = posQty > 0 && strings.TrimSpace(posRegime) == ""
@@ -325,7 +334,9 @@ func applyRegimeDirectionalPolicy(sc *StrategyConfig, currentRegime, posRegime s
 }
 
 // EffectiveDirectionForRegime returns the direction that applies for a single
-// regime label, honoring regime_directional_policy when configured (#783).
+// regime label, honoring regime_directional_policy when configured (#783). This
+// is the RAW (un-gated) policy lookup; runtime decisions must use
+// EffectiveDirectionForRegimeGated so the #1085 evidence gate applies.
 func EffectiveDirectionForRegime(sc StrategyConfig, regime string) string {
 	if sc.RegimeDirectionalPolicy != nil && !sc.RegimeDirectionalPolicy.IsZero() {
 		if entry, ok := sc.RegimeDirectionalPolicy.Resolve(strings.TrimSpace(regime)); ok {
@@ -335,6 +346,17 @@ func EffectiveDirectionForRegime(sc StrategyConfig, regime string) string {
 	return EffectiveDirection(sc)
 }
 
+// EffectiveDirectionForRegimeGated is the #1085 certification-gated direction:
+// the policy's per-regime direction only when certified, otherwise the base
+// direction. Every runtime direction decision that consults the policy resolves
+// through a gated form so the directional-selection surface is default-off.
+func EffectiveDirectionForRegimeGated(sc StrategyConfig, regime string, certified bool) string {
+	if !certified {
+		return EffectiveDirection(sc)
+	}
+	return EffectiveDirectionForRegime(sc, regime)
+}
+
 // EffectiveDirectionForPosition resolves direction for an open position using
 // the same hold-on-transition semantics as applyRegimeDirectionalPolicy: when
 // posQty > 0 and pos.Regime is stamped, that regime governs; otherwise the
@@ -342,6 +364,16 @@ func EffectiveDirectionForRegime(sc StrategyConfig, regime string) string {
 func EffectiveDirectionForPosition(sc StrategyConfig, currentRegime, posRegime string, posQty float64) string {
 	regime := effectiveRegimeForPolicy(currentRegime, posRegime, posQty)
 	return EffectiveDirectionForRegime(sc, regime)
+}
+
+// EffectiveDirectionForPositionGated is the #1085 certification-gated sibling of
+// EffectiveDirectionForPosition: resolves through the evidence gate so an
+// uncertified/legacy open position (certified=false) reports its TRUE effective
+// direction (base), not the un-gated policy direction. `certified` is the
+// position's DirectionCertifiedAtOpen stamp.
+func EffectiveDirectionForPositionGated(sc StrategyConfig, currentRegime, posRegime string, posQty float64, certified bool) string {
+	regime := effectiveRegimeForPolicy(currentRegime, posRegime, posQty)
+	return EffectiveDirectionForRegimeGated(sc, regime, certified)
 }
 
 // policyAllowsPositionSide reports whether posSide is permitted under at least
@@ -383,12 +415,19 @@ type RegimeDirectionOrphanCloseJob struct {
 
 // regimeDirectionOrphanEffectiveDir resolves direction from the current cycle
 // regime only — intentionally ignores pos.Regime hold-on-transition (#822).
-func regimeDirectionOrphanEffectiveDir(stratState *StrategyState, sc StrategyConfig) string {
+//
+// #1085: certified is the OPEN position's stamp (DirectionCertifiedAtOpen).
+//   - certified=true: the policy's current-regime direction governs — the
+//     legitimate #822 regime-flip auto-close. A later certification expiry does
+//     NOT change this (the stamp is frozen at open), so expiry never triggers a
+//     migration auto-close of a position that opened certified.
+//   - certified=false (uncertified now, or a legacy pre-#1085 position): base
+//     direction governs. This IS the intended from-flat migration — a position
+//     whose side conflicts with base is auto-closed for sole-owner coins and
+//     surfaced (never silently flipped) for shared coins.
+func regimeDirectionOrphanEffectiveDir(stratState *StrategyState, sc StrategyConfig, certified bool) string {
 	current := strategyCurrentDirectionalRegime(stratState, sc)
-	if sc.RegimeDirectionalPolicy != nil && !sc.RegimeDirectionalPolicy.IsZero() {
-		return EffectiveDirectionForRegime(sc, current)
-	}
-	return EffectiveDirection(sc)
+	return EffectiveDirectionForRegimeGated(sc, current, certified)
 }
 
 // perpsRegimeDirectionOrphanConflict reports whether a live HL perps position
@@ -414,7 +453,7 @@ func perpsRegimeDirectionOrphanConflict(stratState *StrategyState, sc StrategyCo
 		return false, "", ""
 	}
 	currentRegime = strategyCurrentDirectionalRegime(stratState, sc)
-	effectiveDir = regimeDirectionOrphanEffectiveDir(stratState, sc)
+	effectiveDir = regimeDirectionOrphanEffectiveDir(stratState, sc, pos.DirectionCertifiedAtOpen)
 	if !perpsPositionConflictsDirection(pos.Side, effectiveDir) {
 		return false, currentRegime, effectiveDir
 	}

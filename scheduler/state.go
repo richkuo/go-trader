@@ -274,17 +274,26 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 				continue
 			}
 			posRegime := positionDirectionalRegimeLabel(pos, *sc)
-			effectiveDir := EffectiveDirectionForPosition(*sc, "", posRegime, pos.Quantity)
+			// #1085: gate by the open stamp. An uncertified/legacy directional
+			// position (certified=false) validates against BASE direction — this is
+			// the from-flat migration surface: a side that conflicts with base is
+			// flagged for the operator to close before the next signal.
+			effectiveDir := EffectiveDirectionForPositionGated(*sc, "", posRegime, pos.Quantity, pos.DirectionCertifiedAtOpen)
 			if !perpsPositionConflictsDirection(pos.Side, effectiveDir) {
 				continue
 			}
-			// Legacy / unstamped: if any configured regime allows this side, skip.
-			if policyConfigured && posRegime == "" && policyAllowsPositionSide(*sc, pos.Side) {
+			// Legacy / unstamped under a CERTIFIED-at-open policy: if any configured
+			// regime allows this side, skip (it opened under the honored policy).
+			// Uncertified positions are NOT skipped — they must surface for
+			// from-flat migration (#1085).
+			if policyConfigured && pos.DirectionCertifiedAtOpen && posRegime == "" && policyAllowsPositionSide(*sc, pos.Side) {
 				continue
 			}
 			conflictSide := pos.Side
 			var regimeNote string
 			switch {
+			case !pos.DirectionCertifiedAtOpen && policyConfigured:
+				regimeNote = fmt.Sprintf("effective_direction=%q (regime_directional_policy DEFAULT-OFF / uncertified #1085 → base_direction=%q; close from flat to migrate)", effectiveDir, baseDirection)
 			case posRegime != "":
 				regimeNote = fmt.Sprintf("effective_direction=%q from stamped regime=%q; base_direction=%q", effectiveDir, posRegime, baseDirection)
 			case policyConfigured:

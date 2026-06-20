@@ -214,6 +214,7 @@ def test_regime_directional_policy_uses_prior_bar_regime_not_current():
         close_strategies=_NEVER_FIRES_CLOSE,
         regime_enabled=True,
         regime_directional_policy=_REGIME_DIRECTIONAL_POLICY,
+        regime_directional_certified=True,  # #1085: test the resolver under certification
     )
     result = bt.run(df, save=False)
 

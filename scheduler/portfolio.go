@@ -35,6 +35,16 @@ type Position struct {
 	Regime          string            `json:"regime,omitempty"`             // regime label stamped at position open via stampPositionRegimeIfOpened. Drives regime-aware tier/SL multipliers for the life of the position (#733). Distinct from StrategyState.Regime which tracks the most recent classifier output.
 	RegimeWindows   map[string]string `json:"regime_windows,omitempty"`     // per-window regime labels stamped at open (#792)
 	OpenProfile     string            `json:"open_profile,omitempty"`       // regime-profile allocation: profile active when this position opened, frozen for its life (hold-on-transition). Read by resolveRegimeProfile when a position is open. (#998)
+	// DirectionCertifiedAtOpen records whether regime_directional_policy was
+	// CERTIFIED (#1085) for this strategy's (asset,timeframe,classifier) at the
+	// moment the position opened. The live entry gate keys on the CURRENT
+	// certification verdict only when flat; once open, the position rides under
+	// this stamp so a later certification expiry/refresh can never silently flip
+	// its effective direction or trip the #822 orphan-close. Legacy positions
+	// (pre-#1085) default false → resolve to base direction (the intended
+	// from-flat migration; #822 auto-closes sole-owner conflicts, shared-coin
+	// conflicts are surfaced to the operator).
+	DirectionCertifiedAtOpen bool `json:"direction_certified_at_open,omitempty"`
 	// #843 dynamic close: confirm-cycle state for live ATR-regime re-resolution.
 	RegimePendingLabel string `json:"regime_pending_label,omitempty"`
 	RegimePendingCount int    `json:"regime_pending_count,omitempty"`

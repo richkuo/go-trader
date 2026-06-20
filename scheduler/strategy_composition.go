@@ -35,6 +35,11 @@ type PositionCtx struct {
 	DirectionalRegime string
 	RegimeWindows     map[string]string
 	Profile           string // regime-profile allocation: pos.OpenProfile frozen at open (#998)
+	// DirectionCertifiedAtOpen mirrors Position.DirectionCertifiedAtOpen (#1085):
+	// whether regime_directional_policy was certified when this open position
+	// opened. Drives the entry resolver's gate for OPEN positions so a later
+	// certification expiry/refresh never disturbs them.
+	DirectionCertifiedAtOpen bool
 }
 
 func usesOpenCloseConfig(sc StrategyConfig) bool {
@@ -172,15 +177,16 @@ func positionCtxFromPosition(pos *Position) PositionCtx {
 		return PositionCtx{}
 	}
 	return PositionCtx{
-		Side:              pos.Side,
-		AvgCost:           pos.AvgCost,
-		Quantity:          pos.Quantity,
-		InitialQuantity:   pos.InitialQuantity,
-		EntryATR:          pos.EntryATR,
-		Regime:            pos.Regime,
-		DirectionalRegime: pos.Regime,
-		RegimeWindows:     cloneStringMap(pos.RegimeWindows),
-		Profile:           pos.OpenProfile,
+		Side:                     pos.Side,
+		AvgCost:                  pos.AvgCost,
+		Quantity:                 pos.Quantity,
+		InitialQuantity:          pos.InitialQuantity,
+		EntryATR:                 pos.EntryATR,
+		Regime:                   pos.Regime,
+		DirectionalRegime:        pos.Regime,
+		RegimeWindows:            cloneStringMap(pos.RegimeWindows),
+		Profile:                  pos.OpenProfile,
+		DirectionCertifiedAtOpen: pos.DirectionCertifiedAtOpen,
 	}
 }
 

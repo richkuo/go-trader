@@ -1421,8 +1421,17 @@ func runRegimeDirectionOrphanCloses(
 			}
 		}
 		if len(hlLiveStrategiesForCoin(sym, hlPeerScope)) > 1 {
-			fmt.Printf("[INFO] hl-regime-orphan-close: strategy %s coin %s shares wallet with peers — skipping auto-close (#822)\n",
-				job.StrategyID, sym)
+			// #1085 req 1: a shared-coin position cannot be safely auto-closed
+			// (reduce-only on a coin with live peers would touch their exposure),
+			// so it is STRANDED for manual close. Surface this loudly to the
+			// operator — never silently flip behavior. This is the from-flat
+			// migration gap the issue exists to make visible.
+			msg := fmt.Sprintf("[CRITICAL] hl-regime-orphan-close: strategy %s %s %s qty=%.6f conflicts with effective_direction=%q (regime=%q) but coin %s is SHARED with live peers — auto-close skipped to avoid touching peer exposure. MANUAL CLOSE REQUIRED (#822/#1085).",
+				job.StrategyID, job.PosSide, sym, job.CloseQty, job.EffectiveDir, job.CurrentRegime, sym)
+			fmt.Println(msg)
+			if ownerDM != nil {
+				ownerDM(msg)
+			}
 			continue
 		}
 

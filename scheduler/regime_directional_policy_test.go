@@ -235,7 +235,7 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 
 	t.Run("flat uses current regime", func(t *testing.T) {
 		sc := StrategyConfig{Direction: "long", InvertSignal: false, RegimeDirectionalPolicy: makePolicy()}
-		entry, applied, legacy := applyRegimeDirectionalPolicy(&sc, "trending_down", "", 0)
+		entry, applied, legacy := applyRegimeDirectionalPolicy(&sc, "trending_down", "", 0, true)
 		if !applied {
 			t.Fatalf("expected applied")
 		}
@@ -253,7 +253,7 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 	t.Run("open position uses pos.Regime (hold)", func(t *testing.T) {
 		sc := StrategyConfig{Direction: "long", InvertSignal: false, RegimeDirectionalPolicy: makePolicy()}
 		// pos opened under trending_down, current regime flipped to trending_up
-		entry, applied, legacy := applyRegimeDirectionalPolicy(&sc, "trending_up", "trending_down", 0.001)
+		entry, applied, legacy := applyRegimeDirectionalPolicy(&sc, "trending_up", "trending_down", 0.001, true)
 		if !applied {
 			t.Fatalf("expected applied")
 		}
@@ -272,7 +272,7 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 	t.Run("flat after pos closed picks new regime", func(t *testing.T) {
 		sc := StrategyConfig{Direction: "long", InvertSignal: false, RegimeDirectionalPolicy: makePolicy()}
 		// Position closed (qty=0); current regime is trending_up
-		entry, applied, legacy := applyRegimeDirectionalPolicy(&sc, "trending_up", "trending_down", 0)
+		entry, applied, legacy := applyRegimeDirectionalPolicy(&sc, "trending_up", "trending_down", 0, true)
 		if !applied {
 			t.Fatalf("expected applied")
 		}
@@ -286,7 +286,7 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 
 	t.Run("no policy is no-op", func(t *testing.T) {
 		sc := StrategyConfig{Direction: "long", InvertSignal: false}
-		_, applied, _ := applyRegimeDirectionalPolicy(&sc, "trending_down", "", 0)
+		_, applied, _ := applyRegimeDirectionalPolicy(&sc, "trending_down", "", 0, true)
 		if applied {
 			t.Fatalf("expected no-op when policy nil")
 		}
@@ -297,7 +297,7 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 
 	t.Run("unknown regime is no-op", func(t *testing.T) {
 		sc := StrategyConfig{Direction: "long", InvertSignal: false, RegimeDirectionalPolicy: makePolicy()}
-		_, applied, _ := applyRegimeDirectionalPolicy(&sc, "", "", 0)
+		_, applied, _ := applyRegimeDirectionalPolicy(&sc, "", "", 0, true)
 		if applied {
 			t.Fatalf("empty regime should not resolve")
 		}
@@ -308,7 +308,7 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 
 	t.Run("legacy position without pos.Regime falls back to current", func(t *testing.T) {
 		sc := StrategyConfig{Direction: "long", InvertSignal: false, RegimeDirectionalPolicy: makePolicy()}
-		entry, applied, legacy := applyRegimeDirectionalPolicy(&sc, "trending_up", "", 0.5)
+		entry, applied, legacy := applyRegimeDirectionalPolicy(&sc, "trending_up", "", 0.5, true)
 		if !applied {
 			t.Fatalf("expected applied")
 		}

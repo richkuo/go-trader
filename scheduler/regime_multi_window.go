@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
@@ -553,6 +554,17 @@ func stampPositionRegimeFromPayload(s *StrategyState, symbol string, payload Reg
 	}
 	if pos.Regime != "" {
 		return
+	}
+	// #1085: stamp the directional-certification verdict at open so this position
+	// rides under the verdict it opened with. The live entry gate keys on the
+	// CURRENT verdict only when flat; once stamped, a later expiry/refresh never
+	// flips the open position. Only meaningful when the policy is configured;
+	// default false otherwise and for legacy positions (→ from-flat migration to
+	// base). Same store/cycle as the entry gate, so the stamp matches the entry.
+	if sc.RegimeDirectionalPolicy.IsConfigured() {
+		if _, ok := strategyDirectionalCertified(sc, rc, time.Now().UTC()); ok {
+			pos.DirectionCertifiedAtOpen = true
+		}
 	}
 	gateKey := resolveStrategyRegimeWindow(sc, "gate", rc)
 	if label := payload.Label(gateKey, rc); label != "" {

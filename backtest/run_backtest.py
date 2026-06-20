@@ -626,6 +626,7 @@ def run_single_backtest(
     direction: Optional[str] = None,
     invert_signal: bool = False,
     regime_directional_policy: Optional[dict] = None,
+    directional_cert_path: Optional[str] = None,
     profile_allocation: Optional[dict] = None,
 ) -> Optional[dict]:
     """Run a single backtest and print results.
@@ -700,6 +701,26 @@ def run_single_backtest(
         df_signals = _apply_htf_filter_to_df(df_signals, symbol, timeframe)
         print(f"  HTF filter: applied (HTF={get_default_htf(timeframe)})")
 
+    # #1085: resolve the directional-certification verdict for parity with live.
+    # The backtest honors regime_directional_policy only where the SAME
+    # per-(asset,timeframe,classifier) certification passes that the live daemon
+    # checks; otherwise default-off (base direction). Classifier = the one the
+    # backtester actually applies (composite if windows_spec, else ADX).
+    regime_directional_certified = False
+    if regime_directional_policy:
+        from directional_certification import (
+            load_certifications, is_directional_certified, backtest_classifier,
+        )
+        certs = load_certifications(directional_cert_path)
+        clf = backtest_classifier(regime_windows_spec)
+        regime_directional_certified = is_directional_certified(
+            certs, symbol, timeframe, clf,
+        )
+        if not regime_directional_certified:
+            print(f"  [#1085] regime_directional_policy default-off: "
+                  f"({symbol},{timeframe},{clf}) not certified — base direction "
+                  f"(matches live; #1076 negative result).")
+
     bt = Backtester(
         initial_capital=capital, platform=platform,
         open_strategy={"name": strategy_name, "params": dict(strat_params or {})},
@@ -720,6 +741,7 @@ def run_single_backtest(
         direction=direction,
         invert_signal=invert_signal,
         regime_directional_policy=regime_directional_policy,
+        regime_directional_certified=regime_directional_certified,
         profile_allocation=profile_allocation,
     )
     results = bt.run(
