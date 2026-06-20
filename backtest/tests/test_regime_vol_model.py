@@ -84,3 +84,24 @@ def test_fit_gmm_recovers_three_blobs():
     assert em_mean.shape == (3, 4) and (em_var > 0).all()
     assert counts.sum() == len(z)
     assert _purity(assign, truth, 3) > 0.95
+
+
+def _markov_sequence(seed=0, n=1500):
+    rng = np.random.default_rng(seed)
+    A = np.array([[0.95, 0.04, 0.01], [0.03, 0.94, 0.03], [0.01, 0.04, 0.95]])
+    centers = np.array([[-3, -3, -3, -3], [0, 0, 0, 0], [3, 3, 3, 3]], dtype=float)
+    s = 0; states = []
+    for _ in range(n):
+        states.append(s)
+        s = rng.choice(3, p=A[s])
+    states = np.array(states)
+    z = np.array([rng.normal(centers[s], 0.4) for s in states])
+    return z, states
+
+
+def test_fit_hmm_recovers_markov_states():
+    z, truth = _markov_sequence()
+    assign, em_mean, em_var, counts = rvm.fit_hmm(z, 3, seed=0)
+    assert em_mean.shape == (3, 4) and (em_var > 0).all()
+    assert counts.sum() == len(z)
+    assert _purity(assign, truth, 3) > 0.9

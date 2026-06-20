@@ -119,3 +119,68 @@ def fit_gmm(z, k, *, seed=0, iters=100, var_floor=1e-3, tol=1e-4):
     assign = log_resp.argmax(1)
     counts = np.array([int((assign == j).sum()) for j in range(k)], dtype=int)
     return assign, mu, var, counts
+
+
+def _viterbi(z, mu, var, A, pi):
+    n, k = len(z), len(pi)
+    logA = np.log(A + 1e-300)
+    logB = np.column_stack([_diag_logprob(z, mu[j], var[j]) for j in range(k)])
+    delta = np.log(pi + 1e-300) + logB[0]
+    back = np.zeros((n, k), dtype=int)
+    for t in range(1, n):
+        m = delta[:, None] + logA            # [k_prev, k_next]
+        back[t] = m.argmax(0)
+        delta = m.max(0) + logB[t]
+    path = np.zeros(n, dtype=int)
+    path[-1] = int(delta.argmax())
+    for t in range(n - 2, -1, -1):
+        path[t] = back[t + 1, path[t + 1]]
+    return path
+
+
+def fit_hmm(z, k, *, seed=0, iters=50, var_floor=1e-3, tol=1e-4):
+    z = np.asarray(z, dtype=float)
+    n, d = z.shape
+    _, mu, var, _ = fit_kmeans(z, k, seed=seed)
+    mu = mu.copy(); var = var.copy()
+    A = np.full((k, k), 1.0 / k)
+    pi = np.full(k, 1.0 / k)
+    prev_ll = -np.inf
+    for _ in range(iters):
+        logB = np.column_stack([_diag_logprob(z, mu[j], var[j]) for j in range(k)])
+        logA = np.log(A + 1e-300)
+        log_alpha = np.empty((n, k)); log_alpha[0] = np.log(pi + 1e-300) + logB[0]
+        for t in range(1, n):
+            # alpha[t,j] = logsumexp_i(alpha[t-1,i] + logA[i,j]) + logB[t,j]; reduce over the
+            # SOURCE state i (axis 0). Transpose [i,j]->[j,i] so the per-row reducer sums over i.
+            log_alpha[t] = _logsumexp_rows((log_alpha[t - 1][:, None] + logA).T) + logB[t]
+        ll = _logsumexp(log_alpha[-1])
+        log_beta = np.zeros((n, k))
+        for t in range(n - 2, -1, -1):
+            log_beta[t] = _logsumexp_rows(logA + (logB[t + 1] + log_beta[t + 1])[None, :])
+        log_gamma = log_alpha + log_beta
+        log_gamma -= _logsumexp_rows(log_gamma)[:, None]
+        gamma = np.exp(log_gamma)
+        xi_sum = np.zeros((k, k))
+        for t in range(n - 1):
+            log_xi = (log_alpha[t][:, None] + logA
+                      + (logB[t + 1] + log_beta[t + 1])[None, :])
+            log_xi -= _logsumexp(log_xi.ravel())
+            xi_sum += np.exp(log_xi)
+        pi = gamma[0] + 1e-10; pi /= pi.sum()
+        A = xi_sum + 1e-10; A /= A.sum(1, keepdims=True)
+        Nk = gamma.sum(0) + 1e-10
+        mu = (gamma.T @ z) / Nk[:, None]
+        for j in range(k):
+            diff = z - mu[j]
+            var[j] = (gamma[:, j][:, None] * diff ** 2).sum(0) / Nk[j]
+        var = np.maximum(var, var_floor)
+        if prev_ll != -np.inf and abs(ll - prev_ll) < tol * abs(prev_ll):
+            break
+        prev_ll = ll
+    assign = _viterbi(z, mu, var, A, pi)
+    counts = np.array([int((assign == j).sum()) for j in range(k)], dtype=int)
+    return assign, mu, var, counts
+
+
+FITTERS = {"kmeans": fit_kmeans, "gmm": fit_gmm, "hmm": fit_hmm}
