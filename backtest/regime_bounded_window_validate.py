@@ -59,9 +59,19 @@ A model is cleared for promotion only when ALL hold:
   2. Per-bar model-label agreement between the full-window and bounded-window
      views is >= `agreement_threshold` (default 0.95): the labels the model was
      validated on are the labels it will emit live.
-The report additionally surfaces the full-window verdict (to flag a regression:
-passes full, fails bounded) and ADX/label drift statistics, including an optional
-lookback sweep showing how drift decays as the live lookback lengthens.
+  3. That agreement was measured on >= `min_agreement_bars` bars BOTH arms scored
+     (default 30). Fail-closed floor: a window too short to give the cold full-window
+     arm overlap with the warm bounded arm yields a vacuous agreement=1.0 on ~0 bars,
+     which must BLOCK, never promote.
+Both arms are scored at the same periods the regime_calibrate gate uses -- the model
+arm at its fit period, the hand-rule incumbent arm at `incumbent_period`
+(= regime_diagnostics.DEFAULT_PERIOD, what run_window scores model=None at) -- so the
+full-window verdict here equals the calibrate verdict for the same model+window even
+when the fit period != 48. The report surfaces the full-window verdict (to flag a
+regression: passes full, fails bounded) and ADX/label drift statistics. An optional
+`--lookback-sweep` shows how drift decays as the lookback lengthens; its CLI exit code
+is worst-case (non-zero if ANY swept lookback blocks promotion) so neither mode of this
+gate can exit success while promotion is blocked.
 """
 from __future__ import annotations
 
@@ -85,17 +95,24 @@ from regime import (  # noqa: E402
     compute_regime_composite,
 )
 from regime_calibrate import gate_verdict  # noqa: E402
-from regime_diagnostics import score_labels  # noqa: E402
+# DEFAULT_PERIOD is the period regime_calibrate scores its hand-rule incumbent at
+# (run_window with model=None) and the fallback when a model omits "period" -- imported
+# (not re-declared) so the incumbent baseline here can never desync from the gate it re-runs.
+from regime_diagnostics import DEFAULT_PERIOD, score_labels  # noqa: E402
 from regime_hmm import forward_filter_labels  # noqa: E402
 
 # Mirrors shared_scripts/check_regime.py's `--ohlcv-limit` default and the probe
 # argv in scheduler/version_probe.go. The live regime check fetches this many
 # bars per cycle; the harness reproduces ADX over exactly this trailing window.
 DEFAULT_LOOKBACK = 200
-DEFAULT_PERIOD = 48  # matches regime_calibrate.fit_on_window when a model omits "period"
 # A model whose live labels disagree with the labels it was validated on more than
 # this fraction of bars has not been validated for what it will actually emit.
 DEFAULT_AGREEMENT_THRESHOLD = 0.95
+# Fail-closed floor: the agreement gate must be measured on at least this many bars that
+# both arms score. Below it (e.g. an eval window barely longer than the fit warm-up, so the
+# cold full-window arm is almost all NaN) label_drift_stats reports a vacuous agreement=1.0
+# on ~0 bars; the gate must BLOCK, not promote. 30 mirrors check_regime's `--min-bars 30`.
+DEFAULT_MIN_AGREEMENT_BARS = 30
 ADX_COL = 3  # composite_feature_matrix column order: return_eff, range_eff, efficiency, adx
 
 
@@ -127,46 +144,54 @@ def bounded_window_adx(df: pd.DataFrame, period: int, lookback: int,
     return out
 
 
-def full_window_views(df_window: pd.DataFrame, model, period: int, th: dict):
+def full_window_views(df_window: pd.DataFrame, model, period: int, th: dict, *,
+                      want_model: bool = True, want_handrule: bool = True):
     """Full-window features + (model, hand-rule) labels -- what the FIT consumed.
 
     ADX is seeded at the window start (recursive warm-up over the whole window).
-    Returns (features[n x 4], model_labels|None, handrule_labels).
+    Returns (features[n x 4], model_labels|None, handrule_labels|None). The two arms
+    are scored at DIFFERENT periods (model at its fit period, incumbent at
+    DEFAULT_PERIOD), so callers request only the arm they want at this period.
     """
     feats = composite_feature_matrix(df_window, period, th).to_numpy()
-    hr_labels = compute_regime_composite(df_window, period=period, thresholds=th)["regime"].to_numpy()
+    hr_labels = None
+    if want_handrule:
+        hr_labels = compute_regime_composite(df_window, period=period, thresholds=th)["regime"].to_numpy()
     model_labels = None
-    if model is not None:
+    if want_model and model is not None:
         model_labels, _ = forward_filter_labels(feats, model)
     return feats, model_labels, hr_labels
 
 
 def bounded_window_views(df: pd.DataFrame, model, period: int, th: dict,
-                         lookback: int, eval_start: int):
+                         lookback: int, eval_start: int, *,
+                         want_model: bool = True, want_handrule: bool = True):
     """Faithful per-bar live reproduction over `df` for bars [eval_start, n).
 
     Each scored bar is computed from its own trailing `lookback`-bar slice using
     the same functions the live cycle calls. Returns
-    (features[m x 4], model_labels[m]|None, handrule_labels[m]) where m = n - eval_start.
+    (features[m x 4], model_labels[m]|None, handrule_labels[m]|None) where m = n - eval_start.
     """
     feats_rows: list[np.ndarray] = []
     model_labs: list = []
     hr_labs: list = []
     n = len(df)
-    want_model = model is not None
+    want_model = want_model and model is not None
     for i in range(eval_start, n):
         lo = max(0, i - lookback + 1)
         w = df.iloc[lo:i + 1]
         feat_df = composite_feature_matrix(w, period, th)
         feats_rows.append(feat_df.iloc[-1].to_numpy() if len(feat_df) else np.full(4, np.nan))
-        hr = compute_regime_composite(w, period=period, thresholds=th)["regime"]
-        hr_labs.append(hr.iloc[-1] if len(hr) else None)
+        if want_handrule:
+            hr = compute_regime_composite(w, period=period, thresholds=th)["regime"]
+            hr_labs.append(hr.iloc[-1] if len(hr) else None)
         if want_model:
             seq, _ = forward_filter_labels(feat_df.to_numpy(), model)
             model_labs.append(seq[-1] if len(seq) else None)
     feats = np.vstack(feats_rows) if feats_rows else np.empty((0, 4))
     model_arr = np.array(model_labs, dtype=object) if want_model else None
-    return feats, model_arr, np.array(hr_labs, dtype=object)
+    hr_arr = np.array(hr_labs, dtype=object) if want_handrule else None
+    return feats, model_arr, hr_arr
 
 
 # ---------------------------------------------------------------------------
@@ -230,10 +255,20 @@ def _feature_valid_mask(full_feats: np.ndarray, bounded_feats: np.ndarray) -> np
 # ---------------------------------------------------------------------------
 
 def go_no_go(full_model_scored, full_hr_scored, bounded_model_scored, bounded_hr_scored,
-             label_agreement: float, *,
-             agreement_threshold: float = DEFAULT_AGREEMENT_THRESHOLD) -> dict:
+             model_label_drift: dict, *,
+             agreement_threshold: float = DEFAULT_AGREEMENT_THRESHOLD,
+             min_agreement_bars: int = DEFAULT_MIN_AGREEMENT_BARS) -> dict:
     """Promotion gate for #1074. Promote iff the calibrate gate still ships under
-    bounded-window labels AND model label agreement clears the threshold."""
+    bounded-window labels AND the full-vs-bounded model label agreement clears the
+    threshold AND that agreement was measured on enough comparable bars.
+
+    `model_label_drift` is the model arm's label_drift_stats dict; its `n` is the count
+    of bars BOTH views scored. The bar-count guard is load-bearing: label_drift_stats
+    returns a vacuous agreement=1.0 on zero comparable bars, so without it a window too
+    short to give the cold full-window arm any overlap with the warm bounded arm would
+    promote on ~0 bars while the bounded gate ships on its own larger sample."""
+    label_agreement = float(model_label_drift.get("agreement", 0.0))
+    comparable_bars = int(model_label_drift.get("n", 0))
     full_verdict = gate_verdict(full_hr_scored, full_model_scored)
     bounded_verdict = gate_verdict(bounded_hr_scored, bounded_model_scored)
     reasons: list[str] = []
@@ -241,16 +276,24 @@ def go_no_go(full_model_scored, full_hr_scored, bounded_model_scored, bounded_hr
         reasons.append("model fails the calibrate gate under bounded-window ADX")
     if full_verdict["ship"] and not bounded_verdict["ship"]:
         reasons.append("verdict regressed: ships full-window but not bounded-window")
-    if label_agreement < agreement_threshold:
+    enough_bars = comparable_bars >= min_agreement_bars
+    if not enough_bars:
+        reasons.append(
+            f"insufficient comparable bars: {comparable_bars} < {min_agreement_bars} "
+            "(agreement not measurable -> fail closed)")
+    elif label_agreement < agreement_threshold:
         reasons.append(
             f"full-vs-bounded model label agreement {label_agreement:.4f} "
             f"< threshold {agreement_threshold:.4f}")
-    promote = bool(bounded_verdict["ship"] and label_agreement >= agreement_threshold)
+    promote = bool(bounded_verdict["ship"] and enough_bars
+                   and label_agreement >= agreement_threshold)
     return {
         "promote": promote,
         "blocking_reasons": reasons,
-        "label_agreement": float(label_agreement),
+        "label_agreement": label_agreement,
         "agreement_threshold": float(agreement_threshold),
+        "comparable_bars": comparable_bars,
+        "min_agreement_bars": int(min_agreement_bars),
         "full_window_verdict": full_verdict,
         "bounded_window_verdict": bounded_verdict,
     }
@@ -261,54 +304,84 @@ def go_no_go(full_model_scored, full_hr_scored, bounded_model_scored, bounded_hr
 # ---------------------------------------------------------------------------
 
 def validate_frames(df_window: pd.DataFrame, df_ext: pd.DataFrame, eval_start: int, model, *,
-                    period: int = DEFAULT_PERIOD, thresholds: dict | None = None,
+                    period: int | None = None, incumbent_period: int = DEFAULT_PERIOD,
+                    thresholds: dict | None = None,
                     lookback: int = DEFAULT_LOOKBACK, target: str = "volatility",
                     seed: int = 0, horizons=(1, 4, 12),
-                    agreement_threshold: float = DEFAULT_AGREEMENT_THRESHOLD) -> dict:
+                    agreement_threshold: float = DEFAULT_AGREEMENT_THRESHOLD,
+                    min_agreement_bars: int = DEFAULT_MIN_AGREEMENT_BARS) -> dict:
     """Pure validation core. `df_window` is the exact eval window (full-window/fit
     view); `df_ext` is the same window prefixed with >= `lookback` warm-up bars,
     with `eval_start` the index in df_ext where the eval window begins. The eval
-    bars of both frames are the same calendar bars."""
+    bars of both frames are the same calendar bars.
+
+    The MODEL arm is scored at `period` (the fit period; defaults to the model's own
+    "period", else DEFAULT_PERIOD); the HAND-RULE incumbent arm is scored at
+    `incumbent_period` (DEFAULT_PERIOD) -- the same period regime_calibrate's gate uses
+    for the incumbent (run_window with model=None), so the full-window verdict here
+    equals the calibrate verdict for the same model+window even when period != 48."""
     th = dict(_DEFAULT_COMPOSITE_THRESHOLDS if thresholds is None else thresholds)
     close = df_window["close"].to_numpy(dtype=float)
+    model_period = int(period) if period is not None else (
+        int(model["period"]) if model and "period" in model else DEFAULT_PERIOD)
 
-    full_feats, full_model_labels, full_hr_labels = full_window_views(df_window, model, period, th)
-    bounded_feats, bounded_model_labels, bounded_hr_labels = bounded_window_views(
-        df_ext, model, period, th, lookback, eval_start)
-
-    valid = _feature_valid_mask(full_feats, bounded_feats)
+    # Hand-rule incumbent arm at the incumbent period (no model labels needed here).
+    hr_full_feats, _, hr_full_labels = full_window_views(
+        df_window, None, incumbent_period, th, want_model=False, want_handrule=True)
+    hr_bounded_feats, _, hr_bounded_labels = bounded_window_views(
+        df_ext, None, incumbent_period, th, lookback, eval_start,
+        want_model=False, want_handrule=True)
+    hr_valid = _feature_valid_mask(hr_full_feats, hr_bounded_feats)
+    hr_full_scored = score_labels(close, hr_full_labels, hr_full_feats, horizons=horizons,
+                                  seed=seed, target=target)
+    hr_bounded_scored = score_labels(close, hr_bounded_labels, hr_bounded_feats,
+                                     horizons=horizons, seed=seed, target=target)
 
     report: dict = {
         "lookback": int(lookback),
-        "period": int(period),
+        "model_period": model_period,
+        "incumbent_period": int(incumbent_period),
         "target": target,
         "seed": int(seed),
         "n_eval_bars": int(len(close)),
-        "n_scored_bars": int(valid.sum()),
-        "adx_drift": adx_drift_stats(full_feats[:, ADX_COL], bounded_feats[:, ADX_COL]),
         "handrule": {
-            "label_drift": label_drift_stats(full_hr_labels, bounded_hr_labels, valid),
-            "full": score_labels(close, full_hr_labels, full_feats, horizons=horizons,
-                                 seed=seed, target=target),
-            "bounded": score_labels(close, bounded_hr_labels, bounded_feats, horizons=horizons,
-                                    seed=seed, target=target),
+            "period": int(incumbent_period),
+            "n_scored_bars": int(hr_valid.sum()),
+            "label_drift": label_drift_stats(hr_full_labels, hr_bounded_labels, hr_valid),
+            "full": hr_full_scored,
+            "bounded": hr_bounded_scored,
         },
     }
+
     if model is not None:
-        model_drift = label_drift_stats(full_model_labels, bounded_model_labels, valid)
-        full_model_scored = score_labels(close, full_model_labels, full_feats, horizons=horizons,
+        # Model arm at the model period (its own features/ADX; ADX sub-period is capped
+        # at COMPOSITE_ADX_PERIOD_CAP regardless, so the drift it measures is the model's).
+        m_full_feats, m_full_labels, _ = full_window_views(
+            df_window, model, model_period, th, want_model=True, want_handrule=False)
+        m_bounded_feats, m_bounded_labels, _ = bounded_window_views(
+            df_ext, model, model_period, th, lookback, eval_start,
+            want_model=True, want_handrule=False)
+        m_valid = _feature_valid_mask(m_full_feats, m_bounded_feats)
+        model_drift = label_drift_stats(m_full_labels, m_bounded_labels, m_valid)
+        full_model_scored = score_labels(close, m_full_labels, m_full_feats, horizons=horizons,
                                          seed=seed, target=target)
-        bounded_model_scored = score_labels(close, bounded_model_labels, bounded_feats,
+        bounded_model_scored = score_labels(close, m_bounded_labels, m_bounded_feats,
                                             horizons=horizons, seed=seed, target=target)
+        report["n_scored_bars"] = int(m_valid.sum())
+        report["adx_drift"] = adx_drift_stats(m_full_feats[:, ADX_COL], m_bounded_feats[:, ADX_COL])
         report["model"] = {
+            "period": model_period,
             "label_drift": model_drift,
             "full": full_model_scored,
             "bounded": bounded_model_scored,
         }
         report["go_no_go"] = go_no_go(
-            full_model_scored, report["handrule"]["full"],
-            bounded_model_scored, report["handrule"]["bounded"],
-            model_drift["agreement"], agreement_threshold=agreement_threshold)
+            full_model_scored, hr_full_scored, bounded_model_scored, hr_bounded_scored,
+            model_drift, agreement_threshold=agreement_threshold,
+            min_agreement_bars=min_agreement_bars)
+    else:
+        report["n_scored_bars"] = int(hr_valid.sum())
+        report["adx_drift"] = adx_drift_stats(hr_full_feats[:, ADX_COL], hr_bounded_feats[:, ADX_COL])
     return report
 
 
@@ -327,10 +400,13 @@ def _align_eval_start(df_window: pd.DataFrame, df_ext: pd.DataFrame) -> int:
 
 
 def validate(symbol: str, timeframe: str, window: str, model, *,
-             lookback: int = DEFAULT_LOOKBACK, target: str = "volatility", seed: int = 0,
-             horizons=(1, 4, 12), agreement_threshold: float = DEFAULT_AGREEMENT_THRESHOLD) -> dict:
+             lookback: int = DEFAULT_LOOKBACK, incumbent_period: int = DEFAULT_PERIOD,
+             target: str = "volatility", seed: int = 0, horizons=(1, 4, 12),
+             agreement_threshold: float = DEFAULT_AGREEMENT_THRESHOLD,
+             min_agreement_bars: int = DEFAULT_MIN_AGREEMENT_BARS) -> dict:
     """Data-loading wrapper: load the eval window plus a >= lookback warm-up
-    prefix, then run validate_frames."""
+    prefix, then run validate_frames (model arm at the model's fit period, incumbent
+    arm at `incumbent_period`)."""
     from data_fetcher import load_cached_data
     from eval_windows import WINDOWS, PLATFORM
     if window not in WINDOWS:
@@ -341,10 +417,11 @@ def validate(symbol: str, timeframe: str, window: str, model, *,
     df_ext = load_cached_data(symbol, timeframe, exchange_id=PLATFORM,
                               start_date=None, end_date=end)
     eval_start = _align_eval_start(df_window, df_ext)
-    period = int(model["period"]) if model and "period" in model else DEFAULT_PERIOD
-    report = validate_frames(df_window, df_ext, eval_start, model, period=period,
-                             lookback=lookback, target=target, seed=seed, horizons=horizons,
-                             agreement_threshold=agreement_threshold)
+    report = validate_frames(df_window, df_ext, eval_start, model, period=None,
+                             incumbent_period=incumbent_period, lookback=lookback,
+                             target=target, seed=seed, horizons=horizons,
+                             agreement_threshold=agreement_threshold,
+                             min_agreement_bars=min_agreement_bars)
     report.update({"symbol": symbol, "timeframe": timeframe, "window": window})
     return report
 
@@ -355,9 +432,19 @@ def _sweep_summary(report: dict) -> dict:
            "adx_p95_abs": report["adx_drift"]["p95_abs"], "adx_corr": report["adx_drift"]["corr"]}
     if "model" in report:
         row["model_label_agreement"] = report["model"]["label_drift"]["agreement"]
+        row["comparable_bars"] = report["go_no_go"]["comparable_bars"]
         row["promote"] = report["go_no_go"]["promote"]
         row["bounded_ship"] = report["go_no_go"]["bounded_window_verdict"]["ship"]
     return row
+
+
+def _sweep_blocked(sweep: list[dict]) -> bool:
+    """Worst-case fail-closed verdict over a lookback sweep: blocked if a promotion
+    decision exists for any swept lookback and ANY of them does not promote. The CLI's
+    exit code keys off this so a sweep -- reachable by the #1074 promotion automation --
+    can never exit success while some lookback (including the live default) is blocked."""
+    model_rows = [r for r in sweep if "promote" in r]
+    return bool(model_rows) and not all(bool(r["promote"]) for r in model_rows)
 
 
 # ---------------------------------------------------------------------------
@@ -377,11 +464,18 @@ def build_parser():
     p.add_argument("--lookback", type=int, default=DEFAULT_LOOKBACK,
                    help=f"live bounded fetch size (default {DEFAULT_LOOKBACK}, mirrors --ohlcv-limit)")
     p.add_argument("--lookback-sweep", default=None,
-                   help="comma list of lookbacks to sweep, e.g. 100,150,200,300,400")
+                   help="comma list of lookbacks to sweep, e.g. 100,150,200,300,400. "
+                        "Exit code is worst-case (non-zero if ANY swept lookback blocks promotion).")
+    p.add_argument("--incumbent-period", type=int, default=DEFAULT_PERIOD,
+                   help=f"composite period for the hand-rule incumbent arm (default "
+                        f"{DEFAULT_PERIOD}, matches regime_calibrate's gate)")
     p.add_argument("--target", default="volatility", choices=("returns", "volatility"),
                    help="forward variable the separation is scored on (default volatility, #1078)")
     p.add_argument("--horizons", default="1,4,12")
     p.add_argument("--agreement-threshold", type=float, default=DEFAULT_AGREEMENT_THRESHOLD)
+    p.add_argument("--min-agreement-bars", type=int, default=DEFAULT_MIN_AGREEMENT_BARS,
+                   help=f"fail closed if fewer than this many bars are scored by both arms "
+                        f"(default {DEFAULT_MIN_AGREEMENT_BARS})")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--json", default=None, help="write the full report JSON to this path")
     return p
@@ -402,21 +496,31 @@ def main(argv=None) -> int:
         sweep = []
         for lb in lookbacks:
             rep = validate(args.symbol, args.timeframe, args.window, model, lookback=lb,
-                           target=args.target, seed=args.seed, horizons=horizons,
-                           agreement_threshold=args.agreement_threshold)
+                           incumbent_period=args.incumbent_period, target=args.target,
+                           seed=args.seed, horizons=horizons,
+                           agreement_threshold=args.agreement_threshold,
+                           min_agreement_bars=args.min_agreement_bars)
             sweep.append(_sweep_summary(rep))
+        blocked = _sweep_blocked(sweep)
         payload = {"symbol": args.symbol, "timeframe": args.timeframe, "window": args.window,
-                   "target": args.target, "sweep": sweep}
+                   "target": args.target, "sweep": sweep,
+                   "promotion_blocked": blocked,
+                   "blocked_lookbacks": [r["lookback"] for r in sweep
+                                         if "promote" in r and not r["promote"]]}
     else:
         payload = validate(args.symbol, args.timeframe, args.window, model,
-                           lookback=args.lookback, target=args.target, seed=args.seed,
-                           horizons=horizons, agreement_threshold=args.agreement_threshold)
+                           lookback=args.lookback, incumbent_period=args.incumbent_period,
+                           target=args.target, seed=args.seed, horizons=horizons,
+                           agreement_threshold=args.agreement_threshold,
+                           min_agreement_bars=args.min_agreement_bars)
 
     text = json.dumps(payload, indent=2, default=float)
     if args.json:
         with open(args.json, "w") as fh:
             fh.write(text)
     print(text)
+    if "sweep" in payload:
+        return 1 if payload["promotion_blocked"] else 0
     if "go_no_go" in payload:
         return 0 if payload["go_no_go"]["promote"] else 1
     return 0

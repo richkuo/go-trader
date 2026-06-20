@@ -19,6 +19,7 @@ from regime_hmm import fit_label_anchored_hmm, forward_filter_labels
 from regime_bounded_window_validate import (
     DEFAULT_AGREEMENT_THRESHOLD,
     _align_eval_start,
+    _sweep_blocked,
     adx_drift_stats,
     bounded_window_adx,
     bounded_window_views,
@@ -158,10 +159,15 @@ def _scored(kw_h, transition_rate, p_value=0.005):
             "h4": {"separation": {"kruskal_h": kw_h}, "significance": {"p_value": p_value}}}
 
 
+def _drift(agreement, n=500):
+    return {"n": n, "agreement": agreement,
+            "disagreements": int(round((1 - agreement) * n)), "transitions": {}}
+
+
 def test_go_no_go_promotes_when_bounded_ships_and_agreement_high():
     hr = _scored(10.0, 0.40)
     md = _scored(9.7, 0.25)          # within tolerance, whipsaw down, significant
-    v = go_no_go(md, hr, md, hr, label_agreement=0.99)
+    v = go_no_go(md, hr, md, hr, _drift(0.99))
     assert v["promote"] is True
     assert v["blocking_reasons"] == []
     assert v["bounded_window_verdict"]["ship"] is True
@@ -171,7 +177,7 @@ def test_go_no_go_blocks_when_bounded_fails_gate():
     hr = _scored(10.0, 0.40)
     md_full = _scored(9.7, 0.25)     # ships full-window
     md_bounded = _scored(4.0, 0.25)  # separation collapses under bounded ADX
-    v = go_no_go(md_full, hr, md_bounded, hr, label_agreement=0.99)
+    v = go_no_go(md_full, hr, md_bounded, hr, _drift(0.99))
     assert v["promote"] is False
     assert any("fails the calibrate gate" in r for r in v["blocking_reasons"])
     assert any("regressed" in r for r in v["blocking_reasons"])  # full ships, bounded doesn't
@@ -180,7 +186,7 @@ def test_go_no_go_blocks_when_bounded_fails_gate():
 def test_go_no_go_blocks_when_label_agreement_below_threshold():
     hr = _scored(10.0, 0.40)
     md = _scored(9.7, 0.25)          # gate itself ships under bounded
-    v = go_no_go(md, hr, md, hr, label_agreement=0.80)
+    v = go_no_go(md, hr, md, hr, _drift(0.80))
     assert v["promote"] is False
     assert any("label agreement" in r for r in v["blocking_reasons"])
     assert v["bounded_window_verdict"]["ship"] is True   # gate ok, agreement is the blocker
@@ -189,9 +195,44 @@ def test_go_no_go_blocks_when_label_agreement_below_threshold():
 def test_go_no_go_default_threshold():
     hr = _scored(10.0, 0.40)
     md = _scored(9.7, 0.25)
-    just_under = go_no_go(md, hr, md, hr, label_agreement=DEFAULT_AGREEMENT_THRESHOLD - 0.001)
-    at = go_no_go(md, hr, md, hr, label_agreement=DEFAULT_AGREEMENT_THRESHOLD)
+    just_under = go_no_go(md, hr, md, hr, _drift(DEFAULT_AGREEMENT_THRESHOLD - 0.001))
+    at = go_no_go(md, hr, md, hr, _drift(DEFAULT_AGREEMENT_THRESHOLD))
     assert just_under["promote"] is False and at["promote"] is True
+
+
+def test_go_no_go_blocks_on_insufficient_comparable_bars():
+    # Finding 1: a short window shrinks the full∩bounded intersection toward empty;
+    # label_drift_stats then reports a vacuous agreement=1.0 on ~0 bars. Even with the
+    # gate shipping and agreement "perfect", the gate must FAIL CLOSED on too few bars.
+    hr = _scored(10.0, 0.40)
+    md = _scored(9.7, 0.25)                      # gate ships under bounded
+    v = go_no_go(md, hr, md, hr, _drift(1.0, n=5), min_agreement_bars=30)
+    assert v["promote"] is False
+    assert any("insufficient comparable bars" in r for r in v["blocking_reasons"])
+    assert v["bounded_window_verdict"]["ship"] is True   # gate ok; the bar floor is the blocker
+
+
+def test_go_no_go_zero_comparable_bars_vacuous_agreement_blocks():
+    # The exact degenerate case: label_drift_stats on an all-NaN/empty mask returns
+    # agreement=1.0, n=0. That 1.0 must never clear the gate.
+    empty = label_drift_stats(np.array([], dtype=object), np.array([], dtype=object),
+                              np.array([], dtype=bool))
+    assert empty["agreement"] == 1.0 and empty["n"] == 0
+    hr = _scored(10.0, 0.40)
+    md = _scored(9.7, 0.25)
+    v = go_no_go(md, hr, md, hr, empty)
+    assert v["promote"] is False
+    assert any("insufficient comparable bars" in r for r in v["blocking_reasons"])
+
+
+# --- lookback sweep exit-code (finding 3) -----------------------------------------
+
+def test_sweep_blocked_worst_case_over_lookbacks():
+    promote_row = lambda lb, ok: {"lookback": lb, "promote": ok}
+    assert _sweep_blocked([promote_row(100, True), promote_row(200, True)]) is False
+    assert _sweep_blocked([promote_row(100, False), promote_row(200, True)]) is True   # any fail
+    assert _sweep_blocked([promote_row(200, True), promote_row(400, False)]) is True   # live ok, longer fails
+    assert _sweep_blocked([{"lookback": 200, "adx_mean_abs": 0.1}]) is False           # no model -> no gate
 
 
 # --- alignment helper -------------------------------------------------------------
@@ -236,3 +277,22 @@ def test_validate_frames_handrule_only_without_model():
                           lookback=90, target="volatility", seed=0, horizons=(4,))
     assert "model" not in rep and "go_no_go" not in rep
     assert "handrule" in rep and rep["adx_drift"]["n"] > 0
+
+
+def test_validate_frames_scores_incumbent_at_its_own_period():
+    # Finding 2: the hand-rule incumbent arm is scored at `incumbent_period` (matching
+    # regime_calibrate's gate), independent of the model's fit period — so the full-window
+    # verdict here equals the calibrate verdict for the same model+window even when != 48.
+    df_ext = _ohlcv(260, seed=21)
+    eval_start = 150
+    df_window = df_ext.iloc[eval_start:].reset_index(drop=True)
+    feats = composite_feature_matrix(df_ext, 30, TH).to_numpy()
+    labels = compute_regime_composite(df_ext, period=30, thresholds=TH)["regime"].to_numpy()
+    model = fit_label_anchored_hmm(feats, labels, sorted(VALID_LABELS_COMPOSITE), filter_window=24)
+    model["period"] = 30
+    rep = validate_frames(df_window, df_ext, eval_start, model, incumbent_period=48,
+                          lookback=110, target="volatility", seed=0, horizons=(4,))
+    assert rep["model_period"] == 30
+    assert rep["incumbent_period"] == 48
+    assert rep["model"]["period"] == 30
+    assert rep["handrule"]["period"] == 48

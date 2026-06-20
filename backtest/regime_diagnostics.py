@@ -12,6 +12,11 @@ for _p in (_ROOT, os.path.join(_ROOT, "shared_tools")):
 import numpy as np
 from regime_stats import kruskal_h, benjamini_hochberg
 
+# Composite period used for the hand-rule incumbent (run_window with model=None) and as the
+# fallback when a fitted model omits "period". Single source so downstream gate/re-validation
+# harnesses (regime_calibrate, regime_bounded_window_validate #1082) stay aligned with it.
+DEFAULT_PERIOD = 48
+
 
 def forward_returns(close: np.ndarray, horizon: int) -> np.ndarray:
     close = np.asarray(close, dtype=float)
@@ -245,7 +250,7 @@ def run_window(symbol, timeframe, window, *, model=None, horizons=(1, 4, 12), se
     from eval_windows import WINDOWS, PLATFORM
     start, end = WINDOWS[window]
     df = load_cached_data(symbol, timeframe, exchange_id=PLATFORM, start_date=start, end_date=end)
-    period = int(model["period"]) if model and "period" in model else 48
+    period = int(model["period"]) if model and "period" in model else DEFAULT_PERIOD
     th = dict(_DEFAULT_COMPOSITE_THRESHOLDS)
     feats_df = composite_feature_matrix(df, period, th)
     features = feats_df.to_numpy()
