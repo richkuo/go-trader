@@ -14,8 +14,9 @@ Args:
 
 Stdout (always JSON):
     {
-        "by_oid": {"<oid>": {"fee": float, "closed_pnl": float, "count": int,
-                             "qty": float, "px": float}, ...},
+        "by_oid": {"<oid>": {"coin": str, "fee": float, "closed_pnl": float,
+                             "count": int, "qty": float, "px": float,
+                             "first_time_ms": int, "last_time_ms": int}, ...},
         "fill_count": int,
         "page_count": int,
         "account_address": "0x...",
@@ -54,6 +55,12 @@ def _safe_float(v):
         return float(v)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _safe_coin(v):
+    if not isinstance(v, str):
+        return ""
+    return v.strip().upper()
 
 
 def _emit(payload: dict, exit_code: int = 0):
@@ -161,13 +168,28 @@ def main():
             if oid > 0:
                 key = str(oid)
                 entry = by_oid.get(key)
+                coin = _safe_coin(f.get("coin"))
                 if entry is None:
-                    entry = {"fee": 0.0, "closed_pnl": 0.0, "count": 0,
-                             "qty": 0.0, "_px_num": 0.0}
+                    entry = {"coin": coin, "fee": 0.0, "closed_pnl": 0.0, "count": 0,
+                             "qty": 0.0, "_px_num": 0.0,
+                             "first_time_ms": ts if ts > 0 else 0,
+                             "last_time_ms": ts if ts > 0 else 0}
                     by_oid[key] = entry
+                elif coin and entry.get("coin") and coin != entry.get("coin"):
+                    # OIDs should be per-order/per-coin. If the indexer ever
+                    # emits contradictory coin metadata, blank it so downstream
+                    # coin+qty matchers fail closed instead of guessing.
+                    entry["coin"] = ""
+                elif coin and not entry.get("coin"):
+                    entry["coin"] = coin
                 entry["fee"] += fee
                 entry["closed_pnl"] += closed_pnl
                 entry["count"] += 1
+                if ts > 0:
+                    first = _safe_int(entry.get("first_time_ms"))
+                    last = _safe_int(entry.get("last_time_ms"))
+                    entry["first_time_ms"] = ts if first <= 0 else min(first, ts)
+                    entry["last_time_ms"] = max(last, ts)
                 # Size-weighted average fill price across partial fills of the
                 # same OID (#954 `backfill trade-ledger` rewrites trades.price
                 # from this). Finalized into "px" before emit.

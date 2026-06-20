@@ -77,8 +77,8 @@ class TestSinglePage:
     def test_aggregates_per_oid(self):
         # Two fills, different OIDs.
         page = [
-            {"oid": 111, "time": 1000, "fee": "0.40", "closedPnl": "0", "tid": 1},
-            {"oid": 222, "time": 1100, "fee": "0.30", "closedPnl": "9.7", "tid": 2},
+            {"oid": 111, "coin": "ETH", "time": 1000, "fee": "0.40", "closedPnl": "0", "tid": 1},
+            {"oid": 222, "coin": "BTC", "time": 1100, "fee": "0.30", "closedPnl": "9.7", "tid": 2},
         ]
         # Adapter returns the page once, then [] to terminate the loop.
         out, code = _run_script([page, []], ["--since-ms=500"])
@@ -89,12 +89,15 @@ class TestSinglePage:
         assert out["by_oid"]["222"]["fee"] == pytest.approx(0.30)
         assert out["by_oid"]["222"]["closed_pnl"] == pytest.approx(9.7)
         assert out["by_oid"]["111"]["count"] == 1
+        assert out["by_oid"]["111"]["coin"] == "ETH"
+        assert out["by_oid"]["111"]["first_time_ms"] == 1000
+        assert out["by_oid"]["222"]["last_time_ms"] == 1100
 
     def test_partial_fills_same_oid_summed(self):
         # One OID, two partial-fill rows — script must sum fee + closed_pnl.
         page = [
-            {"oid": 111, "time": 1000, "fee": "0.20", "closedPnl": "5.0", "tid": 1},
-            {"oid": 111, "time": 1000, "fee": "0.20", "closedPnl": "4.7", "tid": 2},
+            {"oid": 111, "coin": "eth", "time": 1000, "fee": "0.20", "closedPnl": "5.0", "tid": 1},
+            {"oid": 111, "coin": "ETH", "time": 1200, "fee": "0.20", "closedPnl": "4.7", "tid": 2},
         ]
         out, code = _run_script([page, []], ["--since-ms=500"])
         assert code == 0, out
@@ -102,6 +105,18 @@ class TestSinglePage:
         assert entry["fee"] == pytest.approx(0.40)
         assert entry["closed_pnl"] == pytest.approx(9.7)
         assert entry["count"] == 2
+        assert entry["coin"] == "ETH"
+        assert entry["first_time_ms"] == 1000
+        assert entry["last_time_ms"] == 1200
+
+    def test_conflicting_coin_metadata_fails_closed(self):
+        page = [
+            {"oid": 111, "coin": "ETH", "time": 1000, "fee": "0.20", "closedPnl": "5.0", "tid": 1},
+            {"oid": 111, "coin": "BTC", "time": 1200, "fee": "0.20", "closedPnl": "4.7", "tid": 2},
+        ]
+        out, code = _run_script([page, []], ["--since-ms=500"])
+        assert code == 0, out
+        assert out["by_oid"]["111"]["coin"] == ""
 
 
 class TestMultiPage:

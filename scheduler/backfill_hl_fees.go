@@ -23,6 +23,11 @@ import (
 // backfill recomputes realized PnL locally from the stored pre-fee PnL
 // and the real exchange fee (see planTradeRewrites in this file).
 type HLFillSummary struct {
+	// Coin / time metadata lets no-OID repair paths fail closed unless a
+	// userFills row can be matched by identity, size, and timing (#1091).
+	Coin           string  `json:"coin"`
+	FirstTimeMS    int64   `json:"first_time_ms"`
+	LastTimeMS     int64   `json:"last_time_ms"`
 	Fee            float64 `json:"fee"`
 	ClosedPnLGross float64 `json:"closed_pnl"`
 	Count          int     `json:"count"`
@@ -722,12 +727,16 @@ const hlUserFillsFetchTimeout = 5 * time.Minute
 // runFetchHLUserFills spawns shared_scripts/fetch_hl_user_fills.py with
 // hlUserFillsFetchTimeout via the shared Python runner (semaphore + .venv).
 func runFetchHLUserFills(since time.Time) (*HLUserFillsResult, error) {
+	return runFetchHLUserFillsWithTimeout(since, hlUserFillsFetchTimeout)
+}
+
+func runFetchHLUserFillsWithTimeout(since time.Time, timeout time.Duration) (*HLUserFillsResult, error) {
 	script := "shared_scripts/fetch_hl_user_fills.py"
 	args := []string{
 		fmt.Sprintf("--since-ms=%d", since.UnixMilli()),
 	}
 
-	stdout, stderr, runErr := runPythonWithTimeout(context.Background(), script, args, nil, hlUserFillsFetchTimeout)
+	stdout, stderr, runErr := runPythonWithTimeout(context.Background(), script, args, nil, timeout)
 	if runErr != nil {
 		var toe *pythonScriptTimeoutError
 		if errors.As(runErr, &toe) {
