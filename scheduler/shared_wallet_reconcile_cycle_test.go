@@ -539,10 +539,13 @@ func TestSharedWalletDriftTracker_RecoveryCountSurvivesChurn(t *testing.T) {
 	}
 }
 
-// #1088: the stdout [WARN] log must NOT fire every reconcile cycle. It logs at
-// the onset of an over-tolerance episode, on any cycle that fires an operator
-// alert, and otherwise at most once per sharedWalletDriftLogInterval — even
-// though every cycle is over tolerance and Record runs every cycle.
+// #1088: the stdout [WARN] log must NOT fire every reconcile cycle. For a
+// STABLE drift it logs at the onset of an over-tolerance episode, on any cycle
+// that fires an operator alert, and otherwise at most once per the (hourly)
+// sharedWalletDriftLogInterval heartbeat — so intra-hour cycles stay silent even
+// though every cycle is over tolerance and Record runs every cycle. This is the
+// 620-lines-in-6h spam the issue reported; a 1-minute interval only halved it,
+// so the heartbeat is aligned to the hourly notification cadence.
 func TestSharedWalletDriftTracker_LogThrottledPerInterval(t *testing.T) {
 	tr := &SharedWalletDriftTracker{}
 	now := time.Now().UTC()
@@ -554,18 +557,48 @@ func TestSharedWalletDriftTracker_LogThrottledPerInterval(t *testing.T) {
 	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(time.Second)); !notify || !log {
 		t.Fatalf("alert cycle: want notify=true log=true, got notify=%v log=%v", notify, log)
 	}
-	// Cycle 3 (+2s): stable drift, throttled alert AND within the log interval
-	// of the last log → MUST NOT log (this is the spam the issue reported).
+	// Cycle 3 (+2s): stable drift, throttled alert AND within the heartbeat
+	// interval of the last log → MUST NOT log (this is the spam the issue
+	// reported).
 	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(2*time.Second)); notify || log {
 		t.Fatalf("intra-interval cycle: want notify=false log=false, got notify=%v log=%v", notify, log)
 	}
-	// A further within-interval cycle is still suppressed.
-	if _, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(3*time.Second)); log {
-		t.Fatal("second intra-interval cycle must stay unlogged")
+	// A cycle well into the hour but still under the heartbeat (and under the
+	// hourly re-alert) stays silent — no spam from a stable drift.
+	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(30*time.Minute)); notify || log {
+		t.Fatalf("mid-hour stable cycle: want notify=false log=false, got notify=%v log=%v", notify, log)
 	}
-	// Once the log interval elapses since the last log, log again (no alert).
-	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(time.Second+sharedWalletDriftLogInterval)); notify || !log {
-		t.Fatalf("post-interval cycle: want notify=false log=true, got notify=%v log=%v", notify, log)
+	// The next log for a stable drift coincides with the hourly re-alert (which
+	// forces a log), one hour after the last notification (the +1s alert).
+	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(time.Second+time.Hour)); !notify || !log {
+		t.Fatalf("hourly re-alert cycle: want notify=true log=true, got notify=%v log=%v", notify, log)
+	}
+}
+
+// #1088: a WORSENING drift must log immediately — even within the heartbeat
+// interval and even when no alert fires — so the operator keeps per-move
+// visibility of a growing sub-threshold drift (the explicit reason #1088
+// throttled rather than gated the log behind shouldNotify). Driven here through
+// a churning orphan set so each coin only ever reaches streak 1: the wallet
+// stays in the confirmation window (no alert can fire), isolating the
+// materially-changed LOG gate from the notification path.
+func TestSharedWalletDriftTracker_WorseningDriftLogsWithinInterval(t *testing.T) {
+	tr := &SharedWalletDriftTracker{}
+	now := time.Now().UTC()
+	// Cycle 1: onset, orphan BTC. Confirmation window (no alert) but logs once.
+	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now); notify || !log {
+		t.Fatalf("onset cycle: want notify=false log=true, got notify=%v log=%v", notify, log)
+	}
+	// Cycle 2 (+1s): orphan churns to ETH (BTC drops out) → still streak 1, no
+	// alert; drift unchanged and within the heartbeat → MUST NOT log.
+	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"ETH"}, now.Add(time.Second)); notify || log {
+		t.Fatalf("stable churn cycle: want notify=false log=false, got notify=%v log=%v", notify, log)
+	}
+	// Cycle 3 (+2s): orphan churns to SOL (still no alert), but the drift jumps
+	// from $5 to $20 (a >10% material move) → MUST log immediately despite being
+	// far inside the hourly heartbeat and despite no alert firing.
+	if notify, log, _ := tr.Record("hyperliquid/0xabc", 20.00, []string{"SOL"}, now.Add(2*time.Second)); notify || !log {
+		t.Fatalf("worsening cycle: want notify=false log=true, got notify=%v log=%v", notify, log)
 	}
 }
 
