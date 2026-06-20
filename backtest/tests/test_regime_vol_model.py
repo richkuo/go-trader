@@ -247,3 +247,35 @@ def test_model_satisfies_bounded_window_and_forward_filter_contract():
     assert prov["verified"] is True
     assert prov["overlap_resolvable"] is True   # both windows in WINDOWS -> date-range path engaged
     assert prov["in_sample"] is False           # is/oos disjoint -> held-out, promotable
+
+
+def test_non_degeneracy_flags_constant_stream():
+    from regime_vol_model import NonDegeneracyThresholds, non_degeneracy
+    thr = NonDegeneracyThresholds(min_active_labels=2, max_occupancy=0.8,
+                                  min_transition_rate=0.05)
+    constant = np.array(["ranging_quiet"] * 500, dtype=object)
+    rep = non_degeneracy(constant, thr)
+    assert rep["ok"] is False
+    assert rep["active_labels"] == 1
+    assert "min_active_labels" in " ".join(rep["reasons"])
+
+
+def test_non_degeneracy_passes_healthy_stream():
+    from regime_vol_model import NonDegeneracyThresholds, non_degeneracy
+    thr = NonDegeneracyThresholds(min_active_labels=2, max_occupancy=0.9,
+                                  min_transition_rate=0.01)
+    rng = np.random.default_rng(0)
+    stream = rng.choice(["ranging_quiet", "trending_up_clean", "ranging_volatile"], size=600)
+    rep = non_degeneracy(stream.astype(object), thr)
+    assert rep["ok"] is True and rep["reasons"] == []
+
+
+def test_derive_thresholds_is_looser_than_incumbent_worst_window():
+    from regime_vol_model import derive_thresholds, non_degeneracy
+    a = np.array((["x", "y", "z"] * 200), dtype=object)
+    b = np.array((["x"] * 150 + ["y"] * 50) * 2, dtype=object)
+    thr = derive_thresholds([a, b])
+    assert non_degeneracy(a, thr)["ok"] is True
+    assert non_degeneracy(b, thr)["ok"] is True
+    occ_b = max(c["pct"] for c in __import__("regime_diagnostics").coverage(b).values())
+    assert thr.max_occupancy >= occ_b

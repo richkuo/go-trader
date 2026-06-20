@@ -240,3 +240,95 @@ def fit_unsupervised(features, *, family, k, filter_window, period=48,
         "filter_window": int(filter_window), "period": int(period),
         "fitted_on": dict(fitted_on or {}), "mapping": mapping,
     }
+
+
+from dataclasses import dataclass
+
+
+@dataclass
+class NonDegeneracyThresholds:
+    min_active_labels: int
+    max_occupancy: float
+    min_transition_rate: float
+
+
+def _stream_stats(labels):
+    from regime_diagnostics import coverage, stability
+    cov = coverage(labels)
+    active = len(cov)
+    max_occ = max((c["pct"] for c in cov.values()), default=0.0)
+    tr = stability(labels)["transition_rate"]
+    return active, float(max_occ), float(tr)
+
+
+def non_degeneracy(labels, thresholds):
+    labels = np.asarray(labels, dtype=object)
+    active, max_occ, tr = _stream_stats(labels)
+    reasons = []
+    if active < thresholds.min_active_labels:
+        reasons.append(f"min_active_labels: {active} < {thresholds.min_active_labels}")
+    if max_occ > thresholds.max_occupancy:
+        reasons.append(f"max_occupancy: {max_occ:.3f} > {thresholds.max_occupancy:.3f}")
+    if tr < thresholds.min_transition_rate:
+        reasons.append(f"min_transition_rate: {tr:.4f} < {thresholds.min_transition_rate:.4f}")
+    return {"active_labels": active, "max_occupancy": max_occ, "transition_rate": tr,
+            "ok": not reasons, "reasons": reasons}
+
+
+def derive_thresholds(handrule_streams, *, active_margin=1, occupancy_margin=0.05,
+                      rate_margin=0.5):
+    """Lock non-degeneracy cutoffs from the incumbent's WORST window, loosened by a fixed
+    margin (anti-gaming). Must be called before scoring any candidate."""
+    stats = [_stream_stats(np.asarray(s, dtype=object)) for s in handrule_streams]
+    worst_active = min(a for a, _, _ in stats)
+    worst_occ = max(o for _, o, _ in stats)
+    worst_tr = min(t for _, _, t in stats)
+    return NonDegeneracyThresholds(
+        min_active_labels=max(1, worst_active - active_margin),
+        max_occupancy=min(1.0, worst_occ + occupancy_margin),
+        min_transition_rate=max(0.0, worst_tr * rate_margin),
+    )
+
+
+def build_parser():
+    import argparse
+    from eval_windows import WINDOWS
+    p = argparse.ArgumentParser(description="Fit one unsupervised vol-regime model (#1080)")
+    p.add_argument("--symbol", default="BTC/USDT")
+    p.add_argument("--timeframe", default="1h")
+    p.add_argument("--window", default="is", help=f"known: {', '.join(WINDOWS)}")
+    p.add_argument("--family", default="hmm", choices=sorted(FITTERS))
+    p.add_argument("--k", type=int, default=4)
+    p.add_argument("--period", type=int, default=48)
+    p.add_argument("--filter-window", type=int, default=64)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--out", default=None, help="write fitted model JSON here")
+    return p
+
+
+def main(argv=None):
+    import json
+    from regime import composite_feature_matrix, _DEFAULT_COMPOSITE_THRESHOLDS
+    from data_fetcher import load_cached_data
+    from eval_windows import WINDOWS, PLATFORM
+    args = build_parser().parse_args(argv)
+    start, end = WINDOWS[args.window]
+    df = load_cached_data(args.symbol, args.timeframe, exchange_id=PLATFORM,
+                          start_date=start, end_date=end)
+    th = dict(_DEFAULT_COMPOSITE_THRESHOLDS)
+    feats = composite_feature_matrix(df, args.period, th).to_numpy()
+    model = fit_unsupervised(feats, family=args.family, k=args.k,
+                             filter_window=args.filter_window, period=args.period,
+                             thresholds=th, seed=args.seed,
+                             fitted_on={"symbol": args.symbol, "timeframe": args.timeframe,
+                                        "window": args.window})
+    text = json.dumps({"model": model}, indent=2, default=float)
+    if args.out:
+        with open(args.out, "w") as fh:
+            fh.write(text)
+    print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
