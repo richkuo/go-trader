@@ -392,6 +392,213 @@ func TestHyperliquidKillSwitchClose_AlreadyFlatRecoversRecentUserFill_LowerKCoin
 	}
 }
 
+// End-to-end shared-coin (>=2 peers) recovery of an already-flat kill-switch fill
+// for a lowercase-k HL perp (kPEPE etc). This composes the raw-casing recovery
+// (planKillSwitchClose + recoverHyperliquidAlreadyFlatFills) with the virtual-qty
+// split (hyperliquidKillSwitchFillShare via forceCloseKillSwitchPositions).
+// Covers the prior review's "Must survive (3)" for the combined path.
+func TestHyperliquidKillSwitchClose_AlreadyFlatSharedLowKCoinRecoversAndSplits(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Leverage: 5, CapitalPct: 2.0 / 3.0,
+			Args: []string{"sma", "kPEPE", "1h", "--mode=live"}},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Leverage: 5, CapitalPct: 1.0 / 3.0,
+			Args: []string{"ema", "kPEPE", "1h", "--mode=live"}},
+		{ID: "hl-zero", Platform: "hyperliquid", Type: "perps", Leverage: 5,
+			Args: []string{"sma", "kPEPE", "1h", "--mode=live"}},
+	}
+	// On-chain view is the wallet aggregate (shared-coin). Recovery matches on this total.
+	positions := []HLPosition{{Coin: "kPEPE", Size: 1.5, EntryPrice: 0.00012}}
+	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	fetcher, _ := stubHLStateFetcher(nil, nil)
+	var recoverCalls int
+	in := defaultHLInputs("0xaddr", true, positions, hlLive,
+		"portfolio drawdown 25.0% exceeds limit 20.0%",
+		time.Second, closer, fetcher)
+	const recOID = "77777"
+	const recQty = 1.5
+	const recPx = 0.000119
+	const recFee = 0.003 // 0.002 / 0.001 split
+	in.HLNoFillRecoverer = func(since time.Time) (*HLUserFillsResult, error) {
+		recoverCalls++
+		return &HLUserFillsResult{
+			ByOID: map[string]HLFillSummary{
+				recOID: {
+					Coin:           "kPEPE",
+					FirstTimeMS:    time.Now().Add(-2 * time.Second).UnixMilli(),
+					LastTimeMS:     time.Now().Add(-time.Second).UnixMilli(),
+					Fee:            recFee,
+					ClosedPnLGross: -0.012,
+					Count:          1,
+					Qty:            recQty,
+					Px:             recPx,
+				},
+			},
+		}, nil
+	}
+
+	plan := planKillSwitchClose(in)
+	if !plan.OnChainConfirmedFlat {
+		t.Fatalf("expected confirmed-flat plan, got %+v", plan)
+	}
+	if recoverCalls != 1 {
+		t.Fatalf("recoverCalls = %d, want 1", recoverCalls)
+	}
+	fill, ok := plan.CloseReport.Fills["kPEPE"]
+	if !ok {
+		t.Fatalf("missing recovered fill under raw 'kPEPE' key: %+v", plan.CloseReport.Fills)
+	}
+	if _, ok := plan.CloseReport.Fills["KPEPE"]; ok {
+		t.Fatalf("must not also write normalized uppercase key on shared low-k: %+v", plan.CloseReport.Fills)
+	}
+	if fill.OID != 77777 || math.Abs(fill.TotalSz-recQty) > 1e-9 || math.Abs(fill.AvgPx-recPx) > 1e-9 || math.Abs(fill.Fee-recFee) > 1e-9 {
+		t.Fatalf("recovered fill = %+v, want oid %s qty %.4f px %.6f fee %.6f", fill, recOID, recQty, recPx, recFee)
+	}
+	logs := strings.Join(plan.LogLines, "\n")
+	if !strings.Contains(logs, "recovered already-flat fill for kPEPE") {
+		t.Fatalf("missing recovery log with raw coin key: %v", plan.LogLines)
+	}
+
+	// Pre-close virtual states. Snapshot from these; on-chain positions above is the sum.
+	stateA := &StrategyState{
+		ID: "hl-a", Type: "perps", Platform: "hyperliquid", Cash: 10000,
+		Positions: map[string]*Position{
+			"kPEPE": {Symbol: "kPEPE", Quantity: 1.0, AvgCost: 0.00012, Side: "long", Multiplier: 1, Leverage: 5},
+		},
+	}
+	stateB := &StrategyState{
+		ID: "hl-b", Type: "perps", Platform: "hyperliquid", Cash: 5000,
+		Positions: map[string]*Position{
+			"kPEPE": {Symbol: "kPEPE", Quantity: 0.5, AvgCost: 0.00012, Side: "long", Multiplier: 1, Leverage: 5},
+		},
+	}
+	zeroState := &StrategyState{
+		ID:        "hl-zero",
+		Type:      "perps",
+		Platform:  "hyperliquid",
+		Cash:      1000,
+		Positions: map[string]*Position{ /* zero virtual on kPEPE */ },
+	}
+	hlVirtualQty := snapshotHyperliquidVirtualQuantities(map[string]*StrategyState{
+		"hl-a": stateA, "hl-b": stateB, "hl-zero": zeroState,
+	}, hlLive)
+
+	// Mark is different on purpose; happy recovery path must use the fill px/fee/oid, not mark.
+	prices := map[string]float64{"kPEPE": 0.00005}
+	forceCloseKillSwitchPositions(stateA, hlLive[0], prices, plan.CloseReport.Fills, hlLive, hlVirtualQty, nil)
+	forceCloseKillSwitchPositions(stateB, hlLive[1], prices, plan.CloseReport.Fills, hlLive, hlVirtualQty, nil)
+	forceCloseKillSwitchPositions(zeroState, hlLive[2], prices, plan.CloseReport.Fills, hlLive, hlVirtualQty, nil)
+
+	// A (virtual 1.0/1.5)
+	if len(stateA.TradeHistory) != 1 {
+		t.Fatalf("A: expected 1 trade from recovered fill, got %d", len(stateA.TradeHistory))
+	}
+	ta := stateA.TradeHistory[0]
+	if ta.ExchangeOrderID != recOID || ta.FeeSource != FeeSourceUserFills || !ta.PnLGross {
+		t.Fatalf("A trade metadata = oid %q src %q gross %v, want %s/UserFills/true", ta.ExchangeOrderID, ta.FeeSource, ta.PnLGross, recOID)
+	}
+	if math.Abs(ta.Quantity-1.0) > 1e-9 || math.Abs(ta.Price-recPx) > 1e-12 || math.Abs(ta.ExchangeFee-0.002) > 1e-12 {
+		t.Fatalf("A qty/px/fee = %.6f/%.6f/%.6f, want 1.0/%.6f/0.002", ta.Quantity, ta.Price, ta.ExchangeFee, recPx)
+	}
+
+	// B (0.5/1.5)
+	if len(stateB.TradeHistory) != 1 {
+		t.Fatalf("B: expected 1 trade from recovered fill, got %d", len(stateB.TradeHistory))
+	}
+	tb := stateB.TradeHistory[0]
+	if tb.ExchangeOrderID != recOID || tb.FeeSource != FeeSourceUserFills || !tb.PnLGross {
+		t.Fatalf("B trade metadata = oid %q src %q gross %v, want %s/UserFills/true", tb.ExchangeOrderID, tb.FeeSource, tb.PnLGross, recOID)
+	}
+	if math.Abs(tb.Quantity-0.5) > 1e-9 || math.Abs(tb.Price-recPx) > 1e-12 || math.Abs(tb.ExchangeFee-0.001) > 1e-12 {
+		t.Fatalf("B qty/px/fee = %.6f/%.6f/%.6f, want 0.5/%.6f/0.001", tb.Quantity, tb.Price, tb.ExchangeFee, recPx)
+	}
+
+	// Shares sum to the single recovered fill exactly.
+	if math.Abs((ta.Quantity+tb.Quantity)-recQty) > 1e-9 || math.Abs((ta.ExchangeFee+tb.ExchangeFee)-recFee) > 1e-12 {
+		t.Fatalf("peer shares sum to q=%.6f f=%.6f; want %.6f / %.6f", ta.Quantity+tb.Quantity, ta.ExchangeFee+tb.ExchangeFee, recQty, recFee)
+	}
+
+	// Zero-virtual peer receives no share and books no kill-switch fill trade.
+	if len(zeroState.TradeHistory) != 0 {
+		t.Fatalf("zero peer must not book a fill share trade, got %d", len(zeroState.TradeHistory))
+	}
+}
+
+// Ambiguous userFills for a shared lowercase-k coin must leave no fill in the report
+// and cause all peers to fall back (no peer books against any of the candidate OIDs).
+func TestHyperliquidKillSwitchClose_AlreadyFlatSharedLowKCoinAmbiguousFallsBack(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Leverage: 5,
+			Args: []string{"sma", "kPEPE", "1h", "--mode=live"}},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Leverage: 5,
+			Args: []string{"ema", "kPEPE", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "kPEPE", Size: 2.0, EntryPrice: 0.00011}}
+	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	fetcher, _ := stubHLStateFetcher(nil, nil)
+	in := defaultHLInputs("0xaddr", true, positions, hlLive,
+		"portfolio drawdown 25.0% exceeds limit 20.0%",
+		time.Second, closer, fetcher)
+	in.HLNoFillRecoverer = func(since time.Time) (*HLUserFillsResult, error) {
+		return &HLUserFillsResult{
+			ByOID: map[string]HLFillSummary{
+				"111": {Coin: "kPEPE", Fee: 0.1, Qty: 2.0, Px: 0.00010, LastTimeMS: time.Now().UnixMilli()},
+				"222": {Coin: "kPEPE", Fee: 0.2, Qty: 2.0, Px: 0.00009, LastTimeMS: time.Now().UnixMilli()},
+			},
+		}, nil
+	}
+
+	plan := planKillSwitchClose(in)
+	if !plan.OnChainConfirmedFlat {
+		t.Fatalf("expected confirmed-flat plan, got %+v", plan)
+	}
+	if _, ok := plan.CloseReport.Fills["kPEPE"]; ok {
+		t.Fatalf("ambiguous must not inject a fill under raw key: %+v", plan.CloseReport.Fills)
+	}
+	if _, ok := plan.CloseReport.Fills["KPEPE"]; ok {
+		t.Fatalf("ambiguous must not inject under normalized key either")
+	}
+	if !strings.Contains(strings.Join(plan.LogLines, "\n"), "multiple userFills candidates") {
+		t.Fatalf("missing ambiguity warning: %v", plan.LogLines)
+	}
+
+	// Apply to peers (with mark different from both candidates). They must fall back
+	// to model-only (no trade carries a guessed ambiguous OID).
+	stateA := &StrategyState{
+		ID: "hl-a", Type: "perps", Platform: "hyperliquid", Cash: 1000,
+		Positions: map[string]*Position{"kPEPE": {Symbol: "kPEPE", Quantity: 1.2, AvgCost: 0.00011, Side: "long", Multiplier: 1, Leverage: 5}},
+	}
+	stateB := &StrategyState{
+		ID: "hl-b", Type: "perps", Platform: "hyperliquid", Cash: 1000,
+		Positions: map[string]*Position{"kPEPE": {Symbol: "kPEPE", Quantity: 0.8, AvgCost: 0.00011, Side: "long", Multiplier: 1, Leverage: 5}},
+	}
+	hlVirtual := snapshotHyperliquidVirtualQuantities(map[string]*StrategyState{"hl-a": stateA, "hl-b": stateB}, hlLive)
+	mark := 0.00005
+	forceCloseKillSwitchPositions(stateA, hlLive[0], map[string]float64{"kPEPE": mark}, plan.CloseReport.Fills, hlLive, hlVirtual, nil)
+	forceCloseKillSwitchPositions(stateB, hlLive[1], map[string]float64{"kPEPE": mark}, plan.CloseReport.Fills, hlLive, hlVirtual, nil)
+
+	for _, st := range []*StrategyState{stateA, stateB} {
+		for _, tr := range st.TradeHistory {
+			if tr.ExchangeOrderID == "111" || tr.ExchangeOrderID == "222" {
+				t.Fatalf("peer booked against ambiguous OID %s (should have fallen back)", tr.ExchangeOrderID)
+			}
+			// Generic fallback books at the passed mark with model-only source, not a guessed fill.
+			if tr.Price == 0.00010 || tr.Price == 0.00009 {
+				t.Fatalf("peer booked at an ambiguous fill px %.6f instead of mark", tr.Price)
+			}
+		}
+	}
+}
+
 func TestHyperliquidKillSwitchClose_AlreadyFlatAmbiguousUserFillFallsBack(t *testing.T) {
 	hlLive := []StrategyConfig{
 		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
