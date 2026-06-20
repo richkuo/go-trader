@@ -8,6 +8,7 @@ from directional_certification import (
     load_certifications,
     is_directional_certified,
     backtest_classifier,
+    config_directional_classifier,
 )
 
 
@@ -62,6 +63,45 @@ def test_is_directional_certified_active_expired_never(tmp_path):
 def test_backtest_classifier():
     assert backtest_classifier(None) == "adx"
     assert backtest_classifier({"windows": {}}) == "composite"
+
+
+# Review finding 3: the backtest cert key must use the LIVE directional-window
+# classifier, not "composite if any windows spec". Otherwise a config whose
+# directional window is ADX but which carries a windows spec keys live on
+# (asset,tf,adx) and backtest on (asset,tf,composite) → parity hole.
+def test_config_directional_classifier_matches_live_resolution():
+    # No regime.windows → legacy single-lookback ADX.
+    assert config_directional_classifier({}, {}) == "adx"
+    assert config_directional_classifier({"windows": {}}, {}) == "adx"
+
+    windows = {
+        "short": {"classifier": "adx", "period": 14},
+        "medium": {"classifier": "composite", "period": 48},
+    }
+    rc = {"enabled": True, "windows": windows}
+
+    # Directional window names an ADX window (the divergence case) → adx, even
+    # though a windows spec is present (backtest_classifier would wrongly say
+    # composite here).
+    sc_adx = {"regime_directional_window": "short"}
+    assert config_directional_classifier(rc, sc_adx) == "adx"
+    assert backtest_classifier(windows) == "composite"  # the bug this fixes
+
+    # Names a composite window → composite.
+    sc_comp = {"regime_directional_window": "medium"}
+    assert config_directional_classifier(rc, sc_comp) == "composite"
+
+    # Unset/"default" → primary window: "medium" preferred when present.
+    assert config_directional_classifier(rc, {}) == "composite"
+    assert config_directional_classifier(rc, {"regime_directional_window": "default"}) == "composite"
+
+    # Unset, no "medium" → first sorted window name.
+    rc2 = {"windows": {"b_win": {"classifier": "composite"}, "a_win": {"classifier": "adx"}}}
+    assert config_directional_classifier(rc2, {}) == "adx"  # a_win sorts first
+
+    # A window with a blank classifier defaults to adx (effectiveClassifier).
+    rc3 = {"windows": {"medium": {"period": 48}}}
+    assert config_directional_classifier(rc3, {}) == "adx"
 
 
 def test_repo_artifact_is_empty_and_valid():

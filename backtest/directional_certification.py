@@ -115,8 +115,40 @@ def is_directional_certified(
 
 
 def backtest_classifier(regime_windows_spec: Optional[dict]) -> str:
-    """The regime classifier the BACKTESTER actually applies: composite when a
-    regime_windows_spec is configured (#1058), else the legacy single-lookback
-    ADX. Certification is checked against this so the gate matches what the
-    backtest computes."""
+    """The regime classifier the BACKTESTER applies for an ad-hoc (by-name) run:
+    composite when a regime_windows_spec is configured (#1058), else legacy ADX.
+    For a --config run prefer config_directional_classifier, which matches the
+    LIVE directional-window classifier exactly (#1085 parity)."""
     return "composite" if regime_windows_spec else "adx"
+
+
+def _normalize_window_key(name: str) -> str:
+    return (name or "").strip().lower()
+
+
+def config_directional_classifier(regime_cfg: Optional[dict],
+                                  sc: Optional[dict]) -> str:
+    """Resolve the DIRECTIONAL window's classifier from a live config exactly as
+    Go does (regimeClassifierForWindow(rc, resolveStrategyRegimeWindow(sc,
+    "directional", rc))), so the backtest certification KEY matches the live key
+    for multi-window directional configs (#1085 parity). Mirrors:
+      - no regime.windows  -> "adx" (legacy single-lookback)
+      - regime_directional_window names a window -> that window's classifier
+      - unset/"default"     -> primary window ("medium" if present, else first
+                               sorted name)
+      - a window's blank classifier defaults to "adx" (effectiveClassifier)."""
+    windows = (regime_cfg or {}).get("windows") or {}
+    if not windows:
+        return "adx"
+    key = _normalize_window_key((sc or {}).get("regime_directional_window"))
+    if key in ("", "default"):
+        if "medium" in windows:
+            key = "medium"
+        else:
+            names = sorted(_normalize_window_key(n) for n in windows)
+            key = names[0] if names else ""
+    for name, spec in windows.items():
+        if _normalize_window_key(name) == key:
+            c = str((spec or {}).get("classifier") or "").strip().lower()
+            return c or "adx"
+    return "adx"

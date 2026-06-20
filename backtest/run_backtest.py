@@ -18,6 +18,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 
 from atr import ensure_atr_indicator
 from data_fetcher import load_cached_data
+from directional_certification import (
+    config_directional_classifier,
+    load_certifications,
+    is_directional_certified,
+    backtest_classifier,
+)
 
 # Strategies whose signals read a per-bar `funding_rate` column. The column is
 # attached after the OHLCV load (Hyperliquid hourly funding, cached in SQLite,
@@ -567,6 +573,20 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"parity path. Gate on the default lookback (remove "
                 f"regime_gate_window) or drop allowed_regimes for backtesting."
             )
+        # #1085 parity: resolve the certification verdict using the SAME
+        # directional-window classifier the live daemon uses (not "composite if
+        # any windows spec"), so a multi-window directional config keys on the
+        # identical (asset,timeframe,classifier) cell. The verdict is a Backtester
+        # param, so the whole returned dict still spreads cleanly into Backtester.
+        cfg_args = sc.get("args") or []
+        cert_symbol = str(cfg_args[1]) if len(cfg_args) > 1 else ""
+        cert_timeframe = str(cfg_args[2]) if len(cfg_args) > 2 else ""
+        regime_directional_certified = False
+        if regime_directional_policy and cert_symbol and cert_timeframe:
+            regime_directional_certified = is_directional_certified(
+                load_certifications(), cert_symbol, cert_timeframe,
+                config_directional_classifier(regime_cfg, sc),
+            )
         return {
             "open_strategy": {
                 "name": open_name,
@@ -584,6 +604,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "direction": direction,
             "invert_signal": invert_signal,
             "regime_directional_policy": regime_directional_policy,
+            "regime_directional_certified": regime_directional_certified,
             "regime_enabled": bool(regime_cfg.get("enabled")),
             "regime_period": int(regime_cfg.get("period", 14) or 14),
             "regime_adx_threshold": float(regime_cfg.get("adx_threshold", 20.0) or 20.0),
@@ -626,6 +647,7 @@ def run_single_backtest(
     direction: Optional[str] = None,
     invert_signal: bool = False,
     regime_directional_policy: Optional[dict] = None,
+    regime_directional_certified: Optional[bool] = None,
     directional_cert_path: Optional[str] = None,
     profile_allocation: Optional[dict] = None,
 ) -> Optional[dict]:
@@ -706,11 +728,10 @@ def run_single_backtest(
     # per-(asset,timeframe,classifier) certification passes that the live daemon
     # checks; otherwise default-off (base direction). Classifier = the one the
     # backtester actually applies (composite if windows_spec, else ADX).
-    regime_directional_certified = False
-    if regime_directional_policy:
-        from directional_certification import (
-            load_certifications, is_directional_certified, backtest_classifier,
-        )
+    # #1085: when the caller (--config via load_strategy_config) already resolved
+    # the verdict with the LIVE directional-window classifier, honor it. For a
+    # by-name run, resolve here against the backtester's modeled classifier.
+    if regime_directional_policy and regime_directional_certified is None:
         certs = load_certifications(directional_cert_path)
         clf = backtest_classifier(regime_windows_spec)
         regime_directional_certified = is_directional_certified(
@@ -720,6 +741,7 @@ def run_single_backtest(
             print(f"  [#1085] regime_directional_policy default-off: "
                   f"({symbol},{timeframe},{clf}) not certified — base direction "
                   f"(matches live; #1076 negative result).")
+    regime_directional_certified = bool(regime_directional_certified)
 
     bt = Backtester(
         initial_capital=capital, platform=platform,
@@ -1155,6 +1177,9 @@ def main():
             "direction",
             "invert_signal",
             "regime_directional_policy",
+            # #1085 parity: the certification verdict resolved with the live
+            # directional-window classifier (a Backtester param).
+            "regime_directional_certified",
             # #998: regime-profile allocation switch block (None when unused).
             "profile_allocation",
             # #1058: composite (7-state) regime windows spec (None when the

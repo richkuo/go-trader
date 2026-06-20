@@ -555,24 +555,28 @@ func stampPositionRegimeFromPayload(s *StrategyState, symbol string, payload Reg
 	if pos.Regime != "" {
 		return
 	}
-	// #1085: stamp the directional-certification verdict at open so this position
-	// rides under the verdict it opened with. The live entry gate keys on the
-	// CURRENT verdict only when flat; once stamped, a later expiry/refresh never
-	// flips the open position. Only meaningful when the policy is configured;
-	// default false otherwise and for legacy positions (→ from-flat migration to
-	// base). Same store/cycle as the entry gate, so the stamp matches the entry.
+	// #1085: freeze the directional-certification verdict TOGETHER with pos.Regime
+	// so it is write-once at open. The verdict is applied ONLY on the branch that
+	// records the regime label below — never unconditionally — so that if no label
+	// is available this cycle (pos.Regime stays empty), the stamp is NOT left at a
+	// value that a later cycle would re-evaluate against a SIGHUP-changed live
+	// verdict. Once pos.Regime is set the early-return above makes both write-once.
+	// Only meaningful when the policy is configured; default false otherwise and
+	// for legacy positions (→ from-flat migration to base). Same store/cycle as
+	// the entry gate, so the stamp matches the entry decision.
+	certifiedAtOpen := false
 	if sc.RegimeDirectionalPolicy.IsConfigured() {
-		if _, ok := strategyDirectionalCertified(sc, rc, time.Now().UTC()); ok {
-			pos.DirectionCertifiedAtOpen = true
-		}
+		_, certifiedAtOpen = strategyDirectionalCertified(sc, rc, time.Now().UTC())
 	}
 	gateKey := resolveStrategyRegimeWindow(sc, "gate", rc)
 	if label := payload.Label(gateKey, rc); label != "" {
 		pos.Regime = label
+		pos.DirectionCertifiedAtOpen = certifiedAtOpen
 		return
 	}
 	if label := payload.PrimaryLabel(rc); label != "" {
 		pos.Regime = label
+		pos.DirectionCertifiedAtOpen = certifiedAtOpen
 	}
 }
 

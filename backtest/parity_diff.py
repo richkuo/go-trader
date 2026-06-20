@@ -213,10 +213,12 @@ def config_from_live_config(config_path: str, strategy_id: str,
     rdp = loaded.get("regime_directional_policy")
     if rdp:
         from directional_certification import (
-            load_certifications, is_directional_certified, backtest_classifier,
+            load_certifications, is_directional_certified,
+            config_directional_classifier,
         )
         certs = load_certifications()
-        clf = backtest_classifier(regime.get("windows"))
+        # Resolve the directional window's classifier exactly as live (#1085).
+        clf = config_directional_classifier(regime, entry)
         if not is_directional_certified(certs, symbol, timeframe, clf):
             rdp = None
     return ParityConfig(
