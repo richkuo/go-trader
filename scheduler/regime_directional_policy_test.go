@@ -179,22 +179,32 @@ func TestRegimeDirectionalPolicyEqualForReload(t *testing.T) {
 	}
 }
 
-func TestEffectiveDirectionForPosition(t *testing.T) {
+func TestEffectiveDirectionForPositionGated(t *testing.T) {
 	policy := &RegimeDirectionalPolicy{TrendRegime: map[string]RegimeDirectionalEntry{
 		"trending_up":   {Direction: DirectionLong},
 		"trending_down": {Direction: DirectionShort},
 		"ranging":       {Direction: DirectionLong},
 	}}
 	sc := StrategyConfig{Direction: DirectionLong, RegimeDirectionalPolicy: policy}
+	// certAll certifies every cell to its configured sign, so the gate passes the policy
+	// direction through and what's under test is the hold-on-transition regime selection
+	// (effectiveRegimeForPolicy) on the live gated resolver.
+	certAll := map[string]string{"trending_up": DirectionLong, "trending_down": DirectionShort, "ranging": DirectionLong}
 
-	if got := EffectiveDirectionForPosition(sc, "trending_up", "trending_down", 1); got != DirectionShort {
+	if got := EffectiveDirectionForPositionGated(sc, "trending_up", "trending_down", 1, certAll); got != DirectionShort {
 		t.Errorf("open position uses stamped regime: got %q want short", got)
 	}
-	if got := EffectiveDirectionForPosition(sc, "trending_up", "", 0); got != DirectionLong {
+	if got := EffectiveDirectionForPositionGated(sc, "trending_up", "", 0, certAll); got != DirectionLong {
 		t.Errorf("flat uses current regime: got %q want long", got)
 	}
-	if got := EffectiveDirectionForPosition(sc, "", "", 1); got != DirectionLong {
+	if got := EffectiveDirectionForPositionGated(sc, "", "", 1, certAll); got != DirectionLong {
 		t.Errorf("unstamped open falls back to current (empty): got %q want base long", got)
+	}
+	// Uncertified (nil) open position resolves to base regardless of stamped regime: the
+	// #1085 fail-closed default. With the ungated EffectiveDirectionForPosition deleted,
+	// no runtime path can bypass this.
+	if got := EffectiveDirectionForPositionGated(sc, "trending_up", "trending_down", 1, nil); got != DirectionLong {
+		t.Errorf("uncertified open falls to base: got %q want long", got)
 	}
 }
 

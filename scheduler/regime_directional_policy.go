@@ -390,15 +390,6 @@ func EffectiveDirectionForRegimeGated(sc StrategyConfig, regime string, certStat
 	return EffectiveDirection(sc)
 }
 
-// EffectiveDirectionForPosition resolves direction for an open position using
-// the same hold-on-transition semantics as applyRegimeDirectionalPolicy: when
-// posQty > 0 and pos.Regime is stamped, that regime governs; otherwise the
-// current cycle regime is used (empty at startup validation → base direction).
-func EffectiveDirectionForPosition(sc StrategyConfig, currentRegime, posRegime string, posQty float64) string {
-	regime := effectiveRegimeForPolicy(currentRegime, posRegime, posQty)
-	return EffectiveDirectionForRegime(sc, regime)
-}
-
 // EffectiveDirectionForPositionGated is the #1085 certification-gated sibling of
 // EffectiveDirectionForPosition: resolves through the PER-STATE evidence gate so
 // an uncertified/legacy open position (nil certStates) — or a state whose config
