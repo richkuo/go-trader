@@ -279,3 +279,36 @@ def test_derive_thresholds_is_looser_than_incumbent_worst_window():
     assert non_degeneracy(b, thr)["ok"] is True
     occ_b = max(c["pct"] for c in __import__("regime_diagnostics").coverage(b).values())
     assert thr.max_occupancy >= occ_b
+
+
+def _load_research_module(tag):
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, "..", "research", "regime_1080_unsupervised_vol_model.py")
+    spec = importlib.util.spec_from_file_location(f"regime_1080_{tag}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_select_winner_prefers_eligible_high_separation():
+    mod = _load_research_module("rank1")
+    cands = [
+        {"family": "hmm", "k": 3, "verdict": {"ship": True},
+         "non_degenerate_all": True, "model_kruskal_h": 90.0, "stability_gain": 0.05},
+        {"family": "gmm", "k": 4, "verdict": {"ship": True},
+         "non_degenerate_all": True, "model_kruskal_h": 120.0, "stability_gain": 0.03},
+        {"family": "kmeans", "k": 5, "verdict": {"ship": False},
+         "non_degenerate_all": True, "model_kruskal_h": 999.0, "stability_gain": 0.9},
+        {"family": "hmm", "k": 7, "verdict": {"ship": True},
+         "non_degenerate_all": False, "model_kruskal_h": 999.0, "stability_gain": 0.9},
+    ]
+    win = mod.select_winner(cands)
+    assert win["family"] == "gmm" and win["k"] == 4
+
+
+def test_select_winner_returns_none_when_no_eligible():
+    mod = _load_research_module("rank2")
+    assert mod.select_winner([{"family": "hmm", "k": 3, "verdict": {"ship": False},
+                               "non_degenerate_all": True, "model_kruskal_h": 1.0,
+                               "stability_gain": 0.0}]) is None
