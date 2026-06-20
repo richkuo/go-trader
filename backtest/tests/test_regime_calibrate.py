@@ -1,7 +1,7 @@
 # backtest/tests/test_regime_calibrate.py
 import os, sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from regime_calibrate import gate_verdict
+from regime_calibrate import gate_verdict, SIGNIFICANCE_ALPHA, STABILITY_MIN_GAIN
 
 
 def _report(kw_h, transition_rate, p_value=0.005, target=None):
@@ -102,4 +102,55 @@ def test_gate_ships_on_trustworthy_volatility_incumbent():
     assert v["incumbent_trustworthy"] is True
     assert v["abstained"] is False
     assert v["separation_ok"] and v["stability_ok"]
+    assert v["ship"] is True
+
+
+# --- #1078 engaged-gate separation floor (bot review #1079) ------------------------------
+# These pin the auto-protective behavior the volatility re-target newly unlocks: now that the
+# incumbent CAN be trustworthy, a model must still independently clear the block-shuffle
+# separation floor and must not ship on the stability arm alone. Invariant: incumbent
+# trustworthy (significant) => ship requires (md_p <= SIGNIFICANCE_ALPHA) AND a stability gain
+# of at least STABILITY_MIN_GAIN, both independently.
+
+def test_engaged_gate_rejects_degenerate_but_perfectly_stable_model():
+    # (1) Strong, significant vol incumbent (engaged, not abstaining) + a constant-label model
+    # (kruskal_h~0, transition_rate=0): the stability arm is maximally green, but separation is
+    # nil and not significant -> must NOT ship. This is the high-value path the PR smoke showed
+    # and the floor that stops a bad model shipping now that incumbent_trustworthy can be true.
+    hr = _report(90.0, 0.45, p_value=0.005, target="volatility")
+    md = _report(0.0, 0.0, p_value=1.0, target="volatility")  # perfect stability, zero separation
+    v = gate_verdict(hr, md)
+    assert v["incumbent_trustworthy"] is True
+    assert v["abstained"] is False           # engaged, NOT the weak-incumbent abstain path
+    assert v["stability_ok"] is True          # the trap: stability looks perfect
+    assert v["model_separation_real"] is False
+    assert v["separation_ok"] is False
+    assert v["ship"] is False
+
+
+def test_engaged_gate_blocks_model_that_keeps_separation_but_loses_stability_gain():
+    # (2) Inverse of (1): engaged gate + a model that keeps the separation (within tolerance,
+    # significant) but whose stability gain is below STABILITY_MIN_GAIN -> must NOT ship. Pins
+    # that the two arms are independent; a strong separator cannot ship without the whipsaw win.
+    hr = _report(90.0, 0.45, p_value=0.005, target="volatility")
+    md = _report(88.0, 0.44, p_value=0.005, target="volatility")  # gain 0.01 < STABILITY_MIN_GAIN
+    v = gate_verdict(hr, md)
+    assert v["incumbent_trustworthy"] is True
+    assert v["abstained"] is False
+    assert v["separation_ok"] is True
+    assert v["stability_ok"] is False
+    assert v["ship"] is False
+
+
+def test_engaged_gate_ships_at_inclusive_floor_boundaries():
+    # (3) Boundary: model exactly AT both floors — md_p == SIGNIFICANCE_ALPHA and stability gain
+    # == STABILITY_MIN_GAIN — must still ship, pinning that both comparisons are inclusive
+    # (<= / >=). A future edit flipping either to a strict bound would break this.
+    hr = _report(90.0, 0.45, p_value=0.005, target="volatility")
+    md = _report(90.0, 0.45 - STABILITY_MIN_GAIN, p_value=SIGNIFICANCE_ALPHA, target="volatility")
+    v = gate_verdict(hr, md)
+    assert v["incumbent_trustworthy"] is True
+    assert v["model_separation_real"] is True   # md_p == alpha is inside the floor
+    assert v["separation_ok"] is True
+    assert v["stability_ok"] is True            # gain == STABILITY_MIN_GAIN is inside the floor
     assert v["ship"] is True
