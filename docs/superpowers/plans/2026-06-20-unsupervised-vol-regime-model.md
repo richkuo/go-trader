@@ -724,9 +724,11 @@ def test_model_satisfies_bounded_window_and_forward_filter_contract():
     for key in ("states", "feature_means", "feature_stds", "emissions",
                 "init", "transition", "filter_window", "period", "fitted_on"):
         assert key in model
-    prov = bw._provenance_status(model, "BTC/USDT", "1h", "oos",
-                                 {"symbol": "BTC/USDT", "timeframe": "1h", "window": "oos"})
+    # _provenance_status(model, symbol, timeframe, window, windows=None); windows defaults
+    # to eval_windows.WINDOWS. Fit on "is", validate on "oos" -> verified, NOT in-sample.
+    prov = bw._provenance_status(model, "BTC/USDT", "1h", "oos")
     assert prov["verified"] is True            # fitted_on stamp is read, no type gate
+    assert prov["in_sample"] is False          # is/oos are disjoint -> held-out, promotable
 ```
 
 Run: `uv run --no-sync python -m pytest backtest/tests/test_regime_vol_model.py::test_model_satisfies_bounded_window_and_forward_filter_contract -q`
