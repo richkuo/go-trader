@@ -1267,6 +1267,33 @@ func ValidateConfig(cfg *Config) error {
 	return validateConfig(cfg, false)
 }
 
+// regimeDirectionalPolicyWarnings returns one operator warning per strategy that selects
+// trade side from the regime label (regime_directional_policy, #779). #1076 validated that
+// premise — regime -> forward DIRECTION — and found it empirically false across BTC/ETH/SOL/
+// BNB/XRP and five timeframes: 0 of 2121 per-state forward-return tests survive global
+// Benjamini-Hochberg/Bonferroni correction, and a look-ahead-safe regime-timing book never
+// beats its own block-shuffled-label null (0/60 after FDR). So this surface chooses long vs
+// short on noise; its only realized effect is a change in exposure (defensive beta in a down
+// sample), not a directional forecast. The warning is advisory and NON-BREAKING — existing
+// live configs still load — because hard-rejecting the keys is the less safe option: a forced
+// disable relies on the #822 orphan auto-close, which fires only for sole-owner coins
+// (hyperliquid_balance.go), so a shared-coin live short would be stranded for manual close.
+// Operators should disable from FLAT (SIGHUP blocks the change while a position is open,
+// config_reload.go) and use the regime for ATR-scaled SL/TP sizing (#1078), its real signal.
+// Returned (not printed) so the set is unit-testable; validateConfig prints them.
+func regimeDirectionalPolicyWarnings(cfg *Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	var out []string
+	for _, sc := range cfg.Strategies {
+		if sc.RegimeDirectionalPolicy.IsConfigured() {
+			out = append(out, fmt.Sprintf("[WARN] %s: regime_directional_policy selects long/short by regime, but the regime→forward-direction premise is empirically unvalidated (#1076 negative result) — it changes exposure, not a directional forecast. Prefer the regime for ATR-scaled SL/TP sizing (#1078); disable from flat.", sc.ID))
+		}
+	}
+	return out
+}
+
 func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	var errs []string
 	seenIDs := make(map[string]bool)
@@ -1927,6 +1954,11 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 				fmt.Printf("[WARN] %s: allowed_regimes is set but regime.enabled=false — gate is a no-op until regime detection is enabled\n", sc.ID)
 			}
 		}
+	}
+
+	// #1076: warn on the regime→direction selection surface (premise empirically refuted).
+	for _, w := range regimeDirectionalPolicyWarnings(cfg) {
+		fmt.Println(w)
 	}
 
 	knownPlatforms := make(map[string]bool)
