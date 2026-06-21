@@ -94,7 +94,12 @@ def test_no_bakeoff_winner_fails_closed_and_skips_economic_gate():
     assert report["summary"]["pass"] is False
     assert economic_calls == []
     assert report["rows"][0]["blocking_reasons"] == ["no #1080 gate-passing model"]
-    assert "no #1080 gate-passing model" in report["summary"]["blocking_reasons"][1]
+    assert any("no #1080 gate-passing model" in r
+               for r in report["summary"]["blocking_reasons"])
+    # A no-winner cell ran the methodology on real data -> a genuine failure,
+    # not an operationally-inconclusive (data-gap) cell.
+    assert report["summary"]["failed_cells"] == 1
+    assert report["summary"]["inconclusive_cells"] == 0
 
 
 def test_cell_exception_is_reported_not_silently_skipped():
@@ -109,8 +114,11 @@ def test_cell_exception_is_reported_not_silently_skipped():
 
     assert report["summary"]["pass"] is False
     assert report["rows"][0]["error"] == "ValueError: no cached data"
-    assert any("SOL/USDT 4h: ValueError: no cached data" == r
+    assert any("SOL/USDT 4h: ValueError: no cached data" in r
                for r in report["summary"]["blocking_reasons"])
+    # An exception (here a data gap) is inconclusive, not a methodology failure.
+    assert report["summary"]["inconclusive_cells"] == 1
+    assert report["summary"]["failed_cells"] == 0
 
 
 def test_economic_failure_blocks_aggregate_even_with_model_winner():
@@ -166,7 +174,7 @@ def test_min_pass_cells_tolerates_k_of_n_failures():
     assert s["total_cells"] == 4
     # The single failing cell does NOT block, but stays visible as a diagnostic.
     assert s["blocking_reasons"] == []
-    assert any("D: economic gate failed" == d for d in s["cell_diagnostics"])
+    assert any("D: economic gate failed" in d for d in s["cell_diagnostics"])
 
 
 def test_min_pass_cells_minus_one_blocks_with_cell_reasons():
@@ -182,8 +190,8 @@ def test_min_pass_cells_minus_one_blocks_with_cell_reasons():
     assert s["pass"] is False
     assert s["passed_cells"] == 2
     assert any("passed cells 2 < required 3" == b for b in s["blocking_reasons"])
-    assert any("C: economic gate failed" == b for b in s["blocking_reasons"])
-    assert any("D: no #1080 gate-passing model" == b for b in s["blocking_reasons"])
+    assert any("C: economic gate failed" in b for b in s["blocking_reasons"])
+    assert any("D: no #1080 gate-passing model" in b for b in s["blocking_reasons"])
 
 
 def test_all_cells_pass_meets_floor():
@@ -299,3 +307,123 @@ def test_main_accepts_valid_families_and_threads_them(monkeypatch):
     rc = m.main(["--datasets", "BTC/USDT:1h", "--families", "hmm,gmm"])
     assert rc == 0
     assert captured["families"] == ["hmm", "gmm"]
+
+
+def _cell(symbol, timeframe, *, passed, error=None, reason="economic gate failed"):
+    row = {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "dataset": f"{symbol} {timeframe}",
+        "pass": passed,
+        "blocking_reasons": [],
+    }
+    if error is not None:
+        row["error"] = error
+        row["blocking_reasons"] = [error]
+    elif not passed:
+        row["blocking_reasons"] = [reason]
+    return row
+
+
+def test_cross_asset_breadth_blocks_single_symbol_even_with_enough_cells():
+    # Three BTC timeframes pass but the result is BTC-specific: a regime model
+    # promoted to run on every asset must demonstrate cross-asset breadth.
+    rows = [
+        _cell("BTC/USDT", "1h", passed=True),
+        _cell("BTC/USDT", "4h", passed=True),
+        _cell("BTC/USDT", "15m", passed=True),
+        _cell("ETH/USDT", "1h", passed=False),
+    ]
+    s = m.summarize(rows, min_pass_cells=3)
+    assert s["pass"] is False  # cell floor met (3), but only 1 symbol passes
+    assert s["passed_cells"] == 3
+    assert s["passing_symbols"] == ["BTC/USDT"]
+    assert s["required_pass_symbols"] == 2  # min(2, 2 panel symbols)
+    assert any("passing symbols 1" in b for b in s["blocking_reasons"])
+
+
+def test_cross_asset_breadth_passes_when_passes_span_symbols():
+    rows = [
+        _cell("BTC/USDT", "1h", passed=True),
+        _cell("BTC/USDT", "4h", passed=True),
+        _cell("ETH/USDT", "1h", passed=True),
+        _cell("SOL/USDT", "4h", passed=False),
+    ]
+    s = m.summarize(rows, min_pass_cells=3)
+    assert s["pass"] is True
+    assert set(s["passing_symbols"]) == {"BTC/USDT", "ETH/USDT"}
+    assert s["blocking_reasons"] == []
+
+
+def test_inconclusive_cells_do_not_erode_breadth_but_cannot_substitute_for_passes():
+    # Two assets pass; a third cell can't be evaluated (data gap). The gap is an
+    # unknown, so it neither blocks nor counts as a pass.
+    rows = [
+        _cell("BTC/USDT", "1h", passed=True),
+        _cell("ETH/USDT", "1h", passed=True),
+        _cell("SOL/USDT", "1h", passed=False, error="ValueError: no cached data"),
+    ]
+    s = m.summarize(rows, min_pass_cells=2)
+    assert s["pass"] is True
+    assert s["passed_cells"] == 2
+    assert s["failed_cells"] == 0
+    assert s["inconclusive_cells"] == 1
+    # ...but an inconclusive cell can never make up the difference toward the floor.
+    s2 = m.summarize(rows, min_pass_cells=3)
+    assert s2["pass"] is False
+    assert any("passed cells 2 < required 3" == b for b in s2["blocking_reasons"])
+
+
+def test_inconclusive_only_panel_fails_closed():
+    # A panel where nothing could be evaluated must never promote.
+    rows = [
+        _cell("BTC/USDT", "1h", passed=False, error="ValueError: no cached data"),
+        _cell("ETH/USDT", "1h", passed=False, error="ValueError: no cached data"),
+    ]
+    s = m.summarize(rows, min_pass_cells=1)
+    assert s["pass"] is False
+    assert s["passed_cells"] == 0
+    assert s["inconclusive_cells"] == 2
+    assert s["failed_cells"] == 0
+
+
+def test_min_pass_symbols_explicit_floor_above_panel_blocks():
+    # An explicit symbol floor exceeding the panel's symbol count is
+    # unsatisfiable -> hard block, mirroring min_pass_cells > total.
+    rows = [
+        _cell("BTC/USDT", "1h", passed=True),
+        _cell("ETH/USDT", "1h", passed=True),
+    ]
+    s = m.summarize(rows, min_pass_cells=2, min_pass_symbols=3)
+    assert s["pass"] is False
+    assert s["required_pass_symbols"] == 3
+    assert any("< required 3" in b for b in s["blocking_reasons"])
+
+
+def test_min_pass_symbols_override_relaxes_for_narrow_panel():
+    # A deliberately single-symbol run can opt out of cross-asset breadth.
+    rows = [
+        _cell("BTC/USDT", "1h", passed=True),
+        _cell("BTC/USDT", "4h", passed=True),
+    ]
+    s = m.summarize(rows, min_pass_cells=2, min_pass_symbols=1)
+    assert s["pass"] is True
+    assert s["passing_symbols"] == ["BTC/USDT"]
+
+
+def test_format_report_surfaces_breadth_and_symbol_lines():
+    rows = [
+        _cell("BTC/USDT", "1h", passed=True),
+        _cell("ETH/USDT", "1h", passed=True),
+        _cell("SOL/USDT", "1h", passed=False, error="ValueError: no cached data"),
+    ]
+    report = {
+        "strategy": "s",
+        "registry": "spot",
+        "rows": rows,
+        "summary": m.summarize(rows, min_pass_cells=2),
+    }
+    text = m.format_report(report)
+    assert "2/3 cells passed" in text
+    assert "inconclusive" in text
+    assert "symbols:" in text

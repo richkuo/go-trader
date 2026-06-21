@@ -249,39 +249,108 @@ def run_cell(
         return row
 
 
-def summarize(rows: list[dict], *, min_pass_cells: int) -> dict:
-    """Aggregate per-cell results into a breadth verdict.
+def _row_symbol(row: dict) -> str:
+    sym = row.get("symbol")
+    if sym:
+        return str(sym)
+    dataset = str(row.get("dataset") or "")
+    return dataset.split(" ", 1)[0] if dataset else "?"
 
-    The gate is a *breadth* check: promotion passes when at least
-    ``min_pass_cells`` cells clear both #1080 and #1081, tolerating the rest.
-    Per-failing-cell reasons are diagnostics — always surfaced for operator
-    visibility (``cell_diagnostics``), but they do NOT veto promotion on their
-    own. They are promoted into ``blocking_reasons`` only when the breadth floor
-    is missed, where the failing cells are the actionable cause. (Letting any
-    single failing cell block makes ``min_pass_cells`` inert: zero failures
-    forces ``passed == total``, so the knob would only ever bind as a floor.)
+
+def _cell_outcome(row: dict) -> str:
+    """Classify a cell as ``pass`` / ``fail`` / ``inconclusive``.
+
+    - ``pass``: cleared both #1080 model selection and #1081 ATR economics.
+    - ``fail``: the methodology ran on real data but did not clear — no #1080
+      gate-passing model, or an #1081 economic rejection. Genuine negative
+      evidence about generalization on that cell.
+    - ``inconclusive``: the cell could not be evaluated at all — a per-cell
+      exception (missing/short cached data, loader/IO error; ``run_cell`` funnels
+      all such failures into ``row['error']``). Absence of evidence, not
+      evidence of absence: it must NOT count as a failure (a data gap would
+      otherwise masquerade as a model that does not generalize), and it must NOT
+      substitute for a pass either.
     """
-    passed = [r for r in rows if r.get("pass")]
+    if row.get("pass"):
+        return "pass"
+    if row.get("error"):
+        return "inconclusive"
+    return "fail"
+
+
+def summarize(rows: list[dict], *, min_pass_cells: int,
+              min_pass_symbols: Optional[int] = None) -> dict:
+    """Aggregate per-cell results into a structured breadth verdict.
+
+    Promotion is a *generalization* claim, and the safe default is NOT promoting
+    (live stays on flat ATR sizing), so the gate is fail-closed on two
+    orthogonal breadth axes, BOTH of which must clear:
+
+    1. **Cell breadth** — at least ``min_pass_cells`` cells pass. This tolerates
+       a minority of genuine failures (one bad cell must not veto an otherwise
+       broad pass — that would make the knob inert), but it is a hard floor:
+       ``min_pass_cells > total`` blocks.
+    2. **Cross-asset breadth** — the passing cells must span at least
+       ``min_pass_symbols`` distinct symbols (default ``min(2, #symbols in the
+       panel)``), so a model that merely racks up passes on one asset's several
+       timeframes cannot be promoted as a *general* regime classifier. An
+       explicit floor above the panel's symbol count blocks (unsatisfiable →
+       fail-closed, mirroring the cell floor).
+
+    ``inconclusive`` cells (per-cell exceptions / missing data) are excluded from
+    BOTH the failing-cell tally and the pass tally — they are unknowns, reported
+    as diagnostics but never eroding or manufacturing breadth. Only cells that
+    genuinely ran and did not clear count against breadth.
+
+    Per-non-pass-cell reasons are diagnostics (``cell_diagnostics``, tagged by
+    outcome). They are promoted into ``blocking_reasons`` only when a breadth
+    floor is missed, where they are the actionable cause.
+    """
+    passed = [r for r in rows if _cell_outcome(r) == "pass"]
+    failed = [r for r in rows if _cell_outcome(r) == "fail"]
+    inconclusive = [r for r in rows if _cell_outcome(r) == "inconclusive"]
+
+    passing_symbols = sorted({_row_symbol(r) for r in passed})
+    panel_symbols = sorted({_row_symbol(r) for r in rows})
+    if min_pass_symbols is None:
+        required_symbols = min(2, len(panel_symbols))
+    else:
+        required_symbols = int(min_pass_symbols)
+
     cell_diagnostics = []
     for row in rows:
-        if row.get("pass"):
+        outcome = _cell_outcome(row)
+        if outcome == "pass":
             continue
         prefix = row.get("dataset") or dataset_label(row.get("symbol", "?"),
                                                      row.get("timeframe", "?"))
         for reason in _cell_blocking_reasons(row):
-            cell_diagnostics.append(f"{prefix}: {reason}")
+            cell_diagnostics.append(f"[{outcome}] {prefix}: {reason}")
+
     breadth_met = len(passed) >= min_pass_cells
+    symbols_met = len(passing_symbols) >= required_symbols
     blocking = []
     if not breadth_met:
+        blocking.append(f"passed cells {len(passed)} < required {min_pass_cells}")
+    if not symbols_met:
+        shown = ",".join(passing_symbols) or "-"
         blocking.append(
-            f"passed cells {len(passed)} < required {min_pass_cells}"
+            f"passing symbols {len(passing_symbols)} ({shown}) "
+            f"< required {required_symbols}"
         )
+    if blocking:
         blocking.extend(cell_diagnostics)
+
     return {
-        "pass": breadth_met,
+        "pass": breadth_met and symbols_met,
         "passed_cells": len(passed),
+        "failed_cells": len(failed),
+        "inconclusive_cells": len(inconclusive),
         "total_cells": len(rows),
         "min_pass_cells": int(min_pass_cells),
+        "passing_symbols": passing_symbols,
+        "panel_symbols": panel_symbols,
+        "required_pass_symbols": int(required_symbols),
         "blocking_reasons": blocking,
         "cell_diagnostics": cell_diagnostics,
     }
@@ -291,6 +360,7 @@ def run_multi_asset_gate(
     *,
     datasets: Iterable[Dataset] = DATASETS,
     min_pass_cells: int = 3,
+    min_pass_symbols: Optional[int] = None,
     in_sample: str = "is",
     held_out: str = "oos",
     bakeoff_windows: Iterable[str] = BAKEOFF_DEFAULT_WINDOWS,
@@ -370,7 +440,8 @@ def run_multi_asset_gate(
         "platform": PLATFORM,
         "thresholds": thresholds or {},
         "rows": rows,
-        "summary": summarize(rows, min_pass_cells=min_pass_cells),
+        "summary": summarize(rows, min_pass_cells=min_pass_cells,
+                             min_pass_symbols=min_pass_symbols),
     }
 
 
@@ -406,8 +477,17 @@ def format_report(report: dict) -> str:
     lines.append("SUMMARY")
     lines.append(
         f"  pass: {bool(summary.get('pass'))} "
-        f"({summary.get('passed_cells', 0)}/{summary.get('total_cells', 0)} cells; "
+        f"({summary.get('passed_cells', 0)}/{summary.get('total_cells', 0)} cells passed; "
+        f"{summary.get('failed_cells', 0)} failed, "
+        f"{summary.get('inconclusive_cells', 0)} inconclusive; "
         f"required {summary.get('min_pass_cells', 0)})"
+    )
+    passing_symbols = summary.get("passing_symbols", [])
+    panel_symbols = summary.get("panel_symbols", [])
+    lines.append(
+        f"  symbols: {','.join(passing_symbols) or '-'} "
+        f"({len(passing_symbols)}/{len(panel_symbols)} passed; "
+        f"required {summary.get('required_pass_symbols', 0)})"
     )
     for reason in summary.get("blocking_reasons", []):
         lines.append(f"  block: {reason}")
@@ -419,6 +499,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--datasets", default="",
                    help="comma list SYMBOL:TIMEFRAME; default eval_windows.DATASETS")
     p.add_argument("--min-pass-cells", type=int, default=3)
+    p.add_argument("--min-pass-symbols", type=int, default=None,
+                   help="distinct passing symbols required for cross-asset "
+                        "breadth; default min(2, #symbols in the panel)")
     p.add_argument("--in-sample", default="is")
     p.add_argument("--held-out", default="oos")
     p.add_argument("--bakeoff-windows", default=",".join(BAKEOFF_DEFAULT_WINDOWS))
@@ -467,6 +550,7 @@ def main(argv=None) -> int:
     report = run_multi_asset_gate(
         datasets=datasets,
         min_pass_cells=args.min_pass_cells,
+        min_pass_symbols=args.min_pass_symbols,
         in_sample=args.in_sample,
         held_out=args.held_out,
         bakeoff_windows=parse_csv(args.bakeoff_windows),
