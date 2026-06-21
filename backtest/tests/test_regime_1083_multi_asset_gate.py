@@ -623,3 +623,45 @@ def test_run_multi_asset_gate_counts_economic_data_gap_as_inconclusive():
     assert s["inconclusive_cells"] == 1
     assert s["failed_cells"] == 0
     assert any("[inconclusive] SOL/USDT 4h" in d for d in s["cell_diagnostics"])
+
+
+def test_main_rejects_empty_enum_sweeps_up_front():
+    # An empty enumerated sweep makes every cell non-evaluable; reject it once,
+    # up front, with a message naming the real cause — not as a misleading
+    # per-cell "no #1080 gate-passing model".
+    cases = [
+        ("--families", "--families requires at least one value"),
+        ("--k-range", "--k-range requires at least one value"),
+        ("--surfaces", "--surfaces requires at least one value"),
+        ("--bakeoff-windows", "--bakeoff-windows requires at least one value"),
+        ("--economic-windows", "--economic-windows requires at least one value"),
+        ("--gate-windows", "--gate-windows requires at least one value"),
+    ]
+    for flag, msg in cases:
+        with pytest.raises(SystemExit, match=msg):
+            m.main(["--datasets", "BTC/USDT:1h", flag, ""])
+
+
+def test_main_accepts_minimal_non_empty_sweeps(monkeypatch):
+    captured = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {
+            "strategy": "s",
+            "registry": "spot",
+            "rows": [],
+            "summary": {
+                "pass": True,
+                "blocking_reasons": [],
+                "passed_cells": 0,
+                "total_cells": 0,
+                "min_pass_cells": 0,
+            },
+        }
+
+    monkeypatch.setattr(m, "run_multi_asset_gate", fake_run)
+    rc = m.main(["--datasets", "BTC/USDT:1h", "--families", "hmm", "--k-range", "2,3"])
+    assert rc == 0
+    assert captured["families"] == ["hmm"]
+    assert captured["k_range"] == [2, 3]

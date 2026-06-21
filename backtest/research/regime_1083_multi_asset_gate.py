@@ -592,20 +592,38 @@ def main(argv=None) -> int:
     if params is not None and not isinstance(params, dict):
         raise SystemExit("--params must decode to a JSON object")
     datasets = parse_datasets(args.datasets)
-    for window in [args.in_sample, args.held_out, *parse_csv(args.bakeoff_windows),
-                   *parse_csv(args.economic_windows), *parse_csv(args.gate_windows)]:
+    bakeoff_windows = parse_csv(args.bakeoff_windows)
+    economic_windows = parse_csv(args.economic_windows)
+    gate_windows = parse_csv(args.gate_windows)
+    surfaces = parse_csv(args.surfaces)
+    families = parse_csv(args.families)
+    k_range = parse_ints(args.k_range)
+    for window in [args.in_sample, args.held_out, *bakeoff_windows,
+                   *economic_windows, *gate_windows]:
         if window not in WINDOWS:
             raise SystemExit(f"unknown window {window}; known: {list(WINDOWS)}")
-    surfaces = parse_csv(args.surfaces)
     bad_surfaces = sorted(set(surfaces) - set(SURFACES))
     if bad_surfaces:
         raise SystemExit(f"unknown surfaces {bad_surfaces}; known: {list(SURFACES)}")
-    families = parse_csv(args.families)
     bad_families = sorted(set(families) - set(rvm.FITTERS))
     if bad_families:
         raise SystemExit(
             f"unknown families {bad_families}; known: {sorted(rvm.FITTERS)}"
         )
+    # Every enumerated sweep input must be non-empty for any cell to be
+    # evaluable; an empty list would otherwise burn per-cell data loads only to
+    # mislabel the result "no #1080 gate-passing model" / "no gate-window rows".
+    # Reject up front, mirroring parse_datasets' non-empty guard.
+    for flag, values in (
+        ("--families", families),
+        ("--k-range", k_range),
+        ("--surfaces", surfaces),
+        ("--bakeoff-windows", bakeoff_windows),
+        ("--economic-windows", economic_windows),
+        ("--gate-windows", gate_windows),
+    ):
+        if not values:
+            raise SystemExit(f"{flag} requires at least one value")
     if args.min_pass_cells < 1:
         raise SystemExit(f"--min-pass-cells must be >= 1, got {args.min_pass_cells}")
     if args.min_pass_symbols is not None and args.min_pass_symbols < 1:
@@ -618,12 +636,12 @@ def main(argv=None) -> int:
         min_pass_symbols=args.min_pass_symbols,
         in_sample=args.in_sample,
         held_out=args.held_out,
-        bakeoff_windows=parse_csv(args.bakeoff_windows),
-        economic_windows=parse_csv(args.economic_windows),
-        gate_windows=parse_csv(args.gate_windows),
+        bakeoff_windows=bakeoff_windows,
+        economic_windows=economic_windows,
+        gate_windows=gate_windows,
         surfaces=surfaces,
         families=families,
-        k_range=parse_ints(args.k_range),
+        k_range=k_range,
         period=args.period,
         filter_window=args.filter_window,
         seed=args.seed,
