@@ -250,25 +250,40 @@ def run_cell(
 
 
 def summarize(rows: list[dict], *, min_pass_cells: int) -> dict:
+    """Aggregate per-cell results into a breadth verdict.
+
+    The gate is a *breadth* check: promotion passes when at least
+    ``min_pass_cells`` cells clear both #1080 and #1081, tolerating the rest.
+    Per-failing-cell reasons are diagnostics — always surfaced for operator
+    visibility (``cell_diagnostics``), but they do NOT veto promotion on their
+    own. They are promoted into ``blocking_reasons`` only when the breadth floor
+    is missed, where the failing cells are the actionable cause. (Letting any
+    single failing cell block makes ``min_pass_cells`` inert: zero failures
+    forces ``passed == total``, so the knob would only ever bind as a floor.)
+    """
     passed = [r for r in rows if r.get("pass")]
-    blocking = []
-    if len(passed) < min_pass_cells:
-        blocking.append(
-            f"passed cells {len(passed)} < required {min_pass_cells}"
-        )
+    cell_diagnostics = []
     for row in rows:
         if row.get("pass"):
             continue
         prefix = row.get("dataset") or dataset_label(row.get("symbol", "?"),
                                                      row.get("timeframe", "?"))
         for reason in _cell_blocking_reasons(row):
-            blocking.append(f"{prefix}: {reason}")
+            cell_diagnostics.append(f"{prefix}: {reason}")
+    breadth_met = len(passed) >= min_pass_cells
+    blocking = []
+    if not breadth_met:
+        blocking.append(
+            f"passed cells {len(passed)} < required {min_pass_cells}"
+        )
+        blocking.extend(cell_diagnostics)
     return {
-        "pass": not blocking,
+        "pass": breadth_met,
         "passed_cells": len(passed),
         "total_cells": len(rows),
         "min_pass_cells": int(min_pass_cells),
         "blocking_reasons": blocking,
+        "cell_diagnostics": cell_diagnostics,
     }
 
 
@@ -297,7 +312,17 @@ def run_multi_asset_gate(
     fit_model_fn: Callable[..., dict] = fit_selected_model,
     economic_gate_fn: Callable[..., dict] = run_gate,
 ) -> dict:
+    # Materialize every swept iterable once: each is re-consumed per cell (via
+    # tuple(...) in run_cell) and again for the report metadata below, so a
+    # one-shot generator would empty after the first cell, silently starving
+    # cells 2..N and blanking the report. datasets was already materialized.
     datasets = list(datasets)
+    bakeoff_windows = list(bakeoff_windows)
+    economic_windows = list(economic_windows)
+    gate_windows = list(gate_windows)
+    surfaces = list(surfaces)
+    families = list(families)
+    k_range = list(k_range)
     rows = [
         run_cell(
             symbol,
@@ -433,6 +458,12 @@ def main(argv=None) -> int:
     bad_surfaces = sorted(set(surfaces) - set(SURFACES))
     if bad_surfaces:
         raise SystemExit(f"unknown surfaces {bad_surfaces}; known: {list(SURFACES)}")
+    families = parse_csv(args.families)
+    bad_families = sorted(set(families) - set(rvm.FITTERS))
+    if bad_families:
+        raise SystemExit(
+            f"unknown families {bad_families}; known: {sorted(rvm.FITTERS)}"
+        )
     report = run_multi_asset_gate(
         datasets=datasets,
         min_pass_cells=args.min_pass_cells,
@@ -442,7 +473,7 @@ def main(argv=None) -> int:
         economic_windows=parse_csv(args.economic_windows),
         gate_windows=parse_csv(args.gate_windows),
         surfaces=surfaces,
-        families=parse_csv(args.families),
+        families=families,
         k_range=parse_ints(args.k_range),
         period=args.period,
         filter_window=args.filter_window,
