@@ -193,7 +193,7 @@ def test_compare_summaries_equal_risk_adjusted_metrics_do_not_pass():
     assert "Sharpe" in joined and "DD-adjusted" in joined
 
 
-def test_run_cell_requires_candidate_to_beat_each_flat_control(monkeypatch):
+def test_run_cell_gates_against_best_control_not_width_extreme(monkeypatch):
     df = pd.DataFrame({"open": [100.0, 101.0], "close": [100.0, 101.0], "atr": [1.0, 1.0]})
     labels = ["ranging_quiet", "trending_up_clean"]
 
@@ -203,10 +203,11 @@ def test_run_cell_requires_candidate_to_beat_each_flat_control(monkeypatch):
     def fake_run_arm(frame, arm, **kwargs):
         label = arm["label"]
         if label == "regime_sl_defaults":
-            return _raw_result(sharpe=1.5, ret=15.0, dd=-10.0)
+            return _raw_result(sharpe=1.5, ret=15.0, dd=-10.0, mae=-0.25, reason="sl")
         if label == "flat_sl_atr=5":
-            return _raw_result(sharpe=2.0, ret=20.0, dd=-10.0)
-        return _raw_result(sharpe=1.0, ret=10.0, dd=-10.0)
+            # Width extreme: lower stop-out rate, but worse risk-adjusted result.
+            return _raw_result(sharpe=0.5, ret=5.0, dd=-10.0, mae=-5.0, reason="signal")
+        return _raw_result(sharpe=1.0, ret=10.0, dd=-10.0, mae=-0.5, reason="sl")
 
     monkeypatch.setattr(m, "_strategy_frame", fake_strategy_frame)
     monkeypatch.setattr(m, "run_arm", fake_run_arm)
@@ -226,10 +227,85 @@ def test_run_cell_requires_candidate_to_beat_each_flat_control(monkeypatch):
         thresholds={},
         control_grids={"flat_atr": [1.0, 5.0]},
     )
-    assert got["control_label"] == "flat_sl_atr=5"
+    assert got["control_label"] == "flat_sl_atr=1"
     assert len(got["controls"]) == 2
+    assert got["verdict"]["pass"] is True
+    by_label = {v["control_label"]: v for v in got["verdict"]["control_verdicts"]}
+    assert by_label["flat_sl_atr=5"]["pass"] is False
+    assert got["verdict"]["blocking_reasons"] == []
+
+
+def test_run_cell_single_arm_grid_winner_passes(monkeypatch):
+    df = pd.DataFrame({"open": [100.0, 101.0], "close": [100.0, 101.0], "atr": [1.0, 1.0]})
+    labels = ["ranging_quiet", "trending_up_clean"]
+
+    def fake_strategy_frame(registry, strategy, frame, params):
+        return frame.copy(), {}
+
+    def fake_run_arm(frame, arm, **kwargs):
+        if arm["label"] == "regime_sl_defaults":
+            return _raw_result(sharpe=1.5, ret=15.0, dd=-10.0, mae=-0.25, reason="signal")
+        return _raw_result(sharpe=1.0, ret=10.0, dd=-10.0, mae=-0.5, reason="sl")
+
+    monkeypatch.setattr(m, "_strategy_frame", fake_strategy_frame)
+    monkeypatch.setattr(m, "run_arm", fake_run_arm)
+    got = m.run_cell(
+        df,
+        labels,
+        valid=[True, True],
+        surface="fixed_sl",
+        registry="futures",
+        strategy="probe",
+        params={},
+        capital=10_000.0,
+        platform="hyperliquid",
+        direction="long",
+        symbol="BTC/USDT",
+        timeframe="1h",
+        thresholds={},
+        control_grids={"flat_atr": [1.0]},
+    )
+    assert got["verdict"]["pass"] is True
+    assert got["verdict"]["control_count"] == 1
+
+
+def test_run_cell_blocks_candidate_worse_than_best_control_headline(monkeypatch):
+    df = pd.DataFrame({"open": [100.0, 101.0], "close": [100.0, 101.0], "atr": [1.0, 1.0]})
+    labels = ["ranging_quiet", "trending_up_clean"]
+
+    def fake_strategy_frame(registry, strategy, frame, params):
+        return frame.copy(), {}
+
+    def fake_run_arm(frame, arm, **kwargs):
+        if arm["label"] == "regime_sl_defaults":
+            return _raw_result(sharpe=0.9, ret=9.0, dd=-10.0, mae=-0.25, reason="signal")
+        if arm["label"] == "flat_sl_atr=5":
+            return _raw_result(sharpe=0.5, ret=5.0, dd=-10.0, mae=-5.0, reason="signal")
+        return _raw_result(sharpe=1.0, ret=10.0, dd=-10.0, mae=-0.5, reason="sl")
+
+    monkeypatch.setattr(m, "_strategy_frame", fake_strategy_frame)
+    monkeypatch.setattr(m, "run_arm", fake_run_arm)
+    got = m.run_cell(
+        df,
+        labels,
+        valid=[True, True],
+        surface="fixed_sl",
+        registry="futures",
+        strategy="probe",
+        params={},
+        capital=10_000.0,
+        platform="hyperliquid",
+        direction="long",
+        symbol="BTC/USDT",
+        timeframe="1h",
+        thresholds={},
+        control_grids={"flat_atr": [1.0, 5.0]},
+    )
+    assert got["control_label"] == "flat_sl_atr=1"
     assert got["verdict"]["pass"] is False
-    assert "flat_sl_atr=5" in " ".join(got["verdict"]["blocking_reasons"])
+    joined = " ".join(got["verdict"]["blocking_reasons"])
+    assert "flat_sl_atr=1" in joined
+    assert "Sharpe" in joined
 
 
 def test_run_cell_threads_valid_mask_to_injection(monkeypatch):

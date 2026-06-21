@@ -496,18 +496,18 @@ def compare_against_controls(control_results: list[dict], candidate: dict, **thr
     best = _best_control(control_results)
     headline = compare_summaries(best["summary"], candidate, **thresholds)
     per_control = []
-    blocking = []
     for item in control_results:
         verdict = compare_summaries(item["summary"], candidate, **thresholds)
         per_control.append({
             "control_label": item["label"],
             **verdict,
         })
-        if not verdict["pass"]:
-            for reason in verdict["blocking_reasons"]:
-                blocking.append(f"{item['label']}: {reason}")
+    blocking = [
+        f"{best['label']}: {reason}"
+        for reason in headline["blocking_reasons"]
+    ]
     return {
-        "pass": not blocking,
+        "pass": headline["pass"],
         "deltas": headline["deltas"],
         "blocking_reasons": blocking,
         "best_control_label": best["label"],
