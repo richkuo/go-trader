@@ -516,3 +516,110 @@ def test_three_symbol_panel_tolerates_one_wholly_inconclusive_symbol():
     assert s["pass"] is True
     assert s["required_pass_symbols"] == 2
     assert set(s["passing_symbols"]) == {"BTC/USDT", "ETH/USDT"}
+
+
+def _econ(gate_windows, rows):
+    return {"gate_windows": list(gate_windows), "rows": rows,
+            "summary": {"pass": all(r.get("verdict", {}).get("pass") for r in rows
+                                    if r.get("window") in gate_windows),
+                        "blocking_reasons": []}}
+
+
+def _gate_row(window, *, passed, error=None, source="hand_rule", surface="tiered_tp"):
+    row = {"window": window, "verdict": {"pass": passed, "blocking_reasons": []}}
+    if error is not None:
+        row["error"] = error
+        row["verdict"] = {"pass": False, "blocking_reasons": [error]}
+    else:
+        row["label_source"] = source
+        row["surface"] = surface
+    return row
+
+
+def test_economic_gate_window_data_gap_is_inconclusive_not_fail():
+    # Must survive (1): bakeoff succeeds but the OOS gate window has no cached
+    # data -> #1081 returns pass=False with an error='no cached data' row, and
+    # the 1083 cell (no row-level error) must read as inconclusive, not fail.
+    econ = _econ(["oos"], [_gate_row("oos", passed=False, error="no cached data")])
+    row = {"symbol": "SOL/USDT", "timeframe": "4h", "pass": False,
+           "economic_report": econ, "blocking_reasons": []}
+    assert m._cell_outcome(row) == "inconclusive"
+
+
+def test_real_economic_rejection_on_data_bearing_window_stays_fail():
+    # Must survive (2): a genuine rejection (error-free verdict) is a fail.
+    econ = _econ(["oos"], [_gate_row("oos", passed=False)])
+    econ["rows"][0]["verdict"]["blocking_reasons"] = ["candidate Sharpe does not beat"]
+    row = {"symbol": "BTC/USDT", "timeframe": "1h", "pass": False,
+           "economic_report": econ, "blocking_reasons": []}
+    assert m._cell_outcome(row) == "fail"
+
+
+def test_real_rejection_with_other_window_data_gap_stays_fail():
+    # Must survive (3): real negative evidence is present on the gate window even
+    # though a non-gate window is gapped -> must NOT be masked as inconclusive.
+    econ = _econ(
+        ["oos"],
+        [
+            _gate_row("is", passed=False, error="no cached data"),  # non-gate gap
+            _gate_row("oos", passed=False),                          # gate rejects
+        ],
+    )
+    row = {"symbol": "ETH/USDT", "timeframe": "1h", "pass": False,
+           "economic_report": econ, "blocking_reasons": []}
+    assert m._cell_outcome(row) == "fail"
+
+
+def test_gate_window_passes_but_other_gate_window_gapped_is_inconclusive():
+    # IS gate window passes economically, OOS gate window has no data -> the cell
+    # could not be fully evaluated, so inconclusive (no real rejection present).
+    econ = _econ(
+        ["is", "oos"],
+        [
+            _gate_row("is", passed=True),
+            _gate_row("oos", passed=False, error="no cached data"),
+        ],
+    )
+    row = {"symbol": "SOL/USDT", "timeframe": "1h", "pass": False,
+           "economic_report": econ, "blocking_reasons": []}
+    assert m._cell_outcome(row) == "inconclusive"
+
+
+def test_degenerate_label_failure_on_data_bearing_window_stays_fail():
+    # A label-validation failure (not a data gap) is a genuine model-usability
+    # failure and must stay fail, not be broadened into inconclusive.
+    econ = _econ(["oos"], [_gate_row("oos", passed=False,
+                                     error="ValueError: degenerate labels")])
+    row = {"symbol": "BTC/USDT", "timeframe": "1h", "pass": False,
+           "economic_report": econ, "blocking_reasons": []}
+    assert m._cell_outcome(row) == "fail"
+
+
+def test_run_multi_asset_gate_counts_economic_data_gap_as_inconclusive():
+    # End-to-end: SOL's OOS gate window is data-gapped; BTC/ETH pass. The gate
+    # promotes (2 symbols) and SOL is tallied inconclusive, not failed.
+    def fake_bakeoff(symbol, timeframe, **kwargs):
+        return _bakeoff()
+
+    def fake_fit(*args, **kwargs):
+        return {"model_id": "m", "states": ["a", "b"], "mapping": {}}
+
+    def fake_economic(**kwargs):
+        if kwargs["symbol"] == "SOL/USDT":
+            return _econ(["oos"], [_gate_row("oos", passed=False,
+                                             error="no cached data")])
+        return _econ(["oos"], [_gate_row("oos", passed=True)])
+
+    report = m.run_multi_asset_gate(
+        datasets=[("BTC/USDT", "1h"), ("ETH/USDT", "4h"), ("SOL/USDT", "4h")],
+        min_pass_cells=2,
+        bakeoff_fn=fake_bakeoff,
+        fit_model_fn=fake_fit,
+        economic_gate_fn=fake_economic,
+    )
+    s = report["summary"]
+    assert s["pass"] is True
+    assert s["passed_cells"] == 2
+    assert s["inconclusive_cells"] == 1
+    assert s["failed_cells"] == 0
+    assert any("[inconclusive] SOL/USDT 4h" in d for d in s["cell_diagnostics"])

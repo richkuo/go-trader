@@ -257,23 +257,64 @@ def _row_symbol(row: dict) -> str:
     return dataset.split(" ", 1)[0] if dataset else "?"
 
 
+# Mirrors the data-absence marker regime_1081_economic_gate sets on a window
+# that has no cached data (it swallows the gap into a pass=False row rather than
+# raising). If that wording ever drifts, the match below simply stops firing and
+# the cell falls back to the prior ``fail`` classification — an audit-accuracy
+# regression, never a verdict/safety change.
+_ECONOMIC_NO_DATA_MARKER = "no cached data"
+
+
+def _economic_failure_is_data_gap_only(economic_report: dict) -> bool:
+    """True iff a non-passing #1081 report's gate-window blocks are ALL missing-
+    data gaps — i.e. no candidate ever ran to a verdict on a data-bearing gate
+    window.
+
+    #1081 does not raise on a missing window; it returns a normal ``pass=False``
+    report carrying a row with ``error='no cached data'``. Without this, the
+    #1083 cell would read as a genuine economic ``fail`` when the data was simply
+    absent. Safety constraint: if ANY gate window ran to a real (error-free)
+    non-passing verdict, that is genuine negative evidence and the cell must stay
+    ``fail`` even when another gate window is data-gapped. Degenerate-label or
+    per-cell economic exceptions on data-bearing windows also stay ``fail`` (only
+    an explicit data gap is inconclusive).
+    """
+    gate_windows = set(economic_report.get("gate_windows", []))
+    non_passing = [
+        r for r in economic_report.get("rows", [])
+        if r.get("window") in gate_windows and not r.get("verdict", {}).get("pass")
+    ]
+    if not non_passing:
+        return False
+    # An error-free non-passing gate row is a real economic rejection.
+    if any(not r.get("error") for r in non_passing):
+        return False
+    return any(_ECONOMIC_NO_DATA_MARKER in str(r.get("error", "")) for r in non_passing)
+
+
 def _cell_outcome(row: dict) -> str:
     """Classify a cell as ``pass`` / ``fail`` / ``inconclusive``.
 
     - ``pass``: cleared both #1080 model selection and #1081 ATR economics.
     - ``fail``: the methodology ran on real data but did not clear — no #1080
-      gate-passing model, or an #1081 economic rejection. Genuine negative
-      evidence about generalization on that cell.
-    - ``inconclusive``: the cell could not be evaluated at all — a per-cell
-      exception (missing/short cached data, loader/IO error; ``run_cell`` funnels
-      all such failures into ``row['error']``). Absence of evidence, not
-      evidence of absence: it must NOT count as a failure (a data gap would
-      otherwise masquerade as a model that does not generalize), and it must NOT
-      substitute for a pass either.
+      gate-passing model, or a genuine #1081 economic rejection (a candidate did
+      not beat the flat control on a data-bearing gate window). Degenerate-label
+      and per-cell economic exceptions on data-bearing windows also stay ``fail``.
+      Genuine negative evidence about generalization on that cell.
+    - ``inconclusive``: the cell could not be evaluated on real data — either a
+      #1083-stage exception (in-sample data gap / loader-IO error, funneled into
+      ``row['error']``), OR an #1081 economic failure whose gate-window blocks are
+      ALL missing-data gaps (no candidate ran to a verdict). Absence of evidence,
+      not evidence of absence: must NOT count as a failure (a data gap would
+      otherwise masquerade as a model that does not generalize) and must NOT
+      substitute for a pass.
     """
     if row.get("pass"):
         return "pass"
     if row.get("error"):
+        return "inconclusive"
+    economic = row.get("economic_report")
+    if economic and _economic_failure_is_data_gap_only(economic):
         return "inconclusive"
     return "fail"
 
