@@ -295,14 +295,15 @@ def _load_research_module(tag):
 
 def test_select_winner_prefers_eligible_high_separation():
     mod = _load_research_module("rank1")
+    # 4 candidates -> bonferroni alpha = 0.05/4 = 0.0125; eligible candidates clear it (p=0.001).
     cands = [
-        {"family": "hmm", "k": 3, "verdict": {"ship": True},
+        {"family": "hmm", "k": 3, "verdict": {"ship": True}, "model_p_value": 0.001,
          "non_degenerate_all": True, "model_kruskal_h": 90.0, "stability_gain": 0.05},
-        {"family": "gmm", "k": 4, "verdict": {"ship": True},
+        {"family": "gmm", "k": 4, "verdict": {"ship": True}, "model_p_value": 0.001,
          "non_degenerate_all": True, "model_kruskal_h": 120.0, "stability_gain": 0.03},
-        {"family": "kmeans", "k": 5, "verdict": {"ship": False},
+        {"family": "kmeans", "k": 5, "verdict": {"ship": False}, "model_p_value": 0.001,
          "non_degenerate_all": True, "model_kruskal_h": 999.0, "stability_gain": 0.9},
-        {"family": "hmm", "k": 7, "verdict": {"ship": True},
+        {"family": "hmm", "k": 7, "verdict": {"ship": True}, "model_p_value": 0.001,
          "non_degenerate_all": False, "model_kruskal_h": 999.0, "stability_gain": 0.9},
     ]
     win = mod.select_winner(cands)
@@ -312,8 +313,59 @@ def test_select_winner_prefers_eligible_high_separation():
 def test_select_winner_returns_none_when_no_eligible():
     mod = _load_research_module("rank2")
     assert mod.select_winner([{"family": "hmm", "k": 3, "verdict": {"ship": False},
-                               "non_degenerate_all": True, "model_kruskal_h": 1.0,
-                               "stability_gain": 0.0}]) is None
+                               "model_p_value": 0.001, "non_degenerate_all": True,
+                               "model_kruskal_h": 1.0, "stability_gain": 0.0}]) is None
+
+
+def test_select_winner_applies_bonferroni_correction():
+    # A candidate that clears the gate (ship + non-degenerate) and the RAW alpha (0.05) but
+    # NOT the family-wise corrected alpha must be rejected, bounding the sweep's false-positive
+    # rate. 20 candidates -> corrected alpha = 0.05/20 = 0.0025; p=0.03 clears 0.05 but not 0.0025.
+    mod = _load_research_module("bonf")
+    lucky = {"family": "kmeans", "k": 4, "verdict": {"ship": True}, "model_p_value": 0.03,
+             "non_degenerate_all": True, "model_kruskal_h": 999.0, "stability_gain": 0.9}
+    fillers = [{"family": "hmm", "k": 2, "verdict": {"ship": False}, "model_p_value": 0.9,
+                "non_degenerate_all": False, "model_kruskal_h": 1.0, "stability_gain": 0.0}
+               for _ in range(19)]
+    assert mod.select_winner([lucky] + fillers) is None        # lucky chance winner rejected
+    assert mod.bonferroni_alpha(20) == pytest.approx(0.05 / 20)
+    # the same candidate WOULD win if it cleared the corrected alpha (p well under 0.0025)
+    lucky_real = dict(lucky, model_p_value=0.0001)
+    win = mod.select_winner([lucky_real] + fillers)
+    assert win["family"] == "kmeans" and win["k"] == 4
+
+
+def test_fit_kmeans_reseeds_empty_clusters_no_ghost_states():
+    # K greater than the number of natural clusters: Lloyd's alone would leave clusters empty,
+    # storing n=0 ghost emission states. The repair must fill every cluster from real data.
+    z, _ = _three_blobs(seed=0)                         # 3 well-separated blobs, K=7 requested
+    assign, em_mean, em_var, counts = rvm.fit_kmeans(z, 7, seed=0)
+    assert counts.min() >= 1                            # no n=0 ghost state
+    assert counts.sum() == len(z)                       # every bar assigned exactly once
+    assert (em_var > 0).all()
+    assert np.isfinite(em_mean).all()                   # no stale/NaN ghost centroid
+    for j in range(7):
+        assert (assign == j).any()                      # every cluster occupied
+
+
+def test_fit_kmeans_reseed_survives_duplicate_rows():
+    # Inverse/degenerate: many identical rows collapse all centroids onto one point. Re-seeding
+    # to distinct row INDICES still gives every cluster >=1 member (no n=0 ghost).
+    z = np.tile(np.array([0.3, 0.4, 0.5, 12.0]), (50, 1))
+    assign, em_mean, em_var, counts = rvm.fit_kmeans(z, 4, seed=0)
+    assert counts.min() >= 1
+    assert counts.sum() == 50
+    assert (em_var > 0).all() and np.isfinite(em_mean).all()
+
+
+def test_fit_unsupervised_high_k_stores_no_zero_n_emission():
+    # The invariant at the schema boundary: no stored emission may summarize zero observations.
+    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
+    feats = _feature_blob_matrix()                      # 3 natural blobs, K=7 requested
+    model = rvm.fit_unsupervised(feats, family="kmeans", k=7, filter_window=32,
+                                 thresholds=dict(TH), seed=0)
+    assert all(e["n"] >= 1 for e in model["emissions"])
+    assert sum(e["n"] for e in model["emissions"]) == int((~np.isnan(feats).any(1)).sum())
 
 
 def test_bakeoff_smoke_on_cached_data_if_available():

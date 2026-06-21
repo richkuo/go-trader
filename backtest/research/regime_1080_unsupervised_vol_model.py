@@ -38,11 +38,26 @@ import regime_vol_model as rvm
 DEFAULT_WINDOWS = ("is", "oos", "2023", "2024", "2025H1")
 
 
+def bonferroni_alpha(n_candidates):
+    """Family-wise significance threshold for a sweep of n_candidates: SIGNIFICANCE_ALPHA split
+    across every candidate independently tested against the gate's significance arm. Bounds the
+    chance that SOME candidate clears significance by luck as the sweep widens (#1083)."""
+    return SIGNIFICANCE_ALPHA / max(1, int(n_candidates))
+
+
 def select_winner(candidates):
-    """Eligible = gate ship AND non-degenerate on every eval window. Winner = max held-out
-    model_kruskal_h, stability_gain as tiebreak. Returns None when none are eligible."""
+    """Eligible = gate ship AND non-degenerate on every eval window AND the model's forward-vol
+    p-value clears the BONFERRONI-corrected threshold (alpha / number of candidates swept).
+    The gate's own significance arm uses the raw per-candidate alpha; across an 18+ candidate
+    sweep ~1-in-20 clears it by chance, so the family-wise correction is what keeps the
+    SELECTION's false-positive rate bounded. Winner = max held-out model_kruskal_h,
+    stability_gain as tiebreak. Returns None when none are eligible."""
+    if not candidates:
+        return None
+    alpha = bonferroni_alpha(len(candidates))
     eligible = [c for c in candidates
-                if c.get("verdict", {}).get("ship") and c.get("non_degenerate_all")]
+                if c.get("verdict", {}).get("ship") and c.get("non_degenerate_all")
+                and c.get("model_p_value") is not None and c["model_p_value"] <= alpha]
     if not eligible:
         return None
     return max(eligible, key=lambda c: (c["model_kruskal_h"], c["stability_gain"]))
@@ -104,10 +119,16 @@ def run_bakeoff(symbol="BTC/USDT", timeframe="1h", *, in_sample="is", held_out="
                 "non_degenerate_all": all(nd[w]["ok"] for w in eval_windows),
                 "states": model["states"], "mapping": model["mapping"],
             })
+    alpha = bonferroni_alpha(len(candidates))
+    for c in candidates:
+        c["passes_bonferroni"] = (c["model_p_value"] is not None and c["model_p_value"] <= alpha)
     winner = select_winner(candidates)
     return {
         "symbol": symbol, "timeframe": timeframe, "in_sample": in_sample,
         "held_out": held_out, "target": "volatility",
+        "candidate_count": len(candidates),
+        "significance_alpha": SIGNIFICANCE_ALPHA,
+        "bonferroni_alpha": alpha,
         "non_degeneracy_thresholds": vars(thresholds),
         "handrule_held_out": {"kruskal_h": hr_held["h4"]["separation"]["kruskal_h"],
                               "p_value": hr_held["h4"]["significance"]["p_value"],

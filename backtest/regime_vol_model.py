@@ -73,6 +73,24 @@ def fit_kmeans(z, k, *, seed=0, iters=100, var_floor=1e-3):
             if (assign == j).any():
                 centers[j] = z[assign == j].mean(0)
     em_mean = centers.copy()  # decouple from `centers` so callers can't mutate the alias
+    # Re-seed empty clusters before summarizing: an emptied cluster keeps its stale init centroid
+    # and the default unit variance, and forward_filter_labels does NOT skip n=0 states -> that
+    # ghost Gaussian can still win the decoder argmax and emit a label no training bar supports.
+    # Hand each empty cluster the data point farthest from its assigned center (classic
+    # empty-cluster repair), stealing only from clusters that can spare a member, so every stored
+    # state summarizes >=1 real observation. No-op when every cluster is occupied -> byte-identical.
+    empty = [j for j in range(k) if not (assign == j).any()]
+    if empty:
+        d = ((z[:, None, :] - centers[None, :, :]) ** 2).sum(-1)
+        nearest = d[np.arange(n), assign]
+        for j in empty:
+            sizes = np.bincount(assign, minlength=k)            # recomputed: prior steals shrink donors
+            spare = np.where(sizes[assign] >= 2, nearest, -np.inf)
+            far = int(spare.argmax())
+            if not np.isfinite(spare[far]):
+                break  # no donor can spare a point (fewer than k distinct-enough rows) -> degenerate
+            assign[far] = j
+            em_mean[j] = z[far]
     em_var = np.ones((k, z.shape[1]))
     counts = np.zeros(k, dtype=int)
     for j in range(k):
