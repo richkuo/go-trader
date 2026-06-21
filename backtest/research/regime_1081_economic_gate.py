@@ -63,6 +63,9 @@ DEFAULT_TP_TIERS = [
     {"atr_multiple": 3.0, "close_fraction": 0.8},
     {"atr_multiple": 5.0, "close_fraction": 1.0},
 ]
+DEFAULT_FLAT_ATR_GRID = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0)
+DEFAULT_TIER_SCALE_GRID = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
+DEFAULT_RATCHET_TRAIL_GRID = DEFAULT_FLAT_ATR_GRID
 
 SURFACES = (
     "fixed_sl",
@@ -97,6 +100,10 @@ def _round_or_none(v, places: int = 4):
     return round(float(v), places)
 
 
+def _fmt_num(v: float) -> str:
+    return f"{float(v):g}"
+
+
 def parse_csv(raw: str | Iterable[str] | None, *, allowed: Optional[set[str]] = None) -> list[str]:
     if raw is None:
         return []
@@ -109,6 +116,19 @@ def parse_csv(raw: str | Iterable[str] | None, *, allowed: Optional[set[str]] = 
         bad = sorted(set(out) - allowed)
         if bad:
             raise ValueError(f"unknown value(s) {bad}; allowed: {sorted(allowed)}")
+    return out
+
+
+def parse_float_csv(raw: str | Iterable[float] | None) -> list[float]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.split(",")]
+    else:
+        parts = [str(p).strip() for p in raw]
+    out = [float(p) for p in parts if p]
+    if any(v <= 0 for v in out):
+        raise ValueError("grid values must be positive")
     return out
 
 
@@ -160,26 +180,55 @@ def _arm(
     }
 
 
-def surface_arms(surface: str) -> tuple[dict, dict]:
+def _grid(control_grids: Optional[dict], key: str, default: tuple[float, ...]) -> list[float]:
+    if not control_grids or key not in control_grids:
+        return list(default)
+    vals = [float(v) for v in control_grids[key]]
+    if not vals:
+        raise ValueError(f"{key} grid must not be empty")
+    if any(v <= 0 for v in vals):
+        raise ValueError(f"{key} grid values must be positive")
+    return vals
+
+
+def _scaled_tp_tiers(scale: float) -> list[dict]:
+    tiers = []
+    for tier in DEFAULT_TP_TIERS:
+        t = dict(tier)
+        t["atr_multiple"] = round(float(t["atr_multiple"]) * float(scale), 8)
+        tiers.append(t)
+    return tiers
+
+
+def surface_arms(surface: str, *, control_grids: Optional[dict] = None) -> tuple[list[dict], dict]:
     if surface == "fixed_sl":
         return (
-            _arm("flat_sl_atr=2", stop_loss_atr_mult=2.0),
+            [
+                _arm(f"flat_sl_atr={_fmt_num(v)}", stop_loss_atr_mult=v)
+                for v in _grid(control_grids, "flat_atr", DEFAULT_FLAT_ATR_GRID)
+            ],
             _arm("regime_sl_defaults", stop_loss_atr_regime={"use_defaults": True}),
         )
     if surface == "trailing_stop":
         return (
-            _arm("flat_trail_atr=3", trailing_stop_atr_mult=3.0),
+            [
+                _arm(f"flat_trail_atr={_fmt_num(v)}", trailing_stop_atr_mult=v)
+                for v in _grid(control_grids, "flat_atr", DEFAULT_FLAT_ATR_GRID)
+            ],
             _arm("regime_trail_defaults", trailing_stop_atr_regime={"use_defaults": True}),
         )
     if surface == "tiered_tp":
         return (
-            _arm(
-                "flat_tiered_tp_atr_default",
-                close_strategies=[{
-                    "name": "tiered_tp_atr",
-                    "params": {"tp_tiers": deepcopy(DEFAULT_TP_TIERS)},
-                }],
-            ),
+            [
+                _arm(
+                    f"flat_tiered_tp_atr_scale={_fmt_num(scale)}",
+                    close_strategies=[{
+                        "name": "tiered_tp_atr",
+                        "params": {"tp_tiers": _scaled_tp_tiers(scale)},
+                    }],
+                )
+                for scale in _grid(control_grids, "tier_scale", DEFAULT_TIER_SCALE_GRID)
+            ],
             _arm(
                 "regime_tiered_tp_atr_defaults",
                 close_strategies=[{
@@ -190,16 +239,19 @@ def surface_arms(surface: str) -> tuple[dict, dict]:
         )
     if surface == "tiered_tp_live":
         return (
-            _arm(
-                "flat_tiered_tp_atr_live_default",
-                close_strategies=[{
-                    "name": "tiered_tp_atr_live",
-                    "params": {
-                        "atr_source": "live",
-                        "tp_tiers": deepcopy(DEFAULT_TP_TIERS),
-                    },
-                }],
-            ),
+            [
+                _arm(
+                    f"flat_tiered_tp_atr_live_scale={_fmt_num(scale)}",
+                    close_strategies=[{
+                        "name": "tiered_tp_atr_live",
+                        "params": {
+                            "atr_source": "live",
+                            "tp_tiers": _scaled_tp_tiers(scale),
+                        },
+                    }],
+                )
+                for scale in _grid(control_grids, "tier_scale", DEFAULT_TIER_SCALE_GRID)
+            ],
             _arm(
                 "regime_tiered_tp_atr_live_defaults",
                 close_strategies=[{
@@ -210,14 +262,17 @@ def surface_arms(surface: str) -> tuple[dict, dict]:
         )
     if surface == "trailing_ratchet":
         return (
-            _arm(
-                "flat_trailing_ratchet_defaults",
-                close_strategies=[{
-                    "name": "trailing_tp_ratchet",
-                    "params": {"use_defaults": True},
-                }],
-                trailing_stop_atr_mult=1.5,
-            ),
+            [
+                _arm(
+                    f"flat_trailing_ratchet_trail={_fmt_num(v)}",
+                    close_strategies=[{
+                        "name": "trailing_tp_ratchet",
+                        "params": {"use_defaults": True},
+                    }],
+                    trailing_stop_atr_mult=v,
+                )
+                for v in _grid(control_grids, "ratchet_trail", DEFAULT_RATCHET_TRAIL_GRID)
+            ],
             _arm(
                 "regime_trailing_ratchet_defaults",
                 close_strategies=[{
@@ -288,12 +343,18 @@ def validate_label_stream(labels, valid, *, source: str, min_active_labels: int 
     }
 
 
-def inject_regime_labels(df, labels):
+def inject_regime_labels(df, labels, valid=None):
     labels = np.asarray(labels, dtype=object)
     if len(labels) != len(df):
         raise ValueError(f"label count {len(labels)} != dataframe rows {len(df)}")
+    if valid is None:
+        valid = np.ones(len(labels), dtype=bool)
+    else:
+        valid = np.asarray(valid, dtype=bool)
+        if len(valid) != len(df):
+            raise ValueError(f"valid mask count {len(valid)} != dataframe rows {len(df)}")
     out = df.copy()
-    out["regime"] = [str(x or "") for x in labels]
+    out["regime"] = [str(x or "") if ok else "" for x, ok in zip(labels, valid)]
     return out
 
 
@@ -408,6 +469,53 @@ def compare_summaries(control: dict, candidate: dict, *, min_sharpe_delta: float
     }
 
 
+def _control_rank(summary: dict) -> tuple:
+    def val(key, default):
+        v = summary.get(key)
+        if v is None:
+            return default
+        return float(v)
+
+    return (
+        val("sharpe", float("-inf")),
+        val("ddadj", float("-inf")),
+        -val("stop_out_rate", float("inf")),
+        val("median_mae_pct", float("-inf")),
+        val("total_return_pct", float("-inf")),
+        val("max_drawdown_pct", float("-inf")),
+    )
+
+
+def _best_control(control_results: list[dict]) -> dict:
+    if not control_results:
+        raise ValueError("at least one flat control arm is required")
+    return max(control_results, key=lambda item: _control_rank(item["summary"]))
+
+
+def compare_against_controls(control_results: list[dict], candidate: dict, **thresholds) -> dict:
+    best = _best_control(control_results)
+    headline = compare_summaries(best["summary"], candidate, **thresholds)
+    per_control = []
+    blocking = []
+    for item in control_results:
+        verdict = compare_summaries(item["summary"], candidate, **thresholds)
+        per_control.append({
+            "control_label": item["label"],
+            **verdict,
+        })
+        if not verdict["pass"]:
+            for reason in verdict["blocking_reasons"]:
+                blocking.append(f"{item['label']}: {reason}")
+    return {
+        "pass": not blocking,
+        "deltas": headline["deltas"],
+        "blocking_reasons": blocking,
+        "best_control_label": best["label"],
+        "control_count": len(control_results),
+        "control_verdicts": per_control,
+    }
+
+
 def _backtester_kwargs(arm: dict, *, capital: float, platform: str, strategy: str,
                        params: dict, direction: str) -> dict:
     validate_arm_config(arm)
@@ -455,29 +563,36 @@ def _strategy_frame(registry: str, strategy: str, df, params: Optional[dict]):
     return frame, strategy_params
 
 
-def run_cell(df, labels, *, surface: str, registry: str, strategy: str,
+def run_cell(df, labels, *, valid=None, surface: str, registry: str, strategy: str,
              params: Optional[dict], capital: float, platform: str,
              direction: str, symbol: str, timeframe: str,
-             thresholds: dict) -> dict:
-    control_arm, candidate_arm = surface_arms(surface)
+             thresholds: dict, control_grids: Optional[dict] = None) -> dict:
+    control_arms, candidate_arm = surface_arms(surface, control_grids=control_grids)
     base_frame, strategy_params = _strategy_frame(registry, strategy, df, params)
-    frame = inject_regime_labels(base_frame, labels)
-    control = summarize_results(run_arm(
-        frame, control_arm, capital=capital, platform=platform, strategy=strategy,
-        params=strategy_params, direction=direction, symbol=symbol,
-        timeframe=timeframe,
-    ))
+    frame = inject_regime_labels(base_frame, labels, valid=valid)
+    controls = []
+    for control_arm in control_arms:
+        controls.append({
+            "label": control_arm["label"],
+            "summary": summarize_results(run_arm(
+                frame, control_arm, capital=capital, platform=platform,
+                strategy=strategy, params=strategy_params, direction=direction,
+                symbol=symbol, timeframe=timeframe,
+            )),
+        })
     candidate = summarize_results(run_arm(
         frame, candidate_arm, capital=capital, platform=platform, strategy=strategy,
         params=strategy_params, direction=direction, symbol=symbol,
         timeframe=timeframe,
     ))
-    verdict = compare_summaries(control, candidate, **thresholds)
+    best = _best_control(controls)
+    verdict = compare_against_controls(controls, candidate, **thresholds)
     return {
         "surface": surface,
-        "control_label": control_arm["label"],
+        "control_label": best["label"],
         "candidate_label": candidate_arm["label"],
-        "control": control,
+        "control": best["summary"],
+        "controls": controls,
         "candidate": candidate,
         "verdict": verdict,
     }
@@ -507,6 +622,7 @@ def run_gate(
     direction: str = DEFAULT_DIRECTION,
     params: Optional[dict] = None,
     thresholds: Optional[dict] = None,
+    control_grids: Optional[dict] = None,
 ) -> dict:
     windows = list(windows)
     gate_windows = set(gate_windows)
@@ -543,10 +659,11 @@ def run_gate(
             for surface in surfaces:
                 try:
                     cell = run_cell(
-                        df, labels, surface=surface, registry=registry,
+                        df, labels, valid=valid, surface=surface, registry=registry,
                         strategy=strategy, params=params, capital=capital,
                         platform=platform, direction=direction, symbol=symbol,
                         timeframe=timeframe, thresholds=thresholds,
+                        control_grids=control_grids,
                     )
                     cell.update({"window": window, "label_source": source})
                 except Exception as exc:  # fail closed, report the blocked cell
@@ -589,6 +706,7 @@ def run_gate(
         "surfaces": surfaces,
         "period": int(period),
         "thresholds": thresholds,
+        "control_grids": control_grids or {},
         "label_stats": label_stats,
         "rows": rows,
         "summary": {
@@ -605,6 +723,7 @@ def format_report(report: dict) -> str:
         "REGIME ATR ECONOMIC GATE (#1081) "
         f"{report['symbol']} {report['timeframe']} strategy={report['strategy']}"
     )
+    lines.append("Flat control columns show the strongest arm from the configured control grid.")
     lines.append("=" * 100)
     hdr = (
         f"{'src':8s} {'surface':18s} {'win':7s} | "
@@ -669,6 +788,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-ddadj-delta", type=float, default=0.0)
     p.add_argument("--max-stop-rate-delta", type=float, default=0.0)
     p.add_argument("--min-mae-delta", type=float, default=0.0)
+    p.add_argument("--flat-atr-grid", default=",".join(_fmt_num(v) for v in DEFAULT_FLAT_ATR_GRID),
+                   help="positive ATR multiples for fixed/trailing flat controls")
+    p.add_argument("--tier-scale-grid", default=",".join(_fmt_num(v) for v in DEFAULT_TIER_SCALE_GRID),
+                   help="positive scale factors applied to flat TP tier ATR multiples")
+    p.add_argument("--ratchet-trail-grid", default=",".join(_fmt_num(v) for v in DEFAULT_RATCHET_TRAIL_GRID),
+                   help="positive trailing ATR multiples for ratchet flat controls")
     return p
 
 
@@ -700,6 +825,11 @@ def main(argv=None) -> int:
             "min_ddadj_delta": args.min_ddadj_delta,
             "max_stop_rate_delta": args.max_stop_rate_delta,
             "min_mae_delta": args.min_mae_delta,
+        },
+        control_grids={
+            "flat_atr": parse_float_csv(args.flat_atr_grid),
+            "tier_scale": parse_float_csv(args.tier_scale_grid),
+            "ratchet_trail": parse_float_csv(args.ratchet_trail_grid),
         },
     )
     if args.json:

@@ -21,10 +21,12 @@ from backtester import Backtester  # noqa: E402
 
 def test_surface_arms_names_and_supported_configs():
     for surface in m.SURFACES:
-        control, candidate = m.surface_arms(surface)
-        assert control["label"]
+        controls, candidate = m.surface_arms(surface)
+        assert controls
+        for control in controls:
+            assert control["label"]
+            m.validate_arm_config(control)
         assert candidate["label"]
-        m.validate_arm_config(control)
         m.validate_arm_config(candidate)
 
 
@@ -93,6 +95,15 @@ def test_validate_label_stream_counts_valid_rows_only():
     assert stats["counts"] == {"ranging_quiet": 2, "trending_up_clean": 1}
 
 
+def test_inject_regime_labels_blanks_invalid_warmup_rows():
+    df = pd.DataFrame({"close": [1.0, 2.0, 3.0]})
+    labels = ["ranging_quiet", "trending_down_clean", "trending_up_clean"]
+    got = m.inject_regime_labels(df, labels, valid=[False, True, False])
+    assert got["regime"].tolist() == ["", "trending_down_clean", ""]
+    with pytest.raises(ValueError, match="valid mask count"):
+        m.inject_regime_labels(df, labels, valid=[True, False])
+
+
 def _trade(entry_date, reason, mae, mfe=2.0, pnl=1.0):
     return {
         "entry_date": entry_date,
@@ -105,6 +116,16 @@ def _trade(entry_date, reason, mae, mfe=2.0, pnl=1.0):
         "exit_price": 101.0,
         "entry_fee": 0.0,
         "exit_fee": 0.0,
+    }
+
+
+def _raw_result(*, sharpe=1.0, ret=10.0, dd=-5.0, mae=-1.0, reason="tiered_tp_atr:1"):
+    return {
+        "total_return_pct": ret,
+        "max_drawdown_pct": dd,
+        "sharpe_ratio": sharpe,
+        "total_trades": 1,
+        "trades": [_trade("d1", reason, mae)],
     }
 
 
@@ -170,6 +191,81 @@ def test_compare_summaries_equal_risk_adjusted_metrics_do_not_pass():
     assert verdict["pass"] is False
     joined = " ".join(verdict["blocking_reasons"])
     assert "Sharpe" in joined and "DD-adjusted" in joined
+
+
+def test_run_cell_requires_candidate_to_beat_each_flat_control(monkeypatch):
+    df = pd.DataFrame({"open": [100.0, 101.0], "close": [100.0, 101.0], "atr": [1.0, 1.0]})
+    labels = ["ranging_quiet", "trending_up_clean"]
+
+    def fake_strategy_frame(registry, strategy, frame, params):
+        return frame.copy(), {}
+
+    def fake_run_arm(frame, arm, **kwargs):
+        label = arm["label"]
+        if label == "regime_sl_defaults":
+            return _raw_result(sharpe=1.5, ret=15.0, dd=-10.0)
+        if label == "flat_sl_atr=5":
+            return _raw_result(sharpe=2.0, ret=20.0, dd=-10.0)
+        return _raw_result(sharpe=1.0, ret=10.0, dd=-10.0)
+
+    monkeypatch.setattr(m, "_strategy_frame", fake_strategy_frame)
+    monkeypatch.setattr(m, "run_arm", fake_run_arm)
+    got = m.run_cell(
+        df,
+        labels,
+        valid=[True, True],
+        surface="fixed_sl",
+        registry="futures",
+        strategy="probe",
+        params={},
+        capital=10_000.0,
+        platform="hyperliquid",
+        direction="long",
+        symbol="BTC/USDT",
+        timeframe="1h",
+        thresholds={},
+        control_grids={"flat_atr": [1.0, 5.0]},
+    )
+    assert got["control_label"] == "flat_sl_atr=5"
+    assert len(got["controls"]) == 2
+    assert got["verdict"]["pass"] is False
+    assert "flat_sl_atr=5" in " ".join(got["verdict"]["blocking_reasons"])
+
+
+def test_run_cell_threads_valid_mask_to_injection(monkeypatch):
+    df = pd.DataFrame({"open": [100.0, 101.0, 102.0], "close": [100.0, 101.0, 102.0]})
+    labels = ["ranging_quiet", "trending_down_clean", "trending_up_clean"]
+    seen = []
+
+    def fake_strategy_frame(registry, strategy, frame, params):
+        return frame.copy(), {}
+
+    def fake_run_arm(frame, arm, **kwargs):
+        seen.append(frame["regime"].tolist())
+        if arm["label"] == "regime_sl_defaults":
+            return _raw_result(sharpe=2.0, ret=20.0, dd=-10.0)
+        return _raw_result(sharpe=1.0, ret=10.0, dd=-10.0)
+
+    monkeypatch.setattr(m, "_strategy_frame", fake_strategy_frame)
+    monkeypatch.setattr(m, "run_arm", fake_run_arm)
+    m.run_cell(
+        df,
+        labels,
+        valid=[False, False, True],
+        surface="fixed_sl",
+        registry="futures",
+        strategy="probe",
+        params={},
+        capital=10_000.0,
+        platform="hyperliquid",
+        direction="long",
+        symbol="BTC/USDT",
+        timeframe="1h",
+        thresholds={},
+        control_grids={"flat_atr": [1.0]},
+    )
+    assert seen
+    assert all(vals == ["", "", "trending_up_clean"] for vals in seen)
 
 
 def test_injected_raw_regime_labels_are_shifted_by_backtester_no_lookahead():
