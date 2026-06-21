@@ -427,3 +427,92 @@ def test_format_report_surfaces_breadth_and_symbol_lines():
     assert "2/3 cells passed" in text
     assert "inconclusive" in text
     assert "symbols:" in text
+
+
+def test_summarize_rejects_non_positive_breadth_floors():
+    # len(passed) >= k is vacuously true for k <= 0, so a non-positive floor
+    # would green-light promoting a model that cleared no cell. The decision
+    # boundary must reject it, not only the CLI.
+    rows = [_cell("BTC/USDT", "1h", passed=True), _cell("ETH/USDT", "1h", passed=True)]
+    with pytest.raises(ValueError, match="min_pass_cells must be >= 1"):
+        m.summarize(rows, min_pass_cells=0)
+    with pytest.raises(ValueError, match="min_pass_cells must be >= 1"):
+        m.summarize(rows, min_pass_cells=-1)
+    with pytest.raises(ValueError, match="min_pass_symbols must be >= 1"):
+        m.summarize(rows, min_pass_cells=1, min_pass_symbols=0)
+    with pytest.raises(ValueError, match="min_pass_symbols must be >= 1"):
+        m.summarize(rows, min_pass_cells=1, min_pass_symbols=-2)
+
+
+def test_main_rejects_non_positive_breadth_floors_up_front():
+    # All rejected before any cell runs (no data load needed).
+    with pytest.raises(SystemExit, match="--min-pass-cells must be >= 1"):
+        m.main(["--datasets", "BTC/USDT:1h", "--min-pass-cells", "0"])
+    with pytest.raises(SystemExit, match="--min-pass-cells must be >= 1"):
+        m.main(["--datasets", "BTC/USDT:1h", "--min-pass-cells", "-1"])
+    with pytest.raises(SystemExit, match="--min-pass-symbols must be >= 1"):
+        m.main(["--datasets", "BTC/USDT:1h", "--min-pass-symbols", "0"])
+    # The dangerous combo (both floors non-positive) must never reach a vacuous
+    # promote — it is rejected up front.
+    with pytest.raises(SystemExit):
+        m.main(["--datasets", "BTC/USDT:1h", "--min-pass-cells", "0",
+                "--min-pass-symbols", "0"])
+
+
+def test_main_accepts_valid_breadth_floors(monkeypatch):
+    captured = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {
+            "strategy": "s",
+            "registry": "spot",
+            "rows": [],
+            "summary": {
+                "pass": True,
+                "blocking_reasons": [],
+                "passed_cells": 0,
+                "total_cells": 0,
+                "min_pass_cells": 0,
+            },
+        }
+
+    monkeypatch.setattr(m, "run_multi_asset_gate", fake_run)
+    rc = m.main(["--datasets", "BTC/USDT:1h", "--min-pass-cells", "1",
+                 "--min-pass-symbols", "1"])
+    assert rc == 0
+    assert captured["min_pass_cells"] == 1
+    assert captured["min_pass_symbols"] == 1
+
+
+def test_wholly_inconclusive_symbol_keeps_cross_asset_floor_fail_closed():
+    # 2-symbol panel: ETH passes both cells, BTC is entirely a data gap.
+    # required_symbols = min(2, 2 panel symbols) = 2, but only ETH can pass, so
+    # the gate blocks — fail-closed, a data gap must not lower the floor.
+    rows = [
+        _cell("ETH/USDT", "1h", passed=True),
+        _cell("ETH/USDT", "4h", passed=True),
+        _cell("BTC/USDT", "1h", passed=False, error="ValueError: no cached data"),
+        _cell("BTC/USDT", "4h", passed=False, error="ValueError: no cached data"),
+    ]
+    s = m.summarize(rows, min_pass_cells=2)
+    assert s["pass"] is False
+    assert s["passed_cells"] == 2
+    assert s["passing_symbols"] == ["ETH/USDT"]
+    assert s["required_pass_symbols"] == 2
+    assert s["inconclusive_cells"] == 2
+    assert any("passing symbols 1" in b for b in s["blocking_reasons"])
+
+
+def test_three_symbol_panel_tolerates_one_wholly_inconclusive_symbol():
+    # The floor caps at 2, so BTC+ETH passing clears even with SOL fully gapped.
+    rows = [
+        _cell("BTC/USDT", "1h", passed=True),
+        _cell("ETH/USDT", "1h", passed=True),
+        _cell("SOL/USDT", "1h", passed=False, error="ValueError: no cached data"),
+        _cell("SOL/USDT", "4h", passed=False, error="ValueError: no cached data"),
+    ]
+    s = m.summarize(rows, min_pass_cells=2)
+    assert s["pass"] is True
+    assert s["required_pass_symbols"] == 2
+    assert set(s["passing_symbols"]) == {"BTC/USDT", "ETH/USDT"}

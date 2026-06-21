@@ -297,15 +297,33 @@ def summarize(rows: list[dict], *, min_pass_cells: int,
        explicit floor above the panel's symbol count blocks (unsatisfiable →
        fail-closed, mirroring the cell floor).
 
-    ``inconclusive`` cells (per-cell exceptions / missing data) are excluded from
-    BOTH the failing-cell tally and the pass tally — they are unknowns, reported
-    as diagnostics but never eroding or manufacturing breadth. Only cells that
-    genuinely ran and did not clear count against breadth.
+    ``inconclusive`` cells (per-cell exceptions / missing data) never count as a
+    ``fail`` and never count as a ``pass`` — on the cell-breadth axis they neither
+    help nor hurt. They are also never allowed to *lower* a breadth floor: the
+    cross-asset floor is derived from the panel's full symbol roster
+    (``min(2, #panel symbols)``), so a symbol whose cells are all inconclusive
+    still counts toward ``required_symbols`` while contributing no passing symbol.
+    This is deliberately fail-closed — a data gap must not make promotion easier.
+    Consequence: on a 2-symbol panel where one symbol is wholly inconclusive,
+    ``required_symbols == 2`` but at most one symbol can pass, so the gate blocks;
+    on the default 3-symbol panel the floor caps at 2, so one wholly-inconclusive
+    symbol still leaves promotion reachable.
 
     Per-non-pass-cell reasons are diagnostics (``cell_diagnostics``, tagged by
     outcome). They are promoted into ``blocking_reasons`` only when a breadth
     floor is missed, where they are the actionable cause.
+
+    Raises ``ValueError`` if any breadth floor is non-positive: ``len(passed) >=
+    k`` is vacuously true for ``k <= 0``, so a misconfigured floor (e.g. a wrapper
+    computing ``len(datasets) - tolerance`` into negative territory) would
+    green-light promoting a model that cleared no cell. The verdict must be
+    reachable as ``True`` only when at least one genuine cell passed, so the floor
+    is enforced at the decision boundary, not only at the CLI.
     """
+    if min_pass_cells < 1:
+        raise ValueError(f"min_pass_cells must be >= 1, got {min_pass_cells}")
+    if min_pass_symbols is not None and min_pass_symbols < 1:
+        raise ValueError(f"min_pass_symbols must be >= 1, got {min_pass_symbols}")
     passed = [r for r in rows if _cell_outcome(r) == "pass"]
     failed = [r for r in rows if _cell_outcome(r) == "fail"]
     inconclusive = [r for r in rows if _cell_outcome(r) == "inconclusive"]
@@ -546,6 +564,12 @@ def main(argv=None) -> int:
     if bad_families:
         raise SystemExit(
             f"unknown families {bad_families}; known: {sorted(rvm.FITTERS)}"
+        )
+    if args.min_pass_cells < 1:
+        raise SystemExit(f"--min-pass-cells must be >= 1, got {args.min_pass_cells}")
+    if args.min_pass_symbols is not None and args.min_pass_symbols < 1:
+        raise SystemExit(
+            f"--min-pass-symbols must be >= 1, got {args.min_pass_symbols}"
         )
     report = run_multi_asset_gate(
         datasets=datasets,
