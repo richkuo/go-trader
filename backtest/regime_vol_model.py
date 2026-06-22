@@ -207,10 +207,17 @@ def fit_hmm(z, k, *, seed=0, iters=50, var_floor=1e-3, tol=1e-4):
 FITTERS = {"kmeans": fit_kmeans, "gmm": fit_gmm, "hmm": fit_hmm}
 
 
-def map_latent_to_names(em_mean_z, feature_means, feature_stds, thresholds):
+def map_latent_to_names(em_mean_z, feature_means, feature_stds, thresholds,
+                        *, canonical_indices=(0, 1, 2, 3)):
     """Name each latent state by un-standardizing its centroid to raw feature space and running
     the canonical map_composite_label on it. Uses only training-window centroids (no per-bar
-    hand-rule labels). volatility_rank orders states by centroid range_eff (ascending)."""
+    hand-rule labels). volatility_rank orders states by centroid range_eff (ascending).
+
+    DECOUPLES fit-features from naming-features (#1095): a model may be fit on an ENRICHED matrix
+    (canonical four + extra signals), but states are still named from only the four canonical
+    columns. `canonical_indices` = the positions of (return_eff, range_eff, efficiency, adx) within
+    the fit matrix; the extra dims shape cluster geometry, never the 7-label vocabulary. Defaults
+    to (0,1,2,3) so the legacy 4-column path is unchanged. `centroid_raw` carries ALL fit dims."""
     from regime import map_composite_label
     em_mean_z = np.asarray(em_mean_z, dtype=float)
     mean = np.asarray(feature_means, dtype=float)
@@ -219,13 +226,16 @@ def map_latent_to_names(em_mean_z, feature_means, feature_stds, thresholds):
     if mean.shape != (d,) or std.shape != (d,):     # a mis-shaped scalar/wrong-length std would
         raise ValueError(f"feature_means/stds must be shape ({d},); "  # silently broadcast garbage
                          f"got {mean.shape} and {std.shape}")
+    ri, gi, ei, ai = (int(x) for x in canonical_indices)  # return_eff, range_eff, efficiency, adx
+    if not all(0 <= x < d for x in (ri, gi, ei, ai)):
+        raise ValueError(f"canonical_indices {tuple(canonical_indices)} out of range for {d} dims")
     raw = em_mean_z * std + mean                       # un-standardize centroids -> raw features
-    order = sorted(range(len(raw)), key=lambda i: (raw[i, 1], i))   # by range_eff, stable on ties
+    order = sorted(range(len(raw)), key=lambda i: (raw[i, gi], i))  # by range_eff, stable on ties
     rank = {i: r for r, i in enumerate(order)}
     names, mapping = [], {}
     for i in range(len(raw)):
         # map_composite_label(return_eff, adx_val, range_eff, efficiency, thresholds)
-        name = map_composite_label(raw[i, 0], raw[i, 3], raw[i, 1], raw[i, 2], thresholds)
+        name = map_composite_label(raw[i, ri], raw[i, ai], raw[i, gi], raw[i, ei], thresholds)
         names.append(name)
         mapping[str(i)] = {"name": name, "centroid_raw": raw[i].tolist(),
                            "volatility_rank": int(rank[i])}
@@ -233,27 +243,40 @@ def map_latent_to_names(em_mean_z, feature_means, feature_stds, thresholds):
 
 
 def fit_unsupervised(features, *, family, k, filter_window, period=48,
-                     thresholds=None, seed=0, fitted_on=None):
+                     thresholds=None, seed=0, fitted_on=None,
+                     feature_names=None, canonical_indices=(0, 1, 2, 3)):
     """Fit one unsupervised family and assemble the forward_filter_labels-decodable model dict.
     Emissions come from the family fit; the transition table + init are always estimated
-    empirically from the training-window state sequence; states are named post-fit from centroids."""
+    empirically from the training-window state sequence; states are named post-fit from centroids.
+
+    #1095: `features` may be an ENRICHED matrix (canonical four + extra signals). The fit, the
+    standardization, and `feature_means/feature_stds/emissions` all span EVERY column; naming
+    reads only the canonical columns via `canonical_indices`. `feature_names` (defaults to the
+    canonical FEATURES) and `canonical_indices` are recorded in the schema so decode can enforce
+    the column-order contract — forward_filter_labels is positional and must see the SAME columns
+    in the SAME order used here."""
     if family not in FITTERS:
         raise ValueError(f"unknown family {family!r}; known: {sorted(FITTERS)}")
     if thresholds is None:
         from regime import _DEFAULT_COMPOSITE_THRESHOLDS
         thresholds = dict(_DEFAULT_COMPOSITE_THRESHOLDS)
     features = np.asarray(features, dtype=float)
+    names_out = list(feature_names) if feature_names is not None else list(FEATURES)
+    if features.ndim != 2 or features.shape[1] != len(names_out):
+        raise ValueError(f"feature matrix has {features.shape[1] if features.ndim == 2 else '?'} "
+                         f"columns but feature_names lists {len(names_out)}")
     mean, std, mask = standardize(features)
     z = (features[mask] - mean) / std
     assign_valid, em_mean, em_var, counts = FITTERS[family](z, k, seed=seed)
     transition = empirical_transition(assign_valid, mask, k)
     init = init_distribution(transition)
-    names, mapping = map_latent_to_names(em_mean, mean, std, thresholds)
+    names, mapping = map_latent_to_names(em_mean, mean, std, thresholds,
+                                         canonical_indices=canonical_indices)
     emissions = [{"mean": em_mean[i].tolist(), "var": em_var[i].tolist(),
                   "n": int(counts[i])} for i in range(k)]
     return {
         "type": MODEL_TYPE, "version": MODEL_VERSION, "fit_method": family,
-        "features": list(FEATURES),
+        "features": names_out, "canonical_indices": [int(x) for x in canonical_indices],
         "feature_means": mean.tolist(), "feature_stds": std.tolist(),
         "states": names, "latent_count": int(k), "emissions": emissions,
         "transition": transition.tolist(), "init": init.tolist(),
