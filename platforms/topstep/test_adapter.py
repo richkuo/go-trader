@@ -115,6 +115,83 @@ class TestAccountData:
         assert adapter.get_open_positions() == []
 
 
+# ─── Cash-flow journal feeds (#1106) ──────────────
+
+def _live_adapter_with_session(session):
+    """Build a live adapter without real creds by injecting a mock session.
+
+    Bypasses __init__'s live-mode credential check / requests import so the
+    #1106 balance + fills methods can be unit-tested against a mocked HTTP layer.
+    """
+    adapter = TopStepExchangeAdapter(mode="paper")
+    adapter._mode = "live"
+    adapter._account_id = "acct-1"
+    adapter._session = session
+    assert adapter.is_live is True
+    return adapter
+
+
+class TestCashflowJournalFeeds:
+    def test_equity_and_upnl_derives_upnl_from_same_read(self):
+        session = MagicMock()
+        resp = MagicMock()
+        resp.json.return_value = {"equity": 50120.0, "cashBalance": 50000.0}
+        session.get.return_value = resp
+        adapter = _live_adapter_with_session(session)
+        equity, upnl = adapter.get_account_equity_and_upnl()
+        assert equity == 50120.0
+        # uPnL = equity − cashBalance from the SAME response (coherent snapshot).
+        assert upnl == pytest.approx(120.0)
+
+    def test_equity_and_upnl_missing_cash_degrades_to_zero_upnl(self):
+        session = MagicMock()
+        resp = MagicMock()
+        resp.json.return_value = {"equity": 1000.0}  # no cashBalance/balance field
+        session.get.return_value = resp
+        adapter = _live_adapter_with_session(session)
+        equity, upnl = adapter.get_account_equity_and_upnl()
+        assert equity == 1000.0
+        assert upnl == pytest.approx(0.0)
+
+    def test_equity_and_upnl_paper_raises(self):
+        adapter = TopStepExchangeAdapter(mode="paper")
+        with pytest.raises(RuntimeError, match="live mode"):
+            adapter.get_account_equity_and_upnl()
+
+    def test_get_account_fills_shapes_and_sorts(self):
+        session = MagicMock()
+        resp = MagicMock()
+        resp.json.return_value = {"fills": [
+            {"id": "f2", "timestamp": 200, "symbol": "es", "kind": "TRADE", "realizedPnl": 20, "fee": 0.3},
+            {"id": "f1", "timestamp": 100, "symbol": "ES", "kind": "", "realizedPnl": 0, "commission": 0.5},
+        ]}
+        session.get.return_value = resp
+        adapter = _live_adapter_with_session(session)
+        fills, capped = adapter.get_account_fills(since_ms=0, limit=1000)
+        assert capped is False
+        # Oldest-first.
+        assert [f["ts_ms"] for f in fills] == [100, 200]
+        assert fills[0] == {"fill_id": "f1", "ts_ms": 100, "symbol": "ES", "kind": "", "realized_pnl": 0.0, "fee": 0.5}
+        assert fills[1]["symbol"] == "ES" and fills[1]["kind"] == "trade" and fills[1]["realized_pnl"] == 20.0
+
+    def test_get_account_fills_capped_at_limit(self):
+        session = MagicMock()
+        resp = MagicMock()
+        resp.json.return_value = {"fills": [
+            {"id": "a", "timestamp": 1, "symbol": "ES", "kind": "trade", "realizedPnl": 1, "fee": 0},
+            {"id": "b", "timestamp": 2, "symbol": "ES", "kind": "trade", "realizedPnl": 1, "fee": 0},
+        ]}
+        session.get.return_value = resp
+        adapter = _live_adapter_with_session(session)
+        _, capped = adapter.get_account_fills(since_ms=0, limit=2)
+        assert capped is True
+
+    def test_get_account_fills_paper_raises(self):
+        adapter = TopStepExchangeAdapter(mode="paper")
+        with pytest.raises(RuntimeError, match="live mode"):
+            adapter.get_account_fills()
+
+
 # ─── Order Execution ──────────────────────────────
 
 class TestOrderExecution:

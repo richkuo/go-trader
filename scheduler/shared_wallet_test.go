@@ -237,8 +237,10 @@ func TestDetectSharedWallets_OKXIncludedAfterFetcher(t *testing.T) {
 	}
 }
 
-// TestDetectSharedWallets_TopStepExcludedNoFetcher — same as OKX, for TopStep.
-func TestDetectSharedWallets_TopStepExcludedNoFetcher(t *testing.T) {
+// TestDetectSharedWallets_TopStepGroupedWithFetcher — #1106 phase 4 of #1100
+// added a TopStep balance fetcher, so two live TopStep futures strategies on one
+// account are now grouped as a single shared wallet (mirrors the OKX test above).
+func TestDetectSharedWallets_TopStepGroupedWithFetcher(t *testing.T) {
 	t.Setenv("TOPSTEP_ACCOUNT_ID", "ts-account-42")
 
 	strategies := []StrategyConfig{
@@ -247,8 +249,13 @@ func TestDetectSharedWallets_TopStepExcludedNoFetcher(t *testing.T) {
 	}
 
 	shared := detectSharedWallets(strategies)
-	if len(shared) != 0 {
-		t.Errorf("expected TopStep to be excluded from detectSharedWallets until a balance fetcher exists; got %d entries", len(shared))
+	if len(shared) != 1 {
+		t.Fatalf("expected TopStep to be grouped as one shared wallet (phase 4 #1106), got %d entries", len(shared))
+	}
+	for _, sc := range strategies {
+		if _, ok := walletKeyFor(sc); !ok {
+			t.Errorf("walletKeyFor should recognize %s", sc.ID)
+		}
 	}
 }
 
@@ -267,15 +274,15 @@ func TestDetectSharedWallets_RobinhoodExcludedNoFetcher(t *testing.T) {
 	}
 }
 
-// TestHasSharedWalletBalanceFetcher_HLAndOKX locks in the contract that HL
-// and OKX have balance fetchers today (#360 phase 2 of #357). When phases
-// 3-4 add fetchers for TS / RH, this test should be updated in the same PR
-// as the fetcher wiring.
+// TestHasSharedWalletBalanceFetcher_HLAndOKX locks in the contract that HL,
+// OKX (#360 phase 2 of #357), and TopStep (#1106 phase 4 of #1100) have balance
+// fetchers today. When phase 4 (RH) adds a fetcher, this test should be updated
+// in the same PR as the fetcher wiring.
 func TestHasSharedWalletBalanceFetcher_HLAndOKX(t *testing.T) {
 	cases := map[string]bool{
 		"hyperliquid": true,
 		"okx":         true,
-		"topstep":     false,
+		"topstep":     true,
 		"robinhood":   false,
 		"binanceus":   false,
 		"unknown":     false,

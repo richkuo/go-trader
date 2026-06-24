@@ -96,6 +96,15 @@ func walletKeyFor(sc StrategyConfig) (SharedWalletKey, bool) {
 var platformsWithSharedWalletBalanceFetcher = map[string]bool{
 	"hyperliquid": true,
 	"okx":         true, // #360 phase 2 of #357 — fetch_okx_balance.py
+	// #1106 phase 4 of #1100: surfaces TopStep shared wallets in
+	// detectSharedWallets so the exchange-sourced cash-flow journal (shadow)
+	// runs. The coherent equity/uPnL snapshot is owned by the dedicated main-loop
+	// block (defaultTopStepEquitySnapshot → walletBalances), mirroring OKX;
+	// defaultSharedWalletFetcher intentionally has no topstep case. TopStep stays
+	// display-skipped in reconcileSharedWalletDisplayValues (no position source),
+	// so this enables the snapshot side without any capital-weight display
+	// mutation.
+	"topstep": true,
 }
 
 // hasSharedWalletBalanceFetcher reports whether defaultSharedWalletFetcher can

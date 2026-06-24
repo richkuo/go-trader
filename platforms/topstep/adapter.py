@@ -207,6 +207,79 @@ class TopStepExchangeAdapter:
             })
         return positions
 
+    def get_account_equity_and_upnl(self):
+        """Return ``(equity, unrealized_pnl)`` for the configured account, in USD.
+
+        Used by the shared-wallet cash-flow journal (#1106). ``equity`` is the
+        account value (settled cash + unrealized PnL); ``unrealized_pnl`` is
+        ``equity − cashBalance`` from the SAME balance read so the journal
+        reconciles a coherent equity/uPnL snapshot with no intra-cycle jitter
+        (mirrors OKX ``get_account_equity_and_upnl``). Live mode only.
+
+        NOTE: the ``/v1/account/balance`` shape mirrors this adapter's existing
+        (unverified) TopStepX REST contract; confirm against the live venue
+        before any Phase-4b alarm flip (#1106).
+        """
+        if not self.is_live:
+            raise RuntimeError("get_account_equity_and_upnl requires live mode")
+        resp = self._session.get(
+            f"{API_BASE_URL}/v1/account/balance",
+            params={"accountId": self._account_id},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        equity = float(data.get("equity", 0))
+        # cashBalance is the settled cash; fall back to "balance" then to equity
+        # (uPnL 0) so a feed without an explicit cash field degrades to cash==equity
+        # rather than mis-stating uPnL.
+        cash = float(data.get("cashBalance", data.get("balance", equity)))
+        return equity, equity - cash
+
+    def get_account_fills(self, since_ms=0, limit=1000):
+        """Return ``(fills, capped)`` — settled trade fills at or after
+        ``since_ms``, oldest first (#1106).
+
+        Each fill: ``{"fill_id", "ts_ms", "symbol", "kind", "realized_pnl",
+        "fee"}``. ``realized_pnl`` is GROSS (0 for entry fills); ``fee`` is the
+        commission charged. ``capped`` is true when the page limit was hit (the
+        Go journal treats that cycle as not-usable). Live mode only.
+
+        NOTE: the ``/v1/account/fills`` shape mirrors this adapter's existing
+        (unverified) TopStepX REST contract; confirm against the live venue
+        before any Phase-4b alarm flip (#1106).
+        """
+        if not self.is_live:
+            raise RuntimeError("get_account_fills requires live mode")
+        resp = self._session.get(
+            f"{API_BASE_URL}/v1/account/fills",
+            params={
+                "accountId": self._account_id,
+                "sinceMs": int(since_ms),
+                "limit": int(limit),
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("fills", []) or []
+        fills = []
+        for f in raw:
+            try:
+                ts_ms = int(f.get("timestamp", f.get("ts_ms", 0)))
+            except (TypeError, ValueError):
+                continue
+            fills.append({
+                "fill_id": str(f.get("id", f.get("fill_id", ""))),
+                "ts_ms": ts_ms,
+                "symbol": (f.get("symbol") or "").upper(),
+                "kind": (f.get("kind") or "").lower(),
+                "realized_pnl": float(f.get("realizedPnl", f.get("realized_pnl", 0)) or 0),
+                "fee": float(f.get("fee", f.get("commission", 0)) or 0),
+            })
+        fills.sort(key=lambda x: x["ts_ms"])
+        capped = len(raw) >= int(limit)
+        return fills, capped
+
     # ─────────────────────────────────────────────
     # Yahoo Finance helpers (paper mode)
     # ─────────────────────────────────────────────

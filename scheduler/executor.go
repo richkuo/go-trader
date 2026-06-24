@@ -830,6 +830,104 @@ func parseTopStepPositionsOutput(stdout []byte, stderrStr string, runErr error) 
 	}
 }
 
+// TopStepBalanceResult is the JSON output from fetch_topstep_balance.py (#1106).
+// Balance is the USD account equity (settled cash + uPnL) the shared-wallet
+// cash-flow journal reconciles; UnrealizedPnL is equity − cashBalance from the
+// SAME read so the journal's equity/uPnL snapshot is coherent (mirrors
+// OKXBalanceResult).
+type TopStepBalanceResult struct {
+	Balance       float64 `json:"balance"`
+	UnrealizedPnL float64 `json:"unrealized_pnl"`
+	Platform      string  `json:"platform"`
+	Timestamp     string  `json:"timestamp"`
+	Error         string  `json:"error,omitempty"`
+}
+
+// RunTopStepFetchBalance runs fetch_topstep_balance.py for the configured TopStep
+// account (#1106). Follows the same 5-case contract as the other TopStep fetch
+// runners: a non-nil error on ANY failure path so the cash-flow journal fails
+// closed (no shadow reading this cycle) rather than treating a fetch failure as a
+// real $0 equity.
+func RunTopStepFetchBalance(script string) (*TopStepBalanceResult, string, error) {
+	stdout, stderr, runErr := RunPythonScript(script, nil)
+	return parseTopStepBalanceOutput(stdout, string(stderr), runErr)
+}
+
+// parseTopStepBalanceOutput is the pure parser for RunTopStepFetchBalance,
+// extracted so the decision logic is testable without spawning Python. Mirrors
+// parseOKXBalanceOutput's 5-case matrix.
+func parseTopStepBalanceOutput(stdout []byte, stderrStr string, runErr error) (*TopStepBalanceResult, string, error) {
+	var result TopStepBalanceResult
+	parseErr := json.Unmarshal(stdout, &result)
+
+	switch {
+	case runErr == nil && parseErr == nil && result.Error == "":
+		return &result, stderrStr, nil
+
+	case runErr == nil && parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("fetch balance reported error despite exit 0: %s", result.Error)
+
+	case parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("fetch balance failed: %s", result.Error)
+
+	case parseErr == nil && runErr != nil:
+		return &result, stderrStr, fmt.Errorf("fetch balance subprocess exit %v with no error field (stderr: %s)", runErr, stderrStr)
+
+	default:
+		return nil, stderrStr, fmt.Errorf("parse balance output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
+	}
+}
+
+// TopStepFillsResult is the JSON output from fetch_topstep_fills.py (#1106). Fills
+// are the settled trade fills since the cursor; Capped is true when the script hit
+// its safety page cap (the journal treats that cycle as not-usable). Fills decode
+// straight into topstepFillRecord (json tags match), so the TopStep cash-flow
+// journal has no second representation.
+type TopStepFillsResult struct {
+	Fills     []topstepFillRecord `json:"fills"`
+	Capped    bool                `json:"capped"`
+	Platform  string              `json:"platform"`
+	Timestamp string              `json:"timestamp"`
+	Error     string              `json:"error,omitempty"`
+}
+
+// RunTopStepFetchFills runs fetch_topstep_fills.py for the configured TopStep
+// account, pulling every settled fill since sinceMs (#1106). Follows the same
+// 5-case contract as RunTopStepFetchPositions / RunTopStepFetchBalance: a non-nil
+// error on ANY failure path so the journal fails closed (no cursor advance, no
+// shadow reading) rather than silently treating a fetch failure as "no cash flow".
+func RunTopStepFetchFills(script string, sinceMs int64) (*TopStepFillsResult, string, error) {
+	args := []string{fmt.Sprintf("--since-ms=%d", sinceMs)}
+	stdout, stderr, runErr := RunPythonScript(script, args)
+	return parseTopStepFillsOutput(stdout, string(stderr), runErr)
+}
+
+// parseTopStepFillsOutput is the pure parser for RunTopStepFetchFills, extracted
+// so the decision logic is testable without spawning Python. Mirrors
+// parseOKXBillsOutput's 5-case matrix — contract drift across the TopStep fetch
+// parsers would be bad.
+func parseTopStepFillsOutput(stdout []byte, stderrStr string, runErr error) (*TopStepFillsResult, string, error) {
+	var result TopStepFillsResult
+	parseErr := json.Unmarshal(stdout, &result)
+
+	switch {
+	case runErr == nil && parseErr == nil && result.Error == "":
+		return &result, stderrStr, nil
+
+	case runErr == nil && parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("fetch fills reported error despite exit 0: %s", result.Error)
+
+	case parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("fetch fills failed: %s", result.Error)
+
+	case parseErr == nil && runErr != nil:
+		return &result, stderrStr, fmt.Errorf("fetch fills subprocess exit %v with no error field (stderr: %s)", runErr, stderrStr)
+
+	default:
+		return nil, stderrStr, fmt.Errorf("parse fills output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
+	}
+}
+
 // RobinhoodResult is the JSON output from check_robinhood.py (signal check mode).
 type RobinhoodResult struct {
 	StrategyDecisionFields
