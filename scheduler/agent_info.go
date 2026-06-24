@@ -87,6 +87,7 @@ var agentInfoEnvVars = []agentEnvVar{
 	{Name: "DISCORD_OWNER_ID", Purpose: "Discord user ID that receives owner-only DMs and mutating commands.", Secret: false},
 	{Name: "GITHUB_TOKEN", Purpose: "GitHub token for the self-updater (fallback to GO_TRADER_GITHUB_TOKEN).", Secret: true},
 	{Name: "GO_TRADER_ALLOW_MISSING_STATE", Purpose: "Set to 1 to allow startup with no existing state DB (CheckStatePresence bypass).", Secret: false},
+	{Name: "GO_TRADER_CASHFLOW_JOURNAL_ALARM", Purpose: "Set to 0/off/false/no to force the legacy trade-ledger drift basis for HL shared wallets instead of the #1100 exchange-sourced cash-flow journal (default on).", Secret: false},
 	{Name: "GO_TRADER_DIRECTIONAL_CERT_PATH", Purpose: "Override path to the regime directional-certification artifact (#1085); default backtest/research/regime_directional_certifications.json.", Secret: false},
 	{Name: "GO_TRADER_GITHUB_TOKEN", Purpose: "GitHub token for the self-updater (preferred over GITHUB_TOKEN).", Secret: true},
 	{Name: "GO_TRADER_SERVICE", Purpose: "systemd unit name used by the updater's restart path.", Secret: false},

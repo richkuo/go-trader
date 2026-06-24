@@ -304,6 +304,17 @@ func formatSharedWalletDriftAlert(key SharedWalletKey, balance, memberSum, drift
 		sharedWalletKeyLabel(key), os.Getpid(), count, memberSum, balance, rawDiff, drift, sharedWalletDriftTolerance, orphanDetail)
 }
 
+// formatSharedWalletJournalDriftAlert is the #1100 journal-basis drift alert:
+// the wallet's total is reconstructed from the exchange's own cash-flow events
+// (fills/funding/transfers) rather than the internal trade ledger, so a non-zero
+// drift is a journal gap (a missing or lagging exchange event) or an
+// unaccounted balance movement — not an attribution/weighting bug.
+func formatSharedWalletJournalDriftAlert(key SharedWalletKey, balance, expectedEquity, drift float64, count int) string {
+	return fmt.Sprintf(
+		"**SHARED-WALLET DRIFT (exchange journal)** %s (pid=%d, %d consecutive): exchange accountValue $%.2f vs cash-flow-journal expected-equity $%.2f — drift $%+.2f (>$%.2f tolerance). The total is reconstructed from on-chain fills/funding/transfers; a persistent drift means a journal gap (missing/lagging exchange event, or an unmapped balance movement), not a strategy-attribution bug — investigate the exchange event feed before assuming it is benign.",
+		sharedWalletKeyLabel(key), os.Getpid(), count, balance, expectedEquity, drift, sharedWalletDriftTolerance)
+}
+
 func formatSharedWalletDriftRecovered(key SharedWalletKey, priorCount int) string {
 	return fmt.Sprintf(
 		"**SHARED-WALLET DRIFT RESOLVED** %s (pid=%d): per-strategy values reconcile to the account balance again after %d cycles of drift.",
@@ -324,14 +335,26 @@ func reportSharedWalletDrift(notifier *MultiNotifier, results []sharedWalletDrif
 		if math.Abs(r.Drift) > sharedWalletDriftTolerance {
 			shouldNotify, shouldLog, count := sharedWalletDriftTracker.Record(label, r.Drift, r.OrphanCoins, now)
 			if shouldLog {
-				rawDiff := r.MemberSum - r.Balance
-				fmt.Printf("[WARN] shared-wallet %s drift $%+.2f (Σ members $%.2f vs balance $%.2f, rawDiff $%+.2f, orphans=[%s])\n",
-					label, r.Drift, r.MemberSum, r.Balance, rawDiff, strings.Join(r.OrphanCoins, ","))
+				if r.Basis == driftBasisJournal {
+					// #1100: journal basis — drift is accountValue vs the
+					// exchange-sourced expected-equity, not a member-sum diff.
+					fmt.Printf("[WARN] shared-wallet %s JOURNAL drift $%+.2f (accountValue $%.2f vs exchange-sourced expected-equity $%.2f)\n",
+						label, r.Drift, r.Balance, r.ExpectedEquity)
+				} else {
+					rawDiff := r.MemberSum - r.Balance
+					fmt.Printf("[WARN] shared-wallet %s drift $%+.2f (Σ members $%.2f vs balance $%.2f, rawDiff $%+.2f, orphans=[%s])\n",
+						label, r.Drift, r.MemberSum, r.Balance, rawDiff, strings.Join(r.OrphanCoins, ","))
+				}
 			}
 			if !shouldNotify || notifier == nil || !notifier.HasBackends() {
 				continue
 			}
-			msg := formatSharedWalletDriftAlert(r.Key, r.Balance, r.MemberSum, r.Drift, count, r.OrphanCoins)
+			var msg string
+			if r.Basis == driftBasisJournal {
+				msg = formatSharedWalletJournalDriftAlert(r.Key, r.Balance, r.ExpectedEquity, r.Drift, count)
+			} else {
+				msg = formatSharedWalletDriftAlert(r.Key, r.Balance, r.MemberSum, r.Drift, count, r.OrphanCoins)
+			}
 			notifier.SendToAllChannels(msg)
 			notifier.SendOwnerDM(msg)
 			continue

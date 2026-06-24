@@ -321,10 +321,16 @@ func roundCents(v float64) float64 {
 // throttled drift alarm.
 type sharedWalletDriftResult struct {
 	Key         SharedWalletKey
-	Drift       float64  // accountBalance - Σ raw member values (orphan/unattributed P&L)
-	Balance     float64  // the real account balance reconciled against
-	MemberSum   float64  // Σ rounded member display values stored this cycle
-	OrphanCoins []string // sorted unattributed coins — streak signature + alert detail
+	Drift       float64  // alarm drift: trade-ledger post-baseline drift, OR the journal drift when Basis==journal (#1100)
+	Balance     float64  // the real account balance (accountValue) reconciled against
+	MemberSum   float64  // Σ rounded member display values stored this cycle (attribution; always trade-ledger)
+	OrphanCoins []string // sorted unattributed coins — streak signature + alert detail (nil under journal basis)
+	// Basis is "" (trade-ledger) or driftBasisJournal when applyCashflowJournalDriftBasis
+	// switched Drift onto the exchange-sourced cash-flow journal (#1100).
+	Basis string
+	// ExpectedEquity is the journal's reconstructed accountValue; only meaningful
+	// when Basis==driftBasisJournal (Drift == Balance − ExpectedEquity).
+	ExpectedEquity float64
 }
 
 // reconcileSharedWalletDisplayValues recomputes the exchange-authoritative
