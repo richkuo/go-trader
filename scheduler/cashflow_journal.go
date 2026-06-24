@@ -58,16 +58,19 @@ const journalDriftStreakKeySuffix = ":journal"
 // exactly once here; closed_pnl_gross is retained for attribution and is NEVER
 // summed into equity on its own.
 //
-// SCOPE: Hyperliquid shared wallets, SHADOW MODE. The journal is computed
-// beside the live trade-ledger drift path and the delta is logged for
-// validation. It does NOT yet drive any alarm or member display — that switch,
-// plus OKX/TopStep extension and baseline-offset retirement, are later phases
-// of #1100. Nothing here mutates StrategyState, so the whole flow runs OUTSIDE
-// the state lock (DB writes are serialized by SQLite).
+// SCOPE: Hyperliquid shared wallets. The journal is the LIVE total-drift-alarm
+// basis for HL wallets (applyCashflowJournalDriftBasis): the total drift alarm is
+// driven by the exchange-sourced expected-equity, and both bases are logged every
+// cycle for comparison. The trade-ledger drift is retained as the fail-closed
+// fallback (operator opt-out via GO_TRADER_CASHFLOW_JOURNAL_ALARM, a latched
+// journal-incomplete, or a persistent feed outage) and remains the per-strategy
+// attribution / member-display source. OKX/TopStep extension and baseline-offset
+// retirement are later phases of #1100. Nothing here mutates StrategyState, so the
+// whole flow runs OUTSIDE the state lock (DB writes are serialized by SQLite).
 
 // CashflowJournalState is one wallet's per-stream journal cursors plus the
 // adoption baseline. Incomplete latches true once an unmapped event kind is
-// seen so a future alarm switch can fail closed to the trade-ledger path.
+// seen so the live alarm switch fails closed to the trade-ledger path.
 type CashflowJournalState struct {
 	FillsSinceMs         int64
 	FundingSinceMs       int64
