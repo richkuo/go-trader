@@ -169,6 +169,18 @@ func cashflowFillSettledDelta(closedPnlGross, fee float64) float64 {
 	return closedPnlGross - fee
 }
 
+// hlFillIsSpot reports whether a userFills coin is a SPOT market identifier
+// rather than a perps asset. HL spot fills settle against a separate spot USDC
+// balance and do NOT move the perps marginSummary.accountValue this journal
+// reconciles, so they must contribute $0 to the perps settled-cash sum — the
+// same spot exclusion signedPerpFlowUSD already applies on the transfer stream.
+// HL spot coins are an index form ("@107") or a named pair ("PURR/USDC"); perps
+// assets ("BTC", "kPEPE", "HYPE") never contain "/" or start with "@".
+func hlFillIsSpot(coin string) bool {
+	c := strings.TrimSpace(coin)
+	return strings.HasPrefix(c, "@") || strings.Contains(c, "/")
+}
+
 // cashflowJournalExpectedEquity reconstructs the wallet's current accountValue
 // from the adoption baseline, the settled-cash deltas booked since, and the
 // change in exchange unrealized PnL since baseline. Pure — unit-tested.
@@ -315,8 +327,20 @@ func ingestCashflowJournalEvents(sdb *StateDB, res cashflowJournalFetchResult) C
 			coin := strings.ToUpper(strings.TrimSpace(f.Coin))
 			closedPnl := parseHLFloat(f.ClosedPnl)
 			fee := parseHLFloat(f.Fee)
+			// A spot fill settles against the separate spot USDC balance, NOT the
+			// perps marginSummary.accountValue this journal reconciles, so it
+			// contributes $0 to the perps settled-cash sum — mirroring the spot
+			// exclusion signedPerpFlowUSD already applies on the transfer stream.
+			// The row is still booked (kind "fill_spot", amount 0) so it stays
+			// visible + deduped and the cursor still advances past it; closedPnl
+			// and fee are retained as attribution metadata only, never summed.
+			kind := "fill"
 			delta := cashflowFillSettledDelta(closedPnl, fee)
-			if err := sdb.InsertCashflowJournalEntry(key.Platform, key.Account, f.Time, "fill", delta, coin, closedPnl, fee, cashflowFillDedupID(f)); err != nil {
+			if hlFillIsSpot(coin) {
+				kind = "fill_spot"
+				delta = 0
+			}
+			if err := sdb.InsertCashflowJournalEntry(key.Platform, key.Account, f.Time, kind, delta, coin, closedPnl, fee, cashflowFillDedupID(f)); err != nil {
 				fmt.Printf("[WARN] cashflow-journal %s: fill insert failed: %v — retrying next cycle\n", sharedWalletKeyLabel(key), err)
 				failedAt = f.Time
 				break

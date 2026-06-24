@@ -336,3 +336,86 @@ func TestCashflowJournalCursorHaltsOnPersistFailure(t *testing.T) {
 		t.Errorf("cursor advanced past a failed insert: %d, want 100 (held)", st.FillsSinceMs)
 	}
 }
+
+// HL spot coins are an index ("@107") or a named pair ("PURR/USDC"); perps
+// assets never contain "/" or start with "@".
+func TestHLFillIsSpot(t *testing.T) {
+	spot := []string{"@107", "@1", "PURR/USDC", "ETH/USDC", " @5 ", "BTC/USDC"}
+	perps := []string{"BTC", "ETH", "kPEPE", "HYPE", "SOL", "", " BTC "}
+	for _, c := range spot {
+		if !hlFillIsSpot(c) {
+			t.Errorf("hlFillIsSpot(%q) = false, want true (spot)", c)
+		}
+	}
+	for _, c := range perps {
+		if hlFillIsSpot(c) {
+			t.Errorf("hlFillIsSpot(%q) = true, want false (perps)", c)
+		}
+	}
+}
+
+// HL userFillsByTime returns SPOT fills too, but the journal reconciles the
+// PERPS marginSummary.accountValue — a spot fill settles against the separate
+// spot USDC balance and must contribute $0, exactly as signedPerpFlowUSD
+// excludes spot on the transfer stream. Mixing spot into the perps settled sum
+// injects spurious drift and can MASK a real perps drift of opposite sign.
+func TestCashflowJournalExcludesSpotFills(t *testing.T) {
+	db := newCashflowJournalTestDB(t)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
+	t0 := int64(1700000000000)
+	res := cashflowJournalFetchResult{
+		Key:        key,
+		State:      CashflowJournalState{FillsSinceMs: t0, BaselineSet: true},
+		StateFound: true, FillsFetched: true,
+		Fills: []hlFillRecord{
+			{Coin: "BTC", Time: t0 + 10, Tid: json.Number("1"), ClosedPnl: "0", Fee: "0.5"},        // perps open: -0.5
+			{Coin: "@107", Time: t0 + 15, Tid: json.Number("2"), ClosedPnl: "0", Fee: "9.8"},       // SPOT: would mask the perps gain
+			{Coin: "BTC", Time: t0 + 20, Tid: json.Number("3"), ClosedPnl: "10", Fee: "0.2"},       // perps close: +9.8
+			{Coin: "PURR/USDC", Time: t0 + 25, Tid: json.Number("4"), ClosedPnl: "0", Fee: "-0.1"}, // SPOT maker rebate (negative fee)
+		},
+	}
+	st := ingestCashflowJournalEvents(db, res)
+
+	// (a)+(c): the perps settled sum is byte-identical to the perps-only sum; the
+	// spot fee does NOT cancel the real perps gain (no masking), and the spot
+	// maker rebate adds nothing.
+	sum, err := db.SumCashflowJournal(key.Platform, key.Account)
+	if err != nil {
+		t.Fatalf("sum: %v", err)
+	}
+	const wantPerpsOnly = -0.5 + 9.8 // 9.3; with the bug it would be 9.3 - 9.8 + 0.1 = -0.4
+	if math.Abs(sum-wantPerpsOnly) > 1e-9 {
+		t.Fatalf("spot leaked into perps settled sum: got %v, want %v (perps-only)", sum, wantPerpsOnly)
+	}
+
+	// (b): spot rows are still booked (visible + deduped) but at $0 amount under a
+	// distinct kind, with closedPnl/fee retained as metadata only.
+	var spotRows, spotNonZero int
+	rows, err := db.db.Query(`SELECT amount_usd FROM cashflow_journal WHERE kind = 'fill_spot' AND platform = ? AND account = ?`, key.Platform, key.Account)
+	if err != nil {
+		t.Fatalf("query spot rows: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var amt float64
+		if err := rows.Scan(&amt); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		spotRows++
+		if math.Abs(amt) > 1e-9 {
+			spotNonZero++
+		}
+	}
+	if spotRows != 2 {
+		t.Errorf("expected 2 spot rows booked, got %d", spotRows)
+	}
+	if spotNonZero != 0 {
+		t.Errorf("%d spot rows carried a non-zero perps amount", spotNonZero)
+	}
+
+	// Spot fills still advance the cursor (the latest event is a spot fill), so
+	// they are booked once and not re-fetched forever.
+	if st.FillsSinceMs != t0+25+1 {
+		t.Errorf("cursor = %d, want %d (advanced past the latest spot fill)", st.FillsSinceMs, t0+26)
+	}
+}
