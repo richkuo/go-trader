@@ -262,6 +262,57 @@ func TestOKXCashflowJournalCappedSameMsSiblingNotStranded(t *testing.T) {
 	}
 }
 
+// Budget-exhaustion case: a capped fetch can return an incomplete prefix whose
+// UNFETCHED tail is at NEWER timestamps (ts > maxTime), not just same-ms. The
+// cursor must not advance to maxTime+1, and a later cleared cycle must re-read
+// from maxTime and book that newer tail. (The adapter now reports capped=True on
+// loop-budget exhaustion; the Go side only sees res.Capped, so the cursor
+// discipline is identical regardless of WHY the fetch was capped.)
+func TestOKXCashflowJournalCappedNewerTailNotStranded(t *testing.T) {
+	db := newCashflowJournalTestDB(t)
+	key := newOKXJournalKey()
+	base := CashflowJournalState{FillsSinceMs: 100, BaselineSet: true}
+	if err := db.UpsertCashflowJournalState(key.Platform, key.Account, base); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Cycle 1: capped prefix ending at ts=160. The feed actually has more bills at
+	// ts=170/180 (the budget-exhausted tail) not returned this cycle.
+	c1 := okxCashflowJournalFetchResult{
+		Key: key, State: base, StateFound: true, BillsFetched: true, Capped: true,
+		Bills: []okxBillRecord{
+			{BillID: "a", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 2},
+			{BillID: "b", TimeMs: 160, Ccy: "USDT", Type: "2", BalChg: 2},
+		},
+	}
+	st1 := ingestOKXCashflowJournalEvents(db, c1, cashflowCutoffAll)
+	if st1.FillsSinceMs != 160 {
+		t.Fatalf("capped cycle: cursor = %d, want 160 (must not pass the unfetched newer tail)", st1.FillsSinceMs)
+	}
+
+	// Cycle 2: feed drained (not capped). Re-fetch from 160 returns the boundary
+	// bill b (dup) plus the previously-stranded newer tail at 170/180.
+	c2 := okxCashflowJournalFetchResult{
+		Key: key, State: st1, StateFound: true, BillsFetched: true, Capped: false,
+		Bills: []okxBillRecord{
+			{BillID: "b", TimeMs: 160, Ccy: "USDT", Type: "2", BalChg: 2}, // dup
+			{BillID: "c", TimeMs: 170, Ccy: "USDT", Type: "2", BalChg: 3}, // stranded tail
+			{BillID: "d", TimeMs: 180, Ccy: "USDT", Type: "2", BalChg: 4}, // stranded tail
+		},
+	}
+	st2 := ingestOKXCashflowJournalEvents(db, c2, cashflowCutoffAll)
+	if st2.FillsSinceMs != 181 {
+		t.Errorf("drained cycle: cursor = %d, want 181", st2.FillsSinceMs)
+	}
+	sum, err := db.SumCashflowJournal(key.Platform, key.Account)
+	if err != nil {
+		t.Fatalf("sum: %v", err)
+	}
+	if math.Abs(sum-11) > 1e-9 { // 2 + 2 + 3 + 4, b booked once
+		t.Errorf("newer tail stranded or double-counted: sum = %v, want 11", sum)
+	}
+}
+
 // An unclassified bill (unknown type) latches incomplete AND still books its
 // authoritative balChg so the running drift surfaces it.
 func TestOKXCashflowJournalUnclassifiedLatchesIncomplete(t *testing.T) {

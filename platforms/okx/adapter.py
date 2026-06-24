@@ -392,8 +392,20 @@ class OKXExchangeAdapter:
         # bill that shares the boundary millisecond but fell beyond the page cut
         # is re-fetched on the next page — the `collected` dedup absorbs the
         # re-read. Advancing past last_ts would permanently skip such a same-ms
-        # bill (a standing offset in the settled sum, not a transient miss). The
-        # page-loop bound caps total iterations.
+        # bill (a standing offset in the settled sum, not a transient miss).
+        #
+        # INVARIANT: capped=False must mean the feed was DRAINED (a short/empty
+        # page), never that the per-cycle iteration budget ran out. The overlap
+        # re-read makes net-new-per-page < page_limit when bills cluster on the
+        # boundary millisecond (a fill emits a trade + a fee bill at the same ms;
+        # settlements batch), so a dense backlog can exhaust the budget before the
+        # feed drains AND before the max_bills cap trips. The `for…else` makes that
+        # budget-exhaustion fall-through report capped=True: every feed-drained or
+        # cap exit above uses `break` (so `else` does NOT run), and only a loop that
+        # runs out of iterations reaches `else`. The Go journal then treats the
+        # cycle as not-usable and re-reads forward from maxTime next cycle
+        # (okxBillDedupID / INSERT OR IGNORE absorbs the re-reads) instead of
+        # advancing the cursor past the unfetched tail.
         for _ in range(max(1, max_bills // max(1, page_limit)) + 2):
             page = self._exchange.fetch_ledger(code=None, since=cursor, limit=page_limit) or []
             if not page:
@@ -419,6 +431,11 @@ class OKXExchangeAdapter:
                 capped = True
                 break
             cursor = page_last_ts  # overlap on the boundary ms (dedup absorbs it)
+        else:
+            # Loop ran out of iterations without a feed-drained/cap break: the
+            # returned set is an INCOMPLETE prefix of the feed. Report capped so the
+            # cursor is not advanced past the unfetched tail.
+            capped = True
         bills = sorted(collected.values(), key=lambda b: b["ts_ms"])
         if len(bills) > max_bills:
             bills = bills[:max_bills]

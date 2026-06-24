@@ -526,3 +526,43 @@ class TestGetAccountBills:
         ids = [b["bill_id"] for b in bills]
         assert len(ids) == len(set(ids))
         assert "d-new" in ids and ids.count("d-99") == 1
+
+    def test_loop_budget_exhaustion_reports_capped(self, adapter):
+        # A backlog larger than the iteration budget, with same-ms clustering so
+        # the overlap re-read makes net-new-per-page < page_limit. The loop must
+        # exhaust its budget and report capped=True (NOT fall through to False with
+        # an incomplete prefix that the Go journal would treat as complete).
+        a, mock_ex = adapter
+        a._is_live = True
+        # 400 bills, 2 per ms (ts 0,0,1,1,2,2,...,199,199); page_limit 10,
+        # max_bills 100 → budget = 100//10 + 2 = 12 iterations. Overlap nets ~8
+        # new/page, so 12 pages can't reach 100 → budget runs out while the feed
+        # still has bills, below the max_bills cap.
+        all_bills = [_ledger_entry(f"x-{i}", i // 2, "1") for i in range(400)]
+
+        def side_effect(*args, **kwargs):
+            since = kwargs.get("since", 0)
+            window = [e for e in all_bills if e["timestamp"] >= since]
+            return window[:10]
+
+        mock_ex.fetch_ledger.side_effect = side_effect
+        bills, capped = a.get_account_bills(since_ms=0, page_limit=10, max_bills=100)
+        assert capped is True, "budget exhaustion must report capped=True, not False"
+        assert len(bills) < 400  # an incomplete prefix, correctly flagged
+
+    def test_drained_distinct_ts_not_spuriously_capped(self, adapter):
+        # The inverse: a fully-drained feed of distinct timestamps that exits on a
+        # short page must stay capped=False (no spurious cap from the for…else).
+        a, mock_ex = adapter
+        a._is_live = True
+        all_bills = [_ledger_entry(f"d-{i}", 100 + i, "1") for i in range(25)]  # < max_bills
+
+        def side_effect(*args, **kwargs):
+            since = kwargs.get("since", 0)
+            window = [e for e in all_bills if e["timestamp"] >= since]
+            return window[:10]
+
+        mock_ex.fetch_ledger.side_effect = side_effect
+        bills, capped = a.get_account_bills(since_ms=0, page_limit=10, max_bills=100)
+        assert capped is False
+        assert len(bills) == 25  # whole feed drained
