@@ -824,6 +824,103 @@ func TestReportSharedWalletDrift_CompoundOrphanAndDriftReportsDrift(t *testing.T
 	}
 }
 
+// #1107 (Optional): a basis switch must not strand a stale trade-ledger tracker
+// entry. After a persistent journal outage alarms under the bare label key, a
+// return to the journal basis must clear that entry (firing its RESOLVED notice),
+// so the operator's alert resolves AND a LATER outage still requires the full
+// 2-cycle confirmation rather than re-firing off the stale alerted entry.
+func TestReportSharedWalletDrift_BasisSwitchClearsStaleTradeLedgerEntry(t *testing.T) {
+	prev := sharedWalletDriftTracker
+	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
+	defer func() { sharedWalletDriftTracker = prev }()
+
+	mock := &mockNotifier{}
+	notifier := NewMultiNotifier(notifierBackend{
+		notifier: mock,
+		channels: map[string]string{"hyperliquid": "chan"},
+		ownerID:  "owner",
+	})
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
+	label := sharedWalletKeyLabel(key)
+	jkey := label + journalDriftStreakKeySuffix
+
+	// Trade-ledger basis (Basis == "") — the persistent-outage fallback path.
+	ledgerDrift := func(d float64) []sharedWalletDriftResult {
+		return []sharedWalletDriftResult{{Key: key, Drift: d, Balance: 1000, MemberSum: 1000 + d}}
+	}
+	// Journal basis, within tolerance — the authoritative basis governing cleanly.
+	journalClean := func() []sharedWalletDriftResult {
+		return []sharedWalletDriftResult{{Key: key, Drift: 0.0, Balance: 1000, ExpectedEquity: 1000, Basis: driftBasisJournal}}
+	}
+
+	// Persistent outage on the trade-ledger basis: confirm + alert under `label`.
+	reportSharedWalletDrift(notifier, ledgerDrift(5.00))
+	reportSharedWalletDrift(notifier, ledgerDrift(5.00))
+	if e := sharedWalletDriftTracker.entries[label]; e == nil || !e.alerted {
+		t.Fatalf("trade-ledger outage must alert under the bare label key: %+v", e)
+	}
+	mock.dms = nil // drop the alert DMs; the RESOLVED notice is what we assert next
+
+	// (a) Journal recovers clean → the stale `label` entry is cleared and a
+	// RESOLVED notice fires; the bare-label entry is gone.
+	reportSharedWalletDrift(notifier, journalClean())
+	if sharedWalletDriftTracker.entries[label] != nil {
+		t.Error("a return to the journal basis must clear the stale trade-ledger entry")
+	}
+	if len(mock.dms) == 0 || !strings.Contains(mock.dms[len(mock.dms)-1].content, "RESOLVED") {
+		t.Errorf("a stranded trade-ledger alert must fire a RESOLVED notice on recovery: %+v", mock.dms)
+	}
+
+	// (b) A SECOND outage (materially different drift, so a stale alerted entry
+	// would re-fire on cycle 1 via the e.alerted && sigChanged arm) must instead
+	// require the full 2-cycle confirmation — proving the stale entry was cleared.
+	mock.dms = nil
+	reportSharedWalletDrift(notifier, ledgerDrift(10.00))
+	if e := sharedWalletDriftTracker.entries[label]; e == nil || e.cycles != 1 || e.alerted {
+		t.Fatalf("second outage cycle 1 must start fresh (count 1, not alerted): %+v", e)
+	}
+	if len(mock.dms) != 0 {
+		t.Errorf("second outage must NOT alert on its first cycle (no early fire off a stale entry): %+v", mock.dms)
+	}
+	reportSharedWalletDrift(notifier, ledgerDrift(10.00))
+	if e := sharedWalletDriftTracker.entries[label]; e == nil || !e.alerted {
+		t.Fatalf("second outage must alert only after the 2-cycle confirmation: %+v", e)
+	}
+
+	// (c) sanity: the journal streak key was never touched by the trade-ledger path.
+	if sharedWalletDriftTracker.entries[jkey] != nil {
+		t.Error("the trade-ledger path must never create the journal streak key")
+	}
+}
+
+// #1107 (Optional): the directional clear must NOT touch the journal streak from
+// the trade-ledger basis — the journal streak is deliberately preserved across
+// journal unavailability and resumes on recovery (inverse of the stranding fix).
+func TestReportSharedWalletDrift_TradeLedgerBasisPreservesJournalStreak(t *testing.T) {
+	prev := sharedWalletDriftTracker
+	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
+	defer func() { sharedWalletDriftTracker = prev }()
+
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
+	jkey := sharedWalletKeyLabel(key) + journalDriftStreakKeySuffix
+
+	// A journal-basis episode confirms (count 1).
+	reportSharedWalletDrift(nil, []sharedWalletDriftResult{
+		{Key: key, Drift: 5.00, Balance: 1000, ExpectedEquity: 995, Basis: driftBasisJournal},
+	})
+	if e := sharedWalletDriftTracker.entries[jkey]; e == nil || e.cycles != 1 {
+		t.Fatalf("journal episode should record under the journal key: %+v", e)
+	}
+	// A within-tolerance trade-ledger cycle (persistent-outage fallback that
+	// happens to be clean) must NOT clear the journal streak.
+	reportSharedWalletDrift(nil, []sharedWalletDriftResult{
+		{Key: key, Drift: 0.0, Balance: 1000, MemberSum: 1000},
+	})
+	if e := sharedWalletDriftTracker.entries[jkey]; e == nil || e.cycles != 1 {
+		t.Fatalf("trade-ledger basis must preserve the journal streak (not clear it): %+v", e)
+	}
+}
+
 // #1107 (Optional): the journal-drift alert formatter folds an orphan in as
 // context when present and omits the clause otherwise — and never claims "within
 // tolerance" (it is the over-tolerance alert).

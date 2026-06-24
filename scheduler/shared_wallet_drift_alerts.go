@@ -368,6 +368,23 @@ func reportSharedWalletDrift(notifier *MultiNotifier, results []sharedWalletDrif
 		trackerKey := label
 		if r.Basis == driftBasisJournal {
 			trackerKey += journalDriftStreakKeySuffix
+			// The journal (authoritative) basis is governing this cycle, so any
+			// trade-ledger fallback episode under the bare label key — left by a
+			// persistent journal-feed outage (#1107 persistent fallback) — is now
+			// OVER: the authoritative basis superseded it. Clear that stale entry so
+			// the basis switch fires its RESOLVED notice and never strands an
+			// already-alerted entry that would skip recovery AND let the NEXT outage
+			// re-alert on its first over-tolerance cycle (bypassing the 2-cycle
+			// confirmation via the e.alerted && sigChanged arm). Directional by
+			// design: the inverse — clearing label:journal from the trade-ledger
+			// basis — is NOT done, because the journal streak is deliberately
+			// preserved across journal unavailability (JournalPending / persistent
+			// outage) and resumes when the journal recovers.
+			if recovered, priorCount := sharedWalletDriftTracker.Clear(label); recovered && notifier != nil && notifier.HasBackends() {
+				msg := formatSharedWalletDriftRecovered(r.Key, priorCount)
+				notifier.SendToAllChannels(msg)
+				notifier.SendOwnerDM(msg)
+			}
 		}
 		// Under the journal basis the exchange total reconciles an unowned
 		// position to ~0 (its fill AND uPnL both count), so orphan exposure is not
