@@ -919,6 +919,10 @@ func main() {
 			// walletBalances is declared at cycle scope (above) and populated here.
 			var hlPositions []HLPosition
 			var hlStateFetched bool
+			// hlSnapshotAt stamps when the accountValue/uPnL snapshot below was
+			// taken; the #1100 cash-flow journal bounds its settled-event
+			// ingestion to this instant so an in-flight fill cannot read as drift.
+			var hlSnapshotAt time.Time
 			// Fetch clearinghouseState whenever any live HL strategy exists (#356
 			// per-strategy circuit closes need fresh positions even if no HL
 			// strategy is due this cycle).
@@ -928,6 +932,7 @@ func main() {
 					fmt.Printf("[WARN] hyperliquid clearinghouseState fetch failed: %v — falling back to per-wallet max and skipping position sync this cycle\n", err)
 				} else {
 					hlStateFetched = true
+					hlSnapshotAt = time.Now().UTC()
 					hlPositions = pos
 					if hlShared {
 						walletBalances[hlKey] = bal
@@ -1065,27 +1070,26 @@ func main() {
 			driftResults := reconcileSharedWalletDisplayValues(cfg.Strategies, state, stateDB, sharedWallets, walletBalances, hlPositions, okxPositions, okxStateFetched)
 			mu.Unlock()
 
-			// Fire throttled drift alarms outside the lock (notifier I/O).
-			reportSharedWalletDrift(notifier, driftResults)
-
-			// #1100 SHADOW: reconstruct the HL shared wallet's equity from the
-			// exchange's OWN cash-flow events (fills + funding + transfers) via a
-			// durable journal and log it beside the trade-ledger drift for
-			// validation. No alarm or display change — this is the read-beside
-			// phase before the alarm is switched onto the journal. Runs outside
-			// the lock: HTTP fetch + DB-only writes, no StrategyState mutation.
-			// Reuses the coherent accountValue / position snapshot the reconcile
-			// just consumed (walletBalances[hlKey] + hlPositions).
+			// #1100: switch the HL shared-wallet drift alarm onto the
+			// exchange-sourced cash-flow journal — the wallet TOTAL is
+			// reconstructed from on-chain fills + funding + transfers instead of
+			// the internal trade ledger, so modeled-fee / fallback-price / model-
+			// only-cleanup rows no longer read as drift. Fails closed to the
+			// trade-ledger drift when the journal is not usable (incomplete,
+			// fetch miss, or operator opt-out via GO_TRADER_CASHFLOW_JOURNAL_ALARM).
+			// Runs outside the lock: HTTP fetch + DB-only journal writes, no
+			// StrategyState mutation. Reuses the reconcile's coherent accountValue
+			// / position snapshot (walletBalances[hlKey] + hlPositions @
+			// hlSnapshotAt) and bounds the journal to that snapshot. OKX/TopStep
+			// keep the trade-ledger / capital-weight path untouched.
 			if hlShared && hlStateFetched {
-				var hlLedgerDrift *sharedWalletDriftResult
-				for i := range driftResults {
-					if driftResults[i].Key == hlKey {
-						hlLedgerDrift = &driftResults[i]
-						break
-					}
-				}
-				reconcileCashflowJournalShadow(stateDB, hlKey, walletBalances[hlKey], sumHLAccountUPnL(hlPositions), hlLedgerDrift, time.Now().UTC())
+				rec := reconcileCashflowJournal(stateDB, hlKey, walletBalances[hlKey], sumHLAccountUPnL(hlPositions), hlSnapshotAt)
+				applyCashflowJournalDriftBasis(driftResults, hlKey, rec, cashflowJournalAlarmEnabled())
 			}
+
+			// Fire throttled drift alarms outside the lock (notifier I/O). For HL
+			// this keys off the journal drift when the switch above applied it.
+			reportSharedWalletDrift(notifier, driftResults)
 
 			// #341 / #345 / #346 / #347: Submit market closes to
 			// Hyperliquid, OKX, Robinhood, AND TopStep for every non-zero

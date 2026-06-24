@@ -3,10 +3,23 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
+
+// driftBasisJournal marks a sharedWalletDriftResult whose alarm drift was
+// switched onto the exchange-sourced cash-flow journal (#1100). The empty
+// string is the legacy trade-ledger basis.
+const driftBasisJournal = "journal"
+
+// journalDriftStreakKeySuffix namespaces the journal-basis drift streak so it is
+// a DISTINCT confirmation series from the trade-ledger basis (#1107): a cycle on
+// (or transiently falling back to) the trade-ledger basis must never reset the
+// journal's 2-cycle confirmation, and vice-versa.
+const journalDriftStreakKeySuffix = ":journal"
 
 // #1100: exchange-sourced equity journal for shared-wallet TOTAL reconciliation.
 //
@@ -45,16 +58,19 @@ import (
 // exactly once here; closed_pnl_gross is retained for attribution and is NEVER
 // summed into equity on its own.
 //
-// SCOPE: Hyperliquid shared wallets, SHADOW MODE. The journal is computed
-// beside the live trade-ledger drift path and the delta is logged for
-// validation. It does NOT yet drive any alarm or member display — that switch,
-// plus OKX/TopStep extension and baseline-offset retirement, are later phases
-// of #1100. Nothing here mutates StrategyState, so the whole flow runs OUTSIDE
-// the state lock (DB writes are serialized by SQLite).
+// SCOPE: Hyperliquid shared wallets. The journal is the LIVE total-drift-alarm
+// basis for HL wallets (applyCashflowJournalDriftBasis): the total drift alarm is
+// driven by the exchange-sourced expected-equity, and both bases are logged every
+// cycle for comparison. The trade-ledger drift is retained as the fail-closed
+// fallback (operator opt-out via GO_TRADER_CASHFLOW_JOURNAL_ALARM, a latched
+// journal-incomplete, or a persistent feed outage) and remains the per-strategy
+// attribution / member-display source. OKX/TopStep extension and baseline-offset
+// retirement are later phases of #1100. Nothing here mutates StrategyState, so the
+// whole flow runs OUTSIDE the state lock (DB writes are serialized by SQLite).
 
 // CashflowJournalState is one wallet's per-stream journal cursors plus the
 // adoption baseline. Incomplete latches true once an unmapped event kind is
-// seen so a future alarm switch can fail closed to the trade-ledger path.
+// seen so the live alarm switch fails closed to the trade-ledger path.
 type CashflowJournalState struct {
 	FillsSinceMs         int64
 	FundingSinceMs       int64
@@ -308,7 +324,15 @@ func fetchCashflowJournalEvents(sdb *StateDB, key SharedWalletKey, accountValue,
 // incomplete latched if an unmapped kind was seen). Every insert path halts its
 // cursor on persistence failure so a watermark never advances past an un-booked
 // event.
-func ingestCashflowJournalEvents(sdb *StateDB, res cashflowJournalFetchResult) CashflowJournalState {
+//
+// cutoffMs bounds ingestion to events settled AT OR BEFORE the accountValue /
+// uPnL snapshot the equity equation reconciles against: an event after the
+// snapshot is NOT booked and the cursor is NOT advanced past it, so it is picked
+// up next cycle once the snapshot includes its balance impact. Without this an
+// in-flight fill (settled on-chain between the balance snapshot and the journal
+// fetch) would be counted in expected-equity but not in accountValue and read as
+// a full cycle of false drift.
+func ingestCashflowJournalEvents(sdb *StateDB, res cashflowJournalFetchResult, cutoffMs int64) CashflowJournalState {
 	st := res.State
 	if sdb == nil || !res.StateFound {
 		return st
@@ -323,6 +347,9 @@ func ingestCashflowJournalEvents(sdb *StateDB, res cashflowJournalFetchResult) C
 		for _, f := range fills {
 			if f.Time < st.FillsSinceMs {
 				continue // cursor-overlap boundary; dedup also covers this
+			}
+			if f.Time > cutoffMs {
+				continue // settled after the balance snapshot — defer to next cycle
 			}
 			coin := strings.ToUpper(strings.TrimSpace(f.Coin))
 			closedPnl := parseHLFloat(f.ClosedPnl)
@@ -361,6 +388,9 @@ func ingestCashflowJournalEvents(sdb *StateDB, res cashflowJournalFetchResult) C
 			if ev.Time < st.FundingSinceMs {
 				continue
 			}
+			if ev.Time > cutoffMs {
+				continue // settled after the balance snapshot — defer to next cycle
+			}
 			// Full funding amount moves the balance regardless of which member
 			// (if any) owns the coin — the journal is the TOTAL, with no
 			// attribution split. Signed: + = balance increased.
@@ -386,6 +416,9 @@ func ingestCashflowJournalEvents(sdb *StateDB, res cashflowJournalFetchResult) C
 		for _, ev := range events {
 			if ev.Time < st.TransfersSinceMs {
 				continue
+			}
+			if ev.Time > cutoffMs {
+				continue // settled after the balance snapshot — defer to next cycle
 			}
 			amount, known := signedPerpFlowUSD(ev.Delta, key.Account)
 			if !known {
@@ -417,45 +450,210 @@ func ingestCashflowJournalEvents(sdb *StateDB, res cashflowJournalFetchResult) C
 	return st
 }
 
-// reconcileCashflowJournalShadow runs the full journal flow for one HL shared
-// wallet OUTSIDE the state lock: fetch the cash-flow events, book them, then log
-// the journal's reconstructed equity beside the live trade-ledger drift for
-// validation. SHADOW MODE — it drives no alarm and mutates no display value.
-// ledgerDrift (may be nil) is the matching trade-ledger drift result this cycle,
-// logged alongside so an operator can compare the two reconciliation bases.
-func reconcileCashflowJournalShadow(sdb *StateDB, key SharedWalletKey, accountValue, currentUPnL float64, ledgerDrift *sharedWalletDriftResult, now time.Time) {
+// cashflowJournalReconcile is one HL wallet's journal-derived total
+// reconciliation for a cycle. Usable=true means the journal may DRIVE the drift
+// alarm this cycle (baseline anchored, all three streams fetched, not
+// incomplete); otherwise the caller fails closed to the trade-ledger drift.
+type cashflowJournalReconcile struct {
+	Key            SharedWalletKey
+	AccountValue   float64
+	ExpectedEquity float64
+	Drift          float64 // accountValue − expectedEquity
+	SettledSum     float64
+	DeltaUPnL      float64
+	Incomplete     bool
+	Usable         bool
+}
+
+// reconcileCashflowJournal runs the full journal flow for one HL shared wallet
+// OUTSIDE the state lock: fetch the cash-flow events (HTTP), book them (DB-only,
+// bounded to the snapshot), and reconstruct the wallet's expected equity. Pure
+// of StrategyState. Returns nil when the wallet is not HL, the state load/init
+// failed, or the baseline was just anchored this cycle — in every such case the
+// caller keeps the trade-ledger drift basis. snapshotAt is the accountValue /
+// uPnL sample time and bounds journal ingestion (see ingestCashflowJournalEvents).
+func reconcileCashflowJournal(sdb *StateDB, key SharedWalletKey, accountValue, currentUPnL float64, snapshotAt time.Time) *cashflowJournalReconcile {
 	if sdb == nil || key.Platform != "hyperliquid" || key.Account == "" {
-		return
+		return nil
 	}
-	res := fetchCashflowJournalEvents(sdb, key, accountValue, currentUPnL, now)
+	res := fetchCashflowJournalEvents(sdb, key, accountValue, currentUPnL, snapshotAt)
 	if !res.StateFound {
-		return // baseline just anchored (logged there) or fetch/load failed
+		return nil // baseline just anchored (logged there) or fetch/load failed
 	}
-	st := ingestCashflowJournalEvents(sdb, res)
+	st := ingestCashflowJournalEvents(sdb, res, snapshotAt.UnixMilli())
+	rec := &cashflowJournalReconcile{Key: key, AccountValue: res.AccountValue, Incomplete: st.Incomplete}
 	if !st.BaselineSet {
-		return // defensive: never compute against an un-anchored baseline
+		return rec // un-anchored: not usable
 	}
 	settled, err := sdb.SumCashflowJournal(key.Platform, key.Account)
 	if err != nil {
 		fmt.Printf("[WARN] cashflow-journal %s: settled-sum read failed: %v\n", sharedWalletKeyLabel(key), err)
+		return rec
+	}
+	rec.SettledSum = settled
+	rec.DeltaUPnL = res.CurrentUPnL - st.BaselineUPnL
+	rec.ExpectedEquity = cashflowJournalExpectedEquity(st.BaselineAccountValue, st.BaselineUPnL, settled, res.CurrentUPnL)
+	rec.Drift = res.AccountValue - rec.ExpectedEquity
+	// Usable only when this cycle's reconstruction is complete: all three streams
+	// fetched (a stream miss leaves its events un-booked → would read as drift)
+	// and no unmapped event has latched the journal incomplete.
+	rec.Usable = res.FillsFetched && res.FundingFetched && res.TransfersFetched && !st.Incomplete
+	return rec
+}
+
+// cashflowJournalAlarmEnabled reports whether the HL drift alarm may switch onto
+// the exchange-sourced journal. Default ON; an operator can force the legacy
+// trade-ledger basis without a redeploy by setting
+// GO_TRADER_CASHFLOW_JOURNAL_ALARM to 0/off/false/no — a safety hatch for this
+// money-path reconciliation switch.
+func cashflowJournalAlarmEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("GO_TRADER_CASHFLOW_JOURNAL_ALARM"))) {
+	case "0", "off", "false", "no":
+		return false
+	}
+	return true
+}
+
+// cashflowJournalPendingTracker counts CONSECUTIVE cycles a wallet's journal was
+// the governing basis but produced no usable reading (a transient stream-fetch
+// miss or a just-anchored baseline). It bounds how long the drift alarm may stay
+// suppressed: a short transient (≤ sharedWalletDriftAlertThreshold cycles)
+// preserves the journal confirmation streak and stays quiet, but a PERSISTENT
+// outage fails closed to the trade-ledger basis so the money-path safety net
+// never goes dark for the whole duration of a multi-cycle exchange-feed outage
+// (#1107). In-memory; resets on process restart, exactly like
+// sharedWalletDriftTracker.
+type cashflowJournalPendingTracker struct {
+	mu      sync.Mutex
+	streaks map[string]int
+}
+
+// mark records one more consecutive pending cycle for label and returns the new
+// streak length (post-increment).
+func (t *cashflowJournalPendingTracker) mark(label string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.streaks == nil {
+		t.streaks = make(map[string]int)
+	}
+	t.streaks[label]++
+	return t.streaks[label]
+}
+
+// reset clears label's consecutive-pending streak (the journal produced a
+// reading, latched incomplete, or was operator-disabled this cycle — the outage,
+// if any, is broken).
+func (t *cashflowJournalPendingTracker) reset(label string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.streaks, label)
+}
+
+// cashflowJournalPendingStreaks is the package-level singleton; resets on restart.
+var cashflowJournalPendingStreaks = &cashflowJournalPendingTracker{}
+
+// applyCashflowJournalDriftBasis switches one HL wallet's drift-alarm basis to
+// the exchange-sourced journal when the journal is usable and the operator has
+// not disabled it; otherwise the trade-ledger drift stands (fail closed). It
+// always logs the journal-vs-ledger comparison so operators see both bases every
+// cycle, and mutates results IN PLACE (the matching HL wallet's alarm fields).
+func applyCashflowJournalDriftBasis(results []sharedWalletDriftResult, key SharedWalletKey, rec *cashflowJournalReconcile, enabled bool) {
+	if rec == nil {
 		return
 	}
-	expected := cashflowJournalExpectedEquity(st.BaselineAccountValue, st.BaselineUPnL, settled, res.CurrentUPnL)
-	journalDrift := res.AccountValue - expected
+	var ledger *sharedWalletDriftResult
+	for i := range results {
+		if results[i].Key == key {
+			ledger = &results[i]
+			break
+		}
+	}
 
-	incompleteNote := ""
-	if st.Incomplete {
-		incompleteNote = " [INCOMPLETE: unmapped event kind seen — would fail closed once promoted]"
+	// Track CONSECUTIVE transient-pending cycles (journal is the governing basis
+	// but produced no usable reading — a stream-fetch miss or just-anchored
+	// baseline). A short transient stays suppressed (journal streak preserved);
+	// once the streak passes the confirmation window the outage is treated like an
+	// incomplete latch and fails closed to the trade-ledger basis so the alarm
+	// keeps running (#1107). Every other path (usable / incomplete / disabled)
+	// breaks the outage and resets the streak.
+	label := sharedWalletKeyLabel(key)
+	transientPending := enabled && !rec.Incomplete && !rec.Usable
+	pendingStreak := 0
+	if transientPending {
+		pendingStreak = cashflowJournalPendingStreaks.mark(label)
+	} else {
+		cashflowJournalPendingStreaks.reset(label)
 	}
+	suppressPending := transientPending && pendingStreak <= sharedWalletDriftAlertThreshold
+
 	ledgerNote := "n/a"
-	if ledgerDrift != nil {
-		// The trade-ledger result carries the post-baseline Drift and the raw
-		// reconciliation inputs; raw diff = balance − Σ member values.
-		ledgerNote = fmt.Sprintf("raw $%+.2f / post-baseline $%+.2f", ledgerDrift.Balance-ledgerDrift.MemberSum, ledgerDrift.Drift)
+	if ledger != nil {
+		// raw diff = balance − Σ member values; Drift is the post-baseline drift.
+		ledgerNote = fmt.Sprintf("raw $%+.2f / post-baseline $%+.2f", ledger.Balance-ledger.MemberSum, ledger.Drift)
 	}
-	fmt.Printf("[cashflow-journal] %s SHADOW: expected_equity $%.2f vs accountValue $%.2f → journal_drift $%+.4f (settled Σ $%+.2f since baseline $%.2f, ΔuPnL $%+.2f); trade-ledger drift %s%s\n",
-		sharedWalletKeyLabel(key), expected, res.AccountValue, journalDrift,
-		settled, st.BaselineAccountValue, res.CurrentUPnL-st.BaselineUPnL, ledgerNote, incompleteNote)
+	var switchNote string
+	switch {
+	case !enabled:
+		switchNote = "OFF (operator-disabled via GO_TRADER_CASHFLOW_JOURNAL_ALARM)"
+	case rec.Incomplete:
+		switchNote = "OFF (journal incomplete — failing closed to trade-ledger)"
+	case !rec.Usable && suppressPending:
+		switchNote = fmt.Sprintf("PENDING (journal not usable — transient miss %d/%d, journal streak preserved)", pendingStreak, sharedWalletDriftAlertThreshold)
+	case !rec.Usable:
+		switchNote = fmt.Sprintf("OFF (journal not usable for %d cycles — failing closed to trade-ledger)", pendingStreak)
+	default:
+		switchNote = "ON (journal is the drift-alarm basis)"
+	}
+	fmt.Printf("[cashflow-journal] %s: expected_equity $%.2f vs accountValue $%.2f → journal_drift $%+.4f (settled Σ $%+.2f, ΔuPnL $%+.2f); trade-ledger %s; alarm %s\n",
+		sharedWalletKeyLabel(key), rec.ExpectedEquity, rec.AccountValue, rec.Drift, rec.SettledSum, rec.DeltaUPnL, ledgerNote, switchNote)
+
+	if ledger == nil {
+		return
+	}
+	if !enabled {
+		return // operator opted out → the trade-ledger basis governs (unchanged)
+	}
+	if !rec.Usable {
+		if rec.Incomplete {
+			// A latched unmapped event means a real, unclassified balance movement
+			// may be hiding. Fail closed to the trade-ledger basis (it governs
+			// under the wallet's own streak key) so SOME alarm still runs while the
+			// journal is un-trustworthy; the distinct journal streak key keeps this
+			// from perturbing the journal's confirmation series.
+			return
+		}
+		if suppressPending {
+			// Transient (within the confirmation window): a stream-fetch miss, or
+			// the baseline was just anchored this cycle. The journal is the
+			// governing basis but has no reading — mark it pending so
+			// reportSharedWalletDrift PRESERVES the journal streak instead of
+			// resetting the 2-cycle confirmation off the within-tolerance trade-
+			// ledger fallback (#1107). A transient feed miss during a real
+			// journal-gap episode must not delay or suppress the operator alarm.
+			ledger.JournalPending = true
+			return
+		}
+		// PERSISTENT outage (pending streak past the confirmation window): the
+		// journal has been unreadable for too many consecutive cycles to keep
+		// trusting it will recover. Fail closed to the trade-ledger basis under the
+		// wallet's own streak key — exactly like the incomplete latch — so a real
+		// trade-ledger drift (or an orphan position) still alarms within a bounded
+		// window instead of staying dark for the whole exchange-feed outage
+		// (#1107). The journal streak (label:journal) is left untouched and resumes
+		// when the journal recovers.
+		return
+	}
+	ledger.Drift = rec.Drift
+	ledger.Basis = driftBasisJournal
+	ledger.ExpectedEquity = rec.ExpectedEquity
+	// OrphanCoins is deliberately PRESERVED (not nil'd): the journal total
+	// reconciles an unowned position to ~0 (its fill AND uPnL both count toward
+	// the exchange accountValue), so the orphan-exposure signal is absent from the
+	// journal total drift. Keeping it lets reportSharedWalletDrift still alarm on
+	// real unmanaged on-chain exposure independent of the (noise-free) total
+	// (#1107 / #1100 review). Pure per-member value mis-attribution with a correct
+	// total and no orphan position is the intentional, non-safety detection loss
+	// of the journal basis (visible in the per-cycle journal-vs-ledger log above).
 }
 
 // sumHLAccountUPnL totals the exchange-reported unrealized PnL across an

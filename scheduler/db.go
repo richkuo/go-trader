@@ -285,8 +285,9 @@ CREATE TABLE IF NOT EXISTS wallet_transfers (
 --                     NEVER summed into equity on its own — #698 / #954 invariant)
 --   funding         = signed funding usdc
 --   <transfer kind> = signedPerpFlowUSD (deposits / withdrawals / transfers / ...)
--- Shadow-only today: computed beside the trade-ledger drift path and logged for
--- validation; it does not yet drive any alarm (see reconcileCashflowJournalShadow).
+-- This is the LIVE total-drift-alarm basis for HL wallets (the drift alarm is
+-- driven by the exchange-sourced expected-equity); the trade-ledger drift path is
+-- retained as the fail-closed fallback and the per-strategy attribution source.
 CREATE TABLE IF NOT EXISTS cashflow_journal (
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
     platform TEXT NOT NULL,
