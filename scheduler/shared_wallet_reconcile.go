@@ -324,13 +324,19 @@ type sharedWalletDriftResult struct {
 	Drift       float64  // alarm drift: trade-ledger post-baseline drift, OR the journal drift when Basis==journal (#1100)
 	Balance     float64  // the real account balance (accountValue) reconciled against
 	MemberSum   float64  // Σ rounded member display values stored this cycle (attribution; always trade-ledger)
-	OrphanCoins []string // sorted unattributed coins — streak signature + alert detail (nil under journal basis)
+	OrphanCoins []string // sorted unattributed coins — streak signature + alert detail (PRESERVED under the journal basis as the noise-free orphan-exposure signal, #1107)
 	// Basis is "" (trade-ledger) or driftBasisJournal when applyCashflowJournalDriftBasis
 	// switched Drift onto the exchange-sourced cash-flow journal (#1100).
 	Basis string
 	// ExpectedEquity is the journal's reconstructed accountValue; only meaningful
 	// when Basis==driftBasisJournal (Drift == Balance − ExpectedEquity).
 	ExpectedEquity float64
+	// JournalPending is set when the journal is the governing basis (operator-
+	// enabled) but produced no trustworthy total this cycle — a transient stream-
+	// fetch miss or a just-anchored baseline. reportSharedWalletDrift treats it as
+	// "no info" and PRESERVES the journal streak instead of resetting the 2-cycle
+	// confirmation off the within-tolerance trade-ledger fallback (#1107).
+	JournalPending bool
 }
 
 // reconcileSharedWalletDisplayValues recomputes the exchange-authoritative

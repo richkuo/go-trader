@@ -14,6 +14,12 @@ import (
 // string is the legacy trade-ledger basis.
 const driftBasisJournal = "journal"
 
+// journalDriftStreakKeySuffix namespaces the journal-basis drift streak so it is
+// a DISTINCT confirmation series from the trade-ledger basis (#1107): a cycle on
+// (or transiently falling back to) the trade-ledger basis must never reset the
+// journal's 2-cycle confirmation, and vice-versa.
+const journalDriftStreakKeySuffix = ":journal"
+
 // #1100: exchange-sourced equity journal for shared-wallet TOTAL reconciliation.
 //
 // Today the shared-wallet drift alarm reconstructs each account's equity from
@@ -539,13 +545,41 @@ func applyCashflowJournalDriftBasis(results []sharedWalletDriftResult, key Share
 	fmt.Printf("[cashflow-journal] %s: expected_equity $%.2f vs accountValue $%.2f → journal_drift $%+.4f (settled Σ $%+.2f, ΔuPnL $%+.2f); trade-ledger %s; alarm %s\n",
 		sharedWalletKeyLabel(key), rec.ExpectedEquity, rec.AccountValue, rec.Drift, rec.SettledSum, rec.DeltaUPnL, ledgerNote, switchNote)
 
-	if !enabled || !rec.Usable || ledger == nil {
-		return // keep the trade-ledger basis
+	if ledger == nil {
+		return
+	}
+	if !enabled {
+		return // operator opted out → the trade-ledger basis governs (unchanged)
+	}
+	if !rec.Usable {
+		if rec.Incomplete {
+			// A latched unmapped event means a real, unclassified balance movement
+			// may be hiding. Fail closed to the trade-ledger basis (it governs
+			// under the wallet's own streak key) so SOME alarm still runs while the
+			// journal is un-trustworthy; the distinct journal streak key keeps this
+			// from perturbing the journal's confirmation series.
+			return
+		}
+		// Transient: a stream-fetch miss, or the baseline was just anchored this
+		// cycle. The journal is the governing basis but has no reading — mark it
+		// pending so reportSharedWalletDrift PRESERVES the journal streak instead
+		// of resetting the 2-cycle confirmation off the within-tolerance trade-
+		// ledger fallback (#1107). A transient feed miss during a real journal-gap
+		// episode must not delay or suppress the operator alarm.
+		ledger.JournalPending = true
+		return
 	}
 	ledger.Drift = rec.Drift
 	ledger.Basis = driftBasisJournal
 	ledger.ExpectedEquity = rec.ExpectedEquity
-	ledger.OrphanCoins = nil // journal drift is a wallet total, not coin-attributed
+	// OrphanCoins is deliberately PRESERVED (not nil'd): the journal total
+	// reconciles an unowned position to ~0 (its fill AND uPnL both count toward
+	// the exchange accountValue), so the orphan-exposure signal is absent from the
+	// journal total drift. Keeping it lets reportSharedWalletDrift still alarm on
+	// real unmanaged on-chain exposure independent of the (noise-free) total
+	// (#1107 / #1100 review). Pure per-member value mis-attribution with a correct
+	// total and no orphan position is the intentional, non-safety detection loss
+	// of the journal basis (visible in the per-cycle journal-vs-ledger log above).
 }
 
 // sumHLAccountUPnL totals the exchange-reported unrealized PnL across an

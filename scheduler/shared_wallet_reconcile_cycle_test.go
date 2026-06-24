@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -626,5 +627,94 @@ func TestSharedWalletDriftTracker_StableDriftRealertsHourlyNotEveryTenth(t *test
 	// Past one hour since the last notification → the hourly back-off re-alerts.
 	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, base.Add(time.Hour+time.Second)); !notify {
 		t.Fatal("stable drift must re-alert once the hourly back-off elapses")
+	}
+}
+
+// #1107 (Optional #1): a transient not-usable journal cycle (JournalPending)
+// must PRESERVE the journal streak — never reset the 2-cycle confirmation off
+// the within-tolerance trade-ledger fallback — and the journal basis must track
+// a DISTINCT streak key from the trade-ledger basis so neither resets the other.
+func TestReportSharedWalletDrift_JournalStreakPreservedOnPending(t *testing.T) {
+	prev := sharedWalletDriftTracker
+	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
+	defer func() { sharedWalletDriftTracker = prev }()
+
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
+	jkey := sharedWalletKeyLabel(key) + journalDriftStreakKeySuffix
+
+	// Cycle 1: journal basis, total drift over tolerance -> recorded under the
+	// DISTINCT journal key, NOT the bare trade-ledger label.
+	reportSharedWalletDrift(nil, []sharedWalletDriftResult{
+		{Key: key, Drift: 5.00, Balance: 1000, ExpectedEquity: 995, Basis: driftBasisJournal},
+	})
+	if e := sharedWalletDriftTracker.entries[jkey]; e == nil || e.cycles != 1 {
+		t.Fatalf("journal streak should record under %q: %+v", jkey, e)
+	}
+	if sharedWalletDriftTracker.entries[sharedWalletKeyLabel(key)] != nil {
+		t.Error("journal basis must NOT touch the bare trade-ledger streak key")
+	}
+
+	// Cycle 2: journal transiently not usable -> JournalPending. The streak is
+	// PRESERVED (no Record, no Clear), so the confirmation window survives the
+	// feed miss instead of resetting off a clean trade-ledger fallback.
+	reportSharedWalletDrift(nil, []sharedWalletDriftResult{
+		{Key: key, Drift: 0.0, Balance: 1000, JournalPending: true},
+	})
+	if e := sharedWalletDriftTracker.entries[jkey]; e == nil || e.cycles != 1 {
+		t.Fatalf("JournalPending must preserve the journal streak unchanged: %+v", e)
+	}
+
+	// Cycle 3: journal usable and over tolerance again -> the preserved streak
+	// confirms within the 2-cycle window despite the intervening transient miss.
+	reportSharedWalletDrift(nil, []sharedWalletDriftResult{
+		{Key: key, Drift: 5.00, Balance: 1000, ExpectedEquity: 995, Basis: driftBasisJournal},
+	})
+	if e := sharedWalletDriftTracker.entries[jkey]; e == nil || e.cycles != 2 {
+		t.Fatalf("streak must continue across the transient, reaching confirmation: %+v", e)
+	}
+}
+
+// #1107 (Optional #2): under the journal basis the exchange total reconciles an
+// unowned position to ~0, so orphan exposure is absent from the total drift. The
+// alarm must TRIP on an orphan coin regardless (real unmanaged exposure), confirm
+// across cycles, and reset only when the orphan is gone AND the total reconciles.
+func TestReportSharedWalletDrift_JournalOrphanTripsWithoutTotalDrift(t *testing.T) {
+	prev := sharedWalletDriftTracker
+	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
+	defer func() { sharedWalletDriftTracker = prev }()
+
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
+	jkey := sharedWalletKeyLabel(key) + journalDriftStreakKeySuffix
+	orphan := func() []sharedWalletDriftResult {
+		return []sharedWalletDriftResult{
+			{Key: key, Drift: 0.0, Balance: 1000, ExpectedEquity: 1000, Basis: driftBasisJournal, OrphanCoins: []string{"BTC"}},
+		}
+	}
+
+	reportSharedWalletDrift(nil, orphan())
+	if e := sharedWalletDriftTracker.entries[jkey]; e == nil || e.cycles != 1 {
+		t.Fatalf("orphan with ~0 total drift must still record (trip): %+v", e)
+	}
+	reportSharedWalletDrift(nil, orphan())
+	if e := sharedWalletDriftTracker.entries[jkey]; e == nil || e.cycles != 2 {
+		t.Fatalf("a persistent journal orphan must keep confirming: %+v", e)
+	}
+
+	// Orphan resolved AND total reconciles -> within tolerance, streak clears.
+	reportSharedWalletDrift(nil, []sharedWalletDriftResult{
+		{Key: key, Drift: 0.0, Balance: 1000, ExpectedEquity: 1000, Basis: driftBasisJournal},
+	})
+	if sharedWalletDriftTracker.entries[jkey] != nil {
+		t.Error("a clean journal cycle (no orphan, no total drift) must clear the streak")
+	}
+}
+
+func TestFormatSharedWalletJournalOrphanAlert(t *testing.T) {
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
+	msg := formatSharedWalletJournalOrphanAlert(key, 1000, 1000, 0.0, 2, []string{"BTC", "ETH"})
+	for _, want := range []string{"ORPHAN POSITION", "hyperliquid/0xabc", "BTC, ETH", "NO strategy"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("orphan alert missing %q: %s", want, msg)
+		}
 	}
 }

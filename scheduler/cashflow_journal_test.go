@@ -445,33 +445,51 @@ func TestApplyCashflowJournalDriftBasis(t *testing.T) {
 	usable := &cashflowJournalReconcile{Key: hlKey, AccountValue: 1000, ExpectedEquity: 1000.0, Drift: 0.0, Usable: true}
 
 	// Enabled + usable -> HL switches to journal drift (0.0), OKX untouched.
+	// #1107: OrphanCoins is PRESERVED (not nil'd) so an unowned position still
+	// alarms even though the journal total reconciles.
 	res := mk()
 	applyCashflowJournalDriftBasis(res, hlKey, usable, true)
-	if res[0].Basis != driftBasisJournal || math.Abs(res[0].Drift) > 1e-9 || res[0].OrphanCoins != nil {
+	if res[0].Basis != driftBasisJournal || math.Abs(res[0].Drift) > 1e-9 {
 		t.Errorf("HL should switch to journal basis: %+v", res[0])
+	}
+	if len(res[0].OrphanCoins) != 1 || res[0].OrphanCoins[0] != "BTC" {
+		t.Errorf("#1107: OrphanCoins must be preserved under the journal basis: %+v", res[0].OrphanCoins)
+	}
+	if res[0].JournalPending {
+		t.Errorf("usable cycle must not be journal-pending: %+v", res[0])
 	}
 	if res[1].Basis != "" || res[1].Drift != 0.05 {
 		t.Errorf("OKX must be untouched: %+v", res[1])
 	}
 
-	// Operator-disabled -> HL stays on trade-ledger drift.
+	// Operator-disabled -> HL stays fully on the trade-ledger drift (not pending).
 	res = mk()
 	applyCashflowJournalDriftBasis(res, hlKey, usable, false)
-	if res[0].Basis != "" || res[0].Drift != 0.40 {
-		t.Errorf("disabled: HL must keep trade-ledger drift: %+v", res[0])
+	if res[0].Basis != "" || res[0].Drift != 0.40 || res[0].JournalPending {
+		t.Errorf("disabled: HL must keep trade-ledger drift, not pending: %+v", res[0])
 	}
 
-	// Not usable -> HL stays on trade-ledger drift even when enabled.
+	// #1107: enabled but TRANSIENTLY not usable (a stream-fetch miss, NOT
+	// incomplete) -> marked JournalPending so reportSharedWalletDrift preserves
+	// the journal streak instead of resetting it off the clean ledger fallback.
+	res = mk()
+	applyCashflowJournalDriftBasis(res, hlKey, &cashflowJournalReconcile{Key: hlKey, Usable: false}, true)
+	if !res[0].JournalPending || res[0].Basis != "" {
+		t.Errorf("transient not-usable must be journal-pending (no basis switch): %+v", res[0])
+	}
+
+	// #1107: enabled but INCOMPLETE (latched unmapped event) -> fail closed to the
+	// trade-ledger basis so SOME alarm runs; NOT pending (the ledger governs).
 	res = mk()
 	applyCashflowJournalDriftBasis(res, hlKey, &cashflowJournalReconcile{Key: hlKey, Usable: false, Incomplete: true}, true)
-	if res[0].Basis != "" || res[0].Drift != 0.40 {
-		t.Errorf("not usable: HL must keep trade-ledger drift: %+v", res[0])
+	if res[0].Basis != "" || res[0].Drift != 0.40 || res[0].JournalPending {
+		t.Errorf("incomplete must fail closed to trade-ledger (not pending): %+v", res[0])
 	}
 
 	// nil rec -> no-op.
 	res = mk()
 	applyCashflowJournalDriftBasis(res, hlKey, nil, true)
-	if res[0].Basis != "" || res[0].Drift != 0.40 {
+	if res[0].Basis != "" || res[0].Drift != 0.40 || res[0].JournalPending {
 		t.Errorf("nil rec must be a no-op: %+v", res[0])
 	}
 }

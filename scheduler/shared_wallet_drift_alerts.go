@@ -315,6 +315,18 @@ func formatSharedWalletJournalDriftAlert(key SharedWalletKey, balance, expectedE
 		sharedWalletKeyLabel(key), os.Getpid(), count, balance, expectedEquity, drift, sharedWalletDriftTolerance)
 }
 
+// formatSharedWalletJournalOrphanAlert fires under the #1100 journal basis when
+// the exchange total reconciles to the journal (no total-equity drift) BUT one
+// or more on-chain positions are owned by NO strategy. The journal total is
+// account-level and nets an orphan's fill + uPnL to ~0, so the orphan-exposure
+// signal would otherwise be silenced by the basis switch (#1107) — this keeps
+// the real-unmanaged-exposure alarm alive independent of the total drift.
+func formatSharedWalletJournalOrphanAlert(key SharedWalletKey, balance, expectedEquity, drift float64, count int, orphanCoins []string) string {
+	return fmt.Sprintf(
+		"**SHARED-WALLET ORPHAN POSITION** %s (pid=%d, %d consecutive): exchange accountValue $%.2f reconciles to cash-flow-journal expected-equity $%.2f (total drift $%+.2f, within tolerance) BUT %d on-chain position(s) are owned by NO strategy: %s. The exchange total is correct, so this is unmanaged/un-attributed on-chain exposure — NOT a journal gap. Investigate the unowned position(s) before assuming it is benign.",
+		sharedWalletKeyLabel(key), os.Getpid(), count, balance, expectedEquity, drift, len(orphanCoins), strings.Join(orphanCoins, ", "))
+}
+
 func formatSharedWalletDriftRecovered(key SharedWalletKey, priorCount int) string {
 	return fmt.Sprintf(
 		"**SHARED-WALLET DRIFT RESOLVED** %s (pid=%d): per-strategy values reconcile to the account balance again after %d cycles of drift.",
@@ -332,15 +344,41 @@ func reportSharedWalletDrift(notifier *MultiNotifier, results []sharedWalletDrif
 	now := time.Now().UTC()
 	for _, r := range results {
 		label := sharedWalletKeyLabel(r.Key)
-		if math.Abs(r.Drift) > sharedWalletDriftTolerance {
-			shouldNotify, shouldLog, count := sharedWalletDriftTracker.Record(label, r.Drift, r.OrphanCoins, now)
+		// #1107: the journal is the governing basis but produced no reading this
+		// cycle (a transient feed miss / a just-anchored baseline). Treat it as
+		// "no info" and PRESERVE the journal streak rather than resetting it off
+		// the within-tolerance trade-ledger fallback — matching the "absent from
+		// results → streak preserved" rule above. A transient miss during a real
+		// journal-gap episode must not delay or suppress the operator alarm.
+		if r.JournalPending {
+			continue
+		}
+		// The journal basis tracks a DISTINCT confirmation series from the
+		// trade-ledger basis so neither resets the other across basis switches.
+		trackerKey := label
+		if r.Basis == driftBasisJournal {
+			trackerKey += journalDriftStreakKeySuffix
+		}
+		// Under the journal basis the exchange total reconciles an unowned
+		// position to ~0 (its fill AND uPnL both count), so orphan exposure is not
+		// in the total drift — trip on an orphan coin regardless so real unmanaged
+		// exposure still alarms (#1107). The trade-ledger basis already trips via
+		// the orphan's uPnL drift, so this only widens the journal path.
+		orphanExposure := r.Basis == driftBasisJournal && len(r.OrphanCoins) > 0
+		if math.Abs(r.Drift) > sharedWalletDriftTolerance || orphanExposure {
+			shouldNotify, shouldLog, count := sharedWalletDriftTracker.Record(trackerKey, r.Drift, r.OrphanCoins, now)
 			if shouldLog {
-				if r.Basis == driftBasisJournal {
+				switch {
+				case r.Basis == driftBasisJournal && len(r.OrphanCoins) > 0:
+					// Journal total reconciles but a position is unowned (#1107).
+					fmt.Printf("[WARN] shared-wallet %s JOURNAL orphan exposure: total reconciles (drift $%+.2f, accountValue $%.2f vs expected-equity $%.2f) but unowned coins=[%s]\n",
+						label, r.Drift, r.Balance, r.ExpectedEquity, strings.Join(r.OrphanCoins, ","))
+				case r.Basis == driftBasisJournal:
 					// #1100: journal basis — drift is accountValue vs the
 					// exchange-sourced expected-equity, not a member-sum diff.
 					fmt.Printf("[WARN] shared-wallet %s JOURNAL drift $%+.2f (accountValue $%.2f vs exchange-sourced expected-equity $%.2f)\n",
 						label, r.Drift, r.Balance, r.ExpectedEquity)
-				} else {
+				default:
 					rawDiff := r.MemberSum - r.Balance
 					fmt.Printf("[WARN] shared-wallet %s drift $%+.2f (Σ members $%.2f vs balance $%.2f, rawDiff $%+.2f, orphans=[%s])\n",
 						label, r.Drift, r.MemberSum, r.Balance, rawDiff, strings.Join(r.OrphanCoins, ","))
@@ -350,16 +388,19 @@ func reportSharedWalletDrift(notifier *MultiNotifier, results []sharedWalletDrif
 				continue
 			}
 			var msg string
-			if r.Basis == driftBasisJournal {
+			switch {
+			case r.Basis == driftBasisJournal && len(r.OrphanCoins) > 0:
+				msg = formatSharedWalletJournalOrphanAlert(r.Key, r.Balance, r.ExpectedEquity, r.Drift, count, r.OrphanCoins)
+			case r.Basis == driftBasisJournal:
 				msg = formatSharedWalletJournalDriftAlert(r.Key, r.Balance, r.ExpectedEquity, r.Drift, count)
-			} else {
+			default:
 				msg = formatSharedWalletDriftAlert(r.Key, r.Balance, r.MemberSum, r.Drift, count, r.OrphanCoins)
 			}
 			notifier.SendToAllChannels(msg)
 			notifier.SendOwnerDM(msg)
 			continue
 		}
-		recovered, priorCount := sharedWalletDriftTracker.Clear(label)
+		recovered, priorCount := sharedWalletDriftTracker.Clear(trackerKey)
 		if !recovered || notifier == nil || !notifier.HasBackends() {
 			continue
 		}
