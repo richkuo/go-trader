@@ -1195,6 +1195,56 @@ func parseOKXBalanceOutput(stdout []byte, stderrStr string, runErr error) (*OKXB
 	}
 }
 
+// OKXBillsResult is the JSON output from fetch_okx_bills.py (#1105). Bills are
+// the OKX account-bill cash-flow events since the cursor; Capped is true when
+// the script hit its safety page cap (a pathological backlog — the journal
+// treats that cycle as not-usable). Bills decodes straight into okxBillRecord
+// (json tags match), so the OKX cash-flow journal has no second representation.
+type OKXBillsResult struct {
+	Bills     []okxBillRecord `json:"bills"`
+	Capped    bool            `json:"capped"`
+	Platform  string          `json:"platform"`
+	Timestamp string          `json:"timestamp"`
+	Error     string          `json:"error,omitempty"`
+}
+
+// RunOKXFetchBills runs fetch_okx_bills.py for one OKX account, pulling every
+// settled cash-flow bill since sinceMs (#1105). Follows the same 5-case
+// contract as RunOKXFetchPositions / RunOKXFetchBalance: a non-nil error on ANY
+// failure path so the journal fails closed (no cursor advance, no shadow
+// reading) rather than silently treating a fetch failure as "no cash flow".
+func RunOKXFetchBills(script string, sinceMs int64) (*OKXBillsResult, string, error) {
+	args := []string{fmt.Sprintf("--since-ms=%d", sinceMs)}
+	stdout, stderr, runErr := RunPythonScript(script, args)
+	return parseOKXBillsOutput(stdout, string(stderr), runErr)
+}
+
+// parseOKXBillsOutput is the pure parser for RunOKXFetchBills, extracted so the
+// decision logic is testable without spawning Python. Mirrors
+// parseOKXPositionsOutput / parseOKXBalanceOutput's 5-case matrix — contract
+// drift across the OKX fetch parsers would be bad.
+func parseOKXBillsOutput(stdout []byte, stderrStr string, runErr error) (*OKXBillsResult, string, error) {
+	var result OKXBillsResult
+	parseErr := json.Unmarshal(stdout, &result)
+
+	switch {
+	case runErr == nil && parseErr == nil && result.Error == "":
+		return &result, stderrStr, nil
+
+	case runErr == nil && parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("fetch bills reported error despite exit 0: %s", result.Error)
+
+	case parseErr == nil && result.Error != "":
+		return &result, stderrStr, fmt.Errorf("fetch bills failed: %s", result.Error)
+
+	case parseErr == nil && runErr != nil:
+		return &result, stderrStr, fmt.Errorf("fetch bills subprocess exit %v with no error field (stderr: %s)", runErr, stderrStr)
+
+	default:
+		return nil, stderrStr, fmt.Errorf("parse bills output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
+	}
+}
+
 // RobinhoodCloseFill is the parsed fill block from close_robinhood_position.py.
 // Mirrors OKXCloseFill. OID is a string (robin_stocks order IDs are opaque
 // UUIDs), fields are optional — empty {} means the adapter found no position

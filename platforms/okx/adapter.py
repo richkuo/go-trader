@@ -23,6 +23,40 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import ccxt
 
 
+def _bill_float(value) -> float:
+    """Parse an OKX bill numeric field; missing/blank/garbage → 0.0."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _normalize_okx_bill(entry: dict) -> dict:
+    """Normalize one ccxt fetch_ledger entry into the #1105 journal bill shape.
+
+    Pulls the raw OKX bill from ``entry["info"]`` (authoritative field names —
+    billId/balChg/etc.) and falls back to the ccxt-unified ``timestamp`` for the
+    millisecond time when the raw ``ts`` is absent. Pure — unit-tested without a
+    live exchange.
+    """
+    info = entry.get("info") or {}
+    ts = info.get("ts")
+    if ts in (None, ""):
+        ts = entry.get("timestamp")
+    return {
+        "bill_id": str(info.get("billId") or entry.get("id") or ""),
+        "ts_ms": int(_bill_float(ts)),
+        "ccy": str(info.get("ccy") or ""),
+        "type": str(info.get("type") or ""),
+        "sub_type": str(info.get("subType") or ""),
+        "bal_chg": _bill_float(info.get("balChg")),
+        "pnl": _bill_float(info.get("pnl")),
+        "fee": _bill_float(info.get("fee")),
+        "inst_id": str(info.get("instId") or ""),
+        "trade_id": str(info.get("tradeId") or ""),
+    }
+
+
 class OKXExchangeAdapter:
     """
     Exchange adapter for OKX — spot, perpetual swaps, and options.
@@ -261,6 +295,67 @@ class OKXExchangeAdapter:
             return float(total.get("USDT") or 0.0)
         except (TypeError, ValueError):
             return 0.0
+
+    def get_account_bills(self, since_ms: int = 0, page_limit: int = 100,
+                          max_bills: int = 10000) -> Tuple[list, bool]:
+        """Fetch OKX account bills (settled cash-flow events) since ``since_ms``
+        for the #1105 exchange-sourced cash-flow journal (shadow phase).
+
+        Every OKX balance change is an account bill carrying ``balChg`` (the
+        signed change to the settled cash balance), so this single feed is the
+        COMPLETE settled-cash-flow source — trade PnL, fees, funding, transfers,
+        deposits and withdrawals are all bills. ``balChg`` already nets every
+        component, so the consumer needs no per-fill fee arithmetic; ``pnl`` /
+        ``fee`` are returned as attribution metadata only.
+
+        Returns ``(bills, capped)`` where ``bills`` is oldest-first, each a dict:
+        ``{"bill_id","ts_ms","ccy","type","sub_type","bal_chg","pnl","fee",
+        "inst_id","trade_id"}`` sourced from the raw OKX bill
+        (ccxt ``fetch_ledger`` entry ``info``). ``capped`` is True when the
+        ``max_bills`` safety cap was hit before the feed was exhausted — the Go
+        journal then treats that cycle as not-usable but still advances its
+        cursor past the contiguous oldest prefix.
+
+        Horizon: ccxt ``fetch_ledger`` reads OKX ``/account/bills`` (~7 days). In
+        steady per-cycle operation the window is ample; after a multi-day outage
+        older bills fall outside it and surface as journal drift in the shadow
+        log (visible to the operator before any Phase-3b alarm flip).
+
+        Only available in live mode; raises RuntimeError in paper mode.
+        """
+        if not self._is_live:
+            raise RuntimeError(
+                "get_account_bills requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
+            )
+        collected = {}
+        cursor = int(since_ms or 0)
+        capped = False
+        # Page FORWARD from the cursor: ccxt fetch_ledger returns unified entries
+        # ascending and `since` filters from that point; advance `since` past the
+        # newest entry each page until the feed is exhausted (short page) or the
+        # safety cap is hit. The page-loop bound is a belt-and-suspenders guard
+        # against a non-advancing cursor.
+        for _ in range(max(1, max_bills // max(1, page_limit)) + 2):
+            page = self._exchange.fetch_ledger(code=None, since=cursor, limit=page_limit) or []
+            if not page:
+                break
+            for entry in page:
+                bill = _normalize_okx_bill(entry)
+                key = bill["bill_id"] or f"{bill['type']}:{bill['ts_ms']}:{bill['trade_id']}"
+                collected[key] = bill
+            if len(collected) >= max_bills:
+                capped = True
+                break
+            if len(page) < page_limit:
+                break
+            last_ts = max((int(e.get("timestamp") or 0) for e in page), default=cursor)
+            if last_ts <= cursor:
+                break  # no forward progress — stop rather than loop forever
+            cursor = last_ts + 1
+        bills = sorted(collected.values(), key=lambda b: b["ts_ms"])
+        if capped:
+            bills = bills[:max_bills]
+        return bills, capped
 
     # ─────────────────────────────────────────────
     # Options Protocol methods
