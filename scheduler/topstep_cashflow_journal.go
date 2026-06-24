@@ -165,7 +165,26 @@ func defaultTopStepEquitySnapshot() (equity, upnl float64, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	return result.Balance, result.UnrealizedPnL, nil
+	return validatedTopStepEquity(result.Balance, result.UnrealizedPnL)
+}
+
+// validatedTopStepEquity treats a non-positive (or NaN) equity as a fetch MISS
+// rather than a real $0 account value. A funded TopStep account always carries
+// positive equity, so equity ≤ 0 means the (unverified) /v1/account/balance
+// response was malformed or shape-mismatched — e.g. a 200 missing the "equity"
+// field, which the fetcher would otherwise coerce to 0 and report as success.
+// Returning an error keeps walletBalances[tsKey] UNSET so the portfolio-value
+// path falls back to the member-PV sum and freezes the portfolio peak, instead
+// of contributing a silent $0 that collapses the TopStep account's portfolio
+// value and could trip the all-platform portfolio kill switch (CheckPortfolioRisk
+// consumes a PRESENT walletBalances[key] directly via computeSubsetPortfolioValue,
+// with no member-PV fallback on a present zero). A genuinely good positive equity
+// flows through unchanged. Pure — unit-tested.
+func validatedTopStepEquity(balance, upnl float64) (equity, upnlOut float64, err error) {
+	if !(balance > 0) { // also rejects NaN
+		return 0, 0, fmt.Errorf("non-positive TopStep equity $%.2f — treating as a fetch miss (malformed /v1/account/balance response)", balance)
+	}
+	return balance, upnl, nil
 }
 
 // topstepCashflowJournalFetchResult carries one TopStep wallet's raw fills plus

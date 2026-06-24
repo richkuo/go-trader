@@ -153,6 +153,18 @@ class TestCashflowJournalFeeds:
         assert equity == 1000.0
         assert upnl == pytest.approx(0.0)
 
+    def test_equity_and_upnl_missing_equity_raises(self):
+        # #1106 review finding 1: a 200 with a shape-mismatched body (no "equity"
+        # field) must RAISE — never silently coerce to a $0 equity that the
+        # portfolio kill switch would consume.
+        session = MagicMock()
+        resp = MagicMock()
+        resp.json.return_value = {"cashBalance": 50000.0}  # no equity field
+        session.get.return_value = resp
+        adapter = _live_adapter_with_session(session)
+        with pytest.raises(ValueError, match="missing 'equity'"):
+            adapter.get_account_equity_and_upnl()
+
     def test_equity_and_upnl_paper_raises(self):
         adapter = TopStepExchangeAdapter(mode="paper")
         with pytest.raises(RuntimeError, match="live mode"):
@@ -167,23 +179,50 @@ class TestCashflowJournalFeeds:
         ]}
         session.get.return_value = resp
         adapter = _live_adapter_with_session(session)
-        fills, capped = adapter.get_account_fills(since_ms=0, limit=1000)
+        # Two fills < page_limit → short page → feed drained, single GET, not capped.
+        fills, capped = adapter.get_account_fills(since_ms=0, page_limit=1000)
         assert capped is False
+        assert session.get.call_count == 1
         # Oldest-first.
         assert [f["ts_ms"] for f in fills] == [100, 200]
         assert fills[0] == {"fill_id": "f1", "ts_ms": 100, "symbol": "ES", "kind": "", "realized_pnl": 0.0, "fee": 0.5}
         assert fills[1]["symbol"] == "ES" and fills[1]["kind"] == "trade" and fills[1]["realized_pnl"] == 20.0
 
-    def test_get_account_fills_capped_at_limit(self):
+    def test_get_account_fills_drains_across_pages(self):
+        # Full first page (== page_limit) must NOT be reported capped: the loop
+        # advances the cursor and pages forward until a short page drains the feed.
+        page1 = {"fills": [
+            {"id": "a", "timestamp": 100, "symbol": "ES", "kind": "trade", "realizedPnl": 1, "fee": 0},
+            {"id": "b", "timestamp": 200, "symbol": "ES", "kind": "trade", "realizedPnl": 2, "fee": 0},
+        ]}
+        page2 = {"fills": [  # boundary overlap (ts 200 re-read) + one new fill
+            {"id": "b", "timestamp": 200, "symbol": "ES", "kind": "trade", "realizedPnl": 2, "fee": 0},
+            {"id": "c", "timestamp": 300, "symbol": "ES", "kind": "trade", "realizedPnl": 3, "fee": 0},
+        ]}
+        page3 = {"fills": []}  # drained
+        session = MagicMock()
+        r1, r2, r3 = MagicMock(), MagicMock(), MagicMock()
+        r1.json.return_value, r2.json.return_value, r3.json.return_value = page1, page2, page3
+        session.get.side_effect = [r1, r2, r3]
+        adapter = _live_adapter_with_session(session)
+        fills, capped = adapter.get_account_fills(since_ms=0, page_limit=2)
+        assert capped is False  # feed drained, not page-capped
+        # Overlap fill b deduped → three distinct fills, oldest-first.
+        assert [f["fill_id"] for f in fills] == ["a", "b", "c"]
+
+    def test_get_account_fills_single_ms_overflow_caps(self):
+        # A FULL page whose fills all share one millisecond (timestamp paging can't
+        # step past it) must fail closed (capped) rather than loop or drop fills.
+        same_ms = {"fills": [
+            {"id": "x", "timestamp": 500, "symbol": "ES", "kind": "trade", "realizedPnl": 1, "fee": 0},
+            {"id": "y", "timestamp": 500, "symbol": "ES", "kind": "trade", "realizedPnl": 1, "fee": 0},
+        ]}
         session = MagicMock()
         resp = MagicMock()
-        resp.json.return_value = {"fills": [
-            {"id": "a", "timestamp": 1, "symbol": "ES", "kind": "trade", "realizedPnl": 1, "fee": 0},
-            {"id": "b", "timestamp": 2, "symbol": "ES", "kind": "trade", "realizedPnl": 1, "fee": 0},
-        ]}
+        resp.json.return_value = same_ms
         session.get.return_value = resp
         adapter = _live_adapter_with_session(session)
-        _, capped = adapter.get_account_fills(since_ms=0, limit=2)
+        _, capped = adapter.get_account_fills(since_ms=0, page_limit=2)
         assert capped is True
 
     def test_get_account_fills_paper_raises(self):

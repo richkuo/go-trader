@@ -61,6 +61,23 @@ func newTopStepJournalKey() SharedWalletKey {
 	return SharedWalletKey{Platform: "topstep", Account: "ts-acct-123"}
 }
 
+// A non-positive (or NaN) equity must be treated as a fetch MISS (error), so the
+// snapshot never feeds walletBalances[tsKey] a silent $0 that could collapse the
+// account's portfolio value and trip the all-platform kill switch. A genuinely
+// positive equity flows through unchanged.
+func TestValidatedTopStepEquity(t *testing.T) {
+	// Good positive equity passes through with uPnL preserved.
+	if eq, upnl, err := validatedTopStepEquity(50000.0, 12.5); err != nil || eq != 50000.0 || upnl != 12.5 {
+		t.Errorf("positive equity: got (%v,%v,%v), want (50000,12.5,nil)", eq, upnl, err)
+	}
+	// Missing-equity-coerced-to-0, exact 0, negative, and NaN all become a miss.
+	for _, bad := range []float64{0, -1, math.NaN()} {
+		if _, _, err := validatedTopStepEquity(bad, 5.0); err == nil {
+			t.Errorf("equity %v must be treated as a fetch miss (error), got nil", bad)
+		}
+	}
+}
+
 // First contact anchors the baseline to the supplied equity/uPnL snapshot and the
 // fills cursor to now, fetching NO history; TopStep uses only the FillsSinceMs
 // cursor (funding/transfers stay 0).

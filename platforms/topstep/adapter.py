@@ -38,6 +38,25 @@ CONTRACT_SPECS = {
 }
 
 
+def _normalize_topstep_fill(f):
+    """Shape one raw TopStep fill into the cash-flow journal record, or None if
+    its timestamp is unparseable (#1106). ``realized_pnl`` is GROSS; ``fee`` is
+    the commission. Tolerant of both camelCase venue keys and the snake_case
+    journal keys."""
+    try:
+        ts_ms = int(f.get("timestamp", f.get("ts_ms", 0)))
+    except (TypeError, ValueError):
+        return None
+    return {
+        "fill_id": str(f.get("id", f.get("fill_id", ""))),
+        "ts_ms": ts_ms,
+        "symbol": (f.get("symbol") or "").upper(),
+        "kind": (f.get("kind") or "").lower(),
+        "realized_pnl": float(f.get("realizedPnl", f.get("realized_pnl", 0)) or 0),
+        "fee": float(f.get("fee", f.get("commission", 0)) or 0),
+    }
+
+
 class TopStepExchangeAdapter:
     """
     Exchange adapter for TopStep prop trading (CME futures).
@@ -229,6 +248,12 @@ class TopStepExchangeAdapter:
         )
         resp.raise_for_status()
         data = resp.json()
+        # A missing "equity" field means a shape-mismatched 200 (the contract is
+        # unverified). RAISE rather than coerce to 0 — the Go side treats a
+        # non-positive equity as a fetch miss anyway, but raising here makes the
+        # error envelope carry a clear cause instead of a silent $0 (#1106 review).
+        if "equity" not in data:
+            raise ValueError("TopStep /v1/account/balance response missing 'equity' field")
         equity = float(data.get("equity", 0))
         # cashBalance is the settled cash; fall back to "balance" then to equity
         # (uPnL 0) so a feed without an explicit cash field degrades to cash==equity
@@ -236,14 +261,25 @@ class TopStepExchangeAdapter:
         cash = float(data.get("cashBalance", data.get("balance", equity)))
         return equity, equity - cash
 
-    def get_account_fills(self, since_ms=0, limit=1000):
+    def get_account_fills(self, since_ms=0, page_limit=100, max_fills=10000):
         """Return ``(fills, capped)`` — settled trade fills at or after
         ``since_ms``, oldest first (#1106).
 
         Each fill: ``{"fill_id", "ts_ms", "symbol", "kind", "realized_pnl",
         "fee"}``. ``realized_pnl`` is GROSS (0 for entry fills); ``fee`` is the
-        commission charged. ``capped`` is true when the page limit was hit (the
-        Go journal treats that cycle as not-usable). Live mode only.
+        commission charged. Live mode only.
+
+        Pages FORWARD by the ``sinceMs`` cursor until the feed is DRAINED (a page
+        shorter than ``page_limit``) — mirroring ``OKXExchangeAdapter.
+        get_account_bills``. ``capped`` is True ONLY when the feed was NOT proven
+        drained: the ``max_fills`` safety cap was hit, a single-millisecond block
+        exceeded ``page_limit`` (timestamp paging cannot step through it), or the
+        per-cycle iteration budget ran out. A naive ``len(page) >= limit`` test
+        would mark a venue page-capped backlog ``Usable`` while fills at/before the
+        snapshot are still missing → phantom journal drift in the shadow log (the
+        exact Phase-4b promotion signal). The cursor advances with a one-ms OVERLAP
+        (cursor = page's last ts) so a same-ms fill beyond the page cut is re-read
+        next page; ``collected`` dedups the overlap by fill id.
 
         NOTE: the ``/v1/account/fills`` shape mirrors this adapter's existing
         (unverified) TopStepX REST contract; confirm against the live venue
@@ -251,33 +287,55 @@ class TopStepExchangeAdapter:
         """
         if not self.is_live:
             raise RuntimeError("get_account_fills requires live mode")
-        resp = self._session.get(
-            f"{API_BASE_URL}/v1/account/fills",
-            params={
-                "accountId": self._account_id,
-                "sinceMs": int(since_ms),
-                "limit": int(limit),
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("fills", []) or []
-        fills = []
-        for f in raw:
-            try:
-                ts_ms = int(f.get("timestamp", f.get("ts_ms", 0)))
-            except (TypeError, ValueError):
-                continue
-            fills.append({
-                "fill_id": str(f.get("id", f.get("fill_id", ""))),
-                "ts_ms": ts_ms,
-                "symbol": (f.get("symbol") or "").upper(),
-                "kind": (f.get("kind") or "").lower(),
-                "realized_pnl": float(f.get("realizedPnl", f.get("realized_pnl", 0)) or 0),
-                "fee": float(f.get("fee", f.get("commission", 0)) or 0),
-            })
-        fills.sort(key=lambda x: x["ts_ms"])
-        capped = len(raw) >= int(limit)
+        collected = {}
+        cursor = int(since_ms or 0)
+        capped = False
+        for _ in range(max(1, max_fills // max(1, page_limit)) + 2):
+            resp = self._session.get(
+                f"{API_BASE_URL}/v1/account/fills",
+                params={
+                    "accountId": self._account_id,
+                    "sinceMs": cursor,
+                    "limit": int(page_limit),
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            page = resp.json().get("fills", []) or []
+            if not page:
+                break
+            before = len(collected)
+            page_last_ts = cursor
+            for f in page:
+                fill = _normalize_topstep_fill(f)
+                if fill is None:
+                    continue
+                if fill["ts_ms"] > page_last_ts:
+                    page_last_ts = fill["ts_ms"]
+                key = fill["fill_id"] or f"{fill['kind']}:{fill['ts_ms']}:{fill['symbol']}"
+                collected[key] = fill
+            added = len(collected) - before
+            if len(collected) >= max_fills:
+                capped = True
+                break
+            if len(page) < int(page_limit):
+                break  # short page → feed exhausted
+            if page_last_ts <= cursor and added == 0:
+                # A FULL page that neither advanced the timestamp nor yielded any
+                # new fill: a single-millisecond block larger than page_limit, which
+                # timestamp paging cannot step through without dropping fills. Fail
+                # closed so the Go journal treats the cycle as not-usable.
+                capped = True
+                break
+            cursor = page_last_ts  # overlap on the boundary ms (dedup absorbs it)
+        else:
+            # Loop ran out of iterations without a drained/cap break: the returned
+            # set is an INCOMPLETE prefix → report capped so the Go cursor is not
+            # advanced past the unfetched tail.
+            capped = True
+        fills = sorted(collected.values(), key=lambda x: x["ts_ms"])
+        if len(fills) > max_fills:
+            fills = fills[:max_fills]
         return fills, capped
 
     # ─────────────────────────────────────────────
