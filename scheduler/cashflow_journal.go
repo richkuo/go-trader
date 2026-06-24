@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -510,6 +511,44 @@ func cashflowJournalAlarmEnabled() bool {
 	return true
 }
 
+// cashflowJournalPendingTracker counts CONSECUTIVE cycles a wallet's journal was
+// the governing basis but produced no usable reading (a transient stream-fetch
+// miss or a just-anchored baseline). It bounds how long the drift alarm may stay
+// suppressed: a short transient (≤ sharedWalletDriftAlertThreshold cycles)
+// preserves the journal confirmation streak and stays quiet, but a PERSISTENT
+// outage fails closed to the trade-ledger basis so the money-path safety net
+// never goes dark for the whole duration of a multi-cycle exchange-feed outage
+// (#1107). In-memory; resets on process restart, exactly like
+// sharedWalletDriftTracker.
+type cashflowJournalPendingTracker struct {
+	mu      sync.Mutex
+	streaks map[string]int
+}
+
+// mark records one more consecutive pending cycle for label and returns the new
+// streak length (post-increment).
+func (t *cashflowJournalPendingTracker) mark(label string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.streaks == nil {
+		t.streaks = make(map[string]int)
+	}
+	t.streaks[label]++
+	return t.streaks[label]
+}
+
+// reset clears label's consecutive-pending streak (the journal produced a
+// reading, latched incomplete, or was operator-disabled this cycle — the outage,
+// if any, is broken).
+func (t *cashflowJournalPendingTracker) reset(label string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.streaks, label)
+}
+
+// cashflowJournalPendingStreaks is the package-level singleton; resets on restart.
+var cashflowJournalPendingStreaks = &cashflowJournalPendingTracker{}
+
 // applyCashflowJournalDriftBasis switches one HL wallet's drift-alarm basis to
 // the exchange-sourced journal when the journal is usable and the operator has
 // not disabled it; otherwise the trade-ledger drift stands (fail closed). It
@@ -526,6 +565,24 @@ func applyCashflowJournalDriftBasis(results []sharedWalletDriftResult, key Share
 			break
 		}
 	}
+
+	// Track CONSECUTIVE transient-pending cycles (journal is the governing basis
+	// but produced no usable reading — a stream-fetch miss or just-anchored
+	// baseline). A short transient stays suppressed (journal streak preserved);
+	// once the streak passes the confirmation window the outage is treated like an
+	// incomplete latch and fails closed to the trade-ledger basis so the alarm
+	// keeps running (#1107). Every other path (usable / incomplete / disabled)
+	// breaks the outage and resets the streak.
+	label := sharedWalletKeyLabel(key)
+	transientPending := enabled && !rec.Incomplete && !rec.Usable
+	pendingStreak := 0
+	if transientPending {
+		pendingStreak = cashflowJournalPendingStreaks.mark(label)
+	} else {
+		cashflowJournalPendingStreaks.reset(label)
+	}
+	suppressPending := transientPending && pendingStreak <= sharedWalletDriftAlertThreshold
+
 	ledgerNote := "n/a"
 	if ledger != nil {
 		// raw diff = balance − Σ member values; Drift is the post-baseline drift.
@@ -537,8 +594,10 @@ func applyCashflowJournalDriftBasis(results []sharedWalletDriftResult, key Share
 		switchNote = "OFF (operator-disabled via GO_TRADER_CASHFLOW_JOURNAL_ALARM)"
 	case rec.Incomplete:
 		switchNote = "OFF (journal incomplete — failing closed to trade-ledger)"
+	case !rec.Usable && suppressPending:
+		switchNote = fmt.Sprintf("PENDING (journal not usable — transient miss %d/%d, journal streak preserved)", pendingStreak, sharedWalletDriftAlertThreshold)
 	case !rec.Usable:
-		switchNote = "OFF (journal not usable this cycle — trade-ledger basis)"
+		switchNote = fmt.Sprintf("OFF (journal not usable for %d cycles — failing closed to trade-ledger)", pendingStreak)
 	default:
 		switchNote = "ON (journal is the drift-alarm basis)"
 	}
@@ -560,13 +619,25 @@ func applyCashflowJournalDriftBasis(results []sharedWalletDriftResult, key Share
 			// from perturbing the journal's confirmation series.
 			return
 		}
-		// Transient: a stream-fetch miss, or the baseline was just anchored this
-		// cycle. The journal is the governing basis but has no reading — mark it
-		// pending so reportSharedWalletDrift PRESERVES the journal streak instead
-		// of resetting the 2-cycle confirmation off the within-tolerance trade-
-		// ledger fallback (#1107). A transient feed miss during a real journal-gap
-		// episode must not delay or suppress the operator alarm.
-		ledger.JournalPending = true
+		if suppressPending {
+			// Transient (within the confirmation window): a stream-fetch miss, or
+			// the baseline was just anchored this cycle. The journal is the
+			// governing basis but has no reading — mark it pending so
+			// reportSharedWalletDrift PRESERVES the journal streak instead of
+			// resetting the 2-cycle confirmation off the within-tolerance trade-
+			// ledger fallback (#1107). A transient feed miss during a real
+			// journal-gap episode must not delay or suppress the operator alarm.
+			ledger.JournalPending = true
+			return
+		}
+		// PERSISTENT outage (pending streak past the confirmation window): the
+		// journal has been unreadable for too many consecutive cycles to keep
+		// trusting it will recover. Fail closed to the trade-ledger basis under the
+		// wallet's own streak key — exactly like the incomplete latch — so a real
+		// trade-ledger drift (or an orphan position) still alarms within a bounded
+		// window instead of staying dark for the whole exchange-feed outage
+		// (#1107). The journal streak (label:journal) is left untouched and resumes
+		// when the journal recovers.
 		return
 	}
 	ledger.Drift = rec.Drift

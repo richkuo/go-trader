@@ -434,6 +434,10 @@ var errTestFetch = errors.New("simulated fetch failure")
 // journal drift ONLY when enabled and usable; it leaves other wallets and the
 // fallback cases on the trade-ledger basis.
 func TestApplyCashflowJournalDriftBasis(t *testing.T) {
+	prevPending := cashflowJournalPendingStreaks
+	cashflowJournalPendingStreaks = &cashflowJournalPendingTracker{}
+	defer func() { cashflowJournalPendingStreaks = prevPending }()
+
 	hlKey := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
 	okxKey := SharedWalletKey{Platform: "okx", Account: "k"}
 	mk := func() []sharedWalletDriftResult {
@@ -472,11 +476,33 @@ func TestApplyCashflowJournalDriftBasis(t *testing.T) {
 	// #1107: enabled but TRANSIENTLY not usable (a stream-fetch miss, NOT
 	// incomplete) -> marked JournalPending so reportSharedWalletDrift preserves
 	// the journal streak instead of resetting it off the clean ledger fallback.
+	// A short transient (within the confirmation window) stays suppressed; a
+	// PERSISTENT outage past the window must fail closed to the trade-ledger basis.
+	cashflowJournalPendingStreaks.reset(sharedWalletKeyLabel(hlKey))
+	for cycle := 1; cycle <= sharedWalletDriftAlertThreshold; cycle++ {
+		res = mk()
+		applyCashflowJournalDriftBasis(res, hlKey, &cashflowJournalReconcile{Key: hlKey, Usable: false}, true)
+		if !res[0].JournalPending || res[0].Basis != "" {
+			t.Errorf("transient miss cycle %d (within window) must be journal-pending: %+v", cycle, res[0])
+		}
+	}
+	// One cycle past the confirmation window -> the outage is now persistent; fail
+	// closed to the trade-ledger basis (drift 0.40, NOT pending) so the alarm runs.
 	res = mk()
 	applyCashflowJournalDriftBasis(res, hlKey, &cashflowJournalReconcile{Key: hlKey, Usable: false}, true)
-	if !res[0].JournalPending || res[0].Basis != "" {
-		t.Errorf("transient not-usable must be journal-pending (no basis switch): %+v", res[0])
+	if res[0].JournalPending || res[0].Basis != "" || res[0].Drift != 0.40 {
+		t.Errorf("persistent miss must fail closed to trade-ledger (drift 0.40, not pending): %+v", res[0])
 	}
+	// A single usable cycle breaks the outage and resets the streak: a later
+	// transient miss is suppressed again from cycle 1 (no carry-over).
+	res = mk()
+	applyCashflowJournalDriftBasis(res, hlKey, usable, true)
+	res = mk()
+	applyCashflowJournalDriftBasis(res, hlKey, &cashflowJournalReconcile{Key: hlKey, Usable: false}, true)
+	if !res[0].JournalPending {
+		t.Errorf("a usable cycle must reset the pending streak (next miss suppressed again): %+v", res[0])
+	}
+	cashflowJournalPendingStreaks.reset(sharedWalletKeyLabel(hlKey))
 
 	// #1107: enabled but INCOMPLETE (latched unmapped event) -> fail closed to the
 	// trade-ledger basis so SOME alarm runs; NOT pending (the ledger governs).

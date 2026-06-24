@@ -718,3 +718,127 @@ func TestFormatSharedWalletJournalOrphanAlert(t *testing.T) {
 		}
 	}
 }
+
+// #1107 (Needs Fixing): a PERSISTENT journal feed outage must not suppress the
+// money-path drift alarm indefinitely. A short transient stays suppressed
+// (journal streak preserved), but once the consecutive-pending streak passes the
+// confirmation window, applyCashflowJournalDriftBasis fails closed to the
+// trade-ledger basis — exactly like the incomplete latch — so a real drift still
+// confirms and alarms within a bounded window during the outage.
+func TestCashflowJournalPersistentPendingFallsBackToLedgerAlarm(t *testing.T) {
+	prevTracker := sharedWalletDriftTracker
+	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
+	defer func() { sharedWalletDriftTracker = prevTracker }()
+	prevPending := cashflowJournalPendingStreaks
+	cashflowJournalPendingStreaks = &cashflowJournalPendingTracker{}
+	defer func() { cashflowJournalPendingStreaks = prevPending }()
+
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
+	label := sharedWalletKeyLabel(key)
+	jkey := label + journalDriftStreakKeySuffix
+	// A real, persistent trade-ledger drift sits under the wallet the entire time.
+	mk := func() []sharedWalletDriftResult {
+		return []sharedWalletDriftResult{
+			{Key: key, Drift: 5.00, Balance: 1000, MemberSum: 1005, OrphanCoins: []string{"BTC"}},
+		}
+	}
+	notUsable := &cashflowJournalReconcile{Key: key, Usable: false}
+
+	// Transient window: each miss is suppressed (JournalPending) — nothing is
+	// recorded under any streak key, so the alarm stays quiet (and the journal
+	// streak is preserved for a journal-gap episode).
+	for cycle := 1; cycle <= sharedWalletDriftAlertThreshold; cycle++ {
+		res := mk()
+		applyCashflowJournalDriftBasis(res, key, notUsable, true)
+		if !res[0].JournalPending {
+			t.Fatalf("cycle %d within the window must stay pending: %+v", cycle, res[0])
+		}
+		reportSharedWalletDrift(nil, res)
+		if sharedWalletDriftTracker.entries[label] != nil {
+			t.Fatalf("a suppressed transient cycle must not touch the trade-ledger streak (cycle %d)", cycle)
+		}
+	}
+
+	// First persistent cycle (past the window): fail closed to the trade-ledger
+	// basis → Records the real drift under the bare label key (count 1, no alert).
+	res := mk()
+	applyCashflowJournalDriftBasis(res, key, notUsable, true)
+	if res[0].JournalPending || res[0].Basis != "" || res[0].Drift != 5.00 {
+		t.Fatalf("first persistent cycle must fall back to the trade-ledger drift: %+v", res[0])
+	}
+	reportSharedWalletDrift(nil, res)
+	if e := sharedWalletDriftTracker.entries[label]; e == nil || e.cycles != 1 {
+		t.Fatalf("persistent fallback must Record the trade-ledger drift under the bare key: %+v", e)
+	}
+
+	// Second persistent cycle: the trade-ledger streak confirms within the
+	// 2-cycle window → the alarm fires despite the ongoing journal outage. The
+	// alarm is bounded, not dark for the outage's duration.
+	res = mk()
+	applyCashflowJournalDriftBasis(res, key, notUsable, true)
+	reportSharedWalletDrift(nil, res)
+	if e := sharedWalletDriftTracker.entries[label]; e == nil || e.cycles != 2 || !e.alerted {
+		t.Fatalf("trade-ledger alarm must confirm within a bounded window during a persistent outage: %+v", e)
+	}
+	if sharedWalletDriftTracker.entries[jkey] != nil {
+		t.Error("the trade-ledger fallback must not touch the journal streak key")
+	}
+}
+
+// #1107 (Optional): when the journal basis carries BOTH an over-tolerance total
+// drift AND an unowned position, reportSharedWalletDrift must emit the
+// journal-DRIFT alert (reporting the real drift) and must NEVER select the orphan
+// alert, whose wording asserts the total is "within tolerance". The orphan is
+// folded in as context.
+func TestReportSharedWalletDrift_CompoundOrphanAndDriftReportsDrift(t *testing.T) {
+	prev := sharedWalletDriftTracker
+	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
+	defer func() { sharedWalletDriftTracker = prev }()
+
+	mock := &mockNotifier{}
+	notifier := NewMultiNotifier(notifierBackend{
+		notifier: mock,
+		channels: map[string]string{"hyperliquid": "chan"},
+		ownerID:  "owner",
+	})
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
+	compound := func() []sharedWalletDriftResult {
+		return []sharedWalletDriftResult{
+			{Key: key, Drift: 5.00, Balance: 1000, ExpectedEquity: 995, Basis: driftBasisJournal, OrphanCoins: []string{"BTC"}},
+		}
+	}
+	// Two consecutive cycles confirm and fire the alert on the second.
+	reportSharedWalletDrift(notifier, compound())
+	reportSharedWalletDrift(notifier, compound())
+	if len(mock.dms) == 0 {
+		t.Fatal("compound over-tolerance drift + orphan must alarm after confirmation")
+	}
+	msg := mock.dms[len(mock.dms)-1].content
+	if strings.Contains(msg, "within tolerance") {
+		t.Errorf("compound state must NOT claim the total is within tolerance: %s", msg)
+	}
+	for _, want := range []string{"DRIFT (exchange journal)", "BTC", "NO strategy"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("compound drift alert missing %q: %s", want, msg)
+		}
+	}
+}
+
+// #1107 (Optional): the journal-drift alert formatter folds an orphan in as
+// context when present and omits the clause otherwise — and never claims "within
+// tolerance" (it is the over-tolerance alert).
+func TestFormatSharedWalletJournalDriftAlert_OrphanContext(t *testing.T) {
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
+	with := formatSharedWalletJournalDriftAlert(key, 1000, 995, 5.00, 2, []string{"BTC"})
+	if strings.Contains(with, "within tolerance") {
+		t.Errorf("over-tolerance drift alert must never claim within tolerance: %s", with)
+	}
+	for _, want := range []string{"DRIFT (exchange journal)", "BTC", "NO strategy"} {
+		if !strings.Contains(with, want) {
+			t.Errorf("drift alert with orphan missing %q: %s", want, with)
+		}
+	}
+	if without := formatSharedWalletJournalDriftAlert(key, 1000, 995, 5.00, 2, nil); strings.Contains(without, "NO strategy") {
+		t.Errorf("no-orphan drift alert must not mention orphans: %s", without)
+	}
+}
