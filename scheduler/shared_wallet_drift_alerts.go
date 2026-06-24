@@ -393,7 +393,22 @@ func reportSharedWalletDrift(notifier *MultiNotifier, results []sharedWalletDrif
 		// the orphan's uPnL drift, so this only widens the journal path.
 		orphanExposure := r.Basis == driftBasisJournal && len(r.OrphanCoins) > 0
 		if math.Abs(r.Drift) > sharedWalletDriftTolerance || orphanExposure {
-			shouldNotify, shouldLog, count := sharedWalletDriftTracker.Record(trackerKey, r.Drift, r.OrphanCoins, now)
+			// Confirmation continuity is keyed PER orphan coin (Record): a stable
+			// orphan confirms while a churning transient set is suppressed. Under the
+			// journal basis, though, an over-tolerance TOTAL drift is a journal gap (a
+			// missing/lagging funding/transfer event) that is causally INDEPENDENT of
+			// which positions are momentarily orphaned — keying its continuity on the
+			// orphan coins lets a churning orphan set (BTC→ETH→…) hold maxStreak below
+			// the threshold and mask a real, persistent gap (#1107). Give the gap its
+			// own stable continuity via the "" pseudo-coin ALONGSIDE any orphan coins,
+			// so it confirms on its own persistence while a stable orphan still
+			// confirms on its coin. The trade-ledger basis is untouched: there the
+			// drift IS the orphan's uPnL, so per-coin continuity is correct.
+			recordCoins := r.OrphanCoins
+			if r.Basis == driftBasisJournal && math.Abs(r.Drift) > sharedWalletDriftTolerance {
+				recordCoins = append(append([]string{}, r.OrphanCoins...), "")
+			}
+			shouldNotify, shouldLog, count := sharedWalletDriftTracker.Record(trackerKey, r.Drift, recordCoins, now)
 			if shouldLog {
 				switch {
 				case r.Basis == driftBasisJournal && math.Abs(r.Drift) > sharedWalletDriftTolerance:

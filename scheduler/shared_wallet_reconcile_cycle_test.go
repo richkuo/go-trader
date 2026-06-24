@@ -824,6 +824,83 @@ func TestReportSharedWalletDrift_CompoundOrphanAndDriftReportsDrift(t *testing.T
 	}
 }
 
+// #1107 (Optional): under the journal basis, a persistent over-tolerance TOTAL
+// drift (a journal gap) must confirm on its OWN continuity, independent of which
+// positions are momentarily orphaned. A churning transient-orphan set must not
+// hold the gap's confirmation streak below the threshold and mask the alarm; a
+// persistent gap with NO orphans must still confirm (no regression).
+func TestReportSharedWalletDrift_JournalGapConfirmsDespiteOrphanChurn(t *testing.T) {
+	prev := sharedWalletDriftTracker
+	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
+	defer func() { sharedWalletDriftTracker = prev }()
+
+	mock := &mockNotifier{}
+	notifier := NewMultiNotifier(notifierBackend{
+		notifier: mock,
+		channels: map[string]string{"hyperliquid": "chan"},
+		ownerID:  "owner",
+	})
+
+	// (a) Churning orphans: a DIFFERENT orphan coin each cycle while the total
+	// drift stays over tolerance → confirms within the 2-cycle window via the
+	// gap's own pseudo-coin continuity.
+	churnKey := SharedWalletKey{Platform: "hyperliquid", Account: "0xchurn"}
+	churnJKey := sharedWalletKeyLabel(churnKey) + journalDriftStreakKeySuffix
+	gap := func(orphan string) []sharedWalletDriftResult {
+		return []sharedWalletDriftResult{
+			{Key: churnKey, Drift: 5.00, Balance: 1000, ExpectedEquity: 995, Basis: driftBasisJournal, OrphanCoins: []string{orphan}},
+		}
+	}
+	reportSharedWalletDrift(notifier, gap("BTC"))
+	if len(mock.dms) != 0 {
+		t.Fatalf("cycle 1 must not confirm yet: %+v", mock.dms)
+	}
+	reportSharedWalletDrift(notifier, gap("ETH"))
+	if e := sharedWalletDriftTracker.entries[churnJKey]; e == nil || !e.alerted {
+		t.Fatalf("a persistent journal gap must confirm despite orphan churn: %+v", e)
+	}
+	if len(mock.dms) == 0 || !strings.Contains(mock.dms[len(mock.dms)-1].content, "DRIFT (exchange journal)") {
+		t.Errorf("the journal-gap alarm must fire on confirmation: %+v", mock.dms)
+	}
+
+	// (b) No orphans: a persistent over-tolerance drift still confirms via the
+	// pseudo-coin — unchanged by the fix.
+	mock.dms = nil
+	noOrphanKey := SharedWalletKey{Platform: "hyperliquid", Account: "0xclean"}
+	noOrphanJKey := sharedWalletKeyLabel(noOrphanKey) + journalDriftStreakKeySuffix
+	clean := []sharedWalletDriftResult{{Key: noOrphanKey, Drift: 5.00, Balance: 1000, ExpectedEquity: 995, Basis: driftBasisJournal}}
+	reportSharedWalletDrift(notifier, clean)
+	reportSharedWalletDrift(notifier, clean)
+	if e := sharedWalletDriftTracker.entries[noOrphanJKey]; e == nil || !e.alerted {
+		t.Fatalf("a no-orphan persistent journal gap must still confirm: %+v", e)
+	}
+}
+
+// #1107 (Optional): the inverse — a SINGLE-cycle over-tolerance blip with churning
+// orphans must still NOT confirm (the pseudo-coin key must not introduce a new
+// false alarm).
+func TestReportSharedWalletDrift_JournalGapBlipDoesNotConfirm(t *testing.T) {
+	prev := sharedWalletDriftTracker
+	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
+	defer func() { sharedWalletDriftTracker = prev }()
+
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
+	jkey := sharedWalletKeyLabel(key) + journalDriftStreakKeySuffix
+
+	// Cycle 1: over-tolerance drift + orphan BTC.
+	reportSharedWalletDrift(nil, []sharedWalletDriftResult{
+		{Key: key, Drift: 5.00, Balance: 1000, ExpectedEquity: 995, Basis: driftBasisJournal, OrphanCoins: []string{"BTC"}},
+	})
+	// Cycle 2: drift back within tolerance, a DIFFERENT orphan (orphan-only trip):
+	// the blip's pseudo-coin drops out, so nothing confirms.
+	reportSharedWalletDrift(nil, []sharedWalletDriftResult{
+		{Key: key, Drift: 0.0, Balance: 1000, ExpectedEquity: 1000, Basis: driftBasisJournal, OrphanCoins: []string{"ETH"}},
+	})
+	if e := sharedWalletDriftTracker.entries[jkey]; e != nil && e.alerted {
+		t.Fatalf("a single-cycle total-drift blip with churning orphans must NOT confirm: %+v", e)
+	}
+}
+
 // #1107 (Optional): a basis switch must not strand a stale trade-ledger tracker
 // entry. After a persistent journal outage alarms under the bare label key, a
 // return to the journal basis must clear that entry (firing its RESOLVED notice),
