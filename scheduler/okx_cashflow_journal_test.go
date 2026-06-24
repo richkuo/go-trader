@@ -59,20 +59,6 @@ func TestOKXBillDedupID(t *testing.T) {
 	}
 }
 
-func TestSumOKXAccountUPnL(t *testing.T) {
-	positions := []OKXPosition{
-		{Coin: "BTC", UnrealizedPnL: 12.5},
-		{Coin: "ETH", UnrealizedPnL: -4.0},
-		{Coin: "SOL", UnrealizedPnL: 0},
-	}
-	if got, want := sumOKXAccountUPnL(positions), 8.5; math.Abs(got-want) > 1e-9 {
-		t.Errorf("sumOKXAccountUPnL = %v, want %v", got, want)
-	}
-	if got := sumOKXAccountUPnL(nil); got != 0 {
-		t.Errorf("nil positions = %v, want 0", got)
-	}
-}
-
 func newOKXJournalKey() SharedWalletKey {
 	return SharedWalletKey{Platform: "okx", Account: "okx-api-key-123"}
 }

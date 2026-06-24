@@ -182,6 +182,27 @@ func defaultSharedWalletBalance(platform string) (float64, error) {
 	return 0, fmt.Errorf("no shared-wallet balance fetcher for platform %q", platform)
 }
 
+// defaultOKXEquitySnapshot returns a COHERENT (eq, uPnL) snapshot for the OKX
+// shared wallet from a SINGLE fetch_okx_balance.py read (#1105). eq is the USDT
+// account value the #918 split reconciles; uPnL is eq − cashBal from the same
+// response, so the cash-flow journal's eq and uPnL are one atomic snapshot
+// instead of eq (balance read) paired with a uPnL from a separately-timed
+// fetch_positions call. Any failure surfaces as a non-nil error so the journal
+// fails closed (no shadow reading this cycle).
+func defaultOKXEquitySnapshot() (eq, upnl float64, err error) {
+	if os.Getenv("OKX_API_KEY") == "" {
+		return 0, 0, fmt.Errorf("OKX_API_KEY not set")
+	}
+	result, stderr, err := RunOKXFetchBalance(okxBalanceScript)
+	if stderr != "" {
+		fmt.Fprintf(os.Stderr, "[okx-balance] stderr: %s\n", stderr)
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	return result.Balance, result.UnrealizedPnL, nil
+}
+
 // syncHyperliquidLiveCapital is a no-op kept for backward compatibility.
 // Capital is now managed per-strategy via config (Capital field) or capital_pct.
 // With multiple strategies on one account, overriding each strategy's capital

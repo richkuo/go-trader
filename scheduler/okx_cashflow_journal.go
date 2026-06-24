@@ -62,10 +62,14 @@ func defaultOKXAccountBillsFetcher(sinceMs int64) ([]okxBillRecord, bool, error)
 //
 // The reconciled field is OKX `eq` (ccxt balance["total"]["USDT"], equity =
 // cash + uPnL — the same field fetch_okx_balance.py already reports and the
-// #918 capital-weight split already reconciles against). The journal is
-// USDT-settlement only: a non-USDT bill with a non-zero balChg cannot be
-// reconciled against the USDT-denominated eq, so it contributes $0 and latches
-// the journal incomplete (fail closed).
+// #918 capital-weight split already reconciles against). current_uPnL /
+// baseline_uPnL come from the SAME balance read as eq (uPnL = eq − cashBal,
+// not a separately-timed fetch_positions sum), so eq and uPnL are one coherent
+// snapshot: the uPnL term cancels against eq and residual drift reduces to the
+// pure settled-cash reconstruction error (cashBal − baseline_cashBal − Σ balChg)
+// — no intra-cycle uPnL jitter. The journal is USDT-settlement only: a non-USDT
+// bill with a non-zero balChg cannot be reconciled against the USDT-denominated
+// eq, so it contributes $0 and latches the journal incomplete (fail closed).
 //
 // SHADOW ONLY. This phase NEVER drives the OKX drift alarm — the live OKX alarm
 // stays on the #918 capital-weight split (reconcileSharedWalletMemberValues).
@@ -155,17 +159,6 @@ func okxBillDedupID(b okxBillRecord) string {
 	return fmt.Sprintf("okxbill:%s:%d:%s", strings.TrimSpace(b.Type), b.TimeMs, strings.TrimSpace(b.TradeID))
 }
 
-// sumOKXAccountUPnL totals the exchange-reported unrealized PnL across an OKX
-// account's open positions — the uPnL component of eq the journal equity
-// equation needs. Mirrors sumHLAccountUPnL.
-func sumOKXAccountUPnL(positions []OKXPosition) float64 {
-	sum := 0.0
-	for _, p := range positions {
-		sum += p.UnrealizedPnL
-	}
-	return sum
-}
-
 // fetchOKXAccountBills is a function variable so tests can stub the OKX bills
 // fetch without spawning Python. It pulls every account bill settled since
 // sinceMs (ascending), returning capped=true when the safety page cap was hit
@@ -184,7 +177,7 @@ type okxCashflowJournalFetchResult struct {
 	State        CashflowJournalState
 	StateFound   bool
 	AccountValue float64 // OKX eq (equity incl. uPnL) this cycle
-	CurrentUPnL  float64 // Σ exchange unrealized PnL across the account this cycle
+	CurrentUPnL  float64 // uPnL component of eq this cycle (eq − cashBal, same balance read)
 	Bills        []okxBillRecord
 	BillsFetched bool
 	Capped       bool

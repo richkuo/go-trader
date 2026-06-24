@@ -1152,11 +1152,16 @@ func parseOKXPositionsOutput(stdout []byte, stderrStr string, runErr error) (*OK
 }
 
 // OKXBalanceResult is the JSON output from fetch_okx_balance.py (#360).
+// UnrealizedPnL (#1105) is eq − cashBal from the SAME fetch_balance read, so the
+// cash-flow journal can reconcile a coherent eq/uPnL snapshot; it is 0 for older
+// scripts that don't emit the field (the journal then conservatively carries
+// uPnL into the shadow drift). Balance keeps its #360 meaning (USDT eq).
 type OKXBalanceResult struct {
-	Balance   float64 `json:"balance"`
-	Platform  string  `json:"platform"`
-	Timestamp string  `json:"timestamp"`
-	Error     string  `json:"error,omitempty"`
+	Balance       float64 `json:"balance"`
+	UnrealizedPnL float64 `json:"unrealized_pnl"`
+	Platform      string  `json:"platform"`
+	Timestamp     string  `json:"timestamp"`
+	Error         string  `json:"error,omitempty"`
 }
 
 // RunOKXFetchBalance runs fetch_okx_balance.py and returns the parsed result

@@ -31,6 +31,23 @@ def _bill_float(value) -> float:
         return 0.0
 
 
+def _okx_usdt_cash_balance(info):
+    """Pull the USDT ``cashBal`` from a raw OKX fetch_balance ``info`` payload
+    (``data[0].details[]``). Returns a float, or None when the field is absent
+    or unparseable. Pure — unit-tested without a live exchange."""
+    try:
+        details = ((info or {}).get("data") or [{}])[0].get("details") or []
+    except (AttributeError, IndexError, TypeError):
+        return None
+    for d in details:
+        try:
+            if str(d.get("ccy") or "").upper() == "USDT":
+                return float(d.get("cashBal"))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _normalize_okx_bill(entry: dict) -> dict:
     """Normalize one ccxt fetch_ledger entry into the #1105 journal bill shape.
 
@@ -296,6 +313,39 @@ class OKXExchangeAdapter:
         except (TypeError, ValueError):
             return 0.0
 
+    def get_account_equity_and_upnl(self) -> Tuple[float, float]:
+        """Return a COHERENT ``(equity, unrealized_pnl)`` snapshot from ONE
+        ``fetch_balance`` call, for the #1105 cash-flow journal.
+
+        ``equity`` is the USDT account value (ccxt ``total["USDT"]`` == OKX
+        ``eq`` — the same field ``get_account_balance`` returns and the #918
+        capital-weight split reconciles). ``unrealized_pnl`` is derived as
+        ``eq - cashBal`` for USDT from the SAME response, so eq and uPnL are one
+        atomic snapshot: in the journal's equity equation the uPnL term then
+        cancels exactly against ``eq``, leaving residual drift = settled-cash
+        reconstruction error only. Pairing eq with a uPnL sampled from a SEPARATE
+        ``fetch_positions`` call (a different instant) would inject intra-cycle
+        uPnL jitter — dollars on a leveraged position — into the shadow drift,
+        the very signal Phase 3b must evaluate.
+
+        Falls back to uPnL ``0.0`` when the USDT ``cashBal`` is absent/unparseable
+        (the shadow drift then conservatively carries uPnL — visible, never a
+        false "clean"). Only available in live mode; raises in paper mode.
+        """
+        if not self._is_live:
+            raise RuntimeError(
+                "get_account_equity_and_upnl requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
+            )
+        bal = self._exchange.fetch_balance()
+        total = bal.get("total") or {}
+        try:
+            eq = float(total.get("USDT") or 0.0)
+        except (TypeError, ValueError):
+            eq = 0.0
+        cash_bal = _okx_usdt_cash_balance(bal.get("info"))
+        upnl = (eq - cash_bal) if cash_bal is not None else 0.0
+        return eq, upnl
+
     def get_account_bills(self, since_ms: int = 0, page_limit: int = 100,
                           max_bills: int = 10000) -> Tuple[list, bool]:
         """Fetch OKX account bills (settled cash-flow events) since ``since_ms``
@@ -321,6 +371,13 @@ class OKXExchangeAdapter:
         older bills fall outside it and surface as journal drift in the shadow
         log (visible to the operator before any Phase-3b alarm flip).
 
+        Ordering assumption: this pages FORWARD by timestamp and relies on ccxt's
+        unified ``fetch_ledger`` returning entries ascending-from-``since`` (ccxt
+        ``parse_ledger`` sorts by timestamp). That contract — and that the
+        millisecond ``ts`` matches the live feed — is offline-unverifiable; confirm
+        the settled-Σ tracks eq to ~0 over a multi-cycle live window before any
+        Phase-3b alarm flip.
+
         Only available in live mode; raises RuntimeError in paper mode.
         """
         if not self._is_live:
@@ -330,30 +387,40 @@ class OKXExchangeAdapter:
         collected = {}
         cursor = int(since_ms or 0)
         capped = False
-        # Page FORWARD from the cursor: ccxt fetch_ledger returns unified entries
-        # ascending and `since` filters from that point; advance `since` past the
-        # newest entry each page until the feed is exhausted (short page) or the
-        # safety cap is hit. The page-loop bound is a belt-and-suspenders guard
-        # against a non-advancing cursor.
+        # Page FORWARD from the cursor, advancing the `since` watermark with a
+        # one-millisecond OVERLAP (cursor = page's last ts, NOT last_ts + 1) so a
+        # bill that shares the boundary millisecond but fell beyond the page cut
+        # is re-fetched on the next page — the `collected` dedup absorbs the
+        # re-read. Advancing past last_ts would permanently skip such a same-ms
+        # bill (a standing offset in the settled sum, not a transient miss). The
+        # page-loop bound caps total iterations.
         for _ in range(max(1, max_bills // max(1, page_limit)) + 2):
             page = self._exchange.fetch_ledger(code=None, since=cursor, limit=page_limit) or []
             if not page:
                 break
+            before = len(collected)
             for entry in page:
                 bill = _normalize_okx_bill(entry)
                 key = bill["bill_id"] or f"{bill['type']}:{bill['ts_ms']}:{bill['trade_id']}"
                 collected[key] = bill
+            added = len(collected) - before
             if len(collected) >= max_bills:
                 capped = True
                 break
             if len(page) < page_limit:
+                break  # short page → feed exhausted
+            page_last_ts = max((int(e.get("timestamp") or 0) for e in page), default=cursor)
+            if page_last_ts <= cursor and added == 0:
+                # A FULL page that neither advanced the timestamp nor yielded any
+                # new bill: a single-millisecond block larger than page_limit, which
+                # timestamp paging cannot step through without dropping bills. Fail
+                # closed — the Go journal treats `capped` as not-usable for the
+                # cycle rather than silently advancing past the undelivered tail.
+                capped = True
                 break
-            last_ts = max((int(e.get("timestamp") or 0) for e in page), default=cursor)
-            if last_ts <= cursor:
-                break  # no forward progress — stop rather than loop forever
-            cursor = last_ts + 1
+            cursor = page_last_ts  # overlap on the boundary ms (dedup absorbs it)
         bills = sorted(collected.values(), key=lambda b: b["ts_ms"])
-        if capped:
+        if len(bills) > max_bills:
             bills = bills[:max_bills]
         return bills, capped
 

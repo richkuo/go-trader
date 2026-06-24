@@ -357,3 +357,172 @@ class TestOptionsProtocol:
         assert pct == 0.05
         assert usd == 0.05 * 67000
         assert greeks["delta"] == 0.45
+
+
+# ─── #1105 account bills + coherent equity/uPnL (cash-flow journal) ─────────
+
+def _ledger_entry(bill_id, ts, balchg="1", ccy="USDT", btype="2", sub="",
+                  pnl="0", fee="0", inst="BTC-USDT-SWAP", trade="t1"):
+    """A ccxt fetch_ledger entry carrying a raw OKX bill in `info`."""
+    return {
+        "id": bill_id,
+        "timestamp": ts,
+        "info": {
+            "billId": bill_id, "ts": str(ts), "ccy": ccy, "type": btype,
+            "subType": sub, "balChg": str(balchg), "pnl": str(pnl),
+            "fee": str(fee), "instId": inst, "tradeId": trade,
+        },
+    }
+
+
+class TestNormalizeOKXBill:
+    def test_full_bill(self):
+        out = _mod._normalize_okx_bill(_ledger_entry("b1", 1700000000000, "19.7", pnl="20", fee="0.3"))
+        assert out == {
+            "bill_id": "b1", "ts_ms": 1700000000000, "ccy": "USDT", "type": "2",
+            "sub_type": "", "bal_chg": 19.7, "pnl": 20.0, "fee": 0.3,
+            "inst_id": "BTC-USDT-SWAP", "trade_id": "t1",
+        }
+
+    def test_falls_back_to_unified_timestamp(self):
+        entry = {"id": "b2", "timestamp": 1700000000999, "info": {"billId": "b2", "balChg": "1.0"}}
+        out = _mod._normalize_okx_bill(entry)
+        assert out["ts_ms"] == 1700000000999
+        assert out["bal_chg"] == 1.0
+
+    def test_garbage_numbers_default_zero(self):
+        entry = {"id": "b3", "timestamp": 1, "info": {"billId": "b3", "balChg": "", "pnl": None, "fee": "x"}}
+        out = _mod._normalize_okx_bill(entry)
+        assert out["bal_chg"] == 0.0 and out["pnl"] == 0.0 and out["fee"] == 0.0
+
+
+class TestOKXUSDTCashBalance:
+    def _info(self, details):
+        return {"code": "0", "data": [{"details": details}]}
+
+    def test_reads_usdt_cash_bal(self):
+        info = self._info([{"ccy": "BTC", "cashBal": "0.5"}, {"ccy": "USDT", "cashBal": "900.25"}])
+        assert _mod._okx_usdt_cash_balance(info) == 900.25
+
+    def test_missing_details_returns_none(self):
+        assert _mod._okx_usdt_cash_balance({"data": [{}]}) is None
+        assert _mod._okx_usdt_cash_balance({}) is None
+        assert _mod._okx_usdt_cash_balance(None) is None
+
+    def test_no_usdt_entry_returns_none(self):
+        assert _mod._okx_usdt_cash_balance(self._info([{"ccy": "BTC", "cashBal": "0.5"}])) is None
+
+    def test_unparseable_cash_bal_returns_none(self):
+        assert _mod._okx_usdt_cash_balance(self._info([{"ccy": "USDT", "cashBal": "n/a"}])) is None
+
+
+class TestGetAccountEquityAndUPnL:
+    def test_paper_mode_raises(self, adapter):
+        a, _ = adapter
+        with pytest.raises(RuntimeError, match="live mode"):
+            a.get_account_equity_and_upnl()
+
+    def test_coherent_eq_and_upnl(self, adapter):
+        a, mock_ex = adapter
+        a._is_live = True
+        mock_ex.fetch_balance.return_value = {
+            "total": {"USDT": 1000.0},
+            "info": {"data": [{"details": [{"ccy": "USDT", "cashBal": "900.0"}]}]},
+        }
+        eq, upnl = a.get_account_equity_and_upnl()
+        assert eq == 1000.0
+        assert upnl == 100.0  # eq - cashBal, one coherent snapshot
+
+    def test_missing_cash_bal_defaults_upnl_zero(self, adapter):
+        a, mock_ex = adapter
+        a._is_live = True
+        mock_ex.fetch_balance.return_value = {"total": {"USDT": 1000.0}, "info": {}}
+        eq, upnl = a.get_account_equity_and_upnl()
+        assert eq == 1000.0 and upnl == 0.0
+
+
+class TestGetAccountBills:
+    def test_paper_mode_raises(self, adapter):
+        a, _ = adapter
+        with pytest.raises(RuntimeError, match="live mode"):
+            a.get_account_bills(since_ms=0)
+
+    def test_single_page_ascending(self, adapter):
+        a, mock_ex = adapter
+        a._is_live = True
+        mock_ex.fetch_ledger.return_value = [
+            _ledger_entry("b2", 200, "19.7"),
+            _ledger_entry("b1", 100, "-0.5"),
+        ]
+        bills, capped = a.get_account_bills(since_ms=50)
+        assert capped is False
+        assert [b["bill_id"] for b in bills] == ["b1", "b2"]
+        assert [b["ts_ms"] for b in bills] == [100, 200]
+
+    def test_full_page_advances_with_overlap_not_plus_one(self, adapter):
+        a, mock_ex = adapter
+        a._is_live = True
+        page1 = [_ledger_entry(f"p1-{i}", 100 + i, "1") for i in range(100)]  # ts 100..199
+        page2 = [_ledger_entry("p2-0", 500, "2")]  # short → stop
+        mock_ex.fetch_ledger.side_effect = [page1, page2]
+        bills, capped = a.get_account_bills(since_ms=0, page_limit=100)
+        assert capped is False
+        assert len(bills) == 101
+        assert mock_ex.fetch_ledger.call_count == 2
+        # Overlap: next cursor is the page's last ts (199), NOT last_ts + 1.
+        assert mock_ex.fetch_ledger.call_args_list[1].kwargs["since"] == 199
+
+    def test_same_ms_straddle_across_page_boundary_is_captured(self, adapter):
+        a, mock_ex = adapter
+        a._is_live = True
+        # page1 fills exactly 100 entries, the last (p-99) at ts=199. A SECOND bill
+        # at ts=199 (p-100) falls beyond the cut. cursor=199 (overlap) re-fetches it.
+        page1 = [_ledger_entry(f"p-{i}", 100 + i, "1") for i in range(100)]  # p-99 @ 199
+        page2 = [_ledger_entry("p-99", 199, "1"),       # dup (deduped)
+                 _ledger_entry("p-100", 199, "1"),      # the straddling bill
+                 _ledger_entry("p-105", 205, "1")]      # short page → stop
+        mock_ex.fetch_ledger.side_effect = [page1, page2]
+        bills, capped = a.get_account_bills(since_ms=0, page_limit=100)
+        ids = [b["bill_id"] for b in bills]
+        assert "p-100" in ids                      # same-ms straddler NOT skipped
+        assert ids.count("p-99") == 1              # dedup absorbed the overlap
+        assert capped is False
+
+    def test_same_ms_block_larger_than_page_fails_closed(self, adapter):
+        a, mock_ex = adapter
+        a._is_live = True
+        # Every bill shares ts=100 and the page is always full → cannot advance by
+        # timestamp without dropping the tail, so the adapter caps (fail closed).
+        page = [_ledger_entry(f"x-{i}", 100, "1") for i in range(10)]
+        mock_ex.fetch_ledger.return_value = page  # same full page every call
+        bills, capped = a.get_account_bills(since_ms=0, page_limit=10, max_bills=10000)
+        assert capped is True
+        assert len(bills) == 10
+        assert mock_ex.fetch_ledger.call_count == 2  # second call detects no progress
+
+    def test_capped_on_max_bills_truncates_oldest_prefix(self, adapter):
+        a, mock_ex = adapter
+        a._is_live = True
+        calls = {"n": 0}
+
+        def side_effect(*args, **kwargs):
+            calls["n"] += 1
+            base = calls["n"] * 1000
+            return [_ledger_entry(f"c-{base+i}", base + i, "1") for i in range(10)]
+
+        mock_ex.fetch_ledger.side_effect = side_effect
+        bills, capped = a.get_account_bills(since_ms=0, page_limit=10, max_bills=25)
+        assert capped is True
+        assert len(bills) == 25
+        assert all(bills[i]["ts_ms"] <= bills[i + 1]["ts_ms"] for i in range(len(bills) - 1))
+
+    def test_dedup_across_overlapping_pages(self, adapter):
+        a, mock_ex = adapter
+        a._is_live = True
+        page1 = [_ledger_entry(f"d-{i}", 100 + i, "1") for i in range(100)]
+        page2 = [_ledger_entry("d-99", 199, "1"), _ledger_entry("d-new", 250, "1")]
+        mock_ex.fetch_ledger.side_effect = [page1, page2]
+        bills, capped = a.get_account_bills(since_ms=0, page_limit=100)
+        ids = [b["bill_id"] for b in bills]
+        assert len(ids) == len(set(ids))
+        assert "d-new" in ids and ids.count("d-99") == 1

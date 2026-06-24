@@ -32,7 +32,13 @@ def main():
         if not adapter.is_live:
             _emit_error("OKX adapter not live — set OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE")
             return
-        balance = float(adapter.get_account_balance() or 0.0)
+        # #1105: equity AND unrealized PnL from a SINGLE fetch_balance read so the
+        # cash-flow journal reconciles a coherent eq/uPnL snapshot (no intra-cycle
+        # jitter from a separately-timed fetch_positions call). `balance` keeps its
+        # #360 meaning (USDT eq) so the existing shared-wallet split is unchanged.
+        eq, upnl = adapter.get_account_equity_and_upnl()
+        balance = float(eq or 0.0)
+        unrealized_pnl = float(upnl or 0.0)
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         _emit_error(str(e))
@@ -40,6 +46,7 @@ def main():
 
     print(json.dumps({
         "balance": balance,
+        "unrealized_pnl": unrealized_pnl,
         "platform": "okx",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }))
@@ -48,6 +55,7 @@ def main():
 def _emit_error(message):
     print(json.dumps({
         "balance": 0.0,
+        "unrealized_pnl": 0.0,
         "platform": "okx",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "error": message,
