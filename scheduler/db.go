@@ -274,6 +274,50 @@ CREATE TABLE IF NOT EXISTS wallet_transfers (
     dedup_id TEXT NOT NULL UNIQUE
 );
 
+-- #1100: exchange-sourced equity journal for shared-wallet TOTAL reconciliation.
+-- Where wallet_ledger_state / wallet_transfers feed the per-strategy ATTRIBUTION
+-- split (#954), this journal reconstructs settled-cash deltas from the exchange's
+-- OWN cash-flow events — fills, funding, transfers — so the total drift alarm no
+-- longer depends on internal trade rows being complete and correctly priced.
+-- amount_usd is the SIGNED settled-cash effect:
+--   fill            = closed_pnl_gross - fee_usd  (closed_pnl is GROSS of fees;
+--                     retained for attribution/display, NEVER summed into equity)
+--   funding         = signed funding usdc
+--   <transfer kind> = signedPerpFlowUSD (deposits / withdrawals / transfers / ...)
+-- Shadow-only today: computed beside the trade-ledger drift path and logged for
+-- validation; it does not yet drive any alarm (see reconcileCashflowJournalShadow).
+CREATE TABLE IF NOT EXISTS cashflow_journal (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL,
+    account TEXT NOT NULL,
+    time_ms INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    amount_usd REAL NOT NULL,
+    coin TEXT NOT NULL DEFAULT '',
+    closed_pnl_gross REAL NOT NULL DEFAULT 0,
+    fee_usd REAL NOT NULL DEFAULT 0,
+    dedup_id TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_cashflow_journal_account ON cashflow_journal(platform, account);
+
+-- #1100: per-wallet journal cursors + adoption baseline. fills/funding/transfers
+-- watermarks bound the three incremental fetches; baseline_account_value /
+-- baseline_upnl anchor the equity equation at adoption so pre-journal history is
+-- never replayed. incomplete=1 LATCHES when an unmapped event kind is seen so a
+-- future alarm switch can fail closed; baseline_set=0 forces a re-anchor.
+CREATE TABLE IF NOT EXISTS cashflow_journal_state (
+    platform TEXT NOT NULL,
+    account TEXT NOT NULL,
+    fills_since_ms INTEGER NOT NULL DEFAULT 0,
+    funding_since_ms INTEGER NOT NULL DEFAULT 0,
+    transfers_since_ms INTEGER NOT NULL DEFAULT 0,
+    baseline_account_value REAL NOT NULL DEFAULT 0,
+    baseline_upnl REAL NOT NULL DEFAULT 0,
+    baseline_set INTEGER NOT NULL DEFAULT 0,
+    incomplete INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (platform, account)
+);
+
 CREATE TABLE IF NOT EXISTS pending_limit_orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     strategy_id TEXT NOT NULL,

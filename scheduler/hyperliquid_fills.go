@@ -72,6 +72,12 @@ type hlFillRecord struct {
 	ClosedPnl string      `json:"closedPnl"`
 	Time      int64       `json:"time"`
 	Dir       string      `json:"dir"`
+	// Tid is Hyperliquid's unique per-fill trade id; Hash is the L1 tx hash.
+	// Unused by OID/coin-size reconciler lookups; gives the #1100 cash-flow
+	// journal a stable per-fill dedup identity (one OID can fragment into many
+	// partial fills, so OID alone is not unique).
+	Tid  json.Number `json:"tid"`
+	Hash string      `json:"hash"`
 }
 
 // fetchHyperliquidUserFillsByTime is a function variable so tests can stub the

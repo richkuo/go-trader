@@ -1068,6 +1068,23 @@ func main() {
 			// Fire throttled drift alarms outside the lock (notifier I/O).
 			reportSharedWalletDrift(notifier, driftResults)
 
+			// #1100 SHADOW: reconstruct the HL shared wallet's equity from the
+			// exchange's OWN cash-flow events (fills + funding + transfers) via a
+			// durable journal and log it beside the trade-ledger drift for
+			// validation. No alarm or display change — read-beside phase before
+			// the alarm is switched onto the journal. Runs outside the lock:
+			// HTTP fetch + DB-only writes, no StrategyState mutation.
+			if hlShared && hlStateFetched {
+				var hlLedgerDrift *sharedWalletDriftResult
+				for i := range driftResults {
+					if driftResults[i].Key == hlKey {
+						hlLedgerDrift = &driftResults[i]
+						break
+					}
+				}
+				reconcileCashflowJournalShadow(stateDB, hlKey, walletBalances[hlKey], sumHLAccountUPnL(hlPositions), hlLedgerDrift, time.Now().UTC())
+			}
+
 			// #341 / #345 / #346 / #347: Submit market closes to
 			// Hyperliquid, OKX, Robinhood, AND TopStep for every non-zero
 			// on-chain / on-account position belonging to a configured
