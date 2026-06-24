@@ -176,6 +176,92 @@ func TestOKXCashflowJournalSnapshotBound(t *testing.T) {
 	}
 }
 
+// A NON-capped fetch advances the cursor past the last booked bill (maxTime+1),
+// but a CAPPED fetch advances only TO maxTime so the boundary millisecond — which
+// the cap may have split across a same-ms group — is re-read next cycle. This is
+// the cursor-side complement of the adapter's fail-closed cap: a capped/truncated
+// page is not a safe contiguous prefix at its final millisecond.
+func TestOKXCashflowJournalCappedAdvancesOnlyToMaxTime(t *testing.T) {
+	mk := func(capped bool) CashflowJournalState {
+		db := newCashflowJournalTestDB(t)
+		key := newOKXJournalKey()
+		base := CashflowJournalState{FillsSinceMs: 100, BaselineSet: true}
+		if err := db.UpsertCashflowJournalState(key.Platform, key.Account, base); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		res := okxCashflowJournalFetchResult{
+			Key: key, State: base, StateFound: true, BillsFetched: true, Capped: capped,
+			Bills: []okxBillRecord{
+				{BillID: "a", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 5},
+				{BillID: "b", TimeMs: 200, Ccy: "USDT", Type: "2", BalChg: 5}, // maxTime = 200
+			},
+		}
+		return ingestOKXCashflowJournalEvents(db, res, cashflowCutoffAll)
+	}
+	if st := mk(false); st.FillsSinceMs != 201 {
+		t.Errorf("non-capped: cursor = %d, want 201 (maxTime+1)", st.FillsSinceMs)
+	}
+	if st := mk(true); st.FillsSinceMs != 200 {
+		t.Errorf("capped: cursor = %d, want 200 (maxTime — boundary ms re-read next cycle)", st.FillsSinceMs)
+	}
+}
+
+// A capped cycle whose booked bills all share one millisecond must NOT strand the
+// truncated same-ms siblings: the cursor stays at that ms, and a later non-capped
+// cycle re-reads it and books the previously-truncated sibling (dedup absorbs the
+// re-read of the already-booked ones). Covers the single-ms-overflow and
+// max_bills-truncation must-survive cases end to end.
+func TestOKXCashflowJournalCappedSameMsSiblingNotStranded(t *testing.T) {
+	db := newCashflowJournalTestDB(t)
+	key := newOKXJournalKey()
+	base := CashflowJournalState{FillsSinceMs: 100, BaselineSet: true}
+	if err := db.UpsertCashflowJournalState(key.Platform, key.Account, base); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Cycle 1: a capped fetch returns only the first slice of a >page_limit block
+	// all at ts=150. The cursor must stay at 150, not advance to 151.
+	c1 := okxCashflowJournalFetchResult{
+		Key: key, State: base, StateFound: true, BillsFetched: true, Capped: true,
+		Bills: []okxBillRecord{
+			{BillID: "s1", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 1},
+			{BillID: "s2", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 1},
+			{BillID: "s3", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 1},
+		},
+	}
+	st1 := ingestOKXCashflowJournalEvents(db, c1, cashflowCutoffAll)
+	if st1.FillsSinceMs != 150 {
+		t.Fatalf("capped cycle: cursor = %d, want 150 (must re-read the boundary ms)", st1.FillsSinceMs)
+	}
+
+	// Cycle 2: the block has cleared (no longer capped). Re-fetch from 150 returns
+	// the three already-booked siblings (deduped) PLUS the previously-truncated
+	// sibling s4 (also ts=150) and a newer bill at 200. s4 must be booked — it was
+	// stranded behind cursor 151 under the pre-fix maxTime+1 advance.
+	c2 := okxCashflowJournalFetchResult{
+		Key: key, State: st1, StateFound: true, BillsFetched: true, Capped: false,
+		Bills: []okxBillRecord{
+			{BillID: "s1", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 1}, // dup
+			{BillID: "s2", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 1}, // dup
+			{BillID: "s3", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 1}, // dup
+			{BillID: "s4", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 1}, // the stranded sibling
+			{BillID: "n1", TimeMs: 200, Ccy: "USDT", Type: "2", BalChg: 7},
+		},
+	}
+	st2 := ingestOKXCashflowJournalEvents(db, c2, cashflowCutoffAll)
+	if st2.FillsSinceMs != 201 {
+		t.Errorf("cleared cycle: cursor = %d, want 201", st2.FillsSinceMs)
+	}
+	sum, err := db.SumCashflowJournal(key.Platform, key.Account)
+	if err != nil {
+		t.Fatalf("sum: %v", err)
+	}
+	// 4 same-ms siblings (each +1, dedup keeps each once) + 1 newer (+7) = 11.
+	if math.Abs(sum-11) > 1e-9 {
+		t.Errorf("same-ms sibling stranded or double-counted: sum = %v, want 11", sum)
+	}
+}
+
 // An unclassified bill (unknown type) latches incomplete AND still books its
 // authoritative balChg so the running drift surfaces it.
 func TestOKXCashflowJournalUnclassifiedLatchesIncomplete(t *testing.T) {

@@ -280,7 +280,23 @@ func ingestOKXCashflowJournalEvents(sdb *StateDB, res okxCashflowJournalFetchRes
 			maxTime = b.TimeMs
 		}
 	}
-	st.FillsSinceMs = advanceCashflowCursor(st.FillsSinceMs, maxTime, failedAt)
+	// A capped/truncated fetch is NOT a safe contiguous prefix at its final
+	// millisecond: BOTH the single-ms-overflow cap (returns only the first
+	// page_limit of a >page_limit same-ms block) AND the max_bills bills[:N]
+	// truncation can cut a same-ms group at maxTime. Advancing to maxTime+1 would
+	// then strand the un-returned siblings behind the cursor forever — a standing
+	// offset in SumCashflowJournal that survives into a Phase-3b alarm flip. When
+	// capped, advance only to maxTime so that boundary millisecond is re-fetched
+	// next cycle; the okxBillDedupID / INSERT OR IGNORE dedup absorbs the re-read,
+	// and a genuinely un-pageable >page_limit same-ms block pins fail-closed at
+	// that ms (Usable stays false on every capped cycle) instead of corrupting the
+	// sum. advanceCashflowCursor still clamps to the current cursor, so this never
+	// moves the watermark backwards.
+	advanceMax := maxTime
+	if res.Capped {
+		advanceMax = maxTime - 1
+	}
+	st.FillsSinceMs = advanceCashflowCursor(st.FillsSinceMs, advanceMax, failedAt)
 
 	if st != res.State {
 		if err := sdb.UpsertCashflowJournalState(key.Platform, key.Account, st); err != nil {
