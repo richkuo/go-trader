@@ -246,10 +246,16 @@ func TestReconcileSharedWalletDisplayValues_HLLedgerPath(t *testing.T) {
 	// Clean balance = Σvalues + flows = 1050.5 + 100 = 1150.5; start drifted +$5.
 	walletBalances := map[SharedWalletKey]float64{key: 1155.5}
 
-	// Cycle 1: baseline anchors at rawDrift=+5, reported drift 0.
+	// Cycle 1: journal baseline pre-seeded → journal drift 0 (ledger path no longer
+	// auto-anchors wallet_ledger_state.baseline_offset_usd — #1100).
+	seedHLCashflowJournalBaseline(t, db, "0xtest", 1155.5, 12, now.UnixMilli())
 	results := reconcileSharedWalletDisplayValues(strategies, state, db, sharedWallets, walletBalances, hlPositions, nil, false)
+	results = applyHLJournalDriftForTest(t, db, results, key, walletBalances[key], 12)
 	if len(results) != 1 || math.Abs(results[0].Drift) > 0.001 {
-		t.Fatalf("cycle 1: want drift 0 (baseline anchor), got %+v", results)
+		t.Fatalf("cycle 1: want journal drift 0, got %+v", results)
+	}
+	if results[0].DriftBasis != sharedWalletDriftBasisCashflowJournal {
+		t.Fatalf("cycle 1: want journal basis, got %q", results[0].DriftBasis)
 	}
 	if got := state.Strategies["hl-btc"].SharedWalletValue; math.Abs(got-650.5) > 0.001 {
 		t.Errorf("hl-btc display = %v, want 650.5 (initial+ledger+uPnL)", got)
@@ -261,32 +267,63 @@ func TestReconcileSharedWalletDisplayValues_HLLedgerPath(t *testing.T) {
 		t.Error("both members must be gated on")
 	}
 	st, found, err := db.GetWalletLedgerState("hyperliquid", "0xtest")
-	if err != nil || !found || !st.BaselineSet || math.Abs(st.BaselineOffset-5) > 0.001 {
-		t.Fatalf("baseline not stored: found=%v err=%v st=%+v", found, err, st)
+	if err != nil || !found {
+		t.Fatalf("watermark row missing: found=%v err=%v", found, err)
+	}
+	if st.BaselineSet {
+		t.Fatalf("reconcile must not auto-set wallet_ledger baseline (#1100): %+v", st)
 	}
 	if st.FundingSinceMs != now.UnixMilli() || st.TransfersSinceMs != now.UnixMilli() {
 		t.Fatalf("baseline upsert clobbered watermarks: %+v", st)
 	}
 
-	// Cycle 2: balance loses $3 the ledger didn't book → drift -3.
+	// Cycle 2: balance loses $3 the exchange journal did not book → journal drift -3.
 	walletBalances[key] = 1152.5
 	results = reconcileSharedWalletDisplayValues(strategies, state, db, sharedWallets, walletBalances, hlPositions, nil, false)
+	results = applyHLJournalDriftForTest(t, db, results, key, walletBalances[key], 12)
 	if len(results) != 1 || math.Abs(results[0].Drift-(-3)) > 0.001 {
-		t.Fatalf("cycle 2: want drift -3 vs baseline, got %+v", results)
+		t.Fatalf("cycle 2: want journal drift -3, got %+v", results)
 	}
 	// Member values are ledger-derived → unchanged by the balance move.
 	if got := state.Strategies["hl-btc"].SharedWalletValue; math.Abs(got-650.5) > 0.001 {
 		t.Errorf("hl-btc display moved with balance: %v, want 650.5", got)
 	}
 
-	// Baseline reset (backfill --apply) → next cycle re-anchors, drift 0 again.
+	// Baseline reset (backfill --apply) on wallet_ledger no longer affects journal drift.
 	if err := db.ResetWalletLedgerBaseline("hyperliquid", "0xtest"); err != nil {
 		t.Fatalf("ResetWalletLedgerBaseline: %v", err)
 	}
 	results = reconcileSharedWalletDisplayValues(strategies, state, db, sharedWallets, walletBalances, hlPositions, nil, false)
-	if len(results) != 1 || math.Abs(results[0].Drift) > 0.001 {
-		t.Fatalf("post-reset: want drift 0 (re-anchored), got %+v", results)
+	results = applyHLJournalDriftForTest(t, db, results, key, walletBalances[key], 12)
+	if len(results) != 1 || math.Abs(results[0].Drift-(-3)) > 0.001 {
+		t.Fatalf("post-reset: journal drift unchanged at -3, got %+v", results)
 	}
+}
+
+func seedHLCashflowJournalBaseline(t *testing.T, db *StateDB, account string, accountValue, uPnL float64, nowMs int64) {
+	t.Helper()
+	st := CashflowJournalState{
+		FillsSinceMs: nowMs, FundingSinceMs: nowMs, TransfersSinceMs: nowMs,
+		BaselineAccountValue: accountValue, BaselineUPnL: uPnL, BaselineSet: true,
+	}
+	if err := db.UpsertCashflowJournalState("hyperliquid", account, st); err != nil {
+		t.Fatalf("seed cashflow journal: %v", err)
+	}
+}
+
+func applyHLJournalDriftForTest(t *testing.T, db *StateDB, results []sharedWalletDriftResult, key SharedWalletKey, bal, uPnL float64) []sharedWalletDriftResult {
+	t.Helper()
+	st, found, err := db.GetCashflowJournalState(key.Platform, key.Account)
+	if err != nil || !found {
+		t.Fatalf("cashflow journal state: found=%v err=%v", found, err)
+	}
+	fetch := cashflowJournalFetchResult{
+		Key: key, State: st, StateFound: true, PriorStateExists: true,
+		AccountValue: bal, CurrentUPnL: uPnL,
+		FillsFetched: true, FundingFetched: true, TransfersFetched: true,
+	}
+	applyHyperliquidCashflowJournalDrift(&results, db, fetch)
+	return results
 }
 
 // A nil StateDB must fall back to the #918 split (rows stay populated).
@@ -354,23 +391,24 @@ func TestReconcileSharedWalletDisplayValues_HLMissingLedgerStateFallsBack(t *tes
 		t.Fatalf("reconcile originated the watermark row: found=%v err=%v", found, err)
 	}
 
-	// Cycle 2: fetch init succeeded (row anchored at now) → ledger path
-	// baselines the +100 and reports drift 0 with ledger-derived values.
+	// Cycle 2: fetch init succeeded (row present) → ledger-derived member values.
 	if err := db.UpsertWalletLedgerState("hyperliquid", "0xtest", WalletLedgerState{
 		FundingSinceMs: now.UnixMilli(), TransfersSinceMs: now.UnixMilli(),
 	}); err != nil {
 		t.Fatalf("seed ledger state: %v", err)
 	}
+	seedHLCashflowJournalBaseline(t, db, "0xtest", 1100, 0, now.UnixMilli())
 	results = reconcileSharedWalletDisplayValues(strategies, state, db, sharedWallets, walletBalances, nil, nil, false)
+	results = applyHLJournalDriftForTest(t, db, results, key, walletBalances[key], 0)
 	if len(results) != 1 || math.Abs(results[0].Drift) > 0.001 {
-		t.Fatalf("cycle 2: want drift 0 (baseline anchor), got %+v", results)
+		t.Fatalf("cycle 2: want journal drift 0, got %+v", results)
 	}
 	if got := state.Strategies["hl-a"].SharedWalletValue; math.Abs(got-600) > 0.001 {
 		t.Errorf("ledger hl-a = %v, want 600 (initial, no ledger rows)", got)
 	}
 	st, found, err := db.GetWalletLedgerState("hyperliquid", "0xtest")
-	if err != nil || !found || !st.BaselineSet || math.Abs(st.BaselineOffset-100) > 0.001 {
-		t.Fatalf("baseline not anchored after row init: found=%v err=%v st=%+v", found, err, st)
+	if err != nil || !found || st.BaselineSet {
+		t.Fatalf("reconcile must not auto-anchor wallet_ledger baseline: found=%v err=%v st=%+v", found, err, st)
 	}
 	if st.FundingSinceMs != now.UnixMilli() {
 		t.Fatalf("watermark clobbered: %+v", st)

@@ -67,6 +67,9 @@ type sharedWalletReconcileResult struct {
 	// unrelated one-cycle transients on consecutive cycles don't read as one
 	// persistent orphan.
 	OrphanCoins []string
+	// LedgerRawDrift is rawDrift before baseline_offset subtraction (#954).
+	// Preserved for HL fail-closed fallback when the #1100 journal is unusable.
+	LedgerRawDrift float64
 }
 
 // reconcileSharedWalletMemberValues splits one shared wallet's real account
@@ -309,7 +312,7 @@ func ledgerSharedWalletMemberValues(in ledgerWalletInputs) (sharedWalletReconcil
 	} else {
 		drift = 0 // first reconciled cycle: caller stores rawDrift as baseline
 	}
-	return sharedWalletReconcileResult{Values: values, Drift: drift, OrphanCoins: orphanCoins}, rawDrift
+	return sharedWalletReconcileResult{Values: values, Drift: drift, OrphanCoins: orphanCoins, LedgerRawDrift: rawDrift}, rawDrift
 }
 
 // roundCents rounds a dollar amount to the nearest cent.
@@ -317,14 +320,26 @@ func roundCents(v float64) float64 {
 	return math.Round(v*100) / 100
 }
 
+// sharedWalletDriftBasis names which reconciliation path drives Drift for alarms.
+const (
+	sharedWalletDriftBasisCapitalSplit    = "capital_split"    // OKX / fallback split
+	sharedWalletDriftBasisLedgerFallback  = "ledger_fallback"  // HL trade-ledger (#954) fail-closed
+	sharedWalletDriftBasisCashflowJournal = "cashflow_journal" // HL exchange journal (#1100)
+)
+
 // sharedWalletDriftResult reports one wallet's reconciliation outcome for the
 // throttled drift alarm.
 type sharedWalletDriftResult struct {
 	Key         SharedWalletKey
-	Drift       float64  // accountBalance - Σ raw member values (orphan/unattributed P&L)
+	Drift       float64  // alarm drift: journal-based on HL when usable, else ledger/split
 	Balance     float64  // the real account balance reconciled against
 	MemberSum   float64  // Σ rounded member display values stored this cycle
 	OrphanCoins []string // sorted unattributed coins — streak signature + alert detail
+	// #1100 HL journal path (zero/empty for OKX and non-journal fallbacks).
+	ExpectedEquity      float64 // journal reconstructed accountValue
+	AttributionGap      float64 // memberSum − balance (display attribution; not the alarm)
+	LedgerFallbackDrift float64 // trade-ledger drift preserved for logs/fail-closed
+	DriftBasis          string  // sharedWalletDriftBasis*
 }
 
 // reconcileSharedWalletDisplayValues recomputes the exchange-authoritative
@@ -357,9 +372,9 @@ type sharedWalletDriftResult struct {
 // reconciled with U=0, which would skew each member's split for one cycle.
 //
 // #954 path split: Hyperliquid wallets derive member values from the local
-// trades ledger (ledgerSharedWalletMemberValues; the wallet balance is a pure
-// drift alarm, anchored by the wallet's stored baseline offset). OKX wallets
-// keep the #918 capital-weight split until the ledger path is extended there.
+// trades ledger (ledgerSharedWalletMemberValues); the wallet-level drift alarm
+// is driven by the #1100 exchange cash-flow journal. OKX wallets keep the #918
+// capital-weight split until the journal path is extended there.
 // sdb supplies the per-member ledger sums + non-trade flows; when it is nil
 // or a ledger read fails, HL wallets fall back to the split path for the
 // cycle (display stays populated, WARN logged) rather than dropping rows.
@@ -444,12 +459,19 @@ func reconcileSharedWalletDisplayValues(
 			ss.SharedWalletValueSet = true
 			memberSum += res.Values[id]
 		}
+		driftBasis := sharedWalletDriftBasisCapitalSplit
+		if key.Platform == "hyperliquid" {
+			driftBasis = sharedWalletDriftBasisLedgerFallback
+		}
 		results = append(results, sharedWalletDriftResult{
-			Key:         key,
-			Drift:       res.Drift,
-			Balance:     bal,
-			MemberSum:   roundCents(memberSum),
-			OrphanCoins: res.OrphanCoins,
+			Key:                 key,
+			Drift:               res.Drift,
+			Balance:             bal,
+			MemberSum:           roundCents(memberSum),
+			OrphanCoins:         res.OrphanCoins,
+			AttributionGap:      roundCents(memberSum - bal),
+			LedgerFallbackDrift: res.Drift,
+			DriftBasis:          driftBasis,
 		})
 	}
 	return results
@@ -581,17 +603,11 @@ func reconcileHLWalletViaLedger(
 		BaselineOffset: st.BaselineOffset,
 		BaselineSet:    st.BaselineSet,
 	})
-	if !st.BaselineSet {
-		st.BaselineOffset = rawDrift
-		st.BaselineSet = true
-		if err := sdb.UpsertWalletLedgerState(key.Platform, key.Account, st); err != nil {
-			fmt.Printf("[WARN] shared-wallet %s: baseline store failed: %v — will recompute next cycle\n",
-				sharedWalletKeyLabel(key), err)
-		} else {
-			fmt.Printf("[shared-wallet] %s: ledger drift baseline set to $%+.2f (balance $%.2f vs ledger-derived $%.2f + flows $%.2f)\n",
-				sharedWalletKeyLabel(key), rawDrift, bal, bal-rawDrift-flows, flows)
-		}
-	}
+	res.LedgerRawDrift = rawDrift
+	// #1100: HL total-reconciliation alarms use the cash-flow journal, not
+	// wallet_ledger_state.baseline_offset_usd. The ledger path still supplies
+	// per-strategy attribution (Values) and a fail-closed fallback drift when
+	// the journal is incomplete or a fetch failed this cycle.
 	return res
 }
 

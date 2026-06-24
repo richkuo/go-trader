@@ -8,40 +8,22 @@ import (
 	"time"
 )
 
-// #1100: exchange-sourced equity journal for shared-wallet TOTAL reconciliation.
-//
-// Today the shared-wallet drift alarm reconstructs each account's equity from
-// the bot's OWN trade ledger plus exchange unrealized PnL, then compares that
-// derived value to the exchange's accountValue:
-//
-//	member_value_i = initial_capital_i + Σ tradeLedgerDelta_i + owned_uPnL_i
-//	raw_drift      = accountValue − Σ member_value_i − Σ wallet_transfers
-//
-// Every write path, fallback, or model-only cleanup that mis-prices a trade row
-// shows up as residual drift because the TOTAL still depends on internal rows.
-//
-// This journal inverts that: it reconstructs equity from the exchange's own
-// cash-flow events — fills, funding, transfers — pulled incrementally per stream
-// with durable cursors and per-event dedup. Internal trade rows stay the source
-// of truth for per-strategy ATTRIBUTION only; the TOTAL comes from the exchange.
+// #1100: exchange-sourced equity journal for shared-wallet TOTAL reconciliation
+// (Hyperliquid only). Internal trade rows remain the source of truth for
+// per-strategy ATTRIBUTION; the wallet-level drift alarm keys off journal equity.
 //
 // Equity decomposition (HL accountValue = settled cash + unrealized PnL):
 //
-//	accountValue_t = baseline_accountValue
-//	               + Σ(settled-cash deltas since baseline)
-//	               + (current_uPnL − baseline_uPnL)
+//	expected = baseline_accountValue
+//	         + Σ(settled-cash deltas since baseline)
+//	         + (current_uPnL − baseline_uPnL)
 //
-// A fill's settled-cash delta is closedPnl (GROSS) minus fee. closedPnl is gross
-// of fees (#698) so the fee is subtracted exactly once; closed_pnl_gross is
-// retained for attribution and is NEVER summed into equity on its own.
-//
-// SCOPE: Hyperliquid shared wallets, SHADOW MODE. The journal is computed
-// beside the live trade-ledger drift path and the delta is logged for
-// validation. It does NOT yet drive any alarm or member display.
+// A fill's settled-cash delta is closedPnl (GROSS) minus fee (#698). OKX and
+// other platforms keep the #918/#954 paths unchanged.
 
 // CashflowJournalState is one wallet's per-stream journal cursors plus the
 // adoption baseline. Incomplete latches true once an unmapped event kind is
-// seen so a future alarm switch can fail closed to the trade-ledger path.
+// seen — alarms fail closed to the trade-ledger path until repaired.
 type CashflowJournalState struct {
 	FillsSinceMs         int64
 	FundingSinceMs       int64
@@ -144,19 +126,14 @@ func (sdb *StateDB) SumCashflowJournal(platform, account string) (float64, error
 	return sum.Float64, nil
 }
 
-// cashflowFillSettledDelta is one fill's SIGNED effect on settled cash.
 func cashflowFillSettledDelta(closedPnlGross, fee float64) float64 {
 	return closedPnlGross - fee
 }
 
-// cashflowJournalExpectedEquity reconstructs the wallet's current accountValue
-// from the adoption baseline, settled-cash deltas since, and ΔuPnL.
 func cashflowJournalExpectedEquity(baselineAccountValue, baselineUPnL, settledDeltaSum, currentUPnL float64) float64 {
 	return baselineAccountValue + settledDeltaSum + (currentUPnL - baselineUPnL)
 }
 
-// advanceCashflowCursor returns the next watermark for one stream. Mirrors the
-// wallet_ledger watermark discipline.
 func advanceCashflowCursor(current, maxProcessed, failedAt int64) int64 {
 	next := maxProcessed + 1
 	if failedAt >= 0 && failedAt < next {
@@ -187,6 +164,7 @@ type cashflowJournalFetchResult struct {
 	Key              SharedWalletKey
 	State            CashflowJournalState
 	StateFound       bool
+	PriorStateExists bool // true when an existing row was loaded (not first anchor)
 	AccountValue     float64
 	CurrentUPnL      float64
 	Fills            []hlFillRecord
@@ -233,6 +211,7 @@ func fetchCashflowJournalEvents(sdb *StateDB, key SharedWalletKey, accountValue,
 	}
 	res.State = st
 	res.StateFound = true
+	res.PriorStateExists = true
 
 	if fills, err := fetchHyperliquidUserFillsByTime(key.Account, st.FillsSinceMs); err != nil {
 		fmt.Printf("[WARN] cashflow-journal %s: userFills fetch failed: %v — retrying next cycle\n", sharedWalletKeyLabel(key), err)
@@ -346,39 +325,66 @@ func ingestCashflowJournalEvents(sdb *StateDB, res cashflowJournalFetchResult) C
 	return st
 }
 
-// reconcileCashflowJournalShadow runs the full journal flow for one HL shared
-// wallet OUTSIDE the state lock and logs journal equity beside trade-ledger drift.
-func reconcileCashflowJournalShadow(sdb *StateDB, key SharedWalletKey, accountValue, currentUPnL float64, ledgerDrift *sharedWalletDriftResult, now time.Time) {
-	if sdb == nil || key.Platform != "hyperliquid" || key.Account == "" {
-		return
+// cashflowJournalUsable reports whether journal-based drift alarms are safe this
+// cycle. First-anchor cycles (no prior row) are usable with zero post-baseline
+// events. Established wallets require all three streams to have fetched cleanly.
+func cashflowJournalUsable(fetch cashflowJournalFetchResult, st CashflowJournalState) bool {
+	if !fetch.StateFound || !st.BaselineSet || st.Incomplete {
+		return false
 	}
-	res := fetchCashflowJournalEvents(sdb, key, accountValue, currentUPnL, now)
-	if !res.StateFound {
-		return
+	if !fetch.PriorStateExists {
+		return true
 	}
-	st := ingestCashflowJournalEvents(sdb, res)
-	if !st.BaselineSet {
-		return
-	}
-	settled, err := sdb.SumCashflowJournal(key.Platform, key.Account)
-	if err != nil {
-		fmt.Printf("[WARN] cashflow-journal %s: settled-sum read failed: %v\n", sharedWalletKeyLabel(key), err)
-		return
-	}
-	expected := cashflowJournalExpectedEquity(st.BaselineAccountValue, st.BaselineUPnL, settled, res.CurrentUPnL)
-	journalDrift := res.AccountValue - expected
+	return fetch.FillsFetched && fetch.FundingFetched && fetch.TransfersFetched
+}
 
-	incompleteNote := ""
-	if st.Incomplete {
-		incompleteNote = " [INCOMPLETE: unmapped event kind seen — would fail closed once promoted]"
+// computeCashflowJournalDrift returns the journal expected equity and alarm drift.
+func computeCashflowJournalDrift(sdb *StateDB, fetch cashflowJournalFetchResult, st CashflowJournalState) (expected, drift float64, ok bool) {
+	if sdb == nil || !cashflowJournalUsable(fetch, st) {
+		return 0, 0, false
 	}
-	ledgerNote := "n/a"
-	if ledgerDrift != nil {
-		ledgerNote = fmt.Sprintf("raw $%+.2f / post-baseline $%+.2f", ledgerDrift.Balance-ledgerDrift.MemberSum, ledgerDrift.Drift)
+	settled, err := sdb.SumCashflowJournal(fetch.Key.Platform, fetch.Key.Account)
+	if err != nil {
+		fmt.Printf("[WARN] cashflow-journal %s: settled-sum read failed: %v\n", sharedWalletKeyLabel(fetch.Key), err)
+		return 0, 0, false
 	}
-	fmt.Printf("[cashflow-journal] %s SHADOW: expected_equity $%.2f vs accountValue $%.2f → journal_drift $%+.4f (settled Σ $%+.2f since baseline $%.2f, ΔuPnL $%+.2f); trade-ledger drift %s%s\n",
-		sharedWalletKeyLabel(key), expected, res.AccountValue, journalDrift,
-		settled, st.BaselineAccountValue, res.CurrentUPnL-st.BaselineUPnL, ledgerNote, incompleteNote)
+	expected = cashflowJournalExpectedEquity(st.BaselineAccountValue, st.BaselineUPnL, settled, fetch.CurrentUPnL)
+	drift = fetch.AccountValue - expected
+	return expected, drift, true
+}
+
+// applyHyperliquidCashflowJournalDrift ingests one HL wallet's journal events and
+// patches the matching sharedWalletDriftResult to use journal equity for alarms
+// when usable; otherwise leaves the trade-ledger fallback drift in place.
+func applyHyperliquidCashflowJournalDrift(results *[]sharedWalletDriftResult, sdb *StateDB, fetch cashflowJournalFetchResult) {
+	if sdb == nil || fetch.Key.Platform != "hyperliquid" || !fetch.StateFound {
+		return
+	}
+	st := ingestCashflowJournalEvents(sdb, fetch)
+	expected, journalDrift, ok := computeCashflowJournalDrift(sdb, fetch, st)
+	for i := range *results {
+		if (*results)[i].Key != fetch.Key {
+			continue
+		}
+		r := &(*results)[i]
+		if ok {
+			r.Drift = journalDrift
+			r.ExpectedEquity = expected
+			r.DriftBasis = sharedWalletDriftBasisCashflowJournal
+			fmt.Printf("[cashflow-journal] %s: expected_equity $%.2f vs accountValue $%.2f → journal_drift $%+.4f (attribution gap $%+.2f, ledger-fallback $%+.2f)\n",
+				sharedWalletKeyLabel(fetch.Key), expected, fetch.AccountValue, journalDrift, r.AttributionGap, r.LedgerFallbackDrift)
+		} else {
+			reason := "journal unusable"
+			if st.Incomplete {
+				reason = "journal incomplete (unmapped event)"
+			} else if fetch.PriorStateExists && (!fetch.FillsFetched || !fetch.FundingFetched || !fetch.TransfersFetched) {
+				reason = "fetch miss this cycle"
+			}
+			fmt.Printf("[WARN] cashflow-journal %s: %s — drift alarm uses trade-ledger fallback $%+.2f\n",
+				sharedWalletKeyLabel(fetch.Key), reason, r.LedgerFallbackDrift)
+		}
+		return
+	}
 }
 
 // sumHLAccountUPnL totals exchange-reported unrealized PnL across open positions.

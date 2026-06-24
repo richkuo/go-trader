@@ -138,6 +138,74 @@ func TestCashflowJournalDedupIgnoresReplay(t *testing.T) {
 	}
 }
 
+func TestApplyHyperliquidCashflowJournalDrift_JournalWins(t *testing.T) {
+	db := newLedgerTestDB(t)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xapply"}
+	nowMs := int64(1_700_000_000_000)
+	seedHLCashflowJournalBaseline(t, db, "0xapply", 1000, 50, nowMs)
+
+	results := []sharedWalletDriftResult{{
+		Key: key, Balance: 997, MemberSum: 990, Drift: 0,
+		LedgerFallbackDrift: 0, DriftBasis: sharedWalletDriftBasisLedgerFallback,
+		AttributionGap: -7,
+	}}
+	fetch := cashflowJournalFetchResult{
+		Key: key, StateFound: true, PriorStateExists: true,
+		AccountValue: 997, CurrentUPnL: 50,
+		FillsFetched: true, FundingFetched: true, TransfersFetched: true,
+	}
+	st, _, _ := db.GetCashflowJournalState(key.Platform, key.Account)
+	fetch.State = st
+	applyHyperliquidCashflowJournalDrift(&results, db, fetch)
+	if results[0].DriftBasis != sharedWalletDriftBasisCashflowJournal {
+		t.Fatalf("basis = %q", results[0].DriftBasis)
+	}
+	if math.Abs(results[0].Drift-(-3)) > 1e-9 {
+		t.Fatalf("journal drift = %v want -3", results[0].Drift)
+	}
+}
+
+func TestApplyHyperliquidCashflowJournalDrift_IncompleteFallsBack(t *testing.T) {
+	db := newLedgerTestDB(t)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xfallback"}
+	nowMs := int64(1_700_000_000_000)
+	st := CashflowJournalState{
+		FillsSinceMs: nowMs, FundingSinceMs: nowMs, TransfersSinceMs: nowMs,
+		BaselineAccountValue: 1000, BaselineUPnL: 0, BaselineSet: true, Incomplete: true,
+	}
+	if err := db.UpsertCashflowJournalState(key.Platform, key.Account, st); err != nil {
+		t.Fatal(err)
+	}
+	results := []sharedWalletDriftResult{{
+		Key: key, Balance: 1000, Drift: -5, LedgerFallbackDrift: -5,
+		DriftBasis: sharedWalletDriftBasisLedgerFallback,
+	}}
+	fetch := cashflowJournalFetchResult{
+		Key: key, State: st, StateFound: true, PriorStateExists: true,
+		AccountValue: 1000, FillsFetched: true, FundingFetched: true, TransfersFetched: true,
+	}
+	applyHyperliquidCashflowJournalDrift(&results, db, fetch)
+	if results[0].DriftBasis != sharedWalletDriftBasisLedgerFallback || math.Abs(results[0].Drift-(-5)) > 1e-9 {
+		t.Fatalf("want ledger fallback preserved, got %+v", results[0])
+	}
+}
+
+func TestCashflowJournalUsable(t *testing.T) {
+	st := CashflowJournalState{BaselineSet: true}
+	if !cashflowJournalUsable(cashflowJournalFetchResult{StateFound: true}, st) {
+		t.Error("first anchor should be usable")
+	}
+	if cashflowJournalUsable(cashflowJournalFetchResult{StateFound: true, PriorStateExists: true, FillsFetched: true}, CashflowJournalState{BaselineSet: true, Incomplete: true}) {
+		t.Error("incomplete must fail")
+	}
+	if !cashflowJournalUsable(cashflowJournalFetchResult{
+		StateFound: true, PriorStateExists: true,
+		FillsFetched: true, FundingFetched: true, TransfersFetched: true,
+	}, st) {
+		t.Error("all streams ok should be usable")
+	}
+}
+
 func TestSumHLAccountUPnL(t *testing.T) {
 	got := sumHLAccountUPnL([]HLPosition{
 		{UnrealizedPnL: 10}, {UnrealizedPnL: -3},

@@ -284,8 +284,8 @@ CREATE TABLE IF NOT EXISTS wallet_transfers (
 --                     retained for attribution/display, NEVER summed into equity)
 --   funding         = signed funding usdc
 --   <transfer kind> = signedPerpFlowUSD (deposits / withdrawals / transfers / ...)
--- Shadow-only today: computed beside the trade-ledger drift path and logged for
--- validation; it does not yet drive any alarm (see reconcileCashflowJournalShadow).
+-- HL shared-wallet TOTAL reconciliation (#1100): journal rows drive the wallet-level
+-- drift alarm; internal trade rows remain attribution-only.
 CREATE TABLE IF NOT EXISTS cashflow_journal (
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
     platform TEXT NOT NULL,
