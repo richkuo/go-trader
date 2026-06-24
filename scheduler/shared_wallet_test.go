@@ -237,7 +237,12 @@ func TestDetectSharedWallets_OKXIncludedAfterFetcher(t *testing.T) {
 	}
 }
 
-// TestDetectSharedWallets_TopStepExcludedNoFetcher — same as OKX, for TopStep.
+// TestDetectSharedWallets_TopStepExcludedNoFetcher — #1106 phase 4 of #1100 runs
+// the TopStep cash-flow journal in SHADOW only and deliberately keeps TopStep OUT
+// of platformsWithSharedWalletBalanceFetcher, so its unverified equity feed never
+// reaches the live computeTotalPortfolioValue / kill-switch path. TopStep is
+// therefore still excluded from detectSharedWallets (the kill-switch grouping),
+// even though walletKeyFor recognizes the live wallet.
 func TestDetectSharedWallets_TopStepExcludedNoFetcher(t *testing.T) {
 	t.Setenv("TOPSTEP_ACCOUNT_ID", "ts-account-42")
 
@@ -248,7 +253,47 @@ func TestDetectSharedWallets_TopStepExcludedNoFetcher(t *testing.T) {
 
 	shared := detectSharedWallets(strategies)
 	if len(shared) != 0 {
-		t.Errorf("expected TopStep to be excluded from detectSharedWallets until a balance fetcher exists; got %d entries", len(shared))
+		t.Fatalf("expected TopStep to stay excluded from detectSharedWallets during the shadow phase (#1106); got %d entries", len(shared))
+	}
+	for _, sc := range strategies {
+		if _, ok := walletKeyFor(sc); !ok {
+			t.Errorf("walletKeyFor should still recognize live %s", sc.ID)
+		}
+	}
+}
+
+// TestDetectTopStepSharedWallet — the shadow cash-flow journal (#1106) detects
+// 2+ live TopStep strategies on one account INDEPENDENTLY of the kill-switch
+// sharedWallets map, so it can run without the equity touching portfolio risk.
+func TestDetectTopStepSharedWallet(t *testing.T) {
+	t.Setenv("TOPSTEP_ACCOUNT_ID", "ts-account-42")
+
+	// 2+ live → shared.
+	twoLive := []StrategyConfig{
+		{ID: "ts-sma-es", Platform: "topstep", Type: "futures", Args: []string{"sma", "ES", "15m", "--mode=live"}, Capital: 5000},
+		{ID: "ts-rsi-nq", Platform: "topstep", Type: "futures", Args: []string{"rsi", "NQ", "15m", "--mode=live"}, Capital: 5000},
+	}
+	if key, ok := detectTopStepSharedWallet(twoLive); !ok || key.Account != "ts-account-42" {
+		t.Fatalf("expected 2 live TopStep strategies to be a shared wallet, got ok=%v key=%+v", ok, key)
+	}
+	// Excluded from the kill-switch grouping at the same time.
+	if len(detectSharedWallets(twoLive)) != 0 {
+		t.Errorf("TopStep must stay out of detectSharedWallets (kill-switch path)")
+	}
+
+	// Single live → not shared.
+	oneLive := twoLive[:1]
+	if _, ok := detectTopStepSharedWallet(oneLive); ok {
+		t.Errorf("a single live TopStep strategy is not a shared wallet")
+	}
+
+	// Paper strategies → not recognized → not shared.
+	paper := []StrategyConfig{
+		{ID: "ts-sma-es", Platform: "topstep", Type: "futures", Args: []string{"sma", "ES", "15m", "--mode=paper"}, Capital: 5000},
+		{ID: "ts-rsi-nq", Platform: "topstep", Type: "futures", Args: []string{"rsi", "NQ", "15m", "--mode=paper"}, Capital: 5000},
+	}
+	if _, ok := detectTopStepSharedWallet(paper); ok {
+		t.Errorf("paper-mode TopStep strategies must not form a shared wallet")
 	}
 }
 
@@ -267,10 +312,12 @@ func TestDetectSharedWallets_RobinhoodExcludedNoFetcher(t *testing.T) {
 	}
 }
 
-// TestHasSharedWalletBalanceFetcher_HLAndOKX locks in the contract that HL
-// and OKX have balance fetchers today (#360 phase 2 of #357). When phases
-// 3-4 add fetchers for TS / RH, this test should be updated in the same PR
-// as the fetcher wiring.
+// TestHasSharedWalletBalanceFetcher_HLAndOKX locks in the contract that HL and
+// OKX (#360 phase 2 of #357) have portfolio-value balance fetchers today.
+// TopStep is intentionally false during the #1106 shadow phase — its unverified
+// equity feeds the shadow journal only, never computeTotalPortfolioValue — and
+// flips true in Phase 4b alongside verification. When RH adds a fetcher, update
+// this in the same PR as the fetcher wiring.
 func TestHasSharedWalletBalanceFetcher_HLAndOKX(t *testing.T) {
 	cases := map[string]bool{
 		"hyperliquid": true,

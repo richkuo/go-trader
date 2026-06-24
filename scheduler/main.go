@@ -1013,6 +1013,33 @@ func main() {
 					tsPositions = pos
 				}
 			}
+			// #1106 phase 4 of #1100: fetch the TopStep account equity for the
+			// shared-wallet cash-flow journal when 2+ live TopStep futures strategies
+			// share an account. One fetch_topstep_balance.py read yields a COHERENT
+			// (equity, uPnL) pair — both feed the SHADOW journal only.
+			//
+			// Unlike the HL/OKX blocks, the equity is NOT written into walletBalances:
+			// the TopStep /v1/account/balance feed is unverified, and routing it into
+			// computeTotalPortfolioValue would put it on the live all-platform kill
+			// switch (CheckPortfolioRisk) behind only a >0 check. The journal uses its
+			// own detectTopStepSharedWallet grouping (not the kill-switch sharedWallets
+			// map), so portfolio risk stays on the pre-PR per-strategy member-PV path
+			// until Phase 4b verifies the feed and promotes it.
+			tsKey, tsShared := detectTopStepSharedWallet(cfg.Strategies)
+			var tsBalanceFetched bool
+			var tsSnapshotEquity float64
+			var tsSnapshotUPnL float64
+			var tsSnapshotAt time.Time
+			if tsShared {
+				if eq, upnl, err := defaultTopStepEquitySnapshot(); err != nil {
+					fmt.Printf("[WARN] topstep balance fetch failed: %v — shadow cash-flow journal skipped this cycle\n", err)
+				} else {
+					tsBalanceFetched = true
+					tsSnapshotEquity = eq
+					tsSnapshotUPnL = upnl
+					tsSnapshotAt = time.Now().UTC()
+				}
+			}
 
 			mu.RLock()
 			totalPV, usedPVFallback = computeTotalPortfolioValue(cfg.Strategies, state, prices, walletBalances, sharedWallets)
@@ -1116,6 +1143,20 @@ func main() {
 			if okxShared && okxBalanceFetched {
 				okxRec := reconcileOKXCashflowJournal(stateDB, okxKey, walletBalances[okxKey], okxSnapshotUPnL, okxSnapshotAt)
 				logOKXCashflowJournalShadow(driftResults, okxKey, okxRec)
+			}
+
+			// #1106 phase 4 of #1100: TopStep cash-flow journal — SHADOW phase. The
+			// wallet equity is reconstructed from TopStep's settled fills (gross realized
+			// PnL − commission per fill) and reconciled against the account equity, exactly
+			// as the HL/OKX journals do, but it ONLY logs each cycle — there is no live
+			// TopStep shared-wallet alarm to drive (TopStep is display-skipped). Flipping a
+			// TopStep alarm onto the journal is Phase 4b, gated on this shadow log proving
+			// the feed/equity field AND the TopStepX endpoint contracts in production. Runs
+			// outside the lock (subprocess fetch + DB-only writes), bounded to the COHERENT
+			// equity/uPnL snapshot from the single balance read above.
+			if tsShared && tsBalanceFetched {
+				tsRec := reconcileTopStepCashflowJournal(stateDB, tsKey, tsSnapshotEquity, tsSnapshotUPnL, tsSnapshotAt)
+				logTopStepCashflowJournalShadow(driftResults, tsKey, tsRec)
 			}
 
 			// Fire throttled drift alarms outside the lock (notifier I/O). For HL
