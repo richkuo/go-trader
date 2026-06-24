@@ -1015,23 +1015,27 @@ func main() {
 			}
 			// #1106 phase 4 of #1100: fetch the TopStep account equity for the
 			// shared-wallet cash-flow journal when 2+ live TopStep futures strategies
-			// share an account. Mirrors the OKX block above: one fetch_topstep_balance.py
-			// read yields a COHERENT (equity, uPnL) pair — equity feeds walletBalances
-			// (dedup / portfolio value) and the same snapshot's uPnL (equity − cashBalance)
-			// bounds the journal so its expected-equity and reconciled equity cancel the
-			// uPnL term exactly. A fetch failure leaves walletBalances[tsKey] unset →
-			// computeTotalPortfolioValue falls back to the member-PV sum (no false-zero).
-			tsKey := SharedWalletKey{Platform: "topstep", Account: os.Getenv("TOPSTEP_ACCOUNT_ID")}
-			_, tsShared := sharedWallets[tsKey]
+			// share an account. One fetch_topstep_balance.py read yields a COHERENT
+			// (equity, uPnL) pair — both feed the SHADOW journal only.
+			//
+			// Unlike the HL/OKX blocks, the equity is NOT written into walletBalances:
+			// the TopStep /v1/account/balance feed is unverified, and routing it into
+			// computeTotalPortfolioValue would put it on the live all-platform kill
+			// switch (CheckPortfolioRisk) behind only a >0 check. The journal uses its
+			// own detectTopStepSharedWallet grouping (not the kill-switch sharedWallets
+			// map), so portfolio risk stays on the pre-PR per-strategy member-PV path
+			// until Phase 4b verifies the feed and promotes it.
+			tsKey, tsShared := detectTopStepSharedWallet(cfg.Strategies)
 			var tsBalanceFetched bool
+			var tsSnapshotEquity float64
 			var tsSnapshotUPnL float64
 			var tsSnapshotAt time.Time
 			if tsShared {
 				if eq, upnl, err := defaultTopStepEquitySnapshot(); err != nil {
-					fmt.Printf("[WARN] topstep balance fetch failed: %v — falling back to per-member PV sum this cycle\n", err)
+					fmt.Printf("[WARN] topstep balance fetch failed: %v — shadow cash-flow journal skipped this cycle\n", err)
 				} else {
-					walletBalances[tsKey] = eq
 					tsBalanceFetched = true
+					tsSnapshotEquity = eq
 					tsSnapshotUPnL = upnl
 					tsSnapshotAt = time.Now().UTC()
 				}
@@ -1151,7 +1155,7 @@ func main() {
 			// outside the lock (subprocess fetch + DB-only writes), bounded to the COHERENT
 			// equity/uPnL snapshot from the single balance read above.
 			if tsShared && tsBalanceFetched {
-				tsRec := reconcileTopStepCashflowJournal(stateDB, tsKey, walletBalances[tsKey], tsSnapshotUPnL, tsSnapshotAt)
+				tsRec := reconcileTopStepCashflowJournal(stateDB, tsKey, tsSnapshotEquity, tsSnapshotUPnL, tsSnapshotAt)
 				logTopStepCashflowJournalShadow(driftResults, tsKey, tsRec)
 			}
 

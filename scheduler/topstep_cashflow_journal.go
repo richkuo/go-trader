@@ -173,13 +173,13 @@ func defaultTopStepEquitySnapshot() (equity, upnl float64, err error) {
 // positive equity, so equity ≤ 0 means the (unverified) /v1/account/balance
 // response was malformed or shape-mismatched — e.g. a 200 missing the "equity"
 // field, which the fetcher would otherwise coerce to 0 and report as success.
-// Returning an error keeps walletBalances[tsKey] UNSET so the portfolio-value
-// path falls back to the member-PV sum and freezes the portfolio peak, instead
-// of contributing a silent $0 that collapses the TopStep account's portfolio
-// value and could trip the all-platform portfolio kill switch (CheckPortfolioRisk
-// consumes a PRESENT walletBalances[key] directly via computeSubsetPortfolioValue,
-// with no member-PV fallback on a present zero). A genuinely good positive equity
-// flows through unchanged. Pure — unit-tested.
+// Returning an error makes the caller skip the shadow journal this cycle instead
+// of reconciling against a garbage $0 equity (which would emit phantom drift in
+// the shadow log and corrupt the persisted baseline). The TopStep equity is
+// shadow-only and never enters computeTotalPortfolioValue (see
+// detectTopStepSharedWallet), so this guards journal correctness, not the live
+// kill switch. A genuinely good positive equity flows through unchanged. Pure —
+// unit-tested.
 func validatedTopStepEquity(balance, upnl float64) (equity, upnlOut float64, err error) {
 	if !(balance > 0) { // also rejects NaN
 		return 0, 0, fmt.Errorf("non-positive TopStep equity $%.2f — treating as a fetch miss (malformed /v1/account/balance response)", balance)

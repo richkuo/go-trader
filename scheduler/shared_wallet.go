@@ -96,15 +96,16 @@ func walletKeyFor(sc StrategyConfig) (SharedWalletKey, bool) {
 var platformsWithSharedWalletBalanceFetcher = map[string]bool{
 	"hyperliquid": true,
 	"okx":         true, // #360 phase 2 of #357 — fetch_okx_balance.py
-	// #1106 phase 4 of #1100: surfaces TopStep shared wallets in
-	// detectSharedWallets so the exchange-sourced cash-flow journal (shadow)
-	// runs. The coherent equity/uPnL snapshot is owned by the dedicated main-loop
-	// block (defaultTopStepEquitySnapshot → walletBalances), mirroring OKX;
-	// defaultSharedWalletFetcher intentionally has no topstep case. TopStep stays
-	// display-skipped in reconcileSharedWalletDisplayValues (no position source),
-	// so this enables the snapshot side without any capital-weight display
-	// mutation.
-	"topstep": true,
+	// #1106 phase 4 of #1100: TopStep is DELIBERATELY NOT listed here during the
+	// shadow phase. Its /v1/account/balance equity feed is unverified, and
+	// listing it would pull TopStep into detectSharedWallets → the live
+	// computeTotalPortfolioValue / CheckPortfolioRisk path (the all-platform kill
+	// switch), where a wrong-but-positive equity could crater totalPV behind only
+	// a >0 check and trip a cross-platform close — and a missing balance would set
+	// usedFallback every cycle, freezing the portfolio peak ratchet. The shadow
+	// cash-flow journal detects its own grouping via detectTopStepSharedWallet and
+	// consumes the equity directly, so portfolio risk stays on the pre-PR
+	// per-strategy member-PV behavior until Phase 4b verifies the feed.
 }
 
 // hasSharedWalletBalanceFetcher reports whether defaultSharedWalletFetcher can
@@ -151,6 +152,35 @@ func detectSharedWallets(strategies []StrategyConfig) map[SharedWalletKey][]stri
 		}
 	}
 	return shared
+}
+
+// detectTopStepSharedWallet reports whether 2+ live TopStep strategies share an
+// account, gating the #1106 shadow cash-flow journal. It is INTENTIONALLY
+// independent of detectSharedWallets / platformsWithSharedWalletBalanceFetcher:
+// the journal must be able to run without TopStep being a member of the
+// kill-switch sharedWallets map, so the unverified /v1/account/balance equity
+// never enters computeTotalPortfolioValue (the live all-platform portfolio kill
+// switch) during the shadow phase. Membership is derived the same way as
+// detectSharedWallets — walletKeyFor already filters to live mode and a present
+// TOPSTEP_ACCOUNT_ID — minus the fetcher-capability gate.
+func detectTopStepSharedWallet(strategies []StrategyConfig) (SharedWalletKey, bool) {
+	counts := make(map[SharedWalletKey]int)
+	for _, sc := range strategies {
+		if sc.Platform != "topstep" {
+			continue
+		}
+		key, ok := walletKeyFor(sc)
+		if !ok {
+			continue
+		}
+		counts[key]++
+	}
+	for key, n := range counts {
+		if n > 1 {
+			return key, true
+		}
+	}
+	return SharedWalletKey{}, false
 }
 
 // defaultSharedWalletFetcher dispatches to the platform-specific balance API.

@@ -62,9 +62,9 @@ func newTopStepJournalKey() SharedWalletKey {
 }
 
 // A non-positive (or NaN) equity must be treated as a fetch MISS (error), so the
-// snapshot never feeds walletBalances[tsKey] a silent $0 that could collapse the
-// account's portfolio value and trip the all-platform kill switch. A genuinely
-// positive equity flows through unchanged.
+// shadow journal skips the cycle instead of reconciling against a garbage $0
+// equity (which would emit phantom drift and corrupt the persisted baseline). A
+// genuinely positive equity flows through unchanged.
 func TestValidatedTopStepEquity(t *testing.T) {
 	// Good positive equity passes through with uPnL preserved.
 	if eq, upnl, err := validatedTopStepEquity(50000.0, 12.5); err != nil || eq != 50000.0 || upnl != 12.5 {
