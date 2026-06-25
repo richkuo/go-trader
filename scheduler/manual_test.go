@@ -580,9 +580,9 @@ func TestManualPositionOwnedByStrategy(t *testing.T) {
 	}
 }
 
-// TestPendingManualActionTPOIDsRoundtrip verifies that TPOIDs survive an
-// InsertPendingManualAction → LoadPendingManualActions round-trip (#632).
-func TestPendingManualActionTPOIDsRoundtrip(t *testing.T) {
+// TestPendingManualActionOpenFieldsRoundtrip verifies that open-only fields survive
+// an InsertPendingManualAction → LoadPendingManualActions round-trip (#632/#1121).
+func TestPendingManualActionOpenFieldsRoundtrip(t *testing.T) {
 	db, err := OpenStateDB(":memory:")
 	if err != nil {
 		t.Fatalf("open state db: %v", err)
@@ -593,8 +593,9 @@ func TestPendingManualActionTPOIDsRoundtrip(t *testing.T) {
 	if err := db.InsertPendingManualAction(PendingManualAction{
 		StrategyID: "hl-manual-eth-live", Action: "open", Symbol: "ETH", Side: "long",
 		Quantity: 0.8, FillPrice: 2500, FillFee: 0.35, EntryATR: 12.5,
-		TPOIDs:    want,
-		CreatedAt: time.Now().UTC(),
+		TPOIDs:                          want,
+		RatchetFallbackNormalizePending: true,
+		CreatedAt:                       time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -615,11 +616,14 @@ func TestPendingManualActionTPOIDsRoundtrip(t *testing.T) {
 			t.Errorf("TPOIDs[%d]=%d want %d", i, got[i], want[i])
 		}
 	}
+	if !actions[0].RatchetFallbackNormalizePending {
+		t.Fatal("RatchetFallbackNormalizePending lost across pending action round-trip")
+	}
 }
 
-// TestApplyManualAction_OpenSetsTPOIDs verifies that applyManualAction stamps
-// TPOIDs onto the materialised position (#632).
-func TestApplyManualAction_OpenSetsTPOIDs(t *testing.T) {
+// TestApplyManualAction_OpenSetsProtectionFields verifies that applyManualAction
+// stamps open-only protection fields onto the materialised position (#632/#1121).
+func TestApplyManualAction_OpenSetsProtectionFields(t *testing.T) {
 	db, err := OpenStateDB(":memory:")
 	if err != nil {
 		t.Fatalf("open state db: %v", err)
@@ -652,8 +656,9 @@ func TestApplyManualAction_OpenSetsTPOIDs(t *testing.T) {
 	_ = db.InsertPendingManualAction(PendingManualAction{
 		StrategyID: stratID, Action: "open", Symbol: "ETH", Side: "long",
 		Quantity: 0.8, FillPrice: 2500, FillFee: 0.875, EntryATR: 12.5,
-		TPOIDs:    wantOIDs,
-		CreatedAt: time.Now().UTC(),
+		TPOIDs:                          wantOIDs,
+		RatchetFallbackNormalizePending: true,
+		CreatedAt:                       time.Now().UTC(),
 	})
 
 	drainPendingManualActions(state, cfg, db)
@@ -669,6 +674,9 @@ func TestApplyManualAction_OpenSetsTPOIDs(t *testing.T) {
 		if pos.TPOIDs[i] != oid {
 			t.Errorf("pos.TPOIDs[%d]=%d want %d", i, pos.TPOIDs[i], oid)
 		}
+	}
+	if !pos.RatchetFallbackNormalizePending {
+		t.Fatal("RatchetFallbackNormalizePending not stamped onto materialized position")
 	}
 }
 
@@ -686,8 +694,8 @@ func TestDefaultManualMarginUSD(t *testing.T) {
 // HL type=manual strategies (#691). Distinct from DefaultStopLossATRMult (1.0)
 // so non-manual perps strategies keep their tighter default.
 func TestDefaultManualStopLossATRMult(t *testing.T) {
-	if defaultManualStopLossATRMult != 1.5 {
-		t.Errorf("defaultManualStopLossATRMult = %g, want 1.5", defaultManualStopLossATRMult)
+	if defaultManualStopLossATRMult != 2.0 {
+		t.Errorf("defaultManualStopLossATRMult = %g, want 2.0", defaultManualStopLossATRMult)
 	}
 }
 

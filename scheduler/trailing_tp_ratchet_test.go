@@ -445,7 +445,7 @@ func ratchetTestState(pos *Position) *StrategyState {
 }
 
 func TestApplyTrailingStopUpdateResult_RestingReplacement(t *testing.T) {
-	s := ratchetTestState(&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: 5, StopLossOID: 7})
+	s := ratchetTestState(&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: 5, StopLossOID: 7, RatchetFallbackNormalizePending: true})
 	upd := &HyperliquidStopLossUpdateResult{StopLossOID: 42, StopLossTriggerPx: 95}
 	fill, px := applyTrailingStopUpdateResult(s, "ETH", "long", 7, 0, false, upd, nil)
 	if fill || px != 0 {
@@ -454,6 +454,9 @@ func TestApplyTrailingStopUpdateResult_RestingReplacement(t *testing.T) {
 	p := s.Positions["ETH"]
 	if p.StopLossOID != 42 || p.StopLossTriggerPx != 95 {
 		t.Fatalf("resting replacement OID/trigger = %d/%v want 42/95", p.StopLossOID, p.StopLossTriggerPx)
+	}
+	if p.RatchetFallbackNormalizePending {
+		t.Fatal("resting replacement must clear ratchet fallback normalize marker")
 	}
 }
 
@@ -470,7 +473,7 @@ func TestApplyTrailingStopUpdateResult_ImmediateFillBooksClose(t *testing.T) {
 }
 
 func TestApplyTrailingStopUpdateResult_CancelWithoutRestClearsStaleOID(t *testing.T) {
-	s := ratchetTestState(&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: 5, StopLossOID: 7, StopLossTriggerPx: 96})
+	s := ratchetTestState(&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: 5, StopLossOID: 7, StopLossTriggerPx: 96, RatchetFallbackNormalizePending: true})
 	upd := &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true}
 	fill, _ := applyTrailingStopUpdateResult(s, "ETH", "long", 7, 0, false, upd, nil)
 	if fill {
@@ -479,6 +482,9 @@ func TestApplyTrailingStopUpdateResult_CancelWithoutRestClearsStaleOID(t *testin
 	p := s.Positions["ETH"]
 	if p.StopLossOID != 0 || p.StopLossTriggerPx != 0 {
 		t.Fatalf("stale OID/trigger not cleared: %d/%v want 0/0", p.StopLossOID, p.StopLossTriggerPx)
+	}
+	if !p.RatchetFallbackNormalizePending {
+		t.Fatal("cancel-without-rest must leave normalize marker set for retry")
 	}
 }
 
