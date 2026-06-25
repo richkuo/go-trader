@@ -152,6 +152,17 @@ func TestFormatStrategyRegimeDisplay_DefaultShowsAllWindows(t *testing.T) {
 			t.Fatalf("unset DisplayWindows should render %q; got: %s", name, got)
 		}
 	}
+	// #1114: the redundant [classifier] suffix must not appear — the window
+	// naming convention and disjoint label vocabularies already encode it.
+	for _, suffix := range []string{"[adx]", "[composite]", "["} {
+		if strings.Contains(got, suffix) {
+			t.Fatalf("regime display should not carry a classifier suffix %q; got: %s", suffix, got)
+		}
+	}
+	// Spot-check the exact rendering of one window.
+	if !strings.Contains(got, "composite_long=ranging_directional") {
+		t.Fatalf("expected bare name=label rendering; got: %s", got)
+	}
 }
 
 func TestFormatStrategyRegimeDisplay_CompositeOnly(t *testing.T) {

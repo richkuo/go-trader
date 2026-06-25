@@ -434,8 +434,7 @@ func formatStrategyRegimeDisplay(ss *StrategyState, rc *RegimeConfig) string {
 			if label == "" {
 				continue
 			}
-			cls := regimeClassifierForWindow(rc, name)
-			parts = append(parts, fmt.Sprintf("%s=%s [%s]", name, label, cls))
+			parts = append(parts, fmt.Sprintf("%s=%s", name, label))
 		}
 		if len(parts) > 0 {
 			return strings.Join(parts, "; ")
