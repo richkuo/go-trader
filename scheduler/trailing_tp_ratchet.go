@@ -539,35 +539,43 @@ func applyTrailingTPRatchet(
 	mark float64,
 	mu *sync.RWMutex,
 	logger *StrategyLogger,
-) {
+) *RatchetTriggerAlert {
 	if !strategyUsesTrailingTPRatchetClose(sc) || stratState == nil || symbol == "" || mark <= 0 {
-		return
+		return nil
 	}
 	mu.Lock()
+	var alert *RatchetTriggerAlert
 	pos, ok := stratState.Positions[symbol]
 	if ok {
-		applyTrailingTPRatchetToPosition(sc, pos, symbol, mark, logger)
+		_, alert = applyTrailingTPRatchetToPosition(sc, pos, symbol, mark, logger)
 	}
 	mu.Unlock()
+	return alert
 }
 
 // applyTrailingTPRatchetToPosition applies the same ratchet logic while the
-// caller already owns the state lock.
-func applyTrailingTPRatchetToPosition(sc StrategyConfig, pos *Position, symbol string, mark float64, logger *StrategyLogger) bool {
+// caller already owns the state lock. Returns (true, *RatchetTriggerAlert) ONLY
+// when a tier newly advances the watermark AND tightens the trail — the alert
+// snapshot carries the immutable details the owner DM needs, so the caller can
+// deliver it (notifyRatchetTrigger) after releasing the lock (#1110). Every
+// non-tightening path returns (false, nil), including a watermark-only advance
+// (tier cleared but the resulting trail is not tighter), so an already-processed
+// or no-tighten tier never alerts.
+func applyTrailingTPRatchetToPosition(sc StrategyConfig, pos *Position, symbol string, mark float64, logger *StrategyLogger) (bool, *RatchetTriggerAlert) {
 	if !strategyUsesTrailingTPRatchetClose(sc) || pos == nil || symbol == "" || mark <= 0 {
-		return false
+		return false, nil
 	}
 	if pos.Quantity <= 0 || pos.AvgCost <= 0 || pos.EntryATR <= 0 {
-		return false
+		return false, nil
 	}
 	side := strings.ToLower(strings.TrimSpace(pos.Side))
 	if side != "long" && side != "short" {
-		return false
+		return false, nil
 	}
 	regime := protectionATRRegimeLabel(pos, sc)
 	tiers := trailingRatchetTiersForRegime(sc, regime)
 	if len(tiers) == 0 {
-		return false
+		return false, nil
 	}
 	// #873: ratchet tier-clearing measures ATR profit distance from the FROZEN
 	// entry (riskAnchorPrice), not the blended AvgCost, so a scale-in keeps the
@@ -580,7 +588,7 @@ func applyTrailingTPRatchetToPosition(sc StrategyConfig, pos *Position, symbol s
 	atrProfit := profitDistance / pos.EntryATR
 	clearedIdx, clearedOK := findHighestMarkClearedRatchetTier(tiers, atrProfit, pos.SLAdjustedTiersProcessed)
 	if !clearedOK {
-		return false
+		return false, nil
 	}
 	newMult := tiers[clearedIdx].TrailingMultAfter
 	current := effectiveTrailingRatchetMult(pos, sc)
@@ -588,7 +596,7 @@ func applyTrailingTPRatchetToPosition(sc StrategyConfig, pos *Position, symbol s
 		if pos.SLAdjustedTiersProcessed <= clearedIdx {
 			pos.SLAdjustedTiersProcessed = clearedIdx + 1
 		}
-		return false
+		return false, nil
 	}
 	mult := newMult
 	pos.PostTPTrailingATRMult = &mult
@@ -597,7 +605,78 @@ func applyTrailingTPRatchetToPosition(sc StrategyConfig, pos *Position, symbol s
 		logger.Info("trailing_tp_ratchet: %s tier %d cleared — trail tightened to %.4g×ATR (from %.4g×ATR)",
 			symbol, clearedIdx, newMult, current)
 	}
-	return true
+	alert := buildRatchetTriggerAlert(sc, pos, symbol, side, regime, mark, anchor, atrProfit, tiers, clearedIdx, current, newMult)
+	return true, alert
+}
+
+// buildRatchetTriggerAlert assembles the immutable #1110 alert snapshot at the
+// instant a ratchet tier tightens the trail. All inputs are read while the
+// caller holds the state lock; the result carries no pointers into pos so it is
+// safe to hand to a post-unlock notifier. anchor / atrProfit are passed through
+// from the caller so the snapshot matches the exact values the tightening
+// decision used.
+func buildRatchetTriggerAlert(sc StrategyConfig, pos *Position, symbol, side, regime string, mark, anchor, atrProfit float64, tiers []trailingRatchetTier, clearedIdx int, oldMult, newMult float64) *RatchetTriggerAlert {
+	entryATR := pos.EntryATR
+	contractMult := 1.0
+	if pos.Multiplier > 0 {
+		contractMult = pos.Multiplier
+	}
+	profitDistance := mark - anchor
+	if side == "short" {
+		profitDistance = anchor - mark
+	}
+	// Effective HWM for the intended-SL display: the best mark seen while open,
+	// floored to the current mark so a stale/unset StopLossHighWaterPx (e.g. the
+	// walker hasn't run yet this open) still yields a sensible computed trigger.
+	hwm := pos.StopLossHighWaterPx
+	if side == "long" {
+		if hwm <= 0 || mark > hwm {
+			hwm = mark
+		}
+	} else {
+		if hwm <= 0 || mark < hwm {
+			hwm = mark
+		}
+	}
+	intendedSL := 0.0
+	if entryATR > 0 && hwm > 0 && newMult > 0 {
+		if side == "long" {
+			intendedSL = hwm - newMult*entryATR
+		} else {
+			intendedSL = hwm + newMult*entryATR
+		}
+		if intendedSL <= 0 {
+			intendedSL = 0
+		}
+	}
+	a := &RatchetTriggerAlert{
+		StrategyID:           sc.ID,
+		Symbol:               symbol,
+		Side:                 side,
+		TierIdx:              clearedIdx,
+		TotalTiers:           len(tiers),
+		TierATRMultiple:      tiers[clearedIdx].ATRMultiple,
+		TierTriggerPx:        atrTierTriggerPx(side, anchor, entryATR, tiers[clearedIdx].ATRMultiple),
+		MarkPrice:            mark,
+		AnchorPrice:          anchor,
+		EntryATR:             entryATR,
+		ProfitATR:            atrProfit,
+		ProfitUSD:            profitDistance * pos.Quantity * contractMult,
+		OldTrailMult:         oldMult,
+		NewTrailMult:         newMult,
+		HighWaterMark:        hwm,
+		IntendedSLTriggerPx:  intendedSL,
+		RegimeLabel:          regime,
+		PositionRegimeAtOpen: pos.Regime,
+	}
+	if clearedIdx+1 < len(tiers) {
+		nt := tiers[clearedIdx+1]
+		a.HasNextTier = true
+		a.NextTierATRMultiple = nt.ATRMultiple
+		a.NextTierTrailAfter = nt.TrailingMultAfter
+		a.NextTierTriggerPx = atrTierTriggerPx(side, anchor, entryATR, nt.ATRMultiple)
+	}
+	return a
 }
 
 func trailingRatchetRulesEqualForReload(a, b StrategyConfig) bool {

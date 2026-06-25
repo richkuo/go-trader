@@ -112,7 +112,7 @@ func TestApplyTrailingTPRatchetToPosition_AfterScaleOut(t *testing.T) {
 		Symbol: "ETH", Side: "long", Quantity: 0.7, InitialQuantity: 1,
 		AvgCost: 100, EntryATR: 10,
 	}
-	if !applyTrailingTPRatchetToPosition(sc, pos, "ETH", 110, nil) {
+	if tightened, _ := applyTrailingTPRatchetToPosition(sc, pos, "ETH", 110, nil); !tightened {
 		t.Fatal("expected scale-out tier to tighten residual trail")
 	}
 	if pos.PostTPTrailingATRMult == nil || *pos.PostTPTrailingATRMult != 1.0 {

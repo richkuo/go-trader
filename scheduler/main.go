@@ -1874,7 +1874,8 @@ func main() {
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
 							if result.Signal == 0 && hlPosQty > 0 && strategyUsesTrailingTPRatchetClose(sc) {
-								applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
+								ratchetAlert := applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
+								notifyRatchetTrigger(notifier, cfg.NotifyRatchetTriggersEnabled(), ratchetAlert)
 								mu.RLock()
 								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos != nil {
 									hlPosSnapshot = hyperliquidProtectionPositionSnapshot(pos)
@@ -2065,12 +2066,17 @@ func main() {
 							if !liveExecFailed {
 								mu.Lock()
 								var openTrade *Trade
+								var ratchetAlert *RatchetTriggerAlert
 								if scaleInAddQty > 0 {
 									trades, detail, openTrade = executeHyperliquidScaleInDeferredOpen(sc, stratState, result, execResult, signalStr, price, scaleInAddQty, logger)
 								} else {
-									trades, detail, openTrade = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, logger)
+									trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, logger)
 								}
 								mu.Unlock()
+								// #1110: deliver any ratchet-tighten DM after releasing the lock
+								// (Discord/Telegram HTTP must not run under mu). Nil-safe no-op
+								// for the scale-in branch and when no tier tightened.
+								notifyRatchetTrigger(notifier, cfg.NotifyRatchetTriggersEnabled(), ratchetAlert)
 								if execResult != nil && trades > 0 {
 									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON)
 									runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
@@ -2226,7 +2232,8 @@ func main() {
 							runPostTPStopLossAdjustment(sc, stratState, sc.Symbol, prices[sc.Symbol], cfg, &mu, notifier, logger, hlOnChainAbsQty)
 							mark := prices[sc.Symbol]
 							if mark > 0 && strategyUsesTrailingTPRatchetClose(sc) {
-								applyTrailingTPRatchet(sc, stratState, sc.Symbol, mark, &mu, logger)
+								ratchetAlert := applyTrailingTPRatchet(sc, stratState, sc.Symbol, mark, &mu, logger)
+								notifyRatchetTrigger(notifier, cfg.NotifyRatchetTriggersEnabled(), ratchetAlert)
 							}
 							mu.RLock()
 							pos = stratState.Positions[sc.Symbol]
@@ -3413,7 +3420,7 @@ func isHLOpenOrderCapRejection(errStr string) bool {
 }
 
 func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, logger *StrategyLogger) (int, string) {
-	trades, detail, openTrade := executeHyperliquidResultDeferredOpen(sc, s, result, execResult, signalStr, price, regime, logger)
+	trades, detail, openTrade, _ := executeHyperliquidResultDeferredOpen(sc, s, result, execResult, signalStr, price, regime, logger)
 	if openTrade != nil {
 		var pos *Position
 		if p, ok := s.Positions[result.Symbol]; ok {
@@ -3428,7 +3435,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 // Must be called under Lock. execResult is non-nil for successful live orders;
 // nil for paper mode. Live open trades are returned so the caller can run
 // same-cycle protection sync before the single INSERT.
-func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, logger *StrategyLogger) (int, string, *Trade) {
+func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, logger *StrategyLogger) (int, string, *Trade, *RatchetTriggerAlert) {
 	fillPrice := price
 	var fillQty float64
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
@@ -3459,7 +3466,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
-		return 0, "", nil
+		return 0, "", nil, nil
 	}
 	trades := exec.TradesExecuted
 	openTrade := exec.OpenTrade
@@ -3469,9 +3476,12 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		stampPositionProtectionSnapshot(pos, sc)
 	}
+	var ratchetAlert *RatchetTriggerAlert
 	if trades > 0 {
 		if pos, ok := s.Positions[result.Symbol]; ok {
-			applyTrailingTPRatchetToPosition(sc, pos, result.Symbol, price, logger)
+			// #1110: capture the tighten snapshot here (under the caller's lock) and
+			// return it so the caller can DM the owner after releasing mu.
+			_, ratchetAlert = applyTrailingTPRatchetToPosition(sc, pos, result.Symbol, price, logger)
 		}
 	}
 	if trades > 0 && fillOID != "" {
@@ -3544,7 +3554,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 			openTrade = nil
 		}
 	}
-	return trades, detail, openTrade
+	return trades, detail, openTrade, ratchetAlert
 }
 
 // topstepIsLive reports whether --mode=live appears in strategy args.

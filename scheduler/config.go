@@ -156,6 +156,7 @@ type Config struct {
 	RiskFreeRate           *float64                   `json:"risk_free_rate,omitempty"`             // #397 — annualized risk-free rate used in Sharpe-ratio calculations (e.g. 0.02 for 2%). Nil/missing falls back to DefaultAnnualRiskFreeRate; an explicit 0 is respected so backtest comparisons can pin to a 0% benchmark.
 	DefaultStopLossATRMult *float64                   `json:"default_stop_loss_atr_mult,omitempty"` // #605 — top-level default applied to HL perps/manual strategies that omit all stop_loss_* / trailing_stop_* fields. Nil/missing falls back to 1.0; explicit values let operators tune the ATR stop without recompiling.
 	NotifyTPSLFills        *bool                      `json:"notify_tp_sl_fills,omitempty"`         // #661 — owner DM when HL on-chain TP/SL fills are detected by the reconciler. Nil/missing → enabled; explicit false disables.
+	NotifyRatchetTriggers  *bool                      `json:"notify_ratchet_triggers,omitempty"`    // #1110 — owner DM when a trailing_tp_ratchet* tier clears and tightens the trail. Nil/missing → enabled; explicit false disables.
 	ManualDefaults         *ManualDefaultsConfig      `json:"manual_defaults,omitempty"`            // #696 — operator-tunable defaults for `manual-open` CLI and `type=manual` strategy auto-config. Each field optional; absent values fall back to the hardcoded defaults.
 	TradingViewExport      TradingViewExportConfig    `json:"tradingview_export,omitempty"`         // #3 — optional symbol overrides for TradingView portfolio CSV exports
 	UserCloseDefaults      CloseDefaultsMap           `json:"user_close_defaults,omitempty"`        // #866 — operator override layer for close-evaluator default tier ladders. Keyed by close evaluator name → {"tp_tiers": <list|regime-map>}. Injected into any close ref that omits tp_tiers at load; per-strategy tp_tiers still wins, and an absent entry falls through to the system default.
@@ -248,6 +249,17 @@ func (c *Config) NotifyTPSLFillsEnabled() bool {
 		return true
 	}
 	return *c.NotifyTPSLFills
+}
+
+// NotifyRatchetTriggersEnabled reports whether a trailing_tp_ratchet* tier
+// clearing (and tightening the trail) should trigger an owner DM. Nil pointer
+// (missing field) defaults to true so existing configs get the alert without an
+// explicit opt-in (mirrors NotifyTPSLFillsEnabled).
+func (c *Config) NotifyRatchetTriggersEnabled() bool {
+	if c == nil || c.NotifyRatchetTriggers == nil {
+		return true
+	}
+	return *c.NotifyRatchetTriggers
 }
 
 // CircuitBreakerEnabled reports whether the per-strategy circuit breaker is
