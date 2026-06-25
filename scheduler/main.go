@@ -1875,7 +1875,7 @@ func main() {
 							liveExecFailed := false
 							if result.Signal == 0 && hlPosQty > 0 && strategyUsesTrailingTPRatchetClose(sc) {
 								ratchetAlert := applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
-								notifyRatchetTrigger(notifier, cfg.NotifyRatchetTriggersEnabled(), ratchetAlert)
+								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
 								mu.RLock()
 								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos != nil {
 									hlPosSnapshot = hyperliquidProtectionPositionSnapshot(pos)
@@ -2076,7 +2076,7 @@ func main() {
 								// #1110: deliver any ratchet-tighten DM after releasing the lock
 								// (Discord/Telegram HTTP must not run under mu). Nil-safe no-op
 								// for the scale-in branch and when no tier tightened.
-								notifyRatchetTrigger(notifier, cfg.NotifyRatchetTriggersEnabled(), ratchetAlert)
+								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
 								if execResult != nil && trades > 0 {
 									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON)
 									runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
@@ -2256,7 +2256,7 @@ func main() {
 							mark := prices[sc.Symbol]
 							if mark > 0 && strategyUsesTrailingTPRatchetClose(sc) {
 								ratchetAlert := applyTrailingTPRatchet(sc, stratState, sc.Symbol, mark, &mu, logger)
-								notifyRatchetTrigger(notifier, cfg.NotifyRatchetTriggersEnabled(), ratchetAlert)
+								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
 							}
 							mu.RLock()
 							pos = stratState.Positions[sc.Symbol]

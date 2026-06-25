@@ -350,6 +350,18 @@ func (c *Config) NotifyRatchetTriggersEnabled() bool {
 	return *c.NotifyRatchetTriggers
 }
 
+// NotifyRatchetTriggersEnabled reports whether THIS strategy's ratchet-tighten
+// owner DM (#1110) is enabled, using a two-layer resolve: the per-strategy
+// notify_ratchet_triggers (#1118) wins when set, else it inherits the global
+// Config.NotifyRatchetTriggersEnabled(). A nil strategy field therefore
+// preserves existing behavior for anyone who never sets it.
+func (sc *StrategyConfig) NotifyRatchetTriggersEnabled(cfg *Config) bool {
+	if sc != nil && sc.NotifyRatchetTriggers != nil {
+		return *sc.NotifyRatchetTriggers
+	}
+	return cfg.NotifyRatchetTriggersEnabled()
+}
+
 // CircuitBreakerEnabled reports whether the per-strategy circuit breaker is
 // active. Nil pointer (missing field) defaults to true so existing configs keep
 // the auto-protective behavior without an explicit opt-in; an explicit false
@@ -468,6 +480,7 @@ type StrategyConfig struct {
 	InitialCapital          float64                  `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
 	MaxDrawdownPct          float64                  `json:"max_drawdown_pct"`
 	CircuitBreaker          *bool                    `json:"circuit_breaker,omitempty"`            // #1048 — per-strategy circuit-breaker opt-out. Nil/missing → enabled (the safe default); explicit false disables BOTH firing arms in CheckRisk (drawdown > max_drawdown_pct AND 5 consecutive losses), uniformly for live and paper (no platform/live gating). Hot-reloadable via SIGHUP including while a position is open: disabling only suppresses NEW fires — an already-latched CB and any pending circuit close still drain. No effect on type=manual (exempt from CheckRisk). Read via CircuitBreakerEnabled(), never directly.
+	NotifyRatchetTriggers   *bool                    `json:"notify_ratchet_triggers,omitempty"`    // #1118 — per-strategy override of the global notify_ratchet_triggers (#1110) ratchet-tighten owner DM. Nil/missing → inherit the global Config.NotifyRatchetTriggersEnabled(); explicit value wins. Notification-only (never affects position/order state), so SIGHUP hot-reloads it unconditionally even while a position is open. Read via NotifyRatchetTriggersEnabled(cfg), never directly.
 	IntervalSeconds         int                      `json:"interval_seconds,omitempty"`           // per-strategy override (0 = use global)
 	HTFFilter               bool                     `json:"htf_filter,omitempty"`                 // higher-timeframe trend filter
 	InvertSignal            bool                     `json:"invert_signal,omitempty"`              // HL perps/manual only: flip BUY<->SELL on a non-zero signal before execution (HOLD/0 is never flipped). Lets inverse variants reuse the same open/close refs. Composes with Direction — invert runs in the Go layer before direction interprets the resulting sign (e.g. direction="short" + invert_signal=true opens short on raw-BUY triggers, distinct from plain direction="short" which opens on raw-SELL). Rejected outside HL perps/manual.

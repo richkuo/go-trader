@@ -2698,3 +2698,31 @@ func TestCircuitBreakerEnabled_DefaultsToTrue(t *testing.T) {
 		t.Fatal("explicit true should report enabled")
 	}
 }
+
+func TestStrategyNotifyRatchetTriggersEnabled_TwoLayerResolve(t *testing.T) {
+	tr := true
+	f := false
+	globalFalse := &Config{NotifyRatchetTriggers: &f}
+	globalTrue := &Config{NotifyRatchetTriggers: &tr}
+	globalDefault := &Config{} // nil field → global resolves to true
+
+	cases := []struct {
+		name     string
+		sc       *StrategyConfig
+		cfg      *Config
+		expected bool
+	}{
+		{"nil strategy field inherits global default (true)", &StrategyConfig{}, globalDefault, true},
+		{"nil strategy field inherits global false", &StrategyConfig{}, globalFalse, false},
+		{"nil strategy field inherits global true", &StrategyConfig{}, globalTrue, true},
+		{"strategy false overrides global true", &StrategyConfig{NotifyRatchetTriggers: &f}, globalTrue, false},
+		{"strategy true overrides global false", &StrategyConfig{NotifyRatchetTriggers: &tr}, globalFalse, true},
+		{"nil receiver inherits global false", nil, globalFalse, false},
+		{"nil receiver inherits global default (true)", nil, globalDefault, true},
+	}
+	for _, c := range cases {
+		if got := c.sc.NotifyRatchetTriggersEnabled(c.cfg); got != c.expected {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.expected)
+		}
+	}
+}

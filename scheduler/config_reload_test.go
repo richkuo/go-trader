@@ -1508,3 +1508,68 @@ func TestStrategyRestartShape_CircuitBreakerOnlyChange(t *testing.T) {
 		t.Fatal("circuit_breaker set-vs-nil should not affect restart shape")
 	}
 }
+
+// #1118: per-strategy notify_ratchet_triggers is notification-only, so a change
+// must hot-reload even while a position is open (accepted, applied, logged).
+func TestApplyHotReloadConfig_NotifyRatchetTriggersWhileOpen(t *testing.T) {
+	falseVal, trueVal := false, true
+	base := func(nrt *bool) []StrategyConfig {
+		return []StrategyConfig{{
+			ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
+			Script:  "shared_scripts/check_hyperliquid.py",
+			Args:    []string{"momentum", "ETH", "1h", "--mode=paper"},
+			Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, Direction: DirectionLong,
+			NotifyRatchetTriggers: nrt,
+		}}
+	}
+	openState := func() *AppState {
+		return &AppState{Strategies: map[string]*StrategyState{
+			"hl-eth": {
+				ID: "hl-eth", Cash: 900,
+				RiskState: RiskState{MaxDrawdownPct: 10},
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1, Side: "long", AvgCost: 3000, Leverage: 2},
+				},
+			},
+		}}
+	}
+
+	// inherit-global (nil) → off while open: accepted, value applied, change logged.
+	cfg := minimalReloadConfig(base(nil))
+	next := minimalReloadConfig(base(&falseVal))
+	changes, err := applyHotReloadConfig(cfg, next, openState(), nil, nil)
+	if err != nil {
+		t.Fatalf("notify_ratchet_triggers nil->off while open should be hot-reloadable: %v", err)
+	}
+	if cfg.Strategies[0].NotifyRatchetTriggers == nil || *cfg.Strategies[0].NotifyRatchetTriggers {
+		t.Fatal("expected notify_ratchet_triggers=false after reload")
+	}
+	if !strings.Contains(strings.Join(changes, "\n"), "notify_ratchet_triggers") {
+		t.Fatalf("expected a notify_ratchet_triggers change entry, got %v", changes)
+	}
+
+	// off → on while open: accepted, value applied.
+	cfg = minimalReloadConfig(base(&falseVal))
+	next = minimalReloadConfig(base(&trueVal))
+	if _, err := applyHotReloadConfig(cfg, next, openState(), nil, nil); err != nil {
+		t.Fatalf("notify_ratchet_triggers off->on while open should be hot-reloadable: %v", err)
+	}
+	if cfg.Strategies[0].NotifyRatchetTriggers == nil || !*cfg.Strategies[0].NotifyRatchetTriggers {
+		t.Fatal("expected notify_ratchet_triggers=true after reload")
+	}
+}
+
+// #1118: a notify_ratchet_triggers-only change must not register in the restart
+// shape (else validateHotReloadCompatible would flag it as restart-required).
+func TestStrategyRestartShape_NotifyRatchetTriggersOnlyChange(t *testing.T) {
+	on, off := true, false
+	a := StrategyConfig{ID: "hl-a", NotifyRatchetTriggers: &on}
+	b := StrategyConfig{ID: "hl-a", NotifyRatchetTriggers: &off}
+	c := StrategyConfig{ID: "hl-a", NotifyRatchetTriggers: nil}
+	if !reflect.DeepEqual(strategyRestartShape(a), strategyRestartShape(b)) {
+		t.Fatal("notify_ratchet_triggers on/off change should not affect restart shape")
+	}
+	if !reflect.DeepEqual(strategyRestartShape(a), strategyRestartShape(c)) {
+		t.Fatal("notify_ratchet_triggers set-vs-nil should not affect restart shape")
+	}
+}
