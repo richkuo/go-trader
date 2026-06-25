@@ -34,7 +34,7 @@ func manualStrategyByID(cfg *Config, id string) (StrategyConfig, bool) {
 	return StrategyConfig{}, false
 }
 
-// Regime DISABLED: unchanged behavior — tiered_tp_atr_live + scalar 1.5× SL,
+// Regime DISABLED: unchanged behavior — tiered_tp_atr_live + scalar manual SL,
 // and no synthesized regime trail block.
 func TestManualDefault_RegimeDisabled_KeepsTieredTPATRLive(t *testing.T) {
 	dir := t.TempDir()
@@ -334,7 +334,7 @@ func TestManualDefault_ManualDefaultsTrailBlockNotAliased(t *testing.T) {
 // The no-naked invariant lives in the pure resolve-or-fallback decision: a
 // manual-open under trailing_tp_ratchet_regime must ALWAYS arm a strictly-positive
 // SL distance — the per-regime trail when the label resolves one, else the
-// protective 1.5×ATR fallback. (The subprocess regime read is split out into the
+// protective configured fallback. (The subprocess regime read is split out into the
 // impure resolveManualRatchetRegimeLabel; this tests the safety-critical branch.)
 func TestManualRatchetOpeningTrailOrFallback(t *testing.T) {
 	block := &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
@@ -345,21 +345,23 @@ func TestManualRatchetOpeningTrailOrFallback(t *testing.T) {
 		name       string
 		block      *RegimeATRBlock
 		label      string
+		fallback   float64
 		wantMult   float64
 		wantFellBk bool
 	}{
-		{"resolvable label → per-regime trail", block, "trending_up", 2.5, false},
-		{"resolvable ranging label → per-regime trail", block, "ranging", 1.0, false},
-		{"empty label (regime read failed) → fallback", block, "", defaultManualStopLossATRMult, true},
-		{"label with no configured trail → fallback", block, "trending_down", defaultManualStopLossATRMult, true},
-		{"nil block → fallback", nil, "trending_up", defaultManualStopLossATRMult, true},
+		{"resolvable label → per-regime trail", block, "trending_up", 2.25, 2.5, false},
+		{"resolvable ranging label → per-regime trail", block, "ranging", 2.25, 1.0, false},
+		{"empty label (regime read failed) → configured fallback", block, "", 2.25, 2.25, true},
+		{"label with no configured trail → configured fallback", block, "trending_down", 2.25, 2.25, true},
+		{"nil block → configured fallback", nil, "trending_up", 2.25, 2.25, true},
+		{"non-positive configured fallback → hardcoded fallback", block, "", 0, defaultManualStopLossATRMult, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			mult, fellBack := manualRatchetOpeningTrailOrFallback(tc.block, tc.label)
+			mult, fellBack := manualRatchetOpeningTrailOrFallback(tc.block, tc.label, tc.fallback)
 			if mult != tc.wantMult || fellBack != tc.wantFellBk {
-				t.Fatalf("manualRatchetOpeningTrailOrFallback(%v, %q) = (%g, %v), want (%g, %v)",
-					tc.block, tc.label, mult, fellBack, tc.wantMult, tc.wantFellBk)
+				t.Fatalf("manualRatchetOpeningTrailOrFallback(%v, %q, %g) = (%g, %v), want (%g, %v)",
+					tc.block, tc.label, tc.fallback, mult, fellBack, tc.wantMult, tc.wantFellBk)
 			}
 			// Invariant: the armed distance is NEVER <= 0 (never naked).
 			if mult <= 0 {

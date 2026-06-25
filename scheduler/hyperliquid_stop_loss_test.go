@@ -265,6 +265,54 @@ func TestRunHyperliquidTrailingStopUpdate_CancelThenPlaceArgs(t *testing.T) {
 	}
 }
 
+func TestRunHyperliquidTrailingStopUpdate_RatchetFallbackNormalizeWidensOnce(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	trail := 3.0
+	minMove := 0.25
+	sc := StrategyConfig{
+		ID: "hl-test", Platform: "hyperliquid", Type: "manual", Script: "shared_scripts/check_hyperliquid.py",
+		CloseStrategy: &StrategyRef{Name: trailingTPRatchetCloseName}, TrailingStopPct: &trail, TrailingStopMinMovePct: &minMove,
+	}
+	logger := silentStrategyLogger("hl-test")
+	defer logger.Close()
+
+	cases := []struct {
+		name           string
+		side           string
+		currentTrigger float64
+		wantTrigger    float64
+	}{
+		{"long fallback too tight", "long", 98, 97},
+		{"short fallback too tight", "short", 102, 103},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var called bool
+			var gotTrigger float64
+			runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				called = true
+				gotTrigger = triggerPx
+				return &HyperliquidStopLossUpdateResult{StopLossOID: 222, StopLossTriggerPx: triggerPx}, "", nil
+			}
+
+			_, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", tc.side, 0.5, &Position{AvgCost: 100}, 100, 100, tc.currentTrigger, 111, false, nil, logger)
+			if !ok || result != nil || called {
+				t.Fatalf("without marker expected no replace: ok=%v result=%+v called=%v", ok, result, called)
+			}
+
+			_, result, ok = runHyperliquidTrailingStopUpdate(sc, "ETH", tc.side, 0.5, &Position{AvgCost: 100, RatchetFallbackNormalizePending: true}, 100, 100, tc.currentTrigger, 111, false, nil, logger)
+			if !ok || result == nil || !called {
+				t.Fatalf("with marker expected widen replace: ok=%v result=%+v called=%v", ok, result, called)
+			}
+			if !approxEq(gotTrigger, tc.wantTrigger) {
+				t.Fatalf("replacement trigger = %v, want %v", gotTrigger, tc.wantTrigger)
+			}
+		})
+	}
+}
+
 func TestRunHyperliquidTrailingStopUpdate_DefersOnCancelFailure(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()

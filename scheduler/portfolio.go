@@ -92,6 +92,11 @@ type Position struct {
 	// 0 = never scaled in → callers fall back to AvgCost.
 	RiskAnchorPrice      float64 `json:"risk_anchor_price,omitempty"`
 	ScaleInResizePending bool    `json:"-"`
+	// RatchetFallbackNormalizePending is set when manual-open had to arm a
+	// trailing_tp_ratchet_regime position with the protective fallback distance
+	// because the live regime label was unavailable. The next trailing walker may
+	// widen exactly once to the configured regime trail, then clears this flag.
+	RatchetFallbackNormalizePending bool `json:"-"`
 }
 
 // riskAnchorPrice returns the price geometry that on-chain SL/TP triggers are

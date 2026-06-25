@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS positions (
     added_notional_usd REAL NOT NULL DEFAULT 0,
     risk_anchor_price REAL NOT NULL DEFAULT 0,
     scale_in_resize_pending INTEGER NOT NULL DEFAULT 0,
+    ratchet_fallback_normalize_pending INTEGER NOT NULL DEFAULT 0,
     open_profile TEXT NOT NULL DEFAULT '',
     direction_certified_at_open INTEGER NOT NULL DEFAULT 0,
     direction_certified_states_json TEXT NOT NULL DEFAULT '',
@@ -239,6 +240,7 @@ CREATE TABLE IF NOT EXISTS pending_manual_actions (
     realized_pnl REAL NOT NULL DEFAULT 0,
     is_full_close INTEGER NOT NULL DEFAULT 0,
     tp_oids_json TEXT NOT NULL DEFAULT '',
+    ratchet_fallback_normalize_pending INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 
@@ -474,6 +476,10 @@ func (sdb *StateDB) migrateSchema() error {
 		// #873: durable resize-pending flag so a restart between an add and the
 		// deferred trailing-SL re-size still grows the on-chain stop next cycle.
 		"ALTER TABLE positions ADD COLUMN scale_in_resize_pending INTEGER NOT NULL DEFAULT 0",
+		// #1121: durable one-shot marker so a manual-open ratchet fallback SL can
+		// widen once to the configured per-regime trail after the daemon stamps regime.
+		"ALTER TABLE positions ADD COLUMN ratchet_fallback_normalize_pending INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE pending_manual_actions ADD COLUMN ratchet_fallback_normalize_pending INTEGER NOT NULL DEFAULT 0",
 		// #954 gross PnL convention marker + fee provenance. pnl_gross=1 rows
 		// store the PRE-FEE realized PnL in realized_pnl with the deducted fee
 		// always stamped in exchange_fee; legacy rows (0) store net PnL and
@@ -1101,8 +1107,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	defer stmtStrat.Close()
 
-	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, tp_armed_tiers_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, regime, regime_windows_json, regime_pending_label, regime_pending_count, regime_applied_label, scale_in_count, last_add_price, added_notional_usd, risk_anchor_price, scale_in_resize_pending, open_profile, direction_certified_at_open, direction_certified_states_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, tp_armed_tiers_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, regime, regime_windows_json, regime_pending_label, regime_pending_count, regime_applied_label, scale_in_count, last_add_price, added_notional_usd, risk_anchor_price, scale_in_resize_pending, ratchet_fallback_normalize_pending, open_profile, direction_certified_at_open, direction_certified_states_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare position insert: %w", err)
 	}
@@ -1158,11 +1164,15 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			if pos.ScaleInResizePending {
 				scaleInResizePending = 1
 			}
+			ratchetFallbackNormalizePending := 0
+			if pos.RatchetFallbackNormalizePending {
+				ratchetFallbackNormalizePending = 1
+			}
 			directionCertifiedAtOpen := 0
 			if pos.DirectionCertifiedAtOpen {
 				directionCertifiedAtOpen = 1
 			}
-			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel, pos.ScaleInCount, pos.LastAddPrice, pos.AddedNotionalUSD, pos.RiskAnchorPrice, scaleInResizePending, pos.OpenProfile, directionCertifiedAtOpen, marshalStringMapJSON(pos.DirectionCertifiedStatesAtOpen)); err != nil {
+			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel, pos.ScaleInCount, pos.LastAddPrice, pos.AddedNotionalUSD, pos.RiskAnchorPrice, scaleInResizePending, ratchetFallbackNormalizePending, pos.OpenProfile, directionCertifiedAtOpen, marshalStringMapJSON(pos.DirectionCertifiedStatesAtOpen)); err != nil {
 				return fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
 			}
 		}
@@ -1581,7 +1591,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	}
 
 	// 3. Load positions for each strategy.
-	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, COALESCE(tp1_oid, 0) AS tp1_oid, COALESCE(tp2_oid, 0) AS tp2_oid, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(tp_armed_tiers_json, '') AS tp_armed_tiers_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(sl_adjusted_tiers_processed, 0) AS sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, COALESCE(regime, '') AS regime, COALESCE(regime_windows_json, '') AS regime_windows_json, COALESCE(regime_pending_label, '') AS regime_pending_label, COALESCE(regime_pending_count, 0) AS regime_pending_count, COALESCE(regime_applied_label, '') AS regime_applied_label, COALESCE(scale_in_count, 0) AS scale_in_count, COALESCE(last_add_price, 0) AS last_add_price, COALESCE(added_notional_usd, 0) AS added_notional_usd, COALESCE(risk_anchor_price, 0) AS risk_anchor_price, COALESCE(scale_in_resize_pending, 0) AS scale_in_resize_pending, COALESCE(open_profile, '') AS open_profile, COALESCE(direction_certified_at_open, 0) AS direction_certified_at_open, COALESCE(direction_certified_states_json, '') AS direction_certified_states_json FROM positions")
+	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, COALESCE(tp1_oid, 0) AS tp1_oid, COALESCE(tp2_oid, 0) AS tp2_oid, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(tp_armed_tiers_json, '') AS tp_armed_tiers_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(sl_adjusted_tiers_processed, 0) AS sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, COALESCE(regime, '') AS regime, COALESCE(regime_windows_json, '') AS regime_windows_json, COALESCE(regime_pending_label, '') AS regime_pending_label, COALESCE(regime_pending_count, 0) AS regime_pending_count, COALESCE(regime_applied_label, '') AS regime_applied_label, COALESCE(scale_in_count, 0) AS scale_in_count, COALESCE(last_add_price, 0) AS last_add_price, COALESCE(added_notional_usd, 0) AS added_notional_usd, COALESCE(risk_anchor_price, 0) AS risk_anchor_price, COALESCE(scale_in_resize_pending, 0) AS scale_in_resize_pending, COALESCE(ratchet_fallback_normalize_pending, 0) AS ratchet_fallback_normalize_pending, COALESCE(open_profile, '') AS open_profile, COALESCE(direction_certified_at_open, 0) AS direction_certified_at_open, COALESCE(direction_certified_states_json, '') AS direction_certified_states_json FROM positions")
 	if err != nil {
 		return nil, fmt.Errorf("load positions: %w", err)
 	}
@@ -1597,12 +1607,14 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		var slATRMult sql.NullFloat64
 		var postTPTrailingMult sql.NullFloat64
 		var scaleInResizePending int
+		var ratchetFallbackNormalizePending int
 		var directionCertifiedAtOpen int
 		var directionCertifiedStatesJSON string
-		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx, &tp1OID, &tp2OID, &tpOIDsJSON, &tpArmedTiersJSON, &slATRMult, &pos.TPTiersJSON, &pos.SLAdjustedTiersProcessed, &postTPTrailingMult, &pos.Regime, &regimeWindowsJSON, &pos.RegimePendingLabel, &pos.RegimePendingCount, &pos.RegimeAppliedLabel, &pos.ScaleInCount, &pos.LastAddPrice, &pos.AddedNotionalUSD, &pos.RiskAnchorPrice, &scaleInResizePending, &pos.OpenProfile, &directionCertifiedAtOpen, &directionCertifiedStatesJSON); err != nil {
+		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx, &tp1OID, &tp2OID, &tpOIDsJSON, &tpArmedTiersJSON, &slATRMult, &pos.TPTiersJSON, &pos.SLAdjustedTiersProcessed, &postTPTrailingMult, &pos.Regime, &regimeWindowsJSON, &pos.RegimePendingLabel, &pos.RegimePendingCount, &pos.RegimeAppliedLabel, &pos.ScaleInCount, &pos.LastAddPrice, &pos.AddedNotionalUSD, &pos.RiskAnchorPrice, &scaleInResizePending, &ratchetFallbackNormalizePending, &pos.OpenProfile, &directionCertifiedAtOpen, &directionCertifiedStatesJSON); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
 		pos.ScaleInResizePending = scaleInResizePending != 0
+		pos.RatchetFallbackNormalizePending = ratchetFallbackNormalizePending != 0
 		pos.DirectionCertifiedAtOpen = directionCertifiedAtOpen != 0
 		pos.DirectionCertifiedStatesAtOpen = parseStringMapJSON(directionCertifiedStatesJSON)
 		pos.OpenedAt = parseTime(openedAtStr)
@@ -2012,22 +2024,23 @@ func (sdb *StateDB) QueryTradingViewExportTrades(strategyIDs []string) ([]Trade,
 // written by the manual-open / manual-close CLI and drained by the scheduler
 // at the top of each cycle (#569).
 type PendingManualAction struct {
-	ID                int64
-	StrategyID        string
-	Action            string // "open" | "close"
-	Symbol            string
-	Side              string
-	Quantity          float64
-	FillPrice         float64
-	FillFee           float64
-	ExchangeOrderID   string
-	StopLossOID       int64
-	StopLossTriggerPx float64
-	EntryATR          float64
-	RealizedPnL       float64
-	IsFullClose       bool    // close-only: operator/scheduler intent flag (avoids tolerance heuristics on the drain side)
-	TPOIDs            []int64 // open-only: TP OIDs placed inline at manual-open time (#632)
-	CreatedAt         time.Time
+	ID                              int64
+	StrategyID                      string
+	Action                          string // "open" | "close"
+	Symbol                          string
+	Side                            string
+	Quantity                        float64
+	FillPrice                       float64
+	FillFee                         float64
+	ExchangeOrderID                 string
+	StopLossOID                     int64
+	StopLossTriggerPx               float64
+	EntryATR                        float64
+	RealizedPnL                     float64
+	IsFullClose                     bool    // close-only: operator/scheduler intent flag (avoids tolerance heuristics on the drain side)
+	TPOIDs                          []int64 // open-only: TP OIDs placed inline at manual-open time (#632)
+	RatchetFallbackNormalizePending bool    // open-only: one-shot normalize marker for fallback ratchet SL (#1121)
+	CreatedAt                       time.Time
 }
 
 // InsertPendingManualAction enqueues a manual-open or manual-close action for
@@ -2040,12 +2053,16 @@ func (sdb *StateDB) InsertPendingManualAction(a PendingManualAction) error {
 	if a.IsFullClose {
 		isFullClose = 1
 	}
+	ratchetFallbackNormalizePending := 0
+	if a.RatchetFallbackNormalizePending {
+		ratchetFallbackNormalizePending = 1
+	}
 	_, err := sdb.db.Exec(`INSERT INTO pending_manual_actions
-		(strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, is_full_close, tp_oids_json, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, is_full_close, tp_oids_json, ratchet_fallback_normalize_pending, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.StrategyID, a.Action, a.Symbol, a.Side, a.Quantity, a.FillPrice, a.FillFee,
 		a.ExchangeOrderID, a.StopLossOID, a.StopLossTriggerPx, a.EntryATR, a.RealizedPnL,
-		isFullClose, marshalTPOIDsJSON(a.TPOIDs), formatTime(a.CreatedAt))
+		isFullClose, marshalTPOIDsJSON(a.TPOIDs), ratchetFallbackNormalizePending, formatTime(a.CreatedAt))
 	return err
 }
 
@@ -2054,7 +2071,7 @@ func (sdb *StateDB) LoadPendingManualActions() ([]PendingManualAction, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, nil
 	}
-	rows, err := sdb.db.Query(`SELECT id, strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, COALESCE(is_full_close, 0) AS is_full_close, COALESCE(tp_oids_json, '') AS tp_oids_json, created_at FROM pending_manual_actions ORDER BY id`)
+	rows, err := sdb.db.Query(`SELECT id, strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, COALESCE(is_full_close, 0) AS is_full_close, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(ratchet_fallback_normalize_pending, 0) AS ratchet_fallback_normalize_pending, created_at FROM pending_manual_actions ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("load pending manual actions: %w", err)
 	}
@@ -2065,11 +2082,13 @@ func (sdb *StateDB) LoadPendingManualActions() ([]PendingManualAction, error) {
 		var createdStr string
 		var isFullCloseInt int
 		var tpOIDsJSON string
-		if err := rows.Scan(&a.ID, &a.StrategyID, &a.Action, &a.Symbol, &a.Side, &a.Quantity, &a.FillPrice, &a.FillFee, &a.ExchangeOrderID, &a.StopLossOID, &a.StopLossTriggerPx, &a.EntryATR, &a.RealizedPnL, &isFullCloseInt, &tpOIDsJSON, &createdStr); err != nil {
+		var ratchetFallbackNormalizePending int
+		if err := rows.Scan(&a.ID, &a.StrategyID, &a.Action, &a.Symbol, &a.Side, &a.Quantity, &a.FillPrice, &a.FillFee, &a.ExchangeOrderID, &a.StopLossOID, &a.StopLossTriggerPx, &a.EntryATR, &a.RealizedPnL, &isFullCloseInt, &tpOIDsJSON, &ratchetFallbackNormalizePending, &createdStr); err != nil {
 			return nil, fmt.Errorf("scan pending manual action: %w", err)
 		}
 		a.IsFullClose = isFullCloseInt != 0
 		a.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
+		a.RatchetFallbackNormalizePending = ratchetFallbackNormalizePending != 0
 		a.CreatedAt = parseTime(createdStr)
 		actions = append(actions, a)
 	}

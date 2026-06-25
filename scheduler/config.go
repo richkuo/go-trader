@@ -177,7 +177,7 @@ type CloseDefaultsMap map[string]map[string]interface{}
 // globally, including for manual strategies (#696).
 type ManualDefaultsConfig struct {
 	MarginUSD       *float64       `json:"margin_usd,omitempty"`         // implicit --margin (USD) when manual-open is invoked without --size/--notional/--margin (live mode only; --record-only still requires --size). Nil → 50.0.
-	StopLossATRMult *float64       `json:"stop_loss_atr_mult,omitempty"` // implicit stop_loss_atr_mult applied to type=manual strategies that omit all five HL stop fields. Nil → 1.5; explicit 0 opts manual strategies out without affecting non-manual perps.
+	StopLossATRMult *float64       `json:"stop_loss_atr_mult,omitempty"` // implicit stop_loss_atr_mult applied to type=manual strategies that omit all five HL stop fields. Nil → 2.0; explicit 0 opts scalar manual strategies out without affecting non-manual perps. Ratchet fallback ignores 0 to preserve no-naked protection.
 	Side            string         `json:"side,omitempty"`               // implicit --side for manual-open. Lowercase "long" or "short". Empty → "long".
 	TPTiers         []ManualTPTier `json:"tp_tiers,omitempty"`           // implicit `tiers` params for tiered_tp_atr / tiered_tp_atr_live close strategies on type=manual. Nil/omitted → [{2.0, 0.5}, {3.0, 1.0}]; empty array is rejected so operators can't accidentally fall back to defaults by zeroing the list.
 
@@ -222,9 +222,21 @@ func (c *Config) resolveManualSide() string {
 
 // resolveManualStopLossATRMult returns the implicit stop_loss_atr_mult for
 // type=manual strategies that omit all five HL stop fields. Operator config
-// wins; the 1.5× hardcoded fallback is preserved when absent.
+// wins; the 2.0× hardcoded fallback is preserved when absent.
 func (c *Config) resolveManualStopLossATRMult() float64 {
 	if c != nil && c.ManualDefaults != nil && c.ManualDefaults.StopLossATRMult != nil {
+		return *c.ManualDefaults.StopLossATRMult
+	}
+	return defaultManualStopLossATRMult
+}
+
+// resolveManualRatchetFallbackATRMult returns the protective fallback used when
+// manual-open cannot resolve the current per-regime ratchet trail. It is always
+// strictly positive so a regime-read failure cannot intentionally or accidentally
+// open a naked manual position; manual_defaults.stop_loss_atr_mult=0 only opts out
+// the scalar manual default.
+func (c *Config) resolveManualRatchetFallbackATRMult() float64 {
+	if c != nil && c.ManualDefaults != nil && c.ManualDefaults.StopLossATRMult != nil && *c.ManualDefaults.StopLossATRMult > 0 {
 		return *c.ManualDefaults.StopLossATRMult
 	}
 	return defaultManualStopLossATRMult
