@@ -679,6 +679,31 @@ func buildRatchetTriggerAlert(sc StrategyConfig, pos *Position, symbol, side, re
 	return a
 }
 
+// manualCloseEvaluatorDriftWarned dedupes the #1115 close-evaluator drift alert
+// to once per (strategy, symbol) per process — keyed "id|symbol". Never reset:
+// the operator only needs to see it once after the upgrade+restart that flipped
+// the default; pinning close_strategy and restarting re-derives the tiered close
+// (no drift, no warning).
+var manualCloseEvaluatorDriftWarned sync.Map
+
+// manualCloseEvaluatorDriftedFromTPs reports whether an open manual position was
+// opened under a tiered-TP close evaluator (it carries resting on-chain TP OIDs)
+// while the strategy's CURRENT close evaluator is the trailing ratchet, which
+// places no on-chain TPs (#1115). This is the cross-evaluator drift that occurs
+// when the manual close DEFAULT flips from tiered_tp_atr_live to
+// trailing_tp_ratchet_regime across a binary upgrade + restart for a position
+// opened pre-upgrade: SL ownership moves to the regime trail and the
+// previously-placed TP1/TP2 orders are no longer managed by the close evaluator.
+// They still rest on-chain (reduce-only) and are cancelled on a full / manual
+// close (extraCancelOIDs) — and auto-cancel when the SL flattens the position —
+// but can fire mid-life under what is now a let-it-ride config, so the operator
+// must be alerted. A ratchet-opened position never carries TP OIDs (the ratchet
+// path skips inline TP placement), so this reliably keys off the tiered-open
+// fingerprint. Pure so the detection is unit-tested.
+func manualCloseEvaluatorDriftedFromTPs(sc StrategyConfig, pos *Position) bool {
+	return pos != nil && len(pos.TPOIDs) > 0 && strategyUsesTrailingTPRatchetClose(sc)
+}
+
 func trailingRatchetRulesEqualForReload(a, b StrategyConfig) bool {
 	return trailingRatchetFingerprint(a) == trailingRatchetFingerprint(b)
 }

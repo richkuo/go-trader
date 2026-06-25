@@ -2221,6 +2221,29 @@ func main() {
 							stampPositionRegimeIfOpened(stratState, sc.Symbol, manualRegime, sc, cfg.Regime)
 							mu.Unlock()
 						}
+						// #1115: alert (once per strategy/symbol) when an open manual
+						// position drifted across a close-evaluator default flip — opened
+						// under a tiered-TP close (resting TP OIDs) but the strategy now
+						// resolves to the ratchet (no on-chain TP). The SL stays protected
+						// (regime trail re-arms), but the stale TPs are no longer managed
+						// by the close evaluator, so surface it rather than silently
+						// changing the position's protection surface across a reload.
+						mu.RLock()
+						driftPos := stratState.Positions[sc.Symbol]
+						drifted := manualCloseEvaluatorDriftedFromTPs(sc, driftPos)
+						var staleTPOIDs []int64
+						if drifted {
+							staleTPOIDs = cloneInt64s(driftPos.TPOIDs)
+						}
+						mu.RUnlock()
+						if drifted {
+							if _, loaded := manualCloseEvaluatorDriftWarned.LoadOrStore(sc.ID+"|"+sc.Symbol, struct{}{}); !loaded {
+								logger.Error("manual close-evaluator drift for %s/%s: opened with tiered on-chain TP OIDs=%v but close now resolves to %s (no on-chain TP)", sc.ID, sc.Symbol, staleTPOIDs, trailingTPRatchetRegimeCloseName)
+								if notifier != nil {
+									notifier.SendOwnerDM(fmt.Sprintf("**MANUAL CLOSE-EVALUATOR DRIFT** [%s] %s was opened under a tiered-TP close (resting TP OIDs=%v) but the strategy now resolves to %s, which places no on-chain TPs. The stop-loss is still protected (the regime trail re-arms), but those TP orders are no longer managed by the close evaluator — they still rest on-chain and cancel on a full/manual close, but can fire mid-position under this let-it-ride config. Pin close_strategy=tiered_tp_atr_live and restart to keep the original exit, or cancel the stale TPs on the HL UI to fully adopt the ratchet.", sc.ID, sc.Symbol, staleTPOIDs, trailingTPRatchetRegimeCloseName))
+								}
+							}
+						}
 						if pos != nil && hyperliquidIsLive(sc.Args) {
 							// Manual ratchet + trailing walker run live-only by design
 							// (gated on hyperliquidIsLive): manual is a live trading

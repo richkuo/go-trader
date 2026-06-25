@@ -313,16 +313,18 @@ func runManualOpen(args []string) int {
 	// fetched and stamped for the ratchet path.
 	if effectiveATRMult == 0 && !*recordOnly && strategyUsesTrailingTPRatchetClose(sc) &&
 		sc.TrailingStopATRRegime != nil && sc.TrailingStopATRRegime.IsConfigured() {
-		if mult, label, ok := resolveManualRatchetRegimeOpeningTrail(sc, cfg, notifier); ok {
-			effectiveATRMult = mult
-			fmt.Fprintf(os.Stderr, "[manual-open] %s %s: regime=%s → initial trailing SL at %.4g×ATR\n", strategyID, sc.Symbol, label, mult)
+		// Impure step: read the current regime label (spawns the regime subprocess).
+		label := resolveManualRatchetRegimeLabel(sc, cfg, notifier)
+		// Pure step (unit-tested): resolve the per-regime opening trail or fall back
+		// to a protective SL — never returns <= 0, so the position is never armed
+		// naked. The daemon's trailing walker re-pins to the per-regime trail next
+		// cycle, so a CLI-vs-daemon regime mismatch (or a fallback) self-heals.
+		mult, fellBack := manualRatchetOpeningTrailOrFallback(sc.TrailingStopATRRegime, label)
+		effectiveATRMult = mult
+		if fellBack {
+			warnNotifier(notifier, fmt.Sprintf("[manual-open] %s %s: could not resolve the live regime trail (label=%q); arming a fallback SL at %.4g×ATR (daemon re-pins per-regime next cycle)", strategyID, sc.Symbol, label, effectiveATRMult))
 		} else {
-			// Never leave a ratchet-regime position naked: the live regime could
-			// not be resolved (regime check failed / no trail for the current
-			// label), so arm a protective fallback SL inline. The daemon's trailing
-			// walker re-pins it to the per-regime trail on the next cycle.
-			effectiveATRMult = defaultManualStopLossATRMult
-			warnNotifier(notifier, fmt.Sprintf("[manual-open] %s %s: could not resolve the live regime for the initial ratchet trail; arming a fallback SL at %.4g×ATR (daemon re-pins per-regime next cycle)", strategyID, sc.Symbol, effectiveATRMult))
+			fmt.Fprintf(os.Stderr, "[manual-open] %s %s: regime=%s → initial trailing SL at %.4g×ATR\n", strategyID, sc.Symbol, label, mult)
 		}
 	}
 
@@ -1267,42 +1269,48 @@ func openTradeSide(posSide string) string {
 	return "buy"
 }
 
-// resolveManualRatchetRegimeOpeningTrail resolves the per-regime opening trail
-// multiple for a type=manual strategy whose close evaluator is
-// trailing_tp_ratchet_regime (#1115). It runs the regime check to determine the
-// current ATR-window regime label, then indexes the strategy's (already-resolved)
-// trailing_stop_atr_regime block. The returned mult is the inline initial-trail
-// distance armed at manual-open so the position opens with an SL — closing the
-// naked window that would otherwise last until the daemon's trailing walker first
-// runs. The daemon stamps its own regime at adoption and the walker re-pins the
-// trail from pos.Regime next cycle, so a transient mismatch between this CLI-time
-// regime read and the daemon's self-heals; the only job here is a protected open.
-// Returns (0, "", false) when the strategy doesn't use the regime ratchet, regime
-// is disabled, the check fails, or the current label has no configured trail —
-// callers arm a protective fallback rather than leave the position naked.
-func resolveManualRatchetRegimeOpeningTrail(sc StrategyConfig, cfg *Config, notifier *MultiNotifier) (float64, string, bool) {
+// resolveManualRatchetRegimeLabel runs the regime check at manual-open CLI time
+// and returns the current ATR-window regime label for a type=manual strategy
+// whose close evaluator is trailing_tp_ratchet_regime (#1115). Impure — it spawns
+// the regime subprocess (runHyperliquidCheck) with a flat posCtx (the position
+// isn't open yet, so this reads the current/entry regime). Returns "" when the
+// strategy isn't a regime ratchet, regime is disabled, or the check fails; the
+// pure manualRatchetOpeningTrailOrFallback below turns that into a protective
+// fallback so the open is never naked.
+func resolveManualRatchetRegimeLabel(sc StrategyConfig, cfg *Config, notifier *MultiNotifier) string {
 	if cfg == nil || cfg.Regime == nil || !cfg.Regime.Enabled {
-		return 0, "", false
+		return ""
 	}
 	if !strategyUsesTrailingTPRatchetClose(sc) || sc.TrailingStopATRRegime == nil || !sc.TrailingStopATRRegime.IsConfigured() {
-		return 0, "", false
+		return ""
 	}
 	logger := &StrategyLogger{stratID: sc.ID, writer: os.Stderr}
 	posCtx := positionCtxFromPosition(nil) // flat at open: read the current (entry) regime
 	result, _, _, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, notifier, logger)
 	if !ok || result == nil {
-		return 0, "", false
+		return ""
 	}
 	payload := regimePayloadValue(result.Regime)
-	label := payload.Label(resolveStrategyRegimeWindow(sc, "atr", cfg.Regime), cfg.Regime)
-	if strings.TrimSpace(label) == "" {
-		return 0, "", false
+	return strings.TrimSpace(payload.Label(resolveStrategyRegimeWindow(sc, "atr", cfg.Regime), cfg.Regime))
+}
+
+// manualRatchetOpeningTrailOrFallback resolves the inline opening-trail multiple
+// armed at manual-open for a trailing_tp_ratchet_regime manual (#1115). It NEVER
+// returns <= 0: the per-regime opening trail (fellBack=false) when the resolved
+// regime label indexes a positive distance in the block, otherwise the protective
+// defaultManualStopLossATRMult fallback (fellBack=true) so the position is never
+// armed naked. Pure (no subprocess) so the safety-critical resolve-vs-fallback
+// branch is unit-tested directly — the regime label is resolved upstream by the
+// impure resolveManualRatchetRegimeLabel. Covers: empty label (regime read
+// failed) → fallback; label with no/zero configured trail → fallback; good label
+// → per-regime trail.
+func manualRatchetOpeningTrailOrFallback(block *RegimeATRBlock, label string) (float64, bool) {
+	if block != nil && strings.TrimSpace(label) != "" {
+		if mult, ok := resolveRegimeATR(*block, label); ok && mult > 0 {
+			return mult, false
+		}
 	}
-	mult, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, label)
-	if !ok || mult <= 0 {
-		return 0, label, false
-	}
-	return mult, label, true
+	return defaultManualStopLossATRMult, true
 }
 
 // runManualCloseEval runs the close-evaluator loop for a single type=manual

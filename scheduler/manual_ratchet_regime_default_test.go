@@ -330,3 +330,65 @@ func TestManualDefault_ManualDefaultsTrailBlockNotAliased(t *testing.T) {
 		}
 	}
 }
+
+// The no-naked invariant lives in the pure resolve-or-fallback decision: a
+// manual-open under trailing_tp_ratchet_regime must ALWAYS arm a strictly-positive
+// SL distance — the per-regime trail when the label resolves one, else the
+// protective 1.5×ATR fallback. (The subprocess regime read is split out into the
+// impure resolveManualRatchetRegimeLabel; this tests the safety-critical branch.)
+func TestManualRatchetOpeningTrailOrFallback(t *testing.T) {
+	block := &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
+		"trending_up": {ATR: 2.5},
+		"ranging":     {ATR: 1.0},
+	}}
+	cases := []struct {
+		name       string
+		block      *RegimeATRBlock
+		label      string
+		wantMult   float64
+		wantFellBk bool
+	}{
+		{"resolvable label → per-regime trail", block, "trending_up", 2.5, false},
+		{"resolvable ranging label → per-regime trail", block, "ranging", 1.0, false},
+		{"empty label (regime read failed) → fallback", block, "", defaultManualStopLossATRMult, true},
+		{"label with no configured trail → fallback", block, "trending_down", defaultManualStopLossATRMult, true},
+		{"nil block → fallback", nil, "trending_up", defaultManualStopLossATRMult, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mult, fellBack := manualRatchetOpeningTrailOrFallback(tc.block, tc.label)
+			if mult != tc.wantMult || fellBack != tc.wantFellBk {
+				t.Fatalf("manualRatchetOpeningTrailOrFallback(%v, %q) = (%g, %v), want (%g, %v)",
+					tc.block, tc.label, mult, fellBack, tc.wantMult, tc.wantFellBk)
+			}
+			// Invariant: the armed distance is NEVER <= 0 (never naked).
+			if mult <= 0 {
+				t.Fatalf("armed mult = %g, must be strictly positive (no-naked invariant)", mult)
+			}
+		})
+	}
+}
+
+// A position opened under a tiered-TP close (resting TP OIDs) whose strategy now
+// resolves to the trailing ratchet is the #1115 close-evaluator drift that the
+// daemon must alert on. A ratchet-opened position (no TP OIDs) and a still-tiered
+// strategy must NOT trip it.
+func TestManualCloseEvaluatorDriftedFromTPs(t *testing.T) {
+	ratchet := StrategyConfig{CloseStrategy: &StrategyRef{Name: trailingTPRatchetRegimeCloseName}}
+	tiered := StrategyConfig{CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"}}
+	withTPs := &Position{TPOIDs: []int64{111, 222}}
+	noTPs := &Position{}
+
+	if !manualCloseEvaluatorDriftedFromTPs(ratchet, withTPs) {
+		t.Error("ratchet strategy + resting TP OIDs must report drift")
+	}
+	if manualCloseEvaluatorDriftedFromTPs(ratchet, noTPs) {
+		t.Error("ratchet strategy + no TP OIDs (ratchet-opened) must NOT report drift")
+	}
+	if manualCloseEvaluatorDriftedFromTPs(tiered, withTPs) {
+		t.Error("still-tiered strategy must NOT report drift (no evaluator change)")
+	}
+	if manualCloseEvaluatorDriftedFromTPs(ratchet, nil) {
+		t.Error("nil position must NOT report drift")
+	}
+}
