@@ -802,7 +802,12 @@ func validateRegimeATRConfig(cfg *Config) []string {
 				if sc.TrailingStopATRMult != nil {
 					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is mutually exclusive with trailing_stop_atr_mult", prefix))
 				}
-				if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
+				// #1111: IsConfigured (raw-aware), NOT !IsZero() — the trailing block
+				// is resolved further below in the `if sc.TrailingStopATRRegime != nil`
+				// branch, so here it is still unresolved and IsZero() would report it
+				// absent, silently skipping this (sole) mutex check when both regime
+				// stops are set.
+				if sc.TrailingStopATRRegime.IsConfigured() {
 					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is mutually exclusive with trailing_stop_atr_regime", prefix))
 				}
 				if sc.Platform != "hyperliquid" || sc.Type != "perps" {

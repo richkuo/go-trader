@@ -1854,7 +1854,11 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			}
 			// #870: the regime ratchet owns its trail via trailing_stop_atr_regime
 			// rather than the scalar trailing_stop_atr_mult, so accept that too.
-			regimeTrail := sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero()
+			// #1111: use IsConfigured (raw-aware), NOT !IsZero() — this check runs
+			// before validateRegimeATRConfig resolves the raw block, and IsZero()
+			// reports true on an unresolved-but-configured block (see its doc), so
+			// !IsZero() would wrongly reject a strategy that did set the regime trail.
+			regimeTrail := sc.TrailingStopATRRegime.IsConfigured()
 			if fixedTrailingPct <= 0 && atrMult <= 0 && !regimeTrail {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct requires trailing_stop_pct > 0, trailing_stop_atr_mult > 0, or trailing_stop_atr_regime", prefix))
 			}
