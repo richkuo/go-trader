@@ -303,6 +303,29 @@ func runManualOpen(args []string) int {
 		effectiveATRMult = *sc.StopLossATRMult
 	}
 
+	// #1115: a manual strategy whose close defaults to (or is set to) the regime
+	// ratchet carries no scalar stop_loss_atr_mult (the trailing_stop_atr_regime
+	// block owns the trail), so effectiveATRMult is 0 above. Resolve the per-regime
+	// opening trail at the current regime and feed it to the inline SL arming below
+	// — this is the difference between opening protected and opening NAKED until the
+	// daemon's trailing walker first runs (one strategy interval later). Resolving
+	// before the ATR-fetch block also flips needsATRProtection on so EntryATR is
+	// fetched and stamped for the ratchet path.
+	if effectiveATRMult == 0 && !*recordOnly && strategyUsesTrailingTPRatchetClose(sc) &&
+		sc.TrailingStopATRRegime != nil && sc.TrailingStopATRRegime.IsConfigured() {
+		if mult, label, ok := resolveManualRatchetRegimeOpeningTrail(sc, cfg, notifier); ok {
+			effectiveATRMult = mult
+			fmt.Fprintf(os.Stderr, "[manual-open] %s %s: regime=%s → initial trailing SL at %.4g×ATR\n", strategyID, sc.Symbol, label, mult)
+		} else {
+			// Never leave a ratchet-regime position naked: the live regime could
+			// not be resolved (regime check failed / no trail for the current
+			// label), so arm a protective fallback SL inline. The daemon's trailing
+			// walker re-pins it to the per-regime trail on the next cycle.
+			effectiveATRMult = defaultManualStopLossATRMult
+			warnNotifier(notifier, fmt.Sprintf("[manual-open] %s %s: could not resolve the live regime for the initial ratchet trail; arming a fallback SL at %.4g×ATR (daemon re-pins per-regime next cycle)", strategyID, sc.Symbol, effectiveATRMult))
+		}
+	}
+
 	// When --atr is omitted, fetch ATR from the same OHLCV/period strategy opens
 	// see via stampEntryATRIfOpened (#689). On fetch failure, fall back to the
 	// leverage-aware heuristic (0.1*fillPrice/leverage = ~10% margin risk at 1× ATR).
@@ -1242,6 +1265,44 @@ func openTradeSide(posSide string) string {
 		return "sell"
 	}
 	return "buy"
+}
+
+// resolveManualRatchetRegimeOpeningTrail resolves the per-regime opening trail
+// multiple for a type=manual strategy whose close evaluator is
+// trailing_tp_ratchet_regime (#1115). It runs the regime check to determine the
+// current ATR-window regime label, then indexes the strategy's (already-resolved)
+// trailing_stop_atr_regime block. The returned mult is the inline initial-trail
+// distance armed at manual-open so the position opens with an SL — closing the
+// naked window that would otherwise last until the daemon's trailing walker first
+// runs. The daemon stamps its own regime at adoption and the walker re-pins the
+// trail from pos.Regime next cycle, so a transient mismatch between this CLI-time
+// regime read and the daemon's self-heals; the only job here is a protected open.
+// Returns (0, "", false) when the strategy doesn't use the regime ratchet, regime
+// is disabled, the check fails, or the current label has no configured trail —
+// callers arm a protective fallback rather than leave the position naked.
+func resolveManualRatchetRegimeOpeningTrail(sc StrategyConfig, cfg *Config, notifier *MultiNotifier) (float64, string, bool) {
+	if cfg == nil || cfg.Regime == nil || !cfg.Regime.Enabled {
+		return 0, "", false
+	}
+	if !strategyUsesTrailingTPRatchetClose(sc) || sc.TrailingStopATRRegime == nil || !sc.TrailingStopATRRegime.IsConfigured() {
+		return 0, "", false
+	}
+	logger := &StrategyLogger{stratID: sc.ID, writer: os.Stderr}
+	posCtx := positionCtxFromPosition(nil) // flat at open: read the current (entry) regime
+	result, _, _, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, notifier, logger)
+	if !ok || result == nil {
+		return 0, "", false
+	}
+	payload := regimePayloadValue(result.Regime)
+	label := payload.Label(resolveStrategyRegimeWindow(sc, "atr", cfg.Regime), cfg.Regime)
+	if strings.TrimSpace(label) == "" {
+		return 0, "", false
+	}
+	mult, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, label)
+	if !ok || mult <= 0 {
+		return 0, label, false
+	}
+	return mult, label, true
 }
 
 // runManualCloseEval runs the close-evaluator loop for a single type=manual

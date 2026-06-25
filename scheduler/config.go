@@ -180,6 +180,16 @@ type ManualDefaultsConfig struct {
 	StopLossATRMult *float64       `json:"stop_loss_atr_mult,omitempty"` // implicit stop_loss_atr_mult applied to type=manual strategies that omit all five HL stop fields. Nil → 1.5; explicit 0 opts manual strategies out without affecting non-manual perps.
 	Side            string         `json:"side,omitempty"`               // implicit --side for manual-open. Lowercase "long" or "short". Empty → "long".
 	TPTiers         []ManualTPTier `json:"tp_tiers,omitempty"`           // implicit `tiers` params for tiered_tp_atr / tiered_tp_atr_live close strategies on type=manual. Nil/omitted → [{2.0, 0.5}, {3.0, 1.0}]; empty array is rejected so operators can't accidentally fall back to defaults by zeroing the list.
+
+	// #1115: implicit per-regime opening trail / SL block applied to type=manual
+	// strategies that DEFAULT to trailing_tp_ratchet_regime (regime enabled, no
+	// explicit close_strategy). Omitted → a use_defaults baseline keyed to the
+	// strategy's active classifier vocabulary; an explicit block lets operators
+	// tune the per-regime trail widths. Resolved per-strategy at validateConfig
+	// against that strategy's classifier labels (never resolved standalone, so a
+	// malformed block surfaces its error only on a strategy that actually adopts
+	// it). Mirrors the stop_loss_atr_mult / tp_tiers knobs above.
+	TrailingStopATRRegime *RegimeATRBlock `json:"trailing_stop_atr_regime,omitempty"`
 }
 
 // ManualTPTier is one entry of ManualDefaultsConfig.TPTiers. Matches the JSON
@@ -239,6 +249,84 @@ func (c *Config) resolveManualTPTiers() []interface{} {
 		map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
 		map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
 	}
+}
+
+// resolveManualRatchetRegimeTrailBlock decides whether a type=manual strategy
+// with no explicit close_strategy should default to trailing_tp_ratchet_regime
+// (#1115) and, if so, returns the per-regime opening trail / SL block to attach.
+// It returns (block, true) only when (a) regime detection is enabled and (b)
+// every label in the strategy's active ATR-window classifier vocabulary resolves
+// to a default opening trail — otherwise (nil, false), so the caller keeps the
+// historical tiered_tp_atr_live default and a regime-less or unmappable config is
+// unchanged. The returned block is fresh per call (its raw shape is resolved
+// per-strategy during validateConfig, which mutates UseDefaults/TrendRegime), so
+// the caller can safely assign it to one strategy's sc.TrailingStopATRRegime
+// without aliasing another's.
+func (c *Config) resolveManualRatchetRegimeTrailBlock(sc StrategyConfig) (*RegimeATRBlock, bool) {
+	if c == nil || c.Regime == nil || !c.Regime.Enabled {
+		return nil, false
+	}
+	// Honor explicit operator stop-field overrides: trailing_tp_ratchet_regime
+	// forbids every scalar/regime stop field, so if the operator set one (with no
+	// close_strategy) selecting the ratchet would turn a previously-valid config
+	// into a validation error. Fall back to tiered_tp_atr_live (compatible with a
+	// scalar stop) so their intent is preserved. Mirrors the manual scalar-SL
+	// default predicate below. IsConfigured() is the raw-aware check (this runs
+	// before ResolveSurface populates the typed regime fields, review #735.1).
+	if sc.StopLossATRMult != nil || sc.StopLossPct != nil || sc.StopLossMarginPct != nil ||
+		sc.TrailingStopPct != nil || sc.TrailingStopATRMult != nil ||
+		sc.StopLossATRRegime.IsConfigured() || sc.TrailingStopATRRegime.IsConfigured() {
+		return nil, false
+	}
+	labels := regimeLabelsForStrategyWindow(sc, c.Regime, "atr")
+	if len(labels) == 0 {
+		return nil, false
+	}
+	// Operator override: manual_defaults.trailing_stop_atr_regime supplies the
+	// per-regime opening trail (mirrors the stop_loss_atr_mult / tp_tiers knobs).
+	// Clone its raw shape so each adopting strategy resolves an independent copy.
+	if c.ManualDefaults != nil && c.ManualDefaults.TrailingStopATRRegime.IsConfigured() {
+		if block := cloneRegimeATRBlock(c.ManualDefaults.TrailingStopATRRegime); block != nil {
+			return block, true
+		}
+	}
+	// Default: synthesize a use_defaults block, but only when every active label
+	// maps onto the baseline opening-trail family — else the ratchet would carry
+	// a per-regime hole and we must not silently default into an un-resolvable
+	// close (fail back to tiered_tp_atr_live instead).
+	for _, label := range labels {
+		if _, ok := mapRegimeToBaselineFamily(regimeATRDefaults.Trailing, label); !ok {
+			return nil, false
+		}
+	}
+	return &RegimeATRBlock{raw: map[string]interface{}{"use_defaults": true}}, true
+}
+
+// cloneRegimeATRBlock deep-copies a RegimeATRBlock so an operator-supplied
+// manual_defaults block can be attached to multiple strategies independently
+// (#1115). The raw shape is the source of truth before validateConfig resolves
+// it, so it is JSON-round-tripped; the typed fields are copied too for blocks
+// that were already resolved. Returns nil for a nil input.
+func cloneRegimeATRBlock(b *RegimeATRBlock) *RegimeATRBlock {
+	if b == nil {
+		return nil
+	}
+	out := &RegimeATRBlock{UseDefaults: b.UseDefaults}
+	if b.raw != nil {
+		if blob, err := json.Marshal(b.raw); err == nil {
+			var cp map[string]interface{}
+			if json.Unmarshal(blob, &cp) == nil {
+				out.raw = cp
+			}
+		}
+	}
+	if len(b.TrendRegime) > 0 {
+		out.TrendRegime = make(map[string]RegimeATREntry, len(b.TrendRegime))
+		for k, v := range b.TrendRegime {
+			out.TrendRegime[k] = v
+		}
+	}
+	return out
 }
 
 // NotifyTPSLFillsEnabled reports whether reconciler-detected TP/SL fills should
@@ -1009,7 +1097,29 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 			sc.MarginMode = "isolated"
 		}
 		if sc.CloseStrategy == nil {
-			sc.CloseStrategy = &StrategyRef{Name: "tiered_tp_atr_live"}
+			// #1115: when regime detection is enabled and the active classifier's
+			// vocabulary maps cleanly onto the default per-regime opening-trail
+			// baseline, default manual closes to the regime-adaptive trailing
+			// take-profit ratchet (trailing_tp_ratchet_regime) so the trail width
+			// tracks volatility per regime. The synthesized trailing_stop_atr_regime
+			// block becomes the SL owner — the scalar stop_loss_atr_mult default
+			// below then self-suppresses via its !TrailingStopATRRegime.IsConfigured()
+			// guard, so it MUST be attached here (before that check runs). Falls back
+			// to today's tiered_tp_atr_live whenever regime is off or any label can't
+			// resolve, leaving a regime-less config unchanged. The choice is logged
+			// (never silently divergent in a protection path).
+			if block, ok := cfg.resolveManualRatchetRegimeTrailBlock(*sc); ok {
+				sc.CloseStrategy = &StrategyRef{Name: trailingTPRatchetRegimeCloseName}
+				sc.TrailingStopATRRegime = block
+				fmt.Printf("[INFO] %s: manual close defaulted to %s (regime enabled; trailing_stop_atr_regime owns the per-regime trail/SL)\n", sc.ID, trailingTPRatchetRegimeCloseName)
+			} else {
+				sc.CloseStrategy = &StrategyRef{Name: "tiered_tp_atr_live"}
+				if cfg.Regime != nil && cfg.Regime.Enabled {
+					fmt.Printf("[INFO] %s: manual close defaulted to tiered_tp_atr_live (regime enabled, but kept the scalar default — an explicit stop field is set or the classifier vocabulary has no default per-regime trail)\n", sc.ID)
+				} else {
+					fmt.Printf("[INFO] %s: manual close defaulted to tiered_tp_atr_live (regime disabled)\n", sc.ID)
+				}
+			}
 		}
 		// #691/#696: type=manual gets its own SL default (1.5× ATR by default,
 		// overridable via manual_defaults.stop_loss_atr_mult) so non-manual
