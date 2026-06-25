@@ -79,6 +79,15 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].circuit_breaker: %s -> %s", sc.ID, formatCircuitBreaker(sc.CircuitBreaker), formatCircuitBreaker(ns.CircuitBreaker))
 			sc.CircuitBreaker = ns.CircuitBreaker
 		}
+		// #1118: per-strategy notify_ratchet_triggers override is hot-reloadable
+		// always, including while a position is open — it only changes whether the
+		// ratchet-tighten owner DM is sent, never position/order state. The next
+		// cycle's notifyRatchetTrigger call reads the new value via
+		// sc.NotifyRatchetTriggersEnabled(cfg), so no state mutation is needed.
+		if !boolPtrEqual(sc.NotifyRatchetTriggers, ns.NotifyRatchetTriggers) {
+			addChange("strategy[%s].notify_ratchet_triggers: %s -> %s", sc.ID, formatNotifyRatchetTriggers(sc.NotifyRatchetTriggers), formatNotifyRatchetTriggers(ns.NotifyRatchetTriggers))
+			sc.NotifyRatchetTriggers = ns.NotifyRatchetTriggers
+		}
 		if sc.CapitalPct == 0 && sc.Capital != ns.Capital {
 			addChange("strategy[%s].capital: $%.2f -> $%.2f", sc.ID, sc.Capital, ns.Capital)
 			sc.Capital = ns.Capital
@@ -619,7 +628,8 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 
 func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.MaxDrawdownPct = 0
-	sc.CircuitBreaker = nil // #1048: hot-reloadable always, including while open. No state-compat guard — disabling only suppresses new fires; an already-latched CB and pending close still drain, and re-enabling just resumes evaluation on the next cycle.
+	sc.CircuitBreaker = nil        // #1048: hot-reloadable always, including while open. No state-compat guard — disabling only suppresses new fires; an already-latched CB and pending close still drain, and re-enabling just resumes evaluation on the next cycle.
+	sc.NotifyRatchetTriggers = nil // #1118: hot-reloadable always, including while open — notification preference only, never touches position/order state. Masked here so a pure notify_ratchet_triggers toggle isn't flagged "restart required"; applied in applyHotReloadConfig.
 	sc.Capital = 0
 	sc.Leverage = 0
 	sc.SizingLeverage = 0
@@ -701,6 +711,20 @@ func boolPtrEqual(a, b *bool) bool {
 func formatCircuitBreaker(p *bool) string {
 	if p == nil {
 		return "default(on)"
+	}
+	if *p {
+		return "on"
+	}
+	return "off"
+}
+
+// formatNotifyRatchetTriggers renders the per-strategy notify_ratchet_triggers
+// override for reload change logs. nil → "inherit-global" so an operator sees the
+// strategy is falling through to Config.NotifyRatchetTriggersEnabled() rather than
+// pinning a value; explicit true/false → "on"/"off". (#1118)
+func formatNotifyRatchetTriggers(p *bool) string {
+	if p == nil {
+		return "inherit-global"
 	}
 	if *p {
 		return "on"
