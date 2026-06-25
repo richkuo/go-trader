@@ -1914,6 +1914,7 @@ func main() {
 										}
 										if newTrigger > 0 {
 											pos.StopLossTriggerPx = newTrigger
+											pos.RatchetFallbackNormalizePending = false
 											logger.Info("Paper trailing SL trigger updated @ $%.4f (high_water=$%.4f)", newTrigger, newHighWater)
 										}
 									}

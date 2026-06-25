@@ -28,15 +28,16 @@ func hyperliquidProtectionPositionSnapshot(pos *Position) *Position {
 		return nil
 	}
 	snap := &Position{
-		AvgCost:                  pos.AvgCost,
-		EntryATR:                 pos.EntryATR,
-		RiskAnchorPrice:          pos.RiskAnchorPrice,
-		Regime:                   pos.Regime,
-		RegimeWindows:            cloneStringMap(pos.RegimeWindows),
-		RegimeAppliedLabel:       pos.RegimeAppliedLabel,
-		RegimePendingLabel:       pos.RegimePendingLabel,
-		RegimePendingCount:       pos.RegimePendingCount,
-		SLAdjustedTiersProcessed: pos.SLAdjustedTiersProcessed,
+		AvgCost:                         pos.AvgCost,
+		EntryATR:                        pos.EntryATR,
+		RiskAnchorPrice:                 pos.RiskAnchorPrice,
+		Regime:                          pos.Regime,
+		RegimeWindows:                   cloneStringMap(pos.RegimeWindows),
+		RegimeAppliedLabel:              pos.RegimeAppliedLabel,
+		RegimePendingLabel:              pos.RegimePendingLabel,
+		RegimePendingCount:              pos.RegimePendingCount,
+		SLAdjustedTiersProcessed:        pos.SLAdjustedTiersProcessed,
+		RatchetFallbackNormalizePending: pos.RatchetFallbackNormalizePending,
 	}
 	if pos.PostTPTrailingATRMult != nil {
 		v := *pos.PostTPTrailingATRMult
@@ -480,6 +481,10 @@ func effectiveTrailingStopMinMovePct(sc StrategyConfig) float64 {
 }
 
 func computeTrailingStopUpdate(side string, mark, highWater, trailingPct, minMovePct, currentTrigger float64) (float64, float64, bool) {
+	return computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, minMovePct, currentTrigger, false)
+}
+
+func computeTrailingStopUpdateInternal(side string, mark, highWater, trailingPct, minMovePct, currentTrigger float64, allowOneShotWiden bool) (float64, float64, bool) {
 	if mark <= 0 || trailingPct <= 0 {
 		return highWater, 0, false
 	}
@@ -521,6 +526,9 @@ func computeTrailingStopUpdate(side string, mark, highWater, trailingPct, minMov
 	favorable := (side == "long" && candidateTrigger > currentTrigger) ||
 		(side == "short" && candidateTrigger < currentTrigger)
 	if !favorable {
+		if allowOneShotWiden && math.Abs(candidateTrigger-currentTrigger) > 1e-9 {
+			return candidateHighWater, candidateTrigger, true
+		}
 		return candidateHighWater, 0, false
 	}
 	movePct := math.Abs(candidateTrigger-currentTrigger) / currentTrigger * 100.0
@@ -594,7 +602,8 @@ func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Positi
 	if highWater <= 0 {
 		highWater = avgCost
 	}
-	nhw, nt, replace := computeTrailingStopUpdate(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger)
+	allowOneShotWiden := pos != nil && pos.RatchetFallbackNormalizePending
+	nhw, nt, replace := computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, allowOneShotWiden)
 	if replace {
 		return nhw, nt, false, 0
 	}
@@ -636,12 +645,14 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 	}
 	switch {
 	case slUpdate.StopLossFilledImmediately && slUpdate.StopLossTriggerPx > 0:
+		pos.RatchetFallbackNormalizePending = false
 		if recordPerpsStopLossClose(s, symbol, slUpdate.StopLossTriggerPx, "trailing_stop_loss_immediate", logger) {
 			return true, slUpdate.StopLossTriggerPx
 		}
 	case slUpdate.StopLossOID > 0:
 		pos.StopLossOID = slUpdate.StopLossOID
 		pos.StopLossTriggerPx = slUpdate.StopLossTriggerPx
+		pos.RatchetFallbackNormalizePending = false
 		if logger != nil {
 			logger.Info("Trailing SL trigger updated oid=%d @ $%.4f", slUpdate.StopLossOID, slUpdate.StopLossTriggerPx)
 		}
@@ -676,7 +687,8 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	if highWater <= 0 {
 		highWater = avgCost
 	}
-	newHighWater, newTrigger, replace := computeTrailingStopUpdate(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger)
+	allowOneShotWiden := pos != nil && pos.RatchetFallbackNormalizePending
+	newHighWater, newTrigger, replace := computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, allowOneShotWiden)
 	if forceResize && !replace {
 		// #873: a scale-in grew the position; the resting trailing SL still
 		// covers only the pre-add size. Force a cancel+replace at the EXISTING

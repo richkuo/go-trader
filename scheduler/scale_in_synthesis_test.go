@@ -251,3 +251,31 @@ func TestScaleInResizePendingPersistsRoundTrip(t *testing.T) {
 		t.Fatalf("ScaleInResizePending lost across round-trip, want true")
 	}
 }
+
+func TestRatchetFallbackNormalizePendingPersistsRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Nanosecond)
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {
+			ID: "hl-eth", Type: "manual", Platform: "hyperliquid", Cash: 1000,
+			Positions: map[string]*Position{
+				"ETH": {
+					Symbol: "ETH", Quantity: 2, InitialQuantity: 2, AvgCost: 2100, Side: "long",
+					Multiplier: 1, OwnerStrategyID: "hl-eth", OpenedAt: now,
+					RiskAnchorPrice: 2000, RatchetFallbackNormalizePending: true,
+				},
+			},
+			OptionPositions: map[string]*OptionPosition{}, TradeHistory: []Trade{},
+		},
+	}}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if !loaded.Strategies["hl-eth"].Positions["ETH"].RatchetFallbackNormalizePending {
+		t.Fatalf("RatchetFallbackNormalizePending lost across round-trip, want true")
+	}
+}
