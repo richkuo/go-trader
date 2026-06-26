@@ -158,3 +158,137 @@ func TestFormatScriptRecoveredAlert(t *testing.T) {
 		t.Fatalf("recovery alert missing fields: %q", msg)
 	}
 }
+
+func TestScriptFailureErrorIsTransient(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"Failed to initialize Hyperliquid Exchange client: (429, None, 'null', None)", true},
+		{"hl rate limited", true},
+		{"X-Cache: Error from cloudfront", true},
+		{"HTTP 429 Too Many Requests", true},
+		{"status_code=429 from HL", true},
+		{"order oid 429 rejected by exchange", false},
+		{"price crossed 42900.5", false},
+		{"list index out of range", false},
+		{"connection refused", false},
+	}
+	for _, tc := range cases {
+		if got := scriptFailureErrorIsTransient(tc.msg); got != tc.want {
+			t.Fatalf("transient(%q) = %v, want %v", tc.msg, got, tc.want)
+		}
+	}
+}
+
+func TestNotifyScriptFailure_BriefTransientSkipsPrimaryStreak(t *testing.T) {
+	id := "transient-brief-1128"
+	defer func() {
+		scriptFailureTracker.Clear(id)
+		scriptFailureTransientTracker.Clear(id)
+	}()
+	sc := StrategyConfig{ID: id, Platform: "hyperliquid", Script: "check_regime.py"}
+	err429 := "Failed to initialize Hyperliquid Exchange client: (429, None)"
+	for i := 0; i < scriptFailureAlertThreshold+2; i++ {
+		notifyScriptFailure(nil, sc, scriptFailureError, err429)
+	}
+	shouldNotify, count := scriptFailureTracker.Record(id, "connection refused", time.Now().UTC())
+	if shouldNotify || count != 1 {
+		t.Fatalf("brief transient must not advance primary streak: notify=%v count=%d, want false/1", shouldNotify, count)
+	}
+}
+
+func TestNotifyScriptFailure_SustainedTransientAlerts(t *testing.T) {
+	id := "transient-sustained-1128"
+	defer func() {
+		scriptFailureTracker.Clear(id)
+		scriptFailureTransientTracker.Clear(id)
+	}()
+	sc := StrategyConfig{ID: id, Platform: "hyperliquid", Script: "check_regime.py"}
+	err429 := "Failed to initialize Hyperliquid Exchange client: (429, None)"
+	for i := 0; i < scriptFailureTransientAlertThreshold; i++ {
+		notifyScriptFailure(nil, sc, scriptFailureError, err429)
+	}
+	recovered, prior := scriptFailureTransientTracker.Clear(id)
+	if !recovered || prior != scriptFailureTransientAlertThreshold {
+		t.Fatalf("sustained transient: recovered=%v prior=%d, want true/%d", recovered, prior, scriptFailureTransientAlertThreshold)
+	}
+}
+
+func TestNotifyScriptFailure_AlternatingTransientAndRealStillAlerts(t *testing.T) {
+	id := "transient-alternate-1128"
+	defer func() {
+		scriptFailureTracker.Clear(id)
+		scriptFailureTransientTracker.Clear(id)
+	}()
+	sc := StrategyConfig{ID: id, Platform: "hyperliquid", Script: "check_hyperliquid.py"}
+	err429 := "Failed to initialize Hyperliquid Exchange client: (429, None)"
+	for i := 0; i < scriptFailureAlertThreshold; i++ {
+		notifyScriptFailure(nil, sc, scriptFailureError, err429)
+		notifyScriptFailure(nil, sc, scriptFailureError, "connection refused")
+	}
+	recovered, prior := scriptFailureTracker.Clear(id)
+	if !recovered || prior != scriptFailureAlertThreshold {
+		t.Fatalf("alternating real errors must alert primary tracker: recovered=%v prior=%d", recovered, prior)
+	}
+}
+
+func TestClearScriptFailure_ClearsTransientTracker(t *testing.T) {
+	id := "transient-clear-1128"
+	defer func() {
+		scriptFailureTracker.Clear(id)
+		scriptFailureTransientTracker.Clear(id)
+	}()
+	now := time.Now().UTC()
+	for i := 0; i < scriptFailureTransientAlertThreshold; i++ {
+		recordScriptFailureAtThreshold(scriptFailureTransientTracker, id, "HTTP 429", now, scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration)
+	}
+	recovered, prior := scriptFailureTransientTracker.Clear(id)
+	if !recovered || prior != scriptFailureTransientAlertThreshold {
+		t.Fatalf("transient clear: recovered=%v prior=%d", recovered, prior)
+	}
+}
+
+func TestScriptFailureTransientTracker_WallClockEscalation(t *testing.T) {
+	tr := &ScriptFailureTracker{}
+	t0 := time.Unix(1700000000, 0).UTC()
+	err429 := "HTTP 429"
+	id := "slow-interval-wallclock-1128"
+
+	if notify, count := recordScriptFailureAtThreshold(tr, id, err429, t0, scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration); notify || count != 1 {
+		t.Fatalf("first failure: notify=%v count=%d, want false/1", notify, count)
+	}
+	// Two sparse 1h-interval failures: count stays below 15 but wall-clock bound fires.
+	tLate := t0.Add(scriptFailureTransientAlertMaxDuration + time.Minute)
+	if notify, count := recordScriptFailureAtThreshold(tr, id, err429, tLate, scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration); !notify || count != 2 {
+		t.Fatalf("wall-clock escalation: notify=%v count=%d, want true/2", notify, count)
+	}
+}
+
+func TestScriptFailureTransientTracker_BriefStormStaysSilent(t *testing.T) {
+	tr := &ScriptFailureTracker{}
+	t0 := time.Unix(1700000000, 0).UTC()
+	err429 := "HTTP 429"
+	id := "brief-storm-wallclock-1128"
+
+	for i := 1; i < scriptFailureTransientAlertThreshold; i++ {
+		if notify, count := recordScriptFailureAtThreshold(tr, id, err429, t0.Add(time.Duration(i)*time.Second), scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration); notify {
+			t.Fatalf("failure %d: unexpected alert during brief storm under count and duration bounds", i)
+		} else if count != i {
+			t.Fatalf("failure %d: count=%d, want %d", i, count, i)
+		}
+	}
+}
+
+func TestScriptFailureTransientTracker_RecoveryResetsWallClock(t *testing.T) {
+	tr := &ScriptFailureTracker{}
+	t0 := time.Unix(1700000000, 0).UTC()
+	err429 := "HTTP 429"
+	id := "wallclock-recovery-1128"
+
+	recordScriptFailureAtThreshold(tr, id, err429, t0, scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration)
+	tr.Clear(id)
+	if notify, count := recordScriptFailureAtThreshold(tr, id, err429, t0.Add(scriptFailureTransientAlertMaxDuration+time.Minute), scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration); notify || count != 1 {
+		t.Fatalf("post-recovery streak must restart: notify=%v count=%d, want false/1", notify, count)
+	}
+}

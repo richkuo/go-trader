@@ -16,6 +16,7 @@ import math
 import os
 import sys
 import tempfile
+import threading
 import time
 from decimal import Decimal, ROUND_DOWN
 
@@ -30,6 +31,10 @@ TESTNET_URL = "https://api.hyperliquid-testnet.xyz"
 # call entirely (#768).
 META_CACHE_PATH = "/tmp/hl_meta.json"
 META_CACHE_TTL_S = 3600  # 60 minutes
+
+# After a lazy Exchange init failure (429, network), suppress re-attempts briefly
+# so trading calls in the same subprocess fast-fail without re-hitting CloudFront.
+_EXCHANGE_INIT_BACKOFF_S = 30
 
 # OHLCV candles are re-fetched from /info by every strategy subprocess. With
 # ~20 strategies per instance sharing a handful of asset+timeframe combos, the
@@ -416,28 +421,27 @@ class HyperliquidExchangeAdapter:
         base_url = TESTNET_URL if testnet else MAINNET_URL
         self._base_url = base_url
 
-        self._info = self._build_info(base_url, allow_cache=True)
-        self._account_address = addr
+        self._wallet = None
         self._exchange = None
+        self._exchange_lock = threading.Lock()
+        self._exchange_init_error = None
+        self._exchange_backoff_until = 0.0
+        self._cached_spot_meta = None
+        self._cached_meta = None
         # Symbols we've already refreshed meta for and still couldn't find —
         # capped at one /info refresh per missing symbol per subprocess
         # lifetime, otherwise a typo or delisted asset would re-fetch meta
         # on every order operation. (PR #769 review point 2.)
         self._sz_decimals_misses: set[str] = set()
 
+        self._info = self._build_info(base_url, allow_cache=True)
+        self._account_address = addr
+
         if secret:
-            try:
-                import eth_account
-                wallet = eth_account.Account.from_key(secret)
-                account_addr = addr or wallet.address
-                self._account_address = account_addr
-                self._exchange = _HLExchange(
-                    wallet, base_url=base_url, account_address=account_addr
-                )
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to initialize Hyperliquid Exchange client: {e}"
-                )
+            import eth_account
+            wallet = eth_account.Account.from_key(secret)
+            self._wallet = wallet
+            self._account_address = addr or wallet.address
 
     def _build_info(self, base_url: str, allow_cache: bool):
         """Construct an SDK Info instance, using the /tmp/hl_meta.json cache
@@ -454,19 +458,70 @@ class HyperliquidExchangeAdapter:
         cached = _load_meta_cache() if allow_cache else None
         if cached is not None:
             spot_meta, meta = cached
+            self._cached_spot_meta, self._cached_meta = spot_meta, meta
             return _HLInfo(base_url=base_url, skip_ws=True, meta=meta,
                            spot_meta=_normalize_spot_meta(spot_meta))
         try:
             spot_meta, meta = _fetch_raw_meta(base_url)
             _save_meta_cache(spot_meta, meta)
+            self._cached_spot_meta, self._cached_meta = spot_meta, meta
             return _HLInfo(base_url=base_url, skip_ws=True, meta=meta,
                            spot_meta=_normalize_spot_meta(spot_meta))
         except Exception as exc:
             # Last-resort fallback: let the SDK's constructor fetch fresh.
             # Costs the same 2 /info as before this change; cache write failed
             # but trading must continue.
+            self._cached_spot_meta, self._cached_meta = None, None
             print(f"[WARN] hl meta fetch failed ({exc}); falling back to SDK init", file=sys.stderr)
             return _HLInfo(base_url=base_url, skip_ws=True)
+
+    def _ensure_exchange(self):
+        """Lazily construct the SDK Exchange client (#1128).
+
+        Regime/signal subprocesses only need ``self._info`` for OHLCV; deferring
+        ``Exchange`` skips its embedded ``Info`` spotMeta/meta /info storm. When
+        trading eventually needs Exchange, pass the same cached meta blobs.
+        """
+        if self._exchange is not None:
+            return self._exchange
+        if self._wallet is None:
+            return None
+        now = time.time()
+        with self._exchange_lock:
+            if self._exchange is not None:
+                return self._exchange
+            if (self._exchange_init_error is not None
+                    and now < self._exchange_backoff_until):
+                raise RuntimeError(
+                    "Failed to initialize Hyperliquid Exchange client: "
+                    f"{self._exchange_init_error}"
+                )
+            try:
+                kwargs = {
+                    "base_url": self._base_url,
+                    "account_address": self._account_address,
+                }
+                if self._cached_meta is not None and self._cached_spot_meta is not None:
+                    kwargs["meta"] = self._cached_meta
+                    kwargs["spot_meta"] = _normalize_spot_meta(self._cached_spot_meta)
+                self._exchange = _HLExchange(self._wallet, **kwargs)
+                self._exchange_init_error = None
+                self._exchange_backoff_until = 0.0
+                return self._exchange
+            except Exception as e:
+                self._exchange_init_error = e
+                self._exchange_backoff_until = time.time() + _EXCHANGE_INIT_BACKOFF_S
+                raise RuntimeError(
+                    f"Failed to initialize Hyperliquid Exchange client: {e}"
+                ) from e
+
+    def _require_exchange(self, caller: str = "live trading"):
+        """Return the live Exchange client or raise if unavailable."""
+        if self._wallet is None:
+            raise RuntimeError(
+                f"{caller} requires live mode (set HYPERLIQUID_SECRET_KEY)"
+            )
+        return self._ensure_exchange()
 
     def _sz_decimals(self, symbol: str) -> int:
         """Look up sz_decimals for ``symbol``, force-refreshing the cached
@@ -502,8 +557,8 @@ class HyperliquidExchangeAdapter:
 
     @property
     def is_live(self) -> bool:
-        """True if Exchange client is initialized (live mode)."""
-        return self._exchange is not None
+        """True when live credentials are configured (Exchange may be lazy)."""
+        return self._wallet is not None
 
     @property
     def mode(self) -> str:
@@ -748,16 +803,13 @@ class HyperliquidExchangeAdapter:
         Only available in live mode; raises RuntimeError in paper mode.
         Returns raw SDK response dict.
         """
-        if not self._exchange:
-            raise RuntimeError(
-                "market_open requires live mode (set HYPERLIQUID_SECRET_KEY)"
-            )
+        exchange = self._require_exchange("market_open")
         # Round to asset's tick precision to avoid float_to_wire rounding error
         sz_decimals = self._sz_decimals(symbol)
         size = round(size, sz_decimals)
         if size <= 0:
             raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
-        return self._exchange.market_open(symbol, is_buy, size, None, 0.01)
+        return exchange.market_open(symbol, is_buy, size, None, 0.01)
 
     def limit_open(
         self,
@@ -782,10 +834,7 @@ class HyperliquidExchangeAdapter:
         live mode; raises RuntimeError in paper mode.
         Returns the raw SDK response dict.
         """
-        if not self._exchange:
-            raise RuntimeError(
-                "limit_open requires live mode (set HYPERLIQUID_SECRET_KEY)"
-            )
+        exchange = self._require_exchange("limit_open")
         sz_decimals = self._sz_decimals(symbol)
         size = round(size, sz_decimals)
         if size <= 0:
@@ -796,7 +845,7 @@ class HyperliquidExchangeAdapter:
             raise ValueError(f"unsupported tif {tif!r}, expected 'Alo', 'Gtc' or 'Ioc'")
         limit_px = _round_perps_px(limit_px, sz_decimals)
         order_type = {"limit": {"tif": tif}}
-        return self._exchange.order(
+        return exchange.order(
             symbol, is_buy, size, limit_px, order_type, reduce_only=False
         )
 
@@ -812,17 +861,14 @@ class HyperliquidExchangeAdapter:
         Only available in live mode; raises RuntimeError in paper mode.
         Returns raw SDK response dict.
         """
-        if not self._exchange:
-            raise RuntimeError(
-                "market_close requires live mode (set HYPERLIQUID_SECRET_KEY)"
-            )
+        exchange = self._require_exchange("market_close")
         if sz is not None:
             # Round to asset's tick precision to avoid float_to_wire rounding error (#425)
             sz_decimals = self._sz_decimals(symbol)
             sz = round(sz, sz_decimals)
             if sz <= 0:
                 raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
-        return self._exchange.market_close(symbol, sz)
+        return exchange.market_close(symbol, sz)
 
     def lookup_fill_fee_by_oid(
         self,
@@ -989,10 +1035,7 @@ class HyperliquidExchangeAdapter:
         The scheduler detects this via isHLOpenOrderCapRejection and escalates
         to CRITICAL + notifier — no proactive client-side counter is required.
         """
-        if not self._exchange:
-            raise RuntimeError(
-                "place_stop_loss requires live mode (set HYPERLIQUID_SECRET_KEY)"
-            )
+        exchange = self._require_exchange("place_stop_loss")
         sz_decimals = self._sz_decimals(symbol)
         sz = round(sz, sz_decimals)
         if sz <= 0:
@@ -1014,7 +1057,7 @@ class HyperliquidExchangeAdapter:
         trigger_px = _round_perps_px(trigger_px, sz_decimals)
 
         order_type = {"trigger": {"triggerPx": trigger_px, "isMarket": True, "tpsl": "sl"}}
-        return self._exchange.order(
+        return exchange.order(
             symbol, is_buy, sz, limit_px, order_type, reduce_only=True
         )
 
@@ -1026,10 +1069,7 @@ class HyperliquidExchangeAdapter:
         is_buy: bool,
     ) -> dict:
         """Place a reduce-only take-profit limit order (#601)."""
-        if not self._exchange:
-            raise RuntimeError(
-                "place_take_profit_limit requires live mode (set HYPERLIQUID_SECRET_KEY)"
-            )
+        exchange = self._require_exchange("place_take_profit_limit")
         sz_decimals = self._sz_decimals(symbol)
         sz = _floor_size(sz, sz_decimals)
         if sz <= 0:
@@ -1038,7 +1078,7 @@ class HyperliquidExchangeAdapter:
             raise ValueError(f"limit_px must be > 0, got {limit_px}")
         limit_px = _round_perps_px(limit_px, sz_decimals)
         order_type = {"limit": {"tif": "Gtc"}}
-        return self._exchange.order(
+        return exchange.order(
             symbol, is_buy, sz, limit_px, order_type, reduce_only=True
         )
 
@@ -1092,11 +1132,8 @@ class HyperliquidExchangeAdapter:
         limits placed via place_take_profit_limit) are both cancellable
         through this single primitive (#604 review #4).
         """
-        if not self._exchange:
-            raise RuntimeError(
-                "cancel_order_by_oid requires live mode (set HYPERLIQUID_SECRET_KEY)"
-            )
-        return self._exchange.cancel(symbol, int(oid))
+        exchange = self._require_exchange("cancel_order_by_oid")
+        return exchange.cancel(symbol, int(oid))
 
     # Backwards-compatible alias. The original name implied only trigger
     # orders were supported; in practice HL's cancel works for any order
@@ -1114,13 +1151,10 @@ class HyperliquidExchangeAdapter:
         or when ``get_position_leverage`` confirms the on-chain state already
         matches the desired (mode, leverage) pair (#491).
         """
-        if not self._exchange:
-            raise RuntimeError(
-                "update_leverage requires live mode (set HYPERLIQUID_SECRET_KEY)"
-            )
+        exchange = self._require_exchange("update_leverage")
         if leverage < 1:
             raise ValueError(f"leverage must be >= 1, got {leverage}")
-        return self._exchange.update_leverage(int(leverage), symbol, bool(is_cross))
+        return exchange.update_leverage(int(leverage), symbol, bool(is_cross))
 
     def get_position_leverage(self, symbol: str) -> dict | None:
         """Return ``{"margin_mode": "isolated"|"cross", "leverage": int}`` for the

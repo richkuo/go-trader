@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"sync"
 	"time"
 )
@@ -15,6 +16,28 @@ import (
 // strikes balances detection latency against noise from a transient indexer
 // blip that clears on the next cycle.
 const scriptFailureAlertThreshold = 3
+
+// scriptFailureTransientAlertThreshold is the consecutive transient-only failure
+// count before operator alert (#1128). Higher than scriptFailureAlertThreshold
+// so brief 429 storms stay journald-only, while a sustained IP-level throttle
+// still surfaces the #829 dead-strategy signal.
+const scriptFailureTransientAlertThreshold = 15
+
+// scriptFailureTransientAlertMaxDuration is the wall-clock cap on sustained
+// throttle before operator alert. Calibrated to scriptFailureTransientAlertThreshold
+// at a 5-minute check interval (~75 min) so slow-interval strategies escalate
+// in the same window without waiting for 15 sparse cycles.
+const scriptFailureTransientAlertMaxDuration = 75 * time.Minute
+
+// scriptFailureTransientRE matches operator-visible upstream throttle errors.
+// Deliberately excludes bare "429" substrings (prices, OIDs, counts).
+var scriptFailureTransientRE = regexp.MustCompile(`(?i)(\(429[,\)]|(?:http|status)[\s_]?429|status_code[=:]\s*429|rate.?limit|error from cloudfront)`)
+
+// scriptFailureErrorIsTransient reports whether errMsg is a short-lived
+// upstream throttle that should not count toward the 3-strike alert.
+func scriptFailureErrorIsTransient(errMsg string) bool {
+	return scriptFailureTransientRE.MatchString(errMsg)
+}
 
 // scriptFailureMode distinguishes the two ways a signal-check subprocess can
 // fail. Both count toward the same per-strategy consecutive-failure tally —
@@ -44,6 +67,7 @@ func scriptFailureModeLabel(mode scriptFailureMode) string {
 type scriptFailureEntry struct {
 	count          int
 	lastErrSig     string // first ~120 bytes of the most recent error
+	firstSeenAt    time.Time
 	lastNotifiedAt time.Time
 	alerted        bool // an alert has fired for the current failure streak
 }
@@ -64,41 +88,7 @@ type ScriptFailureTracker struct {
 // hour) while the streak persists. A change in error signature after the
 // threshold re-alerts immediately so operators see a shifting failure mode.
 func (t *ScriptFailureTracker) Record(strategyID, errSig string, now time.Time) (bool, int) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.entries == nil {
-		t.entries = make(map[string]*scriptFailureEntry)
-	}
-	e := t.entries[strategyID]
-	if e == nil {
-		e = &scriptFailureEntry{}
-		t.entries[strategyID] = e
-	}
-	sig := truncErrSig(errSig)
-	sigChanged := sig != e.lastErrSig
-	e.count++
-	e.lastErrSig = sig
-
-	if e.count < scriptFailureAlertThreshold {
-		return false, e.count
-	}
-
-	shouldNotify := false
-	switch {
-	case !e.alerted:
-		shouldNotify = true // first alert for this streak (threshold crossed)
-	case sigChanged:
-		shouldNotify = true // failure character changed mid-streak
-	case e.count%10 == 0:
-		shouldNotify = true
-	case !e.lastNotifiedAt.IsZero() && now.Sub(e.lastNotifiedAt) >= time.Hour:
-		shouldNotify = true
-	}
-	if shouldNotify {
-		e.alerted = true
-		e.lastNotifiedAt = now
-	}
-	return shouldNotify, e.count
+	return recordScriptFailureAtThreshold(t, strategyID, errSig, now, scriptFailureAlertThreshold, 0)
 }
 
 // Clear resets the failure streak for strategyID after a clean script run and
@@ -123,6 +113,10 @@ func (t *ScriptFailureTracker) Clear(strategyID string) (bool, int) {
 // scriptFailureTracker is the package-level singleton; resets on restart.
 var scriptFailureTracker = &ScriptFailureTracker{}
 
+// scriptFailureTransientTracker counts consecutive throttle-only failures per
+// strategy; cleared on recovery alongside scriptFailureTracker.
+var scriptFailureTransientTracker = &ScriptFailureTracker{}
+
 // formatScriptFailureAlert builds the operator message for a failing signal
 // script. count is the consecutive-failure count after incrementing. The
 // scheduler PID is included so operators can tell which process is producing
@@ -141,6 +135,61 @@ func formatScriptRecoveredAlert(sc StrategyConfig, priorCount int) string {
 		sc.ID, sc.Platform, sc.Script, os.Getpid(), priorCount)
 }
 
+// formatScriptFailureTransientAlert builds the operator message when a strategy
+// has been failing with upstream throttle errors long enough to escalate.
+func formatScriptFailureTransientAlert(sc StrategyConfig, mode scriptFailureMode, errMsg string, count int) string {
+	return fmt.Sprintf("**SIGNAL SCRIPT FAILING (sustained upstream throttle)** [%s] %s %s (pid=%d, %s, %d consecutive transient failures): %s",
+		sc.ID, sc.Platform, sc.Script, os.Getpid(), scriptFailureModeLabel(mode), count, errMsg)
+}
+
+// recordScriptFailureAtThreshold is the shared increment/notify logic for both
+// the primary and transient-only trackers. maxDuration>0 allows wall-clock
+// escalation before count reaches threshold (transient tracker only).
+func recordScriptFailureAtThreshold(t *ScriptFailureTracker, strategyID, errSig string, now time.Time, threshold int, maxDuration time.Duration) (bool, int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.entries == nil {
+		t.entries = make(map[string]*scriptFailureEntry)
+	}
+	e := t.entries[strategyID]
+	if e == nil {
+		e = &scriptFailureEntry{}
+		t.entries[strategyID] = e
+	}
+	sig := truncErrSig(errSig)
+	sigChanged := sig != e.lastErrSig
+	e.count++
+	if e.count == 1 {
+		e.firstSeenAt = now
+	}
+	e.lastErrSig = sig
+
+	crossed := e.count >= threshold
+	if !crossed && maxDuration > 0 && !e.firstSeenAt.IsZero() {
+		crossed = now.Sub(e.firstSeenAt) >= maxDuration
+	}
+	if !crossed {
+		return false, e.count
+	}
+
+	shouldNotify := false
+	switch {
+	case !e.alerted:
+		shouldNotify = true
+	case sigChanged:
+		shouldNotify = true
+	case e.count%10 == 0:
+		shouldNotify = true
+	case !e.lastNotifiedAt.IsZero() && now.Sub(e.lastNotifiedAt) >= time.Hour:
+		shouldNotify = true
+	}
+	if shouldNotify {
+		e.alerted = true
+		e.lastNotifiedAt = now
+	}
+	return shouldNotify, e.count
+}
+
 // notifyScriptFailure records a signal-script failure for sc and fires a
 // throttled operator alert once the consecutive-failure streak crosses
 // scriptFailureAlertThreshold. mode distinguishes a hard crash (no JSON) from a
@@ -148,7 +197,21 @@ func formatScriptRecoveredAlert(sc StrategyConfig, priorCount int) string {
 // always recorded — even with no notifier backends — so the count and recovery
 // state stay accurate; nil/empty notifier just suppresses the send.
 func notifyScriptFailure(notifier *MultiNotifier, sc StrategyConfig, mode scriptFailureMode, errMsg string) {
-	shouldNotify, count := scriptFailureTracker.Record(sc.ID, errMsg, time.Now().UTC())
+	now := time.Now().UTC()
+	if scriptFailureErrorIsTransient(errMsg) {
+		fmt.Printf("[WARN] transient script failure [%s]: %s\n", sc.ID, errMsg)
+		shouldNotify, count := recordScriptFailureAtThreshold(
+			scriptFailureTransientTracker, sc.ID, errMsg, now,
+			scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration)
+		if !shouldNotify || notifier == nil || !notifier.HasBackends() {
+			return
+		}
+		msg := formatScriptFailureTransientAlert(sc, mode, errMsg, count)
+		notifier.SendToAllChannels(msg)
+		notifier.SendOwnerDM(msg)
+		return
+	}
+	shouldNotify, count := scriptFailureTracker.Record(sc.ID, errMsg, now)
 	if !shouldNotify || notifier == nil || !notifier.HasBackends() {
 		return
 	}
@@ -162,10 +225,18 @@ func notifyScriptFailure(notifier *MultiNotifier, sc StrategyConfig, mode script
 // notice. Safe to call every cycle: it no-ops when no streak is active.
 func clearScriptFailure(notifier *MultiNotifier, sc StrategyConfig) {
 	recovered, priorCount := scriptFailureTracker.Clear(sc.ID)
-	if !recovered || notifier == nil || !notifier.HasBackends() {
+	transientRecovered, transientPrior := scriptFailureTransientTracker.Clear(sc.ID)
+	if !recovered && !transientRecovered {
 		return
 	}
-	msg := formatScriptRecoveredAlert(sc, priorCount)
+	if notifier == nil || !notifier.HasBackends() {
+		return
+	}
+	prior := priorCount
+	if transientPrior > prior {
+		prior = transientPrior
+	}
+	msg := formatScriptRecoveredAlert(sc, prior)
 	notifier.SendToAllChannels(msg)
 	notifier.SendOwnerDM(msg)
 }
