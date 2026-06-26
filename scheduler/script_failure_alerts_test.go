@@ -241,10 +241,54 @@ func TestClearScriptFailure_ClearsTransientTracker(t *testing.T) {
 	}()
 	now := time.Now().UTC()
 	for i := 0; i < scriptFailureTransientAlertThreshold; i++ {
-		recordScriptFailureAtThreshold(scriptFailureTransientTracker, id, "HTTP 429", now, scriptFailureTransientAlertThreshold)
+		recordScriptFailureAtThreshold(scriptFailureTransientTracker, id, "HTTP 429", now, scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration)
 	}
 	recovered, prior := scriptFailureTransientTracker.Clear(id)
 	if !recovered || prior != scriptFailureTransientAlertThreshold {
 		t.Fatalf("transient clear: recovered=%v prior=%d", recovered, prior)
+	}
+}
+
+func TestScriptFailureTransientTracker_WallClockEscalation(t *testing.T) {
+	tr := &ScriptFailureTracker{}
+	t0 := time.Unix(1700000000, 0).UTC()
+	err429 := "HTTP 429"
+	id := "slow-interval-wallclock-1128"
+
+	if notify, count := recordScriptFailureAtThreshold(tr, id, err429, t0, scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration); notify || count != 1 {
+		t.Fatalf("first failure: notify=%v count=%d, want false/1", notify, count)
+	}
+	// Two sparse 1h-interval failures: count stays below 15 but wall-clock bound fires.
+	tLate := t0.Add(scriptFailureTransientAlertMaxDuration + time.Minute)
+	if notify, count := recordScriptFailureAtThreshold(tr, id, err429, tLate, scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration); !notify || count != 2 {
+		t.Fatalf("wall-clock escalation: notify=%v count=%d, want true/2", notify, count)
+	}
+}
+
+func TestScriptFailureTransientTracker_BriefStormStaysSilent(t *testing.T) {
+	tr := &ScriptFailureTracker{}
+	t0 := time.Unix(1700000000, 0).UTC()
+	err429 := "HTTP 429"
+	id := "brief-storm-wallclock-1128"
+
+	for i := 1; i < scriptFailureTransientAlertThreshold; i++ {
+		if notify, count := recordScriptFailureAtThreshold(tr, id, err429, t0.Add(time.Duration(i)*time.Second), scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration); notify {
+			t.Fatalf("failure %d: unexpected alert during brief storm under count and duration bounds", i)
+		} else if count != i {
+			t.Fatalf("failure %d: count=%d, want %d", i, count, i)
+		}
+	}
+}
+
+func TestScriptFailureTransientTracker_RecoveryResetsWallClock(t *testing.T) {
+	tr := &ScriptFailureTracker{}
+	t0 := time.Unix(1700000000, 0).UTC()
+	err429 := "HTTP 429"
+	id := "wallclock-recovery-1128"
+
+	recordScriptFailureAtThreshold(tr, id, err429, t0, scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration)
+	tr.Clear(id)
+	if notify, count := recordScriptFailureAtThreshold(tr, id, err429, t0.Add(scriptFailureTransientAlertMaxDuration+time.Minute), scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration); notify || count != 1 {
+		t.Fatalf("post-recovery streak must restart: notify=%v count=%d, want false/1", notify, count)
 	}
 }

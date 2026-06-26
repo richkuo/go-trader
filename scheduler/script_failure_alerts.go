@@ -23,6 +23,12 @@ const scriptFailureAlertThreshold = 3
 // still surfaces the #829 dead-strategy signal.
 const scriptFailureTransientAlertThreshold = 15
 
+// scriptFailureTransientAlertMaxDuration is the wall-clock cap on sustained
+// throttle before operator alert. Calibrated to scriptFailureTransientAlertThreshold
+// at a 5-minute check interval (~75 min) so slow-interval strategies escalate
+// in the same window without waiting for 15 sparse cycles.
+const scriptFailureTransientAlertMaxDuration = 75 * time.Minute
+
 // scriptFailureTransientRE matches operator-visible upstream throttle errors.
 // Deliberately excludes bare "429" substrings (prices, OIDs, counts).
 var scriptFailureTransientRE = regexp.MustCompile(`(?i)(\(429[,\)]|(?:http|status)[\s_]?429|status_code[=:]\s*429|rate.?limit|error from cloudfront)`)
@@ -61,6 +67,7 @@ func scriptFailureModeLabel(mode scriptFailureMode) string {
 type scriptFailureEntry struct {
 	count          int
 	lastErrSig     string // first ~120 bytes of the most recent error
+	firstSeenAt    time.Time
 	lastNotifiedAt time.Time
 	alerted        bool // an alert has fired for the current failure streak
 }
@@ -81,7 +88,7 @@ type ScriptFailureTracker struct {
 // hour) while the streak persists. A change in error signature after the
 // threshold re-alerts immediately so operators see a shifting failure mode.
 func (t *ScriptFailureTracker) Record(strategyID, errSig string, now time.Time) (bool, int) {
-	return recordScriptFailureAtThreshold(t, strategyID, errSig, now, scriptFailureAlertThreshold)
+	return recordScriptFailureAtThreshold(t, strategyID, errSig, now, scriptFailureAlertThreshold, 0)
 }
 
 // Clear resets the failure streak for strategyID after a clean script run and
@@ -136,8 +143,9 @@ func formatScriptFailureTransientAlert(sc StrategyConfig, mode scriptFailureMode
 }
 
 // recordScriptFailureAtThreshold is the shared increment/notify logic for both
-// the primary and transient-only trackers.
-func recordScriptFailureAtThreshold(t *ScriptFailureTracker, strategyID, errSig string, now time.Time, threshold int) (bool, int) {
+// the primary and transient-only trackers. maxDuration>0 allows wall-clock
+// escalation before count reaches threshold (transient tracker only).
+func recordScriptFailureAtThreshold(t *ScriptFailureTracker, strategyID, errSig string, now time.Time, threshold int, maxDuration time.Duration) (bool, int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.entries == nil {
@@ -151,9 +159,16 @@ func recordScriptFailureAtThreshold(t *ScriptFailureTracker, strategyID, errSig 
 	sig := truncErrSig(errSig)
 	sigChanged := sig != e.lastErrSig
 	e.count++
+	if e.count == 1 {
+		e.firstSeenAt = now
+	}
 	e.lastErrSig = sig
 
-	if e.count < threshold {
+	crossed := e.count >= threshold
+	if !crossed && maxDuration > 0 && !e.firstSeenAt.IsZero() {
+		crossed = now.Sub(e.firstSeenAt) >= maxDuration
+	}
+	if !crossed {
 		return false, e.count
 	}
 
@@ -186,7 +201,8 @@ func notifyScriptFailure(notifier *MultiNotifier, sc StrategyConfig, mode script
 	if scriptFailureErrorIsTransient(errMsg) {
 		fmt.Printf("[WARN] transient script failure [%s]: %s\n", sc.ID, errMsg)
 		shouldNotify, count := recordScriptFailureAtThreshold(
-			scriptFailureTransientTracker, sc.ID, errMsg, now, scriptFailureTransientAlertThreshold)
+			scriptFailureTransientTracker, sc.ID, errMsg, now,
+			scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration)
 		if !shouldNotify || notifier == nil || !notifier.HasBackends() {
 			return
 		}
