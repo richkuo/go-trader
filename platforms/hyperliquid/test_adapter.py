@@ -927,6 +927,83 @@ class TestLazyExchangeInit:
         with pytest.raises(RuntimeError, match="Failed to initialize Hyperliquid Exchange client"):
             adapter.market_open("BTC", True, 0.5)
 
+    def test_exchange_init_backoff_suppresses_rapid_retries(self, monkeypatch):
+        err = RuntimeError("(429, None, 'null', None)")
+        mod, adapter, mock_info, _, exchange_calls = self._live_adapter_mod(monkeypatch)
+
+        def exchange_factory(*args, **kwargs):
+            exchange_calls["n"] += 1
+            raise err
+
+        monkeypatch.setattr(mod, "_HLExchange", MagicMock(side_effect=exchange_factory))
+        now = [1_700_000_000.0]
+        monkeypatch.setattr(mod.time, "time", lambda: now[0])
+        adapter._info = mock_info
+
+        with pytest.raises(RuntimeError, match="Failed to initialize Hyperliquid Exchange client"):
+            adapter.market_open("BTC", True, 0.5)
+        assert exchange_calls["n"] == 1
+
+        now[0] += 5
+        with pytest.raises(RuntimeError, match="Failed to initialize Hyperliquid Exchange client"):
+            adapter.market_open("BTC", True, 0.5)
+        assert exchange_calls["n"] == 1, "backoff must suppress SDK constructor within 30s"
+
+    def test_exchange_init_retries_after_backoff_expires(self, monkeypatch):
+        err = RuntimeError("(429, None, 'null', None)")
+        mod, adapter, mock_info, _, exchange_calls = self._live_adapter_mod(monkeypatch)
+
+        def exchange_factory(*args, **kwargs):
+            exchange_calls["n"] += 1
+            raise err
+
+        monkeypatch.setattr(mod, "_HLExchange", MagicMock(side_effect=exchange_factory))
+        now = [1_700_000_000.0]
+        monkeypatch.setattr(mod.time, "time", lambda: now[0])
+        adapter._info = mock_info
+
+        with pytest.raises(RuntimeError, match="Failed to initialize Hyperliquid Exchange client"):
+            adapter.market_open("BTC", True, 0.5)
+        assert exchange_calls["n"] == 1
+
+        now[0] += mod._EXCHANGE_INIT_BACKOFF_S + 1
+        with pytest.raises(RuntimeError, match="Failed to initialize Hyperliquid Exchange client"):
+            adapter.market_open("BTC", True, 0.5)
+        assert exchange_calls["n"] == 2, "constructor must retry after backoff window"
+
+    def test_exchange_init_success_after_backoff_uses_cached_exchange(self, monkeypatch):
+        mod, adapter, mock_info, mock_exchange, exchange_calls = self._live_adapter_mod(monkeypatch)
+        err = RuntimeError("(429, None, 'null', None)")
+
+        def exchange_factory(*args, **kwargs):
+            exchange_calls["n"] += 1
+            if exchange_calls["n"] == 1:
+                raise err
+            return mock_exchange
+
+        adapter._exchange = None
+        monkeypatch.setattr(
+            mod,
+            "_HLExchange",
+            MagicMock(side_effect=exchange_factory),
+        )
+        now = [1_700_000_000.0]
+        monkeypatch.setattr(mod.time, "time", lambda: now[0])
+        adapter._info = mock_info
+
+        with pytest.raises(RuntimeError, match="Failed to initialize Hyperliquid Exchange client"):
+            adapter.market_open("BTC", True, 0.5)
+        assert exchange_calls["n"] == 1
+
+        now[0] += mod._EXCHANGE_INIT_BACKOFF_S + 1
+        adapter.market_open("BTC", True, 0.5)
+        assert exchange_calls["n"] == 2
+        assert adapter._exchange is mock_exchange
+
+        adapter.market_open("BTC", True, 0.5)
+        assert exchange_calls["n"] == 2, "cached exchange must not re-init"
+        assert mock_exchange.market_open.call_count == 2
+
     def test_concurrent_lazy_init_calls_exchange_once(self, monkeypatch):
         import threading
 
