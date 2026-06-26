@@ -395,7 +395,11 @@ def test_map_composite_label_states():
     # Ranging family: no decisive net move.
     assert m(0.01, 10, 0.01, 0.0, th) == "ranging_quiet"
     assert m(0.01, 10, 0.10, 0.0, th) == "ranging_volatile"
-    assert m(0.01, 30, 0.10, 0.0, th) == "ranging_directional"
+    # #1124: directional drift sign is baked into the label; high ADX, no big move.
+    assert m(0.01, 30, 0.10, 0.0, th) == "ranging_directional_up"
+    assert m(-0.01, 30, 0.10, 0.0, th) == "ranging_directional_down"
+    # Exact-zero return_eff stays bare (neutral/back-compat fallback).
+    assert m(0.0, 30, 0.10, 0.0, th) == "ranging_directional"
 
 
 def test_latest_regime_composite_ranging_not_trending():

@@ -237,11 +237,14 @@ func (d *RegimeWindowDivergence) ResolveRaw(label string) []string {
 // regimeLabelBias returns the directional bias of a composite or ADX regime label.
 // ranging_directional uses snapReturnEff (from RegimeSnapshot.Metrics["return_eff"])
 // to break the bullish/bearish tie when provided; otherwise treated as neutral.
+// #1124: ranging_directional_up/_down carry the drift sign in the label itself and
+// resolve bullish/bearish directly, independent of snapReturnEff. The bare
+// ranging_directional label (return_eff == 0) keeps the snapReturnEff resolution.
 func regimeLabelBias(label string, snapReturnEff float64) divergenceBias {
 	switch strings.TrimSpace(label) {
-	case "trending_up", "trending_up_clean", "trending_up_choppy":
+	case "trending_up", "trending_up_clean", "trending_up_choppy", "ranging_directional_up":
 		return biasBullish
-	case "trending_down", "trending_down_clean", "trending_down_choppy":
+	case "trending_down", "trending_down_clean", "trending_down_choppy", "ranging_directional_down":
 		return biasBearish
 	case "ranging_directional":
 		if snapReturnEff > 0 {

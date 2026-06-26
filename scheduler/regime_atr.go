@@ -202,12 +202,26 @@ func (b *RegimeATRBlock) IsConfigured() bool {
 // Resolve returns the per-label entry for the given regime. The caller is
 // responsible for validating the block at config-load time so this can
 // assume label presence. Returns (entry, true) on hit, (zero, false) on miss.
+//
+// #1124: a `ranging_directional_up`/`_down` regime stamp falls back to the bare
+// `ranging_directional` entry when the block doesn't carry an explicit sub-label
+// key (the back-compat shape — bare label covers the whole directional family).
+// This keeps the runtime resolution aligned with the exhaustiveness rule: a
+// bare-only block is exhaustive, so it must also resolve at runtime.
 func (b RegimeATRBlock) Resolve(regime string) (RegimeATREntry, bool) {
 	if b.TrendRegime == nil {
 		return RegimeATREntry{}, false
 	}
-	entry, ok := b.TrendRegime[strings.TrimSpace(regime)]
-	return entry, ok
+	r := strings.TrimSpace(regime)
+	if entry, ok := b.TrendRegime[r]; ok {
+		return entry, true
+	}
+	if r == "ranging_directional_up" || r == "ranging_directional_down" {
+		if entry, ok := b.TrendRegime["ranging_directional"]; ok {
+			return entry, true
+		}
+	}
+	return RegimeATREntry{}, false
 }
 
 // regimeATRDefaults holds the per-surface baseline expansions for
@@ -226,16 +240,18 @@ var regimeATRDefaults = struct {
 	// choppy=2.0, ranging=1.0) so a trailing_stop_atr_regime use_defaults block
 	// differentiates trend groups from ranges (tight).
 	Trailing: map[string]RegimeATREntry{
-		"trending_up":          {ATR: 2.5},
-		"trending_down":        {ATR: 2.5},
-		"ranging":              {ATR: 2.0},
-		"trending_up_clean":    {ATR: 2.0},
-		"trending_down_clean":  {ATR: 2.0},
-		"trending_up_choppy":   {ATR: 2.0},
-		"trending_down_choppy": {ATR: 2.0},
-		"ranging_quiet":        {ATR: 1.0},
-		"ranging_volatile":     {ATR: 1.0},
-		"ranging_directional":  {ATR: 1.0},
+		"trending_up":              {ATR: 2.5},
+		"trending_down":            {ATR: 2.5},
+		"ranging":                  {ATR: 2.0},
+		"trending_up_clean":        {ATR: 2.0},
+		"trending_down_clean":      {ATR: 2.0},
+		"trending_up_choppy":       {ATR: 2.0},
+		"trending_down_choppy":     {ATR: 2.0},
+		"ranging_quiet":            {ATR: 1.0},
+		"ranging_volatile":         {ATR: 1.0},
+		"ranging_directional":      {ATR: 1.0},
+		"ranging_directional_up":   {ATR: 1.0}, // #1124
+		"ranging_directional_down": {ATR: 1.0}, // #1124
 	},
 }
 
@@ -278,7 +294,7 @@ var regimeTPTierGroupDefaults = map[string][]hlProtectionTier{
 var regimeTPFleetDefaultLabelsByGroup = map[string][]string{
 	"clean":   {"trending_up_clean", "trending_down_clean"},
 	"choppy":  {"trending_up", "trending_down", "trending_up_choppy", "trending_down_choppy"},
-	"ranging": {"ranging", "ranging_quiet", "ranging_volatile", "ranging_directional"},
+	"ranging": {"ranging", "ranging_quiet", "ranging_volatile", "ranging_directional", "ranging_directional_up", "ranging_directional_down"},
 }
 
 // defaultRegimeBlockForSurface returns the baseline trend_regime map for a
@@ -450,10 +466,24 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 	}
 
 	missingLabels := []string{}
+	// #1124: the ranging_directional family — bare `ranging_directional` plus
+	// its `ranging_directional_up`/`_down` sub-labels — is satisfied for
+	// exhaustiveness when the bare label is present (it covers all three at
+	// runtime, including the return_eff==0 neutral case the producer still
+	// emits). Providing only the sub-labels without the bare label is NOT
+	// exhaustive (the neutral case would resolve to nil → silent never-arm of
+	// an auto-protective exit). So a present bare label covers its sub-labels,
+	// and a missing bare label is flagged even when both sub-labels exist.
+	bareDirectional := trendMap["ranging_directional"] != nil
 	for _, l := range labels {
-		if _, ok := trendMap[l]; !ok {
-			missingLabels = append(missingLabels, l)
+		if _, ok := trendMap[l]; ok {
+			continue
 		}
+		if (l == "ranging_directional_up" || l == "ranging_directional_down") && bareDirectional {
+			// bare label covers this sub-label
+			continue
+		}
+		missingLabels = append(missingLabels, l)
 	}
 	if len(missingLabels) > 0 {
 		errs = append(errs, fmt.Sprintf("%s.%s: missing required regime labels: %s (must be exhaustive — no silent fallback)", ctxLabel, regimeClassifierKey, strings.Join(missingLabels, ", ")))

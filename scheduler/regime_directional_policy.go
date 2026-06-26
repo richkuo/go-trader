@@ -101,8 +101,17 @@ func (p *RegimeDirectionalPolicy) Resolve(regime string) (RegimeDirectionalEntry
 	if p == nil || len(p.TrendRegime) == 0 {
 		return RegimeDirectionalEntry{}, false
 	}
-	entry, ok := p.TrendRegime[strings.TrimSpace(regime)]
-	return entry, ok
+	r := strings.TrimSpace(regime)
+	if entry, ok := p.TrendRegime[r]; ok {
+		return entry, true
+	}
+	// #1124: sub-label stamp falls back to the bare ranging_directional entry.
+	if r == "ranging_directional_up" || r == "ranging_directional_down" {
+		if entry, ok := p.TrendRegime["ranging_directional"]; ok {
+			return entry, true
+		}
+	}
+	return RegimeDirectionalEntry{}, false
 }
 
 // IsConfigured reports whether the operator supplied any value. Safe to
@@ -258,11 +267,18 @@ func (p *RegimeDirectionalPolicy) ResolveRawWithLabels(label string, labels []st
 	// fallback at runtime. Operators who want the static config to apply
 	// for one regime can spell it out explicitly. Uses `seen` (not `parsed`)
 	// so a label that's present-but-invalid isn't also reported as missing.
+	// #1124: a present bare `ranging_directional` covers its _up/_down
+	// sub-labels (back-compat — resolves the whole family at runtime).
+	bareDirectional := seen["ranging_directional"]
 	missing := []string{}
 	for _, l := range labels {
-		if !seen[l] {
-			missing = append(missing, l)
+		if seen[l] {
+			continue
 		}
+		if (l == "ranging_directional_up" || l == "ranging_directional_down") && bareDirectional {
+			continue
+		}
+		missing = append(missing, l)
 	}
 	if len(missing) > 0 {
 		errs = append(errs, fmt.Sprintf("%s: missing required regime labels: %s", label, strings.Join(missing, ", ")))

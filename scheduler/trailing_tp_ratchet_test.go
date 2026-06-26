@@ -398,8 +398,11 @@ func TestValidateTrailingTPRatchetClose_CompositeVocabulary(t *testing.T) {
 		return tbl
 	}
 	composite := regimeLabelsForClassifier(regimeClassifierComposite)
-	if len(composite) != 7 {
-		t.Fatalf("expected 7 composite labels, got %d", len(composite))
+	// #1124: the composite vocabulary grew from 7 to 9 labels
+	// (ranging_directional_up/_down added).
+	wantLabels := len(composite)
+	if wantLabels != 9 {
+		t.Fatalf("expected 9 composite labels, got %d", wantLabels)
 	}
 
 	// #870: the regime variant's opening trail / SL owner is the per-regime
@@ -759,6 +762,20 @@ func TestDefaultTrailingRatchetTiersForRegime(t *testing.T) {
 	if dir[3].ATRMultiple != 4.5 || dir[3].TrailingMultAfter != 0.6 {
 		t.Fatalf("ranging_directional let-ride rung mismatch: %+v", dir[3])
 	}
+	// #1124: the directional sub-labels must resolve to the SAME ladder as the
+	// bare directional label — never nil. A nil resolution means the ratchet
+	// exit silently never arms (auto-protective money path).
+	for _, sub := range []string{"ranging_directional_up", "ranging_directional_down"} {
+		got := defaultTrailingRatchetTiersForRegime(sub)
+		if len(got) != len(dir) {
+			t.Fatalf("%s: want %d tiers (mirrors ranging_directional), got %d: %+v", sub, len(dir), len(got), got)
+		}
+		for i := range got {
+			if got[i] != dir[i] {
+				t.Fatalf("%s tier[%d] = %+v, want %+v (mirrors ranging_directional)", sub, i, got[i], dir[i])
+			}
+		}
+	}
 	if defaultTrailingRatchetTiersForRegime("") != nil {
 		t.Error("empty regime must resolve to nil")
 	}
@@ -776,6 +793,11 @@ func TestRatchetCloseDefaultGroup(t *testing.T) {
 		{"ranging_quiet", "ranging_quiet", true},
 		{"ranging_volatile", "ranging_volatile", true},
 		{"ranging_directional", "ranging_directional", true},
+		// #1124: directional sub-labels collapse to the directional ladder so
+		// they never fall through to "ranging" (absent from the ratchet tier
+		// defaults → silent never-arm of the auto-protective exit).
+		{"ranging_directional_up", "ranging_directional", true},
+		{"ranging_directional_down", "ranging_directional", true},
 		{"ranging", "ranging_quiet", true}, // bare ADX → quiet ladder
 		{"trending_up_clean", "clean", true},
 		{"trending_up_choppy", "choppy", true},

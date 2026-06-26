@@ -53,7 +53,14 @@ class RegimeFloatBlock:
     trend_regime: Dict[str, float] = field(default_factory=dict)
 
     def resolve(self, regime: str) -> Optional[float]:
-        return self.trend_regime.get((regime or "").strip())
+        r = (regime or "").strip()
+        v = self.trend_regime.get(r)
+        if v is not None:
+            return v
+        # #1124: sub-label stamp falls back to the bare ranging_directional entry.
+        if r in ("ranging_directional_up", "ranging_directional_down"):
+            return self.trend_regime.get("ranging_directional")
+        return None
 
 
 @dataclass(frozen=True)
@@ -389,7 +396,14 @@ def _parse_regime_float_block(
             f"{ctx_label}.{REGIME_CLASSIFIER_KEY}: unknown regime label {label!r} "
             f"(expected one of: {', '.join(labels)})"
         )
-    missing = [label for label in labels if label not in trend_raw]
+    missing = [
+        label for label in labels
+        if label not in trend_raw
+        and not (
+            label in ("ranging_directional_up", "ranging_directional_down")
+            and "ranging_directional" in trend_raw
+        )
+    ]
     if missing:
         errs.append(
             f"{ctx_label}.{REGIME_CLASSIFIER_KEY}: missing required regime labels: "
@@ -872,7 +886,20 @@ def validate_regime_tiered_tp_labels(
                     f"{name}.tiers[{i}].{REGIME_CLASSIFIER_KEY}: unknown regime "
                     f"label {key!r} (expected one of: {', '.join(sorted(expected))})"
                 )
-            missing = [label for label in sorted(expected) if label not in block]
+            # #1124: a present bare `ranging_directional` covers its _up/_down
+            # sub-labels for exhaustiveness (back-compat — the bare label
+            # resolves the whole family at runtime, including the return_eff==0
+            # neutral case the producer still emits). Providing only the
+            # sub-labels without the bare label is NOT exhaustive.
+            bare_directional_present = "ranging_directional" in block
+            missing = [
+                label for label in sorted(expected)
+                if label not in block
+                and not (
+                    label in ("ranging_directional_up", "ranging_directional_down")
+                    and bare_directional_present
+                )
+            ]
             if missing:
                 errs.append(
                     f"{name}.tiers[{i}].{REGIME_CLASSIFIER_KEY}: missing required "

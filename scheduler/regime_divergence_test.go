@@ -441,6 +441,42 @@ func TestClassifyRegimeDivergence_TrustMediumRangingDirectional(t *testing.T) {
 	}
 }
 
+// #1124: ranging_directional_up/down carry the drift sign in the label itself,
+// so regimeLabelBias resolves them bullish/bearish directly — independent of
+// snapReturnEff. The bare ranging_directional label keeps snapReturnEff
+// resolution (zero → neutral).
+func TestClassifyRegimeDivergence_RangingDirectionalUpDownLabelsCarrySign(t *testing.T) {
+	// up label → bullish regardless of snapReturnEff (here passed 0, and even
+	// a contradicting negative sign must NOT flip a label that carries +).
+	rUp := classifyRegimeDivergence("ranging_directional_up", "trending_down", 0, 0, onDivergenceTrustShort)
+	if rUp.Kind != DivergenceHard {
+		t.Fatalf("ranging_directional_up: expected hard vs trending_down, got %q", rUp.Kind)
+	}
+	if rUp.OverrideDir != DirectionLong {
+		t.Errorf("ranging_directional_up: expected long, got %q", rUp.OverrideDir)
+	}
+	// A contradicting snapReturnEff must not override the label's own sign.
+	rUpNeg := classifyRegimeDivergence("ranging_directional_up", "trending_down", -0.05, 0, onDivergenceTrustShort)
+	if rUpNeg.Kind != DivergenceHard || rUpNeg.OverrideDir != DirectionLong {
+		t.Errorf("ranging_directional_up with negative snapReturnEff: label sign must win, got %+v", rUpNeg)
+	}
+
+	// down label → bearish, same direction as trending_down → none.
+	rDown := classifyRegimeDivergence("ranging_directional_down", "trending_down", 0, 0, onDivergenceTrustShort)
+	if rDown.Kind != DivergenceNone {
+		t.Errorf("ranging_directional_down vs trending_down: expected none (same bearish), got %q", rDown.Kind)
+	}
+
+	// up vs down labels → hard opposite.
+	rOpp := classifyRegimeDivergence("ranging_directional_up", "ranging_directional_down", 0, 0, onDivergenceTrustShort)
+	if rOpp.Kind != DivergenceHard {
+		t.Fatalf("up vs down: expected hard, got %q", rOpp.Kind)
+	}
+	if rOpp.OverrideDir != DirectionLong {
+		t.Errorf("up vs down trust_short: expected long, got %q", rOpp.OverrideDir)
+	}
+}
+
 // PR #916 fix 2: a typo'd window name must be rejected at validation time,
 // not silently no-op at runtime. The existence check runs in
 // validateStrategyRegimeVocabulary (after ResolveRaw), so this exercises the

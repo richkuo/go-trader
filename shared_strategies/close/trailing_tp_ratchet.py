@@ -85,10 +85,19 @@ def ratchet_close_default_group(label: str) -> Optional[str]:
     three composite ranging substates. Bare ADX "ranging" maps to the quiet
     ladder (pre-#1059 behavior). clean/choppy and ADX-trend labels delegate
     unchanged to regime_close_default_group. Mirrors ratchetCloseDefaultGroup in
-    scheduler/trailing_tp_ratchet.go."""
+    scheduler/trailing_tp_ratchet.go.
+
+    #1124: ranging_directional_up/down share the single ranging_directional
+    ratchet ladder by default. Routing them anywhere else (or letting them fall
+    through to regime_close_default_group → "ranging", which is ABSENT from
+    DEFAULT_RATCHET_TIERS_BY_GROUP) silently never-arms the auto-protective
+    ratchet exit. Operators wanting distinct geometry set explicit tp_tiers
+    keys for the new labels."""
     l = (label or "").strip()
     if l in ("ranging_quiet", "ranging_volatile", "ranging_directional"):
         return l
+    if l in ("ranging_directional_up", "ranging_directional_down"):
+        return "ranging_directional"
     if l == "ranging":
         return "ranging_quiet"
     return regime_close_default_group(l)

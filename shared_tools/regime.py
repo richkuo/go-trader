@@ -56,6 +56,8 @@ VALID_LABELS_COMPOSITE = frozenset({
     "ranging_quiet",
     "ranging_volatile",
     "ranging_directional",
+    "ranging_directional_up",
+    "ranging_directional_down",
 })
 # Back-compat alias for ADX-only callers
 _VALID_LABELS = VALID_LABELS_ADX
@@ -142,7 +144,7 @@ def map_composite_label(
     efficiency: float,
     thresholds: dict[str, float],
 ) -> str:
-    """Map the composite metric tuple to one of seven labels (#795).
+    """Map the composite metric tuple to one of nine labels (#795, #1124).
 
     Inputs are ATR-efficiency normalized so the thresholds are unit-consistent:
       return_eff — window net move / (per-bar ATR * period), signed, ~[-1, 1]
@@ -150,6 +152,14 @@ def map_composite_label(
       efficiency — Kaufman efficiency ratio |net move| / summed bar-to-bar
                    travel, ∈ [0, 1]; high = clean directional move, low = chop.
     `adx_val` corroborates the efficiency-based clean/choppy split.
+
+    #1124: the ranging-directional drift sign is baked into the label —
+    `ranging_directional_up` when return_eff > 0, `ranging_directional_down`
+    when return_eff < 0, and the bare `ranging_directional` when return_eff
+    is exactly zero. Because `ranging_directional` fires only when there is
+    no decisive net move (big_move false), return_eff is frequently near
+    zero, so the bare label is the neutral/back-compat fallback, not an edge
+    case. Existing configs keyed on bare `ranging_directional` keep working.
     """
     ret_th = float(thresholds.get("return_pct", _DEFAULT_COMPOSITE_THRESHOLDS["return_pct"]))
     range_th = float(thresholds.get("range_pct", _DEFAULT_COMPOSITE_THRESHOLDS["range_pct"]))
@@ -168,7 +178,13 @@ def map_composite_label(
         return "trending_down_clean" if clean else "trending_down_choppy"
     # No decisive net move → ranging family.
     if high_adx:
-        # Directional pressure without net follow-through.
+        # Directional pressure without net follow-through. Sign of the
+        # drift is baked into the label (#1124); exact-zero stays bare so
+        # the neutral/back-compat fallback is owned by the producer.
+        if return_eff > 0:
+            return "ranging_directional_up"
+        if return_eff < 0:
+            return "ranging_directional_down"
         return "ranging_directional"
     if wide:
         return "ranging_volatile"

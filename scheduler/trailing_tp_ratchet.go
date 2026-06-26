@@ -123,7 +123,17 @@ var ratchetTierGroupDefaults = map[string][]trailingRatchetTier{
 func ratchetCloseDefaultGroup(label string) (string, bool) {
 	l := strings.TrimSpace(label)
 	switch l {
-	case "ranging_quiet", "ranging_volatile", "ranging_directional":
+	case "ranging_quiet", "ranging_volatile", "ranging_directional",
+		"ranging_directional_up", "ranging_directional_down":
+		// #1124: the directional sub-labels share the single ranging_directional
+		// ratchet ladder by default. Routing them anywhere else (or letting them
+		// fall through to regimeCloseDefaultGroup → "ranging", which is ABSENT
+		// from ratchetTierGroupDefaults) silently never-arms the auto-protective
+		// ratchet exit. Operators wanting distinct geometry set explicit
+		// tp_tiers keys for the new labels.
+		if l == "ranging_directional_up" || l == "ranging_directional_down" {
+			return "ranging_directional", true
+		}
 		return l, true
 	case "ranging":
 		return "ranging_quiet", true

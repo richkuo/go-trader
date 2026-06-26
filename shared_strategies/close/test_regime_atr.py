@@ -195,3 +195,67 @@ def test_atr_multiple_canonical_only(regime_atr):
         both, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS
     )
     assert errs, "expected error when both atr_multiple and atr are set"
+
+
+# #1124: ranging_directional family — bare label covers _up/_down for
+# exhaustiveness; sub-labels-only is rejected; runtime Resolve falls back.
+_COMPOSITE_LABELS_1124 = (
+    "trending_up_clean",
+    "trending_up_choppy",
+    "trending_down_clean",
+    "trending_down_choppy",
+    "ranging_quiet",
+    "ranging_volatile",
+    "ranging_directional",
+    "ranging_directional_up",
+    "ranging_directional_down",
+)
+
+
+def _composite_block_atr(atr, omit=()):
+    return {
+        "trend_regime": {
+            l: {"atr_multiple": atr} for l in _COMPOSITE_LABELS_1124 if l not in omit
+        }
+    }
+
+
+def test_composite_bare_directional_covers_sublabels(regime_atr):
+    # 7-label block (bare ranging_directional present, no _up/_down keys) →
+    # the bare label covers the sub-labels → validates (back-compat).
+    raw = _composite_block_atr(1.5, omit=("ranging_directional_up", "ranging_directional_down"))
+    block, errs = regime_atr.parse_regime_atr_block(
+        raw, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS,
+        labels=_COMPOSITE_LABELS_1124,
+    )
+    assert errs == [], errs
+    # Runtime: a _up/_down stamp resolves via the bare fallback.
+    assert block.resolve("ranging_directional").atr == 1.5
+    assert block.resolve("ranging_directional_up").atr == 1.5
+    assert block.resolve("ranging_directional_down").atr == 1.5
+
+
+def test_composite_sublabels_without_bare_rejected(regime_atr):
+    # Sub-labels present but bare ranging_directional omitted → NOT exhaustive
+    # (the producer still emits the bare label at return_eff==0).
+    raw = _composite_block_atr(1.5, omit=("ranging_directional",))
+    _, errs = regime_atr.parse_regime_atr_block(
+        raw, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS,
+        labels=_COMPOSITE_LABELS_1124,
+    )
+    assert any(
+        "missing required regime labels" in e and "ranging_directional" in e for e in errs
+    ), errs
+
+
+def test_composite_explicit_sublabel_wins_over_bare(regime_atr):
+    # When an explicit sub-label key is present, it wins over the bare fallback.
+    raw = _composite_block_atr(1.5)
+    raw[regime_atr.REGIME_CLASSIFIER_KEY]["ranging_directional_up"] = {"atr_multiple": 0.9}
+    block, errs = regime_atr.parse_regime_atr_block(
+        raw, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS,
+        labels=_COMPOSITE_LABELS_1124,
+    )
+    assert errs == [], errs
+    assert block.resolve("ranging_directional_up").atr == 0.9
+    assert block.resolve("ranging_directional_down").atr == 1.5  # bare fallback

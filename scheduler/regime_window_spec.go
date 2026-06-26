@@ -136,6 +136,8 @@ func regimeLabelsForClassifier(classifier string) []string {
 			"ranging_quiet",
 			"ranging_volatile",
 			"ranging_directional",
+			"ranging_directional_up",
+			"ranging_directional_down",
 		}
 	default:
 		return append([]string(nil), canonicalTrendRegimeLabels...)

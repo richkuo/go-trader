@@ -59,8 +59,9 @@ func TestValidateRegimeATRConfig_CompositeStopLossExplicit(t *testing.T) {
 		t.Fatalf("composite stop_loss_atr_regime must validate, got: %v", errs)
 	}
 	block := cfg.Strategies[0].StopLossATRRegime
-	if got := len(block.TrendRegime); got != 7 {
-		t.Fatalf("block must be populated with all 7 composite labels, got %d: %v", got, block.TrendRegime)
+	wantN := len(regimeLabelsForClassifier(regimeClassifierComposite))
+	if got := len(block.TrendRegime); got != wantN {
+		t.Fatalf("block must be populated with all %d composite labels, got %d: %v", wantN, got, block.TrendRegime)
 	}
 	// Runtime SL resolution must succeed for a composite label (proves the
 	// authoritative pass populated the composite vocabulary, not ADX).
@@ -116,8 +117,8 @@ func TestValidateRegimeATRConfig_CompositeTrailingExplicit(t *testing.T) {
 	if errs := validateRegimeATRConfig(cfg); len(errs) != 0 {
 		t.Fatalf("composite trailing_stop_atr_regime must validate, got: %v", errs)
 	}
-	if got := len(cfg.Strategies[0].TrailingStopATRRegime.TrendRegime); got != 7 {
-		t.Fatalf("trailing block must hold 7 composite labels, got %d", got)
+	if got := len(cfg.Strategies[0].TrailingStopATRRegime.TrendRegime); got != len(regimeLabelsForClassifier(regimeClassifierComposite)) {
+		t.Fatalf("trailing block must hold all composite labels, got %d", got)
 	}
 }
 
@@ -168,6 +169,83 @@ func TestValidateRegimeATRConfig_CompositeMissingLabelRejected(t *testing.T) {
 	}
 	if !strings.Contains(joined, "classifier \"composite\"") {
 		t.Fatalf("error should carry composite classifier context, got: %v", errs)
+	}
+}
+
+// #1124: the ranging_directional family — bare label covers _up/_down for
+// exhaustiveness, so a legacy 7-label explicit block (no sub-label keys) still
+// validates under the now-9-label composite vocabulary (back-compat).
+func TestValidateRegimeATRConfig_CompositeBareDirectionalCoversSubLabels(t *testing.T) {
+	// 7-label block: every composite label except the new _up/_down, WITH bare
+	// ranging_directional present → the bare label covers the sub-labels.
+	raw := composite7StateATR(2.0)
+	// composite7StateATR already includes ranging_directional (bare) plus the
+	// other 6; it does NOT include _up/_down. Confirm bare is present.
+	if _, ok := raw["trend_regime"].(map[string]interface{})["ranging_directional"]; !ok {
+		t.Fatal("test fixture: expected bare ranging_directional key")
+	}
+	sc := StrategyConfig{
+		ID:                "hl-test",
+		Type:              "perps",
+		Platform:          "hyperliquid",
+		RegimeATRWindow:   "daily",
+		StopLossATRRegime: &RegimeATRBlock{raw: raw},
+	}
+	if errs := validateRegimeATRConfig(compositeRegimeCfg(sc)); len(errs) != 0 {
+		t.Fatalf("legacy 7-label block with bare ranging_directional must still validate, got: %v", errs)
+	}
+}
+
+// #1124: sub-labels-only (no bare ranging_directional) is NOT exhaustive — the
+// producer still emits the bare label at return_eff==0, so a block missing it
+// would silently never-arm on the neutral case. Must be rejected.
+func TestValidateRegimeATRConfig_CompositeSubLabelsWithoutBareRejected(t *testing.T) {
+	labels := regimeLabelsForClassifier(regimeClassifierComposite)
+	tr := make(map[string]interface{}, len(labels))
+	for _, l := range labels {
+		if l == "ranging_directional" {
+			continue // omit the bare label
+		}
+		tr[l] = map[string]interface{}{"atr_multiple": 2.0}
+	}
+	raw := map[string]interface{}{"trend_regime": tr}
+	sc := StrategyConfig{
+		ID:                "hl-test",
+		Type:              "perps",
+		Platform:          "hyperliquid",
+		RegimeATRWindow:   "daily",
+		StopLossATRRegime: &RegimeATRBlock{raw: raw},
+	}
+	errs := validateRegimeATRConfig(compositeRegimeCfg(sc))
+	joined := strings.Join(errs, "\n")
+	if !strings.Contains(joined, "ranging_directional") || !strings.Contains(joined, "missing required regime labels") {
+		t.Fatalf("expected missing bare ranging_directional error, got: %v", errs)
+	}
+}
+
+// #1124: runtime Resolve falls back from a _up/_down stamp to the bare
+// ranging_directional entry when the block carries no explicit sub-label key.
+func TestRegimeATRBlock_ResolveSubLabelFallsBackToBare(t *testing.T) {
+	raw := composite7StateATR(1.5)
+	sc := StrategyConfig{
+		ID:                "hl-test",
+		Type:              "perps",
+		Platform:          "hyperliquid",
+		RegimeATRWindow:   "daily",
+		StopLossATRRegime: &RegimeATRBlock{raw: raw},
+	}
+	if errs := validateRegimeATRConfig(compositeRegimeCfg(sc)); len(errs) != 0 {
+		t.Fatalf("fixture must validate, got: %v", errs)
+	}
+	block := *sc.StopLossATRRegime
+	if v, ok := block.Resolve("ranging_directional"); !ok || v.ATR != 1.5 {
+		t.Fatalf("bare resolve: got (%g, %v), want (1.5, true)", v.ATR, ok)
+	}
+	for _, sub := range []string{"ranging_directional_up", "ranging_directional_down"} {
+		v, ok := block.Resolve(sub)
+		if !ok || v.ATR != 1.5 {
+			t.Errorf("Resolve(%q): got (%g, %v), want (1.5, true) via bare fallback", sub, v.ATR, ok)
+		}
 	}
 }
 
@@ -256,8 +334,8 @@ func TestMapRegimeToBaselineFamily(t *testing.T) {
 func TestRegimeLabelsFromTierRaw(t *testing.T) {
 	raw := []interface{}{composite7StateTier(2.0, 0.5)}
 	got := regimeLabelsFromTierRaw(raw)
-	if len(got) != 7 {
-		t.Fatalf("expected 7 inferred labels, got %d: %v", len(got), got)
+	if len(got) != len(regimeLabelsForClassifier(regimeClassifierComposite)) {
+		t.Fatalf("expected all composite labels, got %d: %v", len(got), got)
 	}
 	// No per-regime keys → canonical ADX fallback.
 	if got := regimeLabelsFromTierRaw(nil); len(got) != 3 {

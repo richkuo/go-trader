@@ -187,6 +187,14 @@ def test_ratchet_close_default_group_differentiates_ranging_substates(ratchet):
     # the B2 ATR-TP use_defaults path would miss its map and never-arm (#1059).
     assert ratchet.regime_close_default_group("ranging_directional") == "ranging"
     assert ratchet.regime_close_default_group("ranging_volatile") == "ranging"
+    # #1124: directional sub-labels collapse to the directional ratchet ladder
+    # (never fall through to "ranging", which is absent from the ratchet tier
+    # defaults → silent never-arm of the auto-protective exit). The shared fn
+    # still collapses them to "ranging" for the B2 ATR-TP path.
+    assert g("ranging_directional_up") == "ranging_directional"
+    assert g("ranging_directional_down") == "ranging_directional"
+    assert ratchet.regime_close_default_group("ranging_directional_up") == "ranging"
+    assert ratchet.regime_close_default_group("ranging_directional_down") == "ranging"
 
 
 def test_resolve_tiers_for_regime_ranging_substates(ratchet):

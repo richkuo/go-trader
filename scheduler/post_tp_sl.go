@@ -76,8 +76,17 @@ func (b *RegimeFloatBlock) Resolve(regime string) (float64, bool) {
 	if b == nil || len(b.TrendRegime) == 0 {
 		return 0, false
 	}
-	v, ok := b.TrendRegime[strings.TrimSpace(regime)]
-	return v, ok
+	r := strings.TrimSpace(regime)
+	if v, ok := b.TrendRegime[r]; ok {
+		return v, true
+	}
+	// #1124: sub-label stamp falls back to the bare ranging_directional entry.
+	if r == "ranging_directional_up" || r == "ranging_directional_down" {
+		if v, ok := b.TrendRegime["ranging_directional"]; ok {
+			return v, true
+		}
+	}
+	return 0, false
 }
 
 func (b *RegimeFloatBlock) EqualForReload(other *RegimeFloatBlock) bool {
@@ -525,10 +534,17 @@ func parseRegimeFloatBlock(raw map[string]interface{}, ctxLabel string, labels [
 			ctxLabel, regimeClassifierKey, label, strings.Join(labels, ", ")))
 	}
 	missing := make([]string, 0)
+	// #1124: bare `ranging_directional` covers its _up/_down sub-labels for
+	// exhaustiveness (back-compat — resolves the whole family at runtime).
+	bareDirectional := trend["ranging_directional"] != nil
 	for _, label := range labels {
-		if _, ok := trend[label]; !ok {
-			missing = append(missing, label)
+		if _, ok := trend[label]; ok {
+			continue
 		}
+		if (label == "ranging_directional_up" || label == "ranging_directional_down") && bareDirectional {
+			continue
+		}
+		missing = append(missing, label)
 	}
 	if len(missing) > 0 {
 		errs = append(errs, fmt.Sprintf("%s.%s: missing required regime labels: %s (must be exhaustive — no silent fallback)",
