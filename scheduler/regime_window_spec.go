@@ -136,6 +136,15 @@ func regimeLabelsForClassifier(classifier string) []string {
 			"ranging_quiet",
 			"ranging_volatile",
 			"ranging_directional",
+			// #1124: directional-drift ranging substates. Adding them to the
+			// classifier vocabulary makes them valid for allowed_regimes gating,
+			// regime_directional_policy and *_atr_regime keys — and, by the same
+			// vocabulary, REQUIRED in explicit (non-use_defaults) trend_regime
+			// blocks under a composite window (exhaustiveness is fail-closed:
+			// a pre-#1124 explicit block missing them errors at load with
+			// "missing required regime labels", never silently no-ops).
+			"ranging_directional_up",
+			"ranging_directional_down",
 		}
 	default:
 		return append([]string(nil), canonicalTrendRegimeLabels...)

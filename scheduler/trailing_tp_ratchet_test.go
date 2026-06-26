@@ -398,8 +398,8 @@ func TestValidateTrailingTPRatchetClose_CompositeVocabulary(t *testing.T) {
 		return tbl
 	}
 	composite := regimeLabelsForClassifier(regimeClassifierComposite)
-	if len(composite) != 7 {
-		t.Fatalf("expected 7 composite labels, got %d", len(composite))
+	if len(composite) != 9 {
+		t.Fatalf("expected 9 composite labels, got %d", len(composite))
 	}
 
 	// #870: the regime variant's opening trail / SL owner is the per-regime
@@ -762,6 +762,21 @@ func TestDefaultTrailingRatchetTiersForRegime(t *testing.T) {
 	if defaultTrailingRatchetTiersForRegime("") != nil {
 		t.Error("empty regime must resolve to nil")
 	}
+	// #1124: the directional-drift substates must resolve to the SAME 4-tier
+	// ranging_directional ladder — never nil. A nil here would mean the ratchet
+	// (auto-protective exit) silently never arms for a ranging_directional_up/
+	// _down position.
+	for _, label := range []string{"ranging_directional_up", "ranging_directional_down"} {
+		got := defaultTrailingRatchetTiersForRegime(label)
+		if len(got) != len(dir) {
+			t.Fatalf("%s want %d tiers (parity with ranging_directional), got %+v", label, len(dir), got)
+		}
+		for i := range dir {
+			if got[i] != dir[i] {
+				t.Fatalf("%s tier[%d] = %+v, want %+v (ranging_directional ladder)", label, i, got[i], dir[i])
+			}
+		}
+	}
 }
 
 // TestRatchetCloseDefaultGroup covers #1059: the ratchet-only resolver
@@ -776,6 +791,9 @@ func TestRatchetCloseDefaultGroup(t *testing.T) {
 		{"ranging_quiet", "ranging_quiet", true},
 		{"ranging_volatile", "ranging_volatile", true},
 		{"ranging_directional", "ranging_directional", true},
+		// #1124: directional-drift substates share the ranging_directional ladder.
+		{"ranging_directional_up", "ranging_directional", true},
+		{"ranging_directional_down", "ranging_directional", true},
 		{"ranging", "ranging_quiet", true}, // bare ADX → quiet ladder
 		{"trending_up_clean", "clean", true},
 		{"trending_up_choppy", "choppy", true},

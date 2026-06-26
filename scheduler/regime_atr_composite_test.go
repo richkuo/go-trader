@@ -59,8 +59,8 @@ func TestValidateRegimeATRConfig_CompositeStopLossExplicit(t *testing.T) {
 		t.Fatalf("composite stop_loss_atr_regime must validate, got: %v", errs)
 	}
 	block := cfg.Strategies[0].StopLossATRRegime
-	if got := len(block.TrendRegime); got != 7 {
-		t.Fatalf("block must be populated with all 7 composite labels, got %d: %v", got, block.TrendRegime)
+	if got := len(block.TrendRegime); got != 9 {
+		t.Fatalf("block must be populated with all 9 composite labels, got %d: %v", got, block.TrendRegime)
 	}
 	// Runtime SL resolution must succeed for a composite label (proves the
 	// authoritative pass populated the composite vocabulary, not ADX).
@@ -116,8 +116,8 @@ func TestValidateRegimeATRConfig_CompositeTrailingExplicit(t *testing.T) {
 	if errs := validateRegimeATRConfig(cfg); len(errs) != 0 {
 		t.Fatalf("composite trailing_stop_atr_regime must validate, got: %v", errs)
 	}
-	if got := len(cfg.Strategies[0].TrailingStopATRRegime.TrendRegime); got != 7 {
-		t.Fatalf("trailing block must hold 7 composite labels, got %d", got)
+	if got := len(cfg.Strategies[0].TrailingStopATRRegime.TrendRegime); got != 9 {
+		t.Fatalf("trailing block must hold 9 composite labels, got %d", got)
 	}
 }
 
@@ -243,6 +243,10 @@ func TestMapRegimeToBaselineFamily(t *testing.T) {
 		{"trending_down_choppy", 2.0, true}, // composite prefix → trending_down
 		{"ranging_quiet", 1.5, true},        // composite prefix → ranging
 		{"ranging_directional", 1.5, true},
+		// #1124: directional-drift substates have no explicit StopLoss entry, so
+		// they fall to the ranging family by prefix — same as bare.
+		{"ranging_directional_up", 1.5, true},
+		{"ranging_directional_down", 1.5, true},
 		{"garbage", 0, false},
 	}
 	for _, tc := range cases {
@@ -251,13 +255,25 @@ func TestMapRegimeToBaselineFamily(t *testing.T) {
 			t.Errorf("mapRegimeToBaselineFamily(%q) = (%g, %v), want (%g, %v)", tc.label, e.ATR, ok, tc.wantATR, tc.wantOK)
 		}
 	}
+
+	// #1124 regression: on the Trailing baseline the directional-drift substates
+	// must resolve to the tight 1.0 ranging_directional trail via their EXPLICIT
+	// entries — NOT the wider 2.0 "ranging" family fallback. Without the explicit
+	// entries a use_defaults trailing block would silently loosen the trail.
+	trailing := regimeATRDefaults.Trailing
+	for _, label := range []string{"ranging_directional_up", "ranging_directional_down"} {
+		e, ok := mapRegimeToBaselineFamily(trailing, label)
+		if !ok || e.ATR != 1.0 {
+			t.Errorf("Trailing[%q] = (%g, %v), want (1.0, true) — explicit tight trail, not the 2.0 ranging family", label, e.ATR, ok)
+		}
+	}
 }
 
 func TestRegimeLabelsFromTierRaw(t *testing.T) {
 	raw := []interface{}{composite7StateTier(2.0, 0.5)}
 	got := regimeLabelsFromTierRaw(raw)
-	if len(got) != 7 {
-		t.Fatalf("expected 7 inferred labels, got %d: %v", len(got), got)
+	if len(got) != 9 {
+		t.Fatalf("expected 9 inferred labels, got %d: %v", len(got), got)
 	}
 	// No per-regime keys → canonical ADX fallback.
 	if got := regimeLabelsFromTierRaw(nil); len(got) != 3 {
@@ -298,7 +314,9 @@ func TestLoadConfig_CompositeStopLossAtrRegime(t *testing.T) {
 					"trending_down_choppy": {"atr_multiple": 1.2},
 					"ranging_quiet": {"atr_multiple": 1.5},
 					"ranging_volatile": {"atr_multiple": 1.0},
-					"ranging_directional": {"atr_multiple": 1.5}
+					"ranging_directional": {"atr_multiple": 1.5},
+					"ranging_directional_up": {"atr_multiple": 1.5},
+					"ranging_directional_down": {"atr_multiple": 1.5}
 				}
 			}
 		}]
@@ -308,11 +326,11 @@ func TestLoadConfig_CompositeStopLossAtrRegime(t *testing.T) {
 	}
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
-		t.Fatalf("LoadConfig must accept composite 7-state stop_loss_atr_regime, got: %v", err)
+		t.Fatalf("LoadConfig must accept composite 9-state stop_loss_atr_regime, got: %v", err)
 	}
 	block := cfg.Strategies[0].StopLossATRRegime
-	if block == nil || len(block.TrendRegime) != 7 {
-		t.Fatalf("composite SL block must be populated with 7 labels post-load, got %#v", block)
+	if block == nil || len(block.TrendRegime) != 9 {
+		t.Fatalf("composite SL block must be populated with 9 labels post-load, got %#v", block)
 	}
 	if v, ok := resolveRegimeATR(*block, "trending_down_choppy"); !ok || v != 1.2 {
 		t.Fatalf("runtime resolve trending_down_choppy = (%g, %v), want (1.2, true)", v, ok)

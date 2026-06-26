@@ -125,6 +125,15 @@ func ratchetCloseDefaultGroup(label string) (string, bool) {
 	switch l {
 	case "ranging_quiet", "ranging_volatile", "ranging_directional":
 		return l, true
+	case "ranging_directional_up", "ranging_directional_down":
+		// #1124: the directional-drift substates share the ranging_directional
+		// scale-out ladder (the geometry is direction-agnostic — the SL side
+		// carries direction, the TP scale-out does not). Map them to that group
+		// explicitly; otherwise they fall through to regimeCloseDefaultGroup's
+		// "ranging" key, which has NO ratchet ladder in ratchetTierGroupDefaults
+		// → defaultTrailingRatchetTiersForRegime returns nil → silent never-arm
+		// of the auto-protective ratchet exit (money path).
+		return "ranging_directional", true
 	case "ranging":
 		return "ranging_quiet", true
 	}

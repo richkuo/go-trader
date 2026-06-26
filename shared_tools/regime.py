@@ -56,6 +56,11 @@ VALID_LABELS_COMPOSITE = frozenset({
     "ranging_quiet",
     "ranging_volatile",
     "ranging_directional",
+    # #1124: directional-drift ranging substates. map_composite_label names the
+    # drift via return_eff's sign; bare ranging_directional stays valid for the
+    # exactly-zero case.
+    "ranging_directional_up",
+    "ranging_directional_down",
 })
 # Back-compat alias for ADX-only callers
 _VALID_LABELS = VALID_LABELS_ADX
@@ -168,7 +173,16 @@ def map_composite_label(
         return "trending_down_clean" if clean else "trending_down_choppy"
     # No decisive net move → ranging family.
     if high_adx:
-        # Directional pressure without net follow-through.
+        # Directional pressure without net follow-through (#1124). return_eff's
+        # sign names the drift so the label carries direction, mirroring the
+        # trending family's _up/_down split. Bare ranging_directional is the
+        # producer-side fallback for the exactly-zero case (a common path here,
+        # since big_move is false so return_eff is frequently near zero) — so
+        # back-compat lives in this SSoT, not in each downstream resolver.
+        if return_eff > 0:
+            return "ranging_directional_up"
+        if return_eff < 0:
+            return "ranging_directional_down"
         return "ranging_directional"
     if wide:
         return "ranging_volatile"

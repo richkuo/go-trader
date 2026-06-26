@@ -89,6 +89,13 @@ def ratchet_close_default_group(label: str) -> Optional[str]:
     l = (label or "").strip()
     if l in ("ranging_quiet", "ranging_volatile", "ranging_directional"):
         return l
+    # #1124: the directional-drift substates share the ranging_directional
+    # scale-out ladder (the geometry is direction-agnostic — the SL side carries
+    # direction, the TP scale-out does not), so map them to that group rather
+    # than fall through to regime_close_default_group's "ranging" (which has no
+    # ratchet ladder → silent never-arm of the protective exit).
+    if l in ("ranging_directional_up", "ranging_directional_down"):
+        return "ranging_directional"
     if l == "ranging":
         return "ranging_quiet"
     return regime_close_default_group(l)

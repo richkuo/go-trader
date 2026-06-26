@@ -275,7 +275,7 @@ func TestValidateStrategyRegimeVocabulary_RejectsBadProfileWindow(t *testing.T) 
 	var a RegimeProfileAllocation
 	if err := json.Unmarshal([]byte(`{
 		"window": "does_not_exist",
-		"profiles": {"trending_up_clean":"trend","trending_up_choppy":"trend","trending_down_clean":"trend","trending_down_choppy":"trend","ranging_quiet":"fade","ranging_volatile":"fade","ranging_directional":"fade"},
+		"profiles": {"trending_up_clean":"trend","trending_up_choppy":"trend","trending_down_clean":"trend","trending_down_choppy":"trend","ranging_quiet":"fade","ranging_volatile":"fade","ranging_directional":"fade","ranging_directional_up":"fade","ranging_directional_down":"fade"},
 		"param_sets": {"fade": {"trend_entry":"off"}, "trend": {"trend_entry":"breakout"}},
 		"confirm_bars": 24,
 		"initial_profile": "fade"
@@ -299,7 +299,7 @@ func TestValidateStrategyRegimeVocabulary_AcceptsGoodProfileAllocation(t *testin
 	var a RegimeProfileAllocation
 	if err := json.Unmarshal([]byte(`{
 		"window": "profile_long",
-		"profiles": {"trending_up_clean":"trend","trending_up_choppy":"trend","trending_down_clean":"trend","trending_down_choppy":"trend","ranging_quiet":"fade","ranging_volatile":"fade","ranging_directional":"fade"},
+		"profiles": {"trending_up_clean":"trend","trending_up_choppy":"trend","trending_down_clean":"trend","trending_down_choppy":"trend","ranging_quiet":"fade","ranging_volatile":"fade","ranging_directional":"fade","ranging_directional_up":"fade","ranging_directional_down":"fade"},
 		"param_sets": {"fade": {"trend_entry":"off"}, "trend": {"trend_entry":"breakout"}},
 		"confirm_bars": 24,
 		"initial_profile": "fade"
@@ -391,7 +391,7 @@ func fullProfileAllocConfig(t *testing.T, palJSON string) Config {
 
 const validPALJSON = `{
 	"window": "profile_long",
-	"profiles": {"trending_up_clean":"trend","trending_up_choppy":"trend","trending_down_clean":"trend","trending_down_choppy":"trend","ranging_quiet":"fade","ranging_volatile":"fade","ranging_directional":"fade"},
+	"profiles": {"trending_up_clean":"trend","trending_up_choppy":"trend","trending_down_clean":"trend","trending_down_choppy":"trend","ranging_quiet":"fade","ranging_volatile":"fade","ranging_directional":"fade","ranging_directional_up":"fade","ranging_directional_down":"fade"},
 	"param_sets": {"fade": {"trend_entry":"off"}, "trend": {"trend_entry":"breakout"}},
 	"confirm_bars": 24,
 	"initial_profile": "fade"
@@ -466,7 +466,7 @@ func TestLoadConfig_ProfileAllocation_FromFile(t *testing.T) {
 			"direction": "long",
 			"regime_profile_allocation": {
 				"window": "profile_long",
-				"profiles": {"trending_up_clean":"trend","trending_up_choppy":"trend","trending_down_clean":"trend","trending_down_choppy":"trend","ranging_quiet":"fade","ranging_volatile":"fade","ranging_directional":"fade"},
+				"profiles": {"trending_up_clean":"trend","trending_up_choppy":"trend","trending_down_clean":"trend","trending_down_choppy":"trend","ranging_quiet":"fade","ranging_volatile":"fade","ranging_directional":"fade","ranging_directional_up":"fade","ranging_directional_down":"fade"},
 				"param_sets": {"fade": {"trend_entry":"off"}, "trend": {"trend_entry":"breakout","trend_drift_confirm":0.1}},
 				"confirm_bars": 24,
 				"initial_profile": "fade"

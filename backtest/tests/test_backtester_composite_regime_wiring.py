@@ -613,6 +613,8 @@ _COMPOSITE_SL_BLOCK = {"trend_regime": {
     "ranging_quiet": {"atr_multiple": 1.2},
     "ranging_volatile": {"atr_multiple": 1.5},
     "ranging_directional": {"atr_multiple": 1.4},
+    "ranging_directional_up": {"atr_multiple": 1.4},
+    "ranging_directional_down": {"atr_multiple": 1.4},
 }}
 _ADX_SL_BLOCK = {"trend_regime": {
     "trending_up": {"atr_multiple": 2.0},

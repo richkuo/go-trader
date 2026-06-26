@@ -122,6 +122,28 @@ func TestClassifyRegimeDivergence_RangingDirectionalSign(t *testing.T) {
 	}
 }
 
+// TestClassifyRegimeDivergence_RangingDirectionalExplicit covers #1124: the
+// explicit _up/_down labels carry their bias in the name, so the divergence
+// verdict is fixed regardless of the (now redundant) return_eff snapshot.
+func TestClassifyRegimeDivergence_RangingDirectionalExplicit(t *testing.T) {
+	// ranging_directional_up → bullish → hard divergence vs trending_down,
+	// even with a contradicting (stale) return_eff snapshot of 0.
+	up := classifyRegimeDivergence("ranging_directional_up", "trending_down", 0, 0, onDivergenceTrustShort)
+	if up.Kind != DivergenceHard || up.OverrideDir != DirectionLong {
+		t.Fatalf("ranging_directional_up: want hard/long, got %q/%q", up.Kind, up.OverrideDir)
+	}
+	// ranging_directional_down → bearish → same side as trending_down → none.
+	down := classifyRegimeDivergence("ranging_directional_down", "trending_down", 0.99, 0, onDivergenceTrustShort)
+	if down.Kind != DivergenceNone {
+		t.Fatalf("ranging_directional_down vs trending_down: want none, got %q", down.Kind)
+	}
+	// ranging_directional_down → bearish → hard divergence vs trending_up.
+	downVsUp := classifyRegimeDivergence("ranging_directional_down", "trending_up", 0, 0, onDivergenceTrustShort)
+	if downVsUp.Kind != DivergenceHard || downVsUp.OverrideDir != DirectionShort {
+		t.Fatalf("ranging_directional_down vs trending_up: want hard/short, got %q/%q", downVsUp.Kind, downVsUp.OverrideDir)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // RegimeWindowDivergence config + ResolveRaw
 // ---------------------------------------------------------------------------

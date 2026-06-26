@@ -131,6 +131,12 @@ REGIME_ATR_DEFAULTS_TRAILING: Dict[str, RegimeATREntry] = {
     "ranging_quiet": RegimeATREntry(atr=1.0),
     "ranging_volatile": RegimeATREntry(atr=1.0),
     "ranging_directional": RegimeATREntry(atr=1.0),
+    # #1124: directional-drift substates inherit the tight ranging_directional
+    # opening trail (1.0). Explicit entries are required because resolve() is a
+    # strict key lookup — without them a use_defaults block would leave these
+    # labels unresolved.
+    "ranging_directional_up": RegimeATREntry(atr=1.0),
+    "ranging_directional_down": RegimeATREntry(atr=1.0),
 }
 
 # #870: per-quality-group default ATR take-profit ladders. Mirrors

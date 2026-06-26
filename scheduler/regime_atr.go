@@ -236,6 +236,12 @@ var regimeATRDefaults = struct {
 		"ranging_quiet":        {ATR: 1.0},
 		"ranging_volatile":     {ATR: 1.0},
 		"ranging_directional":  {ATR: 1.0},
+		// #1124: directional-drift substates inherit the tight ranging_directional
+		// opening trail (1.0). Explicit entries keep parity with the bare label —
+		// without them mapRegimeToBaselineFamily would fall the _up/_down labels
+		// back to the wider "ranging" family (2.0), silently loosening the trail.
+		"ranging_directional_up":   {ATR: 1.0},
+		"ranging_directional_down": {ATR: 1.0},
 	},
 }
 
@@ -278,7 +284,7 @@ var regimeTPTierGroupDefaults = map[string][]hlProtectionTier{
 var regimeTPFleetDefaultLabelsByGroup = map[string][]string{
 	"clean":   {"trending_up_clean", "trending_down_clean"},
 	"choppy":  {"trending_up", "trending_down", "trending_up_choppy", "trending_down_choppy"},
-	"ranging": {"ranging", "ranging_quiet", "ranging_volatile", "ranging_directional"},
+	"ranging": {"ranging", "ranging_quiet", "ranging_volatile", "ranging_directional", "ranging_directional_up", "ranging_directional_down"},
 }
 
 // defaultRegimeBlockForSurface returns the baseline trend_regime map for a

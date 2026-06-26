@@ -243,7 +243,16 @@ func regimeLabelBias(label string, snapReturnEff float64) divergenceBias {
 		return biasBullish
 	case "trending_down", "trending_down_clean", "trending_down_choppy":
 		return biasBearish
+	case "ranging_directional_up":
+		// #1124: the label carries the drift direction directly, so the bias is
+		// fixed regardless of snapReturnEff.
+		return biasBullish
+	case "ranging_directional_down":
+		return biasBearish
 	case "ranging_directional":
+		// Bare label: the producer emits it only when return_eff == 0 exactly,
+		// but a stale/legacy snapshot may still carry a nonzero return_eff, so
+		// keep resolving the sign as the tie-break for back-compat.
 		if snapReturnEff > 0 {
 			return biasBullish
 		}

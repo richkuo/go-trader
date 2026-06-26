@@ -156,12 +156,13 @@ func TestManualDefault_RegimeComposite_SelectsRatchetRegime(t *testing.T) {
 		t.Fatalf("StopLossATRMult = %v, want nil", *sc.StopLossATRMult)
 	}
 	block := sc.TrailingStopATRRegime
-	if block == nil || len(block.TrendRegime) != 7 {
-		t.Fatalf("trailing_stop_atr_regime must resolve to 7 composite labels, got %#v", block)
+	if block == nil || len(block.TrendRegime) != 9 {
+		t.Fatalf("trailing_stop_atr_regime must resolve to 9 composite labels, got %#v", block)
 	}
 	for _, label := range []string{
 		"trending_up_clean", "trending_up_choppy", "trending_down_clean",
 		"trending_down_choppy", "ranging_quiet", "ranging_volatile", "ranging_directional",
+		"ranging_directional_up", "ranging_directional_down",
 	} {
 		if v, ok := resolveRegimeATR(*block, label); !ok || v <= 0 {
 			t.Fatalf("opening trail for composite label %q = (%g, %v), want positive", label, v, ok)
