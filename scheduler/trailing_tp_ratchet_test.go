@@ -382,7 +382,7 @@ func TestValidateTrailingTPRatchetClose_RejectsFirstRungLooserThanInitial(t *tes
 }
 
 // TestValidateTrailingTPRatchetClose_CompositeVocabulary proves the regime form
-// validates cleanly against the 7-state composite classifier when the strategy's
+// validates cleanly against the composite classifier when the strategy's
 // regime_atr_window opts into it (and rejects an ADX-only label under composite).
 func TestValidateTrailingTPRatchetClose_CompositeVocabulary(t *testing.T) {
 	tierList := []interface{}{
@@ -398,8 +398,8 @@ func TestValidateTrailingTPRatchetClose_CompositeVocabulary(t *testing.T) {
 		return tbl
 	}
 	composite := regimeLabelsForClassifier(regimeClassifierComposite)
-	if len(composite) != 7 {
-		t.Fatalf("expected 7 composite labels, got %d", len(composite))
+	if len(composite) == 0 {
+		t.Fatalf("expected composite labels, got %d", len(composite))
 	}
 
 	// #870: the regime variant's opening trail / SL owner is the per-regime
@@ -776,6 +776,8 @@ func TestRatchetCloseDefaultGroup(t *testing.T) {
 		{"ranging_quiet", "ranging_quiet", true},
 		{"ranging_volatile", "ranging_volatile", true},
 		{"ranging_directional", "ranging_directional", true},
+		{"ranging_directional_up", "ranging_directional", true},
+		{"ranging_directional_down", "ranging_directional", true},
 		{"ranging", "ranging_quiet", true}, // bare ADX → quiet ladder
 		{"trending_up_clean", "clean", true},
 		{"trending_up_choppy", "choppy", true},

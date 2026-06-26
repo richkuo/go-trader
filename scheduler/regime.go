@@ -1,5 +1,40 @@
 package main
 
+import "strings"
+
+const (
+	regimeLabelRangingDirectional     = "ranging_directional"
+	regimeLabelRangingDirectionalUp   = "ranging_directional_up"
+	regimeLabelRangingDirectionalDown = "ranging_directional_down"
+)
+
+func regimeLookupLabel(label string) string {
+	label = strings.TrimSpace(label)
+	switch label {
+	case regimeLabelRangingDirectionalUp, regimeLabelRangingDirectionalDown:
+		return regimeLabelRangingDirectional
+	default:
+		return label
+	}
+}
+
+func regimeLabelCoveredBySeen(label string, seen map[string]bool) bool {
+	label = strings.TrimSpace(label)
+	if seen[label] {
+		return true
+	}
+	return regimeLookupLabel(label) != label && seen[regimeLookupLabel(label)]
+}
+
+func regimeLabelMatchesConfig(configured, current string) bool {
+	configured = strings.TrimSpace(configured)
+	current = strings.TrimSpace(current)
+	if configured == current {
+		return true
+	}
+	return configured == regimeLabelRangingDirectional && regimeLookupLabel(current) == configured
+}
+
 // regimeAllowsEntry reports whether the current market regime permits a new
 // entry for a strategy. Returns true when:
 //   - allowed is empty (no gate configured), OR
@@ -13,7 +48,7 @@ func regimeAllowsEntry(allowed []string, current string) bool {
 		return true
 	}
 	for _, label := range allowed {
-		if label == current {
+		if regimeLabelMatchesConfig(label, current) {
 			return true
 		}
 	}

@@ -176,6 +176,8 @@ def test_ratchet_close_default_group_differentiates_ranging_substates(ratchet):
     assert g("ranging_quiet") == "ranging_quiet"
     assert g("ranging_volatile") == "ranging_volatile"
     assert g("ranging_directional") == "ranging_directional"
+    assert g("ranging_directional_up") == "ranging_directional"
+    assert g("ranging_directional_down") == "ranging_directional"
     # Bare ADX "ranging" (no substate signal) → quiet ladder (pre-#1059 behavior).
     assert g("ranging") == "ranging_quiet"
     # clean/choppy/trend labels delegate to the shared fn, unchanged.
@@ -207,6 +209,12 @@ def test_resolve_tiers_for_regime_ranging_substates(ratchet):
     assert [t[0] for t in directional] == [1.0, 2.0, 3.0, 4.5]
     assert [t[1] for t in directional] == [0.25, 0.50, 0.75, 0.75]
     assert [t[2] for t in directional] == [1.0, 1.0, 0.8, 0.6]  # trail non-increasing
+
+    directional_up, errs = ratchet.resolve_tiers_for_regime(
+        {"use_defaults": True}, "ranging_directional_up", regime_table=True,
+    )
+    assert errs == []
+    assert directional_up == directional
 
     # Bare ADX "ranging" still resolves to the quiet ladder (unchanged pre-#1059).
     adx_ranging, errs = ratchet.resolve_tiers_for_regime(

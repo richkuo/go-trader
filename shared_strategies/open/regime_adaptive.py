@@ -28,7 +28,7 @@ classifier uses (ADX period capped at 14, mirroring
     clean    = efficiency >= efficiency_threshold AND adx >= adx_threshold
     big_move & clean        → trending_{up,down}_clean   (breakout mode)
     big_move & !clean       → trending_{up,down}_choppy  (mean-reversion mode)
-    !big_move & high adx    → ranging_directional        (no entries)
+    !big_move & high adx    → ranging_directional_{up,down} / neutral (no entries)
     !big_move & wide range  → ranging_volatile           (mean-reversion mode)
     otherwise               → ranging_quiet              (mean-reversion mode)
 
@@ -36,9 +36,9 @@ The choppy-trend labels take mean-reversion mode because a swing inside a
 broader range *is* a big low-efficiency net move: the z-recovery bar that
 confirms a fade almost definitionally carries a large trailing return, so
 restricting fades to the ``ranging_*`` labels would make them unreachable.
-Only ``ranging_directional`` (high-ADX grind without a decisive move) stays
-entry-free — fading a directional grind is the falling-knife case the #956
-audit showed unfiltered mean reversion dying on.
+Only the ``ranging_directional*`` family (high-ADX grind without a decisive
+move) stays entry-free — fading a directional grind is the falling-knife case
+the #956 audit showed unfiltered mean reversion dying on.
 
 Entries
 -------
@@ -93,6 +93,8 @@ _TREND_DOWN_CHOPPY = -2
 _RANGING_DIRECTIONAL = 3
 _RANGING_VOLATILE = 4
 _RANGING_QUIET = 5
+_RANGING_DIRECTIONAL_UP = 6
+_RANGING_DIRECTIONAL_DOWN = 7
 
 _LABEL_NAMES = {
     _WARMUP: "",
@@ -101,6 +103,8 @@ _LABEL_NAMES = {
     _TREND_DOWN_CLEAN: "trending_down_clean",
     _TREND_DOWN_CHOPPY: "trending_down_choppy",
     _RANGING_DIRECTIONAL: "ranging_directional",
+    _RANGING_DIRECTIONAL_UP: "ranging_directional_up",
+    _RANGING_DIRECTIONAL_DOWN: "ranging_directional_down",
     _RANGING_VOLATILE: "ranging_volatile",
     _RANGING_QUIET: "ranging_quiet",
 }
@@ -127,7 +131,7 @@ def regime_adaptive_core(
     ----------
     df : DataFrame with open, high, low, close, volume columns
     period : composite metric window (return/range/efficiency + ATR normalization)
-    adx_threshold : minimum ADX for the clean-trend / ranging_directional split
+    adx_threshold : minimum ADX for the clean-trend / ranging_directional* split
         (composite classifier default 25; tuned to 20 by walk-forward stability)
     return_eff_threshold : minimum |return_eff| for a decisive net move
         (mirrors composite ``return_pct``, default 0.05)
@@ -221,6 +225,8 @@ def regime_adaptive_core(
             big_move & up,
             big_move & clean,
             big_move,
+            high_adx & up,
+            high_adx & (return_eff < 0),
             high_adx,
             wide,
         ],
@@ -230,6 +236,8 @@ def regime_adaptive_core(
             _TREND_UP_CHOPPY,
             _TREND_DOWN_CLEAN,
             _TREND_DOWN_CHOPPY,
+            _RANGING_DIRECTIONAL_UP,
+            _RANGING_DIRECTIONAL_DOWN,
             _RANGING_DIRECTIONAL,
             _RANGING_VOLATILE,
         ],

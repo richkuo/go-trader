@@ -1,8 +1,8 @@
 """Market regime detection for go-trader check scripts.
 
-Supports per-window classifiers (#795):
+Supports per-window classifiers (#795/#1124):
   adx       — 3-state Wilder ADX + DI (default)
-  composite — 7-state return/ADX/range tuple
+  composite — return/ADX/range tuple with explicit directional ranging labels
 
 Usage in check scripts (after data fetch and before apply_strategy):
 
@@ -56,6 +56,8 @@ VALID_LABELS_COMPOSITE = frozenset({
     "ranging_quiet",
     "ranging_volatile",
     "ranging_directional",
+    "ranging_directional_up",
+    "ranging_directional_down",
 })
 # Back-compat alias for ADX-only callers
 _VALID_LABELS = VALID_LABELS_ADX
@@ -142,7 +144,7 @@ def map_composite_label(
     efficiency: float,
     thresholds: dict[str, float],
 ) -> str:
-    """Map the composite metric tuple to one of seven labels (#795).
+    """Map the composite metric tuple to a composite regime label (#795/#1124).
 
     Inputs are ATR-efficiency normalized so the thresholds are unit-consistent:
       return_eff — window net move / (per-bar ATR * period), signed, ~[-1, 1]
@@ -169,6 +171,10 @@ def map_composite_label(
     # No decisive net move → ranging family.
     if high_adx:
         # Directional pressure without net follow-through.
+        if return_eff > 0:
+            return "ranging_directional_up"
+        if return_eff < 0:
+            return "ranging_directional_down"
         return "ranging_directional"
     if wide:
         return "ranging_volatile"

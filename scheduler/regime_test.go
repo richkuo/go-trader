@@ -122,6 +122,19 @@ func TestRegimeAllowsEntry_MatchingLabel(t *testing.T) {
 	}
 }
 
+func TestRegimeAllowsEntry_RangingDirectionalFamilyFallback(t *testing.T) {
+	allowed := []string{"ranging_directional"}
+	if !regimeAllowsEntry(allowed, "ranging_directional_up") {
+		t.Error("bare ranging_directional should allow ranging_directional_up")
+	}
+	if !regimeAllowsEntry(allowed, "ranging_directional_down") {
+		t.Error("bare ranging_directional should allow ranging_directional_down")
+	}
+	if regimeAllowsEntry([]string{"ranging_directional_up"}, "ranging_directional_down") {
+		t.Error("explicit ranging_directional_up must not allow ranging_directional_down")
+	}
+}
+
 func TestRegimeAllowsEntry_NonMatchingLabel(t *testing.T) {
 	allowed := []string{"trending_up", "trending_down"}
 	if regimeAllowsEntry(allowed, "ranging") {

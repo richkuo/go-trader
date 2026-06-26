@@ -14,7 +14,11 @@ from _helpers import (
     float_from,
     tier_list_from_params,
 )
-from regime_atr import CANONICAL_TREND_REGIME_LABELS, regime_close_default_group
+from regime_atr import (
+    CANONICAL_TREND_REGIME_LABELS,
+    regime_close_default_group,
+    regime_lookup_label,
+)
 
 # DEFAULT_RATCHET_TIERS is the conservative fallback ladder (#866) used when the
 # SCALAR trailing_tp_ratchet omits tp_tiers (or sets use_defaults:true). It
@@ -89,6 +93,8 @@ def ratchet_close_default_group(label: str) -> Optional[str]:
     l = (label or "").strip()
     if l in ("ranging_quiet", "ranging_volatile", "ranging_directional"):
         return l
+    if l in ("ranging_directional_up", "ranging_directional_down"):
+        return "ranging_directional"
     if l == "ranging":
         return "ranging_quiet"
     return regime_close_default_group(l)
@@ -216,6 +222,8 @@ def resolve_tiers_for_regime(
         if not label:
             return [], ["noop:missing_position_regime"]
         block = raw.get(label)
+        if block is None:
+            block = raw.get(regime_lookup_label(label))
         if block is None:
             return [], [f"tp_tiers: missing regime key {label!r}"]
         tiers, terr = _parse_scalar_tiers(block)

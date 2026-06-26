@@ -54,6 +54,32 @@ def test_trailing_use_defaults_composite_clean(regime_atr):
         assert regime_atr.resolve_regime_atr(block, label) == 2.0
     assert regime_atr.resolve_regime_atr(block, "trending_up_choppy") == 2.0
     assert regime_atr.resolve_regime_atr(block, "ranging_quiet") == 1.0
+    assert regime_atr.resolve_regime_atr(block, "ranging_directional_up") == 1.0
+    assert regime_atr.resolve_regime_atr(block, "ranging_directional_down") == 1.0
+
+
+def test_ranging_directional_split_falls_back_to_bare_key(regime_atr):
+    labels = (
+        "trending_up_clean", "trending_up_choppy",
+        "trending_down_clean", "trending_down_choppy",
+        "ranging_quiet", "ranging_volatile", "ranging_directional",
+        "ranging_directional_up", "ranging_directional_down",
+    )
+    raw = {regime_atr.REGIME_CLASSIFIER_KEY: {
+        "trending_up_clean": {"atr_multiple": 2.0},
+        "trending_up_choppy": {"atr_multiple": 2.0},
+        "trending_down_clean": {"atr_multiple": 2.0},
+        "trending_down_choppy": {"atr_multiple": 2.0},
+        "ranging_quiet": {"atr_multiple": 1.0},
+        "ranging_volatile": {"atr_multiple": 1.0},
+        "ranging_directional": {"atr_multiple": 1.25},
+    }}
+    block, errs = regime_atr.parse_regime_atr_block(
+        raw, "trailing_stop_atr_regime", regime_atr.SURFACE_TRAILING, labels=labels,
+    )
+    assert errs == []
+    assert regime_atr.resolve_regime_atr(block, "ranging_directional_up") == 1.25
+    assert regime_atr.resolve_regime_atr(block, "ranging_directional_down") == 1.25
 
 
 def test_rejects_bare_label_keys(regime_atr):

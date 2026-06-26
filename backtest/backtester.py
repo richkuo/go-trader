@@ -89,6 +89,24 @@ _close_registry = None
 # don't pay the import cost.
 _ensure_regime_fn = None
 
+
+def _regime_lookup_label(label: str) -> str:
+    label = (label or "").strip()
+    if label in ("ranging_directional_up", "ranging_directional_down"):
+        return "ranging_directional"
+    return label
+
+
+def _regime_label_allowed(allowed: list[str], current: str) -> bool:
+    current = (current or "").strip()
+    for label in allowed:
+        configured = (label or "").strip()
+        if configured == current:
+            return True
+        if configured == "ranging_directional" and _regime_lookup_label(current) == configured:
+            return True
+    return False
+
 # Post-TP SL helpers (#709). Loaded via spec_from_file_location to avoid the
 # same registry-name collision that close_registry_loader works around — this
 # module lives in shared_strategies/close/ but isn't a registered strategy,
@@ -1725,7 +1743,7 @@ class Backtester:
             regime_blocked = (
                 self.regime_enabled
                 and bool(self.allowed_regimes)
-                and bar_regime not in self.allowed_regimes
+                and not _regime_label_allowed(self.allowed_regimes, bar_regime)
             )
 
             if uses_open_close:

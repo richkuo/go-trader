@@ -120,6 +120,15 @@ func TestClassifyRegimeDivergence_RangingDirectionalSign(t *testing.T) {
 	if r3.Kind != DivergenceSoft {
 		t.Errorf("zero return_eff: expected soft, got %q", r3.Kind)
 	}
+
+	r4 := classifyRegimeDivergence("ranging_directional_up", "trending_down", 0, 0, onDivergenceTrustShort)
+	if r4.Kind != DivergenceHard || r4.OverrideDir != DirectionLong {
+		t.Errorf("ranging_directional_up: got kind=%q dir=%q, want hard/long", r4.Kind, r4.OverrideDir)
+	}
+	r5 := classifyRegimeDivergence("ranging_directional_down", "trending_up", 0, 0, onDivergenceTrustShort)
+	if r5.Kind != DivergenceHard || r5.OverrideDir != DirectionShort {
+		t.Errorf("ranging_directional_down: got kind=%q dir=%q, want hard/short", r5.Kind, r5.OverrideDir)
+	}
 }
 
 // ---------------------------------------------------------------------------

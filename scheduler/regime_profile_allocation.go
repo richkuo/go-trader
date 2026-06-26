@@ -263,8 +263,12 @@ func (a *RegimeProfileAllocation) ResolveRaw(label string, labels []string) []st
 		errs = append(errs, fmt.Sprintf("%s.initial_profile=%q is not a param_sets profile (valid: %s)", label, initialProfile, strings.Join(sortedKeys(paramSets), ", ")))
 	}
 	// Every classifier label must be covered by profiles.
+	seenProfiles := make(map[string]bool, len(profiles))
+	for lbl := range profiles {
+		seenProfiles[lbl] = true
+	}
 	for _, l := range labels {
-		if _, ok := profiles[l]; !ok {
+		if !regimeLabelCoveredBySeen(l, seenProfiles) {
 			errs = append(errs, fmt.Sprintf("%s.profiles: missing mapping for regime label %q (every label of the window classifier must map to a profile)", label, l))
 		}
 	}
@@ -390,6 +394,9 @@ func resolveRegimeProfile(alloc *RegimeProfileAllocation, label, barTime string,
 	desired := ""
 	if label != "" {
 		desired = alloc.Profiles[label]
+		if desired == "" {
+			desired = alloc.Profiles[regimeLookupLabel(label)]
+		}
 	}
 
 	barAdvanced := barTime != "" && barTime != next.LastBarTime

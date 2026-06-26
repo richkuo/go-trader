@@ -61,9 +61,9 @@ bucket label does not flip on one native recovery bar, so fades in true
 ranges stay reachable without that hack (``fade_labels="all_mr"`` restores
 the #967 mapping for comparison).
 
-``ranging_directional`` (high-ADX grind without a decisive move) stays
-entry-free — fading a directional grind is the falling-knife case the #956
-audit showed unfiltered mean reversion dying on. Fades exit at the mean
+The ``ranging_directional*`` family (high-ADX grind without a decisive move)
+stays entry-free — fading a directional grind is the falling-knife case the
+#956 audit showed unfiltered mean reversion dying on. Fades exit at the mean
 (``mr_exit_z``) or when a confirmed *clean* trend ignites against them; the
 slow-trend drift veto from #967 (ATR-normalized net move over
 ``slow_trend_lookback`` native bars opposing the fade side) is retained — it
@@ -101,6 +101,8 @@ _TREND_DOWN_CHOPPY = -2
 _RANGING_DIRECTIONAL = 3
 _RANGING_VOLATILE = 4
 _RANGING_QUIET = 5
+_RANGING_DIRECTIONAL_UP = 6
+_RANGING_DIRECTIONAL_DOWN = 7
 
 _LABEL_NAMES = {
     _WARMUP: "",
@@ -109,6 +111,8 @@ _LABEL_NAMES = {
     _TREND_DOWN_CLEAN: "trending_down_clean",
     _TREND_DOWN_CHOPPY: "trending_down_choppy",
     _RANGING_DIRECTIONAL: "ranging_directional",
+    _RANGING_DIRECTIONAL_UP: "ranging_directional_up",
+    _RANGING_DIRECTIONAL_DOWN: "ranging_directional_down",
     _RANGING_VOLATILE: "ranging_volatile",
     _RANGING_QUIET: "ranging_quiet",
 }
@@ -175,6 +179,8 @@ def _classify_buckets(
             big_move & up,
             big_move & clean,
             big_move,
+            high_adx & up,
+            high_adx & (return_eff < 0),
             high_adx,
             wide,
         ],
@@ -184,6 +190,8 @@ def _classify_buckets(
             _TREND_UP_CHOPPY,
             _TREND_DOWN_CLEAN,
             _TREND_DOWN_CHOPPY,
+            _RANGING_DIRECTIONAL_UP,
+            _RANGING_DIRECTIONAL_DOWN,
             _RANGING_DIRECTIONAL,
             _RANGING_VOLATILE,
         ],

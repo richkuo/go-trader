@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// composite7StateATR builds a trend_regime raw map covering all 7 composite
+// composite7StateATR builds a trend_regime raw map covering all composite
 // labels with the given ATR multiplier (close_fraction omitted — SL/trailing
 // surfaces).
 func composite7StateATR(atr float64) map[string]interface{} {
@@ -19,7 +19,7 @@ func composite7StateATR(atr float64) map[string]interface{} {
 	return map[string]interface{}{"trend_regime": tr}
 }
 
-// composite7StateTier builds one tiered_tp_atr_regime tier covering all 7
+// composite7StateTier builds one tiered_tp_atr_regime tier covering all
 // composite labels with per-regime close_fraction.
 func composite7StateTier(atr, frac float64) map[string]interface{} {
 	labels := regimeLabelsForClassifier(regimeClassifierComposite)
@@ -43,7 +43,7 @@ func compositeRegimeCfg(scs ...StrategyConfig) *Config {
 }
 
 // TestValidateRegimeATRConfig_CompositeStopLossExplicit is the #802 regression:
-// an explicit 7-state stop_loss_atr_regime under a composite regime_atr_window
+// an explicit composite stop_loss_atr_regime under a composite regime_atr_window
 // must validate cleanly (previously rejected because the resolver hardcoded the
 // ADX 3-state vocabulary).
 func TestValidateRegimeATRConfig_CompositeStopLossExplicit(t *testing.T) {
@@ -59,8 +59,8 @@ func TestValidateRegimeATRConfig_CompositeStopLossExplicit(t *testing.T) {
 		t.Fatalf("composite stop_loss_atr_regime must validate, got: %v", errs)
 	}
 	block := cfg.Strategies[0].StopLossATRRegime
-	if got := len(block.TrendRegime); got != 7 {
-		t.Fatalf("block must be populated with all 7 composite labels, got %d: %v", got, block.TrendRegime)
+	if got, want := len(block.TrendRegime), len(regimeLabelsForClassifier(regimeClassifierComposite)); got != want {
+		t.Fatalf("block must be populated with all composite labels, got %d want %d: %v", got, want, block.TrendRegime)
 	}
 	// Runtime SL resolution must succeed for a composite label (proves the
 	// authoritative pass populated the composite vocabulary, not ADX).
@@ -116,8 +116,8 @@ func TestValidateRegimeATRConfig_CompositeTrailingExplicit(t *testing.T) {
 	if errs := validateRegimeATRConfig(cfg); len(errs) != 0 {
 		t.Fatalf("composite trailing_stop_atr_regime must validate, got: %v", errs)
 	}
-	if got := len(cfg.Strategies[0].TrailingStopATRRegime.TrendRegime); got != 7 {
-		t.Fatalf("trailing block must hold 7 composite labels, got %d", got)
+	if got, want := len(cfg.Strategies[0].TrailingStopATRRegime.TrendRegime), len(regimeLabelsForClassifier(regimeClassifierComposite)); got != want {
+		t.Fatalf("trailing block must hold all composite labels, got %d want %d", got, want)
 	}
 }
 
@@ -243,6 +243,8 @@ func TestMapRegimeToBaselineFamily(t *testing.T) {
 		{"trending_down_choppy", 2.0, true}, // composite prefix → trending_down
 		{"ranging_quiet", 1.5, true},        // composite prefix → ranging
 		{"ranging_directional", 1.5, true},
+		{"ranging_directional_up", 1.5, true},
+		{"ranging_directional_down", 1.5, true},
 		{"garbage", 0, false},
 	}
 	for _, tc := range cases {
@@ -256,8 +258,8 @@ func TestMapRegimeToBaselineFamily(t *testing.T) {
 func TestRegimeLabelsFromTierRaw(t *testing.T) {
 	raw := []interface{}{composite7StateTier(2.0, 0.5)}
 	got := regimeLabelsFromTierRaw(raw)
-	if len(got) != 7 {
-		t.Fatalf("expected 7 inferred labels, got %d: %v", len(got), got)
+	if len(got) != len(regimeLabelsForClassifier(regimeClassifierComposite)) {
+		t.Fatalf("expected inferred composite labels, got %d: %v", len(got), got)
 	}
 	// No per-regime keys → canonical ADX fallback.
 	if got := regimeLabelsFromTierRaw(nil); len(got) != 3 {
@@ -308,11 +310,11 @@ func TestLoadConfig_CompositeStopLossAtrRegime(t *testing.T) {
 	}
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
-		t.Fatalf("LoadConfig must accept composite 7-state stop_loss_atr_regime, got: %v", err)
+		t.Fatalf("LoadConfig must accept composite stop_loss_atr_regime, got: %v", err)
 	}
 	block := cfg.Strategies[0].StopLossATRRegime
-	if block == nil || len(block.TrendRegime) != 7 {
-		t.Fatalf("composite SL block must be populated with 7 labels post-load, got %#v", block)
+	if block == nil || len(block.TrendRegime) != len(regimeLabelsForClassifier(regimeClassifierComposite)) {
+		t.Fatalf("composite SL block must be populated with all labels post-load, got %#v", block)
 	}
 	if v, ok := resolveRegimeATR(*block, "trending_down_choppy"); !ok || v != 1.2 {
 		t.Fatalf("runtime resolve trending_down_choppy = (%g, %v), want (1.2, true)", v, ok)

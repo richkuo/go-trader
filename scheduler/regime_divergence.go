@@ -2,7 +2,7 @@ package main
 
 // Regime window divergence detection and trust-short override (#907).
 //
-// The composite (7-state) regime can be evaluated at multiple windows —
+// The composite regime can be evaluated at multiple windows —
 // typically a "medium" window (slow, for open/position policy) and a "short"
 // window (fast, for tactical/gate logic). They can disagree by design: the
 // medium window lags to reduce whipsaw, the short window reacts quickly.
@@ -242,6 +242,10 @@ func regimeLabelBias(label string, snapReturnEff float64) divergenceBias {
 	case "trending_up", "trending_up_clean", "trending_up_choppy":
 		return biasBullish
 	case "trending_down", "trending_down_clean", "trending_down_choppy":
+		return biasBearish
+	case "ranging_directional_up":
+		return biasBullish
+	case "ranging_directional_down":
 		return biasBearish
 	case "ranging_directional":
 		if snapReturnEff > 0 {

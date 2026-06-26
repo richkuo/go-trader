@@ -207,6 +207,9 @@ func (b RegimeATRBlock) Resolve(regime string) (RegimeATREntry, bool) {
 		return RegimeATREntry{}, false
 	}
 	entry, ok := b.TrendRegime[strings.TrimSpace(regime)]
+	if !ok {
+		entry, ok = b.TrendRegime[regimeLookupLabel(regime)]
+	}
 	return entry, ok
 }
 
@@ -226,16 +229,18 @@ var regimeATRDefaults = struct {
 	// choppy=2.0, ranging=1.0) so a trailing_stop_atr_regime use_defaults block
 	// differentiates trend groups from ranges (tight).
 	Trailing: map[string]RegimeATREntry{
-		"trending_up":          {ATR: 2.5},
-		"trending_down":        {ATR: 2.5},
-		"ranging":              {ATR: 2.0},
-		"trending_up_clean":    {ATR: 2.0},
-		"trending_down_clean":  {ATR: 2.0},
-		"trending_up_choppy":   {ATR: 2.0},
-		"trending_down_choppy": {ATR: 2.0},
-		"ranging_quiet":        {ATR: 1.0},
-		"ranging_volatile":     {ATR: 1.0},
-		"ranging_directional":  {ATR: 1.0},
+		"trending_up":              {ATR: 2.5},
+		"trending_down":            {ATR: 2.5},
+		"ranging":                  {ATR: 2.0},
+		"trending_up_clean":        {ATR: 2.0},
+		"trending_down_clean":      {ATR: 2.0},
+		"trending_up_choppy":       {ATR: 2.0},
+		"trending_down_choppy":     {ATR: 2.0},
+		"ranging_quiet":            {ATR: 1.0},
+		"ranging_volatile":         {ATR: 1.0},
+		"ranging_directional":      {ATR: 1.0},
+		"ranging_directional_up":   {ATR: 1.0},
+		"ranging_directional_down": {ATR: 1.0},
 	},
 }
 
@@ -278,7 +283,7 @@ var regimeTPTierGroupDefaults = map[string][]hlProtectionTier{
 var regimeTPFleetDefaultLabelsByGroup = map[string][]string{
 	"clean":   {"trending_up_clean", "trending_down_clean"},
 	"choppy":  {"trending_up", "trending_down", "trending_up_choppy", "trending_down_choppy"},
-	"ranging": {"ranging", "ranging_quiet", "ranging_volatile", "ranging_directional"},
+	"ranging": {"ranging", "ranging_quiet", "ranging_volatile", "ranging_directional", "ranging_directional_up", "ranging_directional_down"},
 }
 
 // defaultRegimeBlockForSurface returns the baseline trend_regime map for a
@@ -439,7 +444,9 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 	}
 
 	unknownLabels := []string{}
+	seenLabels := make(map[string]bool, len(trendMap))
 	for k := range trendMap {
+		seenLabels[k] = true
 		if !validLabels[k] {
 			unknownLabels = append(unknownLabels, k)
 		}
@@ -451,7 +458,7 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 
 	missingLabels := []string{}
 	for _, l := range labels {
-		if _, ok := trendMap[l]; !ok {
+		if !regimeLabelCoveredBySeen(l, seenLabels) {
 			missingLabels = append(missingLabels, l)
 		}
 	}

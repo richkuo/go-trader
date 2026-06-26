@@ -24,6 +24,7 @@ from shared_strategies.close.regime_atr import (
     RegimeATRBlock,
     parse_regime_atr_block,
     parse_regime_tp_tiers,
+    regime_lookup_label,
     resolve_regime_tier,
 )
 from shared_strategies.close._helpers import tier_list_from_params
@@ -872,7 +873,10 @@ def validate_regime_tiered_tp_labels(
                     f"{name}.tiers[{i}].{REGIME_CLASSIFIER_KEY}: unknown regime "
                     f"label {key!r} (expected one of: {', '.join(sorted(expected))})"
                 )
-            missing = [label for label in sorted(expected) if label not in block]
+            missing = [
+                label for label in sorted(expected)
+                if label not in block and regime_lookup_label(label) not in block
+            ]
             if missing:
                 errs.append(
                     f"{name}.tiers[{i}].{REGIME_CLASSIFIER_KEY}: missing required "

@@ -125,6 +125,8 @@ func ratchetCloseDefaultGroup(label string) (string, bool) {
 	switch l {
 	case "ranging_quiet", "ranging_volatile", "ranging_directional":
 		return l, true
+	case "ranging_directional_up", "ranging_directional_down":
+		return "ranging_directional", true
 	case "ranging":
 		return "ranging_quiet", true
 	}
@@ -264,6 +266,9 @@ func trailingRatchetTiersForRegime(sc StrategyConfig, regime string) []trailingR
 				return nil
 			}
 			block, ok := table[strings.TrimSpace(regime)]
+			if !ok {
+				block, ok = table[regimeLookupLabel(regime)]
+			}
 			if !ok {
 				return nil
 			}
@@ -411,6 +416,9 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 			}
 			for _, key := range labels {
 				block, ok := table[key]
+				if !ok {
+					block, ok = table[regimeLookupLabel(key)]
+				}
 				if !ok {
 					errs = append(errs, fmt.Sprintf("%s.tp_tiers: missing required regime key %q", sub, key))
 					continue

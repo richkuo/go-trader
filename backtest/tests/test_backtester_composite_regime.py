@@ -75,7 +75,13 @@ def test_composite_label_allows_entry_when_gate_matches(label):
 @pytest.mark.parametrize("label", COMPOSITE_LABELS)
 def test_composite_label_blocks_entry_when_gate_mismatches(label):
     # Pick any distinct label to gate on — the bar is ``label`` so it must block.
-    other = next(l for l in COMPOSITE_LABELS if l != label)
+    other = next(
+        l for l in COMPOSITE_LABELS
+        if l != label and not (
+            l == "ranging_directional"
+            and label in {"ranging_directional_up", "ranging_directional_down"}
+        )
+    )
     df = _gated_df(label)
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
@@ -140,6 +146,15 @@ def test_ranging_directional_blocked_by_trending_gate():
         allowed_regimes=["trending_up_clean", "trending_down_clean"],
     )
     assert bt.run(df, save=False)["total_trades"] == 0
+
+
+def test_ranging_directional_family_falls_back_to_bare_gate():
+    df = _gated_df("ranging_directional_up")
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        regime_enabled=True, allowed_regimes=["ranging_directional"],
+    )
+    assert bt.run(df, save=False)["total_trades"] >= 1
 
 
 # ─── Open position is held across a composite-regime flip (closes not gated) ──

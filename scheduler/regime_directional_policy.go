@@ -102,6 +102,9 @@ func (p *RegimeDirectionalPolicy) Resolve(regime string) (RegimeDirectionalEntry
 		return RegimeDirectionalEntry{}, false
 	}
 	entry, ok := p.TrendRegime[strings.TrimSpace(regime)]
+	if !ok {
+		entry, ok = p.TrendRegime[regimeLookupLabel(regime)]
+	}
 	return entry, ok
 }
 
@@ -260,7 +263,7 @@ func (p *RegimeDirectionalPolicy) ResolveRawWithLabels(label string, labels []st
 	// so a label that's present-but-invalid isn't also reported as missing.
 	missing := []string{}
 	for _, l := range labels {
-		if !seen[l] {
+		if !regimeLabelCoveredBySeen(l, seen) {
 			missing = append(missing, l)
 		}
 	}
@@ -350,7 +353,11 @@ func gatedDirectionalEntry(sc StrategyConfig, regime string, certStates map[stri
 	if sc.RegimeDirectionalPolicy == nil || sc.RegimeDirectionalPolicy.IsZero() {
 		return RegimeDirectionalEntry{}, false
 	}
-	certDir, certOK := certStates[strings.TrimSpace(regime)]
+	regime = strings.TrimSpace(regime)
+	certDir, certOK := certStates[regime]
+	if !certOK {
+		certDir, certOK = certStates[regimeLookupLabel(regime)]
+	}
 	if !certOK {
 		return RegimeDirectionalEntry{}, false
 	}

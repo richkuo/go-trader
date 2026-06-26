@@ -78,6 +78,16 @@ def unified_regime_scalar_params(params: dict, regime: str):
     return scalar, sl
 
 REGIME_CLASSIFIER_KEY = "trend_regime"
+RANGING_DIRECTIONAL = "ranging_directional"
+RANGING_DIRECTIONAL_UP = "ranging_directional_up"
+RANGING_DIRECTIONAL_DOWN = "ranging_directional_down"
+
+
+def regime_lookup_label(label: str) -> str:
+    label = (label or "").strip()
+    if label in (RANGING_DIRECTIONAL_UP, RANGING_DIRECTIONAL_DOWN):
+        return RANGING_DIRECTIONAL
+    return label
 
 # regimeATRSurface equivalents — kept as string constants so the parser's
 # error messages match Go's surface-specific allowlists.
@@ -107,7 +117,8 @@ class RegimeATRBlock:
     def resolve(self, regime: str) -> Optional[RegimeATREntry]:
         if not self.trend_regime:
             return None
-        return self.trend_regime.get((regime or "").strip())
+        label = (regime or "").strip()
+        return self.trend_regime.get(label) or self.trend_regime.get(regime_lookup_label(label))
 
 
 # Mirrors regimeATRDefaults in scheduler/regime_atr.go — keep values in sync.
@@ -131,6 +142,8 @@ REGIME_ATR_DEFAULTS_TRAILING: Dict[str, RegimeATREntry] = {
     "ranging_quiet": RegimeATREntry(atr=1.0),
     "ranging_volatile": RegimeATREntry(atr=1.0),
     "ranging_directional": RegimeATREntry(atr=1.0),
+    "ranging_directional_up": RegimeATREntry(atr=1.0),
+    "ranging_directional_down": RegimeATREntry(atr=1.0),
 }
 
 # #870: per-quality-group default ATR take-profit ladders. Mirrors
@@ -252,7 +265,10 @@ def parse_regime_atr_block(
             f"(expected one of: {', '.join(labels)})"
         )
 
-    missing_labels = [l for l in labels if l not in trend_raw]
+    missing_labels = [
+        l for l in labels
+        if l not in trend_raw and regime_lookup_label(l) not in trend_raw
+    ]
     if missing_labels:
         errs.append(
             f"{ctx_label}.{REGIME_CLASSIFIER_KEY}: missing required regime labels: "
