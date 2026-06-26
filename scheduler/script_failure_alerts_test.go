@@ -167,6 +167,10 @@ func TestScriptFailureErrorIsTransient(t *testing.T) {
 		{"Failed to initialize Hyperliquid Exchange client: (429, None, 'null', None)", true},
 		{"hl rate limited", true},
 		{"X-Cache: Error from cloudfront", true},
+		{"HTTP 429 Too Many Requests", true},
+		{"status_code=429 from HL", true},
+		{"order oid 429 rejected by exchange", false},
+		{"price crossed 42900.5", false},
 		{"list index out of range", false},
 		{"connection refused", false},
 	}
@@ -177,9 +181,12 @@ func TestScriptFailureErrorIsTransient(t *testing.T) {
 	}
 }
 
-func TestNotifyScriptFailure_Transient429SkipsStreak(t *testing.T) {
-	id := "transient-skip-1128"
-	defer scriptFailureTracker.Clear(id)
+func TestNotifyScriptFailure_BriefTransientSkipsPrimaryStreak(t *testing.T) {
+	id := "transient-brief-1128"
+	defer func() {
+		scriptFailureTracker.Clear(id)
+		scriptFailureTransientTracker.Clear(id)
+	}()
 	sc := StrategyConfig{ID: id, Platform: "hyperliquid", Script: "check_regime.py"}
 	err429 := "Failed to initialize Hyperliquid Exchange client: (429, None)"
 	for i := 0; i < scriptFailureAlertThreshold+2; i++ {
@@ -187,6 +194,57 @@ func TestNotifyScriptFailure_Transient429SkipsStreak(t *testing.T) {
 	}
 	shouldNotify, count := scriptFailureTracker.Record(id, "connection refused", time.Now().UTC())
 	if shouldNotify || count != 1 {
-		t.Fatalf("transient-only notify must not advance streak: notify=%v count=%d, want false/1", shouldNotify, count)
+		t.Fatalf("brief transient must not advance primary streak: notify=%v count=%d, want false/1", shouldNotify, count)
+	}
+}
+
+func TestNotifyScriptFailure_SustainedTransientAlerts(t *testing.T) {
+	id := "transient-sustained-1128"
+	defer func() {
+		scriptFailureTracker.Clear(id)
+		scriptFailureTransientTracker.Clear(id)
+	}()
+	sc := StrategyConfig{ID: id, Platform: "hyperliquid", Script: "check_regime.py"}
+	err429 := "Failed to initialize Hyperliquid Exchange client: (429, None)"
+	for i := 0; i < scriptFailureTransientAlertThreshold; i++ {
+		notifyScriptFailure(nil, sc, scriptFailureError, err429)
+	}
+	recovered, prior := scriptFailureTransientTracker.Clear(id)
+	if !recovered || prior != scriptFailureTransientAlertThreshold {
+		t.Fatalf("sustained transient: recovered=%v prior=%d, want true/%d", recovered, prior, scriptFailureTransientAlertThreshold)
+	}
+}
+
+func TestNotifyScriptFailure_AlternatingTransientAndRealStillAlerts(t *testing.T) {
+	id := "transient-alternate-1128"
+	defer func() {
+		scriptFailureTracker.Clear(id)
+		scriptFailureTransientTracker.Clear(id)
+	}()
+	sc := StrategyConfig{ID: id, Platform: "hyperliquid", Script: "check_hyperliquid.py"}
+	err429 := "Failed to initialize Hyperliquid Exchange client: (429, None)"
+	for i := 0; i < scriptFailureAlertThreshold; i++ {
+		notifyScriptFailure(nil, sc, scriptFailureError, err429)
+		notifyScriptFailure(nil, sc, scriptFailureError, "connection refused")
+	}
+	recovered, prior := scriptFailureTracker.Clear(id)
+	if !recovered || prior != scriptFailureAlertThreshold {
+		t.Fatalf("alternating real errors must alert primary tracker: recovered=%v prior=%d", recovered, prior)
+	}
+}
+
+func TestClearScriptFailure_ClearsTransientTracker(t *testing.T) {
+	id := "transient-clear-1128"
+	defer func() {
+		scriptFailureTracker.Clear(id)
+		scriptFailureTransientTracker.Clear(id)
+	}()
+	now := time.Now().UTC()
+	for i := 0; i < scriptFailureTransientAlertThreshold; i++ {
+		recordScriptFailureAtThreshold(scriptFailureTransientTracker, id, "HTTP 429", now, scriptFailureTransientAlertThreshold)
+	}
+	recovered, prior := scriptFailureTransientTracker.Clear(id)
+	if !recovered || prior != scriptFailureTransientAlertThreshold {
+		t.Fatalf("transient clear: recovered=%v prior=%d", recovered, prior)
 	}
 }
