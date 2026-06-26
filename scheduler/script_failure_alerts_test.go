@@ -158,3 +158,35 @@ func TestFormatScriptRecoveredAlert(t *testing.T) {
 		t.Fatalf("recovery alert missing fields: %q", msg)
 	}
 }
+
+func TestScriptFailureErrorIsTransient(t *testing.T) {
+	cases := []struct {
+		msg   string
+		want  bool
+	}{
+		{"Failed to initialize Hyperliquid Exchange client: (429, None, 'null', None)", true},
+		{"hl rate limited", true},
+		{"X-Cache: Error from cloudfront", true},
+		{"list index out of range", false},
+		{"connection refused", false},
+	}
+	for _, tc := range cases {
+		if got := scriptFailureErrorIsTransient(tc.msg); got != tc.want {
+			t.Fatalf("transient(%q) = %v, want %v", tc.msg, got, tc.want)
+		}
+	}
+}
+
+func TestNotifyScriptFailure_Transient429SkipsStreak(t *testing.T) {
+	id := "transient-skip-1128"
+	defer scriptFailureTracker.Clear(id)
+	sc := StrategyConfig{ID: id, Platform: "hyperliquid", Script: "check_regime.py"}
+	err429 := "Failed to initialize Hyperliquid Exchange client: (429, None)"
+	for i := 0; i < scriptFailureAlertThreshold+2; i++ {
+		notifyScriptFailure(nil, sc, scriptFailureError, err429)
+	}
+	shouldNotify, count := scriptFailureTracker.Record(id, "connection refused", time.Now().UTC())
+	if shouldNotify || count != 1 {
+		t.Fatalf("transient-only notify must not advance streak: notify=%v count=%d, want false/1", shouldNotify, count)
+	}
+}

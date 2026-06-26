@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"sync"
 	"time"
 )
@@ -15,6 +16,17 @@ import (
 // strikes balances detection latency against noise from a transient indexer
 // blip that clears on the next cycle.
 const scriptFailureAlertThreshold = 3
+
+// scriptFailureTransientRE matches operator-visible errors from transient HL /
+// CDN throttling (#1128). These must not advance the consecutive-failure
+// streak — a 429 storm is not a dead strategy.
+var scriptFailureTransientRE = regexp.MustCompile(`(?i)(\(429[,\)]|\b429\b|rate.?limit|error from cloudfront)`)
+
+// scriptFailureErrorIsTransient reports whether errMsg is a short-lived
+// upstream throttle that should not count toward the 3-strike alert.
+func scriptFailureErrorIsTransient(errMsg string) bool {
+	return scriptFailureTransientRE.MatchString(errMsg)
+}
 
 // scriptFailureMode distinguishes the two ways a signal-check subprocess can
 // fail. Both count toward the same per-strategy consecutive-failure tally —
@@ -148,6 +160,11 @@ func formatScriptRecoveredAlert(sc StrategyConfig, priorCount int) string {
 // always recorded — even with no notifier backends — so the count and recovery
 // state stay accurate; nil/empty notifier just suppresses the send.
 func notifyScriptFailure(notifier *MultiNotifier, sc StrategyConfig, mode scriptFailureMode, errMsg string) {
+	if scriptFailureErrorIsTransient(errMsg) {
+		fmt.Printf("[WARN] transient script failure (streak not incremented) [%s]: %s\n",
+			sc.ID, errMsg)
+		return
+	}
 	shouldNotify, count := scriptFailureTracker.Record(sc.ID, errMsg, time.Now().UTC())
 	if !shouldNotify || notifier == nil || !notifier.HasBackends() {
 		return

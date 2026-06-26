@@ -385,6 +385,7 @@ class TestOrderExecution:
         mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
         adapter = mod.HyperliquidExchangeAdapter()
         # Simulate live mode
+        adapter._wallet = MagicMock()
         adapter._exchange = mock_exchange
         adapter._info = mock_info
 
@@ -399,6 +400,7 @@ class TestOrderExecution:
         mock_exchange = MagicMock()
         mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
         adapter = mod.HyperliquidExchangeAdapter()
+        adapter._wallet = MagicMock()
         adapter._exchange = mock_exchange
         adapter._info = mock_info
 
@@ -412,6 +414,7 @@ class TestOrderExecution:
         mock_exchange.market_close.return_value = {"status": "closed"}
         mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
         adapter = mod.HyperliquidExchangeAdapter()
+        adapter._wallet = MagicMock()
         adapter._exchange = mock_exchange
 
         result = adapter.market_close("BTC")
@@ -430,6 +433,7 @@ class TestOrderExecution:
         mock_exchange.market_close.return_value = {"status": "closed"}
         mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
         adapter = mod.HyperliquidExchangeAdapter()
+        adapter._wallet = MagicMock()
         adapter._exchange = mock_exchange
         adapter._info = mock_info
 
@@ -446,6 +450,7 @@ class TestOrderExecution:
         mock_exchange.market_close.return_value = {"status": "closed"}
         mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
         adapter = mod.HyperliquidExchangeAdapter()
+        adapter._wallet = MagicMock()
         adapter._exchange = mock_exchange
         adapter._info = mock_info
 
@@ -459,6 +464,7 @@ class TestOrderExecution:
         mock_exchange = MagicMock()
         mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
         adapter = mod.HyperliquidExchangeAdapter()
+        adapter._wallet = MagicMock()
         adapter._exchange = mock_exchange
         adapter._info = mock_info
 
@@ -480,6 +486,7 @@ class TestStopLossPlacement:
         mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
         adapter = mod.HyperliquidExchangeAdapter()
         mock_exchange = MagicMock()
+        adapter._wallet = MagicMock()
         adapter._exchange = mock_exchange
         adapter._info = mock_info
         return adapter, mock_exchange, mod
@@ -694,6 +701,7 @@ class TestLimitOpen:
         mock_exchange.order.return_value = {"status": "ok"}
         mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
         adapter = mod.HyperliquidExchangeAdapter()
+        adapter._wallet = MagicMock()
         adapter._exchange = mock_exchange
         adapter._info = mock_info
         return adapter, mock_exchange
@@ -847,3 +855,98 @@ class TestFundingHistoryRange:
         adapter = self._adapter(mock_info)
         out = adapter.get_funding_history_range("BTC", base, base + 100 * self._HOUR)
         assert len(out) == 5
+
+
+# ─── Lazy Exchange init (#1128) ───────────────────
+
+class TestLazyExchangeInit:
+    def _sample_meta(self):
+        return (
+            {"universe": [{"index": 0, "name": "USDC/USDC", "tokens": [0, 0]}],
+             "tokens": [{"name": "USDC", "szDecimals": 0}]},
+            {"universe": [{"name": "BTC", "szDecimals": 5}]},
+        )
+
+    def _live_adapter_mod(self, monkeypatch, mock_exchange_cls=None):
+        spot_meta, meta = self._sample_meta()
+        mock_info = MagicMock()
+        mock_info.asset_to_sz_decimals = {"BTC": 5}
+        mock_info.candles_snapshot.return_value = []
+        mock_info_cls = MagicMock(return_value=mock_info)
+        exchange_calls = {"n": 0}
+        mock_exchange = MagicMock()
+        mock_exchange.market_open.return_value = {"status": "ok"}
+
+        def exchange_factory(*args, **kwargs):
+            exchange_calls["n"] += 1
+            exchange_calls["kwargs"] = kwargs
+            return mock_exchange
+
+        mock_exchange_cls = mock_exchange_cls or MagicMock(side_effect=exchange_factory)
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls, mock_exchange_cls=mock_exchange_cls)
+        monkeypatch.setenv("HYPERLIQUID_SECRET_KEY", "0x" + "11" * 32)
+        monkeypatch.setattr(mod, "_load_meta_cache", lambda *a, **kw: (spot_meta, meta))
+
+        fake_wallet = MagicMock()
+        fake_account_mod = MagicMock()
+        fake_account_mod.Account.from_key.return_value = fake_wallet
+        monkeypatch.setitem(sys.modules, "eth_account", fake_account_mod)
+
+        adapter = mod.HyperliquidExchangeAdapter()
+        return mod, adapter, mock_info, mock_exchange, exchange_calls
+
+    def test_init_defers_exchange_when_secret_set(self, monkeypatch):
+        mod, adapter, _, _, exchange_calls = self._live_adapter_mod(monkeypatch)
+        assert adapter._exchange is None
+        assert adapter.is_live is True
+        assert exchange_calls["n"] == 0
+
+    def test_get_ohlcv_works_without_exchange(self, monkeypatch):
+        _, adapter, mock_info, _, exchange_calls = self._live_adapter_mod(monkeypatch)
+        adapter.get_ohlcv("BTC", interval="1h", limit=10)
+        mock_info.candles_snapshot.assert_called()
+        assert exchange_calls["n"] == 0
+
+    def test_market_open_lazy_inits_exchange_with_cached_meta(self, monkeypatch):
+        _, adapter, mock_info, mock_exchange, exchange_calls = self._live_adapter_mod(monkeypatch)
+        assert adapter._cached_meta is not None
+        adapter._info = mock_info
+        adapter.market_open("BTC", True, 0.5)
+        assert exchange_calls["n"] == 1
+        assert exchange_calls["kwargs"].get("meta", {})["universe"][0]["name"] == "BTC"
+        mock_exchange.market_open.assert_called_once()
+
+    def test_exchange_init_429_does_not_fail_adapter_init(self, monkeypatch):
+        err = RuntimeError("(429, None, 'null', None)")
+        mod, adapter, mock_info, _, _ = self._live_adapter_mod(
+            monkeypatch,
+            mock_exchange_cls=MagicMock(side_effect=err),
+        )
+        adapter._info = mock_info
+        assert adapter._exchange is None
+        with pytest.raises(RuntimeError, match="Failed to initialize Hyperliquid Exchange client"):
+            adapter.market_open("BTC", True, 0.5)
+
+    def test_concurrent_lazy_init_calls_exchange_once(self, monkeypatch):
+        import threading
+
+        _, adapter, mock_info, _, exchange_calls = self._live_adapter_mod(monkeypatch)
+        adapter._info = mock_info
+        barrier = threading.Barrier(2)
+        errors = []
+
+        def worker():
+            try:
+                barrier.wait(timeout=5)
+                adapter.market_open("BTC", True, 0.5)
+            except Exception as exc:  # noqa: BLE001 - collect for assertion
+                errors.append(exc)
+
+        t1 = threading.Thread(target=worker)
+        t2 = threading.Thread(target=worker)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+        assert not errors
+        assert exchange_calls["n"] == 1
