@@ -81,41 +81,7 @@ type ScriptFailureTracker struct {
 // hour) while the streak persists. A change in error signature after the
 // threshold re-alerts immediately so operators see a shifting failure mode.
 func (t *ScriptFailureTracker) Record(strategyID, errSig string, now time.Time) (bool, int) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.entries == nil {
-		t.entries = make(map[string]*scriptFailureEntry)
-	}
-	e := t.entries[strategyID]
-	if e == nil {
-		e = &scriptFailureEntry{}
-		t.entries[strategyID] = e
-	}
-	sig := truncErrSig(errSig)
-	sigChanged := sig != e.lastErrSig
-	e.count++
-	e.lastErrSig = sig
-
-	if e.count < scriptFailureAlertThreshold {
-		return false, e.count
-	}
-
-	shouldNotify := false
-	switch {
-	case !e.alerted:
-		shouldNotify = true // first alert for this streak (threshold crossed)
-	case sigChanged:
-		shouldNotify = true // failure character changed mid-streak
-	case e.count%10 == 0:
-		shouldNotify = true
-	case !e.lastNotifiedAt.IsZero() && now.Sub(e.lastNotifiedAt) >= time.Hour:
-		shouldNotify = true
-	}
-	if shouldNotify {
-		e.alerted = true
-		e.lastNotifiedAt = now
-	}
-	return shouldNotify, e.count
+	return recordScriptFailureAtThreshold(t, strategyID, errSig, now, scriptFailureAlertThreshold)
 }
 
 // Clear resets the failure streak for strategyID after a clean script run and
