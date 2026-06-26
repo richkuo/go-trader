@@ -54,6 +54,42 @@ def test_scalar_trail_from_here_tp_atr_fraction():
     assert rule.kind == "trail_from_here"
 
 
+def test_composite_tp_atr_fraction_regime_falls_back_to_bare_directional():
+    labels = (
+        "trending_up_clean",
+        "trending_up_choppy",
+        "trending_down_clean",
+        "trending_down_choppy",
+        "ranging_quiet",
+        "ranging_volatile",
+        "ranging_directional",
+        "ranging_directional_up",
+        "ranging_directional_down",
+    )
+    rule = parse_sl_after_rule(
+        {
+            "trail_from_here": {
+                "tp_atr_fraction": {
+                    "trend_regime": {
+                        "trending_up_clean": 0.5,
+                        "trending_up_choppy": 0.5,
+                        "trending_down_clean": 0.5,
+                        "trending_down_choppy": 0.5,
+                        "ranging_quiet": 0.4,
+                        "ranging_volatile": 0.3,
+                        "ranging_directional": 0.25,
+                    }
+                }
+            }
+        },
+        labels=labels,
+    )
+    resolved = rule.resolve_for_regime("ranging_directional_down", tier_multiple=4.0)
+    assert resolved is not None
+    assert resolved.kind == "trail_from_here"
+    assert resolved.trail_atr_mult == 1.0
+
+
 def test_scalar_breakeven_string():
     assert parse_sl_after_rule("breakeven") == SLAfterRule(kind="breakeven")
 

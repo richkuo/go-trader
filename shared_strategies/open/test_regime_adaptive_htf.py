@@ -5,6 +5,9 @@ import pandas as pd
 
 from regime_adaptive_htf import (
     _confirm_labels,
+    _RANGING_DIRECTIONAL,
+    _RANGING_DIRECTIONAL_DOWN,
+    _RANGING_DIRECTIONAL_UP,
     _RANGING_QUIET,
     _RANGING_VOLATILE,
     _TREND_UP_CLEAN,
@@ -140,6 +143,27 @@ def test_confirm_labels_warmup_resets_streak():
 def test_confirm_one_is_identity():
     raw = np.array([_RANGING_QUIET, _TREND_UP_CLEAN, _TREND_DOWN_CLEAN])
     assert _confirm_labels(raw, 1).tolist() == raw.tolist()
+
+
+def test_confirm_labels_folds_directional_ranging_family():
+    raw = np.array([
+        _RANGING_QUIET,
+        _RANGING_QUIET,
+        _RANGING_DIRECTIONAL_UP,
+        _RANGING_DIRECTIONAL_DOWN,
+        _RANGING_DIRECTIONAL_UP,
+    ])
+    conf = _confirm_labels(raw, 2)
+    assert conf.tolist() == [
+        0,
+        _RANGING_QUIET,
+        _RANGING_QUIET,
+        _RANGING_DIRECTIONAL,
+        _RANGING_DIRECTIONAL,
+    ]
+    assert _confirm_labels(
+        np.array([_RANGING_DIRECTIONAL_UP, _RANGING_DIRECTIONAL_DOWN]), 1
+    ).tolist() == [_RANGING_DIRECTIONAL, _RANGING_DIRECTIONAL]
 
 
 # ── Entry / exit semantics ───────────────────────────────────────────────────
@@ -382,4 +406,3 @@ def test_label_lags_not_leads_the_bucket():
     mutated.loc[later, ["open", "high", "low", "close"]] = 1.0
     out_mut = regime_adaptive_htf_core(mutated, **PIN)
     assert out.loc[mid_bucket, "rah_label"] == out_mut.loc[mid_bucket, "rah_label"]
-

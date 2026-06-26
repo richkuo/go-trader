@@ -82,6 +82,51 @@ def test_ranging_directional_split_falls_back_to_bare_key(regime_atr):
     assert regime_atr.resolve_regime_atr(block, "ranging_directional_down") == 1.25
 
 
+def test_unified_regime_scalar_params_split_falls_back_to_bare_key(regime_atr):
+    tiers = [
+        {"atr_multiple": 1.5, "close_fraction": 0.4},
+        {"atr_multiple": 3.0, "close_fraction": 1.0},
+    ]
+    params = {
+        regime_atr.REGIME_CLASSIFIER_KEY: {
+            "ranging_directional": {
+                "stop_loss_atr": 0.7,
+                "tp_tiers": tiers,
+            }
+        }
+    }
+    scalar, sl = regime_atr.unified_regime_scalar_params(
+        params, "ranging_directional_down"
+    )
+    assert scalar == {"tp_tiers": tiers}
+    assert sl == 0.7
+
+
+def test_unified_regime_evaluate_split_uses_bare_tiers(tiered_regime, regime_atr):
+    position = {
+        "side": "long",
+        "avg_cost": 100.0,
+        "current_quantity": 1.0,
+        "initial_quantity": 1.0,
+        "entry_atr": 2.0,
+        "regime": "ranging_directional_up",
+    }
+    params = {
+        regime_atr.REGIME_CLASSIFIER_KEY: {
+            "ranging_directional": {
+                "stop_loss_atr": 0.7,
+                "tp_tiers": [
+                    {"atr_multiple": 1.5, "close_fraction": 0.4},
+                    {"atr_multiple": 3.0, "close_fraction": 1.0},
+                ],
+            }
+        }
+    }
+    result = tiered_regime.evaluate(position, {"mark_price": 103.0}, params)
+    assert result["close_fraction"] == 0.4
+    assert "ranging_directional_up" in result["reason"]
+
+
 def test_rejects_bare_label_keys(regime_atr):
     raw = {
         "trending_up": {"atr_multiple": 2.0},

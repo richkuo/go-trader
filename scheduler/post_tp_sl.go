@@ -76,7 +76,14 @@ func (b *RegimeFloatBlock) Resolve(regime string) (float64, bool) {
 	if b == nil || len(b.TrendRegime) == 0 {
 		return 0, false
 	}
-	v, ok := b.TrendRegime[strings.TrimSpace(regime)]
+	label := strings.TrimSpace(regime)
+	v, ok := b.TrendRegime[label]
+	if !ok {
+		fallback := regimeLookupLabel(label)
+		if fallback != label {
+			v, ok = b.TrendRegime[fallback]
+		}
+	}
 	return v, ok
 }
 
@@ -513,8 +520,10 @@ func parseRegimeFloatBlock(raw map[string]interface{}, ctxLabel string, labels [
 	for _, label := range labels {
 		valid[label] = true
 	}
+	seen := make(map[string]bool, len(trend))
 	unknown := make([]string, 0)
 	for label := range trend {
+		seen[label] = true
 		if !valid[label] {
 			unknown = append(unknown, label)
 		}
@@ -527,6 +536,9 @@ func parseRegimeFloatBlock(raw map[string]interface{}, ctxLabel string, labels [
 	missing := make([]string, 0)
 	for _, label := range labels {
 		if _, ok := trend[label]; !ok {
+			if regimeLabelCoveredBySeen(label, seen) {
+				continue
+			}
 			missing = append(missing, label)
 		}
 	}

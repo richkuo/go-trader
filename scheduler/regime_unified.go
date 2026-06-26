@@ -54,7 +54,14 @@ func unifiedRegimeScalarParams(params map[string]interface{}, regime string) (sc
 	if !isMap {
 		return nil, 0, false
 	}
-	labelRaw, isMap := trendRaw[strings.TrimSpace(regime)].(map[string]interface{})
+	label := strings.TrimSpace(regime)
+	labelRaw, isMap := trendRaw[label].(map[string]interface{})
+	if !isMap {
+		fallback := regimeLookupLabel(label)
+		if fallback != label {
+			labelRaw, isMap = trendRaw[fallback].(map[string]interface{})
+		}
+	}
 	if !isMap {
 		return nil, 0, false
 	}
@@ -188,8 +195,10 @@ func validateUnifiedRegimeClose(params map[string]interface{}, labels []string, 
 		valid[l] = true
 	}
 
+	seen := make(map[string]bool, len(trendRaw))
 	unknown := make([]string, 0)
 	for l := range trendRaw {
+		seen[l] = true
 		if !valid[l] {
 			unknown = append(unknown, l)
 		}
@@ -203,6 +212,9 @@ func validateUnifiedRegimeClose(params map[string]interface{}, labels []string, 
 	for _, l := range labels {
 		lr, ok := trendRaw[l]
 		if !ok {
+			if regimeLabelCoveredBySeen(l, seen) {
+				continue
+			}
 			errs = append(errs, fmt.Sprintf("%s.%s: missing required regime label %q (must be exhaustive — no silent fallback)",
 				ctxLabel, regimeClassifierKey, l))
 			continue

@@ -201,7 +201,7 @@ def _classify_buckets(
 
 def _confirm_labels(raw: np.ndarray, confirm_buckets: int) -> np.ndarray:
     """Hysteresis over closed buckets: the effective label switches only after
-    ``confirm_buckets`` consecutive buckets carry the same raw label
+    ``confirm_buckets`` consecutive buckets carry the same raw label family
     (the backtest analogue of live ``regime_confirm_cycles``).
 
     Warmup buckets (code 0) neither confirm a new label nor disturb the
@@ -210,23 +210,31 @@ def _confirm_labels(raw: np.ndarray, confirm_buckets: int) -> np.ndarray:
     """
     n = len(raw)
     confirmed = np.zeros(n, dtype=int)
+    def streak_key(label: int) -> int:
+        if label in (_RANGING_DIRECTIONAL_UP, _RANGING_DIRECTIONAL_DOWN):
+            return _RANGING_DIRECTIONAL
+        return label
+
     if confirm_buckets <= 1:
-        return raw.copy()
+        return np.array([streak_key(int(label)) for label in raw], dtype=int)
+
     current = _WARMUP
-    streak_label = _WARMUP
+    streak_family = _WARMUP
     streak = 0
     for i in range(n):
         lab = raw[i]
         if lab == _WARMUP:
-            streak_label = _WARMUP
+            streak_family = _WARMUP
             streak = 0
-        elif lab == streak_label:
-            streak += 1
         else:
-            streak_label = lab
-            streak = 1
-        if streak_label != _WARMUP and streak >= confirm_buckets and streak_label != current:
-            current = streak_label
+            family = streak_key(lab)
+            if family == streak_family:
+                streak += 1
+            else:
+                streak_family = family
+                streak = 1
+        if streak_family != _WARMUP and streak >= confirm_buckets and streak_family != current:
+            current = streak_family
         confirmed[i] = current
     return confirmed
 

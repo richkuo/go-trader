@@ -54,7 +54,13 @@ class RegimeFloatBlock:
     trend_regime: Dict[str, float] = field(default_factory=dict)
 
     def resolve(self, regime: str) -> Optional[float]:
-        return self.trend_regime.get((regime or "").strip())
+        key = (regime or "").strip()
+        if key in self.trend_regime:
+            return self.trend_regime[key]
+        fallback = regime_lookup_label(key)
+        if fallback != key:
+            return self.trend_regime.get(fallback)
+        return None
 
 
 @dataclass(frozen=True)
@@ -384,13 +390,17 @@ def _parse_regime_float_block(
         )
         return RegimeFloatBlock(), errs
     valid = set(labels)
+    seen = set(trend_raw)
     unknown = sorted(k for k in trend_raw if k not in valid)
     for label in unknown:
         errs.append(
             f"{ctx_label}.{REGIME_CLASSIFIER_KEY}: unknown regime label {label!r} "
             f"(expected one of: {', '.join(labels)})"
         )
-    missing = [label for label in labels if label not in trend_raw]
+    missing = [
+        label for label in labels
+        if label not in trend_raw and regime_lookup_label(label) not in seen
+    ]
     if missing:
         errs.append(
             f"{ctx_label}.{REGIME_CLASSIFIER_KEY}: missing required regime labels: "

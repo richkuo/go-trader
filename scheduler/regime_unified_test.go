@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -87,6 +89,108 @@ func TestValidateUnifiedRegimeClose_Valid(t *testing.T) {
 	labels := []string{"trending_up", "trending_down", "ranging"}
 	if errs := validateUnifiedRegimeClose(unifiedBlock(), labels, "close.params"); len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
+	}
+}
+
+func compositeUnifiedBlock(includeSplit bool) map[string]interface{} {
+	tiers := []interface{}{
+		map[string]interface{}{"atr_multiple": 1.5, "close_fraction": 0.4},
+		map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+	}
+	trend := map[string]interface{}{
+		"trending_up_clean":    map[string]interface{}{"stop_loss_atr": 1.5, "tp_tiers": tiers},
+		"trending_up_choppy":   map[string]interface{}{"stop_loss_atr": 1.2, "tp_tiers": tiers},
+		"trending_down_clean":  map[string]interface{}{"stop_loss_atr": 1.5, "tp_tiers": tiers},
+		"trending_down_choppy": map[string]interface{}{"stop_loss_atr": 1.2, "tp_tiers": tiers},
+		"ranging_quiet":        map[string]interface{}{"stop_loss_atr": 0.9, "tp_tiers": tiers},
+		"ranging_volatile":     map[string]interface{}{"stop_loss_atr": 0.8, "tp_tiers": tiers},
+		"ranging_directional":  map[string]interface{}{"stop_loss_atr": 0.7, "tp_tiers": tiers},
+	}
+	if includeSplit {
+		trend["ranging_directional_up"] = map[string]interface{}{"stop_loss_atr": 0.6, "tp_tiers": tiers}
+		trend["ranging_directional_down"] = map[string]interface{}{"stop_loss_atr": 0.5, "tp_tiers": tiers}
+	}
+	return map[string]interface{}{regimeClassifierKey: trend}
+}
+
+func TestValidateUnifiedRegimeClose_CompositeRangingDirectionalFallback(t *testing.T) {
+	labels := regimeLabelsForClassifier(regimeClassifierComposite)
+	block := compositeUnifiedBlock(false)
+	if errs := validateUnifiedRegimeClose(block, labels, "close.params"); len(errs) > 0 {
+		t.Fatalf("bare ranging_directional must cover split labels, got: %v", errs)
+	}
+	trend := block[regimeClassifierKey].(map[string]interface{})
+	if len(trend) != 7 {
+		t.Fatalf("fallback validation must not expand stored keys, got %d", len(trend))
+	}
+	for _, label := range []string{"ranging_directional_up", "ranging_directional_down"} {
+		scalar, sl, ok := unifiedRegimeScalarParams(block, label)
+		if !ok || sl != 0.7 {
+			t.Fatalf("resolve %s = (sl=%g ok=%v), want (0.7 true)", label, sl, ok)
+		}
+		if tiers := scalar["tp_tiers"].([]interface{}); len(tiers) != 2 {
+			t.Fatalf("resolve %s tiers len = %d, want 2", label, len(tiers))
+		}
+	}
+
+	upOnly := compositeUnifiedBlock(false)
+	upTrend := upOnly[regimeClassifierKey].(map[string]interface{})
+	upTrend["ranging_directional_up"] = upTrend["ranging_directional"]
+	delete(upTrend, "ranging_directional")
+	errs := validateUnifiedRegimeClose(upOnly, labels, "close.params")
+	if joined := strings.Join(errs, " | "); !strings.Contains(joined, "ranging_directional") || !strings.Contains(joined, "ranging_directional_down") {
+		t.Fatalf("up-only split config must not cover bare/down labels, got: %v", errs)
+	}
+}
+
+func TestLoadConfig_CompositeUnifiedCloseBareRangingDirectional(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	dbPath := filepath.Join(dir, "state.db")
+	cfgBody := `{
+		"db_file": "` + strings.ReplaceAll(dbPath, "\\", "\\\\") + `",
+		"regime": {
+			"enabled": true, "period": 14, "adx_threshold": 20,
+			"windows": {
+				"daily": {"classifier": "composite", "period": 24, "thresholds": {"return_pct": 0.05, "range_pct": 0.03, "adx": 20}}
+			}
+		},
+		"strategies": [{
+			"id": "hl-unified",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["donchian_breakout", "BTC", "1h", "--mode=paper"],
+			"capital": 1000,
+			"max_drawdown_pct": 25,
+			"leverage": 1,
+			"regime_atr_window": "daily",
+			"close_strategy": {
+				"name": "tiered_tp_atr_live_regime",
+				"params": {
+					"trend_regime": {
+						"trending_up_clean": {"stop_loss_atr": 1.5, "tp_tiers": [{"atr_multiple": 1.5, "close_fraction": 0.4}, {"atr_multiple": 3.0, "close_fraction": 1.0}]},
+						"trending_up_choppy": {"stop_loss_atr": 1.2, "tp_tiers": [{"atr_multiple": 1.5, "close_fraction": 0.4}, {"atr_multiple": 3.0, "close_fraction": 1.0}]},
+						"trending_down_clean": {"stop_loss_atr": 1.5, "tp_tiers": [{"atr_multiple": 1.5, "close_fraction": 0.4}, {"atr_multiple": 3.0, "close_fraction": 1.0}]},
+						"trending_down_choppy": {"stop_loss_atr": 1.2, "tp_tiers": [{"atr_multiple": 1.5, "close_fraction": 0.4}, {"atr_multiple": 3.0, "close_fraction": 1.0}]},
+						"ranging_quiet": {"stop_loss_atr": 0.9, "tp_tiers": [{"atr_multiple": 1.5, "close_fraction": 0.4}, {"atr_multiple": 3.0, "close_fraction": 1.0}]},
+						"ranging_volatile": {"stop_loss_atr": 0.8, "tp_tiers": [{"atr_multiple": 1.5, "close_fraction": 0.4}, {"atr_multiple": 3.0, "close_fraction": 1.0}]},
+						"ranging_directional": {"stop_loss_atr": 0.7, "tp_tiers": [{"atr_multiple": 1.5, "close_fraction": 0.4}, {"atr_multiple": 3.0, "close_fraction": 1.0}]}
+					}
+				}
+			}
+		}]
+	}`
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig must accept base-keyed composite unified close, got: %v", err)
+	}
+	params := cfg.Strategies[0].CloseStrategy.Params
+	if scalar, sl, ok := unifiedRegimeScalarParams(params, "ranging_directional_down"); !ok || sl != 0.7 || len(scalar["tp_tiers"].([]interface{})) != 2 {
+		t.Fatalf("runtime resolve ranging_directional_down = (%v, %g, %v), want 2 tiers/0.7/true", scalar, sl, ok)
 	}
 }
 

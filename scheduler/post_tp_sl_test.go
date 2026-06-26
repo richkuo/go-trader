@@ -1348,6 +1348,35 @@ func TestParseSLAfterRule_TPATRFractionScalar(t *testing.T) {
 	}
 }
 
+func TestParseSLAfterRule_CompositeTPATRFractionRegimeFallback(t *testing.T) {
+	labels := regimeLabelsForClassifier(regimeClassifierComposite)
+	raw := map[string]interface{}{
+		"trail_from_here": map[string]interface{}{
+			"tp_atr_fraction": map[string]interface{}{
+				"trend_regime": map[string]interface{}{
+					"trending_up_clean":    0.5,
+					"trending_up_choppy":   0.5,
+					"trending_down_clean":  0.5,
+					"trending_down_choppy": 0.5,
+					"ranging_quiet":        0.4,
+					"ranging_volatile":     0.3,
+					"ranging_directional":  0.25,
+				},
+			},
+		},
+	}
+	got, err := parseSLAfterRuleWithLabels(raw, labels)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Kind != "trail_from_here" || got.TPATRFractionRegime == nil {
+		t.Fatalf("got %+v, want trail_from_here tp_atr_fraction_regime", got)
+	}
+	if frac, ok := got.TPATRFractionRegime.Resolve("ranging_directional_down"); !ok || frac != 0.25 {
+		t.Fatalf("resolve ranging_directional_down = (%g, %v), want (0.25, true)", frac, ok)
+	}
+}
+
 func TestParseSLAfterRule_RegimeExplicitKindAtROffset(t *testing.T) {
 	raw := map[string]interface{}{
 		"kind": "atr_offset",

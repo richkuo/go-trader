@@ -313,11 +313,17 @@ func TestLoadConfig_CompositeStopLossAtrRegime(t *testing.T) {
 		t.Fatalf("LoadConfig must accept composite stop_loss_atr_regime, got: %v", err)
 	}
 	block := cfg.Strategies[0].StopLossATRRegime
-	if block == nil || len(block.TrendRegime) != len(regimeLabelsForClassifier(regimeClassifierComposite)) {
-		t.Fatalf("composite SL block must be populated with all labels post-load, got %#v", block)
+	if block == nil || len(block.TrendRegime) != 7 {
+		t.Fatalf("composite SL block must store the 7 provided labels post-load, got %#v", block)
 	}
 	if v, ok := resolveRegimeATR(*block, "trending_down_choppy"); !ok || v != 1.2 {
 		t.Fatalf("runtime resolve trending_down_choppy = (%g, %v), want (1.2, true)", v, ok)
+	}
+	if v, ok := resolveRegimeATR(*block, "ranging_directional_up"); !ok || v != 1.5 {
+		t.Fatalf("runtime resolve ranging_directional_up = (%g, %v), want (1.5, true)", v, ok)
+	}
+	if v, ok := resolveRegimeATR(*block, "ranging_directional_down"); !ok || v != 1.5 {
+		t.Fatalf("runtime resolve ranging_directional_down = (%g, %v), want (1.5, true)", v, ok)
 	}
 }
 

@@ -64,7 +64,12 @@ def unified_regime_scalar_params(params: dict, regime: str):
     trend = params.get(REGIME_CLASSIFIER_KEY)
     if not isinstance(trend, dict):
         return None, 0.0
-    label = trend.get((regime or "").strip())
+    key = (regime or "").strip()
+    label = trend.get(key)
+    if not isinstance(label, dict):
+        fallback = regime_lookup_label(key)
+        if fallback != key:
+            label = trend.get(fallback)
     if not isinstance(label, dict) or "tp_tiers" not in label:
         return None, 0.0
     scalar = {"tp_tiers": label["tp_tiers"]}
