@@ -161,8 +161,8 @@ func TestFormatScriptRecoveredAlert(t *testing.T) {
 
 func TestScriptFailureErrorIsTransient(t *testing.T) {
 	cases := []struct {
-		msg   string
-		want  bool
+		msg  string
+		want bool
 	}{
 		{"Failed to initialize Hyperliquid Exchange client: (429, None, 'null', None)", true},
 		{"hl rate limited", true},
