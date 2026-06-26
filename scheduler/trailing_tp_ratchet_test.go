@@ -842,3 +842,84 @@ func errListContains(errs []string, needle string) bool {
 	}
 	return false
 }
+
+// TestValidateTrailingTPRatchetClose_CompositeBareDirectionalCoversSubLabels:
+// #1124 family rule — a trailing_tp_ratchet_regime with explicit tp_tiers keyed
+// on bare ranging_directional (no _up/_down keys) still validates against the
+// 9-label composite vocabulary, and arms for _up/_down stamps at runtime.
+func TestValidateTrailingTPRatchetClose_CompositeBareDirectionalCoversSubLabels(t *testing.T) {
+	tierList := []interface{}{
+		map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.0, "trailing_mult_after": 1.0},
+	}
+	labels := regimeLabelsForClassifier(regimeClassifierComposite)
+	tpTiers := map[string]interface{}{}
+	for _, l := range labels {
+		if l == "ranging_directional_up" || l == "ranging_directional_down" {
+			continue // bare ranging_directional covers these
+		}
+		tpTiers[l] = tierList
+	}
+	sc := StrategyConfig{
+		ID: "s1", Type: "perps", Platform: "hyperliquid",
+		TrailingStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
+			"trending_up_clean":    {ATR: 2.0},
+			"trending_up_choppy":   {ATR: 2.0},
+			"trending_down_clean":  {ATR: 2.0},
+			"trending_down_choppy": {ATR: 2.0},
+			"ranging_quiet":        {ATR: 1.0},
+			"ranging_volatile":     {ATR: 1.2},
+			"ranging_directional":  {ATR: 1.0},
+		}},
+		CloseStrategy: &StrategyRef{
+			Name:   "trailing_tp_ratchet_regime",
+			Params: map[string]interface{}{"tp_tiers": tpTiers},
+		},
+	}
+	if errs := validateTrailingTPRatchetClose(sc, labels, true); len(errs) > 0 {
+		t.Fatalf("composite bare-ranging_directional ratchet must validate, got: %v", errs)
+	}
+	// Sub-label stamp resolves to the bare tier ladder at runtime.
+	for _, stamp := range []string{"ranging_directional_up", "ranging_directional_down"} {
+		tiers := trailingRatchetTiersForRegime(sc, stamp)
+		if len(tiers) != 1 || tiers[0].ATRMultiple != 1.0 {
+			t.Fatalf("%s: resolved tiers = %+v, want bare 1.0 ladder via fallback", stamp, tiers)
+		}
+	}
+}
+
+// TestValidateTrailingTPRatchetClose_CompositeSubLabelsWithoutBareRejected:
+// sub-labels-only (no bare parent) is still non-exhaustive.
+func TestValidateTrailingTPRatchetClose_CompositeSubLabelsWithoutBareRejected(t *testing.T) {
+	tierList := []interface{}{
+		map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.0, "trailing_mult_after": 1.0},
+	}
+	labels := regimeLabelsForClassifier(regimeClassifierComposite)
+	tpTiers := map[string]interface{}{}
+	for _, l := range labels {
+		if l == "ranging_directional" {
+			continue // omit bare — only _up/_down present
+		}
+		tpTiers[l] = tierList
+	}
+	sc := StrategyConfig{
+		ID: "s1", Type: "perps", Platform: "hyperliquid",
+		TrailingStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
+			"trending_up_clean":        {ATR: 2.0},
+			"trending_up_choppy":       {ATR: 2.0},
+			"trending_down_clean":      {ATR: 2.0},
+			"trending_down_choppy":     {ATR: 2.0},
+			"ranging_quiet":            {ATR: 1.0},
+			"ranging_volatile":         {ATR: 1.2},
+			"ranging_directional_up":   {ATR: 1.0},
+			"ranging_directional_down": {ATR: 1.0},
+		}},
+		CloseStrategy: &StrategyRef{
+			Name:   "trailing_tp_ratchet_regime",
+			Params: map[string]interface{}{"tp_tiers": tpTiers},
+		},
+	}
+	errs := validateTrailingTPRatchetClose(sc, labels, true)
+	if !errListContains(errs, `missing required regime key "ranging_directional"`) {
+		t.Fatalf("sub-labels-only ratchet must be rejected as missing bare, got: %v", errs)
+	}
+}

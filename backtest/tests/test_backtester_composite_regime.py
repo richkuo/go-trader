@@ -74,8 +74,14 @@ def test_composite_label_allows_entry_when_gate_matches(label):
 
 @pytest.mark.parametrize("label", COMPOSITE_LABELS)
 def test_composite_label_blocks_entry_when_gate_mismatches(label):
-    # Pick any distinct label to gate on — the bar is ``label`` so it must block.
-    other = next(l for l in COMPOSITE_LABELS if l != label)
+    # Pick a label that does NOT cover ``label`` under the #1124 family rule.
+    # For the _up/_down sub-labels the bare ranging_directional covers them, so
+    # a gate on bare would (correctly) allow — exclude the bare parent here too.
+    covered_by = {"ranging_directional_up", "ranging_directional_down"}
+    if label in covered_by:
+        other = next(l for l in COMPOSITE_LABELS if l != label and l != "ranging_directional")
+    else:
+        other = next(l for l in COMPOSITE_LABELS if l != label)
     df = _gated_df(label)
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
@@ -160,3 +166,35 @@ def test_composite_regime_flip_does_not_close_open_position():
     result = bt.run(df, save=False)
     assert result["total_trades"] == 1
     assert result["trades"][0]["exit_price"] > 0
+
+
+# ─── #1124: bare ranging_directional covers its _up/_down sub-labels ─────────
+
+
+@pytest.mark.parametrize("sub", ["ranging_directional_up", "ranging_directional_down"])
+def test_bare_ranging_directional_covers_sub_label_entry(sub):
+    """#1124 family rule on the entry gate: an allowed_regimes listing only the
+    bare ``ranging_directional`` must still permit entries on ``_up``/``_down``
+    bars (the producer relabels non-zero drift). Mirrors the Go gate for parity.
+    """
+    df = _gated_df(sub)
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        regime_enabled=True, allowed_regimes=["ranging_directional"],
+    )
+    assert bt.run(df, save=False)["total_trades"] >= 1
+
+
+def test_explicit_sub_label_does_not_cover_bare_or_sibling_entry():
+    """#1124: the family expansion is one-directional (bare→subs). An operator
+    listing only ``ranging_directional_up`` gates OUT the bare label and the
+    ``_down`` sibling — never the reverse."""
+    for bar in ["ranging_directional", "ranging_directional_down"]:
+        df = _gated_df(bar)
+        bt = Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            regime_enabled=True, allowed_regimes=["ranging_directional_up"],
+        )
+        assert bt.run(df, save=False)["total_trades"] == 0, (
+            f"explicit _up must NOT cover bar '{bar}'"
+        )

@@ -267,14 +267,14 @@ func (a *RegimeProfileAllocation) ResolveRaw(label string, labels []string) []st
 	// sub-labels (back-compat — the bare profile resolves the whole family at
 	// runtime, including the return_eff==0 neutral case the producer emits).
 	bareDirectional := false
-	if _, ok := profiles["ranging_directional"]; ok {
+	if _, ok := profiles[regimeDirectionalBare]; ok {
 		bareDirectional = true
 	}
 	for _, l := range labels {
 		if _, ok := profiles[l]; ok {
 			continue
 		}
-		if (l == "ranging_directional_up" || l == "ranging_directional_down") && bareDirectional {
+		if regimeLabelFamilyCovered(l, bareDirectional) {
 			continue
 		}
 		errs = append(errs, fmt.Sprintf("%s.profiles: missing mapping for regime label %q (every label of the window classifier must map to a profile)", label, l))
@@ -403,8 +403,8 @@ func resolveRegimeProfile(alloc *RegimeProfileAllocation, label, barTime string,
 		desired = alloc.Profiles[label]
 		// #1124: sub-label stamp falls back to the bare ranging_directional
 		// mapping when no explicit sub-label profile is configured.
-		if desired == "" && (label == "ranging_directional_up" || label == "ranging_directional_down") {
-			desired = alloc.Profiles["ranging_directional"]
+		if desired == "" && regimeDirectionalSubs[label] {
+			desired = alloc.Profiles[regimeDirectionalBare]
 		}
 	}
 

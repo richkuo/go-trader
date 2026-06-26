@@ -129,6 +129,38 @@ func TestRegimeAllowsEntry_NonMatchingLabel(t *testing.T) {
 	}
 }
 
+// TestRegimeAllowsEntry_BareDirectionalCoversSubLabels: #1124 family rule on
+// the entry gate — a bare ranging_directional in allowed matches its _up/_down
+// sub-labels (one-directional bare→subs).
+func TestRegimeAllowsEntry_BareDirectionalCoversSubLabels(t *testing.T) {
+	allowed := []string{"ranging_directional"}
+	if !regimeAllowsEntry(allowed, "ranging_directional_up") {
+		t.Error("bare ranging_directional should allow ranging_directional_up")
+	}
+	if !regimeAllowsEntry(allowed, "ranging_directional_down") {
+		t.Error("bare ranging_directional should allow ranging_directional_down")
+	}
+	if !regimeAllowsEntry(allowed, "ranging_directional") {
+		t.Error("bare ranging_directional should allow itself")
+	}
+}
+
+// TestRegimeAllowsEntry_ExplicitSubLabelDoesNotCoverBareOrSibling: the family
+// expansion is one-directional — an explicit _up does NOT match bare or _down.
+func TestRegimeAllowsEntry_ExplicitSubLabelDoesNotCoverBareOrSibling(t *testing.T) {
+	allowed := []string{"ranging_directional_up"}
+	if regimeAllowsEntry(allowed, "ranging_directional") {
+		t.Error("explicit _up should NOT cover bare ranging_directional")
+	}
+	if regimeAllowsEntry(allowed, "ranging_directional_down") {
+		t.Error("explicit _up should NOT cover ranging_directional_down")
+	}
+	// Still matches itself.
+	if !regimeAllowsEntry(allowed, "ranging_directional_up") {
+		t.Error("explicit _up should match itself")
+	}
+}
+
 func TestRegimeAllowsEntry_EmptyCurrentAllowsWhenListNonEmpty(t *testing.T) {
 	// When regime field is empty (script disabled / not available), allow entry
 	// so existing strategies without regime are unaffected.

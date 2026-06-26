@@ -273,9 +273,17 @@ func trailingRatchetTiersForRegime(sc StrategyConfig, regime string) []trailingR
 			if !ok || strings.TrimSpace(regime) == "" {
 				return nil
 			}
-			block, ok := table[strings.TrimSpace(regime)]
+			key := strings.TrimSpace(regime)
+			block, ok := table[key]
 			if !ok {
-				return nil
+				// #1124: sub-label stamp falls back to the bare
+				// ranging_directional tier ladder.
+				if regimeDirectionalSubs[key] {
+					block, ok = table[regimeDirectionalBare]
+				}
+				if !ok {
+					return nil
+				}
 			}
 			tiers, _ := parseTrailingRatchetTierList(block, ref.Name+".tp_tiers."+regime)
 			return tiers
@@ -419,9 +427,15 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 					errs = append(errs, fmt.Sprintf("%s.tp_tiers: unknown regime key %q (valid: %s)", sub, key, strings.Join(labels, ", ")))
 				}
 			}
+			bareDirectional := table[regimeDirectionalBare] != nil
 			for _, key := range labels {
 				block, ok := table[key]
 				if !ok {
+					// #1124 family rule: bare ranging_directional covers the
+					// _up/_down sub-labels for exhaustiveness.
+					if regimeLabelFamilyCovered(key, bareDirectional) {
+						continue
+					}
 					errs = append(errs, fmt.Sprintf("%s.tp_tiers: missing required regime key %q", sub, key))
 					continue
 				}

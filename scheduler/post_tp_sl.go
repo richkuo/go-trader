@@ -81,8 +81,8 @@ func (b *RegimeFloatBlock) Resolve(regime string) (float64, bool) {
 		return v, true
 	}
 	// #1124: sub-label stamp falls back to the bare ranging_directional entry.
-	if r == "ranging_directional_up" || r == "ranging_directional_down" {
-		if v, ok := b.TrendRegime["ranging_directional"]; ok {
+	if regimeDirectionalSubs[r] {
+		if v, ok := b.TrendRegime[regimeDirectionalBare]; ok {
 			return v, true
 		}
 	}
@@ -536,12 +536,12 @@ func parseRegimeFloatBlock(raw map[string]interface{}, ctxLabel string, labels [
 	missing := make([]string, 0)
 	// #1124: bare `ranging_directional` covers its _up/_down sub-labels for
 	// exhaustiveness (back-compat — resolves the whole family at runtime).
-	bareDirectional := trend["ranging_directional"] != nil
+	bareDirectional := trend[regimeDirectionalBare] != nil
 	for _, label := range labels {
 		if _, ok := trend[label]; ok {
 			continue
 		}
-		if (label == "ranging_directional_up" || label == "ranging_directional_down") && bareDirectional {
+		if regimeLabelFamilyCovered(label, bareDirectional) {
 			continue
 		}
 		missing = append(missing, label)

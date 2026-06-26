@@ -62,6 +62,34 @@ VALID_LABELS_COMPOSITE = frozenset({
 # Back-compat alias for ADX-only callers
 _VALID_LABELS = VALID_LABELS_ADX
 
+# #1124: the bare `ranging_directional` label is the parent of the directional
+# family — the producer emits the bare label only at exactly return_eff == 0
+# (rare on real price data) and the `_up`/`_down` sub-labels for any non-zero
+# drift. The family rule is one-directional for entry gates and exhaustiveness:
+# a bare `ranging_directional` covers its `_up`/`_down` sub-labels, never the
+# reverse. Mirrors the Go `regimeLabelFamilyCovered` / `regimeDirectionalSubs`.
+RANGING_DIRECTIONAL_BARE = "ranging_directional"
+RANGING_DIRECTIONAL_SUBS = frozenset({"ranging_directional_up", "ranging_directional_down"})
+
+
+def regime_label_allows_entry(allowed, current: str) -> bool:
+    """#1124 entry-gate family match.
+
+    True when ``current`` is explicitly in ``allowed`` OR when ``current`` is a
+    directional sub-label (``_up``/``_down``) and the bare ``ranging_directional``
+    parent is in ``allowed``. Expansion is one-directional (bare→subs), so an
+    operator listing an explicit ``_up`` still gates out ``_down``. Empty
+    ``allowed`` (no gate) or empty ``current`` (no regime available) allow entry,
+    matching the Go ``regimeAllowsEntry`` contract for parity.
+    """
+    if not allowed or not current:
+        return True
+    if current in allowed:
+        return True
+    if current in RANGING_DIRECTIONAL_SUBS and RANGING_DIRECTIONAL_BARE in allowed:
+        return True
+    return False
+
 _DEFAULT_COMPOSITE_THRESHOLDS = {
     "return_pct": 0.05,
     "range_pct": 0.03,
@@ -156,10 +184,12 @@ def map_composite_label(
     #1124: the ranging-directional drift sign is baked into the label —
     `ranging_directional_up` when return_eff > 0, `ranging_directional_down`
     when return_eff < 0, and the bare `ranging_directional` when return_eff
-    is exactly zero. Because `ranging_directional` fires only when there is
-    no decisive net move (big_move false), return_eff is frequently near
-    zero, so the bare label is the neutral/back-compat fallback, not an edge
-    case. Existing configs keyed on bare `ranging_directional` keep working.
+    is exactly zero. The bare label fires only at exact zero, which is rare
+    on real price data, so configs keyed on bare `ranging_directional` rely on
+    the one-directional family rule (bare covers its `_up`/`_down` sub-labels
+    for exhaustiveness, runtime resolution, and entry gating) rather than on
+    the bare label being frequently emitted. Existing configs keyed on bare
+    `ranging_directional` keep working via that rule.
     """
     ret_th = float(thresholds.get("return_pct", _DEFAULT_COMPOSITE_THRESHOLDS["return_pct"]))
     range_th = float(thresholds.get("range_pct", _DEFAULT_COMPOSITE_THRESHOLDS["range_pct"]))

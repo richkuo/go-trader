@@ -88,6 +88,7 @@ _close_registry = None
 # Regime helper imported lazily so backtests without regime_enabled=True
 # don't pay the import cost.
 _ensure_regime_fn = None
+_regime_allows_entry_fn = None
 
 # Post-TP SL helpers (#709). Loaded via spec_from_file_location to avoid the
 # same registry-name collision that close_registry_loader works around — this
@@ -98,11 +99,27 @@ _trailing_ratchet_module = None
 
 
 def _load_regime():
-    global _ensure_regime_fn
+    global _ensure_regime_fn, _regime_allows_entry_fn
     if _ensure_regime_fn is None:
         from regime import ensure_regime_columns as _ensure_regime_columns
+        from regime import regime_label_allows_entry as _allows_entry
         _ensure_regime_fn = _ensure_regime_columns
+        _regime_allows_entry_fn = _allows_entry
     return _ensure_regime_fn
+
+
+def _regime_allows_entry(allowed, bar_regime: str) -> bool:
+    """#1124 entry-gate with the one-directional directional family rule.
+
+    A bare ``ranging_directional`` in ``allowed`` matches its ``_up``/``_down``
+    sub-labels, mirroring the Go ``regimeAllowsEntry`` gate for live/backtest
+    parity. Falls back to plain membership if the regime module isn't loaded.
+    """
+    if _regime_allows_entry_fn is None:
+        _load_regime()
+    if _regime_allows_entry_fn is None:
+        return (not allowed) or (not bar_regime) or (bar_regime in allowed)
+    return _regime_allows_entry_fn(allowed, bar_regime)
 
 
 def _regime_primary_labels(spec: Optional[dict]) -> Optional[tuple]:
@@ -1725,7 +1742,7 @@ class Backtester:
             regime_blocked = (
                 self.regime_enabled
                 and bool(self.allowed_regimes)
-                and bar_regime not in self.allowed_regimes
+                and not _regime_allows_entry(self.allowed_regimes, bar_regime)
             )
 
             if uses_open_close:

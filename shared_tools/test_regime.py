@@ -441,3 +441,27 @@ def test_latest_regime_composite_downtrend():
     snap = _regime_mod.latest_regime_composite(df, period=50, thresholds={"return_pct": 0.02, "range_pct": 0.02, "adx": 15})
     assert snap["regime"] in _regime_mod.VALID_LABELS_COMPOSITE
     assert "trending_down" in snap["regime"]
+
+
+def test_regime_label_allows_entry_bare_covers_subs():
+    """#1124: a bare ranging_directional in allowed covers its _up/_down subs."""
+    allowed = ["ranging_directional"]
+    assert _regime_mod.regime_label_allows_entry(allowed, "ranging_directional_up")
+    assert _regime_mod.regime_label_allows_entry(allowed, "ranging_directional_down")
+    assert _regime_mod.regime_label_allows_entry(allowed, "ranging_directional")
+
+
+def test_regime_label_allows_entry_explicit_sub_does_not_cover_bare_or_sibling():
+    """#1124: family expansion is one-directional (bare→subs), never subs→bare/sibling."""
+    allowed = ["ranging_directional_up"]
+    assert not _regime_mod.regime_label_allows_entry(allowed, "ranging_directional")
+    assert not _regime_mod.regime_label_allows_entry(allowed, "ranging_directional_down")
+    assert _regime_mod.regime_label_allows_entry(allowed, "ranging_directional_up")
+
+
+def test_regime_label_allows_entry_empty_and_exact_match():
+    """#1124: empty allowed / empty current allow entry; exact match wins."""
+    assert _regime_mod.regime_label_allows_entry([], "ranging_directional_up")
+    assert _regime_mod.regime_label_allows_entry(["trending_up"], "")
+    assert _regime_mod.regime_label_allows_entry(["trending_up_clean"], "trending_up_clean")
+    assert not _regime_mod.regime_label_allows_entry(["trending_up_clean"], "ranging_quiet")

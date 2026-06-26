@@ -106,8 +106,8 @@ func (p *RegimeDirectionalPolicy) Resolve(regime string) (RegimeDirectionalEntry
 		return entry, true
 	}
 	// #1124: sub-label stamp falls back to the bare ranging_directional entry.
-	if r == "ranging_directional_up" || r == "ranging_directional_down" {
-		if entry, ok := p.TrendRegime["ranging_directional"]; ok {
+	if regimeDirectionalSubs[r] {
+		if entry, ok := p.TrendRegime[regimeDirectionalBare]; ok {
 			return entry, true
 		}
 	}
@@ -269,13 +269,13 @@ func (p *RegimeDirectionalPolicy) ResolveRawWithLabels(label string, labels []st
 	// so a label that's present-but-invalid isn't also reported as missing.
 	// #1124: a present bare `ranging_directional` covers its _up/_down
 	// sub-labels (back-compat — resolves the whole family at runtime).
-	bareDirectional := seen["ranging_directional"]
+	bareDirectional := seen[regimeDirectionalBare]
 	missing := []string{}
 	for _, l := range labels {
 		if seen[l] {
 			continue
 		}
-		if (l == "ranging_directional_up" || l == "ranging_directional_down") && bareDirectional {
+		if regimeLabelFamilyCovered(l, bareDirectional) {
 			continue
 		}
 		missing = append(missing, l)
