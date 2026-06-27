@@ -54,9 +54,19 @@ func unifiedRegimeScalarParams(params map[string]interface{}, regime string) (sc
 	if !isMap {
 		return nil, 0, false
 	}
-	labelRaw, isMap := trendRaw[strings.TrimSpace(regime)].(map[string]interface{})
+	r := strings.TrimSpace(regime)
+	labelRaw, isMap := trendRaw[r].(map[string]interface{})
 	if !isMap {
-		return nil, 0, false
+		// #1124: sub-label stamp falls back to the bare ranging_directional
+		// entry. The unified close is the sole SL owner, so without this
+		// fallback a bare-only block yields no SL *and* no TPs for an
+		// _up/_down stamp → a naked HL perps position.
+		if regimeDirectionalSubs[r] {
+			labelRaw, isMap = trendRaw[regimeDirectionalBare].(map[string]interface{})
+		}
+		if !isMap {
+			return nil, 0, false
+		}
 	}
 	tiers, hasTiers := labelRaw["tp_tiers"]
 	if !hasTiers {
@@ -200,9 +210,17 @@ func validateUnifiedRegimeClose(params map[string]interface{}, labels []string, 
 			ctxLabel, regimeClassifierKey, l, strings.Join(labels, ", ")))
 	}
 
+	bareDirectional := trendRaw[regimeDirectionalBare] != nil
 	for _, l := range labels {
 		lr, ok := trendRaw[l]
 		if !ok {
+			// #1124 family rule: a present bare ranging_directional covers the
+			// _up/_down sub-labels for exhaustiveness, so a 7-label composite
+			// block (the pre-#1124 shape) still loads and resolves at runtime
+			// via the bare fallback in unifiedRegimeScalarParams.
+			if regimeLabelFamilyCovered(l, bareDirectional) {
+				continue
+			}
 			errs = append(errs, fmt.Sprintf("%s.%s: missing required regime label %q (must be exhaustive — no silent fallback)",
 				ctxLabel, regimeClassifierKey, l))
 			continue

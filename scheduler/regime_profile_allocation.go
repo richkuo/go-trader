@@ -263,10 +263,19 @@ func (a *RegimeProfileAllocation) ResolveRaw(label string, labels []string) []st
 		errs = append(errs, fmt.Sprintf("%s.initial_profile=%q is not a param_sets profile (valid: %s)", label, initialProfile, strings.Join(sortedKeys(paramSets), ", ")))
 	}
 	// Every classifier label must be covered by profiles.
+	// #1124: a present bare `ranging_directional` mapping covers its _up/_down
+	// sub-labels (back-compat — the bare profile resolves the whole family at
+	// runtime via resolveRegimeProfile's bare fallback, including the
+	// return_eff==0 neutral case the producer emits).
+	_, bareDirectional := profiles[regimeDirectionalBare]
 	for _, l := range labels {
-		if _, ok := profiles[l]; !ok {
-			errs = append(errs, fmt.Sprintf("%s.profiles: missing mapping for regime label %q (every label of the window classifier must map to a profile)", label, l))
+		if _, ok := profiles[l]; ok {
+			continue
 		}
+		if regimeLabelFamilyCovered(l, bareDirectional) {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("%s.profiles: missing mapping for regime label %q (every label of the window classifier must map to a profile)", label, l))
 	}
 
 	if len(errs) > 0 {
@@ -390,6 +399,11 @@ func resolveRegimeProfile(alloc *RegimeProfileAllocation, label, barTime string,
 	desired := ""
 	if label != "" {
 		desired = alloc.Profiles[label]
+		// #1124: sub-label stamp falls back to the bare ranging_directional
+		// mapping when no explicit sub-label profile is configured.
+		if desired == "" && regimeDirectionalSubs[label] {
+			desired = alloc.Profiles[regimeDirectionalBare]
+		}
 	}
 
 	barAdvanced := barTime != "" && barTime != next.LastBarTime

@@ -107,7 +107,18 @@ class RegimeATRBlock:
     def resolve(self, regime: str) -> Optional[RegimeATREntry]:
         if not self.trend_regime:
             return None
-        return self.trend_regime.get((regime or "").strip())
+        r = (regime or "").strip()
+        entry = self.trend_regime.get(r)
+        if entry is not None:
+            return entry
+        # #1124: a ranging_directional_up/_down stamp falls back to the bare
+        # ranging_directional entry when no explicit sub-label key is present
+        # (the back-compat shape — bare label covers the whole family). Exact
+        # match wins first, so an explicit sub key still overrides bare. Mirrors
+        # RegimeATRBlock.Resolve in scheduler/regime_atr.go.
+        if r in ("ranging_directional_up", "ranging_directional_down"):
+            return self.trend_regime.get("ranging_directional")
+        return None
 
 
 # Mirrors regimeATRDefaults in scheduler/regime_atr.go — keep values in sync.
@@ -258,7 +269,21 @@ def parse_regime_atr_block(
             f"(expected one of: {', '.join(labels)})"
         )
 
-    missing_labels = [l for l in labels if l not in trend_raw]
+    # #1124: a present bare `ranging_directional` covers its _up/_down sub-labels
+    # for exhaustiveness (back-compat — resolve() resolves the whole family at
+    # runtime via its bare fallback, including the return_eff==0 neutral case the
+    # producer still emits). Providing only the sub-labels without the bare label
+    # is NOT exhaustive (the neutral case would resolve to None → silent
+    # never-arm of an auto-protective exit).
+    bare_directional_present = "ranging_directional" in trend_raw
+    missing_labels = [
+        l for l in labels
+        if l not in trend_raw
+        and not (
+            l in ("ranging_directional_up", "ranging_directional_down")
+            and bare_directional_present
+        )
+    ]
     if missing_labels:
         errs.append(
             f"{ctx_label}.{REGIME_CLASSIFIER_KEY}: missing required regime labels: "

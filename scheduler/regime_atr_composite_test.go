@@ -171,6 +171,102 @@ func TestValidateRegimeATRConfig_CompositeMissingLabelRejected(t *testing.T) {
 	}
 }
 
+// #1124: the ranging_directional family — a present bare ranging_directional
+// covers its _up/_down sub-labels for exhaustiveness, so a legacy block keyed
+// on bare only (no sub-label keys) still validates under the 9-label composite
+// vocabulary (back-compat).
+func TestValidateRegimeATRConfig_CompositeBareDirectionalCoversSubLabels(t *testing.T) {
+	raw := composite7StateATR(2.0)
+	tr := raw["trend_regime"].(map[string]interface{})
+	delete(tr, "ranging_directional_up")
+	delete(tr, "ranging_directional_down")
+	if _, ok := tr["ranging_directional"]; !ok {
+		t.Fatal("test fixture: expected bare ranging_directional key")
+	}
+	sc := StrategyConfig{
+		ID:                "hl-test",
+		Type:              "perps",
+		Platform:          "hyperliquid",
+		RegimeATRWindow:   "daily",
+		StopLossATRRegime: &RegimeATRBlock{raw: raw},
+	}
+	if errs := validateRegimeATRConfig(compositeRegimeCfg(sc)); len(errs) != 0 {
+		t.Fatalf("legacy bare-only directional block must still validate, got: %v", errs)
+	}
+}
+
+// #1124: sub-labels-only (no bare ranging_directional) is NOT exhaustive — the
+// producer still emits the bare label at return_eff==0, so a block missing it
+// would silently never-arm on the neutral case. Must be rejected.
+func TestValidateRegimeATRConfig_CompositeSubLabelsWithoutBareRejected(t *testing.T) {
+	raw := composite7StateATR(2.0)
+	delete(raw["trend_regime"].(map[string]interface{}), "ranging_directional")
+	sc := StrategyConfig{
+		ID:                "hl-test",
+		Type:              "perps",
+		Platform:          "hyperliquid",
+		RegimeATRWindow:   "daily",
+		StopLossATRRegime: &RegimeATRBlock{raw: raw},
+	}
+	errs := validateRegimeATRConfig(compositeRegimeCfg(sc))
+	joined := strings.Join(errs, "\n")
+	if !strings.Contains(joined, "ranging_directional") || !strings.Contains(joined, "missing required regime labels") {
+		t.Fatalf("expected missing bare ranging_directional error, got: %v", errs)
+	}
+}
+
+// #1124: runtime Resolve falls back from a _up/_down stamp to the bare
+// ranging_directional entry when no explicit sub-label key exists, and an
+// explicit sub-label key wins over the bare fallback (one-directional rule).
+func TestRegimeATRBlock_ResolveSubLabelFallsBackToBareAndExplicitWins(t *testing.T) {
+	// Bare-only block: subs resolve via bare fallback.
+	raw := composite7StateATR(1.5)
+	tr := raw["trend_regime"].(map[string]interface{})
+	delete(tr, "ranging_directional_up")
+	delete(tr, "ranging_directional_down")
+	sc := StrategyConfig{
+		ID:                "hl-test",
+		Type:              "perps",
+		Platform:          "hyperliquid",
+		RegimeATRWindow:   "daily",
+		StopLossATRRegime: &RegimeATRBlock{raw: raw},
+	}
+	if errs := validateRegimeATRConfig(compositeRegimeCfg(sc)); len(errs) != 0 {
+		t.Fatalf("fixture must validate, got: %v", errs)
+	}
+	block := *sc.StopLossATRRegime
+	if v, ok := block.Resolve("ranging_directional"); !ok || v.ATR != 1.5 {
+		t.Fatalf("bare resolve: got (%g, %v), want (1.5, true)", v.ATR, ok)
+	}
+	for _, sub := range []string{"ranging_directional_up", "ranging_directional_down"} {
+		v, ok := block.Resolve(sub)
+		if !ok || v.ATR != 1.5 {
+			t.Errorf("Resolve(%q): got (%g, %v), want (1.5, true) via bare fallback", sub, v.ATR, ok)
+		}
+	}
+
+	// Explicit _up key wins over bare; _down still falls back to bare.
+	raw2 := composite7StateATR(1.5)
+	raw2["trend_regime"].(map[string]interface{})["ranging_directional_up"] = map[string]interface{}{"atr_multiple": 0.9}
+	sc2 := StrategyConfig{
+		ID:                "hl-test2",
+		Type:              "perps",
+		Platform:          "hyperliquid",
+		RegimeATRWindow:   "daily",
+		StopLossATRRegime: &RegimeATRBlock{raw: raw2},
+	}
+	if errs := validateRegimeATRConfig(compositeRegimeCfg(sc2)); len(errs) != 0 {
+		t.Fatalf("explicit-sub fixture must validate, got: %v", errs)
+	}
+	block2 := *sc2.StopLossATRRegime
+	if v, ok := block2.Resolve("ranging_directional_up"); !ok || v.ATR != 0.9 {
+		t.Fatalf("explicit _up must win: got (%g, %v), want (0.9, true)", v.ATR, ok)
+	}
+	if v, ok := block2.Resolve("ranging_directional_down"); !ok || v.ATR != 1.5 {
+		t.Fatalf("_down must fall back to bare: got (%g, %v), want (1.5, true)", v.ATR, ok)
+	}
+}
+
 // TestValidateRegimeATRConfig_CompositeTPTiersExplicit covers the tier path:
 // an explicit 7-state tiered_tp_atr_regime close ref must validate under a
 // composite window.

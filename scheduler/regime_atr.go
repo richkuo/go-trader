@@ -37,6 +37,35 @@ import (
 // use_defaults, every label here must appear in the trend_regime map.
 var canonicalTrendRegimeLabels = []string{"trending_up", "trending_down", "ranging"}
 
+// regimeDirectionalBare is the bare ranging-directional label, whose
+// `ranging_directional_up`/`_down` sub-labels the producer (#1124) splits out
+// by drift sign. The bare label remains the exact-zero neutral fallback the
+// producer emits at return_eff == 0, so it is the parent of the family.
+const regimeDirectionalBare = "ranging_directional"
+
+// regimeDirectionalSubs is the set of #1124 directional sub-labels that the
+// bare `ranging_directional` label covers for exhaustiveness and runtime
+// resolution. Kept as a helper so every consumer applies the family rule
+// symmetrically (a missed consumer is a silent never-arm of an auto-protective
+// SL/exit — see #1124 review). The rule is one-directional: bare covers its
+// subs, never the reverse, so an explicit `_up`/`_down` key always wins on an
+// exact match and the bare fallback only fires on a miss.
+var regimeDirectionalSubs = map[string]bool{
+	"ranging_directional_up":   true,
+	"ranging_directional_down": true,
+}
+
+// regimeLabelFamilyCovered reports whether an omitted `label` is nevertheless
+// satisfied for exhaustiveness because the bare `ranging_directional` parent
+// is present (`bareDirectionalPresent`). This is the back-compat rule: a
+// 7-label composite block keyed on bare `ranging_directional` still covers
+// the `_up`/`_down` sub-labels, so it must not be rejected as non-exhaustive.
+// Sub-labels-only (no bare parent) is NOT covered — the producer still emits
+// the bare label at return_eff == 0, so omitting it leaves a naked-SL hole.
+func regimeLabelFamilyCovered(label string, bareDirectionalPresent bool) bool {
+	return bareDirectionalPresent && regimeDirectionalSubs[strings.TrimSpace(label)]
+}
+
 // regimeClassifierKey is the wrapper key required around per-label blocks.
 // Reserves space for future classifiers (e.g. "vol_regime") to land as
 // sibling keys without renaming.
@@ -202,12 +231,28 @@ func (b *RegimeATRBlock) IsConfigured() bool {
 // Resolve returns the per-label entry for the given regime. The caller is
 // responsible for validating the block at config-load time so this can
 // assume label presence. Returns (entry, true) on hit, (zero, false) on miss.
+//
+// #1124: a `ranging_directional_up`/`_down` regime stamp falls back to the bare
+// `ranging_directional` entry when the block doesn't carry an explicit sub-label
+// key (the back-compat shape — bare label covers the whole directional family).
+// Exact match wins first, so an explicit sub key always overrides the bare
+// entry. This keeps runtime resolution aligned with the exhaustiveness rule: a
+// bare-only block is exhaustive, so it must also resolve at runtime.
 func (b RegimeATRBlock) Resolve(regime string) (RegimeATREntry, bool) {
 	if b.TrendRegime == nil {
 		return RegimeATREntry{}, false
 	}
-	entry, ok := b.TrendRegime[strings.TrimSpace(regime)]
-	return entry, ok
+	r := strings.TrimSpace(regime)
+	if entry, ok := b.TrendRegime[r]; ok {
+		return entry, true
+	}
+	// #1124: sub-label stamp falls back to the bare ranging_directional entry.
+	if regimeDirectionalSubs[r] {
+		if entry, ok := b.TrendRegime[regimeDirectionalBare]; ok {
+			return entry, true
+		}
+	}
+	return RegimeATREntry{}, false
 }
 
 // regimeATRDefaults holds the per-surface baseline expansions for
@@ -456,10 +501,24 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 	}
 
 	missingLabels := []string{}
+	// #1124: the ranging_directional family — bare `ranging_directional` plus
+	// its `ranging_directional_up`/`_down` sub-labels — is satisfied for
+	// exhaustiveness when the bare label is present (it covers all three at
+	// runtime via Resolve's bare fallback, including the return_eff==0 neutral
+	// case the producer still emits). Providing only the sub-labels without the
+	// bare label is NOT exhaustive (the neutral case would resolve to nil →
+	// silent never-arm of an auto-protective exit). So a present bare label
+	// covers its sub-labels, and a missing bare label is flagged even when both
+	// sub-labels exist.
+	bareDirectional := trendMap[regimeDirectionalBare] != nil
 	for _, l := range labels {
-		if _, ok := trendMap[l]; !ok {
-			missingLabels = append(missingLabels, l)
+		if _, ok := trendMap[l]; ok {
+			continue
 		}
+		if regimeLabelFamilyCovered(l, bareDirectional) {
+			continue
+		}
+		missingLabels = append(missingLabels, l)
 	}
 	if len(missingLabels) > 0 {
 		errs = append(errs, fmt.Sprintf("%s.%s: missing required regime labels: %s (must be exhaustive — no silent fallback)", ctxLabel, regimeClassifierKey, strings.Join(missingLabels, ", ")))
