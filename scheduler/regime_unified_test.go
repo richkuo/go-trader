@@ -300,3 +300,114 @@ func TestUnifiedCloseParamsEqualForReload(t *testing.T) {
 		t.Fatal("two non-unified strategies should compare equal")
 	}
 }
+
+// unifiedCompositeBlock is a 9-label composite unified block keyed on bare
+// ranging_directional (no _up/_down keys) — the pre-#1124 shape that the
+// #1124 family rule must keep valid and keep resolving for _up/_down stamps.
+func unifiedCompositeBlock() map[string]interface{} {
+	tiers := func(a, b float64) []interface{} {
+		return []interface{}{
+			map[string]interface{}{"atr_multiple": a, "close_fraction": 0.5},
+			map[string]interface{}{"atr_multiple": b, "close_fraction": 1.0},
+		}
+	}
+	return map[string]interface{}{
+		regimeClassifierKey: map[string]interface{}{
+			"trending_up_clean":    map[string]interface{}{"stop_loss_atr": 1.5, "tp_tiers": tiers(2.0, 4.0)},
+			"trending_up_choppy":   map[string]interface{}{"stop_loss_atr": 1.3, "tp_tiers": tiers(1.8, 3.0)},
+			"trending_down_clean":  map[string]interface{}{"stop_loss_atr": 1.5, "tp_tiers": tiers(2.0, 4.0)},
+			"trending_down_choppy": map[string]interface{}{"stop_loss_atr": 1.3, "tp_tiers": tiers(1.8, 3.0)},
+			"ranging_quiet":        map[string]interface{}{"stop_loss_atr": 1.0, "tp_tiers": tiers(1.2, 2.4)},
+			"ranging_volatile":     map[string]interface{}{"stop_loss_atr": 1.2, "tp_tiers": tiers(1.5, 3.0)},
+			"ranging_directional":  map[string]interface{}{"stop_loss_atr": 1.1, "tp_tiers": tiers(1.3, 2.6)},
+		},
+	}
+}
+
+// TestValidateUnifiedRegimeClose_CompositeBareDirectionalCoversSubLabels:
+// the #1124 family rule — a bare ranging_directional covers its _up/_down
+// sub-labels for exhaustiveness, so the pre-#1124 bare-only shape still loads
+// under the 9-label composite vocabulary.
+func TestValidateUnifiedRegimeClose_CompositeBareDirectionalCoversSubLabels(t *testing.T) {
+	labels := regimeLabelsForClassifier(regimeClassifierComposite)
+	if errs := validateUnifiedRegimeClose(unifiedCompositeBlock(), labels, "close.params"); len(errs) > 0 {
+		t.Fatalf("bare-only composite block keyed on ranging_directional rejected: %v", errs)
+	}
+}
+
+// TestValidateUnifiedRegimeClose_CompositeSubLabelsWithoutBareRejected:
+// sub-labels-only (no bare parent) is still non-exhaustive because the
+// producer emits bare ranging_directional at exactly return_eff == 0. The
+// rule is one-directional: subs never satisfy the bare requirement.
+func TestValidateUnifiedRegimeClose_CompositeSubLabelsWithoutBareRejected(t *testing.T) {
+	labels := regimeLabelsForClassifier(regimeClassifierComposite)
+	m := unifiedCompositeBlock()
+	tr := m[regimeClassifierKey].(map[string]interface{})
+	delete(tr, "ranging_directional")
+	tr["ranging_directional_up"] = map[string]interface{}{"stop_loss_atr": 1.1, "tp_tiers": []interface{}{
+		map[string]interface{}{"atr_multiple": 1.3, "close_fraction": 0.5},
+		map[string]interface{}{"atr_multiple": 2.6, "close_fraction": 1.0},
+	}}
+	tr["ranging_directional_down"] = tr["ranging_directional_up"]
+	errs := validateUnifiedRegimeClose(m, labels, "close.params")
+	joined := strings.Join(errs, " | ")
+	if !strings.Contains(joined, `missing required regime label "ranging_directional"`) {
+		t.Fatalf("sub-labels-only block must be rejected as missing bare ranging_directional, got: %v", errs)
+	}
+}
+
+// TestUnifiedRegimeScalarParams_SubLabelFallsBackToBare: a _up/_down stamp
+// resolves to the bare ranging_directional block at runtime, returning its
+// SL and TP ladder (the sole-owner safety guarantee — no naked position). An
+// explicit sub-label key wins over bare on exact match, while the sibling in
+// the same block still falls back to bare (one-directional rule).
+func TestUnifiedRegimeScalarParams_SubLabelFallsBackToBare(t *testing.T) {
+	for _, stamp := range []string{"ranging_directional_up", "ranging_directional_down"} {
+		scalar, sl, ok := unifiedRegimeScalarParams(unifiedCompositeBlock(), stamp)
+		if !ok {
+			t.Fatalf("%s: expected ok via bare fallback", stamp)
+		}
+		if sl != 1.1 {
+			t.Fatalf("%s: stop_loss_atr = %g, want 1.1 (bare)", stamp, sl)
+		}
+		if tiers, ok := scalar["tp_tiers"].([]interface{}); !ok || len(tiers) != 2 {
+			t.Fatalf("%s: tp_tiers = %v, want bare 2-tier ladder", stamp, scalar["tp_tiers"])
+		}
+	}
+
+	// Explicit _up key wins over bare on exact match; _down still falls back.
+	m := unifiedCompositeBlock()
+	tr := m[regimeClassifierKey].(map[string]interface{})
+	tr["ranging_directional_up"] = map[string]interface{}{"stop_loss_atr": 0.9, "tp_tiers": []interface{}{
+		map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.5},
+		map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
+	}}
+	if _, sl, ok := unifiedRegimeScalarParams(m, "ranging_directional_up"); !ok || sl != 0.9 {
+		t.Fatalf("explicit _up must win: stop_loss_atr = %g, ok = %v, want 0.9/true", sl, ok)
+	}
+	if _, sl, ok := unifiedRegimeScalarParams(m, "ranging_directional_down"); !ok || sl != 1.1 {
+		t.Fatalf("_down must fall back to bare: stop_loss_atr = %g, ok = %v, want 1.1/true", sl, ok)
+	}
+}
+
+// TestUnifiedRegimeSLFolding_SubLabelStampPlacesSL: end-to-end #1124 safety —
+// a composite unified close keyed on bare ranging_directional (the sole SL
+// owner) places an SL via the on-chain protection plan when the producer
+// stamps _up/_down. Without the bare fallback this would be a naked position.
+func TestUnifiedRegimeSLFolding_SubLabelStampPlacesSL(t *testing.T) {
+	sc := StrategyConfig{
+		ID: "hl-unified-sub", Platform: "hyperliquid", Type: "perps",
+		MaxDrawdownPct: 25,
+		CloseStrategy:  &StrategyRef{Name: "tiered_tp_atr_live_regime", Params: unifiedCompositeBlock()},
+	}
+	for _, stamp := range []string{"ranging_directional_up", "ranging_directional_down"} {
+		pos := &Position{Symbol: "ETH", Quantity: 1, AvgCost: 100, EntryATR: 5, Side: "long", Regime: stamp}
+		plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+		if !ok {
+			t.Fatalf("%s: protection plan not built (naked position)", stamp)
+		}
+		if plan.StopLossATRMult != 1.1 {
+			t.Fatalf("%s: plan.StopLossATRMult = %g, want 1.1 (bare fallback)", stamp, plan.StopLossATRMult)
+		}
+	}
+}

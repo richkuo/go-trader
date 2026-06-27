@@ -368,6 +368,14 @@ func gatedDirectionalEntry(sc StrategyConfig, regime string, certStates map[stri
 	if sc.RegimeDirectionalPolicy == nil || sc.RegimeDirectionalPolicy.IsZero() {
 		return RegimeDirectionalEntry{}, false
 	}
+	// #1124/#1085: exact match ONLY — deliberately NO bare→sub family fallback
+	// here. The certification artifact carries PER-STATE evidence; a bare
+	// ranging_directional certification must not certify the _up/_down states it
+	// has no per-state evidence for. Borrowing the bare cell would place a
+	// directional bet on unproven evidence, so this evidence gate stays
+	// fail-closed (an uncertified _up/_down resolves to base direction). The
+	// bare→sub fallback in Resolve below only selects the operator's configured
+	// entry; this gate still independently requires per-state certified evidence.
 	certDir, certOK := certStates[strings.TrimSpace(regime)]
 	if !certOK {
 		return RegimeDirectionalEntry{}, false
