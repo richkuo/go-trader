@@ -169,10 +169,23 @@ func (b *RegimeATRBlock) ResolveSurfaceWithLabels(ctxLabel string, surface regim
 	return nil
 }
 
-// EqualForReload reports whether two blocks have the same shape for
-// hot-reload state-compat purposes. Compares the resolved fields; the raw
-// shape is informational only.
+// EqualForReload reports whether two blocks have the same reload representation.
+// The raw JSON shape is informational only; use_defaults provenance is retained
+// so flat/effectively-safe reloads still copy the operator's latest form.
 func (b *RegimeATRBlock) EqualForReload(other *RegimeATRBlock) bool {
+	if !b.EqualEffectiveForReload(other) {
+		return false
+	}
+	if b == nil || b.IsZero() {
+		return true
+	}
+	return b.UseDefaults == other.UseDefaults
+}
+
+// EqualEffectiveForReload reports whether two blocks resolve to the same runtime
+// ATR map for hot-reload state-compat checks. Representation-only edits such as
+// explicit defaults -> use_defaults do not alter already-armed triggers.
+func (b *RegimeATRBlock) EqualEffectiveForReload(other *RegimeATRBlock) bool {
 	aZero := b == nil || b.IsZero()
 	bZero := other == nil || other.IsZero()
 	if aZero != bZero {
@@ -180,9 +193,6 @@ func (b *RegimeATRBlock) EqualForReload(other *RegimeATRBlock) bool {
 	}
 	if aZero {
 		return true
-	}
-	if b.UseDefaults != other.UseDefaults {
-		return false
 	}
 	if len(b.TrendRegime) != len(other.TrendRegime) {
 		return false
