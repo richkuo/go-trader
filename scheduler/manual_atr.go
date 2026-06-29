@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 )
 
 // HyperliquidFetchATRResult is the JSON output from check_hyperliquid.py
@@ -56,11 +57,30 @@ var runHyperliquidFetchATRFn = RunHyperliquidFetchATR
 // Strategies that override ATR period via params will see drift between fetched
 // and stamped ATR; if that becomes a problem, plumb a per-strategy ATR period
 // from sc.OpenStrategy.Params here.
-func fetchManualEntryATR(sc StrategyConfig) (float64, string, bool) {
-	if sc.Script == "" || sc.Symbol == "" || sc.Timeframe == "" {
-		return 0, "missing script/symbol/timeframe on strategy config", false
+// resolveManualATRTimeframe returns the timeframe a manual ATR fetch runs
+// against, defaulting an unset strategy timeframe to the manual flow's
+// canonical "1h" (the init wizard and generateConfig both default to "1h").
+// Single source of truth so callers logging the fetch report the timeframe
+// actually used, not the raw (possibly empty) sc.Timeframe.
+func resolveManualATRTimeframe(sc StrategyConfig) string {
+	if sc.Timeframe == "" {
+		return "1h"
 	}
-	result, stderr, err := runHyperliquidFetchATRFn(sc.Script, sc.Symbol, sc.Timeframe, 14)
+	return sc.Timeframe
+}
+
+func fetchManualEntryATR(sc StrategyConfig) (float64, string, bool) {
+	if sc.Script == "" || sc.Symbol == "" {
+		return 0, "missing script/symbol on strategy config", false
+	}
+	// An unset timeframe falls back to 1h rather than failing closed to the
+	// coarse heuristic ATR. Only a genuine fetch failure should drop callers to
+	// computeFallbackATR.
+	timeframe := resolveManualATRTimeframe(sc)
+	if sc.Timeframe == "" {
+		fmt.Fprintf(os.Stderr, "[manual-open] defaulting to 1h ATR (strategy timeframe unset)\n")
+	}
+	result, stderr, err := runHyperliquidFetchATRFn(sc.Script, sc.Symbol, timeframe, 14)
 	if err != nil {
 		msg := err.Error()
 		if stderr != "" {

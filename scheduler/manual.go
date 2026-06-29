@@ -348,7 +348,7 @@ func runManualOpen(args []string) int {
 				} else {
 					entryATR = fetched
 					fmt.Fprintf(os.Stderr, "[manual-open] %s %s: --atr omitted; auto-fetched ATR=%.6f (period=14, %s)\n",
-						strategyID, sc.Symbol, fetched, sc.Timeframe)
+						strategyID, sc.Symbol, fetched, resolveManualATRTimeframe(sc))
 				}
 			}
 			if !fetchedOK {
