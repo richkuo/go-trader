@@ -102,6 +102,26 @@ func TestFetchManualEntryATR_StubSuccess(t *testing.T) {
 	}
 }
 
+func TestResolveManualATRTimeframe(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"unset defaults to 1h", "", "1h"},
+		{"explicit 1h", "1h", "1h"},
+		{"explicit non-1h preserved", "4h", "4h"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := resolveManualATRTimeframe(StrategyConfig{Timeframe: c.in})
+			if got != c.want {
+				t.Errorf("resolveManualATRTimeframe(%q)=%q want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
 // TestFetchManualEntryATR_EmptyTimeframeDefaultsTo1h asserts that an unset
 // timeframe no longer fails closed at the guard but defaults to "1h" and is
 // passed through to the fetch. Stubbed so it never spawns Python.
