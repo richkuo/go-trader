@@ -7,6 +7,7 @@ Main entry point for strategy evaluation.
 import sys
 import os
 import argparse
+from copy import deepcopy
 from typing import List, Optional
 
 import numpy as np
@@ -295,13 +296,49 @@ _USER_CLOSE_DEFAULTS_SUPPORTED = {
     "trailing_tp_ratchet_regime",
 }
 
+_STOP_OWNER_KEYS = (
+    "stop_loss_atr_mult",
+    "stop_loss_pct",
+    "stop_loss_margin_pct",
+    "trailing_stop_atr_mult",
+    "trailing_stop_pct",
+    "stop_loss_atr_regime",
+    "trailing_stop_atr_regime",
+)
 
-def _apply_user_close_defaults(close_refs: list, user_defaults: Optional[dict]) -> None:
-    """Inject user_close_defaults tp_tiers into close refs that omit tp_tiers
-    (#866, --defaults user). Mirrors the Go injection at load: an explicit
-    per-ref tp_tiers (the strategy layer) wins, an unsupported evaluator name is
-    skipped, and a ref with no matching entry falls through to the evaluator's
-    built-in system default."""
+
+def _user_close_default_entry(user_defaults: Optional[dict], name: str) -> Optional[dict]:
+    if not isinstance(user_defaults, dict):
+        return None
+    want = str(name or "").strip().lower()
+    entry = user_defaults.get(want)
+    if isinstance(entry, dict):
+        return entry
+    for key in sorted(user_defaults):
+        if str(key or "").strip().lower() == want:
+            entry = user_defaults.get(key)
+            return entry if isinstance(entry, dict) else None
+    return None
+
+
+def _uses_trailing_tp_ratchet_regime(close_refs: list) -> bool:
+    return any(
+        str(ref.get("name", "")).strip().lower() == "trailing_tp_ratchet_regime"
+        for ref in close_refs
+        if isinstance(ref, dict)
+    )
+
+
+def _has_explicit_stop_owner(sc: dict) -> bool:
+    return any(sc.get(k) is not None for k in _STOP_OWNER_KEYS)
+
+
+def _apply_user_close_defaults(close_refs: list, user_defaults: Optional[dict],
+                               sc: Optional[dict] = None) -> None:
+    """Inject user_close_defaults into refs/strategy fields that omit them
+    (#866/#1133, --defaults user). Mirrors the Go loader: explicit per-ref
+    tp_tiers and explicit strategy-level stop owners win, unsupported evaluator
+    names are skipped, and missing entries fall through to system defaults."""
     if not user_defaults:
         return
     for ref in close_refs:
@@ -311,8 +348,8 @@ def _apply_user_close_defaults(close_refs: list, user_defaults: Optional[dict]) 
         params = ref.setdefault("params", {})
         if params.get("tp_tiers") is not None:
             continue  # strategy_close_defaults layer wins
-        entry = user_defaults.get(name)
-        if not isinstance(entry, dict):
+        entry = _user_close_default_entry(user_defaults, name)
+        if entry is None:
             continue
         tp = entry.get("tp_tiers")
         # Mirror the Go loader (validateUserCloseDefaults): an empty or
@@ -322,6 +359,16 @@ def _apply_user_close_defaults(close_refs: list, user_defaults: Optional[dict]) 
         # config outright at load).
         if (isinstance(tp, list) or isinstance(tp, dict)) and tp:
             params["tp_tiers"] = tp
+    if sc is None or not _uses_trailing_tp_ratchet_regime(close_refs):
+        return
+    if _has_explicit_stop_owner(sc):
+        return
+    entry = _user_close_default_entry(user_defaults, "trailing_tp_ratchet_regime")
+    if entry is None:
+        return
+    trail = entry.get("trailing_stop_atr_regime")
+    if isinstance(trail, dict) and trail:
+        sc["trailing_stop_atr_regime"] = deepcopy(trail)
 
 
 def _effective_direction(sc: dict) -> str:
@@ -469,7 +516,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
         # under the operator override). --defaults system leaves them untouched,
         # falling through to the evaluators' built-in defaults.
         if inject_user_defaults:
-            _apply_user_close_defaults(close_refs, cfg.get("user_close_defaults"))
+            _apply_user_close_defaults(close_refs, cfg.get("user_close_defaults"), sc)
         # #942 (D2.1): model the live entry transforms the backtester used to
         # drop silently. ``invert_signal`` flips BUY<->SELL; ``direction`` gates
         # which side may open. Both are applied to the signal in Backtester.run

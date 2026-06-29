@@ -45,6 +45,10 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("manual_defaults: %s -> %s", formatManualDefaults(cfg.ManualDefaults), formatManualDefaults(next.ManualDefaults))
 		cfg.ManualDefaults = cloneManualDefaults(next.ManualDefaults)
 	}
+	if !reflect.DeepEqual(cfg.UserCloseDefaults, next.UserCloseDefaults) {
+		addChange("user_close_defaults: updated")
+		cfg.UserCloseDefaults = cloneCloseDefaultsMap(next.UserCloseDefaults)
+	}
 
 	// #1062: regime.display_windows hot-reloads (display-only summary filter).
 	// validateHotReloadCompatible masked it but rejects any other regime change,
@@ -170,6 +174,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			if ns.StopLossATRMult == nil || *ns.StopLossATRMult <= 0 {
 				clearATRMultMissingEntryATRWarningsForStrategy(sc.ID)
 			}
+		}
+		if !sc.StopLossATRRegime.EqualForReload(ns.StopLossATRRegime) {
+			addChange("strategy[%s].stop_loss_atr_regime: shape updated", sc.ID)
+			sc.StopLossATRRegime = cloneRegimeATRBlock(ns.StopLossATRRegime)
+		}
+		if !sc.TrailingStopATRRegime.EqualForReload(ns.TrailingStopATRRegime) {
+			addChange("strategy[%s].trailing_stop_atr_regime: shape updated", sc.ID)
+			sc.TrailingStopATRRegime = cloneRegimeATRBlock(ns.TrailingStopATRRegime)
 		}
 		if !floatPtrEqual(sc.TrailingStopMinMovePct, ns.TrailingStopMinMovePct) {
 			addChange("strategy[%s].trailing_stop_min_move_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.TrailingStopMinMovePct), formatFloatPtrPct(ns.TrailingStopMinMovePct))

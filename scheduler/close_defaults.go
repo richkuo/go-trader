@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -41,6 +42,8 @@ var closeDefaultsSupported = map[string]struct{}{
 	"trailing_tp_ratchet_regime": {},
 }
 
+const userCloseDefaultTrailingStopATRRegimeKey = "trailing_stop_atr_regime"
+
 // closeDefaultsTierEvaluator reports whether name accepts a user_close_defaults
 // override (see closeDefaultsSupported).
 func closeDefaultsTierEvaluator(name string) bool {
@@ -57,6 +60,27 @@ func closeDefaultsSupportedNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func closeDefaultsEntry(defaults CloseDefaultsMap, name string) (map[string]interface{}, bool) {
+	if len(defaults) == 0 {
+		return nil, false
+	}
+	want := strings.ToLower(strings.TrimSpace(name))
+	if entry, ok := defaults[want]; ok {
+		return entry, true
+	}
+	keys := make([]string, 0, len(defaults))
+	for k := range defaults {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if strings.ToLower(strings.TrimSpace(k)) == want {
+			return defaults[k], true
+		}
+	}
+	return nil, false
 }
 
 // validateUserCloseDefaults checks the user_close_defaults block shape at load:
@@ -80,8 +104,17 @@ func validateUserCloseDefaults(defaults CloseDefaultsMap) []string {
 			errs = append(errs, fmt.Sprintf("user_close_defaults[%q]: not a tp_tiers close evaluator (allowed: %s)", name, strings.Join(closeDefaultsSupportedNames(), ", ")))
 			continue
 		}
+		normName := strings.ToLower(strings.TrimSpace(name))
 		for k := range entry {
-			if k != "tp_tiers" {
+			if k == "tp_tiers" {
+				continue
+			}
+			if normName == trailingTPRatchetRegimeCloseName && k == userCloseDefaultTrailingStopATRRegimeKey {
+				continue
+			}
+			if normName == trailingTPRatchetRegimeCloseName {
+				errs = append(errs, fmt.Sprintf("user_close_defaults[%q]: unknown key %q (only tp_tiers and trailing_stop_atr_regime are allowed)", name, k))
+			} else {
 				errs = append(errs, fmt.Sprintf("user_close_defaults[%q]: unknown key %q (only tp_tiers is allowed)", name, k))
 			}
 		}
@@ -96,6 +129,11 @@ func validateUserCloseDefaults(defaults CloseDefaultsMap) []string {
 		// empty tp_tiers is rejected loudly: it would otherwise inject `[]` and
 		// silently suppress the system default (runtime resolves to zero tiers).
 		errs = append(errs, validateUserCloseDefaultTiers(name, tp)...)
+		if normName == trailingTPRatchetRegimeCloseName {
+			if raw, ok := entry[userCloseDefaultTrailingStopATRRegimeKey]; ok {
+				errs = append(errs, validateUserCloseDefaultTrailingStopATRRegime(name, raw)...)
+			}
+		}
 	}
 	return errs
 }
@@ -152,6 +190,29 @@ func validateUserCloseDefaultTiers(name string, tp interface{}) []string {
 	}
 }
 
+func validateUserCloseDefaultTrailingStopATRRegime(name string, raw interface{}) []string {
+	ctx := fmt.Sprintf("user_close_defaults[%q].%s", name, userCloseDefaultTrailingStopATRRegimeKey)
+	block, ok := raw.(map[string]interface{})
+	if !ok || block == nil {
+		return []string{ctx + ": must be an object"}
+	}
+	if len(block) == 0 {
+		return []string{ctx + ": must not be empty"}
+	}
+	labels := canonicalTrendRegimeLabels
+	if trendRaw, ok := block[regimeClassifierKey]; ok {
+		if trendMap, ok := trendRaw.(map[string]interface{}); ok && len(trendMap) > 0 {
+			labels = make([]string, 0, len(trendMap))
+			for label := range trendMap {
+				labels = append(labels, label)
+			}
+			sort.Strings(labels)
+		}
+	}
+	_, errs := parseRegimeATRBlock(block, ctx, regimeSurfaceTrailing, labels)
+	return errs
+}
+
 // applyUserCloseDefaultsToRef injects the user_close_defaults tp_tiers for ref's
 // evaluator when the ref omits its own tp_tiers (the strategy layer wins). A
 // no-op when ref is nil, already carries tp_tiers, or has no matching user
@@ -163,7 +224,7 @@ func applyUserCloseDefaultsToRef(ref *StrategyRef, defaults CloseDefaultsMap) bo
 	if _, hasExplicit := closeTierListParam(ref.Params); hasExplicit {
 		return false // strategy_close_defaults layer wins
 	}
-	entry, ok := defaults[strings.ToLower(strings.TrimSpace(ref.Name))]
+	entry, ok := closeDefaultsEntry(defaults, ref.Name)
 	if !ok {
 		return false
 	}
@@ -178,6 +239,85 @@ func applyUserCloseDefaultsToRef(ref *StrategyRef, defaults CloseDefaultsMap) bo
 	return true
 }
 
+func userCloseDefaultTrailingStopATRRegime(defaults CloseDefaultsMap) (*RegimeATRBlock, bool) {
+	entry, ok := closeDefaultsEntry(defaults, trailingTPRatchetRegimeCloseName)
+	if !ok {
+		return nil, false
+	}
+	raw, ok := entry[userCloseDefaultTrailingStopATRRegimeKey]
+	if !ok || raw == nil {
+		return nil, false
+	}
+	blockRaw, ok := raw.(map[string]interface{})
+	if !ok || blockRaw == nil {
+		return nil, false
+	}
+	return &RegimeATRBlock{raw: cloneInterfaceMap(blockRaw)}, true
+}
+
+func cloneInterfaceMap(in map[string]interface{}) map[string]interface{} {
+	if in == nil {
+		return nil
+	}
+	blob, err := json.Marshal(in)
+	if err != nil {
+		out := make(map[string]interface{}, len(in))
+		for k, v := range in {
+			out[k] = v
+		}
+		return out
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(blob, &out); err != nil {
+		out = make(map[string]interface{}, len(in))
+		for k, v := range in {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func strategyUsesTrailingTPRatchetRegimeClose(sc StrategyConfig) bool {
+	for _, ref := range sc.closeRefs() {
+		if strings.ToLower(strings.TrimSpace(ref.Name)) == trailingTPRatchetRegimeCloseName {
+			return true
+		}
+	}
+	return false
+}
+
+func strategyHasExplicitStopOwner(sc StrategyConfig) bool {
+	return sc.StopLossPct != nil ||
+		sc.StopLossMarginPct != nil ||
+		sc.TrailingStopPct != nil ||
+		sc.TrailingStopATRMult != nil ||
+		sc.StopLossATRMult != nil ||
+		sc.StopLossATRRegime.IsConfigured() ||
+		sc.TrailingStopATRRegime.IsConfigured() ||
+		strategyUsesUnifiedRegimeClose(sc)
+}
+
+func applyUserCloseDefaultRatchetRegimeTrail(sc *StrategyConfig, defaults CloseDefaultsMap) bool {
+	if sc == nil || !strategyUsesTrailingTPRatchetRegimeClose(*sc) || strategyHasExplicitStopOwner(*sc) {
+		return false
+	}
+	block, ok := userCloseDefaultTrailingStopATRRegime(defaults)
+	if !ok {
+		return false
+	}
+	sc.TrailingStopATRRegime = block
+	return true
+}
+
+func applyUserCloseDefaultRatchetRegimeTrails(cfg *Config) {
+	if cfg == nil || len(cfg.UserCloseDefaults) == 0 {
+		return
+	}
+	for i := range cfg.Strategies {
+		applyUserCloseDefaultRatchetRegimeTrail(&cfg.Strategies[i], cfg.UserCloseDefaults)
+	}
+}
+
 // applyUserCloseDefaults injects user_close_defaults into every strategy's close
 // ref. Called once per load (and per SIGHUP reload) after close-ref
 // normalization, before validation.
@@ -188,4 +328,19 @@ func applyUserCloseDefaults(cfg *Config) {
 	for i := range cfg.Strategies {
 		applyUserCloseDefaultsToRef(cfg.Strategies[i].CloseStrategy, cfg.UserCloseDefaults)
 	}
+}
+
+func cloneCloseDefaultsMap(defaults CloseDefaultsMap) CloseDefaultsMap {
+	if defaults == nil {
+		return nil
+	}
+	out := make(CloseDefaultsMap, len(defaults))
+	for name, entry := range defaults {
+		if entry == nil {
+			out[name] = nil
+			continue
+		}
+		out[name] = cloneInterfaceMap(entry)
+	}
+	return out
 }

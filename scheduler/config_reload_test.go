@@ -1382,6 +1382,68 @@ func TestApplyHotReloadConfigPropagatesManualDefaults(t *testing.T) {
 	}
 }
 
+func TestApplyHotReloadConfigCopiesFlatRegimeTrailAndUserCloseDefaults(t *testing.T) {
+	oldTrail := &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
+		"trending_up":   {ATR: 2.0},
+		"trending_down": {ATR: 2.0},
+		"ranging":       {ATR: 1.0},
+	}}
+	newTrail := &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
+		"trending_up":   {ATR: 2.75},
+		"trending_down": {ATR: 2.75},
+		"ranging":       {ATR: 1.5},
+	}}
+	strategy := func(block *RegimeATRBlock) StrategyConfig {
+		return StrategyConfig{
+			ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
+			Script:                "shared_scripts/check_hyperliquid.py",
+			Args:                  []string{"sma_crossover", "ETH", "1h", "--mode=paper"},
+			CloseStrategy:         &StrategyRef{Name: trailingTPRatchetRegimeCloseName},
+			TrailingStopATRRegime: block,
+			Capital:               1000,
+			MaxDrawdownPct:        10,
+			Leverage:              1,
+		}
+	}
+	cfg := minimalReloadConfig([]StrategyConfig{strategy(oldTrail)})
+	next := minimalReloadConfig([]StrategyConfig{strategy(newTrail)})
+	next.UserCloseDefaults = CloseDefaultsMap{
+		trailingTPRatchetRegimeCloseName: {
+			"tp_tiers":                 ratchetRegimeUserTiers(),
+			"trailing_stop_atr_regime": ratchetRegimeTrailRaw(2.75, 2.75, 1.5),
+		},
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{}},
+	}}
+
+	changes, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+	if err != nil {
+		t.Fatalf("applyHotReloadConfig: %v", err)
+	}
+	joined := strings.Join(changes, "\n")
+	if !strings.Contains(joined, "trailing_stop_atr_regime") {
+		t.Fatalf("changes missing trailing_stop_atr_regime update: %v", changes)
+	}
+	if !strings.Contains(joined, "user_close_defaults") {
+		t.Fatalf("changes missing user_close_defaults update: %v", changes)
+	}
+	got, ok := resolveRegimeATR(*cfg.Strategies[0].TrailingStopATRRegime, "ranging")
+	if !ok || got != 1.5 {
+		t.Fatalf("reloaded ranging trail = (%g, %v), want (1.5, true)", got, ok)
+	}
+	next.Strategies[0].TrailingStopATRRegime.TrendRegime["ranging"] = RegimeATREntry{ATR: 9.0}
+	got, ok = resolveRegimeATR(*cfg.Strategies[0].TrailingStopATRRegime, "ranging")
+	if !ok || got != 1.5 {
+		t.Fatalf("reloaded trail aliases next after mutation: (%g, %v)", got, ok)
+	}
+	next.UserCloseDefaults[trailingTPRatchetRegimeCloseName]["trailing_stop_atr_regime"] = map[string]interface{}{"use_defaults": true}
+	raw := cfg.UserCloseDefaults[trailingTPRatchetRegimeCloseName]["trailing_stop_atr_regime"].(map[string]interface{})
+	if _, ok := raw["use_defaults"]; ok {
+		t.Fatal("cfg.UserCloseDefaults aliases next after reload")
+	}
+}
+
 // #696: empty tp_tiers array is rejected by validation; LoadConfig surfaces
 // the misuse instead of silently falling back to defaults.
 func TestLoadConfigManualDefaultsRejectsEmptyTPTiersArray(t *testing.T) {

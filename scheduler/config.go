@@ -302,6 +302,12 @@ func (c *Config) resolveManualRatchetRegimeTrailBlock(sc StrategyConfig) (*Regim
 			return block, true
 		}
 	}
+	// #1133: the fleet-wide ratchet package can also provide the coupled
+	// per-regime opening trail. Manual-specific defaults still win above; this
+	// user_close_defaults layer wins over the system use_defaults baseline below.
+	if block, ok := userCloseDefaultTrailingStopATRRegime(c.UserCloseDefaults); ok {
+		return block, true
+	}
 	// Default: synthesize a use_defaults block, but only when every active label
 	// maps onto the baseline opening-trail family — else the ratchet would carry
 	// a per-regime hole and we must not silently default into an un-resolvable
@@ -1071,6 +1077,12 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 			fmt.Printf("[INFO] %s: no theta_harvest config, applying defaults (profit=60%%, stop=200%%, dte=3)\n", cfg.Strategies[i].ID)
 		}
 	}
+
+	// #1133: user_close_defaults["trailing_tp_ratchet_regime"] may carry the
+	// coupled strategy-level trailing_stop_atr_regime owner. Apply it before the
+	// generic scalar ATR-stop default below so eligible ratchet-regime perps do not
+	// first acquire stop_loss_atr_mult and then fail the single-owner validation.
+	applyUserCloseDefaultRatchetRegimeTrails(&cfg)
 
 	// #562/#601/#605: Default HL perps strategies with no explicit stop-loss /
 	// trailing-stop fields to the configurable top-level

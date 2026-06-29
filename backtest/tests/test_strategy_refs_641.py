@@ -278,6 +278,29 @@ _USER_RATCHET = {
     ]}
 }
 
+_USER_RATCHET_REGIME = {
+    "trailing_tp_ratchet_regime": {
+        "tp_tiers": {
+            "trending_up": [
+                {"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}
+            ],
+            "trending_down": [
+                {"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}
+            ],
+            "ranging": [
+                {"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}
+            ],
+        },
+        "trailing_stop_atr_regime": {
+            "trend_regime": {
+                "trending_up": {"atr_multiple": 2.75},
+                "trending_down": {"atr_multiple": 2.75},
+                "ranging": {"atr_multiple": 1.5},
+            }
+        },
+    }
+}
+
 
 def _ratchet_cfg(tmp_path, close_params):
     return _write_full_config(tmp_path, {
@@ -331,6 +354,46 @@ def test_defaults_user_strategy_tiers_win(tmp_path):
     kwargs = run_backtest.load_strategy_config(path, "hl-r", inject_user_defaults=True)
     tp = kwargs["close_strategies"][0]["params"]["tp_tiers"]
     assert len(tp) == 1 and tp[0]["atr_multiple"] == 5.0  # not overridden
+
+
+def _ratchet_regime_cfg(tmp_path, extra_strategy=None):
+    strategy = {
+        "id": "hl-rr",
+        "type": "perps",
+        "platform": "hyperliquid",
+        "open_strategy": {"name": "tema_cross_bd"},
+        "close_strategy": {"name": "trailing_tp_ratchet_regime", "params": {"use_defaults": True}},
+    }
+    if extra_strategy:
+        strategy.update(extra_strategy)
+    return _write_full_config(tmp_path, {
+        "config_version": 15,
+        "regime": {"enabled": True, "period": 14, "adx_threshold": 20},
+        "user_close_defaults": _USER_RATCHET_REGIME,
+        "strategies": [strategy],
+    })
+
+
+def test_defaults_user_injects_ratchet_regime_trail(tmp_path):
+    path = _ratchet_regime_cfg(tmp_path)
+    kwargs = run_backtest.load_strategy_config(path, "hl-rr", inject_user_defaults=True)
+    assert kwargs["trailing_stop_atr_regime"]["trend_regime"]["ranging"]["atr_multiple"] == 1.5
+    tp = kwargs["close_strategies"][0]["params"].get("tp_tiers")
+    assert tp["trending_up"][0]["trailing_mult_after"] == 1.0
+
+
+def test_defaults_system_does_not_inject_ratchet_regime_trail(tmp_path):
+    path = _ratchet_regime_cfg(tmp_path)
+    kwargs = run_backtest.load_strategy_config(path, "hl-rr", inject_user_defaults=False)
+    assert kwargs["trailing_stop_atr_regime"] is None
+    assert kwargs["close_strategies"][0]["params"].get("tp_tiers") is None
+
+
+def test_defaults_user_ratchet_regime_trail_does_not_override_stop_owner(tmp_path):
+    path = _ratchet_regime_cfg(tmp_path, {"trailing_stop_atr_mult": 3.0})
+    kwargs = run_backtest.load_strategy_config(path, "hl-rr", inject_user_defaults=True)
+    assert kwargs["trailing_stop_atr_regime"] is None
+    assert kwargs["trailing_stop_atr_mult"] == 3.0
 
 
 def test_load_strategy_config_rejects_multi_legacy_close_array(tmp_path):
