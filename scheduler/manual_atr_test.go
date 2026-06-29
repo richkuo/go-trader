@@ -66,7 +66,6 @@ func TestFetchManualEntryATR_MissingFields(t *testing.T) {
 	}{
 		{"no script", StrategyConfig{Symbol: "ETH", Timeframe: "1h"}},
 		{"no symbol", StrategyConfig{Script: "x.py", Timeframe: "1h"}},
-		{"no timeframe", StrategyConfig{Script: "x.py", Symbol: "ETH"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -100,6 +99,30 @@ func TestFetchManualEntryATR_StubSuccess(t *testing.T) {
 	}
 	if atr != 25.5 {
 		t.Errorf("atr=%v want 25.5", atr)
+	}
+}
+
+// TestFetchManualEntryATR_EmptyTimeframeDefaultsTo1h asserts that an unset
+// timeframe no longer fails closed at the guard but defaults to "1h" and is
+// passed through to the fetch. Stubbed so it never spawns Python.
+func TestFetchManualEntryATR_EmptyTimeframeDefaultsTo1h(t *testing.T) {
+	prev := runHyperliquidFetchATRFn
+	defer func() { runHyperliquidFetchATRFn = prev }()
+	var gotTimeframe string
+	runHyperliquidFetchATRFn = func(script, symbol, timeframe string, period int) (*HyperliquidFetchATRResult, string, error) {
+		gotTimeframe = timeframe
+		return &HyperliquidFetchATRResult{ATR: 18.0, Candles: 200}, "", nil
+	}
+	sc := StrategyConfig{Script: "check.py", Symbol: "ETH"} // Timeframe unset
+	atr, msg, ok := fetchManualEntryATR(sc)
+	if !ok {
+		t.Fatalf("ok=false msg=%s; empty timeframe should default to 1h, not fail closed", msg)
+	}
+	if gotTimeframe != "1h" {
+		t.Errorf("timeframe=%q want 1h", gotTimeframe)
+	}
+	if atr != 18.0 {
+		t.Errorf("atr=%v want 18.0", atr)
 	}
 }
 
