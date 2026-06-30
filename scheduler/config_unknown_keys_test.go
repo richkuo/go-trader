@@ -143,6 +143,66 @@ func TestValidateStrategyJSONKeysIgnoresTopLevelKeys(t *testing.T) {
 	}
 }
 
+func TestValidateUserDefaultsJSONKeysFlagsUnknownSibling(t *testing.T) {
+	raw := []byte(`{
+		"user_defaults": {
+			"manaul": {"stop_loss_atr_mult": 2.25}
+		},
+		"strategies": [{"id": "s1", "type": "spot", "script": "x.py", "args": []}]
+	}`)
+	errs := validateUserDefaultsJSONKeys(raw)
+	if len(errs) != 1 {
+		t.Fatalf("want 1 error for typo'd user_defaults sibling, got %d: %v", len(errs), errs)
+	}
+	if !strings.Contains(errs[0], `user_defaults: unknown field "manaul"`) {
+		t.Fatalf("unexpected error: %v", errs)
+	}
+}
+
+func TestValidateUserDefaultsJSONKeysFlagsUnknownManualLeaf(t *testing.T) {
+	raw := []byte(`{
+		"user_defaults": {
+			"manual": {"margin": 125}
+		},
+		"strategies": [{"id": "s1", "type": "spot", "script": "x.py", "args": []}]
+	}`)
+	errs := validateUserDefaultsJSONKeys(raw)
+	if len(errs) != 1 {
+		t.Fatalf("want 1 error for typo'd manual leaf, got %d: %v", len(errs), errs)
+	}
+	if !strings.Contains(errs[0], `user_defaults.manual: unknown field "margin"`) {
+		t.Fatalf("unexpected error: %v", errs)
+	}
+}
+
+func TestValidateUserDefaultsJSONKeysAcceptsCanonicalShape(t *testing.T) {
+	raw := []byte(`{
+		"user_defaults": {
+			"close": {
+				"trailing_tp_ratchet": {
+					"tp_tiers": [
+						{"atr_multiple": 2.0, "trailing_mult_after": 1.5, "close_fraction": 0.0}
+					]
+				}
+			},
+			"regime_atr": {
+				"stop_loss_atr_regime": {"use_defaults": true}
+			},
+			"manual": {
+				"margin_usd": 125,
+				"stop_loss_atr_mult": 2.25,
+				"side": "short",
+				"tp_tiers": [{"atr_multiple": 2.0, "close_fraction": 1.0}],
+				"trailing_stop_atr_regime": {"use_defaults": true}
+			}
+		},
+		"strategies": [{"id": "s1", "type": "spot", "script": "x.py", "args": []}]
+	}`)
+	if errs := validateUserDefaultsJSONKeys(raw); len(errs) != 0 {
+		t.Fatalf("expected no user_defaults unknown-key errors, got: %v", errs)
+	}
+}
+
 func TestValidateStrategyJSONKeysReportsByIDDeterministically(t *testing.T) {
 	raw := []byte(`{
 		"strategies": [
@@ -197,5 +257,102 @@ func TestLoadConfigRejectsUnknownStrategyKey(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `unknown field "take_profit_atr_mult"`) {
 		t.Errorf("error %q does not name the unknown field", err)
+	}
+}
+
+func TestLoadConfigRejectsUnknownUserDefaultsManualLeaf(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.json")
+	body := `{
+		"config_version": 16,
+		"db_file": "` + filepath.Join(tmp, "state.db") + `",
+		"user_defaults": {"manual": {"stop_loss_atr_mlt": 2.25}},
+		"strategies": [
+			{
+				"id": "hl-manual-eth-live",
+				"type": "manual",
+				"platform": "hyperliquid",
+				"symbol": "ETH",
+				"timeframe": "1h",
+				"capital": 1000,
+				"max_drawdown_pct": 20,
+				"leverage": 20
+			}
+		]
+	}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("LoadConfig accepted unknown user_defaults.manual field")
+	}
+	if !strings.Contains(err.Error(), `user_defaults.manual: unknown field "stop_loss_atr_mlt"`) {
+		t.Errorf("error %q does not name the unknown user_defaults manual field", err)
+	}
+}
+
+func TestLoadConfigRejectsUnknownUserDefaultsSibling(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.json")
+	body := `{
+		"config_version": 16,
+		"db_file": "` + filepath.Join(tmp, "state.db") + `",
+		"user_defaults": {"manaul": {"stop_loss_atr_mult": 2.25}},
+		"strategies": [
+			{
+				"id": "hl-manual-eth-live",
+				"type": "manual",
+				"platform": "hyperliquid",
+				"symbol": "ETH",
+				"timeframe": "1h",
+				"capital": 1000,
+				"max_drawdown_pct": 20,
+				"leverage": 20
+			}
+		]
+	}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("LoadConfig accepted unknown user_defaults sibling")
+	}
+	if !strings.Contains(err.Error(), `user_defaults: unknown field "manaul"`) {
+		t.Errorf("error %q does not name the unknown user_defaults sibling", err)
+	}
+}
+
+func TestLoadConfigMigratesLegacyManualDefaultsBeforeUnknownKeyValidation(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.json")
+	body := `{
+		"config_version": 16,
+		"db_file": "` + filepath.Join(tmp, "state.db") + `",
+		"manual_defaults": {"stop_loss_atr_mult": 2.25},
+		"strategies": [
+			{
+				"id": "hl-manual-eth-live",
+				"type": "manual",
+				"platform": "hyperliquid",
+				"symbol": "ETH",
+				"timeframe": "1h",
+				"capital": 1000,
+				"max_drawdown_pct": 20,
+				"leverage": 20
+			}
+		]
+	}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig rejected legacy manual_defaults alias: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if sc.StopLossATRMult == nil || *sc.StopLossATRMult != 2.25 {
+		t.Fatalf("StopLossATRMult = %v, want migrated legacy alias value 2.25", sc.StopLossATRMult)
 	}
 }

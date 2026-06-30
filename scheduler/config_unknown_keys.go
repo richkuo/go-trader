@@ -14,8 +14,25 @@ import (
 // that would otherwise produce a config that looks correct but is missing the
 // requested protection (#704).
 func knownStrategyConfigKeys() map[string]bool {
+	known := knownJSONKeys(reflect.TypeOf(StrategyConfig{}))
+	// #842: close_strategies (array) was collapsed to the single close_strategy
+	// ref, but UnmarshalJSON still reads the legacy array for back-compat, so it
+	// must not trip the unknown-field guard. A len>1 array is rejected with the
+	// strategy id in validateConfig; a len-1 array is lifted to close_strategy.
+	known["close_strategies"] = true
+	return known
+}
+
+func knownUserDefaultsKeys() map[string]bool {
+	return knownJSONKeys(reflect.TypeOf(UserDefaultsConfig{}))
+}
+
+func knownManualDefaultsKeys() map[string]bool {
+	return knownJSONKeys(reflect.TypeOf(ManualDefaultsConfig{}))
+}
+
+func knownJSONKeys(t reflect.Type) map[string]bool {
 	known := make(map[string]bool)
-	t := reflect.TypeOf(StrategyConfig{})
 	for i := 0; i < t.NumField(); i++ {
 		tag := t.Field(i).Tag.Get("json")
 		if tag == "" || tag == "-" {
@@ -26,11 +43,6 @@ func knownStrategyConfigKeys() map[string]bool {
 			known[name] = true
 		}
 	}
-	// #842: close_strategies (array) was collapsed to the single close_strategy
-	// ref, but UnmarshalJSON still reads the legacy array for back-compat, so it
-	// must not trip the unknown-field guard. A len>1 array is rejected with the
-	// strategy id in validateConfig; a len-1 array is lifted to close_strategy.
-	known["close_strategies"] = true
 	return known
 }
 
@@ -97,5 +109,53 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 			errs = append(errs, msg)
 		}
 	}
+	return errs
+}
+
+// validateUserDefaultsJSONKeys flags typos inside the canonical #1135
+// user_defaults tree. Top-level config keys stay forward-compatible, but once
+// an operator opts into the stop-loss-adjacent defaults block, unknown siblings
+// and manual leaf keys must fail loudly instead of silently falling back.
+func validateUserDefaultsJSONKeys(rawData []byte) []string {
+	var envelope struct {
+		UserDefaults map[string]json.RawMessage `json:"user_defaults"`
+	}
+	if err := json.Unmarshal(rawData, &envelope); err != nil {
+		return nil
+	}
+	if envelope.UserDefaults == nil {
+		return nil
+	}
+
+	var errs []string
+	userKnown := knownUserDefaultsKeys()
+	keys := make([]string, 0, len(envelope.UserDefaults))
+	for k := range envelope.UserDefaults {
+		if !userKnown[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		errs = append(errs, fmt.Sprintf("user_defaults: unknown field %q", k))
+	}
+
+	if rawManual, ok := envelope.UserDefaults["manual"]; ok {
+		var manual map[string]json.RawMessage
+		if err := json.Unmarshal(rawManual, &manual); err == nil && manual != nil {
+			manualKnown := knownManualDefaultsKeys()
+			keys = keys[:0]
+			for k := range manual {
+				if !manualKnown[k] {
+					keys = append(keys, k)
+				}
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				errs = append(errs, fmt.Sprintf("user_defaults.manual: unknown field %q", k))
+			}
+		}
+	}
+
 	return errs
 }

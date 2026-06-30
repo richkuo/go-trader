@@ -937,7 +937,9 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	// #704: flag unknown per-strategy fields (typos like `take_profit_atr_mult`)
 	// before applying defaults; json.Unmarshal silently drops them and would
 	// otherwise produce a struct indistinguishable from "no protection configured".
-	if unknownErrs := validateStrategyJSONKeys(data); len(unknownErrs) > 0 {
+	unknownErrs := validateStrategyJSONKeys(data)
+	unknownErrs = append(unknownErrs, validateUserDefaultsJSONKeys(data)...)
+	if len(unknownErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(unknownErrs, "\n  "))
 	}
 	if cfg.IntervalSeconds <= 0 {
