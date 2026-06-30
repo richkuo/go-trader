@@ -295,6 +295,7 @@ _USER_CLOSE_DEFAULTS_SUPPORTED = {
     "trailing_tp_ratchet",
     "trailing_tp_ratchet_regime",
 }
+_USER_CLOSE_DEFAULT_REGIME_ATR_KEY = "regime_atr"
 
 _STOP_OWNER_KEYS = (
     "stop_loss_atr_mult",
@@ -333,6 +334,58 @@ def _has_explicit_stop_owner(sc: dict) -> bool:
     return any(sc.get(k) is not None for k in _STOP_OWNER_KEYS)
 
 
+def _regime_atr_block_is_use_defaults_only(raw) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    if raw.get("trend_regime") is not None:
+        return False
+    return raw.get("use_defaults") is True
+
+
+def _validate_user_close_defaults_regime_atr(user_defaults: Optional[dict]) -> None:
+    """Mirror scheduler/close_defaults.go validateUserCloseDefaultRegimeATR (#1134)."""
+    entry = _user_close_default_entry(user_defaults, _USER_CLOSE_DEFAULT_REGIME_ATR_KEY)
+    if entry is None:
+        return
+    section = f'user_close_defaults["{_USER_CLOSE_DEFAULT_REGIME_ATR_KEY}"]'
+    if not isinstance(entry, dict):
+        raise ValueError(f"{section}: must be an object")
+    if not entry:
+        raise ValueError(f"{section}: must not be empty")
+    allowed = {"stop_loss_atr_regime", "trailing_stop_atr_regime"}
+    for key in entry:
+        if key not in allowed:
+            raise ValueError(
+                f'{section}: unknown key {key!r} '
+                "(only stop_loss_atr_regime and trailing_stop_atr_regime are allowed)"
+            )
+    from regime_atr import (  # type: ignore
+        CANONICAL_TREND_REGIME_LABELS,
+        REGIME_CLASSIFIER_KEY,
+        SURFACE_STOP_LOSS,
+        SURFACE_TRAILING,
+        parse_regime_atr_block,
+    )
+
+    def _validate_sub(sub_key: str, surface: str) -> None:
+        raw = entry.get(sub_key)
+        if raw is None:
+            return
+        ctx = f'{section}.{sub_key}'
+        if not isinstance(raw, dict) or not raw:
+            raise ValueError(f"{ctx}: must be a non-empty object")
+        labels = list(CANONICAL_TREND_REGIME_LABELS)
+        trend = raw.get(REGIME_CLASSIFIER_KEY)
+        if isinstance(trend, dict) and trend:
+            labels = sorted(trend.keys())
+        _, errs = parse_regime_atr_block(raw, ctx, surface, labels)
+        if errs:
+            raise ValueError(errs[0])
+
+    _validate_sub("stop_loss_atr_regime", SURFACE_STOP_LOSS)
+    _validate_sub("trailing_stop_atr_regime", SURFACE_TRAILING)
+
+
 def _apply_user_close_defaults(close_refs: list, user_defaults: Optional[dict],
                                sc: Optional[dict] = None) -> None:
     """Inject user_close_defaults into refs/strategy fields that omit them
@@ -359,16 +412,33 @@ def _apply_user_close_defaults(close_refs: list, user_defaults: Optional[dict],
         # config outright at load).
         if (isinstance(tp, list) or isinstance(tp, dict)) and tp:
             params["tp_tiers"] = tp
-    if sc is None or not _uses_trailing_tp_ratchet_regime(close_refs):
+    if sc is not None and _uses_trailing_tp_ratchet_regime(close_refs):
+        if not _has_explicit_stop_owner(sc):
+            entry = _user_close_default_entry(user_defaults, "trailing_tp_ratchet_regime")
+            if entry is not None:
+                trail = entry.get("trailing_stop_atr_regime")
+                if isinstance(trail, dict) and trail:
+                    sc["trailing_stop_atr_regime"] = deepcopy(trail)
         return
-    if _has_explicit_stop_owner(sc):
+    if sc is None:
         return
-    entry = _user_close_default_entry(user_defaults, "trailing_tp_ratchet_regime")
-    if entry is None:
+    regime_entry = _user_close_default_entry(user_defaults, _USER_CLOSE_DEFAULT_REGIME_ATR_KEY)
+    if regime_entry is None:
         return
-    trail = entry.get("trailing_stop_atr_regime")
-    if isinstance(trail, dict) and trail:
-        sc["trailing_stop_atr_regime"] = deepcopy(trail)
+    sl_raw = regime_entry.get("stop_loss_atr_regime")
+    if (
+        isinstance(sl_raw, dict)
+        and sl_raw
+        and _regime_atr_block_is_use_defaults_only(sc.get("stop_loss_atr_regime"))
+    ):
+        sc["stop_loss_atr_regime"] = deepcopy(sl_raw)
+    trail_raw = regime_entry.get("trailing_stop_atr_regime")
+    if (
+        isinstance(trail_raw, dict)
+        and trail_raw
+        and _regime_atr_block_is_use_defaults_only(sc.get("trailing_stop_atr_regime"))
+    ):
+        sc["trailing_stop_atr_regime"] = deepcopy(trail_raw)
 
 
 def _effective_direction(sc: dict) -> str:
@@ -407,6 +477,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
     import json as _json
     with open(config_path) as fh:
         cfg = _json.load(fh)
+    _validate_user_close_defaults_regime_atr(cfg.get("user_close_defaults"))
     version = int(cfg.get("config_version", 0) or 0)
     # #942 (D2.8): gate on v15, not v13. The v13 co-located ref shape (#640) is
     # necessary but not sufficient — the v15 migration is what canonicalizes
