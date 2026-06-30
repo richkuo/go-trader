@@ -1,4 +1,4 @@
-"""#1058: the Backtester CLASSIFIES composite (7-state) regime labels from OHLCV
+"""#1058: the Backtester CLASSIFIES composite (9-state) regime labels from OHLCV
 when threaded a ``regime_windows_spec``, and feeds those substate labels to the
 entry gate AND the close evaluator's position regime.
 
@@ -73,7 +73,7 @@ def _buy_at(df: pd.DataFrame, bar: int) -> pd.DataFrame:
 
 def test_windows_spec_computes_composite_substates_from_ohlcv():
     labels = set(_ground_truth_labels(_mixed_regime_ohlcv()).unique())
-    # Every emitted label is from the 7-state composite vocabulary…
+    # Every emitted label is from the 9-state composite vocabulary…
     assert labels <= VALID_LABELS_COMPOSITE
     # …and the ADX (3-state) and composite vocabularies are disjoint, so a
     # composite substate could never be produced by the legacy ADX path.
@@ -238,6 +238,7 @@ def _composite_config(tmp_path):
         "config_version": 15,
         "regime": {
             "enabled": True,
+            "timeframe": " 1D ",
             "period": 14,
             "adx_threshold": 20.0,
             "windows": {"medium": {"classifier": "composite", "period": 30}},
@@ -261,6 +262,7 @@ def test_load_strategy_config_includes_composite_windows_spec(tmp_path):
     assert spec is not None
     assert spec["medium"]["classifier"] == "composite"
     assert spec["medium"]["period"] == 30
+    assert kwargs["regime_timeframe"] == "1d"
 
 
 def test_load_strategy_config_no_windows_yields_none(tmp_path):
@@ -277,6 +279,61 @@ def test_load_strategy_config_no_windows_yields_none(tmp_path):
     })
     kwargs = run_backtest.load_strategy_config(path, "hl-temacb-btc")
     assert kwargs["regime_windows_spec"] is None
+
+
+def test_regime_timeframe_override_aligns_without_lookahead(monkeypatch):
+    trade = pd.DataFrame(
+        {"open": [100.0, 101.0, 102.0, 103.0],
+         "high": [101.0, 102.0, 103.0, 104.0],
+         "low": [99.0, 100.0, 101.0, 102.0],
+         "close": [100.0, 101.0, 102.0, 103.0],
+         "volume": [1000.0] * 4},
+        index=pd.to_datetime([
+            "2024-01-01 12:00:00+00:00",
+            "2024-01-02 12:00:00+00:00",
+            "2024-01-03 11:00:00+00:00",
+            "2024-01-03 12:00:00+00:00",
+        ]),
+    )
+    regime_source = pd.DataFrame(
+        {"open": [1.0, 2.0], "high": [1.0, 2.0], "low": [1.0, 2.0],
+         "close": [1.0, 2.0], "volume": [1000.0, 1000.0]},
+        index=pd.to_datetime(["2024-01-01 00:00:00+00:00", "2024-01-03 12:00:00+00:00"]),
+    )
+
+    def fake_load(symbol, timeframe, start_date=None):
+        assert symbol == "BTC/USDT"
+        assert timeframe == "1d"
+        assert start_date == "2024-01-01"
+        return regime_source.copy()
+
+    def fake_ensure(df, *, period=14, adx_threshold=20.0, windows_spec=None):
+        assert period == 14
+        assert adx_threshold == 20.0
+        assert windows_spec == COMPOSITE_SPEC
+        df["regime"] = ["macro_old", "macro_new"]
+        df["regime_score"] = [0.1, 0.9]
+        df["adx"] = [11.0, 29.0]
+        df["plus_di"] = [4.0, 8.0]
+        df["minus_di"] = [6.0, 2.0]
+
+    monkeypatch.setattr(run_backtest, "load_cached_data", fake_load)
+    monkeypatch.setattr(run_backtest, "ensure_regime_columns", fake_ensure)
+
+    out = run_backtest._apply_regime_timeframe_override(
+        trade,
+        "BTC/USDT",
+        "1h",
+        "1d",
+        "2024-01-01",
+        regime_period=14,
+        regime_adx_threshold=20.0,
+        regime_windows_spec=COMPOSITE_SPEC,
+    )
+
+    assert out is not None
+    assert out["regime"].tolist() == ["macro_old", "macro_old", "macro_old", "macro_new"]
+    assert out["adx"].tolist() == [11.0, 11.0, 11.0, 29.0]
 
 
 # ─── CLI: --regime-windows-spec-json parsing + rejections ────────────────────
@@ -355,7 +412,7 @@ def test_cli_by_name_threads_windows_spec_to_backtester(monkeypatch):
 
 
 # ─── --allowed-regimes vocabulary tracks the primary window's classifier ──────
-# (#1058 review: composite primary → 7-state gate labels; ADX primary → 3 labels.
+# (#1058 review: composite primary → 9-state gate labels; ADX primary → 3 labels.
 # The gate must be expressible through the SAME surface that computes the label.)
 
 

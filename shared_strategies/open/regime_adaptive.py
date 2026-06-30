@@ -130,9 +130,9 @@ def regime_adaptive_core(
     adx_threshold : minimum ADX for the clean-trend / ranging_directional split
         (composite classifier default 25; tuned to 20 by walk-forward stability)
     return_eff_threshold : minimum |return_eff| for a decisive net move
-        (mirrors composite ``return_pct``, default 0.05)
+        (mirrors composite ``return_eff``, default 0.05)
     range_eff_threshold : minimum range_eff splitting ranging_volatile from
-        ranging_quiet (mirrors composite ``range_pct``, default 0.03)
+        ranging_quiet (mirrors composite ``range_eff``, default 0.03)
     efficiency_threshold : minimum Kaufman efficiency for a *clean* trend
         (mirrors composite ``efficiency``, default 0.5)
     breakout_lookback : prior-bar extreme window for the trend-mode entry

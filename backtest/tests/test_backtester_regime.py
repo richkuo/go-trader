@@ -82,7 +82,7 @@ def test_ensure_regime_columns_composite_labels():
         df,
         period=50,
         classifier="composite",
-        thresholds={"return_pct": 0.02, "range_pct": 0.02, "adx": 15},
+        thresholds={"return_eff": 0.02, "range_eff": 0.02, "adx": 15},
     )
     label = out["regime"].iloc[-1]
     assert label.startswith("trending_up")

@@ -73,9 +73,10 @@ type PlatformConfig struct {
 // Default disabled; strategies opt in via AllowedRegimes or by reading params["regime"].
 type RegimeConfig struct {
 	Enabled      bool             `json:"enabled"`
-	Period       int              `json:"period"`            // ADX lookback (Wilder's smoothing); default 14; legacy single-window mode
-	ADXThreshold float64          `json:"adx_threshold"`     // ADX below this is "ranging"; default 20.0
-	Windows      RegimeWindowsMap `json:"windows,omitempty"` // name -> classifier+period; bare int = ADX period (#792/#795)
+	Period       int              `json:"period"`              // ADX lookback (Wilder's smoothing); default 14; legacy single-window mode
+	ADXThreshold float64          `json:"adx_threshold"`       // ADX below this is "ranging"; default 20.0
+	Timeframe    string           `json:"timeframe,omitempty"` // optional candle timeframe for non-options regime bundles; empty = strategy args[2]
+	Windows      RegimeWindowsMap `json:"windows,omitempty"`   // name -> classifier+period; bare int = ADX period (#792/#795)
 	// DisplayWindows optionally restricts which regime windows appear in the
 	// Discord/cycle summary (#1062). Display-only: it never affects regime
 	// calculation or gating. Names match window keys case-insensitively (e.g.
@@ -84,6 +85,30 @@ type RegimeConfig struct {
 	// populated label, the summary falls back to the single primary regime
 	// string (same fallback as the multi-window-disabled path).
 	DisplayWindows []string `json:"display_windows,omitempty"`
+}
+
+var regimeTimeframeAllowSet = map[string]bool{
+	"1m": true, "2m": true, "3m": true, "5m": true, "15m": true, "30m": true,
+	"60m": true, "90m": true,
+	"1h": true, "2h": true, "4h": true, "6h": true, "8h": true, "12h": true,
+	"1d": true, "3d": true, "5d": true, "1w": true, "1mo": true, "3mo": true,
+}
+
+func normalizeRegimeTimeframe(tf string) string {
+	return strings.ToLower(strings.TrimSpace(tf))
+}
+
+func validRegimeTimeframe(tf string) bool {
+	return regimeTimeframeAllowSet[normalizeRegimeTimeframe(tf)]
+}
+
+func validRegimeTimeframes() []string {
+	out := make([]string, 0, len(regimeTimeframeAllowSet))
+	for tf := range regimeTimeframeAllowSet {
+		out = append(out, tf)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // CorrelationConfig controls portfolio-level directional exposure tracking.
@@ -1253,6 +1278,7 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	if cfg.Regime == nil {
 		cfg.Regime = &RegimeConfig{Enabled: false}
 	}
+	cfg.Regime.Timeframe = normalizeRegimeTimeframe(cfg.Regime.Timeframe)
 	if cfg.Regime.Enabled {
 		if cfg.Regime.Period == 0 {
 			cfg.Regime.Period = 14
@@ -2125,6 +2151,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		}
 		if cfg.Regime.ADXThreshold <= 0 || cfg.Regime.ADXThreshold > 100 {
 			errs = append(errs, fmt.Sprintf("regime.adx_threshold must be in (0, 100], got %g", cfg.Regime.ADXThreshold))
+		}
+		if tf := normalizeRegimeTimeframe(cfg.Regime.Timeframe); tf != "" && !validRegimeTimeframe(tf) {
+			errs = append(errs, fmt.Sprintf("regime.timeframe must be one of %s, got %q", strings.Join(validRegimeTimeframes(), ", "), cfg.Regime.Timeframe))
 		}
 	}
 	errs = append(errs, validateRegimeWindowsConfig(cfg)...)

@@ -45,13 +45,16 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		cfg.UserDefaults = cloneUserDefaults(next.UserDefaults)
 	}
 
-	// #1062: regime.display_windows hot-reloads (display-only summary filter).
-	// validateHotReloadCompatible masked it but rejects any other regime change,
-	// so reaching here means display_windows is the only regime difference.
-	// Clearing it (next nil/empty) reverts to render-all without a restart.
+	// #1062/#1139: selected top-level regime fields hot-reload. display_windows
+	// is display-only; timeframe is state-shifting and validateHotReloadStateCompatible
+	// rejects it while affected strategies are open.
 	if cfg.Regime != nil && next.Regime != nil && !reflect.DeepEqual(cfg.Regime.DisplayWindows, next.Regime.DisplayWindows) {
 		addChange("regime.display_windows: %v -> %v", cfg.Regime.DisplayWindows, next.Regime.DisplayWindows)
 		cfg.Regime.DisplayWindows = append([]string(nil), next.Regime.DisplayWindows...)
+	}
+	if cfg.Regime != nil && next.Regime != nil && normalizeRegimeTimeframe(cfg.Regime.Timeframe) != normalizeRegimeTimeframe(next.Regime.Timeframe) {
+		addChange("regime.timeframe: %q -> %q", normalizeRegimeTimeframe(cfg.Regime.Timeframe), normalizeRegimeTimeframe(next.Regime.Timeframe))
+		cfg.Regime.Timeframe = normalizeRegimeTimeframe(next.Regime.Timeframe)
 	}
 
 	nextByID := strategyConfigByID(next.Strategies)
@@ -311,18 +314,20 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	return changes, nil
 }
 
-// regimeConfigEqualIgnoringDisplayWindows reports whether two regime configs are
-// identical except possibly for DisplayWindows (#1062) — the display-only field
-// that hot-reloads. nil-vs-non-nil counts as a difference (regime add/remove is
-// restart-required). Copies the structs before zeroing the slice header so the
-// live configs are untouched; Windows (a map) is only read by DeepEqual.
-func regimeConfigEqualIgnoringDisplayWindows(a, b *RegimeConfig) bool {
+// regimeConfigEqualIgnoringReloadableFields reports whether two regime configs
+// are identical except for hot-reloadable fields (#1062/#1139). nil-vs-non-nil
+// counts as a difference (regime add/remove is restart-required). Copies the
+// structs before zeroing fields so the live configs are untouched; Windows (a
+// map) is only read by DeepEqual.
+func regimeConfigEqualIgnoringReloadableFields(a, b *RegimeConfig) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
 	ac, bc := *a, *b
 	ac.DisplayWindows = nil
 	bc.DisplayWindows = nil
+	ac.Timeframe = ""
+	bc.Timeframe = ""
 	return reflect.DeepEqual(ac, bc)
 }
 
@@ -349,12 +354,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	if !reflect.DeepEqual(cfg.Correlation, next.Correlation) {
 		errs = append(errs, "correlation changed (restart required)")
 	}
-	// #1062: regime.display_windows is a display-only summary filter (no effect
-	// on calculation, gating, or persisted state), so it hot-reloads — masked
-	// out of this comparison and applied in applyHotReloadConfig. Any OTHER
-	// regime field change (alone or compounded with a display_windows edit)
-	// still rejects, because the mask only zeroes DisplayWindows before DeepEqual.
-	if !regimeConfigEqualIgnoringDisplayWindows(cfg.Regime, next.Regime) {
+	// #1062/#1139: mask top-level regime fields with explicit apply paths.
+	// Any OTHER regime field change still rejects.
+	if !regimeConfigEqualIgnoringReloadableFields(cfg.Regime, next.Regime) {
 		errs = append(errs, "regime changed (restart required)")
 	}
 	if !reflect.DeepEqual(cfg.LeaderboardSummaries, next.LeaderboardSummaries) {
@@ -426,6 +428,14 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 		ns, ok := nextByID[sc.ID]
 		if !ok {
 			continue
+		}
+		if cfg.Regime != nil && next.Regime != nil && sc.Type != "options" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			_, oldTF := strategyRegimeSymbolTimeframe(sc.Args, cfg.Regime)
+			_, newTF := strategyRegimeSymbolTimeframe(ns.Args, next.Regime)
+			if oldTF != "" && newTF != "" && oldTF != newTF {
+				errs = append(errs, fmt.Sprintf("strategy[%s] regime.timeframe changed with open positions (%q -> %q; flatten first or restart after close)",
+					sc.ID, oldTF, newTF))
+			}
 		}
 		if sc.Type == "perps" && sc.Leverage != ns.Leverage && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] leverage changed with open positions (%.2fx -> %.2fx; flatten first or restart after close)",

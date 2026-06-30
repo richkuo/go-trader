@@ -260,6 +260,19 @@ func strategyArgSymbolTimeframe(args []string) (string, string) {
 	return symbol, timeframe
 }
 
+func strategyRegimeSymbolTimeframe(args []string, rc *RegimeConfig) (string, string) {
+	symbol, timeframe := strategyArgSymbolTimeframe(args)
+	if symbol == "" || timeframe == "" {
+		return "", ""
+	}
+	if rc != nil {
+		if tf := normalizeRegimeTimeframe(rc.Timeframe); tf != "" {
+			timeframe = tf
+		}
+	}
+	return symbol, timeframe
+}
+
 // strategyRegimeBundleRequest resolves sc's regime signature for this cycle.
 // ok=false means the strategy reads no bundle (regime disabled for non-options
 // types, or an unresolvable symbol/timeframe) and its check script receives no
@@ -297,7 +310,7 @@ func strategyRegimeBundleRequest(sc StrategyConfig, rc *RegimeConfig) (regimeBun
 	if platform == "" {
 		return regimeBundleRequest{}, false
 	}
-	symbol, timeframe := strategyArgSymbolTimeframe(sc.Args)
+	symbol, timeframe := strategyRegimeSymbolTimeframe(sc.Args, rc)
 	if symbol == "" || timeframe == "" {
 		return regimeBundleRequest{}, false
 	}

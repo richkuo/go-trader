@@ -381,7 +381,7 @@ def test_parse_regime_windows_json_rejects_reserved_name():
 
 
 def test_map_composite_label_states():
-    th = {"return_pct": 0.05, "range_pct": 0.03, "adx": 25, "efficiency": 0.5}
+    th = {"return_eff": 0.05, "range_eff": 0.03, "adx": 25, "efficiency": 0.5}
     m = _regime_mod.map_composite_label
     # (return_eff, adx, range_eff, efficiency, thresholds)
     # Clean trend: big net move + high efficiency + high ADX.
@@ -431,15 +431,35 @@ def test_latest_regime_composite_ranging_not_trending():
 
 def test_parse_regime_windows_spec_json_composite():
     spec = _regime_mod.parse_regime_windows_spec_json(
-        '{"macro":{"classifier":"composite","period":100,"thresholds":{"return_pct":0.05,"range_pct":0.03,"adx":25}}}'
+        '{"macro":{"classifier":"composite","period":100,"thresholds":{"return_eff":0.05,"range_eff":0.03,"adx":25}}}'
     )
     assert spec["macro"]["classifier"] == "composite"
     assert spec["macro"]["period"] == 100
+    assert spec["macro"]["thresholds"]["return_eff"] == 0.05
+    assert spec["macro"]["thresholds"]["range_eff"] == 0.03
+
+
+def test_composite_threshold_aliases_canonical_win():
+    spec = _regime_mod.parse_regime_windows_spec_json(
+        '{"macro":{"classifier":"composite","period":100,"thresholds":{"return_pct":0.90,"range_pct":0.90,"return_eff":0.05,"range_eff":0.03,"adx":25}}}'
+    )
+    th = spec["macro"]["thresholds"]
+    assert th["return_eff"] == 0.05
+    assert th["range_eff"] == 0.03
+    assert "return_pct" not in th
+    assert "range_pct" not in th
+
+
+def test_composite_threshold_unknown_key_rejected():
+    with pytest.raises(ValueError, match="unknown composite threshold key"):
+        _regime_mod.parse_regime_windows_spec_json(
+            '{"macro":{"classifier":"composite","period":100,"thresholds":{"return_price_pct":0.05}}}'
+        )
 
 
 def test_latest_regime_composite_downtrend():
     df = _make_downtrend(n=120)
-    snap = _regime_mod.latest_regime_composite(df, period=50, thresholds={"return_pct": 0.02, "range_pct": 0.02, "adx": 15})
+    snap = _regime_mod.latest_regime_composite(df, period=50, thresholds={"return_eff": 0.02, "range_eff": 0.02, "adx": 15})
     assert snap["regime"] in _regime_mod.VALID_LABELS_COMPOSITE
     assert "trending_down" in snap["regime"]
 

@@ -142,6 +142,22 @@ func TestDirectionalCertIdentity(t *testing.T) {
 	if asset != "BTC" || tf != "1h" || classifier != regimeClassifierADX {
 		t.Fatalf("identity = (%q,%q,%q), want (BTC,1h,adx)", asset, tf, classifier)
 	}
+
+	rc := &RegimeConfig{
+		Enabled:   true,
+		Timeframe: "1d",
+		Windows: RegimeWindowsMap{
+			"medium": {Classifier: regimeClassifierComposite, Period: 30},
+		},
+	}
+	asset, tf, classifier, ok = directionalCertIdentity(sc, rc)
+	if !ok {
+		t.Fatal("expected override-backed identity")
+	}
+	if asset != "BTC" || tf != "1d" || classifier != regimeClassifierComposite {
+		t.Fatalf("override identity = (%q,%q,%q), want (BTC,1d,composite)", asset, tf, classifier)
+	}
+
 	// No symbol/timeframe -> not resolvable.
 	if _, _, _, ok := directionalCertIdentity(StrategyConfig{Args: []string{"hold"}}, nil); ok {
 		t.Fatal("expected unresolvable identity for short args")

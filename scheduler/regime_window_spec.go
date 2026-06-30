@@ -14,29 +14,83 @@ const (
 
 // Default composite thresholds (#795); operators may override per window.
 var defaultCompositeThresholds = RegimeCompositeThresholds{
-	ReturnPct:  0.05,
-	RangePct:   0.03,
+	ReturnEff:  0.05,
+	RangeEff:   0.03,
 	ADX:        25.0,
 	Efficiency: 0.5,
 }
 
-// RegimeCompositeThresholds tunes the composite metric mapper. ReturnPct/RangePct
+// RegimeCompositeThresholds tunes the composite metric mapper. ReturnEff/RangeEff
 // gate the ATR-efficiency net-move/range; Efficiency is the Kaufman efficiency
 // ratio (∈ (0,1]) that splits clean vs choppy trends; ADX corroborates.
 type RegimeCompositeThresholds struct {
-	ReturnPct  float64 `json:"return_pct"`
-	RangePct   float64 `json:"range_pct"`
+	ReturnEff  float64 `json:"return_eff"`
+	RangeEff   float64 `json:"range_eff"`
 	ADX        float64 `json:"adx"`
 	Efficiency float64 `json:"efficiency"`
 }
 
+func (t *RegimeCompositeThresholds) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var out RegimeCompositeThresholds
+	var oldReturn, newReturn *float64
+	var oldRange, newRange *float64
+	for key, blob := range raw {
+		v, err := decodeCompositeThresholdValue(key, blob)
+		if err != nil {
+			return err
+		}
+		switch key {
+		case "return_eff":
+			newReturn = &v
+		case "return_pct":
+			oldReturn = &v
+		case "range_eff":
+			newRange = &v
+		case "range_pct":
+			oldRange = &v
+		case "adx":
+			out.ADX = v
+		case "efficiency":
+			out.Efficiency = v
+		default:
+			return fmt.Errorf("thresholds: unknown key %q", key)
+		}
+	}
+	if oldReturn != nil {
+		out.ReturnEff = *oldReturn
+	}
+	if newReturn != nil {
+		out.ReturnEff = *newReturn
+	}
+	if oldRange != nil {
+		out.RangeEff = *oldRange
+	}
+	if newRange != nil {
+		out.RangeEff = *newRange
+	}
+	*t = out
+	return nil
+}
+
+func decodeCompositeThresholdValue(key string, data json.RawMessage) (float64, error) {
+	var v float64
+	if err := json.Unmarshal(data, &v); err != nil {
+		return 0, fmt.Errorf("thresholds.%s: must be a number: %w", key, err)
+	}
+	return v, nil
+}
+
 func (t RegimeCompositeThresholds) withDefaults() RegimeCompositeThresholds {
 	out := defaultCompositeThresholds
-	if t.ReturnPct > 0 {
-		out.ReturnPct = t.ReturnPct
+	if t.ReturnEff > 0 {
+		out.ReturnEff = t.ReturnEff
 	}
-	if t.RangePct > 0 {
-		out.RangePct = t.RangePct
+	if t.RangeEff > 0 {
+		out.RangeEff = t.RangeEff
 	}
 	if t.ADX > 0 {
 		out.ADX = t.ADX
@@ -191,11 +245,11 @@ func validateRegimeWindowSpec(name string, spec RegimeWindowSpec, rc *RegimeConf
 		}
 	case regimeClassifierComposite:
 		th := spec.compositeThresholds()
-		if th.ReturnPct <= 0 {
-			errs = append(errs, fmt.Sprintf("%s: thresholds.return_pct must be > 0", prefix))
+		if th.ReturnEff <= 0 {
+			errs = append(errs, fmt.Sprintf("%s: thresholds.return_eff must be > 0", prefix))
 		}
-		if th.RangePct <= 0 {
-			errs = append(errs, fmt.Sprintf("%s: thresholds.range_pct must be > 0", prefix))
+		if th.RangeEff <= 0 {
+			errs = append(errs, fmt.Sprintf("%s: thresholds.range_eff must be > 0", prefix))
 		}
 		if th.ADX <= 0 || th.ADX > 100 {
 			errs = append(errs, fmt.Sprintf("%s: thresholds.adx must be in (0, 100], got %g", prefix, th.ADX))
@@ -400,8 +454,8 @@ func formatRegimeWindowSpecInspect(name string, spec RegimeWindowSpec, rc *Regim
 	cls := resolved.effectiveClassifier()
 	if cls == regimeClassifierComposite && resolved.Thresholds != nil {
 		th := resolved.Thresholds
-		return fmt.Sprintf("%s: classifier=%s period=%d thresholds(return_pct=%g range_pct=%g adx=%g efficiency=%g)",
-			name, cls, resolved.Period, th.ReturnPct, th.RangePct, th.ADX, th.Efficiency)
+		return fmt.Sprintf("%s: classifier=%s period=%d thresholds(return_eff=%g range_eff=%g adx=%g efficiency=%g)",
+			name, cls, resolved.Period, th.ReturnEff, th.RangeEff, th.ADX, th.Efficiency)
 	}
 	return fmt.Sprintf("%s: classifier=%s period=%d adx_threshold=%g", name, cls, resolved.Period, resolved.ADXThreshold)
 }

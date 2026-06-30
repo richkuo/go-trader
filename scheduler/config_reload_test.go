@@ -982,6 +982,89 @@ func TestApplyHotReloadConfigDisplayWindows(t *testing.T) {
 	})
 }
 
+// #1139 — regime.timeframe is live reloadable only while affected non-options
+// strategies are flat. It changes the regime bundle/certification key, so open
+// positions must preserve their original regime-timeframe interpretation.
+func TestApplyHotReloadConfigRegimeTimeframe(t *testing.T) {
+	regimeWith := func(tf string) *RegimeConfig {
+		return &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20, Timeframe: tf}
+	}
+	stratWith := func(r *RegimeConfig) *Config {
+		c := minimalReloadConfig([]StrategyConfig{{
+			ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+			Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+			Leverage: 5, MarginMode: "isolated",
+		}})
+		c.Regime = r
+		return c
+	}
+
+	t.Run("applies while flat", func(t *testing.T) {
+		cfg := stratWith(regimeWith(""))
+		next := stratWith(regimeWith(" 1D "))
+		state := &AppState{Strategies: map[string]*StrategyState{
+			"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{}},
+		}}
+
+		changes, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+		if err != nil {
+			t.Fatalf("flat regime.timeframe change should hot-reload, got: %v", err)
+		}
+		if cfg.Regime.Timeframe != "1d" {
+			t.Fatalf("Timeframe = %q, want normalized 1d", cfg.Regime.Timeframe)
+		}
+		if joined := strings.Join(changes, " | "); !strings.Contains(joined, "regime.timeframe") {
+			t.Fatalf("expected a regime.timeframe change entry, got: %v", changes)
+		}
+	})
+
+	t.Run("rejects while open", func(t *testing.T) {
+		cfg := stratWith(regimeWith(""))
+		next := stratWith(regimeWith("1d"))
+		state := &AppState{Strategies: map[string]*StrategyState{
+			"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long"},
+			}},
+		}}
+
+		_, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+		if err == nil {
+			t.Fatal("expected open-position regime.timeframe change to be rejected")
+		}
+		if !strings.Contains(err.Error(), "regime.timeframe changed with open positions") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Regime.Timeframe != "" {
+			t.Fatalf("rejected reload mutated Timeframe: %q", cfg.Regime.Timeframe)
+		}
+	})
+
+	t.Run("options ignore open-position guard", func(t *testing.T) {
+		cfg := minimalReloadConfig([]StrategyConfig{{
+			ID: "deribit-theta", Type: "options", Platform: "deribit", Script: "shared_scripts/check_options.py",
+			Args: []string{"theta_harvest", "BTC"}, Capital: 1000, MaxDrawdownPct: 10,
+		}})
+		cfg.Regime = regimeWith("")
+		next := minimalReloadConfig([]StrategyConfig{{
+			ID: "deribit-theta", Type: "options", Platform: "deribit", Script: "shared_scripts/check_options.py",
+			Args: []string{"theta_harvest", "BTC"}, Capital: 1000, MaxDrawdownPct: 10,
+		}})
+		next.Regime = regimeWith("1d")
+		state := &AppState{Strategies: map[string]*StrategyState{
+			"deribit-theta": {ID: "deribit-theta", Positions: map[string]*Position{
+				"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 1000, Side: "long"},
+			}},
+		}}
+
+		if _, err := applyHotReloadConfig(cfg, next, state, nil, nil); err != nil {
+			t.Fatalf("options path keeps its hardcoded regime timeframe and should not trip the open-position guard: %v", err)
+		}
+		if cfg.Regime.Timeframe != "1d" {
+			t.Fatalf("Timeframe = %q, want 1d", cfg.Regime.Timeframe)
+		}
+	})
+}
+
 // #656 — direction change is allowed when the strategy is flat.
 func TestApplyHotReloadConfigAllowsDirectionChangeWhenFlat(t *testing.T) {
 	cfg := minimalReloadConfig([]StrategyConfig{{

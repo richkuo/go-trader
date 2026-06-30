@@ -52,6 +52,54 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRegimeTimeframe(t *testing.T) {
+	t.Run("normalizes accepted timeframe", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := `{
+			"regime": {"enabled": true, "timeframe": " 1D "},
+			"strategies": [{
+				"id": "test-spot",
+				"type": "spot",
+				"script": "shared_scripts/check_strategy.py",
+				"args": ["sma_crossover", "BTC/USDT", "1h"],
+				"capital": 1000
+			}]
+		}`
+		path := writeTestConfig(t, dir, cfg)
+
+		loaded, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig failed: %v", err)
+		}
+		if loaded.Regime == nil || loaded.Regime.Timeframe != "1d" {
+			t.Fatalf("Regime.Timeframe = %v, want 1d", loaded.Regime)
+		}
+	})
+
+	t.Run("rejects unknown timeframe", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := `{
+			"regime": {"enabled": true, "timeframe": "7h"},
+			"strategies": [{
+				"id": "test-spot",
+				"type": "spot",
+				"script": "shared_scripts/check_strategy.py",
+				"args": ["sma_crossover", "BTC/USDT", "1h"],
+				"capital": 1000
+			}]
+		}`
+		path := writeTestConfig(t, dir, cfg)
+
+		_, err := LoadConfig(path)
+		if err == nil {
+			t.Fatal("expected invalid regime.timeframe to be rejected")
+		}
+		if !strings.Contains(err.Error(), "regime.timeframe") {
+			t.Fatalf("error = %v, want regime.timeframe", err)
+		}
+	})
+}
+
 func TestLoadConfigPlatformInference(t *testing.T) {
 	cases := []struct {
 		id       string

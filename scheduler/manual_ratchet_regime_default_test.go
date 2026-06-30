@@ -126,7 +126,7 @@ func TestManualDefault_RegimeComposite_SelectsRatchetRegime(t *testing.T) {
 		"regime": {
 			"enabled": true, "period": 14, "adx_threshold": 20,
 			"windows": {
-				"daily": {"classifier": "composite", "period": 24, "thresholds": {"return_pct": 0.05, "range_pct": 0.03, "adx": 20}}
+				"daily": {"classifier": "composite", "period": 24, "thresholds": {"return_eff": 0.05, "range_eff": 0.03, "adx": 20}}
 			}
 		},
 		"strategies": [{
