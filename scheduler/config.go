@@ -159,7 +159,7 @@ type Config struct {
 	NotifyRatchetTriggers  *bool                      `json:"notify_ratchet_triggers,omitempty"`    // #1110 — owner DM when a trailing_tp_ratchet* tier clears and tightens the trail. Nil/missing → enabled; explicit false disables.
 	ManualDefaults         *ManualDefaultsConfig      `json:"manual_defaults,omitempty"`            // #696 — operator-tunable defaults for `manual-open` CLI and `type=manual` strategy auto-config. Each field optional; absent values fall back to the hardcoded defaults.
 	TradingViewExport      TradingViewExportConfig    `json:"tradingview_export,omitempty"`         // #3 — optional symbol overrides for TradingView portfolio CSV exports
-	UserCloseDefaults      CloseDefaultsMap           `json:"user_close_defaults,omitempty"`        // #866 — operator override layer for close-evaluator default tier ladders. Keyed by close evaluator name → {"tp_tiers": <list|regime-map>}. Injected into any close ref that omits tp_tiers at load; per-strategy tp_tiers still wins, and an absent entry falls through to the system default.
+	UserCloseDefaults      CloseDefaultsMap           `json:"user_close_defaults,omitempty"`        // #866/#1134 — operator override layer for close defaults. Close-evaluator keys → {"tp_tiers": ...} (and trailing_tp_ratchet_regime may also carry trailing_stop_atr_regime per #1133). Reserved key regime_atr → optional stop_loss_atr_regime / trailing_stop_atr_regime maps for standalone use_defaults-only strategy owners (#1134). Injected at load; per-strategy explicit maps win.
 }
 
 // CloseDefaultsMap is the #866 user_close_defaults block: close-evaluator name →
@@ -1233,6 +1233,12 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	// strategy layer (explicit tp_tiers) still wins; refs with no matching entry
 	// fall through to the evaluator's system default.
 	applyUserCloseDefaults(&cfg)
+
+	// #1134: inject user_close_defaults.regime_atr into standalone
+	// stop_loss_atr_regime / trailing_stop_atr_regime owners that are
+	// use_defaults-only. Runs after manual auto-config and close-ref
+	// injection; skips ratchet/manual strategies.
+	applyUserCloseDefaultRegimeATRs(&cfg)
 
 	if err := validateConfig(&cfg, skipLiveCredentialChecks); err != nil {
 		return nil, err

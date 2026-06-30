@@ -10,6 +10,15 @@
         { "atr_multiple": 2.0, "trailing_mult_after": 1.5, "close_fraction": 0.0 },
         { "atr_multiple": 3.0, "trailing_mult_after": 1.0, "close_fraction": 0.0 }
       ]
+    },
+    "regime_atr": {
+      "stop_loss_atr_regime": {
+        "trend_regime": {
+          "trending_up": { "atr_multiple": 2.0 },
+          "trending_down": { "atr_multiple": 2.0 },
+          "ranging": { "atr_multiple": 1.5 }
+        }
+      }
     }
   },
   "portfolio_risk": {
