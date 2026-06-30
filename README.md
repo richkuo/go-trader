@@ -342,7 +342,7 @@ tailscale serve --bg --https=8444 http://127.0.0.1:8100   # paper instance (8100
 
 Open `https://<node>.tailnet.ts.net:8443/dashboard`. `status_token` still applies.
 
-`inspect` is read-only against live deploys — shows which stop field won, resolved TP tiers, and direction provenance. Discord summaries: columns `Init | Value | PnL | PnL% | DD | Wallet% | Tf | Int | #T | W/L` plus Book Sharpe footer.
+`inspect` is read-only against live deploys — shows which stop field won, resolved TP tiers, and direction provenance. Discord summaries: header shows aggregate initial capital; table columns `Value | PnL | PnL% | DD | Wallet% | Tf | Int | #T | W/L` plus Book Sharpe footer.
 
 ---
 
