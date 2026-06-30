@@ -24,7 +24,7 @@ const defaultManualStopLossATRMult = 2.0
 func runManualOpen(args []string) int {
 	fs := flag.NewFlagSet("manual-open", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
-	side := fs.String("side", "", "Position side: long or short (default: \"long\", override via manual_defaults.side in config)")
+	side := fs.String("side", "", "Position side: long or short (default: \"long\", override via user_defaults.manual.side in config)")
 	size := fs.Float64("size", 0, "Size in base units (coin qty)")
 	notional := fs.Float64("notional", 0, "Size as USD notional (size = notional / price)")
 	margin := fs.Float64("margin", 0, "Size as USD margin (size = margin * leverage / price)")
@@ -64,8 +64,9 @@ func runManualOpen(args []string) int {
 		return 1
 	}
 
-	// #696: resolve --side default after config load so manual_defaults.side
-	// can override the "long" fallback when the operator omits the flag.
+	// #696/#1135: resolve --side default after config load so
+	// user_defaults.manual.side can override the "long" fallback when the
+	// operator omits the flag.
 	*side = strings.ToLower(strings.TrimSpace(*side))
 	if *side == "" {
 		*side = cfg.resolveManualSide()

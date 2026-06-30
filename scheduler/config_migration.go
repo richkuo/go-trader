@@ -10,7 +10,7 @@ import (
 
 // CurrentConfigVersion is the version embedded in newly generated configs.
 // When the binary starts and cfg.ConfigVersion < CurrentConfigVersion, migration runs.
-const CurrentConfigVersion = 15
+const CurrentConfigVersion = 16
 
 // ConfigField describes a config field introduced in a specific version.
 type ConfigField struct {
@@ -209,6 +209,15 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 	// unified per-regime block, tp_at_pct → tiered_tp_pct.
 	if oldVer < 15 {
 		migrateV15CloseKeys(raw)
+	}
+
+	// v16: consolidate operator-tunable defaults under user_defaults (#1135).
+	// The old top-level aliases are accepted only when they do not conflict
+	// with the canonical section they map to.
+	if oldVer < 16 || hasLegacyUserDefaultAliases(raw) {
+		if err := migrateV16UserDefaults(raw); err != nil {
+			return err
+		}
 	}
 
 	raw["config_version"] = CurrentConfigVersion

@@ -7,15 +7,15 @@ import (
 	"strings"
 )
 
-// close_defaults.go implements the #866 user_close_defaults override layer — the
+// close_defaults.go implements the #866 user_defaults override layer — the
 // middle of the three-layer close-default resolution:
 //
 //	system_close_defaults  (Go constant / Python mirror, the built-in fallback)
-//	  → user_close_defaults  (this file — a top-level config.json block)
+//	  → user_defaults        (this file — a top-level config.json block)
 //	    → strategy_close_defaults  (inline tp_tiers on a strategy's close ref)
 //
 // Resolution is implemented by *injection at load*: for any close ref that omits
-// tp_tiers, if user_close_defaults names that evaluator, its tp_tiers is copied
+// tp_tiers, if user_defaults.close names that evaluator, its tp_tiers is copied
 // into the ref's Params before validation/runtime. A ref that already carries an
 // explicit tp_tiers (the strategy layer) is left untouched, and a ref with no
 // matching user entry falls through to the evaluator's system default unchanged.
@@ -24,7 +24,7 @@ import (
 // all see the resolved tiers transparently — no separate plumbing required.
 
 // closeDefaultsSupported is the set of close evaluators whose default ladder can
-// be overridden via user_close_defaults (#866). Every member resolves its tier
+// be overridden via user_defaults.close (#866). Every member resolves its tier
 // list purely through tp_tiers, so an injected tp_tiers cleanly wins over the
 // system default with no precedence ambiguity.
 //
@@ -48,7 +48,7 @@ const (
 	userCloseDefaultRegimeATRKey             = "regime_atr"
 )
 
-// closeDefaultsTierEvaluator reports whether name accepts a user_close_defaults
+// closeDefaultsTierEvaluator reports whether name accepts a user_defaults.close
 // override (see closeDefaultsSupported).
 func closeDefaultsTierEvaluator(name string) bool {
 	_, ok := closeDefaultsSupported[strings.ToLower(strings.TrimSpace(name))]
@@ -87,7 +87,20 @@ func closeDefaultsEntry(defaults CloseDefaultsMap, name string) (map[string]inte
 	return nil, false
 }
 
-// validateUserCloseDefaults checks the user_close_defaults block shape at load:
+// validateUserDefaults checks the user_defaults block shape at load.
+func validateUserDefaults(defaults *UserDefaultsConfig) []string {
+	if defaults == nil {
+		return nil
+	}
+	var errs []string
+	errs = append(errs, validateUserCloseDefaults(defaults.Close)...)
+	if defaults.RegimeATR != nil {
+		errs = append(errs, validateUserDefaultRegimeATR(defaults.RegimeATR)...)
+	}
+	return errs
+}
+
+// validateUserCloseDefaults checks the user_defaults.close block shape at load:
 // every key must be a tp_tiers-shaped close evaluator, and every entry must
 // carry a non-nil tp_tiers and no other keys. The tier *contents* are validated
 // per-evaluator once injected into a consuming strategy (so a regime ladder is
@@ -105,12 +118,12 @@ func validateUserCloseDefaults(defaults CloseDefaultsMap) []string {
 	for _, name := range names {
 		entry := defaults[name]
 		normName := strings.ToLower(strings.TrimSpace(name))
-		if normName == userCloseDefaultRegimeATRKey {
-			errs = append(errs, validateUserCloseDefaultRegimeATR(name, entry)...)
-			continue
-		}
 		if !closeDefaultsTierEvaluator(name) {
-			errs = append(errs, fmt.Sprintf("user_close_defaults[%q]: not a tp_tiers close evaluator (allowed: %s, %s)", name, strings.Join(closeDefaultsSupportedNames(), ", "), userCloseDefaultRegimeATRKey))
+			if normName == userCloseDefaultRegimeATRKey {
+				errs = append(errs, fmt.Sprintf("user_defaults.close[%q]: regime_atr moved to user_defaults.regime_atr", name))
+			} else {
+				errs = append(errs, fmt.Sprintf("user_defaults.close[%q]: not a tp_tiers close evaluator (allowed: %s)", name, strings.Join(closeDefaultsSupportedNames(), ", ")))
+			}
 			continue
 		}
 		for k := range entry {
@@ -121,19 +134,19 @@ func validateUserCloseDefaults(defaults CloseDefaultsMap) []string {
 				continue
 			}
 			if normName == trailingTPRatchetRegimeCloseName {
-				errs = append(errs, fmt.Sprintf("user_close_defaults[%q]: unknown key %q (only tp_tiers and trailing_stop_atr_regime are allowed)", name, k))
+				errs = append(errs, fmt.Sprintf("user_defaults.close[%q]: unknown key %q (only tp_tiers and trailing_stop_atr_regime are allowed)", name, k))
 			} else {
-				errs = append(errs, fmt.Sprintf("user_close_defaults[%q]: unknown key %q (only tp_tiers is allowed)", name, k))
+				errs = append(errs, fmt.Sprintf("user_defaults.close[%q]: unknown key %q (only tp_tiers is allowed)", name, k))
 			}
 		}
 		tp, ok := entry["tp_tiers"]
 		if !ok || tp == nil {
-			errs = append(errs, fmt.Sprintf("user_close_defaults[%q]: missing tp_tiers", name))
+			errs = append(errs, fmt.Sprintf("user_defaults.close[%q]: missing tp_tiers", name))
 			continue
 		}
 		// Deep-validate the ladder here so a malformed user default (empty list,
 		// wrong type, non-monotonic ratchet tiers) is attributed to
-		// user_close_defaults — not to the strategy it later injects into. An
+		// user_defaults.close — not to the strategy it later injects into. An
 		// empty tp_tiers is rejected loudly: it would otherwise inject `[]` and
 		// silently suppress the system default (runtime resolves to zero tiers).
 		errs = append(errs, validateUserCloseDefaultTiers(name, tp)...)
@@ -146,14 +159,14 @@ func validateUserCloseDefaults(defaults CloseDefaultsMap) []string {
 	return errs
 }
 
-// validateUserCloseDefaultTiers validates a user_close_defaults tp_tiers value
+// validateUserCloseDefaultTiers validates a user_defaults.close tp_tiers value
 // (scalar list, or regime-keyed map for the *_regime ratchet) with errors
-// attributed to the user_close_defaults block. Ratchet ladders also get the
+// attributed to the user_defaults.close block. Ratchet ladders also get the
 // context-free monotonicity check; the regime-exhaustiveness and initial-trail
 // checks stay per-strategy (they need the consuming strategy's classifier and
 // trailing_stop_atr_mult).
 func validateUserCloseDefaultTiers(name string, tp interface{}) []string {
-	ctx := fmt.Sprintf("user_close_defaults[%q].tp_tiers", name)
+	ctx := fmt.Sprintf("user_defaults.close[%q].tp_tiers", name)
 	isRatchet := isTrailingTPRatchetCloseName(name)
 	switch v := tp.(type) {
 	case []interface{}:
@@ -198,12 +211,12 @@ func validateUserCloseDefaultTiers(name string, tp interface{}) []string {
 	}
 }
 
-func validateUserCloseDefaultRegimeATR(name string, entry map[string]interface{}) []string {
+func validateUserDefaultRegimeATR(entry map[string]interface{}) []string {
 	if entry == nil {
-		return []string{fmt.Sprintf("user_close_defaults[%q]: must be an object", name)}
+		return []string{"user_defaults.regime_atr: must be an object"}
 	}
 	if len(entry) == 0 {
-		return []string{fmt.Sprintf("user_close_defaults[%q]: must not be empty", name)}
+		return []string{"user_defaults.regime_atr: must not be empty"}
 	}
 	var errs []string
 	allowed := map[string]bool{
@@ -212,20 +225,20 @@ func validateUserCloseDefaultRegimeATR(name string, entry map[string]interface{}
 	}
 	for k := range entry {
 		if !allowed[k] {
-			errs = append(errs, fmt.Sprintf("user_close_defaults[%q]: unknown key %q (only stop_loss_atr_regime and trailing_stop_atr_regime are allowed)", name, k))
+			errs = append(errs, fmt.Sprintf("user_defaults.regime_atr: unknown key %q (only stop_loss_atr_regime and trailing_stop_atr_regime are allowed)", k))
 		}
 	}
 	if raw, ok := entry[userCloseDefaultStopLossATRRegimeKey]; ok {
-		errs = append(errs, validateUserCloseDefaultRegimeATRSubBlock(name, userCloseDefaultStopLossATRRegimeKey, raw, regimeSurfaceStopLoss)...)
+		errs = append(errs, validateUserCloseDefaultRegimeATRSubBlock(userCloseDefaultStopLossATRRegimeKey, raw, regimeSurfaceStopLoss)...)
 	}
 	if raw, ok := entry[userCloseDefaultTrailingStopATRRegimeKey]; ok {
-		errs = append(errs, validateUserCloseDefaultRegimeATRSubBlock(name, userCloseDefaultTrailingStopATRRegimeKey, raw, regimeSurfaceTrailing)...)
+		errs = append(errs, validateUserCloseDefaultRegimeATRSubBlock(userCloseDefaultTrailingStopATRRegimeKey, raw, regimeSurfaceTrailing)...)
 	}
 	return errs
 }
 
-func validateUserCloseDefaultRegimeATRSubBlock(section, subKey string, raw interface{}, surface regimeATRSurface) []string {
-	ctx := fmt.Sprintf("user_close_defaults[%q].%s", section, subKey)
+func validateUserCloseDefaultRegimeATRSubBlock(subKey string, raw interface{}, surface regimeATRSurface) []string {
+	ctx := fmt.Sprintf("user_defaults.regime_atr.%s", subKey)
 	block, ok := raw.(map[string]interface{})
 	if !ok || block == nil {
 		return []string{ctx + ": must be an object"}
@@ -248,7 +261,7 @@ func validateUserCloseDefaultRegimeATRSubBlock(section, subKey string, raw inter
 }
 
 func validateUserCloseDefaultTrailingStopATRRegime(name string, raw interface{}) []string {
-	ctx := fmt.Sprintf("user_close_defaults[%q].%s", name, userCloseDefaultTrailingStopATRRegimeKey)
+	ctx := fmt.Sprintf("user_defaults.close[%q].%s", name, userCloseDefaultTrailingStopATRRegimeKey)
 	block, ok := raw.(map[string]interface{})
 	if !ok || block == nil {
 		return []string{ctx + ": must be an object"}
@@ -270,7 +283,7 @@ func validateUserCloseDefaultTrailingStopATRRegime(name string, raw interface{})
 	return errs
 }
 
-// applyUserCloseDefaultsToRef injects the user_close_defaults tp_tiers for ref's
+// applyUserCloseDefaultsToRef injects the user_defaults.close tp_tiers for ref's
 // evaluator when the ref omits its own tp_tiers (the strategy layer wins). A
 // no-op when ref is nil, already carries tp_tiers, or has no matching user
 // entry. Returns true when an injection occurred (for logging/tests).
@@ -352,9 +365,8 @@ type userCloseDefaultRegimeATRBlocks struct {
 	trailing *RegimeATRBlock
 }
 
-func parseUserCloseDefaultRegimeATR(defaults CloseDefaultsMap) (userCloseDefaultRegimeATRBlocks, bool) {
-	entry, ok := closeDefaultsEntry(defaults, userCloseDefaultRegimeATRKey)
-	if !ok || len(entry) == 0 {
+func parseUserCloseDefaultRegimeATR(entry map[string]interface{}) (userCloseDefaultRegimeATRBlocks, bool) {
+	if len(entry) == 0 {
 		return userCloseDefaultRegimeATRBlocks{}, false
 	}
 	var out userCloseDefaultRegimeATRBlocks
@@ -374,7 +386,7 @@ func parseUserCloseDefaultRegimeATR(defaults CloseDefaultsMap) (userCloseDefault
 	return out, found
 }
 
-func applyUserCloseDefaultRegimeATR(sc *StrategyConfig, defaults CloseDefaultsMap) bool {
+func applyUserCloseDefaultRegimeATR(sc *StrategyConfig, defaults map[string]interface{}) bool {
 	if sc == nil || strategyUsesTrailingTPRatchetRegimeClose(*sc) {
 		return false
 	}
@@ -395,11 +407,12 @@ func applyUserCloseDefaultRegimeATR(sc *StrategyConfig, defaults CloseDefaultsMa
 }
 
 func applyUserCloseDefaultRegimeATRs(cfg *Config) {
-	if cfg == nil || len(cfg.UserCloseDefaults) == 0 {
+	defaults := cfg.userDefaultsRegimeATR()
+	if len(defaults) == 0 {
 		return
 	}
 	for i := range cfg.Strategies {
-		applyUserCloseDefaultRegimeATR(&cfg.Strategies[i], cfg.UserCloseDefaults)
+		applyUserCloseDefaultRegimeATR(&cfg.Strategies[i], defaults)
 	}
 }
 
@@ -436,23 +449,25 @@ func applyUserCloseDefaultRatchetRegimeTrail(sc *StrategyConfig, defaults CloseD
 }
 
 func applyUserCloseDefaultRatchetRegimeTrails(cfg *Config) {
-	if cfg == nil || len(cfg.UserCloseDefaults) == 0 {
+	defaults := cfg.userDefaultsClose()
+	if len(defaults) == 0 {
 		return
 	}
 	for i := range cfg.Strategies {
-		applyUserCloseDefaultRatchetRegimeTrail(&cfg.Strategies[i], cfg.UserCloseDefaults)
+		applyUserCloseDefaultRatchetRegimeTrail(&cfg.Strategies[i], defaults)
 	}
 }
 
-// applyUserCloseDefaults injects user_close_defaults into every strategy's close
+// applyUserCloseDefaults injects user_defaults.close into every strategy's close
 // ref. Called once per load (and per SIGHUP reload) after close-ref
 // normalization, before validation.
 func applyUserCloseDefaults(cfg *Config) {
-	if cfg == nil || len(cfg.UserCloseDefaults) == 0 {
+	defaults := cfg.userDefaultsClose()
+	if len(defaults) == 0 {
 		return
 	}
 	for i := range cfg.Strategies {
-		applyUserCloseDefaultsToRef(cfg.Strategies[i].CloseStrategy, cfg.UserCloseDefaults)
+		applyUserCloseDefaultsToRef(cfg.Strategies[i].CloseStrategy, defaults)
 	}
 }
 

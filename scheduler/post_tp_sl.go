@@ -10,7 +10,7 @@ import (
 )
 
 // deprecatedConfigKeyWarned dedupes one-shot deprecation warnings per legacy
-// config key so a busy scheduler doesn't spam the log every cycle (#841).
+// config key so a busy scheduler doesn't spam the log every cycle.
 var deprecatedConfigKeyWarned sync.Map
 
 // warnDeprecatedConfigKey emits a single [DEPRECATED] notice the first time a
@@ -19,7 +19,7 @@ func warnDeprecatedConfigKey(old, canonical string) {
 	if _, loaded := deprecatedConfigKeyWarned.LoadOrStore(old+"->"+canonical, true); loaded {
 		return
 	}
-	fmt.Printf("[DEPRECATED] config key %q is deprecated; use %q (#841)\n", old, canonical)
+	fmt.Printf("[DEPRECATED] config key %q is deprecated; use %q\n", old, canonical)
 }
 
 // closeTierListParam returns the take-profit tier list from a close ref's

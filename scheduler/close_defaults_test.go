@@ -102,15 +102,13 @@ func TestValidateUserCloseDefaults(t *testing.T) {
 		{"empty regime map", CloseDefaultsMap{"trailing_tp_ratchet_regime": {"tp_tiers": map[string]interface{}{}}}, "must not be empty"},
 		{"wrong type", CloseDefaultsMap{"tiered_tp_atr": {"tp_tiers": 42}}, "must be a tier list or regime-keyed object"},
 		{"bad trail shape", CloseDefaultsMap{"trailing_tp_ratchet_regime": {"tp_tiers": ratchetRegimeUserTiers(), "trailing_stop_atr_regime": map[string]interface{}{"trend_regime": map[string]interface{}{"trending_up": map[string]interface{}{"close_fraction": 0.5}}}}}, "close_fraction is only allowed inside close-evaluator tiers"},
-		// non-monotonic ratchet ladder attributed to user_close_defaults, not the strategy.
-		{"non-monotonic ratchet attributed", CloseDefaultsMap{"trailing_tp_ratchet": {"tp_tiers": nonMonotonicRatchet}}, "user_close_defaults[\"trailing_tp_ratchet\"].tp_tiers"},
+		// non-monotonic ratchet ladder attributed to user_defaults.close, not the strategy.
+		{"non-monotonic ratchet attributed", CloseDefaultsMap{"trailing_tp_ratchet": {"tp_tiers": nonMonotonicRatchet}}, "user_defaults.close[\"trailing_tp_ratchet\"].tp_tiers"},
 		// the dynamic unified-regime evaluator is trend_regime-shaped (no tp_tiers) and excluded.
 		{"dynamic excluded", CloseDefaultsMap{"tiered_tp_atr_live_regime_dynamic": {"tp_tiers": []interface{}{}}}, "not a tp_tiers close evaluator"},
 		// regime tiered-ATR override is deferred to #870 (use_defaults baseline interaction).
 		{"tiered regime excluded", CloseDefaultsMap{"tiered_tp_atr_regime": {"tp_tiers": []interface{}{}}}, "not a tp_tiers close evaluator"},
-		{"regime_atr stray key", CloseDefaultsMap{"regime_atr": {"stop_loss_atr_regime": ratchetRegimeTrailRaw(2.0, 2.0, 1.5), "foo": 1}}, "unknown key"},
-		{"regime_atr empty", CloseDefaultsMap{"regime_atr": {}}, "must not be empty"},
-		{"regime_atr bad stop shape", CloseDefaultsMap{"regime_atr": {"stop_loss_atr_regime": map[string]interface{}{"trend_regime": map[string]interface{}{"trending_up": map[string]interface{}{"close_fraction": 0.5}}}}}, "close_fraction is only allowed inside close-evaluator tiers"},
+		{"regime_atr moved", CloseDefaultsMap{"regime_atr": {"stop_loss_atr_regime": ratchetRegimeTrailRaw(2.0, 2.0, 1.5)}}, "regime_atr moved to user_defaults.regime_atr"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -123,11 +121,13 @@ func TestValidateUserCloseDefaults(t *testing.T) {
 
 // TestUserCloseDefaults_EndToEndRatchet proves the middle layer: a ratchet
 // strategy with use_defaults (no tp_tiers) resolves to the operator's
-// user_close_defaults ladder — not the system default — and still validates.
+// user_defaults.close ladder — not the system default — and still validates.
 func TestUserCloseDefaults_EndToEndRatchet(t *testing.T) {
 	trail := 3.0
 	cfg := &Config{
-		UserCloseDefaults: CloseDefaultsMap{"trailing_tp_ratchet": {"tp_tiers": ratchetUserTiers()}},
+		UserDefaults: &UserDefaultsConfig{
+			Close: CloseDefaultsMap{"trailing_tp_ratchet": {"tp_tiers": ratchetUserTiers()}},
+		},
 		Strategies: []StrategyConfig{{
 			ID: "s1", Type: "perps", Platform: "hyperliquid",
 			TrailingStopATRMult: &trail,
@@ -553,8 +553,8 @@ func TestUserCloseDefaults_RegimeATRCompositeBareCoversDirectionalSubs(t *testin
 				"daily": {Classifier: regimeClassifierComposite, Period: 24},
 			},
 		},
-		UserCloseDefaults: CloseDefaultsMap{
-			"regime_atr": {
+		UserDefaults: &UserDefaultsConfig{
+			RegimeATR: map[string]interface{}{
 				"stop_loss_atr_regime": raw,
 			},
 		},
@@ -566,8 +566,8 @@ func TestUserCloseDefaults_RegimeATRCompositeBareCoversDirectionalSubs(t *testin
 			StopLossATRRegime: &RegimeATRBlock{raw: map[string]interface{}{"use_defaults": true}},
 		}},
 	}
-	if errs := validateUserCloseDefaults(cfg.UserCloseDefaults); len(errs) != 0 {
-		t.Fatalf("validateUserCloseDefaults rejected bare-covering composite block: %v", errs)
+	if errs := validateUserDefaults(cfg.UserDefaults); len(errs) != 0 {
+		t.Fatalf("validateUserDefaults rejected bare-covering composite block: %v", errs)
 	}
 	applyUserCloseDefaultRegimeATRs(cfg)
 	if errs := validateRegimeATRConfig(cfg); len(errs) != 0 {

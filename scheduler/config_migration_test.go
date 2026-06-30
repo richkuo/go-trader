@@ -1291,3 +1291,130 @@ func TestLoadConfig_V14_TranslatesAllowShortsToDirection(t *testing.T) {
 		t.Errorf("EffectiveDirection(tema) = %q, want %q", got, DirectionLong)
 	}
 }
+
+func TestMigrateConfigV16UserDefaultsAliases(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	raw := map[string]interface{}{
+		"config_version": 15,
+		"user_close_defaults": map[string]interface{}{
+			"trailing_tp_ratchet": map[string]interface{}{
+				"tp_tiers": []interface{}{map[string]interface{}{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}},
+			},
+			"regime_atr": map[string]interface{}{
+				"stop_loss_atr_regime": map[string]interface{}{"use_defaults": true},
+			},
+		},
+		"manual_defaults": map[string]interface{}{
+			"margin_usd":         125.0,
+			"stop_loss_atr_mult": 2.25,
+			"side":               "short",
+		},
+	}
+	writeMigrationJSON(t, path, raw)
+
+	if err := MigrateConfig(path, nil, nil); err != nil {
+		t.Fatalf("MigrateConfig: %v", err)
+	}
+	updated := readMigrationJSON(t, path)
+	if int(updated["config_version"].(float64)) != CurrentConfigVersion {
+		t.Fatalf("config_version = %v, want %d", updated["config_version"], CurrentConfigVersion)
+	}
+	if _, ok := updated["user_close_defaults"]; ok {
+		t.Fatal("legacy user_close_defaults key was not removed")
+	}
+	if _, ok := updated["manual_defaults"]; ok {
+		t.Fatal("legacy manual_defaults key was not removed")
+	}
+	userDefaults := updated["user_defaults"].(map[string]interface{})
+	closeDefaults := userDefaults["close"].(map[string]interface{})
+	if _, ok := closeDefaults["regime_atr"]; ok {
+		t.Fatal("regime_atr stayed inside user_defaults.close")
+	}
+	if _, ok := closeDefaults["trailing_tp_ratchet"]; !ok {
+		t.Fatalf("trailing_tp_ratchet missing from user_defaults.close: %+v", closeDefaults)
+	}
+	regimeATR := userDefaults["regime_atr"].(map[string]interface{})
+	if _, ok := regimeATR["stop_loss_atr_regime"]; !ok {
+		t.Fatalf("stop_loss_atr_regime missing from user_defaults.regime_atr: %+v", regimeATR)
+	}
+	manual := userDefaults["manual"].(map[string]interface{})
+	if manual["margin_usd"].(float64) != 125.0 || manual["side"].(string) != "short" {
+		t.Fatalf("manual defaults not migrated: %+v", manual)
+	}
+}
+
+func TestMigrateConfigV16UserDefaultsEquivalentAliases(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	closeDefaults := map[string]interface{}{
+		"tiered_tp_atr": map[string]interface{}{
+			"tp_tiers": []interface{}{map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0}},
+		},
+	}
+	raw := map[string]interface{}{
+		"config_version":             16,
+		"user_close_defaults":        closeDefaults,
+		"user_defaults":              map[string]interface{}{"close": closeDefaults},
+		"interval_seconds":           600,
+		"default_stop_loss_atr_mult": 1.0,
+	}
+	writeMigrationJSON(t, path, raw)
+
+	if err := MigrateConfig(path, nil, nil); err != nil {
+		t.Fatalf("MigrateConfig accepted equivalent legacy/canonical aliases: %v", err)
+	}
+	updated := readMigrationJSON(t, path)
+	if _, ok := updated["user_close_defaults"]; ok {
+		t.Fatal("equivalent legacy user_close_defaults key was not removed")
+	}
+	userDefaults := updated["user_defaults"].(map[string]interface{})
+	if !reflect.DeepEqual(userDefaults["close"], closeDefaults) {
+		t.Fatalf("canonical close defaults changed: %+v", userDefaults["close"])
+	}
+}
+
+func TestMigrateConfigV16UserDefaultsConflictRejects(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	raw := map[string]interface{}{
+		"config_version": 16,
+		"user_defaults": map[string]interface{}{
+			"manual": map[string]interface{}{"side": "long"},
+		},
+		"manual_defaults": map[string]interface{}{"side": "short"},
+	}
+	writeMigrationJSON(t, path, raw)
+
+	err := MigrateConfig(path, nil, nil)
+	if err == nil {
+		t.Fatal("MigrateConfig accepted conflicting user_defaults.manual/manual_defaults")
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("conflicts")) {
+		t.Fatalf("error %q does not mention conflict", err)
+	}
+}
+
+func writeMigrationJSON(t *testing.T, path string, raw map[string]interface{}) {
+	t.Helper()
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readMigrationJSON(t *testing.T, path string) map[string]interface{} {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}

@@ -35,19 +35,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("default_stop_loss_atr_mult: %s -> %s (applies to strategies opened after restart; existing StopLossATRMult on currently-loaded strategies is unchanged)", formatFloatPtr(cfg.DefaultStopLossATRMult), formatFloatPtr(next.DefaultStopLossATRMult))
 		cfg.DefaultStopLossATRMult = next.DefaultStopLossATRMult
 	}
-	// #696: manual_defaults flows through hot-reload so SIGHUP edits to
-	// margin_usd / side propagate to subsequent manual-open invocations and
-	// stop_loss_atr_mult / tp_tiers shape new type=manual strategy opens. The
-	// CLI loads fresh each invocation so it would already pick up changes from
-	// disk; the in-process cfg keeps parity for any code that reads via
-	// cfg.ManualDefaults / cfg.resolveManual* helpers.
-	if !reflect.DeepEqual(cfg.ManualDefaults, next.ManualDefaults) {
-		addChange("manual_defaults: %s -> %s", formatManualDefaults(cfg.ManualDefaults), formatManualDefaults(next.ManualDefaults))
-		cfg.ManualDefaults = cloneManualDefaults(next.ManualDefaults)
-	}
-	if !reflect.DeepEqual(cfg.UserCloseDefaults, next.UserCloseDefaults) {
-		addChange("user_close_defaults: updated")
-		cfg.UserCloseDefaults = cloneCloseDefaultsMap(next.UserCloseDefaults)
+	// #1135: user_defaults flows through hot-reload so SIGHUP edits to the
+	// operator-default layer shape subsequent manual-open invocations, new
+	// type=manual defaults, and close-default injection. The CLI loads fresh
+	// each invocation, but the in-process cfg keeps parity for code that reads
+	// via cfg.resolveManual* helpers and the injected close defaults.
+	if !reflect.DeepEqual(cfg.UserDefaults, next.UserDefaults) {
+		addChange("user_defaults: %s -> %s", formatUserDefaults(cfg.UserDefaults), formatUserDefaults(next.UserDefaults))
+		cfg.UserDefaults = cloneUserDefaults(next.UserDefaults)
 	}
 
 	// #1062: regime.display_windows hot-reloads (display-only summary filter).
@@ -840,7 +835,39 @@ func cloneManualDefaults(md *ManualDefaultsConfig) *ManualDefaultsConfig {
 	if len(md.TPTiers) > 0 {
 		cp.TPTiers = append([]ManualTPTier(nil), md.TPTiers...)
 	}
+	cp.TrailingStopATRRegime = cloneRegimeATRBlock(md.TrailingStopATRRegime)
 	return &cp
+}
+
+func cloneUserDefaults(ud *UserDefaultsConfig) *UserDefaultsConfig {
+	if ud == nil {
+		return nil
+	}
+	return &UserDefaultsConfig{
+		Close:     cloneCloseDefaultsMap(ud.Close),
+		RegimeATR: cloneInterfaceMap(ud.RegimeATR),
+		Manual:    cloneManualDefaults(ud.Manual),
+	}
+}
+
+func formatUserDefaults(ud *UserDefaultsConfig) string {
+	if ud == nil {
+		return "(unset)"
+	}
+	parts := []string{}
+	if len(ud.Close) > 0 {
+		parts = append(parts, fmt.Sprintf("close=%d", len(ud.Close)))
+	}
+	if len(ud.RegimeATR) > 0 {
+		parts = append(parts, fmt.Sprintf("regime_atr=%d", len(ud.RegimeATR)))
+	}
+	if ud.Manual != nil {
+		parts = append(parts, "manual="+formatManualDefaults(ud.Manual))
+	}
+	if len(parts) == 0 {
+		return "{}"
+	}
+	return "{" + strings.Join(parts, ", ") + "}"
 }
 
 func formatManualDefaults(md *ManualDefaultsConfig) string {
@@ -859,6 +886,9 @@ func formatManualDefaults(md *ManualDefaultsConfig) string {
 	}
 	if len(md.TPTiers) > 0 {
 		parts = append(parts, fmt.Sprintf("tp_tiers=%d", len(md.TPTiers)))
+	}
+	if md.TrailingStopATRRegime.IsConfigured() {
+		parts = append(parts, "trailing_stop_atr_regime=configured")
 	}
 	if len(parts) == 0 {
 		return "{}"

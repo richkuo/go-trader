@@ -7,6 +7,7 @@ Main entry point for strategy evaluation.
 import sys
 import os
 import argparse
+import json
 from copy import deepcopy
 from typing import List, Optional
 
@@ -284,8 +285,8 @@ DEFAULT_SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
 DEFAULT_TIMEFRAMES = ["4h", "1d"]
 
 
-# #866: close evaluators whose default ladder is overridable via
-# user_close_defaults. Mirrors scheduler/close_defaults.go closeDefaultsSupported
+# #866/#1135: close evaluators whose default ladder is overridable via
+# user_defaults.close. Mirrors scheduler/close_defaults.go closeDefaultsSupported
 # — the evaluators that resolve purely through tp_tiers (the regime tiered-ATR
 # variants are excluded; their use_defaults baseline is #870 territory).
 _USER_CLOSE_DEFAULTS_SUPPORTED = {
@@ -322,6 +323,86 @@ def _user_close_default_entry(user_defaults: Optional[dict], name: str) -> Optio
     return None
 
 
+def _json_equivalent(a, b) -> bool:
+    return json.dumps(a, sort_keys=True, separators=(",", ":")) == json.dumps(
+        b, sort_keys=True, separators=(",", ":")
+    )
+
+
+def _split_legacy_user_close_defaults(legacy: Optional[dict]) -> tuple[dict, object, bool]:
+    if legacy is None:
+        return {}, None, False
+    if not isinstance(legacy, dict):
+        raise ValueError("user_close_defaults: must be an object")
+    close_defaults: dict = {}
+    regime_atr = None
+    regime_present = False
+    for key in sorted(legacy):
+        norm = str(key or "").strip().lower()
+        value = legacy[key]
+        if norm == _USER_CLOSE_DEFAULT_REGIME_ATR_KEY:
+            if regime_present and not _json_equivalent(regime_atr, value):
+                raise ValueError("user_close_defaults contains conflicting regime_atr entries")
+            regime_atr = value
+            regime_present = True
+            continue
+        if norm in close_defaults and not _json_equivalent(close_defaults[norm], value):
+            raise ValueError(f"user_close_defaults contains conflicting {norm!r} entries")
+        close_defaults[norm] = value
+    return close_defaults, regime_atr, regime_present
+
+
+def _effective_user_close_defaults(cfg: dict) -> Optional[dict]:
+    """Return the combined close-default view consumed by the backtester.
+
+    External config is canonical as user_defaults.close + user_defaults.regime_atr
+    (#1135). Deprecated user_close_defaults is still accepted when it is absent
+    from, or equivalent to, the canonical section.
+    """
+    user_defaults = cfg.get("user_defaults")
+    if user_defaults is None:
+        user_defaults = {}
+    if not isinstance(user_defaults, dict):
+        raise ValueError("user_defaults: must be an object")
+
+    close_present = "close" in user_defaults and user_defaults.get("close") is not None
+    close_defaults = user_defaults.get("close") if close_present else {}
+    if not isinstance(close_defaults, dict):
+        raise ValueError("user_defaults.close: must be an object")
+    for key in close_defaults:
+        if str(key or "").strip().lower() == _USER_CLOSE_DEFAULT_REGIME_ATR_KEY:
+            raise ValueError('user_defaults.close["regime_atr"]: regime_atr moved to user_defaults.regime_atr')
+
+    regime_present = "regime_atr" in user_defaults and user_defaults.get("regime_atr") is not None
+    regime_atr = user_defaults.get("regime_atr") if regime_present else None
+
+    legacy_present = "user_close_defaults" in cfg and cfg.get("user_close_defaults") is not None
+    legacy_close, legacy_regime, legacy_regime_present = _split_legacy_user_close_defaults(
+        cfg.get("user_close_defaults") if legacy_present else None
+    )
+    if legacy_close:
+        if close_present and not _json_equivalent(close_defaults, legacy_close):
+            raise ValueError("user_defaults.close conflicts with deprecated user_close_defaults")
+        if not close_present:
+            close_defaults = legacy_close
+            close_present = True
+    if legacy_regime_present:
+        if regime_present and not _json_equivalent(regime_atr, legacy_regime):
+            raise ValueError("user_defaults.regime_atr conflicts with deprecated user_close_defaults.regime_atr")
+        if not regime_present:
+            regime_atr = legacy_regime
+            regime_present = True
+    if regime_present and not isinstance(regime_atr, dict):
+        raise ValueError("user_defaults.regime_atr: must be an object")
+
+    combined = {}
+    if close_present:
+        combined.update(close_defaults)
+    if regime_present:
+        combined[_USER_CLOSE_DEFAULT_REGIME_ATR_KEY] = regime_atr
+    return combined or None
+
+
 def _uses_trailing_tp_ratchet_regime(close_refs: list) -> bool:
     return any(
         str(ref.get("name", "")).strip().lower() == "trailing_tp_ratchet_regime"
@@ -347,7 +428,7 @@ def _validate_user_close_defaults_regime_atr(user_defaults: Optional[dict]) -> N
     entry = _user_close_default_entry(user_defaults, _USER_CLOSE_DEFAULT_REGIME_ATR_KEY)
     if entry is None:
         return
-    section = f'user_close_defaults["{_USER_CLOSE_DEFAULT_REGIME_ATR_KEY}"]'
+    section = "user_defaults.regime_atr"
     if not isinstance(entry, dict):
         raise ValueError(f"{section}: must be an object")
     if not entry:
@@ -398,7 +479,7 @@ def _validate_user_close_defaults_regime_atr(user_defaults: Optional[dict]) -> N
 
 def _apply_user_close_defaults(close_refs: list, user_defaults: Optional[dict],
                                sc: Optional[dict] = None) -> None:
-    """Inject user_close_defaults into refs/strategy fields that omit them
+    """Inject user_defaults into refs/strategy fields that omit them
     (#866/#1133, --defaults user). Mirrors the Go loader: explicit per-ref
     tp_tiers and explicit strategy-level stop owners win, unsupported evaluator
     names are skipped, and missing entries fall through to system defaults."""
@@ -487,7 +568,8 @@ def load_strategy_config(config_path: str, strategy_id: str,
     import json as _json
     with open(config_path) as fh:
         cfg = _json.load(fh)
-    _validate_user_close_defaults_regime_atr(cfg.get("user_close_defaults"))
+    user_defaults = _effective_user_close_defaults(cfg)
+    _validate_user_close_defaults_regime_atr(user_defaults)
     version = int(cfg.get("config_version", 0) or 0)
     # #942 (D2.8): gate on v15, not v13. The v13 co-located ref shape (#640) is
     # necessary but not sufficient — the v15 migration is what canonicalizes
@@ -592,12 +674,12 @@ def load_strategy_config(config_path: str, strategy_id: str,
                     f"tiered_tp_atr_live_regime_dynamic, which is HL-live-only "
                     f"in this release (backtester parity deferred — see #843)."
                 )
-        # #866: with --defaults user, apply the config's user_close_defaults to
+        # #866/#1135: with --defaults user, apply the config's user_defaults to
         # any close ref that omits tp_tiers (so backtest matches the live daemon
         # under the operator override). --defaults system leaves them untouched,
         # falling through to the evaluators' built-in defaults.
         if inject_user_defaults:
-            _apply_user_close_defaults(close_refs, cfg.get("user_close_defaults"), sc)
+            _apply_user_close_defaults(close_refs, user_defaults, sc)
         # #942 (D2.1): model the live entry transforms the backtester used to
         # drop silently. ``invert_signal`` flips BUY<->SELL; ``direction`` gates
         # which side may open. Both are applied to the signal in Backtester.run
@@ -1132,7 +1214,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--defaults", choices=["system", "user"], default="system",
                         help="Which close-default layer to apply when a close ref omits tp_tiers (#866): "
                              "'system' (default) uses the built-in defaults; 'user' applies the "
-                             "user_close_defaults block from --config. Per-strategy tp_tiers always wins. "
+                             "user_defaults.close block from --config. Per-strategy tp_tiers always wins. "
                              "Requires --config when set to 'user'.")
     parser.add_argument("--regime-enabled", action="store_true", default=False,
                         help="Enable market regime detection. Injects vectorized regime "
@@ -1252,9 +1334,9 @@ def main():
         _validate_allowed_regimes_vocabulary(
             args.allowed_regimes, args.regime_windows_spec)
 
-    # #866: --defaults user only has an effect via the config's user_close_defaults.
+    # #866/#1135: --defaults user only has an effect via the config's user_defaults.
     if args.defaults == "user" and not args.config:
-        print("--defaults user requires --config (user_close_defaults lives in the config); "
+        print("--defaults user requires --config (user_defaults lives in the config); "
               "falling back to system defaults")
 
     # #641: --config loads a single strategy by ID and uses its refs directly.

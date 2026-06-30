@@ -1,4 +1,4 @@
-"""#1134: user_close_defaults.regime_atr parity with the Go loader."""
+"""#1134/#1135: user_defaults.regime_atr parity with the Go loader."""
 
 from __future__ import annotations
 
@@ -117,7 +117,7 @@ def test_apply_regime_atr_leaves_ratchet_use_defaults_trail_untouched():
 
 def test_load_strategy_config_rejects_malformed_regime_atr(tmp_path):
     cfg = {
-        "config_version": 15,
+        "config_version": 16,
         "strategies": [
             {
                 "id": "hl-test",
@@ -127,7 +127,7 @@ def test_load_strategy_config_rejects_malformed_regime_atr(tmp_path):
                 "stop_loss_atr_regime": {"use_defaults": True},
             }
         ],
-        "user_close_defaults": {
+        "user_defaults": {
             "regime_atr": {
                 "stop_loss_atr_regime": {
                     "trend_regime": {"trending_up": {"close_fraction": 0.5}}

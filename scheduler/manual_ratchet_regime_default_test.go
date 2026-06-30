@@ -243,7 +243,7 @@ func TestManualDefault_ExplicitStopFieldKeepsTiered(t *testing.T) {
 	}
 }
 
-// Operator-tunable: manual_defaults.trailing_stop_atr_regime supplies the
+// Operator-tunable: user_defaults.manual.trailing_stop_atr_regime supplies the
 // per-regime opening trail in place of the use_defaults baseline.
 func TestManualDefault_ManualDefaultsTrailBlockOverride(t *testing.T) {
 	dir := t.TempDir()
@@ -251,12 +251,14 @@ func TestManualDefault_ManualDefaultsTrailBlockOverride(t *testing.T) {
 	cfgJSON := `{
 		"db_file": "` + strings.ReplaceAll(dbPath, "\\", "\\\\") + `",
 		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
-		"manual_defaults": {
-			"trailing_stop_atr_regime": {
-				"trend_regime": {
-					"trending_up": {"atr_multiple": 3.0},
-					"trending_down": {"atr_multiple": 3.0},
-					"ranging": {"atr_multiple": 1.5}
+		"user_defaults": {
+			"manual": {
+				"trailing_stop_atr_regime": {
+					"trend_regime": {
+						"trending_up": {"atr_multiple": 3.0},
+						"trending_down": {"atr_multiple": 3.0},
+						"ranging": {"atr_multiple": 1.5}
+					}
 				}
 			}
 		},
@@ -284,7 +286,7 @@ func TestManualDefault_ManualDefaultsTrailBlockOverride(t *testing.T) {
 	}
 	block := sc.TrailingStopATRRegime
 	if block == nil {
-		t.Fatal("trailing_stop_atr_regime must be synthesized from manual_defaults override")
+		t.Fatal("trailing_stop_atr_regime must be synthesized from user_defaults.manual override")
 	}
 	if v, ok := resolveRegimeATR(*block, "trending_up"); !ok || v != 3.0 {
 		t.Fatalf("operator-tuned trending_up trail = (%g, %v), want (3.0, true)", v, ok)
@@ -294,7 +296,7 @@ func TestManualDefault_ManualDefaultsTrailBlockOverride(t *testing.T) {
 	}
 }
 
-// The manual_defaults override block must not alias across strategies: each
+// The user_defaults.manual override block must not alias across strategies: each
 // adopting strategy resolves an independent copy (cloneRegimeATRBlock).
 func TestManualDefault_ManualDefaultsTrailBlockNotAliased(t *testing.T) {
 	dir := t.TempDir()
@@ -302,8 +304,10 @@ func TestManualDefault_ManualDefaultsTrailBlockNotAliased(t *testing.T) {
 	cfgJSON := `{
 		"db_file": "` + strings.ReplaceAll(dbPath, "\\", "\\\\") + `",
 		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
-		"manual_defaults": {
-			"trailing_stop_atr_regime": {"use_defaults": true}
+		"user_defaults": {
+			"manual": {
+				"trailing_stop_atr_regime": {"use_defaults": true}
+			}
 		},
 		"strategies": [
 			{"id": "hl-manual-eth", "type": "manual", "platform": "hyperliquid", "symbol": "ETH", "timeframe": "1h", "capital": 1000, "leverage": 20, "max_drawdown_pct": 20},

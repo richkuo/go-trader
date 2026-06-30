@@ -262,7 +262,7 @@ def test_load_strategy_config_rejects_when_no_open_name_and_no_args(tmp_path):
         run_backtest.load_strategy_config(path, "spot-z")
 
 
-# ─── #866: --defaults system|user (user_close_defaults injection) ────────────
+# ─── #866/#1135: --defaults system|user (user_defaults injection) ────────────
 
 
 def _write_full_config(tmp_path, cfg):
@@ -304,8 +304,8 @@ _USER_RATCHET_REGIME = {
 
 def _ratchet_cfg(tmp_path, close_params):
     return _write_full_config(tmp_path, {
-        "config_version": 15,
-        "user_close_defaults": _USER_RATCHET,
+        "config_version": 16,
+        "user_defaults": {"close": _USER_RATCHET},
         "strategies": [{
             "id": "hl-r", "type": "perps", "platform": "hyperliquid",
             "open_strategy": {"name": "tema_cross_bd"},
@@ -315,12 +315,48 @@ def _ratchet_cfg(tmp_path, close_params):
     })
 
 
-def test_defaults_user_injects_user_close_defaults(tmp_path):
+def test_defaults_user_injects_user_defaults_close(tmp_path):
     path = _ratchet_cfg(tmp_path, {"use_defaults": True})
     kwargs = run_backtest.load_strategy_config(path, "hl-r", inject_user_defaults=True)
     tp = kwargs["close_strategies"][0]["params"].get("tp_tiers")
     assert tp is not None and len(tp) == 2
     assert tp[0]["trailing_mult_after"] == 2.0
+
+
+def test_defaults_user_accepts_legacy_alias_when_canonical_absent(tmp_path):
+    path = _write_full_config(tmp_path, {
+        "config_version": 16,
+        "user_close_defaults": _USER_RATCHET,
+        "strategies": [{
+            "id": "hl-r", "type": "perps", "platform": "hyperliquid",
+            "open_strategy": {"name": "tema_cross_bd"},
+            "trailing_stop_atr_mult": 3.0,
+            "close_strategy": {"name": "trailing_tp_ratchet", "params": {"use_defaults": True}},
+        }],
+    })
+    kwargs = run_backtest.load_strategy_config(path, "hl-r", inject_user_defaults=True)
+    tp = kwargs["close_strategies"][0]["params"].get("tp_tiers")
+    assert tp is not None and tp[0]["trailing_mult_after"] == 2.0
+
+
+def test_defaults_user_rejects_conflicting_legacy_alias(tmp_path):
+    path = _write_full_config(tmp_path, {
+        "config_version": 16,
+        "user_defaults": {"close": _USER_RATCHET},
+        "user_close_defaults": {
+            "trailing_tp_ratchet": {"tp_tiers": [
+                {"atr_multiple": 9.0, "trailing_mult_after": 1.0, "close_fraction": 0.0},
+            ]},
+        },
+        "strategies": [{
+            "id": "hl-r", "type": "perps", "platform": "hyperliquid",
+            "open_strategy": {"name": "tema_cross_bd"},
+            "trailing_stop_atr_mult": 3.0,
+            "close_strategy": {"name": "trailing_tp_ratchet", "params": {"use_defaults": True}},
+        }],
+    })
+    with pytest.raises(ValueError, match="conflicts"):
+        run_backtest.load_strategy_config(path, "hl-r", inject_user_defaults=True)
 
 
 def test_defaults_system_does_not_inject(tmp_path):
@@ -335,8 +371,8 @@ def test_defaults_user_empty_tiers_not_injected(tmp_path):
     # Go↔Python parity: an empty user tp_tiers is not a valid override — skip it
     # so resolution falls through to the system default instead of injecting [].
     path = _write_full_config(tmp_path, {
-        "config_version": 15,
-        "user_close_defaults": {"trailing_tp_ratchet": {"tp_tiers": []}},
+        "config_version": 16,
+        "user_defaults": {"close": {"trailing_tp_ratchet": {"tp_tiers": []}}},
         "strategies": [{
             "id": "hl-r", "type": "perps", "platform": "hyperliquid",
             "open_strategy": {"name": "tema_cross_bd"},
@@ -367,9 +403,9 @@ def _ratchet_regime_cfg(tmp_path, extra_strategy=None):
     if extra_strategy:
         strategy.update(extra_strategy)
     return _write_full_config(tmp_path, {
-        "config_version": 15,
+        "config_version": 16,
         "regime": {"enabled": True, "period": 14, "adx_threshold": 20},
-        "user_close_defaults": _USER_RATCHET_REGIME,
+        "user_defaults": {"close": _USER_RATCHET_REGIME},
         "strategies": [strategy],
     })
 

@@ -113,7 +113,7 @@ Generate via `./go-trader init` or `--json`. Skeleton:
 
 ```json
 {
-  "config_version": 15,
+  "config_version": 16,
   "interval_seconds": 3600,
   "db_file": "scheduler/state.db",
   "log_dir": "logs",
@@ -277,7 +277,7 @@ Hand-placed positions (or TradingView alerts) tracked for P&L, stops/TPs, and Di
 
 Sizing: mutually exclusive `--size` / `--notional` / `--margin` (default `--margin 50` when omitted). `--side` defaults to `long`. Omitting `--atr` auto-fetches ATR(14); leverage-aware fallback if fetch fails. SL + tiered TPs placed inline so the position is never naked.
 
-**Close defaults (#1115):** with `regime.enabled` and a resolvable per-regime trail, manual defaults to `trailing_tp_ratchet_regime` (regime trail owns the SL); otherwise `tiered_tp_atr_live` + scalar **2.0×ATR** SL (#1121). Override via `close_strategy`, stop fields, or top-level `manual_defaults` (hot-reloadable via SIGHUP).
+**Close defaults (#1115/#1135):** with `regime.enabled` and a resolvable per-regime trail, manual defaults to `trailing_tp_ratchet_regime` (regime trail owns the SL); otherwise `tiered_tp_atr_live` + scalar **2.0×ATR** SL (#1121). Override via `close_strategy`, stop fields, or `user_defaults.manual` (hot-reloadable via SIGHUP). Fleet close ladders live under `user_defaults.close`; standalone `*_atr_regime` defaults live under `user_defaults.regime_atr`.
 
 `manual-update-sl` / `manual-cancel-sl` queue daemon-side cancel-then-place edits — rejected when automated ATR/regime/trailing protection would re-pin next cycle. `--dry-run` previews without exchange calls. Limit opens are post-only (ALO) by default or GTC with `--tif Gtc`; scheduler polls fills each cycle.
 

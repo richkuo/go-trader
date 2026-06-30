@@ -1179,11 +1179,11 @@ func TestLoadConfigManualExplicitATRMultPreserved(t *testing.T) {
 	}
 }
 
-// #696: manual_defaults.stop_loss_atr_mult overrides the hardcoded fallback.
+// #696/#1135: user_defaults.manual.stop_loss_atr_mult overrides the hardcoded fallback.
 func TestLoadConfigManualDefaultsStopLossATRMultOverride(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
-		"manual_defaults": {"stop_loss_atr_mult": 2.25},
+		"user_defaults": {"manual": {"stop_loss_atr_mult": 2.25}},
 		"strategies": [{
 			"id": "hl-manual-eth-live",
 			"type": "manual",
@@ -1202,20 +1202,20 @@ func TestLoadConfigManualDefaultsStopLossATRMultOverride(t *testing.T) {
 	}
 	sc := cfg.Strategies[0]
 	if sc.StopLossATRMult == nil {
-		t.Fatal("StopLossATRMult = nil, want 2.25 from manual_defaults")
+		t.Fatal("StopLossATRMult = nil, want 2.25 from user_defaults.manual")
 	}
 	if got := *sc.StopLossATRMult; got != 2.25 {
-		t.Errorf("StopLossATRMult = %g, want 2.25 (manual_defaults override)", got)
+		t.Errorf("StopLossATRMult = %g, want 2.25 (user_defaults.manual override)", got)
 	}
 }
 
-// #696: manual_defaults.stop_loss_atr_mult=0 opts manual strategies out of the
-// auto-default just like the fleet-wide default_stop_loss_atr_mult=0. Lets
-// operators disable the manual SL default without affecting non-manual perps.
+// #696/#1135: user_defaults.manual.stop_loss_atr_mult=0 opts manual strategies
+// out of the auto-default just like the fleet-wide default_stop_loss_atr_mult=0.
+// Lets operators disable the manual SL default without affecting non-manual perps.
 func TestLoadConfigManualDefaultsStopLossATRMultZeroOptsOut(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
-		"manual_defaults": {"stop_loss_atr_mult": 0},
+		"user_defaults": {"manual": {"stop_loss_atr_mult": 0}},
 		"strategies": [{
 			"id": "hl-manual-eth-live",
 			"type": "manual",
@@ -1234,20 +1234,22 @@ func TestLoadConfigManualDefaultsStopLossATRMultZeroOptsOut(t *testing.T) {
 	}
 	sc := cfg.Strategies[0]
 	if sc.StopLossATRMult != nil {
-		t.Errorf("StopLossATRMult = %v, want nil (manual_defaults.stop_loss_atr_mult=0 opts manual strategies out)", *sc.StopLossATRMult)
+		t.Errorf("StopLossATRMult = %v, want nil (user_defaults.manual.stop_loss_atr_mult=0 opts manual strategies out)", *sc.StopLossATRMult)
 	}
 }
 
-// #696: manual_defaults.tp_tiers overrides the hardcoded 1×/2× tier literal
+// #696/#1135: user_defaults.manual.tp_tiers overrides the hardcoded 2×/3× tier literal
 // for tiered_tp_atr* close strategies.
 func TestLoadConfigManualDefaultsTPTiersOverride(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
-		"manual_defaults": {
-			"tp_tiers": [
-				{"atr_multiple": 1.5, "close_fraction": 0.4},
-				{"atr_multiple": 2.5, "close_fraction": 1.0}
-			]
+		"user_defaults": {
+			"manual": {
+				"tp_tiers": [
+					{"atr_multiple": 1.5, "close_fraction": 0.4},
+					{"atr_multiple": 2.5, "close_fraction": 1.0}
+				]
+			}
 		},
 		"strategies": [{
 			"id": "hl-manual-eth-live",
@@ -1295,7 +1297,7 @@ func TestLoadConfigManualDefaultsTPTiersOverride(t *testing.T) {
 	}
 }
 
-// #696: explicit `tiers` on a close-strategy ref wins over manual_defaults.tp_tiers
+// #696/#1135: explicit `tiers` on a close-strategy ref wins over user_defaults.manual.tp_tiers
 // so per-strategy operator intent is preserved.
 func TestLoadConfigManualDefaultsTPTiersDoesNotOverrideExplicit(t *testing.T) {
 	dir := t.TempDir()
@@ -1303,8 +1305,10 @@ func TestLoadConfigManualDefaultsTPTiersDoesNotOverrideExplicit(t *testing.T) {
 	// close_strategies entry isn't dropped.
 	cfgJSON := `{
 		"config_version": 14,
-		"manual_defaults": {
-			"tp_tiers": [{"atr_multiple": 1.5, "close_fraction": 1.0}]
+		"user_defaults": {
+			"manual": {
+				"tp_tiers": [{"atr_multiple": 1.5, "close_fraction": 1.0}]
+			}
 		},
 		"strategies": [{
 			"id": "hl-manual-eth-live",
@@ -1332,11 +1336,11 @@ func TestLoadConfigManualDefaultsTPTiersDoesNotOverrideExplicit(t *testing.T) {
 	}
 	got := tiers[0].(map[string]interface{})["atr_multiple"].(float64)
 	if got != 5.0 {
-		t.Errorf("tier[0].atr_multiple = %g, want 5.0 (explicit, not manual_defaults)", got)
+		t.Errorf("tier[0].atr_multiple = %g, want 5.0 (explicit, not user_defaults.manual)", got)
 	}
 }
 
-// #696/#1121: absent manual_defaults block uses the hardcoded 2.0× SL and
+// #696/#1121: absent user_defaults.manual block uses the hardcoded 2.0× SL and
 // 1×/2× tier defaults.
 func TestLoadConfigManualDefaultsAbsentPreservesHardcodedDefaults(t *testing.T) {
 	dir := t.TempDir()
@@ -1375,17 +1379,17 @@ func TestLoadConfigManualDefaultsAbsentPreservesHardcodedDefaults(t *testing.T) 
 	}
 }
 
-// #696: manual_defaults validation rejects invalid values.
+// #696/#1135: user_defaults.manual validation rejects invalid values.
 func TestLoadConfigManualDefaultsValidation(t *testing.T) {
 	cases := []struct {
 		name      string
 		block     string
 		wantError string
 	}{
-		{"margin negative", `"margin_usd": -1`, "manual_defaults.margin_usd"},
-		{"margin zero", `"margin_usd": 0`, "manual_defaults.margin_usd"},
-		{"slmult negative", `"stop_loss_atr_mult": -0.5`, "manual_defaults.stop_loss_atr_mult"},
-		{"side invalid", `"side": "neutral"`, "manual_defaults.side"},
+		{"margin negative", `"margin_usd": -1`, "user_defaults.manual.margin_usd"},
+		{"margin zero", `"margin_usd": 0`, "user_defaults.manual.margin_usd"},
+		{"slmult negative", `"stop_loss_atr_mult": -0.5`, "user_defaults.manual.stop_loss_atr_mult"},
+		{"side invalid", `"side": "neutral"`, "user_defaults.manual.side"},
 		{"tier atr zero", `"tp_tiers": [{"atr_multiple": 0, "close_fraction": 1.0}]`, "atr_multiple"},
 		{"tier frac zero", `"tp_tiers": [{"atr_multiple": 1.0, "close_fraction": 0}]`, "close_fraction"},
 		{"tier frac over 1", `"tp_tiers": [{"atr_multiple": 1.0, "close_fraction": 1.5}]`, "close_fraction"},
@@ -1394,7 +1398,7 @@ func TestLoadConfigManualDefaultsValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			cfgJSON := `{
-				"manual_defaults": {` + tc.block + `},
+				"user_defaults": {"manual": {` + tc.block + `}},
 				"strategies": [{
 					"id": "hl-manual-eth-live",
 					"type": "manual",
@@ -1409,7 +1413,7 @@ func TestLoadConfigManualDefaultsValidation(t *testing.T) {
 			path := writeTestConfig(t, dir, cfgJSON)
 			_, err := LoadConfig(path)
 			if err == nil {
-				t.Fatalf("LoadConfig accepted invalid manual_defaults block: %s", tc.block)
+				t.Fatalf("LoadConfig accepted invalid user_defaults.manual block: %s", tc.block)
 			}
 			if !strings.Contains(err.Error(), tc.wantError) {
 				t.Errorf("error %q does not mention %q", err, tc.wantError)
@@ -1439,19 +1443,21 @@ func TestConfigResolveManualHelpersFallback(t *testing.T) {
 	}
 }
 
-// #696: resolveManual* helpers honor populated ManualDefaults block.
+// #696/#1135: resolveManual* helpers honor populated user_defaults.manual block.
 func TestConfigResolveManualHelpersFromConfig(t *testing.T) {
 	margin := 125.0
 	slMult := 2.0
 	cfg := Config{
-		ManualDefaults: &ManualDefaultsConfig{
-			MarginUSD:       &margin,
-			StopLossATRMult: &slMult,
-			Side:            "short",
-			TPTiers: []ManualTPTier{
-				{ATRMultiple: 1.0, CloseFraction: 0.3},
-				{ATRMultiple: 2.0, CloseFraction: 0.7},
-				{ATRMultiple: 4.0, CloseFraction: 1.0},
+		UserDefaults: &UserDefaultsConfig{
+			Manual: &ManualDefaultsConfig{
+				MarginUSD:       &margin,
+				StopLossATRMult: &slMult,
+				Side:            "short",
+				TPTiers: []ManualTPTier{
+					{ATRMultiple: 1.0, CloseFraction: 0.3},
+					{ATRMultiple: 2.0, CloseFraction: 0.7},
+					{ATRMultiple: 4.0, CloseFraction: 1.0},
+				},
 			},
 		},
 	}
@@ -1479,7 +1485,7 @@ func TestConfigResolveManualHelpersFromConfig(t *testing.T) {
 
 func TestConfigResolveManualRatchetFallbackIgnoresZeroScalarOptOut(t *testing.T) {
 	slMult := 0.0
-	cfg := Config{ManualDefaults: &ManualDefaultsConfig{StopLossATRMult: &slMult}}
+	cfg := Config{UserDefaults: &UserDefaultsConfig{Manual: &ManualDefaultsConfig{StopLossATRMult: &slMult}}}
 	if got := cfg.resolveManualStopLossATRMult(); got != 0 {
 		t.Errorf("resolveManualStopLossATRMult = %g, want 0 scalar opt-out", got)
 	}

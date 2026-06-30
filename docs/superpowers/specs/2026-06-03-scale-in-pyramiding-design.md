@@ -77,7 +77,7 @@ Rejected: (B) overloading the open path with an add-mode flag — entangles add 
 - Paper: blend only, no on-chain calls.
 
 **5. `manual-add` CLI** (`manual.go`) mirroring `manual-open`
-- `manual-add --strategy <id> --symbol <sym> [--notional <usd> | --size <qty>] [--record-only]`. `--notional` and `--size` are mutually exclusive; when neither is given, fall back to `manual-open`'s notional default (`cfg.ManualDefaults` → hardcoded `$50`).
+- `manual-add --strategy <id> --symbol <sym> [--notional <usd> | --size <qty>] [--record-only]`. `--notional` and `--size` are mutually exclusive; when neither is given, fall back to `manual-open`'s notional default (`user_defaults.manual` → hardcoded `$50`).
 - Direction inferred from the open position side; errors if the add would flip.
 - Refuses when flat: "no open position for <id>/<sym>; open one first" (inverse of manual-open's `:612` guard).
 - Kill-switch + circuit-breaker guards like manual-open.

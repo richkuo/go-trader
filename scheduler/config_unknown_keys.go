@@ -42,7 +42,7 @@ func unknownKeyHint(key string) string {
 	lk := strings.ToLower(key)
 	switch {
 	case strings.Contains(lk, "take_profit") || strings.Contains(lk, "tp_tier") || lk == "tp_tiers":
-		return "TP logic lives under close_strategy (e.g. {\"name\":\"tiered_tp_atr\",\"params\":{\"tp_tiers\":[...]}}); manual_defaults.tp_tiers only seeds defaults for type=manual"
+		return "TP logic lives under close_strategy (e.g. {\"name\":\"tiered_tp_atr\",\"params\":{\"tp_tiers\":[...]}}); user_defaults.manual.tp_tiers only seeds defaults for type=manual"
 	case strings.HasPrefix(lk, "stop_loss") || strings.Contains(lk, "stoploss"):
 		return "valid SL fields: stop_loss_atr_mult, stop_loss_pct, stop_loss_margin_pct, trailing_stop_pct, trailing_stop_atr_mult (mutually exclusive)"
 	case lk == "params" || lk == "open" || lk == "close":

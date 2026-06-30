@@ -1,15 +1,17 @@
 {
-  "config_version": 12,
+  "config_version": 16,
   "interval_seconds": 300,
   "db_file": "scheduler/state.db",
   "status_port": 8099,
   "default_stop_loss_atr_mult": 1.0,
-  "user_close_defaults": {
-    "trailing_tp_ratchet": {
-      "tp_tiers": [
-        { "atr_multiple": 2.0, "trailing_mult_after": 1.5, "close_fraction": 0.0 },
-        { "atr_multiple": 3.0, "trailing_mult_after": 1.0, "close_fraction": 0.0 }
-      ]
+  "user_defaults": {
+    "close": {
+      "trailing_tp_ratchet": {
+        "tp_tiers": [
+          { "atr_multiple": 2.0, "trailing_mult_after": 1.5, "close_fraction": 0.0 },
+          { "atr_multiple": 3.0, "trailing_mult_after": 1.0, "close_fraction": 0.0 }
+        ]
+      }
     },
     "regime_atr": {
       "stop_loss_atr_regime": {
@@ -19,6 +21,11 @@
           "ranging": { "atr_multiple": 1.5 }
         }
       }
+    },
+    "manual": {
+      "margin_usd": 50,
+      "stop_loss_atr_mult": 2.0,
+      "side": "long"
     }
   },
   "portfolio_risk": {
