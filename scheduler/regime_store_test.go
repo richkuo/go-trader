@@ -56,6 +56,25 @@ func TestStrategyRegimeBundleRequestPlatformMapping(t *testing.T) {
 	}
 }
 
+func TestStrategyRegimeBundleRequestTimeframeOverride(t *testing.T) {
+	rc := testRegimeConfig()
+	rc.Timeframe = " 1D "
+	sc := StrategyConfig{
+		ID:       "hl-a",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Args:     []string{"momentum", "BTC", "1h"},
+	}
+
+	req, ok := strategyRegimeBundleRequest(sc, rc)
+	if !ok {
+		t.Fatalf("expected a bundle request")
+	}
+	if req.Key.Symbol != "BTC" || req.Key.Timeframe != "1d" {
+		t.Fatalf("key = %+v, want BTC/1d", req.Key)
+	}
+}
+
 func TestStrategyRegimeBundleRequestDisabled(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-a", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "BTC", "1h"}}
 	if _, ok := strategyRegimeBundleRequest(sc, nil); ok {
@@ -75,7 +94,9 @@ func TestStrategyRegimeBundleRequestOptions(t *testing.T) {
 	// check_options path never was. Signature mirrors the hardcoded 4h/ADX
 	// defaults and upper-cases the underlying like the script does.
 	sc := StrategyConfig{ID: "deribit-theta", Type: "options", Platform: "deribit", Args: []string{"theta_harvest", "btc", "--platform=deribit"}}
-	req, ok := strategyRegimeBundleRequest(sc, nil)
+	rc := testRegimeConfig()
+	rc.Timeframe = "1d"
+	req, ok := strategyRegimeBundleRequest(sc, rc)
 	if !ok {
 		t.Fatalf("options strategy must always have a regime signature")
 	}

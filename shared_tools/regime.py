@@ -2,7 +2,7 @@
 
 Supports per-window classifiers (#795):
   adx       — 3-state Wilder ADX + DI (default)
-  composite — 7-state return/ADX/range tuple
+  composite — 9-state return/ADX/range tuple
 
 Usage in check scripts (after data fetch and before apply_strategy):
 
@@ -95,10 +95,14 @@ def regime_label_allows_entry(allowed, current: str) -> bool:
 
 
 _DEFAULT_COMPOSITE_THRESHOLDS = {
-    "return_pct": 0.05,
-    "range_pct": 0.03,
+    "return_eff": 0.05,
+    "range_eff": 0.03,
     "adx": 25.0,
     "efficiency": 0.5,
+}
+_COMPOSITE_THRESHOLD_ALIASES = {
+    "return_pct": "return_eff",
+    "range_pct": "range_eff",
 }
 
 _REGIME_COLUMNS = ("regime", "regime_score", "adx", "plus_di", "minus_di")
@@ -110,6 +114,33 @@ def valid_labels_for_classifier(classifier: str) -> frozenset[str]:
     if str(classifier or "").strip().lower() == CLASSIFIER_COMPOSITE:
         return VALID_LABELS_COMPOSITE
     return VALID_LABELS_ADX
+
+
+def normalize_composite_thresholds(
+    thresholds: dict[str, Any] | None,
+    *,
+    with_defaults: bool = True,
+) -> dict[str, float]:
+    """Return canonical composite thresholds.
+
+    Canonical keys are return_eff/range_eff. Deprecated return_pct/range_pct are
+    accepted as aliases; canonical keys win when both are present.
+    """
+    raw = dict(thresholds or {})
+    allowed = set(_DEFAULT_COMPOSITE_THRESHOLDS) | set(_COMPOSITE_THRESHOLD_ALIASES)
+    unknown = sorted(str(k) for k in raw if k not in allowed)
+    if unknown:
+        raise ValueError(f"unknown composite threshold key(s): {', '.join(unknown)}")
+
+    out = dict(_DEFAULT_COMPOSITE_THRESHOLDS) if with_defaults else {}
+    for key in _DEFAULT_COMPOSITE_THRESHOLDS:
+        if key in raw:
+            out[key] = float(raw[key])
+            continue
+        alias = next((old for old, new in _COMPOSITE_THRESHOLD_ALIASES.items() if new == key), None)
+        if alias and alias in raw:
+            out[key] = float(raw[alias])
+    return out
 
 
 def _normalize_spec(spec: dict[str, Any], *, default_adx_threshold: float = 20.0) -> dict[str, Any]:
@@ -126,7 +157,7 @@ def _normalize_spec(spec: dict[str, Any], *, default_adx_threshold: float = 20.0
         out["adx_threshold"] = th
     else:
         raw_th = out.get("thresholds") or {}
-        th = {**_DEFAULT_COMPOSITE_THRESHOLDS, **raw_th}
+        th = normalize_composite_thresholds(raw_th)
         out["thresholds"] = th
     return out
 
@@ -185,8 +216,9 @@ def map_composite_label(
                    travel, ∈ [0, 1]; high = clean directional move, low = chop.
     `adx_val` corroborates the efficiency-based clean/choppy split.
     """
-    ret_th = float(thresholds.get("return_pct", _DEFAULT_COMPOSITE_THRESHOLDS["return_pct"]))
-    range_th = float(thresholds.get("range_pct", _DEFAULT_COMPOSITE_THRESHOLDS["range_pct"]))
+    thresholds = normalize_composite_thresholds(thresholds)
+    ret_th = float(thresholds["return_eff"])
+    range_th = float(thresholds["range_eff"])
     adx_th = float(thresholds.get("adx", _DEFAULT_COMPOSITE_THRESHOLDS["adx"]))
     eff_th = float(thresholds.get("efficiency", _DEFAULT_COMPOSITE_THRESHOLDS["efficiency"]))
 
@@ -223,7 +255,7 @@ def latest_regime_composite(
     period: int,
     thresholds: dict[str, float] | None = None,
 ) -> dict:
-    th = {**_DEFAULT_COMPOSITE_THRESHOLDS, **(thresholds or {})}
+    th = normalize_composite_thresholds(thresholds)
     if len(df) == 0:
         return {**_DEFAULT_RESULT, "metrics": dict(_DEFAULT_METRICS), "classifier": CLASSIFIER_COMPOSITE}
 
@@ -339,7 +371,7 @@ def compute_regime_composite(
     Uses a rolling Python loop (not vectorized). ADX persistence uses
     COMPOSITE_ADX_PERIOD_CAP; return/range/ATR normalization use the full window period.
     """
-    th = {**_DEFAULT_COMPOSITE_THRESHOLDS, **(thresholds or {})}
+    th = normalize_composite_thresholds(thresholds)
     result = df.copy()
     n = len(result)
     result["regime"] = "ranging_quiet"
@@ -382,7 +414,7 @@ def composite_feature_matrix(
     an offline model fits on byte-consistent inputs. Warmup (i < period) and
     atr<=0 bars are NaN.
     """
-    th = {**_DEFAULT_COMPOSITE_THRESHOLDS, **(thresholds or {})}
+    th = normalize_composite_thresholds(thresholds)
     cols = ["return_eff", "range_eff", "efficiency", "adx"]
     out = pd.DataFrame(float("nan"), index=df.index, columns=cols)
     n = len(df)

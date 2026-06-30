@@ -701,6 +701,7 @@ class Backtester:
                  regime_directional_policy: Optional[dict] = None,
                  regime_directional_certified: bool = False,
                  regime_directional_certified_states: Optional[dict] = None,
+                 regime_timeframe: Optional[str] = None,
                  profile_allocation: Optional[dict] = None):
         """
         Args:
@@ -727,6 +728,9 @@ class Backtester:
                 vs any column-based ``close_fraction`` mirrors the live
                 composition contract). Replaces the pre-#641 parallel
                 ``close_strategies: list[str]`` + ``close_params: dict`` pair.
+            regime_timeframe: Accepted for ``load_strategy_config`` spread
+                compatibility. The runner applies this before constructing the
+                engine by aligning regime columns onto the trading DataFrame.
         """
         self.initial_capital = initial_capital
         self.platform = platform
@@ -764,9 +768,10 @@ class Backtester:
         self.close_strategies = [r["name"] for r in self._close_refs]
         self.close_params = {r["name"]: r["params"] for r in self._close_refs}
         self.regime_enabled = regime_enabled
+        self.regime_timeframe = str(regime_timeframe or "").strip() or None
         self.regime_period = regime_period
         self.regime_adx_threshold = regime_adx_threshold
-        # #1058: optional composite (7-state) regime. When set, this is the live
+        # #1058: optional composite (9-state) regime. When set, this is the live
         # ``regime.windows`` spec map (already normalized: name -> {classifier,
         # period, adx_threshold|thresholds}). The per-bar ``regime`` column and
         # the close evaluator's ``_run_position_regime`` are then classified from
@@ -1397,7 +1402,7 @@ class Backtester:
         if self.regime_enabled and "regime" not in df.columns:
             ensure_regime = _load_regime()
             # #1058: when a composite windows spec is threaded, ensure_regime_columns
-            # classifies the PRIMARY window (medium-first) — composite (7-state) or
+            # classifies the PRIMARY window (medium-first) — composite (9-state) or
             # ADX — exactly as live's regime store does for the strategy_regime that
             # feeds close evaluators. Without it, the legacy single-lookback ADX
             # (period / adx_threshold) path is unchanged.

@@ -49,7 +49,7 @@ var probeCompositeArgv = []string{
 	"--strategy-refs", `{"open":{"name":"probe","params":{}},"closes":[{"name":"probe_close","params":{}}]}`,
 	"--mark-price=0",
 	"--ohlcv-limit", "200",
-	"--regime-windows-spec-json", `{"macro":{"classifier":"composite","period":14,"thresholds":{"return_pct":0.05,"range_pct":0.03,"adx":25}}}`,
+	"--regime-windows-spec-json", `{"macro":{"classifier":"composite","period":14,"thresholds":{"return_eff":0.05,"range_eff":0.03,"adx":25}}}`,
 	"--regime-atr-window", "",
 	"--regime-payload-json", `{"macro":{"regime":"trending_up_clean","score":0.5,"classifier":"composite","metrics":{"adx":30.0}}}`,
 	"--probe-only",

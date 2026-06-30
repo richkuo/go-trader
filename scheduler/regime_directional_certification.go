@@ -265,7 +265,7 @@ func getDirectionalCertStore() *DirectionalCertSet {
 // the strategy carries no resolvable symbol/timeframe (regime can't run, so the
 // policy is inert anyway).
 func directionalCertIdentity(sc StrategyConfig, rc *RegimeConfig) (asset, timeframe, classifier string, ok bool) {
-	symbol, tf := strategyArgSymbolTimeframe(sc.Args)
+	symbol, tf := strategyRegimeSymbolTimeframe(sc.Args, rc)
 	if symbol == "" || tf == "" {
 		return "", "", "", false
 	}

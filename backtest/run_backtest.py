@@ -86,6 +86,7 @@ from reporter import (
 from regime import (  # noqa: E402
     compute_regime,
     compute_regime_composite,
+    ensure_regime_columns,
     parse_regime_windows_spec_json,
     valid_labels_for_classifier,
     CLASSIFIER_ADX,
@@ -93,6 +94,8 @@ from regime import (  # noqa: E402
     REGIME_PRIMARY_WINDOW_KEY,
     VALID_LABELS_COMPOSITE,
 )
+
+_REGIME_COLUMNS = ("regime", "regime_score", "adx", "plus_di", "minus_di")
 
 
 def _normalize_regime_window_spec(spec) -> dict:
@@ -215,7 +218,7 @@ def _validate_allowed_regimes_vocabulary(
     # Most common slip: composite substates supplied without a composite spec.
     if classifier == CLASSIFIER_ADX and any(lab in VALID_LABELS_COMPOSITE for lab in invalid):
         msg += (
-            " (Composite 7-state labels require a composite primary window — "
+            " (Composite 9-state labels require a composite primary window — "
             "supply --regime-windows-spec-json with a composite classifier, or "
             "use --config.)"
         )
@@ -237,6 +240,108 @@ def _build_profile_label_series(df: pd.DataFrame, window_spec: dict) -> pd.Serie
         reg = compute_regime(df, period=period,
                              adx_threshold=float(window_spec.get("adx_threshold") or 20.0))
     return reg["regime"].astype(str)
+
+
+def _aligned_regime_columns(
+    symbol: str,
+    trade_index: pd.Index,
+    regime_timeframe: str,
+    since: str,
+    *,
+    regime_period: int = 14,
+    regime_adx_threshold: float = 20.0,
+    regime_windows_spec: Optional[dict] = None,
+) -> Optional[pd.DataFrame]:
+    """Compute regime labels on ``regime_timeframe`` and align backward to
+    trading bars.
+
+    The returned columns are bar-close decision inputs. ``load_cached_data``
+    indexes each HTF candle by its OPEN time, so a row's regime label (derived
+    from that candle's full OHLC) is only actually known once the candle
+    CLOSES — i.e. at the next HTF row's index, assuming contiguous candles.
+    Shifting the HTF columns by one row before reindexing onto ``trade_index``
+    makes a label available starting at its candle's close instead of its
+    open, so an LTF bar inside a still-forming HTF candle never sees that
+    candle's (not-yet-known) label. Backtester.run then applies the usual
+    one-row LTF shift on top (a separate concern: bar N's regime governs the
+    decision that fills at bar N+1), so a trading bar only ever consumes the
+    most recently CLOSED regime candle known at the prior decision point —
+    matching live's ``latest_regime`` over closed-candle OHLCV.
+    """
+    regime_df = load_cached_data(symbol, regime_timeframe, start_date=since)
+    if regime_df.empty:
+        print(f"No regime data available for {symbol} {regime_timeframe}")
+        return None
+    source = regime_df.copy().sort_index()
+    ensure_regime_columns(
+        source,
+        period=regime_period,
+        adx_threshold=regime_adx_threshold,
+        windows_spec=regime_windows_spec,
+    )
+    cols = source.loc[:, list(_REGIME_COLUMNS)].shift(1)
+    aligned = cols.reindex(trade_index, method="ffill")
+    aligned["regime"] = aligned["regime"].fillna("").astype(str)
+    for col in _REGIME_COLUMNS:
+        if col != "regime":
+            aligned[col] = aligned[col].fillna(0.0)
+    return aligned
+
+
+def _apply_regime_timeframe_override(
+    df: pd.DataFrame,
+    symbol: str,
+    trade_timeframe: str,
+    regime_timeframe: Optional[str],
+    since: str,
+    *,
+    regime_period: int,
+    regime_adx_threshold: float,
+    regime_windows_spec: Optional[dict],
+) -> Optional[pd.DataFrame]:
+    tf = str(regime_timeframe or "").strip().lower()
+    trade_tf = str(trade_timeframe or "").strip().lower()
+    if not tf or tf == trade_tf:
+        return df
+    aligned = _aligned_regime_columns(
+        symbol,
+        df.index,
+        tf,
+        since,
+        regime_period=regime_period,
+        regime_adx_threshold=regime_adx_threshold,
+        regime_windows_spec=regime_windows_spec,
+    )
+    if aligned is None:
+        return None
+    out = df.copy()
+    for col in _REGIME_COLUMNS:
+        out[col] = aligned[col].values
+    return out
+
+
+def _profile_label_series(
+    df: pd.DataFrame,
+    symbol: str,
+    trade_timeframe: str,
+    regime_timeframe: Optional[str],
+    since: str,
+    window_spec: dict,
+) -> Optional[pd.Series]:
+    tf = str(regime_timeframe or "").strip().lower()
+    trade_tf = str(trade_timeframe or "").strip().lower()
+    if not tf or tf == trade_tf:
+        return _build_profile_label_series(df, window_spec)
+    regime_df = load_cached_data(symbol, tf, start_date=since)
+    if regime_df.empty:
+        print(f"No regime profile data available for {symbol} {tf}")
+        return None
+    # Shift one HTF row before reindexing — same open-vs-close-time leak as
+    # ``_aligned_regime_columns`` (a label is only known once its HTF candle
+    # closes, i.e. at the NEXT HTF row's index); Backtester.run's own
+    # shift(1) on ``_profile_label`` is a separate, LTF-granularity concern.
+    labels = _build_profile_label_series(regime_df.copy().sort_index(), window_spec).shift(1)
+    return labels.reindex(df.index, method="ffill").fillna("").astype(str)
 
 
 def _htf_trend_series(symbol: str, timeframe: str, ltf_index: pd.Index,
@@ -621,6 +726,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
         regime_cfg = cfg.get("regime") or {}
         if not isinstance(regime_cfg, dict):
             regime_cfg = {}
+        regime_timeframe = str(regime_cfg.get("timeframe") or "").strip().lower() or None
         regime_directional_policy = sc.get("regime_directional_policy")
         if regime_directional_policy and not regime_cfg.get("enabled"):
             raise ValueError(
@@ -791,7 +897,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
         # param, so the whole returned dict still spreads cleanly into Backtester.
         cfg_args = sc.get("args") or []
         cert_symbol = str(cfg_args[1]) if len(cfg_args) > 1 else ""
-        cert_timeframe = str(cfg_args[2]) if len(cfg_args) > 2 else ""
+        cert_timeframe = regime_timeframe or (str(cfg_args[2]) if len(cfg_args) > 2 else "")
         regime_directional_certified = False
         regime_directional_certified_states = None
         if regime_directional_policy and cert_symbol and cert_timeframe:
@@ -827,7 +933,8 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "regime_enabled": bool(regime_cfg.get("enabled")),
             "regime_period": int(regime_cfg.get("period", 14) or 14),
             "regime_adx_threshold": float(regime_cfg.get("adx_threshold", 20.0) or 20.0),
-            # #1058: composite (7-state) regime from regime.windows. None when no
+            "regime_timeframe": regime_timeframe,
+            # #1058: composite (9-state) regime from regime.windows. None when no
             # windows are configured → legacy single-lookback ADX path unchanged.
             "regime_windows_spec": _resolve_regime_windows_spec(regime_cfg),
             "allowed_regimes": allowed_regimes,
@@ -853,6 +960,7 @@ def run_single_backtest(
     regime_enabled: bool = False,
     regime_period: int = 14,
     regime_adx_threshold: float = 20.0,
+    regime_timeframe: Optional[str] = None,
     regime_windows_spec: Optional[dict] = None,
     allowed_regimes: Optional[List[str]] = None,
     stop_loss_atr_mult: Optional[float] = None,
@@ -924,9 +1032,17 @@ def run_single_backtest(
                 df_signals["signal__" + p] = res["signal"].values
         if close_strategies:
             df_signals = ensure_atr_indicator(df_signals)
-        df_signals["_profile_label"] = _build_profile_label_series(
-            df_signals, profile_allocation["window_spec"]
-        ).values
+        profile_labels = _profile_label_series(
+            df_signals,
+            symbol,
+            timeframe,
+            regime_timeframe,
+            since,
+            profile_allocation["window_spec"],
+        )
+        if profile_labels is None:
+            return None
+        df_signals["_profile_label"] = profile_labels.values
         print(f"  Profile allocation: window={profile_allocation['window']} "
               f"profiles={names} confirm_bars={profile_allocation['confirm_bars']}")
     else:
@@ -942,6 +1058,20 @@ def run_single_backtest(
     if htf_filter:
         df_signals = _apply_htf_filter_to_df(df_signals, symbol, timeframe)
         print(f"  HTF filter: applied (HTF={get_default_htf(timeframe)})")
+
+    if regime_enabled:
+        df_signals = _apply_regime_timeframe_override(
+            df_signals,
+            symbol,
+            timeframe,
+            regime_timeframe,
+            since,
+            regime_period=regime_period,
+            regime_adx_threshold=regime_adx_threshold,
+            regime_windows_spec=regime_windows_spec,
+        )
+        if df_signals is None:
+            return None
 
     # #1085: resolve the directional-certification verdict for parity with live.
     # The backtest honors regime_directional_policy only where the SAME
@@ -959,12 +1089,13 @@ def run_single_backtest(
             and regime_directional_certified is None):
         certs = load_certifications(directional_cert_path)
         clf = backtest_classifier(regime_windows_spec)
+        cert_timeframe = str(regime_timeframe or timeframe).strip().lower()
         regime_directional_certified_states = certified_states(
-            certs, symbol, timeframe, clf,
+            certs, symbol, cert_timeframe, clf,
         )
         if regime_directional_certified_states is None:
             print(f"  [#1085] regime_directional_policy default-off: "
-                  f"({symbol},{timeframe},{clf}) not certified — base direction "
+                  f"({symbol},{cert_timeframe},{clf}) not certified — base direction "
                   f"(matches live; #1076 negative result).")
     regime_directional_certified = bool(regime_directional_certified)
 
@@ -1226,7 +1357,7 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="ADX threshold below which market is 'ranging' (default: 20.0).")
     parser.add_argument("--regime-windows-spec-json", default=None,
                         dest="regime_windows_spec_json", metavar="JSON",
-                        help="Composite (7-state) regime windows spec, same shape as the live "
+                        help="Composite (9-state) regime windows spec, same shape as the live "
                              "--regime-windows-spec-json arg: a JSON object mapping window name "
                              "-> {classifier,period,...} (bare int = ADX period). The PRIMARY "
                              "window (medium-first) is classified into the per-bar regime label "
@@ -1239,7 +1370,7 @@ def _build_parser() -> argparse.ArgumentParser:
                              "window's classifier vocabulary (#1058): ADX (default / no "
                              "--regime-windows-spec-json) accepts trending_up, "
                              "trending_down, ranging; a composite primary window accepts "
-                             "the 7-state substates (trending_up_clean, ranging_quiet, ...).")
+                             "the 9-state substates (trending_up_clean, ranging_quiet, ...).")
     parser.add_argument("--stop-loss-atr-mult", type=float, default=None,
                         dest="stop_loss_atr_mult", metavar="MULT",
                         help="Fixed ATR-multiple stop loss (e.g. 2.0). Applied in "
@@ -1324,7 +1455,7 @@ def main():
             print("--regime-windows-spec-json is only valid with --mode single")
             sys.exit(1)
 
-    # #1058 review: a composite primary window classifies 7-state substates the
+    # #1058 review: a composite primary window classifies 9-state substates the
     # entry gate must be able to filter on; validate the by-name --allowed-regimes
     # against that classifier's vocabulary so a label the classifier can never emit
     # (which would silently block every entry) is rejected loudly. The --config
@@ -1411,7 +1542,8 @@ def main():
             "regime_directional_certified_states",
             # #998: regime-profile allocation switch block (None when unused).
             "profile_allocation",
-            # #1058: composite (7-state) regime windows spec (None when the
+            "regime_timeframe",
+            # #1058: composite (9-state) regime windows spec (None when the
             # config has no regime.windows → legacy ADX path). Only single mode
             # consumes live_stop_kwargs; optimize/compare/multi stay ADX, as they
             # already drop the other config-sourced close fields here.

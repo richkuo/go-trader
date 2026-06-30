@@ -55,7 +55,7 @@ _SPEC_MULTI = {
     "macro": {
         "classifier": "composite",
         "period": 30,
-        "thresholds": {"return_pct": 0.05, "range_pct": 0.03, "adx": 25.0, "efficiency": 0.5},
+        "thresholds": {"return_eff": 0.05, "range_eff": 0.03, "adx": 25.0, "efficiency": 0.5},
     },
 }
 
@@ -156,7 +156,7 @@ def test_bundle_adx3_view_is_full_period_classifier():
         "macro": {
             "classifier": "composite",
             "period": 30,  # > COMPOSITE_ADX_PERIOD_CAP
-            "thresholds": {"return_pct": 0.05, "range_pct": 0.03, "adx": 25.0, "efficiency": 0.5},
+            "thresholds": {"return_eff": 0.05, "range_eff": 0.03, "adx": 25.0, "efficiency": 0.5},
         }
     }
     bundle = compute_regime_bundle(df, spec)

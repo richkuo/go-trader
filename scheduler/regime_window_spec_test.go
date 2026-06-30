@@ -17,13 +17,34 @@ func TestRegimeWindowsMap_UnmarshalBareInt(t *testing.T) {
 }
 
 func TestRegimeWindowsMap_UnmarshalCompositeSpec(t *testing.T) {
-	raw := `{"macro":{"classifier":"composite","period":720,"thresholds":{"return_pct":0.05,"range_pct":0.03,"adx":25}}}`
+	raw := `{"macro":{"classifier":"composite","period":720,"thresholds":{"return_eff":0.05,"range_eff":0.03,"adx":25}}}`
 	var m RegimeWindowsMap
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		t.Fatal(err)
 	}
 	if m["macro"].effectiveClassifier() != regimeClassifierComposite {
 		t.Fatalf("classifier = %q", m["macro"].Classifier)
+	}
+}
+
+func TestRegimeWindowsMap_CompositeThresholdAliases(t *testing.T) {
+	raw := `{"macro":{"classifier":"composite","period":720,"thresholds":{"return_pct":0.90,"range_pct":0.90,"return_eff":0.05,"range_eff":0.03,"adx":25}}}`
+	var m RegimeWindowsMap
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatal(err)
+	}
+	th := m["macro"].compositeThresholds()
+	if th.ReturnEff != 0.05 || th.RangeEff != 0.03 {
+		t.Fatalf("thresholds = %+v, want canonical values", th)
+	}
+}
+
+func TestRegimeWindowsMap_CompositeThresholdUnknownKey(t *testing.T) {
+	raw := `{"macro":{"classifier":"composite","period":720,"thresholds":{"return_price_pct":0.05}}}`
+	var m RegimeWindowsMap
+	err := json.Unmarshal([]byte(raw), &m)
+	if err == nil || !strings.Contains(err.Error(), `unknown key "return_price_pct"`) {
+		t.Fatalf("expected unknown threshold key error, got: %v", err)
 	}
 }
 
