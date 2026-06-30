@@ -44,7 +44,8 @@ DEFAULT_RATCHET_TIERS = [
 #     let-ride rung that only tightens the trail (no extra close) so a nascent
 #     breakout's runner survives.
 # Each group's first rung couples to that group's opening trail in
-# REGIME_ATR_DEFAULTS_TRAILING (clean 2.0 / choppy 2.0 / ranging family 1.0).
+# REGIME_ATR_DEFAULTS_TRAILING (#1120: clean 2.5 / choppy 2.25 / ranging_quiet 1.0
+# / ranging_volatile 1.25 / ranging_directional* 1.5).
 # Split values are starting priors — validate via the #1058 7-state backtester
 # before relying on the exact geometry.
 DEFAULT_RATCHET_TIERS_BY_GROUP = {

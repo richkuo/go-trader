@@ -121,10 +121,9 @@ func TestValidateRegimeATRConfig_CompositeTrailingExplicit(t *testing.T) {
 	}
 }
 
-// TestParseRegimeATRBlock_TrailingUseDefaultsCompositeClean (#940): fleet
-// baseline expansion for composite labels must resolve clean opening trails to
-// 2.0 ATR (aligned with choppy composite; ratchet/TP ladders unchanged).
-func TestParseRegimeATRBlock_TrailingUseDefaultsCompositeClean(t *testing.T) {
+// TestParseRegimeATRBlock_TrailingUseDefaultsComposite (#1120): fleet baseline
+// expansion for composite labels must resolve the retuned opening trails.
+func TestParseRegimeATRBlock_TrailingUseDefaultsComposite(t *testing.T) {
 	labels := regimeLabelsForClassifier(regimeClassifierComposite)
 	raw := map[string]interface{}{"use_defaults": true}
 	block, errs := parseRegimeATRBlock(raw, "trailing_stop_atr_regime", regimeSurfaceTrailing, labels)
@@ -133,15 +132,27 @@ func TestParseRegimeATRBlock_TrailingUseDefaultsCompositeClean(t *testing.T) {
 	}
 	for _, label := range []string{"trending_up_clean", "trending_down_clean"} {
 		v, ok := resolveRegimeATR(block, label)
-		if !ok || v != 2.0 {
-			t.Fatalf("resolveRegimeATR(%s) = (%g, %v), want (2.0, true)", label, v, ok)
+		if !ok || v != 2.5 {
+			t.Fatalf("resolveRegimeATR(%s) = (%g, %v), want (2.5, true)", label, v, ok)
 		}
 	}
-	if v, ok := resolveRegimeATR(block, "trending_up_choppy"); !ok || v != 2.0 {
-		t.Fatalf("resolveRegimeATR(trending_up_choppy) = (%g, %v), want (2.0, true)", v, ok)
+	for _, label := range []string{"trending_up_choppy", "trending_down_choppy"} {
+		v, ok := resolveRegimeATR(block, label)
+		if !ok || v != 2.25 {
+			t.Fatalf("resolveRegimeATR(%s) = (%g, %v), want (2.25, true)", label, v, ok)
+		}
 	}
 	if v, ok := resolveRegimeATR(block, "ranging_quiet"); !ok || v != 1.0 {
 		t.Fatalf("resolveRegimeATR(ranging_quiet) = (%g, %v), want (1.0, true)", v, ok)
+	}
+	if v, ok := resolveRegimeATR(block, "ranging_volatile"); !ok || v != 1.25 {
+		t.Fatalf("resolveRegimeATR(ranging_volatile) = (%g, %v), want (1.25, true)", v, ok)
+	}
+	for _, label := range []string{"ranging_directional", "ranging_directional_up", "ranging_directional_down"} {
+		v, ok := resolveRegimeATR(block, label)
+		if !ok || v != 1.5 {
+			t.Fatalf("resolveRegimeATR(%s) = (%g, %v), want (1.5, true)", label, v, ok)
+		}
 	}
 }
 
@@ -353,14 +364,13 @@ func TestMapRegimeToBaselineFamily(t *testing.T) {
 	}
 
 	// #1124 regression: on the Trailing baseline the directional-drift substates
-	// must resolve to the tight 1.0 ranging_directional trail via their EXPLICIT
-	// entries — NOT the wider 2.0 "ranging" family fallback. Without the explicit
-	// entries a use_defaults trailing block would silently loosen the trail.
+	// must resolve to the ranging_directional trail via their EXPLICIT entries —
+	// NOT the wider 2.0 "ranging" family fallback.
 	trailing := regimeATRDefaults.Trailing
 	for _, label := range []string{"ranging_directional_up", "ranging_directional_down"} {
 		e, ok := mapRegimeToBaselineFamily(trailing, label)
-		if !ok || e.ATR != 1.0 {
-			t.Errorf("Trailing[%q] = (%g, %v), want (1.0, true) — explicit tight trail, not the 2.0 ranging family", label, e.ATR, ok)
+		if !ok || e.ATR != 1.5 {
+			t.Errorf("Trailing[%q] = (%g, %v), want (1.5, true) — explicit trail, not the 2.0 ranging family", label, e.ATR, ok)
 		}
 	}
 }

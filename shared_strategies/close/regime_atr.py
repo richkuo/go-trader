@@ -132,22 +132,23 @@ REGIME_ATR_DEFAULTS_TRAILING: Dict[str, RegimeATREntry] = {
     "trending_up": RegimeATREntry(atr=2.5),
     "trending_down": RegimeATREntry(atr=2.5),
     "ranging": RegimeATREntry(atr=2.0),
-    # #870: composite group opening trails (clean=2.0, choppy=2.0, ranging=1.0).
+    # #870 / #1120: composite group opening trails (clean=2.5, choppy=2.25,
+    # ranging_quiet=1.0, ranging_volatile=1.25, ranging_directional*=1.5).
     # ADX labels keep their pre-#870 values; resolve() exact-matches keys so the
     # extra composite entries are inert for an ADX strategy.
-    "trending_up_clean": RegimeATREntry(atr=2.0),
-    "trending_down_clean": RegimeATREntry(atr=2.0),
-    "trending_up_choppy": RegimeATREntry(atr=2.0),
-    "trending_down_choppy": RegimeATREntry(atr=2.0),
+    "trending_up_clean": RegimeATREntry(atr=2.5),
+    "trending_down_clean": RegimeATREntry(atr=2.5),
+    "trending_up_choppy": RegimeATREntry(atr=2.25),
+    "trending_down_choppy": RegimeATREntry(atr=2.25),
     "ranging_quiet": RegimeATREntry(atr=1.0),
-    "ranging_volatile": RegimeATREntry(atr=1.0),
-    "ranging_directional": RegimeATREntry(atr=1.0),
-    # #1124: directional-drift substates inherit the tight ranging_directional
-    # opening trail (1.0). Explicit entries are required because resolve() is a
+    "ranging_volatile": RegimeATREntry(atr=1.25),
+    "ranging_directional": RegimeATREntry(atr=1.5),
+    # #1124: directional-drift substates inherit the ranging_directional
+    # opening trail (1.5). Explicit entries are required because resolve() is a
     # strict key lookup — without them a use_defaults block would leave these
     # labels unresolved.
-    "ranging_directional_up": RegimeATREntry(atr=1.0),
-    "ranging_directional_down": RegimeATREntry(atr=1.0),
+    "ranging_directional_up": RegimeATREntry(atr=1.5),
+    "ranging_directional_down": RegimeATREntry(atr=1.5),
 }
 
 # #870: per-quality-group default ATR take-profit ladders. Mirrors
