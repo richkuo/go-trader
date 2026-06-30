@@ -7,17 +7,17 @@
   "arms": [
     {
       "arm": "current_system_trailing",
-      "total_return_pct": 0.0,
+      "total_return_pct": -17.04,
       "sharpe": -1.461,
-      "max_drawdown_pct": 0.0,
+      "max_drawdown_pct": -18.73,
       "total_trades": 103,
       "win_rate": 43.69
     },
     {
       "arm": "proposed_mc_trailing",
-      "total_return_pct": 0.0,
+      "total_return_pct": -19.82,
       "sharpe": -1.712,
-      "max_drawdown_pct": 0.0,
+      "max_drawdown_pct": -21.45,
       "total_trades": 101,
       "win_rate": 45.54
     }
