@@ -44,6 +44,18 @@ var closeDefaultsSupported = map[string]struct{}{
 
 const userCloseDefaultTrailingStopATRRegimeKey = "trailing_stop_atr_regime"
 
+// userCloseDefaultRegimeATRKey is the reserved user_close_defaults section that
+// holds fleet-wide per-regime ATR defaults for standalone
+// stop_loss_atr_regime / trailing_stop_atr_regime owners configured with
+// use_defaults:true (Phase 2, #1134). It is NOT a close-evaluator name — it is
+// routed through its own validation branch in validateUserCloseDefaults and
+// applied by applyUserCloseDefaultRegimeATRs at load, so it never trips the
+// evaluator-name allowlist / tp_tiers-required gates. The ratchet-coupled
+// trailing_stop_atr_regime owner keeps its own home under
+// user_close_defaults["trailing_tp_ratchet_regime"] (#1133); the two are kept
+// disjoint by an explicit close-strategy guard on each injection path.
+const userCloseDefaultRegimeATRKey = "regime_atr"
+
 // closeDefaultsTierEvaluator reports whether name accepts a user_close_defaults
 // override (see closeDefaultsSupported).
 func closeDefaultsTierEvaluator(name string) bool {
@@ -100,11 +112,21 @@ func validateUserCloseDefaults(defaults CloseDefaultsMap) []string {
 	sort.Strings(names)
 	for _, name := range names {
 		entry := defaults[name]
+		normName := strings.ToLower(strings.TrimSpace(name))
+		// #1134: the reserved `regime_atr` section is NOT a close-evaluator
+		// name — it holds fleet-wide per-regime ATR defaults for standalone
+		// *_atr_regime use_defaults owners. Route it through a dedicated
+		// validation branch BEFORE the evaluator-name allowlist so it never
+		// trips the allowlist / stray-key / tp_tiers-required gates that the
+		// evaluator-name entries still walk below.
+		if normName == userCloseDefaultRegimeATRKey {
+			errs = append(errs, validateUserCloseDefaultRegimeATR(name, entry)...)
+			continue
+		}
 		if !closeDefaultsTierEvaluator(name) {
 			errs = append(errs, fmt.Sprintf("user_close_defaults[%q]: not a tp_tiers close evaluator (allowed: %s)", name, strings.Join(closeDefaultsSupportedNames(), ", ")))
 			continue
 		}
-		normName := strings.ToLower(strings.TrimSpace(name))
 		for k := range entry {
 			if k == "tp_tiers" {
 				continue
@@ -213,6 +235,76 @@ func validateUserCloseDefaultTrailingStopATRRegime(name string, raw interface{})
 	return errs
 }
 
+// validateUserCloseDefaultRegimeATR validates the reserved
+// user_close_defaults["regime_atr"] section (Phase 2, #1134). The section holds
+// optional stop_loss_atr_regime / trailing_stop_atr_regime sub-blocks, each a
+// trend_regime-shaped map (or a use_defaults:true no-op) that overrides the
+// system baseline for standalone *_atr_regime use_defaults consumers.
+//
+// Sub-blocks are shape-validated here via parseRegimeATRBlock (context-free:
+// labels are derived from each block's own trend_regime keys, falling back to
+// the canonical ADX vocabulary). Per-strategy classifier-vocabulary validation
+// (composite labels, the #1124 bare-covers-subs exhaustiveness rule) happens
+// later in validateRegimeATRConfig once a sub-block is injected onto a
+// consuming strategy — mirroring the #1133 ratchet-trail layer, which deep-
+// validates tiers here and regime-exhaustiveness per-strategy.
+//
+// A user sub-block set to use_defaults:true is accepted but is a documented
+// no-op: parseRegimeATRBlock re-expands the system regimeATRDefaults baseline
+// regardless of source (regime_atr.go), so it cannot form a distinct middle
+// layer. The injection helper (applyUserCloseDefaultRegimeATR) still applies it
+// verbatim, which resolves identically to the system table.
+func validateUserCloseDefaultRegimeATR(name string, entry map[string]interface{}) []string {
+	ctx := fmt.Sprintf("user_close_defaults[%q]", name)
+	if entry == nil {
+		return []string{ctx + ": must be an object"}
+	}
+	var errs []string
+	allowedSubKeys := map[string]bool{
+		"stop_loss_atr_regime":     true,
+		"trailing_stop_atr_regime": true,
+	}
+	subKeys := make([]string, 0, len(entry))
+	for k := range entry {
+		subKeys = append(subKeys, k)
+	}
+	sort.Strings(subKeys)
+	for _, k := range subKeys {
+		if !allowedSubKeys[k] {
+			errs = append(errs, fmt.Sprintf("%s: unknown key %q (only stop_loss_atr_regime and trailing_stop_atr_regime are allowed)", ctx, k))
+			continue
+		}
+		raw := entry[k]
+		subCtx := fmt.Sprintf("%s.%s", ctx, k)
+		block, ok := raw.(map[string]interface{})
+		if !ok || block == nil {
+			errs = append(errs, fmt.Sprintf("%s: must be an object", subCtx))
+			continue
+		}
+		if len(block) == 0 {
+			errs = append(errs, fmt.Sprintf("%s: must not be empty (omit the sub-block to inherit the system default)", subCtx))
+			continue
+		}
+		labels := canonicalTrendRegimeLabels
+		if trendRaw, ok := block[regimeClassifierKey]; ok {
+			if trendMap, ok := trendRaw.(map[string]interface{}); ok && len(trendMap) > 0 {
+				labels = make([]string, 0, len(trendMap))
+				for label := range trendMap {
+					labels = append(labels, label)
+				}
+				sort.Strings(labels)
+			}
+		}
+		surface := regimeSurfaceStopLoss
+		if k == "trailing_stop_atr_regime" {
+			surface = regimeSurfaceTrailing
+		}
+		_, subErrs := parseRegimeATRBlock(block, subCtx, surface, labels)
+		errs = append(errs, subErrs...)
+	}
+	return errs
+}
+
 // applyUserCloseDefaultsToRef injects the user_close_defaults tp_tiers for ref's
 // evaluator when the ref omits its own tp_tiers (the strategy layer wins). A
 // no-op when ref is nil, already carries tp_tiers, or has no matching user
@@ -315,6 +407,86 @@ func applyUserCloseDefaultRatchetRegimeTrails(cfg *Config) {
 	}
 	for i := range cfg.Strategies {
 		applyUserCloseDefaultRatchetRegimeTrail(&cfg.Strategies[i], cfg.UserCloseDefaults)
+	}
+}
+
+// userCloseDefaultRegimeATRSubBlocks returns the parsed user-level
+// regime_atr sub-blocks (stop_loss_atr_regime / trailing_stop_atr_regime) and
+// whether the reserved section is present at all (#1134). The returned maps are
+// the raw JSON shapes, deep-cloned by the caller as needed.
+func userCloseDefaultRegimeATRSubBlocks(defaults CloseDefaultsMap) (stopLoss, trailing map[string]interface{}, present bool) {
+	entry, ok := closeDefaultsEntry(defaults, userCloseDefaultRegimeATRKey)
+	if !ok {
+		return nil, nil, false
+	}
+	if raw, has := entry["stop_loss_atr_regime"]; has && raw != nil {
+		if m, ok := raw.(map[string]interface{}); ok {
+			stopLoss = m
+		}
+	}
+	if raw, has := entry["trailing_stop_atr_regime"]; has && raw != nil {
+		if m, ok := raw.(map[string]interface{}); ok {
+			trailing = m
+		}
+	}
+	return stopLoss, trailing, true
+}
+
+// applyUserCloseDefaultRegimeATR injects the user-level regime_atr default
+// onto a standalone *_atr_regime stop owner that is use_defaults-only (Phase 2,
+// #1134). Precedence: system regimeATRDefaults < user_close_defaults.regime_atr
+// < per-strategy explicit trend_regime map. The per-strategy layer wins because
+// IsUseDefaultsOnly is false for an explicit trend_regime block, so injection
+// is skipped.
+//
+// Safety-critical guard: ratchet/manual strategies are excluded via
+// !strategyUsesTrailingTPRatchetRegimeClose. The type=manual synthesized trail
+// (resolveManualRatchetRegimeTrailBlock, config.go) runs in the per-strategy
+// loop BEFORE this hook and assigns a synthesized {use_defaults:true}
+// TrailingStopATRRegime with close_strategy=trailing_tp_ratchet_regime; without
+// this guard the Phase-2 predicate ("standalone *_atr_regime is use_defaults-
+// only") would match that synthesized block and overwrite a live manual SL
+// owner, routing it to the wrong default home. The guard makes Phase-2 disjoint
+// from the #1133 ratchet-coupled trail, which keeps its own home under
+// user_close_defaults["trailing_tp_ratchet_regime"].
+//
+// Injection replaces the use_defaults expansion in place on the existing field
+// (no new field), so the seven mutually-exclusive HL stop owners stay
+// mutually exclusive — the sole-owner mutex (regime_atr.go) still trips on any
+// accidental second owner, and per-strategy classifier-vocabulary validation
+// runs in validateRegimeATRConfig after this hook.
+func applyUserCloseDefaultRegimeATR(sc *StrategyConfig, defaults CloseDefaultsMap) bool {
+	if sc == nil || strategyUsesTrailingTPRatchetRegimeClose(*sc) {
+		return false
+	}
+	stopLoss, trailing, present := userCloseDefaultRegimeATRSubBlocks(defaults)
+	if !present {
+		return false
+	}
+	applied := false
+	if stopLoss != nil && sc.StopLossATRRegime.IsUseDefaultsOnly() {
+		sc.StopLossATRRegime = &RegimeATRBlock{raw: cloneInterfaceMap(stopLoss)}
+		applied = true
+	}
+	if trailing != nil && sc.TrailingStopATRRegime.IsUseDefaultsOnly() {
+		sc.TrailingStopATRRegime = &RegimeATRBlock{raw: cloneInterfaceMap(trailing)}
+		applied = true
+	}
+	return applied
+}
+
+// applyUserCloseDefaultRegimeATRs injects user_close_defaults["regime_atr"]
+// into every eligible standalone *_atr_regime use_defaults owner. Called once
+// per load (and per SIGHUP reload) after the #1133 ratchet-trail injection and
+// the per-strategy close-ref normalization/auto-config, before validation — so
+// the injected blocks flow through validateRegimeATRConfig's per-strategy
+// classifier-vocabulary + sole-owner checks.
+func applyUserCloseDefaultRegimeATRs(cfg *Config) {
+	if cfg == nil || len(cfg.UserCloseDefaults) == 0 {
+		return
+	}
+	for i := range cfg.Strategies {
+		applyUserCloseDefaultRegimeATR(&cfg.Strategies[i], cfg.UserCloseDefaults)
 	}
 }
 

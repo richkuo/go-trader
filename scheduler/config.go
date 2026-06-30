@@ -159,7 +159,7 @@ type Config struct {
 	NotifyRatchetTriggers  *bool                      `json:"notify_ratchet_triggers,omitempty"`    // #1110 — owner DM when a trailing_tp_ratchet* tier clears and tightens the trail. Nil/missing → enabled; explicit false disables.
 	ManualDefaults         *ManualDefaultsConfig      `json:"manual_defaults,omitempty"`            // #696 — operator-tunable defaults for `manual-open` CLI and `type=manual` strategy auto-config. Each field optional; absent values fall back to the hardcoded defaults.
 	TradingViewExport      TradingViewExportConfig    `json:"tradingview_export,omitempty"`         // #3 — optional symbol overrides for TradingView portfolio CSV exports
-	UserCloseDefaults      CloseDefaultsMap           `json:"user_close_defaults,omitempty"`        // #866 — operator override layer for close-evaluator default tier ladders. Keyed by close evaluator name → {"tp_tiers": <list|regime-map>}. Injected into any close ref that omits tp_tiers at load; per-strategy tp_tiers still wins, and an absent entry falls through to the system default.
+	UserCloseDefaults      CloseDefaultsMap           `json:"user_close_defaults,omitempty"`        // #866/#1133/#1134 — operator override layer for close-evaluator default tier ladders AND standalone regime ATR stop/trailing baselines. Keyed by close evaluator name → {"tp_tiers": <list|regime-map>} (the #1133 trailing_tp_ratchet_regime entry may also carry a "trailing_stop_atr_regime" sub-block for its coupled SL owner); plus a reserved "regime_atr" section → {"stop_loss_atr_regime": <trend_regime map>, "trailing_stop_atr_regime": <trend_regime map>} that overrides the system baseline for standalone *_atr_regime use_defaults-only owners (#1134). Injected at load; per-strategy explicit values still win, and an absent entry falls through to the system default.
 }
 
 // CloseDefaultsMap is the #866 user_close_defaults block: close-evaluator name →
@@ -1233,6 +1233,16 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	// strategy layer (explicit tp_tiers) still wins; refs with no matching entry
 	// fall through to the evaluator's system default.
 	applyUserCloseDefaults(&cfg)
+
+	// #1134: inject user_close_defaults["regime_atr"] onto standalone
+	// stop_loss_atr_regime / trailing_stop_atr_regime use_defaults-only owners.
+	// Runs after the #1133 ratchet-trail injection and the per-strategy
+	// close-ref normalization/auto-config (incl. the type=manual synthesized
+	// ratchet trail), and before validateConfig so the injected blocks flow
+	// through validateRegimeATRConfig's per-strategy classifier-vocabulary +
+	// sole-owner checks. The !strategyUsesTrailingTPRatchetRegimeClose guard
+	// inside keeps Phase-2 disjoint from the #1133 ratchet-coupled trail.
+	applyUserCloseDefaultRegimeATRs(&cfg)
 
 	if err := validateConfig(&cfg, skipLiveCredentialChecks); err != nil {
 		return nil, err

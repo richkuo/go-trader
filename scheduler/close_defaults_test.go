@@ -396,3 +396,366 @@ func TestUserCloseDefaults_ManualDefaultsTrailWinsOverUserTrail(t *testing.T) {
 		t.Fatalf("trending_up trail = (%g, %v), want manual default (3.5, true)", got, ok)
 	}
 }
+
+// ─── #1134: user_close_defaults["regime_atr"] standalone stop owners ───────
+
+// regimeATRUserRaw builds an ADX trend_regime map for a user regime_atr
+// sub-block (distinct from ratchetRegimeTrailRaw only in intent — reused shape).
+func regimeATRUserRaw(up, down, ranging float64) map[string]interface{} {
+	return ratchetRegimeTrailRaw(up, down, ranging)
+}
+
+// compositeBareDirectionalATR builds a 9-state composite trend_regime map that
+// omits ranging_directional_up/_down but keeps the bare ranging_directional
+// label — the #1124 bare-covers-subs shape. Used to prove the family rule
+// applies to the reserved regime_atr section's per-strategy validation.
+func compositeBareDirectionalATR(atr float64) map[string]interface{} {
+	labels := regimeLabelsForClassifier(regimeClassifierComposite)
+	tr := make(map[string]interface{}, len(labels))
+	for _, l := range labels {
+		if l == "ranging_directional_up" || l == "ranging_directional_down" {
+			continue
+		}
+		tr[l] = map[string]interface{}{"atr_multiple": atr}
+	}
+	return map[string]interface{}{"trend_regime": tr}
+}
+
+func TestValidateUserCloseDefaultRegimeATR(t *testing.T) {
+	validSL := regimeATRUserRaw(2.5, 2.5, 1.75)
+	validTrail := regimeATRUserRaw(3.0, 3.0, 2.0)
+	cases := []struct {
+		name     string
+		entry    map[string]interface{}
+		want     string
+		wantNone bool
+	}{
+		{"valid both sub-blocks", map[string]interface{}{"stop_loss_atr_regime": validSL, "trailing_stop_atr_regime": validTrail}, "", true},
+		{"valid single stop_loss", map[string]interface{}{"stop_loss_atr_regime": validSL}, "", true},
+		{"use_defaults no-op accepted", map[string]interface{}{"stop_loss_atr_regime": map[string]interface{}{"use_defaults": true}}, "", true},
+		{"composite bare-covers-subs accepted", map[string]interface{}{"stop_loss_atr_regime": compositeBareDirectionalATR(2.0)}, "", true},
+		{"stray key", map[string]interface{}{"stop_loss_atr_regime": validSL, "foo": 1}, "unknown key", false},
+		{"empty sub-block", map[string]interface{}{"stop_loss_atr_regime": map[string]interface{}{}}, "must not be empty", false},
+		{"close_fraction on SL surface", map[string]interface{}{"stop_loss_atr_regime": map[string]interface{}{"trend_regime": map[string]interface{}{"trending_up": map[string]interface{}{"close_fraction": 0.5}}}}, "close_fraction is only allowed", false},
+		{"missing trend_regime", map[string]interface{}{"stop_loss_atr_regime": map[string]interface{}{"use_defaults": false}}, "missing", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := validateUserCloseDefaultRegimeATR("regime_atr", tc.entry)
+			if tc.wantNone {
+				if len(errs) != 0 {
+					t.Fatalf("expected no errors, got: %v", errs)
+				}
+				return
+			}
+			if !errListContains(errs, tc.want) {
+				t.Fatalf("want %q, got: %v", tc.want, errs)
+			}
+		})
+	}
+	// nil entry → must be an object.
+	if errs := validateUserCloseDefaultRegimeATR("regime_atr", nil); !errListContains(errs, "must be an object") {
+		t.Fatalf("nil entry: want 'must be an object', got: %v", errs)
+	}
+}
+
+func TestValidateUserCloseDefaultRegimeATR_RoutedThroughValidateUserCloseDefaults(t *testing.T) {
+	// The reserved regime_atr key must NOT trip the evaluator-name allowlist:
+	// a valid regime_atr section passes the top-level validator, while a
+	// malformed one surfaces its dedicated-branch error.
+	if errs := validateUserCloseDefaults(CloseDefaultsMap{
+		"regime_atr": {"stop_loss_atr_regime": regimeATRUserRaw(2.5, 2.5, 1.75)},
+	}); len(errs) != 0 {
+		t.Fatalf("valid regime_atr should pass validateUserCloseDefaults, got: %v", errs)
+	}
+	errs := validateUserCloseDefaults(CloseDefaultsMap{
+		"regime_atr": {"stop_loss_atr_regime": map[string]interface{}{"bogus_key": 1}},
+	})
+	if !errListContains(errs, "unknown key") {
+		t.Fatalf("want regime_atr dedicated-branch 'unknown key' error, got: %v", errs)
+	}
+	// Evaluator-name entries keep their existing three-gate validation.
+	if errs := validateUserCloseDefaults(CloseDefaultsMap{"tiered_tp_atr": {}}); !errListContains(errs, "missing tp_tiers") {
+		t.Fatalf("evaluator-name tp_tiers-required gate must still fire, got: %v", errs)
+	}
+}
+
+func TestRegimeATRBlock_IsUseDefaultsOnly(t *testing.T) {
+	if (&RegimeATRBlock{}).IsUseDefaultsOnly() {
+		t.Fatal("zero block is not use_defaults-only")
+	}
+	if (&RegimeATRBlock{raw: map[string]interface{}{}}).IsUseDefaultsOnly() {
+		t.Fatal("empty-raw block is not use_defaults-only")
+	}
+	if (&RegimeATRBlock{raw: map[string]interface{}{"use_defaults": false}}).IsUseDefaultsOnly() {
+		t.Fatal("use_defaults:false is not use_defaults-only")
+	}
+	if (&RegimeATRBlock{raw: map[string]interface{}{"trend_regime": map[string]interface{}{"ranging": map[string]interface{}{"atr_multiple": 1.0}}}}).IsUseDefaultsOnly() {
+		t.Fatal("explicit trend_regime map is not use_defaults-only (strategy layer wins)")
+	}
+	if !(&RegimeATRBlock{raw: map[string]interface{}{"use_defaults": true}}).IsUseDefaultsOnly() {
+		t.Fatal("{use_defaults:true} must be use_defaults-only")
+	}
+}
+
+func TestApplyUserCloseDefaultRegimeATR_InjectsStandaloneUseDefaultsOwner(t *testing.T) {
+	defaults := CloseDefaultsMap{"regime_atr": {"stop_loss_atr_regime": regimeATRUserRaw(2.5, 2.5, 1.75)}}
+	sc := StrategyConfig{
+		ID: "s1", Type: "perps", Platform: "hyperliquid",
+		StopLossATRRegime: &RegimeATRBlock{raw: map[string]interface{}{"use_defaults": true}},
+	}
+	if !applyUserCloseDefaultRegimeATR(&sc, defaults) {
+		t.Fatal("expected injection onto use_defaults-only standalone owner")
+	}
+	if errs := sc.StopLossATRRegime.ResolveSurface("s1.stop_loss_atr_regime", regimeSurfaceStopLoss); len(errs) != 0 {
+		t.Fatalf("injected block must validate: %v", errs)
+	}
+	if got, ok := resolveRegimeATR(*sc.StopLossATRRegime, "ranging"); !ok || got != 1.75 {
+		t.Fatalf("ranging = (%g, %v), want (1.75, true) from user regime_atr", got, ok)
+	}
+}
+
+func TestApplyUserCloseDefaultRegimeATR_ExplicitStrategyMapWins(t *testing.T) {
+	defaults := CloseDefaultsMap{"regime_atr": {"stop_loss_atr_regime": regimeATRUserRaw(9.0, 9.0, 9.0)}}
+	sc := StrategyConfig{
+		ID: "s1", Type: "perps", Platform: "hyperliquid",
+		StopLossATRRegime: &RegimeATRBlock{raw: regimeATRUserRaw(2.0, 2.0, 1.5)},
+	}
+	if applyUserCloseDefaultRegimeATR(&sc, defaults) {
+		t.Fatal("explicit per-strategy trend_regime map must NOT be overridden by user regime_atr")
+	}
+	if errs := sc.StopLossATRRegime.ResolveSurface("s1.stop_loss_atr_regime", regimeSurfaceStopLoss); len(errs) != 0 {
+		t.Fatalf("explicit block must validate: %v", errs)
+	}
+	if got, ok := resolveRegimeATR(*sc.StopLossATRRegime, "ranging"); !ok || got != 1.5 {
+		t.Fatalf("ranging = (%g, %v), want (1.5, true) from explicit strategy map", got, ok)
+	}
+}
+
+func TestApplyUserCloseDefaultRegimeATR_NilOwnerNotInjected(t *testing.T) {
+	defaults := CloseDefaultsMap{"regime_atr": {"stop_loss_atr_regime": regimeATRUserRaw(2.5, 2.5, 1.75)}}
+	sc := StrategyConfig{ID: "s1", Type: "perps", Platform: "hyperliquid"}
+	if applyUserCloseDefaultRegimeATR(&sc, defaults) {
+		t.Fatal("a strategy with no stop_loss_atr_regime field must not get one injected")
+	}
+	if sc.StopLossATRRegime != nil {
+		t.Fatalf("StopLossATRRegime = %v, want nil (strategy did not opt into a regime ATR stop)", sc.StopLossATRRegime)
+	}
+}
+
+func TestApplyUserCloseDefaultRegimeATR_SkipsRatchetRegimeClose(t *testing.T) {
+	defaults := CloseDefaultsMap{"regime_atr": {"trailing_stop_atr_regime": regimeATRUserRaw(9.0, 9.0, 9.0)}}
+	sc := StrategyConfig{
+		ID: "s1", Type: "perps", Platform: "hyperliquid",
+		TrailingStopATRRegime: &RegimeATRBlock{raw: map[string]interface{}{"use_defaults": true}},
+		CloseStrategy:         &StrategyRef{Name: trailingTPRatchetRegimeCloseName},
+	}
+	if applyUserCloseDefaultRegimeATR(&sc, defaults) {
+		t.Fatal("Phase-2 must skip trailing_tp_ratchet_regime strategies (disjoint from #1133)")
+	}
+	// The synthesized {use_defaults:true} owner resolves to the system table,
+	// NOT the user regime_atr value (9.0).
+	if errs := sc.TrailingStopATRRegime.ResolveSurface("s1.trailing_stop_atr_regime", regimeSurfaceTrailing); len(errs) != 0 {
+		t.Fatalf("synthesized block must validate: %v", errs)
+	}
+	if got, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, "ranging"); !ok || got == 9.0 {
+		t.Fatalf("ranging = (%g, %v); must not be the user regime_atr value 9.0", got, ok)
+	}
+}
+
+func TestUserCloseDefaultRegimeATR_LoadConfigEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
+		"user_close_defaults": {
+			"regime_atr": {
+				"stop_loss_atr_regime": {
+					"trend_regime": {
+						"trending_up": {"atr_multiple": 2.5},
+						"trending_down": {"atr_multiple": 2.5},
+						"ranging": {"atr_multiple": 1.75}
+					}
+				}
+			}
+		},
+		"strategies": [{
+			"id": "hl-eth-slregime",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"stop_loss_atr_regime": {"use_defaults": true},
+			"close_strategy": {"name": "tiered_tp_atr_live", "params": {"tp_tiers": [{"atr_multiple": 3.0, "close_fraction": 1.0}]}}
+		}]
+	}`
+	cfg, err := LoadConfig(writeTestConfig(t, dir, cfgJSON))
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if sc.StopLossATRRegime == nil || !sc.StopLossATRRegime.IsConfigured() {
+		t.Fatal("StopLossATRRegime was not injected")
+	}
+	if got, ok := resolveRegimeATR(*sc.StopLossATRRegime, "ranging"); !ok || got != 1.75 {
+		t.Fatalf("ranging SL = (%g, %v), want (1.75, true) from user regime_atr", got, ok)
+	}
+	if got, ok := resolveRegimeATR(*sc.StopLossATRRegime, "trending_up"); !ok || got != 2.5 {
+		t.Fatalf("trending_up SL = (%g, %v), want (2.5, true) from user regime_atr", got, ok)
+	}
+	// Differs from the system table (ranging=1.5) — proves the user layer took effect.
+	if got, _ := resolveRegimeATR(*sc.StopLossATRRegime, "ranging"); got == 1.5 {
+		t.Fatal("ranging SL matches system default (1.5) — user regime_atr layer did not apply")
+	}
+	// No scalar SL default was applied on top (would have tripped the sole-owner mutex).
+	if sc.StopLossATRMult != nil {
+		t.Fatalf("StopLossATRMult = %v, want nil (regime owner is the sole SL)", *sc.StopLossATRMult)
+	}
+}
+
+func TestUserCloseDefaultRegimeATR_LoadConfigRejectsMalformed(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
+		"user_close_defaults": {
+			"regime_atr": {"stop_loss_atr_regime": {"trend_regime": {"trending_up": {"close_fraction": 0.5}}}}
+		},
+		"strategies": [{
+			"id": "hl-eth-slregime",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"stop_loss_atr_regime": {"use_defaults": true},
+			"close_strategy": {"name": "tiered_tp_atr_live", "params": {"tp_tiers": [{"atr_multiple": 3.0, "close_fraction": 1.0}]}}
+		}]
+	}`
+	_, err := LoadConfig(writeTestConfig(t, dir, cfgJSON))
+	if err == nil {
+		t.Fatal("LoadConfig accepted a malformed regime_atr sub-block (close_fraction on SL surface)")
+	}
+	if !strings.Contains(err.Error(), "close_fraction is only allowed") {
+		t.Fatalf("expected dedicated-branch close_fraction rejection, got: %v", err)
+	}
+}
+
+func TestUserCloseDefaultRegimeATR_LoadConfigUseDefaultsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
+		"user_close_defaults": {
+			"regime_atr": {"stop_loss_atr_regime": {"use_defaults": true}}
+		},
+		"strategies": [{
+			"id": "hl-eth-slregime",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"stop_loss_atr_regime": {"use_defaults": true},
+			"close_strategy": {"name": "tiered_tp_atr_live", "params": {"tp_tiers": [{"atr_multiple": 3.0, "close_fraction": 1.0}]}}
+		}]
+	}`
+	cfg, err := LoadConfig(writeTestConfig(t, dir, cfgJSON))
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	// A use_defaults user sub-block resolves identically to the system table
+	// (documented no-op) — not a distinct middle layer. System ranging SL = 1.5.
+	if got, ok := resolveRegimeATR(*cfg.Strategies[0].StopLossATRRegime, "ranging"); !ok || got != 1.5 {
+		t.Fatalf("ranging SL = (%g, %v), want (1.5, true) system table (use_defaults no-op)", got, ok)
+	}
+}
+
+func TestUserCloseDefaultRegimeATR_LoadConfigSkipsManualRatchet(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
+		"user_close_defaults": {
+			"regime_atr": {
+				"trailing_stop_atr_regime": {
+					"trend_regime": {
+						"trending_up": {"atr_multiple": 9.0},
+						"trending_down": {"atr_multiple": 9.0},
+						"ranging": {"atr_multiple": 9.0}
+					}
+				}
+			}
+		},
+		"strategies": [{
+			"id": "hl-manual-eth",
+			"type": "manual",
+			"platform": "hyperliquid",
+			"symbol": "ETH",
+			"timeframe": "1h",
+			"capital": 1000,
+			"leverage": 20,
+			"max_drawdown_pct": 20
+		}]
+	}`
+	cfg, err := LoadConfig(writeTestConfig(t, dir, cfgJSON))
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if sc.CloseStrategy == nil || sc.CloseStrategy.Name != trailingTPRatchetRegimeCloseName {
+		t.Fatalf("CloseStrategy = %v, want synthesized %s", sc.CloseStrategy, trailingTPRatchetRegimeCloseName)
+	}
+	if sc.TrailingStopATRRegime == nil || !sc.TrailingStopATRRegime.IsConfigured() {
+		t.Fatal("manual synthesized TrailingStopATRRegime missing")
+	}
+	// The manual synthesized trail resolves to the SYSTEM table (ranging=2.0),
+	// NOT the user regime_atr value (9.0) — the !strategyUsesTrailingTPRatchetRegimeClose
+	// guard prevented Phase-2 from overwriting the live manual SL owner.
+	if got, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, "ranging"); !ok || got != 2.0 {
+		t.Fatalf("manual ranging trail = (%g, %v), want (2.0, true) system table (Phase-2 must not overwrite)", got, ok)
+	}
+}
+
+func TestUserCloseDefaultRegimeATR_LoadConfigCompositeBareCoversSubs(t *testing.T) {
+	dir := t.TempDir()
+	// Composite regime_atr_window; user regime_atr block keyed on bare
+	// ranging_directional (omits _up/_down subs) — the #1124 family rule must
+	// accept it and runtime resolution of a sub-label must fall back to bare.
+	cfgJSON := `{
+		"regime": {"enabled": true, "windows": {"daily": {"classifier": "composite", "period": 24}}},
+		"user_close_defaults": {
+			"regime_atr": {"stop_loss_atr_regime": {
+				"trend_regime": {
+					"trending_up_clean": {"atr_multiple": 2.5},
+					"trending_up_choppy": {"atr_multiple": 2.5},
+					"trending_down_clean": {"atr_multiple": 2.5},
+					"trending_down_choppy": {"atr_multiple": 2.5},
+					"ranging_quiet": {"atr_multiple": 1.5},
+					"ranging_volatile": {"atr_multiple": 1.5},
+					"ranging_directional": {"atr_multiple": 1.25}
+				}
+			}}
+		},
+		"strategies": [{
+			"id": "hl-eth-slregime-comp",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"regime_atr_window": "daily",
+			"stop_loss_atr_regime": {"use_defaults": true},
+			"close_strategy": {"name": "tiered_tp_atr_live", "params": {"tp_tiers": [{"atr_multiple": 3.0, "close_fraction": 1.0}]}}
+		}]
+	}`
+	cfg, err := LoadConfig(writeTestConfig(t, dir, cfgJSON))
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if got, ok := resolveRegimeATR(*sc.StopLossATRRegime, "trending_up_clean"); !ok || got != 2.5 {
+		t.Fatalf("trending_up_clean SL = (%g, %v), want (2.5, true)", got, ok)
+	}
+	// Sub-label falls back to the bare ranging_directional entry (1.25).
+	if got, ok := resolveRegimeATR(*sc.StopLossATRRegime, "ranging_directional_up"); !ok || got != 1.25 {
+		t.Fatalf("ranging_directional_up SL = (%g, %v), want (1.25, true) via bare fallback", got, ok)
+	}
+}

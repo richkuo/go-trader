@@ -238,6 +238,26 @@ func (b *RegimeATRBlock) IsConfigured() bool {
 	return len(b.raw) > 0
 }
 
+// IsUseDefaultsOnly reports whether the block was configured as exactly
+// {"use_defaults": true} with no explicit trend_regime map — the shape that
+// relies on the system baseline expansion and is the only shape eligible for a
+// user_close_defaults.regime_atr override (Phase 2, #1134). An explicit
+// trend_regime map is the strategy layer and wins, so it returns false; a nil
+// or unconfigured block is not a standalone regime owner at all.
+//
+// Raw-aware: safe before ResolveSurface populates the typed fields (the
+// Phase-2 injection runs in loadConfig before validateConfig→ResolveSurface).
+func (b *RegimeATRBlock) IsUseDefaultsOnly() bool {
+	if b == nil || len(b.raw) == 0 {
+		return false
+	}
+	if _, hasTrend := b.raw[regimeClassifierKey]; hasTrend {
+		return false
+	}
+	ud, hasUD := b.raw["use_defaults"]
+	return hasUD && ud == true
+}
+
 // Resolve returns the per-label entry for the given regime. The caller is
 // responsible for validating the block at config-load time so this can
 // assume label presence. Returns (entry, true) on hit, (zero, false) on miss.

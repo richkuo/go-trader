@@ -17,6 +17,14 @@ import pandas as pd
 # dynamically per-registry via registry_loader.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
+# shared_strategies/close is needed for the regime_atr parser used by the
+# user_close_defaults["regime_atr"] injection (#1134). Inserted lazily inside
+# the injector so a plain `--defaults system` run does not pay the path cost or
+# risk the import side effects of the close registry.
+_CLOSE_STRATEGIES_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'close')
+)
+
 from atr import ensure_atr_indicator
 from data_fetcher import load_cached_data
 from directional_certification import (
@@ -333,6 +341,117 @@ def _has_explicit_stop_owner(sc: dict) -> bool:
     return any(sc.get(k) is not None for k in _STOP_OWNER_KEYS)
 
 
+# #1134: reserved user_close_defaults section for standalone *_atr_regime
+# use_defaults-only stop owners. Distinct from the close-evaluator-name keys,
+# so it is NOT in _USER_CLOSE_DEFAULTS_SUPPORTED.
+_REGIME_ATR_RESERVED_KEY = "regime_atr"
+_REGIME_ATR_SUB_KEYS = ("stop_loss_atr_regime", "trailing_stop_atr_regime")
+
+
+def _regime_atr_block_is_use_defaults_only(raw) -> bool:
+    """Report whether a strategy's *_atr_regime raw shape is exactly
+    {"use_defaults": True} with no explicit trend_regime map — the shape
+    eligible for a user-layer regime_atr override. Mirrors the Go
+    RegimeATRBlock.IsUseDefaultsOnly (scheduler/regime_atr.go)."""
+    if not isinstance(raw, dict) or not raw:
+        return False
+    if "trend_regime" in raw:
+        return False
+    return raw.get("use_defaults") is True
+
+
+def _apply_user_close_default_regime_atr(
+    close_refs: list, user_defaults: Optional[dict], sc: Optional[dict],
+    config_path: str, strategy_id: str,
+) -> None:
+    """Inject the reserved user_close_defaults["regime_atr"] block onto
+    standalone use_defaults-only stop_loss_atr_regime / trailing_stop_atr_regime
+    owners (#1134, --defaults user). Mirrors the Go loader
+    (applyUserCloseDefaultRegimeATR):
+
+      - ratchet/manual strategies are skipped (``_uses_trailing_tp_ratchet_regime``)
+        so the type=manual synthesized ratchet trail is not overwritten;
+      - explicit per-strategy trend_regime maps win (use_defaults-only check);
+      - a malformed regime_atr block fails LOUDLY — parity with the Go loader,
+        which rejects it at validateUserCloseDefaults→parseRegimeATRBlock. This
+        is the explicit reject path the existing tp_tiers silent-skip lacks.
+    """
+    if not isinstance(user_defaults, dict):
+        return
+    # Detect the reserved key case-insensitively and reject a non-object value
+    # outright — parity with the Go loader, whose CloseDefaultsMap unmarshal
+    # rejects a non-object user_close_defaults["regime_atr"] at load. Using
+    # _user_close_default_entry here would hide a non-dict value as "absent".
+    entry = None
+    key_present = False
+    for k in user_defaults:
+        if str(k or "").strip().lower() == _REGIME_ATR_RESERVED_KEY:
+            key_present = True
+            entry = user_defaults[k]
+            break
+    if not key_present:
+        return
+    if not isinstance(entry, dict):
+        raise ValueError(
+            f"{config_path}: user_close_defaults[\"regime_atr\"] must be an object "
+            f"(strategy {strategy_id!r})"
+        )
+    # Reject stray keys inside the reserved section.
+    for k in sorted(entry):
+        if k not in _REGIME_ATR_SUB_KEYS:
+            raise ValueError(
+                f"{config_path}: user_close_defaults[\"regime_atr\"]: unknown key "
+                f"{k!r} (only {list(_REGIME_ATR_SUB_KEYS)} are allowed; "
+                f"strategy {strategy_id!r})"
+            )
+    # Validate each present sub-block via the regime_atr parser (reject path).
+    if _CLOSE_STRATEGIES_DIR not in sys.path:
+        sys.path.insert(0, _CLOSE_STRATEGIES_DIR)
+    from regime_atr import (  # type: ignore
+        CANONICAL_TREND_REGIME_LABELS,
+        REGIME_CLASSIFIER_KEY,
+        SURFACE_STOP_LOSS,
+        SURFACE_TRAILING,
+        parse_regime_atr_block,
+    )
+    sub_surfaces = {
+        "stop_loss_atr_regime": SURFACE_STOP_LOSS,
+        "trailing_stop_atr_regime": SURFACE_TRAILING,
+    }
+    parsed: dict = {}
+    for key in _REGIME_ATR_SUB_KEYS:
+        if key not in entry:
+            continue
+        raw = entry[key]
+        sub_ctx = f"user_close_defaults[\"regime_atr\"].{key}"
+        if not isinstance(raw, dict) or not raw:
+            raise ValueError(
+                f"{config_path}: {sub_ctx} must be a non-empty object "
+                f"(strategy {strategy_id!r})"
+            )
+        labels = CANONICAL_TREND_REGIME_LABELS
+        trend = raw.get(REGIME_CLASSIFIER_KEY)
+        if isinstance(trend, dict) and trend:
+            labels = tuple(sorted(trend.keys()))
+        _, errs = parse_regime_atr_block(
+            raw, sub_ctx, sub_surfaces[key], labels,
+        )
+        if errs:
+            raise ValueError(
+                f"{config_path}: " + "; ".join(errs)
+                + f" (strategy {strategy_id!r})"
+            )
+        parsed[key] = raw
+    # Inject onto standalone use_defaults-only owners, skipping ratchet/manual.
+    if sc is None or _uses_trailing_tp_ratchet_regime(close_refs):
+        return
+    for key in _REGIME_ATR_SUB_KEYS:
+        if key not in parsed:
+            continue
+        if _regime_atr_block_is_use_defaults_only(sc.get(key)):
+            sc[key] = deepcopy(parsed[key])
+
+
 def _apply_user_close_defaults(close_refs: list, user_defaults: Optional[dict],
                                sc: Optional[dict] = None) -> None:
     """Inject user_close_defaults into refs/strategy fields that omit them
@@ -517,6 +636,14 @@ def load_strategy_config(config_path: str, strategy_id: str,
         # falling through to the evaluators' built-in defaults.
         if inject_user_defaults:
             _apply_user_close_defaults(close_refs, cfg.get("user_close_defaults"), sc)
+            # #1134: the reserved regime_atr section overrides the system baseline
+            # for standalone *_atr_regime use_defaults-only owners. Mirrors the Go
+            # loader; a malformed block fails loudly (parity with Go load-time
+            # rejection) instead of the tp_tiers silent-skip.
+            _apply_user_close_default_regime_atr(
+                close_refs, cfg.get("user_close_defaults"), sc,
+                config_path, strategy_id,
+            )
         # #942 (D2.1): model the live entry transforms the backtester used to
         # drop silently. ``invert_signal`` flips BUY<->SELL; ``direction`` gates
         # which side may open. Both are applied to the signal in Backtester.run

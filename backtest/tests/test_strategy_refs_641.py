@@ -396,6 +396,154 @@ def test_defaults_user_ratchet_regime_trail_does_not_override_stop_owner(tmp_pat
     assert kwargs["trailing_stop_atr_mult"] == 3.0
 
 
+# ─── #1134: user_close_defaults["regime_atr"] standalone stop owners ────────
+
+_REGIME_ATR_ADX = {
+    "trend_regime": {
+        "trending_up": {"atr_multiple": 2.5},
+        "trending_down": {"atr_multiple": 2.5},
+        "ranging": {"atr_multiple": 1.75},
+    }
+}
+
+
+def _standalone_sl_regime_cfg(tmp_path, user_defaults, strategy=None):
+    strat = {
+        "id": "hl-slr",
+        "type": "perps",
+        "platform": "hyperliquid",
+        "open_strategy": {"name": "tema_cross_bd"},
+        "stop_loss_atr_regime": {"use_defaults": True},
+        "close_strategy": {"name": "tiered_tp_atr_live", "params": {
+            "tp_tiers": [{"atr_multiple": 3.0, "close_fraction": 1.0}]}},
+    }
+    if strategy:
+        strat.update(strategy)
+    return _write_full_config(tmp_path, {
+        "config_version": 15,
+        "regime": {"enabled": True, "period": 14, "adx_threshold": 20},
+        "user_close_defaults": user_defaults,
+        "strategies": [strat],
+    })
+
+
+def test_defaults_user_injects_regime_atr_standalone_owner(tmp_path):
+    path = _standalone_sl_regime_cfg(tmp_path, {"regime_atr": {
+        "stop_loss_atr_regime": _REGIME_ATR_ADX}})
+    kwargs = run_backtest.load_strategy_config(path, "hl-slr", inject_user_defaults=True)
+    sl = kwargs["stop_loss_atr_regime"]
+    assert sl["trend_regime"]["ranging"]["atr_multiple"] == 1.75
+    assert sl["trend_regime"]["trending_up"]["atr_multiple"] == 2.5
+
+
+def test_defaults_system_does_not_inject_regime_atr(tmp_path):
+    path = _standalone_sl_regime_cfg(tmp_path, {"regime_atr": {
+        "stop_loss_atr_regime": _REGIME_ATR_ADX}})
+    kwargs = run_backtest.load_strategy_config(path, "hl-slr", inject_user_defaults=False)
+    # The strategy's own {use_defaults: True} shape is left untouched; the
+    # backtester's regime resolver expands the system baseline at runtime.
+    assert kwargs["stop_loss_atr_regime"] == {"use_defaults": True}
+
+
+def test_defaults_user_regime_atr_explicit_strategy_map_wins(tmp_path):
+    explicit = {"trend_regime": {
+        "trending_up": {"atr_multiple": 2.0},
+        "trending_down": {"atr_multiple": 2.0},
+        "ranging": {"atr_multiple": 1.5},
+    }}
+    path = _standalone_sl_regime_cfg(tmp_path, {"regime_atr": {
+        "stop_loss_atr_regime": _REGIME_ATR_ADX}},
+        strategy={"stop_loss_atr_regime": explicit})
+    kwargs = run_backtest.load_strategy_config(path, "hl-slr", inject_user_defaults=True)
+    assert kwargs["stop_loss_atr_regime"]["trend_regime"]["ranging"]["atr_multiple"] == 1.5
+
+
+def test_defaults_user_regime_atr_skips_ratchet_regime(tmp_path):
+    # A trailing_tp_ratchet_regime close must NOT have its coupled trail owner
+    # overwritten by the reserved regime_atr section (Phase-1/#1133 disjointness).
+    path = _write_full_config(tmp_path, {
+        "config_version": 15,
+        "regime": {"enabled": True, "period": 14, "adx_threshold": 20},
+        "user_close_defaults": {
+            "regime_atr": {"trailing_stop_atr_regime": {
+                "trend_regime": {
+                    "trending_up": {"atr_multiple": 9.0},
+                    "trending_down": {"atr_multiple": 9.0},
+                    "ranging": {"atr_multiple": 9.0},
+                }}},
+            "trailing_tp_ratchet_regime": {
+                "tp_tiers": {
+                    "trending_up": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}],
+                    "trending_down": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}],
+                    "ranging": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}],
+                },
+                "trailing_stop_atr_regime": {
+                    "trend_regime": {
+                        "trending_up": {"atr_multiple": 2.75},
+                        "trending_down": {"atr_multiple": 2.75},
+                        "ranging": {"atr_multiple": 1.5},
+                    }},
+            },
+        },
+        "strategies": [{
+            "id": "hl-rr",
+            "type": "perps",
+            "platform": "hyperliquid",
+            "open_strategy": {"name": "tema_cross_bd"},
+            "close_strategy": {"name": "trailing_tp_ratchet_regime", "params": {"use_defaults": True}},
+        }],
+    })
+    kwargs = run_backtest.load_strategy_config(path, "hl-rr", inject_user_defaults=True)
+    # The #1133 ratchet-coupled trail (1.5) wins; the regime_atr value (9.0) did not overwrite it.
+    assert kwargs["trailing_stop_atr_regime"]["trend_regime"]["ranging"]["atr_multiple"] == 1.5
+
+
+def test_defaults_user_regime_atr_use_defaults_no_op(tmp_path):
+    # A user regime_atr sub-block set to use_defaults:true is a documented no-op:
+    # it re-expands the system baseline, so the strategy resolves identically to
+    # the system table (no distinct middle layer).
+    path = _standalone_sl_regime_cfg(tmp_path, {"regime_atr": {
+        "stop_loss_atr_regime": {"use_defaults": True}}})
+    kwargs = run_backtest.load_strategy_config(path, "hl-slr", inject_user_defaults=True)
+    # The use_defaults shape is applied verbatim (re-expands to system at runtime).
+    assert kwargs["stop_loss_atr_regime"] == {"use_defaults": True}
+
+
+def test_defaults_user_regime_atr_malformed_rejects(tmp_path):
+    # close_fraction on the SL surface is invalid; Go rejects at load, so the
+    # backtester must reject too (explicit reject path, not silent skip).
+    bad = {"trend_regime": {"trending_up": {"close_fraction": 0.5}}}
+    path = _standalone_sl_regime_cfg(tmp_path, {"regime_atr": {
+        "stop_loss_atr_regime": bad}})
+    with pytest.raises(ValueError, match="close_fraction is only allowed"):
+        run_backtest.load_strategy_config(path, "hl-slr", inject_user_defaults=True)
+
+
+def test_defaults_user_regime_atr_stray_key_rejects(tmp_path):
+    path = _standalone_sl_regime_cfg(tmp_path, {"regime_atr": {
+        "stop_loss_atr_regime": _REGIME_ATR_ADX, "bogus": 1}})
+    with pytest.raises(ValueError, match="unknown key"):
+        run_backtest.load_strategy_config(path, "hl-slr", inject_user_defaults=True)
+
+
+def test_defaults_user_regime_atr_non_object_entry_rejects(tmp_path):
+    path = _standalone_sl_regime_cfg(tmp_path, {"regime_atr": "not an object"})
+    with pytest.raises(ValueError, match="must be an object"):
+        run_backtest.load_strategy_config(path, "hl-slr", inject_user_defaults=True)
+
+
+def test_defaults_user_regime_atr_standalone_trailing_owner(tmp_path):
+    path = _standalone_sl_regime_cfg(tmp_path, {"regime_atr": {
+        "trailing_stop_atr_regime": _REGIME_ATR_ADX}},
+        strategy={
+            "stop_loss_atr_regime": None,
+            "trailing_stop_atr_regime": {"use_defaults": True},
+        })
+    kwargs = run_backtest.load_strategy_config(path, "hl-slr", inject_user_defaults=True)
+    assert kwargs["trailing_stop_atr_regime"]["trend_regime"]["ranging"]["atr_multiple"] == 1.75
+    assert kwargs["stop_loss_atr_regime"] is None
+
+
 def test_load_strategy_config_rejects_multi_legacy_close_array(tmp_path):
     # #842: the live Go loader rejects a len>1 close_strategies array; the
     # backtester loader must reject it the same way instead of running it under
