@@ -102,6 +102,14 @@ func defaultHyperliquidLiveCloser(symbol string, partialSz *float64, cancelStopL
 	return result, err
 }
 
+func defaultHyperliquidForceCloseCloser(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+	result, stderr, err := RunHyperliquidCloseCancelAfterFill(hyperliquidLiveCloseScript, symbol, partialSz, cancelStopLossOIDs)
+	if stderr != "" {
+		fmt.Fprintf(os.Stderr, "[hl-force-close] %s stderr: %s\n", symbol, stderr)
+	}
+	return result, err
+}
+
 // fetchHyperliquidBalance fetches the live USDC balance (accountValue) from
 // the Hyperliquid clearinghouseState endpoint for a given address.
 // Returns 0 and a non-nil error if the request fails or the response is unexpected.

@@ -273,13 +273,14 @@ Hand-placed positions (or TradingView alerts) tracked for P&L, stops/TPs, and Di
 ./go-trader manual-update-sl hl-manual-btc --trigger 66000
 ./go-trader manual-cancel-sl hl-manual-btc
 ./go-trader manual-close hl-manual-btc [--qty 0.025]
+./go-trader force-close hl-tcross-eth-live [--qty 0.025]                 # live HL perps strategy close
 ```
 
 Sizing: mutually exclusive `--size` / `--notional` / `--margin` (default `--margin 50` when omitted). `--side` defaults to `long`. Omitting `--atr` auto-fetches ATR(14); leverage-aware fallback if fetch fails. SL + tiered TPs placed inline so the position is never naked.
 
 **Close defaults (#1115/#1135):** with `regime.enabled` and a resolvable per-regime trail, manual defaults to `trailing_tp_ratchet_regime` (regime trail owns the SL); otherwise `tiered_tp_atr_live` + scalar **2.0×ATR** SL (#1121). Override via `close_strategy`, stop fields, or `user_defaults.manual` (hot-reloadable via SIGHUP). Fleet close ladders live under `user_defaults.close`; standalone `*_atr_regime` defaults live under `user_defaults.regime_atr`.
 
-`manual-update-sl` / `manual-cancel-sl` queue daemon-side cancel-then-place edits — rejected when automated ATR/regime/trailing protection would re-pin next cycle. `--dry-run` previews without exchange calls. Limit opens are post-only (ALO) by default or GTC with `--tif Gtc`; scheduler polls fills each cycle.
+`manual-update-sl` / `manual-cancel-sl` queue daemon-side cancel-then-place edits — rejected when automated ATR/regime/trailing protection would re-pin next cycle. `force-close` is for live Hyperliquid `type=perps` strategy positions; it submits the reduce-only close and queues the fill for the scheduler to adopt into state/trades. `--dry-run` previews without exchange calls. Limit opens are post-only (ALO) by default or GTC with `--tif Gtc`; scheduler polls fills each cycle.
 
 ---
 
