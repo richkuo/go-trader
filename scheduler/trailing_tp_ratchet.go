@@ -76,7 +76,8 @@ func defaultTrailingRatchetTiers() []trailingRatchetTier {
 //     the runner survives a nascent breakout instead of being fully scaled out.
 //
 // Each group's first-rung trail couples to that group's opening trail in
-// regimeATRDefaults.Trailing (clean 2.0 / choppy 2.0 / ranging family 1.0), so
+// regimeATRDefaults.Trailing (#1120: clean 2.5 / choppy 2.25 / ranging_quiet 1.0
+// / ranging_volatile 1.25 / ranging_directional* 1.5), so
 // every first rung is <= 1.0 for the ranging substates. The split values are
 // starting priors — validate via the #1058 7-state backtester (item 4) before
 // relying on the exact geometry. Mirrors DEFAULT_RATCHET_TIERS_BY_GROUP in
