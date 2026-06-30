@@ -645,3 +645,134 @@ func TestRegimeATRBlockIsUseDefaultsOnly(t *testing.T) {
 		t.Fatal("explicit trend_regime must not count as use_defaults-only")
 	}
 }
+
+// --- #1134 synthesis: end-to-end LoadConfig coverage grafted from PR #1143 (GLM 5.2) ---
+// The tests above already exercise the regime_atr injection at the apply/validator
+// level. These three lift it to the full LoadConfig file-load path, closing this PR's
+// three scored soft spots: a malformed block rejected through load, the composite
+// bare-covers rule through load, and the sole-SL-owner mutex (#605) verified at load.
+
+// TestUserCloseDefaults_RegimeATRLoadConfigRejectsMalformed proves a malformed
+// user regime_atr sub-block (close_fraction on an SL surface, which is only legal
+// inside close-evaluator tiers) is rejected through the real LoadConfig path, not
+// just by calling validateUserCloseDefaults directly.
+func TestUserCloseDefaults_RegimeATRLoadConfigRejectsMalformed(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
+		"user_close_defaults": {
+			"regime_atr": {"stop_loss_atr_regime": {"trend_regime": {"trending_up": {"close_fraction": 0.5}}}}
+		},
+		"strategies": [{
+			"id": "hl-eth-slregime",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"stop_loss_atr_regime": {"use_defaults": true},
+			"close_strategy": {"name": "tiered_tp_atr_live", "params": {"tp_tiers": [{"atr_multiple": 3.0, "close_fraction": 1.0}]}}
+		}]
+	}`
+	if _, err := LoadConfig(writeTestConfig(t, dir, cfgJSON)); err == nil {
+		t.Fatal("LoadConfig accepted a malformed regime_atr sub-block (close_fraction on SL surface)")
+	} else if !strings.Contains(err.Error(), "close_fraction is only allowed") {
+		t.Fatalf("expected close_fraction rejection through LoadConfig, got: %v", err)
+	}
+}
+
+// TestUserCloseDefaults_RegimeATRLoadConfigCompositeBareCoversSubs proves the #1124
+// family rule (a bare ranging_directional entry covers its _up/_down sub-labels) holds
+// through the full LoadConfig path for a composite-classifier window, with sub-label
+// resolution falling back to the bare entry.
+func TestUserCloseDefaults_RegimeATRLoadConfigCompositeBareCoversSubs(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"regime": {"enabled": true, "windows": {"daily": {"classifier": "composite", "period": 24}}},
+		"user_close_defaults": {
+			"regime_atr": {"stop_loss_atr_regime": {
+				"trend_regime": {
+					"trending_up_clean": {"atr_multiple": 2.5},
+					"trending_up_choppy": {"atr_multiple": 2.5},
+					"trending_down_clean": {"atr_multiple": 2.5},
+					"trending_down_choppy": {"atr_multiple": 2.5},
+					"ranging_quiet": {"atr_multiple": 1.5},
+					"ranging_volatile": {"atr_multiple": 1.5},
+					"ranging_directional": {"atr_multiple": 1.25}
+				}
+			}}
+		},
+		"strategies": [{
+			"id": "hl-eth-slregime-comp",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"regime_atr_window": "daily",
+			"stop_loss_atr_regime": {"use_defaults": true},
+			"close_strategy": {"name": "tiered_tp_atr_live", "params": {"tp_tiers": [{"atr_multiple": 3.0, "close_fraction": 1.0}]}}
+		}]
+	}`
+	cfg, err := LoadConfig(writeTestConfig(t, dir, cfgJSON))
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if got, ok := resolveRegimeATR(*sc.StopLossATRRegime, "trending_up_clean"); !ok || got != 2.5 {
+		t.Fatalf("trending_up_clean SL = (%g, %v), want (2.5, true)", got, ok)
+	}
+	// A sub-label with no explicit entry falls back to the bare ranging_directional (1.25).
+	if got, ok := resolveRegimeATR(*sc.StopLossATRRegime, "ranging_directional_up"); !ok || got != 1.25 {
+		t.Fatalf("ranging_directional_up SL = (%g, %v), want (1.25, true) via bare fallback", got, ok)
+	}
+}
+
+// TestUserCloseDefaults_RegimeATRLoadConfigSoleOwnerNoScalarSecondOwner proves that
+// injecting a user regime_atr SL owner does NOT also attract the #605
+// default_stop_loss_atr_mult scalar — the IsConfigured() guard at the scalar-default
+// gate self-suppresses, so the strategy ends with exactly one SL owner (no mutex
+// violation, no accidental second owner).
+func TestUserCloseDefaults_RegimeATRLoadConfigSoleOwnerNoScalarSecondOwner(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
+		"default_stop_loss_atr_mult": 1.0,
+		"user_close_defaults": {
+			"regime_atr": {
+				"stop_loss_atr_regime": {
+					"trend_regime": {
+						"trending_up": {"atr_multiple": 2.5},
+						"trending_down": {"atr_multiple": 2.5},
+						"ranging": {"atr_multiple": 1.75}
+					}
+				}
+			}
+		},
+		"strategies": [{
+			"id": "hl-eth-slregime",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"stop_loss_atr_regime": {"use_defaults": true},
+			"close_strategy": {"name": "tiered_tp_atr_live", "params": {"tp_tiers": [{"atr_multiple": 3.0, "close_fraction": 1.0}]}}
+		}]
+	}`
+	cfg, err := LoadConfig(writeTestConfig(t, dir, cfgJSON))
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if sc.StopLossATRRegime == nil || !sc.StopLossATRRegime.IsConfigured() {
+		t.Fatal("StopLossATRRegime owner was not injected")
+	}
+	if got, ok := resolveRegimeATR(*sc.StopLossATRRegime, "ranging"); !ok || got != 1.75 {
+		t.Fatalf("ranging SL = (%g, %v), want user regime_atr (1.75, true)", got, ok)
+	}
+	// The #605 scalar default must self-suppress in the presence of the regime owner.
+	if sc.StopLossATRMult != nil {
+		t.Fatalf("StopLossATRMult = %v, want nil — regime owner is the sole SL owner (#605 mutex)", *sc.StopLossATRMult)
+	}
+}
