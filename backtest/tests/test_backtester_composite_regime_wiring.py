@@ -282,6 +282,12 @@ def test_load_strategy_config_no_windows_yields_none(tmp_path):
 
 
 def test_regime_timeframe_override_aligns_without_lookahead(monkeypatch):
+    """``load_cached_data`` indexes each HTF candle by its OPEN time, so a
+    candle's label (derived from its full OHLC) isn't actually known until
+    the candle CLOSES — i.e. at the next HTF row's open. An LTF bar that
+    falls inside a still-forming HTF candle must never see that candle's
+    label; it should see the PRIOR (already-closed) candle's label, or ""
+    if none has closed yet."""
     trade = pd.DataFrame(
         {"open": [100.0, 101.0, 102.0, 103.0],
          "high": [101.0, 102.0, 103.0, 104.0],
@@ -289,16 +295,20 @@ def test_regime_timeframe_override_aligns_without_lookahead(monkeypatch):
          "close": [100.0, 101.0, 102.0, 103.0],
          "volume": [1000.0] * 4},
         index=pd.to_datetime([
-            "2024-01-01 12:00:00+00:00",
-            "2024-01-02 12:00:00+00:00",
-            "2024-01-03 11:00:00+00:00",
-            "2024-01-03 12:00:00+00:00",
+            "2024-01-01 12:00:00+00:00",  # inside row0's (still-open) candle
+            "2024-01-02 12:00:00+00:00",  # row0 closed (at row1's open); inside row1's candle
+            "2024-01-03 11:00:00+00:00",  # still inside row1's (still-open) candle
+            "2024-01-03 12:00:00+00:00",  # row1 closed exactly here (row2's open)
         ]),
     )
     regime_source = pd.DataFrame(
-        {"open": [1.0, 2.0], "high": [1.0, 2.0], "low": [1.0, 2.0],
-         "close": [1.0, 2.0], "volume": [1000.0, 1000.0]},
-        index=pd.to_datetime(["2024-01-01 00:00:00+00:00", "2024-01-03 12:00:00+00:00"]),
+        {"open": [1.0, 2.0, 3.0], "high": [1.0, 2.0, 3.0], "low": [1.0, 2.0, 3.0],
+         "close": [1.0, 2.0, 3.0], "volume": [1000.0, 1000.0, 1000.0]},
+        index=pd.to_datetime([
+            "2024-01-01 00:00:00+00:00",
+            "2024-01-02 00:00:00+00:00",
+            "2024-01-03 12:00:00+00:00",
+        ]),
     )
 
     def fake_load(symbol, timeframe, start_date=None):
@@ -311,11 +321,11 @@ def test_regime_timeframe_override_aligns_without_lookahead(monkeypatch):
         assert period == 14
         assert adx_threshold == 20.0
         assert windows_spec == COMPOSITE_SPEC
-        df["regime"] = ["macro_old", "macro_new"]
-        df["regime_score"] = [0.1, 0.9]
-        df["adx"] = [11.0, 29.0]
-        df["plus_di"] = [4.0, 8.0]
-        df["minus_di"] = [6.0, 2.0]
+        df["regime"] = ["macro_row0", "macro_row1", "macro_row2"]
+        df["regime_score"] = [0.1, 0.5, 0.9]
+        df["adx"] = [11.0, 19.0, 29.0]
+        df["plus_di"] = [4.0, 6.0, 8.0]
+        df["minus_di"] = [6.0, 4.0, 2.0]
 
     monkeypatch.setattr(run_backtest, "load_cached_data", fake_load)
     monkeypatch.setattr(run_backtest, "ensure_regime_columns", fake_ensure)
@@ -332,8 +342,55 @@ def test_regime_timeframe_override_aligns_without_lookahead(monkeypatch):
     )
 
     assert out is not None
-    assert out["regime"].tolist() == ["macro_old", "macro_old", "macro_old", "macro_new"]
-    assert out["adx"].tolist() == [11.0, 11.0, 11.0, 29.0]
+    # row0's label never leaks before it closes (Jan2 00:00); row2's label
+    # never appears at all (it never closes within this trade index).
+    assert out["regime"].tolist() == ["", "macro_row0", "macro_row0", "macro_row1"]
+    assert out["adx"].tolist() == [0.0, 11.0, 11.0, 19.0]
+
+
+def test_profile_label_series_cross_timeframe_aligns_without_lookahead(monkeypatch):
+    """Same open-vs-close-time leak as ``_aligned_regime_columns`` above, for
+    the ``_profile_label_series`` cross-timeframe branch (#998 profile
+    allocation read at a different ``regime.timeframe`` than the trade
+    bars)."""
+    trade_index = pd.to_datetime([
+        "2024-01-01 12:00:00+00:00",
+        "2024-01-02 12:00:00+00:00",
+        "2024-01-03 11:00:00+00:00",
+        "2024-01-03 12:00:00+00:00",
+    ])
+    trade = pd.DataFrame({"close": [100.0, 101.0, 102.0, 103.0]}, index=trade_index)
+    regime_source = pd.DataFrame(
+        {"open": [1.0, 2.0, 3.0], "high": [1.0, 2.0, 3.0], "low": [1.0, 2.0, 3.0],
+         "close": [1.0, 2.0, 3.0], "volume": [1000.0, 1000.0, 1000.0]},
+        index=pd.to_datetime([
+            "2024-01-01 00:00:00+00:00",
+            "2024-01-02 00:00:00+00:00",
+            "2024-01-03 12:00:00+00:00",
+        ]),
+    )
+
+    def fake_load(symbol, timeframe, start_date=None):
+        assert symbol == "BTC/USDT"
+        assert timeframe == "1d"
+        assert start_date == "2024-01-01"
+        return regime_source.copy()
+
+    monkeypatch.setattr(run_backtest, "load_cached_data", fake_load)
+    monkeypatch.setattr(
+        run_backtest, "compute_regime_composite",
+        lambda df, period=20, thresholds=None: pd.DataFrame(
+            {"regime": ["macro_row0", "macro_row1", "macro_row2"]}, index=df.index
+        ),
+    )
+
+    out = run_backtest._profile_label_series(
+        trade, "BTC/USDT", "1h", "1d", "2024-01-01",
+        {"classifier": "composite", "period": 20},
+    )
+
+    assert out is not None
+    assert out.tolist() == ["", "macro_row0", "macro_row0", "macro_row1"]
 
 
 # ─── CLI: --regime-windows-spec-json parsing + rejections ────────────────────

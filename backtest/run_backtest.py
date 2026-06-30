@@ -255,9 +255,18 @@ def _aligned_regime_columns(
     """Compute regime labels on ``regime_timeframe`` and align backward to
     trading bars.
 
-    The returned columns are bar-close decision inputs. Backtester.run performs
-    the usual one-row shift before entry gating, so a trading bar only consumes
-    the most recently closed regime candle known at the prior decision point.
+    The returned columns are bar-close decision inputs. ``load_cached_data``
+    indexes each HTF candle by its OPEN time, so a row's regime label (derived
+    from that candle's full OHLC) is only actually known once the candle
+    CLOSES — i.e. at the next HTF row's index, assuming contiguous candles.
+    Shifting the HTF columns by one row before reindexing onto ``trade_index``
+    makes a label available starting at its candle's close instead of its
+    open, so an LTF bar inside a still-forming HTF candle never sees that
+    candle's (not-yet-known) label. Backtester.run then applies the usual
+    one-row LTF shift on top (a separate concern: bar N's regime governs the
+    decision that fills at bar N+1), so a trading bar only ever consumes the
+    most recently CLOSED regime candle known at the prior decision point —
+    matching live's ``latest_regime`` over closed-candle OHLCV.
     """
     regime_df = load_cached_data(symbol, regime_timeframe, start_date=since)
     if regime_df.empty:
@@ -270,7 +279,7 @@ def _aligned_regime_columns(
         adx_threshold=regime_adx_threshold,
         windows_spec=regime_windows_spec,
     )
-    cols = source.loc[:, list(_REGIME_COLUMNS)]
+    cols = source.loc[:, list(_REGIME_COLUMNS)].shift(1)
     aligned = cols.reindex(trade_index, method="ffill")
     aligned["regime"] = aligned["regime"].fillna("").astype(str)
     for col in _REGIME_COLUMNS:
@@ -327,7 +336,11 @@ def _profile_label_series(
     if regime_df.empty:
         print(f"No regime profile data available for {symbol} {tf}")
         return None
-    labels = _build_profile_label_series(regime_df.copy().sort_index(), window_spec)
+    # Shift one HTF row before reindexing — same open-vs-close-time leak as
+    # ``_aligned_regime_columns`` (a label is only known once its HTF candle
+    # closes, i.e. at the NEXT HTF row's index); Backtester.run's own
+    # shift(1) on ``_profile_label`` is a separate, LTF-granularity concern.
+    labels = _build_profile_label_series(regime_df.copy().sort_index(), window_spec).shift(1)
     return labels.reindex(df.index, method="ffill").fillna("").astype(str)
 
 
