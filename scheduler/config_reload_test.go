@@ -1525,6 +1525,32 @@ func TestApplyHotReloadConfigAllowsUserCloseDefaultRegimeTrailEquivalentEditWith
 	}
 }
 
+func TestApplyHotReloadConfigCopiesFlatStandaloneRegimeATRDefault(t *testing.T) {
+	cfg := loadUserDefaultStandaloneRegimeATRReloadConfig(t, explicitUserDefaultStopLossJSON(2.0, 2.0, 1.5))
+	next := loadUserDefaultStandaloneRegimeATRReloadConfig(t, explicitUserDefaultStopLossJSON(2.25, 2.25, 1.25))
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{}},
+	}}
+
+	changes, err := applyHotReloadConfig(cfg, next, state, nil, nil)
+	if err != nil {
+		t.Fatalf("applyHotReloadConfig: %v", err)
+	}
+	joined := strings.Join(changes, "\n")
+	if !strings.Contains(joined, "user_close_defaults") || !strings.Contains(joined, "stop_loss_atr_regime") {
+		t.Fatalf("changes=%v, want user_close_defaults and stop_loss_atr_regime entries", changes)
+	}
+	got, ok := resolveRegimeATR(*cfg.Strategies[0].StopLossATRRegime, "ranging")
+	if !ok || got != 1.25 {
+		t.Fatalf("reloaded ranging SL = (%g, %v), want (1.25, true)", got, ok)
+	}
+	next.Strategies[0].StopLossATRRegime.TrendRegime["ranging"] = RegimeATREntry{ATR: 9.0}
+	got, ok = resolveRegimeATR(*cfg.Strategies[0].StopLossATRRegime, "ranging")
+	if !ok || got != 1.25 {
+		t.Fatalf("reloaded standalone SL aliases next after mutation: (%g, %v)", got, ok)
+	}
+}
+
 func loadUserDefaultRatchetRegimeReloadConfig(t *testing.T, strategyJSON, trailJSON string) *Config {
 	t.Helper()
 	cfgJSON := fmt.Sprintf(`{
@@ -1546,6 +1572,44 @@ func loadUserDefaultRatchetRegimeReloadConfig(t *testing.T, strategyJSON, trailJ
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	return cfg
+}
+
+func loadUserDefaultStandaloneRegimeATRReloadConfig(t *testing.T, slJSON string) *Config {
+	t.Helper()
+	cfgJSON := fmt.Sprintf(`{
+		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
+		"user_close_defaults": {
+			"regime_atr": {
+				"stop_loss_atr_regime": %s
+			}
+		},
+		"strategies": [{
+			"id": "hl-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"leverage": 1,
+			"max_drawdown_pct": 20,
+			"stop_loss_atr_regime": {"use_defaults": true}
+		}]
+	}`, slJSON)
+	cfg, err := LoadConfig(writeTestConfig(t, t.TempDir(), cfgJSON))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	return cfg
+}
+
+func explicitUserDefaultStopLossJSON(up, down, ranging float64) string {
+	return fmt.Sprintf(`{
+		"trend_regime": {
+			"trending_up": {"atr_multiple": %g},
+			"trending_down": {"atr_multiple": %g},
+			"ranging": {"atr_multiple": %g}
+		}
+	}`, up, down, ranging)
 }
 
 func explicitUserDefaultTrailJSON(up, down, ranging float64) string {

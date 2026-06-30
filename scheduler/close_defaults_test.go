@@ -108,6 +108,9 @@ func TestValidateUserCloseDefaults(t *testing.T) {
 		{"dynamic excluded", CloseDefaultsMap{"tiered_tp_atr_live_regime_dynamic": {"tp_tiers": []interface{}{}}}, "not a tp_tiers close evaluator"},
 		// regime tiered-ATR override is deferred to #870 (use_defaults baseline interaction).
 		{"tiered regime excluded", CloseDefaultsMap{"tiered_tp_atr_regime": {"tp_tiers": []interface{}{}}}, "not a tp_tiers close evaluator"},
+		{"regime_atr stray key", CloseDefaultsMap{"regime_atr": {"stop_loss_atr_regime": ratchetRegimeTrailRaw(2.0, 2.0, 1.5), "foo": 1}}, "unknown key"},
+		{"regime_atr empty", CloseDefaultsMap{"regime_atr": {}}, "must not be empty"},
+		{"regime_atr bad stop shape", CloseDefaultsMap{"regime_atr": {"stop_loss_atr_regime": map[string]interface{}{"trend_regime": map[string]interface{}{"trending_up": map[string]interface{}{"close_fraction": 0.5}}}}}, "close_fraction is only allowed inside close-evaluator tiers"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -394,5 +397,251 @@ func TestUserCloseDefaults_ManualDefaultsTrailWinsOverUserTrail(t *testing.T) {
 	sc := cfg.Strategies[0]
 	if got, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, "trending_up"); !ok || got != 3.5 {
 		t.Fatalf("trending_up trail = (%g, %v), want manual default (3.5, true)", got, ok)
+	}
+}
+
+func TestUserCloseDefaults_RegimeATRInjectsStandaloneStopLoss(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
+		"user_close_defaults": {
+			"regime_atr": {
+				"stop_loss_atr_regime": {
+					"trend_regime": {
+						"trending_up": {"atr_multiple": 2.25},
+						"trending_down": {"atr_multiple": 2.25},
+						"ranging": {"atr_multiple": 1.25}
+					}
+				}
+			}
+		},
+		"strategies": [{
+			"id": "hl-eth-sl-regime",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"stop_loss_atr_regime": {"use_defaults": true}
+		}]
+	}`
+	cfg, err := LoadConfig(writeTestConfig(t, dir, cfgJSON))
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if got, ok := resolveRegimeATR(*sc.StopLossATRRegime, "ranging"); !ok || got != 1.25 {
+		t.Fatalf("ranging SL = (%g, %v), want user default (1.25, true)", got, ok)
+	}
+}
+
+func TestUserCloseDefaults_RegimeATRInjectsStandaloneTrailingStop(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
+		"user_close_defaults": {
+			"regime_atr": {
+				"trailing_stop_atr_regime": {
+					"trend_regime": {
+						"trending_up": {"atr_multiple": 2.75},
+						"trending_down": {"atr_multiple": 2.75},
+						"ranging": {"atr_multiple": 1.25}
+					}
+				}
+			}
+		},
+		"strategies": [{
+			"id": "hl-eth-trail-regime",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"trailing_stop_atr_regime": {"use_defaults": true}
+		}]
+	}`
+	cfg, err := LoadConfig(writeTestConfig(t, dir, cfgJSON))
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if got, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, "ranging"); !ok || got != 1.25 {
+		t.Fatalf("ranging trail = (%g, %v), want user default (1.25, true)", got, ok)
+	}
+}
+
+func TestUserCloseDefaults_RegimeATRStrategyExplicitWins(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
+		"user_close_defaults": {
+			"regime_atr": {
+				"stop_loss_atr_regime": {
+					"trend_regime": {
+						"trending_up": {"atr_multiple": 9.0},
+						"trending_down": {"atr_multiple": 9.0},
+						"ranging": {"atr_multiple": 9.0}
+					}
+				}
+			}
+		},
+		"strategies": [{
+			"id": "hl-eth-sl-regime",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"stop_loss_atr_regime": {
+				"trend_regime": {
+					"trending_up": {"atr_multiple": 2.0},
+					"trending_down": {"atr_multiple": 2.0},
+					"ranging": {"atr_multiple": 1.5}
+				}
+			}
+		}]
+	}`
+	cfg, err := LoadConfig(writeTestConfig(t, dir, cfgJSON))
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if got, ok := resolveRegimeATR(*sc.StopLossATRRegime, "ranging"); !ok || got != 1.5 {
+		t.Fatalf("ranging SL = (%g, %v), want per-strategy explicit (1.5, true)", got, ok)
+	}
+}
+
+func TestUserCloseDefaults_RegimeATRUseDefaultsUserBlockIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
+		"user_close_defaults": {
+			"regime_atr": {
+				"stop_loss_atr_regime": {"use_defaults": true}
+			}
+		},
+		"strategies": [{
+			"id": "hl-eth-sl-regime",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"stop_loss_atr_regime": {"use_defaults": true}
+		}]
+	}`
+	cfg, err := LoadConfig(writeTestConfig(t, dir, cfgJSON))
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if got, ok := resolveRegimeATR(*sc.StopLossATRRegime, "ranging"); !ok || got != regimeATRDefaults.StopLoss["ranging"].ATR {
+		t.Fatalf("ranging SL = (%g, %v), want system default (%g, true)", got, ok, regimeATRDefaults.StopLoss["ranging"].ATR)
+	}
+}
+
+func TestUserCloseDefaults_RegimeATRCompositeBareCoversDirectionalSubs(t *testing.T) {
+	raw := composite7StateATR(1.75)
+	tr := raw[regimeClassifierKey].(map[string]interface{})
+	delete(tr, "ranging_directional_up")
+	delete(tr, "ranging_directional_down")
+
+	cfg := &Config{
+		Regime: &RegimeConfig{
+			Enabled: true,
+			Windows: RegimeWindowsMap{
+				"daily": {Classifier: regimeClassifierComposite, Period: 24},
+			},
+		},
+		UserCloseDefaults: CloseDefaultsMap{
+			"regime_atr": {
+				"stop_loss_atr_regime": raw,
+			},
+		},
+		Strategies: []StrategyConfig{{
+			ID:                "hl-eth-composite",
+			Type:              "perps",
+			Platform:          "hyperliquid",
+			RegimeATRWindow:   "daily",
+			StopLossATRRegime: &RegimeATRBlock{raw: map[string]interface{}{"use_defaults": true}},
+		}},
+	}
+	if errs := validateUserCloseDefaults(cfg.UserCloseDefaults); len(errs) != 0 {
+		t.Fatalf("validateUserCloseDefaults rejected bare-covering composite block: %v", errs)
+	}
+	applyUserCloseDefaultRegimeATRs(cfg)
+	if errs := validateRegimeATRConfig(cfg); len(errs) != 0 {
+		t.Fatalf("validateRegimeATRConfig rejected injected composite block: %v", errs)
+	}
+	block := cfg.Strategies[0].StopLossATRRegime
+	for _, label := range []string{"ranging_directional", "ranging_directional_up", "ranging_directional_down"} {
+		if got, ok := resolveRegimeATR(*block, label); !ok || got != 1.75 {
+			t.Fatalf("resolveRegimeATR(%q) = (%g, %v), want (1.75, true)", label, got, ok)
+		}
+	}
+}
+
+func TestUserCloseDefaults_RegimeATRSkipsManualRatchet(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
+		"user_close_defaults": {
+			"regime_atr": {
+				"trailing_stop_atr_regime": {
+					"trend_regime": {
+						"trending_up": {"atr_multiple": 9.0},
+						"trending_down": {"atr_multiple": 9.0},
+						"ranging": {"atr_multiple": 9.0}
+					}
+				}
+			},
+			"trailing_tp_ratchet_regime": {
+				"tp_tiers": {
+					"trending_up": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}],
+					"trending_down": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}],
+					"ranging": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}]
+				},
+				"trailing_stop_atr_regime": {
+					"trend_regime": {
+						"trending_up": {"atr_multiple": 2.75},
+						"trending_down": {"atr_multiple": 2.75},
+						"ranging": {"atr_multiple": 1.5}
+					}
+				}
+			}
+		},
+		"strategies": [{
+			"id": "hl-manual-eth",
+			"type": "manual",
+			"platform": "hyperliquid",
+			"symbol": "ETH",
+			"timeframe": "1h",
+			"capital": 1000,
+			"leverage": 20,
+			"max_drawdown_pct": 20
+		}]
+	}`
+	cfg, err := LoadConfig(writeTestConfig(t, dir, cfgJSON))
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	sc := cfg.Strategies[0]
+	if got, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, "trending_up"); !ok || got != 2.75 {
+		t.Fatalf("trending_up trail = (%g, %v), want #1133 ratchet-coupled default (2.75, true), not regime_atr", got, ok)
+	}
+}
+
+func TestRegimeATRBlockIsUseDefaultsOnly(t *testing.T) {
+	if regimeATRBlockIsUseDefaultsOnly(nil) {
+		t.Fatal("nil block is not use_defaults-only")
+	}
+	if regimeATRBlockIsUseDefaultsOnly(&RegimeATRBlock{raw: map[string]interface{}{"use_defaults": true}}) != true {
+		t.Fatal("expected use_defaults-only")
+	}
+	if regimeATRBlockIsUseDefaultsOnly(&RegimeATRBlock{raw: map[string]interface{}{
+		"use_defaults": true,
+		"trend_regime": map[string]interface{}{"ranging": map[string]interface{}{"atr_multiple": 1.0}},
+	}}) {
+		t.Fatal("explicit trend_regime must not count as use_defaults-only")
 	}
 }
