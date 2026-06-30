@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -448,6 +449,22 @@ func TestParseHyperliquidCloseOutput_AlreadyFlatFieldParsed(t *testing.T) {
 	}
 	if !result.Close.AlreadyFlat {
 		t.Errorf("AlreadyFlat = false, want true — Go side cannot route to AlreadyFlat slice without this field")
+	}
+}
+
+func TestBuildHyperliquidCloseArgs_CancelAfterClose(t *testing.T) {
+	sz := 1.25
+	got := buildHyperliquidCloseArgs("ETH", &sz, []int64{111, 0, 222}, true)
+	want := []string{
+		"--symbol=ETH",
+		"--mode=live",
+		"--sz=1.25",
+		"--cancel-stop-loss-oid=111",
+		"--cancel-stop-loss-oid=222",
+		"--cancel-protection-after-close",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("close args = %v, want %v", got, want)
 	}
 }
 

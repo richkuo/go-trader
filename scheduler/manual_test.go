@@ -868,6 +868,135 @@ func TestApplyManualAction_PerpsPartialForceCloseClearsCanceledProtection(t *tes
 	}
 }
 
+func TestApplyManualAction_PerpsForceCloseDuplicateOIDSkipsPartial(t *testing.T) {
+	stratID := "hl-tcross-eth-live"
+	now := time.Now().UTC()
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			stratID: {
+				ID:       stratID,
+				Type:     "perps",
+				Platform: "hyperliquid",
+				Cash:     1048.75,
+				RiskState: RiskState{
+					DailyPnLDate:      todayUTC(),
+					DailyPnL:          48.75,
+					ConsecutiveLosses: 0,
+				},
+				Positions: map[string]*Position{"ETH": {
+					Symbol:            "ETH",
+					Quantity:          0.5,
+					InitialQuantity:   1.0,
+					AvgCost:           2000,
+					Side:              "long",
+					Multiplier:        1,
+					Leverage:          2,
+					OwnerStrategyID:   stratID,
+					StopLossOID:       111,
+					StopLossTriggerPx: 1900,
+					TPOIDs:            []int64{222},
+					TPArmedTiers:      []bool{true},
+					OpenedAt:          now.Add(-time.Hour),
+				}},
+				TradeHistory: []Trade{{
+					Timestamp:       now,
+					StrategyID:      stratID,
+					Symbol:          "ETH",
+					Side:            "sell",
+					Quantity:        0.5,
+					Price:           2100,
+					TradeType:       "perps",
+					ExchangeOrderID: "98765",
+					IsClose:         true,
+				}},
+			},
+		},
+	}
+	scByID := map[string]StrategyConfig{
+		stratID: {ID: stratID, Type: "perps", Platform: "hyperliquid", Args: []string{"tcross", "ETH", "1h", "--mode=live"}},
+	}
+
+	if err := applyManualAction(state, scByID, PendingManualAction{
+		StrategyID:      stratID,
+		Action:          "close",
+		Symbol:          "ETH",
+		Side:            "sell",
+		Quantity:        0.5,
+		FillPrice:       2100,
+		FillFee:         1.25,
+		ExchangeOrderID: "98765",
+		RealizedPnL:     48.75,
+		IsFullClose:     false,
+		StopLossOID:     111,
+		TPOIDs:          []int64{222},
+		CreatedAt:       now,
+	}); err != nil {
+		t.Fatalf("applyManualAction duplicate partial close: %v", err)
+	}
+
+	ss := state.Strategies[stratID]
+	if ss.Cash != 1048.75 || ss.RiskState.DailyPnL != 48.75 || len(ss.TradeHistory) != 1 {
+		t.Fatalf("duplicate mutated accounting: cash %.2f daily %.2f trades %d", ss.Cash, ss.RiskState.DailyPnL, len(ss.TradeHistory))
+	}
+	pos := ss.Positions["ETH"]
+	if pos == nil || pos.Quantity != 0.5 {
+		t.Fatalf("position after duplicate = %+v, want qty 0.5", pos)
+	}
+	if pos.StopLossOID != 0 || !reflect.DeepEqual(pos.TPOIDs, []int64{0}) || !reflect.DeepEqual(pos.TPArmedTiers, []bool{false}) {
+		t.Fatalf("canceled protection not cleared on duplicate: sl=%d tp=%v armed=%v", pos.StopLossOID, pos.TPOIDs, pos.TPArmedTiers)
+	}
+}
+
+func TestApplyManualAction_PerpsForceCloseDuplicateOIDSkipsMissingPosition(t *testing.T) {
+	stratID := "hl-tcross-eth-live"
+	now := time.Now().UTC()
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			stratID: {
+				ID:        stratID,
+				Type:      "perps",
+				Platform:  "hyperliquid",
+				Cash:      1038.75,
+				Positions: map[string]*Position{},
+				TradeHistory: []Trade{{
+					Timestamp:       now,
+					StrategyID:      stratID,
+					Symbol:          "ETH",
+					Side:            "sell",
+					Quantity:        0.4,
+					Price:           2100,
+					TradeType:       "perps",
+					ExchangeOrderID: "98765",
+					IsClose:         true,
+				}},
+			},
+		},
+	}
+	scByID := map[string]StrategyConfig{
+		stratID: {ID: stratID, Type: "perps", Platform: "hyperliquid", Args: []string{"tcross", "ETH", "1h", "--mode=live"}},
+	}
+
+	if err := applyManualAction(state, scByID, PendingManualAction{
+		StrategyID:      stratID,
+		Action:          "close",
+		Symbol:          "ETH",
+		Side:            "sell",
+		Quantity:        0.4,
+		FillPrice:       2100,
+		FillFee:         1.25,
+		ExchangeOrderID: "98765",
+		RealizedPnL:     38.75,
+		IsFullClose:     true,
+		CreatedAt:       now,
+	}); err != nil {
+		t.Fatalf("applyManualAction duplicate full close with missing position: %v", err)
+	}
+	ss := state.Strategies[stratID]
+	if ss.Cash != 1038.75 || len(ss.TradeHistory) != 1 {
+		t.Fatalf("duplicate full close mutated accounting: cash %.2f trades %d", ss.Cash, len(ss.TradeHistory))
+	}
+}
+
 func TestApplyManualAction_PerpsForceCloseRejectsPaper(t *testing.T) {
 	stratID := "hl-tcross-eth-paper"
 	state := &AppState{

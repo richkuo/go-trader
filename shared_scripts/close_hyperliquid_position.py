@@ -64,7 +64,12 @@ def main():
         type=int,
         action="append",
         default=[],
-        help="cancel this trigger OID before the close; repeat for shared-coin triggers (#421)",
+        help="cancel this trigger OID; repeat for shared-coin triggers (#421)",
+    )
+    parser.add_argument(
+        "--cancel-protection-after-close",
+        action="store_true",
+        help="cancel trigger OIDs only after the close fill covers the requested size",
     )
     args = parser.parse_args()
 
@@ -85,26 +90,15 @@ def main():
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
-        # Cancel stale SL trigger first so it doesn't sit orphaned on HL's
-        # book after the close completes (#421 review point 1). A cancel
-        # failure is non-fatal — the SL may have already triggered, in
-        # which case the close itself will hit "no position" and route
-        # through already_flat. Cancel state is surfaced in the JSON
-        # envelope so the Go side can clear pos.StopLossOID either way.
-        cancel_errors = []
-        for oid in args.cancel_stop_loss_oid:
-            if oid <= 0:
-                continue
-            try:
-                adapter.cancel_trigger_order(args.symbol, oid)
-                cancel_succeeded = True
-                cancel_succeeded_oids.append(oid)
-            except Exception as ce:
-                cancel_failed_oids.append(oid)
-                cancel_errors.append(f"{oid}: {ce}")
-                print(f"[WARN] cancel_trigger_order({args.symbol}, {oid}) failed: {ce}", file=sys.stderr)
-        if cancel_errors:
-            cancel_err = "; ".join(cancel_errors)
+        # Default behavior preserves kill-switch / circuit-close semantics:
+        # cancel stale triggers before flattening so successful full closes do
+        # not leave trigger slots burning on HL's account-wide order cap. The
+        # force-close CLI opts into post-fill cancel so a failed close never
+        # leaves the still-open position naked while Go still tracks old OIDs.
+        if not args.cancel_protection_after_close:
+            cancel_err, cancel_succeeded, cancel_succeeded_oids, cancel_failed_oids = _cancel_trigger_orders(
+                adapter, args.symbol, args.cancel_stop_loss_oid
+            )
         # Bound the userFills lookup window for the post-close fee query (#585).
         fills_since_ms = int(time.time() * 1000) - 10_000
         result = adapter.market_close(args.symbol, args.sz)
@@ -176,6 +170,10 @@ def main():
         "avg_px": float(filled.get("avgPx", 0) or 0),
         "total_sz": float(filled.get("totalSz", 0) or 0),
     }
+    if args.cancel_protection_after_close and _fill_covers_requested_size(fill["total_sz"], args.sz):
+        cancel_err, cancel_succeeded, cancel_succeeded_oids, cancel_failed_oids = _cancel_trigger_orders(
+            adapter, args.symbol, args.cancel_stop_loss_oid
+        )
     oid = filled.get("oid")
     if oid is not None:
         fill["oid"] = int(oid)
@@ -199,6 +197,31 @@ def main():
             print(f"[WARN] userFills lookup failed for oid={fill['oid']}: {fe}", file=sys.stderr)
     _emit_success(args.symbol, fill, cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
                   cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
+
+
+def _cancel_trigger_orders(adapter, symbol, cancel_oids):
+    cancel_errors = []
+    cancel_succeeded_oids = []
+    cancel_failed_oids = []
+    for oid in cancel_oids:
+        if oid <= 0:
+            continue
+        try:
+            adapter.cancel_trigger_order(symbol, oid)
+            cancel_succeeded_oids.append(oid)
+        except Exception as ce:
+            cancel_failed_oids.append(oid)
+            cancel_errors.append(f"{oid}: {ce}")
+            print(f"[WARN] cancel_trigger_order({symbol}, {oid}) failed: {ce}", file=sys.stderr)
+    return "; ".join(cancel_errors), bool(cancel_succeeded_oids), cancel_succeeded_oids, cancel_failed_oids
+
+
+def _fill_covers_requested_size(total_sz, requested_sz):
+    if total_sz <= 0:
+        return False
+    if requested_sz is None:
+        return True
+    return total_sz >= requested_sz * 0.99
 
 
 def _emit_success(symbol, fill, already_flat=False, cancel_err="", cancel_succeeded=False,

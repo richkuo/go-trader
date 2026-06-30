@@ -18,7 +18,7 @@ import json
 import os
 import sys
 from io import StringIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -310,7 +310,10 @@ def _run_script_with_cancel(sdk_response, cancel_response, argv):
     mock_adapter_cls = MagicMock()
     mock_adapter = MagicMock()
     mock_adapter_cls.return_value = mock_adapter
-    mock_adapter.market_close.return_value = sdk_response
+    if isinstance(sdk_response, Exception):
+        mock_adapter.market_close.side_effect = sdk_response
+    else:
+        mock_adapter.market_close.return_value = sdk_response
     if isinstance(cancel_response, Exception):
         mock_adapter.cancel_trigger_order.side_effect = cancel_response
     else:
@@ -416,6 +419,70 @@ class TestCancelStopLossOID:
         assert code == 1
         assert "per-status error" in out["error"]
         assert out.get("cancel_stop_loss_succeeded") is True
+
+    def test_post_cancel_waits_until_close_fill(self):
+        out, code, adapter = _run_script_with_cancel(
+            self._filled_response(), {"status": "ok"},
+            ["--symbol=ETH", "--mode=live", "--cancel-stop-loss-oid=12345", "--cancel-protection-after-close"])
+        assert code == 0
+        assert adapter.method_calls[:2] == [
+            call.market_close("ETH", None),
+            call.cancel_trigger_order("ETH", 12345),
+        ]
+        assert out.get("cancel_stop_loss_succeeded") is True
+        assert out.get("cancel_stop_loss_succeeded_oids") == [12345]
+
+    def test_post_cancel_skips_cancel_when_close_errors(self):
+        sdk_response = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [
+                {"error": "no position to close"}
+            ]}},
+        }
+        out, code, adapter = _run_script_with_cancel(
+            sdk_response, {"status": "ok"},
+            ["--symbol=ETH", "--mode=live", "--cancel-stop-loss-oid=12345", "--cancel-protection-after-close"])
+        assert code == 1
+        assert "per-status error" in out["error"]
+        adapter.cancel_trigger_order.assert_not_called()
+        assert "cancel_stop_loss_succeeded" not in out
+
+    def test_post_cancel_skips_cancel_when_adapter_raises(self):
+        out, code, adapter = _run_script_with_cancel(
+            RuntimeError("network down"), {"status": "ok"},
+            ["--symbol=ETH", "--mode=live", "--cancel-stop-loss-oid=12345", "--cancel-protection-after-close"])
+        assert code == 1
+        assert "network down" in out["error"]
+        adapter.cancel_trigger_order.assert_not_called()
+
+    def test_post_cancel_skips_cancel_when_sized_close_underfills(self):
+        sdk_response = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [
+                {"filled": {"avgPx": "3000", "totalSz": "0.5", "oid": 999}}
+            ]}},
+        }
+        out, code, adapter = _run_script_with_cancel(
+            sdk_response, {"status": "ok"},
+            ["--symbol=ETH", "--mode=live", "--sz=1.0", "--cancel-stop-loss-oid=12345", "--cancel-protection-after-close"])
+        assert code == 0
+        assert out["close"]["fill"]["total_sz"] == 0.5
+        adapter.cancel_trigger_order.assert_not_called()
+        assert "cancel_stop_loss_succeeded" not in out
+
+    def test_post_cancel_cancels_when_sized_close_fills_request(self):
+        sdk_response = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [
+                {"filled": {"avgPx": "3000", "totalSz": "1.0", "oid": 999}}
+            ]}},
+        }
+        out, code, adapter = _run_script_with_cancel(
+            sdk_response, {"status": "ok"},
+            ["--symbol=ETH", "--mode=live", "--sz=1.0", "--cancel-stop-loss-oid=12345", "--cancel-protection-after-close"])
+        assert code == 0
+        adapter.cancel_trigger_order.assert_called_once_with("ETH", 12345)
+        assert out.get("cancel_stop_loss_succeeded_oids") == [12345]
 
 
 if __name__ == "__main__":

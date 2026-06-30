@@ -834,7 +834,7 @@ func runManualClose(args []string) int {
 // confirmed fill for the scheduler drain so state/trade mutation stays in the
 // daemon-owned path.
 func runForceClose(args []string) int {
-	return runForceCloseWithCloser(args, defaultHyperliquidLiveCloser)
+	return runForceCloseWithCloser(args, defaultHyperliquidForceCloseCloser)
 }
 
 func runForceCloseWithCloser(args []string, closer HyperliquidLiveCloser) int {
@@ -1199,6 +1199,16 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			a.StrategyID, a.Side, a.Quantity, a.Symbol, a.FillPrice)
 
 	case "close":
+		if a.ExchangeOrderID != "" && strategyHasCloseTradeForOID(ss, a.ExchangeOrderID) {
+			if sc.Type != "manual" {
+				if pos, ok := ss.Positions[a.Symbol]; ok && pos != nil {
+					clearForceCloseCanceledProtectionOIDs(pos, a.StopLossOID, a.TPOIDs)
+				}
+			}
+			fmt.Printf("[manual] skipped duplicate close: %s %s oid=%s already booked\n",
+				a.StrategyID, a.Symbol, a.ExchangeOrderID)
+			return nil
+		}
 		pos, exists := ss.Positions[a.Symbol]
 		if !exists || pos == nil {
 			return fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)

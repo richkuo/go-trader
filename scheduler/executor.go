@@ -564,6 +564,20 @@ type HyperliquidCloseResult struct {
 // caller to also inspect result.Error and conflated subprocess success with
 // JSON-error success.
 func RunHyperliquidClose(script, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, string, error) {
+	return runHyperliquidClose(script, symbol, partialSz, cancelStopLossOIDs, false)
+}
+
+func RunHyperliquidCloseCancelAfterFill(script, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, string, error) {
+	return runHyperliquidClose(script, symbol, partialSz, cancelStopLossOIDs, true)
+}
+
+func runHyperliquidClose(script, symbol string, partialSz *float64, cancelStopLossOIDs []int64, cancelProtectionAfterClose bool) (*HyperliquidCloseResult, string, error) {
+	args := buildHyperliquidCloseArgs(symbol, partialSz, cancelStopLossOIDs, cancelProtectionAfterClose)
+	stdout, stderr, runErr := runPythonSideEffect(script, args)
+	return parseHyperliquidCloseOutput(stdout, string(stderr), runErr)
+}
+
+func buildHyperliquidCloseArgs(symbol string, partialSz *float64, cancelStopLossOIDs []int64, cancelProtectionAfterClose bool) []string {
 	args := []string{
 		fmt.Sprintf("--symbol=%s", symbol),
 		"--mode=live",
@@ -576,8 +590,10 @@ func RunHyperliquidClose(script, symbol string, partialSz *float64, cancelStopLo
 			args = append(args, fmt.Sprintf("--cancel-stop-loss-oid=%d", oid))
 		}
 	}
-	stdout, stderr, runErr := runPythonSideEffect(script, args)
-	return parseHyperliquidCloseOutput(stdout, string(stderr), runErr)
+	if cancelProtectionAfterClose {
+		args = append(args, "--cancel-protection-after-close")
+	}
+	return args
 }
 
 // parseHyperliquidCloseOutput turns the raw subprocess result into
