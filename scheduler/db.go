@@ -2021,12 +2021,12 @@ func (sdb *StateDB) QueryTradingViewExportTrades(strategyIDs []string) ([]Trade,
 }
 
 // PendingManualAction is a row from the pending_manual_actions queue table
-// written by the manual-open / manual-close CLI and drained by the scheduler
-// at the top of each cycle (#569).
+// written by operator CLIs (manual-open / manual-close / force-close) and
+// drained by the scheduler at the top of each cycle (#569/#1140).
 type PendingManualAction struct {
 	ID                              int64
 	StrategyID                      string
-	Action                          string // "open" | "close"
+	Action                          string // "open" | "close" | "add" | "update-sl" | "cancel-sl"
 	Symbol                          string
 	Side                            string
 	Quantity                        float64
@@ -2043,8 +2043,8 @@ type PendingManualAction struct {
 	CreatedAt                       time.Time
 }
 
-// InsertPendingManualAction enqueues a manual-open or manual-close action for
-// the scheduler to drain on its next cycle.
+// InsertPendingManualAction enqueues an operator action for the scheduler to
+// drain on its next cycle.
 func (sdb *StateDB) InsertPendingManualAction(a PendingManualAction) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")

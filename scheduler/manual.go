@@ -829,6 +829,222 @@ func runManualClose(args []string) int {
 	return 0
 }
 
+// runForceClose implements `go-trader force-close <strategy-id>` for live HL
+// perps strategies. It submits the venue close immediately, then enqueues the
+// confirmed fill for the scheduler drain so state/trade mutation stays in the
+// daemon-owned path.
+func runForceClose(args []string) int {
+	return runForceCloseWithCloser(args, defaultHyperliquidLiveCloser)
+}
+
+func runForceCloseWithCloser(args []string, closer HyperliquidLiveCloser) int {
+	fs := flag.NewFlagSet("force-close", flag.ContinueOnError)
+	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
+	qty := fs.Float64("qty", 0, "Quantity to close in base units (0 = full strategy position)")
+	dryRun := fs.Bool("dry-run", false, "Print planned action without placing order or mutating state")
+
+	args = reorderArgsForPositional(args, collectBoolFlagNames(fs))
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "Usage: go-trader force-close <strategy-id> [--qty N] [--dry-run]")
+		return 2
+	}
+	if *qty < 0 {
+		fmt.Fprintf(os.Stderr, "error: --qty must be non-negative, got %.6f\n", *qty)
+		return 2
+	}
+	if closer == nil {
+		fmt.Fprintln(os.Stderr, "error: hyperliquid closer unavailable")
+		return 1
+	}
+	strategyID := fs.Arg(0)
+
+	cfg, err := LoadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		return 1
+	}
+
+	_, sym, ok := findForceCloseStrategy(cfg, strategyID)
+	if !ok {
+		return 1
+	}
+
+	stateDB, err := OpenStateDB(cfg.DBFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
+		return 1
+	}
+	defer stateDB.Close()
+
+	state, err := LoadStateWithDB(cfg, stateDB)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load state: %v\n", err)
+		return 1
+	}
+	ss := state.Strategies[strategyID]
+	if ss == nil {
+		fmt.Fprintf(os.Stderr, "error: strategy state for %q not found\n", strategyID)
+		return 1
+	}
+	pos := ss.Positions[sym]
+	if pos == nil {
+		fmt.Fprintf(os.Stderr, "error: no open position found for %s/%s\n", strategyID, sym)
+		return 1
+	}
+	if !manualPositionOwnedByStrategy(pos, strategyID) {
+		fmt.Fprintf(os.Stderr, "error: position %s/%s is owned by %q, not %q\n", strategyID, sym, pos.OwnerStrategyID, strategyID)
+		return 1
+	}
+
+	closeQty := pos.Quantity
+	intentFullClose := true
+	if *qty > 0 {
+		if *qty > pos.Quantity {
+			fmt.Fprintf(os.Stderr, "error: --qty %.6f exceeds open position %.6f\n", *qty, pos.Quantity)
+			return 1
+		}
+		closeQty = *qty
+		if pos.Quantity-*qty > 0.0001 {
+			intentFullClose = false
+		}
+	}
+
+	closeSide := "sell"
+	if pos.Side == "short" {
+		closeSide = "buy"
+	}
+
+	closeFullPosition := false
+	if intentFullClose {
+		if pending, perr := pendingSLActionExists(stateDB, strategyID, sym); perr != nil {
+			fmt.Fprintf(os.Stderr, "error: could not check for queued stop-loss edits (%v) - refusing the full close to avoid orphaning an on-chain order; retry once the scheduler is reachable\n", perr)
+			return 1
+		} else if pending {
+			fmt.Fprintf(os.Stderr, "error: a stop-loss edit for %s/%s is queued and not yet applied - run the scheduler (`--once`) or wait for the next cycle before a full close\n", strategyID, sym)
+			return 1
+		}
+		closeFullPosition = shouldCloseFullPosition(
+			manualCloseIntentFraction(true, closeQty, pos.Quantity),
+			sym,
+			hyperliquidCloseScopeStrategies(cfg.Strategies),
+		)
+	}
+
+	var cancelOIDs []int64
+	if intentFullClose {
+		cancelOIDs = hyperliquidProtectionCancelOIDs(pos)
+	}
+	var partialSz *float64
+	if !closeFullPosition {
+		partial := closeQty
+		partialSz = &partial
+	}
+
+	if *dryRun {
+		mode := fmt.Sprintf("sized %.6f", closeQty)
+		if closeFullPosition {
+			mode = "full market_close"
+		}
+		fmt.Printf("[dry-run] force-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f, %s)\n",
+			strategyID, closeSide, closeQty, sym, pos.Quantity, pos.AvgCost, mode)
+		return 0
+	}
+
+	result, execErr := closer(sym, partialSz, cancelOIDs)
+	if execErr != nil {
+		fmt.Fprintf(os.Stderr, "error placing force-close order: %v\n", execErr)
+		return 1
+	}
+	if result == nil || result.Close == nil {
+		fmt.Fprintln(os.Stderr, "error: no close result returned from HL")
+		return 1
+	}
+	if result.Error != "" {
+		fmt.Fprintf(os.Stderr, "error from HL: %s\n", result.Error)
+		return 1
+	}
+	if result.CancelStopLossError != "" {
+		fmt.Fprintf(os.Stderr,
+			"warning: force-close cancel failed (non-fatal) for %s/%s: %s (oids=%v) - verify HL on-chain triggers\n",
+			strategyID, sym, result.CancelStopLossError, cancelOIDs)
+	}
+	if result.Close.AlreadyFlat {
+		fmt.Fprintf(os.Stderr, "error: HL reports %s already flat; run the scheduler once to reconcile state\n", sym)
+		return 1
+	}
+	fill := result.Close.Fill
+	if fill == nil {
+		fmt.Fprintln(os.Stderr, "error: no fill returned from force-close")
+		return 1
+	}
+
+	fillAvgPx := fill.AvgPx
+	if fillAvgPx <= 0 {
+		fmt.Fprintf(os.Stderr, "error: invalid force-close fill price %.6f\n", fillAvgPx)
+		return 1
+	}
+	filledQty := fill.TotalSz
+	if filledQty <= 0 {
+		filledQty = closeQty
+	}
+	if filledQty <= 0 {
+		fmt.Fprintln(os.Stderr, "error: force-close fill quantity is zero")
+		return 1
+	}
+	fillFee := fill.Fee
+	if filledQty > pos.Quantity+1e-9 {
+		if fill.TotalSz > 0 {
+			fillFee *= pos.Quantity / fill.TotalSz
+		}
+		fmt.Fprintf(os.Stderr, "warning: force-close fill size %.6f exceeds virtual position %.6f for %s/%s; attributing only the virtual quantity\n",
+			filledQty, pos.Quantity, strategyID, sym)
+		filledQty = pos.Quantity
+	} else if filledQty > pos.Quantity {
+		filledQty = pos.Quantity
+	}
+	actualFullClose := intentFullClose && pos.Quantity-filledQty <= 0.0001
+	var exchangeOID string
+	if fill.OID != 0 {
+		exchangeOID = fmt.Sprintf("%d", fill.OID)
+	}
+
+	var realizedPnL float64
+	if pos.Side == "long" {
+		realizedPnL = filledQty * (fillAvgPx - pos.AvgCost)
+	} else {
+		realizedPnL = filledQty * (pos.AvgCost - fillAvgPx)
+	}
+	realizedPnL -= fillFee
+
+	fmt.Printf("Force-closed: %.6f %s @ $%.4f | PnL=$%.2f (fee=$%.4f)\n",
+		filledQty, sym, fillAvgPx, realizedPnL, fillFee)
+
+	action := PendingManualAction{
+		StrategyID:      strategyID,
+		Action:          "close",
+		Symbol:          sym,
+		Side:            closeSide,
+		Quantity:        filledQty,
+		FillPrice:       fillAvgPx,
+		FillFee:         fillFee,
+		ExchangeOrderID: exchangeOID,
+		RealizedPnL:     realizedPnL,
+		IsFullClose:     actualFullClose,
+		CreatedAt:       time.Now().UTC(),
+	}
+	if err := stateDB.InsertPendingManualAction(action); err != nil {
+		fmt.Fprintf(os.Stderr, "error queuing force-close action: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("Queued: force-close will be reflected in the dashboard after the next scheduler cycle.\n")
+	return 0
+}
+
 // manualAlert captures one strategy's successfully drained manual actions so the
 // caller can emit trade alerts AFTER releasing mu. drainPendingManualActions runs
 // under mu.Lock and sendTradeAlerts re-acquires mu.RLock; since sync.RWMutex is
@@ -910,8 +1126,8 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 	if !hasSC {
 		return fmt.Errorf("strategy %q not found in config", a.StrategyID)
 	}
-	if sc.Type != "manual" {
-		return fmt.Errorf("strategy %q is not type=manual", a.StrategyID)
+	if err := validatePendingManualActionStrategy(sc, a); err != nil {
+		return err
 	}
 
 	ss := state.Strategies[a.StrategyID]
@@ -988,6 +1204,7 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 		// collapsed into a full close.
 		closedFull := a.IsFullClose
 		side := closeTradeSide(pos.Side)
+		closeLabel := operatorCloseLabel(sc)
 
 		trade := Trade{
 			Timestamp:       now,
@@ -998,7 +1215,7 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			Price:           a.FillPrice,
 			Value:           a.Quantity * a.FillPrice,
 			TradeType:       "perps",
-			Details:         fmt.Sprintf("manual close %s @ $%.4f | PnL=$%.2f", a.Symbol, a.FillPrice, a.RealizedPnL),
+			Details:         fmt.Sprintf("%s %s @ $%.4f | PnL=$%.2f", closeLabel, a.Symbol, a.FillPrice, a.RealizedPnL),
 			PositionID:      ensurePositionTradeID(a.StrategyID, a.Symbol, pos),
 			ExchangeOrderID: a.ExchangeOrderID,
 			ExchangeFee:     a.FillFee,
@@ -1006,20 +1223,20 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			IsClose:         true,
 			RealizedPnL:     a.RealizedPnL + a.FillFee, // action PnL is net; gross row adds the fee back
 			PnLGross:        true,
-			Manual:          true,
+			Manual:          sc.Type == "manual",
 		}
 		RecordTrade(ss, trade)
 		// Fix #1: perps close credits only the realized PnL; notional was never debited.
 		ss.Cash += a.RealizedPnL
 
 		if closedFull {
-			recordClosedPosition(ss, pos, a.FillPrice, a.RealizedPnL, "manual_close", now)
+			recordClosedPosition(ss, pos, a.FillPrice, a.RealizedPnL, operatorCloseReason(sc), now)
 			delete(ss.Positions, a.Symbol)
 		} else {
 			pos.Quantity -= a.Quantity
 		}
-		fmt.Printf("[manual] applied close: %s %.6f %s @ $%.4f | PnL=$%.2f\n",
-			a.StrategyID, a.Quantity, a.Symbol, a.FillPrice, a.RealizedPnL)
+		fmt.Printf("[manual] applied %s: %s %.6f %s @ $%.4f | PnL=$%.2f\n",
+			closeLabel, a.StrategyID, a.Quantity, a.Symbol, a.FillPrice, a.RealizedPnL)
 
 	case "add":
 		// #873 manual scale-in: blend an add leg into the open position. Side is
@@ -1116,6 +1333,57 @@ func findManualStrategy(cfg *Config, id string) (StrategyConfig, bool) {
 	}
 	fmt.Fprintf(os.Stderr, "error: strategy %q not found in config\n", id)
 	return StrategyConfig{}, false
+}
+
+func findForceCloseStrategy(cfg *Config, id string) (StrategyConfig, string, bool) {
+	for _, sc := range cfg.Strategies {
+		if sc.ID != id {
+			continue
+		}
+		if sc.Platform != "hyperliquid" || sc.Type != "perps" {
+			fmt.Fprintf(os.Stderr, "error: strategy %q has platform=%q type=%q; force-close only works with live Hyperliquid perps strategies\n", id, sc.Platform, sc.Type)
+			return StrategyConfig{}, "", false
+		}
+		if !hyperliquidIsLive(sc.Args) {
+			fmt.Fprintf(os.Stderr, "error: strategy %q is not live mode; force-close only works with live Hyperliquid perps strategies\n", id)
+			return StrategyConfig{}, "", false
+		}
+		sym := hyperliquidSymbol(sc.Args)
+		if strings.TrimSpace(sym) == "" {
+			fmt.Fprintf(os.Stderr, "error: strategy %q has no Hyperliquid symbol in args\n", id)
+			return StrategyConfig{}, "", false
+		}
+		return sc, sym, true
+	}
+	fmt.Fprintf(os.Stderr, "error: strategy %q not found in config\n", id)
+	return StrategyConfig{}, "", false
+}
+
+func validatePendingManualActionStrategy(sc StrategyConfig, a PendingManualAction) error {
+	if sc.Type == "manual" {
+		return nil
+	}
+	if a.Action == "close" && sc.Platform == "hyperliquid" && sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
+		return nil
+	}
+	if a.Action == "close" {
+		return fmt.Errorf("strategy %q close action requires type=manual or live Hyperliquid perps (got platform=%q type=%q)", a.StrategyID, sc.Platform, sc.Type)
+	}
+	return fmt.Errorf("strategy %q is not type=manual", a.StrategyID)
+}
+
+func operatorCloseLabel(sc StrategyConfig) string {
+	if sc.Type == "perps" {
+		return "force close"
+	}
+	return "manual close"
+}
+
+func operatorCloseReason(sc StrategyConfig) string {
+	if sc.Type == "perps" {
+		return "force_close"
+	}
+	return "manual_close"
 }
 
 // collectBoolFlagNames returns the names of bool flags registered on fs.

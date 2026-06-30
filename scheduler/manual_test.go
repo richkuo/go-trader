@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -551,6 +552,312 @@ func TestDrainPendingManualActionsAlerts(t *testing.T) {
 	remaining, _ := db.LoadPendingManualActions()
 	if len(remaining) != 0 {
 		t.Errorf("expected empty queue after drain, got %d rows", len(remaining))
+	}
+}
+
+func TestApplyManualAction_PerpsForceCloseFull(t *testing.T) {
+	stratID := "hl-tcross-eth-live"
+	now := time.Now().UTC()
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			stratID: {
+				ID:       stratID,
+				Type:     "perps",
+				Platform: "hyperliquid",
+				Cash:     1000,
+				Positions: map[string]*Position{"ETH": {
+					Symbol:          "ETH",
+					Quantity:        0.4,
+					InitialQuantity: 0.4,
+					AvgCost:         2000,
+					Side:            "long",
+					Multiplier:      1,
+					Leverage:        2,
+					OwnerStrategyID: stratID,
+					OpenedAt:        now.Add(-time.Hour),
+				}},
+			},
+		},
+	}
+	scByID := map[string]StrategyConfig{
+		stratID: {
+			ID:       stratID,
+			Type:     "perps",
+			Platform: "hyperliquid",
+			Args:     []string{"tcross", "ETH", "1h", "--mode=live"},
+		},
+	}
+
+	if err := applyManualAction(state, scByID, PendingManualAction{
+		StrategyID:      stratID,
+		Action:          "close",
+		Symbol:          "ETH",
+		Side:            "sell",
+		Quantity:        0.4,
+		FillPrice:       2100,
+		FillFee:         1.25,
+		ExchangeOrderID: "98765",
+		RealizedPnL:     38.75,
+		IsFullClose:     true,
+		CreatedAt:       now,
+	}); err != nil {
+		t.Fatalf("applyManualAction perps close: %v", err)
+	}
+
+	ss := state.Strategies[stratID]
+	if pos := ss.Positions["ETH"]; pos != nil {
+		t.Fatalf("position still open after full force-close: %+v", pos)
+	}
+	if len(ss.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory len=%d, want 1", len(ss.TradeHistory))
+	}
+	trade := ss.TradeHistory[0]
+	if trade.Details != "force close ETH @ $2100.0000 | PnL=$38.75" {
+		t.Errorf("trade details = %q", trade.Details)
+	}
+	if trade.Manual {
+		t.Error("perps force-close trade Manual=true, want false")
+	}
+	if trade.ExchangeFee != 1.25 || trade.RealizedPnL != 40 || !trade.PnLGross {
+		t.Errorf("trade fee/pnl/gross = %g/%g/%v, want 1.25/40/true", trade.ExchangeFee, trade.RealizedPnL, trade.PnLGross)
+	}
+	if ss.Cash != 1038.75 {
+		t.Errorf("cash = %g, want 1038.75", ss.Cash)
+	}
+	if len(ss.ClosedPositions) != 1 || ss.ClosedPositions[0].CloseReason != "force_close" {
+		t.Fatalf("closed positions = %+v, want force_close", ss.ClosedPositions)
+	}
+}
+
+func TestApplyManualAction_PerpsForceCloseRejectsPaper(t *testing.T) {
+	stratID := "hl-tcross-eth-paper"
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			stratID: {
+				ID:        stratID,
+				Type:      "perps",
+				Platform:  "hyperliquid",
+				Positions: map[string]*Position{"ETH": {Symbol: "ETH", Quantity: 0.4, AvgCost: 2000, Side: "long"}},
+			},
+		},
+	}
+	scByID := map[string]StrategyConfig{
+		stratID: {
+			ID:       stratID,
+			Type:     "perps",
+			Platform: "hyperliquid",
+			Args:     []string{"tcross", "ETH", "1h", "--mode=paper"},
+		},
+	}
+	err := applyManualAction(state, scByID, PendingManualAction{
+		StrategyID: stratID, Action: "close", Symbol: "ETH", Quantity: 0.4, FillPrice: 2100, IsFullClose: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "live Hyperliquid perps") {
+		t.Fatalf("applyManualAction paper perps error = %v, want live Hyperliquid perps rejection", err)
+	}
+}
+
+func TestRunForceCloseQueuesPerpsClose(t *testing.T) {
+	t.Setenv("HYPERLIQUID_SECRET_KEY", "test-secret")
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	db, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	stratID := "hl-tcross-eth-live"
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			stratID: {
+				ID:             stratID,
+				Type:           "perps",
+				Platform:       "hyperliquid",
+				Cash:           1000,
+				InitialCapital: 1000,
+				Positions: map[string]*Position{"ETH": {
+					Symbol:          "ETH",
+					Quantity:        0.4,
+					InitialQuantity: 0.4,
+					AvgCost:         2000,
+					Side:            "long",
+					Multiplier:      1,
+					Leverage:        2,
+					OwnerStrategyID: stratID,
+					StopLossOID:     111,
+					TPOIDs:          []int64{222},
+					OpenedAt:        time.Now().UTC().Add(-time.Hour),
+				}},
+			},
+		},
+	}
+	if err := db.SaveState(state); err != nil {
+		db.Close()
+		t.Fatalf("SaveState: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	cfgPath := writeTestConfig(t, dir, fmt.Sprintf(`{
+		"db_file": %q,
+		"strategies": [{
+			"id": %q,
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["tcross", "ETH", "1h", "--mode=live"],
+			"capital": 1000,
+			"leverage": 2
+		}]
+	}`, dbPath, stratID))
+
+	var gotSymbol string
+	var gotPartialNil bool
+	var gotCancelOIDs []int64
+	closer := func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
+		gotSymbol = symbol
+		gotPartialNil = partialSz == nil
+		gotCancelOIDs = append([]int64(nil), cancelOIDs...)
+		return &HyperliquidCloseResult{
+			Close: &HyperliquidClose{
+				Symbol: symbol,
+				Fill:   &HyperliquidCloseFill{AvgPx: 2100, TotalSz: 0.4, OID: 98765, Fee: 1.25},
+			},
+			Platform: "hyperliquid",
+		}, nil
+	}
+
+	rc := runForceCloseWithCloser([]string{"--config", cfgPath, stratID}, closer)
+	if rc != 0 {
+		t.Fatalf("runForceCloseWithCloser rc=%d, want 0", rc)
+	}
+	if gotSymbol != "ETH" {
+		t.Errorf("closer symbol = %q, want ETH", gotSymbol)
+	}
+	if !gotPartialNil {
+		t.Error("closer partialSz was non-nil for sole-owner full close")
+	}
+	if !reflect.DeepEqual(gotCancelOIDs, []int64{111, 222}) {
+		t.Errorf("cancel OIDs = %v, want [111 222]", gotCancelOIDs)
+	}
+
+	db2, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer db2.Close()
+	actions, err := db2.LoadPendingManualActions()
+	if err != nil {
+		t.Fatalf("LoadPendingManualActions: %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("queued actions len=%d, want 1", len(actions))
+	}
+	a := actions[0]
+	if a.StrategyID != stratID || a.Action != "close" || a.Symbol != "ETH" || !a.IsFullClose {
+		t.Fatalf("queued action identity = %+v", a)
+	}
+	if a.Quantity != 0.4 || a.FillPrice != 2100 || a.FillFee != 1.25 || a.ExchangeOrderID != "98765" {
+		t.Errorf("queued fill = qty %g px %g fee %g oid %q", a.Quantity, a.FillPrice, a.FillFee, a.ExchangeOrderID)
+	}
+	if a.RealizedPnL != 38.75 {
+		t.Errorf("queued realized PnL = %g, want 38.75", a.RealizedPnL)
+	}
+}
+
+func TestRunForceCloseQueuesActualFillQuantity(t *testing.T) {
+	t.Setenv("HYPERLIQUID_SECRET_KEY", "test-secret")
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	db, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	stratID := "hl-tcross-eth-live"
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			stratID: {
+				ID:             stratID,
+				Type:           "perps",
+				Platform:       "hyperliquid",
+				Cash:           1000,
+				InitialCapital: 1000,
+				Positions: map[string]*Position{"ETH": {
+					Symbol:          "ETH",
+					Quantity:        1.0,
+					InitialQuantity: 1.0,
+					AvgCost:         2000,
+					Side:            "long",
+					Multiplier:      1,
+					Leverage:        2,
+					OwnerStrategyID: stratID,
+					OpenedAt:        time.Now().UTC().Add(-time.Hour),
+				}},
+			},
+		},
+	}
+	if err := db.SaveState(state); err != nil {
+		db.Close()
+		t.Fatalf("SaveState: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	cfgPath := writeTestConfig(t, dir, fmt.Sprintf(`{
+		"db_file": %q,
+		"strategies": [{
+			"id": %q,
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["tcross", "ETH", "1h", "--mode=live"],
+			"capital": 1000,
+			"leverage": 2
+		}]
+	}`, dbPath, stratID))
+
+	var gotPartial float64
+	closer := func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
+		if partialSz == nil {
+			t.Fatal("partialSz = nil, want sized partial close")
+		}
+		gotPartial = *partialSz
+		return &HyperliquidCloseResult{
+			Close: &HyperliquidClose{
+				Symbol: symbol,
+				Fill:   &HyperliquidCloseFill{AvgPx: 2100, TotalSz: 0.5, OID: 98765, Fee: 1.25},
+			},
+			Platform: "hyperliquid",
+		}, nil
+	}
+
+	rc := runForceCloseWithCloser([]string{"--config", cfgPath, "--qty", "0.8", stratID}, closer)
+	if rc != 0 {
+		t.Fatalf("runForceCloseWithCloser rc=%d, want 0", rc)
+	}
+	if gotPartial != 0.8 {
+		t.Fatalf("partial close size = %g, want 0.8", gotPartial)
+	}
+
+	db2, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer db2.Close()
+	actions, err := db2.LoadPendingManualActions()
+	if err != nil {
+		t.Fatalf("LoadPendingManualActions: %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("queued actions len=%d, want 1", len(actions))
+	}
+	a := actions[0]
+	if a.Quantity != 0.5 || a.IsFullClose {
+		t.Fatalf("queued quantity/full = %g/%v, want 0.5/false", a.Quantity, a.IsFullClose)
+	}
+	if a.RealizedPnL != 48.75 {
+		t.Errorf("queued realized PnL = %g, want 48.75", a.RealizedPnL)
 	}
 }
 

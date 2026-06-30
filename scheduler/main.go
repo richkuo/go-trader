@@ -23,6 +23,7 @@ var knownSubcommands = []string{
 	"manual-open",
 	"manual-add",
 	"manual-close",
+	"force-close",
 	"manual-cancel",
 	"manual-update-sl",
 	"manual-cancel-sl",
@@ -66,6 +67,8 @@ func main() {
 			os.Exit(runManualAdd(os.Args[2:]))
 		case "manual-close":
 			os.Exit(runManualClose(os.Args[2:]))
+		case "force-close":
+			os.Exit(runForceClose(os.Args[2:]))
 		case "manual-cancel":
 			os.Exit(runManualCancel(os.Args[2:]))
 		case "manual-update-sl":

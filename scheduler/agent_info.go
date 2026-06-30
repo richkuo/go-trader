@@ -63,6 +63,7 @@ var agentInfoCommands = []agentCommand{
 	{Name: "manual-open", Summary: "Open a manual position (kill-switch + circuit-breaker guarded).", Usage: "go-trader manual-open [...]"},
 	{Name: "manual-add", Summary: "Scale into an existing manual position.", Usage: "go-trader manual-add [...]"},
 	{Name: "manual-close", Summary: "Close (or partially close) a manual position.", Usage: "go-trader manual-close [...]"},
+	{Name: "force-close", Summary: "Close (or partially close) a live Hyperliquid perps strategy position.", Usage: "go-trader force-close <strategy-id> [--qty N] [--dry-run]"},
 	{Name: "manual-cancel", Summary: "Cancel a resting manual limit order.", Usage: "go-trader manual-cancel [...]"},
 	{Name: "manual-update-sl", Summary: "Move the stop-loss trigger on a manual position.", Usage: "go-trader manual-update-sl <strategy-id> --trigger N [--symbol Y] [--dry-run]"},
 	{Name: "manual-cancel-sl", Summary: "Cancel the resting stop-loss on a manual position.", Usage: "go-trader manual-cancel-sl <strategy-id> [--symbol Y] [--dry-run]"},
