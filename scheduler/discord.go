@@ -544,7 +544,6 @@ func FormatCategorySummary(
 			timeframe:      tf,
 			interval:       formatInterval(effectiveInterval),
 			value:          pv,
-			initialCap:     initCap,
 			pnl:            pnl,
 			pnlPct:         pnlPct,
 			maxDrawdownPct: sc.MaxDrawdownPct,
@@ -757,7 +756,6 @@ type botInfo struct {
 	timeframe      string // e.g. "1h" or "—" for spot/options
 	interval       string // e.g. "10m", formatted from effective interval seconds
 	value          float64
-	initialCap     float64
 	pnl            float64
 	pnlPct         float64
 	maxDrawdownPct float64
