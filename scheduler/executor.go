@@ -539,12 +539,14 @@ type HyperliquidClose struct {
 // pre-close trigger-cancel that frees `Position.StopLossOID` when a CB or
 // kill switch flattens a strategy carrying a resting SL (#421).
 type HyperliquidCloseResult struct {
-	Close                   *HyperliquidClose `json:"close"`
-	Platform                string            `json:"platform"`
-	Timestamp               string            `json:"timestamp"`
-	Error                   string            `json:"error,omitempty"`
-	CancelStopLossError     string            `json:"cancel_stop_loss_error,omitempty"`
-	CancelStopLossSucceeded bool              `json:"cancel_stop_loss_succeeded,omitempty"`
+	Close                       *HyperliquidClose `json:"close"`
+	Platform                    string            `json:"platform"`
+	Timestamp                   string            `json:"timestamp"`
+	Error                       string            `json:"error,omitempty"`
+	CancelStopLossError         string            `json:"cancel_stop_loss_error,omitempty"`
+	CancelStopLossSucceeded     bool              `json:"cancel_stop_loss_succeeded,omitempty"`
+	CancelStopLossSucceededOIDs []int64           `json:"cancel_stop_loss_succeeded_oids,omitempty"`
+	CancelStopLossFailedOIDs    []int64           `json:"cancel_stop_loss_failed_oids,omitempty"`
 }
 
 // RunHyperliquidClose runs close_hyperliquid_position.py to submit a reduce-only

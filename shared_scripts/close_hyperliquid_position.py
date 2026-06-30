@@ -79,6 +79,8 @@ def main():
 
     cancel_err = ""
     cancel_succeeded = False
+    cancel_succeeded_oids = []
+    cancel_failed_oids = []
 
     try:
         from adapter import HyperliquidExchangeAdapter
@@ -96,7 +98,9 @@ def main():
             try:
                 adapter.cancel_trigger_order(args.symbol, oid)
                 cancel_succeeded = True
+                cancel_succeeded_oids.append(oid)
             except Exception as ce:
+                cancel_failed_oids.append(oid)
                 cancel_errors.append(f"{oid}: {ce}")
                 print(f"[WARN] cancel_trigger_order({args.symbol}, {oid}) failed: {ce}", file=sys.stderr)
         if cancel_errors:
@@ -106,7 +110,8 @@ def main():
         result = adapter.market_close(args.symbol, args.sz)
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        _emit_error(args.symbol, str(e), cancel_err=cancel_err, cancel_succeeded=cancel_succeeded)
+        _emit_error(args.symbol, str(e), cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
+                    cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
         return
 
     # SDK reduce-only close response shape mirrors market_open:
@@ -118,14 +123,16 @@ def main():
 
     if not isinstance(result, dict):
         _emit_error(args.symbol, f"unexpected SDK response type {type(result).__name__}: {result!r}",
-                    cancel_err=cancel_err, cancel_succeeded=cancel_succeeded)
+                    cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
+                    cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
         return
 
     # Outer status must be "ok" or absent — anything else is an SDK rejection.
     outer_status = result.get("status")
     if outer_status not in (None, "ok"):
         _emit_error(args.symbol, f"sdk status={outer_status!r}: {result}",
-                    cancel_err=cancel_err, cancel_succeeded=cancel_succeeded)
+                    cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
+                    cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
         return
 
     statuses = result.get("response", {}).get("data", {}).get("statuses", [])
@@ -141,7 +148,8 @@ def main():
         # messaging must distinguish "we sent a close order" from
         # "nothing to close" (#350).
         _emit_success(args.symbol, fill={}, already_flat=True,
-                      cancel_err=cancel_err, cancel_succeeded=cancel_succeeded)
+                      cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
+                      cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
         return
 
     first = statuses[0]
@@ -150,7 +158,8 @@ def main():
     # Surface so the kill switch latches and retries next cycle.
     if "error" in first:
         _emit_error(args.symbol, f"per-status error: {first['error']}",
-                    cancel_err=cancel_err, cancel_succeeded=cancel_succeeded)
+                    cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
+                    cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
         return
 
     # "resting" means a limit order is sitting on the book — for market_close
@@ -158,7 +167,8 @@ def main():
     # Not "filled" => not closed => kill switch must NOT release the latch.
     if "filled" not in first:
         _emit_error(args.symbol, f"close not filled (status keys={list(first.keys())}): {first}",
-                    cancel_err=cancel_err, cancel_succeeded=cancel_succeeded)
+                    cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
+                    cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
         return
 
     filled = first["filled"]
@@ -187,10 +197,12 @@ def main():
                 print(f"[WARN] userFills lookup returned malformed fill data for oid={fill['oid']}", file=sys.stderr)
         except Exception as fe:
             print(f"[WARN] userFills lookup failed for oid={fill['oid']}: {fe}", file=sys.stderr)
-    _emit_success(args.symbol, fill, cancel_err=cancel_err, cancel_succeeded=cancel_succeeded)
+    _emit_success(args.symbol, fill, cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
+                  cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
 
 
-def _emit_success(symbol, fill, already_flat=False, cancel_err="", cancel_succeeded=False):
+def _emit_success(symbol, fill, already_flat=False, cancel_err="", cancel_succeeded=False,
+                  cancel_succeeded_oids=None, cancel_failed_oids=None):
     close = {"symbol": symbol, "fill": fill}
     if already_flat:
         close["already_flat"] = True
@@ -203,10 +215,15 @@ def _emit_success(symbol, fill, already_flat=False, cancel_err="", cancel_succee
         out["cancel_stop_loss_error"] = cancel_err
     if cancel_succeeded:
         out["cancel_stop_loss_succeeded"] = True
+    if cancel_succeeded_oids:
+        out["cancel_stop_loss_succeeded_oids"] = cancel_succeeded_oids
+    if cancel_failed_oids:
+        out["cancel_stop_loss_failed_oids"] = cancel_failed_oids
     print(json.dumps(out))
 
 
-def _emit_error(symbol, message, cancel_err="", cancel_succeeded=False):
+def _emit_error(symbol, message, cancel_err="", cancel_succeeded=False,
+                cancel_succeeded_oids=None, cancel_failed_oids=None):
     out = {
         "close": {"symbol": symbol, "fill": {}},
         "platform": "hyperliquid",
@@ -217,6 +234,10 @@ def _emit_error(symbol, message, cancel_err="", cancel_succeeded=False):
         out["cancel_stop_loss_error"] = cancel_err
     if cancel_succeeded:
         out["cancel_stop_loss_succeeded"] = True
+    if cancel_succeeded_oids:
+        out["cancel_stop_loss_succeeded_oids"] = cancel_succeeded_oids
+    if cancel_failed_oids:
+        out["cancel_stop_loss_failed_oids"] = cancel_failed_oids
     print(json.dumps(out))
     sys.exit(1)
 

@@ -1007,6 +1007,11 @@ func runForceCloseWithCloser(args []string, closer HyperliquidLiveCloser) int {
 		filledQty = pos.Quantity
 	}
 	actualFullClose := intentFullClose && pos.Quantity-filledQty <= 0.0001
+	var canceledSLOID int64
+	var canceledTPOIDs []int64
+	if !actualFullClose {
+		canceledSLOID, canceledTPOIDs = forceCloseCanceledProtectionSnapshot(pos, hyperliquidSucceededCancelOIDs(result, cancelOIDs))
+	}
 	var exchangeOID string
 	if fill.OID != 0 {
 		exchangeOID = fmt.Sprintf("%d", fill.OID)
@@ -1034,6 +1039,8 @@ func runForceCloseWithCloser(args []string, closer HyperliquidLiveCloser) int {
 		ExchangeOrderID: exchangeOID,
 		RealizedPnL:     realizedPnL,
 		IsFullClose:     actualFullClose,
+		StopLossOID:     canceledSLOID,
+		TPOIDs:          canceledTPOIDs,
 		CreatedAt:       time.Now().UTC(),
 	}
 	if err := stateDB.InsertPendingManualAction(action); err != nil {
@@ -1226,6 +1233,9 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			Manual:          sc.Type == "manual",
 		}
 		RecordTrade(ss, trade)
+		if sc.Type != "manual" {
+			RecordTradeResult(&ss.RiskState, a.RealizedPnL)
+		}
 		// Fix #1: perps close credits only the realized PnL; notional was never debited.
 		ss.Cash += a.RealizedPnL
 
@@ -1234,6 +1244,9 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			delete(ss.Positions, a.Symbol)
 		} else {
 			pos.Quantity -= a.Quantity
+			if sc.Type != "manual" {
+				clearForceCloseCanceledProtectionOIDs(pos, a.StopLossOID, a.TPOIDs)
+			}
 		}
 		fmt.Printf("[manual] applied %s: %s %.6f %s @ $%.4f | PnL=$%.2f\n",
 			closeLabel, a.StrategyID, a.Quantity, a.Symbol, a.FillPrice, a.RealizedPnL)
@@ -1357,6 +1370,94 @@ func findForceCloseStrategy(cfg *Config, id string) (StrategyConfig, string, boo
 	}
 	fmt.Fprintf(os.Stderr, "error: strategy %q not found in config\n", id)
 	return StrategyConfig{}, "", false
+}
+
+func hyperliquidSucceededCancelOIDs(result *HyperliquidCloseResult, requested []int64) []int64 {
+	if result == nil || len(requested) == 0 {
+		return nil
+	}
+	if len(result.CancelStopLossSucceededOIDs) > 0 {
+		requestedSet := make(map[int64]struct{}, len(requested))
+		for _, oid := range requested {
+			if oid > 0 {
+				requestedSet[oid] = struct{}{}
+			}
+		}
+		var out []int64
+		seen := make(map[int64]struct{}, len(result.CancelStopLossSucceededOIDs))
+		for _, oid := range result.CancelStopLossSucceededOIDs {
+			if oid <= 0 {
+				continue
+			}
+			if _, ok := requestedSet[oid]; !ok {
+				continue
+			}
+			if _, dup := seen[oid]; dup {
+				continue
+			}
+			out = append(out, oid)
+			seen[oid] = struct{}{}
+		}
+		return out
+	}
+	if result.CancelStopLossSucceeded && result.CancelStopLossError == "" {
+		return cloneInt64s(requested)
+	}
+	return nil
+}
+
+func forceCloseCanceledProtectionSnapshot(pos *Position, canceledOIDs []int64) (int64, []int64) {
+	if pos == nil || len(canceledOIDs) == 0 {
+		return 0, nil
+	}
+	canceled := make(map[int64]struct{}, len(canceledOIDs))
+	for _, oid := range canceledOIDs {
+		if oid > 0 {
+			canceled[oid] = struct{}{}
+		}
+	}
+	var slOID int64
+	if pos.StopLossOID > 0 {
+		if _, ok := canceled[pos.StopLossOID]; ok {
+			slOID = pos.StopLossOID
+		}
+	}
+	var tpOIDs []int64
+	for idx, oid := range pos.TPOIDs {
+		if oid <= 0 {
+			continue
+		}
+		if _, ok := canceled[oid]; !ok {
+			continue
+		}
+		if tpOIDs == nil {
+			tpOIDs = make([]int64, len(pos.TPOIDs))
+		}
+		tpOIDs[idx] = oid
+	}
+	return slOID, tpOIDs
+}
+
+func clearForceCloseCanceledProtectionOIDs(pos *Position, canceledSLOID int64, canceledTPOIDs []int64) {
+	if pos == nil {
+		return
+	}
+	if canceledSLOID > 0 && pos.StopLossOID == canceledSLOID {
+		pos.StopLossOID = 0
+		pos.StopLossTriggerPx = 0
+	}
+	for idx, canceledOID := range canceledTPOIDs {
+		if canceledOID <= 0 {
+			continue
+		}
+		if idx >= len(pos.TPOIDs) || pos.TPOIDs[idx] != canceledOID {
+			continue
+		}
+		pos.TPOIDs[idx] = 0
+		if idx < len(pos.TPArmedTiers) {
+			pos.TPArmedTiers[idx] = false
+		}
+	}
 }
 
 func validatePendingManualActionStrategy(sc StrategyConfig, a PendingManualAction) error {

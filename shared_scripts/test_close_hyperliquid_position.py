@@ -144,6 +144,21 @@ class TestSuccessFill:
         assert "oid" not in fill
         assert "fee" not in fill
 
+    def test_success_reports_exact_cancelled_oids(self):
+        sdk_response = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [
+                {"filled": {"avgPx": "3000", "totalSz": "0.5"}}
+            ]}},
+        }
+        out, code = _run_script(
+            sdk_response,
+            ["--symbol=ETH", "--mode=live", "--cancel-stop-loss-oid=123", "--cancel-stop-loss-oid=456"],
+        )
+        assert code == 0
+        assert out["cancel_stop_loss_succeeded"] is True
+        assert out["cancel_stop_loss_succeeded_oids"] == [123, 456]
+
     def test_filled_uses_numeric_lookup_result(self):
         sdk_response = {
             "status": "ok",

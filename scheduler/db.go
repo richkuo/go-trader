@@ -2038,7 +2038,7 @@ type PendingManualAction struct {
 	EntryATR                        float64
 	RealizedPnL                     float64
 	IsFullClose                     bool    // close-only: operator/scheduler intent flag (avoids tolerance heuristics on the drain side)
-	TPOIDs                          []int64 // open-only: TP OIDs placed inline at manual-open time (#632)
+	TPOIDs                          []int64 // open: placed TP OIDs; close: canceled TP OIDs that must be cleared for re-arm
 	RatchetFallbackNormalizePending bool    // open-only: one-shot normalize marker for fallback ratchet SL (#1121)
 	CreatedAt                       time.Time
 }
