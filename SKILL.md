@@ -262,7 +262,10 @@ When in doubt, treat as runtime default and prompt. **Full narrative** for older
 - **#1092** kill-switch already-flat fill repair (`kPEPE`-style coins)
 - **#1100/#1103–#1106** HL cashflow journal drives total-drift alarm; trade-ledger fail-closed fallback; `GO_TRADER_CASHFLOW_JOURNAL_ALARM=0` opts out
 - **#1115** manual close defaults to `trailing_tp_ratchet_regime` when regime on + resolvable trail; tiered-TP drift owner DM
+- **#1120** composite opening-trail `use_defaults` system table retuned: `trending_*_clean` 2.0→**2.5×ATR**, `trending_*_choppy` 2.0→**2.25×**, `ranging_volatile` 1.0→**1.25×**, `ranging_directional`/`_up`/`_down` 1.0→**1.5×** (`ranging_quiet` 1.0 + ADX labels + tier ladders unchanged). ⚠️ **On-chain**: a full restart/deploy re-expands `use_defaults` trailing blocks, so open HL-live positions on that path see their reduce-only SL **widen** on the next protection sync (SIGHUP does NOT apply it while open). Set explicit per-regime ATR to keep the old geometry.
 - **#1121** manual default SL + ratchet fallback **2.0×ATR**; `RatchetFallbackNormalizePending` one-shot widen
+- **#1131** `manual-open` ATR fetch defaults to **1h** when the strategy timeframe is unset (was: dropped to coarse heuristic). No config change; display-only nuance
+- **#1140** new operator command `force-close <id>` closes a **live HL `type=perps`** strategy position (analog of `manual-close` for automated strategies) — reduce-only, scheduler adopts the fill, records a `force_close` trade + updates RiskState PnL. See Manual Trading. No config change
 - **#1110/#1118** ratchet tier-clear owner DM; per-strategy `notify_ratchet_triggers` shadows global
 - **#1124** composite `ranging_directional` splits into `_up`/`_down` (9 labels); a bare `ranging_directional` in `allowed_regimes`/`*_atr_regime`/`regime_directional_policy` covers both subs (one-way; explicit `_up` gates out `_down`). No config change required; an explicit composite block listing the subs but omitting bare now errors at load. `regime_directional_policy` certification stays exact-match (bare does NOT certify subs)
 
@@ -473,6 +476,7 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    ./go-trader manual-open <strategy-id> --limit-price N [--tif Alo|Gtc] [--expire-after N]
    ./go-trader manual-cancel <limit-order-id>
    ./go-trader manual-close <strategy-id> [--qty N]
+   ./go-trader force-close <strategy-id> [--qty N] [--dry-run]   # live HL perps strategy close
    ./go-trader manual-update-sl <strategy-id> --trigger N [--symbol Y] [--dry-run]
    ./go-trader manual-cancel-sl <strategy-id> [--symbol Y] [--dry-run]
    ./go-trader backfill hl-fees [--strategy <id>|--all] [--apply] [--reset-cash]
@@ -543,6 +547,8 @@ Notes:
 - Fills queued in `pending_manual_actions`, applied at top of next scheduler cycle (need `--once` if daemon idle). If the queue insert fails after a successful on-chain fill, the position is auto-flattened and SL/TP cancelled (#635); cleanup failures notify loudly — flatten manually.
 - A 99% partial close is **not** silently collapsed into a full close — the queue carries explicit `is_full_close` intent from `--qty`.
 - `manual-update-sl` / `manual-cancel-sl` (#1050) edit the resting stop-loss in place: they cancel-then-place (update) or cancel (remove) the on-chain SL, then queue an `update-sl`/`cancel-sl` action the daemon drains into memory — **no direct `state.db` write, no restart**. They are **hard-rejected** when the strategy's automated protection (ATR/regime `stop_loss_atr_mult`, trailing close) would re-pin the edit on the next cycle — only strategies opted out of auto-SL (`stop_loss_atr_mult: 0`, no trailing) qualify; the error names the opt-out. `update-sl` also refuses a trigger that would fill immediately against the current mark. Same kill-switch / pending-CB guards as `manual-open`; SL edits record no trade (no Discord trade DM).
+- `manual-open` auto-fetches ATR against the strategy's timeframe; when the strategy `timeframe` is unset it now defaults the fetch to **1h** (the manual flow's canonical default) instead of dropping straight to the coarse heuristic (#1131). The success log prints the timeframe the ATR was actually computed against.
+- `force-close <strategy-id> [--qty N] [--dry-run]` (#1140) closes a position on a **live Hyperliquid `type=perps` strategy** — the automated-strategy analog of `manual-close` (which only works on `type=manual`). Rejects paper mode and non-perps/non-HL strategies. It submits the reduce-only close, defers cancelling the on-chain SL/TP triggers until the close fill is confirmed (a failed or under-filled close never orphans protection), then queues the confirmed fill for the scheduler to adopt into state/trades on the next cycle (`--once` if the daemon is idle). The booked leg records a `force_close` trade and, unlike manual closes, **updates the strategy's RiskState** with the realized PnL (circuit-breaker-visible). A **full** close is refused while a stop-loss edit is queued for that position (run the scheduler first). `--qty` closes a partial; `--dry-run` previews without any exchange call or state write.
 - External closes (UI, SL, TP) detected by reconciler and cleared automatically (#576) — no ghosts.
 - `type=manual` exempt from CB drawdown checks (#574).
 
