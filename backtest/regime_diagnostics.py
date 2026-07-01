@@ -210,7 +210,7 @@ def kmeans_yardstick(features, fwd, k_range=(2, 3, 4, 5, 6, 7), seed=0) -> dict:
 
 
 def score_labels(close, labels, features, horizons=(1, 4, 12), block_mult=3, seed=0,
-                 target="returns") -> dict:
+                 target="returns", n_perm=200) -> dict:
     labels = np.asarray(labels, dtype=object)
     features = np.asarray(features, dtype=float)
     try:
@@ -233,9 +233,11 @@ def score_labels(close, labels, features, horizons=(1, 4, 12), block_mult=3, see
         block_len = max(int(block_mult * mean_dwell), h)
         out["horizons"][f"h{h}"] = {
             "separation": separation(vlabels, fwd),
-            "significance": block_shuffle_pvalue(vlabels, fwd, block_len, seed=seed),
+            "significance": block_shuffle_pvalue(vlabels, fwd, block_len, n_perm=n_perm,
+                                                 seed=seed),
             "yardstick": kmeans_yardstick(features, fwd_full, seed=seed),
-            "per_state_fdr": per_state_significance(vlabels, fwd, block_len, seed=seed),
+            "per_state_fdr": per_state_significance(vlabels, fwd, block_len, n_perm=n_perm,
+                                                    seed=seed),
         }
     # flat aliases for the pre-registered primary (h=4)
     if "h4" in out["horizons"]:
@@ -244,7 +246,7 @@ def score_labels(close, labels, features, horizons=(1, 4, 12), block_mult=3, see
 
 
 def run_window(symbol, timeframe, window, *, model=None, horizons=(1, 4, 12), seed=0,
-               target="returns") -> dict:
+               target="returns", n_perm=200) -> dict:
     from regime import compute_regime_composite, composite_feature_matrix, _DEFAULT_COMPOSITE_THRESHOLDS
     from data_fetcher import load_cached_data
     from eval_windows import WINDOWS, PLATFORM
@@ -260,7 +262,7 @@ def run_window(symbol, timeframe, window, *, model=None, horizons=(1, 4, 12), se
         from regime_hmm import forward_filter_labels
         labels, _conf = forward_filter_labels(features, model)
     return score_labels(df["close"].to_numpy(), labels, features, horizons=horizons,
-                        seed=seed, target=target)
+                        seed=seed, target=target, n_perm=n_perm)
 
 
 def build_parser() -> "argparse.ArgumentParser":

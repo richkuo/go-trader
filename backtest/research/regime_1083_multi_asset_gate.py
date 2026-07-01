@@ -110,6 +110,10 @@ def _summarize_bakeoff(report: dict) -> dict:
         "handrule_held_out": report.get("handrule_held_out"),
         "significance_alpha": report.get("significance_alpha"),
         "bonferroni_alpha": report.get("bonferroni_alpha"),
+        "bonferroni_denominator": report.get("bonferroni_denominator"),
+        "n_perm": report.get("n_perm"),
+        "min_achievable_p_value": report.get("min_achievable_p_value"),
+        "structurally_ineligible": report.get("structurally_ineligible"),
     }
 
 
