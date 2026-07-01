@@ -17,6 +17,25 @@ Rules (long; short is the mirror)
 
 Emits ``signal = 1`` (long) / ``-1`` (short) on the reversion bar, else 0.
 When used open-as-close, the opposite signal also exits the position.
+
+Additional entry triggers (#981, default-off)
+---------------------------------------------
+The reversion-cross trigger alone starves the strategy (17 trades in-sample
+in the #956 audit). Two extra triggers add setups *inside the same no-trend
+regime* — frequency from more setups, not weaker filtering. Both stay behind
+the ADX gate and the RSI-extreme evidence, and both are OR'd with the base
+trigger (they never remove a base signal):
+
+- ``touch_entry=1`` — band touch: the bar the z-score first pierces
+  ``±entry_std`` (previous bar inside the band) while RSI shows the extreme.
+- ``turn_entry=1`` — stretched turn: z-score still beyond ``±entry_std`` but
+  turning back toward the mean vs the prior bar, while RSI shows the extreme.
+  Fires earlier than the reversion cross and also catches stretches whose RSI
+  confirmation window has expired by the time z crosses back.
+
+RSI evidence for the extra triggers = RSI at the extreme on the current bar
+OR within the last ``confirm_window`` bars (the base trigger's window).
+Defaults 0/0 are bit-identical to the pre-#981 strategy.
 """
 
 import numpy as np
@@ -35,6 +54,8 @@ def mean_reversion_pro_core(
     rsi_oversold: float = 30.0,
     rsi_overbought: float = 70.0,
     confirm_window: int = 3,
+    touch_entry: int = 0,
+    turn_entry: int = 0,
 ) -> pd.DataFrame:
     """Generate trend-filtered mean-reversion signals (bidirectional).
 
@@ -47,6 +68,8 @@ def mean_reversion_pro_core(
     rsi_period : Wilder RSI lookback
     rsi_oversold / rsi_overbought : RSI extremes the stretch must have reached
     confirm_window : bars to look back for the RSI extreme during the stretch
+    touch_entry : #981 default-off — 1 adds the band-touch trigger
+    turn_entry : #981 default-off — 1 adds the stretched-turn trigger
 
     Returns
     -------
@@ -113,6 +136,26 @@ def mean_reversion_pro_core(
 
     long_mask = no_trend & long_revert & rsi_was_oversold
     short_mask = no_trend & short_revert & rsi_was_overbought
+
+    # #981 additional entry triggers (default-off): more setups inside the
+    # same no-trend regime. OR'd with the base trigger — they only ever add
+    # signal bars, and every extra setup still requires the ADX gate plus
+    # RSI-extreme evidence (current bar or the base trigger's window).
+    if touch_entry or turn_entry:
+        rsi_evidence_long = (result["rsi"] < rsi_oversold) | rsi_was_oversold
+        rsi_evidence_short = (result["rsi"] > rsi_overbought) | rsi_was_overbought
+        if touch_entry:
+            # Band touch: first bar beyond the band (prior bar inside it).
+            long_touch = (z <= -entry_std) & (z.shift(1) > -entry_std)
+            short_touch = (z >= entry_std) & (z.shift(1) < entry_std)
+            long_mask |= no_trend & long_touch & rsi_evidence_long
+            short_mask |= no_trend & short_touch & rsi_evidence_short
+        if turn_entry:
+            # Stretched turn: still beyond the band, turning back to the mean.
+            long_turn = (z <= -entry_std) & (z > z.shift(1))
+            short_turn = (z >= entry_std) & (z < z.shift(1))
+            long_mask |= no_trend & long_turn & rsi_evidence_long
+            short_mask |= no_trend & short_turn & rsi_evidence_short
 
     result.loc[long_mask, "signal"] = 1
     result.loc[short_mask, "signal"] = -1

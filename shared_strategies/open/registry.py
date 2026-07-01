@@ -1160,6 +1160,9 @@ def momentum_pro_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "adx_period": 14, "adx_max": 25.0,
         "rsi_period": 14, "rsi_oversold": 30.0, "rsi_overbought": 70.0,
         "confirm_window": 3,
+        # #981 additional entry triggers — default-off (1 enables; both stay
+        # behind the ADX no-trend gate + RSI-extreme evidence).
+        "touch_entry": 0, "turn_entry": 0,
     },
 )
 def mean_reversion_pro_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:

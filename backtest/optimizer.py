@@ -777,6 +777,9 @@ DEFAULT_PARAM_RANGES = {
         "adx_max": [20.0, 25.0, 30.0],
         "rsi_oversold": [25.0, 30.0, 35.0],
         "rsi_overbought": [65.0, 70.0, 75.0],
+        # #981 default-off extra entry triggers.
+        "touch_entry": [0, 1],
+        "turn_entry": [0, 1],
     },
     "mtf_confluence": {
         "htf_factor": [3, 4, 6],
