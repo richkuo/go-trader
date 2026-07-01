@@ -14,6 +14,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from mtf_confluence import _project_to_native, _resample_htf
+
 
 @dataclass
 class PatternMatch:
@@ -720,6 +722,47 @@ def detect_cup_and_handle(
 
 
 # ─────────────────────────────────────────────
+# HTF Trend Gate (#982)
+# ─────────────────────────────────────────────
+
+_HTF_GATE_MODES = ("veto", "align")
+
+
+def _htf_gate_trend(
+    df: pd.DataFrame,
+    htf_factor: int,
+    ema_fast: int = 20,
+    ema_slow: int = 40,
+) -> pd.Series:
+    """Higher-timeframe trend visible at each native bar (1 up, -1 down, 0).
+
+    Reuses the ``mtf_confluence`` (#963) resample machinery and its
+    anti-look-ahead contract: an HTF bucket is only readable from the native
+    bar at which the bucket has fully closed, so the trend at bar N never
+    depends on bars after N. Trend is up when the HTF EMA(fast) of bucket
+    closes sits above EMA(slow), down when below; neutral (0) until
+    ``ema_slow`` buckets have accrued (EMA warmup) and before the first
+    bucket close is visible.
+    """
+    htf, visible_at = _resample_htf(df, htf_factor)
+    if len(htf) == 0:
+        return pd.Series(0, index=df.index, dtype=int)
+    htf_close = htf["close"]
+    fast = htf_close.ewm(span=ema_fast, adjust=False).mean()
+    slow = htf_close.ewm(span=ema_slow, adjust=False).mean()
+    warm = np.arange(len(htf)) >= ema_slow
+    trend_htf = pd.Series(
+        np.where(warm & (fast > slow), 1, np.where(warm & (fast < slow), -1, 0)),
+        index=htf.index,
+    )
+    return (
+        _project_to_native(trend_htf, visible_at, df.index)
+        .fillna(0)
+        .astype(int)
+    )
+
+
+# ─────────────────────────────────────────────
 # Orchestrator
 # ─────────────────────────────────────────────
 
@@ -748,11 +791,34 @@ def chart_pattern_core(
     tolerance: float = 0.03,
     vol_multiplier: float = 1.5,
     vol_period: int = 20,
+    htf_gate_factor: int = 0,
+    htf_gate_mode: str = "veto",
+    htf_gate_ema_fast: int = 20,
+    htf_gate_ema_slow: int = 40,
 ) -> pd.DataFrame:
     """
     Run all pattern detectors on OHLCV data. Produces a 'signal' column:
     1 = bullish pattern confirmed, -1 = bearish, 0 = no pattern.
+
+    HTF trend gate (#982, default-off): when ``htf_gate_factor`` > 1 the
+    native frame is resampled to ``htf_gate_factor`` × the native bar (no
+    extra data fetch; closed buckets only, same anti-look-ahead contract as
+    ``mtf_confluence``) and pattern signals are filtered against the HTF
+    EMA(fast)/EMA(slow) trend:
+
+    - ``htf_gate_mode="veto"``: block only counter-trend signals (+1 in an
+      HTF downtrend, -1 in an HTF uptrend); a neutral/warmup trend passes
+      everything — the same semantics as the live DSL ``htf_filter``.
+    - ``htf_gate_mode="align"``: require agreement (+1 only in an uptrend,
+      -1 only in a downtrend); neutral blocks.
+
+    ``htf_gate_factor`` <= 1 disables the gate entirely and the output is
+    bit-identical to the pre-#982 strategy.
     """
+    if htf_gate_mode not in _HTF_GATE_MODES:
+        raise ValueError(
+            f"htf_gate_mode must be one of {_HTF_GATE_MODES}, got {htf_gate_mode!r}"
+        )
     result = df.copy()
     result["signal"] = 0
     n = len(result)
@@ -787,6 +853,21 @@ def chart_pattern_core(
         idx = match.bar_index
         if 0 <= idx < n and volume_confirmed(result["volume"], idx, vol_period, vol_multiplier):
             result.iloc[idx, result.columns.get_loc("signal")] = match.signal
+
+    # HTF trend gate (#982): filter confirmed pattern signals against the
+    # higher-timeframe trend. Applied after volume confirmation so the gate
+    # sees exactly the signals the strategy would otherwise emit.
+    if htf_gate_factor and int(htf_gate_factor) > 1:
+        trend = _htf_gate_trend(
+            result, int(htf_gate_factor), htf_gate_ema_fast, htf_gate_ema_slow
+        )
+        result["htf_gate_trend"] = trend
+        sig = result["signal"]
+        if htf_gate_mode == "align":
+            blocked = ((sig == 1) & (trend != 1)) | ((sig == -1) & (trend != -1))
+        else:  # veto
+            blocked = ((sig == 1) & (trend == -1)) | ((sig == -1) & (trend == 1))
+        result.loc[blocked, "signal"] = 0
 
     result["swing_high"] = swing_highs
     result["swing_low"] = swing_lows

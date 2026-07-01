@@ -845,7 +845,14 @@ def vwap_reversion_strategy(df: pd.DataFrame, entry_std: float = 1.5, exit_std: 
 @register(
     "chart_pattern",
     "Chart Pattern \u2014 detects Double Top/Bottom, H&S, Flags, Triangles with volume confirmation",
-    {"pivot_lookback": 5, "tolerance": 0.03, "vol_multiplier": 1.5, "vol_period": 20},
+    {
+        "pivot_lookback": 5, "tolerance": 0.03, "vol_multiplier": 1.5,
+        "vol_period": 20,
+        # #982 HTF trend gate \u2014 default-off (0 disables; >1 gates pattern
+        # signals against the resampled-in-frame HTF EMA trend).
+        "htf_gate_factor": 0, "htf_gate_mode": "veto",
+        "htf_gate_ema_fast": 20, "htf_gate_ema_slow": 40,
+    },
 )
 def chart_pattern_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return chart_pattern_core(df, **params)
