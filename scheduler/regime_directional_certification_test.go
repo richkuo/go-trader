@@ -247,6 +247,7 @@ func TestDirectionalCertStartupLinesNeedingOwnerDM(t *testing.T) {
 }
 
 func TestNotifyDirectionalCertStartupSummary(t *testing.T) {
+	resetDirectionalCertOwnerDMDedupForTest()
 	mock := &mockNotifier{}
 	mn := NewMultiNotifier(notifierBackend{notifier: mock, ownerID: "owner1"})
 	lines := []string{
@@ -260,6 +261,36 @@ func TestNotifyDirectionalCertStartupSummary(t *testing.T) {
 	if !strings.Contains(mock.dms[0].content, "DEFAULT-OFF") {
 		t.Fatalf("DM should carry DEFAULT-OFF line, got: %q", mock.dms[0].content)
 	}
+
+	notifyDirectionalCertStartupSummary(mn, lines)
+	if len(mock.dms) != 1 {
+		t.Fatalf("identical snapshot should not re-DM, got %d DMs: %v", len(mock.dms), mock.dms)
+	}
+
+	changed := append([]string(nil), lines...)
+	changed = append(changed, "[#1085] eth: regime_directional_policy DEFAULT-OFF — no certified directional edge for (ETH,1h,adx)")
+	notifyDirectionalCertStartupSummary(mn, changed)
+	if len(mock.dms) != 2 {
+		t.Fatalf("changed snapshot should DM again, got %d DMs: %v", len(mock.dms), mock.dms)
+	}
+
+	certifiedOnly := []string{
+		"[#1085] dir: regime_directional_policy CERTIFIED for (BTC,1h,adx) — directional selection ACTIVE",
+	}
+	notifyDirectionalCertStartupSummary(mn, certifiedOnly)
+	if len(mock.dms) != 2 {
+		t.Fatalf("certified-only snapshot should not DM, got %d DMs", len(mock.dms))
+	}
+	notifyDirectionalCertStartupSummary(mn, lines)
+	if len(mock.dms) != 3 {
+		t.Fatalf("re-degradation after certified should DM again, got %d DMs", len(mock.dms))
+	}
+}
+
+func resetDirectionalCertOwnerDMDedupForTest() {
+	directionalCertOwnerDMMu.Lock()
+	directionalCertOwnerDMLastSnap = ""
+	directionalCertOwnerDMMu.Unlock()
 }
 
 func TestDirectionalCertOperatorNotes(t *testing.T) {

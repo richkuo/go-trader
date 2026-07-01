@@ -445,13 +445,61 @@ func directionalCertStartupLinesNeedingOwnerDM(lines []string) []string {
 	return out
 }
 
+// directionalCertOwnerDMSnapshot canonicalizes the filtered owner-DM payload so
+// unchanged certification state can be deduped across startup/SIGHUP (#1157).
+func directionalCertOwnerDMSnapshot(lines []string) string {
+	filtered := directionalCertStartupLinesNeedingOwnerDM(lines)
+	if len(filtered) == 0 {
+		return ""
+	}
+	cp := append([]string(nil), filtered...)
+	sort.Strings(cp)
+	return strings.Join(cp, "\n")
+}
+
+var (
+	directionalCertOwnerDMMu       sync.Mutex
+	directionalCertOwnerDMLastSnap string
+)
+
 // notifyDirectionalCertStartupSummary forwards filtered #1085 startup-summary
 // lines to the owner DM so uncertified policy is visible outside boot stdout.
+// Identical filtered snapshots are deduped so repeated SIGHUPs (e.g. after
+// Discord config edits) do not spam the owner. When the snapshot changes,
+// only lines absent from the prior snapshot are DM'd, except on a fresh
+// degradation (prior snapshot empty → all filtered lines).
 func notifyDirectionalCertStartupSummary(notifier *MultiNotifier, lines []string) {
 	if notifier == nil || !notifier.HasOwner() {
 		return
 	}
-	for _, line := range directionalCertStartupLinesNeedingOwnerDM(lines) {
+	filtered := directionalCertStartupLinesNeedingOwnerDM(lines)
+	snap := directionalCertOwnerDMSnapshot(lines)
+	directionalCertOwnerDMMu.Lock()
+	if snap == directionalCertOwnerDMLastSnap {
+		directionalCertOwnerDMMu.Unlock()
+		return
+	}
+	prevSnap := directionalCertOwnerDMLastSnap
+	directionalCertOwnerDMLastSnap = snap
+	directionalCertOwnerDMMu.Unlock()
+
+	if snap == "" {
+		return
+	}
+	toSend := filtered
+	if prevSnap != "" {
+		prevSet := make(map[string]struct{}, strings.Count(prevSnap, "\n")+1)
+		for _, line := range strings.Split(prevSnap, "\n") {
+			prevSet[line] = struct{}{}
+		}
+		toSend = nil
+		for _, line := range filtered {
+			if _, seen := prevSet[line]; !seen {
+				toSend = append(toSend, line)
+			}
+		}
+	}
+	for _, line := range toSend {
 		notifier.SendOwnerDM("[state] " + line)
 	}
 }
