@@ -989,9 +989,12 @@ func TestFormatCategorySummary_SharedWallet(t *testing.T) {
 	if !strings.Contains(msg, "Wallet%") {
 		t.Errorf("expected 'Wallet%%' column header, got:\n%s", msg)
 	}
-	// Should contain Init column
-	if !strings.Contains(msg, "Init") {
-		t.Errorf("expected 'Init' column header, got:\n%s", msg)
+	// Aggregate initial capital appears once in the header, not per-row in the table.
+	if !strings.Contains(msg, "Initial capital: $1,000") {
+		t.Errorf("expected aggregate initial capital in header, got:\n%s", msg)
+	}
+	if strings.Contains(msg, " Init ") {
+		t.Errorf("Init column should be removed from table, got:\n%s", msg)
 	}
 	// Should contain 50.0% for each strategy
 	if !strings.Contains(msg, "50.0%") {
@@ -1010,14 +1013,8 @@ func TestFormatCategorySummary_SharedWallet(t *testing.T) {
 		t.Errorf("expected individual value ~542, got:\n%s", msg)
 	}
 	// PnL should use InitialCapital ($500), not runtime Capital ($542.50)
-	if !strings.Contains(msg, "500") {
-		t.Errorf("expected initial capital '500', got:\n%s", msg)
-	}
-	// Column order should be Init | Value (not Value | Init)
-	initIdx := strings.Index(msg, "Init")
-	valueIdx := strings.Index(msg, "Value")
-	if initIdx >= valueIdx {
-		t.Errorf("expected Init column before Value column, got:\n%s", msg)
+	if !strings.Contains(msg, "+42") && !strings.Contains(msg, "+43") {
+		t.Errorf("expected positive PnL from InitialCapital baseline, got:\n%s", msg)
 	}
 }
 
@@ -1069,9 +1066,11 @@ func TestFormatCategorySummary_NoSharedWallet(t *testing.T) {
 	if strings.Contains(msg, "Wallet%") {
 		t.Errorf("should not show Wallet%% column without shared wallet, got:\n%s", msg)
 	}
-	// Should still show Init column even without shared wallet
-	if !strings.Contains(msg, "Init") {
-		t.Errorf("expected 'Init' column header, got:\n%s", msg)
+	if !strings.Contains(msg, "Initial capital: $1,000") {
+		t.Errorf("expected aggregate initial capital in header, got:\n%s", msg)
+	}
+	if strings.Contains(msg, " Init ") {
+		t.Errorf("Init column should be removed from table, got:\n%s", msg)
 	}
 }
 
@@ -2912,9 +2911,9 @@ func TestFormatCategorySummary_AdjustedTotalOverridesNaiveSum(t *testing.T) {
 		t.Fatalf("no TOTAL row found in:\n%s", msg)
 	}
 
-	// TOTAL row value column must show $8,000 (adjusted). The init-capital column
-	// correctly shows $10,000 (sum of both strategies), so we distinguish by
-	// checking the PnL% which is -20.0% only when value=8000 is used.
+	// TOTAL row value column must show $8,000 (adjusted). Aggregate initial
+	// capital ($10,000) lives in the header; distinguish adjusted total via
+	// PnL% which is -20.0% only when value=8000 is used.
 	if !strings.Contains(totalLine, "8,000") {
 		t.Errorf("TOTAL row should show adjusted $8,000; got: %q\nfull msg:\n%s", totalLine, msg)
 	}
@@ -2972,9 +2971,8 @@ func TestFormatCategorySummary_NegativeAdjustedTotalFallsBackToNaiveSum(t *testi
 	}
 
 	// Explicit $0 adjustment (drained shared wallet) → TOTAL Value column shows
-	// $0, NOT the inflated naive sum. The Init column legitimately shows $5,000
-	// (sum of starting capital), so distinguish by PnL%: Value=0 vs Init=5000
-	// gives -100.0%; the naive fallback (Value=5000) would give 0.0%.
+	// $0, NOT the inflated naive sum. Header shows aggregate initial capital
+	// $5,000; PnL% -100.0% distinguishes drained value=0 from naive fallback 0.0%.
 	drainedLine := totalLineOf(FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "spot", "", 600, 0, nil, nil))
 	if drainedLine == "" {
 		t.Fatal("no TOTAL row found for $0-adjustment case")
