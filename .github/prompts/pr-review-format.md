@@ -10,7 +10,7 @@ Verdict rule: emit Needs Updates if and only if there is at least one item under
 
 LGTM signals the agent reading it may merge and close the PR. When the only findings are non-blocking, follow the LGTM line with the relevant ### Recommended Optional and/or ### Create Follow-up Issue sections; when there are no findings at all, LGTM stands alone with no other text.
 
-LGTM precondition: only emit LGTM after you have inspected every changed file in the diff. If you could not review the full diff, you MUST NOT emit LGTM — emit Needs Updates and record the gap as an item under ### Requires Human Review.
+LGTM precondition: only emit LGTM after you have BOTH inspected every changed file in the diff AND checked the CI status on the PR head commit (for example with gh pr checks). A failing required check is a blocking finding under ### Needs Fixing. If you could not review the full diff, could not determine CI status, or required checks are still running at verdict time, you MUST NOT emit LGTM — emit Needs Updates and record the gap as an item under ### Requires Human Review.
 
 Materiality filter (apply before writing): drop only trivia — style and naming nits, subjective preferences, micro-optimizations, and hypothetical edge cases with no realistic trigger. Anything you would prefix with 'minor' or 'nit' is trivia. Dropped trivia is not mentioned anywhere, not even as a note. Do NOT drop a substantive finding just because it is non-blocking — a real but non-merge-blocking improvement belongs under ### Recommended Optional or ### Create Follow-up Issue, never silently discarded.
 

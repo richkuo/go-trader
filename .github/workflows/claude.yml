@@ -6,9 +6,15 @@ on:
   pull_request_review_comment:
     types: [created]
   issues:
-    types: [opened, assigned]
+    types: [opened]
   pull_request_review:
     types: [submitted]
+
+# Serialize runs per issue/PR: both comment-patch steps rewrite "the latest
+# claude[bot] comment", so overlapping runs would stamp each other's comments.
+concurrency:
+  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
 
 jobs:
   claude:
@@ -18,6 +24,8 @@ jobs:
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
+    # Bound hung runs (GitHub default is 360 minutes); recorded runs peak at 15.
+    timeout-minutes: 45
     env:
       CLAUDE_HARNESS: anthropics/claude-code-action@v1
     permissions:
@@ -25,6 +33,9 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
+      # Read-only CI results, so the reviewer can enforce the CI-status LGTM
+      # precondition (gh pr checks / gh run view).
+      actions: read
     steps:
       - name: Verify @claude is an actual invocation (not in a code block or example)
         id: verify_invocation
@@ -159,11 +170,18 @@ jobs:
           # one line and inject as --append-system-prompt. The allowedTools list
           # is workflow capability (not review format), so it stays here.
           PROMPT=$(tr '\n' ' ' < .github/prompts/pr-review-format.md | sed -e 's/[[:space:]]\{2,\}/ /g' -e 's/^ *//' -e 's/ *$//')
-          if printf '%s' "$PROMPT" | grep -q '"'; then
-            echo "::error::pr-review-format.md must not contain double quotes (would break claude_args quoting)."
+          # claude_args is shell-evaluated downstream: a double quote breaks the
+          # quoting, and a backtick or dollar sign would expand or execute.
+          if printf '%s' "$PROMPT" | grep -q '["`$]'; then
+            echo "::error::pr-review-format.md must not contain double quotes, backticks, or dollar signs (claude_args is shell-evaluated)."
             exit 1
           fi
-          ALLOWED='Bash(go *),Bash(cd scheduler && go *),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *),Bash(git *),Bash(gh *)'
+          # git/gh are narrowed instead of wildcarded: Claude reads untrusted PR
+          # content while the job token can write contents and merge PRs, so a
+          # prompt-injected diff must not reach gh pr merge or push outside the
+          # working branch (push origin HEAD only). No gh api — its --method
+          # flag reaches every mutating endpoint.
+          ALLOWED='Bash(go *),Bash(cd scheduler && go *),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *),Bash(git status*),Bash(git log*),Bash(git diff*),Bash(git show*),Bash(git fetch*),Bash(git branch*),Bash(git rev-parse*),Bash(git checkout*),Bash(git switch*),Bash(git add*),Bash(git commit*),Bash(git push origin HEAD*),Bash(gh pr view*),Bash(gh pr diff*),Bash(gh pr checks*),Bash(gh pr comment*),Bash(gh issue view*),Bash(gh run view*),Bash(gh run list*)'
           ARGS="--model ${MODEL_ID} --effort ${EFFORT} --append-system-prompt \"${PROMPT}\" --allowedTools \"${ALLOWED}\""
           {
             printf 'claude_args<<CLAUDE_ARGS_EOF\n'
@@ -243,59 +261,27 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: "Use the Skill tool to invoke the 'claude-md-management:revise-claude-md' skill. Review the changes made in this session (use git log and git diff to inspect them) and update CLAUDE.md with any new patterns, conventions, or important context learned."
+          prompt: "Use the Skill tool to invoke the 'claude-md-management:revise-claude-md' skill. Review the changes made in this session (use git log and git diff to inspect them) and update CLAUDE.md with any new patterns, conventions, or important context learned. If you modified CLAUDE.md, you MUST persist it: commit it on the current branch following the repository commit conventions and push with git push origin HEAD — an uncommitted edit is discarded when this job ends."
           plugin_marketplaces: |
             https://github.com/anthropics/claude-code.git
             https://github.com/anthropics/claude-plugins-official.git
           plugins: |
             code-review@claude-code-plugins
             claude-md-management@claude-plugins-official
-          claude_args: --model ${{ steps.resolve_model.outputs.model_id }} --allowedTools "Bash(git *),Edit,Read,Grep,Glob,Write"
+          claude_args: --model ${{ steps.resolve_model.outputs.model_id }} --effort ${{ steps.resolve_model.outputs.effort }} --allowedTools "Bash(git status*),Bash(git log*),Bash(git diff*),Bash(git show*),Bash(git add*),Bash(git commit*),Bash(git push origin HEAD*),Edit,Read,Grep,Glob,Write"
 
+      # Footer composition and comment patching live in .github/scripts
+      # (patch_claude_comment.sh + compose_claude_comment.py) — shared with the
+      # cancellation/failure step below and unit-tested.
       - name: Append LLM footer to Claude comment
         if: steps.verify_invocation.outputs.invoked == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           MODEL_ID: ${{ steps.resolve_model.outputs.model_id }}
           EFFORT: ${{ steps.resolve_model.outputs.effort }}
-          CLAUDE_HARNESS: ${{ env.CLAUDE_HARNESS }}
           ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-        run: |
-          case "$MODEL_ID" in
-            "claude-opus-4-8[1m]")   MODEL_NAME="Claude Opus 4.8 (1M)" ;;
-            claude-sonnet-5)         MODEL_NAME="Claude Sonnet 5" ;;
-            claude-fable-5)          MODEL_NAME="Claude Fable 5" ;;
-            *)                       MODEL_NAME="$MODEL_ID" ;;
-          esac
-
-          COMMENT=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
-            --jq '[.[] | select(.user.login == "claude[bot]")] | sort_by(.updated_at) | last')
-
-          COMMENT_ID=$(echo "$COMMENT" | jq -r '.id')
-          BODY=$(echo "$COMMENT" | jq -r '.body')
-
-          if [ -z "$COMMENT_ID" ] || [ "$COMMENT_ID" = "null" ]; then
-            echo "No claude[bot] comment found"
-            exit 0
-          fi
-
-          # Strip any stale LLM footer Claude may have written (it doesn't know
-          # the real --effort value, so it guesses). The workflow is authoritative.
-          BODY=$(printf '%s' "$BODY" | python3 .github/scripts/strip_llm_footer.py)
-
-          FOOTER="---"$'\n'"LLM: ${MODEL_NAME} | ${EFFORT} | Harness: ${CLAUDE_HARNESS}"
-
-          NEW_BODY="${BODY}"$'\n\n'"${FOOTER}"
-
-          # Rewrite the "Create PR" link's prefilled `body=` query param so the PR
-          # description ends with our model/effort footer instead of the default
-          # "Generated with [Claude Code](https://claude.com/claude-code)" line.
-          NEW_BODY=$(BODY_IN="$NEW_BODY" FOOTER_TEXT="$FOOTER" python3 .github/scripts/rewrite_create_pr_link.py)
-
-          gh api "repos/$REPO/issues/comments/$COMMENT_ID" \
-            --method PATCH \
-            --field body="$NEW_BODY"
+        run: bash .github/scripts/patch_claude_comment.sh
 
       - name: Mark cancellation for downstream status note
         if: always() && cancelled()
@@ -307,46 +293,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MODEL_ID: ${{ steps.resolve_model.outputs.model_id }}
           EFFORT: ${{ steps.resolve_model.outputs.effort }}
-          CLAUDE_HARNESS: ${{ env.CLAUDE_HARNESS }}
           ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          case "$MODEL_ID" in
-            "claude-opus-4-8[1m]")   MODEL_NAME="Claude Opus 4.8 (1M)" ;;
-            claude-sonnet-5)         MODEL_NAME="Claude Sonnet 5" ;;
-            claude-fable-5)          MODEL_NAME="Claude Fable 5" ;;
-            "")                      MODEL_NAME="(model not resolved)" ;;
-            *)                       MODEL_NAME="$MODEL_ID" ;;
-          esac
+          # A failure before (or during) checkout leaves no scripts to run with.
+          if [ ! -f .github/scripts/patch_claude_comment.sh ]; then
+            echo "::notice::Checkout unavailable — cannot patch the Claude comment."
+            exit 0
+          fi
 
-          if [ "$IS_CANCELLED" = "true" ]; then
+          if [ "${IS_CANCELLED:-}" = "true" ]; then
             STATUS_NOTE="**Workflow cancelled before completion.** See [run log]($RUN_URL)."
           else
             STATUS_NOTE="**Workflow failed before completion.** See [run log]($RUN_URL)."
           fi
+          export STATUS_NOTE
 
-          COMMENT=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
-            --jq '[.[] | select(.user.login == "claude[bot]")] | sort_by(.updated_at) | last')
-
-          COMMENT_ID=$(echo "$COMMENT" | jq -r '.id')
-          BODY=$(echo "$COMMENT" | jq -r '.body')
-
-          if [ -z "$COMMENT_ID" ] || [ "$COMMENT_ID" = "null" ]; then
-            echo "No claude[bot] comment found — nothing to update."
-            exit 0
-          fi
-
-          # Strip any stale LLM footer Claude may have written so we don't stack footers.
-          BODY=$(printf '%s' "$BODY" | python3 .github/scripts/strip_llm_footer.py)
-
-          # Drop a previously appended status note (idempotent on retries / repeated failures).
-          BODY=$(printf '%s' "$BODY" | perl -0777 -pe 's/\n*\*\*Workflow (cancelled|failed) before completion\.\*\*[^\n]*\n?//g')
-
-          FOOTER="---"$'\n'"LLM: ${MODEL_NAME} | ${EFFORT:-unknown} | Harness: ${CLAUDE_HARNESS}"
-
-          NEW_BODY="${BODY}"$'\n\n'"${STATUS_NOTE}"$'\n\n'"${FOOTER}"
-
-          gh api "repos/$REPO/issues/comments/$COMMENT_ID" \
-            --method PATCH \
-            --field body="$NEW_BODY"
+          bash .github/scripts/patch_claude_comment.sh
