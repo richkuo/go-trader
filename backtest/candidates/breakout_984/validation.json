@@ -1,0 +1,3518 @@
+{
+  "baseline": {
+    "candidate": {
+      "name": "breakout",
+      "direction": "long"
+    },
+    "window_scores": [
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": -1.105,
+              "return_pct": -17.96,
+              "max_dd_pct": -25.27,
+              "ddadj": -0.711,
+              "trades": 35,
+              "bh_return_pct": -20.07,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -1.02,
+              "ddadj": -0.656,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": -1.404,
+              "return_pct": -19.51,
+              "max_dd_pct": -24.56,
+              "ddadj": -0.794,
+              "trades": 13,
+              "bh_return_pct": -19.54,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -0.325,
+              "ddadj": -0.325,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": 2.228,
+              "return_pct": 70.11,
+              "max_dd_pct": -19.01,
+              "ddadj": 3.688,
+              "trades": 38,
+              "bh_return_pct": 10.85,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": 0.869,
+              "ddadj": 0.593,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": 0.76,
+              "return_pct": 14.48,
+              "max_dd_pct": -35.79,
+              "ddadj": 0.405,
+              "trades": 11,
+              "bh_return_pct": 11.35,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": 0.303,
+              "ddadj": 0.112,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": -0.244,
+              "return_pct": -14.24,
+              "max_dd_pct": -42.32,
+              "ddadj": -0.336,
+              "trades": 40,
+              "bh_return_pct": -21.9,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -0.49,
+              "ddadj": -0.45,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": -0.567,
+              "return_pct": -21.21,
+              "max_dd_pct": -52.17,
+              "ddadj": -0.407,
+              "trades": 11,
+              "bh_return_pct": -21.19,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -0.032,
+              "ddadj": -0.119,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": -0.055,
+        "mean_ddadj": 0.308,
+        "mean_bar_sharpe": -0.116,
+        "mean_bar_ddadj": -0.141,
+        "beats_sharpe_count": 3,
+        "beats_ddadj_count": 3,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "pass",
+        "window": "is",
+        "window_range": [
+          "2025-06-10",
+          "2026-01-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": -1.02,
+            "ddadj": -0.656,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": -0.325,
+            "ddadj": -0.325,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": 0.869,
+            "ddadj": 0.593,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": 0.303,
+            "ddadj": 0.112,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": -0.49,
+            "ddadj": -0.45,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": -0.032,
+            "ddadj": -0.119,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": -0.199,
+              "return_pct": -4.22,
+              "max_dd_pct": -15.7,
+              "ddadj": -0.269,
+              "trades": 31,
+              "bh_return_pct": -26.77,
+              "liquidated": false,
+              "span_days": 154.0
+            },
+            "bar": {
+              "sharpe": -1.176,
+              "ddadj": -0.57,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": -0.183,
+              "return_pct": -3.48,
+              "max_dd_pct": -18.03,
+              "ddadj": -0.193,
+              "trades": 6,
+              "bh_return_pct": -27.52,
+              "liquidated": false,
+              "span_days": 154.5
+            },
+            "bar": {
+              "sharpe": -0.301,
+              "ddadj": -0.247,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": -0.805,
+              "return_pct": -16.17,
+              "max_dd_pct": -27.12,
+              "ddadj": -0.596,
+              "trades": 35,
+              "bh_return_pct": -43.99,
+              "liquidated": false,
+              "span_days": 162.7917
+            },
+            "bar": {
+              "sharpe": -0.194,
+              "ddadj": -0.228,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": 0.236,
+              "return_pct": 0.81,
+              "max_dd_pct": -15.29,
+              "ddadj": 0.053,
+              "trades": 5,
+              "bh_return_pct": -40.42,
+              "liquidated": false,
+              "span_days": 154.5
+            },
+            "bar": {
+              "sharpe": -0.433,
+              "ddadj": -0.44,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": -0.297,
+              "return_pct": -9.5,
+              "max_dd_pct": -22.8,
+              "ddadj": -0.417,
+              "trades": 34,
+              "bh_return_pct": -46.51,
+              "liquidated": false,
+              "span_days": 162.7917
+            },
+            "bar": {
+              "sharpe": -1.635,
+              "ddadj": -0.795,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": -0.033,
+              "return_pct": -4.03,
+              "max_dd_pct": -14.84,
+              "ddadj": -0.272,
+              "trades": 6,
+              "bh_return_pct": -44.21,
+              "liquidated": false,
+              "span_days": 154.5
+            },
+            "bar": {
+              "sharpe": -0.764,
+              "ddadj": -0.657,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": -0.214,
+        "mean_ddadj": -0.282,
+        "mean_bar_sharpe": -0.75,
+        "mean_bar_ddadj": -0.489,
+        "beats_sharpe_count": 5,
+        "beats_ddadj_count": 5,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "pass",
+        "window": "oos",
+        "window_range": [
+          "2026-01-01",
+          null
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": -1.176,
+            "ddadj": -0.57,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": -0.301,
+            "ddadj": -0.247,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": -0.194,
+            "ddadj": -0.228,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": -0.433,
+            "ddadj": -0.44,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": -1.635,
+            "ddadj": -0.795,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": -0.764,
+            "ddadj": -0.657,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": 0.355,
+              "return_pct": 6.5,
+              "max_dd_pct": -45.69,
+              "ddadj": 0.142,
+              "trades": 87,
+              "bh_return_pct": 157.1,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 1.465,
+              "ddadj": 1.932,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": 2.357,
+              "return_pct": 108.89,
+              "max_dd_pct": -18.77,
+              "ddadj": 5.801,
+              "trades": 19,
+              "bh_return_pct": 156.16,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 1.814,
+              "ddadj": 3.022,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": -0.409,
+              "return_pct": -19.39,
+              "max_dd_pct": -41.82,
+              "ddadj": -0.464,
+              "trades": 86,
+              "bh_return_pct": 92.17,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 0.341,
+              "ddadj": 0.176,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": 0.463,
+              "return_pct": 10.62,
+              "max_dd_pct": -33.16,
+              "ddadj": 0.32,
+              "trades": 23,
+              "bh_return_pct": 90.59,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 0.476,
+              "ddadj": 0.341,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": 2.273,
+              "return_pct": 325.02,
+              "max_dd_pct": -53.75,
+              "ddadj": 6.047,
+              "trades": 79,
+              "bh_return_pct": 922.79,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 2.564,
+              "ddadj": 9.829,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": 2.466,
+              "return_pct": 417.44,
+              "max_dd_pct": -35.2,
+              "ddadj": 11.859,
+              "trades": 18,
+              "bh_return_pct": 931.25,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 2.096,
+              "ddadj": 6.752,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": 1.251,
+        "mean_ddadj": 3.951,
+        "mean_bar_sharpe": 1.459,
+        "mean_bar_ddadj": 3.675,
+        "beats_sharpe_count": 2,
+        "beats_ddadj_count": 2,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "fail",
+        "window": "2023",
+        "window_range": [
+          "2023-01-01",
+          "2024-01-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": 1.465,
+            "ddadj": 1.932,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": 1.814,
+            "ddadj": 3.022,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": 0.341,
+            "ddadj": 0.176,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": 0.476,
+            "ddadj": 0.341,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": 2.564,
+            "ddadj": 9.829,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": 2.096,
+            "ddadj": 6.752,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": 0.827,
+              "return_pct": 26.65,
+              "max_dd_pct": -34.22,
+              "ddadj": 0.779,
+              "trades": 77,
+              "bh_return_pct": 122.08,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.956,
+              "ddadj": 1.123,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": 1.447,
+              "return_pct": 57.9,
+              "max_dd_pct": -29.72,
+              "ddadj": 1.948,
+              "trades": 18,
+              "bh_return_pct": 121.35,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 1.49,
+              "ddadj": 2.325,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": -0.138,
+              "return_pct": -13.55,
+              "max_dd_pct": -50.2,
+              "ddadj": -0.27,
+              "trades": 79,
+              "bh_return_pct": 46.47,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.719,
+              "ddadj": 0.795,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": 0.639,
+              "return_pct": 20.28,
+              "max_dd_pct": -47.92,
+              "ddadj": 0.423,
+              "trades": 19,
+              "bh_return_pct": 47.4,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.888,
+              "ddadj": 0.966,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": 0.581,
+              "return_pct": 18.41,
+              "max_dd_pct": -33.06,
+              "ddadj": 0.557,
+              "trades": 76,
+              "bh_return_pct": 88.34,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.591,
+              "ddadj": 0.493,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": 1.161,
+              "return_pct": 62.61,
+              "max_dd_pct": -42.71,
+              "ddadj": 1.466,
+              "trades": 15,
+              "bh_return_pct": 85.57,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.781,
+              "ddadj": 0.748,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": 0.753,
+        "mean_ddadj": 0.817,
+        "mean_bar_sharpe": 0.904,
+        "mean_bar_ddadj": 1.075,
+        "beats_sharpe_count": 1,
+        "beats_ddadj_count": 2,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "fail",
+        "window": "2024",
+        "window_range": [
+          "2024-01-01",
+          "2025-01-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": 0.956,
+            "ddadj": 1.123,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": 1.49,
+            "ddadj": 2.325,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": 0.719,
+            "ddadj": 0.795,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": 0.888,
+            "ddadj": 0.966,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": 0.591,
+            "ddadj": 0.493,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": 0.781,
+            "ddadj": 0.748,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": -1.181,
+              "return_pct": -20.88,
+              "max_dd_pct": -31.75,
+              "ddadj": -0.658,
+              "trades": 39,
+              "bh_return_pct": 13.78,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.529,
+              "ddadj": -0.479,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": -0.683,
+              "return_pct": -14.22,
+              "max_dd_pct": -18.91,
+              "ddadj": -0.752,
+              "trades": 11,
+              "bh_return_pct": 14.42,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": 0.11,
+              "ddadj": 0.024,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": -2.096,
+              "return_pct": -45.0,
+              "max_dd_pct": -58.97,
+              "ddadj": -0.763,
+              "trades": 46,
+              "bh_return_pct": -25.89,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.671,
+              "ddadj": -0.54,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": -1.995,
+              "return_pct": -41.88,
+              "max_dd_pct": -55.0,
+              "ddadj": -0.761,
+              "trades": 12,
+              "bh_return_pct": -25.91,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -1.075,
+              "ddadj": -0.634,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": 0.268,
+              "return_pct": -3.36,
+              "max_dd_pct": -46.9,
+              "ddadj": -0.072,
+              "trades": 36,
+              "bh_return_pct": -19.57,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.295,
+              "ddadj": -0.37,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": -0.198,
+              "return_pct": -14.98,
+              "max_dd_pct": -45.98,
+              "ddadj": -0.326,
+              "trades": 10,
+              "bh_return_pct": -19.16,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.085,
+              "ddadj": -0.2,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": -0.981,
+        "mean_ddadj": -0.555,
+        "mean_bar_sharpe": -0.424,
+        "mean_bar_ddadj": -0.366,
+        "beats_sharpe_count": 1,
+        "beats_ddadj_count": 1,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "fail",
+        "window": "2025H1",
+        "window_range": [
+          "2025-01-01",
+          "2025-07-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": -0.529,
+            "ddadj": -0.479,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": 0.11,
+            "ddadj": 0.024,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": -0.671,
+            "ddadj": -0.54,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": -1.075,
+            "ddadj": -0.634,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": -0.295,
+            "ddadj": -0.37,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": -0.085,
+            "ddadj": -0.2,
+            "n": 8
+          }
+        }
+      }
+    ]
+  },
+  "trail_atr_3.0": {
+    "candidate": {
+      "name": "breakout",
+      "direction": "long",
+      "trailing_stop_atr_mult": 3.0
+    },
+    "window_scores": [
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": -1.936,
+              "return_pct": -24.8,
+              "max_dd_pct": -30.33,
+              "ddadj": -0.818,
+              "trades": 50,
+              "bh_return_pct": -20.07,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -1.02,
+              "ddadj": -0.656,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": -0.601,
+              "return_pct": -8.25,
+              "max_dd_pct": -17.72,
+              "ddadj": -0.466,
+              "trades": 14,
+              "bh_return_pct": -19.54,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -0.325,
+              "ddadj": -0.325,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": 1.24,
+              "return_pct": 27.79,
+              "max_dd_pct": -20.74,
+              "ddadj": 1.34,
+              "trades": 57,
+              "bh_return_pct": 10.85,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": 0.869,
+              "ddadj": 0.593,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": 2.369,
+              "return_pct": 57.15,
+              "max_dd_pct": -19.01,
+              "ddadj": 3.006,
+              "trades": 12,
+              "bh_return_pct": 11.35,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": 0.303,
+              "ddadj": 0.112,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": 0.555,
+              "return_pct": 8.67,
+              "max_dd_pct": -31.72,
+              "ddadj": 0.273,
+              "trades": 53,
+              "bh_return_pct": -21.9,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -0.49,
+              "ddadj": -0.45,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": -1.104,
+              "return_pct": -24.49,
+              "max_dd_pct": -39.75,
+              "ddadj": -0.616,
+              "trades": 16,
+              "bh_return_pct": -21.19,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -0.032,
+              "ddadj": -0.119,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": 0.087,
+        "mean_ddadj": 0.453,
+        "mean_bar_sharpe": -0.116,
+        "mean_bar_ddadj": -0.141,
+        "beats_sharpe_count": 3,
+        "beats_ddadj_count": 3,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "pass",
+        "window": "is",
+        "window_range": [
+          "2025-06-10",
+          "2026-01-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": -1.02,
+            "ddadj": -0.656,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": -0.325,
+            "ddadj": -0.325,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": 0.869,
+            "ddadj": 0.593,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": 0.303,
+            "ddadj": 0.112,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": -0.49,
+            "ddadj": -0.45,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": -0.032,
+            "ddadj": -0.119,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": -1.161,
+              "return_pct": -13.44,
+              "max_dd_pct": -18.58,
+              "ddadj": -0.723,
+              "trades": 40,
+              "bh_return_pct": -26.77,
+              "liquidated": false,
+              "span_days": 154.0
+            },
+            "bar": {
+              "sharpe": -1.176,
+              "ddadj": -0.57,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": -1.055,
+              "return_pct": -10.71,
+              "max_dd_pct": -13.81,
+              "ddadj": -0.776,
+              "trades": 10,
+              "bh_return_pct": -27.52,
+              "liquidated": false,
+              "span_days": 154.5
+            },
+            "bar": {
+              "sharpe": -0.301,
+              "ddadj": -0.247,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": -1.565,
+              "return_pct": -24.0,
+              "max_dd_pct": -27.62,
+              "ddadj": -0.869,
+              "trades": 48,
+              "bh_return_pct": -43.99,
+              "liquidated": false,
+              "span_days": 162.7917
+            },
+            "bar": {
+              "sharpe": -0.194,
+              "ddadj": -0.228,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": -0.996,
+              "return_pct": -12.44,
+              "max_dd_pct": -17.95,
+              "ddadj": -0.693,
+              "trades": 10,
+              "bh_return_pct": -40.42,
+              "liquidated": false,
+              "span_days": 154.5
+            },
+            "bar": {
+              "sharpe": -0.433,
+              "ddadj": -0.44,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": -1.868,
+              "return_pct": -29.15,
+              "max_dd_pct": -35.93,
+              "ddadj": -0.811,
+              "trades": 47,
+              "bh_return_pct": -46.51,
+              "liquidated": false,
+              "span_days": 162.7917
+            },
+            "bar": {
+              "sharpe": -1.635,
+              "ddadj": -0.795,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": -0.932,
+              "return_pct": -13.03,
+              "max_dd_pct": -20.01,
+              "ddadj": -0.651,
+              "trades": 9,
+              "bh_return_pct": -44.21,
+              "liquidated": false,
+              "span_days": 154.5
+            },
+            "bar": {
+              "sharpe": -0.764,
+              "ddadj": -0.657,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": true
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": -1.263,
+        "mean_ddadj": -0.754,
+        "mean_bar_sharpe": -0.75,
+        "mean_bar_ddadj": -0.489,
+        "beats_sharpe_count": 1,
+        "beats_ddadj_count": 1,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "fail",
+        "window": "oos",
+        "window_range": [
+          "2026-01-01",
+          null
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": -1.176,
+            "ddadj": -0.57,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": -0.301,
+            "ddadj": -0.247,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": -0.194,
+            "ddadj": -0.228,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": -0.433,
+            "ddadj": -0.44,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": -1.635,
+            "ddadj": -0.795,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": -0.764,
+            "ddadj": -0.657,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": 1.047,
+              "return_pct": 30.93,
+              "max_dd_pct": -31.57,
+              "ddadj": 0.98,
+              "trades": 103,
+              "bh_return_pct": 157.1,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 1.465,
+              "ddadj": 1.932,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": 1.53,
+              "return_pct": 51.92,
+              "max_dd_pct": -18.21,
+              "ddadj": 2.851,
+              "trades": 28,
+              "bh_return_pct": 156.16,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 1.814,
+              "ddadj": 3.022,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": -0.81,
+              "return_pct": -27.32,
+              "max_dd_pct": -47.67,
+              "ddadj": -0.573,
+              "trades": 110,
+              "bh_return_pct": 92.17,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 0.341,
+              "ddadj": 0.176,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": -0.005,
+              "return_pct": -5.17,
+              "max_dd_pct": -34.37,
+              "ddadj": -0.15,
+              "trades": 29,
+              "bh_return_pct": 90.59,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 0.476,
+              "ddadj": 0.341,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": 1.126,
+              "return_pct": 66.96,
+              "max_dd_pct": -62.32,
+              "ddadj": 1.074,
+              "trades": 115,
+              "bh_return_pct": 922.79,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 2.564,
+              "ddadj": 9.829,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": 1.961,
+              "return_pct": 209.68,
+              "max_dd_pct": -53.64,
+              "ddadj": 3.909,
+              "trades": 27,
+              "bh_return_pct": 931.25,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 2.096,
+              "ddadj": 6.752,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": 0.808,
+        "mean_ddadj": 1.349,
+        "mean_bar_sharpe": 1.459,
+        "mean_bar_ddadj": 3.675,
+        "beats_sharpe_count": 0,
+        "beats_ddadj_count": 0,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "fail",
+        "window": "2023",
+        "window_range": [
+          "2023-01-01",
+          "2024-01-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": 1.465,
+            "ddadj": 1.932,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": 1.814,
+            "ddadj": 3.022,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": 0.341,
+            "ddadj": 0.176,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": 0.476,
+            "ddadj": 0.341,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": 2.564,
+            "ddadj": 9.829,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": 2.096,
+            "ddadj": 6.752,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": -0.236,
+              "return_pct": -11.34,
+              "max_dd_pct": -35.62,
+              "ddadj": -0.318,
+              "trades": 106,
+              "bh_return_pct": 122.08,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.956,
+              "ddadj": 1.123,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": 1.821,
+              "return_pct": 66.16,
+              "max_dd_pct": -18.62,
+              "ddadj": 3.553,
+              "trades": 24,
+              "bh_return_pct": 121.35,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 1.49,
+              "ddadj": 2.325,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": -0.79,
+              "return_pct": -29.61,
+              "max_dd_pct": -45.61,
+              "ddadj": -0.649,
+              "trades": 103,
+              "bh_return_pct": 46.47,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.719,
+              "ddadj": 0.795,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": 0.589,
+              "return_pct": 16.55,
+              "max_dd_pct": -32.23,
+              "ddadj": 0.513,
+              "trades": 27,
+              "bh_return_pct": 47.4,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.888,
+              "ddadj": 0.966,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": -0.458,
+              "return_pct": -32.39,
+              "max_dd_pct": -38.5,
+              "ddadj": -0.841,
+              "trades": 101,
+              "bh_return_pct": 88.34,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.591,
+              "ddadj": 0.493,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": 1.112,
+              "return_pct": 47.83,
+              "max_dd_pct": -19.63,
+              "ddadj": 2.437,
+              "trades": 22,
+              "bh_return_pct": 85.57,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.781,
+              "ddadj": 0.748,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": 0.34,
+        "mean_ddadj": 0.782,
+        "mean_bar_sharpe": 0.904,
+        "mean_bar_ddadj": 1.075,
+        "beats_sharpe_count": 2,
+        "beats_ddadj_count": 2,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "fail",
+        "window": "2024",
+        "window_range": [
+          "2024-01-01",
+          "2025-01-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": 0.956,
+            "ddadj": 1.123,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": 1.49,
+            "ddadj": 2.325,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": 0.719,
+            "ddadj": 0.795,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": 0.888,
+            "ddadj": 0.966,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": 0.591,
+            "ddadj": 0.493,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": 0.781,
+            "ddadj": 0.748,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": -0.919,
+              "return_pct": -14.5,
+              "max_dd_pct": -24.55,
+              "ddadj": -0.591,
+              "trades": 43,
+              "bh_return_pct": 13.78,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.529,
+              "ddadj": -0.479,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": -0.682,
+              "return_pct": -11.09,
+              "max_dd_pct": -17.77,
+              "ddadj": -0.624,
+              "trades": 15,
+              "bh_return_pct": 14.42,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": 0.11,
+              "ddadj": 0.024,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": -1.605,
+              "return_pct": -32.06,
+              "max_dd_pct": -42.11,
+              "ddadj": -0.761,
+              "trades": 57,
+              "bh_return_pct": -25.89,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.671,
+              "ddadj": -0.54,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": -1.471,
+              "return_pct": -30.69,
+              "max_dd_pct": -41.05,
+              "ddadj": -0.748,
+              "trades": 15,
+              "bh_return_pct": -25.91,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -1.075,
+              "ddadj": -0.634,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": -1.764,
+              "return_pct": -43.56,
+              "max_dd_pct": -56.36,
+              "ddadj": -0.773,
+              "trades": 55,
+              "bh_return_pct": -19.57,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.295,
+              "ddadj": -0.37,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": 0.592,
+              "return_pct": 9.1,
+              "max_dd_pct": -29.7,
+              "ddadj": 0.306,
+              "trades": 13,
+              "bh_return_pct": -19.16,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.085,
+              "ddadj": -0.2,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": -0.975,
+        "mean_ddadj": -0.532,
+        "mean_bar_sharpe": -0.424,
+        "mean_bar_ddadj": -0.366,
+        "beats_sharpe_count": 1,
+        "beats_ddadj_count": 1,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "fail",
+        "window": "2025H1",
+        "window_range": [
+          "2025-01-01",
+          "2025-07-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": -0.529,
+            "ddadj": -0.479,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": 0.11,
+            "ddadj": 0.024,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": -0.671,
+            "ddadj": -0.54,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": -1.075,
+            "ddadj": -0.634,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": -0.295,
+            "ddadj": -0.37,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": -0.085,
+            "ddadj": -0.2,
+            "n": 8
+          }
+        }
+      }
+    ]
+  },
+  "tp_tight": {
+    "candidate": {
+      "name": "breakout",
+      "direction": "long",
+      "close_strategies": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.5
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.8
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "window_scores": [
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": -0.55,
+              "return_pct": -7.54,
+              "max_dd_pct": -17.51,
+              "ddadj": -0.431,
+              "trades": 21,
+              "bh_return_pct": -20.07,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -1.02,
+              "ddadj": -0.656,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": -0.764,
+              "return_pct": -7.24,
+              "max_dd_pct": -17.27,
+              "ddadj": -0.419,
+              "trades": 10,
+              "bh_return_pct": -19.54,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -0.325,
+              "ddadj": -0.325,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": -0.302,
+              "return_pct": -16.66,
+              "max_dd_pct": -45.32,
+              "ddadj": -0.368,
+              "trades": 42,
+              "bh_return_pct": 10.85,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": 0.869,
+              "ddadj": 0.593,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": 1.224,
+              "return_pct": 19.47,
+              "max_dd_pct": -22.07,
+              "ddadj": 0.882,
+              "trades": 20,
+              "bh_return_pct": 11.35,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": 0.303,
+              "ddadj": 0.112,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": 1.03,
+              "return_pct": 18.7,
+              "max_dd_pct": -18.68,
+              "ddadj": 1.001,
+              "trades": 36,
+              "bh_return_pct": -21.9,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -0.49,
+              "ddadj": -0.45,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": 1.381,
+              "return_pct": 18.48,
+              "max_dd_pct": -11.84,
+              "ddadj": 1.561,
+              "trades": 19,
+              "bh_return_pct": -21.19,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -0.032,
+              "ddadj": -0.119,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": 0.337,
+        "mean_ddadj": 0.371,
+        "mean_bar_sharpe": -0.116,
+        "mean_bar_ddadj": -0.141,
+        "beats_sharpe_count": 4,
+        "beats_ddadj_count": 4,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "pass",
+        "window": "is",
+        "window_range": [
+          "2025-06-10",
+          "2026-01-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": -1.02,
+            "ddadj": -0.656,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": -0.325,
+            "ddadj": -0.325,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": 0.869,
+            "ddadj": 0.593,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": 0.303,
+            "ddadj": 0.112,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": -0.49,
+            "ddadj": -0.45,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": -0.032,
+            "ddadj": -0.119,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": -0.281,
+              "return_pct": -1.28,
+              "max_dd_pct": -7.42,
+              "ddadj": -0.173,
+              "trades": 12,
+              "bh_return_pct": -26.77,
+              "liquidated": false,
+              "span_days": 154.0
+            },
+            "bar": {
+              "sharpe": -1.176,
+              "ddadj": -0.57,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": -1.92,
+              "return_pct": -32.73,
+              "max_dd_pct": -35.52,
+              "ddadj": -0.921,
+              "trades": 4,
+              "bh_return_pct": -27.52,
+              "liquidated": false,
+              "span_days": 154.5
+            },
+            "bar": {
+              "sharpe": -0.301,
+              "ddadj": -0.247,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": -2.089,
+              "return_pct": -48.2,
+              "max_dd_pct": -55.08,
+              "ddadj": -0.875,
+              "trades": 13,
+              "bh_return_pct": -43.99,
+              "liquidated": false,
+              "span_days": 162.7917
+            },
+            "bar": {
+              "sharpe": -0.194,
+              "ddadj": -0.228,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": -2.104,
+              "return_pct": -44.68,
+              "max_dd_pct": -49.01,
+              "ddadj": -0.912,
+              "trades": 6,
+              "bh_return_pct": -40.42,
+              "liquidated": false,
+              "span_days": 154.5
+            },
+            "bar": {
+              "sharpe": -0.433,
+              "ddadj": -0.44,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": -2.126,
+              "return_pct": -52.12,
+              "max_dd_pct": -58.85,
+              "ddadj": -0.886,
+              "trades": 8,
+              "bh_return_pct": -46.51,
+              "liquidated": false,
+              "span_days": 162.7917
+            },
+            "bar": {
+              "sharpe": -1.635,
+              "ddadj": -0.795,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": -1.247,
+              "return_pct": -6.52,
+              "max_dd_pct": -10.76,
+              "ddadj": -0.606,
+              "trades": 6,
+              "bh_return_pct": -44.21,
+              "liquidated": false,
+              "span_days": 154.5
+            },
+            "bar": {
+              "sharpe": -0.764,
+              "ddadj": -0.657,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": true
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": -1.628,
+        "mean_ddadj": -0.729,
+        "mean_bar_sharpe": -0.75,
+        "mean_bar_ddadj": -0.489,
+        "beats_sharpe_count": 1,
+        "beats_ddadj_count": 2,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "fail",
+        "window": "oos",
+        "window_range": [
+          "2026-01-01",
+          null
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": -1.176,
+            "ddadj": -0.57,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": -0.301,
+            "ddadj": -0.247,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": -0.194,
+            "ddadj": -0.228,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": -0.433,
+            "ddadj": -0.44,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": -1.635,
+            "ddadj": -0.795,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": -0.764,
+            "ddadj": -0.657,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": 1.632,
+              "return_pct": 63.87,
+              "max_dd_pct": -19.57,
+              "ddadj": 3.264,
+              "trades": 69,
+              "bh_return_pct": 157.1,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 1.465,
+              "ddadj": 1.932,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": 1.246,
+              "return_pct": 41.9,
+              "max_dd_pct": -22.05,
+              "ddadj": 1.9,
+              "trades": 32,
+              "bh_return_pct": 156.16,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 1.814,
+              "ddadj": 3.022,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": 1.09,
+              "return_pct": 31.71,
+              "max_dd_pct": -14.18,
+              "ddadj": 2.236,
+              "trades": 42,
+              "bh_return_pct": 92.17,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 0.341,
+              "ddadj": 0.176,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": 1.053,
+              "return_pct": 39.95,
+              "max_dd_pct": -27.67,
+              "ddadj": 1.444,
+              "trades": 26,
+              "bh_return_pct": 90.59,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 0.476,
+              "ddadj": 0.341,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": 2.428,
+              "return_pct": 252.35,
+              "max_dd_pct": -40.54,
+              "ddadj": 6.225,
+              "trades": 59,
+              "bh_return_pct": 922.79,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 2.564,
+              "ddadj": 9.829,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": 1.419,
+              "return_pct": 129.21,
+              "max_dd_pct": -48.14,
+              "ddadj": 2.684,
+              "trades": 28,
+              "bh_return_pct": 931.25,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 2.096,
+              "ddadj": 6.752,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": 1.478,
+        "mean_ddadj": 2.959,
+        "mean_bar_sharpe": 1.459,
+        "mean_bar_ddadj": 3.675,
+        "beats_sharpe_count": 3,
+        "beats_ddadj_count": 3,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "fail",
+        "window": "2023",
+        "window_range": [
+          "2023-01-01",
+          "2024-01-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": 1.465,
+            "ddadj": 1.932,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": 1.814,
+            "ddadj": 3.022,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": 0.341,
+            "ddadj": 0.176,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": 0.476,
+            "ddadj": 0.341,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": 2.564,
+            "ddadj": 9.829,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": 2.096,
+            "ddadj": 6.752,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": 1.717,
+              "return_pct": 58.79,
+              "max_dd_pct": -19.87,
+              "ddadj": 2.959,
+              "trades": 62,
+              "bh_return_pct": 122.08,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.956,
+              "ddadj": 1.123,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": 2.412,
+              "return_pct": 52.39,
+              "max_dd_pct": -7.23,
+              "ddadj": 7.246,
+              "trades": 36,
+              "bh_return_pct": 121.35,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 1.49,
+              "ddadj": 2.325,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": 1.74,
+              "return_pct": 46.1,
+              "max_dd_pct": -14.28,
+              "ddadj": 3.228,
+              "trades": 50,
+              "bh_return_pct": 46.47,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.719,
+              "ddadj": 0.795,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": 0.964,
+              "return_pct": 24.97,
+              "max_dd_pct": -22.74,
+              "ddadj": 1.098,
+              "trades": 29,
+              "bh_return_pct": 47.4,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.888,
+              "ddadj": 0.966,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": 0.805,
+              "return_pct": 38.48,
+              "max_dd_pct": -46.37,
+              "ddadj": 0.83,
+              "trades": 26,
+              "bh_return_pct": 88.34,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.591,
+              "ddadj": 0.493,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": 0.785,
+              "return_pct": 25.62,
+              "max_dd_pct": -32.96,
+              "ddadj": 0.777,
+              "trades": 30,
+              "bh_return_pct": 85.57,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.781,
+              "ddadj": 0.748,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": 1.404,
+        "mean_ddadj": 2.69,
+        "mean_bar_sharpe": 0.904,
+        "mean_bar_ddadj": 1.075,
+        "beats_sharpe_count": 6,
+        "beats_ddadj_count": 6,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "pass",
+        "window": "2024",
+        "window_range": [
+          "2024-01-01",
+          "2025-01-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": 0.956,
+            "ddadj": 1.123,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": 1.49,
+            "ddadj": 2.325,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": 0.719,
+            "ddadj": 0.795,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": 0.888,
+            "ddadj": 0.966,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": 0.591,
+            "ddadj": 0.493,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": 0.781,
+            "ddadj": 0.748,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": 1.081,
+              "return_pct": 7.88,
+              "max_dd_pct": -6.3,
+              "ddadj": 1.251,
+              "trades": 19,
+              "bh_return_pct": 13.78,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.529,
+              "ddadj": -0.479,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": 0.526,
+              "return_pct": 6.97,
+              "max_dd_pct": -30.9,
+              "ddadj": 0.226,
+              "trades": 5,
+              "bh_return_pct": 14.42,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": 0.11,
+              "ddadj": 0.024,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": -0.531,
+              "return_pct": -30.64,
+              "max_dd_pct": -61.8,
+              "ddadj": -0.496,
+              "trades": 10,
+              "bh_return_pct": -25.89,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.671,
+              "ddadj": -0.54,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": -0.624,
+              "return_pct": -33.14,
+              "max_dd_pct": -61.81,
+              "ddadj": -0.536,
+              "trades": 1,
+              "bh_return_pct": -25.91,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -1.075,
+              "ddadj": -0.634,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": 0.202,
+              "return_pct": 0.1,
+              "max_dd_pct": -32.11,
+              "ddadj": 0.003,
+              "trades": 15,
+              "bh_return_pct": -19.57,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.295,
+              "ddadj": -0.37,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": -0.106,
+              "return_pct": -5.63,
+              "max_dd_pct": -30.81,
+              "ddadj": -0.183,
+              "trades": 4,
+              "bh_return_pct": -19.16,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.085,
+              "ddadj": -0.2,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": true
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": 0.091,
+        "mean_ddadj": 0.044,
+        "mean_bar_sharpe": -0.424,
+        "mean_bar_ddadj": -0.366,
+        "beats_sharpe_count": 5,
+        "beats_ddadj_count": 6,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "pass",
+        "window": "2025H1",
+        "window_range": [
+          "2025-01-01",
+          "2025-07-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": -0.529,
+            "ddadj": -0.479,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": 0.11,
+            "ddadj": 0.024,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": -0.671,
+            "ddadj": -0.54,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": -1.075,
+            "ddadj": -0.634,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": -0.295,
+            "ddadj": -0.37,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": -0.085,
+            "ddadj": -0.2,
+            "n": 8
+          }
+        }
+      }
+    ]
+  },
+  "tp_tight_trail3": {
+    "candidate": {
+      "name": "breakout",
+      "direction": "long",
+      "trailing_stop_atr_mult": 3.0,
+      "close_strategies": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.5
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.8
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "window_scores": [
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": -3.075,
+              "return_pct": -31.29,
+              "max_dd_pct": -35.34,
+              "ddadj": -0.885,
+              "trades": 129,
+              "bh_return_pct": -20.07,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -1.02,
+              "ddadj": -0.656,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": -0.47,
+              "return_pct": -5.58,
+              "max_dd_pct": -10.54,
+              "ddadj": -0.529,
+              "trades": 39,
+              "bh_return_pct": -19.54,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -0.325,
+              "ddadj": -0.325,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": 1.856,
+              "return_pct": 34.14,
+              "max_dd_pct": -11.58,
+              "ddadj": 2.948,
+              "trades": 159,
+              "bh_return_pct": 10.85,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": 0.869,
+              "ddadj": 0.593,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": 2.288,
+              "return_pct": 38.36,
+              "max_dd_pct": -9.05,
+              "ddadj": 4.239,
+              "trades": 43,
+              "bh_return_pct": 11.35,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": 0.303,
+              "ddadj": 0.112,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": -0.812,
+              "return_pct": -17.29,
+              "max_dd_pct": -23.04,
+              "ddadj": -0.75,
+              "trades": 145,
+              "bh_return_pct": -21.9,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -0.49,
+              "ddadj": -0.45,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": 0.145,
+              "return_pct": -0.25,
+              "max_dd_pct": -29.0,
+              "ddadj": -0.009,
+              "trades": 43,
+              "bh_return_pct": -21.19,
+              "liquidated": false,
+              "span_days": 205.0
+            },
+            "bar": {
+              "sharpe": -0.032,
+              "ddadj": -0.119,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": -0.011,
+        "mean_ddadj": 0.836,
+        "mean_bar_sharpe": -0.116,
+        "mean_bar_ddadj": -0.141,
+        "beats_sharpe_count": 3,
+        "beats_ddadj_count": 3,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "pass",
+        "window": "is",
+        "window_range": [
+          "2025-06-10",
+          "2026-01-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": -1.02,
+            "ddadj": -0.656,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": -0.325,
+            "ddadj": -0.325,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": 0.869,
+            "ddadj": 0.593,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": 0.303,
+            "ddadj": 0.112,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": -0.49,
+            "ddadj": -0.45,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": -0.032,
+            "ddadj": -0.119,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": -2.139,
+              "return_pct": -20.0,
+              "max_dd_pct": -24.11,
+              "ddadj": -0.83,
+              "trades": 104,
+              "bh_return_pct": -26.77,
+              "liquidated": false,
+              "span_days": 154.0
+            },
+            "bar": {
+              "sharpe": -1.176,
+              "ddadj": -0.57,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": -1.29,
+              "return_pct": -9.85,
+              "max_dd_pct": -12.69,
+              "ddadj": -0.776,
+              "trades": 23,
+              "bh_return_pct": -27.52,
+              "liquidated": false,
+              "span_days": 154.5
+            },
+            "bar": {
+              "sharpe": -0.301,
+              "ddadj": -0.247,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": -1.868,
+              "return_pct": -22.77,
+              "max_dd_pct": -26.29,
+              "ddadj": -0.866,
+              "trades": 107,
+              "bh_return_pct": -43.99,
+              "liquidated": false,
+              "span_days": 162.7917
+            },
+            "bar": {
+              "sharpe": -0.194,
+              "ddadj": -0.228,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": -0.264,
+              "return_pct": -3.73,
+              "max_dd_pct": -18.16,
+              "ddadj": -0.205,
+              "trades": 26,
+              "bh_return_pct": -40.42,
+              "liquidated": false,
+              "span_days": 154.5
+            },
+            "bar": {
+              "sharpe": -0.433,
+              "ddadj": -0.44,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": -1.899,
+              "return_pct": -25.19,
+              "max_dd_pct": -30.15,
+              "ddadj": -0.835,
+              "trades": 114,
+              "bh_return_pct": -46.51,
+              "liquidated": false,
+              "span_days": 162.7917
+            },
+            "bar": {
+              "sharpe": -1.635,
+              "ddadj": -0.795,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": -1.086,
+              "return_pct": -13.15,
+              "max_dd_pct": -19.6,
+              "ddadj": -0.671,
+              "trades": 24,
+              "bh_return_pct": -44.21,
+              "liquidated": false,
+              "span_days": 154.5
+            },
+            "bar": {
+              "sharpe": -0.764,
+              "ddadj": -0.657,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": -1.424,
+        "mean_ddadj": -0.697,
+        "mean_bar_sharpe": -0.75,
+        "mean_bar_ddadj": -0.489,
+        "beats_sharpe_count": 1,
+        "beats_ddadj_count": 1,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "fail",
+        "window": "oos",
+        "window_range": [
+          "2026-01-01",
+          null
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": -1.176,
+            "ddadj": -0.57,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": -0.301,
+            "ddadj": -0.247,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": -0.194,
+            "ddadj": -0.228,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": -0.433,
+            "ddadj": -0.44,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": -1.635,
+            "ddadj": -0.795,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": -0.764,
+            "ddadj": -0.657,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": 0.469,
+              "return_pct": 10.36,
+              "max_dd_pct": -41.46,
+              "ddadj": 0.25,
+              "trades": 130,
+              "bh_return_pct": 157.1,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 1.465,
+              "ddadj": 1.932,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": 0.442,
+              "return_pct": 8.68,
+              "max_dd_pct": -22.23,
+              "ddadj": 0.39,
+              "trades": 71,
+              "bh_return_pct": 156.16,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 1.814,
+              "ddadj": 3.022,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": -1.894,
+              "return_pct": -44.37,
+              "max_dd_pct": -53.36,
+              "ddadj": -0.832,
+              "trades": 241,
+              "bh_return_pct": 92.17,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 0.341,
+              "ddadj": 0.176,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": 0.829,
+              "return_pct": 21.18,
+              "max_dd_pct": -18.43,
+              "ddadj": 1.149,
+              "trades": 72,
+              "bh_return_pct": 90.59,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 0.476,
+              "ddadj": 0.341,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": 0.3,
+              "return_pct": 1.2,
+              "max_dd_pct": -57.17,
+              "ddadj": 0.021,
+              "trades": 293,
+              "bh_return_pct": 922.79,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 2.564,
+              "ddadj": 9.829,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": 0.921,
+              "return_pct": 44.66,
+              "max_dd_pct": -47.35,
+              "ddadj": 0.943,
+              "trades": 84,
+              "bh_return_pct": 931.25,
+              "liquidated": false,
+              "span_days": 365.0
+            },
+            "bar": {
+              "sharpe": 2.096,
+              "ddadj": 6.752,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": 0.178,
+        "mean_ddadj": 0.32,
+        "mean_bar_sharpe": 1.459,
+        "mean_bar_ddadj": 3.675,
+        "beats_sharpe_count": 1,
+        "beats_ddadj_count": 1,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "fail",
+        "window": "2023",
+        "window_range": [
+          "2023-01-01",
+          "2024-01-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": 1.465,
+            "ddadj": 1.932,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": 1.814,
+            "ddadj": 3.022,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": 0.341,
+            "ddadj": 0.176,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": 0.476,
+            "ddadj": 0.341,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": 2.564,
+            "ddadj": 9.829,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": 2.096,
+            "ddadj": 6.752,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": -1.013,
+              "return_pct": -26.4,
+              "max_dd_pct": -29.11,
+              "ddadj": -0.907,
+              "trades": 266,
+              "bh_return_pct": 122.08,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.956,
+              "ddadj": 1.123,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": 1.159,
+              "return_pct": 26.83,
+              "max_dd_pct": -13.94,
+              "ddadj": 1.925,
+              "trades": 90,
+              "bh_return_pct": 121.35,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 1.49,
+              "ddadj": 2.325,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": -0.344,
+              "return_pct": -13.14,
+              "max_dd_pct": -34.67,
+              "ddadj": -0.379,
+              "trades": 256,
+              "bh_return_pct": 46.47,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.719,
+              "ddadj": 0.795,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": 1.657,
+              "return_pct": 56.33,
+              "max_dd_pct": -18.67,
+              "ddadj": 3.017,
+              "trades": 78,
+              "bh_return_pct": 47.4,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.888,
+              "ddadj": 0.966,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": -0.356,
+              "return_pct": -21.34,
+              "max_dd_pct": -38.32,
+              "ddadj": -0.557,
+              "trades": 285,
+              "bh_return_pct": 88.34,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.591,
+              "ddadj": 0.493,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": 1.911,
+              "return_pct": 81.93,
+              "max_dd_pct": -17.39,
+              "ddadj": 4.711,
+              "trades": 76,
+              "bh_return_pct": 85.57,
+              "liquidated": false,
+              "span_days": 366.0
+            },
+            "bar": {
+              "sharpe": 0.781,
+              "ddadj": 0.748,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": 0.502,
+        "mean_ddadj": 1.302,
+        "mean_bar_sharpe": 0.904,
+        "mean_bar_ddadj": 1.075,
+        "beats_sharpe_count": 2,
+        "beats_ddadj_count": 2,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "fail",
+        "window": "2024",
+        "window_range": [
+          "2024-01-01",
+          "2025-01-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": 0.956,
+            "ddadj": 1.123,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": 1.49,
+            "ddadj": 2.325,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": 0.719,
+            "ddadj": 0.795,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": 0.888,
+            "ddadj": 0.966,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": 0.591,
+            "ddadj": 0.493,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": 0.781,
+            "ddadj": 0.748,
+            "n": 8
+          }
+        }
+      },
+      {
+        "rows": [
+          {
+            "dataset": "BTC/USDT 1h",
+            "leg": {
+              "sharpe": -1.396,
+              "return_pct": -17.45,
+              "max_dd_pct": -24.73,
+              "ddadj": -0.706,
+              "trades": 126,
+              "bh_return_pct": 13.78,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.529,
+              "ddadj": -0.479,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "BTC/USDT 4h",
+            "leg": {
+              "sharpe": 0.689,
+              "return_pct": 7.03,
+              "max_dd_pct": -9.25,
+              "ddadj": 0.76,
+              "trades": 33,
+              "bh_return_pct": 14.42,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": 0.11,
+              "ddadj": 0.024,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          },
+          {
+            "dataset": "ETH/USDT 1h",
+            "leg": {
+              "sharpe": -1.451,
+              "return_pct": -25.58,
+              "max_dd_pct": -35.01,
+              "ddadj": -0.731,
+              "trades": 123,
+              "bh_return_pct": -25.89,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.671,
+              "ddadj": -0.54,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "ETH/USDT 4h",
+            "leg": {
+              "sharpe": -1.98,
+              "return_pct": -34.79,
+              "max_dd_pct": -37.26,
+              "ddadj": -0.934,
+              "trades": 32,
+              "bh_return_pct": -25.91,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -1.075,
+              "ddadj": -0.634,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 1h",
+            "leg": {
+              "sharpe": -1.043,
+              "return_pct": -25.29,
+              "max_dd_pct": -43.85,
+              "ddadj": -0.577,
+              "trades": 135,
+              "bh_return_pct": -19.57,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.295,
+              "ddadj": -0.37,
+              "n": 8
+            },
+            "beats_sharpe": false,
+            "beats_ddadj": false
+          },
+          {
+            "dataset": "SOL/USDT 4h",
+            "leg": {
+              "sharpe": 0.17,
+              "return_pct": -0.77,
+              "max_dd_pct": -26.0,
+              "ddadj": -0.03,
+              "trades": 36,
+              "bh_return_pct": -19.16,
+              "liquidated": false,
+              "span_days": 181.0
+            },
+            "bar": {
+              "sharpe": -0.085,
+              "ddadj": -0.2,
+              "n": 8
+            },
+            "beats_sharpe": true,
+            "beats_ddadj": true
+          }
+        ],
+        "scored_datasets": 6,
+        "traded_datasets": 6,
+        "mean_sharpe": -0.835,
+        "mean_ddadj": -0.37,
+        "mean_bar_sharpe": -0.424,
+        "mean_bar_ddadj": -0.366,
+        "beats_sharpe_count": 2,
+        "beats_ddadj_count": 2,
+        "liquidated_legs": 0,
+        "degenerate": false,
+        "verdict": "fail",
+        "window": "2025H1",
+        "window_range": [
+          "2025-01-01",
+          "2025-07-01"
+        ],
+        "bars": {
+          "BTC/USDT 1h": {
+            "sharpe": -0.529,
+            "ddadj": -0.479,
+            "n": 8
+          },
+          "BTC/USDT 4h": {
+            "sharpe": 0.11,
+            "ddadj": 0.024,
+            "n": 8
+          },
+          "ETH/USDT 1h": {
+            "sharpe": -0.671,
+            "ddadj": -0.54,
+            "n": 8
+          },
+          "ETH/USDT 4h": {
+            "sharpe": -1.075,
+            "ddadj": -0.634,
+            "n": 8
+          },
+          "SOL/USDT 1h": {
+            "sharpe": -0.295,
+            "ddadj": -0.37,
+            "n": 8
+          },
+          "SOL/USDT 4h": {
+            "sharpe": -0.085,
+            "ddadj": -0.2,
+            "n": 8
+          }
+        }
+      }
+    ]
+  }
+}

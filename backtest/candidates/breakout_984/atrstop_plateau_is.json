@@ -1,0 +1,212 @@
+[
+  {
+    "label": "atr_stop_4.0_live",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "atr_stop",
+          "params": {
+            "atr_mult": 4.0,
+            "atr_source": "live"
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.24,
+    "mean_sharpe": -0.216,
+    "mean_ret": -10.77,
+    "worst_dd": -63.32,
+    "trades": 30
+  },
+  {
+    "label": "atr_stop_4.0_entry",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "atr_stop",
+          "params": {
+            "atr_mult": 4.0,
+            "atr_source": "entry"
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.273,
+    "mean_sharpe": -0.264,
+    "mean_ret": -12.51,
+    "worst_dd": -64.34,
+    "trades": 34
+  },
+  {
+    "label": "atr_stop_5.0_live",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "atr_stop",
+          "params": {
+            "atr_mult": 5.0,
+            "atr_source": "live"
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.275,
+    "mean_sharpe": -0.281,
+    "mean_ret": -12.34,
+    "worst_dd": -61.12,
+    "trades": 27
+  },
+  {
+    "label": "atr_stop_3.0_live",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "atr_stop",
+          "params": {
+            "atr_mult": 3.0,
+            "atr_source": "live"
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.278,
+    "mean_sharpe": -0.317,
+    "mean_ret": -11.86,
+    "worst_dd": -62.69,
+    "trades": 38
+  },
+  {
+    "label": "atr_stop_5.0_entry",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "atr_stop",
+          "params": {
+            "atr_mult": 5.0,
+            "atr_source": "entry"
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.284,
+    "mean_sharpe": -0.239,
+    "mean_ret": -11.97,
+    "worst_dd": -62.2,
+    "trades": 29
+  },
+  {
+    "label": "atr_stop_3.0_entry",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "atr_stop",
+          "params": {
+            "atr_mult": 3.0,
+            "atr_source": "entry"
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.295,
+    "mean_sharpe": -0.298,
+    "mean_ret": -12.08,
+    "worst_dd": -62.83,
+    "trades": 39
+  },
+  {
+    "label": "atr_stop_2.5_entry",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "atr_stop",
+          "params": {
+            "atr_mult": 2.5,
+            "atr_source": "entry"
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.301,
+    "mean_sharpe": -0.412,
+    "mean_ret": -13.14,
+    "worst_dd": -62.61,
+    "trades": 44
+  },
+  {
+    "label": "atr_stop_2.5_live",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "atr_stop",
+          "params": {
+            "atr_mult": 2.5,
+            "atr_source": "live"
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.311,
+    "mean_sharpe": -0.487,
+    "mean_ret": -13.55,
+    "worst_dd": -64.69,
+    "trades": 48
+  },
+  {
+    "label": "atr_stop_2.0_entry",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "atr_stop",
+          "params": {
+            "atr_mult": 2.0,
+            "atr_source": "entry"
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.321,
+    "mean_sharpe": -0.556,
+    "mean_ret": -14.7,
+    "worst_dd": -63.48,
+    "trades": 56
+  },
+  {
+    "label": "atr_stop_2.0_live",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "atr_stop",
+          "params": {
+            "atr_mult": 2.0,
+            "atr_source": "live"
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.373,
+    "mean_sharpe": -0.537,
+    "mean_ret": -16.13,
+    "worst_dd": -64.87,
+    "trades": 58
+  }
+]
