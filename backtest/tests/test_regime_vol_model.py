@@ -506,6 +506,23 @@ def test_permutation_steps_to_alpha_flags_merged_run_knife_edge():
     assert mod.permutation_steps_to_alpha(2.0 / 201.0, 200) > 0    # comfortable margin
 
 
+def test_verdict_knife_edge_is_symmetric_around_alpha():
+    # knife_edge must fire whenever a single as-or-more-extreme permutation (added on the
+    # proceed side, removed on the abstain side) would flip trustworthy/abstain — one-sided
+    # 0..1 would read an abstain-by-one incumbent as a comfortable abstain.
+    mod = _load_research_module("knife")
+    # proceed-edge regression guard: merged-run p = 10/201 -> steps 0, flagged
+    assert mod.permutation_steps_to_alpha(10.0 / 201.0, 200) == 0
+    assert mod.verdict_knife_edge(0) is True
+    # abstain-by-one: p = 11/201 -> steps -1, must flag
+    assert mod.permutation_steps_to_alpha(11.0 / 201.0, 200) == -1
+    assert mod.verdict_knife_edge(-1) is True
+    # one step inside the boundary still flags; two steps either side must not
+    assert mod.verdict_knife_edge(1) is True
+    assert mod.verdict_knife_edge(-2) is False
+    assert mod.verdict_knife_edge(2) is False
+
+
 def test_score_labels_default_n_perm_is_byte_identical():
     # #1160 acceptance: existing callers that pass no n_perm must produce byte-identical
     # output to an explicit n_perm=200 (regime_calibrate / regime_bounded_window_validate).

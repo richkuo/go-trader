@@ -88,6 +88,15 @@ def permutation_steps_to_alpha(p_value, n_perm, alpha=SIGNIFICANCE_ALPHA):
     return limit - count
 
 
+def verdict_knife_edge(steps):
+    """True when the trustworthy/abstain verdict sits within one permutation step of alpha on
+    EITHER side: steps 0 / -1 flip on a single as-or-more-extreme permutation (one added /
+    one removed under a different seed), steps 1 is a single step from the boundary itself.
+    A one-sided check would report an abstain-by-one incumbent as a comfortable abstain —
+    understating exactly the fragility this flag exists to surface."""
+    return abs(int(steps)) <= 1
+
+
 def structurally_ineligible_reason(k, thresholds):
     """A k-latent candidate emits at most k distinct label names, so below the incumbent-derived
     min_active_labels floor it can NEVER pass non-degeneracy — it is still scored for evidence,
@@ -233,9 +242,10 @@ def run_bakeoff(symbol="BTC/USDT", timeframe="1h", *, in_sample="is", held_out="
                               "abstained": bool(hr_p > SIGNIFICANCE_ALPHA),
                               # Knife-edge visibility (#1160): additional as-or-more-extreme
                               # permutations the incumbent p could absorb before the
-                              # trustworthy/abstain verdict flips (0 = next one flips it).
+                              # trustworthy/abstain verdict flips (0 = next one flips it;
+                              # negative = already abstained, -1 by a single permutation).
                               "permutation_steps_to_alpha": int(incumbent_steps),
-                              "knife_edge": bool(0 <= incumbent_steps <= 1)},
+                              "knife_edge": bool(verdict_knife_edge(incumbent_steps))},
         "candidates": candidates,
         "winner": ({"family": winner["family"], "k": winner["k"]} if winner else None),
     }
