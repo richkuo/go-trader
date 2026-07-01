@@ -4,9 +4,11 @@ import "testing"
 
 func TestDeprecatedStrategiesNotInDefaultFallbackLists(t *testing.T) {
 	deprecated := map[string]bool{
-		"range_scalper":    true,
-		"session_breakout": true,
-		"vol_momentum":     true,
+		"amd_ifvg":          true, // #1023
+		"donchian_breakout": true, // #985
+		"range_scalper":     true,
+		"session_breakout":  true,
+		"vol_momentum":      true,
 	}
 	lists := map[string][]stratDef{
 		"spot":    defaultSpotStrategies,
