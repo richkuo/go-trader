@@ -410,3 +410,86 @@ def test_anchored_vwap_no_lookahead():
     assert not np.array_equal(bf[:cut], bt), (
         "forward-peeking variant should break truncation-invariance — the test "
         "is not sensitive to look-ahead")
+
+
+# ─── anchored_vwap_channel: signals at bars <= cut don't depend on future bars (#1169) ─
+from anchored_vwap_channel import anchored_vwap_channel_core  # noqa: E402
+
+
+_AVWAP_CHANNEL_PARAMS = dict(pivot_strength=2, buffer_atr_mult=0.0, confirm_bars=2,
+                             min_width_atr_mult=0.0, atr_period=3)
+
+
+def _avwap_channel_mixed_fixture() -> pd.DataFrame:
+    """OHLCV forming a swing HIGH (idx 2), a swing LOW (idx 6), then a channel.
+
+    Bar 10 wicks through the support line and reclaims (+1 fires at bar 11 —
+    and bar 10's hand-set wick low is itself a strict swing low, re-anchoring
+    support at bar 12). A later swing HIGH (idx 13) re-anchors resistance; the
+    bar-15 dip to the risen support fires +1 at 16, and bar 16's hand-set
+    up-wick through resistance with a held rejection fires -1 at bar 17. A
+    smooth fixture is NOT usable: equal highs/lows at a monotonic turn tie
+    under the strict pivot rule and nothing confirms (see the anchored_vwap
+    fixture note above).
+    """
+    closes = np.array([104, 106, 108, 106, 104, 102, 100, 102, 104, 103,
+                       102.5, 103.5, 104.5, 106.0, 104.8, 104.2, 104.6, 104.0],
+                      dtype=float)
+    lows = closes - 0.5
+    lows[10] = 101.0
+    highs = closes + 0.5
+    highs[16] = 105.8
+    idx = pd.date_range("2026-01-01", periods=len(closes), freq="1h")
+    return pd.DataFrame(
+        {"open": closes, "high": highs, "low": lows, "close": closes,
+         "volume": np.full(len(closes), 10.0)},
+        index=idx,
+    )
+
+
+def test_anchored_vwap_channel_no_lookahead():
+    """Truncating future bars must not change any signal at bars <= cut.
+
+    anchored_vwap_channel_core confirms typed pivots (pivot_strength bars on
+    each side), derives both AVWAP lines from prefix sums, and evaluates every
+    trigger/validity clause on bars at or before the current bar, so appending
+    future bars cannot change an earlier signal.
+
+    Mirrors test_anchored_vwap_no_lookahead's non-vacuity and sensitivity
+    checks (#1019 review): the fixture must emit both signal directions, and a
+    deliberately forward-peeking variant must make the invariance assertion
+    FAIL, proving the test can actually detect look-ahead.
+    """
+    df = _avwap_channel_mixed_fixture()
+    cut = 17  # straddles the confirm_bars window [16, 17]; bar 17 fires -1
+
+    def real(d):
+        return anchored_vwap_channel_core(d, **_AVWAP_CHANNEL_PARAMS)["signal"].to_numpy()
+
+    def forward_peeking(d):
+        # bar n adopts bar n+1's signal — a canonical look-ahead contamination.
+        s = anchored_vwap_channel_core(d, **_AVWAP_CHANNEL_PARAMS)["signal"].to_numpy().copy()
+        if len(s) > 1:
+            s[:-1] = s[1:]
+        return s
+
+    full = real(df)
+    # Non-vacuity: the fixture must actually produce signals (both directions).
+    assert (full != 0).any(), "fixture is vacuous — no signal to guard"
+    assert (full == 1).any() and (full == -1).any(), "expected a +1 and a -1"
+
+    # Invariant: signals at bars < cut are unchanged when future bars are
+    # dropped — at the single cut straddling the firing window, and at every
+    # earlier cut (re-anchors at 12 and 15 sit inside the sweep).
+    trunc = real(df.iloc[:cut])
+    assert np.array_equal(full[:cut], trunc), "signals < cut must not depend on future bars"
+    for c in range(3, len(df)):
+        assert np.array_equal(full[:c], real(df.iloc[:c])), f"prefix changed at cut {c}"
+
+    # Sensitivity: a forward-peeking core variant must NOT be truncation-invariant,
+    # else the assertion above proves nothing.
+    bf = forward_peeking(df)
+    bt = forward_peeking(df.iloc[:cut])
+    assert not np.array_equal(bf[:cut], bt), (
+        "forward-peeking variant should break truncation-invariance — the test "
+        "is not sensitive to look-ahead")

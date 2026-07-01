@@ -59,6 +59,7 @@ var knownShortNames = map[string]string{
 	"order_blocks":          "ob",
 	"vwap_reversion":        "vwap",
 	"anchored_vwap":         "avwap",
+	"anchored_vwap_channel": "avwapch",
 	"chart_pattern":         "cpat",
 	"liquidity_sweeps":      "liqsw",
 	"parabolic_sar":         "psar",
@@ -89,23 +90,24 @@ var knownShortNames = map[string]string{
 // set AllowShorts=true so ExecutePerpsSignal opens shorts from flat instead
 // of skipping the signal (#328).
 var bidirectionalPerpsStrategies = map[string]bool{
-	"triple_ema_bidir":    true,
-	"tema_cross_bd":       true,
-	"session_breakout":    true,
-	"donchian_breakout":   true, // emits short on lower-channel breakdown (#649)
-	"chart_pattern":       true, // emits short on bearish patterns (double top, H&S, bear flag) (#649)
-	"liquidity_sweeps":    true, // emits short on stop-hunt wicks above swing highs (#649)
-	"bear_pullback_st":    true, // dedicated short-only strategy for bear-market rally rejections (#651)
-	"vwap_rejection_st":   true, // dedicated short-only strategy for VWAP/EMA rally rejections in bearish regime (#652)
-	"anchored_vwap":       true, // single-AVWAP S/R flip; emits short on a buffered breakdown below the line (#1016)
-	"momentum_pro":        true, // emits short on stacked-bearish-EMA trend-pullback breakdowns
-	"mean_reversion_pro":  true, // emits short on overbought reversion in no-trend regimes
-	"consolidation_range": true, // emits short at the top edge of a consolidation box (range-edge mean-reversion)
-	"atr_band_revert":     true, // futures variant (allow_short) shorts the upper ATR band in ranging conditions
-	"mtf_confluence":      true, // futures variant (allow_short) shorts LTF pullback rallies in HTF downtrends (#957)
-	"vol_momentum":        true, // emits short on ATR-normalized negative momentum with efficiency confirmation (#959)
-	"funding_skew":        true, // shorts crowded-long funding extremes on EMA breakdown (#960)
-	"regime_adaptive":     true, // futures variant (allow_short) shorts clean downtrend breakouts and fades range tops (#958)
+	"triple_ema_bidir":      true,
+	"tema_cross_bd":         true,
+	"session_breakout":      true,
+	"donchian_breakout":     true, // emits short on lower-channel breakdown (#649)
+	"chart_pattern":         true, // emits short on bearish patterns (double top, H&S, bear flag) (#649)
+	"liquidity_sweeps":      true, // emits short on stop-hunt wicks above swing highs (#649)
+	"bear_pullback_st":      true, // dedicated short-only strategy for bear-market rally rejections (#651)
+	"vwap_rejection_st":     true, // dedicated short-only strategy for VWAP/EMA rally rejections in bearish regime (#652)
+	"anchored_vwap":         true, // single-AVWAP S/R flip; emits short on a buffered breakdown below the line (#1016)
+	"anchored_vwap_channel": true, // dual-AVWAP channel; emits short on a buffered rejection off the resistance line (#1169)
+	"momentum_pro":          true, // emits short on stacked-bearish-EMA trend-pullback breakdowns
+	"mean_reversion_pro":    true, // emits short on overbought reversion in no-trend regimes
+	"consolidation_range":   true, // emits short at the top edge of a consolidation box (range-edge mean-reversion)
+	"atr_band_revert":       true, // futures variant (allow_short) shorts the upper ATR band in ranging conditions
+	"mtf_confluence":        true, // futures variant (allow_short) shorts LTF pullback rallies in HTF downtrends (#957)
+	"vol_momentum":          true, // emits short on ATR-normalized negative momentum with efficiency confirmation (#959)
+	"funding_skew":          true, // shorts crowded-long funding extremes on EMA breakdown (#960)
+	"regime_adaptive":       true, // futures variant (allow_short) shorts clean downtrend breakouts and fades range tops (#958)
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {
@@ -122,6 +124,9 @@ func isBidirectionalPerpsStrategy(id string) bool {
 // case). Operators can widen/narrow allowed_regimes post-init.
 var strategiesDefaultingToCompositeRangingGate = map[string][]string{
 	"atr_band_revert": {"ranging_quiet", "ranging_volatile"},
+	// anchored_vwap_channel fades both edges of an AVWAP channel — the same
+	// range-edge mean-reversion class, gated for the same reason (#1169).
+	"anchored_vwap_channel": {"ranging_quiet", "ranging_volatile"},
 }
 
 // defaultCompositeRangingGate returns a fresh copy of the default composite
@@ -169,6 +174,7 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "order_blocks", ShortName: "ob"},
 	{ID: "vwap_reversion", ShortName: "vwap"},
 	{ID: "anchored_vwap", ShortName: "avwap"},
+	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "parabolic_sar", ShortName: "psar"},
@@ -198,6 +204,7 @@ var defaultPerpsStrategies = []stratDef{
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "anchored_vwap", ShortName: "avwap"},
+	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
 	{ID: "funding_skew", ShortName: "fskew"},
 	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
@@ -223,6 +230,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "order_blocks", ShortName: "ob"},
 	{ID: "vwap_reversion", ShortName: "vwap"},
 	{ID: "anchored_vwap", ShortName: "avwap"},
+	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "parabolic_sar", ShortName: "psar"},
