@@ -71,7 +71,8 @@ Expands CLAUDE.md § Backtest. The run commands and look-ahead/`--config` guardr
 - **Funding (#960/#988):** per-bar `funding_rate` via `funding_fetcher` (`merge_asof` backward); #988 `funding_accrual` carry for `delta_neutral_funding`.
 - **#1005 liquidation floor:** sticky-floors equity at 0; `±LIQUIDATED_METRIC_FLOOR=100.0` on blown metrics; propagated by `eval_windows`/`fee_audit`.
 - **M1–M6 research harnesses** (import `eval_windows.py` `WINDOWS`/`DATASETS`/`PLATFORM`):
-  - **M1** `eval_windows.py` — incumbent-relative multi-window validator.
+  - **M1** `eval_windows.py` — incumbent-relative multi-window validator. `run_leg(keep_trades=True)` attaches per-trade `{entry_date, pnl_pct}` samples (#1054).
+  - **M1 step-2 (#1054) `gross_edge_noise.py`** — sample-noise adjudicator for `graduate_m1` verdicts: re-runs the fee audit's zero-friction gross legs, pools per-trade returns, pre-registered one-sided sign-flip permutation on the mean (primary; bootstrap CI / sign / Wilcoxon reported, never blended); dedupes pooled overlap entries by `(dataset, entry_date)`; verdict `distinguishable_positive` / `indistinguishable_from_zero` / `no_positive_edge`.
   - **M2** `run_backtest.py --mode optimize --sweep-close` — joint open×exit walk-forward.
   - **M3** `exit_diagnostics.py` — MFE/MAE/bleed-mode; default-off `close/{time_stop,atr_stop,zscore_target}.py` (live deferred).
   - **M5** `fee_audit.py` — net-vs-gross fee drag; `salvage_verdict`; short-capable strategies need `--direction short`.

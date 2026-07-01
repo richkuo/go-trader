@@ -1,0 +1,50 @@
+{
+  "registry": "spot",
+  "windows": {
+    "is": [
+      "2025-06-10",
+      "2026-01-01"
+    ],
+    "oos": [
+      "2026-01-01",
+      null
+    ]
+  },
+  "datasets": [
+    "BTC/USDT 1h",
+    "BTC/USDT 4h",
+    "ETH/USDT 1h",
+    "ETH/USDT 4h",
+    "SOL/USDT 1h",
+    "SOL/USDT 4h"
+  ],
+  "direction": "long",
+  "capital": 1000.0,
+  "verdict_counts": {
+    "deprecate": 0,
+    "graduate_m1": 1,
+    "healthy": 0,
+    "unscreened_short": 0,
+    "no_trades": 0
+  },
+  "rows": [
+    {
+      "strategy": "regime_adaptive_htf",
+      "registry": "spot",
+      "trades": 37,
+      "span_days": 2173.08,
+      "trades_per_year": 6.2,
+      "mean_gross_ret": 0.273,
+      "mean_net_ret": -0.662,
+      "fee_drag_pp": 0.935,
+      "drag_per_trade_pp": 0.3032,
+      "mean_net_sharpe": -0.047,
+      "short_unmeasured": false,
+      "n_legs": 12,
+      "n_liquidated": 0,
+      "n_errors": 0,
+      "errors": [],
+      "verdict": "graduate_m1"
+    }
+  ]
+}

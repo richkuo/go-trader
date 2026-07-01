@@ -94,6 +94,20 @@ PLATFORM = "binanceus"  # audit fee model; fixed, not a knob
 # Pure scoring helpers (unit-tested without data access).
 # ---------------------------------------------------------------------------
 
+def trade_samples_from_results(results: dict) -> List[dict]:
+    """Per-trade ``{entry_date, pnl_pct}`` samples from a Backtester result
+    dict (#1054).
+
+    ``pnl_pct`` is computed purely from entry/exit fill prices, so on a
+    zero-friction (gross) run it is the raw per-trade price edge the M1
+    step-2 noise check adjudicates. ``entry_date`` rides along so callers
+    pooling overlapping windows can deduplicate the same physical entry.
+    Missing/empty trade lists yield [].
+    """
+    return [{"entry_date": str(t["entry_date"]), "pnl_pct": float(t["pnl_pct"])}
+            for t in results.get("trades") or []]
+
+
 def dd_adjusted_return(return_pct: float, max_dd_pct: float) -> float:
     """DDadj = total return / |max drawdown| (#963 definition).
 
@@ -272,7 +286,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             regime_adx_threshold: float = 20.0,
             *,
             commission_pct: Optional[float] = None,
-            slippage_pct: Optional[float] = None) -> Optional[dict]:
+            slippage_pct: Optional[float] = None,
+            keep_trades: bool = False) -> Optional[dict]:
     """Run one (strategy, dataset, window) leg on the audit-identical harness.
 
     ``commission_pct`` / ``slippage_pct`` are keyword-only friction overrides
@@ -281,7 +296,9 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     audit (#999) passes ``commission_pct=0.0, slippage_pct=0.0`` for the gross
     (zero-friction) re-run. The returned leg dict carries an additive
     ``span_days`` key (calendar span of the data slice) so callers can
-    annualize trade counts.
+    annualize trade counts. ``keep_trades`` (#1054) additionally attaches
+    ``trade_samples`` (per-trade ``{entry_date, pnl_pct}``) so the gross-edge
+    noise check can resample the trade universe the same harness produced.
 
     allowed_regimes (when provided) turns on the regime entry gate for this
     leg using the legacy single-lookback; regime_enabled is forced true in
@@ -360,6 +377,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     except (AttributeError, TypeError):
         span_days = None
     leg["span_days"] = round(span_days, 4) if span_days else span_days
+    if keep_trades:
+        leg["trade_samples"] = trade_samples_from_results(results)
     return leg
 
 

@@ -1,0 +1,374 @@
+{
+ "strategy": "regime_adaptive_htf",
+ "windows": [
+  "is",
+  "oos"
+ ],
+ "n_trades": 37,
+ "by_signal_label": {
+  "ranging_volatile": {
+   "n": 37,
+   "mean": 0.0816,
+   "n_pos": 24
+  }
+ },
+ "by_timeframe": {
+  "1h": {
+   "n": 26,
+   "mean": 0.6123,
+   "n_pos": 21
+  },
+  "4h": {
+   "n": 11,
+   "mean": -1.1727,
+   "n_pos": 3
+  }
+ },
+ "by_window": {
+  "is": {
+   "n": 25,
+   "mean": 0.2456,
+   "n_pos": 18
+  },
+  "oos": {
+   "n": 12,
+   "mean": -0.26,
+   "n_pos": 6
+  }
+ },
+ "samples": [
+  {
+   "window": "is",
+   "dataset": "BTC/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-07-01 17:00:00",
+   "pnl_pct": 0.19,
+   "signal_label": "ranging_volatile",
+   "fill_label": "trending_down_choppy"
+  },
+  {
+   "window": "is",
+   "dataset": "BTC/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-07-06 11:00:00",
+   "pnl_pct": 0.07,
+   "signal_label": "ranging_volatile",
+   "fill_label": "trending_down_choppy"
+  },
+  {
+   "window": "is",
+   "dataset": "BTC/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-07-07 16:00:00",
+   "pnl_pct": -0.1,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "BTC/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-07-21 02:00:00",
+   "pnl_pct": 0.65,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "BTC/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-07-25 07:00:00",
+   "pnl_pct": 0.97,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "BTC/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-07-30 21:00:00",
+   "pnl_pct": 0.38,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "BTC/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-12-28 21:00:00",
+   "pnl_pct": 0.85,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "BTC/USDT 4h",
+   "timeframe": "4h",
+   "entry_date": "2025-07-02 00:00:00",
+   "pnl_pct": 1.84,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "BTC/USDT 4h",
+   "timeframe": "4h",
+   "entry_date": "2025-10-30 04:00:00",
+   "pnl_pct": -0.65,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "BTC/USDT 4h",
+   "timeframe": "4h",
+   "entry_date": "2025-11-03 20:00:00",
+   "pnl_pct": -3.69,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "ETH/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-06-17 19:00:00",
+   "pnl_pct": 1.37,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "ETH/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-07-30 20:00:00",
+   "pnl_pct": 1.2,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "ETH/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-09-06 17:00:00",
+   "pnl_pct": 0.09,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "ETH/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-12-27 18:00:00",
+   "pnl_pct": 0.12,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "ETH/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-12-28 20:00:00",
+   "pnl_pct": 0.61,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "ETH/USDT 4h",
+   "timeframe": "4h",
+   "entry_date": "2025-10-30 00:00:00",
+   "pnl_pct": -0.66,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "ETH/USDT 4h",
+   "timeframe": "4h",
+   "entry_date": "2025-11-04 04:00:00",
+   "pnl_pct": -5.46,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "SOL/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-07-05 18:00:00",
+   "pnl_pct": 0.72,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "SOL/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-07-07 19:00:00",
+   "pnl_pct": -0.15,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "SOL/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-08-22 14:00:00",
+   "pnl_pct": 6.24,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "SOL/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-11-29 21:00:00",
+   "pnl_pct": 0.44,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "SOL/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-12-21 15:00:00",
+   "pnl_pct": 0.93,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "SOL/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2025-12-23 16:00:00",
+   "pnl_pct": 0.67,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "SOL/USDT 4h",
+   "timeframe": "4h",
+   "entry_date": "2025-10-31 00:00:00",
+   "pnl_pct": 1.7,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "is",
+   "dataset": "SOL/USDT 4h",
+   "timeframe": "4h",
+   "entry_date": "2025-11-04 04:00:00",
+   "pnl_pct": -2.19,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "oos",
+   "dataset": "BTC/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2026-01-07 20:00:00",
+   "pnl_pct": -0.55,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "oos",
+   "dataset": "BTC/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2026-03-07 21:00:00",
+   "pnl_pct": 0.15,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "oos",
+   "dataset": "BTC/USDT 4h",
+   "timeframe": "4h",
+   "entry_date": "2026-01-20 12:00:00",
+   "pnl_pct": -1.39,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "oos",
+   "dataset": "BTC/USDT 4h",
+   "timeframe": "4h",
+   "entry_date": "2026-03-27 00:00:00",
+   "pnl_pct": -2.38,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "oos",
+   "dataset": "ETH/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2026-02-22 16:00:00",
+   "pnl_pct": -1.79,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "oos",
+   "dataset": "ETH/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2026-03-06 18:00:00",
+   "pnl_pct": 1.06,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "oos",
+   "dataset": "ETH/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2026-03-07 21:00:00",
+   "pnl_pct": -0.09,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "oos",
+   "dataset": "ETH/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2026-04-25 17:00:00",
+   "pnl_pct": 0.29,
+   "signal_label": "ranging_volatile",
+   "fill_label": "trending_down_choppy"
+  },
+  {
+   "window": "oos",
+   "dataset": "ETH/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2026-04-29 21:00:00",
+   "pnl_pct": 1.02,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "oos",
+   "dataset": "ETH/USDT 4h",
+   "timeframe": "4h",
+   "entry_date": "2026-04-05 12:00:00",
+   "pnl_pct": 1.09,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "oos",
+   "dataset": "SOL/USDT 1h",
+   "timeframe": "1h",
+   "entry_date": "2026-04-12 04:00:00",
+   "pnl_pct": 0.58,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  },
+  {
+   "window": "oos",
+   "dataset": "SOL/USDT 4h",
+   "timeframe": "4h",
+   "entry_date": "2026-04-28 00:00:00",
+   "pnl_pct": -1.11,
+   "signal_label": "ranging_volatile",
+   "fill_label": "ranging_volatile"
+  }
+ ]
+}

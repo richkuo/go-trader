@@ -1,0 +1,427 @@
+{
+  "strategy": "regime_adaptive_htf",
+  "registry": "spot",
+  "params": null,
+  "direction": "long",
+  "windows": {
+    "is": [
+      "2025-06-10",
+      "2026-01-01"
+    ],
+    "oos": [
+      "2026-01-01",
+      null
+    ]
+  },
+  "datasets": [
+    "BTC/USDT 1h",
+    "BTC/USDT 4h",
+    "ETH/USDT 1h",
+    "ETH/USDT 4h",
+    "SOL/USDT 1h",
+    "SOL/USDT 4h"
+  ],
+  "capital": 1000.0,
+  "resamples": 10000,
+  "seed": 1066,
+  "alpha": 0.05,
+  "legs": [
+    {
+      "sharpe": 1.732,
+      "return_pct": 3.05,
+      "max_dd_pct": -1.3,
+      "ddadj": 2.346,
+      "trades": 7,
+      "bh_return_pct": -20.07,
+      "liquidated": false,
+      "span_days": 205.0,
+      "trade_samples": [
+        {
+          "entry_date": "2025-07-01 17:00:00",
+          "pnl_pct": 0.19
+        },
+        {
+          "entry_date": "2025-07-06 11:00:00",
+          "pnl_pct": 0.07
+        },
+        {
+          "entry_date": "2025-07-07 16:00:00",
+          "pnl_pct": -0.1
+        },
+        {
+          "entry_date": "2025-07-21 02:00:00",
+          "pnl_pct": 0.65
+        },
+        {
+          "entry_date": "2025-07-25 07:00:00",
+          "pnl_pct": 0.97
+        },
+        {
+          "entry_date": "2025-07-30 21:00:00",
+          "pnl_pct": 0.38
+        },
+        {
+          "entry_date": "2025-12-28 21:00:00",
+          "pnl_pct": 0.85
+        }
+      ],
+      "window": "is",
+      "dataset": "BTC/USDT 1h"
+    },
+    {
+      "sharpe": -0.482,
+      "return_pct": -2.55,
+      "max_dd_pct": -7.78,
+      "ddadj": -0.328,
+      "trades": 3,
+      "bh_return_pct": -19.54,
+      "liquidated": false,
+      "span_days": 205.0,
+      "trade_samples": [
+        {
+          "entry_date": "2025-07-02 00:00:00",
+          "pnl_pct": 1.84
+        },
+        {
+          "entry_date": "2025-10-30 04:00:00",
+          "pnl_pct": -0.65
+        },
+        {
+          "entry_date": "2025-11-03 20:00:00",
+          "pnl_pct": -3.69
+        }
+      ],
+      "window": "is",
+      "dataset": "BTC/USDT 4h"
+    },
+    {
+      "sharpe": 1.784,
+      "return_pct": 3.43,
+      "max_dd_pct": -1.56,
+      "ddadj": 2.199,
+      "trades": 5,
+      "bh_return_pct": 10.85,
+      "liquidated": false,
+      "span_days": 205.0,
+      "trade_samples": [
+        {
+          "entry_date": "2025-06-17 19:00:00",
+          "pnl_pct": 1.37
+        },
+        {
+          "entry_date": "2025-07-30 20:00:00",
+          "pnl_pct": 1.2
+        },
+        {
+          "entry_date": "2025-09-06 17:00:00",
+          "pnl_pct": 0.09
+        },
+        {
+          "entry_date": "2025-12-27 18:00:00",
+          "pnl_pct": 0.12
+        },
+        {
+          "entry_date": "2025-12-28 20:00:00",
+          "pnl_pct": 0.61
+        }
+      ],
+      "window": "is",
+      "dataset": "ETH/USDT 1h"
+    },
+    {
+      "sharpe": -0.565,
+      "return_pct": -6.08,
+      "max_dd_pct": -12.68,
+      "ddadj": -0.479,
+      "trades": 2,
+      "bh_return_pct": 11.35,
+      "liquidated": false,
+      "span_days": 205.0,
+      "trade_samples": [
+        {
+          "entry_date": "2025-10-30 00:00:00",
+          "pnl_pct": -0.66
+        },
+        {
+          "entry_date": "2025-11-04 04:00:00",
+          "pnl_pct": -5.46
+        }
+      ],
+      "window": "is",
+      "dataset": "ETH/USDT 4h"
+    },
+    {
+      "sharpe": 1.553,
+      "return_pct": 9.05,
+      "max_dd_pct": -1.57,
+      "ddadj": 5.764,
+      "trades": 6,
+      "bh_return_pct": -21.9,
+      "liquidated": false,
+      "span_days": 205.0,
+      "trade_samples": [
+        {
+          "entry_date": "2025-07-05 18:00:00",
+          "pnl_pct": 0.72
+        },
+        {
+          "entry_date": "2025-07-07 19:00:00",
+          "pnl_pct": -0.15
+        },
+        {
+          "entry_date": "2025-08-22 14:00:00",
+          "pnl_pct": 6.24
+        },
+        {
+          "entry_date": "2025-11-29 21:00:00",
+          "pnl_pct": 0.44
+        },
+        {
+          "entry_date": "2025-12-21 15:00:00",
+          "pnl_pct": 0.93
+        },
+        {
+          "entry_date": "2025-12-23 16:00:00",
+          "pnl_pct": 0.67
+        }
+      ],
+      "window": "is",
+      "dataset": "SOL/USDT 1h"
+    },
+    {
+      "sharpe": -0.002,
+      "return_pct": -0.52,
+      "max_dd_pct": -8.85,
+      "ddadj": -0.059,
+      "trades": 2,
+      "bh_return_pct": -21.19,
+      "liquidated": false,
+      "span_days": 205.0,
+      "trade_samples": [
+        {
+          "entry_date": "2025-10-31 00:00:00",
+          "pnl_pct": 1.7
+        },
+        {
+          "entry_date": "2025-11-04 04:00:00",
+          "pnl_pct": -2.19
+        }
+      ],
+      "window": "is",
+      "dataset": "SOL/USDT 4h"
+    },
+    {
+      "sharpe": -0.247,
+      "return_pct": -0.39,
+      "max_dd_pct": -1.93,
+      "ddadj": -0.202,
+      "trades": 2,
+      "bh_return_pct": -26.77,
+      "liquidated": false,
+      "span_days": 154.0,
+      "trade_samples": [
+        {
+          "entry_date": "2026-01-07 20:00:00",
+          "pnl_pct": -0.55
+        },
+        {
+          "entry_date": "2026-03-07 21:00:00",
+          "pnl_pct": 0.15
+        }
+      ],
+      "window": "oos",
+      "dataset": "BTC/USDT 1h"
+    },
+    {
+      "sharpe": -1.076,
+      "return_pct": -3.74,
+      "max_dd_pct": -5.32,
+      "ddadj": -0.703,
+      "trades": 2,
+      "bh_return_pct": -27.52,
+      "liquidated": false,
+      "span_days": 154.5,
+      "trade_samples": [
+        {
+          "entry_date": "2026-01-20 12:00:00",
+          "pnl_pct": -1.39
+        },
+        {
+          "entry_date": "2026-03-27 00:00:00",
+          "pnl_pct": -2.38
+        }
+      ],
+      "window": "oos",
+      "dataset": "BTC/USDT 4h"
+    },
+    {
+      "sharpe": 0.166,
+      "return_pct": 0.46,
+      "max_dd_pct": -5.25,
+      "ddadj": 0.088,
+      "trades": 5,
+      "bh_return_pct": -43.99,
+      "liquidated": false,
+      "span_days": 162.7917,
+      "trade_samples": [
+        {
+          "entry_date": "2026-02-22 16:00:00",
+          "pnl_pct": -1.79
+        },
+        {
+          "entry_date": "2026-03-06 18:00:00",
+          "pnl_pct": 1.06
+        },
+        {
+          "entry_date": "2026-03-07 21:00:00",
+          "pnl_pct": -0.09
+        },
+        {
+          "entry_date": "2026-04-25 17:00:00",
+          "pnl_pct": 0.29
+        },
+        {
+          "entry_date": "2026-04-29 21:00:00",
+          "pnl_pct": 1.02
+        }
+      ],
+      "window": "oos",
+      "dataset": "ETH/USDT 1h"
+    },
+    {
+      "sharpe": 0.525,
+      "return_pct": 1.09,
+      "max_dd_pct": -2.16,
+      "ddadj": 0.505,
+      "trades": 1,
+      "bh_return_pct": -40.42,
+      "liquidated": false,
+      "span_days": 154.5,
+      "trade_samples": [
+        {
+          "entry_date": "2026-04-05 12:00:00",
+          "pnl_pct": 1.09
+        }
+      ],
+      "window": "oos",
+      "dataset": "ETH/USDT 4h"
+    },
+    {
+      "sharpe": 0.812,
+      "return_pct": 0.58,
+      "max_dd_pct": -0.92,
+      "ddadj": 0.63,
+      "trades": 1,
+      "bh_return_pct": -46.51,
+      "liquidated": false,
+      "span_days": 162.7917,
+      "trade_samples": [
+        {
+          "entry_date": "2026-04-12 04:00:00",
+          "pnl_pct": 0.58
+        }
+      ],
+      "window": "oos",
+      "dataset": "SOL/USDT 1h"
+    },
+    {
+      "sharpe": -0.491,
+      "return_pct": -1.11,
+      "max_dd_pct": -3.23,
+      "ddadj": -0.344,
+      "trades": 1,
+      "bh_return_pct": -44.21,
+      "liquidated": false,
+      "span_days": 154.5,
+      "trade_samples": [
+        {
+          "entry_date": "2026-04-28 00:00:00",
+          "pnl_pct": -1.11
+        }
+      ],
+      "window": "oos",
+      "dataset": "SOL/USDT 4h"
+    }
+  ],
+  "pooled_duplicates_dropped": 0,
+  "trade_level": {
+    "summary": {
+      "n": 37,
+      "mean": 0.081622,
+      "median": 0.29,
+      "min": -5.46,
+      "max": 6.24,
+      "n_pos": 24,
+      "n_neg": 13,
+      "n_zero": 0
+    },
+    "permutation": {
+      "n": 37,
+      "mean": 0.081622,
+      "p_value": 0.391261,
+      "n_resamples": 10000
+    },
+    "bootstrap": {
+      "point": 0.081622,
+      "lo": -0.510007,
+      "hi": 0.670561,
+      "n_resamples": 10000
+    },
+    "bootstrap_p_mean_le_zero": 0.3873,
+    "sign_test": {
+      "n": 37,
+      "n_pos": 24,
+      "n_neg": 13,
+      "n_zero": 0,
+      "p_value": 0.098872
+    },
+    "wilcoxon": {
+      "n": 37,
+      "w": 421.5,
+      "z": 1.0485,
+      "p_value": 0.294389
+    },
+    "alpha": 0.05,
+    "verdict": "indistinguishable_from_zero"
+  },
+  "leg_level": {
+    "summary": {
+      "n": 12,
+      "mean": 0.2725,
+      "median": 0.035,
+      "min": -6.08,
+      "max": 9.05,
+      "n_pos": 6,
+      "n_neg": 6,
+      "n_zero": 0
+    },
+    "permutation": {
+      "n": 12,
+      "mean": 0.2725,
+      "p_value": 0.407459,
+      "n_resamples": 10000
+    },
+    "bootstrap": {
+      "point": 0.2725,
+      "lo": -1.673354,
+      "hi": 2.423333,
+      "n_resamples": 10000
+    },
+    "bootstrap_p_mean_le_zero": 0.4002,
+    "sign_test": {
+      "n": 12,
+      "n_pos": 6,
+      "n_neg": 6,
+      "n_zero": 0,
+      "p_value": 1.0
+    },
+    "wilcoxon": {
+      "n": 12,
+      "w": 40.0,
+      "z": 0.0392,
+      "p_value": 0.968712
+    },
+    "alpha": 0.05,
+    "verdict": "indistinguishable_from_zero"
+  }
+}
