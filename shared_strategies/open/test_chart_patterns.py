@@ -21,6 +21,7 @@ from chart_patterns import (
     detect_cup_and_handle,
     chart_pattern_core,
     _get_swing_indices,
+    _htf_gate_trend,
 )
 
 
@@ -558,3 +559,130 @@ class TestChartPatternCore:
         # With vol_multiplier=3.0 and low breakout volume, signals should be filtered
         sell_signals = result[result["signal"] == -1]
         assert len(sell_signals) == 0
+
+
+# ─── HTF Trend Gate (#982) ──────────────────
+
+def _double_top_fixture(prefix=None):
+    """The orchestrator double-top fixture (emits -1 sell signals), optionally
+    preceded by a price prefix that sets the HTF trend context."""
+    prices = (
+        list(np.linspace(80, 100, 20)) +
+        list(np.linspace(100, 90, 15)) +
+        list(np.linspace(90, 99, 15)) +
+        list(np.linspace(99, 85, 20)) +
+        [85] * 30
+    )
+    if prefix is not None:
+        prices = list(prefix) + prices
+    vol = [100.0] * len(prices)
+    # High volume across the double-top breakout region so the volume filter
+    # passes there (region sits after the prefix).
+    off = len(prefix) if prefix is not None else 0
+    for i in range(off + 50, off + 70):
+        vol[i] = 200.0
+    return make_ohlcv(prices, volume=vol)
+
+
+class TestHTFGate:
+    def test_default_off_is_bit_identical(self):
+        df = _double_top_fixture()
+        base = chart_pattern_core(df, pivot_lookback=3, tolerance=0.03, vol_multiplier=1.0)
+        off = chart_pattern_core(
+            df, pivot_lookback=3, tolerance=0.03, vol_multiplier=1.0,
+            htf_gate_factor=0,
+        )
+        assert "htf_gate_trend" not in base.columns
+        assert "htf_gate_trend" not in off.columns
+        assert (base["signal"] == off["signal"]).all()
+
+    def test_htf_gate_trend_direction_and_warmup(self):
+        up = make_ohlcv(np.linspace(50, 200, 600))
+        trend_up = _htf_gate_trend(up, 4, ema_fast=10, ema_slow=20)
+        down = make_ohlcv(np.linspace(200, 50, 600))
+        trend_down = _htf_gate_trend(down, 4, ema_fast=10, ema_slow=20)
+        # Neutral through EMA warmup (slow span in buckets), then directional.
+        assert trend_up.iloc[0] == 0 and trend_down.iloc[0] == 0
+        assert trend_up.iloc[-1] == 1
+        assert trend_down.iloc[-1] == -1
+
+    def test_veto_blocks_counter_trend_sell_in_uptrend(self):
+        # Long rising prefix puts the HTF trend firmly up when the double-top
+        # breakdown (-1) fires; veto mode must gate those sells to 0.
+        df = _double_top_fixture(prefix=np.linspace(20, 80, 400))
+        base = chart_pattern_core(df, pivot_lookback=3, tolerance=0.03, vol_multiplier=1.0)
+        gated = chart_pattern_core(
+            df, pivot_lookback=3, tolerance=0.03, vol_multiplier=1.0,
+            htf_gate_factor=4, htf_gate_ema_fast=10, htf_gate_ema_slow=20,
+        )
+        sell_bars = np.where(base["signal"].values == -1)[0]
+        assert len(sell_bars) >= 1  # fixture sanity
+        blocked = 0
+        for k in sell_bars:
+            trend_k = int(gated["htf_gate_trend"].iloc[k])
+            if trend_k == 1:
+                assert gated["signal"].iloc[k] == 0, (
+                    f"veto left a -1 signal at bar {k} despite HTF uptrend"
+                )
+                blocked += 1
+            else:
+                assert gated["signal"].iloc[k] == base["signal"].iloc[k]
+        # Fixture sanity: the uptrend prefix must actually make the gate bite
+        # on at least one sell signal, else this test is vacuous.
+        assert blocked >= 1
+
+    def test_veto_passes_neutral_and_align_blocks_it(self):
+        # factor=30 with slow=40 needs 1200 bars of warmup; the 100-bar fixture
+        # keeps the HTF trend neutral throughout. Veto passes everything
+        # through unchanged; align (requires agreement) blocks everything.
+        df = _double_top_fixture()
+        base = chart_pattern_core(df, pivot_lookback=3, tolerance=0.03, vol_multiplier=1.0)
+        assert base["signal"].abs().sum() >= 1  # fixture sanity
+        veto = chart_pattern_core(
+            df, pivot_lookback=3, tolerance=0.03, vol_multiplier=1.0,
+            htf_gate_factor=30,
+        )
+        align = chart_pattern_core(
+            df, pivot_lookback=3, tolerance=0.03, vol_multiplier=1.0,
+            htf_gate_factor=30, htf_gate_mode="align",
+        )
+        assert (veto["htf_gate_trend"] == 0).all()
+        assert (veto["signal"] == base["signal"]).all()
+        assert (align["signal"] == 0).all()
+
+    def test_invalid_mode_raises(self):
+        df = _double_top_fixture()
+        with pytest.raises(ValueError, match="htf_gate_mode"):
+            chart_pattern_core(df, htf_gate_mode="bogus")
+
+    def test_gated_signal_independent_of_future_bars(self):
+        # Same prefix-stability contract as the ungated orchestrator test,
+        # with the gate active on a DatetimeIndex (exercises the wall-clock
+        # resample path): the projected HTF trend must never read a bucket
+        # that has not closed by bar K.
+        df = _double_top_fixture(prefix=np.linspace(20, 80, 400))
+        df.index = pd.date_range("2024-01-01", periods=len(df), freq="1h")
+        kwargs = dict(
+            pivot_lookback=3, tolerance=0.03, vol_multiplier=1.0,
+            htf_gate_factor=4, htf_gate_ema_fast=10, htf_gate_ema_slow=20,
+        )
+        full = chart_pattern_core(df, **kwargs)
+        base = chart_pattern_core(df, pivot_lookback=3, tolerance=0.03,
+                                  vol_multiplier=1.0)
+        # Check every bar where the UNGATED strategy fires: the gated verdict
+        # there (pass or block) must be identical under truncation — a
+        # look-ahead in the projected trend would flip it either way.
+        signal_bars = list(np.where(base["signal"].values != 0)[0])
+        assert len(signal_bars) >= 1  # fixture sanity
+        for k in signal_bars:
+            partial = chart_pattern_core(df.iloc[: k + 1], **kwargs)
+            assert partial["signal"].iloc[k] == full["signal"].iloc[k], (
+                f"gated signal at bar {k} flipped under truncation"
+            )
+        # The visible trend series itself must also be prefix-stable.
+        k = signal_bars[-1]
+        partial = chart_pattern_core(df.iloc[: k + 1], **kwargs)
+        assert (
+            partial["htf_gate_trend"].values
+            == full["htf_gate_trend"].values[: k + 1]
+        ).all()
